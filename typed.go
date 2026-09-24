@@ -90,13 +90,14 @@ func (a *Agent) cloneWith(extra Tool, mw ...Middleware) *Agent {
 	}
 	tools[extra.Name()] = extra
 	return &Agent{
-		model:    a.model,
-		tools:    tools,
-		store:    a.store,
-		mw:       append(append([]Middleware(nil), a.mw...), mw...),
-		toolMW:   append([]ToolMiddleware(nil), a.toolMW...),
-		sampling: a.sampling,
-		maxConc:  a.maxConc,
+		model:        a.model,
+		tools:        tools,
+		store:        a.store,
+		mw:           append(append([]Middleware(nil), a.mw...), mw...),
+		toolMW:       append([]ToolMiddleware(nil), a.toolMW...),
+		sampling:     a.sampling,
+		maxConc:      a.maxConc,
+		systemPrompt: a.systemPrompt,
 	}
 }
 
