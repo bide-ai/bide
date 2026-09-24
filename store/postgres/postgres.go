@@ -79,7 +79,7 @@ func (s *Store) Do(ctx context.Context, runID, name string, fn func(context.Cont
 
 		data, e := json.Marshal(rec)
 		if e != nil {
-			return nil, fmt.Errorf("marshal step %q: %w", name, e)
+			return nil, fmt.Errorf("marshal step %q: %w (%w)", name, e, agent.ErrStorage)
 		}
 		tag, e := s.db.ExecContext(ctx, `
 			INSERT INTO steps (run_id, seq, name, data)
@@ -87,7 +87,7 @@ func (s *Store) Do(ctx context.Context, runID, name string, fn func(context.Cont
 			ON CONFLICT (run_id, name) DO NOTHING`,
 			runID, name, data)
 		if e != nil {
-			return nil, fmt.Errorf("insert step %q: %w", name, e)
+			return nil, fmt.Errorf("insert step %q: %w (%w)", name, e, agent.ErrStorage)
 		}
 		if n, _ := tag.RowsAffected(); n == 0 {
 			if existing, ok, e := s.load(ctx, runID, name); e == nil && ok {
@@ -106,7 +106,7 @@ func (s *Store) Do(ctx context.Context, runID, name string, fn func(context.Cont
 func (s *Store) History(ctx context.Context, runID string) ([]agent.Record, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT data FROM steps WHERE run_id = $1 ORDER BY seq`, runID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("query history %q: %w (%w)", runID, err, agent.ErrStorage)
 	}
 	defer rows.Close()
 
@@ -114,11 +114,11 @@ func (s *Store) History(ctx context.Context, runID string) ([]agent.Record, erro
 	for rows.Next() {
 		var data []byte
 		if err := rows.Scan(&data); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("scan step: %w (%w)", err, agent.ErrStorage)
 		}
 		var rec agent.Record
 		if err := json.Unmarshal(data, &rec); err != nil {
-			return nil, fmt.Errorf("unmarshal step: %w", err)
+			return nil, fmt.Errorf("unmarshal step: %w (%w)", err, agent.ErrStorage)
 		}
 		out = append(out, rec)
 	}
@@ -132,11 +132,11 @@ func (s *Store) load(ctx context.Context, runID, name string) (agent.Record, boo
 		return agent.Record{}, false, nil
 	}
 	if err != nil {
-		return agent.Record{}, false, err
+		return agent.Record{}, false, fmt.Errorf("load step %q: %w (%w)", name, err, agent.ErrStorage)
 	}
 	var rec agent.Record
 	if err := json.Unmarshal(data, &rec); err != nil {
-		return agent.Record{}, false, fmt.Errorf("unmarshal step %q: %w", name, err)
+		return agent.Record{}, false, fmt.Errorf("unmarshal step %q: %w (%w)", name, err, agent.ErrStorage)
 	}
 	return rec, true, nil
 }

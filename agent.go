@@ -103,7 +103,7 @@ func (a *Agent) run(ctx context.Context, runID, input string, saga bool, emit fu
 
 	recs, err := a.store.History(ctx, runID)
 	if err != nil {
-		return Message{}, fmt.Errorf("load history %s: %w", runID, err)
+		return Message{}, fmt.Errorf("load history %s: %w (%w)", runID, err, ErrStorage)
 	}
 
 	msgs := []Message{UserText(input)}
@@ -178,7 +178,7 @@ func (a *Agent) run(ctx context.Context, runID, input string, saga bool, emit fu
 					return Record{Kind: StepModel, Message: &m}, nil
 				})
 			if err != nil {
-				return Message{}, fmt.Errorf("generate: %w", err)
+				return Message{}, fmt.Errorf("generate (run %s): %w (%w)", runID, err, ErrModel)
 			}
 			asst = *rec.Message
 			modelSeq++
@@ -209,7 +209,7 @@ func (a *Agent) run(ctx context.Context, runID, input string, saga bool, emit fu
 			}
 			t, ok := a.tools[tu.Name]
 			if !ok {
-				return Message{}, fmt.Errorf("model called unknown tool %q", tu.Name)
+				return Message{}, fmt.Errorf("model called unknown tool %q: %w", tu.Name, ErrUnknownTool)
 			}
 			if t.Safety().RequiresApproval {
 				if !decided[tu.ID] {
@@ -275,7 +275,7 @@ func (a *Agent) run(ctx context.Context, runID, input string, saga bool, emit fu
 					return &sagaTrip{toolName: c.tu.Name, toolUseID: c.tu.ID, cause: toolCallErr}
 				}
 				if err != nil {
-					return fmt.Errorf("tool %q: %w", c.tu.Name, err)
+					return fmt.Errorf("tool %q: %w (%w)", c.tu.Name, err, ErrTool)
 				}
 				results[c.idx] = &Message{Role: RoleTool, Parts: []Part{ToolResult{ToolUseID: c.tu.ID, Result: rec.Result, IsError: rec.IsError}}}
 				fire(ToolCompleted{ToolUseID: c.tu.ID, Name: c.tu.Name, Result: rec.Result, IsError: rec.IsError})

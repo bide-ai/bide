@@ -78,7 +78,7 @@ func (m *Model) Stream(ctx context.Context, req agent.Request) (*agent.Stream, e
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
-		return nil, fmt.Errorf("openai: status %d: %s", resp.StatusCode, b)
+		return nil, fmt.Errorf("openai: status %d: %s (%w)", resp.StatusCode, b, agent.ErrModel)
 	}
 
 	ch := make(chan agent.Emit)
@@ -209,7 +209,7 @@ func streamSSE(body io.ReadCloser, ch chan<- agent.Emit) {
 		}
 		var c chunk
 		if err := json.Unmarshal([]byte(data), &c); err != nil {
-			ch <- agent.Emit{Err: fmt.Errorf("openai sse decode: %w", err)}
+			ch <- agent.Emit{Err: fmt.Errorf("openai sse decode: %w (%w)", err, agent.ErrModel)}
 			return
 		}
 		for _, choice := range c.Choices {

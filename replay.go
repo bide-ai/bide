@@ -2,7 +2,7 @@ package agent
 
 import (
 	"context"
-	"errors"
+	"fmt"
 )
 
 // Replay returns a Model that re-emits the model outputs recorded in `source` for runID,
@@ -38,7 +38,7 @@ type replayModel struct {
 
 func (m *replayModel) Stream(_ context.Context, _ Request) (*Stream, error) {
 	if m.i >= len(m.msgs) {
-		return nil, errors.New("replay: no more recorded model outputs")
+		return nil, fmt.Errorf("replay: %w", ErrNoRecordedOutput)
 	}
 	msg := m.msgs[m.i]
 	m.i++

@@ -130,7 +130,7 @@ func partKind(p Part) (string, error) {
 	case ToolResult:
 		return "tool_result", nil
 	default:
-		return "", fmt.Errorf("agent: unknown part type %T", p)
+		return "", fmt.Errorf("agent: unknown part type %T (%w)", p, ErrProtocol)
 	}
 }
 
@@ -172,6 +172,6 @@ func unmarshalPart(raw []byte) (Part, error) {
 		var v ToolResult
 		return v, json.Unmarshal(raw, &v)
 	default:
-		return nil, fmt.Errorf("agent: unknown part type %q", probe.Type)
+		return nil, fmt.Errorf("agent: unknown part type %q (%w)", probe.Type, ErrProtocol)
 	}
 }

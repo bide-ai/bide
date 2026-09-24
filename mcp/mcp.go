@@ -29,7 +29,7 @@ import (
 func Tools(ctx context.Context, session *mcp.ClientSession) ([]agent.Tool, error) {
 	res, err := session.ListTools(ctx, nil)
 	if err != nil {
-		return nil, fmt.Errorf("mcp: list tools: %w", err)
+		return nil, fmt.Errorf("mcp: list tools: %w (%w)", err, agent.ErrTool)
 	}
 	tools := make([]agent.Tool, 0, len(res.Tools))
 	for _, t := range res.Tools {
@@ -45,7 +45,7 @@ func Connect(ctx context.Context, transport mcp.Transport) (*mcp.ClientSession, 
 	client := mcp.NewClient(&mcp.Implementation{Name: "go-agents", Version: "0.1.0"}, nil)
 	session, err := client.Connect(ctx, transport, nil)
 	if err != nil {
-		return nil, fmt.Errorf("mcp: connect: %w", err)
+		return nil, fmt.Errorf("mcp: connect: %w (%w)", err, agent.ErrTool)
 	}
 	return session, nil
 }
@@ -112,14 +112,14 @@ func (t *tool) Call(ctx context.Context, args json.RawMessage) (json.RawMessage,
 	}
 	res, err := t.session.CallTool(ctx, params)
 	if err != nil {
-		return nil, fmt.Errorf("mcp: call tool %q: %w", t.def.Name, err)
+		return nil, fmt.Errorf("mcp: call tool %q: %w (%w)", t.def.Name, err, agent.ErrTool)
 	}
 	out, err := json.Marshal(res.Content)
 	if err != nil {
-		return nil, fmt.Errorf("mcp: marshal result of tool %q: %w", t.def.Name, err)
+		return nil, fmt.Errorf("mcp: marshal result of tool %q: %w (%w)", t.def.Name, err, agent.ErrProtocol)
 	}
 	if res.IsError {
-		return nil, fmt.Errorf("mcp: tool %q reported error: %s", t.def.Name, out)
+		return nil, fmt.Errorf("mcp: tool %q reported error: %s (%w)", t.def.Name, out, agent.ErrTool)
 	}
 	return out, nil
 }

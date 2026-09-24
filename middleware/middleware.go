@@ -55,7 +55,7 @@ func TokenBudget(max int) agent.Middleware {
 			over := used >= max
 			mu.Unlock()
 			if over {
-				return agent.Message{}, agent.Usage{}, fmt.Errorf("token budget exceeded: %d used, cap %d", used, max)
+				return agent.Message{}, agent.Usage{}, fmt.Errorf("%d used, cap %d: %w", used, max, agent.ErrBudgetExceeded)
 			}
 			msg, u, err := next(ctx, req)
 			if err == nil {

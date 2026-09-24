@@ -67,7 +67,7 @@ func (t *subAgentTool) Call(ctx context.Context, args json.RawMessage) (json.Raw
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
-				ch <- result{err: fmt.Errorf("sub-agent %q panicked: %v", t.name, r)}
+				ch <- result{err: fmt.Errorf("sub-agent %q panicked: %v (%w)", t.name, r, ErrTool)}
 			}
 		}()
 		var m Message

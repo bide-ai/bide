@@ -61,7 +61,7 @@ func NewFederated(ctx context.Context, m *gsm.FedMachine, log EventLog, entity s
 		}
 		st, err := m.ApplyNamed(fg.state, registry, event)
 		if err != nil {
-			return nil, fmt.Errorf("govern: replaying %q: %w", enc, err)
+			return nil, fmt.Errorf("govern: replaying %q: %w (%w)", enc, err, agent.ErrStorage)
 		}
 		fg.state = st
 	}
@@ -74,7 +74,7 @@ func NewFederated(ctx context.Context, m *gsm.FedMachine, log EventLog, entity s
 // fails, the in-memory state is left untouched.
 func (fg *FederatedGovernor) Apply(ctx context.Context, registry, event string) (gsm.FedState, error) {
 	if strings.Contains(registry, fedSep) || strings.Contains(event, fedSep) {
-		return fg.State(), fmt.Errorf("govern: registry/event name may not contain the separator byte")
+		return fg.State(), fmt.Errorf("govern: registry/event name may not contain the separator byte: %w", agent.ErrConfig)
 	}
 	fg.mu.Lock()
 	defer fg.mu.Unlock()
@@ -84,7 +84,7 @@ func (fg *FederatedGovernor) Apply(ctx context.Context, registry, event string) 
 		return fg.state, err
 	}
 	if err := fg.log.Append(ctx, fg.entity, encodeFedEvent(registry, event)); err != nil {
-		return fg.state, err
+		return fg.state, fmt.Errorf("govern: append log: %w (%w)", err, agent.ErrStorage)
 	}
 	fg.state = next
 	return fg.state, nil
@@ -102,7 +102,7 @@ func encodeFedEvent(registry, event string) string { return registry + fedSep + 
 func decodeFedEvent(enc string) (registry, event string, err error) {
 	parts := strings.SplitN(enc, fedSep, 2)
 	if len(parts) != 2 {
-		return "", "", fmt.Errorf("govern: malformed federated log entry %q", enc)
+		return "", "", fmt.Errorf("govern: malformed federated log entry %q: %w", enc, agent.ErrProtocol)
 	}
 	return parts[0], parts[1], nil
 }

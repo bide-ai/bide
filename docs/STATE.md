@@ -60,6 +60,13 @@ gsm federation capability reaches the agent tier for free on a version bump:
   `AssistantTurn` (with `Replayed` on resume), `ToolStarted`/`ToolCompleted`, `ApprovalRequired`,
   `Finished`. Token deltas forward below the middleware chain (still sees assembled messages) and
   only on a FRESH model call — replayed turns re-emit the journaled transcript instead.
+- **Standardized errors** (`errors.go`): sentinel-based classification via `errors.Is` (no
+  custom framework). Category sentinels — `ErrConfig`, `ErrModel`, `ErrTool`, `ErrStorage`,
+  `ErrProtocol`, `ErrBudget`; condition sentinels wrap their category (`ErrUnknownTool` →
+  `ErrTool`, etc.). Every error across core + adapters (model, mcp, store, govern, middleware)
+  wraps a category via a second `%w`. Control-flow stays typed (`errors.As`): `*PendingApproval`,
+  `*ResumeHalt`, `*SagaAborted`. (Chose sentinels over a `Kind` enum — `Model`/`Tool` collide
+  with the interface type names, and `errors.Is` is the idiomatic fit.)
 - `middleware`: Retry, TokenBudget. `trace`: opt-in OTel gen_ai.* (API only).
 - `model/anthropic` (native), `model/openai` (any OpenAI-compatible via WithBaseURL).
 - `schema`: reflect→inline JSON schema + OpenAIStrict. `mcp`: official go-sdk; annotations→Safety.

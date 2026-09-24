@@ -76,7 +76,7 @@ func (m *Model) Stream(ctx context.Context, req agent.Request) (*agent.Stream, e
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
-		return nil, fmt.Errorf("anthropic: status %d: %s", resp.StatusCode, b)
+		return nil, fmt.Errorf("anthropic: status %d: %s (%w)", resp.StatusCode, b, agent.ErrModel)
 	}
 
 	ch := make(chan agent.Emit)
@@ -210,7 +210,7 @@ func streamSSE(body io.ReadCloser, ch chan<- agent.Emit) {
 		}
 		var ev sseEvent
 		if err := json.Unmarshal([]byte(data), &ev); err != nil {
-			ch <- agent.Emit{Err: fmt.Errorf("anthropic sse decode: %w", err)}
+			ch <- agent.Emit{Err: fmt.Errorf("anthropic sse decode: %w (%w)", err, agent.ErrModel)}
 			return
 		}
 		switch ev.Type {
@@ -248,7 +248,7 @@ func streamSSE(body io.ReadCloser, ch chan<- agent.Emit) {
 		case "message_stop":
 			return
 		case "error":
-			ch <- agent.Emit{Err: fmt.Errorf("anthropic stream error: %s", data)}
+			ch <- agent.Emit{Err: fmt.Errorf("anthropic stream error: %s (%w)", data, agent.ErrModel)}
 			return
 		}
 	}

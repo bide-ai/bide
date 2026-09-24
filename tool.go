@@ -73,7 +73,7 @@ func (t *funcTool[In, Out]) Call(ctx context.Context, args json.RawMessage) (jso
 	var in In
 	if len(args) > 0 {
 		if err := json.Unmarshal(args, &in); err != nil {
-			return nil, fmt.Errorf("decode args for tool %q: %w", t.name, err)
+			return nil, fmt.Errorf("decode args for tool %q: %w (%w)", t.name, err, ErrToolArgs)
 		}
 	}
 	out, err := t.fn(ctx, in)

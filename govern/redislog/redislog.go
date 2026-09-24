@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 
+	agent "github.com/dayna/go-agents"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -54,7 +55,7 @@ func (l *Log) Events(ctx context.Context, entity string) ([]string, error) {
 	for _, m := range msgs {
 		e, ok := m.Values["event"].(string)
 		if !ok {
-			return nil, fmt.Errorf("redislog: stream %q entry %s missing string 'event' field", l.key(entity), m.ID)
+			return nil, fmt.Errorf("redislog: stream %q entry %s missing string 'event' field: %w", l.key(entity), m.ID, agent.ErrProtocol)
 		}
 		out = append(out, e)
 	}

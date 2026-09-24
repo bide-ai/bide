@@ -178,7 +178,7 @@ func (b *msgBuilder) finalize() (Message, error) {
 	for _, i := range b.order {
 		tu := b.calls[i]
 		if len(tu.Args) > 0 && !json.Valid(tu.Args) {
-			return Message{}, fmt.Errorf("tool call %q: incomplete or invalid JSON arguments from stream: %s", tu.Name, tu.Args)
+			return Message{}, fmt.Errorf("tool call %q: %w: %s", tu.Name, ErrTruncatedToolArgs, tu.Args)
 		}
 		parts = append(parts, *tu)
 	}

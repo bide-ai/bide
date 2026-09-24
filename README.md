@@ -169,6 +169,37 @@ if errors.As(err, &pend) {
 }
 ```
 
+## Errors
+
+Failures are classified with sentinel errors matched by `errors.Is` — the standard-library
+idiom, no custom error framework. Two tiers: a **category** (the coarse class) and a
+**condition** (a specific cause) that wraps its category, so a match works at whichever level
+you need:
+
+```go
+_, err := a.Run(ctx, runID, input)
+switch {
+case errors.Is(err, agent.ErrModel):       // any provider fault (HTTP status, decode, stream)
+	backOffAndRetry()
+case errors.Is(err, agent.ErrUnknownTool):  // a specific condition (implies agent.ErrTool)
+	fixToolWiring()
+case errors.Is(err, agent.ErrStorage):      // durable-store I/O
+	alertOps()
+}
+```
+
+Categories: `ErrConfig`, `ErrModel`, `ErrTool`, `ErrStorage`, `ErrProtocol`, `ErrBudget`.
+Conditions (each wraps a category): `ErrUnknownTool`, `ErrToolArgs`, `ErrNoRecordedOutput`,
+`ErrTruncatedToolArgs`, `ErrBudgetExceeded`. Every error the toolkit returns — including from
+the model, MCP, store, and governance adapters — carries a category, so `errors.Is` is reliable
+across the whole surface.
+
+The **control-flow signals** are richer than a category, so they stay concrete types matched
+with `errors.As`: `*PendingApproval` (approval needed), `*ResumeHalt` (unsafe to resume),
+`*SagaAborted` (rolled back). A paused or halted run is not a "failure" category — inspect the
+struct for `RunID` / `ToolUseID` / compensation details. Cancellation surfaces as the usual
+`context.Canceled` / `context.DeadlineExceeded`.
+
 ## Middleware & observability
 
 ```go
