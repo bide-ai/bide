@@ -183,8 +183,15 @@ Mirrors how we proved the single-registry + saga tiers.
   source-determinacy (a morphism's shared image depends only on the source). Equivalence to the
   centralized `FedMachine` proven in gsm; equivalence to the durable central `FederatedGovernor`
   proven in go-agents (`govern/federated_test.go`).
-- **M4 (frontier, not committed):** multi-source resolution (Remark 8.15) — target-agreement
-  predicates / conflict operators. Research, deferred by design.
+- **M4 (multi-source) — DONE (beyond-paper, verified).** gsm `Resolver` + `Federation.Resolve`
+  (gsm, post-v0.2.0): a target may have >1 source (acyclic DAG) if it declares a deterministic
+  merge. This extends past the paper's tree-only theorem (Remark 8.15 leaves it open); gsm makes
+  it safe by **exhaustive build-time verification** of the specific federation (resolver writes
+  only shared vars, preserves validity over all reachable source combinations, source-determined)
+  rather than a general proof. Rejects multi-source-without-resolver, divergent/local-reading/
+  non-shared-writing resolvers, and cycles. Single-source (tree) federations stay proof-backed.
+  NOT yet consumed by go-agents (needs a new gsm tag + re-pin); the `FederatedGovernor` will
+  support multi-source federations automatically once pinned, since it drives `FedMachine`.
 
 ## 7. Risks / notes
 
