@@ -250,6 +250,10 @@ single charge happened, exposing no other customers or prompts). And `ProveConsi
 was only appended, never rewritten or reordered (the transparency-log guarantee). The implementation
 is checked against the published RFC 6962 test vectors.
 
+`SignTreeHead` produces the CT-style **Signed Tree Head** — `{Size, Root, Timestamp}` signed with
+Ed25519 — the artifact you publish. The full flow: sign an STH, later disclose a single record with an
+inclusion proof an auditor checks against the signed root, and prove append-only growth between two STHs.
+
 ## RAG & memory (bring your own)
 
 go-agents ships **no vector store, embedder, or memory backend** — it gives you the *seam* and

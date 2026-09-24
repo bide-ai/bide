@@ -134,7 +134,12 @@ gsm federation capability reaches the agent tier for free on a version bump:
   transparency-log guarantee). Generation from the RFC SUBPROOF recursion; verification is the canonical
   CT algorithm (decompInclProof + chainInner/Right/Border). Validated: round-trips reconstruct the
   spec-verified MTH roots (all m,n≤24), a hand-derived 1→2 vector, rewrite-detection, journal
-  append-only + directionality. The full CT transparency-log triad now: Head, inclusion, consistency. HONEST model (in the package doc):
+  append-only + directionality. The full CT transparency-log triad now: Head, inclusion, consistency.
+  **Signed Tree Head** (`audit/sth.go`): the CT-style anchoring artifact — `TreeHead{Size, Root,
+  Timestamp}` + `SignTreeHead`/`Verify` (ed25519) binds the Merkle root to WHICH tree (size) and WHEN,
+  so a signature can't be replayed across sizes. `NewTreeHead` builds it from the store. End-to-end
+  compliance flow tested: sign STH → disclose one record + inclusion proof → auditor verifies against
+  the signed root → consistency between two STHs proves append-only growth. #4 is a complete product. HONEST model (in the package doc):
   integrity always; tamper-evidence only if the head is anchored out-of-band (a chain in the same DB
   an attacker controls can be rewritten+rehashed). Compliance/enterprise axis (fintech/health). Read
   over persisted order (correct under parallel tools), no core Record change. Next: Merkle root +
