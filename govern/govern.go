@@ -164,3 +164,29 @@ func EventTool(gov Applier, name, description, event string, safety agent.Safety
 			return map[string]any{"event": event, "applied": true}, nil
 		})
 }
+
+// AttestedEventTool is EventTool that also records, in the tool's durable result, WHICH
+// governed policy admitted the action: it embeds policyDigest (a stable identifier of the
+// combinator policy, e.g. gsm.Registry.PolicyDigest) alongside the event. Because the result
+// is part of the journaled record, any audit over the journal (a signed tree head, or a
+// ProofBundle from ProveToolCall) then commits cryptographically to the policy the action ran
+// under, not merely that the action happened. An auditor recomputes the digest from the
+// published policy bytes and runs the external verified oracle on them (see
+// `goagents-audit verify-governance`), tying the cryptographic root (the log) to the
+// mathematical root (the proof) over one artifact.
+//
+// policyDigest is treated as an opaque string on purpose: the SDK does not depend on gsm's
+// serialization format, it only records the identifier the policy's owner published.
+func AttestedEventTool(gov Applier, name, description, event, policyDigest string, safety agent.Safety) agent.Tool {
+	return agent.Func(name, description, safety,
+		func(ctx context.Context, _ struct{}) (map[string]any, error) {
+			if _, err := gov.Apply(ctx, event); err != nil {
+				return nil, err
+			}
+			return map[string]any{
+				"event":         event,
+				"applied":       true,
+				"policy_digest": policyDigest,
+			}, nil
+		})
+}

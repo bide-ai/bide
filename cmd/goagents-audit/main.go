@@ -15,16 +15,24 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
 
 	agent "github.com/dayna/go-agents"
 	"github.com/dayna/go-agents/audit"
 )
+
+// policyFormatVersion is the published domain-separation tag for the combinator policy
+// serialization (gsm's PolicyFormatVersion). It is hardcoded here on purpose: the verifier
+// recomputes a policy digest from the published format and bytes without importing or trusting
+// gsm, so the two roots of trust (the log and the proof) stay independent of the producer.
+const policyFormatVersion = "gsm-policy-v1"
 
 func flagSet(name string) *flag.FlagSet { return flag.NewFlagSet(name, flag.ExitOnError) }
 
@@ -37,6 +45,8 @@ func main() {
 		prove(os.Args[2:])
 	case "verify":
 		verify(os.Args[2:])
+	case "verify-governance":
+		verifyGovernance(os.Args[2:])
 	default:
 		usage()
 	}
@@ -50,6 +60,10 @@ func usage() {
 
   verify -bundle <file> -pubkey <hex|file>
          verify a ProofBundle offline; exit 0 if authentic, 1 otherwise
+
+  verify-governance -policy <file> [-digest <hex>] [-checker <astchecker>]
+         recompute the policy digest and, with -checker, run the external verified
+         oracle to certify the policy converges; exit 0 if all checks pass
 
 Export a journal for `+"`prove`"+` with: json.Marshal(store.History(ctx, runID)).
 `)
@@ -131,6 +145,57 @@ func verify(args []string) {
 		os.Exit(1)
 	}
 	fmt.Printf("OK: run %q record verified in a signed tree of size %d\n", bundle.RunID, bundle.STH.Size)
+}
+
+// verifyGovernance closes the loop between the two roots of trust for a governed policy: it
+// recomputes the policy digest from the published bytes (the cryptographic identity anchored in
+// the log and embedded in each governed action's ProofBundle) and, given the external verified
+// oracle, certifies that the policy actually converges (the mathematical guarantee). It imports
+// neither gsm nor the runtime: it recomputes the digest from the published format and runs a
+// checker the auditor supplies, so it trusts neither the producer nor any code the producer wrote.
+func verifyGovernance(args []string) {
+	fs := flagSet("verify-governance")
+	policyPath := fs.String("policy", "", "path to the serialized combinator policy (gsm PolicyBytes / WriteMachineAST output)")
+	expected := fs.String("digest", "", "expected policy digest as hex (e.g. from a ProofBundle or the anchor); must match if set")
+	checker := fs.String("checker", "", "path to the external verified oracle (astchecker); if set, it is run on the policy")
+	_ = fs.Parse(args)
+
+	if *policyPath == "" {
+		usage()
+	}
+	policy, err := os.ReadFile(*policyPath)
+	if err != nil {
+		fatal(err)
+	}
+
+	// Domain-separated SHA-256 over the published format tag and the policy bytes, recomputed
+	// here rather than taken from gsm, so the digest check is independent of the producer.
+	h := sha256.New()
+	h.Write([]byte(policyFormatVersion + "\n"))
+	h.Write(policy)
+	digest := hex.EncodeToString(h.Sum(nil))
+	fmt.Printf("policy digest: %s\n", digest)
+
+	if *expected != "" && trimSpace(*expected) != digest {
+		fmt.Printf("FAIL: digest mismatch (expected %s)\n", trimSpace(*expected))
+		os.Exit(1)
+	}
+
+	if *checker == "" {
+		fmt.Println("OK: digest computed. Pass -checker <astchecker> to also certify the policy converges.")
+		return
+	}
+
+	out, runErr := exec.Command(*checker, *policyPath).CombinedOutput()
+	fmt.Printf("oracle: %s", out)
+	if len(out) > 0 && out[len(out)-1] != '\n' {
+		fmt.Println()
+	}
+	if runErr != nil {
+		fmt.Println("FAIL: the verified oracle did not certify this policy as convergent")
+		os.Exit(1)
+	}
+	fmt.Println("OK: digest verified and the external oracle certifies the policy converges")
 }
 
 // readPubKey accepts a hex string directly, or a path to a file whose (trimmed) contents are
