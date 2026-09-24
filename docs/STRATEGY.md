@@ -22,12 +22,33 @@ offline with a checker we did not write. Two independent roots of trust, cryptog
 mathematical, over one artifact. No agent framework pairs these; the formal-methods world has the
 proofs but no agent product; Temporal has durable execution but no governance or proof story.
 
+## Scale and concurrency (the Go dividend)
+
+An underplayed asset: because the runtime is Go, one commodity process keeps a very large number
+of durable, governed, audited agent runs in flight at once. Agent work is I/O-bound (waiting on
+model and tool calls), which the Go scheduler and cheap goroutines absorb without a cluster. The
+`cmd/bench` harness measures it: 5,000 runs that each block ~100ms on the model overlap into under
+half a second of wall-clock on a few thousand goroutines and tens of MB (see `cmd/bench/README.md`).
+
+Frame it precisely, or a serious infra buyer catches the overreach: the win is throughput,
+concurrency, and operational simplicity (a library, not a cluster), not lower latency than the
+model, which the provider owns. The real ceiling at high fan-out is the durable store's write
+throughput, not goroutines. This is Pillar 2 with the volume turned up, and it reinforces the
+accountability story: the durability, governance, and audit all hold under that concurrency.
+
 ## Wedge
 
-- **Vertical (hypothesis):** fintech back-office money movement (payments, ledger, reconciliation).
-  At-most-once maps to "never double-execute a payment"; audit plus convergence maps to
-  reconciliation and regulatory audit. Legal is the fallback (the "prove what the agent did" pitch
-  is native there).
+- **Vertical (hypothesis):** fintech back-office money movement (payments, ledger, reconciliation),
+  and its sharper form, **capital-markets middle/back-office and compliance**: order-lifecycle and
+  mandate/risk-limit governance, trade surveillance, reconciliation, and regulator-grade
+  record-keeping (MiFID II, SEC 17a-4, FINRA). At-most-once maps to "never double-execute";
+  governed convergence maps to "no action outside the mandate"; the audit trail is the
+  offline-verifiable regulatory record. Legal is the fallback (the "prove what the agent did"
+  pitch is native there).
+- **Buyer:** not the bank. The company building agents that touch money, ledgers, or orders,
+  blocked from shipping by their customer's compliance or audit bar.
+- **Validation gate:** one design partner with a *currently blocked* deployment, not a survey.
+  The first willing blocked partner chooses the final vertical.
 - **Buyer:** not the bank. The company building agents that touch money or ledgers, blocked from
   shipping by their customer's compliance or audit bar.
 - **Validation gate:** one design partner with a *currently blocked* deployment, not a survey.
@@ -81,3 +102,8 @@ proofs but no agent product; Temporal has durable execution but no governance or
 - Out-featuring general frameworks on capability.
 - Selling directly to end regulated enterprises before a picks-and-shovels buyer validates the wedge.
 - Any public claim the proofs do not currently support.
+- **Agentic HFT / the low-latency trading hot path.** An LLM in a microsecond-to-millisecond loop
+  is a category error: model calls are hundreds of ms to seconds, and Go's GC, excellent as it is,
+  is not zero-pause. The capital-markets opportunity is the consequential, regulated decision and
+  workflow layer around trading (governance, surveillance, reconciliation, audit), not execution
+  latency. Chasing "HFT" burns credibility with people who do it for real.
