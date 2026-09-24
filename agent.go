@@ -39,13 +39,14 @@ type Middleware func(ModelHandler) ModelHandler
 
 // Agent binds a model, a tool set, a durable store, and a middleware chain.
 type Agent struct {
-	model    Model
-	tools    map[string]Tool
-	store    Durable
-	mw       []Middleware
-	toolMW   []ToolMiddleware
-	sampling Sampling // generation controls applied to every model call
-	maxConc  int      // max concurrent tool calls per turn; 0 = unbounded (default)
+	model        Model
+	tools        map[string]Tool
+	store        Durable
+	mw           []Middleware
+	toolMW       []ToolMiddleware
+	sampling     Sampling // generation controls applied to every model call
+	maxConc      int      // max concurrent tool calls per turn; 0 = unbounded (default)
+	systemPrompt string   // optional system message prepended to every model call
 }
 
 // SamplingOption sets one field of the Sampling config; see Temperature, TopP,
@@ -73,6 +74,15 @@ func (a *Agent) WithSampling(opts ...SamplingOption) *Agent {
 	for _, o := range opts {
 		o(&a.sampling)
 	}
+	return a
+}
+
+// WithSystemPrompt sets a system message that is prepended to the conversation on every
+// model turn. The message is re-seeded on each Run (including resumes), so it is always
+// present regardless of journal replay. Returns the agent for chaining:
+// New(...).WithSystemPrompt("you are a concise assistant").
+func (a *Agent) WithSystemPrompt(s string) *Agent {
+	a.systemPrompt = s
 	return a
 }
 
@@ -149,7 +159,11 @@ func (a *Agent) run(ctx context.Context, runID, input string, saga bool, emit fu
 		return Message{}, Usage{}, 0, fmt.Errorf("load history %s: %w (%w)", runID, err, ErrStorage)
 	}
 
-	msgs := []Message{UserText(input)}
+	msgs := []Message{}
+	if a.systemPrompt != "" {
+		msgs = append(msgs, SystemText(a.systemPrompt))
+	}
+	msgs = append(msgs, UserText(input))
 	done := map[string]bool{}      // tool-use IDs with a recorded result
 	attempted := map[string]bool{} // tool-use IDs we recorded an attempt marker for (started a side effect)
 	decided := map[string]bool{}   // tool-use IDs with a recorded approval decision
