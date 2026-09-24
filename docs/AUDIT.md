@@ -217,9 +217,12 @@ and a stdlib-only standalone verifier (`audit/verify`).
 
 Candidate extensions if a use case needs them, in rough priority:
 
-- **Absence proofs** ("prove this did NOT happen": no charge was logged, no approval recorded).
-  A genuinely new verifiable claim we cannot make today; high compliance value, purely additive.
-  Sorted-adjacency gap proofs (see the sibling `merkle-strata` module) are the known technique.
+- ~~Absence proofs~~ **Done** (`audit/absence.go`): prove a thing did NOT happen (no charge, no
+  approval for an ID) over an RFC 6962 tree of the run's sorted distinct keys. `AbsenceRoot`,
+  `ProveAbsent` / `VerifyAbsence`, and the anchorable `AbsenceBundle`. Adapted dependency-free
+  from the sibling `merkle-strata` module, with one soundness correction: we verify the two
+  bracketing neighbors are ADJACENT (consecutive indices), which merkle-strata omits, so a
+  present key cannot be hidden between non-consecutive neighbors.
 - **Stratified / grouped trees** (`merkle-strata`, MIT, stdlib-only): group leaves by step type
   or agent for O(groups) diffs and per-agent scoped verification/disclosure, useful at
   multi-agent scale. Note: this restructures the currently-flat RFC 6962 tree, so weigh it
