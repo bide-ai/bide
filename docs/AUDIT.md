@@ -203,6 +203,34 @@ audit.VerifyConsistency(sth1.Root, sth2.Root, cproof)
 That is a privacy-preserving, third-party-verifiable audit trail: prove a single action happened,
 in a committed run whose history is provably append-only, without exposing the rest.
 
+## Governed actions: proving which policy admitted the action
+
+For a governed action (a `gsm` event applied through the Tier-2 governor), the audit trail can
+commit not only to the fact that the action happened but to the policy it ran under.
+`govern.AttestedEventTool` embeds a policy digest (an opaque identifier, e.g.
+`gsm.Registry.PolicyDigest`) in the tool's journaled result, so the same `ProofBundle` that proves
+the action also commits to that digest. The SDK treats the digest as opaque; it does not depend on
+the policy engine's serialization format.
+
+The verifier then closes a second, independent root of trust:
+
+```
+# recompute the policy digest from the published bytes and, with the external verified
+# oracle (astchecker, extracted from the axiom-free Coq proof), certify the policy converges:
+goagents-audit verify-governance -policy policy.machine -digest <hex-from-bundle> -checker ./astchecker
+```
+
+`verify-governance` recomputes the digest from the published format without importing the policy
+engine, and runs a checker it did not write, so neither root of trust depends on the producer: the
+log is tamper-evident (cryptographic root) and the policy is provably convergent (mathematical
+root), over one artifact.
+
+Scope, stated precisely: this proves the action ran under a policy that is provably convergent and
+tamper-evidently logged. It does not prove the runtime's implementation refines that policy for all
+inputs (that gap is closed only by the differential oracles' testing, not by an end-to-end proof).
+Anchoring the full policy bytes as a dedicated log leaf, and absence-proof-backed "no violation was
+ever admitted," are roadmap, not yet shipped.
+
 ## Next
 
 RFC 6962 is fully covered (Head, inclusion, consistency, STH) over both the journal and, via
