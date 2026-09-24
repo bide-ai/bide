@@ -114,7 +114,14 @@ gsm federation capability reaches the agent tier for free on a version bump:
   both assert `count ≤ 1` and terminal ∈ {completed, *ResumeHalt}. The K=result-write case fires then
   crashes → resume must HALT (haltSeen asserts this path runs, so it's non-vacuous). Turns "tested" into
   "adversarially verified" — the gsm exhaustive-verification ethos applied to the runtime. Foundation
-  laid by the synctest adoption. Next: exported harness → the "chaos benchmark competitors fail" (#2).
+  laid by the synctest adoption. **Chaos benchmark** (`chaos/`, moat #2 — the exported weapon,
+  docs/CHAOS-BENCHMARK.md): `chaos.Verify(name, System, seeds)` sweeps crash points + randomized
+  schedules and reports whether a non-idempotent side effect ever double-fires. `GoAgents()` reference
+  PASSES (maxFired=1); `NaiveReference()` at-least-once baseline FAILS (maxFired=5, ~240 double-fires) —
+  proving the harness non-vacuous. Runnable: `go run ./examples/chaosbench`. Point at any SDK via the
+  `System`/`Run` interface; competitor adapters go in a SEPARATE module (keep their deps out of core);
+  adapters must be FAIR (represent the SDK's best-effort durability, not a strawman). Next: wire ADK-Go /
+  trpc-agent-go / langchaingo adapters.
   **Saga DST** (`saga_dst_test.go`): extends the proof to reverse-order compensation. Honest split —
   forward non-idempotent effect is at-most-once (halt on unknown); compensators are at-LEAST-once
   (memoized → once if they complete, but a crash mid-compensation re-runs them, the documented
