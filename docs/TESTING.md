@@ -118,14 +118,22 @@ Scale tiers:
 - `E2E_HUGE=million` adds `100000` and `1000000`.
 - `E2E_HUGE=tenmillion` adds `10000000`.
 
-Measured on one dev machine (from the commit history that introduced each tier):
+Measured on one dev machine (illustrative, not a production SLA). Each agent gets its own store
+that is dropped after its proof verifies, so the LIVE heap stays bounded by the in-flight set, not
+total N:
 
-- 20,000 agents in ~1.07s at ~18.8k agents/s, peak ~3,200 goroutines, ~88 MB, throughput flat
-  across the default scales (linear).
-- 100,000 agents in ~5.6s at ~17.9k agents/s, peak ~3,200 goroutines, ~860 MB (this tier keeps
-  ~1.6M journal records live in the in-memory store, hence gated behind `E2E_HUGE=1`).
-- 1,000,000 agents in ~33.7s at ~29.7k agents/s, peak ~2,560 goroutines, ~189 MB (bounded, via
-  the per-run store that is dropped after each proof verifies).
+- Default scales (5,000 / 10,000 / 20,000): each converges and verifies in well under two seconds,
+  live heap a few MB.
+- 1,000,000 agents (`E2E_HUGE=million`): ~34s at ~30k agents/s, peak ~2,560 goroutines.
+- 10,000,000 agents (`E2E_HUGE=tenmillion`): ~8m27s at ~19.7k agents/s, peak ~2,833 goroutines,
+  live heap ~4 MB. The ~839 GB "total alloc" is cumulative allocation churned and freed across the
+  run; the live heap does not grow, which is the point.
+
+The shape is the result: throughput roughly flat and live heap flat from thousands to ten million
+agents. The ceiling is time (and, in production, the durable store's write throughput), not process
+memory. Every agent in every tier violated the capped invariant at some step (the event multiset
+sums past the cap) and was compensated before converging, so these are violation-inducing runs, not
+happy-path ones.
 
 The precise bounds:
 
