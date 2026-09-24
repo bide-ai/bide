@@ -128,8 +128,13 @@ gsm federation capability reaches the agent tier for free on a version bump:
   one record is in a committed run via an O(log n) inclusion proof without revealing the others (the
   compliance superpower: show an auditor one charge, expose nothing else). VERIFIED against the
   published RFC 6962 test vectors (9 CT reference roots, sizes 0..8, all match) + inclusion round-trips
-  (sizes 1..33) + journal selective-disclosure. Same anchoring caveat as Head. Next: consistency proofs
-  (append-only / transparency-log — prove history was only appended, never rewritten). HONEST model (in the package doc):
+  (sizes 1..33) + journal selective-disclosure. Same anchoring caveat as Head. **Consistency proofs**
+  (`audit/consistency.go`, RFC 6962 §2.1.2): `ProveConsistency`/`VerifyConsistency` prove an earlier
+  root is an append-only PREFIX of a later one (history only appended, never rewritten/reordered — the
+  transparency-log guarantee). Generation from the RFC SUBPROOF recursion; verification is the canonical
+  CT algorithm (decompInclProof + chainInner/Right/Border). Validated: round-trips reconstruct the
+  spec-verified MTH roots (all m,n≤24), a hand-derived 1→2 vector, rewrite-detection, journal
+  append-only + directionality. The full CT transparency-log triad now: Head, inclusion, consistency. HONEST model (in the package doc):
   integrity always; tamper-evidence only if the head is anchored out-of-band (a chain in the same DB
   an attacker controls can be rewritten+rehashed). Compliance/enterprise axis (fintech/health). Read
   over persisted order (correct under parallel tools), no core Record change. Next: Merkle root +

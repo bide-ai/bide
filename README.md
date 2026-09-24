@@ -245,8 +245,10 @@ what the agent did.
 For **selective disclosure**, `audit.Root` / `Prove` / `VerifyInclusion` build an **RFC 6962**
 (Certificate Transparency) Merkle tree, so you can prove one record is part of a committed run —
 via an O(log n) inclusion proof — *without revealing the other records* (e.g. show an auditor a
-single charge happened, exposing no other customers or prompts). The implementation is checked
-against the published RFC 6962 test vectors.
+single charge happened, exposing no other customers or prompts). And `ProveConsistency` /
+`VerifyConsistency` prove an earlier root is an **append-only prefix** of a later one — that history
+was only appended, never rewritten or reordered (the transparency-log guarantee). The implementation
+is checked against the published RFC 6962 test vectors.
 
 ## RAG & memory (bring your own)
 
