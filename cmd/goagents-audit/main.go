@@ -432,11 +432,37 @@ func verifyConvergence(args []string) {
 		fmt.Printf("FAIL: certificate claims converges=%v but the verified oracle says converges=%v\n", cert.Converges, oracleConverges)
 		os.Exit(1)
 	}
+	// If the oracle also certifies the CRDT-fragment classification (compensation_free=<bool>),
+	// cross-check it, so a certificate cannot overstate that either. Older oracles omit the line;
+	// then the classification stays producer-reported, which we say rather than silently pass.
+	if cf, ok := parseCompensationFree(out); ok {
+		if cf != cert.CompensationFree {
+			fmt.Printf("FAIL: certificate claims compensation_free=%v but the verified oracle says compensation_free=%v\n", cert.CompensationFree, cf)
+			os.Exit(1)
+		}
+	} else {
+		fmt.Println("note: this oracle does not certify the compensation-free classification; that field stays producer-reported")
+	}
 	if !cert.Converges {
 		fmt.Println("FAIL: the certificate and the oracle agree the policy does NOT converge; do not deploy it")
 		os.Exit(1)
 	}
 	fmt.Println("OK: the verified oracle's verdict agrees with the certificate: the anchored policy provably converges")
+}
+
+// parseCompensationFree scans the oracle's output for a machine-readable classification line
+// (compensation_free=true / compensation_free=false). The second return is false if no such line
+// is present, so a caller can distinguish "oracle disagrees" from "oracle does not report it".
+func parseCompensationFree(out []byte) (bool, bool) {
+	for _, line := range strings.Split(string(out), "\n") {
+		switch strings.TrimSpace(line) {
+		case "compensation_free=true":
+			return true, true
+		case "compensation_free=false":
+			return false, true
+		}
+	}
+	return false, false
 }
 
 // absenceSelector maps a CLI -key selector to the KeyFunc and the exact absence key to prove

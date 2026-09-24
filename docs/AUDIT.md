@@ -260,12 +260,19 @@ evidence rides the same signed tree head and inclusion proofs as the policy and 
 keeps the certificate opaque, exactly as it does the policy digest: it imports no `gsm`.
 
 The certificate is a producer claim, so the verifier does not trust it: `verify-convergence`
-re-establishes convergence from the disclosed policy bytes with the external oracle and fails if the
-oracle disagrees with the certificate, so a certificate that overstates convergence is caught.
+re-establishes the claims from the disclosed policy bytes with the external oracle and fails if the
+oracle disagrees. It cross-checks both facts. Convergence: the oracle certifies (or refutes) it, and
+a certificate that says convergent while the oracle refutes is rejected. Classification: the oracle
+also certifies the compensation-free (CRDT-fragment) verdict, via `compensationFree` in
+`AstChecker.v` (a machine-checked, axiom-free predicate: no in-domain state ever needs repair, the
+AST analogue of "max repair depth = 0"), emitted as a `compensation_free=<bool>` line the CLI parses
+and compares. So a certificate that overstates either convergence or the CRDT classification is
+caught. `compensationFree_step_no_repair` is in the axiom-free gate alongside `check_sound_converges`.
 
 ```
 # both bundles authentic and in the same signed tree, the certificate certifies the anchored
-# policy's digest, the leaf's bytes hash to it, and the oracle's verdict agrees with the certificate:
+# policy's digest, the leaf's bytes hash to it, and the oracle's convergence AND compensation-free
+# verdicts agree with the certificate:
 goagents-audit verify-convergence -cert-bundle cert.json -policy-bundle policy.json -pubkey <hex> -checker ./astchecker
 ```
 

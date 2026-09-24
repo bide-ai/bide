@@ -82,32 +82,43 @@ func TestVerifyConvergenceCLI(t *testing.T) {
 
 	base := []string{"verify-convergence", "-cert-bundle", certPath, "-policy-bundle", policyPath, "-pubkey", pubHex}
 
+	// The KYC machine has a repair, so its certificate says compensation_free=false.
+	if got := govern.CertifyConvergence(rep, digest).CompensationFree; got {
+		t.Fatalf("KYC machine must not be compensation-free, cert says %v", got)
+	}
+
 	// 1) No checker: the cryptographic root verifies (exit 0).
 	if out, err := exec.Command(bin, base...).CombinedOutput(); err != nil {
 		t.Fatalf("no-checker run should pass, got err %v\n%s", err, out)
 	}
 
-	// 2) Checker agrees (exit 0 => converges): the command passes.
-	agree := fakeChecker(t, dir, "agree", 0)
+	// 2) Checker agrees on convergence AND classification: the command passes.
+	agree := fakeChecker(t, dir, "agree", 0, "compensation_free=false")
 	if out, err := exec.Command(bin, append(base, "-checker", agree)...).CombinedOutput(); err != nil {
 		t.Fatalf("agreeing checker should pass, got err %v\n%s", err, out)
 	}
 
-	// 3) Checker disagrees (exit 1 => not convergent) while the certificate claims convergent:
-	// the command must FAIL, catching a certificate that overstates convergence.
-	disagree := fakeChecker(t, dir, "disagree", 1)
-	out, err := exec.Command(bin, append(base, "-checker", disagree)...).CombinedOutput()
-	if err == nil {
+	// 3) Checker disagrees on convergence (exit 1) while the certificate claims convergent: FAIL.
+	disagree := fakeChecker(t, dir, "disagree", 1, "compensation_free=false")
+	if out, err := exec.Command(bin, append(base, "-checker", disagree)...).CombinedOutput(); err == nil {
 		t.Fatalf("disagreeing checker must fail the command, but it exited 0\n%s", out)
+	}
+
+	// 4) Checker agrees on convergence but reports a DIFFERENT classification than the certificate:
+	// the command must FAIL, catching a certificate that overstates the CRDT-fragment claim.
+	misclass := fakeChecker(t, dir, "misclass", 0, "compensation_free=true")
+	if out, err := exec.Command(bin, append(base, "-checker", misclass)...).CombinedOutput(); err == nil {
+		t.Fatalf("classification mismatch must fail the command, but it exited 0\n%s", out)
 	}
 }
 
-// fakeChecker writes an executable script that ignores its argument and exits with the given code,
-// standing in for the external oracle (exit 0 = convergent, non-zero = not).
-func fakeChecker(t *testing.T, dir, name string, code int) string {
+// fakeChecker writes an executable script that ignores its argument, prints the given
+// classification line, and exits with the given code, standing in for the external oracle
+// (exit 0 = convergent, non-zero = not; the printed line is the compensation-free verdict).
+func fakeChecker(t *testing.T, dir, name string, code int, line string) string {
 	t.Helper()
 	path := filepath.Join(dir, name+".sh")
-	script := "#!/bin/sh\nexit " + map[int]string{0: "0", 1: "1"}[code] + "\n"
+	script := "#!/bin/sh\necho " + line + "\nexit " + map[int]string{0: "0", 1: "1"}[code] + "\n"
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake checker: %v", err)
 	}
