@@ -16,31 +16,6 @@ import (
 	agent "github.com/dayna/go-agents"
 )
 
-// Retry retries the model call up to n additional times on error, respecting context
-// cancellation. (First cut: no backoff / Retry-After — that lands with the provider
-// error taxonomy.)
-func Retry(n int) agent.Middleware {
-	return func(next agent.ModelHandler) agent.ModelHandler {
-		return func(ctx context.Context, req agent.Request) (agent.Message, agent.Usage, error) {
-			var (
-				msg agent.Message
-				u   agent.Usage
-				err error
-			)
-			for attempt := 0; attempt <= n; attempt++ {
-				if ctx.Err() != nil {
-					return msg, u, ctx.Err()
-				}
-				msg, u, err = next(ctx, req)
-				if err == nil {
-					return msg, u, nil
-				}
-			}
-			return msg, u, err
-		}
-	}
-}
-
 // TokenBudget aborts the run once cumulative tokens (input+output) across the run's
 // model calls exceed max. The cap is a HARD ceiling: the call that would exceed it is
 // refused. State is per-middleware-instance, so it accumulates across the loop's turns.

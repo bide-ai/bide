@@ -17,7 +17,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 
 	agent "github.com/dayna/go-agents"
 )
@@ -83,6 +85,13 @@ func (m *Model) Stream(ctx context.Context, req agent.Request) (*agent.Stream, e
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
+		if resp.StatusCode == http.StatusTooManyRequests {
+			d := parseRetryAfter(resp.Header.Get("Retry-After"))
+			return nil, &agent.RateLimited{
+				RetryAfter: d,
+				Err:        fmt.Errorf("anthropic: rate limited (%w)", agent.ErrModel),
+			}
+		}
 		return nil, fmt.Errorf("anthropic: status %d: %s (%w)", resp.StatusCode, b, agent.ErrModel)
 	}
 
@@ -223,6 +232,25 @@ type sseEvent struct {
 	Usage *struct {
 		OutputTokens int `json:"output_tokens"`
 	} `json:"usage"`
+}
+
+// parseRetryAfter parses an HTTP Retry-After header value. It accepts either an
+// integer number of seconds or an HTTP-date. Returns 0 if absent or unparseable.
+func parseRetryAfter(s string) time.Duration {
+	if s == "" {
+		return 0
+	}
+	if secs, err := strconv.Atoi(s); err == nil {
+		return time.Duration(secs) * time.Second
+	}
+	if t, err := http.ParseTime(s); err == nil {
+		d := time.Until(t)
+		if d < 0 {
+			return 0
+		}
+		return d
+	}
+	return 0
 }
 
 // streamSSE reads Anthropic's SSE stream and pushes normalized agent events. It closes

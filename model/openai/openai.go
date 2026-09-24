@@ -17,7 +17,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 
 	agent "github.com/dayna/go-agents"
 	"github.com/dayna/go-agents/schema"
@@ -78,6 +80,13 @@ func (m *Model) Stream(ctx context.Context, req agent.Request) (*agent.Stream, e
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
+		if resp.StatusCode == http.StatusTooManyRequests {
+			d := parseRetryAfter(resp.Header.Get("Retry-After"))
+			return nil, &agent.RateLimited{
+				RetryAfter: d,
+				Err:        fmt.Errorf("openai: rate limited (%w)", agent.ErrModel),
+			}
+		}
 		return nil, fmt.Errorf("openai: status %d: %s (%w)", resp.StatusCode, b, agent.ErrModel)
 	}
 
@@ -169,6 +178,25 @@ func (m *Model) buildRequest(req agent.Request) ([]byte, error) {
 		payload["tools"] = tools
 	}
 	return json.Marshal(payload)
+}
+
+// parseRetryAfter parses an HTTP Retry-After header value. It accepts either an
+// integer number of seconds or an HTTP-date. Returns 0 if absent or unparseable.
+func parseRetryAfter(s string) time.Duration {
+	if s == "" {
+		return 0
+	}
+	if secs, err := strconv.Atoi(s); err == nil {
+		return time.Duration(secs) * time.Second
+	}
+	if t, err := http.ParseTime(s); err == nil {
+		d := time.Until(t)
+		if d < 0 {
+			return 0
+		}
+		return d
+	}
+	return 0
 }
 
 func textOf(m agent.Message) string {

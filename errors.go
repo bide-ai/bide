@@ -3,6 +3,7 @@ package agent
 import (
 	"errors"
 	"fmt"
+	"time"
 )
 
 // The toolkit classifies failures with sentinel errors matched by errors.Is — the
@@ -47,3 +48,21 @@ var (
 	ErrTruncatedToolArgs = fmt.Errorf("truncated tool-call arguments: %w", ErrProtocol)
 	ErrBudgetExceeded    = fmt.Errorf("budget exceeded: %w", ErrBudget)
 )
+
+// RateLimited is returned by a provider adapter when it receives HTTP 429. It
+// carries an optional RetryAfter hint from the Retry-After response header (0
+// means no hint was provided). It wraps the caller-supplied Err (typically
+// wrapping ErrModel) so errors.Is(err, ErrModel) holds.
+type RateLimited struct {
+	RetryAfter time.Duration
+	Err        error
+}
+
+func (e *RateLimited) Error() string {
+	if e.RetryAfter > 0 {
+		return fmt.Sprintf("rate limited (retry after %s): %v", e.RetryAfter, e.Err)
+	}
+	return fmt.Sprintf("rate limited: %v", e.Err)
+}
+
+func (e *RateLimited) Unwrap() error { return e.Err }
