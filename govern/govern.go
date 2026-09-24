@@ -180,13 +180,19 @@ func EventTool(gov Applier, name, description, event string, safety agent.Safety
 func AttestedEventTool(gov Applier, name, description, event, policyDigest string, safety agent.Safety) agent.Tool {
 	return agent.Func(name, description, safety,
 		func(ctx context.Context, _ struct{}) (map[string]any, error) {
-			if _, err := gov.Apply(ctx, event); err != nil {
+			st, err := gov.Apply(ctx, event)
+			if err != nil {
 				return nil, err
 			}
+			// One leaf binds the action (this tool call), the policy that admitted it, and the
+			// exact resulting state. A verifier replaying the policy over the run's governed
+			// events reproduces each state_digest, so the runtime's state is checkable against
+			// the verified reference at every transition.
 			return map[string]any{
 				"event":         event,
 				"applied":       true,
 				"policy_digest": policyDigest,
+				"state_digest":  st.Digest(),
 			}, nil
 		})
 }

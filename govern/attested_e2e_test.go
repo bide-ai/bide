@@ -69,6 +69,10 @@ func TestAttestedEventTool_RealPolicyDigest(t *testing.T) {
 	if gov.State().GetInt(a) != 1 {
 		t.Fatalf("governed state did not advance: a=%d", gov.State().GetInt(a))
 	}
+	// The leaf binds the resulting state too: its digest matches the post-apply state.
+	if out["state_digest"] != gov.State().Digest() {
+		t.Fatalf("journaled state_digest does not match the resulting state:\n want %s\n got  %v", gov.State().Digest(), out["state_digest"])
+	}
 
 	// Optional second trust root: run the external verified oracle on the same policy bytes.
 	checker := os.Getenv("GSM_AST_CHECKER")

@@ -42,6 +42,9 @@ func TestAttestedEventTool_EmbedsPolicyDigest(t *testing.T) {
 	if m["event"] != "ship" || m["applied"] != true {
 		t.Fatalf("unexpected result payload: %v", m)
 	}
+	if sd, ok := m["state_digest"].(string); !ok || sd == "" {
+		t.Fatalf("state_digest not embedded in result: %v", m)
+	}
 	if len(fa.applied) != 1 || fa.applied[0] != "ship" {
 		t.Fatalf("event not applied exactly once: %v", fa.applied)
 	}
