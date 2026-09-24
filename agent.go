@@ -21,6 +21,14 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
+// addUsage accumulates src into dst field-by-field.
+func addUsage(dst *Usage, src Usage) {
+	dst.InputTokens += src.InputTokens
+	dst.OutputTokens += src.OutputTokens
+	dst.CacheReadTokens += src.CacheReadTokens
+	dst.CacheWriteTokens += src.CacheWriteTokens
+}
+
 // ModelHandler generates one assistant turn. Middleware wraps it.
 type ModelHandler func(context.Context, Request) (Message, Usage, error)
 
@@ -118,13 +126,17 @@ func (a *Agent) generate(ctx context.Context, req Request) (Message, Usage, erro
 // are re-run; a non-retry-safe tool with no result triggers ResumeHalt; a tool that
 // requires approval with no recorded decision triggers PendingApproval.
 func (a *Agent) Run(ctx context.Context, runID, input string) (Message, error) {
-	return a.run(ctx, runID, input, false, nil)
+	msg, _, _, err := a.run(ctx, runID, input, false, nil)
+	return msg, err
 }
 
 // run is the single loop shared by Run/RunSaga (emit == nil) and Stream/StreamSaga
 // (emit receives lifecycle events). Durability, resume, and side-effect safety are
 // identical regardless of emit; emitting is best-effort observation layered on top.
-func (a *Agent) run(ctx context.Context, runID, input string, saga bool, emit func(AgentEvent)) (Message, error) {
+// It returns the final message, accumulated token usage across all model turns, the
+// number of model turns executed (live only; replayed turns from the journal are not
+// counted), and any error.
+func (a *Agent) run(ctx context.Context, runID, input string, saga bool, emit func(AgentEvent)) (Message, Usage, int, error) {
 	fire := func(e AgentEvent) {
 		if emit != nil {
 			emit(e)
@@ -134,7 +146,7 @@ func (a *Agent) run(ctx context.Context, runID, input string, saga bool, emit fu
 
 	recs, err := a.store.History(ctx, runID)
 	if err != nil {
-		return Message{}, fmt.Errorf("load history %s: %w (%w)", runID, err, ErrStorage)
+		return Message{}, Usage{}, 0, fmt.Errorf("load history %s: %w (%w)", runID, err, ErrStorage)
 	}
 
 	msgs := []Message{UserText(input)}
@@ -181,9 +193,12 @@ func (a *Agent) run(ctx context.Context, runID, input string, saga bool, emit fu
 			continue
 		}
 		if t, ok := a.tools[name]; ok && !t.Safety().retriableOnResume() {
-			return Message{}, &ResumeHalt{RunID: runID, ToolUseID: id, ToolName: name}
+			return Message{}, Usage{}, 0, &ResumeHalt{RunID: runID, ToolUseID: id, ToolName: name}
 		}
 	}
+
+	var totalUsage Usage // accumulated token usage across live model turns
+	var liveTurns int    // number of live (non-replayed) model calls this run
 
 	for {
 		// If the last turn is an assistant message with tool calls still pending (a
@@ -200,17 +215,21 @@ func (a *Agent) run(ctx context.Context, runID, input string, saga bool, emit fu
 			if emit != nil {
 				genCtx = withModelSink(ctx, func(ev Event) { fire(ModelEvent{Event: ev}) })
 			}
+			var turnUsage Usage
 			rec, err := a.store.Do(genCtx, runID, fmt.Sprintf("@llm/%d", modelSeq),
 				func(ctx context.Context) (Record, error) {
-					m, _, e := a.generate(ctx, Request{Messages: msgs, Tools: a.toolList(), Sampling: a.sampling})
+					m, u, e := a.generate(ctx, Request{Messages: msgs, Tools: a.toolList(), Sampling: a.sampling})
 					if e != nil {
 						return Record{}, e
 					}
+					turnUsage = u
 					return Record{Kind: StepModel, Message: &m}, nil
 				})
 			if err != nil {
-				return Message{}, fmt.Errorf("generate (run %s): %w (%w)", runID, err, ErrModel)
+				return Message{}, Usage{}, 0, fmt.Errorf("generate (run %s): %w (%w)", runID, err, ErrModel)
 			}
+			addUsage(&totalUsage, turnUsage)
+			liveTurns++
 			asst = *rec.Message
 			modelSeq++
 			msgs = append(msgs, asst)
@@ -220,7 +239,7 @@ func (a *Agent) run(ctx context.Context, runID, input string, saga bool, emit fu
 		uses := asst.toolUses()
 		if len(uses) == 0 {
 			fire(Finished{Final: asst})
-			return asst, nil // final answer
+			return asst, totalUsage, liveTurns, nil // final answer
 		}
 
 		// Pre-pass (sequential): resolve human-in-the-loop approvals and collect the tools
@@ -240,19 +259,19 @@ func (a *Agent) run(ctx context.Context, runID, input string, saga bool, emit fu
 			}
 			t, ok := a.tools[tu.Name]
 			if !ok {
-				return Message{}, fmt.Errorf("model called unknown tool %q: %w", tu.Name, ErrUnknownTool)
+				return Message{}, Usage{}, 0, fmt.Errorf("model called unknown tool %q: %w", tu.Name, ErrUnknownTool)
 			}
 			if t.Safety().RequiresApproval {
 				if !decided[tu.ID] {
 					fire(ApprovalRequired{ToolUseID: tu.ID, Name: tu.Name, Args: tu.Args})
-					return Message{}, &PendingApproval{RunID: runID, ToolUseID: tu.ID, ToolName: tu.Name, Args: tu.Args}
+					return Message{}, Usage{}, 0, &PendingApproval{RunID: runID, ToolUseID: tu.ID, ToolName: tu.Name, Args: tu.Args}
 				}
 				if !approvals[tu.ID] { // denied — record a denial and let the model react
 					const denied = `"tool call denied by human"`
 					if _, err := a.store.Do(ctx, runID, tu.ID, func(context.Context) (Record, error) {
 						return Record{Kind: StepToolResult, ToolUseID: tu.ID, IsError: true, Result: json.RawMessage(denied)}, nil
 					}); err != nil {
-						return Message{}, err
+						return Message{}, Usage{}, 0, err
 					}
 					done[tu.ID] = true
 					results[i] = &Message{Role: RoleTool, Parts: []Part{ToolResult{ToolUseID: tu.ID, Result: json.RawMessage(denied), IsError: true}}}
@@ -331,9 +350,9 @@ func (a *Agent) run(ctx context.Context, runID, input string, saga bool, emit fu
 		if err := g.Wait(); err != nil {
 			var trip *sagaTrip
 			if errors.As(err, &trip) {
-				return Message{}, trip // RunSaga catches → compensates
+				return Message{}, Usage{}, 0, trip // RunSaga catches → compensates
 			}
-			return Message{}, err
+			return Message{}, Usage{}, 0, err
 		}
 
 		// Append results in deterministic uses-order.
