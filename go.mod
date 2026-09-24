@@ -4,7 +4,7 @@ module github.com/dayna/go-agents
 go 1.27
 
 require (
-	github.com/blackwell-systems/gsm v0.4.0
+	github.com/blackwell-systems/gsm v0.4.1
 	github.com/jackc/pgx/v5 v5.11.0
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	github.com/redis/go-redis/v9 v9.22.0
