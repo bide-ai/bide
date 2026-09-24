@@ -92,6 +92,10 @@ gsm federation capability reaches the agent tier for free on a version bump:
   sub-agent boundary (a gap in ADK / AgenticGoKit / trpc-agent-go). Note: `trace.Tool` is now a
   ToolMiddleware, `Tool(tracer)` — was a per-tool decorator `Tool(tracer, t)` (breaking, pre-1.0).
 - `model/anthropic` (native), `model/openai` (any OpenAI-compatible via WithBaseURL).
+- **Prompt caching**: `anthropic.WithPromptCache()` places cache_control breakpoints on the
+  system block + tool defs (the constant per-turn prefix); OpenAI caches prefixes automatically.
+  Cache hits/writes surface cross-provider in `agent.Usage.CacheReadTokens`/`CacheWriteTokens`
+  (Anthropic cache_read/creation; OpenAI prompt_tokens_details.cached_tokens). = trpc's caching idea.
 - `schema`: reflect→inline JSON schema + OpenAIStrict. `mcp`: official go-sdk; annotations→Safety.
 - `store/sqlite`, `store/postgres` (Durable adapters, single-flight).
 - `govern` (Tier-2, gsm edge — core never imports it): `Governor`, `PersistentGovernor`,

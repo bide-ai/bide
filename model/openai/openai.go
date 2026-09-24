@@ -198,8 +198,11 @@ type chunk struct {
 		FinishReason *string `json:"finish_reason"`
 	} `json:"choices"`
 	Usage *struct {
-		PromptTokens     int `json:"prompt_tokens"`
-		CompletionTokens int `json:"completion_tokens"`
+		PromptTokens        int `json:"prompt_tokens"`
+		CompletionTokens    int `json:"completion_tokens"`
+		PromptTokensDetails *struct {
+			CachedTokens int `json:"cached_tokens"`
+		} `json:"prompt_tokens_details"`
 	} `json:"usage"`
 }
 
@@ -247,9 +250,11 @@ func streamSSE(body io.ReadCloser, ch chan<- agent.Emit) {
 			}
 		}
 		if c.Usage != nil {
-			ch <- agent.Emit{Event: agent.Finish{Reason: lastReason, Usage: agent.Usage{
-				InputTokens: c.Usage.PromptTokens, OutputTokens: c.Usage.CompletionTokens,
-			}}}
+			u := agent.Usage{InputTokens: c.Usage.PromptTokens, OutputTokens: c.Usage.CompletionTokens}
+			if d := c.Usage.PromptTokensDetails; d != nil { // OpenAI caches prefixes automatically
+				u.CacheReadTokens = d.CachedTokens
+			}
+			ch <- agent.Emit{Event: agent.Finish{Reason: lastReason, Usage: u}}
 			finished = true
 		}
 	}

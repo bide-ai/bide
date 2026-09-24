@@ -29,6 +29,7 @@ type Model struct {
 	maxTokens int
 	baseURL   string
 	http      *http.Client
+	cache     bool
 }
 
 var _ agent.Model = (*Model)(nil) // port/adapter contract
@@ -39,6 +40,12 @@ func WithModel(id string) Option           { return func(m *Model) { m.model = i
 func WithMaxTokens(n int) Option           { return func(m *Model) { m.maxTokens = n } }
 func WithBaseURL(u string) Option          { return func(m *Model) { m.baseURL = u } }
 func WithHTTPClient(c *http.Client) Option { return func(m *Model) { m.http = c } }
+
+// WithPromptCache turns on Anthropic prompt caching: cache_control breakpoints are
+// placed on the system prompt and the tool definitions — the large, constant prefix an
+// agent loop resends every turn — so repeat turns are billed at the cache-read rate.
+// Cache hits/writes surface in agent.Usage (CacheReadTokens / CacheWriteTokens).
+func WithPromptCache() Option { return func(m *Model) { m.cache = true } }
 
 // New constructs an Anthropic model adapter. apiKey is your Anthropic API key.
 func New(apiKey string, opts ...Option) *Model {
@@ -145,6 +152,11 @@ func (m *Model) buildRequest(req agent.Request) ([]byte, error) {
 			"input_schema": input,
 		})
 	}
+	// Cache breakpoint on the last tool: Anthropic caches every block up to and including
+	// the marked one, so this caches the whole (constant) tool-definition prefix.
+	if m.cache && len(tools) > 0 {
+		tools[len(tools)-1]["cache_control"] = map[string]any{"type": "ephemeral"}
+	}
 
 	maxTokens := m.maxTokens // request-level Sampling overrides the construction default
 	if s := req.Sampling.MaxTokens; s != nil {
@@ -167,7 +179,16 @@ func (m *Model) buildRequest(req agent.Request) ([]byte, error) {
 	}
 	// Anthropic has no seed parameter; req.Sampling.Seed is intentionally ignored.
 	if system.Len() > 0 {
-		payload["system"] = system.String()
+		if m.cache {
+			// A structured system block lets us attach a cache breakpoint to it.
+			payload["system"] = []map[string]any{{
+				"type":          "text",
+				"text":          system.String(),
+				"cache_control": map[string]any{"type": "ephemeral"},
+			}}
+		} else {
+			payload["system"] = system.String()
+		}
 	}
 	if len(tools) > 0 {
 		payload["tools"] = tools
@@ -194,7 +215,9 @@ type sseEvent struct {
 	} `json:"delta"`
 	Message *struct {
 		Usage struct {
-			InputTokens int `json:"input_tokens"`
+			InputTokens              int `json:"input_tokens"`
+			CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+			CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
 		} `json:"usage"`
 	} `json:"message"`
 	Usage *struct {
@@ -212,7 +235,7 @@ func streamSSE(body io.ReadCloser, ch chan<- agent.Emit) {
 	sc := bufio.NewScanner(body)
 	sc.Buffer(make([]byte, 0, 64*1024), 1<<20) // raise the 64KB line cap (openai-go #368 lesson)
 
-	var in, out int
+	var in, out, cacheRead, cacheWrite int
 	for sc.Scan() {
 		line := sc.Text()
 		if !strings.HasPrefix(line, "data:") {
@@ -231,6 +254,8 @@ func streamSSE(body io.ReadCloser, ch chan<- agent.Emit) {
 		case "message_start":
 			if ev.Message != nil {
 				in = ev.Message.Usage.InputTokens
+				cacheRead = ev.Message.Usage.CacheReadInputTokens
+				cacheWrite = ev.Message.Usage.CacheCreationInputTokens
 			}
 		case "content_block_start":
 			if ev.ContentBlock != nil && ev.ContentBlock.Type == "tool_use" {
@@ -258,7 +283,9 @@ func streamSSE(body io.ReadCloser, ch chan<- agent.Emit) {
 			if ev.Delta != nil {
 				reason = ev.Delta.StopReason
 			}
-			ch <- agent.Emit{Event: agent.Finish{Reason: reason, Usage: agent.Usage{InputTokens: in, OutputTokens: out}}}
+			ch <- agent.Emit{Event: agent.Finish{Reason: reason, Usage: agent.Usage{
+				InputTokens: in, OutputTokens: out, CacheReadTokens: cacheRead, CacheWriteTokens: cacheWrite,
+			}}}
 		case "message_stop":
 			return
 		case "error":

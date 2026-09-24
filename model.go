@@ -40,6 +40,11 @@ type Sampling struct {
 type Usage struct {
 	InputTokens  int
 	OutputTokens int
+	// CacheReadTokens is input tokens served from the provider's prompt cache (billed at
+	// a discount). CacheWriteTokens is input tokens written to the cache on this call
+	// (Anthropic cache creation; 0 for providers that cache implicitly, like OpenAI).
+	CacheReadTokens  int
+	CacheWriteTokens int
 }
 
 // Event is a normalized streamed model event. The stream/ package maps every

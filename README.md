@@ -180,6 +180,20 @@ Fields are optional by design: an unset field uses the provider default, so an e
 `Temperature(0)` is distinct from "not specified." Request-level `MaxTokens` overrides an
 adapter's construction-time default.
 
+## Prompt caching
+
+An agent loop resends a large constant prefix — system prompt + tool schemas — every turn.
+Anthropic prompt caching bills those repeats at the cache-read rate:
+
+```go
+model := anthropic.New(key, anthropic.WithPromptCache())
+```
+
+This places `cache_control` breakpoints on the system block and the tool definitions. OpenAI
+caches prefixes automatically (no flag needed). Either way, cache effectiveness surfaces in
+`agent.Usage` — `CacheReadTokens` (served from cache) and `CacheWriteTokens` (written to it) —
+so middleware like `TokenBudget` and cost accounting see the real numbers.
+
 ## Resume safety, in one table
 
 ```go
