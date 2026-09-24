@@ -1,0 +1,61 @@
+// Command smoke runs the agent end-to-end against a live OpenAI-compatible endpoint
+// (here, OpenRouter) to prove the loop + tool calling work against a real model.
+//
+//	OPENROUTER_API_KEY=sk-... go run ./examples/smoke
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"os"
+	"time"
+
+	agent "github.com/dayna/go-agents"
+	"github.com/dayna/go-agents/model/openai"
+)
+
+type WeatherArgs struct {
+	City string `json:"city" desc:"city name"`
+}
+type Weather struct {
+	TempF int    `json:"temp_f"`
+	Sky   string `json:"sky"`
+}
+
+func main() {
+	key := os.Getenv("OPENROUTER_API_KEY")
+	if key == "" {
+		log.Fatal("set OPENROUTER_API_KEY")
+	}
+
+	model := openai.New(key,
+		openai.WithBaseURL("https://openrouter.ai/api/v1"),
+		openai.WithModel("openai/gpt-4o-mini"),
+		openai.WithMaxTokens(512),
+	)
+
+	weather := agent.Func("get_weather", "Get the current weather for a city",
+		agent.Safety{ReadOnly: true},
+		func(_ context.Context, in WeatherArgs) (Weather, error) {
+			log.Printf("[tool] get_weather(%q) called", in.City)
+			return Weather{TempF: 68, Sky: "sunny"}, nil
+		})
+
+	a := agent.New(model, agent.NewMemStore(), weather)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	out, err := a.Run(ctx, "smoke-1", "What's the weather in San Francisco? Use the get_weather tool, then answer in one sentence.")
+	if err != nil {
+		log.Fatalf("run: %v", err)
+	}
+
+	for _, p := range out.Parts {
+		if t, ok := p.(agent.Text); ok {
+			fmt.Println("\n=== agent answer ===")
+			fmt.Println(t.Text)
+		}
+	}
+}
