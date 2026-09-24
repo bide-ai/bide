@@ -2,12 +2,10 @@ package govern_test
 
 import (
 	"context"
-	"path/filepath"
 	"testing"
 
 	gsm "github.com/blackwell-systems/gsm"
 	"github.com/dayna/go-agents/govern"
-	"github.com/dayna/go-agents/govern/sqlitelog"
 )
 
 // buildMfrSupFederation reproduces the paper's §8.5 manufacturer–supplier federation: a
@@ -44,18 +42,11 @@ func buildMfrSupFederation(t *testing.T) (*gsm.FedMachine, *gsm.Registry, *gsm.R
 
 // TestFederatedGovernor_ReconstructFromLog proves crash recovery: apply events through one
 // governor, drop it, then reconstruct a fresh governor from the SAME log and confirm the
-// federated state matches. Runs over both the in-memory and on-disk SQLite event logs.
+// federated state matches. Uses the in-memory log here; the on-disk SQLite reconstruction
+// is covered in govern/sqlitelog (that adapter is its own module).
 func TestFederatedGovernor_ReconstructFromLog(t *testing.T) {
-	sqlitePath := filepath.Join(t.TempDir(), "fed.db")
-	sqLog, err := sqlitelog.Open(sqlitePath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { sqLog.Close() })
-
 	logs := map[string]govern.EventLog{
-		"mem":    govern.NewMemEventLog(),
-		"sqlite": sqLog,
+		"mem": govern.NewMemEventLog(),
 	}
 
 	for name, log := range logs {

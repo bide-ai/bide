@@ -9,6 +9,12 @@ dependency-pure (arch guard enforces it). Name still deferred.
 Three repos under `/Users/dayna/code/`, all remotes on the `github-blackwell` SSH host:
 - **go-agents** (this repo) — the agent devkit. Private: `blackwell-systems/go-agents`.
   No license yet (proprietary by default). Committed history, on `main`.
+  **Multi-module** (see docs/MODULE-STRUCTURE.md): core module (agent/schema/middleware/model/
+  govern/examples — deps gsm + x/sync only) plus one module per heavy adapter (mcp, trace,
+  store/sqlite, store/postgres, govern/redislog, govern/sqlitelog). A core-only consumer's
+  external-module surface dropped 54 → 2. Dev via a root `go.work`; adapter go.mods `replace` the
+  core locally (pre-publish); CI iterates modules (`MODULES` in ci.yml). At v1.0/naming: rename
+  paths + tag core + swap replaces for version pins.
 - **gsm** — the convergence engine (founder's IP). Public: `blackwell-systems/gsm`.
   **Apache-2.0** (relicensed from MIT; copyright "Dayna Blackwell, Blackwell Systems").
   Released through **v0.6.0** (compensation synthesis that scales — backtracking + forward-checking —

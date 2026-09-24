@@ -318,6 +318,15 @@ func RequireTag(tag string) agent.ToolMiddleware {
 }
 ```
 
+## Modules
+
+go-agents is a multi-module repo: a dependency-light **core** (`github.com/dayna/go-agents` —
+the loop, schema, middleware, model adapters, govern; deps are just gsm + `x/sync`) plus one
+module per heavy adapter (`mcp`, `trace`, `store/sqlite`, `store/postgres`, `govern/redislog`,
+`govern/sqlitelog`). Import an adapter and you pull its dependency tree; import only the core
+and you don't. A core-only consumer's external-module surface is 2, not 54. See
+[docs/MODULE-STRUCTURE.md](docs/MODULE-STRUCTURE.md).
+
 ## Architecture
 
 Hexagonal by construction: the core defines the ports (`Model`, `Durable`, `Tool`,

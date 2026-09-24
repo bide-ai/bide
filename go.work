@@ -1,0 +1,11 @@
+go 1.27.0
+
+use (
+	.
+	./govern/redislog
+	./govern/sqlitelog
+	./mcp
+	./store/postgres
+	./store/sqlite
+	./trace
+)
