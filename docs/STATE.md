@@ -127,15 +127,21 @@ gsm federation capability reaches the agent tier for free on a version bump:
   The trpc finding is FAIR — `fairness_test.go` proves resuming a COMPLETE run is a no-op (its
   checkpoint/resume genuinely works); the double-fires are the documented LangGraph "nodes must be
   idempotent" window (crash between the side-effect node and its checkpoint persisting → resume
-  re-runs it), which go-agents' attempt-marker/halt closes. ADK-Go finding: no checkpoint layer at all
-  (weaker fit; models "re-invoke re-runs everything"). **Second competitor wired: langchaingo**
+  re-runs it), which go-agents' attempt-marker/halt closes. **Second competitor wired: langchaingo**
   (`benchmarks/langchaingo.go`) — NO durable resume; crash = ctx-cancel after the tool fires,
   "resume" = fresh invocation → re-runs everything. RESULT maxFired=64 FAIL (unbounded; fair per
-  `lcg_fairness_test.go`). Full table: go-agents 1 PASS, trpc 5, langchaingo 64, EINO 64, naive 5. **eino** (`eino.go`) also
+  `lcg_fairness_test.go`). **eino** (`eino.go`) also
   wired: its checkpoint is HITL-interrupt-only (NOT automatic crash-resume; verified checkpoint.set
   fires only on interrupt), so a crash re-runs → maxFired=64 FAIL (fair per eino_fairness_test.go).
-  **ADK-Go still PENDING** (needs mock genai model + tool + runner + crash-injecting session.Service;
-  expected no-checkpoint → re-invoke re-runs). benchmarks not in go.work/CI (heavy deps).
+  **ADK-Go now wired** (`adk.go`): Google's ADK has REAL event persistence — every event
+  `AppendEvent`s to a `session.Service` and re-invoking replays history, so a history-aware model
+  de-dupes recorded work. Injected the crash through ADK's real machinery (a `session.Service` that
+  fails the Nth AppendEvent; the session survives across steps; resume = fresh `runner.Run` on it).
+  Measured (not assumed): **maxFired=4 FAIL** — trpc-like, NOT eino-like. FAIR per
+  `adk_fairness_test.go` (resume of a COMPLETE run is a no-op: recorded charge → replay says "already
+  charged" → no re-fire). The double-fires are the execute→persist window ADK has no attempt-marker to
+  close. Full table: **go-agents 1 PASS, trpc 5, adk-go 4, langchaingo 64, eino 64, naive 5.**
+  benchmarks not in go.work/CI (heavy deps).
   **Saga DST** (`saga_dst_test.go`): extends the proof to reverse-order compensation. Honest split —
   forward non-idempotent effect is at-most-once (halt on unknown); compensators are at-LEAST-once
   (memoized → once if they complete, but a crash mid-compensation re-runs them, the documented

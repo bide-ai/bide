@@ -18,6 +18,7 @@ func TestChaos_Comparison(t *testing.T) {
 		{"trpc-agent-go", TRPC()},
 		{"langchaingo", LangChainGo()},
 		{"eino", EinoGraph()},
+		{"adk-go", ADK()},
 		{"naive-loop", chaos.NaiveReference()},
 	} {
 		rep := chaos.Verify(c.name, c.sys, 200)

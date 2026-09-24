@@ -15,6 +15,7 @@ cd benchmarks && GOWORK=off go test -run Comparison -v
 ```
 go-agents        maxFired=1   PASS ✓ (at-most-once held)
 trpc-agent-go    maxFired=5   FAIL ✗ (70 double-fires, worst=5)
+adk-go           maxFired=4   FAIL ✗ (45 double-fires, worst=4)
 langchaingo      maxFired=64  FAIL ✗ (204 double-fires, worst=64)
 eino             maxFired=64  FAIL ✗ (204 double-fires, worst=64)
 naive-loop       maxFired=5   FAIL ✗ (45 double-fires, worst=5)
@@ -22,9 +23,12 @@ naive-loop       maxFired=5   FAIL ✗ (45 double-fires, worst=5)
 
 `maxFired` is the most times a single non-idempotent side effect ("charge") actually
 executed across a crash schedule. **1 is correct; anything higher is a double-charge.** The
-three failure shapes are distinct: **trpc-agent-go** has working resume but a narrow re-fire
-window; **langchaingo** has *no durability at all*, so retries re-run everything unboundedly
-(it charges up to 64 times); the naive baseline sits between.
+failure shapes fall into two camps. **Real persistence, narrow re-fire window** (trpc-agent-go,
+adk-go): resume genuinely works, but a crash in the window between a side effect *executing*
+and its record *persisting* re-fires it (worst 4–5). **No crash durability at all**
+(langchaingo, eino): a crash loses the run and re-invoking re-runs everything unboundedly (up
+to 64 charges). The naive baseline sits with the first camp's shape but for a different
+reason (at-least-once loop, no attempt marker).
 
 ## The trpc-agent-go finding (and why it's fair)
 
@@ -62,6 +66,25 @@ automatic crash-resume**: a checkpoint is written only when a node interrupts (a
 with `ResumeWithData`). There is no per-step checkpoint, so an unplanned process crash has
 nothing to resume from — the run is lost and re-invoking re-runs everything. So for crash-safety
 eino sits with langchaingo (`eino.go`; fair per `eino_fairness_test.go`): maxFired=64.
+
+## The adk-go finding
+
+ADK-Go (Google's Agent Development Kit) has **real event persistence**: every event is
+appended to a `session.Service` as the run proceeds, and re-invoking the runner with the same
+session replays that history to the model. So a history-aware model — which is what a real LLM
+is, since it sees the conversation — de-dupes work that was durably recorded. The adapter
+(`adk.go`) wires a mock model + one `charge` function-tool + a runner over a crash-injecting
+`session.Service` that fails the Nth `AppendEvent` (a real persist failure), and lets the
+session survive across steps; "resume" is a fresh `runner.Run` on that same session.
+
+**It is fair** (`adk_fairness_test.go`): resuming a *completed* run is a genuine no-op — once
+the charge's function-response event is durably recorded, the replayed history tells the model
+"already charged" and it does not re-fire. So ADK's persistence really works. The double-fires
+(worst=4) happen specifically when the crash lands in the window between the `charge` tool
+*executing* and the `AppendEvent` that *records* its result: the record is lost, the replay
+sees no charge in history, and it re-fires. ADK has no framework-level attempt-marker /
+halt-on-unknown-outcome to close that window — the same gap trpc has, and the same one
+go-agents closes to hold `maxFired=1`.
 
 ## Adding another SDK
 
