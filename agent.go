@@ -31,12 +31,41 @@ type Middleware func(ModelHandler) ModelHandler
 
 // Agent binds a model, a tool set, a durable store, and a middleware chain.
 type Agent struct {
-	model   Model
-	tools   map[string]Tool
-	store   Durable
-	mw      []Middleware
-	toolMW  []ToolMiddleware
-	maxConc int // max concurrent tool calls per turn; 0 = unbounded (default)
+	model    Model
+	tools    map[string]Tool
+	store    Durable
+	mw       []Middleware
+	toolMW   []ToolMiddleware
+	sampling Sampling // generation controls applied to every model call
+	maxConc  int      // max concurrent tool calls per turn; 0 = unbounded (default)
+}
+
+// SamplingOption sets one field of the Sampling config; see Temperature, TopP,
+// MaxTokens, Stop, Seed.
+type SamplingOption func(*Sampling)
+
+// Temperature sets the sampling temperature (0 = most deterministic).
+func Temperature(v float64) SamplingOption { return func(s *Sampling) { s.Temperature = &v } }
+
+// TopP sets nucleus-sampling top-p.
+func TopP(v float64) SamplingOption { return func(s *Sampling) { s.TopP = &v } }
+
+// MaxTokens caps generated tokens, overriding the model adapter's construction default.
+func MaxTokens(v int) SamplingOption { return func(s *Sampling) { s.MaxTokens = &v } }
+
+// Stop sets stop sequences.
+func Stop(seqs ...string) SamplingOption { return func(s *Sampling) { s.Stop = seqs } }
+
+// Seed sets a best-effort determinism seed (honored by providers that support it).
+func Seed(v int64) SamplingOption { return func(s *Sampling) { s.Seed = &v } }
+
+// WithSampling sets generation controls applied to every model call (last write wins per
+// field). Returns the agent for chaining: New(...).WithSampling(agent.Temperature(0), agent.MaxTokens(500)).
+func (a *Agent) WithSampling(opts ...SamplingOption) *Agent {
+	for _, o := range opts {
+		o(&a.sampling)
+	}
+	return a
 }
 
 // New constructs an Agent.
@@ -173,7 +202,7 @@ func (a *Agent) run(ctx context.Context, runID, input string, saga bool, emit fu
 			}
 			rec, err := a.store.Do(genCtx, runID, fmt.Sprintf("@llm/%d", modelSeq),
 				func(ctx context.Context) (Record, error) {
-					m, _, e := a.generate(ctx, Request{Messages: msgs, Tools: a.toolList()})
+					m, _, e := a.generate(ctx, Request{Messages: msgs, Tools: a.toolList(), Sampling: a.sampling})
 					if e != nil {
 						return Record{}, e
 					}

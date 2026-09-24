@@ -166,6 +166,20 @@ decoded from the *journaled* tool call, so it's **resume-safe** — a crash mid-
 typed answer from the log on resume. If the model replies in plain JSON text instead of calling
 the tool, `RunTyped` falls back to parsing that text. `T` is meant to be a struct.
 
+## Sampling
+
+Generation controls are provider-neutral and set once — each adapter maps them onto its wire
+format (and drops what it can't do, e.g. Anthropic has no `seed`):
+
+```go
+a := agent.New(model, store, tools...).
+	WithSampling(agent.Temperature(0), agent.MaxTokens(500), agent.TopP(0.9), agent.Seed(42))
+```
+
+Fields are optional by design: an unset field uses the provider default, so an explicit
+`Temperature(0)` is distinct from "not specified." Request-level `MaxTokens` overrides an
+adapter's construction-time default.
+
 ## Resume safety, in one table
 
 ```go

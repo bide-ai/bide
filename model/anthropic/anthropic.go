@@ -146,12 +146,26 @@ func (m *Model) buildRequest(req agent.Request) ([]byte, error) {
 		})
 	}
 
+	maxTokens := m.maxTokens // request-level Sampling overrides the construction default
+	if s := req.Sampling.MaxTokens; s != nil {
+		maxTokens = *s
+	}
 	payload := map[string]any{
 		"model":      m.model,
-		"max_tokens": m.maxTokens,
+		"max_tokens": maxTokens, // Anthropic requires max_tokens
 		"stream":     true,
 		"messages":   msgs,
 	}
+	if s := req.Sampling.Temperature; s != nil {
+		payload["temperature"] = *s
+	}
+	if s := req.Sampling.TopP; s != nil {
+		payload["top_p"] = *s
+	}
+	if len(req.Sampling.Stop) > 0 {
+		payload["stop_sequences"] = req.Sampling.Stop
+	}
+	// Anthropic has no seed parameter; req.Sampling.Seed is intentionally ignored.
 	if system.Len() > 0 {
 		payload["system"] = system.String()
 	}

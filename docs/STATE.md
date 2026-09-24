@@ -73,8 +73,13 @@ gsm federation capability reaches the agent tier for free on a version bump:
   decodes from the JOURNALED call args (resume-safe), falling back to parsing final text. Package
   function, not a method (Go methods can't add type params). This is AgenticGoKit's #151 idea; we
   had the `schema` package but lacked the ergonomic. (Also still open from that audit: `Capabilities()`
-  provider discovery #142, sampling params on `Request` #143 — our own TODO — and the single-module
-  vs submodule dep-hygiene question #144.)
+  provider discovery #142, and the single-module vs submodule dep-hygiene question #144.)
+- **Sampling params** (`Sampling` on `Request`, `Agent.WithSampling`): provider-neutral generation
+  controls (Temperature/TopP/MaxTokens/Stop/Seed) as pointer fields (nil = provider default, so an
+  explicit 0 is distinct from unset). Set once at the agent level via option helpers
+  (`agent.Temperature(0)`, `agent.MaxTokens(500)`, …); both adapters translate to wire format
+  (OpenAI `stop`/`seed`; Anthropic `stop_sequences`, no seed). Closed our own `model.go` TODO =
+  AgenticGoKit #143.
 - **Two middleware chains** (`func(Handler) Handler`, mutating + short-circuiting): `Use` wraps
   the model call (`Middleware`/`ModelHandler`); `UseTool` wraps every tool call
   (`ToolMiddleware`/`ToolHandler`). Tool middleware runs INSIDE the durable memoized step, so a

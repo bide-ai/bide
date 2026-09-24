@@ -145,8 +145,25 @@ func (m *Model) buildRequest(req agent.Request) ([]byte, error) {
 		"stream":         true,
 		"stream_options": obj{"include_usage": true},
 	}
-	if m.maxTokens > 0 {
-		payload["max_tokens"] = m.maxTokens
+	// max_tokens: request-level Sampling overrides the adapter's construction default.
+	maxTokens := m.maxTokens
+	if s := req.Sampling.MaxTokens; s != nil {
+		maxTokens = *s
+	}
+	if maxTokens > 0 {
+		payload["max_tokens"] = maxTokens
+	}
+	if s := req.Sampling.Temperature; s != nil {
+		payload["temperature"] = *s
+	}
+	if s := req.Sampling.TopP; s != nil {
+		payload["top_p"] = *s
+	}
+	if s := req.Sampling.Seed; s != nil {
+		payload["seed"] = *s
+	}
+	if len(req.Sampling.Stop) > 0 {
+		payload["stop"] = req.Sampling.Stop
 	}
 	if len(tools) > 0 {
 		payload["tools"] = tools

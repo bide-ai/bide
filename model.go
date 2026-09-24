@@ -16,11 +16,24 @@ type Model interface {
 	Stream(ctx context.Context, req Request) (*Stream, error)
 }
 
-// Request is a single model call. (Model settings — temperature, max tokens, etc. —
-// land here later.)
+// Request is a single model call.
 type Request struct {
 	Messages []Message
 	Tools    []Tool
+	Sampling Sampling // generation controls; zero value = provider/model defaults
+}
+
+// Sampling holds provider-neutral generation controls. Pointer fields distinguish
+// "unset" (nil → use the provider/model default) from an explicit value — so a
+// deliberate Temperature of 0 is not confused with "not specified". Each adapter maps
+// the set fields onto its wire format and ignores those it doesn't support (e.g.
+// Anthropic has no Seed). Set it once with Agent.WithSampling.
+type Sampling struct {
+	Temperature *float64 // 0..2 (OpenAI) / 0..1 (Anthropic); determinism at 0
+	TopP        *float64 // nucleus sampling
+	MaxTokens   *int     // cap on generated tokens; overrides the adapter's construction default
+	Stop        []string // stop sequences
+	Seed        *int64   // best-effort determinism (OpenAI; ignored where unsupported)
 }
 
 // Usage is token accounting for a call; middleware turns it into cost.
