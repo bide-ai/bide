@@ -208,9 +208,11 @@ in a committed run whose history is provably append-only, without exposing the r
 For a governed action (a `gsm` event applied through the Tier-2 governor), the audit trail can
 commit not only to the fact that the action happened but to the policy it ran under.
 `govern.AttestedEventTool` embeds a policy digest (an opaque identifier, e.g.
-`gsm.Registry.PolicyDigest`) in the tool's journaled result, so the same `ProofBundle` that proves
-the action also commits to that digest. The SDK treats the digest as opaque; it does not depend on
-the policy engine's serialization format.
+`gsm.Registry.PolicyDigest`) and the resulting `state_digest` (`gsm.State.Digest`) in the tool's
+journaled result, so one committed leaf binds the action, the policy that admitted it, and the exact
+state it produced, and the same `ProofBundle` that proves the action commits to all three. The SDK
+treats both digests as opaque; it does not depend on the policy engine's serialization or state
+layout.
 
 The verifier then closes a second, independent root of trust:
 
@@ -243,6 +245,19 @@ The CLI does this whole cross-link in one command:
 goagents-audit verify-governed-action -action action.json -policy-bundle policy.json -pubkey <hex> -checker ./astchecker
 ```
 
+### Binding the resulting state, and checking it by replay
+
+Each governed leaf also commits the `state_digest` the action produced (`gsm.State.Digest`, a stable
+domain-separated hash over the packed state, meaningful because the policy pins the layout). Because
+`gsm`'s convergence engine is deterministic given a policy and an event set, a verifier holding the
+policy and the run's governed events can build a reference machine, replay those events, and
+reproduce every committed `state_digest`. Any divergence means the runtime's committed state does not
+match what the verified reference computes for that policy. This is a per-run differential check of
+the actual execution against the verified reference, not merely of the policy in isolation
+(`govern/attested_replay_test.go` demonstrates it end to end). It is not a refinement proof: it
+checks the events this run actually took, not the runtime's behavior for all possible inputs, so the
+refinement gap stays open.
+
 ### Proving a negative: no action under a disallowed policy
 
 The set of policies a run exercised is itself provable. Governed-action leaves are keyed by their
@@ -262,13 +277,15 @@ The negative has teeth: the commitment is over the run's actual key set (the STH
 policy that was in fact used.
 
 Scope, stated precisely: this proves the action ran under a policy that is anchored in the log and
-provably convergent, in a committed, append-only run, and that no governed action ran under a policy
-outside the approved set. Combined with the approved policies being oracle-certified convergent and
-invariant-preserving, that supports "no violation was admitted." It is a policy-level negative, not a
-per-action state-validity proof, and it does not prove the runtime's implementation refines the
-policy for all inputs: the runtime is differentially tested against the verified reference, so the
-refinement gap is open and this is not an end-to-end execution proof. A resulting-state digest per
-transition, and binding (action, policy, state-digest) into a single leaf, remain roadmap.
+provably convergent, in a committed, append-only run; that each governed leaf binds the action, the
+policy, and the resulting state, and that replaying the policy over the run's governed events
+reproduces every committed state; and that no governed action ran under a policy outside the approved
+set. Combined with the approved policies being oracle-certified convergent and invariant-preserving,
+that supports "no violation was admitted." Two limits remain, stated plainly: it is a policy-level
+negative, not a per-action state-validity proof; and the replay checks the events this run actually
+took, not the runtime's behavior for all inputs, so the runtime refinement gap is open and this is
+not an end-to-end execution proof. No proof feature remains on the roadmap; what is left is
+operational (a hosted anchor service).
 
 ## Next
 

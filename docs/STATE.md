@@ -17,10 +17,11 @@ Three repos under `/Users/dayna/code/`, all remotes on the `github-blackwell` SS
   paths + tag core + swap replaces for version pins.
 - **gsm** — the convergence engine (founder's IP). Public: `blackwell-systems/gsm`.
   **Apache-2.0** (relicensed from MIT; copyright "Dayna Blackwell, Blackwell Systems").
-  Released through **v0.6.0** (compensation synthesis that scales — backtracking + forward-checking —
-  plus preference-guided (`SynthesizeWith`/`Prefer`), provably minimum-cost (`Optimal`), and an
-  impossibility witness; CI green: lint + ubuntu/macos/windows × Go 1.22/1.23). go-agents depends on
-  it via a normal versioned require (**pinned `gsm@v0.6.0`**). The old `replace ../gsm` is gone.
+  Released through **v0.8.0** (through v0.6.0: scalable compensation synthesis with preference-guided,
+  provably minimum-cost, and impossibility-witness modes; v0.7.0: the combinator rule vocabulary plus
+  sugar, the two differential oracles, footprint-local `BuildCompositional`, and `Registry.PolicyDigest`;
+  v0.8.0: `State.Digest` for state attestation). go-agents depends on it via a normal versioned require
+  (**pinned `gsm@v0.8.0`**). The old `replace ../gsm` is gone.
 - **normalization-confluence** — the papers. Public: `blackwell-systems/normalization-confluence`.
   Two papers (single-registry `normalization_confluence_2026.tex`; federated
   `normalization_confluence_in_federated_registry_networks.tex`), CC-BY-4.0.
@@ -200,9 +201,10 @@ gsm federation capability reaches the agent tier for free on a version bump:
   inclusion+consistency. Next: real external-log `Anchor` adapters (Trillian/CT, ledger, notary);
   batched/periodic anchoring for high throughput.
 - **Governed-action attestation** (`govern.AttestedEventTool` + `audit.RecordPolicy`/`ProvePolicy`/
-  `PolicyContent`, on gsm v0.7.0 `Registry.PolicyDigest`/`PolicyBytes`): a governed tool embeds the
-  policy digest (opaque to the SDK) in its journaled result, so the STH and `ProofBundle` commit to
-  WHICH policy admitted the action. The policy itself is anchored as a dedicated in-log leaf
+  `PolicyContent`, on gsm v0.8.0 `Registry.PolicyDigest`/`PolicyBytes` + `State.Digest`): a governed
+  tool embeds the policy digest and the resulting `state_digest` (both opaque to the SDK) in its
+  journaled result, so one committed leaf binds the action, the policy that admitted it, and the state
+  it produced, and the STH and `ProofBundle` commit to all three. The policy itself is anchored as a dedicated in-log leaf
   (`StepValue` keyed by digest, idempotent), covered by the same tree; an action bundle and a policy
   bundle cross-link in one tree via matching digests. `goagents-audit verify-governance` recomputes
   the digest from the published bytes (no gsm import) and runs the external oracle (`astchecker`) to
@@ -214,11 +216,13 @@ gsm federation capability reaches the agent tier for free on a version bump:
   offline-verifiable proof that no governed action ran under a disallowed digest (the negative has
   teeth: absence of a policy that was actually used cannot be proven). Combined with the approved
   policies being oracle-certified convergent, that supports "no violation was admitted" as a policy-
-  level claim. Shipped and tested (`govern/attested_test.go`, `govern/attested_e2e_test.go`,
-  `audit/policy_test.go`, `audit/governance_absence_test.go`). ROADMAP: a resulting-state digest per
-  transition, and single-leaf binding of (action, policy, state-digest). NOTE: this is a policy-level
-  negative, not a per-action state-validity proof; the runtime is differentially tested against the
-  verified reference, and the refinement gap is open.
+  level claim. A verifier holding the policy and the run's governed events replays them and reproduces
+  every committed `state_digest`, a per-run differential check of the actual execution against the
+  verified reference. Shipped and tested (`govern/attested_test.go`, `govern/attested_e2e_test.go`,
+  `govern/attested_replay_test.go`, `audit/policy_test.go`, `audit/governance_absence_test.go`). No
+  proof feature remains on the roadmap; what is left is operational (a hosted anchor service). NOTE:
+  the negative is policy-level, not a per-action state-validity proof, and the replay checks the events
+  this run took, not all inputs, so the runtime refinement gap stays open.
 - **RAG/memory = bring-your-own** (`retrieval.go`, decision in docs/RAG-MEMORY.md): ship NO vector
   store/embedder. Core seam: `Retriever` port (`Retrieve(ctx, query, k) []Doc`), `RetrievalTool`
   (agentic — model searches on demand), `WithRetrieval` middleware (classic — top-k injected as a
