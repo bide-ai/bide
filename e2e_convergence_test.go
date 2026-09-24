@@ -58,10 +58,14 @@ func TestE2E_ManyAgentsConvergeAndAreTraceable(t *testing.T) {
 	if testing.Short() {
 		scales = []int{200}
 	}
-	// The 100k tier keeps ~1.6M journal records live in the in-memory store, so it is
-	// memory-bound; run it only on request (E2E_HUGE=1) rather than in the default suite.
-	if os.Getenv("E2E_HUGE") != "" {
+	// The huge tiers are gated by wall time, not the default suite: each run uses its own store
+	// that is dropped after its proof verifies, so memory stays bounded by the in-flight set
+	// regardless of total N. E2E_HUGE=1 adds 100k; E2E_HUGE=million adds 100k and 1,000,000.
+	switch os.Getenv("E2E_HUGE") {
+	case "1":
 		scales = append(scales, 100000)
+	case "million":
+		scales = append(scales, 100000, 1000000)
 	}
 	ctx := context.Background()
 
@@ -108,7 +112,6 @@ func runScale(t *testing.T, ctx context.Context, m *gsm.Machine, base []string, 
 	if err != nil {
 		t.Fatalf("keygen: %v", err)
 	}
-	store := agent.NewMemStore()
 
 	concurrency := n
 	if concurrency > 2048 {
@@ -151,8 +154,12 @@ func runScale(t *testing.T, ctx context.Context, m *gsm.Machine, base []string, 
 				govern.AttestedEventTool(gov, "inc_a", "increment a (capped)", "inc_a", digest, agent.Safety{}),
 				govern.AttestedEventTool(gov, "inc_b", "increment b", "inc_b", digest, agent.Safety{}),
 			}
+			// Each agent gets its own store, dropped when this goroutine returns (the journal
+			// would go to a durable store in production). Memory stays bounded by the in-flight
+			// set, not total N, so this isolates runtime scaling from store capacity.
+			store := agent.NewMemStore()
 			ag := agent.New(seqModel{events: rotate(base, i)}, store, tools...)
-			runID := fmt.Sprintf("run-%d", i)
+			runID := "run"
 			if _, err := ag.Run(ctx, runID, "go"); err != nil {
 				atomic.AddInt64(&runErrs, 1)
 				return
