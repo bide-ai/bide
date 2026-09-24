@@ -179,8 +179,14 @@ gsm federation capability reaches the agent tier for free on a version bump:
   replay), so the durable artifact is `audit.EventLogFromJournal` = a projection of the crash-safe journal
   via `agent.ReplayEvents` (StepModel→AssistantTurn{Replayed}, StepToolResult→ToolCompleted; deterministic,
   resume-stable, append-only-across-crash — proven in `replay_test.go` + `audit/eventsink_test.go`).
-  Token deltas aren't journaled → not in the durable projection (correct for a compliance log). Next: BYO
-  `EventStore` port for separate event retention; auto-STH `Durable` decorator; external transparency log.
+  Token deltas aren't journaled → not in the durable projection (correct for a compliance log).
+  **BYO EventStore port** (`audit/eventstore.go`): `EventStore` interface (Append idempotent+append-only
+  on (runID,seq), Load) + `MemEventStore` default (Postgres UNIQUE(run_id,seq)/WORM in prod).
+  `PersistJournal(evStore, jStore, runID)` idempotently mirrors the journal PROJECTION (not the live
+  stream — projection is resume-stable so re-mirror never forks) into a backend with its OWN retention;
+  `LoadEventLog(evStore, runID)` rebuilds Root/STH/proofs from the store ALONE (journal can be GC'd).
+  Tested: append-only/fork rejection, journal round-trip + idempotent re-mirror + store-only anchor,
+  prefix→full consistency. Next: auto-STH `Durable` decorator; external transparency log anchoring.
 - **RAG/memory = bring-your-own** (`retrieval.go`, decision in docs/RAG-MEMORY.md): ship NO vector
   store/embedder. Core seam: `Retriever` port (`Retrieve(ctx, query, k) []Doc`), `RetrievalTool`
   (agentic — model searches on demand), `WithRetrieval` middleware (classic — top-k injected as a

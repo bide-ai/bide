@@ -88,6 +88,30 @@ journaled, so they aren't in the durable projection — the durable content is t
 results, which is what a compliance log should commit anyway. The live `EventLog` remains the
 real-time UI view; the journal projection is the anchored artifact.
 
+### A separate lifecycle: the BYO EventStore port
+
+The journal is the resume substrate and may be garbage-collected after a run; a compliance
+trail often has to outlive it (keep for years, on WORM storage, in a different trust domain).
+`EventStore` is the bring-your-own port for that — append canonical event leaves to a backend
+you run, on its own retention lifecycle, and rebuild an `EventLog` from it later.
+
+```go
+// Mirror the run's durable trail into your store (idempotent — call it whenever).
+audit.PersistJournal(ctx, evStore, journal, runID)
+
+// Later, even after the journal is deleted: anchor and prove from the store alone.
+log, _ := audit.LoadEventLog(ctx, evStore, runID)
+sth    := audit.SignTreeHead(log.TreeHead(ts), priv)
+proof, _ := log.Prove(i)   // + audit.VerifyEventInclusion(sth.Root, event, proof)
+```
+
+`PersistJournal` is fed from the journal projection, not the live stream, on purpose: the
+projection is deterministic and resume-stable, so re-mirroring after a crash appends the same
+leaves at the same positions (idempotent, never forks). The store contract is append-only and
+idempotent on `(runID, seq)` — a different leaf at an existing position is rejected as a fork.
+`MemEventStore` is the in-memory default; a real backend is a Postgres table with
+`UNIQUE(run_id, seq)` and insert-only grants, or object storage with object-lock/WORM.
+
 Each leaf is a kind-tagged canonical encoding, so event types never collide, and `ModelEvent`
 carries the inner delta's kind. `Root`/`Head`/`Prove`/`Sign` behave exactly as they do over the
 journal; the `Inclusion` proof type and signing path are shared. (Prototype: `audit/eventsink.go`.)
@@ -129,8 +153,8 @@ in a committed run whose history is provably append-only, without exposing the r
 
 RFC 6962 is fully covered (Head, inclusion, consistency, STH) over both the journal and, via
 the event→audit sink (`EventLog` / `Record` / `TreeHead` / `ProveConsistency`), the semantic
-event stream (live via `EventLog`, and crash-durable via `EventLogFromJournal` /
-`agent.ReplayEvents`), all sharing one verification surface. Possible extensions if a use case
-needs them: an audited `Durable` decorator that emits an STH automatically per run; a BYO
-`EventStore` port for callers who want the event trail on a separate retention lifecycle from
-the resume journal; and integration with an external transparency log for out-of-band anchoring.
+event stream (live via `EventLog`, crash-durable via `EventLogFromJournal` / `agent.ReplayEvents`,
+and on a separate lifecycle via the BYO `EventStore` port / `PersistJournal`), all sharing one
+verification surface. Possible extensions if a use case needs them: an audited `Durable`
+decorator that emits an STH automatically per run; and integration with an external transparency
+log for out-of-band anchoring.
