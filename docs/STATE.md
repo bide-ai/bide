@@ -107,6 +107,13 @@ gsm federation capability reaches the agent tier for free on a version bump:
   (per `Session.Send` turn). Counts replayed turns too (a resumed run past the cap stops at once).
   = trpc's "Call Count Limits" safety mechanism; a real hole in our loop (TokenBudget was the only,
   indirect guard). `cloneWith` carries it.
+- **Tamper-evident audit** (`audit/`, moat #4): `audit.Head(ctx, store, runID)` = SHA-256 hash-chain
+  commitment over the journal in persisted order (any modify/insert/delete/reorder changes the head);
+  `Sign`/`VerifySignature` (ed25519) to anchor it. Stdlib-only. HONEST model (in the package doc):
+  integrity always; tamper-evidence only if the head is anchored out-of-band (a chain in the same DB
+  an attacker controls can be rewritten+rehashed). Compliance/enterprise axis (fintech/health). Read
+  over persisted order (correct under parallel tools), no core Record change. Next: Merkle root +
+  inclusion proofs (selective disclosure) leveraging merkle-strata.
 - **RAG/memory = bring-your-own** (`retrieval.go`, decision in docs/RAG-MEMORY.md): ship NO vector
   store/embedder. Core seam: `Retriever` port (`Retrieve(ctx, query, k) []Doc`), `RetrievalTool`
   (agentic — model searches on demand), `WithRetrieval` middleware (classic — top-k injected as a
