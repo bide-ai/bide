@@ -107,6 +107,14 @@ gsm federation capability reaches the agent tier for free on a version bump:
   (per `Session.Send` turn). Counts replayed turns too (a resumed run past the cap stops at once).
   = trpc's "Call Count Limits" safety mechanism; a real hole in our loop (TokenBudget was the only,
   indirect guard). `cloneWith` carries it.
+- **Deterministic Simulation Testing** (`dst_test.go`, moat #1 — the crown jewel): adversarially
+  PROVES the at-most-once side-effect guarantee. `crashStore` fails the Kth persist (simulating a
+  crash); a resume-safe `dstModel` (deterministic on the conversation) + a non-idempotent `chargeTool`
+  (global counter). CrashSweep hits every write point; Randomized throws 500 multi-crash schedules;
+  both assert `count ≤ 1` and terminal ∈ {completed, *ResumeHalt}. The K=result-write case fires then
+  crashes → resume must HALT (haltSeen asserts this path runs, so it's non-vacuous). Turns "tested" into
+  "adversarially verified" — the gsm exhaustive-verification ethos applied to the runtime. Foundation
+  laid by the synctest adoption. Next: exported harness → the "chaos benchmark competitors fail" (#2).
 - **Tamper-evident audit** (`audit/`, moat #4): `audit.Head(ctx, store, runID)` = SHA-256 hash-chain
   commitment over the journal in persisted order (any modify/insert/delete/reorder changes the head);
   `Sign`/`VerifySignature` (ed25519) to anchor it. Stdlib-only. HONEST model (in the package doc):

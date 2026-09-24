@@ -281,6 +281,12 @@ Before a non-idempotent side effect the loop records a durable *attempt marker*,
 resume can tell "never ran" (safe to run) from "ran and crashed" (halt) — precisely, not
 conservatively.
 
+This is **proven, not asserted.** `dst_test.go` is a deterministic simulation test: a
+fault-injecting store crashes at *every* write point (and across hundreds of randomized
+multi-crash schedules), and the harness asserts a non-idempotent side effect fires **at most
+once** every time, with the run always ending completed or halted — never double-firing. (Point
+the same harness at a naive at-least-once loop and it fails immediately.)
+
 `WithMaxTurns(n)` caps model turns per run so a model that keeps calling tools can't loop forever
 — hitting it returns `ErrMaxTurns` (which is `errors.Is` `ErrBudget`).
 
