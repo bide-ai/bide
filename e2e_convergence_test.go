@@ -3,8 +3,9 @@ package agent_test
 import (
 	"context"
 	"crypto/ed25519"
-	"crypto/rand"
+	crand "crypto/rand"
 	"fmt"
+	"math/rand/v2"
 	"os"
 	"runtime"
 	"sync"
@@ -38,13 +39,14 @@ func (m seqModel) Stream(_ context.Context, req agent.Request) (*agent.Stream, e
 	return agent.NewStream(ch), nil
 }
 
-func rotate(s []string, n int) []string {
-	if len(s) == 0 {
-		return s
-	}
-	n %= len(s)
-	out := make([]string, 0, len(s))
-	return append(append(out, s[n:]...), s[:n]...)
+// shuffled returns a random permutation of s, seeded by n so each agent gets a different but
+// reproducible order. Because the events genuinely conflict on the capped variable, different
+// orders exercise the compensation firing at different (random) points.
+func shuffled(s []string, n int) []string {
+	out := append([]string(nil), s...)
+	rng := rand.New(rand.NewPCG(uint64(n)+1, 0x9e3779b97f4a7c15))
+	rng.Shuffle(len(out), func(i, j int) { out[i], out[j] = out[j], out[i] })
+	return out
 }
 
 // TestE2E_ManyAgentsConvergeAndAreTraceable is the combined proof: many concurrent governed
@@ -97,9 +99,12 @@ func TestE2E_ManyAgentsConvergeAndAreTraceable(t *testing.T) {
 		t.Fatalf("PolicyDigest: %v", err)
 	}
 
-	// The event multiset every agent applies. On a: +1+2+2+1 = 6, capped to 5 (the cap fires at a
-	// different step for different orders). On b: +1+1 = 2. flag: raised. Normal form: a=5, b=2,
-	// flag=true, regardless of order.
+	// The event multiset every agent applies, in a RANDOM per-agent order. On a: +1+2+2+1 = 6
+	// against a cap of 5, so in EVERY ordering the a-cap invariant is violated at some step (a
+	// transiently reaches 6 or 7) and the compensation repairs it: violations happen, at a random
+	// point, in every run. On b: +1+1 = 2. flag: raised. Yet every ordering still reaches the same
+	// valid normal form: a=5, b=2, flag=true. That is the claim: random violation-inducing orders,
+	// all converging.
 	base := []string{"inc_a", "add2_a", "add2_a", "inc_a", "inc_b", "inc_b", "raise_flag"}
 	ref := govern.New(m, m.NewState())
 	for _, e := range base {
@@ -121,7 +126,7 @@ func TestE2E_ManyAgentsConvergeAndAreTraceable(t *testing.T) {
 }
 
 func runScale(t *testing.T, ctx context.Context, m *gsm.Machine, base []string, digest, want string, n int) {
-	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	pub, priv, err := ed25519.GenerateKey(crand.Reader)
 	if err != nil {
 		t.Fatalf("keygen: %v", err)
 	}
@@ -172,7 +177,7 @@ func runScale(t *testing.T, ctx context.Context, m *gsm.Machine, base []string, 
 			// would go to a durable store in production). Memory stays bounded by the in-flight
 			// set, not total N, so this isolates runtime scaling from store capacity.
 			store := agent.NewMemStore()
-			ag := agent.New(seqModel{events: rotate(base, i)}, store, tools...)
+			ag := agent.New(seqModel{events: shuffled(base, i)}, store, tools...)
 			runID := "run"
 			if _, err := ag.Run(ctx, runID, "go"); err != nil {
 				atomic.AddInt64(&runErrs, 1)
