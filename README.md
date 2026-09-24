@@ -571,6 +571,9 @@ tool := govern.EventTool(gov, "pay", "mark the order paid", "pay", agent.Safety{
 - **[docs/EXTENSION-POINTS.md](docs/EXTENSION-POINTS.md)**: the ports and adapters the
   framework is built on (`Model`, `Durable`, `Tool`, `Compensator`, `Retriever`, `Anchor`,
   `EventStore`), with an "implement your own store" walkthrough.
+- **[docs/TESTING.md](docs/TESTING.md)**: what is tested and how, the chaos crash-injection
+  benchmark (fair, not strawman), differential oracle checks, convergence and traceability at
+  scale with measured numbers and their bounds, RFC 6962 conformance, and the commands to run it.
 
 > Name is deliberately deferred — this is a codename. Design + competitive analysis in
 > `docs/DESIGN.md` and `docs/COMPETITIVE*.md`; the governance tier in `docs/GOVERNANCE.md`.

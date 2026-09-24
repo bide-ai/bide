@@ -1,0 +1,263 @@
+# What we test, and how
+
+This project's central claims are strong (at-most-once side effects, order-independent
+convergence, a cryptographic record of exactly what an agent did), so the test suite is built
+to **try to break those claims, not to confirm them**. The methods are adversarial (crash
+injection, randomized schedules), differential (re-check a verdict with an independent
+implementation), and conformance-based (match published cryptographic reference vectors).
+This document describes what each pillar actually does and, importantly, the bounds each one
+implies.
+
+## Scope and one correction (read this first)
+
+Everything below was written against the test code as it exists in the repository, not against
+an idealized plan. One item is stated differently here than you may expect:
+
+- The **differential oracle** work (a table oracle over emitted step tables, a rules oracle
+  recomputing convergence from the combinator declarations, both extracted from the axiom-free
+  Coq/Rocq proof) lives in the sibling `gsm` and `normalization-confluence` repositories, where
+  gsm's convergence verdict is re-certified. It is not a pair of `oracle_test.go` /
+  `astoracle_test.go` files inside go-agents, and there is no `GSM_CONVERGENCE_CHECKER`
+  environment variable in this repo. What go-agents ships in-repo is a single optional hook,
+  `GSM_AST_CHECKER`, in `govern/attested_e2e_test.go`, which runs the external verified oracle
+  on the exact policy bytes go-agents anchors (see Pillar 2). The two-independent-implementations
+  idea is real; the code that runs both checkers is upstream in gsm, and go-agents leverages it
+  rather than re-implementing it.
+
+Two module boundaries matter for running tests. The competitor benchmark adapters live in a
+**separate module** (`benchmarks/`, its own `go.mod`) so their large dependency trees never
+touch the go-agents core. The workspace (`go.work`) also stitches in `govern/redislog`,
+`govern/sqlitelog`, `mcp`, `store/postgres`, `store/sqlite`, and `trace`.
+
+## Pillar 1: fair crash-injection chaos benchmark
+
+**A deterministic crash-injection harness drives a non-idempotent charge through every crash
+point and counts how many times it actually fired.** The invariant is at-most-once: `maxFired`
+of 1 means the guarantee held; anything higher is a double-charge.
+
+- `chaos/` (`chaos.go`, `chaos_test.go`) is the exportable harness. `Verify(name, sys, seeds)`
+  runs an **exhaustive** single-crash sweep at every durable write point (crash there, then
+  resume to a terminal state), then `seeds` **randomized** multi-crash schedules (default 500
+  in the tests), and records `MaxFired` and `Violations`. `TestVerify_GoAgentsPasses` asserts
+  the go-agents reference adapter holds `maxFired=1`. `TestVerify_NaiveReferenceFails` asserts
+  the naive at-least-once baseline double-fires (`maxFired>=2`); this is deliberate, and it
+  proves the harness is **non-vacuous** (a correct loop passes, an incorrect one fails).
+- `benchmarks/` runs the same harness against other Go agent SDKs from that separate module
+  (`cd benchmarks && GOWORK=off go test -run Comparison -v`). The published cross-SDK result
+  in `benchmarks/README.md`: go-agents `maxFired=1` (PASS); trpc-agent-go `maxFired=5`; adk-go
+  `maxFired=4`; langchaingo `maxFired=64`; eino `maxFired=64`; naive-loop `maxFired=5`.
+
+**Fairness is the discipline that makes this credible, not a strawman contest.** Every
+competitor adapter ships a fairness test proving its resume genuinely works before the crash
+schedules are applied: `fairness_test.go` (trpc), `adk_fairness_test.go` (adk-go),
+`lcg_fairness_test.go` (langchaingo), `eino_fairness_test.go` (eino). Each proves that resuming
+a *completed* run is a genuine no-op (the charge does not re-fire), so where a double-fire
+appears it reflects that SDK's real behavior. The findings are documented per-SDK: trpc-agent-go
+and adk-go have real persistence and a narrow re-fire window (a crash between the side effect
+executing and its record persisting); langchaingo and eino have no automatic crash-resume, so a
+crash loses the run and re-invoking re-runs everything. go-agents closes that window with a
+durable attempt marker written before a non-idempotent tool, which is why it holds `maxFired=1`.
+
+Bounds: this is randomized plus exhaustive-over-write-points crash injection modeling process
+death around durable writes. It is strong and non-vacuous, but it is not a machine-checked
+formal proof over all interleavings.
+
+The internal form of the same discipline is the core DST: `dst_test.go`
+(`TestDST_NoDoubleFire_CrashSweep`, `TestDST_NoDoubleFire_Randomized`) crashes at the Kth
+durable write and asserts the charge fires at most once and the run ends either completed or in
+`ResumeHalt`; the sweep test even fails itself if no crash point ever exercises the halt path,
+so it cannot pass vacuously. `saga_dst_test.go` applies the same crash sweep and randomized
+schedules to saga compensation.
+
+## Pillar 2: differential testing against a verified oracle
+
+**gsm proves at build time that every interleaving of agent events converges to the same valid
+state; a second, independent implementation re-checks that verdict, so a bug in one verifier
+cannot silently pass a non-convergent machine.** The two-independent-implementations principle:
+if two programs written from the same axiom-free proof, by different routes, both accept a
+machine, a single implementation bug is far less likely to have admitted a bad one.
+
+- In go-agents, `govern/attested_e2e_test.go` (`TestAttestedEventTool_RealPolicyDigest`) builds
+  a real gsm policy, takes its `PolicyDigest`, governs a real transition through
+  `AttestedEventTool`, and confirms the journaled leaf carries that exact digest and the
+  resulting state digest. It independently recomputes the digest with the same domain-separated
+  SHA-256 formula the `goagents-audit verify-governance` CLI uses (without importing gsm), and
+  asserts parity, so the SDK, the verifier CLI, and gsm agree on the policy's identity. When
+  `GSM_AST_CHECKER` is set to an external checker binary, the test writes the policy bytes to a
+  temp file and runs that checker on them, failing if the external verified oracle rejects a
+  policy gsm built as convergent. Without the env var the oracle step is skipped.
+- The two checkers themselves (the table oracle over emitted step tables and the rules oracle
+  over combinator declarations, both extracted from the axiom-free Coq/Rocq proof) live in the
+  `gsm` / `normalization-confluence` sibling repos, as noted in the correction above.
+
+Bounds: go-agents leverages gsm's proof; it does not claim to have proven the underlying theorem
+or that its own Go code is axiom-free. The precise convergence claim is order-independent replay,
+not "agents always agree" (see Pillar 3).
+
+## Pillar 3: convergence and traceability at scale
+
+**Many concurrent governed agents each apply the same event multiset in a different order; the
+test asserts every one converges to the same machine-checked normal form AND every one's
+governed action verifies offline against a signed tree head.** This is
+`e2e_convergence_test.go` (`TestE2E_ManyAgentsConvergeAndAreTraceable`), exercising scale,
+order-independent convergence under real concurrency (including a compensating cap that fires at
+different steps for different orders), and cryptographic traceability in one test.
+
+The domain is two capped counters with distinct additive events (+1 and +2) plus a boolean flag,
+applied as the multiset `inc_a, add2_a, add2_a, inc_a, inc_b, inc_b, raise_flag`; every ordering
+reaches the normal form `a=5, b=2, flag=true`. Each agent runs its own `MemStore`, and
+convergence is checked inline (not accumulated), so memory stays bounded by the in-flight set
+rather than by total N. For each agent the test signs a tree head over its journal
+(`audit.NewTreeHead` + `SignTreeHead`), proves one governed tool call (`audit.ProveToolCall`),
+and verifies the bundle against the public key.
+
+Scale tiers:
+
+- Default: `5000`, `10000`, `20000` (`-short` collapses to a single `N=200`).
+- `E2E_HUGE=1` adds `100000`.
+- `E2E_HUGE=million` adds `100000` and `1000000`.
+- `E2E_HUGE=tenmillion` adds `10000000`.
+
+Measured on one dev machine (from the commit history that introduced each tier):
+
+- 20,000 agents in ~1.07s at ~18.8k agents/s, peak ~3,200 goroutines, ~88 MB, throughput flat
+  across the default scales (linear).
+- 100,000 agents in ~5.6s at ~17.9k agents/s, peak ~3,200 goroutines, ~860 MB (this tier keeps
+  ~1.6M journal records live in the in-memory store, hence gated behind `E2E_HUGE=1`).
+- 1,000,000 agents in ~33.7s at ~29.7k agents/s, peak ~2,560 goroutines, ~189 MB (bounded, via
+  the per-run store that is dropped after each proof verifies).
+
+The precise bounds:
+
+- The model is a **stub** (`seqModel`) that drives a fixed event sequence. The test measures the
+  framework and governance/audit machinery, not a real LLM; a live model's latency would dominate.
+- `MemStore` is the **in-memory floor**. A durable store's throughput is the real production
+  ceiling; the per-run store here isolates runtime scaling from store capacity, it does not model
+  a durable backend's write cost.
+- "Arbitrary-order-all-converge" structurally requires the **commuting regime**. `Build()`
+  succeeding is the proof that these events commute after compensation (WFC + CC). A fully
+  non-commuting case (for example ship-before-pay) deliberately would not converge under
+  arbitrary order and would be rejected by `Build()`; that harder case needs causal ordering and
+  is proven in the Coq/gsm layer instead, not asserted at scale here.
+
+Related governance tests: `govern/federated_test.go` proves crash recovery by reconstructing
+state from an event log, order-independence of federated events, and that a partial sync matches
+the central view. `govern/attested_replay_test.go` replays the state digests bound into the
+single governed-action leaf.
+
+## Pillar 4: RFC 6962 conformance
+
+**The Merkle commitment is checked against the published Certificate Transparency reference
+vectors, so it is the real RFC 6962 construction and not a homegrown look-alike.**
+
+- `audit/merkle_test.go` (`TestMerkle_MatchesRFC6962Vectors`) hardcodes the canonical 8-leaf CT
+  test tree and the published Merkle Tree Hash at each size 0..8, and asserts our `merkleRoot`
+  matches every one. `TestMerkle_InclusionRoundTrip` verifies inclusion proofs for trees of many
+  sizes (1..33, exercising ragged-tree recursion), confirms a forged leaf is rejected, and
+  confirms a proof does not verify against a different tree's root.
+  `TestMerkle_JournalSelectiveDisclosure` proves one journal record with only that record plus
+  its proof plus the root, and confirms the proof does not verify a different record.
+- `audit/consistency_test.go` verifies append-only consistency proofs against RFC-correct roots
+  for every `(m, n)` up to 24 (`TestConsistency_RoundTripAgainstRFCRoots`), includes a
+  hand-derived 1-to-2 vector (`TestConsistency_HandDerived1to2`), proves a rewritten early record
+  is detectable (`TestConsistency_DetectsRewrite`), and runs the append-only flow over a real
+  journal (`TestConsistency_JournalAppendOnly`).
+- `audit/sth_test.go` covers signed tree heads: `TestSTH_SignVerifyAndTamper` confirms the
+  signature commits to size, root, and time (any field change or wrong key breaks verification),
+  and `TestSTH_EndToEndComplianceFlow` walks the full flow (publish an STH, disclose one record
+  against its signed root, then prove append-only growth between two signed STHs).
+- `audit/verify/verify_test.go` checks that the standalone verifier agrees with the SDK on
+  inclusion, consistency, and signed tree heads. `audit/absence_test.go` covers absence proofs
+  (an absent key proves against the root; a present key cannot).
+
+Bounds: conformance to the published vectors establishes the commitment is spec-correct. It does
+not, by itself, provide tamper-evidence; that requires anchoring the commitment out-of-band, which
+is a deployment requirement documented in `docs/AUDIT.md`.
+
+## Pillar 5: architecture enforcement
+
+**A test enforces the stdlib-only / no-heavy-deps boundary so dependencies keep pointing inward.**
+`architecture_test.go` (`TestCoreHasNoAdapterImports`) runs `go list -deps` on the core module and
+fails if the core's runtime import graph contains any adapter package (`model/`, `store/`, `trace`,
+`middleware`, `govern`) or any heavy infrastructure (`opentelemetry`, `modernc.org/sqlite`,
+`jackc/pgx`, `temporal`, `weaviate`, `blackwell-systems/gsm`). It skips (does not fail) if
+`go list` is unavailable. This is the ports-and-adapters discipline verified mechanically: the
+core depends only on its ports (interfaces), never on a concrete adapter.
+
+## Pillar 6: deterministic replay for regression and debugging
+
+**Because every run journals a complete, ordered history, a recorded run can be replayed exactly
+as a test.** `agent.Replay` (`replay.go`) returns a `Model` that re-emits the recorded model
+outputs for a run in order, so an agent built on it re-executes the past run against a fresh store
+with no live LLM. `agent.ReplayEvents` reconstructs the durable semantic events from the journal.
+
+`replay_test.go` verifies both properties this rests on: `TestReplayEvents_MatchesLiveStream`
+confirms the journal projection reproduces the same semantic events the live stream emitted (it is
+not inventing a different history), and `TestReplayEvents_AppendOnlyAcrossCrash` confirms that a
+crash mid-run leaves a prefix of the events, that resuming appends the rest without rewriting the
+prefix, and that recomputing from the same journal is deterministic. See
+[docs/DEBUGGING.md](DEBUGGING.md) for the replay, event-reconstruction, and Mermaid tools built on
+the journal.
+
+## Pillar 7: standard per-package unit tests
+
+Beyond the pillars above, each package carries conventional unit tests:
+
+- Core (`agent_test.go`, `stream_agent_test.go`, `concurrency_test.go`, `saga_test.go`,
+  `session_test.go`, `result_test.go`, `errors_test.go`, `hitl_test.go`, `maxturns_test.go`,
+  `system_prompt_test.go`, `dynamic_prompt_test.go`, `typed_test.go`, `typed_native_test.go`,
+  `sampling_test.go`, `retrieval_test.go`, `tool_middleware_test.go`): the agent loop, streaming,
+  concurrency, sagas, sessions, typed results, human-in-the-loop, turn limits, prompts, sampling,
+  retrieval/RAG, and tool middleware.
+- `audit/` also covers policy, signing (including signature-scheme agility), anchoring, event
+  sink/store, proof bundles, and governance-absence proofs.
+- `govern/` covers the in-memory and persistent governors, attestation, and the
+  `redislog` / `sqlitelog` event-log backends.
+- `middleware/` covers cost tracking, reliability, retry, and tool retry/wrapping.
+- Model adapters: `model/anthropic/` and `model/openai/` cover request/response translation,
+  prompt caching, rate limiting, sampling, and (OpenAI) response formats.
+- Stores: `store/sqlite/` and `store/postgres/`. Also `schema/`, `trace/`, and `mcp/`.
+
+## Methodology
+
+The principles evident across the suite:
+
+- **Fair benchmarks.** Every competitor adapter is verified not to be a strawman: a fairness test
+  proves its resume genuinely works before crash schedules are applied, so a reported double-fire
+  reflects that SDK's real behavior.
+- **Differential / oracle testing.** A convergence verdict from one implementation is re-checked
+  by an independent implementation extracted from an axiom-free proof; digests are recomputed by a
+  separate code path and asserted equal.
+- **Determinism and replay.** The journal is a complete, ordered history, so runs replay exactly;
+  regression and debugging are pure functions of recorded records.
+- **Scale is measured, not claimed, with the bounds stated.** Throughput and memory numbers come
+  from actual runs and are reported with their limits (stub model, in-memory floor, commuting
+  regime).
+- **Cryptographic conformance to published vectors.** The Merkle commitment matches the RFC 6962
+  Certificate Transparency reference tree, so the construction is verifiably the standard one.
+
+## Running the tests
+
+```sh
+# Full suite (core module).
+go test ./...
+
+# Fast pass: skips heavy scale sweeps (e2e convergence collapses to a single small scale).
+go test -short ./...
+
+# Chaos benchmark: go-agents passes at-most-once, the naive baseline fails (non-vacuous).
+go test ./chaos -run Verify -v
+
+# Cross-SDK chaos comparison (separate module; keeps competitor deps off the core).
+cd benchmarks && GOWORK=off go test -run Comparison -v
+
+# E2E convergence + traceability at larger scale (gated by wall time).
+E2E_HUGE=1          go test -run TestE2E_ManyAgentsConvergeAndAreTraceable -v   # adds 100k
+E2E_HUGE=million    go test -run TestE2E_ManyAgentsConvergeAndAreTraceable -v   # adds 100k + 1,000,000
+E2E_HUGE=tenmillion go test -run TestE2E_ManyAgentsConvergeAndAreTraceable -v   # adds 10,000,000
+
+# Second trust root: re-certify the anchored policy with the external verified oracle.
+GSM_AST_CHECKER=/path/to/checker go test ./govern -run TestAttestedEventTool_RealPolicyDigest -v
+```
+
+There is no `Makefile` in this repository; the `go test` invocations above are the interface.
