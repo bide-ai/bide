@@ -235,6 +235,9 @@ Before a non-idempotent side effect the loop records a durable *attempt marker*,
 resume can tell "never ran" (safe to run) from "ran and crashed" (halt) — precisely, not
 conservatively.
 
+`WithMaxTurns(n)` caps model turns per run so a model that keeps calling tools can't loop forever
+— hitting it returns `ErrMaxTurns` (which is `errors.Is` `ErrBudget`).
+
 ## Human-in-the-loop
 
 Two flavors. **Approve/deny** — a tool marked `RequiresApproval` pauses *before* running; the

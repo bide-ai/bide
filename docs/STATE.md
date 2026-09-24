@@ -93,6 +93,11 @@ gsm federation capability reaches the agent tier for free on a version bump:
   (`agent.Temperature(0)`, `agent.MaxTokens(500)`, …); both adapters translate to wire format
   (OpenAI `stop`/`seed`; Anthropic `stop_sequences`, no seed). Closed our own `model.go` TODO =
   AgenticGoKit #143.
+- **Max-turns safety** (`Agent.WithMaxTurns(n)`): caps model turns per run so a model that keeps
+  calling tools can't loop forever; hitting it returns `ErrMaxTurns` (wraps `ErrBudget`). Per run
+  (per `Session.Send` turn). Counts replayed turns too (a resumed run past the cap stops at once).
+  = trpc's "Call Count Limits" safety mechanism; a real hole in our loop (TokenBudget was the only,
+  indirect guard). `cloneWith` carries it.
 - **Sessions / multi-turn** (`session.go`): `Agent.Session(ctx, id) *Session`; `Session.Send(ctx,
   input)` is one durable turn seeded with the transcript so far (agent remembers prior turns).
   Transcript journaled turn-by-turn under `<id>` (StepValue `turn/N` = {input, answer}); turn N runs

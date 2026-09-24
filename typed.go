@@ -97,6 +97,7 @@ func (a *Agent) cloneWith(extra Tool, mw ...Middleware) *Agent {
 		toolMW:       append([]ToolMiddleware(nil), a.toolMW...),
 		sampling:     a.sampling,
 		maxConc:      a.maxConc,
+		maxTurns:     a.maxTurns,
 		systemPrompt: a.systemPrompt,
 	}
 }

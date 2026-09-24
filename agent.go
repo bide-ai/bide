@@ -46,6 +46,7 @@ type Agent struct {
 	toolMW       []ToolMiddleware
 	sampling     Sampling // generation controls applied to every model call
 	maxConc      int      // max concurrent tool calls per turn; 0 = unbounded (default)
+	maxTurns     int      // max model turns per run; 0 = unbounded (default)
 	systemPrompt string   // optional system message prepended to every model call
 }
 
@@ -99,6 +100,15 @@ func New(model Model, store Durable, tools ...Tool) *Agent {
 // agent for chaining.
 func (a *Agent) Use(mw ...Middleware) *Agent {
 	a.mw = append(a.mw, mw...)
+	return a
+}
+
+// WithMaxTurns caps the number of model turns a single run may take, so a model that
+// keeps calling tools can't loop forever. n <= 0 means unbounded (the default). When the
+// cap is reached the run returns ErrMaxTurns (category ErrBudget). Returns the agent for
+// chaining. The cap is per run (per Session.Send turn), not per session.
+func (a *Agent) WithMaxTurns(n int) *Agent {
+	a.maxTurns = n
 	return a
 }
 
@@ -222,6 +232,12 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 		if n := len(msgs); n > 0 && msgs[n-1].Role == RoleAssistant && pending(msgs[n-1], done) {
 			asst = msgs[n-1]
 		} else {
+			// Safety valve: cap model turns so a model that keeps calling tools can't loop
+			// forever. modelSeq counts turns including replayed ones, so a resumed run that
+			// already hit the cap stops immediately.
+			if a.maxTurns > 0 && modelSeq >= a.maxTurns {
+				return Message{}, totalUsage, liveTurns, fmt.Errorf("run %s: %w (%d turns)", runID, ErrMaxTurns, modelSeq)
+			}
 			fire(TurnStarted{Seq: modelSeq})
 			// Install the token sink so a live (non-replayed) model call forwards its
 			// deltas as ModelEvents. On memoized replay store.Do skips the fn, so no

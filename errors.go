@@ -47,6 +47,7 @@ var (
 	ErrNoRecordedOutput  = fmt.Errorf("no recorded model output: %w", ErrModel)
 	ErrTruncatedToolArgs = fmt.Errorf("truncated tool-call arguments: %w", ErrProtocol)
 	ErrBudgetExceeded    = fmt.Errorf("budget exceeded: %w", ErrBudget)
+	ErrMaxTurns          = fmt.Errorf("max turns exceeded: %w", ErrBudget)
 )
 
 // RateLimited is returned by a provider adapter when it receives HTTP 429. It
