@@ -10,6 +10,7 @@
 package schema
 
 import (
+	"encoding"
 	"encoding/json"
 	"reflect"
 	"sort"
@@ -17,12 +18,30 @@ import (
 	"time"
 )
 
-var timeType = reflect.TypeOf(time.Time{})
+var (
+	timeType       = reflect.TypeOf(time.Time{})
+	rawMessageType = reflect.TypeOf(json.RawMessage{})
+	textMarshaler  = reflect.TypeOf((*encoding.TextMarshaler)(nil)).Elem()
+	jsonMarshaler  = reflect.TypeOf((*json.Marshaler)(nil)).Elem()
+)
+
+// implements reports whether t or *t satisfies the interface iface.
+func implements(t, iface reflect.Type) bool {
+	return t.Implements(iface) || reflect.PointerTo(t).Implements(iface)
+}
 
 // For derives an inline JSON Schema from Go type T's exported fields. Nested structs
 // are inlined (no $ref/$defs). Field names + optionality come from the `json` tag (a
 // field is required unless it is a pointer or its json tag has ",omitempty");
 // descriptions come from the `desc` tag.
+//
+// It mirrors encoding/json's actual marshaling: embedded structs are flattened
+// (promoted) into the parent; []byte is a base64 string but a byte array is a JSON
+// number array; time.Time is a date-time string; json.RawMessage and interface{} are
+// unconstrained. A type with a custom marshaler is not reflected field-by-field
+// (reflection can't see the custom shape): encoding.TextMarshaler → string, any other
+// json.Marshaler → unconstrained. Deeply-nested embedding-conflict resolution is not
+// fully modeled (the common shallow-shadows-deep case is).
 func For[T any]() (json.RawMessage, error) {
 	s := reflectSchema(reflect.TypeFor[T](), map[reflect.Type]bool{})
 	return json.Marshal(s)
@@ -32,8 +51,18 @@ func reflectSchema(t reflect.Type, seen map[reflect.Type]bool) map[string]any {
 	for t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
-	if t == timeType {
+	// Types with custom JSON marshaling can't be inferred from their fields. Handle the
+	// common ones precisely, then fall back: TextMarshaler always emits a JSON string;
+	// any other json.Marshaler emits a shape we can't see, so leave it unconstrained.
+	switch {
+	case t == timeType:
 		return map[string]any{"type": "string", "format": "date-time"}
+	case t == rawMessageType:
+		return map[string]any{} // json.RawMessage is arbitrary JSON
+	case implements(t, textMarshaler):
+		return map[string]any{"type": "string"}
+	case implements(t, jsonMarshaler):
+		return map[string]any{}
 	}
 	switch t.Kind() {
 	case reflect.String:
@@ -45,10 +74,13 @@ func reflectSchema(t reflect.Type, seen map[reflect.Type]bool) map[string]any {
 		return map[string]any{"type": "integer"}
 	case reflect.Float32, reflect.Float64:
 		return map[string]any{"type": "number"}
-	case reflect.Slice, reflect.Array:
+	case reflect.Slice:
 		if t.Elem().Kind() == reflect.Uint8 { // []byte → base64 string in JSON
 			return map[string]any{"type": "string"}
 		}
+		return map[string]any{"type": "array", "items": reflectSchema(t.Elem(), seen)}
+	case reflect.Array:
+		// A byte ARRAY (unlike a []byte SLICE) marshals as a JSON array of numbers.
 		return map[string]any{"type": "array", "items": reflectSchema(t.Elem(), seen)}
 	case reflect.Map:
 		return map[string]any{"type": "object", "additionalProperties": reflectSchema(t.Elem(), seen)}
@@ -60,9 +92,36 @@ func reflectSchema(t reflect.Type, seen map[reflect.Type]bool) map[string]any {
 		defer delete(seen, t)
 
 		props := map[string]any{}
-		var required []string
+		required := map[string]bool{}
 		for i := 0; i < t.NumField(); i++ {
 			f := t.Field(i)
+			jsonTag := f.Tag.Get("json")
+
+			// encoding/json PROMOTES the exported fields of an embedded struct (no json
+			// tag) into the parent object; mirror that by inlining its schema. A tagged
+			// embedded field is a normal named field (nested), not promoted.
+			if f.Anonymous && jsonTag == "" {
+				et := f.Type
+				for et.Kind() == reflect.Pointer {
+					et = et.Elem()
+				}
+				if et.Kind() == reflect.Struct {
+					sub := reflectSchema(f.Type, seen)
+					subReq := toSet(sub["required"])
+					if sp, ok := sub["properties"].(map[string]any); ok {
+						for k, v := range sp {
+							if _, exists := props[k]; !exists { // shallower (outer) field wins
+								props[k] = v
+								if subReq[k] {
+									required[k] = true
+								}
+							}
+						}
+					}
+					continue
+				}
+			}
+
 			if !f.IsExported() {
 				continue
 			}
@@ -74,20 +133,42 @@ func reflectSchema(t reflect.Type, seen map[reflect.Type]bool) map[string]any {
 			if d := f.Tag.Get("desc"); d != "" {
 				fs["description"] = d
 			}
-			props[name] = fs
+			props[name] = fs // an explicit field shadows any promoted one of the same name
 			if !omitempty && f.Type.Kind() != reflect.Pointer {
-				required = append(required, name)
+				required[name] = true
+			} else {
+				delete(required, name)
 			}
 		}
 		out := map[string]any{"type": "object", "properties": props}
 		if len(required) > 0 {
-			sort.Strings(required)
-			out["required"] = required
+			out["required"] = sortedKeys(required)
 		}
 		return out
 	default: // interface{}, chan, func, etc. → unconstrained
 		return map[string]any{}
 	}
+}
+
+// toSet reads a []string (a schema's "required" list) into a lookup set.
+func toSet(v any) map[string]bool {
+	m := map[string]bool{}
+	if s, ok := v.([]string); ok {
+		for _, k := range s {
+			m[k] = true
+		}
+	}
+	return m
+}
+
+// sortedKeys returns a set's keys in sorted order (deterministic schema output).
+func sortedKeys(m map[string]bool) []string {
+	ks := make([]string, 0, len(m))
+	for k := range m {
+		ks = append(ks, k)
+	}
+	sort.Strings(ks)
+	return ks
 }
 
 func jsonField(f reflect.StructField) (name string, omitempty bool) {
