@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 
 	agent "github.com/dayna/go-agents"
 	"github.com/dayna/go-agents/audit"
@@ -49,6 +50,10 @@ func main() {
 		verifyGovernance(os.Args[2:])
 	case "verify-governed-action":
 		verifyGovernedAction(os.Args[2:])
+	case "prove-absent":
+		proveAbsent(os.Args[2:])
+	case "verify-absent":
+		verifyAbsent(os.Args[2:])
 	default:
 		usage()
 	}
@@ -71,6 +76,13 @@ func usage() {
          verify a governed action end to end: both bundles authentic and in the same
          signed tree, the action's policy digest links to the anchored policy leaf, the
          leaf's bytes hash to that digest, and (with -checker) the policy converges
+
+  prove-absent -journal <file> -sth <file> -key (tool:<id>|policy:<digest>) [-out <file>]
+         prove a thing did NOT happen (no such tool call / no action under that policy)
+         against a signed absence tree head (see audit.SignAbsenceRoot)
+
+  verify-absent -bundle <file> -pubkey <hex|file>
+         verify an absence proof offline; exit 0 if authentic, 1 otherwise
 
 Export a journal for `+"`prove`"+` with: json.Marshal(store.History(ctx, runID)).
 `)
@@ -298,6 +310,79 @@ func verifyGovernedAction(args []string) {
 		os.Exit(1)
 	}
 	fmt.Println("OK: both roots verified: the action ran under an anchored, provably convergent policy")
+}
+
+// absenceSelector maps a CLI -key selector to the KeyFunc and the exact absence key to prove
+// missing. "tool:<id>" proves no tool call with that id happened; "policy:<digest>" proves no
+// governed action ran under that policy.
+func absenceSelector(key string) (audit.KeyFunc, string, error) {
+	switch {
+	case strings.HasPrefix(key, "tool:"):
+		return audit.ToolUseKey, audit.ToolUseKeyFor(strings.TrimPrefix(key, "tool:")), nil
+	case strings.HasPrefix(key, "policy:"):
+		return audit.PolicyUsedKey, audit.PolicyUsedKeyFor(strings.TrimPrefix(key, "policy:")), nil
+	default:
+		return nil, "", fmt.Errorf("key must be tool:<id> or policy:<digest>, got %q", key)
+	}
+}
+
+func proveAbsent(args []string) {
+	fs := flagSet("prove-absent")
+	journal := fs.String("journal", "", "path to the exported journal JSON ([]Record)")
+	sthPath := fs.String("sth", "", "path to the signed absence tree head JSON (see audit.SignAbsenceRoot)")
+	key := fs.String("key", "", "what to prove absent: tool:<id> or policy:<digest>")
+	out := fs.String("out", "", "write the absence bundle here (default: stdout)")
+	_ = fs.Parse(args)
+
+	if *journal == "" || *sthPath == "" || *key == "" {
+		usage()
+	}
+	keyFn, absKey, err := absenceSelector(*key)
+	if err != nil {
+		fatal(err)
+	}
+	var recs []agent.Record
+	readJSON(*journal, &recs)
+	var sth audit.SignedTreeHead
+	readJSON(*sthPath, &sth)
+
+	bundle, err := audit.ProveAbsentBundle(recs, keyFn, absKey, "", sth)
+	if err != nil {
+		fatal(err)
+	}
+	b, _ := json.MarshalIndent(bundle, "", "  ")
+	if *out == "" {
+		fmt.Println(string(b))
+		return
+	}
+	if err := os.WriteFile(*out, b, 0o644); err != nil {
+		fatal(err)
+	}
+	fmt.Fprintf(os.Stderr, "wrote %s\n", *out)
+}
+
+func verifyAbsent(args []string) {
+	fs := flagSet("verify-absent")
+	bundlePath := fs.String("bundle", "", "path to the AbsenceBundle JSON")
+	pubkey := fs.String("pubkey", "", "ed25519 public key as hex, or a path to a file containing it")
+	_ = fs.Parse(args)
+
+	if *bundlePath == "" || *pubkey == "" {
+		usage()
+	}
+	var bundle audit.AbsenceBundle
+	readJSON(*bundlePath, &bundle)
+	pub := readPubKey(*pubkey)
+
+	ok, err := bundle.Verify(pub)
+	if err != nil {
+		fatal(err)
+	}
+	if !ok {
+		fmt.Println("FAIL: absence proof did not verify under this key")
+		os.Exit(1)
+	}
+	fmt.Printf("OK: %q is absent from run %q in a signed key set of size %d\n", bundle.Absence.Key, bundle.RunID, bundle.Absence.Size)
 }
 
 // readPubKey accepts a hex string directly, or a path to a file whose (trimmed) contents are
