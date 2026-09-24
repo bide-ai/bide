@@ -1,46 +1,90 @@
 # go-agents (working codename)
 
-**Durable AI agents for Go that survive a crash — without firing the same side effect twice.**
+**The durable agent runtime for work that must not happen twice.**
 
-The agent loop is ~40 lines. The hard part is what happens when the process dies
-mid-run. Most frameworks either lose the run, or blindly re-run the step that already
-charged the card. This one journals every step, resumes exactly where it left off, and
-**refuses to re-run a write whose outcome it can't verify — it halts and asks instead of
-double-charging.**
+One append-only journal, four guarantees no other agent framework pairs in a single library:
+side effects that fire **at most once**, a **tamper-evident audit trail**, and **provably
+convergent** shared state, all as a **plain-Go library** with no cluster. Built for agents that
+move money, touch records, or act under audit.
 
 Status: **working v0**, live-verified end-to-end. Requires **Go 1.27**.
 
-## Why it's different
+## One journal, four guarantees
 
-Not "another durable agent framework." The differentiators are things you can check:
+Everyone ships an agent loop; ours is ~40 lines. The moat is the substrate underneath it: a
+durable, append-only journal that all four guarantees are *derived from*, so you get them from
+one mechanism instead of integrating four systems.
 
-- **Side-effect-safe resume.** A crash between a payment and its journal entry does **not**
-  re-run the payment. Read-only tools re-run freely; idempotent ones retry; a
-  non-idempotent write whose outcome is unknown **halts for confirmation**. Nobody else
-  does this — the common behavior is at-least-once (double-charge) or "your problem."
-- **A lean core.** A hello-world imports the **standard library only**. No Temporal, no
-  Weaviate, no gRPC dragged into your binary. Enforced by a test (`architecture_test.go`).
-- **Plain Go, not a graph DSL.** You write `if`/`for`/functions; the graph is *derived*
-  from what ran (`RenderMermaid`) for viewing — you never author or debug one.
-- **Claude reasoning survives round-trips.** Extended-thinking signatures are preserved;
-  most SDKs drop them, silently breaking thinking + tool use.
+### 1 · At most once, not at least once (measured, not claimed)
+
+Temporal, DBOS, trpc-agent-go, ADK, eino all resume by **re-running**: activities/steps must be
+idempotent, so a non-idempotent side effect (a charge, an email, a shipment) can fire twice
+across a crash. We built a **fair** crash-injection benchmark ([`chaos/`](chaos), cross-SDK
+results in [`benchmarks/`](benchmarks/README.md)) that drives a non-idempotent `charge` through
+every crash point. The number *is* the product:
+
+```
+go-agents      maxFired=1    ✓ at-most-once held
+trpc-agent-go  maxFired=5    ✗ double-charged
+adk-go         maxFired=4    ✗
+langchaingo    maxFired=64   ✗
+eino           maxFired=64   ✗
+```
+
+`maxFired` is the most times one side effect actually executed. **1 is correct; higher is a
+double-charge.** The competitor adapters are verified *not* to be strawmen (each has a fairness
+test proving its resume genuinely works). The piece none of them have: a durable **attempt
+marker** written before a non-idempotent write, and **halt-on-unknown-outcome** on resume: if a
+write's result was never journaled, the run stops for a human decision instead of guessing.
+
+### 2 · Durable execution as a library, not a cluster
+
+Temporal has the guarantees but needs a server + a worker fleet to operate. Here they come from
+a **store adapter you already run** (SQLite locally, Postgres in prod). A hello-world imports the
+**standard library only**: no Temporal, no gRPC, no vector DB dragged into your binary (enforced
+by `architecture_test.go`). Import it; don't operate it.
+
+### 3 · A tamper-evident audit spine, from the same journal
+
+The journal that makes resume safe *is* the audit record. The [`audit/`](audit) package commits
+to it with **RFC 6962** (Certificate Transparency) Merkle proofs: prove one action happened
+without revealing the rest (inclusion), prove history was only appended (consistency), sign it
+(signed tree head), and continuously anchor it out-of-band (`AuditedStore` → an external
+transparency log). Integrity always; tamper-evidence once anchored. **No other agent framework
+has this at all.** → [docs/AUDIT.md](docs/AUDIT.md)
+
+### 4 · Provably convergent shared state (gsm)
+
+The governed-state tier: multiple processes replaying the same durable log **converge on
+identical state**, backed by the normalization-confluence proof of the **gsm** convergence
+engine: the rewrite system is confluent, so the order steps replay in cannot change the result.
+This is how independent agents share state without a single writer. *(Newest tier; the claim is
+scoped to confluence of the normalization rewrite system, not "agents always agree.")*
+
+### vs. durable-execution and agent runtimes
+
+| | **go-agents** | Temporal / DBOS | ADK · eino · trpc · langchaingo |
+|---|---|---|---|
+| Non-idempotent side effect on crash | **At most once (halts on unknown outcome)** | At least once; activities/steps must be idempotent | At least once; re-runs (**measured 4–64×**) |
+| Deployment | **Library + a DB you already run** | Server + worker fleet | Library |
+| Tamper-evident audit | **RFC 6962 Merkle spine (same journal)** | Not built in | None |
+| Convergent shared state | **Provable (gsm)** | N/A | None |
+
+### The craft underneath
+
+Beyond the four guarantees, the details that make it pleasant to build on:
+
+- **Plain Go, not a graph DSL.** You write `if`/`for`/functions; the graph is *derived* from
+  what ran (`RenderMermaid`) for viewing, never authored or debugged.
+- **Claude reasoning survives round-trips.** Extended-thinking signatures are preserved; most
+  SDKs drop them, silently breaking thinking + tool use.
 - **Provider-aware tool schemas.** One reflected schema, emitted per dialect (OpenAI strict
-  mode, etc.) — not one generic schema that strict mode and Gemini reject.
-- **Any model, one adapter.** Native Claude + any OpenAI-compatible endpoint (OpenAI,
-  Ollama, DeepSeek, Groq, OpenRouter, vLLM, Azure, xAI…) via `WithBaseURL`.
+  mode, etc.), not one generic schema that strict mode and Gemini reject.
+- **Any model, one adapter.** Native Claude + any OpenAI-compatible endpoint (OpenAI, Ollama,
+  DeepSeek, Groq, OpenRouter, vLLM, Azure, xAI…) via `WithBaseURL`.
+- **Multi-node failover.** Any node resumes any run (Postgres); no single-writer lock.
 
-### vs. the typical Go agent framework
-
-| | **go-agents** | Typical framework |
-|---|---|---|
-| Crash mid-write | **Halts — never double-fires** | Blindly re-runs (double-charge), or loses the run |
-| Hello-world deps | **stdlib only** (core) | Often Temporal + Weaviate + gRPC (hundreds of pkgs) |
-| Orchestration | **Plain Go**; graph derived for viewing | A graph/DSL you author *and* debug |
-| Claude reasoning across turns | **Preserved (signatures)** | Dropped → breaks extended thinking |
-| Tool schema | **Per-provider dialects** | One schema → rejected by strict mode / Gemini |
-| Multi-node failover | **Any node resumes any run** (Postgres) | Single-writer lock — no failover |
-
-## The money shot: it won't double-charge
+## Guarantee 1, in code: it won't double-charge
 
 ```go
 // A tool that moves money is a write: not ReadOnly, not Idempotent.
