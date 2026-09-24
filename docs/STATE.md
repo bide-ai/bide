@@ -67,7 +67,15 @@ gsm federation capability reaches the agent tier for free on a version bump:
   wraps a category via a second `%w`. Control-flow stays typed (`errors.As`): `*PendingApproval`,
   `*ResumeHalt`, `*SagaAborted`. (Chose sentinels over a `Kind` enum — `Model`/`Tool` collide
   with the interface type names, and `errors.Is` is the idiomatic fit.)
-- `middleware`: Retry, TokenBudget. `trace`: opt-in OTel gen_ai.* (API only).
+- **Two middleware chains** (`func(Handler) Handler`, mutating + short-circuiting): `Use` wraps
+  the model call (`Middleware`/`ModelHandler`); `UseTool` wraps every tool call
+  (`ToolMiddleware`/`ToolHandler`). Tool middleware runs INSIDE the durable memoized step, so a
+  short-circuit/transformed result is journaled and resume-safe. This is the mutate/short-circuit
+  answer to agent-sdk-go's 8 lifecycle hooks — two real boundaries, not hook-soup; run/turn
+  observation is the `Agent.Stream` event feed.
+- `middleware`: model batteries Retry, TokenBudget; tool batteries `ToolLog`, `ToolCache`.
+  `trace`: opt-in OTel gen_ai.* (API only). Natural next tool battery: `trace.Tool` OTel spans
+  (crosses the sub-agent boundary, which agent-sdk-go's spans do not).
 - `model/anthropic` (native), `model/openai` (any OpenAI-compatible via WithBaseURL).
 - `schema`: reflect→inline JSON schema + OpenAIStrict. `mcp`: official go-sdk; annotations→Safety.
 - `store/sqlite`, `store/postgres` (Durable adapters, single-flight).

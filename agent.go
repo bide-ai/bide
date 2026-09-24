@@ -35,6 +35,7 @@ type Agent struct {
 	tools   map[string]Tool
 	store   Durable
 	mw      []Middleware
+	toolMW  []ToolMiddleware
 	maxConc int // max concurrent tool calls per turn; 0 = unbounded (default)
 }
 
@@ -100,6 +101,7 @@ func (a *Agent) run(ctx context.Context, runID, input string, saga bool, emit fu
 			emit(e)
 		}
 	}
+	toolH := a.toolHandler() // tool-middleware chain, built once for this run
 
 	recs, err := a.store.History(ctx, runID)
 	if err != nil {
@@ -256,7 +258,7 @@ func (a *Agent) run(ctx context.Context, runID, input string, saga bool, emit fu
 				fire(ToolStarted{ToolUseID: c.tu.ID, Name: c.tu.Name, Args: c.tu.Args})
 				var toolCallErr error
 				rec, err := a.store.Do(gctx, runID, c.tu.ID, func(context.Context) (Record, error) {
-					res, callErr := c.t.Call(sctx, c.tu.Args)
+					res, callErr := toolH(sctx, c.tu)
 					r := Record{Kind: StepToolResult, ToolUseID: c.tu.ID}
 					if callErr != nil {
 						if saga {

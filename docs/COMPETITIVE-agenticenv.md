@@ -44,7 +44,10 @@ genuinely ours, verified in their source.**
 - **Observability:** real, well-wired OTel across llm/tool/memory/retriever spans, 30+ metrics,
   no-op defaults. We have none yet. (Their gap: no span propagation across sub-agent boundary.)
 - **Middleware:** true *mutating, short-circuiting* hooks at 8 lifecycle points. Genuinely good.
-  We have none yet.
+  CLOSED: we now have two mutating/short-circuiting `func(Handler) Handler` chains at the two
+  boundaries that matter — model (`Use`) and tool (`UseTool`) — plus the `Agent.Stream` event
+  feed for run/turn observation. One idiom, not 8 bespoke slots; tool middleware runs inside the
+  durable step so short-circuits are journaled. (Their gap remains: no span across sub-agents.)
 - **HITL:** comprehensive tool/MCP/sub-agent/budget approvals with tokens + policies. We have none.
 - **Provider breadth:** 5 providers (OpenAI/Anthropic/Gemini/DeepSeek/Ollama) via official SDKs.
   We have 1 (Anthropic).

@@ -202,12 +202,36 @@ struct for `RunID` / `ToolUseID` / compensation details. Cancellation surfaces a
 
 ## Middleware & observability
 
+Two independent `func(Handler) Handler` chains at the two boundaries that matter — the model
+call (`Use`) and each tool call (`UseTool`). First added = outermost. Both are *mutating and
+short-circuiting*: rewrite what goes in, transform what comes out, or return without calling
+`next`.
+
 ```go
 a := agent.New(model, store, tools...).
-	Use(middleware.Retry(3), middleware.TokenBudget(100_000))
+	Use(middleware.Retry(3), middleware.TokenBudget(100_000)).       // wraps the model call
+	UseTool(middleware.ToolLog(log.Printf), middleware.ToolCache())  // wraps every tool call
 
 // opt-in OTel gen_ai.* spans — the core has no OTel dependency:
 a.Use(trace.Model(tracer, trace.WithSystem("openai"), trace.WithModel("gpt-4o-mini")))
+```
+
+Tool middleware runs *inside* the durable step, so a short-circuit (a `ToolCache` hit) or a
+policy denial is journaled like any tool result — resume replays it and never re-runs the
+middleware or the tool. Write your own with the `agent.ToolMiddleware` signature:
+
+```go
+// Deny a tool by policy — the tool never executes; the model sees the error and reacts.
+func RequireTag(tag string) agent.ToolMiddleware {
+	return func(next agent.ToolHandler) agent.ToolHandler {
+		return func(ctx context.Context, tu agent.ToolUse) (json.RawMessage, error) {
+			if !authorized(ctx, tag) {
+				return nil, fmt.Errorf("tool %q denied: %w", tu.Name, agent.ErrTool)
+			}
+			return next(ctx, tu) // mutate tu.Args before, transform the result after
+		}
+	}
+}
 ```
 
 ## Architecture
