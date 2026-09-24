@@ -107,3 +107,19 @@ accountability story: the durability, governance, and audit all hold under that 
   is not zero-pause. The capital-markets opportunity is the consequential, regulated decision and
   workflow layer around trading (governance, surveillance, reconciliation, audit), not execution
   latency. Chasing "HFT" burns credibility with people who do it for real.
+- **A static, compile-time-typed graph orchestration DSL** (the eino / ADK "compose" model). Agentic
+  control flow is dynamic: the model chooses the next step, which a static DAG fights (ADK had to add
+  a "DynamicNode" to escape its own graph). We keep dynamic routing in plain Go plus sub-agents, and
+  the flow is derived (`RenderMermaid`), not authored. The value in those frameworks is type-checked
+  edges; ours is durable, provable stages, a different and stronger thing for our buyer.
+
+  What IS in scope, and is moat-extending rather than breadth-chasing: **durable, auditable
+  composition primitives** over the journal, because governed/compliance workflows genuinely ARE
+  multi-stage fan-out/fan-in (KYC runs sanctions + credit + fraud in parallel then decides; trade
+  lifecycle, underwriting, claims are the same shape). `Parallel` (durable fan-in: each stage
+  crash-safe, at-most-once, and independently provable via `audit.ProveStep`) ships today; `Sequential`
+  is a trivial `Step` loop; branching/map-reduce helpers get added only when a real workflow needs
+  them. "Run N compliance checks in parallel, each crash-safe and cryptographically provable, then
+  decide under a machine-checked-convergent policy" is a capability eino and ADK structurally cannot
+  match (checkpoints are not durable-at-most-once, and neither has an audit spine). See
+  `examples/compliance` for the worked KYC-shaped flow.
