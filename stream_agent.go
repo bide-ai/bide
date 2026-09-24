@@ -155,7 +155,7 @@ func (a *Agent) stream(ctx context.Context, runID, input string, saga bool) *Age
 		if saga {
 			msg, err = a.runSaga(ctx, runID, input, emit)
 		} else {
-			msg, _, _, err = a.run(ctx, runID, input, false, emit)
+			msg, _, _, err = a.run(ctx, runID, []Message{UserText(input)}, false, emit)
 		}
 		as.result <- agentResult{msg: msg, err: err}
 	}()

@@ -203,6 +203,25 @@ caches prefixes automatically (no flag needed). Either way, cache effectiveness 
 `agent.Usage` — `CacheReadTokens` (served from cache) and `CacheWriteTokens` (written to it) —
 so middleware like `TokenBudget` and cost accounting see the real numbers.
 
+## Sessions (multi-turn)
+
+`Run` is one turn. A `Session` is a durable multi-turn conversation: each `Send` is a full agent
+run (tools, resume, side-effect safety) seeded with the transcript so far, so the agent remembers
+earlier turns.
+
+```go
+s, _ := a.Session(ctx, "user-42")   // reopens + rebuilds the transcript from the store
+a1, _ := s.Send(ctx, "what's the capital of France?")
+a2, _ := s.Send(ctx, "and its population?")   // sees turn 1 in context
+```
+
+The transcript is journaled turn-by-turn under the session id, so a restarted process
+`a.Session(ctx, "user-42")` rebuilds it and continues. Turn N runs under `"<id>/tN"` (its own
+durable journal handles crash-resume *within* a turn); conversational memory is the question/answer
+transcript — a turn's intermediate tool calls stay in that turn and don't leak into later ones. If
+a turn pauses (approval / `Interrupt`), `Send` returns that error; resolve it and call `Send` again
+with the same input to resume.
+
 ## Resume safety, in one table
 
 ```go

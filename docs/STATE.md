@@ -93,6 +93,13 @@ gsm federation capability reaches the agent tier for free on a version bump:
   (`agent.Temperature(0)`, `agent.MaxTokens(500)`, …); both adapters translate to wire format
   (OpenAI `stop`/`seed`; Anthropic `stop_sequences`, no seed). Closed our own `model.go` TODO =
   AgenticGoKit #143.
+- **Sessions / multi-turn** (`session.go`): `Agent.Session(ctx, id) *Session`; `Session.Send(ctx,
+  input)` is one durable turn seeded with the transcript so far (agent remembers prior turns).
+  Transcript journaled turn-by-turn under `<id>` (StepValue `turn/N` = {input, answer}); turn N runs
+  under `<id>/tN` (own journal, in-turn crash resume). Reload from the same store rebuilds the
+  transcript. Tool calls don't leak across turns (memory = Q&A). A paused turn (approval/Interrupt)
+  returns the error; re-Send same input to resume. Core change: `run` now seeds from a `[]Message`
+  instead of `input string` (Run/RunSaga/RunResult/Stream wrap `[]Message{UserText(input)}`).
 - **System prompt** (`Agent.WithSystemPrompt(s)`): seeds a `SystemText` at the head of the
   conversation on every model turn (re-seeded each Run, so resume-consistent); `cloneWith` carries
   it so `RunTyped` preserves it. First-class alternative to injecting a system message via

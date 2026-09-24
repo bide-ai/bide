@@ -114,7 +114,7 @@ func (a *Agent) runSaga(ctx context.Context, runID, input string, emit func(Agen
 		return Message{}, a.rollback(ctx, runID, errors.New(cause))
 	}
 
-	out, _, _, err := a.run(ctx, runID, input, true, emit)
+	out, _, _, err := a.run(ctx, runID, []Message{UserText(input)}, true, emit)
 	var trip *sagaTrip
 	if errors.As(err, &trip) {
 		return Message{}, a.rollback(ctx, runID, trip.cause)
@@ -133,7 +133,7 @@ func (a *Agent) runSagaWithTelemetry(ctx context.Context, runID, input string, e
 		return Message{}, Usage{}, 0, a.rollback(ctx, runID, errors.New(cause))
 	}
 
-	out, usage, turns, err := a.run(ctx, runID, input, true, emit)
+	out, usage, turns, err := a.run(ctx, runID, []Message{UserText(input)}, true, emit)
 	var trip *sagaTrip
 	if errors.As(err, &trip) {
 		return Message{}, Usage{}, 0, a.rollback(ctx, runID, trip.cause)

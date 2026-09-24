@@ -39,7 +39,7 @@ type Result struct {
 // change.
 func (a *Agent) RunResult(ctx context.Context, runID, input string) (*Result, error) {
 	start := time.Now()
-	msg, usage, turns, err := a.run(ctx, runID, input, false, nil)
+	msg, usage, turns, err := a.run(ctx, runID, []Message{UserText(input)}, false, nil)
 	elapsed := time.Since(start)
 	if err != nil {
 		return nil, err

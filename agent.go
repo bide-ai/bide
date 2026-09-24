@@ -136,17 +136,18 @@ func (a *Agent) generate(ctx context.Context, req Request) (Message, Usage, erro
 // are re-run; a non-retry-safe tool with no result triggers ResumeHalt; a tool that
 // requires approval with no recorded decision triggers PendingApproval.
 func (a *Agent) Run(ctx context.Context, runID, input string) (Message, error) {
-	msg, _, _, err := a.run(ctx, runID, input, false, nil)
+	msg, _, _, err := a.run(ctx, runID, []Message{UserText(input)}, false, nil)
 	return msg, err
 }
 
 // run is the single loop shared by Run/RunSaga (emit == nil) and Stream/StreamSaga
-// (emit receives lifecycle events). Durability, resume, and side-effect safety are
-// identical regardless of emit; emitting is best-effort observation layered on top.
+// (emit receives lifecycle events). It drives one durable run seeded with `seed` — the
+// conversation to start from: a single user turn for Run, or the full transcript plus
+// the new user turn for a Session turn. The system prompt, if set, is prepended ahead of
+// the seed. Durability, resume, and side-effect safety are identical regardless of emit.
 // It returns the final message, accumulated token usage across all model turns, the
-// number of model turns executed (live only; replayed turns from the journal are not
-// counted), and any error.
-func (a *Agent) run(ctx context.Context, runID, input string, saga bool, emit func(AgentEvent)) (Message, Usage, int, error) {
+// number of live model turns (replayed journal turns are not counted), and any error.
+func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool, emit func(AgentEvent)) (Message, Usage, int, error) {
 	fire := func(e AgentEvent) {
 		if emit != nil {
 			emit(e)
@@ -163,7 +164,7 @@ func (a *Agent) run(ctx context.Context, runID, input string, saga bool, emit fu
 	if a.systemPrompt != "" {
 		msgs = append(msgs, SystemText(a.systemPrompt))
 	}
-	msgs = append(msgs, UserText(input))
+	msgs = append(msgs, seed...)
 	done := map[string]bool{}      // tool-use IDs with a recorded result
 	attempted := map[string]bool{} // tool-use IDs we recorded an attempt marker for (started a side effect)
 	decided := map[string]bool{}   // tool-use IDs with a recorded approval decision
