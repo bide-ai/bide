@@ -123,7 +123,13 @@ gsm federation capability reaches the agent tier for free on a version bump:
   both paths exercised. (`failTool` name taken → `boomTool`.)
 - **Tamper-evident audit** (`audit/`, moat #4): `audit.Head(ctx, store, runID)` = SHA-256 hash-chain
   commitment over the journal in persisted order (any modify/insert/delete/reorder changes the head);
-  `Sign`/`VerifySignature` (ed25519) to anchor it. Stdlib-only. HONEST model (in the package doc):
+  `Sign`/`VerifySignature` (ed25519) to anchor it. Stdlib-only. **Merkle upgrade** (`audit/merkle.go`):
+  RFC 6962 (Certificate Transparency) `Root`/`Prove`/`VerifyInclusion` for SELECTIVE DISCLOSURE — prove
+  one record is in a committed run via an O(log n) inclusion proof without revealing the others (the
+  compliance superpower: show an auditor one charge, expose nothing else). VERIFIED against the
+  published RFC 6962 test vectors (9 CT reference roots, sizes 0..8, all match) + inclusion round-trips
+  (sizes 1..33) + journal selective-disclosure. Same anchoring caveat as Head. Next: consistency proofs
+  (append-only / transparency-log — prove history was only appended, never rewritten). HONEST model (in the package doc):
   integrity always; tamper-evidence only if the head is anchored out-of-band (a chain in the same DB
   an attacker controls can be rewritten+rehashed). Compliance/enterprise axis (fintech/health). Read
   over persisted order (correct under parallel tools), no core Record change. Next: Merkle root +

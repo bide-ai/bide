@@ -242,6 +242,12 @@ in the same DB an attacker controls can be rewritten and rehashed) — see the p
 compliance/enterprise seam: provable at-most-once side effects *plus* a verifiable record of exactly
 what the agent did.
 
+For **selective disclosure**, `audit.Root` / `Prove` / `VerifyInclusion` build an **RFC 6962**
+(Certificate Transparency) Merkle tree, so you can prove one record is part of a committed run —
+via an O(log n) inclusion proof — *without revealing the other records* (e.g. show an auditor a
+single charge happened, exposing no other customers or prompts). The implementation is checked
+against the published RFC 6962 test vectors.
+
 ## RAG & memory (bring your own)
 
 go-agents ships **no vector store, embedder, or memory backend** — it gives you the *seam* and
