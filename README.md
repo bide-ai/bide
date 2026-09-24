@@ -3,9 +3,10 @@
 **The durable agent runtime for work that must not happen twice.**
 
 One append-only journal, four guarantees no other agent framework pairs in a single library:
-side effects that fire **at most once**, a **tamper-evident audit trail**, and **provably
-convergent** shared state, all as a **plain-Go library** with no cluster. Built for agents that
-move money, touch records, or act under audit.
+side effects that fire **at most once**, a **cryptographically verifiable audit trail** (RFC
+6962 Merkle proofs, verifiable without trusting the vendor), and **provably convergent** shared
+state, all as a **plain-Go library** with no cluster. Built for agents that move money, touch
+records, or act under audit.
 
 Status: **working v0**, live-verified end-to-end. Requires **Go 1.27**.
 
@@ -44,22 +45,34 @@ a **store adapter you already run** (SQLite locally, Postgres in prod). A hello-
 **standard library only**: no Temporal, no gRPC, no vector DB dragged into your binary (enforced
 by `architecture_test.go`). Import it; don't operate it.
 
-### 3 · A tamper-evident audit spine, from the same journal
+### 3 · A cryptographically verifiable audit spine, from the same journal
 
-The journal that makes resume safe *is* the audit record. The [`audit/`](audit) package commits
-to it with **RFC 6962** (Certificate Transparency) Merkle proofs: prove one action happened
-without revealing the rest (inclusion), prove history was only appended (consistency), sign it
-(signed tree head), and continuously anchor it out-of-band (`AuditedStore` → an external
-transparency log). Integrity always; tamper-evidence once anchored. **No other agent framework
-has this at all.** → [docs/AUDIT.md](docs/AUDIT.md)
+The journal that makes resume safe *is* the audit record, and it is committed with the **same
+cryptography Certificate Transparency uses** ([RFC 6962](https://datatracker.ietf.org/doc/html/rfc6962),
+checked against the published reference vectors). The distinction that matters for a regulated
+buyer: this is **verifiable, not merely logged**. A third party checks a proof *without trusting
+you, your database, or your logs*:
+
+- **Inclusion proof**: prove one specific action happened (this charge, this approval) in
+  O(log n), revealing nothing else. Selective disclosure for an auditor.
+- **Consistency proof**: prove the history was only ever appended to, never rewritten or
+  reordered.
+- **Signed tree head + continuous anchoring**: `AuditedStore` signs a commitment per step and
+  publishes it out-of-band to an external transparency log; tampering becomes provable, not just
+  suspected.
+
+Everyone else offers *observability* (logs you trust because the vendor is SOC2). This is a
+*cryptographic proof you verify yourself*. **No other agent framework has this at all.**
+→ [docs/AUDIT.md](docs/AUDIT.md)
 
 ### 4 · Provably convergent shared state (gsm)
 
 The governed-state tier: multiple processes replaying the same durable log **converge on
-identical state**, backed by the normalization-confluence proof of the **gsm** convergence
-engine: the rewrite system is confluent, so the order steps replay in cannot change the result.
-This is how independent agents share state without a single writer. *(Newest tier; the claim is
-scoped to confluence of the normalization rewrite system, not "agents always agree.")*
+identical state**, backed by a **published proof**. The **gsm** convergence engine's
+normalization rewrite system is confluent, so the order steps replay in cannot change the
+result (the [normalization-confluence papers](https://github.com/blackwell-systems/normalization-confluence)).
+This is how independent agents share state without a single writer. The claim is precise:
+*order-independent convergence of the replay*, proven, not "agents always agree."
 
 ### vs. durable-execution and agent runtimes
 
