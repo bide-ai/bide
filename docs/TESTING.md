@@ -226,6 +226,30 @@ Beyond the pillars above, each package carries conventional unit tests:
   prompt caching, rate limiting, sampling, and (OpenAI) response formats.
 - Stores: `store/sqlite/` and `store/postgres/`. Also `schema/`, `trace/`, and `mcp/`.
 
+## Evaluation: statistical, and distinct from the provable layer
+
+The `eval` package answers a different question from the pillars above: "does the model decide
+well?" That cannot be proven, because the model is stochastic, so it is measured. `eval.Run` executes
+labeled cases multiple times, scores each run with rule-based or LLM-judge metrics, and reports a
+pass-rate distribution (`eval.Report`), not a single verdict. Use `Runs > 1`, pin the model version,
+and set temperature 0 for the most reproducible baseline (still not perfectly deterministic).
+
+The boundary is the point, and it is stated in the package doc and repeated here so it is never
+blurred in a claim:
+
+- **eval measures the model, statistically and best-effort.** A pass rate is a signal, not a
+  guarantee. An LLM-as-judge metric is itself a model grading a model, so it too is a signal.
+- **The provable layer is separate.** The governed policy's convergence and invariant enforcement
+  (govern + the gsm proof) bound what the model can do for all inputs; the audit trail proves what it
+  did. Those are machine-checked and cryptographic, not statistical.
+- So the correct posture for a validating buyer (for example under model-risk rules like SR 11-7):
+  the model's judgment is validated statistically here; the guardrails around it are validated
+  deterministically by governance; the record is provable by audit. Never present an eval pass rate
+  as one of the machine-checked guarantees.
+
+`eval.AgentRunner` wraps an agent as an eval `RunFunc` (unique runID per run), so evaluation runs are
+themselves durable and can be replayed and audited like any other run.
+
 ## Methodology
 
 The principles evident across the suite:
