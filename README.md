@@ -580,6 +580,10 @@ tool := govern.EventTool(gov, "pay", "mark the order paid", "pay", agent.Safety{
 - **[docs/EXTENSION-POINTS.md](docs/EXTENSION-POINTS.md)**: the ports and adapters the
   framework is built on (`Model`, `Durable`, `Tool`, `Compensator`, `Retriever`, `Anchor`,
   `EventStore`), with an "implement your own store" walkthrough.
+- **[docs/MESSAGING.md](docs/MESSAGING.md)**: driving an agent from an inbound messenger
+  webhook (Slack, Telegram, WhatsApp, SMS, Discord) without shipping transport code in core:
+  the redelivery-safe idempotency pattern where the durable journal makes a retried webhook
+  replay instead of double-firing a side effect. Runnable in `examples/webhook`.
 - **[docs/TESTING.md](docs/TESTING.md)**: what is tested and how, the chaos crash-injection
   benchmark (fair, not strawman), differential oracle checks, convergence and traceability at
   scale with measured numbers and their bounds, RFC 6962 conformance, the commands to run it,
