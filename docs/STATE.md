@@ -208,11 +208,17 @@ gsm federation capability reaches the agent tier for free on a version bump:
   the digest from the published bytes (no gsm import) and runs the external oracle (`astchecker`) to
   certify convergence; `verify-governed-action` does the whole cross-link end to end. Two independent
   roots of trust (tamper-evident log + external axiom-free-proof oracle) over one artifact, verifiable
-  by someone who trusts neither the producer nor gsm. Shipped and tested (`govern/attested_test.go`,
-  `govern/attested_e2e_test.go`, `audit/policy_test.go`). ROADMAP: absence-backed "no violation was
-  ever admitted," a resulting-state digest per transition, binding (action, policy, state-digest) into
-  one leaf. NOTE: this is not an end-to-end execution proof; the runtime is differentially tested
-  against the verified reference, and the refinement gap is open.
+  by someone who trusts neither the producer nor gsm. The **policy-level negative** is shipped too:
+  governed-action leaves are keyed by policy digest (`audit.PolicyUsedKey`), so `audit.PoliciesUsed`
+  recomputes the set of policies a run used and `audit.ProveAbsentBundle` yields an anchorable,
+  offline-verifiable proof that no governed action ran under a disallowed digest (the negative has
+  teeth: absence of a policy that was actually used cannot be proven). Combined with the approved
+  policies being oracle-certified convergent, that supports "no violation was admitted" as a policy-
+  level claim. Shipped and tested (`govern/attested_test.go`, `govern/attested_e2e_test.go`,
+  `audit/policy_test.go`, `audit/governance_absence_test.go`). ROADMAP: a resulting-state digest per
+  transition, and single-leaf binding of (action, policy, state-digest). NOTE: this is a policy-level
+  negative, not a per-action state-validity proof; the runtime is differentially tested against the
+  verified reference, and the refinement gap is open.
 - **RAG/memory = bring-your-own** (`retrieval.go`, decision in docs/RAG-MEMORY.md): ship NO vector
   store/embedder. Core seam: `Retriever` port (`Retrieve(ctx, query, k) []Doc`), `RetrievalTool`
   (agentic — model searches on demand), `WithRetrieval` middleware (classic — top-k injected as a

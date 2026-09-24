@@ -243,12 +243,32 @@ The CLI does this whole cross-link in one command:
 goagents-audit verify-governed-action -action action.json -policy-bundle policy.json -pubkey <hex> -checker ./astchecker
 ```
 
+### Proving a negative: no action under a disallowed policy
+
+The set of policies a run exercised is itself provable. Governed-action leaves are keyed by their
+policy digest (`audit.PolicyUsedKey`), so the run's absence commitment (`AbsenceRoot`, a Merkle tree
+over the sorted distinct keys with adjacency-checked non-membership) commits exactly the policies
+that were used. An auditor:
+
+1. recomputes the used set with `audit.PoliciesUsed(records)` and confirms every digest is in the
+   approved set (each approved policy having been oracle-certified convergent, as above);
+2. for any digest that is not approved, obtains an anchorable `audit.AbsenceBundle` via
+   `audit.ProveAbsentBundle(records, audit.PolicyUsedKey, audit.PolicyUsedKeyFor(digest), runID, sth)`
+   and verifies it offline with `AbsenceBundle.Verify(pub)`, proving no governed action ran under
+   that policy.
+
+The negative has teeth: the commitment is over the run's actual key set (the STH must commit to the
+`AbsenceRoot` of these records, or `ProveAbsentBundle` refuses), so you cannot prove absence of a
+policy that was in fact used.
+
 Scope, stated precisely: this proves the action ran under a policy that is anchored in the log and
-provably convergent, in a committed, append-only run. It does not prove the runtime's implementation
-refines that policy for all inputs: the runtime is differentially tested against the verified
-reference, so the refinement gap is open and this is not an end-to-end execution proof. Absence-
-proof-backed "no violation was ever admitted," a resulting-state digest per transition, and binding
-(action, policy, state-digest) into a single leaf remain roadmap.
+provably convergent, in a committed, append-only run, and that no governed action ran under a policy
+outside the approved set. Combined with the approved policies being oracle-certified convergent and
+invariant-preserving, that supports "no violation was admitted." It is a policy-level negative, not a
+per-action state-validity proof, and it does not prove the runtime's implementation refines the
+policy for all inputs: the runtime is differentially tested against the verified reference, so the
+refinement gap is open and this is not an end-to-end execution proof. A resulting-state digest per
+transition, and binding (action, policy, state-digest) into a single leaf, remain roadmap.
 
 ## Next
 
