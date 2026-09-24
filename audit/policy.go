@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	agent "github.com/dayna/go-agents"
 )
@@ -58,4 +59,49 @@ func ProvePolicy(ctx context.Context, store agent.Durable, runID, digest string,
 		return ProofBundle{}, fmt.Errorf("audit: no policy leaf for digest %q in run %s", digest, runID)
 	}
 	return ProveRecord(ctx, store, runID, idx, sth)
+}
+
+// policyUsedKeyPrefix namespaces the absence key set to policy digests exercised by governed
+// actions, so it does not collide with other KeyFuncs (e.g. ToolUseKey) over the same run.
+const policyUsedKeyPrefix = "policy_used:"
+
+// PolicyUsedKey is a KeyFunc (see ProveAbsent / ProveAbsentBundle) over governed-action leaves:
+// a completed tool call whose result carries a policy_digest, as govern.AttestedEventTool
+// records. It keys by that digest, so the absence machinery commits the set of policies actually
+// exercised in a run. Proving a digest ABSENT under this KeyFunc shows that no governed action
+// ran under that policy; recomputing AbsenceRoot lists exactly which policies were used, so an
+// auditor can confirm every one is in the approved set.
+//
+// Scope: this is a policy-level negative ("no action ran under a disallowed policy"), which,
+// combined with the approved policies being oracle-certified convergent and invariant-preserving,
+// supports "no violation was admitted". It is not a per-action state-validity proof (a
+// per-transition state digest is roadmap), and it does not close the runtime refinement gap: the
+// runtime is differentially tested against the verified reference, not proven equal to it.
+func PolicyUsedKey(r agent.Record) (string, bool) {
+	if r.Kind != agent.StepToolResult || len(r.Result) == 0 {
+		return "", false
+	}
+	var payload struct {
+		PolicyDigest string `json:"policy_digest"`
+	}
+	if err := json.Unmarshal(r.Result, &payload); err != nil || payload.PolicyDigest == "" {
+		return "", false
+	}
+	return policyUsedKeyPrefix + payload.PolicyDigest, true
+}
+
+// PolicyUsedKeyFor is the absence key for a specific policy digest: pass it to ProveAbsent /
+// ProveAbsentBundle with PolicyUsedKey to prove no governed action ran under that policy.
+func PolicyUsedKeyFor(digest string) string { return policyUsedKeyPrefix + digest }
+
+// PoliciesUsed returns the sorted, distinct policy digests exercised by governed actions in the
+// run. An auditor compares this against the approved set; for any disallowed digest it then
+// obtains an absence proof (ProveAbsentBundle with PolicyUsedKey) showing no action ran under it.
+func PoliciesUsed(records []agent.Record) []string {
+	keys := absenceKeys(records, PolicyUsedKey)
+	out := make([]string, len(keys))
+	for i, k := range keys {
+		out[i] = strings.TrimPrefix(k, policyUsedKeyPrefix)
+	}
+	return out
 }
