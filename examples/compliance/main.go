@@ -77,6 +77,20 @@ func main() {
 		panic(fmt.Sprintf("build: %v\n%s", err, rep))
 	}
 	policyDigest, _ := r.PolicyDigest()
+	policyBytes, _ := r.PolicyBytes()
+
+	// Carry gsm's build-time convergence proof across as a portable certificate, and anchor both
+	// the policy and the certificate as journal leaves so a verifier can later prove, from the
+	// signed tree alone, that the anchored policy was certified convergent (not merely used).
+	cert := govern.CertifyConvergence(rep, policyDigest)
+	fmt.Printf("\n%s\n", cert.String())
+	if _, err := audit.RecordPolicy(ctx, store, runID, policyBytes, policyDigest); err != nil {
+		panic(err)
+	}
+	certBytes, _ := cert.Marshal()
+	if _, err := audit.RecordConvergence(ctx, store, runID, certBytes, policyDigest); err != nil {
+		panic(err)
+	}
 
 	gov := govern.New(m, m.NewState())
 	// The case is submitted for approval; a failed check flags it. Order does not matter.
@@ -124,6 +138,18 @@ func main() {
 		}
 		fmt.Printf("  %-20s inclusion proof verified: %v\n", name, ok)
 	}
+	// The convergence certificate is provable from the same signed tree: a verifier confirms the
+	// anchored policy was certified convergent, in the same committed tree as the actions.
+	cb, err := audit.ProveConvergence(ctx, store, runID, policyDigest, sth)
+	if err != nil {
+		panic(err)
+	}
+	ok, err := cb.Verify(pub)
+	if err != nil {
+		panic(err)
+	}
+	fmt.Printf("  %-20s inclusion proof verified: %v\n", "convergence_cert", ok)
+
 	fmt.Println("\nEvery check ran durably (at-most-once on resume), the decision was governed by a")
 	fmt.Println("machine-checked-convergent policy, and every stage is provable to a third party.")
 }

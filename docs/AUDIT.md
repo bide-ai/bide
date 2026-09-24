@@ -245,6 +245,30 @@ The CLI does this whole cross-link in one command:
 goagents-audit verify-governed-action -action action.json -policy-bundle policy.json -pubkey <hex> -checker ./astchecker
 ```
 
+### Anchoring the convergence proof itself
+
+`gsm.Registry.Build` proves convergence exhaustively at build time (WFC over every repair chain, CC
+over every independent event pair across the enumerated state space) and returns a `Report`.
+`govern.CertifyConvergence(report, digest)` carries that result across as a portable
+`ConfluenceCertificate`: the WFC and CC verdicts, the longest compensation chain, the number of
+pairs checked, the state count, and a `CompensationFree` flag. That flag is the CRDT.v subsumption
+result made visible: CRDTs are exactly the compensation-free fragment, so `MaxRepairLen == 0` marks
+a machine that needs no coordinator, while a positive value marks a compensation-bearing policy that
+is strictly more expressive than any CRDT. `audit.RecordConvergence` anchors the certificate as a
+leaf keyed by the same policy digest, and `audit.ProveConvergence` proves it, so the convergence
+evidence rides the same signed tree head and inclusion proofs as the policy and the actions. audit
+keeps the certificate opaque, exactly as it does the policy digest: it imports no `gsm`.
+
+The certificate is a producer claim, so the verifier does not trust it: `verify-convergence`
+re-establishes convergence from the disclosed policy bytes with the external oracle and fails if the
+oracle disagrees with the certificate, so a certificate that overstates convergence is caught.
+
+```
+# both bundles authentic and in the same signed tree, the certificate certifies the anchored
+# policy's digest, the leaf's bytes hash to it, and the oracle's verdict agrees with the certificate:
+goagents-audit verify-convergence -cert-bundle cert.json -policy-bundle policy.json -pubkey <hex> -checker ./astchecker
+```
+
 ### Binding the resulting state, and checking it by replay
 
 Each governed leaf also commits the `state_digest` the action produced (`gsm.State.Digest`, a stable

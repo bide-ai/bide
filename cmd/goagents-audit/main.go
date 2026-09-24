@@ -50,6 +50,8 @@ func main() {
 		verifyGovernance(os.Args[2:])
 	case "verify-governed-action":
 		verifyGovernedAction(os.Args[2:])
+	case "verify-convergence":
+		verifyConvergence(os.Args[2:])
 	case "prove-absent":
 		proveAbsent(os.Args[2:])
 	case "verify-absent":
@@ -76,6 +78,12 @@ func usage() {
          verify a governed action end to end: both bundles authentic and in the same
          signed tree, the action's policy digest links to the anchored policy leaf, the
          leaf's bytes hash to that digest, and (with -checker) the policy converges
+
+  verify-convergence -cert-bundle <bundle> -policy-bundle <bundle> -pubkey <hex|file> [-checker <astchecker>]
+         verify an anchored convergence certificate: both bundles authentic and in the same
+         signed tree, the certificate certifies the anchored policy's digest, the leaf's bytes
+         hash to that digest, and (with -checker) the external oracle's verdict AGREES with the
+         certificate's convergence claim, so a certificate that overstates convergence is caught
 
   prove-absent -journal <file> -sth <file> -key (tool:<id>|policy:<digest>) [-out <file>]
          prove a thing did NOT happen (no such tool call / no action under that policy)
@@ -310,6 +318,125 @@ func verifyGovernedAction(args []string) {
 		os.Exit(1)
 	}
 	fmt.Println("OK: both roots verified: the action ran under an anchored, provably convergent policy")
+}
+
+// verifyConvergence verifies an anchored convergence certificate from public artifacts alone, and
+// crucially does NOT trust the certificate's convergence claim: it re-establishes convergence from
+// the disclosed policy bytes using the external verified oracle and fails if the oracle's verdict
+// disagrees with the certificate. So a certificate that overstates convergence (a producer bug or
+// a forgery) is caught here, outside the trust boundary. Steps: (1) both bundles authentic under
+// the out-of-band key, (2) in the same signed tree, (3) the certificate certifies the same digest
+// the policy leaf carries, (4) the policy leaf's bytes hash to that digest, (5) with -checker, the
+// oracle's convergence verdict on those bytes AGREES with the certificate. The certificate's CRDT
+// classification is surfaced but noted as producer-reported: the oracle certifies convergence, not
+// the compensation-free refinement.
+func verifyConvergence(args []string) {
+	fs := flagSet("verify-convergence")
+	certPath := fs.String("cert-bundle", "", "path to the convergence-leaf ProofBundle JSON (from ProveConvergence)")
+	policyPath := fs.String("policy-bundle", "", "path to the policy-leaf ProofBundle JSON (from ProvePolicy)")
+	pubkey := fs.String("pubkey", "", "ed25519 public key as hex, or a path to a file containing it")
+	checker := fs.String("checker", "", "path to the external verified oracle (astchecker); if set, its verdict must agree with the certificate")
+	_ = fs.Parse(args)
+
+	if *certPath == "" || *policyPath == "" || *pubkey == "" {
+		usage()
+	}
+	var certBundle, policy audit.ProofBundle
+	readJSON(*certPath, &certBundle)
+	readJSON(*policyPath, &policy)
+	pub := readPubKey(*pubkey)
+
+	// (1) both bundles authentic under the out-of-band key.
+	if ok, err := certBundle.Verify(pub); err != nil {
+		fatal(err)
+	} else if !ok {
+		fmt.Println("FAIL: certificate bundle did not verify under this key")
+		os.Exit(1)
+	}
+	if ok, err := policy.Verify(pub); err != nil {
+		fatal(err)
+	} else if !ok {
+		fmt.Println("FAIL: policy bundle did not verify under this key")
+		os.Exit(1)
+	}
+
+	// (2) same signed tree.
+	if certBundle.STH.Size != policy.STH.Size || string(certBundle.STH.Root) != string(policy.STH.Root) {
+		fmt.Println("FAIL: the certificate and policy are not committed in the same signed tree")
+		os.Exit(1)
+	}
+
+	// (3) the certificate certifies the same digest the policy leaf carries. The certificate is
+	// decoded into a local struct so the CLI imports neither gsm nor govern.
+	var cc audit.ConvergenceContent
+	if err := json.Unmarshal(certBundle.Record.Result, &cc); err != nil {
+		fatal(fmt.Errorf("certificate bundle is not a convergence leaf: %w", err))
+	}
+	var pc audit.PolicyContent
+	if err := json.Unmarshal(policy.Record.Result, &pc); err != nil {
+		fatal(fmt.Errorf("policy bundle is not a policy leaf: %w", err))
+	}
+	if cc.Digest == "" || cc.Digest != pc.Digest {
+		fmt.Printf("FAIL: certificate digest %q does not link to the anchored policy leaf %q\n", cc.Digest, pc.Digest)
+		os.Exit(1)
+	}
+
+	// (4) the leaf's bytes actually hash to that digest (recomputed independently of gsm).
+	h := sha256.New()
+	h.Write([]byte(policyFormatVersion + "\n"))
+	h.Write([]byte(pc.Policy))
+	if recomputed := hex.EncodeToString(h.Sum(nil)); recomputed != pc.Digest {
+		fmt.Printf("FAIL: policy leaf lies about its digest (bytes hash to %s, leaf claims %s)\n", recomputed, pc.Digest)
+		os.Exit(1)
+	}
+
+	var cert struct {
+		Machine          string `json:"machine"`
+		Converges        bool   `json:"converges"`
+		MaxRepairLen     int    `json:"max_repair_len"`
+		States           int    `json:"states"`
+		CompensationFree bool   `json:"compensation_free"`
+	}
+	if err := json.Unmarshal(cc.Certificate, &cert); err != nil {
+		fatal(fmt.Errorf("convergence certificate payload: %w", err))
+	}
+	fragment := "governed (compensation-bearing)"
+	if cert.CompensationFree {
+		fragment = "CRDT (compensation-free fragment)"
+	}
+	fmt.Printf("certificate: machine %q claims converges=%v, %s, checked over %d states (max repair depth %d)\n",
+		cert.Machine, cert.Converges, fragment, cert.States, cert.MaxRepairLen)
+	fmt.Printf("OK: certificate anchored for policy %s in a signed tree of size %d\n", pc.Digest, certBundle.STH.Size)
+
+	// (5) the independent root: the oracle's verdict must AGREE with the certificate's claim.
+	if *checker == "" {
+		fmt.Println("OK: cryptographic root verified. Pass -checker <astchecker> to cross-check the convergence claim against the oracle.")
+		return
+	}
+	tmp, err := os.CreateTemp("", "policy-*.machine")
+	if err != nil {
+		fatal(err)
+	}
+	defer os.Remove(tmp.Name())
+	if _, err := tmp.WriteString(pc.Policy); err != nil {
+		fatal(err)
+	}
+	_ = tmp.Close()
+	out, runErr := exec.Command(*checker, tmp.Name()).CombinedOutput()
+	fmt.Printf("oracle: %s", out)
+	if len(out) > 0 && out[len(out)-1] != '\n' {
+		fmt.Println()
+	}
+	oracleConverges := runErr == nil
+	if oracleConverges != cert.Converges {
+		fmt.Printf("FAIL: certificate claims converges=%v but the verified oracle says converges=%v\n", cert.Converges, oracleConverges)
+		os.Exit(1)
+	}
+	if !cert.Converges {
+		fmt.Println("FAIL: the certificate and the oracle agree the policy does NOT converge; do not deploy it")
+		os.Exit(1)
+	}
+	fmt.Println("OK: the verified oracle's verdict agrees with the certificate: the anchored policy provably converges")
 }
 
 // absenceSelector maps a CLI -key selector to the KeyFunc and the exact absence key to prove
