@@ -120,8 +120,15 @@ gsm federation capability reaches the agent tier for free on a version bump:
   PASSES (maxFired=1); `NaiveReference()` at-least-once baseline FAILS (maxFired=5, ~240 double-fires) —
   proving the harness non-vacuous. Runnable: `go run ./examples/chaosbench`. Point at any SDK via the
   `System`/`Run` interface; competitor adapters go in a SEPARATE module (keep their deps out of core);
-  adapters must be FAIR (represent the SDK's best-effort durability, not a strawman). Next: wire ADK-Go /
-  trpc-agent-go / langchaingo adapters.
+  adapters must be FAIR (represent the SDK's best-effort durability, not a strawman).
+  **First competitor wired: trpc-agent-go** (`benchmarks/` — SEPARATE module, own go.mod, trpc's ~80
+  deps isolated from core; run `cd benchmarks && GOWORK=off go test -run Comparison -v`). RESULT:
+  go-agents maxFired=1 PASS; **trpc-agent-go maxFired=5 FAIL (70 double-fires)**; naive maxFired=5 FAIL.
+  The trpc finding is FAIR — `fairness_test.go` proves resuming a COMPLETE run is a no-op (its
+  checkpoint/resume genuinely works); the double-fires are the documented LangGraph "nodes must be
+  idempotent" window (crash between the side-effect node and its checkpoint persisting → resume
+  re-runs it), which go-agents' attempt-marker/halt closes. ADK-Go finding: no checkpoint layer at all
+  (weaker fit; models "re-invoke re-runs everything"). benchmarks not in go.work/CI (heavy deps).
   **Saga DST** (`saga_dst_test.go`): extends the proof to reverse-order compensation. Honest split —
   forward non-idempotent effect is at-most-once (halt on unknown); compensators are at-LEAST-once
   (memoized → once if they complete, but a crash mid-compensation re-runs them, the documented

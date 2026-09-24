@@ -297,8 +297,12 @@ conservatively.
 This is **proven, not asserted.** `dst_test.go` is a deterministic simulation test: a
 fault-injecting store crashes at *every* write point (and across hundreds of randomized
 multi-crash schedules), and the harness asserts a non-idempotent side effect fires **at most
-once** every time, with the run always ending completed or halted — never double-firing. (Point
-the same harness at a naive at-least-once loop and it fails immediately.)
+once** every time, with the run always ending completed or halted — never double-firing.
+
+The harness is exported (`chaos/`) and pointed at other SDKs in `benchmarks/`. The measured result:
+**go-agents `maxFired=1` (PASS); trpc-agent-go `maxFired=5` (FAIL, 70 double-fires).** trpc's
+checkpoint/resume genuinely works (verified — resuming a completed run is a no-op); its double-fire
+is the documented LangGraph "nodes must be idempotent" window, which go-agents' attempt-marker closes.
 
 `WithMaxTurns(n)` caps model turns per run so a model that keeps calling tools can't loop forever
 — hitting it returns `ErrMaxTurns` (which is `errors.Is` `ErrBudget`).
