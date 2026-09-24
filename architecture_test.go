@@ -21,9 +21,9 @@ func TestCoreHasNoAdapterImports(t *testing.T) {
 	deps := string(out)
 
 	forbidden := []string{
-		"dayna/go-agents/model/",  // provider adapters
-		"dayna/go-agents/store/",  // persistence adapters
-		"dayna/go-agents/trace",   // OTel adapter
+		"dayna/go-agents/model/", // provider adapters
+		"dayna/go-agents/store/", // persistence adapters
+		"dayna/go-agents/trace",  // OTel adapter
 		"dayna/go-agents/middleware",
 		"dayna/go-agents/govern", // gsm-backed governor (Tier-2 edge)
 	}

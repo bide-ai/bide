@@ -114,7 +114,9 @@ gsm federation capability reaches the agent tier for free on a version bump:
 - Symbolic verification (SAT/SMT) to break the ~1M-state enumeration ceiling; infinite-domain
   engine (overlaps with symbolic). Self-stabilization reframing (cheap positioning win).
 - v1 agent gaps: sessions/multi-turn, production retry (backoff). (`Agent.Stream` — DONE.)
-- Housekeeping: pick a real name; go-agents CI; godoc examples; per-file SPDX headers (optional).
+- Housekeeping: pick a real name; godoc examples; per-file SPDX headers (optional).
+  (go-agents CI — DONE: `.github/workflows/ci.yml`, lint [gofmt + vet] + test matrix
+  ubuntu/macos/windows on Go 1.27, `-race` off Windows; repo gofmt-clean.)
 
 ## Notes
 - gsm module path is `github.com/blackwell-systems/gsm`; go-agents module path is the

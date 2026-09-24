@@ -12,8 +12,8 @@ import (
 	"fmt"
 
 	agent "github.com/dayna/go-agents"
-	"golang.org/x/sync/singleflight"
 	_ "github.com/jackc/pgx/v5/stdlib"
+	"golang.org/x/sync/singleflight"
 )
 
 // Store is a Postgres-backed agent.Durable.

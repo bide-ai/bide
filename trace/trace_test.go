@@ -55,10 +55,10 @@ func TestModel_EmitsGenAIChatSpan(t *testing.T) {
 
 type fakeTool struct{}
 
-func (fakeTool) Name() string                      { return "lookup" }
-func (fakeTool) Description() string                { return "" }
-func (fakeTool) Safety() agent.Safety               { return agent.Safety{} }
-func (fakeTool) ArgsSchema() json.RawMessage        { return nil }
+func (fakeTool) Name() string                { return "lookup" }
+func (fakeTool) Description() string         { return "" }
+func (fakeTool) Safety() agent.Safety        { return agent.Safety{} }
+func (fakeTool) ArgsSchema() json.RawMessage { return nil }
 func (fakeTool) Call(context.Context, json.RawMessage) (json.RawMessage, error) {
 	return json.RawMessage(`{}`), nil
 }

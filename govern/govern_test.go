@@ -7,8 +7,8 @@ import (
 	"sync"
 	"testing"
 
-	agent "github.com/dayna/go-agents"
 	gsm "github.com/blackwell-systems/gsm"
+	agent "github.com/dayna/go-agents"
 )
 
 // --- minimal scripted model to drive real agent.Agent loops in these tests ---
@@ -76,7 +76,9 @@ func buildOrderMachine(t *testing.T) (*gsm.Machine, orderVars) {
 	r.Event("ship_item").
 		Writes(v.status, v.inventory).
 		Guard(func(s gsm.State) bool { return s.Get(v.status) == "paid" && s.GetInt(v.inventory) > 0 }).
-		Apply(func(s gsm.State) gsm.State { return s.Set(v.status, "shipped").SetInt(v.inventory, s.GetInt(v.inventory)-1) }).
+		Apply(func(s gsm.State) gsm.State {
+			return s.Set(v.status, "shipped").SetInt(v.inventory, s.GetInt(v.inventory)-1)
+		}).
 		Add()
 	r.Event("restock").
 		Writes(v.inventory).

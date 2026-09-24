@@ -17,8 +17,8 @@ import (
 	"context"
 	"sync"
 
-	agent "github.com/dayna/go-agents"
 	gsm "github.com/blackwell-systems/gsm"
+	agent "github.com/dayna/go-agents"
 )
 
 // Applier applies a named governed event to shared state, returning the new normal form.

@@ -64,7 +64,7 @@ type funcTool[In, Out any] struct {
 	fn                func(context.Context, In) (Out, error)
 }
 
-func (t *funcTool[In, Out]) Name() string               { return t.name }
+func (t *funcTool[In, Out]) Name() string                { return t.name }
 func (t *funcTool[In, Out]) Description() string         { return t.description }
 func (t *funcTool[In, Out]) Safety() Safety              { return t.safety }
 func (t *funcTool[In, Out]) ArgsSchema() json.RawMessage { return t.argsSchema }

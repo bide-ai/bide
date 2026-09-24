@@ -35,9 +35,9 @@ var _ agent.Model = (*Model)(nil) // port/adapter contract
 
 type Option func(*Model)
 
-func WithModel(id string) Option          { return func(m *Model) { m.model = id } }
-func WithMaxTokens(n int) Option          { return func(m *Model) { m.maxTokens = n } }
-func WithBaseURL(u string) Option         { return func(m *Model) { m.baseURL = u } }
+func WithModel(id string) Option           { return func(m *Model) { m.model = id } }
+func WithMaxTokens(n int) Option           { return func(m *Model) { m.maxTokens = n } }
+func WithBaseURL(u string) Option          { return func(m *Model) { m.baseURL = u } }
 func WithHTTPClient(c *http.Client) Option { return func(m *Model) { m.http = c } }
 
 // New constructs an Anthropic model adapter. apiKey is your Anthropic API key.

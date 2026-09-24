@@ -43,10 +43,10 @@ type countingTool struct {
 	calls  *int
 }
 
-func (t *countingTool) Name() string                 { return t.name }
-func (t *countingTool) Description() string           { return "" }
-func (t *countingTool) Safety() Safety                { return t.safety }
-func (t *countingTool) ArgsSchema() json.RawMessage   { return nil }
+func (t *countingTool) Name() string                { return t.name }
+func (t *countingTool) Description() string         { return "" }
+func (t *countingTool) Safety() Safety              { return t.safety }
+func (t *countingTool) ArgsSchema() json.RawMessage { return nil }
 func (t *countingTool) Call(context.Context, json.RawMessage) (json.RawMessage, error) {
 	*t.calls++
 	return json.RawMessage(`{"ok":true}`), nil

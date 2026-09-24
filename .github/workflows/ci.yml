@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27'
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "These files are not gofmt-clean:"
+            echo "$unformatted"
+            echo "Run: gofmt -w ."
+            exit 1
+          fi
+      - name: go vet
+        run: go vet ./...
+
+  test:
+    name: Test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27'
+      - name: Build
+        run: go build ./...
+      - name: Test
+        shell: bash
+        # The race detector needs a C toolchain (absent on the Windows runner), so run
+        # it on Linux/macOS and a plain test on Windows. Postgres/Redis integration tests
+        # self-skip unless PG_DSN / REDIS_ADDR are set, so no service containers here.
+        run: |
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            go test -count=1 ./...
+          else
+            go test -race -count=1 ./...
+          fi

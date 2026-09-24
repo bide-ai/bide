@@ -39,8 +39,8 @@ type Option func(*Model)
 func WithModel(id string) Option           { return func(m *Model) { m.model = id } }
 func WithMaxTokens(n int) Option           { return func(m *Model) { m.maxTokens = n } }
 func WithBaseURL(u string) Option          { return func(m *Model) { m.baseURL = strings.TrimRight(u, "/") } }
-func WithHTTPClient(c *http.Client) Option  { return func(m *Model) { m.http = c } }
-func WithStrictSchema() Option              { return func(m *Model) { m.strict = true } }
+func WithHTTPClient(c *http.Client) Option { return func(m *Model) { m.http = c } }
+func WithStrictSchema() Option             { return func(m *Model) { m.strict = true } }
 
 // New constructs an OpenAI-compatible adapter. For non-OpenAI endpoints set WithBaseURL
 // (e.g. "http://localhost:11434/v1" for Ollama) and WithModel.

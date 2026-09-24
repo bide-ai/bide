@@ -34,7 +34,7 @@ type subAgentTool struct {
 	argsSchema        json.RawMessage
 }
 
-func (t *subAgentTool) Name() string               { return t.name }
+func (t *subAgentTool) Name() string                { return t.name }
 func (t *subAgentTool) Description() string         { return t.description }
 func (t *subAgentTool) ArgsSchema() json.RawMessage { return t.argsSchema }
 
