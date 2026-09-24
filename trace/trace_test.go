@@ -53,22 +53,15 @@ func TestModel_EmitsGenAIChatSpan(t *testing.T) {
 	}
 }
 
-type fakeTool struct{}
-
-func (fakeTool) Name() string                { return "lookup" }
-func (fakeTool) Description() string         { return "" }
-func (fakeTool) Safety() agent.Safety        { return agent.Safety{} }
-func (fakeTool) ArgsSchema() json.RawMessage { return nil }
-func (fakeTool) Call(context.Context, json.RawMessage) (json.RawMessage, error) {
-	return json.RawMessage(`{}`), nil
-}
-
 func TestTool_EmitsExecuteToolSpan(t *testing.T) {
 	sr, tp := recorder()
 	tracer := tp.Tracer("test")
 
-	wrapped := Tool(tracer, fakeTool{})
-	if _, err := wrapped.Call(context.Background(), nil); err != nil {
+	base := agent.ToolHandler(func(context.Context, agent.ToolUse) (json.RawMessage, error) {
+		return json.RawMessage(`{}`), nil
+	})
+	h := Tool(tracer)(base)
+	if _, err := h(context.Background(), agent.ToolUse{ID: "c1", Name: "lookup"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -82,5 +75,46 @@ func TestTool_EmitsExecuteToolSpan(t *testing.T) {
 	}
 	if a["gen_ai.tool.name"].AsString() != "lookup" {
 		t.Errorf("tool.name = %v", a["gen_ai.tool.name"])
+	}
+	if a["gen_ai.tool.call.id"].AsString() != "c1" {
+		t.Errorf("tool.call.id = %v", a["gen_ai.tool.call.id"])
+	}
+}
+
+// A nested tool call produces a child span: the inner span's parent is the outer span.
+// This is what lets a sub-agent (which is just a tool) nest under its caller's trace.
+func TestTool_NestsChildSpanAcrossBoundary(t *testing.T) {
+	sr, tp := recorder()
+	tracer := tp.Tracer("test")
+	mw := Tool(tracer)
+
+	// The "outer" tool, when run, itself invokes an "inner" traced tool with the same ctx —
+	// exactly how a sub-agent tool re-enters the loop and runs its own tools.
+	inner := mw(agent.ToolHandler(func(context.Context, agent.ToolUse) (json.RawMessage, error) {
+		return json.RawMessage(`{}`), nil
+	}))
+	outer := mw(agent.ToolHandler(func(ctx context.Context, _ agent.ToolUse) (json.RawMessage, error) {
+		return inner(ctx, agent.ToolUse{ID: "c2", Name: "inner"})
+	}))
+	if _, err := outer(context.Background(), agent.ToolUse{ID: "c1", Name: "outer"}); err != nil {
+		t.Fatal(err)
+	}
+
+	spans := sr.Ended()
+	if len(spans) != 2 {
+		t.Fatalf("want 2 spans, got %d", len(spans))
+	}
+	// Spans end innermost-first: spans[0] is "inner", spans[1] is "outer".
+	byName := map[string]sdktrace.ReadOnlySpan{}
+	for _, s := range spans {
+		byName[s.Name()] = s
+	}
+	in, out := byName["execute_tool inner"], byName["execute_tool outer"]
+	if in == nil || out == nil {
+		t.Fatalf("missing spans: %v", spans)
+	}
+	if in.Parent().SpanID() != out.SpanContext().SpanID() {
+		t.Fatalf("inner span parent = %v, want outer span %v (trace must cross the boundary)",
+			in.Parent().SpanID(), out.SpanContext().SpanID())
 	}
 }

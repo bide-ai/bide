@@ -87,8 +87,10 @@ gsm federation capability reaches the agent tier for free on a version bump:
   answer to agent-sdk-go's 8 lifecycle hooks — two real boundaries, not hook-soup; run/turn
   observation is the `Agent.Stream` event feed.
 - `middleware`: model batteries Retry, TokenBudget; tool batteries `ToolLog`, `ToolCache`.
-  `trace`: opt-in OTel gen_ai.* (API only). Natural next tool battery: `trace.Tool` OTel spans
-  (crosses the sub-agent boundary, which agent-sdk-go's spans do not).
+  `trace`: opt-in OTel gen_ai.* — `trace.Model` (`.Use`) + `trace.Tool` (`.UseTool`, execute_tool
+  span per call) + `trace.Invoke`. `trace.Tool` runs inside the loop so its span nests across the
+  sub-agent boundary (a gap in ADK / AgenticGoKit / trpc-agent-go). Note: `trace.Tool` is now a
+  ToolMiddleware, `Tool(tracer)` — was a per-tool decorator `Tool(tracer, t)` (breaking, pre-1.0).
 - `model/anthropic` (native), `model/openai` (any OpenAI-compatible via WithBaseURL).
 - `schema`: reflect→inline JSON schema + OpenAIStrict. `mcp`: official go-sdk; annotations→Safety.
 - `store/sqlite`, `store/postgres` (Durable adapters, single-flight).

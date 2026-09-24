@@ -250,7 +250,12 @@ a := agent.New(model, store, tools...).
 
 // opt-in OTel gen_ai.* spans — the core has no OTel dependency:
 a.Use(trace.Model(tracer, trace.WithSystem("openai"), trace.WithModel("gpt-4o-mini")))
+a.UseTool(trace.Tool(tracer)) // execute_tool span per call; nests across the sub-agent boundary
 ```
+
+Because `trace.Tool` runs inside the loop, its span sits in the context handed to the tool — so
+when a tool is itself a sub-agent, the sub-agent's run and its own spans nest as children. The
+trace crosses the sub-agent boundary automatically (a gap in ADK / AgenticGoKit / trpc-agent-go).
 
 Tool middleware runs *inside* the durable step, so a short-circuit (a `ToolCache` hit) or a
 policy denial is journaled like any tool result — resume replays it and never re-runs the

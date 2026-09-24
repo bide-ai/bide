@@ -1,8 +1,9 @@
 // Package trace adds OpenTelemetry GenAI instrumentation to an agent — opt-in, so the
 // core agent package carries NO OTel dependency (a user who doesn't import trace pays
 // nothing; contrast frameworks whose core drags the full OTel + Temporal stack into
-// every binary). It plugs in through the existing middleware hook (Model) and a Tool
-// decorator, emitting spans with the OTel GenAI semantic-convention attributes.
+// every binary). It plugs in through the existing middleware hooks — Model (a .Use
+// middleware) and Tool (a .UseTool middleware) — emitting spans with the OTel GenAI
+// semantic-convention attributes.
 //
 // We hardcode the stable gen_ai.* attribute keys rather than import the semconv module,
 // which churns every release (v1.37 -> v1.41). Message/argument CONTENT is not captured
@@ -28,6 +29,7 @@ const (
 	attrInputTokens  = "gen_ai.usage.input_tokens"
 	attrOutputTokens = "gen_ai.usage.output_tokens"
 	attrToolName     = "gen_ai.tool.name"
+	attrToolCallID   = "gen_ai.tool.call.id"
 )
 
 type config struct{ system, model string }
@@ -76,29 +78,30 @@ func Model(tracer oteltrace.Tracer, opts ...Option) agent.Middleware {
 	}
 }
 
-// Tool wraps a tool so each execution is a gen_ai "execute_tool" span. Wrap the tools
-// you pass to agent.New.
-func Tool(tracer oteltrace.Tracer, t agent.Tool) agent.Tool {
-	return &tracedTool{Tool: t, tracer: tracer}
-}
-
-type tracedTool struct {
-	agent.Tool
-	tracer oteltrace.Tracer
-}
-
-func (t *tracedTool) Call(ctx context.Context, args json.RawMessage) (json.RawMessage, error) {
-	ctx, span := t.tracer.Start(ctx, "execute_tool "+t.Name(), oteltrace.WithAttributes(
-		attribute.String(attrOperation, "execute_tool"),
-		attribute.String(attrToolName, t.Name()),
-	))
-	defer span.End()
-	res, err := t.Tool.Call(ctx, args)
-	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
+// Tool returns tool middleware that wraps every tool call in a gen_ai "execute_tool"
+// span. Attach via agent.Agent.UseTool. Because it runs inside the agent loop, the span
+// lives in the context passed to the tool — so when a tool is itself a sub-agent, that
+// sub-agent's run (and its own spans) nest as children of this span: the trace crosses
+// the sub-agent boundary automatically, a gap in ADK / AgenticGoKit / trpc-agent-go.
+func Tool(tracer oteltrace.Tracer) agent.ToolMiddleware {
+	return func(next agent.ToolHandler) agent.ToolHandler {
+		return func(ctx context.Context, tu agent.ToolUse) (json.RawMessage, error) {
+			ctx, span := tracer.Start(ctx, "execute_tool "+tu.Name, oteltrace.WithAttributes(
+				attribute.String(attrOperation, "execute_tool"),
+				attribute.String(attrToolName, tu.Name),
+			))
+			defer span.End()
+			if tu.ID != "" {
+				span.SetAttributes(attribute.String(attrToolCallID, tu.ID))
+			}
+			res, err := next(ctx, tu)
+			if err != nil {
+				span.RecordError(err)
+				span.SetStatus(codes.Error, err.Error())
+			}
+			return res, err
+		}
 	}
-	return res, err
 }
 
 // Invoke starts a top-level gen_ai "invoke_agent" span; call the returned end(err) when
