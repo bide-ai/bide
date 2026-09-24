@@ -93,6 +93,15 @@ gsm federation capability reaches the agent tier for free on a version bump:
   (`agent.Temperature(0)`, `agent.MaxTokens(500)`, …); both adapters translate to wire format
   (OpenAI `stop`/`seed`; Anthropic `stop_sequences`, no seed). Closed our own `model.go` TODO =
   AgenticGoKit #143.
+- **Dynamic system prompt** (`Agent.WithSystemPromptFunc(func(ctx) string)`): computes the system
+  message per run (dynamic context: time/tenant/retrieved state); takes precedence over the static
+  `WithSystemPrompt`. `clone` carries it.
+- **Native structured output** (`RunTypedNative[T]`): uses the provider's JSON-schema response
+  format (`Request.ResponseFormat`; OpenAI emits strict `json_schema`) instead of the final_answer
+  tool — provider-enforced schema, no tool round-trip. Anthropic ignores it (use `RunTyped` there).
+  `cloneWith` refactored into `clone` + `cloneWith`.
+- **ToolRetry** (`middleware.ToolRetry(n, WithBackoff(...))`): tool-side analogue of model `Retry`
+  (backoff+jitter, honors `RateLimited`, ctx-aware); reuses retry.go's shared helpers.
 - **Max-turns safety** (`Agent.WithMaxTurns(n)`): caps model turns per run so a model that keeps
   calling tools can't loop forever; hitting it returns `ErrMaxTurns` (wraps `ErrBudget`). Per run
   (per `Session.Send` turn). Counts replayed turns too (a resumed run past the cap stops at once).

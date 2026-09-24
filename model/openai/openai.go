@@ -177,6 +177,22 @@ func (m *Model) buildRequest(req agent.Request) ([]byte, error) {
 	if len(tools) > 0 {
 		payload["tools"] = tools
 	}
+	if rf := req.ResponseFormat; rf != nil && len(rf.Schema) > 0 {
+		// OpenAI strict structured outputs: the schema must be closed (additionalProperties
+		// false, all keys required) — the same transform we apply to tool schemas.
+		sch := json.RawMessage(rf.Schema)
+		if strict, err := schema.OpenAIStrict(rf.Schema); err == nil {
+			sch = strict
+		}
+		payload["response_format"] = obj{
+			"type": "json_schema",
+			"json_schema": obj{
+				"name":   rf.Name,
+				"schema": sch,
+				"strict": true,
+			},
+		}
+	}
 	return json.Marshal(payload)
 }
 

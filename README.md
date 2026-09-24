@@ -175,6 +175,10 @@ decoded from the *journaled* tool call, so it's **resume-safe** — a crash mid-
 typed answer from the log on resume. If the model replies in plain JSON text instead of calling
 the tool, `RunTyped` falls back to parsing that text. `T` is meant to be a struct.
 
+On OpenAI-compatible providers with strict structured outputs, `RunTypedNative[T]` uses the
+provider's native JSON-schema response format instead of the tool (schema enforced provider-side,
+no tool round-trip); Anthropic ignores it, so use `RunTyped` there for provider-agnostic output.
+
 ## Sampling
 
 Generation controls are provider-neutral and set once — each adapter maps them onto its wire
@@ -325,7 +329,7 @@ a := agent.New(model, store, tools...).
 		middleware.TokenBudget(100_000),
 		middleware.Cost(&cost, middleware.Rates{InputPer1M: 3, OutputPer1M: 15}),
 	).
-	UseTool(middleware.ToolLog(log.Printf), middleware.ToolCache())
+	UseTool(middleware.ToolLog(log.Printf), middleware.ToolCache(), middleware.ToolRetry(3))
 
 // opt-in OTel gen_ai.* spans — the core has no OTel dependency:
 a.Use(trace.Model(tracer, trace.WithSystem("openai"), trace.WithModel("gpt-4o-mini")))

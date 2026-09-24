@@ -9,6 +9,52 @@ import (
 	agent "github.com/dayna/go-agents"
 )
 
+// ToolRetry retries a failing tool call up to n additional times with exponential
+// backoff + jitter (honoring an *agent.RateLimited RetryAfter), respecting context
+// cancellation. Reuses RetryOption/WithBackoff from the model-side Retry.
+//
+// Default backoff: base=200ms, max=10s. Override with WithBackoff.
+//
+//	a := agent.New(model, store, tools...).UseTool(middleware.ToolRetry(3))
+func ToolRetry(n int, opts ...RetryOption) agent.ToolMiddleware {
+	cfg := retryConfig{base: defaultBackoffBase, max: defaultBackoffMax}
+	for _, o := range opts {
+		o(&cfg)
+	}
+
+	return func(next agent.ToolHandler) agent.ToolHandler {
+		return func(ctx context.Context, tu agent.ToolUse) (json.RawMessage, error) {
+			var (
+				res json.RawMessage
+				err error
+			)
+			for attempt := 0; attempt <= n; attempt++ {
+				if ctx.Err() != nil {
+					return nil, ctx.Err()
+				}
+				res, err = next(ctx, tu)
+				if err == nil {
+					return res, nil
+				}
+				if attempt == n {
+					break
+				}
+
+				// Compute how long to sleep before the next attempt.
+				d := sleepDuration(err, attempt, cfg)
+				if d > 0 {
+					select {
+					case <-time.After(d):
+					case <-ctx.Done():
+						return nil, ctx.Err()
+					}
+				}
+			}
+			return res, err
+		}
+	}
+}
+
 // ToolLog logs one line per tool call — name, duration, and ok/error — via logf (pass
 // log.Printf, t.Logf, or a structured logger's Printf-shaped method). Attach with
 // agent.Agent.UseTool.

@@ -18,9 +18,19 @@ type Model interface {
 
 // Request is a single model call.
 type Request struct {
-	Messages []Message
-	Tools    []Tool
-	Sampling Sampling // generation controls; zero value = provider/model defaults
+	Messages       []Message
+	Tools          []Tool
+	Sampling       Sampling        // generation controls; zero value = provider/model defaults
+	ResponseFormat *ResponseFormat // nil = free-form; set = constrain output to a JSON schema
+}
+
+// ResponseFormat asks the provider to constrain the model's output to a named JSON schema
+// (OpenAI structured outputs / "json_schema" response format). Adapters that don't support
+// it ignore it. Name is the schema name; Schema is provider-neutral JSON Schema (as from
+// the schema package). See RunTypedNative.
+type ResponseFormat struct {
+	Name   string
+	Schema json.RawMessage
 }
 
 // Sampling holds provider-neutral generation controls. Pointer fields distinguish

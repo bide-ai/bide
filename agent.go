@@ -47,7 +47,20 @@ type Agent struct {
 	sampling     Sampling // generation controls applied to every model call
 	maxConc      int      // max concurrent tool calls per turn; 0 = unbounded (default)
 	maxTurns     int      // max model turns per run; 0 = unbounded (default)
-	systemPrompt string   // optional system message prepended to every model call
+	systemPrompt string   // optional static system message prepended to every model call
+	// systemPromptFn, if set, computes the system message per run (dynamic context:
+	// current time, tenant, retrieved state). Takes precedence over systemPrompt.
+	systemPromptFn func(context.Context) string
+	responseFormat *ResponseFormat // native structured-output constraint (see RunTypedNative)
+}
+
+// systemMessage returns the system prompt for this run — the dynamic function if set,
+// else the static string.
+func (a *Agent) systemMessage(ctx context.Context) string {
+	if a.systemPromptFn != nil {
+		return a.systemPromptFn(ctx)
+	}
+	return a.systemPrompt
 }
 
 // SamplingOption sets one field of the Sampling config; see Temperature, TopP,
@@ -84,6 +97,14 @@ func (a *Agent) WithSampling(opts ...SamplingOption) *Agent {
 // New(...).WithSystemPrompt("you are a concise assistant").
 func (a *Agent) WithSystemPrompt(s string) *Agent {
 	a.systemPrompt = s
+	return a
+}
+
+// WithSystemPromptFunc sets a system message computed per run, so it can inject dynamic
+// context (current date, tenant, retrieved state) each turn. It takes precedence over
+// WithSystemPrompt. Returns the agent for chaining.
+func (a *Agent) WithSystemPromptFunc(fn func(context.Context) string) *Agent {
+	a.systemPromptFn = fn
 	return a
 }
 
@@ -171,8 +192,8 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 	}
 
 	msgs := []Message{}
-	if a.systemPrompt != "" {
-		msgs = append(msgs, SystemText(a.systemPrompt))
+	if sys := a.systemMessage(ctx); sys != "" {
+		msgs = append(msgs, SystemText(sys))
 	}
 	msgs = append(msgs, seed...)
 	done := map[string]bool{}      // tool-use IDs with a recorded result
@@ -249,7 +270,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 			var turnUsage Usage
 			rec, err := a.store.Do(genCtx, runID, fmt.Sprintf("@llm/%d", modelSeq),
 				func(ctx context.Context) (Record, error) {
-					m, u, e := a.generate(ctx, Request{Messages: msgs, Tools: a.toolList(), Sampling: a.sampling})
+					m, u, e := a.generate(ctx, Request{Messages: msgs, Tools: a.toolList(), Sampling: a.sampling, ResponseFormat: a.responseFormat})
 					if e != nil {
 						return Record{}, e
 					}

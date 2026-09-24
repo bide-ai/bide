@@ -80,26 +80,60 @@ func RunTyped[T any](ctx context.Context, a *Agent, runID, input string) (T, err
 	return out, nil
 }
 
-// cloneWith returns a shallow copy of the agent with one extra tool and appended model
-// middleware, leaving the caller's agent untouched. Model/store are shared; the tool map
-// and middleware slices are copied.
-func (a *Agent) cloneWith(extra Tool, mw ...Middleware) *Agent {
+// RunTypedNative is like RunTyped but uses the provider's NATIVE structured-output
+// constraint (a JSON-schema response format) instead of the injected final_answer tool:
+// it sets Request.ResponseFormat from T's schema and decodes the model's direct JSON
+// output. Prefer it on OpenAI-compatible providers with strict structured outputs (schema
+// adherence is enforced provider-side, no tool round-trip). Providers that don't support
+// response formats (e.g. Anthropic) ignore the constraint — use the provider-agnostic
+// RunTyped there. Package function (Go methods can't add type parameters).
+func RunTypedNative[T any](ctx context.Context, a *Agent, runID, input string) (T, error) {
+	var zero T
+	sch, err := schema.For[T]()
+	if err != nil {
+		return zero, fmt.Errorf("typed: schema for %T: %w (%w)", zero, err, ErrConfig)
+	}
+	c := a.clone()
+	c.responseFormat = &ResponseFormat{Name: "response", Schema: sch}
+	msg, err := c.Run(ctx, runID, input)
+	if err != nil {
+		return zero, err
+	}
+	var out T
+	if err := json.Unmarshal([]byte(firstText(msg)), &out); err != nil {
+		return zero, fmt.Errorf("typed: decode native structured output into %T: %w (%w)", zero, err, ErrProtocol)
+	}
+	return out, nil
+}
+
+// clone returns a shallow copy of the agent (shared model/store; copied tool map and
+// middleware slices), leaving the caller's agent untouched.
+func (a *Agent) clone() *Agent {
 	tools := make(map[string]Tool, len(a.tools)+1)
 	for k, v := range a.tools {
 		tools[k] = v
 	}
-	tools[extra.Name()] = extra
 	return &Agent{
-		model:        a.model,
-		tools:        tools,
-		store:        a.store,
-		mw:           append(append([]Middleware(nil), a.mw...), mw...),
-		toolMW:       append([]ToolMiddleware(nil), a.toolMW...),
-		sampling:     a.sampling,
-		maxConc:      a.maxConc,
-		maxTurns:     a.maxTurns,
-		systemPrompt: a.systemPrompt,
+		model:          a.model,
+		tools:          tools,
+		store:          a.store,
+		mw:             append([]Middleware(nil), a.mw...),
+		toolMW:         append([]ToolMiddleware(nil), a.toolMW...),
+		sampling:       a.sampling,
+		maxConc:        a.maxConc,
+		maxTurns:       a.maxTurns,
+		systemPrompt:   a.systemPrompt,
+		systemPromptFn: a.systemPromptFn,
+		responseFormat: a.responseFormat,
 	}
+}
+
+// cloneWith returns a clone with one extra tool and appended model middleware.
+func (a *Agent) cloneWith(extra Tool, mw ...Middleware) *Agent {
+	c := a.clone()
+	c.tools[extra.Name()] = extra
+	c.mw = append(c.mw, mw...)
+	return c
 }
 
 // injectSystem is model middleware that prepends a system message to each model call —
