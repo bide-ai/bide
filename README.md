@@ -108,6 +108,14 @@ func main() {
 
 Run the live smoke example: `OPENROUTER_API_KEY=sk-... go run ./examples/smoke`
 
+`Run` returns just the final message. For a run summary — token usage (summed across turns,
+including cache), model-turn count, wall-clock duration — use `RunResult` (and `RunSagaResult`):
+
+```go
+res, err := a.RunResult(ctx, runID, input)
+// res.Message, res.Usage, res.Turns, res.Duration, res.RunID
+```
+
 ## Streaming
 
 `Run` blocks and returns the final answer. To watch the agent work — token deltas, turn
@@ -287,14 +295,24 @@ short-circuiting*: rewrite what goes in, transform what comes out, or return wit
 `next`.
 
 ```go
+var cost middleware.CostMeter
 a := agent.New(model, store, tools...).
-	Use(middleware.Retry(3), middleware.TokenBudget(100_000)).       // wraps the model call
-	UseTool(middleware.ToolLog(log.Printf), middleware.ToolCache())  // wraps every tool call
+	Use(
+		middleware.Retry(3, middleware.WithBackoff(200*time.Millisecond, 10*time.Second)),
+		middleware.TokenBudget(100_000),
+		middleware.Cost(&cost, middleware.Rates{InputPer1M: 3, OutputPer1M: 15}),
+	).
+	UseTool(middleware.ToolLog(log.Printf), middleware.ToolCache())
 
 // opt-in OTel gen_ai.* spans — the core has no OTel dependency:
 a.Use(trace.Model(tracer, trace.WithSystem("openai"), trace.WithModel("gpt-4o-mini")))
 a.UseTool(trace.Tool(tracer)) // execute_tool span per call; nests across the sub-agent boundary
+// ... after the run: cost.Total() (USD), cost.Usage()
 ```
+
+`Retry` does exponential backoff with jitter and honors a `Retry-After` on a provider 429 (the
+adapter returns a typed `*agent.RateLimited`); `Cost` accumulates USD from token usage (incl.
+cache-read/write) into a `CostMeter` you read after the run.
 
 Because `trace.Tool` runs inside the loop, its span sits in the context handed to the tool — so
 when a tool is itself a sub-agent, the sub-agent's run and its own spans nest as children. The

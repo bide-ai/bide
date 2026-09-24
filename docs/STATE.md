@@ -93,6 +93,14 @@ gsm federation capability reaches the agent tier for free on a version bump:
   (`agent.Temperature(0)`, `agent.MaxTokens(500)`, …); both adapters translate to wire format
   (OpenAI `stop`/`seed`; Anthropic `stop_sequences`, no seed). Closed our own `model.go` TODO =
   AgenticGoKit #143.
+- **Run result envelope** (`result.go`): `RunResult`/`RunSagaResult` return `*Result{Message,
+  Usage (summed across turns, incl. cache), Turns, Duration, RunID}` — additive, `Run` still
+  returns just `Message`. (Internal `run` now returns `(Message, Usage, int, error)`.) `AgentStream.Result()`
+  deferred (would touch the stream goroutine). = competitors' rich Result/RunOptions (partial: no per-call overrides yet).
+- **Retry hardening** (`middleware/retry.go`, `cost.go`): `Retry(n, WithBackoff(base,max))` — exponential
+  backoff + jitter, honors `Retry-After` via a typed `agent.RateLimited` (adapters return it on HTTP 429).
+  `Cost(&CostMeter, Rates)` accumulates USD from token usage (incl. cache read/write). = the "production
+  hardening" competitors market; retry-after/cost were our gaps.
 - **Two middleware chains** (`func(Handler) Handler`, mutating + short-circuiting): `Use` wraps
   the model call (`Middleware`/`ModelHandler`); `UseTool` wraps every tool call
   (`ToolMiddleware`/`ToolHandler`). Tool middleware runs INSIDE the durable memoized step, so a
