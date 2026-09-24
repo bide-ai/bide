@@ -42,18 +42,28 @@ genuinely ours, verified in their source.**
 ## Where THEY win (shipped; we haven't yet — catch-up, not moat)
 
 - **Observability:** real, well-wired OTel across llm/tool/memory/retriever spans, 30+ metrics,
-  no-op defaults. We have none yet. (Their gap: no span propagation across sub-agent boundary.)
+  no-op defaults. CLOSED: `trace.Model` (`.Use`) + `trace.Tool` (`.UseTool`) emit gen_ai.* spans,
+  opt-in (core has no OTel dep). And our tool span NESTS across the sub-agent boundary — their
+  documented gap — because sub-agents are just tools sharing the ctx. (We don't yet have their
+  breadth of metrics; spans + usage are there.)
 - **Middleware:** true *mutating, short-circuiting* hooks at 8 lifecycle points. Genuinely good.
   CLOSED: we now have two mutating/short-circuiting `func(Handler) Handler` chains at the two
   boundaries that matter — model (`Use`) and tool (`UseTool`) — plus the `Agent.Stream` event
   feed for run/turn observation. One idiom, not 8 bespoke slots; tool middleware runs inside the
   durable step so short-circuits are journaled. (Their gap remains: no span across sub-agents.)
-- **HITL:** comprehensive tool/MCP/sub-agent/budget approvals with tokens + policies. We have none.
+- **HITL:** comprehensive tool/MCP/sub-agent/budget approvals with tokens + policies. CLOSED:
+  declarative approve/deny (`RequiresApproval` → `*PendingApproval` → `Approve`) AND imperative
+  typed `Interrupt[T]`/`Resume` — both DURABLE (the decision/value is a journaled step, survives a
+  crash), on our at-most-once substrate (theirs relies on idempotency). Plus `WithMaxTurns` safety.
 - **Provider breadth:** 5 providers (OpenAI/Anthropic/Gemini/DeepSeek/Ollama) via official SDKs.
-  We have 1 (Anthropic).
+  PARTLY CLOSED: Anthropic (native) + one OpenAI-compatible adapter that via `WithBaseURL` runs on
+  OpenAI/Groq/DeepSeek/Ollama/Mistral/Together/vLLM/... — "1 adapter, N providers." Still missing
+  native Gemini/Bedrock. (Prompt caching + sampling params shipped since.)
 
-These are on our roadmap. Important: they're *features*, not *moats* — we can add OTel/middleware/
-HITL; they can't easily add side-effect safety (it's an engine-level redesign) or shed 380 deps.
+Most are now CLOSED (observability, middleware, HITL). Remaining catch-up: native Gemini/Bedrock and
+multimodal. Still *features*, not *moats* — we add them; they can't add side-effect safety (an
+engine-level redesign, now DST-proven) or shed 380 deps. And we've since built moats they can't
+match at all: adversarial crash-safety DST + an RFC 6962 tamper-evident audit trail.
 
 ## Their other footguns (ammunition)
 

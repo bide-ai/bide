@@ -290,15 +290,20 @@ underlying SDK's own retry so budgets/retries compose predictably.
 ### From the Eino design study (things to build / match — see COMPETITIVE.md)
 - [ ] Add `ToolChoice` (auto/required/none) to `Request` — Eino has it, we don't.
 - [ ] Extend `Part` to multimodal: `Image`/`Audio`/`Video`/`File` (Eino covers these).
-- [ ] Match Eino's HITL: `StatefulInterrupt` + `ResumeWithData` equivalent via the select loop.
+- [x] Match Eino's HITL: `StatefulInterrupt` + `ResumeWithData` equivalent. DONE — durable typed
+      `Interrupt[T]`/`Resume` (pause anywhere, resume with a typed value), plus declarative
+      `RequiresApproval`/`Approve`. Both journaled (survive a crash), on the at-most-once substrate.
 - [ ] **MUST-BUILD (stream layer, not graph):** value↔stream bridging (drain a stream to a value
       when a consumer wants a value; box a value into a one-chunk stream when it wants a stream) +
       **named fan-in merge** (Eino's `MergeNamedStreamReaders` equivalent). This is the ONE
       legitimate graph-adjacent win from Eino's design-principles doc; we solve it at the
       `Stream`/`stream` layer so it never justifies a graph. `Stream.Message()` already does the
       drain direction — owe the box + merge directions.
-- [ ] Deliver checkpointing + stream stitching + observability WITHOUT a graph — the core bet
-      that justifies deleting Eino's compose/. If we can't, the graph's value returns.
+- [x] Deliver checkpointing + stream stitching + observability WITHOUT a graph — the core bet
+      that justifies deleting Eino's compose/. DONE: durable resume (checkpointing), `Agent.Stream`
+      (stitching), `trace.*` (observability) — all plain Go, no graph. The bet held; the crash-safety
+      side is now DST-proven and the audit trail is RFC 6962. (Still owed from the stream layer: the
+      value→stream *box* + named fan-in *merge* directions.)
 - [ ] `Durable.RenderGraph(runID)` + Dev-UI topology view — the "graph as derived output" (Option B)
       mechanism. Render from trace/named-steps; never authored.
 - [ ] Keep `Reasoning.Signature` — confirmed win vs Eino (their reasoning parts drop it).

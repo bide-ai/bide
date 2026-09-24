@@ -71,7 +71,34 @@ Parallel tool execution is built: a turn's tool calls run concurrently via `errg
 
 ## Provider / schema
 
+- Adapters: Anthropic (native) + one OpenAI-compatible adapter (OpenAI/Groq/DeepSeek/Ollama/
+  Mistral/... via `WithBaseURL`). No **native Gemini or Bedrock** adapter yet.
 - `schema/` emits OpenAI-strict and a neutral dialect; a dedicated **Gemini** dialect
   (strip `additionalProperties`/`$ref` per its subset) is not yet done.
 - Runtime (MCP) tools use the untyped path; there's no Go-struct typing for them (Go can't
   synthesize a struct type from a runtime schema).
+- **No multimodal input.** Message parts are Text / Reasoning / ToolUse / ToolResult — no
+  image / audio / video.
+- **`RunTypedNative[T]` needs provider JSON-schema support** (OpenAI-compatible strict mode).
+  Anthropic ignores `Request.ResponseFormat`; use the provider-agnostic tool-based `RunTyped` there.
+- **Settings are agent-level, not per-call.** `WithSampling` / `WithSystemPrompt` / `WithMaxTurns`
+  apply to the agent; there's no per-`Run` options override yet.
+
+## Crash-safety proof (DST) — scope
+
+`dst_test.go` / `saga_dst_test.go` prove at-most-once side effects and crash-safe compensation by
+adversarial fault injection: a store that fails the Kth persist, swept over every write point and
+across hundreds of randomized multi-crash schedules. It is strong, in-process, and non-vacuous (the
+halt path is asserted) — but it is **randomized + exhaustive-over-write-points testing, not a
+machine-checked formal proof** over all interleavings. It models a crash as "a persist fails and the
+run unwinds," matching process death around durable writes (the honest promise), not arbitrary
+mid-instruction faults.
+
+## Audit tamper-evidence needs external anchoring
+
+The `audit` package (hash-chain `Head`, RFC 6962 Merkle `Root`/inclusion/consistency, signed
+`TreeHead`) gives integrity unconditionally and **tamper-evidence only when the head/root is anchored
+out-of-band** (signed with a key the app tier doesn't fully control, and/or published to a separate
+trust domain). A chain or tree in a database an attacker fully controls can be rewritten and
+re-hashed; the guarantee is "you committed the root elsewhere, so divergence is provable." By design,
+but a real deployment requirement.

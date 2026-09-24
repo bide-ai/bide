@@ -253,6 +253,7 @@ is checked against the published RFC 6962 test vectors.
 `SignTreeHead` produces the CT-style **Signed Tree Head** — `{Size, Root, Timestamp}` signed with
 Ed25519 — the artifact you publish. The full flow: sign an STH, later disclose a single record with an
 inclusion proof an auditor checks against the signed root, and prove append-only growth between two STHs.
+See [docs/AUDIT.md](docs/AUDIT.md) for the model, the API, and the end-to-end compliance flow.
 
 ## RAG & memory (bring your own)
 
