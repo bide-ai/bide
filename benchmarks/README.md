@@ -16,6 +16,7 @@ cd benchmarks && GOWORK=off go test -run Comparison -v
 go-agents        maxFired=1   PASS ✓ (at-most-once held)
 trpc-agent-go    maxFired=5   FAIL ✗ (70 double-fires, worst=5)
 langchaingo      maxFired=64  FAIL ✗ (204 double-fires, worst=64)
+eino             maxFired=64  FAIL ✗ (204 double-fires, worst=64)
 naive-loop       maxFired=5   FAIL ✗ (45 double-fires, worst=5)
 ```
 
@@ -53,6 +54,14 @@ charge fires; "resume" is a fresh invocation. It is fair (`lcg_fairness_test.go`
 single invocation fires exactly once), and the double-fire is inherent, not injected — this
 isn't a bug in langchaingo, durable side-effect safety is just an absent feature. Under
 repeated crashes it charges up to 64 times.
+
+## The eino finding
+
+eino (ByteDance) HAS checkpoint/interrupt/resume — but it is **HITL-interrupt-driven, not
+automatic crash-resume**: a checkpoint is written only when a node interrupts (and you resume
+with `ResumeWithData`). There is no per-step checkpoint, so an unplanned process crash has
+nothing to resume from — the run is lost and re-invoking re-runs everything. So for crash-safety
+eino sits with langchaingo (`eino.go`; fair per `eino_fairness_test.go`): maxFired=64.
 
 ## Adding another SDK
 

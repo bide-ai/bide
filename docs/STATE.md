@@ -131,8 +131,11 @@ gsm federation capability reaches the agent tier for free on a version bump:
   (weaker fit; models "re-invoke re-runs everything"). **Second competitor wired: langchaingo**
   (`benchmarks/langchaingo.go`) — NO durable resume; crash = ctx-cancel after the tool fires,
   "resume" = fresh invocation → re-runs everything. RESULT maxFired=64 FAIL (unbounded; fair per
-  `lcg_fairness_test.go`). Full table: go-agents 1 PASS, trpc 5, langchaingo 64, naive 5. benchmarks
-  not in go.work/CI (heavy deps).
+  `lcg_fairness_test.go`). Full table: go-agents 1 PASS, trpc 5, langchaingo 64, EINO 64, naive 5. **eino** (`eino.go`) also
+  wired: its checkpoint is HITL-interrupt-only (NOT automatic crash-resume; verified checkpoint.set
+  fires only on interrupt), so a crash re-runs → maxFired=64 FAIL (fair per eino_fairness_test.go).
+  **ADK-Go still PENDING** (needs mock genai model + tool + runner + crash-injecting session.Service;
+  expected no-checkpoint → re-invoke re-runs). benchmarks not in go.work/CI (heavy deps).
   **Saga DST** (`saga_dst_test.go`): extends the proof to reverse-order compensation. Honest split —
   forward non-idempotent effect is at-most-once (halt on unknown); compensators are at-LEAST-once
   (memoized → once if they complete, but a crash mid-compensation re-runs them, the documented
