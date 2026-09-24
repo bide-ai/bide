@@ -4,7 +4,7 @@ module github.com/dayna/go-agents
 go 1.27
 
 require (
-	github.com/blackwell-systems/gsm v0.0.0-00010101000000-000000000000
+	github.com/blackwell-systems/gsm v0.2.0
 	github.com/jackc/pgx/v5 v5.11.0
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	github.com/redis/go-redis/v9 v9.22.0
@@ -42,5 +42,3 @@ require (
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.12.1 // indirect
 )
-
-replace github.com/blackwell-systems/gsm => ../gsm
