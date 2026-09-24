@@ -12,8 +12,9 @@ package schema
 import (
 	"encoding"
 	"encoding/json"
+	"maps"
 	"reflect"
-	"sort"
+	"slices"
 	"strings"
 	"time"
 )
@@ -163,12 +164,7 @@ func toSet(v any) map[string]bool {
 
 // sortedKeys returns a set's keys in sorted order (deterministic schema output).
 func sortedKeys(m map[string]bool) []string {
-	ks := make([]string, 0, len(m))
-	for k := range m {
-		ks = append(ks, k)
-	}
-	sort.Strings(ks)
-	return ks
+	return slices.Sorted(maps.Keys(m))
 }
 
 func jsonField(f reflect.StructField) (name string, omitempty bool) {
@@ -212,7 +208,7 @@ func strictify(v any) {
 					keys = append(keys, k)
 					strictify(pv)
 				}
-				sort.Strings(keys)
+				slices.Sort(keys)
 				t["required"] = keys
 			}
 		}

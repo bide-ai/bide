@@ -133,6 +133,11 @@ gsm federation capability reaches the agent tier for free on a version bump:
   short-circuit/transformed result is journaled and resume-safe. This is the mutate/short-circuit
   answer to agent-sdk-go's 8 lifecycle hooks — two real boundaries, not hook-soup; run/turn
   observation is the `Agent.Stream` event feed.
+- **Go 1.2x modernization**: `testing/synctest` for the retry/tool-retry timing tests (fake clock →
+  deterministic + instant, kills the real-timer flake class); `math/rand/v2` (dropped the seeded
+  source + gosec nolint); `slices.Sorted(maps.Keys)` / `slices.Sort` in schema; `min` builtin +
+  `for range n` in retry backoff; removed the dead `c := c` loop-var shadow (loop vars per-iteration
+  since 1.22). concurrency_test sleeps left as-is (race-window widening / timeout guard, not backoff).
 - `middleware`: model batteries Retry, TokenBudget; tool batteries `ToolLog`, `ToolCache`.
   `trace`: opt-in OTel gen_ai.* — `trace.Model` (`.Use`) + `trace.Tool` (`.UseTool`, execute_tool
   span per call) + `trace.Invoke`. `trace.Tool` runs inside the loop so its span nests across the

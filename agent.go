@@ -341,7 +341,6 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 			g.SetLimit(a.maxConc)
 		}
 		for _, c := range toRun {
-			c := c
 			g.Go(func() error {
 				sctx := withRunScope(gctx, runID+"/"+c.tu.ID) // hierarchical sub-run ID
 				sctx = withRunContext(sctx, a.store, runID)   // lets the tool call Interrupt

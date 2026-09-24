@@ -3,15 +3,11 @@ package middleware
 import (
 	"context"
 	"errors"
-	"math/rand"
+	"math/rand/v2"
 	"time"
 
 	agent "github.com/dayna/go-agents"
 )
-
-// retryRand is the package-level source for jitter. Fixed seed so tests are
-// deterministic (jitter only affects timing, not correctness).
-var retryRand = rand.New(rand.NewSource(42)) //nolint:gosec
 
 const (
 	defaultBackoffBase = 200 * time.Millisecond
@@ -89,25 +85,17 @@ func Retry(n int, opts ...RetryOption) agent.Middleware {
 func sleepDuration(err error, attempt int, cfg retryConfig) time.Duration {
 	var rl *agent.RateLimited
 	if errors.As(err, &rl) && rl.RetryAfter > 0 {
-		d := rl.RetryAfter
-		if d > cfg.max {
-			d = cfg.max
-		}
-		return d
+		return min(rl.RetryAfter, cfg.max)
 	}
 
-	// Exponential cap: base * 2^attempt, capped at max.
-	cap := cfg.base
-	for i := 0; i < attempt; i++ {
-		cap *= 2
-		if cap > cfg.max {
-			cap = cfg.max
-			break
-		}
+	// Exponential backoff: base * 2^attempt, capped at max.
+	back := cfg.base
+	for range attempt {
+		back = min(back*2, cfg.max)
 	}
-	// Full jitter: uniform in [0, cap).
-	if cap <= 0 {
+	if back <= 0 {
 		return 0
 	}
-	return time.Duration(retryRand.Int63n(int64(cap)))
+	// Full jitter: uniform in [0, back).
+	return time.Duration(rand.Int64N(int64(back)))
 }
