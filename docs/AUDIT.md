@@ -29,6 +29,33 @@ Merkle tree — the same commitment, but it supports per-record inclusion proofs
 proofs. Use `Head` when you only ever reveal the whole run; use `Root` (+ STH) when selective
 disclosure or append-only proofs matter.
 
+## Continuous anchoring: `AuditedStore` + the `Anchor` port
+
+The primitives above are pull-based (commit when you ask). `AuditedStore` makes anchoring
+automatic and push-based, and it's the piece that operationalizes the security model's "anchor
+out-of-band" requirement. Wrap any `Durable` and every durable step is signed and published to
+a separate trust domain with no changes to the agent loop:
+
+```go
+anchor := audit.NewMemAnchorLog()                          // your external transparency log
+store  := audit.NewAuditedStore(journal, priv, anchor)     // drop-in Durable
+agent.New(model, store, tools...).Run(ctx, runID, input)   // each step → a signed STH, published
+```
+
+On every journal growth `AuditedStore` commits the run's Merkle root, signs an STH, and calls
+`Anchor.Publish`. A memoized replay (resume) does **not** re-anchor — each record is anchored
+exactly once, even across a crash. Anchoring is a **side channel**: a `Publish` failure never
+fails the durable step (the write already succeeded; failing it could wrongly retry a
+non-idempotent step), so publish errors go to an optional `OnError` hook instead.
+
+**`Anchor` is a bring-your-own port** — implement `Publish(ctx, runID, sth)` against the
+transparency log you trust (a CT-style log, a notary/timestamping service, another account's
+WORM store, a public ledger). `MemAnchorLog` is the reference: an append-only log that keeps its
+**own** RFC 6962 tree over the published STHs, so a monitor can prove a given STH was anchored
+(`Prove` + `VerifyAnchorInclusion`) and that the anchor log itself only grew (`ProveConsistency`
++ `VerifyConsistency`). That is the full end-to-end chain: **journal record → inclusion proof →
+signed tree head → provably anchored in an independent, append-only log**.
+
 ## Committing the event stream, not just the journal
 
 `Head`/`Root` above commit over the durable **journal** (the resume substrate). An `EventLog`
@@ -155,6 +182,9 @@ RFC 6962 is fully covered (Head, inclusion, consistency, STH) over both the jour
 the event→audit sink (`EventLog` / `Record` / `TreeHead` / `ProveConsistency`), the semantic
 event stream (live via `EventLog`, crash-durable via `EventLogFromJournal` / `agent.ReplayEvents`,
 and on a separate lifecycle via the BYO `EventStore` port / `PersistJournal`), all sharing one
-verification surface. Possible extensions if a use case needs them: an audited `Durable`
-decorator that emits an STH automatically per run; and integration with an external transparency
-log for out-of-band anchoring.
+verification surface. Continuous anchoring is done: `AuditedStore` auto-signs an STH per durable
+step and publishes it through the `Anchor` port to a reference external transparency log
+(`MemAnchorLog`) that is itself append-only and verifiable. Remaining extensions if a use case
+needs them: adapters implementing `Anchor` against real external logs (Trillian/CT, a public
+ledger, a notary/timestamping service); and periodic (batched) rather than per-step anchoring
+for high-throughput runs.

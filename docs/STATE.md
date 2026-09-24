@@ -186,7 +186,19 @@ gsm federation capability reaches the agent tier for free on a version bump:
   stream — projection is resume-stable so re-mirror never forks) into a backend with its OWN retention;
   `LoadEventLog(evStore, runID)` rebuilds Root/STH/proofs from the store ALONE (journal can be GC'd).
   Tested: append-only/fork rejection, journal round-trip + idempotent re-mirror + store-only anchor,
-  prefix→full consistency. Next: auto-STH `Durable` decorator; external transparency log anchoring.
+  prefix→full consistency.
+  **Continuous anchoring** (`audit/anchor.go` + `audit/audited_store.go`): `AuditedStore` wraps any
+  `Durable` (drop-in) and on each journal growth signs an STH (reusing merkleRoot+SignTreeHead) and
+  publishes via the BYO `Anchor` port. Memoized replay does NOT re-anchor (per-run lastSize dedup →
+  each record anchored exactly once, even across a crash). Anchor failure is a SIDE CHANNEL: never
+  fails the durable step (would risk retrying a non-idempotent side effect) → optional `OnError` hook.
+  `MemAnchorLog` = reference external transparency log: append-only, keeps its OWN RFC 6962 tree over
+  published STHs → `Prove`/`VerifyAnchorInclusion` (an STH was anchored) + `ProveConsistency` (the
+  anchor log only grew). End-to-end chain proven: journal record → inclusion proof → STH → provably
+  anchored in an independent append-only log. Tested: per-step anchoring, monotonic sizes, final STH
+  == journal Root, no-reanchor-across-crash+resume, publish-error-doesn't-fail-step, anchor-log
+  inclusion+consistency. Next: real external-log `Anchor` adapters (Trillian/CT, ledger, notary);
+  batched/periodic anchoring for high throughput.
 - **RAG/memory = bring-your-own** (`retrieval.go`, decision in docs/RAG-MEMORY.md): ship NO vector
   store/embedder. Core seam: `Retriever` port (`Retrieve(ctx, query, k) []Doc`), `RetrievalTool`
   (agentic — model searches on demand), `WithRetrieval` middleware (classic — top-k injected as a
