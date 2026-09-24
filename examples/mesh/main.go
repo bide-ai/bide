@@ -1,11 +1,14 @@
-// Command mesh demonstrates a durable, coordination-free *mesh* of agents whose governed
-// state constrains each other cyclically — a topology the tree/DAG governance tier cannot
-// express. Three regional agents form a ring; the rule is that every region must run at
-// least the highest capacity tier requested anywhere in the ring (a mutual constraint).
+// Command mesh demonstrates a durable, coordination-free safety mesh where agents' governed
+// state constrains each other *cyclically* (mutual constraints) — a topology the tree/DAG
+// governance tier cannot express.
 //
-// gsm's monotone-cycle convergence guarantees all regions agree without coordination,
-// regardless of the order the agents act, and the event-sourced FederatedGovernor makes it
-// crash-recoverable. Run: go run ./examples/mesh
+// Three production lines form a ring. Each line can signal a safety level (normal < caution
+// < stop). The mesh rule is most-restrictive-wins: every line runs at the HIGHEST level any
+// line is signalling — you cannot have one line running normal while a peer signals stop.
+// The rule is mutual (cyclic), so it needs monotone-cycle convergence. Actions go through
+// govern.FederatedEventTool, the same tool boundary a real LLM agent would call.
+//
+// Run: go run ./examples/mesh
 package main
 
 import (
@@ -13,89 +16,99 @@ import (
 	"fmt"
 
 	gsm "github.com/blackwell-systems/gsm"
+	agent "github.com/dayna/go-agents"
 	"github.com/dayna/go-agents/govern"
 )
 
-// buildRing constructs the cyclic capacity mesh: us → eu → ap → us, where each region's
-// effective tier is the max of its predecessor's requested and effective tier.
-func buildRing() (*gsm.FedMachine, []*gsm.Registry, []gsm.Var) {
-	names := []string{"us", "eu", "ap"}
+var levels = []string{"normal", "caution", "stop"}
+var rank = map[string]int{"normal": 0, "caution": 1, "stop": 2}
+
+func buildSafetyMesh() (*gsm.FedMachine, []*gsm.Registry, []gsm.Var) {
+	names := []string{"line1", "line2", "line3"}
 	regs := make([]*gsm.Registry, 3)
-	reqV := make([]gsm.Var, 3)
-	tierV := make([]gsm.Var, 3)
+	signalV := make([]gsm.Var, 3)
+	levelV := make([]gsm.Var, 3)
 	for i, n := range names {
 		r := gsm.NewRegistry(n)
-		reqV[i] = r.Int("req", 0, 3)
-		tierV[i] = r.Int("tier", 0, 3)
-		rq := reqV[i]
-		for lvl := 1; lvl <= 3; lvl++ {
-			l := lvl
-			r.Event(fmt.Sprintf("request_t%d", l)).Writes(rq).
-				Apply(func(s gsm.State) gsm.State { return s.SetInt(rq, l) }).Add()
+		signalV[i] = r.Enum("signal", levels...) // this line's own request (local)
+		levelV[i] = r.Enum("level", levels...)   // effective level (shared, mesh-controlled)
+		sig := signalV[i]
+		for _, lv := range levels {
+			v := lv
+			r.Event("signal_" + v).Writes(sig).
+				Apply(func(s gsm.State) gsm.State { return s.Set(sig, v) }).Add()
 		}
 		regs[i] = r
 	}
-	fed := gsm.NewFederation("capacity-ring").AllowMonotoneCycles()
+	// Ring: each line's effective level = max(predecessor's signal, predecessor's level).
+	fed := gsm.NewFederation("safety-ring").AllowMonotoneCycles()
 	for i := 0; i < 3; i++ {
-		pred := (i + 2) % 3 // us←ap, eu←us, ap←eu  (a ring)
-		pReq, pTier, myTier := reqV[pred], tierV[pred], tierV[i]
-		fed.Morphism(regs[pred], regs[i]).Shared(myTier).
+		pred := (i + 2) % 3
+		pSig, pLvl, myLvl := signalV[pred], levelV[pred], levelV[i]
+		fed.Morphism(regs[pred], regs[i]).Shared(myLvl).
 			Map(func(srcNF, d gsm.State) gsm.State {
-				mx := srcNF.GetInt(pReq)
-				if v := srcNF.GetInt(pTier); v > mx {
-					mx = v
+				hi := rank[srcNF.Get(pSig)]
+				if r := rank[srcNF.Get(pLvl)]; r > hi {
+					hi = r
 				}
-				return d.SetInt(myTier, mx)
+				return d.Set(myLvl, levels[hi])
 			}).Add()
 	}
-	m, _, err := fed.Build() // verifies monotonicity — a non-monotone cyclic repair is rejected here
+	m, _, err := fed.Build() // verifies monotonicity — a non-monotone cyclic rule is rejected here
 	if err != nil {
 		panic(err)
 	}
-	return m, regs, tierV
+	return m, regs, levelV
 }
 
 func main() {
 	ctx := context.Background()
-	m, regs, tierV := buildRing()
+	m, regs, levelV := buildSafetyMesh()
 
 	show := func(label string, g *govern.FederatedGovernor) {
 		st := g.State()
-		fmt.Printf("%-24s us=%d  eu=%d  ap=%d\n", label,
-			m.Of(st, regs[0]).GetInt(tierV[0]),
-			m.Of(st, regs[1]).GetInt(tierV[1]),
-			m.Of(st, regs[2]).GetInt(tierV[2]))
+		fmt.Printf("%-30s line1=%-8s line2=%-8s line3=%-8s\n", label,
+			m.Of(st, regs[0]).Get(levelV[0]), m.Of(st, regs[1]).Get(levelV[1]), m.Of(st, regs[2]).Get(levelV[2]))
+	}
+	// An agent action: a tool call that becomes a governed event (the real LLM-agent path).
+	act := func(g *govern.FederatedGovernor, line, level string) {
+		tool := govern.FederatedEventTool(g, line+"_signal_"+level,
+			line+" signals "+level, line, "signal_"+level, agent.Safety{})
+		if _, err := tool.Call(ctx, []byte("{}")); err != nil {
+			panic(err)
+		}
 	}
 
-	fmt.Println("== Mutual-constraint mesh: 3 regional agents in a ring ==")
-	fmt.Println("Rule: every region runs at least the highest tier requested anywhere in the ring.")
-	fmt.Println("Topology: us → eu → ap → us  (cyclic — impossible without monotone-cycle support)")
+	fmt.Println("== Safety mesh: 3 production lines in a ring, most-restrictive-wins ==")
+	fmt.Println("Rule: every line runs at the highest level ANY line signals. Cyclic mutual constraint.")
+	fmt.Println("Actions go through govern.FederatedEventTool — the agent tool boundary.")
 	fmt.Println()
 
 	log := govern.NewMemEventLog()
-	g, _ := govern.NewFederated(ctx, m, log, "ring", m.NewState())
+	g, _ := govern.NewFederated(ctx, m, log, "plant", m.NewState())
 	show("initial:", g)
 
-	fmt.Println("\nAgents act:")
-	g.Apply(ctx, "eu", "request_t3")
-	show("  eu requests tier 3:", g)
-	g.Apply(ctx, "us", "request_t1")
-	show("  us requests tier 1:", g)
-	fmt.Println("→ eu's tier-3 request propagated around the whole ring; all regions converge to 3.")
+	fmt.Println("\nTwo lines signal DIFFERENT levels (a genuine conflict):")
+	act(g, "line2", "caution")
+	show("  line2 → caution:", g)
+	act(g, "line3", "stop")
+	show("  line3 → stop:", g)
+	fmt.Println("→ conflict (caution vs stop) reconciled: the whole plant runs at STOP.")
 
-	fmt.Println("\nSame requests, reverse order (a separate governor):")
-	g2, _ := govern.NewFederated(ctx, m, govern.NewMemEventLog(), "ring", m.NewState())
-	g2.Apply(ctx, "us", "request_t1")
-	g2.Apply(ctx, "eu", "request_t3")
+	fmt.Println("\nSame two signals, opposite order (a separate governor):")
+	g2, _ := govern.NewFederated(ctx, m, govern.NewMemEventLog(), "plant", m.NewState())
+	act(g2, "line3", "stop")
+	act(g2, "line2", "caution")
 	show("  converged:", g2)
-	fmt.Println("→ identical result — coordination-free convergence regardless of order.")
+	fmt.Println("→ identical — coordination-free, order-independent.")
+
+	fmt.Println("\nline3 stands down; the mesh re-derives from current signals:")
+	act(g, "line3", "normal")
+	show("  line3 → normal:", g)
+	fmt.Println("→ line2's caution still governs the plant — not stuck high.")
 
 	fmt.Println("\nCrash recovery (a fresh process replays the durable event log):")
-	g3, _ := govern.NewFederated(ctx, m, log, "ring", m.NewState())
+	g3, _ := govern.NewFederated(ctx, m, log, "plant", m.NewState())
 	show("  reconstructed:", g3)
-	fmt.Println("→ state rebuilt from the log alone.")
-
-	fmt.Println("\n(In production each region is an LLM agent calling govern.FederatedEventTool;")
-	fmt.Println(" here deterministic calls stand in. Swap MemEventLog for the SQLite or Redis")
-	fmt.Println(" adapter for cross-process durability.)")
+	fmt.Println("→ rebuilt from the event log alone. (Swap MemEventLog for the SQLite/Redis adapter for real durability.)")
 }
