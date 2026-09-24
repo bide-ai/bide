@@ -103,6 +103,20 @@ gsm federation capability reaches the agent tier for free on a version bump:
   `cloneWith` refactored into `clone` + `cloneWith`.
 - **ToolRetry** (`middleware.ToolRetry(n, WithBackoff(...))`): tool-side analogue of model `Retry`
   (backoff+jitter, honors `RateLimited`, ctx-aware); reuses retry.go's shared helpers.
+- **Reliability wrapper hardening** (`middleware`, commit f01ef81): `WithTimeout` (per-attempt
+  deadline for both `Retry` and `ToolRetry`); `WithRetryIf` plus a ready-made `Retryable` classifier
+  (retries 5xx / 408 / `RateLimited` / per-attempt timeout, fails fast on 4xx auth/validation, with
+  adapters now returning a typed `agent.APIError{StatusCode}`); and a dependency-free `RateLimiter`
+  with `RateLimit` / `ToolRateLimit` (token bucket, proactive throttling). Backoff and Retry-After
+  already existed.
+- **Scale/concurrency benchmark** (`cmd/bench` + `cmd/bench/README.md`, commit 03b0d46): a load
+  harness with measured numbers, about 128k runs/s framework-overhead-only, and 5,000 runs each
+  blocking about 100ms on the model overlapping into about 448ms wall-clock on about 5,500 goroutines
+  and about 35 MB. It backs Pillar 2 as throughput and operational simplicity (one process, no fleet),
+  not lower latency than the model (the provider owns per-call latency). NOTE: these numbers use the
+  in-memory store (the floor); at high fan-out the durable store's write throughput, not goroutines,
+  is the production ceiling. STRATEGY.md carries the Go-dividend scale section, the capital-markets
+  wedge, and HFT as a non-goal.
 - **Max-turns safety** (`Agent.WithMaxTurns(n)`): caps model turns per run so a model that keeps
   calling tools can't loop forever; hitting it returns `ErrMaxTurns` (wraps `ErrBudget`). Per run
   (per `Session.Send` turn). Counts replayed turns too (a resumed run past the cap stops at once).

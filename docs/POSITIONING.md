@@ -59,6 +59,14 @@ Pick altitude by context; keep the spine identical.
 that are hardest to fake (at-most-once + audit) are exactly what they buy. Lead with the
 double-charge story, close with the audit spine.
 
+**Sharpened wedge: capital-markets middle and back office plus compliance.** The order-lifecycle,
+mandate, and risk-limit checks that must never double-execute, plus surveillance, reconciliation,
+and regulator-grade record-keeping, are exactly the at-most-once and audit pillars applied to a
+buyer with acute willingness to pay. Governed policies express mandate and risk-limit rules;
+attested, anchored logs give the regulator-grade record. This is deliberately the middle and back
+office, not the front-office trading loop: see the STRATEGY.md non-goals for why agentic HFT is out
+of scope.
+
 | Audience | Open with | Close with | Why this order |
 |---|---|---|---|
 | **Regulated / fintech (primary)** | At-most-once (no double-charge), measured | The RFC 6962 audit spine | Their two non-negotiables; both provable today |
@@ -103,7 +111,15 @@ do not cross), and the phrasing to use / avoid.
   their scale, visibility tooling). The claim is specifically the *durable-resume guarantee* as
   a library. Say "the guarantees you wanted Temporal for, as an import," not "replaces
   Temporal."
-- **Say:** "library, not infrastructure," "import it, don't operate it."
+- **Scale (the Go dividend):** being a library, not a cluster, is also a throughput and
+  operational-simplicity story. The `cmd/bench` harness measures framework overhead at roughly
+  128k runs/s, and 5,000 runs each blocking about 100ms on the model overlap into about 448ms of
+  wall-clock on roughly 5,500 goroutines and about 35 MB, in one process with no scheduler or
+  worker fleet. Frame this precisely: it is throughput and operational simplicity, not lower
+  latency than the model (the provider owns per-call latency). And it is a floor, not a ceiling:
+  those numbers use the in-memory store, so at high fan-out the durable store's write throughput,
+  not goroutines, is the real production ceiling.
+- **Say:** "library, not infrastructure," "import it, don't operate it," "one process, no fleet."
 
 ### Pillar 3: A tamper-evident audit spine from the same journal
 
