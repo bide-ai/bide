@@ -1,0 +1,177 @@
+package agent
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"iter"
+	"strings"
+)
+
+// Model is the provider primitive. Streaming is FIRST-CLASS: Stream is the only
+// method an adapter must implement. Generate is a convenience drain built on top —
+// the opposite of frameworks that make blocking generation primary and bolt
+// streaming on later.
+type Model interface {
+	Stream(ctx context.Context, req Request) (*Stream, error)
+}
+
+// Request is a single model call. (Model settings — temperature, max tokens, etc. —
+// land here later.)
+type Request struct {
+	Messages []Message
+	Tools    []Tool
+}
+
+// Usage is token accounting for a call; middleware turns it into cost.
+type Usage struct {
+	InputTokens  int
+	OutputTokens int
+}
+
+// Event is a normalized streamed model event. The stream/ package maps every
+// provider wire format (OpenAI SSE / Anthropic typed / Gemini NDJSON / Bedrock
+// binary) onto these.
+type Event interface{ event() }
+
+type TextDelta struct{ Text string }
+
+func (TextDelta) event() {}
+
+type ReasoningDelta struct {
+	Text      string
+	Signature string // opaque provider token to echo back on later turns (Anthropic thinking)
+}
+
+func (ReasoningDelta) event() {}
+
+// ToolCallDelta is an incremental fragment of a tool call, keyed by Index. Fragments
+// are concatenated and gated by json.Valid before use (the UTF-8/partial-JSON safety
+// the research flagged as universally missing).
+type ToolCallDelta struct {
+	Index        int
+	ID           string
+	Name         string
+	ArgsFragment json.RawMessage
+}
+
+func (ToolCallDelta) event() {}
+
+type Finish struct {
+	Reason string
+	Usage  Usage
+}
+
+func (Finish) event() {}
+
+// Emit is what an adapter pushes onto its event channel (event or terminal error).
+type Emit struct {
+	Event Event
+	Err   error
+}
+
+// Stream is a live model response. Range over Events() for a streaming UI, OR call
+// Message() to drain it into the fully-assembled assistant Message — not both (a
+// Stream is consumed once).
+type Stream struct {
+	ch <-chan Emit
+}
+
+// NewStream is used by provider adapters to wrap their event channel.
+func NewStream(ch <-chan Emit) *Stream { return &Stream{ch: ch} }
+
+// Events returns a range-over-func iterator (Go 1.23+) over streamed events.
+func (s *Stream) Events() iter.Seq2[Event, error] {
+	return func(yield func(Event, error) bool) {
+		for e := range s.ch {
+			if !yield(e.Event, e.Err) {
+				return
+			}
+		}
+	}
+}
+
+// Message drains the stream and returns the assembled assistant Message + usage.
+func (s *Stream) Message() (Message, Usage, error) {
+	var b msgBuilder
+	for ev, err := range s.Events() {
+		if err != nil {
+			return Message{}, Usage{}, err
+		}
+		b.add(ev)
+	}
+	msg, err := b.finalize()
+	return msg, b.usage, err
+}
+
+// Generate is the convenience drain: stream and assemble in one call.
+func Generate(ctx context.Context, m Model, req Request) (Message, Usage, error) {
+	s, err := m.Stream(ctx, req)
+	if err != nil {
+		return Message{}, Usage{}, err
+	}
+	return s.Message()
+}
+
+// msgBuilder assembles streamed events into a Message.
+type msgBuilder struct {
+	reasoning    strings.Builder
+	reasoningSig string
+	text         strings.Builder
+	calls        map[int]*ToolUse
+	order        []int
+	usage        Usage
+}
+
+func (b *msgBuilder) add(ev Event) {
+	switch e := ev.(type) {
+	case TextDelta:
+		b.text.WriteString(e.Text)
+	case ReasoningDelta:
+		b.reasoning.WriteString(e.Text)
+		if e.Signature != "" {
+			b.reasoningSig = e.Signature
+		}
+	case ToolCallDelta:
+		if b.calls == nil {
+			b.calls = map[int]*ToolUse{}
+		}
+		tu, ok := b.calls[e.Index]
+		if !ok {
+			tu = &ToolUse{}
+			b.calls[e.Index] = tu
+			b.order = append(b.order, e.Index)
+		}
+		if e.ID != "" {
+			tu.ID = e.ID
+		}
+		if e.Name != "" {
+			tu.Name = e.Name
+		}
+		tu.Args = append(tu.Args, e.ArgsFragment...) // fragments concatenated; validated in finalize()
+	case Finish:
+		b.usage = e.Usage
+	}
+}
+
+// finalize assembles the streamed events into a Message, validating that each tool
+// call's concatenated argument fragments form complete JSON. A truncated stream
+// yields invalid JSON — surface it rather than hand malformed args to a tool.
+// (v1 json.Valid today; swaps to jsontext when we adopt json/v2 at the model layer.)
+func (b *msgBuilder) finalize() (Message, error) {
+	var parts []Part
+	if b.reasoning.Len() > 0 || b.reasoningSig != "" {
+		parts = append(parts, Reasoning{Text: b.reasoning.String(), Signature: b.reasoningSig})
+	}
+	if b.text.Len() > 0 {
+		parts = append(parts, Text{Text: b.text.String()})
+	}
+	for _, i := range b.order {
+		tu := b.calls[i]
+		if len(tu.Args) > 0 && !json.Valid(tu.Args) {
+			return Message{}, fmt.Errorf("tool call %q: incomplete or invalid JSON arguments from stream: %s", tu.Name, tu.Args)
+		}
+		parts = append(parts, *tu)
+	}
+	return Message{Role: RoleAssistant, Parts: parts}, nil
+}
