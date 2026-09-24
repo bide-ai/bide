@@ -190,8 +190,11 @@ Mirrors how we proved the single-registry + saga tiers.
   only shared vars, preserves validity over all reachable source combinations, source-determined)
   rather than a general proof. Rejects multi-source-without-resolver, divergent/local-reading/
   non-shared-writing resolvers, and cycles. Single-source (tree) federations stay proof-backed.
-  NOT yet consumed by go-agents (needs a new gsm tag + re-pin); the `FederatedGovernor` will
-  support multi-source federations automatically once pinned, since it drives `FedMachine`.
+  **Consumed by go-agents** (pinned `gsm@v0.4.0`): `FederatedGovernor` drives multi-source
+  federations, and — via `AllowMonotoneCycles` — monotone cyclic *meshes* (mutual constraints).
+  Both are exercised end-to-end in `govern/federated_test.go` (AND-gate access control; a
+  2-peer max-propagation mesh), including durable reconstruction. v0.4.0 also adds
+  `Federation.Embed` (compositional collapse: verify a subsystem once, reuse it as a unit).
 
 ## 7. Risks / notes
 

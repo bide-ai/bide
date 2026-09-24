@@ -170,6 +170,113 @@ func TestFederatedGovernor_PartialSyncMatchesCentral(t *testing.T) {
 	}
 }
 
+// TestFederatedGovernor_MultiSource drives a multi-source (DAG) federation through the durable
+// governor: a door is granted only if HR says employed AND Security says cleared (a resolver
+// merge). Confirms the governor supports multi-source federations and reconstructs from its log.
+func TestFederatedGovernor_MultiSource(t *testing.T) {
+	ctx := context.Background()
+
+	hr := gsm.NewRegistry("hr")
+	employed := hr.Bool("employed")
+	hr.Event("hire").Writes(employed).Apply(func(s gsm.State) gsm.State { return s.SetBool(employed, true) }).Add()
+	sec := gsm.NewRegistry("security")
+	cleared := sec.Bool("cleared")
+	sec.Event("grant").Writes(cleared).Apply(func(s gsm.State) gsm.State { return s.SetBool(cleared, true) }).Add()
+	door := gsm.NewRegistry("door")
+	access := door.Enum("access", "denied", "granted")
+	id := func(srcNF, d gsm.State) gsm.State { return d } // superseded by the resolver
+	m, rep, err := gsm.NewFederation("access").
+		Morphism(hr, door).Shared(access).Map(id).Add().
+		Morphism(sec, door).Shared(access).Map(id).Add().
+		Resolve(door, func(dst gsm.State, src map[string]gsm.State) gsm.State {
+			if src["hr"].GetBool(employed) && src["security"].GetBool(cleared) {
+				return dst.Set(access, "granted")
+			}
+			return dst.Set(access, "denied")
+		}).Build()
+	if err != nil {
+		t.Fatalf("multi-source federation build: %v\n%s", err, rep)
+	}
+
+	log := govern.NewMemEventLog()
+	g, err := govern.NewFederated(ctx, m, log, "acct-1", m.NewState())
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.Apply(ctx, "hr", "hire")
+	if got := m.Of(g.State(), door).Get(access); got != "denied" {
+		t.Fatalf("HR-only: access=%s, want denied (needs both)", got)
+	}
+	g.Apply(ctx, "security", "grant")
+	if got := m.Of(g.State(), door).Get(access); got != "granted" {
+		t.Fatalf("both sources: access=%s, want granted", got)
+	}
+
+	// Reconstruct from the same durable log.
+	g2, err := govern.NewFederated(ctx, m, log, "acct-1", m.NewState())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := m.Of(g2.State(), door).Get(access); got != "granted" {
+		t.Fatalf("reconstructed access=%s, want granted", got)
+	}
+}
+
+// TestFederatedGovernor_MonotoneMesh drives a CYCLIC monotone mesh through the durable
+// governor: two peers mutually cap each other's level with max-propagation. Confirms the
+// governor supports monotone cyclic federations (mutual constraints) and reconstructs.
+func TestFederatedGovernor_MonotoneMesh(t *testing.T) {
+	ctx := context.Background()
+
+	a := gsm.NewRegistry("A")
+	reqA, sA := a.Int("req", 0, 2), a.Int("s", 0, 2)
+	a.Event("reqA2").Writes(reqA).Apply(func(s gsm.State) gsm.State { return s.SetInt(reqA, 2) }).Add()
+	b := gsm.NewRegistry("B")
+	reqB, sB := b.Int("req", 0, 2), b.Int("s", 0, 2)
+	b.Event("reqB1").Writes(reqB).Apply(func(s gsm.State) gsm.State { return s.SetInt(reqB, 1) }).Add()
+
+	// Mutual (cyclic) constraint: each peer's s takes the max of the other's request and s.
+	maxFrom := func(oReq, oS, mine gsm.Var) func(gsm.State, gsm.State) gsm.State {
+		return func(srcNF, d gsm.State) gsm.State {
+			mx := srcNF.GetInt(oReq)
+			if v := srcNF.GetInt(oS); v > mx {
+				mx = v
+			}
+			return d.SetInt(mine, mx)
+		}
+	}
+	m, rep, err := gsm.NewFederation("mesh").AllowMonotoneCycles().
+		Morphism(b, a).Shared(sA).Map(maxFrom(reqB, sB, sA)).Add().
+		Morphism(a, b).Shared(sB).Map(maxFrom(reqA, sA, sB)).Add().
+		Build()
+	if err != nil {
+		t.Fatalf("monotone mesh build: %v\n%s", err, rep)
+	}
+
+	log := govern.NewMemEventLog()
+	g, err := govern.NewFederated(ctx, m, log, "mesh-1", m.NewState())
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.Apply(ctx, "A", "reqA2")
+	g.Apply(ctx, "B", "reqB1")
+	// The max request (2) propagates around the cycle to both peers.
+	if got := m.Of(g.State(), a).GetInt(sA); got != 2 {
+		t.Fatalf("A.s=%d, want 2 (max propagates around the mesh)", got)
+	}
+	if got := m.Of(g.State(), b).GetInt(sB); got != 2 {
+		t.Fatalf("B.s=%d, want 2", got)
+	}
+
+	g2, err := govern.NewFederated(ctx, m, log, "mesh-1", m.NewState())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.Of(g2.State(), a).GetInt(sA) != 2 || m.Of(g2.State(), b).GetInt(sB) != 2 {
+		t.Fatal("reconstructed mesh state diverged from original")
+	}
+}
+
 // TestFederatedGovernor_RejectsUnknown confirms an unapplicable event is neither applied nor
 // written to the log (validate-before-append).
 func TestFederatedGovernor_RejectsUnknown(t *testing.T) {
