@@ -52,6 +52,7 @@ type Agent struct {
 	// current time, tenant, retrieved state). Takes precedence over systemPrompt.
 	systemPromptFn func(context.Context) string
 	responseFormat *ResponseFormat // native structured-output constraint (see RunTypedNative)
+	toolChoice     *ToolChoice     // tool-choice control applied to every model call (see WithToolChoice)
 }
 
 // systemMessage returns the system prompt for this run — the dynamic function if set,
@@ -88,6 +89,18 @@ func (a *Agent) WithSampling(opts ...SamplingOption) *Agent {
 	for _, o := range opts {
 		o(&a.sampling)
 	}
+	return a
+}
+
+// WithToolChoice sets the tool-choice control applied to every model call (see
+// ToolChoice for the modes). Returns the agent for chaining.
+//
+// CAVEAT: forcing Mode "required" or "tool" on every turn of the multi-turn loop keeps
+// the model from ever producing a final answer (it must always call a tool), so the run
+// cannot terminate normally. Reserve those modes for single-turn or typed/structured
+// calls; "auto" (the default when unset) is the norm for the agent loop.
+func (a *Agent) WithToolChoice(tc ToolChoice) *Agent {
+	a.toolChoice = &tc
 	return a
 }
 
@@ -270,7 +283,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 			var turnUsage Usage
 			rec, err := a.store.Do(genCtx, runID, fmt.Sprintf("@llm/%d", modelSeq),
 				func(ctx context.Context) (Record, error) {
-					m, u, e := a.generate(ctx, Request{Messages: msgs, Tools: a.toolList(), Sampling: a.sampling, ResponseFormat: a.responseFormat})
+					m, u, e := a.generate(ctx, Request{Messages: msgs, Tools: a.toolList(), Sampling: a.sampling, ResponseFormat: a.responseFormat, ToolChoice: a.toolChoice})
 					if e != nil {
 						return Record{}, e
 					}

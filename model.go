@@ -22,6 +22,21 @@ type Request struct {
 	Tools          []Tool
 	Sampling       Sampling        // generation controls; zero value = provider/model defaults
 	ResponseFormat *ResponseFormat // nil = free-form; set = constrain output to a JSON schema
+	ToolChoice     *ToolChoice     // nil = provider default (auto); see ToolChoice
+}
+
+// ToolChoice controls whether and how the model may call tools on a request. Mode is one
+// of "" or "auto" (model decides, the default), "none" (never call a tool), "required"
+// (must call some tool), or "tool" (must call the specific tool named in Name). A nil
+// *ToolChoice on a Request means the provider default (auto).
+//
+// CAVEAT: in the multi-turn agent loop, forcing "required" or "tool" on EVERY turn
+// prevents the model from ever emitting a final text answer, so the loop never
+// terminates. Those two modes are intended for single-turn or typed/structured calls
+// where exactly one tool round-trip is expected. Use "auto" (the default) for the loop.
+type ToolChoice struct {
+	Mode string // "", "auto", "none", "required", or "tool"
+	Name string // tool name to force; only meaningful when Mode == "tool"
 }
 
 // ResponseFormat asks the provider to constrain the model's output to a named JSON schema

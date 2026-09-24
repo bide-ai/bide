@@ -13,6 +13,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -104,7 +105,7 @@ func (m *Model) buildRequest(req agent.Request) ([]byte, error) {
 		case agent.RoleSystem:
 			msgs = append(msgs, obj{"role": "system", "content": textOf(msg)})
 		case agent.RoleUser:
-			msgs = append(msgs, obj{"role": "user", "content": textOf(msg)})
+			msgs = append(msgs, obj{"role": "user", "content": userContent(msg)})
 		case agent.RoleTool:
 			// each tool result becomes its own tool message
 			for _, p := range msg.Parts {
@@ -177,6 +178,19 @@ func (m *Model) buildRequest(req agent.Request) ([]byte, error) {
 	if len(tools) > 0 {
 		payload["tools"] = tools
 	}
+	// tool_choice: "auto" / "none" / "required" / {"type":"function","function":{"name":...}}.
+	if tc := req.ToolChoice; tc != nil {
+		switch tc.Mode {
+		case "", "auto":
+			payload["tool_choice"] = "auto"
+		case "none":
+			payload["tool_choice"] = "none"
+		case "required":
+			payload["tool_choice"] = "required"
+		case "tool":
+			payload["tool_choice"] = obj{"type": "function", "function": obj{"name": tc.Name}}
+		}
+	}
 	if rf := req.ResponseFormat; rf != nil && len(rf.Schema) > 0 {
 		// OpenAI strict structured outputs: the schema must be closed (additionalProperties
 		// false, all keys required) — the same transform we apply to tool schemas.
@@ -223,6 +237,39 @@ func textOf(m agent.Message) string {
 		}
 	}
 	return b.String()
+}
+
+// userContent renders a user turn's content. With no image parts it returns a plain
+// string (the common case, maximally compatible). When any Image part is present it
+// returns the OpenAI array-of-parts form: text parts as {"type":"text","text":...} and
+// images as {"type":"image_url","image_url":{"url":...}}, where raw bytes become a
+// "data:<mime>;base64,<b64>" data URI and a URL passes through unchanged.
+func userContent(m agent.Message) any {
+	hasImage := false
+	for _, p := range m.Parts {
+		if _, ok := p.(agent.Image); ok {
+			hasImage = true
+			break
+		}
+	}
+	if !hasImage {
+		return textOf(m)
+	}
+	type obj = map[string]any
+	var parts []obj
+	for _, p := range m.Parts {
+		switch v := p.(type) {
+		case agent.Text:
+			parts = append(parts, obj{"type": "text", "text": v.Text})
+		case agent.Image:
+			url := v.URL
+			if url == "" {
+				url = "data:" + v.Mime + ";base64," + base64.StdEncoding.EncodeToString(v.Data)
+			}
+			parts = append(parts, obj{"type": "image_url", "image_url": obj{"url": url}})
+		}
+	}
+	return parts
 }
 
 type chunk struct {

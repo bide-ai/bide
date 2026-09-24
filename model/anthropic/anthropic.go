@@ -13,6 +13,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -144,6 +145,19 @@ func (m *Model) buildRequest(req agent.Request) ([]byte, error) {
 				blocks = append(blocks, block{"type": "tool_use", "id": v.ID, "name": v.Name, "input": input})
 			case agent.ToolResult:
 				blocks = append(blocks, block{"type": "tool_result", "tool_use_id": v.ToolUseID, "content": string(v.Result), "is_error": v.IsError})
+			case agent.Image:
+				// URL source when URL is set; otherwise a base64 source from the raw bytes.
+				var source map[string]any
+				if v.URL != "" {
+					source = map[string]any{"type": "url", "url": v.URL}
+				} else {
+					source = map[string]any{
+						"type":       "base64",
+						"media_type": v.Mime,
+						"data":       base64.StdEncoding.EncodeToString(v.Data),
+					}
+				}
+				blocks = append(blocks, block{"type": "image", "source": source})
 			}
 		}
 		msgs = append(msgs, map[string]any{"role": role, "content": blocks})
@@ -201,6 +215,21 @@ func (m *Model) buildRequest(req agent.Request) ([]byte, error) {
 	}
 	if len(tools) > 0 {
 		payload["tools"] = tools
+	}
+	// tool_choice: {"type":"auto"} / {"type":"any"} (for "required") / {"type":"tool","name":...}.
+	// Anthropic has no "none" equivalent, so map "none" the closest safe way by omitting the
+	// tool declarations entirely (the model then cannot call a tool this turn).
+	if tc := req.ToolChoice; tc != nil {
+		switch tc.Mode {
+		case "", "auto":
+			payload["tool_choice"] = map[string]any{"type": "auto"}
+		case "required":
+			payload["tool_choice"] = map[string]any{"type": "any"}
+		case "tool":
+			payload["tool_choice"] = map[string]any{"type": "tool", "name": tc.Name}
+		case "none":
+			delete(payload, "tools")
+		}
 	}
 	return json.Marshal(payload)
 }

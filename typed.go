@@ -125,6 +125,7 @@ func (a *Agent) clone() *Agent {
 		systemPrompt:   a.systemPrompt,
 		systemPromptFn: a.systemPromptFn,
 		responseFormat: a.responseFormat,
+		toolChoice:     a.toolChoice,
 	}
 }
 

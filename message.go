@@ -28,17 +28,17 @@ const (
 	RoleTool      Role = "tool"
 )
 
-// Message is one turn. Its content is a sequence of typed Parts — NOT a flat string —
+// Message is one turn. Its content is a sequence of typed Parts (NOT a flat string),
 // so reasoning/thinking parts (which Anthropic requires echoed back across turns),
-// tool calls, tool results, and images all survive round-trips intact. This is the
-// provider-neutral type; adapters translate to/from provider wire formats.
+// tool calls, tool results, and image inputs all survive round-trips intact. This is
+// the provider-neutral type; adapters translate to/from provider wire formats.
 type Message struct {
 	Role  Role
 	Parts []Part
 }
 
 // Part is a single piece of message content. Concrete parts: Text, Reasoning,
-// ToolUse, ToolResult (Image etc. later).
+// ToolUse, ToolResult, Image.
 type Part interface{ part() }
 
 // Text is plain assistant/user text.
@@ -76,9 +76,35 @@ type ToolResult struct {
 
 func (ToolResult) part() {}
 
+// Image is a provider-neutral image input. Exactly one of Data or URL is set (Data XOR
+// URL). For raw bytes, set Data and Mime (e.g. "image/png"); the adapter base64-encodes
+// it (Anthropic base64 source / OpenAI data URI). For a hosted image, set URL and leave
+// Data nil; Mime is not required for URLs. This is an input-only part: models emit text,
+// reasoning, and tool calls, never images, so nothing produces an Image on the response
+// path.
+type Image struct {
+	Mime string `json:"mime,omitempty"` // MIME type for Data (required when Data is set), e.g. "image/jpeg"; ignored for URL
+	Data []byte `json:"data,omitempty"` // raw image bytes; adapters base64-encode. Mutually exclusive with URL.
+	URL  string `json:"url,omitempty"`  // hosted image URL. Mutually exclusive with Data.
+}
+
+func (Image) part() {}
+
 // UserText and SystemText are convenience constructors.
 func UserText(s string) Message   { return Message{Role: RoleUser, Parts: []Part{Text{s}}} }
 func SystemText(s string) Message { return Message{Role: RoleSystem, Parts: []Part{Text{s}}} }
+
+// UserParts builds a user message from mixed parts, e.g. a prompt and one or more
+// images: UserParts(Text{"what is this?"}, ImageData("image/png", raw)). It is the
+// multimodal counterpart to UserText.
+func UserParts(parts ...Part) Message { return Message{Role: RoleUser, Parts: parts} }
+
+// ImageData builds an Image part from raw bytes with the given MIME type; the adapter
+// base64-encodes the bytes onto the wire.
+func ImageData(mime string, data []byte) Image { return Image{Mime: mime, Data: data} }
+
+// ImageURL builds an Image part referencing a hosted image by URL.
+func ImageURL(url string) Image { return Image{URL: url} }
 
 // toolUses returns the ToolUse parts of a message.
 func (m Message) toolUses() []ToolUse {
@@ -142,6 +168,8 @@ func partKind(p Part) (string, error) {
 		return "tool_use", nil
 	case ToolResult:
 		return "tool_result", nil
+	case Image:
+		return "image", nil
 	default:
 		return "", fmt.Errorf("agent: unknown part type %T (%w)", p, ErrProtocol)
 	}
@@ -183,6 +211,9 @@ func unmarshalPart(raw []byte) (Part, error) {
 		return v, json.Unmarshal(raw, &v)
 	case "tool_result":
 		var v ToolResult
+		return v, json.Unmarshal(raw, &v)
+	case "image":
+		var v Image
 		return v, json.Unmarshal(raw, &v)
 	default:
 		return nil, fmt.Errorf("agent: unknown part type %q (%w)", probe.Type, ErrProtocol)
