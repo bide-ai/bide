@@ -146,12 +146,13 @@ do not cross), and the phrasing to use / avoid.
 
 Honest contrast. Measured numbers only where we measured; everything else qualitative.
 
-| | go-agents | Temporal / DBOS | ADK · eino · trpc · langchaingo |
-|---|---|---|---|
-| Non-idempotent side effect on crash | **At most once (halts on unknown)** | At least once; steps must be idempotent | At least once; re-runs (**measured 4–64×**) |
-| Deployment | **Library + a DB you run** | Server + worker fleet | Library |
-| Tamper-evident audit | **RFC 6962 spine (same journal)** | Not built in | None |
-| Convergent shared state | **Provable (gsm)** | N/A | None |
+| | go-agents | Temporal / DBOS | ADK · eino · trpc · langchaingo | Sema4.ai |
+|---|---|---|---|---|
+| Non-idempotent side effect on crash | **At most once (halts on unknown)** | At least once; steps must be idempotent | At least once; re-runs (**measured 4–64×**) | Not claimed (their "deterministic" = reproducible output) |
+| Deployment | **Library + a DB you run** | Server + worker fleet | Library | Cloud / VPC-native platform you operate |
+| Tamper-evident audit | **RFC 6962 spine (same journal)** | Not built in | None | Observability / trace logs (trust-based, not cryptographic proofs) |
+| Convergent shared state | **Provable (gsm)** | N/A | None | N/A |
+| Ecosystem | Go | Go / multi | Go | Python |
 
 Notes for honest use:
 - We have **measured** double-fire counts only for the four agent frameworks (fair adapters in
@@ -163,6 +164,42 @@ Notes for honest use:
   window, which it does not have. Be precise, not dismissive.
 - The competitor adapters are deliberately fair. That discipline is itself an asset: say we
   represented each SDK at its best and still hold the only `maxFired=1`.
+
+### The Sema4.ai contrast (the vocabulary incumbent)
+
+Sema4.ai (Robocorp + an AI layer, ~$55M raised, ex-Hortonworks/Cloudera founders) is the most
+positioning-relevant competitor for our **primary buyer**, more so than langchaingo: it is a
+cloud/VPC-native enterprise agent **platform** for regulated back-office finance (invoice
+reconciliation, AP, SOX), and its headline words are literally **"deterministic, auditable
+outcomes."** It owns our vocabulary, for our buyer, with real funding and SOC2/ISO27001/HIPAA
+motion behind it. Treat it as the incumbent to differentiate *against*, not to ignore.
+
+The differentiation is **substance under the same words**:
+
+- **"Deterministic" (theirs is reproducibility, ours is crash-safety).** Sema4's determinism
+  means "same query returns the same result" (a semantic data layer + promoting patterns to
+  versioned Python modules). That is reproducibility of output. It is **not** side-effect-safe
+  resume; their public material makes no at-most-once-across-a-crash claim. Ours is the
+  attempt-marker + halt guarantee, measured (`maxFired=1`).
+- **"Auditable" (theirs is observability, ours is cryptographic proof).** Sema4 offers
+  "three-lens observability" and full run traceability: rich logs an auditor trusts *because
+  the vendor is SOC2*. Ours is RFC 6962 inclusion/consistency proofs + STH, **verifiable by a
+  third party without trusting us**, anchored out-of-band. "Logs you trust" vs "proofs you can
+  verify."
+- **Platform vs library.** Sema4 is a hosted runtime you operate inside; go-agents is a Go
+  import against a DB you already run. Opposite deployment models. Different ecosystems (Python
+  vs Go), so not a drop-in substitution either way.
+
+Honesty guardrail on this contrast: the "they don't do X" claims are inferred from **what they
+do not advertise**, not a teardown. Say "they do not claim crash-safe at-most-once / their audit
+is observability, not cryptographic proof," never "they can't." Lead with the sharper *thing we
+prove*, not a negative about them.
+
+Copy implication: because Sema4 owns the bare words "deterministic" and "auditable" in this
+buyer's mind, **do not lead with those words**. Lead with the sharper versions: "won't
+double-charge, measured" and "cryptographically verifiable, not just logged." The three-line
+wedge: *their observability you must trust vs our proofs you can verify; their reproducible
+agents vs our crash-safe (measured) ones; their platform you operate vs our library you import.*
 
 ---
 
@@ -214,7 +251,12 @@ Notes for honest use:
 Ranked by leverage:
 
 1. **Name the product.** "go-agents (working codename)" in an H1 undercuts a compliance buyer.
-   Highest-leverage unfinished item for this positioning.
+   Highest-leverage unfinished item for this positioning. Ruled out: **Semel** (Latin "once",
+   semantically ideal) for being too close to **Sema4.ai**, a funded incumbent in our exact
+   auditable-finance-agents lane; the name would invite conflation with the competitor we
+   differentiate against. Also ruled out on collision: Cairn, Keel, Ballast. Surviving
+   plain-word candidates: **Docket**, **Holdfast**. Name toward the verifiable-ledger /
+   crash-safe center of gravity, not the "deterministic/auditable" words Sema4 owns.
 2. **Compile/publish the gsm confluence proofs.** Gives pillar 4 the click-through evidence the
    other three have; the precondition for co-headlining it without hedging.
 3. **A standalone competitor-comparison doc** with methodology, so the benchmark table has a
