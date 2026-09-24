@@ -126,18 +126,27 @@ do not cross), and the phrasing to use / avoid.
 ### Pillar 4: Provably convergent shared state (gsm)
 
 - **Claim:** multiple processes replaying the same durable log converge on identical state.
-- **Proof:** the gsm engine's normalization-confluence result, written up and published in the
-  `normalization-confluence` papers (`normalization_confluence_2026` and the federated-registry
-  version). This pillar now has the same click-through backing as 1 to 3; it is fully
-  co-headlined, not hedged.
+- **Proof:** the gsm engine's normalization-confluence result now has a **machine-checked,
+  axiom-free Coq/Rocq proof**, CI-verified. `Print Assumptions` reports "Closed under the global
+  context" for every key theorem (no axioms, no admits), and a GitHub Actions workflow compiles
+  it on Coq 8.18 and 8.20 and gates on the axiom-free property (badge green). Anyone can
+  reproduce it with one command. Mechanized: Newman's Lemma, the single-registry Convergence
+  Theorem (confluence + unique normal forms), non-vacuity plus a discriminating non-confluent
+  example, soundness of gsm's WFC/CC certification (footprint-disjointness => commutation,
+  potential-decrease => termination), and the constructive core of the federated
+  monotone-cycles result (Kleene least-fixed-point). Not yet mechanized: full chaotic
+  (asynchronous) iteration. Proof directory:
+  https://github.com/blackwell-systems/normalization-confluence/tree/main/coq . This pillar has
+  the same click-through backing as 1 to 3; it is fully co-headlined, not hedged.
 - **Scope (precision, not a hedge):** the claim is **confluence of the normalization rewrite
   system** (replay order cannot change the result), NOT "agents always agree on a correct
   answer" and NOT "automatic consensus." Keep this scope in the sentence every time. This is
   not tentativeness: it is the exact wording that lets us assert the claim *aggressively*
   without an evaluator catching an overreach. Confident about what is proven; precise about
   what that is.
-- **Say:** "provably convergent shared state," with the confluence scope. Lead with it as a
-  co-equal pillar now that the proof is published.
+- **Say:** "provably convergent shared state," with the confluence scope; "machine-checked,
+  axiom-free, CI-verified" is now the click-through. Lead with it as a co-equal pillar now that
+  the proof is mechanized.
   **Avoid:** "consensus," "always correct," "CRDT" (unless precise), any *unscoped* "provable"
   (the scope is what makes it defensible, so it stays even when we assert confidently).
 
@@ -222,7 +231,7 @@ actually holds."**
 | Temporal: **"durable execution"** | Guarantees, if you run a server + worker fleet | The same guarantees as a **library**, against a DB you already run. "Durable execution shouldn't require operating a cluster." |
 | Temporal / DBOS: **"exactly-once"** | Once, *if your activity/step is idempotent* (your problem) | We close the execute→persist window they hand back to you (attempt-marker + halt). |
 | Agent frameworks: **"checkpoint / resume"** | Resume by re-running the step | Resume that **never re-fires a side effect** (they measured 4–64×; we hold 1). |
-| "**shared state / multi-agent**" | Best-effort, or a single-writer bottleneck | **Provably convergent** replay of a durable log (confluence, published proof). "Shared state should be *provably* order-independent, not hopefully consistent." |
+| "**shared state / multi-agent**" | Best-effort, or a single-writer bottleneck | **Provably convergent** replay of a durable log (confluence, machine-checked axiom-free proof, CI-verified). "Shared state should be *provably* order-independent, not hopefully consistent." |
 
 ### The three rules that keep this accurate (not spin)
 
@@ -230,9 +239,9 @@ This move is powerful *because* the proofs exist. It goes hollow the instant we 
 
 1. **Only reframe a word we can out-prove with a click.** All four bars now clear this: `audit/`
    + the RFC 6962 vectors back "auditable → verifiable"; the `benchmarks/` numbers back
-   "resume → no double-fire"; and the published `normalization-confluence` papers back "shared
-   state → provably convergent." Keep the rule as the gate for *future* reframes: no claim ships
-   as a bar until its proof is clickable.
+   "resume → no double-fire"; and the machine-checked, axiom-free, CI-verified
+   `normalization-confluence` Coq proof backs "shared state → provably convergent." Keep the rule
+   as the gate for *future* reframes: no claim ships as a bar until its proof is clickable.
 2. **Raise the bar; never call theirs a lie.** Say "reproducible output is the floor;
    crash-safety is the bar," not "Sema4 isn't really deterministic." The first is a confident
    category definition; the second is an attack we cannot fully substantiate (we infer from
@@ -254,8 +263,11 @@ proposed reframe fails rule 1 (no clickable proof), it does not ship until the p
 - **`architecture_test.go`**: stdlib-only core enforcement (pillar 2).
 - **`audit/` + `docs/AUDIT.md`**: RFC 6962 proofs, STH, `AuditedStore`, transparency log,
   checked against published CT reference vectors (pillar 3).
-- **`normalization-confluence` papers** (`normalization_confluence_2026`, federated version):
-  the published gsm confluence proof (pillar 4). Compiled and published.
+- **`normalization-confluence` Coq/Rocq proof** (public repo, `coq/` directory): the
+  machine-checked, axiom-free gsm confluence proof (pillar 4). CI-verified on Coq 8.18 and 8.20
+  with a green badge; `Print Assumptions` reports "Closed under the global context." Directory:
+  https://github.com/blackwell-systems/normalization-confluence/tree/main/coq . Field guide for
+  "when does my network converge": https://github.com/blackwell-systems/normalization-confluence/blob/main/REGIMES.md .
 - **`dst_test.go`, `saga_dst_test.go`**: deterministic simulation tests proving at-most-once
   under a crash-point sweep + randomized schedules (supporting pillar 1).
 
@@ -269,7 +281,8 @@ proposed reframe fails rule 1 (no clickable proof), it does not ship until the p
 3. Pillar 4 always carries its confluence scope in the same sentence.
 4. Lead with the plain-language pain (double-charge), then the term (at-most-once).
 5. The benchmark number is the marketing. Show it before adjectives.
-6. When a claim's proof is not yet clickable (gsm), say so plainly rather than implying it is.
+6. When a claim's proof is not yet clickable, say so plainly rather than implying it is. (All
+   four pillars are clickable today; gsm's convergence proof is machine-checked and CI-verified.)
 
 ---
 
@@ -286,9 +299,14 @@ proposed reframe fails rule 1 (no clickable proof), it does not ship until the p
   Integrity is unconditional; tamper-evidence requires anchoring the signed head out-of-band,
   which `AuditedStore` + the `Anchor` port do. We never claim your DB is immutable.
 - *"Provable convergence sounds like hand-waving."* The claim is narrow and mathematical, and
-  it is published: the normalization rewrite system is confluent, so replay order cannot change
-  the result. See the `normalization-confluence` papers. It is not "agents always agree"; it is
-  order-independent convergence of the replay, which is a proven property, not an aspiration.
+  it is now machine-checked: the normalization rewrite system is confluent (Coq/Rocq proof,
+  axiom-free, `Print Assumptions` reports "Closed under the global context", CI-verified on Coq
+  8.18 and 8.20), so replay order cannot change the result. Reproduce it with one command; see
+  https://github.com/blackwell-systems/normalization-confluence/tree/main/coq . It is not
+  "agents always agree"; it is order-independent convergence of the replay, which is a proven
+  property, not an aspiration. (Full chaotic asynchronous iteration is not yet mechanized; the
+  single-registry Convergence Theorem and the constructive core of the federated
+  monotone-cycles result are.)
 
 ---
 
@@ -303,10 +321,11 @@ Ranked by leverage:
    differentiate against. Also ruled out on collision: Cairn, Keel, Ballast. Surviving
    plain-word candidates: **Docket**, **Holdfast**. Name toward the verifiable-ledger /
    crash-safe center of gravity, not the "deterministic/auditable" words Sema4 owns.
-2. ~~Compile/publish the gsm confluence proofs.~~ **Done.** The `normalization-confluence`
-   papers are compiled and published (public repo), so pillar 4 is fully co-headlined (see §4).
-   A polished public host (arXiv / a docs site) would further strengthen external click-through,
-   but the proof is already reachable.
+2. ~~Compile/publish the gsm confluence proofs.~~ **Done, and mechanized.** The
+   `normalization-confluence` result now has a machine-checked, axiom-free Coq/Rocq proof in the
+   public repo (`coq/` directory), CI-verified on Coq 8.18 and 8.20 with a green badge, so pillar
+   4 is fully co-headlined (see §4). Remaining upside: mechanize full chaotic (asynchronous)
+   iteration, and a polished public host (arXiv / a docs site) for external click-through.
 3. **A standalone competitor-comparison doc** with methodology, so the benchmark table has a
    rigorous backing page to link.
 4. **Tag/publish the core** (retires the `benchmarks/` replace directives; makes "it's a

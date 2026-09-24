@@ -70,11 +70,15 @@ imports the SDK. **No other agent framework has this at all.** → [docs/AUDIT.m
 ### 4 · Provably convergent shared state (gsm)
 
 The governed-state tier: multiple processes replaying the same durable log **converge on
-identical state**, backed by a **published proof**. The **gsm** convergence engine's
+identical state**, backed by a **machine-checked proof**. The **gsm** convergence engine's
 normalization rewrite system is confluent, so the order steps replay in cannot change the
-result (the [normalization-confluence papers](https://github.com/blackwell-systems/normalization-confluence)).
+result. The proof is axiom-free and CI-verified on Coq 8.18 and 8.20 (`Print Assumptions`
+reports "Closed under the global context"): [the Coq/Rocq
+proof](https://github.com/blackwell-systems/normalization-confluence/tree/main/coq)
+([![verify](https://github.com/blackwell-systems/normalization-confluence/actions/workflows/verify.yml/badge.svg)](https://github.com/blackwell-systems/normalization-confluence/actions/workflows/verify.yml)).
 This is how independent agents share state without a single writer. The claim is precise:
-*order-independent convergence of the replay*, proven, not "agents always agree."
+*order-independent convergence of the replay*, proven, not "agents always agree." (Full chaotic
+asynchronous iteration is not yet mechanized.)
 
 ### vs. durable-execution and agent runtimes
 

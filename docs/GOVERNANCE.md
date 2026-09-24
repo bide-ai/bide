@@ -151,7 +151,19 @@ go run ./examples/compose   # a verified subsystem Embed-ed and reused across tw
 ## Under the hood
 
 `govern` never leaks into the durable core (the architecture guard enforces it). All of the
-above is `gsm` — the convergence engine and the founder's published research
+above is `gsm`, the convergence engine and the founder's published research
 ([Normalization Confluence](https://doi.org/10.5281/zenodo.18677400)). The federation ladder,
 monotone cycles, compositionality, and synthesis are all theorems in that work; gsm verifies
 their preconditions exhaustively at build time.
+
+The convergence guarantee is backed by a **machine-checked, axiom-free Coq/Rocq proof**,
+CI-verified on Coq 8.18 and 8.20 (`Print Assumptions` reports "Closed under the global context"
+for every key theorem; no axioms, no admits; the badge is green and anyone can reproduce it with
+one command). Mechanized: Newman's Lemma, the single-registry Convergence Theorem (confluence +
+unique normal forms), the soundness of gsm's WFC/CC certification (footprint-disjointness =>
+commutation, potential-decrease => termination), and the constructive core of the federated
+monotone-cycles result (Kleene least-fixed-point). Not yet mechanized: full chaotic
+(asynchronous) iteration. Proof directory:
+[normalization-confluence/coq](https://github.com/blackwell-systems/normalization-confluence/tree/main/coq).
+For "when does my multi-agent / governed network converge," see the
+[REGIMES field guide](https://github.com/blackwell-systems/normalization-confluence/blob/main/REGIMES.md).
