@@ -70,9 +70,10 @@ func TestRunResult_TwoTurnAccumulatesUsage(t *testing.T) {
 		t.Errorf("Usage = %+v, want %+v", res.Usage, wantUsage)
 	}
 
-	// Duration must be positive.
-	if res.Duration <= 0 {
-		t.Errorf("Duration = %v, want > 0", res.Duration)
+	// Duration is measured wall-clock; a zero-work mock run can legitimately round to 0
+	// on coarse-resolution clocks (seen on the Windows runner), so only require non-negative.
+	if res.Duration < 0 {
+		t.Errorf("Duration = %v, want >= 0", res.Duration)
 	}
 
 	// Tool must have executed exactly once.
