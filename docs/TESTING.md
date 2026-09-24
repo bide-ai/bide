@@ -234,6 +234,22 @@ labeled cases multiple times, scores each run with rule-based or LLM-judge metri
 pass-rate distribution (`eval.Report`), not a single verdict. Use `Runs > 1`, pin the model version,
 and set temperature 0 for the most reproducible baseline (still not perfectly deterministic).
 
+For rigor it does three things a bare pass-count does not:
+
+- **Confidence intervals.** Every rate carries a 95% Wilson score interval, so a lucky 4/5 reads as
+  "80%, 95% CI [38%, 96%]" and does not masquerade as precise; the interval tightens as `Runs` grows.
+- **Trajectory metrics.** It scores the agent's behavior from the durable journal, not only the final
+  message: `CalledTool`, `ToolOrder`, `MaxSteps` evaluate which tools ran, in what order, and whether
+  the agent looped. This is the agent-specific part, and it uses data (the journal) that only this
+  SDK has.
+- **Latency percentiles** (p50/p95) per report. Runs go through `AgentRunner`, so each evaluation run
+  is itself durable and auditable.
+
+Remaining bounds (stated so the harness is not oversold): there is no built-in result store or
+cross-version regression comparison yet (you keep the JSON `Report`s and diff them), and per-run
+token cost is not captured because the public `Run` does not expose usage. Those are additive, not
+corrections.
+
 The boundary is the point, and it is stated in the package doc and repeated here so it is never
 blurred in a claim:
 

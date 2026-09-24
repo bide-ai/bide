@@ -1,28 +1,30 @@
-// Package eval is a lightweight, statistical evaluation harness for agents. It answers "does the
-// model decide well?" the only way a stochastic model can be answered: run labeled cases multiple
-// times and report a pass-rate distribution, not a single verdict.
+// Package eval is a statistical evaluation harness for agents. It answers "does the model decide
+// well?" the only way a stochastic model can be answered: run labeled cases multiple times and
+// report a pass-rate distribution with confidence intervals, not a single verdict.
 //
 // Read the boundary carefully, it is the point of this package. eval measures the MODEL's judgment,
 // statistically and best-effort; it is NOT a proof and a pass rate is not a guarantee. The provable
-// parts of the system are separate and live elsewhere: the governed policy's convergence and
-// invariant enforcement (see the govern package and the gsm proof) bound what the model can do for
-// all inputs, and the audit package proves what it did. In short: eval quantifies the model;
-// governance contains it; audit records it. Do not present an eval pass rate as a guarantee, and do
-// not confuse it with the machine-checked guarantees the rest of the SDK provides.
+// parts of the system are separate: the governed policy's convergence and invariant enforcement
+// (the govern package and the gsm proof) bound what the model can do for all inputs, and the audit
+// package proves what it did. eval quantifies the model; governance contains it; audit records it.
 //
-// Because the model is stochastic, evaluate with Runs > 1 and pin the model version (and set
-// temperature 0 for the most reproducible baseline, acknowledging even that is not perfectly
-// deterministic). The report is a distribution over runs, by design.
+// Rigor: because a raw pass rate over few runs is misleading (4/5 is not "80%", it is 80% with a
+// wide interval), every rate carries a 95% Wilson confidence interval, and the harness evaluates the
+// agent's TRAJECTORY (which tools it called, how many steps it took), not only the final message,
+// using the durable journal. Evaluate with Runs well above 1, pin the model version, and set
+// temperature 0 for the most reproducible baseline (still not perfectly deterministic).
 package eval
 
 import (
 	"context"
 	"fmt"
+	"math"
 	"regexp"
 	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	agent "github.com/dayna/go-agents"
 )
@@ -34,10 +36,37 @@ type Case struct {
 	Want  any
 }
 
-// RunOutput is the result of executing one case: the agent's final message and any error.
+// Trajectory is the agent's behavior on one run, reconstructed from the durable journal: how many
+// model turns it took and which tools it called, in order, plus the raw records for custom metrics.
+type Trajectory struct {
+	Steps     int
+	ToolCalls []string
+	Records   []agent.Record
+}
+
+// TrajectoryFrom reconstructs a Trajectory from a run's journal records.
+func TrajectoryFrom(records []agent.Record) Trajectory {
+	tr := Trajectory{Records: records}
+	for _, r := range records {
+		if r.Kind == agent.StepModel && r.Message != nil {
+			tr.Steps++
+			for _, p := range r.Message.Parts {
+				if tu, ok := p.(agent.ToolUse); ok {
+					tr.ToolCalls = append(tr.ToolCalls, tu.Name)
+				}
+			}
+		}
+	}
+	return tr
+}
+
+// RunOutput is the result of executing one case: the final message, any error, the runID, and the
+// trajectory (populated by AgentRunner; empty for a bare RunFunc).
 type RunOutput struct {
 	Final agent.Message
 	Err   error
+	RunID string
+	Trace Trajectory
 }
 
 // RunFunc executes one case input and returns its output. Wrap an agent with AgentRunner, or supply
@@ -49,6 +78,8 @@ type Metric struct {
 	Name string
 	Fn   func(ctx context.Context, c Case, out RunOutput) bool
 }
+
+// --- outcome metrics (score the final message) ---
 
 // NoError passes iff the run did not error.
 func NoError() Metric {
@@ -70,14 +101,14 @@ func Matches(pattern string) Metric {
 	}}
 }
 
-// Custom builds a metric from a name and a predicate.
+// Custom builds a metric from a name and a predicate; the predicate may inspect out.Trace.
 func Custom(name string, fn func(ctx context.Context, c Case, out RunOutput) bool) Metric {
 	return Metric{Name: name, Fn: fn}
 }
 
 // Judge is an LLM-as-judge metric: it asks a model whether the output satisfies rubric, passing iff
 // the judge answers PASS. It is itself stochastic (a model grading a model), so treat it as a
-// signal, run it with Runs > 1, and never read it as a verdict.
+// signal, run it with Runs well above 1, and never read it as a verdict.
 func Judge(name string, m agent.Model, rubric string) Metric {
 	return Metric{Name: name, Fn: func(ctx context.Context, c Case, out RunOutput) bool {
 		prompt := fmt.Sprintf(
@@ -91,19 +122,89 @@ func Judge(name string, m agent.Model, rubric string) Metric {
 	}}
 }
 
-// Options configures a run. Runs is the number of executions per case (default 1); use more than
-// one to sample a stochastic model. Concurrency caps in-flight executions (default 8, which is
-// friendly to provider rate limits).
+// --- trajectory metrics (score the agent's behavior, from the journal) ---
+
+// CalledTool passes iff the run called a tool with this name at least once.
+func CalledTool(name string) Metric {
+	return Metric{Name: "called:" + name, Fn: func(_ context.Context, _ Case, out RunOutput) bool {
+		for _, t := range out.Trace.ToolCalls {
+			if t == name {
+				return true
+			}
+		}
+		return false
+	}}
+}
+
+// MaxSteps passes iff the run took at most n model turns (a guard against looping/thrashing).
+func MaxSteps(n int) Metric {
+	return Metric{Name: fmt.Sprintf("max_steps:%d", n), Fn: func(_ context.Context, _ Case, out RunOutput) bool {
+		return out.Trace.Steps <= n
+	}}
+}
+
+// ToolOrder passes iff the named tools were each called, in the given relative order (as a
+// subsequence of the actual call order).
+func ToolOrder(names ...string) Metric {
+	return Metric{Name: "tool_order:" + strings.Join(names, ">"), Fn: func(_ context.Context, _ Case, out RunOutput) bool {
+		i := 0
+		for _, t := range out.Trace.ToolCalls {
+			if i < len(names) && t == names[i] {
+				i++
+			}
+		}
+		return i == len(names)
+	}}
+}
+
+// Options configures a run. Runs is the executions per case (default 1); use many more to sample a
+// stochastic model and get a meaningful confidence interval. Concurrency caps in-flight executions
+// (default 8, friendly to provider rate limits).
 type Options struct {
 	Runs        int
 	Concurrency int
 }
 
-// MetricStat is a metric's pass count over some number of runs.
+// MetricStat is a metric's pass count over some runs, with a 95% Wilson score confidence interval
+// on the true pass rate. The interval is wide for small Runs, by design: it stops a lucky 4/5 from
+// reading as a solid 80%.
 type MetricStat struct {
 	Passes int     `json:"passes"`
 	Runs   int     `json:"runs"`
 	Rate   float64 `json:"rate"`
+	CILow  float64 `json:"ci_low"`
+	CIHigh float64 `json:"ci_high"`
+}
+
+func stat(passes, runs int) MetricStat {
+	s := MetricStat{Passes: passes, Runs: runs}
+	if runs > 0 {
+		s.Rate = float64(passes) / float64(runs)
+		s.CILow, s.CIHigh = wilson(passes, runs)
+	}
+	return s
+}
+
+// wilson returns the 95% Wilson score interval for a binomial proportion. It is well-behaved for
+// small n and extreme rates, unlike the normal approximation.
+func wilson(passes, n int) (lo, hi float64) {
+	if n == 0 {
+		return 0, 0
+	}
+	const z = 1.96
+	nf := float64(n)
+	phat := float64(passes) / nf
+	denom := 1 + z*z/nf
+	center := (phat + z*z/(2*nf)) / denom
+	margin := z * math.Sqrt(phat*(1-phat)/nf+z*z/(4*nf*nf)) / denom
+	lo, hi = center-margin, center+margin
+	if lo < 0 {
+		lo = 0
+	}
+	if hi > 1 {
+		hi = 1
+	}
+	return lo, hi
 }
 
 // CaseReport holds one case's per-metric stats over Runs executions.
@@ -112,17 +213,21 @@ type CaseReport struct {
 	Metrics map[string]MetricStat `json:"metrics"`
 }
 
-// Report is the statistical result of an evaluation: per-case pass rates and an aggregate. It is
-// JSON-marshalable for storage or inspection. It is a distribution, not a verdict.
+// Report is the statistical result of an evaluation: per-case and aggregate pass rates with
+// confidence intervals, plus latency percentiles. JSON-marshalable. A distribution, not a verdict.
 type Report struct {
 	RunsPerCase int                   `json:"runs_per_case"`
+	TotalRuns   int                   `json:"total_runs"`
 	Cases       []CaseReport          `json:"cases"`
 	Overall     map[string]MetricStat `json:"overall"`
+	LatencyP50  time.Duration         `json:"latency_p50"`
+	LatencyP95  time.Duration         `json:"latency_p95"`
 }
 
 // Run executes each case Runs times through run, scores every execution with each metric, and
-// returns a Report of pass rates. Executions run concurrently up to Options.Concurrency. Because
-// the model is stochastic, the report is a pass-rate distribution over runs, not a single pass/fail.
+// returns a Report of pass rates (with Wilson confidence intervals) and latency percentiles.
+// Executions run concurrently up to Options.Concurrency. Because the model is stochastic, the report
+// is a distribution over runs, not a single pass/fail.
 func Run(ctx context.Context, run RunFunc, cases []Case, metrics []Metric, opts Options) Report {
 	runs := opts.Runs
 	if runs < 1 {
@@ -132,11 +237,13 @@ func Run(ctx context.Context, run RunFunc, cases []Case, metrics []Metric, opts 
 	if conc < 1 {
 		conc = 8
 	}
+	total := len(cases) * runs
 
 	passes := make([][]int64, len(cases))
 	for i := range passes {
 		passes[i] = make([]int64, len(metrics))
 	}
+	latencies := make([]time.Duration, total)
 
 	sem := make(chan struct{}, conc)
 	var wg sync.WaitGroup
@@ -144,72 +251,86 @@ func Run(ctx context.Context, run RunFunc, cases []Case, metrics []Metric, opts 
 		for r := 0; r < runs; r++ {
 			wg.Add(1)
 			sem <- struct{}{}
-			go func(i int) {
+			go func(i, r int) {
 				defer wg.Done()
 				defer func() { <-sem }()
+				start := time.Now()
 				out := run(ctx, cases[i].Input)
+				latencies[i*runs+r] = time.Since(start)
 				for m := range metrics {
 					if metrics[m].Fn(ctx, cases[i], out) {
 						atomic.AddInt64(&passes[i][m], 1)
 					}
 				}
-			}(i)
+			}(i, r)
 		}
 	}
 	wg.Wait()
 
-	rep := Report{RunsPerCase: runs, Overall: map[string]MetricStat{}}
+	rep := Report{RunsPerCase: runs, TotalRuns: total, Overall: map[string]MetricStat{}}
 	totals := make([]int64, len(metrics))
 	for i, c := range cases {
 		cr := CaseReport{Name: c.Name, Metrics: map[string]MetricStat{}}
 		for m := range metrics {
-			p := int(passes[i][m])
-			cr.Metrics[metrics[m].Name] = MetricStat{Passes: p, Runs: runs, Rate: float64(p) / float64(runs)}
+			cr.Metrics[metrics[m].Name] = stat(int(passes[i][m]), runs)
 			totals[m] += passes[i][m]
 		}
 		rep.Cases = append(rep.Cases, cr)
 	}
-	denom := len(cases) * runs
 	for m := range metrics {
-		rate := 0.0
-		if denom > 0 {
-			rate = float64(totals[m]) / float64(denom)
-		}
-		rep.Overall[metrics[m].Name] = MetricStat{Passes: int(totals[m]), Runs: denom, Rate: rate}
+		rep.Overall[metrics[m].Name] = stat(int(totals[m]), total)
+	}
+	if total > 0 {
+		sort.Slice(latencies, func(a, b int) bool { return latencies[a] < latencies[b] })
+		rep.LatencyP50 = latencies[pctIndex(total, 50)]
+		rep.LatencyP95 = latencies[pctIndex(total, 95)]
 	}
 	return rep
 }
 
+func pctIndex(n, p int) int {
+	i := (n * p) / 100
+	if i >= n {
+		i = n - 1
+	}
+	return i
+}
+
 // AgentRunner wraps an Agent as a RunFunc, giving each run a unique runID (prefix plus a counter)
-// so evaluation runs are independent in the durable store.
-func AgentRunner(a *agent.Agent, runIDPrefix string) RunFunc {
+// so evaluation runs are independent, durable, and auditable. It reads the run's journal from store
+// (the same Durable the Agent was built with) to populate the Trajectory for trajectory metrics.
+func AgentRunner(a *agent.Agent, store agent.Durable, runIDPrefix string) RunFunc {
 	var n int64
 	return func(ctx context.Context, input string) RunOutput {
 		id := fmt.Sprintf("%s-%d", runIDPrefix, atomic.AddInt64(&n, 1))
 		msg, err := a.Run(ctx, id, input)
-		return RunOutput{Final: msg, Err: err}
+		recs, _ := store.History(ctx, id)
+		return RunOutput{Final: msg, Err: err, RunID: id, Trace: TrajectoryFrom(recs)}
 	}
 }
 
-// String renders the report as a readable table. Metric names are sorted for stable output.
+// String renders the report as a readable table with confidence intervals and latency. Metric names
+// are sorted for stable output.
 func (r Report) String() string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "eval: %d run(s) per case\n", r.RunsPerCase)
+	fmt.Fprintf(&b, "eval: %d run(s) per case, %d total\n", r.RunsPerCase, r.TotalRuns)
 	names := make([]string, 0, len(r.Overall))
 	for n := range r.Overall {
 		names = append(names, n)
 	}
 	sort.Strings(names)
+	line := func(who string, s MetricStat, name string) {
+		fmt.Fprintf(&b, "  %-20s %-22s %d/%d  rate=%.0f%%  95%%CI=[%.0f%%,%.0f%%]\n",
+			who, name, s.Passes, s.Runs, s.Rate*100, s.CILow*100, s.CIHigh*100)
+	}
 	for _, c := range r.Cases {
 		for _, n := range names {
-			s := c.Metrics[n]
-			fmt.Fprintf(&b, "  %-22s %-24s %d/%d (%.0f%%)\n", c.Name, n, s.Passes, s.Runs, s.Rate*100)
+			line(c.Name, c.Metrics[n], n)
 		}
 	}
-	fmt.Fprintf(&b, "  %-22s\n", "OVERALL")
 	for _, n := range names {
-		s := r.Overall[n]
-		fmt.Fprintf(&b, "  %-22s %-24s %d/%d (%.0f%%)\n", "", n, s.Passes, s.Runs, s.Rate*100)
+		line("OVERALL", r.Overall[n], n)
 	}
+	fmt.Fprintf(&b, "  latency p50=%s p95=%s\n", r.LatencyP50.Round(time.Millisecond), r.LatencyP95.Round(time.Millisecond))
 	return b.String()
 }

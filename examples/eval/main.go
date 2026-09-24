@@ -54,7 +54,8 @@ func main() {
 	ctx := context.Background()
 
 	// 1) The agent under test. For a real evaluation, swap classifier{} for a provider adapter.
-	a := agent.New(&classifier{}, agent.NewMemStore()).
+	store := agent.NewMemStore()
+	a := agent.New(&classifier{}, store).
 		WithSystemPrompt("Classify the sentiment of the user's message as 'positive' or 'negative'.")
 
 	// 2) Labeled cases. Want carries the expected label a metric checks.
@@ -68,10 +69,11 @@ func main() {
 		want, _ := c.Want.(string)
 		return strings.Contains(strings.ToLower(out.Final.Text()), want)
 	})
-	metrics := []eval.Metric{eval.NoError(), correct}
+	// MaxSteps reads the trajectory from the journal: a classifier should answer in one turn.
+	metrics := []eval.Metric{eval.NoError(), correct, eval.MaxSteps(1)}
 
 	// 4) Run each case 5 times (sampling the stochastic model) and print the pass-rate report.
-	rep := eval.Run(ctx, eval.AgentRunner(a, "sentiment"), cases, metrics, eval.Options{Runs: 5, Concurrency: 4})
+	rep := eval.Run(ctx, eval.AgentRunner(a, store, "sentiment"), cases, metrics, eval.Options{Runs: 5, Concurrency: 4})
 	fmt.Print(rep.String())
 	fmt.Printf("\noverall correct_label rate: %.0f%% (a distribution over runs, not a guarantee)\n",
 		rep.Overall["correct_label"].Rate*100)

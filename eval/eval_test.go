@@ -9,14 +9,12 @@ import (
 	"github.com/dayna/go-agents/eval"
 )
 
-// TestRun_StatisticalPassRate confirms the harness reports a pass-rate distribution over runs, not
-// a single verdict: a RunFunc that alternates output every call yields a deterministic 50% rate
-// over 4 runs (2 of 4), regardless of goroutine scheduling, because the alternation is by an atomic
-// counter's parity.
+// TestRun_StatisticalPassRate confirms the harness reports a pass-rate distribution with a Wilson
+// confidence interval: a RunFunc that alternates output yields a deterministic 50% over 4 runs, and
+// the 95% CI for 2/4 is wide (roughly [15%, 85%]), which is the point of reporting intervals.
 func TestRun_StatisticalPassRate(t *testing.T) {
 	var n int64
 	stochastic := func(_ context.Context, _ string) eval.RunOutput {
-		// even call -> "APPROVED", odd -> "DENIED". Over 4 concurrent calls: exactly 2 of each.
 		if atomic.AddInt64(&n, 1)%2 == 0 {
 			return eval.RunOutput{Final: agent.UserText("APPROVED")}
 		}
@@ -27,18 +25,22 @@ func TestRun_StatisticalPassRate(t *testing.T) {
 
 	rep := eval.Run(context.Background(), stochastic, cases, metrics, eval.Options{Runs: 4})
 
-	if rep.RunsPerCase != 4 {
-		t.Fatalf("runs per case = %d, want 4", rep.RunsPerCase)
+	if rep.RunsPerCase != 4 || rep.TotalRuns != 4 {
+		t.Fatalf("runs=%d total=%d, want 4,4", rep.RunsPerCase, rep.TotalRuns)
 	}
-	if ne := rep.Overall["no_error"]; ne.Rate != 1.0 {
-		t.Fatalf("no_error rate = %v, want 1.0", ne.Rate)
-	}
-	if ap := rep.Overall["contains:APPROVED"]; ap.Passes != 2 || ap.Rate != 0.5 {
+	ap := rep.Overall["contains:APPROVED"]
+	if ap.Passes != 2 || ap.Rate != 0.5 {
 		t.Fatalf("contains:APPROVED = %d/%d rate %v, want 2/4 rate 0.5", ap.Passes, ap.Runs, ap.Rate)
+	}
+	if !(ap.CILow < 0.25 && ap.CIHigh > 0.75) {
+		t.Fatalf("expected a wide 95%% CI for 2/4, got [%.2f,%.2f]", ap.CILow, ap.CIHigh)
+	}
+	if rep.Overall["no_error"].Rate != 1.0 {
+		t.Fatalf("no_error rate = %v, want 1.0", rep.Overall["no_error"].Rate)
 	}
 }
 
-// judgeModel is a stub judge that returns a fixed verdict, so the Judge metric is testable offline.
+// judgeModel is a stub judge returning a fixed verdict so the Judge metric is testable offline.
 type judgeModel struct{ verdict string }
 
 func (m judgeModel) Stream(_ context.Context, _ agent.Request) (*agent.Stream, error) {
@@ -49,19 +51,16 @@ func (m judgeModel) Stream(_ context.Context, _ agent.Request) (*agent.Stream, e
 	return agent.NewStream(ch), nil
 }
 
-// TestJudge confirms the LLM-as-judge metric passes on a PASS verdict and fails on FAIL.
 func TestJudge(t *testing.T) {
 	cases := []eval.Case{{Name: "c", Input: "in"}}
 	run := func(_ context.Context, _ string) eval.RunOutput {
 		return eval.RunOutput{Final: agent.UserText("some answer")}
 	}
-
 	pass := eval.Run(context.Background(), run, cases,
 		[]eval.Metric{eval.Judge("rubric", judgeModel{"PASS"}, "is it fine")}, eval.Options{Runs: 1})
 	if pass.Overall["rubric"].Rate != 1.0 {
 		t.Fatalf("judge PASS should score 1.0, got %v", pass.Overall["rubric"].Rate)
 	}
-
 	fail := eval.Run(context.Background(), run, cases,
 		[]eval.Metric{eval.Judge("rubric", judgeModel{"FAIL: off topic"}, "is it fine")}, eval.Options{Runs: 1})
 	if fail.Overall["rubric"].Rate != 0.0 {
@@ -69,30 +68,54 @@ func TestJudge(t *testing.T) {
 	}
 }
 
-// echoModel returns a fixed final answer, so AgentRunner can be tested end to end offline.
-type echoModel struct{}
+// toolModel calls the "lookup" tool on the first turn, then answers, so the run has a two-step
+// trajectory with one tool call, exercising the trajectory metrics.
+type toolModel struct{}
 
-func (echoModel) Stream(_ context.Context, _ agent.Request) (*agent.Stream, error) {
+func (toolModel) Stream(_ context.Context, req agent.Request) (*agent.Stream, error) {
 	ch := make(chan agent.Emit, 2)
-	ch <- agent.Emit{Event: agent.TextDelta{Text: "done"}}
-	ch <- agent.Emit{Event: agent.Finish{Reason: "stop"}}
+	if len(req.Messages) <= 1 {
+		ch <- agent.Emit{Event: agent.ToolCallDelta{Index: 0, ID: "c1", Name: "lookup", ArgsFragment: []byte(`{}`)}}
+		ch <- agent.Emit{Event: agent.Finish{Reason: "tool_use"}}
+	} else {
+		ch <- agent.Emit{Event: agent.TextDelta{Text: "done"}}
+		ch <- agent.Emit{Event: agent.Finish{Reason: "stop"}}
+	}
 	close(ch)
 	return agent.NewStream(ch), nil
 }
 
-// TestAgentRunner drives a real Agent through the harness, giving each run a unique runID.
-func TestAgentRunner(t *testing.T) {
-	a := agent.New(echoModel{}, agent.NewMemStore())
-	run := eval.AgentRunner(a, "eval")
-	cases := []eval.Case{{Name: "greet", Input: "hi"}, {Name: "ask", Input: "what"}}
+// TestTrajectoryMetrics drives a real Agent with a tool and confirms the harness scores the agent's
+// behavior (tool called, step count) from the journal, not just the final text.
+func TestTrajectoryMetrics(t *testing.T) {
+	store := agent.NewMemStore()
+	lookup := agent.Func("lookup", "look something up", agent.Safety{ReadOnly: true},
+		func(context.Context, struct{}) (string, error) { return "ok", nil })
+	a := agent.New(toolModel{}, store, lookup)
+	run := eval.AgentRunner(a, store, "traj")
+	cases := []eval.Case{{Name: "with_tool", Input: "go"}}
 
-	rep := eval.Run(context.Background(), run, cases,
-		[]eval.Metric{eval.NoError(), eval.Contains("done")}, eval.Options{Runs: 2, Concurrency: 2})
+	rep := eval.Run(context.Background(), run, cases, []eval.Metric{
+		eval.NoError(),
+		eval.CalledTool("lookup"),
+		eval.MaxSteps(2),
+		eval.MaxSteps(1),
+		eval.ToolOrder("lookup"),
+	}, eval.Options{Runs: 3, Concurrency: 2})
 
-	if rep.Overall["no_error"].Rate != 1.0 || rep.Overall["contains:done"].Rate != 1.0 {
-		t.Fatalf("expected all runs to succeed and contain 'done', got %+v", rep.Overall)
+	if rep.Overall["no_error"].Rate != 1.0 {
+		t.Fatalf("expected no errors, got %v", rep.Overall["no_error"].Rate)
 	}
-	if len(rep.Cases) != 2 {
-		t.Fatalf("expected 2 case reports, got %d", len(rep.Cases))
+	if rep.Overall["called:lookup"].Rate != 1.0 {
+		t.Fatalf("expected the lookup tool to be called every run, got %v", rep.Overall["called:lookup"].Rate)
+	}
+	if rep.Overall["max_steps:2"].Rate != 1.0 {
+		t.Fatalf("expected <=2 steps every run, got %v", rep.Overall["max_steps:2"].Rate)
+	}
+	if rep.Overall["max_steps:1"].Rate != 0.0 {
+		t.Fatalf("run took 2 turns, so max_steps:1 should fail every run, got %v", rep.Overall["max_steps:1"].Rate)
+	}
+	if rep.Overall["tool_order:lookup"].Rate != 1.0 {
+		t.Fatalf("expected tool_order:lookup to hold, got %v", rep.Overall["tool_order:lookup"].Rate)
 	}
 }
