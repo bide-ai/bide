@@ -100,6 +100,12 @@ func (e *SagaAborted) Unwrap() error { return e.Cause }
 // marker but before any result), resume returns *ResumeHalt instead — you can't safely
 // auto-roll-back a step that may have committed; a human decides.
 func (a *Agent) RunSaga(ctx context.Context, runID, input string) (Message, error) {
+	return a.runSaga(ctx, runID, input, nil)
+}
+
+// runSaga is the shared body of RunSaga and StreamSaga; emit (may be nil) receives
+// lifecycle events as the loop runs.
+func (a *Agent) runSaga(ctx context.Context, runID, input string, emit func(AgentEvent)) (Message, error) {
 	recs, err := a.store.History(ctx, runID)
 	if err != nil {
 		return Message{}, err
@@ -108,7 +114,7 @@ func (a *Agent) RunSaga(ctx context.Context, runID, input string) (Message, erro
 		return Message{}, a.rollback(ctx, runID, errors.New(cause))
 	}
 
-	out, err := a.run(ctx, runID, input, true)
+	out, err := a.run(ctx, runID, input, true, emit)
 	var trip *sagaTrip
 	if errors.As(err, &trip) {
 		return Message{}, a.rollback(ctx, runID, trip.cause)

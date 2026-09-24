@@ -55,6 +55,11 @@ gsm federation capability reaches the agent tier for free on a version bump:
 - `agent` (root, gsm/adapter-free core): loop, Message/Part, Tool/Safety, Durable, Model
   (Stream-first), middleware types, sub-agents, saga, replay, RenderMermaid. Ports: Model,
   Durable, Tool, Middleware. `architecture_test.go` fails the build if core imports an adapter.
+  **Caller-facing streaming** (`Agent.Stream`/`StreamSaga` → `AgentStream`): one loop shared with
+  Run (Run is `Stream(...).Final()`); emits `TurnStarted`, live `ModelEvent` token deltas,
+  `AssistantTurn` (with `Replayed` on resume), `ToolStarted`/`ToolCompleted`, `ApprovalRequired`,
+  `Finished`. Token deltas forward below the middleware chain (still sees assembled messages) and
+  only on a FRESH model call — replayed turns re-emit the journaled transcript instead.
 - `middleware`: Retry, TokenBudget. `trace`: opt-in OTel gen_ai.* (API only).
 - `model/anthropic` (native), `model/openai` (any OpenAI-compatible via WithBaseURL).
 - `schema`: reflect→inline JSON schema + OpenAIStrict. `mcp`: official go-sdk; annotations→Safety.
@@ -101,7 +106,7 @@ gsm federation capability reaches the agent tier for free on a version bump:
   + `./compile.sh` in the normalization-confluence repo; then re-publish to Zenodo.
 - Symbolic verification (SAT/SMT) to break the ~1M-state enumeration ceiling; infinite-domain
   engine (overlaps with symbolic). Self-stabilization reframing (cheap positioning win).
-- v1 agent gaps: `Agent.Stream` to the caller, sessions/multi-turn, production retry (backoff).
+- v1 agent gaps: sessions/multi-turn, production retry (backoff). (`Agent.Stream` — DONE.)
 - Housekeeping: pick a real name; go-agents CI; godoc examples; per-file SPDX headers (optional).
 
 ## Notes

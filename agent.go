@@ -64,6 +64,17 @@ func (a *Agent) SetMaxConcurrency(n int) *Agent {
 
 func (a *Agent) generate(ctx context.Context, req Request) (Message, Usage, error) {
 	h := ModelHandler(func(ctx context.Context, req Request) (Message, Usage, error) {
+		// When a token sink is installed (Agent.Stream), stream the model call and
+		// forward deltas as they arrive while still assembling the message for the
+		// journal; otherwise take the plain blocking drain. Middleware wraps this
+		// either way and sees the assembled message + usage — streaming stays below it.
+		if sink := modelSink(ctx); sink != nil {
+			s, err := a.model.Stream(ctx, req)
+			if err != nil {
+				return Message{}, Usage{}, err
+			}
+			return s.drain(sink)
+		}
 		return Generate(ctx, a.model, req)
 	})
 	for i := len(a.mw) - 1; i >= 0; i-- {
@@ -77,10 +88,19 @@ func (a *Agent) generate(ctx context.Context, req Request) (Message, Usage, erro
 // are re-run; a non-retry-safe tool with no result triggers ResumeHalt; a tool that
 // requires approval with no recorded decision triggers PendingApproval.
 func (a *Agent) Run(ctx context.Context, runID, input string) (Message, error) {
-	return a.run(ctx, runID, input, false)
+	return a.run(ctx, runID, input, false, nil)
 }
 
-func (a *Agent) run(ctx context.Context, runID, input string, saga bool) (Message, error) {
+// run is the single loop shared by Run/RunSaga (emit == nil) and Stream/StreamSaga
+// (emit receives lifecycle events). Durability, resume, and side-effect safety are
+// identical regardless of emit; emitting is best-effort observation layered on top.
+func (a *Agent) run(ctx context.Context, runID, input string, saga bool, emit func(AgentEvent)) (Message, error) {
+	fire := func(e AgentEvent) {
+		if emit != nil {
+			emit(e)
+		}
+	}
+
 	recs, err := a.store.History(ctx, runID)
 	if err != nil {
 		return Message{}, fmt.Errorf("load history %s: %w", runID, err)
@@ -98,12 +118,15 @@ func (a *Agent) run(ctx context.Context, runID, input string, saga bool) (Messag
 			modelSeq++
 			if r.Message != nil {
 				msgs = append(msgs, *r.Message)
+				fire(AssistantTurn{Message: *r.Message, Replayed: true})
 			}
 		case StepToolResult:
 			done[r.ToolUseID] = true
 			msgs = append(msgs, Message{Role: RoleTool, Parts: []Part{
 				ToolResult{ToolUseID: r.ToolUseID, Result: r.Result, IsError: r.IsError},
 			}})
+			name, _ := toolNameFor(recs, r.ToolUseID)
+			fire(ToolCompleted{ToolUseID: r.ToolUseID, Name: name, Result: r.Result, IsError: r.IsError})
 		case StepAttempt:
 			attempted[r.ToolUseID] = true
 		case StepSagaFail:
@@ -138,7 +161,15 @@ func (a *Agent) run(ctx context.Context, runID, input string, saga bool) (Messag
 		if n := len(msgs); n > 0 && msgs[n-1].Role == RoleAssistant && pending(msgs[n-1], done) {
 			asst = msgs[n-1]
 		} else {
-			rec, err := a.store.Do(ctx, runID, fmt.Sprintf("@llm/%d", modelSeq),
+			fire(TurnStarted{Seq: modelSeq})
+			// Install the token sink so a live (non-replayed) model call forwards its
+			// deltas as ModelEvents. On memoized replay store.Do skips the fn, so no
+			// sink fires — an AssistantTurn{Replayed:true} was emitted during resume.
+			genCtx := ctx
+			if emit != nil {
+				genCtx = withModelSink(ctx, func(ev Event) { fire(ModelEvent{Event: ev}) })
+			}
+			rec, err := a.store.Do(genCtx, runID, fmt.Sprintf("@llm/%d", modelSeq),
 				func(ctx context.Context) (Record, error) {
 					m, _, e := a.generate(ctx, Request{Messages: msgs, Tools: a.toolList()})
 					if e != nil {
@@ -152,10 +183,12 @@ func (a *Agent) run(ctx context.Context, runID, input string, saga bool) (Messag
 			asst = *rec.Message
 			modelSeq++
 			msgs = append(msgs, asst)
+			fire(AssistantTurn{Message: asst, Replayed: false})
 		}
 
 		uses := asst.toolUses()
 		if len(uses) == 0 {
+			fire(Finished{Final: asst})
 			return asst, nil // final answer
 		}
 
@@ -180,6 +213,7 @@ func (a *Agent) run(ctx context.Context, runID, input string, saga bool) (Messag
 			}
 			if t.Safety().RequiresApproval {
 				if !decided[tu.ID] {
+					fire(ApprovalRequired{ToolUseID: tu.ID, Name: tu.Name, Args: tu.Args})
 					return Message{}, &PendingApproval{RunID: runID, ToolUseID: tu.ID, ToolName: tu.Name, Args: tu.Args}
 				}
 				if !approvals[tu.ID] { // denied — record a denial and let the model react
@@ -191,6 +225,7 @@ func (a *Agent) run(ctx context.Context, runID, input string, saga bool) (Messag
 					}
 					done[tu.ID] = true
 					results[i] = &Message{Role: RoleTool, Parts: []Part{ToolResult{ToolUseID: tu.ID, Result: json.RawMessage(denied), IsError: true}}}
+					fire(ToolCompleted{ToolUseID: tu.ID, Name: tu.Name, Result: json.RawMessage(denied), IsError: true})
 					continue
 				}
 			}
@@ -218,6 +253,7 @@ func (a *Agent) run(ctx context.Context, runID, input string, saga bool) (Messag
 						return err
 					}
 				}
+				fire(ToolStarted{ToolUseID: c.tu.ID, Name: c.tu.Name, Args: c.tu.Args})
 				var toolCallErr error
 				rec, err := a.store.Do(gctx, runID, c.tu.ID, func(context.Context) (Record, error) {
 					res, callErr := c.t.Call(sctx, c.tu.Args)
@@ -235,12 +271,14 @@ func (a *Agent) run(ctx context.Context, runID, input string, saga bool) (Messag
 					return r, nil
 				})
 				if saga && toolCallErr != nil {
+					fire(ToolCompleted{ToolUseID: c.tu.ID, Name: c.tu.Name, Result: rec.Result, IsError: true})
 					return &sagaTrip{toolName: c.tu.Name, toolUseID: c.tu.ID, cause: toolCallErr}
 				}
 				if err != nil {
 					return fmt.Errorf("tool %q: %w", c.tu.Name, err)
 				}
 				results[c.idx] = &Message{Role: RoleTool, Parts: []Part{ToolResult{ToolUseID: c.tu.ID, Result: rec.Result, IsError: rec.IsError}}}
+				fire(ToolCompleted{ToolUseID: c.tu.ID, Name: c.tu.Name, Result: rec.Result, IsError: rec.IsError})
 				return nil
 			})
 		}
@@ -273,9 +311,21 @@ func (a *Agent) toolList() []Tool {
 type ctxKey int
 
 const (
-	runScopeKey ctxKey = 0
-	sagaKey     ctxKey = 1
+	runScopeKey  ctxKey = 0
+	sagaKey      ctxKey = 1
+	modelSinkKey ctxKey = 2
 )
+
+func withModelSink(ctx context.Context, sink func(Event)) context.Context {
+	return context.WithValue(ctx, modelSinkKey, sink)
+}
+
+// modelSink returns the live token sink installed by Agent.Stream, or nil for a
+// blocking Run. The base model handler forwards each stream Event to it.
+func modelSink(ctx context.Context) func(Event) {
+	s, _ := ctx.Value(modelSinkKey).(func(Event))
+	return s
+}
 
 func withRunScope(ctx context.Context, scope string) context.Context {
 	return context.WithValue(ctx, runScopeKey, scope)

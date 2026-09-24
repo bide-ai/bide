@@ -92,11 +92,20 @@ func (s *Stream) Events() iter.Seq2[Event, error] {
 }
 
 // Message drains the stream and returns the assembled assistant Message + usage.
-func (s *Stream) Message() (Message, Usage, error) {
+func (s *Stream) Message() (Message, Usage, error) { return s.drain(nil) }
+
+// drain assembles the stream into a Message, forwarding each event to onEvent (if
+// non-nil) as it arrives. This is the shared path behind Message() and the Agent's
+// token-streaming model call: the caller sees live deltas while the assembled
+// message is still produced for the journal and middleware.
+func (s *Stream) drain(onEvent func(Event)) (Message, Usage, error) {
 	var b msgBuilder
 	for ev, err := range s.Events() {
 		if err != nil {
 			return Message{}, Usage{}, err
+		}
+		if onEvent != nil {
+			onEvent(ev)
 		}
 		b.add(ev)
 	}
