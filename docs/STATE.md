@@ -293,7 +293,7 @@ gsm federation capability reaches the agent tier for free on a version bump:
   span per call) + `trace.Invoke`. `trace.Tool` runs inside the loop so its span nests across the
   sub-agent boundary (a gap in ADK / AgenticGoKit / trpc-agent-go). Note: `trace.Tool` is now a
   ToolMiddleware, `Tool(tracer)` — was a per-tool decorator `Tool(tracer, t)` (breaking, pre-1.0).
-- `model/anthropic` (native), `model/openai` (any OpenAI-compatible via WithBaseURL).
+- `model/anthropic` (native), `model/gemini` (native), `model/openai` (any OpenAI-compatible via WithBaseURL).
 - **Prompt caching**: `anthropic.WithPromptCache()` places cache_control breakpoints on the
   system block + tool defs (the constant per-turn prefix); OpenAI caches prefixes automatically.
   Cache hits/writes surface cross-provider in `agent.Usage.CacheReadTokens`/`CacheWriteTokens`

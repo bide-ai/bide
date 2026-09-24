@@ -124,8 +124,8 @@ Beyond the four guarantees, the details that make it pleasant to build on:
   SDKs drop them, silently breaking thinking + tool use.
 - **Provider-aware tool schemas.** One reflected schema, emitted per dialect (OpenAI strict
   mode, etc.), not one generic schema that strict mode and Gemini reject.
-- **Any model, one adapter.** Native Claude + any OpenAI-compatible endpoint (OpenAI, Ollama,
-  DeepSeek, Groq, OpenRouter, vLLM, Azure, xAI…) via `WithBaseURL`.
+- **Any model, one adapter.** Native Claude, native Gemini, and any OpenAI-compatible endpoint
+  (OpenAI, Ollama, DeepSeek, Groq, OpenRouter, vLLM, Azure, xAI…) via `WithBaseURL`.
 - **Multi-node failover.** Any node resumes any run (Postgres); no single-writer lock.
 
 ## Guarantee 1, in code: it won't double-charge
@@ -536,6 +536,7 @@ no adapter and no infrastructure, guarded by `architecture_test.go`.
 agent (root)     durable loop · Message/Part · Tool/Safety · Durable · middleware types · RenderMermaid
 model/anthropic  native Claude (thinking + signatures)
 model/openai     any OpenAI-compatible endpoint
+model/gemini     native Gemini (generativelanguage / Vertex via WithBaseURL)
 schema           reflect Go types → inline JSON Schema + OpenAIStrict
 middleware       Retry, TokenBudget
 trace            opt-in OTel gen_ai.* spans
