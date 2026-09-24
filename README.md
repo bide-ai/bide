@@ -108,6 +108,42 @@ func main() {
 
 Run the live smoke example: `OPENROUTER_API_KEY=sk-... go run ./examples/smoke`
 
+## Streaming
+
+`Run` blocks and returns the final answer. To watch the agent work — token deltas, turn
+boundaries, tool start/finish — use `Stream`. It drives the **same loop** (`Run` is literally
+`Stream(...).Final()`), so durability, resume, and side-effect safety are identical:
+
+```go
+stream := a.Stream(ctx, runID, input)
+for ev := range stream.Events() {
+	switch e := ev.(type) {
+	case agent.ModelEvent: // live token/reasoning/tool-call deltas
+		if d, ok := e.Event.(agent.TextDelta); ok {
+			fmt.Print(d.Text)
+		}
+	case agent.ToolStarted:
+		fmt.Printf("\n[calling %s]\n", e.Name)
+	case agent.ToolCompleted:
+		fmt.Printf("[%s done]\n", e.Name)
+	}
+}
+answer, err := stream.Final() // terminal message + error (incl. *PendingApproval / *ResumeHalt)
+```
+
+Events: `TurnStarted`, `ModelEvent` (the token feed), `AssistantTurn`, `ToolStarted` /
+`ToolCompleted`, `ApprovalRequired`, `Finished`. Range `Events()` for a UI then call `Final()`,
+or call `Final()` alone to behave exactly like `Run` (it drains events for you).
+
+Two things worth knowing, both consequences of durability:
+- **Token deltas arrive below the middleware chain** (Retry / TokenBudget still see whole
+  assembled messages), and **only on a fresh model call**.
+- **On resume, the journaled transcript is re-emitted** as `AssistantTurn{Replayed: true}` +
+  `ToolCompleted` before live progress — so a fresh UI reconstructs the whole story after a
+  crash, and a replayed turn produces no token deltas (it was already decided).
+
+`StreamSaga` is the streaming counterpart of `RunSaga`.
+
 ## Resume safety, in one table
 
 ```go

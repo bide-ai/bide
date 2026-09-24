@@ -190,6 +190,9 @@ early-adopter crowd (enterprises pin old Go and aren't our first users).
   — deterministically test the whole durable loop INCLUDING model HTTP calls, fake clock + fake
   network. Ship as a feature: "deterministically test your agent's retry/timeout/**resume**."
 - **Range-over-func iterators (1.23)** — `for ev := range agent.Stream(ctx, msg)`. Streaming keystone.
+  DONE: `Agent.Stream`/`StreamSaga` return an `AgentStream`; `for ev := range stream.Events()` yields
+  the semantic lifecycle (token deltas, turn boundaries, tool start/finish), `Final()` the answer.
+  Shares one loop with `Run` (`Run` == `Stream(...).Final()`); token deltas forward below middleware.
 - **Generic methods (1.27) + generic type aliases (1.24)** — clean typed-tool registry ergonomics.
 - Minor but handy: `bytes.CutLast`/`strings.CutLast`; `runtime/secret` (secret-mode goroutines —
   relevant to privacy-gating API keys / prompt content in the observability pillar).
@@ -231,7 +234,8 @@ Eight gaps, all currently unowned. **Don't build all eight at once.** Sequence:
 
 - **v1 (the moat):** durable resume (gap 2) + orchestration-as-plain-Go (gap 6) + typed tools
   with the provider-aware schema emitter (gap 1). Lead the pitch with durable resume.
-- **v1.x:** unified streaming event core (gap 3) + semantic middleware chain (gap 4).
+- **v1.x:** unified streaming event core (gap 3 — model-layer `Event` + caller-facing
+  `Agent.Stream`, both DONE) + semantic middleware chain (gap 4, DONE).
 - **v2:** native OTel `gen_ai.*` (gap 5) + decoupled local trace UI (gap 7).
 - **Explicit non-goal:** RAG / embeddings / math (gap 8). Ship a clean gRPC/HTTP boundary to a
   Python sidecar instead. Do NOT try to replace NumPy/Instructor.
