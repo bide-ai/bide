@@ -11,9 +11,9 @@ Three repos under `/Users/dayna/code/`, all remotes on the `github-blackwell` SS
   No license yet (proprietary by default). Committed history, on `main`.
 - **gsm** — the convergence engine (founder's IP). Public: `blackwell-systems/gsm`.
   **Apache-2.0** (relicensed from MIT; copyright "Dayna Blackwell, Blackwell Systems").
-  Released through **v0.4.2** (CI green: lint + ubuntu/macos/windows × Go 1.22/1.23).
-  go-agents depends on it via a normal versioned require (**pinned `gsm@v0.4.1`**;
-  v0.4.2 is docs/CI only, code-identical — bump anytime). The old `replace ../gsm` is gone.
+  Released through **v0.5.0** (compensation synthesis; CI green: lint + ubuntu/macos/windows
+  × Go 1.22/1.23). go-agents depends on it via a normal versioned require (**pinned
+  `gsm@v0.5.0`**). The old `replace ../gsm` is gone.
 - **normalization-confluence** — the papers. Public: `blackwell-systems/normalization-confluence`.
   Two papers (single-registry `normalization_confluence_2026.tex`; federated
   `normalization_confluence_in_federated_registry_networks.tex`), CC-BY-4.0.
@@ -74,6 +74,9 @@ gsm federation capability reaches the agent tier for free on a version bump:
 - **Infinite domains**: convergence is domain-independent (WFC+CC, not finiteness); finiteness
   only buys UBC + enumerative verification + O(1) tabulated runtime; monotone infinite lattices
   compute via Kleene + widening. gsm verifies all preconditions exhaustively at build time.
+- **Compensation synthesis** (gsm v0.5.0, `Registry.Synthesize`): generate a convergent
+  compensation from invariants + events, or prove none exists. Convergent ≠ desirable (human
+  vets the repair). Brute-force, bounded; SAT/SMT scaling is the next step.
 
 ## Key decisions
 - **Orchestration = plain Go control flow + named durable steps**; NO graph DSL (graph is a
@@ -89,8 +92,9 @@ gsm federation capability reaches the agent tier for free on a version bump:
 - `docs/KNOWN-LIMITATIONS.md` — deep-tree recursion memory wall; saga atomicity; etc.
 
 ## Open / next candidates
-- **Compensation synthesis** (next up): synthesize a CC-satisfying `ρ` from invariants+events,
-  or prove none exists (flips gsm verifier→synthesizer). Prototype first, like monotone cycles.
+- **Scale compensation synthesis** via SAT/SMT (brute force is bounded; shares machinery with
+  symbolic verification). Also: surface `Synthesize` at the agent tier (suggest/repair a
+  governed registry) if useful.
 - **Compile the paper PDFs** — big unreleased batch (multi-source, monotone cycles,
   compositionality, regime table, cross-paper refs, infinite domains). Needs `colima start`
   + `./compile.sh` in the normalization-confluence repo; then re-publish to Zenodo.
