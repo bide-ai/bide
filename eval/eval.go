@@ -29,11 +29,15 @@ import (
 	agent "github.com/dayna/go-agents"
 )
 
-// Case is one evaluation input plus optional expectations that metrics interpret.
+// Case is one evaluation input plus optional expectations that metrics interpret. Tags are
+// arbitrary labels (for example "hard", "kyc", "refund") used to stratify the Report: every tag a
+// case carries gets its own aggregate pass rate, so a hard subset can be reported apart from an easy
+// one.
 type Case struct {
 	Name  string
 	Input string
 	Want  any
+	Tags  []string
 }
 
 // Trajectory is the agent's behavior on one run, reconstructed from the durable journal: how many
@@ -163,6 +167,10 @@ func ToolOrder(names ...string) Metric {
 type Options struct {
 	Runs        int
 	Concurrency int
+	// Provenance records the run conditions (model, temperature, seed, timestamp) to stamp onto the
+	// Report. It is optional; Run always overwrites CaseSetHash with a hash of the cases scored,
+	// regardless of what the caller supplies here.
+	Provenance Provenance
 }
 
 // MetricStat is a metric's pass count over some runs, with a 95% Wilson score confidence interval
@@ -215,13 +223,18 @@ type CaseReport struct {
 
 // Report is the statistical result of an evaluation: per-case and aggregate pass rates with
 // confidence intervals, plus latency percentiles. JSON-marshalable. A distribution, not a verdict.
+// ByTag stratifies the aggregate by case tag: tag -> metric -> stat, over the runs of every case
+// carrying that tag. Provenance records the conditions under which the run happened (with a hash of
+// the case set) for reproducibility and audit.
 type Report struct {
-	RunsPerCase int                   `json:"runs_per_case"`
-	TotalRuns   int                   `json:"total_runs"`
-	Cases       []CaseReport          `json:"cases"`
-	Overall     map[string]MetricStat `json:"overall"`
-	LatencyP50  time.Duration         `json:"latency_p50"`
-	LatencyP95  time.Duration         `json:"latency_p95"`
+	RunsPerCase int                              `json:"runs_per_case"`
+	TotalRuns   int                              `json:"total_runs"`
+	Cases       []CaseReport                     `json:"cases"`
+	Overall     map[string]MetricStat            `json:"overall"`
+	ByTag       map[string]map[string]MetricStat `json:"by_tag,omitempty"`
+	LatencyP50  time.Duration                    `json:"latency_p50"`
+	LatencyP95  time.Duration                    `json:"latency_p95"`
+	Provenance  Provenance                       `json:"provenance"`
 }
 
 // Run executes each case Runs times through run, scores every execution with each metric, and
@@ -267,8 +280,12 @@ func Run(ctx context.Context, run RunFunc, cases []Case, metrics []Metric, opts 
 	}
 	wg.Wait()
 
-	rep := Report{RunsPerCase: runs, TotalRuns: total, Overall: map[string]MetricStat{}}
+	rep := Report{RunsPerCase: runs, TotalRuns: total, Overall: map[string]MetricStat{}, Provenance: opts.Provenance}
+	rep.Provenance.CaseSetHash = HashCases(cases)
 	totals := make([]int64, len(metrics))
+	// Per-tag accumulators: tag -> metric index -> (passes, runs).
+	tagPasses := map[string][]int64{}
+	tagRuns := map[string]int{}
 	for i, c := range cases {
 		cr := CaseReport{Name: c.Name, Metrics: map[string]MetricStat{}}
 		for m := range metrics {
@@ -276,9 +293,28 @@ func Run(ctx context.Context, run RunFunc, cases []Case, metrics []Metric, opts 
 			totals[m] += passes[i][m]
 		}
 		rep.Cases = append(rep.Cases, cr)
+		for _, tag := range c.Tags {
+			if _, ok := tagPasses[tag]; !ok {
+				tagPasses[tag] = make([]int64, len(metrics))
+			}
+			for m := range metrics {
+				tagPasses[tag][m] += passes[i][m]
+			}
+			tagRuns[tag] += runs
+		}
 	}
 	for m := range metrics {
 		rep.Overall[metrics[m].Name] = stat(int(totals[m]), total)
+	}
+	if len(tagPasses) > 0 {
+		rep.ByTag = map[string]map[string]MetricStat{}
+		for tag, tp := range tagPasses {
+			byMetric := map[string]MetricStat{}
+			for m := range metrics {
+				byMetric[metrics[m].Name] = stat(int(tp[m]), tagRuns[tag])
+			}
+			rep.ByTag[tag] = byMetric
+		}
 	}
 	if total > 0 {
 		sort.Slice(latencies, func(a, b int) bool { return latencies[a] < latencies[b] })
@@ -331,6 +367,28 @@ func (r Report) String() string {
 	for _, n := range names {
 		line("OVERALL", r.Overall[n], n)
 	}
+	if len(r.ByTag) > 0 {
+		tags := make([]string, 0, len(r.ByTag))
+		for t := range r.ByTag {
+			tags = append(tags, t)
+		}
+		sort.Strings(tags)
+		for _, t := range tags {
+			for _, n := range names {
+				if s, ok := r.ByTag[t][n]; ok {
+					line("tag:"+t, s, n)
+				}
+			}
+		}
+	}
 	fmt.Fprintf(&b, "  latency p50=%s p95=%s\n", r.LatencyP50.Round(time.Millisecond), r.LatencyP95.Round(time.Millisecond))
+	if r.Provenance.ModelID != "" || r.Provenance.CaseSetHash != "" {
+		hash := r.Provenance.CaseSetHash
+		if len(hash) > 12 {
+			hash = hash[:12]
+		}
+		fmt.Fprintf(&b, "  provenance model=%s temp=%g seed=%d cases=%s\n",
+			r.Provenance.ModelID, r.Provenance.Temperature, r.Provenance.Seed, hash)
+	}
 	return b.String()
 }
