@@ -29,6 +29,32 @@ Merkle tree — the same commitment, but it supports per-record inclusion proofs
 proofs. Use `Head` when you only ever reveal the whole run; use `Root` (+ STH) when selective
 disclosure or append-only proofs matter.
 
+## Committing the event stream, not just the journal
+
+`Head`/`Root` above commit over the durable **journal** (the resume substrate). An `EventLog`
+applies the *same* RFC 6962 machinery to `Agent.Stream`'s **semantic event stream**: the
+lifecycle a UI/operator actually observes (turn boundaries, tool start/finish, approvals, the
+final answer). This closes the seam where durability lived in the journal but the observable
+event feed was ephemeral: now "stream for the UI" and "commit a provable audit trail" are one
+pass.
+
+```go
+log := audit.NewEventLog()
+// Record drains the stream, commits every event, and forwards it live to the UI:
+msg, err := audit.Record(log, agentStream, func(e agent.AgentEvent) { render(e) })
+
+root := log.Root()                 // RFC 6962 commitment over what was observed, in order
+sig  := audit.Sign(root, priv)     // anchor it out-of-band, same caveat as the journal
+
+// Later: prove ONE observed event (e.g. the approval) without revealing the rest.
+proof, _ := log.Prove(approvalIndex)
+ok, _ := audit.VerifyEventInclusion(root, approvalEvent, proof)
+```
+
+Each leaf is a kind-tagged canonical encoding, so event types never collide, and `ModelEvent`
+carries the inner delta's kind. `Root`/`Head`/`Prove`/`Sign` behave exactly as they do over the
+journal; the `Inclusion` proof type and signing path are shared. (Prototype: `audit/eventsink.go`.)
+
 ## RFC 6962 conformance
 
 The Merkle tree, inclusion proofs, and consistency proofs implement
@@ -64,6 +90,8 @@ in a committed run whose history is provably append-only, without exposing the r
 
 ## Next
 
-RFC 6962 is fully covered (Head, inclusion, consistency, STH). Possible extensions if a use case
-needs them: an audited `Durable` decorator that emits an STH automatically per run, and
-integration with an external transparency log for the out-of-band anchoring.
+RFC 6962 is fully covered (Head, inclusion, consistency, STH), and the event→audit sink
+(`EventLog` / `Record`) now commits the semantic event stream with the same machinery. Possible
+extensions if a use case needs them: an audited `Durable` decorator that emits an STH
+automatically per run; an STH over an `EventLog` (so an event trail gets a signed root↔size↔time
+binding too); and integration with an external transparency log for out-of-band anchoring.
