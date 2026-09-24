@@ -76,10 +76,10 @@ func (dstModel) Stream(_ context.Context, req Request) (*Stream, error) {
 // chargeTool is a NON-idempotent side effect (Safety{}): it must never run twice.
 type chargeTool struct{ count *int }
 
-func (chargeTool) Name() string                 { return "charge" }
-func (chargeTool) Description() string           { return "" }
-func (chargeTool) Safety() Safety                { return Safety{} }
-func (chargeTool) ArgsSchema() json.RawMessage   { return nil }
+func (chargeTool) Name() string                { return "charge" }
+func (chargeTool) Description() string         { return "" }
+func (chargeTool) Safety() Safety              { return Safety{} }
+func (chargeTool) ArgsSchema() json.RawMessage { return nil }
 func (t chargeTool) Call(context.Context, json.RawMessage) (json.RawMessage, error) {
 	*t.count++ // the real-world side effect (the "charge")
 	return json.RawMessage(`{"charged":true}`), nil
