@@ -115,6 +115,12 @@ gsm federation capability reaches the agent tier for free on a version bump:
   crashes → resume must HALT (haltSeen asserts this path runs, so it's non-vacuous). Turns "tested" into
   "adversarially verified" — the gsm exhaustive-verification ethos applied to the runtime. Foundation
   laid by the synctest adoption. Next: exported harness → the "chaos benchmark competitors fail" (#2).
+  **Saga DST** (`saga_dst_test.go`): extends the proof to reverse-order compensation. Honest split —
+  forward non-idempotent effect is at-most-once (halt on unknown); compensators are at-LEAST-once
+  (memoized → once if they complete, but a crash mid-compensation re-runs them, the documented
+  idempotency contract). Crash-sweep + 300 randomized schedules assert: charge never double-fires,
+  rollback always completes (no charged-but-uncompensated), terminal ∈ {SagaAborted, ResumeHalt};
+  both paths exercised. (`failTool` name taken → `boomTool`.)
 - **Tamper-evident audit** (`audit/`, moat #4): `audit.Head(ctx, store, runID)` = SHA-256 hash-chain
   commitment over the journal in persisted order (any modify/insert/delete/reorder changes the head);
   `Sign`/`VerifySignature` (ed25519) to anchor it. Stdlib-only. HONEST model (in the package doc):
