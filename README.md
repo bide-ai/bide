@@ -209,6 +209,9 @@ conservatively.
 
 ## Human-in-the-loop
 
+Two flavors. **Approve/deny** — a tool marked `RequiresApproval` pauses *before* running; the
+human decision is a bool:
+
 ```go
 _, err := a.Run(ctx, runID, input)
 var pend *agent.PendingApproval
@@ -218,6 +221,32 @@ if errors.As(err, &pend) {
 	out, _ := a.Run(ctx, runID, input) // resumes past the pause
 }
 ```
+
+**Interrupt/resume** — a tool pauses *at an arbitrary point* and resumes with a *typed* value
+(generalizing the bool). Call `agent.Interrupt[T]` inside a retry-safe tool:
+
+```go
+tool := agent.Func("choose_plan", "pick a plan", agent.Safety{ReadOnly: true},
+	func(ctx context.Context, in Options) (Plan, error) {
+		pick, err := agent.Interrupt[Plan](ctx, "plan", in) // pauses the run; in is shown to the human
+		if err != nil {
+			return Plan{}, err // *Interrupted propagates out of Run
+		}
+		return pick, nil // on resume, pick is the human's typed answer
+	})
+
+_, err := a.Run(ctx, runID, input)
+var intr *agent.Interrupted
+if errors.As(err, &intr) {
+	// ... show intr.Prompt, get a typed answer ...
+	agent.Resume(ctx, store, runID, intr.Key, chosenPlan)
+	out, _ := a.Run(ctx, runID, input) // resumes; Interrupt now returns chosenPlan
+}
+```
+
+Both are durable — the decision/value is a journaled step, so it survives a crash. Interrupt
+must be in a retry-safe tool (`ReadOnly`/`Idempotent`): on resume the tool re-runs until the
+interrupt resolves, so everything before the `Interrupt` call must be safe to repeat.
 
 ## Errors
 

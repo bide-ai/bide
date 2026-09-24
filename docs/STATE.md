@@ -67,6 +67,13 @@ gsm federation capability reaches the agent tier for free on a version bump:
   wraps a category via a second `%w`. Control-flow stays typed (`errors.As`): `*PendingApproval`,
   `*ResumeHalt`, `*SagaAborted`. (Chose sentinels over a `Kind` enum — `Model`/`Tool` collide
   with the interface type names, and `errors.Is` is the idiomatic fit.)
+- **Richer HITL** (`hitl.go`): imperative `Interrupt[T](ctx, key, prompt)` inside a tool pauses
+  the run durably and resumes with a TYPED value (generalizes approve/deny's bool). Returns
+  `*Interrupted` out of Run; `Resume[T](ctx, d, runID, key, value)` records the answer (reuses
+  `StepValue`, no new journal kind); re-run continues. Run-context (store+runID) is injected into
+  the tool ctx (`withRunContext`). Must be a retry-safe tool (guarded with ErrConfig otherwise, so
+  a non-retriable Interrupt fails loudly instead of ResumeHalt-ing). = trpc/LangGraph `interrupt()`,
+  but on our durable at-most-once substrate. Existing declarative `PendingApproval`/`Approve` stays.
 - **Typed output** (`RunTyped[T]`, `typed.go`): returns a typed `T` from a full agent run.
   Injects a synthetic `final_answer` tool with `T`'s schema (via `schema.For[T]`), steers the
   model to it with an injected system message (`injectSystem` middleware + `cloneWith`), and

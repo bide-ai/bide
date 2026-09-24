@@ -273,6 +273,7 @@ func (a *Agent) run(ctx context.Context, runID, input string, saga bool, emit fu
 			c := c
 			g.Go(func() error {
 				sctx := withRunScope(gctx, runID+"/"+c.tu.ID) // hierarchical sub-run ID
+				sctx = withRunContext(sctx, a.store, runID)   // lets the tool call Interrupt
 				if saga {
 					sctx = withSaga(sctx)
 				}
@@ -290,6 +291,16 @@ func (a *Agent) run(ctx context.Context, runID, input string, saga bool, emit fu
 					res, callErr := toolH(sctx, c.tu)
 					r := Record{Kind: StepToolResult, ToolUseID: c.tu.ID}
 					if callErr != nil {
+						// An Interrupt pauses the run: record nothing and propagate, so
+						// the tool re-runs and resolves on resume. Requires a retry-safe
+						// tool (else its attempt marker would halt the resume instead).
+						var intr *Interrupted
+						if errors.As(callErr, &intr) {
+							if !c.t.Safety().retriableOnResume() {
+								return Record{}, fmt.Errorf("agent: tool %q used Interrupt but is not retry-safe (mark it ReadOnly or Idempotent): %w", c.tu.Name, ErrConfig)
+							}
+							return Record{}, callErr
+						}
 						if saga {
 							toolCallErr = callErr
 							return Record{Kind: StepSagaFail, ToolUseID: c.tu.ID, Result: mustJSON(callErr.Error())}, nil
@@ -306,6 +317,10 @@ func (a *Agent) run(ctx context.Context, runID, input string, saga bool, emit fu
 					return &sagaTrip{toolName: c.tu.Name, toolUseID: c.tu.ID, cause: toolCallErr}
 				}
 				if err != nil {
+					var intr *Interrupted
+					if errors.As(err, &intr) {
+						return err // propagate the pause unwrapped
+					}
 					return fmt.Errorf("tool %q: %w (%w)", c.tu.Name, err, ErrTool)
 				}
 				results[c.idx] = &Message{Role: RoleTool, Parts: []Part{ToolResult{ToolUseID: c.tu.ID, Result: rec.Result, IsError: rec.IsError}}}
@@ -342,10 +357,27 @@ func (a *Agent) toolList() []Tool {
 type ctxKey int
 
 const (
-	runScopeKey  ctxKey = 0
-	sagaKey      ctxKey = 1
-	modelSinkKey ctxKey = 2
+	runScopeKey   ctxKey = 0
+	sagaKey       ctxKey = 1
+	modelSinkKey  ctxKey = 2
+	runContextKey ctxKey = 3
 )
+
+// runCtx carries the store + runID into a tool's context so Interrupt can journal and
+// read its resume value without the tool holding those handles.
+type runCtx struct {
+	store Durable
+	runID string
+}
+
+func withRunContext(ctx context.Context, store Durable, runID string) context.Context {
+	return context.WithValue(ctx, runContextKey, runCtx{store: store, runID: runID})
+}
+
+func runContext(ctx context.Context) (Durable, string, bool) {
+	rc, ok := ctx.Value(runContextKey).(runCtx)
+	return rc.store, rc.runID, ok
+}
 
 func withModelSink(ctx context.Context, sink func(Event)) context.Context {
 	return context.WithValue(ctx, modelSinkKey, sink)
