@@ -66,16 +66,28 @@ func TestE2E_ManyAgentsConvergeAndAreTraceable(t *testing.T) {
 		scales = append(scales, 100000)
 	case "million":
 		scales = append(scales, 100000, 1000000)
+	case "tenmillion":
+		scales = append(scales, 10000000)
 	}
 	ctx := context.Background()
 
 	// One built, verified machine shared by all agents (Build is the convergence guarantee).
+	// Two capped counters with DISTINCT additive events (+1 and +2) plus a boolean flag, so the
+	// compensating cap fires at genuinely different points depending on the order events arrive,
+	// yet every ordering still reaches the same valid normal form. Build succeeding is the proof
+	// that these events commute after compensation (WFC + CC); it stays in the commuting regime
+	// (a fully non-commuting case, e.g. ship-before-pay, deliberately does not converge under
+	// arbitrary order and would be rejected here).
 	r := gsm.NewRegistry("cap")
-	a := r.Int("a", 0, 5)
-	b := r.Int("b", 0, 5)
-	r.DeclInvariant("a_cap", gsm.Le(gsm.V(a), gsm.Lit(3)), gsm.Do(gsm.Set(a, gsm.Lit(3))))
+	a := r.Int("a", 0, 9)
+	b := r.Int("b", 0, 9)
+	flag := r.Bool("flag")
+	r.DeclInvariant("a_cap", gsm.Le(gsm.V(a), gsm.Lit(5)), gsm.Do(gsm.Set(a, gsm.Lit(5))))
+	r.DeclInvariant("b_cap", gsm.Le(gsm.V(b), gsm.Lit(5)), gsm.Do(gsm.Set(b, gsm.Lit(5))))
 	r.DeclEvent("inc_a", gsm.Do(gsm.Set(a, gsm.Add(gsm.V(a), gsm.Lit(1)))))
+	r.DeclEvent("add2_a", gsm.Do(gsm.Set(a, gsm.Add(gsm.V(a), gsm.Lit(2)))))
 	r.DeclEvent("inc_b", gsm.Do(gsm.Set(b, gsm.Add(gsm.V(b), gsm.Lit(1)))))
+	r.DeclEvent("raise_flag", gsm.Do(gsm.Set(flag, gsm.Lit(1))))
 	m, rep, err := r.Build()
 	if err != nil {
 		t.Fatalf("build: %v\n%s", err, rep)
@@ -85,9 +97,10 @@ func TestE2E_ManyAgentsConvergeAndAreTraceable(t *testing.T) {
 		t.Fatalf("PolicyDigest: %v", err)
 	}
 
-	// The event multiset every agent applies: four inc_a (capped at 3) and one inc_b. The normal
-	// form is a=3, b=1 regardless of order.
-	base := []string{"inc_a", "inc_a", "inc_a", "inc_a", "inc_b"}
+	// The event multiset every agent applies. On a: +1+2+2+1 = 6, capped to 5 (the cap fires at a
+	// different step for different orders). On b: +1+1 = 2. flag: raised. Normal form: a=5, b=2,
+	// flag=true, regardless of order.
+	base := []string{"inc_a", "add2_a", "add2_a", "inc_a", "inc_b", "inc_b", "raise_flag"}
 	ref := govern.New(m, m.NewState())
 	for _, e := range base {
 		if _, err := ref.Apply(ctx, e); err != nil {
@@ -95,8 +108,8 @@ func TestE2E_ManyAgentsConvergeAndAreTraceable(t *testing.T) {
 		}
 	}
 	want := ref.State().Digest()
-	if ref.State().GetInt(a) != 3 || ref.State().GetInt(b) != 1 {
-		t.Fatalf("unexpected normal form: a=%d b=%d", ref.State().GetInt(a), ref.State().GetInt(b))
+	if ref.State().GetInt(a) != 5 || ref.State().GetInt(b) != 2 || !ref.State().GetBool(flag) {
+		t.Fatalf("unexpected normal form: a=%d b=%d flag=%v", ref.State().GetInt(a), ref.State().GetInt(b), ref.State().GetBool(flag))
 	}
 
 	for _, n := range scales {
@@ -118,8 +131,7 @@ func runScale(t *testing.T, ctx context.Context, m *gsm.Machine, base []string, 
 		concurrency = 2048
 	}
 
-	digests := make([]string, n)
-	var runErrs, auditErrs, peakG int64
+	var runErrs, convErrs, auditErrs, peakG int64
 	sampleDone := make(chan struct{})
 	go func() {
 		tk := time.NewTicker(3 * time.Millisecond)
@@ -151,8 +163,10 @@ func runScale(t *testing.T, ctx context.Context, m *gsm.Machine, base []string, 
 
 			gov := govern.New(m, m.NewState()) // this agent's own governed state
 			tools := []agent.Tool{
-				govern.AttestedEventTool(gov, "inc_a", "increment a (capped)", "inc_a", digest, agent.Safety{}),
-				govern.AttestedEventTool(gov, "inc_b", "increment b", "inc_b", digest, agent.Safety{}),
+				govern.AttestedEventTool(gov, "inc_a", "a += 1 (capped)", "inc_a", digest, agent.Safety{}),
+				govern.AttestedEventTool(gov, "add2_a", "a += 2 (capped)", "add2_a", digest, agent.Safety{}),
+				govern.AttestedEventTool(gov, "inc_b", "b += 1 (capped)", "inc_b", digest, agent.Safety{}),
+				govern.AttestedEventTool(gov, "raise_flag", "raise flag", "raise_flag", digest, agent.Safety{}),
 			}
 			// Each agent gets its own store, dropped when this goroutine returns (the journal
 			// would go to a durable store in production). Memory stays bounded by the in-flight
@@ -164,7 +178,12 @@ func runScale(t *testing.T, ctx context.Context, m *gsm.Machine, base []string, 
 				atomic.AddInt64(&runErrs, 1)
 				return
 			}
-			digests[i] = gov.State().Digest()
+			// Convergence: this agent reached the same machine-checked normal form. Checked inline
+			// (not accumulated) so memory stays bounded even at ten million agents.
+			if gov.State().Digest() != want {
+				atomic.AddInt64(&convErrs, 1)
+				return
+			}
 
 			// Traceability: sign a tree head over this run's journal and prove one governed action.
 			th, err := audit.NewTreeHead(ctx, store, runID, 1)
@@ -193,15 +212,13 @@ func runScale(t *testing.T, ctx context.Context, m *gsm.Machine, base []string, 
 	if runErrs != 0 {
 		t.Fatalf("%d/%d agent runs failed", runErrs, n)
 	}
+	if convErrs != 0 {
+		t.Fatalf("%d/%d agents did not converge to the normal form", convErrs, n)
+	}
 	if auditErrs != 0 {
 		t.Fatalf("%d/%d runs failed the traceability check (proof did not verify)", auditErrs, n)
 	}
-	for i, d := range digests {
-		if d != want {
-			t.Fatalf("agent %d did not converge: got %s, want %s", i, d, want)
-		}
-	}
-	t.Logf("N=%d: converged + traceable in %s (%.0f agents/s), peak goroutines=%d, heap delta=%.0f MB",
+	t.Logf("N=%d: converged + traceable in %s (%.0f agents/s), peak goroutines=%d, heap in use=%.0f MB, total alloc=%.0f MB",
 		n, elapsed.Round(time.Millisecond), float64(n)/elapsed.Seconds(),
-		atomic.LoadInt64(&peakG), float64(m1.HeapAlloc-m0.HeapAlloc)/1e6)
+		atomic.LoadInt64(&peakG), float64(m1.HeapAlloc)/1e6, float64(m1.TotalAlloc-m0.TotalAlloc)/1e6)
 }
