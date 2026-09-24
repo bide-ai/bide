@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"fmt"
+	"os"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -56,6 +57,11 @@ func TestE2E_ManyAgentsConvergeAndAreTraceable(t *testing.T) {
 	scales := []int{5000, 10000, 20000}
 	if testing.Short() {
 		scales = []int{200}
+	}
+	// The 100k tier keeps ~1.6M journal records live in the in-memory store, so it is
+	// memory-bound; run it only on request (E2E_HUGE=1) rather than in the default suite.
+	if os.Getenv("E2E_HUGE") != "" {
+		scales = append(scales, 100000)
 	}
 	ctx := context.Background()
 
