@@ -87,7 +87,7 @@ func (m *Model) Stream(ctx context.Context, req agent.Request) (*agent.Stream, e
 				Err:        fmt.Errorf("openai: rate limited (%w)", agent.ErrModel),
 			}
 		}
-		return nil, fmt.Errorf("openai: status %d: %s (%w)", resp.StatusCode, b, agent.ErrModel)
+		return nil, &agent.APIError{StatusCode: resp.StatusCode, Body: string(b), Err: fmt.Errorf("openai (%w)", agent.ErrModel)}
 	}
 
 	ch := make(chan agent.Emit)

@@ -32,9 +32,18 @@ func ToolRetry(n int, opts ...RetryOption) agent.ToolMiddleware {
 				if ctx.Err() != nil {
 					return nil, ctx.Err()
 				}
-				res, err = next(ctx, tu)
+				err = cfg.run(ctx, func(actx context.Context) error {
+					res, err = next(actx, tu)
+					return err
+				})
 				if err == nil {
 					return res, nil
+				}
+				if cfg.retryIf != nil && !cfg.retryIf(err) {
+					return res, err
+				}
+				if ctx.Err() != nil {
+					return nil, ctx.Err()
 				}
 				if attempt == n {
 					break

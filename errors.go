@@ -67,3 +67,20 @@ func (e *RateLimited) Error() string {
 }
 
 func (e *RateLimited) Unwrap() error { return e.Err }
+
+// APIError is returned by a provider adapter for a non-2xx HTTP response other than 429
+// (which uses RateLimited). It carries the StatusCode so a retry classifier can tell a
+// transient failure (5xx, 408) from a terminal one (most 4xx: auth, validation), and a
+// short Body snippet for diagnostics. It wraps Err (typically ErrModel) so
+// errors.Is(err, ErrModel) holds.
+type APIError struct {
+	StatusCode int
+	Body       string
+	Err        error
+}
+
+func (e *APIError) Error() string {
+	return fmt.Sprintf("api error: status %d: %s: %v", e.StatusCode, e.Body, e.Err)
+}
+
+func (e *APIError) Unwrap() error { return e.Err }

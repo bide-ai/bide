@@ -18,8 +18,10 @@ const (
 type RetryOption func(*retryConfig)
 
 type retryConfig struct {
-	base time.Duration
-	max  time.Duration
+	base    time.Duration
+	max     time.Duration
+	timeout time.Duration    // per-attempt deadline; 0 = none
+	retryIf func(error) bool // nil = retry every error
 }
 
 // WithBackoff sets the initial backoff duration and the maximum cap. Between
@@ -31,6 +33,61 @@ func WithBackoff(base, max time.Duration) RetryOption {
 		c.base = base
 		c.max = max
 	}
+}
+
+// WithTimeout bounds each individual attempt with its own deadline: the call gets a
+// context that is cancelled after d, so a hung model or tool call fails that attempt
+// (and is retried) instead of blocking the run forever. The parent context still governs
+// overall cancellation. 0 (default) means no per-attempt timeout.
+func WithTimeout(d time.Duration) RetryOption {
+	return func(c *retryConfig) { c.timeout = d }
+}
+
+// WithRetryIf classifies which errors are worth retrying: pred returns true to retry,
+// false to fail fast. Use it to stop burning attempts (and tokens) on terminal errors
+// such as HTTP 4xx auth/validation failures, while still retrying transient ones. The
+// default (nil) retries every error. Context cancellation always stops the loop
+// regardless. See Retryable for a ready-made classifier.
+func WithRetryIf(pred func(error) bool) RetryOption {
+	return func(c *retryConfig) { c.retryIf = pred }
+}
+
+// Retryable is a ready-made classifier for WithRetryIf: it retries transient failures and
+// fails fast on terminal ones. It retries *agent.RateLimited, a per-attempt timeout
+// (context.DeadlineExceeded), and *agent.APIError with a 5xx or 408 status; it does not retry
+// parent cancellation (context.Canceled) or 4xx API errors (auth, validation). Errors it cannot
+// classify (e.g. raw network errors) are retried, since those are usually transient.
+//
+//	agent.New(model, store, tools...).Use(middleware.Retry(3, middleware.WithRetryIf(middleware.Retryable)))
+func Retryable(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var rl *agent.RateLimited
+	if errors.As(err, &rl) {
+		return true
+	}
+	var ae *agent.APIError
+	if errors.As(err, &ae) {
+		return ae.StatusCode >= 500 || ae.StatusCode == 408
+	}
+	return true
+}
+
+// attempt runs fn under a per-attempt timeout if configured, returning its error.
+func (cfg retryConfig) run(ctx context.Context, fn func(context.Context) error) error {
+	if cfg.timeout <= 0 {
+		return fn(ctx)
+	}
+	actx, cancel := context.WithTimeout(ctx, cfg.timeout)
+	defer cancel()
+	return fn(actx)
 }
 
 // Retry retries the model call up to n additional times on error, respecting
@@ -56,9 +113,19 @@ func Retry(n int, opts ...RetryOption) agent.Middleware {
 				if ctx.Err() != nil {
 					return msg, u, ctx.Err()
 				}
-				msg, u, err = next(ctx, req)
+				err = cfg.run(ctx, func(actx context.Context) error {
+					msg, u, err = next(actx, req)
+					return err
+				})
 				if err == nil {
 					return msg, u, nil
+				}
+				// Fail fast on a terminal error or on parent cancellation.
+				if cfg.retryIf != nil && !cfg.retryIf(err) {
+					return msg, u, err
+				}
+				if ctx.Err() != nil {
+					return msg, u, ctx.Err()
 				}
 				if attempt == n {
 					break
