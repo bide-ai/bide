@@ -165,5 +165,8 @@ commutation, potential-decrease => termination), and the federated monotone-cycl
 the least fixed point (Kleene) and asynchronous (chaotic) order-independent convergence to it.
 Proof directory:
 [normalization-confluence/coq](https://github.com/blackwell-systems/normalization-confluence/tree/main/coq).
-For "when does my multi-agent / governed network converge," see the
+The engine's own per-machine verification is also differentially checked against the proof: a
+checker extracted from the Coq development re-certifies gsm's emitted tables converge,
+independently of the Go, so a verifier bug cannot pass a non-convergent machine. For "when does
+my multi-agent / governed network converge," see the
 [REGIMES field guide](https://github.com/blackwell-systems/normalization-confluence/blob/main/REGIMES.md).
