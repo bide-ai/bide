@@ -199,6 +199,20 @@ gsm federation capability reaches the agent tier for free on a version bump:
   == journal Root, no-reanchor-across-crash+resume, publish-error-doesn't-fail-step, anchor-log
   inclusion+consistency. Next: real external-log `Anchor` adapters (Trillian/CT, ledger, notary);
   batched/periodic anchoring for high throughput.
+- **Governed-action attestation** (`govern.AttestedEventTool` + `audit.RecordPolicy`/`ProvePolicy`/
+  `PolicyContent`, on gsm v0.7.0 `Registry.PolicyDigest`/`PolicyBytes`): a governed tool embeds the
+  policy digest (opaque to the SDK) in its journaled result, so the STH and `ProofBundle` commit to
+  WHICH policy admitted the action. The policy itself is anchored as a dedicated in-log leaf
+  (`StepValue` keyed by digest, idempotent), covered by the same tree; an action bundle and a policy
+  bundle cross-link in one tree via matching digests. `goagents-audit verify-governance` recomputes
+  the digest from the published bytes (no gsm import) and runs the external oracle (`astchecker`) to
+  certify convergence; `verify-governed-action` does the whole cross-link end to end. Two independent
+  roots of trust (tamper-evident log + external axiom-free-proof oracle) over one artifact, verifiable
+  by someone who trusts neither the producer nor gsm. Shipped and tested (`govern/attested_test.go`,
+  `govern/attested_e2e_test.go`, `audit/policy_test.go`). ROADMAP: absence-backed "no violation was
+  ever admitted," a resulting-state digest per transition, binding (action, policy, state-digest) into
+  one leaf. NOTE: this is not an end-to-end execution proof; the runtime is differentially tested
+  against the verified reference, and the refinement gap is open.
 - **RAG/memory = bring-your-own** (`retrieval.go`, decision in docs/RAG-MEMORY.md): ship NO vector
   store/embedder. Core seam: `Retriever` port (`Retrieve(ctx, query, k) []Doc`), `RetrievalTool`
   (agentic — model searches on demand), `WithRetrieval` middleware (classic — top-k injected as a

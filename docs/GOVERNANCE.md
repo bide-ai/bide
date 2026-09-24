@@ -176,3 +176,8 @@ for machines whose global state space is too large to enumerate, gsm verifies **
 (`BuildCompositional`), certifying each independent component over its own small subspace. For
 "when does my multi-agent / governed network converge," see the
 [REGIMES field guide](https://github.com/blackwell-systems/normalization-confluence/blob/main/REGIMES.md).
+
+Because the policy is inspectable, serializable data, it also becomes an audit artifact:
+`govern.AttestedEventTool` records which policy admitted each governed action, and the policy is
+anchored as a log leaf an auditor cross-links to the action and re-checks with the external oracle.
+See [AUDIT.md](AUDIT.md) for the attestation and `goagents-audit verify-governed-action`.

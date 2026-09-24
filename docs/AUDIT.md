@@ -225,11 +225,30 @@ engine, and runs a checker it did not write, so neither root of trust depends on
 log is tamper-evident (cryptographic root) and the policy is provably convergent (mathematical
 root), over one artifact.
 
-Scope, stated precisely: this proves the action ran under a policy that is provably convergent and
-tamper-evidently logged. It does not prove the runtime's implementation refines that policy for all
-inputs (that gap is closed only by the differential oracles' testing, not by an end-to-end proof).
-Anchoring the full policy bytes as a dedicated log leaf, and absence-proof-backed "no violation was
-ever admitted," are roadmap, not yet shipped.
+The policy is not only referenced by digest, it is anchored in the log. `audit.RecordPolicy`
+commits the serialized policy as a dedicated leaf (a `StepValue` record keyed by its digest,
+idempotent per run), so the policy is covered by the same signed tree head and inclusion proofs as
+the actions taken under it. `audit.ProvePolicy` builds a `ProofBundle` for that leaf. An auditor
+pairs it with an action's `ProofBundle` whose result embeds the same digest: both verify under the
+same out-of-band key, both bind to the same tree (same STH root and size), and their digests link,
+so the action provably ran under a policy anchored in the same committed run. `audit.PolicyContent`
+is the disclosed leaf payload (the serialized policy plus its digest), which the auditor feeds to
+`verify-governance` to recompute the digest from the bytes and certify convergence.
+
+The CLI does this whole cross-link in one command:
+
+```
+# both bundles authentic and in the same signed tree, the action's policy digest links to the
+# anchored policy leaf, the leaf's bytes hash to that digest, and (with -checker) the policy converges:
+goagents-audit verify-governed-action -action action.json -policy-bundle policy.json -pubkey <hex> -checker ./astchecker
+```
+
+Scope, stated precisely: this proves the action ran under a policy that is anchored in the log and
+provably convergent, in a committed, append-only run. It does not prove the runtime's implementation
+refines that policy for all inputs: the runtime is differentially tested against the verified
+reference, so the refinement gap is open and this is not an end-to-end execution proof. Absence-
+proof-backed "no violation was ever admitted," a resulting-state digest per transition, and binding
+(action, policy, state-digest) into a single leaf remain roadmap.
 
 ## Next
 
