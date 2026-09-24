@@ -165,8 +165,14 @@ commutation, potential-decrease => termination), and the federated monotone-cycl
 the least fixed point (Kleene) and asynchronous (chaotic) order-independent convergence to it.
 Proof directory:
 [normalization-confluence/coq](https://github.com/blackwell-systems/normalization-confluence/tree/main/coq).
-The engine's own per-machine verification is also differentially checked against the proof: a
-checker extracted from the Coq development re-certifies gsm's emitted tables converge,
-independently of the Go, so a verifier bug cannot pass a non-convergent machine. For "when does
-my multi-agent / governed network converge," see the
+The engine's own per-machine verification is also differentially checked against the proof by
+**two independent oracles extracted from the Coq development**: a *table oracle* that re-certifies
+gsm's emitted step tables converge, and a *rules oracle* that recomputes convergence straight from
+the combinator declarations (trusting neither gsm's enumeration nor its normalization). Either one
+runs independently of the Go, so a bug in gsm's own verifier cannot let a non-convergent machine
+pass. The rules are built from a fixed combinator vocabulary rather than arbitrary Go closures,
+which is what makes them inspectable and serializable to those checkers in the first place; and
+for machines whose global state space is too large to enumerate, gsm verifies **footprint-local**
+(`BuildCompositional`), certifying each independent component over its own small subspace. For
+"when does my multi-agent / governed network converge," see the
 [REGIMES field guide](https://github.com/blackwell-systems/normalization-confluence/blob/main/REGIMES.md).

@@ -138,6 +138,14 @@ do not cross), and the phrasing to use / avoid.
   Proof directory:
   https://github.com/blackwell-systems/normalization-confluence/tree/main/coq . This pillar has
   the same click-through backing as 1 to 3; it is fully co-headlined, not hedged.
+- **Defense in depth (for a regulated buyer):** the axiom-free Coq proof is the theory; the
+  *engine* is then held to it. gsm's per-machine verdict is re-certified by two checkers
+  **extracted from that same proof**: a table oracle over the emitted step tables, and a rules
+  oracle that recomputes convergence directly from the combinator declarations. A compliance
+  reviewer who accepts "axiom-free Coq proof" but still worries about a bug in ordinary Go code
+  gets the gap closed: an independent, machine-checked verifier would reject a non-convergent
+  machine even if gsm's own Go verification were wrong. Rules are combinator **data**, not
+  closures, so they are inspectable, serializable, and portable as governance policy.
 - **Scope (precision, not a hedge):** the claim is **confluence of the normalization rewrite
   system** (replay order cannot change the result), NOT "agents always agree on a correct
   answer" and NOT "automatic consensus." Keep this scope in the sentence every time. This is

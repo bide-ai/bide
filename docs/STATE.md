@@ -268,6 +268,14 @@ gsm federation capability reaches the agent tier for free on a version bump:
 - **Compensation synthesis** (gsm v0.6.0, `Registry.Synthesize`): generate a convergent
   compensation from invariants + events, or prove none exists. Convergent ≠ desirable (human
   vets the repair). Brute-force, bounded; SAT/SMT scaling is the next step.
+- **Verification infrastructure** (as of 2026-09-24): rules can be expressed as a fixed
+  **combinator vocabulary** (invariants/events as inspectable data, footprints derived from the
+  expression tree), with an ergonomic sugar layer that lowers to the same primitives. gsm's
+  per-machine verdict is **differentially checked by two oracles extracted from the axiom-free
+  Coq proof**: a *table oracle* (over emitted step tables) and a *rules oracle* (recomputing
+  convergence from the combinator declarations). **Footprint-local verification**
+  (`Registry.BuildCompositional`) certifies each footprint-connected component over its own
+  subspace, scaling past the global enumeration ceiling.
 
 ## Key decisions
 - **Orchestration = plain Go control flow + named durable steps**; NO graph DSL (graph is a

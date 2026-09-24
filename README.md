@@ -76,9 +76,16 @@ result. The proof is axiom-free and CI-verified on Coq 8.18 and 8.20 (`Print Ass
 reports "Closed under the global context"): [the Coq/Rocq
 proof](https://github.com/blackwell-systems/normalization-confluence/tree/main/coq)
 ([![verify](https://github.com/blackwell-systems/normalization-confluence/actions/workflows/verify.yml/badge.svg)](https://github.com/blackwell-systems/normalization-confluence/actions/workflows/verify.yml)).
-This is how independent agents share state without a single writer. The claim is precise:
-*order-independent convergence of the replay*, proven, not "agents always agree." The federated
-result is mechanized in full, including asynchronous (chaotic) order-independence.
+And the proof does not just sit next to the code: gsm's own per-machine verdict is
+**re-certified by two independent checkers extracted from that proof** (one recomputes
+convergence from the emitted step tables, the other straight from the rules), so a bug in gsm's
+Go verifier cannot let a non-convergent machine pass. Rules are expressed as **inspectable
+combinator data** rather than opaque closures, which is what makes them serializable, portable,
+and re-checkable; verification can also run **footprint-local** (`BuildCompositional`) to certify
+machines whose global state space is too large to enumerate. This is how independent agents share
+state without a single writer. The claim is precise: *order-independent convergence of the
+replay*, proven, not "agents always agree." The federated result is mechanized in full, including
+asynchronous (chaotic) order-independence.
 
 ### vs. durable-execution and agent runtimes
 
