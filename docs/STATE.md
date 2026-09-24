@@ -128,7 +128,11 @@ gsm federation capability reaches the agent tier for free on a version bump:
   checkpoint/resume genuinely works); the double-fires are the documented LangGraph "nodes must be
   idempotent" window (crash between the side-effect node and its checkpoint persisting → resume
   re-runs it), which go-agents' attempt-marker/halt closes. ADK-Go finding: no checkpoint layer at all
-  (weaker fit; models "re-invoke re-runs everything"). benchmarks not in go.work/CI (heavy deps).
+  (weaker fit; models "re-invoke re-runs everything"). **Second competitor wired: langchaingo**
+  (`benchmarks/langchaingo.go`) — NO durable resume; crash = ctx-cancel after the tool fires,
+  "resume" = fresh invocation → re-runs everything. RESULT maxFired=64 FAIL (unbounded; fair per
+  `lcg_fairness_test.go`). Full table: go-agents 1 PASS, trpc 5, langchaingo 64, naive 5. benchmarks
+  not in go.work/CI (heavy deps).
   **Saga DST** (`saga_dst_test.go`): extends the proof to reverse-order compensation. Honest split —
   forward non-idempotent effect is at-most-once (halt on unknown); compensators are at-LEAST-once
   (memoized → once if they complete, but a crash mid-compensation re-runs them, the documented

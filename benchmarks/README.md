@@ -13,13 +13,17 @@ cd benchmarks && GOWORK=off go test -run Comparison -v
 ## Result
 
 ```
-go-agents        sweeps=6   schedules=206   maxFired=1  PASS ✓ (at-most-once held)
-trpc-agent-go    sweeps=8   schedules=208   maxFired=5  FAIL ✗ (70 double-fires, worst=5)
-naive-loop       sweeps=5   schedules=205   maxFired=5  FAIL ✗ (45 double-fires, worst=5)
+go-agents        maxFired=1   PASS ✓ (at-most-once held)
+trpc-agent-go    maxFired=5   FAIL ✗ (70 double-fires, worst=5)
+langchaingo      maxFired=64  FAIL ✗ (204 double-fires, worst=64)
+naive-loop       maxFired=5   FAIL ✗ (45 double-fires, worst=5)
 ```
 
 `maxFired` is the most times a single non-idempotent side effect ("charge") actually
-executed across a crash schedule. **1 is correct; anything higher is a double-charge.**
+executed across a crash schedule. **1 is correct; anything higher is a double-charge.** The
+three failure shapes are distinct: **trpc-agent-go** has working resume but a narrow re-fire
+window; **langchaingo** has *no durability at all*, so retries re-run everything unboundedly
+(it charges up to 64 times); the naive baseline sits between.
 
 ## The trpc-agent-go finding (and why it's fair)
 
@@ -39,6 +43,16 @@ a non-idempotent side effect double-fires across a crash. trpc's own docs acknow
 go-agents closes exactly that window: it writes a durable *attempt marker* before a
 non-idempotent tool, so resume can tell "never ran" (safe to run) from "ran, outcome unknown"
 (halt) — and never re-fires. That's why it holds `maxFired=1`.
+
+## The langchaingo finding
+
+langchaingo (`langchaingo.go`) has **no durable resume or checkpoint of any kind** — so a
+crash mid-tool loses the run, and the only recovery is re-invoking the agent, which re-runs
+everything. The adapter models the crash by cancelling the run's context right after the
+charge fires; "resume" is a fresh invocation. It is fair (`lcg_fairness_test.go`: a clean
+single invocation fires exactly once), and the double-fire is inherent, not injected — this
+isn't a bug in langchaingo, durable side-effect safety is just an absent feature. Under
+repeated crashes it charges up to 64 times.
 
 ## Adding another SDK
 

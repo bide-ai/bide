@@ -16,6 +16,7 @@ func TestChaos_Comparison(t *testing.T) {
 	}{
 		{"go-agents", chaos.GoAgents()},
 		{"trpc-agent-go", TRPC()},
+		{"langchaingo", LangChainGo()},
 		{"naive-loop", chaos.NaiveReference()},
 	} {
 		rep := chaos.Verify(c.name, c.sys, 200)

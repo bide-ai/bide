@@ -300,9 +300,10 @@ multi-crash schedules), and the harness asserts a non-idempotent side effect fir
 once** every time, with the run always ending completed or halted — never double-firing.
 
 The harness is exported (`chaos/`) and pointed at other SDKs in `benchmarks/`. The measured result:
-**go-agents `maxFired=1` (PASS); trpc-agent-go `maxFired=5` (FAIL, 70 double-fires).** trpc's
-checkpoint/resume genuinely works (verified — resuming a completed run is a no-op); its double-fire
-is the documented LangGraph "nodes must be idempotent" window, which go-agents' attempt-marker closes.
+**go-agents `maxFired=1` (PASS); trpc-agent-go `maxFired=5`; langchaingo `maxFired=64` (both FAIL).**
+trpc's checkpoint/resume genuinely works (verified — resuming a completed run is a no-op); its
+double-fire is the documented LangGraph "nodes must be idempotent" window. langchaingo has no
+durability at all, so retries re-run everything. go-agents' attempt-marker closes the window entirely.
 
 `WithMaxTurns(n)` caps model turns per run so a model that keeps calling tools can't loop forever
 — hitting it returns `ErrMaxTurns` (which is `errors.Is` `ErrBudget`).
