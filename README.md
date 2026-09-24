@@ -1,0 +1,164 @@
+# go-agents (working codename)
+
+**Durable AI agents for Go that survive a crash — without firing the same side effect twice.**
+
+The agent loop is ~40 lines. The hard part is what happens when the process dies
+mid-run. Most frameworks either lose the run, or blindly re-run the step that already
+charged the card. This one journals every step, resumes exactly where it left off, and
+**refuses to re-run a write whose outcome it can't verify — it halts and asks instead of
+double-charging.**
+
+Status: **working v0**, live-verified end-to-end. Requires **Go 1.27**.
+
+## Why it's different
+
+Not "another durable agent framework." The differentiators are things you can check:
+
+- **Side-effect-safe resume.** A crash between a payment and its journal entry does **not**
+  re-run the payment. Read-only tools re-run freely; idempotent ones retry; a
+  non-idempotent write whose outcome is unknown **halts for confirmation**. Nobody else
+  does this — the common behavior is at-least-once (double-charge) or "your problem."
+- **A lean core.** A hello-world imports the **standard library only**. No Temporal, no
+  Weaviate, no gRPC dragged into your binary. Enforced by a test (`architecture_test.go`).
+- **Plain Go, not a graph DSL.** You write `if`/`for`/functions; the graph is *derived*
+  from what ran (`RenderMermaid`) for viewing — you never author or debug one.
+- **Claude reasoning survives round-trips.** Extended-thinking signatures are preserved;
+  most SDKs drop them, silently breaking thinking + tool use.
+- **Provider-aware tool schemas.** One reflected schema, emitted per dialect (OpenAI strict
+  mode, etc.) — not one generic schema that strict mode and Gemini reject.
+- **Any model, one adapter.** Native Claude + any OpenAI-compatible endpoint (OpenAI,
+  Ollama, DeepSeek, Groq, OpenRouter, vLLM, Azure, xAI…) via `WithBaseURL`.
+
+### vs. the typical Go agent framework
+
+| | **go-agents** | Typical framework |
+|---|---|---|
+| Crash mid-write | **Halts — never double-fires** | Blindly re-runs (double-charge), or loses the run |
+| Hello-world deps | **stdlib only** (core) | Often Temporal + Weaviate + gRPC (hundreds of pkgs) |
+| Orchestration | **Plain Go**; graph derived for viewing | A graph/DSL you author *and* debug |
+| Claude reasoning across turns | **Preserved (signatures)** | Dropped → breaks extended thinking |
+| Tool schema | **Per-provider dialects** | One schema → rejected by strict mode / Gemini |
+| Multi-node failover | **Any node resumes any run** (Postgres) | Single-writer lock — no failover |
+
+## The money shot: it won't double-charge
+
+```go
+// A tool that moves money is a write: not ReadOnly, not Idempotent.
+charge := agent.Func("charge_card", "Charge the customer", agent.Safety{},
+	func(ctx context.Context, in ChargeArgs) (Receipt, error) { /* ... */ })
+
+// If the process crashes after the charge fires but before its result is journaled,
+// resume does NOT run it again — it returns *ResumeHalt so you confirm, not double-charge:
+_, err := a.Run(ctx, runID, input)
+var halt *agent.ResumeHalt
+if errors.As(err, &halt) {
+	// halt.ToolName == "charge_card": outcome unknown — a human decides, no double side effect.
+}
+```
+
+## Quickstart
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"os"
+
+	agent "github.com/dayna/go-agents"
+	"github.com/dayna/go-agents/model/openai"
+	"github.com/dayna/go-agents/store/sqlite"
+)
+
+type WeatherArgs struct {
+	City string `json:"city" desc:"city name"`
+}
+type Weather struct {
+	TempF int    `json:"temp_f"`
+	Sky   string `json:"sky"`
+}
+
+func main() {
+	// Any OpenAI-compatible endpoint — here OpenRouter; swap the base URL for Ollama, etc.
+	model := openai.New(os.Getenv("OPENROUTER_API_KEY"),
+		openai.WithBaseURL("https://openrouter.ai/api/v1"),
+		openai.WithModel("openai/gpt-4o-mini"))
+
+	// A tool is a typed Go function; its schema is derived automatically.
+	weather := agent.Func("get_weather", "Current weather for a city",
+		agent.Safety{ReadOnly: true},
+		func(_ context.Context, in WeatherArgs) (Weather, error) {
+			return Weather{TempF: 68, Sky: "sunny"}, nil
+		})
+
+	// Durable on-disk store — a crash mid-run resumes from here.
+	store, _ := sqlite.Open("agent.db")
+	defer store.Close()
+
+	a := agent.New(model, store, weather)
+	out, _ := a.Run(context.Background(), "run-1", "Weather in SF? Use the tool.")
+	for _, p := range out.Parts {
+		if t, ok := p.(agent.Text); ok {
+			fmt.Println(t.Text)
+		}
+	}
+}
+```
+
+Run the live smoke example: `OPENROUTER_API_KEY=sk-... go run ./examples/smoke`
+
+## Resume safety, in one table
+
+```go
+agent.Safety{ReadOnly: true}          // no side effects → always safe to re-run
+agent.Safety{Idempotent: true}        // safe to retry (dedupes downstream)
+agent.Safety{}                        // a write → HALT on unknown outcome, don't double-fire
+agent.Safety{RequiresApproval: true}  // pause for human approval before executing
+```
+
+Before a non-idempotent side effect the loop records a durable *attempt marker*, so
+resume can tell "never ran" (safe to run) from "ran and crashed" (halt) — precisely, not
+conservatively.
+
+## Human-in-the-loop
+
+```go
+_, err := a.Run(ctx, runID, input)
+var pend *agent.PendingApproval
+if errors.As(err, &pend) {
+	// ... get a human decision ...
+	agent.Approve(ctx, store, runID, pend.ToolUseID, true)
+	out, _ := a.Run(ctx, runID, input) // resumes past the pause
+}
+```
+
+## Middleware & observability
+
+```go
+a := agent.New(model, store, tools...).
+	Use(middleware.Retry(3), middleware.TokenBudget(100_000))
+
+// opt-in OTel gen_ai.* spans — the core has no OTel dependency:
+a.Use(trace.Model(tracer, trace.WithSystem("openai"), trace.WithModel("gpt-4o-mini")))
+```
+
+## Architecture
+
+Hexagonal by construction: the core defines the ports (`Model`, `Durable`, `Tool`,
+`Middleware`); adapters plug in at the edges. Dependencies point inward — the core imports
+no adapter and no infrastructure, guarded by `architecture_test.go`.
+
+```
+agent (root)     durable loop · Message/Part · Tool/Safety · Durable · middleware types · RenderMermaid
+model/anthropic  native Claude (thinking + signatures)
+model/openai     any OpenAI-compatible endpoint
+schema           reflect Go types → inline JSON Schema + OpenAIStrict
+middleware       Retry, TokenBudget
+trace            opt-in OTel gen_ai.* spans
+store/sqlite     on-disk durable resume (single binary, no cluster)
+store/postgres   HA durable resume (any node resumes any run)
+```
+
+> Name is deliberately deferred — this is a codename. Design + competitive analysis in
+> `docs/DESIGN.md` and `docs/COMPETITIVE*.md`.
