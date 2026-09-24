@@ -90,6 +90,6 @@ go-agents closes to hold `maxFired=1`.
 
 Implement `chaos.System` for it (see `trpc.go` as a template), add it to `bench_test.go`,
 and — importantly — add a fairness check like `fairness_test.go` so the adapter represents
-that SDK's *best-effort* durability, not a rigged failure. Two honest outcomes: the SDK has
+that SDK's *best-effort* durability, not a rigged failure. Two outcomes: the SDK has
 no resumable-run concept (a crash loses the run; re-invoke re-runs everything) or it resumes
 by re-executing (a genuine double-fire, as trpc does here).

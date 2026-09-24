@@ -142,7 +142,7 @@ gsm federation capability reaches the agent tier for free on a version bump:
   charged" → no re-fire). The double-fires are the execute→persist window ADK has no attempt-marker to
   close. Full table: **go-agents 1 PASS, trpc 5, adk-go 4, langchaingo 64, eino 64, naive 5.**
   benchmarks not in go.work/CI (heavy deps).
-  **Saga DST** (`saga_dst_test.go`): extends the proof to reverse-order compensation. Honest split —
+  **Saga DST** (`saga_dst_test.go`): extends the proof to reverse-order compensation. The split:
   forward non-idempotent effect is at-most-once (halt on unknown); compensators are at-LEAST-once
   (memoized → once if they complete, but a crash mid-compensation re-runs them, the documented
   idempotency contract). Crash-sweep + 300 randomized schedules assert: charge never double-fires,
@@ -166,7 +166,7 @@ gsm federation capability reaches the agent tier for free on a version bump:
   Timestamp}` + `SignTreeHead`/`Verify` (ed25519) binds the Merkle root to WHICH tree (size) and WHEN,
   so a signature can't be replayed across sizes. `NewTreeHead` builds it from the store. End-to-end
   compliance flow tested: sign STH → disclose one record + inclusion proof → auditor verifies against
-  the signed root → consistency between two STHs proves append-only growth. #4 is a complete product. HONEST model (in the package doc):
+  the signed root → consistency between two STHs proves append-only growth. #4 is a complete product. Model (in the package doc):
   integrity always; tamper-evidence only if the head is anchored out-of-band (a chain in the same DB
   an attacker controls can be rewritten+rehashed). Compliance/enterprise axis (fintech/health). Read
   over persisted order (correct under parallel tools), no core Record change.

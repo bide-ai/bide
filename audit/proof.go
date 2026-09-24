@@ -32,7 +32,7 @@ type ProofBundle struct {
 
 // Verify reports whether the bundle is internally consistent and authentic under pub (a key
 // obtained out-of-band, e.g. from the anchor log operator). It returns false, not an error,
-// for an honest-but-invalid proof; an error indicates the record could not be canonicalized.
+// for a well-formed-but-invalid proof; an error indicates the record could not be canonicalized.
 func (b ProofBundle) Verify(pub ed25519.PublicKey) (bool, error) {
 	if !b.STH.Verify(pub) {
 		return false, nil // the signed commitment is not authentic under this key

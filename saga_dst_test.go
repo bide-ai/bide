@@ -9,7 +9,7 @@ import (
 )
 
 // Deterministic Simulation Testing of the SAGA path: reverse-order compensation under
-// crashes. Two guarantees, and they are DIFFERENT (this is the honest part):
+// crashes. Two guarantees, and they are DIFFERENT:
 //
 //   - The forward non-idempotent effect (chargeA) fires AT MOST ONCE — same strong
 //     guarantee as the base DST, halt-on-unknown, now in saga mode.

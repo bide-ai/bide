@@ -138,7 +138,7 @@ go run ./examples/mesh      # cyclic mutual-constraint safety mesh (conflict →
 go run ./examples/compose   # a verified subsystem Embed-ed and reused across two systems
 ```
 
-## Limits (be honest about these)
+## Limits
 
 - **Finite state spaces.** The semantic state must be finite (bounded enums/ints). Unbounded
   numeric state is a theory extension, not shipped.

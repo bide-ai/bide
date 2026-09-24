@@ -78,7 +78,7 @@ winning = a violently opinionated take on the two wedge features + Go-idiomatic 
 > "no automatic recovery" + at-least-once tools. Side-effect-safe, single-binary, crash-recoverable
 > mid-tool-call resume is the single most universally-unowned gap. **This is our headline.**
 >
-> **Honesty caveats (don't build positioning on stale claims):** (1) typed tools is table stakes —
+> **Caveats (don't build positioning on stale claims):** (1) typed tools is table stakes —
 > Eino/Genkit/ADK all have schema-from-struct; our differentiation is durability + no-DSL +
 > neutrality + correct ops, not "typed tools." (2) Genkit is GA with a great Dev UI + native
 > Anthropic — attack durability/observability/OSS-RAG, not maturity. (3) ADK's runtime does NOT

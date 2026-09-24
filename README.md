@@ -295,7 +295,7 @@ head, _ := audit.Head(ctx, store, runID)     // SHA-256 chain over the journal (
 sig := audit.Sign(head, priv)                // anchor it: sign / publish out-of-band
 ```
 
-Any modify / insert / delete / reorder of a record changes the head. **Honest security model:** this
+Any modify / insert / delete / reorder of a record changes the head. **Security model:** this
 gives integrity unconditionally, and tamper-evidence *when you anchor the head out-of-band* (a chain
 in the same DB an attacker controls can be rewritten and rehashed) — see the package doc. It's the
 compliance/enterprise seam: provable at-most-once side effects *plus* a verifiable record of exactly

@@ -8,7 +8,7 @@
 // Handler middleware chain.
 //
 // Scope: this resumes AROUND tool boundaries, not the internals of a single in-flight
-// tool call. The honest promise is "survives crashes around tool calls, never
+// tool call. The precise promise is "survives crashes around tool calls, never
 // double-fires an unsafe side effect" — not "mid-tool-call resume".
 package agent
 

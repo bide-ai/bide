@@ -40,7 +40,7 @@ func TestProofBundle_RoundTrip(t *testing.T) {
 	}
 	ok, err := bundle.Verify(pub)
 	if err != nil || !ok {
-		t.Fatalf("honest bundle failed to verify (ok=%v err=%v)", ok, err)
+		t.Fatalf("valid bundle failed to verify (ok=%v err=%v)", ok, err)
 	}
 
 	// Wrong key: reject.

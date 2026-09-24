@@ -218,7 +218,7 @@ container path exists.
 - Unported vs Python/Kotlin: **Evaluations** (#240), Skills (#540), session compaction (#298).
   v2.0 GA (June 2026) was a breaking module-path + graph-engine rewrite within ~8mo of launch.
 
-**Honesty caveats (don't get caught out):** Genkit's "long alpha" is OVER (it's GA, has the great
+**Caveats (don't get caught out):** Genkit's "long alpha" is OVER (it's GA, has the great
 Dev UI + native Anthropic). ADK's Agent Runtime does **NOT** bill idle-between-turns — attack
 lock-in + boilerplate, not idle cost.
 
@@ -352,7 +352,7 @@ journal/halt-on-unknown-write; SAGA compensation incl. across sub-agent trees; a
 orchestration at all; MCP (aspirational TODOs only); OTel; middleware; a genuine any-model
 OpenAI-compatible adapter (they expose no Ollama/base-URL adapter; OpenRouter is `internal/`).
 
-**Honest gaps of theirs to note (not attack unfairly):** manual JSON-schema tools (no
+**Gaps of theirs to note (not attack unfairly):** manual JSON-schema tools (no
 reflect-based auto-schema, no typed handler); **README overclaims** "production-ready…
 retries, rate limiting, failover" that are NOT implemented in code (only an `IsRetryable`
 classifier); no Gemini.

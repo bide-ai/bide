@@ -28,7 +28,7 @@ func TestAbsence_ProveAndVerify(t *testing.T) {
 		t.Fatalf("ProveAbsent: %v", err)
 	}
 	if ok, err := audit.VerifyAbsence(root, proof); err != nil || !ok {
-		t.Fatalf("honest absence proof failed (ok=%v err=%v)", ok, err)
+		t.Fatalf("valid absence proof failed (ok=%v err=%v)", ok, err)
 	}
 
 	// A present key cannot be proven absent.
@@ -74,7 +74,7 @@ func TestAbsence_AdjacencyIsEnforced(t *testing.T) {
 	recs := keyRecs("b", "d", "f") // indices: b=0, d=1, f=2
 	root := audit.AbsenceRoot(recs, audit.ToolUseKey)
 
-	// Honestly prove b and f (indices 0 and 2), then forge an "absence of d" by pairing them.
+	// Genuinely prove b and f (indices 0 and 2), then forge an "absence of d" by pairing them.
 	// d IS present at index 1, so a sound verifier must reject this.
 	bProof, _ := audit.ProveAbsent(recs, audit.ToolUseKey, "tooluse:a") // gives right=b@0
 	fProofSrc, _ := audit.ProveAbsent(recs, audit.ToolUseKey, "tooluse:z")

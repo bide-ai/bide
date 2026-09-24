@@ -1,6 +1,6 @@
 # Known limitations
 
-Honest list of what doesn't work yet or has bounds. Correctness invariants hold within
+What doesn't work yet or has bounds. Correctness invariants hold within
 these bounds; these are the edges.
 
 ## Deep agent-tree recursion is superlinear (time AND memory)
@@ -91,7 +91,7 @@ adversarial fault injection: a store that fails the Kth persist, swept over ever
 across hundreds of randomized multi-crash schedules. It is strong, in-process, and non-vacuous (the
 halt path is asserted) — but it is **randomized + exhaustive-over-write-points testing, not a
 machine-checked formal proof** over all interleavings. It models a crash as "a persist fails and the
-run unwinds," matching process death around durable writes (the honest promise), not arbitrary
+run unwinds," matching process death around durable writes (the actual promise), not arbitrary
 mid-instruction faults.
 
 ## Audit tamper-evidence needs external anchoring

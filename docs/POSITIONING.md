@@ -2,7 +2,7 @@
 
 This is the messaging spine. README, landing pages, decks, and talks derive from it; do not
 invent claims elsewhere that are not backed here. The governing rule: **every headline claim
-has a click-through proof, or it does not go in the headline.** Honesty is the product's moat
+has a click-through proof, or it does not go in the headline.** Accuracy is the product's moat
 with the buyer we want (regulated/fintech), so overclaiming is not a growth hack here, it is a
 credibility leak.
 
@@ -74,7 +74,7 @@ backed; sequencing is about attention and impact, not about hiding a weak claim.
 
 ## 4. The four pillars
 
-Each pillar has: the claim, the proof (what a skeptic can click), the honest scope (the line we
+Each pillar has: the claim, the proof (what a skeptic can click), the scope (the line we
 do not cross), and the phrasing to use / avoid.
 
 ### Pillar 1: At most once, not at least once
@@ -87,7 +87,7 @@ do not cross), and the phrasing to use / avoid.
 - **Mechanism (the part nobody else has):** a durable **attempt marker** written before a
   non-idempotent write, plus **halt-on-unknown-outcome** on resume. If a write's result was
   never journaled, the run stops for a human decision instead of re-running.
-- **Scope / honesty:** the guarantee is for side effects declared non-idempotent through the
+- **Scope:** the guarantee is for side effects declared non-idempotent through the
   `Safety` type; read-only and idempotent tools re-run freely by design. We say "at most once
   for declared side effects," not "exactly once for everything."
 - **Say:** "won't double-charge," "measured, not claimed," "the benchmark is the product."
@@ -99,7 +99,7 @@ do not cross), and the phrasing to use / avoid.
 - **Claim:** Temporal-class durability without operating a server or worker fleet.
 - **Proof:** a hello-world imports the standard library only, enforced by
   `architecture_test.go`. Durability comes from a store adapter (SQLite, Postgres).
-- **Scope / honesty:** we are not claiming Temporal's full feature set (schedules, signals at
+- **Scope:** we are not claiming Temporal's full feature set (schedules, signals at
   their scale, visibility tooling). The claim is specifically the *durable-resume guarantee* as
   a library. Say "the guarantees you wanted Temporal for, as an import," not "replaces
   Temporal."
@@ -114,10 +114,10 @@ do not cross), and the phrasing to use / avoid.
   `AuditedStore` auto-signs and publishes an STH per step to an external transparency log.
   Verification is one flow across the journal, the live event stream, and separate-retention
   storage. → `docs/AUDIT.md`.
-- **Scope / honesty (load-bearing):** **integrity is unconditional; tamper-evidence requires
+- **Scope (load-bearing):** **integrity is unconditional; tamper-evidence requires
   anchoring the commitment out-of-band.** A hash tree in a DB the attacker controls can be
   rewritten and rehashed. We ship the anchoring machinery; we never say "tamper-proof" or
-  "immutable." This honesty is the sell to a security buyer who has been lied to by everyone
+  "immutable." This is the sell to a security buyer who has been lied to by everyone
   else's "immutable audit log."
 - **Say:** "tamper-evident when anchored," "prove one action without revealing the rest," "no
   other agent framework has this at all" (true).
@@ -145,7 +145,7 @@ do not cross), and the phrasing to use / avoid.
 
 ## 5. Competitor map
 
-Honest contrast. Measured numbers only where we measured; everything else qualitative.
+Measured numbers only where we measured; everything else qualitative.
 
 | | go-agents | Temporal / DBOS | ADK · eino · trpc · langchaingo | Sema4.ai |
 |---|---|---|---|---|
@@ -155,13 +155,13 @@ Honest contrast. Measured numbers only where we measured; everything else qualit
 | Convergent shared state | **Provable (gsm)** | N/A | None | N/A |
 | Ecosystem | Go | Go / multi | Go | Python |
 
-Notes for honest use:
+Notes for use:
 - We have **measured** double-fire counts only for the four agent frameworks (fair adapters in
   `benchmarks/`). Temporal and DBOS are described qualitatively ("resume by re-running; steps
   must be idempotent"), which is accurate and documented by them; do not invent a number for
   them.
 - DBOS is the closest of the "re-run" camp (it markets once-and-only-once for completed steps);
-  the honest differentiator is still the attempt-marker + halt for the execute-to-persist
+  the real differentiator is still the attempt-marker + halt for the execute-to-persist
   window, which it does not have. Be precise, not dismissive.
 - The competitor adapters are deliberately fair. That discipline is itself an asset: say we
   represented each SDK at its best and still hold the only `maxFired=1`.
@@ -191,7 +191,7 @@ The differentiation is **substance under the same words**:
   import against a DB you already run. Opposite deployment models. Different ecosystems (Python
   vs Go), so not a drop-in substitution either way.
 
-Honesty guardrail on this contrast: the "they don't do X" claims are inferred from **what they
+Guardrail on this contrast: the "they don't do X" claims are inferred from **what they
 do not advertise**, not a teardown. Say "they do not claim crash-safe at-most-once / their audit
 is observability, not cryptographic proof," never "they can't." Lead with the sharper *thing we
 prove*, not a negative about them.
@@ -224,7 +224,7 @@ actually holds."**
 | Agent frameworks: **"checkpoint / resume"** | Resume by re-running the step | Resume that **never re-fires a side effect** (they measured 4–64×; we hold 1). |
 | "**shared state / multi-agent**" | Best-effort, or a single-writer bottleneck | **Provably convergent** replay of a durable log (confluence, published proof). "Shared state should be *provably* order-independent, not hopefully consistent." |
 
-### The three rules that keep this honest (not spin)
+### The three rules that keep this accurate (not spin)
 
 This move is powerful *because* the proofs exist. It goes hollow the instant we overreach, so:
 
@@ -273,12 +273,12 @@ proposed reframe fails rule 1 (no clickable proof), it does not ship until the p
 
 ---
 
-## 9. Objections and honest responses
+## 9. Objections and responses
 
 - *"Isn't this just exactly-once, which is theoretically impossible?"* We do not claim
   exactly-once delivery. We claim at-most-once execution of declared side effects, and on an
   unknown outcome we halt for a human instead of guessing. That is a weaker, achievable, and
-  more honest guarantee than the impossible one.
+  more accurate guarantee than the impossible one.
 - *"Temporal already does durable execution."* It does, and it needs a server + worker fleet,
   and its activities must be idempotent (a non-idempotent one double-fires on worker crash). We
   give the resume guarantee as a library and close the double-fire window they leave to you.

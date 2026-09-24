@@ -105,7 +105,7 @@ func TestEventLog_InclusionProofs(t *testing.T) {
 		if !ok {
 			t.Fatalf("event %d (%T) failed its own inclusion proof", i, e)
 		}
-		// A tampered event must not verify against the honest proof.
+		// A tampered event must not verify against the genuine proof.
 		if ok, _ := audit.VerifyEventInclusion(root, agent.TurnStarted{Seq: 999}, proof); ok && i != 0 {
 			t.Fatalf("a forged event verified at index %d", i)
 		}
@@ -188,7 +188,7 @@ func TestEventLog_Consistency(t *testing.T) {
 		t.Fatalf("ProveConsistency: %v", err)
 	}
 	if !audit.VerifyConsistency(rootEarly, rootFull, proof) {
-		t.Fatal("honest append-only history failed the consistency proof")
+		t.Fatal("a genuinely append-only history failed the consistency proof")
 	}
 
 	// Rewrite an early event: the earlier root no longer reconciles.

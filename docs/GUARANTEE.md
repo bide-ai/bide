@@ -1,6 +1,6 @@
 # The durability guarantee
 
-This is the precise, honest statement of the core guarantee (pillar 1 in `POSITIONING.md`).
+This is the precise statement of the core guarantee (pillar 1 in `POSITIONING.md`).
 README and marketing assert it; this document specifies it, including exactly where it stops.
 
 ## What the guarantee is
@@ -23,7 +23,7 @@ store, it is safe: resume replays it from the journal rather than re-running it.
    attempted, outcome unknown" and **halts** (`ResumeHalt`) instead of guessing. It does not
    silently re-run, and it does not silently assume success.
 
-Case 3 is the whole moat. The honest phrasing is **at-most-once**: the side effect fires zero or
+Case 3 is the whole moat. The precise phrasing is **at-most-once**: the side effect fires zero or
 one times, never twice. It is **not** "exactly-once": an unresumable crash in that window can
 leave it having fired once but unconfirmed, and the system stops for a human/policy decision
 rather than pretending it knows.
@@ -37,7 +37,7 @@ rather than pretending it knows.
 - **The write to the store must itself be atomic/durable.** The guarantee reduces to "the
   journal did or did not record this step"; it relies on the store committing atomically. It
   does not defend against the storage layer lying about a commit.
-- **The tool must declare its safety honestly.** `ReadOnly` re-runs freely, `Idempotent`
+- **The tool must declare its safety accurately.** `ReadOnly` re-runs freely, `Idempotent`
   retries, and only an unmarked non-idempotent write gets the attempt-marker/halt treatment.
   Mislabel a card-charge as idempotent and you have opted out of the protection.
 - **It is at-most-once for the side effect, not "the agent always finishes."** A crash can still
