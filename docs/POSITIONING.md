@@ -203,7 +203,49 @@ agents vs our crash-safe (measured) ones; their platform you operate vs our libr
 
 ---
 
-## 6. Proof assets (what every claim points to)
+## 6. Reframe: turn their strengths into our bar
+
+The highest-leverage move in this whole doc: take the word a well-funded competitor spent
+millions teaching our buyer to want, concede it, then raise the bar to the reading only we
+meet. We do not create demand; we invert their marketing. Every competitor headline word has a
+*weak reading* they quietly rely on and a *strong reading* they cannot deliver. Agree with the
+premise (disarming), then show their delivery stops short of it.
+
+The pattern, every time: **"Yes, X matters, which is exactly why we do the version of X that
+actually holds."**
+
+| They say | Their (weak) reading | Our (strong) reading = the new bar |
+|---|---|---|
+| Sema4: **"deterministic"** | Same query → same answer (reproducible output) | Fires **at most once across a crash** (measured). "Deterministic output is table stakes; deterministic execution *under failure* is the hard part." |
+| Sema4: **"auditable"** | Rich logs an auditor trusts because the vendor is SOC2 | Cryptographic proofs a third party verifies **without trusting us**. "Auditable should mean *provable*, not *loggable*." |
+| Temporal: **"durable execution"** | Guarantees, if you run a server + worker fleet | The same guarantees as a **library**, against a DB you already run. "Durable execution shouldn't require operating a cluster." |
+| Temporal / DBOS: **"exactly-once"** | Once, *if your activity/step is idempotent* (your problem) | We close the execute→persist window they hand back to you (attempt-marker + halt). |
+| Agent frameworks: **"checkpoint / resume"** | Resume by re-running the step | Resume that **never re-fires a side effect** (they measured 4–64×; we hold 1). |
+
+### The three rules that keep this honest (not spin)
+
+This move is powerful *because* the proofs exist. It goes hollow the instant we overreach, so:
+
+1. **Only reframe a word we can out-prove with a click.** "Auditable → cryptographically
+   verifiable" works because `audit/` + the RFC 6962 vectors exist. **Do NOT reframe
+   "deterministic → provably convergent" yet**: gsm's proof is not compiled, so that one would
+   be the exact hollow claim that discredits the rest. Earn it first (see the debt in §10).
+2. **Raise the bar; never call theirs a lie.** Say "reproducible output is the floor;
+   crash-safety is the bar," not "Sema4 isn't really deterministic." The first is a confident
+   category definition; the second is an attack we cannot fully substantiate (we infer from
+   their marketing, not a teardown) and it makes us look small. This is guardrail §8.2 applied.
+3. **Redefine the category, don't just win a feature.** The strongest form is not "we are more
+   auditable than Sema4." It is planting a **definition**: *"Auditable means
+   verifiable-without-trust; anything less is just logging."* Now every competitor is measured
+   against our bar, and the buyer re-reads their page through our frame. That is positioning,
+   not comparison.
+
+Use this as the engine behind every comparison line, headline, and objection response. If a
+proposed reframe fails rule 1 (no clickable proof), it does not ship until the proof does.
+
+---
+
+## 7. Proof assets (what every claim points to)
 
 - **`chaos/` + `benchmarks/README.md`**: the crash benchmark and cross-SDK table (pillar 1).
 - **`architecture_test.go`**: stdlib-only core enforcement (pillar 2).
@@ -215,7 +257,7 @@ agents vs our crash-safe (measured) ones; their platform you operate vs our libr
 
 ---
 
-## 7. Messaging guardrails
+## 8. Messaging guardrails
 
 1. No unqualified "exactly-once," "tamper-proof," "immutable," or unscoped "provable."
 2. Every competitor comparison stays fair: measured where measured, qualitative otherwise, and
@@ -227,7 +269,7 @@ agents vs our crash-safe (measured) ones; their platform you operate vs our libr
 
 ---
 
-## 8. Objections and honest responses
+## 9. Objections and honest responses
 
 - *"Isn't this just exactly-once, which is theoretically impossible?"* We do not claim
   exactly-once delivery. We claim at-most-once execution of declared side effects, and on an
@@ -246,7 +288,7 @@ agents vs our crash-safe (measured) ones; their platform you operate vs our libr
 
 ---
 
-## 9. Open positioning debts
+## 10. Open positioning debts
 
 Ranked by leverage:
 
