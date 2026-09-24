@@ -5,8 +5,8 @@
 One append-only journal, four guarantees no other agent framework pairs in a single library:
 side effects that fire **at most once**, a **cryptographically verifiable audit trail** (RFC
 6962 Merkle proofs, verifiable without trusting the vendor), and **provably convergent** shared
-state, all as a **plain-Go library** with no cluster. Built for agents that move money, touch
-records, or act under audit.
+state, all as a **plain-Go library** with no cluster that drives thousands of concurrent durable
+runs in one process. Built for agents that move money, touch records, or act under audit.
 
 Status: **working v0**, live-verified end-to-end. Requires **Go 1.27**.
 
@@ -44,6 +44,16 @@ Temporal has the guarantees but needs a server + a worker fleet to operate. Here
 a **store adapter you already run** (SQLite locally, Postgres in prod). A hello-world imports the
 **standard library only**: no Temporal, no gRPC, no vector DB dragged into your binary (enforced
 by `architecture_test.go`). Import it; don't operate it.
+
+And because it is a Go library, one process keeps a very large number of these durable runs in
+flight at once. Agent work is I/O-bound (waiting on model and tool calls), which goroutines absorb
+without a cluster. The [`cmd/bench`](cmd/bench/README.md) harness measures it: 5,000 runs that each
+block ~100ms on the model overlap into **~450ms of wall-clock** on a few thousand goroutines and
+tens of MB. The win is throughput and operational simplicity, not lower latency than the model
+(the provider owns per-call latency); at high fan-out the durable store's write throughput is the
+ceiling, not goroutines. Every concurrent run keeps all four guarantees. Reliability under that
+load is built in: per-attempt **timeouts**, retry with backoff that **classifies** transient vs
+terminal errors, and a **rate limiter** for model and tool calls ([middleware](middleware)).
 
 ### 3 · A cryptographically verifiable audit spine, from the same journal
 
