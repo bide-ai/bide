@@ -47,6 +47,8 @@ func main() {
 		verify(os.Args[2:])
 	case "verify-governance":
 		verifyGovernance(os.Args[2:])
+	case "verify-governed-action":
+		verifyGovernedAction(os.Args[2:])
 	default:
 		usage()
 	}
@@ -64,6 +66,11 @@ func usage() {
   verify-governance -policy <file> [-digest <hex>] [-checker <astchecker>]
          recompute the policy digest and, with -checker, run the external verified
          oracle to certify the policy converges; exit 0 if all checks pass
+
+  verify-governed-action -action <bundle> -policy-bundle <bundle> -pubkey <hex|file> [-checker <astchecker>]
+         verify a governed action end to end: both bundles authentic and in the same
+         signed tree, the action's policy digest links to the anchored policy leaf, the
+         leaf's bytes hash to that digest, and (with -checker) the policy converges
 
 Export a journal for `+"`prove`"+` with: json.Marshal(store.History(ctx, runID)).
 `)
@@ -196,6 +203,101 @@ func verifyGovernance(args []string) {
 		os.Exit(1)
 	}
 	fmt.Println("OK: digest verified and the external oracle certifies the policy converges")
+}
+
+// verifyGovernedAction verifies a governed action against its anchored policy from public
+// artifacts alone: two ProofBundles (the action and the policy leaf) plus an out-of-band public
+// key. It confirms (1) both bundles are authentic under the key, (2) they are in the SAME signed
+// tree, (3) the action's embedded policy digest matches the anchored policy leaf's digest,
+// (4) the leaf's bytes actually hash to that digest (so the leaf cannot lie about which policy it
+// is), and (5) with -checker, that the external verified oracle certifies the policy converges.
+// Steps 1 to 4 are the cryptographic root; step 5 is the independent mathematical root.
+func verifyGovernedAction(args []string) {
+	fs := flagSet("verify-governed-action")
+	actionPath := fs.String("action", "", "path to the action ProofBundle JSON (from prove -tool)")
+	policyPath := fs.String("policy-bundle", "", "path to the policy-leaf ProofBundle JSON (from ProvePolicy)")
+	pubkey := fs.String("pubkey", "", "ed25519 public key as hex, or a path to a file containing it")
+	checker := fs.String("checker", "", "path to the external verified oracle (astchecker); if set, it certifies the policy converges")
+	_ = fs.Parse(args)
+
+	if *actionPath == "" || *policyPath == "" || *pubkey == "" {
+		usage()
+	}
+	var action, policy audit.ProofBundle
+	readJSON(*actionPath, &action)
+	readJSON(*policyPath, &policy)
+	pub := readPubKey(*pubkey)
+
+	// (1) both bundles authentic under the out-of-band key.
+	if ok, err := action.Verify(pub); err != nil {
+		fatal(err)
+	} else if !ok {
+		fmt.Println("FAIL: action bundle did not verify under this key")
+		os.Exit(1)
+	}
+	if ok, err := policy.Verify(pub); err != nil {
+		fatal(err)
+	} else if !ok {
+		fmt.Println("FAIL: policy bundle did not verify under this key")
+		os.Exit(1)
+	}
+
+	// (2) same signed tree.
+	if action.STH.Size != policy.STH.Size || string(action.STH.Root) != string(policy.STH.Root) {
+		fmt.Println("FAIL: the action and policy are not committed in the same signed tree")
+		os.Exit(1)
+	}
+
+	// (3) the action's embedded policy digest matches the anchored policy leaf's digest.
+	var actionPayload struct {
+		PolicyDigest string `json:"policy_digest"`
+	}
+	if err := json.Unmarshal(action.Record.Result, &actionPayload); err != nil {
+		fatal(fmt.Errorf("action result is not a governed-action payload: %w", err))
+	}
+	var pc audit.PolicyContent
+	if err := json.Unmarshal(policy.Record.Result, &pc); err != nil {
+		fatal(fmt.Errorf("policy bundle is not a policy leaf: %w", err))
+	}
+	if actionPayload.PolicyDigest == "" || actionPayload.PolicyDigest != pc.Digest {
+		fmt.Printf("FAIL: action policy digest %q does not link to the anchored policy leaf %q\n", actionPayload.PolicyDigest, pc.Digest)
+		os.Exit(1)
+	}
+
+	// (4) the leaf's bytes actually hash to that digest (recomputed independently of gsm).
+	h := sha256.New()
+	h.Write([]byte(policyFormatVersion + "\n"))
+	h.Write([]byte(pc.Policy))
+	if recomputed := hex.EncodeToString(h.Sum(nil)); recomputed != pc.Digest {
+		fmt.Printf("FAIL: policy leaf lies about its digest (bytes hash to %s, leaf claims %s)\n", recomputed, pc.Digest)
+		os.Exit(1)
+	}
+	fmt.Printf("OK: action in run %q ran under anchored policy %s, both in a signed tree of size %d\n", action.RunID, pc.Digest, action.STH.Size)
+
+	// (5) the independent mathematical root: the policy converges.
+	if *checker == "" {
+		fmt.Println("OK: cryptographic root verified. Pass -checker <astchecker> to also certify the policy converges.")
+		return
+	}
+	tmp, err := os.CreateTemp("", "policy-*.machine")
+	if err != nil {
+		fatal(err)
+	}
+	defer os.Remove(tmp.Name())
+	if _, err := tmp.WriteString(pc.Policy); err != nil {
+		fatal(err)
+	}
+	_ = tmp.Close()
+	out, runErr := exec.Command(*checker, tmp.Name()).CombinedOutput()
+	fmt.Printf("oracle: %s", out)
+	if len(out) > 0 && out[len(out)-1] != '\n' {
+		fmt.Println()
+	}
+	if runErr != nil {
+		fmt.Println("FAIL: the verified oracle did not certify the anchored policy as convergent")
+		os.Exit(1)
+	}
+	fmt.Println("OK: both roots verified: the action ran under an anchored, provably convergent policy")
 }
 
 // readPubKey accepts a hex string directly, or a path to a file whose (trimmed) contents are
