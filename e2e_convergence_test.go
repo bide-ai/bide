@@ -5,9 +5,11 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"fmt"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	gsm "github.com/blackwell-systems/gsm"
 	agent "github.com/dayna/go-agents"
@@ -44,16 +46,16 @@ func rotate(s []string, n int) []string {
 	return append(append(out, s[n:]...), s[:n]...)
 }
 
-// TestE2E_ManyAgentsConvergeAndAreTraceable is the combined proof: N concurrent governed agents,
-// each applying the SAME multiset of events in a DIFFERENT order, all (a) converge to the same
-// machine-checked normal form and (b) produce a governed action that verifies offline against a
-// signed tree head. It exercises scale, convergence (order-independence under real concurrency,
-// including a compensating cap), and cryptographic traceability in one test. Use -short to run a
-// smaller N.
+// TestE2E_ManyAgentsConvergeAndAreTraceable is the combined proof: many concurrent governed
+// agents, each applying the SAME multiset of events in a DIFFERENT order, all (a) converge to the
+// same machine-checked normal form and (b) produce a governed action that verifies offline against
+// a signed tree head. It exercises scale, convergence (order-independence under real concurrency,
+// including a compensating cap), and cryptographic traceability in one test, at 5k/10k/20k agents.
+// Use -short for a single small scale.
 func TestE2E_ManyAgentsConvergeAndAreTraceable(t *testing.T) {
-	n := 5000
+	scales := []int{5000, 10000, 20000}
 	if testing.Short() {
-		n = 200
+		scales = []int{200}
 	}
 	ctx := context.Background()
 
@@ -87,16 +89,50 @@ func TestE2E_ManyAgentsConvergeAndAreTraceable(t *testing.T) {
 		t.Fatalf("unexpected normal form: a=%d b=%d", ref.State().GetInt(a), ref.State().GetInt(b))
 	}
 
+	for _, n := range scales {
+		n := n
+		t.Run(fmt.Sprintf("N=%d", n), func(t *testing.T) {
+			runScale(t, ctx, m, base, digest, want, n)
+		})
+	}
+}
+
+func runScale(t *testing.T, ctx context.Context, m *gsm.Machine, base []string, digest, want string, n int) {
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatalf("keygen: %v", err)
 	}
 	store := agent.NewMemStore()
 
+	concurrency := n
+	if concurrency > 2048 {
+		concurrency = 2048
+	}
+
 	digests := make([]string, n)
-	var runErrs, auditErrs int64
+	var runErrs, auditErrs, peakG int64
+	sampleDone := make(chan struct{})
+	go func() {
+		tk := time.NewTicker(3 * time.Millisecond)
+		defer tk.Stop()
+		for {
+			select {
+			case <-sampleDone:
+				return
+			case <-tk.C:
+				if g := int64(runtime.NumGoroutine()); g > atomic.LoadInt64(&peakG) {
+					atomic.StoreInt64(&peakG, g)
+				}
+			}
+		}
+	}()
+
+	var m0 runtime.MemStats
+	runtime.ReadMemStats(&m0)
+
 	var wg sync.WaitGroup
-	sem := make(chan struct{}, 512)
+	sem := make(chan struct{}, concurrency)
+	start := time.Now()
 	for i := 0; i < n; i++ {
 		wg.Add(1)
 		sem <- struct{}{}
@@ -135,6 +171,11 @@ func TestE2E_ManyAgentsConvergeAndAreTraceable(t *testing.T) {
 		}(i)
 	}
 	wg.Wait()
+	elapsed := time.Since(start)
+	close(sampleDone)
+
+	var m1 runtime.MemStats
+	runtime.ReadMemStats(&m1)
 
 	if runErrs != 0 {
 		t.Fatalf("%d/%d agent runs failed", runErrs, n)
@@ -142,10 +183,12 @@ func TestE2E_ManyAgentsConvergeAndAreTraceable(t *testing.T) {
 	if auditErrs != 0 {
 		t.Fatalf("%d/%d runs failed the traceability check (proof did not verify)", auditErrs, n)
 	}
-	// Convergence: every agent reached the same machine-checked normal form.
 	for i, d := range digests {
 		if d != want {
 			t.Fatalf("agent %d did not converge: got %s, want %s", i, d, want)
 		}
 	}
+	t.Logf("N=%d: converged + traceable in %s (%.0f agents/s), peak goroutines=%d, heap delta=%.0f MB",
+		n, elapsed.Round(time.Millisecond), float64(n)/elapsed.Seconds(),
+		atomic.LoadInt64(&peakG), float64(m1.HeapAlloc-m0.HeapAlloc)/1e6)
 }
