@@ -107,6 +107,13 @@ gsm federation capability reaches the agent tier for free on a version bump:
   (per `Session.Send` turn). Counts replayed turns too (a resumed run past the cap stops at once).
   = trpc's "Call Count Limits" safety mechanism; a real hole in our loop (TokenBudget was the only,
   indirect guard). `cloneWith` carries it.
+- **RAG/memory = bring-your-own** (`retrieval.go`, decision in docs/RAG-MEMORY.md): ship NO vector
+  store/embedder. Core seam: `Retriever` port (`Retrieve(ctx, query, k) []Doc`), `RetrievalTool`
+  (agentic — model searches on demand), `WithRetrieval` middleware (classic — top-k injected as a
+  system message on user turns, skipped mid-loop). `Message.Text()` helper added. Conversational
+  memory = Sessions; dynamic context = WithSystemPromptFunc; semantic memory = this seam + your
+  store. Concrete stores would be separate modules if demand appears. Deliberate scope boundary
+  (keeps the zero-dep core + focus on the durability moat); positioning win vs bundled-vector-DB.
 - **Sessions / multi-turn** (`session.go`): `Agent.Session(ctx, id) *Session`; `Session.Send(ctx,
   input)` is one durable turn seeded with the transcript so far (agent remembers prior turns).
   Transcript journaled turn-by-turn under `<id>` (StepValue `turn/N` = {input, answer}); turn N runs

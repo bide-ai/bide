@@ -226,6 +226,32 @@ transcript — a turn's intermediate tool calls stay in that turn and don't leak
 a turn pauses (approval / `Interrupt`), `Send` returns that error; resolve it and call `Send` again
 with the same input to resume.
 
+## RAG & memory (bring your own)
+
+go-agents ships **no vector store, embedder, or memory backend** — it gives you the *seam* and
+you plug in the store you already run. Implement one interface against your infra:
+
+```go
+type Retriever interface {
+	Retrieve(ctx context.Context, query string, k int) ([]agent.Doc, error)
+}
+```
+
+Then wire it in one of two ways:
+
+```go
+// Agentic RAG — the model searches on demand:
+a := agent.New(model, store, agent.RetrievalTool(myStore, 5))
+
+// Classic RAG — top-k auto-injected as context on each user turn:
+a.Use(agent.WithRetrieval(myStore, 5))
+```
+
+Conversational memory is already built in (`Session`); dynamic context goes through
+`WithSystemPromptFunc`; this seam covers semantic / long-term memory. Concrete store adapters (if
+ever needed) would be separate modules, never in the core. See
+[docs/RAG-MEMORY.md](docs/RAG-MEMORY.md).
+
 ## Resume safety, in one table
 
 ```go

@@ -3,7 +3,20 @@ package agent
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 )
+
+// Text returns the concatenation of the message's Text parts (ignoring reasoning, tool
+// calls, and tool results). Empty if the message carries no text.
+func (m Message) Text() string {
+	var b strings.Builder
+	for _, p := range m.Parts {
+		if t, ok := p.(Text); ok {
+			b.WriteString(t.Text)
+		}
+	}
+	return b.String()
+}
 
 // Role identifies the author of a Message.
 type Role string
