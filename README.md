@@ -158,7 +158,32 @@ middleware       Retry, TokenBudget
 trace            opt-in OTel gen_ai.* spans
 store/sqlite     on-disk durable resume (single binary, no cluster)
 store/postgres   HA durable resume (any node resumes any run)
+govern           Tier-2: convergent shared state for concurrent agents (gsm-backed)
 ```
 
+## Convergent governance (Tier-2)
+
+The durable core keeps *one* agent's work crash-safe. The `govern` tier handles the other
+hard case: **many agents mutating shared state, converging without coordination.** You
+describe the shared state as a registry (variables + invariants + events); gsm proves *at
+build time* that every interleaving of agent actions reaches the same valid state — or refuses
+to build and shows you a counterexample. Runtime is O(1) table lookups; state is event-sourced
+and crash-recoverable.
+
+It scales from a single shared registry up through **federations** (cross-agent constraints:
+trees → multi-source DAGs with resolvers → monotone cyclic *meshes*), composes via `Embed`,
+and can even **synthesize** the compensation for you (declare the rules, get a convergent
+governor — or a proof that none exists). Agents plug in through `FederatedEventTool`, so an
+LLM tool call becomes a governed event.
+
+```go
+gov, _ := govern.NewPersistent(ctx, machine, log, "order-42", machine.NewState())
+tool := govern.EventTool(gov, "pay", "mark the order paid", "pay", agent.Safety{})
+// hand `tool` to the agent — concurrent agents sharing `gov` converge, durably.
+```
+
+> Full guide, capability ladder, and the two runnable demos (`examples/mesh`, `examples/compose`)
+> in **[docs/GOVERNANCE.md](docs/GOVERNANCE.md)**.
+
 > Name is deliberately deferred — this is a codename. Design + competitive analysis in
-> `docs/DESIGN.md` and `docs/COMPETITIVE*.md`.
+> `docs/DESIGN.md` and `docs/COMPETITIVE*.md`; the governance tier in `docs/GOVERNANCE.md`.
