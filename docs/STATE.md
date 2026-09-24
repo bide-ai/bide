@@ -169,8 +169,18 @@ gsm federation capability reaches the agent tier for free on a version bump:
   the signed root → consistency between two STHs proves append-only growth. #4 is a complete product. HONEST model (in the package doc):
   integrity always; tamper-evidence only if the head is anchored out-of-band (a chain in the same DB
   an attacker controls can be rewritten+rehashed). Compliance/enterprise axis (fintech/health). Read
-  over persisted order (correct under parallel tools), no core Record change. Next: Merkle root +
-  inclusion proofs (selective disclosure) leveraging merkle-strata.
+  over persisted order (correct under parallel tools), no core Record change.
+  **Event→audit sink** (`audit/eventsink.go`, from the "durable+auditable as one spine" review): an
+  `EventLog` applies the SAME RFC 6962 machinery (merkleRoot/auditPath/verifyPath) to `Agent.Stream`'s
+  semantic AgentEvents — `Add`/`Root`/`Head`/`Prove`/`VerifyEventInclusion`/`TreeHead`/`ProveConsistency`,
+  all reusing the journal's `Inclusion`/`TreeHead`/`Consistency` types and `Sign`/`Verify` (one auditor
+  flow for journal + events). `Record(log, stream, onEvent)` drains a live stream in one pass (UI feed +
+  committed trail). DURABILITY: a live `EventLog` is in-memory (lost on crash; Root even shifts fresh-vs-
+  replay), so the durable artifact is `audit.EventLogFromJournal` = a projection of the crash-safe journal
+  via `agent.ReplayEvents` (StepModel→AssistantTurn{Replayed}, StepToolResult→ToolCompleted; deterministic,
+  resume-stable, append-only-across-crash — proven in `replay_test.go` + `audit/eventsink_test.go`).
+  Token deltas aren't journaled → not in the durable projection (correct for a compliance log). Next: BYO
+  `EventStore` port for separate event retention; auto-STH `Durable` decorator; external transparency log.
 - **RAG/memory = bring-your-own** (`retrieval.go`, decision in docs/RAG-MEMORY.md): ship NO vector
   store/embedder. Core seam: `Retriever` port (`Retrieve(ctx, query, k) []Doc`), `RetrievalTool`
   (agentic — model searches on demand), `WithRetrieval` middleware (classic — top-k injected as a

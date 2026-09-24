@@ -1,6 +1,7 @@
 package audit
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -104,6 +105,28 @@ func VerifyEventInclusion(root []byte, event agent.AgentEvent, proof Inclusion) 
 		return false, err
 	}
 	return verifyPath(root, leaf, proof.Index, proof.Size, proof.Path), nil
+}
+
+// EventLogFromJournal builds an EventLog from runID's DURABLE journal by projecting it to the
+// semantic events Agent.Stream re-emits on resume (agent.ReplayEvents). This is the
+// crash-durable, resume-stable counterpart to filling an EventLog from the live stream: it is
+// a deterministic function of the persisted journal, so its Root / STH are byte-identical
+// before and after a crash. THIS is the artifact to anchor for a durable audit trail; the
+// live-stream EventLog is a real-time view (and its Root shifts between a fresh run and its
+// replay because live-only events differ). Root / Head / TreeHead / Prove / ProveConsistency
+// then work exactly as they do on any EventLog.
+func EventLogFromJournal(ctx context.Context, store agent.Durable, runID string) (*EventLog, error) {
+	evs, err := agent.ReplayEvents(ctx, store, runID)
+	if err != nil {
+		return nil, err
+	}
+	log := NewEventLog()
+	for _, e := range evs {
+		if err := log.Add(e); err != nil {
+			return nil, err
+		}
+	}
+	return log, nil
 }
 
 // Record drains stream through log — committing every event — while forwarding each event

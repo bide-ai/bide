@@ -4,11 +4,30 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"encoding/json"
 	"testing"
 
 	agent "github.com/dayna/go-agents"
 	"github.com/dayna/go-agents/audit"
 )
+
+// twoTurnModel calls a tool on turn 1, then answers on turn 2 — enough to journal a
+// StepModel + StepToolResult + StepModel, so the durable projection has real content.
+type twoTurnModel struct{ calls int }
+
+func (m *twoTurnModel) Stream(_ context.Context, _ agent.Request) (*agent.Stream, error) {
+	m.calls++
+	ch := make(chan agent.Emit, 2)
+	if m.calls == 1 {
+		ch <- agent.Emit{Event: agent.ToolCallDelta{Index: 0, ID: "c1", Name: "lookup", ArgsFragment: json.RawMessage(`{}`)}}
+		ch <- agent.Emit{Event: agent.Finish{Reason: "tool_use"}}
+	} else {
+		ch <- agent.Emit{Event: agent.TextDelta{Text: "final"}}
+		ch <- agent.Emit{Event: agent.Finish{Reason: "stop"}}
+	}
+	close(ch)
+	return agent.NewStream(ch), nil
+}
 
 // eventTurn is a mock model turn that streams one text answer, so Agent.Stream produces a
 // real, ordered AgentEvent sequence (TurnStarted → ModelEvent(TextDelta) → ModelEvent(Finish)
@@ -213,6 +232,57 @@ func TestRecord_DrainsRealStream(t *testing.T) {
 	}
 	if _, ok := seen[len(seen)-1].(agent.Finished); !ok {
 		t.Fatalf("last event = %T, want agent.Finished", seen[len(seen)-1])
+	}
+}
+
+// TestEventLogFromJournal: the DURABLE projection is deterministic, composes with the STH /
+// consistency surface, and its trail is provably append-only — the crash-durable audit
+// artifact, built from the persisted journal rather than the ephemeral live stream.
+func TestEventLogFromJournal(t *testing.T) {
+	ctx := context.Background()
+	store := agent.NewMemStore()
+	tool := agent.Func("lookup", "", agent.Safety{ReadOnly: true},
+		func(_ context.Context, _ struct{}) (string, error) { return "ok", nil })
+	if _, err := agent.New(&twoTurnModel{}, store, tool).Run(ctx, "run", "hi"); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+
+	log1, err := audit.EventLogFromJournal(ctx, store, "run")
+	if err != nil {
+		t.Fatalf("EventLogFromJournal: %v", err)
+	}
+	if log1.Len() == 0 {
+		t.Fatal("durable projection is empty")
+	}
+	log2, _ := audit.EventLogFromJournal(ctx, store, "run")
+	if !bytes.Equal(log1.Root(), log2.Root()) {
+		t.Fatal("durable Root not deterministic across two projections of the same journal")
+	}
+
+	// Composes with the STH anchor.
+	pub, priv, _ := ed25519.GenerateKey(nil)
+	sth := audit.SignTreeHead(log1.TreeHead(1000), priv)
+	if !sth.Verify(pub) || sth.Size != log1.Len() {
+		t.Fatalf("durable event STH failed (verify=%v size=%d/%d)", sth.Verify(pub), sth.Size, log1.Len())
+	}
+
+	// The trail up to any earlier point is an append-only prefix of the full run.
+	evs, _ := agent.ReplayEvents(ctx, store, "run")
+	if len(evs) < 2 {
+		t.Fatalf("need >= 2 projected events, got %d", len(evs))
+	}
+	prefix := audit.NewEventLog()
+	for _, e := range evs[:len(evs)-1] {
+		if err := prefix.Add(e); err != nil {
+			t.Fatalf("prefix Add: %v", err)
+		}
+	}
+	proof, err := log1.ProveConsistency(prefix.Len())
+	if err != nil {
+		t.Fatalf("ProveConsistency: %v", err)
+	}
+	if !audit.VerifyConsistency(prefix.Root(), log1.Root(), proof) {
+		t.Fatal("durable event trail failed the append-only consistency proof")
 	}
 }
 

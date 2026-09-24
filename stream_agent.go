@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"iter"
 )
 
@@ -79,6 +80,37 @@ func (ApprovalRequired) agentEvent() {}
 type Finished struct{ Final Message }
 
 func (Finished) agentEvent() {}
+
+// ReplayEvents returns the semantic lifecycle events implied by runID's DURABLE journal:
+// the same AssistantTurn and ToolCompleted events Agent.Stream re-emits when it resumes from
+// that journal, in persisted order. Because the sequence is a pure function of the recorded
+// steps, it — and any commitment built over it (see audit.EventLogFromJournal) — is identical
+// before and after a crash, which is what makes it a resume-stable audit artifact.
+//
+// It reconstructs from the journal alone, without re-running the model or tools. Only
+// journaled facts are reproduced: assembled assistant turns (StepModel) and completed tool
+// calls with their results (StepToolResult). Live-loop-only signals — token-level ModelEvent
+// deltas, TurnStarted, ToolStarted, and the terminal Finished — are not journaled and so are
+// not part of the durable projection; the durable content is the turns and tool results.
+func ReplayEvents(ctx context.Context, store Durable, runID string) ([]AgentEvent, error) {
+	recs, err := store.History(ctx, runID)
+	if err != nil {
+		return nil, fmt.Errorf("load history %s: %w (%w)", runID, err, ErrStorage)
+	}
+	var out []AgentEvent
+	for _, r := range recs {
+		switch r.Kind {
+		case StepModel:
+			if r.Message != nil {
+				out = append(out, AssistantTurn{Message: *r.Message, Replayed: true})
+			}
+		case StepToolResult:
+			name, _ := toolNameFor(recs, r.ToolUseID)
+			out = append(out, ToolCompleted{ToolUseID: r.ToolUseID, Name: name, Result: r.Result, IsError: r.IsError})
+		}
+	}
+	return out, nil
+}
 
 // AgentStream is a live view of a running agent: range Events for progress, then call
 // Final for the terminal answer (or error). It is the streaming counterpart of Run,

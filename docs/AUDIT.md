@@ -67,6 +67,27 @@ audit.VerifyConsistency(sth1.Root, sth2.Root, cproof)
 `TreeHead` / `SignedTreeHead` / `Verify` / `Consistency` are the *same types* used over the
 journal (Size counts events instead of records), so an auditor learns one verification flow.
 
+### Durable vs live: where the event log lives
+
+An `EventLog` filled from the live stream is **in-memory**, so a crash loses it — and its Root
+even shifts between a fresh run and its own replay (live-only events like token deltas differ).
+For the durable audit artifact, don't store a second log: **derive it from the journal**, which
+is already the crash-safe, at-most-once substrate.
+
+```go
+log, _ := audit.EventLogFromJournal(ctx, store, runID) // projection of the DURABLE journal
+sth    := audit.SignTreeHead(log.TreeHead(ts), priv)   // anchor THIS — crash-durable, resume-stable
+```
+
+`EventLogFromJournal` projects the journal to the same semantic events `Agent.Stream` re-emits
+on resume (`agent.ReplayEvents`: assembled assistant turns + completed tool calls, in order).
+Because that sequence is a deterministic function of the persisted records, its Root/STH are
+byte-identical before and after a crash, and a crash mid-run leaves a provable append-only
+*prefix* of the completed trail (verified by `ProveConsistency`). Token-level deltas aren't
+journaled, so they aren't in the durable projection — the durable content is turns and tool
+results, which is what a compliance log should commit anyway. The live `EventLog` remains the
+real-time UI view; the journal projection is the anchored artifact.
+
 Each leaf is a kind-tagged canonical encoding, so event types never collide, and `ModelEvent`
 carries the inner delta's kind. `Root`/`Head`/`Prove`/`Sign` behave exactly as they do over the
 journal; the `Inclusion` proof type and signing path are shared. (Prototype: `audit/eventsink.go`.)
@@ -108,7 +129,8 @@ in a committed run whose history is provably append-only, without exposing the r
 
 RFC 6962 is fully covered (Head, inclusion, consistency, STH) over both the journal and, via
 the event→audit sink (`EventLog` / `Record` / `TreeHead` / `ProveConsistency`), the semantic
-event stream, all sharing one verification surface. Possible extensions if a use case needs
-them: an audited `Durable` decorator that emits an STH automatically per run; **durable
-event-log persistence** (today an `EventLog` is in-memory, so it must be flushed and anchored to
-survive a crash); and integration with an external transparency log for out-of-band anchoring.
+event stream (live via `EventLog`, and crash-durable via `EventLogFromJournal` /
+`agent.ReplayEvents`), all sharing one verification surface. Possible extensions if a use case
+needs them: an audited `Durable` decorator that emits an STH automatically per run; a BYO
+`EventStore` port for callers who want the event trail on a separate retention lifecycle from
+the resume journal; and integration with an external transparency log for out-of-band anchoring.
