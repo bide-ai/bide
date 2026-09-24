@@ -11,9 +11,10 @@ Three repos under `/Users/dayna/code/`, all remotes on the `github-blackwell` SS
   No license yet (proprietary by default). Committed history, on `main`.
 - **gsm** — the convergence engine (founder's IP). Public: `blackwell-systems/gsm`.
   **Apache-2.0** (relicensed from MIT; copyright "Dayna Blackwell, Blackwell Systems").
-  Released through **v0.5.0** (compensation synthesis; CI green: lint + ubuntu/macos/windows
-  × Go 1.22/1.23). go-agents depends on it via a normal versioned require (**pinned
-  `gsm@v0.5.0`**). The old `replace ../gsm` is gone.
+  Released through **v0.6.0** (compensation synthesis that scales — backtracking + forward-checking —
+  plus preference-guided (`SynthesizeWith`/`Prefer`), provably minimum-cost (`Optimal`), and an
+  impossibility witness; CI green: lint + ubuntu/macos/windows × Go 1.22/1.23). go-agents depends on
+  it via a normal versioned require (**pinned `gsm@v0.6.0`**). The old `replace ../gsm` is gone.
 - **normalization-confluence** — the papers. Public: `blackwell-systems/normalization-confluence`.
   Two papers (single-registry `normalization_confluence_2026.tex`; federated
   `normalization_confluence_in_federated_registry_networks.tex`), CC-BY-4.0.
@@ -74,7 +75,7 @@ gsm federation capability reaches the agent tier for free on a version bump:
 - **Infinite domains**: convergence is domain-independent (WFC+CC, not finiteness); finiteness
   only buys UBC + enumerative verification + O(1) tabulated runtime; monotone infinite lattices
   compute via Kleene + widening. gsm verifies all preconditions exhaustively at build time.
-- **Compensation synthesis** (gsm v0.5.0, `Registry.Synthesize`): generate a convergent
+- **Compensation synthesis** (gsm v0.6.0, `Registry.Synthesize`): generate a convergent
   compensation from invariants + events, or prove none exists. Convergent ≠ desirable (human
   vets the repair). Brute-force, bounded; SAT/SMT scaling is the next step.
 
