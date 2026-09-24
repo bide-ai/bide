@@ -61,9 +61,11 @@ you, your database, or your logs*:
   publishes it out-of-band to an external transparency log; tampering becomes provable, not just
   suspected.
 
-Everyone else offers *observability* (logs you trust because the vendor is SOC2). This is a
-*cryptographic proof you verify yourself*. **No other agent framework has this at all.**
-→ [docs/AUDIT.md](docs/AUDIT.md)
+**Proofs you verify, not logs you trust.** Everyone else offers *observability* (logs you
+trust because the vendor is SOC2); this is a *cryptographic proof you check yourself*. Produce a
+portable `ProofBundle` for one action (`audit.ProveToolCall`) and hand it to an auditor who
+verifies it offline with a `goagents-audit verify` command or a stdlib-only verifier that never
+imports the SDK. **No other agent framework has this at all.** → [docs/AUDIT.md](docs/AUDIT.md)
 
 ### 4 · Provably convergent shared state (gsm)
 

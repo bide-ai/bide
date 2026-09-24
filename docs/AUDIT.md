@@ -143,6 +143,33 @@ Each leaf is a kind-tagged canonical encoding, so event types never collide, and
 carries the inner delta's kind. `Root`/`Head`/`Prove`/`Sign` behave exactly as they do over the
 journal; the `Inclusion` proof type and signing path are shared. (Prototype: `audit/eventsink.go`.)
 
+## Producing a proof: `ProofBundle`, the CLI, and the standalone verifier
+
+The primitives above are the machinery; a `ProofBundle` is the **one portable artifact** you
+hand an auditor. It packages a single disclosed record, its inclusion path, and the signed tree
+head it is proven against, and it verifies offline against a public key obtained out-of-band:
+
+```go
+// Produce: prove one tool call happened, against an anchored STH. Semantic, not by index.
+bundle, _ := audit.ProveToolCall(ctx, store, runID, toolUseID, sth)   // or audit.ProveRecord(..., index, sth)
+blob, _  := json.Marshal(bundle)                                      // store / email / publish it
+
+// Verify: offline, trusting only the out-of-band public key.
+ok, _ := bundle.Verify(pub)   // checks STH signature, size-binding, and inclusion
+```
+
+`Verify` fails closed on a forged record, a proof not bound to the signed size, or the wrong
+key. The public key must come from the anchor operator, not the bundle: that is what makes it
+**proofs you verify, not logs you trust.**
+
+For the auditor who does not write Go, the `goagents-audit` CLI wraps this (`prove` over an
+exported journal + STH, `verify` over a bundle + hex key; `verify` exits 0/1). And for a third
+party who will not import the SDK at all, [`audit/verify`](../audit/verify) is a **stdlib-only**
+package (no `agent`, no gsm) that checks inclusion, consistency, and STH signatures from raw
+leaf bytes: they can vendor just that, or reimplement it from RFC 6962 and check us against it.
+The two verification paths are cross-checked bit-for-bit in the tests so the standalone mirror
+cannot drift.
+
 ## RFC 6962 conformance
 
 The Merkle tree, inclusion proofs, and consistency proofs implement
@@ -184,7 +211,23 @@ event stream (live via `EventLog`, crash-durable via `EventLogFromJournal` / `ag
 and on a separate lifecycle via the BYO `EventStore` port / `PersistJournal`), all sharing one
 verification surface. Continuous anchoring is done: `AuditedStore` auto-signs an STH per durable
 step and publishes it through the `Anchor` port to a reference external transparency log
-(`MemAnchorLog`) that is itself append-only and verifiable. Remaining extensions if a use case
-needs them: adapters implementing `Anchor` against real external logs (Trillian/CT, a public
-ledger, a notary/timestamping service); and periodic (batched) rather than per-step anchoring
-for high-throughput runs.
+(`MemAnchorLog`) that is itself append-only and verifiable. Proof ergonomics are done too: a
+portable `ProofBundle` (`ProveToolCall` / `ProveRecord` / `Verify`), the `goagents-audit` CLI,
+and a stdlib-only standalone verifier (`audit/verify`).
+
+Candidate extensions if a use case needs them, in rough priority:
+
+- **Absence proofs** ("prove this did NOT happen": no charge was logged, no approval recorded).
+  A genuinely new verifiable claim we cannot make today; high compliance value, purely additive.
+  Sorted-adjacency gap proofs (see the sibling `merkle-strata` module) are the known technique.
+- **Stratified / grouped trees** (`merkle-strata`, MIT, stdlib-only): group leaves by step type
+  or agent for O(groups) diffs and per-agent scoped verification/disclosure, useful at
+  multi-agent scale. Note: this restructures the currently-flat RFC 6962 tree, so weigh it
+  against the clean CT-compatible consistency proofs we already have; add alongside, do not
+  replace, the linear tree.
+- **`Anchor` adapters** against real external logs (Trillian/CT, a public ledger, a
+  notary/timestamping service), and **witness cosigning** so a shared anchor's forks are
+  detectable (only relevant if the anchor is a service you do not control).
+- **Batched/periodic anchoring** rather than per-step, for high-throughput runs.
+- **Pinned cross-language canonicalization** so non-Go verifiers can reproduce leaf bytes (today
+  leaves are Go `json.Marshal`, deterministic in-ecosystem but not a pinned wire format).
