@@ -77,8 +77,8 @@ reports "Closed under the global context"): [the Coq/Rocq
 proof](https://github.com/blackwell-systems/normalization-confluence/tree/main/coq)
 ([![verify](https://github.com/blackwell-systems/normalization-confluence/actions/workflows/verify.yml/badge.svg)](https://github.com/blackwell-systems/normalization-confluence/actions/workflows/verify.yml)).
 This is how independent agents share state without a single writer. The claim is precise:
-*order-independent convergence of the replay*, proven, not "agents always agree." (Full chaotic
-asynchronous iteration is not yet mechanized.)
+*order-independent convergence of the replay*, proven, not "agents always agree." The federated
+result is mechanized in full, including asynchronous (chaotic) order-independence.
 
 ### vs. durable-execution and agent runtimes
 

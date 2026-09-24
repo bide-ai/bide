@@ -133,9 +133,9 @@ do not cross), and the phrasing to use / avoid.
   reproduce it with one command. Mechanized: Newman's Lemma, the single-registry Convergence
   Theorem (confluence + unique normal forms), non-vacuity plus a discriminating non-confluent
   example, soundness of gsm's WFC/CC certification (footprint-disjointness => commutation,
-  potential-decrease => termination), and the constructive core of the federated
-  monotone-cycles result (Kleene least-fixed-point). Not yet mechanized: full chaotic
-  (asynchronous) iteration. Proof directory:
+  potential-decrease => termination), and the federated monotone-cycles result in full: both the
+  least fixed point (Kleene) and asynchronous (chaotic) order-independent convergence to it.
+  Proof directory:
   https://github.com/blackwell-systems/normalization-confluence/tree/main/coq . This pillar has
   the same click-through backing as 1 to 3; it is fully co-headlined, not hedged.
 - **Scope (precision, not a hedge):** the claim is **confluence of the normalization rewrite
@@ -304,9 +304,9 @@ proposed reframe fails rule 1 (no clickable proof), it does not ship until the p
   8.18 and 8.20), so replay order cannot change the result. Reproduce it with one command; see
   https://github.com/blackwell-systems/normalization-confluence/tree/main/coq . It is not
   "agents always agree"; it is order-independent convergence of the replay, which is a proven
-  property, not an aspiration. (Full chaotic asynchronous iteration is not yet mechanized; the
-  single-registry Convergence Theorem and the constructive core of the federated
-  monotone-cycles result are.)
+  property, not an aspiration. The single-registry Convergence Theorem and the federated
+  monotone-cycles result (least fixed point plus asynchronous, chaotic order-independence) are
+  all mechanized.
 
 ---
 
@@ -323,9 +323,10 @@ Ranked by leverage:
    crash-safe center of gravity, not the "deterministic/auditable" words Sema4 owns.
 2. ~~Compile/publish the gsm confluence proofs.~~ **Done, and mechanized.** The
    `normalization-confluence` result now has a machine-checked, axiom-free Coq/Rocq proof in the
-   public repo (`coq/` directory), CI-verified on Coq 8.18 and 8.20 with a green badge, so pillar
-   4 is fully co-headlined (see §4). Remaining upside: mechanize full chaotic (asynchronous)
-   iteration, and a polished public host (arXiv / a docs site) for external click-through.
+   public repo (`coq/` directory), CI-verified on Coq 8.18 and 8.20 with a green badge, covering
+   the single-registry theorem and the federated monotone-cycles result in full (least fixed
+   point and asynchronous chaotic convergence), so pillar 4 is fully co-headlined (see §4).
+   Remaining upside: a polished public host (arXiv / a docs site) for external click-through.
 3. **A standalone competitor-comparison doc** with methodology, so the benchmark table has a
    rigorous backing page to link.
 4. **Tag/publish the core** (retires the `benchmarks/` replace directives; makes "it's a

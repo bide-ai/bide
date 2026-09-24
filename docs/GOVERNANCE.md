@@ -161,9 +161,9 @@ CI-verified on Coq 8.18 and 8.20 (`Print Assumptions` reports "Closed under the 
 for every key theorem; no axioms, no admits; the badge is green and anyone can reproduce it with
 one command). Mechanized: Newman's Lemma, the single-registry Convergence Theorem (confluence +
 unique normal forms), the soundness of gsm's WFC/CC certification (footprint-disjointness =>
-commutation, potential-decrease => termination), and the constructive core of the federated
-monotone-cycles result (Kleene least-fixed-point). Not yet mechanized: full chaotic
-(asynchronous) iteration. Proof directory:
+commutation, potential-decrease => termination), and the federated monotone-cycles result: both
+the least fixed point (Kleene) and asynchronous (chaotic) order-independent convergence to it.
+Proof directory:
 [normalization-confluence/coq](https://github.com/blackwell-systems/normalization-confluence/tree/main/coq).
 For "when does my multi-agent / governed network converge," see the
 [REGIMES field guide](https://github.com/blackwell-systems/normalization-confluence/blob/main/REGIMES.md).
