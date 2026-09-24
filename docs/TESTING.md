@@ -234,7 +234,7 @@ labeled cases multiple times, scores each run with rule-based or LLM-judge metri
 pass-rate distribution (`eval.Report`), not a single verdict. Use `Runs > 1`, pin the model version,
 and set temperature 0 for the most reproducible baseline (still not perfectly deterministic).
 
-For rigor it does three things a bare pass-count does not:
+For rigor it does more than a bare pass-count:
 
 - **Confidence intervals.** Every rate carries a 95% Wilson score interval, so a lucky 4/5 reads as
   "80%, 95% CI [38%, 96%]" and does not masquerade as precise; the interval tightens as `Runs` grows.
@@ -244,11 +244,32 @@ For rigor it does three things a bare pass-count does not:
   SDK has.
 - **Latency percentiles** (p50/p95) per report. Runs go through `AgentRunner`, so each evaluation run
   is itself durable and auditable.
+- **Significance-tested regression comparison.** `Compare(old, new)` pairs each metric across two
+  reports and tests whether a rate moved by more than sampling noise: it picks Fisher's exact test
+  or a two-proportion z-test by the minimum-expected-cell-count rule, applies Benjamini-Hochberg
+  correction across the metric family, and labels each result regression / improvement / flat. A CI
+  gate can fail the build on a significant regression rather than on a raw rate dip.
+- **Pre-registered sample sizing.** `RequiredRuns(baselineRate, minDetectableDrop, alpha, power)`
+  returns the runs-per-arm needed to detect a given regression, using the pooled-variance normal
+  approximation (probit via Beasley-Springer/Moro). Size the run before spending on it, rather than
+  reading significance into an underpowered sample.
+- **Reproducibility provenance.** Each `Report` carries a `Provenance{ModelID, Temperature, Seed,
+  Timestamp, CaseSetHash}`; `Run` always fills `CaseSetHash` from `HashCases` (a length-prefixed
+  sha256 over the case set) so a comparison across two reports can confirm they ran the same cases
+  before trusting the delta.
+- **Stratified breakdown.** `Case.Tags` plus `Report.ByTag` report pass rates per slice (region,
+  difficulty, product line), so an aggregate that hides a failing subgroup is visible.
+- **Governance-held metric.** `GovernanceHeld(name, compliant)` scores whether the governed
+  invariant held on each run, which is what makes the two-number report legible: model-correct X%
+  (statistical) alongside governance-held 100% (deterministic). It keeps the boundary below explicit
+  inside the report itself.
 
-Remaining bounds (stated so the harness is not oversold): there is no built-in result store or
-cross-version regression comparison yet (you keep the JSON `Report`s and diff them), and per-run
-token cost is not captured because the public `Run` does not expose usage. Those are additive, not
-corrections.
+Remaining bounds (stated so the harness is not oversold): there is no built-in persistent result
+store yet (you keep the JSON `Report`s, though `Compare` now does the cross-version diff with a
+significance test), and per-run token cost is not captured because the public `Run` does not expose
+usage. Dataset discipline (labels, held-out splits, adversarial coverage) is the user's to bring:
+the harness measures whatever cases it is given, so a weak case set yields a confident-looking but
+uninformative report. Those are additive, not corrections.
 
 The boundary is the point, and it is stated in the package doc and repeated here so it is never
 blurred in a claim:

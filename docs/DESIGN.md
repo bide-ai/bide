@@ -48,7 +48,9 @@ Pitch: **"Type-safe agents that survive a crash. Single binary. No cluster."**
 The agent-framework lane is crowded and vendor-backed (two Google teams + ByteDance). We are
 building here anyway because it's what we want to build. Winning ≠ more integrations than Eino;
 winning = a violently opinionated take on the two wedge features + Go-idiomatic ergonomics.
-(The genuinely *empty* lane was Go evals — noted, parked, not what we're doing.)
+(Go evals were the other empty lane. We now ship a statistical `eval` package, but as a
+supporting layer subordinate to the provable governance/audit moats, not as the product wedge:
+it measures the model statistically and says so; see docs/TESTING.md for the boundary.)
 
 ---
 
