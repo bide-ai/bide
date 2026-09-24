@@ -1,0 +1,22 @@
+# Compiled binaries / plugins
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test binaries, coverage, profiles
+*.test
+*.out
+coverage.*
+
+# Local test artifacts (temp SQLite event logs, etc.)
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# OS / editor cruft
+.DS_Store
+*.swp
+.idea/
+.vscode/
