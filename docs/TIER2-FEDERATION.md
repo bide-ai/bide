@@ -177,7 +177,12 @@ Mirrors how we proved the single-registry + saga tiers.
   over the existing `EventLog` port; event-sourced (registry,event) log; validate-before-append.
   Reconstruction tests green over Mem + SQLite; order-independent convergence + reject-unknown.
   (go-agents `govern/federated.go`, uncommitted — go-agents has no commits yet.)
-- **M3 (partial sync):** `SharedProjection` + distributed-governor protocol + equivalence test.
+- **M3 (partial sync) — DONE.** gsm `Projection`/`SharedProjection`/`Component`/`MergeProjection`
+  (gsm `109b2be`): each node runs only its own component Machine and exchanges shared-component
+  messages along tree edges, never the full federated state. `Build` now also verifies
+  source-determinacy (a morphism's shared image depends only on the source). Equivalence to the
+  centralized `FedMachine` proven in gsm; equivalence to the durable central `FederatedGovernor`
+  proven in go-agents (`govern/federated_test.go`).
 - **M4 (frontier, not committed):** multi-source resolution (Remark 8.15) — target-agreement
   predicates / conflict operators. Research, deferred by design.
 

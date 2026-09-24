@@ -129,6 +129,47 @@ func TestFederatedGovernor_OrderIndependent(t *testing.T) {
 	}
 }
 
+// TestFederatedGovernor_PartialSyncMatchesCentral proves the distributed deployment model:
+// instead of one governor holding the full federated state, each registry runs on its own
+// node (its own component Machine + local state) and nodes exchange only shared projections
+// along tree edges. The distributed per-component states must match the durable, centralized
+// FederatedGovernor — validating that the Tier-2 governor and the partial-sync protocol agree.
+func TestFederatedGovernor_PartialSyncMatchesCentral(t *testing.T) {
+	ctx := context.Background()
+	m, mfr, sup, mstate, sstate := buildMfrSupFederation(t)
+
+	// Centralized, durable reference.
+	central, err := govern.NewFederated(ctx, m, govern.NewMemEventLog(), "order-central", m.NewState())
+	if err != nil {
+		t.Fatal(err)
+	}
+	central.Apply(ctx, "supplier", "eexp")
+	central.Apply(ctx, "manufacturer", "epub")
+	cs := central.State()
+
+	// Distributed: each node has ONLY its component Machine and local state.
+	mfrMachine, supMachine := m.Component(mfr), m.Component(sup)
+	mfrLocal := mfrMachine.Apply(mfrMachine.NewState(), "epub")
+	supLocal := supMachine.Apply(supMachine.NewState(), "eexp")
+
+	// Parent (manufacturer) sends only its shared projection down the edge; supplier merges it.
+	proj, err := m.SharedProjection(mfrLocal, mfr, sup)
+	if err != nil {
+		t.Fatal(err)
+	}
+	supLocal, err = supMachine.MergeProjection(supLocal, proj)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if mfrLocal.ID() != m.Of(cs, mfr).ID() {
+		t.Fatalf("manufacturer diverged: distributed %s vs central %s", mfrLocal.Get(mstate), m.Of(cs, mfr).Get(mstate))
+	}
+	if supLocal.ID() != m.Of(cs, sup).ID() {
+		t.Fatalf("supplier diverged: distributed %s vs central %s", supLocal.Get(sstate), m.Of(cs, sup).Get(sstate))
+	}
+}
+
 // TestFederatedGovernor_RejectsUnknown confirms an unapplicable event is neither applied nor
 // written to the log (validate-before-append).
 func TestFederatedGovernor_RejectsUnknown(t *testing.T) {
