@@ -67,6 +67,14 @@ gsm federation capability reaches the agent tier for free on a version bump:
   wraps a category via a second `%w`. Control-flow stays typed (`errors.As`): `*PendingApproval`,
   `*ResumeHalt`, `*SagaAborted`. (Chose sentinels over a `Kind` enum — `Model`/`Tool` collide
   with the interface type names, and `errors.Is` is the idiomatic fit.)
+- **Typed output** (`RunTyped[T]`, `typed.go`): returns a typed `T` from a full agent run.
+  Injects a synthetic `final_answer` tool with `T`'s schema (via `schema.For[T]`), steers the
+  model to it with an injected system message (`injectSystem` middleware + `cloneWith`), and
+  decodes from the JOURNALED call args (resume-safe), falling back to parsing final text. Package
+  function, not a method (Go methods can't add type params). This is AgenticGoKit's #151 idea; we
+  had the `schema` package but lacked the ergonomic. (Also still open from that audit: `Capabilities()`
+  provider discovery #142, sampling params on `Request` #143 — our own TODO — and the single-module
+  vs submodule dep-hygiene question #144.)
 - **Two middleware chains** (`func(Handler) Handler`, mutating + short-circuiting): `Use` wraps
   the model call (`Middleware`/`ModelHandler`); `UseTool` wraps every tool call
   (`ToolMiddleware`/`ToolHandler`). Tool middleware runs INSIDE the durable memoized step, so a

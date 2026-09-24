@@ -144,6 +144,28 @@ Two things worth knowing, both consequences of durability:
 
 `StreamSaga` is the streaming counterpart of `RunSaga`.
 
+## Typed output
+
+`RunTyped[T]` returns a typed `T` instead of a free-form message. It injects a synthetic
+`final_answer` tool whose JSON schema is derived from `T` (via the `schema` package) and steers
+the model to call it once its work is done — so a tool-using agent can do real work and *then*
+answer typed. Provider-agnostic (built on native tool calling, not a provider's JSON mode).
+
+```go
+type Weather struct {
+	City  string `json:"city"`
+	TempF int    `json:"temp_f"`
+}
+
+w, err := agent.RunTyped[Weather](ctx, a, runID, "weather in SF?")
+// w.City == "SF", w.TempF == 68
+```
+
+It's a package function, not a method (Go methods can't add type parameters). The value is
+decoded from the *journaled* tool call, so it's **resume-safe** — a crash mid-run recovers the
+typed answer from the log on resume. If the model replies in plain JSON text instead of calling
+the tool, `RunTyped` falls back to parsing that text. `T` is meant to be a struct.
+
 ## Resume safety, in one table
 
 ```go
