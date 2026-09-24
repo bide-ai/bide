@@ -560,5 +560,17 @@ tool := govern.EventTool(gov, "pay", "mark the order paid", "pay", agent.Safety{
 > Full guide, capability ladder, and the two runnable demos (`examples/mesh`, `examples/compose`)
 > in **[docs/GOVERNANCE.md](docs/GOVERNANCE.md)**.
 
+## Guides
+
+- **[docs/MCP.md](docs/MCP.md)**: Model Context Protocol integration. Connect to an MCP
+  server as a runtime tool source, discover its tools, and inherit side-effect-safe resume
+  from the annotation-to-`Safety` mapping.
+- **[docs/DEBUGGING.md](docs/DEBUGGING.md)**: deterministic replay (`Replay`), durable
+  semantic-event reconstruction (`ReplayEvents`), and Mermaid run diagrams (`RenderMermaid`)
+  for time-travel debugging, regression, and evals.
+- **[docs/EXTENSION-POINTS.md](docs/EXTENSION-POINTS.md)**: the ports and adapters the
+  framework is built on (`Model`, `Durable`, `Tool`, `Compensator`, `Retriever`, `Anchor`,
+  `EventStore`), with an "implement your own store" walkthrough.
+
 > Name is deliberately deferred — this is a codename. Design + competitive analysis in
 > `docs/DESIGN.md` and `docs/COMPETITIVE*.md`; the governance tier in `docs/GOVERNANCE.md`.
