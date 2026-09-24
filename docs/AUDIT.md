@@ -276,6 +276,17 @@ The negative has teeth: the commitment is over the run's actual key set (the STH
 `AbsenceRoot` of these records, or `ProveAbsentBundle` refuses), so you cannot prove absence of a
 policy that was in fact used.
 
+The auditor persona produces and checks these from the command line, as with inclusion. Absence
+proofs verify against a separate absence commitment, signed in one call with
+`audit.SignAbsenceRoot(records, keyFn, priv, ts)`; keys are built with `audit.ToolUseKeyFor(id)` or
+`audit.PolicyUsedKeyFor(digest)`:
+
+```
+# prove no tool call with this ID, or no governed action under this policy digest, ever happened:
+goagents-audit prove-absent -journal run.json -sth absence-sth.json -key policy:<digest> -out absent.json
+goagents-audit verify-absent -bundle absent.json -pubkey <hex>   # exit 0 = authentically absent
+```
+
 Scope, stated precisely: this proves the action ran under a policy that is anchored in the log and
 provably convergent, in a committed, append-only run; that each governed leaf binds the action, the
 policy, and the resulting state, and that replaying the policy over the run's governed events
@@ -286,6 +297,26 @@ negative, not a per-action state-validity proof; and the replay checks the event
 took, not the runtime's behavior for all inputs, so the runtime refinement gap is open and this is
 not an end-to-end execution proof. No proof feature remains on the roadmap; what is left is
 operational (a hosted anchor service).
+
+## Signature schemes and post-quantum anchoring
+
+Signed tree heads sign under a pluggable scheme. `SignedTreeHead` carries an `Alg` field
+(`omitempty`), so existing ed25519 bundles are unchanged and keep verifying; the legacy
+`SignTreeHead` / `Verify` path is untouched. `SignTreeHeadWith` / `VerifyWith` (and
+`ProofBundle.VerifyWith` / `AbsenceBundle.VerifyWith`) carry the scheme end to end. Three schemes
+are available, all in the Go 1.27 standard library, so this adds no dependency:
+
+- `ed25519` (default): small, fast, FIPS-approved.
+- `ml-dsa-65` (FIPS 204): post-quantum.
+- `ed25519+ml-dsa-65` (hybrid): accepted only if both signatures verify.
+
+Why it matters here specifically: audit anchors are long-lived, so they face a harvest-now,
+forge-later exposure. The signature is the quantum-vulnerable part; the SHA-256 Merkle hashing is
+not affected and is unchanged. Choosing ML-DSA or hybrid for the anchor signature addresses the
+signature exposure without touching the tree. One toolchain constraint: `crypto/mldsa` is
+unavailable under the FIPS 140-3 module, so FIPS mode and ML-DSA are mutually exclusive in this
+toolchain (ed25519 keeps working in FIPS mode). Pick per buyer: a FIPS-required buyer takes
+ed25519, a post-quantum-focused buyer takes ML-DSA or hybrid.
 
 ## Next
 

@@ -223,6 +223,19 @@ gsm federation capability reaches the agent tier for free on a version bump:
   proof feature remains on the roadmap; what is left is operational (a hosted anchor service). NOTE:
   the negative is policy-level, not a per-action state-validity proof, and the replay checks the events
   this run took, not all inputs, so the runtime refinement gap stays open.
+- **Absence proofs from the CLI** (`goagents-audit prove-absent`/`verify-absent`,
+  `audit.SignAbsenceRoot`, `audit.ToolUseKeyFor`/`PolicyUsedKeyFor`): the auditor persona produces and
+  checks "this never happened" proofs from the command line, like inclusion. `SignAbsenceRoot` signs
+  the separate absence commitment in one call; keys are `tool:<id>` or `policy:<digest>`. Shipped.
+- **Signature-scheme agility + post-quantum option** (`audit/signing.go`; `SignTreeHeadWith` /
+  `VerifyWith`, `ProofBundle`/`AbsenceBundle.VerifyWith`; `SignedTreeHead.Alg` is `omitempty`, so
+  existing ed25519 bundles are unchanged and the legacy `SignTreeHead`/`Verify` path is untouched):
+  pluggable Signer/Verifier with three schemes, all stdlib as of Go 1.27 (no new dependency): ed25519
+  (default), ML-DSA-65 (FIPS 204 post-quantum), and hybrid ed25519+ML-DSA-65 (accepted only if both
+  verify). Rationale: audit anchors are long-lived (harvest-now, forge-later), and the signature is
+  the quantum-vulnerable part while the SHA-256 Merkle hashing is unaffected and unchanged. Constraint:
+  `crypto/mldsa` is unavailable under the FIPS 140-3 module, so FIPS mode and ML-DSA are mutually
+  exclusive in this toolchain (pick per buyer). Shipped.
 - **RAG/memory = bring-your-own** (`retrieval.go`, decision in docs/RAG-MEMORY.md): ship NO vector
   store/embedder. Core seam: `Retriever` port (`Retrieve(ctx, query, k) []Doc`), `RetrievalTool`
   (agentic — model searches on demand), `WithRetrieval` middleware (classic — top-k injected as a
