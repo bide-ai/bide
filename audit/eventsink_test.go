@@ -112,6 +112,75 @@ func TestEventLog_SignAnchor(t *testing.T) {
 	}
 }
 
+// TestEventLog_STH: an STH over the event log signs Root↔Size↔Timestamp, verifies, and
+// any change to the bundle invalidates it — the same anchoring the journal STH gives.
+func TestEventLog_STH(t *testing.T) {
+	pub, priv, _ := ed25519.GenerateKey(nil)
+	evs := sampleEvents()
+	log := buildLog(t, evs)
+
+	sth := audit.SignTreeHead(log.TreeHead(1_700_000_000), priv)
+	if !sth.Verify(pub) {
+		t.Fatal("event-log STH did not verify")
+	}
+	if sth.Size != len(evs) {
+		t.Fatalf("STH Size = %d, want %d", sth.Size, len(evs))
+	}
+
+	// An inclusion proof checks against the SIGNED root — auditor trusts sth, not raw bytes.
+	proof, _ := log.Prove(2)
+	if ok, _ := audit.VerifyEventInclusion(sth.Root, evs[2], proof); !ok {
+		t.Fatal("event proves against its own signed STH root but verification failed")
+	}
+
+	// Tamper each bound field: signature must break.
+	bad := sth
+	bad.Size++
+	if bad.Verify(pub) {
+		t.Fatal("STH verified after Size tamper")
+	}
+	bad = sth
+	bad.Timestamp++
+	if bad.Verify(pub) {
+		t.Fatal("STH verified after Timestamp tamper")
+	}
+	bad = sth
+	bad.Root = append([]byte{}, sth.Root...)
+	bad.Root[0] ^= 0xff
+	if bad.Verify(pub) {
+		t.Fatal("STH verified after Root tamper")
+	}
+}
+
+// TestEventLog_Consistency: the first m events are provably an append-only prefix of the
+// later log; a rewrite of an early event breaks the proof.
+func TestEventLog_Consistency(t *testing.T) {
+	evs := sampleEvents()
+	m := 3
+
+	early := buildLog(t, evs[:m])
+	rootEarly := early.Root() // commitment when the log held m events
+
+	full := buildLog(t, evs)
+	rootFull := full.Root()
+
+	proof, err := full.ProveConsistency(m)
+	if err != nil {
+		t.Fatalf("ProveConsistency: %v", err)
+	}
+	if !audit.VerifyConsistency(rootEarly, rootFull, proof) {
+		t.Fatal("honest append-only history failed the consistency proof")
+	}
+
+	// Rewrite an early event: the earlier root no longer reconciles.
+	tampered := append([]agent.AgentEvent{}, evs...)
+	tampered[1] = agent.ToolStarted{ToolUseID: "evil", Name: "exfiltrate"}
+	rewritten := buildLog(t, tampered[:m]).Root()
+	if audit.VerifyConsistency(rewritten, rootFull, proof) {
+		t.Fatal("consistency proof accepted a rewritten early event")
+	}
+}
+
 // TestRecord_DrainsRealStream: Record over a live Agent.Stream yields the terminal answer
 // AND a committed log whose every event proves. This is the end-to-end sink.
 func TestRecord_DrainsRealStream(t *testing.T) {

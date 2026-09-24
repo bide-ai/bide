@@ -51,6 +51,22 @@ proof, _ := log.Prove(approvalIndex)
 ok, _ := audit.VerifyEventInclusion(root, approvalEvent, proof)
 ```
 
+The event log gets the **full transparency-log surface**, reusing the journal's STH and
+consistency machinery unchanged:
+
+```go
+sth := audit.SignTreeHead(log.TreeHead(time.Now().UnixNano()), priv) // signs Root↔Size↔Time
+sth.Verify(pub)                                                      // anchored commitment
+audit.VerifyEventInclusion(sth.Root, event, proof)                   // check proofs vs the STH root
+
+// Between two published event STHs, prove the observed trail was only appended to:
+cproof, _ := laterLog.ProveConsistency(sth1.Size)
+audit.VerifyConsistency(sth1.Root, sth2.Root, cproof)
+```
+
+`TreeHead` / `SignedTreeHead` / `Verify` / `Consistency` are the *same types* used over the
+journal (Size counts events instead of records), so an auditor learns one verification flow.
+
 Each leaf is a kind-tagged canonical encoding, so event types never collide, and `ModelEvent`
 carries the inner delta's kind. `Root`/`Head`/`Prove`/`Sign` behave exactly as they do over the
 journal; the `Inclusion` proof type and signing path are shared. (Prototype: `audit/eventsink.go`.)
@@ -90,8 +106,9 @@ in a committed run whose history is provably append-only, without exposing the r
 
 ## Next
 
-RFC 6962 is fully covered (Head, inclusion, consistency, STH), and the event→audit sink
-(`EventLog` / `Record`) now commits the semantic event stream with the same machinery. Possible
-extensions if a use case needs them: an audited `Durable` decorator that emits an STH
-automatically per run; an STH over an `EventLog` (so an event trail gets a signed root↔size↔time
-binding too); and integration with an external transparency log for out-of-band anchoring.
+RFC 6962 is fully covered (Head, inclusion, consistency, STH) over both the journal and, via
+the event→audit sink (`EventLog` / `Record` / `TreeHead` / `ProveConsistency`), the semantic
+event stream, all sharing one verification surface. Possible extensions if a use case needs
+them: an audited `Durable` decorator that emits an STH automatically per run; **durable
+event-log persistence** (today an `EventLog` is in-memory, so it must be flushed and anchored to
+survive a crash); and integration with an external transparency log for out-of-band anchoring.

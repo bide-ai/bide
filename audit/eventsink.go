@@ -74,6 +74,27 @@ func (l *EventLog) Prove(index int) (Inclusion, error) {
 	return Inclusion{Index: index, Size: len(l.leaves), Path: auditPath(index, l.leaves)}, nil
 }
 
+// TreeHead returns a commitment to the events added so far at the given timestamp — the
+// EventLog analogue of NewTreeHead over the journal. Sign it with SignTreeHead and verify
+// with SignedTreeHead.Verify; the signature binds Root ↔ Size ↔ Timestamp, so an event
+// trail gets the same anchored root↔size↔time guarantee a journal STH gives. Inclusion
+// proofs (Prove / VerifyEventInclusion) check against the resulting Root; Size counts events.
+func (l *EventLog) TreeHead(timestamp int64) TreeHead {
+	return TreeHead{Size: len(l.leaves), Root: merkleRoot(l.leaves), Timestamp: timestamp}
+}
+
+// ProveConsistency proves the first `first` events are an append-only PREFIX of the current
+// log — nothing observed earlier was rewritten or reordered, only appended. Verify with the
+// shared VerifyConsistency against two published event-log roots (e.g. two STH Roots taken
+// at different points in the run). This is the transparency-log guarantee over the event
+// stream, the same one ProveConsistency gives over the journal.
+func (l *EventLog) ProveConsistency(first int) (Consistency, error) {
+	if first < 0 || first > len(l.leaves) {
+		return Consistency{}, fmt.Errorf("audit: first %d out of range [0,%d]", first, len(l.leaves))
+	}
+	return Consistency{First: first, Size: len(l.leaves), Path: consistencyProof(first, l.leaves)}, nil
+}
+
 // VerifyEventInclusion reports whether event is the leaf at proof.Index in a log of
 // proof.Size events committed by root — from the event + proof alone, no other events
 // needed. The event must canonicalize identically to when it was Add-ed.
