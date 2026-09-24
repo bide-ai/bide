@@ -93,6 +93,11 @@ gsm federation capability reaches the agent tier for free on a version bump:
   (`agent.Temperature(0)`, `agent.MaxTokens(500)`, …); both adapters translate to wire format
   (OpenAI `stop`/`seed`; Anthropic `stop_sequences`, no seed). Closed our own `model.go` TODO =
   AgenticGoKit #143.
+- **System prompt** (`Agent.WithSystemPrompt(s)`): seeds a `SystemText` at the head of the
+  conversation on every model turn (re-seeded each Run, so resume-consistent); `cloneWith` carries
+  it so `RunTyped` preserves it. First-class alternative to injecting a system message via
+  middleware. (AgentFlow puts `system_prompt` in TOML config; we keep it a typed Go option — the
+  values-not-structure line. We deliberately did NOT add their declarative config/orchestration DSL.)
 - **Run result envelope** (`result.go`): `RunResult`/`RunSagaResult` return `*Result{Message,
   Usage (summed across turns, incl. cache), Turns, Duration, RunID}` — additive, `Run` still
   returns just `Message`. (Internal `run` now returns `(Message, Usage, int, error)`.) `AgentStream.Result()`

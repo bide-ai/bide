@@ -96,7 +96,8 @@ func main() {
 	store, _ := sqlite.Open("agent.db")
 	defer store.Close()
 
-	a := agent.New(model, store, weather)
+	a := agent.New(model, store, weather).
+		WithSystemPrompt("You are a concise weather assistant.")
 	out, _ := a.Run(context.Background(), "run-1", "Weather in SF? Use the tool.")
 	for _, p := range out.Parts {
 		if t, ok := p.(agent.Text); ok {
