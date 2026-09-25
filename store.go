@@ -101,6 +101,9 @@ func Step[T any](ctx context.Context, d Durable, runID, name string, fn func(con
 // the agent with the same runID and it resumes past the pending-approval pause. The
 // decision survives a crash because it's a journaled step like any other.
 func Approve(ctx context.Context, d Durable, runID, toolUseID string, approved bool) error {
+	if runID == "" {
+		return fmt.Errorf("Approve: empty runID: %w", ErrConfig)
+	}
 	_, err := d.Do(ctx, runID, "approval:"+toolUseID, func(context.Context) (Record, error) {
 		return Record{Kind: StepApproval, ToolUseID: toolUseID, Approved: approved}, nil
 	})
@@ -151,6 +154,14 @@ type runLog struct {
 
 func NewMemStore() *MemStore {
 	return &MemStore{runs: map[string]*runLog{}, leases: map[string]memLease{}, now: time.Now}
+}
+
+// setNow replaces the lease clock under the mutex that guards its reads, so a test can install a
+// controlled clock without racing the lease methods. Test-only; production uses time.Now.
+func (m *MemStore) setNow(now func() time.Time) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.now = now
 }
 
 var _ Durable = (*MemStore)(nil) // port/adapter contract

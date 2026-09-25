@@ -45,11 +45,15 @@ type compTool[In, Out any] struct {
 func (t *compTool[In, Out]) Compensate(ctx context.Context, args, result json.RawMessage) error {
 	var in In
 	if len(args) > 0 {
-		_ = json.Unmarshal(args, &in)
+		if err := json.Unmarshal(args, &in); err != nil {
+			return fmt.Errorf("saga compensate %q: decode recorded args: %w (%w)", t.Name(), err, ErrProtocol)
+		}
 	}
 	var out Out
 	if len(result) > 0 {
-		_ = json.Unmarshal(result, &out)
+		if err := json.Unmarshal(result, &out); err != nil {
+			return fmt.Errorf("saga compensate %q: decode recorded result: %w (%w)", t.Name(), err, ErrProtocol)
+		}
 	}
 	return t.undo(ctx, in, out)
 }

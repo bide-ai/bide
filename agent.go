@@ -38,6 +38,17 @@ type ModelHandler func(context.Context, Request) (Message, Usage, error)
 type Middleware func(ModelHandler) ModelHandler
 
 // Agent binds a model, a tool set, a durable store, and a middleware chain.
+//
+// The WithX/Use/SetX builder methods MUTATE the receiver in place and return it for chaining; they
+// do not copy. This is deliberate: it lets configuration be applied after construction and after the
+// value has been shared, e.g. a.Use(trace.Model(...)) or a.Use(agent.WithRetrieval(...)) wiring a
+// cross-cutting concern onto an agent other code already holds. The consequence is that two
+// variables assigned from the same New(...) are aliases: reconfiguring one reconfigures both. When
+// you need an independently configured variant, construct a fresh Agent rather than expecting a
+// builder to fork. (The internal clone/cloneWith, used by RunTyped, do copy; they are not exported.)
+//
+// An Agent is safe for concurrent Run/Stream/Session calls once configured; the builder methods are
+// not safe to call concurrently with a run or with each other. Configure first, then run.
 type Agent struct {
 	model        Model
 	tools        map[string]Tool
@@ -121,8 +132,16 @@ func (a *Agent) WithSystemPromptFunc(fn func(context.Context) string) *Agent {
 	return a
 }
 
-// New constructs an Agent.
+// New constructs an Agent. It panics if model or store is nil: both are load-bearing on every run
+// (the model drives turns, the store journals them for at-most-once resume), so a nil is a
+// construction-time programmer error, not a runtime condition to thread through every call.
 func New(model Model, store Durable, tools ...Tool) *Agent {
+	if model == nil {
+		panic("agent: New requires a non-nil Model")
+	}
+	if store == nil {
+		panic("agent: New requires a non-nil Durable store")
+	}
 	m := make(map[string]Tool, len(tools))
 	for _, t := range tools {
 		m[t.Name()] = t
@@ -192,6 +211,11 @@ func (a *Agent) Run(ctx context.Context, runID, input string) (Message, error) {
 // It returns the final message, accumulated token usage across all model turns, the
 // number of live model turns (replayed journal turns are not counted), and any error.
 func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool, emit func(AgentEvent)) (Message, Usage, int, error) {
+	if runID == "" {
+		// An empty runID would key every run to the same journal, silently cross-contaminating
+		// their memoized steps. Reject it rather than corrupt the log.
+		return Message{}, Usage{}, 0, fmt.Errorf("run: empty runID: %w", ErrConfig)
+	}
 	fire := func(e AgentEvent) {
 		if emit != nil {
 			emit(e)
@@ -291,7 +315,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 					return Record{Kind: StepModel, Message: &m}, nil
 				})
 			if err != nil {
-				return Message{}, Usage{}, 0, fmt.Errorf("generate (run %s): %w (%w)", runID, err, ErrModel)
+				return Message{}, totalUsage, liveTurns, fmt.Errorf("generate (run %s): %w (%w)", runID, err, ErrModel)
 			}
 			addUsage(&totalUsage, turnUsage)
 			liveTurns++
@@ -333,19 +357,19 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 			}
 			t, ok := a.tools[tu.Name]
 			if !ok {
-				return Message{}, Usage{}, 0, fmt.Errorf("model called unknown tool %q: %w", tu.Name, ErrUnknownTool)
+				return Message{}, totalUsage, liveTurns, fmt.Errorf("model called unknown tool %q: %w", tu.Name, ErrUnknownTool)
 			}
 			if t.Safety().RequiresApproval {
 				if !decided[tu.ID] {
 					fire(ApprovalRequired{ToolUseID: tu.ID, Name: tu.Name, Args: tu.Args})
-					return Message{}, Usage{}, 0, &PendingApproval{RunID: runID, ToolUseID: tu.ID, ToolName: tu.Name, Args: tu.Args}
+					return Message{}, totalUsage, liveTurns, &PendingApproval{RunID: runID, ToolUseID: tu.ID, ToolName: tu.Name, Args: tu.Args}
 				}
 				if !approvals[tu.ID] { // denied — record a denial and let the model react
 					const denied = `"tool call denied by human"`
 					if _, err := a.store.Do(ctx, runID, tu.ID, func(context.Context) (Record, error) {
 						return Record{Kind: StepToolResult, ToolUseID: tu.ID, IsError: true, Result: json.RawMessage(denied)}, nil
 					}); err != nil {
-						return Message{}, Usage{}, 0, err
+						return Message{}, totalUsage, liveTurns, err
 					}
 					done[tu.ID] = true
 					results[i] = &Message{Role: RoleTool, Parts: []Part{ToolResult{ToolUseID: tu.ID, Result: json.RawMessage(denied), IsError: true}}}
@@ -379,7 +403,13 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 				}
 				fire(ToolStarted{ToolUseID: c.tu.ID, Name: c.tu.Name, Args: c.tu.Args})
 				var toolCallErr error
-				rec, err := a.store.Do(gctx, runID, c.tu.ID, func(context.Context) (Record, error) {
+				// Journal the tool's OUTCOME under a non-cancellable context: the tool itself still
+				// runs under sctx (a saga sibling's failure cancels it, as intended), but once it has
+				// run, recording its result must not be cancelled by that sibling: otherwise a fired
+				// side effect is left with no recorded outcome and resume would halt on it (or, worse,
+				// re-fire it). The attempt marker above stays on gctx: if we are cancelled before it
+				// commits, the tool has not started, so there is nothing to record.
+				rec, err := a.store.Do(context.WithoutCancel(gctx), runID, c.tu.ID, func(context.Context) (Record, error) {
 					res, callErr := toolH(sctx, c.tu)
 					r := Record{Kind: StepToolResult, ToolUseID: c.tu.ID}
 					if callErr != nil {
@@ -425,9 +455,9 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 		if err := g.Wait(); err != nil {
 			var trip *sagaTrip
 			if errors.As(err, &trip) {
-				return Message{}, Usage{}, 0, trip // RunSaga catches → compensates
+				return Message{}, totalUsage, liveTurns, trip // RunSaga catches → compensates
 			}
-			return Message{}, Usage{}, 0, err
+			return Message{}, totalUsage, liveTurns, err
 		}
 
 		// Append results in deterministic uses-order.

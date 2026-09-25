@@ -35,6 +35,9 @@ func sessionTurnStep(n int) string { return "turn/" + strconv.Itoa(n) }
 // Session opens (or reopens) a multi-turn conversation with the given id, rebuilding the
 // transcript from the store so a restarted process continues where it left off.
 func (a *Agent) Session(ctx context.Context, id string) (*Session, error) {
+	if id == "" {
+		return nil, fmt.Errorf("Session: empty id: %w", ErrConfig)
+	}
 	recs, err := a.store.History(ctx, id)
 	if err != nil {
 		return nil, fmt.Errorf("session %s: load transcript: %w (%w)", id, err, ErrStorage)

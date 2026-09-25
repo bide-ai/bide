@@ -60,6 +60,9 @@ func Interrupt[T any](ctx context.Context, key string, prompt any) (T, error) {
 // re-invoke Run with the same runID to continue. Idempotent: the first value for a
 // (runID, key) wins. The value survives a crash — it is a journaled step.
 func Resume[T any](ctx context.Context, d Durable, runID, key string, value T) error {
+	if runID == "" {
+		return fmt.Errorf("Resume: empty runID: %w", ErrConfig)
+	}
 	b, err := json.Marshal(value)
 	if err != nil {
 		return fmt.Errorf("agent: encode resume value for %q: %w (%w)", key, err, ErrConfig)

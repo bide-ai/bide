@@ -24,7 +24,7 @@ func TestLease_ExclusiveAndExpiry(t *testing.T) {
 	ctx := context.Background()
 	s := NewMemStore()
 	clk := time.Unix(1000, 0)
-	s.now = func() time.Time { return clk }
+	s.setNow(func() time.Time { return clk })
 	ttl := time.Minute
 
 	if ok, _ := s.AcquireLease(ctx, "r", "A", ttl); !ok {
