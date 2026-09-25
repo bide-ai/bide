@@ -3,10 +3,11 @@
 **The durable agent runtime for work that must not happen twice.**
 
 One append-only journal, four guarantees no other agent framework pairs in a single library:
-side effects that fire **at most once**, a **cryptographically verifiable audit trail** (RFC
-6962 Merkle proofs, verifiable without trusting the vendor), and **provably convergent** shared
-state, all as a **plain-Go library** with no cluster that drives thousands of concurrent durable
-runs in one process. Built for agents that move money, touch records, or act under audit.
+side effects that fire **at most once**; thousands of concurrent durable runs **in one process, no
+cluster**; a **cryptographically verifiable audit trail** (RFC 6962 Merkle proofs, checkable without
+trusting the vendor); and **provably convergent** shared state. You get all four from one mechanism,
+not four integrated systems, as a plain-Go library. Built for agents that move money, touch records,
+or act under audit.
 
 Status: **working v0**, live-verified end-to-end. Requires **Go 1.27**.
 
@@ -57,6 +58,13 @@ terminal errors, **hedged** model calls (race a backup, take the first, for tail
 provider failover), and a **rate limiter** for model and tool calls
 ([middleware](middleware), [docs/RELIABILITY.md](docs/RELIABILITY.md)).
 
+For high availability, any node resumes any run from the shared store, and competing drivers
+coordinate through a per-run **lease** (`agent.Lease`): only one process drives a run at a time, a
+crashed holder's lease expires so another node takes it over, and no run is ever double-driven. Like
+guarantee 1, this is verified, not asserted: concurrent-worker mutual exclusion, crash-and-takeover,
+and cross-process at-most-once on Postgres (`ha_e2e_test.go`; the Postgres backend implements the
+lease with a DB-clock upsert).
+
 ### 3 · A cryptographically verifiable audit spine, from the same journal
 
 The journal that makes resume safe *is* the audit record, and it is committed with the **same
@@ -81,7 +89,10 @@ you, your database, or your logs*:
 trust because the vendor is SOC2); this is a *cryptographic proof you check yourself*. Produce a
 portable `ProofBundle` for one action (`audit.ProveToolCall`) and hand it to an auditor who
 verifies it offline with a `goagents-audit verify` command or a stdlib-only verifier that never
-imports the SDK. **No other agent framework has this at all.** → [docs/AUDIT.md](docs/AUDIT.md)
+imports the SDK. **No other agent framework has this at all.** The same spine carries the rest of the
+accountability layer, all verifiable offline: proof-carrying runs (one `RunCertificate` attesting a
+whole run's policy compliance), signed capability grants with attenuating delegation, authority
+earned from a clean audit trail, and governed k-of-n quorum. → [docs/AUDIT.md](docs/AUDIT.md)
 
 ### 4 · Provably convergent shared state (gsm)
 
@@ -132,7 +143,9 @@ Beyond the four guarantees, the details that make it pleasant to build on:
   mode, etc.), not one generic schema that strict mode and Gemini reject.
 - **Any model, one adapter.** Native Claude, native Gemini, and any OpenAI-compatible endpoint
   (OpenAI, Ollama, DeepSeek, Groq, OpenRouter, vLLM, Azure, xAI…) via `WithBaseURL`.
-- **Multi-node failover.** Any node resumes any run (Postgres); no single-writer lock.
+- **Multi-node failover, coordinated.** Any node resumes any run (Postgres, no single-writer lock);
+  a per-run lease keeps competing recoverers and live workers from double-driving, and a crashed
+  holder's runs are taken over on lease expiry.
 
 ## Guarantee 1, in code: it won't double-charge
 
@@ -528,7 +541,7 @@ func RequireTag(tag string) agent.ToolMiddleware {
 go-agents is a multi-module repo: a dependency-light **core** (`github.com/dayna/go-agents` —
 the loop, schema, middleware, model adapters, govern; deps are just gsm + `x/sync`) plus one
 module per heavy adapter (`mcp`, `trace`, `store/sqlite`, `store/postgres`, `govern/redislog`,
-`govern/sqlitelog`). Import an adapter and you pull its dependency tree; import only the core
+`govern/sqlitelog`, `govern/postgreslog`). Import an adapter and you pull its dependency tree; import only the core
 and you don't. A core-only consumer's external-module surface is 2, not 54. See
 [docs/MODULE-STRUCTURE.md](docs/MODULE-STRUCTURE.md).
 
