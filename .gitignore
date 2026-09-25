@@ -23,3 +23,6 @@ coverage.*
 
 # compiled cmd/bench binary
 /bench
+
+# compiled cmd/goagents-audit binary
+/goagents-audit
