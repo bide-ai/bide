@@ -95,7 +95,6 @@ func Recover(ctx context.Context, store Durable, resume func(ctx context.Context
 	if cfg.holder == "" {
 		cfg.holder = defaultHolder()
 	}
-	leaser, _ := store.(Leaser)
 
 	runIDs, err := lister.Runs(ctx)
 	if err != nil {
@@ -114,38 +113,64 @@ func Recover(ctx context.Context, store Durable, resume func(ctx context.Context
 			continue // finished before the crash: nothing to re-drive
 		}
 
-		// When the store supports leasing, claim the run so competing recoverers do not both drive
-		// it. A run held by another live holder is skipped; the lease is renewed while we drive and
-		// released after, so a crash lets it expire and another process takes over.
-		if leaser != nil {
-			got, err := leaser.AcquireLease(ctx, runID, cfg.holder, cfg.ttl)
+		// Drive under the run's lease (when the store supports one). A run another holder currently
+		// leases is skipped; competing recoverers and live primary drivers coordinate through Lease.
+		driven, err := Lease(ctx, store, runID, func(ctx context.Context) error { return resume(ctx, runID) },
+			WithLeaseHolder(cfg.holder), WithLeaseTTL(cfg.ttl))
+		if !driven {
 			if err != nil {
-				errs = append(errs, fmt.Errorf("acquire lease %s: %w (%w)", runID, err, ErrStorage))
-				continue
+				errs = append(errs, fmt.Errorf("recover run %s: %w", runID, err))
 			}
-			if !got {
-				continue // another holder is driving it
-			}
-			recovered++
-			rerr := driveWithRenew(ctx, leaser, runID, cfg, resume)
-			_ = leaser.ReleaseLease(ctx, runID, cfg.holder)
-			if rerr != nil && !isPause(rerr) {
-				errs = append(errs, fmt.Errorf("recover run %s: %w", runID, rerr))
-			}
-			continue
+			continue // leased by another holder (err nil) or acquisition failed
 		}
-
 		recovered++
-		if err := resume(ctx, runID); err != nil && !isPause(err) {
+		if err != nil && !isPause(err) {
 			errs = append(errs, fmt.Errorf("recover run %s: %w", runID, err))
 		}
 	}
 	return recovered, errors.Join(errs...)
 }
 
-// driveWithRenew runs resume while renewing the lease every ttl/2, so a drive that outlasts the TTL
-// keeps its lease instead of letting another process grab a run it is actively driving.
-func driveWithRenew(ctx context.Context, leaser Leaser, runID string, cfg recoverConfig, resume func(ctx context.Context, runID string) error) error {
+// Lease runs drive under an exclusive, auto-renewed lease on runID, so a primary driver and a
+// recoverer (or two workers) do not drive the same run at once. If the store implements Leaser and
+// another holder currently leases the run, drive is NOT called and Lease returns (false, nil). If
+// the store does not implement Leaser, drive runs unconditionally. The bool reports whether drive
+// ran; the error is the acquisition error (when false) or drive's own error (when true).
+//
+// A primary driver wraps Agent.Run so a live run and a recoverer never both drive it, using the
+// same lease the recoverer respects:
+//
+//	driven, err := agent.Lease(ctx, store, runID, func(ctx context.Context) error {
+//	    _, err := ag.Run(ctx, runID, input)
+//	    return err
+//	}, agent.WithLeaseHolder("worker-1"))
+func Lease(ctx context.Context, store Durable, runID string, drive func(context.Context) error, opts ...RecoverOption) (bool, error) {
+	cfg := recoverConfig{ttl: 30 * time.Second}
+	for _, o := range opts {
+		o(&cfg)
+	}
+	if cfg.holder == "" {
+		cfg.holder = defaultHolder()
+	}
+	leaser, ok := store.(Leaser)
+	if !ok {
+		return true, drive(ctx) // no leasing available: drive unconditionally
+	}
+	got, err := leaser.AcquireLease(ctx, runID, cfg.holder, cfg.ttl)
+	if err != nil {
+		return false, fmt.Errorf("acquire lease %s: %w (%w)", runID, err, ErrStorage)
+	}
+	if !got {
+		return false, nil // another holder is driving it
+	}
+	err = driveWithRenew(ctx, leaser, runID, cfg, func() error { return drive(ctx) })
+	_ = leaser.ReleaseLease(ctx, runID, cfg.holder)
+	return true, err
+}
+
+// driveWithRenew runs the drive while renewing the lease every ttl/2, so a drive that outlasts the
+// TTL keeps its lease instead of letting another process grab a run it is actively driving.
+func driveWithRenew(ctx context.Context, leaser Leaser, runID string, cfg recoverConfig, run func() error) error {
 	done := make(chan struct{})
 	go func() {
 		t := time.NewTicker(cfg.ttl / 2)
@@ -159,7 +184,7 @@ func driveWithRenew(ctx context.Context, leaser Leaser, runID string, cfg recove
 			}
 		}
 	}()
-	err := resume(ctx, runID)
+	err := run()
 	close(done)
 	return err
 }

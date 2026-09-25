@@ -397,9 +397,10 @@ plans were removed rather than kept as history. Remaining forward work is below.
   `Leaser` port (`AcquireLease`/`RenewLease`/`ReleaseLease`), a `MemStore` reference implementation,
   and a lease-aware `Recover` (claims and renews a per-run lease, skips runs another holder leases,
   so competing recoverers do not double-drive; a crash expires the lease and another process takes
-  over). Still forward here: a `store/postgres` `Leaser` (the real cross-process backend, atomic
-  upsert over a leases table), lease-aware primary driving (not just recovery), a Postgres
-  `EventLog`, cross-language replicas via `Export()`, and modeling ergonomics. The coordination
+  over). The `store/postgres` `Leaser`+`Lister` (the real cross-process backend, atomic upsert over
+  a leases table, DB-clock expiry) and lease-aware primary driving (`agent.Lease` wraps `Run`, and
+  `Recover` drives each run through it) are DONE. Still forward here: a Postgres `EventLog`,
+  cross-language replicas via `Export()`, and modeling ergonomics. The coordination
   strategy is the minimal-coordination result (normalization-confluence `CATEGORICAL-STRUCTURE.md`
   §10.2): coordinate only the obstructing governed cycles, run the rest coordination-free. This is
   the "tier 3" frontier.

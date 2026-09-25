@@ -208,6 +208,9 @@ process takes over; that expiry-and-takeover is the high-availability property. 
 implements `Leaser` in-process (the reference and for tests); the cross-process backend is a shared
 store (`store/postgres`) implementing it with an atomic upsert over a leases table. Without
 `Leaser`, `Recover` drives every enumerated run, safe under at-most-once memoization, just redundant.
+A live primary driver wraps `Agent.Run` in `agent.Lease(ctx, store, runID, drive, ...)`, which holds
+the same lease, so a recoverer never grabs a run a worker is actively driving; recovery and primary
+driving coordinate through one mechanism (`Recover` itself drives each run via `Lease`).
 
 **The idempotency-key retry path** reduces halt-for-a-human stops. On resume, a tool with an
 unknown outcome (invoked, no result journaled) normally fires `*ResumeHalt` unless it is

@@ -96,3 +96,41 @@ func TestRecover_SkipsLeasedByOther(t *testing.T) {
 		t.Fatal("r2's lease should have been released after Recover drove it")
 	}
 }
+
+// TestLease_PrimarySkipsWhenHeld confirms a primary driver does not drive a run another holder
+// currently leases, and drives (then releases) a free one, coordinating through the same lease a
+// recoverer uses.
+func TestLease_PrimarySkipsWhenHeld(t *testing.T) {
+	ctx := context.Background()
+	s := NewMemStore()
+	if ok, _ := s.AcquireLease(ctx, "x", "worker-2", time.Hour); !ok {
+		t.Fatal("setup: worker-2 should hold x")
+	}
+
+	ran := false
+	driven, err := Lease(ctx, s, "x", func(context.Context) error { ran = true; return nil }, WithLeaseHolder("worker-1"))
+	if err != nil {
+		t.Fatalf("Lease: %v", err)
+	}
+	if driven || ran {
+		t.Fatal("worker-1 must not drive a run worker-2 holds")
+	}
+
+	driven, err = Lease(ctx, s, "y", func(context.Context) error { ran = true; return nil }, WithLeaseHolder("worker-1"))
+	if err != nil || !driven || !ran {
+		t.Fatalf("worker-1 should drive the free run y (driven=%v ran=%v err=%v)", driven, ran, err)
+	}
+	if ok, _ := s.AcquireLease(ctx, "y", "z", time.Hour); !ok {
+		t.Fatal("y's lease should be released after the drive")
+	}
+}
+
+// TestLease_NonLeaserStoreDrives confirms Lease drives unconditionally when the store does not
+// implement Leaser (noListStore is Durable only).
+func TestLease_NonLeaserStoreDrives(t *testing.T) {
+	ran := false
+	driven, err := Lease(context.Background(), noListStore{}, "r", func(context.Context) error { ran = true; return nil })
+	if err != nil || !driven || !ran {
+		t.Fatalf("a non-Leaser store should drive unconditionally (driven=%v ran=%v err=%v)", driven, ran, err)
+	}
+}
