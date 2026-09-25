@@ -422,6 +422,18 @@ reasons autonomously; only its authority shrinks. The result is that capabilitie
 decrease down a delegation tree by construction, and the chain stays provable via
 `VerifyDelegationChain`.
 
+**Earned authority.** `audit.EarnedAuthority` drives a grant's scope from the agent's track record:
+authority starts at a baseline rung, is promoted one rung after a clean streak (capped by the
+ladder's top), and resets to baseline the instant an anomaly is flagged. Each change re-issues a
+signed grant that is a child of the root, so the earned limit provably never exceeds the root
+ceiling (every earned grant passes `VerifyDelegationChain`, so even a buggy controller cannot widen
+past what the root principal authorized). The asymmetry is the safety property: promotion is slow,
+capped, and evidence-gated; attenuation is immediate and ungated, because shrinking authority is
+always safe. It is deliberately a durable, sequential controller rather than a convergent machine,
+because earning is temporal and order-dependent (a promotion does not commute with a compliant
+action); the enforcement of the limit it sets stays a convergent gsm invariant on the work machine.
+Runnable in `examples/earned-authority`.
+
 ## Next
 
 RFC 6962 is fully covered (Head, inclusion, consistency, STH) over both the journal and, via
