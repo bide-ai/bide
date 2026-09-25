@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -73,6 +74,156 @@ func TestTools(t *testing.T) {
 	}
 	if !strings.Contains(string(out), "echo: hello") {
 		t.Errorf("Call result = %s, want it to contain %q", out, "echo: hello")
+	}
+}
+
+// TestTools_Paginates forces the server to return its tools one per page
+// (PageSize 1) and asserts Tools() follows the cursor and returns all of them,
+// so a multi-page server is never silently truncated.
+func TestTools_Paginates(t *testing.T) {
+	ctx := context.Background()
+
+	server := mcp.NewServer(&mcp.Implementation{Name: "paged-server", Version: "0.1.0"}, &mcp.ServerOptions{PageSize: 1})
+	for _, name := range []string{"a", "b", "c"} {
+		mcp.AddTool(server, &mcp.Tool{
+			Name:        name,
+			Description: "tool " + name,
+			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
+		}, func(_ context.Context, _ *mcp.CallToolRequest, _ echoArgs) (*mcp.CallToolResult, any, error) {
+			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "ok"}}}, nil, nil
+		})
+	}
+
+	clientT, serverT := mcp.NewInMemoryTransports()
+	serverSession, err := server.Connect(ctx, serverT, nil)
+	if err != nil {
+		t.Fatalf("server connect: %v", err)
+	}
+	defer serverSession.Close()
+
+	session, err := Connect(ctx, clientT)
+	if err != nil {
+		t.Fatalf("client connect: %v", err)
+	}
+	defer session.Close()
+
+	tools, err := Tools(ctx, session)
+	if err != nil {
+		t.Fatalf("Tools: %v", err)
+	}
+	if len(tools) != 3 {
+		t.Fatalf("got %d tools across pages, want 3 (pagination cursor not followed)", len(tools))
+	}
+}
+
+// TestElicitation_ResolverAnswers exercises the real production path on the
+// current protocol: a tool returns a multi-round-trip input request (SEP-2322)
+// asking the host for input; the SDK's client middleware fulfills it by invoking
+// our WithElicitation resolver, then retries the call, and the tool reads the
+// answer. This drives the resolver through our Tools()/Call wrappers end to end.
+func TestElicitation_ResolverAnswers(t *testing.T) {
+	ctx := context.Background()
+
+	server := mcp.NewServer(&mcp.Implementation{Name: "elicit-server", Version: "0.1.0"}, nil)
+	mcp.AddTool(server, &mcp.Tool{Name: "ask", Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true}},
+		func(_ context.Context, req *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, any, error) {
+			if len(req.Params.InputResponses) == 0 {
+				return &mcp.CallToolResult{
+					InputRequests: mcp.InputRequestMap{
+						"q": &mcp.ElicitParams{
+							Message: "what is the answer?",
+							RequestedSchema: map[string]any{
+								"type":       "object",
+								"properties": map[string]any{"answer": map[string]any{"type": "string"}},
+							},
+						},
+					},
+					RequestState: "step=1",
+				}, nil, nil
+			}
+			ans := req.Params.InputResponses["q"].(*mcp.ElicitResult).Content["answer"].(string)
+			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "answer:" + ans}}}, nil, nil
+		})
+
+	clientT, serverT := mcp.NewInMemoryTransports()
+	serverSession, err := server.Connect(ctx, serverT, nil)
+	if err != nil {
+		t.Fatalf("server connect: %v", err)
+	}
+	defer serverSession.Close()
+
+	var elicited bool
+	session, err := Connect(ctx, clientT, WithElicitation(
+		func(_ context.Context, r *mcp.ElicitRequest) (*mcp.ElicitResult, error) {
+			elicited = true
+			if r.Params.Message != "what is the answer?" {
+				t.Errorf("elicit message = %q", r.Params.Message)
+			}
+			return &mcp.ElicitResult{Action: "accept", Content: map[string]any{"answer": "yes"}}, nil
+		}))
+	if err != nil {
+		t.Fatalf("client connect: %v", err)
+	}
+	defer session.Close()
+
+	tools, err := Tools(ctx, session)
+	if err != nil {
+		t.Fatalf("Tools: %v", err)
+	}
+	out, err := tools[0].Call(ctx, []byte(`{}`))
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	if !elicited {
+		t.Error("elicitation resolver was never invoked")
+	}
+	if !strings.Contains(string(out), "answer:yes") {
+		t.Errorf("Call result = %s, want it to contain %q", out, "answer:yes")
+	}
+}
+
+// TestToolListChanged_Notifies asserts the WithToolListChanged callback fires when
+// the server adds a tool after the session is connected, so a long-lived host can
+// re-list.
+func TestToolListChanged_Notifies(t *testing.T) {
+	ctx := context.Background()
+
+	server := mcp.NewServer(&mcp.Implementation{Name: "dyn-server", Version: "0.1.0"}, nil)
+	// One tool at connect time so the server advertises the tools capability.
+	mcp.AddTool(server, &mcp.Tool{Name: "seed", Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true}},
+		func(_ context.Context, _ *mcp.CallToolRequest, _ echoArgs) (*mcp.CallToolResult, any, error) {
+			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "ok"}}}, nil, nil
+		})
+
+	clientT, serverT := mcp.NewInMemoryTransports()
+	serverSession, err := server.Connect(ctx, serverT, nil)
+	if err != nil {
+		t.Fatalf("server connect: %v", err)
+	}
+	defer serverSession.Close()
+
+	changed := make(chan struct{}, 1)
+	session, err := Connect(ctx, clientT, WithToolListChanged(func(context.Context) {
+		select {
+		case changed <- struct{}{}:
+		default:
+		}
+	}))
+	if err != nil {
+		t.Fatalf("client connect: %v", err)
+	}
+	defer session.Close()
+
+	// Mutate the server's tool set after connect: this sends tools/list_changed.
+	mcp.AddTool(server, &mcp.Tool{Name: "added", Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true}},
+		func(_ context.Context, _ *mcp.CallToolRequest, _ echoArgs) (*mcp.CallToolResult, any, error) {
+			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "ok"}}}, nil, nil
+		})
+
+	select {
+	case <-changed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("tools/list_changed callback did not fire within 2s")
 	}
 }
 
