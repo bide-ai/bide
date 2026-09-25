@@ -11,7 +11,7 @@ Three repos under `/Users/dayna/code/`, all remotes on the `github-blackwell` SS
   No license yet (proprietary by default). Committed history, on `main`.
   **Multi-module** (see docs/MODULE-STRUCTURE.md): core module (agent/schema/middleware/model/
   govern/examples — deps gsm + x/sync only) plus one module per heavy adapter (mcp, trace,
-  store/sqlite, store/postgres, govern/redislog, govern/sqlitelog). A core-only consumer's
+  store/sqlite, store/postgres, govern/redislog, govern/sqlitelog, govern/postgreslog). A core-only consumer's
   external-module surface dropped 54 → 2. Dev via a root `go.work`; adapter go.mods `replace` the
   core locally (pre-publish); CI iterates modules (`MODULES` in ci.yml). At v1.0/naming: rename
   paths + tag core + swap replaces for version pins.
@@ -302,7 +302,7 @@ gsm federation capability reaches the agent tier for free on a version bump:
 - `store/sqlite`, `store/postgres` (Durable adapters, single-flight).
 - `govern` (Tier-2, gsm edge — core never imports it): `Governor`, `PersistentGovernor`,
   `FederatedGovernor`, `FederatedApplier`, `EventTool`, `FederatedEventTool`, `EventLog` port.
-  Log adapters: `govern/sqlitelog`, `govern/redislog` (Redis Streams).
+  Log adapters: `govern/sqlitelog`, `govern/redislog` (Redis Streams), `govern/postgreslog` (HA).
 - `examples/`: `smoke` (live OpenRouter), `mesh` (monotone mesh), `compose` (Embed).
 - Every adapter has a `var _ Port = (*Adapter)(nil)` compile-time contract.
 
@@ -398,9 +398,10 @@ plans were removed rather than kept as history. Remaining forward work is below.
   and a lease-aware `Recover` (claims and renews a per-run lease, skips runs another holder leases,
   so competing recoverers do not double-drive; a crash expires the lease and another process takes
   over). The `store/postgres` `Leaser`+`Lister` (the real cross-process backend, atomic upsert over
-  a leases table, DB-clock expiry) and lease-aware primary driving (`agent.Lease` wraps `Run`, and
-  `Recover` drives each run through it) are DONE. Still forward here: a Postgres `EventLog`,
-  cross-language replicas via `Export()`, and modeling ergonomics. The coordination
+  a leases table, DB-clock expiry), lease-aware primary driving (`agent.Lease` wraps `Run`, and
+  `Recover` drives each run through it), and the Postgres governed-state `EventLog`
+  (`govern/postgreslog`, a global-bigserial append log, race-free under concurrent appends) are DONE.
+  Still forward here: cross-language replicas via `Export()`, and modeling ergonomics. The coordination
   strategy is the minimal-coordination result (normalization-confluence `CATEGORICAL-STRUCTURE.md`
   §10.2): coordinate only the obstructing governed cycles, run the rest coordination-free. This is
   the "tier 3" frontier.
