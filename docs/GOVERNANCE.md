@@ -110,6 +110,12 @@ Because `limit` is a state variable, `Build` verifies the invariant exhaustively
 `(exposure, limit)` pair: **one machine-checked policy covers every principal's limit at once**, and
 each run is governed to the limit its grant seeded. See `examples/authority`.
 
+The same pattern (an external fact seeded into governed state, gated by an invariant) is how a
+**k-of-n model quorum** would be built: fan out a decision to N models, tally the votes, seed the
+count into state, and gate the commit on `votes_for >= k`, so a high-stakes action requires
+agreement or escalates. It is a composition of existing seams, not a new agent type. Design note:
+[QUORUM.md](QUORUM.md) (not yet implemented).
+
 ## Federation: constraints across agents
 
 When shared state spans **multiple registries** with cross-registry rules (one agent's state
