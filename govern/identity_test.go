@@ -1,0 +1,127 @@
+package govern_test
+
+import (
+	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/json"
+	"testing"
+
+	gsm "github.com/blackwell-systems/gsm"
+	agent "github.com/dayna/go-agents"
+	"github.com/dayna/go-agents/audit"
+	"github.com/dayna/go-agents/govern"
+)
+
+// buildCreditGov returns a governor over a tiny machine plus its policy digest, enough to exercise
+// an attested governed action.
+func buildCreditGov(t *testing.T) (govern.Applier, string) {
+	t.Helper()
+	r := gsm.NewRegistry("account")
+	bal := r.Int("balance", 0, 10)
+	r.On("credit").Does(gsm.Inc(bal)).Add()
+	m, _, err := r.Build()
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	digest, err := r.PolicyDigest()
+	if err != nil {
+		t.Fatalf("digest: %v", err)
+	}
+	return govern.New(m, m.NewState()), digest
+}
+
+// TestAttestedEventTool_StampsIdentity confirms that when the deployment binds an identity to the
+// run (agent.WithIdentity), a governed action's leaf carries who acted, on whose behalf, and under
+// what authority, alongside the policy and state digests.
+func TestAttestedEventTool_StampsIdentity(t *testing.T) {
+	gov, digest := buildCreditGov(t)
+	tool := govern.AttestedEventTool(gov, "credit", "credit $1", "credit", digest, agent.Safety{})
+
+	id := agent.Identity{Actor: "exec-agent@1.4.2", OnBehalfOf: "desk-EQ-US", AuthorityRef: "grant#a1b2"}
+	ctx := agent.WithIdentity(context.Background(), id)
+
+	raw, err := tool.Call(ctx, []byte(`{}`))
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+	if got["actor"] != id.Actor || got["on_behalf_of"] != id.OnBehalfOf || got["authority_ref"] != id.AuthorityRef {
+		t.Fatalf("identity not stamped into leaf: %+v", got)
+	}
+	if got["policy_digest"] != digest {
+		t.Fatalf("policy digest missing/wrong: %+v", got)
+	}
+}
+
+// TestAttestedEventTool_NoIdentity confirms backward compatibility: with no identity bound to the
+// run, the leaf omits the identity fields entirely (rather than emitting empty ones).
+func TestAttestedEventTool_NoIdentity(t *testing.T) {
+	gov, digest := buildCreditGov(t)
+	tool := govern.AttestedEventTool(gov, "credit", "credit $1", "credit", digest, agent.Safety{})
+
+	raw, err := tool.Call(context.Background(), []byte(`{}`))
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	for _, k := range []string{"actor", "on_behalf_of", "authority_ref"} {
+		if _, present := got[k]; present {
+			t.Fatalf("expected %q absent when no identity is bound, got %+v", k, got)
+		}
+	}
+}
+
+// TestProof_CommitsToIdentity confirms the end-to-end guarantee: a signed inclusion proof over the
+// governed action's leaf commits to the identity claim, so an auditor verifies WHO acted (and under
+// what authority) from public artifacts alone, not just that the action happened.
+func TestProof_CommitsToIdentity(t *testing.T) {
+	ctx := context.Background()
+	gov, digest := buildCreditGov(t)
+	tool := govern.AttestedEventTool(gov, "credit", "credit $1", "credit", digest, agent.Safety{})
+
+	id := agent.Identity{Actor: "exec-agent@1.4.2", OnBehalfOf: "desk-EQ-US", AuthorityRef: "grant#a1b2"}
+	raw, err := tool.Call(agent.WithIdentity(ctx, id), []byte(`{}`))
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+
+	// Journal the tool result as a governed-action leaf, as the agent loop would.
+	store := agent.NewMemStore()
+	const runID = "run1"
+	if _, err := store.Do(ctx, runID, "call1", func(context.Context) (agent.Record, error) {
+		return agent.Record{Kind: agent.StepToolResult, ToolUseID: "call1", Result: raw}, nil
+	}); err != nil {
+		t.Fatalf("record leaf: %v", err)
+	}
+
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	th, err := audit.NewTreeHead(ctx, store, runID, 1)
+	if err != nil {
+		t.Fatalf("NewTreeHead: %v", err)
+	}
+	sth := audit.SignTreeHead(th, priv)
+
+	pb, err := audit.ProveToolCall(ctx, store, runID, "call1", sth)
+	if err != nil {
+		t.Fatalf("ProveToolCall: %v", err)
+	}
+	if ok, err := pb.Verify(pub); err != nil || !ok {
+		t.Fatalf("bundle did not verify: ok=%v err=%v", ok, err)
+	}
+
+	// The proven leaf commits to the identity claim.
+	var payload map[string]any
+	if err := json.Unmarshal(pb.Record.Result, &payload); err != nil {
+		t.Fatalf("proven payload: %v", err)
+	}
+	if payload["actor"] != id.Actor || payload["on_behalf_of"] != id.OnBehalfOf {
+		t.Fatalf("proof does not commit to identity: %+v", payload)
+	}
+}

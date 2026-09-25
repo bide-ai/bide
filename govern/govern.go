@@ -188,11 +188,26 @@ func AttestedEventTool(gov Applier, name, description, event, policyDigest strin
 			// exact resulting state. A verifier replaying the policy over the run's governed
 			// events reproduces each state_digest, so the runtime's state is checkable against
 			// the verified reference at every transition.
-			return map[string]any{
+			result := map[string]any{
 				"event":         event,
 				"applied":       true,
 				"policy_digest": policyDigest,
 				"state_digest":  st.Digest(),
-			}, nil
+			}
+			// If the deployment bound an acting identity to the run (agent.WithIdentity), stamp it
+			// into the same leaf, so an inclusion proof commits to WHO acted, on whose behalf, and
+			// under what authority, not merely that the action happened under the policy.
+			if id, ok := agent.IdentityFrom(ctx); ok && !id.Empty() {
+				if id.Actor != "" {
+					result["actor"] = id.Actor
+				}
+				if id.OnBehalfOf != "" {
+					result["on_behalf_of"] = id.OnBehalfOf
+				}
+				if id.AuthorityRef != "" {
+					result["authority_ref"] = id.AuthorityRef
+				}
+			}
+			return result, nil
 		})
 }

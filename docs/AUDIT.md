@@ -214,6 +214,15 @@ state it produced, and the same `ProofBundle` that proves the action commits to 
 treats both digests as opaque; it does not depend on the policy engine's serialization or state
 layout.
 
+If the deployment binds an acting identity to the run (`agent.WithIdentity`, carrying `Actor`,
+`OnBehalfOf`, and `AuthorityRef`), `AttestedEventTool` also stamps those fields into the same leaf,
+so an inclusion proof commits to who acted, on whose behalf, and under what authority, not merely
+that the action happened under the policy. Identity is assigned by the deployment from its own auth
+layer (an IdP, a signed grant, a service identity), never by the model, and it rides the context so
+governed actions and sub-agents inherit it. The proof commits to the identity CLAIM; authenticating
+the principal is the operator's IdP/PKI, and the attribution is only as strong as the key custody
+behind the run's signatures.
+
 The verifier then closes a second, independent root of trust:
 
 ```
