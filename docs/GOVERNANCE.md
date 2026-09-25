@@ -77,6 +77,39 @@ tool := govern.EventTool(gov, "pay", "mark the order paid", "pay", agent.Safety{
 
 Multiple agents sharing one governor converge no matter how their calls interleave.
 
+## Identity and delegated authority
+
+A governed action can commit to **who acted**, not just what happened. The deployment binds an
+`agent.Identity{Actor, OnBehalfOf, AuthorityRef}` to the run (from its own auth layer, never from
+the model), and `AttestedEventTool` stamps it into the same leaf as the policy and state digests:
+
+```go
+id := agent.Identity{Actor: "exec-agent@1.4.2", OnBehalfOf: "desk-EQ-US", AuthorityRef: "grant#a1b2"}
+a.Run(agent.WithIdentity(ctx, id), runID, input) // propagates to governed tools and sub-agents
+```
+
+An inclusion proof then commits to who acted, on whose behalf, and under what authority. The SDK
+proves the identity CLAIM; authenticating the principal is the operator's IdP/PKI, and the
+attribution is only as strong as the key custody behind the run's signatures (see AUDIT.md).
+
+**Authority as governed state.** The cleaner move is to make the delegated authority part of the
+state the invariants read, so the rule is scoped per principal. Model the limit as a variable and
+require `exposure <= limit`:
+
+```go
+exposure := r.Int("exposure", 0, 10)
+limit    := r.Int("limit", 0, 10)              // seeded at run start from the verified grant
+r.Rule("within_delegated_limit").
+    Require(gsm.AtMostVar(exposure, limit)).
+    RepairWith(gsm.Do(gsm.Set(exposure, gsm.V(limit)))).
+    Add()
+gov := govern.New(m, m.NewState().SetInt(limit, granted)) // the agent never sets its own limit
+```
+
+Because `limit` is a state variable, `Build` verifies the invariant exhaustively over every
+`(exposure, limit)` pair: **one machine-checked policy covers every principal's limit at once**, and
+each run is governed to the limit its grant seeded. See `examples/authority`.
+
 ## Federation: constraints across agents
 
 When shared state spans **multiple registries** with cross-registry rules (one agent's state
@@ -134,8 +167,10 @@ unacceptable, the fix is to redesign the *events*, not the compensation.
 ## Runnable demos
 
 ```
-go run ./examples/mesh      # cyclic mutual-constraint safety mesh (conflict → converge, crash recovery)
-go run ./examples/compose   # a verified subsystem Embed-ed and reused across two systems
+go run ./examples/mesh       # cyclic mutual-constraint safety mesh (conflict -> converge, crash recovery)
+go run ./examples/compose    # a verified subsystem Embed-ed and reused across two systems
+go run ./examples/authority  # authority-as-governed-state: per-principal limits, one proof, identity in the leaf
+go run ./examples/compliance # KYC pipeline: parallel checks -> governed decision -> offline proofs
 ```
 
 ## Limits
