@@ -109,24 +109,15 @@ func RunTypedNative[T any](ctx context.Context, a *Agent, runID, input string) (
 // clone returns a shallow copy of the agent (shared model/store; copied tool map and
 // middleware slices), leaving the caller's agent untouched.
 func (a *Agent) clone() *Agent {
-	tools := make(map[string]Tool, len(a.tools)+1)
+	c := *a // copies every value field and pointer, so a newly added option field can't be forgotten
+	// Deep-copy only the reference types a derived agent must not share with its parent.
+	c.tools = make(map[string]Tool, len(a.tools)+1)
 	for k, v := range a.tools {
-		tools[k] = v
+		c.tools[k] = v
 	}
-	return &Agent{
-		model:          a.model,
-		tools:          tools,
-		store:          a.store,
-		mw:             append([]Middleware(nil), a.mw...),
-		toolMW:         append([]ToolMiddleware(nil), a.toolMW...),
-		sampling:       a.sampling,
-		maxConc:        a.maxConc,
-		maxTurns:       a.maxTurns,
-		systemPrompt:   a.systemPrompt,
-		systemPromptFn: a.systemPromptFn,
-		responseFormat: a.responseFormat,
-		toolChoice:     a.toolChoice,
-	}
+	c.mw = append([]Middleware(nil), a.mw...)
+	c.toolMW = append([]ToolMiddleware(nil), a.toolMW...)
+	return &c
 }
 
 // cloneWith returns a clone with one extra tool and appended model middleware.

@@ -163,15 +163,21 @@ func Lease(ctx context.Context, store Durable, runID string, drive func(context.
 	if !got {
 		return false, nil // another holder is driving it
 	}
-	err = driveWithRenew(ctx, leaser, runID, cfg, func() error { return drive(ctx) })
-	_ = leaser.ReleaseLease(ctx, runID, cfg.holder)
-	return true, err
+	// Release on return, including if drive panics.
+	defer func() { _ = leaser.ReleaseLease(ctx, runID, cfg.holder) }()
+	return true, driveWithRenew(ctx, leaser, runID, cfg, drive)
 }
 
 // driveWithRenew runs the drive while renewing the lease every ttl/2, so a drive that outlasts the
-// TTL keeps its lease instead of letting another process grab a run it is actively driving.
-func driveWithRenew(ctx context.Context, leaser Leaser, runID string, cfg recoverConfig, run func() error) error {
+// TTL keeps its lease. The drive is given a derived context that is cancelled if the lease is lost
+// (renew fails or returns not-held) or the parent context is done, so a node that loses its lease
+// stops driving rather than continuing un-leased. `defer close(done)` guarantees the renewer
+// goroutine exits even if the drive panics.
+func driveWithRenew(ctx context.Context, leaser Leaser, runID string, cfg recoverConfig, run func(context.Context) error) error {
+	dctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	done := make(chan struct{})
+	defer close(done)
 	go func() {
 		t := time.NewTicker(cfg.ttl / 2)
 		defer t.Stop()
@@ -179,14 +185,17 @@ func driveWithRenew(ctx context.Context, leaser Leaser, runID string, cfg recove
 			select {
 			case <-done:
 				return
+			case <-ctx.Done():
+				return
 			case <-t.C:
-				_, _ = leaser.RenewLease(ctx, runID, cfg.holder, cfg.ttl)
+				if ok, err := leaser.RenewLease(ctx, runID, cfg.holder, cfg.ttl); err != nil || !ok {
+					cancel() // lost the lease: stop the drive rather than run un-leased
+					return
+				}
 			}
 		}
 	}()
-	err := run()
-	close(done)
-	return err
+	return run(dctx)
 }
 
 // isPause reports whether err is a durable pause signal (the run recovered and is still
