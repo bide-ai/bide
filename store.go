@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sync"
+	"time"
 
 	"golang.org/x/sync/singleflight"
 )
@@ -136,9 +137,11 @@ func (e *ResumeHalt) Error() string {
 // MemStore is an in-memory Durable for tests and local dev. SQLite is the shipping
 // default; store/postgres is the high-availability backend.
 type MemStore struct {
-	mu   sync.Mutex
-	sf   singleflight.Group // collapses concurrent Do on the same (runID,name) — at-most-once fn
-	runs map[string]*runLog
+	mu     sync.Mutex
+	sf     singleflight.Group // collapses concurrent Do on the same (runID,name) — at-most-once fn
+	runs   map[string]*runLog
+	leases map[string]memLease // run leasing (see lease.go); in-process, for tests and the reference
+	now    func() time.Time    // lease clock (settable in tests); defaults to time.Now
 }
 
 type runLog struct {
@@ -146,10 +149,13 @@ type runLog struct {
 	byName map[string]int
 }
 
-func NewMemStore() *MemStore { return &MemStore{runs: map[string]*runLog{}} }
+func NewMemStore() *MemStore {
+	return &MemStore{runs: map[string]*runLog{}, leases: map[string]memLease{}, now: time.Now}
+}
 
 var _ Durable = (*MemStore)(nil) // port/adapter contract
 var _ Lister = (*MemStore)(nil)  // MemStore can enumerate runs for crash recovery
+var _ Leaser = (*MemStore)(nil)  // MemStore can lease runs to coordinate recovery
 
 func (m *MemStore) Do(ctx context.Context, runID, name string, fn func(context.Context) (Record, error)) (Record, error) {
 	// Single-flight per (runID,name): concurrent callers for the same step run fn ONCE and

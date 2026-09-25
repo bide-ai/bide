@@ -198,6 +198,17 @@ which sees the `Waker` on the context and re-registers the journaled wake automa
 Advancing the clock and firing the waker then resumes the run to completion. The rebuild
 falls out of ordinary replay: no timer-specific recovery path exists or is needed.
 
+**Run leasing coordinates recovery across processes.** When several processes recover against a
+shared store they all enumerate the same in-flight runs. If the store implements the optional
+`Leaser` (`AcquireLease` / `RenewLease` / `ReleaseLease`), `Recover` claims an exclusive, renewed
+lease per run before driving it and skips a run another holder currently leases, so competing
+recoverers do not both re-drive one run (redundant, and a hazard when the store's `Do` is not
+cross-process atomic). A crash lets the lease expire (default 30s, `WithLeaseTTL`) and another
+process takes over; that expiry-and-takeover is the high-availability property. `MemStore`
+implements `Leaser` in-process (the reference and for tests); the cross-process backend is a shared
+store (`store/postgres`) implementing it with an atomic upsert over a leases table. Without
+`Leaser`, `Recover` drives every enumerated run, safe under at-most-once memoization, just redundant.
+
 **The idempotency-key retry path** reduces halt-for-a-human stops. On resume, a tool with an
 unknown outcome (invoked, no result journaled) normally fires `*ResumeHalt` unless it is
 retry-safe. A tool that declares a `Safety.IdempotencyKey` is now treated as retry-safe: it
