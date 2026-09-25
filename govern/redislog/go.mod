@@ -3,7 +3,7 @@ module github.com/dayna/go-agents/govern/redislog
 go 1.27.0
 
 require (
-	github.com/blackwell-systems/gsm v0.6.0
+	github.com/blackwell-systems/gsm v0.9.0
 	github.com/dayna/go-agents v0.0.0
 	github.com/redis/go-redis/v9 v9.22.0
 )
