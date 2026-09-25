@@ -336,10 +336,13 @@ gsm federation capability reaches the agent tier for free on a version bump:
 
 ## Docs index
 - `docs/DESIGN.md`, `docs/COMPETITIVE*.md` — thesis + competitive teardowns.
-- `docs/TIER2-DISTRIBUTED.md` — original distributed-saga plan.
-- `docs/TIER2-FEDERATION.md` — the federation plan; **M0–M4 all DONE**, monotone cycles +
-  compositionality done; consumed by go-agents.
+- `docs/GOVERNANCE.md`: the governance/convergence tier as shipped, including federation
+  (tree / multi-source DAG / monotone cycles) and the identity/authority model.
 - `docs/KNOWN-LIMITATIONS.md` — deep-tree recursion memory wall; saga atomicity; etc.
+
+(The former `TIER2-DISTRIBUTED.md` / `TIER2-FEDERATION.md` were implementation plans whose
+milestones are all done; federation is now documented as a feature in `GOVERNANCE.md`, so the
+plans were removed rather than kept as history. Remaining forward work is below.)
 
 ## Open / next candidates
 - **Scale compensation synthesis** via SAT/SMT (brute force is bounded; shares machinery with
@@ -350,7 +353,12 @@ gsm federation capability reaches the agent tier for free on a version bump:
   + `./compile.sh` in the normalization-confluence repo; then re-publish to Zenodo.
 - Symbolic verification (SAT/SMT) to break the ~1M-state enumeration ceiling; infinite-domain
   engine (overlaps with symbolic). Self-stabilization reframing (cheap positioning win).
-- v1 agent gaps: sessions/multi-turn, production retry (backoff). (`Agent.Stream` — DONE.)
+- **Distributed at scale**: a networked `EventLog` ships (Redis Streams, so multi-process
+  convergence works today via shared-log replay); still forward: a Postgres `EventLog` for HA,
+  cross-language replicas via `Export()`, and modeling ergonomics (author the event alphabet from
+  tool schemas, quantization helpers, surface CC counterexamples). This is the "tier 3" frontier.
+- v1 agent gaps: sessions/multi-turn (DONE, `Session`), production retry/backoff (DONE,
+  `middleware`), hedged calls + governed quorum (DONE). (`Agent.Stream`: DONE.)
 - Housekeeping: pick a real name; godoc examples; per-file SPDX headers (optional).
   (go-agents CI — DONE: `.github/workflows/ci.yml`, lint [gofmt + vet] + test matrix
   ubuntu/macos/windows on Go 1.27, `-race` off Windows; repo gofmt-clean.)
