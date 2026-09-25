@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -136,4 +138,67 @@ func TestPostgres_LeaseExpiry(t *testing.T) {
 		t.Fatal("B should take A's expired lease")
 	}
 	_ = store.ReleaseLease(ctx, run, "B")
+}
+
+// TestPostgres_HAAtMostOnceAcrossInstances is the cross-process HA e2e: two Store instances (two
+// "processes" with separate in-process single-flight) contend to drive the same run with a
+// non-idempotent charge. The lease must serialize them so the charge fires exactly once; without it
+// both would run the charge fn before either records it and double-charge. Skips without PG_DSN.
+func TestPostgres_HAAtMostOnceAcrossInstances(t *testing.T) {
+	dsn := os.Getenv("PG_DSN")
+	if dsn == "" {
+		t.Skip("set PG_DSN to run the Postgres HA e2e")
+	}
+	ctx := context.Background()
+	s1, err := Open(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s1.Close()
+	s2, err := Open(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s2.Close()
+
+	run := "pg-ha-" + t.Name()
+	_ = s1.ReleaseLease(ctx, run, "n1")
+	_ = s1.ReleaseLease(ctx, run, "n2")
+
+	var charges int32
+	driveVia := func(s *Store) func(context.Context) error {
+		return func(ctx context.Context) error {
+			if _, err := s.Do(ctx, run, "charge", func(context.Context) (agent.Record, error) {
+				atomic.AddInt32(&charges, 1) // non-idempotent side effect
+				return agent.Record{Kind: agent.StepValue}, nil
+			}); err != nil {
+				return err
+			}
+			_, err := s.Do(ctx, run, "run:complete", func(context.Context) (agent.Record, error) {
+				return agent.Record{Kind: agent.StepValue}, nil // the completion marker (agent.IsComplete)
+			})
+			return err
+		}
+	}
+	worker := func(s *Store, holder string) {
+		for iter := 0; iter < 2000; iter++ {
+			if done, _ := agent.IsComplete(ctx, s, run); done {
+				return
+			}
+			_, _ = agent.Lease(ctx, s, run, driveVia(s), agent.WithLeaseHolder(holder), agent.WithLeaseTTL(time.Minute))
+		}
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() { defer wg.Done(); worker(s1, "n1") }()
+	go func() { defer wg.Done(); worker(s2, "n2") }()
+	wg.Wait()
+
+	if c := atomic.LoadInt32(&charges); c != 1 {
+		t.Fatalf("charge fired %d times across two instances, want exactly 1 (the lease must serialize cross-process driving)", c)
+	}
+	if done, _ := agent.IsComplete(ctx, s1, run); !done {
+		t.Fatal("run never completed")
+	}
 }
