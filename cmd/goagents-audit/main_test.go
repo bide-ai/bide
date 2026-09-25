@@ -135,3 +135,75 @@ func writeJSON(t *testing.T, path string, v any) {
 		t.Fatalf("write %s: %v", path, err)
 	}
 }
+
+// TestVerifyQuorumCLI exercises verify-quorum end to end: a real quorum run produces vote and tally
+// bundles, and the command confirms k-of-n agreement, recomputing the tally from the disclosed
+// votes. It also checks the failure paths (threshold not met, and not all votes disclosed).
+func TestVerifyQuorumCLI(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	store := agent.NewMemStore()
+	const runID = "run1"
+
+	// Three voters, two agree on "approve"; k = 2. govern.Quorum records each vote and the tally
+	// as durable, provable Steps.
+	decide := func(v string) func(context.Context) (string, error) {
+		return func(context.Context) (string, error) { return v, nil }
+	}
+	res, err := govern.Quorum(ctx, store, runID, 2,
+		govern.Voter{Name: "model-A", Decide: decide("approve")},
+		govern.Voter{Name: "model-B", Decide: decide("approve")},
+		govern.Voter{Name: "model-C", Decide: decide("deny")})
+	if err != nil {
+		t.Fatalf("Quorum: %v", err)
+	}
+	if res.Decision != "approve" || res.VotesFor != 2 || !res.Agreed {
+		t.Fatalf("unexpected tally: %+v", res)
+	}
+
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	th, err := audit.NewTreeHead(ctx, store, runID, 1)
+	if err != nil {
+		t.Fatalf("NewTreeHead: %v", err)
+	}
+	sth := audit.SignTreeHead(th, priv)
+
+	// Produce and write the bundles a verifier would receive.
+	bundlePath := func(name, file string) string {
+		pb, err := audit.ProveStep(ctx, store, runID, name, sth)
+		if err != nil {
+			t.Fatalf("ProveStep %s: %v", name, err)
+		}
+		p := filepath.Join(dir, file)
+		writeJSON(t, p, pb)
+		return p
+	}
+	tallyP := bundlePath("quorum/tally", "tally.json")
+	aP := bundlePath("model-A", "a.json")
+	bP := bundlePath("model-B", "b.json")
+	cP := bundlePath("model-C", "c.json")
+	pubHex := hex.EncodeToString(pub)
+
+	bin := filepath.Join(dir, "goagents-audit")
+	if out, err := exec.Command("go", "build", "-o", bin, ".").CombinedOutput(); err != nil {
+		t.Fatalf("build binary: %v\n%s", err, out)
+	}
+
+	// 1) Quorum met (k=2), all three votes disclosed: passes.
+	pass := []string{"verify-quorum", "-tally", tallyP, "-vote", aP, "-vote", bP, "-vote", cP, "-pubkey", pubHex, "-k", "2"}
+	if out, err := exec.Command(bin, pass...).CombinedOutput(); err != nil {
+		t.Fatalf("quorum-met run should pass, got err %v\n%s", err, out)
+	}
+
+	// 2) Threshold not met (k=3 while votes_for=2): must FAIL.
+	k3 := []string{"verify-quorum", "-tally", tallyP, "-vote", aP, "-vote", bP, "-vote", cP, "-pubkey", pubHex, "-k", "3"}
+	if out, err := exec.Command(bin, k3...).CombinedOutput(); err == nil {
+		t.Fatalf("k=3 with votes_for=2 must fail, but exited 0\n%s", out)
+	}
+
+	// 3) Not all votes disclosed (2 of 3) so the tally cannot be recomputed: must FAIL.
+	partial := []string{"verify-quorum", "-tally", tallyP, "-vote", aP, "-vote", bP, "-pubkey", pubHex, "-k", "2"}
+	if out, err := exec.Command(bin, partial...).CombinedOutput(); err == nil {
+		t.Fatalf("partial vote disclosure must fail, but exited 0\n%s", out)
+	}
+}

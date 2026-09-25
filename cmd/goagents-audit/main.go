@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 
 	agent "github.com/dayna/go-agents"
@@ -52,6 +53,8 @@ func main() {
 		verifyGovernedAction(os.Args[2:])
 	case "verify-convergence":
 		verifyConvergence(os.Args[2:])
+	case "verify-quorum":
+		verifyQuorum(os.Args[2:])
 	case "prove-absent":
 		proveAbsent(os.Args[2:])
 	case "verify-absent":
@@ -84,6 +87,12 @@ func usage() {
          signed tree, the certificate certifies the anchored policy's digest, the leaf's bytes
          hash to that digest, and (with -checker) the external oracle's verdict AGREES with the
          certificate's convergence claim, so a certificate that overstates convergence is caught
+
+  verify-quorum -tally <bundle> -vote <bundle> [-vote <bundle>...] -pubkey <hex|file> -k <n> [-commit <bundle>]
+         verify a governed k-of-n quorum: the tally and every vote bundle authentic and in the
+         same signed tree and run, the recorded tally recomputes from the disclosed votes (a
+         forged tally is caught), and votes_for >= k; with -commit, a governed commit is anchored
+         in the same tree
 
   prove-absent -journal <file> -sth <file> -key (tool:<id>|policy:<digest>) [-out <file>]
          prove a thing did NOT happen (no such tool call / no action under that policy)
@@ -463,6 +472,135 @@ func parseCompensationFree(out []byte) (bool, bool) {
 		}
 	}
 	return false, false
+}
+
+// stringList is a repeatable string flag (one -vote per voter bundle).
+type stringList []string
+
+func (s *stringList) String() string     { return strings.Join(*s, ",") }
+func (s *stringList) Set(v string) error { *s = append(*s, v); return nil }
+
+// verifyQuorum verifies a governed k-of-n quorum from public artifacts alone, and does not trust the
+// recorded tally: it recomputes the tally from the separately-anchored vote leaves and fails if they
+// disagree, so a forged tally is caught. Steps (all FAIL exit 1): (1) the tally and every vote bundle
+// authentic under the out-of-band key, (2) all in the same signed tree and the same run, (3) the
+// recorded tally (decision, votes_for, total) recomputes exactly from the disclosed votes with the
+// same plurality-and-lexical-tie-break rule govern.Quorum uses, and every vote is disclosed, (4)
+// votes_for >= k. With -commit, the governed commit is confirmed anchored in the same tree and run.
+//
+// The CLI decodes the tally and vote leaves into local structs, so it imports neither gsm nor govern.
+func verifyQuorum(args []string) {
+	fs := flagSet("verify-quorum")
+	tallyPath := fs.String("tally", "", "path to the quorum tally ProofBundle JSON (the quorum/tally step)")
+	var votePaths stringList
+	fs.Var(&votePaths, "vote", "path to one vote ProofBundle JSON; repeat once per voter")
+	commitPath := fs.String("commit", "", "path to the commit action ProofBundle JSON (optional)")
+	pubkey := fs.String("pubkey", "", "ed25519 public key as hex, or a path to a file containing it")
+	k := fs.Int("k", 0, "the quorum threshold to assert: votes_for must be >= k")
+	_ = fs.Parse(args)
+
+	if *tallyPath == "" || len(votePaths) == 0 || *pubkey == "" || *k <= 0 {
+		usage()
+	}
+	pub := readPubKey(*pubkey)
+
+	var tally audit.ProofBundle
+	readJSON(*tallyPath, &tally)
+	votes := make([]audit.ProofBundle, len(votePaths))
+	for i, p := range votePaths {
+		readJSON(p, &votes[i])
+	}
+
+	mustVerify := func(b audit.ProofBundle, what string) {
+		if ok, err := b.Verify(pub); err != nil {
+			fatal(err)
+		} else if !ok {
+			fmt.Printf("FAIL: %s bundle did not verify under this key\n", what)
+			os.Exit(1)
+		}
+	}
+
+	// (1) authenticity; (2) same signed tree and same run as the tally.
+	mustVerify(tally, "tally")
+	for i := range votes {
+		mustVerify(votes[i], fmt.Sprintf("vote %d", i))
+		if votes[i].STH.Size != tally.STH.Size || string(votes[i].STH.Root) != string(tally.STH.Root) {
+			fmt.Println("FAIL: a vote is not committed in the same signed tree as the tally")
+			os.Exit(1)
+		}
+		if votes[i].RunID != tally.RunID {
+			fmt.Println("FAIL: a vote is not from the same run as the tally")
+			os.Exit(1)
+		}
+	}
+
+	// (3) recompute the tally from the disclosed votes; it must match the recorded tally exactly.
+	var rec struct {
+		Decision string `json:"decision"`
+		VotesFor int    `json:"votes_for"`
+		Total    int    `json:"total"`
+	}
+	if err := json.Unmarshal(tally.Record.Result, &rec); err != nil {
+		fatal(fmt.Errorf("tally bundle is not a quorum tally: %w", err))
+	}
+	counts := map[string]int{}
+	for i := range votes {
+		var v struct {
+			Voter    string `json:"voter"`
+			Decision string `json:"decision"`
+		}
+		if err := json.Unmarshal(votes[i].Record.Result, &v); err != nil {
+			fatal(fmt.Errorf("vote bundle %d is not a vote leaf: %w", i, err))
+		}
+		counts[v.Decision]++
+	}
+	decs := make([]string, 0, len(counts))
+	for d := range counts {
+		decs = append(decs, d)
+	}
+	sort.Strings(decs) // deterministic plurality, lexically smallest decision breaks ties
+	winner, best := "", 0
+	for _, d := range decs {
+		if counts[d] > best {
+			winner, best = d, counts[d]
+		}
+	}
+	if len(votes) != rec.Total {
+		fmt.Printf("FAIL: %d vote bundles disclosed but the tally records total=%d; all votes must be disclosed to verify the tally\n", len(votes), rec.Total)
+		os.Exit(1)
+	}
+	if winner != rec.Decision || best != rec.VotesFor {
+		fmt.Printf("FAIL: recorded tally (decision=%q votes_for=%d) does not match the disclosed votes (decision=%q votes_for=%d)\n",
+			rec.Decision, rec.VotesFor, winner, best)
+		os.Exit(1)
+	}
+
+	// (4) the quorum threshold.
+	if rec.VotesFor < *k {
+		fmt.Printf("FAIL: quorum not met: votes_for=%d < k=%d for decision %q\n", rec.VotesFor, *k, rec.Decision)
+		os.Exit(1)
+	}
+	fmt.Printf("OK: %d-of-%d agreement on decision %q (votes_for=%d >= k=%d), recomputed from %d disclosed votes, in run %q of a signed tree of size %d\n",
+		rec.VotesFor, rec.Total, rec.Decision, rec.VotesFor, *k, len(votes), tally.RunID, tally.STH.Size)
+
+	// (optional) confirm a governed commit is anchored in the same tree and run.
+	if *commitPath != "" {
+		var commit audit.ProofBundle
+		readJSON(*commitPath, &commit)
+		mustVerify(commit, "commit")
+		if commit.STH.Size != tally.STH.Size || string(commit.STH.Root) != string(tally.STH.Root) || commit.RunID != tally.RunID {
+			fmt.Println("FAIL: the commit is not in the same signed tree and run as the quorum")
+			os.Exit(1)
+		}
+		var payload struct {
+			PolicyDigest string `json:"policy_digest"`
+		}
+		if err := json.Unmarshal(commit.Record.Result, &payload); err != nil || payload.PolicyDigest == "" {
+			fmt.Println("FAIL: commit bundle is not a governed-action leaf")
+			os.Exit(1)
+		}
+		fmt.Printf("OK: a governed commit under policy %s is anchored in the same tree; the decision committed under k-of-n agreement\n", payload.PolicyDigest)
+	}
 }
 
 // absenceSelector maps a CLI -key selector to the KeyFunc and the exact absence key to prove

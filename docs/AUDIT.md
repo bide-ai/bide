@@ -198,6 +198,7 @@ Conventions shared across verbs:
 | `verify-governance` | `-policy` | `-digest <hex>`, `-checker <astchecker>` | Recompute the policy digest from the published bytes (independent of gsm); with `-digest`, assert it matches; with `-checker`, run the external verified oracle to certify the policy converges. |
 | `verify-governed-action` | `-action`, `-policy-bundle`, `-pubkey` | `-checker` | End to end: both bundles authentic and in the same signed tree, the action's embedded policy digest links to the anchored policy leaf, the leaf's bytes hash to that digest, and (with `-checker`) the policy converges. |
 | `verify-convergence` | `-cert-bundle`, `-policy-bundle`, `-pubkey` | `-checker` | An anchored `ConfluenceCertificate` links to the policy leaf; with `-checker`, the oracle's convergence AND compensation-free verdicts must AGREE with the certificate, so an overstated certificate is caught. |
+| `verify-quorum` | `-tally`, `-vote` (repeatable), `-pubkey`, `-k` | `-commit` | A governed k-of-n quorum: the tally and every vote bundle authentic and in the same signed tree and run, the recorded tally recomputes from the disclosed votes (a forged tally is caught), and `votes_for >= k`; with `-commit`, a governed commit is anchored in the same tree. |
 
 The `-checker` flag points at the external verified oracle binary (the `astchecker` extracted from
 the axiom-free Coq proof); the CLI does not ship it, and without it the governance verbs verify only

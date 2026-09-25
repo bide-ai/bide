@@ -105,11 +105,17 @@ names (`Ge`, `SetLabel`, and a boolean-set transform) are illustrative; the shap
    values (provable one by one via `audit.ProveStep`).
 2. Done: `examples/quorum` wires the count into a `gsm` invariant as above and commits through
    `AttestedEventTool`, with `RequiresApproval` on the escalate path.
-3. Deferred: extend the attested leaf (or add vote leaves) so the `ProofBundle` commits to each
-   vote and the tally in one leaf, and add a `goagents-audit` verify path that confirms "committed
-   under k-of-n agreement" from the signed tree alone. Today the votes and the commit are each
-   provable (`ProveStep` / `ProveToolCall`), but binding the count into the commit leaf and a
-   dedicated verify subcommand are not yet built.
+3. Done: `goagents-audit verify-quorum` confirms "committed under k-of-n agreement" from public
+   artifacts alone. It takes the tally bundle and one vote bundle per voter (from `ProveStep`), and
+   does not trust the recorded tally: it verifies every bundle authentic and in the same signed tree
+   and run, recomputes the tally from the disclosed vote leaves with the same plurality rule
+   `govern.Quorum` uses (so a forged tally is caught), and asserts `votes_for >= k`; with `-commit`
+   it confirms the governed commit is anchored in the same tree. The vote leaves are already
+   separately anchored, so this needed no change to the attested-commit leaf shape (a hard
+   constraint) and no gsm import in the CLI: it decodes the tally and votes into local structs. The
+   remaining refinement, binding the decision value itself into the commit leaf so the commit links
+   to the decision without relying on same-run, would touch the governed event, not the audit path,
+   and is left as a small follow-on.
 
 Built this way it is a composition helper on the seams, testable and auditable like the rest, and
 the one `Agent` stays unchanged.
