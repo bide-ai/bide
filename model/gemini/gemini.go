@@ -14,7 +14,6 @@
 package gemini
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/base64"
@@ -24,7 +23,6 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"time"
 
 	agent "github.com/dayna/go-agents"
 )
@@ -84,16 +82,7 @@ func (m *Model) Stream(ctx context.Context, req agent.Request) (*agent.Stream, e
 		return nil, err
 	}
 	if resp.StatusCode != http.StatusOK {
-		b, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		if resp.StatusCode == http.StatusTooManyRequests {
-			d := parseRetryAfter(resp.Header.Get("Retry-After"))
-			return nil, &agent.RateLimited{
-				RetryAfter: d,
-				Err:        fmt.Errorf("gemini: rate limited (%w)", agent.ErrModel),
-			}
-		}
-		return nil, &agent.APIError{StatusCode: resp.StatusCode, Body: string(b), Err: fmt.Errorf("gemini (%w)", agent.ErrModel)}
+		return nil, agent.ClassifyHTTPError("gemini", resp)
 	}
 
 	ch := make(chan agent.Emit)
@@ -284,25 +273,6 @@ type chunk struct {
 	} `json:"usageMetadata"`
 }
 
-// parseRetryAfter parses an HTTP Retry-After header value. It accepts either an
-// integer number of seconds or an HTTP-date. Returns 0 if absent or unparseable.
-func parseRetryAfter(s string) time.Duration {
-	if s == "" {
-		return 0
-	}
-	if secs, err := strconv.Atoi(s); err == nil {
-		return time.Duration(secs) * time.Second
-	}
-	if t, err := http.ParseTime(s); err == nil {
-		d := time.Until(t)
-		if d < 0 {
-			return 0
-		}
-		return d
-	}
-	return 0
-}
-
 // mapFinishReason maps Gemini's finishReason onto the neutral reason strings the other
 // adapters emit (Anthropic "end_turn"/"tool_use"; OpenAI "stop"/"tool_calls"). The agent
 // core's finalize() does not branch on the string, so this is for the caller's benefit.
@@ -333,21 +303,16 @@ func streamSSE(body io.ReadCloser, ch chan<- agent.Emit) {
 	defer close(ch)
 	defer body.Close()
 
-	sc := bufio.NewScanner(body)
-	sc.Buffer(make([]byte, 0, 64*1024), 1<<20) // raise the 64KB line cap (openai-go #368 lesson)
+	sc := agent.NewSSEScanner(body)
 
 	var in, out, cacheRead int
 	var lastReason string
 	var sawToolCall bool
 	var toolIndex int
 	for sc.Scan() {
-		line := sc.Text()
-		if !strings.HasPrefix(line, "data:") {
+		data, ok := agent.SSEPayload(sc.Text())
+		if !ok {
 			continue // ignore blank separators and any non-data framing
-		}
-		data := strings.TrimSpace(line[len("data:"):])
-		if data == "" {
-			continue
 		}
 		var c chunk
 		if err := json.Unmarshal([]byte(data), &c); err != nil {

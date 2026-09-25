@@ -10,7 +10,6 @@
 package openai
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/base64"
@@ -18,9 +17,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strconv"
 	"strings"
-	"time"
 
 	agent "github.com/dayna/go-agents"
 	"github.com/dayna/go-agents/schema"
@@ -79,16 +76,7 @@ func (m *Model) Stream(ctx context.Context, req agent.Request) (*agent.Stream, e
 		return nil, err
 	}
 	if resp.StatusCode != http.StatusOK {
-		b, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		if resp.StatusCode == http.StatusTooManyRequests {
-			d := parseRetryAfter(resp.Header.Get("Retry-After"))
-			return nil, &agent.RateLimited{
-				RetryAfter: d,
-				Err:        fmt.Errorf("openai: rate limited (%w)", agent.ErrModel),
-			}
-		}
-		return nil, &agent.APIError{StatusCode: resp.StatusCode, Body: string(b), Err: fmt.Errorf("openai (%w)", agent.ErrModel)}
+		return nil, agent.ClassifyHTTPError("openai", resp)
 	}
 
 	ch := make(chan agent.Emit)
@@ -210,25 +198,6 @@ func (m *Model) buildRequest(req agent.Request) ([]byte, error) {
 	return json.Marshal(payload)
 }
 
-// parseRetryAfter parses an HTTP Retry-After header value. It accepts either an
-// integer number of seconds or an HTTP-date. Returns 0 if absent or unparseable.
-func parseRetryAfter(s string) time.Duration {
-	if s == "" {
-		return 0
-	}
-	if secs, err := strconv.Atoi(s); err == nil {
-		return time.Duration(secs) * time.Second
-	}
-	if t, err := http.ParseTime(s); err == nil {
-		d := time.Until(t)
-		if d < 0 {
-			return 0
-		}
-		return d
-	}
-	return 0
-}
-
 func textOf(m agent.Message) string {
 	var b strings.Builder
 	for _, p := range m.Parts {
@@ -301,18 +270,13 @@ func streamSSE(body io.ReadCloser, ch chan<- agent.Emit) {
 	defer close(ch)
 	defer body.Close()
 
-	sc := bufio.NewScanner(body)
-	sc.Buffer(make([]byte, 0, 64*1024), 1<<20)
+	sc := agent.NewSSEScanner(body)
 
 	var lastReason string
 	var finished bool
 	for sc.Scan() {
-		line := sc.Text()
-		if !strings.HasPrefix(line, "data:") {
-			continue
-		}
-		data := strings.TrimSpace(line[len("data:"):])
-		if data == "" {
+		data, ok := agent.SSEPayload(sc.Text())
+		if !ok {
 			continue
 		}
 		if data == "[DONE]" {

@@ -37,22 +37,3 @@ func TestStream_429_RateLimited(t *testing.T) {
 		t.Errorf("errors.Is(err, agent.ErrModel) = false, want true")
 	}
 }
-
-func TestParseRetryAfter(t *testing.T) {
-	tests := []struct {
-		in   string
-		want time.Duration
-	}{
-		{"", 0},
-		{"0", 0},
-		{"5", 5 * time.Second},
-		{"120", 120 * time.Second},
-		{"notanumber", 0},
-	}
-	for _, tc := range tests {
-		got := parseRetryAfter(tc.in)
-		if got != tc.want {
-			t.Errorf("parseRetryAfter(%q) = %v, want %v", tc.in, got, tc.want)
-		}
-	}
-}
