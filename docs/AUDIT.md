@@ -412,6 +412,16 @@ covers the "lower the limit" case; scope semantics are otherwise domain-defined)
 confirms a sub-agent's authority descends, unbroken and never widened, from a root principal each
 hop signed. Runnable end to end in `examples/delegation`.
 
+**Attenuation by default.** `AttenuatingSubAgent` wires this into the sub-agent seam so narrowing is
+the default, not something the caller remembers to do. Bind the acting grant and signer once at the
+root with `WithGrant`; then each delegation through the tool mints a narrower child grant (linked to
+the parent, signed, and anchored as a leaf), rebinds the sub-run's identity to it, and propagates it
+so a deeper delegation narrows again. With no grant on the context it is a plain sub-agent that
+inherits identity, so it is safe either way. The wrapped sub-agent still runs its own full loop and
+reasons autonomously; only its authority shrinks. The result is that capabilities monotonically
+decrease down a delegation tree by construction, and the chain stays provable via
+`VerifyDelegationChain`.
+
 ## Next
 
 RFC 6962 is fully covered (Head, inclusion, consistency, STH) over both the journal and, via
