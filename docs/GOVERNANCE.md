@@ -48,6 +48,31 @@ r.Event("pay").Writes(status, paid).
 m, report, err := r.Build() // proves convergence, or returns a counterexample
 ```
 
+## What an invariant guarantees: prevent, repair, halt
+
+An invariant is inviolate on the **committed state**: every state a governor ever returns or
+commits satisfies every invariant, proven exhaustively at build and backed by the machine-checked
+convergence proof. What it does not promise is that no *transient* state is ever invalid, because
+the model is precisely that an event may violate an invariant and compensation then restores
+validity. So pick the posture per rule:
+
+- **Prevent (guard).** A `Guard` / `OnlyIf` makes the event a no-op unless its precondition holds,
+  so the invariant is never breached even transiently on that path. Use this when the action must
+  never fire into an invalid state at all.
+- **Repair (compensation).** The event may fire into an invalid state, and the `Repair` restores a
+  valid normal form. The invariant holds after repair, not during. This is the default and the
+  source of order-independent convergence.
+- **Halt (human decision).** A tool marked `agent.Safety{RequiresApproval: true}` (or one that calls
+  `Interrupt`) pauses the run for a durable human decision instead of auto-repairing, for cases
+  where silent compensation is not acceptable.
+
+Two boundaries follow from this. A machine only builds if every invariant is restorable (WFC + CC),
+so any shipped invariant is provably always-restored; `Synthesize` reports a witness when none is.
+And a governor makes the governed *record* inviolate, not the outside world: compensation can reset
+a state variable but cannot undo a side effect that already left the process, so an invariant that
+must hold in reality (not just in the record) uses prevent or halt **before** the side effect
+routes, the pre-trade-check posture rather than post-trade remediation.
+
 ## Governors: the durable runtime
 
 A **governor** applies agents' events to the shared state. Two flavors:
