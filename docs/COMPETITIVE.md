@@ -41,6 +41,27 @@ type Tool interface {
 No typed args, no schema in the contract. Schema is an optional `ToolWithSchema` bolt-on found
 by runtime type assertion. This is exactly the gap our typed-tools wedge fills.
 
+**Execution model: ephemeral, no durable substrate (source-confirmed v0.1.14).** The executor's
+entire run state is one local slice: `steps := make([]schema.AgentStep, 0)`, accumulated across a
+bounded loop (default 5 iterations) and garbage-collected when `Call` returns
+(`agents/executor.go`). There is no journal, checkpoint, or serialization, so an interrupted run
+keeps no record of what already happened and re-invocation re-runs everything. A tool error aborts
+the executor outright (no retry, no compensation, no halt-for-a-human); chains are the same, they
+fail-fast at the first error with no resume. This is the exact shape our durable substrate is built
+against, and the gap is measured, not asserted: our chaos crash-injection benchmark drives a
+non-idempotent charge through every crash point and records langchaingo at **maxFired=64**
+(unbounded double-firing) against go-agents at **maxFired=1**. The adapter is fair (resuming a
+complete run is a no-op); the double-firing is simply the absence of durable execution, wired in
+`benchmarks/langchaingo.go`.
+
+**Its "persistence" is chat history, not durable execution.** langchaingo ships opt-in
+`SqliteChatMessageHistory` and `ZepChatMessageHistory` that persist the conversation transcript
+across restarts. That is a different guarantee from resuming a half-finished, side-effecting run
+exactly once: persisting what was said is orthogonal to never firing a charge twice, and conflating
+the two is the most common way this gap gets missed. Our journal persists execution state (the
+steps, their attempt markers, their outcomes), which is what makes at-most-once resume and the audit
+spine possible; conversational memory is a separate, higher layer (Sessions).
+
 **Leaky Python ports:** imports a Jinja2 engine (`gonja`) + `sprig` for prompt templating;
 output parser hard-requires Gemini-style code fences and breaks on OpenAI; legacy `logrus`.
 62 modules / 38 MB binary vs Genkit Go's 41 / 28.7 MB.
