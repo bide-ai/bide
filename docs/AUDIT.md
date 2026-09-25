@@ -170,6 +170,41 @@ leaf bytes: they can vendor just that, or reimplement it from RFC 6962 and check
 The two verification paths are cross-checked bit-for-bit in the tests so the standalone mirror
 cannot drift.
 
+## CLI reference: `goagents-audit`
+
+The `goagents-audit` command ([`cmd/goagents-audit`](../cmd/goagents-audit)) is the auditor-facing
+front end for the whole proof surface. It is dependency-light: it imports only the core and `audit`
+packages and no store backend, so every produce verb operates on an **exported journal** (a JSON
+array of `Record`, obtained with `json.Marshal(store.History(ctx, runID))`) plus a signed tree head,
+and every verify verb needs only a bundle and an out-of-band public key. Build it with
+`go build ./cmd/goagents-audit`.
+
+Conventions shared across verbs:
+
+- `-pubkey` accepts either a hex string directly or a path to a file whose trimmed contents are
+  hex. The key must come from the anchor operator out-of-band, never from the bundle: that is what
+  makes it a proof you verify rather than a log you trust.
+- Produce verbs (`prove`, `prove-absent`) write the bundle to `-out`, or to stdout if `-out` is
+  omitted; the "wrote &lt;file&gt;" line goes to stderr so stdout stays clean for piping.
+- Verify verbs print a one-line `OK: ...` / `FAIL: ...` verdict and set the exit code: **0 =
+  authentic / all checks passed, 1 = failed** (a usage error exits 2). This is the CI-gate contract.
+
+| Verb | Required flags | Optional flags | Proves / checks |
+|---|---|---|---|
+| `prove` | `-journal`, `-sth`, and one of `-tool <id>` / `-index <n>` | `-out` | Build a `ProofBundle` for one record (by tool-use id or journal index) against a signed tree head. |
+| `verify` | `-bundle`, `-pubkey` | | A `ProofBundle` is authentic under the key and bound to its signed size. |
+| `prove-absent` | `-journal`, `-sth`, `-key` (`tool:<id>` or `policy:<digest>`) | `-out` | Build an `AbsenceBundle` proving a tool call / governed policy never appears, against a signed **absence** tree head (`audit.SignAbsenceRoot`). |
+| `verify-absent` | `-bundle`, `-pubkey` | | An `AbsenceBundle` is authentic (the key really is absent from the signed key set). |
+| `verify-governance` | `-policy` | `-digest <hex>`, `-checker <astchecker>` | Recompute the policy digest from the published bytes (independent of gsm); with `-digest`, assert it matches; with `-checker`, run the external verified oracle to certify the policy converges. |
+| `verify-governed-action` | `-action`, `-policy-bundle`, `-pubkey` | `-checker` | End to end: both bundles authentic and in the same signed tree, the action's embedded policy digest links to the anchored policy leaf, the leaf's bytes hash to that digest, and (with `-checker`) the policy converges. |
+| `verify-convergence` | `-cert-bundle`, `-policy-bundle`, `-pubkey` | `-checker` | An anchored `ConfluenceCertificate` links to the policy leaf; with `-checker`, the oracle's convergence AND compensation-free verdicts must AGREE with the certificate, so an overstated certificate is caught. |
+
+The `-checker` flag points at the external verified oracle binary (the `astchecker` extracted from
+the axiom-free Coq proof); the CLI does not ship it, and without it the governance verbs verify only
+the cryptographic root and say so. The digest is recomputed here from a hardcoded
+`gsm-policy-v1` domain-separation tag rather than taken from gsm, so neither root of trust depends
+on the producer. The CLI reads no environment variables.
+
 ## RFC 6962 conformance
 
 The Merkle tree, inclusion proofs, and consistency proofs implement

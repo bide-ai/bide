@@ -79,8 +79,10 @@ Parallel tool execution is built: a turn's tool calls run concurrently via `errg
   (strip `additionalProperties`/`$ref` per its subset) is not yet done.
 - Runtime (MCP) tools use the untyped path; there's no Go-struct typing for them (Go can't
   synthesize a struct type from a runtime schema).
-- **No multimodal input.** Message parts are Text / Reasoning / ToolUse / ToolResult — no
-  image / audio / video.
+- **Multimodal input is images only.** Message parts are Text / Reasoning / ToolUse / ToolResult /
+  Image; image input (raw bytes or a hosted URL) is supported across all three adapters via
+  `Image` / `UserParts` (see the messaging docs). Audio and video input are not modeled, and images
+  are input-only (models emit text, reasoning, and tool calls, never images).
 - **`RunTypedNative[T]` needs provider JSON-schema support** (OpenAI-compatible strict mode).
   Anthropic ignores `Request.ResponseFormat`; use the provider-agnostic tool-based `RunTyped` there.
 - **Settings are agent-level, not per-call.** `WithSampling` / `WithSystemPrompt` / `WithMaxTurns`

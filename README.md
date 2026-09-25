@@ -458,9 +458,9 @@ case errors.Is(err, agent.ErrStorage):      // durable-store I/O
 
 Categories: `ErrConfig`, `ErrModel`, `ErrTool`, `ErrStorage`, `ErrProtocol`, `ErrBudget`.
 Conditions (each wraps a category): `ErrUnknownTool`, `ErrToolArgs`, `ErrNoRecordedOutput`,
-`ErrTruncatedToolArgs`, `ErrBudgetExceeded`. Every error the toolkit returns — including from
-the model, MCP, store, and governance adapters — carries a category, so `errors.Is` is reliable
-across the whole surface.
+`ErrTruncatedToolArgs`, `ErrBudgetExceeded`, `ErrMaxTurns` (both wrap `ErrBudget`). Every error the
+toolkit returns (including from the model, MCP, store, and governance adapters) carries a category,
+so `errors.Is` is reliable across the whole surface.
 
 The **control-flow signals** are richer than a category, so they stay concrete types matched
 with `errors.As`: `*PendingApproval` (approval needed), `*ResumeHalt` (unsafe to resume),
@@ -571,6 +571,14 @@ tool := govern.EventTool(gov, "pay", "mark the order paid", "pay", agent.Safety{
 
 ## Guides
 
+- **[docs/DURABLE-STEPS.md](docs/DURABLE-STEPS.md)**: composing your own durable work on the same
+  substrate. `Step` (one named durable operation), `Parallel` / `Task` (durable fan-in for
+  parallel-checks-then-decide pipelines), and sagas (`RunSaga` / `CompensatedFunc`, reverse-order
+  compensation). Runnable in `examples/compliance`.
+- **[docs/MODELS.md](docs/MODELS.md)**: the three model adapters (Anthropic, OpenAI-compatible,
+  Gemini): constructor options and defaults, `WithBaseURL` for any OpenAI-compatible or Vertex
+  endpoint, per-provider sampling mapping, prompt caching and usage accounting, typed error
+  surfacing (`RateLimited` / `APIError`), and multimodal image input (`UserParts` / `Image`).
 - **[docs/MCP.md](docs/MCP.md)**: Model Context Protocol integration. Connect to an MCP
   server as a runtime tool source, discover its tools, and inherit side-effect-safe resume
   from the annotation-to-`Safety` mapping.

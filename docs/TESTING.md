@@ -285,7 +285,9 @@ blurred in a claim:
   as one of the machine-checked guarantees.
 
 `eval.AgentRunner` wraps an agent as an eval `RunFunc` (unique runID per run), so evaluation runs are
-themselves durable and can be replayed and audited like any other run.
+themselves durable and can be replayed and audited like any other run. A runnable, self-contained
+walkthrough (labeled cases, rule-based and stub metrics, a deliberately flaky model so the report
+shows a rate below 100%) is [`examples/eval`](../examples/eval/main.go): `go run ./examples/eval`.
 
 ## Methodology
 

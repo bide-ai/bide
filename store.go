@@ -35,10 +35,10 @@ type Record struct {
 }
 
 // Durable is the crash-safe substrate: named-step memoization. Do runs a step at
-// most-once per (runID, name) — a recorded step returns without re-running fn. This
-// mirrors DBOS RunAsStep and ADK v2 RunNode; our SQLite default implements it directly
-// and store/dbos wraps DBOS. The side-effect-safety layer (Safety / ResumeHalt) sits
-// ABOVE this and is substrate-agnostic — see Agent.Run.
+// most-once per (runID, name): a recorded step returns without re-running fn. This
+// mirrors DBOS RunAsStep and ADK v2 RunNode; our SQLite default implements it directly,
+// and store/postgres is the high-availability backend. The side-effect-safety layer
+// (Safety / ResumeHalt) sits ABOVE this and is substrate-agnostic (see Agent.Run).
 type Durable interface {
 	// Do returns the recorded Record for (runID, name) without running fn if present;
 	// otherwise runs fn, records the returned Record (with Name set), and returns it.
@@ -116,7 +116,7 @@ func (e *ResumeHalt) Error() string {
 }
 
 // MemStore is an in-memory Durable for tests and local dev. SQLite is the shipping
-// default; store/dbos and store/postgres are optional backends.
+// default; store/postgres is the high-availability backend.
 type MemStore struct {
 	mu   sync.Mutex
 	sf   singleflight.Group // collapses concurrent Do on the same (runID,name) — at-most-once fn
