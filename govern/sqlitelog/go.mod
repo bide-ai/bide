@@ -3,7 +3,7 @@ module github.com/dayna/go-agents/govern/sqlitelog
 go 1.27.0
 
 require (
-	github.com/blackwell-systems/gsm v0.9.0
+	github.com/blackwell-systems/gsm v0.9.1
 	github.com/dayna/go-agents v0.0.0
 	modernc.org/sqlite v1.59.0
 )

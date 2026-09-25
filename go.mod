@@ -4,6 +4,6 @@ module github.com/dayna/go-agents
 go 1.27
 
 require (
-	github.com/blackwell-systems/gsm v0.9.0
+	github.com/blackwell-systems/gsm v0.9.1
 	golang.org/x/sync v0.23.0
 )
