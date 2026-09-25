@@ -1,8 +1,20 @@
 # Governed model quorum (design note)
 
-Status: design, not implemented. This note records how a k-of-n model quorum is expressed on the
-existing seams (not as a new agent type), so it can be built as a composition helper rather than a
-bespoke agent.
+Status: implemented (`govern.Quorum`, `examples/quorum`). This note records how a k-of-n model
+quorum is expressed on the existing seams (not as a new agent type), so it is a composition helper
+rather than a bespoke agent.
+
+## Usage
+
+`govern.Quorum(ctx, store, runID, k, voters...)` fans the voters out with `agent.Parallel` (each
+vote a durable `Step`), tallies their normalized decisions, and returns a `QuorumResult` with the
+plurality `Decision`, `VotesFor`, `Total`, `Agreed`, and the per-voter `Votes`. Each `Voter` keeps
+its own model call and output parsing inside `Decide`, so the helper stays model-agnostic and the
+votes are already comparable labels. Wire `VotesFor` into a `gsm` invariant to make the k-of-n gate
+provable, commit through `govern.AttestedEventTool`, and put the escalate path behind
+`agent.Safety{RequiresApproval: true}`. `examples/quorum` is a runnable, offline walk-through of
+both outcomes (quorum met -> commit; split -> escalate), with the votes, the tally, and the commit
+provable offline against a signed tree head.
 
 ## What it is, and how it differs from hedging
 
@@ -88,12 +100,16 @@ names (`Ge`, `SetLabel`, and a boolean-set transform) are illustrative; the shap
 
 ## Staged build
 
-1. A `govern.Quorum` helper that takes N models (or handlers) and a decision schema, fans out with
-   `Parallel`, tallies, and returns the winning value plus the count, so the tally is reusable.
-2. Wire the count into a `gsm` invariant as above and commit through `AttestedEventTool`, with
-   `RequiresApproval` on the escalate path.
-3. Extend the attested leaf (or add vote leaves) so the `ProofBundle` commits to each vote and the
-   tally, and a `goagents-audit` verify path can confirm "committed under k-of-n agreement".
+1. Done: `govern.Quorum` takes N voters, fans out with `Parallel`, tallies, and returns the winning
+   value plus the count, so the tally is reusable. Each vote and the tally are durable `Step`
+   values (provable one by one via `audit.ProveStep`).
+2. Done: `examples/quorum` wires the count into a `gsm` invariant as above and commits through
+   `AttestedEventTool`, with `RequiresApproval` on the escalate path.
+3. Deferred: extend the attested leaf (or add vote leaves) so the `ProofBundle` commits to each
+   vote and the tally in one leaf, and add a `goagents-audit` verify path that confirms "committed
+   under k-of-n agreement" from the signed tree alone. Today the votes and the commit are each
+   provable (`ProveStep` / `ProveToolCall`), but binding the count into the commit leaf and a
+   dedicated verify subcommand are not yet built.
 
 Built this way it is a composition helper on the seams, testable and auditable like the rest, and
 the one `Agent` stays unchanged.

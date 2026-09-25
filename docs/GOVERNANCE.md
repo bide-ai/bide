@@ -202,6 +202,7 @@ go run ./examples/mesh       # cyclic mutual-constraint safety mesh (conflict ->
 go run ./examples/compose    # a verified subsystem Embed-ed and reused across two systems
 go run ./examples/authority  # authority-as-governed-state: per-principal limits, one proof, identity in the leaf
 go run ./examples/compliance # KYC pipeline: parallel checks -> governed decision -> offline proofs
+go run ./examples/quorum     # governed model quorum: k-of-n agreement gates the commit, else escalate
 ```
 
 ## Limits
