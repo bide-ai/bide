@@ -378,5 +378,10 @@ Candidate extensions if a use case needs them, in rough priority:
   notary/timestamping service), and **witness cosigning** so a shared anchor's forks are
   detectable (only relevant if the anchor is a service you do not control).
 - **Batched/periodic anchoring** rather than per-step, for high-throughput runs.
+- **Journal compaction with proof continuity** (design note: [COMPACTION.md](COMPACTION.md)): seal
+  a closed prefix into a signed checkpoint plus a deterministic state snapshot, carry the previous
+  root forward as the next segment's first leaf, and drop the sealed raw records. Proofs survive the
+  boundary via a signed checkpoint chain; the load-bearing invariant is that only a closed prefix
+  may be sealed, so at-most-once is never broken. Not implemented.
 - **Pinned cross-language canonicalization** so non-Go verifiers can reproduce leaf bytes (today
   leaves are Go `json.Marshal`, deterministic in-ecosystem but not a pinned wire format).
