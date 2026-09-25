@@ -142,6 +142,80 @@ flowchart TD
   n2 --> done([done])
 ```
 
+## 4 · Crash recovery: `Lister` and `Recover`
+
+Replay (section 1) re-drives one run you already have the ID for. After a real crash the
+harder question is which runs were in flight at all: the durable store holds them, but the
+base `Durable` port is `Do` + `History(runID)` only, with no way to enumerate. Recovery adds
+that missing piece and a supervisor that uses it.
+
+The durable store is the source of truth. A run's full state lives in its journal, so
+recovery is enumerate-then-re-drive, nothing more:
+
+```go
+type Lister interface {
+	Runs(ctx context.Context) ([]string, error)
+}
+
+func IsComplete(ctx context.Context, store Durable, runID string) (bool, error)
+func Recover(ctx context.Context, store Durable, resume func(ctx context.Context, runID string) error) (int, error)
+```
+
+`Lister` is an OPTIONAL capability, kept off the base `Durable` interface on purpose:
+memoization and replay are the crash-safety core, and enumeration is a separate,
+backend-specific concern (a SQL store lists with a query; the base contract stays minimal).
+A store opts in by implementing `Runs`; `Recover` type-asserts for it and returns an
+`ErrConfig`-wrapped error if the store cannot enumerate.
+
+`Recover` enumerates every run, skips the ones already finished, and calls `resume` for each
+remaining run to push it forward:
+
+```go
+n, err := agent.Recover(ctx, store, func(ctx context.Context, runID string) error {
+	_, err := a.Run(agent.WithWaker(ctx, waker), runID, inputFor(runID))
+	return err
+})
+// n = runs re-driven; err = joined genuine failures (nil if the only "errors" were pauses)
+```
+
+**The completion marker lets it skip finished runs.** When a run returns its final answer,
+the loop records one terminal `StepValue` named `run:complete` (it renders as
+`step: run:complete` in the Mermaid graph above). `IsComplete` checks for it, and `Recover`
+skips any run that has it. The marker is appended only at the terminal and is at-most-once by
+name, so a replayed run never adds a second one and no earlier record's index shifts.
+
+**Pauses re-surface; they are not errors.** A re-driven run that is still waiting returns one
+of the durable pause signals (`*PendingApproval`, `*Interrupted`, `*Sleeping`, `*ResumeHalt`).
+`Recover` detects these with `errors.As` and treats them as SUCCESSFUL recoveries: the run is
+back in memory and will resume when its condition is met (a human approves, an interrupt is
+answered, a timer fires). Only a genuine model, storage, or tool fault is joined into the
+returned error.
+
+**A Waker-bound resume rebuilds the timer set** with no separate journal scan. A sleeping run
+journals its wake time (see `MESSAGING.md` / `timer.go`). When `Recover` re-drives it with a
+`resume` that binds a `Waker` (`agent.WithWaker`), the run replays into its durable `Sleep`,
+which sees the `Waker` on the context and re-registers the journaled wake automatically.
+Advancing the clock and firing the waker then resumes the run to completion. The rebuild
+falls out of ordinary replay: no timer-specific recovery path exists or is needed.
+
+**The idempotency-key retry path** reduces halt-for-a-human stops. On resume, a tool with an
+unknown outcome (invoked, no result journaled) normally fires `*ResumeHalt` unless it is
+retry-safe. A tool that declares a `Safety.IdempotencyKey` is now treated as retry-safe: it
+asserts that a retried call with the same args de-duplicates downstream, so the run retries it
+instead of halting. The contract is the tool's to keep: it must send that key to the
+downstream (the SDK derives the same key from the same args on retry, but does not itself call
+the downstream). This keeps autonomous and ambient agents moving instead of stopping for a
+human on every uncertain call.
+
+**Boundary: mechanism vs policy.** `Recover` is the mechanism (enumerate, skip finished,
+re-drive the rest). `resume` is deployment POLICY: it alone knows a run's original input and
+any `Waker` or clock to bind, and it should no-op a `runID` it does not own (a sub-agent run
+is driven by its parent; re-driving one directly is redundant, though harmless under
+at-most-once memoization). `MemStore` and `MemWaker` are in-memory references: a process exit
+loses their state, so for durability across a real crash use the SQLite or Postgres store
+(and an external scheduler or durable waker) whose runs survive the restart `Recover` reads
+them back from.
+
 ## The telemetry envelope: `RunResult` / `Result`
 
 Separate from the journal projections above, `Agent.RunResult` (and `RunSagaResult`) return

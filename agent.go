@@ -303,6 +303,15 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 
 		uses := asst.toolUses()
 		if len(uses) == 0 {
+			// Terminal: record a durable completion marker so a crash-recovery supervisor
+			// can skip this run (see IsComplete / Recover). Appended only at the terminal,
+			// so it never shifts an earlier record's index; at-most-once by name, so a
+			// replay of a finished run does not add a second one.
+			if _, err := a.store.Do(ctx, runID, runCompleteStep, func(context.Context) (Record, error) {
+				return Record{Kind: StepValue}, nil
+			}); err != nil {
+				return Message{}, totalUsage, liveTurns, fmt.Errorf("mark complete (run %s): %w (%w)", runID, err, ErrStorage)
+			}
 			fire(Finished{Final: asst})
 			return asst, totalUsage, liveTurns, nil // final answer
 		}

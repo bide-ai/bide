@@ -44,7 +44,17 @@ type Safety struct {
 
 // retriableOnResume reports whether an unknown-outcome call may be safely re-run.
 // Anything else halts the run for confirmation rather than risk a double side effect.
-func (s Safety) retriableOnResume() bool { return s.ReadOnly || s.Idempotent }
+//
+// A declared IdempotencyKey counts as retry-safe: the tool asserts that a retried call
+// with the same args de-duplicates downstream, so on an unknown outcome the run may
+// safely retry it instead of firing *ResumeHalt. The contract is the tool's to keep: it
+// must send that key to the downstream. The SDK derives the same key from the same args
+// on retry, but does not itself call the downstream, so the de-duplication happens only if
+// the tool forwards the key. This turns halt-for-a-human stops into automatic retries for
+// autonomous and ambient agents whose tools carry idempotency keys.
+func (s Safety) retriableOnResume() bool {
+	return s.ReadOnly || s.Idempotent || s.IdempotencyKey != nil
+}
 
 // Func wraps a typed Go function into a Tool. In is JSON-decoded from the args; the
 // return value is JSON-encoded. This is the compile-time-typed ergonomic: change In

@@ -48,6 +48,24 @@ type Durable interface {
 	History(ctx context.Context, runID string) ([]Record, error)
 }
 
+// Lister is the optional capability a crash-recovery supervisor needs: it enumerates
+// the runs a store knows about, so Recover can find in-flight runs to re-drive after a
+// restart. The base Durable interface intentionally does NOT require it: memoization
+// (Do) and replay (History) are the crash-safety core, and enumeration is a separate,
+// backend-specific concern (a SQL store lists with a query; a sharded store may not
+// enumerate cheaply at all). A store opts in by implementing Runs; Recover type-asserts
+// for it.
+type Lister interface {
+	// Runs returns the IDs of every run the store holds, in no guaranteed order.
+	Runs(ctx context.Context) ([]string, error)
+}
+
+// runCompleteStep is the journal name of the terminal completion marker. The agent loop
+// appends one StepValue Record under this name when a run returns its final answer, so a
+// crash-recovery supervisor can tell a finished run from an in-flight one (see IsComplete
+// and Recover) without inspecting the model output.
+const runCompleteStep = "run:complete"
+
 // Step runs fn as a named durable step and returns its typed result. On resume, a
 // completed step returns its recorded result without re-running fn. This is the
 // Option-B authoring primitive: write plain Go control flow, and name the operations
@@ -131,6 +149,7 @@ type runLog struct {
 func NewMemStore() *MemStore { return &MemStore{runs: map[string]*runLog{}} }
 
 var _ Durable = (*MemStore)(nil) // port/adapter contract
+var _ Lister = (*MemStore)(nil)  // MemStore can enumerate runs for crash recovery
 
 func (m *MemStore) Do(ctx context.Context, runID, name string, fn func(context.Context) (Record, error)) (Record, error) {
 	// Single-flight per (runID,name): concurrent callers for the same step run fn ONCE and
@@ -169,6 +188,18 @@ func (m *MemStore) Do(ctx context.Context, runID, name string, fn func(context.C
 		return Record{}, err
 	}
 	return v.(Record), nil
+}
+
+// Runs returns the IDs of every run the store holds, satisfying Lister so a
+// crash-recovery supervisor can enumerate in-flight runs (see Recover).
+func (m *MemStore) Runs(_ context.Context) ([]string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]string, 0, len(m.runs))
+	for id := range m.runs {
+		out = append(out, id)
+	}
+	return out, nil
 }
 
 func (m *MemStore) History(_ context.Context, runID string) ([]Record, error) {
