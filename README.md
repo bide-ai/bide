@@ -584,12 +584,24 @@ tool := govern.EventTool(gov, "pay", "mark the order paid", "pay", agent.Safety{
 - **[docs/DURABLE-STEPS.md](docs/DURABLE-STEPS.md)**: composing your own durable work on the same
   substrate. `Step` (one named durable operation), `Parallel` / `Task` (durable fan-in for
   parallel-checks-then-decide pipelines), and sagas (`RunSaga` / `CompensatedFunc`, reverse-order
-  compensation). Runnable in `examples/compliance`.
+  compensation). Durable timers (`Sleep` / `WaitUntil`) pause a run until a wall-clock deadline and
+  resume it through the pluggable `Waker` (`MemWaker`), the same at-most-once substrate for
+  time-driven and ambient agents. Runnable in `examples/compliance`.
 - **[docs/AUDIT.md](docs/AUDIT.md#proof-carrying-runs)**: proof-carrying runs. A run ships one
   portable `RunCertificate` asserting behavioral-property compliance over the whole run
   (only-approved-policies, policies-convergence-certified), composed from the existing audit
   primitives and checkable offline against a single signed tree head with `CertifyRun` / `VerifyRun`
   or the `goagents-audit verify-run` CLI. Runnable in `examples/proof-carrying-run`.
+- **[docs/AUDIT.md](docs/AUDIT.md)**: signed grants and attenuating delegation. A parent mints a
+  capability grant a sub-agent can only narrow (`Grant` / `SignGrant` / `AttenuatingSubAgent`),
+  `VerifyDelegationChain` checks the whole chain offline, and `EarnedAuthority` widens a subject's
+  scope from a clean audit trail and revokes it the moment an anomaly appears, always bounded by the
+  parent grant. `agent.Identity` binds the acting principal into every governed leaf. Runnable in
+  `examples/delegation`, `examples/authority`, `examples/earned-authority`.
+- **[docs/QUORUM.md](docs/QUORUM.md)**: governed k-of-n model agreement. `govern.Quorum` runs
+  several models over `agent.Parallel` and admits an answer only when k agree, with the tally
+  anchored in the journal and re-checkable offline via `goagents-audit verify-quorum`. Runnable in
+  `examples/quorum`.
 - **[docs/MODELS.md](docs/MODELS.md)**: the three model adapters (Anthropic, OpenAI-compatible,
   Gemini): constructor options and defaults, `WithBaseURL` for any OpenAI-compatible or Vertex
   endpoint, per-provider sampling mapping, prompt caching and usage accounting, typed error
@@ -599,10 +611,15 @@ tool := govern.EventTool(gov, "pay", "mark the order paid", "pay", agent.Safety{
   from the annotation-to-`Safety` mapping.
 - **[docs/DEBUGGING.md](docs/DEBUGGING.md)**: deterministic replay (`Replay`), durable
   semantic-event reconstruction (`ReplayEvents`), and Mermaid run diagrams (`RenderMermaid`)
-  for time-travel debugging, regression, and evals.
+  for time-travel debugging, regression, and evals. Crash recovery re-drives interrupted runs after
+  a restart: `Recover` enumerates a store's runs (`Lister`), skips the finished ones (`IsComplete`),
+  and resumes the rest, treating a durable pause as a success rather than a failure.
 - **[docs/EXTENSION-POINTS.md](docs/EXTENSION-POINTS.md)**: the ports and adapters the
   framework is built on (`Model`, `Durable`, `Tool`, `Compensator`, `Retriever`, `Anchor`,
   `EventStore`), with an "implement your own store" walkthrough.
+- **[docs/COMPACTION.md](docs/COMPACTION.md)**: journal compaction with proof continuity (a design
+  note): how an unbounded journal can be compacted without breaking the audit spine's inclusion and
+  consistency proofs.
 - **[docs/MESSAGING.md](docs/MESSAGING.md)**: driving an agent from an inbound messenger
   webhook (Slack, Telegram, WhatsApp, SMS, Discord) without shipping transport code in core:
   the redelivery-safe idempotency pattern where the durable journal makes a retried webhook

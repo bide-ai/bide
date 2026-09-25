@@ -98,6 +98,32 @@ machine-checked formal proof** over all interleavings. It models a crash as "a p
 run unwinds," matching process death around durable writes (the actual promise), not arbitrary
 mid-instruction faults.
 
+## Crash recovery: mechanism ships, durability of the re-driver is deployment policy
+
+`agent.Recover(ctx, store, resume)` is the crash-recovery re-driver (docs/DEBUGGING.md): it
+enumerates runs via the optional `Lister` capability, skips the ones marked complete (the
+`run:complete` terminal marker checked by `agent.IsComplete`), and re-drives the rest, treating a
+durable pause (`*PendingApproval` / `*Interrupted` / `*Sleeping` / `*ResumeHalt`) as a successful
+recovery. The bounds:
+
+- **`resume` is deployment policy, not a mechanism the SDK supplies.** Only the deployment knows a
+  run's original input and which `Waker` / clock to bind onto the context. `Recover` re-drives every
+  incomplete run it enumerates; a `resume` that does not own a given run should no-op it (a sub-agent
+  run is driven by its parent).
+- **No run leasing yet.** Two processes both calling `Recover` against a shared store will both
+  re-drive the same in-flight runs. That is safe under at-most-once memoization (a completed step is
+  not re-run), but it is redundant work; a lease so only one recoverer claims a run is forward work
+  (see STATE.md, "Distributed at scale / HA").
+- **`MemStore` and `MemWaker` are local-dev defaults, not durable.** `MemStore` implements `Lister`,
+  so `Recover` works against it in-process, but its journal is lost on process exit, so there is
+  nothing to recover after a real crash. `MemWaker`'s timer set is likewise in-memory: `Sleep`
+  journals the wake time durably, but a restarted deployment must rebuild pending wakes by scanning
+  runs or hand the trigger to an external scheduler. Durable crash recovery needs a durable store
+  (SQLite/Postgres) and a durable or externally-driven waker.
+- **The `run:complete` marker is visible in `RenderMermaid`.** It is a `StepValue` named
+  `run:complete`, so a completed run's diagram now ends with a `step: run:complete` node before
+  `done`. This is intentional (it is a real journaled step), not a rendering bug.
+
 ## Audit tamper-evidence needs external anchoring
 
 The `audit` package (hash-chain `Head`, RFC 6962 Merkle `Root`/inclusion/consistency, signed

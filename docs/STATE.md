@@ -335,32 +335,84 @@ gsm federation capability reaches the agent tier for free on a version bump:
 - gsm is the guardrail/convergence engine, not the store.
 
 ## Docs index
-- `docs/DESIGN.md`, `docs/COMPETITIVE*.md` — thesis + competitive teardowns.
+- `docs/DESIGN.md`, `docs/COMPETITIVE*.md`: thesis + competitive teardowns.
+- `docs/STRATEGY.md`, `docs/POSITIONING.md`: go-to-market wedge and product positioning.
+- `docs/GUARANTEE.md`: the one-line guarantee and its precise scope.
+- `docs/AUDIT.md`: the tamper-evident audit spine (RFC 6962 inclusion/consistency/STH,
+  continuous anchoring, signed grants and delegation chains, governed-action attestation,
+  earned authority, absence proofs, proof-carrying runs via `RunCertificate` / `verify-run`,
+  and the `goagents-audit` CLI verbs).
 - `docs/GOVERNANCE.md`: the governance/convergence tier as shipped, including federation
-  (tree / multi-source DAG / monotone cycles) and the identity/authority model.
-- `docs/KNOWN-LIMITATIONS.md` — deep-tree recursion memory wall; saga atomicity; etc.
+  (tree / multi-source DAG / monotone cycles), the identity/authority model, and quorum.
+- `docs/QUORUM.md`: governed k-of-n model agreement (`govern.Quorum` + `verify-quorum`).
+- `docs/RELIABILITY.md`: the reliability middleware (timeouts, classified retry, hedged
+  model calls via `Hedge`, rate limiting, cost).
+- `docs/DURABLE-STEPS.md`: `Step` / `Parallel` / `Task`, sagas, and durable timers
+  (`Sleep` / `WaitUntil` + the `Waker`).
+- `docs/MODELS.md`, `docs/MESSAGING.md`, `docs/MCP.md`: the model adapters; driving an
+  agent from an inbound messenger webhook; MCP tool sourcing.
+- `docs/COMPACTION.md`: journal compaction with proof continuity (design note).
+- `docs/DEBUGGING.md`: replay, semantic-event reconstruction, Mermaid diagrams, and crash
+  recovery (`Lister` / `Recover` / `IsComplete`).
+- `docs/TESTING.md`, `docs/CHAOS-BENCHMARK.md`: what is tested and how; the exported chaos harness.
+- `docs/EXTENSION-POINTS.md`, `docs/MODULE-STRUCTURE.md`, `docs/RAG-MEMORY.md`: ports/adapters;
+  the multi-module layout; bring-your-own retrieval.
+- `docs/KNOWN-LIMITATIONS.md`: deep-tree recursion memory wall; saga atomicity; etc.
 
 (The former `TIER2-DISTRIBUTED.md` / `TIER2-FEDERATION.md` were implementation plans whose
 milestones are all done; federation is now documented as a feature in `GOVERNANCE.md`, so the
 plans were removed rather than kept as history. Remaining forward work is below.)
 
+## Shipped this cycle (was Open, now done)
+- **Crash-recovery re-driver**: `agent.Lister` (optional store enumeration), `agent.Recover(ctx,
+  store, resume)`, `agent.IsComplete`, and the `run:complete` terminal marker (store.go, recover.go,
+  agent.go). Recover enumerates runs, skips finished ones, and re-drives the rest; a durable pause is
+  a success, not a failure. See docs/DEBUGGING.md.
+- **Idempotency-key retry**: a tool with `Safety.IdempotencyKey != nil` is now retry-safe on an
+  unknown outcome (automatic retry) instead of `*ResumeHalt` (tool.go). Turns halt-for-a-human stops
+  into automatic retries for autonomous/ambient agents whose tools carry idempotency keys.
+- **Durable timers**: `agent.Sleep` / `agent.WaitUntil`, the `*Sleeping` durable pause,
+  `agent.WithClock` for tests, and the pluggable `Waker` port (`MemWaker` + `agent.WithWaker`)
+  (timer.go, waker.go). See docs/DURABLE-STEPS.md.
+- **Hedged model calls**: `middleware.Hedge` (race a backup, take the first) for tail latency and
+  provider failover. See docs/RELIABILITY.md, `examples/hedge`.
+- **Governed quorum**: `govern.Quorum` (k-of-n model agreement over `agent.Parallel`) +
+  `goagents-audit verify-quorum` + `examples/quorum`. See docs/QUORUM.md.
+- **Signed grants + attenuating delegation**: `audit.Grant` / `SignGrant` /
+  `VerifyDelegationChain` / `AttenuatingSubAgent` (authority narrows by default down a delegation
+  tree) + `examples/authority`, `examples/delegation`. See docs/AUDIT.md / docs/GOVERNANCE.md.
+- **Earned authority**: `audit.EarnedAuthority` drives a grant's scope from the agent's track
+  record, bounded by proof, + `examples/earned-authority`. See docs/AUDIT.md.
+- **Proof-carrying runs**: `audit.RunCertificate`, `CertifyRun`, `RecordRunCertificate` /
+  `ProveRunCertificate`, `VerifyRun`, and the `goagents-audit verify-run` CLI verb (audit/runcert.go,
+  cmd/goagents-audit). One portable certificate asserts behavioral-property compliance over a whole
+  run, checkable offline against a single signed tree head. See docs/AUDIT.md.
+- **Identity**: `agent.Identity` + `agent.WithIdentity(ctx, id)` bind the acting principal onto the
+  run context, so it propagates to tool calls and sub-agents and lands in governed leaves. See
+  docs/GOVERNANCE.md / docs/AUDIT.md / docs/POSITIONING.md.
+
 ## Open / next candidates
+- **Distributed at scale / HA**: a networked `EventLog` ships (Redis Streams, so multi-process
+  convergence works today via shared-log replay); still forward: a Postgres `EventLog` for HA and
+  **run leasing** (so competing recoverers do not both re-drive the same run), cross-language
+  replicas via `Export()`, and modeling ergonomics (author the event alphabet from tool schemas,
+  quantization helpers, surface CC counterexamples). This is the "tier 3" frontier.
+- **Snapshotting / journal compaction** (design note only, see docs/COMPACTION.md): a live journal
+  grows unbounded; compaction with proof continuity is designed but not implemented.
 - **Scale compensation synthesis** via SAT/SMT (brute force is bounded; shares machinery with
-  symbolic verification). Also: surface `Synthesize` at the agent tier (suggest/repair a
-  governed registry) if useful.
-- **Compile the paper PDFs** — big unreleased batch (multi-source, monotone cycles,
+  symbolic verification). Also: surface `Synthesize` at the agent tier (suggest/repair a governed
+  registry) if useful. Symbolic verification (SAT/SMT) to break the ~1M-state enumeration ceiling;
+  infinite-domain engine (overlaps with symbolic). Self-stabilization reframing (cheap positioning
+  win).
+- **Cross-language canonicalization pinning**: `Export()` gives cross-language replicas, but the
+  JSON canonicalization the replica must match is not yet pinned as a versioned spec.
+- **Per-run token cost**: `RunResult.Usage` sums usage across turns, but there is no per-run USD
+  cost on the envelope (the `Cost` middleware accumulates into a `CostMeter`, not the `Result`).
+- **Compile the paper PDFs**: big unreleased batch (multi-source, monotone cycles,
   compositionality, regime table, cross-paper refs, infinite domains). Needs `colima start`
   + `./compile.sh` in the normalization-confluence repo; then re-publish to Zenodo.
-- Symbolic verification (SAT/SMT) to break the ~1M-state enumeration ceiling; infinite-domain
-  engine (overlaps with symbolic). Self-stabilization reframing (cheap positioning win).
-- **Distributed at scale**: a networked `EventLog` ships (Redis Streams, so multi-process
-  convergence works today via shared-log replay); still forward: a Postgres `EventLog` for HA,
-  cross-language replicas via `Export()`, and modeling ergonomics (author the event alphabet from
-  tool schemas, quantization helpers, surface CC counterexamples). This is the "tier 3" frontier.
-- v1 agent gaps: sessions/multi-turn (DONE, `Session`), production retry/backoff (DONE,
-  `middleware`), hedged calls + governed quorum (DONE). (`Agent.Stream`: DONE.)
 - Housekeeping: pick a real name; godoc examples; per-file SPDX headers (optional).
-  (go-agents CI — DONE: `.github/workflows/ci.yml`, lint [gofmt + vet] + test matrix
+  (go-agents CI is DONE: `.github/workflows/ci.yml`, lint [gofmt + vet] + test matrix
   ubuntu/macos/windows on Go 1.27, `-race` off Windows; repo gofmt-clean.)
 
 ## Notes
