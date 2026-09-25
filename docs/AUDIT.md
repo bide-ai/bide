@@ -358,6 +358,24 @@ unavailable under the FIPS 140-3 module, so FIPS mode and ML-DSA are mutually ex
 toolchain (ed25519 keeps working in FIPS mode). Pick per buyer: a FIPS-required buyer takes
 ed25519, a post-quantum-focused buyer takes ML-DSA or hybrid.
 
+## Signed authority grants and the delegation chain
+
+Identity binds who acted (see above); a **grant** binds *by what authority*, non-repudiably.
+`audit.Grant{Issuer, Subject, Scope, NotAfter, ParentRef}` is a statement by a principal authorizing
+an actor within a scope. `SignGrant` signs it with the issuer's own key (an `audit.Signer`:
+Ed25519, ML-DSA, or hybrid), distinct from the log's tree-head key, so the authorization is
+attributable to the principal, not the operator. `RecordGrant` / `ProveGrant` anchor and prove it as
+a leaf like a policy, and a governed action's `agent.Identity.AuthorityRef` is set to the grant's
+`Digest`, so the action links to an in-log, issuer-signed authority.
+
+`ParentRef` hash-links a grant to the one it was attenuated from, so a holder can mint a strictly
+narrower sub-grant for a sub-agent without returning to the root issuer (capability attenuation).
+`VerifyDelegationChain` checks a root-to-leaf chain: each hop signed by its issuer, each `ParentRef`
+equal to the parent's digest, and each hop an attenuation of its parent (`AttenuatesNumericScope`
+covers the "lower the limit" case; scope semantics are otherwise domain-defined). An auditor thus
+confirms a sub-agent's authority descends, unbroken and never widened, from a root principal each
+hop signed. Runnable end to end in `examples/delegation`.
+
 ## Next
 
 RFC 6962 is fully covered (Head, inclusion, consistency, STH) over both the journal and, via
