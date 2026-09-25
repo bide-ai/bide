@@ -53,7 +53,9 @@ tens of MB. The win is throughput and operational simplicity, not lower latency 
 (the provider owns per-call latency); at high fan-out the durable store's write throughput is the
 ceiling, not goroutines. Every concurrent run keeps all four guarantees. Reliability under that
 load is built in: per-attempt **timeouts**, retry with backoff that **classifies** transient vs
-terminal errors, and a **rate limiter** for model and tool calls ([middleware](middleware)).
+terminal errors, **hedged** model calls (race a backup, take the first, for tail latency and
+provider failover), and a **rate limiter** for model and tool calls
+([middleware](middleware), [docs/RELIABILITY.md](docs/RELIABILITY.md)).
 
 ### 3 · A cryptographically verifiable audit spine, from the same journal
 
@@ -571,6 +573,10 @@ tool := govern.EventTool(gov, "pay", "mark the order paid", "pay", agent.Safety{
 
 ## Guides
 
+- **[docs/RELIABILITY.md](docs/RELIABILITY.md)**: the reliability middleware: per-attempt timeouts,
+  classified retry (`Retry` / `Retryable`), hedged model calls (`Hedge`, race a backup for tail
+  latency and provider failover), rate limiting, and cost tracking, plus how they compose. Runnable
+  in `examples/hedge`.
 - **[docs/DURABLE-STEPS.md](docs/DURABLE-STEPS.md)**: composing your own durable work on the same
   substrate. `Step` (one named durable operation), `Parallel` / `Task` (durable fan-in for
   parallel-checks-then-decide pipelines), and sagas (`RunSaga` / `CompensatedFunc`, reverse-order
