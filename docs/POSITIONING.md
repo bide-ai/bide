@@ -361,7 +361,57 @@ proposed reframe fails rule 1 (no clickable proof), it does not ship until the p
 
 ---
 
-## 10. Open positioning debts
+## 10. Licensing and business model
+
+- **Model: source-available, with a commercial license required for production/business use.**
+  The recommended license is **BSL 1.1**: the Additional Use Grant makes non-production and
+  evaluation use free, so any production use needs a commercial license; Change License Apache-2.0;
+  Change Date 2 years per release (converts to open source then).
+- **Why BSL over FSL for this product:** the buyer is regulated enterprises who expect to pay for a
+  licensed, supported product, and BSL gates production behind the paid license. FSL permits all
+  non-competing use for free, so a bank could run it in production without paying, which leaves the
+  natural revenue on the table. FSL is the fallback only if the strategy pivots to adoption-first,
+  monetized by a hosted service plus support rather than production licenses.
+- **Keep the split:** gsm stays Apache-2.0 and the Coq proof stays public. Open, verifiable engine
+  and math for credibility; source-available product for revenue. The two coexist cleanly.
+- **Say "source-available," never "open source."** We start here, so there is no relicensing-away
+  betrayal narrative (the HashiCorp/Elastic/Redis backlash was about moving *from* open *to*
+  restricted). Do not claim the OSI-open label we are not using; the precision is a credibility
+  asset.
+- **Timing:** not urgent while go-agents is private. Decide before any external distribution, and
+  pair it with the module-path rename (`github.com/dayna/go-agents` to the org path).
+- **The one-line pitch:** source-available under BSL, commercial license for production, open engine
+  (gsm) and public proof underneath.
+
+---
+
+## 11. Language strategy
+
+- **The durable/audit/governance core stays Go and is not reimplemented per language.** At-most-once
+  plus audit anchoring is the moat, and it is subtle; N native ports means N chances to reintroduce
+  the double-fire we sell against. One verified implementation *is* the product; a Python port that
+  double-charges on crash is worse than no port.
+- **Reach other languages by artifacts and thin clients, not ports:**
+  - **Proof verification is language-neutral by design and reimplementation there is a feature, not
+    a burden.** RFC 6962 is a public standard, so a non-Go verifier lets a third party check a proof
+    without trusting our code. This depends on **pinning the canonical leaf format** (today leaves
+    are Go `json.Marshal`; see KNOWN-LIMITATIONS), which turns a limitation into a "verify in any
+    language" selling point.
+  - **Governance is already portable:** `gsm.Machine.Export()` emits the verified machine as JSON and
+    a roughly 20-line table-lookup runtime applies events convergently in any language. Verification
+    stays in Go and Coq; the runtime is universal.
+  - **The agent-building SDK reaches Python/TS via thin clients over the one Go core** (a service or
+    language bindings), never a native re-port of the durable engine.
+- **Buyer reality:** regulated buyers are polyglot and buy on the guarantees, not the host language;
+  a Go service with Python/TS clients is a normal enterprise shape. A real Go agent niche exists
+  (ADK-Go, eino, trpc-agent-go); the mass developer market is Python, reached with clients.
+- **Say:** "verify in Go, verify and run anywhere," "the proof and the policy are language-neutral
+  artifacts." **Avoid:** promising native Python/TS ports of the durable core, which would forfeit
+  the single-verified-implementation guarantee.
+
+---
+
+## 12. Open positioning debts
 
 Ranked by leverage:
 
