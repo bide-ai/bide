@@ -141,3 +141,43 @@ These are stated in full in [KNOWN-LIMITATIONS.md](KNOWN-LIMITATIONS.md); in bri
 **same** `Durable` store as the parent for a unified journal, and a crash anywhere in the tree
 resumes the whole tree precisely (completed sub-agents reused, the in-flight one resumed, and
 `ResumeHalt` / `PendingApproval` / `SagaAborted` from deep in the tree propagating up).
+
+## Durable timers: `Sleep` / `WaitUntil` and the `Waker`
+
+An agent often has to wait: for a deadline, a cool-off, a scheduled follow-up. `Sleep(ctx, name, d)`
+and `WaitUntil(ctx, name, until)` make that wait durable. Called from inside a retry-safe tool, they
+journal the wake time once (at-most-once by name) and pause the run with `*Sleeping`, the same durable
+pause as `Interrupt`. Because the wake time is journaled on the first call and memoized, a resumed or
+crash-recovered run waits to the same absolute instant rather than restarting the clock; no goroutine
+is held blocked across the wait.
+
+```go
+wait := agent.Func("cooldown", "wait before retrying", agent.Safety{ReadOnly: true},
+    func(ctx context.Context, _ struct{}) (string, error) {
+        if err := agent.Sleep(ctx, "cooldown", time.Hour); err != nil {
+            return "", err // *Sleeping propagates out of Run; the run is paused durably
+        }
+        return "resumed", nil
+    })
+```
+
+Re-invoking `Run` with the same runID at or after the wake time resumes past the `Sleep`. What
+re-invokes it is a **`Waker`**, the time-driven sibling of the inbound event trigger in
+[MESSAGING.md](MESSAGING.md): the SDK provides the durable, at-most-once timer and its resume safety,
+and the trigger is pluggable. Bind one with `agent.WithWaker(ctx, w)` and `Sleep` registers its wake
+automatically. `MemWaker` is the reference in-process implementation:
+
+```go
+w := agent.NewMemWaker(func(ctx context.Context, runID string) error {
+    _, err := a.Run(agent.WithWaker(ctx, w), runID, savedInput) // resume; may sleep again
+    return err
+})
+w.Start(ctx, time.Second, nil) // tick: resume every run whose timer is due
+```
+
+Boundaries: `MemWaker` is a local-dev default, not a durable scheduler. Its in-memory timer set is
+lost on process exit, so the wake times must also live in the journal (they do), and a restarted
+deployment rebuilds pending wakes by scanning runs or hands the trigger to an external scheduler
+(cron, a queue). Tests inject a clock with `agent.WithClock` to advance time deterministically. This
+is the piece that makes an always-on ambient agent turnkey: a durable wait plus a trigger, with
+at-most-once and crash-resume intact across the wait.

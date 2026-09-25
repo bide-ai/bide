@@ -374,13 +374,14 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 					res, callErr := toolH(sctx, c.tu)
 					r := Record{Kind: StepToolResult, ToolUseID: c.tu.ID}
 					if callErr != nil {
-						// An Interrupt pauses the run: record nothing and propagate, so
-						// the tool re-runs and resolves on resume. Requires a retry-safe
-						// tool (else its attempt marker would halt the resume instead).
+						// An Interrupt or a durable Sleep pauses the run: record nothing and
+						// propagate, so the tool re-runs and resolves on resume. Requires a
+						// retry-safe tool (else its attempt marker would halt the resume instead).
 						var intr *Interrupted
-						if errors.As(callErr, &intr) {
+						var slp *Sleeping
+						if errors.As(callErr, &intr) || errors.As(callErr, &slp) {
 							if !c.t.Safety().retriableOnResume() {
-								return Record{}, fmt.Errorf("agent: tool %q used Interrupt but is not retry-safe (mark it ReadOnly or Idempotent): %w", c.tu.Name, ErrConfig)
+								return Record{}, fmt.Errorf("agent: tool %q paused (Interrupt or Sleep) but is not retry-safe (mark it ReadOnly or Idempotent): %w", c.tu.Name, ErrConfig)
 							}
 							return Record{}, callErr
 						}
@@ -401,7 +402,8 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 				}
 				if err != nil {
 					var intr *Interrupted
-					if errors.As(err, &intr) {
+					var slp *Sleeping
+					if errors.As(err, &intr) || errors.As(err, &slp) {
 						return err // propagate the pause unwrapped
 					}
 					return fmt.Errorf("tool %q: %w (%w)", c.tu.Name, err, ErrTool)
