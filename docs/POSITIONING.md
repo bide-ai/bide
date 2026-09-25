@@ -174,6 +174,33 @@ do not cross), and the phrasing to use / avoid.
   **Avoid:** "consensus," "always correct," "CRDT" (unless precise), any *unscoped* "provable"
   (the scope is what makes it defensible, so it stays even when we assert confidently).
 
+### Supporting pillar: identity and delegated authority (not the headline)
+
+- **Claim:** a governed action commits to *who* acted, on whose behalf, and under what authority,
+  that authority is enforced by the policy, and both are provable in the trail.
+- **Proof:** `agent.Identity` / `WithIdentity` stamps actor / principal / authority into the
+  attested leaf; `audit` signed grants plus `VerifyDelegationChain` prove an attenuating
+  delegation chain; authority-as-governed-state makes "may act only within its delegated limit" a
+  machine-checked invariant (one policy over all limits). See `docs/GOVERNANCE.md`,
+  `examples/authority`, `examples/delegation`.
+- **Weighting:** supporting, not a fifth pillar. Third in emphasis behind at-most-once and
+  audit/governance, and it climbs toward near-headline only in the multi-agent, delegated, or
+  autonomous-fleet and regulated (attribution-required) narratives, where "which agent, for whom,
+  under what authority, and can it exceed its delegation" is a real unsolved pain.
+- **Scope (load-bearing):** we bind and PROVE the identity claim; we do not authenticate the
+  principal (that is the operator's IdP/PKI), and attribution is only as strong as the key custody
+  behind the run's signatures. That boundary is a positioning asset: a clean seam with identity
+  providers, not a gap.
+- **Position with IdPs, not against them.** We are not an identity provider. Bring your IdP; we
+  make the authorized action provable and the delegation chain auditable, which turns Okta and the
+  non-human-identity vendors into complements. The differentiated claim they lack: identity and
+  authority are not merely logged, they are bound into a cryptographic audit leaf, enforced as
+  governed state, and carried through a signed, attenuating delegation chain.
+- **Say:** "who acted, for whom, under what authority, provable and enforced," "complement to your
+  IdP." Keep identity OUT of the tagline (the tagline stays provable governance).
+  **Avoid:** presenting go-agents as an identity provider or an agent-IAM product; "authentication"
+  (we do provable attribution and authorization-enforcement, not authentication).
+
 ---
 
 ## 5. Competitor map

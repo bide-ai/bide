@@ -72,6 +72,10 @@ you, your database, or your logs*:
 - **Signed tree head + continuous anchoring**: `AuditedStore` signs a commitment per step and
   publishes it out-of-band to an external transparency log; tampering becomes provable, not just
   suspected.
+- **Who acted, under what authority**: the same leaf can commit to the acting identity (actor, on
+  whose behalf, under which signed grant) and enforce delegated authority as a governed invariant,
+  so a proof shows not just what happened but who was authorized for it. Bring your own IdP; this
+  makes the authorized action provable, it does not replace authentication.
 
 **Proofs you verify, not logs you trust.** Everyone else offers *observability* (logs you
 trust because the vendor is SOC2); this is a *cryptographic proof you check yourself*. Produce a
