@@ -10,6 +10,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	agent "github.com/dayna/go-agents"
 	_ "github.com/jackc/pgx/v5/stdlib"
@@ -22,7 +23,11 @@ type Store struct {
 	sf singleflight.Group // collapse concurrent Do on the same (runID,name) — at-most-once fn
 }
 
-var _ agent.Durable = (*Store)(nil) // port/adapter contract
+var (
+	_ agent.Durable = (*Store)(nil) // port/adapter contract
+	_ agent.Lister  = (*Store)(nil) // enumerates runs for crash recovery
+	_ agent.Leaser  = (*Store)(nil) // leases runs so competing recoverers do not double-drive
+)
 
 // Open connects to Postgres via a pgx DSN (e.g. "postgres://user:pass@host:5432/db")
 // and ensures the schema exists.
@@ -52,7 +57,12 @@ func (s *Store) migrate(ctx context.Context) error {
 			data   jsonb  NOT NULL,
 			PRIMARY KEY (run_id, name)
 		);
-		CREATE INDEX IF NOT EXISTS idx_steps_run_seq ON steps (run_id, seq);`)
+		CREATE INDEX IF NOT EXISTS idx_steps_run_seq ON steps (run_id, seq);
+		CREATE TABLE IF NOT EXISTS leases (
+			run_id text        PRIMARY KEY,
+			holder text        NOT NULL,
+			expiry timestamptz NOT NULL
+		);`)
 	return err
 }
 
@@ -139,4 +149,64 @@ func (s *Store) load(ctx context.Context, runID, name string) (agent.Record, boo
 		return agent.Record{}, false, fmt.Errorf("unmarshal step %q: %w (%w)", name, err, agent.ErrStorage)
 	}
 	return rec, true, nil
+}
+
+// Runs implements agent.Lister: the distinct run IDs the store holds, so a crash-recovery
+// supervisor can enumerate in-flight runs (see agent.Recover).
+func (s *Store) Runs(ctx context.Context) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT run_id FROM steps ORDER BY run_id`)
+	if err != nil {
+		return nil, fmt.Errorf("list runs: %w (%w)", err, agent.ErrStorage)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan run id: %w (%w)", err, agent.ErrStorage)
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
+// AcquireLease implements agent.Leaser: claim runID for holder until now()+ttl. The upsert grants
+// the lease when the run is unleased, already held by holder (renewal), or the current lease has
+// expired, and grants nothing when another holder's lease is still live. Expiry uses the database
+// clock (now()) so all nodes compare against one clock, not their own.
+func (s *Store) AcquireLease(ctx context.Context, runID, holder string, ttl time.Duration) (bool, error) {
+	tag, err := s.db.ExecContext(ctx, `
+		INSERT INTO leases (run_id, holder, expiry)
+		VALUES ($1, $2, now() + ($3 * interval '1 second'))
+		ON CONFLICT (run_id) DO UPDATE
+			SET holder = EXCLUDED.holder, expiry = EXCLUDED.expiry
+			WHERE leases.holder = EXCLUDED.holder OR leases.expiry < now()`,
+		runID, holder, ttl.Seconds())
+	if err != nil {
+		return false, fmt.Errorf("acquire lease %q: %w (%w)", runID, err, agent.ErrStorage)
+	}
+	n, _ := tag.RowsAffected()
+	return n > 0, nil
+}
+
+// RenewLease implements agent.Leaser: extend holder's still-live lease on runID. Returns false if
+// holder no longer holds it (expired or taken over).
+func (s *Store) RenewLease(ctx context.Context, runID, holder string, ttl time.Duration) (bool, error) {
+	tag, err := s.db.ExecContext(ctx, `
+		UPDATE leases SET expiry = now() + ($3 * interval '1 second')
+		WHERE run_id = $1 AND holder = $2 AND expiry >= now()`,
+		runID, holder, ttl.Seconds())
+	if err != nil {
+		return false, fmt.Errorf("renew lease %q: %w (%w)", runID, err, agent.ErrStorage)
+	}
+	n, _ := tag.RowsAffected()
+	return n > 0, nil
+}
+
+// ReleaseLease implements agent.Leaser: relinquish runID if held by holder (a no-op otherwise).
+func (s *Store) ReleaseLease(ctx context.Context, runID, holder string) error {
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM leases WHERE run_id = $1 AND holder = $2`, runID, holder); err != nil {
+		return fmt.Errorf("release lease %q: %w (%w)", runID, err, agent.ErrStorage)
+	}
+	return nil
 }
