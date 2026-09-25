@@ -199,6 +199,7 @@ Conventions shared across verbs:
 | `verify-governed-action` | `-action`, `-policy-bundle`, `-pubkey` | `-checker` | End to end: both bundles authentic and in the same signed tree, the action's embedded policy digest links to the anchored policy leaf, the leaf's bytes hash to that digest, and (with `-checker`) the policy converges. |
 | `verify-convergence` | `-cert-bundle`, `-policy-bundle`, `-pubkey` | `-checker` | An anchored `ConfluenceCertificate` links to the policy leaf; with `-checker`, the oracle's convergence AND compensation-free verdicts must AGREE with the certificate, so an overstated certificate is caught. |
 | `verify-quorum` | `-tally`, `-vote` (repeatable), `-pubkey`, `-k` | `-commit` | A governed k-of-n quorum: the tally and every vote bundle authentic and in the same signed tree and run, the recorded tally recomputes from the disclosed votes (a forged tally is caught), and `votes_for >= k`; with `-commit`, a governed commit is anchored in the same tree. |
+| `verify-run` | `-cert`, `-pubkey`, and one of `-approved <digest>` (repeatable) / `-approved-file <file>` | `-checker <astchecker>` | A proof-carrying run certificate: the used-policy set is bound to the run's signed absence root and is a subset of the approved allowlist (only-approved-policies), and every used policy has an anchored, digest-linked convergence certificate in the run's signed tree (policies-convergence-certified); with `-checker`, the oracle's convergence verdict on each used policy must AGREE with its certificate. |
 
 The `-checker` flag points at the external verified oracle binary (the `astchecker` extracted from
 the axiom-free Coq proof); the CLI does not ship it, and without it the governance verbs verify only
@@ -373,6 +374,71 @@ negative, not a per-action state-validity proof; and the replay checks the event
 took, not the runtime's behavior for all inputs, so the runtime refinement gap is open and this is
 not an end-to-end execution proof. No proof feature remains on the roadmap; what is left is
 operational (a hosted anchor service).
+
+## Proof-carrying runs
+
+The primitives above prove one fact at a time: this action happened, this policy was anchored, this
+policy is convergent, this policy was not used. A **proof-carrying run** composes them into one
+portable certificate asserting behavioral-property compliance over a WHOLE run, checkable offline
+against a single signed tree head. The innovation is the composition, not new cryptography: a
+`RunCertificate` binds together the used-policy absence commitment, the anchored policy and
+convergence leaves, and the run's STH, and `VerifyRun` re-derives every property from the disclosed
+proofs.
+
+v1 asserts two properties, each dischargeable from a committed leaf:
+
+- **only-approved-policies**: every policy digest exercised by a governed action in the run is a
+  member of a caller-supplied approved allowlist. This is the **completeness-bearing** property: it
+  commits WHICH policies were used, via the policy-used absence commitment (`AbsenceRoot` over
+  `PolicyUsedKey`). The used set is exactly the sorted distinct keys the absence tree commits to, so
+  the verifier recomputes that root from the disclosed set and confirms the signed absence STH
+  commits to it. That is what gives the negative teeth: a policy that was in fact used cannot be
+  dropped from the disclosed set without changing the root and breaking the signature check.
+- **policies-convergence-certified**: for each used policy digest, an anchored convergence
+  certificate leaf exists in the same signed tree as the policy leaf and links to its digest,
+  exactly as `verify-convergence` establishes. With `-checker`, the external oracle is run on each
+  disclosed policy's bytes and its verdict must AGREE with the certificate, so a certificate that
+  overstates convergence is caught.
+
+Composing the two yields "every governed state in the run was produced by an approved,
+oracle-certified-convergent policy," so the enforced invariant held throughout the governed
+boundary.
+
+```go
+// Emit: recompute the used-policy set, confirm it is a subset of the allowlist, and assemble the
+// anchored policy + convergence proofs for each used policy against the run's signed tree head.
+sth  := audit.SignTreeHead(th, priv)
+cert, _ := audit.CertifyRun(ctx, store, runID, sth,
+	audit.RunCertSpec{ApprovedPolicies: []string{policyDigest}}, priv, time.Now().UnixNano())
+
+// Anchor the certificate itself so it is provable in the run (mirrors RecordPolicy / RecordConvergence):
+audit.RecordRunCertificate(ctx, store, runID, cert)   // + audit.ProveRunCertificate(..., laterSTH)
+
+// Verify: offline, trusting only the out-of-band public key.
+res, _ := audit.VerifyRun(cert, pub)   // res.OnlyApprovedPolicies && res.ConvergenceCertified
+```
+
+The CLI verifies the same certificate for an auditor who does not write Go, and takes the allowlist
+as its own input (never the certificate's embedded list, so a producer cannot pass by widening its
+own set):
+
+```
+# only-approved-policies (used set bound to the signed absence root and a subset of the allowlist)
+# and policies-convergence-certified (each used policy anchored and digest-linked); with -checker the
+# oracle's verdict on each policy must agree with its certificate:
+goagents-audit verify-run -cert runcert.json -pubkey <hex> -approved <digest> -checker ./astchecker
+```
+
+Scope, stated precisely: the certificate proves properties of the **governed, committed boundary**
+of the run: which policies ran, that each is on the approved allowlist, and that each has an
+anchored convergence certificate that (with the oracle) is confirmed convergent. It does NOT prove
+the model's judgment was correct, that ungoverned side effects were appropriate, or the
+runtime-refinement claim (the replay differential check covers the events this run took, not all
+inputs). The used-policy completeness rests entirely on the absence-root key-set commitment
+described above. Property support for **authority-bounded** (every governed action under a grant
+descending from the root, via `VerifyDelegationChain`) and **quorum-backed** commits composes from
+the same seams and is deferred to a later version. Runnable end to end in
+`examples/proof-carrying-run`.
 
 ## Signature schemes and post-quantum anchoring
 

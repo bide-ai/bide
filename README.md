@@ -585,6 +585,11 @@ tool := govern.EventTool(gov, "pay", "mark the order paid", "pay", agent.Safety{
   substrate. `Step` (one named durable operation), `Parallel` / `Task` (durable fan-in for
   parallel-checks-then-decide pipelines), and sagas (`RunSaga` / `CompensatedFunc`, reverse-order
   compensation). Runnable in `examples/compliance`.
+- **[docs/AUDIT.md](docs/AUDIT.md#proof-carrying-runs)**: proof-carrying runs. A run ships one
+  portable `RunCertificate` asserting behavioral-property compliance over the whole run
+  (only-approved-policies, policies-convergence-certified), composed from the existing audit
+  primitives and checkable offline against a single signed tree head with `CertifyRun` / `VerifyRun`
+  or the `goagents-audit verify-run` CLI. Runnable in `examples/proof-carrying-run`.
 - **[docs/MODELS.md](docs/MODELS.md)**: the three model adapters (Anthropic, OpenAI-compatible,
   Gemini): constructor options and defaults, `WithBaseURL` for any OpenAI-compatible or Vertex
   endpoint, per-provider sampling mapping, prompt caching and usage accounting, typed error

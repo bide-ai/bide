@@ -55,6 +55,8 @@ func main() {
 		verifyConvergence(os.Args[2:])
 	case "verify-quorum":
 		verifyQuorum(os.Args[2:])
+	case "verify-run":
+		verifyRun(os.Args[2:])
 	case "prove-absent":
 		proveAbsent(os.Args[2:])
 	case "verify-absent":
@@ -93,6 +95,13 @@ func usage() {
          same signed tree and run, the recorded tally recomputes from the disclosed votes (a
          forged tally is caught), and votes_for >= k; with -commit, a governed commit is anchored
          in the same tree
+
+  verify-run -cert <file> -pubkey <hex|file> (-approved <digest>... | -approved-file <file>) [-checker <astchecker>]
+         verify a proof-carrying run certificate: the used-policy set is bound to the run's
+         signed absence commitment and is a subset of the approved allowlist (only-approved-
+         policies), and every used policy has an anchored, digest-linked convergence certificate
+         in the run's signed tree (policies-convergence-certified); with -checker, the external
+         oracle's convergence verdict on each used policy must AGREE with its certificate
 
   prove-absent -journal <file> -sth <file> -key (tool:<id>|policy:<digest>) [-out <file>]
          prove a thing did NOT happen (no such tool call / no action under that policy)
@@ -601,6 +610,136 @@ func verifyQuorum(args []string) {
 		}
 		fmt.Printf("OK: a governed commit under policy %s is anchored in the same tree; the decision committed under k-of-n agreement\n", payload.PolicyDigest)
 	}
+}
+
+// verifyRun verifies a proof-carrying run certificate from public artifacts alone: the certificate
+// bundle, an out-of-band public key, and the AUDITOR's own approved allowlist (never the certificate's
+// embedded list, which the producer chose). It re-derives every property rather than trusting the
+// certificate:
+//
+//  1. only-approved-policies (completeness-bearing): audit.VerifyRun confirms the used-policy set is
+//     bound to the run's signed absence commitment (recomputing the absence root, so a used policy
+//     cannot be hidden) and is a subset of the auditor-supplied allowlist.
+//  2. policies-convergence-certified: audit.VerifyRun confirms every used policy has an anchored,
+//     digest-linked policy leaf and convergence-certificate leaf in the run's signed tree.
+//  3. with -checker, the independent mathematical root: for each used policy the external oracle is
+//     run on the disclosed policy bytes and its convergence verdict must AGREE with the certificate's,
+//     exactly as verify-convergence does, so a certificate that overstates convergence is caught.
+//
+// The CLI decodes the certificate and its leaves into audit's types (which import neither gsm nor
+// govern) and the convergence certificate payload into a local struct, so it depends on neither.
+func verifyRun(args []string) {
+	fs := flagSet("verify-run")
+	certPath := fs.String("cert", "", "path to the RunCertificate JSON (from audit.CertifyRun)")
+	pubkey := fs.String("pubkey", "", "ed25519 public key as hex, or a path to a file containing it")
+	var approved stringList
+	fs.Var(&approved, "approved", "an approved policy digest; repeat once per allowed policy")
+	approvedFile := fs.String("approved-file", "", "path to a file of approved policy digests, one per line")
+	checker := fs.String("checker", "", "path to the external verified oracle (astchecker); if set, its verdict must agree with each policy's certificate")
+	_ = fs.Parse(args)
+
+	if *certPath == "" || *pubkey == "" || (len(approved) == 0 && *approvedFile == "") {
+		usage()
+	}
+
+	var cert audit.RunCertificate
+	readJSON(*certPath, &cert)
+	pub := readPubKey(*pubkey)
+
+	// The auditor's own allowlist governs the only-approved-policies check, not the certificate's
+	// embedded list: overwrite it before verifying, so a producer cannot pass by widening its own set.
+	allow := append([]string(nil), approved...)
+	if *approvedFile != "" {
+		allow = append(allow, readDigestLines(*approvedFile)...)
+	}
+	cert.ApprovedPolicies = allow
+
+	res, err := audit.VerifyRun(cert, pub)
+	if err != nil {
+		fatal(err)
+	}
+	for _, r := range res.Reasons {
+		fmt.Printf("  - %s\n", r)
+	}
+	if !res.OK {
+		fmt.Printf("FAIL: run %q certificate did not verify (only-approved-policies=%v, policies-convergence-certified=%v)\n",
+			cert.RunID, res.OnlyApprovedPolicies, res.ConvergenceCertified)
+		os.Exit(1)
+	}
+	fmt.Printf("OK: run %q: %d policies used, all in the approved set and bound to the signed absence root; each has an anchored convergence certificate in a signed tree of size %d\n",
+		cert.RunID, len(cert.UsedPolicies), cert.STH.Size)
+
+	// The independent mathematical root: cross-check each used policy's certificate against the oracle.
+	if *checker == "" {
+		fmt.Println("OK: cryptographic root verified. Pass -checker <astchecker> to cross-check each policy's convergence claim against the oracle.")
+		return
+	}
+	for _, pc := range cert.Convergence {
+		var polC audit.PolicyContent
+		if err := json.Unmarshal(pc.PolicyLeaf.Record.Result, &polC); err != nil {
+			fatal(fmt.Errorf("policy leaf for %s is not a policy content leaf: %w", pc.Digest, err))
+		}
+		var convC audit.ConvergenceContent
+		if err := json.Unmarshal(pc.Certificate.Record.Result, &convC); err != nil {
+			fatal(fmt.Errorf("convergence leaf for %s is not a convergence content leaf: %w", pc.Digest, err))
+		}
+		var claim struct {
+			Converges        bool `json:"converges"`
+			CompensationFree bool `json:"compensation_free"`
+		}
+		if err := json.Unmarshal(convC.Certificate, &claim); err != nil {
+			fatal(fmt.Errorf("convergence certificate payload for %s: %w", pc.Digest, err))
+		}
+
+		tmp, err := os.CreateTemp("", "policy-*.machine")
+		if err != nil {
+			fatal(err)
+		}
+		if _, err := tmp.WriteString(polC.Policy); err != nil {
+			fatal(err)
+		}
+		_ = tmp.Close()
+		out, runErr := exec.Command(*checker, tmp.Name()).CombinedOutput()
+		os.Remove(tmp.Name())
+		fmt.Printf("oracle (%s): %s", polC.Digest, out)
+		if len(out) > 0 && out[len(out)-1] != '\n' {
+			fmt.Println()
+		}
+		oracleConverges := runErr == nil
+		if oracleConverges != claim.Converges {
+			fmt.Printf("FAIL: policy %s certificate claims converges=%v but the verified oracle says converges=%v\n", polC.Digest, claim.Converges, oracleConverges)
+			os.Exit(1)
+		}
+		if cf, ok := parseCompensationFree(out); ok {
+			if cf != claim.CompensationFree {
+				fmt.Printf("FAIL: policy %s certificate claims compensation_free=%v but the verified oracle says compensation_free=%v\n", polC.Digest, claim.CompensationFree, cf)
+				os.Exit(1)
+			}
+		}
+		if !claim.Converges {
+			fmt.Printf("FAIL: policy %s does NOT converge (certificate and oracle agree); do not deploy it\n", polC.Digest)
+			os.Exit(1)
+		}
+	}
+	fmt.Println("OK: the verified oracle agrees with every policy's certificate: the whole run ran under approved, provably convergent policies")
+}
+
+// readDigestLines reads a file of approved policy digests, one per line, ignoring blank lines and
+// # comments. It is the file form of the repeatable -approved flag.
+func readDigestLines(path string) []string {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		fatal(err)
+	}
+	var out []string
+	for _, line := range strings.Split(string(b), "\n") {
+		s := trimSpace(line)
+		if s == "" || strings.HasPrefix(s, "#") {
+			continue
+		}
+		out = append(out, s)
+	}
+	return out
 }
 
 // absenceSelector maps a CLI -key selector to the KeyFunc and the exact absence key to prove

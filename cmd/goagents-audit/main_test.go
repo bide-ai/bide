@@ -136,6 +136,99 @@ func writeJSON(t *testing.T, path string, v any) {
 	}
 }
 
+// TestVerifyRunCLI exercises the verify-run command end to end: a run with a governed action under
+// an approved, convergence-certified policy produces a RunCertificate that the command verifies,
+// including the oracle cross-check. It covers the failure paths: a policy not in the auditor's
+// allowlist FAILS only-approved-policies, and an oracle whose verdict disagrees with a policy's
+// certificate FAILS. A fake checker stands in for the real Coq oracle.
+func TestVerifyRunCLI(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	store := agent.NewMemStore()
+	const runID = "run1"
+
+	// A real convergent policy, anchored with its certificate, exercised by one governed action.
+	r := gsm.NewRegistry("kyc-decision")
+	approved := r.Bool("approved")
+	flag := r.Bool("flagged")
+	r.Rule("no_approve_when_flagged").
+		Require(gsm.Or(gsm.Is(approved, 0), gsm.Is(flag, 0))).
+		RepairWith(gsm.SetTo(approved, 0)).
+		Add()
+	r.On("flag").Does(gsm.SetTo(flag, 1)).Add()
+	r.On("approve").Does(gsm.SetTo(approved, 1)).Add()
+	_, rep, err := r.Build()
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	digest, _ := r.PolicyDigest()
+	policyBytes, _ := r.PolicyBytes()
+	certBytes, _ := govern.CertifyConvergence(rep, digest).Marshal()
+
+	if _, err := audit.RecordPolicy(ctx, store, runID, policyBytes, digest); err != nil {
+		t.Fatalf("RecordPolicy: %v", err)
+	}
+	if _, err := audit.RecordConvergence(ctx, store, runID, certBytes, digest); err != nil {
+		t.Fatalf("RecordConvergence: %v", err)
+	}
+	// A governed-action leaf: a completed tool call whose result embeds the policy digest, as
+	// govern.AttestedEventTool journals.
+	if _, err := store.Do(ctx, runID, "action", func(context.Context) (agent.Record, error) {
+		return agent.Record{
+			Kind:      agent.StepToolResult,
+			ToolUseID: "call_1",
+			Result:    []byte(`{"event":"approve","applied":true,"policy_digest":"` + digest + `","state_digest":"abc"}`),
+		}, nil
+	}); err != nil {
+		t.Fatalf("record action: %v", err)
+	}
+
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	th, err := audit.NewTreeHead(ctx, store, runID, 1)
+	if err != nil {
+		t.Fatalf("NewTreeHead: %v", err)
+	}
+	sth := audit.SignTreeHead(th, priv)
+
+	cert, err := audit.CertifyRun(ctx, store, runID, sth, audit.RunCertSpec{ApprovedPolicies: []string{digest}}, priv, 2)
+	if err != nil {
+		t.Fatalf("CertifyRun: %v", err)
+	}
+	certPath := filepath.Join(dir, "runcert.json")
+	writeJSON(t, certPath, cert)
+	pubHex := hex.EncodeToString(pub)
+
+	bin := filepath.Join(dir, "goagents-audit")
+	if out, err := exec.Command("go", "build", "-o", bin, ".").CombinedOutput(); err != nil {
+		t.Fatalf("build binary: %v\n%s", err, out)
+	}
+
+	base := []string{"verify-run", "-cert", certPath, "-pubkey", pubHex, "-approved", digest}
+
+	// 1) No checker, policy approved: the cryptographic root verifies (exit 0).
+	if out, err := exec.Command(bin, base...).CombinedOutput(); err != nil {
+		t.Fatalf("no-checker approved run should pass, got err %v\n%s", err, out)
+	}
+
+	// 2) Checker agrees (exit 0, KYC machine is compensation-bearing so compensation_free=false): pass.
+	agree := fakeChecker(t, dir, "agree", 0, "compensation_free=false")
+	if out, err := exec.Command(bin, append(base, "-checker", agree)...).CombinedOutput(); err != nil {
+		t.Fatalf("agreeing checker should pass, got err %v\n%s", err, out)
+	}
+
+	// 3) Oracle disagrees on convergence (exit 1) while the certificate claims convergent: FAIL.
+	disagree := fakeChecker(t, dir, "disagree", 1, "compensation_free=false")
+	if out, err := exec.Command(bin, append(base, "-checker", disagree)...).CombinedOutput(); err == nil {
+		t.Fatalf("disagreeing oracle must fail the command, but it exited 0\n%s", out)
+	}
+
+	// 4) The used policy is NOT in the auditor's allowlist: only-approved-policies FAILS.
+	notApproved := []string{"verify-run", "-cert", certPath, "-pubkey", pubHex, "-approved", "some-other-digest"}
+	if out, err := exec.Command(bin, notApproved...).CombinedOutput(); err == nil {
+		t.Fatalf("a used policy outside the allowlist must fail, but it exited 0\n%s", out)
+	}
+}
+
 // TestVerifyQuorumCLI exercises verify-quorum end to end: a real quorum run produces vote and tally
 // bundles, and the command confirms k-of-n agreement, recomputing the tally from the disclosed
 // votes. It also checks the failure paths (threshold not met, and not all votes disclosed).
