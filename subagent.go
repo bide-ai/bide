@@ -50,8 +50,12 @@ func (t *subAgentTool) Call(ctx context.Context, args json.RawMessage) (json.Raw
 			return nil, err
 		}
 	}
-	subRunID := RunScope(ctx) // parentRunID/toolUseID — stable + unique per call site
+	subRunID := RunScope(ctx) // parentRunID/toolUseID: stable and unique per call site
 	if subRunID == "" {
+		// Fallback for a SubAgent tool invoked outside the agent loop (which always sets the run
+		// scope, agent.go withRunScope). This id is NOT unique per call: two calls to a same-named
+		// sub-agent would share one journal and the second would memoize to the first's result. Drive
+		// sub-agents through Agent.Run/RunSaga (the normal path) so each call gets a distinct scope.
 		subRunID = "sub/" + t.name
 	}
 	// Run the sub-agent on its OWN goroutine (fresh, small stack) rather than recursing on

@@ -72,10 +72,15 @@ func RunTyped[T any](ctx context.Context, a *Agent, runID, input string) (T, err
 	if len(raw) == 0 {
 		raw = json.RawMessage(lastText)
 	}
+	if len(raw) == 0 {
+		// The model neither called the final_answer tool nor produced any text to parse: there is
+		// no answer to decode. Report that directly rather than surfacing an opaque JSON error on "".
+		return zero, fmt.Errorf("typed: run produced no final_answer tool call and no text answer to decode into %T: %w", zero, ErrProtocol)
+	}
 
 	var out T
 	if err := json.Unmarshal(raw, &out); err != nil {
-		return zero, fmt.Errorf("typed: decode answer into %T: %w (%w)", zero, err, ErrProtocol)
+		return zero, fmt.Errorf("typed: decode answer into %T (the model answered in text that is not valid JSON for this type): %w (%w)", zero, err, ErrProtocol)
 	}
 	return out, nil
 }
