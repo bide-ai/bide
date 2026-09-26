@@ -1,6 +1,8 @@
 # Design: Durable Signals
 
-Status: design draft. Implementation-ready.
+Status: stages 1-3 shipped (Signal/Await, AwaitFor, ordered channels). Stage 4 dropped in
+favor of the existing Waker (see "Waking the run"). The ordered-channel section below reflects
+the shipped explicit-Ack design, which supersedes the earlier cursor sketch.
 
 ## Why
 
@@ -46,10 +48,17 @@ func Await[T any](ctx context.Context, name string) (T, error)
 // so the deadline survives a crash. This is the ambient "wait for X, give up after D" case.
 func AwaitFor[T any](ctx context.Context, name string, d time.Duration) (T, bool, error)
 
-// Receive consumes the next unconsumed message on an ordered channel, in delivery order,
-// each message exactly once over the run's lifetime. Pauses (*Awaiting) when empty. This is
-// the stream form: many messages under one channel name.
-func Receive[T any](ctx context.Context, channel string) (T, error)
+// Receive returns the oldest not-yet-acked message on an ordered channel, in delivery order.
+// Pauses (*Awaiting) when the channel is drained. The run must Ack(channel, msg.Key) after it
+// durably handles the message; until then Receive keeps returning the SAME message, which is
+// what makes streaming consumption replay-safe and exactly-once (Receive writes nothing; only
+// Ack writes). Call from a retry-safe tool, like Await.
+type Received[T any] struct {
+	Key     string
+	Payload T
+}
+func Receive[T any](ctx context.Context, channel string) (Received[T], error)
+func Ack(ctx context.Context, d Durable, runID, channel, key string) error
 ```
 
 ### Deliver (external, at-most-once intake)
@@ -60,9 +69,9 @@ func Receive[T any](ctx context.Context, channel string) (T, error)
 // store's PK / ON CONFLICT is the cross-process dedup. After delivering, wake the run.
 func Signal[T any](ctx context.Context, d Durable, runID, name string, payload T) error
 
-// Send appends a message to an ordered channel for a run, deduped by idempotency key
-// (WithKey); without a key every call appends. At-most-once per key.
-func Send[T any](ctx context.Context, d Durable, runID, channel string, payload T, opts ...SendOption) error
+// Send appends a message to an ordered channel for a run, deduped by key: a redelivery with
+// the same (runID, channel, key) is a no-op and the first payload wins. At-most-once per key.
+func Send[T any](ctx context.Context, d Durable, runID, channel, key string, payload T) error
 ```
 
 ### Pause error (parallels `*Interrupted` / `*Sleeping`)
@@ -87,10 +96,14 @@ func (e *Awaiting) Error() string // "run <id> awaiting signal <name>"
   (`timer:await-timeout:<name>`). On each entry: if the signal is present, return
   `(v, true)`; else if the timer is due, return `(zero, false)`; else schedule the waker
   and return `*Awaiting`. It is `Await` and `Sleep` composed, nothing new.
-- **Ordered channel:** delivery records `"signal:"+channel+"#"+seq`; `Receive` keeps a
-  cursor `"sigcursor:"+channel` (a `StepValue` holding the next unread index), reads the
-  element at the cursor from `History`, and advances the cursor via `Do`. The journaled
-  cursor is what makes each message consumed exactly once across resumes.
+- **Ordered channel (shipped, explicit-Ack):** `Send` records `"chan:"+channel+":"+key`
+  (`StepSignal`), deduped by that name so a redelivery is a no-op. `Ack` records
+  `"chanack:"+channel+":"+key` (`StepValue`). `Receive` scans `History`, collects the acked
+  keys, and returns the first message under `"chan:"+channel+":"` (in delivery order) whose
+  ack is absent. `Receive` writes nothing; only `Ack` writes, so on a tool re-run `Receive`
+  returns the same oldest-unacked message deterministically, and the run consumes exactly once
+  by looping Receive, durably handle, Ack. This is replay-safe without any per-execution cursor
+  state, so it needs no change to the `Durable` interface.
 - Delivery and consumption both go through `Durable.Do`, so both are at-most-once and
   replay-deterministic by construction.
 
@@ -100,10 +113,11 @@ An `Awaiting` run is paused exactly like a `Sleeping` one, so delivery must trig
 resume. Reuse the `Waker` seam: after journaling, the deliverer calls
 `w.Schedule(runID, "signal:"+name, now())` and the existing `MemWaker.Fire` resumes the run
 on its next tick; or the deployment resumes `Run(runID)` directly (webhook handler ->
-`Signal` -> `Run`). An optional `Notifier` can offer push (rather than poll) resume later.
-No new durable machinery is required: the signal record already lives in the journal, so a
-restarted deployment rebuilds pending awaits by scanning runs, exactly as it does for
-timers.
+`Signal` -> `Run`). This deliver-then-wake idiom is why stage 4 (a separate push-`Notifier`
+type) was dropped: immediate resume is already achievable with the existing `Waker`, so a
+parallel notifier would be speculative surface for no gain. No new durable machinery is
+required: the signal record already lives in the journal, so a restarted deployment rebuilds
+pending awaits by scanning runs, exactly as it does for timers.
 
 ## Ordering and concurrency
 
@@ -122,11 +136,11 @@ await resolves, so everything before the `Await` call must be safe to repeat.
 
 ## Rollout
 
-1. **Single-shot `Signal`/`Await`** (+ `*Awaiting`, `StepSignal`): trivial, reuses `Do`
-   exactly, mirrors `Interrupt`/`Resume`. Ship first.
-2. **`AwaitFor`** (Await plus durable timeout): the ambient "wait or give up" primitive.
-3. **Ordered channels `Send`/`Receive`**: needs the cursor and the ordering decision above.
-4. **`Notifier` push-resume** (optional), alongside the poll-based `Waker` reuse.
+1. **Single-shot `Signal`/`Await`** (+ `*Awaiting`, `StepSignal`): shipped. Mirrors
+   `Interrupt`/`Resume`, reuses `Do`.
+2. **`AwaitFor`** (Await plus durable timeout): shipped. The ambient "wait or give up" case.
+3. **Ordered channels `Send`/`Receive`/`Ack`**: shipped, explicit-Ack design (above).
+4. **Push-`Notifier`**: dropped. Deliver-then-wake via the existing `Waker` covers it.
 
 ## Tests
 
