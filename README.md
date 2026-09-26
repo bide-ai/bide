@@ -145,8 +145,9 @@ governance and audit machinery at scale, not a live LLM or a production database
 
 Beyond the four guarantees, the details that make it pleasant to build on:
 
-- **Plain Go, not a graph DSL.** You write `if`/`for`/functions; the graph is *derived* from
-  what ran (`RenderMermaid`) for viewing, never authored or debugged.
+- **Plain Go, not a graph DSL.** You write `if`/`for`/functions; the graph is a *derived* view
+  (`RenderMermaid`), not a thing you author. See [Graphs](#graphs) for why, and for how a graph
+  layer can still sit on top.
 - **Claude reasoning survives round-trips.** Extended-thinking signatures are preserved; most
   SDKs drop them, silently breaking thinking + tool use.
 - **Provider-aware tool schemas.** One reflected schema, emitted per dialect (OpenAI strict
@@ -156,6 +157,33 @@ Beyond the four guarantees, the details that make it pleasant to build on:
 - **Multi-node failover, coordinated.** Any node resumes any run (Postgres, no single-writer lock);
   a per-run lease keeps competing recoverers and live workers from double-driving, and a crashed
   holder's runs are taken over on lease expiry.
+
+## Graphs
+
+Most agent frameworks make a graph the thing you author: nodes, edges, a state object, sometimes a
+visual builder. go-agents does not, and the reason is precise rather than ideological.
+
+A graph adds no expressive power. Anything a graph computes, ordinary control flow computes: a
+computation graph is a control-flow graph, and sequence, selection, and iteration suffice to express
+any of them. There is no agent behavior you can build as a node-and-edge graph that you cannot write
+with `if`, `for`, and functions. What a graph adds is not capability but *reification*: a first-class
+representation of the flow you can inspect, visualize, statically validate, and author outside the
+code. That is genuinely useful, but it is a tooling layer, not a foundation, and it is not required
+to build agents.
+
+So the substrate here is plain Go, and the guarantees (durability, at-most-once, the verifiable
+trail) come from the journal, not from a graph. The graph still exists as a *derived* view:
+`RenderMermaid` reconstructs it from what actually ran.
+
+If you want a graph to author, you can build one on top: a constrained node-and-edge API, or a
+visual builder, that compiles down to this runtime and inherits at-most-once and the audit trail for
+free. Nothing in the design prevents it, and that layering is the point. A graph-first framework
+cannot offer the reverse, because for it the graph is the base rather than a layer you choose.
+
+For an accountability runtime the direction also matters. An authored graph is a diagram you trust;
+a derived graph is reconstructed from the journal, so it is exactly what ran. Preferring the derived
+view is the same verify, do not trust stance as the rest of the system, and it holds even once an
+authoring layer sits on top.
 
 ## Ambient runs: durable sleep, wake, and interrupt
 
