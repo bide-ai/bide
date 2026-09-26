@@ -15,6 +15,14 @@ type Rates struct {
 	CacheWritePer1M float64
 }
 
+// Cost returns the USD cost of the token usage u at these rates.
+func (r Rates) Cost(u agent.Usage) float64 {
+	return float64(u.InputTokens)/1e6*r.InputPer1M +
+		float64(u.OutputTokens)/1e6*r.OutputPer1M +
+		float64(u.CacheReadTokens)/1e6*r.CacheReadPer1M +
+		float64(u.CacheWriteTokens)/1e6*r.CacheWritePer1M
+}
+
 // CostMeter accumulates token usage and computed cost across model calls.
 // It is safe for concurrent use.
 type CostMeter struct {
@@ -46,10 +54,7 @@ func Cost(m *CostMeter, r Rates) agent.Middleware {
 			if err != nil {
 				return msg, u, err
 			}
-			cost := float64(u.InputTokens)/1e6*r.InputPer1M +
-				float64(u.OutputTokens)/1e6*r.OutputPer1M +
-				float64(u.CacheReadTokens)/1e6*r.CacheReadPer1M +
-				float64(u.CacheWriteTokens)/1e6*r.CacheWritePer1M
+			cost := r.Cost(u)
 
 			m.mu.Lock()
 			m.total += cost

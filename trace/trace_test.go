@@ -3,6 +3,7 @@ package trace
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -10,7 +11,10 @@ import (
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
 	agent "github.com/dayna/go-agents"
+	"github.com/dayna/go-agents/middleware"
 )
+
+const captureEnv = "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT"
 
 func recorder() (*tracetest.SpanRecorder, *sdktrace.TracerProvider) {
 	sr := tracetest.NewSpanRecorder()
@@ -116,5 +120,99 @@ func TestTool_NestsChildSpanAcrossBoundary(t *testing.T) {
 	if in.Parent().SpanID() != out.SpanContext().SpanID() {
 		t.Fatalf("inner span parent = %v, want outer span %v (trace must cross the boundary)",
 			in.Parent().SpanID(), out.SpanContext().SpanID())
+	}
+}
+
+// With OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT set, the chat span carries the
+// input and output message content; without it (the default), it does not.
+func TestModel_CapturesContentWhenEnabled(t *testing.T) {
+	t.Setenv(captureEnv, "true")
+	sr, tp := recorder()
+	tracer := tp.Tracer("test")
+
+	base := agent.ModelHandler(func(context.Context, agent.Request) (agent.Message, agent.Usage, error) {
+		return agent.Message{}, agent.Usage{}, nil
+	})
+	h := Model(tracer)(base) // captureContent() read here, so the env must be set first
+	req := agent.Request{Messages: []agent.Message{agent.UserText("hello")}}
+	if _, _, err := h(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+
+	a := spanAttrs(sr.Ended()[0])
+	if in, ok := a["gen_ai.input.messages"]; !ok || !strings.Contains(in.AsString(), "hello") {
+		t.Errorf("input messages not captured: %v", a["gen_ai.input.messages"])
+	}
+	if _, ok := a["gen_ai.output.messages"]; !ok {
+		t.Errorf("output messages not captured")
+	}
+}
+
+func TestModel_NoContentByDefault(t *testing.T) {
+	t.Setenv(captureEnv, "") // force off, deterministically
+	sr, tp := recorder()
+	tracer := tp.Tracer("test")
+
+	base := agent.ModelHandler(func(context.Context, agent.Request) (agent.Message, agent.Usage, error) {
+		return agent.Message{}, agent.Usage{}, nil
+	})
+	h := Model(tracer)(base)
+	req := agent.Request{Messages: []agent.Message{agent.UserText("secret")}}
+	if _, _, err := h(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+
+	a := spanAttrs(sr.Ended()[0])
+	if _, ok := a["gen_ai.input.messages"]; ok {
+		t.Error("input content captured without the opt-in env var (privacy leak)")
+	}
+	if _, ok := a["gen_ai.output.messages"]; ok {
+		t.Error("output content captured without the opt-in env var (privacy leak)")
+	}
+}
+
+// WithRates records USD cost on the chat span, computed from token usage.
+func TestModel_RecordsCostWithRates(t *testing.T) {
+	sr, tp := recorder()
+	tracer := tp.Tracer("test")
+
+	base := agent.ModelHandler(func(context.Context, agent.Request) (agent.Message, agent.Usage, error) {
+		return agent.Message{}, agent.Usage{InputTokens: 1_000_000, OutputTokens: 2_000_000}, nil
+	})
+	h := Model(tracer, WithRates(middleware.Rates{InputPer1M: 3, OutputPer1M: 15}))(base)
+	if _, _, err := h(context.Background(), agent.Request{}); err != nil {
+		t.Fatal(err)
+	}
+
+	a := spanAttrs(sr.Ended()[0])
+	got, ok := a["gen_ai.usage.cost"]
+	if !ok {
+		t.Fatal("no cost attribute recorded")
+	}
+	if want := 1*3.0 + 2*15.0; got.AsFloat64() != want { // 3 + 30 = 33 USD
+		t.Errorf("cost = %v, want %v", got.AsFloat64(), want)
+	}
+}
+
+// With the opt-in env var, the execute_tool span carries the tool arguments and result.
+func TestTool_CapturesArgsAndResultWhenEnabled(t *testing.T) {
+	t.Setenv(captureEnv, "1")
+	sr, tp := recorder()
+	tracer := tp.Tracer("test")
+
+	base := agent.ToolHandler(func(context.Context, agent.ToolUse) (json.RawMessage, error) {
+		return json.RawMessage(`{"ok":1}`), nil
+	})
+	h := Tool(tracer)(base)
+	if _, err := h(context.Background(), agent.ToolUse{ID: "c1", Name: "lookup", Args: json.RawMessage(`{"q":"x"}`)}); err != nil {
+		t.Fatal(err)
+	}
+
+	a := spanAttrs(sr.Ended()[0])
+	if a["gen_ai.tool.call.arguments"].AsString() != `{"q":"x"}` {
+		t.Errorf("tool arguments = %v", a["gen_ai.tool.call.arguments"])
+	}
+	if a["gen_ai.tool.call.result"].AsString() != `{"ok":1}` {
+		t.Errorf("tool result = %v", a["gen_ai.tool.call.result"])
 	}
 }
