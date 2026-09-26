@@ -4,6 +4,7 @@ use (
 	.
 	./examples/mcp
 	./examples/observability
+	./examples/plan
 	./govern/postgreslog
 	./govern/redislog
 	./govern/sqlitelog
