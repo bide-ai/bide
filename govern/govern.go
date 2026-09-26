@@ -82,8 +82,10 @@ type MemEventLog struct {
 	logs map[string][]string
 }
 
+// NewMemEventLog returns an empty in-memory EventLog.
 func NewMemEventLog() *MemEventLog { return &MemEventLog{logs: map[string][]string{}} }
 
+// Append records an event for the entity, preserving append order.
 func (l *MemEventLog) Append(_ context.Context, entity, event string) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -91,6 +93,7 @@ func (l *MemEventLog) Append(_ context.Context, entity, event string) error {
 	return nil
 }
 
+// Events returns a copy of the entity's events in append order.
 func (l *MemEventLog) Events(_ context.Context, entity string) ([]string, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()

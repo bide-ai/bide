@@ -138,8 +138,9 @@ each run is governed to the limit its grant seeded. See `examples/authority`.
 The same pattern (an external fact seeded into governed state, gated by an invariant) is how a
 **k-of-n model quorum** would be built: fan out a decision to N models, tally the votes, seed the
 count into state, and gate the commit on `votes_for >= k`, so a high-stakes action requires
-agreement or escalates. It is a composition of existing seams, not a new agent type. Design note:
-[QUORUM.md](QUORUM.md) (not yet implemented).
+agreement or escalates. It is a composition of existing seams, not a new agent type, and it is
+implemented: `govern.Quorum` (k-of-n model agreement over `agent.Parallel`) plus the
+`goagents-audit verify-quorum` verb and `examples/quorum`. See [QUORUM.md](QUORUM.md).
 
 ## Federation: constraints across agents
 
@@ -194,6 +195,41 @@ action sets (e.g., two agents setting the same field to different constants) bef
 **Caveat — convergent ≠ desirable.** A synthesized repair only makes orderings *agree*; it
 may not be the repair you'd *want*. Inspect `syn.Repairs()`; if the only convergent repair is
 unacceptable, the fix is to redesign the *events*, not the compensation.
+
+### gsm v0.11.0: verify-or-repair and federation coordination
+
+`govern.New` / `govern.NewFederated` wrap a machine that is **already built and proven** by gsm.
+So the newer gsm v0.11.0 build APIs are run by the caller on the registry or federation, and the
+resulting machine is then handed to `govern`. Two capabilities are worth reaching for:
+
+- **Verify-or-repair in one call**: `Registry.BuildOrSynthesize(opts ...gsm.SynthOption)` builds
+  the machine as you wrote it and, only when your rules do not converge, falls back to synthesizing
+  a convergent compensation and building that instead. It returns a ready-to-use `*gsm.Machine`;
+  the second return is a `*gsm.Synthesis` that is nil when your repair built as written and non-nil
+  (with `Repairs()` / `String()`) when a synthesized compensation was substituted. It errors only
+  when neither path works: build failed and no convergent compensation exists (the error carries
+  the impossibility witness). It ties verification and repair generation together, so a caller can
+  say "build this, and if my repair does not converge, give me one that does."
+  ```go
+  m, syn, err := r.BuildOrSynthesize()
+  if err != nil { /* your rules cannot converge, even with a synthesized repair */ }
+  if syn != nil { /* a compensation was synthesized; vet syn.Repairs() */ }
+  gov := govern.New(m, initial)
+  ```
+- **Coordinate a cyclic, non-monotone federation**: when a federation has morphism cycles that are
+  not monotone, `Build` rejects it. `Federation.CoordinationPlan()` returns the minimal set of
+  morphism edges (a feedback edge set) to coordinate so the residual network is acyclic and
+  therefore converges; `Federation.BuildCoordinated(plan)` then builds the federation given that
+  those edges are externally coordinated (their targets become external inputs). The plan is a
+  correct, polynomial coordination of size at most the number of independent cycles (the exact
+  minimum is NP-hard); an empty plan is exactly `Build`.
+  ```go
+  plan := fed.CoordinationPlan()           // where to coordinate; nil if already acyclic
+  fm, _, err := fed.BuildCoordinated(plan) // build given that coordination
+  // hand the *gsm.FedMachine to govern.NewFederated(ctx, fm, log, entity, initial)
+  ```
+  This is the minimal-coordination route: coordinate only the obstructing cycles, run the rest
+  coordination-free. See `examples/coordination`.
 
 ## Runnable demos
 

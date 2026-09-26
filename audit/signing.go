@@ -18,9 +18,9 @@ import (
 
 // Algorithm identifiers stored in SignedTreeHead.Alg.
 const (
-	AlgEd25519 = "ed25519"
-	AlgMLDSA65 = "ml-dsa-65"
-	AlgHybrid  = "ed25519+ml-dsa-65"
+	AlgEd25519 = "ed25519"           // classical Ed25519 (small, fast, FIPS-approved)
+	AlgMLDSA65 = "ml-dsa-65"         // post-quantum ML-DSA-65 (FIPS 204)
+	AlgHybrid  = "ed25519+ml-dsa-65" // both schemes; valid only if both verify
 )
 
 // mldsaContext domain-separates ML-DSA signatures produced by this package.
@@ -41,32 +41,52 @@ type Verifier interface {
 // ---- ed25519 ----
 
 // Ed25519Signer signs with an Ed25519 private key.
-type Ed25519Signer struct{ Priv ed25519.PrivateKey }
+type Ed25519Signer struct {
+	Priv ed25519.PrivateKey // the Ed25519 private key that signs
+}
 
-func (Ed25519Signer) Alg() string                     { return AlgEd25519 }
+// Alg reports the signature scheme (AlgEd25519).
+func (Ed25519Signer) Alg() string { return AlgEd25519 }
+
+// Sign returns the Ed25519 signature over m.
 func (s Ed25519Signer) Sign(m []byte) ([]byte, error) { return ed25519.Sign(s.Priv, m), nil }
 
 // Ed25519Verifier verifies with an Ed25519 public key.
-type Ed25519Verifier struct{ Pub ed25519.PublicKey }
+type Ed25519Verifier struct {
+	Pub ed25519.PublicKey // the Ed25519 public key that verifies
+}
 
-func (Ed25519Verifier) Alg() string                 { return AlgEd25519 }
+// Alg reports the signature scheme (AlgEd25519).
+func (Ed25519Verifier) Alg() string { return AlgEd25519 }
+
+// Verify reports whether sig is a valid Ed25519 signature over m.
 func (v Ed25519Verifier) Verify(m, sig []byte) bool { return ed25519.Verify(v.Pub, m, sig) }
 
 // ---- ML-DSA-65 (FIPS 204) ----
 
 // MLDSASigner signs with an ML-DSA-65 private key. Signing is deterministic, so replaying the
 // same tree head reproduces the same signature.
-type MLDSASigner struct{ Priv *mldsa.PrivateKey }
+type MLDSASigner struct {
+	Priv *mldsa.PrivateKey // the ML-DSA-65 private key that signs
+}
 
+// Alg reports the signature scheme (AlgMLDSA65).
 func (MLDSASigner) Alg() string { return AlgMLDSA65 }
+
+// Sign returns the deterministic ML-DSA-65 signature over m.
 func (s MLDSASigner) Sign(m []byte) ([]byte, error) {
 	return s.Priv.SignDeterministic(m, &mldsa.Options{Context: mldsaContext})
 }
 
 // MLDSAVerifier verifies with an ML-DSA-65 public key.
-type MLDSAVerifier struct{ Pub *mldsa.PublicKey }
+type MLDSAVerifier struct {
+	Pub *mldsa.PublicKey // the ML-DSA-65 public key that verifies
+}
 
+// Alg reports the signature scheme (AlgMLDSA65).
 func (MLDSAVerifier) Alg() string { return AlgMLDSA65 }
+
+// Verify reports whether sig is a valid ML-DSA-65 signature over m.
 func (v MLDSAVerifier) Verify(m, sig []byte) bool {
 	return mldsa.Verify(v.Pub, m, sig, &mldsa.Options{Context: mldsaContext}) == nil
 }
@@ -76,11 +96,14 @@ func (v MLDSAVerifier) Verify(m, sig []byte) bool {
 // HybridSigner signs with both schemes; the signature is only accepted if BOTH verify, so the
 // anchor is safe as long as either scheme remains unbroken.
 type HybridSigner struct {
-	Ed Ed25519Signer
-	ML MLDSASigner
+	Ed Ed25519Signer // the Ed25519 component signer
+	ML MLDSASigner   // the ML-DSA-65 component signer
 }
 
+// Alg reports the signature scheme (AlgHybrid).
 func (HybridSigner) Alg() string { return AlgHybrid }
+
+// Sign returns the packed pair of Ed25519 and ML-DSA-65 signatures over m.
 func (s HybridSigner) Sign(m []byte) ([]byte, error) {
 	e, err := s.Ed.Sign(m)
 	if err != nil {
@@ -95,11 +118,14 @@ func (s HybridSigner) Sign(m []byte) ([]byte, error) {
 
 // HybridVerifier requires both component signatures to verify.
 type HybridVerifier struct {
-	Ed Ed25519Verifier
-	ML MLDSAVerifier
+	Ed Ed25519Verifier // the Ed25519 component verifier
+	ML MLDSAVerifier   // the ML-DSA-65 component verifier
 }
 
+// Alg reports the signature scheme (AlgHybrid).
 func (HybridVerifier) Alg() string { return AlgHybrid }
+
+// Verify reports whether both component signatures over m are valid.
 func (v HybridVerifier) Verify(m, sig []byte) bool {
 	e, d, ok := decodeHybrid(sig)
 	if !ok {

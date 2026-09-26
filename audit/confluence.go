@@ -20,8 +20,8 @@ import (
 // from the disclosed policy bytes (by rebuilding the gsm machine) and compares, so a leaf that
 // overstates convergence is caught outside audit, not trusted here.
 type ConvergenceContent struct {
-	Digest      string          `json:"digest"`
-	Certificate json.RawMessage `json:"certificate"`
+	Digest      string          `json:"digest"`      // the policy digest this certificate certifies (treated as opaque here)
+	Certificate json.RawMessage `json:"certificate"` // the opaque, serialized convergence certificate bytes
 }
 
 // convergenceLeafName is the reserved journal name for a convergence leaf, keyed by digest so a

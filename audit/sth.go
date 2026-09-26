@@ -35,8 +35,8 @@ func (th TreeHead) canonical() []byte {
 
 // SignedTreeHead is a TreeHead with an Ed25519 signature over its canonical encoding.
 type SignedTreeHead struct {
-	TreeHead
-	Signature []byte
+	TreeHead         // the {Size, Root, Timestamp} commitment being signed
+	Signature []byte // signature over TreeHead.canonical() under the scheme named by Alg
 	// Alg names the signature scheme (see signing.go). Empty means "ed25519", so bundles
 	// produced by the ed25519-only SignTreeHead / Verify path are unchanged on the wire and
 	// keep verifying. Agility-aware producers set it explicitly (SignTreeHeadWith).

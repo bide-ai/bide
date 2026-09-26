@@ -24,7 +24,7 @@ import (
 // verifier to trust the producer, its database, or its logs. For full tamper-evidence the
 // auditor also confirms the STH itself appears in the anchor log (MemAnchorLog.Prove).
 type ProofBundle struct {
-	RunID     string         `json:"run_id"`
+	RunID     string         `json:"run_id"`    // the run whose journal the record and STH belong to
 	Record    agent.Record   `json:"record"`    // the single disclosed action
 	Inclusion Inclusion      `json:"inclusion"` // its RFC 6962 audit path
 	STH       SignedTreeHead `json:"sth"`       // the signed commitment it is proven against

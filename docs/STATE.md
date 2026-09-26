@@ -17,11 +17,13 @@ Three repos under `/Users/dayna/code/`, all remotes on the `github-blackwell` SS
   paths + tag core + swap replaces for version pins.
 - **gsm** — the convergence engine (founder's IP). Public: `blackwell-systems/gsm`.
   **Apache-2.0** (relicensed from MIT; copyright "Dayna Blackwell, Blackwell Systems").
-  Released through **v0.8.0** (through v0.6.0: scalable compensation synthesis with preference-guided,
-  provably minimum-cost, and impossibility-witness modes; v0.7.0: the combinator rule vocabulary plus
-  sugar, the two differential oracles, footprint-local `BuildCompositional`, and `Registry.PolicyDigest`;
-  v0.8.0: `State.Digest` for state attestation). go-agents depends on it via a normal versioned require
-  (**pinned `gsm@v0.8.0`**). The old `replace ../gsm` is gone.
+  Released through **v0.11.0** (historical: through v0.6.0 scalable compensation synthesis with
+  preference-guided, provably minimum-cost, and impossibility-witness modes; v0.7.0 the combinator rule
+  vocabulary plus sugar, the two differential oracles, footprint-local `BuildCompositional`, and
+  `Registry.PolicyDigest`; v0.8.0 `State.Digest` for state attestation; v0.11.0 the verify-or-repair
+  `Registry.BuildOrSynthesize` plus federation coordination `Federation.CoordinationPlan()` /
+  `BuildCoordinated`). go-agents depends on it via a normal versioned require
+  (**pinned `gsm@v0.11.0`**). The old `replace ../gsm` is gone.
 - **normalization-confluence** — the papers. Public: `blackwell-systems/normalization-confluence`.
   Two papers (single-registry `normalization_confluence_2026.tex`; federated
   `normalization_confluence_in_federated_registry_networks.tex`), CC-BY-4.0.
@@ -74,7 +76,7 @@ gsm federation capability reaches the agent tier for free on a version bump:
   wraps a category via a second `%w`. Control-flow stays typed (`errors.As`): `*PendingApproval`,
   `*ResumeHalt`, `*SagaAborted`. (Chose sentinels over a `Kind` enum — `Model`/`Tool` collide
   with the interface type names, and `errors.Is` is the idiomatic fit.)
-- **Richer HITL** (`hitl.go`): imperative `Interrupt[T](ctx, key, prompt)` inside a tool pauses
+- **Richer HITL** (`pause.go`): imperative `Interrupt[T](ctx, key, prompt)` inside a tool pauses
   the run durably and resumes with a TYPED value (generalizes approve/deny's bool). Returns
   `*Interrupted` out of Run; `Resume[T](ctx, d, runID, key, value)` records the answer (reuses
   `StepValue`, no new journal kind); re-run continues. Run-context (store+runID) is injected into
@@ -365,7 +367,7 @@ plans were removed rather than kept as history. Remaining forward work is below.
 
 ## Shipped this cycle (was Open, now done)
 - **Crash-recovery re-driver**: `agent.Lister` (optional store enumeration), `agent.Recover(ctx,
-  store, resume)`, `agent.IsComplete`, and the `run:complete` terminal marker (store.go, recover.go,
+  store, resume)`, `agent.IsComplete`, and the `run:complete` terminal marker (store.go, recovery.go,
   agent.go). Recover enumerates runs, skips finished ones, and re-drives the rest; a durable pause is
   a success, not a failure. See docs/DEBUGGING.md.
 - **Idempotency-key retry**: a tool with `Safety.IdempotencyKey != nil` is now retry-safe on an
@@ -373,7 +375,7 @@ plans were removed rather than kept as history. Remaining forward work is below.
   into automatic retries for autonomous/ambient agents whose tools carry idempotency keys.
 - **Durable timers**: `agent.Sleep` / `agent.WaitUntil`, the `*Sleeping` durable pause,
   `agent.WithClock` for tests, and the pluggable `Waker` port (`MemWaker` + `agent.WithWaker`)
-  (timer.go, waker.go). See docs/DURABLE-STEPS.md.
+  (pause.go). See docs/DURABLE-STEPS.md.
 - **Hedged model calls**: `middleware.Hedge` (race a backup, take the first) for tail latency and
   provider failover. See docs/RELIABILITY.md, `examples/hedge`.
 - **Governed quorum**: `govern.Quorum` (k-of-n model agreement over `agent.Parallel`) +

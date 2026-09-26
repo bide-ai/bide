@@ -24,9 +24,9 @@ type Anchor interface {
 // AnchorEntry is one published commitment recorded by a transparency log: the run it commits
 // to, its signed tree head, and the entry's position in the anchor log.
 type AnchorEntry struct {
-	Seq   int            `json:"seq"`
-	RunID string         `json:"run_id"`
-	STH   SignedTreeHead `json:"sth"`
+	Seq   int            `json:"seq"`    // the entry's position in the anchor log
+	RunID string         `json:"run_id"` // the run whose commitment was published
+	STH   SignedTreeHead `json:"sth"`    // the published signed tree head
 }
 
 // MemAnchorLog is a reference external transparency log: an append-only, independently

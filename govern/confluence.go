@@ -21,8 +21,8 @@ import (
 // closes that: an auditor verifies not merely "policy digest X was used" but "policy digest X is
 // provably convergent, checked over N states".
 type ConfluenceCertificate struct {
-	Machine      string `json:"machine"`
-	PolicyDigest string `json:"policy_digest"`
+	Machine      string `json:"machine"`       // name of the gsm machine the certificate is about
+	PolicyDigest string `json:"policy_digest"` // stable identifier of the policy this certificate certifies
 
 	// Converges is the headline: WFC && CC. True means every interleaving of events reaches the
 	// same normal form, proven exhaustively at build time.

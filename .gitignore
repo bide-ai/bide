@@ -26,3 +26,7 @@ coverage.*
 
 # compiled cmd/goagents-audit binary
 /goagents-audit
+
+# compiled example binaries (from `go build .` in an example dir)
+examples/mcp/mcp
+examples/observability/observability

@@ -23,12 +23,12 @@ import (
 // the root is provable. Scope semantics are domain-defined; the chain verifier takes an Attenuator
 // that decides what "narrower" means (a helper for numeric limits is provided).
 type Grant struct {
-	ID        string            `json:"id"`
-	Issuer    string            `json:"issuer"`
-	Subject   string            `json:"subject"`
-	Scope     map[string]string `json:"scope,omitempty"`
-	NotAfter  int64             `json:"not_after,omitempty"`
-	ParentRef string            `json:"parent_ref,omitempty"`
+	ID        string            `json:"id"`                   // unique identifier for this grant
+	Issuer    string            `json:"issuer"`               // principal that authorized the grant (resolves to the signing key)
+	Subject   string            `json:"subject"`              // actor the grant authorizes to act
+	Scope     map[string]string `json:"scope,omitempty"`      // domain-defined authority bounds (e.g. limits) the chain verifier attenuates over
+	NotAfter  int64             `json:"not_after,omitempty"`  // unix-seconds expiry; zero never expires
+	ParentRef string            `json:"parent_ref,omitempty"` // Digest of the grant this was attenuated from; empty for a root grant
 }
 
 const grantDigestPrefix = "goagents-grant-v1\n"
@@ -55,9 +55,9 @@ func (g Grant) Expired(now int64) bool { return g.NotAfter != 0 && now > g.NotAf
 
 // SignedGrant is a Grant plus the issuer's signature over its canonical bytes.
 type SignedGrant struct {
-	Grant Grant  `json:"grant"`
-	Alg   string `json:"alg"`
-	Sig   []byte `json:"sig"`
+	Grant Grant  `json:"grant"` // the grant whose canonical bytes are signed
+	Alg   string `json:"alg"`   // signature scheme the issuer used (see signing.go)
+	Sig   []byte `json:"sig"`   // issuer's signature over Grant.Bytes()
 }
 
 // SignGrant signs a grant with the issuer's key (Ed25519, ML-DSA, or hybrid, per the Signer).

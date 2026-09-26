@@ -84,9 +84,9 @@ type RunCertificate struct {
 // leaf's digest, and the policy leaf's bytes hash to that digest (done in the CLI, independent of
 // gsm), then optionally runs the oracle on the disclosed policy bytes.
 type PolicyConvergence struct {
-	Digest      string      `json:"digest"`
-	PolicyLeaf  ProofBundle `json:"policy_leaf"`
-	Certificate ProofBundle `json:"certificate"`
+	Digest      string      `json:"digest"`      // the used policy digest this evidence is for
+	PolicyLeaf  ProofBundle `json:"policy_leaf"` // proof the policy leaf is anchored in the run STH
+	Certificate ProofBundle `json:"certificate"` // proof the convergence-certificate leaf is anchored in the same tree
 }
 
 // RunCertSpec carries the caller's assertion inputs to CertifyRun. v1 needs only the approved
@@ -206,6 +206,7 @@ func ProveRunCertificate(ctx context.Context, store agent.Durable, runID string,
 // RunVerification is the structured outcome of VerifyRun: the overall verdict plus per-property
 // results, so a caller (or the CLI) can report exactly which property held and which failed.
 type RunVerification struct {
+	// OK is the overall verdict: true only when every asserted property held.
 	OK bool
 	// OnlyApprovedPolicies is true when every used policy is in the allowlist AND the disclosed
 	// used-policy set is bound to the run's absence commitment (completeness).

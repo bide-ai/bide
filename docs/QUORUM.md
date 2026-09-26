@@ -1,8 +1,9 @@
-# Governed model quorum (design note)
+# Governed model quorum
 
-Status: implemented (`govern.Quorum`, `examples/quorum`). This note records how a k-of-n model
-quorum is expressed on the existing seams (not as a new agent type), so it is a composition helper
-rather than a bespoke agent.
+Status: implemented and shipped. All staged build items below are Done: `govern.Quorum`,
+`examples/quorum`, and the `goagents-audit verify-quorum` verb. This note documents how a k-of-n
+model quorum is expressed on the existing seams (not as a new agent type), so it is a composition
+helper rather than a bespoke agent.
 
 ## Usage
 

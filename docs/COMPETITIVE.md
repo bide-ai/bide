@@ -319,8 +319,10 @@ Every high-value gap is currently **unowned**, and they reinforce each other. Ei
    caps that abort at the limit** — with the SDK's own retry disabled so budgets compose.
 5. **Observability: spec exists, no idiomatic Go emitter.** OTel GenAI `gen_ai.*` is still
    "Development" status, churny, Python-first; no Go framework emits the full taxonomy natively.
-   **Own it:** default-on `gen_ai.*` spans (invoke_agent/chat/execute_tool/embeddings), honor
-   `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT`, token→cost on spans.
+   **Own it:** opt-in `gen_ai.*` spans (one import of the `trace` package / one `trace.Instrument`
+   call), taxonomy invoke_agent/chat/execute_tool, honor
+   `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT`, token→cost on spans. (An `embeddings` span
+   is roadmap, not shipped.)
 6. **Multi-agent DSL debate = guarantees vs tax.** Graph camp (Eino/ADK 2.0) gets guarantees at
    a "verbose" cost + "debugging a graph, not a function"; goroutine camp wants the stdlib.
    **Own it:** *the durability/resumability/observability of a graph engine, expressed as

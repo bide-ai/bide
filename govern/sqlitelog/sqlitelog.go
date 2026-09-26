@@ -41,6 +41,7 @@ func Open(path string) (*Log, error) {
 	return &Log{db: db}, nil
 }
 
+// Close releases the underlying database handle.
 func (l *Log) Close() error { return l.db.Close() }
 
 // Append durably records an event for an entity (monotonic seq).

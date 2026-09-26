@@ -33,6 +33,7 @@ func Open(ctx context.Context, addr string) (*Log, error) {
 // NewWithClient wraps an existing redis.Client (for shared clients / custom options).
 func NewWithClient(rc *redis.Client, prefix string) *Log { return &Log{rc: rc, prefix: prefix} }
 
+// Close closes the underlying Redis client.
 func (l *Log) Close() error { return l.rc.Close() }
 
 func (l *Log) key(entity string) string { return l.prefix + entity }

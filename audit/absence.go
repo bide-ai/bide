@@ -75,18 +75,18 @@ func AbsenceRoot(records []agent.Record, keyFn KeyFunc) []byte {
 
 // Neighbor is one committed key adjacent to an absent key, with its inclusion proof.
 type Neighbor struct {
-	Key   string    `json:"key"`
-	Proof Inclusion `json:"proof"`
+	Key   string    `json:"key"`   // the committed key adjacent to the absent key
+	Proof Inclusion `json:"proof"` // inclusion proof placing Key at its index in the committed key set
 }
 
 // Absence is a non-membership proof: Key is not among the Size committed keys, shown by the
 // adjacent committed keys that bracket it. Left is nil when Key sorts before all keys; Right is
 // nil when it sorts after all; both nil only for the empty key set.
 type Absence struct {
-	Key   string    `json:"key"`
-	Size  int       `json:"size"`
-	Left  *Neighbor `json:"left,omitempty"`
-	Right *Neighbor `json:"right,omitempty"`
+	Key   string    `json:"key"`             // the key claimed absent from the committed set
+	Size  int       `json:"size"`            // number of committed keys the proof is against
+	Left  *Neighbor `json:"left,omitempty"`  // committed key just below Key in sort order; nil if Key sorts before all
+	Right *Neighbor `json:"right,omitempty"` // committed key just above Key in sort order; nil if Key sorts after all
 }
 
 // ProveAbsent builds an absence proof for key over records under keyFn, or errors if the key is
@@ -151,9 +151,9 @@ func VerifyAbsence(root []byte, proof Absence) (bool, error) {
 // an out-of-band public key; it checks the STH signature, binds the proof to the signed size,
 // and verifies non-membership against the signed root.
 type AbsenceBundle struct {
-	RunID   string         `json:"run_id"`
-	Absence Absence        `json:"absence"`
-	STH     SignedTreeHead `json:"sth"`
+	RunID   string         `json:"run_id"`  // the run whose key set the proof is against
+	Absence Absence        `json:"absence"` // the non-membership proof
+	STH     SignedTreeHead `json:"sth"`     // the signed commitment to the key set the proof is proven against
 }
 
 // Verify reports whether the bundle authentically proves absence under pub.

@@ -14,8 +14,8 @@ import (
 // inclusion proofs as the actions taken under it, so an auditor can prove not merely that an
 // action happened but that the exact policy admitting it was anchored in the same committed tree.
 type PolicyContent struct {
-	Digest string `json:"digest"`
-	Policy string `json:"policy"`
+	Digest string `json:"digest"` // the policy owner's stable identifier (treated as opaque here)
+	Policy string `json:"policy"` // the serialized governed policy bytes
 }
 
 // policyLeafName is the reserved journal name for a policy leaf, keyed by digest so a run that

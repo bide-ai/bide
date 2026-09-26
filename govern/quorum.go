@@ -15,14 +15,14 @@ import (
 // is already a comparable, normalized value. Free-form prose cannot be quorumed: Decide must
 // map to a small set of labels (an enum, a yes/no, a chosen action).
 type Voter struct {
-	Name   string
-	Decide func(context.Context) (string, error)
+	Name   string                                // identifies who voted; also the durable step key, so it must be unique per Quorum call
+	Decide func(context.Context) (string, error) // produces this voter's normalized decision label
 }
 
 // Vote is one voter's recorded decision. It is the provenance the audit trail commits to.
 type Vote struct {
-	Voter    string `json:"voter"`
-	Decision string `json:"decision"`
+	Voter    string `json:"voter"`    // the voter that cast this decision
+	Decision string `json:"decision"` // the normalized decision label the voter chose
 }
 
 // QuorumResult is the tally over the votes. Decision is the plurality value (the decision the
@@ -36,11 +36,11 @@ type Vote struct {
 // model errors mean agreement is not statistical independence, so a quorum lowers single-model
 // risk without certifying the answer.
 type QuorumResult struct {
-	Decision string `json:"decision"`
-	VotesFor int    `json:"votes_for"`
-	Total    int    `json:"total"`
-	Agreed   bool   `json:"agreed"`
-	Votes    []Vote `json:"votes"`
+	Decision string `json:"decision"`  // the plurality decision (the label the most voters chose)
+	VotesFor int    `json:"votes_for"` // how many voters chose Decision
+	Total    int    `json:"total"`     // number of voters that successfully voted
+	Agreed   bool   `json:"agreed"`    // whether VotesFor >= k (statistical signal, not a proof)
+	Votes    []Vote `json:"votes"`     // every recorded vote, in voter order
 }
 
 // Quorum fans the voters out concurrently and durably, tallies their normalized decisions, and

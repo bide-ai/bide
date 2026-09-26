@@ -150,7 +150,7 @@ func Tool(tracer oteltrace.Tracer) agent.ToolMiddleware {
 	}
 }
 
-// Instrument wires the gen_ai span taxonomy onto a in one call: the "chat" span (via Model)
+// Instrument wires the gen_ai span taxonomy onto an agent in one call: the "chat" span (via Model)
 // and the "execute_tool" span (via Tool), using tracer. It is the low-friction way to enable
 // observability without hand-wiring each middleware, while the core agent package keeps no
 // OpenTelemetry dependency (importing this package is the single opt-in). Options (WithSystem,

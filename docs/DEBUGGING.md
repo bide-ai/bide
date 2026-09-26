@@ -192,7 +192,7 @@ answered, a timer fires). Only a genuine model, storage, or tool fault is joined
 returned error.
 
 **A Waker-bound resume rebuilds the timer set** with no separate journal scan. A sleeping run
-journals its wake time (see `MESSAGING.md` / `timer.go`). When `Recover` re-drives it with a
+journals its wake time (see `MESSAGING.md` / `pause.go`). When `Recover` re-drives it with a
 `resume` that binds a `Waker` (`agent.WithWaker`), the run replays into its durable `Sleep`,
 which sees the `Waker` on the context and re-registers the journaled wake automatically.
 Advancing the clock and firing the waker then resumes the run to completion. The rebuild

@@ -51,6 +51,7 @@ func (l *Log) migrate(ctx context.Context) error {
 	return err
 }
 
+// Close releases the underlying database connection pool.
 func (l *Log) Close() error { return l.db.Close() }
 
 // Append durably records an event for an entity. The bigserial id is assigned atomically, so
