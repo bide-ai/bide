@@ -63,7 +63,7 @@ func IsComplete(ctx context.Context, store Durable, runID string) (bool, error) 
 // enumerated run, which is safe under at-most-once memoization but redundant across processes.
 //
 // A pause is a SUCCESS, not a failure. A re-driven run that is still waiting returns one
-// of the durable pause signals (*PendingApproval, *Interrupted, *Sleeping, *ResumeHalt);
+// of the durable pause signals (*PendingApproval, *Interrupted, *Sleeping, *Awaiting, *ResumeHalt);
 // Recover detects those with errors.As and does NOT record them as errors: they mean
 // "recovered, still waiting", and the run resumes later when its condition is met (a
 // human approves, an interrupt is answered, a timer fires). Only a genuine error (a model
@@ -205,7 +205,8 @@ func isPause(err error) bool {
 		pa  *PendingApproval
 		itr *Interrupted
 		slp *Sleeping
+		awt *Awaiting
 		rh  *ResumeHalt
 	)
-	return errors.As(err, &pa) || errors.As(err, &itr) || errors.As(err, &slp) || errors.As(err, &rh)
+	return errors.As(err, &pa) || errors.As(err, &itr) || errors.As(err, &slp) || errors.As(err, &awt) || errors.As(err, &rh)
 }

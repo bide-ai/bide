@@ -418,9 +418,10 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 						// retry-safe tool (else its attempt marker would halt the resume instead).
 						var intr *Interrupted
 						var slp *Sleeping
-						if errors.As(callErr, &intr) || errors.As(callErr, &slp) {
+						var awt *Awaiting
+						if errors.As(callErr, &intr) || errors.As(callErr, &slp) || errors.As(callErr, &awt) {
 							if !c.t.Safety().retriableOnResume() {
-								return Record{}, fmt.Errorf("agent: tool %q paused (Interrupt or Sleep) but is not retry-safe (mark it ReadOnly or Idempotent): %w", c.tu.Name, ErrConfig)
+								return Record{}, fmt.Errorf("agent: tool %q paused (Interrupt, Sleep, or Await) but is not retry-safe (mark it ReadOnly or Idempotent): %w", c.tu.Name, ErrConfig)
 							}
 							return Record{}, callErr
 						}
@@ -442,7 +443,8 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 				if err != nil {
 					var intr *Interrupted
 					var slp *Sleeping
-					if errors.As(err, &intr) || errors.As(err, &slp) {
+					var awt *Awaiting
+					if errors.As(err, &intr) || errors.As(err, &slp) || errors.As(err, &awt) {
 						return err // propagate the pause unwrapped
 					}
 					return fmt.Errorf("tool %q: %w (%w)", c.tu.Name, err, ErrTool)

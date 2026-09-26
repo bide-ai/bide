@@ -17,6 +17,7 @@ const (
 	StepModel      StepKind = "model"       // an assistant message from the model
 	StepToolResult StepKind = "tool_result" // a completed tool call + its result
 	StepValue      StepKind = "value"       // a user-authored durable step (see Step[T])
+	StepSignal     StepKind = "signal"      // an external event delivered into a run (see Signal/Await)
 	StepApproval   StepKind = "approval"    // a durable human approve/deny decision (HITL)
 	StepAttempt    StepKind = "attempt"     // "about to run a non-retriable side effect" marker
 	StepSagaFail   StepKind = "saga_fail"   // a saga step failed → durable abort trigger
