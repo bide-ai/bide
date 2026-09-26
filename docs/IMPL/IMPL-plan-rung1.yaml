@@ -573,8 +573,14 @@ waves:
             - Assert plan introduces NO new executor: scan the plan package source (excluding
               _test.go) for concurrency primitives that would constitute a second execution model
               (errgroup, "go func", "make(chan", "sync.WaitGroup") and fail if found. Use os.ReadDir plus
-              reading .go files. This is the machine-checkable form of the substrate invariant. Document
-              that concurrent agent.Do in the CORE runtime is fine; a scheduler IN plan is not.
+              reading .go files. IMPORTANT: match only real CODE, not comments or string literals. Strip
+              Go comments before scanning (parse each file with go/parser + go/token and walk tokens, or
+              use a comment stripper) so documentation prose that names these tokens does not trip the
+              guard. This matters concretely: plan/doc.go line 14 states the package runs "with no
+              goroutines or errgroup", which is prose, not code, and MUST NOT fail the test. A naive
+              grep over raw file bytes would give a false positive here. This is the machine-checkable
+              form of the substrate invariant. Document that concurrent agent.Do in the CORE runtime is
+              fine; a scheduler IN plan is not.
 
             conformance_test.go: build a small flow, Run it against a MemStore to produce a journal, then
             call Conform and assert ok == true and diffs is empty for a clean run. Add a negative case:
@@ -736,6 +742,17 @@ scaffolds:
         Flow, or any exported constructor here.
       import_path: github.com/dayna/go-agents/plan
       status: committed (4d5b687)
+completion_reports:
+    A:
+        status: complete
+        branch: main
+        commit: 21971d9
+        files_changed:
+            - plan/doc.go
+        files_created:
+            - plan/doc.go
+        verification: PASS
+        notes: 'plan/handle.go and plan/spec.go were pre-created and frozen by scaffold commit 4d5b687; left untouched per run override. Only deliverable this run was plan/doc.go (package doc comment for rung-1). Gates: GOWORK=off go build ./plan/... OK, GOWORK=off go vet ./plan/... OK, gofmt -l plan empty. Postconditions: producerMarker/consumerMarker count=4, builderCore struct count=1, no real concurrency (grep hit is doc prose stating ''no goroutines or errgroup'').'
 pre_mortem:
     overall_risk: medium
     rows:
@@ -881,5 +898,5 @@ critic_report:
     summary: 'Verified all 5 agents (15 new files) against the go-agents core. All files are action:new and no plan/ directory exists (file_existence pass). Cross-package dependency symbols the briefs lower against are accurate: agent.Step[T], Durable.Do, Durable.History, agent.Record, StepValue/StepModel/StepToolResult (store.go), agent.Tool + agent.Safety (tool.go), agent.RenderMermaid (render.go), the crashStore crash-sweep pattern (dst_test.go), and the go-list-deps adapter guard (architecture_test.go) all exist with the signatures the briefs describe. reflect.TypeFor and generic methods are legal on go 1.27; golang.org/x/sync/singleflight is in go.mod. No agentflow reference remains in the IMPL doc itself, and no I1 disjoint-ownership violation, no complexity-balance breach (max agent D owns 4 of 15 files, 27%). One advisory warning: the design doc docs/design/expression-surfaces.md section B still uses the old placeholder package name agentflow (agentflow.New/When/Else); agents A and D are told to read that doc and could copy the stale name, though the IMPL contracts correctly use package plan. No errors; wave execution may proceed.'
     reviewed_at: "2026-09-26T22:22:44Z"
     issue_count: 2
-state: "REVIEWED"
+state: REVIEWED
 injection_method: hook
