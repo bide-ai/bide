@@ -15,13 +15,13 @@ every level live and the goroutine stack balloons.
 | 500 | ~4s ✓ (completed, invariant held) |
 | 2500 | ~7.4 GB RAM, >8 min, killed (did not finish) |
 
-- **Not a correctness bug** — the "no dangling side effects / at-most-once compensation"
+- **Not a correctness bug**: the "no dangling side effects / at-most-once compensation"
   invariant held at every depth that completed.
-- **Irrelevant in practice** — real agent trees are single-digit deep; 100 is already far
+- **Irrelevant in practice**: real agent trees are single-digit deep; 100 is already far
   beyond realistic.
 - **Root cause is heap live-set, not stack depth (measured).** A synchronous agent tree
-  keeps the entire ancestor chain alive — every parent is blocked waiting on its child,
-  retaining its conversation + maps — so live heap is O(depth) with a large per-level
+  keeps the entire ancestor chain alive (every parent is blocked waiting on its child,
+  retaining its conversation + maps), so live heap is O(depth) with a large per-level
   constant (~MBs/level). We tried running each sub-agent on its own goroutine
   (subagent.go); it did NOT reduce memory (still ~7.4GB at 2500), confirming the cost is
   heap-resident live state, not the call stack. (The goroutine change was kept anyway: it
@@ -31,7 +31,7 @@ every level live and the goroutine stack balloons.
   hold the whole chain live. Neither is a quick win, and it's not worth it until a workload
   genuinely needs >100-deep trees.
 
-## Parallel tool calls — SHIPPED, concurrency status
+## Parallel tool calls: SHIPPED, concurrency status
 
 Parallel tool execution is built: a turn's tool calls run concurrently via `errgroup`
 (bounded by `SetMaxConcurrency`, unbounded by default), proven concurrent + `-race`-clean
@@ -40,14 +40,14 @@ Parallel tool execution is built: a turn's tool calls run concurrently via `errg
 - ✅ **Concurrent `Do` on the same `(runID,name)` never double-runs `fn`.** All stores
   single-flight per key (`golang.org/x/sync/singleflight`); a side effect fires at most once.
 - ✅ **Forward conversation order is deterministic.** The loop assembles tool-result
-  messages in `uses` order (indexed slice), not completion order — so the transcript is
+  messages in `uses` order (indexed slice), not completion order, so the transcript is
   stable regardless of which tool finishes first.
 - ⚠️ **Journal `seq` under parallel tools is completion-order, not dispatch-order.** Benign
   in practice: tool results are matched by `tool_use` ID (order among siblings doesn't affect
   the model), and saga rollback of *parallel* siblings assumes they're independent/atomic
   (already a documented saga requirement). If a future need requires strict dispatch-order in
   the journal itself, add a dispatch-time execution index to `Record` + sort `History` by it.
-- ✅ **`@llm/N` naming** is unaffected — parallelism is only *within* a turn's tools; model
+- ✅ **`@llm/N` naming** is unaffected: parallelism is only *within* a turn's tools; model
   turns remain sequential (one per loop iteration).
 
 ## Saga semantics
@@ -57,16 +57,16 @@ Parallel tool execution is built: a turn's tool calls run concurrently via `errg
   before returning an error. Make forward steps all-or-nothing or idempotent.
 - **Unknown-outcome resume halts, doesn't auto-rollback.** If a non-retriable step crashes
   after its attempt marker but before any result, `RunSaga` returns `*ResumeHalt` (a human
-  decides) — you can't safely roll back a step that may have committed.
+  decides); you can't safely roll back a step that may have committed.
 - **Distributed compensation is hierarchical, not concurrent.** Rollback recurses through
   a sub-agent *tree* (one causal order). Truly concurrent agents mutating shared state
-  out-of-order need provable convergence (gsm territory) — not built.
+  out-of-order need provable convergence (gsm territory); not built.
 
 ## Replay fidelity
 
 - `emitsFor` re-emits an assistant message as `reasoning → text → tool calls`, losing
   original interleaving. Multiple `Reasoning` blocks collapse to one (keeping the last
-  signature) — a fidelity loss for multi-block extended-thinking replay. Fix: represent
+  signature): a fidelity loss for multi-block extended-thinking replay. Fix: represent
   reasoning as an ordered list of parts, each with its own signature, end-to-end.
 
 ## Provider / schema
@@ -88,12 +88,12 @@ Parallel tool execution is built: a turn's tool calls run concurrently via `errg
 - **Settings are agent-level, not per-call.** `WithSampling` / `WithSystemPrompt` / `WithMaxTurns`
   apply to the agent; there's no per-`Run` options override yet.
 
-## Crash-safety proof (DST) — scope
+## Crash-safety proof (DST): scope
 
 `dst_test.go` / `saga_dst_test.go` prove at-most-once side effects and crash-safe compensation by
 adversarial fault injection: a store that fails the Kth persist, swept over every write point and
 across hundreds of randomized multi-crash schedules. It is strong, in-process, and non-vacuous (the
-halt path is asserted) — but it is **randomized + exhaustive-over-write-points testing, not a
+halt path is asserted), but it is **randomized + exhaustive-over-write-points testing, not a
 machine-checked formal proof** over all interleavings. It models a crash as "a persist fails and the
 run unwinds," matching process death around durable writes (the actual promise), not arbitrary
 mid-instruction faults.

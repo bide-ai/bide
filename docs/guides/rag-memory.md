@@ -1,7 +1,7 @@
 # RAG & memory: bring your own
 
 **Decision: go-agents does not ship a vector store, an embedder, or a memory backend.**
-It provides the *seam* — a `Retriever` port and thin glue — and you plug in the store you
+It provides the *seam* (a `Retriever` port and thin glue) and you plug in the store you
 already run. This is a deliberate scope boundary, not a gap.
 
 ## Why
@@ -16,7 +16,7 @@ already run. This is a deliberate scope boundary, not a gap.
   straight through that.
 - **Teams already have a store.** Most run pgvector / Pinecone / their own index. Forcing our
   memory abstraction on them is friction; respecting their infrastructure is a feature. The
-  positioning: *"we don't ship a vector DB you'll outgrow and fight — we give you a clean
+  positioning: *"we don't ship a vector DB you'll outgrow and fight; we give you a clean
   retrieval seam that works with the store you already run."*
 
 ## The seam (in core, zero-dep)
@@ -34,11 +34,11 @@ func WithRetrieval(r Retriever, k int) Middleware  // classic: top-k auto-inject
 
 Implement `Retriever` against your store (~20 lines), then wire it in one of two ways:
 
-- **Agentic RAG** — `agent.New(model, store, agent.RetrievalTool(myStore, 5))`. The model
+- **Agentic RAG**: `agent.New(model, store, agent.RetrievalTool(myStore, 5))`. The model
   decides when to search and with what query; results come back as a tool result.
-- **Classic RAG** — `a.Use(agent.WithRetrieval(myStore, 5))`. On each fresh user turn the
+- **Classic RAG**: `a.Use(agent.WithRetrieval(myStore, 5))`. On each fresh user turn the
   middleware retrieves top-k for the user message and prepends them as a system message; it
-  does not retrieve on mid-loop tool-result turns. A retrieval error aborts the call — return
+  does not retrieve on mid-loop tool-result turns. A retrieval error aborts the call; return
   `(nil, nil)` from your `Retriever` if you prefer to degrade to no context.
 
 ## Memory, in layers
@@ -52,5 +52,5 @@ Implement `Retriever` against your store (~20 lines), then wire it in one of two
 ## If demand appears
 
 Concrete store adapters (e.g. a pgvector `Retriever`) would ship as **separate modules**
-(like `store/postgres` and the other adapters), never in the core — preserving the zero-dep
+(like `store/postgres` and the other adapters), never in the core, preserving the zero-dep
 core. Until then, the seam + your ~20-line `Retriever` is the whole story.

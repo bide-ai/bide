@@ -1,15 +1,15 @@
 # Verifiable audit trail
 
 The durable journal records every step of a run. The `audit` package turns it into a
-**verifiable, tamper-evident, selectively-disclosable** record — the compliance/enterprise
+**verifiable, tamper-evident, selectively-disclosable** record: the compliance/enterprise
 side of the moat: *provable at-most-once side effects* plus *a cryptographic record of exactly
 what the agent did*. Stdlib-only (`crypto/sha256`, `crypto/ed25519`), no external deps.
 
 ## Security model (read this first)
 
-- **Integrity** — unconditional. Any modify / insert / delete / reorder of a journal record
+- **Integrity**: unconditional. Any modify / insert / delete / reorder of a journal record
   changes the commitment.
-- **Tamper-evidence** — only when you **anchor the commitment out-of-band**: sign it with a key
+- **Tamper-evidence**: only when you **anchor the commitment out-of-band**: sign it with a key
   the app tier doesn't fully control, and/or publish it to a separate trust domain. A hash chain
   or Merkle tree stored in the same database an attacker fully controls can be rewritten and
   re-hashed. The guarantee is: *"you committed the root elsewhere, so divergence is provable."*
@@ -20,12 +20,12 @@ what the agent did*. Stdlib-only (`crypto/sha256`, `crypto/ed25519`), no externa
 | API | Proves | A verifier needs |
 |---|---|---|
 | `Head` + `Sign` / `VerifySignature` | the whole run is intact | the head + signature |
-| `Root` / `Prove` / `VerifyInclusion` | **one record** is in a committed run — without revealing the rest | that record + its O(log n) proof + the root |
+| `Root` / `Prove` / `VerifyInclusion` | **one record** is in a committed run, without revealing the rest | that record + its O(log n) proof + the root |
 | `ProveConsistency` / `VerifyConsistency` | history was **only appended**, never rewritten/reordered | two roots + the proof |
 | `TreeHead` / `SignTreeHead` / `Verify` | a **signed** commitment binding root ↔ size ↔ time | the STH + public key |
 
 `Head` is a linear SHA-256 hash chain (simple whole-run commitment). `Root` is the RFC 6962
-Merkle tree — the same commitment, but it supports per-record inclusion proofs and consistency
+Merkle tree: the same commitment, but it supports per-record inclusion proofs and consistency
 proofs. Use `Head` when you only ever reveal the whole run; use `Root` (+ STH) when selective
 disclosure or append-only proofs matter.
 
@@ -43,12 +43,12 @@ agent.New(model, store, tools...).Run(ctx, runID, input)   // each step → a si
 ```
 
 On every journal growth `AuditedStore` commits the run's Merkle root, signs an STH, and calls
-`Anchor.Publish`. A memoized replay (resume) does **not** re-anchor — each record is anchored
+`Anchor.Publish`. A memoized replay (resume) does **not** re-anchor; each record is anchored
 exactly once, even across a crash. Anchoring is a **side channel**: a `Publish` failure never
 fails the durable step (the write already succeeded; failing it could wrongly retry a
 non-idempotent step), so publish errors go to an optional `OnError` hook instead.
 
-**`Anchor` is a bring-your-own port** — implement `Publish(ctx, runID, sth)` against the
+**`Anchor` is a bring-your-own port**: implement `Publish(ctx, runID, sth)` against the
 transparency log you trust (a CT-style log, a notary/timestamping service, another account's
 WORM store, a public ledger). `MemAnchorLog` is the reference: an append-only log that keeps its
 **own** RFC 6962 tree over the published STHs, so a monitor can prove a given STH was anchored
@@ -96,14 +96,14 @@ journal (Size counts events instead of records), so an auditor learns one verifi
 
 ### Durable vs live: where the event log lives
 
-An `EventLog` filled from the live stream is **in-memory**, so a crash loses it — and its Root
+An `EventLog` filled from the live stream is **in-memory**, so a crash loses it, and its Root
 even shifts between a fresh run and its own replay (live-only events like token deltas differ).
 For the durable audit artifact, don't store a second log: **derive it from the journal**, which
 is already the crash-safe, at-most-once substrate.
 
 ```go
 log, _ := audit.EventLogFromJournal(ctx, store, runID) // projection of the DURABLE journal
-sth    := audit.SignTreeHead(log.TreeHead(ts), priv)   // anchor THIS — crash-durable, resume-stable
+sth    := audit.SignTreeHead(log.TreeHead(ts), priv)   // anchor THIS: crash-durable, resume-stable
 ```
 
 `EventLogFromJournal` projects the journal to the same semantic events `Agent.Stream` re-emits
@@ -111,7 +111,7 @@ on resume (`agent.ReplayEvents`: assembled assistant turns + completed tool call
 Because that sequence is a deterministic function of the persisted records, its Root/STH are
 byte-identical before and after a crash, and a crash mid-run leaves a provable append-only
 *prefix* of the completed trail (verified by `ProveConsistency`). Token-level deltas aren't
-journaled, so they aren't in the durable projection — the durable content is turns and tool
+journaled, so they aren't in the durable projection; the durable content is turns and tool
 results, which is what a compliance log should commit anyway. The live `EventLog` remains the
 real-time UI view; the journal projection is the anchored artifact.
 
@@ -119,11 +119,11 @@ real-time UI view; the journal projection is the anchored artifact.
 
 The journal is the resume substrate and may be garbage-collected after a run; a compliance
 trail often has to outlive it (keep for years, on WORM storage, in a different trust domain).
-`EventStore` is the bring-your-own port for that — append canonical event leaves to a backend
+`EventStore` is the bring-your-own port for that: append canonical event leaves to a backend
 you run, on its own retention lifecycle, and rebuild an `EventLog` from it later.
 
 ```go
-// Mirror the run's durable trail into your store (idempotent — call it whenever).
+// Mirror the run's durable trail into your store (idempotent: call it whenever).
 audit.PersistJournal(ctx, evStore, journal, runID)
 
 // Later, even after the journal is deleted: anchor and prove from the store alone.
@@ -135,7 +135,7 @@ proof, _ := log.Prove(i)   // + audit.VerifyEventInclusion(sth.Root, event, proo
 `PersistJournal` is fed from the journal projection, not the live stream, on purpose: the
 projection is deterministic and resume-stable, so re-mirroring after a crash appends the same
 leaves at the same positions (idempotent, never forks). The store contract is append-only and
-idempotent on `(runID, seq)` — a different leaf at an existing position is rejected as a fork.
+idempotent on `(runID, seq)`: a different leaf at an existing position is rejected as a fork.
 `MemEventStore` is the in-memory default; a real backend is a Postgres table with
 `UNIQUE(run_id, seq)` and insert-only grants, or object storage with object-lock/WORM.
 
@@ -210,7 +210,7 @@ on the producer. The CLI reads no environment variables.
 ## RFC 6962 conformance
 
 The Merkle tree, inclusion proofs, and consistency proofs implement
-[RFC 6962](https://datatracker.ietf.org/doc/html/rfc6962) (Certificate Transparency) — the same
+[RFC 6962](https://datatracker.ietf.org/doc/html/rfc6962) (Certificate Transparency): the same
 construction CT logs use. The implementation is checked against the **published RFC 6962 reference
 test vectors** (the canonical 8-leaf tree roots at all sizes), plus inclusion round-trips, a
 hand-derived consistency vector, and rewrite-detection tests. It is not a homegrown look-alike.
@@ -223,7 +223,7 @@ th, _  := audit.NewTreeHead(ctx, store, runID, time.Now().UnixNano())
 sth    := audit.SignTreeHead(th, priv)   // publish/anchor sth (out-of-band)
 
 // 2. Later, an auditor asks: "did the agent issue THIS charge?"
-//    Disclose only that one record + its inclusion proof — nothing else.
+//    Disclose only that one record + its inclusion proof, nothing else.
 proof, _ := audit.Prove(ctx, store, runID, chargeIndex)
 recs, _  := store.History(ctx, runID)
 

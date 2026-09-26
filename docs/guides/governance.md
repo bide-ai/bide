@@ -1,6 +1,6 @@
 # Convergent governance (Tier-2)
 
-How to let **multiple concurrent agents mutate shared state and still agree** — without a
+How to let **multiple concurrent agents mutate shared state and still agree**, without a
 lock, a leader, or a consensus round. This is the `govern` package. It's built on
 [gsm](https://github.com/blackwell-systems/gsm) (Governed State Machines), which proves *at
 build time* that every interleaving of agent actions converges to the same valid state.
@@ -26,14 +26,14 @@ consistent view → governance.**
 
 You describe shared state as a **registry**:
 
-- **Variables** — the finite shared state (enums, bools, bounded ints).
-- **Invariants** — what "valid" means (`Holds`), and how to **repair** a violation (`Repair`).
-- **Events** — the actions agents can take (`Writes` / `Guard` / `Apply`).
+- **Variables**: the finite shared state (enums, bools, bounded ints).
+- **Invariants**: what "valid" means (`Holds`), and how to **repair** a violation (`Repair`).
+- **Events**: the actions agents can take (`Writes` / `Guard` / `Apply`).
 
 `Build()` enumerates the state space and **proves** two properties: compensation always
 terminates (WFC) and event order doesn't matter after repair (CC). If it can't prove them, it
 **refuses to build** and hands you a counterexample. A built machine is an immutable set of
-O(1) lookup tables — no compensation logic runs at runtime.
+O(1) lookup tables; no compensation logic runs at runtime.
 
 ```go
 r := gsm.NewRegistry("order")
@@ -83,11 +83,11 @@ pg, _ := govern.NewPersistent(ctx, m, log, "order-42", m.NewState()) // event-so
 ```
 
 `PersistentGovernor` appends every event to an `EventLog` and **reconstructs state by
-replaying the log** on startup — crash-recoverable. `EventLog` is a port; adapters:
+replaying the log** on startup: crash-recoverable. `EventLog` is a port; adapters:
 
-- `govern.NewMemEventLog()` — in-memory (tests / local).
-- `govern/sqlitelog` — on-disk SQLite.
-- `govern/redislog` — Redis Streams (networked, "no SQL DB required").
+- `govern.NewMemEventLog()`: in-memory (tests / local).
+- `govern/sqlitelog`: on-disk SQLite.
+- `govern/redislog`: Redis Streams (networked, "no SQL DB required").
 
 ## The agent boundary
 
@@ -148,10 +148,10 @@ When shared state spans **multiple registries** with cross-registry rules (one a
 constrains another's), connect them with **morphisms** into a `Federation`, and drive it with
 a `FederatedGovernor`. The capability ladder:
 
-- **Tree** — each target has one source; the source is *authoritative* over the target's
+- **Tree**: each target has one source; the source is *authoritative* over the target's
   shared component (a manufacturer's status fixes a supplier's listing). Coordination-free
   conflict resolution: the source wins, deterministically.
-- **Multi-source (DAG)** — a target with several sources declares a **`Resolver`** that
+- **Multi-source (DAG)**: a target with several sources declares a **`Resolver`** that
   merges them (priority / AND-OR / most-restrictive):
   ```go
   fed.Morphism(hr, door).Shared(access).Map(...).Add().
@@ -163,11 +163,11 @@ a `FederatedGovernor`. The capability ladder:
           return dst.Set(access, "denied")
       })
   ```
-- **Monotone mesh (cycles)** — peers that constrain **each other** (mutual, cyclic). Enable
+- **Monotone mesh (cycles)**: peers that constrain **each other** (mutual, cyclic). Enable
   with `Federation.AllowMonotoneCycles()`; gsm requires the repair to be monotone and
   converges by fixed-point iteration. This is the only regime that expresses mutual
-  constraints — see `examples/mesh`.
-- **Compositional `Embed`** — verify a subsystem once, reuse it as a unit inside a larger
+  constraints (see `examples/mesh`).
+- **Compositional `Embed`**: verify a subsystem once, reuse it as a unit inside a larger
   federation. See `examples/compose`.
 
 `Build()` rejects anything it can't prove convergent: cycles without monotonicity,
@@ -176,12 +176,12 @@ multi-source without a resolver, morphisms that don't preserve validity.
 ## Synthesis: generate the compensation, or prove it's impossible
 
 You don't have to *design* the `Repair` yourself. Declare the invariants (validity) and the
-events, and let gsm **generate** a convergent compensation — or tell you none exists:
+events, and let gsm **generate** a convergent compensation, or tell you none exists:
 
 ```go
 syn, _ := r.Synthesize()      // Repair omitted on the invariants
 if !syn.Convergent {
-    // these invariants + events cannot converge under ANY repair — redesign the events
+    // these invariants + events cannot converge under ANY repair; redesign the events
 }
 gov := govern.New(syn.Machine(), initial) // hand the synthesized machine to a governor
 ```
@@ -192,7 +192,7 @@ convergent, crash-recoverable governor *with a proof* (which LLMs are bad at). T
 impossibility verdict is a build-time coordination guardrail: it catches unconvergeable
 action sets (e.g., two agents setting the same field to different constants) before deploy.
 
-**Caveat — convergent ≠ desirable.** A synthesized repair only makes orderings *agree*; it
+**Caveat: convergent ≠ desirable.** A synthesized repair only makes orderings *agree*; it
 may not be the repair you'd *want*. Inspect `syn.Repairs()`; if the only convergent repair is
 unacceptable, the fix is to redesign the *events*, not the compensation.
 

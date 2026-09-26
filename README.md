@@ -186,11 +186,11 @@ charge := agent.Func("charge_card", "Charge the customer", agent.Safety{},
 	func(ctx context.Context, in ChargeArgs) (Receipt, error) { /* ... */ })
 
 // If the process crashes after the charge fires but before its result is journaled,
-// resume does NOT run it again — it returns *ResumeHalt so you confirm, not double-charge:
+// resume does NOT run it again: it returns *ResumeHalt so you confirm, not double-charge:
 _, err := a.Run(ctx, runID, input)
 var halt *agent.ResumeHalt
 if errors.As(err, &halt) {
-	// halt.ToolName == "charge_card": outcome unknown — a human decides, no double side effect.
+	// halt.ToolName == "charge_card": outcome unknown, a human decides, no double side effect.
 }
 ```
 
@@ -218,7 +218,7 @@ type Weather struct {
 }
 
 func main() {
-	// Any OpenAI-compatible endpoint — here OpenRouter; swap the base URL for Ollama, etc.
+	// Any OpenAI-compatible endpoint (here OpenRouter); swap the base URL for Ollama, etc.
 	model := openai.New(os.Getenv("OPENROUTER_API_KEY"),
 		openai.WithBaseURL("https://openrouter.ai/api/v1"),
 		openai.WithModel("openai/gpt-4o-mini"))
@@ -230,7 +230,7 @@ func main() {
 			return Weather{TempF: 68, Sky: "sunny"}, nil
 		})
 
-	// Durable on-disk store — a crash mid-run resumes from here.
+	// Durable on-disk store: a crash mid-run resumes from here.
 	store, _ := sqlite.Open("agent.db")
 	defer store.Close()
 
@@ -247,8 +247,8 @@ func main() {
 
 Run the live smoke example: `OPENROUTER_API_KEY=sk-... go run ./examples/smoke`
 
-`Run` returns just the final message. For a run summary — token usage (summed across turns,
-including cache), model-turn count, wall-clock duration — use `RunResult` (and `RunSagaResult`):
+`Run` returns just the final message. For a run summary (token usage, summed across turns,
+including cache; model-turn count; wall-clock duration) use `RunResult` (and `RunSagaResult`):
 
 ```go
 res, err := a.RunResult(ctx, runID, input)
@@ -257,8 +257,8 @@ res, err := a.RunResult(ctx, runID, input)
 
 ## Streaming
 
-`Run` blocks and returns the final answer. To watch the agent work — token deltas, turn
-boundaries, tool start/finish — use `Stream`. It drives the **same loop** (`Run` is literally
+`Run` blocks and returns the final answer. To watch the agent work (token deltas, turn
+boundaries, tool start/finish), use `Stream`. It drives the **same loop** (`Run` is literally
 `Stream(...).Final()`), so durability, resume, and side-effect safety are identical:
 
 ```go
@@ -286,7 +286,7 @@ Two things worth knowing, both consequences of durability:
 - **Token deltas arrive below the middleware chain** (Retry / TokenBudget still see whole
   assembled messages), and **only on a fresh model call**.
 - **On resume, the journaled transcript is re-emitted** as `AssistantTurn{Replayed: true}` +
-  `ToolCompleted` before live progress — so a fresh UI reconstructs the whole story after a
+  `ToolCompleted` before live progress, so a fresh UI reconstructs the whole story after a
   crash, and a replayed turn produces no token deltas (it was already decided).
 
 `StreamSaga` is the streaming counterpart of `RunSaga`.
@@ -295,7 +295,7 @@ Two things worth knowing, both consequences of durability:
 
 `RunTyped[T]` returns a typed `T` instead of a free-form message. It injects a synthetic
 `final_answer` tool whose JSON schema is derived from `T` (via the `schema` package) and steers
-the model to call it once its work is done — so a tool-using agent can do real work and *then*
+the model to call it once its work is done, so a tool-using agent can do real work and *then*
 answer typed. Provider-agnostic (built on native tool calling, not a provider's JSON mode).
 
 ```go
@@ -309,7 +309,7 @@ w, err := agent.RunTyped[Weather](ctx, a, runID, "weather in SF?")
 ```
 
 It's a package function, not a method (Go methods can't add type parameters). The value is
-decoded from the *journaled* tool call, so it's **resume-safe** — a crash mid-run recovers the
+decoded from the *journaled* tool call, so it's **resume-safe**: a crash mid-run recovers the
 typed answer from the log on resume. If the model replies in plain JSON text instead of calling
 the tool, `RunTyped` falls back to parsing that text. `T` is meant to be a struct.
 
@@ -319,7 +319,7 @@ no tool round-trip); Anthropic ignores it, so use `RunTyped` there for provider-
 
 ## Sampling
 
-Generation controls are provider-neutral and set once — each adapter maps them onto its wire
+Generation controls are provider-neutral and set once; each adapter maps them onto its wire
 format (and drops what it can't do, e.g. Anthropic has no `seed`):
 
 ```go
@@ -333,7 +333,7 @@ adapter's construction-time default.
 
 ## Prompt caching
 
-An agent loop resends a large constant prefix — system prompt + tool schemas — every turn.
+An agent loop resends a large constant prefix (system prompt + tool schemas) every turn.
 Anthropic prompt caching bills those repeats at the cache-read rate:
 
 ```go
@@ -342,7 +342,7 @@ model := anthropic.New(key, anthropic.WithPromptCache())
 
 This places `cache_control` breakpoints on the system block and the tool definitions. OpenAI
 caches prefixes automatically (no flag needed). Either way, cache effectiveness surfaces in
-`agent.Usage` — `CacheReadTokens` (served from cache) and `CacheWriteTokens` (written to it) —
+`agent.Usage` (`CacheReadTokens`, served from cache, and `CacheWriteTokens`, written to it),
 so middleware like `TokenBudget` and cost accounting see the real numbers.
 
 ## Sessions (multi-turn)
@@ -360,7 +360,7 @@ a2, _ := s.Send(ctx, "and its population?")   // sees turn 1 in context
 The transcript is journaled turn-by-turn under the session id, so a restarted process
 `a.Session(ctx, "user-42")` rebuilds it and continues. Turn N runs under `"<id>/tN"` (its own
 durable journal handles crash-resume *within* a turn); conversational memory is the question/answer
-transcript — a turn's intermediate tool calls stay in that turn and don't leak into later ones. If
+transcript: a turn's intermediate tool calls stay in that turn and don't leak into later ones. If
 a turn pauses (approval / `Interrupt`), `Send` returns that error; resolve it and call `Send` again
 with the same input to resume.
 
@@ -376,26 +376,26 @@ sig := audit.Sign(head, priv)                // anchor it: sign / publish out-of
 
 Any modify / insert / delete / reorder of a record changes the head. **Security model:** this
 gives integrity unconditionally, and tamper-evidence *when you anchor the head out-of-band* (a chain
-in the same DB an attacker controls can be rewritten and rehashed) — see the package doc. It's the
+in the same DB an attacker controls can be rewritten and rehashed); see the package doc. It's the
 compliance/enterprise seam: provable at-most-once side effects *plus* a verifiable record of exactly
 what the agent did.
 
 For **selective disclosure**, `audit.Root` / `Prove` / `VerifyInclusion` build an **RFC 6962**
-(Certificate Transparency) Merkle tree, so you can prove one record is part of a committed run —
-via an O(log n) inclusion proof — *without revealing the other records* (e.g. show an auditor a
+(Certificate Transparency) Merkle tree, so you can prove one record is part of a committed run
+via an O(log n) inclusion proof, *without revealing the other records* (e.g. show an auditor a
 single charge happened, exposing no other customers or prompts). And `ProveConsistency` /
-`VerifyConsistency` prove an earlier root is an **append-only prefix** of a later one — that history
+`VerifyConsistency` prove an earlier root is an **append-only prefix** of a later one: that history
 was only appended, never rewritten or reordered (the transparency-log guarantee). The implementation
 is checked against the published RFC 6962 test vectors.
 
-`SignTreeHead` produces the CT-style **Signed Tree Head** — `{Size, Root, Timestamp}` signed with
-Ed25519 — the artifact you publish. The full flow: sign an STH, later disclose a single record with an
+`SignTreeHead` produces the CT-style **Signed Tree Head**, `{Size, Root, Timestamp}` signed with
+Ed25519, the artifact you publish. The full flow: sign an STH, later disclose a single record with an
 inclusion proof an auditor checks against the signed root, and prove append-only growth between two STHs.
 See [docs/guides/audit.md](docs/guides/audit.md) for the model, the API, and the end-to-end compliance flow.
 
 ## RAG & memory (bring your own)
 
-go-agents ships **no vector store, embedder, or memory backend** — it gives you the *seam* and
+go-agents ships **no vector store, embedder, or memory backend**: it gives you the *seam* and
 you plug in the store you already run. Implement one interface against your infra:
 
 ```go
@@ -407,10 +407,10 @@ type Retriever interface {
 Then wire it in one of two ways:
 
 ```go
-// Agentic RAG — the model searches on demand:
+// Agentic RAG: the model searches on demand:
 a := agent.New(model, store, agent.RetrievalTool(myStore, 5))
 
-// Classic RAG — top-k auto-injected as context on each user turn:
+// Classic RAG: top-k auto-injected as context on each user turn:
 a.Use(agent.WithRetrieval(myStore, 5))
 ```
 
@@ -429,26 +429,26 @@ agent.Safety{RequiresApproval: true}  // pause for human approval before executi
 ```
 
 Before a non-idempotent side effect the loop records a durable *attempt marker*, so
-resume can tell "never ran" (safe to run) from "ran and crashed" (halt) — precisely, not
+resume can tell "never ran" (safe to run) from "ran and crashed" (halt): precisely, not
 conservatively.
 
 This is **proven, not asserted.** `dst_test.go` is a deterministic simulation test: a
 fault-injecting store crashes at *every* write point (and across hundreds of randomized
 multi-crash schedules), and the harness asserts a non-idempotent side effect fires **at most
-once** every time, with the run always ending completed or halted — never double-firing.
+once** every time, with the run always ending completed or halted, never double-firing.
 
 The harness is exported (`chaos/`) and pointed at other SDKs in `benchmarks/`. The measured result:
 **go-agents `maxFired=1` (PASS); trpc-agent-go `maxFired=5`; langchaingo `maxFired=64` (both FAIL).**
-trpc's checkpoint/resume genuinely works (verified — resuming a completed run is a no-op); its
+trpc's checkpoint/resume genuinely works (verified: resuming a completed run is a no-op); its
 double-fire is the documented LangGraph "nodes must be idempotent" window. langchaingo has no
 durability at all, so retries re-run everything. go-agents' attempt-marker closes the window entirely.
 
-`WithMaxTurns(n)` caps model turns per run so a model that keeps calling tools can't loop forever
-— hitting it returns `ErrMaxTurns` (which is `errors.Is` `ErrBudget`).
+`WithMaxTurns(n)` caps model turns per run so a model that keeps calling tools can't loop forever:
+hitting it returns `ErrMaxTurns` (which is `errors.Is` `ErrBudget`).
 
 ## Human-in-the-loop
 
-Two flavors. **Approve/deny** — a tool marked `RequiresApproval` pauses *before* running; the
+Two flavors. **Approve/deny**: a tool marked `RequiresApproval` pauses *before* running; the
 human decision is a bool:
 
 ```go
@@ -461,7 +461,7 @@ if errors.As(err, &pend) {
 }
 ```
 
-**Interrupt/resume** — a tool pauses *at an arbitrary point* and resumes with a *typed* value
+**Interrupt/resume**: a tool pauses *at an arbitrary point* and resumes with a *typed* value
 (generalizing the bool). Call `agent.Interrupt[T]` inside a retry-safe tool:
 
 ```go
@@ -483,13 +483,13 @@ if errors.As(err, &intr) {
 }
 ```
 
-Both are durable — the decision/value is a journaled step, so it survives a crash. Interrupt
+Both are durable: the decision/value is a journaled step, so it survives a crash. Interrupt
 must be in a retry-safe tool (`ReadOnly`/`Idempotent`): on resume the tool re-runs until the
 interrupt resolves, so everything before the `Interrupt` call must be safe to repeat.
 
 ## Errors
 
-Failures are classified with sentinel errors matched by `errors.Is` — the standard-library
+Failures are classified with sentinel errors matched by `errors.Is`, the standard-library
 idiom, no custom error framework. Two tiers: a **category** (the coarse class) and a
 **condition** (a specific cause) that wraps its category, so a match works at whichever level
 you need:
@@ -514,13 +514,13 @@ so `errors.Is` is reliable across the whole surface.
 
 The **control-flow signals** are richer than a category, so they stay concrete types matched
 with `errors.As`: `*PendingApproval` (approval needed), `*ResumeHalt` (unsafe to resume),
-`*SagaAborted` (rolled back). A paused or halted run is not a "failure" category — inspect the
+`*SagaAborted` (rolled back). A paused or halted run is not a "failure" category; inspect the
 struct for `RunID` / `ToolUseID` / compensation details. Cancellation surfaces as the usual
 `context.Canceled` / `context.DeadlineExceeded`.
 
 ## Middleware & observability
 
-Two independent `func(Handler) Handler` chains at the two boundaries that matter — the model
+Two independent `func(Handler) Handler` chains at the two boundaries that matter: the model
 call (`Use`) and each tool call (`UseTool`). First added = outermost. Both are *mutating and
 short-circuiting*: rewrite what goes in, transform what comes out, or return without calling
 `next`.
@@ -535,7 +535,7 @@ a := agent.New(model, store, tools...).
 	).
 	UseTool(middleware.ToolLog(log.Printf), middleware.ToolCache(), middleware.ToolRetry(3))
 
-// opt-in OTel gen_ai.* spans — the core has no OTel dependency:
+// opt-in OTel gen_ai.* spans; the core has no OTel dependency:
 a.Use(trace.Model(tracer, trace.WithSystem("openai"), trace.WithModel("gpt-4o-mini")))
 a.UseTool(trace.Tool(tracer)) // execute_tool span per call; nests across the sub-agent boundary
 // ... after the run: cost.Total() (USD), cost.Usage()
@@ -545,16 +545,16 @@ a.UseTool(trace.Tool(tracer)) // execute_tool span per call; nests across the su
 adapter returns a typed `*agent.RateLimited`); `Cost` accumulates USD from token usage (incl.
 cache-read/write) into a `CostMeter` you read after the run.
 
-Because `trace.Tool` runs inside the loop, its span sits in the context handed to the tool — so
+Because `trace.Tool` runs inside the loop, its span sits in the context handed to the tool, so
 when a tool is itself a sub-agent, the sub-agent's run and its own spans nest as children. The
 trace crosses the sub-agent boundary automatically (a gap in ADK / AgenticGoKit / trpc-agent-go).
 
 Tool middleware runs *inside* the durable step, so a short-circuit (a `ToolCache` hit) or a
-policy denial is journaled like any tool result — resume replays it and never re-runs the
+policy denial is journaled like any tool result; resume replays it and never re-runs the
 middleware or the tool. Write your own with the `agent.ToolMiddleware` signature:
 
 ```go
-// Deny a tool by policy — the tool never executes; the model sees the error and reacts.
+// Deny a tool by policy: the tool never executes; the model sees the error and reacts.
 func RequireTag(tag string) agent.ToolMiddleware {
 	return func(next agent.ToolHandler) agent.ToolHandler {
 		return func(ctx context.Context, tu agent.ToolUse) (json.RawMessage, error) {
@@ -569,7 +569,7 @@ func RequireTag(tag string) agent.ToolMiddleware {
 
 ## Modules
 
-go-agents is a multi-module repo: a dependency-light **core** (`github.com/dayna/go-agents` —
+go-agents is a multi-module repo: a dependency-light **core** (`github.com/dayna/go-agents`,
 the loop, schema, middleware, model adapters, govern; deps are just gsm + `x/sync`) plus one
 module per heavy adapter (`mcp`, `trace`, `store/sqlite`, `store/postgres`, `govern/redislog`,
 `govern/sqlitelog`, `govern/postgreslog`). Import an adapter and you pull its dependency tree; import only the core
@@ -579,7 +579,7 @@ and you don't. A core-only consumer's external-module surface is 2, not 54. See
 ## Architecture
 
 Hexagonal by construction: the core defines the ports (`Model`, `Durable`, `Tool`,
-`Middleware`); adapters plug in at the edges. Dependencies point inward — the core imports
+`Middleware`); adapters plug in at the edges. Dependencies point inward; the core imports
 no adapter and no infrastructure, guarded by `architecture_test.go`.
 
 ```

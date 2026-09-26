@@ -7,7 +7,7 @@ actually import.
 ## Why
 
 The core agent loop imports only `golang.org/x/sync` (plus gsm). The adapters, however, pull
-large dependency trees — modernc pure-Go SQLite alone is 34 modules. As a single module, a
+large dependency trees: modernc pure-Go SQLite alone is 34 modules. As a single module, a
 consumer who imported *only* the core still inherited the whole set in their `go.sum` /
 `go mod graph` / SCA audit surface (Go's module-graph pruning keeps them from *compiling*
 unused adapters, but they still appear to dependency scanners).
@@ -30,7 +30,7 @@ only when that adapter is imported.
 
 The core module keeps everything with no heavy deps: `agent` (loop), `schema`, `middleware`,
 `model/anthropic`, `model/openai`, `govern`, and `examples`. The `architecture_test.go` guard
-(core must not import an adapter) still holds — now enforced at the module boundary too.
+(core must not import an adapter) still holds, now enforced at the module boundary too.
 
 ## Working in the repo
 
@@ -51,5 +51,5 @@ so it builds standalone in CI. CI builds and tests every module in its own direc
 The module path is still the working-codename placeholder and the core is unpublished, so the
 adapter modules resolve the core via `replace` directives rather than a pinned version. At the
 **v1.0 / real-name** milestone: rename all module paths, tag the core, and replace the
-`replace` directives with version pins — one coordinated event. Until then there are no
+`replace` directives with version pins: one coordinated event. Until then there are no
 external consumers, so the interim resolution is invisible.

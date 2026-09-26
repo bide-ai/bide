@@ -17,7 +17,7 @@ For a `System` under test, `Verify` runs an exhaustive crash-point sweep (crash 
 durable write, then resume to a terminal state) plus hundreds of randomized multi-crash
 schedules, and counts how many times the real side effect executed. The invariant: never
 more than once. A loop that relies on at-least-once + "make it idempotent yourself"
-double-fires here, visibly (see `NaiveReference`, the baseline that fails — which also
+double-fires here, visibly (see `NaiveReference`, the baseline that fails, which also
 proves the harness is non-vacuous: a correct loop passes it, that one doesn't).
 
 ## Pointing it at another SDK
@@ -39,8 +39,8 @@ type Run interface {
 `GoAgents()` is the reference adapter; `NaiveReference()` is the at-least-once baseline.
 
 **Fairness matters.** An adapter must represent that SDK's *best-effort* durability, not a
-strawman — the benchmark's credibility is that it's fair. Two outcomes for an SDK
-without side-effect-safe resume: it either **can't resume at all** (a crash loses the run —
+strawman; the benchmark's credibility is that it's fair. Two outcomes for an SDK
+without side-effect-safe resume: it either **can't resume at all** (a crash loses the run,
 model that as the finding, not a rigged double-fire), or it **resumes by re-running** the
 tool (a genuine double-fire). Competitor adapters live in a **separate module** so their
 dependency trees never touch the go-agents core (see `benchmarks/`, when added).
@@ -48,5 +48,5 @@ dependency trees never touch the go-agents core (see `benchmarks/`, when added).
 ## Scope
 
 Same as the DST it derives from: this is randomized + exhaustive-over-write-points crash
-injection modeling process death around durable writes — strong and non-vacuous, but not a
+injection modeling process death around durable writes: strong and non-vacuous, but not a
 machine-checked formal proof over all interleavings.
