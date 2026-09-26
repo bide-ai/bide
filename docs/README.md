@@ -36,7 +36,7 @@ Accountability and governance:
 
 ## Design notes
 
-- **[Design](design/design.md)**, **[Durable signals](design/design-durable-signals.md)**, **[Compaction](design/compaction.md)**, **[Chaos benchmark](design/chaos-benchmark.md)**.
+- **[Design](design/design.md)**, **[Durable signals](design/design-durable-signals.md)**, **[Expression surfaces](design/expression-surfaces.md)** (one substrate, many front-ends), **[Compaction](design/compaction.md)**, **[Chaos benchmark](design/chaos-benchmark.md)**.
 
 ## Testing and evidence
 

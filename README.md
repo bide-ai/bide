@@ -183,7 +183,8 @@ cannot offer the reverse, because for it the graph is the base rather than a lay
 For an accountability runtime the direction also matters. An authored graph is a diagram you trust;
 a derived graph is reconstructed from the journal, so it is exactly what ran. Preferring the derived
 view is the same verify, do not trust stance as the rest of the system, and it holds even once an
-authoring layer sits on top.
+authoring layer sits on top. The principle for adding any such layer without forking the runtime is
+recorded in [expression surfaces](docs/design/expression-surfaces.md).
 
 ## Ambient runs: durable sleep, wake, and interrupt
 
