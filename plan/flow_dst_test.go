@@ -240,8 +240,9 @@ func TestDST_Flow_JournalRecordScheme(t *testing.T) {
 func TestDST_Flow_HaltThenResolveCompletes(t *testing.T) {
 	// Find a crash point on the ENTRY result write (increment fired, result lost,
 	// attempt marker persisted), so the halt names "entry" and count is 1 at halt.
-	// The entry attempt is write 1 and its result is write 2, so crashAt=2 lands
-	// there; find it robustly rather than hard-coding the count.
+	// Run records flow:digest first, then the entry attempt, then the entry result,
+	// so the crash point is a few writes in; find it robustly rather than hard-coding
+	// the count.
 	var count int
 	var mem agent.Durable
 	var halt *HaltAmbiguous

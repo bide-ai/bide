@@ -96,6 +96,92 @@ Every node lowers to a memoized `Do` step under a two-phase attempt/result guard
   journaled branch choice. The blind spot: conformance sees *that* a node ran, not what its Go body did
   inside, so a node whose interior must be checked should be split into smaller nodes.
 
+## Cryptographic conformance
+
+`Conform` proves a run followed the declared graph *against the flow value in memory*. Cryptographic
+conformance makes the same claim **offline-verifiable**: it lets an auditor who was not present at
+runtime, and who does not trust your database, confirm that a run committed to **this** declared
+topology.
+
+The mechanism is a topology digest journaled inside the run, so the audit layer's Merkle tree and
+signed tree head (STH) cover it:
+
+- **`flow.Digest()`** returns a deterministic SHA-256 (hex) fingerprint of the FROZEN topology: the
+  flow name and boundary types, every node's name and kind and I/O types, every edge, and every
+  `Switch` and its ordered arms, serialized in insertion order (never by map iteration). Two builds of
+  the same diagram produce the same digest; any change to the topology (a renamed or retyped node, an
+  added or reordered edge, a changed arm) produces a different digest. It commits to topology, not to
+  node bodies, mirroring `Conform`.
+- **`Run` records the digest first.** The first durable step of every run is the reserved record
+  `flow:digest` (a `StepValue` whose result is the hex digest), memoized on resume. Because it lives in
+  the journal, an `audit.TreeHead` over the run commits to it like any other record.
+- **`Conform` verifies the journaled digest** equals the current flow's `Digest()`. A mismatch is a
+  divergence ("ran against a different topology"); the `flow:digest` record itself is recognised as an
+  internal record of the run, never an unexpected step.
+
+The full offline-verifiable flow ("the run followed the signed diagram"):
+
+```
+Run(store, runID, in)                     // journals flow:digest first, then the nodes
+  -> th  := audit.NewTreeHead(store, runID, ts)   // Merkle commitment over the whole journal
+  -> sth := audit.SignTreeHead(th, priv)          // anchor this out of band
+  -> bundle := audit.ProveRecord(store, runID, idxOf("flow:digest"), sth)  // RFC 6962 inclusion proof
+  -> bundle.Verify(pub)                    // signature authentic + flow:digest included under the signed root
+  -> decode(bundle.Record) == flow.Digest()       // the proven digest is THIS declared topology
+  -> flow.Conform(store, runID)            // the journaled PATH followed the declared graph
+```
+
+Given only the signed tree head, the proof bundle, and the signer's public key (obtained out of band),
+the auditor checks all of this offline: the signature is authentic, the `flow:digest` record is
+included under the signed root, and the proven digest equals the declared flow's `Digest()`. Tampering
+with the record breaks the inclusion proof, so a forged topology digest cannot be passed off as
+committed. The `plan` package stays audit-free (journaling the digest needs only `store.Do`); the
+inclusion-proof step lives at the caller layer, where `audit` is available. See
+`proveTopologyConformance` in `examples/plan/main.go` and its test for the worked demonstration.
+
+## Cryptographic conformance
+
+`Conform` proves the run followed the declared graph *against the same process's copy of the flow*.
+Cryptographic conformance goes one step further: it makes that claim **offline-verifiable** by an
+auditor who never trusts your process, your database, or your logs. The property proven is precise:
+*this run committed to THIS declared topology*.
+
+Two pieces make it work:
+
+- **A topology digest.** `flow.Digest()` returns a deterministic SHA-256 (hex) of the *frozen* spec:
+  the flow name, each node's name + kind + input type + output type, every edge, and each `Switch`
+  with its ordered arms. It is computed by walking the insertion-ordered spec (never a map), so it is
+  stable across builds and processes and changes whenever the topology changes (a renamed or retyped
+  node, an added or reordered edge, a changed arm). It commits to topology, not to node bodies.
+- **A journaled record the audit layer covers.** The first thing `Run` records is the digest, as a
+  durable step under the reserved name `flow:digest` (memoized on resume). Because it lives in the
+  journal, the [`audit`](../../audit) package's Merkle tree and signed tree head commit to it like any
+  other record.
+
+The flow, end to end:
+
+1. `flow.Run(ctx, store, runID, in)` executes the flow. Its first journal record is `flow:digest`.
+2. `audit.NewTreeHead(ctx, store, runID, ts)` then `audit.SignTreeHead(th, priv)` commit to the run's
+   journal with a signed tree head (STH). Anchor the STH and its key in a separate trust domain; that
+   is what makes it tamper-evident (see the `audit` package security model).
+3. `audit.ProveRecord(ctx, store, runID, i, sth)` builds an RFC 6962 inclusion proof for the
+   `flow:digest` record (index `i`), bundled with the STH.
+4. An auditor holding only the bundle and the signer's public key (obtained out of band) checks
+   `bundle.Verify(pub)` (the STH signature is authentic and the record is included under the signed
+   root) and that the proven digest equals the declared flow's `flow.Digest()`. Together: **the run
+   committed to this signed diagram.**
+
+`Conform` closes the loop on the *path*: it recognizes `flow:digest` as an internal record (never a
+divergence) and verifies the journaled digest **equals** the current flow's `Digest()`. A mismatch is
+reported as a divergence, "ran against a different topology": the run executed under a different
+declared graph than the flow now describes. So `Conform` covers node-visitation and branch choices,
+and the digest + inclusion proof cover *which topology* the run committed to, verifiable offline.
+
+The `examples/plan` demo prints this after a clean run
+(`Cryptographic conformance: the run committed to the declared topology under the signed tree head`),
+and `TestCryptographicConformance` there proves it in-process, including that a tampered `flow:digest`
+record no longer verifies under the signed root.
+
 ## Limits in rung 1
 
 - `Model` is a stub (returns an error); real model binding is not wired.
@@ -106,8 +192,10 @@ Every node lowers to a memoized `Do` step under a two-phase attempt/result guard
 ## A runnable example
 
 `examples/plan` is a self-contained module: it builds an order-triage flow, prints the declared
-diagram, runs it against a sqlite-backed store, and conforms the run. Its cross-process test crashes
-mid-run and resumes in a fresh process, proving the side effect fires at most once and the run either
-completes or halts. Run the demo with `cd examples/plan && GOWORK=off go run .`.
+diagram, runs it against a sqlite-backed store, conforms the run, and proves cryptographic conformance
+(a signed tree head over the run plus an inclusion proof that the journaled topology digest equals
+`flow.Digest()`). Its cross-process test crashes mid-run and resumes in a fresh process, proving the
+side effect fires at most once and the run either completes or halts. Run the demo with
+`cd examples/plan && GOWORK=off go run .`.
 
 See also the [design note](../design/expression-surfaces.md) for why the surface is shaped this way.

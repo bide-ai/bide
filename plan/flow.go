@@ -46,7 +46,13 @@ type Flow[In, Out any] struct {
 // replayed rather than re-decided, so the predicates must be pure over the
 // switched value (see When). Only the taken arm's downstream path executes.
 //
-// Journal-record name scheme Run writes, per node named N:
+// Journal-record name scheme Run writes:
+//   - "flow:digest" -- the frozen topology digest (StepValue whose Result is the
+//     JSON-encoded hex digest), recorded FIRST, before any node runs, and memoized on
+//     resume. It is an internal record of the run, not a declared node; conformance
+//     recognises it and verifies it equals the current flow's Digest() (see Conform).
+//
+// then, per node named N:
 //   - "attempt:"+N  -- the attempt marker (StepValue, no Result), recorded before N runs;
 //   - N             -- N's result (StepValue whose Result is the JSON-encoded output);
 //   - "switch:"+over -- for a switched node, the journaled arm choice (StepValue whose
@@ -57,6 +63,21 @@ type Flow[In, Out any] struct {
 func (f *Flow[In, Out]) Run(ctx context.Context, store agent.Durable, runID string, in In) (Out, error) {
 	var out Out
 	c := f.core
+
+	// The FIRST thing Run records is the frozen flow's topology digest, under the
+	// reserved step name flow:digest, so the audit layer's Merkle tree and signed
+	// tree head cover it (see Digest). store.Do memoizes it by name, so a resumed run
+	// replays the recorded digest rather than recomputing and re-recording it. This is
+	// what makes it offline-verifiable that the run followed THIS declared topology.
+	if _, err := store.Do(ctx, runID, flowDigestStep, func(context.Context) (agent.Record, error) {
+		encoded, encErr := json.Marshal(c.digest())
+		if encErr != nil {
+			return agent.Record{}, fmt.Errorf("plan: run %q: encode topology digest: %w", c.flowName, encErr)
+		}
+		return agent.Record{Kind: agent.StepValue, Result: encoded}, nil
+	}); err != nil {
+		return out, fmt.Errorf("plan: run %q: record topology digest: %w", c.flowName, err)
+	}
 
 	// Walk from the entry, carrying the current node and its decoded input. Each
 	// node is driven as one durable step; the walk advances to the edge target or,

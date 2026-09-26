@@ -37,6 +37,11 @@ func (f *Flow[In, Out]) Conform(ctx context.Context, store agent.Durable, runID 
 //
 // The record-name scheme Run writes (see Flow.Run) is:
 //
+//   - "flow:digest"    -- the frozen topology digest Run records first (StepValue whose
+//     Result is the JSON-encoded hex digest). It is an INTERNAL record of the run, not a
+//     declared node, so it is never an unexpected step; conform verifies it EQUALS the
+//     current flow's Digest() and reports a mismatch as a divergence ("ran against a
+//     different topology").
 //   - "<N>"            -- node N's result (StepValue whose Result is N's JSON output).
 //   - "attempt:<N>"    -- an attempt marker written BEFORE node N's body runs
 //     (StepValue, empty Result). It is an INTERNAL step of node N, not a distinct
@@ -68,9 +73,28 @@ func (c *builderCore) conform(ctx context.Context, store agent.Durable, runID st
 		switchArms[br.over] = targets
 	}
 
+	// The current flow's topology digest, so a journaled flow:digest record can be
+	// checked for equality: a mismatch means the run executed against a DIFFERENT
+	// declared topology than the flow now describes.
+	want := c.digest()
+
 	var diffs []string
 	for _, r := range recs {
 		switch {
+		case r.Name == flowDigestStep:
+			// The reserved topology-digest record Run writes first (see Flow.Run). It is
+			// an internal record of the run, not a declared node, so it is never an
+			// "unexpected step". It MUST equal the current flow's Digest(); a mismatch is a
+			// divergence: the run followed a different declared topology than this flow.
+			got, decErr := decodeSwitchChoice(r.Result)
+			if decErr != nil {
+				diffs = append(diffs, r.Name+" (unreadable topology digest)")
+				continue
+			}
+			if got != want {
+				diffs = append(diffs, r.Name+" (ran against a different topology)")
+			}
+
 		case strings.HasPrefix(r.Name, "switch:"):
 			// A journaled Switch choice. The over-node must be a declared Switch, and
 			// the recorded chosen target must be one of that Switch's declared arms.

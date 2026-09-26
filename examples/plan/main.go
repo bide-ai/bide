@@ -4,7 +4,12 @@
 //
 //   - prints flow.RenderMermaid(), the DECLARED topology;
 //   - flow.Run(...) to a typed Receipt and prints it;
-//   - flow.Conform(...) and prints whether the journaled run followed the declared graph.
+//   - flow.Conform(...) and prints whether the journaled run followed the declared graph;
+//   - proves CRYPTOGRAPHIC conformance: commits to the run's journal with a signed
+//     audit tree head, obtains an RFC 6962 inclusion proof for the flow:digest record
+//     Run journaled first, and checks the proven digest equals flow.Digest() (see
+//     proveTopologyConformance). This is the offline-verifiable "the run followed the
+//     signed diagram" story.
 //
 // The point it demonstrates is the substrate guarantee the plan surface inherits for
 // free: a non-idempotent side effect (reserving inventory, modelled as one appended
@@ -35,13 +40,16 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"os"
+	"time"
 
 	agent "github.com/dayna/go-agents"
+	"github.com/dayna/go-agents/audit"
 	"github.com/dayna/go-agents/plan"
 	"github.com/dayna/go-agents/store/sqlite"
 )
@@ -134,6 +142,99 @@ func main() {
 
 	fmt.Printf("Run output (typed Receipt): %+v\n", out)
 	reportConform(ctx, flow, store, cfg.runID)
+	proveTopologyConformance(ctx, flow, store, cfg.runID)
+}
+
+// proveTopologyConformance demonstrates the offline-verifiable "the run followed the
+// signed diagram" story, tying three pieces together:
+//
+//  1. the DECLARED topology, hashed to flow.Digest();
+//  2. the audit layer's signed tree head (STH) over this run's journal, which commits
+//     to the whole history, including the flow:digest record Run wrote first;
+//  3. an RFC 6962 inclusion proof that the flow:digest record is in the tree the STH
+//     signed, plus a Conform pass over the same run.
+//
+// An auditor, given only the signed tree head, the proof bundle, and the signer's
+// public key (obtained out of band), can verify OFFLINE that a run committed to THIS
+// topology: the bundle's signature is authentic, the flow:digest record is included
+// under the signed root, and the proven digest equals the declared flow's Digest().
+// The signing key here is generated for the demo; a real deployment anchors the STH
+// and its key in a separate trust domain (see the audit package security model).
+func proveTopologyConformance(ctx context.Context, flow *plan.Flow[Order, Receipt], store *sqlite.Store, runID string) {
+	// The declared topology digest: the fingerprint of the diagram the author wrote.
+	declared := flow.Digest()
+
+	// Commit to the run's journal with a signed tree head. In production the key is
+	// held by a separate trust domain and the STH is anchored out of band; here we
+	// generate a demo key so the example is self-contained (no network, no key file).
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		fatal(fmt.Errorf("generate demo signing key: %w", err))
+	}
+	th, err := audit.NewTreeHead(ctx, store, runID, time.Now().UnixNano())
+	if err != nil {
+		fatal(fmt.Errorf("build tree head over run %q: %w", runID, err))
+	}
+	sth := audit.SignTreeHead(th, priv)
+
+	// Locate the flow:digest record's index in the journal (Run writes it first, so it
+	// is index 0, but resolve it by name to stay robust), then prove its inclusion
+	// under the signed tree head.
+	idx, err := digestRecordIndex(ctx, store, runID)
+	if err != nil {
+		fatal(err)
+	}
+	bundle, err := audit.ProveRecord(ctx, store, runID, idx, sth)
+	if err != nil {
+		fatal(fmt.Errorf("prove flow:digest inclusion: %w", err))
+	}
+
+	// Verify OFFLINE: (1) the bundle is authentic under the signer's public key and the
+	// flow:digest record is included under the signed root; (2) the proven digest equals
+	// the declared topology's Digest(). Together these prove the run followed THIS diagram.
+	ok, err := bundle.Verify(pub)
+	if err != nil {
+		fatal(fmt.Errorf("verify proof bundle: %w", err))
+	}
+	if !ok {
+		fmt.Println("Cryptographic conformance: FAILED (the inclusion proof did not verify under the signing key).")
+		return
+	}
+	proven, err := decodeJournaledDigest(bundle.Record.Result)
+	if err != nil {
+		fatal(fmt.Errorf("decode proven digest: %w", err))
+	}
+	if proven != declared {
+		fmt.Printf("Cryptographic conformance: FAILED (proven digest %s != declared %s: the run followed a different topology).\n", proven, declared)
+		return
+	}
+	fmt.Printf("Cryptographic conformance: the run committed to the declared topology under the signed tree head (digest %s).\n", declared)
+}
+
+// digestRecordIndex returns the journal index of the reserved flow:digest record for
+// runID, so audit.ProveRecord can build an inclusion proof for it. It errors if no
+// such record exists (the run never started, or was journaled without Run).
+func digestRecordIndex(ctx context.Context, store *sqlite.Store, runID string) (int, error) {
+	recs, err := store.History(ctx, runID)
+	if err != nil {
+		return 0, fmt.Errorf("load history for run %q: %w", runID, err)
+	}
+	for i, r := range recs {
+		if r.Name == "flow:digest" {
+			return i, nil
+		}
+	}
+	return 0, fmt.Errorf("run %q has no flow:digest record", runID)
+}
+
+// decodeJournaledDigest reads the hex topology digest from a flow:digest record's
+// Result, which Run JSON-encodes as a string.
+func decodeJournaledDigest(raw json.RawMessage) (string, error) {
+	var digest string
+	if err := json.Unmarshal(raw, &digest); err != nil {
+		return "", err
+	}
+	return digest, nil
 }
 
 // buildFlow assembles the order-triage flow: classify the order, then Switch on the

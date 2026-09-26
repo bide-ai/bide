@@ -119,6 +119,12 @@ func TestE2E_ResumeAfterKillCompletesOnce(t *testing.T) {
 	if !strings.Contains(out2, "Conform: the run followed the declared graph") {
 		t.Fatalf("phase 2 run did not Conform to the declared graph\n%s", out2)
 	}
+	// The completed run must also prove CRYPTOGRAPHIC conformance: the flow:digest
+	// record is included under a signed audit tree head and equals the declared
+	// topology's Digest(). This is the offline-verifiable "followed the signed diagram".
+	if !strings.Contains(out2, "Cryptographic conformance: the run committed to the declared topology under the signed tree head") {
+		t.Fatalf("phase 2 run did not prove cryptographic conformance\n%s", out2)
+	}
 }
 
 // TestE2E_HaltOnAmbiguityAcrossProcesses is scenario (b): phase 1 fires the reserve side
