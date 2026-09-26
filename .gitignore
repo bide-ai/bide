@@ -30,6 +30,7 @@ coverage.*
 # compiled example binaries (from `go build .` in an example dir)
 examples/mcp/mcp
 examples/observability/observability
+examples/plan/plan
 
 # internal strategy/positioning docs (not published)
 /internal/
