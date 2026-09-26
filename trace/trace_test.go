@@ -216,3 +216,63 @@ func TestTool_CapturesArgsAndResultWhenEnabled(t *testing.T) {
 		t.Errorf("tool result = %v", a["gen_ai.tool.call.result"])
 	}
 }
+
+// instrModel calls the "ping" tool on the first turn, then answers, so a full run produces
+// both a chat span and an execute_tool span.
+type instrModel struct{}
+
+func (instrModel) Stream(_ context.Context, req agent.Request) (*agent.Stream, error) {
+	answered := false
+	for _, msg := range req.Messages {
+		if msg.Role == agent.RoleTool {
+			answered = true
+		}
+	}
+	var emits []agent.Emit
+	if answered {
+		emits = []agent.Emit{{Event: agent.TextDelta{Text: "done"}}, {Event: agent.Finish{Reason: "stop"}}}
+	} else {
+		emits = []agent.Emit{
+			{Event: agent.ToolCallDelta{Index: 0, ID: "c1", Name: "ping", ArgsFragment: []byte(`{}`)}},
+			{Event: agent.Finish{Reason: "tool_use"}},
+		}
+	}
+	ch := make(chan agent.Emit, len(emits))
+	for _, e := range emits {
+		ch <- e
+	}
+	close(ch)
+	return agent.NewStream(ch), nil
+}
+
+type pingTool struct{}
+
+func (pingTool) Name() string                { return "ping" }
+func (pingTool) Description() string         { return "" }
+func (pingTool) Safety() agent.Safety        { return agent.Safety{ReadOnly: true} }
+func (pingTool) ArgsSchema() json.RawMessage { return nil }
+func (pingTool) Call(context.Context, json.RawMessage) (json.RawMessage, error) {
+	return json.RawMessage(`{"pong":1}`), nil
+}
+
+// Instrument wires both the chat and execute_tool spans in one call: a full run emits both.
+func TestInstrument_WiresChatAndToolSpans(t *testing.T) {
+	sr, tp := recorder()
+	tracer := tp.Tracer("test")
+
+	a := Instrument(agent.New(instrModel{}, agent.NewMemStore(), pingTool{}), tracer)
+	if _, err := a.Run(context.Background(), "r", "hi"); err != nil {
+		t.Fatal(err)
+	}
+
+	names := map[string]bool{}
+	for _, s := range sr.Ended() {
+		names[s.Name()] = true
+	}
+	if !names["chat"] {
+		t.Errorf("no chat span emitted; got %v", names)
+	}
+	if !names["execute_tool ping"] {
+		t.Errorf("no execute_tool span emitted; got %v", names)
+	}
+}
