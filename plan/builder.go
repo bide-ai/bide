@@ -53,9 +53,11 @@ func (c *builderCore) register(n *node) {
 // must be unique across the flow; a duplicate is recorded as a deferred error
 // surfaced at Build. Step infers I and O from fn.
 //
-// The func body is the escape hatch: a non-idempotent side effect inside it must
-// declare its own Safety or wrap its own agent.Do, because a plain Step carries no
-// Safety classification of its own. See docs/design/expression-surfaces.md.
+// The func body is the escape hatch: arbitrary Go. Run drives every Step under an
+// at-most-once guard (an attempt marker written before the body, the result after),
+// so a crash whose outcome was never recorded HALTS the run (*HaltAmbiguous) rather
+// than re-firing the body. A non-idempotent side effect is therefore safe by default,
+// with no per-step opt-in. See docs/design/expression-surfaces.md.
 func (b *Builder[In, Out]) Step[I, O any](name string, fn func(I) (O, error)) Handle[I, O] {
 	b.core.register(&node{
 		name:    name,
