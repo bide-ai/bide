@@ -1,5 +1,3 @@
-github.com/blackwell-systems/gsm v0.9.1 h1:b4MZ6tXgC8WCXETmAVLQCywPLRNe/mRtF3IETJyLq28=
-github.com/blackwell-systems/gsm v0.9.1/go.mod h1:16Y8Evoyne2mqkkPxrh738bIMnyD3t13mhJAQgNXPeM=
 github.com/blackwell-systems/gsm v0.11.0 h1:asYFfn6il08M75KPAk7cnjkGKgHHDKovRqj2tlBkyFw=
 github.com/blackwell-systems/gsm v0.11.0/go.mod h1:16Y8Evoyne2mqkkPxrh738bIMnyD3t13mhJAQgNXPeM=
 golang.org/x/sync v0.23.0 h1:KameEIfc1IkluZyXWLn39Wd4tURc6GbCiISGiZm2bQk=
