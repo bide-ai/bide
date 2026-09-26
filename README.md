@@ -9,6 +9,16 @@ trusting the vendor); and **provably convergent** shared state. You get all four
 not four integrated systems, as a plain-Go library. Built for agents that move money, touch records,
 or act under audit.
 
+**Built for ambient agents.** An ambient agent runs unattended: it sleeps until a trigger (a
+schedule or an event) wakes it, works over hours or days, and pauses to ask a human only when it
+needs judgment, with nobody watching each step. That is exactly when at-most-once, HA resume, and a
+verifiable trail stop being nice-to-haves; a background agent that acts unobserved has to be safe to
+crash, safe to re-trigger, and provable after the fact. go-agents ships the durable lifecycle for
+this: durable `Sleep`/`WaitUntil` timers, a pluggable `Waker` for time- or event-driven wakeups, and
+durable `Interrupt`/`Resume` for typed human-in-the-loop, all on the same journal. You bring the
+trigger source and the oversight UI; the runtime keeps every run correct across sleeps, crashes, and
+node handoffs.
+
 Status: **working v0**, live-verified end-to-end. Requires **Go 1.27**.
 
 ## One journal, four guarantees
@@ -146,6 +156,26 @@ Beyond the four guarantees, the details that make it pleasant to build on:
 - **Multi-node failover, coordinated.** Any node resumes any run (Postgres, no single-writer lock);
   a per-run lease keeps competing recoverers and live workers from double-driving, and a crashed
   holder's runs are taken over on lease expiry.
+
+## Ambient runs: durable sleep, wake, and interrupt
+
+The four guarantees above are the substrate; this is the lifecycle they enable. An ambient run does
+not sit in a synchronous chat loop. It sleeps, wakes on a trigger, and pauses for a human, and every
+one of those transitions is a durable, at-most-once step on the journal, so the run survives crashes
+and node handoffs between them.
+
+- **Sleep until a deadline.** `Sleep`/`WaitUntil` pause a run and journal its wake time, so the pause
+  outlives a restart. Re-invoking at the wake time resumes exactly once.
+- **Wake on time or event.** A pluggable `Waker` (in-process `MemWaker` by default) re-invokes a due
+  run; the trigger source is yours (an in-process loop, a cron, a queue, an inbound webhook), so the
+  same substrate drives both scheduled and event-driven agents.
+- **Interrupt for a human, durably.** `Interrupt[T]`/`Resume` pause a run at any point to request a
+  typed decision and resume with the human's answer as a journaled step (see
+  [Human-in-the-loop](#human-in-the-loop)). Approve/deny is the boolean special case.
+
+You supply the trigger source and the oversight surface; the runtime keeps the run correct across
+every sleep, wake, interrupt, crash, and handoff. Runnable in `examples/compliance` (a time-driven
+ambient agent).
 
 ## Guarantee 1, in code: it won't double-charge
 
