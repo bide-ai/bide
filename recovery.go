@@ -1,3 +1,8 @@
+// recovery.go groups the read side of the durable journal: Recover re-drives in-flight runs
+// after a restart, run leasing (Leaser) coordinates a single driver per run under HA, and
+// replay deterministically re-emits a journaled run. Given a store of recorded runs, these
+// bring survivors back to life exactly once.
+
 package agent
 
 import (
@@ -8,6 +13,10 @@ import (
 	"os"
 	"time"
 )
+
+// ===========================================================================
+// Recovery: re-drive in-flight runs after a restart
+// ===========================================================================
 
 // RecoverOption configures Recover. Lease options apply only when the store implements Leaser.
 type RecoverOption func(*recoverConfig)
@@ -209,4 +218,154 @@ func isPause(err error) bool {
 		rh  *ResumeHalt
 	)
 	return errors.As(err, &pa) || errors.As(err, &itr) || errors.As(err, &slp) || errors.As(err, &awt) || errors.As(err, &rh)
+}
+
+// ===========================================================================
+// Leasing: single-driver coordination under HA
+// ===========================================================================
+
+// Leaser is the optional capability that coordinates driving a run across processes. Without it,
+// several processes recovering against a shared store all re-drive the same in-flight runs: safe
+// under at-most-once memoization but redundant, and a real hazard when the store's Do is not
+// cross-process atomic (two live drivers could each run a non-memoized step before either records
+// it). A store that implements Leaser lets a driver claim an exclusive, time-bounded lease on a run
+// so only the holder drives it; a dead holder's lease expires and another process takes over, which
+// is the high-availability property. Recover uses it automatically when the store provides it.
+//
+// The base Durable contract does not require leasing, and MemStore's implementation is in-process
+// (for tests and as the reference); the cross-process payoff is a shared backend (store/postgres)
+// implementing this with an atomic upsert over a leases table.
+type Leaser interface {
+	// AcquireLease claims runID for holder until now+ttl. It returns true if granted (the run is
+	// unleased or the live lease is already holder's, which renews it), false if another holder
+	// currently holds a live lease. An expired lease is available to any holder.
+	AcquireLease(ctx context.Context, runID, holder string, ttl time.Duration) (bool, error)
+	// RenewLease extends holder's lease on runID, returning false if holder no longer holds it (it
+	// expired or was taken). A driver whose work outlasts ttl renews to keep the lease.
+	RenewLease(ctx context.Context, runID, holder string, ttl time.Duration) (bool, error)
+	// ReleaseLease relinquishes runID if held by holder (a no-op otherwise) so another process can
+	// take it immediately rather than waiting for expiry.
+	ReleaseLease(ctx context.Context, runID, holder string) error
+}
+
+// memLease is one in-memory lease: the current holder and when it expires.
+type memLease struct {
+	holder string
+	expiry time.Time
+}
+
+// held reports whether the lease for runID is currently held by someone other than holder.
+func (m *MemStore) heldByOther(runID, holder string, now time.Time) bool {
+	cur, ok := m.leases[runID]
+	return ok && cur.holder != holder && now.Before(cur.expiry)
+}
+
+// AcquireLease implements Leaser.
+func (m *MemStore) AcquireLease(_ context.Context, runID, holder string, ttl time.Duration) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	now := m.now()
+	if m.heldByOther(runID, holder, now) {
+		return false, nil
+	}
+	m.leases[runID] = memLease{holder: holder, expiry: now.Add(ttl)}
+	return true, nil
+}
+
+// RenewLease implements Leaser.
+func (m *MemStore) RenewLease(_ context.Context, runID, holder string, ttl time.Duration) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	now := m.now()
+	cur, ok := m.leases[runID]
+	if !ok || cur.holder != holder || !now.Before(cur.expiry) {
+		return false, nil // no longer ours (expired or taken)
+	}
+	m.leases[runID] = memLease{holder: holder, expiry: now.Add(ttl)}
+	return true, nil
+}
+
+// ReleaseLease implements Leaser.
+func (m *MemStore) ReleaseLease(_ context.Context, runID, holder string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if cur, ok := m.leases[runID]; ok && cur.holder == holder {
+		delete(m.leases, runID)
+	}
+	return nil
+}
+
+// ===========================================================================
+// Replay: deterministic re-emission of a journaled run
+// ===========================================================================
+
+// Replay returns a Model that re-emits the model outputs recorded in `source` for runID,
+// in order, instead of calling a live LLM. Run an agent with it against a FRESH store to
+// deterministically re-execute a past run:
+//
+//   - time-travel debugging: step through exactly what happened, offline and free;
+//   - regression tests: capture a production run, replay it in CI (pairs with
+//     testing/synctest), assert behavior didn't drift;
+//   - evals over real traffic: the journal IS a golden dataset.
+//
+// Because the journal captures every model output across the whole (possibly nested)
+// tree, the replay is exact. This is only possible because the durable substrate records
+// a complete, replayable history in the first place.
+func Replay(ctx context.Context, source Durable, runID string) (Model, error) {
+	recs, err := source.History(ctx, runID)
+	if err != nil {
+		return nil, err
+	}
+	var msgs []Message
+	for _, r := range recs {
+		if r.Kind == StepModel && r.Message != nil {
+			msgs = append(msgs, *r.Message)
+		}
+	}
+	return &replayModel{msgs: msgs}, nil
+}
+
+type replayModel struct {
+	msgs []Message
+	i    int
+}
+
+func (m *replayModel) Stream(_ context.Context, _ Request) (*Stream, error) {
+	if m.i >= len(m.msgs) {
+		return nil, fmt.Errorf("replay: %w", ErrNoRecordedOutput)
+	}
+	msg := m.msgs[m.i]
+	m.i++
+
+	evs := emitsFor(msg)
+	ch := make(chan Emit, len(evs))
+	for _, e := range evs {
+		ch <- e
+	}
+	close(ch)
+	return NewStream(ch), nil
+}
+
+// emitsFor converts an assistant Message back into the stream events that would have
+// produced it (the inverse of msgBuilder).
+func emitsFor(msg Message) []Emit {
+	var out []Emit
+	idx := 0
+	for _, p := range msg.Parts {
+		switch v := p.(type) {
+		case Reasoning:
+			if v.Text != "" {
+				out = append(out, Emit{Event: ReasoningDelta{Text: v.Text}})
+			}
+			if v.Signature != "" {
+				out = append(out, Emit{Event: ReasoningDelta{Signature: v.Signature}})
+			}
+		case Text:
+			out = append(out, Emit{Event: TextDelta{Text: v.Text}})
+		case ToolUse:
+			out = append(out, Emit{Event: ToolCallDelta{Index: idx, ID: v.ID, Name: v.Name, ArgsFragment: v.Args}})
+			idx++
+		}
+	}
+	return append(out, Emit{Event: Finish{Reason: "stop"}})
 }
