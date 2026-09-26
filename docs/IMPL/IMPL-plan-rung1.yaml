@@ -294,6 +294,7 @@ waves:
             - plan/handle.go
             - plan/spec.go
             - plan/doc.go
+          context_source: prepared-brief
     - number: 2
       agents:
         - id: B
@@ -670,7 +671,7 @@ scaffolds:
         duplicate-declaration merge conflict, `builderCore` is fully declared in spec.go
         (Wave 1 Agent A owns both handle.go and spec.go), and handle.go only references it.
       import_path: github.com/dayna/go-agents/plan
-      status: pending
+      status: committed (4d5b687)
     - file_path: plan/spec.go
       contents: |-
         `package plan`. The internal reified topology model (the IR) that Handle back-references
@@ -734,7 +735,7 @@ scaffolds:
         reflect.TypeFor[T]() for the constructors to capture I/O types. Do NOT declare Builder,
         Flow, or any exported constructor here.
       import_path: github.com/dayna/go-agents/plan
-      status: pending
+      status: committed (4d5b687)
 pre_mortem:
     overall_risk: medium
     rows:
@@ -880,5 +881,5 @@ critic_report:
     summary: 'Verified all 5 agents (15 new files) against the go-agents core. All files are action:new and no plan/ directory exists (file_existence pass). Cross-package dependency symbols the briefs lower against are accurate: agent.Step[T], Durable.Do, Durable.History, agent.Record, StepValue/StepModel/StepToolResult (store.go), agent.Tool + agent.Safety (tool.go), agent.RenderMermaid (render.go), the crashStore crash-sweep pattern (dst_test.go), and the go-list-deps adapter guard (architecture_test.go) all exist with the signatures the briefs describe. reflect.TypeFor and generic methods are legal on go 1.27; golang.org/x/sync/singleflight is in go.mod. No agentflow reference remains in the IMPL doc itself, and no I1 disjoint-ownership violation, no complexity-balance breach (max agent D owns 4 of 15 files, 27%). One advisory warning: the design doc docs/design/expression-surfaces.md section B still uses the old placeholder package name agentflow (agentflow.New/When/Else); agents A and D are told to read that doc and could copy the stale name, though the IMPL contracts correctly use package plan. No errors; wave execution may proceed.'
     reviewed_at: "2026-09-26T22:22:44Z"
     issue_count: 2
-state: SCOUT_PENDING
+state: "REVIEWED"
 injection_method: hook
