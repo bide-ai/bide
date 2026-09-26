@@ -1,0 +1,88 @@
+package plan
+
+import "fmt"
+
+// named is the minimal shape wiring needs from an endpoint: its durable journal
+// key. Handle[I,O] satisfies it through its exported Name method, and Handle is
+// the only type that satisfies Producer[M]/Consumer[M] (their markers are
+// unexported), so a Producer/Consumer is always a Handle and always named. This
+// unexported interface lets wiring recover the endpoint name without touching the
+// frozen handle.go scaffold.
+type named interface{ Name() string }
+
+// endpointName extracts the journal key of a wiring endpoint. It panics only on a
+// programmer error that the type system already forbids: a Producer/Consumer that
+// is not a Handle cannot be constructed, because the marker methods are
+// unexported to this package.
+func endpointName(v any) string {
+	n, ok := v.(named)
+	if !ok {
+		panic(fmt.Sprintf("plan: wiring endpoint %T does not name a step (only Handle is a valid endpoint)", v))
+	}
+	return n.Name()
+}
+
+// Edge connects a producer to a consumer, unifying the connecting type M at the
+// call site: the producer's output type and the consumer's input type must both be
+// M, so a mismatch does not compile and the compiler error names the handles, not
+// an erased spec entry. Edge records the endpoint names only; the values flow
+// through the journal at run time.
+func (b *Builder[In, Out]) Edge[M any](from Producer[M], to Consumer[M]) {
+	b.core.edges = append(b.core.edges, edge{
+		from: endpointName(from),
+		to:   endpointName(to),
+	})
+}
+
+// Arm is one branch of a Switch, produced by When or Else. It carries the typed
+// predicate over the switched node's output (nil for an Else arm) and the target
+// step's name. Switch type-erases the predicate to func(any)bool at the wiring
+// boundary.
+type Arm[M any] struct {
+	isElse bool
+	pred   func(M) bool
+	target string
+}
+
+// When routes to `to` when pred(over.Out) is true. pred must be pure over the
+// value: Build lowers the branch choice to its own journaled step, so a resumed
+// run replays the recorded arm and the predicate is not re-evaluated against
+// changed external state.
+func When[M any](pred func(M) bool, to Consumer[M]) Arm[M] {
+	return Arm[M]{pred: pred, target: endpointName(to)}
+}
+
+// Else routes to `to` when no When arm matched. At most one Else per Switch, which
+// Build validates. An Else arm carries no predicate.
+func Else[M any](to Consumer[M]) Arm[M] {
+	return Arm[M]{isElse: true, target: endpointName(to)}
+}
+
+// Switch routes on over.Out to exactly one arm. M unifies the switched producer's
+// output with every arm's predicate/target input, so an arm typed to the wrong
+// value does not compile. The branch choice is journaled as its own agent.Step at
+// Build/Run time (Agent D), so a resumed run replays the recorded arm and only the
+// taken arm executes. Arms do not reconverge in rung-1 (open design point a): each
+// arm terminates a path that Build checks produces Out.
+func (b *Builder[In, Out]) Switch[M any](over Producer[M], arms ...Arm[M]) {
+	erased := make([]arm, len(arms))
+	for i, a := range arms {
+		erased[i] = arm{isElse: a.isElse, target: a.target}
+		if a.pred != nil {
+			pred := a.pred
+			// Type-erase the typed predicate. The switched value arrives as any at
+			// the journal boundary; a wrong dynamic type means the arm did not match.
+			erased[i].pred = func(v any) bool {
+				typed, ok := v.(M)
+				if !ok {
+					return false
+				}
+				return pred(typed)
+			}
+		}
+	}
+	b.core.branches = append(b.core.branches, branch{
+		over: endpointName(over),
+		arms: erased,
+	})
+}
