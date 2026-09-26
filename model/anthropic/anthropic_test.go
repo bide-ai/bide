@@ -138,3 +138,52 @@ func TestBuildRequest_Translation(t *testing.T) {
 		t.Errorf("thinking block = %+v (signature must be echoed)", think)
 	}
 }
+
+// buildRequest merges consecutive same-role turns so the payload alternates user/assistant
+// as Anthropic requires, and drops turns that would carry empty content.
+func TestBuildRequest_MergesConsecutiveSameRole(t *testing.T) {
+	m := New("test-key")
+	body, err := m.buildRequest(agent.Request{
+		Messages: []agent.Message{
+			agent.UserText("do two things"),
+			{Role: agent.RoleUser, Parts: nil}, // empty turn: dropped, never emitted as empty content
+			{Role: agent.RoleAssistant, Parts: []agent.Part{
+				agent.ToolUse{ID: "t1", Name: "a", Args: json.RawMessage(`{}`)},
+			}},
+			{Role: agent.RoleTool, Parts: []agent.Part{
+				agent.ToolResult{ToolUseID: "t1", Result: json.RawMessage(`{"ok":1}`)},
+			}},
+			{Role: agent.RoleTool, Parts: []agent.Part{
+				agent.ToolResult{ToolUseID: "t2", Result: json.RawMessage(`{"ok":2}`)},
+			}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatal(err)
+	}
+	msgs := got["messages"].([]any)
+	// user("do two things") ; assistant(tool_use) ; user(two tool_results merged)
+	if len(msgs) != 3 {
+		t.Fatalf("messages = %d, want 3 (consecutive same-role merged, empty dropped)", len(msgs))
+	}
+	for i, want := range []string{"user", "assistant", "user"} {
+		if got := msgs[i].(map[string]any)["role"]; got != want {
+			t.Errorf("msgs[%d].role = %v, want %v", i, got, want)
+		}
+	}
+	// the two tool-result turns merged into one user turn with both blocks, in order
+	merged := msgs[2].(map[string]any)["content"].([]any)
+	if len(merged) != 2 {
+		t.Fatalf("merged tool-result turn has %d blocks, want 2", len(merged))
+	}
+	if b := merged[0].(map[string]any); b["tool_use_id"] != "t1" {
+		t.Errorf("first merged block = %+v, want tool_use_id t1", b)
+	}
+	if b := merged[1].(map[string]any); b["tool_use_id"] != "t2" {
+		t.Errorf("second merged block = %+v, want tool_use_id t2", b)
+	}
+}

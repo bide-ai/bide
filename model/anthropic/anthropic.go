@@ -91,10 +91,12 @@ func (m *Model) Stream(ctx context.Context, req agent.Request) (*agent.Stream, e
 
 // buildRequest translates the provider-neutral request into an Anthropic Messages
 // payload. System turns fold into the top-level `system` field; RoleTool turns become
-// user turns carrying tool_result blocks.
-//
-// TODO: merge consecutive same-role turns (Anthropic wants alternating user/assistant);
-// TODO: input_schema comes from the schema/ provider-aware emitter once built.
+// user turns carrying tool_result blocks. Consecutive same-role turns are merged into a
+// single turn: Anthropic requires messages to alternate between user and assistant, and
+// folding out system turns (or mapping RoleTool to user) can otherwise leave two same-role
+// turns adjacent. Tool input_schema is the tool's neutral schema used as-is; Anthropic
+// accepts the schema/ package's neutral form directly, so no provider dialect transform is
+// needed (unlike OpenAI strict mode).
 func (m *Model) buildRequest(req agent.Request) ([]byte, error) {
 	type block map[string]any
 
@@ -147,6 +149,15 @@ func (m *Model) buildRequest(req agent.Request) ([]byte, error) {
 				}
 				blocks = append(blocks, block{"type": "image", "source": source})
 			}
+		}
+		if len(blocks) == 0 {
+			continue // a turn with no renderable parts would be empty content, which Anthropic rejects
+		}
+		// Merge into the previous turn when they share a role, rather than emitting an
+		// illegal same-role adjacency; Anthropic wants strict user/assistant alternation.
+		if n := len(msgs); n > 0 && msgs[n-1]["role"] == role {
+			msgs[n-1]["content"] = append(msgs[n-1]["content"].([]block), blocks...)
+			continue
 		}
 		msgs = append(msgs, map[string]any{"role": role, "content": blocks})
 	}
