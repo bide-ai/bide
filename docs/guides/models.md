@@ -1,7 +1,7 @@
 # Model adapters: configuration and multimodal input
 
 The `Model` port is a single method, `Stream(ctx, Request) (*Stream, error)`
-([EXTENSION-POINTS.md](EXTENSION-POINTS.md)). Three reference adapters ship, all in the zero-dep
+([EXTENSION-POINTS.md](../reference/extension-points.md)). Three reference adapters ship, all in the zero-dep
 core module (net/http + stdlib, no provider SDK, enforced by `architecture_test.go`):
 
 | Adapter | Package | Wire API | Covers |
@@ -15,7 +15,7 @@ core module (net/http + stdlib, no provider SDK, enforced by `architecture_test.
 Every adapter is `New(apiKey string, opts ...Option) *Model`. **No adapter reads an environment
 variable**: the API key is always passed explicitly to `New`, so key management is the caller's
 (pull it from your secret store, not from `os.Getenv` inside the SDK). The runnable
-[`examples/smoke`](../examples/smoke/main.go) shows the pattern (`os.Getenv("OPENROUTER_API_KEY")`
+[`examples/smoke`](../../examples/smoke/main.go) shows the pattern (`os.Getenv("OPENROUTER_API_KEY")`
 in the caller, passed to `openai.New`).
 
 Shared options (all three adapters): `WithModel(id)`, `WithMaxTokens(n)`, `WithBaseURL(u)`,
@@ -81,7 +81,7 @@ see the real numbers:
 ## Error surfacing (shared across all three adapters)
 
 Every adapter maps HTTP failures onto the framework's typed errors so a retry middleware can
-classify them ([retry docs in the README](../README.md#middleware--observability)):
+classify them ([retry docs in the README](../../README.md#middleware--observability)):
 
 - **HTTP 429** returns `*agent.RateLimited{RetryAfter}`, parsing the `Retry-After` header (seconds
   or an HTTP date; `0` if absent). `middleware.Retry` honors the hint.
@@ -109,7 +109,7 @@ msg := agent.UserParts(
 three adapters translate it to their native form (Anthropic base64 image source, OpenAI image-URL /
 data-URI content, Gemini `inlineData` / `fileData`). This is **input-only**: models emit text,
 reasoning, and tool calls, never images, so nothing produces an `Image` on the response path. Audio
-and video input are not modeled (see [KNOWN-LIMITATIONS.md](KNOWN-LIMITATIONS.md)).
+and video input are not modeled (see [KNOWN-LIMITATIONS.md](../KNOWN-LIMITATIONS.md)).
 
 ## Extended thinking (Anthropic)
 
@@ -129,4 +129,4 @@ DeepSeek / Ollama and similar) as a `ReasoningDelta` on the stream.
 - `schema/` emits an OpenAI-strict and a neutral dialect; a dedicated **Gemini** schema dialect is
   not yet done, so Gemini structured output passes the neutral `responseSchema` through
   best-effort.
-- Settings are agent-level, not per-`Run` (see [KNOWN-LIMITATIONS.md](KNOWN-LIMITATIONS.md)).
+- Settings are agent-level, not per-`Run` (see [KNOWN-LIMITATIONS.md](../KNOWN-LIMITATIONS.md)).

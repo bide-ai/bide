@@ -204,7 +204,7 @@ confirms the journal projection reproduces the same semantic events the live str
 not inventing a different history), and `TestReplayEvents_AppendOnlyAcrossCrash` confirms that a
 crash mid-run leaves a prefix of the events, that resuming appends the rest without rewriting the
 prefix, and that recomputing from the same journal is deterministic. See
-[docs/DEBUGGING.md](DEBUGGING.md) for the replay, event-reconstruction, and Mermaid tools built on
+[docs/DEBUGGING.md](../guides/debugging.md) for the replay, event-reconstruction, and Mermaid tools built on
 the journal.
 
 ## Pillar 7: standard per-package unit tests
@@ -287,7 +287,7 @@ blurred in a claim:
 `eval.AgentRunner` wraps an agent as an eval `RunFunc` (unique runID per run), so evaluation runs are
 themselves durable and can be replayed and audited like any other run. A runnable, self-contained
 walkthrough (labeled cases, rule-based and stub metrics, a deliberately flaky model so the report
-shows a rate below 100%) is [`examples/eval`](../examples/eval/main.go): `go run ./examples/eval`.
+shows a rate below 100%) is [`examples/eval`](../../examples/eval/main.go): `go run ./examples/eval`.
 
 ## Methodology
 

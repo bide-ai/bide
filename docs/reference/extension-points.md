@@ -159,7 +159,7 @@ never implement this by hand: `agent.Func[In, Out](name, desc, safety, fn)` wrap
 function and derives `ArgsSchema` from `In` at construction, so changing `In` is a
 compile-time change. `Safety` declares retry behavior on resume (`ReadOnly`, `Idempotent`,
 `IdempotencyKey`, `RequiresApproval`) and maps directly onto MCP annotations (see
-[MCP.md](MCP.md)).
+[MCP.md](../guides/mcp.md)).
 
 ## `Compensator`: how a tool undoes its side effect
 
@@ -189,7 +189,7 @@ store (pgvector, Pinecone, a file index, anything). go-agents ships no vector st
 embedder; you implement `Retrieve` against infrastructure you already run and wire it in with
 `agent.RetrievalTool(r, k)` (agentic: the model searches on demand) or
 `agent.WithRetrieval(r, k)` (classic: top-k auto-injected as context on each user turn). See
-[RAG-MEMORY.md](RAG-MEMORY.md).
+[RAG-MEMORY.md](../guides/rag-memory.md).
 
 ## `Anchor`: out-of-band anchoring (`audit`)
 
@@ -211,7 +211,7 @@ an append-only, independently Merkle-committed record of published STHs. Because
 own RFC 6962 tree over the entries, a third party can verify that the anchor log itself only
 grew (`ProveConsistency`) and that a specific STH was anchored (`Prove`). In a real
 deployment the anchor lives in a different trust domain than the journal; this in-memory
-version is for tests and local dev. See [AUDIT.md](AUDIT.md).
+version is for tests and local dev. See [AUDIT.md](../guides/audit.md).
 
 ## `EventStore`: durable event-trail persistence (`audit`)
 
@@ -231,7 +231,7 @@ The bring-your-own port for a compliance trail that has to outlive the journal (
 on WORM storage, in a different trust domain). You implement `Append` / `Load` against an
 append-only backend you run (a Postgres table with `UNIQUE(run_id, seq)` and insert-only
 grants, object storage with object-lock/WORM, or a log). The trail is fed from the durable
-journal projection (`agent.ReplayEvents`, see [DEBUGGING.md](DEBUGGING.md)), not the live
+journal projection (`agent.ReplayEvents`, see [DEBUGGING.md](../guides/debugging.md)), not the live
 stream, so re-mirroring after a crash appends the same leaves at the same positions
 (idempotent). `audit.PersistJournal` drives that mirroring; `audit.LoadEventLog` rebuilds an
 `EventLog` from the store for `Root` / STH / proofs even after the journal is deleted.

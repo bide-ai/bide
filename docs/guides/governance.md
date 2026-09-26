@@ -140,7 +140,7 @@ The same pattern (an external fact seeded into governed state, gated by an invar
 count into state, and gate the commit on `votes_for >= k`, so a high-stakes action requires
 agreement or escalates. It is a composition of existing seams, not a new agent type, and it is
 implemented: `govern.Quorum` (k-of-n model agreement over `agent.Parallel`) plus the
-`goagents-audit verify-quorum` verb and `examples/quorum`. See [QUORUM.md](QUORUM.md).
+`goagents-audit verify-quorum` verb and `examples/quorum`. See [QUORUM.md](quorum.md).
 
 ## Federation: constraints across agents
 
@@ -283,4 +283,4 @@ for machines whose global state space is too large to enumerate, gsm verifies **
 Because the policy is inspectable, serializable data, it also becomes an audit artifact:
 `govern.AttestedEventTool` records which policy admitted each governed action, and the policy is
 anchored as a log leaf an auditor cross-links to the action and re-checks with the external oracle.
-See [AUDIT.md](AUDIT.md) for the attestation and `goagents-audit verify-governed-action`.
+See [AUDIT.md](audit.md) for the attestation and `goagents-audit verify-governed-action`.

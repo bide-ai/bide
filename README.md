@@ -66,7 +66,7 @@ ceiling, not goroutines. Every concurrent run keeps all four guarantees. Reliabi
 load is built in: per-attempt **timeouts**, retry with backoff that **classifies** transient vs
 terminal errors, **hedged** model calls (race a backup, take the first, for tail latency and
 provider failover), and a **rate limiter** for model and tool calls
-([middleware](middleware), [docs/RELIABILITY.md](docs/RELIABILITY.md)).
+([middleware](middleware), [docs/guides/reliability.md](docs/guides/reliability.md)).
 
 For high availability, any node resumes any run from the shared store, and competing drivers
 coordinate through a per-run **lease** (`agent.Lease`): only one process drives a run at a time, a
@@ -102,7 +102,7 @@ verifies it offline with a `goagents-audit verify` command or a stdlib-only veri
 imports the SDK. **No other agent framework has this at all.** The same spine carries the rest of the
 accountability layer, all verifiable offline: proof-carrying runs (one `RunCertificate` attesting a
 whole run's policy compliance), signed capability grants with attenuating delegation, authority
-earned from a clean audit trail, and governed k-of-n quorum. → [docs/AUDIT.md](docs/AUDIT.md)
+earned from a clean audit trail, and governed k-of-n quorum. → [docs/guides/audit.md](docs/guides/audit.md)
 
 ### 4 · Provably convergent shared state (gsm)
 
@@ -130,7 +130,7 @@ compensated), and asserts that every agent converges to the same valid normal fo
 an audit proof that verifies offline, in one process with a flat ~4 MB live heap (~8.5 min,
 ~20k agents/s). This is a framework-level test (stub model, in-memory store): it exercises the
 governance and audit machinery at scale, not a live LLM or a production database. See
-[docs/TESTING.md](docs/TESTING.md).
+[docs/testing/testing.md](docs/testing/testing.md).
 
 ### vs. durable-execution and agent runtimes
 
@@ -174,8 +174,9 @@ and node handoffs between them.
   [Human-in-the-loop](#human-in-the-loop)). Approve/deny is the boolean special case.
 
 You supply the trigger source and the oversight surface; the runtime keeps the run correct across
-every sleep, wake, interrupt, crash, and handoff. Runnable in `examples/compliance` (a time-driven
-ambient agent).
+every sleep, wake, interrupt, crash, and handoff. Runnable in `examples/signals` (deliver an event
+into a waiting run), `examples/interrupt` (human-in-the-loop pause/resume), and `examples/recover`
+(durable resume). See the [signals and ambient guide](docs/guides/signals.md).
 
 ## Guarantee 1, in code: it won't double-charge
 
@@ -390,7 +391,7 @@ is checked against the published RFC 6962 test vectors.
 `SignTreeHead` produces the CT-style **Signed Tree Head** — `{Size, Root, Timestamp}` signed with
 Ed25519 — the artifact you publish. The full flow: sign an STH, later disclose a single record with an
 inclusion proof an auditor checks against the signed root, and prove append-only growth between two STHs.
-See [docs/AUDIT.md](docs/AUDIT.md) for the model, the API, and the end-to-end compliance flow.
+See [docs/guides/audit.md](docs/guides/audit.md) for the model, the API, and the end-to-end compliance flow.
 
 ## RAG & memory (bring your own)
 
@@ -416,7 +417,7 @@ a.Use(agent.WithRetrieval(myStore, 5))
 Conversational memory is already built in (`Session`); dynamic context goes through
 `WithSystemPromptFunc`; this seam covers semantic / long-term memory. Concrete store adapters (if
 ever needed) would be separate modules, never in the core. See
-[docs/RAG-MEMORY.md](docs/RAG-MEMORY.md).
+[docs/guides/rag-memory.md](docs/guides/rag-memory.md).
 
 ## Resume safety, in one table
 
@@ -573,7 +574,7 @@ the loop, schema, middleware, model adapters, govern; deps are just gsm + `x/syn
 module per heavy adapter (`mcp`, `trace`, `store/sqlite`, `store/postgres`, `govern/redislog`,
 `govern/sqlitelog`, `govern/postgreslog`). Import an adapter and you pull its dependency tree; import only the core
 and you don't. A core-only consumer's external-module surface is 2, not 54. See
-[docs/MODULE-STRUCTURE.md](docs/MODULE-STRUCTURE.md).
+[docs/reference/module-structure.md](docs/reference/module-structure.md).
 
 ## Architecture
 
@@ -627,63 +628,77 @@ tool := govern.EventTool(gov, "pay", "mark the order paid", "pay", agent.Safety{
 ```
 
 > Full guide, capability ladder, and the runnable demos (`examples/mesh`, `examples/compose`,
-> `examples/quorum`) in **[docs/GOVERNANCE.md](docs/GOVERNANCE.md)**.
+> `examples/quorum`) in **[docs/guides/governance.md](docs/guides/governance.md)**.
 
 ## Guides
 
-- **[docs/RELIABILITY.md](docs/RELIABILITY.md)**: the reliability middleware: per-attempt timeouts,
+New here? Start with **[Getting started](docs/getting-started.md)**, use the **[docs index](docs/README.md)** for the full map, and see **[Concepts](docs/CONCEPTS.md)** for the vocabulary (journal, at-most-once, lease, Waker, gsm, ProofBundle). The precise durability guarantee is stated in **[docs/GUARANTEE.md](docs/GUARANTEE.md)** and its bounds in **[docs/KNOWN-LIMITATIONS.md](docs/KNOWN-LIMITATIONS.md)**.
+
+- **[docs/guides/reliability.md](docs/guides/reliability.md)**: the reliability middleware: per-attempt timeouts,
   classified retry (`Retry` / `Retryable`), hedged model calls (`Hedge`, race a backup for tail
   latency and provider failover), rate limiting, and cost tracking, plus how they compose. Runnable
   in `examples/hedge`.
-- **[docs/DURABLE-STEPS.md](docs/DURABLE-STEPS.md)**: composing your own durable work on the same
+- **[docs/guides/durable-steps.md](docs/guides/durable-steps.md)**: composing your own durable work on the same
   substrate. `Step` (one named durable operation), `Parallel` / `Task` (durable fan-in for
   parallel-checks-then-decide pipelines), and sagas (`RunSaga` / `CompensatedFunc`, reverse-order
   compensation). Durable timers (`Sleep` / `WaitUntil`) pause a run until a wall-clock deadline and
-  resume it through the pluggable `Waker` (`MemWaker`), the same at-most-once substrate for
-  time-driven and ambient agents. Runnable in `examples/compliance`.
-- **[docs/AUDIT.md](docs/AUDIT.md#proof-carrying-runs)**: proof-carrying runs. A run ships one
+  resume it through the pluggable `Waker` (`MemWaker`). Runnable in `examples/parallel`.
+- **[docs/guides/signals.md](docs/guides/signals.md)**: receiving external events into a run. Durable
+  timers (`Sleep` / `WaitUntil`) and the `Waker`, human-in-the-loop (`Interrupt` / `Resume`), and
+  durable signals (`Signal` / `Await` / `AwaitFor`, ordered channels `Send` / `Receive` / `Ack`):
+  at-least-once transport in, exactly-once application. Runnable in `examples/signals`,
+  `examples/interrupt`, `examples/recover`.
+- **[docs/guides/observability.md](docs/guides/observability.md)**: OTel gen_ai spans in one line
+  (`trace.Instrument`): the invoke_agent / chat / execute_tool taxonomy, sub-agent span nesting,
+  token-to-cost on spans (`WithRates`), and the content-capture privacy default. Runnable in
+  `examples/observability`.
+- **[docs/guides/audit.md](docs/guides/audit.md#proof-carrying-runs)**: proof-carrying runs. A run ships one
   portable `RunCertificate` asserting behavioral-property compliance over the whole run
   (only-approved-policies, policies-convergence-certified), composed from the existing audit
   primitives and checkable offline against a single signed tree head with `CertifyRun` / `VerifyRun`
   or the `goagents-audit verify-run` CLI. Runnable in `examples/proof-carrying-run`.
-- **[docs/AUDIT.md](docs/AUDIT.md)**: signed grants and attenuating delegation. A parent mints a
+- **[docs/guides/delegation.md](docs/guides/delegation.md)**: signed grants and attenuating delegation. A parent mints a
   capability grant a sub-agent can only narrow (`Grant` / `SignGrant` / `AttenuatingSubAgent`),
   `VerifyDelegationChain` checks the whole chain offline, and `EarnedAuthority` widens a subject's
   scope from a clean audit trail and revokes it the moment an anomaly appears, always bounded by the
   parent grant. `agent.Identity` binds the acting principal into every governed leaf. Runnable in
   `examples/delegation`, `examples/authority`, `examples/earned-authority`.
-- **[docs/QUORUM.md](docs/QUORUM.md)**: governed k-of-n model agreement. `govern.Quorum` runs
+- **[docs/guides/security-model.md](docs/guides/security-model.md)**: the cryptographic guarantees and
+  their exact scope: integrity, authenticity, tamper-evidence, non-repudiation, and selective
+  disclosure, and what is explicitly out of scope (confidentiality: leaves are not encrypted). Read
+  this before relying on the audit trail.
+- **[docs/guides/quorum.md](docs/guides/quorum.md)**: governed k-of-n model agreement. `govern.Quorum` runs
   several models over `agent.Parallel` and admits an answer only when k agree, with the tally
   anchored in the journal and re-checkable offline via `goagents-audit verify-quorum`. Runnable in
   `examples/quorum`.
-- **[docs/MODELS.md](docs/MODELS.md)**: the three model adapters (Anthropic, OpenAI-compatible,
+- **[docs/guides/models.md](docs/guides/models.md)**: the three model adapters (Anthropic, OpenAI-compatible,
   Gemini): constructor options and defaults, `WithBaseURL` for any OpenAI-compatible or Vertex
   endpoint, per-provider sampling mapping, prompt caching and usage accounting, typed error
   surfacing (`RateLimited` / `APIError`), and multimodal image input (`UserParts` / `Image`).
-- **[docs/MCP.md](docs/MCP.md)**: Model Context Protocol integration. Connect to an MCP
+- **[docs/guides/mcp.md](docs/guides/mcp.md)**: Model Context Protocol integration. Connect to an MCP
   server as a runtime tool source, discover its tools, and inherit side-effect-safe resume
   from the annotation-to-`Safety` mapping.
-- **[docs/DEBUGGING.md](docs/DEBUGGING.md)**: deterministic replay (`Replay`), durable
+- **[docs/guides/debugging.md](docs/guides/debugging.md)**: deterministic replay (`Replay`), durable
   semantic-event reconstruction (`ReplayEvents`), and Mermaid run diagrams (`RenderMermaid`)
   for time-travel debugging, regression, and evals. Crash recovery re-drives interrupted runs after
   a restart: `Recover` enumerates a store's runs (`Lister`), skips the finished ones (`IsComplete`),
   and resumes the rest, treating a durable pause as a success rather than a failure.
-- **[docs/EXTENSION-POINTS.md](docs/EXTENSION-POINTS.md)**: the ports and adapters the
+- **[docs/reference/extension-points.md](docs/reference/extension-points.md)**: the ports and adapters the
   framework is built on (`Model`, `Durable`, `Tool`, `Compensator`, `Retriever`, `Anchor`,
   `EventStore`), with an "implement your own store" walkthrough.
-- **[docs/COMPACTION.md](docs/COMPACTION.md)**: journal compaction with proof continuity (a design
+- **[docs/design/compaction.md](docs/design/compaction.md)**: journal compaction with proof continuity (a design
   note): how an unbounded journal can be compacted without breaking the audit spine's inclusion and
   consistency proofs.
-- **[docs/MESSAGING.md](docs/MESSAGING.md)**: driving an agent from an inbound messenger
+- **[docs/guides/messaging.md](docs/guides/messaging.md)**: driving an agent from an inbound messenger
   webhook (Slack, Telegram, WhatsApp, SMS, Discord) without shipping transport code in core:
   the redelivery-safe idempotency pattern where the durable journal makes a retried webhook
   replay instead of double-firing a side effect. Runnable in `examples/webhook`.
-- **[docs/TESTING.md](docs/TESTING.md)**: what is tested and how, the chaos crash-injection
+- **[docs/testing/testing.md](docs/testing/testing.md)**: what is tested and how, the chaos crash-injection
   benchmark (fair, not strawman), differential oracle checks, convergence and traceability at
   scale with measured numbers and their bounds, RFC 6962 conformance, the commands to run it,
   and the statistical `eval` package (Wilson CIs, trajectory metrics, significance-tested
   regression `Compare`, `RequiredRuns` power sizing, stratified `ByTag`) with the provable-versus-
   statistical boundary that keeps a pass rate from being sold as a guarantee.
 
-> Name is deliberately deferred — this is a codename. Design + competitive analysis in
-> `docs/DESIGN.md` and `docs/COMPETITIVE*.md`; the governance tier in `docs/GOVERNANCE.md`.
+> Name is deliberately deferred; this is a codename. Design notes live in `docs/design/`; the
+> governance tier in [docs/guides/governance.md](docs/guides/governance.md).

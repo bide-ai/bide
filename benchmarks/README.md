@@ -1,7 +1,7 @@
 # Chaos benchmark — cross-SDK results
 
 This is a **separate module** (its own `go.mod`) so competitor SDKs' large dependency trees
-never touch the go-agents core. It runs the [chaos benchmark](../docs/CHAOS-BENCHMARK.md)
+never touch the go-agents core. It runs the [chaos benchmark](../docs/design/chaos-benchmark.md)
 against other Go agent SDKs.
 
 Run it:

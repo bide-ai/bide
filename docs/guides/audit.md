@@ -164,7 +164,7 @@ key. The public key must come from the anchor operator, not the bundle: that is 
 
 For the auditor who does not write Go, the `goagents-audit` CLI wraps this (`prove` over an
 exported journal + STH, `verify` over a bundle + hex key; `verify` exits 0/1). And for a third
-party who will not import the SDK at all, [`audit/verify`](../audit/verify) is a **stdlib-only**
+party who will not import the SDK at all, [`audit/verify`](../../audit/verify) is a **stdlib-only**
 package (no `agent`, no gsm) that checks inclusion, consistency, and STH signatures from raw
 leaf bytes: they can vendor just that, or reimplement it from RFC 6962 and check us against it.
 The two verification paths are cross-checked bit-for-bit in the tests so the standalone mirror
@@ -172,7 +172,7 @@ cannot drift.
 
 ## CLI reference: `goagents-audit`
 
-The `goagents-audit` command ([`cmd/goagents-audit`](../cmd/goagents-audit)) is the auditor-facing
+The `goagents-audit` command ([`cmd/goagents-audit`](../../cmd/goagents-audit)) is the auditor-facing
 front end for the whole proof surface. It is dependency-light: it imports only the core and `audit`
 packages and no store backend, so every produce verb operates on an **exported journal** (a JSON
 array of `Record`, obtained with `json.Marshal(store.History(ctx, runID))`) plus a signed tree head,
@@ -529,7 +529,7 @@ Candidate extensions if a use case needs them, in rough priority:
   notary/timestamping service), and **witness cosigning** so a shared anchor's forks are
   detectable (only relevant if the anchor is a service you do not control).
 - **Batched/periodic anchoring** rather than per-step, for high-throughput runs.
-- **Journal compaction with proof continuity** (design note: [COMPACTION.md](COMPACTION.md)): seal
+- **Journal compaction with proof continuity** (design note: [COMPACTION.md](../design/compaction.md)): seal
   a closed prefix into a signed checkpoint plus a deterministic state snapshot, carry the previous
   root forward as the next segment's first leaf, and drop the sealed raw records. Proofs survive the
   boundary via a signed checkpoint chain; the load-bearing invariant is that only a closed prefix

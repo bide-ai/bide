@@ -52,7 +52,7 @@ it needs a new primitive, not a new agent class.
 
 ## Quorum as an invariant
 
-This mirrors authority-as-governed-state (see [GOVERNANCE.md](GOVERNANCE.md)): an external fact (the
+This mirrors authority-as-governed-state (see [GOVERNANCE.md](governance.md)): an external fact (the
 tally) is seeded into governed state, and an invariant makes the gate provable. One policy, verified
 over every possible vote count.
 

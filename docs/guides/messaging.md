@@ -1,12 +1,11 @@
 # Connecting a messenger (Slack, Telegram, WhatsApp, SMS, Discord)
 
 Short version: the SDK ships no messenger connectors, and it should not. A chat transport is edge
-plumbing, not accountability, so it sits on the wrong side of the non-goal line (see
-[STRATEGY.md](STRATEGY.md)): the formats and signing schemes churn, every platform already has a
+plumbing, not accountability, so it sits on the wrong side of the non-goal line: the formats and signing schemes churn, every platform already has a
 mature Go library (`slack-go`, `telebot`, `discordgo`, the Twilio and Meta SDKs), and none of it
 makes an agent more provable. What the SDK owes you is a run that is safe to drive from an untrusted,
 redelivering channel. That it already provides. This page shows the pattern; the runnable version is
-[`examples/webhook`](../examples/webhook/main.go).
+[`examples/webhook`](../../examples/webhook/main.go).
 
 ## The core is transport-agnostic on purpose
 
@@ -74,7 +73,7 @@ errors, nothing is recorded, so the next redelivery correctly retries it.
 For the governed and audited story, carry the messenger user's identity into the run so the audit
 record ties the action to who asked. Put it in the system prompt, the tool context, or a governed
 input field. The run is then replayable and provable like any other, with the requester on the
-record. See [AUDIT.md](AUDIT.md) and [GOVERNANCE.md](GOVERNANCE.md).
+record. See [AUDIT.md](audit.md) and [GOVERNANCE.md](governance.md).
 
 ## What stays your responsibility
 

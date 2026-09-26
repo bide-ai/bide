@@ -1,6 +1,6 @@
 # Deterministic replay and run visualization
 
-Every run journals its steps to a `Durable` store (see [EXTENSION-POINTS.md](EXTENSION-POINTS.md)).
+Every run journals its steps to a `Durable` store (see [EXTENSION-POINTS.md](../reference/extension-points.md)).
 Because that journal is a complete, ordered history of what happened, three debugging and
 observability tools fall out of it directly, each a pure function of the recorded records:
 

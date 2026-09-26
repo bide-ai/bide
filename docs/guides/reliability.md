@@ -1,7 +1,7 @@
 # Reliability middleware
 
 The agent loop is thin; the reliability it needs (timeouts, retries, rate limits, cost tracking,
-hedging) lives in composable middleware in [`middleware/`](../middleware). Model middleware wraps
+hedging) lives in composable middleware in [`middleware/`](../../middleware). Model middleware wraps
 the model call and is attached with `agent.Use`; tool middleware wraps tool execution. All of it is
 optional and stdlib-only, and it rides the durable substrate, so a retried or hedged call is still
 journaled at most once and a crash still resumes safely.
@@ -45,7 +45,7 @@ a.Use(middleware.Retry(3, middleware.WithRetryIf(middleware.Retryable), middlewa
 
 `Hedge(delay, backups...)` races the model call against one or more backup models and returns the
 first successful response, cancelling the rest. See [the hedge design and boundaries](#when-to-hedge-vs-retry)
-below; the running demo is [`examples/hedge`](../examples/hedge/main.go).
+below; the running demo is [`examples/hedge`](../../examples/hedge/main.go).
 
 ```go
 // Primary is Anthropic; if it is quiet for 800ms, also try OpenAI and take the first good answer.
