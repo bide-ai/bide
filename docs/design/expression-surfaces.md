@@ -63,6 +63,61 @@ an agent is authored in, the runtime keeps deriving the actual-ran graph from th
 (`RenderMermaid`), so the verify, do not trust stance holds regardless of how the agent was written.
 Authoring is a convenience for the writer; the journal remains the source of truth for the auditor.
 
+## What a layer up looks like (rung 1 sketch)
+
+This is an illustrative sketch, not a committed API. It exists to make the invariant concrete, and
+it is subject to the gate above; it is not a work item.
+
+Surfaces stack in rungs, each compiling to the one below and ultimately to the journal-backed core:
+
+- Rung 0 (today): plain Go plus the durable primitives.
+- Rung 1: a Go-embedded flow DSL, a reified composition you author as data.
+- Rung 2: a declarative config (for example YAML) loaded into the rung-1 builder.
+- Rung 3: a visual builder that emits the rung-2 config.
+
+Rung 1 is the first and most load-bearing. A flow is declared as nodes and edges and compiled to a
+normal agent that runs on the loop:
+
+```go
+flow := agentflow.New("triage").
+    Model("classify", classifyPrompt).          // a model turn (a journaled step)
+    Tool("lookup", lookupTool).                  // a tool node
+    Route("classify", func(s State) string {     // a conditional edge
+        if urgent(s) {
+            return "escalate"
+        }
+        return "resolve"
+    }).
+    Node("escalate", escalateFn).                // an arbitrary Go node (the escape hatch)
+    Node("resolve", resolveFn).
+    Compile()                                    // returns *agent.Agent; lowers to the loop
+
+out, err := flow.Run(ctx, runID, input)          // same runtime, same guarantees
+```
+
+How it lowers, which is what keeps it a front-end and not a fork:
+
+- A node is a durable step. Each maps to a `Do`-memoized unit, so at-most-once and resume are
+  inherited for free. The DSL adds no executor.
+- An edge is control flow the compiler emits. `Route` is a router; a loop is bounded iteration.
+  `Compile` turns the declared topology into the same control flow you would have written by hand.
+- State is the journal, not a separate shared object with reducers. Nodes read and write through the
+  run's journaled state. This is the divergence from graph frameworks that carry their own mutable
+  state model, and it is what keeps the substrate's semantics intact.
+- There is always an escape hatch to plain Go. A `Node` can be an arbitrary function, so the DSL is a
+  convenience over control flow, never a cage. Going up a layer never costs expressiveness.
+
+What reifying the flow buys (the reason to have the layer at all): the flow is a value, so it can be
+rendered from the declaration and not only from a run, statically validated at build time
+(unreachable nodes, dangling edges, type mismatches), diffed and versioned as a topology, and used as
+the hook a visual builder emits into.
+
+The conformance property (the layer expressed through the accountability identity): because the flow
+is authored and the actual path is derived from the journal, a run can be checked against its declared
+graph, proving it followed the declared topology or flagging exactly where it diverged. A graph-first
+framework cannot offer this, because for it the graph is the execution and there is no independent
+record to check against. Here there are both, so "the run did what the diagram said" is verifiable.
+
 ## Current status
 
 Pure Go control flow is the only surface built today, and it is deliberately the low level so richer
