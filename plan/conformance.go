@@ -1,0 +1,128 @@
+package plan
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"strings"
+
+	agent "github.com/dayna/go-agents"
+)
+
+// Conform checks the journaled path for runID against f's declared topology. ok
+// is true iff every journaled step name maps to a declared node (or is a
+// recognised internal marker of one) and every journaled Switch choice picked a
+// declared arm of that Switch. diffs lists divergences by name (an unexpected
+// step, or an unreachable arm taken); when ok is true diffs is empty.
+//
+// This is the accountability property of docs/design/expression-surfaces.md:
+// prove the run followed the declared graph, or point at where it diverged.
+// Conform reads history via agent.Durable.History and compares it to the frozen
+// spec; it runs nothing, adds no executor, and never mutates the store.
+//
+// Conform is DECLARATION-vs-JOURNAL, not value verification. Its blind spot: it
+// sees THAT a declared Step ran and which arm a Switch took, but not what the
+// arbitrary Go inside a Step body actually did. A Step that runs but computes the
+// wrong value still conforms; conformance is about topology and routing, not
+// about the correctness of a node's computation.
+//
+// Conform forwards to the internal (*builderCore).conform so a single method owns
+// the logic against the frozen spec; the exported method only unwraps the Flow.
+func (f *Flow[In, Out]) Conform(ctx context.Context, store agent.Durable, runID string) (ok bool, diffs []string, err error) {
+	return f.core.conform(ctx, store, runID)
+}
+
+// conform is the unexported core of Flow.Conform: it reads the journal for runID
+// and reconciles each recorded step against the declared topology carried by c.
+//
+// The record-name scheme Run writes (see Flow.Run) is:
+//
+//   - "<N>"            -- node N's result (StepValue whose Result is N's JSON output).
+//   - "attempt:<N>"    -- an attempt marker written BEFORE node N's body runs
+//     (StepValue, empty Result). It is an INTERNAL step of node N, not a distinct
+//     declared node, so it maps to N and is never a divergence on its own.
+//   - "switch:<over>"  -- a switched node's journaled arm choice (StepValue whose
+//     Result is the JSON-encoded chosen target step name). It maps to the Switch
+//     declared over "<over>"; the recorded chosen target must be a declared arm of
+//     that Switch, else an unreachable/undeclared arm was taken (a divergence).
+//
+// A HALTED run (Run returned *HaltAmbiguous) leaves "attempt:<N>" present with the
+// "<N>" result missing for the halted node. That is a legitimate observable
+// in-flight state, not a divergence: conform reports what is observable and does
+// not require every attempted node to have completed. conform never panics on a
+// partial, halted, or empty journal.
+func (c *builderCore) conform(ctx context.Context, store agent.Durable, runID string) (bool, []string, error) {
+	recs, err := store.History(ctx, runID)
+	if err != nil {
+		return false, nil, fmt.Errorf("plan: conform run %q: load history: %w", runID, err)
+	}
+
+	// Index the declared topology. byName covers every declared node; the Switch
+	// set and each Switch's declared arm targets let us validate a recorded choice.
+	switchArms := make(map[string]map[string]bool, len(c.branches)) // over -> set of declared arm target names
+	for _, br := range c.branches {
+		targets := make(map[string]bool, len(br.arms))
+		for _, a := range br.arms {
+			targets[a.target] = true
+		}
+		switchArms[br.over] = targets
+	}
+
+	var diffs []string
+	for _, r := range recs {
+		switch {
+		case strings.HasPrefix(r.Name, "switch:"):
+			// A journaled Switch choice. The over-node must be a declared Switch, and
+			// the recorded chosen target must be one of that Switch's declared arms.
+			over := strings.TrimPrefix(r.Name, "switch:")
+			arms, isSwitch := switchArms[over]
+			if !isSwitch {
+				diffs = append(diffs, r.Name+" (switch over undeclared node)")
+				continue
+			}
+			chosen, decErr := decodeSwitchChoice(r.Result)
+			if decErr != nil {
+				// A malformed choice record is observable divergence, not a panic cause.
+				diffs = append(diffs, r.Name+" (unreadable switch choice)")
+				continue
+			}
+			// An empty choice means "matched no arm and no Else" (halted routing); it
+			// takes no arm, so there is no undeclared-arm divergence to report.
+			if chosen != "" && !arms[chosen] {
+				diffs = append(diffs, r.Name+" -> "+chosen+" (unreachable arm taken)")
+			}
+
+		case strings.HasPrefix(r.Name, "attempt:"):
+			// An internal attempt marker of a node. It maps to the declared node it
+			// guards; only an attempt for an UNDECLARED node is a divergence. A present
+			// attempt whose result is missing is a halted/in-flight node, not a
+			// divergence, so we do not require the "<N>" result to also be present.
+			guarded := strings.TrimPrefix(r.Name, "attempt:")
+			if c.byName[guarded] == nil {
+				diffs = append(diffs, r.Name+" (attempt for undeclared step)")
+			}
+
+		default:
+			// A node result record. It must name a declared node.
+			if c.byName[r.Name] == nil {
+				diffs = append(diffs, r.Name+" (unexpected step)")
+			}
+		}
+	}
+
+	return len(diffs) == 0, diffs, nil
+}
+
+// decodeSwitchChoice reads the chosen arm target from a "switch:<over>" record's
+// Result (a JSON-encoded string, see Flow.chooseArm). An empty Result decodes to
+// the empty target, meaning no arm was taken (no When matched and no Else).
+func decodeSwitchChoice(raw json.RawMessage) (string, error) {
+	if len(raw) == 0 {
+		return "", nil
+	}
+	var target string
+	if err := json.Unmarshal(raw, &target); err != nil {
+		return "", err
+	}
+	return target, nil
+}
