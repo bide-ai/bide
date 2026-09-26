@@ -30,11 +30,30 @@ type Flow[In, Out any] struct {
 // without re-running (at-most-once by name), and a resumed run replays recorded
 // steps rather than re-executing them.
 //
+// Halt-on-ambiguity is AUTOMATIC and applies to every node, with no per-step
+// opt-in (see runNode). Each node runs under the substrate's two-phase
+// attempt/result protocol: Run records an attempt marker before invoking the
+// node body, then records the result. On resume, a node whose attempt marker is
+// present but whose result is missing crashed mid-effect with an unknown outcome,
+// so Run HALTS (returns *HaltAmbiguous) rather than re-running the body. This is
+// the plan surface inheriting the crown-jewel property of the substrate: a
+// non-idempotent side effect fires at most once across a crash, for free, without
+// the step author declaring any Safety.
+//
 // A Switch is lowered the same way: Run reads the switched node's journaled
 // output, evaluates the arm predicates ONCE, and records the chosen arm target
 // as its own durable step named "switch:"+over. On resume the recorded choice is
 // replayed rather than re-decided, so the predicates must be pure over the
 // switched value (see When). Only the taken arm's downstream path executes.
+//
+// Journal-record name scheme Run writes, per node named N:
+//   - "attempt:"+N  -- the attempt marker (StepValue, no Result), recorded before N runs;
+//   - N             -- N's result (StepValue whose Result is the JSON-encoded output);
+//   - "switch:"+over -- for a switched node, the journaled arm choice (StepValue whose
+//     Result is the JSON-encoded chosen target step name).
+//
+// The attempt marker "attempt:"+N is an internal step of node N, not a distinct
+// declared node; conformance treats it as belonging to N.
 func (f *Flow[In, Out]) Run(ctx context.Context, store agent.Durable, runID string, in In) (Out, error) {
 	var out Out
 	c := f.core
@@ -60,24 +79,14 @@ func (f *Flow[In, Out]) Run(ctx context.Context, store agent.Durable, runID stri
 
 	input := any(in)
 	for {
-		// Drive the current node as a named durable step. store.Do memoizes by
-		// (runID, name): a recorded step returns its value without re-running the
-		// node body, so resume replays it. This mirrors agent.Step; we call store.Do
-		// directly because node.run is type-erased (any in, any out) and the recorded
-		// Result is JSON, so a resumed run decodes the journaled output for the type
-		// the next step expects.
+		// Drive the current node as a durable step under the automatic
+		// halt-on-ambiguity guard (see runNode): a recorded result replays without
+		// re-running; an attempt marker with no result halts rather than re-firing a
+		// possibly-completed effect; a fresh node records an attempt, runs, then
+		// records its result. This makes at-most-once inherited for free by every
+		// node, with no per-step opt-in.
 		node := cur
-		rec, err := store.Do(ctx, runID, node.name, func(ctx context.Context) (agent.Record, error) {
-			result, runErr := node.run(ctx, input)
-			if runErr != nil {
-				return agent.Record{}, runErr
-			}
-			encoded, encErr := json.Marshal(result)
-			if encErr != nil {
-				return agent.Record{}, fmt.Errorf("plan: step %q encode result: %w", node.name, encErr)
-			}
-			return agent.Record{Kind: agent.StepValue, Result: encoded}, nil
-		})
+		rec, err := runNode(ctx, store, runID, node, input)
 		if err != nil {
 			return out, err
 		}
@@ -129,6 +138,91 @@ func (f *Flow[In, Out]) Run(ctx context.Context, store agent.Durable, runID stri
 		}
 		return out, nil
 	}
+}
+
+// HaltAmbiguous is returned by Run when a resumed node has a recorded attempt
+// marker but no recorded result: the node's effect may have fired before the
+// crash, so its outcome is unknown. Run stops rather than re-run the body and
+// risk a double side effect, mirroring the core runtime's ResumeHalt. Step names
+// the node that halted. Resolve it out of band (confirm whether the effect landed
+// and record the result, or discard the run); Run does not decide that.
+type HaltAmbiguous struct {
+	RunID string
+	Step  string
+}
+
+func (e *HaltAmbiguous) Error() string {
+	return fmt.Sprintf("plan: run %s halted at step %q: an attempt was recorded but no result, so the outcome is unknown and re-running could double-fire; confirm before continuing", e.RunID, e.Step)
+}
+
+// attemptMarker is the journal name of a node's attempt marker: the "about to run
+// this node's effect" record written before the node body runs. It is an internal
+// step of the node named name, not a separate declared node.
+func attemptMarker(name string) string { return "attempt:" + name }
+
+// runNode drives one node as a durable step under the automatic two-phase
+// attempt/result guard, so at-most-once and halt-on-ambiguity are inherited by
+// every node with no per-step opt-in. It uses only the existing substrate
+// primitives (store.History and store.Do); it adds no new Durable, no goroutine,
+// no scheduler.
+//
+// Three cases, checked against the journal:
+//  1. the node's result record already exists  -> return it (memoized; body not re-run);
+//  2. an attempt marker exists but the result does not -> HALT (*HaltAmbiguous), because
+//     the effect may have fired before a crash and re-running could double-fire;
+//  3. fresh -> record the attempt marker, invoke node.run, then record the result.
+//
+// The happy path (no crash) is: attempt, run, result. Because store.Do memoizes
+// each record by name, a clean resume falls into case 1 for every completed node.
+func runNode(ctx context.Context, store agent.Durable, runID string, node *node, input any) (agent.Record, error) {
+	// Read the journal once to classify this node (case 1/2/3). History is the same
+	// primitive the core loop uses for its resume gate.
+	recs, err := store.History(ctx, runID)
+	if err != nil {
+		return agent.Record{}, fmt.Errorf("plan: run %s: load history for step %q: %w", runID, node.name, err)
+	}
+	var haveResult, haveAttempt bool
+	var resultRec agent.Record
+	marker := attemptMarker(node.name)
+	for _, r := range recs {
+		switch r.Name {
+		case node.name:
+			haveResult = true
+			resultRec = r
+		case marker:
+			haveAttempt = true
+		}
+	}
+	if haveResult {
+		return resultRec, nil // case 1: memoized result, do not re-run the body
+	}
+	if haveAttempt {
+		// case 2: the effect was attempted but its result was lost to a crash.
+		return agent.Record{}, &HaltAmbiguous{RunID: runID, Step: node.name}
+	}
+
+	// case 3 (fresh): record the attempt marker BEFORE running the body, so a crash
+	// between the effect and its result leaves the marker persisted and the result
+	// missing, which case 2 detects on resume. The marker carries no payload.
+	if _, err := store.Do(ctx, runID, marker, func(context.Context) (agent.Record, error) {
+		return agent.Record{Kind: agent.StepValue}, nil
+	}); err != nil {
+		return agent.Record{}, fmt.Errorf("plan: run %s: record attempt for step %q: %w", runID, node.name, err)
+	}
+
+	// Run the body and record its result. store.Do memoizes by name, so a resume
+	// after a clean result falls into case 1 above.
+	return store.Do(ctx, runID, node.name, func(ctx context.Context) (agent.Record, error) {
+		result, runErr := node.run(ctx, input)
+		if runErr != nil {
+			return agent.Record{}, runErr
+		}
+		encoded, encErr := json.Marshal(result)
+		if encErr != nil {
+			return agent.Record{}, fmt.Errorf("plan: step %q encode result: %w", node.name, encErr)
+		}
+		return agent.Record{Kind: agent.StepValue, Result: encoded}, nil
+	})
 }
 
 // chooseArm evaluates a Switch over the journaled output of the switched node and
