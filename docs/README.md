@@ -14,6 +14,7 @@ The map. Read in roughly this order; each entry notes who it is for.
 Authoring:
 - **[Reliability](guides/reliability.md)**: retry, hedge, rate limit, cost tracking, and how they compose.
 - **[Durable steps](guides/durable-steps.md)**: `Step`, `Parallel`/`Task` fan-in, and sagas on the durable substrate.
+- **[Flows](guides/flows.md)**: the `plan` builder (rung 1). Author a typed flow, prove a run followed the declared graph, with at-most-once and halt-on-ambiguity inherited from the substrate.
 - **[Signals and ambient](guides/signals.md)**: timers, human-in-the-loop, and durable signals (`Signal`/`Await`/`AwaitFor`, ordered channels). At-least-once transport in, exactly-once application.
 - **[Observability](guides/observability.md)**: OTel gen_ai spans in one line (`trace.Instrument`), token-to-cost, and the content-capture default.
 - **[Models](guides/models.md)**: the Anthropic, OpenAI-compatible, and Gemini adapters, `WithBaseURL`, caching, and multimodal input.
