@@ -3,6 +3,7 @@ package plan
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"reflect"
 	"strconv"
 	"strings"
 )
@@ -59,6 +60,18 @@ func (c *builderCore) digest() string {
 		writeField(&b, "n.kind", strconv.Itoa(int(n.kind)))
 		writeField(&b, "n.in", typeName(n.inType))
 		writeField(&b, "n.out", typeName(n.outType))
+		// A Join fans in several producers; its ordered inputs and their port types are
+		// part of the topology (a differently-ordered or differently-typed merge is a
+		// distinct shape), so commit to them in declared order. Non-join nodes have no
+		// joinInputs, so this adds nothing to their canonical bytes.
+		for i, src := range n.joinInputs {
+			writeField(&b, "n.join.in", src)
+			var portType reflect.Type
+			if i < len(n.joinInTypes) {
+				portType = n.joinInTypes[i]
+			}
+			writeField(&b, "n.join.intype", typeName(portType))
+		}
 	}
 
 	// Edges in insertion order: producer -> consumer, by name.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
 
 	agent "github.com/dayna/go-agents"
 )
@@ -188,6 +189,104 @@ func (b *Builder[In, Out]) Tool[I, O any](name string, t agent.Tool, opts ...Nod
 		},
 	}, opts))
 	return Handle[I, O]{name: name, b: b.core}
+}
+
+// Join2 registers a fixed-arity fan-in named name that consumes two upstream
+// producers a and b and merges them with fn. It is the rung-1 way to reconverge
+// two branches that BOTH execute (for example a fan-out X -> {Y, Z} whose results
+// Join2(Y, Z) merges), as opposed to a Switch, whose arms are mutually exclusive.
+//
+// The input types are unified at the call site through the generic parameters,
+// exactly as Edge unifies M: a is a Producer[A] and b a Producer[B], so the
+// merge fn func(A, B) (O, error) receives the two producers' outputs in order and
+// a mismatch does not compile. Join2 wires one input edge per producer (a -> name,
+// b -> name) and records the ordered input source names and their reflect types, so
+// Build can re-check the port types by reflect identity and Run can decode each
+// journaled input into its concrete Go type before calling fn.
+//
+// The returned Handle names the join and produces O, so it composes downstream
+// (Edge from it, Switch over it, or as an input to another Join). Its input type
+// parameter is O and carries no meaning: a join has several inputs, wired through
+// its arguments rather than through a single Edge, so nothing consumes the handle's
+// Consumer side.
+//
+// SAFETY: like a Step or Model, a Join defaults to the conservative
+// halt-on-ambiguous-crash (its merge fn may have a side effect). Because a join
+// runs only AFTER all its inputs are journaled (Run executes the reachable DAG in
+// topological order), the merge is a plain sequential step under the same
+// attempt/result guard as every other node; the fan-in is a topological barrier,
+// not concurrency. Pass plan.ReadOnly()/plan.Idempotent() (or plan.Retryable()) to
+// opt the join into re-run on an ambiguous crash instead of halting.
+func (b *Builder[In, Out]) Join2[A, B, O any](name string, a Producer[A], bb Producer[B], fn func(A, B) (O, error), opts ...NodeOption) Handle[O, O] {
+	aName, bName := endpointName(a), endpointName(bb)
+	b.core.register(applyNodeOptions(&node{
+		name:        name,
+		kind:        kindJoin,
+		outType:     typeOf[O](),
+		joinInputs:  []string{aName, bName},
+		joinInTypes: []reflect.Type{typeOf[A](), typeOf[B]()},
+		merge: func(_ context.Context, inputs []any) (any, error) {
+			if len(inputs) != 2 {
+				return nil, fmt.Errorf("plan: join %q expected 2 inputs, got %d", name, len(inputs))
+			}
+			av, ok := inputs[0].(A)
+			if !ok {
+				return nil, fmt.Errorf("plan: join %q input 0 got type %T, want %s", name, inputs[0], typeOf[A]())
+			}
+			bv, ok := inputs[1].(B)
+			if !ok {
+				return nil, fmt.Errorf("plan: join %q input 1 got type %T, want %s", name, inputs[1], typeOf[B]())
+			}
+			out, err := fn(av, bv)
+			if err != nil {
+				return nil, err
+			}
+			return out, nil
+		},
+	}, opts))
+	b.core.edges = append(b.core.edges, edge{from: aName, to: name}, edge{from: bName, to: name})
+	return Handle[O, O]{name: name, b: b.core}
+}
+
+// Join3 is Join2 for arity three: it consumes three upstream producers a, b, c and
+// merges them with fn func(A, B, C) (O, error). Everything else matches Join2: the
+// input types unify at the call site, it wires one input edge per producer in order,
+// records the ordered input source names and their reflect types for Build to
+// re-check, defaults to halt-on-ambiguous-crash, and returns a Handle producing O.
+func (b *Builder[In, Out]) Join3[A, B, C, O any](name string, a Producer[A], bb Producer[B], cc Producer[C], fn func(A, B, C) (O, error), opts ...NodeOption) Handle[O, O] {
+	aName, bName, cName := endpointName(a), endpointName(bb), endpointName(cc)
+	b.core.register(applyNodeOptions(&node{
+		name:        name,
+		kind:        kindJoin,
+		outType:     typeOf[O](),
+		joinInputs:  []string{aName, bName, cName},
+		joinInTypes: []reflect.Type{typeOf[A](), typeOf[B](), typeOf[C]()},
+		merge: func(_ context.Context, inputs []any) (any, error) {
+			if len(inputs) != 3 {
+				return nil, fmt.Errorf("plan: join %q expected 3 inputs, got %d", name, len(inputs))
+			}
+			av, ok := inputs[0].(A)
+			if !ok {
+				return nil, fmt.Errorf("plan: join %q input 0 got type %T, want %s", name, inputs[0], typeOf[A]())
+			}
+			bv, ok := inputs[1].(B)
+			if !ok {
+				return nil, fmt.Errorf("plan: join %q input 1 got type %T, want %s", name, inputs[1], typeOf[B]())
+			}
+			cv, ok := inputs[2].(C)
+			if !ok {
+				return nil, fmt.Errorf("plan: join %q input 2 got type %T, want %s", name, inputs[2], typeOf[C]())
+			}
+			out, err := fn(av, bv, cv)
+			if err != nil {
+				return nil, err
+			}
+			return out, nil
+		},
+	}, opts))
+	b.core.edges = append(b.core.edges,
+		edge{from: aName, to: name}, edge{from: bName, to: name}, edge{from: cName, to: name})
+	return Handle[O, O]{name: name, b: b.core}
 }
 
 // WithModel binds an agent.Model to the flow, so a Model step can render its prompt,

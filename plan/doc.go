@@ -16,6 +16,17 @@
 // is a surface over agent.Step control flow; it introduces no separate
 // scheduler or executor.
 //
+// Builder.Join2 and Builder.Join3 add fixed-arity fan-in: a node that consumes two
+// (or three) upstream producers that BOTH execute and merges them, so a fan-out
+// (a producer with several outgoing edges) can reconverge. Flow.Run executes the
+// reachable DAG in a deterministic topological order, strictly sequentially: a Join
+// runs only after all its inputs are journaled, so the fan-in barrier is realized by
+// ordering, not concurrency (still no goroutines or errgroup). A Switch still prunes
+// to its taken arm; Build rejects a Join whose inputs a Switch can skip (Join is
+// fan-in of both-execute branches, not reconvergence of mutually-exclusive arms).
+// Join is currently expressible only through the Go builder; the config loader (Load)
+// does not yet carry a join wiring element, which is a deferred follow-up.
+//
 // Because the topology is declared as a value, plan can render the authored
 // graph (Flow.RenderMermaid) and compare it against the journal-derived path of
 // a run (Flow.Conform), distinguishing the declared diagram from the diagram

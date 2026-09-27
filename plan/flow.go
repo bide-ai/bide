@@ -81,43 +81,82 @@ func (f *Flow[In, Out]) Run(ctx context.Context, store agent.Durable, runID stri
 		return out, fmt.Errorf("plan: run %q: record topology digest: %w", c.flowName, err)
 	}
 
-	// Walk from the entry, carrying the current node and its decoded input. Each
-	// node is driven as one durable step; the walk advances to the edge target or,
-	// for a switched node, to the journaled arm target. It ends at a terminal node
-	// (no outgoing edge, not switched over), whose output is the flow output.
-	cur := c.byName[c.entry]
-	if cur == nil {
+	if c.byName[c.entry] == nil {
 		return out, fmt.Errorf("plan: run %q: no entry step (flow was not built)", c.flowName)
 	}
 
-	// Index the topology once for the walk: edge targets and per-node branch.
-	edgeTo := make(map[string]string, len(c.edges))
+	// Execute the reachable DAG in a deterministic topological order, strictly
+	// sequentially: one node at a time, each under the automatic halt-on-ambiguity
+	// guard (see runNode). This is a strict superset of the old single-active-path
+	// walk: a linear or switched flow visits the same nodes in the same order, while
+	// a fan-out (a node with several successors) and a fan-in (a Join with several
+	// inputs) are handled by ordering alone. There is NO goroutine, channel, or
+	// scheduler: a Join "barrier" is realized purely by topological order (a Join
+	// appears after all its inputs in topoOrder, so their results are already
+	// journaled when it runs), not by concurrency.
+	order, err := c.topoOrder()
+	if err != nil {
+		return out, fmt.Errorf("plan: run %q: %w", c.flowName, err)
+	}
+
+	// Index the topology once: edge successors, per-node branch, and each node's
+	// recorded output for a downstream node (or Join) to consume as input.
+	outEdges := make(map[string][]string, len(c.edges))
 	for _, e := range c.edges {
-		edgeTo[e.from] = e.to
+		outEdges[e.from] = append(outEdges[e.from], e.to)
 	}
 	branchOf := make(map[string]branch, len(c.branches))
 	for _, br := range c.branches {
 		branchOf[br.over] = br
 	}
 
-	input := any(in)
-	for {
-		// Drive the current node as a durable step under the automatic
-		// halt-on-ambiguity guard (see runNode): a recorded result replays without
-		// re-running; an attempt marker with no result halts rather than re-firing a
-		// possibly-completed effect; a fresh node records an attempt, runs, then
-		// records its result. This makes at-most-once inherited for free by every
-		// node, with no per-step opt-in.
-		node := cur
-		rec, err := runNode(ctx, store, runID, c.model, node, input)
-		if err != nil {
-			return out, err
+	// live marks a node the walk has decided must execute: the entry is live, an
+	// edge target becomes live when its (non-switched) source runs, and a switched
+	// node's CHOSEN arm becomes live (the other arms stay pruned). results holds each
+	// executed node's journaled output so a successor or Join can decode it as input.
+	live := map[string]bool{c.entry: true}
+	results := make(map[string]json.RawMessage, len(c.nodes))
+
+	// haveTerminal/terminalOut carry the output of the last live terminal reached in
+	// topological order (a live node with no outgoing edge and not switched over). A
+	// diamond reconverges to a single Join terminal, so this is unambiguous for the
+	// intended fan-out-then-join shape; a bare fan-out with several live terminals
+	// resolves to the last one in topological order, deterministically.
+	var terminalOut json.RawMessage
+	haveTerminal := false
+
+	for _, name := range order {
+		if !live[name] {
+			continue // pruned: reachable only via a not-taken Switch arm, or never scheduled
+		}
+		node := c.byName[name]
+
+		// Resolve this node's input. A Join gathers its ordered inputs from the
+		// already-journaled results of its input sources (topological order guarantees
+		// they ran first). Every other node consumes the single upstream value: the flow
+		// input for the entry, or the recorded output of its one live predecessor.
+		input, inErr := f.nodeInput(c, node, in, results, live, outEdges, branchOf)
+		if inErr != nil {
+			return out, inErr
 		}
 
-		// Route onward. Precedence mirrors Build's terminal rule: a switched node
-		// routes through its arms; otherwise an edge advances the walk; otherwise the
-		// node is terminal and its output is the flow output.
-		if br, switched := branchOf[node.name]; switched {
+		// Drive the node as a durable step under the automatic attempt/result guard
+		// (see runNode): a recorded result replays without re-running; an attempt with
+		// no result halts rather than re-firing a possibly-completed effect; a fresh
+		// node records an attempt, runs, then records its result. This holds for a Join
+		// exactly as for any node: it is a plain sequential step, so a non-idempotent
+		// merge halts on the ambiguous crash unless marked retry-safe.
+		rec, runErr := runNode(ctx, store, runID, c.model, node, input)
+		if runErr != nil {
+			return out, runErr
+		}
+		results[name] = rec.Result
+
+		// Route onward, marking live successors. A switched node routes ONLY through
+		// its chosen arm (its edge successors, if any, are not followed), mirroring the
+		// old walk's precedence; the choice is journaled so a resume replays it. Every
+		// other node makes all its edge targets live (fan-out).
+		if br, switched := branchOf[name]; switched {
 			target, chooseErr := f.chooseArm(ctx, store, runID, br, node.outType, rec.Result)
 			if chooseErr != nil {
 				return out, chooseErr
@@ -125,42 +164,91 @@ func (f *Flow[In, Out]) Run(ctx context.Context, store agent.Durable, runID stri
 			if target == "" {
 				return out, fmt.Errorf("plan: run %q: Switch over %q matched no arm and has no Else", c.flowName, br.over)
 			}
-			next := c.byName[target]
-			if next == nil {
+			if c.byName[target] == nil {
 				return out, fmt.Errorf("plan: run %q: Switch over %q routes to unknown step %q", c.flowName, br.over, target)
 			}
-			// The taken arm consumes the switched node's output as its input.
-			in, decErr := decodeInto(rec.Result, next.inType)
-			if decErr != nil {
-				return out, fmt.Errorf("plan: run %q: decode switch input for arm %q: %w", c.flowName, target, decErr)
-			}
-			cur = next
-			input = in
+			live[target] = true
 			continue
 		}
 
-		if target, has := edgeTo[node.name]; has {
-			next := c.byName[target]
-			if next == nil {
-				return out, fmt.Errorf("plan: run %q: edge routes to unknown step %q", c.flowName, target)
-			}
-			in, decErr := decodeInto(rec.Result, next.inType)
-			if decErr != nil {
-				return out, fmt.Errorf("plan: run %q: decode edge input for step %q: %w", c.flowName, target, decErr)
-			}
-			cur = next
-			input = in
+		succ := outEdges[name]
+		if len(succ) == 0 {
+			// Terminal: no outgoing edge and not switched. Record its output as a
+			// candidate flow output.
+			terminalOut = rec.Result
+			haveTerminal = true
 			continue
 		}
-
-		// Terminal: decode the recorded output into Out and return it.
-		if len(rec.Result) > 0 {
-			if decErr := json.Unmarshal(rec.Result, &out); decErr != nil {
-				return out, fmt.Errorf("plan: run %q: decode terminal output of step %q: %w", c.flowName, node.name, decErr)
-			}
+		for _, to := range succ {
+			live[to] = true
 		}
-		return out, nil
 	}
+
+	if !haveTerminal {
+		return out, fmt.Errorf("plan: run %q: no live terminal reached", c.flowName)
+	}
+	if len(terminalOut) > 0 {
+		if decErr := json.Unmarshal(terminalOut, &out); decErr != nil {
+			return out, fmt.Errorf("plan: run %q: decode terminal output: %w", c.flowName, decErr)
+		}
+	}
+	return out, nil
+}
+
+// nodeInput resolves the decoded input a node consumes when Run reaches it. A Join
+// gathers its ordered inputs from the already-journaled results of its input source
+// nodes (topological order guarantees they ran first) and returns them as a []any
+// positionally aligned with the merge function's parameters; the merge closure
+// installed by Join2/Join3 asserts each element's concrete type. Every other node
+// consumes a single upstream value: the flow input in for the entry, the switched
+// node's output for a Switch arm target, or the recorded output of its one live
+// predecessor edge for an ordinary edge target. Each value is decoded into the
+// consumer's concrete Go type so a Step/Tool/Model body (or a Switch predicate)
+// receives the type it expects rather than the neutral JSON shape.
+func (f *Flow[In, Out]) nodeInput(c *builderCore, node *node, in In, results map[string]json.RawMessage, live map[string]bool, outEdges map[string][]string, branchOf map[string]branch) (any, error) {
+	if node.kind == kindJoin {
+		inputs := make([]any, len(node.joinInputs))
+		for i, src := range node.joinInputs {
+			decoded, decErr := decodeInto(results[src], node.joinInTypes[i])
+			if decErr != nil {
+				return nil, fmt.Errorf("plan: run %q: decode join %q input %q: %w", c.flowName, node.name, src, decErr)
+			}
+			inputs[i] = decoded
+		}
+		return inputs, nil
+	}
+
+	if node.name == c.entry {
+		return any(in), nil
+	}
+
+	// Find the live predecessor whose output feeds this node. It is either the
+	// switched node that chose this node as its arm target, or the single ordinary
+	// edge source that ran. There is exactly one in a valid rung-1 topology (fan-in
+	// is only via Join, which is handled above); Build enforces that.
+	for _, br := range branchOf {
+		for _, a := range br.arms {
+			if a.target == node.name && live[br.over] {
+				decoded, decErr := decodeInto(results[br.over], node.inType)
+				if decErr != nil {
+					return nil, fmt.Errorf("plan: run %q: decode switch input for arm %q: %w", c.flowName, node.name, decErr)
+				}
+				return decoded, nil
+			}
+		}
+	}
+	for src, tos := range outEdges {
+		for _, to := range tos {
+			if to == node.name && live[src] && results[src] != nil {
+				decoded, decErr := decodeInto(results[src], node.inType)
+				if decErr != nil {
+					return nil, fmt.Errorf("plan: run %q: decode edge input for step %q: %w", c.flowName, node.name, decErr)
+				}
+				return decoded, nil
+			}
+		}
+	}
+	return nil, fmt.Errorf("plan: run %q: node %q has no journaled predecessor input", c.flowName, node.name)
 }
 
 // HaltAmbiguous is returned by Run when a resumed node has a recorded attempt
@@ -252,13 +340,26 @@ func runNode(ctx context.Context, store agent.Durable, runID string, model agent
 	return store.Do(ctx, runID, node.name, func(ctx context.Context) (agent.Record, error) {
 		var result any
 		var runErr error
-		if node.kind == kindModel {
+		switch node.kind {
+		case kindModel:
 			// A Model node has no run closure: it renders its prompt from the input,
 			// calls the flow's bound model, and decodes the structured result into the
 			// node's output type. The model is bound to the flow (WithModel) and read at
 			// run time. Build guarantees it is non-nil for a flow with a Model node.
 			result, runErr = runModel(ctx, model, node, input)
-		} else {
+		case kindJoin:
+			// A Join node has no run closure: it dispatches to its erased merge, which
+			// receives the ordered inputs (a []any assembled by nodeInput from the
+			// already-journaled input results) and returns the merged output. Because the
+			// join runs after all its inputs in topological order, this is a plain
+			// sequential step, guarded exactly like every other node.
+			inputs, ok := input.([]any)
+			if !ok {
+				runErr = fmt.Errorf("plan: join %q expected ordered inputs, got %T", node.name, input)
+			} else {
+				result, runErr = node.merge(ctx, inputs)
+			}
+		default:
 			result, runErr = node.run(ctx, input)
 		}
 		if runErr != nil {

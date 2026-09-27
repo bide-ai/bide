@@ -15,6 +15,7 @@ const (
 	kindTool                   // an agent.Tool
 	kindModel                  // a model call built from a prompt
 	kindSwitch                 // a journaled branch choice
+	kindJoin                   // a fixed-arity fan-in that merges several producers
 )
 
 // node is one declared step in the topology. inType/outType are reflect.Type
@@ -45,6 +46,28 @@ type node struct {
 	// supplies the call. It is not part of Digest (the digest commits to topology,
 	// not to a node's prompt text, mirroring how a Step's body is not hashed).
 	prompt string
+	// joinInputs are the ORDERED source node names a kindJoin node fans in, one per
+	// merge-function parameter (Join2 records two, Join3 three). They are the join's
+	// input ports in declared order, so the merge closure receives its arguments in
+	// the same order the author wrote them. Empty for every other kind. The join also
+	// records one edge per input (source -> join name) so the executor and reachability
+	// walk treat the fan-in as ordinary edges; joinInputs additionally pins the ORDER,
+	// which a plain edge set does not. It participates in Digest so a diamond's shape is
+	// stable and distinct from a differently-ordered or differently-shaped merge.
+	joinInputs []string
+	// joinInTypes are the reflect.Type of each join input port, positionally aligned
+	// with joinInputs, captured from the merge function's parameter types at
+	// construction (A, B for Join2). Build checks each equals the corresponding input
+	// producer's output type by reflect identity, mirroring how Edge unifies M. Empty
+	// for every other kind. It participates in Digest.
+	joinInTypes []reflect.Type
+	// merge is the type-erased fan-in closure a kindJoin node installs: it receives the
+	// decoded inputs boxed as any, positionally aligned with joinInputs/joinInTypes, and
+	// returns the merged output boxed as any (or an error). runNode dispatches a kindJoin
+	// node to it instead of node.run (which is nil for a join). It is nil for every other
+	// kind. Like run it is not hashed: the digest commits to the join's shape (its ordered
+	// inputs and their types plus its own name and output type), not to the merge body.
+	merge func(ctx context.Context, inputs []any) (any, error)
 }
 
 // edge is a declared connection producer.Out -> consumer.In (names, not values).
