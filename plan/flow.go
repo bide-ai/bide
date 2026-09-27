@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"strings"
+	"text/template"
 
 	agent "github.com/dayna/go-agents"
 )
@@ -107,7 +109,7 @@ func (f *Flow[In, Out]) Run(ctx context.Context, store agent.Durable, runID stri
 		// records its result. This makes at-most-once inherited for free by every
 		// node, with no per-step opt-in.
 		node := cur
-		rec, err := runNode(ctx, store, runID, node, input)
+		rec, err := runNode(ctx, store, runID, c.model, node, input)
 		if err != nil {
 			return out, err
 		}
@@ -201,7 +203,7 @@ func attemptMarker(name string) string { return "attempt:" + name }
 // Only case 2 consults node.safety; the happy path and the completed-result replay
 // path (case 1) are unchanged, so a node's Safety opt-in changes resume behavior
 // only, never a clean run.
-func runNode(ctx context.Context, store agent.Durable, runID string, node *node, input any) (agent.Record, error) {
+func runNode(ctx context.Context, store agent.Durable, runID string, model agent.Model, node *node, input any) (agent.Record, error) {
 	// Read the journal once to classify this node (case 1/2/3). History is the same
 	// primitive the core loop uses for its resume gate.
 	recs, err := store.History(ctx, runID)
@@ -248,7 +250,17 @@ func runNode(ctx context.Context, store agent.Durable, runID string, node *node,
 	// after a clean result falls into case 1 above. For a retry-safe node resuming
 	// from case 2, this re-runs the body and records the result the crash lost.
 	return store.Do(ctx, runID, node.name, func(ctx context.Context) (agent.Record, error) {
-		result, runErr := node.run(ctx, input)
+		var result any
+		var runErr error
+		if node.kind == kindModel {
+			// A Model node has no run closure: it renders its prompt from the input,
+			// calls the flow's bound model, and decodes the structured result into the
+			// node's output type. The model is bound to the flow (WithModel) and read at
+			// run time. Build guarantees it is non-nil for a flow with a Model node.
+			result, runErr = runModel(ctx, model, node, input)
+		} else {
+			result, runErr = node.run(ctx, input)
+		}
 		if runErr != nil {
 			return agent.Record{}, runErr
 		}
@@ -258,6 +270,51 @@ func runNode(ctx context.Context, store agent.Durable, runID string, node *node,
 		}
 		return agent.Record{Kind: agent.StepValue, Result: encoded}, nil
 	})
+}
+
+// runModel is the body of a kindModel node: it renders the node's prompt as a Go
+// text/template with the decoded input as data, calls the flow's bound model, and
+// decodes the model's text response as JSON into a fresh value of the node's output
+// type (returned boxed as any, mirroring a Step's run closure). This mirrors the
+// core's typed-output decode path (RunTypedNative json.Unmarshal-s the assistant's
+// text into the typed result): because the plan surface imports only stdlib and the
+// core agent (not the schema helper, which is generic over a type parameter and
+// cannot be reached from a reflect.Type here), the output type O must be JSON-shaped
+// and the prompt must instruct the model to answer with matching JSON.
+func runModel(ctx context.Context, model agent.Model, node *node, input any) (any, error) {
+	if model == nil {
+		// Defensive: Build rejects a Model node with no bound model, so this should be
+		// unreachable. Kept so a hand-assembled core (bypassing Build) fails loudly with
+		// the node name rather than nil-dereferencing.
+		return nil, fmt.Errorf("plan: model step %q has no bound model", node.name)
+	}
+
+	// Render the prompt as a text/template with the decoded input as data. A parse or
+	// execute error names the node so an author's template mistake is legible.
+	tmpl, err := template.New(node.name).Parse(node.prompt)
+	if err != nil {
+		return nil, fmt.Errorf("plan: model step %q parse prompt template: %w", node.name, err)
+	}
+	var rendered strings.Builder
+	if err := tmpl.Execute(&rendered, input); err != nil {
+		return nil, fmt.Errorf("plan: model step %q render prompt: %w", node.name, err)
+	}
+
+	// Send the rendered prompt as a single user message and drain the model's turn.
+	msg, _, err := agent.Generate(ctx, model, agent.Request{
+		Messages: []agent.Message{agent.UserText(rendered.String())},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("plan: model step %q generate: %w", node.name, err)
+	}
+
+	// Decode the assistant's text as JSON into a fresh value of the node's output
+	// type, so the next node (or the flow terminal) receives the concrete Go type.
+	out, err := decodeInto(json.RawMessage(msg.Text()), node.outType)
+	if err != nil {
+		return nil, fmt.Errorf("plan: model step %q decode structured output into %s (the model must answer with JSON for this type): %w", node.name, typeName(node.outType), err)
+	}
+	return out, nil
 }
 
 // chooseArm evaluates a Switch over the journaled output of the switched node and

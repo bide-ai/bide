@@ -190,38 +190,48 @@ func (b *Builder[In, Out]) Tool[I, O any](name string, t agent.Tool, opts ...Nod
 	return Handle[I, O]{name: name, b: b.core}
 }
 
-// modelStubMessage is the error a rung-1 Model step returns when run. Model is a
-// declared node so it renders and validates, but rung-1 does not bind a model
-// call; see the Model doc comment.
-const modelStubMessage = "plan: Model requires a bound model (rung-1 stub)"
+// WithModel binds an agent.Model to the flow, so a Model step can render its prompt,
+// call the model, and decode the structured result. The binding is read at RUN time
+// by every Model node (a Model node does not know the model at construction), so one
+// bound model serves the whole flow. A later WithModel overrides an earlier one (last
+// write wins). Build rejects a flow that declares a Model step with no bound model,
+// naming the node. Returns the builder for chaining:
+// New[I,O](name).WithModel(m). It binds identically to a flow produced by Load, so a
+// config-loaded flow with a Model node runs once a model is bound.
+func (b *Builder[In, Out]) WithModel(m agent.Model) *Builder[In, Out] {
+	b.core.model = m
+	return b
+}
 
-// Model registers a model call built from prompt as a durable step named name.
-// name must be unique across the flow; a duplicate is recorded as a deferred error
-// surfaced at Build. I and O are explicit because a prompt string infers nothing:
-// I is the input rendered into the prompt and O is the structured result.
+// Model registers a model call built from prompt as a durable step named name. name
+// must be unique across the flow; a duplicate is recorded as a deferred error
+// surfaced at Build. I and O are explicit because a prompt string infers nothing: I
+// is the input rendered into the prompt and O is the structured result.
 //
-// rung-1 shape (documented open design point): binding a model call would need a
-// model supplied on the Builder plus prompt rendering and structured decoding of
-// agent.Generate output, which is beyond the rung-1 budget. So rung-1 lowers Model
-// to a declared step whose body returns a stub error (modelStubMessage). The node
-// still participates in topology rendering, name-uniqueness, and type unification;
-// only its run body is a stub. Binding a real model (a WithModel Builder option
-// feeding agent.Generate) is deferred to a later rung.
+// At run time the node (see runModel): renders prompt as a Go text/template with the
+// decoded input I as its data (so {{.Field}} references the input's fields), sends
+// the rendered text as a single user message to the model bound with WithModel under
+// a JSON-schema response format derived from O, then decodes the model's text
+// response into O. The model must therefore be bound with Builder.WithModel before
+// Build; a flow declaring a Model step with no bound model fails Build, naming the
+// node. O must be a JSON-shaped type (a struct is the usual structured-output shape),
+// because the model's response is decoded as JSON into O.
 //
-// Pass plan.ReadOnly() or plan.Idempotent() to opt a Model node into re-run on an
-// ambiguous mid-node crash (a model generation is typically read-only). Omit the
-// option to keep the conservative halt behavior.
+// SAFETY: a model call is non-idempotent by default (it may cost tokens and its
+// output can vary between calls), so a Model node keeps the conservative
+// halt-on-ambiguous-crash default: on a mid-node crash whose result was lost, Run
+// HALTS rather than re-call the model. Pass plan.ReadOnly() or plan.Idempotent() (or
+// the plan.Retryable() alias) only if you know a re-call is safe; that opts the node
+// into re-run on the ambiguous crash instead of halting.
 func (b *Builder[In, Out]) Model[I, O any](name, prompt string, opts ...NodeOption) Handle[I, O] {
-	_ = prompt // recorded intent; rung-1 does not render it (see doc comment)
 	b.core.register(applyNodeOptions(&node{
 		name:    name,
 		kind:    kindModel,
 		inType:  typeOf[I](),
 		outType: typeOf[O](),
-		run: func(_ context.Context, _ any) (any, error) {
-			var zero O
-			return zero, fmt.Errorf("%s", modelStubMessage)
-		},
+		prompt:  prompt,
+		// run is nil for a kindModel node: runNode dispatches to runModel, which reads
+		// the flow's bound model at run time (it is not known here at construction).
 	}, opts))
 	return Handle[I, O]{name: name, b: b.core}
 }

@@ -38,6 +38,13 @@ type node struct {
 	// runtime resume property, not part of the wired topology, so it deliberately
 	// does NOT participate in Digest (a flow's identity is its shape).
 	safety agent.Safety
+	// prompt is the raw prompt template of a kindModel node, recorded at
+	// construction. It is a Go text/template rendered with the decoded input I as
+	// data at run time, so {{.Field}} references the input's fields. It is empty
+	// for every other kind. runModel reads it; the bound model (builderCore.model)
+	// supplies the call. It is not part of Digest (the digest commits to topology,
+	// not to a node's prompt text, mirroring how a Step's body is not hashed).
+	prompt string
 }
 
 // edge is a declared connection producer.Out -> consumer.In (names, not values).
@@ -70,6 +77,12 @@ type builderCore struct {
 	edges           []edge
 	branches        []branch
 	errs            []error // deferred construction errors surfaced at Build
+	// model is the agent.Model bound to this flow via WithModel. A kindModel node
+	// reads it at RUN time (it is not known at node construction); nil means no
+	// model was bound. Build rejects a flow that declares a Model node with no
+	// bound model, naming the node. It is a runtime binding, not part of the wired
+	// topology, so it is NOT part of Digest.
+	model agent.Model
 }
 
 // typeOf captures the reflect.Type of T for the constructors to record I/O types.

@@ -89,7 +89,8 @@ func TestBuilderConstructsFlow(t *testing.T) {
 }
 
 // TestBuilderNodeKindsAndTypes asserts each constructor records its kind and I/O
-// reflect types, and that the run closures are installed (non-nil).
+// reflect types. A Step/Tool installs a run closure; a Model node installs no run
+// closure (runNode dispatches a kindModel node to runModel) and records its prompt.
 func TestBuilderNodeKindsAndTypes(t *testing.T) {
 	b := New[int, int]("kinds")
 	b.Step("s", func(int) (bool, error) { return true, nil })
@@ -110,6 +111,15 @@ func TestBuilderNodeKindsAndTypes(t *testing.T) {
 		if n.name != w.name || n.kind != w.kind || n.inType != w.in || n.outType != w.out {
 			t.Errorf("node %d = {%q %v %s %s}, want {%q %v %s %s}",
 				i, n.name, n.kind, n.inType, n.outType, w.name, w.kind, w.in, w.out)
+		}
+		if w.kind == kindModel {
+			if n.run != nil {
+				t.Errorf("node %q (Model) has a run closure; want nil so runNode dispatches to runModel", n.name)
+			}
+			if n.prompt != "prompt text" {
+				t.Errorf("node %q recorded prompt %q, want %q", n.name, n.prompt, "prompt text")
+			}
+			continue
 		}
 		if n.run == nil {
 			t.Errorf("node %q run closure is nil", n.name)
@@ -168,14 +178,21 @@ func TestToolRunClosureRoundTrips(t *testing.T) {
 	}
 }
 
-// TestModelRunReturnsStub asserts the rung-1 Model lowering returns the documented
-// stub error rather than performing a model call.
-func TestModelRunReturnsStub(t *testing.T) {
+// TestModelLoweringRecordsPromptNoStub asserts the Model lowering records the prompt
+// template and installs no run closure (runNode dispatches a kindModel node to
+// runModel, which reads the bound model at run time). The rung-1 stub error is gone.
+func TestModelLoweringRecordsPromptNoStub(t *testing.T) {
 	b := New[int, string]("model")
-	b.Model[int, string]("m", "prompt")
-	_, err := b.core.nodes[0].run(context.Background(), 1)
-	if err == nil || err.Error() != modelStubMessage {
-		t.Errorf("model run err = %v, want %q", err, modelStubMessage)
+	b.Model[int, string]("m", "prompt {{.}}")
+	n := b.core.nodes[0]
+	if n.kind != kindModel {
+		t.Errorf("node kind = %v, want kindModel", n.kind)
+	}
+	if n.run != nil {
+		t.Error("Model node has a run closure; want nil so runNode dispatches to runModel")
+	}
+	if n.prompt != "prompt {{.}}" {
+		t.Errorf("recorded prompt = %q, want %q", n.prompt, "prompt {{.}}")
 	}
 }
 

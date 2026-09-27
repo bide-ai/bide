@@ -41,6 +41,11 @@ type regBlock struct {
 	inType  reflect.Type
 	outType reflect.Type
 	run     func(ctx context.Context, in any) (any, error)
+	// prompt is the model prompt template of a kindModel block, recorded by
+	// RegisterModel and threaded onto the assembled node so a loaded Model node
+	// renders identically to a hand-built one. Empty for a Step or Tool block, whose
+	// behavior lives in run instead.
+	prompt string
 	// safety is the retry-on-resume classification the loaded node carries, mirroring
 	// Builder-side node.safety. RegisterTool auto-derives it from the wrapped
 	// agent.Tool; RegisterStep/RegisterModel take it from a NodeOption at
@@ -165,26 +170,29 @@ func RegisterTool[I, O any](r *Registry, name string, t agent.Tool, opts ...Node
 }
 
 // RegisterModel registers a model call built from prompt as a Model block named
-// name. I and O are explicit because a prompt string infers nothing: I is the
-// input rendered into the prompt and O is the structured result. It carries rung-1
-// stub semantics, mirroring Builder.Model: the node participates in topology,
-// name-uniqueness, and type unification, but its run body returns the stub error
-// (modelStubMessage) because rung-1 binds no model. A duplicate name is an error,
-// surfaced at Load and returned here for inline checking.
+// name. I and O are explicit because a prompt string infers nothing: I is the input
+// rendered into the prompt and O is the structured result. It mirrors Builder.Model:
+// at run time the loaded node renders prompt as a Go text/template with the decoded
+// input I as data, calls the model bound to the loaded flow, and decodes the model's
+// text response as JSON into O. A duplicate name is an error, surfaced at Load and
+// returned here for inline checking.
 //
-// Pass plan.ReadOnly()/plan.Idempotent() to record the block's retry-on-resume
-// Safety in Go (the config JSON carries no Safety), mirroring Builder.Model.
+// The model is bound to the loaded flow with WithLoadedModel at Load time (a Registry
+// carries no model); a config that declares a Model block loaded without a bound
+// model fails Build, naming the node. O must be a JSON-shaped type.
+//
+// Pass plan.ReadOnly()/plan.Idempotent() to record the block's retry-on-resume Safety
+// in Go (the config JSON carries no Safety), mirroring Builder.Model; the default
+// keeps the conservative halt-on-ambiguous-crash for a non-idempotent model call.
 func RegisterModel[I, O any](r *Registry, name, prompt string, opts ...NodeOption) error {
-	_ = prompt // recorded intent; rung-1 does not render it (mirrors Builder.Model)
 	return r.registerBlock(name, &regBlock{
 		kind:    kindModel,
 		inType:  reflect.TypeFor[I](),
 		outType: reflect.TypeFor[O](),
 		safety:  safetyFromOptions(agent.Safety{}, opts),
-		run: func(_ context.Context, _ any) (any, error) {
-			var zero O
-			return zero, fmt.Errorf("%s", modelStubMessage)
-		},
+		prompt:  prompt,
+		// run is nil for a Model block: runNode dispatches a kindModel node to runModel,
+		// which reads the flow's bound model at run time (see Builder.Model / WithModel).
 	})
 }
 

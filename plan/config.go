@@ -7,6 +7,8 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+
+	agent "github.com/dayna/go-agents"
 )
 
 // config is the decoded rung-2 topology: pure topology plus block references.
@@ -90,7 +92,7 @@ func (w configWire) isEdge() bool {
 // checks Build does not: a node cannot be both switched-over and have an outgoing
 // edge, and a wiring element must set exactly one of edge/switch. On success it
 // hands the assembled spec to the existing Build (whole-graph validation) and seal.
-func Load[In, Out any](data []byte, reg *Registry) (*Flow[In, Out], error) {
+func Load[In, Out any](data []byte, reg *Registry, opts ...LoadOption) (*Flow[In, Out], error) {
 	var cfg config
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("plan: load: parse config: %w", err)
@@ -106,6 +108,14 @@ func Load[In, Out any](data []byte, reg *Registry) (*Flow[In, Out], error) {
 		return nil, err
 	}
 
+	// Apply load options (for example WithLoadedModel) before Build, so a config that
+	// declares a Model node has its model bound in time for Build's binding check.
+	for _, opt := range opts {
+		if opt != nil {
+			opt(core)
+		}
+	}
+
 	// Boundary checks that need the In/Out type parameters, by reflect.Type identity.
 	if err := checkBoundary(&cfg, core, inType, outType); err != nil {
 		return nil, err
@@ -116,14 +126,29 @@ func Load[In, Out any](data []byte, reg *Registry) (*Flow[In, Out], error) {
 	return (&Builder[In, Out]{core: core}).Build()
 }
 
+// LoadOption configures a flow at Load time (before Build). It is the loader's
+// counterpart to the Builder's chained options: it mutates the assembled builderCore
+// the loaded flow is built from. See WithLoadedModel.
+type LoadOption func(*builderCore)
+
+// WithLoadedModel binds an agent.Model to a flow produced by Load or LoadReader, so a
+// config that declares a Model node (a RegisterModel block) can render its prompt,
+// call the model, and decode the structured result at run time. It is the loader's
+// equivalent of Builder.WithModel: pass it to Load and a loaded Model node resumes
+// and runs identically to a hand-built one. A config with a Model node loaded without
+// a bound model fails Build, naming the node.
+func WithLoadedModel(m agent.Model) LoadOption {
+	return func(c *builderCore) { c.model = m }
+}
+
 // LoadReader is Load reading the config from r (for example an *os.File or an HTTP
 // body). It reads r to EOF, then behaves exactly like Load.
-func LoadReader[In, Out any](r io.Reader, reg *Registry) (*Flow[In, Out], error) {
+func LoadReader[In, Out any](r io.Reader, reg *Registry, opts ...LoadOption) (*Flow[In, Out], error) {
 	data, err := io.ReadAll(r)
 	if err != nil {
 		return nil, fmt.Errorf("plan: load: read config: %w", err)
 	}
-	return Load[In, Out](data, reg)
+	return Load[In, Out](data, reg, opts...)
 }
 
 // Validate parses and checks a config against reg without producing a Flow, so
@@ -202,6 +227,9 @@ func assemble(cfg *config, reg *Registry) (*builderCore, error) {
 			// resumes identically to a hand-built one. Safety is recorded in Go at
 			// registration, not in the config JSON (see regBlock.safety).
 			safety: b.safety,
+			// Carry the model prompt template for a Model block, so a loaded Model node
+			// renders identically to a hand-built one (see RegisterModel / runModel).
+			prompt: b.prompt,
 		})
 	}
 

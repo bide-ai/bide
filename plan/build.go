@@ -71,6 +71,17 @@ func (b *Builder[In, Out]) Build() (*Flow[In, Out], error) {
 		}
 	}
 
+	// 4b. Model binding: a Model node calls the flow's bound model at run time, so a
+	// flow that declares one must have a model bound via WithModel. Reject it here,
+	// naming the node, rather than surfacing an opaque nil-model error deep in Run.
+	if c.model == nil {
+		for _, n := range c.nodes {
+			if n.kind == kindModel {
+				return nil, fmt.Errorf("plan: build %q: Model step %q has no bound model; bind one with Builder.WithModel(m) before Build", c.flowName, n.name)
+			}
+		}
+	}
+
 	// 5. Reachability: every node must be reachable from the entry via edges and
 	// Switch arms. An orphan step is a wiring mistake; the error names it.
 	reachable := c.reachableFrom(c.entry)
@@ -150,6 +161,7 @@ func (c *builderCore) seal() *builderCore {
 		byName:   make(map[string]*node, len(c.nodes)),
 		edges:    make([]edge, len(c.edges)),
 		branches: make([]branch, len(c.branches)),
+		model:    c.model, // carry the bound model onto the frozen flow so Run can call it
 	}
 	copy(sealed.nodes, c.nodes)
 	for _, n := range sealed.nodes {
