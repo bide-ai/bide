@@ -1,11 +1,11 @@
 package main
 
-// This file adds the rung-2 (declarative config) demonstration to the plan example.
-// Rung 2 expresses a flow's TOPOLOGY as data (nodes, edges, switch arms) while BEHAVIOR
-// stays as registered Go blocks referenced by name. A config loads into the same rung-1
+// This file adds the declarative (declarative config) demonstration to the plan example.
+// declarative config expresses a flow's TOPOLOGY as data (nodes, edges, switch arms) while BEHAVIOR
+// stays as registered Go blocks referenced by name. A config loads into the same Go
 // builder and produces the same *plan.Flow, so it inherits RenderMermaid, Conform, and
-// the topology Digest unchanged. See ../../docs/design/rung2-config.md and
-// ../../docs/guides/flows.md ("Rung 2: declarative config").
+// the topology Digest unchanged. See
+// ../../docs/guides/flows.md ("Declarative config").
 //
 // The headline this demonstration proves is CONFIG-CONFORMANCE: the config below and the
 // code-built triage flow in buildFlow describe the same topology, so their Digest() values
@@ -21,13 +21,13 @@ import (
 	"github.com/blackwell-systems/bide/plan"
 )
 
-// rung2Config is the order-triage flow expressed as a rung-2 JSON config. It restates the
+// declarativeConfig is the order-triage flow expressed as a declarative JSON config. It restates the
 // topology of buildFlow's code-built flow (classify entry, a Switch routing rush orders to
 // reserve-and-finalize and everything else to decline) as pure data: nodes reference
 // registered blocks by name, wiring is an ordered list of edges and switches. Types are
 // NOT restated here; they flow from the registered blocks at load time. The optional
 // in/out fields are documentation the loader cross-checks against Load's In/Out.
-const rung2Config = `{
+const declarativeConfig = `{
   "flow": "order-triage",
   "in": "main.Order",
   "out": "main.Receipt",
@@ -44,14 +44,14 @@ const rung2Config = `{
   ]
 }`
 
-// buildRung2Registry registers the SAME blocks the code-built flow uses, under the SAME
+// buildDeclarativeRegistry registers the SAME blocks the code-built flow uses, under the SAME
 // journal-key names (classify/reserve/finalize/decline) plus the rush predicate. The block
-// bodies are the clean, side-effect-free demo variants (the rung-2 demo never injects a
+// bodies are the clean, side-effect-free demo variants (the declarative demo never injects a
 // crash), which is sound because the topology Digest commits to node names, kinds, and I/O
 // types, not to node bodies: the config and the code describe the same SHAPE regardless of
 // what each body does inside. Every registration is checked; a duplicate would surface at
 // Load, but this fixed set has none.
-func buildRung2Registry() (*plan.Registry, error) {
+func buildDeclarativeRegistry() (*plan.Registry, error) {
 	reg := plan.NewRegistry()
 
 	// classify: Order -> Assessment, the entry step the Switch routes on. Identical to the
@@ -63,7 +63,7 @@ func buildRung2Registry() (*plan.Registry, error) {
 	}
 
 	// reserve: Assessment -> Reservation, the rush-arm step. In the code-built flow this is
-	// the one non-idempotent effect; the rung-2 demo uses the clean variant with no witness
+	// the one non-idempotent effect; the declarative demo uses the clean variant with no witness
 	// append or crash injection, since it only needs to run to completion.
 	if err := plan.RegisterStep(reg, "reserve", func(a Assessment) (Reservation, error) {
 		return Reservation{OrderID: a.OrderID, Ref: "hold-" + a.OrderID}, nil
@@ -86,7 +86,7 @@ func buildRung2Registry() (*plan.Registry, error) {
 	}
 
 	// rush: the Switch predicate over Assessment. Load checks its M (Assessment) equals the
-	// switched node's output type, a strict improvement over rung 1.
+	// switched node's output type, a strict improvement over the Go builder.
 	if err := plan.RegisterPredicate(reg, "rush", func(a Assessment) bool { return a.Rush }); err != nil {
 		return nil, err
 	}
@@ -94,7 +94,7 @@ func buildRung2Registry() (*plan.Registry, error) {
 	return reg, nil
 }
 
-// demoRung2 runs the rung-2 demonstration on the no-flags demo path. It loads the flow from
+// demoDeclarative runs the declarative demonstration on the no-flags demo path. It loads the flow from
 // the JSON config against a registry of the same blocks, prints the config-derived declared
 // topology, runs it against a store to a typed Receipt, conforms the run, and prints that
 // the config-loaded flow's Digest() EQUALS the code-built flow's Digest(): the config and
@@ -103,21 +103,21 @@ func buildRung2Registry() (*plan.Registry, error) {
 //
 // It uses an in-memory store and its own run id so it never touches the sqlite journal the
 // code-built demo drives, keeping the demo deterministic and dependency-free.
-func demoRung2(ctx context.Context, codeBuilt *plan.Flow[Order, Receipt]) {
+func demoDeclarative(ctx context.Context, codeBuilt *plan.Flow[Order, Receipt]) {
 	fmt.Println()
-	fmt.Println("== Rung 2: the same triage flow, authored as declarative config ==")
+	fmt.Println("== Declarative config: the same triage flow, authored as declarative config ==")
 
-	reg, err := buildRung2Registry()
+	reg, err := buildDeclarativeRegistry()
 	if err != nil {
-		fatal(fmt.Errorf("build rung-2 registry: %w", err))
+		fatal(fmt.Errorf("build declarative registry: %w", err))
 	}
 
-	// Load the config into the rung-1 builder. Load resolves every block and predicate
+	// Load the config into the Go builder. Load resolves every block and predicate
 	// against the registry and runs the load-time type checks; a miswired config fails here
 	// with a worded error rather than at compile time.
-	loaded, err := plan.Load[Order, Receipt]([]byte(rung2Config), reg)
+	loaded, err := plan.Load[Order, Receipt]([]byte(declarativeConfig), reg)
 	if err != nil {
-		fatal(fmt.Errorf("load rung-2 config: %w", err))
+		fatal(fmt.Errorf("load declarative config: %w", err))
 	}
 
 	// The config-derived declared topology: the same diagram, sourced from data.

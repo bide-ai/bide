@@ -1,4 +1,4 @@
-// Command plan shows the rung-1 plan flow builder driving a small order-triage flow
+// Command plan shows the plan flow builder driving a small order-triage flow
 // durably against an on-disk SQLite journal. It builds a realistic multi-step flow
 // (two Step nodes and a Switch with When/Else), then, for one run id:
 //
@@ -36,7 +36,7 @@
 //	-resolve       on resume: if Run halts at the side-effect-free finalize step, record
 //	               finalize's result out of band (the documented HaltAmbiguous resolution)
 //	               and re-run to completion
-//	-config        build the flow by plan.Load-ing the rung-2 config (rung2Config) instead
+//	-config        build the flow by plan.Load-ing the declarative config (declarativeConfig) instead
 //	               of the code builder. The config-loaded flow uses the SAME node names and
 //	               topology as the code-built flow, so it produces the SAME journal keys and
 //	               the SAME flow.Digest(): a fresh-process resume off the same journal aligns
@@ -152,18 +152,18 @@ func main() {
 	reportConform(ctx, flow, store, cfg.runID)
 	proveTopologyConformance(ctx, flow, store, cfg.runID)
 
-	// The rung-2 demonstration: the same triage flow authored as declarative config,
+	// The declarative demonstration: the same triage flow authored as declarative config,
 	// loaded, run, conformed, and shown to share the code-built flow's topology Digest.
 	// It runs only on the clean demo path (no crash injection), against its own in-memory
 	// store, so it never perturbs the crash/resume e2e that drives the sqlite journal.
 	if cfg.crash == "" {
-		demoRung2(ctx, flow)
+		demoDeclarative(ctx, flow)
 		// The config surface beyond the linear case: a fan-in (join) diamond and a
 		// bounded loop (loopMax back-edge), each authored as data, run, conformed, and
-		// shown to share the code-built flow's topology Digest. Like demoRung2, they run
+		// shown to share the code-built flow's topology Digest. Like demoDeclarative, they run
 		// only on the clean path against their own in-memory stores.
-		demoRung2Join(ctx)
-		demoRung2Loop(ctx)
+		demoDeclarativeJoin(ctx)
+		demoDeclarativeLoop(ctx)
 	}
 }
 
@@ -320,7 +320,7 @@ func buildFlow(cfg config) (*plan.Flow[Order, Receipt], error) {
 // selectFlow returns the flow the harness runs: the code-built triage flow by default, or
 // the config-loaded equivalent when -config is set. Both describe the identical topology
 // (same node names, same wiring), so they share journal keys and flow.Digest(); the only
-// difference is authorship (Go builder vs plan.Load of rung2Config).
+// difference is authorship (Go builder vs plan.Load of declarativeConfig).
 func selectFlow(cfg config) (*plan.Flow[Order, Receipt], error) {
 	if cfg.loadFlow {
 		return buildFlowFromConfig(cfg)
@@ -328,14 +328,14 @@ func selectFlow(cfg config) (*plan.Flow[Order, Receipt], error) {
 	return buildFlow(cfg)
 }
 
-// buildFlowFromConfig builds the order-triage flow by plan.Load-ing rung2Config against a
+// buildFlowFromConfig builds the order-triage flow by plan.Load-ing declarativeConfig against a
 // registry whose block bodies are the HARNESS variants: reserve appends the witness line
 // and honors the crash flag, and finalize honors the crash flag, exactly as buildFlow's
 // steps do. The registry reuses the same node names (classify/reserve/finalize/decline plus
-// the rush predicate) rung2Config references, so the loaded flow produces the SAME journal
+// the rush predicate) declarativeConfig references, so the loaded flow produces the SAME journal
 // keys and the SAME Digest() as the code-built flow: a fresh process can resume the same run
 // id off the same journal and the committed topology digest matches. The block BODIES differ
-// from buildRung2Registry's clean demo variants (they take the witness/crash side effects the
+// from buildDeclarativeRegistry's clean demo variants (they take the witness/crash side effects the
 // crash/resume e2e observes), which is sound because the topology Digest commits to node
 // names, kinds, and I/O types, not to node bodies.
 func buildFlowFromConfig(cfg config) (*plan.Flow[Order, Receipt], error) {
@@ -386,9 +386,9 @@ func buildFlowFromConfig(cfg config) (*plan.Flow[Order, Receipt], error) {
 		return nil, fmt.Errorf("register rush: %w", err)
 	}
 
-	flow, err := plan.Load[Order, Receipt]([]byte(rung2Config), reg)
+	flow, err := plan.Load[Order, Receipt]([]byte(declarativeConfig), reg)
 	if err != nil {
-		return nil, fmt.Errorf("load rung-2 config: %w", err)
+		return nil, fmt.Errorf("load declarative config: %w", err)
 	}
 	return flow, nil
 }
@@ -452,7 +452,7 @@ func parseFlags() config {
 	flag.IntVar(&cfg.amount, "amount", 500, "order amount; over 100 routes to the reserving rush arm")
 	flag.StringVar(&cfg.crash, "crash", "", `inject a crash: "during-reserve" or "before-finalize"`)
 	flag.BoolVar(&cfg.resolve, "resolve", false, "on resume, resolve a finalize halt out of band and complete")
-	flag.BoolVar(&cfg.loadFlow, "config", false, "build the flow by plan.Load-ing the rung-2 config instead of the code builder (same topology, same journal keys, same Digest)")
+	flag.BoolVar(&cfg.loadFlow, "config", false, "build the flow by plan.Load-ing the declarative config instead of the code builder (same topology, same journal keys, same Digest)")
 	flag.Parse()
 	return cfg
 }

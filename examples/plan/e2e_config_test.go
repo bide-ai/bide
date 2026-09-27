@@ -2,8 +2,8 @@ package main
 
 // Cross-process end-to-end tests for the CONFIG-LOADED triage flow. These mirror the
 // code-built cross-process tests in e2e_test.go exactly, but pass -config in BOTH phases so
-// the flow is built by plan.Load-ing rung2Config rather than the Go
-// builder. The point they prove: a rung-2 CONFIG-LOADED flow survives a real process death.
+// the flow is built by plan.Load-ing declarativeConfig rather than the Go
+// builder. The point they prove: a declarative CONFIG-LOADED flow survives a real process death.
 // A fresh process re-loads the SAME config, resumes the same run id against the same sqlite
 // journal, the run is at-most-once, completes or halts cleanly, conforms, AND stays
 // cryptographically conformable to that config across the crash and the reload (the phase-2
@@ -50,7 +50,7 @@ func canonicalConfigDigest(t *testing.T, bin string) string {
 }
 
 // TestE2E_ConfigLoaded_ResumeAcrossProcesses is the config-loaded analogue of
-// TestE2E_ResumeAfterKillCompletesOnce. Phase 1 is a fresh process built from rung2Config
+// TestE2E_ResumeAfterKillCompletesOnce. Phase 1 is a fresh process built from declarativeConfig
 // (-config) whose reserve step fires the non-idempotent effect and commits it, then crashes
 // at the start of the side-effect-free finalize step (-crash before-finalize). Phase 2 is a
 // fresh process, ALSO built from the SAME config (-config), that reopens the SAME journal for

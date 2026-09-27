@@ -1,6 +1,6 @@
 package main
 
-// In-process test of the rung-2 (declarative config) path: load the triage flow from the
+// In-process test of the declarative (declarative config) path: load the triage flow from the
 // JSON config against a registry of the same blocks, run it, conform the run, and assert
 // the config-loaded flow's topology Digest EQUALS the code-built flow's. The digest
 // equality is the config-conformance headline: the config and the Go describe the same
@@ -15,9 +15,9 @@ import (
 	"github.com/blackwell-systems/bide/plan"
 )
 
-// TestRung2ConfigMatchesCodeBuilt loads the rung-2 config, runs and conforms it, and
+// TestDeclarativeConfigMatchesCodeBuilt loads the declarative config, runs and conforms it, and
 // asserts its Digest equals the code-built flow's Digest.
-func TestRung2ConfigMatchesCodeBuilt(t *testing.T) {
+func TestDeclarativeConfigMatchesCodeBuilt(t *testing.T) {
 	ctx := context.Background()
 
 	codeBuilt, err := buildFlow(config{})
@@ -25,18 +25,18 @@ func TestRung2ConfigMatchesCodeBuilt(t *testing.T) {
 		t.Fatalf("buildFlow: %v", err)
 	}
 
-	reg, err := buildRung2Registry()
+	reg, err := buildDeclarativeRegistry()
 	if err != nil {
-		t.Fatalf("buildRung2Registry: %v", err)
+		t.Fatalf("buildDeclarativeRegistry: %v", err)
 	}
-	loaded, err := plan.Load[Order, Receipt]([]byte(rung2Config), reg)
+	loaded, err := plan.Load[Order, Receipt]([]byte(declarativeConfig), reg)
 	if err != nil {
-		t.Fatalf("Load rung-2 config: %v", err)
+		t.Fatalf("Load declarative config: %v", err)
 	}
 
 	// The config-loaded flow runs to the expected typed Receipt.
 	store := agent.NewMemStore()
-	const runID = "rung2-run"
+	const runID = "declarative-run"
 	out, err := loaded.Run(ctx, store, runID, Order{ID: runID, Amount: 500})
 	if err != nil {
 		t.Fatalf("Run config-loaded flow: %v", err)
@@ -61,12 +61,12 @@ func TestRung2ConfigMatchesCodeBuilt(t *testing.T) {
 	}
 }
 
-// TestRung2ValidateCatchesDrift asserts Validate rejects a config that references an
-// unregistered block, which is the CI drift guard rung 2 adds over rung 1.
-func TestRung2ValidateCatchesDrift(t *testing.T) {
-	reg, err := buildRung2Registry()
+// TestDeclarativeValidateCatchesDrift asserts Validate rejects a config that references an
+// unregistered block, which is the CI drift guard declarative config adds over the Go builder.
+func TestDeclarativeValidateCatchesDrift(t *testing.T) {
+	reg, err := buildDeclarativeRegistry()
 	if err != nil {
-		t.Fatalf("buildRung2Registry: %v", err)
+		t.Fatalf("buildDeclarativeRegistry: %v", err)
 	}
 	// A config naming a block the registry does not have must fail Validate.
 	const drifted = `{
@@ -88,10 +88,10 @@ func TestRung2ValidateCatchesDrift(t *testing.T) {
 	}
 }
 
-// TestRung2JoinConfigMatchesCodeBuilt loads the fan-in (join) diamond config, runs it to
+// TestDeclarativeJoinConfigMatchesCodeBuilt loads the fan-in (join) diamond config, runs it to
 // the merged output, conforms the run, and asserts its Digest equals the code-built
 // diamond's: config == code for a fan-in flow.
-func TestRung2JoinConfigMatchesCodeBuilt(t *testing.T) {
+func TestDeclarativeJoinConfigMatchesCodeBuilt(t *testing.T) {
 	ctx := context.Background()
 
 	reg, err := buildDiamondRegistry()
@@ -130,10 +130,10 @@ func TestRung2JoinConfigMatchesCodeBuilt(t *testing.T) {
 	}
 }
 
-// TestRung2LoopConfigMatchesCodeBuilt loads the bounded-loop config, runs it (input 3
+// TestDeclarativeLoopConfigMatchesCodeBuilt loads the bounded-loop config, runs it (input 3
 // iterates refine three times then exits at N=0), conforms the run, and asserts its Digest
 // equals the code-built loop's: config == code for a bounded loop.
-func TestRung2LoopConfigMatchesCodeBuilt(t *testing.T) {
+func TestDeclarativeLoopConfigMatchesCodeBuilt(t *testing.T) {
 	ctx := context.Background()
 
 	reg, err := buildLoopRegistry()

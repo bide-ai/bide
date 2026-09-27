@@ -1,13 +1,13 @@
 package main
 
-// This file extends the rung-2 (declarative config) demonstration to the three config
+// This file extends the declarative (declarative config) demonstration to the three config
 // features beyond the linear triage flow: fan-in (a join), a bounded loop (a switch When
 // arm with a loopMax back-edge), and per-node safety. Each is authored as data that
-// references registered Go blocks by name, loaded into the rung-1 builder, run, conformed,
+// references registered Go blocks by name, loaded into the Go builder, run, conformed,
 // and asserted to share the code-built flow's topology Digest (config == code). See
-// ../../docs/guides/flows.md ("Rung 2: declarative config").
+// ../../docs/guides/flows.md ("Declarative config").
 //
-// As with demoRung2, these run only on the clean demo path against their own in-memory
+// As with demoDeclarative, these run only on the clean demo path against their own in-memory
 // stores, so they never perturb the crash/resume e2e that drives the sqlite journal.
 
 import (
@@ -107,7 +107,7 @@ func buildDiamondRegistry() (*plan.Registry, error) {
 	return reg, nil
 }
 
-// buildDiamondByHand builds the same fan-out-then-fan-in diamond with the rung-1 builder,
+// buildDiamondByHand builds the same fan-out-then-fan-in diamond with the Go builder,
 // so its Digest can be compared against a Load of diamondConfig, proving config == code for
 // a fan-in flow. The node order, edges, join, and ReadOnly on the join all match the config.
 func buildDiamondByHand() (*plan.Flow[int, string], error) {
@@ -163,7 +163,7 @@ func buildLoopRegistry() (*plan.Registry, error) {
 	return reg, nil
 }
 
-// buildCountdownLoopByHand builds the same bounded loop with the rung-1 builder, so its
+// buildCountdownLoopByHand builds the same bounded loop with the Go builder, so its
 // Digest can be compared against a Load of loopConfig, proving config == code for a bounded
 // loop. The node order, the two forward edges, and the LoopBack(10)/Else arm order match the
 // config's loopMax of 10.
@@ -192,7 +192,7 @@ func buildCountdownLoopByHand() (*plan.Flow[int, string], error) {
 	return flow, nil
 }
 
-// demoRung2Join runs the fan-in (join) config demonstration on the clean demo path. It loads
+// demoDeclarativeJoin runs the fan-in (join) config demonstration on the clean demo path. It loads
 // the diamond from JSON against a registry of the same blocks (including the RegisterJoin2
 // merge), prints the config-derived topology, runs it to the merged output, conforms the
 // run, and asserts the config-loaded flow's Digest() EQUALS the code-built diamond's: the
@@ -200,9 +200,9 @@ func buildCountdownLoopByHand() (*plan.Flow[int, string], error) {
 // Conform and the topology Digest, so it is cryptographically conformable to its config
 // exactly as a code-built join is to its diagram. It uses an in-memory store and its own run
 // id, so it never touches the sqlite journal the code-built demo drives.
-func demoRung2Join(ctx context.Context) {
+func demoDeclarativeJoin(ctx context.Context) {
 	fmt.Println()
-	fmt.Println("== Rung 2: a fan-in (join) diamond, authored as declarative config ==")
+	fmt.Println("== Declarative config: a fan-in (join) diamond, authored as declarative config ==")
 
 	reg, err := buildDiamondRegistry()
 	if err != nil {
@@ -248,16 +248,16 @@ func demoRung2Join(ctx context.Context) {
 	}
 }
 
-// demoRung2Loop runs the bounded-loop config demonstration on the clean demo path. It loads
+// demoDeclarativeLoop runs the bounded-loop config demonstration on the clean demo path. It loads
 // the countdown loop from JSON (a switch whose When arm carries a loopMax back-edge to the
 // loop head, referencing a registered predicate) against a registry of the same blocks,
 // prints the config-derived topology, runs it (input 3 iterates refine three times then
 // exits at N=0), conforms the run, and asserts the config-loaded flow's Digest() EQUALS the
 // code-built loop's: the config and the Go describe the same bounded loop. It uses an
 // in-memory store and its own run id, so it never touches the sqlite journal.
-func demoRung2Loop(ctx context.Context) {
+func demoDeclarativeLoop(ctx context.Context) {
 	fmt.Println()
-	fmt.Println("== Rung 2: a bounded loop (loopMax back-edge), authored as declarative config ==")
+	fmt.Println("== Declarative config: a bounded loop (loopMax back-edge), authored as declarative config ==")
 
 	reg, err := buildLoopRegistry()
 	if err != nil {

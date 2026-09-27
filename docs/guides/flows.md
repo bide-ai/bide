@@ -206,7 +206,7 @@ wiring:
   - edge: [reserve, finalize]
 ```
 
-The equivalent JSON (the loader format) is what `examples/plan/rung2.go` embeds and loads.
+The equivalent JSON (the loader format) is what `examples/plan/declarative.go` embeds and loads.
 
 #### Fan-in: the `join` wiring element
 
