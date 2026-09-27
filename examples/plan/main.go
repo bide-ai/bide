@@ -36,6 +36,13 @@
 //	-resolve       on resume: if Run halts at the side-effect-free finalize step, record
 //	               finalize's result out of band (the documented HaltAmbiguous resolution)
 //	               and re-run to completion
+//	-config        build the flow by plan.Load-ing the rung-2 config (rung2Config) instead
+//	               of the code builder. The config-loaded flow uses the SAME node names and
+//	               topology as the code-built flow, so it produces the SAME journal keys and
+//	               the SAME flow.Digest(): a fresh-process resume off the same journal aligns
+//	               node-for-node and the committed digest matches. All other flags apply
+//	               unchanged, so the cross-process crash/resume harness drives a config-loaded
+//	               flow exactly as it drives the code-built one.
 package main
 
 import (
@@ -86,12 +93,13 @@ type Receipt struct {
 // config holds the run parameters parsed from flags, so both the demo path and the e2e
 // harness drive main through the same code.
 type config struct {
-	db      string
-	runID   string
-	witness string
-	amount  int
-	crash   string
-	resolve bool
+	db       string
+	runID    string
+	witness  string
+	amount   int
+	crash    string
+	resolve  bool
+	loadFlow bool
 }
 
 func main() {
@@ -103,7 +111,7 @@ func main() {
 	}
 	defer cleanup()
 
-	flow, err := buildFlow(cfg)
+	flow, err := selectFlow(cfg)
 	if err != nil {
 		fatal(err)
 	}
@@ -309,6 +317,82 @@ func buildFlow(cfg config) (*plan.Flow[Order, Receipt], error) {
 	return flow, nil
 }
 
+// selectFlow returns the flow the harness runs: the code-built triage flow by default, or
+// the config-loaded equivalent when -config is set. Both describe the identical topology
+// (same node names, same wiring), so they share journal keys and flow.Digest(); the only
+// difference is authorship (Go builder vs plan.Load of rung2Config).
+func selectFlow(cfg config) (*plan.Flow[Order, Receipt], error) {
+	if cfg.loadFlow {
+		return buildFlowFromConfig(cfg)
+	}
+	return buildFlow(cfg)
+}
+
+// buildFlowFromConfig builds the order-triage flow by plan.Load-ing rung2Config against a
+// registry whose block bodies are the HARNESS variants: reserve appends the witness line
+// and honors the crash flag, and finalize honors the crash flag, exactly as buildFlow's
+// steps do. The registry reuses the same node names (classify/reserve/finalize/decline plus
+// the rush predicate) rung2Config references, so the loaded flow produces the SAME journal
+// keys and the SAME Digest() as the code-built flow: a fresh process can resume the same run
+// id off the same journal and the committed topology digest matches. The block BODIES differ
+// from buildRung2Registry's clean demo variants (they take the witness/crash side effects the
+// crash/resume e2e observes), which is sound because the topology Digest commits to node
+// names, kinds, and I/O types, not to node bodies.
+func buildFlowFromConfig(cfg config) (*plan.Flow[Order, Receipt], error) {
+	reg := plan.NewRegistry()
+
+	// classify: Order -> Assessment, the entry step the Switch routes on. Side-effect-free,
+	// identical to the code-built classify body.
+	if err := plan.RegisterStep(reg, "classify", func(o Order) (Assessment, error) {
+		return Assessment{OrderID: o.ID, Amount: o.Amount, Rush: o.Amount > 100}, nil
+	}); err != nil {
+		return nil, fmt.Errorf("register classify: %w", err)
+	}
+
+	// reserve: Assessment -> Reservation, the one non-idempotent step. It appends the witness
+	// line then, under -crash during-reserve, exits BEFORE returning so Run records no result,
+	// exactly as buildFlow's reserve does. This is the effect the e2e proves fires at most once.
+	if err := plan.RegisterStep(reg, "reserve", func(a Assessment) (Reservation, error) {
+		appendWitness(cfg.witness, "reserved "+a.OrderID)
+		if cfg.crash == "during-reserve" {
+			os.Exit(1)
+		}
+		return Reservation{OrderID: a.OrderID, Ref: "hold-" + a.OrderID}, nil
+	}); err != nil {
+		return nil, fmt.Errorf("register reserve: %w", err)
+	}
+
+	// finalize: Reservation -> Receipt, the side-effect-free rush-arm terminal. Under -crash
+	// before-finalize it exits at the start (after reserve has committed), leaving finalize
+	// attempted-but-unfinished for the resume, exactly as buildFlow's finalize does.
+	if err := plan.RegisterStep(reg, "finalize", func(r Reservation) (Receipt, error) {
+		if cfg.crash == "before-finalize" {
+			os.Exit(1)
+		}
+		return Receipt{OrderID: r.OrderID, Outcome: "reserved", Detail: r.Ref, Reserved: true}, nil
+	}); err != nil {
+		return nil, fmt.Errorf("register finalize: %w", err)
+	}
+
+	// decline: Assessment -> Receipt, the Else-arm terminal, side-effect-free.
+	if err := plan.RegisterStep(reg, "decline", func(a Assessment) (Receipt, error) {
+		return Receipt{OrderID: a.OrderID, Outcome: "declined", Detail: "below rush threshold"}, nil
+	}); err != nil {
+		return nil, fmt.Errorf("register decline: %w", err)
+	}
+
+	// rush: the Switch predicate over Assessment, identical to the code-built When.
+	if err := plan.RegisterPredicate(reg, "rush", func(a Assessment) bool { return a.Rush }); err != nil {
+		return nil, fmt.Errorf("register rush: %w", err)
+	}
+
+	flow, err := plan.Load[Order, Receipt]([]byte(rung2Config), reg)
+	if err != nil {
+		return nil, fmt.Errorf("load rung-2 config: %w", err)
+	}
+	return flow, nil
+}
+
 // resolveFinalize handles a resumed run that halted at the side-effect-free finalize
 // step: finalize took no external action, so its result is safe to record out of band
 // (the resolution the HaltAmbiguous doc prescribes). It records finalize's result under
@@ -368,6 +452,7 @@ func parseFlags() config {
 	flag.IntVar(&cfg.amount, "amount", 500, "order amount; over 100 routes to the reserving rush arm")
 	flag.StringVar(&cfg.crash, "crash", "", `inject a crash: "during-reserve" or "before-finalize"`)
 	flag.BoolVar(&cfg.resolve, "resolve", false, "on resume, resolve a finalize halt out of band and complete")
+	flag.BoolVar(&cfg.loadFlow, "config", false, "build the flow by plan.Load-ing the rung-2 config instead of the code builder (same topology, same journal keys, same Digest)")
 	flag.Parse()
 	return cfg
 }
