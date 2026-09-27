@@ -1,7 +1,7 @@
 # Governed convergent state in the rung-1 `plan` flow builder
 
 Status: SCOPING DESIGN NOTE. Not built. This is research plus a proposed shape,
-subject to the three-question gate in
+subject to the two architectural gates in
 [expression-surfaces.md](expression-surfaces.md). Nothing here has been
 implemented, and this note deliberately edits no core or `plan` code.
 
