@@ -189,12 +189,18 @@ func attemptMarker(name string) string { return "attempt:" + name }
 //
 // Three cases, checked against the journal:
 //  1. the node's result record already exists  -> return it (memoized; body not re-run);
-//  2. an attempt marker exists but the result does not -> HALT (*HaltAmbiguous), because
-//     the effect may have fired before a crash and re-running could double-fire;
+//  2. an attempt marker exists but the result does not -> the node crashed mid-effect
+//     with an unknown outcome. If the node is retry-safe (nodeRetriableOnResume: its
+//     Safety is ReadOnly or Idempotent, or carries an IdempotencyKey, mirroring the
+//     core loop's classification), RE-RUN the body and record the result. Otherwise
+//     HALT (*HaltAmbiguous), because re-running a non-idempotent effect could double-fire;
 //  3. fresh -> record the attempt marker, invoke node.run, then record the result.
 //
 // The happy path (no crash) is: attempt, run, result. Because store.Do memoizes
 // each record by name, a clean resume falls into case 1 for every completed node.
+// Only case 2 consults node.safety; the happy path and the completed-result replay
+// path (case 1) are unchanged, so a node's Safety opt-in changes resume behavior
+// only, never a clean run.
 func runNode(ctx context.Context, store agent.Durable, runID string, node *node, input any) (agent.Record, error) {
 	// Read the journal once to classify this node (case 1/2/3). History is the same
 	// primitive the core loop uses for its resume gate.
@@ -218,21 +224,29 @@ func runNode(ctx context.Context, store agent.Durable, runID string, node *node,
 		return resultRec, nil // case 1: memoized result, do not re-run the body
 	}
 	if haveAttempt {
-		// case 2: the effect was attempted but its result was lost to a crash.
-		return agent.Record{}, &HaltAmbiguous{RunID: runID, Step: node.name}
-	}
-
-	// case 3 (fresh): record the attempt marker BEFORE running the body, so a crash
-	// between the effect and its result leaves the marker persisted and the result
-	// missing, which case 2 detects on resume. The marker carries no payload.
-	if _, err := store.Do(ctx, runID, marker, func(context.Context) (agent.Record, error) {
-		return agent.Record{Kind: agent.StepValue}, nil
-	}); err != nil {
-		return agent.Record{}, fmt.Errorf("plan: run %s: record attempt for step %q: %w", runID, node.name, err)
+		// case 2: the effect was attempted but its result was lost to a crash. A
+		// retry-safe node (ReadOnly/Idempotent, mirroring the core loop) may safely
+		// re-run its body from the top, so fall through to record the result below (the
+		// attempt marker is already persisted, so it is not re-recorded). A
+		// non-idempotent node HALTS rather than risk a double side effect.
+		if !nodeRetriableOnResume(node.safety) {
+			return agent.Record{}, &HaltAmbiguous{RunID: runID, Step: node.name}
+		}
+	} else {
+		// case 3 (fresh): record the attempt marker BEFORE running the body, so a crash
+		// between the effect and its result leaves the marker persisted and the result
+		// missing, which case 2 detects on resume. The marker carries no payload. A
+		// retry-safe node in case 2 skips this because its marker already exists.
+		if _, err := store.Do(ctx, runID, marker, func(context.Context) (agent.Record, error) {
+			return agent.Record{Kind: agent.StepValue}, nil
+		}); err != nil {
+			return agent.Record{}, fmt.Errorf("plan: run %s: record attempt for step %q: %w", runID, node.name, err)
+		}
 	}
 
 	// Run the body and record its result. store.Do memoizes by name, so a resume
-	// after a clean result falls into case 1 above.
+	// after a clean result falls into case 1 above. For a retry-safe node resuming
+	// from case 2, this re-runs the body and records the result the crash lost.
 	return store.Do(ctx, runID, node.name, func(ctx context.Context) (agent.Record, error) {
 		result, runErr := node.run(ctx, input)
 		if runErr != nil {

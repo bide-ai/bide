@@ -198,6 +198,10 @@ func assemble(cfg *config, reg *Registry) (*builderCore, error) {
 			inType:  b.inType,
 			outType: b.outType,
 			run:     b.run,
+			// Carry the registered block's Safety onto the loaded node, so a loaded flow
+			// resumes identically to a hand-built one. Safety is recorded in Go at
+			// registration, not in the config JSON (see regBlock.safety).
+			safety: b.safety,
 		})
 	}
 

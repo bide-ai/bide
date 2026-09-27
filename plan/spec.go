@@ -3,6 +3,8 @@ package plan
 import (
 	"context"
 	"reflect"
+
+	agent "github.com/dayna/go-agents"
 )
 
 // nodeKind classifies a lowered step for rendering and validation.
@@ -27,6 +29,15 @@ type node struct {
 	// wraps it in an agent.Step call keyed by name. It takes the decoded input
 	// (as any) and returns the output (as any) or an error. nil for kindSwitch.
 	run func(ctx context.Context, in any) (any, error)
+	// safety is the node's retry-on-resume classification, mirroring agent.Safety
+	// for a core tool. The zero value (no ReadOnly/Idempotent, no IdempotencyKey)
+	// is the conservative default: on an ambiguous mid-node crash the node HALTS
+	// rather than re-run, preserving the surface's at-most-once-by-default. A node
+	// marked retry-safe (see safety.retriableOnResume via nodeRetriableOnResume)
+	// instead re-runs its body from the top on resume (see runNode). It is a
+	// runtime resume property, not part of the wired topology, so it deliberately
+	// does NOT participate in Digest (a flow's identity is its shape).
+	safety agent.Safety
 }
 
 // edge is a declared connection producer.Out -> consumer.In (names, not values).

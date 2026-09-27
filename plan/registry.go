@@ -41,6 +41,14 @@ type regBlock struct {
 	inType  reflect.Type
 	outType reflect.Type
 	run     func(ctx context.Context, in any) (any, error)
+	// safety is the retry-on-resume classification the loaded node carries, mirroring
+	// Builder-side node.safety. RegisterTool auto-derives it from the wrapped
+	// agent.Tool; RegisterStep/RegisterModel take it from a NodeOption at
+	// registration. It is threaded into the built node by assemble, so a loaded flow
+	// resumes identically to a hand-built one. Safety is a Go-side registration
+	// property: it is NOT carried in the config JSON (see doc.go / the Safety note),
+	// because it is a runtime resume property, not part of the wired topology.
+	safety agent.Safety
 }
 
 // regPred is a registered Switch predicate. mType is the switched value's type M
@@ -93,11 +101,16 @@ func (r *Registry) registerPred(name string, p *regPred) error {
 // registered block). The installed run closure mirrors Builder.Step: it asserts
 // the erased input is I, calls fn, and boxes the O result back as any. A duplicate
 // name is an error, surfaced at Load and returned here for inline checking.
-func RegisterStep[I, O any](r *Registry, name string, fn func(I) (O, error)) error {
+//
+// Pass plan.ReadOnly()/plan.Idempotent() to record the block's retry-on-resume
+// Safety in Go (the config JSON carries no Safety); a loaded node then resumes
+// identically to one built with Builder.Step and the same option.
+func RegisterStep[I, O any](r *Registry, name string, fn func(I) (O, error), opts ...NodeOption) error {
 	return r.registerBlock(name, &regBlock{
 		kind:    kindStep,
 		inType:  reflect.TypeFor[I](),
 		outType: reflect.TypeFor[O](),
+		safety:  safetyFromOptions(agent.Safety{}, opts),
 		run: func(_ context.Context, in any) (any, error) {
 			typed, ok := in.(I)
 			if !ok {
@@ -117,11 +130,16 @@ func RegisterStep[I, O any](r *Registry, name string, fn func(I) (O, error)) err
 // input is JSON-encoded into the tool's args and the tool's JSON result is decoded
 // into O, exactly like Builder.Tool. A duplicate name is an error, surfaced at
 // Load and returned here for inline checking.
-func RegisterTool[I, O any](r *Registry, name string, t agent.Tool) error {
+//
+// Safety AUTO-DERIVES from t.Safety(), mirroring Builder.Tool; an explicit
+// plan.ReadOnly()/plan.Idempotent() option overrides the derived Safety. Safety is
+// recorded in Go here, not in the config JSON.
+func RegisterTool[I, O any](r *Registry, name string, t agent.Tool, opts ...NodeOption) error {
 	return r.registerBlock(name, &regBlock{
 		kind:    kindTool,
 		inType:  reflect.TypeFor[I](),
 		outType: reflect.TypeFor[O](),
+		safety:  safetyFromOptions(t.Safety(), opts),
 		run: func(ctx context.Context, in any) (any, error) {
 			typed, ok := in.(I)
 			if !ok {
@@ -153,12 +171,16 @@ func RegisterTool[I, O any](r *Registry, name string, t agent.Tool) error {
 // name-uniqueness, and type unification, but its run body returns the stub error
 // (modelStubMessage) because rung-1 binds no model. A duplicate name is an error,
 // surfaced at Load and returned here for inline checking.
-func RegisterModel[I, O any](r *Registry, name, prompt string) error {
+//
+// Pass plan.ReadOnly()/plan.Idempotent() to record the block's retry-on-resume
+// Safety in Go (the config JSON carries no Safety), mirroring Builder.Model.
+func RegisterModel[I, O any](r *Registry, name, prompt string, opts ...NodeOption) error {
 	_ = prompt // recorded intent; rung-1 does not render it (mirrors Builder.Model)
 	return r.registerBlock(name, &regBlock{
 		kind:    kindModel,
 		inType:  reflect.TypeFor[I](),
 		outType: reflect.TypeFor[O](),
+		safety:  safetyFromOptions(agent.Safety{}, opts),
 		run: func(_ context.Context, _ any) (any, error) {
 			var zero O
 			return zero, fmt.Errorf("%s", modelStubMessage)
