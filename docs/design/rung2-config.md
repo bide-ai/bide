@@ -115,7 +115,7 @@ declared topology), and `Digest` + the `flow:digest` record (cryptographic confo
 now commits to the config-derived topology, so a signed tree head over the run proves the run followed
 **this config**, offline. Rung 2 gets the whole accountability story with no new code in that path.
 
-## The honest cost
+## The real cost
 
 Moving from Go to data trades compile-time type checking for load-time validation. A miswired config
 does not fail at `go build`; it fails at `Load`, at process start. This is expected and is the same
