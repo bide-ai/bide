@@ -1,5 +1,12 @@
 # Contributing
 
+## Contributor License Agreement
+
+By submitting a contribution you agree to the [Contributor License Agreement](CLA.md).
+Contributions are accepted only from contributors who have agreed to it (recorded per
+pull request). This keeps every contribution properly attributed and preserves the
+project's ability to relicense as needed.
+
 ## Build and test
 
 This is a multi-module workspace. The core is one Go module at the repository root; adapters and backends are their own modules (`trace`, `mcp`, `store/sqlite`, `store/postgres`, `govern/postgreslog`, `govern/redislog`, `govern/sqlitelog`, and the self-contained `examples/mcp` and `examples/observability`). A `go.work` stitches them together for local development.
