@@ -280,17 +280,14 @@ From [expression-surfaces.md](expression-surfaces.md), applied to this feature.
    its own. It is a convenience over `EventTool`, which is itself a convenience over
    `Governor.Apply`. PASS, with that caveat.
 
-3. **Is it pulled, not pushed?** UNPROVEN. There is no evidence in the repo of a
-   user or design partner asking to author governed effects through `plan` rather
-   than through `EventTool` directly. Option (b) (register an `EventTool` via
-   `Builder.Tool`) already works with zero new code, so the first-class node is a
-   REIFICATION-and-ergonomics upgrade, not a capability unlock. Per the gate, a
-   speculative second surface splits focus from proving the core wedge. This gate
-   is the one that should hold the work until pull is demonstrated. HOLD.
+Net: the feature passes the two architectural gates (lowers to the core; substrate
+stays headline) and is architecturally sound. Timing is a priority call, not a gate.
 
-Net: the feature passes the "lowers to the core" and "substrate stays headline"
-gates and is architecturally sound. It fails the "pulled, not pushed" gate today.
-The recommendation follows from that.
+Worth noting: the capability is already available with zero new code, by registering
+an `EventTool` via `Builder.Tool` so `plan` runs it as an opaque node. The
+first-class `Govern` node is a reification-and-ergonomics upgrade over that
+(footprint, governed rendering, conformance), not a capability unlock, so it is a
+clean additive build whenever it is prioritized.
 
 ## 6. Scope table
 
@@ -304,7 +301,7 @@ The recommendation follows from that.
 | NON-GOAL (first cut) | Auto-retry a compensation-free governed node instead of halting (governed `Safety.Idempotent`). | Explicit non-goal. Halt is the conservative correct default. |
 | NON-GOAL (first cut) | `plan` re-proving or verifying convergence. gsm owns the proof; `plan` only surfaces the footprint. | Explicit non-goal. |
 | NON-GOAL (first cut) | Concurrent governed flows / fan-out in `plan`. Rung-1 is strictly sequential ([flow.go:57](../../plan/flow.go)); the multi-flow convergence story lives in the core e2e tests, not `plan`. | Explicit non-goal. |
-| NON-GOAL (interim) | Any of the above, until a user pulls it. Option (b) (`EventTool` via `Builder.Tool`) covers the capability today. | Held by gate 3. |
+| INTERIM | Option (b) (`EventTool` via `Builder.Tool`) covers the capability today with zero new code; the first-class node is the upgrade path when prioritized. | Additive; author's call on timing. |
 
 ### Open questions
 
@@ -324,9 +321,9 @@ The recommendation follows from that.
 
 ## Bottom line
 
-Architecturally the feature is sound and lowers cleanly: it fails only the
-"pulled, not pushed" gate. Until a user pulls it, register a `govern.EventTool`
-through the existing `Builder.Tool` (option b, zero new code). Build the
+Architecturally the feature is sound and lowers cleanly through the two
+architectural gates. The `EventTool`-via-`Builder.Tool` path (option b) covers the
+capability today with zero new code. Build the
 first-class `Govern` node (option a: a neutral core `Governor` port + a `govern`
 adapter + a `plan` constructor) when a design partner asks to author governed
 effects as reified, footprint-aware, conformable flow nodes rather than as opaque

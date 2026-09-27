@@ -44,16 +44,15 @@ surface you already know; stay for the guarantees.
 
 ## The gate for adding a surface
 
-Before building any new expression surface, it must pass all three:
+Before building any new expression surface, it must pass both:
 
 1. **Does it lower to the core?** Does it inherit at-most-once and the audit trail by compiling to the
    journal-backed runtime? If it needs its own execution or durability model, it is a fork. Hard no.
 2. **Does the substrate stay the headline?** After adding it, is the runtime still the star and the
    surface a convenience? If the surface becomes the pitch, no.
-3. **Is it pulled, not pushed?** Is a real user or design partner asking for it, or is it speculative?
-   Pre-adoption, a second front-end splits focus from proving the core wedge. If speculative, wait.
 
-Pass all three, build it. Fail any, hold.
+Pass both, build it. Fail either, hold. These two gates protect the architecture. Timing and priority
+are the author's call, not a gate.
 
 ## Derived truth survives authoring
 
@@ -274,7 +273,7 @@ diagram" and treats the typed builder as the ergonomic on-ramp, never the reason
 
 ## Current status
 
-Pure Go control flow is the only surface built today, and it is deliberately the low level so richer
-surfaces can sit above it. A graph DSL or visual builder is a stated, credible option (see the
-[Graphs](../../README.md#graphs) section), not a current work item. It is a demand-driven addition,
-to be built when a user pulls it or the core has adoption, and only through the gate above.
+Rung 1 (the `plan` builder) is built. Rung 2 (declarative config over the builder) is in progress
+(see [rung2-config.md](rung2-config.md)); a rung-3 visual builder would emit rung-2 config. Each
+surface sits above the same journal-backed core and is added through the two-question gate above, at
+the author's discretion on timing.

@@ -6,7 +6,8 @@ Rung 1 (`plan`, built) is a Go-embedded flow builder. Rung 2 is the next surface
 [expression-surfaces](expression-surfaces.md) stack: a declarative config (YAML or JSON) that
 describes a flow's topology and loads into the rung-1 builder to produce the same `*Flow`. This note
 resolves the design before any build, because rung 2 has one genuinely hard decision that rung 1 did
-not. It is subject to the same gate; the pull here is an explicit request to build toward it.
+not. It passes the two architectural gates: it lowers to the plan builder, and the substrate stays the
+headline.
 
 ## What rung 2 is, and what it is not
 
@@ -49,7 +50,7 @@ plan.RegisterStep(reg, "classify", classifyOrder)        // captures Order -> As
 plan.RegisterStep(reg, "reserve", reserveInventory)      // Assessment -> Reservation
 plan.RegisterStep(reg, "finalize", finalizeReceipt)      // Reservation -> Receipt
 plan.RegisterStep(reg, "decline", declineReceipt)        // Assessment -> Receipt
-plan.RegisterTool(reg, "lookup", lookupTool)             // an agent.Tool + its I/O types
+plan.RegisterTool[Assessment, Hit](reg, "lookup", lookupTool)   // agent.Tool is untyped: I/O explicit
 plan.RegisterPredicate(reg, "rush", func(a Assessment) bool { return a.Rush })
 ```
 
@@ -101,10 +102,11 @@ JSON and YAML are just two front-ends to the one loader.
 
 ## Where it lives
 
-In the `plan` package (or a `plan/config` subpackage in the same module), so the dynamic path can
-populate `builderCore` directly. It imports only the standard library plus the core, exactly like the
-rest of `plan`; the architecture guard (`TestPlanNoAdapterImports`, no new executor) must keep
-passing. Registration and `Load` add authoring, not execution, so the no-new-executor invariant holds
+In the `plan` package itself, not a subpackage. The dynamic path must populate the unexported
+`builderCore` (and call the unexported `register`/`Build`/`seal`), so a separate `plan/config`
+subpackage cannot host `Load` without `plan` growing a new exported lowering API. `Load` therefore
+lives in `plan`. It imports only the standard library plus the core, exactly like the rest of `plan`;
+the architecture guard (`TestPlanNoAdapterImports`, no new executor) must keep passing. Registration and `Load` add authoring, not execution, so the no-new-executor invariant holds
 trivially.
 
 ## What is inherited for free
@@ -143,13 +145,49 @@ compile-time safety gives back better diagnostics.
 - No fan-in (`Join`) or back-edges (`Loop`) in the config until rung 1 has them.
 - No visual builder (rung 3); rung 2 is the data format rung 3 would target.
 
-## Open questions to pressure-test before building
+## Resolved after pressure-test
 
-- The `Register*` and `Load` signatures: is `Load[In, Out](bytes, reg)` the right shape, or should the
-  registry be typed by boundary? How are predicates typed in the registry so the loader can check an
-  arm's predicate against the switched node's output type?
-- Type identity across the boundary: matching a config's declared `in`/`out` names and edge types to
-  `reflect.Type` reliably (two types named `main.Order` in different packages, etc.).
-- Whether the registry should be global or per-load, and how name collisions are handled.
-- Error surface: exactly what a load error reports for an unknown block, a type mismatch, and a
-  structural violation.
+Two adversarial reviews (type-soundness and DX/competitive) confirmed the mechanism is sound and
+settled the open questions. Decisions the build must follow:
+
+- **`Load` lives in package `plan`.** It returns `*Flow[In, Out]` and populates the unexported
+  `builderCore` via the existing `register`/`Build`/`seal`, so it cannot live in a subpackage.
+  Signatures: `Load[In, Out](data []byte, reg *Registry) (*Flow[In, Out], error)` plus a
+  `LoadReader[In, Out]` variant.
+- **Registry is per-`Load`, explicit, and fresh.** `NewRegistry()` returns a new instance; a duplicate
+  registration is an error, not an overwrite. No global mutable default.
+- **`RegisterStep` infers `[I, O]` from the func; `RegisterTool[I, O]` and `RegisterModel[I, O]` take
+  them explicitly** (an `agent.Tool` and a prompt carry no I/O types). Predicates:
+  `RegisterPredicate[M](reg, name, func(M) bool)` captures `M`.
+- **Predicate typing is checked at load**, a strict improvement over rung 1 (which only checks a
+  predicate at its compile-time call site): `Load` verifies every arm's registered predicate `M` equals
+  the switched node's output type via `reflect.Type` identity. Without this a mismatch would be a
+  runtime type-assertion failure in `chooseArm`.
+- **Edges match by nominal `reflect.Type` identity, not assignability** (`from.outType == to.inType`
+  exactly; interface-typed seams that would work at runtime are rejected, same as rung 1's `Edge[M]`).
+  This is reliable because `reflect.TypeFor[T]()` is canonical, matching what `Build` already does.
+- **Entry is explicit and order is preserved.** The schema names the entry (an `entry:` field, or
+  normatively `nodes[0]`), and `Load` appends nodes in config-array order, never by ranging a map. This
+  keeps `entry` deterministic and the topology `Digest` stable across loads of the same file, which the
+  cryptographic-conformance property depends on.
+- **Two structural checks `Build` does not give:** reject a node that is both switched-over and has an
+  outgoing edge (the runtime silently prefers the switch), and reject a `wiring[]` element that sets
+  both or neither of `switch`/`edge` (a JSON union that `encoding/json` will not validate).
+- **`Load` reports all failures at once**, names every unresolved block or predicate with near-miss
+  suggestions, and flags unused registered blocks. A standalone `Validate(config, reg) error` lets drift
+  be caught in CI, not at boot. This is the mitigation for config-vs-registry drift (the stringly-typed
+  footgun re-created at rung 2); a later `go generate` codegen of a typed `RegisterAll` stub would move
+  drift detection to `go build` and would lead the field, since MAF does not solve drift either.
+- **A resolved view.** `Load` (or a render mode) can emit a type-annotated copy of the config so it is
+  reviewable standalone without restating types in the authored file.
+- **YAML is the authoring front-end; JSON is the interchange/tool-emit format.** Ship the YAML adapter
+  in the same initiative; the core loader stays stdlib-JSON and dependency-free.
+- **Optional `in`/`out` stay documentation only** (a `reflect.Type`-identity cross-check where present,
+  never a `.String()` type source).
+
+Competitive: the closest analog is Microsoft Agent Framework Declarative Workflows 1.0, which makes the
+same "loads into the code type" move and binds by name through a factory registry, but has no type
+safety between steps (namespaced mutable variables plus Power Fx string expressions) and no conformance
+or audit property. The differentiator to lead with is that a config-loaded flow inherits `flow:digest`
+and `Conform`, so a signed tree head proves offline that the run followed *this config*, which a
+graph-is-execution framework structurally cannot offer.

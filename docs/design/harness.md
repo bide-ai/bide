@@ -65,7 +65,7 @@ however convenient, and is forbidden.
 
 ## The gate
 
-A harness is subject to the same three-question gate as any new surface:
+A harness is subject to the same two-question gate as any new surface:
 
 1. Does it lower to the core? A supervisor that calls `Recover`/`Lease` and a control plane that submits
    runs both drive the existing journal-backed runtime. Yes, by construction, as long as it adds no
@@ -73,9 +73,8 @@ A harness is subject to the same three-question gate as any new surface:
 2. Does the substrate stay the headline? The runtime and its guarantees are the product; the harness is
    the way you operate them at scale or reach them from another language. If the harness (the hosting,
    the dashboard) becomes the pitch and the guarantees become a detail, that is the failure mode.
-3. Is it pulled, not pushed? Pre-adoption, building a server and a supervisor is a large operational
-   surface that competes with proving the embeddable wedge. Build it when a user needs hosting or a
-   polyglot entry point, not before.
+
+Both gates protect the architecture. When to build a harness is a priority call, not a gate.
 
 ## Why SDK-first, and where the harness fits
 
@@ -96,7 +95,7 @@ governance front-end ([governed-flows.md](governed-flows.md)). All of them lower
 ## Current status
 
 go-agents is an embeddable SDK, deliberately. No daemon, control plane, or hosting exists, and none is
-a work item. The substrate is harness-ready: the recovery, lease, and waker primitives are the pieces a
-harness would supervise, and the pluggable `Durable` store is the seam a hosted deployment would use. A
-harness is a demand-driven, additive layer, to be built when hosting or polyglot reach is pulled, and
-only through the gate above and the operational invariant.
+a work item yet. The substrate is harness-ready: the recovery, lease, and waker primitives are the
+pieces a harness would supervise, and the pluggable `Durable` store is the seam a hosted deployment
+would use. A harness is an additive layer built through the gate above and the operational invariant;
+the substrate is ready for it whenever hosting or polyglot reach is the priority.
