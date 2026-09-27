@@ -70,7 +70,12 @@ func (c *builderCore) renderMermaid() string {
 				continue
 			}
 			armLabel := "When"
-			if a.isElse {
+			switch {
+			case a.loopBack:
+				// A bounded back-edge: label it as a loop with its iteration bound so the
+				// authored diagram shows the cycle and its max, distinct from a forward arm.
+				armLabel = fmt.Sprintf("loop &le;%d", a.loopMax)
+			case a.isElse:
 				armLabel = "Else"
 			}
 			b.WriteString(fmt.Sprintf("  %s -->|%s| %s\n", from, armLabel, to))

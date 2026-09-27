@@ -82,14 +82,36 @@ func (c *builderCore) digest() string {
 	}
 
 	// Branches in insertion order: the switched-over node and its ordered arms. Each
-	// arm records whether it is the Else fallback and its target, in declared order,
-	// so reordering arms changes the digest.
+	// arm records whether it is the Else fallback, its target, and whether it is a
+	// bounded back-edge with its iteration bound, in declared order, so reordering arms
+	// or turning an arm into a loop (or changing its bound) changes the digest.
 	b.WriteString("branches\n")
 	for _, br := range c.branches {
 		writeField(&b, "b.over", br.over)
 		for _, a := range br.arms {
 			writeField(&b, "a.else", strconv.FormatBool(a.isElse))
 			writeField(&b, "a.target", a.target)
+			// Commit to the loop back-edge and its bound so a looped flow's digest is
+			// distinct from the acyclic one and shifts if the bound changes. This is the
+			// STRUCTURE only; the runtime iteration count is never hashed (it is runtime,
+			// like Safety). A non-loop arm writes loopback=false and max 0, so an acyclic
+			// flow's digest is unchanged by this addition only if it has no loop arms.
+			writeField(&b, "a.loopback", strconv.FormatBool(a.loopBack))
+			writeField(&b, "a.loopmax", strconv.Itoa(a.loopMax))
+		}
+	}
+
+	// Loops in insertion order: the derived loop head, switch, ordered body region, and
+	// bound. This binds the digest to the resolved loop structure (not just the arm
+	// flags), so two flows with the same nodes/edges/arms but a different loop region are
+	// distinct. Empty for an acyclic flow, so its canonical bytes are unchanged.
+	b.WriteString("loops\n")
+	for _, lp := range c.loops {
+		writeField(&b, "l.head", lp.head)
+		writeField(&b, "l.over", lp.over)
+		writeField(&b, "l.max", strconv.Itoa(lp.max))
+		for _, name := range lp.body {
+			writeField(&b, "l.body", name)
 		}
 	}
 

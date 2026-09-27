@@ -34,14 +34,19 @@ func (b *Builder[In, Out]) Edge[M any](from Producer[M], to Consumer[M]) {
 	})
 }
 
-// Arm is one branch of a Switch, produced by When or Else. It carries the typed
-// predicate over the switched node's output (nil for an Else arm) and the target
-// step's name. Switch type-erases the predicate to func(any)bool at the wiring
-// boundary.
+// Arm is one branch of a Switch, produced by When, Else, or LoopBack. It carries
+// the typed predicate over the switched node's output (nil for an Else arm) and
+// the target step's name. Switch type-erases the predicate to func(any)bool at the
+// wiring boundary.
+//
+// A LoopBack arm sets loopBack and loopMax: its target is an EARLIER loop head, so
+// the arm is a bounded back-edge (a cycle) rather than a forward route. See LoopBack.
 type Arm[M any] struct {
-	isElse bool
-	pred   func(M) bool
-	target string
+	isElse   bool
+	pred     func(M) bool
+	target   string
+	loopBack bool
+	loopMax  int
 }
 
 // When routes to `to` when pred(over.Out) is true. pred must be pure over the
@@ -58,6 +63,34 @@ func Else[M any](to Consumer[M]) Arm[M] {
 	return Arm[M]{isElse: true, target: endpointName(to)}
 }
 
+// LoopBack declares a BOUNDED LOOP as a Switch arm: when pred(over.Out) is true,
+// route the switched value BACK to `head` (an earlier node, the loop head) and run
+// the loop body again, up to max iterations. It is the rung-1 way to express a
+// bounded loop with NO new executor: a loop is a back-edge (a Switch arm whose
+// target is an ancestor of the Switch) plus an iteration bound. The other arm(s) of
+// the same Switch are the exit; Build requires at least one non-loop-back arm so the
+// loop can terminate.
+//
+// The type frontier is enforced by the compiler, not at run time: `head` is a
+// Consumer[M] and the Switch unifies M with over.Out, so the value routed on the
+// back-edge (of type M) must equal the head's input type. A single-type loop is the
+// only shape LoopBack expresses, by construction.
+//
+// max must be > 0. Run journals each iteration's node executions under
+// iteration-scoped keys (iter:<n>:<node>), so at-most-once, halt-on-ambiguity, and
+// resume all hold PER ITERATION exactly as for a linear flow; if the loop would
+// re-enter the head more than max times without taking the exit arm, Run returns a
+// runaway-loop error rather than looping forever. Like When, pred must be pure over
+// the switched value: each iteration's choice is journaled and replayed on resume.
+//
+// LoopBack co-locates the back-edge, its predicate, its target head, and the bound
+// in one typed call, which reads more cleanly than a separate Loop(head, max)
+// marker and keeps the type-frontier check at the call site where the compiler can
+// enforce it.
+func LoopBack[M any](max int, pred func(M) bool, head Consumer[M]) Arm[M] {
+	return Arm[M]{pred: pred, target: endpointName(head), loopBack: true, loopMax: max}
+}
+
 // Switch routes on over.Out to exactly one arm. M unifies the switched producer's
 // output with every arm's predicate/target input, so an arm typed to the wrong
 // value does not compile. The branch choice is journaled as its own agent.Step at
@@ -67,7 +100,7 @@ func Else[M any](to Consumer[M]) Arm[M] {
 func (b *Builder[In, Out]) Switch[M any](over Producer[M], arms ...Arm[M]) {
 	erased := make([]arm, len(arms))
 	for i, a := range arms {
-		erased[i] = arm{isElse: a.isElse, target: a.target}
+		erased[i] = arm{isElse: a.isElse, target: a.target, loopBack: a.loopBack, loopMax: a.loopMax}
 		if a.pred != nil {
 			pred := a.pred
 			// Type-erase the typed predicate. The switched value arrives as any at

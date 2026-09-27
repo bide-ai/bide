@@ -96,9 +96,13 @@ func (c *builderCore) conform(ctx context.Context, store agent.Durable, runID st
 			}
 
 		case strings.HasPrefix(r.Name, "switch:"):
-			// A journaled Switch choice. The over-node must be a declared Switch, and
-			// the recorded chosen target must be one of that Switch's declared arms.
-			over := strings.TrimPrefix(r.Name, "switch:")
+			// A journaled Switch choice, possibly iteration-scoped for a bounded loop:
+			// "switch:<over>" for a linear Switch, "switch:iter:<n>:<over>" for one
+			// iteration of a loop Switch. Strip the "iter:<n>:" prefix to recover the
+			// declared over-node, then validate exactly as for a linear Switch: the
+			// over-node must be a declared Switch and the recorded chosen target one of its
+			// declared arms (a loop-back arm targets the head, which is a declared arm).
+			over := stripIterPrefix(strings.TrimPrefix(r.Name, "switch:"))
 			arms, isSwitch := switchArms[over]
 			if !isSwitch {
 				diffs = append(diffs, r.Name+" (switch over undeclared node)")
@@ -117,24 +121,49 @@ func (c *builderCore) conform(ctx context.Context, store agent.Durable, runID st
 			}
 
 		case strings.HasPrefix(r.Name, "attempt:"):
-			// An internal attempt marker of a node. It maps to the declared node it
-			// guards; only an attempt for an UNDECLARED node is a divergence. A present
-			// attempt whose result is missing is a halted/in-flight node, not a
-			// divergence, so we do not require the "<N>" result to also be present.
-			guarded := strings.TrimPrefix(r.Name, "attempt:")
+			// An internal attempt marker of a node, possibly iteration-scoped for a bounded
+			// loop: "attempt:<N>" or "attempt:iter:<n>:<N>". Strip the "iter:<n>:" prefix to
+			// recover the declared node it guards; only an attempt for an UNDECLARED node is
+			// a divergence. A present attempt whose result is missing is a halted/in-flight
+			// node, not a divergence, so we do not require the "<N>" result to also be present.
+			guarded := stripIterPrefix(strings.TrimPrefix(r.Name, "attempt:"))
 			if c.byName[guarded] == nil {
 				diffs = append(diffs, r.Name+" (attempt for undeclared step)")
 			}
 
 		default:
-			// A node result record. It must name a declared node.
-			if c.byName[r.Name] == nil {
+			// A node result record, possibly iteration-scoped for a bounded loop:
+			// "<N>" for a linear node, "iter:<n>:<N>" for one iteration of a loop-body
+			// node. Strip the "iter:<n>:" prefix to map it back to its declared node.
+			if c.byName[stripIterPrefix(r.Name)] == nil {
 				diffs = append(diffs, r.Name+" (unexpected step)")
 			}
 		}
 	}
 
 	return len(diffs) == 0, diffs, nil
+}
+
+// stripIterPrefix removes a leading iteration scope "iter:<n>:" (where <n> is one or
+// more decimal digits) from a journal key, so a bounded-loop node's iteration-scoped
+// record maps back to its declared node. A key without a well-formed iteration prefix
+// is returned unchanged, so a malformed or non-loop name is still matched (or flagged)
+// against the declared topology as before. It mirrors iterKey/attemptMarker in flow.go.
+func stripIterPrefix(name string) string {
+	rest, ok := strings.CutPrefix(name, "iter:")
+	if !ok {
+		return name
+	}
+	digits, node, ok := strings.Cut(rest, ":")
+	if !ok || digits == "" {
+		return name // not "iter:<n>:<node>"; leave unchanged
+	}
+	for _, r := range digits {
+		if r < '0' || r > '9' {
+			return name // the segment after "iter:" is not a number; not an iteration key
+		}
+	}
+	return node
 }
 
 // decodeSwitchChoice reads the chosen arm target from a "switch:<over>" record's

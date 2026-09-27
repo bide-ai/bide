@@ -75,11 +75,23 @@ type edge struct{ from, to string }
 
 // arm is a resolved Switch arm: a predicate over the switched node's output
 // (nil for Else) and the target node name. Stored type-erased; the typed
-// When/Else builders populate these.
+// When/Else/LoopBack builders populate these.
+//
+// A LoopBack arm additionally sets loopBack and loopMax: its target is the loop
+// HEAD (an earlier node), so the arm is a bounded back-edge rather than a forward
+// route. loopMax is the maximum number of times the loop body may re-enter the
+// head before Run declares a runaway loop and errors; it is > 0 for a loop-back
+// arm and 0 otherwise. The back-edge is deliberately excluded from the forward
+// (acyclic) graph topoOrder and reachability walk, so Kahn still works; Run
+// re-enters the head per iteration under iteration-scoped journal keys. Build
+// validates the target is an ancestor (a real cycle) and that the Switch also has
+// a non-loop-back exit arm.
 type arm struct {
-	isElse bool
-	pred   func(v any) bool
-	target string
+	isElse   bool
+	pred     func(v any) bool
+	target   string
+	loopBack bool // true iff this arm is a bounded back-edge to an earlier loop head
+	loopMax  int  // for a loop-back arm, the max iterations before Run errors (> 0); 0 otherwise
 }
 
 // branch is a declared Switch: the switched-over producer node and its ordered arms.
@@ -106,6 +118,31 @@ type builderCore struct {
 	// bound model, naming the node. It is a runtime binding, not part of the wired
 	// topology, so it is NOT part of Digest.
 	model agent.Model
+	// loops are the bounded loops Build derived from the LoopBack arms (see
+	// loopSpec). They are populated by Build (deriveLoops) and carried onto the
+	// sealed flow so Run can drive each loop region, and digest/render/conform can
+	// commit to and recognise the loop structure. Empty for an acyclic flow. The
+	// loop STRUCTURE (head, switch, body region, and the max bound) participates in
+	// Digest; the runtime iteration count does not (it is runtime, like Safety).
+	loops []loopSpec
+}
+
+// loopSpec is one bounded loop Build derived from a LoopBack arm: the loop head
+// (the back-edge target, an earlier node), the loop switch (the node the Switch is
+// over, which carries the back-edge arm), the exit arm target (the first
+// non-loop-back arm), the ordered body region (head..switch inclusive, a
+// contiguous interval of the forward topoOrder), and the iteration bound. Run
+// drives the region iteratively under iteration-scoped journal keys; Build
+// validates the back-edge is a real cycle (the switch is reachable from the head in
+// the forward graph), that an exit arm exists, and that the region is a contiguous
+// interval so the executor stays a simple sequential sweep.
+type loopSpec struct {
+	head    string   // the back-edge target; the loop head re-entered each iteration
+	over    string   // the switched node carrying the back-edge arm (the loop switch)
+	body    []string // head..switch inclusive, in forward topoOrder (a contiguous interval)
+	max     int      // maximum iterations before Run errors (runaway guard); > 0
+	headIdx int      // index of head in the forward topoOrder
+	overIdx int      // index of the loop switch in the forward topoOrder
 }
 
 // typeOf captures the reflect.Type of T for the constructors to record I/O types.

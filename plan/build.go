@@ -89,6 +89,17 @@ func (b *Builder[In, Out]) Build() (*Flow[In, Out], error) {
 		return nil, fmt.Errorf("plan: build %q: %w", c.flowName, err)
 	}
 
+	// 4d. Loop coherence. A LoopBack arm is a bounded back-edge to an earlier loop
+	// head. deriveLoops validates each such arm (the target is a real ancestor so the
+	// back-edge forms a cycle; the bound is positive; the Switch has a non-loop-back
+	// exit arm; the loop region head..switch is a contiguous interval of the forward
+	// order so Run's iterative sweep stays simple) and records the loop structure on
+	// the core for Run/Digest/render/conform. The type frontier (switched value type ==
+	// head input type) is already enforced at the LoopBack call site by M unification.
+	if err := c.deriveLoops(); err != nil {
+		return nil, err
+	}
+
 	// 5. Reachability: every node must be reachable from the entry via edges and
 	// Switch arms. An orphan step is a wiring mistake; the error names it.
 	reachable := c.reachableFrom(c.entry)
@@ -165,6 +176,13 @@ func (c *builderCore) topoOrder() ([]string, error) {
 	}
 	for _, br := range c.branches {
 		for _, a := range br.arms {
+			// A LoopBack arm is a bounded BACK-EDGE to an earlier loop head: it forms a
+			// cycle deliberately, so it is EXCLUDED from the forward graph. Excluding it
+			// keeps the forward graph acyclic, so Kahn still linearizes it and Run walks a
+			// fixed forward order; Run handles the back-edge separately as loop re-entry.
+			if a.loopBack {
+				continue
+			}
 			addEdge(br.over, a.target)
 		}
 	}
@@ -267,6 +285,143 @@ func (c *builderCore) checkJoins() error {
 	return nil
 }
 
+// deriveLoops finds every Switch that carries a LoopBack arm, validates it as a
+// bounded loop, and records the resolved loopSpec on the core for Run, Digest,
+// render, and conform to use. It runs after topoOrder succeeds (with back-edges
+// excluded) so it can locate the head and switch in the forward order.
+//
+// The validations, each naming the offending Switch:
+//   - a LoopBack arm's max must be > 0 (a non-positive bound cannot terminate cleanly);
+//   - the back-edge must be a real cycle: the loop switch must be reachable from the
+//     head in the FORWARD graph (the head is an ancestor of the switch), else the arm
+//     is not a loop at all;
+//   - the Switch must have at least one non-loop-back arm (a When or Else exit), so the
+//     loop can terminate rather than spin until the max guard trips;
+//   - the loop region head..switch must be a CONTIGUOUS interval of the forward
+//     topoOrder, so Run drives it as one simple sequential sweep; a region interleaved
+//     with unrelated nodes is rejected as too complex for rung-1.
+//
+// At most one LoopBack arm per Switch is supported (a Switch is a single decision
+// point; two back-edges from one Switch would target two heads, which rung-1 does
+// not express); a second is rejected.
+func (c *builderCore) deriveLoops() error {
+	order, err := c.topoOrder()
+	if err != nil {
+		return err // already reported by the caller's acyclicity check; defensive here
+	}
+	indexOf := make(map[string]int, len(order))
+	for i, name := range order {
+		indexOf[name] = i
+	}
+
+	// Forward adjacency (edges + non-loop-back arms) for the ancestor check.
+	fwd := make(map[string][]string, len(c.nodes))
+	for _, e := range c.edges {
+		fwd[e.from] = append(fwd[e.from], e.to)
+	}
+	for _, br := range c.branches {
+		for _, a := range br.arms {
+			if a.loopBack {
+				continue
+			}
+			fwd[br.over] = append(fwd[br.over], a.target)
+		}
+	}
+
+	var loops []loopSpec
+	for _, br := range c.branches {
+		var back *arm
+		exits := 0
+		for i := range br.arms {
+			a := &br.arms[i]
+			if a.loopBack {
+				if back != nil {
+					return fmt.Errorf("plan: build %q: Switch over %q has more than one LoopBack arm; a Switch expresses a single loop back-edge", c.flowName, br.over)
+				}
+				back = a
+			} else {
+				exits++
+			}
+		}
+		if back == nil {
+			continue // an ordinary forward Switch
+		}
+		if back.loopMax <= 0 {
+			return fmt.Errorf("plan: build %q: loop over %q has max %d, want a positive iteration bound", c.flowName, br.over, back.loopMax)
+		}
+		if exits == 0 {
+			return fmt.Errorf("plan: build %q: loop over %q has no exit arm; add a When or Else that does not loop back so the loop can terminate", c.flowName, br.over)
+		}
+		head := back.target
+		if c.byName[head] == nil {
+			return fmt.Errorf("plan: build %q: loop over %q routes back to unknown head %q", c.flowName, br.over, head)
+		}
+		// The back-edge must be a real cycle: the switch must be forward-reachable from
+		// the head (the head is an ancestor of the switch). Otherwise the "loop" routes
+		// back to a node that never reaches the switch, which is a wiring mistake.
+		if !forwardReaches(fwd, head, br.over) {
+			return fmt.Errorf("plan: build %q: LoopBack over %q targets %q, which is not an ancestor of the Switch (a loop head must reach its loop Switch in the forward graph)", c.flowName, br.over, head)
+		}
+		headIdx, overIdx := indexOf[head], indexOf[br.over]
+		if headIdx > overIdx {
+			// Guaranteed not to happen given the ancestor check, but assert it so the
+			// contiguous-interval slice below is well-formed.
+			return fmt.Errorf("plan: build %q: loop over %q has head %q ordered after its Switch; the loop region is malformed", c.flowName, br.over, head)
+		}
+		// The loop region is the forward interval head..switch inclusive. Require it to be
+		// contiguous: every node in that index range must lie on a forward path from the
+		// head to the switch, so Run's sequential sweep of the interval re-runs exactly
+		// the loop body and nothing unrelated.
+		body := make([]string, 0, overIdx-headIdx+1)
+		for i := headIdx; i <= overIdx; i++ {
+			name := order[i]
+			if name != head && name != br.over {
+				// A node between head and switch must both descend from the head and reach the
+				// switch, else it is unrelated to the loop and the region is not a clean interval.
+				if !forwardReaches(fwd, head, name) || !forwardReaches(fwd, name, br.over) {
+					return fmt.Errorf("plan: build %q: loop over %q has a non-contiguous body (node %q lies between the head and Switch but is not on the loop path); rung-1 loops must form a simple region", c.flowName, br.over, name)
+				}
+			}
+			body = append(body, name)
+		}
+		loops = append(loops, loopSpec{
+			head:    head,
+			over:    br.over,
+			body:    body,
+			max:     back.loopMax,
+			headIdx: headIdx,
+			overIdx: overIdx,
+		})
+	}
+	c.loops = loops
+	return nil
+}
+
+// forwardReaches reports whether dst is reachable from start over the forward
+// adjacency (edges plus non-loop-back arms). It is a plain BFS with a seen set, so
+// it terminates even though the full declared graph contains the excluded cycle.
+func forwardReaches(fwd map[string][]string, start, dst string) bool {
+	if start == dst {
+		return true
+	}
+	seen := map[string]bool{start: true}
+	queue := []string{start}
+	for len(queue) > 0 {
+		cur := queue[0]
+		queue = queue[1:]
+		for _, nx := range fwd[cur] {
+			if nx == dst {
+				return true
+			}
+			if !seen[nx] {
+				seen[nx] = true
+				queue = append(queue, nx)
+			}
+		}
+	}
+	return false
+}
+
 // joinInputGate reports, for the given Join-input source node, which Switches gate
 // reaching it and via which single arm. The result maps a Switch's switched-over
 // node name to the arm index that must be taken to reach src. A Switch appears in
@@ -286,6 +441,9 @@ func (c *builderCore) joinInputGate(src string) map[string]int {
 	}, len(c.branches))
 	for _, br := range c.branches {
 		for ai, a := range br.arms {
+			if a.loopBack {
+				continue // a back-edge is not a forward route; join gating is over the forward graph
+			}
 			armEdges[br.over] = append(armEdges[br.over], struct {
 				arm    int
 				target string
@@ -397,6 +555,9 @@ func (c *builderCore) reachableFrom(start string) map[string]bool {
 	}
 	for _, br := range c.branches {
 		for _, a := range br.arms {
+			if a.loopBack {
+				continue // a back-edge does not establish forward reachability; the head is reached forward
+			}
 			adj[br.over] = append(adj[br.over], a.target)
 		}
 	}
@@ -431,6 +592,7 @@ func (c *builderCore) seal() *builderCore {
 		edges:    make([]edge, len(c.edges)),
 		branches: make([]branch, len(c.branches)),
 		model:    c.model, // carry the bound model onto the frozen flow so Run can call it
+		loops:    make([]loopSpec, len(c.loops)),
 	}
 	copy(sealed.nodes, c.nodes)
 	for _, n := range sealed.nodes {
@@ -441,6 +603,11 @@ func (c *builderCore) seal() *builderCore {
 		arms := make([]arm, len(br.arms))
 		copy(arms, br.arms)
 		sealed.branches[i] = branch{over: br.over, arms: arms}
+	}
+	for i, lp := range c.loops {
+		body := make([]string, len(lp.body))
+		copy(body, lp.body)
+		sealed.loops[i] = loopSpec{head: lp.head, over: lp.over, body: body, max: lp.max, headIdx: lp.headIdx, overIdx: lp.overIdx}
 	}
 	return sealed
 }

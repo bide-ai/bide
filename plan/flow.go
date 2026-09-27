@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"strconv"
 	"strings"
 	"text/template"
 
@@ -110,6 +111,20 @@ func (f *Flow[In, Out]) Run(ctx context.Context, store agent.Durable, runID stri
 		branchOf[br.over] = br
 	}
 
+	// Index the bounded loops by their head node. When the walk reaches a live loop
+	// head it hands the whole loop region (head..switch inclusive) to runLoop, which
+	// drives the body iteratively under iteration-scoped journal keys and returns the
+	// exit choice; the flat walk then continues forward from past the loop switch. A
+	// loop's Switch is therefore NOT handled by the ordinary switched-node path below
+	// (loopSwitches records it so the walk skips it if reached directly).
+	loopByHead := make(map[string]*loopSpec, len(c.loops))
+	loopSwitches := make(map[string]bool, len(c.loops))
+	for i := range c.loops {
+		lp := &c.loops[i]
+		loopByHead[lp.head] = lp
+		loopSwitches[lp.over] = true
+	}
+
 	// live marks a node the walk has decided must execute: the entry is live, an
 	// edge target becomes live when its (non-switched) source runs, and a switched
 	// node's CHOSEN arm becomes live (the other arms stay pruned). results holds each
@@ -125,10 +140,44 @@ func (f *Flow[In, Out]) Run(ctx context.Context, store agent.Durable, runID stri
 	var terminalOut json.RawMessage
 	haveTerminal := false
 
-	for _, name := range order {
+	// Walk the forward order with an explicit cursor rather than a range, so a loop
+	// region can advance the cursor past its body once runLoop has driven it. The walk
+	// is still strictly sequential: one node (or one whole loop region) at a time, no
+	// goroutine, channel, or scheduler.
+	for cursor := 0; cursor < len(order); cursor++ {
+		name := order[cursor]
 		if !live[name] {
 			continue // pruned: reachable only via a not-taken Switch arm, or never scheduled
 		}
+
+		// A live loop head hands the whole region to runLoop, which iterates the body
+		// under iteration-scoped keys, then routes to the exit arm and returns the exit
+		// target and its input value. The walk skips over the body (already driven) and
+		// continues from the exit target.
+		if lp, isHead := loopByHead[name]; isHead {
+			headInput, inErr := f.nodeInput(c, c.byName[name], in, results, live, outEdges, branchOf)
+			if inErr != nil {
+				return out, inErr
+			}
+			exitTarget, exitVal, loopErr := f.runLoop(ctx, store, runID, c, lp, in, results, live, branchOf, outEdges, headInput)
+			if loopErr != nil {
+				return out, loopErr
+			}
+			// The exit target consumes the switched value the loop Switch routed to it, so
+			// seed results under the loop Switch's name (its journaled arm input source) and
+			// mark the exit target live. Advance the cursor past the loop region.
+			results[lp.over] = exitVal
+			live[exitTarget] = true
+			cursor = lp.overIdx // the loop for-post increments to overIdx+1
+			continue
+		}
+
+		// A loop Switch reached directly on the forward walk means the loop head above it
+		// was not live, which cannot happen for a reachable loop; guard defensively.
+		if loopSwitches[name] {
+			return out, fmt.Errorf("plan: run %q: loop Switch over %q reached without its loop head running", c.flowName, name)
+		}
+
 		node := c.byName[name]
 
 		// Resolve this node's input. A Join gathers its ordered inputs from the
@@ -193,6 +242,92 @@ func (f *Flow[In, Out]) Run(ctx context.Context, store agent.Durable, runID stri
 		}
 	}
 	return out, nil
+}
+
+// runLoop drives one bounded loop region (head..switch inclusive) iteratively and
+// returns the exit arm's target and the switched value routed to it. It is a plain
+// sequential Go for-loop bounded by lp.max: NO goroutine, channel, or scheduler. Each
+// iteration runs the body nodes in forward order under ITERATION-SCOPED journal keys
+// (iter:<n>:<node>, and switch:iter:<n>:<over> for the loop Switch), so the two-phase
+// attempt/result guard, at-most-once, HaltAmbiguous, and resume all hold per
+// iteration exactly as for a linear flow: a completed iteration replays from the
+// journal (each runNodeKeyed falls into the memoized case), and the first incomplete
+// iteration resumes mid-body.
+//
+// The head's input is headInput on iteration 0 (its forward predecessor's value) and
+// the previous iteration's switched value on iteration n > 0 (the value the back-edge
+// re-routes into the head). Body nodes read the current iteration's upstream values
+// from the shared results map, which each iteration overwrites, so nodeInput resolves
+// them against this iteration's outputs.
+//
+// If the loop would re-enter the head more than lp.max times without taking an exit
+// arm, runLoop returns a runaway-loop error rather than looping forever. The runtime
+// iteration count is NOT part of the digest (it is runtime, like Safety); only the
+// loop structure and its max bound are.
+func (f *Flow[In, Out]) runLoop(ctx context.Context, store agent.Durable, runID string, c *builderCore, lp *loopSpec, in In, results map[string]json.RawMessage, live map[string]bool, branchOf map[string]branch, outEdges map[string][]string, headInput any) (string, json.RawMessage, error) {
+	br := branchOf[lp.over]
+	for iter := 0; ; iter++ {
+		if iter >= lp.max {
+			return "", nil, fmt.Errorf("plan: run %q: loop over %q exceeded its bound of %d iterations without taking an exit arm (runaway loop)", c.flowName, lp.over, lp.max)
+		}
+
+		// Run each body node in forward order under this iteration's scoped key. The head
+		// takes the iteration input directly (headInput on iteration 0, the previous
+		// iteration's switched value thereafter); every other body node resolves its input
+		// from the results this iteration has already produced (nodeInput reads the shared
+		// results map, which the body overwrites in place each iteration). All body nodes
+		// are marked live so nodeInput's live-predecessor lookup succeeds inside the region.
+		for _, name := range lp.body {
+			live[name] = true
+		}
+		var switchOut json.RawMessage
+		for _, name := range lp.body {
+			node := c.byName[name]
+			var input any
+			if name == lp.head {
+				input = headInput
+			} else {
+				resolved, inErr := f.nodeInput(c, node, in, results, live, outEdges, branchOf)
+				if inErr != nil {
+					return "", nil, inErr
+				}
+				input = resolved
+			}
+
+			rec, runErr := runNodeKeyed(ctx, store, runID, c.model, node, iterKey(iter, name), input)
+			if runErr != nil {
+				return "", nil, runErr
+			}
+			results[name] = rec.Result
+			if name == lp.over {
+				switchOut = rec.Result
+			}
+		}
+
+		// Evaluate the loop Switch for this iteration, journaled under an iteration-scoped
+		// key so the choice is made once and replayed on resume. The loop-back arm
+		// re-enters the head with the switched value; any other (exit) arm returns to Run.
+		target, chooseErr := f.chooseArmKeyed(ctx, store, runID, iterSwitchKey(iter, lp.over), br, c.byName[lp.over].outType, switchOut)
+		if chooseErr != nil {
+			return "", nil, chooseErr
+		}
+		if target == "" {
+			return "", nil, fmt.Errorf("plan: run %q: loop Switch over %q matched no arm and has no Else", c.flowName, lp.over)
+		}
+		if c.byName[target] == nil {
+			return "", nil, fmt.Errorf("plan: run %q: loop Switch over %q routes to unknown step %q", c.flowName, lp.over, target)
+		}
+		if target == lp.head {
+			// Back-edge: re-enter the head with the switched value and run the body again.
+			headInput, chooseErr = decodeInto(switchOut, c.byName[lp.head].inType)
+			if chooseErr != nil {
+				return "", nil, fmt.Errorf("plan: run %q: loop over %q decode back-edge value for head %q: %w", c.flowName, lp.over, lp.head, chooseErr)
+			}
+			continue
+		}
+		// Exit arm: hand the switched value and the exit target back to Run.
+		return target, switchOut, nil
+	}
 }
 
 // nodeInput resolves the decoded input a node consumes when Run reaches it. A Join
@@ -271,6 +406,23 @@ func (e *HaltAmbiguous) Error() string {
 // step of the node named name, not a separate declared node.
 func attemptMarker(name string) string { return "attempt:" + name }
 
+// iterKey returns the ITERATION-SCOPED journal key for a node executed on iteration
+// iter of a bounded loop body: "iter:<n>:<node>". Run journals every loop-body node
+// under this key, so the two-phase attempt/result guard, at-most-once,
+// HaltAmbiguous, and resume all hold per iteration. attemptMarker prefixes it to
+// form "attempt:iter:<n>:<node>". conform strips the "iter:<n>:" prefix to map the
+// key back to its declared node. iteration 0 is the first pass through the head.
+func iterKey(iter int, node string) string {
+	return "iter:" + strconv.Itoa(iter) + ":" + node
+}
+
+// iterSwitchKey returns the iteration-scoped journal key for a loop Switch's choice
+// on iteration iter: "switch:iter:<n>:<over>". It mirrors the linear "switch:<over>"
+// key so each iteration records and replays its own branch decision.
+func iterSwitchKey(iter int, over string) string {
+	return "switch:iter:" + strconv.Itoa(iter) + ":" + over
+}
+
 // runNode drives one node as a durable step under the automatic two-phase
 // attempt/result guard, so at-most-once and halt-on-ambiguity are inherited by
 // every node with no per-step opt-in. It uses only the existing substrate
@@ -292,18 +444,29 @@ func attemptMarker(name string) string { return "attempt:" + name }
 // path (case 1) are unchanged, so a node's Safety opt-in changes resume behavior
 // only, never a clean run.
 func runNode(ctx context.Context, store agent.Durable, runID string, model agent.Model, node *node, input any) (agent.Record, error) {
+	return runNodeKeyed(ctx, store, runID, model, node, node.name, input)
+}
+
+// runNodeKeyed is runNode with an explicit journal key, so a node inside a bounded
+// loop body can be journaled under an ITERATION-SCOPED key (iter:<n>:<node>) while
+// still dispatching the same node body. The key names both the result record and,
+// via attemptMarker, the attempt marker, so the two-phase guard, at-most-once,
+// HaltAmbiguous, and resume all hold per iteration exactly as they do per node for a
+// linear flow. For a non-loop node the key is just node.name and the behavior is
+// identical to before. It adds no new primitive: still only store.History/store.Do.
+func runNodeKeyed(ctx context.Context, store agent.Durable, runID string, model agent.Model, node *node, key string, input any) (agent.Record, error) {
 	// Read the journal once to classify this node (case 1/2/3). History is the same
 	// primitive the core loop uses for its resume gate.
 	recs, err := store.History(ctx, runID)
 	if err != nil {
-		return agent.Record{}, fmt.Errorf("plan: run %s: load history for step %q: %w", runID, node.name, err)
+		return agent.Record{}, fmt.Errorf("plan: run %s: load history for step %q: %w", runID, key, err)
 	}
 	var haveResult, haveAttempt bool
 	var resultRec agent.Record
-	marker := attemptMarker(node.name)
+	marker := attemptMarker(key)
 	for _, r := range recs {
 		switch r.Name {
-		case node.name:
+		case key:
 			haveResult = true
 			resultRec = r
 		case marker:
@@ -320,7 +483,7 @@ func runNode(ctx context.Context, store agent.Durable, runID string, model agent
 		// attempt marker is already persisted, so it is not re-recorded). A
 		// non-idempotent node HALTS rather than risk a double side effect.
 		if !nodeRetriableOnResume(node.safety) {
-			return agent.Record{}, &HaltAmbiguous{RunID: runID, Step: node.name}
+			return agent.Record{}, &HaltAmbiguous{RunID: runID, Step: key}
 		}
 	} else {
 		// case 3 (fresh): record the attempt marker BEFORE running the body, so a crash
@@ -330,14 +493,14 @@ func runNode(ctx context.Context, store agent.Durable, runID string, model agent
 		if _, err := store.Do(ctx, runID, marker, func(context.Context) (agent.Record, error) {
 			return agent.Record{Kind: agent.StepValue}, nil
 		}); err != nil {
-			return agent.Record{}, fmt.Errorf("plan: run %s: record attempt for step %q: %w", runID, node.name, err)
+			return agent.Record{}, fmt.Errorf("plan: run %s: record attempt for step %q: %w", runID, key, err)
 		}
 	}
 
 	// Run the body and record its result. store.Do memoizes by name, so a resume
 	// after a clean result falls into case 1 above. For a retry-safe node resuming
 	// from case 2, this re-runs the body and records the result the crash lost.
-	return store.Do(ctx, runID, node.name, func(ctx context.Context) (agent.Record, error) {
+	return store.Do(ctx, runID, key, func(ctx context.Context) (agent.Record, error) {
 		var result any
 		var runErr error
 		switch node.kind {
@@ -426,7 +589,16 @@ func runModel(ctx context.Context, model agent.Model, node *node, input any) (an
 // (see When). It returns the chosen target step name; the name is "" when no When
 // arm matched and there is no Else.
 func (f *Flow[In, Out]) chooseArm(ctx context.Context, store agent.Durable, runID string, br branch, switchedType reflect.Type, switchedOut json.RawMessage) (string, error) {
-	rec, err := store.Do(ctx, runID, "switch:"+br.over, func(context.Context) (agent.Record, error) {
+	return f.chooseArmKeyed(ctx, store, runID, "switch:"+br.over, br, switchedType, switchedOut)
+}
+
+// chooseArmKeyed is chooseArm with an explicit journal key, so a loop Switch can
+// journal each iteration's choice under an iteration-scoped key
+// (switch:iter:<n>:<over>). The recorded choice is replayed on resume exactly as for
+// a linear Switch, so each iteration's branch decision is made once and the
+// predicates stay pure over the switched value.
+func (f *Flow[In, Out]) chooseArmKeyed(ctx context.Context, store agent.Durable, runID, key string, br branch, switchedType reflect.Type, switchedOut json.RawMessage) (string, error) {
+	rec, err := store.Do(ctx, runID, key, func(context.Context) (agent.Record, error) {
 		// Decode the switched output into the switched node's concrete Go type, so a
 		// predicate typed to that value (the type-erased closure asserts v.(M), see
 		// wiring.go) receives the Go value rather than the neutral JSON shape a plain

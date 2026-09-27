@@ -27,6 +27,22 @@
 // Join is currently expressible only through the Go builder; the config loader (Load)
 // does not yet carry a join wiring element, which is a deferred follow-up.
 //
+// LoopBack adds a BOUNDED loop: a Switch arm whose target is an earlier loop head
+// is a back-edge, and the arm carries a max-iteration bound. The other arm(s) of the
+// same Switch are the exit; Build requires one so the loop can terminate. The
+// back-edge is excluded from the forward (acyclic) graph, so Kahn still linearizes it
+// and every other check is unchanged; Flow.Run re-enters the head per iteration under
+// ITERATION-SCOPED journal keys (iter:<n>:<node>), so at-most-once, halt-on-ambiguity,
+// and resume hold per iteration exactly as for a linear flow, and a run that would
+// exceed the bound errors rather than spinning forever. The loop is still driven by a
+// plain sequential Go for-loop: no goroutine, channel, or scheduler. The type frontier
+// (the value routed on the back-edge equals the head's input type) is enforced at the
+// LoopBack call site by the compiler. Digest commits to the loop STRUCTURE (head,
+// switch, body region, and max bound) but never the runtime iteration count; conform
+// strips the iteration prefix to map each key back to its declared node. Like Join,
+// LoopBack is expressible only through the Go builder; the config loader (Load) does
+// not yet carry a loop wiring element, which is a deferred follow-up.
+//
 // Because the topology is declared as a value, plan can render the authored
 // graph (Flow.RenderMermaid) and compare it against the journal-derived path of
 // a run (Flow.Conform), distinguishing the declared diagram from the diagram
