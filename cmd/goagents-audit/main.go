@@ -26,8 +26,8 @@ import (
 	"sort"
 	"strings"
 
-	agent "github.com/dayna/go-agents"
-	"github.com/dayna/go-agents/audit"
+	agent "github.com/blackwell-systems/bide"
+	"github.com/blackwell-systems/bide/audit"
 )
 
 // policyFormatVersion is the published domain-separation tag for the combinator policy

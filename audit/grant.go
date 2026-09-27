@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"strconv"
 
-	agent "github.com/dayna/go-agents"
+	agent "github.com/blackwell-systems/bide"
 )
 
 // Grant is a signed statement by a principal (Issuer) authorizing an actor (Subject) to act within

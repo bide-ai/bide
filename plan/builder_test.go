@@ -6,7 +6,7 @@ import (
 	"reflect"
 	"testing"
 
-	agent "github.com/dayna/go-agents"
+	agent "github.com/blackwell-systems/bide"
 )
 
 // stubTool is a minimal agent.Tool used to exercise Builder.Tool without a real

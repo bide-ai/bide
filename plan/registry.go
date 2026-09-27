@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"reflect"
 
-	agent "github.com/dayna/go-agents"
+	agent "github.com/blackwell-systems/bide"
 )
 
 // Registry maps config names to typed Go behavior, so a rung-2 config can

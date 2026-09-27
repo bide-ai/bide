@@ -17,8 +17,8 @@ import (
 	"strings"
 	"sync/atomic"
 
-	agent "github.com/dayna/go-agents"
-	"github.com/dayna/go-agents/eval"
+	agent "github.com/blackwell-systems/bide"
+	"github.com/blackwell-systems/bide/eval"
 )
 
 // classifier is a stub model: it labels input sentiment, but flips its answer on every fifth call

@@ -1,6 +1,6 @@
 # RAG & memory: bring your own
 
-**Decision: go-agents does not ship a vector store, an embedder, or a memory backend.**
+**Decision: Bide does not ship a vector store, an embedder, or a memory backend.**
 It provides the *seam* (a `Retriever` port and thin glue) and you plug in the store you
 already run. This is a deliberate scope boundary, not a gap.
 

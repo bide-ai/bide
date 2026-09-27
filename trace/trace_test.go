@@ -10,8 +10,8 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
-	agent "github.com/dayna/go-agents"
-	"github.com/dayna/go-agents/middleware"
+	agent "github.com/blackwell-systems/bide"
+	"github.com/blackwell-systems/bide/middleware"
 )
 
 const captureEnv = "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT"

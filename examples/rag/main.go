@@ -1,7 +1,7 @@
 // Command rag shows bring-your-own retrieval: a trivial in-memory Retriever wired two
 // ways. WithRetrieval is classic RAG (top-k auto-injected as context on each user turn);
 // RetrievalTool is agentic RAG (the model decides when to search and with what query).
-// go-agents ships no vector store or embedder: you implement Retrieve against your own
+// Bide ships no vector store or embedder: you implement Retrieve against your own
 // infrastructure. This example uses naive substring matching to stay offline-runnable.
 //
 //	OPENROUTER_API_KEY=sk-... go run ./examples/rag
@@ -15,8 +15,8 @@ import (
 	"strings"
 	"time"
 
-	agent "github.com/dayna/go-agents"
-	"github.com/dayna/go-agents/model/openai"
+	agent "github.com/blackwell-systems/bide"
+	"github.com/blackwell-systems/bide/model/openai"
 )
 
 // memRetriever is a stand-in knowledge base. A real Retriever would query pgvector,

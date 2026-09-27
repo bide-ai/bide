@@ -7,7 +7,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	agent "github.com/dayna/go-agents"
+	agent "github.com/blackwell-systems/bide"
 )
 
 // governedAction records a completed tool call whose result carries a policy digest, as

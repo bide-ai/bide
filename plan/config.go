@@ -8,7 +8,7 @@ import (
 	"sort"
 	"strings"
 
-	agent "github.com/dayna/go-agents"
+	agent "github.com/blackwell-systems/bide"
 )
 
 // config is the decoded rung-2 topology: pure topology plus block references.

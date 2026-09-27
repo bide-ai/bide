@@ -6,7 +6,7 @@ import (
 	"testing"
 	"testing/synctest"
 
-	agent "github.com/dayna/go-agents"
+	agent "github.com/blackwell-systems/bide"
 )
 
 // (The flaky-then-succeeds case lives in retry_test.go under synctest.)

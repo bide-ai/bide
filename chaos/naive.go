@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 
-	agent "github.com/dayna/go-agents"
+	agent "github.com/blackwell-systems/bide"
 )
 
 // NaiveReference is a deliberately-simple at-least-once loop: it journals tool results and

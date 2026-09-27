@@ -9,7 +9,7 @@ import (
 	"strings"
 	"text/template"
 
-	agent "github.com/dayna/go-agents"
+	agent "github.com/blackwell-systems/bide"
 )
 
 // Flow[In, Out] is a built, frozen flow: the reified topology validated by

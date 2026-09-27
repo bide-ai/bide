@@ -15,7 +15,7 @@ import (
 	"fmt"
 	"log"
 
-	agent "github.com/dayna/go-agents"
+	agent "github.com/blackwell-systems/bide"
 )
 
 // scriptModel is a deterministic Model: turn 0 calls the review tool; turn 1 (after the

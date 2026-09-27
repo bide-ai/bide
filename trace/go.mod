@@ -1,9 +1,9 @@
-module github.com/dayna/go-agents/trace
+module github.com/blackwell-systems/bide/trace
 
 go 1.27.0
 
 require (
-	github.com/dayna/go-agents v0.0.0
+	github.com/blackwell-systems/bide v0.0.0
 	go.opentelemetry.io/otel v1.46.0
 	go.opentelemetry.io/otel/sdk v1.46.0
 	go.opentelemetry.io/otel/trace v1.46.0
@@ -20,4 +20,4 @@ require (
 	golang.org/x/sys v0.47.0 // indirect
 )
 
-replace github.com/dayna/go-agents => ../
+replace github.com/blackwell-systems/bide => ../

@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	agent "github.com/dayna/go-agents"
+	agent "github.com/blackwell-systems/bide"
 )
 
 // AuditedStore wraps a Durable so every durable step is continuously anchored: whenever a

@@ -6,8 +6,8 @@ import (
 	"strings"
 	"sync"
 
+	agent "github.com/blackwell-systems/bide"
 	gsm "github.com/blackwell-systems/gsm"
-	agent "github.com/dayna/go-agents"
 )
 
 // FederatedApplier is the federated analogue of Applier: it applies a named event to a

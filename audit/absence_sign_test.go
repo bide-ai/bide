@@ -7,7 +7,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	agent "github.com/dayna/go-agents"
+	agent "github.com/blackwell-systems/bide"
 )
 
 // TestSignAbsenceRoot_OneCall confirms the one-step signer produces a tree head that

@@ -7,8 +7,8 @@ import (
 	"encoding/json"
 	"testing"
 
-	agent "github.com/dayna/go-agents"
-	"github.com/dayna/go-agents/audit"
+	agent "github.com/blackwell-systems/bide"
+	"github.com/blackwell-systems/bide/audit"
 )
 
 // twoTurnModel calls a tool on turn 1, then answers on turn 2 — enough to journal a

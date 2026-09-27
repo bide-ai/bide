@@ -7,8 +7,8 @@ import (
 	"sync"
 	"testing"
 
+	agent "github.com/blackwell-systems/bide"
 	gsm "github.com/blackwell-systems/gsm"
-	agent "github.com/dayna/go-agents"
 )
 
 // --- minimal scripted model to drive real agent.Agent loops in these tests ---

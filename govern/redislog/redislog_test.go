@@ -5,9 +5,9 @@ import (
 	"os"
 	"testing"
 
+	"github.com/blackwell-systems/bide/govern"
+	"github.com/blackwell-systems/bide/govern/redislog"
 	gsm "github.com/blackwell-systems/gsm"
-	"github.com/dayna/go-agents/govern"
-	"github.com/dayna/go-agents/govern/redislog"
 )
 
 // The Redis adapter satisfies the govern.EventLog port (asserted here so the adapter

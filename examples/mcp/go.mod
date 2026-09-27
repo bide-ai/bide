@@ -1,13 +1,13 @@
 // Self-contained example module: the mcp package is its own module with the MCP go-sdk
 // dependency, which the root module does not carry, so this example is its own module too.
 // Build and run it from this directory: GOWORK=off go run .
-module github.com/dayna/go-agents/examples/mcp
+module github.com/blackwell-systems/bide/examples/mcp
 
 go 1.27.0
 
 require (
-	github.com/dayna/go-agents v0.0.0
-	github.com/dayna/go-agents/mcp v0.0.0
+	github.com/blackwell-systems/bide v0.0.0
+	github.com/blackwell-systems/bide/mcp v0.0.0
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 )
 
@@ -22,6 +22,6 @@ require (
 	golang.org/x/time v0.15.0 // indirect
 )
 
-replace github.com/dayna/go-agents => ../../
+replace github.com/blackwell-systems/bide => ../../
 
-replace github.com/dayna/go-agents/mcp => ../../mcp
+replace github.com/blackwell-systems/bide/mcp => ../../mcp

@@ -18,7 +18,7 @@ store, it is safe: resume replays it from the journal rather than re-running it.
 2. **Crash after a step ran and its result was journaled** → resume reads the result, skips
    re-execution. Correct.
 3. **Crash in the gap** (the side effect fired but its result was not journaled yet) → this is
-   the dangerous window every other system re-runs into (the double-charge). go-agents wrote an
+   the dangerous window every other system re-runs into (the double-charge). Bide wrote an
    **attempt marker** before firing, so on resume it sees "this non-idempotent thing was
    attempted, outcome unknown" and **halts** (`ResumeHalt`) instead of guessing. It does not
    silently re-run, and it does not silently assume success.

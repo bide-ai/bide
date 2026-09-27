@@ -1,9 +1,9 @@
-module github.com/dayna/go-agents/store/postgres
+module github.com/blackwell-systems/bide/store/postgres
 
 go 1.27.0
 
 require (
-	github.com/dayna/go-agents v0.0.0
+	github.com/blackwell-systems/bide v0.0.0
 	github.com/jackc/pgx/v5 v5.11.0
 	golang.org/x/sync v0.23.0
 )
@@ -16,4 +16,4 @@ require (
 	golang.org/x/text v0.29.0 // indirect
 )
 
-replace github.com/dayna/go-agents => ../../
+replace github.com/blackwell-systems/bide => ../../

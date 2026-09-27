@@ -11,8 +11,8 @@ import (
 	"os"
 	"time"
 
-	agent "github.com/dayna/go-agents"
-	"github.com/dayna/go-agents/model/openai"
+	agent "github.com/blackwell-systems/bide"
+	"github.com/blackwell-systems/bide/model/openai"
 )
 
 type WeatherArgs struct {

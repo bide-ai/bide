@@ -6,7 +6,7 @@ import (
 	"sync"
 	"testing"
 
-	agent "github.com/dayna/go-agents"
+	agent "github.com/blackwell-systems/bide"
 )
 
 // Deterministic Simulation Testing of the substrate invariant as it reaches the

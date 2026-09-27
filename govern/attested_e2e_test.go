@@ -10,8 +10,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	agent "github.com/blackwell-systems/bide"
 	gsm "github.com/blackwell-systems/gsm"
-	agent "github.com/dayna/go-agents"
 )
 
 // TestAttestedEventTool_RealPolicyDigest wires a real gsm policy end to end: it builds a

@@ -1,13 +1,13 @@
 // Self-contained example module: the trace package is its own module carrying the
 // OpenTelemetry SDK dependency, which the root module does not, so this example is its own
 // module too. Build and run it from this directory: GOWORK=off go run .
-module github.com/dayna/go-agents/examples/observability
+module github.com/blackwell-systems/bide/examples/observability
 
 go 1.27.0
 
 require (
-	github.com/dayna/go-agents v0.0.0
-	github.com/dayna/go-agents/trace v0.0.0
+	github.com/blackwell-systems/bide v0.0.0
+	github.com/blackwell-systems/bide/trace v0.0.0
 	go.opentelemetry.io/otel v1.46.0
 	go.opentelemetry.io/otel/sdk v1.46.0
 )
@@ -24,6 +24,6 @@ require (
 	golang.org/x/sys v0.47.0 // indirect
 )
 
-replace github.com/dayna/go-agents => ../../
+replace github.com/blackwell-systems/bide => ../../
 
-replace github.com/dayna/go-agents/trace => ../../trace
+replace github.com/blackwell-systems/bide/trace => ../../trace

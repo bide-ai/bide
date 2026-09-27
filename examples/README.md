@@ -1,6 +1,6 @@
 # Examples
 
-Runnable programs that exercise go-agents end to end. Each is a `main.go` in its own
+Runnable programs that exercise Bide end to end. Each is a `main.go` in its own
 directory with a header comment giving a one-line description and its run command.
 
 Model-centric examples call an OpenAI-compatible endpoint (here OpenRouter) and read an

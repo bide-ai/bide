@@ -7,7 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	agent "github.com/dayna/go-agents"
+	agent "github.com/blackwell-systems/bide"
 )
 
 // This file implements RFC 6962 (Certificate Transparency) Merkle trees over the journal:

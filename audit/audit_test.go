@@ -8,8 +8,8 @@ import (
 	"fmt"
 	"testing"
 
-	agent "github.com/dayna/go-agents"
-	"github.com/dayna/go-agents/audit"
+	agent "github.com/blackwell-systems/bide"
+	"github.com/blackwell-systems/bide/audit"
 )
 
 // record writes a sequence of durable value-steps into a run's journal.

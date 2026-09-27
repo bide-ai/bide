@@ -23,11 +23,11 @@ import (
 	"encoding/json"
 	"fmt"
 
-	agent "github.com/dayna/go-agents"
+	agent "github.com/blackwell-systems/bide"
 )
 
 // domain separates this hash use from any other, seeding the chain.
-var domain = sha256.Sum256([]byte("go-agents.audit.v1"))
+var domain = sha256.Sum256([]byte("bide.audit.v1"))
 
 // Head returns the hash-chain commitment to runID's journal: head_0 = H(domain), and
 // head_i = H(head_{i-1} || canonical(record_i)) over the records in persisted order. Two

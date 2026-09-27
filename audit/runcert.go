@@ -7,7 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	agent "github.com/dayna/go-agents"
+	agent "github.com/blackwell-systems/bide"
 )
 
 // A RunCertificate is a proof-carrying run: one portable, offline-checkable artifact asserting

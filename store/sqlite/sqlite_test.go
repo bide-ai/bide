@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	agent "github.com/dayna/go-agents"
+	agent "github.com/blackwell-systems/bide"
 )
 
 // --- minimal test doubles (mirrors the ones in the agent package) ---

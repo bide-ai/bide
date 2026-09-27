@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"sort"
 
-	agent "github.com/dayna/go-agents"
+	agent "github.com/blackwell-systems/bide"
 )
 
 // Absence proofs answer the negative question an inclusion proof cannot: prove a thing did NOT

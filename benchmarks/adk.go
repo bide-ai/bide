@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"iter"
 
-	"github.com/dayna/go-agents/chaos"
+	"github.com/blackwell-systems/bide/chaos"
 	"google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/agent/llmagent"
 	"google.golang.org/adk/v2/model"

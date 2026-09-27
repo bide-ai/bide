@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	agent "github.com/dayna/go-agents"
+	agent "github.com/blackwell-systems/bide"
 )
 
 func TestStream_429_RateLimited(t *testing.T) {

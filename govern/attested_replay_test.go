@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"testing"
 
+	agent "github.com/blackwell-systems/bide"
 	gsm "github.com/blackwell-systems/gsm"
-	agent "github.com/dayna/go-agents"
 )
 
 // TestAttestedEventTool_StateDigestsReplay is the payoff for the single-leaf (action, policy,

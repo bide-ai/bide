@@ -6,7 +6,7 @@ import (
 	"encoding/binary"
 	"fmt"
 
-	agent "github.com/dayna/go-agents"
+	agent "github.com/blackwell-systems/bide"
 )
 
 // A Signed Tree Head (STH) is the anchoring artifact for the RFC 6962 Merkle commitment,
@@ -25,7 +25,7 @@ type TreeHead struct {
 // canonical is the deterministic, domain-separated, length-prefixed encoding signed by an
 // STH — so two different TreeHeads can never share an encoding.
 func (th TreeHead) canonical() []byte {
-	b := append([]byte(nil), "go-agents.audit.sth.v1\x00"...)
+	b := append([]byte(nil), "bide.audit.sth.v1\x00"...)
 	b = binary.BigEndian.AppendUint64(b, uint64(th.Size))
 	b = binary.BigEndian.AppendUint64(b, uint64(len(th.Root)))
 	b = append(b, th.Root...)

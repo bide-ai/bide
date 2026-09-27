@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	agent "github.com/dayna/go-agents"
+	agent "github.com/blackwell-systems/bide"
 )
 
 // Conform checks the journaled path for runID against f's declared topology. ok

@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/dayna/go-agents/schema"
+	"github.com/blackwell-systems/bide/schema"
 )
 
 // Tool is an action the agent can take. The interface is untyped (json.RawMessage)

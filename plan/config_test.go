@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	agent "github.com/dayna/go-agents"
+	agent "github.com/blackwell-systems/bide"
 )
 
 // The rung-2 test domain: a tiny triage flow. classify maps an Order to an

@@ -38,7 +38,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	agent "github.com/dayna/go-agents"
+	agent "github.com/blackwell-systems/bide"
 )
 
 // Tools lists the tools exposed by a connected MCP client session and returns each one
@@ -93,7 +93,7 @@ func WithToolListChanged(f func(context.Context)) Option {
 }
 
 // WithClientInfo overrides the client name and version reported to the server
-// (default "go-agents"/"0.1.0").
+// (default "bide"/"0.1.0").
 func WithClientInfo(name, version string) Option {
 	return func(c *config) { c.name, c.version = name, version }
 }
@@ -104,7 +104,7 @@ func WithClientInfo(name, version string) Option {
 // client identity). Callers who already hold a *mcp.ClientSession can skip this
 // and pass it to Tools.
 func Connect(ctx context.Context, transport mcp.Transport, opts ...Option) (*mcp.ClientSession, error) {
-	cfg := config{name: "go-agents", version: "0.1.0"}
+	cfg := config{name: "bide", version: "0.1.0"}
 	for _, o := range opts {
 		o(&cfg)
 	}

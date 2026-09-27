@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	agent "github.com/dayna/go-agents"
+	agent "github.com/blackwell-systems/bide"
 )
 
 // An OpenAI streaming response: text + a tool call whose arguments arrive fragmented

@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	agent "github.com/dayna/go-agents"
+	agent "github.com/blackwell-systems/bide"
 )
 
 func openTestStore(t *testing.T) (*Store, context.Context) {

@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"testing"
 
-	agent "github.com/dayna/go-agents"
+	agent "github.com/blackwell-systems/bide"
 )
 
 // ctLeaves / ctRoots are the canonical RFC 6962 (Certificate Transparency) reference test

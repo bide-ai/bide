@@ -24,7 +24,7 @@ const (
 )
 
 // mldsaContext domain-separates ML-DSA signatures produced by this package.
-const mldsaContext = "go-agents.audit.sth.v1"
+const mldsaContext = "bide.audit.sth.v1"
 
 // Signer produces a signature over a message under a named algorithm.
 type Signer interface {

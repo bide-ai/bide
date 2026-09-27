@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	agent "github.com/dayna/go-agents"
+	agent "github.com/blackwell-systems/bide"
 )
 
 // grantCtxKey carries the acting principal's signed grant plus the signer used to mint attenuated

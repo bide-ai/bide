@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/dayna/go-agents/schema"
+	"github.com/blackwell-systems/bide/schema"
 )
 
 // SubAgent wraps an agent as a Tool so a parent can delegate to it — the multi-agent

@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"math/bits"
 
-	agent "github.com/dayna/go-agents"
+	agent "github.com/blackwell-systems/bide"
 )
 
 // RFC 6962 §2.1.2 Merkle consistency proofs: prove that an earlier tree (the first m

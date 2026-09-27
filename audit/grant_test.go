@@ -7,7 +7,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	agent "github.com/dayna/go-agents"
+	agent "github.com/blackwell-systems/bide"
 )
 
 // keyring issues a signer/verifier per issuer name, standing in for a PKI/IdP.

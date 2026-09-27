@@ -5,8 +5,8 @@ import (
 	"os"
 	"testing"
 
-	"github.com/dayna/go-agents/govern"
-	"github.com/dayna/go-agents/govern/postgreslog"
+	"github.com/blackwell-systems/bide/govern"
+	"github.com/blackwell-systems/bide/govern/postgreslog"
 )
 
 // The Postgres adapter satisfies the govern.EventLog port (asserted here so the adapter package

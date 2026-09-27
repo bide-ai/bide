@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	agent "github.com/dayna/go-agents"
+	agent "github.com/blackwell-systems/bide"
 )
 
 func simpleTool() agent.Tool {

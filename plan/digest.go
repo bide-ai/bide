@@ -44,7 +44,7 @@ func (c *builderCore) digest() string {
 
 	// Domain tag and version, so this hash use cannot collide with another and the
 	// scheme can evolve without silently matching an old digest.
-	b.WriteString("go-agents.plan.topology.v1\n")
+	b.WriteString("bide.plan.topology.v1\n")
 
 	// The flow name and its pinned boundary types anchor the digest to this flow.
 	writeField(&b, "flow", c.flowName)

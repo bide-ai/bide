@@ -19,7 +19,7 @@ import (
 	"net/http"
 	"strings"
 
-	agent "github.com/dayna/go-agents"
+	agent "github.com/blackwell-systems/bide"
 )
 
 // Model is an Anthropic Messages API adapter implementing agent.Model.

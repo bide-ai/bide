@@ -11,7 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	agent "github.com/dayna/go-agents"
+	agent "github.com/blackwell-systems/bide"
 	"golang.org/x/sync/singleflight"
 	_ "modernc.org/sqlite"
 )

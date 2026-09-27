@@ -9,7 +9,7 @@ import (
 	"context"
 	"fmt"
 
-	agent "github.com/dayna/go-agents"
+	agent "github.com/blackwell-systems/bide"
 	"github.com/redis/go-redis/v9"
 )
 

@@ -1,7 +1,7 @@
 # Chaos benchmark: cross-SDK results
 
 This is a **separate module** (its own `go.mod`) so competitor SDKs' large dependency trees
-never touch the go-agents core. It runs the [chaos benchmark](../docs/design/chaos-benchmark.md)
+never touch the Bide core. It runs the [chaos benchmark](../docs/design/chaos-benchmark.md)
 against other Go agent SDKs.
 
 Run it:
@@ -13,7 +13,7 @@ cd benchmarks && GOWORK=off go test -run Comparison -v
 ## Result
 
 ```
-go-agents        maxFired=1   PASS ✓ (at-most-once held)
+Bide        maxFired=1   PASS ✓ (at-most-once held)
 trpc-agent-go    maxFired=5   FAIL ✗ (70 double-fires, worst=5)
 adk-go           maxFired=4   FAIL ✗ (45 double-fires, worst=4)
 langchaingo      maxFired=64  FAIL ✗ (204 double-fires, worst=64)
@@ -45,7 +45,7 @@ side-effect node running and its checkpoint persisting, after which resume corre
 re-executes that node. That is the documented LangGraph model: **nodes must be idempotent**;
 a non-idempotent side effect double-fires across a crash. trpc's own docs acknowledge it.
 
-go-agents closes exactly that window: it writes a durable *attempt marker* before a
+Bide closes exactly that window: it writes a durable *attempt marker* before a
 non-idempotent tool, so resume can tell "never ran" (safe to run) from "ran, outcome unknown"
 (halt), and never re-fires. That's why it holds `maxFired=1`.
 
@@ -84,7 +84,7 @@ the charge's function-response event is durably recorded, the replayed history t
 *executing* and the `AppendEvent` that *records* its result: the record is lost, the replay
 sees no charge in history, and it re-fires. ADK has no framework-level attempt-marker /
 halt-on-unknown-outcome to close that window: the same gap trpc has, and the same one
-go-agents closes to hold `maxFired=1`.
+Bide closes to hold `maxFired=1`.
 
 ## Adding another SDK
 

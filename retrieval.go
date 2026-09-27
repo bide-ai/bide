@@ -17,7 +17,7 @@ type Doc struct {
 }
 
 // Retriever is the bring-your-own-RAG port: given a query, return the top-k relevant
-// documents from YOUR store (pgvector, Pinecone, a file index — anything). go-agents
+// documents from YOUR store (pgvector, Pinecone, a file index — anything). Bide
 // ships no vector store and no embedder; you implement Retrieve against infrastructure you
 // already run, and wire it in with RetrievalTool (agentic — the model searches on demand)
 // or WithRetrieval (classic — top-k auto-injected as context on each user turn). Sessions

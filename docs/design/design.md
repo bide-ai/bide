@@ -1,6 +1,6 @@
-# go-agents: Design Doc
+# Bide: Design Doc
 
-> Working codename: **go-agents**. Real name TBD (deliberately deferred: build first, name when the thing exists).
+> Working codename: **Bide**. Real name TBD (deliberately deferred: build first, name when the thing exists).
 
 ## Thesis
 

@@ -1,7 +1,7 @@
 // Package chaos is a deterministic crash-injection benchmark for agent runtimes: it drives
 // a NON-IDEMPOTENT side effect through a fault schedule and checks it fires at most once.
 //
-// It's the exportable form of go-agents' internal DST — point it at any SDK by implementing
+// It's the exportable form of Bide' internal DST — point it at any SDK by implementing
 // System (wire that SDK to do one non-idempotent side effect against a fault-injectable,
 // resumable store). The harness is what proves — or disproves — an at-most-once guarantee:
 // a loop that relies on at-least-once + idempotency double-fires here, visibly. See

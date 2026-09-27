@@ -9,12 +9,12 @@ Apply it the moment the repo becomes public **or** the account upgrades to
 GitHub Pro:
 
 ```sh
-gh api --method POST repos/blackwell-systems/go-agents/rulesets \
+gh api --method POST repos/blackwell-systems/Bide/rulesets \
   --input .github/rulesets/strict-protection.json
 ```
 
 Verify:
 
 ```sh
-gh api repos/blackwell-systems/go-agents/rulesets
+gh api repos/blackwell-systems/Bide/rulesets
 ```

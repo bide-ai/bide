@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	agent "github.com/dayna/go-agents"
+	agent "github.com/blackwell-systems/bide"
 )
 
 // ConvergenceContent is the payload of a convergence leaf: an opaque, serialized convergence

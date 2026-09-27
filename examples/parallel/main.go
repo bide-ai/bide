@@ -13,7 +13,7 @@ import (
 	"fmt"
 	"log"
 
-	agent "github.com/dayna/go-agents"
+	agent "github.com/blackwell-systems/bide"
 )
 
 // Check is the result of one independent screening step.

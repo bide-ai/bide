@@ -1,4 +1,8 @@
-# go-agents (working codename)
+# Bide (working name)
+
+> **Bide** is the current working name for this SDK (temporary, under evaluation). On this branch the Go
+> module is now `github.com/blackwell-systems/bide`; the core package stays `agent`. The fit: a runtime that
+> *bides*, waiting on ambiguity rather than risking a bad side effect, and enduring across crashes.
 
 **The durable agent runtime for work that must not happen twice.**
 
@@ -13,7 +17,7 @@ or act under audit.
 schedule or an event) wakes it, works over hours or days, and pauses to ask a human only when it
 needs judgment, with nobody watching each step. That is exactly when at-most-once, HA resume, and a
 verifiable trail stop being nice-to-haves; a background agent that acts unobserved has to be safe to
-crash, safe to re-trigger, and provable after the fact. go-agents ships the durable lifecycle for
+crash, safe to re-trigger, and provable after the fact. Bide ships the durable lifecycle for
 this: durable `Sleep`/`WaitUntil` timers, a pluggable `Waker` for time- or event-driven wakeups, and
 durable `Interrupt`/`Resume` for typed human-in-the-loop, all on the same journal. You bring the
 trigger source and the oversight UI; the runtime keeps every run correct across sleeps, crashes, and
@@ -36,7 +40,7 @@ results in [`benchmarks/`](benchmarks/README.md)) that drives a non-idempotent `
 every crash point. The number *is* the product:
 
 ```
-go-agents      maxFired=1    ✓ at-most-once held
+Bide      maxFired=1    ✓ at-most-once held
 trpc-agent-go  maxFired=5    ✗ double-charged
 adk-go         maxFired=4    ✗
 langchaingo    maxFired=64   ✗
@@ -134,7 +138,7 @@ governance and audit machinery at scale, not a live LLM or a production database
 
 ### vs. durable-execution and agent runtimes
 
-| | **go-agents** | Temporal / DBOS | ADK · eino · trpc · langchaingo |
+| | **Bide** | Temporal / DBOS | ADK · eino · trpc · langchaingo |
 |---|---|---|---|
 | Non-idempotent side effect on crash | **At most once (halts on unknown outcome)** | At least once; activities/steps must be idempotent | At least once; re-runs (**measured 4–64×**) |
 | Deployment | **Library + a DB you already run** | Server + worker fleet | Library |
@@ -161,7 +165,7 @@ Beyond the four guarantees, the details that make it pleasant to build on:
 ## Graphs
 
 Most agent frameworks make a graph the thing you author: nodes, edges, a state object, sometimes a
-visual builder. go-agents does not, and the reason is precise rather than ideological.
+visual builder. Bide does not, and the reason is precise rather than ideological.
 
 A graph adds no expressive power. Anything a graph computes, ordinary control flow computes: a
 computation graph is a control-flow graph, and sequence, selection, and iteration suffice to express
@@ -184,7 +188,8 @@ For an accountability runtime the direction also matters. An authored graph is a
 a derived graph is reconstructed from the journal, so it is exactly what ran. Preferring the derived
 view is the same verify, do not trust stance as the rest of the system, and it holds even once an
 authoring layer sits on top. The principle for adding any such layer without forking the runtime is
-recorded in [expression surfaces](docs/design/expression-surfaces.md).
+that a new surface may add a way to author, never a way to execute: every layer lowers to the one
+journal-backed runtime.
 
 ## Ambient runs: durable sleep, wake, and interrupt
 
@@ -233,9 +238,9 @@ import (
 	"fmt"
 	"os"
 
-	agent "github.com/dayna/go-agents"
-	"github.com/dayna/go-agents/model/openai"
-	"github.com/dayna/go-agents/store/sqlite"
+	agent "github.com/blackwell-systems/bide"
+	"github.com/blackwell-systems/bide/model/openai"
+	"github.com/blackwell-systems/bide/store/sqlite"
 )
 
 type WeatherArgs struct {
@@ -424,7 +429,7 @@ See [docs/guides/audit.md](docs/guides/audit.md) for the model, the API, and the
 
 ## RAG & memory (bring your own)
 
-go-agents ships **no vector store, embedder, or memory backend**: it gives you the *seam* and
+Bide ships **no vector store, embedder, or memory backend**: it gives you the *seam* and
 you plug in the store you already run. Implement one interface against your infra:
 
 ```go
@@ -467,10 +472,10 @@ multi-crash schedules), and the harness asserts a non-idempotent side effect fir
 once** every time, with the run always ending completed or halted, never double-firing.
 
 The harness is exported (`chaos/`) and pointed at other SDKs in `benchmarks/`. The measured result:
-**go-agents `maxFired=1` (PASS); trpc-agent-go `maxFired=5`; langchaingo `maxFired=64` (both FAIL).**
+**Bide `maxFired=1` (PASS); trpc-agent-go `maxFired=5`; langchaingo `maxFired=64` (both FAIL).**
 trpc's checkpoint/resume genuinely works (verified: resuming a completed run is a no-op); its
 double-fire is the documented LangGraph "nodes must be idempotent" window. langchaingo has no
-durability at all, so retries re-run everything. go-agents' attempt-marker closes the window entirely.
+durability at all, so retries re-run everything. Bide' attempt-marker closes the window entirely.
 
 `WithMaxTurns(n)` caps model turns per run so a model that keeps calling tools can't loop forever:
 hitting it returns `ErrMaxTurns` (which is `errors.Is` `ErrBudget`).
@@ -598,7 +603,7 @@ func RequireTag(tag string) agent.ToolMiddleware {
 
 ## Modules
 
-go-agents is a multi-module repo: a dependency-light **core** (`github.com/dayna/go-agents`,
+Bide is a multi-module repo: a dependency-light **core** (`github.com/blackwell-systems/bide`,
 the loop, schema, middleware, model adapters, govern; deps are just gsm + `x/sync`) plus one
 module per heavy adapter (`mcp`, `trace`, `store/sqlite`, `store/postgres`, `govern/redislog`,
 `govern/sqlitelog`, `govern/postgreslog`). Import an adapter and you pull its dependency tree; import only the core
@@ -729,5 +734,4 @@ New here? Start with **[Getting started](docs/getting-started.md)**, use the **[
   regression `Compare`, `RequiredRuns` power sizing, stratified `ByTag`) with the provable-versus-
   statistical boundary that keeps a pass rate from being sold as a guarantee.
 
-> Name is deliberately deferred; this is a codename. Design notes live in `docs/design/`; the
-> governance tier in [docs/guides/governance.md](docs/guides/governance.md).
+> The governance tier is documented in [docs/guides/governance.md](docs/guides/governance.md).

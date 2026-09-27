@@ -1,4 +1,4 @@
-// Package verify is a dependency-light, standalone verifier for go-agents audit proofs. It
+// Package verify is a dependency-light, standalone verifier for Bide audit proofs. It
 // depends on nothing but the Go standard library (crypto/sha256, crypto/ed25519,
 // encoding/binary, bytes, math/bits), deliberately NOT the agent core or gsm, so a third
 // party (an auditor, a regulator) can verify a proof without importing the SDK, or reimplement
@@ -133,7 +133,7 @@ func TreeHead(root []byte, size int, timestamp int64, sig, pub []byte) bool {
 	if len(pub) != ed25519.PublicKeySize {
 		return false
 	}
-	b := append([]byte(nil), "go-agents.audit.sth.v1\x00"...)
+	b := append([]byte(nil), "bide.audit.sth.v1\x00"...)
 	b = binary.BigEndian.AppendUint64(b, uint64(size))
 	b = binary.BigEndian.AppendUint64(b, uint64(len(root)))
 	b = append(b, root...)

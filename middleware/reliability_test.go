@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	agent "github.com/dayna/go-agents"
-	"github.com/dayna/go-agents/middleware"
+	agent "github.com/blackwell-systems/bide"
+	"github.com/blackwell-systems/bide/middleware"
 )
 
 // TestRetry_PerAttemptTimeout: a handler that blocks past the per-attempt timeout fails that

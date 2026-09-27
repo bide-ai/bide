@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
+	"github.com/blackwell-systems/bide/govern"
 	gsm "github.com/blackwell-systems/gsm"
-	"github.com/dayna/go-agents/govern"
 )
 
 // buildMfrSupFederation reproduces the paper's §8.5 manufacturer–supplier federation: a

@@ -1,6 +1,6 @@
 # Module structure
 
-go-agents is a **multi-module repository**: a dependency-light core module plus one module
+Bide is a **multi-module repository**: a dependency-light core module plus one module
 per heavy adapter. This keeps a consumer's dependency/audit surface proportional to what they
 actually import.
 
@@ -20,7 +20,7 @@ only when that adapter is imported.
 
 | Module | Path | Extra deps beyond core |
 |---|---|---|
-| **core** | `github.com/dayna/go-agents` | gsm, `x/sync` |
+| **core** | `github.com/blackwell-systems/bide` | gsm, `x/sync` |
 | mcp | `…/mcp` | modelcontextprotocol/go-sdk (+ jsonschema, segmentio, …) |
 | trace | `…/trace` | go.opentelemetry.io/otel |
 | sqlite store | `…/store/sqlite` | modernc.org/sqlite |
@@ -42,7 +42,7 @@ go work sync
 cd trace && go test ./...     # or any module
 ```
 
-Each adapter module's `go.mod` also carries a `replace github.com/dayna/go-agents => <rel>`
+Each adapter module's `go.mod` also carries a `replace github.com/blackwell-systems/bide => <rel>`
 so it builds standalone in CI. CI builds and tests every module in its own directory (see
 `.github/workflows/ci.yml`, `MODULES`).
 

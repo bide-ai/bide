@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	agent "github.com/dayna/go-agents"
+	agent "github.com/blackwell-systems/bide"
 )
 
 // RateLimiter is a token-bucket limiter shared across calls: it allows one token every

@@ -6,8 +6,8 @@ import (
 	"crypto/ed25519"
 	"testing"
 
-	agent "github.com/dayna/go-agents"
-	"github.com/dayna/go-agents/audit"
+	agent "github.com/blackwell-systems/bide"
+	"github.com/blackwell-systems/bide/audit"
 )
 
 // TestMemEventStore_AppendOnly exercises the port contract: contiguous append, idempotent

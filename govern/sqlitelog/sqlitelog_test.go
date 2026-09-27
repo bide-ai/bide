@@ -5,9 +5,9 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/blackwell-systems/bide/govern"
+	"github.com/blackwell-systems/bide/govern/sqlitelog"
 	gsm "github.com/blackwell-systems/gsm"
-	"github.com/dayna/go-agents/govern"
-	"github.com/dayna/go-agents/govern/sqlitelog"
 )
 
 // The SQLite adapter satisfies the govern.EventLog port (asserted in the test so the

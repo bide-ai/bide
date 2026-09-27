@@ -15,7 +15,7 @@ import (
 
 // Anchor is the bring-your-own port for out-of-band anchoring: publish a SignedTreeHead to a
 // trust domain separate from the app (a Certificate-Transparency-style log, a notary /
-// timestamping service, another account's WORM store, a public ledger). go-agents ships
+// timestamping service, another account's WORM store, a public ledger). Bide ships
 // MemAnchorLog as a reference; you implement Publish against the external log you trust.
 type Anchor interface {
 	Publish(ctx context.Context, runID string, sth SignedTreeHead) error

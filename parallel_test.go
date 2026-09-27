@@ -8,8 +8,8 @@ import (
 	"sync/atomic"
 	"testing"
 
-	agent "github.com/dayna/go-agents"
-	"github.com/dayna/go-agents/audit"
+	agent "github.com/blackwell-systems/bide"
+	"github.com/blackwell-systems/bide/audit"
 )
 
 type checkResult struct {

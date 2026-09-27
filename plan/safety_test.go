@@ -6,7 +6,7 @@ import (
 	"errors"
 	"testing"
 
-	agent "github.com/dayna/go-agents"
+	agent "github.com/blackwell-systems/bide"
 )
 
 // Safety opt-in on the plan surface: a node marked ReadOnly/Idempotent RE-RUNS its

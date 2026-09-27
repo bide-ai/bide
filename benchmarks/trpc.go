@@ -1,12 +1,12 @@
 // Package benchmarks holds chaos-benchmark adapters for OTHER agent SDKs. It lives in its
-// own module so those SDKs' dependency trees never touch the go-agents core.
+// own module so those SDKs' dependency trees never touch the Bide core.
 package benchmarks
 
 import (
 	"context"
 	"sync"
 
-	"github.com/dayna/go-agents/chaos"
+	"github.com/blackwell-systems/bide/chaos"
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/graph"
 	"trpc.group/trpc-go/trpc-agent-go/graph/checkpoint/inmemory"

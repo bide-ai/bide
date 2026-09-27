@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	agent "github.com/dayna/go-agents"
+	agent "github.com/blackwell-systems/bide"
 )
 
 // A Request.ResponseFormat maps to an OpenAI strict json_schema response_format.

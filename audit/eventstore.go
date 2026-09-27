@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"sync"
 
-	agent "github.com/dayna/go-agents"
+	agent "github.com/blackwell-systems/bide"
 )
 
 // This file is the bring-your-own port for DURABLE event-trail persistence. The journal is
@@ -24,7 +24,7 @@ import (
 
 // EventStore is the bring-your-own port: append canonical event leaves to your append-only
 // backend (a Postgres table with UNIQUE(run_id, seq) and insert-only grants, object storage
-// with object-lock/WORM, or a log) and read them back. go-agents ships MemEventStore as the
+// with object-lock/WORM, or a log) and read them back. Bide ships MemEventStore as the
 // in-memory default; you implement Append/Load against infrastructure you already run.
 type EventStore interface {
 	// Append durably records leaf at position seq (0-based, contiguous) for runID. It MUST be

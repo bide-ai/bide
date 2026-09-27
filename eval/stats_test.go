@@ -6,8 +6,8 @@ import (
 	"sync/atomic"
 	"testing"
 
-	agent "github.com/dayna/go-agents"
-	"github.com/dayna/go-agents/eval"
+	agent "github.com/blackwell-systems/bide"
+	"github.com/blackwell-systems/bide/eval"
 )
 
 // reportFor builds a Report whose single overall metric has the given passes/runs, so comparison

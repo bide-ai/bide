@@ -3,8 +3,8 @@ package benchmarks
 import (
 	"context"
 
+	"github.com/blackwell-systems/bide/chaos"
 	"github.com/cloudwego/eino/compose"
-	"github.com/dayna/go-agents/chaos"
 )
 
 // Eino (ByteDance) has checkpoint/interrupt/resume — but it is HITL-interrupt-driven, NOT

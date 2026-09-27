@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"testing"
 
-	agent "github.com/dayna/go-agents"
+	agent "github.com/blackwell-systems/bide"
 )
 
 // answerModel is a stub model that returns a fixed final answer in one turn, so a wrapped sub-agent

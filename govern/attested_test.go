@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"testing"
 
+	agent "github.com/blackwell-systems/bide"
 	gsm "github.com/blackwell-systems/gsm"
-	agent "github.com/dayna/go-agents"
 )
 
 // fakeApplier records applied events and returns a zero state, standing in for a real

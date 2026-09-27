@@ -1,9 +1,9 @@
-module github.com/dayna/go-agents/mcp
+module github.com/blackwell-systems/bide/mcp
 
 go 1.27.0
 
 require (
-	github.com/dayna/go-agents v0.0.0
+	github.com/blackwell-systems/bide v0.0.0
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 )
 
@@ -19,4 +19,4 @@ require (
 	golang.org/x/tools v0.48.0 // indirect
 )
 
-replace github.com/dayna/go-agents => ../
+replace github.com/blackwell-systems/bide => ../

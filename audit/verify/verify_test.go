@@ -6,9 +6,9 @@ import (
 	"encoding/json"
 	"testing"
 
-	agent "github.com/dayna/go-agents"
-	"github.com/dayna/go-agents/audit"
-	"github.com/dayna/go-agents/audit/verify"
+	agent "github.com/blackwell-systems/bide"
+	"github.com/blackwell-systems/bide/audit"
+	"github.com/blackwell-systems/bide/audit/verify"
 )
 
 // The standalone verifier must agree, bit for bit, with the full audit package on the same

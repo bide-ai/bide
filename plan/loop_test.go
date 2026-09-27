@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	agent "github.com/dayna/go-agents"
+	agent "github.com/blackwell-systems/bide"
 )
 
 // loopState is the single loop-carried value: a countdown a bounded loop decrements

@@ -16,7 +16,7 @@ import (
 	"log"
 	"sync/atomic"
 
-	agent "github.com/dayna/go-agents"
+	agent "github.com/blackwell-systems/bide"
 )
 
 // scriptModel calls the charge tool once, then answers in text on the next turn.

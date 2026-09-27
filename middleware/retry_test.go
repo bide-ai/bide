@@ -7,7 +7,7 @@ import (
 	"testing/synctest"
 	"time"
 
-	agent "github.com/dayna/go-agents"
+	agent "github.com/blackwell-systems/bide"
 )
 
 // These run inside synctest bubbles: the backoff sleeps use a fake clock, so realistic

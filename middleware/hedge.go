@@ -5,7 +5,7 @@ import (
 	"errors"
 	"time"
 
-	agent "github.com/dayna/go-agents"
+	agent "github.com/blackwell-systems/bide"
 )
 
 // Hedge races the model call against one or more backup models and returns the FIRST

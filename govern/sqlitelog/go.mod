@@ -1,10 +1,10 @@
-module github.com/dayna/go-agents/govern/sqlitelog
+module github.com/blackwell-systems/bide/govern/sqlitelog
 
 go 1.27.0
 
 require (
 	github.com/blackwell-systems/gsm v0.11.0
-	github.com/dayna/go-agents v0.0.0
+	github.com/blackwell-systems/bide v0.0.0
 	modernc.org/sqlite v1.59.0
 )
 
@@ -21,4 +21,4 @@ require (
 	modernc.org/memory v1.12.1 // indirect
 )
 
-replace github.com/dayna/go-agents => ../../
+replace github.com/blackwell-systems/bide => ../../

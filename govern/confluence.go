@@ -15,7 +15,7 @@ import (
 // Newman's lemma those two local facts give global confluence, so applying a set of events in ANY
 // order reaches the same valid state. This certificate is that result made portable.
 //
-// Without it the guarantee lived only inside gsm's build step and was discarded at the go-agents
+// Without it the guarantee lived only inside gsm's build step and was discarded at the Bide
 // boundary; a run could prove which policy was used (audit) but not that the policy was provably
 // convergent. Anchoring the certificate next to the policy leaf (see audit.RecordConvergence)
 // closes that: an auditor verifies not merely "policy digest X was used" but "policy digest X is

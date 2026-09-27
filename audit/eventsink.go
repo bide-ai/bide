@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	agent "github.com/dayna/go-agents"
+	agent "github.com/blackwell-systems/bide"
 )
 
 // This file is the event→audit sink: it turns Agent.Stream's ephemeral SEMANTIC lifecycle
@@ -22,7 +22,7 @@ import (
 // UI" and "commit an audit trail" one pass instead of two mechanisms.
 
 // eventDomain separates the event-log hash chain from the journal chain (audit.domain).
-var eventDomain = sha256.Sum256([]byte("go-agents.audit.events.v1"))
+var eventDomain = sha256.Sum256([]byte("bide.audit.events.v1"))
 
 // EventLog is an append-only, tamper-evident log of one run's AgentEvents. Build it by
 // Add-ing events in emission order (Agent.Stream emits them ordered from a single

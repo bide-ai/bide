@@ -19,8 +19,8 @@ import (
 	"net/http"
 	"strings"
 
-	agent "github.com/dayna/go-agents"
-	"github.com/dayna/go-agents/schema"
+	agent "github.com/blackwell-systems/bide"
+	"github.com/blackwell-systems/bide/schema"
 )
 
 type Model struct {

@@ -1,10 +1,10 @@
-module github.com/dayna/go-agents/govern/redislog
+module github.com/blackwell-systems/bide/govern/redislog
 
 go 1.27.0
 
 require (
 	github.com/blackwell-systems/gsm v0.11.0
-	github.com/dayna/go-agents v0.0.0
+	github.com/blackwell-systems/bide v0.0.0
 	github.com/redis/go-redis/v9 v9.22.0
 )
 
@@ -16,4 +16,4 @@ require (
 	golang.org/x/sys v0.47.0 // indirect
 )
 
-replace github.com/dayna/go-agents => ../../
+replace github.com/blackwell-systems/bide => ../../

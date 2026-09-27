@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	agent "github.com/dayna/go-agents"
-	"github.com/dayna/go-agents/audit"
+	agent "github.com/blackwell-systems/bide"
+	"github.com/blackwell-systems/bide/audit"
 )
 
 // TestCryptographicConformance proves offline that a run followed THIS declared

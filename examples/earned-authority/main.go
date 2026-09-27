@@ -18,9 +18,9 @@ import (
 	"crypto/rand"
 	"fmt"
 
+	"github.com/blackwell-systems/bide/audit"
+	"github.com/blackwell-systems/bide/govern"
 	gsm "github.com/blackwell-systems/gsm"
-	"github.com/dayna/go-agents/audit"
-	"github.com/dayna/go-agents/govern"
 )
 
 func main() {

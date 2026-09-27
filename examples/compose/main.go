@@ -11,8 +11,8 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/blackwell-systems/bide/govern"
 	gsm "github.com/blackwell-systems/gsm"
-	"github.com/dayna/go-agents/govern"
 )
 
 // buildFulfillment is the reusable subsystem: two internal registries connected by a morphism.

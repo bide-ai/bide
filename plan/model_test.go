@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	agent "github.com/dayna/go-agents"
+	agent "github.com/blackwell-systems/bide"
 )
 
 // A Model node binds a real model to the flow: it renders the node's prompt from the

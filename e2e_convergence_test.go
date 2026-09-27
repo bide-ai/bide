@@ -13,10 +13,10 @@ import (
 	"testing"
 	"time"
 
+	agent "github.com/blackwell-systems/bide"
+	"github.com/blackwell-systems/bide/audit"
+	"github.com/blackwell-systems/bide/govern"
 	gsm "github.com/blackwell-systems/gsm"
-	agent "github.com/dayna/go-agents"
-	"github.com/dayna/go-agents/audit"
-	"github.com/dayna/go-agents/govern"
 )
 
 // seqModel drives one agent through a fixed sequence of governed events (one tool call per turn),

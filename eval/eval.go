@@ -26,7 +26,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	agent "github.com/dayna/go-agents"
+	agent "github.com/blackwell-systems/bide"
 )
 
 // Case is one evaluation input plus optional expectations that metrics interpret. Tags are

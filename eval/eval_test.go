@@ -5,8 +5,8 @@ import (
 	"sync/atomic"
 	"testing"
 
-	agent "github.com/dayna/go-agents"
-	"github.com/dayna/go-agents/eval"
+	agent "github.com/blackwell-systems/bide"
+	"github.com/blackwell-systems/bide/eval"
 )
 
 // TestRun_StatisticalPassRate confirms the harness reports a pass-rate distribution with a Wilson

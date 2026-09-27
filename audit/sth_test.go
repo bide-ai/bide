@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"testing"
 
-	agent "github.com/dayna/go-agents"
+	agent "github.com/blackwell-systems/bide"
 )
 
 func journal(t *testing.T, store agent.Durable, runID string, vals ...string) {

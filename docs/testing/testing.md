@@ -17,16 +17,16 @@ an idealized plan. One item is stated differently here than you may expect:
   recomputing convergence from the combinator declarations, both extracted from the axiom-free
   Coq/Rocq proof) lives in the sibling `gsm` and `normalization-confluence` repositories, where
   gsm's convergence verdict is re-certified. It is not a pair of `oracle_test.go` /
-  `astoracle_test.go` files inside go-agents, and there is no `GSM_CONVERGENCE_CHECKER`
-  environment variable in this repo. What go-agents ships in-repo is a single optional hook,
+  `astoracle_test.go` files inside Bide, and there is no `GSM_CONVERGENCE_CHECKER`
+  environment variable in this repo. What Bide ships in-repo is a single optional hook,
   `GSM_AST_CHECKER`, in `govern/attested_e2e_test.go`, which runs the external verified oracle
-  on the exact policy bytes go-agents anchors (see Pillar 2). The two-independent-implementations
-  idea is real; the code that runs both checkers is upstream in gsm, and go-agents leverages it
+  on the exact policy bytes Bide anchors (see Pillar 2). The two-independent-implementations
+  idea is real; the code that runs both checkers is upstream in gsm, and Bide leverages it
   rather than re-implementing it.
 
 Two module boundaries matter for running tests. The competitor benchmark adapters live in a
 **separate module** (`benchmarks/`, its own `go.mod`) so their large dependency trees never
-touch the go-agents core. The workspace (`go.work`) also stitches in `govern/redislog`,
+touch the Bide core. The workspace (`go.work`) also stitches in `govern/redislog`,
 `govern/sqlitelog`, `mcp`, `store/postgres`, `store/sqlite`, and `trace`.
 
 ## Pillar 1: fair crash-injection chaos benchmark
@@ -39,12 +39,12 @@ of 1 means the guarantee held; anything higher is a double-charge.
   runs an **exhaustive** single-crash sweep at every durable write point (crash there, then
   resume to a terminal state), then `seeds` **randomized** multi-crash schedules (default 500
   in the tests), and records `MaxFired` and `Violations`. `TestVerify_GoAgentsPasses` asserts
-  the go-agents reference adapter holds `maxFired=1`. `TestVerify_NaiveReferenceFails` asserts
+  the Bide reference adapter holds `maxFired=1`. `TestVerify_NaiveReferenceFails` asserts
   the naive at-least-once baseline double-fires (`maxFired>=2`); this is deliberate, and it
   proves the harness is **non-vacuous** (a correct loop passes, an incorrect one fails).
 - `benchmarks/` runs the same harness against other Go agent SDKs from that separate module
   (`cd benchmarks && GOWORK=off go test -run Comparison -v`). The published cross-SDK result
-  in `benchmarks/README.md`: go-agents `maxFired=1` (PASS); trpc-agent-go `maxFired=5`; adk-go
+  in `benchmarks/README.md`: Bide `maxFired=1` (PASS); trpc-agent-go `maxFired=5`; adk-go
   `maxFired=4`; langchaingo `maxFired=64`; eino `maxFired=64`; naive-loop `maxFired=5`.
 
 **Fairness is the discipline that makes this credible, not a strawman contest.** Every
@@ -55,7 +55,7 @@ a *completed* run is a genuine no-op (the charge does not re-fire), so where a d
 appears it reflects that SDK's real behavior. The findings are documented per-SDK: trpc-agent-go
 and adk-go have real persistence and a narrow re-fire window (a crash between the side effect
 executing and its record persisting); langchaingo and eino have no automatic crash-resume, so a
-crash loses the run and re-invoking re-runs everything. go-agents closes that window with a
+crash loses the run and re-invoking re-runs everything. Bide closes that window with a
 durable attempt marker written before a non-idempotent tool, which is why it holds `maxFired=1`.
 
 Bounds: this is randomized plus exhaustive-over-write-points crash injection modeling process
@@ -77,7 +77,7 @@ cannot silently pass a non-convergent machine.** The two-independent-implementat
 if two programs written from the same axiom-free proof, by different routes, both accept a
 machine, a single implementation bug is far less likely to have admitted a bad one.
 
-- In go-agents, `govern/attested_e2e_test.go` (`TestAttestedEventTool_RealPolicyDigest`) builds
+- In Bide, `govern/attested_e2e_test.go` (`TestAttestedEventTool_RealPolicyDigest`) builds
   a real gsm policy, takes its `PolicyDigest`, governs a real transition through
   `AttestedEventTool`, and confirms the journaled leaf carries that exact digest and the
   resulting state digest. It independently recomputes the digest with the same domain-separated
@@ -90,7 +90,7 @@ machine, a single implementation bug is far less likely to have admitted a bad o
   over combinator declarations, both extracted from the axiom-free Coq/Rocq proof) live in the
   `gsm` / `normalization-confluence` sibling repos, as noted in the correction above.
 
-Bounds: go-agents leverages gsm's proof; it does not claim to have proven the underlying theorem
+Bounds: Bide leverages gsm's proof; it does not claim to have proven the underlying theorem
 or that its own Go code is axiom-free. The precise convergence claim is order-independent replay,
 not "agents always agree" (see Pillar 3).
 
@@ -316,7 +316,7 @@ go test ./...
 # Fast pass: skips heavy scale sweeps (e2e convergence collapses to a single small scale).
 go test -short ./...
 
-# Chaos benchmark: go-agents passes at-most-once, the naive baseline fails (non-vacuous).
+# Chaos benchmark: Bide passes at-most-once, the naive baseline fails (non-vacuous).
 go test ./chaos -run Verify -v
 
 # Cross-SDK chaos comparison (separate module; keeps competitor deps off the core).

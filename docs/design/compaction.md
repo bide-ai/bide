@@ -17,7 +17,7 @@ Two things grow without bound in a long-lived run, and each backs a guarantee co
   proof already issued. Compaction must preserve **proof continuity**: proofs issued before a
   snapshot still verify, or are cryptographically linked to the post-snapshot tree.
 
-CRDT stores (Automerge, Yjs) faced only the first problem (garbage-collecting tombstones). go-agents
+CRDT stores (Automerge, Yjs) faced only the first problem (garbage-collecting tombstones). Bide
 faces both, so their GC technique is necessary but not sufficient: the audit tree is the added
 constraint.
 

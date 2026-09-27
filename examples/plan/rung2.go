@@ -17,8 +17,8 @@ import (
 	"context"
 	"fmt"
 
-	agent "github.com/dayna/go-agents"
-	"github.com/dayna/go-agents/plan"
+	agent "github.com/blackwell-systems/bide"
+	"github.com/blackwell-systems/bide/plan"
 )
 
 // rung2Config is the order-triage flow expressed as a rung-2 JSON config. It restates the

@@ -55,10 +55,10 @@ import (
 	"os"
 	"time"
 
-	agent "github.com/dayna/go-agents"
-	"github.com/dayna/go-agents/audit"
-	"github.com/dayna/go-agents/plan"
-	"github.com/dayna/go-agents/store/sqlite"
+	agent "github.com/blackwell-systems/bide"
+	"github.com/blackwell-systems/bide/audit"
+	"github.com/blackwell-systems/bide/plan"
+	"github.com/blackwell-systems/bide/store/sqlite"
 )
 
 // Order is the flow input: a single incoming order to triage.

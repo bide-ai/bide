@@ -1,10 +1,10 @@
-module github.com/dayna/go-agents/benchmarks
+module github.com/blackwell-systems/bide/benchmarks
 
 go 1.27.0
 
 require (
 	github.com/cloudwego/eino v0.9.21
-	github.com/dayna/go-agents v0.0.0
+	github.com/blackwell-systems/bide v0.0.0
 	github.com/tmc/langchaingo v0.1.14
 	google.golang.org/adk/v2 v2.4.0
 	google.golang.org/genai v1.70.0
@@ -95,4 +95,4 @@ require (
 	trpc.group/trpc-go/trpc-a2a-go v0.2.6-0.20260721084546-18c8244d0acb // indirect
 )
 
-replace github.com/dayna/go-agents => ../
+replace github.com/blackwell-systems/bide => ../

@@ -16,7 +16,7 @@ import (
 	"log"
 	"time"
 
-	agent "github.com/dayna/go-agents"
+	agent "github.com/blackwell-systems/bide"
 )
 
 // oneTool calls the named tool once, then answers in text on the next turn. Reused by the

@@ -6,7 +6,7 @@ import (
 	"errors"
 	"sync"
 
-	agent "github.com/dayna/go-agents"
+	agent "github.com/blackwell-systems/bide"
 )
 
 // errCrash is the injected "process died here" signal.
@@ -82,7 +82,7 @@ func (t chargeTool) Call(context.Context, json.RawMessage) (json.RawMessage, err
 	return json.RawMessage(`{"charged":true}`), nil
 }
 
-// GoAgents is the reference System: go-agents' durable loop wired to charge once. It is
+// GoAgents is the reference System: Bide' durable loop wired to charge once. It is
 // expected to PASS (at-most-once) under any crash schedule.
 func GoAgents() System { return goAgents{} }
 

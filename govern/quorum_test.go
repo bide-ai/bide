@@ -8,9 +8,9 @@ import (
 	"sync/atomic"
 	"testing"
 
-	agent "github.com/dayna/go-agents"
-	"github.com/dayna/go-agents/audit"
-	"github.com/dayna/go-agents/govern"
+	agent "github.com/blackwell-systems/bide"
+	"github.com/blackwell-systems/bide/audit"
+	"github.com/blackwell-systems/bide/govern"
 )
 
 // fixed builds a voter that always returns the same decision, counting how many times it is

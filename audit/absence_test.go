@@ -4,8 +4,8 @@ import (
 	"crypto/ed25519"
 	"testing"
 
-	agent "github.com/dayna/go-agents"
-	"github.com/dayna/go-agents/audit"
+	agent "github.com/blackwell-systems/bide"
+	"github.com/blackwell-systems/bide/audit"
 )
 
 // keyRecs builds a set of records whose ToolUseKeys are exactly the given tool-use IDs.

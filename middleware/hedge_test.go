@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	agent "github.com/dayna/go-agents"
-	"github.com/dayna/go-agents/middleware"
+	agent "github.com/blackwell-systems/bide"
+	"github.com/blackwell-systems/bide/middleware"
 )
 
 // stubModel is a Model that waits `delay`, then either errors or returns a one-token answer. It

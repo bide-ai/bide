@@ -2,12 +2,12 @@
 
 `chaos/` is a deterministic crash-injection benchmark for agent runtimes: it drives a
 NON-IDEMPOTENT side effect (a "charge") through a fault schedule and checks it fires **at
-most once**. It's the exportable form of go-agents' internal DST, and it's meant to be
+most once**. It's the exportable form of Bide' internal DST, and it's meant to be
 pointed at *any* Go agent SDK.
 
 ```
 $ go run ./examples/chaosbench
-  go-agents    sweeps=6   schedules=1006  maxFired=1  PASS ✓ (at-most-once held)
+  Bide    sweeps=6   schedules=1006  maxFired=1  PASS ✓ (at-most-once held)
   naive-loop   sweeps=5   schedules=1005  maxFired=5  FAIL ✗ (240 double-fires, worst=5)
 ```
 
@@ -43,7 +43,7 @@ strawman; the benchmark's credibility is that it's fair. Two outcomes for an SDK
 without side-effect-safe resume: it either **can't resume at all** (a crash loses the run,
 model that as the finding, not a rigged double-fire), or it **resumes by re-running** the
 tool (a genuine double-fire). Competitor adapters live in a **separate module** so their
-dependency trees never touch the go-agents core (see `benchmarks/`, when added).
+dependency trees never touch the Bide core (see `benchmarks/`, when added).
 
 ## Scope
 

@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/dayna/go-agents/schema"
+	"github.com/blackwell-systems/bide/schema"
 )
 
 // finalAnswerTool is the synthetic tool RunTyped injects to collect the structured result.

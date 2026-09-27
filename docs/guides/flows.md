@@ -1,10 +1,10 @@
 # Flows (the `plan` builder)
 
-The `plan` package is rung 1 of the [expression surfaces](../design/expression-surfaces.md) stack: a
-Go-embedded flow builder you author as typed handles, compiled to the same journal-backed runtime as
-plain Go. It adds a way to *author*, never a way to *execute*. Every node lowers to a memoized `Do`
-step, so a flow inherits at-most-once side effects, halt-on-ambiguity, and durable resume for free,
-and it can be checked against its declared shape (conformance).
+The `plan` package is a typed flow builder: a Go-embedded builder you author as typed handles,
+compiled to the same journal-backed runtime as plain Go. It adds a way to *author*, never a way to
+*execute*. Every node lowers to a memoized `Do` step, so a flow inherits at-most-once side effects,
+halt-on-ambiguity, and durable resume for free, and it can be checked against its declared shape
+(conformance).
 
 Requires Go 1.27 (the builder uses generic methods).
 
@@ -14,15 +14,14 @@ Plain Go plus the durable primitives ([durable steps](durable-steps.md)) already
 guarantees and full type safety. Reach for `plan` when you want the flow to be a *value*: a declared
 topology you can render, diff, version, hand to a visual builder, and, above all, prove a run
 **followed** (did the run do what the diagram said?). If you do not need a declared topology, plain Go
-is simpler and wins on every other axis. See the [design note](../design/expression-surfaces.md) for
-the reasoning.
+is simpler and wins on every other axis.
 
 ## A flow, end to end
 
 ```go
 import (
-    agent "github.com/dayna/go-agents"
-    "github.com/dayna/go-agents/plan"
+    agent "github.com/blackwell-systems/bide"
+    "github.com/blackwell-systems/bide/plan"
 )
 
 f := plan.New[Order, Receipt]("triage")                  // input and output pinned here
@@ -58,7 +57,7 @@ production). `runID` is the durable identity: re-running the same `runID` resume
   - `Tool[I, O](name, agent.Tool)` runs a tool; give `I`/`O` explicitly (they say how to JSON-encode
     the input and decode the result).
   - `Model[I, O](name, prompt)` is a model turn: bind a model with `Builder.WithModel(m)` (or, in a
-    rung-2 config, `Load`'s `WithLoadedModel`). The node renders `prompt` as a `text/template` over the
+    declarative config, `Load`'s `WithLoadedModel`). The node renders `prompt` as a `text/template` over the
     typed input `I`, calls the bound model, and decodes the structured response into `O` (so `O` must
     be JSON-shaped and the prompt should ask for matching JSON). Build errors if a `Model` node has no
     bound model, naming it.
@@ -94,7 +93,7 @@ Every node lowers to a memoized `Do` step under a two-phase attempt/result guard
   default (no classification) never double-fires, but completing after a mid-node crash then requires
   resolving the halt out of band (record the halted node's result, then continue), which is only safe
   when that node has no side effect. A node may instead declare a `Safety` (read-only, idempotent, or
-  retryable, via `ReadOnly()`/`Idempotent()`/`Retryable()` in Go, or `safety` in a rung-2 config) so
+  retryable, via `ReadOnly()`/`Idempotent()`/`Retryable()` in Go, or `safety` in a declarative config) so
   it re-runs on resume instead of halting.
 - **Conformance.** Because the flow is authored and the actual path is derived from the journal, a run
   can be proven to have followed the declared topology, at node-visitation granularity plus the
@@ -144,15 +143,13 @@ The `examples/plan` demo prints this after a clean run
 and `TestCryptographicConformance` there proves it in-process, including that a tampered `flow:digest`
 record no longer verifies under the signed root.
 
-## Rung 2: declarative config
+## Declarative config
 
-Rung 1 authors a flow as typed Go. **Rung 2 authors the same flow as data**: a declarative
+The builder authors a flow as typed Go. You can also author **the same flow as data**: a declarative
 config that describes the *topology* (nodes, edges, switch arms) and references *behavior* by name.
-Topology raises to a higher rung; behavior does not. A config places and wires nodes; it cannot write
-a `Step`'s body or a `Switch`'s predicate. Those stay in Go and are referenced by name through a
-registry. A config loads into the rung-1 builder and produces the same `*Flow`, so it inherits
-`RenderMermaid`, `Conform`, and the topology `Digest` unchanged. See the
-[design note](../design/rung2-config.md) for the full reasoning.
+A config places and wires nodes; it cannot write a `Step`'s body or a `Switch`'s predicate. Those stay
+in Go and are referenced by name through a registry. A config loads into the same builder and produces
+the same `*Flow`, so it inherits `RenderMermaid`, `Conform`, and the topology `Digest` unchanged.
 
 ### The registry and `Load`
 
@@ -289,10 +286,10 @@ miswired config does not fail at `go build`, it fails at `Load`, with a worded e
 offending nodes and types. `Load` runs, by `reflect.Type` identity:
 
 - **Predicate typing:** every switch arm's registered predicate `M` equals the switched node's output
-  type. This is a strict improvement over rung 1, which only checks a predicate at its compile-time
-  call site.
+  type. This is a strict improvement over the Go builder, which only checks a predicate at its
+  compile-time call site.
 - **Edge typing:** every edge's `from.outType` equals `to.inType` exactly (nominal identity, not
-  assignability, matching rung 1's `Edge[M]`).
+  assignability, matching the Go builder's `Edge[M]`).
 - **Boundary typing:** the entry consumes `In`, every terminal produces `Out`, and any present
   `in`/`out` documentation matches `In`/`Out`.
 - **Join typing:** a `join`'s `merge` block must be registered, and its arity and input types must
@@ -323,7 +320,7 @@ JSON is the loader (and tool-emit / interchange) format; the core loader stays s
 dependency-free. YAML is a thin authoring front-end that decodes into the same config struct, not a
 core dependency, so the two formats are just front-ends to one loader.
 
-## Limits in rung 1
+## Limits
 
 - Fan-in is fixed-arity (`Join2`/`Join3`); unbounded or ragged fan-in is not supported.
 - `Model` decodes the response as JSON into `O` (no derived response schema yet), so `O` must be
@@ -338,5 +335,3 @@ diagram, runs it against a sqlite-backed store, conforms the run, and proves cry
 `flow.Digest()`). Its cross-process test crashes mid-run and resumes in a fresh process, proving the
 side effect fires at most once and the run either completes or halts. Run the demo with
 `cd examples/plan && GOWORK=off go run .`.
-
-See also the [design note](../design/expression-surfaces.md) for why the surface is shaped this way.

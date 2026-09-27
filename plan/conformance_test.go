@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	agent "github.com/dayna/go-agents"
+	agent "github.com/blackwell-systems/bide"
 )
 
 // TestConformCleanRun builds a small switched flow, runs it against a MemStore to

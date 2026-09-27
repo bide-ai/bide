@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	agent "github.com/dayna/go-agents"
+	agent "github.com/blackwell-systems/bide"
 )
 
 // ToolRetry retries a failing tool call up to n additional times with exponential

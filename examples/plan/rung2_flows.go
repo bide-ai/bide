@@ -14,8 +14,8 @@ import (
 	"context"
 	"fmt"
 
-	agent "github.com/dayna/go-agents"
-	"github.com/dayna/go-agents/plan"
+	agent "github.com/blackwell-systems/bide"
+	"github.com/blackwell-systems/bide/plan"
 )
 
 // LoopState is the single loop-carried value the bounded-loop demo threads through its

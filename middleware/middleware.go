@@ -13,7 +13,7 @@ import (
 	"fmt"
 	"sync"
 
-	agent "github.com/dayna/go-agents"
+	agent "github.com/blackwell-systems/bide"
 )
 
 // TokenBudget aborts the run once cumulative tokens (input+output) across the run's

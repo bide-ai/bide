@@ -6,10 +6,10 @@ import (
 	"crypto/rand"
 	"testing"
 
+	agent "github.com/blackwell-systems/bide"
+	"github.com/blackwell-systems/bide/audit"
+	"github.com/blackwell-systems/bide/govern"
 	gsm "github.com/blackwell-systems/gsm"
-	agent "github.com/dayna/go-agents"
-	"github.com/dayna/go-agents/audit"
-	"github.com/dayna/go-agents/govern"
 )
 
 // buildKYC returns a small convergent policy (an approval reverted when the case is flagged), its

@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"reflect"
 
-	agent "github.com/dayna/go-agents"
+	agent "github.com/blackwell-systems/bide"
 )
 
 // New constructs a flow builder whose input is In and output is Out, both pinned

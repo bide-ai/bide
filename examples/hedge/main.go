@@ -9,8 +9,8 @@ import (
 	"fmt"
 	"time"
 
-	agent "github.com/dayna/go-agents"
-	"github.com/dayna/go-agents/middleware"
+	agent "github.com/blackwell-systems/bide"
+	"github.com/blackwell-systems/bide/middleware"
 )
 
 // stub is an offline model: it waits `delay`, then either fails (down) or answers in one turn.

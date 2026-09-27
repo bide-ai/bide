@@ -2,12 +2,12 @@ package chaos
 
 import "testing"
 
-// The go-agents durable loop passes: the charge fires at most once under every crash schedule.
+// The Bide durable loop passes: the charge fires at most once under every crash schedule.
 func TestVerify_GoAgentsPasses(t *testing.T) {
-	rep := Verify("go-agents", GoAgents(), 500)
+	rep := Verify("Bide", GoAgents(), 500)
 	t.Log(rep)
 	if !rep.OK() {
-		t.Fatalf("go-agents failed the chaos benchmark: %+v", rep)
+		t.Fatalf("Bide failed the chaos benchmark: %+v", rep)
 	}
 }
 
@@ -27,6 +27,6 @@ func TestVerify_NaiveReferenceFails(t *testing.T) {
 // A side-by-side the benchmark prints (go test ./chaos -run Benchmark -v).
 func TestVerify_Benchmark(t *testing.T) {
 	t.Log("chaos benchmark — at-most-once side effect under crash injection:")
-	t.Log("  " + Verify("go-agents", GoAgents(), 300).String())
+	t.Log("  " + Verify("Bide", GoAgents(), 300).String())
 	t.Log("  " + Verify("naive-loop", NaiveReference(), 300).String())
 }

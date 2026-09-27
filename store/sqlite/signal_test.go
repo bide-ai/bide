@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	agent "github.com/dayna/go-agents"
+	agent "github.com/blackwell-systems/bide"
 )
 
 // A redelivered signal dedups ACROSS PROCESSES on the on-disk store: the second delivery,

@@ -64,7 +64,7 @@ default `Connect(ctx, transport)` behaves exactly as before.
   already in flight.
 
 - **`WithClientInfo(name, version)`** overrides the client name and version reported to the
-  server (default `"go-agents"` / `"0.1.0"`).
+  server (default `"Bide"` / `"0.1.0"`).
 
 ## Exported API
 
@@ -109,9 +109,9 @@ import (
 
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 
-	agent "github.com/dayna/go-agents"
-	"github.com/dayna/go-agents/mcp"
-	"github.com/dayna/go-agents/model/anthropic"
+	agent "github.com/blackwell-systems/bide"
+	"github.com/blackwell-systems/bide/mcp"
+	"github.com/blackwell-systems/bide/model/anthropic"
 )
 
 func main() {
@@ -171,7 +171,7 @@ func main() {
 - Discovery is a **snapshot** at the time you call `Tools`. `WithToolListChanged` tells you
   when to re-list, but the package does not maintain a live, self-updating tool set for you:
   the agent core takes a fixed tool set per run by design.
-- The package is a **client/host only.** It does not expose a go-agents agent *as* an MCP
+- The package is a **client/host only.** It does not expose a Bide agent *as* an MCP
   server for other hosts to call.
 - Transport lifecycle (spawning a subprocess, HTTP endpoints, reconnection) is the SDK's and
   the caller's responsibility. `Connect` only opens the session.

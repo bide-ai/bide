@@ -11,8 +11,8 @@ import (
 	"context"
 	"testing"
 
-	agent "github.com/dayna/go-agents"
-	"github.com/dayna/go-agents/plan"
+	agent "github.com/blackwell-systems/bide"
+	"github.com/blackwell-systems/bide/plan"
 )
 
 // TestRung2ConfigMatchesCodeBuilt loads the rung-2 config, runs and conforms it, and

@@ -10,7 +10,7 @@ package main
 import (
 	"fmt"
 
-	"github.com/dayna/go-agents/chaos"
+	"github.com/blackwell-systems/bide/chaos"
 )
 
 func main() {
@@ -22,7 +22,7 @@ func main() {
 		name string
 		sys  chaos.System
 	}{
-		{"go-agents", chaos.GoAgents()},
+		{"Bide", chaos.GoAgents()},
 		{"naive-loop", chaos.NaiveReference()}, // the at-least-once baseline (expected to fail)
 		// Add competitor adapters here: {"langchaingo", langchaingoAdapter{}}, ...
 	}

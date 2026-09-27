@@ -7,7 +7,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	agent "github.com/dayna/go-agents"
+	agent "github.com/blackwell-systems/bide"
 )
 
 // TestPolicyLeaf_AnchorsAndCrossLinks commits a policy as a journal leaf, records a governed

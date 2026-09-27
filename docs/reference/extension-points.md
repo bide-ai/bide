@@ -77,7 +77,7 @@ import (
 	"context"
 	"sync"
 
-	agent "github.com/dayna/go-agents"
+	agent "github.com/blackwell-systems/bide"
 )
 
 type Store struct {
@@ -185,7 +185,7 @@ type Retriever interface {
 ```
 
 The bring-your-own-RAG port: given a query, return the top-k relevant `Doc` values from your
-store (pgvector, Pinecone, a file index, anything). go-agents ships no vector store and no
+store (pgvector, Pinecone, a file index, anything). Bide ships no vector store and no
 embedder; you implement `Retrieve` against infrastructure you already run and wire it in with
 `agent.RetrievalTool(r, k)` (agentic: the model searches on demand) or
 `agent.WithRetrieval(r, k)` (classic: top-k auto-injected as context on each user turn). See

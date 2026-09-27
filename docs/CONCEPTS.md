@@ -40,7 +40,7 @@ The vocabulary, defined once. Terms are grouped by the layer they belong to. See
 - **Grant / delegation**: a signed capability a sub-agent can only narrow (attenuate). `VerifyDelegationChain` checks the chain offline; `EarnedAuthority` widens scope from a clean trail.
 - **Quorum**: governed k-of-n agreement among voters, with the tally anchored and re-checkable offline.
 - **Selective disclosure**: revealing some records while proving the rest exist, without showing their content. It limits what you reveal; it does not encrypt. See the [security model](guides/security-model.md).
-- **Flow / conformance**: a `plan` flow (rung 1) is a reified, authored topology of durable steps; `Conform` checks a run's journal against it, proving the run followed the declared graph or flagging where it diverged. See the [Flows guide](guides/flows.md).
+- **Flow / conformance**: a `plan` flow is a reified, authored topology of durable steps; `Conform` checks a run's journal against it, proving the run followed the declared graph or flagging where it diverged. See the [Flows guide](guides/flows.md).
 
 ## Structure
 
