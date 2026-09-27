@@ -98,49 +98,6 @@ Every node lowers to a memoized `Do` step under a two-phase attempt/result guard
 
 ## Cryptographic conformance
 
-`Conform` proves a run followed the declared graph *against the flow value in memory*. Cryptographic
-conformance makes the same claim **offline-verifiable**: it lets an auditor who was not present at
-runtime, and who does not trust your database, confirm that a run committed to **this** declared
-topology.
-
-The mechanism is a topology digest journaled inside the run, so the audit layer's Merkle tree and
-signed tree head (STH) cover it:
-
-- **`flow.Digest()`** returns a deterministic SHA-256 (hex) fingerprint of the FROZEN topology: the
-  flow name and boundary types, every node's name and kind and I/O types, every edge, and every
-  `Switch` and its ordered arms, serialized in insertion order (never by map iteration). Two builds of
-  the same diagram produce the same digest; any change to the topology (a renamed or retyped node, an
-  added or reordered edge, a changed arm) produces a different digest. It commits to topology, not to
-  node bodies, mirroring `Conform`.
-- **`Run` records the digest first.** The first durable step of every run is the reserved record
-  `flow:digest` (a `StepValue` whose result is the hex digest), memoized on resume. Because it lives in
-  the journal, an `audit.TreeHead` over the run commits to it like any other record.
-- **`Conform` verifies the journaled digest** equals the current flow's `Digest()`. A mismatch is a
-  divergence ("ran against a different topology"); the `flow:digest` record itself is recognised as an
-  internal record of the run, never an unexpected step.
-
-The full offline-verifiable flow ("the run followed the signed diagram"):
-
-```
-Run(store, runID, in)                     // journals flow:digest first, then the nodes
-  -> th  := audit.NewTreeHead(store, runID, ts)   // Merkle commitment over the whole journal
-  -> sth := audit.SignTreeHead(th, priv)          // anchor this out of band
-  -> bundle := audit.ProveRecord(store, runID, idxOf("flow:digest"), sth)  // RFC 6962 inclusion proof
-  -> bundle.Verify(pub)                    // signature authentic + flow:digest included under the signed root
-  -> decode(bundle.Record) == flow.Digest()       // the proven digest is THIS declared topology
-  -> flow.Conform(store, runID)            // the journaled PATH followed the declared graph
-```
-
-Given only the signed tree head, the proof bundle, and the signer's public key (obtained out of band),
-the auditor checks all of this offline: the signature is authentic, the `flow:digest` record is
-included under the signed root, and the proven digest equals the declared flow's `Digest()`. Tampering
-with the record breaks the inclusion proof, so a forged topology digest cannot be passed off as
-committed. The `plan` package stays audit-free (journaling the digest needs only `store.Do`); the
-inclusion-proof step lives at the caller layer, where `audit` is available. See
-`proveTopologyConformance` in `examples/plan/main.go` and its test for the worked demonstration.
-
-## Cryptographic conformance
-
 `Conform` proves the run followed the declared graph *against the same process's copy of the flow*.
 Cryptographic conformance goes one step further: it makes that claim **offline-verifiable** by an
 auditor who never trusts your process, your database, or your logs. The property proven is precise:
@@ -181,6 +138,107 @@ The `examples/plan` demo prints this after a clean run
 (`Cryptographic conformance: the run committed to the declared topology under the signed tree head`),
 and `TestCryptographicConformance` there proves it in-process, including that a tampered `flow:digest`
 record no longer verifies under the signed root.
+
+## Rung 2: declarative config
+
+Rung 1 authors a flow as typed Go. **Rung 2 authors the same flow as data**: a declarative
+config that describes the *topology* (nodes, edges, switch arms) and references *behavior* by name.
+Topology raises to a higher rung; behavior does not. A config places and wires nodes; it cannot write
+a `Step`'s body or a `Switch`'s predicate. Those stay in Go and are referenced by name through a
+registry. A config loads into the rung-1 builder and produces the same `*Flow`, so it inherits
+`RenderMermaid`, `Conform`, and the topology `Digest` unchanged. See the
+[design note](../design/rung2-config.md) for the full reasoning.
+
+### The registry and `Load`
+
+Registration maps config names to typed Go blocks, capturing each block's I/O types via
+`reflect.TypeFor`, so the config never restates types; they flow from the registered block.
+
+```go
+reg := plan.NewRegistry()
+plan.RegisterStep(reg, "classify", classifyOrder)              // infers Order -> Assessment
+plan.RegisterStep(reg, "reserve", reserveInventory)            // Assessment -> Reservation
+plan.RegisterStep(reg, "finalize", finalizeReceipt)            // Reservation -> Receipt
+plan.RegisterStep(reg, "decline", declineReceipt)              // Assessment -> Receipt
+plan.RegisterPredicate(reg, "rush", func(a Assessment) bool { return a.Rush })
+```
+
+- **`NewRegistry()`** returns a fresh, explicit, per-`Load` registry. There is no global mutable
+  default, and a duplicate registration is an error, never a silent overwrite.
+- **`RegisterStep[I, O]`** infers `I`/`O` from the func. **`RegisterTool[I, O]`** and
+  **`RegisterModel[I, O]`** take them explicitly (an `agent.Tool` and a prompt carry no I/O types;
+  `Model` stays the rung-1 stub). **`RegisterPredicate[M]`** captures the switched type `M`.
+
+Loading supplies the boundary types at the Go call site (the caller knows them); the loader fills the
+middle from data:
+
+```go
+flow, err := plan.Load[Order, Receipt](configBytes, reg)   // *Flow[Order, Receipt], or a load error
+```
+
+`LoadReader[In, Out]` is the same reading from an `io.Reader` (an `*os.File` or an HTTP body).
+
+### The config schema
+
+A config is pure topology plus block references: a top-level `flow` name, optional `in`/`out`
+documentation, an explicit `entry` (else `nodes[0]`), the `nodes`, and an ordered `wiring` list. Each
+wiring element is EITHER an edge `{"edge": [from, to]}` OR a switch
+`{"switch": over, "when": [{"pred": p, "to": t}], "else": t}`. Illustrative YAML:
+
+```yaml
+flow: order-triage
+in: main.Order            # optional, cross-checked against Load's In
+out: main.Receipt         # optional, cross-checked against Load's Out
+entry: classify
+nodes:
+  - {name: classify, block: classify}
+  - {name: reserve,  block: reserve}
+  - {name: finalize, block: finalize}
+  - {name: decline,  block: decline}
+wiring:
+  - switch: classify
+    when: [{pred: rush, to: reserve}]
+    else: decline
+  - edge: [reserve, finalize]
+```
+
+The equivalent JSON (the loader format) is what `examples/plan/rung2.go` embeds and loads.
+
+### Load-time validation
+
+Moving topology from Go to data trades compile-time type checking for load-time validation: a
+miswired config does not fail at `go build`, it fails at `Load`, with a worded error that names the
+offending nodes and types. `Load` runs, by `reflect.Type` identity:
+
+- **Predicate typing:** every switch arm's registered predicate `M` equals the switched node's output
+  type. This is a strict improvement over rung 1, which only checks a predicate at its compile-time
+  call site.
+- **Edge typing:** every edge's `from.outType` equals `to.inType` exactly (nominal identity, not
+  assignability, matching rung 1's `Edge[M]`).
+- **Boundary typing:** the entry consumes `In`, every terminal produces `Out`, and any present
+  `in`/`out` documentation matches `In`/`Out`.
+- **Structural checks `Build` does not give:** a node cannot be both switched-over and have an
+  outgoing edge, and a `wiring[]` element must set exactly one of `edge`/`switch`.
+
+`Load` **reports all failures at once** (collect-all drift): it names every unresolved block or
+predicate with a near-miss suggestion where one exists, and flags registered blocks the config never
+uses. For CI, **`Validate(data, reg) error`** runs every check that does not need `In`/`Out`, so
+config-vs-registry drift is catchable in a unit test rather than only at process start.
+
+### Inherited for free, and conformable to its config
+
+A config-loaded `*Flow` is an ordinary flow, so it inherits `Run` (sequential, at-most-once,
+halt-on-ambiguity), `RenderMermaid` (the declared topology, now sourced from the config), `Conform`,
+and `Digest` + the `flow:digest` record. Because the digest now commits to the config-derived
+topology, a signed tree head over the run proves offline that the run followed **this config**, the
+same way cryptographic conformance proves it followed the diagram. This is the headline: a
+config-loaded flow is **cryptographically conformable to its config**. `examples/plan` demonstrates it
+by asserting the config-loaded flow's `Digest()` **equals** the code-built flow's `Digest()`: the
+config and the Go describe the same topology.
+
+JSON is the loader (and tool-emit / interchange) format; the core loader stays stdlib-JSON and
+dependency-free. YAML is a thin authoring front-end that decodes into the same config struct, not a
+core dependency, so the two formats are just front-ends to one loader.
 
 ## Limits in rung 1
 

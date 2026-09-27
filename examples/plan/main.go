@@ -143,6 +143,14 @@ func main() {
 	fmt.Printf("Run output (typed Receipt): %+v\n", out)
 	reportConform(ctx, flow, store, cfg.runID)
 	proveTopologyConformance(ctx, flow, store, cfg.runID)
+
+	// The rung-2 demonstration: the same triage flow authored as declarative config,
+	// loaded, run, conformed, and shown to share the code-built flow's topology Digest.
+	// It runs only on the clean demo path (no crash injection), against its own in-memory
+	// store, so it never perturbs the crash/resume e2e that drives the sqlite journal.
+	if cfg.crash == "" {
+		demoRung2(ctx, flow)
+	}
 }
 
 // proveTopologyConformance demonstrates the offline-verifiable "the run followed the
@@ -160,7 +168,7 @@ func main() {
 // under the signed root, and the proven digest equals the declared flow's Digest().
 // The signing key here is generated for the demo; a real deployment anchors the STH
 // and its key in a separate trust domain (see the audit package security model).
-func proveTopologyConformance(ctx context.Context, flow *plan.Flow[Order, Receipt], store *sqlite.Store, runID string) {
+func proveTopologyConformance(ctx context.Context, flow *plan.Flow[Order, Receipt], store agent.Durable, runID string) {
 	// The declared topology digest: the fingerprint of the diagram the author wrote.
 	declared := flow.Digest()
 
@@ -214,7 +222,7 @@ func proveTopologyConformance(ctx context.Context, flow *plan.Flow[Order, Receip
 // digestRecordIndex returns the journal index of the reserved flow:digest record for
 // runID, so audit.ProveRecord can build an inclusion proof for it. It errors if no
 // such record exists (the run never started, or was journaled without Run).
-func digestRecordIndex(ctx context.Context, store *sqlite.Store, runID string) (int, error) {
+func digestRecordIndex(ctx context.Context, store agent.Durable, runID string) (int, error) {
 	recs, err := store.History(ctx, runID)
 	if err != nil {
 		return 0, fmt.Errorf("load history for run %q: %w", runID, err)
