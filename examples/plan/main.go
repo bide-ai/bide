@@ -150,6 +150,12 @@ func main() {
 	// store, so it never perturbs the crash/resume e2e that drives the sqlite journal.
 	if cfg.crash == "" {
 		demoRung2(ctx, flow)
+		// The config surface beyond the linear case: a fan-in (join) diamond and a
+		// bounded loop (loopMax back-edge), each authored as data, run, conformed, and
+		// shown to share the code-built flow's topology Digest. Like demoRung2, they run
+		// only on the clean path against their own in-memory stores.
+		demoRung2Join(ctx)
+		demoRung2Loop(ctx)
 	}
 }
 

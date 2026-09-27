@@ -87,3 +87,87 @@ func TestRung2ValidateCatchesDrift(t *testing.T) {
 		t.Fatal("Validate accepted a config referencing an unregistered block; want a drift error")
 	}
 }
+
+// TestRung2JoinConfigMatchesCodeBuilt loads the fan-in (join) diamond config, runs it to
+// the merged output, conforms the run, and asserts its Digest equals the code-built
+// diamond's: config == code for a fan-in flow.
+func TestRung2JoinConfigMatchesCodeBuilt(t *testing.T) {
+	ctx := context.Background()
+
+	reg, err := buildDiamondRegistry()
+	if err != nil {
+		t.Fatalf("buildDiamondRegistry: %v", err)
+	}
+	loaded, err := plan.Load[int, string]([]byte(diamondConfig), reg)
+	if err != nil {
+		t.Fatalf("Load diamond config: %v", err)
+	}
+
+	store := agent.NewMemStore()
+	const runID = "join-run"
+	out, err := loaded.Run(ctx, store, runID, 3)
+	if err != nil {
+		t.Fatalf("Run config-loaded diamond: %v", err)
+	}
+	if out != "z6+7" {
+		t.Fatalf("merged output = %q, want %q", out, "z6+7")
+	}
+
+	ok, diffs, err := loaded.Conform(ctx, store, runID)
+	if err != nil {
+		t.Fatalf("Conform config-loaded diamond: %v", err)
+	}
+	if !ok {
+		t.Fatalf("config-loaded diamond diverged from the declared graph: %v", diffs)
+	}
+
+	hand, err := buildDiamondByHand()
+	if err != nil {
+		t.Fatalf("buildDiamondByHand: %v", err)
+	}
+	if loaded.Digest() != hand.Digest() {
+		t.Fatalf("join config Digest() %q != code-built diamond Digest() %q", loaded.Digest(), hand.Digest())
+	}
+}
+
+// TestRung2LoopConfigMatchesCodeBuilt loads the bounded-loop config, runs it (input 3
+// iterates refine three times then exits at N=0), conforms the run, and asserts its Digest
+// equals the code-built loop's: config == code for a bounded loop.
+func TestRung2LoopConfigMatchesCodeBuilt(t *testing.T) {
+	ctx := context.Background()
+
+	reg, err := buildLoopRegistry()
+	if err != nil {
+		t.Fatalf("buildLoopRegistry: %v", err)
+	}
+	loaded, err := plan.Load[int, string]([]byte(loopConfig), reg)
+	if err != nil {
+		t.Fatalf("Load loop config: %v", err)
+	}
+
+	store := agent.NewMemStore()
+	const runID = "loop-run"
+	out, err := loaded.Run(ctx, store, runID, 3)
+	if err != nil {
+		t.Fatalf("Run config-loaded loop: %v", err)
+	}
+	if want := "done N=0 trace=seed|refine|refine|refine"; out != want {
+		t.Fatalf("loop output = %q, want %q", out, want)
+	}
+
+	ok, diffs, err := loaded.Conform(ctx, store, runID)
+	if err != nil {
+		t.Fatalf("Conform config-loaded loop: %v", err)
+	}
+	if !ok {
+		t.Fatalf("config-loaded loop diverged from the declared graph: %v", diffs)
+	}
+
+	hand, err := buildCountdownLoopByHand()
+	if err != nil {
+		t.Fatalf("buildCountdownLoopByHand: %v", err)
+	}
+	if loaded.Digest() != hand.Digest() {
+		t.Fatalf("loop config Digest() %q != code-built loop Digest() %q", loaded.Digest(), hand.Digest())
+	}
+}

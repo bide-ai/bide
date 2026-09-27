@@ -57,8 +57,11 @@ production). `runID` is the durable identity: re-running the same `runID` resume
   - `Step[I, O](name, func(I) (O, error))` wraps arbitrary Go. `I` and `O` are inferred from the func.
   - `Tool[I, O](name, agent.Tool)` runs a tool; give `I`/`O` explicitly (they say how to JSON-encode
     the input and decode the result).
-  - `Model[I, O](name, prompt)` is a model turn. In rung 1 it is a **stub that returns an error**
-    (model binding is not wired yet); do not use it in a flow you expect to complete.
+  - `Model[I, O](name, prompt)` is a model turn: bind a model with `Builder.WithModel(m)` (or, in a
+    rung-2 config, `Load`'s `WithLoadedModel`). The node renders `prompt` as a `text/template` over the
+    typed input `I`, calls the bound model, and decodes the structured response into `O` (so `O` must
+    be JSON-shaped and the prompt should ask for matching JSON). Build errors if a `Model` node has no
+    bound model, naming it.
   - The string `name` is the node's **durable journal key**: it must be unique (Build enforces it) and
     stable across code edits, because resume finds a step by this name. It is not just a label.
 - **Wiring** takes handles, so a miswired connection does not compile:
@@ -85,12 +88,13 @@ Every node lowers to a memoized `Do` step under a two-phase attempt/result guard
   with a `*plan.HaltAmbiguous` rather than re-firing the body.** A `Switch` choice is journaled as its
   own step `switch:<over>` and replayed, so a resumed run takes the branch it originally took;
   predicates must therefore be pure functions of the node's output.
-- **Halt is currently unconditional per node.** Because the attempt marker is written before the body,
-  *any* crash inside a node, even a side-effect-free one, halts on resume. This is safe by default (it
-  never double-fires), but completing after a mid-node crash then requires resolving the halt out of
-  band (record the halted node's result, then continue), which is only safe when that node has no side
-  effect. A future refinement will let a node declare it is read-only or idempotent so it re-runs on
-  resume instead of halting.
+- **Halt is per node, and conservative by default.** Because the attempt marker is written before the
+  body, *any* crash inside a node halts on resume unless the node is classified safe to repeat. The
+  default (no classification) never double-fires, but completing after a mid-node crash then requires
+  resolving the halt out of band (record the halted node's result, then continue), which is only safe
+  when that node has no side effect. A node may instead declare a `Safety` (read-only, idempotent, or
+  retryable, via `ReadOnly()`/`Idempotent()`/`Retryable()` in Go, or `safety` in a rung-2 config) so
+  it re-runs on resume instead of halting.
 - **Conformance.** Because the flow is authored and the actual path is derived from the journal, a run
   can be proven to have followed the declared topology, at node-visitation granularity plus the
   journaled branch choice. The blind spot: conformance sees *that* a node ran, not what its Go body did
@@ -166,8 +170,10 @@ plan.RegisterPredicate(reg, "rush", func(a Assessment) bool { return a.Rush })
 - **`NewRegistry()`** returns a fresh, explicit, per-`Load` registry. There is no global mutable
   default, and a duplicate registration is an error, never a silent overwrite.
 - **`RegisterStep[I, O]`** infers `I`/`O` from the func. **`RegisterTool[I, O]`** and
-  **`RegisterModel[I, O]`** take them explicitly (an `agent.Tool` and a prompt carry no I/O types;
-  `Model` stays the rung-1 stub). **`RegisterPredicate[M]`** captures the switched type `M`.
+  **`RegisterModel[I, O]`** take them explicitly (an `agent.Tool` and a prompt carry no I/O types). A
+  `Model` node needs a bound model, supplied to the loaded flow via `Load(..., WithLoadedModel(m))`.
+  **`RegisterPredicate[M]`** captures the switched type `M`; **`RegisterJoin2`/`RegisterJoin3`** register
+  a merge block for a `join`.
 
 Loading supplies the boundary types at the Go call site (the caller knows them); the loader fills the
 middle from data:
@@ -204,6 +210,77 @@ wiring:
 
 The equivalent JSON (the loader format) is what `examples/plan/rung2.go` embeds and loads.
 
+#### Fan-in: the `join` wiring element
+
+A third wiring form fans several producers back into one node: `{"join": name, "inputs": [...],
+"merge": mergeBlock}`. The `merge` names a merge block registered with `RegisterJoin2[A, B, O]` (or
+`RegisterJoin3`), whose arity and input types `Load` checks against the join's declared `inputs`. As
+with steps and predicates, only the *shape* is data; the merge *body* stays registered Go referenced
+by name. A canonical fan-out-then-fan-in diamond as data:
+
+```yaml
+nodes:
+  - {name: split, block: split}   # int -> int, fans out
+  - {name: y,     block: y}        # int -> int
+  - {name: z,     block: z}        # int -> string
+wiring:
+  - edge: [split, y]
+  - edge: [split, z]
+  - join: merge
+    inputs: [y, z]
+    merge: mergeBlock              # RegisterJoin2(reg, "mergeBlock", func(int, string) (string, error))
+    safety: readonly               # optional; see "Node and join safety" below
+```
+
+The `merge` block:
+
+```go
+plan.RegisterJoin2(reg, "mergeBlock", func(a int, s string) (string, error) {
+    return fmt.Sprintf("%s+%d", s, a), nil
+})
+```
+
+#### Bounded loops: the `loopMax` back-edge arm
+
+A switch `when` arm may carry a `loopMax`: `{"pred": p, "to": head, "loopMax": n}`. This is a bounded
+back-edge that routes to an *ancestor* of the switched node (the loop head) while `pred` holds, up to
+`n` iterations, so the graph stays finite. The arm's `pred` is an ordinary registered predicate
+referenced by name; `loopMax` is the only new field. A bounded countdown loop as data:
+
+```yaml
+nodes:
+  - {name: seed,   block: seed}     # int -> LoopState (entry)
+  - {name: refine, block: refine}   # LoopState -> LoopState (the loop head)
+  - {name: check,  block: check}    # LoopState -> LoopState (the loop switch)
+  - {name: done,   block: done}     # LoopState -> string (the exit terminal)
+wiring:
+  - edge: [seed, refine]
+  - edge: [refine, check]
+  - switch: check
+    when: [{pred: again, to: refine, loopMax: 10}]   # loop back to refine while N>0
+    else: done                                        # exit
+```
+
+The same load-time validation `Build` gives a hand-built loop applies: the back-edge target must be
+an ancestor of the switch, the bound must be positive, and the routed type must equal the head's input
+type.
+
+#### Node and join safety
+
+A node (or a join) may carry a `safety` classifying how `Run` treats it on the ambiguous-crash window
+(an attempt recorded, its result lost to a crash): `"readonly"`, `"idempotent"`, or `"retryable"`. A
+node with a safety re-runs its body on resume rather than halting, because a read-only or idempotent
+body is safe to repeat. The default (no `safety`) is the conservative halt. The config `safety`
+overrides the registered block's default, so the classification is authorable as data:
+
+```yaml
+nodes:
+  - {name: read, block: read, safety: readonly}   # re-run on resume, do not halt
+```
+
+The join wiring element takes the same optional `safety` (shown in the diamond above), since a merge
+block carries no safety of its own.
+
 ### Load-time validation
 
 Moving topology from Go to data trades compile-time type checking for load-time validation: a
@@ -217,8 +294,10 @@ offending nodes and types. `Load` runs, by `reflect.Type` identity:
   assignability, matching rung 1's `Edge[M]`).
 - **Boundary typing:** the entry consumes `In`, every terminal produces `Out`, and any present
   `in`/`out` documentation matches `In`/`Out`.
+- **Join typing:** a `join`'s `merge` block must be registered, and its arity and input types must
+  match the join's declared `inputs`; an unknown or mis-arity merge is a load error naming the join.
 - **Structural checks `Build` does not give:** a node cannot be both switched-over and have an
-  outgoing edge, and a `wiring[]` element must set exactly one of `edge`/`switch`.
+  outgoing edge, and a `wiring[]` element must set exactly one of `edge`/`switch`/`join`.
 
 `Load` **reports all failures at once** (collect-all drift): it names every unresolved block or
 predicate with a near-miss suggestion where one exists, and flags registered blocks the config never
@@ -234,7 +313,10 @@ topology, a signed tree head over the run proves offline that the run followed *
 same way cryptographic conformance proves it followed the diagram. This is the headline: a
 config-loaded flow is **cryptographically conformable to its config**. `examples/plan` demonstrates it
 by asserting the config-loaded flow's `Digest()` **equals** the code-built flow's `Digest()`: the
-config and the Go describe the same topology.
+config and the Go describe the same topology. The same holds for a config-built fan-in or bounded
+loop: `examples/plan` loads a `join` diamond and a `loopMax` loop, runs and conforms each, and asserts
+each config-loaded flow's `Digest()` equals its code-built counterpart, so a config-built join or loop
+is cryptographically conformable to its config just like the linear case.
 
 JSON is the loader (and tool-emit / interchange) format; the core loader stays stdlib-JSON and
 dependency-free. YAML is a thin authoring front-end that decodes into the same config struct, not a
@@ -242,9 +324,9 @@ core dependency, so the two formats are just front-ends to one loader.
 
 ## Limits in rung 1
 
-- `Model` is a stub (returns an error); real model binding is not wired.
-- No fan-in (`Join`) and no back-edges (`Loop`) yet; a flow is a forward DAG with branches.
-- Halt is unconditional per node (no Safety classification yet; see above).
+- Fan-in is fixed-arity (`Join2`/`Join3`); unbounded or ragged fan-in is not supported.
+- `Model` decodes the response as JSON into `O` (no derived response schema yet), so `O` must be
+  JSON-shaped and the prompt should instruct JSON output.
 - Requires Go 1.27.
 
 ## A runnable example
