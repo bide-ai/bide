@@ -40,11 +40,21 @@ type config struct {
 type configNode struct {
 	Name  string `json:"name"`
 	Block string `json:"block"`
+	// Safety optionally overrides the node's retry-on-resume classification: one of
+	// "readonly", "idempotent", or "retryable" ("retryable" is an alias for
+	// "idempotent"). Empty means the node keeps the registered block's Safety (the Go
+	// registration default). An explicit value here OVERRIDES that default; an unknown
+	// string is a load error naming the node. It maps to the corresponding NodeOption
+	// / agent.Safety, so a loaded node resumes identically to a hand-built one with the
+	// same option. Unlike Go registration, Safety CAN be expressed in the config JSON
+	// (this field), because it is a per-node authoring choice the config author may
+	// want to make without editing Go.
+	Safety string `json:"safety,omitempty"`
 }
 
-// configWire is one wiring element: a discriminated union of EITHER an edge OR a
-// switch. Exactly one of Edge/Switch must be set. encoding/json populates whatever
-// keys are present, so Load validates the union explicitly.
+// configWire is one wiring element: a discriminated union of EXACTLY ONE of an edge,
+// a switch, or a join. encoding/json populates whatever keys are present, so Load
+// validates the union explicitly.
 type configWire struct {
 	// Edge is [from, to] node names when this element is an edge.
 	Edge []string `json:"edge,omitempty"`
@@ -55,6 +65,21 @@ type configWire struct {
 	// Else is the fallback target node name when this element is a switch; empty means
 	// no Else arm.
 	Else string `json:"else,omitempty"`
+	// Join is the fan-in node's name when this element is a join; it is the kindJoin
+	// node assemble creates, wired one input edge per named input.
+	Join string `json:"join,omitempty"`
+	// Inputs are the ordered upstream producer node names a join fans in, one per
+	// merge-block parameter. Their count must equal the merge block's arity.
+	Inputs []string `json:"inputs,omitempty"`
+	// Merge is the registered merge-block name (a RegisterJoin2/RegisterJoin3) whose
+	// arity, ordered input types, and erased merge closure the join node adopts.
+	Merge string `json:"merge,omitempty"`
+	// Safety optionally sets the join node's retry-on-resume classification (one of
+	// "readonly", "idempotent", "retryable"), like configNode.Safety. A join created
+	// from wiring is not a declared node, so its Safety is set here. Empty keeps the
+	// conservative halt-on-ambiguous-crash default, matching a hand-built Join. An
+	// unknown string is a load error naming the join.
+	Safety string `json:"safety,omitempty"`
 }
 
 // configArm is one When arm of a switch: a registered predicate name and the
@@ -62,11 +87,18 @@ type configWire struct {
 type configArm struct {
 	Pred string `json:"pred"`
 	To   string `json:"to"`
+	// LoopMax, when > 0, marks this arm as a BOUNDED LOOP-BACK rather than a plain
+	// forward route: when Pred holds, the switched value routes BACK to To (an earlier
+	// loop head, which Build validates is an ancestor of the switch) and the loop body
+	// runs again, up to LoopMax iterations before Run declares a runaway loop. It is
+	// the config counterpart of LoopBack(max, pred, head). Omitted or 0 means an
+	// ordinary forward When arm.
+	LoopMax int `json:"loopMax,omitempty"`
 }
 
 // isSwitch reports whether this wiring element is a switch. A switch is identified
 // by a non-empty switch field, or by carrying When/Else arms. An edge carries an
-// Edge slice and none of these.
+// Edge slice and a join carries a Join field, neither of which sets these.
 func (w configWire) isSwitch() bool {
 	return w.Switch != "" || len(w.When) > 0 || w.Else != ""
 }
@@ -74,6 +106,12 @@ func (w configWire) isSwitch() bool {
 // isEdge reports whether this wiring element is an edge: it carries an Edge slice.
 func (w configWire) isEdge() bool {
 	return w.Edge != nil
+}
+
+// isJoin reports whether this wiring element is a join: it names a Join fan-in node,
+// or carries Inputs/Merge. An edge and a switch set none of these.
+func (w configWire) isJoin() bool {
+	return w.Join != "" || len(w.Inputs) > 0 || w.Merge != ""
 }
 
 // Load parses a rung-2 JSON config, resolves every block and predicate against
@@ -186,15 +224,25 @@ func assemble(cfg *config, reg *Registry) (*builderCore, error) {
 		problems = append(problems, e.Error())
 	}
 
-	// 1. Structural union check on every wiring element: exactly one of edge/switch.
-	// encoding/json does not validate a union, so an element that sets both or neither
-	// is a load error naming its index.
+	// 1. Structural union check on every wiring element: EXACTLY ONE of edge/switch/join.
+	// encoding/json does not validate a union, so an element that sets more than one, or
+	// none, is a load error naming its index.
 	for i, w := range cfg.Wiring {
+		set := 0
+		if w.isEdge() {
+			set++
+		}
+		if w.isSwitch() {
+			set++
+		}
+		if w.isJoin() {
+			set++
+		}
 		switch {
-		case w.isEdge() && w.isSwitch():
-			problems = append(problems, fmt.Sprintf("wiring[%d] sets both edge and switch; set exactly one", i))
-		case !w.isEdge() && !w.isSwitch():
-			problems = append(problems, fmt.Sprintf("wiring[%d] sets neither edge nor switch; set exactly one", i))
+		case set > 1:
+			problems = append(problems, fmt.Sprintf("wiring[%d] sets more than one of edge/switch/join; set exactly one", i))
+		case set == 0:
+			problems = append(problems, fmt.Sprintf("wiring[%d] sets none of edge/switch/join; set exactly one", i))
 		case w.isEdge() && len(w.Edge) != 2:
 			problems = append(problems, fmt.Sprintf("wiring[%d] edge must be [from, to], got %d element(s)", i, len(w.Edge)))
 		}
@@ -217,31 +265,50 @@ func assemble(cfg *config, reg *Registry) (*builderCore, error) {
 			continue
 		}
 		usedBlocks[cn.Block] = true
+		// Safety default is the registered block's Safety (the Go registration default);
+		// an explicit config "safety" overrides it. An unknown safety string is a load
+		// error naming the node, collected with the rest of the drift.
+		safety := b.safety
+		if cn.Safety != "" {
+			s, ok := safetyFromConfig(cn.Safety)
+			if !ok {
+				problems = append(problems, fmt.Sprintf("node %q has unknown safety %q; want one of \"readonly\", \"idempotent\", \"retryable\"", cn.Name, cn.Safety))
+			} else {
+				safety = s
+			}
+		}
 		resolvedNodes = append(resolvedNodes, &node{
 			name:    cn.Name,
 			kind:    b.kind,
 			inType:  b.inType,
 			outType: b.outType,
 			run:     b.run,
-			// Carry the registered block's Safety onto the loaded node, so a loaded flow
-			// resumes identically to a hand-built one. Safety is recorded in Go at
-			// registration, not in the config JSON (see regBlock.safety).
-			safety: b.safety,
+			// Carry the resolved Safety onto the loaded node, so a loaded flow resumes
+			// identically to a hand-built one. The default is the registered block's Safety
+			// (recorded in Go at registration, see regBlock.safety); an explicit config
+			// "safety" overrides it.
+			safety: safety,
 			// Carry the model prompt template for a Model block, so a loaded Model node
 			// renders identically to a hand-built one (see RegisterModel / runModel).
 			prompt: b.prompt,
 		})
 	}
 
-	// 3. Resolve every switch arm's predicate against the registry, collecting all
-	// unknowns alongside unknown blocks in the single error.
+	// 3. Resolve every switch arm's predicate and every join's merge block against the
+	// registry, collecting all unknowns alongside unknown blocks in the single error. A
+	// loop-back arm's predicate is an ordinary registered predicate (a When arm with a
+	// positive loopMax), so it is resolved by the same walk.
 	for i, w := range cfg.Wiring {
-		if !w.isSwitch() {
-			continue
-		}
-		for j, a := range w.When {
-			if _, ok := reg.preds[a.Pred]; !ok {
-				problems = append(problems, fmt.Sprintf("wiring[%d].when[%d] references unknown predicate %q%s", i, j, a.Pred, suggest(a.Pred, predNames(reg))))
+		switch {
+		case w.isSwitch():
+			for j, a := range w.When {
+				if _, ok := reg.preds[a.Pred]; !ok {
+					problems = append(problems, fmt.Sprintf("wiring[%d].when[%d] references unknown predicate %q%s", i, j, a.Pred, suggest(a.Pred, predNames(reg))))
+				}
+			}
+		case w.isJoin():
+			if _, ok := reg.merges[w.Merge]; !ok {
+				problems = append(problems, fmt.Sprintf("wiring[%d] join %q references unknown merge %q%s", i, w.Join, w.Merge, suggest(w.Merge, mergeNames(reg))))
 			}
 		}
 	}
@@ -284,13 +351,16 @@ func assemble(cfg *config, reg *Registry) (*builderCore, error) {
 		return nil, fmt.Errorf("plan: load %q: flow has no nodes", cfg.Flow)
 	}
 
-	// 6. Add edges and switches in wiring order, erasing predicates. Track which nodes
-	// are switched-over and which have an outgoing edge to enforce the structural
-	// exclusivity Build does not.
+	// 6. Add edges, switches, and joins in wiring order, erasing predicates and merge
+	// closures. Track which nodes are switched-over and which have an outgoing edge to
+	// enforce the structural exclusivity Build does not. A join's input edges count as
+	// outgoing edges of the input producers, so a fan-out producer that also feeds a
+	// join is tracked here too.
 	switchedOver := make(map[string]bool)
 	hasOutEdge := make(map[string]bool)
 	for i, w := range cfg.Wiring {
-		if w.isEdge() {
+		switch {
+		case w.isEdge():
 			from, to := w.Edge[0], w.Edge[1]
 			if core.byName[from] == nil {
 				return nil, fmt.Errorf("plan: load %q: wiring[%d] edge from unknown node %q", cfg.Flow, i, from)
@@ -300,30 +370,84 @@ func assemble(cfg *config, reg *Registry) (*builderCore, error) {
 			}
 			hasOutEdge[from] = true
 			core.edges = append(core.edges, edge{from: from, to: to})
-			continue
-		}
 
-		// A switch element. Its switched-over node is the switch field.
-		over := w.Switch
-		if core.byName[over] == nil {
-			return nil, fmt.Errorf("plan: load %q: wiring[%d] switch over unknown node %q", cfg.Flow, i, over)
-		}
-		switchedOver[over] = true
-		arms := make([]arm, 0, len(w.When)+1)
-		for j, a := range w.When {
-			if core.byName[a.To] == nil {
-				return nil, fmt.Errorf("plan: load %q: wiring[%d].when[%d] routes to unknown node %q", cfg.Flow, i, j, a.To)
+		case w.isJoin():
+			// A join CREATES a kindJoin node named by Join and wires one input edge per
+			// named input, mirroring Builder.Join2/Join3 (which registers the join node and
+			// appends one edge per input). The merge block (resolved above) supplies the
+			// arity, ordered input types, output type, and erased merge closure. The join
+			// node is registered here, after its input producers' nodes and the fan-out
+			// edges, exactly as Builder.Join2 registers it after the producers and their
+			// edges, so a config diamond and a hand-built one share node/edge insertion
+			// order and therefore one Digest.
+			m := reg.merges[w.Merge] // resolved above
+			if core.byName[w.Join] != nil {
+				return nil, fmt.Errorf("plan: load %q: wiring[%d] join names %q, which is already a declared node; a join creates its own node", cfg.Flow, i, w.Join)
 			}
-			p := reg.preds[a.Pred] // resolved above
-			arms = append(arms, arm{pred: p.pred, target: a.To})
-		}
-		if w.Else != "" {
-			if core.byName[w.Else] == nil {
-				return nil, fmt.Errorf("plan: load %q: wiring[%d] else routes to unknown node %q", cfg.Flow, i, w.Else)
+			if len(w.Inputs) != m.arity {
+				return nil, fmt.Errorf("plan: load %q: wiring[%d] join %q has %d input(s) but merge %q expects %d", cfg.Flow, i, w.Join, len(w.Inputs), w.Merge, m.arity)
 			}
-			arms = append(arms, arm{isElse: true, target: w.Else})
+			for _, src := range w.Inputs {
+				if core.byName[src] == nil {
+					return nil, fmt.Errorf("plan: load %q: wiring[%d] join %q reads unknown input %q", cfg.Flow, i, w.Join, src)
+				}
+			}
+			// Register the kindJoin node with its ordered inputs/types, output type, and
+			// erased merge closure. inType stays nil like a hand-built join (a join has
+			// several inputs wired as edges, not one Edge-consumed input). Safety defaults
+			// to the conservative halt; an explicit "safety" on the join element overrides it.
+			jsafety := agent.Safety{}
+			if w.Safety != "" {
+				s, ok := safetyFromConfig(w.Safety)
+				if !ok {
+					return nil, fmt.Errorf("plan: load %q: wiring[%d] join %q has unknown safety %q; want one of \"readonly\", \"idempotent\", \"retryable\"", cfg.Flow, i, w.Join, w.Safety)
+				}
+				jsafety = s
+			}
+			core.register(&node{
+				name:        w.Join,
+				kind:        kindJoin,
+				joinInputs:  append([]string(nil), w.Inputs...),
+				joinInTypes: append([]reflect.Type(nil), m.inTypes...),
+				outType:     m.outType,
+				merge:       m.merge,
+				safety:      jsafety,
+			})
+			for _, src := range w.Inputs {
+				hasOutEdge[src] = true
+				core.edges = append(core.edges, edge{from: src, to: w.Join})
+			}
+
+		default:
+			// A switch element. Its switched-over node is the switch field.
+			over := w.Switch
+			if core.byName[over] == nil {
+				return nil, fmt.Errorf("plan: load %q: wiring[%d] switch over unknown node %q", cfg.Flow, i, over)
+			}
+			switchedOver[over] = true
+			arms := make([]arm, 0, len(w.When)+1)
+			for j, a := range w.When {
+				if core.byName[a.To] == nil {
+					return nil, fmt.Errorf("plan: load %q: wiring[%d].when[%d] routes to unknown node %q", cfg.Flow, i, j, a.To)
+				}
+				p := reg.preds[a.Pred] // resolved above
+				// A positive loopMax marks the arm as a bounded loop-back to a.To (an earlier
+				// loop head), mirroring LoopBack(max, pred, head); Build then validates the
+				// ancestor/exit/bound/contiguity requirements. Otherwise it is a plain When arm.
+				if a.LoopMax > 0 {
+					arms = append(arms, arm{pred: p.pred, target: a.To, loopBack: true, loopMax: a.LoopMax})
+				} else {
+					arms = append(arms, arm{pred: p.pred, target: a.To})
+				}
+			}
+			if w.Else != "" {
+				if core.byName[w.Else] == nil {
+					return nil, fmt.Errorf("plan: load %q: wiring[%d] else routes to unknown node %q", cfg.Flow, i, w.Else)
+				}
+				arms = append(arms, arm{isElse: true, target: w.Else})
+			}
+			core.branches = append(core.branches, branch{over: over, arms: arms})
 		}
-		core.branches = append(core.branches, branch{over: over, arms: arms})
 	}
 
 	// 7. Structural exclusivity: a node both switched-over and with an outgoing edge is
@@ -337,9 +461,17 @@ func assemble(cfg *config, reg *Registry) (*builderCore, error) {
 	// 8. Intra-graph type checks by reflect.Type identity (no In/Out needed): every
 	// edge's from.outType == to.inType, and every switch arm's predicate M == the
 	// switched node's output type (the improvement over rung 1).
+	//
+	// A join's INPUT edges are skipped here: a kindJoin node has no single inType (it
+	// fans in several producers), so its per-port types are checked by Build.checkJoins
+	// against joinInTypes by reflect identity, not by this from.outType == to.inType
+	// rule. Comparing against the join's nil inType would spuriously reject every join.
 	for _, e := range core.edges {
 		from := core.byName[e.from]
 		to := core.byName[e.to]
+		if to.kind == kindJoin {
+			continue // join port types are validated by Build.checkJoins
+		}
 		if from.outType != to.inType {
 			return nil, fmt.Errorf("plan: load %q: edge %q -> %q connects %s to %s (types must match exactly)",
 				cfg.Flow, e.from, e.to, typeName(from.outType), typeName(to.inType))
@@ -424,6 +556,32 @@ func predNames(reg *Registry) []string {
 		names = append(names, n)
 	}
 	return names
+}
+
+// mergeNames returns the registered merge-block names, for near-miss suggestions.
+func mergeNames(reg *Registry) []string {
+	names := make([]string, 0, len(reg.merges))
+	for n := range reg.merges {
+		names = append(names, n)
+	}
+	return names
+}
+
+// safetyFromConfig maps a config safety string to the agent.Safety it denotes,
+// mirroring the ReadOnly/Idempotent/Retryable NodeOptions: "readonly" ->
+// {ReadOnly:true}, "idempotent" and its "retryable" alias -> {Idempotent:true}. The
+// bool is false for an unknown string so the caller can report it as a load error
+// naming the node. It is the config counterpart of the Go-side ReadOnly()/Idempotent()
+// options, so a loaded node resumes identically to a hand-built one with the same option.
+func safetyFromConfig(s string) (agent.Safety, bool) {
+	switch s {
+	case "readonly":
+		return agent.Safety{ReadOnly: true}, true
+	case "idempotent", "retryable":
+		return agent.Safety{Idempotent: true}, true
+	default:
+		return agent.Safety{}, false
+	}
 }
 
 // suggest returns a " (did you mean %q?)" fragment when exactly one candidate is a

@@ -2,6 +2,8 @@ package plan
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -306,13 +308,13 @@ func TestNodeSwitchedAndEdged(t *testing.T) {
 func TestWiringUnionBothOrNeither(t *testing.T) {
 	reg := triageRegistry(t)
 
-	// Both: an element with an edge AND a switch.
+	// More than one: an element with an edge AND a switch.
 	both := strings.Replace(triageConfig,
 		`{"edge": ["reserve", "finalize"]}`,
 		`{"edge": ["reserve", "finalize"], "switch": "reserve"}`, 1)
 	_, err := Load[cfgOrder, cfgReceipt]([]byte(both), reg)
-	if err == nil || !strings.Contains(err.Error(), "sets both edge and switch") {
-		t.Errorf("expected both-set error, got: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "sets more than one of edge/switch/join") {
+		t.Errorf("expected more-than-one error, got: %v", err)
 	}
 
 	// Neither: an empty wiring element.
@@ -320,8 +322,8 @@ func TestWiringUnionBothOrNeither(t *testing.T) {
 		`{"edge": ["reserve", "finalize"]}`,
 		`{}`, 1)
 	_, err = Load[cfgOrder, cfgReceipt]([]byte(neither), triageRegistry(t))
-	if err == nil || !strings.Contains(err.Error(), "sets neither edge nor switch") {
-		t.Errorf("expected neither-set error, got: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "sets none of edge/switch/join") {
+		t.Errorf("expected none-set error, got: %v", err)
 	}
 }
 
@@ -356,5 +358,446 @@ func TestDuplicateRegistration(t *testing.T) {
 	// The duplicate is also collected and surfaces at Load.
 	if err := Validate([]byte(triageConfig), reg); err == nil || !strings.Contains(err.Error(), "duplicate block registration") {
 		t.Errorf("expected duplicate surfaced at Load, got: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Join in config (fan-in). The config diamond mirrors join_test.go's buildDiamond
+// exactly, so its Digest must equal the hand-built fan-in flow (config == code).
+// ---------------------------------------------------------------------------
+
+// diamondRegistry registers the split/y/z steps and the two-input merge for the
+// canonical fan-in diamond, matching join_test.go's buildDiamond bodies so a loaded
+// diamond and the hand-built one share one Digest and one output.
+func diamondRegistry(t *testing.T) *Registry {
+	t.Helper()
+	reg := NewRegistry()
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatalf("register: %v", err)
+		}
+	}
+	must(RegisterStep(reg, "split", func(n int) (int, error) { return n * 2, nil }))
+	must(RegisterStep(reg, "y", func(n int) (int, error) { return n + 1, nil }))
+	must(RegisterStep(reg, "z", func(n int) (string, error) { return fmt.Sprintf("z%d", n), nil }))
+	must(RegisterJoin2(reg, "mergeBlock", func(a int, s string) (string, error) {
+		return fmt.Sprintf("%s+%d", s, a), nil
+	}))
+	return reg
+}
+
+// diamondConfig is the fan-in diamond as data: split fans out to y and z (two
+// edges), and a join named "merge" fans them back in via the mergeBlock. The node
+// and edge insertion order (split, y, z, then the two fan-out edges, then the join
+// which registers "merge" and appends y->merge, z->merge) matches buildDiamond, so
+// the two Digests must be equal.
+const diamondConfig = `{
+  "flow": "diamond",
+  "in": "int",
+  "out": "string",
+  "entry": "split",
+  "nodes": [
+    {"name": "split", "block": "split"},
+    {"name": "y",     "block": "y"},
+    {"name": "z",     "block": "z"}
+  ],
+  "wiring": [
+    {"edge": ["split", "y"]},
+    {"edge": ["split", "z"]},
+    {"join": "merge", "inputs": ["y", "z"], "merge": "mergeBlock"}
+  ]
+}`
+
+// TestLoadJoinConfigRunsConformsAndMatchesHandBuilt loads the diamond config, runs it
+// to the merged output, conforms, and asserts its Digest EQUALS join_test.go's
+// hand-built buildDiamond of the same fan-in topology (config == code for a diamond).
+func TestLoadJoinConfigRunsConformsAndMatchesHandBuilt(t *testing.T) {
+	flow, err := Load[int, string]([]byte(diamondConfig), diamondRegistry(t))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	// Digest equals the hand-built diamond of the same shape.
+	hand, err := buildDiamond()
+	if err != nil {
+		t.Fatalf("hand build: %v", err)
+	}
+	if flow.Digest() != hand.Digest() {
+		t.Errorf("config digest %s != hand-built diamond digest %s", flow.Digest(), hand.Digest())
+	}
+
+	// Runs to the merged output: split(3)=6; y=7; z="z6"; merge="z6+7".
+	ctx := context.Background()
+	store := agent.NewMemStore()
+	out, err := flow.Run(ctx, store, "diamond-cfg", 3)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if out != "z6+7" {
+		t.Errorf("merged output = %q, want %q", out, "z6+7")
+	}
+	ok, diffs, err := flow.Conform(ctx, store, "diamond-cfg")
+	if err != nil {
+		t.Fatalf("Conform: %v", err)
+	}
+	if !ok {
+		t.Errorf("loaded diamond run did not conform: %v", diffs)
+	}
+}
+
+// TestLoadJoinUnknownMergeIsCollected asserts an unknown merge block is a load error
+// naming the offending join and merge, collected with the rest of the drift.
+func TestLoadJoinUnknownMergeIsCollected(t *testing.T) {
+	reg := diamondRegistry(t)
+	cfg := strings.Replace(diamondConfig, `"merge": "mergeBlock"`, `"merge": "ghostMerge"`, 1)
+	_, err := Load[int, string]([]byte(cfg), reg)
+	if err == nil {
+		t.Fatal("expected unknown-merge error, got nil")
+	}
+	if !strings.Contains(err.Error(), "unknown merge") || !strings.Contains(err.Error(), "ghostMerge") {
+		t.Errorf("error does not name the unknown merge: %s", err.Error())
+	}
+}
+
+// TestLoadJoinArityMismatchIsError asserts a join whose declared input count differs
+// from the merge block's arity is a load error naming the join and both counts.
+func TestLoadJoinArityMismatchIsError(t *testing.T) {
+	reg := diamondRegistry(t)
+	// The mergeBlock has arity 2; give the join three inputs.
+	cfg := strings.Replace(diamondConfig, `"inputs": ["y", "z"]`, `"inputs": ["y", "z", "y"]`, 1)
+	_, err := Load[int, string]([]byte(cfg), reg)
+	if err == nil {
+		t.Fatal("expected join-arity mismatch, got nil")
+	}
+	if !strings.Contains(err.Error(), "merge") || !strings.Contains(err.Error(), "expects 2") {
+		t.Errorf("error does not name the arity mismatch: %s", err.Error())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Loop (LoopBack) in config: a switch When arm with a positive loopMax is a bounded
+// back-edge. The config countdown loop mirrors loop_test.go's buildCountdownLoop, so
+// it iterates then exits, conforms, and its Digest equals the hand-built loop.
+// ---------------------------------------------------------------------------
+
+// loopRegistry registers the seed/refine/check/done steps and the loop predicate for
+// the countdown loop, matching loop_test.go's buildCountdownLoop bodies.
+func loopRegistry(t *testing.T) *Registry {
+	t.Helper()
+	reg := NewRegistry()
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatalf("register: %v", err)
+		}
+	}
+	must(RegisterStep(reg, "seed", func(n int) (loopState, error) {
+		return loopState{N: n, Trace: "seed"}, nil
+	}))
+	must(RegisterStep(reg, "refine", func(s loopState) (loopState, error) {
+		return loopState{N: s.N - 1, Trace: s.Trace + "|refine"}, nil
+	}))
+	must(RegisterStep(reg, "check", func(s loopState) (loopState, error) { return s, nil }))
+	must(RegisterStep(reg, "done", func(s loopState) (string, error) {
+		return fmt.Sprintf("done N=%d trace=%s", s.N, s.Trace), nil
+	}))
+	must(RegisterPredicate(reg, "again", func(s loopState) bool { return s.N > 0 }))
+	return reg
+}
+
+// loopConfig is the bounded countdown loop as data: seed -> refine (head) -> check
+// (switch); the switch has a When arm with loopMax 10 routing BACK to refine while
+// N>0, and an Else exit to done. It mirrors buildCountdownLoop(10) exactly (same node
+// order, same edges, same arm order and bound), so the two Digests must be equal.
+const loopConfig = `{
+  "flow": "countdown",
+  "in": "int",
+  "out": "string",
+  "entry": "seed",
+  "nodes": [
+    {"name": "seed",   "block": "seed"},
+    {"name": "refine", "block": "refine"},
+    {"name": "check",  "block": "check"},
+    {"name": "done",   "block": "done"}
+  ],
+  "wiring": [
+    {"edge": ["seed", "refine"]},
+    {"edge": ["refine", "check"]},
+    {"switch": "check", "when": [{"pred": "again", "to": "refine", "loopMax": 10}], "else": "done"}
+  ]
+}`
+
+// TestLoadLoopConfigIteratesExitsConformsAndMatchesHandBuilt loads the loop config,
+// asserts its Digest equals the hand-built buildCountdownLoop(10), runs it (input 3
+// iterates refine three times then exits at N=0), and conforms.
+func TestLoadLoopConfigIteratesExitsConformsAndMatchesHandBuilt(t *testing.T) {
+	flow, err := Load[int, string]([]byte(loopConfig), loopRegistry(t))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	hand, err := buildCountdownLoop(10, nil)
+	if err != nil {
+		t.Fatalf("hand build: %v", err)
+	}
+	if flow.Digest() != hand.Digest() {
+		t.Errorf("config digest %s != hand-built loop digest %s", flow.Digest(), hand.Digest())
+	}
+
+	ctx := context.Background()
+	store := agent.NewMemStore()
+	out, err := flow.Run(ctx, store, "loop-cfg", 3)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !strings.HasPrefix(out, "done N=0 ") {
+		t.Errorf("terminal output = %q, want it to report N=0", out)
+	}
+	if want := "seed|refine|refine|refine"; !strings.Contains(out, want) {
+		t.Errorf("terminal trace does not show three body passes: %q (want %q)", out, want)
+	}
+	ok, diffs, err := flow.Conform(ctx, store, "loop-cfg")
+	if err != nil {
+		t.Fatalf("Conform: %v", err)
+	}
+	if !ok {
+		t.Errorf("loaded loop run did not conform: %v", diffs)
+	}
+}
+
+// TestLoadLoopUnknownPredicateIsCollected asserts an unknown loop-back predicate is a
+// load error naming the offending arm and predicate, collected with the rest of the
+// drift (a loop-back arm's predicate is an ordinary registered predicate).
+func TestLoadLoopUnknownPredicateIsCollected(t *testing.T) {
+	reg := loopRegistry(t)
+	cfg := strings.Replace(loopConfig, `"pred": "again"`, `"pred": "ghostPred"`, 1)
+	_, err := Load[int, string]([]byte(cfg), reg)
+	if err == nil {
+		t.Fatal("expected unknown-predicate error, got nil")
+	}
+	if !strings.Contains(err.Error(), "unknown predicate") || !strings.Contains(err.Error(), "ghostPred") {
+		t.Errorf("error does not name the unknown loop predicate: %s", err.Error())
+	}
+}
+
+// TestLoadLoopNonAncestorHeadIsBuildError asserts the existing loop validation runs on
+// a loaded loop: a loopMax back-edge whose target is not an ancestor of the switch is
+// rejected. Here the arm loops back to "done", which the switch does not reach forward.
+func TestLoadLoopNonAncestorHeadIsBuildError(t *testing.T) {
+	reg := loopRegistry(t)
+	// Route the loop-back to "done" (not an ancestor of check) and exit via a second
+	// When arm so the switch still has a non-loop-back exit; done consumes loopState so
+	// the arm types unify.
+	cfg := strings.Replace(loopConfig,
+		`{"switch": "check", "when": [{"pred": "again", "to": "refine", "loopMax": 10}], "else": "done"}`,
+		`{"switch": "check", "when": [{"pred": "again", "to": "done", "loopMax": 10}], "else": "done"}`, 1)
+	_, err := Load[int, string]([]byte(cfg), reg)
+	if err == nil {
+		t.Fatal("expected non-ancestor loop error, got nil")
+	}
+	if !strings.Contains(err.Error(), "ancestor") {
+		t.Errorf("error does not mention the ancestor requirement: %s", err.Error())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Safety in config: an explicit "safety" on a node overrides the registered block's
+// default, so a node that would halt on the ambiguous-crash window re-runs instead.
+// ---------------------------------------------------------------------------
+
+// safetyNodeConfig is a one-node flow whose entry "read" carries safety "readonly".
+// The read block itself registers with no Safety (the default halt), so the config
+// "safety" is what opts it into re-run on the ambiguous crash.
+const safetyNodeConfig = `{
+  "flow": "read-flow",
+  "in": "int",
+  "out": "int",
+  "entry": "read",
+  "nodes": [
+    {"name": "read", "block": "read", "safety": "readonly"}
+  ],
+  "wiring": []
+}`
+
+// loadReadFlow loads the one-node read flow, registering the read block with the given
+// reads counter and value and NO Go-side Safety, so the config "safety" is the only
+// source of the node's retry-on-resume classification.
+func loadReadFlow(t *testing.T, reads *int, value int, safety string) (*Flow[int, int], error) {
+	t.Helper()
+	reg := NewRegistry()
+	if err := RegisterStep(reg, "read", func(int) (int, error) { *reads++; return value, nil }); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	cfg := safetyNodeConfig
+	if safety != "readonly" {
+		cfg = strings.Replace(cfg, `, "safety": "readonly"`, safetySuffix(safety), 1)
+	}
+	return Load[int, int]([]byte(cfg), reg)
+}
+
+// safetySuffix renders the JSON fragment for a given safety value, or drops the field
+// entirely for the empty string (the default-halt case).
+func safetySuffix(safety string) string {
+	if safety == "" {
+		return ""
+	}
+	return fmt.Sprintf(`, "safety": %q`, safety)
+}
+
+// TestLoadSafetyConfigRerunsOnAmbiguousCrash proves an explicit config "safety":
+// "readonly" makes a loaded node RE-RUN its body on the ambiguous-crash window (attempt
+// marker persisted, result lost) and COMPLETE, where the SAME node without the config
+// safety would halt. It reuses the crashFlowStore DST harness from flow_dst_test.go.
+func TestLoadSafetyConfigRerunsOnAmbiguousCrash(t *testing.T) {
+	// Find the crash landing on the read node's result write, with the readonly config.
+	var mem agent.Durable
+	var readsAtCrash int
+	for crashAt := 1; crashAt <= 32; crashAt++ {
+		reads := 0
+		m := agent.NewMemStore()
+		store := &crashFlowStore{inner: m, crashAt: crashAt}
+		flow, err := loadReadFlow(t, &reads, 42, "readonly")
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		_, err = flow.Run(context.Background(), store, "cfg-safety", 0)
+		if !errors.Is(err, errCrash) {
+			continue
+		}
+		recs, hErr := m.History(context.Background(), "cfg-safety")
+		if hErr != nil {
+			t.Fatalf("History: %v", hErr)
+		}
+		var haveAttempt, haveResult bool
+		for _, r := range recs {
+			switch r.Name {
+			case "attempt:read":
+				haveAttempt = true
+			case "read":
+				haveResult = true
+			}
+		}
+		if haveAttempt && !haveResult && reads >= 1 {
+			mem = m
+			readsAtCrash = reads
+			break
+		}
+	}
+	if mem == nil {
+		t.Fatal("no crash point produced the entry-result ambiguous window")
+	}
+
+	// Resume with no further crash. The config safety "readonly" opts the node into
+	// re-run, so the flow completes rather than returning *HaltAmbiguous.
+	reads := readsAtCrash
+	flow, err := loadReadFlow(t, &reads, 42, "readonly")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	out, err := flow.Run(context.Background(), mem, "cfg-safety", 0)
+	var halt *HaltAmbiguous
+	if errors.As(err, &halt) {
+		t.Fatalf("config-safety readonly node halted at %q; want re-run and completion", halt.Step)
+	}
+	if err != nil {
+		t.Fatalf("resume Run: %v", err)
+	}
+	if out != 42 {
+		t.Fatalf("output = %d, want 42", out)
+	}
+	if reads < 2 {
+		t.Fatalf("body ran %d times total, want >= 2 (a re-run happened on resume)", reads)
+	}
+}
+
+// TestLoadSafetyDefaultHalts is the regression guard: the SAME one-node flow loaded
+// with NO config safety keeps the conservative default and HALTS on the ambiguous
+// crash, proving the config safety is what changed the behavior above.
+func TestLoadSafetyDefaultHalts(t *testing.T) {
+	var mem agent.Durable
+	var readsAtCrash int
+	for crashAt := 1; crashAt <= 32; crashAt++ {
+		reads := 0
+		m := agent.NewMemStore()
+		store := &crashFlowStore{inner: m, crashAt: crashAt}
+		flow, err := loadReadFlow(t, &reads, 42, "")
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		_, err = flow.Run(context.Background(), store, "cfg-default", 0)
+		if !errors.Is(err, errCrash) {
+			continue
+		}
+		recs, _ := m.History(context.Background(), "cfg-default")
+		var haveAttempt, haveResult bool
+		for _, r := range recs {
+			switch r.Name {
+			case "attempt:read":
+				haveAttempt = true
+			case "read":
+				haveResult = true
+			}
+		}
+		if haveAttempt && !haveResult && reads >= 1 {
+			mem = m
+			readsAtCrash = reads
+			break
+		}
+	}
+	if mem == nil {
+		t.Fatal("no crash point produced the entry-result ambiguous window")
+	}
+
+	reads := readsAtCrash
+	flow, err := loadReadFlow(t, &reads, 42, "")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	_, err = flow.Run(context.Background(), mem, "cfg-default", 0)
+	var halt *HaltAmbiguous
+	if !errors.As(err, &halt) {
+		t.Fatalf("default node did not halt: err = %v; want *HaltAmbiguous", err)
+	}
+	if halt.Step != "read" {
+		t.Fatalf("halt named %q, want %q", halt.Step, "read")
+	}
+	if reads != readsAtCrash {
+		t.Fatalf("default node re-ran its body on resume (reads %d -> %d); it must halt", readsAtCrash, reads)
+	}
+}
+
+// TestLoadUnknownSafetyStringIsError asserts an unknown safety string on a node is a
+// load error naming the node and the bad value.
+func TestLoadUnknownSafetyStringIsError(t *testing.T) {
+	reg := NewRegistry()
+	if err := RegisterStep(reg, "read", func(n int) (int, error) { return n, nil }); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	cfg := strings.Replace(safetyNodeConfig, `"safety": "readonly"`, `"safety": "sometimes"`, 1)
+	_, err := Load[int, int]([]byte(cfg), reg)
+	if err == nil {
+		t.Fatal("expected unknown-safety error, got nil")
+	}
+	if !strings.Contains(err.Error(), "unknown safety") || !strings.Contains(err.Error(), "read") || !strings.Contains(err.Error(), "sometimes") {
+		t.Errorf("error does not name the node and bad safety value: %s", err.Error())
+	}
+}
+
+// TestLoadWiringUnionRejectsMoreThanOneIncludingJoin asserts the three-way union check
+// rejects a wiring element that sets more than one of edge/switch/join (here an edge
+// AND a join), naming its index.
+func TestLoadWiringUnionRejectsMoreThanOneIncludingJoin(t *testing.T) {
+	reg := diamondRegistry(t)
+	// Turn the second edge into an element that ALSO carries a join.
+	cfg := strings.Replace(diamondConfig,
+		`{"edge": ["split", "z"]}`,
+		`{"edge": ["split", "z"], "join": "merge2", "inputs": ["y", "z"], "merge": "mergeBlock"}`, 1)
+	_, err := Load[int, string]([]byte(cfg), reg)
+	if err == nil {
+		t.Fatal("expected more-than-one union error, got nil")
+	}
+	if !strings.Contains(err.Error(), "sets more than one of edge/switch/join") {
+		t.Errorf("error does not report the union violation: %s", err.Error())
 	}
 }

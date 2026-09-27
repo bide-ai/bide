@@ -26,6 +26,7 @@ import (
 type Registry struct {
 	blocks map[string]*regBlock
 	preds  map[string]*regPred
+	merges map[string]*regMerge
 	// errs collects duplicate-registration errors so they surface at Load with the
 	// config's other drift, rather than being lost at a Register call the caller may
 	// not check. Register also returns the error for callers that check inline.
@@ -65,6 +66,24 @@ type regPred struct {
 	pred  func(v any) bool
 }
 
+// regMerge is a registered fan-in merge, the config counterpart of a
+// Builder.Join2/Join3 node. arity is the number of ordered inputs (2 for a
+// RegisterJoin2, 3 for a RegisterJoin3); inTypes are those inputs' reflect.Types
+// in declared order, captured via reflect.TypeFor so assemble can pin
+// node.joinInTypes and Build can re-check each input producer's output type by
+// identity; outType is the merged result type; merge is the type-erased fan-in
+// closure assemble installs on the kindJoin node, mirroring the closure
+// Builder.Join2/Join3 build. A merge block is a THIRD Registry namespace,
+// separate from blocks and predicates: a name may appear once in each without
+// conflict, because a merge lowers to a node's merge closure rather than to a
+// block's run or a predicate's arm test.
+type regMerge struct {
+	arity   int
+	inTypes []reflect.Type
+	outType reflect.Type
+	merge   func(ctx context.Context, inputs []any) (any, error)
+}
+
 // NewRegistry returns a fresh, empty Registry. Every Load takes an explicit
 // Registry; there is no shared global, so two loaders never contend over one
 // mutable namespace.
@@ -72,6 +91,7 @@ func NewRegistry() *Registry {
 	return &Registry{
 		blocks: make(map[string]*regBlock),
 		preds:  make(map[string]*regPred),
+		merges: make(map[string]*regMerge),
 	}
 }
 
@@ -99,6 +119,94 @@ func (r *Registry) registerPred(name string, p *regPred) error {
 	}
 	r.preds[name] = p
 	return nil
+}
+
+// registerMerge installs a merge block under name, recording a duplicate as an
+// error on the Registry (surfaced at Load) and returning it for inline checking. A
+// duplicate never silently overwrites the existing entry.
+func (r *Registry) registerMerge(name string, m *regMerge) error {
+	if _, dup := r.merges[name]; dup {
+		err := fmt.Errorf("plan: duplicate merge registration %q", name)
+		r.errs = append(r.errs, err)
+		return err
+	}
+	r.merges[name] = m
+	return nil
+}
+
+// RegisterJoin2 registers a fixed-arity fan-in merge func(A, B) (O, error) as a
+// merge block named name, inferring A, B, and O from fn (the config never restates
+// types; they flow from the registered merge). It is the config counterpart of
+// Builder.Join2: a "join" wiring element references the merge block by name, names
+// its two ordered inputs, and assemble builds a kindJoin node whose ordered input
+// types are A, B and whose type-erased merge closure asserts each boxed input to
+// its concrete type before calling fn, exactly like Builder.Join2. A duplicate name
+// is an error, surfaced at Load and returned here for inline checking.
+//
+// Safety is not carried on a merge block: like a hand-built Join a loaded join
+// defaults to the conservative halt-on-ambiguous-crash, and an explicit config
+// "safety" on the join node overrides it (see the join node's safety field).
+func RegisterJoin2[A, B, O any](r *Registry, name string, fn func(A, B) (O, error)) error {
+	return r.registerMerge(name, &regMerge{
+		arity:   2,
+		inTypes: []reflect.Type{reflect.TypeFor[A](), reflect.TypeFor[B]()},
+		outType: reflect.TypeFor[O](),
+		merge: func(_ context.Context, inputs []any) (any, error) {
+			if len(inputs) != 2 {
+				return nil, fmt.Errorf("plan: join %q expected 2 inputs, got %d", name, len(inputs))
+			}
+			av, ok := inputs[0].(A)
+			if !ok {
+				return nil, fmt.Errorf("plan: join %q input 0 got type %T, want %s", name, inputs[0], reflect.TypeFor[A]())
+			}
+			bv, ok := inputs[1].(B)
+			if !ok {
+				return nil, fmt.Errorf("plan: join %q input 1 got type %T, want %s", name, inputs[1], reflect.TypeFor[B]())
+			}
+			out, err := fn(av, bv)
+			if err != nil {
+				return nil, err
+			}
+			return out, nil
+		},
+	})
+}
+
+// RegisterJoin3 is RegisterJoin2 for arity three: it registers a fan-in merge
+// func(A, B, C) (O, error) as a merge block named name, inferring A, B, C, and O
+// from fn. It is the config counterpart of Builder.Join3: a "join" element names
+// three ordered inputs and assemble builds a kindJoin node whose ordered input
+// types are A, B, C and whose erased merge closure asserts each boxed input before
+// calling fn. A duplicate name is an error, surfaced at Load and returned here for
+// inline checking.
+func RegisterJoin3[A, B, C, O any](r *Registry, name string, fn func(A, B, C) (O, error)) error {
+	return r.registerMerge(name, &regMerge{
+		arity:   3,
+		inTypes: []reflect.Type{reflect.TypeFor[A](), reflect.TypeFor[B](), reflect.TypeFor[C]()},
+		outType: reflect.TypeFor[O](),
+		merge: func(_ context.Context, inputs []any) (any, error) {
+			if len(inputs) != 3 {
+				return nil, fmt.Errorf("plan: join %q expected 3 inputs, got %d", name, len(inputs))
+			}
+			av, ok := inputs[0].(A)
+			if !ok {
+				return nil, fmt.Errorf("plan: join %q input 0 got type %T, want %s", name, inputs[0], reflect.TypeFor[A]())
+			}
+			bv, ok := inputs[1].(B)
+			if !ok {
+				return nil, fmt.Errorf("plan: join %q input 1 got type %T, want %s", name, inputs[1], reflect.TypeFor[B]())
+			}
+			cv, ok := inputs[2].(C)
+			if !ok {
+				return nil, fmt.Errorf("plan: join %q input 2 got type %T, want %s", name, inputs[2], reflect.TypeFor[C]())
+			}
+			out, err := fn(av, bv, cv)
+			if err != nil {
+				return nil, err
+			}
+			return out, nil
+		},
+	})
 }
 
 // RegisterStep registers an arbitrary func(I)(O,error) as a Step block named name,
