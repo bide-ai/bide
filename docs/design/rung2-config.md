@@ -4,10 +4,11 @@
 
 Rung 1 (`plan`, built) is a Go-embedded flow builder. Rung 2 is the next surface in the
 [expression-surfaces](expression-surfaces.md) stack: a declarative config (YAML or JSON) that
-describes a flow's topology and loads into the rung-1 builder to produce the same `*Flow`. This note
-resolves the design before any build, because rung 2 has one genuinely hard decision that rung 1 did
-not. It passes the two architectural gates: it lowers to the plan builder, and the substrate stays the
-headline.
+describes a flow's topology and loads into the rung-1 builder to produce the same `*Flow`. Rung 2 is
+now built (registry + `Load`, with `Join`/`Loop`/`Safety` expressible in the config); see the
+[Flows guide](../guides/flows.md). This note records the design and the pressure-test decisions behind
+it. Rung 2 had one genuinely hard decision rung 1 did not. It passes the two architectural gates: it
+lowers to the plan builder, and the substrate stays the headline.
 
 ## What rung 2 is, and what it is not
 
@@ -138,11 +139,18 @@ compile-time safety gives back better diagnostics.
    the digest proof against the config; a Rung 2 section in the Flows guide.
 4. Optional later: a YAML adapter module; the rung-3 visual builder that emits this config.
 
-## Non-goals for the first cut
+## Built since this note, and remaining non-goals
 
-- No behavior in config: predicates, step bodies, tools, and models are registered Go, referenced by
-  name. `Model` remains the rung-1 stub.
-- No fan-in (`Join`) or back-edges (`Loop`) in the config until rung 1 has them.
+Built after this note was first written: `Model` is really bound now (not a stub), and fan-in (`Join`)
+and bounded loops (`LoopBack`) are expressible in the config, matching rung 1's feature set. Behavior
+still stays as registered Go referenced by name (predicates, step bodies, tools, merge functions are
+Go, never config expressions).
+
+Remaining non-goals:
+- No behavior in config: there is no config expression language; behavior is always registered Go by
+  name.
+- Fan-in is fixed-arity (`Join2`/`Join3`); no ragged or unbounded fan-in.
+- `Model` decodes the response as JSON into `O` (no derived response schema yet).
 - No visual builder (rung 3); rung 2 is the data format rung 3 would target.
 
 ## Resolved after pressure-test

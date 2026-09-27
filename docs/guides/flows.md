@@ -66,8 +66,9 @@ production). `runID` is the durable identity: re-running the same `runID` resume
     stable across code edits, because resume finds a step by this name. It is not just a label.
 - **Wiring** takes handles, so a miswired connection does not compile:
   - `Edge[M](from, to)` connects a producer to a consumer, unifying the connecting type `M`.
-  - `Switch[M](over, When(pred, to)..., Else(to))` routes on a node's output to exactly one arm. In
-    rung 1 arms do not reconverge: each arm runs to a terminal that produces `Out`.
+  - `Switch[M](over, When(pred, to)..., Else(to))` routes on a node's output to exactly one arm.
+    Switch arms do not reconverge (each arm runs to a terminal producing `Out`); use `Join2`/`Join3`
+    for fan-in of branches that both run, and a `When` arm with a `loopMax` back-edge for a bounded loop.
 - **`Build()`** validates whole-graph coherence (entry consumes `In`, every terminal path produces
   `Out`, names unique, no unreachable node, at most one `Else` per switch) and freezes the spec into a
   `*Flow`. Errors name the offending node.

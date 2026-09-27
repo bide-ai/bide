@@ -64,8 +64,9 @@ Authoring is a convenience for the writer; the journal remains the source of tru
 
 ## What a layer up looks like (rung 1 sketch)
 
-This is an illustrative sketch, not a committed API. It exists to make the invariant concrete, and
-it is subject to the gate above; it is not a work item.
+This began as an illustrative sketch to make the invariant concrete; rung 1 (the `plan` builder) is
+now built to it, feature-complete (see the [Flows guide](../guides/flows.md)). The section is retained
+as the design rationale for the shape.
 
 Surfaces stack in rungs, each compiling to the one below and ultimately to the journal-backed core:
 
@@ -273,7 +274,7 @@ diagram" and treats the typed builder as the ergonomic on-ramp, never the reason
 
 ## Current status
 
-Rung 1 (the `plan` builder) is built. Rung 2 (declarative config over the builder) is in progress
-(see [rung2-config.md](rung2-config.md)); a rung-3 visual builder would emit rung-2 config. Each
-surface sits above the same journal-backed core and is added through the two-question gate above, at
-the author's discretion on timing.
+Rung 1 (the `plan` builder) and rung 2 (declarative config over the builder) are both built (see
+[rung2-config.md](rung2-config.md) and the [Flows guide](../guides/flows.md)); a rung-3 visual builder
+would emit rung-2 config. Each surface sits above the same journal-backed core and is added through the
+two-question gate above, at the author's discretion on timing.
