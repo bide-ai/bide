@@ -111,6 +111,8 @@ lease with a DB-clock upsert).
 
 ### 3 · A cryptographically verifiable audit spine, from the same journal
 
+<p align="center"><img src="assets/merkle.png" width="820" alt="Merkle inclusion proof: a journal record (charge) hashes up its sibling path to the signed root, proving the record is in the committed history while the other records stay hidden."></p>
+
 The journal that makes resume safe *is* the audit record, and it is committed with the **same
 cryptography Certificate Transparency uses** ([RFC 6962](https://datatracker.ietf.org/doc/html/rfc6962),
 checked against the published reference vectors). The distinction that matters for a regulated

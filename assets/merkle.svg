@@ -1,0 +1,58 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="640" viewBox="0 0 1200 640" font-family="Menlo, 'DejaVu Sans Mono', monospace">
+  <rect width="1200" height="640" fill="#0E0E11"/>
+
+  <!-- header -->
+  <rect x="120" y="44" width="16" height="16" fill="#E8A33D"/>
+  <text x="148" y="59" font-size="22" font-weight="700" fill="#E8A33D" letter-spacing="2">INCLUSION PROOF</text>
+
+  <!-- edges (drawn first, behind nodes) -->
+  <g stroke-width="2" fill="none">
+    <!-- proof path: leaf0 -> H0 -> H01 -> ROOT, in amber -->
+    <path d="M600 158 L360 236" stroke="#E8A33D"/>
+    <path d="M360 290 L240 380" stroke="#E8A33D"/>
+    <!-- other edges, muted -->
+    <path d="M600 158 L840 236" stroke="#33333B"/>
+    <path d="M360 290 L480 380" stroke="#33333B"/>
+    <path d="M840 290 L720 380" stroke="#33333B"/>
+    <path d="M840 290 L960 380" stroke="#33333B"/>
+  </g>
+
+  <!-- ROOT: signed tree head, amber-filled anchor -->
+  <rect x="510" y="104" width="180" height="54" rx="12" fill="#E8A33D"/>
+  <text x="600" y="138" font-size="22" font-weight="700" fill="#111114" text-anchor="middle">signed root</text>
+
+  <!-- level 1 -->
+  <!-- H01: on the proof path -->
+  <rect x="300" y="236" width="120" height="54" rx="12" fill="#17171C" stroke="#E8A33D" stroke-width="2"/>
+  <text x="360" y="270" font-size="22" fill="#F5F1E8" text-anchor="middle">9f2a…</text>
+  <!-- H23: a proof sibling (given to the auditor) -->
+  <rect x="780" y="236" width="120" height="54" rx="12" fill="#17171C" stroke="#E8A33D" stroke-width="2" stroke-dasharray="6 5"/>
+  <text x="840" y="266" font-size="22" fill="#F5F1E8" text-anchor="middle">5e0c…</text>
+  <text x="840" y="286" font-size="13" fill="#E8A33D" text-anchor="middle">proof</text>
+
+  <!-- leaves (hashes) -->
+  <!-- H0: proven leaf hash -->
+  <rect x="180" y="380" width="120" height="54" rx="12" fill="#17171C" stroke="#E8A33D" stroke-width="2"/>
+  <text x="240" y="414" font-size="22" fill="#F5F1E8" text-anchor="middle">3c2a…</text>
+  <!-- H1: proof sibling -->
+  <rect x="420" y="380" width="120" height="54" rx="12" fill="#17171C" stroke="#E8A33D" stroke-width="2" stroke-dasharray="6 5"/>
+  <text x="480" y="410" font-size="22" fill="#F5F1E8" text-anchor="middle">7f10…</text>
+  <text x="480" y="430" font-size="13" fill="#E8A33D" text-anchor="middle">proof</text>
+  <!-- H2, H3: context, muted -->
+  <rect x="660" y="380" width="120" height="54" rx="12" fill="#141419" stroke="#2A2A31" stroke-width="1.5"/>
+  <text x="720" y="414" font-size="22" fill="#6E6A62" text-anchor="middle">b8d4…</text>
+  <rect x="900" y="380" width="120" height="54" rx="12" fill="#141419" stroke="#2A2A31" stroke-width="1.5"/>
+  <text x="960" y="414" font-size="22" fill="#6E6A62" text-anchor="middle">e6a2…</text>
+
+  <!-- leaf record labels -->
+  <text x="240" y="470" font-size="20" font-weight="700" fill="#F5F1E8" text-anchor="middle">charge</text>
+  <text x="480" y="470" font-size="20" fill="#8C887F" text-anchor="middle">email</text>
+  <text x="720" y="470" font-size="20" fill="#8C887F" text-anchor="middle">approve</text>
+  <text x="960" y="470" font-size="20" fill="#8C887F" text-anchor="middle">log</text>
+  <text x="600" y="502" font-size="16" fill="#6E6A62" text-anchor="middle">journal records</text>
+
+  <!-- caption -->
+  <line x1="120" y1="548" x2="1080" y2="548" stroke="#2A2A31" stroke-width="1.5"/>
+  <text x="120" y="586" font-size="21" font-weight="700" fill="#F5F1E8">Prove one record reached the signed root, and nothing else.</text>
+  <text x="120" y="616" font-size="18" fill="#9A968E">Recompute the root from the record and O(log n) siblings, then check the signed root.</text>
+</svg>
