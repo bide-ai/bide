@@ -126,11 +126,12 @@ DeepSeek / Ollama and similar) as a `ReasoningDelta` on the stream.
 ## GCF tool-result encoding (opt-in)
 
 Tool results are sent to the model as JSON by default. For structured output you can
-switch the model-facing encoding to [GCF](https://bide-ai.com), which is more
-token-efficient and better comprehended by frontier models than JSON, so it can cut the
-prompt tokens spent echoing tool output back each turn. It is opt-in per adapter and
-changes only what the model reads: the journal and the audit trail keep the canonical
-JSON form, so durability and proofs are unaffected.
+switch the model-facing encoding to [GCF](https://gcformat.com), the Graph Compact
+Format: a compact wire format for structured data that is more token-efficient and
+better comprehended by frontier models than JSON. Switching cuts the prompt tokens spent
+echoing tool output back each turn. It is opt-in per adapter and changes only what the
+model reads: the journal and the audit trail keep the canonical JSON form, so durability
+and proofs are unaffected.
 
 Wire it in with any adapter's `WithToolResultCodec`:
 
