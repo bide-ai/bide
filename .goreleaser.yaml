@@ -53,3 +53,23 @@ release:
   draft: false
   prerelease: auto
   name_template: "bide {{ .Tag }}"
+
+brews:
+  - name: bide-audit
+    ids:
+      - bide-audit
+    repository:
+      owner: bide-ai
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    directory: Formula
+    homepage: "https://bide-ai.com"
+    description: "Offline verifier for bide proof bundles (RFC 6962 Merkle audit trails)"
+    license: "Apache-2.0"
+    # Skip the push (but still generate the formula) when no tap token is set,
+    # so a release never fails just because the secret is absent.
+    skip_upload: '{{ if .Env.HOMEBREW_TAP_TOKEN }}false{{ else }}true{{ end }}'
+    install: |
+      bin.install "bide-audit"
+    test: |
+      assert_match "verify", shell_output("#{bin}/bide-audit 2>&1 || true")

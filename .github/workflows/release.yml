@@ -46,3 +46,6 @@ jobs:
           args: release --clean ${{ github.event_name == 'workflow_dispatch' && '--snapshot' || '' }} ${{ steps.notes.outputs.arg }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Cross-repo push to bide-ai/homebrew-tap. If unset, the formula is
+          # generated but not pushed (see skip_upload in .goreleaser.yaml).
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
