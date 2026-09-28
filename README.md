@@ -9,11 +9,13 @@
 > A pause a human or reconciler can clear beats a double-fire you cannot undo.
 
 One append-only journal, four guarantees no other agent framework pairs in a single library:
-side effects that fire **at most once**; thousands of concurrent durable runs **in one process, no
-cluster**; a **cryptographically verifiable audit trail** (RFC 6962 Merkle proofs, checkable without
-trusting the vendor); and **provably convergent** shared state. You get all four from one mechanism,
-not four integrated systems, as a plain-Go library. Built for agents that move money, touch records,
-or act under audit.
+
+- **Side effects fire at most once**, even across a crash. Not at-least-once you have to make idempotent.
+- **Thousands of concurrent durable runs in one process.** A library you import, not a cluster you operate.
+- **A cryptographically verifiable audit trail.** RFC 6962 Merkle proofs, checkable offline without trusting the vendor.
+- **Provably convergent shared state.** Machine-checked, not eventual-consistency hope.
+
+You get all four from one mechanism, not four integrated systems, as a plain-Go library. Built for agents that move money, touch records, or act under audit.
 
 **Built for ambient agents.** An ambient agent runs unattended: it sleeps until a trigger (a
 schedule or an event) wakes it, works over hours or days, and pauses to ask a human only when it
