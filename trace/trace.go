@@ -21,8 +21,8 @@ import (
 	"go.opentelemetry.io/otel/codes"
 	oteltrace "go.opentelemetry.io/otel/trace"
 
-	"github.com/blackwell-systems/bide/agent"
-	"github.com/blackwell-systems/bide/middleware"
+	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/middleware"
 )
 
 // GenAI semantic-convention attribute keys (stable subset). attrCost is a custom extension:

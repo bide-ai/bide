@@ -14,18 +14,18 @@ import (
 //
 // go list -deps reports non-test dependencies, so this checks the runtime import graph.
 func TestCoreHasNoAdapterImports(t *testing.T) {
-	out, err := exec.Command("go", "list", "-deps", "github.com/blackwell-systems/bide/agent").Output()
+	out, err := exec.Command("go", "list", "-deps", "github.com/bide-ai/bide/agent").Output()
 	if err != nil {
 		t.Skipf("go list unavailable: %v", err)
 	}
 	deps := string(out)
 
 	forbidden := []string{
-		"blackwell-systems/bide/model/", // provider adapters
-		"blackwell-systems/bide/store/", // persistence adapters
-		"blackwell-systems/bide/trace",  // OTel adapter
-		"blackwell-systems/bide/middleware",
-		"blackwell-systems/bide/govern", // gsm-backed governor (Tier-2 edge)
+		"bide-ai/bide/model/", // provider adapters
+		"bide-ai/bide/store/", // persistence adapters
+		"bide-ai/bide/trace",  // OTel adapter
+		"bide-ai/bide/middleware",
+		"bide-ai/bide/govern", // gsm-backed governor (Tier-2 edge)
 	}
 	for _, bad := range forbidden {
 		if strings.Contains(deps, bad) {

@@ -17,8 +17,8 @@ import (
 	"strings"
 	"sync/atomic"
 
-	"github.com/blackwell-systems/bide/agent"
-	"github.com/blackwell-systems/bide/eval"
+	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/eval"
 )
 
 // classifier is a stub model: it labels input sentiment, but flips its answer on every fifth call

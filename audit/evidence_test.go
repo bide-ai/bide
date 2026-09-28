@@ -8,8 +8,8 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/blackwell-systems/bide/agent"
-	"github.com/blackwell-systems/bide/audit"
+	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/audit"
 )
 
 // buildEvidenceRun journals a run with two completed tool calls and one anchored, issuer-signed

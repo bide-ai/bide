@@ -7,8 +7,8 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/blackwell-systems/bide/agent"
-	"github.com/blackwell-systems/bide/audit"
+	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/audit"
 )
 
 // twoTurnModel calls a tool on turn 1, then answers on turn 2 — enough to journal a

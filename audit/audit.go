@@ -23,7 +23,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/blackwell-systems/bide/agent"
+	"github.com/bide-ai/bide/agent"
 )
 
 // domain separates this hash use from any other, seeding the chain.

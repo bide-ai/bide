@@ -3,7 +3,7 @@ package benchmarks
 import (
 	"context"
 
-	"github.com/blackwell-systems/bide/chaos"
+	"github.com/bide-ai/bide/chaos"
 	"github.com/cloudwego/eino/compose"
 )
 

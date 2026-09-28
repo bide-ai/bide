@@ -23,9 +23,9 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 
-	"github.com/blackwell-systems/bide/agent"
-	"github.com/blackwell-systems/bide/middleware"
-	"github.com/blackwell-systems/bide/trace"
+	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/middleware"
+	"github.com/bide-ai/bide/trace"
 )
 
 // scriptModel calls the weather tool once (reporting token usage on Finish so cost is

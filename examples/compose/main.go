@@ -11,7 +11,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/blackwell-systems/bide/govern"
+	"github.com/bide-ai/bide/govern"
 	gsm "github.com/blackwell-systems/gsm"
 )
 

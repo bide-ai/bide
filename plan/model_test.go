@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/blackwell-systems/bide/agent"
+	"github.com/bide-ai/bide/agent"
 )
 
 // A Model node binds a real model to the flow: it renders the node's prompt from the

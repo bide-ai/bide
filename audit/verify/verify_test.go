@@ -6,9 +6,9 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/blackwell-systems/bide/agent"
-	"github.com/blackwell-systems/bide/audit"
-	"github.com/blackwell-systems/bide/audit/verify"
+	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/audit"
+	"github.com/bide-ai/bide/audit/verify"
 )
 
 // The standalone verifier must agree, bit for bit, with the full audit package on the same

@@ -1,9 +1,9 @@
-module github.com/blackwell-systems/bide/benchmarks
+module github.com/bide-ai/bide/benchmarks
 
 go 1.27.0
 
 require (
-	github.com/blackwell-systems/bide v0.0.0
+	github.com/bide-ai/bide v0.0.0
 	github.com/cloudwego/eino v0.9.21
 	github.com/tmc/langchaingo v0.1.14
 	google.golang.org/adk/v2 v2.4.0
@@ -95,4 +95,4 @@ require (
 	trpc.group/trpc-go/trpc-a2a-go v0.2.6-0.20260721084546-18c8244d0acb // indirect
 )
 
-replace github.com/blackwell-systems/bide => ../
+replace github.com/bide-ai/bide => ../

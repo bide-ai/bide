@@ -1,9 +1,9 @@
-module github.com/blackwell-systems/bide/store/sqlite
+module github.com/bide-ai/bide/store/sqlite
 
 go 1.27.0
 
 require (
-	github.com/blackwell-systems/bide v0.0.0
+	github.com/bide-ai/bide v0.0.0
 	golang.org/x/sync v0.23.0
 	modernc.org/sqlite v1.59.0
 )
@@ -20,4 +20,4 @@ require (
 	modernc.org/memory v1.12.1 // indirect
 )
 
-replace github.com/blackwell-systems/bide => ../../
+replace github.com/bide-ai/bide => ../../

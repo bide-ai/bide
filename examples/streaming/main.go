@@ -12,8 +12,8 @@ import (
 	"os"
 	"time"
 
-	"github.com/blackwell-systems/bide/agent"
-	"github.com/blackwell-systems/bide/model/openai"
+	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/model/openai"
 )
 
 type WeatherArgs struct {

@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/blackwell-systems/bide/agent"
+	"github.com/bide-ai/bide/agent"
 )
 
 // This file is the bring-your-own port for DURABLE event-trail persistence. The journal is

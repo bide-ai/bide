@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/blackwell-systems/bide/agent"
+	"github.com/bide-ai/bide/agent"
 )
 
 func openTestStore(t *testing.T) (*Store, context.Context) {

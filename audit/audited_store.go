@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/blackwell-systems/bide/agent"
+	"github.com/bide-ai/bide/agent"
 )
 
 // AuditedStore wraps a Durable so every durable step is continuously anchored: whenever a

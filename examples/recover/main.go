@@ -16,7 +16,7 @@ import (
 	"log"
 	"sync/atomic"
 
-	"github.com/blackwell-systems/bide/agent"
+	"github.com/bide-ai/bide/agent"
 )
 
 // scriptModel calls the charge tool once, then answers in text on the next turn.

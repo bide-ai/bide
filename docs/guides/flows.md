@@ -20,8 +20,8 @@ is simpler and wins on every other axis.
 
 ```go
 import (
-    "github.com/blackwell-systems/bide/agent"
-    "github.com/blackwell-systems/bide/plan"
+    "github.com/bide-ai/bide/agent"
+    "github.com/bide-ai/bide/plan"
 )
 
 f := plan.New[Order, Receipt]("triage")                  // input and output pinned here

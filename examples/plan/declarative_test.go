@@ -11,8 +11,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/blackwell-systems/bide/agent"
-	"github.com/blackwell-systems/bide/plan"
+	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/plan"
 )
 
 // TestDeclarativeConfigMatchesCodeBuilt loads the declarative config, runs and conforms it, and

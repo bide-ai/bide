@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/blackwell-systems/bide/agent"
+	"github.com/bide-ai/bide/agent"
 )
 
 // This file is the event→audit sink: it turns Agent.Stream's ephemeral SEMANTIC lifecycle

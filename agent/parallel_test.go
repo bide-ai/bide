@@ -8,8 +8,8 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/blackwell-systems/bide/agent"
-	"github.com/blackwell-systems/bide/audit"
+	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/audit"
 )
 
 type checkResult struct {

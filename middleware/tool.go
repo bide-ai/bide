@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/blackwell-systems/bide/agent"
+	"github.com/bide-ai/bide/agent"
 )
 
 // ToolRetry retries a failing tool call up to n additional times with exponential

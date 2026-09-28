@@ -237,7 +237,7 @@ if errors.As(err, &halt) {
 Requires Go 1.27 (the core uses generic methods). If `go version` is older, upgrade or set
 `GOTOOLCHAIN=go1.27.0`.
 
-The core package is `agent`, imported from `github.com/blackwell-systems/bide/agent`
+The core package is `agent`, imported from `github.com/bide-ai/bide/agent`
 (as the block below shows).
 
 ```go
@@ -248,9 +248,9 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/blackwell-systems/bide/agent"
-	"github.com/blackwell-systems/bide/model/openai"
-	"github.com/blackwell-systems/bide/store/sqlite"
+	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/model/openai"
+	"github.com/bide-ai/bide/store/sqlite"
 )
 
 type WeatherArgs struct {
@@ -613,7 +613,7 @@ func RequireTag(tag string) agent.ToolMiddleware {
 
 ## Modules
 
-Bide is a multi-module repo: a dependency-light **core** (`github.com/blackwell-systems/bide`,
+Bide is a multi-module repo: a dependency-light **core** (`github.com/bide-ai/bide`,
 the loop, schema, middleware, model adapters, the `plan` flow builder, `audit`, govern; deps are just gsm + `x/sync`) plus one
 module per heavy adapter (`mcp`, `trace`, `store/sqlite`, `store/postgres`, `govern/redislog`,
 `govern/sqlitelog`, `govern/postgreslog`). Import an adapter and you pull its dependency tree; import only the core

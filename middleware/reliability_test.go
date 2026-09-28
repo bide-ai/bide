@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/blackwell-systems/bide/agent"
-	"github.com/blackwell-systems/bide/middleware"
+	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/middleware"
 )
 
 // TestRetry_PerAttemptTimeout: a handler that blocks past the per-attempt timeout fails that

@@ -3,7 +3,7 @@ package benchmarks
 import (
 	"context"
 
-	"github.com/blackwell-systems/bide/chaos"
+	"github.com/bide-ai/bide/chaos"
 	"github.com/tmc/langchaingo/agents"
 	"github.com/tmc/langchaingo/chains"
 	"github.com/tmc/langchaingo/llms"

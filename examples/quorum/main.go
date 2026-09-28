@@ -27,9 +27,9 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/blackwell-systems/bide/agent"
-	"github.com/blackwell-systems/bide/audit"
-	"github.com/blackwell-systems/bide/govern"
+	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/audit"
+	"github.com/bide-ai/bide/govern"
 	gsm "github.com/blackwell-systems/gsm"
 )
 

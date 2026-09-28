@@ -9,7 +9,7 @@ import (
 	"strings"
 	"text/template"
 
-	"github.com/blackwell-systems/bide/agent"
+	"github.com/bide-ai/bide/agent"
 )
 
 // Flow[In, Out] is a built, frozen flow: the reified topology validated by

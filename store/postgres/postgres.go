@@ -12,7 +12,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/blackwell-systems/bide/agent"
+	"github.com/bide-ai/bide/agent"
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"golang.org/x/sync/singleflight"
 )

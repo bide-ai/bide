@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/blackwell-systems/bide/agent"
+	"github.com/bide-ai/bide/agent"
 )
 
 // The rung-2 test domain: a tiny triage flow. classify maps an Order to an

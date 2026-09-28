@@ -26,8 +26,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/blackwell-systems/bide/agent"
-	"github.com/blackwell-systems/bide/audit"
+	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/audit"
 )
 
 // policyFormatVersion is the published domain-separation tag for the combinator policy

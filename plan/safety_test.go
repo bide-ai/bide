@@ -6,7 +6,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/blackwell-systems/bide/agent"
+	"github.com/bide-ai/bide/agent"
 )
 
 // Safety opt-in on the plan surface: a node marked ReadOnly/Idempotent RE-RUNS its

@@ -55,10 +55,10 @@ import (
 	"os"
 	"time"
 
-	"github.com/blackwell-systems/bide/agent"
-	"github.com/blackwell-systems/bide/audit"
-	"github.com/blackwell-systems/bide/plan"
-	"github.com/blackwell-systems/bide/store/sqlite"
+	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/audit"
+	"github.com/bide-ai/bide/plan"
+	"github.com/bide-ai/bide/store/sqlite"
 )
 
 // Order is the flow input: a single incoming order to triage.

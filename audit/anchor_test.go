@@ -7,8 +7,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/blackwell-systems/bide/agent"
-	"github.com/blackwell-systems/bide/audit"
+	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/audit"
 )
 
 // mkSTH builds a distinct signed tree head for anchor-log tests (the anchor log doesn't care

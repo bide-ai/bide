@@ -15,8 +15,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/blackwell-systems/bide/agent"
-	"github.com/blackwell-systems/bide/model/openai"
+	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/model/openai"
 )
 
 // memRetriever is a stand-in knowledge base. A real Retriever would query pgvector,

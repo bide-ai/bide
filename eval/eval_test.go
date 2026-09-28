@@ -5,8 +5,8 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/blackwell-systems/bide/agent"
-	"github.com/blackwell-systems/bide/eval"
+	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/eval"
 )
 
 // TestRun_StatisticalPassRate confirms the harness reports a pass-rate distribution with a Wilson

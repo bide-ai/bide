@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/blackwell-systems/bide/agent"
-	"github.com/blackwell-systems/bide/middleware"
+	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/middleware"
 )
 
 // stubModel is a Model that waits `delay`, then either errors or returns a one-token answer. It

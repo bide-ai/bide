@@ -5,8 +5,8 @@ import (
 	"os"
 	"testing"
 
-	"github.com/blackwell-systems/bide/govern"
-	"github.com/blackwell-systems/bide/govern/postgreslog"
+	"github.com/bide-ai/bide/govern"
+	"github.com/bide-ai/bide/govern/postgreslog"
 )
 
 // The Postgres adapter satisfies the govern.EventLog port (asserted here so the adapter package

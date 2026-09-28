@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/blackwell-systems/bide/agent"
-	"github.com/blackwell-systems/bide/audit"
+	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/audit"
 )
 
 // TestCryptographicConformance proves offline that a run followed THIS declared

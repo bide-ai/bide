@@ -6,8 +6,8 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/blackwell-systems/bide/agent"
-	"github.com/blackwell-systems/bide/eval"
+	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/eval"
 )
 
 // reportFor builds a Report whose single overall metric has the given passes/runs, so comparison

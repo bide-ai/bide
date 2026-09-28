@@ -6,7 +6,7 @@ import (
 	"context"
 	"sync"
 
-	"github.com/blackwell-systems/bide/chaos"
+	"github.com/bide-ai/bide/chaos"
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/graph"
 	"trpc.group/trpc-go/trpc-agent-go/graph/checkpoint/inmemory"

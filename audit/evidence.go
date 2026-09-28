@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/blackwell-systems/bide/agent"
+	"github.com/bide-ai/bide/agent"
 )
 
 // EvidenceFormat is the format/version tag written into every EvidencePackage. It is

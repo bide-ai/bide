@@ -19,7 +19,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/blackwell-systems/bide/agent"
+	"github.com/bide-ai/bide/agent"
 )
 
 // Model is an Anthropic Messages API adapter implementing agent.Model.

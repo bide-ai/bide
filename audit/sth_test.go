@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/blackwell-systems/bide/agent"
+	"github.com/bide-ai/bide/agent"
 )
 
 func journal(t *testing.T, store agent.Durable, runID string, vals ...string) {

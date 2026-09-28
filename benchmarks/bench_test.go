@@ -3,7 +3,7 @@ package benchmarks
 import (
 	"testing"
 
-	"github.com/blackwell-systems/bide/chaos"
+	"github.com/bide-ai/bide/chaos"
 )
 
 // TestChaos_Comparison runs the crash-injection benchmark across SDKs and logs a table.

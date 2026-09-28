@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/blackwell-systems/bide/govern"
-	"github.com/blackwell-systems/bide/govern/sqlitelog"
+	"github.com/bide-ai/bide/govern"
+	"github.com/bide-ai/bide/govern/sqlitelog"
 	gsm "github.com/blackwell-systems/gsm"
 )
 

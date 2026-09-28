@@ -25,7 +25,7 @@ import (
 	"fmt"
 	"sync/atomic"
 
-	"github.com/blackwell-systems/bide/agent"
+	"github.com/bide-ai/bide/agent"
 )
 
 // tickets counts how many times the side-effecting tool actually executed, so the example can

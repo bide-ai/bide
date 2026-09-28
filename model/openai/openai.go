@@ -19,8 +19,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/blackwell-systems/bide/agent"
-	"github.com/blackwell-systems/bide/schema"
+	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/schema"
 )
 
 type Model struct {

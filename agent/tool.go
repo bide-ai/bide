@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/blackwell-systems/bide/schema"
+	"github.com/bide-ai/bide/schema"
 )
 
 // Tool is an action the agent can take. The interface is untyped (json.RawMessage)

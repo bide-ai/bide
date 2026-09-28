@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/blackwell-systems/bide/agent"
+	"github.com/bide-ai/bide/agent"
 )
 
 // loopState is the single loop-carried value: a countdown a bounded loop decrements

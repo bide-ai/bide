@@ -17,8 +17,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/blackwell-systems/bide/agent"
-	"github.com/blackwell-systems/bide/plan"
+	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/plan"
 )
 
 // declarativeConfig is the order-triage flow expressed as a declarative JSON config. It restates the

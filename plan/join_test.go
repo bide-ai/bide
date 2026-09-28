@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/blackwell-systems/bide/agent"
+	"github.com/bide-ai/bide/agent"
 )
 
 // buildDiamond builds the canonical fan-out-then-fan-in diamond: an entry split

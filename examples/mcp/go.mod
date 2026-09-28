@@ -1,13 +1,13 @@
 // Self-contained example module: the mcp package is its own module with the MCP go-sdk
 // dependency, which the root module does not carry, so this example is its own module too.
 // Build and run it from this directory: GOWORK=off go run .
-module github.com/blackwell-systems/bide/examples/mcp
+module github.com/bide-ai/bide/examples/mcp
 
 go 1.27.0
 
 require (
-	github.com/blackwell-systems/bide v0.0.0
-	github.com/blackwell-systems/bide/mcp v0.0.0
+	github.com/bide-ai/bide v0.0.0
+	github.com/bide-ai/bide/mcp v0.0.0
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 )
 
@@ -22,6 +22,6 @@ require (
 	golang.org/x/time v0.15.0 // indirect
 )
 
-replace github.com/blackwell-systems/bide => ../../
+replace github.com/bide-ai/bide => ../../
 
-replace github.com/blackwell-systems/bide/mcp => ../../mcp
+replace github.com/bide-ai/bide/mcp => ../../mcp

@@ -15,7 +15,7 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/blackwell-systems/bide/agent"
+	"github.com/bide-ai/bide/agent"
 )
 
 // scriptModel is a deterministic Model: turn 0 calls the review tool; turn 1 (after the

@@ -4,8 +4,8 @@ import (
 	"crypto/ed25519"
 	"testing"
 
-	"github.com/blackwell-systems/bide/agent"
-	"github.com/blackwell-systems/bide/audit"
+	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/audit"
 )
 
 // keyRecs builds a set of records whose ToolUseKeys are exactly the given tool-use IDs.

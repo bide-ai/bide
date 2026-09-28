@@ -9,8 +9,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/blackwell-systems/bide/agent"
-	"github.com/blackwell-systems/bide/middleware"
+	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/middleware"
 )
 
 // stub is an offline model: it waits `delay`, then either fails (down) or answers in one turn.

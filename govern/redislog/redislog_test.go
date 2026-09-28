@@ -5,8 +5,8 @@ import (
 	"os"
 	"testing"
 
-	"github.com/blackwell-systems/bide/govern"
-	"github.com/blackwell-systems/bide/govern/redislog"
+	"github.com/bide-ai/bide/govern"
+	"github.com/bide-ai/bide/govern/redislog"
 	gsm "github.com/blackwell-systems/gsm"
 )
 

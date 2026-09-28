@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/blackwell-systems/bide/agent"
+	"github.com/bide-ai/bide/agent"
 )
 
 // ProveStep builds a ProofBundle proving that the durable step with this name (an agent.Step /

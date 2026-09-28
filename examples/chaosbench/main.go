@@ -10,7 +10,7 @@ package main
 import (
 	"fmt"
 
-	"github.com/blackwell-systems/bide/chaos"
+	"github.com/bide-ai/bide/chaos"
 )
 
 func main() {

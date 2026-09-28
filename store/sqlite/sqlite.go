@@ -18,7 +18,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/blackwell-systems/bide/agent"
+	"github.com/bide-ai/bide/agent"
 	"golang.org/x/sync/singleflight"
 	_ "modernc.org/sqlite"
 )

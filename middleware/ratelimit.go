@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/blackwell-systems/bide/agent"
+	"github.com/bide-ai/bide/agent"
 )
 
 // RateLimiter is a token-bucket limiter shared across calls: it allows one token every

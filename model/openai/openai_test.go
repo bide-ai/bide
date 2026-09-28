@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/blackwell-systems/bide/agent"
+	"github.com/bide-ai/bide/agent"
 )
 
 // An OpenAI streaming response: text + a tool call whose arguments arrive fragmented

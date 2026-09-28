@@ -2,13 +2,13 @@
 // carries the modernc.org/sqlite dependency, which the root module does not), so, like the
 // other example modules, it is its own module. Build and run it from this directory:
 // GOWORK=off go run .
-module github.com/blackwell-systems/bide/examples/plan
+module github.com/bide-ai/bide/examples/plan
 
 go 1.27.0
 
 require (
-	github.com/blackwell-systems/bide v0.0.0
-	github.com/blackwell-systems/bide/store/sqlite v0.0.0
+	github.com/bide-ai/bide v0.0.0
+	github.com/bide-ai/bide/store/sqlite v0.0.0
 )
 
 require (
@@ -25,6 +25,6 @@ require (
 	modernc.org/sqlite v1.59.0 // indirect
 )
 
-replace github.com/blackwell-systems/bide => ../../
+replace github.com/bide-ai/bide => ../../
 
-replace github.com/blackwell-systems/bide/store/sqlite => ../../store/sqlite
+replace github.com/bide-ai/bide/store/sqlite => ../../store/sqlite

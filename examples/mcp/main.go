@@ -19,8 +19,8 @@ import (
 
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/blackwell-systems/bide/agent"
-	"github.com/blackwell-systems/bide/mcp"
+	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/mcp"
 )
 
 // scriptModel calls the discovered "echo" tool once, then answers in text on the next turn,

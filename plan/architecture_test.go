@@ -12,7 +12,7 @@ import (
 
 // TestPlanNoAdapterImports locks the ports-and-adapters boundary for the plan
 // surface: plan lowers onto the CORE runtime and may import the core
-// (github.com/blackwell-systems/bide), but it must never drag a concrete adapter into
+// (github.com/bide-ai/bide), but it must never drag a concrete adapter into
 // its runtime import graph. Dependencies point INWARD. If this fails, an adapter
 // import crept into plan transitively and the hexagon is rotting.
 //
@@ -20,21 +20,21 @@ import (
 // /Users/dayna/code/go-agents/architecture_test.go): go list -deps reports the
 // non-test dependency graph, so this checks what plan actually pulls at runtime.
 func TestPlanNoAdapterImports(t *testing.T) {
-	out, err := exec.Command("go", "list", "-deps", "github.com/blackwell-systems/bide/plan").Output()
+	out, err := exec.Command("go", "list", "-deps", "github.com/bide-ai/bide/plan").Output()
 	if err != nil {
 		t.Skipf("go list unavailable: %v", err)
 	}
 	deps := string(out)
 
 	// Adapter packages: plan may depend on the core's ports, never on a concrete
-	// adapter. Importing the core root (github.com/blackwell-systems/bide) is allowed and
+	// adapter. Importing the core root (github.com/bide-ai/bide) is allowed and
 	// is intentionally NOT in this list; only its adapter subtrees are forbidden.
 	forbidden := []string{
-		"blackwell-systems/bide/model/", // provider adapters
-		"blackwell-systems/bide/store/", // persistence adapters
-		"blackwell-systems/bide/trace",  // OTel adapter
-		"blackwell-systems/bide/middleware",
-		"blackwell-systems/bide/govern", // gsm-backed governor (Tier-2 edge)
+		"bide-ai/bide/model/", // provider adapters
+		"bide-ai/bide/store/", // persistence adapters
+		"bide-ai/bide/trace",  // OTel adapter
+		"bide-ai/bide/middleware",
+		"bide-ai/bide/govern", // gsm-backed governor (Tier-2 edge)
 	}
 	for _, bad := range forbidden {
 		if strings.Contains(deps, bad) {

@@ -14,8 +14,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/blackwell-systems/bide/agent"
-	"github.com/blackwell-systems/bide/plan"
+	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/plan"
 )
 
 // LoopState is the single loop-carried value the bounded-loop demo threads through its

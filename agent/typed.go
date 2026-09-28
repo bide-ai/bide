@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/blackwell-systems/bide/schema"
+	"github.com/bide-ai/bide/schema"
 )
 
 // finalAnswerTool is the synthetic tool RunTyped injects to collect the structured result.
