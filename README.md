@@ -53,6 +53,33 @@ test proving its resume genuinely works). The piece none of them have: a durable
 marker** written before a non-idempotent write, and **halt-on-unknown-outcome** on resume: if a
 write's result was never journaled, the run stops for a human decision instead of guessing.
 
+### When the outcome is unknown, it stops
+
+The hard case in at-most-once is not the crash you can see, it is the one you cannot: a side
+effect whose call left the process but whose result never reached the journal. The attempt marker
+lets a resumed run tell "never started" from "started, outcome unknown," and it resolves the
+unknown case by a fixed hierarchy, never a guess:
+
+```mermaid
+flowchart TD
+  A["Side effect attempted"] --> B{"Result journaled?"}
+  B -- "yes" --> DONE["Fired exactly once"]
+  B -- "no, crash mid-flight" --> C{"Retry-safe?<br/>read-only, idempotent, or idempotency key"}
+  C -- "yes" --> R["Auto-retry; provider dedupes"] --> DONE
+  C -- "no" --> H["Halt: unknown outcome"]
+  H --> V{"Can the outcome be established?"}
+  V -- "system left a queryable record" --> REC["Reconciler verifies, resolves automatically"] --> DONE
+  V -- "genuinely unknowable" --> HUM["Human resolves, once"] --> DONE
+```
+
+Most unknowns never reach a person: an idempotency key lets the provider dedupe a safe retry, and
+for systems without one (email, internal services) a reconciler resolves the step from the record
+it left (`agent.ResolveHalt`). The human is the floor, not the default.
+
+The rule underneath it: when an action moves money, touches a record, or happens under audit and
+the outcome is genuinely unknowable, stopping is the correct result. A pause a human or a
+reconciler can clear beats a double-charge no one can take back.
+
 ### 2 · Durable execution as a library, not a cluster
 
 Temporal has the guarantees but needs a server + a worker fleet to operate. Here they come from
