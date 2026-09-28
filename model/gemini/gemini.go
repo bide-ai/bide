@@ -24,7 +24,7 @@ import (
 	"strconv"
 	"strings"
 
-	agent "github.com/blackwell-systems/bide"
+	"github.com/blackwell-systems/bide/agent"
 )
 
 // Model is a Google Gemini generateContent API adapter implementing agent.Model.

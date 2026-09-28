@@ -4,7 +4,7 @@ import (
 	"context"
 	"sync"
 
-	agent "github.com/blackwell-systems/bide"
+	"github.com/blackwell-systems/bide/agent"
 )
 
 // Rates holds the billing rates for a model in USD per 1,000,000 tokens.

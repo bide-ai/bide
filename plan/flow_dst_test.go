@@ -6,7 +6,7 @@ import (
 	"sync"
 	"testing"
 
-	agent "github.com/blackwell-systems/bide"
+	"github.com/blackwell-systems/bide/agent"
 )
 
 // Deterministic Simulation Testing of the substrate invariant as it reaches the

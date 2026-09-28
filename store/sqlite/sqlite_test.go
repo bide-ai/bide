@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	agent "github.com/blackwell-systems/bide"
+	"github.com/blackwell-systems/bide/agent"
 )
 
 // --- minimal test doubles (mirrors the ones in the agent package) ---

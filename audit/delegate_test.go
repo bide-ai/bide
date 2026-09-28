@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"testing"
 
-	agent "github.com/blackwell-systems/bide"
+	"github.com/blackwell-systems/bide/agent"
 )
 
 // answerModel is a stub model that returns a fixed final answer in one turn, so a wrapped sub-agent

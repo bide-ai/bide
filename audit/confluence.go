@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	agent "github.com/blackwell-systems/bide"
+	"github.com/blackwell-systems/bide/agent"
 )
 
 // ConvergenceContent is the payload of a convergence leaf: an opaque, serialized convergence

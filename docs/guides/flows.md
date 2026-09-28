@@ -20,7 +20,7 @@ is simpler and wins on every other axis.
 
 ```go
 import (
-    agent "github.com/blackwell-systems/bide"
+    "github.com/blackwell-systems/bide/agent"
     "github.com/blackwell-systems/bide/plan"
 )
 

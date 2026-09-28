@@ -17,7 +17,7 @@ import (
 	"context"
 	"sync"
 
-	agent "github.com/blackwell-systems/bide"
+	"github.com/blackwell-systems/bide/agent"
 	gsm "github.com/blackwell-systems/gsm"
 )
 

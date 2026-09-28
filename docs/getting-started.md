@@ -7,13 +7,13 @@
 
 ## Install
 
-Once published: `go get github.com/blackwell-systems/bide`. To build against the repo today, clone it and use a local `replace` directive or `go.work` (this repo already ships a `go.work`; see [Building the repository](#building-the-repository)).
+Once published: `go get github.com/blackwell-systems/bide/agent`. To build against the repo today, clone it and use a local `replace` directive or `go.work` (this repo already ships a `go.work`; see [Building the repository](#building-the-repository)).
 
 ## Your first agent
 
 An agent is a model, a durable store, and some tools. The loop runs to a final answer; tool results and model turns are journaled so a crashed run resumes without repeating work.
 
-The module is `bide` but the package is `agent`, so import it aliased as `agent "github.com/blackwell-systems/bide"` (as the block below shows).
+The core package is `agent`, imported from `github.com/blackwell-systems/bide/agent` (as the block below shows).
 
 ```go
 package main
@@ -23,7 +23,7 @@ import (
 	"fmt"
 	"os"
 
-	agent "github.com/blackwell-systems/bide"
+	"github.com/blackwell-systems/bide/agent"
 	"github.com/blackwell-systems/bide/model/openai"
 )
 

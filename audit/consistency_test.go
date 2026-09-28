@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"testing"
 
-	agent "github.com/blackwell-systems/bide"
+	"github.com/blackwell-systems/bide/agent"
 )
 
 func leavesN(n int) [][]byte {

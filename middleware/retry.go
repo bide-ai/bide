@@ -6,7 +6,7 @@ import (
 	"math/rand/v2"
 	"time"
 
-	agent "github.com/blackwell-systems/bide"
+	"github.com/blackwell-systems/bide/agent"
 )
 
 const (

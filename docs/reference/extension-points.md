@@ -77,7 +77,7 @@ import (
 	"context"
 	"sync"
 
-	agent "github.com/blackwell-systems/bide"
+	"github.com/blackwell-systems/bide/agent"
 )
 
 type Store struct {

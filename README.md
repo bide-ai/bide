@@ -235,8 +235,8 @@ if errors.As(err, &halt) {
 Requires Go 1.27 (the core uses generic methods). If `go version` is older, upgrade or set
 `GOTOOLCHAIN=go1.27.0`.
 
-The module is `bide` but the package is `agent`, so import it aliased as
-`agent "github.com/blackwell-systems/bide"` (as the block below shows).
+The core package is `agent`, imported from `github.com/blackwell-systems/bide/agent`
+(as the block below shows).
 
 ```go
 package main
@@ -246,7 +246,7 @@ import (
 	"fmt"
 	"os"
 
-	agent "github.com/blackwell-systems/bide"
+	"github.com/blackwell-systems/bide/agent"
 	"github.com/blackwell-systems/bide/model/openai"
 	"github.com/blackwell-systems/bide/store/sqlite"
 )

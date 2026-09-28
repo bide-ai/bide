@@ -14,7 +14,7 @@ import (
 //
 // go list -deps reports non-test dependencies, so this checks the runtime import graph.
 func TestCoreHasNoAdapterImports(t *testing.T) {
-	out, err := exec.Command("go", "list", "-deps", "github.com/blackwell-systems/bide").Output()
+	out, err := exec.Command("go", "list", "-deps", "github.com/blackwell-systems/bide/agent").Output()
 	if err != nil {
 		t.Skipf("go list unavailable: %v", err)
 	}

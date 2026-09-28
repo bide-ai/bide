@@ -109,7 +109,7 @@ import (
 
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 
-	agent "github.com/blackwell-systems/bide"
+	"github.com/blackwell-systems/bide/agent"
 	"github.com/blackwell-systems/bide/mcp"
 	"github.com/blackwell-systems/bide/model/anthropic"
 )

@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	agent "github.com/blackwell-systems/bide"
+	"github.com/blackwell-systems/bide/agent"
 )
 
 // buildTriage builds a small switched flow shaped like the example, so the digest

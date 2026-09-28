@@ -38,7 +38,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	agent "github.com/blackwell-systems/bide"
+	"github.com/blackwell-systems/bide/agent"
 )
 
 // Tools lists the tools exposed by a connected MCP client session and returns each one

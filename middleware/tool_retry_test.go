@@ -8,7 +8,7 @@ import (
 	"testing/synctest"
 	"time"
 
-	agent "github.com/blackwell-systems/bide"
+	"github.com/blackwell-systems/bide/agent"
 )
 
 // Run inside synctest bubbles: backoff sleeps use a fake clock (deterministic, instant).

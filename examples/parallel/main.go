@@ -13,7 +13,7 @@ import (
 	"fmt"
 	"log"
 
-	agent "github.com/blackwell-systems/bide"
+	"github.com/blackwell-systems/bide/agent"
 )
 
 // Check is the result of one independent screening step.

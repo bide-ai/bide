@@ -4,7 +4,7 @@ import (
 	"crypto/ed25519"
 	"testing"
 
-	agent "github.com/blackwell-systems/bide"
+	"github.com/blackwell-systems/bide/agent"
 	"github.com/blackwell-systems/bide/audit"
 )
 

@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	agent "github.com/blackwell-systems/bide"
+	"github.com/blackwell-systems/bide/agent"
 )
 
 // Conform checks the journaled path for runID against f's declared topology. ok

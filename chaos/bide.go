@@ -6,7 +6,7 @@ import (
 	"errors"
 	"sync"
 
-	agent "github.com/blackwell-systems/bide"
+	"github.com/blackwell-systems/bide/agent"
 )
 
 // errCrash is the injected "process died here" signal.

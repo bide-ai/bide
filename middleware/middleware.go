@@ -13,7 +13,7 @@ import (
 	"fmt"
 	"sync"
 
-	agent "github.com/blackwell-systems/bide"
+	"github.com/blackwell-systems/bide/agent"
 )
 
 // TokenBudget aborts the run once cumulative tokens (input+output) across the run's

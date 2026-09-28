@@ -6,7 +6,7 @@ import (
 	"crypto/ed25519"
 	"fmt"
 
-	agent "github.com/blackwell-systems/bide"
+	"github.com/blackwell-systems/bide/agent"
 )
 
 // A ProofBundle is a single, portable, self-describing artifact that proves ONE action

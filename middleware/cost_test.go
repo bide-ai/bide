@@ -5,7 +5,7 @@ import (
 	"math"
 	"testing"
 
-	agent "github.com/blackwell-systems/bide"
+	"github.com/blackwell-systems/bide/agent"
 )
 
 func TestCost_AccumulatesCorrectly(t *testing.T) {

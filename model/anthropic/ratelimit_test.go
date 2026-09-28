@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	agent "github.com/blackwell-systems/bide"
+	"github.com/blackwell-systems/bide/agent"
 )
 
 func TestStream_429_RateLimited(t *testing.T) {

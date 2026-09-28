@@ -17,7 +17,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	agent "github.com/blackwell-systems/bide"
+	"github.com/blackwell-systems/bide/agent"
 )
 
 // stubModel is concurrency-safe and stateless: it decides the turn from the message count,

@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"sort"
 
-	agent "github.com/blackwell-systems/bide"
+	"github.com/blackwell-systems/bide/agent"
 )
 
 // Absence proofs answer the negative question an inclusion proof cannot: prove a thing did NOT

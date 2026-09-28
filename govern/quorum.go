@@ -4,7 +4,7 @@ import (
 	"context"
 	"sort"
 
-	agent "github.com/blackwell-systems/bide"
+	"github.com/blackwell-systems/bide/agent"
 )
 
 // Voter is one named unit that produces a normalized decision. Name identifies who voted

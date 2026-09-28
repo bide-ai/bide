@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	agent "github.com/blackwell-systems/bide"
+	"github.com/blackwell-systems/bide/agent"
 )
 
 // A redelivered signal dedups ACROSS PROCESSES on the on-disk store: the second delivery,

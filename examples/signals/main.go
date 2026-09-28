@@ -16,7 +16,7 @@ import (
 	"log"
 	"time"
 
-	agent "github.com/blackwell-systems/bide"
+	"github.com/blackwell-systems/bide/agent"
 )
 
 // oneTool calls the named tool once, then answers in text on the next turn. Reused by the

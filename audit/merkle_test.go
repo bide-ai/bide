@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"testing"
 
-	agent "github.com/blackwell-systems/bide"
+	"github.com/blackwell-systems/bide/agent"
 )
 
 // ctLeaves / ctRoots are the canonical RFC 6962 (Certificate Transparency) reference test

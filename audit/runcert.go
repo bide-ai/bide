@@ -7,7 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	agent "github.com/blackwell-systems/bide"
+	"github.com/blackwell-systems/bide/agent"
 )
 
 // A RunCertificate is a proof-carrying run: one portable, offline-checkable artifact asserting

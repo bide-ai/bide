@@ -8,7 +8,7 @@ import (
 	"sort"
 	"strings"
 
-	agent "github.com/blackwell-systems/bide"
+	"github.com/blackwell-systems/bide/agent"
 )
 
 // config is the decoded rung-2 topology: pure topology plus block references.

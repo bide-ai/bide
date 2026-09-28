@@ -4,7 +4,7 @@ import (
 	"context"
 	"reflect"
 
-	agent "github.com/blackwell-systems/bide"
+	"github.com/blackwell-systems/bide/agent"
 )
 
 // nodeKind classifies a lowered step for rendering and validation.

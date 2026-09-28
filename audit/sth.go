@@ -6,7 +6,7 @@ import (
 	"encoding/binary"
 	"fmt"
 
-	agent "github.com/blackwell-systems/bide"
+	"github.com/blackwell-systems/bide/agent"
 )
 
 // A Signed Tree Head (STH) is the anchoring artifact for the RFC 6962 Merkle commitment,

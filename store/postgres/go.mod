@@ -1,7 +1,6 @@
 module github.com/blackwell-systems/bide/store/postgres
 
 go 1.27.0
-toolchain go1.27.0
 
 require (
 	github.com/blackwell-systems/bide v0.0.0

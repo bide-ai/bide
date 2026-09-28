@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	agent "github.com/blackwell-systems/bide"
+	"github.com/blackwell-systems/bide/agent"
 )
 
 // OpenAI caches prefixes automatically; its cached_tokens surface in agent.Usage.

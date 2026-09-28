@@ -27,7 +27,7 @@ import (
 	"encoding/hex"
 	"fmt"
 
-	agent "github.com/blackwell-systems/bide"
+	"github.com/blackwell-systems/bide/agent"
 	"github.com/blackwell-systems/bide/audit"
 	"github.com/blackwell-systems/bide/govern"
 	gsm "github.com/blackwell-systems/gsm"

@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	agent "github.com/blackwell-systems/bide"
+	"github.com/blackwell-systems/bide/agent"
 )
 
 // PolicyContent is the payload of a policy leaf: the serialized governed policy and its digest.
