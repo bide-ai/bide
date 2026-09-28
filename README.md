@@ -97,9 +97,10 @@ you, your database, or your logs*:
 
 **Proofs you verify, not logs you trust.** Everyone else offers *observability* (logs you
 trust because the vendor is SOC2); this is a *cryptographic proof you check yourself*. Produce a
-portable `ProofBundle` for one action (`audit.ProveToolCall`) and hand it to an auditor who
-verifies it offline with a `bide-audit verify` command or a stdlib-only verifier that never
-imports the SDK. **No other agent framework has this at all.** The same spine carries the rest of the
+portable `ProofBundle` for one action (`audit.ProveToolCall`), or a whole-run `EvidencePackage`
+(`audit.Evidence`) bundling every material action's proof into one file, and hand it to an auditor
+who verifies it offline with `bide-audit verify` / `verify-evidence` or a stdlib-only verifier that
+never imports the SDK. **No other agent framework has this at all.** The same spine carries the rest of the
 accountability layer, all verifiable offline: proof-carrying runs (one `RunCertificate` attesting a
 whole run's policy compliance), signed capability grants with attenuating delegation, authority
 earned from a clean audit trail, and governed k-of-n quorum. → [docs/guides/audit.md](docs/guides/audit.md)

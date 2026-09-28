@@ -145,9 +145,10 @@ journal; the `Inclusion` proof type and signing path are shared. (Prototype: `au
 
 ## Producing a proof: `ProofBundle`, the CLI, and the standalone verifier
 
-The primitives above are the machinery; a `ProofBundle` is the **one portable artifact** you
-hand an auditor. It packages a single disclosed record, its inclusion path, and the signed tree
-head it is proven against, and it verifies offline against a public key obtained out-of-band:
+The primitives above are the machinery; a `ProofBundle` is the **portable artifact for a single
+action** you hand an auditor (for a whole run, see the evidence bundle below). It packages a single
+disclosed record, its inclusion path, and the signed tree head it is proven against, and it verifies
+offline against a public key obtained out-of-band:
 
 ```go
 // Produce: prove one tool call happened, against an anchored STH. Semantic, not by index.
@@ -169,6 +170,27 @@ package (no `agent`, no gsm) that checks inclusion, consistency, and STH signatu
 leaf bytes: they can vendor just that, or reimplement it from RFC 6962 and check us against it.
 The two verification paths are cross-checked bit-for-bit in the tests so the standalone mirror
 cannot drift.
+
+### The run-level evidence bundle: `EvidencePackage`
+
+A `ProofBundle` proves one disclosed action. For a whole run, `audit.Evidence` assembles the run's
+evidence into a single portable file: one signed tree head, an inclusion proof per material action,
+and optionally the run certificate, the authority grant chain, and a consistency proof. It is pure
+JSON (store it, email it, publish it) and verifies offline:
+
+```go
+pkg, _ := audit.Evidence(ctx, store, runID, priv, time.Now().Unix(),
+	audit.WithAllToolCalls(), audit.WithRunCertificate(spec), audit.WithGrants())
+report, _ := pkg.Verify(pub) // per-action verdicts plus overall OK, trusting only the out-of-band key
+```
+
+`Verify` trusts the key you pass, never the one embedded in the package. It confirms the tree-head
+signature, every action proof against that tree, and (when present) the run certificate, anchored
+grants, and consistency proof. Two checks need inputs the package deliberately does not carry, so the
+report flags them: grant issuer signatures (they need the issuers' keys, checked with
+`VerifyDelegationChain` against your own PKI) and the full consistency prefix (it needs the earlier
+root). For the auditor who does not write Go, `bide-audit verify-evidence` verifies the same file and
+prints a plain-English PASS/FAIL.
 
 ## CLI reference: `bide-audit`
 
@@ -200,6 +222,7 @@ Conventions shared across verbs:
 | `verify-convergence` | `-cert-bundle`, `-policy-bundle`, `-pubkey` | `-checker` | An anchored `ConfluenceCertificate` links to the policy leaf; with `-checker`, the oracle's convergence AND compensation-free verdicts must AGREE with the certificate, so an overstated certificate is caught. |
 | `verify-quorum` | `-tally`, `-vote` (repeatable), `-pubkey`, `-k` | `-commit` | A governed k-of-n quorum: the tally and every vote bundle authentic and in the same signed tree and run, the recorded tally recomputes from the disclosed votes (a forged tally is caught), and `votes_for >= k`; with `-commit`, a governed commit is anchored in the same tree. |
 | `verify-run` | `-cert`, `-pubkey`, and one of `-approved <digest>` (repeatable) / `-approved-file <file>` | `-checker <astchecker>` | A proof-carrying run certificate: the used-policy set is bound to the run's signed absence root and is a subset of the approved allowlist (only-approved-policies), and every used policy has an anchored, digest-linked convergence certificate in the run's signed tree (policies-convergence-certified); with `-checker`, the oracle's convergence verdict on each used policy must AGREE with its certificate. |
+| `verify-evidence` | `-evidence`, `-pubkey` | | A run-level `EvidencePackage`: the signed tree head is authentic and every packaged action proof (plus any run certificate, anchored grant, and consistency proof) verifies against it. Prints one line per action and an overall PASS/FAIL. |
 
 The `-checker` flag points at the external verified oracle binary (the `astchecker` extracted from
 the axiom-free Coq proof); the CLI does not ship it, and without it the governance verbs verify only
