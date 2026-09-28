@@ -27,7 +27,8 @@
     <text x="270" y="421" font-size="31" font-weight="700" fill="#F5F1E8">Queryable record</text>
     <text x="270" y="457" font-size="20" fill="#9A968E">sent-message id, row, log line</text>
     <line x1="736" y1="385" x2="736" y2="475" stroke="#2A2A31" stroke-width="1.5"/>
-    <text x="762" y="437" font-size="20" fill="#CFCBC2">auto, reconciler resolves</text>
+    <text x="762" y="425" font-size="20" fill="#CFCBC2">auto, reconciler resolves</text>
+    <text x="762" y="455" font-size="17" fill="#8C887F">after a grace period</text>
   </g>
   <text x="218" y="535" font-size="19" fill="#6E6A62" text-anchor="middle">else</text>
   <path d="M212 543 l6 8 l6 -8" fill="none" stroke="#6E6A62" stroke-width="2"/>

@@ -6,6 +6,8 @@
 
 **Build durable AI agents in Go. Side effects that fire at most once.**
 
+> A pause a human or reconciler can clear beats a double-fire you cannot undo.
+
 One append-only journal, four guarantees no other agent framework pairs in a single library:
 side effects that fire **at most once**; thousands of concurrent durable runs **in one process, no
 cluster**; a **cryptographically verifiable audit trail** (RFC 6962 Merkle proofs, checkable without
