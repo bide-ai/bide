@@ -2,7 +2,7 @@
 
 ## How contributions work
 
-bide is maintained by Blackwell Systems, and the core is kept under tight authorial control on
+bide is maintained by Dayna Blackwell (bide-ai), and the core is kept under tight authorial control on
 purpose. The project's value is correctness you can rely on: at-most-once side effects,
 machine-checked convergence, and an offline-verifiable audit trail. Those guarantees require the
 maintainers to own the core end to end, the same reason SQLite keeps a closed core. Concretely:

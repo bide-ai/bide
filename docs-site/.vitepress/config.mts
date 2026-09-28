@@ -87,7 +87,7 @@ export default defineConfig({
     },
     footer: {
       message: 'Apache-2.0 licensed.',
-      copyright: 'Copyright 2026 Dayna Blackwell / Blackwell Systems',
+      copyright: 'Copyright 2026 Dayna Blackwell / bide-ai',
     },
   },
 })
