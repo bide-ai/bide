@@ -53,10 +53,3 @@ release:
   draft: false
   prerelease: auto
   name_template: "bide {{ .Tag }}"
-  footer: |
-    ---
-    Install the library:
-
-    ```
-    go get github.com/bide-ai/bide@{{ .Tag }}
-    ```
