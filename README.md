@@ -25,7 +25,7 @@ Status: **working v0**, live-verified end-to-end. Requires **Go 1.27**.
 
 ## One journal, four guarantees
 
-Everyone ships an agent loop; ours is ~40 lines. The moat is the substrate underneath it: a
+Everyone ships an agent loop; ours is ~40 lines. What matters is the substrate underneath it: a
 durable, append-only journal that all four guarantees are *derived from*, so you get them from
 one mechanism instead of integrating four systems.
 
