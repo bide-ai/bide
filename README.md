@@ -66,6 +66,11 @@ unknown case by a fixed hierarchy, never a guess:
   <img src="assets/resolution-ladder.png" width="820" alt="Unknown-outcome resolution ladder: a retry-safe effect auto-retries and the provider dedupes; an effect that left a queryable record is resolved automatically by a reconciler; a genuinely unknowable outcome halts and waits for a human. Under ultimate ambiguity, it stops.">
 </p>
 
+Which tier a tool lands in is set by its declared `Safety`: mark it read-only, idempotent, or
+give it an idempotency key and an unknown outcome auto-retries; declare none of those and it
+halts. Retry-safety is opt-in; the pause is the default when you have not opted in, so a library
+whose whole point is "never double-fire" defaults to safe rather than to guessing.
+
 Most unknowns never reach a person: an idempotency key lets the provider dedupe a safe retry, and
 for systems without one (email, internal services) a reconciler resolves the step from the record
 it left (`agent.ResolveHalt`). The human is the floor, not the default.
