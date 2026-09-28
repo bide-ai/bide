@@ -30,6 +30,7 @@ type Model struct {
 	baseURL   string
 	http      *http.Client
 	cache     bool
+	toolCodec agent.ToolResultCodec
 }
 
 var _ agent.Model = (*Model)(nil) // port/adapter contract
@@ -46,6 +47,11 @@ func WithHTTPClient(c *http.Client) Option { return func(m *Model) { m.http = c 
 // agent loop resends every turn — so repeat turns are billed at the cache-read rate.
 // Cache hits/writes surface in agent.Usage (CacheReadTokens / CacheWriteTokens).
 func WithPromptCache() Option { return func(m *Model) { m.cache = true } }
+
+// WithToolResultCodec encodes tool results sent to the model with c instead of
+// raw JSON (for example GCF, to cut tokens on structured output). The journal
+// keeps the JSON form; only what the model reads changes. Default is JSON.
+func WithToolResultCodec(c agent.ToolResultCodec) Option { return func(m *Model) { m.toolCodec = c } }
 
 // New constructs an Anthropic model adapter. apiKey is your Anthropic API key.
 func New(apiKey string, opts ...Option) *Model {
@@ -134,7 +140,7 @@ func (m *Model) buildRequest(req agent.Request) ([]byte, error) {
 				}
 				blocks = append(blocks, block{"type": "tool_use", "id": v.ID, "name": v.Name, "input": input})
 			case agent.ToolResult:
-				blocks = append(blocks, block{"type": "tool_result", "tool_use_id": v.ToolUseID, "content": string(v.Result), "is_error": v.IsError})
+				blocks = append(blocks, block{"type": "tool_result", "tool_use_id": v.ToolUseID, "content": agent.EncodeToolResultOr(m.toolCodec, v.Result), "is_error": v.IsError})
 			case agent.Image:
 				// URL source when URL is set; otherwise a base64 source from the raw bytes.
 				var source map[string]any

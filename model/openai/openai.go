@@ -30,6 +30,7 @@ type Model struct {
 	maxTokens int
 	strict    bool
 	http      *http.Client
+	toolCodec agent.ToolResultCodec
 }
 
 var _ agent.Model = (*Model)(nil) // port/adapter contract
@@ -41,6 +42,11 @@ func WithMaxTokens(n int) Option           { return func(m *Model) { m.maxTokens
 func WithBaseURL(u string) Option          { return func(m *Model) { m.baseURL = strings.TrimRight(u, "/") } }
 func WithHTTPClient(c *http.Client) Option { return func(m *Model) { m.http = c } }
 func WithStrictSchema() Option             { return func(m *Model) { m.strict = true } }
+
+// WithToolResultCodec encodes tool results sent to the model with c instead of
+// raw JSON (for example GCF, to cut tokens on structured output). The journal
+// keeps the JSON form; only what the model reads changes. Default is JSON.
+func WithToolResultCodec(c agent.ToolResultCodec) Option { return func(m *Model) { m.toolCodec = c } }
 
 // New constructs an OpenAI-compatible adapter. For non-OpenAI endpoints set WithBaseURL
 // (e.g. "http://localhost:11434/v1" for Ollama) and WithModel.
@@ -98,7 +104,7 @@ func (m *Model) buildRequest(req agent.Request) ([]byte, error) {
 			// each tool result becomes its own tool message
 			for _, p := range msg.Parts {
 				if tr, ok := p.(agent.ToolResult); ok {
-					msgs = append(msgs, obj{"role": "tool", "tool_call_id": tr.ToolUseID, "content": string(tr.Result)})
+					msgs = append(msgs, obj{"role": "tool", "tool_call_id": tr.ToolUseID, "content": agent.EncodeToolResultOr(m.toolCodec, tr.Result)})
 				}
 			}
 		case agent.RoleAssistant:
