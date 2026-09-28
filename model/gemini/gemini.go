@@ -34,6 +34,7 @@ type Model struct {
 	maxTokens int
 	baseURL   string
 	http      *http.Client
+	toolCodec agent.ToolResultCodec
 }
 
 var _ agent.Model = (*Model)(nil) // port/adapter contract
@@ -44,6 +45,13 @@ func WithModel(id string) Option           { return func(m *Model) { m.model = i
 func WithMaxTokens(n int) Option           { return func(m *Model) { m.maxTokens = n } }
 func WithBaseURL(u string) Option          { return func(m *Model) { m.baseURL = strings.TrimRight(u, "/") } }
 func WithHTTPClient(c *http.Client) Option { return func(m *Model) { m.http = c } }
+
+// WithToolResultCodec encodes tool results sent to the model with c instead of
+// raw JSON (for example GCF, to cut tokens on structured output). The journal
+// keeps the JSON form; only what the model reads changes. Default is JSON.
+// Gemini normally passes a JSON tool result through as a structured response;
+// with a codec set, the encoded string is sent as {"result": <encoded>}.
+func WithToolResultCodec(c agent.ToolResultCodec) Option { return func(m *Model) { m.toolCodec = c } }
 
 // New constructs a Gemini model adapter. apiKey is your Google AI Studio API key. For
 // Vertex AI or a proxy, override the host with WithBaseURL (the request path
@@ -134,14 +142,19 @@ func (m *Model) buildRequest(req agent.Request) ([]byte, error) {
 				// only the call id, so the name is best-effort recovered by scanning prior turns.
 				name := m.toolNameForResult(req.Messages, v.ToolUseID)
 				var response any
-				if len(v.Result) > 0 && json.Valid(v.Result) {
+				switch {
+				case m.toolCodec != nil:
+					// An explicit codec (for example GCF) renders the result to a
+					// string; Gemini requires an object, so it is wrapped.
+					response = obj{"result": agent.EncodeToolResultOr(m.toolCodec, v.Result)}
+				case len(v.Result) > 0 && json.Valid(v.Result):
 					// A JSON object passes through; a bare JSON value is wrapped so response is an object.
 					if bytes.HasPrefix(bytes.TrimSpace(v.Result), []byte("{")) {
 						response = json.RawMessage(v.Result)
 					} else {
 						response = obj{"result": json.RawMessage(v.Result)}
 					}
-				} else {
+				default:
 					response = obj{"result": string(v.Result)}
 				}
 				parts = append(parts, obj{"functionResponse": obj{"name": name, "response": response}})

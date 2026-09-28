@@ -123,6 +123,33 @@ signature to echo), so request-side `Reasoning` parts are dropped rather than se
 token. The OpenAI adapter still surfaces inbound reasoning it receives (`reasoning_content` from
 DeepSeek / Ollama and similar) as a `ReasoningDelta` on the stream.
 
+## GCF tool-result encoding (opt-in)
+
+Tool results are sent to the model as JSON by default. For structured output you can
+switch the model-facing encoding to [GCF](https://bide-ai.com), which is more
+token-efficient and better comprehended by frontier models than JSON, so it can cut the
+prompt tokens spent echoing tool output back each turn. It is opt-in per adapter and
+changes only what the model reads: the journal and the audit trail keep the canonical
+JSON form, so durability and proofs are unaffected.
+
+Wire it in with any adapter's `WithToolResultCodec`:
+
+```go
+import (
+	"github.com/bide-ai/bide/model/openai"
+	"github.com/bide-ai/bide/codec/gcf"
+)
+
+model := openai.New(apiKey, openai.WithToolResultCodec(gcf.New()))
+```
+
+The same option exists on the Anthropic and Gemini adapters. GCF lives in its own module
+(`github.com/bide-ai/bide/codec/gcf`), so the core takes no GCF dependency unless you opt
+in. Best paired with current frontier models; weaker or older models may comprehend the
+compact form less reliably, so treat it as a per-deployment tuning knob rather than a
+default. If encoding a particular result ever fails, the adapter falls back to the JSON
+form for that result.
+
 ## What is not built
 
 - No **native Bedrock** adapter (reach Bedrock-hosted models through an OpenAI-compatible proxy).

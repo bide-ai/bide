@@ -2,6 +2,7 @@ go 1.27.0
 
 use (
 	.
+	./codec/gcf
 	./examples/mcp
 	./examples/observability
 	./examples/plan
