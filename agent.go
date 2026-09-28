@@ -5,7 +5,9 @@
 // retry-safe tools, halting (rather than double-executing) a non-idempotent tool whose
 // outcome is unknown, and pausing durably for human approval when a tool requires it.
 // Orchestration is plain Go (Option B); the model call is wrapped by a func(Handler)
-// Handler middleware chain.
+// Handler middleware chain. Reliability wrappers ship in the middleware package:
+// per-attempt timeouts, classified retry with backoff, hedged model calls
+// (middleware.Hedge), and rate limiting.
 //
 // Scope: this resumes AROUND tool boundaries, not the internals of a single in-flight
 // tool call. The precise promise is "survives crashes around tool calls, never

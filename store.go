@@ -74,6 +74,10 @@ const runCompleteStep = "run:complete"
 // that must survive a crash.
 //
 //	inv, err := agent.Step(ctx, dur, runID, "fetch-invoice", func(ctx context.Context) (Invoice, error) { ... })
+//
+// T must be JSON-serializable: the result is marshaled into the journal, so a struct with
+// unexported fields round-trips those fields to their zero values (encoding/json skips them)
+// with no error reported. Return exported fields, a map, or a pointer whose fields are exported.
 func Step[T any](ctx context.Context, d Durable, runID, name string, fn func(context.Context) (T, error)) (T, error) {
 	var out T
 	rec, err := d.Do(ctx, runID, name, func(ctx context.Context) (Record, error) {

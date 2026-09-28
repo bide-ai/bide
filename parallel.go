@@ -28,6 +28,9 @@ type Task[T any] struct {
 // This is deliberately a thin primitive over the durable journal, not a graph engine: dynamic,
 // model-driven routing stays in plain Go and sub-agents; Parallel covers the static fan-out/fan-in
 // that a governed workflow's parallel-checks-then-decide stage is made of.
+//
+// As with Step, each task result is journaled as JSON, so T must be JSON-serializable;
+// a struct's unexported fields silently round-trip to their zero values.
 func Parallel[T any](ctx context.Context, d Durable, runID string, maxConcurrency int, tasks ...Task[T]) ([]T, error) {
 	results := make([]T, len(tasks))
 	errs := make([]error, len(tasks))
