@@ -715,6 +715,12 @@ New here? Start with **[Getting started](docs/getting-started.md)**, use the **[
   their exact scope: integrity, authenticity, tamper-evidence, non-repudiation, and selective
   disclosure, and what is explicitly out of scope (confidentiality: leaves are not encrypted). Read
   this before relying on the audit trail.
+- **[docs/guides/governance.md](docs/guides/governance.md)**: the Tier-2 governed-state substrate (gsm).
+  When many independently-run agents must agree on shared state with no central coordinator: describe
+  the state as a registry (variables + invariants + events), and `Build()` proves at build time that
+  every interleaving converges to the same valid state or hands back a counterexample. Covers the
+  saga-vs-governance decision, prevent/repair/halt, federation, and synthesis. Runnable in
+  `examples/mesh`, `examples/compose`.
 - **[docs/guides/quorum.md](docs/guides/quorum.md)**: governed k-of-n model agreement. `govern.Quorum` runs
   several models over `agent.Parallel` and admits an answer only when k agree, with the tally
   anchored in the journal and re-checkable offline via `bide-audit verify-quorum`. Runnable in
