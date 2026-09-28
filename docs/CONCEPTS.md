@@ -36,11 +36,12 @@ The vocabulary, defined once. Terms are grouped by the layer they belong to. See
 - **Merkle tree / STH**: the audit spine. Records hash into a tree; a signed tree head (STH) commits to the whole log. Inclusion and consistency proofs are checkable offline.
 - **Anchoring**: publishing an STH to an independent log, which upgrades integrity to tamper-evidence against the operator.
 - **ProofBundle**: a portable proof that a specific record is included under a signed tree head.
+- **EvidencePackage**: a whole run's evidence in one portable file: a signed tree head plus an inclusion proof per material action, and optionally the run certificate, grant chain, and consistency proof. Built with `audit.Evidence` and checkable offline with `bide-audit verify-evidence`.
 - **RunCertificate**: a proof-carrying attestation of behavioral-property compliance over a whole run, checkable offline.
 - **Grant / delegation**: a signed capability a sub-agent can only narrow (attenuate). `VerifyDelegationChain` checks the chain offline; `EarnedAuthority` widens scope from a clean trail.
 - **Quorum**: governed k-of-n agreement among voters, with the tally anchored and re-checkable offline.
 - **Selective disclosure**: revealing some records while proving the rest exist, without showing their content. It limits what you reveal; it does not encrypt. See the [security model](guides/security-model.md).
-- **Flow / conformance**: a `plan` flow is a reified, authored topology of durable steps; `Conform` checks a run's journal against it, proving the run followed the declared graph or flagging where it diverged. See the [Flows guide](guides/flows.md).
+- **Flow / conformance**: the `plan` package is an optional typed flow builder over the same durable core. A `Flow` is a reified topology of durable steps, authored in typed Go or loaded from declarative config (`plan.Load`); `Topology` and `RenderMermaid` expose its shape, and `Conform` checks a run's journal against it, proving the run followed the declared topology or flagging where it diverged. See the [Flows guide](guides/flows.md).
 
 ## Structure
 
