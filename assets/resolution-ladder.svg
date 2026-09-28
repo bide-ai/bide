@@ -9,7 +9,6 @@
   <!-- rung 1 -->
   <g>
     <rect x="160" y="150" width="920" height="150" rx="16" fill="#17171C" stroke="#2A2A31" stroke-width="1.5"/>
-    <rect x="160" y="150" width="7" height="150" rx="3" fill="#3A3A42"/>
     <rect x="196" y="205" width="44" height="44" fill="#E8A33D"/>
     <text x="218" y="236" font-size="28" font-weight="700" fill="#111114" text-anchor="middle">1</text>
     <text x="270" y="216" font-size="31" font-weight="700" fill="#F5F1E8">Retry-safe</text>
@@ -23,7 +22,6 @@
   <!-- rung 2 -->
   <g>
     <rect x="160" y="355" width="920" height="150" rx="16" fill="#17171C" stroke="#2A2A31" stroke-width="1.5"/>
-    <rect x="160" y="355" width="7" height="150" rx="3" fill="#3A3A42"/>
     <rect x="196" y="410" width="44" height="44" fill="#E8A33D"/>
     <text x="218" y="441" font-size="28" font-weight="700" fill="#111114" text-anchor="middle">2</text>
     <text x="270" y="421" font-size="31" font-weight="700" fill="#F5F1E8">Queryable record</text>
@@ -37,7 +35,6 @@
   <!-- rung 3: the stop, emphasized -->
   <g>
     <rect x="160" y="560" width="920" height="150" rx="16" fill="#1C1710" stroke="#E8A33D" stroke-width="2"/>
-    <rect x="160" y="560" width="7" height="150" rx="3" fill="#E8A33D"/>
     <rect x="196" y="615" width="44" height="44" fill="#E8A33D"/>
     <text x="218" y="646" font-size="28" font-weight="700" fill="#111114" text-anchor="middle">3</text>
     <text x="270" y="626" font-size="31" font-weight="700" fill="#F5F1E8">Genuinely unknowable</text>
