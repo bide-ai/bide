@@ -30,11 +30,19 @@ jobs:
           distribution: goreleaser
           version: '~> v2'
           args: check
+      - name: Resolve release notes
+        id: notes
+        run: |
+          arg=""
+          if [ "${GITHUB_REF_TYPE}" = "tag" ] && [ -f "docs/releases/${GITHUB_REF_NAME}.md" ]; then
+            arg="--release-notes=docs/releases/${GITHUB_REF_NAME}.md"
+          fi
+          echo "arg=${arg}" >> "$GITHUB_OUTPUT"
       - name: Release
         uses: goreleaser/goreleaser-action@v6
         with:
           distribution: goreleaser
           version: '~> v2'
-          args: release --clean ${{ github.event_name == 'workflow_dispatch' && '--snapshot' || '' }}
+          args: release --clean ${{ github.event_name == 'workflow_dispatch' && '--snapshot' || '' }} ${{ steps.notes.outputs.arg }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
