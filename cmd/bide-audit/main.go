@@ -57,6 +57,8 @@ func main() {
 		verifyQuorum(os.Args[2:])
 	case "verify-run":
 		verifyRun(os.Args[2:])
+	case "verify-evidence":
+		verifyEvidence(os.Args[2:])
 	case "prove-absent":
 		proveAbsent(os.Args[2:])
 	case "verify-absent":
@@ -102,6 +104,11 @@ func usage() {
          policies), and every used policy has an anchored, digest-linked convergence certificate
          in the run's signed tree (policies-convergence-certified); with -checker, the external
          oracle's convergence verdict on each used policy must AGREE with its certificate
+
+  verify-evidence -evidence <file> -pubkey <hex|file>
+         verify a portable evidence package offline and print a plain-English report: one line
+         per proven action (tool call, step, grant), plus the run certificate and consistency
+         proof if present; exit 0 if the whole package verifies, 1 otherwise
 
   prove-absent -journal <file> -sth <file> -key (tool:<id>|policy:<digest>) [-out <file>]
          prove a thing did NOT happen (no such tool call / no action under that policy)
@@ -722,6 +729,78 @@ func verifyRun(args []string) {
 		}
 	}
 	fmt.Println("OK: the verified oracle agrees with every policy's certificate: the whole run ran under approved, provably convergent policies")
+}
+
+// verifyEvidence verifies a portable evidence package (audit.Evidence) from public artifacts alone:
+// the package JSON and an out-of-band public key. It re-checks every proof the package carries via
+// audit.EvidencePackage.Verify (the STH signature, each action's inclusion proof against the signed
+// root, the run certificate and consistency proof if present) and prints a plain-English report, one
+// line per proven item, then an overall verdict. It exits non-zero if the package did not verify.
+func verifyEvidence(args []string) {
+	fs := flagSet("verify-evidence")
+	evidencePath := fs.String("evidence", "", "path to the EvidencePackage JSON (from audit.Evidence)")
+	pubkey := fs.String("pubkey", "", "ed25519 public key as hex, or a path to a file containing it")
+	_ = fs.Parse(args)
+
+	if *evidencePath == "" || *pubkey == "" {
+		usage()
+	}
+
+	var pkg audit.EvidencePackage
+	readJSON(*evidencePath, &pkg)
+	pub := readPubKey(*pubkey)
+
+	rep, err := pkg.Verify(pub)
+	if err != nil {
+		fatal(err)
+	}
+
+	if pkg.Label != "" {
+		fmt.Printf("evidence for run %q: %s\n", rep.RunID, pkg.Label)
+	} else {
+		fmt.Printf("evidence for run %q\n", rep.RunID)
+	}
+	if rep.STHVerified {
+		fmt.Printf("PASS  signed tree head authentic (size %d)\n", pkg.STH.Size)
+	} else {
+		fmt.Println("FAIL  signed tree head is NOT authentic under this key")
+	}
+	for _, it := range rep.Items {
+		status := "FAIL"
+		if it.Verified {
+			status = "PASS"
+		}
+		fmt.Printf("%s  %s\n", status, evidenceItemLine(it))
+	}
+
+	if !rep.OK {
+		fmt.Println("FAIL: evidence package did not verify under this key")
+		os.Exit(1)
+	}
+	fmt.Printf("PASS: run %q evidence verified (%d items) in a signed tree of size %d\n", rep.RunID, len(rep.Items), pkg.STH.Size)
+}
+
+// evidenceItemLine phrases one report line in plain English, e.g.
+// `tool "call-charge": tool call included in the signed log`.
+func evidenceItemLine(it audit.EvidenceItem) string {
+	subject := it.Label
+	switch it.Kind {
+	case "tool":
+		if it.Ref != "" {
+			subject = fmt.Sprintf("tool call %q", it.Ref)
+		} else {
+			subject = fmt.Sprintf("tool call %q", it.Label)
+		}
+	case "step":
+		subject = fmt.Sprintf("step %q", it.Label)
+	case "grant":
+		subject = fmt.Sprintf("grant %s", it.Label)
+	case "run-certificate":
+		subject = "run certificate"
+	case "consistency":
+		subject = it.Label
+	}
+	return fmt.Sprintf("%s: %s", subject, it.Note)
 }
 
 // readDigestLines reads a file of approved policy digests, one per line, ignoring blank lines and
