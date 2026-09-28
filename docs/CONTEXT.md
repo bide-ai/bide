@@ -1,6 +1,6 @@
 # Project Context
 
-Bide is a durable agent runtime built as a plain-Go library. It centers on one
+Bide is a Go library for building durable AI agents. It centers on one
 append-only journal that provides at-most-once side effects, many concurrent
 durable runs in a single process, a cryptographically verifiable audit trail,
 and provably convergent shared state.

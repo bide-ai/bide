@@ -1,6 +1,6 @@
 # Bide
 
-**The durable agent runtime for work that must not happen twice.**
+**Build durable AI agents in Go. Side effects that fire at most once.**
 
 One append-only journal, four guarantees no other agent framework pairs in a single library:
 side effects that fire **at most once**; thousands of concurrent durable runs **in one process, no
