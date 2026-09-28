@@ -694,87 +694,34 @@ tool := govern.EventTool(gov, "pay", "mark the order paid", "pay", agent.Safety{
 ```
 
 > Full guide, capability ladder, and the runnable demos (`examples/mesh`, `examples/compose`,
-> `examples/quorum`) in **[docs/guides/governance.md](docs/guides/governance.md)**.
+> `examples/quorum`) in **[the governance guide](docs/guides/governance.md)**.
 
 ## Guides
 
-New here? Start with **[Getting started](docs/getting-started.md)**, use the **[docs index](docs/README.md)** for the full map, and see **[Concepts](docs/CONCEPTS.md)** for the vocabulary (journal, at-most-once, lease, Waker, gsm, ProofBundle). The precise durability guarantee is stated in **[docs/GUARANTEE.md](docs/GUARANTEE.md)** and its bounds in **[docs/KNOWN-LIMITATIONS.md](docs/KNOWN-LIMITATIONS.md)**.
+New here? Start with **[Getting started](docs/getting-started.md)**, use the **[docs index](docs/README.md)** for the full map, and see **[Concepts](docs/CONCEPTS.md)** for the vocabulary (journal, at-most-once, lease, Waker, gsm, ProofBundle). The precise durability guarantee is stated in **[the guarantee](docs/GUARANTEE.md)** and its bounds in **[known limitations](docs/KNOWN-LIMITATIONS.md)**.
 
-- **[docs/guides/flows.md](docs/guides/flows.md)**: the `plan` typed flow builder, for when you want to
-  author topology instead of plain Go. Wire typed nodes (`Step` / `Tool` / `Model` / `Switch` / `Join` /
-  bounded `LoopBack`) into a `Flow` that lowers to the same journal (at-most-once and audit inherited), or
-  load the same flow from declarative config (`plan.Load`). `Topology` / `RenderMermaid` expose the shape;
-  `Conform` proves a run followed the topology it declared. Runnable in `examples/plan`.
-- **[docs/guides/reliability.md](docs/guides/reliability.md)**: the reliability middleware: per-attempt timeouts,
-  classified retry (`Retry` / `Retryable`), hedged model calls (`Hedge`, race a backup for tail
-  latency and provider failover), rate limiting, and cost tracking, plus how they compose. Runnable
-  in `examples/hedge`.
-- **[docs/guides/durable-steps.md](docs/guides/durable-steps.md)**: composing your own durable work on the same
-  substrate. `Step` (one named durable operation), `Parallel` / `Task` (durable fan-in for
-  parallel-checks-then-decide pipelines), and sagas (`RunSaga` / `CompensatedFunc`, reverse-order
-  compensation). Durable timers (`Sleep` / `WaitUntil`) pause a run until a wall-clock deadline and
-  resume it through the pluggable `Waker` (`MemWaker`). Runnable in `examples/parallel`.
-- **[docs/guides/signals.md](docs/guides/signals.md)**: receiving external events into a run. Durable
-  timers (`Sleep` / `WaitUntil`) and the `Waker`, human-in-the-loop (`Interrupt` / `Resume`), and
-  durable signals (`Signal` / `Await` / `AwaitFor`, ordered channels `Send` / `Receive` / `Ack`):
-  at-least-once transport in, exactly-once application. Runnable in `examples/signals`,
-  `examples/interrupt`, `examples/recover`.
-- **[docs/guides/observability.md](docs/guides/observability.md)**: OTel gen_ai spans in one line
-  (`trace.Instrument`): the invoke_agent / chat / execute_tool taxonomy, sub-agent span nesting,
-  token-to-cost on spans (`WithRates`), and the content-capture privacy default. Runnable in
-  `examples/observability`.
-- **[docs/guides/audit.md](docs/guides/audit.md#proof-carrying-runs)**: proof-carrying runs. A run ships one
-  portable `RunCertificate` asserting behavioral-property compliance over the whole run
-  (only-approved-policies, policies-convergence-certified), composed from the existing audit
-  primitives and checkable offline against a single signed tree head with `CertifyRun` / `VerifyRun`
-  or the `bide-audit verify-run` CLI. Runnable in `examples/proof-carrying-run`.
-- **[docs/guides/delegation.md](docs/guides/delegation.md)**: signed grants and attenuating delegation. A parent mints a
-  capability grant a sub-agent can only narrow (`Grant` / `SignGrant` / `AttenuatingSubAgent`),
-  `VerifyDelegationChain` checks the whole chain offline, and `EarnedAuthority` widens a subject's
-  scope from a clean audit trail and revokes it the moment an anomaly appears, always bounded by the
-  parent grant. `agent.Identity` binds the acting principal into every governed leaf. Runnable in
-  `examples/delegation`, `examples/authority`, `examples/earned-authority`.
-- **[docs/guides/security-model.md](docs/guides/security-model.md)**: the cryptographic guarantees and
-  their exact scope: integrity, authenticity, tamper-evidence, non-repudiation, and selective
-  disclosure, and what is explicitly out of scope (confidentiality: leaves are not encrypted). Read
-  this before relying on the audit trail.
-- **[docs/guides/governance.md](docs/guides/governance.md)**: the Tier-2 governed-state substrate (gsm).
-  When many independently-run agents must agree on shared state with no central coordinator: describe
-  the state as a registry (variables + invariants + events), and `Build()` proves at build time that
-  every interleaving converges to the same valid state or hands back a counterexample. Covers the
-  saga-vs-governance decision, prevent/repair/halt, federation, and synthesis. Runnable in
-  `examples/mesh`, `examples/compose`.
-- **[docs/guides/quorum.md](docs/guides/quorum.md)**: governed k-of-n model agreement. `govern.Quorum` runs
-  several models over `agent.Parallel` and admits an answer only when k agree, with the tally
-  anchored in the journal and re-checkable offline via `bide-audit verify-quorum`. Runnable in
-  `examples/quorum`.
-- **[docs/guides/models.md](docs/guides/models.md)**: the three model adapters (Anthropic, OpenAI-compatible,
-  Gemini): constructor options and defaults, `WithBaseURL` for any OpenAI-compatible or Vertex
-  endpoint, per-provider sampling mapping, prompt caching and usage accounting, typed error
-  surfacing (`RateLimited` / `APIError`), and multimodal image input (`UserParts` / `Image`).
-- **[docs/guides/mcp.md](docs/guides/mcp.md)**: Model Context Protocol integration. Connect to an MCP
-  server as a runtime tool source, discover its tools, and inherit side-effect-safe resume
-  from the annotation-to-`Safety` mapping.
-- **[docs/guides/debugging.md](docs/guides/debugging.md)**: deterministic replay (`Replay`), durable
-  semantic-event reconstruction (`ReplayEvents`), and Mermaid run diagrams (`RenderMermaid`)
-  for time-travel debugging, regression, and evals. Crash recovery re-drives interrupted runs after
-  a restart: `Recover` enumerates a store's runs (`Lister`), skips the finished ones (`IsComplete`),
-  and resumes the rest, treating a durable pause as a success rather than a failure.
-- **[docs/reference/extension-points.md](docs/reference/extension-points.md)**: the ports and adapters the
-  framework is built on (`Model`, `Durable`, `Tool`, `Compensator`, `Retriever`, `Anchor`,
-  `EventStore`), with an "implement your own store" walkthrough.
-- **[docs/design/compaction.md](docs/design/compaction.md)**: journal compaction with proof continuity (a design
-  note): how an unbounded journal can be compacted without breaking the audit spine's inclusion and
-  consistency proofs.
-- **[docs/guides/messaging.md](docs/guides/messaging.md)**: driving an agent from an inbound messenger
-  webhook (Slack, Telegram, WhatsApp, SMS, Discord) without shipping transport code in core:
-  the redelivery-safe idempotency pattern where the durable journal makes a retried webhook
-  replay instead of double-firing a side effect. Runnable in `examples/webhook`.
-- **[docs/testing/testing.md](docs/testing/testing.md)**: what is tested and how, the chaos crash-injection
-  benchmark (fair, not strawman), differential oracle checks, convergence and traceability at
-  scale with measured numbers and their bounds, RFC 6962 conformance, the commands to run it,
-  and the statistical `eval` package (Wilson CIs, trajectory metrics, significance-tested
-  regression `Compare`, `RequiredRuns` power sizing, stratified `ByTag`) with the provable-versus-
-  statistical boundary that keeps a pass rate from being sold as a guarantee.
+**Authoring**
 
-> The governance tier is documented in [docs/guides/governance.md](docs/guides/governance.md).
+- **[Flows](docs/guides/flows.md)**: the `plan` typed flow builder. Author topology (`Step`/`Tool`/`Model`/`Switch`/`Join`/`LoopBack`) that lowers to the same journal, then prove a run followed it (`Conform`). Runnable: `examples/plan`.
+- **[Durable steps](docs/guides/durable-steps.md)**: compose your own durable work: `Step`, `Parallel`/`Task` fan-in, sagas (`RunSaga`), and durable timers (`Sleep`/`WaitUntil`). Runnable: `examples/parallel`.
+- **[Reliability](docs/guides/reliability.md)**: per-attempt timeouts, classified retry, hedged model calls, rate limiting, and cost tracking, and how they compose. Runnable: `examples/hedge`.
+- **[Signals and ambient](docs/guides/signals.md)**: external events into a run: durable timers and the `Waker`, human-in-the-loop (`Interrupt`/`Resume`), and durable signals (at-least-once in, exactly-once applied). Runnable: `examples/signals`, `examples/interrupt`.
+- **[Models](docs/guides/models.md)**: the Anthropic, OpenAI-compatible, and Gemini adapters: `WithBaseURL`, sampling, prompt caching, typed errors, and multimodal image input.
+- **[MCP](docs/guides/mcp.md)**: connect an MCP server as a runtime tool source, with side-effect-safe resume inherited from its tool annotations.
+- **[Observability](docs/guides/observability.md)**: OTel gen_ai spans in one line (`trace.Instrument`): span taxonomy, sub-agent nesting, token-to-cost, and the content-capture privacy default. Runnable: `examples/observability`.
+- **[Messaging](docs/guides/messaging.md)**: drive an agent from an inbound webhook (Slack, Telegram, SMS, Discord), redelivery-safe: a retried webhook replays instead of double-firing. Runnable: `examples/webhook`.
+- **[Debugging and recovery](docs/guides/debugging.md)**: deterministic replay (`Replay`), event reconstruction (`ReplayEvents`), Mermaid run diagrams, and crash recovery (`Recover`) that re-drives interrupted runs.
+
+**Accountability and governance**
+
+- **[Audit](docs/guides/audit.md)**: proof-carrying runs. A run ships one portable `RunCertificate`, checkable offline with `bide-audit verify-run`. Runnable: `examples/proof-carrying-run`.
+- **[Delegation](docs/guides/delegation.md)**: signed capability grants a sub-agent can only narrow (`Grant`/`SignGrant`), verified offline (`VerifyDelegationChain`), plus authority earned from a clean trail. Runnable: `examples/delegation`, `examples/authority`.
+- **[Security model](docs/guides/security-model.md)**: the exact scope of the cryptographic guarantees (integrity, authenticity, tamper-evidence, non-repudiation, selective disclosure) and what is out of scope (confidentiality). Read before relying on the trail.
+- **[Governance](docs/guides/governance.md)**: the Tier-2 governed-state substrate (gsm). Describe shared state as a registry, and `Build()` proves every interleaving converges or returns a counterexample. Runnable: `examples/mesh`, `examples/compose`.
+- **[Quorum](docs/guides/quorum.md)**: governed k-of-n model agreement (`govern.Quorum`), the tally anchored in the journal and re-checkable offline (`bide-audit verify-quorum`). Runnable: `examples/quorum`.
+
+**Reference and internals**
+
+- **[Extension points](docs/reference/extension-points.md)**: the ports and adapters (`Model`, `Durable`, `Tool`, `Compensator`, `Retriever`, `Anchor`, `EventStore`), with an implement-your-own-store walkthrough.
+- **[Testing and evidence](docs/testing/testing.md)**: what is tested and how, the chaos crash-injection benchmark, differential oracles, RFC 6962 conformance, and the provable-versus-statistical boundary in the `eval` package.
+- **[Journal compaction](docs/design/compaction.md)** (design note): compacting an unbounded journal without breaking the audit spine's inclusion and consistency proofs.
