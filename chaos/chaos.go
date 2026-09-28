@@ -5,7 +5,7 @@
 // System (wire that SDK to do one non-idempotent side effect against a fault-injectable,
 // resumable store). The harness is what proves — or disproves — an at-most-once guarantee:
 // a loop that relies on at-least-once + idempotency double-fires here, visibly. See
-// GoAgents for the reference adapter that passes.
+// Bide for the reference adapter that passes.
 package chaos
 
 import (

@@ -82,28 +82,28 @@ func (t chargeTool) Call(context.Context, json.RawMessage) (json.RawMessage, err
 	return json.RawMessage(`{"charged":true}`), nil
 }
 
-// GoAgents is the reference System: Bide' durable loop wired to charge once. It is
+// Bide is the reference System: Bide' durable loop wired to charge once. It is
 // expected to PASS (at-most-once) under any crash schedule.
-func GoAgents() System { return goAgents{} }
+func Bide() System { return bide{} }
 
-type goAgents struct{}
+type bide struct{}
 
-func (goAgents) Writes() int { return 4 } // @llm/0, attempt:c1, c1, @llm/1
+func (bide) Writes() int { return 4 } // @llm/0, attempt:c1, c1, @llm/1
 
-func (goAgents) NewRun() Run {
-	return &goRun{store: agent.NewMemStore(), fired: new(int)}
+func (bide) NewRun() Run {
+	return &bideRun{store: agent.NewMemStore(), fired: new(int)}
 }
 
-type goRun struct {
+type bideRun struct {
 	store agent.Durable
 	fired *int
 }
 
-func (r *goRun) Step(crashAt int) bool {
+func (r *bideRun) Step(crashAt int) bool {
 	a := agent.New(chargeModel{}, &crashStore{inner: r.store, crashAt: crashAt}, chargeTool{count: r.fired}).
 		SetMaxConcurrency(1)
 	_, err := a.Run(context.Background(), "chaos", "charge me")
 	return errors.Is(err, errCrash)
 }
 
-func (r *goRun) Fired() int { return *r.fired }
+func (r *bideRun) Fired() int { return *r.fired }

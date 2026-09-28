@@ -36,7 +36,7 @@ type Run interface {
 }
 ```
 
-`GoAgents()` is the reference adapter; `NaiveReference()` is the at-least-once baseline.
+`Bide()` is the reference adapter; `NaiveReference()` is the at-least-once baseline.
 
 **Fairness matters.** An adapter must represent that SDK's *best-effort* durability, not a
 strawman; the benchmark's credibility is that it's fair. Two outcomes for an SDK

@@ -38,7 +38,7 @@ of 1 means the guarantee held; anything higher is a double-charge.
 - `chaos/` (`chaos.go`, `chaos_test.go`) is the exportable harness. `Verify(name, sys, seeds)`
   runs an **exhaustive** single-crash sweep at every durable write point (crash there, then
   resume to a terminal state), then `seeds` **randomized** multi-crash schedules (default 500
-  in the tests), and records `MaxFired` and `Violations`. `TestVerify_GoAgentsPasses` asserts
+  in the tests), and records `MaxFired` and `Violations`. `TestVerify_BidePasses` asserts
   the Bide reference adapter holds `maxFired=1`. `TestVerify_NaiveReferenceFails` asserts
   the naive at-least-once baseline double-fires (`maxFired>=2`); this is deliberate, and it
   proves the harness is **non-vacuous** (a correct loop passes, an incorrect one fails).

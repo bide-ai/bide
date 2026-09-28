@@ -22,7 +22,7 @@ func main() {
 		name string
 		sys  chaos.System
 	}{
-		{"Bide", chaos.GoAgents()},
+		{"Bide", chaos.Bide()},
 		{"naive-loop", chaos.NaiveReference()}, // the at-least-once baseline (expected to fail)
 		// Add competitor adapters here: {"langchaingo", langchaingoAdapter{}}, ...
 	}

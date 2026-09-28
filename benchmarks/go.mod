@@ -1,11 +1,10 @@
 module github.com/blackwell-systems/bide/benchmarks
 
 go 1.27.0
-toolchain go1.27.0
 
 require (
-	github.com/cloudwego/eino v0.9.21
 	github.com/blackwell-systems/bide v0.0.0
+	github.com/cloudwego/eino v0.9.21
 	github.com/tmc/langchaingo v0.1.14
 	google.golang.org/adk/v2 v2.4.0
 	google.golang.org/genai v1.70.0

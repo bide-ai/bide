@@ -14,7 +14,7 @@ func TestChaos_Comparison(t *testing.T) {
 		name string
 		sys  chaos.System
 	}{
-		{"Bide", chaos.GoAgents()},
+		{"Bide", chaos.Bide()},
 		{"trpc-agent-go", TRPC()},
 		{"langchaingo", LangChainGo()},
 		{"eino", EinoGraph()},
