@@ -233,17 +233,26 @@ journal-backed runtime. See [docs/guides/flows.md](docs/guides/flows.md).
 
 ### Three ways to author, one runtime
 
-Plain Go is the default: write the loop, and the journal supplies the guarantees.
+The same order-triage flow, three ways. Plain Go is the default: write ordinary control flow, and name the steps the journal must make crash-safe.
 
 ```go
-weather := agent.Func("get_weather", "Current weather for a city",
-    agent.Safety{ReadOnly: true}, getWeather)
+// classify, then branch: rush orders reserve-then-finalize, the rest decline.
+assess, _ := agent.Step(ctx, store, "order-42", "classify",
+    func(ctx context.Context) (Assessment, error) { return classify(order) })
 
-a := agent.New(model, store, weather)
-out, _ := a.Run(ctx, "run-1", "Weather in SF? Use the tool.")
+var receipt Receipt
+if assess.Rush {
+    res, _ := agent.Step(ctx, store, "order-42", "reserve", // non-idempotent
+        func(ctx context.Context) (Reservation, error) { return reserve(assess) })
+    receipt, _ = agent.Step(ctx, store, "order-42", "finalize",
+        func(ctx context.Context) (Receipt, error) { return finalize(res) })
+} else {
+    receipt, _ = agent.Step(ctx, store, "order-42", "decline",
+        func(ctx context.Context) (Receipt, error) { return decline(assess) })
+}
 ```
 
-When you want the flow as a first-class, inspectable artifact, the `plan` builder wires typed nodes into a `Flow` that lowers to the same runtime:
+When you want that same flow as a first-class, inspectable artifact, the `plan` builder wires typed nodes into a `Flow` that lowers to the same runtime:
 
 ```go
 b := plan.New[Order, Receipt]("order-triage")
