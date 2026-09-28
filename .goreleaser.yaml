@@ -1,0 +1,62 @@
+# Release config for bide. Builds the bide-audit verifier CLI cross-platform
+# and publishes a GitHub Release from the pushed tag. The library itself is
+# consumed via `go get`; these binaries are for auditors who verify proof
+# bundles without a Go toolchain.
+version: 2
+
+project_name: bide
+
+before:
+  hooks:
+    - go mod download
+
+builds:
+  - id: bide-audit
+    main: ./cmd/bide-audit
+    binary: bide-audit
+    env:
+      - CGO_ENABLED=0
+      - GOWORK=off
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+
+archives:
+  - id: bide-audit
+    ids:
+      - bide-audit
+    name_template: "bide-audit_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  use: github
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+      - "^ci:"
+
+release:
+  github:
+    owner: bide-ai
+    name: bide
+  draft: false
+  prerelease: auto
+  name_template: "bide {{ .Tag }}"
+  footer: |
+    ---
+    Install the library:
+
+    ```
+    go get github.com/bide-ai/bide@{{ .Tag }}
+    ```
