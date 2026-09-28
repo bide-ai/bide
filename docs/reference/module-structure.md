@@ -27,6 +27,8 @@ only when that adapter is imported.
 | postgres store | `…/store/postgres` | jackc/pgx |
 | redis log | `…/govern/redislog` | redis/go-redis |
 | sqlite log | `…/govern/sqlitelog` | modernc.org/sqlite |
+| postgres log | `…/govern/postgreslog` | jackc/pgx |
+| gcf codec | `…/codec/gcf` | blackwell-systems/gcf-go |
 
 The core module keeps everything with no heavy deps: `agent` (loop), `schema`, `middleware`,
 `model/anthropic`, `model/openai`, `govern`, and `examples`. The `architecture_test.go` guard
@@ -48,8 +50,7 @@ so it builds standalone in CI. CI builds and tests every module in its own direc
 
 ## Interim state (pre-1.0)
 
-The core is not yet published, so the
-adapter modules resolve the core via `replace` directives rather than a pinned version. At the
-**v1.0** milestone: tag the core, and replace the
-`replace` directives with version pins: one coordinated event. Until then there are no
-external consumers, so the interim resolution is invisible.
+The core is published (tagged `v0.x`, available on the Go module proxy), but the adapter modules
+still resolve the core through their `replace` directives rather than a pinned version, so a
+cross-module build does not yet depend on a specific core tag. At the **v1.0** milestone the
+`replace` directives get swapped for version pins, one coordinated event.
