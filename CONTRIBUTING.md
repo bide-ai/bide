@@ -1,11 +1,11 @@
 # Contributing
 
-## Contributor License Agreement
+## Developer Certificate of Origin
 
-By submitting a contribution you agree to the [Contributor License Agreement](CLA.md).
-Contributions are accepted only from contributors who have agreed to it (recorded per
-pull request). This keeps every contribution properly attributed and preserves the
-project's ability to relicense as needed.
+Contributions are accepted under the [Developer Certificate of Origin](DCO). Sign off
+each commit with `git commit -s`, which appends a `Signed-off-by` line certifying you
+have the right to submit the work under the project's license (Apache-2.0). Commits
+without a sign-off fail the DCO check.
 
 ## Build and test
 
