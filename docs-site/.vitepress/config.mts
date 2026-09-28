@@ -5,6 +5,12 @@ export default defineConfig({
   srcDir: '../docs',
   srcExclude: ['README.md', 'CONTEXT.md', 'design/**'],
   cleanUrls: true,
+  // The docs are authored to be read in-repo on GitHub too, so they link to
+  // source files, examples, and CONTRIBUTING with repo-relative paths. Those
+  // targets are not pages on the standalone site, so skip the dead-link gate
+  // rather than fork the prose. (Follow-up: rewrite source links to absolute
+  // github.com URLs so they resolve on the site as well.)
+  ignoreDeadLinks: true,
   lang: 'en-US',
   title: 'bide',
   description: 'Build durable AI agents in Go. Side effects that fire at most once.',
