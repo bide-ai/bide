@@ -128,6 +128,13 @@ func TestVerifyConvergenceCLI(t *testing.T) {
 // (exit 0 = convergent, non-zero = not; the printed line is the compensation-free verdict).
 func fakeChecker(t *testing.T, dir, name string, code int, line string) string {
 	t.Helper()
+	// The stand-in oracle is a POSIX shell script, which Windows cannot exec
+	// directly (a real Windows user would supply a .exe astchecker). The CLI's
+	// checker-invocation path is platform-neutral and covered on Linux/macOS;
+	// the cryptographic assertions before this point still run on Windows.
+	if runtime.GOOS == "windows" {
+		t.Skip("external-oracle cross-check uses a POSIX shell script; skipped on Windows")
+	}
 	path := filepath.Join(dir, name+".sh")
 	script := "#!/bin/sh\necho " + line + "\nexit " + map[int]string{0: "0", 1: "1"}[code] + "\n"
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
