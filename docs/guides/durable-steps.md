@@ -166,6 +166,37 @@ Pass the result value an actual call would have returned, and `isError=true` if 
 was a failure the model should react to. It is idempotent (first result for a `(runID, toolUseID)`
 wins), so a retry or a racing driver injects it at most once.
 
+### Resolving without a human: reconcilers
+
+The verifier does not have to be a person. Most systems that lack an idempotency key still leave a
+queryable record (a sent-message id, a row, a log line), so a reconciler can query that record,
+decide, and call `ResolveHalt` itself. Two options make that safe:
+
+- **`WithMinHaltAge(d)`** refuses to resolve a halt younger than `d`, measured from the attempt
+  marker (`ResumeHalt.AttemptedAt`) to now. A provider's record can lag the send by seconds, so a
+  reconciler that queries too early reads "absent" and re-fires the exact effect the halt prevents.
+  A minimum age keeps "unknown" unknown until the record has had time to appear; too soon returns
+  `*HaltTooYoung`, so the reconciler waits and retries.
+- **`WithEvidence(v)`** records the resolution as reconciled and stores what was read to decide,
+  signed alongside the outcome (`Record.Reconciled` / `Record.Evidence`). The journal is the audit
+  record, so a reconciled outcome that did not say it was reconciled, and on what basis, would be a
+  hole in the very thing the trail exists to protect. With it, a later reader tells a reconciled
+  step from a clean one and re-checks the evidence.
+
+```go
+var halt *agent.ResumeHalt
+if errors.As(err, &halt) {
+    sent, record := providerSays(halt) // query the system of record
+    if sent {
+        _ = agent.ResolveHalt(ctx, store, halt.RunID, halt.ToolUseID, "sent (reconciled)", false,
+            agent.WithMinHaltAge(30*time.Second), // do not decide before the record can settle
+            agent.WithEvidence(record))           // journal the basis, signed with the outcome
+    }
+}
+```
+
+The human stays the fallback for the genuinely unknowable case, not the default.
+
 ## Durable timers: `Sleep` / `WaitUntil` and the `Waker`
 
 An agent often has to wait: for a deadline, a cool-off, a scheduled follow-up. `Sleep(ctx, name, d)`
