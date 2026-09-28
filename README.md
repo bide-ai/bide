@@ -268,6 +268,8 @@ if errors.As(err, &halt) {
 }
 ```
 
+<p align="center"><img src="assets/divider-line.png" width="100%" alt=""></p>
+
 ## Quickstart
 
 Requires Go 1.27 (the core uses generic methods). If `go version` is older, upgrade or set
@@ -647,6 +649,8 @@ func RequireTag(tag string) agent.ToolMiddleware {
 }
 ```
 
+<p align="center"><img src="assets/divider.png?v=4" width="100%" alt=""></p>
+
 ## Modules
 
 Bide is a multi-module repo: a dependency-light **core** (`github.com/bide-ai/bide`,
@@ -710,6 +714,8 @@ tool := govern.EventTool(gov, "pay", "mark the order paid", "pay", agent.Safety{
 
 > Full guide, capability ladder, and the runnable demos (`examples/mesh`, `examples/compose`,
 > `examples/quorum`) in **[the governance guide](docs/guides/governance.md)**.
+
+<p align="center"><img src="assets/divider-line.png" width="100%" alt=""></p>
 
 ## Guides
 
