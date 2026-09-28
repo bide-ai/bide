@@ -60,17 +60,9 @@ effect whose call left the process but whose result never reached the journal. T
 lets a resumed run tell "never started" from "started, outcome unknown," and it resolves the
 unknown case by a fixed hierarchy, never a guess:
 
-```mermaid
-flowchart TD
-  A["Side effect attempted"] --> B{"Result journaled?"}
-  B -- "yes" --> DONE["Fired exactly once"]
-  B -- "no, crash mid-flight" --> C{"Retry-safe?<br/>read-only, idempotent, or idempotency key"}
-  C -- "yes" --> R["Auto-retry; provider dedupes"] --> DONE
-  C -- "no" --> H["Halt: unknown outcome"]
-  H --> V{"Can the outcome be established?"}
-  V -- "system left a queryable record" --> REC["Reconciler verifies, resolves automatically"] --> DONE
-  V -- "genuinely unknowable" --> HUM["Human resolves, once"] --> DONE
-```
+<p align="center">
+  <img src="assets/resolution-ladder.png" width="820" alt="Unknown-outcome resolution ladder: a retry-safe effect auto-retries and the provider dedupes; an effect that left a queryable record is resolved automatically by a reconciler; a genuinely unknowable outcome halts and waits for a human. Under ultimate ambiguity, it stops.">
+</p>
 
 Most unknowns never reach a person: an idempotency key lets the provider dedupe a safe retry, and
 for systems without one (email, internal services) a reconciler resolves the step from the record
