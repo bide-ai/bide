@@ -123,6 +123,12 @@ func (c *builderCore) register(n *node) {
 // a node OUT of that halt: a retry-safe node RE-RUNS its body from the top on an
 // ambiguous mid-node crash instead of halting. Omit the option to keep the
 // conservative halt behavior unchanged.
+//
+// A Step is non-retry-safe by DEFAULT, so this applies even to a step with no side
+// effect: a pure-compute or read-only step still HALTS on an ambiguous crash unless
+// annotated. Mark such steps plan.ReadOnly() (or plan.Idempotent()) so they re-run on
+// resume instead of stalling the flow; reserve the default halt for steps whose body
+// must not repeat.
 func (b *Builder[In, Out]) Step[I, O any](name string, fn func(I) (O, error), opts ...NodeOption) Handle[I, O] {
 	b.core.register(applyNodeOptions(&node{
 		name:    name,

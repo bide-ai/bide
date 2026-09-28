@@ -3,6 +3,13 @@
 // primitive as DBOS RunAsStep / ADK RunNode — so an agent run survives a process crash
 // and resumes without re-running completed steps. No cluster, no daemon: one binary +
 // one file. The side-effect-safety layer (agent.Safety / ResumeHalt) sits above this.
+//
+// Store implements agent.Lister, so single-node crash recovery (agent.Recover) works on the
+// default on-disk store: after a restart it enumerates the journal's runs and re-drives the
+// in-flight ones. It does NOT implement agent.Leaser: cross-process HA lease coordination
+// (one driver per run across nodes) remains Postgres-only, since SQLite is a single-writer,
+// single-node journal. Under a single recoverer this is safe regardless, because memoization
+// makes re-driving at-most-once.
 package sqlite
 
 import (
@@ -22,7 +29,10 @@ type Store struct {
 	sf singleflight.Group // collapse concurrent Do on the same (runID,name) — at-most-once fn
 }
 
-var _ agent.Durable = (*Store)(nil) // port/adapter contract
+var (
+	_ agent.Durable = (*Store)(nil) // port/adapter contract
+	_ agent.Lister  = (*Store)(nil) // enumerates runs for single-node crash recovery
+)
 
 // Open opens (creating if needed) a SQLite journal at path. Use ":memory:" for an
 // ephemeral store in tests. WAL mode is enabled for concurrent readers alongside the
@@ -117,6 +127,27 @@ func (s *Store) History(ctx context.Context, runID string) ([]agent.Record, erro
 			return nil, fmt.Errorf("unmarshal step: %w (%w)", err, agent.ErrStorage)
 		}
 		out = append(out, rec)
+	}
+	return out, rows.Err()
+}
+
+// Runs implements agent.Lister: the distinct run IDs the store holds, so agent.Recover can
+// enumerate in-flight runs to re-drive after a restart. This makes single-node crash recovery
+// work on the default on-disk store; cross-process HA leasing (agent.Leaser) remains
+// Postgres-only, since SQLite is a single-writer, single-node journal.
+func (s *Store) Runs(ctx context.Context) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT run_id FROM steps ORDER BY run_id`)
+	if err != nil {
+		return nil, fmt.Errorf("list runs: %w (%w)", err, agent.ErrStorage)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan run id: %w (%w)", err, agent.ErrStorage)
+		}
+		out = append(out, id)
 	}
 	return out, rows.Err()
 }

@@ -24,8 +24,9 @@
 // ordering, not concurrency (still no goroutines or errgroup). A Switch still prunes
 // to its taken arm; Build rejects a Join whose inputs a Switch can skip (Join is
 // fan-in of both-execute branches, not reconvergence of mutually-exclusive arms).
-// Join is currently expressible only through the Go builder; the config loader (Load)
-// does not yet carry a join wiring element, which is a deferred follow-up.
+// A Join is expressible both through the Go builder and in a declarative config: the
+// config loader (Load) carries a "join" wiring element ({"join":name,"inputs":[...],
+// "merge":block}) whose merge block is registered with RegisterJoin2/RegisterJoin3.
 //
 // LoopBack adds a BOUNDED loop: a Switch arm whose target is an earlier loop head
 // is a back-edge, and the arm carries a max-iteration bound. The other arm(s) of the
@@ -39,9 +40,10 @@
 // (the value routed on the back-edge equals the head's input type) is enforced at the
 // LoopBack call site by the compiler. Digest commits to the loop STRUCTURE (head,
 // switch, body region, and max bound) but never the runtime iteration count; conform
-// strips the iteration prefix to map each key back to its declared node. Like Join,
-// LoopBack is expressible only through the Go builder; the config loader (Load) does
-// not yet carry a loop wiring element, which is a deferred follow-up.
+// strips the iteration prefix to map each key back to its declared node. Like Join, a
+// bounded loop is expressible both through the Go builder and in a declarative config:
+// the config loader (Load) carries the back-edge as a Switch "when" arm with a positive
+// "loopMax" ({"pred":p,"to":head,"loopMax":n}), which Build lowers exactly as LoopBack.
 //
 // Because the topology is declared as a value, plan can render the authored
 // graph (Flow.RenderMermaid) and compare it against the journal-derived path of

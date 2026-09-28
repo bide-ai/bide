@@ -111,6 +111,44 @@ func Approve(ctx context.Context, d Durable, runID, toolUseID string, approved b
 	return err
 }
 
+// ResolveHalt is the sanctioned escape from a ResumeHalt. After a non-retriable tool
+// halted with an unknown outcome (see ResumeHalt), an operator who has verified the real
+// side effect out of band injects the missing tool result directly, keyed by the halted
+// tool-use ID (the same key the agent loop uses), so a re-run proceeds past the halt
+// instead of halting again. Pass the result value (JSON-marshalled here) an actual call
+// would have returned, and isError if the verified outcome was a failure the model should
+// react to.
+//
+// It is idempotent: the first result for a (runID, toolUseID) wins, so calling it twice or
+// racing a concurrent driver injects the record at most once. runID and toolUseID come
+// straight off the ResumeHalt. After resolving, re-run the agent with the same runID:
+//
+//	var halt *agent.ResumeHalt
+//	if errors.As(err, &halt) {
+//	    // operator confirms out of band that the charge did go through
+//	    _ = agent.ResolveHalt(ctx, store, halt.RunID, halt.ToolUseID, "charged (operator-confirmed)", false)
+//	    msg, err = a.Run(ctx, halt.RunID, input) // resumes past the halt
+//	}
+//
+// This is the only supported way to clear a ResumeHalt for a non-idempotent side effect;
+// deciding the true outcome is a human judgment the runtime cannot make for you.
+func ResolveHalt(ctx context.Context, store Durable, runID, toolUseID string, result any, isError bool) error {
+	if runID == "" {
+		return fmt.Errorf("ResolveHalt: empty runID: %w", ErrConfig)
+	}
+	if toolUseID == "" {
+		return fmt.Errorf("ResolveHalt: empty toolUseID: %w", ErrConfig)
+	}
+	b, err := json.Marshal(result)
+	if err != nil {
+		return fmt.Errorf("agent: encode resolve-halt result for %q: %w (%w)", toolUseID, err, ErrConfig)
+	}
+	_, err = store.Do(ctx, runID, toolUseID, func(context.Context) (Record, error) {
+		return Record{Kind: StepToolResult, ToolUseID: toolUseID, Result: b, IsError: isError}, nil
+	})
+	return err
+}
+
 // PendingApproval is returned by Agent.Run when a tool requiring human approval has no
 // recorded decision yet. The run has paused durably; call Approve then re-run to resume.
 type PendingApproval struct {

@@ -140,7 +140,31 @@ These are stated in full in [KNOWN-LIMITATIONS.md](../KNOWN-LIMITATIONS.md); in 
 `SubAgent(name, description, sub)` composes agents into that durable tree: give the sub-agent the
 **same** `Durable` store as the parent for a unified journal, and a crash anywhere in the tree
 resumes the whole tree precisely (completed sub-agents reused, the in-flight one resumed, and
-`ResumeHalt` / `PendingApproval` / `SagaAborted` from deep in the tree propagating up).
+`ResumeHalt` / `PendingApproval` / `SagaAborted` from deep in the tree propagating up). A
+`ResumeHalt` or `PendingApproval` raised inside a sub-agent surfaces from the parent's own `Run`
+(match it with `errors.As`); resolve it against the **sub-run's** ID and tool-use ID carried on the
+signal, then re-run the parent to resume down the path.
+
+### Clearing a `ResumeHalt`: `ResolveHalt`
+
+A `ResumeHalt` is deliberately terminal until a human confirms the real outcome: the runtime cannot
+know whether the non-idempotent side effect (a charge, a send) actually committed. Once you have
+verified it out of band, `ResolveHalt` is the sanctioned escape. It injects the missing tool result
+under the halted tool-use ID (the same journal key the loop uses), so a re-run proceeds past the
+halt instead of halting again:
+
+```go
+var halt *agent.ResumeHalt
+if errors.As(err, &halt) {
+    // operator confirmed the charge did go through
+    _ = agent.ResolveHalt(ctx, store, halt.RunID, halt.ToolUseID, "charged (confirmed)", false)
+    msg, err = a.Run(ctx, halt.RunID, input) // resumes past the halt
+}
+```
+
+Pass the result value an actual call would have returned, and `isError=true` if the verified outcome
+was a failure the model should react to. It is idempotent (first result for a `(runID, toolUseID)`
+wins), so a retry or a racing driver injects it at most once.
 
 ## Durable timers: `Sleep` / `WaitUntil` and the `Waker`
 

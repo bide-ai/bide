@@ -34,7 +34,7 @@ func (c *builderCore) renderMermaid() string {
 	// A kindSwitch renders as a diamond (branch); every other kind as a box.
 	for _, n := range c.nodes {
 		id := ids[n.name]
-		label := n.name + " : " + typeName(n.inType) + " -> " + typeName(n.outType)
+		label := n.name + " : " + inLabel(n) + " -> " + typeName(n.outType)
 		if n.kind == kindSwitch {
 			b.WriteString(fmt.Sprintf("  %s{%q}\n", id, label))
 		} else {
@@ -47,11 +47,19 @@ func (c *builderCore) renderMermaid() string {
 		b.WriteString(fmt.Sprintf("  start --> %s\n", entryID))
 	}
 
-	// Straight edges (producer.Out -> consumer.In), in insertion order.
+	// Straight edges (producer.Out -> consumer.In), in insertion order. An edge into
+	// a Join is labelled with the input port's type (from the join's joinInTypes,
+	// positionally aligned with joinInputs), so a fan-in shows each contributed type
+	// rather than a bare arrow.
 	for _, e := range c.edges {
 		from, okFrom := ids[e.from]
 		to, okTo := ids[e.to]
-		if okFrom && okTo {
+		if !okFrom || !okTo {
+			continue
+		}
+		if lbl := joinEdgeLabel(c, e); lbl != "" {
+			b.WriteString(fmt.Sprintf("  %s -->|%s| %s\n", from, lbl, to))
+		} else {
 			b.WriteString(fmt.Sprintf("  %s --> %s\n", from, to))
 		}
 	}
@@ -83,6 +91,41 @@ func (c *builderCore) renderMermaid() string {
 	}
 
 	return b.String()
+}
+
+// joinEdgeLabel returns the type label for an edge feeding a Join, or "" if the
+// edge's target is not a Join (or its type cannot be resolved). The join records
+// its inputs in declared order (joinInputs) with positionally-aligned types
+// (joinInTypes); the label is the type of the port whose source is e.from. A
+// source wired to the same join twice takes its first port, which is enough for
+// the diagram.
+func joinEdgeLabel(c *builderCore, e edge) string {
+	to := c.byName[e.to]
+	if to == nil || to.kind != kindJoin {
+		return ""
+	}
+	for i, src := range to.joinInputs {
+		if src == e.from && i < len(to.joinInTypes) {
+			return typeName(to.joinInTypes[i])
+		}
+	}
+	return ""
+}
+
+// inLabel renders a node's input side for its Mermaid label. A kindJoin node has
+// no single inType (it fans in several producers); its real input types live in
+// joinInTypes, so render them as a parenthesized tuple ("(int, string)") rather
+// than the "?" typeName would emit for the nil inType. Every other kind pins a
+// single inType and renders through typeName.
+func inLabel(n *node) string {
+	if n.kind == kindJoin && len(n.joinInTypes) > 0 {
+		parts := make([]string, len(n.joinInTypes))
+		for i, t := range n.joinInTypes {
+			parts[i] = typeName(t)
+		}
+		return "(" + strings.Join(parts, ", ") + ")"
+	}
+	return typeName(n.inType)
 }
 
 // typeName renders a captured reflect.Type for a node label, tolerating a nil

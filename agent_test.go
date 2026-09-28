@@ -524,6 +524,126 @@ func TestSaga_SubAgentFailureReversesWholeTree(t *testing.T) {
 	}
 }
 
+// Regression (sub-agent halt/approval propagation): a *ResumeHalt or *PendingApproval
+// raised INSIDE a sub-agent must propagate up through a non-saga parent Run — the parent
+// must surface it (errors.As matches), must NOT mark the run complete, and after the
+// operator resolves it (ResolveHalt / Approve) a re-Run must complete. Before the fix the
+// parent loop only special-cased *Interrupted/*Sleeping/*Awaiting, so a sub-agent halt or
+// approval fell through to an errored tool-result and the parent ran to completion,
+// permanently burying the signal.
+func TestSubAgent_PropagatesHaltAndApproval(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("resume-halt", func(t *testing.T) {
+		store := NewMemStore()
+		var charged int
+		// Non-retriable write tool inside the sub-agent.
+		charge := &countingTool{name: "charge", safety: Safety{}, calls: &charged}
+		sub := New(&scriptModel{turns: [][]Emit{
+			toolTurn("s1", "charge", `{}`),
+			textTurn("sub-done"),
+		}}, store, charge)
+		worker := SubAgent("worker", "does work", sub)
+		parent := New(&scriptModel{turns: [][]Emit{
+			toolTurn("c1", "worker", `{"task":"charge it"}`),
+			textTurn("parent-done"),
+		}}, store, worker)
+
+		// Seed the sub-run's journal so its charge is ATTEMPTED (side effect started) but has
+		// no recorded result — a crash mid-write. On resume the sub-agent must halt.
+		subRunID := "root/c1"
+		asst := Message{Role: RoleAssistant, Parts: []Part{ToolUse{ID: "s1", Name: "charge", Args: json.RawMessage(`{}`)}}}
+		if _, err := store.Do(ctx, subRunID, "@llm/0", func(context.Context) (Record, error) {
+			return Record{Kind: StepModel, Message: &asst}, nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.Do(ctx, subRunID, "attempt:s1", func(context.Context) (Record, error) {
+			return Record{Kind: StepAttempt, ToolUseID: "s1"}, nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+
+		_, err := parent.Run(ctx, "root", "delegate")
+		var halt *ResumeHalt
+		if !errors.As(err, &halt) {
+			t.Fatalf("parent Run err = %v, want *ResumeHalt propagated from sub-agent", err)
+		}
+		if halt.RunID != subRunID || halt.ToolName != "charge" || halt.ToolUseID != "s1" {
+			t.Fatalf("halt = %+v, want sub-run charge/s1", halt)
+		}
+		if charged != 0 {
+			t.Fatalf("halted charge ran %d times, want 0", charged)
+		}
+		if complete, _ := IsComplete(ctx, store, "root"); complete {
+			t.Fatal("parent run marked complete despite a buried sub-agent halt")
+		}
+
+		// Operator confirms the outcome out of band and resolves the halt in the SUB-run.
+		if err := ResolveHalt(ctx, store, subRunID, "s1", "charged (confirmed)", false); err != nil {
+			t.Fatal(err)
+		}
+		out, err := parent.Run(ctx, "root", "delegate")
+		if err != nil {
+			t.Fatalf("re-run after ResolveHalt: %v", err)
+		}
+		if textOf(out) != "parent-done" {
+			t.Fatalf("resumed parent answer = %q, want parent-done", textOf(out))
+		}
+		if complete, _ := IsComplete(ctx, store, "root"); !complete {
+			t.Fatal("parent run not marked complete after resolving the halt")
+		}
+	})
+
+	t.Run("pending-approval", func(t *testing.T) {
+		store := NewMemStore()
+		var charged int
+		approve := &countingTool{name: "charge", safety: Safety{RequiresApproval: true}, calls: &charged}
+		sub := New(&scriptModel{turns: [][]Emit{
+			toolTurn("s1", "charge", `{}`),
+			textTurn("sub-done"),
+		}}, store, approve)
+		worker := SubAgent("worker", "does work", sub)
+		parent := New(&scriptModel{turns: [][]Emit{
+			toolTurn("c1", "worker", `{"task":"charge it"}`),
+			textTurn("parent-done"),
+		}}, store, worker)
+
+		_, err := parent.Run(ctx, "root", "delegate")
+		var pend *PendingApproval
+		if !errors.As(err, &pend) {
+			t.Fatalf("parent Run err = %v, want *PendingApproval propagated from sub-agent", err)
+		}
+		if pend.ToolName != "charge" || pend.ToolUseID != "s1" {
+			t.Fatalf("pend = %+v, want sub-run charge/s1", pend)
+		}
+		if charged != 0 {
+			t.Fatalf("approval-gated charge ran %d times before approval, want 0", charged)
+		}
+		if complete, _ := IsComplete(ctx, store, "root"); complete {
+			t.Fatal("parent run marked complete despite a buried sub-agent approval pause")
+		}
+
+		// Human approves the SUB-run's tool, then re-run the parent.
+		if err := Approve(ctx, store, pend.RunID, pend.ToolUseID, true); err != nil {
+			t.Fatal(err)
+		}
+		out, err := parent.Run(ctx, "root", "delegate")
+		if err != nil {
+			t.Fatalf("re-run after Approve: %v", err)
+		}
+		if textOf(out) != "parent-done" {
+			t.Fatalf("resumed parent answer = %q, want parent-done", textOf(out))
+		}
+		if charged != 1 {
+			t.Fatalf("approved charge ran %d times, want 1", charged)
+		}
+		if complete, _ := IsComplete(ctx, store, "root"); !complete {
+			t.Fatal("parent run not marked complete after approval")
+		}
+	})
+}
+
 func textOf(m Message) string {
 	for _, p := range m.Parts {
 		if t, ok := p.(Text); ok {

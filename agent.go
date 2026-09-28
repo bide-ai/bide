@@ -413,6 +413,18 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 					res, callErr := toolH(sctx, c.tu)
 					r := Record{Kind: StepToolResult, ToolUseID: c.tu.ID}
 					if callErr != nil {
+						// A ResumeHalt or PendingApproval raised INSIDE this tool (a sub-agent
+						// whose own tool halted or needs approval) is a control-flow signal for
+						// the whole tree, not a tool failure: record nothing and propagate it up
+						// unchanged, so the parent surfaces it and does NOT mark the run complete.
+						// It is not gated on retry-safety: the pause lives in the sub-run's
+						// journal, and re-driving this tool re-enters that sub-run rather than
+						// re-firing a side effect here (see subagent.go).
+						var subHalt *ResumeHalt
+						var subApproval *PendingApproval
+						if errors.As(callErr, &subHalt) || errors.As(callErr, &subApproval) {
+							return Record{}, callErr
+						}
 						// An Interrupt or a durable Sleep pauses the run: record nothing and
 						// propagate, so the tool re-runs and resolves on resume. Requires a
 						// retry-safe tool (else its attempt marker would halt the resume instead).
@@ -441,11 +453,14 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 					return &sagaTrip{toolName: c.tu.Name, toolUseID: c.tu.ID, cause: toolCallErr}
 				}
 				if err != nil {
+					var subHalt *ResumeHalt
+					var subApproval *PendingApproval
 					var intr *Interrupted
 					var slp *Sleeping
 					var awt *Awaiting
-					if errors.As(err, &intr) || errors.As(err, &slp) || errors.As(err, &awt) {
-						return err // propagate the pause unwrapped
+					if errors.As(err, &subHalt) || errors.As(err, &subApproval) ||
+						errors.As(err, &intr) || errors.As(err, &slp) || errors.As(err, &awt) {
+						return err // propagate the pause / sub-tree halt unwrapped
 					}
 					return fmt.Errorf("tool %q: %w (%w)", c.tu.Name, err, ErrTool)
 				}

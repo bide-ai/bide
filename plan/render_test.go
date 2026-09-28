@@ -1,6 +1,7 @@
 package plan
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -109,6 +110,39 @@ func TestRenderMermaid_Deterministic(t *testing.T) {
 	}
 	if !(iEdge < iWhen && iWhen < iElse) {
 		t.Errorf("edges must follow insertion order (edge < When < Else), got positions %d, %d, %d in:\n%s", iEdge, iWhen, iElse, first)
+	}
+}
+
+func TestRenderMermaid_JoinInputTypes(t *testing.T) {
+	// A Join has no single inType (it fans in several producers), so its label
+	// renders the real input tuple from joinInTypes rather than "?", and each input
+	// edge is labelled with the port's contributed type.
+	nY := &node{name: "y", kind: kindStep, inType: typeOf[int](), outType: typeOf[int]()}
+	nZ := &node{name: "z", kind: kindStep, inType: typeOf[int](), outType: typeOf[string]()}
+	nMerge := &node{
+		name:        "merge",
+		kind:        kindJoin,
+		outType:     typeOf[string](),
+		joinInputs:  []string{"y", "z"},
+		joinInTypes: []reflect.Type{typeOf[int](), typeOf[string]()},
+	}
+	c := &builderCore{
+		flowName: "diamond",
+		entry:    "y",
+		nodes:    []*node{nY, nZ, nMerge},
+		byName:   map[string]*node{"y": nY, "z": nZ, "merge": nMerge},
+		edges:    []edge{{from: "y", to: "merge"}, {from: "z", to: "merge"}},
+	}
+	got := c.renderMermaid()
+	if !strings.Contains(got, `merge : (int, string) -> string`) {
+		t.Errorf("join node must label its input tuple, got:\n%s", got)
+	}
+	// n0 is y, n2 is merge: the edge y -> merge carries the int input port's type.
+	if !strings.Contains(got, "n0 -->|int| n2") {
+		t.Errorf("join input edge must carry its port type, got:\n%s", got)
+	}
+	if !strings.Contains(got, "n1 -->|string| n2") {
+		t.Errorf("second join input edge must carry its port type, got:\n%s", got)
 	}
 }
 
