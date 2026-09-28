@@ -1,8 +1,24 @@
 # Contributing
 
+## How contributions work
+
+bide is maintained by Blackwell Systems, and the core is kept under tight authorial control on
+purpose. The project's value is correctness you can rely on: at-most-once side effects,
+machine-checked convergence, and an offline-verifiable audit trail. Those guarantees require the
+maintainers to own the core end to end, the same reason SQLite keeps a closed core. Concretely:
+
+- **Bug reports and security reports are the most valuable thing you can send.** A clear,
+  reproducible report is worth more to this project than a patch. Please report security
+  vulnerabilities privately to the maintainers rather than in a public issue.
+- **Design discussion and questions are welcome** as issues.
+- **Unsolicited code pull requests are generally not accepted.** This is deliberate and not a
+  judgment of your work: the correctness and audit guarantees depend on tight control of the core.
+- **Code changes happen by invitation.** If a change is wanted, it gets discussed in an issue
+  first; an invited contribution then follows the DCO below.
+
 ## Developer Certificate of Origin
 
-Contributions are accepted under the [Developer Certificate of Origin](DCO). Sign off
+An invited or accepted contribution is made under the [Developer Certificate of Origin](DCO). Sign off
 each commit with `git commit -s`, which appends a `Signed-off-by` line certifying you
 have the right to submit the work under the project's license (Apache-2.0). Commits
 without a sign-off fail the DCO check.
