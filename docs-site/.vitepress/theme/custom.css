@@ -1,0 +1,29 @@
+/* bide palette: ink ground, single ember accent. */
+:root {
+  /* amber, darkened for contrast on light backgrounds */
+  --vp-c-brand-1: #9c6716;
+  --vp-c-brand-2: #b4791e;
+  --vp-c-brand-3: #e8a33d;
+  --vp-c-brand-soft: rgba(232, 163, 61, 0.14);
+
+  --vp-home-hero-name-color: #b4791e;
+}
+
+.dark {
+  --vp-c-brand-1: #e8a33d;
+  --vp-c-brand-2: #f0b25a;
+  --vp-c-brand-3: #e8a33d;
+  --vp-c-brand-soft: rgba(232, 163, 61, 0.16);
+
+  /* ink background, matching the wordmark and social card */
+  --vp-c-bg: #0e0e11;
+  --vp-c-bg-alt: #111114;
+  --vp-c-bg-soft: #16161a;
+
+  --vp-home-hero-name-color: #e8a33d;
+}
+
+/* keep the hero mark crisp, not washed into a gradient */
+.VPHero .image-bg {
+  opacity: 0.55;
+}
