@@ -1,7 +1,5 @@
 # Bide: Design Doc
 
-> Working codename: **Bide**. Real name TBD (deliberately deferred: build first, name when the thing exists).
-
 ## Thesis
 
 Every existing Go agent framework (Eino, Google ADK Go, Genkit Go, LangChainGo) ported

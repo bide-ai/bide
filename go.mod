@@ -1,4 +1,3 @@
-// Module path is a placeholder using the working codename; rename when the project is named.
 module github.com/blackwell-systems/bide
 
 go 1.27

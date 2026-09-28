@@ -1,8 +1,4 @@
-# Bide (working name)
-
-> **Bide** is the current working name for this SDK (temporary, under evaluation). On this branch the Go
-> module is now `github.com/blackwell-systems/bide`; the core package stays `agent`. The fit: a runtime that
-> *bides*, waiting on ambiguity rather than risking a bad side effect, and enduring across crashes.
+# Bide
 
 **The durable agent runtime for work that must not happen twice.**
 

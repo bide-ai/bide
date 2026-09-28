@@ -48,8 +48,8 @@ so it builds standalone in CI. CI builds and tests every module in its own direc
 
 ## Interim state (pre-1.0)
 
-The module path is still the working-codename placeholder and the core is unpublished, so the
+The core is not yet published, so the
 adapter modules resolve the core via `replace` directives rather than a pinned version. At the
-**v1.0 / real-name** milestone: rename all module paths, tag the core, and replace the
+**v1.0** milestone: tag the core, and replace the
 `replace` directives with version pins: one coordinated event. Until then there are no
 external consumers, so the interim resolution is invisible.
