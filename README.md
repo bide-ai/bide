@@ -4,9 +4,11 @@
   <img src="assets/bide-banner.png" alt="Bide">
 </p>
 
-<p align="center"><strong>Build durable AI agents in Go. Side effects that fire at most once.</strong></p>
-
-<p align="center"><em>A pause a human or reconciler can clear beats a double-fire you cannot undo.</em></p>
+<p align="center">
+  <strong>Build durable AI agents in Go. Side effects that fire at most once.</strong>
+  <br>
+  <em>A pause you can clear beats a double-fire you can't undo.</em>
+</p>
 
 One append-only journal, four guarantees no other agent framework pairs in a single library:
 
