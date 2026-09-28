@@ -75,7 +75,7 @@ func TestVerifyConvergenceCLI(t *testing.T) {
 	pubHex := hex.EncodeToString(pub)
 
 	// Build the CLI binary once.
-	bin := filepath.Join(dir, "goagents-audit")
+	bin := filepath.Join(dir, "bide-audit")
 	if out, err := exec.Command("go", "build", "-o", bin, ".").CombinedOutput(); err != nil {
 		t.Fatalf("build binary: %v\n%s", err, out)
 	}
@@ -198,7 +198,7 @@ func TestVerifyRunCLI(t *testing.T) {
 	writeJSON(t, certPath, cert)
 	pubHex := hex.EncodeToString(pub)
 
-	bin := filepath.Join(dir, "goagents-audit")
+	bin := filepath.Join(dir, "bide-audit")
 	if out, err := exec.Command("go", "build", "-o", bin, ".").CombinedOutput(); err != nil {
 		t.Fatalf("build binary: %v\n%s", err, out)
 	}
@@ -277,7 +277,7 @@ func TestVerifyQuorumCLI(t *testing.T) {
 	cP := bundlePath("model-C", "c.json")
 	pubHex := hex.EncodeToString(pub)
 
-	bin := filepath.Join(dir, "goagents-audit")
+	bin := filepath.Join(dir, "bide-audit")
 	if out, err := exec.Command("go", "build", "-o", bin, ".").CombinedOutput(); err != nil {
 		t.Fatalf("build binary: %v\n%s", err, out)
 	}

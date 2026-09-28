@@ -17,7 +17,7 @@ import (
 // TestAttestedEventTool_RealPolicyDigest wires a real gsm policy end to end: it builds a
 // combinator machine, takes its PolicyDigest, governs a real state transition through
 // AttestedEventTool, and confirms the journaled result carries that exact digest. It also
-// recomputes the digest independently (the same domain-separated formula goagents-audit
+// recomputes the digest independently (the same domain-separated formula bide-audit
 // verify-governance uses) and asserts parity with gsm's own PolicyDigest, so the SDK, the
 // verifier CLI, and gsm agree on the policy's identity. When GSM_AST_CHECKER is set, it runs
 // the external verified oracle on the policy bytes to close the second trust root in-repo.
@@ -39,7 +39,7 @@ func TestAttestedEventTool_RealPolicyDigest(t *testing.T) {
 	}
 
 	// Independent recomputation: domain-separated SHA-256 over the published format tag and
-	// the policy bytes, exactly what goagents-audit verify-governance computes without importing
+	// the policy bytes, exactly what bide-audit verify-governance computes without importing
 	// gsm. Parity here means the anchored digest a verifier recomputes will match gsm's.
 	h := sha256.New()
 	h.Write([]byte(gsm.PolicyFormatVersion + "\n"))

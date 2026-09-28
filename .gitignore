@@ -24,8 +24,8 @@ coverage.*
 # compiled cmd/bench binary
 /bench
 
-# compiled cmd/goagents-audit binary
-/goagents-audit
+# compiled cmd/bide-audit binary
+/bide-audit
 
 # compiled example binaries (from `go build .` in an example dir)
 examples/mcp/mcp

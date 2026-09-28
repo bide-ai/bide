@@ -1,5 +1,12 @@
 # Project Context
 
-## Features Completed
-- **plan-rung1**: completed 2026-09-26, 4 waves, 5 agents
-  - IMPL doc: docs/IMPL/complete/IMPL-plan-rung1.yaml
+Bide is a durable agent runtime built as a plain-Go library. It centers on one
+append-only journal that provides at-most-once side effects, many concurrent
+durable runs in a single process, a cryptographically verifiable audit trail,
+and provably convergent shared state.
+
+The core module lives at the repository root; adapters and backends (`trace`,
+`mcp`, the `store/*` and `govern/*` backends, and the `examples/*` modules) are
+separate modules stitched together by a `go.work` for local development. See
+[docs/reference/module-structure.md](reference/module-structure.md) for the
+layout and [README.md](../README.md) for the guarantees and their scope.

@@ -2,18 +2,18 @@
 
 ## Prerequisites
 
-- Go 1.27 or newer.
+- Go 1.27 or newer (the core uses generic methods). If `go version` is older, upgrade or set `GOTOOLCHAIN=go1.27.0`.
 - For examples that call a live model, an API key (any OpenAI-compatible endpoint works via `WithBaseURL`). Several examples run with no key at all (see below).
 
 ## Install
 
-```
-go get github.com/blackwell-systems/bide
-```
+Once published: `go get github.com/blackwell-systems/bide`. To build against the repo today, clone it and use a local `replace` directive or `go.work` (this repo already ships a `go.work`; see [Building the repository](#building-the-repository)).
 
 ## Your first agent
 
 An agent is a model, a durable store, and some tools. The loop runs to a final answer; tool results and model turns are journaled so a crashed run resumes without repeating work.
+
+The module is `bide` but the package is `agent`, so import it aliased as `agent "github.com/blackwell-systems/bide"` (as the block below shows).
 
 ```go
 package main
@@ -47,7 +47,7 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	fmt.Println(out)
+	fmt.Println(out.Text())
 }
 ```
 

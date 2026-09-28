@@ -162,7 +162,7 @@ ok, _ := bundle.Verify(pub)   // checks STH signature, size-binding, and inclusi
 key. The public key must come from the anchor operator, not the bundle: that is what makes it
 **proofs you verify, not logs you trust.**
 
-For the auditor who does not write Go, the `goagents-audit` CLI wraps this (`prove` over an
+For the auditor who does not write Go, the `bide-audit` CLI wraps this (`prove` over an
 exported journal + STH, `verify` over a bundle + hex key; `verify` exits 0/1). And for a third
 party who will not import the SDK at all, [`audit/verify`](../../audit/verify) is a **stdlib-only**
 package (no `agent`, no gsm) that checks inclusion, consistency, and STH signatures from raw
@@ -170,14 +170,14 @@ leaf bytes: they can vendor just that, or reimplement it from RFC 6962 and check
 The two verification paths are cross-checked bit-for-bit in the tests so the standalone mirror
 cannot drift.
 
-## CLI reference: `goagents-audit`
+## CLI reference: `bide-audit`
 
-The `goagents-audit` command ([`cmd/goagents-audit`](../../cmd/goagents-audit)) is the auditor-facing
+The `bide-audit` command ([`cmd/bide-audit`](../../cmd/bide-audit)) is the auditor-facing
 front end for the whole proof surface. It is dependency-light: it imports only the core and `audit`
 packages and no store backend, so every produce verb operates on an **exported journal** (a JSON
 array of `Record`, obtained with `json.Marshal(store.History(ctx, runID))`) plus a signed tree head,
 and every verify verb needs only a bundle and an out-of-band public key. Build it with
-`go build ./cmd/goagents-audit`.
+`go build ./cmd/bide-audit`.
 
 Conventions shared across verbs:
 
@@ -265,7 +265,7 @@ The verifier then closes a second, independent root of trust:
 ```
 # recompute the policy digest from the published bytes and, with the external verified
 # oracle (astchecker, extracted from the axiom-free Coq proof), certify the policy converges:
-goagents-audit verify-governance -policy policy.machine -digest <hex-from-bundle> -checker ./astchecker
+bide-audit verify-governance -policy policy.machine -digest <hex-from-bundle> -checker ./astchecker
 ```
 
 `verify-governance` recomputes the digest from the published format without importing the policy
@@ -288,7 +288,7 @@ The CLI does this whole cross-link in one command:
 ```
 # both bundles authentic and in the same signed tree, the action's policy digest links to the
 # anchored policy leaf, the leaf's bytes hash to that digest, and (with -checker) the policy converges:
-goagents-audit verify-governed-action -action action.json -policy-bundle policy.json -pubkey <hex> -checker ./astchecker
+bide-audit verify-governed-action -action action.json -policy-bundle policy.json -pubkey <hex> -checker ./astchecker
 ```
 
 ### Anchoring the convergence proof itself
@@ -319,7 +319,7 @@ caught. `compensationFree_step_no_repair` is in the axiom-free gate alongside `c
 # both bundles authentic and in the same signed tree, the certificate certifies the anchored
 # policy's digest, the leaf's bytes hash to it, and the oracle's convergence AND compensation-free
 # verdicts agree with the certificate:
-goagents-audit verify-convergence -cert-bundle cert.json -policy-bundle policy.json -pubkey <hex> -checker ./astchecker
+bide-audit verify-convergence -cert-bundle cert.json -policy-bundle policy.json -pubkey <hex> -checker ./astchecker
 ```
 
 ### Binding the resulting state, and checking it by replay
@@ -360,8 +360,8 @@ proofs verify against a separate absence commitment, signed in one call with
 
 ```
 # prove no tool call with this ID, or no governed action under this policy digest, ever happened:
-goagents-audit prove-absent -journal run.json -sth absence-sth.json -key policy:<digest> -out absent.json
-goagents-audit verify-absent -bundle absent.json -pubkey <hex>   # exit 0 = authentically absent
+bide-audit prove-absent -journal run.json -sth absence-sth.json -key policy:<digest> -out absent.json
+bide-audit verify-absent -bundle absent.json -pubkey <hex>   # exit 0 = authentically absent
 ```
 
 Scope, stated precisely: this proves the action ran under a policy that is anchored in the log and
@@ -426,7 +426,7 @@ own set):
 # only-approved-policies (used set bound to the signed absence root and a subset of the allowlist)
 # and policies-convergence-certified (each used policy anchored and digest-linked); with -checker the
 # oracle's verdict on each policy must agree with its certificate:
-goagents-audit verify-run -cert runcert.json -pubkey <hex> -approved <digest> -checker ./astchecker
+bide-audit verify-run -cert runcert.json -pubkey <hex> -approved <digest> -checker ./astchecker
 ```
 
 Scope, stated precisely: the certificate proves properties of the **governed, committed boundary**
@@ -509,7 +509,7 @@ and on a separate lifecycle via the BYO `EventStore` port / `PersistJournal`), a
 verification surface. Continuous anchoring is done: `AuditedStore` auto-signs an STH per durable
 step and publishes it through the `Anchor` port to a reference external transparency log
 (`MemAnchorLog`) that is itself append-only and verifiable. Proof ergonomics are done too: a
-portable `ProofBundle` (`ProveToolCall` / `ProveRecord` / `Verify`), the `goagents-audit` CLI,
+portable `ProofBundle` (`ProveToolCall` / `ProveRecord` / `Verify`), the `bide-audit` CLI,
 and a stdlib-only standalone verifier (`audit/verify`).
 
 Candidate extensions if a use case needs them, in rough priority:

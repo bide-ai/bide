@@ -98,7 +98,7 @@ you, your database, or your logs*:
 **Proofs you verify, not logs you trust.** Everyone else offers *observability* (logs you
 trust because the vendor is SOC2); this is a *cryptographic proof you check yourself*. Produce a
 portable `ProofBundle` for one action (`audit.ProveToolCall`) and hand it to an auditor who
-verifies it offline with a `goagents-audit verify` command or a stdlib-only verifier that never
+verifies it offline with a `bide-audit verify` command or a stdlib-only verifier that never
 imports the SDK. **No other agent framework has this at all.** The same spine carries the rest of the
 accountability layer, all verifiable offline: proof-carrying runs (one `RunCertificate` attesting a
 whole run's policy compliance), signed capability grants with attenuating delegation, authority
@@ -225,6 +225,12 @@ if errors.As(err, &halt) {
 ```
 
 ## Quickstart
+
+Requires Go 1.27 (the core uses generic methods). If `go version` is older, upgrade or set
+`GOTOOLCHAIN=go1.27.0`.
+
+The module is `bide` but the package is `agent`, so import it aliased as
+`agent "github.com/blackwell-systems/bide"` (as the block below shows).
 
 ```go
 package main
@@ -645,7 +651,7 @@ through `FederatedEventTool`, so an LLM tool call becomes a governed event.
 **Agreement on a decision (quorum).** k-of-n named voters (each a model, provider, or principal)
 cast a normalized decision; every vote is a journaled, at-most-once step that records who voted how,
 and the k-of-n gate is a gsm invariant over the vote count, so "k agreed" is machine-checked over
-every possible tally. `goagents-audit verify-quorum` re-checks the tally and every vote from public
+every possible tally. `bide-audit verify-quorum` re-checks the tally and every vote from public
 artifacts, reproducing the plurality rule without trusting the producer. The claim is precise: a
 quorum proves *that k voters agreed* and lowers single-model risk; it does not certify the decision
 is correct (correlated errors are not independence), and only normalized decisions can be quorumed,
@@ -686,7 +692,7 @@ New here? Start with **[Getting started](docs/getting-started.md)**, use the **[
   portable `RunCertificate` asserting behavioral-property compliance over the whole run
   (only-approved-policies, policies-convergence-certified), composed from the existing audit
   primitives and checkable offline against a single signed tree head with `CertifyRun` / `VerifyRun`
-  or the `goagents-audit verify-run` CLI. Runnable in `examples/proof-carrying-run`.
+  or the `bide-audit verify-run` CLI. Runnable in `examples/proof-carrying-run`.
 - **[docs/guides/delegation.md](docs/guides/delegation.md)**: signed grants and attenuating delegation. A parent mints a
   capability grant a sub-agent can only narrow (`Grant` / `SignGrant` / `AttenuatingSubAgent`),
   `VerifyDelegationChain` checks the whole chain offline, and `EarnedAuthority` widens a subject's
@@ -699,7 +705,7 @@ New here? Start with **[Getting started](docs/getting-started.md)**, use the **[
   this before relying on the audit trail.
 - **[docs/guides/quorum.md](docs/guides/quorum.md)**: governed k-of-n model agreement. `govern.Quorum` runs
   several models over `agent.Parallel` and admits an answer only when k agree, with the tally
-  anchored in the journal and re-checkable offline via `goagents-audit verify-quorum`. Runnable in
+  anchored in the journal and re-checkable offline via `bide-audit verify-quorum`. Runnable in
   `examples/quorum`.
 - **[docs/guides/models.md](docs/guides/models.md)**: the three model adapters (Anthropic, OpenAI-compatible,
   Gemini): constructor options and defaults, `WithBaseURL` for any OpenAI-compatible or Vertex

@@ -31,7 +31,7 @@ type Grant struct {
 	ParentRef string            `json:"parent_ref,omitempty"` // Digest of the grant this was attenuated from; empty for a root grant
 }
 
-const grantDigestPrefix = "goagents-grant-v1\n"
+const grantDigestPrefix = "bide-grant-v1\n"
 
 // Bytes is the canonical serialization that is signed and digested. json.Marshal sorts map keys and
 // emits struct fields in declaration order, so it is deterministic in-ecosystem.

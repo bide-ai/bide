@@ -17,8 +17,11 @@ Build and test with the versions pinned in each `go.mod` (rather than the worksp
 GOWORK=off go build ./...
 GOWORK=off go test ./...
 GOWORK=off go vet .
-gofmt -l .        # must print nothing
+export PATH="$(go env GOROOT)/bin:$PATH"   # use the go1.27 toolchain gofmt
+gofmt -l .                                 # must print nothing
 ```
+
+The homebrew/base `gofmt` predates Go 1.27 generic methods and reports false errors on this repo (for example "method must have no type parameters"); the `PATH` export above puts the go1.27 toolchain `gofmt` first, or run `go fmt ./...` instead.
 
 The two example modules that import separate modules (`examples/mcp`, `examples/observability`) build from their own directory:
 
@@ -44,6 +47,6 @@ Each example is its own `main.go` with a package-doc header that states what it 
 
 ## Before opening a change
 
-- `GOWORK=off go build ./...`, `GOWORK=off go test ./...`, and `gofmt -l .` are clean.
+- `GOWORK=off go build ./...`, `GOWORK=off go test ./...`, and `gofmt -l .` are clean (run `gofmt` from the go1.27 toolchain via `export PATH="$(go env GOROOT)/bin:$PATH"`, or use `go fmt ./...`; the base gofmt predates Go 1.27 generic methods and reports false errors).
 - New exported symbols have doc comments.
 - New docs are linked from the [docs index](docs/README.md) and honor the style above.

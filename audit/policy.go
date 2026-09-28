@@ -27,7 +27,7 @@ func policyLeafName(digest string) string { return "audit:policy:" + digest }
 // taken under it. The digest is the policy owner's stable identifier (e.g.
 // gsm.Registry.PolicyDigest); audit treats it as opaque and does not recompute it from the bytes.
 // A verifier recomputes the digest from the disclosed bytes and runs the external oracle
-// (goagents-audit verify-governance), so a leaf that lies about its digest is caught there.
+// (bide-audit verify-governance), so a leaf that lies about its digest is caught there.
 func RecordPolicy(ctx context.Context, store agent.Durable, runID string, policy []byte, digest string) (agent.Record, error) {
 	content, err := json.Marshal(PolicyContent{Digest: digest, Policy: string(policy)})
 	if err != nil {

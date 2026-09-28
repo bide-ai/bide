@@ -1,7 +1,7 @@
 # Governed model quorum
 
 Status: implemented and shipped. All staged build items below are Done: `govern.Quorum`,
-`examples/quorum`, and the `goagents-audit verify-quorum` verb. This note documents how a k-of-n
+`examples/quorum`, and the `bide-audit verify-quorum` verb. This note documents how a k-of-n
 model quorum is expressed on the existing seams (not as a new agent type), so it is a composition
 helper rather than a bespoke agent.
 
@@ -106,7 +106,7 @@ names (`Ge`, `SetLabel`, and a boolean-set transform) are illustrative; the shap
    values (provable one by one via `audit.ProveStep`).
 2. Done: `examples/quorum` wires the count into a `gsm` invariant as above and commits through
    `AttestedEventTool`, with `RequiresApproval` on the escalate path.
-3. Done: `goagents-audit verify-quorum` confirms "committed under k-of-n agreement" from public
+3. Done: `bide-audit verify-quorum` confirms "committed under k-of-n agreement" from public
    artifacts alone. It takes the tally bundle and one vote bundle per voter (from `ProveStep`), and
    does not trust the recorded tally: it verifies every bundle authentic and in the same signed tree
    and run, recomputes the tally from the disclosed vote leaves with the same plurality rule

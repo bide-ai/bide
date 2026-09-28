@@ -29,7 +29,7 @@ import (
 //   - policies-convergence-certified: for each used policy digest, an anchored convergence
 //     certificate leaf exists in the same signed tree as the policy leaf and links to its digest.
 //     The certificate is a producer claim; a rigorous verifier cross-checks it against the external
-//     oracle (goagents-audit verify-run -checker), exactly as verify-convergence does, so a
+//     oracle (bide-audit verify-run -checker), exactly as verify-convergence does, so a
 //     certificate that overstates convergence is caught outside this package.
 //
 // What the certificate proves, stated precisely: it proves properties of the GOVERNED, COMMITTED

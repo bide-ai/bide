@@ -175,7 +175,7 @@ func EventTool(gov Applier, name, description, event string, safety agent.Safety
 // ProofBundle from ProveToolCall) then commits cryptographically to the policy the action ran
 // under, not merely that the action happened. An auditor recomputes the digest from the
 // published policy bytes and runs the external verified oracle on them (see
-// `goagents-audit verify-governance`), tying the cryptographic root (the log) to the
+// `bide-audit verify-governance`), tying the cryptographic root (the log) to the
 // mathematical root (the proof) over one artifact.
 //
 // policyDigest is treated as an opaque string on purpose: the SDK does not depend on gsm's

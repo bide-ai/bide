@@ -81,7 +81,7 @@ machine, a single implementation bug is far less likely to have admitted a bad o
   a real gsm policy, takes its `PolicyDigest`, governs a real transition through
   `AttestedEventTool`, and confirms the journaled leaf carries that exact digest and the
   resulting state digest. It independently recomputes the digest with the same domain-separated
-  SHA-256 formula the `goagents-audit verify-governance` CLI uses (without importing gsm), and
+  SHA-256 formula the `bide-audit verify-governance` CLI uses (without importing gsm), and
   asserts parity, so the SDK, the verifier CLI, and gsm agree on the policy's identity. When
   `GSM_AST_CHECKER` is set to an external checker binary, the test writes the policy bytes to a
   temp file and runs that checker on them, failing if the external verified oracle rejects a

@@ -110,7 +110,7 @@ takes ML-DSA or hybrid.
 
 Verification never requires trusting the producer or importing the producer's runtime. Two paths:
 
-- The **`goagents-audit` CLI** (`cmd/goagents-audit`) is the auditor-facing front end. It imports
+- The **`bide-audit` CLI** (`cmd/bide-audit`) is the auditor-facing front end. It imports
   only the core and `audit` packages and no store backend, so it operates on an exported journal
   (a JSON array of `Record`) plus a signed tree head. `verify` and the other verify verbs print a
   one-line verdict and set the exit code (**0 = passed, 1 = failed**, 2 = usage error), which is
@@ -132,4 +132,4 @@ reference test vectors, not a homegrown look-alike.
   runs, event logs). This page consolidates the caveats that walkthrough scatters.
 - `docs/guides/delegation.md`: signed grants, the delegation chain, and capability attenuation.
 - `audit/`: the package. `audit/verify/`: the stdlib-only standalone verifier.
-- `cmd/goagents-audit`: the offline CLI.
+- `cmd/bide-audit`: the offline CLI.

@@ -1,6 +1,7 @@
 module github.com/blackwell-systems/bide/benchmarks
 
 go 1.27.0
+toolchain go1.27.0
 
 require (
 	github.com/cloudwego/eino v0.9.21

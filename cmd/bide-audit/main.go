@@ -1,14 +1,14 @@
-// Command goagents-audit produces and verifies audit ProofBundles from the command line, for
+// Command bide-audit produces and verifies audit ProofBundles from the command line, for
 // the auditor/compliance persona who does not write Go. It is deliberately dependency-light:
 // it imports only the core + audit packages (stdlib under the hood), no store backend, so it
 // works against any store by operating on an exported journal (a JSON array of records) and a
 // signed tree head. `verify` needs neither: just the bundle and a public key.
 //
 //	# Produce a proof that one tool call happened, against an anchored STH:
-//	goagents-audit prove -journal run.json -sth sth.json -tool call_abc -out proof.json
+//	bide-audit prove -journal run.json -sth sth.json -tool call_abc -out proof.json
 //
 //	# Verify it offline, trusting only an out-of-band public key:
-//	goagents-audit verify -bundle proof.json -pubkey 1a2b...   # exit 0 = verified
+//	bide-audit verify -bundle proof.json -pubkey 1a2b...   # exit 0 = verified
 //
 // Export the journal with: json.Marshal(store.History(ctx, runID)).
 package main
@@ -67,7 +67,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprint(os.Stderr, `goagents-audit: produce and verify audit proof bundles
+	fmt.Fprint(os.Stderr, `bide-audit: produce and verify audit proof bundles
 
   prove  -journal <file> -sth <file> (-tool <id> | -index <n>) [-out <file>]
          build a ProofBundle for one record against a signed tree head
@@ -121,7 +121,7 @@ type staticStore struct{ recs []agent.Record }
 
 func (s staticStore) History(context.Context, string) ([]agent.Record, error) { return s.recs, nil }
 func (staticStore) Do(context.Context, string, string, func(context.Context) (agent.Record, error)) (agent.Record, error) {
-	return agent.Record{}, errors.New("goagents-audit: journal is read-only")
+	return agent.Record{}, errors.New("bide-audit: journal is read-only")
 }
 
 func prove(args []string) {
