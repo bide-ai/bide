@@ -5,8 +5,9 @@
   "type": "module",
   "description": "Documentation site for bide (https://bide-ai.com).",
   "scripts": {
-    "docs:dev": "vitepress dev",
-    "docs:build": "vitepress build",
+    "sync": "node sync-docs.mjs",
+    "docs:dev": "node sync-docs.mjs && vitepress dev",
+    "docs:build": "node sync-docs.mjs && vitepress build",
     "docs:preview": "vitepress preview"
   },
   "devDependencies": {

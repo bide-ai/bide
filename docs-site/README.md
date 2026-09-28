@@ -2,9 +2,10 @@
 
 The [VitePress](https://vitepress.dev) site published at [bide-ai.com](https://bide-ai.com).
 
-It sources its content from the repository's `docs/` tree (via `srcDir: '../docs'`),
-so guides live in one place: edit the markdown under `docs/`, not here. This
-directory holds only the site shell (config, theme, homepage assets).
+Guides live in one place: edit the markdown under `docs/`, not here. At build
+time `sync-docs.mjs` copies `docs/` into this directory (gitignored) so VitePress
+resolves modules locally. This directory holds only the site shell (config,
+theme, homepage, assets) plus the synced copy.
 
 ## Develop
 

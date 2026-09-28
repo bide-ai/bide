@@ -2,7 +2,6 @@ import { defineConfig } from 'vitepress'
 
 // The site shell lives here; page content is sourced from the repo's docs/ tree.
 export default defineConfig({
-  srcDir: '../docs',
   srcExclude: ['README.md', 'CONTEXT.md', 'design/**'],
   cleanUrls: true,
   // The docs are authored to be read in-repo on GitHub too, so they link to

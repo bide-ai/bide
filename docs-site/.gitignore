@@ -2,3 +2,12 @@ node_modules/
 .vitepress/dist/
 .vitepress/cache/
 package-lock.json
+
+# Synced from ../docs at build time by sync-docs.mjs. Single source lives in /docs.
+/getting-started.md
+/CONCEPTS.md
+/GUARANTEE.md
+/KNOWN-LIMITATIONS.md
+/guides/
+/reference/
+/testing/
