@@ -231,6 +231,59 @@ stance as the rest of the system. The rule that keeps any such layer from forkin
 that a new surface may add a way to author, never a way to execute: every layer lowers to the one
 journal-backed runtime. See [docs/guides/flows.md](docs/guides/flows.md).
 
+### Three ways to author, one runtime
+
+Plain Go is the default: write the loop, and the journal supplies the guarantees.
+
+```go
+weather := agent.Func("get_weather", "Current weather for a city",
+    agent.Safety{ReadOnly: true}, getWeather)
+
+a := agent.New(model, store, weather)
+out, _ := a.Run(ctx, "run-1", "Weather in SF? Use the tool.")
+```
+
+When you want the flow as a first-class, inspectable artifact, the `plan` builder wires typed nodes into a `Flow` that lowers to the same runtime:
+
+```go
+b := plan.New[Order, Receipt]("order-triage")
+classify := b.Step("classify", func(o Order) (Assessment, error) { ... })
+reserve  := b.Step("reserve",  func(a Assessment) (Reservation, error) { ... }) // non-idempotent
+finalize := b.Step("finalize", func(r Reservation) (Receipt, error) { ... })
+decline  := b.Step("decline",  func(a Assessment) (Receipt, error) { ... })
+
+b.Switch(classify,
+    plan.When(func(a Assessment) bool { return a.Rush }, reserve),
+    plan.Else(decline),
+)
+b.Edge(reserve, finalize)
+
+flow, err := b.Build() // inherits at-most-once and the audit trail
+```
+
+Or author that same topology as declarative config a higher layer (a visual builder) can emit, loaded with `plan.Load`:
+
+```json
+{
+  "flow": "order-triage",
+  "entry": "classify",
+  "nodes": [
+    {"name": "classify", "block": "classify"}, {"name": "reserve", "block": "reserve"},
+    {"name": "finalize", "block": "finalize"}, {"name": "decline", "block": "decline"}
+  ],
+  "wiring": [
+    {"switch": "classify", "when": [{"pred": "rush", "to": "reserve"}], "else": "decline"},
+    {"edge": ["reserve", "finalize"]}
+  ]
+}
+```
+
+```go
+flow, err := plan.Load[Order, Receipt](configBytes, reg) // same topology, same Digest()
+```
+
+All three lower to the one journal-backed runtime, so at-most-once, HA resume, and the verifiable trail come for free whichever surface you pick.
+
 ## Ambient runs: durable sleep, wake, and interrupt
 
 The four guarantees above are the substrate; this is the lifecycle they enable. An ambient run does
