@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
@@ -16,6 +17,16 @@ import (
 	"github.com/bide-ai/bide/govern"
 	gsm "github.com/blackwell-systems/gsm"
 )
+
+// auditBin is the path to build the bide-audit test binary to. On Windows, go
+// build writes (and exec expects) a .exe suffix, so add it there.
+func auditBin(dir string) string {
+	bin := filepath.Join(dir, "bide-audit")
+	if runtime.GOOS == "windows" {
+		bin += ".exe"
+	}
+	return bin
+}
 
 // TestVerifyConvergenceCLI exercises the verify-convergence command end to end, including the
 // adversarial cross-check: with a checker whose verdict disagrees with the certificate, the command
@@ -75,7 +86,7 @@ func TestVerifyConvergenceCLI(t *testing.T) {
 	pubHex := hex.EncodeToString(pub)
 
 	// Build the CLI binary once.
-	bin := filepath.Join(dir, "bide-audit")
+	bin := auditBin(dir)
 	if out, err := exec.Command("go", "build", "-o", bin, ".").CombinedOutput(); err != nil {
 		t.Fatalf("build binary: %v\n%s", err, out)
 	}
@@ -198,7 +209,7 @@ func TestVerifyRunCLI(t *testing.T) {
 	writeJSON(t, certPath, cert)
 	pubHex := hex.EncodeToString(pub)
 
-	bin := filepath.Join(dir, "bide-audit")
+	bin := auditBin(dir)
 	if out, err := exec.Command("go", "build", "-o", bin, ".").CombinedOutput(); err != nil {
 		t.Fatalf("build binary: %v\n%s", err, out)
 	}
@@ -277,7 +288,7 @@ func TestVerifyQuorumCLI(t *testing.T) {
 	cP := bundlePath("model-C", "c.json")
 	pubHex := hex.EncodeToString(pub)
 
-	bin := filepath.Join(dir, "bide-audit")
+	bin := auditBin(dir)
 	if out, err := exec.Command("go", "build", "-o", bin, ".").CombinedOutput(); err != nil {
 		t.Fatalf("build binary: %v\n%s", err, out)
 	}

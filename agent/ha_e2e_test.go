@@ -47,7 +47,14 @@ func TestHA_MutualExclusionUnderConcurrency(t *testing.T) {
 		go func(id int) {
 			defer wg.Done()
 			holder := fmt.Sprintf("w%d", id)
-			for iter := 0; iter < 1000; iter++ {
+			// Drive to completion, bounded by wall-clock rather than a fixed
+			// iteration count: losing workers spin through failed lease
+			// acquisitions far faster than winners drive the runs, and on a
+			// slow (or few-core) runner a fixed cap can expire before the runs
+			// finish. The deadline still fails a genuine livelock instead of
+			// hanging.
+			deadline := time.Now().Add(30 * time.Second)
+			for {
 				allDone := true
 				for _, r := range runIDs {
 					done, _ := IsComplete(ctx, s, r)
@@ -60,8 +67,12 @@ func TestHA_MutualExclusionUnderConcurrency(t *testing.T) {
 				if allDone {
 					return
 				}
+				if time.Now().After(deadline) {
+					t.Errorf("worker %d did not converge within deadline", id)
+					return
+				}
+				time.Sleep(time.Millisecond) // yield so a lease holder can make progress
 			}
-			t.Errorf("worker %d did not converge", id)
 		}(w)
 	}
 	wg.Wait()
