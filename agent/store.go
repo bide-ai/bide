@@ -34,6 +34,19 @@ type Record struct {
 	Result    json.RawMessage `json:"result,omitempty"`      // StepToolResult / StepValue
 	IsError   bool            `json:"is_error,omitempty"`    // StepToolResult
 	Approved  bool            `json:"approved,omitempty"`    // StepApproval
+	// AttemptedAt is the Unix-millis wall-clock time an attempt marker (StepAttempt) was
+	// written, i.e. just before a non-retriable side effect fired. It is set once and read
+	// back verbatim on replay, so it stays deterministic. Zero (and omitted) on every
+	// other kind; a reconciler uses it to honor a grace period before resolving a halt.
+	AttemptedAt int64 `json:"attempted_at,omitempty"`
+	// Reconciled marks a StepToolResult that ResolveHalt injected from verified evidence
+	// rather than one the tool produced by running. It lets a later reader (and bide-audit)
+	// tell a reconciled outcome from a clean one at a glance.
+	Reconciled bool `json:"reconciled,omitempty"`
+	// Evidence is what a reconciler read to decide the outcome (a queried provider record,
+	// a message id, a log line). It is carried on the reconciled result and signed with it,
+	// so the verdict and its basis live in the journal beside the outcome.
+	Evidence json.RawMessage `json:"evidence,omitempty"`
 }
 
 // Durable is the crash-safe substrate: named-step memoization. Do runs a step at
@@ -134,23 +147,126 @@ func Approve(ctx context.Context, d Durable, runID, toolUseID string, approved b
 //	    msg, err = a.Run(ctx, halt.RunID, input) // resumes past the halt
 //	}
 //
+// Two options refine this. WithMinHaltAge(d) refuses to resolve a halt younger than d
+// (measured from the attempt marker), so a reconciler cannot query and resolve before the
+// provider's record has settled and thereby re-fire the effect. WithEvidence(v) records the
+// resolution as reconciled and stores what was read to decide, signed beside the outcome,
+// so a clean run stays distinguishable from a reconciled one.
+//
 // This is the only supported way to clear a ResumeHalt for a non-idempotent side effect;
-// deciding the true outcome is a human judgment the runtime cannot make for you.
-func ResolveHalt(ctx context.Context, store Durable, runID, toolUseID string, result any, isError bool) error {
+// deciding the true outcome is a human (or reconciler) judgment the runtime cannot make for you.
+func ResolveHalt(ctx context.Context, store Durable, runID, toolUseID string, result any, isError bool, opts ...ResolveOption) error {
 	if runID == "" {
 		return fmt.Errorf("ResolveHalt: empty runID: %w", ErrConfig)
 	}
 	if toolUseID == "" {
 		return fmt.Errorf("ResolveHalt: empty toolUseID: %w", ErrConfig)
 	}
+	cfg := resolveConfig{now: time.Now}
+	for _, o := range opts {
+		o(&cfg)
+	}
+	if cfg.evErr != nil {
+		return cfg.evErr
+	}
+	if cfg.minHaltAge > 0 {
+		attemptedAt, ok, err := attemptTime(ctx, store, runID, toolUseID)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return fmt.Errorf("ResolveHalt: cannot enforce min halt age for %q: no attempt marker carries a timestamp: %w", toolUseID, ErrConfig)
+		}
+		if age := cfg.now().Sub(attemptedAt); age < cfg.minHaltAge {
+			return &HaltTooYoung{RunID: runID, ToolUseID: toolUseID, Age: age, Min: cfg.minHaltAge}
+		}
+	}
 	b, err := json.Marshal(result)
 	if err != nil {
 		return fmt.Errorf("agent: encode resolve-halt result for %q: %w (%w)", toolUseID, err, ErrConfig)
 	}
 	_, err = store.Do(ctx, runID, toolUseID, func(context.Context) (Record, error) {
-		return Record{Kind: StepToolResult, ToolUseID: toolUseID, Result: b, IsError: isError}, nil
+		return Record{Kind: StepToolResult, ToolUseID: toolUseID, Result: b, IsError: isError, Reconciled: cfg.reconciled, Evidence: cfg.evidence}, nil
 	})
 	return err
+}
+
+// ResolveOption configures ResolveHalt.
+type ResolveOption func(*resolveConfig)
+
+type resolveConfig struct {
+	minHaltAge time.Duration
+	now        func() time.Time
+	evidence   json.RawMessage
+	reconciled bool
+	evErr      error
+}
+
+// WithMinHaltAge refuses to resolve a halt younger than d, measured from the attempt
+// marker's AttemptedAt to now. A reconciler passes this so it cannot resolve before the
+// provider's record has had time to settle (a sent-message id can appear seconds after the
+// send): resolving too early reads "absent" and re-fires the very side effect the halt
+// exists to prevent. d <= 0 skips the check. When d > 0 but no attempt timestamp is found,
+// ResolveHalt errors rather than resolve blind. Returns *HaltTooYoung when the halt has not
+// aged enough, so the caller waits and retries later.
+func WithMinHaltAge(d time.Duration) ResolveOption {
+	return func(c *resolveConfig) { c.minHaltAge = d }
+}
+
+// WithNow overrides the clock WithMinHaltAge measures against (default time.Now). For tests
+// and callers that carry their own clock.
+func WithNow(now func() time.Time) ResolveOption {
+	return func(c *resolveConfig) {
+		if now != nil {
+			c.now = now
+		}
+	}
+}
+
+// WithEvidence records the resolution as reconciled from verified evidence rather than an
+// operator's bare assertion: it marks the injected result Reconciled and stores v
+// (JSON-marshalled) as its Evidence, signed alongside the outcome. Use it so a later reader
+// can tell a reconciled step from a clean one and re-check the basis of the verdict.
+func WithEvidence(v any) ResolveOption {
+	return func(c *resolveConfig) {
+		b, err := json.Marshal(v)
+		if err != nil {
+			c.evErr = fmt.Errorf("agent: encode resolve-halt evidence: %w (%w)", err, ErrConfig)
+			return
+		}
+		c.evidence = b
+		c.reconciled = true
+	}
+}
+
+// HaltTooYoung is returned by ResolveHalt when WithMinHaltAge is set and the halt has not
+// aged past the grace period yet. Wait and retry the resolution later.
+type HaltTooYoung struct {
+	RunID     string
+	ToolUseID string
+	Age       time.Duration // elapsed since the effect was attempted
+	Min       time.Duration // the required minimum
+}
+
+func (e *HaltTooYoung) Error() string {
+	return fmt.Sprintf("resolve-halt for call %s (run %s) too soon: attempted %s ago, need %s before resolving",
+		e.ToolUseID, e.RunID, e.Age, e.Min)
+}
+
+// attemptTime returns the AttemptedAt of the StepAttempt marker for toolUseID in the run's
+// history. ok is false when there is no attempt marker for it or the marker carries no
+// timestamp (e.g. a journal written before AttemptedAt existed).
+func attemptTime(ctx context.Context, store Durable, runID, toolUseID string) (time.Time, bool, error) {
+	recs, err := store.History(ctx, runID)
+	if err != nil {
+		return time.Time{}, false, fmt.Errorf("ResolveHalt: read history for %s: %w", runID, err)
+	}
+	for _, r := range recs {
+		if r.Kind == StepAttempt && r.ToolUseID == toolUseID && r.AttemptedAt != 0 {
+			return time.UnixMilli(r.AttemptedAt), true, nil
+		}
+	}
+	return time.Time{}, false, nil
 }
 
 // PendingApproval is returned by Agent.Run when a tool requiring human approval has no
@@ -173,6 +289,11 @@ type ResumeHalt struct {
 	RunID     string
 	ToolUseID string
 	ToolName  string
+	// AttemptedAt is when the effect was attempted (the attempt marker's timestamp), zero
+	// if unknown. A reconciler uses it to honor a grace period before resolving (see
+	// ResolveHalt with WithMinHaltAge) so it does not query the provider before its record
+	// has settled.
+	AttemptedAt time.Time
 }
 
 func (e *ResumeHalt) Error() string {

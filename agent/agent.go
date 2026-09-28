@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"golang.org/x/sync/errgroup"
 )
@@ -235,10 +236,11 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 		msgs = append(msgs, SystemText(sys))
 	}
 	msgs = append(msgs, seed...)
-	done := map[string]bool{}      // tool-use IDs with a recorded result
-	attempted := map[string]bool{} // tool-use IDs we recorded an attempt marker for (started a side effect)
-	decided := map[string]bool{}   // tool-use IDs with a recorded approval decision
-	approvals := map[string]bool{} // tool-use ID -> approve(true)/deny(false)
+	done := map[string]bool{}           // tool-use IDs with a recorded result
+	attempted := map[string]bool{}      // tool-use IDs we recorded an attempt marker for (started a side effect)
+	attemptedAtMs := map[string]int64{} // tool-use ID -> attempt marker's Unix-millis timestamp
+	decided := map[string]bool{}        // tool-use IDs with a recorded approval decision
+	approvals := map[string]bool{}      // tool-use ID -> approve(true)/deny(false)
 	modelSeq := 0
 	for _, r := range recs {
 		switch r.Kind {
@@ -257,6 +259,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 			fire(ToolCompleted{ToolUseID: r.ToolUseID, Name: name, Result: r.Result, IsError: r.IsError})
 		case StepAttempt:
 			attempted[r.ToolUseID] = true
+			attemptedAtMs[r.ToolUseID] = r.AttemptedAt
 		case StepSagaFail:
 			done[r.ToolUseID] = true // the failing step is durably resolved (no ResumeHalt)
 		case StepApproval:
@@ -278,7 +281,11 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 			continue
 		}
 		if t, ok := a.tools[name]; ok && !t.Safety().retriableOnResume() {
-			return Message{}, Usage{}, 0, &ResumeHalt{RunID: runID, ToolUseID: id, ToolName: name}
+			var attemptedAt time.Time
+			if ms := attemptedAtMs[id]; ms != 0 {
+				attemptedAt = time.UnixMilli(ms)
+			}
+			return Message{}, Usage{}, 0, &ResumeHalt{RunID: runID, ToolUseID: id, ToolName: name, AttemptedAt: attemptedAt}
 		}
 	}
 
@@ -398,7 +405,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 				// Attempt marker before a non-retriable side effect (crash-mid-write → halt).
 				if !c.t.Safety().retriableOnResume() {
 					if _, err := a.store.Do(gctx, runID, "attempt:"+c.tu.ID, func(context.Context) (Record, error) {
-						return Record{Kind: StepAttempt, ToolUseID: c.tu.ID}, nil
+						return Record{Kind: StepAttempt, ToolUseID: c.tu.ID, AttemptedAt: time.Now().UnixMilli()}, nil
 					}); err != nil {
 						return err
 					}
