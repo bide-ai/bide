@@ -17,7 +17,4 @@
   <g filter="url(#glow)" fill="none">
     <path d="M40 52 L420 52 Q520 52 560 38 Q600 28 640 38 Q680 52 780 52 L1160 52" stroke="url(#fade)" stroke-width="2"/>
   </g>
-  <g filter="url(#glow)">
-    <rect x="592" y="20" width="16" height="16" fill="#E8A33D"/>
-  </g>
 </svg>

@@ -31,7 +31,7 @@ node handoffs.
 
 Status: **working v0**, live-verified end-to-end. Requires **Go 1.27**.
 
-<p align="center"><img src="assets/divider.png?v=3" width="100%" alt=""></p>
+<p align="center"><img src="assets/divider.png?v=4" width="100%" alt=""></p>
 
 ## One journal, four guarantees
 
