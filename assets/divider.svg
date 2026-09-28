@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="24" viewBox="0 0 1200 24">
+  <!-- faded baseline (mid-gray reads on light and dark) -->
+  <defs>
+    <linearGradient id="fade" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#E8A33D" stop-opacity="0"/>
+      <stop offset="0.12" stop-color="#E8A33D" stop-opacity="0.7"/>
+      <stop offset="0.88" stop-color="#E8A33D" stop-opacity="0.7"/>
+      <stop offset="1" stop-color="#E8A33D" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+  <line x1="20" y1="12" x2="1180" y2="12" stroke="url(#fade)" stroke-width="2"/>
+  <!-- append-only ledger ticks: small amber squares along the line -->
+  <g fill="#E8A33D">
+    <rect x="116" y="8" width="8" height="8"/>
+    <rect x="236" y="8" width="8" height="8"/>
+    <rect x="356" y="8" width="8" height="8"/>
+    <rect x="476" y="8" width="8" height="8"/>
+    <rect x="596" y="8" width="8" height="8"/>
+    <rect x="716" y="8" width="8" height="8"/>
+    <rect x="836" y="8" width="8" height="8"/>
+    <rect x="956" y="8" width="8" height="8"/>
+    <rect x="1076" y="8" width="8" height="8"/>
+  </g>
+</svg>
