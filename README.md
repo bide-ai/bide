@@ -1,4 +1,6 @@
-# Bide
+<p align="center">
+  <img src="bide-banner.png" alt="Bide">
+</p>
 
 **Build durable AI agents in Go. Side effects that fire at most once.**
 
