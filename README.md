@@ -146,9 +146,10 @@ governance and audit machinery at scale, not a live LLM or a production database
 
 Beyond the four guarantees, the details that make it pleasant to build on:
 
-- **Plain Go, not a graph DSL.** You write `if`/`for`/functions; the graph is a *derived* view
-  (`RenderMermaid`), not a thing you author. See [Graphs](#graphs) for why, and for how a graph
-  layer can still sit on top.
+- **Plain Go by default, with an optional typed flow builder.** You write `if`/`for`/functions and
+  the graph is a *derived* view (`RenderMermaid`, `Topology`), not something you are forced to author.
+  When you do want authored topology, the `plan` builder gives it to you and lowers to the same
+  runtime. See [Graphs](#graphs).
 - **Claude reasoning survives round-trips.** Extended-thinking signatures are preserved; most
   SDKs drop them, silently breaking thinking + tool use.
 - **Provider-aware tool schemas.** One reflected schema, emitted per dialect (OpenAI strict
@@ -176,17 +177,21 @@ So the substrate here is plain Go, and the guarantees (durability, at-most-once,
 trail) come from the journal, not from a graph. The graph still exists as a *derived* view:
 `RenderMermaid` reconstructs it from what actually ran.
 
-If you want a graph to author, you can build one on top: a constrained node-and-edge API, or a
-visual builder, that compiles down to this runtime and inherits at-most-once and the audit trail for
-free. Nothing in the design prevents it, and that layering is the point. A graph-first framework
-cannot offer the reverse, because for it the graph is the base rather than a layer you choose.
+If you want a graph to author, that layer already exists: the **`plan`** package is a constrained,
+type-checked flow builder that compiles down to this runtime and inherits at-most-once and the audit
+trail for free. You wire typed nodes (`Step`, `Tool`, `Model`, `Switch`, fan-in `Join`, bounded
+`LoopBack`) into a `Flow`, or author the same topology as declarative config (`plan.Load`) that a
+higher layer such as a visual builder can emit. It stays a layer you choose, not the base: a
+graph-first framework cannot offer the reverse, because for it the graph is the foundation rather
+than an option.
 
 For an accountability runtime the direction also matters. An authored graph is a diagram you trust;
-a derived graph is reconstructed from the journal, so it is exactly what ran. Preferring the derived
-view is the same verify, do not trust stance as the rest of the system, and it holds even once an
-authoring layer sits on top. The principle for adding any such layer without forking the runtime is
+a derived graph is reconstructed from the journal, so it is exactly what ran. The `plan` layer ties
+the two together: `Topology()` and `RenderMermaid()` expose the declared shape, and `Conform()`
+cryptographically checks that a run followed the topology it declared, the same verify, do not trust
+stance as the rest of the system. The rule that keeps any such layer from forking the runtime is
 that a new surface may add a way to author, never a way to execute: every layer lowers to the one
-journal-backed runtime.
+journal-backed runtime. See [docs/guides/flows.md](docs/guides/flows.md).
 
 ## Ambient runs: durable sleep, wake, and interrupt
 
@@ -607,7 +612,7 @@ func RequireTag(tag string) agent.ToolMiddleware {
 ## Modules
 
 Bide is a multi-module repo: a dependency-light **core** (`github.com/blackwell-systems/bide`,
-the loop, schema, middleware, model adapters, govern; deps are just gsm + `x/sync`) plus one
+the loop, schema, middleware, model adapters, the `plan` flow builder, `audit`, govern; deps are just gsm + `x/sync`) plus one
 module per heavy adapter (`mcp`, `trace`, `store/sqlite`, `store/postgres`, `govern/redislog`,
 `govern/sqlitelog`, `govern/postgreslog`). Import an adapter and you pull its dependency tree; import only the core
 and you don't. A core-only consumer's external-module surface is 2, not 54. See
@@ -621,6 +626,7 @@ no adapter and no infrastructure, guarded by `architecture_test.go`.
 
 ```
 agent (root)     durable loop · Message/Part · Tool/Safety · Durable · middleware types · RenderMermaid
+plan             optional typed flow builder + declarative config; lowers to the loop (Topology · Conform)
 model/anthropic  native Claude (thinking + signatures)
 model/openai     any OpenAI-compatible endpoint
 model/gemini     native Gemini (generativelanguage / Vertex via WithBaseURL)
@@ -671,6 +677,11 @@ tool := govern.EventTool(gov, "pay", "mark the order paid", "pay", agent.Safety{
 
 New here? Start with **[Getting started](docs/getting-started.md)**, use the **[docs index](docs/README.md)** for the full map, and see **[Concepts](docs/CONCEPTS.md)** for the vocabulary (journal, at-most-once, lease, Waker, gsm, ProofBundle). The precise durability guarantee is stated in **[docs/GUARANTEE.md](docs/GUARANTEE.md)** and its bounds in **[docs/KNOWN-LIMITATIONS.md](docs/KNOWN-LIMITATIONS.md)**.
 
+- **[docs/guides/flows.md](docs/guides/flows.md)**: the `plan` typed flow builder, for when you want to
+  author topology instead of plain Go. Wire typed nodes (`Step` / `Tool` / `Model` / `Switch` / `Join` /
+  bounded `LoopBack`) into a `Flow` that lowers to the same journal (at-most-once and audit inherited), or
+  load the same flow from declarative config (`plan.Load`). `Topology` / `RenderMermaid` expose the shape;
+  `Conform` proves a run followed the topology it declared. Runnable in `examples/plan`.
 - **[docs/guides/reliability.md](docs/guides/reliability.md)**: the reliability middleware: per-attempt timeouts,
   classified retry (`Retry` / `Retryable`), hedged model calls (`Hedge`, race a backup for tail
   latency and provider failover), rate limiting, and cost tracking, plus how they compose. Runnable
