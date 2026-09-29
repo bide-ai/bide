@@ -120,6 +120,20 @@ func TestFinalAnswerCrash_ResumeReplaysAnswer(t *testing.T) {
 				return textOf(m), err
 			},
 		},
+		{
+			// Likewise a run whose answer used up its token budget: resume must not refuse
+			// with ErrBudgetExceeded.
+			name: "RunAtTokenBudget", runID: "r1",
+			script: [][]Emit{
+				toolTurnWithUsage("c1", "charge", `{}`, Usage{InputTokens: 10}),
+				textTurnWithUsage("done", Usage{InputTokens: 10}),
+			},
+			opts: func(a *Agent) *Agent { return a.WithTokenBudget(20) },
+			entry: func(a *Agent) (string, error) {
+				m, err := a.Run(ctx, "r1", "pay")
+				return textOf(m), err
+			},
+		},
 		{name: "RunResult", runID: "r1", script: chargeThenAnswer, entry: func(a *Agent) (string, error) {
 			res, err := a.RunResult(ctx, "r1", "pay")
 			if err != nil {
