@@ -44,7 +44,10 @@ func Open(path string) (*Store, error) {
 	}
 	// One writer at a time keeps the memoization insert race-free without extra locking.
 	db.SetMaxOpenConns(1)
-	if _, err := db.Exec(`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;`); err != nil {
+	// A writer waits up to 30s for another process's write lock. SQLite's busy handler is not
+	// fair, so under a burst of writers on one file (or a slow disk) a single writer can wait
+	// well past a few seconds; failing then would lose a write whose side effect already ran.
+	if _, err := db.Exec(`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=30000;`); err != nil {
 		db.Close()
 		return nil, err
 	}
