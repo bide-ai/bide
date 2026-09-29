@@ -35,5 +35,7 @@ examples/approval/approval
 examples/approval/evidence.json
 examples/approval/approver-keys.json
 
-# internal strategy/positioning docs (not published)
-/internal/
+# internal strategy/positioning docs (not published); the Go packages under internal/ are tracked
+/internal/*
+!/internal/jsonfields/
+!/internal/strictjson/

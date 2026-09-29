@@ -19,9 +19,9 @@ import (
 	"math"
 	"reflect"
 	"slices"
-	"strings"
 	"time"
-	"unicode"
+
+	"github.com/bide-ai/bide/internal/jsonfields"
 )
 
 var (
@@ -186,29 +186,35 @@ func reflectSchema(t reflect.Type, seen map[reflect.Type]bool) (map[string]any, 
 
 		props := map[string]any{}
 		var required []string
-		fields, err := jsonFields(t)
+		fields, err := jsonfields.Of(t)
 		if err != nil {
+			var tn *jsonfields.TagNameError
+			if errors.As(err, &tn) {
+				// encoding/json v1 falls back to the Go name here and its v2 implementation
+				// reads the name differently, so the field has no one JSON name.
+				return nil, fmt.Errorf("%w: %s: field %s has the json tag name %q, which encoding/json does not accept as a name", ErrUnsupportedType, tn.Struct, tn.Field, tn.Name)
+			}
 			return nil, err
 		}
 		for _, f := range fields {
-			if f.viaUnexportedPtr != "" {
-				return nil, fmt.Errorf("%w: %s: field %q is reached through the embedded pointer to the unexported struct type %s, which encoding/json cannot allocate when decoding", ErrUnsupportedType, t, f.name, f.viaUnexportedPtr)
+			if f.ViaUnexportedPtr != "" {
+				return nil, fmt.Errorf("%w: %s: field %q is reached through the embedded pointer to the unexported struct type %s, which encoding/json cannot allocate when decoding", ErrUnsupportedType, t, f.Name, f.ViaUnexportedPtr)
 			}
 			var fs map[string]any
-			if f.quoted {
-				fs = quotedSchema(f.typ)
+			if f.Quoted {
+				fs = quotedSchema(f.Type)
 			} else {
 				var err error
-				if fs, err = reflectSchema(f.field.Type, seen); err != nil {
-					return nil, fmt.Errorf("%s field %s: %w", t, f.field.Name, err)
+				if fs, err = reflectSchema(f.Field.Type, seen); err != nil {
+					return nil, fmt.Errorf("%s field %s: %w", t, f.Field.Name, err)
 				}
 			}
-			if d := f.field.Tag.Get("desc"); d != "" {
+			if d := f.Field.Tag.Get("desc"); d != "" {
 				fs["description"] = d
 			}
-			props[f.name] = fs
-			if !f.optional && f.field.Type.Kind() != reflect.Pointer {
-				required = append(required, f.name)
+			props[f.Name] = fs
+			if f.Required() {
+				required = append(required, f.Name)
 			}
 		}
 		out := map[string]any{"type": "object", "properties": props}
@@ -237,170 +243,6 @@ func quotedSchema(t reflect.Type) map[string]any {
 	default: // reflect.String: the string's own JSON encoding, quotes included
 		return map[string]any{"type": "string", "pattern": `^"([^"\\]|\\.)*"$`}
 	}
-}
-
-// jsonField is one field encoding/json reads from a JSON object into a struct.
-type jsonField struct {
-	name     string
-	tagged   bool  // the name came from a json tag
-	index    []int // the field's index path from the outer struct
-	field    reflect.StructField
-	typ      reflect.Type // the field's type, with an unnamed pointer followed
-	optional bool         // ",omitempty" or ",omitzero"
-	quoted   bool         // ",string" on a string, number, or boolean field
-	// viaUnexportedPtr names the unexported struct type of an embedded pointer on the field's
-	// path, if any: encoding/json cannot allocate it, so decoding the field fails.
-	viaUnexportedPtr string
-}
-
-// jsonFields returns the fields encoding/json reads for struct type t, in index order. It is a
-// port of encoding/json's typeFields: a breadth-first walk over embedded structs, then Go's
-// dominance rules (the shallowest name wins, a json tag breaks a tie at one depth, and any other
-// tie removes the name). A json tag name encoding/json does not accept is an error wrapping
-// ErrUnsupportedType, since encoding/json's two implementations read such a name differently.
-func jsonFields(t reflect.Type) ([]jsonField, error) {
-	type level struct {
-		typ              reflect.Type
-		index            []int
-		viaUnexportedPtr string
-	}
-	var current []level
-	next := []level{{typ: t}}
-	var count, nextCount map[reflect.Type]int
-	visited := map[reflect.Type]bool{}
-	var fields []jsonField
-
-	for len(next) > 0 {
-		current, next = next, current[:0]
-		count, nextCount = nextCount, map[reflect.Type]int{}
-		for _, f := range current {
-			if visited[f.typ] {
-				continue
-			}
-			visited[f.typ] = true
-			for i := 0; i < f.typ.NumField(); i++ {
-				sf := f.typ.Field(i)
-				if sf.Anonymous {
-					et := sf.Type
-					if et.Kind() == reflect.Pointer {
-						et = et.Elem()
-					}
-					if !sf.IsExported() && et.Kind() != reflect.Struct {
-						continue // an embedded unexported non-struct type has no fields to promote
-					}
-				} else if !sf.IsExported() {
-					continue
-				}
-				tag := sf.Tag.Get("json")
-				if tag == "-" {
-					continue
-				}
-				name, opts, _ := strings.Cut(tag, ",")
-				if name != "" && !validTagName(name) {
-					// encoding/json v1 falls back to the Go name here and its v2 implementation
-					// reads the name differently, so the field has no one JSON name.
-					return nil, fmt.Errorf("%w: %s: field %s has the json tag name %q, which encoding/json does not accept as a name", ErrUnsupportedType, f.typ, sf.Name, name)
-				}
-				index := append(slices.Clip(f.index), i)
-				ft := sf.Type
-				if ft.Name() == "" && ft.Kind() == reflect.Pointer {
-					ft = ft.Elem()
-				}
-				quoted := false
-				if hasOption(opts, "string") {
-					switch ft.Kind() {
-					case reflect.Bool,
-						reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
-						reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr,
-						reflect.Float32, reflect.Float64,
-						reflect.String:
-						quoted = true
-					}
-				}
-				if name != "" || !sf.Anonymous || ft.Kind() != reflect.Struct {
-					field := jsonField{
-						name: cmp.Or(name, sf.Name), tagged: name != "", index: index, field: sf, typ: ft,
-						optional: hasOption(opts, "omitempty") || hasOption(opts, "omitzero"),
-						quoted:   quoted, viaUnexportedPtr: f.viaUnexportedPtr,
-					}
-					fields = append(fields, field)
-					if count[f.typ] > 1 {
-						// The embedding struct is reached more than once at this depth: record a
-						// second copy so the dominance pass sees the tie and removes the name.
-						fields = append(fields, field)
-					}
-					continue
-				}
-				// An embedded struct whose tag names nothing: promote its fields next round.
-				nextCount[ft]++
-				if nextCount[ft] == 1 {
-					via := f.viaUnexportedPtr
-					if via == "" && sf.Type.Kind() == reflect.Pointer && !sf.IsExported() {
-						via = ft.String()
-					}
-					next = append(next, level{typ: ft, index: index, viaUnexportedPtr: via})
-				}
-			}
-		}
-	}
-
-	slices.SortFunc(fields, func(a, b jsonField) int {
-		if c := strings.Compare(a.name, b.name); c != 0 {
-			return c
-		}
-		if c := cmp.Compare(len(a.index), len(b.index)); c != 0 {
-			return c
-		}
-		if a.tagged != b.tagged {
-			if a.tagged {
-				return -1
-			}
-			return +1
-		}
-		return slices.Compare(a.index, b.index)
-	})
-	out := fields[:0]
-	for i := 0; i < len(fields); {
-		j := i + 1
-		for j < len(fields) && fields[j].name == fields[i].name {
-			j++
-		}
-		// The first field of a name dominates, unless the second ties it on depth and tagging.
-		if j-i == 1 || len(fields[i].index) != len(fields[i+1].index) || fields[i].tagged != fields[i+1].tagged {
-			out = append(out, fields[i])
-		}
-		i = j
-	}
-	slices.SortFunc(out, func(a, b jsonField) int { return slices.Compare(a.index, b.index) })
-	return out, nil
-}
-
-// validTagName reports whether encoding/json accepts s as a field name in a json tag.
-func validTagName(s string) bool {
-	if s == "" {
-		return false
-	}
-	for _, c := range s {
-		switch {
-		case strings.ContainsRune("!#$%&()*+-./:;<=>?@[]^_{|}~ ", c):
-			// Backslash and quote are reserved; other punctuation is allowed.
-		case !unicode.IsLetter(c) && !unicode.IsDigit(c):
-			return false
-		}
-	}
-	return true
-}
-
-// hasOption reports whether a json tag's comma-separated options include opt.
-func hasOption(opts, opt string) bool {
-	for opts != "" {
-		var o string
-		o, opts, _ = strings.Cut(opts, ",")
-		if o == opt {
-			return true
-		}
-	}
-	return false
 }
 
 // OpenAIStrict transforms a neutral schema into OpenAI structured-output "strict" form, which
