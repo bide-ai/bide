@@ -366,6 +366,11 @@ func streamSSE(body io.ReadCloser, send func(agent.Emit) bool) {
 		send(agent.Emit{Err: err})
 		return
 	}
+	if lastReason == "" {
+		// No candidate reported a finishReason, so the response stopped partway through the
+		// turn. Send no Finish: the consumer sees agent.ErrIncompleteResponse.
+		return
+	}
 	// One terminal Finish carries the reason and the usage totals accumulated from the
 	// stream's usageMetadata, mirroring how anthropic/openai signal the end of a turn.
 	send(agent.Emit{Event: agent.Finish{

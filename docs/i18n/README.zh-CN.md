@@ -363,7 +363,7 @@ case errors.Is(err, agent.ErrStorage):      // durable-store I/O
 }
 ```
 
-类别：`ErrConfig`、`ErrModel`、`ErrTool`、`ErrStorage`、`ErrProtocol`、`ErrBudget`。条件（每一个都包裹一个类别）：`ErrUnknownTool`、`ErrToolArgs`、`ErrNoRecordedOutput`、`ErrTruncatedToolArgs`、`ErrBudgetExceeded`、`ErrMaxTurns`（后两者都包裹 `ErrBudget`）。该工具包返回的每一个错误（包括来自模型、MCP、存储和治理适配器的）都带有一个类别，所以 `errors.Is` 在整个表面上都是可靠的。
+类别：`ErrConfig`、`ErrModel`、`ErrTool`、`ErrStorage`、`ErrProtocol`、`ErrBudget`。条件（每一个都包裹一个类别）：`ErrUnknownTool`、`ErrToolArgs`、`ErrNoRecordedOutput`、`ErrIncompleteResponse`、`ErrTruncatedToolArgs`、`ErrBudgetExceeded`、`ErrMaxTurns`（后两者都包裹 `ErrBudget`）。该工具包返回的每一个错误（包括来自模型、MCP、存储和治理适配器的）都带有一个类别，所以 `errors.Is` 在整个表面上都是可靠的。
 
 而**控制流信号**比一个类别更丰富，所以它们保持为具体类型，由 `errors.As` 匹配：`*PendingApproval`（需要批准）、`*ResumeHalt`（恢复不安全）、`*SagaAborted`（已回滚）。一个暂停或停机的运行不是一个"失败"类别；检视那个结构体以获取 `RunID` / `ToolUseID` / 补偿细节。取消以通常的 `context.Canceled` / `context.DeadlineExceeded` 浮现。
 

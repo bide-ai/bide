@@ -363,7 +363,7 @@ case errors.Is(err, agent.ErrStorage):      // durable-store I/O
 }
 ```
 
-Категории: `ErrConfig`, `ErrModel`, `ErrTool`, `ErrStorage`, `ErrProtocol`, `ErrBudget`. Условия (каждое оборачивает категорию): `ErrUnknownTool`, `ErrToolArgs`, `ErrNoRecordedOutput`, `ErrTruncatedToolArgs`, `ErrBudgetExceeded`, `ErrMaxTurns` (оба оборачивают `ErrBudget`). Каждая ошибка, которую возвращает набор инструментов (включая из модели, MCP, хранилища и адаптеров управления), несёт категорию, так что `errors.Is` надёжен по всей поверхности.
+Категории: `ErrConfig`, `ErrModel`, `ErrTool`, `ErrStorage`, `ErrProtocol`, `ErrBudget`. Условия (каждое оборачивает категорию): `ErrUnknownTool`, `ErrToolArgs`, `ErrNoRecordedOutput`, `ErrIncompleteResponse`, `ErrTruncatedToolArgs`, `ErrBudgetExceeded`, `ErrMaxTurns` (оба оборачивают `ErrBudget`). Каждая ошибка, которую возвращает набор инструментов (включая из модели, MCP, хранилища и адаптеров управления), несёт категорию, так что `errors.Is` надёжен по всей поверхности.
 
 А **сигналы потока управления** богаче, чем категория, поэтому они остаются конкретными типами, сопоставляемыми через `errors.As`: `*PendingApproval` (нужно одобрение), `*ResumeHalt` (небезопасно возобновлять), `*SagaAborted` (откачено). Приостановленный или остановленный прогон — это не категория «сбоя»; инспектируйте структуру ради `RunID` / `ToolUseID` / деталей компенсации. Отмена всплывает как обычные `context.Canceled` / `context.DeadlineExceeded`.
 

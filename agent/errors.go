@@ -42,12 +42,15 @@ var (
 
 // Condition sentinels — specific causes, each wrapping its category.
 var (
-	ErrUnknownTool       = fmt.Errorf("unknown tool: %w", ErrTool)
-	ErrToolArgs          = fmt.Errorf("invalid tool arguments: %w", ErrTool)
-	ErrNoRecordedOutput  = fmt.Errorf("no recorded model output: %w", ErrModel)
-	ErrTruncatedToolArgs = fmt.Errorf("truncated tool-call arguments: %w", ErrProtocol)
-	ErrBudgetExceeded    = fmt.Errorf("budget exceeded: %w", ErrBudget)
-	ErrMaxTurns          = fmt.Errorf("max turns exceeded: %w", ErrBudget)
+	ErrUnknownTool      = fmt.Errorf("unknown tool: %w", ErrTool)
+	ErrToolArgs         = fmt.Errorf("invalid tool arguments: %w", ErrTool)
+	ErrNoRecordedOutput = fmt.Errorf("no recorded model output: %w", ErrModel)
+	// ErrIncompleteResponse is a model stream that ended without a Finish event: the
+	// response stopped partway through a turn, so what arrived is not the model's answer.
+	ErrIncompleteResponse = fmt.Errorf("model response ended before the turn finished: %w", ErrModel)
+	ErrTruncatedToolArgs  = fmt.Errorf("truncated tool-call arguments: %w", ErrProtocol)
+	ErrBudgetExceeded     = fmt.Errorf("budget exceeded: %w", ErrBudget)
+	ErrMaxTurns           = fmt.Errorf("max turns exceeded: %w", ErrBudget)
 	// ErrInvalidApproval is an approver decision rejected at submission by ApproveAs's
 	// WithDecisionCheck: no such tool call, an unknown approver, or a signature that does not
 	// verify for this exact call.
