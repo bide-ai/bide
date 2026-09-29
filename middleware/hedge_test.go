@@ -2,6 +2,7 @@ package middleware_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"sync/atomic"
 	"testing"
@@ -143,5 +144,64 @@ func TestHedge_NoBackups(t *testing.T) {
 	msg, _, err := h(context.Background(), agent.Request{})
 	if err != nil || msg.Text() != "solo" {
 		t.Fatalf("pass-through failed: msg=%q err=%v", msg.Text(), err)
+	}
+}
+
+// turnModel answers each turn (counted by the assistant messages in the request) with a scripted
+// message after a per-turn delay, honoring cancellation.
+type turnModel struct {
+	delays []time.Duration
+	msgs   []agent.Message
+}
+
+func (m *turnModel) Stream(ctx context.Context, req agent.Request) (*agent.Stream, error) {
+	turn := 0
+	for _, msg := range req.Messages {
+		if msg.Role == agent.RoleAssistant {
+			turn++
+		}
+	}
+	turn = min(turn, len(m.msgs)-1)
+	select {
+	case <-time.After(m.delays[turn]):
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	ch := make(chan agent.Emit, 8)
+	for i, p := range m.msgs[turn].Parts {
+		switch p := p.(type) {
+		case agent.Text:
+			ch <- agent.Emit{Event: agent.TextDelta{Text: p.Text}}
+		case agent.ToolUse:
+			ch <- agent.Emit{Event: agent.ToolCallDelta{Index: i, ID: p.ID, Name: p.Name, ArgsFragment: p.Args}}
+		}
+	}
+	ch <- agent.Emit{Event: agent.Finish{Reason: "stop"}}
+	close(ch)
+	return agent.NewStream(ch), nil
+}
+
+// A backup's response gets the same checks as the primary's. Here the backup answers the second
+// turn first, with a tool call that reuses the first turn's tool-use ID, which the run would
+// skip as already done. It must count as that target failing, so the primary's valid answer
+// wins, rather than winning the race.
+func TestHedge_BackupReusingToolUseIDLoses(t *testing.T) {
+	lookup := agent.Func("lookup", "", agent.Safety{ReadOnly: true}, func(context.Context, struct{}) (string, error) {
+		return "ok", nil
+	})
+	reuse := agent.Message{Role: agent.RoleAssistant, Parts: []agent.Part{agent.ToolUse{ID: "c1", Name: "lookup", Args: json.RawMessage(`{}`)}}}
+	primary := &turnModel{
+		delays: []time.Duration{0, 100 * time.Millisecond},
+		msgs:   []agent.Message{reuse, {Role: agent.RoleAssistant, Parts: []agent.Part{agent.Text{Text: "done"}}}},
+	}
+	backup := &turnModel{delays: []time.Duration{time.Hour, 0}, msgs: []agent.Message{reuse, reuse}}
+
+	out, err := agent.New(primary, agent.NewMemStore(), lookup).Use(middleware.Hedge(0, backup)).WithMaxTurns(4).
+		Run(context.Background(), "r", "go")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if out.Text() != "done" {
+		t.Fatalf("answer = %q, want the primary's %q", out.Text(), "done")
 	}
 }
