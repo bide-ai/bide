@@ -45,30 +45,93 @@ func RetrievalTool(r Retriever, k int) Tool {
 		})
 }
 
-// WithRetrieval is model middleware that auto-injects retrieved context (classic RAG):
-// when the model is responding to a fresh user turn, it retrieves the top-k documents for
-// that user message and adds them as a system message after the agent's system prompt. It does NOT retrieve on
-// tool-result turns (mid-loop). A retrieval error aborts the model call — have your
-// Retriever return (nil, nil) instead of an error if you prefer to degrade to no context.
-// A Retriever that returns more than k documents is cut to its first k. It panics if k is
-// below 1.
+// WithRetrieval is model middleware that auto-injects retrieved context (classic RAG): it
+// retrieves the top-k documents for the run's user message and adds them as a system message
+// after the agent's system prompt, on every model call of the run, so the call that follows a
+// tool result still has the context.
+//
+// Inside an agent run the retrieval is a journaled step (read-only, so a crash before it is
+// recorded simply retrieves again): the run retrieves once, every later call of the run
+// (including after a crash and resume, or from a second driver) is given the documents it
+// recorded, and the journal holds what the model was shown. Retrieved text is therefore
+// durable content, stored like a tool result. Called outside a run, where there is no journal,
+// it retrieves for the latest user message on every call.
+//
+// A retrieval error aborts the model call (and nothing is recorded, so the next attempt
+// retrieves again): have your Retriever return (nil, nil) instead of an error if you prefer to
+// degrade to no context. A Retriever that returns more than k documents is cut to its first
+// k. It panics if k is below 1.
 func WithRetrieval(r Retriever, k int) Middleware {
 	checkK("WithRetrieval", k)
 	return func(next ModelHandler) ModelHandler {
 		return func(ctx context.Context, req Request) (Message, Usage, error) {
-			if q := lastUserQuery(req.Messages); q != "" {
-				docs, err := r.Retrieve(ctx, q, k)
-				if err != nil {
-					return Message{}, Usage{}, fmt.Errorf("retrieval: %w", err)
-				}
-				docs = topK(docs, k)
-				if block := formatDocs(docs); block != "" {
-					req.Messages = afterSystem(req.Messages, SystemText(block))
-				}
+			// Number the WithRetrieval layers on this call path, outermost first, so two of
+			// them on one agent journal their documents under different step names.
+			layer, _ := ctx.Value(retrievalLayerKey{}).(int)
+			ctx = context.WithValue(ctx, retrievalLayerKey{}, layer+1)
+			q, ok := lastUserQuery(req.Messages)
+			if !ok {
+				return next(ctx, req)
+			}
+			docs, err := retrieveOnce(ctx, r, q, k, layer)
+			if err != nil {
+				return Message{}, Usage{}, fmt.Errorf("retrieval: %w", err)
+			}
+			if block := formatDocs(docs); block != "" {
+				req.Messages = afterSystem(req.Messages, SystemText(block))
 			}
 			return next(ctx, req)
 		}
 	}
+}
+
+// retrievalLayerKey holds, on a model call's context, how many WithRetrieval layers the call
+// has passed through.
+type retrievalLayerKey struct{}
+
+// modelRunKey holds the modelRun of the agent run a model call belongs to.
+type modelRunKey struct{}
+
+// modelRun identifies the journal of the agent run a model call belongs to. The agent loop
+// sets it on every model call's context (withModelRun), so model middleware can record a
+// step of that run.
+type modelRun struct {
+	store Durable
+	runID string
+}
+
+func withModelRun(ctx context.Context, store Durable, runID string) context.Context {
+	return context.WithValue(ctx, modelRunKey{}, modelRun{store: store, runID: runID})
+}
+
+// retrieval is the journaled record of one WithRetrieval step: the query and the documents
+// the Retriever returned for it.
+type retrieval struct {
+	Query string `json:"query"`
+	Docs  []Doc  `json:"docs"`
+}
+
+// retrieveOnce returns the top-k documents for query. Inside an agent run it is the run's
+// step "@retrieval/<layer>": the first call retrieves and records the result, and every later
+// call returns the recorded documents. A run has one user message (the last one it was
+// seeded with; the loop adds only assistant and tool turns), so one step per layer holds the
+// retrieval for the whole run.
+func retrieveOnce(ctx context.Context, r Retriever, query string, k, layer int) ([]Doc, error) {
+	get := func(ctx context.Context) (retrieval, error) {
+		docs, err := r.Retrieve(ctx, query, k)
+		if err != nil {
+			return retrieval{}, err
+		}
+		return retrieval{Query: query, Docs: topK(docs, k)}, nil
+	}
+	mr, ok := ctx.Value(modelRunKey{}).(modelRun)
+	if !ok {
+		rec, err := get(ctx)
+		return rec.Docs, err
+	}
+	rec, err := Step(ctx, mr.store, mr.runID, fmt.Sprintf("@retrieval/%d", layer), get,
+		StepSafety(Safety{ReadOnly: true}))
+	return rec.Docs, err
 }
 
 // checkK panics unless k is at least 1: k is how many documents to return, and a k below 1
@@ -114,13 +177,16 @@ func afterSystem(msgs []Message, m Message) []Message {
 	return append(out, msgs[i:]...)
 }
 
-// lastUserQuery returns the text of the final message if it is a user turn (the point at
-// which retrieval is relevant), else "".
-func lastUserQuery(msgs []Message) string {
-	if n := len(msgs); n > 0 && msgs[n-1].Role == RoleUser {
-		return msgs[n-1].Text()
+// lastUserQuery returns the text of the latest user message, the turn the run is answering,
+// and whether that message has any text to search for.
+func lastUserQuery(msgs []Message) (string, bool) {
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role == RoleUser {
+			q := msgs[i].Text()
+			return q, q != ""
+		}
 	}
-	return ""
+	return "", false
 }
 
 // formatDocs renders retrieved docs as a context block for a system message.

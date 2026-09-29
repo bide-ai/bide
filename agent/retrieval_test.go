@@ -296,23 +296,33 @@ var noopTool = Func("noop", "does nothing", Safety{ReadOnly: true},
 // Within a run, the model call that follows a tool result still sees the retrieved context:
 // the same documents the first call saw, recorded once in the journal, not retrieved again.
 func TestWithRetrieval_ContextKeptAcrossTheRun(t *testing.T) {
-	r := &seqRetriever{}
-	var got []string
-	m := NewScriptedModel(ToolTurn("c1", "noop", `{}`), TextTurn("done"))
-	a := New(m, NewMemStore(), noopTool).WithSystemPrompt("OPERATOR").Use(WithRetrieval(r, 2), captureRequests(&got))
-	if _, err := a.Run(context.Background(), "run-1", "q"); err != nil {
-		t.Fatal(err)
-	}
-	if len(got) != 2 {
-		t.Fatalf("model called %d times, want 2", len(got))
-	}
-	for i, block := range got {
-		if !strings.Contains(block, "version-1") {
-			t.Errorf("model call %d got context %q, want the first retrieval (version-1)", i, block)
-		}
-	}
-	if n := r.count(); n != 1 {
-		t.Errorf("retriever called %d times in one run, want 1", n)
+	for _, mode := range []string{"Run", "Stream"} {
+		t.Run(mode, func(t *testing.T) {
+			r := &seqRetriever{}
+			var got []string
+			m := NewScriptedModel(ToolTurn("c1", "noop", `{}`), TextTurn("done"))
+			a := New(m, NewMemStore(), noopTool).WithSystemPrompt("OPERATOR").Use(WithRetrieval(r, 2), captureRequests(&got))
+			var err error
+			if mode == "Run" {
+				_, err = a.Run(context.Background(), "run-1", "q")
+			} else {
+				_, err = a.Stream(context.Background(), "run-1", "q").Final()
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(got) != 2 {
+				t.Fatalf("model called %d times, want 2", len(got))
+			}
+			for i, block := range got {
+				if !strings.Contains(block, "version-1") {
+					t.Errorf("model call %d got context %q, want the first retrieval (version-1)", i, block)
+				}
+			}
+			if n := r.count(); n != 1 {
+				t.Errorf("retriever called %d times in one run, want 1", n)
+			}
+		})
 	}
 }
 
