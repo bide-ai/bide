@@ -680,6 +680,7 @@ const (
 	sagaKey       ctxKey = 1
 	modelSinkKey  ctxKey = 2
 	runContextKey ctxKey = 3
+	onceScopeKey  ctxKey = 4
 )
 
 // runCtx carries the store + runID into a tool's context so Interrupt can journal and
@@ -741,7 +742,7 @@ func EmitMessage(sink func(Event), m Message) {
 }
 
 func withRunScope(ctx context.Context, scope string) context.Context {
-	return context.WithValue(ctx, runScopeKey, scope)
+	return withOnceScope(context.WithValue(ctx, runScopeKey, scope), scope)
 }
 
 // RunScope returns the hierarchical run scope for the current tool execution
