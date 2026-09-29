@@ -38,7 +38,22 @@ import (
 // gsm, so the two roots of trust (the log and the proof) stay independent of the producer.
 const policyFormatVersion = "gsm-policy-v1"
 
-func flagSet(name string) *flag.FlagSet { return flag.NewFlagSet(name, flag.ExitOnError) }
+func flagSet(name string) *flag.FlagSet { return flag.NewFlagSet(name, flag.ContinueOnError) }
+
+// parse parses a verb's flags and exits 2, a usage error, unless it read the whole command line.
+// Flag parsing stops at the first argument that is not a flag, so a stray argument would otherwise
+// drop every flag after it (a -digest or -checker the auditor asked for) and the verb would still
+// report a verdict. A help request verifies nothing, so it exits 2 as well rather than 0, which
+// the verify verbs reserve for "verified".
+func parse(fs *flag.FlagSet, args []string) {
+	if err := fs.Parse(args); err != nil {
+		os.Exit(2) // fs has printed the error, or the help text, and its flags
+	}
+	if fs.NArg() > 0 {
+		fmt.Fprintf(os.Stderr, "%s: unexpected argument %q: every input is a flag, and no flag after an argument is read\n", fs.Name(), fs.Arg(0))
+		os.Exit(2)
+	}
+}
 
 func main() {
 	if len(os.Args) < 2 {
@@ -104,14 +119,15 @@ func usage() {
          votes (a forged tally is caught); and votes_for >= k; with -commit, a governed commit
          is anchored in the same tree
 
-  verify-run -cert <file> -pubkey <hex|file> (-approved <digest>... | -approved-file <file>) [-checker <astchecker>]
+  verify-run -cert <file> -pubkey <hex|file> [-approved <digest>...] [-approved-file <file>] [-checker <astchecker>]
+         (at least one of -approved and -approved-file; together they form one allowlist)
          verify a proof-carrying run certificate: the used-policy set is bound by a signed
          used-policy head to this run and its journal tree, and is a subset of the approved
          allowlist (only-approved-policies), and every used policy has an anchored, digest-linked convergence certificate
          in the run's signed tree (policies-convergence-certified); with -checker, the external
          oracle's convergence verdict on each used policy must AGREE with its certificate
 
-  verify-evidence -evidence <file> -pubkey <hex|file> [-approved <digest>... | -approved-file <file>]
+  verify-evidence -evidence <file> -pubkey <hex|file> [-approved <digest>...] [-approved-file <file>]
          verify a portable evidence package offline and print a plain-English report: the
          format, seal, key, and run binding, then one line per proven action (tool call, step,
          grant), plus the run certificate (checked against the given allowlist, required when
@@ -138,6 +154,10 @@ func usage() {
 Export a journal for `+"`prove`"+` with: json.Marshal(store.History(ctx, runID)). Every JSON
 input is parsed strictly: a duplicate or case-variant key, an unknown field, or invalid UTF-8 is
 an error, and a public key must be 32 bytes of hex.
+
+Exit status: 0 = verified, 1 = failed, 2 = usage error, 3 = the -checker gave no verdict (it could
+not be started, exited with a status other than 0 or 1, was killed, or printed an unreadable
+compensation_free line).
 `)
 	os.Exit(2)
 }
@@ -158,9 +178,9 @@ func prove(args []string) {
 	tool := fs.String("tool", "", "prove the tool call with this ToolUseID")
 	index := fs.Int("index", -1, "prove the record at this journal index")
 	out := fs.String("out", "", "write the bundle here (default: stdout)")
-	_ = fs.Parse(args)
+	parse(fs, args)
 
-	if *journal == "" || *sthPath == "" || (*tool == "" && *index < 0) {
+	if *journal == "" || *sthPath == "" || (*tool == "") == (*index < 0) {
 		usage()
 	}
 
@@ -198,7 +218,7 @@ func verify(args []string) {
 	fs := flagSet("verify")
 	bundlePath := fs.String("bundle", "", "path to the ProofBundle JSON")
 	pubkey := fs.String("pubkey", "", "ed25519 public key as hex, or a path to a file containing it")
-	_ = fs.Parse(args)
+	parse(fs, args)
 
 	if *bundlePath == "" || *pubkey == "" {
 		usage()
@@ -230,7 +250,7 @@ func verifyGovernance(args []string) {
 	policyPath := fs.String("policy", "", "path to the serialized combinator policy (gsm PolicyBytes / WriteMachineAST output)")
 	expected := fs.String("digest", "", "expected policy digest as hex (e.g. from a ProofBundle or the anchor); must match if set")
 	checker := fs.String("checker", "", "path to the external verified oracle (astchecker); if set, it is run on the policy")
-	_ = fs.Parse(args)
+	parse(fs, args)
 
 	if *policyPath == "" {
 		usage()
@@ -258,12 +278,7 @@ func verifyGovernance(args []string) {
 		return
 	}
 
-	out, runErr := exec.Command(*checker, *policyPath).CombinedOutput()
-	fmt.Printf("oracle: %s", out)
-	if len(out) > 0 && out[len(out)-1] != '\n' {
-		fmt.Println()
-	}
-	if runErr != nil {
+	if !checkPolicyFile(*checker, *policyPath, "oracle").converges {
 		fmt.Println("FAIL: the verified oracle did not certify this policy as convergent")
 		os.Exit(1)
 	}
@@ -283,7 +298,7 @@ func verifyGovernedAction(args []string) {
 	policyPath := fs.String("policy-bundle", "", "path to the policy-leaf ProofBundle JSON (from ProvePolicy)")
 	pubkey := fs.String("pubkey", "", "ed25519 public key as hex, or a path to a file containing it")
 	checker := fs.String("checker", "", "path to the external verified oracle (astchecker); if set, it certifies the policy converges")
-	_ = fs.Parse(args)
+	parse(fs, args)
 
 	if *actionPath == "" || *policyPath == "" || *pubkey == "" {
 		usage()
@@ -340,21 +355,7 @@ func verifyGovernedAction(args []string) {
 		fmt.Println("OK: cryptographic root verified. Pass -checker <astchecker> to also certify the policy converges.")
 		return
 	}
-	tmp, err := os.CreateTemp("", "policy-*.machine")
-	if err != nil {
-		fatal(err)
-	}
-	defer os.Remove(tmp.Name())
-	if _, err := tmp.WriteString(pc.Policy); err != nil {
-		fatal(err)
-	}
-	_ = tmp.Close()
-	out, runErr := exec.Command(*checker, tmp.Name()).CombinedOutput()
-	fmt.Printf("oracle: %s", out)
-	if len(out) > 0 && out[len(out)-1] != '\n' {
-		fmt.Println()
-	}
-	if runErr != nil {
+	if !checkPolicy(*checker, pc.Policy, "oracle").converges {
 		fmt.Println("FAIL: the verified oracle did not certify the anchored policy as convergent")
 		os.Exit(1)
 	}
@@ -377,7 +378,7 @@ func verifyConvergence(args []string) {
 	policyPath := fs.String("policy-bundle", "", "path to the policy-leaf ProofBundle JSON (from ProvePolicy)")
 	pubkey := fs.String("pubkey", "", "ed25519 public key as hex, or a path to a file containing it")
 	checker := fs.String("checker", "", "path to the external verified oracle (astchecker); if set, its verdict must agree with the certificate")
-	_ = fs.Parse(args)
+	parse(fs, args)
 
 	if *certPath == "" || *policyPath == "" || *pubkey == "" {
 		usage()
@@ -444,31 +445,17 @@ func verifyConvergence(args []string) {
 		fmt.Println("OK: cryptographic root verified. Pass -checker <astchecker> to cross-check the convergence claim against the oracle.")
 		return
 	}
-	tmp, err := os.CreateTemp("", "policy-*.machine")
-	if err != nil {
-		fatal(err)
-	}
-	defer os.Remove(tmp.Name())
-	if _, err := tmp.WriteString(pc.Policy); err != nil {
-		fatal(err)
-	}
-	_ = tmp.Close()
-	out, runErr := exec.Command(*checker, tmp.Name()).CombinedOutput()
-	fmt.Printf("oracle: %s", out)
-	if len(out) > 0 && out[len(out)-1] != '\n' {
-		fmt.Println()
-	}
-	oracleConverges := runErr == nil
-	if oracleConverges != cert.Converges {
-		fmt.Printf("FAIL: certificate claims converges=%v but the verified oracle says converges=%v\n", cert.Converges, oracleConverges)
+	oracle := checkPolicy(*checker, pc.Policy, "oracle")
+	if oracle.converges != cert.Converges {
+		fmt.Printf("FAIL: certificate claims converges=%v but the verified oracle says converges=%v\n", cert.Converges, oracle.converges)
 		os.Exit(1)
 	}
 	// If the oracle also certifies the CRDT-fragment classification (compensation_free=<bool>),
 	// cross-check it, so a certificate cannot overstate that either. Older oracles omit the line;
 	// then the classification stays producer-reported, which we say rather than silently pass.
-	if cf, ok := parseCompensationFree(out); ok {
-		if cf != cert.CompensationFree {
-			fmt.Printf("FAIL: certificate claims compensation_free=%v but the verified oracle says compensation_free=%v\n", cert.CompensationFree, cf)
+	if oracle.classified {
+		if oracle.compensationFree != cert.CompensationFree {
+			fmt.Printf("FAIL: certificate claims compensation_free=%v but the verified oracle says compensation_free=%v\n", cert.CompensationFree, oracle.compensationFree)
 			os.Exit(1)
 		}
 	} else {
@@ -481,19 +468,101 @@ func verifyConvergence(args []string) {
 	fmt.Println("OK: the verified oracle's verdict agrees with the certificate: the anchored policy provably converges")
 }
 
-// parseCompensationFree scans the oracle's output for a machine-readable classification line
-// (compensation_free=true / compensation_free=false). The second return is false if no such line
-// is present, so a caller can distinguish "oracle disagrees" from "oracle does not report it".
-func parseCompensationFree(out []byte) (bool, bool) {
-	for _, line := range strings.Split(string(out), "\n") {
-		switch strings.TrimSpace(line) {
-		case "compensation_free=true":
-			return true, true
-		case "compensation_free=false":
-			return false, true
-		}
+// exitNoVerdict is the exit status when the external checker gives no verdict: it could not be
+// started, it failed, or its output cannot be read. It is not a verification failure (exit 1), since
+// nothing about the policy was learned, and it is never 0.
+const exitNoVerdict = 3
+
+// oracleVerdict is the external checker's verdict on one policy.
+type oracleVerdict struct {
+	converges bool
+	// compensationFree is the checker's compensation_free=<bool> classification; classified is
+	// false when it printed none (an older checker), so the caller can tell "the checker
+	// disagrees" from "the checker does not report it".
+	compensationFree, classified bool
+}
+
+// runOracle runs the external checker on the policy file at path, prints its output after label,
+// and returns its verdict. The astchecker exits 0 for a convergent policy, 1 for one that does not
+// converge, and 2 for a usage or parse error (as does any uncaught OCaml exception), so only 0 and
+// 1 are verdicts. A checker that cannot be started, exits with any other status, or is killed by a
+// signal gives none, and neither does output with a compensation_free line that reads as neither
+// true nor false, or as both: runOracle returns an error, which the caller must not read as "does
+// not converge".
+func runOracle(checker, path, label string) (oracleVerdict, error) {
+	out, err := exec.Command(checker, path).CombinedOutput()
+	fmt.Printf("%s: %s", label, out)
+	if len(out) > 0 && out[len(out)-1] != '\n' {
+		fmt.Println()
 	}
-	return false, false
+	var v oracleVerdict
+	var exit *exec.ExitError
+	switch {
+	case err == nil:
+		v.converges = true
+	case errors.As(err, &exit) && exit.ExitCode() == 1:
+		v.converges = false
+	default:
+		return v, fmt.Errorf("the checker %s gave no verdict (%v)", checker, err)
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "compensation_free") {
+			continue
+		}
+		var cf bool
+		switch line {
+		case "compensation_free=true":
+			cf = true
+		case "compensation_free=false":
+		default:
+			return v, fmt.Errorf("the checker %s printed an unreadable classification line %q", checker, line)
+		}
+		if v.classified && cf != v.compensationFree {
+			return v, fmt.Errorf("the checker %s printed both compensation_free=true and compensation_free=false", checker)
+		}
+		v.compensationFree, v.classified = cf, true
+	}
+	return v, nil
+}
+
+// checkPolicyFile runs the external checker on the policy file at path (see runOracle), and exits
+// with exitNoVerdict if it gives no verdict.
+func checkPolicyFile(checker, path, label string) oracleVerdict {
+	v, err := runOracle(checker, path, label)
+	if err != nil {
+		noVerdict(err)
+	}
+	return v
+}
+
+// checkPolicy runs the external checker on policy, written to a temporary file for it (see
+// runOracle), and exits with exitNoVerdict if it gives no verdict.
+func checkPolicy(checker, policy, label string) oracleVerdict {
+	tmp, err := os.CreateTemp("", "policy-*.machine")
+	if err != nil {
+		fatal(err)
+	}
+	_, err = tmp.WriteString(policy)
+	if cerr := tmp.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		os.Remove(tmp.Name())
+		fatal(err)
+	}
+	v, err := runOracle(checker, tmp.Name(), label)
+	os.Remove(tmp.Name())
+	if err != nil {
+		noVerdict(err)
+	}
+	return v
+}
+
+// noVerdict reports that the external checker gave no verdict and exits with exitNoVerdict.
+func noVerdict(err error) {
+	fmt.Printf("ERROR: %v; the policy was not checked, so this is no verdict on whether it converges\n", err)
+	os.Exit(exitNoVerdict)
 }
 
 // stringList is a repeatable string flag (one -vote per voter bundle).
@@ -524,7 +593,7 @@ func verifyQuorum(args []string) {
 	commitPath := fs.String("commit", "", "path to the commit action ProofBundle JSON (optional)")
 	pubkey := fs.String("pubkey", "", "ed25519 public key as hex, or a path to a file containing it")
 	k := fs.Int("k", 0, "the quorum threshold to assert: votes_for must be >= k")
-	_ = fs.Parse(args)
+	parse(fs, args)
 
 	if *name == "" || *tallyPath == "" || len(votePaths) == 0 || *pubkey == "" || *k <= 0 {
 		usage()
@@ -581,8 +650,15 @@ func verifyQuorum(args []string) {
 
 	// (3) the disclosed votes are exactly the votes the tally records (each recorded vote is
 	// disclosed with the same decision here, and the count check below rules out extra or repeated
-	// bundles), and the tally recomputes from them.
+	// bundles), and the tally recomputes from them. A voter the tally records twice would let one
+	// disclosed vote count twice, so each recorded voter must be distinct.
+	recorded := map[string]bool{}
 	for _, v := range rec.Votes {
+		if recorded[v.Voter] {
+			fmt.Printf("FAIL: the tally records a vote by %q more than once\n", v.Voter)
+			os.Exit(1)
+		}
+		recorded[v.Voter] = true
 		d, ok := disclosed[v.Voter]
 		if !ok {
 			fmt.Printf("FAIL: the tally records a vote by %q that is not disclosed; all votes must be disclosed to verify the tally\n", v.Voter)
@@ -671,7 +747,7 @@ func verifyRun(args []string) {
 	fs.Var(&approved, "approved", "an approved policy digest; repeat once per allowed policy")
 	approvedFile := fs.String("approved-file", "", "path to a file of approved policy digests, one per line")
 	checker := fs.String("checker", "", "path to the external verified oracle (astchecker); if set, its verdict must agree with each policy's certificate")
-	_ = fs.Parse(args)
+	parse(fs, args)
 
 	if *certPath == "" || *pubkey == "" || (len(approved) == 0 && *approvedFile == "") {
 		usage()
@@ -716,30 +792,14 @@ func verifyRun(args []string) {
 			fatal(fmt.Errorf("convergence certificate payload for %s: %w", polC.Digest, err))
 		}
 
-		tmp, err := os.CreateTemp("", "policy-*.machine")
-		if err != nil {
-			fatal(err)
-		}
-		if _, err := tmp.WriteString(polC.Policy); err != nil {
-			fatal(err)
-		}
-		_ = tmp.Close()
-		out, runErr := exec.Command(*checker, tmp.Name()).CombinedOutput()
-		os.Remove(tmp.Name())
-		fmt.Printf("oracle (%s): %s", polC.Digest, out)
-		if len(out) > 0 && out[len(out)-1] != '\n' {
-			fmt.Println()
-		}
-		oracleConverges := runErr == nil
-		if oracleConverges != claim.Converges {
-			fmt.Printf("FAIL: policy %s certificate claims converges=%v but the verified oracle says converges=%v\n", polC.Digest, claim.Converges, oracleConverges)
+		oracle := checkPolicy(*checker, polC.Policy, "oracle ("+polC.Digest+")")
+		if oracle.converges != claim.Converges {
+			fmt.Printf("FAIL: policy %s certificate claims converges=%v but the verified oracle says converges=%v\n", polC.Digest, claim.Converges, oracle.converges)
 			os.Exit(1)
 		}
-		if cf, ok := parseCompensationFree(out); ok {
-			if cf != claim.CompensationFree {
-				fmt.Printf("FAIL: policy %s certificate claims compensation_free=%v but the verified oracle says compensation_free=%v\n", polC.Digest, claim.CompensationFree, cf)
-				os.Exit(1)
-			}
+		if oracle.classified && oracle.compensationFree != claim.CompensationFree {
+			fmt.Printf("FAIL: policy %s certificate claims compensation_free=%v but the verified oracle says compensation_free=%v\n", polC.Digest, claim.CompensationFree, oracle.compensationFree)
+			os.Exit(1)
 		}
 		if !claim.Converges {
 			fmt.Printf("FAIL: policy %s does NOT converge (certificate and oracle agree); do not deploy it\n", polC.Digest)
@@ -763,7 +823,7 @@ func verifyEvidence(args []string) {
 	var approved stringList
 	fs.Var(&approved, "approved", "an approved policy digest for the run certificate; repeat once per allowed policy")
 	approvedFile := fs.String("approved-file", "", "path to a file of approved policy digests, one per line")
-	_ = fs.Parse(args)
+	parse(fs, args)
 
 	if *evidencePath == "" || *pubkey == "" {
 		usage()
@@ -825,7 +885,7 @@ func verifyApprovals(args []string) {
 	need := fs.Int("need", 0, "approvals the policy requires (k)")
 	approvers := fs.String("approvers", "", "the policy's eligible approver ids, comma-separated, in policy order")
 	keysPath := fs.String("approver-keys", "", `JSON object of approver id to ed25519 public key hex, e.g. {"ops":"ab12..."}`)
-	_ = fs.Parse(args)
+	parse(fs, args)
 
 	if *evidencePath == "" || *pubkey == "" || *call == "" || *need == 0 || *approvers == "" || *keysPath == "" {
 		usage()
@@ -959,7 +1019,7 @@ func proveAbsent(args []string) {
 	sthPath := fs.String("sth", "", "path to the signed absence tree head JSON (see audit.SignAbsenceRoot)")
 	key := fs.String("key", "", "what to prove absent: tool:<id> or policy:<digest>")
 	out := fs.String("out", "", "write the absence bundle here (default: stdout)")
-	_ = fs.Parse(args)
+	parse(fs, args)
 
 	if *journal == "" || *sthPath == "" || *key == "" {
 		usage()
@@ -992,7 +1052,7 @@ func verifyAbsent(args []string) {
 	fs := flagSet("verify-absent")
 	bundlePath := fs.String("bundle", "", "path to the AbsenceBundle JSON")
 	pubkey := fs.String("pubkey", "", "ed25519 public key as hex, or a path to a file containing it")
-	_ = fs.Parse(args)
+	parse(fs, args)
 
 	if *bundlePath == "" || *pubkey == "" {
 		usage()

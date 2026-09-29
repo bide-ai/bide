@@ -85,11 +85,21 @@ span (`chat`, `execute_tool`, or `invoke_agent`) gets status Error with a descri
 `middleware.ErrorSummary`, which names only what failed: the control-flow signal, the provider's
 HTTP status and error type or code, and the condition or category sentinel the error wraps (for
 example `api error: status 400 (invalid_request_error): model`, or `unknown tool: tool`). No
-exception event is recorded. With capture on, the span records the error with `RecordError` and
-its full text as the status description.
+exception event is recorded. With capture on, the span records an `exception` event and the
+error's text as the status description, with every URL in the text redacted as the agent redacts
+a tool error before journaling it (see the security model's tool-error redaction): capture is for
+content, not credentials. An `execute_tool` span records exactly the text the agent journals for
+the call, so an `Agent.WithToolErrorRedactor` applies there too. A tool middleware of your own
+that records error text gets the same text from `agent.ToolErrorText(ctx, tool, err)`.
+
+A call that panics ends its span with status Error and the description `panic`, whatever the
+capture setting; the panic value, which can carry content, is not recorded, and the panic
+continues.
 
 `middleware.ToolLog` applies the same rule to its log line: a failed call is logged by its
-`ErrorSummary`. Pass `middleware.LogErrorText()` to log the full error text instead.
+`ErrorSummary`. Pass `middleware.LogErrorText()` to log the error text instead: the text the agent
+journals for the call (`agent.ToolErrorText`), so your `WithToolErrorRedactor` and URL redaction
+apply to the log line too.
 
 ## Attribute keys
 

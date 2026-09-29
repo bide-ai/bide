@@ -110,7 +110,8 @@ a failed call when URL redaction is not enough (an account number, a token a ser
 back); URL redaction still applies to what it returns. This covers every failed tool call, a
 failed sub-agent (its failure is its tool call's error), and the two records a saga journals
 for its failure. The error returned to the caller (for example `SagaAborted.Cause`) is the
-tool's own, unredacted. A secret that is not in a URL, and not removed by your redactor, is
+tool's own, unredacted. With content capture on, `trace` records a failed call's journaled text
+on its span, and redacts the URLs in the chat and run spans' error text the same way. A secret that is not in a URL, and not removed by your redactor, is
 journaled as written.
 
 ## Anchoring: the condition on tamper-evidence
@@ -192,7 +193,8 @@ Verification never requires trusting the producer or importing the producer's ru
 - The **`bide-audit` CLI** (`cmd/bide-audit`) is the auditor-facing front end. It imports
   only the core and `audit` packages and no store backend, so it operates on an exported journal
   (a JSON array of `Record`) plus a signed tree head. `verify` and the other verify verbs print a
-  one-line verdict and set the exit code (**0 = passed, 1 = failed**, 2 = usage error), which is
+  one-line verdict and set the exit code (**0 = passed, 1 = failed**, 2 = usage error, 3 = the
+  external `-checker` gave no verdict), which is
   the CI-gate contract. The `-pubkey` flag must come from the anchor operator out-of-band, never
   from the bundle: that is what makes it a proof you verify rather than a log you trust.
 - The **`audit/verify` package** is stdlib-only (no `agent` dependency) and checks inclusion,

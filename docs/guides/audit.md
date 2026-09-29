@@ -315,7 +315,11 @@ Conventions shared across verbs:
 - Produce verbs (`prove`, `prove-absent`) write the bundle to `-out`, or to stdout if `-out` is
   omitted; the "wrote &lt;file&gt;" line goes to stderr so stdout stays clean for piping.
 - Verify verbs print a one-line `OK: ...` / `FAIL: ...` verdict and set the exit code: **0 =
-  authentic / all checks passed, 1 = failed** (a usage error exits 2). This is the CI-gate contract.
+  authentic / all checks passed, 1 = failed** (a usage error exits 2, and a `-checker` that gives no
+  verdict exits 3). This is the CI-gate contract: only 0 means verified.
+- A usage error is any command line the CLI does not read in full: a missing required flag, an
+  unknown flag, a help request (`-h`), or an argument that is not a flag (flag parsing stops
+  there, so a flag after it would go unread). None of them is a verdict, so none exits 0.
 
 | Verb | Required flags | Optional flags | Proves / checks |
 |---|---|---|---|
@@ -327,13 +331,19 @@ Conventions shared across verbs:
 | `verify-governed-action` | `-action`, `-policy-bundle`, `-pubkey` | `-checker` | End to end: both bundles authentic and in the same signed tree, the action's embedded policy digest links to the anchored policy leaf, the leaf's bytes hash to that digest, and (with `-checker`) the policy converges. |
 | `verify-convergence` | `-cert-bundle`, `-policy-bundle`, `-pubkey` | `-checker` | An anchored `ConfluenceCertificate` links to the policy leaf; with `-checker`, the oracle's convergence verdict must AGREE with the certificate, so overstated convergence is caught; the compensation-free (CRDT) classification is cross-checked only when the oracle emits a `compensation_free=` line, and otherwise stays producer-reported (the CLI prints a note saying so). |
 | `verify-quorum` | `-name`, `-tally`, `-vote` (repeatable), `-pubkey`, `-k` | `-commit` | A governed k-of-n quorum: the tally and every vote bundle authentic, in the same signed tree and run, and recorded by the quorum named `-name`; the disclosed votes exactly the votes the tally records; the recorded tally recomputes from them (a forged tally is caught); and `votes_for >= k`; with `-commit`, a governed commit is anchored in the same tree. |
-| `verify-run` | `-cert`, `-pubkey`, and one of `-approved <digest>` (repeatable) / `-approved-file <file>` | `-checker <astchecker>` | A proof-carrying run certificate: the used-policy set is bound by a signed used-policy head to this run and to the certificate's journal tree, and is a subset of the approved allowlist (only-approved-policies), and every used policy has an anchored, digest-linked convergence certificate in the run's signed tree (policies-convergence-certified); with `-checker`, the oracle's convergence verdict on each used policy must AGREE with its certificate. |
+| `verify-run` | `-cert`, `-pubkey`, and at least one of `-approved <digest>` (repeatable) / `-approved-file <file>` (both together form one allowlist) | `-checker <astchecker>` | A proof-carrying run certificate: the used-policy set is bound by a signed used-policy head to this run and to the certificate's journal tree, and is a subset of the approved allowlist (only-approved-policies), and every used policy has an anchored, digest-linked convergence certificate in the run's signed tree (policies-convergence-certified); with `-checker`, the oracle's convergence verdict on each used policy must AGREE with its certificate. |
 | `verify-approvals` | `-evidence`, `-pubkey`, `-call`, `-need`, `-approvers`, `-approver-keys` | | An m-of-n approval gate from an `EvidencePackage`: the request, every decision the gate read, its recorded tally, and the call's result all verify in one signed tree and in order; recounting the decisions with the approvers' keys (a JSON object of id to ed25519 public key hex) against the exact call reproduces the recorded tally; the gate enforced the expected policy; and at least k approved. Catches an omitted decision, which `verify-evidence` alone cannot. |
-| `verify-evidence` | `-evidence`, `-pubkey` | `-approved <digest>` (repeatable), `-approved-file <file>` | A run-level `EvidencePackage`: the format, seal, and key are right, the signed tree head is an authentic journal head of the package's run, every packaged action proof verifies against it with the kind and label its record says, the grant chain is the anchored grants, the consistency proof holds between its two signed heads, and any run certificate is for this run and passes against the given allowlist (required when the package carries one). Prints one line per item and an overall PASS/FAIL. |
+| `verify-evidence` | `-evidence`, `-pubkey` | `-approved <digest>` (repeatable), `-approved-file <file>` (together, one allowlist) | A run-level `EvidencePackage`: the format, seal, and key are right, the signed tree head is an authentic journal head of the package's run, every packaged action proof verifies against it with the kind and label its record says, the grant chain is the anchored grants, the consistency proof holds between its two signed heads, and any run certificate is for this run and passes against the given allowlist (required when the package carries one). Prints one line per item and an overall PASS/FAIL. |
 
 The `-checker` flag points at the external verified oracle binary (the `astchecker` extracted from
 the axiom-free Coq proof); the CLI does not ship it, and without it the governance verbs verify only
-the cryptographic root and say so. The digest is recomputed here from a hardcoded
+the cryptographic root and say so. The checker's verdict is its exit status: 0 for a convergent
+policy, 1 for one that does not converge. Anything else gives no verdict: a checker that cannot be
+started, exits with another status (the astchecker exits 2 on a usage or parse error), or is
+killed by a signal, or whose output has a `compensation_free` line that reads as neither `true` nor
+`false`, or as both. Then the verb prints an `ERROR: ...` line, not a `FAIL` verdict, and exits 3,
+so a broken checker is never reported as a policy that does not converge, nor as agreement with a
+certificate. The digest is recomputed here from a hardcoded
 `gsm-policy-v1` domain-separation tag rather than taken from gsm, so neither root of trust depends
 on the producer. The CLI reads no environment variables.
 
