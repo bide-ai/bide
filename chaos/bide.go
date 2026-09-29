@@ -13,25 +13,42 @@ import (
 var errCrash = errors.New("chaos: injected crash")
 
 // crashStore fails the crashAt-th persisting write (0 = never), simulating a crash at that
-// point: the record is not recorded and the run unwinds.
+// point: the record is not recorded and the run unwinds. A crash is the process dying, so after
+// it the store is dead: every later step fails with the crash without running or persisting.
 type crashStore struct {
 	inner   agent.Durable
 	mu      sync.Mutex
 	writes  int
 	crashAt int
+	crashed bool
+}
+
+func (c *crashStore) dead() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.crashed
 }
 
 func (c *crashStore) Do(ctx context.Context, runID, name string, fn func(context.Context) (agent.Record, error)) (agent.Record, error) {
+	if c.dead() {
+		return agent.Record{}, errCrash
+	}
 	return c.inner.Do(ctx, runID, name, func(ctx context.Context) (agent.Record, error) {
+		if c.dead() {
+			return agent.Record{}, errCrash
+		}
 		rec, err := fn(ctx) // the real work (incl. any side effect) happens here
 		if err != nil {
 			return rec, err
 		}
 		c.mu.Lock()
 		c.writes++
-		w := c.writes
+		crash := c.crashAt > 0 && c.writes == c.crashAt
+		if crash {
+			c.crashed = true
+		}
 		c.mu.Unlock()
-		if c.crashAt > 0 && w == c.crashAt {
+		if crash {
 			return agent.Record{}, errCrash // crash: record NOT persisted
 		}
 		return rec, nil
