@@ -510,7 +510,10 @@ The transcript is journaled turn-by-turn under the session id, so a restarted pr
 durable journal handles crash-resume *within* a turn); conversational memory is the question/answer
 transcript: a turn's intermediate tool calls stay in that turn and don't leak into later ones. If
 a turn pauses (approval / `Interrupt`), `Send` returns that error; resolve it and call `Send` again
-with the same input to resume.
+with the same input to resume. Until then, `Send` with a different message returns `ErrConfig`: the
+open turn belongs to its message. For inbound messages that may be redelivered, `SendOnce(ctx, id,
+text)` answers each message id once. Several handles on one session never lose a turn or answer
+one message with another's reply.
 
 ## Auditability (tamper-evident journal)
 
