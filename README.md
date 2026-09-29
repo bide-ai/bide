@@ -513,14 +513,15 @@ a2, _ := s.Send(ctx, "and its population?")   // sees turn 1 in context
 ```
 
 The transcript is journaled turn-by-turn under the session id, so a restarted process
-`a.Session(ctx, "user-42")` rebuilds it and continues. Turn N runs under `"<id>/tN"` (its own
+`a.Session(ctx, "user-42")` rebuilds it and continues. The id must not contain `/`. Turn N runs under `"<id>/tN"` (its own
 durable journal handles crash-resume *within* a turn); conversational memory is the question/answer
 transcript: a turn's intermediate tool calls stay in that turn and don't leak into later ones. If
 a turn pauses (approval / `Interrupt`), `Send` returns that error; resolve it and call `Send` again
 with the same input to resume. Until then, `Send` with a different message returns `ErrConfig`: the
 open turn belongs to its message. For inbound messages that may be redelivered, `SendOnce(ctx, id,
 text)` answers each message id once. Several handles on one session never lose a turn or answer
-one message with another's reply.
+one message with another's reply. A turn resumed after a crash is seeded with the same transcript
+it started with, even if other messages were answered in between.
 
 ## Auditability (tamper-evident journal)
 

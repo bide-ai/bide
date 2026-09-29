@@ -10,8 +10,9 @@ redelivering channel. That it already provides. This page shows the pattern; the
 ## The core is transport-agnostic on purpose
 
 `Agent.Run(ctx, runID, input)` takes a caller-supplied `runID` and a plain string. `Session(ctx, id)`
-gives multi-turn continuity keyed by any string. A messenger integration is glue you write in your
-own webhook handler:
+gives multi-turn continuity keyed by any string without a `/`: the session runs its turns under
+`<id>/...`, so a `/` could name another session's turn (join composite ids with another separator).
+A messenger integration is glue you write in your own webhook handler:
 
 1. Verify the provider's signature and return 200 fast (both are the handler's job, not the SDK's).
 2. Map the channel's thread or conversation id to a run or a `Session` id.
@@ -64,10 +65,11 @@ return msg.Text(), nil
 `SendOnce` answers a message at most once per key. A redelivered event whose turn completed returns
 the recorded answer without calling the model, even if the process died after the turn and before
 the reply went out. A turn interrupted by a crash or a pause resumes when the event is redelivered,
-in its own journal, so a different message arriving in between gets its own turn. Reusing a key for
-different text is `ErrConfig`. Several workers may hold handles on one conversation: every
-message is recorded once, and a handle that is behind catches up from the journal before
-answering, so each turn sees the conversation as it stands.
+in its own journal, so a different message arriving in between gets its own turn; the resumed turn
+still sees the conversation as it stood when the turn started, since that starting point is
+journaled. Reusing a key for different text is `ErrConfig`. Several workers may hold handles on one
+conversation: every message is recorded once, and a handle that is behind catches up from the
+journal before answering, so each new turn sees the conversation as it stands.
 
 The first delivery runs the turn and records the reply under the event id; a redelivery returns the
 recorded reply without advancing the transcript. If the turn pauses (a tool needs approval) or
