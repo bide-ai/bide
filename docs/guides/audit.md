@@ -23,8 +23,10 @@ what the agent did*. Stdlib-only (`crypto/sha256`, `crypto/ed25519`), no externa
   only over valid UTF-8 (encoding/json rewrites invalid bytes to U+FFFD). A record, grant, or
   anchor entry with invalid UTF-8 in any string is refused rather than committed or verified.
   `bide-audit` reads every artifact with `audit.UnmarshalStrict`, which rejects duplicate keys,
-  keys that differ from a field only in case, unknown fields, and invalid UTF-8, so the file a
-  person reads is exactly the data that is verified.
+  keys that differ from a field only in case, unknown fields, invalid UTF-8, escaped lone
+  surrogates, and base64 that is not the standard encoding of its bytes (line breaks, stray bits),
+  and checks a message part against the fields of its type, so the file a person reads is exactly
+  the data that is verified.
 
 ## The four primitives
 
@@ -39,6 +41,15 @@ what the agent did*. Stdlib-only (`crypto/sha256`, `crypto/ed25519`), no externa
 Merkle tree: the same commitment, but it supports per-record inclusion proofs and consistency
 proofs. Use `Head` when you only ever reveal the whole run; use `Root` (+ STH) when selective
 disclosure or append-only proofs matter.
+
+**Encoding versions.** A journal leaf is the record's journal encoding (`agent.EncodeRecord`),
+which, unlike v0.6.0's, does not HTML-escape: a record containing `<`, `>`, or `&` hashes differently
+than it did in v0.6.0. The domain tags that commit to those bytes name the new encoding, so a head
+computed by v0.6.0 and a head computed now over the same journal differ by version, not as a fork:
+`Head` seeds its chain with `bide.audit.v2` (was `bide.audit.v1`), and signed tree heads sign the
+`bide.audit.sth.v3` encoding (v0.6.0 signed `bide.audit.sth.v1`), which `audit/verify` checks too.
+Re-anchor a run under the new version rather than comparing it with a v0.6.0 head. A bare `Root`
+carries no version of its own, so compare roots across versions only through their signed heads.
 
 ## Continuous anchoring: `AuditedStore` + the `Anchor` port
 
@@ -263,8 +274,9 @@ Conventions shared across verbs:
   key must come from the anchor operator out-of-band, never from the bundle: that is what makes it a
   proof you verify rather than a log you trust.
 - Every JSON input is read strictly (`audit.UnmarshalStrict`): a duplicate key, a key that matches a
-  field only case-insensitively, an unknown field, or invalid UTF-8 exits 1, so a file cannot show a
-  reader one value while the verifier checks another.
+  field only case-insensitively, an unknown field, invalid UTF-8, an escaped lone surrogate, or
+  base64 that is not the standard encoding of its bytes exits 1, so a file cannot show a reader one
+  value while the verifier checks another.
 - Produce verbs (`prove`, `prove-absent`) write the bundle to `-out`, or to stdout if `-out` is
   omitted; the "wrote &lt;file&gt;" line goes to stderr so stdout stays clean for piping.
 - Verify verbs print a one-line `OK: ...` / `FAIL: ...` verdict and set the exit code: **0 =
@@ -550,7 +562,7 @@ Signed tree heads sign under a pluggable scheme. `SignedTreeHead` carries an `Al
 (`omitempty`; empty means ed25519), so ed25519 heads from `SignTreeHead` / `Verify` carry no extra
 field. `SignTreeHeadWith` / `VerifyWith` (and `ProofBundle.VerifyWith` /
 `AbsenceBundle.VerifyWith`) carry the scheme end to end. Every scheme signs the same encoding
-(`bide.audit.sth.v2`: kind, run ID, size, root, timestamp, and the source journal of a key-set
+(`bide.audit.sth.v3`: kind, run ID, size, root, timestamp, and the source journal of a key-set
 head), so the kind and run binding hold whichever scheme signs. Three schemes
 are available, all in the Go 1.27 standard library, so this adds no dependency:
 
@@ -608,7 +620,9 @@ the earned limit provably never exceeds the root ceiling (every earned grant pas
 the root principal authorized). A demotion takes the higher grant out of use at once: every issued
 grant is appended to a ledger run, and only the ledger's last leaf is current
 (`ProveCurrentGrant` / `VerifyCurrentGrant` against the ledger's latest signed head, which an offline
-verifier takes from the anchor log). The asymmetry is the safety property: promotion is slow,
+verifier takes from the anchor log; the proof must name the ledger run, and must extend the last
+ledger head the verifier saw, so neither another run's leaf nor an older head passes as current).
+The asymmetry is the safety property: promotion is slow,
 capped, and evidence-gated; attenuation is immediate and ungated, because shrinking authority is
 always safe. It is deliberately a durable, sequential controller rather than a convergent machine,
 because earning is temporal and order-dependent (a promotion does not commute with a compliant

@@ -145,7 +145,7 @@ func TreeHead(kind, runID string, size int, root []byte, timestamp int64, journa
 		b = binary.BigEndian.AppendUint64(b, uint64(len(f)))
 		return append(b, f...)
 	}
-	b := append([]byte(nil), "bide.audit.sth.v2\x00"...)
+	b := append([]byte(nil), "bide.audit.sth.v3\x00"...)
 	b = field(b, []byte(kind))
 	b = field(b, []byte(runID))
 	b = binary.BigEndian.AppendUint64(b, uint64(size))

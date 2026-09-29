@@ -43,8 +43,10 @@ const (
 const absenceKindPrefix = "absence/"
 
 // sthTag domain-separates the signed tree head encoding from every other message this
-// package signs. It names the encoding version: v2 added Kind, RunID, and Journal.
-const sthTag = "bide.audit.sth.v2\x00"
+// package signs. It names the encoding version: v2 added Kind, RunID, and Journal, and v3 marks
+// journal roots over the journal encoding (agent.EncodeRecord), which does not HTML-escape, so a
+// v2 head and a v3 head over the same journal differ by version rather than read as a fork.
+const sthTag = "bide.audit.sth.v3\x00"
 
 // TreeRef names one tree of a run by its size and root.
 type TreeRef struct {

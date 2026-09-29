@@ -164,12 +164,14 @@ func newApplyID() (string, error) {
 	return "apply:" + hex.EncodeToString(b[:]), nil
 }
 
-// callApplyID is the ApplyOnce id for the tool call running in ctx: its hierarchical run scope
-// (run ID, then tool call ID), which is the same every time that call runs. Outside a run it is
+// callApplyID is the ApplyOnce id for the next apply the tool call running in ctx makes: the
+// call's hierarchical run scope (run ID, then tool call ID) and the apply's number within the call
+// (agent.NextOnceKey), which are the same every time that call runs. Every apply of one call gets
+// its own id, so a composite tool that applies two events records both. Outside a run it is
 // empty, and the tools fall back to Apply.
 func callApplyID(ctx context.Context) string {
-	if scope := agent.RunScope(ctx); scope != "" {
-		return "tool:" + scope
+	if key := agent.NextOnceKey(ctx); key != "" {
+		return "tool:" + key
 	}
 	return ""
 }
@@ -422,9 +424,10 @@ func (pg *PersistentGovernor) State() gsm.State {
 // verified event on shared state, rather than an unchecked side effect. Works with either
 // Governor (in-memory) or PersistentGovernor (crash-recoverable).
 //
-// Inside a run, the event is applied with ApplyOnce keyed by the tool call, so a call that runs
-// again (a retry-safe tool whose process died before its result was recorded) applies its event
-// once and reports the original position.
+// Inside a run, the event is applied with ApplyOnce keyed by the tool call and the apply's number
+// within it (agent.NextOnceKey), so a call that runs again (a retry-safe tool whose process died
+// before its result was recorded) applies its event once and reports the original position, and a
+// composite tool that calls EventTool several times in one call applies each of them.
 func EventTool(gov Applier, name, description, event string, safety agent.Safety) agent.Tool {
 	return agent.Func(name, description, safety,
 		func(ctx context.Context, _ struct{}) (map[string]any, error) {

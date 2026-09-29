@@ -98,6 +98,13 @@ each its own name, and each gets its own votes and tally even when the same mode
   different `k`, different voters, or the voters in a different order is an error, and nothing is
   asked or counted.
 
+**Upgrading from v0.6.0.** v0.6.0's `Quorum` took no name and recorded each vote under the voter's
+name alone and the tally as `quorum/tally`. The new version does not read those records, so a run
+that v0.6.0 left in the middle of a quorum, or that is resumed after one, asks every voter again
+and records a new tally beside the old one; the decision it acts on may differ from the one v0.6.0
+recorded. Before upgrading, let runs that call `Quorum` finish, and start them again on the new
+version.
+
 ## Rules for voters
 
 - **`Name` must be non-empty and unique** within one call. It identifies the voter in the record,

@@ -70,6 +70,9 @@ func TestHead_EmptyJournalStable(t *testing.T) {
 
 // The head chains over each record's journal encoding (agent.EncodeRecord), the bytes a store
 // persists, so a record whose JSON carries HTML-significant characters is committed as stored.
+// The chain's seed names the encoding version, bide.audit.v2: v2 is the first chain over the
+// journal encoding without HTML escaping, so a head over the older encoding cannot be mistaken
+// for a fork of a head over the newer one.
 func TestHead_ChainsTheJournalEncoding(t *testing.T) {
 	ctx := context.Background()
 	store := agent.NewMemStore()
@@ -83,7 +86,7 @@ func TestHead_ChainsTheJournalEncoding(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	seed := sha256.Sum256([]byte("bide.audit.v1"))
+	seed := sha256.Sum256([]byte("bide.audit.v2"))
 	want := sha256.Sum256(append(seed[:], leaf...))
 	if got := head(t, store, "run"); !bytes.Equal(got, want[:]) {
 		t.Fatalf("head = %x, want the chain over the journal encoding %q (%x)", got, leaf, want)

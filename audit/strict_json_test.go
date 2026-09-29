@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/bide-ai/bide/agent"
 )
 
 type strictInner struct {
@@ -120,5 +122,98 @@ func TestUnmarshalStrict_ShallowestFieldDecidesShape(t *testing.T) {
 	var d doc
 	if err := UnmarshalStrict([]byte(`{"Inner":{"any":1}}`), &d); err != nil || d.Inner["any"] != 1 {
 		t.Fatalf("the direct map field did not decide the shape: %+v, %v", d, err)
+	}
+}
+
+// A value decoded into Go has one spelling: encoding/json turns every lone surrogate escape into
+// U+FFFD and base64 skips line breaks and ignores the unused bits of its last character, so each
+// of those would give a root, a signature, or a name several spellings. JSON copied verbatim
+// (json.RawMessage) is exempt: it is committed as written.
+func TestUnmarshalStrict_OneSpellingPerValue(t *testing.T) {
+	bad := map[string]string{
+		"a lone high surrogate":            `{"name":"\ud800"}`,
+		"a lone low surrogate":             `{"name":"a\udc00"}`,
+		"a high surrogate before a letter": `{"name":"\ud800A"}`,
+		"two high surrogates":              `{"name":"\ud800\ud800"}`,
+		"a lone surrogate in a map key":    `{"tags":{"\ud800":"1"}}`,
+		"a lone surrogate in a map value":  `{"tags":{"a":"\udfff"}}`,
+		"a lone surrogate in a field name": `{"name\ud800":"a"}`,
+		"a lone surrogate in a slice":      `{"nested":{"k":["\ud800"]}}`,
+		"base64 with a line feed":          `{"bytes":"AA\nAE"}`,
+		"base64 with CR LF":                `{"bytes":"AAE=\r\n"}`,
+		"base64 with unused bits set":      `{"bytes":"AAF="}`,
+		"base64 without padding":           `{"bytes":"AAE"}`,
+	}
+	for name, doc := range bad {
+		t.Run(name, func(t *testing.T) {
+			var d strictDoc
+			if err := UnmarshalStrict([]byte(doc), &d); err == nil {
+				t.Fatalf("accepted %s as %+v", doc, d)
+			}
+		})
+	}
+	for _, doc := range []string{
+		`{"name":"\` + `ud83d\` + `ude00"}`, // an escaped surrogate pair is one character (split so it stays escaped here)
+		`{"name":"A\n"}`,
+		`{"raw":"\ud800"}`, // raw JSON is kept as written
+		`{"raw":{"k":["\udc00"],"\ud800":1}}`,
+		`{"bytes":"AAE="}`,
+		`{"bytes":""}`,
+	} {
+		var d strictDoc
+		if err := UnmarshalStrict([]byte(doc), &d); err != nil {
+			t.Fatalf("rejected %s: %v", doc, err)
+		}
+	}
+}
+
+// Strict decoding reaches inside a message, whose own UnmarshalJSON matches names loosely: a
+// record read by the CLI shows exactly the message it hashes.
+func TestUnmarshalStrict_Message(t *testing.T) {
+	rec := func(msg string) string {
+		return `[{"name":"n","kind":"model","message":` + msg + `}]`
+	}
+	bad := map[string]string{
+		"a case variant of a part field": `{"role":"assistant","parts":[{"type":"text","text":"a","Text":"b"}]}`,
+		"an unknown part field":          `{"role":"assistant","parts":[{"type":"text","text":"a","bogus":1}]}`,
+		"a case variant of role":         `{"role":"assistant","ROLE":"user","parts":[]}`,
+		"an unknown message field":       `{"role":"assistant","extra":1}`,
+		"a case variant of type":         `{"role":"assistant","parts":[{"TYPE":"text","text":"a"}]}`,
+		"a duplicate part type":          `{"role":"assistant","parts":[{"type":"text","type":"reasoning","text":"a"}]}`,
+		"an unknown part type":           `{"role":"assistant","parts":[{"type":"video"}]}`,
+		"a part without a type":          `{"role":"assistant","parts":[{"text":"a"}]}`,
+		"a field of another part type":   `{"role":"assistant","parts":[{"type":"text","text":"a","signature":"s"}]}`,
+		"a lone surrogate in text":       `{"role":"assistant","parts":[{"type":"text","text":"\ud800"}]}`,
+		"image bytes with a line break":  `{"role":"user","parts":[{"type":"image","data":"AA\nAE"}]}`,
+		"a part that is not an object":   `{"role":"assistant","parts":["text"]}`,
+	}
+	for name, msg := range bad {
+		t.Run(name, func(t *testing.T) {
+			var recs []agent.Record
+			if err := UnmarshalStrict([]byte(rec(msg)), &recs); err == nil {
+				t.Fatalf("accepted %s as %+v", msg, recs[0].Message)
+			}
+		})
+	}
+
+	// Every part kind, as the journal encodes it, decodes strictly to the same message.
+	m := agent.Message{Role: agent.RoleAssistant, Parts: []agent.Part{
+		agent.Text{Text: "a <b> \U0001F600"},
+		agent.Reasoning{Text: "r", Signature: "sig"},
+		agent.ToolUse{ID: "t1", Name: "charge", Args: json.RawMessage(`{"x":"\ud800","X":1}`)},
+		agent.ToolResult{ToolUseID: "t1", Result: json.RawMessage(`{"ok":true}`), IsError: true},
+		agent.Image{Mime: "image/png", Data: []byte{0, 1, 2, 250}},
+		agent.Image{URL: "https://example.com/a.png"},
+	}}
+	b, err := agent.EncodeRecord(agent.Record{Name: "n", Kind: agent.StepModel, Message: &m})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got agent.Record
+	if err := UnmarshalStrict(b, &got); err != nil {
+		t.Fatalf("rejected the journal encoding %s: %v", b, err)
+	}
+	if again, _ := agent.EncodeRecord(got); string(again) != string(b) {
+		t.Fatalf("strict decoding changed the record:\n%s\n%s", b, again)
 	}
 }

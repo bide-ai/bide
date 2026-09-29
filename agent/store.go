@@ -184,7 +184,7 @@ func Step[T any](ctx context.Context, d Durable, runID, name string, fn func(con
 			// Attempted before, with no recorded result: the outcome is unknown.
 			return Record{}, &ResumeHalt{RunID: runID, RootRunID: runID, ToolUseID: name, AttemptedAt: attemptedAt}
 		}
-		v, err := fn(ctx)
+		v, err := fn(stepOnceScope(ctx, runID, name)) // the step numbers its own NextOnceKey keys
 		if err != nil {
 			return Record{}, err
 		}

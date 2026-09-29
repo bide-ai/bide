@@ -3,6 +3,10 @@
 // which forbids it outright), shared Postgres storage lets ANY node resume ANY run —
 // so a dead worker's in-flight agents pick up elsewhere. Same named-step memoization
 // semantics as the SQLite backend; the side-effect-safety layer sits above it.
+//
+// The journal is the bide_steps table (run_id, seq, name, data), where data is bytea: each
+// record's journal encoding (agent.EncodeRecord), byte for byte. Open creates the tables if they
+// do not exist and never alters them.
 package postgres
 
 import (
@@ -54,10 +58,13 @@ func Open(ctx context.Context, dsn string) (*Store, error) {
 // effect already happened. seq is unique per run, so History has one order.
 const stepsTable = "bide_steps"
 
-// migrateLock is the advisory lock key that serializes schema migration across nodes opening the
+// migrateLock is the advisory lock key that serializes schema creation across nodes opening the
 // store at once ("bide" in ASCII).
 const migrateLock = 0x62696465
 
+// migrate creates the tables if they do not exist. It never alters an existing table: bide_steps
+// has had a bytea data column since it was introduced, and altering a table other nodes are
+// running on would take its exclusive lock and change what they write.
 func (s *Store) migrate(ctx context.Context) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -82,19 +89,6 @@ func (s *Store) migrate(ctx context.Context) error {
 			expiry timestamptz NOT NULL
 		);`); err != nil {
 		return err
-	}
-	// A journal created while data was text is converted in place. Its rows are valid UTF-8 (text
-	// admits nothing else), and convert_to keeps their bytes exactly.
-	var typ string
-	if err := tx.QueryRowContext(ctx, `
-		SELECT data_type FROM information_schema.columns
-		WHERE table_schema = current_schema() AND table_name = 'bide_steps' AND column_name = 'data'`).Scan(&typ); err != nil {
-		return fmt.Errorf("inspect %s: %w", stepsTable, err)
-	}
-	if typ == "text" {
-		if _, err := tx.ExecContext(ctx, `ALTER TABLE bide_steps ALTER COLUMN data TYPE bytea USING convert_to(data, 'UTF8')`); err != nil {
-			return fmt.Errorf("convert %s.data to bytea: %w", stepsTable, err)
-		}
 	}
 	return tx.Commit()
 }

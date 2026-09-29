@@ -98,8 +98,13 @@ holds such an entry (from an older policy or another writer), every fold (`NewPe
 
 `ApplyOnce(ctx, id, event)` applies an event at most once per id, across every process sharing the
 log: a repeat returns the first call's position and the state replayed through it. `EventTool`
-uses it with the tool call's id, so a governed tool call that runs again (its process died after the
-event was appended but before the call's result was recorded) records its event once.
+uses it with an id made of the tool call's id and the apply's number within the call
+(`agent.NextOnceKey`), so a governed tool call that runs again (its process died after the event
+was appended but before the call's result was recorded) records its event once, and a composite
+tool that applies several events in one call records each of them. The numbering is stable when
+the call applies its events in the same order each time it runs; applies made concurrently must
+each run in their own step (`agent.Step`, or the tasks of `agent.Parallel`), which numbers its
+applies under the step's name.
 
 `EventLog` is a port with a precise contract: `Append(ctx, entity, id, event)` returns the event's
 position, positions are dense and never change, and `Events(ctx, entity, from)` reads from any
@@ -113,7 +118,9 @@ should your own. Adapters:
 - `govern.NewMemEventLog()`: in-memory (tests / local).
 - `govern/sqlitelog`: on-disk SQLite.
 - `govern/postgreslog`: Postgres, for several processes on a shared database.
-- `govern/redislog`: Redis Streams (networked, "no SQL DB required").
+- `govern/redislog`: Redis Streams (networked, "no SQL DB required"). An entity's stream and its
+  append-id hash share the Redis Cluster hash tag `{<len>:<entity>}`, so the append script, which
+  touches both, runs on Redis Cluster; a key prefix must not contain `{` or `}`.
 
 The in-memory `Governor` holds its state in one process. Use a `PersistentGovernor` whenever more than
 one process acts on the same state, or when recorded state digests must be checked later against a

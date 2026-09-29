@@ -11,6 +11,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/bide-ai/bide/agent"
 	_ "github.com/jackc/pgx/v5/stdlib"
@@ -40,12 +41,44 @@ func Open(ctx context.Context, dsn string) (*Log, error) {
 	return l, nil
 }
 
+// migrateLockKey is the advisory lock key that serializes schema migrations of the event log
+// across processes (any 64-bit constant private to this package).
+const migrateLockKey int64 = 0x62696465_6576_6c67 // "bide" "ev" "lg"
+
+// migrateLockTimeout bounds how long a migration waits for a table lock. ALTER TABLE and CREATE
+// INDEX queue for their lock behind every open transaction that has read the table, and while
+// they wait, every later read and write of the table queues behind them; so a migration that
+// cannot get its lock soon gives up, and Open fails, rather than stall every other process.
+const migrateLockTimeout = 3 * time.Second
+
 // migrate creates the governed_events table. Each entity's events carry a dense position (seq),
 // unique per entity, assigned by Append under a per-entity lock, and the append id they were
 // recorded under, unique per entity. A table created before appends carried ids gains the column;
 // its earlier rows have no id and never match a new append.
+//
+// A table that is already current (the common case: every Open after the first) is only read from
+// the catalog, so Open takes no lock on it. Otherwise the migration runs in one transaction under
+// an advisory lock, so processes opening the log at once migrate it one at a time, and with a lock
+// timeout (migrateLockTimeout), so it cannot wedge the table.
 func (l *Log) migrate(ctx context.Context) error {
-	_, err := l.db.ExecContext(ctx, `
+	current, err := schemaCurrent(ctx, l.db)
+	if err != nil || current {
+		return err
+	}
+	tx, err := l.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock($1)`, migrateLockKey); err != nil {
+		return fmt.Errorf("postgreslog: migrate: take the migration lock: %w", err)
+	}
+	// The lock timeout is set after the advisory lock, so a process waiting for another's
+	// migration waits for it to finish rather than give up.
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`SET LOCAL lock_timeout = %d`, migrateLockTimeout.Milliseconds())); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
 		CREATE TABLE IF NOT EXISTS governed_events (
 			entity    text   NOT NULL,
 			seq       bigint NOT NULL,
@@ -54,8 +87,21 @@ func (l *Log) migrate(ctx context.Context) error {
 			PRIMARY KEY (entity, seq)
 		);
 		ALTER TABLE governed_events ADD COLUMN IF NOT EXISTS append_id text;
-		CREATE UNIQUE INDEX IF NOT EXISTS governed_events_append_id ON governed_events (entity, append_id);`)
-	return err
+		CREATE UNIQUE INDEX IF NOT EXISTS governed_events_append_id ON governed_events (entity, append_id);`); err != nil {
+		return fmt.Errorf("postgreslog: migrate governed_events (another session may hold the table; retry Open): %w", err)
+	}
+	return tx.Commit()
+}
+
+// schemaCurrent reports whether the governed_events table the search path resolves to exists
+// with its unique append_id index (the last thing migrate creates, over the append_id column),
+// reading only the catalog.
+func schemaCurrent(ctx context.Context, db *sql.DB) (bool, error) {
+	var current bool
+	err := db.QueryRowContext(ctx, `
+		SELECT EXISTS (SELECT 1 FROM pg_index
+			WHERE indrelid = to_regclass('governed_events') AND indexrelid = to_regclass('governed_events_append_id'))`).Scan(&current)
+	return current, err
 }
 
 // Close releases the underlying database connection pool.

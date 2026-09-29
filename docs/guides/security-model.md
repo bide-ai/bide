@@ -15,7 +15,7 @@ post-quantum options below), with no external dependencies.
   commitment was produced by the key holder and was not forged.
 - **Domain separation between trees.** One key signs several trees per run: the journal, the
   absence key sets projected from it (tool uses, used policies), and the event stream. The signed
-  encoding (`bide.audit.sth.v2`) commits to the tree's **kind** and the **run ID**, and a key-set
+  encoding (`bide.audit.sth.v3`) commits to the tree's **kind** and the **run ID**, and a key-set
   head also commits to the journal tree (size and root) it was projected from. Every verifier
   requires the kind it expects: a journal proof needs a journal head of the bundle's run, an
   absence proof needs a key-set head of the set its key belongs to, and a run certificate needs a
@@ -42,8 +42,8 @@ post-quantum options below), with no external dependencies.
   to U+FFFD). A value with invalid UTF-8 in any string is refused, never committed, signed, or
   verified, so two different values never share a leaf or a signature. `bide-audit` reads every
   artifact with `audit.UnmarshalStrict`, which rejects duplicate keys, keys that match a field only
-  case-insensitively, unknown fields, and invalid UTF-8, so a file cannot show a reader one value
-  while the verifier checks another. Malformed keys (the wrong length, or none) verify nothing;
+  case-insensitively, unknown fields, invalid UTF-8, escaped lone surrogates, and non-standard
+  base64, so a file cannot show a reader one value while the verifier checks another. Malformed keys (the wrong length, or none) verify nothing;
   they never panic.
 
 ## What is NOT guaranteed: confidentiality
