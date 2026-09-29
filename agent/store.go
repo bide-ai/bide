@@ -120,14 +120,48 @@ const runCompleteStep = "run:complete"
 // Option-B authoring primitive: write plain Go control flow, and name the operations
 // that must survive a crash.
 //
-//	inv, err := agent.Step(ctx, dur, runID, "fetch-invoice", func(ctx context.Context) (Invoice, error) { ... })
+//	inv, err := agent.Step(ctx, dur, runID, "fetch-invoice", fetchInvoice, agent.StepSafety(agent.Safety{ReadOnly: true}))
+//	res, err := agent.Step(ctx, dur, runID, "reserve", reserve) // a side effect: at most once
+//
+// A step runs at most once, like a tool call. By default it is treated as a side effect: an
+// attempt marker is journaled before fn runs, so if the process dies after fn's effect and
+// before its result is recorded, the resumed step returns *ResumeHalt instead of running fn
+// again. Clear it with ResolveHalt (the halt's ToolUseID is the step name) once the true
+// outcome is known. A step that is safe to re-run declares it with StepSafety (ReadOnly,
+// Idempotent, or an IdempotencyKey); it then skips the marker and simply re-runs after a crash.
+//
+// If fn returns an error, nothing is recorded but the marker: a side-effecting step whose fn
+// failed halts on the next attempt too, since a failed call may still have taken effect.
 //
 // T must be JSON-serializable: the result is marshaled into the journal, so a struct with
 // unexported fields round-trips those fields to their zero values (encoding/json skips them)
 // with no error reported. Return exported fields, a map, or a pointer whose fields are exported.
-func Step[T any](ctx context.Context, d Durable, runID, name string, fn func(context.Context) (T, error)) (T, error) {
+func Step[T any](ctx context.Context, d Durable, runID, name string, fn func(context.Context) (T, error), opts ...StepOption) (T, error) {
 	var out T
+	var cfg stepConfig
+	for _, o := range opts {
+		o(&cfg)
+	}
+	// The attempt marker is an exclusive claim, as for a tool call: a driver that did not
+	// write it (a resume after a crash, or a second driver of the same run) must not run fn.
+	claimed := true
+	var attemptedAt time.Time
+	if !cfg.safety.RetrySafe() {
+		won, got, err := ClaimAttempt(ctx, d, runID, "attempt:step:"+name,
+			Record{Kind: StepAttempt, ToolUseID: name, AttemptedAt: time.Now().UnixMilli()})
+		if err != nil {
+			return out, err
+		}
+		claimed = won
+		if got.AttemptedAt != 0 {
+			attemptedAt = time.UnixMilli(got.AttemptedAt)
+		}
+	}
 	rec, err := d.Do(ctx, runID, name, func(ctx context.Context) (Record, error) {
+		if !claimed {
+			// Attempted before, with no recorded result: the outcome is unknown.
+			return Record{}, &ResumeHalt{RunID: runID, ToolUseID: name, AttemptedAt: attemptedAt}
+		}
 		v, err := fn(ctx)
 		if err != nil {
 			return Record{}, err
@@ -141,12 +175,24 @@ func Step[T any](ctx context.Context, d Durable, runID, name string, fn func(con
 	if err != nil {
 		return out, err
 	}
+	if rec.IsError { // resolved by ResolveHalt as failed
+		return out, fmt.Errorf("step %q was resolved as failed: %s: %w", name, rec.Result, ErrTool)
+	}
 	if len(rec.Result) == 0 {
 		return out, nil
 	}
 	err = json.Unmarshal(rec.Result, &out)
 	return out, err
 }
+
+// StepOption configures Step.
+type StepOption func(*stepConfig)
+
+type stepConfig struct{ safety Safety }
+
+// StepSafety declares how safe a step is to re-run, as Safety does for a tool. A step that is
+// RetrySafe (ReadOnly, Idempotent, or keyed) re-runs after a crash; any other step halts.
+func StepSafety(s Safety) StepOption { return func(c *stepConfig) { c.safety = s } }
 
 // Approve durably records a human approve/deny decision for a tool call (HITL). It is
 // idempotent: the first decision for a (runID, toolUseID) wins. After approving, re-run
@@ -338,6 +384,9 @@ type ResumeHalt struct {
 }
 
 func (e *ResumeHalt) Error() string {
+	if e.ToolName == "" { // a Step: ToolUseID is the step name
+		return fmt.Sprintf("resume halted: step %q has unknown outcome and is not retry-safe; confirm before continuing", e.ToolUseID)
+	}
 	return fmt.Sprintf("resume halted: tool %q (call %s) has unknown outcome and is not retry-safe; confirm before continuing",
 		e.ToolName, e.ToolUseID)
 }

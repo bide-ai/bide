@@ -93,7 +93,8 @@ func statelessCommand(ctx context.Context, a *agent.Agent, channelID, eventID, t
 // conversation/thread id) carries memory across messages; wrapping Send in a Step keyed by the
 // event id makes a redelivered inbound message return the recorded reply instead of opening a
 // second turn. Session alone is NOT enough: it keys turns by index, so a redelivery would
-// advance the transcript. The event-id Step is the idempotency guard.
+// advance the transcript. The event-id Step is the idempotency guard. It is Idempotent because a
+// retried Send resumes the same turn from the journal rather than starting another.
 func handleConversational(ctx context.Context, a *agent.Agent, store agent.Durable, conversationID, eventID, text string) (string, error) {
 	return agent.Step(ctx, store, "inbox/"+conversationID, eventID, func(ctx context.Context) (string, error) {
 		sess, err := a.Session(ctx, conversationID)
@@ -105,7 +106,7 @@ func handleConversational(ctx context.Context, a *agent.Agent, store agent.Durab
 			return "", err // a pause/error is not recorded, so the next redelivery retries the turn
 		}
 		return msg.Text(), nil
-	})
+	}, agent.StepSafety(agent.Safety{Idempotent: true}))
 }
 
 func main() {

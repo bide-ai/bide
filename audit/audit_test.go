@@ -17,7 +17,7 @@ func record(t *testing.T, store agent.Durable, runID string, vals ...string) {
 	t.Helper()
 	for i, v := range vals {
 		if _, err := agent.Step(context.Background(), store, runID, fmt.Sprintf("s%d", i),
-			func(context.Context) (string, error) { return v, nil }); err != nil {
+			func(context.Context) (string, error) { return v, nil }, agent.StepSafety(agent.Safety{ReadOnly: true})); err != nil {
 			t.Fatal(err)
 		}
 	}
