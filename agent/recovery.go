@@ -207,6 +207,7 @@ func Lease(ctx context.Context, store Durable, runID string, drive func(context.
 	// primary and its recoverer, or a restarted worker and its stalled predecessor) would otherwise
 	// both hold the lease, renew it for each other, and release it from under each other.
 	owner := cfg.holder + "#" + leaseToken()
+	issued := time.Now() // the lease cannot expire before issued+ttl (see driveWithRenew)
 	got, err := leaser.AcquireLease(ctx, runID, owner, cfg.ttl)
 	if err != nil {
 		return false, fmt.Errorf("acquire lease %s: %w (%w)", runID, err, ErrStorage)
@@ -221,25 +222,42 @@ func Lease(ctx context.Context, store Durable, runID string, drive func(context.
 		defer cancel()
 		_ = leaser.ReleaseLease(rctx, runID, owner)
 	}()
-	return true, driveWithRenew(ctx, leaser, runID, owner, cfg.ttl, drive)
+	return true, driveWithRenew(ctx, leaser, runID, owner, cfg.ttl, issued, drive)
 }
 
 // leaseToken returns a random token that makes each Lease call's claim its own.
 func leaseToken() string { return fmt.Sprintf("%016x", rand.Uint64()) }
 
-// driveWithRenew runs the drive while renewing the lease every ttl/2, so a drive that outlasts the
-// TTL keeps its lease. The drive is given a derived context that is cancelled if the lease is lost
-// (renew fails or returns not-held) or the parent context is done, so a node that loses its lease
-// stops driving at its next cancellation check. That is best effort, not mutual exclusion: a node
-// stalled past the TTL (a long GC pause, a suspended VM, a partition from the store) wakes still
-// driving and can take a step before its renewer notices. At-most-once does not depend on this;
-// the exclusive attempt claim (ClaimAttempt) stops two overlapping drivers from both running a
-// side effect.
+// driveWithRenew runs the drive while renewing the lease, so a drive that outlasts the TTL keeps
+// its lease. The drive is given a derived context that is cancelled if the lease is lost or the
+// parent context is done, so a node that loses its lease stops driving at its next cancellation
+// check. That is best effort, not mutual exclusion: a node stalled past the TTL (a long GC pause,
+// a suspended VM, a partition from the store) wakes still driving and can take a step before its
+// renewer notices. At-most-once does not depend on this; the exclusive attempt claim
+// (ClaimAttempt) stops two overlapping drivers from both running a side effect.
+//
+// The renewal schedule, measured on this process's monotonic clock from the moment the last
+// successful acquisition or renewal was issued (issued):
+//
+//   - The lease cannot expire before issued+ttl. The store sets the expiry from its own clock
+//     while it serves the call, which is after the call was issued, and only the store compares
+//     expiries, so the offset between the clocks does not matter.
+//   - A renewal is first attempted at issued+ttl/2.
+//   - A renewal that fails with an error (the store is briefly unreachable, say) is retried every
+//     ttl/20 until the cutoff, issued+3*ttl/4. Each attempt is abandoned at the cutoff, so a
+//     renewal that hangs cannot hold the drive past it.
+//   - A renewal that reports the lease is no longer held cancels the drive at once, and so does
+//     reaching the cutoff without a successful renewal.
+//
+// So the drive is cancelled at least ttl/4 before any other process can take the lease. That
+// quarter is the margin for the cancellation to reach the drive and for the store's clock to run
+// at a slightly different rate than this one; it does not cover a process that is stalled through
+// the cutoff, which is the case the attempt claim exists for.
 //
 // When the drive returns (or panics), the renewer is stopped, abandoning any renewal it has in
 // flight, and waited for before driveWithRenew returns, so no renewal outlives the drive or races
 // the release that follows it.
-func driveWithRenew(ctx context.Context, leaser Leaser, runID, owner string, ttl time.Duration, run func(context.Context) error) error {
+func driveWithRenew(ctx context.Context, leaser Leaser, runID, owner string, ttl time.Duration, issued time.Time, run func(context.Context) error) error {
 	dctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	rctx, stopRenew := context.WithCancel(ctx)
@@ -250,21 +268,61 @@ func driveWithRenew(ctx context.Context, leaser Leaser, runID, owner string, ttl
 	}()
 	go func() {
 		defer close(renewerDone)
-		t := time.NewTicker(max(ttl/2, 1)) // a 1ns TTL halves to zero, which NewTicker rejects
-		defer t.Stop()
-		for {
-			select {
-			case <-rctx.Done():
-				return
-			case <-t.C:
-				if ok, err := leaser.RenewLease(rctx, runID, owner, ttl); err != nil || !ok {
-					cancel() // lost the lease: stop the drive rather than run un-leased
-					return
-				}
-			}
+		if !renewLoop(rctx, leaser, runID, owner, ttl, issued) {
+			cancel() // lost the lease: stop the drive rather than run un-leased
 		}
 	}()
 	return run(dctx)
+}
+
+// renewLoop keeps owner's lease on runID renewed on the schedule driveWithRenew documents. It
+// returns true when ctx is done (the drive finished) and false when the lease is lost.
+func renewLoop(ctx context.Context, leaser Leaser, runID, owner string, ttl time.Duration, issued time.Time) bool {
+	retry := max(ttl/20, 1)
+	for {
+		if !sleepUntil(ctx, issued.Add(ttl/2)) {
+			return true
+		}
+		cutoff := issued.Add(ttl - ttl/4)
+		for {
+			at := time.Now()
+			if !at.Before(cutoff) {
+				return false // could not renew in time
+			}
+			actx, cancel := context.WithDeadline(ctx, cutoff)
+			ok, err := leaser.RenewLease(actx, runID, owner, ttl)
+			cancel()
+			if ctx.Err() != nil {
+				return true
+			}
+			if err == nil && ok {
+				issued = at
+				break
+			}
+			if err == nil {
+				return false // the store says the lease is no longer ours
+			}
+			next := time.Now().Add(retry)
+			if next.After(cutoff) {
+				next = cutoff
+			}
+			if !sleepUntil(ctx, next) {
+				return true
+			}
+		}
+	}
+}
+
+// sleepUntil waits until t or until ctx is done, and reports whether it reached t.
+func sleepUntil(ctx context.Context, t time.Time) bool {
+	timer := time.NewTimer(time.Until(t))
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
 }
 
 // isPause reports whether err is a durable pause signal (the run recovered and is still
