@@ -102,7 +102,8 @@ Tool execution has its own wrappers (attached where you build the agent's tool s
 
 - `ToolLog(logf)` logs each tool call and its outcome. A failed call is logged by
   `ErrorSummary(err)` (category, condition, provider status), not its text, which can carry the
-  call's arguments; pass `LogErrorText()` to log the text.
+  call's arguments; pass `LogErrorText()` to log the text the agent journals for the call (its
+  `WithToolErrorRedactor` text, with URL credentials redacted).
 
 Middleware reads a call's `Safety` with `agent.ToolSafety(ctx)`. The agent also enforces
 at-most-once below every middleware: a tool that is not retry-safe runs at most once per tool

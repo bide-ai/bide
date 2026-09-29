@@ -80,7 +80,8 @@ func ToolRetry(n int, opts ...RetryOption) agent.ToolMiddleware {
 //
 // A failed call is logged by its ErrorSummary (category, condition, provider status), not its
 // text: a tool's error text commonly embeds the call's arguments or a URL with a credential in
-// it, and a log line is not the place for them. Pass LogErrorText to log the full text.
+// it, and a log line is not the place for them. Pass LogErrorText to log the text the agent
+// journals for the call instead (see agent.ToolErrorText).
 func ToolLog(logf func(format string, args ...any), opts ...ToolLogOption) agent.ToolMiddleware {
 	var cfg toolLogConfig
 	for _, o := range opts {
@@ -94,7 +95,7 @@ func ToolLog(logf func(format string, args ...any), opts ...ToolLogOption) agent
 			if err != nil {
 				detail := ErrorSummary(err)
 				if cfg.errorText {
-					detail = err.Error()
+					detail = agent.ToolErrorText(ctx, tu.Name, err)
 				}
 				logf("tool %s (%s) error in %s: %s", tu.Name, tu.ID, dur, detail)
 			} else {
@@ -110,9 +111,11 @@ type ToolLogOption func(*toolLogConfig)
 
 type toolLogConfig struct{ errorText bool }
 
-// LogErrorText makes ToolLog log a failed call's full error text instead of its ErrorSummary.
-// The text can carry content (the call's arguments, a provider's echo of them, a credential in a
-// URL), so enable it only where the log may hold that content.
+// LogErrorText makes ToolLog log a failed call's error text instead of its ErrorSummary: the text
+// the agent journals for the call and sends to the model (agent.ToolErrorText), which is the
+// agent's WithToolErrorRedactor text if one is set, with every URL in it redacted. It can still
+// carry content (the call's arguments, a provider's echo of them), so enable it only where the
+// log may hold that content.
 func LogErrorText() ToolLogOption { return func(c *toolLogConfig) { c.errorText = true } }
 
 // ToolCache memoizes successful tool results by (name, args) in a process-local map and

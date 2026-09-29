@@ -97,7 +97,9 @@ capture setting; the panic value, which can carry content, is not recorded, and 
 continues.
 
 `middleware.ToolLog` applies the same rule to its log line: a failed call is logged by its
-`ErrorSummary`. Pass `middleware.LogErrorText()` to log the full error text instead.
+`ErrorSummary`. Pass `middleware.LogErrorText()` to log the error text instead: the text the agent
+journals for the call (`agent.ToolErrorText`), so your `WithToolErrorRedactor` and URL redaction
+apply to the log line too.
 
 ## Attribute keys
 
