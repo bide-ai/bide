@@ -65,6 +65,13 @@ jobs:
             echo "== $m =="
             ( cd "$m" && go build ./... && go test $race -count=1 ./... )
           done
+      - name: Test without encoding/json/v2 (core module)
+        if: runner.os == 'Linux'
+        shell: bash
+        # encoding/json/v2 is a Go experiment in Go 1.27, on by default. bide does not depend on it,
+        # and the journal encoding must be identical with and without it, so the core module is
+        # also tested with the experiment off.
+        run: GOEXPERIMENT=nojsonv2 go test -count=1 ./...
 
   integration:
     name: Integration (Postgres, Redis)
