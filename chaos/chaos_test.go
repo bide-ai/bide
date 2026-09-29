@@ -30,3 +30,22 @@ func TestVerify_Benchmark(t *testing.T) {
 	t.Log("  " + Verify("Bide", Bide(), 300).String())
 	t.Log("  " + Verify("naive-loop", NaiveReference(), 300).String())
 }
+
+// Writes is the sweep's bound: Verify crashes at write 1..Writes()+2 and draws every randomized
+// crash point from that range, so a write past the bound is never crashed at. Each reference
+// adapter must report the writes a clean run makes: the last one crashes, the one after it does
+// not (no write is left to crash at).
+func TestReferenceSystems_WritesMatchACleanRun(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		sys  System
+	}{{"Bide", Bide()}, {"naive-loop", NaiveReference()}} {
+		w := c.sys.Writes()
+		if !c.sys.NewRun().Step(w) {
+			t.Errorf("%s: Writes() = %d, but a crash at write %d does not happen: a clean run makes fewer writes", c.name, w, w)
+		}
+		if c.sys.NewRun().Step(w + 1) {
+			t.Errorf("%s: Writes() = %d, but a crash at write %d still happens: a clean run makes more writes", c.name, w, w+1)
+		}
+	}
+}
