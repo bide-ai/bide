@@ -90,6 +90,19 @@ The audit trail does not provide **confidentiality**. This is scoped out explici
   with appropriate access control. The cryptography here proves *what happened*; it does not
   hide it.
 
+### Retrieved documents are stored like tool results
+
+Retrieved documents are durable content at rest, like tool results. A `RetrievalTool` call's
+documents are its journaled result, and `WithRetrieval` journals the query and the documents it
+retrieved as a step of the run, so a resumed run shows the model the same documents and the
+journal records what the model was given. They are stored as written: no redaction applies to
+them, and anyone who holds the journal can read them. Salting keeps them out of other records'
+proofs: a `ProofBundle` for a different record of the run discloses a neighbouring leaf only as a
+sibling hash over salted content, which cannot be tested against a guessed document. A proof
+of the retrieval record itself discloses the documents in full. If documents are sensitive,
+keep them out of the `Retriever`'s results or keep the journal in a trust domain where they may
+be read (see [RAG and memory](rag-memory.md)).
+
 ### Tool errors are redacted before they are journaled
 
 When a tool call fails, its error text becomes the call's result: it is journaled, sent to the

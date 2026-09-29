@@ -1,6 +1,8 @@
 // Command rag shows bring-your-own retrieval: a trivial in-memory Retriever wired two
-// ways. WithRetrieval is classic RAG (top-k auto-injected as context on each user turn);
-// RetrievalTool is agentic RAG (the model decides when to search and with what query).
+// ways. WithRetrieval is classic RAG (the top-k documents for the user's message are added,
+// as a user message of JSON-quoted documents, to every model call of the run, and journaled so
+// a resumed run sees the same ones); RetrievalTool is agentic RAG (the model decides when to
+// search and with what query).
 // Bide ships no vector store or embedder: you implement Retrieve against your own
 // infrastructure. This example uses naive substring matching to stay offline-runnable.
 //
@@ -61,7 +63,7 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	// Classic RAG: WithRetrieval middleware injects the top-2 docs as context each user turn.
+	// Classic RAG: WithRetrieval middleware adds the top-2 docs as context to each model call.
 	classic := agent.New(model, agent.NewMemStore()).Use(agent.WithRetrieval(kb, 2))
 	out, err := classic.Run(ctx, "rag-classic",
 		"What is the warranty on the widget? Answer in one sentence.")
@@ -72,9 +74,12 @@ func main() {
 	fmt.Println(out.Text())
 
 	// Agentic RAG: expose retrieval as a tool the model calls on demand.
-	agentic := agent.New(model, agent.NewMemStore(), agent.RetrievalTool(kb, 2))
+	// It is named "retrieve" by default; an agent searching several stores names each tool.
+	agentic := agent.New(model, agent.NewMemStore(), agent.RetrievalTool(kb, 2,
+		agent.RetrievalName("search_support_kb"),
+		agent.RetrievalDescription("Search the support knowledge base: shipping, warranty, returns, and hours.")))
 	out2, err := agentic.Run(ctx, "rag-agentic",
-		"Use the retrieve tool to find the return policy, then answer in one sentence.")
+		"Use the search_support_kb tool to find the return policy, then answer in one sentence.")
 	if err != nil {
 		log.Fatalf("agentic rag: %v", err)
 	}
