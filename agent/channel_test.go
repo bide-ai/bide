@@ -88,7 +88,7 @@ func TestSend_RedeliveryIsAtMostOnce(t *testing.T) {
 	n := 0
 	var payload string
 	for _, r := range recs {
-		if r.Kind == StepSignal && r.Name == "chan:inbox:k1" {
+		if r.Kind == StepSignal && r.Name == "chan:5:inbox:k1" {
 			n++
 			_ = json.Unmarshal(r.Result, &payload)
 		}

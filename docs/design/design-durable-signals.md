@@ -99,11 +99,13 @@ func (e *Awaiting) Error() string // "run <id> awaiting signal <name>"
   waker for the top-level run, and returns `*Awaiting`. Once the outcome is recorded every
   later entry returns it, so a signal delivered after the timeout won cannot flip a re-run
   tool to the signal branch.
-- **Ordered channel (shipped, explicit-Ack):** `Send` records `"chan:"+channel+":"+key`
-  (`StepSignal`), deduped by that name so a redelivery is a no-op. `Ack` records
-  `"chanack:"+channel+":"+key` (`StepValue`). `Receive` scans `History`, collects the acked
-  keys, and returns the first message under `"chan:"+channel+":"` (in delivery order) whose
-  ack is absent. `Receive` writes nothing; only `Ack` writes, so on a tool re-run `Receive`
+- **Ordered channel (shipped, explicit-Ack):** `Send` records
+  `"chan:"+len(channel)+":"+channel+":"+key` (`StepSignal`), deduped by that name so a
+  redelivery is a no-op. `Ack` records `"chanack:"+len(channel)+":"+channel+":"+key`
+  (`StepValue`). The channel name's byte length makes the boundary exact when names contain
+  `:`, so no two (channel, key) pairs share a step. `Receive` scans `History`, collects the
+  acked keys, and returns the first message under its channel's prefix (in delivery order)
+  whose ack is absent. `Receive` writes nothing; only `Ack` writes, so on a tool re-run `Receive`
   returns the same oldest-unacked message deterministically, and the run consumes exactly once
   by looping Receive, durably handle, Ack. This is replay-safe without any per-execution cursor
   state, so it needs no change to the `Durable` interface.

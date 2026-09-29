@@ -112,7 +112,8 @@ re-returned on resume, so the handler must itself be idempotent (or be a durable
 
 `Send` dedups by `(runID, channel, key)`: a redelivery with the same key is a no-op and the
 first payload wins, the same at-most-once intake as `Signal`. Matching is on the exact channel
-boundary, so channel `"a"` never picks up channel `"ab"`'s messages.
+name, so channel `"a"` never picks up the messages or acks of channel `"ab"` or `"a:b"`, and
+names and keys may contain any characters.
 
 ## Waking the run: the deliver-then-wake pattern
 
