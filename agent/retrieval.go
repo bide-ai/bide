@@ -33,8 +33,8 @@ type Retriever interface {
 
 // RetrievalTool exposes a Retriever as a tool the model can call to search on demand
 // (agentic RAG): the model decides when to retrieve and with what query. It returns the
-// top-k documents: a Retriever that returns more is cut to its first k. Read-only (retry-safe).
-// It panics if k is below 1.
+// top-k documents: a Retriever that returns more is cut to its first k. Read-only
+// (retry-safe). It panics if k is below 1.
 func RetrievalTool(r Retriever, k int) Tool {
 	checkK("RetrievalTool", k)
 	type args struct {
