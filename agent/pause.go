@@ -237,26 +237,48 @@ func (w *MemWaker) Schedule(runID, name string, fireAt time.Time) {
 // Fire resumes every run that has a timer due at or before now, each run once even if several of its
 // timers are due, drops the fired timers, and returns how many runs it resumed. Resume callbacks run
 // without the lock held, so a resumed run may register a new wake. Errors from resume are joined.
+//
+// A resume that fails (the model provider or the store was briefly unavailable) leaves the run where
+// it was, so its due timers are put back and the next Fire retries it; without that, one transient
+// failure would leave the run asleep with nothing to wake it. A resume that ends in a durable pause
+// (the run slept again, or awaits approval, an interrupt, a signal, or a halt resolution) is not
+// retried: the run is waiting on something else, and waking it every tick would only spin.
 func (w *MemWaker) Fire(ctx context.Context, now time.Time) (int, error) {
+	type dueTimer struct {
+		key string
+		s   scheduled
+	}
 	w.mu.Lock()
 	var runIDs []string
-	seen := map[string]bool{}
+	due := map[string][]dueTimer{}
 	for key, s := range w.timers {
 		if !now.Before(s.fireAt) {
 			delete(w.timers, key)
-			if !seen[s.runID] {
-				seen[s.runID] = true
+			if _, ok := due[s.runID]; !ok {
 				runIDs = append(runIDs, s.runID)
 			}
+			due[s.runID] = append(due[s.runID], dueTimer{key, s})
 		}
 	}
 	w.mu.Unlock()
 
 	var errs []error
 	for _, runID := range runIDs {
-		if err := w.resume(ctx, runID); err != nil {
-			errs = append(errs, err)
+		err := w.resume(ctx, runID)
+		if err == nil {
+			continue
 		}
+		errs = append(errs, err)
+		if isPause(err) {
+			continue
+		}
+		w.mu.Lock()
+		for _, t := range due[runID] {
+			if _, rescheduled := w.timers[t.key]; !rescheduled {
+				w.timers[t.key] = t.s
+			}
+		}
+		w.mu.Unlock()
 	}
 	return len(runIDs), errors.Join(errs...)
 }
