@@ -75,6 +75,19 @@ if errors.As(err, &pend) && pend.Quorum != nil {
 }
 ```
 
+With `Agent.Stream`, the `ApprovalRequired` event carries the same tally in its `Quorum` field, so a
+UI can show progress as the run pauses, before `Final` returns. It is nil for a 1-of-1 gate.
+
+### Inside a sub-agent
+
+An m-of-n tool inside a `SubAgent` pauses the whole tree: the parent's `Run` returns the sub-run's
+`*PendingApproval`. Two details follow from where the gate runs:
+
+- set `WithApproverVerifiers` on the **sub**-agent, since that is the agent whose tool is gated;
+- approvers sign and record against `pend.RunID`, the sub-run's id (`<parentRunID>/<toolUseID>`), not
+  the top-level run id. The run id is part of the signed bytes, so a decision signed against the
+  parent's id does not verify and is not counted.
+
 ### What counts
 
 A decision counts toward the tally only if all of these hold:
@@ -116,14 +129,23 @@ actions, _ := audit.ApprovalEvidence(ctx, store, runID, toolUseID, policy.Approv
 ```
 
 Decisions come first (Kind `"approval"`, in the order of `approvers`), and the action comes last
-(Kind `"tool"`). The result appends straight onto an `EvidencePackage`'s `Actions`. An offline
-verifier holding the log key and the approvers' public keys can then check, without the store:
+(Kind `"tool"`). The result appends onto an `EvidencePackage`'s `Actions`; drop the trailing action
+entry if the package already carries it.
 
-- each proof verifies and is bound to the same signed tree head;
-- each disclosed decision's signature verifies under that approver's key;
-- each decision sits at a lower journal index than the action, so it was recorded before the action
-  ran;
-- at least `Need` distinct eligible approvers approved.
+An auditor checks the gate offline with `audit.VerifyApprovals`, holding only the evidence, the log
+key, and the approvers' public keys. It takes the same resolver shape the gate uses at run time:
+
+```go
+v, err := audit.VerifyApprovals(pkg.Actions, toolUseID, policy, approverVerifiers, logPub)
+// v.OK: at least Need approvals counted. v.Counted: who. v.Ignored: every other decision and why.
+```
+
+A decision counts only if its proof verifies under the log key against the same signed tree head as
+the action, the approver is eligible, it is an approval, it was journaled before the action, and its
+signature verifies under that approver's key. Everything else is listed in `v.Ignored` with a reason
+(for example, `not an eligible approver` or `signature does not verify under the approver's key`).
+`EvidencePackage.Verify` and `bide-audit verify-evidence` check the inclusion proofs;
+`VerifyApprovals` adds the signatures and the count to k.
 
 That certifies exactly one claim: **these named approvers approved, and the action did not execute
 until k of them had.** It does not certify that their judgment was right. `audit.ProveApproval`
@@ -137,5 +159,13 @@ proves a single approver's decision on its own.
   ("at least one from risk"), delegated approval, or deadline to resolve a gate that never reaches k.
 - A declarative `plan` config can carry an `approval` block (see [Flows](flows.md#node-approval)),
   but the `plan` runtime does not enforce it yet; the gate is enforced on agent tools.
+
+## Runnable example
+
+`examples/approval` runs the whole flow across separate processes on a SQLite journal: the run pauses
+and exits, approvers record signed decisions from their own processes, an ineligible approver and a
+forged signature are ignored, the refund runs exactly once at 2 of 3, and an auditor verifies the
+exported evidence with public keys only (`cd examples/approval && go run .`). Its test drives every
+actor as a separate process and also checks the evidence with `bide-audit verify-evidence`.
 
 The design and its tradeoffs are in [docs/design/design-mofn-approval.md](../design/design-mofn-approval.md).

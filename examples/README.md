@@ -40,6 +40,7 @@ evaluation, and integration seams.
 | `chaosbench` | The crash-injection benchmark: an exhaustive crash-point sweep proving a side effect never double-fires (offline). | `go run ./examples/chaosbench` |
 | `recover` | Crash recovery: a supervisor resumes an interrupted run from its journal without re-firing side effects. | `go run ./examples/recover` |
 | `interrupt` | Human-in-the-loop: a tool pauses the run for a durable approval decision, then resumes. | `go run ./examples/interrupt` |
+| `approval` | m-of-n human approval across separate processes on a SQLite journal: 2 of 3 signed approvals gate a refund, a forged signature and an ineligible approver are ignored, and an auditor verifies the evidence offline with public keys only (offline). Its own module. | `cd examples/approval && go run .` |
 | `signals` | Durable timers and external signals: a run sleeps or waits for an event and resumes on delivery. | `go run ./examples/signals` |
 | `hedge` | The hedged-model middleware: race a primary against a backup and take the first good answer (offline). | `go run ./examples/hedge` |
 | `eval` | The statistical evaluation harness: labeled cases, metrics, repeated runs, a pass-rate report (offline). | `go run ./examples/eval` |

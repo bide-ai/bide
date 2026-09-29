@@ -147,10 +147,17 @@ func ApproveAs(ctx context.Context, d Durable, runID, toolUseID, approverID stri
 	if approverID == "" {
 		return fmt.Errorf("ApproveAs: empty approverID: %w", ErrConfig)
 	}
-	_, err := d.Do(ctx, runID, approvalStepPrefix(toolUseID)+approverID, func(context.Context) (Record, error) {
+	_, err := d.Do(ctx, runID, ApprovalStepName(toolUseID, approverID), func(context.Context) (Record, error) {
 		return Record{Kind: StepApproval, ToolUseID: toolUseID, Approved: approved, Approver: approverID, Signature: sig}, nil
 	})
 	return err
+}
+
+// ApprovalStepName is the durable step name ApproveAs journals approverID's decision on
+// toolUseID under. It is exported so other packages (audit) locate decision records by the
+// same key rather than rebuilding the string.
+func ApprovalStepName(toolUseID, approverID string) string {
+	return approvalStepPrefix(toolUseID) + approverID
 }
 
 // approvalStepPrefix is the step-name prefix of every per-approver decision for toolUseID.

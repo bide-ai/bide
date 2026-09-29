@@ -392,7 +392,9 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 						return Message{}, totalUsage, liveTurns, err
 					}
 					if !final {
-						fire(ApprovalRequired{ToolUseID: tu.ID, Name: tu.Name, Args: tu.Args})
+						evTally := tally // the event gets its own copy; PendingApproval keeps tally
+						evTally.Pending = append([]string(nil), tally.Pending...)
+						fire(ApprovalRequired{ToolUseID: tu.ID, Name: tu.Name, Args: tu.Args, Quorum: &evTally})
 						return Message{}, totalUsage, liveTurns, &PendingApproval{RunID: runID, ToolUseID: tu.ID, ToolName: tu.Name, Args: tu.Args, Quorum: &tally}
 					}
 					approved = tally.Approved >= tally.Need

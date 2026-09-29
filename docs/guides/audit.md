@@ -206,10 +206,12 @@ pkg.Actions = append(pkg.Actions, approvals[:len(approvals)-1]...) // the action
 
 `pkg.Verify` checks each decision's inclusion under the tree head like any other action. Like grant
 issuer signatures, the approver signatures and the count to k need inputs the package does not carry
-(the approvers' public keys and the policy), so the verifier checks them: each disclosed decision's
-signature over `agent.ApprovalDecisionBytes`, that the approver is eligible, that its journal index is
-below the action's, and that at least `Need` distinct approvers approved. `audit.ProveApproval` proves
-a single decision. See the [approval guide](approval.md#proving-the-gate-held).
+(the approvers' public keys and the policy), so `audit.VerifyApprovals` checks them from the package
+and those keys: each decision's signature over `agent.ApprovalDecisionBytes`, that the approver is
+eligible, that it sits under the action's tree head and before the action, and that at least `Need`
+distinct approvers approved. It reports every decision that did not count, with a reason.
+`audit.ProveApproval` proves a single decision. See the
+[approval guide](approval.md#proving-the-gate-held) and `examples/approval`.
 
 ## CLI reference: `bide-audit`
 
