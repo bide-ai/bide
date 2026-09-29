@@ -23,8 +23,10 @@ what the agent did*. Stdlib-only (`crypto/sha256`, `crypto/ed25519`), no externa
   only over valid UTF-8 (encoding/json rewrites invalid bytes to U+FFFD). A record, grant, or
   anchor entry with invalid UTF-8 in any string is refused rather than committed or verified.
   `bide-audit` reads every artifact with `audit.UnmarshalStrict`, which rejects duplicate keys,
-  keys that differ from a field only in case, unknown fields, and invalid UTF-8, so the file a
-  person reads is exactly the data that is verified.
+  keys that differ from a field only in case, unknown fields, invalid UTF-8, escaped lone
+  surrogates, and base64 that is not the standard encoding of its bytes (line breaks, stray bits),
+  and checks a message part against the fields of its type, so the file a person reads is exactly
+  the data that is verified.
 
 ## The four primitives
 
@@ -272,8 +274,9 @@ Conventions shared across verbs:
   key must come from the anchor operator out-of-band, never from the bundle: that is what makes it a
   proof you verify rather than a log you trust.
 - Every JSON input is read strictly (`audit.UnmarshalStrict`): a duplicate key, a key that matches a
-  field only case-insensitively, an unknown field, or invalid UTF-8 exits 1, so a file cannot show a
-  reader one value while the verifier checks another.
+  field only case-insensitively, an unknown field, invalid UTF-8, an escaped lone surrogate, or
+  base64 that is not the standard encoding of its bytes exits 1, so a file cannot show a reader one
+  value while the verifier checks another.
 - Produce verbs (`prove`, `prove-absent`) write the bundle to `-out`, or to stdout if `-out` is
   omitted; the "wrote &lt;file&gt;" line goes to stderr so stdout stays clean for piping.
 - Verify verbs print a one-line `OK: ...` / `FAIL: ...` verdict and set the exit code: **0 =
