@@ -230,6 +230,15 @@ func TestRequiredRuns_NonFiniteInputs(t *testing.T) {
 	}
 }
 
+// A drop of zero or less leaves nothing to detect, so no runs are needed.
+func TestRequiredRuns_NoDropNeedsNoRuns(t *testing.T) {
+	for _, drop := range []float64{0, -0.05} {
+		if n := eval.RequiredRuns(0.9, drop, 0.05, 0.8); n != 0 {
+			t.Errorf("RequiredRuns with drop %g = %d, want 0", drop, n)
+		}
+	}
+}
+
 // The normal-approximation formula needs z_alpha*sigma0 + z_beta*sigma1 > 0. Below that (power so
 // low it sits under the false-positive rate) any sample reaches it, and squaring the negative sum
 // would instead ask for more runs the lower the power: 1 run per arm is the answer.
