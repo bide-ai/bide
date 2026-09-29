@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -8,34 +9,42 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/durabletest"
 )
 
-// The journal keeps what was written, byte for byte: a tool result's JSON comes back exactly as
-// recorded, so an audit head computed over this store matches one over any other store, and a
-// replayed step returns what the live step returned. Skips without PG_DSN.
-func TestDo_RecordsRoundTripExactly(t *testing.T) {
+// The journal keeps what was written: the record Do returns on the live path is the record a
+// replay reads back, byte for byte, for any content a model or tool produces (HTML characters,
+// whitespace, NUL, U+2028, invalid UTF-8, key order, number spelling). So a resumed run rebuilds
+// the conversation the live run had, and an audit head computed over this store matches one over
+// any other store. Skips without PG_DSN.
+func TestPostgres_Fidelity(t *testing.T) {
+	durabletest.Run(t, func(t *testing.T) agent.Durable {
+		s, _ := openTestStore(t)
+		return s
+	})
+}
+
+// The table holds exactly the canonical encoding of the record the store hands back, so an audit
+// leaf computed from a replayed record is the bytes in the database.
+func TestPostgres_PersistsCanonicalBytes(t *testing.T) {
 	s, ctx := openTestStore(t)
-	cases := map[string]json.RawMessage{
-		"key order":   json.RawMessage(`{"b":1,"a":2}`),
-		"NUL in text": json.RawMessage(`"before\u0000after"`),
-	}
-	for name, result := range cases {
-		t.Run(name, func(t *testing.T) {
-			runID := uniqueID(t, "pg-fidelity-")
-			live, err := s.Do(ctx, runID, "tool", func(context.Context) (agent.Record, error) {
-				return agent.Record{Kind: agent.StepToolResult, ToolUseID: "c1", Result: result}, nil
-			})
-			if err != nil {
-				t.Fatalf("Do: %v", err)
-			}
-			hist, err := s.History(ctx, runID)
-			if err != nil || len(hist) != 1 {
-				t.Fatalf("History = %v, %v", hist, err)
-			}
-			if string(live.Result) != string(result) || string(hist[0].Result) != string(result) {
-				t.Fatalf("recorded %s; live Do returned %s, History returned %s", result, live.Result, hist[0].Result)
-			}
-		})
+	for i, c := range durabletest.Cases() {
+		runID := uniqueID(t, fmt.Sprintf("pg-canon-%d-", i))
+		live, err := s.Do(ctx, runID, "step", func(context.Context) (agent.Record, error) { return c.Record, nil })
+		if err != nil {
+			t.Fatalf("%s: Do: %v", c.Name, err)
+		}
+		var data []byte
+		if err := s.db.QueryRowContext(ctx, `SELECT data FROM `+stepsTable+` WHERE run_id = $1 AND name = $2`, runID, "step").Scan(&data); err != nil {
+			t.Fatalf("%s: read stored bytes: %v", c.Name, err)
+		}
+		want, err := agent.EncodeRecord(live)
+		if err != nil {
+			t.Fatalf("%s: EncodeRecord: %v", c.Name, err)
+		}
+		if !bytes.Equal(data, want) {
+			t.Fatalf("%s: stored %q, but the returned record encodes to %q", c.Name, data, want)
+		}
 	}
 }
 

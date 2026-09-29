@@ -648,5 +648,7 @@ Candidate extensions if a use case needs them, in rough priority:
   boundary via a signed checkpoint chain; the load-bearing invariant is that only a closed prefix
   may be sealed, so at-most-once is never broken. Not implemented.
 - **Pinned cross-language canonicalization** so non-Go verifiers can reproduce leaf bytes (today
-  leaves are Go `json.Marshal` over values refused if they hold invalid UTF-8, deterministic and
-  injective in-ecosystem but not a pinned wire format).
+  a leaf is `agent.EncodeRecord` of the record, which is exactly the bytes every store persists
+  and is pinned by golden tests, and a record with invalid UTF-8 in a string field is refused, so
+  leaves are injective; but the encoding is specified by its Go implementation rather than a
+  written wire format).

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -421,13 +422,89 @@ func (e *ResumeHalt) Error() string {
 		e.ToolName, e.ToolUseID)
 }
 
+// EncodeRecord returns the journal encoding of r: the bytes a store persists for it and the
+// bytes an audit leaf commits to. Every store writes exactly these bytes, so a record's journal
+// form does not depend on the backend, and every store hands back DecodeRecord of them, on the
+// live path as on replay, so a resumed run rebuilds exactly the conversation the live run had.
+//
+// The encoding is JSON with two properties that make it canonical:
+//
+//   - It is a fixed point: decoding it with DecodeRecord and encoding the result again yields
+//     the same bytes. So a store holds exactly EncodeRecord(rec) for the record rec it hands
+//     back, and an audit leaf computed from a record read back from any store is the bytes that
+//     store persisted.
+//   - It keeps the content of every json.RawMessage (a tool's arguments and result, a step's
+//     value, a reconciler's evidence) byte for byte, except whitespace between JSON tokens,
+//     which is removed. Nothing is HTML-escaped: a tool result that says "<b>" is journaled as
+//     "<b>", not with the escapes json.Marshal writes for < and >, so an adapter that forwards
+//     the JSON text to a model sends what the tool returned. Key order, number spelling ("1.50",
+//     "1e20"), escapes already in the text, and even invalid UTF-8 inside a JSON string are kept
+//     as they are.
+//
+// Insignificant whitespace is dropped because encoding/json compacts every raw value it embeds,
+// and one spelling per JSON value is what an audit leaf should commit to. For the same reason
+// the line and paragraph separators U+2028 and U+2029 are always written as their JSON escapes,
+// which encoding/json emits in some builds but not others. In a Go string field
+// (message text, a reasoning signature), invalid UTF-8 becomes U+FFFD, as encoding/json writes
+// it; since the stores hand out only the decoded form, the live and replayed conversations agree.
+func EncodeRecord(r Record) ([]byte, error) {
+	b, err := marshalJournal(r)
+	if err != nil {
+		return nil, err
+	}
+	// One decode and re-encode reaches the fixed point. The first pass writes invalid UTF-8 in a
+	// Go string field as the JSON escape for U+FFFD, which decodes to a valid U+FFFD that a later pass
+	// writes verbatim; every other part of the encoding is already stable.
+	back, err := DecodeRecord(b)
+	if err != nil {
+		return nil, err
+	}
+	return marshalJournal(back)
+}
+
+// DecodeRecord decodes a record from its journal encoding (see EncodeRecord) into an independent
+// copy that shares no memory with b.
+func DecodeRecord(b []byte) (Record, error) {
+	var r Record
+	if err := json.Unmarshal(b, &r); err != nil {
+		return Record{}, fmt.Errorf("decode stored record: %w (%w)", err, ErrStorage)
+	}
+	return r, nil
+}
+
+// marshalJournal is json.Marshal without HTML escaping and without the newline an Encoder
+// appends.
+//
+// U+2028 and U+2029 are always written as their six-character JSON escapes. encoding/json escapes
+// them inside a raw value when built on its v2 implementation (the Go 1.27 default) but not when
+// built with GOEXPERIMENT=nojsonv2; escaping them here gives the journal one encoding in every
+// build. Both byte sequences can occur only inside a JSON string (everything outside one is
+// ASCII), where the escape denotes the same character.
+func marshalJournal(v any) ([]byte, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(v); err != nil {
+		return nil, err
+	}
+	b := bytes.TrimSuffix(buf.Bytes(), []byte("\n"))
+	b = bytes.ReplaceAll(b, []byte(lineSep), []byte(jsonEscape+"2028"))
+	return bytes.ReplaceAll(b, []byte(paraSep), []byte(jsonEscape+"2029")), nil
+}
+
+const (
+	lineSep    = "\xe2\x80\xa8" // U+2028 LINE SEPARATOR, UTF-8 encoded
+	paraSep    = "\xe2\x80\xa9" // U+2029 PARAGRAPH SEPARATOR, UTF-8 encoded
+	jsonEscape = "\x5cu"        // a backslash and u: the prefix of a JSON \uXXXX escape
+)
+
 // MemStore is an in-memory Durable for tests and local dev. SQLite is the shipping
 // default; store/postgres is the high-availability backend.
 //
-// It keeps each record as its JSON encoding and decodes on every read, the same way the SQL
-// stores do. So a record a caller gets back is always an independent copy (modifying it
-// cannot change the journal), and it has the same byte-normalized form a production store
-// returns, which keeps tests on MemStore faithful to SQLite and Postgres.
+// It keeps each record as its journal encoding (EncodeRecord) and decodes on every read, the
+// same way the SQL stores do. So a record a caller gets back is always an independent copy
+// (modifying it cannot change the journal), and Do hands back the record a replay reads, on the
+// live path too, which keeps tests on MemStore faithful to SQLite and Postgres.
 type MemStore struct {
 	mu     sync.Mutex
 	sf     singleflight.Group // collapses concurrent Do on the same (runID,name) — at-most-once fn
@@ -437,17 +514,8 @@ type MemStore struct {
 }
 
 type runLog struct {
-	order  [][]byte // each record's JSON encoding, in append order
+	order  [][]byte // each record's journal encoding, in append order
 	byName map[string]int
-}
-
-// decodeRecord decodes one stored record into an independent copy.
-func decodeRecord(b []byte) (Record, error) {
-	var r Record
-	if err := json.Unmarshal(b, &r); err != nil {
-		return Record{}, fmt.Errorf("decode stored record: %w (%w)", err, ErrStorage)
-	}
-	return r, nil
 }
 
 func NewMemStore() *MemStore {
@@ -470,6 +538,7 @@ func (m *MemStore) Do(ctx context.Context, runID, name string, fn func(context.C
 	// Single-flight per (runID,name): concurrent callers for the same step run fn ONCE and
 	// share the result, so a side effect can't fire twice under concurrency (parallel tools,
 	// retries). In-process only; cross-process dedup is the store's job (PK/ON CONFLICT).
+	// What they share is the stored encoding; each caller decodes its own copy of it below.
 	v, err, _ := m.sf.Do(runID+"\x00"+name, func() (any, error) {
 		m.mu.Lock()
 		rl := m.runs[runID]
@@ -480,7 +549,7 @@ func (m *MemStore) Do(ctx context.Context, runID, name string, fn func(context.C
 		if i, ok := rl.byName[name]; ok {
 			b := rl.order[i]
 			m.mu.Unlock()
-			return decodeRecord(b) // memoized — do not re-run fn
+			return b, nil // memoized — do not re-run fn
 		}
 		m.mu.Unlock() // run fn without holding the lock (it may do model/tool I/O)
 
@@ -489,7 +558,7 @@ func (m *MemStore) Do(ctx context.Context, runID, name string, fn func(context.C
 			return nil, e // not recorded — will re-run on the next attempt
 		}
 		rec.Name = name
-		b, e := json.Marshal(rec)
+		b, e := EncodeRecord(rec)
 		if e != nil {
 			return nil, fmt.Errorf("marshal step %q: %w (%w)", name, e, ErrStorage)
 		}
@@ -497,16 +566,17 @@ func (m *MemStore) Do(ctx context.Context, runID, name string, fn func(context.C
 		m.mu.Lock()
 		defer m.mu.Unlock()
 		if i, ok := rl.byName[name]; ok { // a prior write landed
-			return decodeRecord(rl.order[i])
+			return rl.order[i], nil
 		}
 		rl.byName[name] = len(rl.order)
 		rl.order = append(rl.order, b)
-		return rec, nil // the caller's own record, as the SQL stores return it
+		return b, nil
 	})
 	if err != nil {
 		return Record{}, err
 	}
-	return v.(Record), nil
+	// The stored record, decoded: what History returns for this step, never the caller's own.
+	return DecodeRecord(v.([]byte))
 }
 
 // Runs returns the IDs of every run the store holds, satisfying Lister so a
@@ -530,7 +600,7 @@ func (m *MemStore) History(_ context.Context, runID string) ([]Record, error) {
 	}
 	out := make([]Record, len(rl.order))
 	for i, b := range rl.order {
-		r, err := decodeRecord(b)
+		r, err := DecodeRecord(b)
 		if err != nil {
 			return nil, err
 		}

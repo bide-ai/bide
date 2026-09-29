@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
 	"fmt"
 	"testing"
 
@@ -64,6 +65,28 @@ func TestHead_EmptyJournalStable(t *testing.T) {
 	s1, s2 := agent.NewMemStore(), agent.NewMemStore()
 	if !bytes.Equal(head(t, s1, "none"), head(t, s2, "none")) {
 		t.Fatal("empty journals must share a head")
+	}
+}
+
+// The head chains over each record's journal encoding (agent.EncodeRecord), the bytes a store
+// persists, so a record whose JSON carries HTML-significant characters is committed as stored.
+func TestHead_ChainsTheJournalEncoding(t *testing.T) {
+	ctx := context.Background()
+	store := agent.NewMemStore()
+	rec, err := store.Do(ctx, "run", "c1", func(context.Context) (agent.Record, error) {
+		return agent.Record{Kind: agent.StepToolResult, ToolUseID: "c1", Result: []byte(`{"html":"<b>a & b</b>"}`)}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaf, err := agent.EncodeRecord(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seed := sha256.Sum256([]byte("bide.audit.v1"))
+	want := sha256.Sum256(append(seed[:], leaf...))
+	if got := head(t, store, "run"); !bytes.Equal(got, want[:]) {
+		t.Fatalf("head = %x, want the chain over the journal encoding %q (%x)", got, leaf, want)
 	}
 }
 
