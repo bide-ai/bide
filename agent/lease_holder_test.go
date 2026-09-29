@@ -60,10 +60,10 @@ func TestLease_RenewsItsOwnClaim(t *testing.T) {
 		select {
 		case <-ctx.Done():
 			return errors.New("the drive was cancelled: its own lease was not renewed")
-		case <-time.After(100 * time.Millisecond): // five TTLs
+		case <-time.After(500 * time.Millisecond): // five TTLs
 			return nil
 		}
-	}, WithLeaseHolder("worker-1"), WithLeaseTTL(20*time.Millisecond))
+	}, WithLeaseHolder("worker-1"), WithLeaseTTL(100*time.Millisecond))
 	if err != nil || !driven {
 		t.Fatalf("Lease = (%v, %v), want (true, nil)", driven, err)
 	}

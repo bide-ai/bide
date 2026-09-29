@@ -51,6 +51,9 @@ func TestLease_LostLeaseEndsWithErrLeaseLost(t *testing.T) {
 			if !errors.Is(err, ErrLeaseLost) || !errors.Is(err, context.Canceled) {
 				t.Fatalf("Lease returned %v, want the drive's error (context.Canceled) wrapped with ErrLeaseLost", err)
 			}
+			if _, failing := tc.s.(*failingRenewLeaser); failing && !errors.Is(cause, errStoreDown) {
+				t.Fatalf("the cause %v does not carry the store error that kept the lease from being renewed", cause)
+			}
 		})
 	}
 }

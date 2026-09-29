@@ -39,12 +39,16 @@ func TestLease_RenewerStopsBeforeRelease(t *testing.T) {
 		driven bool
 		err    error
 	}
+	// The renewal starts at ttl/2 (200ms) and hangs; the drive ends at 220ms, before the renewal
+	// cutoff (3/4 of the TTL, 300ms) would abandon it, so only stopping the renewer ends it.
+	const ttl = 400 * time.Millisecond
 	res := make(chan result, 1)
+	start := time.Now()
 	go func() {
 		driven, err := Lease(context.Background(), s, "r", func(context.Context) error {
-			time.Sleep(50 * time.Millisecond) // long enough for a renewal (every ttl/2) to start and hang
+			time.Sleep(ttl/2 + 20*time.Millisecond)
 			return nil
-		}, WithLeaseHolder("a"), WithLeaseTTL(20*time.Millisecond))
+		}, WithLeaseHolder("a"), WithLeaseTTL(ttl))
 		res <- result{driven, err}
 	}()
 	var driven bool
@@ -55,8 +59,12 @@ func TestLease_RenewerStopsBeforeRelease(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("Lease never returned after its drive did: it is waiting on a renewal that nothing cancels")
 	}
+	elapsed := time.Since(start)
 	if err != nil || !driven {
 		t.Fatalf("Lease = (%v, %v), want (true, nil)", driven, err)
+	}
+	if elapsed >= ttl*3/4 {
+		t.Fatalf("Lease returned %v after it started, once the renewal cutoff abandoned the hung renewal, not when the drive ended", elapsed)
 	}
 	if s.renewAtRelease {
 		t.Fatal("the lease was released while a renewal was still in flight")

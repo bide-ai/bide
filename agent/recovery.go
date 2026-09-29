@@ -459,7 +459,7 @@ func renewLoop(ctx context.Context, leaser Leaser, runID, owner string, ttl time
 			at := time.Now()
 			if !at.Before(cutoff) {
 				if lastErr == nil {
-					lastErr = errors.New("no renewal attempted: the process was not running")
+					lastErr = errors.New("no renewal was attempted before the cutoff: the process did not run in time")
 				}
 				return fmt.Errorf("lease on run %s not renewed within 3/4 of its %v TTL: %w: %w", runID, ttl, ErrLeaseLost, lastErr)
 			}
