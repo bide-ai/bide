@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"os"
+	"sync"
 	"time"
 )
 
@@ -37,10 +38,12 @@ type recoverConfig struct {
 // lease (the TTL) like any other process rather than taking it over.
 func WithLeaseHolder(id string) RecoverOption { return func(c *recoverConfig) { c.holder = id } }
 
-// WithLeaseTTL sets how long an acquired lease is valid. Recover renews it while a run is driving,
-// so a crash lets the lease expire after roughly this long and another process takes over. Defaults
-// to 30s. Set it comfortably above the store's clock skew. It must be positive: Lease and Recover
-// return an ErrConfig error otherwise.
+// WithLeaseTTL sets how long an acquired lease is valid. Lease renews it while a run is driving,
+// so a crash lets the lease expire after roughly this long and another process (RecoverLoop)
+// takes over. Defaults to 30s. Set it well above the store's round-trip time and the longest pause
+// you expect a process to take: renewal starts at half the TTL, and a drive that cannot renew
+// within three quarters of it is cancelled with ErrLeaseLost (see Lease). It must be positive:
+// Lease, Recover and RecoverLoop return an ErrConfig error otherwise.
 func WithLeaseTTL(d time.Duration) RecoverOption { return func(c *recoverConfig) { c.ttl = d } }
 
 // WithRecoverInterval sets how often RecoverLoop starts a recovery pass. Defaults to half the
@@ -67,7 +70,7 @@ func WithRecoverErrors(fn func(error)) RecoverOption {
 
 // leaseConfig applies opts over the defaults and validates the result.
 func leaseConfig(opts []RecoverOption) (recoverConfig, error) {
-	cfg := recoverConfig{ttl: 30 * time.Second}
+	cfg := recoverConfig{ttl: 30 * time.Second, concurrency: 16}
 	for _, o := range opts {
 		o(&cfg)
 	}
@@ -120,7 +123,7 @@ func completedAnswer(recs []Record) (Message, bool) {
 	return Message{}, false
 }
 
-// Recover re-drives the runs that were in flight when the process died. It enumerates
+// Recover re-drives the runs that were in flight when the process died, in one pass. It enumerates
 // every run the store holds (via Lister), skips the ones already marked complete, and
 // calls resume for each remaining run to push it forward. It returns how many runs it
 // re-drove and the joined genuine failures (nil if none).
@@ -131,7 +134,8 @@ func completedAnswer(recs []Record) (Message, bool) {
 // If the store also implements Leaser, Recover coordinates across processes: it claims an
 // exclusive, renewed lease per run before driving it and skips a run another holder currently
 // leases, so competing recoverers do not both re-drive the same run. A crash lets the lease expire
-// (see WithLeaseTTL) and another process takes over. Without Leaser, Recover drives every
+// (see WithLeaseTTL), and the next pass of another process takes the run over: Recover is one
+// pass, so run RecoverLoop to keep passing. Without Leaser, Recover drives every
 // enumerated run, which is safe under at-most-once memoization but redundant across processes.
 //
 // A pause is a SUCCESS, not a failure. A re-driven run that is still waiting returns one
@@ -174,46 +178,166 @@ func Recover(ctx context.Context, store Durable, resume func(ctx context.Context
 	var recovered int
 	var errs []error
 	for _, runID := range runIDs {
-		complete, err := IsComplete(ctx, store, runID)
+		if ok, err := recoverable(ctx, store, runID); err != nil {
+			errs = append(errs, err)
+			continue
+		} else if !ok {
+			continue
+		}
+		driven, err := recoverRun(ctx, store, runID, resume, cfg)
+		if driven {
+			recovered++
+		}
 		if err != nil {
 			errs = append(errs, err)
-			continue
-		}
-		if complete {
-			continue // finished before the crash: nothing to re-drive
-		}
-		if aborted, err := hasValueStep(ctx, store, runID, runAbortedStep); err != nil {
-			errs = append(errs, err)
-			continue
-		} else if aborted {
-			continue // a saga that aborted and finished its rollback: over
-		}
-
-		// Drive under the run's lease (when the store supports one). A run another holder currently
-		// leases is skipped; competing recoverers and live primary drivers coordinate through Lease.
-		driven, err := Lease(ctx, store, runID, func(ctx context.Context) error { return resume(ctx, runID) },
-			WithLeaseHolder(cfg.holder), WithLeaseTTL(cfg.ttl))
-		if !driven {
-			if err != nil {
-				errs = append(errs, fmt.Errorf("recover run %s: %w", runID, err))
-			}
-			continue // leased by another holder (err nil) or acquisition failed
-		}
-		recovered++
-		if err != nil && !isPause(err) && !errors.Is(err, ErrLeaseLost) {
-			errs = append(errs, fmt.Errorf("recover run %s: %w", runID, err))
 		}
 	}
 	return recovered, errors.Join(errs...)
 }
 
-// RecoverLoop runs Recover repeatedly until ctx is done. SKELETON: one pass only.
+// recoverable reports whether runID still needs driving: it has neither completed nor finished
+// rolling back an aborted saga.
+func recoverable(ctx context.Context, store Durable, runID string) (bool, error) {
+	complete, err := IsComplete(ctx, store, runID)
+	if err != nil || complete {
+		return false, err // finished before the crash: nothing to re-drive
+	}
+	aborted, err := hasValueStep(ctx, store, runID, runAbortedStep)
+	if err != nil || aborted {
+		return false, err // a saga that aborted and finished its rollback: over
+	}
+	return true, nil
+}
+
+// recoverRun drives runID under its lease (when the store supports one) and reports whether it
+// drove it and the genuine failure, if any. A run another holder currently leases is skipped;
+// competing recoverers and live primary drivers coordinate through Lease. A pause and a lost lease
+// are not failures.
+func recoverRun(ctx context.Context, store Durable, runID string, resume func(ctx context.Context, runID string) error, cfg recoverConfig) (bool, error) {
+	driven, err := Lease(ctx, store, runID, func(ctx context.Context) error { return resume(ctx, runID) },
+		WithLeaseHolder(cfg.holder), WithLeaseTTL(cfg.ttl))
+	if err != nil && (!driven || !isPause(err) && !errors.Is(err, ErrLeaseLost)) {
+		return driven, fmt.Errorf("recover run %s: %w", runID, err)
+	}
+	return driven, nil
+}
+
+// RecoverLoop re-drives in-flight runs until ctx is done, so a run whose holder dies is taken over
+// automatically: Recover is a single pass, and a run another holder leases at that moment is left
+// for a later one. Each pass, started every WithRecoverInterval (half the lease TTL by default),
+// enumerates the store's runs as Recover does and drives each incomplete run it can lease, so a
+// dead holder's run is picked up within about one interval of its lease expiring (the TTL after
+// the holder's last renewal).
+//
+// Runs are driven concurrently, up to WithRecoverConcurrency at once (16 by default), so one long
+// drive does not hold up the others; a run this loop is already driving is not started again, and
+// a pass that finds every slot busy leaves its remaining runs to the next one. Genuine failures go
+// to the WithRecoverErrors handler, and the run is retried on the next pass; pauses and lost leases
+// are not failures (see Recover).
+//
+// Run it once per process, for the life of the process, with the same resume Recover takes:
+//
+//	go func() {
+//	    err := agent.RecoverLoop(ctx, store, resume,
+//	        agent.WithLeaseHolder("worker-1"),
+//	        agent.WithRecoverErrors(func(err error) { log.Print(err) }))
+//	    // err is ctx's error once ctx is done
+//	}()
+//
+// A configuration error (a store that does not implement Lister, a non-positive TTL, interval or
+// concurrency) is returned at once. Otherwise RecoverLoop returns ctx's error when ctx is done,
+// after the drives it started (whose contexts derive from ctx) have returned.
 func RecoverLoop(ctx context.Context, store Durable, resume func(ctx context.Context, runID string) error, opts ...RecoverOption) error {
-	if _, err := Recover(ctx, store, resume, opts...); errors.Is(err, ErrConfig) {
+	lister, ok := store.(Lister)
+	if !ok {
+		return fmt.Errorf("RecoverLoop needs a store that implements Lister to enumerate runs: %w", ErrConfig)
+	}
+	cfg, err := leaseConfig(opts)
+	if err != nil {
 		return err
 	}
-	<-ctx.Done()
-	return ctx.Err()
+	if !cfg.intervalSet {
+		cfg.interval = max(cfg.ttl/2, 1)
+	}
+	if cfg.interval <= 0 {
+		return fmt.Errorf("recover interval must be positive, got %v: %w", cfg.interval, ErrConfig)
+	}
+	if cfg.concurrency < 1 {
+		return fmt.Errorf("recover concurrency must be at least 1, got %d: %w", cfg.concurrency, ErrConfig)
+	}
+
+	var reportMu sync.Mutex
+	report := func(err error) {
+		if cfg.onError == nil || ctx.Err() != nil {
+			return // no handler, or a failure caused by the shutdown itself
+		}
+		reportMu.Lock()
+		defer reportMu.Unlock()
+		cfg.onError(err)
+	}
+	var (
+		wg       sync.WaitGroup
+		mu       sync.Mutex
+		inFlight = map[string]bool{}
+		slots    = make(chan struct{}, cfg.concurrency)
+	)
+	defer wg.Wait()
+	pass := func() {
+		runIDs, err := lister.Runs(ctx)
+		if err != nil {
+			report(fmt.Errorf("list runs for recovery: %w (%w)", err, ErrStorage))
+			return
+		}
+		for _, runID := range runIDs {
+			if ctx.Err() != nil {
+				return
+			}
+			mu.Lock()
+			busy := inFlight[runID]
+			mu.Unlock()
+			if busy {
+				continue // this loop is driving it already
+			}
+			if ok, err := recoverable(ctx, store, runID); err != nil {
+				report(err)
+				continue
+			} else if !ok {
+				continue
+			}
+			select {
+			case slots <- struct{}{}:
+			default:
+				return // every slot is busy: the next pass takes the rest
+			}
+			mu.Lock()
+			inFlight[runID] = true
+			mu.Unlock()
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				defer func() {
+					mu.Lock()
+					delete(inFlight, runID)
+					mu.Unlock()
+					<-slots
+				}()
+				if _, err := recoverRun(ctx, store, runID, resume, cfg); err != nil {
+					report(err)
+				}
+			}()
+		}
+	}
+
+	t := time.NewTicker(cfg.interval)
+	defer t.Stop()
+	for {
+		pass()
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-t.C:
+		}
+	}
 }
 
 // Lease runs drive under an exclusive, auto-renewed lease on runID, so a primary driver and a
