@@ -247,7 +247,7 @@ func TestWithRetrieval_ContextFollowsSystemPrompt(t *testing.T) {
 	if m := seen.Messages[2]; m.Role != RoleUser {
 		t.Errorf("message 2 = %+v, want the user turn", m)
 	}
-	if req.Messages[0].Text() != "OPERATOR" || len(req.Messages) != 2 {
+	if len(req.Messages) != 2 || req.Messages[0].Text() != "OPERATOR" || req.Messages[1].Text() != "what's the capital?" {
 		t.Errorf("the caller's request was modified: %+v", req.Messages)
 	}
 }
@@ -360,6 +360,11 @@ func TestWithRetrieval_ResumeInjectsRecordedDocs(t *testing.T) {
 			journaled = true
 		}
 	}
+	for _, rec := range recs {
+		if rec.Kind == StepValue && strings.Contains(string(rec.Result), "version-1") && !strings.Contains(string(rec.Result), `"query":"q"`) {
+			t.Errorf("the retrieval record does not hold its query: %s", rec.Result)
+		}
+	}
 	if !journaled {
 		t.Errorf("no journal record holds the retrieved documents: %+v", recs)
 	}
@@ -387,5 +392,83 @@ func TestWithRetrieval_SubAgentRetrievesForItself(t *testing.T) {
 		if !strings.Contains(block, "version-1") {
 			t.Errorf("parent model call %d got context %q, want its own retrieval (version-1)", i, block)
 		}
+	}
+}
+
+// A Retriever with no hits gives the tool the same result as before the helpers normalized
+// documents: JSON null, not an error.
+func TestRetrievalTool_NoHits(t *testing.T) {
+	res, err := RetrievalTool(&fakeRetriever{}, 3).Call(context.Background(), json.RawMessage(`{"query":"q"}`))
+	if err != nil || string(res) != "null" {
+		t.Fatalf("RetrievalTool with no hits = %s, %v; want null", res, err)
+	}
+}
+
+// Two WithRetrieval layers on one agent (two stores, say) journal separately: each call of the
+// run carries both stores' documents, and neither layer is handed the other's record.
+func TestWithRetrieval_TwoLayers(t *testing.T) {
+	docsR := &fakeRetriever{docs: []Doc{{Text: "from-docs"}}}
+	ticketsR := &fakeRetriever{docs: []Doc{{Text: "from-tickets"}}}
+	var got [][]string
+	capture := func(next ModelHandler) ModelHandler {
+		return func(ctx context.Context, req Request) (Message, Usage, error) {
+			var blocks []string
+			for _, m := range req.Messages {
+				if m.Role == RoleSystem {
+					blocks = append(blocks, m.Text())
+				}
+			}
+			got = append(got, blocks)
+			return next(ctx, req)
+		}
+	}
+	m := NewScriptedModel(ToolTurn("c1", "noop", `{}`), TextTurn("done"))
+	a := New(m, NewMemStore(), noopTool).Use(WithRetrieval(docsR, 1), WithRetrieval(ticketsR, 1), capture)
+	if _, err := a.Run(context.Background(), "run-1", "q"); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("model called %d times, want 2", len(got))
+	}
+	for i, blocks := range got {
+		all := strings.Join(blocks, "|")
+		if !strings.Contains(all, "from-docs") || !strings.Contains(all, "from-tickets") {
+			t.Errorf("model call %d got context %q, want both stores' documents", i, blocks)
+		}
+	}
+	if docsR.calls != 1 || ticketsR.calls != 1 {
+		t.Errorf("retrievers called %d and %d times, want once each", docsR.calls, ticketsR.calls)
+	}
+}
+
+// A failed retrieval records nothing and leaves no attempt marker: retrieval is read-only, so
+// the next attempt of the run retrieves again rather than halting for confirmation.
+func TestWithRetrieval_FailedRetrievalRetriesOnResume(t *testing.T) {
+	store := NewMemStore()
+	r := &fakeRetriever{err: errors.New("vector store down")}
+	m := NewScriptedModel(TextTurn("done"))
+	if _, err := New(m, store).Use(WithRetrieval(r, 1)).Run(context.Background(), "run-1", "q"); err == nil {
+		t.Fatal("first run: want the retrieval error")
+	}
+	r.err, r.docs = nil, []Doc{{Text: "back up"}}
+	var got []string
+	if _, err := New(m, store).Use(WithRetrieval(r, 1), captureRequests(&got)).Run(context.Background(), "run-1", "q"); err != nil {
+		t.Fatalf("resume after a failed retrieval: %v", err)
+	}
+	if len(got) != 1 || !strings.Contains(got[0], "back up") {
+		t.Fatalf("resumed model call got context %q, want the new retrieval", got)
+	}
+}
+
+// A user message with no text (an image alone) gives nothing to search for: no retrieval.
+func TestWithRetrieval_NoTextNoRetrieval(t *testing.T) {
+	r := &fakeRetriever{docs: []Doc{{Text: "x"}}}
+	base := ModelHandler(func(context.Context, Request) (Message, Usage, error) { return Message{}, Usage{}, nil })
+	req := Request{Messages: []Message{UserParts(Image{URL: "https://example.com/cat.png"})}}
+	if _, _, err := WithRetrieval(r, 1)(base)(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	if r.calls != 0 {
+		t.Fatalf("retriever called %d times for a message with no text, want 0", r.calls)
 	}
 }
