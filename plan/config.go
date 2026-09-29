@@ -50,6 +50,18 @@ type configNode struct {
 	// (this field), because it is a per-node authoring choice the config author may
 	// want to make without editing Go.
 	Safety string `json:"safety,omitempty"`
+	// Approval, when present, declares an m-of-n human approval gate
+	// that lowers to agent.Safety.Approval on the built node. Absent
+	// keeps the node's existing (1-of-1 or none) approval behavior.
+	Approval *configApproval `json:"approval,omitempty"`
+}
+
+// configApproval is a node's m-of-n approval block: Need decisions required from the
+// bounded Approvers set. It lowers to agent.ApprovalPolicy; Load rejects Need outside
+// [1, len(Approvers)], an empty approver set, and duplicate approver ids.
+type configApproval struct {
+	Need      int      `json:"need"`
+	Approvers []string `json:"approvers"`
 }
 
 // configWire is one wiring element: a discriminated union of EXACTLY ONE of an edge,
@@ -276,6 +288,25 @@ func assemble(cfg *config, reg *Registry) (*builderCore, error) {
 			} else {
 				safety = s
 			}
+		}
+		// An "approval" block lowers to Safety.Approval, applied after the safety string
+		// so an explicit "safety" does not discard it. Invalid blocks are load errors
+		// naming the node, collected with the rest of the drift.
+		if cn.Approval != nil {
+			n := len(cn.Approval.Approvers)
+			if n == 0 {
+				problems = append(problems, fmt.Sprintf("node %q approval.approvers must be non-empty", cn.Name))
+			} else if cn.Approval.Need < 1 || cn.Approval.Need > n {
+				problems = append(problems, fmt.Sprintf("node %q approval.need %d must be between 1 and %d (the approver count)", cn.Name, cn.Approval.Need, n))
+			}
+			seenApprover := make(map[string]bool, n)
+			for _, id := range cn.Approval.Approvers {
+				if seenApprover[id] {
+					problems = append(problems, fmt.Sprintf("node %q approval.approvers lists %q more than once", cn.Name, id))
+				}
+				seenApprover[id] = true
+			}
+			safety.Approval = &agent.ApprovalPolicy{Need: cn.Approval.Need, Approvers: cn.Approval.Approvers}
 		}
 		resolvedNodes = append(resolvedNodes, &node{
 			name:    cn.Name,

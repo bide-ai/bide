@@ -67,6 +67,9 @@ type Agent struct {
 	systemPromptFn func(context.Context) string
 	responseFormat *ResponseFormat // native structured-output constraint (see RunTypedNative)
 	toolChoice     *ToolChoice     // tool-choice control applied to every model call (see WithToolChoice)
+	// approverVerifiers resolves an approver id to the verifier for its decision
+	// signature; required by any tool with a non-nil Safety.Approval (see WithApproverVerifiers).
+	approverVerifiers ApproverVerifierFor
 }
 
 // systemMessage returns the system prompt for this run — the dynamic function if set,
@@ -176,6 +179,15 @@ func (a *Agent) SetMaxConcurrency(n int) *Agent {
 	return a
 }
 
+// WithApproverVerifiers configures how the m-of-n approval gate resolves an approver id to
+// the verifier for its signature. Required whenever any tool carries a non-nil
+// Safety.Approval: a gated call with no resolver configured fails with ErrConfig rather than
+// silently counting zero decisions. Returns the agent for chaining.
+func (a *Agent) WithApproverVerifiers(fn ApproverVerifierFor) *Agent {
+	a.approverVerifiers = fn
+	return a
+}
+
 func (a *Agent) generate(ctx context.Context, req Request) (Message, Usage, error) {
 	h := ModelHandler(func(ctx context.Context, req Request) (Message, Usage, error) {
 		// When a token sink is installed (Agent.Stream), stream the model call and
@@ -263,6 +275,9 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 		case StepSagaFail:
 			done[r.ToolUseID] = true // the failing step is durably resolved (no ResumeHalt)
 		case StepApproval:
+			if r.Approver != "" {
+				continue // a per-approver m-of-n decision (ApproveAs); tallied by the quorum gate, not here
+			}
 			decided[r.ToolUseID] = true
 			approvals[r.ToolUseID] = r.Approved
 		}
@@ -368,12 +383,27 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 			if !ok {
 				return Message{}, totalUsage, liveTurns, fmt.Errorf("model called unknown tool %q: %w", tu.Name, ErrUnknownTool)
 			}
-			if t.Safety().RequiresApproval {
-				if !decided[tu.ID] {
-					fire(ApprovalRequired{ToolUseID: tu.ID, Name: tu.Name, Args: tu.Args})
-					return Message{}, totalUsage, liveTurns, &PendingApproval{RunID: runID, ToolUseID: tu.ID, ToolName: tu.Name, Args: tu.Args}
+			if safety := t.Safety(); safety.RequiresApproval || safety.Approval != nil {
+				var approved bool
+				if pol := safety.Approval; pol != nil {
+					// m-of-n: the decision is the tally over the journaled per-approver records.
+					tally, final, err := a.quorumTally(ctx, runID, tu, pol)
+					if err != nil {
+						return Message{}, totalUsage, liveTurns, err
+					}
+					if !final {
+						fire(ApprovalRequired{ToolUseID: tu.ID, Name: tu.Name, Args: tu.Args})
+						return Message{}, totalUsage, liveTurns, &PendingApproval{RunID: runID, ToolUseID: tu.ID, ToolName: tu.Name, Args: tu.Args, Quorum: &tally}
+					}
+					approved = tally.Approved >= tally.Need
+				} else {
+					if !decided[tu.ID] {
+						fire(ApprovalRequired{ToolUseID: tu.ID, Name: tu.Name, Args: tu.Args})
+						return Message{}, totalUsage, liveTurns, &PendingApproval{RunID: runID, ToolUseID: tu.ID, ToolName: tu.Name, Args: tu.Args}
+					}
+					approved = approvals[tu.ID]
 				}
-				if !approvals[tu.ID] { // denied — record a denial and let the model react
+				if !approved { // denied — record a denial and let the model react
 					const denied = `"tool call denied by human"`
 					if _, err := a.store.Do(ctx, runID, tu.ID, func(context.Context) (Record, error) {
 						return Record{Kind: StepToolResult, ToolUseID: tu.ID, IsError: true, Result: json.RawMessage(denied)}, nil
@@ -494,6 +524,52 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 			}
 		}
 	}
+}
+
+// approvalTallyStep is the journal name of the final m-of-n tally for toolUseID.
+func approvalTallyStep(toolUseID string) string { return "approval-tally:" + toolUseID }
+
+// quorumTally evaluates the m-of-n gate for tu. It re-reads the run's journal (the
+// authoritative source of the per-approver decisions ApproveAs recorded) and tallies it with
+// tallyApprovals. final reports whether the gate has reached a terminal decision: approved
+// (Approved >= Need) or unreachable (fewer undecided-or-approving eligible approvers remain
+// than Need, so it can never pass). A non-final tally means the run must stay paused.
+//
+// Only a final tally is journaled, as a StepValue named approvalTallyStep(tu.ID). Steps are
+// append-once by name, so writing a still-pending count would freeze a stale tally under that
+// name; recording only the terminal decision keeps it a single, final, provable record per
+// resolved gate. Once that record exists it is authoritative: a replay reuses it rather than
+// recomputing, so the gate's outcome cannot drift if the verifier configuration later changes.
+func (a *Agent) quorumTally(ctx context.Context, runID string, tu ToolUse, pol *ApprovalPolicy) (ApprovalTally, bool, error) {
+	if a.approverVerifiers == nil {
+		return ApprovalTally{}, false, fmt.Errorf("agent: tool %q has an m-of-n Approval policy but no approver verifiers are configured (see WithApproverVerifiers): %w", tu.Name, ErrConfig)
+	}
+	if pol.Need < 1 || pol.Need > len(pol.Approvers) {
+		return ApprovalTally{}, false, fmt.Errorf("agent: tool %q Approval.Need = %d, want 1 <= Need <= %d approvers: %w", tu.Name, pol.Need, len(pol.Approvers), ErrConfig)
+	}
+	recs, err := a.store.History(ctx, runID)
+	if err != nil {
+		return ApprovalTally{}, false, fmt.Errorf("load history %s: %w (%w)", runID, err, ErrStorage)
+	}
+	name := approvalTallyStep(tu.ID)
+	for _, r := range recs {
+		if r.Name == name && r.Kind == StepValue {
+			var t ApprovalTally
+			if err := json.Unmarshal(r.Result, &t); err != nil {
+				return ApprovalTally{}, false, fmt.Errorf("decode %s (run %s): %w (%w)", name, runID, err, ErrStorage)
+			}
+			return t, true, nil
+		}
+	}
+	tally := tallyApprovals(recs, runID, tu.ID, pol.Need, pol.Approvers, a.approverVerifiers)
+	if tally.Approved < pol.Need && len(pol.Approvers)-tally.Denied >= pol.Need {
+		return tally, false, nil
+	}
+	tally, err = Step(ctx, a.store, runID, name, func(context.Context) (ApprovalTally, error) { return tally, nil })
+	if err != nil {
+		return ApprovalTally{}, false, fmt.Errorf("record %s (run %s): %w (%w)", name, runID, err, ErrStorage)
+	}
+	return tally, true, nil
 }
 
 func (a *Agent) toolList() []Tool {

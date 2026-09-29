@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"sync"
@@ -34,6 +35,8 @@ type Record struct {
 	Result    json.RawMessage `json:"result,omitempty"`      // StepToolResult / StepValue
 	IsError   bool            `json:"is_error,omitempty"`    // StepToolResult
 	Approved  bool            `json:"approved,omitempty"`    // StepApproval
+	Approver  string          `json:"approver,omitempty"`    // StepApproval written by ApproveAs
+	Signature []byte          `json:"signature,omitempty"`   // StepApproval written by ApproveAs
 	// AttemptedAt is the Unix-millis wall-clock time an attempt marker (StepAttempt) was
 	// written, i.e. just before a non-retriable side effect fired. It is set once and read
 	// back verbatim on replay, so it stays deterministic. Zero (and omitted) on every
@@ -126,6 +129,124 @@ func Approve(ctx context.Context, d Durable, runID, toolUseID string, approved b
 		return Record{Kind: StepApproval, ToolUseID: toolUseID, Approved: approved}, nil
 	})
 	return err
+}
+
+// ApproveAs records one named approver's decision for a tool call, idempotent per
+// (runID, toolUseID, approverID): the first decision an approver records wins. sig is the
+// approver's signature over ApprovalDecisionBytes(runID, toolUseID, approverID, approved);
+// the gate verifies it against the approver's registered verifier and ignores unverifiable
+// or ineligible decisions in the tally. After enough decisions land, re-run with the same
+// runID. The 1-of-1 path keeps using Approve.
+func ApproveAs(ctx context.Context, d Durable, runID, toolUseID, approverID string, approved bool, sig []byte) error {
+	if runID == "" {
+		return fmt.Errorf("ApproveAs: empty runID: %w", ErrConfig)
+	}
+	if toolUseID == "" {
+		return fmt.Errorf("ApproveAs: empty toolUseID: %w", ErrConfig)
+	}
+	if approverID == "" {
+		return fmt.Errorf("ApproveAs: empty approverID: %w", ErrConfig)
+	}
+	_, err := d.Do(ctx, runID, approvalStepPrefix(toolUseID)+approverID, func(context.Context) (Record, error) {
+		return Record{Kind: StepApproval, ToolUseID: toolUseID, Approved: approved, Approver: approverID, Signature: sig}, nil
+	})
+	return err
+}
+
+// approvalStepPrefix is the step-name prefix of every per-approver decision for toolUseID.
+// The legacy 1-of-1 key written by Approve ("approval:"+toolUseID) has no trailing colon,
+// so it never matches.
+func approvalStepPrefix(toolUseID string) string {
+	return "approval:" + toolUseID + ":"
+}
+
+// approvalDomain tags the bytes an approver signs so a signature over a decision can never
+// be replayed as a signature over any other message the same key signs.
+const approvalDomain = "bide.approval.v1\n"
+
+// ApprovalDecisionBytes returns the canonical, domain-separated bytes an approver signs and
+// the gate verifies: a version tag plus (runID, toolUseID, approverID, approved). Each string
+// is length-prefixed, so no two distinct decisions encode to the same bytes. Deterministic
+// and stable across replays. Approvers produce
+// sig = signer.Sign(ApprovalDecisionBytes(runID, toolUseID, approverID, approved)).
+func ApprovalDecisionBytes(runID, toolUseID, approverID string, approved bool) []byte {
+	b := make([]byte, 0, len(approvalDomain)+3*4+len(runID)+len(toolUseID)+len(approverID)+1)
+	b = append(b, approvalDomain...)
+	for _, s := range []string{runID, toolUseID, approverID} {
+		b = binary.BigEndian.AppendUint32(b, uint32(len(s)))
+		b = append(b, s...)
+	}
+	if approved {
+		return append(b, 1)
+	}
+	return append(b, 0)
+}
+
+// ApproverVerifier checks an approver's signature over the canonical decision bytes. Any
+// audit.Verifier satisfies it structurally, so a deployment reuses the existing
+// ed25519/ML-DSA/hybrid verifiers with no new cryptography and no agent->audit import.
+type ApproverVerifier interface {
+	Verify(message, sig []byte) bool
+}
+
+// ApproverVerifierFor resolves the verifier for an approver id (the caller's PKI, mirroring
+// audit's issuer lookup). It reports ok=false for an unknown approver; the gate treats such
+// decisions as unverifiable and ignores them in the tally.
+type ApproverVerifierFor func(approverID string) (ApproverVerifier, bool)
+
+// ApprovalTally is the running k-of-n tally for an m-of-n approval gate.
+type ApprovalTally struct {
+	Need     int      // k
+	Approved int      // distinct eligible approvals recorded so far
+	Denied   int      // distinct eligible denials recorded so far
+	Pending  []string // eligible approvers who have not yet decided
+}
+
+// tallyApprovals computes the deterministic k-of-n tally from a run's journaled
+// StepApproval records for toolUseID. need and approvers are the policy's Need and
+// Approvers. It keeps only decisions from eligible approvers whose signature verifies
+// through verifierFor, dedupes by approver (the first counted decision in journal order
+// wins), and reports counts. Pending lists the eligible approvers with no counted decision,
+// in policy order. Pure and order-stable across replays.
+func tallyApprovals(recs []Record, runID, toolUseID string, need int, approvers []string, verifierFor ApproverVerifierFor) ApprovalTally {
+	eligible := make(map[string]bool, len(approvers))
+	for _, a := range approvers {
+		eligible[a] = true
+	}
+	t := ApprovalTally{Need: need}
+	decided := make(map[string]bool, len(approvers))
+	prefix := approvalStepPrefix(toolUseID)
+	for _, r := range recs {
+		if r.Kind != StepApproval || len(r.Name) <= len(prefix) || r.Name[:len(prefix)] != prefix {
+			continue
+		}
+		id := r.Name[len(prefix):]
+		if !eligible[id] || decided[id] || r.Approver != id || r.ToolUseID != toolUseID {
+			continue
+		}
+		if verifierFor == nil {
+			continue
+		}
+		v, ok := verifierFor(id)
+		if !ok || v == nil || !v.Verify(ApprovalDecisionBytes(runID, toolUseID, id, r.Approved), r.Signature) {
+			continue
+		}
+		decided[id] = true
+		if r.Approved {
+			t.Approved++
+		} else {
+			t.Denied++
+		}
+	}
+	seen := make(map[string]bool, len(approvers))
+	for _, a := range approvers {
+		if decided[a] || seen[a] {
+			continue
+		}
+		seen[a] = true
+		t.Pending = append(t.Pending, a)
+	}
+	return t
 }
 
 // ResolveHalt is the sanctioned escape from a ResumeHalt. After a non-retriable tool
@@ -276,6 +397,9 @@ type PendingApproval struct {
 	ToolUseID string
 	ToolName  string
 	Args      json.RawMessage
+	// Quorum is non-nil for an m-of-n gate: the running tally at the pause. Record
+	// decisions with ApproveAs, then re-run.
+	Quorum *ApprovalTally
 }
 
 func (e *PendingApproval) Error() string {

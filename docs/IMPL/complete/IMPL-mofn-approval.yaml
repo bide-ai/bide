@@ -1,0 +1,1028 @@
+completion_date: "2026-09-28"
+title: m-of-n human approval
+feature_slug: mofn-approval
+verdict: SUITABLE
+suitability_assessment: |-
+    Decomposes cleanly into disjoint file ownership across three sequential waves.
+    All five suitability questions resolve.
+
+    1. File decomposition: the feature touches five distinct source files
+       (agent/tool.go, agent/store.go, agent/agent.go, audit/evidence.go +
+       one new audit file, plan/config.go) plus test files. No two implementation
+       tasks require conflicting edits to the same file once the shared additive
+       work in agent/tool.go and agent/store.go lands in wave 1. >=2 agents with
+       disjoint ownership is achievable.
+
+    2. Investigation-first items: none. The design doc is a settled spec; there is
+       no crash to root-cause or race to reproduce. Two open points needed
+       resolution during scouting and are now resolved (see below), so no
+       investigation blocks implementation.
+
+    3. Interface discoverability: all cross-agent interfaces are definable up
+       front. The tally types, ApproveAs signature, the ApproverVerifier hook,
+       the canonical signing-bytes function, and the new audit prover are all
+       specified in interface_contracts. Agents implement against them without
+       seeing each other's code.
+
+    4. Pre-implementation status check: none of this exists yet. Safety has no
+       Approval field, store.go has only the 1-of-1 Approve, agent.go gates only
+       on RequiresApproval, audit has no approval-decision prover, plan/config.go
+       has no approval block. All items are TODO. The 1-of-1 denied-tool-result
+       path DOES already exist (agent/agent.go:376-387) and is reused verbatim.
+
+    5. Parallelization value: the go test cycle for this repo runs per-module and
+       with -race in CI (well over 30s), each agent runs it independently, and the
+       wave-2 agents (gate, audit, config) are fully independent of each other.
+       Files per agent land in the 2-4 range. High parallelization value.
+
+    RESOLVED OPEN POINTS (were bracketed at scout start):
+
+    A. Which signing API to reuse, and where approver keys are looked up.
+       The signing machinery is audit.Signer/audit.Verifier (signing.go): a
+       scheme-agnostic pair (Ed25519/ML-DSA/hybrid) where Sign(message []byte)
+       and Verify(message, sig []byte) bool operate over canonical bytes. Grants
+       sign SignGrant(g, Signer) over g.Bytes(); verification resolves a Verifier
+       by principal via the issuerVerifier func(issuer string)(Verifier,bool)
+       lookup pattern in VerifyDelegationChain (grant.go:144). THERE IS NO
+       centralized key registry: the caller supplies verifier lookup from its own
+       PKI. Approver decisions reuse exactly this pattern.
+
+       CRITICAL IMPORT CONSTRAINT: audit imports agent; agent does NOT import
+       audit (verified). Therefore agent/agent.go and agent/store.go CANNOT call
+       audit.Verify directly without creating an import cycle. Resolution: agent
+       defines a minimal local hook interface ApproverVerifier { Verify(message,
+       sig []byte) bool } that audit.Ed25519Verifier / MLDSAVerifier /
+       HybridVerifier already satisfy structurally (their Verify(message, sig
+       []byte) bool method matches). The deployment supplies a resolver
+       func(approverID string)(ApproverVerifier, bool) via a run option; the gate
+       verifies each decision's signature over the canonical bytes with it. This
+       reuses the SAME signature schemes and the SAME resolver-by-principal shape
+       as grants, with zero new cryptography and no import cycle. Approvers sign
+       with any audit.Signer; the caller wires audit verifiers into the resolver.
+
+    B. Denied-tool-result path for 1-of-1: it ALREADY EXISTS in agent/agent.go
+       (the `const denied = "tool call denied by human"` block at lines 376-387).
+       The m-of-n deny branch feeds the model the identical denied tool-result,
+       so no new denial-result plumbing is added; the gate branch reuses it.
+test_command: GOWORK=off go test ./...
+lint_command: GOWORK=off go vet ./...
+file_ownership:
+    - file: agent/tool.go
+      agent: A
+      wave: 1
+      action: modify
+    - file: agent/store.go
+      agent: B
+      wave: 1
+      action: modify
+    - file: agent/agent.go
+      agent: C
+      wave: 2
+      action: modify
+      depends_on:
+        - A
+        - B
+    - file: agent/mofn_gate_test.go
+      agent: C
+      wave: 2
+      action: new
+      depends_on:
+        - A
+        - B
+    - file: audit/approval.go
+      agent: D
+      wave: 2
+      action: new
+      depends_on:
+        - B
+    - file: audit/approval_test.go
+      agent: D
+      wave: 2
+      action: new
+      depends_on:
+        - B
+    - file: plan/config.go
+      agent: E
+      wave: 2
+      action: modify
+      depends_on:
+        - A
+    - file: plan/config_approval_test.go
+      agent: E
+      wave: 2
+      action: new
+      depends_on:
+        - A
+    - file: agent/mofn_dst_test.go
+      agent: F
+      wave: 3
+      action: new
+      depends_on:
+        - B
+        - C
+    - file: audit/mofn_evidence_test.go
+      agent: G
+      wave: 3
+      action: new
+      depends_on:
+        - C
+        - D
+interface_contracts:
+    - name: ApprovalPolicy
+      description: |-
+        Declares a k-of-n human gate over a bounded, named approver set.
+        Owned by Agent A in agent/tool.go. nil Safety.Approval keeps exact 1-of-1
+        behavior (backward compatible).
+      definition: |
+        // ApprovalPolicy declares a k-of-n human gate. Need is k; the eligible
+        // approvers are the bounded set (n = len(Approvers)). A tool with a
+        // non-nil Approval requires approval whether or not RequiresApproval is
+        // also set.
+        type ApprovalPolicy struct {
+            Need      int      // decisions required to proceed (k), 1 <= Need <= len(Approvers)
+            Approvers []string // eligible approver ids; the bounded set (n)
+        }
+
+        // Safety gains one optional field:
+        //   Approval *ApprovalPolicy
+        // The gate predicate becomes: RequiresApproval || Approval != nil
+      location: agent/tool.go
+    - name: ApproveAs
+      description: |-
+        Records one named approver's decision, idempotent per
+        (runID, toolUseID, approverID) via step key
+        "approval:"+toolUseID+":"+approverID. Owned by Agent B in agent/store.go.
+        Existing Approve stays UNCHANGED for the 1-of-1 path.
+      definition: |
+        // ApproveAs records one named approver's decision for a tool call,
+        // idempotent per (runID, toolUseID, approverID). sig is the approver's
+        // signature over the canonical decision bytes; the gate verifies it
+        // against the approver's registered verifier and ignores unverifiable or
+        // ineligible decisions in the tally. After enough decisions land, re-run
+        // with the same runID.
+        func ApproveAs(ctx context.Context, d Durable, runID, toolUseID, approverID string, approved bool, sig []byte) error
+
+        // Record gains two fields (additive, omitempty), set on the StepApproval
+        // record ApproveAs writes:
+        //   Approver  string `json:"approver,omitempty"`
+        //   Signature []byte `json:"signature,omitempty"`
+      location: agent/store.go
+    - name: ApprovalTally
+      description: |-
+        The k-of-n running tally. Owned by Agent B in agent/store.go. Carried on
+        PendingApproval and journaled as its own durable step by the gate (Agent C).
+      definition: |
+        type ApprovalTally struct {
+            Need     int      // k
+            Approved int      // distinct eligible approvals recorded so far
+            Denied   int      // distinct eligible denials recorded so far
+            Pending  []string // eligible approvers who have not yet decided
+        }
+
+        // PendingApproval gains one optional field:
+        //   Quorum *ApprovalTally // non-nil for an m-of-n gate: running tally at pause
+      location: agent/store.go
+    - name: ApproverVerifier
+      description: |-
+        Minimal signature-verification hook DEFINED IN PACKAGE agent so the gate
+        can verify approver signatures WITHOUT importing audit (audit imports
+        agent; the reverse would be a cycle). audit.Ed25519Verifier,
+        audit.MLDSAVerifier, and audit.HybridVerifier already satisfy this
+        interface structurally (their Verify(message, sig []byte) bool matches).
+        Owned by Agent B in agent/store.go.
+      definition: |
+        // ApproverVerifier checks an approver's signature over the canonical
+        // decision bytes. Any audit.Verifier satisfies it structurally, so a
+        // deployment reuses the existing ed25519/ML-DSA/hybrid verifiers with no
+        // new cryptography and no agent->audit import.
+        type ApproverVerifier interface {
+            Verify(message, sig []byte) bool
+        }
+
+        // ApproverVerifierFor resolves the verifier for an approver id (the
+        // caller's PKI, mirroring audit's issuerVerifier lookup). Reports ok=false
+        // for an unknown approver; the gate treats such decisions as unverifiable
+        // and ignores them in the tally.
+        type ApproverVerifierFor func(approverID string) (ApproverVerifier, bool)
+      location: agent/store.go
+    - name: ApprovalDecisionBytes
+      description: |-
+        Canonical, domain-separated byte encoding of a decision that both the
+        approver signs and the gate verifies over. Owned by Agent B in
+        agent/store.go so both ApproveAs callers (out of band) and the gate use
+        one definition. Deterministic across replays.
+      definition: |
+        // ApprovalDecisionBytes returns the canonical, domain-separated bytes an
+        // approver signs and the gate verifies: a version tag plus
+        // (runID, toolUseID, approverID, approved). Deterministic and stable
+        // across replays. Approvers produce sig = signer.Sign(
+        // ApprovalDecisionBytes(runID, toolUseID, approverID, approved)).
+        func ApprovalDecisionBytes(runID, toolUseID, approverID string, approved bool) []byte
+      location: agent/store.go
+    - name: tallyApprovals
+      description: |-
+        Pure, deterministic tally over journaled decisions for one toolUseID:
+        keep eligible + valid-signature, dedupe by approver (first wins), count.
+        Owned by Agent B in agent/store.go (unexported helper) so the gate
+        (Agent C) and unit tests share ONE implementation. Reuses only the
+        count>=k semantics of govern.tally; does NOT call govern.Quorum.
+      definition: |
+        // tallyApprovals computes the deterministic k-of-n tally from a run's
+        // journaled StepApproval records for toolUseID, given the policy and a
+        // verifier resolver. It keeps only decisions from eligible approvers whose
+        // signature verifies, dedupes by approver (first decision in journal order
+        // wins), and reports counts. Pure and order-stable across replays.
+        //
+        // Signature (unexported, package agent):
+        //   func tallyApprovals(recs []Record, runID, toolUseID string,
+        //       policy *ApprovalPolicy, verifierFor ApproverVerifierFor) ApprovalTally
+      location: agent/store.go
+    - name: WithApproverVerifiers
+      description: |-
+        Run option that wires the approver-verifier resolver into an Agent so the
+        m-of-n gate can verify signatures. Owned by Agent C (gate) in
+        agent/agent.go. BRACKETED: the exact option surface (functional option on
+        the Agent constructor vs. a field) must match the existing option style in
+        agent/agent.go; Agent C confirms the existing New/Option pattern before
+        finalizing the name and shape. If no resolver is configured, an m-of-n
+        gated tool with a non-nil Approval must error clearly rather than silently
+        count zero eligible decisions.
+      definition: |
+        // WithApproverVerifiers configures how the m-of-n gate resolves an
+        // approver id to the verifier for its signature. Required whenever any
+        // tool carries a non-nil Safety.Approval.
+        //   func WithApproverVerifiers(fn ApproverVerifierFor) Option
+        // (exact Option type name to match agent/agent.go's existing option style)
+      location: agent/agent.go
+    - name: ProveApproval
+      description: |-
+        New audit prover that proves one approver-decision record (a StepApproval,
+        NOT a StepValue, so ProveStep cannot find it) is included under an STH.
+        Owned by Agent D in audit/approval.go. Needed because the k-of-n evidence
+        bundle must include Need distinct signed eligible approver-decision
+        inclusion proofs.
+      definition: |
+        // ProveApproval builds a ProofBundle proving the approver-decision record
+        // keyed "approval:"+toolUseID+":"+approverID (a StepApproval) is committed
+        // in the tree sth signs. Resolves the record by its step name and delegates
+        // to ProveRecord. Fan-in counterpart to ProveToolCall for approvals.
+        func ProveApproval(ctx context.Context, store agent.Durable, runID, toolUseID, approverID string, sth SignedTreeHead) (ProofBundle, error)
+      location: audit/approval.go
+waves:
+    - number: 1
+      agents:
+        - id: A
+          task: |
+            Add the m-of-n approval POLICY type to the tool safety surface.
+            Pure additive change to agent/tool.go; the existing 1-of-1 behavior
+            must stay byte-for-byte unchanged when Safety.Approval is nil.
+
+            What to implement (in agent/tool.go):
+            1. Add a new field to the Safety struct, after RequiresApproval:
+
+                 // Approval, when non-nil, upgrades the approval gate from one
+                 // decision to an m-of-n human gate over a bounded, named set of
+                 // approvers. nil = the existing 1-of-1 RequiresApproval behavior.
+                 Approval *ApprovalPolicy
+
+            2. Add the ApprovalPolicy type (see interface_contracts: ApprovalPolicy),
+               with the Need and Approvers fields and the documented comment.
+
+            Do NOT change Safety.retriableOnResume, Func, funcTool, or any other
+            symbol. Do NOT wire the gate here (that is Agent C). Do NOT add
+            validation of Need vs len(Approvers) here; the gate and config lowering
+            own validation.
+
+            Interfaces: implement exactly the ApprovalPolicy definition in
+            interface_contracts.
+
+            Verification gate:
+              gofmt -l agent/tool.go   # expect empty
+              GOWORK=off go build ./agent/...
+              GOWORK=off go vet ./agent/...
+            Postconditions:
+              grep -c 'Approval \*ApprovalPolicy' agent/tool.go   # expect 1
+              grep -c 'type ApprovalPolicy struct' agent/tool.go  # expect 1
+
+            ### Constraints
+            - Do NOT modify files outside agent/tool.go.
+            - Do NOT define ApprovalTally, ApproveAs, or the verifier interface;
+              those are Agent B's (agent/store.go).
+            - Do NOT touch the gate logic in agent/agent.go.
+            - Use the go1.27 toolchain: export PATH="$(go env GOROOT)/bin:$PATH"
+              and set GOWORK=off for all build/test commands.
+          files:
+            - agent/tool.go
+        - id: B
+          task: |
+            Add the m-of-n COLLECTION + VERIFICATION surface to agent/store.go:
+            per-approver decision recording, the tally types, the canonical
+            signing bytes, the verifier hook, and the pure tally helper. The
+            existing 1-of-1 Approve must stay byte-for-byte unchanged.
+
+            What to implement (all in agent/store.go):
+
+            1. Record fields (additive, both omitempty), set by ApproveAs on the
+               StepApproval record it writes. Add after the existing Approved field
+               in the Record struct:
+                 Approver  string `json:"approver,omitempty"`
+                 Signature []byte `json:"signature,omitempty"`
+
+            2. ApproveAs (see interface_contracts: ApproveAs). Journal the decision
+               under step key "approval:"+toolUseID+":"+approverID via d.Do, mirroring
+               the existing Approve. The record is Kind: StepApproval, ToolUseID set,
+               Approved set, Approver=approverID, Signature=sig. Idempotent per
+               (runID,toolUseID,approverID): first write wins (d.Do gives this).
+               Validate empty runID / toolUseID / approverID with a wrapped ErrConfig
+               error, matching the existing Approve style.
+
+               Insert ApproveAs immediately after the existing Approve function. The
+               existing Approve ends with this exact text; add the new function after
+               its closing brace:
+               ```go
+               	_, err := d.Do(ctx, runID, "approval:"+toolUseID, func(context.Context) (Record, error) {
+               		return Record{Kind: StepApproval, ToolUseID: toolUseID, Approved: approved}, nil
+               	})
+               	return err
+               }
+               ```
+
+            3. ApprovalTally type and the optional PendingApproval.Quorum field
+               (see interface_contracts: ApprovalTally). Add Quorum *ApprovalTally
+               to the existing PendingApproval struct (do not change its existing
+               fields or Error method).
+
+            4. ApproverVerifier interface + ApproverVerifierFor func type
+               (see interface_contracts: ApproverVerifier). These live in package
+               agent so the gate can verify without importing audit.
+
+            5. ApprovalDecisionBytes (see interface_contracts: ApprovalDecisionBytes).
+               Domain-separated (a "bide.approval.v1\n" style prefix), deterministic
+               encoding of (runID, toolUseID, approverID, approved). This is the
+               message approvers sign and the gate verifies.
+
+            6. tallyApprovals unexported helper (see interface_contracts:
+               tallyApprovals). Iterate the run's Records in journal order; for
+               records with Kind==StepApproval and step name
+               "approval:"+toolUseID+":"+<approverID>, keep only approvers listed in
+               policy.Approvers whose Signature verifies via
+               verifierFor(approverID) over ApprovalDecisionBytes(...); dedupe by
+               approver (first in journal order wins); count Approved/Denied; Pending
+               = eligible approvers with no counted decision. This reuses ONLY the
+               count>=k arithmetic idea from govern.tally; do NOT import govern and
+               do NOT call govern.Quorum. Keep it pure and deterministic.
+
+               Note the step key parse: the record Name is
+               "approval:"+toolUseID+":"+approverID. toolUseID may itself contain a
+               colon in principle, so match by the exact prefix "approval:"+toolUseID+":"
+               and treat the remainder as approverID. Skip the legacy 1-of-1 key
+               "approval:"+toolUseID (no trailing ":"+approverID), which belongs to
+               Approve, not ApproveAs.
+
+            Include focused unit tests for ApprovalDecisionBytes determinism and
+            tallyApprovals (eligibility, dedupe-first-wins, signature rejection,
+            approve/deny counting) in agent/store.go's existing test file ONLY IF
+            that file is not owned by another agent -- it is not owned here, so put
+            these unit tests instead inside the wave-2/3 test agents. For wave 1,
+            you may add a small internal sanity test in a NEW file
+            agent/store_mofn_test.go IF you keep ownership; but to stay within your
+            declared ownership (agent/store.go only), do NOT create new files.
+            Leave thorough tally unit tests to Agent C (agent/mofn_gate_test.go).
+
+            Verification gate:
+              gofmt -l agent/store.go   # expect empty
+              GOWORK=off go build ./agent/...
+              GOWORK=off go vet ./agent/...
+            Postconditions:
+              grep -c 'func ApproveAs' agent/store.go              # expect 1
+              grep -c 'func Approve(' agent/store.go               # expect 1 (unchanged)
+              grep -c 'type ApprovalTally struct' agent/store.go   # expect 1
+              grep -c 'ApproverVerifier' agent/store.go            # expect >=2
+              grep -c 'func ApprovalDecisionBytes' agent/store.go  # expect 1
+              grep -c 'func tallyApprovals' agent/store.go         # expect 1
+
+            ### Constraints
+            - Do NOT modify the existing Approve function body or signature; the
+              1-of-1 path must be unchanged.
+            - Do NOT modify files outside agent/store.go. In particular do NOT add
+              Safety.Approval (that is Agent A's agent/tool.go) -- tallyApprovals
+              takes *ApprovalPolicy as a parameter, so you reference the type by
+              forward name; it will resolve once Agent A merges. Your branch builds
+              in isolation only if you do NOT dereference a Safety value; you take
+              the policy as a plain *ApprovalPolicy argument. (ApprovalPolicy is
+              defined by Agent A and merges before Agent C consumes tallyApprovals;
+              in your isolated branch, referencing the type name ApprovalPolicy will
+              fail to compile because agent/tool.go is not yet merged. To keep your
+              branch self-compiling, define tallyApprovals to accept the concrete
+              fields it needs rather than the ApprovalPolicy type: e.g.
+              func tallyApprovals(recs []Record, runID, toolUseID string, need int,
+              approvers []string, verifierFor ApproverVerifierFor) ApprovalTally.
+              The gate (Agent C) passes policy.Need and policy.Approvers. This
+              removes the cross-file type dependency entirely and keeps wave 1
+              agents fully independent.)
+            - Do NOT import github.com/bide-ai/bide/audit (import cycle) or
+              github.com/bide-ai/bide/govern.
+            - Use the go1.27 toolchain and GOWORK=off.
+          files:
+            - agent/store.go
+      base_commit: ac97f5d9801fc09fe2c41ae14b05261fea20246e
+    - number: 2
+      agents:
+        - id: C
+          task: |
+            Implement the m-of-n GATE in agent/agent.go and its unit tests. This is
+            the enforcement point. Depends on Agent A (Safety.Approval,
+            ApprovalPolicy) and Agent B (ApproveAs, ApprovalTally, ApproverVerifier,
+            ApprovalDecisionBytes, tallyApprovals) -- both merged from wave 1.
+
+            Current 1-of-1 gate is in agent/agent.go. Find this exact block (the
+            approval pre-pass) and extend it:
+            ```go
+            			if t.Safety().RequiresApproval {
+            				if !decided[tu.ID] {
+            					fire(ApprovalRequired{ToolUseID: tu.ID, Name: tu.Name, Args: tu.Args})
+            					return Message{}, totalUsage, liveTurns, &PendingApproval{RunID: runID, ToolUseID: tu.ID, ToolName: tu.Name, Args: tu.Args}
+            				}
+            ```
+
+            What to implement:
+            1. Change the gate predicate to fire for m-of-n too. The condition
+               becomes t.Safety().RequiresApproval || t.Safety().Approval != nil.
+               When Safety.Approval == nil, the EXISTING 1-of-1 path must run
+               unchanged (byte-for-byte behavior): decided[]/approvals[] maps,
+               PendingApproval without Quorum, the existing denied-tool-result block
+               at the deny branch.
+
+            2. When Safety.Approval != nil (m-of-n): read the run's journaled
+               decisions (you already have recs during resume; for the live loop,
+               call a.store.History(ctx, runID) once when needed, or thread the
+               tally off the replay maps -- but the authoritative source is the
+               journal, so re-read history to build the tally deterministically).
+               Build the tally via the wave-1 helper:
+                 tally := tallyApprovals(recs, runID, tu.ID, policy.Need, policy.Approvers, a.<resolver>)
+               where a.<resolver> is the configured ApproverVerifierFor.
+               Then:
+                 - tally.Approved >= policy.Need  -> proceed (append to toRun).
+                 - len(policy.Approvers) - tally.Denied < policy.Need -> DENY: reuse
+                   the EXISTING denied-tool-result block verbatim (the
+                   `const denied = ...` StepToolResult write and results[i]
+                   assignment) so the model gets the identical denied result it gets
+                   from a denied 1-of-1.
+                 - otherwise -> raise &PendingApproval{... , Quorum: &tally} with the
+                   running tally attached; the run stays paused.
+
+            3. Journal the tally as its own durable step named
+               "approval-tally:"+tu.ID (a StepValue via a.store.Do / agent.Step) so
+               the tally is provable as a single record, not only reconstructable.
+               This step is written at the point the gate evaluates the tally (both
+               on a proceed and on a pause, so the latest tally is always recorded).
+               Because d.Do is at-most-once by name, use a name that reflects the
+               CURRENT tally state deterministically, OR overwrite semantics are not
+               available (records are append-once by name). RESOLUTION: name it
+               "approval-tally:"+tu.ID and write it ONLY at the terminal gate
+               decisions (proceed or deny), where the tally is final for that
+               toolUseID; on a still-pending pause, do NOT write the tally step (it
+               would freeze a non-final count). This keeps the journaled tally step
+               a single, final, provable record per resolved gate. Document this in
+               a comment.
+
+            4. Add the run option to configure the resolver. Confirm the existing
+               option style in agent/agent.go (functional Option on the constructor,
+               or Agent field) by reading the file, then add WithApproverVerifiers
+               (see interface_contracts: WithApproverVerifiers) matching that style.
+               If a tool has a non-nil Approval but no resolver is configured, return
+               a clear wrapped ErrConfig error rather than silently tallying zero.
+
+            Tests (agent/mofn_gate_test.go): use MemStore and a fake in-package
+            ApproverVerifier. Cover:
+              - tally proceeds at exactly Need approvals; pauses below Need with
+                Quorum populated (Approved/Denied/Pending correct).
+              - auto-deny when n-denied < Need, feeding the denied tool-result.
+              - ineligible approver (not in Approvers) ignored.
+              - bad signature ignored.
+              - dedupe: same approver's second (flipped) decision ignored.
+              - Safety.Approval == nil path is unchanged 1-of-1 (a RequiresApproval
+                tool still pauses and resumes via Approve).
+              - the "approval-tally:"+toolUseID step is journaled and readable.
+
+            Verification gate:
+              gofmt -l agent/agent.go agent/mofn_gate_test.go   # expect empty
+              GOWORK=off go build ./agent/...
+              GOWORK=off go vet ./agent/...
+              GOWORK=off go test ./agent/ -run 'Mofn|Approval'
+            Postconditions:
+              grep -c 'approval-tally:' agent/agent.go            # expect >=1
+              grep -c 'tallyApprovals' agent/agent.go             # expect >=1
+              grep -c 'Quorum:' agent/agent.go                    # expect >=1
+
+            ### Constraints
+            - Do NOT modify agent/tool.go or agent/store.go (owned by wave 1).
+            - Do NOT change the nil-Approval 1-of-1 behavior in ANY observable way.
+            - Do NOT import audit or govern from package agent (import cycle /
+              forbidden reuse). Verify signatures only through the injected
+              ApproverVerifier resolver.
+            - Do NOT call govern.Quorum.
+            - Use the go1.27 toolchain and GOWORK=off.
+          files:
+            - agent/agent.go
+            - agent/mofn_gate_test.go
+          dependencies:
+            - A
+            - B
+        - id: D
+          task: |
+            Add the audit prover for approver-decision records. Depends on Agent B
+            (the "approval:"+toolUseID+":"+approverID step key and the
+            Approver/Signature Record fields) -- merged from wave 1.
+
+            Problem this solves: approver decisions are journaled as StepApproval
+            records, NOT StepValue, so the existing audit.ProveStep (which matches
+            only StepValue) cannot prove them. The k-of-n evidence bundle needs
+            inclusion proofs of the individual signed approver decisions.
+
+            What to implement in a NEW file audit/approval.go (package audit):
+            1. ProveApproval (see interface_contracts: ProveApproval). Load
+               store.History, find the record whose Name ==
+               "approval:"+toolUseID+":"+approverID (Kind agent.StepApproval), and
+               delegate to ProveRecord for its index against sth. Error clearly if
+               absent. Mirror the shape of ProveToolCall / ProveStep.
+            2. A convenience that gathers proofs for all eligible signed approvals
+               for a toolUseID under one STH, for the evidence bundle. Suggested:
+
+                 // ApprovalEvidence builds, under one STH, the inclusion proof for
+                 // the tool-result action plus one ProofBundle per approver in
+                 // approvers that recorded a decision, so an offline verifier can
+                 // confirm k distinct signed eligible approvers decided before the
+                 // action. Ordered approver-decisions-first, action-last.
+                 func ApprovalEvidence(ctx context.Context, store agent.Durable, runID, toolUseID string, approvers []string, sth SignedTreeHead) (action ProofBundle, decisions []ProofBundle, err error)
+
+               (Adjust the return shape to whatever composes cleanly with the
+               existing EvidenceAction/EvidencePackage types; you may instead return
+               []EvidenceAction. Read audit/evidence.go for the EvidenceAction shape
+               and match it. Keep the "decisions before action" ordering explicit in
+               the doc comment because the design certifies "k approved BEFORE the
+               action executed".)
+
+            Do NOT modify audit/evidence.go in this wave (it is not in your
+            ownership). Provide the building blocks; Agent G's test composes them.
+            If you find you must touch evidence.go to expose an option, STOP and
+            note it in your completion report as an integration gap rather than
+            editing a file outside your ownership.
+
+            Tests (audit/approval_test.go): use agent.MemStore, agent.ApproveAs to
+            record decisions, then NewTreeHead + SignTreeHead, then ProveApproval /
+            ApprovalEvidence, and verify the returned ProofBundle(s) with
+            ProofBundle.Verify against the public key. Confirm a proof for a missing
+            approver errors, and a proof for a present one verifies and binds to the
+            STH size.
+
+            Verification gate:
+              gofmt -l audit/approval.go audit/approval_test.go   # expect empty
+              GOWORK=off go build ./audit/...
+              GOWORK=off go vet ./audit/...
+              GOWORK=off go test ./audit/ -run 'Approval'
+            Postconditions:
+              grep -c 'func ProveApproval' audit/approval.go       # expect 1
+              grep -c 'StepApproval' audit/approval.go             # expect >=1
+
+            ### Constraints
+            - Do NOT modify audit/evidence.go, audit/proof.go, or audit/step.go
+              (not in your ownership). Reuse ProveRecord/ProveToolCall as-is.
+            - Do NOT modify any file in package agent.
+            - Use the go1.27 toolchain and GOWORK=off.
+          files:
+            - audit/approval.go
+            - audit/approval_test.go
+          dependencies:
+            - B
+        - id: E
+          task: |
+            Lower an "approval" config block to Safety.Approval in plan/config.go.
+            Depends on Agent A (Safety.Approval field, ApprovalPolicy type) --
+            merged from wave 1.
+
+            Design (design-mofn-approval.md section "DSL / config lowering"):
+              - name: refund
+                block: refund
+                approval: { need: 2, approvers: [ops, finance, risk] }
+
+            What to implement in plan/config.go:
+            1. Add an optional approval block to the configNode struct, after the
+               Safety field:
+                 // Approval, when present, declares an m-of-n human approval gate
+                 // that lowers to agent.Safety.Approval on the built node. Absent
+                 // keeps the node's existing (1-of-1 or none) approval behavior.
+                 Approval *configApproval `json:"approval,omitempty"`
+               and the helper type:
+                 type configApproval struct {
+                     Need      int      `json:"need"`
+                     Approvers []string `json:"approvers"`
+                 }
+
+            2. In the node-resolution loop (the block near plan/config.go:255-295
+               where `safety := b.safety` is set and cn.Safety is applied), after
+               resolving safety, if cn.Approval != nil set
+               safety.Approval = &agent.ApprovalPolicy{Need: cn.Approval.Need,
+               Approvers: cn.Approval.Approvers}. Insert this AFTER the existing
+               cn.Safety handling and BEFORE the resolvedNodes append. Match by this
+               exact surrounding text:
+               ```go
+               		if cn.Safety != "" {
+               			s, ok := safetyFromConfig(cn.Safety)
+               			if !ok {
+               				problems = append(problems, fmt.Sprintf("node %q has unknown safety %q; want one of \"readonly\", \"idempotent\", \"retryable\"", cn.Name, cn.Safety))
+               			} else {
+               				safety = s
+               			}
+               		}
+               ```
+
+            3. Validate the block and collect problems (matching the existing
+               problems-collection style): Need must be >= 1 and <= len(Approvers);
+               Approvers must be non-empty and contain no duplicates. On violation
+               append a clear problem string naming the node, e.g.
+               fmt.Sprintf("node %q approval.need %d must be between 1 and %d (the approver count)", cn.Name, cn.Approval.Need, len(cn.Approval.Approvers)).
+
+            Read the top of plan/config.go to confirm the exact loop variable name
+            (cn) and the safety local before editing. The node struct carries
+            safety agent.Safety (see plan/spec.go:41), so setting safety.Approval is
+            all the lowering needs -- the node already threads safety through.
+
+            Tests (plan/config_approval_test.go): load a config with an approval
+            block via the existing Load entry point (read an existing *_test.go in
+            plan/ to see how configs are loaded and nodes inspected), assert the
+            built node's safety.Approval is non-nil with the right Need/Approvers,
+            and assert that need<1, need>len(approvers), empty approvers, and
+            duplicate approvers each produce a naming load error.
+
+            Verification gate:
+              gofmt -l plan/config.go plan/config_approval_test.go   # expect empty
+              GOWORK=off go build ./plan/...
+              GOWORK=off go vet ./plan/...
+              GOWORK=off go test ./plan/ -run 'Approval'
+            Postconditions:
+              grep -c 'configApproval' plan/config.go              # expect >=2
+              grep -c 'safety.Approval' plan/config.go             # expect 1
+
+            ### Constraints
+            - Do NOT modify files outside plan/config.go and your new test file.
+            - Do NOT enforce the gate in the plan executor (flow.go) -- scope is
+              lowering to Safety.Approval only, per the design. The plan flow
+              executor does not currently gate on RequiresApproval at all; do NOT
+              add gate enforcement here.
+            - Use the go1.27 toolchain and GOWORK=off.
+          files:
+            - plan/config.go
+            - plan/config_approval_test.go
+          dependencies:
+            - A
+      base_commit: c10726d575ece6cee47aef350ec9061bf7919b80
+    - number: 3
+      agents:
+        - id: F
+          task: |
+            Crash / determinism (DST) test proving at-most-once-per-approver and a
+            deterministic gate across resume. Depends on Agent C (the gate),
+            Agent B (ApproveAs). All merged from waves 1-2.
+
+            New file agent/mofn_dst_test.go (package agent or agent_test -- match
+            the package clause of the existing agent tests). Using MemStore and a
+            Tool with Safety{Approval: &ApprovalPolicy{Need: 2, Approvers:
+            [ops, finance, risk]}} and an in-package fake ApproverVerifier:
+
+            1. At-most-once per approver: record the SAME approver's decision twice
+               (via ApproveAs) with different `approved` values; assert the tally
+               counts that approver exactly once and the FIRST decision wins, and
+               that the journal contains exactly one "approval:"+toolUseID+":"+id
+               record (History scan).
+
+            2. Deterministic across resume: drive a run to a PendingApproval pause,
+               record enough decisions to reach Need, re-run with the SAME runID,
+               and assert the gate proceeds; then re-run AGAIN and assert the
+               outcome (tool result, journaled "approval-tally:"+toolUseID) is
+               identical -- replay does not re-tally differently, does not double
+               the tally step, and does not re-run the tool. Compare full
+               History() before and after the redundant resume for equality
+               (modulo the terminal completion marker).
+
+            3. Interleaved crash: simulate a decision landing between two resumes
+               (record one approval, resume -> still pending with Quorum.Approved==1;
+               record the second, resume -> proceeds). Assert Quorum values at the
+               intermediate pause are exact.
+
+            Verification gate:
+              gofmt -l agent/mofn_dst_test.go   # expect empty
+              GOWORK=off go build ./agent/...
+              GOWORK=off go test ./agent/ -run 'MofnDST|Resume|AtMostOnce' -count=1
+
+            ### Constraints
+            - Do NOT modify any non-test file. This agent adds ONLY the new test
+              file agent/mofn_dst_test.go.
+            - If a needed hook is missing (e.g. no way to inject the verifier
+              resolver), STOP and report it as an integration gap; do not edit
+              agent.go/store.go to add it.
+            - Use the go1.27 toolchain and GOWORK=off.
+          files:
+            - agent/mofn_dst_test.go
+          dependencies:
+            - B
+            - C
+        - id: G
+          task: |
+            End-to-end audit test proving the k-of-n evidence verifies offline.
+            Depends on Agent D (ProveApproval / ApprovalEvidence) and Agent C (the
+            gate journals decisions + the "approval-tally:"+toolUseID step). All
+            merged from waves 1-2.
+
+            New file audit/mofn_evidence_test.go (package audit or audit_test --
+            match the existing audit test package clause). Build a run where a
+            Need=2 of 3 gate proceeds after two distinct eligible signed approvals,
+            then assemble and verify the evidence:
+
+            1. Record two eligible approvers' signed decisions (agent.ApproveAs with
+               sig = signer.Sign(agent.ApprovalDecisionBytes(...))), drive the gate
+               to proceed so the tool-result action is journaled, then build ONE STH
+               (NewTreeHead + SignTreeHead).
+            2. Using Agent D's ProveApproval / ApprovalEvidence, obtain the action
+               inclusion proof plus the two approver-decision inclusion proofs under
+               that single STH.
+            3. Assert offline verification (as bide-audit would): each ProofBundle
+               verifies via ProofBundle.Verify(pub); all bind to the same STH size;
+               the two approver-decision records precede the action record in journal
+               order (Inclusion.Index of each decision < the action's index),
+               certifying "k signed eligible approvers decided BEFORE the action
+               executed"; and a tampered signature or a swapped-in ineligible
+               approver fails verification / is absent from the eligible set.
+            4. Optionally assemble a full audit.EvidencePackage that includes the
+               tool action and prove the "approval-tally:"+toolUseID StepValue via
+               the existing audit.ProveStep, showing the final tally is itself
+               provable as a single record.
+
+            Read audit/evidence_test.go and audit/proof_test.go for the established
+            helpers (key generation, NewTreeHead, SignTreeHead, ProofBundle.Verify,
+            EvidencePackage assembly) and match their conventions.
+
+            Verification gate:
+              gofmt -l audit/mofn_evidence_test.go   # expect empty
+              GOWORK=off go build ./audit/...
+              GOWORK=off go test ./audit/ -run 'MofnEvidence|KofN' -count=1
+
+            ### Constraints
+            - Do NOT modify any non-test file. This agent adds ONLY the new test
+              file audit/mofn_evidence_test.go.
+            - If ApprovalEvidence's shape does not compose with EvidencePackage,
+              report it as an integration gap; do not edit audit/evidence.go or
+              audit/approval.go.
+            - Use the go1.27 toolchain and GOWORK=off.
+          files:
+            - audit/mofn_evidence_test.go
+          dependencies:
+            - C
+            - D
+      base_commit: 04c220a5e3f6b124c6b6af6385f3c1d739c5c40d
+quality_gates:
+    level: standard
+    gates:
+        - type: format
+          command: gofmt -l agent audit plan
+          required: true
+        - type: build
+          command: GOWORK=off go build ./...
+          required: true
+        - type: custom
+          command: GOWORK=off go vet ./...
+          required: true
+        - type: test
+          command: GOWORK=off go test ./agent/... ./audit/... ./plan/...
+          required: true
+completion_reports:
+    A:
+        status: complete
+        branch: polywave/mofn-approval/wave1-agent-A
+        commit: 1e438b7
+        files_changed:
+            - agent/tool.go
+        verification: PASS
+        notes: Added Safety.Approval *ApprovalPolicy and ApprovalPolicy{Need, Approvers}. Purely additive; nil Approval keeps 1-of-1 behavior. No validation or gate wiring (Agent B/C scope). gofmt clean, build/vet/test ./agent pass.
+    B:
+        status: complete
+        branch: polywave/mofn-approval/wave1-agent-B
+        commit: b51aa29
+        files_changed:
+            - agent/store.go
+        verification: PASS
+        notes: 'INTERFACE DEVIATION (per brief constraint): tallyApprovals(recs []Record, runID, toolUseID string, need int, approvers []string, verifierFor ApproverVerifierFor) ApprovalTally, not *ApprovalPolicy; Agent C passes policy.Need, policy.Approvers. Added Record.Approver/Signature, ApproveAs (step key approval:<tool>:<approver>, ErrConfig on empty runID/toolUseID/approverID), ApprovalTally, PendingApproval.Quorum, ApproverVerifier, ApproverVerifierFor, ApprovalDecisionBytes (prefix bide.approval.v1 newline + uint32 BE length-prefixed runID/toolUseID/approverID + 1 byte approved). Approve unchanged. tallyApprovals skips legacy 1-of-1 key, requires rec.Approver == name suffix and rec.ToolUseID match, nil verifierFor counts nothing, Pending in policy order deduped. Sanity-tested with a throwaway test (not committed); thorough tests left to Agent C.'
+    C:
+        status: complete
+        worktree: /Users/dayna/code/go-agents/.claude/worktrees/polywave/mofn-approval/wave2-agent-C
+        branch: polywave/mofn-approval/wave2-agent-C
+        commit: 094c5d1
+        files_changed:
+            - agent/agent.go
+            - agent/mofn_gate_test.go
+        files_created:
+            - agent/mofn_gate_test.go
+        tests_added:
+            - TestMofn_ProceedsAtNeed
+            - TestMofn_TallyStepJournaled
+            - TestMofn_AutoDenyWhenUnreachable
+            - TestMofn_IneligibleApproverIgnored
+            - TestMofn_BadSignatureIgnored
+            - TestMofn_DuplicateApproverDeduped
+            - TestMofn_NilApprovalKeepsOneOfOne
+            - TestMofn_ConfigErrors
+        verification: PASS
+        notes: 'Interface shape: WithApproverVerifiers is a chaining method func (a *Agent) WithApproverVerifiers(fn ApproverVerifierFor) *Agent (no Option type exists). Gate predicate is RequiresApproval || Approval != nil. nil-Approval path keeps the decided/approvals maps, Quorum-less PendingApproval, and the shared denied-result block. m-of-n path (Agent.quorumTally) re-reads History, tallies via tallyApprovals(recs, runID, id, pol.Need, pol.Approvers, a.approverVerifiers), journals approval-tally:<id> as a StepValue only at terminal decisions (proceed or unreachable deny); once present that record is authoritative on replay. ErrConfig on nil resolver or Need outside [1, len(Approvers)]. Replay loop now skips StepApproval records with Approver set when building the 1-of-1 decided map, so an ApproveAs decision cannot satisfy (or last-wins override) a 1-of-1 gate; legacy Approve records are unaffected.'
+    D:
+        status: complete
+        branch: polywave/mofn-approval/wave2-agent-D
+        commit: fe2d5dc
+        files_changed:
+            - audit/approval.go
+            - audit/approval_test.go
+        files_created:
+            - audit/approval.go
+            - audit/approval_test.go
+        tests_added:
+            - TestProveApproval
+            - TestApprovalEvidence
+        verification: PASS
+        notes: ProveApproval matches StepApproval by step name approval:<toolUseID>:<approverID> and delegates to ProveRecord. ApprovalEvidence returns []EvidenceAction (decisions first in approver order with Kind approval, tool action last with Kind tool), appendable to EvidencePackage.Actions. It omits approvers with no decision or with a decision journaled after the tool result, and dedupes ids. evidence.go untouched; itemSuccessNote has no approval case so reports use the default note (optional follow-up). audit.approvalStepName duplicates agent's unexported approvalStepPrefix string format.
+    E:
+        status: complete
+        branch: polywave/mofn-approval/wave2-agent-E
+        commit: 6685eb9
+        files_changed:
+            - plan/config.go
+            - plan/config_approval_test.go
+        files_created:
+            - plan/config_approval_test.go
+        tests_added:
+            - TestLoadApprovalLowersToSafety
+            - TestLoadApprovalAbsentKeepsNil
+            - TestLoadApprovalInvalidIsError
+        verification: PASS
+        notes: 'configNode.Approval (*configApproval) lowers to safety.Approval after the safety-string override, so explicit safety and approval coexist. Validation collects problems naming the node: empty approvers, need outside [1,n], duplicate approver ids. Validate reports the same (shared assemble). No executor gate enforcement, per scope. Full plan test suite passes.'
+    F:
+        status: complete
+        branch: polywave/mofn-approval/wave3-agent-F
+        commit: f482b20
+        files_changed:
+            - agent/mofn_dst_test.go
+        files_created:
+            - agent/mofn_dst_test.go
+        tests_added:
+            - TestMofnDST_AtMostOncePerApprover
+            - TestMofnDST_DeterministicAcrossResume
+            - TestMofnDST_InterleavedDecisions
+            - TestMofnDST_CrashSweepAfterQuorum
+        verification: PASS
+        notes: 'Reuses mofn_gate_test.go helpers (fakeVerifiers, approveAs, mofnRun, wantPending, hasStep) and dst_test.go crashStore. Added a crash sweep after quorum (at most one charge, ResumeHalt path exercised, tally journaled exactly once). Redundant-resume check disables verifiers to prove the journaled tally is authoritative. Observation (pre-existing, not m-of-n specific): re-running an already complete run via Run appends a fresh @llm/N model turn after run:complete, because the loop does not consult the completion marker. The test compares History up through run:complete for equality and asserts only StepModel records follow. Full agent package passes with -race.'
+    G:
+        status: complete
+        branch: polywave/mofn-approval/wave3-agent-G
+        commit: "8991782"
+        files_changed:
+            - audit/mofn_evidence_test.go
+        files_created:
+            - audit/mofn_evidence_test.go
+        tests_added:
+            - TestMofnEvidence_KofNVerifiesOffline
+            - TestMofnEvidence_PackageAndTallyStep
+        verification: PASS
+        notes: 'Drives a real agent.Run through a Need=2 of {alice,bob,carol} gate with audit.Ed25519Verifier approver keys; mallory (registered key, ineligible) and carol (tampered sig) decide first and are rejected both by the gate (journaled tally Pending=[carol]) and by the offline tally. ApprovalEvidence composes with EvidencePackage: Evidence(WithToolCall, WithStep(approval-tally:c1)) mints the same STH as NewTreeHead+SignTreeHead at the same timestamp, decisions append to Actions, JSON round-trip Verify OK (report uses the generic ''included in the signed log'' note for kind approval). No integration gap.'
+pre_mortem:
+    overall_risk: medium
+    rows:
+        - scenario: |
+            Agent B references the ApprovalPolicy type (owned by Agent A) in
+            tallyApprovals, so B's isolated branch fails to compile because
+            agent/tool.go is not yet merged.
+          likelihood: high
+          impact: high
+          mitigation: |
+            B's brief mandates tallyApprovals accept (need int, approvers []string)
+            rather than *ApprovalPolicy, removing the cross-file type dependency.
+            The gate (Agent C, wave 2, after A merges) passes policy.Need /
+            policy.Approvers. This keeps wave-1 agents fully independent and
+            self-compiling.
+        - scenario: |
+            Agent C or B tries to verify approver signatures by importing
+            github.com/bide-ai/bide/audit, creating an import cycle (audit imports
+            agent).
+          likelihood: high
+          impact: high
+          mitigation: |
+            The ApproverVerifier interface is defined in package agent (Agent B);
+            the gate verifies through the injected resolver only. Both briefs
+            explicitly forbid importing audit or govern from package agent. The
+            deployment wires audit verifiers into the resolver from outside.
+        - scenario: |
+            The journaled "approval-tally:"+toolUseID step is written on a
+            still-pending pause, freezing a non-final count; because d.Do is
+            at-most-once by name, a later resume with more decisions cannot update
+            it, so the provable tally disagrees with the real one.
+          likelihood: medium
+          impact: high
+          mitigation: |
+            Agent C brief mandates writing the tally step ONLY at terminal gate
+            decisions (proceed or auto-deny), never on a still-pending pause, so the
+            single at-most-once record is always the FINAL tally for that toolUseID.
+            The DST test (Agent F) asserts the journaled tally step is not doubled
+            and matches the resolved outcome across resume.
+        - scenario: |
+            Agent D must expose approval proofs but the k-of-n evidence bundle needs
+            them wired into audit.EvidencePackage, tempting an edit to
+            audit/evidence.go which D does not own.
+          likelihood: medium
+          impact: medium
+          mitigation: |
+            D provides standalone ProveApproval + ApprovalEvidence building blocks
+            and is forbidden from editing evidence.go; Agent G's test composes them
+            (and uses the existing ProveStep for the tally record). If a real gap
+            exists, D reports it as an integration gap rather than editing outside
+            ownership. A follow-up integration wave can wire it into EvidencePackage
+            if desired; the offline-verify property (design point 7) is provable from
+            the standalone bundles under one STH without modifying evidence.go.
+        - scenario: |
+            The nil-Approval 1-of-1 path drifts (behavior changes) when Agent C
+            restructures the approval pre-pass, breaking backward compatibility.
+          likelihood: medium
+          impact: high
+          mitigation: |
+            Agent C brief requires the nil-Approval branch to run the EXISTING code
+            unchanged and to reuse the existing denied-tool-result block verbatim.
+            Agent C's unit tests include an explicit nil-Approval 1-of-1
+            pause/resume-via-Approve case; the full agent test suite runs at the
+            post-merge gate.
+        - scenario: |
+            The step-key parse in tallyApprovals mis-handles a toolUseID that itself
+            contains a colon, or confuses the 1-of-1 key "approval:"+toolUseID with
+            an m-of-n key.
+          likelihood: low
+          impact: medium
+          mitigation: |
+            Agent B brief specifies matching the exact prefix
+            "approval:"+toolUseID+":" and treating the remainder as approverID, and
+            skipping the legacy key with no trailing ":"+approverID. Agent C's unit
+            tests exercise mixed keys.
+known_issues:
+    - title: Plan executor does not enforce approval gating
+      description: |
+        The plan flow executor (plan/flow.go) does not currently enforce approval
+        gating at all (no RequiresApproval handling in the plan runtime). This
+        feature only LOWERS the config approval block to agent.Safety.Approval on
+        the built node, matching the design scope. Enforcing the m-of-n gate inside
+        the plan executor is out of scope here and would be a separate feature.
+    - title: Deferred m-of-n extensions not built
+      description: |
+        Deferred by design (not built): deadline/stuck-gate resolution,
+        weighted/role-predicate quorum, open/dynamic approver sets, delegated
+        approval. See design-mofn-approval.md "Non-goals" and "Deferred".
+critic_report:
+    verdict: PASS
+    agent_reviews:
+        A:
+            agent_id: A
+            verdict: PASS
+        B:
+            agent_id: B
+            verdict: PASS
+            issues:
+                - check: symbol_accuracy
+                  severity: warning
+                  description: Brief says to validate empty runID/toolUseID/approverID in ApproveAs matching the existing Approve style, but the existing Approve (agent/store.go:121-128) validates only empty runID, not toolUseID. The added validation is additive and reasonable, but the stated parity with Approve is slightly inaccurate.
+                  file: agent/store.go
+                  symbol: Approve
+        C:
+            agent_id: C
+            verdict: PASS
+            issues:
+                - check: pattern_accuracy
+                  severity: warning
+                  description: WithApproverVerifiers is written as a functional option on the constructor in the interface_contract, but the Agent uses chaining setter methods on *Agent (WithSystemPrompt, WithMaxTurns, SetMaxConcurrency at agent/agent.go) rather than functional options passed to New(model, store, tools...). The brief correctly BRACKETS this and instructs Agent C to confirm the existing style before finalizing, so it is not a hallucinated signature; noted so the implementer matches the chaining-setter idiom.
+                  file: agent/agent.go
+                  symbol: WithApproverVerifiers
+        D:
+            agent_id: D
+            verdict: PASS
+        E:
+            agent_id: E
+            verdict: PASS
+            issues:
+                - check: symbol_accuracy
+                  severity: warning
+                  description: Brief references agent.ApprovalPolicy (owned by Agent A, agent/tool.go) which does not exist yet at scout time. This is a cross-agent dependency defined in interface_contracts and merges from wave 1 before Agent E (wave 2) consumes it; plan already imports the agent package as agent.Safety, so the qualified reference will resolve. Correct by design, flagged for visibility.
+                  file: plan/config.go
+                  symbol: ApprovalPolicy
+        F:
+            agent_id: F
+            verdict: PASS
+        G:
+            agent_id: G
+            verdict: PASS
+    summary: 'All seven agent briefs verified against the codebase. The three load-bearing feature claims hold: (1) the import direction is one-directional (production agent/*.go does not import bide/audit; only agent_test files do, in package agent_test, so no cycle) and audit.Ed25519Verifier/MLDSAVerifier/HybridVerifier each expose Verify(message, sig []byte) bool, so they structurally satisfy the proposed agent.ApproverVerifier interface (Verify only); (2) the signing API to reuse exists as described - audit.Signer/audit.Verifier in audit/signing.go, SignGrant(g, Signer), Grant.Bytes(), and the issuerVerifier func(issuer string)(Verifier,bool) lookup in VerifyDelegationChain at audit/grant.go:144; (3) audit.ProveStep matches only Kind==agent.StepValue (audit/step.go), so it cannot reach StepApproval records, justifying the new audit.ProveApproval. The 1-of-1 denied-tool-result block exists verbatim at agent/agent.go:376-387 with const denied and is reusable by the m-of-n deny branch; the decided[]/approvals[]/done[] maps are as described. The Approve body quoted in Agent B''s brief matches agent/store.go:125-128 exactly. plan/config.go anchors (the cn.Safety block at 272-279, resolvedNodes append, configNode.Safety at line 52) and plan/spec.go''s node.safety agent.Safety field are all present. Backward-compat is purely additive: Safety and Record gain nil/omitempty fields only. All new files are absent, all modify targets exist, ownership is disjoint per wave, and no brief uses caller-migration language. Warnings are advisory only.'
+    reviewed_at: "2026-09-29T00:26:28Z"
+    issue_count: 3
+state: COMPLETE
+injection_method: manual-fallback

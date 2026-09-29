@@ -40,6 +40,19 @@ type Safety struct {
 	// RequiresApproval pauses the run for a durable human decision (HITL) before the
 	// tool executes — surfaced as *PendingApproval; resume after agent.Approve.
 	RequiresApproval bool
+	// Approval, when non-nil, upgrades the approval gate from one
+	// decision to an m-of-n human gate over a bounded, named set of
+	// approvers. nil = the existing 1-of-1 RequiresApproval behavior.
+	Approval *ApprovalPolicy
+}
+
+// ApprovalPolicy declares a k-of-n human gate. Need is k; the eligible
+// approvers are the bounded set (n = len(Approvers)). A tool with a
+// non-nil Approval requires approval whether or not RequiresApproval is
+// also set.
+type ApprovalPolicy struct {
+	Need      int      // decisions required to proceed (k), 1 <= Need <= len(Approvers)
+	Approvers []string // eligible approver ids; the bounded set (n)
 }
 
 // retriableOnResume reports whether an unknown-outcome call may be safely re-run.
