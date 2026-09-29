@@ -63,83 +63,71 @@ func freshSchema(t *testing.T) (dsn, schema string, admin *sql.DB) {
 	return base + sep + "search_path=" + schema, schema, admin
 }
 
-// createTextJournal creates bide_steps as it was before data became bytea, with one row.
-func createTextJournal(t *testing.T, admin *sql.DB, schema string) {
-	t.Helper()
-	if _, err := admin.ExecContext(context.Background(), `
-		CREATE TABLE `+schema+`.bide_steps (
-			run_id text   NOT NULL,
-			seq    bigint NOT NULL,
-			name   text   NOT NULL,
-			data   text   NOT NULL,
-			PRIMARY KEY (run_id, name),
-			UNIQUE (run_id, seq)
-		);
-		INSERT INTO `+schema+`.bide_steps VALUES ('old', 0, 'step', '{"name":"step","kind":"value","result":"caf`+"\xc3\xa9"+`"}');`); err != nil {
-		t.Fatal(err)
-	}
-}
-
-// Nodes that open the store at the same time over an old text journal all succeed: the
-// migration runs once, under a lock, rather than each node converting a column another node
-// already converted. Skips without PG_DSN.
-func TestPostgres_ConcurrentOpensMigrateOnce(t *testing.T) {
-	dsn, schema, admin := freshSchema(t)
-	createTextJournal(t, admin, schema)
-	const nodes = 8
-	errs := make(chan error, nodes)
-	start := make(chan struct{})
-	for range nodes {
-		go func() {
-			<-start
-			s, err := Open(context.Background(), dsn)
-			if err == nil {
-				s.Close()
+// Nodes that open the store at the same time over an empty database all succeed: the schema is
+// created once, under a lock, rather than each node racing to create the same tables. Skips
+// without PG_DSN.
+func TestPostgres_ConcurrentOpensCreateTheSchemaOnce(t *testing.T) {
+	for range 5 {
+		dsn, _, _ := freshSchema(t)
+		const nodes = 8
+		errs := make(chan error, nodes)
+		start := make(chan struct{})
+		for range nodes {
+			go func() {
+				<-start
+				s, err := Open(context.Background(), dsn)
+				if err == nil {
+					s.Close()
+				}
+				errs <- err
+			}()
+		}
+		close(start)
+		for range nodes {
+			if err := <-errs; err != nil {
+				t.Fatalf("a concurrent Open failed: %v", err)
 			}
-			errs <- err
-		}()
-	}
-	close(start)
-	for range nodes {
-		if err := <-errs; err != nil {
-			t.Fatalf("a concurrent Open failed: %v", err)
 		}
 	}
 }
 
-// A bide_steps table created before data became bytea is converted in place when the store
-// opens, keeping its rows, so invalid UTF-8 can be recorded in it afterwards. Skips without
-// PG_DSN.
-func TestPostgres_MigratesTextJournalToBytea(t *testing.T) {
+// Open creates bide_steps with a bytea data column, and never rewrites an existing bide_steps
+// table: altering a column takes the table's exclusive lock and changes what the nodes already
+// running on it write, so a node that opens the store during a rolling deploy would break them.
+// Skips without PG_DSN.
+func TestPostgres_OpenCreatesByteaAndNeverAltersTheJournal(t *testing.T) {
 	ctx := context.Background()
+	dataType := func(admin *sql.DB, schema string) string {
+		t.Helper()
+		var typ string
+		if err := admin.QueryRowContext(ctx, `SELECT data_type FROM information_schema.columns
+			WHERE table_schema = $1 AND table_name = 'bide_steps' AND column_name = 'data'`, schema).Scan(&typ); err != nil {
+			t.Fatal(err)
+		}
+		return typ
+	}
 	dsn, schema, admin := freshSchema(t)
-	createTextJournal(t, admin, schema)
 	s, err := Open(ctx, dsn)
 	if err != nil {
-		t.Fatalf("Open over a text journal: %v", err)
-	}
-	defer s.Close()
-	var typ string
-	if err := s.db.QueryRowContext(ctx, `SELECT data_type FROM information_schema.columns
-		WHERE table_schema = $1 AND table_name = 'bide_steps' AND column_name = 'data'`, schema).Scan(&typ); err != nil {
 		t.Fatal(err)
 	}
-	if typ != "bytea" {
-		t.Fatalf("data column is %s after Open, want bytea", typ)
+	s.Close()
+	if typ := dataType(admin, schema); typ != "bytea" {
+		t.Fatalf("Open created bide_steps.data as %s, want bytea", typ)
 	}
-	hist, err := s.History(ctx, "old")
-	if err != nil || len(hist) != 1 || string(hist[0].Result) != "\"caf\xc3\xa9\"" {
-		t.Fatalf("History of the migrated run = %v, %v; want the one recorded step", hist, err)
+
+	dsn, schema, admin = freshSchema(t)
+	if _, err := admin.ExecContext(ctx, `CREATE TABLE `+schema+`.bide_steps (
+		run_id text NOT NULL, seq bigint NOT NULL, name text NOT NULL, data text NOT NULL,
+		PRIMARY KEY (run_id, name), UNIQUE (run_id, seq))`); err != nil {
+		t.Fatal(err)
 	}
-	if _, err := s.Do(ctx, "old", "next", func(context.Context) (agent.Record, error) {
-		return agent.Record{Kind: agent.StepValue, Result: json.RawMessage("\"\xff\"")}, nil
-	}); err != nil {
-		t.Fatalf("Do with invalid UTF-8 after the migration: %v", err)
-	}
-	// Opening again finds bytea and leaves it alone.
-	s2, err := Open(ctx, dsn)
+	s, err = Open(ctx, dsn)
 	if err != nil {
-		t.Fatalf("second Open: %v", err)
+		t.Fatal(err)
 	}
-	s2.Close()
+	s.Close()
+	if typ := dataType(admin, schema); typ != "text" {
+		t.Fatalf("Open rewrote an existing bide_steps.data column from text to %s", typ)
+	}
 }
