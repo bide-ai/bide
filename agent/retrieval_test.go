@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"testing"
 )
@@ -173,5 +174,40 @@ func TestRetrieval_CapsAtK(t *testing.T) {
 	}
 	if block := seen.Messages[0].Text(); !strings.Contains(block, "two") || strings.Contains(block, "three") {
 		t.Fatalf("WithRetrieval(k=2) injected %q, want docs 1 and 2 only", block)
+	}
+}
+
+// A similarity score can come out NaN or infinite (cosine similarity against a zero vector is
+// 0/0), and JSON has no encoding for either. Such a score is dropped, so the model still gets
+// the documents rather than the encoder's "unsupported value" error, and the Retriever's own
+// slice is left as it was.
+func TestRetrievalTool_NonFiniteScoreDropped(t *testing.T) {
+	docs := []Doc{
+		{ID: "a", Text: "alpha", Score: math.NaN()},
+		{ID: "b", Text: "beta", Score: math.Inf(1)},
+		{ID: "c", Text: "gamma", Score: math.Inf(-1)},
+		{ID: "d", Text: "delta", Score: 0.5},
+	}
+	r := &fakeRetriever{docs: docs}
+
+	res, err := RetrievalTool(r, 4).Call(context.Background(), json.RawMessage(`{"query":"q"}`))
+	if err != nil {
+		t.Fatalf("RetrievalTool with a non-finite score: %v", err)
+	}
+	var got []Doc
+	if err := json.Unmarshal(res, &got); err != nil {
+		t.Fatal(err)
+	}
+	want := []Doc{{ID: "a", Text: "alpha"}, {ID: "b", Text: "beta"}, {ID: "c", Text: "gamma"}, {ID: "d", Text: "delta", Score: 0.5}}
+	if len(got) != len(want) {
+		t.Fatalf("got %s, want %d docs", res, len(want))
+	}
+	for i := range want {
+		if got[i].ID != want[i].ID || got[i].Text != want[i].Text || got[i].Score != want[i].Score {
+			t.Errorf("doc %d = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+	if !math.IsNaN(docs[0].Score) || !math.IsInf(docs[1].Score, 1) || !math.IsInf(docs[2].Score, -1) {
+		t.Errorf("the Retriever's docs were modified: %+v", docs)
 	}
 }
