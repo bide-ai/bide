@@ -31,8 +31,23 @@ only when that adapter is imported.
 | gcf codec | `…/codec/gcf` | blackwell-systems/gcf-go |
 
 The core module keeps everything with no heavy deps: `agent` (loop), `schema`, `middleware`,
-`model/anthropic`, `model/openai`, `govern`, and `examples`. The `architecture_test.go` guard
+`model/anthropic`, `model/openai`, `model/gemini`, `plan`, `audit`, `govern`, `eval`, `chaos`, the
+`cmd` tools, and most of `examples`. The `architecture_test.go` guard
 (core must not import an adapter) still holds, now enforced at the module boundary too.
+
+Five more modules are not libraries you import; they exist so their dependencies stay out of the
+core:
+
+| Module | Path | Why it is separate |
+|---|---|---|
+| approval example | `…/examples/approval` | imports `store/sqlite` |
+| plan example | `…/examples/plan` | imports `store/sqlite` |
+| mcp example | `…/examples/mcp` | imports `mcp` and the MCP go-sdk |
+| observability example | `…/examples/observability` | imports `trace` and the OpenTelemetry SDK |
+| benchmarks | `…/benchmarks` | the cross-SDK chaos comparison: eino, langchaingo, adk-go, trpc-agent-go |
+
+The example modules are in `go.work`; `benchmarks` is not, so run it with `GOWORK=off` from its
+directory.
 
 ## Working in the repo
 
@@ -46,7 +61,7 @@ cd trace && go test ./...     # or any module
 
 Each adapter module's `go.mod` also carries a `replace github.com/bide-ai/bide => <rel>`
 so it builds standalone in CI. CI builds and tests every module in its own directory (see
-`.github/workflows/ci.yml`, `MODULES`).
+`.github/workflows/ci.yml`, `MODULES`), except `benchmarks`, which CI does not run.
 
 ## Interim state (pre-1.0)
 

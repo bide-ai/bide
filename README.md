@@ -95,9 +95,10 @@ by `architecture_test.go`). Import it; don't operate it.
 
 And because it is a Go library, one process keeps a very large number of these durable runs in
 flight at once. Agent work is I/O-bound (waiting on model and tool calls), which goroutines absorb
-without a cluster. The [`cmd/bench`](cmd/bench/README.md) harness measures it: 5,000 runs that each
-block ~100ms on the model overlap into **~450ms of wall-clock** on a few thousand goroutines and
-tens of MB. The win is throughput and operational simplicity, not lower latency than the model
+without a cluster. The [`cmd/bench`](cmd/bench/README.md) harness measures it: 20,000 runs, 5,000 in
+flight at a time, each blocking ~100ms on the model, finish in **about half a second (~450ms) of
+wall-clock** on a few thousand goroutines and tens of MB (`go run ./cmd/bench -runs 20000
+-concurrency 5000 -latency 50ms`). The win is throughput and operational simplicity, not lower latency than the model
 (the provider owns per-call latency); at high fan-out the durable store's write throughput is the
 ceiling, not goroutines. Every concurrent run keeps all four guarantees. Reliability under that
 load is built in: per-attempt **timeouts**, retry with backoff that **classifies** transient vs
@@ -109,8 +110,10 @@ For high availability, any node resumes any run from the shared store, and compe
 coordinate through a per-run **lease** (`agent.Lease`): only one process drives a run at a time, a
 crashed holder's lease expires so another node takes it over, and no run is ever double-driven. Like
 guarantee 1, this is verified, not asserted: concurrent-worker mutual exclusion, crash-and-takeover,
-and cross-process at-most-once on Postgres (`ha_e2e_test.go`; the Postgres backend implements the
-lease with a DB-clock upsert).
+and at-most-once under concurrent drivers on the in-memory store (`agent/ha_e2e_test.go`), and
+cross-process at-most-once on Postgres, two store instances sharing one database
+(`TestPostgres_HAAtMostOnceAcrossInstances` in `store/postgres/postgres_test.go`; the Postgres
+backend implements the lease with a DB-clock upsert).
 
 ### 3 · A cryptographically verifiable audit spine, from the same journal
 
@@ -164,8 +167,8 @@ state without a single writer. The claim is precise: *order-independent converge
 replay*, proven, not "agents always agree." The federated result is mechanized in full, including
 asynchronous (chaotic) order-independence.
 
-Made concrete at scale: an integration test drives up to **10,000,000 concurrent governed agents**
-through *random, invariant-violating* orders (every run breaches a capped invariant and is
+Made concrete at scale: an integration test drives up to **10,000,000 governed agents, 2,048 at a
+time,** through *random, invariant-violating* orders (every run breaches a capped invariant and is
 compensated), and asserts that every agent converges to the same valid normal form *and* produces
 an audit proof that verifies offline, in one process with a flat ~3 MB live heap (~13 min,
 ~12.5k agents/s). This is a framework-level test (stub model, in-memory store): it exercises the
@@ -684,14 +687,20 @@ case errors.Is(err, agent.ErrStorage):      // durable-store I/O
 ```
 
 Categories: `ErrConfig`, `ErrModel`, `ErrTool`, `ErrStorage`, `ErrProtocol`, `ErrBudget`.
-Conditions (each wraps a category): `ErrUnknownTool`, `ErrToolArgs`, `ErrToolReinvoked`, `ErrNoRecordedOutput`, `ErrIncompleteResponse`,
-`ErrTruncatedToolArgs`, `ErrBudgetExceeded`, `ErrMaxTurns` (both wrap `ErrBudget`). Every error the
+Conditions (each wraps a category): `ErrUnknownTool`, `ErrToolArgs` (wrap `ErrTool`),
+`ErrToolReinvoked`, `ErrInvalidApproval`, `ErrAlreadyDecided` (wrap `ErrConfig`),
+`ErrNoRecordedOutput`, `ErrIncompleteResponse` (wrap `ErrModel`), `ErrTruncatedToolArgs` (wraps
+`ErrProtocol`), `ErrBudgetExceeded`, `ErrMaxTurns` (wrap `ErrBudget`). Provider adapters also
+return `*RateLimited` (HTTP 429, with a `RetryAfter` hint) and `*APIError` (other non-2xx, with the
+`StatusCode`), both wrapping `ErrModel`. Every error the
 toolkit returns (including from the model, MCP, store, and governance adapters) carries a category,
 so `errors.Is` is reliable across the whole surface.
 
 The **control-flow signals** are richer than a category, so they stay concrete types matched
-with `errors.As`: `*PendingApproval` (approval needed), `*ResumeHalt` (unsafe to resume),
-`*SagaAborted` (rolled back). A paused or halted run is not a "failure" category; inspect the
+with `errors.As`: `*PendingApproval` (approval needed), `*Interrupted` (waiting for human input),
+`*Sleeping` (durable timer pending), `*Awaiting` (waiting for an external signal), `*ResumeHalt`
+(unsafe to resume), `*SagaAborted` (rolled back), and `*HaltTooYoung` (from `ResolveHalt`, when
+`WithMinHaltAge` has not elapsed yet). A paused or halted run is not a "failure" category; inspect the
 struct for `RunID` / `ToolUseID` / compensation details. Cancellation surfaces as the usual
 `context.Canceled` / `context.DeadlineExceeded`.
 
@@ -753,7 +762,7 @@ func RequireTag(tag string) agent.ToolMiddleware {
 Bide is a multi-module repo: a dependency-light **core** (`github.com/bide-ai/bide`,
 the loop, schema, middleware, model adapters, the `plan` flow builder, `audit`, govern; deps are just gsm + `x/sync`) plus one
 module per heavy adapter (`mcp`, `trace`, `store/sqlite`, `store/postgres`, `govern/redislog`,
-`govern/sqlitelog`, `govern/postgreslog`). Import an adapter and you pull its dependency tree; import only the core
+`govern/sqlitelog`, `govern/postgreslog`, `codec/gcf`). Import an adapter and you pull its dependency tree; import only the core
 and you don't. A core-only consumer's external-module surface is 2, not 54. See
 [docs/reference/module-structure.md](docs/reference/module-structure.md).
 

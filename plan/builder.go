@@ -117,7 +117,7 @@ func (c *builderCore) register(n *node) {
 // at-most-once guard (an attempt marker written before the body, the result after),
 // so a crash whose outcome was never recorded HALTS the run (*HaltAmbiguous) rather
 // than re-firing the body. A non-idempotent side effect is therefore safe by default,
-// with no per-step opt-in. See docs/design/expression-surfaces.md.
+// with no per-step opt-in. See docs/guides/flows.md.
 //
 // Pass plan.ReadOnly() or plan.Idempotent() (or the plan.Retryable() alias) to opt
 // a node OUT of that halt: a retry-safe node RE-RUNS its body from the top on an

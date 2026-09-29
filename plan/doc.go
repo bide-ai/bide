@@ -50,6 +50,6 @@
 // a run (Flow.Conform), distinguishing the declared diagram from the diagram
 // agent.RenderMermaid recovers from the journal.
 //
-// See docs/design/expression-surfaces.md for the design and the open points
-// carried by this rung (arm reconvergence and the no-new-executor invariant).
+// See docs/guides/flows.md for the guide, including the limits this package carries
+// (Switch arms do not reconverge; plan adds no executor of its own).
 package plan

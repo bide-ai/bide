@@ -6,6 +6,8 @@
 
 **用 Go 构建持久化 AI 智能体。副作用至多触发一次。**
 
+*一次你能解除的暂停，胜过一次你无法撤销的重复触发。*
+
 一条仅追加（append-only）的日志，带来其他任何智能体框架都无法在单个库中同时提供的四项保证：副作用**至多触发一次**；在**单个进程内、无需集群**即可承载成千上万个并发的持久化运行；一条**可加密验证的审计轨迹**（RFC 6962 Merkle 证明，无需信任厂商即可核验）；以及**可证明收敛**的共享状态。这四项都出自同一套机制，而非四套集成起来的系统，作为一个纯 Go 库交付。专为经手资金、触及记录或在审计之下运行的智能体而生。
 
 **为环境智能体（ambient agent）而生。** 环境智能体在无人值守下运行：它休眠，直到某个触发条件（一个计划任务或一个事件）将其唤醒，随后工作数小时乃至数天，仅在需要判断时才暂停以询问人类，全程无人盯着每一步。恰恰在这种场景下，至多一次、高可用恢复以及可验证的轨迹才从"锦上添花"变成刚需；一个不被观察、独自行动的后台智能体，必须做到崩溃安全、重复触发安全、事后可证明。Bide 为此提供了持久化的生命周期：持久化的 `Sleep`/`WaitUntil` 定时器、用于按时间或事件驱动唤醒的可插拔 `Waker`，以及用于类型化人在回路（human-in-the-loop）的持久化 `Interrupt`/`Resume`，全都建立在同一条日志之上。你负责提供触发源和监督 UI；运行时则保证每一次运行在休眠、崩溃和节点交接之间始终正确。
@@ -30,15 +32,32 @@ eino           maxFired=64   ✗
 
 `maxFired` 是同一个副作用实际执行的最多次数。**1 是正确的；更高就是一次重复扣款。** 这些竞品适配器都经过验证*不是*稻草人（每个都带有一个公平性测试，证明其恢复机制确实有效）。它们全都没有的那一块：在非幂等写入之前写下的持久化**尝试标记（attempt marker）**，以及恢复时的**结果未知即停机（halt-on-unknown-outcome）**：如果一次写入的结果从未被记入日志，运行就会停下来交由人类决定，而不是靠猜。
 
+### 结果未知时，它就停下
+
+至多一次的难点不在于你看得见的崩溃，而在于你看不见的那种：一个副作用的调用已经离开了进程，但它的结果从未抵达日志。尝试标记让一次恢复的运行能区分"从未开始"与"已开始、结果未知"，并按一个固定的层级来解决未知的情形，从不靠猜：
+
+<p align="center">
+  <img src="../../assets/resolution-ladder.png" width="820" alt="结果未知的解决阶梯：可安全重试的副作用会自动重试，由提供商去重；留下了可查询记录的副作用由一个对账器（reconciler）自动解决；真正无法得知的结果则停机并等待人类。在终极的不确定之下，它停下来。">
+</p>
+
+一个工具落在哪一层，取决于它声明的 `Safety`：把它标记为只读、幂等，或给它一个幂等键，未知结果就会自动重试；这些都不声明，它就会停机。可重试安全是需要主动选择的；在你没有主动选择时，暂停就是默认行为，因此一个以"绝不重复触发"为全部意义的库，默认偏向安全而非靠猜。
+
+大多数未知结果根本不会交到人手里：幂等键让提供商对一次安全的重试去重，而对于没有幂等键的系统（邮件、内部服务），一个对账器会根据该步骤留下的记录来解决它（`agent.ResolveHalt`）。人类是兜底，而不是默认。
+
+> [!IMPORTANT]
+> **其下的规则：** 当一个动作经手资金、触及记录或在审计之下发生，而其结果真正无法得知时，停下来就是正确的结果。一次人类或对账器能解除的暂停，胜过一次无人能收回的重复扣款。
+
 ### 2 · 作为库、而非集群的持久化执行
 
 Temporal 拥有这些保证，但需要一个服务器加一支 worker 机群才能运转。而这里，它们来自一个**你本就在运行的存储适配器**（本地用 SQLite，生产用 Postgres）。一个 hello-world 只导入**标准库**：不把 Temporal、gRPC、向量数据库拖进你的二进制文件（由 `architecture_test.go` 强制保证）。导入它，而不是运维它。
 
-而且，因为它是一个 Go 库，单个进程可以同时让数量极其庞大的这类持久化运行处于进行中。智能体的工作是 I/O 密集型的（在等待模型和工具调用），而 goroutine 无需集群即可吸收这类等待。[`cmd/bench`](../../cmd/bench/README.md) 测试工具对此做了测量：5,000 次各自在模型上阻塞约 100ms 的运行，重叠成**约 450ms 的墙钟时间**，跑在几千个 goroutine 和数十 MB 之上。它的优势在于吞吐量和运维简洁性，而不是比模型更低的延迟（每次调用的延迟由提供商决定）；在高扇出下，持久化存储的写入吞吐量才是上限，而非 goroutine。每一个并发运行都保有全部四项保证。这种负载下的可靠性是内建的：按尝试计的**超时**、带退避（backoff）且能**区分**瞬时错误与终结性错误的重试、**对冲式（hedged）**模型调用（同时发起一个备份调用，取先到者，用于降低尾延迟并实现提供商故障切换），以及用于模型和工具调用的**限流器（rate limiter）**（[middleware](../../middleware)、[docs/guides/reliability.md](../../docs/guides/reliability.md)）。
+而且，因为它是一个 Go 库，单个进程可以同时让数量极其庞大的这类持久化运行处于进行中。智能体的工作是 I/O 密集型的（在等待模型和工具调用），而 goroutine 无需集群即可吸收这类等待。[`cmd/bench`](../../cmd/bench/README.md) 测试工具对此做了测量：20,000 次运行，每次同时有 5,000 次处于进行中，每次运行在模型上阻塞约 100ms，在**约半秒（约 450ms）的墙钟时间**内完成，跑在几千个 goroutine 和数十 MB 之上（`go run ./cmd/bench -runs 20000 -concurrency 5000 -latency 50ms`）。它的优势在于吞吐量和运维简洁性，而不是比模型更低的延迟（每次调用的延迟由提供商决定）；在高扇出下，持久化存储的写入吞吐量才是上限，而非 goroutine。每一个并发运行都保有全部四项保证。这种负载下的可靠性是内建的：按尝试计的**超时**、带退避（backoff）且能**区分**瞬时错误与终结性错误的重试、**对冲式（hedged）**模型调用（同时发起一个备份调用，取先到者，用于降低尾延迟并实现提供商故障切换），以及用于模型和工具调用的**限流器（rate limiter）**（[middleware](../../middleware)、[docs/guides/reliability.md](../../docs/guides/reliability.md)）。
 
-为实现高可用，任意节点都能从共享存储恢复任意运行，而相互竞争的驱动方通过一个按运行计的**租约（lease）**（`agent.Lease`）来协调：同一时刻只有一个进程驱动某个运行，崩溃持有者的租约会过期从而由另一个节点接管，任何运行都不会被双重驱动。与保证 1 一样，这是经过验证的，而非断言的：并发 worker 互斥、崩溃接管，以及 Postgres 上的跨进程至多一次（`ha_e2e_test.go`；Postgres 后端用一次 DB 时钟 upsert 实现该租约）。
+为实现高可用，任意节点都能从共享存储恢复任意运行，而相互竞争的驱动方通过一个按运行计的**租约（lease）**（`agent.Lease`）来协调：同一时刻只有一个进程驱动某个运行，崩溃持有者的租约会过期从而由另一个节点接管，任何运行都不会被双重驱动。与保证 1 一样，这是经过验证的，而非断言的：内存存储上的并发 worker 互斥、崩溃接管，以及并发驱动方下的至多一次（`agent/ha_e2e_test.go`），还有 Postgres 上的跨进程至多一次，即两个存储实例共享同一个数据库（`store/postgres/postgres_test.go` 中的 `TestPostgres_HAAtMostOnceAcrossInstances`；Postgres 后端用一次 DB 时钟 upsert 实现该租约）。
 
 ### 3 · 一条可加密验证的审计脊柱，出自同一条日志
+
+<p align="center"><img src="../../assets/merkle.png" width="820" alt="Merkle 包含性证明：一条日志记录（charge）沿其兄弟路径逐级哈希到签名的根，证明该记录处于已承诺的历史之中，而其他记录保持隐藏。"></p>
 
 那条让恢复变得安全的日志*就是*审计记录，并且它以**与证书透明度（Certificate Transparency）所用相同的密码学**加以承诺（[RFC 6962](https://datatracker.ietf.org/doc/html/rfc6962)，已对照发布的参考向量核验）。对受监管买家而言真正重要的区别：这是**可验证的，而非仅仅被记录下来的**。第三方核验一个证明，*无需信任你、你的数据库或你的日志*：
 
@@ -53,7 +72,7 @@ Temporal 拥有这些保证，但需要一个服务器加一支 worker 机群才
 
 受治理的状态层：多个进程重放同一条持久化日志会**收敛到完全相同的状态**，并有一份**机器核验的证明**作后盾。**gsm** 收敛引擎的规范化重写系统是合流的（confluent），因此各步骤重放的顺序无法改变结果。该证明是无公理的，并在 Coq 8.18 与 8.20 上经 CI 验证（`Print Assumptions` 报告 "Closed under the global context"）：[Coq/Rocq 证明](https://github.com/blackwell-systems/normalization-confluence/tree/main/coq)（[![verify](https://github.com/blackwell-systems/normalization-confluence/actions/workflows/verify.yml/badge.svg)](https://github.com/blackwell-systems/normalization-confluence/actions/workflows/verify.yml)）。而且这份证明并不只是躺在代码旁边：gsm 自身对每台机器的判定会被**从该证明中提取出来的两个独立检查器重新认证**（一个从发出的步骤表重新计算收敛性，另一个直接从规则重新计算），因此 gsm 的 Go 验证器里的 bug 不可能让一台非收敛的机器蒙混过关。规则被表达为**可检视的组合子（combinator）数据**，而非不透明的闭包，正是这一点使它们可序列化、可移植、可重新核验；验证还可以以**局部足迹（footprint-local）**的方式运行（`BuildCompositional`），以认证那些全局状态空间大到无法枚举的机器。这就是独立的智能体在没有单一写者的情况下共享状态的方式。这个论断是精确的：*重放的顺序无关收敛性*，已被证明，而非"智能体总能达成一致"。这一联邦化结果被完整地机械化了，包括异步（混沌）顺序无关性。
 
-在规模上具体化：一个集成测试驱动多达 **1,000 万个并发的受治理智能体**，让它们经历*随机的、违反不变量的*顺序（每一次运行都突破一个设了上限的不变量并被补偿），并断言每一个智能体都收敛到同一个有效的规范形式*且*产出一份可离线核验的审计证明，全在单个进程内、以约 3 MB 的扁平活跃堆完成（约 13 分钟，约每秒 1.25 万个智能体）。这是一个框架级的测试（桩模型、内存存储）：它在规模上考验治理和审计机器，而非一个真实的 LLM 或一个生产数据库。见 [docs/testing/testing.md](../../docs/testing/testing.md)。
+在规模上具体化：一个集成测试驱动多达 **1,000 万个受治理智能体，每次 2,048 个**，让它们经历*随机的、违反不变量的*顺序（每一次运行都突破一个设了上限的不变量并被补偿），并断言每一个智能体都收敛到同一个有效的规范形式*且*产出一份可离线核验的审计证明，全在单个进程内、以约 3 MB 的扁平活跃堆完成（约 13 分钟，约每秒 1.25 万个智能体）。这是一个框架级的测试（桩模型、内存存储）：它在规模上考验治理和审计机器，而非一个真实的 LLM 或一个生产数据库。见 [docs/testing/testing.md](../../docs/testing/testing.md)。
 
 ### 与持久化执行及智能体运行时的对比
 
@@ -76,7 +95,7 @@ Temporal 拥有这些保证，但需要一个服务器加一支 worker 机群才
 
 ## Graphs（图）
 
-大多数智能体框架把图当作你要去手写的东西：节点、边、一个状态对象，有时还有一个可视化构建器。Bide 不这样，而其理由是精确的，而非意识形态的。
+大多数智能体框架把图当作*基础*：既是你必须手写的东西，也是被执行的东西，带有节点、边、一个状态对象，有时上面还有一个可视化构建器。Bide 把这一点倒了过来。同样的手写表面都可用，直至并包括一个可视化构建器，但它们是你在一个纯 Go 日志底座之上选择的层，而从来不是基座。其理由是精确的，而非意识形态的。
 
 图不增添任何表达力。图能计算的任何东西，普通控制流都能计算：一个计算图就是一个控制流图，而顺序、选择和迭代足以表达其中任意一个。不存在哪种智能体行为你能用节点-边的图搭出来、却不能用 `if`、`for` 和函数写出来。图增添的不是能力，而是*具象化（reification）*：一份对流程的一等表示，你可以检视它、可视化它、静态校验它，并在代码之外去手写它。那确实有用，但它是一个工具层，而非一个基础，且构建智能体并不需要它。
 
@@ -86,13 +105,76 @@ Temporal 拥有这些保证，但需要一个服务器加一支 worker 机群才
 
 对一个问责型运行时来说，方向同样重要。一份手写的图是一张你信任的示意图；一份派生的图是从日志中重建的，因此它恰恰是运行过的东西。`plan` 层把两者系在一起：`Topology()` 和 `RenderMermaid()` 暴露所声明的形状，而 `Conform()` 以密码学方式核验一次运行是否遵循了它所声明的拓扑，这与系统其余部分是同一种"核验、不信任"的立场。让任何这样的层都无法分叉运行时的规则是：一个新表面可以增添一种手写方式，绝不增添一种执行方式；每一层都下沉到那一个由日志支撑的运行时。见 [docs/guides/flows.md](../../docs/guides/flows.md)。
 
+### 三种手写方式，一个运行时
+
+同一个订单分拣流程，三种写法。纯 Go 是默认方式：写普通的控制流，并为日志必须保证崩溃安全的那些步骤命名。
+
+```go
+// classify, then branch: rush orders reserve-then-finalize, the rest decline.
+assess, _ := agent.Step(ctx, store, "order-42", "classify",
+    func(ctx context.Context) (Assessment, error) { return classify(order) },
+    agent.StepSafety(agent.Safety{ReadOnly: true})) // safe to re-run after a crash
+
+var receipt Receipt
+if assess.Rush {
+    res, _ := agent.Step(ctx, store, "order-42", "reserve", // a side effect: at most once
+        func(ctx context.Context) (Reservation, error) { return reserve(assess) })
+    receipt, _ = agent.Step(ctx, store, "order-42", "finalize",
+        func(ctx context.Context) (Receipt, error) { return finalize(res) })
+} else {
+    receipt, _ = agent.Step(ctx, store, "order-42", "decline",
+        func(ctx context.Context) (Receipt, error) { return decline(assess) })
+}
+```
+
+当你想把同一个流程作为一件一等的、可检视的工件时，`plan` 构建器把类型化的节点接入一个下沉到同一运行时的 `Flow`：
+
+```go
+b := plan.New[Order, Receipt]("order-triage")
+classify := b.Step("classify", func(o Order) (Assessment, error) { ... })
+reserve  := b.Step("reserve",  func(a Assessment) (Reservation, error) { ... }) // non-idempotent
+finalize := b.Step("finalize", func(r Reservation) (Receipt, error) { ... })
+decline  := b.Step("decline",  func(a Assessment) (Receipt, error) { ... })
+
+b.Switch(classify,
+    plan.When(func(a Assessment) bool { return a.Rush }, reserve),
+    plan.Else(decline),
+)
+b.Edge(reserve, finalize)
+
+flow, err := b.Build() // inherits at-most-once and the audit trail
+```
+
+或者把同一份拓扑写成声明式配置，供更高的一层（一个可视化构建器）发出，并用 `plan.Load` 加载：
+
+```json
+{
+  "flow": "order-triage",
+  "entry": "classify",
+  "nodes": [
+    {"name": "classify", "block": "classify"}, {"name": "reserve", "block": "reserve"},
+    {"name": "finalize", "block": "finalize"}, {"name": "decline", "block": "decline"}
+  ],
+  "wiring": [
+    {"switch": "classify", "when": [{"pred": "rush", "to": "reserve"}], "else": "decline"},
+    {"edge": ["reserve", "finalize"]}
+  ]
+}
+```
+
+```go
+flow, err := plan.Load[Order, Receipt](configBytes, reg) // same topology, same Digest()
+```
+
+三者都下沉到那一个由日志支撑的运行时，因此无论你选哪个表面，至多一次、高可用恢复和可验证的轨迹都免费获得。
+
 ## 环境运行：持久化的休眠、唤醒与中断
 
 上文的四项保证是底座；这是它们所使能的生命周期。一次环境运行并不待在一个同步的聊天循环里。它休眠，在某个触发下唤醒，为一个人类暂停，而其中每一次转换都是日志上一个持久化、至多一次的步骤，因此运行能在它们之间幸免于崩溃和节点交接。
 
 - **休眠至某个截止时刻。** `Sleep`/`WaitUntil` 暂停一次运行并把它的唤醒时间记入日志，从而暂停能挺过一次重启。在唤醒时刻重新调用会恰好一次地恢复。
 - **按时间或事件唤醒。** 一个可插拔的 `Waker`（默认是进程内的 `MemWaker`）重新调用一个到期的运行；触发源是你的（一个进程内循环、一个 cron、一个队列、一个入站 webhook），因此同一底座既驱动计划型、也驱动事件驱动型的智能体。
-- **为一个人类持久化地中断。** `Interrupt[T]`/`Resume` 在任意点暂停一次运行以请求一个类型化的决定，并以人类的回答作为一个记入日志的步骤来恢复（见 [Human-in-the-loop（人在回路）](#human-in-the-loop人在回路)）。批准/拒绝是那个布尔的特例。
+- **为一个人类持久化地中断。** `Interrupt[T]`/`Resume` 在任意点暂停一次运行以请求一个类型化的决定，并以人类的回答作为一个记入日志的步骤来恢复（见 [Human-in-the-loop（人在回路）](#人在回路human-in-the-loop)）。批准/拒绝是那个布尔的特例。
 
 你提供触发源和监督表面；运行时保证运行在每一次休眠、唤醒、中断、崩溃和交接之间始终正确。可在 `examples/signals`（把一个事件投递进一个等待中的运行）、`examples/interrupt`（人在回路的暂停/恢复）和 `examples/recover`（持久化恢复）中运行。见[信号与环境指南](../../docs/guides/signals.md)。
 
@@ -219,7 +301,7 @@ w, err := agent.RunTyped[Weather](ctx, a, runID, "weather in SF?")
 // w.City == "SF", w.TempF == 68
 ```
 
-它是一个包函数，而非一个方法（Go 的方法不能添加类型参数）。该值是从*记入日志的*工具调用中解码出来的，所以它是**恢复安全的**：一次运行中途的崩溃会在恢复时从日志中把类型化的答案找回来。如果模型以纯 JSON 文本回复而没有调用该工具，`RunTyped` 会退回到解析那段文本。`T` 意在是一个结构体。
+它是一个包函数，而非一个方法（Go 的方法不能添加类型参数）。该值是从*记入日志的*工具调用中解码出来的，所以它是**恢复安全的**：一次运行中途的崩溃会在恢复时从日志中把类型化的答案找回来。该工具接受的第一次 `final_answer` 调用即结束本次运行。只有当模型从未发出这样的调用（而是以纯 JSON 文本回复）时，`RunTyped` 才会解析那段文本。`T` 意在是一个结构体。
 
 在支持严格结构化输出的 OpenAI 兼容提供商上，`RunTypedNative[T]` 使用提供商原生的 JSON-schema 响应格式而非工具（schema 在提供商侧强制执行，无需工具往返）；Anthropic 会忽略它，所以在那里请用 `RunTyped` 以获得与提供商无关的输出。
 
@@ -242,7 +324,7 @@ a := agent.New(model, store, tools...).
 model := anthropic.New(key, anthropic.WithPromptCache())
 ```
 
-这会在系统块和工具定义上放置 `cache_control` 断点。OpenAI 自动缓存前缀（无需标志）。无论哪种方式，缓存效果都会体现在 `agent.Usage` 中（`CacheReadTokens`，自缓存供给；`CacheWriteTokens`，写入缓存），因此像 `trace.Model` 和成本核算这样的中间件看到的是真实数字。
+这会在系统块和工具定义上放置 `cache_control` 断点。OpenAI 自动缓存前缀（无需标志）。无论哪种方式，缓存效果都会体现在 `agent.Usage` 中（`CacheReadTokens`，自缓存供给；`CacheWriteTokens`，写入缓存），因此成本核算、追踪以及本次运行的 token 预算看到的都是真实数字。
 
 ## 会话（多轮）
 
@@ -254,7 +336,7 @@ a1, _ := s.Send(ctx, "what's the capital of France?")
 a2, _ := s.Send(ctx, "and its population?")   // sees turn 1 in context
 ```
 
-记录按会话 id 逐轮记入日志，因此一个重启的进程 `a.Session(ctx, "user-42")` 会把它重建出来并继续。第 N 轮在 `"<id>/tN"` 之下运行（它自己的持久化日志处理该轮*之内*的崩溃恢复）；对话记忆是问答记录：一轮的中间工具调用留在那一轮里，不会泄漏进后面的轮次。如果一轮暂停了（批准 / `Interrupt`），`Send` 会返回那个错误；解决它，然后用相同的输入再次调用 `Send` 以恢复。
+记录按会话 id 逐轮记入日志，因此一个重启的进程 `a.Session(ctx, "user-42")` 会把它重建出来并继续。第 N 轮在 `"<id>/tN"` 之下运行（它自己的持久化日志处理该轮*之内*的崩溃恢复）；对话记忆是问答记录：一轮的中间工具调用留在那一轮里，不会泄漏进后面的轮次。如果一轮暂停了（批准 / `Interrupt`），`Send` 会返回那个错误；解决它，然后用相同的输入再次调用 `Send` 以恢复。在此之前，用一条不同的消息调用 `Send` 会返回 `ErrConfig`：那个未完成的轮次属于它自己的消息。对于可能被重投递的入站消息，`SendOnce(ctx, id, text)` 对每个消息 id 只回答一次。同一个会话上的多个句柄既不会丢失任何一轮，也不会用另一条消息的回复来回答某条消息。
 
 ## 可审计性（防篡改日志）
 
@@ -308,11 +390,11 @@ agent.Safety{RequiresApproval: true}  // pause for human approval before executi
 
 该测试工具是导出的（`chaos/`），并在 `benchmarks/` 中被指向其他 SDK。实测结果：**Bide `maxFired=1`（通过）；trpc-agent-go `maxFired=5`；langchaingo `maxFired=64`（两者均失败）。** trpc 的检查点/恢复确实有效（已验证：恢复一次已完成的运行是一个空操作）；它的双重触发是那个有文档记载的 LangGraph"节点必须幂等"窗口。langchaingo 完全没有持久性，所以重试会把一切重新运行。Bide 的尝试标记把那个窗口彻底关闭。
 
-`WithMaxTurns(n)` 为每次运行的模型轮次设上限，使一个不停调用工具的模型无法永远循环下去：触及它会返回 `ErrMaxTurns`（它是 `errors.Is` `ErrBudget` 的）。
+`WithMaxTurns(n)` 为每次运行的模型轮次设上限，使一个不停调用工具的模型无法永远循环下去：触及它会返回 `ErrMaxTurns`（它是 `errors.Is` `ErrBudget` 的）。`WithTokenBudget(n)` 为一次运行可使用的 token 设上限，缓存的输入也计算在内：一旦运行已用掉 `n`，它就不再发起任何模型调用，并返回 `ErrBudgetExceeded`。每次调用的用量都随其轮次记入日志，因此两项限制都从日志中重建，并在崩溃与恢复之后依然成立。
 
 ## 人在回路（Human-in-the-loop）
 
-两种风味。**批准/拒绝**：一个标记了 `RequiresApproval` 的工具在运行*之前*暂停；人类的决定是一个布尔：
+三种风味。**批准/拒绝**：一个标记了 `RequiresApproval` 的工具在运行*之前*暂停；人类的决定是一个布尔：
 
 ```go
 _, err := a.Run(ctx, runID, input)
@@ -347,6 +429,21 @@ if errors.As(err, &intr) {
 
 两者都是持久化的：那个决定/值是一个记入日志的步骤，所以它挺得过一次崩溃。Interrupt 必须处于一个可重试安全的工具中（`ReadOnly`/`Idempotent`）：恢复时该工具会一直重新运行直到中断被解决，所以 `Interrupt` 调用之前的一切都必须是可安全重复的。
 
+**m-of-n 批准**：当一次签核不够时，要求来自一个具名的 n 位批准人集合中的 k 份签名决定。每位批准人签署的是确切的那次调用（工具及其参数）；该门在达到 k 份批准时放行，一旦 k 不再可达就拒绝，否则带着当前计票暂停。一份伪造或出错的决定会被忽略，而不会把它的批准人锁在门外：
+
+```go
+refund := agent.Func("refund", "refund the order",
+	agent.Safety{Approval: &agent.ApprovalPolicy{Need: 2, Approvers: []string{"ops", "finance", "risk"}}},
+	doRefund)
+a := agent.New(model, store, refund).WithApproverVerifiers(keysByApprover)
+
+// each approver, out of band, signs the paused call they were shown:
+sig, _ := signer.Sign(agent.ApprovalDecisionBytes(pend.Subject(), "finance", true))
+agent.ApproveAs(ctx, store, pend.RunID, pend.ToolUseID, "finance", true, sig)
+```
+
+然后，`audit.ApprovalEvidence` 与 `audit.VerifyApprovals`（或 `bide-audit verify-approvals`）离线证明：k 位具名批准人在这次确切的调用运行*之前*、依照预期的策略签核了它，所依据的证据不可能在不被察觉的情况下漏掉任何一份决定。见[批准指南](../../docs/guides/approval.md)；可跨独立进程在 `examples/approval` 中运行。
+
 ## 错误
 
 失败以哨兵错误（sentinel error）来分类，由 `errors.Is` 匹配，这是标准库的惯用法，没有自定义的错误框架。两层：一个**类别（category）**（粗粒度的类）和一个**条件（condition）**（一个具体的成因），后者包裹其类别，因此匹配可以在你需要的任一层级上工作：
@@ -363,9 +460,9 @@ case errors.Is(err, agent.ErrStorage):      // durable-store I/O
 }
 ```
 
-类别：`ErrConfig`、`ErrModel`、`ErrTool`、`ErrStorage`、`ErrProtocol`、`ErrBudget`。条件（每一个都包裹一个类别）：`ErrUnknownTool`、`ErrToolArgs`、`ErrToolReinvoked`、`ErrNoRecordedOutput`、`ErrIncompleteResponse`、`ErrTruncatedToolArgs`、`ErrBudgetExceeded`、`ErrMaxTurns`（后两者都包裹 `ErrBudget`）。该工具包返回的每一个错误（包括来自模型、MCP、存储和治理适配器的）都带有一个类别，所以 `errors.Is` 在整个表面上都是可靠的。
+类别：`ErrConfig`、`ErrModel`、`ErrTool`、`ErrStorage`、`ErrProtocol`、`ErrBudget`。条件（每一个都包裹一个类别）：`ErrUnknownTool`、`ErrToolArgs`（包裹 `ErrTool`）；`ErrToolReinvoked`、`ErrInvalidApproval`、`ErrAlreadyDecided`（包裹 `ErrConfig`）；`ErrNoRecordedOutput`、`ErrIncompleteResponse`（包裹 `ErrModel`）；`ErrTruncatedToolArgs`（包裹 `ErrProtocol`）；`ErrBudgetExceeded`、`ErrMaxTurns`（包裹 `ErrBudget`）。提供商适配器还会返回 `*RateLimited`（HTTP 429，附带一个 `RetryAfter` 提示）和 `*APIError`（其他非 2xx，附带 `StatusCode`），两者都包裹 `ErrModel`。该工具包返回的每一个错误（包括来自模型、MCP、存储和治理适配器的）都带有一个类别，所以 `errors.Is` 在整个表面上都是可靠的。
 
-而**控制流信号**比一个类别更丰富，所以它们保持为具体类型，由 `errors.As` 匹配：`*PendingApproval`（需要批准）、`*ResumeHalt`（恢复不安全）、`*SagaAborted`（已回滚）。一个暂停或停机的运行不是一个"失败"类别；检视那个结构体以获取 `RunID` / `ToolUseID` / 补偿细节。取消以通常的 `context.Canceled` / `context.DeadlineExceeded` 浮现。
+而**控制流信号**比一个类别更丰富，所以它们保持为具体类型，由 `errors.As` 匹配：`*PendingApproval`（需要批准）、`*Interrupted`（等待人类输入）、`*Sleeping`（持久化定时器待触发）、`*Awaiting`（等待一个外部信号）、`*ResumeHalt`（恢复不安全）、`*SagaAborted`（已回滚），以及 `*HaltTooYoung`（来自 `ResolveHalt`，当 `WithMinHaltAge` 尚未到期时）。一个暂停或停机的运行不是一个"失败"类别；检视那个结构体以获取 `RunID` / `ToolUseID` / 补偿细节。取消以通常的 `context.Canceled` / `context.DeadlineExceeded` 浮现。
 
 ## 中间件与可观测性
 
@@ -391,7 +488,7 @@ a.UseTool(trace.Tool(tracer)) // execute_tool span per call; nests across the su
 
 因为 `trace.Tool` 在循环内部运行，它的 span 处于交给工具的上下文中，所以当一个工具本身就是一个子智能体时，该子智能体的运行及其自己的 span 会作为子级嵌套。该 trace 自动跨越子智能体边界（这是 ADK / AgenticGoKit / trpc-agent-go 的一个缺口）。
 
-工具中间件在持久化步骤*内部*运行，所以一次短路（一次 `ToolCache` 命中）或一次策略拒绝会像任何工具结果一样被记入日志；恢复会重放它，绝不重新运行中间件或工具。用 `agent.ToolMiddleware` 签名写你自己的：
+工具中间件在持久化步骤*内部*运行，所以一次短路（一次 `ToolCache` 命中）或一次策略拒绝会像任何工具结果一样被记入日志；恢复会重放它，绝不重新运行中间件或工具。`ToolRetry` 和 `ToolCache` 只作用于 `Safety` 允许的工具（分别是可重试安全的和 `ReadOnly` 的），而无论中间件做什么，智能体对一个不可重试安全的工具每次调用至多运行一次。用 `agent.ToolMiddleware` 签名写你自己的：
 
 ```go
 // Deny a tool by policy: the tool never executes; the model sees the error and reacts.
@@ -409,7 +506,7 @@ func RequireTag(tag string) agent.ToolMiddleware {
 
 ## 模块
 
-Bide 是一个多模块仓库：一个依赖精简的**核心**（`github.com/bide-ai/bide`，即循环、schema、中间件、模型适配器、`plan` 流程构建器、`audit`、govern；依赖仅有 gsm + `x/sync`），外加每个重型适配器一个模块（`mcp`、`trace`、`store/sqlite`、`store/postgres`、`govern/redislog`、`govern/sqlitelog`、`govern/postgreslog`）。导入一个适配器，你就拉进它的依赖树；只导入核心，你就不会。一个仅用核心的消费者，其外部模块表面是 2，而不是 54。见 [docs/reference/module-structure.md](../../docs/reference/module-structure.md)。
+Bide 是一个多模块仓库：一个依赖精简的**核心**（`github.com/bide-ai/bide`，即循环、schema、中间件、模型适配器、`plan` 流程构建器、`audit`、govern；依赖仅有 gsm + `x/sync`），外加每个重型适配器一个模块（`mcp`、`trace`、`store/sqlite`、`store/postgres`、`govern/redislog`、`govern/sqlitelog`、`govern/postgreslog`、`codec/gcf`）。导入一个适配器，你就拉进它的依赖树；只导入核心，你就不会。一个仅用核心的消费者，其外部模块表面是 2，而不是 54。见 [docs/reference/module-structure.md](../../docs/reference/module-structure.md)。
 
 ## 架构
 
@@ -447,24 +544,36 @@ tool := govern.EventTool(gov, "pay", "mark the order paid", "pay", agent.Safety{
 
 ## 指南
 
-初来乍到？从 **[Getting started（入门）](../../docs/getting-started.md)** 开始，用 **[文档索引](../../docs/README.md)** 获取完整地图，并参见 **[Concepts（概念）](../../docs/CONCEPTS.md)** 了解词汇（journal、at-most-once、lease、Waker、gsm、ProofBundle）。精确的持久性保证陈述于 **[docs/GUARANTEE.md](../../docs/GUARANTEE.md)**，其边界见 **[docs/KNOWN-LIMITATIONS.md](../../docs/KNOWN-LIMITATIONS.md)**。
+初来乍到？从 **[入门](../../docs/getting-started.md)** 开始，用 **[文档索引](../../docs/README.md)** 获取完整地图，并参见 **[概念](../../docs/CONCEPTS.md)** 了解词汇（journal、at-most-once、lease、Waker、gsm、ProofBundle）。精确的持久性保证陈述于 **[保证](../../docs/GUARANTEE.md)**，其边界见 **[已知限制](../../docs/KNOWN-LIMITATIONS.md)**。
 
-- **[docs/guides/flows.md](../../docs/guides/flows.md)**：`plan` 类型化流程构建器，用于当你想手写拓扑而非纯 Go 的时候。把类型化节点（`Step` / `Tool` / `Model` / `Switch` / `Join` / 有界的 `LoopBack`）接入一个下沉到同一条日志的 `Flow`（继承至多一次和审计），或从声明式配置加载同一个流程（`plan.Load`）。`Topology` / `RenderMermaid` 暴露形状；`Conform` 证明一次运行遵循了它所声明的拓扑。可在 `examples/plan` 中运行。
-- **[docs/guides/reliability.md](../../docs/guides/reliability.md)**：可靠性中间件：按尝试计的超时、分类的重试（`Retry` / `Retryable`）、对冲式模型调用（`Hedge`，同时发起一个备份以降低尾延迟并实现提供商故障切换）、限流和成本跟踪，以及它们如何组合。可在 `examples/hedge` 中运行。
-- **[docs/guides/durable-steps.md](../../docs/guides/durable-steps.md)**：在同一底座上组合你自己的持久化工作。`Step`（一个具名的持久化操作）、`Parallel` / `Task`（用于并行检查然后决定的流水线的持久化扇入），以及 saga（`RunSaga` / `CompensatedFunc`，逆序补偿）。持久化定时器（`Sleep` / `WaitUntil`）把一次运行暂停到一个墙钟截止时刻，并经由可插拔的 `Waker`（`MemWaker`）恢复它。可在 `examples/parallel` 中运行。
-- **[docs/guides/signals.md](../../docs/guides/signals.md)**：把外部事件接收进一次运行。持久化定时器（`Sleep` / `WaitUntil`）和 `Waker`、人在回路（`Interrupt` / `Resume`），以及持久化信号（`Signal` / `Await` / `AwaitFor`，有序通道 `Send` / `Receive` / `Ack`）：传输进来是至少一次，应用出去是恰好一次。可在 `examples/signals`、`examples/interrupt`、`examples/recover` 中运行。
-- **[docs/guides/observability.md](../../docs/guides/observability.md)**：一行搞定 OTel gen_ai span（`trace.Instrument`）：invoke_agent / chat / execute_tool 分类法、子智能体 span 嵌套、span 上的 token 到成本（`WithRates`），以及内容捕获的隐私默认值。可在 `examples/observability` 中运行。
-- **[docs/guides/audit.md](../../docs/guides/audit.md#proof-carrying-runs)**：带证明的运行。一次运行随附一份可移植的 `RunCertificate`，就整次运行断言行为属性合规性（only-approved-policies、policies-convergence-certified），由现有审计原语组合而成，并可用 `CertifyRun` / `VerifyRun` 或 `bide-audit verify-run` CLI，对照单个签名树头离线核验。可在 `examples/proof-carrying-run` 中运行。
-- **[docs/guides/delegation.md](../../docs/guides/delegation.md)**：签名授权与衰减式委派。一个父级铸造一份子智能体只能收窄的能力授权（`Grant` / `SignGrant` / `AttenuatingSubAgent`），`VerifyDelegationChain` 离线核验整条链，而 `EarnedAuthority` 依据一份干净的审计轨迹拓宽一个主体的范围，并在一个异常出现的那一刻将其撤销，始终受父级授权约束。`agent.Identity` 把行动主体绑定进每一片受治理的叶子。可在 `examples/delegation`、`examples/authority`、`examples/earned-authority` 中运行。
-- **[docs/guides/security-model.md](../../docs/guides/security-model.md)**：密码学保证及其确切范围：完整性、真实性、防篡改性、不可否认性和选择性披露，以及什么被明确排除在外（机密性：叶子不加密）。在依赖审计轨迹之前请读这个。
-- **[docs/guides/governance.md](../../docs/guides/governance.md)**：Tier-2 受治理状态底座（gsm）。当许多独立运行的智能体必须在没有中央协调者的情况下就共享状态达成一致时：把状态描述为一个注册表（变量 + 不变量 + 事件），而 `Build()` 在构建时证明每一种交错都收敛到同一个有效状态，否则交还一个反例。涵盖 saga 与治理的抉择、prevent/repair/halt、联邦和合成。可在 `examples/mesh`、`examples/compose` 中运行。
-- **[docs/guides/quorum.md](../../docs/guides/quorum.md)**：受治理的 k-of-n 模型一致。`govern.Quorum` 在 `agent.Parallel` 之上运行若干模型，并仅在 k 个达成一致时才准入一个答案，计票锚定在日志中并可经由 `bide-audit verify-quorum` 离线重新核对。可在 `examples/quorum` 中运行。
-- **[docs/guides/models.md](../../docs/guides/models.md)**：三个模型适配器（Anthropic、OpenAI 兼容、Gemini）：构造器选项与默认值、用于任意 OpenAI 兼容或 Vertex 端点的 `WithBaseURL`、按提供商的采样映射、提示缓存和用量核算、类型化错误浮现（`RateLimited` / `APIError`），以及多模态图像输入（`UserParts` / `Image`）。
-- **[docs/guides/mcp.md](../../docs/guides/mcp.md)**：Model Context Protocol 集成。作为一个运行时工具源连接到一个 MCP 服务器，发现它的工具，并从注解到 `Safety` 的映射继承副作用安全的恢复。
-- **[docs/guides/debugging.md](../../docs/guides/debugging.md)**：确定性重放（`Replay`）、持久化语义事件重建（`ReplayEvents`），以及用于时间旅行调试、回归和评测的 Mermaid 运行图（`RenderMermaid`）。崩溃恢复在一次重启后重新驱动被中断的运行：`Recover` 枚举一个存储的各次运行（`Lister`），跳过已完成的（`IsComplete`），并恢复其余的，把一次持久化暂停当作成功而非失败。
-- **[docs/reference/extension-points.md](../../docs/reference/extension-points.md)**：该框架赖以构建的端口与适配器（`Model`、`Durable`、`Tool`、`Compensator`、`Retriever`、`Anchor`、`EventStore`），附一个"实现你自己的存储"的演练。
-- **[docs/design/compaction.md](../../docs/design/compaction.md)**：带证明连续性的日志压紧（一份设计说明）：一条无界的日志如何能在不破坏审计脊柱的包含性和一致性证明的前提下被压紧。
-- **[docs/guides/messaging.md](../../docs/guides/messaging.md)**：从一个入站消息 webhook（Slack、Telegram、WhatsApp、SMS、Discord）驱动一个智能体，而不在核心里搭载传输代码：那种重投递安全的幂等模式，其中持久化日志让一个被重试的 webhook 重放，而非双重触发一个副作用。可在 `examples/webhook` 中运行。
-- **[docs/testing/testing.md](../../docs/testing/testing.md)**：测试了什么以及如何测试，混沌崩溃注入基准（公平的，非稻草人）、差分预言机检查、规模上的收敛与可追溯性（附实测数字及其边界）、RFC 6962 一致性、运行它的命令，以及统计性的 `eval` 包（Wilson 置信区间、轨迹指标、经显著性检验的回归 `Compare`、`RequiredRuns` 功效定量、分层的 `ByTag`），附那条把一个通过率与一个保证区分开来的可证明与统计边界。
+**手写与构建**
 
-> 治理层的文档见 [docs/guides/governance.md](../../docs/guides/governance.md)。
+- **[流程](../../docs/guides/flows.md)**：`plan` 类型化流程构建器。手写下沉到同一条日志的拓扑（`Step`/`Tool`/`Model`/`Switch`/`Join`/`LoopBack`），然后证明一次运行遵循了它（`Conform`）。可在 `examples/plan` 中运行。
+- **[持久化步骤](../../docs/guides/durable-steps.md)**：组合你自己的持久化工作：`Step`、`Parallel`/`Task` 扇入、saga（`RunSaga`）以及持久化定时器（`Sleep`/`WaitUntil`）。可在 `examples/parallel` 中运行。
+- **[可靠性](../../docs/guides/reliability.md)**：按尝试计的超时、分类的重试、对冲式模型调用、限流和成本跟踪，以及它们如何组合。可在 `examples/hedge` 中运行。
+- **[信号与环境运行](../../docs/guides/signals.md)**：把外部事件接收进一次运行：持久化定时器和 `Waker`、人在回路（`Interrupt`/`Resume`），以及持久化信号（传输进来是至少一次，应用出去是恰好一次）。可在 `examples/signals`、`examples/interrupt` 中运行。
+- **[模型](../../docs/guides/models.md)**：Anthropic、OpenAI 兼容和 Gemini 适配器：`WithBaseURL`、采样、提示缓存、类型化错误和多模态图像输入。
+- **[MCP](../../docs/guides/mcp.md)**：把一个 MCP 服务器作为运行时工具源接入，并具备副作用安全的恢复；一个受信任服务器的工具注解可以把工具标记为可安全重新运行。
+- **[可观测性](../../docs/guides/observability.md)**：一行搞定 OTel gen_ai span（`trace.Instrument`）：span 分类法、子智能体嵌套、token 到成本，以及内容捕获的隐私默认值。可在 `examples/observability` 中运行。
+- **[消息](../../docs/guides/messaging.md)**：从一个入站 webhook（Slack、Telegram、SMS、Discord）驱动一个智能体，且重投递安全：一个被重试的 webhook 会重放，而不是重复触发。可在 `examples/webhook` 中运行。
+- **[调试与恢复](../../docs/guides/debugging.md)**：确定性重放（`Replay`）、事件重建（`ReplayEvents`）、Mermaid 运行图，以及重新驱动被中断运行的崩溃恢复（`Recover`）。
+
+**问责与治理**
+
+- **[审计](../../docs/guides/audit.md)**：带证明的运行。一次运行随附一份可移植的 `RunCertificate`，可用 `bide-audit verify-run` 离线核验。可在 `examples/proof-carrying-run` 中运行。
+- **[委派](../../docs/guides/delegation.md)**：子智能体只能收窄的签名能力授权（`Grant`/`SignGrant`），离线核验（`VerifyDelegationChain`），外加从一份干净轨迹中赢得的权限。可在 `examples/delegation`、`examples/authority` 中运行。
+- **[安全模型](../../docs/guides/security-model.md)**：密码学保证的确切范围（完整性、真实性、防篡改性、不可否认性、选择性披露）以及范围之外的内容（机密性）。在依赖审计轨迹之前请读这个。
+- **[治理](../../docs/guides/governance.md)**：Tier-2 受治理状态底座（gsm）。把共享状态描述为一个注册表，而 `Build()` 证明每一种交错都收敛，否则返回一个反例。可在 `examples/mesh`、`examples/compose` 中运行。
+- **[批准](../../docs/guides/approval.md)**：工具运行之前的持久化人类签核，从 1-of-1 到签名的 m-of-n（`ApprovalPolicy`、`ApproveAs`），并离线证明 k 位具名批准人在动作之前批准了它（`audit.ApprovalEvidence`、`audit.VerifyApprovals`）。可在 `examples/approval` 中运行。
+- **[法定人数](../../docs/guides/quorum.md)**：受治理的 k-of-n 模型一致（`govern.Quorum`），计票锚定在日志中并可离线重新核对（`bide-audit verify-quorum`）。可在 `examples/quorum` 中运行。
+
+**参考与内部机制**
+
+- **[扩展点](../../docs/reference/extension-points.md)**：端口与适配器（`Model`、`Durable`、`Tool`、`Compensator`、`Retriever`、`Anchor`、`EventStore`），附一个"实现你自己的存储"的演练。
+- **[bide 如何被验证](../../docs/testing/verification.md)**：没有失败测试就没有修复、变异检查、崩溃与取消扫描、强制交错、一致性测试套件，以及 CI 强制执行的内容。
+- **[测试与证据](../../docs/testing/testing.md)**：测试了什么以及如何测试、混沌崩溃注入基准、差分预言机、RFC 6962 一致性，以及 `eval` 包中可证明与统计之间的边界。
+- **[日志压紧](../../docs/design/compaction.md)**（设计说明）：在不破坏审计脊柱的包含性和一致性证明的前提下，压紧一条无界的日志。
+
+## 联系方式
+
+问题、反馈，或有意使用 bide：**dayna@blackwell-systems.com**。安全问题请通过 [SECURITY.md](../../SECURITY.md)（私下报告）提交。

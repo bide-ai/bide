@@ -15,7 +15,7 @@ Where the implementation refined this design:
 - **Path isolation.** An `ApproveAs` decision never satisfies a 1-of-1 gate, and an `Approve`
   decision never counts toward an m-of-n tally.
 - **Declarative config.** The `approval` block loads onto `Safety.Approval`, but the `plan` runtime
-  does not enforce the gate yet.
+  does not enforce the gate yet, so `plan` Build refuses a flow that declares one (`ErrConfig`).
 - **v2 decisions and evidence** (below). The first implementation followed this document's "first
   decision per approver wins" literally, and an end-to-end test found that it let a bad record lock
   an approver out. v2 closes that and three related gaps.
@@ -162,6 +162,9 @@ rule as 1-of-1 `Approve`). Only decisions from eligible approvers with a valid s
 
 ## API
 
+The code blocks below show the shipped signatures and types. The prose around them is the original
+design; where the implementation refined it, the notes at the top and the v2 section govern.
+
 ### Policy on the tool (`agent/tool.go`)
 
 `Safety` gains one optional field. `nil` keeps today's exact 1-of-1 behavior, so the change is
@@ -188,38 +191,49 @@ type ApprovalPolicy struct {
 
 The gate predicate becomes `RequiresApproval || Approval != nil`.
 
-### Recording a decision (`agent/store.go`)
+### Recording a decision (`agent/approval.go`)
 
 ```go
-// ApproveAs records one named approver's decision for a tool call, idempotent per
-// (runID, toolUseID, approverID). sig is the approver's signature over the decision; the
-// core verifies it against the approver's registered key and ignores unverifiable or
-// ineligible decisions in the tally. After enough decisions land, re-run with the same runID.
-func ApproveAs(ctx context.Context, d Durable, runID, toolUseID, approverID string, approved bool, sig []byte) error
+// ApproveAs records one named approver's signed decision on a tool call gated by an m-of-n
+// Approval policy. sig is the approver's signature over
+// ApprovalDecisionBytes(pend.Subject(), approverID, approved). Each distinct decision is its own
+// journal record; the gate counts each approver's first valid decision and ignores the rest.
+// WithDecisionCheck verifies the decision at submission and records nothing if it would not count
+// (ErrInvalidApproval, ErrAlreadyDecided). After enough decisions land, re-run with the same runID.
+func ApproveAs(ctx context.Context, d Durable, runID, toolUseID, approverID string, approved bool, sig []byte, opts ...ApproveOption) error
 ```
 
 `Approve` is retained unchanged for the 1-of-1 path (equivalently, the single-approver case of
 `ApproveAs`). The journaled record gains `Approver string` and `Signature []byte` alongside the
 existing `Approved bool`.
 
-### The pause carries the tally (`agent/store.go`)
+### The pause carries the tally (`agent/store.go`, `agent/approval.go`)
 
 `PendingApproval` gains an optional tally so an oversight surface can render progress
 ("1 of 2 in, waiting on risk"):
 
 ```go
 type PendingApproval struct {
-    RunID, ToolUseID, ToolName string
-    Args json.RawMessage
-    // Quorum is non-nil for an m-of-n gate: the running tally at the time the run paused.
+    RunID     string
+    RootRunID string // the run to re-invoke to continue (differs from RunID inside a sub-agent)
+    ToolUseID string
+    ToolName  string
+    Args      json.RawMessage
+    // Quorum is non-nil for an m-of-n gate: the running tally at the pause.
     Quorum *ApprovalTally
 }
 
 type ApprovalTally struct {
-    Need      int      // k
-    Approved  int      // distinct eligible approvals recorded so far
-    Denied    int      // distinct eligible denials recorded so far
-    Pending   []string // eligible approvers who have not yet decided
+    Need       int      // the policy's k
+    Approvers  []string // the eligible set the gate enforced, in policy order
+    Approved   int      // approvers whose counted decision is an approval
+    Denied     int      // approvers whose counted decision is a denial
+    ApprovedBy []string // those approvers, in journal order
+    DeniedBy   []string // those approvers, in journal order
+    Pending    []string // eligible approvers with no valid decision yet, in policy order
+    // Records names every decision record on this call the gate read, valid or not, in
+    // journal order. Evidence must disclose all of them, so an omitted decision is detectable.
+    Records []string
 }
 ```
 

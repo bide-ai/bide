@@ -58,6 +58,12 @@ including tampered and incomplete evidence that must be rejected.
 **Conformance suites.** A port is held to its contract by a reusable suite that any
 implementation, bide's or yours, can run:
 
+- `agent/durabletest` checks a durable store (`agent.Durable`): the record `Do` returns on the live
+  path is exactly the record a replay reads back, memoized or from `History`, in the journal's
+  canonical form, for content whose encoding is easy to get wrong (HTML-significant characters,
+  U+2028, NUL, invalid UTF-8, unusual number forms, key order), and a caller that modifies a
+  returned record cannot change the journal. `MemStore`, `store/sqlite`, and `store/postgres` run
+  it; see [extension points](../reference/extension-points.md#implement-your-own-store).
 - `govern/eventlogtest` checks a governed event log: dense, unique positions under concurrent
   appends from separate handles, and appends idempotent by id, so a repeated append (a retry, even
   concurrent with the original) is recorded once.

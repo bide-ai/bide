@@ -24,5 +24,5 @@ Pushing to `main` builds and deploys to GitHub Pages via
 
 1. Repo **Settings -> Pages -> Build and deployment -> Source: GitHub Actions**.
 2. Set the custom domain to `bide-ai.com` (a `CNAME` file is already emitted from
-   `docs/public/CNAME`).
+   `docs-site/public/CNAME`).
 3. Point DNS at GitHub Pages (see the Cloudflare records for `bide-ai.com`).

@@ -1,6 +1,6 @@
 # The durability guarantee
 
-This is the precise statement of the core guarantee (pillar 1 in `POSITIONING.md`).
+This is the precise statement of the core guarantee (guarantee 1 in the [README](../README.md#1--at-most-once-not-at-least-once-measured-not-claimed)).
 README and marketing assert it; this document specifies it, including exactly where it stops.
 
 ## What the guarantee is

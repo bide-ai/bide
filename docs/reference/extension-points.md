@@ -11,7 +11,7 @@ reference adapters that ship with it.
 
 | Port | Package | What it abstracts | Reference adapter(s) |
 |---|---|---|---|
-| `Model` | root | the provider (LLM) primitive | `model/anthropic`, `model/openai` |
+| `Model` | root | the provider (LLM) primitive | `model/anthropic`, `model/openai`, `model/gemini` |
 | `Durable` | root | the crash-safe journal substrate | `MemStore`, `store/sqlite`, `store/postgres` |
 | `Tool` | root | an action the agent can take | `Func`, `CompensatedFunc`, `mcp` tools |
 | `Compensator` | root | how a tool undoes its side effect (sagas) | `CompensatedFunc` |
@@ -88,10 +88,18 @@ across processes with a primary key / `ON CONFLICT` on `(run_id, name)`.
 
 ### Implement your own store
 
-A `Durable` needs to satisfy exactly one invariant: `Do` records the result of `fn` under
-`(runID, name)` and never runs `fn` a second time once a result is recorded. Here is a
-minimal, correct in-memory implementation (equivalent in shape to `MemStore`, minus its
-single-flight optimization):
+A `Durable` must satisfy two invariants:
+
+- **At most once.** `Do` records the result of `fn` under `(runID, name)` and never runs `fn` a
+  second time once a result is recorded.
+- **Live equals replay.** The `Record` that `Do` returns on the live path must be exactly the
+  record a later `History` or memoized `Do` reads back. Store the journal encoding
+  (`agent.EncodeRecord`) and hand out only its decoded form (`agent.DecodeRecord`), never the
+  caller's own `Record`. A store that returned the caller's record live but a decoded copy on
+  replay would let a resumed run rebuild a different conversation than the one it was having.
+
+Here is a small in-memory implementation that meets both (the same shape as `MemStore`, minus
+its single-flight of concurrent callers on one step):
 
 ```go
 package mystore
@@ -105,12 +113,12 @@ import (
 
 type Store struct {
 	mu   sync.Mutex
-	runs map[string]map[string]agent.Record // runID -> name -> record
-	ord  map[string][]string                // runID -> names in insertion order
+	runs map[string]map[string][]byte // runID -> name -> encoded record
+	ord  map[string][]string          // runID -> names in insertion order
 }
 
 func New() *Store {
-	return &Store{runs: map[string]map[string]agent.Record{}, ord: map[string][]string{}}
+	return &Store{runs: map[string]map[string][]byte{}, ord: map[string][]string{}}
 }
 
 var _ agent.Durable = (*Store)(nil) // port/adapter contract
@@ -119,11 +127,9 @@ func (s *Store) Do(ctx context.Context, runID, name string,
 	fn func(context.Context) (agent.Record, error)) (agent.Record, error) {
 
 	s.mu.Lock()
-	if byName, ok := s.runs[runID]; ok {
-		if rec, ok := byName[name]; ok {
-			s.mu.Unlock()
-			return rec, nil // memoized: do NOT re-run fn
-		}
+	if b, ok := s.runs[runID][name]; ok {
+		s.mu.Unlock()
+		return agent.DecodeRecord(b) // memoized: do NOT re-run fn
 	}
 	s.mu.Unlock()
 
@@ -132,20 +138,25 @@ func (s *Store) Do(ctx context.Context, runID, name string,
 		return agent.Record{}, err // not recorded: re-runs on the next attempt
 	}
 	rec.Name = name
+	b, err := agent.EncodeRecord(rec) // the journal form a replay reads
+	if err != nil {
+		return agent.Record{}, err
+	}
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	byName := s.runs[runID]
 	if byName == nil {
-		byName = map[string]agent.Record{}
+		byName = map[string][]byte{}
 		s.runs[runID] = byName
 	}
 	if existing, ok := byName[name]; ok { // a concurrent write landed first
-		return existing, nil
+		b = existing
+	} else {
+		byName[name] = b
+		s.ord[runID] = append(s.ord[runID], name)
 	}
-	byName[name] = rec
-	s.ord[runID] = append(s.ord[runID], name)
-	return rec, nil
+	s.mu.Unlock()
+	return agent.DecodeRecord(b) // the stored form, never the caller's rec
 }
 
 func (s *Store) History(ctx context.Context, runID string) ([]agent.Record, error) {
@@ -154,15 +165,34 @@ func (s *Store) History(ctx context.Context, runID string) ([]agent.Record, erro
 	names := s.ord[runID]
 	out := make([]agent.Record, 0, len(names))
 	for _, n := range names {
-		out = append(out, s.runs[runID][n])
+		rec, err := agent.DecodeRecord(s.runs[runID][n])
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, rec)
 	}
 	return out, nil
 }
 ```
 
-For a cross-process backend, replace the map with your database and let a unique constraint
+For a cross-process backend, replace the maps with your database and let a unique constraint
 on `(run_id, name)` enforce the at-most-once write: on a conflicting insert, read back and
-return the already-stored `Record` instead of the one `fn` just produced.
+return the already-stored record instead of the one `fn` just produced. Persist the
+`agent.EncodeRecord` bytes and decode them on every read.
+
+**Check it with the conformance suite.** `agent/durabletest` holds every store to the
+live-equals-replay property: it feeds `Do` records whose encoding is easy to get wrong
+(HTML-significant characters, U+2028, NUL, invalid UTF-8, unusual number forms, key order) and
+requires the live, memoized, and `History` records to be identical and in canonical form. Run
+it from a test in your store's package:
+
+```go
+func TestMyStore_Durable(t *testing.T) {
+	durabletest.Run(t, func(t *testing.T) agent.Durable { return mystore.New() })
+}
+```
+
+`MemStore`, `store/sqlite`, and `store/postgres` all run it.
 
 ## `Tool`: an action the agent can take
 
@@ -182,7 +212,7 @@ never implement this by hand: `agent.Func[In, Out](name, desc, safety, fn)` wrap
 function and derives `ArgsSchema` from `In` at construction, so changing `In` is a
 compile-time change. `Safety` declares retry behavior on resume (`ReadOnly`, `Idempotent`,
 `IdempotencyKey`, `RequiresApproval`) and maps directly onto MCP annotations (see
-[MCP.md](../guides/mcp.md)). Its optional `Approval` field upgrades the approval gate to a signed
+the [MCP guide](../guides/mcp.md)). Its optional `Approval` field upgrades the approval gate to a signed
 m-of-n policy; approver signatures are checked through the `ApproverVerifier` hook, which the
 `audit` package's Ed25519, ML-DSA, and hybrid verifiers satisfy (see
 [approval](../guides/approval.md)).
@@ -191,7 +221,8 @@ m-of-n policy; approver signatures are checked through the `ApproverVerifier` ho
 
 ```go
 type Compensator interface {
-	// Compensate undoes a completed call. args are the tool's x	// result is what Call returned. Must be idempotent (a mid-rollback crash re-runs it).
+	// Compensate undoes a completed call. args are the tool's original arguments; result
+	// is what Call returned. Must be idempotent: on a crash mid-rollback it may re-run.
 	Compensate(ctx context.Context, args, result json.RawMessage) error
 }
 ```
@@ -215,7 +246,7 @@ store (pgvector, Pinecone, a file index, anything). Bide ships no vector store a
 embedder; you implement `Retrieve` against infrastructure you already run and wire it in with
 `agent.RetrievalTool(r, k)` (agentic: the model searches on demand) or
 `agent.WithRetrieval(r, k)` (classic: top-k auto-injected as context on each user turn). See
-[RAG-MEMORY.md](../guides/rag-memory.md).
+[RAG and memory](../guides/rag-memory.md).
 
 ## `Anchor`: out-of-band anchoring (`audit`)
 
@@ -237,7 +268,7 @@ an append-only, independently Merkle-committed record of published STHs. Because
 own RFC 6962 tree over the entries, a third party can verify that the anchor log itself only
 grew (`ProveConsistency`) and that a specific STH was anchored (`Prove`). In a real
 deployment the anchor lives in a different trust domain than the journal; this in-memory
-version is for tests and local dev. See [AUDIT.md](../guides/audit.md).
+version is for tests and local dev. See the [audit guide](../guides/audit.md).
 
 ## `EventStore`: durable event-trail persistence (`audit`)
 
@@ -257,7 +288,7 @@ The bring-your-own port for a compliance trail that has to outlive the journal (
 on WORM storage, in a different trust domain). You implement `Append` / `Load` against an
 append-only backend you run (a Postgres table with `UNIQUE(run_id, seq)` and insert-only
 grants, object storage with object-lock/WORM, or a log). The trail is fed from the durable
-journal projection (`agent.ReplayEvents`, see [DEBUGGING.md](../guides/debugging.md)), not the live
+journal projection (`agent.ReplayEvents`, see [debugging](../guides/debugging.md)), not the live
 stream, so re-mirroring after a crash appends the same leaves at the same positions
 (idempotent). `audit.PersistJournal` drives that mirroring; `audit.LoadEventLog` rebuilds an
 `EventLog` from the store for `Root` / STH / proofs even after the journal is deleted.

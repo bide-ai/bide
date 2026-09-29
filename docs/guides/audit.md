@@ -278,7 +278,7 @@ Conventions shared across verbs:
 | `verify-absent` | `-bundle`, `-pubkey` | | An `AbsenceBundle` is authentic: its head is a signed key-set head of the kind the key belongs to (`tooluse:` keys need a tool-use head, `policy_used:` keys a used-policy head) for the bundle's run, and the key is absent from it. Reports the journal size the absence covers. |
 | `verify-governance` | `-policy` | `-digest <hex>`, `-checker <astchecker>` | Recompute the policy digest from the published bytes (independent of gsm); with `-digest`, assert it matches; with `-checker`, run the external verified oracle to certify the policy converges. |
 | `verify-governed-action` | `-action`, `-policy-bundle`, `-pubkey` | `-checker` | End to end: both bundles authentic and in the same signed tree, the action's embedded policy digest links to the anchored policy leaf, the leaf's bytes hash to that digest, and (with `-checker`) the policy converges. |
-| `verify-convergence` | `-cert-bundle`, `-policy-bundle`, `-pubkey` | `-checker` | An anchored `ConfluenceCertificate` links to the policy leaf; with `-checker`, the oracle's convergence AND compensation-free verdicts must AGREE with the certificate, so an overstated certificate is caught. |
+| `verify-convergence` | `-cert-bundle`, `-policy-bundle`, `-pubkey` | `-checker` | An anchored `ConfluenceCertificate` links to the policy leaf; with `-checker`, the oracle's convergence verdict must AGREE with the certificate, so overstated convergence is caught; the compensation-free (CRDT) classification is cross-checked only when the oracle emits a `compensation_free=` line, and otherwise stays producer-reported (the CLI prints a note saying so). |
 | `verify-quorum` | `-name`, `-tally`, `-vote` (repeatable), `-pubkey`, `-k` | `-commit` | A governed k-of-n quorum: the tally and every vote bundle authentic, in the same signed tree and run, and recorded by the quorum named `-name`; the disclosed votes exactly the votes the tally records; the recorded tally recomputes from them (a forged tally is caught); and `votes_for >= k`; with `-commit`, a governed commit is anchored in the same tree. |
 | `verify-run` | `-cert`, `-pubkey`, and one of `-approved <digest>` (repeatable) / `-approved-file <file>` | `-checker <astchecker>` | A proof-carrying run certificate: the used-policy set is bound by a signed used-policy head to this run and to the certificate's journal tree, and is a subset of the approved allowlist (only-approved-policies), and every used policy has an anchored, digest-linked convergence certificate in the run's signed tree (policies-convergence-certified); with `-checker`, the oracle's convergence verdict on each used policy must AGREE with its certificate. |
 | `verify-approvals` | `-evidence`, `-pubkey`, `-call`, `-need`, `-approvers`, `-approver-keys` | | An m-of-n approval gate from an `EvidencePackage`: the request, every decision the gate read, its recorded tally, and the call's result all verify in one signed tree and in order; recounting the decisions with the approvers' keys (a JSON object of id to ed25519 public key hex) against the exact call reproduces the recorded tally; the gate enforced the expected policy; and at least k approved. Catches an omitted decision, which `verify-evidence` alone cannot. |
@@ -395,8 +395,10 @@ a certificate that says convergent while the oracle refutes is rejected. Classif
 also certifies the compensation-free (CRDT-fragment) verdict, via `compensationFree` in
 `AstChecker.v` (a machine-checked, axiom-free predicate: no in-domain state ever needs repair, the
 AST analogue of "max repair depth = 0"), emitted as a `compensation_free=<bool>` line the CLI parses
-and compares. So a certificate that overstates either convergence or the CRDT classification is
-caught. `compensationFree_step_no_repair` is in the axiom-free gate alongside `check_sound_converges`.
+and compares. So a certificate that overstates convergence is always caught, and one that overstates
+the CRDT classification is caught when the oracle emits that line. An oracle that does not emit it
+leaves the classification producer-reported: the CLI prints a note saying so rather than passing
+it silently. `compensationFree_step_no_repair` is in the axiom-free gate alongside `check_sound_converges`.
 
 ```
 # both bundles authentic and in the same signed tree, the certificate certifies the anchored
@@ -479,7 +481,7 @@ against a single signed tree head. The innovation is the composition, not new cr
 convergence leaves, and the run's STH, and `VerifyRun` re-derives every property from the disclosed
 proofs.
 
-v1 asserts two properties, each dischargeable from a committed leaf:
+v1 asserts three properties, each dischargeable from a committed leaf:
 
 - **only-approved-policies**: every policy digest exercised by a governed action in the run is a
   member of the auditor's approved allowlist (an argument to `VerifyRun`; the certificate carries
@@ -502,7 +504,7 @@ v1 asserts two properties, each dischargeable from a committed leaf:
   disclosed policy's bytes and its verdict must AGREE with the certificate, so a certificate that
   overstates convergence is caught.
 
-Composing the two yields "every governed state in the run was produced by an approved,
+Composing them yields "every governed state in the run was produced by an approved,
 oracle-certified-convergent policy," so the enforced invariant held throughout the governed
 boundary.
 
@@ -642,7 +644,7 @@ Candidate extensions if a use case needs them, in rough priority:
   notary/timestamping service), and **witness cosigning** so a shared anchor's forks are
   detectable (only relevant if the anchor is a service you do not control).
 - **Batched/periodic anchoring** rather than per-step, for high-throughput runs.
-- **Journal compaction with proof continuity** (design note: [COMPACTION.md](../design/compaction.md)): seal
+- **Journal compaction with proof continuity** (design note: [compaction](../design/compaction.md)): seal
   a closed prefix into a signed checkpoint plus a deterministic state snapshot, carry the previous
   root forward as the next segment's first leaf, and drop the sealed raw records. Proofs survive the
   boundary via a signed checkpoint chain; the load-bearing invariant is that only a closed prefix

@@ -4,10 +4,10 @@ The agent loop journals its own model turns and tool calls. But the same durable
 exposed directly, so you can wrap *your own* work in the same at-most-once, crash-safe,
 independently-provable guarantee. This is the "Option B" authoring model: write plain Go control
 flow (`if` / `for` / functions), and name the operations that must survive a crash. There is no
-graph DSL; the graph is a derived output (see [DEBUGGING.md](debugging.md) `RenderMermaid`).
+graph DSL; the graph is a derived output (see [Debugging](debugging.md) `RenderMermaid`).
 
 Three primitives cover the common shapes, all built on the `Durable` port
-([EXTENSION-POINTS.md](../reference/extension-points.md)):
+([extension points](../reference/extension-points.md)):
 
 - **`Step[T]`**: one named durable step.
 - **`Parallel[T]` / `Task[T]`**: durable fan-out/fan-in.
@@ -43,11 +43,11 @@ res, err := agent.Step(ctx, store, runID, "reserve", // at most once; halts on a
 
 `Step` is a package function, not a method, because Go methods cannot add type parameters. The
 result is journaled as a `StepValue` record, so it shows up in `RenderMermaid` as `step: <name>`
-and is independently provable via `audit.ProveStep` (see [AUDIT.md](audit.md)). `name` must be
+and is independently provable via `audit.ProveStep` (see [Audit](audit.md)). `name` must be
 unique within the run: a second `Step` with the same `(runID, name)` returns the first one's
 recorded result.
 
-`Step` is the idempotency guard the [MESSAGING.md](messaging.md) webhook pattern uses to make a
+`Step` is the idempotency guard the [Messaging](messaging.md) webhook pattern uses to make a
 redelivered inbound event replay instead of re-fire.
 
 ## `Parallel[T]` / `Task[T]`: durable fan-in
@@ -100,7 +100,7 @@ durable checks, then a governed decision, then an offline proof) is
 
 A saga is the sequential/hierarchical transactional tier: "charged the card and booked the flight,
 then failed on the hotel, so cleanly refund and cancel." A tool declares how to undo its write with
-the `Compensator` port ([EXTENSION-POINTS.md](../reference/extension-points.md)); `CompensatedFunc` builds a
+the `Compensator` port ([extension points](../reference/extension-points.md)); `CompensatedFunc` builds a
 typed tool that carries both the forward action and its undo:
 
 ```go
@@ -121,7 +121,7 @@ if errors.As(err, &aborted) {
 }
 ```
 
-`RunSagaResult` is the `*Result`-envelope counterpart (see [DEBUGGING.md](debugging.md)), and
+`RunSagaResult` is the `*Result`-envelope counterpart (see [Debugging](debugging.md)), and
 `StreamSaga` is the streaming counterpart of `Stream`. `SagaAborted` unwraps to its cause, so
 `errors.Is` against a sentinel still works.
 
@@ -131,7 +131,7 @@ The abort is derived from the journal: a saga step failure writes a durable `Ste
 so a crash at any point resumes correctly. On re-entry a recorded failure sends the run straight to
 rollback, and **each compensation is itself a durable memoized step**, so it runs at-most-once if it
 completes. This split is the precise contract, proven adversarially in `saga_dst_test.go` (see
-[TESTING.md](../testing/testing.md)):
+[Testing](../testing/testing.md)):
 
 - The **forward** non-idempotent effect is **at-most-once** (halt on unknown outcome).
 - **Compensators** are **at-least-once**: memoized so they run once if they complete, but a crash
@@ -156,7 +156,7 @@ These are stated in full in [KNOWN-LIMITATIONS.md](../KNOWN-LIMITATIONS.md); in 
   compensator, idempotent or not, is listed in `SagaAborted.Uncompensated`.
 - **Compensation is hierarchical, not concurrent.** Rollback recurses through a sub-agent *tree*
   (one causal order). Truly concurrent agents mutating shared state out of order need the provable
-  convergence of the governance tier ([GOVERNANCE.md](governance.md)), not a saga.
+  convergence of the governance tier ([Governance](governance.md)), not a saga.
 
 `SubAgent(name, description, sub)` composes agents into that durable tree: give the sub-agent the
 **same** `Durable` store as the parent for a unified journal, and a crash anywhere in the tree
@@ -241,17 +241,28 @@ wait := agent.Func("cooldown", "wait before retrying", agent.Safety{ReadOnly: tr
 
 Re-invoking `Run` with the same runID at or after the wake time resumes past the `Sleep`. What
 re-invokes it is a **`Waker`**, the time-driven sibling of the inbound event trigger in
-[MESSAGING.md](messaging.md): the SDK provides the durable, at-most-once timer and its resume safety,
+[Messaging](messaging.md): the SDK provides the durable, at-most-once timer and its resume safety,
 and the trigger is pluggable. Bind one with `agent.WithWaker(ctx, w)` and `Sleep` registers its wake
 automatically. `MemWaker` is the reference in-process implementation:
 
 ```go
-w := agent.NewMemWaker(func(ctx context.Context, runID string) error {
+ctx, cancel := context.WithCancel(ctx)
+var w *agent.MemWaker
+w = agent.NewMemWaker(func(ctx context.Context, runID string) error {
     _, err := a.Run(agent.WithWaker(ctx, w), runID, savedInput) // resume; may sleep again
     return err
 })
-w.Start(ctx, time.Second, nil) // tick: resume every run whose timer is due
+done := w.Start(ctx, time.Second, nil) // tick: resume every run whose timer is due
+
+// On shutdown: stop the loop and wait for it (including any Fire in flight) before closing the
+// store the resumed runs write to.
+cancel()
+<-done
+store.Close() // e.g. a store/sqlite or store/postgres Store
 ```
+
+`Start` returns a channel that closes once the loop has stopped, after any in-flight `Fire` has
+returned. Waiting on it before closing the store keeps a resume from writing to a closed store.
 
 Boundaries: `MemWaker` is a local-dev default, not a durable scheduler. Its in-memory timer set is
 lost on process exit, so the wake times must also live in the journal (they do), and a restarted

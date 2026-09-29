@@ -154,7 +154,7 @@ reference test vectors, not a homegrown look-alike.
 
 ## See also
 
-- `docs/AUDIT.md`: the full feature walkthrough (proof bundles, governed actions, proof-carrying
+- [docs/guides/audit.md](audit.md): the full feature walkthrough (proof bundles, governed actions, proof-carrying
   runs, event logs). This page consolidates the caveats that walkthrough scatters.
 - `docs/guides/delegation.md`: signed grants, the delegation chain, and capability attenuation.
 - `audit/`: the package. `audit/verify/`: the stdlib-only standalone verifier.

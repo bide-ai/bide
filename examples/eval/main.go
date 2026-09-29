@@ -6,7 +6,7 @@
 // so eval reports a distribution, not a verdict. To evaluate a real agent, replace the stub with
 // anthropic.New / openai.New / gemini.New and keep everything else the same.
 //
-// Remember the boundary (see docs/TESTING.md): eval measures the model statistically; the provable
+// Remember the boundary (see docs/testing/testing.md): eval measures the model statistically; the provable
 // guarantees (governed convergence, cryptographic audit) live in the govern and audit packages. A
 // pass rate is a signal, not a proof.
 package main

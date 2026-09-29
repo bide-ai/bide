@@ -28,7 +28,7 @@ type Flow[In, Out any] struct {
 // Run is STRICTLY SEQUENTIAL and adds no executor: it walks the declared
 // topology one node at a time and drives each node as a named durable step
 // through store.Do, exactly as plain Go control flow over agent.Step would (see
-// docs/design/expression-surfaces.md, rung 0). It therefore inherits the
+// docs/guides/flows.md). It therefore inherits the
 // substrate's guarantees unchanged: a completed step returns its recorded value
 // without re-running (at-most-once by name), and a resumed run replays recorded
 // steps rather than re-executing them.

@@ -129,6 +129,23 @@ ways to do the wake:
    loop resumes the run on its next tick. `AwaitFor` already schedules its own wake for the
    deadline side, so the timeout fires without an external nudge.
 
+**Awaits inside a sub-agent.** When the `Await` runs in a sub-agent, the `*Awaiting` that
+surfaces from the parent's `Run` carries two IDs. Deliver the signal (or the `Send`, for a channel receive) against `RunID` (the
+sub-agent's journal), then re-invoke the run named by `RootRunID`, the top-level run, with the root
+agent; it replays down the tree to the waiting sub-agent. `RootRunID` equals `RunID` for an await
+in the top-level run, so re-invoking `RootRunID` is always correct. With the Waker path, schedule
+the wake for `RootRunID` as well (`Sleep` in a sub-agent already schedules its wake for the root
+run).
+
+```go
+var aw *agent.Awaiting
+if errors.As(err, &aw) {
+    // later, when the event arrives:
+    _ = agent.Signal(ctx, store, aw.RunID, aw.Name, payload)
+    _, err = rootAgent.Run(ctx, aw.RootRunID, savedInput)
+}
+```
+
 No new durable machinery is required for either path: the signal record already lives in the
 journal, so a restarted deployment rebuilds pending awaits by scanning runs, exactly as it does
 for timers. What re-invokes the run is deployment policy (an in-process loop, a cron, a queue),
@@ -139,4 +156,4 @@ just like the inbound trigger for any event-driven run.
 - `pause.go`: `Signal`, `Await`, and the shared `Waker` / `Sleep` machinery.
 - `awaitfor.go`: `AwaitFor`.
 - `channel.go`: `Send`, `Receive`, `Ack`.
-- `docs/DESIGN-durable-signals.md`: the design rationale and journal semantics.
+- [docs/design/design-durable-signals.md](../design/design-durable-signals.md): the design rationale and journal semantics.

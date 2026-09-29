@@ -73,7 +73,7 @@ The snapshot is a claim. It is made trustworthy two ways, both reusing existing 
   is committed in the tree like any other action.
 - **Replay-verifiable**: runs are deterministic given policy and events, so a verifier holding the
   prior segment's leaves (archival mode) reproduces `S_k`'s `State.Digest` by replay. This is the
-  same determinism-and-replay trust already used for per-run state digests (see AUDIT.md), applied
+  same determinism-and-replay trust already used for per-run state digests (see the [audit guide](../guides/audit.md)), applied
   at the segment boundary.
 
 ## New primitives (sketch)

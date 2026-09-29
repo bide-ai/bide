@@ -133,18 +133,23 @@ state (see [Governance](governance.md)). The tally is fed in as a fact, and a ch
 refuses the commit unless the count reaches `k`:
 
 ```go
+r := gsm.NewRegistry("model-quorum")
 decision := r.Enum("decision", "approve", "deny", "escalate")
 votesFor := r.Int("votes_for", 0, n)
 committed := r.Bool("committed")
 
-// A decision may be committed only with k votes; otherwise it becomes "escalate".
+// A decision may be committed only with k votes. Without them, the repair undoes the commit
+// and sets the decision to "escalate", so the rule holds again afterwards.
+revertAndEscalate := append(gsm.Do(gsm.Set(committed, gsm.Lit(0))), gsm.SetLabel(decision, "escalate")...)
 r.Rule("quorum_required").
     Require(gsm.Or(gsm.Is(committed, 0), gsm.Ge(gsm.V(votesFor), gsm.Lit(k)))).
-    RepairWith(gsm.SetLabel(decision, "escalate")).
+    RepairWith(revertAndEscalate).
     Add()
 
 // The commit event does nothing unless the quorum is met.
-r.On("commit").OnlyIf(gsm.Ge(gsm.V(votesFor), gsm.Lit(k))).Does(gsm.SetBoolTrue(committed)).Add()
+r.On("commit").OnlyIf(gsm.Ge(gsm.V(votesFor), gsm.Lit(k))).Does(gsm.SetTo(committed, 1)).Add()
+
+machine, report, err := r.Build() // fails with a counterexample if the policy cannot converge
 ```
 
 The policy is checked for every possible vote count, so the gate holds however the models vote.

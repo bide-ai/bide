@@ -5,7 +5,13 @@ directory with a header comment giving a one-line description and its run comman
 
 Model-centric examples call an OpenAI-compatible endpoint (here OpenRouter) and read an
 API key from the environment; set `OPENROUTER_API_KEY` before running them. Examples
-marked "offline" need no key and no network. All build with `GOWORK=off`.
+marked "offline" need no key and no network.
+
+Most examples are packages of the root module: run them from the repository root with
+`go run ./examples/<name>`. Four are their own modules because they import an adapter module with
+its own dependencies (`approval`, `plan`, `mcp`, `observability`); `cd` into the directory and run
+`go run .` (the `go.work` at the root resolves the local modules; with `GOWORK=off` each module's
+`replace` directives do the same).
 
 ## Authoring basics
 
@@ -38,13 +44,14 @@ evaluation, and integration seams.
 | `compose` | Compositional construction: verify a subsystem once, embed it as a black box into larger systems (offline). | `go run ./examples/compose` |
 | `mesh` | A coordination-free safety mesh where governed state constrains agents cyclically (offline). | `go run ./examples/mesh` |
 | `chaosbench` | The crash-injection benchmark: an exhaustive crash-point sweep proving a side effect never double-fires (offline). | `go run ./examples/chaosbench` |
+| `plan` | The `plan` flow builder driving an order-triage flow on a SQLite journal: the declared diagram, a typed result, `Conform`, and an offline proof that the run followed the signed flow digest (offline). Its own module. | `cd examples/plan && go run .` |
 | `recover` | Crash recovery: a supervisor resumes an interrupted run from its journal without re-firing side effects. | `go run ./examples/recover` |
 | `interrupt` | Human-in-the-loop: a tool pauses the run for a durable approval decision, then resumes. | `go run ./examples/interrupt` |
 | `approval` | m-of-n human approval across separate processes on a SQLite journal: 2 of 3 approvals, each signed over the exact call, gate a refund; a forged signature and an ineligible approver are ignored without locking anyone out; and an auditor verifies the evidence offline with public keys only, in Go or with `bide-audit verify-approvals` (offline). Its own module. | `cd examples/approval && go run .` |
 | `signals` | Durable timers and external signals: a run sleeps or waits for an event and resumes on delivery. | `go run ./examples/signals` |
 | `hedge` | The hedged-model middleware: race a primary against a backup and take the first good answer (offline). | `go run ./examples/hedge` |
 | `eval` | The statistical evaluation harness: labeled cases, metrics, repeated runs, a pass-rate report (offline). | `go run ./examples/eval` |
-| `observability` | Tracing and metrics middleware over the model call, so runs are inspectable. | `go run ./examples/observability` |
-| `mcp` | Wiring runtime MCP tools into an agent alongside native Go tools. | `go run ./examples/mcp` |
+| `observability` | OpenTelemetry GenAI spans in one call (`trace.Instrument`), exported to stdout, with token usage and cost on the chat span (offline). Its own module. | `cd examples/observability && go run .` |
+| `mcp` | Wiring runtime MCP tools into an agent from an in-memory MCP server, with trusted annotations marking a tool retry-safe (offline). Its own module. | `cd examples/mcp && go run .` |
 | `coordination` | Multi-agent coordination through shared durable state. | `go run ./examples/coordination` |
 | `webhook` | Driving an agent from an inbound messenger webhook, with idempotent redelivery handling. | `go run ./examples/webhook` |

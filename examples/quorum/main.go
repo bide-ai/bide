@@ -1,5 +1,5 @@
 // Command quorum shows a governed model quorum built as a composition of existing seams, not a new
-// agent type (see docs/QUORUM.md). A high-stakes decision is put to N voters; the commit is admitted
+// agent type (see docs/guides/quorum.md). A high-stakes decision is put to N voters; the commit is admitted
 // only under k-of-n agreement, and the whole vote is in the audit trail.
 //
 // The pieces are all seams the SDK already has:

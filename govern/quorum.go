@@ -31,7 +31,8 @@ type Vote struct {
 
 // QuorumResult is the tally over the votes. Decision is the plurality value (the decision the
 // most voters chose); VotesFor is how many voters chose it; Total is the number of voters that
-// voted; Agreed reports whether VotesFor >= k. Votes carries every recorded vote in voter order.
+// voted; Agreed reports whether VotesFor >= k and no other decision has as many votes (a tie for
+// the most votes is never agreement). Votes carries every recorded vote in voter order.
 //
 // Agreed is the statistical signal, not a proof. The provable object is the gate a caller builds
 // from VotesFor: seed votes_for into a gsm invariant that admits the commit only when
@@ -40,10 +41,10 @@ type Vote struct {
 // model errors mean agreement is not statistical independence, so a quorum lowers single-model
 // risk without certifying the answer.
 type QuorumResult struct {
-	Decision string `json:"decision"`  // the plurality decision (the label the most voters chose)
+	Decision string `json:"decision"`  // the plurality decision; on a tie, the lexically smallest tied label (a placeholder, and Agreed is false)
 	VotesFor int    `json:"votes_for"` // how many voters chose Decision
 	Total    int    `json:"total"`     // number of voters that successfully voted
-	Agreed   bool   `json:"agreed"`    // whether VotesFor >= k (statistical signal, not a proof)
+	Agreed   bool   `json:"agreed"`    // VotesFor >= k and no tie for the most votes (statistical signal, not a proof)
 	Votes    []Vote `json:"votes"`     // every recorded vote, in voter order
 }
 
@@ -68,10 +69,10 @@ type QuorumResult struct {
 //
 // Tally: votes are grouped by decision value; the plurality value wins (ties broken by decision
 // string, deterministically, so the recorded tally is stable across replays). Agreed is
-// VotesFor >= k. A voter that errors is not recorded, so on a later resume it re-runs while the
+// VotesFor >= k with no tie for the most votes: a tie is never agreement. A voter that errors is not recorded, so on a later resume it re-runs while the
 // voters that already voted are memoized; the joined error is returned and the tally reflects
 // only the votes that succeeded (Total is the count of successful votes). k <= 0 is treated as
-// no gate (Agreed is true whenever at least one voter voted).
+// no gate (Agreed is true whenever at least one voter voted and the top count is not tied).
 //
 // The boundary, stated plainly: this returns a tally. The tally makes the k-of-n gate provable
 // once a caller wires VotesFor into an invariant; the agreement itself is statistical and never a
