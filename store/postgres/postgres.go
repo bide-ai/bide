@@ -47,18 +47,32 @@ func Open(ctx context.Context, dsn string) (*Store, error) {
 	return s, nil
 }
 
-// stepsTable is the journal table. data holds each record's JSON as written (text, not jsonb:
-// jsonb reorders object keys and rejects the \u0000 escape, so a record would not come back
-// byte for byte, or not be stored at all). seq is unique per run, so History has one order.
+// stepsTable is the journal table. data holds each record's journal encoding (agent.EncodeRecord)
+// byte for byte, as bytea. Not jsonb, which reorders object keys and rejects the NUL escape, and
+// not text, which rejects invalid UTF-8: a tool may return JSON with invalid UTF-8 inside a string,
+// MemStore and SQLite record it, and refusing it here would fail the step after the tool's side
+// effect already happened. seq is unique per run, so History has one order.
 const stepsTable = "bide_steps"
 
+// migrateLock is the advisory lock key that serializes schema migration across nodes opening the
+// store at once ("bide" in ASCII).
+const migrateLock = 0x62696465
+
 func (s *Store) migrate(ctx context.Context) error {
-	_, err := s.db.ExecContext(ctx, `
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock($1)`, migrateLock); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
 		CREATE TABLE IF NOT EXISTS bide_steps (
 			run_id text   NOT NULL,
 			seq    bigint NOT NULL,
 			name   text   NOT NULL,
-			data   text   NOT NULL,
+			data   bytea  NOT NULL,
 			PRIMARY KEY (run_id, name),
 			UNIQUE (run_id, seq)
 		);
@@ -66,8 +80,23 @@ func (s *Store) migrate(ctx context.Context) error {
 			run_id text        PRIMARY KEY,
 			holder text        NOT NULL,
 			expiry timestamptz NOT NULL
-		);`)
-	return err
+		);`); err != nil {
+		return err
+	}
+	// A journal created while data was text is converted in place. Its rows are valid UTF-8 (text
+	// admits nothing else), and convert_to keeps their bytes exactly.
+	var typ string
+	if err := tx.QueryRowContext(ctx, `
+		SELECT data_type FROM information_schema.columns
+		WHERE table_schema = current_schema() AND table_name = 'bide_steps' AND column_name = 'data'`).Scan(&typ); err != nil {
+		return fmt.Errorf("inspect %s: %w", stepsTable, err)
+	}
+	if typ == "text" {
+		if _, err := tx.ExecContext(ctx, `ALTER TABLE bide_steps ALTER COLUMN data TYPE bytea USING convert_to(data, 'UTF8')`); err != nil {
+			return fmt.Errorf("convert %s.data to bytea: %w", stepsTable, err)
+		}
+	}
+	return tx.Commit()
 }
 
 func (s *Store) Close() error { return s.db.Close() }
@@ -139,7 +168,7 @@ func (s *Store) insert(ctx context.Context, runID, name string, data []byte) (in
 		INSERT INTO bide_steps (run_id, seq, name, data)
 		VALUES ($1, (SELECT COALESCE(MAX(seq), -1) + 1 FROM bide_steps WHERE run_id = $1), $2, $3)
 		ON CONFLICT (run_id, name) DO NOTHING`,
-		runID, name, string(data))
+		runID, name, data)
 	if err != nil {
 		return 0, err
 	}
