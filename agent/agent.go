@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"golang.org/x/sync/errgroup"
@@ -465,13 +466,31 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 		}
 
 		// Execute the ready tools CONCURRENTLY (Go's strength; single-flight-safe). First
-		// failure in saga mode cancels siblings via the errgroup context.
+		// failure in saga mode cancels siblings via the errgroup context. A pause or halt
+		// (Interrupt, Sleep, Await, approval, ResumeHalt) does not: it is held until every
+		// sibling has finished and recorded its outcome, since a routine pause must not cut
+		// off a side effect in flight and leave it with an unknown outcome.
 		g, gctx := errgroup.WithContext(ctx)
 		if a.maxConc > 0 {
 			g.SetLimit(a.maxConc)
 		}
+		var (
+			pauseMu  sync.Mutex
+			pauseIdx = -1
+			pauseErr error
+		)
 		for _, c := range toRun {
-			g.Go(func() error {
+			g.Go(func() (err error) {
+				defer func() {
+					if err != nil && isPause(err) {
+						pauseMu.Lock()
+						if pauseIdx < 0 || c.idx < pauseIdx { // report the first call's pause
+							pauseIdx, pauseErr = c.idx, err
+						}
+						pauseMu.Unlock()
+						err = nil
+					}
+				}()
 				sctx := withRunScope(gctx, runID+"/"+c.tu.ID) // hierarchical sub-run ID
 				sctx = withRunContext(sctx, a.store, runID)   // lets the tool call Interrupt
 				if saga {
@@ -582,6 +601,9 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 				return Message{}, totalUsage, liveTurns, trip // RunSaga catches → compensates
 			}
 			return Message{}, totalUsage, liveTurns, err
+		}
+		if pauseErr != nil {
+			return Message{}, totalUsage, liveTurns, pauseErr
 		}
 
 		// Append results in deterministic uses-order.
