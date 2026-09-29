@@ -69,6 +69,11 @@ func (s Safety) retriableOnResume() bool {
 	return s.ReadOnly || s.Idempotent || s.IdempotencyKey != nil
 }
 
+// RetrySafe reports whether a call to the tool may run more than once for one tool call: it
+// is ReadOnly, Idempotent, or carries an IdempotencyKey. It is the test the agent applies on
+// resume, and the one tool middleware applies before retrying a call (see ToolSafety).
+func (s Safety) RetrySafe() bool { return s.retriableOnResume() }
+
 // Func wraps a typed Go function into a Tool. In is JSON-decoded from the args; the
 // return value is JSON-encoded. This is the compile-time-typed ergonomic: change In
 // and the handler won't compile. The Tool interface itself stays untyped so a map of

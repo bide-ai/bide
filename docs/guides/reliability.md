@@ -87,11 +87,19 @@ fmt.Printf("spent $%.4f, usage %+v\n", meter.Total(), meter.Usage())
 Tool execution has its own wrappers (attached where you build the agent's tool set):
 
 - `ToolRetry(n, opts...)` retries a tool call with the same backoff/classification options as
-  `Retry`. Use it for flaky read-only or idempotent tools; a non-idempotent tool is still guarded
-  by the at-most-once journal and `Safety`, so retries never double-fire a recorded effect.
+  `Retry`, for tools that are retry-safe (`ReadOnly`, `Idempotent`, or keyed). A tool that is not
+  runs once and its error goes to the model as is, since a failed side effect may still have
+  taken effect.
 - `ToolRateLimit(rl)` caps a tool's call rate (share a `*RateLimiter` to bound a downstream API).
-- `ToolCache()` memoizes a tool's result for identical arguments within a run.
+- `ToolCache()` memoizes a `ReadOnly` tool's result for identical arguments within a process.
+  Other tools always run: two calls with the same arguments to a side effect are two effects.
+
 - `ToolLog(logf)` logs each tool call and result.
+
+Middleware reads a call's `Safety` with `agent.ToolSafety(ctx)`. The agent also enforces
+at-most-once below every middleware: a tool that is not retry-safe runs at most once per tool
+call, and a middleware that calls it again gets `agent.ErrToolReinvoked` without the tool
+running.
 
 ## When to hedge vs retry
 

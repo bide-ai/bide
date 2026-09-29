@@ -13,6 +13,11 @@ import (
 // backoff + jitter (honoring an *agent.RateLimited RetryAfter), respecting context
 // cancellation. Reuses RetryOption/WithBackoff from the model-side Retry.
 //
+// It retries only a tool that is retry-safe (agent.Safety.RetrySafe: ReadOnly, Idempotent,
+// or keyed). A tool that is not runs once, and its error is returned as is: a failed call to a
+// side effect may still have taken effect, as when a payment gateway times out after charging,
+// and running it again could repeat it.
+//
 // Default backoff: base=200ms, max=10s. Override with WithBackoff.
 //
 //	a := agent.New(model, store, tools...).UseTool(middleware.ToolRetry(3))
@@ -24,6 +29,9 @@ func ToolRetry(n int, opts ...RetryOption) agent.ToolMiddleware {
 
 	return func(next agent.ToolHandler) agent.ToolHandler {
 		return func(ctx context.Context, tu agent.ToolUse) (json.RawMessage, error) {
+			if s, ok := agent.ToolSafety(ctx); !ok || !s.RetrySafe() {
+				return next(ctx, tu)
+			}
 			var (
 				res json.RawMessage
 				err error
@@ -89,8 +97,10 @@ func ToolLog(logf func(format string, args ...any)) agent.ToolMiddleware {
 // short-circuits a repeat call — the tool never runs on a hit. It demonstrates the
 // short-circuit power of tool middleware.
 //
-// Use ONLY for pure / read-only tools whose output depends solely on their arguments:
-// a cached result skips the real call entirely. Errors are never cached. This is an
+// It caches only tools marked ReadOnly (agent.Safety); every other tool call runs, since two
+// calls with the same arguments to a side effect are two effects, such as two separate
+// charges. Even for a ReadOnly tool a hit returns the earlier result, so use it only where
+// the output depends solely on the arguments. Errors are never cached. This is an
 // in-memory, unbounded, per-instance cache — it is NOT the durable journal (which
 // already dedupes each tool-use ID at-most-once); it dedupes DISTINCT calls with
 // identical arguments within one process.
@@ -98,6 +108,9 @@ func ToolCache() agent.ToolMiddleware {
 	var cache sync.Map // key string -> json.RawMessage
 	return func(next agent.ToolHandler) agent.ToolHandler {
 		return func(ctx context.Context, tu agent.ToolUse) (json.RawMessage, error) {
+			if s, ok := agent.ToolSafety(ctx); !ok || !s.ReadOnly {
+				return next(ctx, tu)
+			}
 			key := tu.Name + "\x00" + string(tu.Args)
 			if v, ok := cache.Load(key); ok {
 				return v.(json.RawMessage), nil // hit — skip the tool

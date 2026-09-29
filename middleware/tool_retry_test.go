@@ -24,7 +24,7 @@ func TestToolRetry_SucceedsAfterFlakes(t *testing.T) {
 			}
 			return json.RawMessage(`{}`), nil
 		})
-		res, err := ToolRetry(flakes)(base)(context.Background(), agent.ToolUse{Name: "t"})
+		res, err := ToolRetry(flakes)(base)(idempotent(context.Background()), agent.ToolUse{Name: "t"})
 		if err != nil {
 			t.Fatalf("err = %v, want nil after retries", err)
 		}
@@ -48,7 +48,7 @@ func TestToolRetry_RateLimitedOnceSucceeds(t *testing.T) {
 			}
 			return json.RawMessage(`{}`), nil
 		})
-		if _, err := ToolRetry(2)(base)(context.Background(), agent.ToolUse{Name: "t"}); err != nil {
+		if _, err := ToolRetry(2)(base)(idempotent(context.Background()), agent.ToolUse{Name: "t"}); err != nil {
 			t.Fatalf("err = %v, want nil after rate-limited retry", err)
 		}
 		if calls != 2 {
@@ -59,7 +59,7 @@ func TestToolRetry_RateLimitedOnceSucceeds(t *testing.T) {
 
 func TestToolRetry_ContextCanceledReturnsCtxErr(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		ctx, cancel := context.WithCancel(context.Background())
+		ctx, cancel := context.WithCancel(idempotent(context.Background()))
 		var calls int
 		base := agent.ToolHandler(func(_ context.Context, _ agent.ToolUse) (json.RawMessage, error) {
 			calls++
@@ -82,7 +82,7 @@ func TestToolRetry_ExhaustedReturnsLastErr(t *testing.T) {
 			calls++
 			return nil, sentinel
 		})
-		_, err := ToolRetry(2)(base)(context.Background(), agent.ToolUse{Name: "t"})
+		_, err := ToolRetry(2)(base)(idempotent(context.Background()), agent.ToolUse{Name: "t"})
 		if !errors.Is(err, sentinel) {
 			t.Fatalf("err = %v, want sentinel error", err)
 		}
@@ -90,4 +90,10 @@ func TestToolRetry_ExhaustedReturnsLastErr(t *testing.T) {
 			t.Fatalf("calls = %d, want 3 (1 initial + 2 retries)", calls)
 		}
 	})
+}
+
+// idempotent marks ctx as a call to a retry-safe tool, as the agent does for a tool declared
+// Idempotent: ToolRetry retries only such tools.
+func idempotent(ctx context.Context) context.Context {
+	return agent.WithToolSafety(ctx, agent.Safety{Idempotent: true})
 }
