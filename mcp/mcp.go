@@ -37,6 +37,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -51,11 +52,13 @@ import (
 //
 // The server's tool list is untrusted input. Tools refuses the whole list, with an error
 // wrapping agent.ErrProtocol, if a tool's name is outside the MCP grammar (1 to 128 of A-Z a-z
-// 0-9 _ - .), two tools share a name, or a tool's input schema is not an object schema.
+// 0-9 _ - .), two tools share a name, a tool's input schema is not an object schema, or a
+// tool's description is longer than the limit (DefaultMaxDescriptionBytes unless set with
+// WithMaxDescriptionBytes).
 func Tools(ctx context.Context, session *mcp.ClientSession, opts ...ToolsOption) ([]agent.Tool, error) {
-	var cfg toolsConfig
+	cfg := &toolsConfig{maxResult: DefaultMaxResultBytes, maxDescription: DefaultMaxDescriptionBytes}
 	for _, o := range opts {
-		o(&cfg)
+		o(cfg)
 	}
 	var tools []agent.Tool
 	seen := map[string]bool{}
@@ -72,11 +75,15 @@ func Tools(ctx context.Context, session *mcp.ClientSession, opts ...ToolsOption)
 			return nil, fmt.Errorf("mcp: list tools: tool %q is listed twice (%w)", def.Name, agent.ErrProtocol)
 		}
 		seen[def.Name] = true
+		if cfg.maxDescription > 0 && len(def.Description) > cfg.maxDescription {
+			return nil, fmt.Errorf("mcp: list tools: tool %q: description is %d bytes, over the %d-byte limit (see WithMaxDescriptionBytes) (%w)",
+				def.Name, len(def.Description), cfg.maxDescription, agent.ErrProtocol)
+		}
 		schema, err := inputSchema(def.InputSchema)
 		if err != nil {
 			return nil, fmt.Errorf("mcp: list tools: tool %q: %w (%w)", def.Name, err, agent.ErrProtocol)
 		}
-		tools = append(tools, &tool{session: session, def: def, schema: schema, trust: cfg.trust})
+		tools = append(tools, &tool{session: session, def: def, schema: schema, cfg: cfg})
 	}
 	return tools, nil
 }
@@ -120,7 +127,50 @@ func inputSchema(s any) (json.RawMessage, error) {
 // ToolsOption configures Tools.
 type ToolsOption func(*toolsConfig)
 
-type toolsConfig struct{ trust bool }
+type toolsConfig struct {
+	trust          bool          // map the server's annotations onto Safety (TrustAnnotations)
+	timeout        time.Duration // per-call deadline (WithCallTimeout); 0 = none
+	maxResult      int           // largest result Call accepts, in bytes; <= 0 = no limit
+	maxDescription int           // longest description Tools accepts, in bytes; <= 0 = no limit
+}
+
+// DefaultMaxResultBytes is the largest tool result, in bytes of JSON, that Call accepts unless
+// WithMaxResultBytes says otherwise: 1 MiB. A result is journaled and sent back to the model on
+// every later turn of the run. 1 MiB of text is about 250,000 tokens, more than most models'
+// whole context window, so a larger result cannot be used as it is; refusing it keeps one
+// server from filling the journal and every later request.
+const DefaultMaxResultBytes = 1 << 20
+
+// DefaultMaxDescriptionBytes is the longest tool description, in bytes, that Tools accepts
+// unless WithMaxDescriptionBytes says otherwise: 8 KiB. A description is sent to the model with
+// every request, for every tool, so its size is paid on every turn of every run, and a long one
+// is room for instructions aimed at the model. Descriptions written for a model to read are a
+// few sentences to a page; 8 KiB (about 2,000 tokens) leaves room for a detailed one.
+const DefaultMaxDescriptionBytes = 8 << 10
+
+// WithCallTimeout bounds each call to a tool from Tools by d, on top of the caller's context.
+// There is no default: without it a call waits as long as the run's context allows. A call
+// that times out has an unknown outcome (the server may still be running it), so it fails
+// with agent.ErrToolOutcomeUnknown, and a side effect halts on resume rather than run again.
+// d <= 0 sets no timeout.
+func WithCallTimeout(d time.Duration) ToolsOption { return func(c *toolsConfig) { c.timeout = d } }
+
+// WithMaxResultBytes sets the largest result, in bytes of JSON, that a tool's Call accepts
+// (DefaultMaxResultBytes by default). A larger result is refused with an error wrapping
+// ErrResultTooLarge, never truncated: the tool ran, so the error is a definite failure that says
+// so, and the model is not told the call did not happen. n <= 0 removes the limit.
+func WithMaxResultBytes(n int) ToolsOption { return func(c *toolsConfig) { c.maxResult = n } }
+
+// WithMaxDescriptionBytes sets the longest tool description, in bytes, that Tools accepts
+// (DefaultMaxDescriptionBytes by default). A server that lists a longer one fails Tools with an
+// error wrapping agent.ErrProtocol, never a truncated description. n <= 0 removes the limit.
+func WithMaxDescriptionBytes(n int) ToolsOption {
+	return func(c *toolsConfig) { c.maxDescription = n }
+}
+
+// ErrResultTooLarge is a tool call whose result was larger than the limit (see
+// WithMaxResultBytes). The tool ran; only its result was refused. It wraps agent.ErrTool.
+var ErrResultTooLarge = fmt.Errorf("mcp: tool result too large: %w", agent.ErrTool)
 
 // TrustAnnotations maps the server's tool annotations onto agent.Safety: readOnlyHint becomes
 // ReadOnly and idempotentHint becomes Idempotent. Pass it only for a server you trust to label
@@ -203,7 +253,7 @@ type tool struct {
 	session *mcp.ClientSession
 	def     *mcp.Tool
 	schema  json.RawMessage // def.InputSchema, checked to be an object schema
-	trust   bool            // map the server's annotations onto Safety (TrustAnnotations)
+	cfg     *toolsConfig
 }
 
 func (t *tool) Name() string        { return t.def.Name }
@@ -225,7 +275,7 @@ func (t *tool) ArgsSchema() json.RawMessage { return t.schema }
 // the MCP spec, which is the conservative choice for resume.
 func (t *tool) Safety() agent.Safety {
 	a := t.def.Annotations
-	if !t.trust || a == nil {
+	if !t.cfg.trust || a == nil {
 		return agent.Safety{}
 	}
 	switch {
@@ -252,6 +302,11 @@ func (t *tool) Call(ctx context.Context, args json.RawMessage) (json.RawMessage,
 		}
 		params.Arguments = args
 	}
+	if t.cfg.timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, t.cfg.timeout)
+		defer cancel()
+	}
 	res, err := t.session.CallTool(ctx, params)
 	if err != nil {
 		return nil, callError(t.def.Name, err)
@@ -265,6 +320,14 @@ func (t *tool) Call(ctx context.Context, args json.RawMessage) (json.RawMessage,
 	out, err := json.Marshal(result)
 	if err != nil {
 		return nil, fmt.Errorf("mcp: marshal result of tool %q: %w (%w)", t.def.Name, err, agent.ErrProtocol)
+	}
+	if max := t.cfg.maxResult; max > 0 && len(out) > max {
+		what := "result"
+		if res.IsError {
+			what = "error result"
+		}
+		return nil, fmt.Errorf("mcp: tool %q ran, but its %s is %d bytes, over the %d-byte limit: %w",
+			t.def.Name, what, len(out), max, ErrResultTooLarge)
 	}
 	if res.IsError {
 		return nil, fmt.Errorf("mcp: tool %q reported error: %s (%w)", t.def.Name, out, agent.ErrTool)

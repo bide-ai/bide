@@ -67,6 +67,42 @@ An absent `Annotations` block is treated as the destructive default per the MCP 
 is the conservative choice for resume. Whether to trust the annotations at all is the only
 policy decision; the wrapped tool carries no other configuration.
 
+## Limits
+
+A server's answers are untrusted input, and each one costs every later turn: a tool
+description is sent to the model with every request, and a result is journaled and sent back
+on every later turn of the run. `Tools` sets two caps by default. Each one refuses what is
+over it with an error; neither one truncates.
+
+| Limit | Default | Over the limit | Option |
+|---|---|---|---|
+| Tool result | `DefaultMaxResultBytes`, 1 MiB of JSON | `Call` fails with `ErrResultTooLarge` (wraps `agent.ErrTool`) | `WithMaxResultBytes(n)` |
+| Tool description | `DefaultMaxDescriptionBytes`, 8 KiB | `Tools` fails with `agent.ErrProtocol` | `WithMaxDescriptionBytes(n)` |
+
+- **1 MiB for a result.** 1 MiB of text is about 250,000 tokens, more than most models' whole
+  context window, so a larger result cannot be used as it is, and the journal would hold it for
+  the life of the run. The tool did run, so an oversized result is a definite failure whose
+  error says so ("tool ran, but its result is N bytes"); the model is not told the call did not
+  happen. An `isError` result is held to the same limit.
+- **8 KiB for a description.** A description written for a model to read is a few sentences to
+  a page. 8 KiB (about 2,000 tokens) leaves room for a detailed one, while a server cannot add
+  megabytes to every request or hide long instructions aimed at the model in it.
+
+Pass `n <= 0` to remove either limit.
+
+**Per-call timeout.** `WithCallTimeout(d)` bounds each call by `d`, on top of the run's context.
+There is no default: without it a call waits as long as the run's context allows. A call that
+times out may still be running on the server, so it fails with `agent.ErrToolOutcomeUnknown`
+(see below), and a side effect halts on resume rather than run again.
+
+**Unknown outcomes are the safe side.** Only two failures are known not to have run the tool:
+a JSON-RPC error from the server, and a call on a session already closed. Every other transport
+failure counts as an unknown outcome. That includes a streamable HTTP server that cannot be
+dialled at all: the SDK does not report a refused connection distinctly from one that dropped
+mid-request, so a side effect whose server is down halts the run for confirmation instead of
+failing outright. Confirm with `agent.ResolveHalt` once you know the call did not reach the
+server.
+
 ## Optional client capabilities
 
 `Connect` takes options that wire three more MCP client capabilities. All are opt-in; the
@@ -106,6 +142,12 @@ func Tools(ctx context.Context, session *mcp.ClientSession, opts ...ToolsOption)
 
 // TrustAnnotations maps a trusted server's annotations onto agent.Safety.
 func TrustAnnotations() ToolsOption
+
+// Limits (see Limits): a per-call timeout (no default) and caps on results and descriptions.
+func WithCallTimeout(d time.Duration) ToolsOption
+func WithMaxResultBytes(n int) ToolsOption         // default DefaultMaxResultBytes (1 MiB)
+func WithMaxDescriptionBytes(n int) ToolsOption    // default DefaultMaxDescriptionBytes (8 KiB)
+var ErrResultTooLarge error                        // wraps agent.ErrTool
 
 // Options for Connect.
 func WithElicitation(f ElicitFunc) Option
