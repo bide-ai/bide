@@ -30,13 +30,16 @@ import (
 //
 //	journal record: SHA-256(0x00 || "bide.audit.journal-leaf.v1\x00" || agent.EncodeRecord(record))
 //	absence key:    SHA-256(0x00 || "bide.audit.key-leaf.v1\x00" || key)
-//	event:          SHA-256(0x00 || "bide.audit.event-leaf.v1\x00" || event JSON)
+//	event:          SHA-256(0x00 || "bide.audit.event-leaf.v2\x00" || {"kind":...,"event":...,"salt":...})
 //	anchor entry:   SHA-256(0x00 || "bide.audit.anchor-leaf.v1\x00" || entry JSON)
 //
-// A journal record's encoding includes its salt (the "salt" field, base64). Key, event, and
-// anchor leaves are not salted: an absence proof names its neighbouring keys in the clear anyway
-// (see Absence), and an event or anchor proof's path hashes cover leaves that are as guessable as
-// their content.
+// A journal record's encoding includes its salt (the "salt" field, base64), and so does an
+// event's leaf: every event carries a random 32-byte salt that only its own proof discloses (see
+// EventInclusion; v1 event leaves were unsalted). Key and anchor leaves are not salted. An absence
+// proof names its neighbouring keys in the clear anyway (see Absence). An anchor entry holds a
+// signed tree head, whose root and Ed25519 signature a holder of a neighbour's proof cannot
+// compute, so a guess about a neighbouring entry can be confirmed only by someone who already
+// holds that exact signed head (see AnchorEntry).
 
 const (
 	rfc6962LeafPrefix = 0x00 // hash of a leaf   = SHA-256(0x00 || data)
@@ -47,7 +50,7 @@ const (
 const (
 	journalLeafTag = "bide.audit.journal-leaf.v1\x00"
 	keyLeafTag     = "bide.audit.key-leaf.v1\x00"
-	eventLeafTag   = "bide.audit.event-leaf.v1\x00"
+	eventLeafTag   = "bide.audit.event-leaf.v2\x00"
 	anchorLeafTag  = "bide.audit.anchor-leaf.v1\x00"
 )
 

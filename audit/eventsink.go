@@ -1,7 +1,9 @@
 package audit
 
 import (
+	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -30,18 +32,30 @@ var eventDomain = sha256.Sum256([]byte("bide.audit.events.v1"))
 // anchor. Not safe for concurrent Add — feed it from the one goroutine ranging Events.
 type EventLog struct {
 	leaves [][]byte
+	salts  [][]byte // salts[i] is the salt leaves[i] commits to, disclosed only by Prove(i)
 }
 
 // NewEventLog returns an empty log.
 func NewEventLog() *EventLog { return &EventLog{} }
 
-// Add appends one event as a canonical, kind-tagged leaf.
+// Add appends one event as a canonical, kind-tagged leaf that commits to a fresh random salt
+// (agent.SaltSize bytes from crypto/rand; see EventInclusion). It errors if the event cannot be
+// canonicalized or the system's random source fails.
 func (l *EventLog) Add(e agent.AgentEvent) error {
-	b, err := canonicalEvent(e)
+	salt, err := newEventSalt()
+	if err != nil {
+		return err
+	}
+	return l.add(e, salt)
+}
+
+func (l *EventLog) add(e agent.AgentEvent, salt []byte) error {
+	b, err := canonicalEvent(e, salt)
 	if err != nil {
 		return err
 	}
 	l.leaves = append(l.leaves, b)
+	l.salts = append(l.salts, append([]byte(nil), salt...))
 	return nil
 }
 
@@ -64,17 +78,29 @@ func (l *EventLog) Head() []byte {
 	return head
 }
 
-// Prove returns an inclusion proof for the event at index against Root — enough to verify
-// that one event WITHOUT revealing any other (selective disclosure over the event stream).
-// Event leaves are not salted, so the proof's sibling hashes let its holder confirm a guessed
-// event; a journal ProofBundle, whose leaves are salted, does not.
-// The returned Inclusion is the same type journal proofs use, so audit.Sign over Root and
-// this proof compose exactly as they do for the journal.
-func (l *EventLog) Prove(index int) (Inclusion, error) {
+// EventInclusion is an inclusion proof for one event: the event's own salt, which its leaf
+// commits to, and the RFC 6962 audit path (the same Inclusion journal proofs use) from that leaf
+// to the log's Root. It discloses the proven event's salt, its index, the log's size, and the
+// sibling hashes on its path. Each sibling hash covers other events' leaves, and every leaf
+// commits to its own random salt, so a holder of the proof cannot confirm a guess about any other
+// event by hashing it: the salt a guess would need is disclosed only by that event's own proof.
+type EventInclusion struct {
+	Salt []byte // the proven event's salt (agent.SaltSize bytes)
+	Inclusion
+}
+
+// Prove returns an inclusion proof for the event at index against Root: enough to verify that
+// one event WITHOUT revealing any other (selective disclosure over the event stream). The proof
+// carries the event's salt and nothing about any other event beyond the hashes on its path (see
+// EventInclusion). audit.Sign over Root and this proof compose exactly as they do for the journal.
+func (l *EventLog) Prove(index int) (EventInclusion, error) {
 	if index < 0 || index >= len(l.leaves) {
-		return Inclusion{}, fmt.Errorf("audit: event index %d out of range [0,%d)", index, len(l.leaves))
+		return EventInclusion{}, fmt.Errorf("audit: event index %d out of range [0,%d)", index, len(l.leaves))
 	}
-	return Inclusion{Index: index, Size: len(l.leaves), Path: auditPath(index, l.leaves)}, nil
+	return EventInclusion{
+		Salt:      append([]byte(nil), l.salts[index]...),
+		Inclusion: Inclusion{Index: index, Size: len(l.leaves), Path: auditPath(index, l.leaves)},
+	}, nil
 }
 
 // TreeHead returns a commitment to runID's events added so far at the given timestamp, the
@@ -99,11 +125,12 @@ func (l *EventLog) ProveConsistency(first int) (Consistency, error) {
 	return Consistency{First: first, Size: len(l.leaves), Path: consistencyProof(first, l.leaves)}, nil
 }
 
-// VerifyEventInclusion reports whether event is the leaf at proof.Index in a log of
-// proof.Size events committed by root — from the event + proof alone, no other events
-// needed. The event must canonicalize identically to when it was Add-ed.
-func VerifyEventInclusion(root []byte, event agent.AgentEvent, proof Inclusion) (bool, error) {
-	leaf, err := canonicalEvent(event)
+// VerifyEventInclusion reports whether event, under the salt proof discloses, is the leaf at
+// proof.Index in a log of proof.Size events committed by root: from the event and proof alone,
+// no other events needed. The event must canonicalize identically to when it was added. It
+// errors if the event cannot be canonicalized or proof.Salt is not agent.SaltSize bytes.
+func VerifyEventInclusion(root []byte, event agent.AgentEvent, proof EventInclusion) (bool, error) {
+	leaf, err := canonicalEvent(event, proof.Salt)
 	if err != nil {
 		return false, err
 	}
@@ -118,18 +145,55 @@ func VerifyEventInclusion(root []byte, event agent.AgentEvent, proof Inclusion) 
 // live-stream EventLog is a real-time view (and its Root shifts between a fresh run and its
 // replay because live-only events differ). Root / Head / TreeHead / Prove / ProveConsistency
 // then work exactly as they do on any EventLog.
+//
+// Each projected event comes from one journal record, and its salt is derived from that
+// record's random salt (journalEventSalt), so the projection needs no state beyond the journal.
+// It errors if a source record has no agent.SaltSize salt.
 func EventLogFromJournal(ctx context.Context, store agent.Durable, runID string) (*EventLog, error) {
-	evs, err := agent.ReplayEvents(ctx, store, runID)
+	evs, salts, err := projectJournal(ctx, store, runID)
 	if err != nil {
 		return nil, err
 	}
 	log := NewEventLog()
-	for _, e := range evs {
-		if err := log.Add(e); err != nil {
+	for i, e := range evs {
+		if err := log.add(e, salts[i]); err != nil {
 			return nil, err
 		}
 	}
 	return log, nil
+}
+
+// eventSaltTag separates a projected event's salt from its source record's salt.
+const eventSaltTag = "bide.audit.event-salt.v1\x00"
+
+// journalEventSalt is the salt of the event projected from a journal record whose salt is
+// recordSalt: SHA-256("bide.audit.event-salt.v1\x00" || recordSalt). The record's salt is random
+// and every store persists it with the record, so the event's salt is as unguessable, is the same
+// on every projection of the journal, and needs no storage of its own. The hash is one-way: an
+// event proof discloses this salt but not the record's, so it does not open the record's journal
+// leaf.
+func journalEventSalt(recordSalt []byte) []byte {
+	sum := sha256.Sum256(append([]byte(eventSaltTag), recordSalt...))
+	return sum[:]
+}
+
+// projectJournal returns the events agent.ReplayEvents returns for runID's journal and each
+// event's salt, derived from the record the event projects (journalEventSalt).
+func projectJournal(ctx context.Context, store agent.Durable, runID string) ([]agent.AgentEvent, [][]byte, error) {
+	recs, err := store.History(ctx, runID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("audit: load history %s: %w", runID, err)
+	}
+	evs, sources := agent.ProjectEvents(recs)
+	salts := make([][]byte, len(evs))
+	for i, src := range sources {
+		r := recs[src]
+		if len(r.Salt) != agent.SaltSize {
+			return nil, nil, fmt.Errorf("audit: run %s: record %q has a %d-byte salt, want %d (a store sets it when it journals the record; see agent.JournalEntry)", runID, r.Name, len(r.Salt), agent.SaltSize)
+		}
+		salts[i] = journalEventSalt(r.Salt)
+	}
+	return evs, salts, nil
 }
 
 // Record drains stream through log — committing every event — while forwarding each event
@@ -154,24 +218,59 @@ func Record(log *EventLog, stream *agent.AgentStream, onEvent func(agent.AgentEv
 	return msg, addErr
 }
 
-// eventLeaf is the canonical wire form of one event: a kind tag plus the event's JSON.
-// The tag makes the leaf self-describing so two different event types can never collide by
-// having the same field shape (e.g. an empty struct).
+// eventLeaf is the canonical wire form of one event: a kind tag, the event's JSON, and the
+// event's random salt (base64). The kind makes the leaf self-describing so two different event
+// types can never collide by having the same field shape (e.g. an empty struct); the salt makes
+// the leaf's hash unguessable from the event's content (see EventInclusion).
 type eventLeaf struct {
 	Kind  string          `json:"kind"`
 	Event json.RawMessage `json:"event"`
+	Salt  []byte          `json:"salt"`
 }
 
-func canonicalEvent(e agent.AgentEvent) ([]byte, error) {
+// canonicalEvent returns the leaf bytes of e under salt:
+// "bide.audit.event-leaf.v2\x00" || {"kind":...,"event":...,"salt":...}. It refuses a salt that
+// is not agent.SaltSize bytes: the leaf would be guessable from the event's content.
+func canonicalEvent(e agent.AgentEvent, salt []byte) ([]byte, error) {
+	if len(salt) != agent.SaltSize {
+		return nil, fmt.Errorf("audit: canonicalize event: %d-byte salt, want %d", len(salt), agent.SaltSize)
+	}
 	inner, err := json.Marshal(e)
 	if err != nil {
 		return nil, fmt.Errorf("audit: canonicalize event: %w", err)
 	}
-	b, err := json.Marshal(eventLeaf{Kind: eventKind(e), Event: inner})
+	b, err := json.Marshal(eventLeaf{Kind: eventKind(e), Event: inner, Salt: salt})
 	if err != nil {
 		return nil, fmt.Errorf("audit: canonicalize event: %w", err)
 	}
 	return tagged(eventLeafTag, b), nil
+}
+
+// eventLeafSalt returns the salt a stored event leaf commits to. It refuses a leaf of another
+// kind or version (an unsalted bide.audit.event-leaf.v1 leaf among them) and one whose salt is
+// not agent.SaltSize bytes.
+func eventLeafSalt(leaf []byte) ([]byte, error) {
+	body, ok := bytes.CutPrefix(leaf, []byte(eventLeafTag))
+	if !ok {
+		return nil, fmt.Errorf("not a %s leaf", eventLeafTag[:len(eventLeafTag)-1])
+	}
+	var el eventLeaf
+	if err := json.Unmarshal(body, &el); err != nil {
+		return nil, err
+	}
+	if len(el.Salt) != agent.SaltSize {
+		return nil, fmt.Errorf("%d-byte salt, want %d", len(el.Salt), agent.SaltSize)
+	}
+	return el.Salt, nil
+}
+
+// newEventSalt returns agent.SaltSize bytes from crypto/rand.
+func newEventSalt() ([]byte, error) {
+	salt := make([]byte, agent.SaltSize)
+	if _, err := rand.Read(salt); err != nil {
+		return nil, fmt.Errorf("audit: salt event: %w", err)
+	}
+	return salt, nil
 }
 
 // eventKind is a stable, human-readable discriminator for an AgentEvent. ModelEvent carries

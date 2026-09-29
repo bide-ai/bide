@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"errors"
+	"strings"
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
@@ -105,13 +107,15 @@ func TestPersistJournal_IncrementalConsistency(t *testing.T) {
 	}
 
 	evStore := audit.NewMemEventStore()
-	// Mirror a prefix (as if the process died after the first events).
-	for seq, e := range evs[:len(evs)-1] {
-		if err := audit.PersistEvent(ctx, evStore, "run", seq, e); err != nil {
-			t.Fatalf("PersistEvent %d: %v", seq, err)
-		}
+	// Mirror a prefix: the process dies after the first events are appended.
+	dying := &dyingStore{EventStore: evStore, left: len(evs) - 1}
+	if err := audit.PersistJournal(ctx, dying, jStore, "run"); err == nil {
+		t.Fatal("PersistJournal succeeded past the crash")
 	}
-	early, _ := audit.LoadEventLog(ctx, evStore, "run")
+	early, err := audit.LoadEventLog(ctx, evStore, "run")
+	if err != nil || early.Len() != len(evs)-1 {
+		t.Fatalf("after the crash the trail holds %d events (%v), want %d", early.Len(), err, len(evs)-1)
+	}
 	earlyRoot := early.Root()
 
 	// Now mirror the whole journal; the missing tail is appended, prefix untouched.
@@ -126,5 +130,99 @@ func TestPersistJournal_IncrementalConsistency(t *testing.T) {
 	}
 	if !audit.VerifyConsistency(earlyRoot, full.Root(), proof) {
 		t.Fatal("store-backed trail failed the append-only consistency proof")
+	}
+}
+
+// dyingStore passes left appends through to its EventStore, then fails every append, as a
+// process that dies mid-mirror.
+type dyingStore struct {
+	audit.EventStore
+	left int
+}
+
+func (s *dyingStore) Append(ctx context.Context, runID string, seq int, leaf []byte) error {
+	if s.left == 0 {
+		return errors.New("process died")
+	}
+	s.left--
+	return s.EventStore.Append(ctx, runID, seq, leaf)
+}
+
+// A leaf persists its event's salt: after a restart (a new process that has only the store), the
+// reloaded trail has the same root and proves each event under the salt its leaf holds. A retried
+// PersistEvent of the same event reuses that salt and is a no-op; a different event is a fork.
+func TestEventStore_PersistsSalts(t *testing.T) {
+	ctx := context.Background()
+	evStore := audit.NewMemEventStore()
+	evs := []agent.AgentEvent{agent.TurnStarted{Seq: 0}, agent.ToolCompleted{ToolUseID: "t1", Result: []byte(`true`)}}
+	for seq, e := range evs {
+		if err := audit.PersistEvent(ctx, evStore, "run", seq, e); err != nil {
+			t.Fatalf("PersistEvent %d: %v", seq, err)
+		}
+	}
+	a, err := audit.LoadEventLog(ctx, evStore, "run")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := audit.LoadEventLog(ctx, evStore, "run")
+	if !bytes.Equal(a.Root(), b.Root()) {
+		t.Fatal("two loads of one trail have different roots")
+	}
+	p0, _ := b.Prove(0)
+	p1, _ := b.Prove(1)
+	if len(p0.Salt) != agent.SaltSize || bytes.Equal(p0.Salt, p1.Salt) {
+		t.Fatalf("reloaded salts %x, %x; want distinct %d-byte salts", p0.Salt, p1.Salt, agent.SaltSize)
+	}
+	for i, p := range []audit.EventInclusion{p0, p1} {
+		if ok, err := audit.VerifyEventInclusion(a.Root(), evs[i], p); !ok || err != nil {
+			t.Fatalf("event %d does not verify from the reloaded trail: %v, %v", i, ok, err)
+		}
+	}
+
+	if err := audit.PersistEvent(ctx, evStore, "run", 1, evs[1]); err != nil {
+		t.Fatalf("a retried PersistEvent must be a no-op: %v", err)
+	}
+	if err := audit.PersistEvent(ctx, evStore, "run", 1, agent.TurnStarted{Seq: 9}); err == nil {
+		t.Fatal("a different event at a stored seq was not refused")
+	}
+	if c, _ := audit.LoadEventLog(ctx, evStore, "run"); !bytes.Equal(c.Root(), a.Root()) {
+		t.Fatal("a retried PersistEvent changed the trail")
+	}
+}
+
+// A trail holding a leaf that is not a salted bide.audit.event-leaf.v2 leaf (an unsalted v1 leaf,
+// or a v2 leaf without a full salt) is refused: its proof would have no salt to disclose.
+func TestLoadEventLog_RefusesUnsaltedLeaves(t *testing.T) {
+	ctx := context.Background()
+	for _, leaf := range []string{
+		"bide.audit.event-leaf.v1\x00" + `{"kind":"TurnStarted","event":{"Seq":0}}`,
+		"bide.audit.event-leaf.v1\x00" + `{"kind":"TurnStarted","event":{"Seq":0},"salt":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="}`,
+		"bide.audit.event-leaf.v2\x00" + `{"kind":"TurnStarted","event":{"Seq":0}}`,
+		"bide.audit.event-leaf.v2\x00" + `{"kind":"TurnStarted","event":{"Seq":0},"salt":"AAAA"}`,
+	} {
+		evStore := audit.NewMemEventStore()
+		if err := evStore.Append(ctx, "run", 0, []byte(leaf)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := audit.LoadEventLog(ctx, evStore, "run"); err == nil {
+			t.Errorf("LoadEventLog accepted %q", leaf)
+		}
+		if err := audit.PersistEvent(ctx, evStore, "run", 0, agent.TurnStarted{Seq: 0}); err == nil || !strings.Contains(err.Error(), "event 0 of run run") {
+			t.Errorf("PersistEvent over %q = %v, want an error naming the stored event", leaf, err)
+		}
+	}
+}
+
+// The journal projection refuses a record without an agent.SaltSize salt: the event it projects
+// would have no salt to derive.
+func TestEventLogFromJournal_RefusesUnsaltedRecords(t *testing.T) {
+	ctx := context.Background()
+	h := toolResults(2)
+	h[1].Salt = nil
+	if _, err := audit.EventLogFromJournal(ctx, h, "run"); err == nil {
+		t.Error("EventLogFromJournal projected an unsalted record")
+	}
+	if err := audit.PersistJournal(ctx, audit.NewMemEventStore(), h, "run"); err == nil {
+		t.Error("PersistJournal projected an unsalted record")
 	}
 }

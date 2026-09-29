@@ -48,8 +48,13 @@ encoding does not HTML-escape (unlike v0.6.0's) and includes the record's `salt`
 a store sets when it first journals the record (`agent.JournalEntry`), so that a proof's sibling
 hashes cannot be matched against a guessed neighbouring record. A record without a 32-byte salt
 is refused. Every other kind of leaf carries its own tag too (`bide.audit.key-leaf.v1`,
-`bide.audit.event-leaf.v1`, `bide.audit.anchor-leaf.v1`), so a leaf names its kind and version
-and a root over leaves of one version never equals a root over another's. Signed tree heads sign
+`bide.audit.event-leaf.v2`, `bide.audit.anchor-leaf.v1`), so a leaf names its kind and version
+and a root over leaves of one version never equals a root over another's. Event leaves are salted
+too (v2; v1 event leaves were not; see [Committing the event stream](#committing-the-event-stream-not-just-the-journal)).
+Key-set leaves are not salted: an absence proof names its neighbouring keys in plain text by
+design. Anchor-log leaves are not salted either: each entry holds a signed tree head whose root
+and Ed25519 signature a proof holder cannot compute, so an anchor proof's path confirms a
+neighbouring entry only to someone who already holds that exact signed head. Signed tree heads sign
 the `bide.audit.sth.v4` encoding (v3 signed untagged, unsalted leaves; v0.6.0 signed
 `bide.audit.sth.v1`), which `audit/verify` checks too, and `Head` seeds its chain with
 `bide.audit.v2`. A journal written before salts existed cannot be proven: re-run or re-journal
@@ -171,12 +176,34 @@ idempotent on `(runID, seq)`: a different leaf at an existing position is reject
 `UNIQUE(run_id, seq)` and insert-only grants, or object storage with object-lock/WORM.
 
 Each leaf is a kind-tagged canonical encoding, so event types never collide, and `ModelEvent`
-carries the inner delta's kind. `Root`/`Head`/`Prove`/`Sign` behave exactly as they do over the
-journal; the `Inclusion` proof type and signing path are shared. (Prototype: `audit/eventsink.go`.)
-Unlike journal leaves, event leaves are not salted: an event proof's sibling hashes cover other
-events, and a holder of the proof can confirm a guessed event (an approval with a known call ID)
-against them. Prove from the journal (a `ProofBundle`) when the other steps must stay
-unconfirmable.
+carries the inner delta's kind. `Root`/`Head`/`Sign` behave exactly as they do over the journal,
+and the signing path is shared. (Prototype: `audit/eventsink.go`.)
+
+**Event leaves are salted, like journal leaves.** An event leaf hashes as
+`SHA-256(0x00 || "bide.audit.event-leaf.v2\x00" || {"kind":...,"event":...,"salt":...})`, where
+`salt` is the event's own 32 random bytes (base64). `Prove` returns an `audit.EventInclusion`:
+the event's salt plus the shared `Inclusion` (index, size, audit path). An event proof discloses
+exactly: the event (held by the verifier), its salt, its index, the log's size, and the O(log n)
+sibling hashes on its path. It does not disclose any other event's content, kind, or salt, and
+those hashes cannot be tested against a guessed event (an approval with a known call ID, a
+two-valued tool result): the salt a guess would need is disclosed only by that event's own proof.
+Where the salt comes from:
+
+- `EventLog.Add` (and so `Record`) draws a fresh salt from `crypto/rand`. The salt lives in the
+  in-memory log; keep the log (or the proofs you took from it) to prove against its root later.
+- `EventLogFromJournal` and `PersistJournal` salt each projected event with
+  `SHA-256("bide.audit.event-salt.v1\x00" || record salt)`, where the record salt is the random
+  salt of the journal record the event projects (`agent.ProjectEvents` names that record). The
+  journal persists that salt, so the projection stays deterministic and resume-stable, and the
+  hash is one-way: an event proof does not disclose the record's journal salt.
+- `PersistEvent` draws a fresh salt, or reuses the salt already stored at that position, so a
+  retry is a no-op. Do not mix it with `PersistJournal` on one run: they salt the same event
+  differently, and the second reports a fork.
+
+An `EventStore` stores each leaf, salt included, verbatim, so `LoadEventLog` after a restart has
+the same root and each proof discloses the stored salt. `LoadEventLog` refuses a leaf that is not
+a salted v2 leaf. v1 event leaves were unsalted: a trail persisted under v1 cannot be loaded or
+proven; re-mirror it from the journal with `PersistJournal` into a fresh store and re-anchor.
 
 ## Producing a proof: `ProofBundle`, the CLI, and the standalone verifier
 

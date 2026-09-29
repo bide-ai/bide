@@ -5,6 +5,8 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
@@ -65,25 +67,75 @@ func buildLog(t *testing.T, evs []agent.AgentEvent) *audit.EventLog {
 	return log
 }
 
-// TestEventLog_RootIsDeterministic: same events in the same order → same Root and Head.
-func TestEventLog_RootIsDeterministic(t *testing.T) {
+// history is a read-only Durable whose history is exactly the records it holds, salts included,
+// as a journal exported from a store is.
+type history []agent.Record
+
+func (h history) History(context.Context, string) ([]agent.Record, error) { return h, nil }
+
+func (history) Do(context.Context, string, string, func(context.Context) (agent.Record, error)) (agent.Record, error) {
+	return agent.Record{}, errors.New("history is read-only")
+}
+
+// toolResults is a journal of n tool results, each with its own fixed salt.
+func toolResults(n int) history {
+	h := make(history, n)
+	for i := range h {
+		id := fmt.Sprintf("t%d", i)
+		h[i] = agent.Record{Name: id, Kind: agent.StepToolResult, ToolUseID: id, Result: json.RawMessage(fmt.Sprintf(`{"n":%d}`, i)), Salt: bytes.Repeat([]byte{byte(i + 1)}, agent.SaltSize)}
+	}
+	return h
+}
+
+func projectLog(t *testing.T, h history) *audit.EventLog {
+	t.Helper()
+	log, err := audit.EventLogFromJournal(context.Background(), h, "run")
+	if err != nil {
+		t.Fatalf("EventLogFromJournal: %v", err)
+	}
+	return log
+}
+
+// TestEventLog_SaltedPerEvent: each added event commits to a fresh random salt, so two logs of the
+// same events have different roots, and each proof discloses its own event's salt: the event
+// verifies under it, and not under another salt or without one.
+func TestEventLog_SaltedPerEvent(t *testing.T) {
 	a := buildLog(t, sampleEvents())
 	b := buildLog(t, sampleEvents())
-	if !bytes.Equal(a.Root(), b.Root()) {
-		t.Fatal("Root not deterministic across identical event sequences")
+	if bytes.Equal(a.Root(), b.Root()) || bytes.Equal(a.Head(), b.Head()) {
+		t.Fatal("two logs of the same events share a commitment: their leaves are not salted")
 	}
-	if !bytes.Equal(a.Head(), b.Head()) {
-		t.Fatal("Head not deterministic across identical event sequences")
+	p0, _ := a.Prove(0)
+	p1, _ := a.Prove(1)
+	if len(p0.Salt) != agent.SaltSize || bytes.Equal(p0.Salt, p1.Salt) {
+		t.Fatalf("event salts %x and %x, want distinct %d-byte salts", p0.Salt, p1.Salt, agent.SaltSize)
+	}
+	evs := sampleEvents()
+	if ok, err := audit.VerifyEventInclusion(a.Root(), evs[0], p0); !ok || err != nil {
+		t.Fatalf("event 0 does not verify under its proof's salt: %v, %v", ok, err)
+	}
+	other := p0
+	other.Salt = p1.Salt
+	if ok, _ := audit.VerifyEventInclusion(a.Root(), evs[0], other); ok {
+		t.Fatal("event 0 verified under another event's salt")
+	}
+	for _, salt := range [][]byte{nil, p0.Salt[:agent.SaltSize-1]} {
+		bad := p0
+		bad.Salt = salt
+		if ok, err := audit.VerifyEventInclusion(a.Root(), evs[0], bad); ok || err == nil {
+			t.Fatalf("a proof with a %d-byte salt = %v, %v; want an error", len(salt), ok, err)
+		}
 	}
 }
 
-// TestEventLog_OrderMatters: reordering two events changes the commitment (tamper-evidence).
+// TestEventLog_OrderMatters: reordering two events changes the commitment (tamper-evidence), even
+// when each event keeps its salt.
 func TestEventLog_OrderMatters(t *testing.T) {
-	evs := sampleEvents()
-	swapped := append([]agent.AgentEvent{}, evs...)
-	swapped[2], swapped[3] = swapped[3], swapped[2] // swap ToolStarted / ToolCompleted
-	if bytes.Equal(buildLog(t, evs).Root(), buildLog(t, swapped).Root()) {
-		t.Fatal("reordering events did not change the Root — not order-sensitive")
+	h := toolResults(4)
+	swapped := append(history{}, h...)
+	swapped[1], swapped[2] = swapped[2], swapped[1]
+	if bytes.Equal(projectLog(t, h).Root(), projectLog(t, swapped).Root()) {
+		t.Fatal("reordering events did not change the Root: not order-sensitive")
 	}
 }
 
@@ -177,25 +229,31 @@ func TestEventLog_Consistency(t *testing.T) {
 	evs := sampleEvents()
 	m := 3
 
-	early := buildLog(t, evs[:m])
-	rootEarly := early.Root() // commitment when the log held m events
-
-	full := buildLog(t, evs)
-	rootFull := full.Root()
-
-	proof, err := full.ProveConsistency(m)
+	log := buildLog(t, evs[:m])
+	rootEarly := log.Root() // commitment when the log held m events
+	for _, e := range evs[m:] {
+		if err := log.Add(e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	proof, err := log.ProveConsistency(m)
 	if err != nil {
 		t.Fatalf("ProveConsistency: %v", err)
 	}
-	if !audit.VerifyConsistency(rootEarly, rootFull, proof) {
+	if !audit.VerifyConsistency(rootEarly, log.Root(), proof) {
 		t.Fatal("a genuinely append-only history failed the consistency proof")
 	}
 
-	// Rewrite an early event: the earlier root no longer reconciles.
-	tampered := append([]agent.AgentEvent{}, evs...)
-	tampered[1] = agent.ToolStarted{ToolUseID: "evil", Name: "exfiltrate"}
-	rewritten := buildLog(t, tampered[:m]).Root()
-	if audit.VerifyConsistency(rewritten, rootFull, proof) {
+	// Rewrite an early event, keeping its salt: the earlier root no longer reconciles.
+	h := toolResults(6)
+	full := projectLog(t, h)
+	proof, _ = full.ProveConsistency(m)
+	if !audit.VerifyConsistency(projectLog(t, h[:m]).Root(), full.Root(), proof) {
+		t.Fatal("a projected prefix failed the consistency proof")
+	}
+	tampered := append(history{}, h[:m]...)
+	tampered[1].Result = json.RawMessage(`{"n":"evil"}`)
+	if audit.VerifyConsistency(projectLog(t, tampered).Root(), full.Root(), proof) {
 		t.Fatal("consistency proof accepted a rewritten early event")
 	}
 }
@@ -266,16 +324,19 @@ func TestEventLogFromJournal(t *testing.T) {
 		t.Fatalf("durable event STH failed (verify=%v size=%d/%d)", sth.Verify(pub), sth.Size, log1.Len())
 	}
 
-	// The trail up to any earlier point is an append-only prefix of the full run.
-	evs, _ := agent.ReplayEvents(ctx, store, "run")
-	if len(evs) < 2 {
-		t.Fatalf("need >= 2 projected events, got %d", len(evs))
+	// The trail up to any earlier point (the projection of a journal prefix, as it stood before
+	// the run finished) is an append-only prefix of the full run.
+	recs, _ := store.History(ctx, "run")
+	if log1.Len() < 2 {
+		t.Fatalf("need >= 2 projected events, got %d", log1.Len())
 	}
-	prefix := audit.NewEventLog()
-	for _, e := range evs[:len(evs)-1] {
-		if err := prefix.Add(e); err != nil {
-			t.Fatalf("prefix Add: %v", err)
-		}
+	k := len(recs) - 1
+	for k > 0 && projectLog(t, history(recs[:k])).Len() == log1.Len() {
+		k--
+	}
+	prefix := projectLog(t, history(recs[:k]))
+	if prefix.Len() == 0 || prefix.Len() >= log1.Len() {
+		t.Fatalf("prefix projects %d of %d events", prefix.Len(), log1.Len())
 	}
 	proof, err := log1.ProveConsistency(prefix.Len())
 	if err != nil {
