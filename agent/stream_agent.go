@@ -34,6 +34,16 @@ type ModelEvent struct{ Event Event }
 
 func (ModelEvent) agentEvent() {}
 
+// TurnRestarted fires when the model call for turn Seq starts over after an attempt that had
+// already streamed ModelEvent deltas: a middleware such as Retry called the model again after
+// that attempt failed, or delivered a different response in its place. The deltas received
+// since TurnStarted{Seq} (or the previous TurnRestarted) belong to the discarded attempt and
+// are not part of the recorded turn, so a consumer rendering the turn should clear them. Not
+// emitted when the discarded attempt streamed nothing.
+type TurnRestarted struct{ Seq int }
+
+func (TurnRestarted) agentEvent() {}
+
 // AssistantTurn is the fully-assembled assistant message for a turn. Replayed is true
 // when it was reconstructed from the journal on resume rather than produced by a live
 // model call (in which case no ModelEvent deltas preceded it).
