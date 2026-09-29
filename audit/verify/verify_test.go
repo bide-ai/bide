@@ -22,7 +22,7 @@ func journal(t *testing.T) (agent.Durable, string) {
 	store := agent.NewMemStore()
 	for i, v := range []string{"a", "b", "c", "d", "e"} {
 		name := v
-		if _, err := agent.Step(ctx, store, "run", name, func(context.Context) (string, error) { return v, nil }); err != nil {
+		if _, err := agent.Step(ctx, store, "run", name, func(context.Context) (string, error) { return v, nil }, agent.StepSafety(agent.Safety{ReadOnly: true})); err != nil {
 			t.Fatalf("step %d: %v", i, err)
 		}
 	}
@@ -81,7 +81,7 @@ func TestVerify_ConsistencyMatchesAudit(t *testing.T) {
 	twoStore := agent.NewMemStore()
 	for _, v := range []string{"a", "b"} {
 		vv := v
-		if _, err := agent.Step(ctx, twoStore, "run", vv, func(context.Context) (string, error) { return vv, nil }); err != nil {
+		if _, err := agent.Step(ctx, twoStore, "run", vv, func(context.Context) (string, error) { return vv, nil }, agent.StepSafety(agent.Safety{ReadOnly: true})); err != nil {
 			t.Fatalf("two-step: %v", err)
 		}
 	}

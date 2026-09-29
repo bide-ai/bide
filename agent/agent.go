@@ -632,7 +632,7 @@ func (a *Agent) quorumTally(ctx context.Context, runID string, tu ToolUse, pol *
 	if !tally.Passed() && !tally.Unreachable() {
 		return tally, false, nil
 	}
-	tally, err = Step(ctx, a.store, runID, name, func(context.Context) (ApprovalTally, error) { return tally, nil })
+	tally, err = Step(ctx, a.store, runID, name, func(context.Context) (ApprovalTally, error) { return tally, nil }, StepSafety(Safety{ReadOnly: true}))
 	if err != nil {
 		return ApprovalTally{}, false, fmt.Errorf("record %s (run %s): %w (%w)", name, runID, err, ErrStorage)
 	}

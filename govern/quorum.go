@@ -13,7 +13,8 @@ import (
 // the voters in one Quorum call. Decide returns a discrete decision string; the caller keeps
 // the model call and its parsing inside Decide, so Quorum stays model-agnostic and every vote
 // is already a comparable, normalized value. Free-form prose cannot be quorumed: Decide must
-// map to a small set of labels (an enum, a yes/no, a chosen action).
+// map to a small set of labels (an enum, a yes/no, a chosen action). Decide must have no side
+// effects: a vote not yet recorded when the process dies is cast again on resume.
 type Voter struct {
 	Name   string                                // identifies who voted; also the durable step key, so it must be unique per Quorum call
 	Decide func(context.Context) (string, error) // produces this voter's normalized decision label
@@ -71,7 +72,8 @@ func Quorum(ctx context.Context, store agent.Durable, runID string, k int, voter
 	for i, v := range voters {
 		v := v // capture per iteration
 		tasks[i] = agent.Task[Vote]{
-			Name: v.Name,
+			Name:   v.Name,
+			Safety: agent.Safety{ReadOnly: true}, // a vote is a decision, not an effect (see Voter)
 			Fn: func(ctx context.Context) (Vote, error) {
 				decision, err := v.Decide(ctx)
 				if err != nil {
@@ -82,7 +84,7 @@ func Quorum(ctx context.Context, store agent.Durable, runID string, k int, voter
 		}
 	}
 
-	// Fan out durably: each vote is a Step (at-most-once, replayable, independently provable).
+	// Fan out durably: each vote is a Step (recorded once, replayable, independently provable).
 	votes, err := agent.Parallel(ctx, store, runID, 0, tasks...)
 	if err != nil {
 		// Some voter failed. Tally only the votes that were recorded (Voter set), so the caller
@@ -96,7 +98,7 @@ func Quorum(ctx context.Context, store agent.Durable, runID string, k int, voter
 	// individual votes, and so a resumed run returns the same tally without recomputing it.
 	result, err := agent.Step(ctx, store, runID, "quorum/tally", func(context.Context) (QuorumResult, error) {
 		return tally(votes, k), nil
-	})
+	}, agent.StepSafety(agent.Safety{ReadOnly: true}))
 	if err != nil {
 		return QuorumResult{}, err
 	}

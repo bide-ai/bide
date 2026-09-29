@@ -47,7 +47,8 @@ A redelivered event resumes the recorded run rather than re-calling the model an
 
 For multi-turn bots, use a `Session` keyed by the conversation/thread id for memory, and guard the
 inbound event with a `Step` keyed by the event id. `Session` alone is not enough: it keys turns by
-index, so a redelivery would open a second turn. The event-id `Step` is the idempotency guard.
+index, so a redelivery would open a second turn. The event-id `Step` is the idempotency guard. It is
+declared `Idempotent` because a retried `Send` resumes the same turn from the journal.
 
 ```go
 reply, err := agent.Step(ctx, store, "inbox/"+conversationID, eventID,
@@ -61,7 +62,7 @@ reply, err := agent.Step(ctx, store, "inbox/"+conversationID, eventID,
 			return "", err // a pause/error is not recorded, so the next redelivery retries the turn
 		}
 		return msg.Text(), nil
-	})
+	}, agent.StepSafety(agent.Safety{Idempotent: true}))
 ```
 
 The first delivery runs the turn and records the reply under the event id; a redelivery returns the

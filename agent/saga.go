@@ -98,7 +98,8 @@ func (e *SagaAborted) Unwrap() error { return e.Cause }
 //
 // The abort is derived from the journal (a durable StepSagaFail record), so a crash at
 // any point resumes correctly: on re-entry a recorded failure sends us straight to
-// rollback, and each compensation is itself a durable memoized step (at-most-once).
+// rollback, and each compensation is a durable memoized step: once recorded it never
+// runs again, and a crash mid-compensation re-runs it (so Compensate must be idempotent).
 //
 // Note: if a non-retriable step's outcome is genuinely unknown (crashed after its attempt
 // marker but before any result), resume returns *ResumeHalt instead — you can't safely
@@ -152,8 +153,8 @@ func (a *Agent) rollback(ctx context.Context, runID string, cause error) error {
 
 // rollbackRun compensates a run's completed writes in reverse execution order, recursing
 // into sub-agent child runs so a whole agent tree rolls back as a unit (distributed
-// saga). Each compensation is a durable, memoized step, so it runs at-most-once and a
-// crash mid-rollback resumes cleanly.
+// saga). Each compensation is a durable, memoized step: a completed one never re-runs, and
+// a crash mid-compensation re-runs it on resume (at-least-once; see Compensator).
 func (a *Agent) rollbackRun(ctx context.Context, runID string) (compensated, uncompensated []string, err error) {
 	recs, e := a.store.History(ctx, runID)
 	if e != nil {

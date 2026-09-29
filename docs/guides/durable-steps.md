@@ -17,17 +17,28 @@ Three primitives cover the common shapes, all built on the `Durable` port
 
 ```go
 func Step[T any](ctx context.Context, d Durable, runID, name string,
-    fn func(context.Context) (T, error)) (T, error)
+    fn func(context.Context) (T, error), opts ...StepOption) (T, error)
 ```
 
 `Step` runs `fn` as a named durable step keyed by `(runID, name)` and returns its typed result.
-On resume, a completed step returns its **recorded** result without re-running `fn`; if `fn`
-errors, nothing is recorded and the step re-runs on the next attempt. It is the building block the
-agent loop itself is made of, exposed for your own orchestration:
+On resume, a completed step returns its **recorded** result without re-running `fn`. It is the
+building block the agent loop itself is made of, exposed for your own orchestration.
+
+A step is a side effect unless you say otherwise, and it gets the same guarantee as a tool call:
+it runs **at most once**. An attempt marker is journaled before `fn` runs, so if the process dies
+after `fn`'s effect and before its result is recorded, the resumed step returns `*ResumeHalt`
+instead of running `fn` again; `ResolveHalt` (with the step name as the ID) records the confirmed
+outcome. The same holds when `fn` returns an error, since a failed call may still have taken
+effect. A step that is safe to re-run declares it with `StepSafety`, and then simply re-runs after
+a crash or an error:
 
 ```go
 inv, err := agent.Step(ctx, store, runID, "fetch-invoice",
-    func(ctx context.Context) (Invoice, error) { return billing.Lookup(ctx, id) })
+    func(ctx context.Context) (Invoice, error) { return billing.Lookup(ctx, id) },
+    agent.StepSafety(agent.Safety{ReadOnly: true}))
+
+res, err := agent.Step(ctx, store, runID, "reserve", // at most once; halts on an unknown outcome
+    func(ctx context.Context) (Reservation, error) { return inventory.Reserve(ctx, sku) })
 ```
 
 `Step` is a package function, not a method, because Go methods cannot add type parameters. The
@@ -43,8 +54,9 @@ redelivered inbound event replay instead of re-fire.
 
 ```go
 type Task[T any] struct {
-    Name string
-    Fn   func(context.Context) (T, error)
+    Name   string
+    Fn     func(context.Context) (T, error)
+    Safety Safety // as StepSafety: the zero value is a side effect
 }
 
 func Parallel[T any](ctx context.Context, d Durable, runID string,
@@ -53,21 +65,23 @@ func Parallel[T any](ctx context.Context, d Durable, runID string,
 
 `Parallel` runs each `Task` concurrently, each as its own durable `Step`, and returns the results
 **in task order** (not completion order). It is the durable, auditable fan-in that a compliance
-pipeline wants: run several independent checks at once (sanctions, credit, fraud), each crash-safe
-and at-most-once, each result committed to the journal and provable on its own, then aggregate.
+pipeline wants: run several independent checks at once (sanctions, credit, fraud), each crash-safe,
+each result committed to the journal and provable on its own, then aggregate.
 
 - Each task's `Name` is its durable memoization key within the run, so it **must be unique** across
-  the tasks in one call.
+  the tasks in one call; a repeated name returns `ErrConfig` before any task runs.
+- Each task is a `Step` with the task's `Safety`: mark checks and lookups `ReadOnly`, and leave a
+  side effect at the zero value so it runs at most once.
 - **All tasks run even if some fail**, so a failed check never hides the others. The returned error
-  joins every task's error (`errors.Join`) and is `nil` only if all succeeded. A failed task was not
-  journaled, so a later resume re-runs it while succeeded tasks are memoized.
+  joins every task's error (`errors.Join`) and is `nil` only if all succeeded. Succeeded tasks are
+  memoized on resume; a failed `ReadOnly` task re-runs, and a failed side effect halts.
 - `maxConcurrency` caps in-flight tasks; `<= 0` means one goroutine per task.
 
 ```go
 checks := []agent.Task[CheckResult]{
-    {Name: "sanctions_check",     Fn: runSanctions},
-    {Name: "pep_check",           Fn: runPEP},
-    {Name: "adverse_media_check", Fn: runAdverseMedia},
+    {Name: "sanctions_check",     Fn: runSanctions,    Safety: agent.Safety{ReadOnly: true}},
+    {Name: "pep_check",           Fn: runPEP,          Safety: agent.Safety{ReadOnly: true}},
+    {Name: "adverse_media_check", Fn: runAdverseMedia, Safety: agent.Safety{ReadOnly: true}},
 }
 results, err := agent.Parallel(ctx, store, runID, 0, checks...) // 0 = unbounded concurrency
 ```

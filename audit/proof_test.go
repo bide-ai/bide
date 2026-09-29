@@ -119,7 +119,7 @@ func TestProveRecord_RejectsSTHFromDifferentRun(t *testing.T) {
 	otherStore := agent.NewMemStore()
 	for _, v := range []string{"x", "y", "z"} {
 		vv := v
-		if _, err := agent.Step(ctx, otherStore, "other", vv, func(context.Context) (string, error) { return vv, nil }); err != nil {
+		if _, err := agent.Step(ctx, otherStore, "other", vv, func(context.Context) (string, error) { return vv, nil }, agent.StepSafety(agent.Safety{ReadOnly: true})); err != nil {
 			t.Fatalf("other journal: %v", err)
 		}
 	}

@@ -241,11 +241,12 @@ The same order-triage flow, three ways. Plain Go is the default: write ordinary 
 ```go
 // classify, then branch: rush orders reserve-then-finalize, the rest decline.
 assess, _ := agent.Step(ctx, store, "order-42", "classify",
-    func(ctx context.Context) (Assessment, error) { return classify(order) })
+    func(ctx context.Context) (Assessment, error) { return classify(order) },
+    agent.StepSafety(agent.Safety{ReadOnly: true})) // safe to re-run after a crash
 
 var receipt Receipt
 if assess.Rush {
-    res, _ := agent.Step(ctx, store, "order-42", "reserve", // non-idempotent
+    res, _ := agent.Step(ctx, store, "order-42", "reserve", // a side effect: at most once
         func(ctx context.Context) (Reservation, error) { return reserve(assess) })
     receipt, _ = agent.Step(ctx, store, "order-42", "finalize",
         func(ctx context.Context) (Receipt, error) { return finalize(res) })

@@ -42,9 +42,9 @@ func main() {
 
 	// 1) Parallel, durable, independently-provable compliance checks. adverse_media flags.
 	checks := []agent.Task[checkResult]{
-		{Name: "sanctions_check", Fn: func(context.Context) (checkResult, error) { return checkResult{"sanctions", true}, nil }},
-		{Name: "pep_check", Fn: func(context.Context) (checkResult, error) { return checkResult{"pep", true}, nil }},
-		{Name: "adverse_media_check", Fn: func(context.Context) (checkResult, error) { return checkResult{"adverse_media", false}, nil }},
+		{Name: "sanctions_check", Safety: agent.Safety{ReadOnly: true}, Fn: func(context.Context) (checkResult, error) { return checkResult{"sanctions", true}, nil }},
+		{Name: "pep_check", Safety: agent.Safety{ReadOnly: true}, Fn: func(context.Context) (checkResult, error) { return checkResult{"pep", true}, nil }},
+		{Name: "adverse_media_check", Safety: agent.Safety{ReadOnly: true}, Fn: func(context.Context) (checkResult, error) { return checkResult{"adverse_media", false}, nil }},
 	}
 	results, err := agent.Parallel(ctx, store, runID, 0, checks...)
 	if err != nil {
@@ -109,7 +109,7 @@ func main() {
 			PolicyDigest: policyDigest,
 			StateDigest:  st.Digest(),
 		}, nil
-	})
+	}, agent.StepSafety(agent.Safety{ReadOnly: true}))
 	if err != nil {
 		panic(err)
 	}
@@ -150,6 +150,6 @@ func main() {
 	}
 	fmt.Printf("  %-20s inclusion proof verified: %v\n", "convergence_cert", ok)
 
-	fmt.Println("\nEvery check ran durably (at-most-once on resume), the decision was governed by a")
+	fmt.Println("\nEvery check ran durably (recorded once, replayed on resume), the decision was governed by a")
 	fmt.Println("machine-checked-convergent policy, and every stage is provable to a third party.")
 }

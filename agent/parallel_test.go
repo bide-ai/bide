@@ -29,15 +29,15 @@ func TestParallel_DurableAuditableFanIn(t *testing.T) {
 
 	var sanctions, credit, fraud int64
 	checks := []agent.Task[checkResult]{
-		{Name: "sanctions_check", Fn: func(context.Context) (checkResult, error) {
+		{Name: "sanctions_check", Safety: agent.Safety{ReadOnly: true}, Fn: func(context.Context) (checkResult, error) {
 			atomic.AddInt64(&sanctions, 1)
 			return checkResult{"sanctions", true, 10}, nil
 		}},
-		{Name: "credit_check", Fn: func(context.Context) (checkResult, error) {
+		{Name: "credit_check", Safety: agent.Safety{ReadOnly: true}, Fn: func(context.Context) (checkResult, error) {
 			atomic.AddInt64(&credit, 1)
 			return checkResult{"credit", true, 7}, nil
 		}},
-		{Name: "fraud_check", Fn: func(context.Context) (checkResult, error) {
+		{Name: "fraud_check", Safety: agent.Safety{ReadOnly: true}, Fn: func(context.Context) (checkResult, error) {
 			atomic.AddInt64(&fraud, 1)
 			return checkResult{"fraud", false, 3}, nil
 		}},
@@ -90,7 +90,7 @@ func TestParallel_DurableAuditableFanIn(t *testing.T) {
 
 // TestParallel_PartialFailure confirms the fan-in preserves every result and aggregates errors: a
 // failing check surfaces in the joined error, the others still return, and (since a failed step is
-// not journaled) it re-runs on resume while the succeeded ones are memoized.
+// not journaled and a check is ReadOnly) it re-runs on resume while the succeeded ones are memoized.
 func TestParallel_PartialFailure(t *testing.T) {
 	ctx := context.Background()
 	store := agent.NewMemStore()
@@ -99,10 +99,10 @@ func TestParallel_PartialFailure(t *testing.T) {
 	boom := errors.New("credit bureau timeout")
 	var creditAttempts int64
 	tasks := []agent.Task[checkResult]{
-		{Name: "sanctions_check", Fn: func(context.Context) (checkResult, error) {
+		{Name: "sanctions_check", Safety: agent.Safety{ReadOnly: true}, Fn: func(context.Context) (checkResult, error) {
 			return checkResult{"sanctions", true, 10}, nil
 		}},
-		{Name: "credit_check", Fn: func(context.Context) (checkResult, error) {
+		{Name: "credit_check", Safety: agent.Safety{ReadOnly: true}, Fn: func(context.Context) (checkResult, error) {
 			atomic.AddInt64(&creditAttempts, 1)
 			return checkResult{}, boom
 		}},
@@ -143,4 +143,35 @@ func mustKey(t *testing.T) ed25519.PrivateKey {
 		t.Fatalf("keygen: %v", err)
 	}
 	return priv
+}
+
+// A task that is a side effect runs at most once. When it fails, it may still have taken effect
+// (a gateway that timed out after charging), so resume halts on it instead of running it again.
+func TestParallel_FailedSideEffectHaltsOnResume(t *testing.T) {
+	ctx := context.Background()
+	store := agent.NewMemStore()
+	var charges int64
+	tasks := []agent.Task[string]{{Name: "charge", Fn: func(context.Context) (string, error) {
+		atomic.AddInt64(&charges, 1)
+		return "", errors.New("gateway timeout")
+	}}}
+	if _, err := agent.Parallel(ctx, store, "r1", 0, tasks...); err == nil {
+		t.Fatal("setup: want the charge's error")
+	}
+	_, err := agent.Parallel(ctx, store, "r1", 0, tasks...)
+	var halt *agent.ResumeHalt
+	if !errors.As(err, &halt) || halt.ToolUseID != "charge" || charges != 1 {
+		t.Fatalf("resume: err = %v after %d charges; want *ResumeHalt for charge after 1", err, charges)
+	}
+}
+
+// Two tasks with one name would share one journal entry, so one would never run.
+func TestParallel_RejectsDuplicateNames(t *testing.T) {
+	var ran int64
+	fn := func(context.Context) (int, error) { atomic.AddInt64(&ran, 1); return 1, nil }
+	_, err := agent.Parallel(context.Background(), agent.NewMemStore(), "r1", 0,
+		agent.Task[int]{Name: "check", Fn: fn}, agent.Task[int]{Name: "check", Fn: fn})
+	if !errors.Is(err, agent.ErrConfig) || ran != 0 {
+		t.Fatalf("err = %v, ran = %d; want ErrConfig before any task runs", err, ran)
+	}
 }
