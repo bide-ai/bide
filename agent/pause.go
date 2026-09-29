@@ -24,9 +24,13 @@ import (
 // Inspect Prompt to decide what to ask the human, record an answer with Resume (same
 // Key), then re-invoke Run with the same runID to continue.
 type Interrupted struct {
-	RunID  string
-	Key    string
-	Prompt any // caller-defined payload for the human: a question, options, current state
+	RunID string
+	// RootRunID is the run to re-invoke to continue: the top-level run. It differs from RunID
+	// when the signal comes from inside a sub-agent, whose journal is RunID. Record the answer
+	// against RunID (Resume, Approve, ResolveHalt, Signal), then run RootRunID with the root agent.
+	RootRunID string
+	Key       string
+	Prompt    any // caller-defined payload for the human: a question, options, current state
 }
 
 func (e *Interrupted) Error() string {
@@ -66,7 +70,7 @@ func Interrupt[T any](ctx context.Context, key string, prompt any) (T, error) {
 			return v, nil
 		}
 	}
-	return zero, &Interrupted{RunID: runID, Key: key, Prompt: prompt}
+	return zero, &Interrupted{RunID: runID, RootRunID: rootRunID(ctx, runID), Key: key, Prompt: prompt}
 }
 
 // Resume records the typed value a paused run is waiting for at key (see Interrupt), then
@@ -97,9 +101,13 @@ func interruptStep(key string) string { return "interrupt:" + key }
 // survives a restart. Re-invoke Run with the same runID at or after FireAt to resume (a Waker does
 // this automatically; otherwise the deployment re-invokes on its own schedule).
 type Sleeping struct {
-	RunID  string
-	Name   string
-	FireAt time.Time
+	RunID string
+	// RootRunID is the run to re-invoke to continue: the top-level run. It differs from RunID
+	// when the signal comes from inside a sub-agent, whose journal is RunID. Record the answer
+	// against RunID (Resume, Approve, ResolveHalt, Signal), then run RootRunID with the root agent.
+	RootRunID string
+	Name      string
+	FireAt    time.Time
 }
 
 func (e *Sleeping) Error() string {
@@ -166,9 +174,11 @@ func waitUntil(ctx context.Context, name string, fireAtFrom func(now time.Time) 
 	}
 	// Not yet due: schedule a wake if a Waker is bound, then pause durably.
 	if w := wakerFrom(ctx); w != nil {
-		w.Schedule(runID, name, fireAt)
+		// Wake the top-level run: re-running it re-enters any sub-agent down to this Sleep,
+		// while the sub-run alone cannot be driven by the root agent's resume callback.
+		w.Schedule(rootRunID(ctx, runID), name, fireAt)
 	}
-	return &Sleeping{RunID: runID, Name: name, FireAt: fireAt}
+	return &Sleeping{RunID: runID, RootRunID: rootRunID(ctx, runID), Name: name, FireAt: fireAt}
 }
 
 func timerStep(name string) string { return "timer:" + name }
@@ -319,9 +329,13 @@ func (w *MemWaker) Start(ctx context.Context, every time.Duration, onError func(
 // externally-pushed dual of Interrupted: Interrupt asks a human and resumes with their
 // answer; Await waits for an event an outside system delivers.
 type Awaiting struct {
-	RunID  string
-	Name   string
-	Prompt any // optional caller payload describing what the run is waiting for
+	RunID string
+	// RootRunID is the run to re-invoke to continue: the top-level run. It differs from RunID
+	// when the signal comes from inside a sub-agent, whose journal is RunID. Record the answer
+	// against RunID (Resume, Approve, ResolveHalt, Signal), then run RootRunID with the root agent.
+	RootRunID string
+	Name      string
+	Prompt    any // optional caller payload describing what the run is waiting for
 }
 
 func (e *Awaiting) Error() string {
@@ -362,7 +376,7 @@ func Await[T any](ctx context.Context, name string) (T, error) {
 			return v, nil
 		}
 	}
-	return zero, &Awaiting{RunID: runID, Name: name}
+	return zero, &Awaiting{RunID: runID, RootRunID: rootRunID(ctx, runID), Name: name}
 }
 
 // Signal delivers a single-shot signal to a run, journaled at-most-once by name: a

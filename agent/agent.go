@@ -333,7 +333,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 			if ms := attemptedAtMs[id]; ms != 0 {
 				attemptedAt = time.UnixMilli(ms)
 			}
-			return Message{}, Usage{}, 0, &ResumeHalt{RunID: runID, ToolUseID: id, ToolName: name, AttemptedAt: attemptedAt}
+			return Message{}, Usage{}, 0, &ResumeHalt{RunID: runID, RootRunID: rootRunID(ctx, runID), ToolUseID: id, ToolName: name, AttemptedAt: attemptedAt}
 		}
 	}
 
@@ -439,13 +439,13 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 						evTally := tally // the event gets its own copy; PendingApproval keeps tally
 						evTally.Pending = append([]string(nil), tally.Pending...)
 						fire(ApprovalRequired{ToolUseID: tu.ID, Name: tu.Name, Args: tu.Args, Quorum: &evTally})
-						return Message{}, totalUsage, liveTurns, &PendingApproval{RunID: runID, ToolUseID: tu.ID, ToolName: tu.Name, Args: tu.Args, Quorum: &tally}
+						return Message{}, totalUsage, liveTurns, &PendingApproval{RunID: runID, RootRunID: rootRunID(ctx, runID), ToolUseID: tu.ID, ToolName: tu.Name, Args: tu.Args, Quorum: &tally}
 					}
 					approved = tally.Passed()
 				} else {
 					if !decided[tu.ID] {
 						fire(ApprovalRequired{ToolUseID: tu.ID, Name: tu.Name, Args: tu.Args})
-						return Message{}, totalUsage, liveTurns, &PendingApproval{RunID: runID, ToolUseID: tu.ID, ToolName: tu.Name, Args: tu.Args}
+						return Message{}, totalUsage, liveTurns, &PendingApproval{RunID: runID, RootRunID: rootRunID(ctx, runID), ToolUseID: tu.ID, ToolName: tu.Name, Args: tu.Args}
 					}
 					approved = approvals[tu.ID]
 				}
@@ -511,7 +511,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 						if got.AttemptedAt != 0 {
 							at = time.UnixMilli(got.AttemptedAt)
 						}
-						return &ResumeHalt{RunID: runID, ToolUseID: c.tu.ID, ToolName: c.tu.Name, AttemptedAt: at}
+						return &ResumeHalt{RunID: runID, RootRunID: rootRunID(ctx, runID), ToolUseID: c.tu.ID, ToolName: c.tu.Name, AttemptedAt: at}
 					}
 				}
 				fire(ToolStarted{ToolUseID: c.tu.ID, Name: c.tu.Name, Args: c.tu.Args})
@@ -683,10 +683,20 @@ const (
 type runCtx struct {
 	store Durable
 	runID string
+	root  string // the top-level run; a sub-agent's runs inherit it
 }
 
 func withRunContext(ctx context.Context, store Durable, runID string) context.Context {
-	return context.WithValue(ctx, runContextKey, runCtx{store: store, runID: runID})
+	return context.WithValue(ctx, runContextKey, runCtx{store: store, runID: runID, root: rootRunID(ctx, runID)})
+}
+
+// rootRunID is the top-level run for a run with this ID reached through ctx: the root recorded
+// by an enclosing run (a sub-agent is called from its parent's tool context), or runID itself.
+func rootRunID(ctx context.Context, runID string) string {
+	if rc, ok := ctx.Value(runContextKey).(runCtx); ok && rc.root != "" {
+		return rc.root
+	}
+	return runID
 }
 
 func runContext(ctx context.Context) (Durable, string, bool) {

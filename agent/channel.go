@@ -88,7 +88,7 @@ func Receive[T any](ctx context.Context, channel string) (Received[T], error) {
 		return Received[T]{Key: key, Payload: v}, nil
 	}
 	// Drained (or empty): pause durably, reusing *Awaiting like single-shot Await.
-	return zero, &Awaiting{RunID: runID, Name: channel}
+	return zero, &Awaiting{RunID: runID, RootRunID: rootRunID(ctx, runID), Name: channel}
 }
 
 // Ack marks a message consumed so Receive advances past it. Idempotent (the first ack for a
