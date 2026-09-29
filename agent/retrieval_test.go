@@ -211,3 +211,34 @@ func TestRetrievalTool_NonFiniteScoreDropped(t *testing.T) {
 		t.Errorf("the Retriever's docs were modified: %+v", docs)
 	}
 }
+
+// The retrieved context goes after the agent's own system prompt, not ahead of it: the
+// operator's instructions lead, ahead of retrieved text they do not control, and the prompt
+// stays a constant prefix that a provider's prompt cache can reuse from turn to turn.
+func TestWithRetrieval_ContextFollowsSystemPrompt(t *testing.T) {
+	r := &fakeRetriever{docs: []Doc{{Text: "Paris is the capital of France"}}}
+	var seen Request
+	base := ModelHandler(func(_ context.Context, req Request) (Message, Usage, error) {
+		seen = req
+		return Message{}, Usage{}, nil
+	})
+	req := Request{Messages: []Message{SystemText("OPERATOR"), UserText("what's the capital?")}}
+	if _, _, err := WithRetrieval(r, 2)(base)(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	if len(seen.Messages) != 3 {
+		t.Fatalf("model got %d messages, want 3: %+v", len(seen.Messages), seen.Messages)
+	}
+	if m := seen.Messages[0]; m.Role != RoleSystem || m.Text() != "OPERATOR" {
+		t.Errorf("message 0 = %+v, want the operator's system prompt", m)
+	}
+	if m := seen.Messages[1]; m.Role != RoleSystem || !strings.Contains(m.Text(), "Paris is the capital") {
+		t.Errorf("message 1 = %+v, want the retrieved context", m)
+	}
+	if m := seen.Messages[2]; m.Role != RoleUser {
+		t.Errorf("message 2 = %+v, want the user turn", m)
+	}
+	if req.Messages[0].Text() != "OPERATOR" || len(req.Messages) != 2 {
+		t.Errorf("the caller's request was modified: %+v", req.Messages)
+	}
+}
