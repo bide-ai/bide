@@ -35,7 +35,13 @@ exponential backoff between attempts and honoring context cancellation.
 - `WithRetryIf(pred)` classifies which errors are worth retrying. Pass the ready-made `Retryable`:
   it retries `*agent.RateLimited`, per-attempt `context.DeadlineExceeded`, and `*agent.APIError`
   with a 5xx or 408 status; it fails fast on parent cancellation and 4xx (auth, validation), so you
-  do not burn attempts or tokens on terminal errors.
+  do not burn attempts or tokens on terminal errors. It also fails fast on errors the same request
+  would repeat: `agent.ErrConfig` (a request the adapter refused to build, such as a schema the
+  provider cannot take), `agent.ErrQuotaExhausted` (used-up quota or credit, even when the provider
+  sends it as a 429), and `agent.ErrResponseTooLarge`. It retries `agent.ErrToolUseIDReused` (a
+  model turn that reused a tool-use ID; a fresh attempt can issue valid ones) and a provider's
+  mid-stream server error. See [error surfacing](models.md#error-surfacing-shared-across-all-three-adapters)
+  for how adapters classify provider errors.
 
 ```go
 a.Use(middleware.Retry(3, middleware.WithRetryIf(middleware.Retryable), middleware.WithTimeout(30*time.Second)))

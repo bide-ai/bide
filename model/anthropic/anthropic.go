@@ -336,11 +336,11 @@ func streamSSE(body io.ReadCloser, send func(agent.Emit) bool) {
 		case "message_stop":
 			return
 		case "error":
-			send(agent.Emit{Err: fmt.Errorf("anthropic stream error: %s (%w)", data, agent.ErrModel)})
+			send(agent.Emit{Err: agent.ClassifyStreamError("anthropic", []byte(data))})
 			return
 		}
 	}
 	if err := sc.Err(); err != nil {
-		send(agent.Emit{Err: err})
+		send(agent.Emit{Err: agent.SSEReadError("anthropic", err)})
 	}
 }

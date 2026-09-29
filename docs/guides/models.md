@@ -104,13 +104,34 @@ adds the output.
 Every adapter maps HTTP failures onto the framework's typed errors so a retry middleware can
 classify them ([retry docs in the README](../../README.md#middleware--observability)):
 
-- **HTTP 429** returns `*agent.RateLimited{RetryAfter}`, parsing the `Retry-After` header (seconds
-  or an HTTP date; `0` if absent). `middleware.Retry` honors the hint.
-- **Any other non-2xx** returns `*agent.APIError{StatusCode, Body}` (a short body snippet for
-  diagnostics), so `middleware.Retryable` can tell a transient failure (5xx, 408) from a terminal
-  one (most 4xx: auth, validation).
-- Both wrap `agent.ErrModel`, so `errors.Is(err, agent.ErrModel)` holds either way (see the errors
-  section of the README).
+The provider's error object (`{"error":{...}}`, the same envelope on all three) is parsed, so the
+error carries the provider's own message.
+
+- **Quota or credit used up** returns `*agent.APIError` wrapping `agent.ErrQuotaExhausted`, whatever
+  the status: HTTP 402, an error type or code of `insufficient_quota`, `billing_hard_limit_reached`,
+  or `billing_not_active` (OpenAI, which sends these as 429), `billing_error` (Anthropic), or a
+  Gemini `RESOURCE_EXHAUSTED` whose quota violation is per day. No wait lifts it, so
+  `middleware.Retryable` does not retry it.
+- **Any other HTTP 429** returns `*agent.RateLimited{RetryAfter, Message}`. `RetryAfter` is the
+  `Retry-After` header (seconds or an HTTP date) or, without one, Gemini's `RetryInfo.retryDelay`;
+  `0` if neither. `middleware.Retry` honors the hint.
+- **Any other non-2xx** returns `*agent.APIError{StatusCode, Message, Type, Code, Body}`, so
+  `middleware.Retryable` can tell a transient failure (5xx, 408) from a terminal one (most 4xx:
+  auth, validation).
+- **An error sent partway through a stream** (an OpenAI or Gemini data line holding an error
+  object, an Anthropic `error` event) ends the turn with an error carrying the provider's message:
+  classified by its status when it has one (Gemini), as `ErrQuotaExhausted` or `*RateLimited` when
+  its type or code says so, and otherwise as a plain `ErrModel` that `Retryable` retries.
+- **A stream line over `agent.MaxSSELine` (32MB)** fails with `agent.ErrResponseTooLarge`, which
+  the same request would hit again, so it is not retried. Any other failed stream read wraps
+  `ErrModel`.
+- All of these wrap `agent.ErrModel`, so `errors.Is(err, agent.ErrModel)` holds either way (see the
+  errors section of the README).
+
+Error text is bounded whatever the endpoint sends: at most 64KB of a failed response is read, and
+the body, message, type, and code an error carries are each cut to 8KB (a cut body ends in
+`...(truncated)`), so a broken endpoint, or one that echoes the prompt back, cannot put megabytes
+into memory, logs, or traces.
 
 ## Tool-call IDs
 

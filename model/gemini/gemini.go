@@ -382,6 +382,7 @@ func (m *Model) toolNameForResult(msgs []agent.Message, toolUseID string) string
 
 // chunk is the subset of a Gemini streamGenerateContent SSE chunk we consume.
 type chunk struct {
+	Error      json.RawMessage `json:"error"` // a failure reported partway through the stream
 	Candidates []struct {
 		Content struct {
 			Parts []struct {
@@ -463,6 +464,10 @@ func streamSSE(body io.ReadCloser, send func(agent.Emit) bool) {
 			send(agent.Emit{Err: fmt.Errorf("gemini sse decode: %w (%w)", err, agent.ErrModel)})
 			return
 		}
+		if len(c.Error) > 0 && string(c.Error) != "null" {
+			send(agent.Emit{Err: agent.ClassifyStreamError("gemini", []byte(data))})
+			return
+		}
 		for _, cand := range c.Candidates {
 			for _, part := range cand.Content.Parts {
 				if part.Text != "" {
@@ -503,7 +508,7 @@ func streamSSE(body io.ReadCloser, send func(agent.Emit) bool) {
 		}
 	}
 	if err := sc.Err(); err != nil {
-		send(agent.Emit{Err: err})
+		send(agent.Emit{Err: agent.SSEReadError("gemini", err)})
 		return
 	}
 	if lastReason == "" {

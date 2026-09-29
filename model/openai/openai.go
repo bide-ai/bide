@@ -251,6 +251,7 @@ func userContent(m agent.Message) any {
 }
 
 type chunk struct {
+	Error   json.RawMessage `json:"error"` // a failure reported partway through the stream
 	Choices []struct {
 		Delta struct {
 			Content          string `json:"content"`
@@ -296,6 +297,10 @@ func streamSSE(body io.ReadCloser, send func(agent.Emit) bool) {
 			send(agent.Emit{Err: fmt.Errorf("openai sse decode: %w (%w)", err, agent.ErrModel)})
 			return
 		}
+		if len(c.Error) > 0 && string(c.Error) != "null" {
+			send(agent.Emit{Err: agent.ClassifyStreamError("openai", []byte(data))})
+			return
+		}
 		for _, choice := range c.Choices {
 			if rc := choice.Delta.ReasoningContent; rc != "" {
 				if !send(agent.Emit{Event: agent.ReasoningDelta{Text: rc}}) {
@@ -334,7 +339,7 @@ func streamSSE(body io.ReadCloser, send func(agent.Emit) bool) {
 		}
 	}
 	if err := sc.Err(); err != nil {
-		send(agent.Emit{Err: err})
+		send(agent.Emit{Err: agent.SSEReadError("openai", err)})
 		return
 	}
 	// A server that omits the usage chunk still ends the turn, with a finish_reason or [DONE],

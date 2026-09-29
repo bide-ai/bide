@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"time"
@@ -59,8 +60,16 @@ var (
 	// output, the turn is not journaled, and a fresh attempt can issue a valid turn, so a
 	// retry middleware treats it as retryable.
 	ErrToolUseIDReused = fmt.Errorf("tool-use id missing or reused: %w (%w)", ErrProtocol, ErrModel)
-	ErrBudgetExceeded  = fmt.Errorf("budget exceeded: %w", ErrBudget)
-	ErrMaxTurns        = fmt.Errorf("max turns exceeded: %w", ErrBudget)
+	// ErrQuotaExhausted is a provider refusing a call because the account's quota or credit
+	// is used up (OpenAI insufficient_quota, Anthropic billing_error, HTTP 402, a Gemini daily
+	// quota), as opposed to a momentary rate limit. Waiting a few seconds does not lift it, so
+	// middleware.Retryable does not retry it. It arrives as an *APIError.
+	ErrQuotaExhausted = fmt.Errorf("provider quota or credit exhausted: %w", ErrModel)
+	// ErrResponseTooLarge is a streamed response with a line longer than MaxSSELine. The same
+	// request would produce it again, so middleware.Retryable does not retry it.
+	ErrResponseTooLarge = fmt.Errorf("model response line too large: %w", ErrModel)
+	ErrBudgetExceeded   = fmt.Errorf("budget exceeded: %w", ErrBudget)
+	ErrMaxTurns         = fmt.Errorf("max turns exceeded: %w", ErrBudget)
 	// ErrInvalidApproval is an approver decision rejected at submission by ApproveAs's
 	// WithDecisionCheck: no such tool call, an unknown approver, or a signature that does not
 	// verify for this exact call.
@@ -70,37 +79,55 @@ var (
 	ErrAlreadyDecided = fmt.Errorf("approver already decided: %w", ErrConfig)
 )
 
-// RateLimited is returned by a provider adapter when it receives HTTP 429. It
-// carries an optional RetryAfter hint from the Retry-After response header (0
-// means no hint was provided). It wraps the caller-supplied Err (typically
-// wrapping ErrModel) so errors.Is(err, ErrModel) holds.
+// RateLimited is returned by a provider adapter when it is rate limited (HTTP 429 that is not an
+// exhausted quota; see ClassifyHTTPError). It carries an optional RetryAfter hint from the
+// Retry-After response header or the provider's own retry delay (0 means no hint was provided),
+// and the provider's error message. It wraps the caller-supplied Err (typically wrapping
+// ErrModel) so errors.Is(err, ErrModel) holds.
 type RateLimited struct {
 	RetryAfter time.Duration
+	Message    string // the provider's error message, if it sent one
 	Err        error
 }
 
 func (e *RateLimited) Error() string {
+	s := "rate limited"
 	if e.RetryAfter > 0 {
-		return fmt.Sprintf("rate limited (retry after %s): %v", e.RetryAfter, e.Err)
+		s += fmt.Sprintf(" (retry after %s)", e.RetryAfter)
 	}
-	return fmt.Sprintf("rate limited: %v", e.Err)
+	if e.Message != "" {
+		s += ": " + truncate(e.Message)
+	}
+	return fmt.Sprintf("%s: %v", s, e.Err)
 }
 
 func (e *RateLimited) Unwrap() error { return e.Err }
 
-// APIError is returned by a provider adapter for a non-2xx HTTP response other than 429
-// (which uses RateLimited). It carries the StatusCode so a retry classifier can tell a
-// transient failure (5xx, 408) from a terminal one (most 4xx: auth, validation), and a
-// short Body snippet for diagnostics. It wraps Err (typically ErrModel) so
-// errors.Is(err, ErrModel) holds.
+// APIError is returned by a provider adapter for a non-2xx HTTP response that is not a rate
+// limit (which uses RateLimited), and for an exhausted quota whatever its status (wrapping
+// ErrQuotaExhausted). It carries the StatusCode so a retry classifier can tell a transient
+// failure (5xx, 408) from a terminal one (most 4xx: auth, validation), the provider's error
+// fields when the body held its error object, and the Body (cut to 8KB) for diagnostics. It
+// wraps Err (typically ErrModel) so errors.Is(err, ErrModel) holds. StatusCode is 0 for an
+// error the provider sent partway through a stream without one.
 type APIError struct {
 	StatusCode int
 	Body       string
+	Message    string // the provider's error message
+	Type       string // the provider's error type (OpenAI, Anthropic) or status (Gemini)
+	Code       string // the provider's error code (OpenAI)
 	Err        error
 }
 
 func (e *APIError) Error() string {
-	return fmt.Sprintf("api error: status %d: %s: %v", e.StatusCode, e.Body, e.Err)
+	detail := truncate(e.Body)
+	if e.Message != "" {
+		detail = truncate(e.Message)
+		if kind := cmp.Or(e.Code, e.Type); kind != "" {
+			detail += " (" + kind + ")"
+		}
+	}
+	return fmt.Sprintf("api error: status %d: %s: %v", e.StatusCode, detail, e.Err)
 }
 
 func (e *APIError) Unwrap() error { return e.Err }
