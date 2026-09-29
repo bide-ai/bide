@@ -1,8 +1,14 @@
-// Package modeltest checks that an HTTP-backed agent.Model releases its response when the
-// consumer stops early. An adapter that reads a streamed response in its own goroutine and
-// sends each event on an unbuffered channel blocks forever once nobody is receiving, holding
-// the response body and its connection. Run holds an adapter to the contract: breaking out of
-// Stream.Events, or cancelling the context passed to Model.Stream, closes the response body.
+// Package modeltest checks an HTTP-backed agent.Model against the streaming contract the agent
+// loop relies on:
+//
+//   - The adapter releases its response when the consumer stops early. An adapter that reads a
+//     streamed response in its own goroutine and sends each event on an unbuffered channel
+//     blocks forever once nobody is receiving, holding the response body and its connection.
+//     Breaking out of Stream.Events, or cancelling the context passed to Model.Stream, must
+//     close the response body.
+//   - A response that ends before the provider's end-of-turn marker is an error. A connection
+//     closed partway through a turn must never read as a complete message, which the agent
+//     would journal as the model's answer.
 package modeltest
 
 import (
@@ -18,10 +24,11 @@ import (
 	"github.com/bide-ai/bide/agent"
 )
 
-// Run runs the release checks. newModel returns the adapter under test pointed at baseURL and
-// using client for its requests. event returns the i-th server-sent event of an endless text
-// response, in the provider's wire format and including its trailing blank line; the test server
-// sends one every few milliseconds until the client goes away, as a long model response does.
+// Run runs the checks. newModel returns the adapter under test pointed at baseURL and using
+// client for its requests. event returns the i-th server-sent event of an endless text response,
+// in the provider's wire format and including its trailing blank line; it must not end the turn.
+// The test server sends one every few milliseconds until the client goes away, as a long model
+// response does, or, for the truncation check, stops after two.
 func Run(t *testing.T, newModel func(baseURL string, client *http.Client) agent.Model, event func(i int) string) {
 	t.Run("BreakReleases", func(t *testing.T) {
 		m, closed := serve(t, newModel, event)
@@ -46,6 +53,13 @@ func Run(t *testing.T, newModel func(baseURL string, client *http.Client) agent.
 		cancel() // the consumer abandons the stream without reading it
 		wait(t, closed, "the stream's context was cancelled")
 	})
+	t.Run("TruncatedIsAnError", func(t *testing.T) {
+		m, _ := serveN(t, newModel, event, 2)
+		msg, _, err := agent.Generate(context.Background(), m, request())
+		if err == nil {
+			t.Fatalf("a response that ended before the end-of-turn marker was accepted as complete: %+v", msg)
+		}
+	})
 }
 
 func request() agent.Request {
@@ -56,12 +70,18 @@ func request() agent.Request {
 // once the adapter closes the response body.
 func serve(t *testing.T, newModel func(string, *http.Client) agent.Model, event func(int) string) (agent.Model, <-chan struct{}) {
 	t.Helper()
+	return serveN(t, newModel, event, -1)
+}
+
+// serveN is serve for a response that ends cleanly after n events; n < 0 never ends.
+func serveN(t *testing.T, newModel func(string, *http.Client) agent.Model, event func(int) string, n int) (agent.Model, <-chan struct{}) {
+	t.Helper()
 	// stop ends the handler at cleanup, so a leaked reader holding the connection fails the
 	// test on its assertion instead of hanging the server's shutdown.
 	stop := make(chan struct{})
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("content-type", "text/event-stream")
-		for i := 0; ; i++ {
+		for i := 0; n < 0 || i < n; i++ {
 			if _, err := io.WriteString(w, event(i)); err != nil {
 				return
 			}

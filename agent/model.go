@@ -176,17 +176,30 @@ func NewStreamFunc(ctx context.Context, produce func(send func(Emit) bool)) *Str
 func (s *Stream) Close() { s.stop.Do(func() { close(s.done) }) }
 
 // Events returns a range-over-func iterator (Go 1.23+) over streamed events. Breaking out
-// of the loop closes the stream.
+// of the loop closes the stream. A stream that ends without a Finish event yields
+// ErrIncompleteResponse last: the response stopped partway through the turn.
 func (s *Stream) Events() iter.Seq2[Event, error] {
 	return func(yield func(Event, error) bool) {
+		var finished bool
 		for e := range s.ch {
-			if !yield(e.Event, e.Err) {
+			if e.Err != nil {
+				yield(nil, e.Err)
+				s.Close()
+				return
+			}
+			if _, ok := e.Event.(Finish); ok {
+				finished = true
+			}
+			if !yield(e.Event, nil) {
 				s.Close()
 				return
 			}
 		}
-		if s.err != nil {
+		switch {
+		case s.err != nil:
 			yield(nil, s.err)
+		case !finished:
+			yield(nil, ErrIncompleteResponse)
 		}
 	}
 }

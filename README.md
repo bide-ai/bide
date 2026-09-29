@@ -675,7 +675,7 @@ case errors.Is(err, agent.ErrStorage):      // durable-store I/O
 ```
 
 Categories: `ErrConfig`, `ErrModel`, `ErrTool`, `ErrStorage`, `ErrProtocol`, `ErrBudget`.
-Conditions (each wraps a category): `ErrUnknownTool`, `ErrToolArgs`, `ErrNoRecordedOutput`,
+Conditions (each wraps a category): `ErrUnknownTool`, `ErrToolArgs`, `ErrNoRecordedOutput`, `ErrIncompleteResponse`,
 `ErrTruncatedToolArgs`, `ErrBudgetExceeded`, `ErrMaxTurns` (both wrap `ErrBudget`). Every error the
 toolkit returns (including from the model, MCP, store, and governance adapters) carries a category,
 so `errors.Is` is reliable across the whole surface.

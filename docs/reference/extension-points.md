@@ -49,9 +49,13 @@ return agent.NewStreamFunc(ctx, func(send func(agent.Emit) bool) {
 `send` returns false once the consumer breaks out of `Stream.Events`, calls `Stream.Close`, or
 cancels ctx, so the adapter stops and releases the response. After cancellation no further
 event is delivered and the stream ends with the context's error, so a response cut short is
-never read as a complete one. `agent.NewStream` wraps a channel the caller fills itself, which
-suits a response buffered up front. `model/modeltest.Run` checks an HTTP adapter against this
-contract.
+never read as a complete one. A turn ends with a `Finish` event, sent only once the provider
+has signalled the end of the turn: a stream that closes without one reads as
+`agent.ErrIncompleteResponse` (an `ErrModel`), so a response cut off partway fails the model
+call, which retry middleware can repeat, instead of being journaled as the model's answer.
+`agent.NewStream` wraps a channel the caller fills itself, which suits a response buffered up
+front. `model/modeltest.Run` checks an HTTP adapter against this
+contract, including the truncation case.
 
 **Reference adapters.** `model/anthropic`, `model/openai`, and `model/gemini` each provide
 `New(apiKey, opts...)` returning a `*Model` that satisfies the port, with options like

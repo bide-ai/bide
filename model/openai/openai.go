@@ -276,13 +276,14 @@ func streamSSE(body io.ReadCloser, send func(agent.Emit) bool) {
 	sc := agent.NewSSEScanner(body)
 
 	var lastReason string
-	var finished bool
+	var finished, done bool
 	for sc.Scan() {
 		data, ok := agent.SSEPayload(sc.Text())
 		if !ok {
 			continue
 		}
 		if data == "[DONE]" {
+			done = true
 			break
 		}
 		var c chunk
@@ -324,12 +325,14 @@ func streamSSE(body io.ReadCloser, send func(agent.Emit) bool) {
 			finished = true
 		}
 	}
-	if !finished { // servers that omit a usage chunk still get a terminal Finish
-		if !send(agent.Emit{Event: agent.Finish{Reason: lastReason}}) {
-			return
-		}
-	}
 	if err := sc.Err(); err != nil {
 		send(agent.Emit{Err: err})
+		return
+	}
+	// A server that omits the usage chunk still ends the turn, with a finish_reason or [DONE],
+	// and gets a terminal Finish. Without either the response stopped partway: no Finish is
+	// sent, so the consumer sees agent.ErrIncompleteResponse.
+	if !finished && (done || lastReason != "") {
+		send(agent.Emit{Event: agent.Finish{Reason: lastReason}})
 	}
 }
