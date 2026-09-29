@@ -228,7 +228,8 @@ func (s *Stream) Events() iter.Seq2[Event, error] {
 	}
 }
 
-// Message drains the stream and returns the assembled assistant Message + usage.
+// Message drains the stream and returns the assembled assistant Message + usage. When the stream
+// fails, the usage is what it reported before failing, which the provider may still bill.
 func (s *Stream) Message() (Message, Usage, error) { return s.drain(nil) }
 
 // drain assembles the stream into a Message, forwarding each event to onEvent (if
@@ -239,7 +240,7 @@ func (s *Stream) drain(onEvent func(Event)) (Message, Usage, error) {
 	var b msgBuilder
 	for ev, err := range s.Events() {
 		if err != nil {
-			return Message{}, Usage{}, err
+			return Message{}, b.usage, err // the usage reported before the stream failed was billed
 		}
 		if onEvent != nil {
 			onEvent(ev)

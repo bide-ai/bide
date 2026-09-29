@@ -138,19 +138,19 @@ func (a *Agent) runSaga(ctx context.Context, runID, input string, emit func(Agen
 
 // runSagaWithTelemetry is the counterpart of runSaga that returns usage and turn count
 // for RunSagaResult. It uses the richer run return values directly.
-func (a *Agent) runSagaWithTelemetry(ctx context.Context, runID, input string, emit func(AgentEvent)) (Message, Usage, int, error) {
+func (a *Agent) runSagaWithTelemetry(ctx context.Context, runID, input string, emit func(AgentEvent)) (Message, usageTotals, int, error) {
 	recs, err := a.store.History(ctx, runID)
 	if err != nil {
-		return Message{}, Usage{}, 0, err
+		return Message{}, usageTotals{}, 0, err
 	}
 	if cause, aborting := sagaFailure(recs); aborting {
-		return Message{}, Usage{}, 0, a.rollback(ctx, runID, errors.New(cause), cause)
+		return Message{}, usageTotals{}, 0, a.rollback(ctx, runID, errors.New(cause), cause)
 	}
 
 	out, usage, turns, err := a.run(ctx, runID, []Message{UserText(input)}, true, emit)
 	var trip *sagaTrip
 	if errors.As(err, &trip) {
-		return Message{}, Usage{}, 0, a.rollback(ctx, runID, trip.cause, trip.journaled)
+		return Message{}, usageTotals{}, 0, a.rollback(ctx, runID, trip.cause, trip.journaled)
 	}
 	return out, usage, turns, err
 }

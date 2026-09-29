@@ -96,8 +96,14 @@ so you can read spend across a run without touching the loop.
 meter := &middleware.CostMeter{}
 a.Use(middleware.Cost(meter, middleware.Rates{InputPer1M: 3.00, OutputPer1M: 15.00})) // USD per 1M tokens
 // ... after running ...
-fmt.Printf("spent $%.4f, usage %+v\n", meter.Total(), meter.Usage())
+fmt.Printf("spent $%.4f, usage %+v\n", meter.SpentTotal(), meter.Spent())
 ```
+
+The meter keeps two views. `Usage` and `Total` count the answers, the responses the calls
+returned and the run records. `Spent` and `SpentTotal` count every request sent, wherever `Cost`
+sits: failed attempts a `Retry` repeated and losing `Hedge` targets are billed too. The run itself
+keeps the same split: `Result.Usage` is the answers, `Result.Spend` everything, and
+`WithTokenBudget` stops on everything, including model calls that failed for good.
 
 ## Tool middleware
 

@@ -17,13 +17,14 @@ type Result struct {
 	// Message is the final assistant answer, identical to what Run / RunSaga return.
 	Message Message
 
-	// Usage is the sum of all model-call usages across the run (input, output, and
-	// cache tokens accumulated across every turn).
+	// Usage is the sum of the usage of the model responses this invocation recorded, one per
+	// live turn (input, output, and cache tokens).
 	Usage Usage
 
-	// Spend is every token the run's live model requests used: Usage plus the usage of requests
-	// whose responses were discarded (failed attempts a middleware retried, losing hedge
-	// targets). It is what the provider bills.
+	// Spend is every token this invocation's model requests used: Usage plus the usage of
+	// requests whose responses were discarded (failed attempts a middleware retried, losing hedge
+	// targets). It is what the provider bills. The journal keeps the discarded part too (see
+	// Record.DiscardedUsage), and WithTokenBudget counts it.
 	Spend Usage
 
 	// Turns is the number of live model turns executed during this run (replayed turns
@@ -51,7 +52,8 @@ func (a *Agent) RunResult(ctx context.Context, runID, input string) (*Result, er
 	}
 	return &Result{
 		Message:  msg,
-		Usage:    usage,
+		Usage:    usage.answer,
+		Spend:    usage.spend,
 		Turns:    turns,
 		Duration: elapsed,
 		RunID:    runID,
@@ -70,7 +72,8 @@ func (a *Agent) RunSagaResult(ctx context.Context, runID, input string) (*Result
 	}
 	return &Result{
 		Message:  msg,
-		Usage:    usage,
+		Usage:    usage.answer,
+		Spend:    usage.spend,
 		Turns:    turns,
 		Duration: elapsed,
 		RunID:    runID,

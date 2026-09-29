@@ -8,7 +8,7 @@ import (
 // Two calls that add a hook to the same parent context (two hedged targets through the same
 // middleware) each keep their own hook: adding one must not overwrite the other's.
 func TestWithModelCallHook_SiblingsKeepTheirOwnHooks(t *testing.T) {
-	ctx := inModelCall(context.Background())
+	ctx := inModelCall(context.Background(), &spendMeter{})
 	for range 3 { // grow the parent's hook list so it has spare capacity
 		ctx, _ = WithModelCallHook(ctx, ModelCallHook{})
 	}

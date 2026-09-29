@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -183,9 +184,13 @@ func (a *Agent) WithMaxTurns(n int) *Agent {
 // after it returns, so the call that crosses max completes; the next one is refused. max <= 0
 // means unbounded (the default). Returns the agent for chaining.
 //
-// The budget is per run and durable: each model call's usage is journaled with its turn, and
-// the count is rebuilt from the journal, so a resumed run, on any process, is held to what it
-// has already used. Like WithMaxTurns it applies per run (per Session.Send turn), and a
+// The budget counts every model request the run sent, not only the responses it recorded: a
+// failed attempt a middleware retried, a losing hedge target, and a model call that failed for
+// good all count (see Result.Spend). It is durable: each turn's usage and discarded spend are
+// journaled with it, a failed call's spend is journaled as its own record, and the count is
+// rebuilt from the journal, so a resumed run, on any process, is held to what it has already
+// used. A request still running when the run returns (a hedge loser whose model ignores
+// cancellation) is not counted. Like WithMaxTurns it applies per run (per Session.Send turn), and a
 // sub-agent's run has its own budget.
 func (a *Agent) WithTokenBudget(max int) *Agent {
 	a.tokenBudget = max
@@ -235,9 +240,10 @@ func (a *Agent) WithToolErrorRedactor(fn func(tool string, err error) string) *A
 // from the handler it wraps (a fallback, a cache), and that response is what the run records.
 //
 // The innermost handler sends every request of the call: it goes to the model WithModel set, if
-// any, and runs the ModelCallHooks middleware installed around it.
-func (a *Agent) generate(ctx context.Context, req Request, usedIDs map[string]bool) (Message, Usage, error) {
-	ctx = inModelCall(ctx)
+// any, and runs the ModelCallHooks middleware installed around it. meter receives every
+// request's usage, so the run can record what the call spent beyond the response it returns.
+func (a *Agent) generate(ctx context.Context, req Request, usedIDs map[string]bool, meter *spendMeter) (Message, Usage, error) {
+	ctx = inModelCall(ctx, meter)
 	h := ModelHandler(func(ctx context.Context, req Request) (Message, Usage, error) {
 		hooks := modelHooks(ctx)
 		for _, hk := range hooks {
@@ -309,11 +315,11 @@ func (a *Agent) Run(ctx context.Context, runID, input string) (Message, error) {
 // the seed. Durability, resume, and side-effect safety are identical regardless of emit.
 // It returns the final message, accumulated token usage across all model turns, the
 // number of live model turns (replayed journal turns are not counted), and any error.
-func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool, emit func(AgentEvent)) (Message, Usage, int, error) {
+func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool, emit func(AgentEvent)) (Message, usageTotals, int, error) {
 	if runID == "" {
 		// An empty runID would key every run to the same journal, silently cross-contaminating
 		// their memoized steps. Reject it rather than corrupt the log.
-		return Message{}, Usage{}, 0, fmt.Errorf("run: empty runID: %w", ErrConfig)
+		return Message{}, usageTotals{}, 0, fmt.Errorf("run: empty runID: %w", ErrConfig)
 	}
 	fire := func(e AgentEvent) {
 		if emit != nil {
@@ -324,7 +330,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 
 	recs, err := a.store.History(ctx, runID)
 	if err != nil {
-		return Message{}, Usage{}, 0, fmt.Errorf("load history %s: %w (%w)", runID, err, ErrStorage)
+		return Message{}, usageTotals{}, 0, fmt.Errorf("load history %s: %w (%w)", runID, err, ErrStorage)
 	}
 
 	msgs := []Message{}
@@ -339,7 +345,16 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 	approvals := map[string]bool{}      // tool-use ID -> approve(true)/deny(false)
 	modelSeq := 0
 	var runUsage Usage // token usage across all of this run's model calls, replayed and live
+	spendSeq := 0      // spend records ("@spend/<n>") already in the journal
 	for _, r := range recs {
+		// Discarded spend: on a model step, its turn's other requests; on a spend record, a
+		// failed model call's requests (see recordSpend).
+		if r.DiscardedUsage != nil {
+			addUsage(&runUsage, *r.DiscardedUsage)
+		}
+		if strings.HasPrefix(r.Name, spendStepPrefix) {
+			spendSeq++
+		}
 		switch r.Kind {
 		case StepModel:
 			modelSeq++
@@ -378,7 +393,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 	// (keyed by tool-use id) would not recognize as repeats. The input is not consulted.
 	if final, ok := completedAnswer(recs); ok {
 		fire(Finished{Final: final})
-		return final, Usage{}, 0, nil
+		return final, usageTotals{}, 0, nil
 	}
 
 	// Resume safety gate: a non-retriable tool that we ATTEMPTED (recorded a start marker
@@ -398,12 +413,13 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 			if ms := attemptedAtMs[id]; ms != 0 {
 				attemptedAt = time.UnixMilli(ms)
 			}
-			return Message{}, Usage{}, 0, &ResumeHalt{RunID: runID, RootRunID: rootRunID(ctx, runID), ToolUseID: id, ToolName: name, AttemptedAt: attemptedAt}
+			return Message{}, usageTotals{}, 0, &ResumeHalt{RunID: runID, RootRunID: rootRunID(ctx, runID), ToolUseID: id, ToolName: name, AttemptedAt: attemptedAt}
 		}
 	}
 
-	var totalUsage Usage // accumulated token usage across live model turns
-	var liveTurns int    // number of live (non-replayed) model calls this run
+	var totalUsage usageTotals // accumulated token usage across live model turns
+	meter := &spendMeter{}     // usage of every model request this invocation sends
+	var liveTurns int          // number of live (non-replayed) model calls this run
 
 	for {
 		// If the last turn is an assistant message with tool calls still pending (a
@@ -447,19 +463,37 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 			var turnUsage Usage
 			rec, err := a.store.Do(genCtx, runID, fmt.Sprintf("@llm/%d", modelSeq),
 				func(ctx context.Context) (Record, error) {
-					m, u, e := a.generate(ctx, Request{Messages: msgs, Tools: a.toolList(), Sampling: a.sampling, ResponseFormat: a.responseFormat, ToolChoice: a.toolChoice}, toolUseIDs(msgs))
+					m, u, e := a.generate(ctx, Request{Messages: msgs, Tools: a.toolList(), Sampling: a.sampling, ResponseFormat: a.responseFormat, ToolChoice: a.toolChoice}, toolUseIDs(msgs), meter)
 					if e != nil {
 						return Record{}, e
 					}
 					turnUsage = u
-					return Record{Kind: StepModel, Message: &m, Usage: &u}, nil
+					r := Record{Kind: StepModel, Message: &m, Usage: &u}
+					// The turn recorded one response; every other request it sent was billed too.
+					if d := discardedSpend(meter.take(), u); d != (Usage{}) {
+						r.DiscardedUsage = &d
+					}
+					return r, nil
 				})
 			if err != nil {
-				return Message{}, totalUsage, liveTurns, fmt.Errorf("generate (run %s): %w (%w)", runID, err, ErrModel)
+				err = fmt.Errorf("generate (run %s): %w (%w)", runID, err, ErrModel)
+				// The call failed for good, but its requests were billed: journal their spend so the
+				// budget counts it on this and every later invocation of the run.
+				if spent := meter.take(); spent != (Usage{}) {
+					if serr := a.recordSpend(ctx, runID, spendSeq, spent); serr != nil {
+						err = errors.Join(err, serr)
+					}
+				}
+				return Message{}, totalUsage, liveTurns, err
 			}
-			addUsage(&totalUsage, turnUsage)
+			addUsage(&totalUsage.answer, turnUsage)
+			addUsage(&totalUsage.spend, turnUsage)
 			if rec.Usage != nil {
 				addUsage(&runUsage, *rec.Usage)
+			}
+			if rec.DiscardedUsage != nil {
+				addUsage(&runUsage, *rec.DiscardedUsage)
+				addUsage(&totalUsage.spend, *rec.DiscardedUsage)
 			}
 			liveTurns++
 			asst = *rec.Message

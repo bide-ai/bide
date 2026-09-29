@@ -109,11 +109,43 @@ func TestRetry_SpendWhenCancelledMidAttempt(t *testing.T) {
 	defer cancel()
 	m := &billedModel{u: billed, bad: 1, block: cancel}
 	var meter middleware.CostMeter
-	a := agent.New(m, agent.NewMemStore()).Use(middleware.Cost(&meter, perInput), middleware.Retry(3, middleware.WithBackoff(0, 0)))
+	store := agent.NewMemStore()
+	a := agent.New(m, store).Use(middleware.Cost(&meter, perInput), middleware.Retry(3, middleware.WithBackoff(0, 0)))
 	if _, err := a.Run(ctx, "r", "q"); !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v, want context.Canceled", err)
 	}
 	if meter.Spent() != billed || meter.Usage() != (agent.Usage{}) {
 		t.Fatalf("meter Spent = %+v, Usage = %+v; want %+v and none", meter.Spent(), meter.Usage(), billed)
+	}
+	// The cancelled call's spend is journaled all the same, for the run's budget.
+	recs, _ := store.History(context.Background(), "r")
+	var journaled agent.Usage
+	for _, r := range recs {
+		if r.DiscardedUsage != nil {
+			journaled = *r.DiscardedUsage
+		}
+	}
+	if journaled != billed {
+		t.Fatalf("journaled spend = %+v, want %+v", journaled, billed)
+	}
+}
+
+// Outside an agent, Cost counts what each call returns as spent, failed or not.
+func TestCost_SpendOutsideAnAgent(t *testing.T) {
+	var meter middleware.CostMeter
+	fail := true
+	h := middleware.Cost(&meter, perInput)(func(context.Context, agent.Request) (agent.Message, agent.Usage, error) {
+		if fail {
+			fail = false
+			return agent.Message{}, billed, errors.New("cut off")
+		}
+		return agent.Message{}, billed, nil
+	})
+	_, _, _ = h(context.Background(), agent.Request{})
+	if _, _, err := h(context.Background(), agent.Request{}); err != nil {
+		t.Fatal(err)
+	}
+	if meter.Spent() != twice(billed) || meter.Usage() != billed {
+		t.Fatalf("meter Spent = %+v, Usage = %+v; want %+v and %+v", meter.Spent(), meter.Usage(), twice(billed), billed)
 	}
 }

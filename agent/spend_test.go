@@ -122,3 +122,105 @@ func TestTokenBudget_CountsFailedCalls(t *testing.T) {
 		t.Fatalf("the model was called %d times, want 2", m.i)
 	}
 }
+
+// A stream that fails after reporting its usage was billed for it: a Finish followed by another
+// event breaks the stream protocol, and the usage the Finish carried still counts.
+func TestRunResult_SpendOfBrokenStream(t *testing.T) {
+	broken := append(textTurnWithUsage("draft", billed), Emit{Event: TextDelta{Text: "late"}})
+	m := &scriptModel{turns: [][]Emit{broken, textTurnWithUsage("done", billed)}}
+	res, err := New(m, NewMemStore()).Use(retryOnceMW).RunResult(context.Background(), "r", "go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Spend != twice(billed) {
+		t.Fatalf("Spend = %+v, want both attempts' %+v", res.Spend, twice(billed))
+	}
+}
+
+// A response a middleware supplies without sending a request (a cache) reports usage no request
+// spent; the turn's discarded spend is then zero, never negative.
+func TestRunResult_SpendOfSuppliedResponse(t *testing.T) {
+	cache := func(ModelHandler) ModelHandler {
+		return func(context.Context, Request) (Message, Usage, error) {
+			return Message{Role: RoleAssistant, Parts: []Part{Text{Text: "cached"}}}, billed, nil
+		}
+	}
+	store := NewMemStore()
+	res, err := New(&scriptModel{}, store).Use(cache).RunResult(context.Background(), "r", "go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Spend != billed {
+		t.Fatalf("Spend = %+v, want %+v", res.Spend, billed)
+	}
+	recs, _ := store.History(context.Background(), "r")
+	for _, r := range recs {
+		if r.DiscardedUsage != nil {
+			t.Fatalf("journaled DiscardedUsage %+v for a supplied response", *r.DiscardedUsage)
+		}
+	}
+}
+
+// Each turn records only its own discarded spend: what one turn discarded is not counted again
+// with the next.
+func TestRunResult_SpendAcrossTurns(t *testing.T) {
+	var calls int
+	tool := &countingTool{name: "lookup", safety: Safety{ReadOnly: true}, calls: &calls}
+	m := &scriptModel{turns: [][]Emit{
+		truncatedTurn(billed),
+		toolTurnWithUsage("c1", "lookup", `{}`, billed),
+		textTurnWithUsage("done", billed),
+	}}
+	res, err := New(m, NewMemStore(), tool).Use(retryOnceMW).RunResult(context.Background(), "r", "go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := twice(billed)
+	addUsage(&want, billed)
+	if res.Spend != want {
+		t.Fatalf("Spend = %+v, want three requests' %+v", res.Spend, want)
+	}
+}
+
+// cancelAwareStore is a MemStore whose Do fails once its context is cancelled, as a database
+// store's does.
+type cancelAwareStore struct{ *MemStore }
+
+func (s cancelAwareStore) Do(ctx context.Context, runID, name string, fn func(context.Context) (Record, error)) (Record, error) {
+	if err := ctx.Err(); err != nil {
+		return Record{}, err
+	}
+	return s.MemStore.Do(ctx, runID, name, fn)
+}
+
+// A model call that fails because the run was cancelled was still billed: its spend is journaled
+// even though the run's context has ended.
+func TestTokenBudget_JournalsSpendOfCancelledCall(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cancelling := func(next ModelHandler) ModelHandler {
+		return func(ctx context.Context, req Request) (Message, Usage, error) {
+			msg, u, err := next(ctx, req) // billed, then the caller gives up
+			cancel()
+			if err == nil {
+				err = context.Canceled
+			}
+			return msg, u, err
+		}
+	}
+	store := cancelAwareStore{NewMemStore()}
+	m := &scriptModel{turns: [][]Emit{textTurnWithUsage("done", billed)}}
+	if _, err := New(m, store).Use(cancelling).Run(ctx, "r", "go"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	recs, _ := store.History(context.Background(), "r")
+	var journaled Usage
+	for _, r := range recs {
+		if r.DiscardedUsage != nil {
+			addUsage(&journaled, *r.DiscardedUsage)
+		}
+	}
+	if journaled != billed {
+		t.Fatalf("journaled spend = %+v, want %+v", journaled, billed)
+	}
+}

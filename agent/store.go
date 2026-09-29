@@ -34,9 +34,10 @@ type Record struct {
 	Kind    StepKind `json:"kind"`
 	Message *Message `json:"message,omitempty"` // StepModel
 	Usage   *Usage   `json:"usage,omitempty"`   // StepModel: the call's token usage
-	// DiscardedUsage (StepModel) is the usage of the turn's other model requests, whose responses
-	// the turn did not record: failed attempts a middleware retried, losing hedge targets. Nil
-	// when there were none.
+	// DiscardedUsage is billed usage no recorded response carries. On a StepModel record, the
+	// turn's other model requests: failed attempts a middleware retried, losing hedge targets. On
+	// a StepValue record named "@spend/<n>", a model call that failed for good. Nil when there
+	// was none. WithTokenBudget counts it.
 	DiscardedUsage *Usage          `json:"discarded_usage,omitempty"`
 	ToolUseID      string          `json:"tool_use_id,omitempty"` // StepToolResult
 	Result         json.RawMessage `json:"result,omitempty"`      // StepToolResult / StepValue
