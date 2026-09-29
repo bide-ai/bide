@@ -63,9 +63,9 @@ func TestRecoverLoop_TakesOverAfterTheHolderDies(t *testing.T) {
 // over run b once b's dead holder's lease expires.
 func TestRecoverLoop_LongDriveDoesNotBlockOthers(t *testing.T) {
 	ctx := context.Background()
-	s := NewMemStore()
-	seedRun(t, s, "a")
-	seedRun(t, s, "b")
+	s := &countingStore{MemStore: NewMemStore()}
+	seedRun(t, s.MemStore, "a")
+	seedRun(t, s.MemStore, "b")
 	if ok, _ := s.AcquireLease(ctx, "b", "dead-worker#0", 100*time.Millisecond); !ok {
 		t.Fatal("setup: the dead worker should hold b")
 	}
@@ -91,6 +91,54 @@ func TestRecoverLoop_LongDriveDoesNotBlockOthers(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("run b was never driven while run a's drive was still running")
 	}
+	time.Sleep(100 * time.Millisecond) // more passes while a is still in flight
+	if n := s.acquires("a"); n != 1 {
+		t.Fatalf("the loop tried to lease run a %d times while it was driving it, want once", n)
+	}
+}
+
+// countingStore is a MemStore that counts lease acquisitions per run and listings.
+type countingStore struct {
+	*MemStore
+	mu       sync.Mutex
+	acquired map[string]int
+	lists    int
+}
+
+func (c *countingStore) AcquireLease(ctx context.Context, runID, holder string, ttl time.Duration) (bool, error) {
+	c.mu.Lock()
+	if c.acquired == nil {
+		c.acquired = map[string]int{}
+	}
+	c.acquired[runID]++
+	c.mu.Unlock()
+	return c.MemStore.AcquireLease(ctx, runID, holder, ttl)
+}
+
+func (c *countingStore) Runs(ctx context.Context) ([]string, error) {
+	c.mu.Lock()
+	c.lists++
+	c.mu.Unlock()
+	return c.MemStore.Runs(ctx)
+}
+
+func (c *countingStore) acquires(runID string) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.acquired[runID]
+}
+
+// Without WithRecoverInterval, a pass starts every half lease TTL.
+func TestRecoverLoop_DefaultIntervalIsHalfTheTTL(t *testing.T) {
+	s := &countingStore{MemStore: NewMemStore()}
+	stop := runLoop(t, s, func(context.Context, string) error { return nil }, WithLeaseTTL(100*time.Millisecond))
+	time.Sleep(525 * time.Millisecond)
+	_ = stop()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.lists < 8 || s.lists > 13 {
+		t.Fatalf("%d passes in 525ms with a 100ms TTL, want about 11 (one every 50ms)", s.lists)
+	}
 }
 
 // When its context ends, the loop cancels the drives it started, waits for them to return, and
@@ -101,6 +149,7 @@ func TestRecoverLoop_WaitsForItsDrivesOnShutdown(t *testing.T) {
 	started := make(chan struct{})
 	var mu sync.Mutex
 	returned := false
+	var reported []error
 	stop := runLoop(t, s, func(ctx context.Context, _ string) error {
 		close(started)
 		<-ctx.Done()
@@ -109,7 +158,11 @@ func TestRecoverLoop_WaitsForItsDrivesOnShutdown(t *testing.T) {
 		returned = true
 		mu.Unlock()
 		return ctx.Err()
-	}, WithRecoverInterval(time.Hour))
+	}, WithRecoverInterval(time.Hour), WithRecoverErrors(func(err error) {
+		mu.Lock()
+		reported = append(reported, err)
+		mu.Unlock()
+	}))
 	<-started
 	if err := stop(); !errors.Is(err, context.Canceled) {
 		t.Fatalf("RecoverLoop returned %v, want context.Canceled", err)
@@ -118,6 +171,9 @@ func TestRecoverLoop_WaitsForItsDrivesOnShutdown(t *testing.T) {
 	defer mu.Unlock()
 	if !returned {
 		t.Fatal("RecoverLoop returned while a drive it started was still running")
+	}
+	if len(reported) != 0 {
+		t.Fatalf("the shutdown's own cancellation was reported as a failure: %v", reported)
 	}
 }
 
