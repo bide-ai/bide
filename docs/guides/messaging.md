@@ -10,8 +10,9 @@ redelivering channel. That it already provides. This page shows the pattern; the
 ## The core is transport-agnostic on purpose
 
 `Agent.Run(ctx, runID, input)` takes a caller-supplied `runID` and a plain string. `Session(ctx, id)`
-gives multi-turn continuity keyed by any string. A messenger integration is glue you write in your
-own webhook handler:
+gives multi-turn continuity keyed by any string without a `/`: the session runs its turns under
+`<id>/...`, so a `/` could name another session's turn (join composite ids with another separator).
+A messenger integration is glue you write in your own webhook handler:
 
 1. Verify the provider's signature and return 200 fast (both are the handler's job, not the SDK's).
 2. Map the channel's thread or conversation id to a run or a `Session` id.
