@@ -230,8 +230,9 @@ func recoverRun(ctx context.Context, store Durable, runID string, resume func(ct
 // the holder's last renewal).
 //
 // Runs are driven concurrently, up to WithRecoverConcurrency at once (16 by default), so one long
-// drive does not hold up the others; a run this loop is already driving is not started again, and
-// a pass that finds every slot busy leaves its remaining runs to the next one. Genuine failures go
+// drive does not hold up the others; a run this loop is already driving is not started again. A
+// pass that finds every slot busy waits for one, so each pass reaches every run it listed; the
+// next pass starts when this one has started all of its drives and the interval has elapsed. Genuine failures go
 // to the WithRecoverErrors handler, and the run is retried on the next pass; pauses and lost leases
 // are not failures (see Recover).
 //
@@ -304,10 +305,13 @@ func RecoverLoop(ctx context.Context, store Durable, resume func(ctx context.Con
 			} else if !ok {
 				continue
 			}
+			// Wait for a free slot rather than leave the rest of the list to the next pass: the next
+			// pass starts from the top again, so runs that stay incomplete on every pass (halted
+			// ones) would take the slots each time and starve the runs listed after them.
 			select {
 			case slots <- struct{}{}:
-			default:
-				return // every slot is busy: the next pass takes the rest
+			case <-ctx.Done():
+				return
 			}
 			mu.Lock()
 			inFlight[runID] = true
