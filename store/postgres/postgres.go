@@ -48,16 +48,21 @@ func Open(ctx context.Context, dsn string) (*Store, error) {
 	return s, nil
 }
 
+// stepsTable is the journal table. data holds each record's JSON as written (text, not jsonb:
+// jsonb reorders object keys and rejects the \u0000 escape, so a record would not come back
+// byte for byte, or not be stored at all). seq is unique per run, so History has one order.
+const stepsTable = "bide_steps"
+
 func (s *Store) migrate(ctx context.Context) error {
 	_, err := s.db.ExecContext(ctx, `
-		CREATE TABLE IF NOT EXISTS steps (
+		CREATE TABLE IF NOT EXISTS bide_steps (
 			run_id text   NOT NULL,
 			seq    bigint NOT NULL,
 			name   text   NOT NULL,
-			data   jsonb  NOT NULL,
-			PRIMARY KEY (run_id, name)
+			data   text   NOT NULL,
+			PRIMARY KEY (run_id, name),
+			UNIQUE (run_id, seq)
 		);
-		CREATE INDEX IF NOT EXISTS idx_steps_run_seq ON steps (run_id, seq);
 		CREATE TABLE IF NOT EXISTS leases (
 			run_id text        PRIMARY KEY,
 			holder text        NOT NULL,
@@ -91,18 +96,22 @@ func (s *Store) Do(ctx context.Context, runID, name string, fn func(context.Cont
 		if e != nil {
 			return nil, fmt.Errorf("marshal step %q: %w (%w)", name, e, agent.ErrStorage)
 		}
-		tag, e := s.db.ExecContext(ctx, `
-			INSERT INTO steps (run_id, seq, name, data)
-			VALUES ($1, (SELECT COALESCE(MAX(seq), -1) + 1 FROM steps WHERE run_id = $1), $2, $3)
-			ON CONFLICT (run_id, name) DO NOTHING`,
-			runID, name, data)
+		n, e := s.insert(ctx, runID, name, data)
 		if e != nil {
 			return nil, fmt.Errorf("insert step %q: %w (%w)", name, e, agent.ErrStorage)
 		}
-		if n, _ := tag.RowsAffected(); n == 0 {
-			if existing, ok, e := s.load(ctx, runID, name); e == nil && ok {
-				return existing, nil // another node won the race
+		if n == 0 {
+			// Another node recorded this step first: its record is the step's. Return it or an
+			// error, never rec, which a caller such as ClaimAttempt would read as a win. The
+			// reload ignores cancellation so a caller cancelled mid-step still learns the truth.
+			existing, ok, e := s.load(context.WithoutCancel(ctx), runID, name)
+			if e != nil {
+				return nil, fmt.Errorf("reload step %q after a conflicting insert: %w (%w)", name, e, agent.ErrStorage)
 			}
+			if !ok {
+				return nil, fmt.Errorf("step %q: insert conflicted but no record exists (%w)", name, agent.ErrStorage)
+			}
+			return existing, nil
 		}
 		return rec, nil
 	})
@@ -112,9 +121,34 @@ func (s *Store) Do(ctx context.Context, runID, name string, fn func(context.Cont
 	return v.(agent.Record), nil
 }
 
+// insert appends one step to runID's journal and reports whether it was written (0 when the
+// step's name is already recorded). Inserts into one run are serialized by a transaction-scoped
+// advisory lock on the run, so each takes the next position: MAX(seq)+1 computed by two
+// concurrent inserts would otherwise collide.
+func (s *Store) insert(ctx context.Context, runID, name string, data []byte) (int64, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, runID); err != nil {
+		return 0, err
+	}
+	res, err := tx.ExecContext(ctx, `
+		INSERT INTO bide_steps (run_id, seq, name, data)
+		VALUES ($1, (SELECT COALESCE(MAX(seq), -1) + 1 FROM bide_steps WHERE run_id = $1), $2, $3)
+		ON CONFLICT (run_id, name) DO NOTHING`,
+		runID, name, string(data))
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return n, tx.Commit()
+}
+
 // History implements agent.Durable.
 func (s *Store) History(ctx context.Context, runID string) ([]agent.Record, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT data FROM steps WHERE run_id = $1 ORDER BY seq`, runID)
+	rows, err := s.db.QueryContext(ctx, `SELECT data FROM bide_steps WHERE run_id = $1 ORDER BY seq`, runID)
 	if err != nil {
 		return nil, fmt.Errorf("query history %q: %w (%w)", runID, err, agent.ErrStorage)
 	}
@@ -137,7 +171,7 @@ func (s *Store) History(ctx context.Context, runID string) ([]agent.Record, erro
 
 func (s *Store) load(ctx context.Context, runID, name string) (agent.Record, bool, error) {
 	var data []byte
-	err := s.db.QueryRowContext(ctx, `SELECT data FROM steps WHERE run_id = $1 AND name = $2`, runID, name).Scan(&data)
+	err := s.db.QueryRowContext(ctx, `SELECT data FROM bide_steps WHERE run_id = $1 AND name = $2`, runID, name).Scan(&data)
 	if err == sql.ErrNoRows {
 		return agent.Record{}, false, nil
 	}
@@ -154,7 +188,7 @@ func (s *Store) load(ctx context.Context, runID, name string) (agent.Record, boo
 // Runs implements agent.Lister: the distinct run IDs the store holds, so a crash-recovery
 // supervisor can enumerate in-flight runs (see agent.Recover).
 func (s *Store) Runs(ctx context.Context) ([]string, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT run_id FROM steps ORDER BY run_id`)
+	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT run_id FROM bide_steps ORDER BY run_id`)
 	if err != nil {
 		return nil, fmt.Errorf("list runs: %w (%w)", err, agent.ErrStorage)
 	}

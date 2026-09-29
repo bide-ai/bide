@@ -191,8 +191,13 @@ func Lease(ctx context.Context, store Durable, runID string, drive func(context.
 	if !got {
 		return false, nil // another holder is driving it
 	}
-	// Release on return, including if drive panics.
-	defer func() { _ = leaser.ReleaseLease(ctx, runID, cfg.holder) }()
+	// Release on return, including if drive panics or ctx was cancelled (a shutdown): the
+	// release must still reach the store, so another node can take the run at once.
+	defer func() {
+		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		defer cancel()
+		_ = leaser.ReleaseLease(rctx, runID, cfg.holder)
+	}()
 	return true, driveWithRenew(ctx, leaser, runID, cfg, drive)
 }
 
