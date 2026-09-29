@@ -37,8 +37,8 @@ func TestBuildRequest_Sampling(t *testing.T) {
 	if p["top_p"] != 0.9 {
 		t.Fatalf("top_p = %v, want 0.9", p["top_p"])
 	}
-	if p["max_tokens"] != float64(500) {
-		t.Fatalf("max_tokens = %v, want 500", p["max_tokens"])
+	if p["max_completion_tokens"] != float64(500) {
+		t.Fatalf("max_completion_tokens = %v, want 500", p["max_completion_tokens"])
 	}
 	if p["seed"] != float64(42) {
 		t.Fatalf("seed = %v, want 42", p["seed"])
@@ -70,7 +70,7 @@ func TestBuildRequest_MaxTokensOverride(t *testing.T) {
 	})
 	var p map[string]any
 	_ = json.Unmarshal(body, &p)
-	if p["max_tokens"] != float64(999) {
-		t.Fatalf("max_tokens = %v, want 999 (request overrides default)", p["max_tokens"])
+	if p["max_completion_tokens"] != float64(999) {
+		t.Fatalf("max_completion_tokens = %v, want 999 (request overrides default)", p["max_completion_tokens"])
 	}
 }

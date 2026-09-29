@@ -243,8 +243,8 @@ func TestStreamSSE_NormalizesTextToolCallAndUsage(t *testing.T) {
 			if e.Name != "get_weather" {
 				t.Errorf("tool call name = %q", e.Name)
 			}
-			if e.ID != "call_get_weather0" {
-				t.Errorf("synthesized id = %q, want call_get_weather0", e.ID)
+			if !strings.HasPrefix(e.ID, "call_") || len(e.ID) != len("call_")+24 {
+				t.Errorf("synthesized id = %q, want call_ and 24 random hex digits", e.ID)
 			}
 			if string(e.ArgsFragment) != `{"city":"SF"}` {
 				t.Errorf("args fragment = %s, want {\"city\":\"SF\"}", e.ArgsFragment)

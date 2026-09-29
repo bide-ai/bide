@@ -6,7 +6,7 @@
 // hand-edits JSON Schema.
 //
 // Tools expose the neutral schema (For); each model adapter dialectizes it at request
-// time (Anthropic accepts the neutral form; OpenAI needs OpenAIStrict).
+// time (Anthropic accepts the neutral form; OpenAI needs OpenAIStrict; Gemini needs Gemini).
 package schema
 
 import (

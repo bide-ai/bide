@@ -91,7 +91,7 @@ func TestSSEPayload(t *testing.T) {
 }
 
 // TestNewSSEScanner_LargeLine verifies the scanner reads an SSE line larger than bufio's default
-// 64KB cap (a big tool-call args blob), which the raised 1MB buffer must accommodate.
+// 64KB cap (a big tool-call args blob), which the raised MaxSSELine buffer must accommodate.
 func TestNewSSEScanner_LargeLine(t *testing.T) {
 	big := strings.Repeat("x", 200*1024)
 	sc := NewSSEScanner(strings.NewReader("data: " + big + "\n"))

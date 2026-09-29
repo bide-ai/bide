@@ -41,6 +41,15 @@ Adapter-specific options:
   wrapping `schema.ErrStrictUnsupported`, rather than being sent as a schema that changes what the
   model may answer.
 
+The Gemini adapter translates tool argument schemas and the `RunTypedNative` response schema to
+the OpenAPI subset Gemini reads (`schema.Gemini`): an optional field becomes `nullable`, a closed
+object drops `additionalProperties: false`, and keywords Gemini lacks that only annotate or
+further constrain a value are dropped. A tool with no arguments declares no `parameters` (Gemini
+rejects an object with no properties, so a tool whose schema is a bare `{"type":"object"}` is
+declared the same way). A schema the subset cannot express (a map, an `interface{}` or
+`json.RawMessage` field, a recursive type, `$ref`, `oneOf`, ...) fails the request with an
+`ErrConfig` error wrapping `schema.ErrGeminiUnsupported` that names the tool and the location.
+
 `WithBaseURL` is how one adapter reaches many providers. For OpenAI-compatible endpoints, set the
 base URL and the model, e.g. `openai.New("", openai.WithBaseURL("http://localhost:11434/v1"),
 openai.WithModel("llama3"))` for Ollama; the OpenAI adapter only sets the auth header when the API
@@ -56,11 +65,18 @@ provider lacks is not an error:
 
 | `agent.Sampling` field | anthropic | openai | gemini |
 |---|---|---|---|
-| `MaxTokens` | `max_tokens` | `max_tokens` | `maxOutputTokens` |
+| `MaxTokens` | `max_tokens` | `max_completion_tokens` or `max_tokens` (below) | `maxOutputTokens` |
 | `Temperature` | `temperature` | `temperature` | `temperature` |
 | `TopP` | `top_p` | `top_p` | `topP` |
 | `Stop` | `stop_sequences` | `stop` | `stopSequences` |
 | `Seed` | dropped (no seed param) | `seed` | dropped (no seed param) |
+
+The OpenAI adapter sends the token limit as `max_completion_tokens` on OpenAI's own endpoint
+(`api.openai.com`, where `max_tokens` is deprecated and the o-series and gpt-5 reasoning models
+reject it) and for an OpenAI reasoning model id (`o1`, `o3-mini`, `gpt-5`, ..., also behind a
+`vendor/` prefix) on any endpoint; other OpenAI-compatible servers get `max_tokens`, which is what
+they implement. `openai.WithMaxCompletionTokens(bool)` forces the choice, for example for Azure
+OpenAI serving a reasoning model under a deployment name.
 
 A request-level `MaxTokens` overrides the adapter's construction-time default. Because the fields
 are pointers, an explicit `Temperature(0)` is distinct from unset (which uses the provider default).
@@ -95,13 +111,60 @@ adds the output.
 Every adapter maps HTTP failures onto the framework's typed errors so a retry middleware can
 classify them ([retry docs in the README](../../README.md#middleware--observability)):
 
-- **HTTP 429** returns `*agent.RateLimited{RetryAfter}`, parsing the `Retry-After` header (seconds
-  or an HTTP date; `0` if absent). `middleware.Retry` honors the hint.
-- **Any other non-2xx** returns `*agent.APIError{StatusCode, Body}` (a short body snippet for
-  diagnostics), so `middleware.Retryable` can tell a transient failure (5xx, 408) from a terminal
-  one (most 4xx: auth, validation).
-- Both wrap `agent.ErrModel`, so `errors.Is(err, agent.ErrModel)` holds either way (see the errors
-  section of the README).
+The provider's error object (`{"error":{...}}`, the same envelope on all three) is parsed, so the
+error carries the provider's own message.
+
+- **Quota or credit used up** returns `*agent.APIError` wrapping `agent.ErrQuotaExhausted`, whatever
+  the status: HTTP 402, an error type or code of `insufficient_quota`, `billing_hard_limit_reached`,
+  or `billing_not_active` (OpenAI, which sends these as 429), `billing_error` (Anthropic), or a
+  Gemini `RESOURCE_EXHAUSTED` whose quota violation is per day. No wait lifts it, so
+  `middleware.Retryable` does not retry it.
+- **Any other HTTP 429** returns `*agent.RateLimited{RetryAfter, Message}`. `RetryAfter` is the
+  `Retry-After` header (seconds or an HTTP date) or, without one, Gemini's `RetryInfo.retryDelay`;
+  `0` if neither. `middleware.Retry` honors the hint.
+- **Any other non-2xx** returns `*agent.APIError{StatusCode, Message, Type, Code, Body}`, so
+  `middleware.Retryable` can tell a transient failure (5xx, 408) from a terminal one (most 4xx:
+  auth, validation).
+- **An error sent partway through a stream** (an OpenAI or Gemini data line holding an error
+  object, an Anthropic `error` event) ends the turn with an error carrying the provider's message:
+  classified by its status when it has one (Gemini), as `ErrQuotaExhausted` or `*RateLimited` when
+  its type or code says so, and otherwise as a plain `ErrModel` that `Retryable` retries.
+- **A stream line over `agent.MaxSSELine` (32MB)** fails with `agent.ErrResponseTooLarge`, which
+  the same request would hit again, so it is not retried. Any other failed stream read wraps
+  `ErrModel`.
+- All of these wrap `agent.ErrModel`, so `errors.Is(err, agent.ErrModel)` holds either way (see the
+  errors section of the README).
+
+Error text is bounded whatever the endpoint sends: at most 64KB of a failed response is read, and
+the body, message, type, and code an error carries are each cut to 8KB (a cut body ends in
+`...(truncated)`), so a broken endpoint, or one that echoes the prompt back, cannot put megabytes
+into memory, logs, or traces.
+
+## Tool names and tool choice
+
+Each adapter checks a request's tools and tool choice against the provider's rules before sending
+it, and refuses a setup the provider would answer with a 400 as an `ErrConfig` that says what is
+wrong:
+
+- A tool name must match `^[a-zA-Z0-9_-]{1,64}$` (OpenAI, Anthropic) or
+  `^[a-zA-Z_][a-zA-Z0-9_.:-]{0,63}$` (Gemini), and no two tools may share a name.
+- A `ToolChoice` mode must be `""`, `auto`, `none`, `required`, or `tool`. `required` and `tool`
+  need declared tools, and `tool` must name one of them.
+- `auto` or `none` with no tools declared is already met, so no tool choice is sent (the providers
+  reject one with no tools).
+
+## Tool-call IDs
+
+The agent keys each tool call's result and journal step by its tool-use ID, so every call in a
+run needs its own. Anthropic and OpenAI issue one per call. Gemini usually sends none: the Gemini
+adapter keeps an `id` when Gemini sends one and otherwise makes up a random `call_<24 hex digits>`,
+which carries nothing from the tool name or the call's position.
+
+The agent checks every live model turn whatever the adapter: a tool call with no ID, an ID already
+used earlier in the conversation, or one repeated within the turn fails the turn with
+`agent.ErrToolUseIDReused` (wrapping `ErrProtocol` and `ErrModel`) instead of passing the call off
+as already done. The check runs below middleware, so `middleware.Retry` retries it, and the rejected
+turn is never journaled. Turns replayed from an existing journal are not re-checked.
 
 ## Multimodal input (images)
 
@@ -119,7 +182,9 @@ msg := agent.UserParts(
 
 `agent.Image` sets exactly one of `Data` (raw bytes, plus `Mime`) or `URL` (a hosted image). All
 three adapters translate it to their native form (Anthropic base64 image source, OpenAI image-URL /
-data-URI content, Gemini `inlineData` / `fileData`). This is **input-only**: models emit text,
+data-URI content, Gemini `inlineData` / `fileData`). Gemini's `fileData` requires a MIME type:
+for an image by URL it is `Image.Mime`, or else the type the URL's file extension names; with
+neither, the request fails with `ErrConfig`. This is **input-only**: models emit text,
 reasoning, and tool calls, never images, so nothing produces an `Image` on the response path. Audio
 and video input are not modeled (see [KNOWN-LIMITATIONS.md](../KNOWN-LIMITATIONS.md)).
 
@@ -127,13 +192,28 @@ and video input are not modeled (see [KNOWN-LIMITATIONS.md](../KNOWN-LIMITATIONS
 
 The Anthropic adapter preserves extended-thinking **signatures**: a `Reasoning` part carries the
 provider's opaque `Signature`, which is echoed back on later turns. Dropping it corrupts thinking +
-tool use, which is why message content is typed parts rather than a flat string.
+tool use, which is why message content is typed parts rather than a flat string. Each thinking
+block is its own `Reasoning` part with its own signature, in the order the model produced them,
+and a `redacted_thinking` block is kept as a `Reasoning` part whose `Redacted` field holds its
+encrypted data, sent back unchanged. A `Reasoning` part with neither a signature nor redacted data
+(reasoning from another provider) is not sent to Anthropic, which would reject it.
+
+Other Anthropic request details: empty or whitespace-only text blocks are left out (Anthropic
+rejects them), system text from several parts or turns is joined with a blank line, and
+`ToolChoice{Mode: "none"}` is sent as `{"type": "none"}` with the tools still declared (Anthropic
+requires the declarations whenever the history holds `tool_use` blocks).
 
 The OpenAI and Gemini adapters take the opposite, provider-correct stance: they do not send a prior
 `Reasoning` part back on an assistant-input turn (the providers reject it, and there is no stable
 signature to echo), so request-side `Reasoning` parts are dropped rather than sent with an invalid
 token. The OpenAI adapter still surfaces inbound reasoning it receives (`reasoning_content` from
-DeepSeek / Ollama and similar) as a `ReasoningDelta` on the stream.
+DeepSeek / Ollama and similar) as a `ReasoningDelta` on the stream, and the Gemini adapter surfaces
+a part Gemini flags `thought` the same way.
+
+Gemini's thinking models attach a `thoughtSignature` to a `functionCall` part and reject the next
+turn unless it comes back on that part. The adapter keeps it on the call (`agent.ToolUse.Signature`,
+journaled with the call) and sends it back with the `functionCall`. Signatures Gemini puts on text
+parts are not kept; Gemini does not require them.
 
 ## GCF tool-result encoding (opt-in)
 
@@ -166,7 +246,4 @@ form for that result.
 ## What is not built
 
 - No **native Bedrock** adapter (reach Bedrock-hosted models through an OpenAI-compatible proxy).
-- `schema/` emits an OpenAI-strict and a neutral dialect; a dedicated **Gemini** schema dialect is
-  not yet done, so Gemini structured output passes the neutral `responseSchema` through
-  best-effort.
 - Settings are agent-level, not per-`Run` (see [KNOWN-LIMITATIONS.md](../KNOWN-LIMITATIONS.md)).

@@ -58,19 +58,18 @@ func TestBuildRequest_Image(t *testing.T) {
 	}
 }
 
-// tool_choice maps onto Anthropic's wire shapes; "none" drops tools since Anthropic has
-// no explicit none mode.
+// tool_choice maps onto Anthropic's wire shapes, "none" included.
 func TestBuildRequest_ToolChoice(t *testing.T) {
 	cases := []struct {
 		mode string
 		name string
-		want map[string]any // nil means tool_choice absent (and tools dropped)
+		want map[string]any
 	}{
 		{"auto", "", map[string]any{"type": "auto"}},
 		{"", "", map[string]any{"type": "auto"}},
 		{"required", "", map[string]any{"type": "any"}},
 		{"tool", "get_weather", map[string]any{"type": "tool", "name": "get_weather"}},
-		{"none", "", nil},
+		{"none", "", map[string]any{"type": "none"}},
 	}
 	for _, c := range cases {
 		t.Run(c.mode, func(t *testing.T) {
@@ -87,17 +86,7 @@ func TestBuildRequest_ToolChoice(t *testing.T) {
 			if err := json.Unmarshal(body, &got); err != nil {
 				t.Fatal(err)
 			}
-			tc, present := got["tool_choice"]
-			if c.want == nil {
-				if present {
-					t.Fatalf("mode %q: tool_choice should be absent, got %v", c.mode, tc)
-				}
-				if _, hasTools := got["tools"]; hasTools {
-					t.Errorf("mode none must drop tools, got %v", got["tools"])
-				}
-				return
-			}
-			tcm := tc.(map[string]any)
+			tcm, _ := got["tool_choice"].(map[string]any)
 			for k, v := range c.want {
 				if tcm[k] != v {
 					t.Errorf("mode %q: tool_choice[%q] = %v, want %v", c.mode, k, tcm[k], v)

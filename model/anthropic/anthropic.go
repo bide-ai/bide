@@ -20,6 +20,7 @@ import (
 	"strings"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/model/internal/toolcfg"
 )
 
 // Model is an Anthropic Messages API adapter implementing agent.Model.
@@ -102,16 +103,22 @@ func (m *Model) Stream(ctx context.Context, req agent.Request) (*agent.Stream, e
 // accepts the schema/ package's neutral form directly, so no provider dialect transform is
 // needed (unlike OpenAI strict mode).
 func (m *Model) buildRequest(req agent.Request) ([]byte, error) {
+	// Tool names and the tool choice are checked first, so a setup the provider would reject
+	// is a config error here rather than a 400.
+	sendChoice, err := toolcfg.Check("anthropic", toolcfg.AnthropicName, req)
+	if err != nil {
+		return nil, err
+	}
 	type block map[string]any
 
-	var system strings.Builder
+	var systemTexts []string
 	var msgs []map[string]any
 
 	for _, msg := range req.Messages {
 		if msg.Role == agent.RoleSystem {
 			for _, p := range msg.Parts {
-				if t, ok := p.(agent.Text); ok {
-					system.WriteString(t.Text)
+				if t, ok := p.(agent.Text); ok && t.Text != "" {
+					systemTexts = append(systemTexts, t.Text)
 				}
 			}
 			continue
@@ -124,13 +131,20 @@ func (m *Model) buildRequest(req agent.Request) ([]byte, error) {
 		for _, p := range msg.Parts {
 			switch v := p.(type) {
 			case agent.Text:
+				if strings.TrimSpace(v.Text) == "" {
+					continue // Anthropic rejects a text block with no non-whitespace text
+				}
 				blocks = append(blocks, block{"type": "text", "text": v.Text})
 			case agent.Reasoning:
-				b := block{"type": "thinking", "thinking": v.Text}
-				if v.Signature != "" {
-					b["signature"] = v.Signature
+				// Anthropic takes thinking back only as it issued it: a thinking block with its
+				// signature, or a redacted_thinking block's data. Reasoning with neither (from
+				// another provider) cannot be verified and is dropped.
+				switch {
+				case v.Redacted != "":
+					blocks = append(blocks, block{"type": "redacted_thinking", "data": v.Redacted})
+				case v.Signature != "":
+					blocks = append(blocks, block{"type": "thinking", "thinking": v.Text, "signature": v.Signature})
 				}
-				blocks = append(blocks, b)
 			case agent.ToolUse:
 				var input any = json.RawMessage(v.Args)
 				if len(v.Args) == 0 {
@@ -204,25 +218,28 @@ func (m *Model) buildRequest(req agent.Request) ([]byte, error) {
 		payload["stop_sequences"] = req.Sampling.Stop
 	}
 	// Anthropic has no seed parameter; req.Sampling.Seed is intentionally ignored.
-	if system.Len() > 0 {
+	// System text from several parts or turns is joined with a blank line, as separate
+	// paragraphs, rather than run together.
+	system := strings.Join(systemTexts, "\n\n")
+	if system != "" {
 		if m.cache {
 			// A structured system block lets us attach a cache breakpoint to it.
 			payload["system"] = []map[string]any{{
 				"type":          "text",
-				"text":          system.String(),
+				"text":          system,
 				"cache_control": map[string]any{"type": "ephemeral"},
 			}}
 		} else {
-			payload["system"] = system.String()
+			payload["system"] = system
 		}
 	}
 	if len(tools) > 0 {
 		payload["tools"] = tools
 	}
-	// tool_choice: {"type":"auto"} / {"type":"any"} (for "required") / {"type":"tool","name":...}.
-	// Anthropic has no "none" equivalent, so map "none" the closest safe way by omitting the
-	// tool declarations entirely (the model then cannot call a tool this turn).
-	if tc := req.ToolChoice; tc != nil {
+	// tool_choice: {"type":"auto"} / {"type":"any"} (for "required") / {"type":"tool","name":...}
+	// / {"type":"none"}. "none" keeps the tool declarations: Anthropic requires them whenever
+	// the history holds tool_use blocks.
+	if tc := req.ToolChoice; tc != nil && sendChoice {
 		switch tc.Mode {
 		case "", "auto":
 			payload["tool_choice"] = map[string]any{"type": "auto"}
@@ -231,7 +248,7 @@ func (m *Model) buildRequest(req agent.Request) ([]byte, error) {
 		case "tool":
 			payload["tool_choice"] = map[string]any{"type": "tool", "name": tc.Name}
 		case "none":
-			delete(payload, "tools")
+			payload["tool_choice"] = map[string]any{"type": "none"}
 		}
 	}
 	return json.Marshal(payload)
@@ -245,6 +262,7 @@ type sseEvent struct {
 		Type string `json:"type"`
 		ID   string `json:"id"`
 		Name string `json:"name"`
+		Data string `json:"data"` // redacted_thinking: the encrypted reasoning
 	} `json:"content_block"`
 	Delta *struct {
 		Type        string `json:"type"`
@@ -293,8 +311,15 @@ func streamSSE(body io.ReadCloser, send func(agent.Emit) bool) {
 				cacheWrite = ev.Message.Usage.CacheCreationInputTokens
 			}
 		case "content_block_start":
-			if ev.ContentBlock != nil && ev.ContentBlock.Type == "tool_use" {
-				if !send(agent.Emit{Event: agent.ToolCallDelta{Index: ev.Index, ID: ev.ContentBlock.ID, Name: ev.ContentBlock.Name}}) {
+			switch cb := ev.ContentBlock; {
+			case cb == nil:
+			case cb.Type == "tool_use":
+				if !send(agent.Emit{Event: agent.ToolCallDelta{Index: ev.Index, ID: cb.ID, Name: cb.Name}}) {
+					return
+				}
+			case cb.Type == "redacted_thinking":
+				// The whole block arrives here, with no deltas; it goes back unchanged.
+				if !send(agent.Emit{Event: agent.ReasoningDelta{Redacted: cb.Data}}) {
 					return
 				}
 			}
@@ -336,11 +361,11 @@ func streamSSE(body io.ReadCloser, send func(agent.Emit) bool) {
 		case "message_stop":
 			return
 		case "error":
-			send(agent.Emit{Err: fmt.Errorf("anthropic stream error: %s (%w)", data, agent.ErrModel)})
+			send(agent.Emit{Err: agent.ClassifyStreamError("anthropic", []byte(data))})
 			return
 		}
 	}
 	if err := sc.Err(); err != nil {
-		send(agent.Emit{Err: err})
+		send(agent.Emit{Err: agent.SSEReadError("anthropic", err)})
 	}
 }

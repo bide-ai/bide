@@ -54,9 +54,12 @@ func WithRetryIf(pred func(error) bool) RetryOption {
 
 // Retryable is a ready-made classifier for WithRetryIf: it retries transient failures and
 // fails fast on terminal ones. It retries *agent.RateLimited, a per-attempt timeout
-// (context.DeadlineExceeded), and *agent.APIError with a 5xx or 408 status; it does not retry
-// parent cancellation (context.Canceled) or 4xx API errors (auth, validation). Errors it cannot
-// classify (e.g. raw network errors) are retried, since those are usually transient.
+// (context.DeadlineExceeded), and *agent.APIError with a 5xx or 408 status. It does not retry
+// parent cancellation (context.Canceled), 4xx API errors (auth, validation), or failures the
+// same request would repeat: agent.ErrConfig (a request the adapter refused to build),
+// agent.ErrQuotaExhausted (used-up quota or credit, which no wait lifts), and
+// agent.ErrResponseTooLarge. Errors it cannot classify (e.g. raw network errors, a provider's
+// mid-stream server error) are retried, since those are usually transient.
 //
 //	agent.New(model, store, tools...).Use(middleware.Retry(3, middleware.WithRetryIf(middleware.Retryable)))
 func Retryable(err error) bool {
@@ -64,6 +67,9 @@ func Retryable(err error) bool {
 		return false
 	}
 	if errors.Is(err, context.Canceled) {
+		return false
+	}
+	if errors.Is(err, agent.ErrConfig) || errors.Is(err, agent.ErrQuotaExhausted) || errors.Is(err, agent.ErrResponseTooLarge) {
 		return false
 	}
 	if errors.Is(err, context.DeadlineExceeded) {

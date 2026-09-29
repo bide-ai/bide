@@ -17,9 +17,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"regexp"
 	"strings"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/model/internal/toolcfg"
 	"github.com/bide-ai/bide/schema"
 )
 
@@ -29,8 +32,11 @@ type Model struct {
 	baseURL   string
 	maxTokens int
 	strict    bool
-	http      *http.Client
-	toolCodec agent.ToolResultCodec
+	// completionTokens picks the token-limit field: nil decides by endpoint and model (see
+	// WithMaxCompletionTokens); set, it is forced on or off.
+	completionTokens *bool
+	http             *http.Client
+	toolCodec        agent.ToolResultCodec
 }
 
 var _ agent.Model = (*Model)(nil) // port/adapter contract
@@ -42,6 +48,18 @@ func WithMaxTokens(n int) Option           { return func(m *Model) { m.maxTokens
 func WithBaseURL(u string) Option          { return func(m *Model) { m.baseURL = strings.TrimRight(u, "/") } }
 func WithHTTPClient(c *http.Client) Option { return func(m *Model) { m.http = c } }
 func WithStrictSchema() Option             { return func(m *Model) { m.strict = true } }
+
+// WithMaxCompletionTokens chooses the request field that carries the token limit
+// (WithMaxTokens, or Sampling.MaxTokens): max_completion_tokens when use is true, max_tokens
+// when false. Without it the adapter decides: max_completion_tokens on OpenAI's own endpoint
+// (api.openai.com, where max_tokens is deprecated and the reasoning models reject it) and for
+// an OpenAI reasoning model (an o-series or gpt-5 model id, optionally behind a "vendor/"
+// prefix) on any endpoint, and max_tokens otherwise, which is what OpenAI-compatible servers
+// such as Ollama and vLLM implement. Set it for an endpoint the default gets wrong, such as
+// Azure OpenAI serving a reasoning model under a deployment name.
+func WithMaxCompletionTokens(use bool) Option {
+	return func(m *Model) { m.completionTokens = &use }
+}
 
 // WithToolResultCodec encodes tool results sent to the model with c instead of
 // raw JSON (for example GCF, to cut tokens on structured output). The journal
@@ -89,13 +107,26 @@ func (m *Model) Stream(ctx context.Context, req agent.Request) (*agent.Stream, e
 }
 
 func (m *Model) buildRequest(req agent.Request) ([]byte, error) {
+	// Tool names and the tool choice are checked first, so a setup the provider would reject
+	// is a config error here rather than a 400.
+	sendChoice, err := toolcfg.Check("openai", toolcfg.OpenAIName, req)
+	if err != nil {
+		return nil, err
+	}
 	type obj = map[string]any
 	var msgs []obj
 
 	for _, msg := range req.Messages {
 		switch msg.Role {
 		case agent.RoleSystem:
-			msgs = append(msgs, obj{"role": "system", "content": textOf(msg)})
+			// Several text parts are separate paragraphs of the prompt, not one run-on line.
+			var texts []string
+			for _, p := range msg.Parts {
+				if t, ok := p.(agent.Text); ok && t.Text != "" {
+					texts = append(texts, t.Text)
+				}
+			}
+			msgs = append(msgs, obj{"role": "system", "content": strings.Join(texts, "\n\n")})
 		case agent.RoleUser:
 			msgs = append(msgs, obj{"role": "user", "content": userContent(msg)})
 		case agent.RoleTool:
@@ -112,9 +143,13 @@ func (m *Model) buildRequest(req agent.Request) ([]byte, error) {
 				// NOTE: Reasoning parts are intentionally dropped — OpenAI does not accept
 				// prior reasoning as input (unlike Anthropic, which requires echoing it).
 				if tu, ok := p.(agent.ToolUse); ok {
+					args := string(tu.Args)
+					if args == "" {
+						args = "{}" // arguments must be a JSON object; a call with none has {}
+					}
 					calls = append(calls, obj{
 						"id": tu.ID, "type": "function",
-						"function": obj{"name": tu.Name, "arguments": string(tu.Args)},
+						"function": obj{"name": tu.Name, "arguments": args},
 					})
 				}
 			}
@@ -151,13 +186,18 @@ func (m *Model) buildRequest(req agent.Request) ([]byte, error) {
 		"stream":         true,
 		"stream_options": obj{"include_usage": true},
 	}
-	// max_tokens: request-level Sampling overrides the adapter's construction default.
+	// The token limit: request-level Sampling overrides the adapter's construction default. It
+	// goes in max_completion_tokens or max_tokens (see WithMaxCompletionTokens).
 	maxTokens := m.maxTokens
 	if s := req.Sampling.MaxTokens; s != nil {
 		maxTokens = *s
 	}
 	if maxTokens > 0 {
-		payload["max_tokens"] = maxTokens
+		if m.useCompletionTokens() {
+			payload["max_completion_tokens"] = maxTokens
+		} else {
+			payload["max_tokens"] = maxTokens
+		}
 	}
 	if s := req.Sampling.Temperature; s != nil {
 		payload["temperature"] = *s
@@ -175,7 +215,7 @@ func (m *Model) buildRequest(req agent.Request) ([]byte, error) {
 		payload["tools"] = tools
 	}
 	// tool_choice: "auto" / "none" / "required" / {"type":"function","function":{"name":...}}.
-	if tc := req.ToolChoice; tc != nil {
+	if tc := req.ToolChoice; tc != nil && sendChoice {
 		switch tc.Mode {
 		case "", "auto":
 			payload["tool_choice"] = "auto"
@@ -205,6 +245,25 @@ func (m *Model) buildRequest(req agent.Request) ([]byte, error) {
 		}
 	}
 	return json.Marshal(payload)
+}
+
+// reasoningModel matches OpenAI reasoning model ids (o1, o3-mini, o4-mini, gpt-5, gpt-5.1, ...),
+// which take max_completion_tokens and reject max_tokens wherever they are served.
+var reasoningModel = regexp.MustCompile(`^(o[1-9][0-9]*(-|$)|gpt-5)`)
+
+// useCompletionTokens reports whether the token limit goes in max_completion_tokens.
+func (m *Model) useCompletionTokens() bool {
+	if m.completionTokens != nil {
+		return *m.completionTokens
+	}
+	if u, err := url.Parse(m.baseURL); err == nil && u.Hostname() == "api.openai.com" {
+		return true
+	}
+	id := m.model
+	if i := strings.LastIndex(id, "/"); i >= 0 {
+		id = id[i+1:] // a router's "vendor/model" id
+	}
+	return reasoningModel.MatchString(id)
 }
 
 func textOf(m agent.Message) string {
@@ -251,6 +310,7 @@ func userContent(m agent.Message) any {
 }
 
 type chunk struct {
+	Error   json.RawMessage `json:"error"` // a failure reported partway through the stream
 	Choices []struct {
 		Delta struct {
 			Content          string `json:"content"`
@@ -296,6 +356,10 @@ func streamSSE(body io.ReadCloser, send func(agent.Emit) bool) {
 			send(agent.Emit{Err: fmt.Errorf("openai sse decode: %w (%w)", err, agent.ErrModel)})
 			return
 		}
+		if len(c.Error) > 0 && string(c.Error) != "null" {
+			send(agent.Emit{Err: agent.ClassifyStreamError("openai", []byte(data))})
+			return
+		}
 		for _, choice := range c.Choices {
 			if rc := choice.Delta.ReasoningContent; rc != "" {
 				if !send(agent.Emit{Event: agent.ReasoningDelta{Text: rc}}) {
@@ -334,7 +398,7 @@ func streamSSE(body io.ReadCloser, send func(agent.Emit) bool) {
 		}
 	}
 	if err := sc.Err(); err != nil {
-		send(agent.Emit{Err: err})
+		send(agent.Emit{Err: agent.SSEReadError("openai", err)})
 		return
 	}
 	// A server that omits the usage chunk still ends the turn, with a finish_reason or [DONE],
