@@ -45,6 +45,13 @@ rather than pretending it knows.
 - **The write to the store must itself be atomic/durable.** The guarantee reduces to "the
   journal did or did not record this step"; it relies on the store committing atomically. It
   does not defend against the storage layer lying about a commit.
+- **Two drivers of one run.** Leases normally keep one process driving a run, but no lease can
+  guarantee that: a holder stalled past its TTL (a long GC pause, a suspended VM, a partition) wakes
+  still driving. The guarantee does not rely on the lease. Before a non-idempotent side effect, a
+  driver writes the attempt marker as an exclusive claim, and only the driver whose claim the store
+  kept runs it; the other halts (`ResumeHalt`). This relies on the store recording a step name at
+  most once across processes (the SQLite and Postgres stores use a primary key), which is the atomic
+  write above.
 - **The tool must declare its safety accurately.** `ReadOnly` re-runs freely, `Idempotent`
   retries, and only an unmarked non-idempotent write gets the attempt-marker/halt treatment.
   Mislabel a card-charge as idempotent and you have opted out of the protection.

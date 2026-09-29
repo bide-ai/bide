@@ -199,8 +199,11 @@ func Lease(ctx context.Context, store Durable, runID string, drive func(context.
 // driveWithRenew runs the drive while renewing the lease every ttl/2, so a drive that outlasts the
 // TTL keeps its lease. The drive is given a derived context that is cancelled if the lease is lost
 // (renew fails or returns not-held) or the parent context is done, so a node that loses its lease
-// stops driving rather than continuing un-leased. `defer close(done)` guarantees the renewer
-// goroutine exits even if the drive panics.
+// stops driving at its next cancellation check. That is best effort, not mutual exclusion: a node
+// stalled past the TTL (a long GC pause, a suspended VM, a partition from the store) wakes still
+// driving and can take a step before its renewer notices. At-most-once does not depend on this;
+// the exclusive attempt claim (ClaimAttempt) stops two overlapping drivers from both running a
+// side effect. `defer close(done)` guarantees the renewer goroutine exits even if the drive panics.
 func driveWithRenew(ctx context.Context, leaser Leaser, runID string, cfg recoverConfig, run func(context.Context) error) error {
 	dctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -244,12 +247,15 @@ func isPause(err error) bool {
 // ===========================================================================
 
 // Leaser is the optional capability that coordinates driving a run across processes. Without it,
-// several processes recovering against a shared store all re-drive the same in-flight runs: safe
-// under at-most-once memoization but redundant, and a real hazard when the store's Do is not
-// cross-process atomic (two live drivers could each run a non-memoized step before either records
-// it). A store that implements Leaser lets a driver claim an exclusive, time-bounded lease on a run
-// so only the holder drives it; a dead holder's lease expires and another process takes over, which
-// is the high-availability property. Recover uses it automatically when the store provides it.
+// several processes recovering against a shared store all re-drive the same in-flight runs. That is
+// safe but wasteful: side effects stay at-most-once because each non-idempotent call is guarded by
+// an exclusive attempt claim (ClaimAttempt), but the drivers duplicate model calls and a loser of a
+// claim halts with ResumeHalt. A store that implements Leaser lets a driver take a time-bounded lease
+// on a run so normally only the holder drives it; a dead holder's lease expires and another process
+// takes over, which is the high-availability property. Recover uses it automatically when the store
+// provides it. A lease is an efficiency and liveness mechanism, not the safety one: no lease can
+// guarantee mutual exclusion against a holder that stalls past its TTL, which is why the claim, not
+// the lease, is what keeps side effects at-most-once.
 //
 // The base Durable contract does not require leasing, and MemStore's implementation is in-process
 // (for tests and as the reference); the cross-process payoff is a shared backend (store/postgres)
