@@ -145,11 +145,11 @@ func TestProbit_KnownQuantiles(t *testing.T) {
 // TestRequiredRuns checks the sample-size helper is sane and monotone: detecting a 5-point drop from
 // 0.9 at alpha 0.05 power 0.8 needs a few hundred per arm, and a larger drop needs fewer runs.
 func TestRequiredRuns(t *testing.T) {
-	n5 := eval.RequiredRuns(0.9, 0.05, 0.05, 0.8)
+	n5 := requiredRuns(t, 0.9, 0.05, 0.05, 0.8)
 	if n5 < 200 || n5 > 900 {
 		t.Fatalf("detecting a 5-point drop from 0.9 should need a few hundred per arm, got %d", n5)
 	}
-	n15 := eval.RequiredRuns(0.9, 0.15, 0.05, 0.8)
+	n15 := requiredRuns(t, 0.9, 0.15, 0.05, 0.8)
 	if n15 >= n5 {
 		t.Fatalf("a larger drop should need fewer runs: 15pp=%d must be < 5pp=%d", n15, n5)
 	}
@@ -186,11 +186,21 @@ func TestWilson_NoRunsIsTheWholeRange(t *testing.T) {
 	}
 }
 
+// requiredRuns calls RequiredRuns on arguments that are in its domain and fails the test on an error.
+func requiredRuns(t *testing.T, baseline, drop, alpha, power float64) int {
+	t.Helper()
+	n, err := eval.RequiredRuns(baseline, drop, alpha, power)
+	if err != nil {
+		t.Fatalf("RequiredRuns(%g, %g, %g, %g): %v", baseline, drop, alpha, power, err)
+	}
+	return n
+}
+
 // RequiredRuns always returns a count a caller can use. A drop so small that the runs it needs
 // exceed int (or that rounds away against the baseline) saturates at math.MaxInt, instead of
 // converting an out-of-range float to int, which Go leaves to the platform (math.MinInt64 on
 // amd64), or reading the rounded-away drop as "nothing to detect". Arguments outside their domain
-// are a caller error and panic.
+// return an error and no count.
 func TestRequiredRuns_NonFiniteInputs(t *testing.T) {
 	for _, tc := range []struct {
 		name                         string
@@ -199,7 +209,7 @@ func TestRequiredRuns_NonFiniteInputs(t *testing.T) {
 		{"runs exceed int", 0.9, 1e-10, 0.05, 0.8},
 		{"drop rounds away", 0.9, 1e-200, 0.05, 0.8},
 	} {
-		if n := eval.RequiredRuns(tc.baseline, tc.drop, tc.alpha, tc.power); n != math.MaxInt {
+		if n := requiredRuns(t, tc.baseline, tc.drop, tc.alpha, tc.power); n != math.MaxInt {
 			t.Errorf("%s: RequiredRuns = %d, want math.MaxInt", tc.name, n)
 		}
 	}
@@ -218,22 +228,17 @@ func TestRequiredRuns_NonFiniteInputs(t *testing.T) {
 		{"NaN alpha", 0.9, 0.05, math.NaN(), 0.8},
 		{"NaN power", 0.9, 0.05, 0.05, math.NaN()},
 	} {
-		func() {
-			defer func() {
-				if recover() == nil {
-					t.Errorf("%s: RequiredRuns returned instead of panicking", tc.name)
-				}
-			}()
-			n := eval.RequiredRuns(tc.baseline, tc.drop, tc.alpha, tc.power)
-			t.Logf("%s: RequiredRuns = %d", tc.name, n)
-		}()
+		n, err := eval.RequiredRuns(tc.baseline, tc.drop, tc.alpha, tc.power)
+		if err == nil || n != 0 {
+			t.Errorf("%s: RequiredRuns = %d, %v; want 0 and an error", tc.name, n, err)
+		}
 	}
 }
 
 // A drop of zero or less leaves nothing to detect, so no runs are needed.
 func TestRequiredRuns_NoDropNeedsNoRuns(t *testing.T) {
 	for _, drop := range []float64{0, -0.05} {
-		if n := eval.RequiredRuns(0.9, drop, 0.05, 0.8); n != 0 {
+		if n := requiredRuns(t, 0.9, drop, 0.05, 0.8); n != 0 {
 			t.Errorf("RequiredRuns with drop %g = %d, want 0", drop, n)
 		}
 	}
@@ -243,7 +248,7 @@ func TestRequiredRuns_NoDropNeedsNoRuns(t *testing.T) {
 // low it sits under the false-positive rate) any sample reaches it, and squaring the negative sum
 // would instead ask for more runs the lower the power: 1 run per arm is the answer.
 func TestRequiredRuns_PowerBelowAlphaNeedsOneRun(t *testing.T) {
-	if n := eval.RequiredRuns(0.9, 0.05, 0.05, 0.001); n != 1 {
+	if n := requiredRuns(t, 0.9, 0.05, 0.05, 0.001); n != 1 {
 		t.Fatalf("RequiredRuns at power 0.001 = %d, want 1", n)
 	}
 }
