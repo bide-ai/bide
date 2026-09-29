@@ -2,12 +2,20 @@ package postgreslog_test
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/bide-ai/bide/govern"
 	"github.com/bide-ai/bide/govern/postgreslog"
 )
+
+// uniqueID returns prefix plus the test name and a per-run suffix, so the test can run again
+// against the same database or Redis instance without seeing a previous run's records.
+func uniqueID(t *testing.T, prefix string) string {
+	return fmt.Sprintf("%s%s-%d", prefix, t.Name(), time.Now().UnixNano())
+}
 
 // The Postgres adapter satisfies the govern.EventLog port (asserted here so the adapter package
 // need not import govern, keeping the coupling one-directional).
@@ -31,8 +39,8 @@ func openTestLog(t *testing.T) (*postgreslog.Log, context.Context) {
 // TestPostgresLog_AppendEventsOrder checks events replay in append order and entities are isolated.
 func TestPostgresLog_AppendEventsOrder(t *testing.T) {
 	l, ctx := openTestLog(t)
-	a := "pg-evlog-a-" + t.Name()
-	b := "pg-evlog-b-" + t.Name()
+	a := uniqueID(t, "pg-evlog-a-")
+	b := uniqueID(t, "pg-evlog-b-")
 
 	for _, e := range []string{"e1", "e2", "e3"} {
 		if err := l.Append(ctx, a, e); err != nil {
