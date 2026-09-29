@@ -1,142 +1,154 @@
 # Known limitations
 
-What doesn't work yet or has bounds. Correctness invariants hold within
-these bounds; these are the edges.
+This page lists what bide does not do yet, and where its guarantees stop. Read it alongside
+[the guarantee](GUARANTEE.md): everything bide promises holds inside these bounds.
 
-## Deep agent-tree recursion is superlinear (time AND memory)
+Each section says what the limit is, whether it affects you, and what to do about it.
 
-Execution and rollback use native synchronous recursion, so a deep sub-agent tree keeps
-every level live and the goroutine stack balloons.
+- [Durability and recovery](#durability-and-recovery)
+- [Sagas](#sagas)
+- [Parallel tool calls](#parallel-tool-calls)
+- [Sub-agent depth](#sub-agent-depth)
+- [Models and providers](#models-and-providers)
+- [Approval and quorum](#approval-and-quorum)
+- [Flows](#flows)
+- [Audit and proofs](#audit-and-proofs)
+- [Stores](#stores)
 
-| Depth | Result |
-|---|---|
-| 50 | <10ms ✓ |
-| 100 | fast ✓ (committed test) |
-| 500 | ~4s ✓ (completed, invariant held) |
-| 2500 | ~7.4 GB RAM, >8 min, killed (did not finish) |
+## Durability and recovery
 
-- **Not a correctness bug**: the "no dangling side effects / at-most-once compensation"
-  invariant held at every depth that completed.
-- **Irrelevant in practice**: real agent trees are single-digit deep; 100 is already far
-  beyond realistic.
-- **Root cause is heap live-set, not stack depth (measured).** A synchronous agent tree
-  keeps the entire ancestor chain alive (every parent is blocked waiting on its child,
-  retaining its conversation + maps), so live heap is O(depth) with a large per-level
-  constant (~MBs/level). We tried running each sub-agent on its own goroutine
-  (subagent.go); it did NOT reduce memory (still ~7.4GB at 2500), confirming the cost is
-  heap-resident live state, not the call stack. (The goroutine change was kept anyway: it
-  makes sub-agents ctx-cancellable and avoids one monster stack.)
-- **A real fix** would require heap-profiling to shrink the per-level footprint (what each
-  blocked level retains), and/or a fundamentally different execution model that doesn't
-  hold the whole chain live. Neither is a quick win, and it's not worth it until a workload
-  genuinely needs >100-deep trees.
+**Durability needs a durable store and waker.** `MemStore` and `MemWaker` are for local development
+and tests. They keep everything in memory, so after a real crash there is nothing to recover, and a
+pending `Sleep` has no timer to wake it. In production, use SQLite or Postgres, and either a durable
+waker or an external scheduler that re-drives sleeping runs.
 
-## Parallel tool calls: SHIPPED, concurrency status
+**You supply the resume function.** `agent.Recover` finds incomplete runs and re-drives them, but only
+your deployment knows each run's original input and which waker and clock to bind. Pass that as the
+`resume` function. A `resume` that does not own a run (for example, a sub-agent run, which its parent
+drives) should do nothing. See [Crash recovery](guides/debugging.md#4--crash-recovery-lister-and-recover).
 
-Parallel tool execution is built: a turn's tool calls run concurrently via `errgroup`
-(bounded by `SetMaxConcurrency`, unbounded by default), proven concurrent + `-race`-clean
-(`concurrency_test.go`).
+**Leases prevent duplicate work, not duplicate side effects.** With a store that supports leases
+(`MemStore` in one process, Postgres across processes), each run is driven by one holder at a time,
+and another node takes over if the holder dies. A holder that stalls past its lease (a long GC pause,
+a suspended VM, a network partition) can wake up still driving. That is safe: at-most-once rests on
+the attempt claim written before each side effect, not on the lease, so the second driver stops with
+`*ResumeHalt` instead of firing again. The cost is repeated work, such as a model call made twice.
 
-- ✅ **Concurrent `Do` on the same `(runID,name)` never double-runs `fn`.** All stores
-  single-flight per key (`golang.org/x/sync/singleflight`); a side effect fires at most once.
-- ✅ **Forward conversation order is deterministic.** The loop assembles tool-result
-  messages in `uses` order (indexed slice), not completion order, so the transcript is
-  stable regardless of which tool finishes first.
-- ⚠️ **Journal `seq` under parallel tools is completion-order, not dispatch-order.** Benign
-  in practice: tool results are matched by `tool_use` ID (order among siblings doesn't affect
-  the model), and saga rollback of *parallel* siblings assumes they're independent/atomic
-  (already a documented saga requirement). If a future need requires strict dispatch-order in
-  the journal itself, add a dispatch-time execution index to `Record` + sort `History` by it.
-- ✅ **`@llm/N` naming** is unaffected: parallelism is only *within* a turn's tools; model
-  turns remain sequential (one per loop iteration).
+**Crash safety is tested, not formally proven.** The crash tests fail the store at every write point,
+across hundreds of randomized multi-crash schedules, and check that no side effect fires twice and
+every rollback completes. That is strong evidence, but it is not a machine-checked proof over every
+possible interleaving. A crash is modelled as a failed durable write followed by the run unwinding,
+which matches a process dying around its writes. See [How bide is verified](testing/verification.md).
 
-## Saga semantics
+**`run:complete` appears in diagrams.** A finished run records a `run:complete` step, so
+`RenderMermaid` shows it just before `done`. This is expected.
 
-- **A saga step must be atomic.** The failing step itself is not compensated (no recorded
-  result to drive `Compensate`), so a step must not leave a partial external side effect
-  before returning an error. Make forward steps all-or-nothing or idempotent.
-- **Unknown-outcome resume halts, doesn't auto-rollback.** If a non-retriable step crashes
-  after its attempt marker but before any result, `RunSaga` returns `*ResumeHalt` (a human
-  decides); you can't safely roll back a step that may have committed.
-- **Distributed compensation is hierarchical, not concurrent.** Rollback recurses through
-  a sub-agent *tree* (one causal order). Truly concurrent agents mutating shared state
-  out-of-order need provable convergence (gsm territory); not built.
+## Sagas
 
-## Replay fidelity
+**Each forward step must be all-or-nothing.** When a step fails, the steps before it are
+compensated, but the failing step itself is not: it has no recorded result to undo. A step must not
+leave a partial side effect behind when it returns an error. Make it atomic or idempotent.
 
-- `emitsFor` re-emits an assistant message as `reasoning → text → tool calls`, losing
-  original interleaving. Multiple `Reasoning` blocks collapse to one (keeping the last
-  signature): a fidelity loss for multi-block extended-thinking replay. Fix: represent
-  reasoning as an ordered list of parts, each with its own signature, end-to-end.
+**An unknown outcome stops the saga instead of rolling back.** If a step that cannot be retried
+crashed after it started but before its result was recorded, bide cannot know whether it happened, so
+`RunSaga` returns `*ResumeHalt` for a person or a reconciler to resolve with `ResolveHalt`. See
+[Sagas](guides/durable-steps.md#sagas-transactional-agents-with-reverse-order-compensation).
 
-## Provider / schema
+**Rollback follows the sub-agent tree.** Compensation runs in one order, through the tree of
+sub-agents. Independent agents changing shared state concurrently need
+[governed state](guides/governance.md), not a saga.
 
-- Adapters: Anthropic (native), Gemini (native), and one OpenAI-compatible adapter (OpenAI/Groq/
-  DeepSeek/Ollama/Mistral/... via `WithBaseURL`). No **native Bedrock** adapter yet. The Gemini
-  adapter drops request-side reasoning text (it keeps the `thoughtSignature` on each call).
-- `schema.Gemini` translates to Gemini's OpenAPI subset and refuses what the subset cannot
-  express: a tool or typed output with a map, an `interface{}`/`json.RawMessage` field, or a
-  recursive type cannot be used with Gemini (`ErrConfig`).
-- Runtime (MCP) tools use the untyped path; there's no Go-struct typing for them (Go can't
-  synthesize a struct type from a runtime schema).
-- **Multimodal input is images only.** Message parts are Text / Reasoning / ToolUse / ToolResult /
-  Image; image input (raw bytes or a hosted URL) is supported across all three adapters via
-  `Image` / `UserParts` (see the messaging docs). Audio and video input are not modeled, and images
-  are input-only (models emit text, reasoning, and tool calls, never images).
-- **`RunTypedNative[T]` needs provider JSON-schema support** (OpenAI-compatible strict mode).
-  Anthropic ignores `Request.ResponseFormat`; use the provider-agnostic tool-based `RunTyped` there.
-- **Settings are agent-level, not per-call.** `WithSampling` / `WithSystemPrompt` / `WithMaxTurns`
-  apply to the agent; there's no per-`Run` options override yet.
+## Parallel tool calls
 
-## Crash-safety proof (DST): scope
+A model turn's tool calls run concurrently, unbounded by default. Use `SetMaxConcurrency(n)` to cap
+them, or `SetMaxConcurrency(1)` to run them one at a time. Each side effect still fires at most once,
+and the conversation lists tool results in the order the model asked for them.
 
-`dst_test.go` / `saga_dst_test.go` prove at-most-once side effects and crash-safe compensation by
-adversarial fault injection: a store that fails the Kth persist, swept over every write point and
-across hundreds of randomized multi-crash schedules. It is strong, in-process, and non-vacuous (the
-halt path is asserted), but it is **randomized + exhaustive-over-write-points testing, not a
-machine-checked formal proof** over all interleavings. It models a crash as "a persist fails and the
-run unwinds," matching process death around durable writes (the actual promise), not arbitrary
-mid-instruction faults.
+**Journal order is completion order.** Within a turn, parallel tool results are recorded in the
+order they finish, not the order they were started. This does not affect the model, which matches
+results by tool-call id. It matters only if you read the journal and expect dispatch order, or if a
+saga's parallel steps depend on each other (they should not: parallel steps must be independent).
 
-## Crash recovery: mechanism ships, durability of the re-driver is deployment policy
+## Sub-agent depth
 
-`agent.Recover(ctx, store, resume)` is the crash-recovery re-driver ([debugging](guides/debugging.md)): it
-enumerates runs via the optional `Lister` capability, skips the ones marked complete (the
-`run:complete` terminal marker checked by `agent.IsComplete`), and re-drives the rest, treating a
-durable pause (`*PendingApproval` / `*Interrupted` / `*Sleeping` / `*Awaiting` / `*ResumeHalt`) as a successful
-recovery. The bounds:
+**Very deep sub-agent trees use a lot of memory.** Every level of a tree stays in memory while its
+children run, so memory grows with depth. Trees up to a few hundred levels deep complete and keep
+every guarantee; trees thousands of levels deep can need gigabytes. Real agent trees are usually a
+handful of levels deep, so this rarely matters. If you need very deep chains, restructure them as a
+loop of sequential runs instead of nested sub-agents.
 
-- **`resume` is deployment policy, not a mechanism the SDK supplies.** Only the deployment knows a
-  run's original input and which `Waker` / clock to bind onto the context. `Recover` re-drives every
-  incomplete run it enumerates; a `resume` that does not own a given run should no-op it (a sub-agent
-  run is driven by its parent).
-- **Leases coordinate drivers; they are not the safety mechanism.** When the store implements
-  `agent.Leaser` (`MemStore` in-process, `store/postgres` across processes through a leases table
-  and a DB-clock upsert; `store/sqlite` does not), `Recover` drives each run under a per-run lease
-  and skips runs another holder leases, and a primary driver wraps `Run` in `agent.Lease` so it and
-  the recoverers do not drive the same run at once. The lease is renewed while the run drives and
-  expires after `WithLeaseTTL` (default 30s) if its holder dies, so another node takes over. The
-  bound: a lease saves redundant work and gives takeover, but it cannot exclude a holder that stalls
-  past its TTL (a long GC pause, a suspended VM, a partition from the store) and wakes still
-  driving. At-most-once does not rest on the lease: the exclusive attempt claim written before each
-  side effect is what stops a second driver, which halts with `*ResumeHalt` instead of re-firing.
-  Without a `Leaser`, `Recover` and `Lease` drive unconditionally, which is still safe for the same
-  reason.
-- **`MemStore` and `MemWaker` are local-dev defaults, not durable.** `MemStore` implements `Lister`,
-  so `Recover` works against it in-process, but its journal is lost on process exit, so there is
-  nothing to recover after a real crash. `MemWaker`'s timer set is likewise in-memory: `Sleep`
-  journals the wake time durably, but a restarted deployment must rebuild pending wakes by scanning
-  runs or hand the trigger to an external scheduler. Durable crash recovery needs a durable store
-  (SQLite/Postgres) and a durable or externally-driven waker.
-- **The `run:complete` marker is visible in `RenderMermaid`.** It is a `StepValue` named
-  `run:complete`, so a completed run's diagram now ends with a `step: run:complete` node before
-  `done`. This is intentional (it is a real journaled step), not a rendering bug.
+## Models and providers
 
-## Audit tamper-evidence needs external anchoring
+**Three adapters.** bide ships native Anthropic and Gemini adapters, and one OpenAI-compatible adapter
+that also covers Groq, DeepSeek, Ollama, Mistral and other compatible endpoints through `WithBaseURL`.
+There is no native Bedrock adapter yet. See [Models](guides/models.md).
 
-The `audit` package (hash-chain `Head`, RFC 6962 Merkle `Root`/inclusion/consistency, signed
-`TreeHead`) gives integrity unconditionally and **tamper-evidence only when the head/root is anchored
-out-of-band** (signed with a key the app tier doesn't fully control, and/or published to a separate
-trust domain). A chain or tree in a database an attacker fully controls can be rewritten and
-re-hashed; the guarantee is "you committed the root elsewhere, so divergence is provable." By design,
-but a real deployment requirement.
+**Images are the only non-text input.** Messages carry text, reasoning, tool calls, tool results and
+images. Audio and video input are not supported, and models produce text, reasoning and tool calls,
+not images.
+
+**Structured output varies by provider.** `RunTypedNative[T]` uses the provider's JSON-schema mode,
+which the OpenAI-compatible and Gemini adapters support and the Anthropic adapter does not. With
+Anthropic, use `RunTyped`, which works with every provider.
+
+**Gemini schemas are a subset.** Gemini accepts only part of JSON Schema. A tool or typed output that
+uses a map, an `interface{}` or `json.RawMessage` field, or a recursive type fails with `ErrConfig`
+instead of being silently changed.
+
+**Gemini does not receive earlier reasoning text.** Gemini does not accept thought text as input, so
+the adapter sends back only the thought signatures Gemini needs to continue a thinking turn.
+
+**Replay simplifies a reply's layout.** A replayed model turn has the same content as the original,
+but it is laid out as reasoning blocks, then the text, then the tool calls. Text that appeared
+between two reasoning blocks is moved after them, and separate text blocks are joined into one.
+
+**MCP tools are untyped.** Tools discovered from an MCP server at runtime use raw JSON arguments,
+because Go cannot create a struct type from a schema at runtime.
+
+**Settings apply to the whole agent.** `WithSampling`, `WithSystemPrompt` and `WithMaxTurns` are set on
+the agent. There is no per-`Run` override yet; use a separate agent for different settings.
+
+## Approval and quorum
+
+**Approvers are a fixed, named set.** An m-of-n approval gate names its approvers up front. There are
+no weighted votes, role rules (such as "at least one from risk"), delegated approval, or deadline for
+a gate that never reaches k. bide checks signatures against the keys you provide; linking a key to a
+person is your identity provider's job. Keep old public keys after a rotation so old evidence still
+verifies. See [Approval](guides/approval.md#scope).
+
+**Flows cannot hold an approval gate yet.** A `plan` flow with an approval node fails to build with
+`ErrConfig` rather than running the node unapproved. Put the gate on an agent tool instead.
+
+**A quorum needs short, fixed answers.** Voters must pick from a set of labels, so a quorum does not
+apply to free-form output. Agreement lowers the risk of one model's mistake, but models can be wrong
+together. A tie is never agreement. See [Quorum](guides/quorum.md#what-a-quorum-does-not-do).
+
+## Flows
+
+**Fan-in has fixed arity.** `Join2` and `Join3` combine two or three branches; there is no join over
+a variable number of branches.
+
+**Some wiring is rejected.** `Build` refuses wiring the runtime cannot run as declared, and names the
+step: for example, a step fed by several producers without a join, or nested loops.
+
+**`Model` nodes expect JSON.** A `Model` node decodes the reply as JSON into its output type, so
+prompt the model for JSON. See [Flows](guides/flows.md#limits).
+
+## Audit and proofs
+
+**Tamper evidence needs an anchor outside your database.** Hash chains, Merkle roots and signed tree
+heads always detect accidental corruption. They detect deliberate tampering only when the root is
+also committed somewhere an attacker cannot rewrite: signed with a key the application cannot use
+freely, or published to a separate system. Someone who fully controls the database can rewrite and
+re-hash everything in it. See [Audit](guides/audit.md#security-model-read-this-first).
+
+**Some leaves are not salted.** Journal and event leaves carry a random salt, so the hashes in a proof
+cannot be matched against guessed neighbouring records. Key-set leaves are not salted, because an absence proof names its
+neighbouring keys by design, and neither are anchor-log leaves, which hold signed tree heads meant to
+be public.
+
+## Stores
+
+**SQLite is for one machine.** SQLite allows one writer at a time; a writer waits up to 30 seconds
+for the lock before failing. It does not support leases, so it cannot coordinate several processes
+driving the same runs. Use Postgres for more than one node.
