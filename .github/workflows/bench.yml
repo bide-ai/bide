@@ -1,0 +1,78 @@
+name: Benchmark
+
+# Runs cmd/bench on a standard GitHub-hosted runner, so the published numbers come from an
+# environment anyone can reproduce: Actions -> Benchmark -> Run workflow. Each scenario runs
+# several times and the job summary reports the median of each metric, plus the raw output.
+on:
+  workflow_dispatch:
+    inputs:
+      repeats:
+        description: Runs per scenario (the median is reported)
+        default: '7'
+
+permissions:
+  contents: read
+
+jobs:
+  bench:
+    name: cmd/bench (ubuntu-latest)
+    runs-on: ubuntu-latest
+    env:
+      GOWORK: 'off'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27'
+      - name: Build
+        run: go build -o bench ./cmd/bench
+      - name: Run scenarios
+        shell: bash
+        run: |
+          set -euo pipefail
+          n="${{ inputs.repeats }}"
+          run() { # name, args...
+            local name=$1; shift
+            for i in $(seq 1 "$n"); do ./bench "$@" > "out-$name-$i.txt"; done
+          }
+          run overhead -runs 5000 -concurrency 256
+          run fanout -runs 20000 -concurrency 5000 -latency 50ms
+      - name: Summarize (medians)
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Durations are printed with units (µs, ms, s); convert to ms before taking medians.
+          ms() { awk '{ v=$1; if (v ~ /µs$/) { sub(/µs$/,"",v); v=v/1000 } else if (v ~ /ms$/) { sub(/ms$/,"",v) } else if (v ~ /s$/) { sub(/s$/,"",v); v=v*1000 } print v }'; }
+          median() { sort -g | awk '{ a[NR]=$1 } END { if (NR%2) print a[(NR+1)/2]; else print (a[NR/2]+a[NR/2+1])/2 }'; }
+          field() { grep -ho "$2=[^ ]*" out-$1-*.txt | cut -d= -f2; }
+          {
+            echo "## cmd/bench on ubuntu-latest"
+            echo
+            echo "Runner: $(nproc) vCPU, $(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2 | sed 's/^ //'), $(go version | cut -d' ' -f3-4). ${{ inputs.repeats }} runs per scenario; each figure is the median."
+            echo
+            echo "| Scenario | Wall-clock | Runs/s | Journal records/s | p50 | p99 | Peak goroutines | Heap delta |"
+            echo "|---|---|---|---|---|---|---|---|"
+            for s in overhead fanout; do
+              wall=$(field $s elapsed | ms | median)
+              rps=$(grep -ho 'throughput=[0-9]*' out-$s-*.txt | cut -d= -f2 | median)
+              recs=$(grep -ho '([0-9]* journal records/s' out-$s-*.txt | tr -dc '0-9\n' | median)
+              p50=$(field $s p50 | ms | median)
+              p99=$(field $s p99 | ms | median)
+              gor=$(field $s goroutines | median)
+              heap=$(grep -ho 'heap alloc delta=[0-9.]* MB' out-$s-*.txt | grep -o '[0-9.]*' | median)
+              echo "| $s | ${wall} ms | ${rps} | ${recs} | ${p50} ms | ${p99} ms | ${gor} | ${heap} MB |"
+            done
+            echo
+            echo "overhead: \`-runs 5000 -concurrency 256\`; fanout: \`-runs 20000 -concurrency 5000 -latency 50ms\`."
+            echo
+            echo "<details><summary>Raw output</summary>"
+            echo
+            echo '```'
+            for f in out-*.txt; do echo "== $f"; cat "$f"; done
+            echo '```'
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bench-output
+          path: out-*.txt
