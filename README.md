@@ -675,7 +675,7 @@ case errors.Is(err, agent.ErrStorage):      // durable-store I/O
 ```
 
 Categories: `ErrConfig`, `ErrModel`, `ErrTool`, `ErrStorage`, `ErrProtocol`, `ErrBudget`.
-Conditions (each wraps a category): `ErrUnknownTool`, `ErrToolArgs`, `ErrNoRecordedOutput`, `ErrIncompleteResponse`,
+Conditions (each wraps a category): `ErrUnknownTool`, `ErrToolArgs`, `ErrToolReinvoked`, `ErrNoRecordedOutput`, `ErrIncompleteResponse`,
 `ErrTruncatedToolArgs`, `ErrBudgetExceeded`, `ErrMaxTurns` (both wrap `ErrBudget`). Every error the
 toolkit returns (including from the model, MCP, store, and governance adapters) carries a category,
 so `errors.Is` is reliable across the whole surface.
@@ -719,7 +719,9 @@ trace crosses the sub-agent boundary automatically (a gap in ADK / AgenticGoKit 
 
 Tool middleware runs *inside* the durable step, so a short-circuit (a `ToolCache` hit) or a
 policy denial is journaled like any tool result; resume replays it and never re-runs the
-middleware or the tool. Write your own with the `agent.ToolMiddleware` signature:
+middleware or the tool. `ToolRetry` and `ToolCache` act only on tools whose `Safety` allows it
+(retry-safe, and `ReadOnly`, respectively), and the agent runs a tool that is not retry-safe at
+most once per call whatever the middleware does. Write your own with the `agent.ToolMiddleware` signature:
 
 ```go
 // Deny a tool by policy: the tool never executes; the model sees the error and reacts.

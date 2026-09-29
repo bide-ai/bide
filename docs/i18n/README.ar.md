@@ -521,7 +521,7 @@ case errors.Is(err, agent.ErrStorage):      // durable-store I/O
 ```
 
 الأصناف: `ErrConfig`، `ErrModel`، `ErrTool`، `ErrStorage`، `ErrProtocol`، `ErrBudget`.
-الشروط (يلفّ كلٌّ منها صنفًا): `ErrUnknownTool`، `ErrToolArgs`، `ErrNoRecordedOutput`، `ErrIncompleteResponse`،
+الشروط (يلفّ كلٌّ منها صنفًا): `ErrUnknownTool`، `ErrToolArgs`، `ErrToolReinvoked`، `ErrNoRecordedOutput`، `ErrIncompleteResponse`،
 `ErrTruncatedToolArgs`، `ErrBudgetExceeded`، `ErrMaxTurns` (يلفّان كلاهما `ErrBudget`). كل خطأ تُرجِعه
 العُدّة (بما فيه من النموذج وMCP والمخزن ومُحوّلات الحوكمة) يحمل صنفًا، فـ `errors.Is` موثوق عبر السطح كله.
 

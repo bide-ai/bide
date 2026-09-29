@@ -363,7 +363,7 @@ case errors.Is(err, agent.ErrStorage):      // durable-store I/O
 }
 ```
 
-श्रेणियाँ: `ErrConfig`, `ErrModel`, `ErrTool`, `ErrStorage`, `ErrProtocol`, `ErrBudget`। स्थितियाँ (हर एक एक श्रेणी को लपेटती है): `ErrUnknownTool`, `ErrToolArgs`, `ErrNoRecordedOutput`, `ErrIncompleteResponse`, `ErrTruncatedToolArgs`, `ErrBudgetExceeded`, `ErrMaxTurns` (दोनों `ErrBudget` को लपेटती हैं)। टूलकिट जो भी त्रुटि लौटाता है (मॉडल, MCP, स्टोर, और शासन अडैप्टरों से सहित) एक श्रेणी वहन करती है, इसलिए `errors.Is` पूरी सतह पर विश्वसनीय है।
+श्रेणियाँ: `ErrConfig`, `ErrModel`, `ErrTool`, `ErrStorage`, `ErrProtocol`, `ErrBudget`। स्थितियाँ (हर एक एक श्रेणी को लपेटती है): `ErrUnknownTool`, `ErrToolArgs`, `ErrToolReinvoked`, `ErrNoRecordedOutput`, `ErrIncompleteResponse`, `ErrTruncatedToolArgs`, `ErrBudgetExceeded`, `ErrMaxTurns` (दोनों `ErrBudget` को लपेटती हैं)। टूलकिट जो भी त्रुटि लौटाता है (मॉडल, MCP, स्टोर, और शासन अडैप्टरों से सहित) एक श्रेणी वहन करती है, इसलिए `errors.Is` पूरी सतह पर विश्वसनीय है।
 
 और **नियंत्रण-प्रवाह संकेत** एक श्रेणी से समृद्धतर हैं, इसलिए वे ठोस प्रकार बने रहते हैं जिन्हें `errors.As` मिलाता है: `*PendingApproval` (अनुमोदन आवश्यक), `*ResumeHalt` (पुनरारंभ असुरक्षित), `*SagaAborted` (वापस लुढ़काया गया)। एक रुका या ठहरा हुआ रन एक "विफलता" श्रेणी नहीं है; `RunID` / `ToolUseID` / क्षतिपूर्ति विवरण के लिए struct का निरीक्षण करें। रद्दीकरण सामान्य `context.Canceled` / `context.DeadlineExceeded` के रूप में उभरता है।
 

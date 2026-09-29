@@ -18,7 +18,7 @@ func TestToolCache_ShortCircuitsRepeat(t *testing.T) {
 		return json.RawMessage(`{"n":` + string(tu.Args) + `}`), nil
 	})
 	h := ToolCache()(base)
-	ctx := context.Background()
+	ctx := agent.WithToolSafety(context.Background(), agent.Safety{ReadOnly: true}) // ToolCache caches only ReadOnly tools
 
 	call := func(args string) string {
 		res, err := h(ctx, agent.ToolUse{Name: "f", Args: json.RawMessage(args)})
@@ -49,7 +49,7 @@ func TestToolCache_DoesNotCacheErrors(t *testing.T) {
 		return nil, errors.New("boom")
 	})
 	h := ToolCache()(base)
-	ctx := context.Background()
+	ctx := agent.WithToolSafety(context.Background(), agent.Safety{ReadOnly: true}) // ToolCache caches only ReadOnly tools
 
 	for i := 0; i < 3; i++ {
 		if _, err := h(ctx, agent.ToolUse{Name: "f", Args: json.RawMessage(`{}`)}); err == nil {
