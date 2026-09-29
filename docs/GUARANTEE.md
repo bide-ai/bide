@@ -29,7 +29,9 @@ after a lost response, a redelivered job, a sub-agent or session turn re-entered
 4. **Re-invoking a finished run** → the run's completion marker is journaled → it returns the
    recorded final answer without asking the model for another turn. Correct. This matters because
    the protection is keyed by the tool call the model emitted: a fresh model turn could request the
-   same side effect again under a new call id, which the journal would treat as new work.
+   same side effect again under a new call id, which the journal would treat as new work. A crash
+   after the final answer was journaled but before the marker was written is handled the same way:
+   the resumed run finishes with the recorded answer and writes the marker, without a model call.
 
 Case 3 is the whole moat. The precise phrasing is **at-most-once**: the side effect fires zero or
 one times, never twice. It is **not** "exactly-once": an unresumable crash in that window can

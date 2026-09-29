@@ -191,7 +191,9 @@ n, err := agent.Recover(ctx, store, func(ctx context.Context, runID string) erro
 the loop records one terminal `StepValue` named `run:complete` (it renders as
 `step: run:complete` in the Mermaid graph above). `IsComplete` checks for it, and `Recover`
 skips any run that has it. The marker is appended only at the terminal and is at-most-once by
-name, so a replayed run never adds a second one and no earlier record's index shifts.
+name, so a replayed run never adds a second one and no earlier record's index shifts. A run
+that crashed after journaling its final answer but before the marker is not skipped; re-driving
+it writes the marker from the recorded answer without calling the model.
 
 **Pauses re-surface; they are not errors.** A re-driven run that is still waiting returns one
 of the durable pause signals (`*PendingApproval`, `*Interrupted`, `*Sleeping`, `*Awaiting`,
