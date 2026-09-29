@@ -164,7 +164,9 @@ resumes the whole tree precisely (completed sub-agents reused, the in-flight one
 `ResumeHalt` / `PendingApproval` / `SagaAborted` from deep in the tree propagating up). A
 `ResumeHalt` or `PendingApproval` raised inside a sub-agent surfaces from the parent's own `Run`
 (match it with `errors.As`); resolve it against the **sub-run's** ID and tool-use ID carried on the
-signal, then re-run the parent to resume down the path.
+signal (`RunID`, `ToolUseID`), then re-run the run named by `RootRunID`, the top-level run, with
+the root agent to resume down the path. The same holds for `Interrupted`, `Awaiting`, and
+`Sleeping` from a sub-agent; a `Sleep` in a sub-agent schedules its wake for the root run.
 
 ### Clearing a `ResumeHalt`: `ResolveHalt`
 
@@ -179,7 +181,7 @@ var halt *agent.ResumeHalt
 if errors.As(err, &halt) {
     // operator confirmed the charge did go through
     _ = agent.ResolveHalt(ctx, store, halt.RunID, halt.ToolUseID, "charged (confirmed)", false)
-    msg, err = a.Run(ctx, halt.RunID, input) // resumes past the halt
+    msg, err = a.Run(ctx, halt.RootRunID, input) // resumes past the halt
 }
 ```
 

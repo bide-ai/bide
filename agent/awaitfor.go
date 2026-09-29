@@ -82,5 +82,5 @@ func AwaitFor[T any](ctx context.Context, name string, d time.Duration) (T, bool
 	if w := wakerFrom(ctx); w != nil {
 		w.Schedule(runID, timeout, deadline)
 	}
-	return zero, false, &Awaiting{RunID: runID, Name: name}
+	return zero, false, &Awaiting{RunID: runID, RootRunID: rootRunID(ctx, runID), Name: name}
 }

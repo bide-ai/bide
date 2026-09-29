@@ -163,7 +163,7 @@ func Step[T any](ctx context.Context, d Durable, runID, name string, fn func(con
 	rec, err := d.Do(ctx, runID, name, func(ctx context.Context) (Record, error) {
 		if !claimed {
 			// Attempted before, with no recorded result: the outcome is unknown.
-			return Record{}, &ResumeHalt{RunID: runID, ToolUseID: name, AttemptedAt: attemptedAt}
+			return Record{}, &ResumeHalt{RunID: runID, RootRunID: runID, ToolUseID: name, AttemptedAt: attemptedAt}
 		}
 		v, err := fn(ctx)
 		if err != nil {
@@ -221,13 +221,14 @@ func Approve(ctx context.Context, d Durable, runID, toolUseID string, approved b
 //
 // It is idempotent: the first result for a (runID, toolUseID) wins, so calling it twice or
 // racing a concurrent driver injects the record at most once. runID and toolUseID come
-// straight off the ResumeHalt. After resolving, re-run the agent with the same runID:
+// straight off the ResumeHalt. After resolving, re-run the agent with the halt's RootRunID,
+// which is the same run unless the halt came from inside a sub-agent:
 //
 //	var halt *agent.ResumeHalt
 //	if errors.As(err, &halt) {
 //	    // operator confirms out of band that the charge did go through
 //	    _ = agent.ResolveHalt(ctx, store, halt.RunID, halt.ToolUseID, "charged (operator-confirmed)", false)
-//	    msg, err = a.Run(ctx, halt.RunID, input) // resumes past the halt
+//	    msg, err = a.Run(ctx, halt.RootRunID, input) // resumes past the halt
 //	}
 //
 // Two options refine this. WithMinHaltAge(d) refuses to resolve a halt younger than d
@@ -355,7 +356,11 @@ func attemptTime(ctx context.Context, store Durable, runID, toolUseID string) (t
 // PendingApproval is returned by Agent.Run when a tool requiring human approval has no
 // recorded decision yet. The run has paused durably; call Approve then re-run to resume.
 type PendingApproval struct {
-	RunID     string
+	RunID string
+	// RootRunID is the run to re-invoke to continue: the top-level run. It differs from RunID
+	// when the signal comes from inside a sub-agent, whose journal is RunID. Record the answer
+	// against RunID (Resume, Approve, ResolveHalt, Signal), then run RootRunID with the root agent.
+	RootRunID string
 	ToolUseID string
 	ToolName  string
 	Args      json.RawMessage
@@ -376,7 +381,11 @@ func (e *PendingApproval) Error() string {
 // ClaimAttempt), for example a second node that took over after this node's lease lapsed. That
 // driver owns the side effect; once it records the result, re-running proceeds normally.
 type ResumeHalt struct {
-	RunID     string
+	RunID string
+	// RootRunID is the run to re-invoke to continue: the top-level run. It differs from RunID
+	// when the signal comes from inside a sub-agent, whose journal is RunID. Record the answer
+	// against RunID (Resume, Approve, ResolveHalt, Signal), then run RootRunID with the root agent.
+	RootRunID string
 	ToolUseID string
 	ToolName  string
 	// AttemptedAt is when the effect was attempted (the attempt marker's timestamp), zero
