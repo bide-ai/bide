@@ -58,6 +58,10 @@ tools, err := mcp.Tools(ctx, session, mcp.TrustAnnotations())
 | `idempotentHint == true` | `Safety{Idempotent: true}` | safe to retry |
 | destructive or **unannotated** | `Safety{}` (the zero value) | halts the run on an unknown-outcome resume rather than risk firing a side effect twice |
 
+A trusted server that changes a tool's annotations cannot make a call already in flight
+retry-safe after the fact: a call that fired as a side effect and lost its result halts the
+resume even if the server now labels the tool read-only.
+
 `ReadOnly` wins if both hints are set: a read-only tool has no side effect to double-fire.
 An absent `Annotations` block is treated as the destructive default per the MCP spec, which
 is the conservative choice for resume. Whether to trust the annotations at all is the only

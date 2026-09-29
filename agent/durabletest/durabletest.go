@@ -16,6 +16,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"testing"
@@ -33,6 +34,7 @@ func Run(t *testing.T, open func(t *testing.T) agent.Durable) {
 	t.Run("ReturnedRecordIsACopy", func(t *testing.T) { returnedCopy(t, open(t)) })
 	t.Run("Salted", func(t *testing.T) { salted(t, open(t)) })
 	t.Run("RecordsAfterCancel", func(t *testing.T) { recordsAfterCancel(t, open(t)) })
+	t.Run("StepAttemptSafety", func(t *testing.T) { stepAttemptSafety(t, open(t)) })
 }
 
 // Case is one record the suite round-trips. Want, when set, is the Result the store must hand
@@ -241,5 +243,36 @@ func recordsAfterCancel(t *testing.T, d agent.Durable) {
 	hist, err := d.History(context.Background(), id)
 	if err != nil || len(hist) != 1 || string(hist[0].Result) != `"fired"` {
 		t.Fatalf("History = %+v, %v; want the one recorded outcome", hist, err)
+	}
+}
+
+// stepAttemptSafety: agent.Step goes by the safety a step was attempted under. A retry-safe step
+// looks for an earlier attempt marker by calling Do with a step that fails, so the store must
+// record nothing for it; and a step attempted as a side effect halts on resume even when it is
+// declared retry-safe by then.
+func stepAttemptSafety(t *testing.T, d agent.Durable) {
+	ctx := context.Background()
+	id := runID(t)
+	safe := agent.StepSafety(agent.Safety{ReadOnly: true})
+	if _, err := agent.Step(ctx, d, id, "read", func(context.Context) (int, error) { return 1, nil }, safe); err != nil {
+		t.Fatal(err)
+	}
+	hist, err := d.History(ctx, id)
+	if err != nil || len(hist) != 1 || hist[0].Name != "read" {
+		t.Fatalf("History after one retry-safe step = %v, %v; want only the step's record", hist, err)
+	}
+
+	ran := 0
+	write := func(context.Context) (int, error) { ran++; return 0, fmt.Errorf("lost the answer") }
+	if _, err := agent.Step(ctx, d, id, "write", write); err == nil {
+		t.Fatal("the failing step succeeded")
+	}
+	_, err = agent.Step(ctx, d, id, "write", write, safe)
+	var halt *agent.ResumeHalt
+	if !errors.As(err, &halt) || halt.ToolUseID != "write" || halt.AttemptedAt.IsZero() {
+		t.Fatalf("resume err = %v, want *ResumeHalt for write with its attempt time", err)
+	}
+	if ran != 1 {
+		t.Fatalf("the side-effecting step ran %d times, want 1", ran)
 	}
 }

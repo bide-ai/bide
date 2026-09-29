@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -78,5 +79,28 @@ func TestStep_RelabelledRetrySafeStillHalts(t *testing.T) {
 	}
 	if ran != 1 {
 		t.Fatalf("the step ran %d times, want 1", ran)
+	}
+}
+
+// markerLookupFails is a store whose lookups of step attempt markers fail.
+type markerLookupFails struct{ *MemStore }
+
+func (s markerLookupFails) Do(ctx context.Context, runID, name string, fn func(context.Context) (Record, error)) (Record, error) {
+	if strings.HasPrefix(name, "attempt:step:") {
+		return Record{}, fmt.Errorf("disk on fire (%w)", ErrStorage)
+	}
+	return s.MemStore.Do(ctx, runID, name, fn)
+}
+
+// If the store cannot say whether a retry-safe step was attempted before as a side effect, the
+// step does not run: running it could be the second run of that side effect.
+func TestStep_MarkerLookupFailureStopsTheStep(t *testing.T) {
+	ran := 0
+	_, err := Step(context.Background(), markerLookupFails{NewMemStore()}, "r1", "read", func(context.Context) (int, error) {
+		ran++
+		return 1, nil
+	}, StepSafety(Safety{ReadOnly: true}))
+	if !errors.Is(err, ErrStorage) || ran != 0 {
+		t.Fatalf("err = %v after %d runs, want the store's error and no run", err, ran)
 	}
 }

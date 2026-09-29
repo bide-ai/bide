@@ -420,10 +420,16 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 		return final, usageTotals{}, 0, nil
 	}
 
-	// Resume safety gate: a non-retriable tool that we ATTEMPTED (recorded a start marker
-	// for) but has no recorded result crashed mid-side-effect → unknown outcome → halt.
-	// A tool that was never attempted never ran its side effect, so it's safe to run now
-	// (not a halt); one awaiting approval re-surfaces as PendingApproval in the loop.
+	// Resume safety gate: a tool call that we ATTEMPTED (recorded a start marker for) but has
+	// no recorded result crashed mid-side-effect → unknown outcome → halt. A tool that was never
+	// attempted never ran its side effect, so it's safe to run now (not a halt); one awaiting
+	// approval re-surfaces as PendingApproval in the loop.
+	//
+	// The marker is the call's recorded safety: one is written only for a call that was not
+	// retry-safe when it fired, in this version and every earlier one. So the halt goes by the
+	// marker, not by the tool's safety now: a tool relabelled retry-safe since (a trusted MCP
+	// server's new annotations, a code change), or no longer registered at all, still halts,
+	// rather than run a side effect a second time.
 	for id := range attempted {
 		if done[id] {
 			continue
@@ -432,13 +438,11 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 		if !ok {
 			continue
 		}
-		if t, ok := a.tools[name]; ok && !t.Safety().retriableOnResume() {
-			var attemptedAt time.Time
-			if ms := attemptedAtMs[id]; ms != 0 {
-				attemptedAt = time.UnixMilli(ms)
-			}
-			return Message{}, usageTotals{}, 0, &ResumeHalt{RunID: runID, RootRunID: rootRunID(ctx, runID), ToolUseID: id, ToolName: name, AttemptedAt: attemptedAt}
+		var attemptedAt time.Time
+		if ms := attemptedAtMs[id]; ms != 0 {
+			attemptedAt = time.UnixMilli(ms)
 		}
+		return Message{}, usageTotals{}, 0, &ResumeHalt{RunID: runID, RootRunID: rootRunID(ctx, runID), ToolUseID: id, ToolName: name, AttemptedAt: attemptedAt}
 	}
 
 	var totalUsage usageTotals // accumulated token usage across live model turns

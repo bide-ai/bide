@@ -60,6 +60,12 @@ rather than pretending it knows.
 - **The tool must declare its safety accurately.** `ReadOnly` re-runs freely, `Idempotent`
   retries, and only an unmarked non-idempotent write gets the attempt-marker/halt treatment.
   Mislabel a card-charge as idempotent and you have opted out of the protection.
+  A call keeps the safety it fired under: the attempt marker is written only for a call that
+  was not retry-safe when it fired, so a resume halts on a marker without a result whatever the
+  tool is declared as by then (relabelled retry-safe, or no longer registered at all), and a
+  `Step` attempted as a side effect halts even if the resuming code passes a retry-safe
+  `StepSafety`. The marker needs no new field for this, so markers written by earlier versions
+  are read the same way: every one of them means "not retry-safe, halt".
 - **It is at-most-once for the side effect, not "the agent always finishes."** A crash can still
   leave a run halted and needing intervention. The promise is *safety* (no double-fire, no lost
   completed work), not *liveness* (guaranteed completion without help).
