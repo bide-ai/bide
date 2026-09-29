@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
+	"time"
 )
 
 type strictInner struct {
@@ -222,5 +223,80 @@ func TestRunTyped_RewrittenResultIsReadStrictly(t *testing.T) {
 		if got, err := RunTyped[typedAnswer](context.Background(), a, "r", "go"); !errors.Is(err, ErrProtocol) {
 			t.Errorf("result %s: RunTyped = %+v, %v; want ErrProtocol", result, got, err)
 		}
+	}
+}
+
+type nullArgs struct {
+	S    string            `json:"s"`
+	L    []int             `json:"l"`
+	M    map[string]int    `json:"m"`
+	In   strictInner       `json:"in"`
+	At   time.Time         `json:"at"`
+	Any  any               `json:"any"`
+	Raw  json.RawMessage   `json:"raw"`
+	Opt  string            `json:"opt,omitempty"`
+	Ptr  *string           `json:"ptr"`
+	Tags map[string]string `json:"tags,omitzero"`
+}
+
+// null for a required field whose schema does not admit null (a string, slice, map, struct, or
+// time.Time: For gives each a type without null) is rejected like a missing field: encoding/json
+// read it as the zero value, a value the model never sent. A required field whose schema admits
+// any value (any, json.RawMessage) takes null, and so does an optional one (a pointer, omitempty,
+// omitzero), which OpenAI strict mode sends as null.
+func TestFunc_NullForARequiredFieldIsRejected(t *testing.T) {
+	tool := Func("t", "nulls", Safety{ReadOnly: true}, func(context.Context, nullArgs) (string, error) { return "ok", nil })
+	base := map[string]string{
+		"s": `"x"`, "l": `[1]`, "m": `{"a":1}`, "in": `{"id":"i"}`, "at": `"2026-01-02T03:04:05Z"`,
+		"any": `1`, "raw": `{}`, "opt": `"o"`, "ptr": `"p"`, "tags": `{}`,
+	}
+	doc := func(null string) json.RawMessage {
+		b := []byte("{")
+		first := true
+		for k, v := range base {
+			if !first {
+				b = append(b, ',')
+			}
+			first = false
+			if k == null {
+				v = "null"
+			}
+			b = append(b, `"`+k+`":`+v...)
+		}
+		return append(b, '}')
+	}
+	if _, err := tool.Call(context.Background(), doc("")); err != nil {
+		t.Fatalf("Call with no null = %v", err)
+	}
+	for _, f := range []string{"s", "l", "m", "in", "at"} {
+		if _, err := tool.Call(context.Background(), doc(f)); !errors.Is(err, ErrToolArgs) {
+			t.Errorf("null for required %q: Call = %v, want ErrToolArgs", f, err)
+		}
+	}
+	for _, f := range []string{"any", "raw", "opt", "ptr", "tags"} {
+		if _, err := tool.Call(context.Background(), doc(f)); err != nil {
+			t.Errorf("null for %q: Call = %v, want no error", f, err)
+		}
+	}
+	// Nested: null for a required field of a nested struct.
+	strict := Func("t2", "strict", Safety{ReadOnly: true}, func(context.Context, strictArgs) (string, error) { return "ok", nil })
+	if _, err := strict.Call(context.Background(), json.RawMessage(`{"region":"eu","name":"a","inner":{"id":null}}`)); !errors.Is(err, ErrToolArgs) {
+		t.Errorf("null for a nested required field: Call = %v, want ErrToolArgs", err)
+	}
+}
+
+// SubAgent and final_answer reject null for a required field the same way.
+func TestNullForARequiredField_SubAgentAndFinalAnswer(t *testing.T) {
+	sub := SubAgent("helper", "helps", New(NewScriptedModel(TextTurn("done")), NewMemStore()))
+	if _, err := sub.Call(context.Background(), json.RawMessage(`{"task":null}`)); !errors.Is(err, ErrToolArgs) {
+		t.Errorf("SubAgent.Call({\"task\":null}) = %v, want ErrToolArgs", err)
+	}
+	m := &countModel{inner: NewScriptedModel(
+		ToolTurn("f1", finalAnswerTool, `{"name":null}`),
+		ToolTurn("f2", finalAnswerTool, `{"name":"ok"}`),
+	)}
+	got, err := RunTyped[typedAnswer](context.Background(), New(m, NewMemStore()), "r", "go")
+	if err != nil || got.Name != "ok" || m.calls.Load() != 2 {
+		t.Errorf("RunTyped = %+v, %v after %d model calls; want the corrected answer after 2", got, err, m.calls.Load())
 	}
 }
