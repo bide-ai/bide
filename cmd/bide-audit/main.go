@@ -603,7 +603,14 @@ func verifyQuorum(args []string) {
 		os.Exit(1)
 	}
 
-	// (4) the quorum threshold.
+	// (4) the quorum threshold, and a single most-supported decision: in a tie for the most votes
+	// every tied decision may reach k, but none has more support than another.
+	for _, d := range decs {
+		if d != winner && counts[d] == best {
+			fmt.Printf("FAIL: no single decision has the most votes: %q and %q each have %d\n", winner, d, best)
+			os.Exit(1)
+		}
+	}
 	if rec.VotesFor < *k {
 		fmt.Printf("FAIL: quorum not met: votes_for=%d < k=%d for decision %q\n", rec.VotesFor, *k, rec.Decision)
 		os.Exit(1)

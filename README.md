@@ -81,9 +81,10 @@ Most unknowns never reach a person: an idempotency key lets the provider dedupe 
 for systems without one (email, internal services) a reconciler resolves the step from the record
 it left (`agent.ResolveHalt`). The human is the floor, not the default.
 
-The rule underneath it: when an action moves money, touches a record, or happens under audit and
-the outcome is genuinely unknowable, stopping is the correct result. A pause a human or a
-reconciler can clear beats a double-charge no one can take back.
+> [!IMPORTANT]
+> **The rule underneath it:** when an action moves money, touches a record, or happens under audit
+> and the outcome is genuinely unknowable, stopping is the correct result. A pause a human or a
+> reconciler can clear beats a double-charge no one can take back.
 
 ### 2 · Durable execution as a library, not a cluster
 
