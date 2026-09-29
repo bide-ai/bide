@@ -31,12 +31,31 @@ Streaming is **first-class**: `Stream` is the only method an adapter must implem
 `agent.Generate` is a convenience drain built on top (stream and assemble in one call), the
 opposite of frameworks that make blocking generation primary and bolt streaming on later. An
 implementer maps a provider's wire format onto normalized `Event` values (`TextDelta`,
-`ReasoningDelta`, `ToolCallDelta`, `Finish`) pushed onto a channel wrapped by
-`agent.NewStream`.
+`ReasoningDelta`, `ToolCallDelta`, `Finish`).
 
-**Reference adapters.** `model/anthropic.New(apiKey, opts...)` and
-`model/openai.New(apiKey, opts...)` both return a `*Model` satisfying the port, with options
-like `WithModel`, `WithMaxTokens`, and `WithPromptCache` (Anthropic).
+An adapter that reads a response as it arrives builds its stream with `agent.NewStreamFunc`:
+
+```go
+return agent.NewStreamFunc(ctx, func(send func(agent.Emit) bool) {
+	defer resp.Body.Close()
+	for /* each event read from resp.Body */ {
+		if !send(agent.Emit{Event: ev}) {
+			return // the consumer stopped reading, or ctx was cancelled
+		}
+	}
+}), nil
+```
+
+`send` returns false once the consumer breaks out of `Stream.Events`, calls `Stream.Close`, or
+cancels ctx, so the adapter stops and releases the response. After cancellation no further
+event is delivered and the stream ends with the context's error, so a response cut short is
+never read as a complete one. `agent.NewStream` wraps a channel the caller fills itself, which
+suits a response buffered up front. `model/modeltest.Run` checks an HTTP adapter against this
+contract.
+
+**Reference adapters.** `model/anthropic`, `model/openai`, and `model/gemini` each provide
+`New(apiKey, opts...)` returning a `*Model` that satisfies the port, with options like
+`WithModel`, `WithMaxTokens`, and `WithPromptCache` (Anthropic).
 
 ## `Durable`: the crash-safe substrate
 

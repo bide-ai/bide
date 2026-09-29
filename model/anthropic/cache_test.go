@@ -3,8 +3,6 @@ package anthropic
 import (
 	"context"
 	"encoding/json"
-	"io"
-	"strings"
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
@@ -84,9 +82,7 @@ event: message_stop
 data: {"type":"message_stop"}
 
 `
-	ch := make(chan agent.Emit)
-	go streamSSE(io.NopCloser(strings.NewReader(stream)), ch)
-	_, u, err := agent.NewStream(ch).Message()
+	_, u, err := testStream(stream).Message()
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -93,9 +93,7 @@ func (m *Model) Stream(ctx context.Context, req agent.Request) (*agent.Stream, e
 		return nil, agent.ClassifyHTTPError("gemini", resp)
 	}
 
-	ch := make(chan agent.Emit)
-	go streamSSE(resp.Body, ch)
-	return agent.NewStream(ch), nil
+	return agent.NewStreamFunc(ctx, func(send func(agent.Emit) bool) { streamSSE(resp.Body, send) }), nil
 }
 
 // buildRequest translates the provider-neutral request into a Gemini generateContent
@@ -312,8 +310,7 @@ func mapFinishReason(reason string, sawToolCall bool) string {
 // Gemini omits one (it does not send tool-call ids). Usage arrives on the usageMetadata
 // of (typically) the final chunk; the terminal Finish carries it, matching the
 // anthropic/openai contract that the agent core's finalize() reads.
-func streamSSE(body io.ReadCloser, ch chan<- agent.Emit) {
-	defer close(ch)
+func streamSSE(body io.ReadCloser, send func(agent.Emit) bool) {
 	defer body.Close()
 
 	sc := agent.NewSSEScanner(body)
@@ -329,13 +326,15 @@ func streamSSE(body io.ReadCloser, ch chan<- agent.Emit) {
 		}
 		var c chunk
 		if err := json.Unmarshal([]byte(data), &c); err != nil {
-			ch <- agent.Emit{Err: fmt.Errorf("gemini sse decode: %w (%w)", err, agent.ErrModel)}
+			send(agent.Emit{Err: fmt.Errorf("gemini sse decode: %w (%w)", err, agent.ErrModel)})
 			return
 		}
 		for _, cand := range c.Candidates {
 			for _, part := range cand.Content.Parts {
 				if part.Text != "" {
-					ch <- agent.Emit{Event: agent.TextDelta{Text: part.Text}}
+					if !send(agent.Emit{Event: agent.TextDelta{Text: part.Text}}) {
+						return
+					}
 				}
 				if fc := part.FunctionCall; fc != nil {
 					sawToolCall = true
@@ -345,9 +344,11 @@ func streamSSE(body io.ReadCloser, ch chan<- agent.Emit) {
 					}
 					// Synthesize a stable id: Gemini does not send tool-call ids.
 					id := "call_" + fc.Name + strconv.Itoa(toolIndex)
-					ch <- agent.Emit{Event: agent.ToolCallDelta{
+					if !send(agent.Emit{Event: agent.ToolCallDelta{
 						Index: toolIndex, ID: id, Name: fc.Name, ArgsFragment: args,
-					}}
+					}}) {
+						return
+					}
 					toolIndex++
 				}
 			}
@@ -362,13 +363,13 @@ func streamSSE(body io.ReadCloser, ch chan<- agent.Emit) {
 		}
 	}
 	if err := sc.Err(); err != nil {
-		ch <- agent.Emit{Err: err}
+		send(agent.Emit{Err: err})
 		return
 	}
 	// One terminal Finish carries the reason and the usage totals accumulated from the
 	// stream's usageMetadata, mirroring how anthropic/openai signal the end of a turn.
-	ch <- agent.Emit{Event: agent.Finish{
+	send(agent.Emit{Event: agent.Finish{
 		Reason: mapFinishReason(lastReason, sawToolCall),
 		Usage:  agent.Usage{InputTokens: in, OutputTokens: out, CacheReadTokens: cacheRead},
-	}}
+	}})
 }

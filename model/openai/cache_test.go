@@ -1,12 +1,6 @@
 package openai
 
-import (
-	"io"
-	"strings"
-	"testing"
-
-	"github.com/bide-ai/bide/agent"
-)
+import "testing"
 
 // OpenAI caches prefixes automatically; its cached_tokens surface in agent.Usage.
 func TestStreamSSE_ReportsCachedTokens(t *testing.T) {
@@ -17,9 +11,7 @@ data: {"choices":[],"usage":{"prompt_tokens":1000,"completion_tokens":5,"prompt_
 data: [DONE]
 
 `
-	ch := make(chan agent.Emit)
-	go streamSSE(io.NopCloser(strings.NewReader(stream)), ch)
-	_, u, err := agent.NewStream(ch).Message()
+	_, u, err := testStream(stream).Message()
 	if err != nil {
 		t.Fatal(err)
 	}
