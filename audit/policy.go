@@ -62,10 +62,10 @@ func ProvePolicy(ctx context.Context, store agent.Durable, runID, digest string,
 }
 
 // policyUsedKeyPrefix namespaces the absence key set to policy digests exercised by governed
-// actions, so it does not collide with other KeyFuncs (e.g. ToolUseKey) over the same run.
+// actions, so it does not collide with other key sets (e.g. ToolUseKeys) over the same run.
 const policyUsedKeyPrefix = "policy_used:"
 
-// PolicyUsedKey is a KeyFunc (see ProveAbsent / ProveAbsentBundle) over governed-action leaves:
+// PolicyUsedKey is the KeyFunc of PolicyUsedKeys (see ProveAbsent / ProveAbsentBundle) over governed-action leaves:
 // a completed tool call whose result carries a policy_digest, as govern.AttestedEventTool
 // records. It keys by that digest, so the absence machinery commits the set of policies actually
 // exercised in a run. Proving a digest ABSENT under this KeyFunc shows that no governed action
@@ -91,14 +91,14 @@ func PolicyUsedKey(r agent.Record) (string, bool) {
 }
 
 // PolicyUsedKeyFor is the absence key for a specific policy digest: pass it to ProveAbsent /
-// ProveAbsentBundle with PolicyUsedKey to prove no governed action ran under that policy.
+// ProveAbsentBundle with PolicyUsedKeys to prove no governed action ran under that policy.
 func PolicyUsedKeyFor(digest string) string { return policyUsedKeyPrefix + digest }
 
 // PoliciesUsed returns the sorted, distinct policy digests exercised by governed actions in the
 // run. An auditor compares this against the approved set; for any disallowed digest it then
-// obtains an absence proof (ProveAbsentBundle with PolicyUsedKey) showing no action ran under it.
+// obtains an absence proof (ProveAbsentBundle with PolicyUsedKeys) showing no action ran under it.
 func PoliciesUsed(records []agent.Record) []string {
-	keys := absenceKeys(records, PolicyUsedKey)
+	keys := absenceKeys(records, PolicyUsedKeys)
 	out := make([]string, len(keys))
 	for i, k := range keys {
 		out[i] = strings.TrimPrefix(k, policyUsedKeyPrefix)

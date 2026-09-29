@@ -75,13 +75,14 @@ func (l *EventLog) Prove(index int) (Inclusion, error) {
 	return Inclusion{Index: index, Size: len(l.leaves), Path: auditPath(index, l.leaves)}, nil
 }
 
-// TreeHead returns a commitment to the events added so far at the given timestamp — the
-// EventLog analogue of NewTreeHead over the journal. Sign it with SignTreeHead and verify
-// with SignedTreeHead.Verify; the signature binds Root ↔ Size ↔ Timestamp, so an event
-// trail gets the same anchored root↔size↔time guarantee a journal STH gives. Inclusion
-// proofs (Prove / VerifyEventInclusion) check against the resulting Root; Size counts events.
-func (l *EventLog) TreeHead(timestamp int64) TreeHead {
-	return TreeHead{Size: len(l.leaves), Root: merkleRoot(l.leaves), Timestamp: timestamp}
+// TreeHead returns a commitment to runID's events added so far at the given timestamp, the
+// EventLog analogue of NewTreeHead over the journal. Its Kind is TreeEvents, so a signed event
+// head never verifies as a journal head. Sign it with SignTreeHead and verify with
+// SignedTreeHead.Verify; the signature binds kind, run, root, size, and timestamp, so an event
+// trail gets the same anchored guarantee a journal STH gives. Inclusion proofs (Prove /
+// VerifyEventInclusion) check against the resulting Root; Size counts events.
+func (l *EventLog) TreeHead(runID string, timestamp int64) TreeHead {
+	return TreeHead{Kind: TreeEvents, RunID: runID, Size: len(l.leaves), Root: merkleRoot(l.leaves), Timestamp: timestamp}
 }
 
 // ProveConsistency proves the first `first` events are an append-only PREFIX of the current

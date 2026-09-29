@@ -15,7 +15,7 @@ import (
 // what each STH commits to, only that entries differ and are append-only).
 func mkSTH(t *testing.T, priv ed25519.PrivateKey, size int) audit.SignedTreeHead {
 	t.Helper()
-	th := audit.TreeHead{Size: size, Root: bytes.Repeat([]byte{byte(size)}, 32), Timestamp: int64(size)}
+	th := audit.TreeHead{Kind: audit.TreeJournal, RunID: "run", Size: size, Root: bytes.Repeat([]byte{byte(size)}, 32), Timestamp: int64(size)}
 	return audit.SignTreeHead(th, priv)
 }
 

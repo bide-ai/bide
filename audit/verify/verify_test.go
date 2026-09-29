@@ -106,13 +106,32 @@ func TestVerify_TreeHeadMatchesAudit(t *testing.T) {
 	if !sth.Verify(pub) {
 		t.Fatal("audit STH did not self-verify")
 	}
-	if !verify.TreeHead(sth.Root, sth.Size, sth.Timestamp, sth.Signature, pub) {
+	if !verify.TreeHead(sth.Kind, sth.RunID, sth.Size, sth.Root, sth.Timestamp, nil, sth.Signature, pub) {
 		t.Fatal("standalone verifier rejected a valid SDK-signed STH")
 	}
-	if verify.TreeHead(sth.Root, sth.Size+1, sth.Timestamp, sth.Signature, pub) {
-		t.Fatal("standalone verifier accepted an STH with a tampered size")
+	for name, ok := range map[string]bool{
+		"size":      verify.TreeHead(sth.Kind, sth.RunID, sth.Size+1, sth.Root, sth.Timestamp, nil, sth.Signature, pub),
+		"timestamp": verify.TreeHead(sth.Kind, sth.RunID, sth.Size, sth.Root, sth.Timestamp+1, nil, sth.Signature, pub),
+		"kind":      verify.TreeHead(audit.TreePolicyUsed, sth.RunID, sth.Size, sth.Root, sth.Timestamp, nil, sth.Signature, pub),
+		"run id":    verify.TreeHead(sth.Kind, "other", sth.Size, sth.Root, sth.Timestamp, nil, sth.Signature, pub),
+		"journal":   verify.TreeHead(sth.Kind, sth.RunID, sth.Size, sth.Root, sth.Timestamp, &verify.TreeRef{}, sth.Signature, pub),
+	} {
+		if ok {
+			t.Fatalf("standalone verifier accepted an STH with a tampered %s", name)
+		}
 	}
-	if verify.TreeHead(sth.Root, sth.Size, sth.Timestamp+1, sth.Signature, pub) {
-		t.Fatal("standalone verifier accepted an STH with a tampered timestamp")
+
+	// An absence key-set head, which names its source journal, verifies the same way.
+	recs, _ := store.History(ctx, runID)
+	abs, err := audit.SignAbsenceRoot(recs, audit.ToolUseKeys, th, priv, 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := &verify.TreeRef{Size: abs.Journal.Size, Root: abs.Journal.Root}
+	if !verify.TreeHead(abs.Kind, abs.RunID, abs.Size, abs.Root, abs.Timestamp, ref, abs.Signature, pub) {
+		t.Fatal("standalone verifier rejected a valid SDK-signed absence head")
+	}
+	if verify.TreeHead(abs.Kind, abs.RunID, abs.Size, abs.Root, abs.Timestamp, &verify.TreeRef{Size: ref.Size + 1, Root: ref.Root}, abs.Signature, pub) {
+		t.Fatal("standalone verifier accepted an absence head with a tampered journal size")
 	}
 }

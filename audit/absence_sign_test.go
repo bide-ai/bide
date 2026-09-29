@@ -28,25 +28,35 @@ func TestSignAbsenceRoot_OneCall(t *testing.T) {
 		t.Fatalf("keygen: %v", err)
 	}
 
+	journal, err := NewTreeHead(ctx, store, runID, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
 	// One call to commit and sign the policy-used key set.
-	sth := SignAbsenceRoot(recs, PolicyUsedKey, priv, 1)
+	sth, err := SignAbsenceRoot(recs, PolicyUsedKeys, journal, priv, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	// Prove a disallowed policy is absent against that signed root.
-	b, err := ProveAbsentBundle(recs, PolicyUsedKey, PolicyUsedKeyFor("dddd"), runID, sth)
+	b, err := ProveAbsentBundle(recs, PolicyUsedKeys, PolicyUsedKeyFor("dddd"), sth)
 	if err != nil {
 		t.Fatalf("ProveAbsentBundle: %v", err)
 	}
-	if ok, err := b.Verify(pub); err != nil || !ok {
+	if ok, err := b.Verify(pub, PolicyUsedKeys); err != nil || !ok {
 		t.Fatalf("absence bundle did not verify: ok=%v err=%v", ok, err)
 	}
 
 	// ToolUseKeyFor mirrors PolicyUsedKeyFor: prove a tool id that never happened is absent.
-	sthTool := SignAbsenceRoot(recs, ToolUseKey, priv, 1)
-	bt, err := ProveAbsentBundle(recs, ToolUseKey, ToolUseKeyFor("nope"), runID, sthTool)
+	sthTool, err := SignAbsenceRoot(recs, ToolUseKeys, journal, priv, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bt, err := ProveAbsentBundle(recs, ToolUseKeys, ToolUseKeyFor("nope"), sthTool)
 	if err != nil {
 		t.Fatalf("ProveAbsentBundle (tool): %v", err)
 	}
-	if ok, err := bt.Verify(pub); err != nil || !ok {
+	if ok, err := bt.Verify(pub, ToolUseKeys); err != nil || !ok {
 		t.Fatalf("tool absence bundle did not verify: ok=%v err=%v", ok, err)
 	}
 }

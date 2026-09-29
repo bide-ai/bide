@@ -79,7 +79,7 @@ func TestPersistJournal_RoundTripsAndIsIdempotent(t *testing.T) {
 
 	// The trail stands on its own: anchor and prove from the EventStore alone (journal gone).
 	pub, priv, _ := ed25519.GenerateKey(nil)
-	sth := audit.SignTreeHead(fromStore.TreeHead(1000), priv)
+	sth := audit.SignTreeHead(fromStore.TreeHead("run", 1000), priv)
 	proof, _ := fromStore.Prove(0)
 	evs, _ := agent.ReplayEvents(ctx, jStore, "run") // the disclosed event (held by the verifier)
 	ok, _ := audit.VerifyEventInclusion(sth.Root, evs[0], proof)

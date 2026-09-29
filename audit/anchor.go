@@ -51,8 +51,12 @@ func NewMemAnchorLog() *MemAnchorLog { return &MemAnchorLog{} }
 var _ Anchor = (*MemAnchorLog)(nil)
 
 // Publish appends an STH for runID at the next sequence. Append-only: entries are never
-// modified or removed.
+// modified or removed. It refuses a head that commits to a different run than runID, so an
+// entry's RunID is always the run its signed head names.
 func (l *MemAnchorLog) Publish(_ context.Context, runID string, sth SignedTreeHead) error {
+	if sth.RunID != runID {
+		return fmt.Errorf("audit: anchor: tree head is for run %q, not %q", sth.RunID, runID)
+	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.entries = append(l.entries, AnchorEntry{Seq: len(l.entries), RunID: runID, STH: sth})
@@ -138,6 +142,9 @@ func VerifyAnchorInclusion(root []byte, entry AnchorEntry, proof Inclusion) (boo
 }
 
 func canonicalAnchorEntry(e AnchorEntry) ([]byte, error) {
+	if err := checkUTF8(e); err != nil {
+		return nil, fmt.Errorf("audit: canonicalize anchor entry: %w", err)
+	}
 	b, err := json.Marshal(e)
 	if err != nil {
 		return nil, fmt.Errorf("audit: canonicalize anchor entry: %w", err)

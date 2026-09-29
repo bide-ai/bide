@@ -7,17 +7,40 @@ import (
 )
 
 // ToolUseKeyFor is the absence key for a tool-use id: pass it to ProveAbsent / ProveAbsentBundle
-// with ToolUseKey to prove no tool call with that id happened in the run. It mirrors
-// PolicyUsedKeyFor for the ToolUseKey key set.
-func ToolUseKeyFor(toolUseID string) string { return "tooluse:" + toolUseID }
+// with ToolUseKeys to prove no tool call with that id happened in the run. It mirrors
+// PolicyUsedKeyFor for the PolicyUsedKeys key set.
+func ToolUseKeyFor(toolUseID string) string { return toolUseKeyPrefix + toolUseID }
 
-// SignAbsenceRoot commits and signs the run's absence key set under keyFn in one call: it builds a
-// TreeHead over AbsenceRoot(records, keyFn) and signs it. Absence proofs verify against this
-// separate commitment (not the journal STH), so this is the one-step producer for it. Anchor the
-// result like any STH; a verifier holding the journal recomputes AbsenceRoot to confirm the STH
-// commits to this run's key set before trusting an absence proof against it.
-func SignAbsenceRoot(records []agent.Record, keyFn KeyFunc, priv ed25519.PrivateKey, timestamp int64) SignedTreeHead {
-	keys := absenceKeys(records, keyFn)
-	th := TreeHead{Size: len(keys), Root: merkleRoot(keyLeaves(keys)), Timestamp: timestamp}
-	return SignTreeHead(th, priv)
+// NewAbsenceTreeHead builds the key-set tree head for set over a run's journal. journal is the
+// run's journal tree head (NewTreeHead) and records the run's journal: the first journal.Size
+// records must hash to journal.Root. The head commits to set.Kind, the run, the key set projected
+// from exactly those records, and the journal tree itself, so it is bound to one run's history.
+func NewAbsenceTreeHead(records []agent.Record, set KeySet, journal TreeHead, timestamp int64) (TreeHead, error) {
+	if err := set.check(); err != nil {
+		return TreeHead{}, err
+	}
+	recs, err := journalPrefix(journal.RunID, records, journal)
+	if err != nil {
+		return TreeHead{}, err
+	}
+	keys := absenceKeys(recs, set)
+	return TreeHead{
+		Kind:      set.Kind,
+		RunID:     journal.RunID,
+		Size:      len(keys),
+		Root:      merkleRoot(keyLeaves(keys)),
+		Timestamp: timestamp,
+		Journal:   &TreeRef{Size: journal.Size, Root: append([]byte(nil), journal.Root...)},
+	}, nil
+}
+
+// SignAbsenceRoot commits and signs a run's key set in one call: NewAbsenceTreeHead, then
+// SignTreeHead. Absence proofs verify against this separate commitment (never the journal STH).
+// Anchor the result like any STH.
+func SignAbsenceRoot(records []agent.Record, set KeySet, journal TreeHead, priv ed25519.PrivateKey, timestamp int64) (SignedTreeHead, error) {
+	th, err := NewAbsenceTreeHead(records, set, journal, timestamp)
+	if err != nil {
+		return SignedTreeHead{}, err
+	}
+	return SignTreeHead(th, priv), nil
 }

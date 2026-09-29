@@ -20,6 +20,12 @@ const (
 	KindTool          = "tool"           // the call's result: the action, or the denial the model received
 )
 
+// Other evidence kinds.
+const (
+	KindStep  = "step"  // a durable step's recorded value
+	KindGrant = "grant" // an anchored signed grant leaf
+)
+
 // ProveApproval builds a ProofBundle proving one approver-decision record, named step, is
 // committed in the tree sth signs. Decision records are named per decision (see
 // agent.ApprovalTally.Records and agent.DecisionCheck.Step), so the step name identifies one

@@ -72,9 +72,11 @@ func auditPath(m int, leaves [][]byte) [][]byte {
 	return append(auditPath(m-k, leaves[k:]), merkleRoot(leaves[:k]))
 }
 
-// verifyPath runs the RFC 6962 §2.1.1 inclusion-proof verification algorithm.
+// verifyPath runs the RFC 6962 §2.1.1 inclusion-proof verification algorithm. A negative index is
+// rejected (the bit arithmetic below would otherwise accept index -1 as the last leaf), and with it
+// a negative size, which index >= size then covers.
 func verifyPath(root, leaf []byte, index, size int, path [][]byte) bool {
-	if index >= size {
+	if index < 0 || index >= size {
 		return false
 	}
 	fn, sn := index, size-1
@@ -98,10 +100,19 @@ func verifyPath(root, leaf []byte, index, size int, path [][]byte) bool {
 	return sn == 0 && bytes.Equal(r, root)
 }
 
+// canonicalRecord is the leaf encoding of one journal record: its JSON, refused for a record with
+// invalid UTF-8 (see checkUTF8), whose JSON would collide with another record's.
+func canonicalRecord(r agent.Record) ([]byte, error) {
+	if err := checkUTF8(r); err != nil {
+		return nil, err
+	}
+	return json.Marshal(r)
+}
+
 func canonicalLeaves(recs []agent.Record) ([][]byte, error) {
 	leaves := make([][]byte, len(recs))
 	for i, r := range recs {
-		b, err := json.Marshal(r)
+		b, err := canonicalRecord(r)
 		if err != nil {
 			return nil, fmt.Errorf("audit: canonicalize record %d: %w", i, err)
 		}
@@ -152,7 +163,7 @@ func Prove(ctx context.Context, store agent.Durable, runID string, index int) (I
 // VerifyInclusion reports whether record is the leaf at proof.Index in a run of proof.Size
 // records committed by root — checked from record + proof alone, no other records needed.
 func VerifyInclusion(root []byte, record agent.Record, proof Inclusion) (bool, error) {
-	leaf, err := json.Marshal(record)
+	leaf, err := canonicalRecord(record)
 	if err != nil {
 		return false, fmt.Errorf("audit: canonicalize record: %w", err)
 	}

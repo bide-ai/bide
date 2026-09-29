@@ -73,18 +73,19 @@ func TestAttenuatingSubAgent_Default(t *testing.T) {
 
 	// The desk delegates to an execution sub-agent, narrowing the limit by 3 automatically.
 	sub := agent.New(answerModel{"done"}, store)
-	tool := AttenuatingSubAgent("exec", "execute within delegated authority", sub, store, narrowLimitBy(3))
+	tool := AttenuatingSubAgent("exec", "execute within delegated authority", sub, store, narrowLimitBy(3), ScopeRules{"limit": NumericAtMost})
+	parent := agent.New(agent.NewScriptedModel(agent.ToolTurn("c1", "exec", `{"task":"do the thing"}`), agent.TextTurn("ok")), store, tool)
 
 	ctx = agent.WithIdentity(ctx, agent.Identity{Actor: "desk-agent", OnBehalfOf: "desk", AuthorityRef: root.Digest()})
 	ctx = WithGrant(ctx, rootSG, signer)
 
-	if _, err := tool.Call(ctx, []byte(`{"task":"do the thing"}`)); err != nil {
-		t.Fatalf("delegation Call: %v", err)
+	if _, err := parent.Run(ctx, "p1", "go"); err != nil {
+		t.Fatalf("delegating run: %v", err)
 	}
 
-	// The child grant was minted and anchored under the sub-run ("sub/exec" since RunScope is unset
-	// in a direct call), attenuated and linked to the parent.
-	child := findGrant(t, store, "sub/exec")
+	// The child grant was minted and anchored under the call's own sub-run (parent run / tool-use
+	// id), attenuated and linked to the parent.
+	child := findGrant(t, store, "p1/c1")
 	if child.Grant.ParentRef != root.Digest() {
 		t.Fatalf("child parent_ref %q does not link to root %q", child.Grant.ParentRef, root.Digest())
 	}
@@ -96,7 +97,7 @@ func TestAttenuatingSubAgent_Default(t *testing.T) {
 	}
 
 	// The chain verifies: each hop signed, linked, and strictly narrowing.
-	ok, err := VerifyDelegationChain([]SignedGrant{rootSG, child}, opVerifier, AttenuatesNumericScope("limit"))
+	ok, err := VerifyDelegationChain([]SignedGrant{rootSG, child}, opVerifier, ScopeRules{"limit": NumericAtMost})
 	if err != nil || !ok {
 		t.Fatalf("delegation chain did not verify: ok=%v err=%v", ok, err)
 	}
@@ -107,7 +108,7 @@ func TestAttenuatingSubAgent_Default(t *testing.T) {
 func TestAttenuatingSubAgent_NoGrant(t *testing.T) {
 	store := agent.NewMemStore()
 	sub := agent.New(answerModel{"done"}, store)
-	tool := AttenuatingSubAgent("exec", "execute", sub, store, narrowLimitBy(3))
+	tool := AttenuatingSubAgent("exec", "execute", sub, store, narrowLimitBy(3), ScopeRules{"limit": NumericAtMost})
 
 	if _, err := tool.Call(context.Background(), []byte(`{"task":"go"}`)); err != nil {
 		t.Fatalf("plain delegation should work without a grant: %v", err)

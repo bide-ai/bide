@@ -5,7 +5,9 @@
 //   - the controller (audit.EarnedAuthority) is a durable, sequential control loop: earning is
 //     temporal and order-dependent, so it is not a convergent machine; it decides the current limit
 //     and re-issues a signed grant that is a CHILD of the root grant, so the earned limit provably
-//     never exceeds the root ceiling (VerifyDelegationChain);
+//     never exceeds the root ceiling (VerifyDelegationChain), and appends it to a ledger run whose
+//     last leaf is the only current grant, so a demotion revokes the higher grant at once
+//     (VerifyCurrentGrant against the ledger's latest signed head);
 //   - the enforcement is a convergent gsm invariant on the work machine (exposure <= limit), seeded
 //     with whatever limit the controller currently grants.
 //
@@ -18,6 +20,7 @@ import (
 	"crypto/rand"
 	"fmt"
 
+	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/audit"
 	"github.com/bide-ai/bide/govern"
 	gsm "github.com/blackwell-systems/gsm"
@@ -30,7 +33,7 @@ func main() {
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
 	signer := audit.Ed25519Signer{Priv: priv}
 	verifier := func(string) (audit.Verifier, bool) { return audit.Ed25519Verifier{Pub: pub}, true }
-	rootSG, err := audit.SignGrant(audit.Grant{ID: "root", Issuer: "corp", Subject: "desk", Scope: map[string]string{"limit": "10"}}, signer)
+	rootSG, err := audit.SignGrant(audit.Grant{ID: "root", Issuer: "corp", Subject: "desk", NotAfter: 1900000000, Scope: map[string]string{"limit": "10"}}, signer)
 	if err != nil {
 		panic(err)
 	}
@@ -39,14 +42,32 @@ func main() {
 	m, exposure, limit := buildWork()
 
 	// The controller: baseline 2, then 5, then 10 (the ceiling), promoting every 3 compliant actions.
-	ctrl, err := audit.NewEarnedAuthority([]int{2, 5, 10}, 3, rootSG, signer, "exec-agent")
+	// Each issued grant is appended to a ledger run; its last leaf is the current grant. The log
+	// operator signs the ledger's heads (anchor them in production) with its own key.
+	ledger := agent.NewMemStore()
+	const ledgerRun = "ledger/exec-agent"
+	logPub, logPriv, _ := ed25519.GenerateKey(rand.Reader)
+	ctrl, err := audit.NewEarnedAuthority(ctx, []int{2, 5, 10}, 3, rootSG, signer, "exec-agent", ledger, ledgerRun)
 	if err != nil {
 		panic(err)
 	}
 
+	// isCurrent checks a grant against the ledger's latest signed head, as an offline verifier does.
+	isCurrent := func(sg audit.SignedGrant) bool {
+		th, err := audit.NewTreeHead(ctx, ledger, ledgerRun, 1)
+		if err != nil {
+			panic(err)
+		}
+		proof, err := audit.ProveCurrentGrant(ctx, ledger, ledgerRun, audit.SignTreeHead(th, logPriv))
+		if err != nil {
+			panic(err)
+		}
+		ok, _ := audit.VerifyCurrentGrant(sg, proof, logPub)
+		return ok
+	}
 	verify := func() string {
-		ok, _ := audit.VerifyDelegationChain([]audit.SignedGrant{rootSG, ctrl.Grant()}, verifier, audit.AttenuatesNumericScope("limit"))
-		return fmt.Sprintf("earned grant limit %d verifies within the root ceiling(10): %v", ctrl.Limit(), ok)
+		ok, _ := audit.VerifyDelegationChain([]audit.SignedGrant{rootSG, ctrl.Grant()}, verifier, audit.EarnedRules)
+		return fmt.Sprintf("earned grant limit %d verifies within the root ceiling(10): %v, current in the ledger: %v", ctrl.Limit(), ok, isCurrent(ctrl.Grant()))
 	}
 	show := func(label string) {
 		reached := tryBuys(ctx, m, exposure, limit, ctrl.Limit(), 8)
@@ -60,25 +81,27 @@ func main() {
 	fmt.Println("  " + verify())
 
 	fmt.Println("\n== earning ==")
-	recordClean(ctrl, 3) // three clean actions
+	recordClean(ctx, ctrl, 3) // three clean actions
 	fmt.Printf("after 3 clean actions: promoted to limit %d\n", ctrl.Limit())
 	show("operating at earned limit")
 	fmt.Println("  " + verify())
 
-	recordClean(ctrl, 3) // three more
+	recordClean(ctx, ctrl, 3) // three more
 	fmt.Printf("\nafter 6 clean actions: promoted to the ceiling limit %d\n", ctrl.Limit())
 	show("operating at the ceiling")
 	fmt.Println("  " + verify())
 
-	recordClean(ctrl, 6) // cannot exceed the ceiling
+	recordClean(ctx, ctrl, 6) // cannot exceed the ceiling
 	fmt.Printf("\nafter 12 clean actions: still capped at the ceiling limit %d (cannot exceed root)\n", ctrl.Limit())
 
 	fmt.Println("\n== anomaly ==")
-	if changed, _ := ctrl.FlagAnomaly(); changed {
+	ceiling := ctrl.Grant()
+	if changed, _ := ctrl.FlagAnomaly(ctx); changed {
 		fmt.Printf("anomaly flagged: authority reset to baseline limit %d immediately (no gate)\n", ctrl.Limit())
 	}
 	show("operating after the reset")
 	fmt.Println("  " + verify())
+	fmt.Printf("  the superseded limit-10 grant is still current: %v (revoked by the ledger)\n", isCurrent(ceiling))
 
 	fmt.Println("\nAuthority was earned from the trail and bounded by proof: it only ever widened on a")
 	fmt.Println("clean streak, never past the root ceiling (each earned grant is a verified child of")
@@ -113,9 +136,9 @@ func tryBuys(ctx context.Context, m *gsm.Machine, exposure, limit gsm.Var, atLim
 	return gov.State().GetInt(exposure)
 }
 
-func recordClean(ctrl *audit.EarnedAuthority, n int) {
+func recordClean(ctx context.Context, ctrl *audit.EarnedAuthority, n int) {
 	for i := 0; i < n; i++ {
-		if _, err := ctrl.RecordCompliant(); err != nil {
+		if _, err := ctrl.RecordCompliant(ctx); err != nil {
 			panic(err)
 		}
 	}

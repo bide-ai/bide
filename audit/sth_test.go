@@ -54,6 +54,37 @@ func TestSTH_SignVerifyAndTamper(t *testing.T) {
 	if bad.Verify(pub) {
 		t.Fatal("STH verified after Root tampering")
 	}
+	bad = sth
+	bad.RunID = "other"
+	if bad.Verify(pub) {
+		t.Fatal("STH verified after RunID tampering")
+	}
+	for _, kind := range []string{TreeEvents, TreeToolUse, TreePolicyUsed, "", "absence/"} {
+		bad = sth
+		bad.Kind = kind
+		if bad.Verify(pub) {
+			t.Fatalf("STH verified after Kind tampering to %q", kind)
+		}
+	}
+	bad = sth
+	bad.Journal = &TreeRef{Size: 0, Root: merkleRoot(nil)}
+	if bad.Verify(pub) {
+		t.Fatal("STH verified after adding a Journal reference")
+	}
+	// A head that is malformed for its kind never verifies, even when signed: a journal head with a
+	// Journal reference, an absence head without one, a negative size, an unknown kind.
+	for name, th := range map[string]TreeHead{
+		"journal with a source journal": {Kind: TreeJournal, RunID: "run", Journal: &TreeRef{}},
+		"absence without one":           {Kind: TreeToolUse, RunID: "run"},
+		"negative size":                 {Kind: TreeJournal, RunID: "run", Size: -1},
+		"negative journal size":         {Kind: TreeToolUse, RunID: "run", Journal: &TreeRef{Size: -1}},
+		"unknown kind":                  {Kind: "ledger", RunID: "run"},
+		"bare absence prefix":           {Kind: "absence/", RunID: "run", Journal: &TreeRef{}},
+	} {
+		if SignTreeHead(th, priv).Verify(pub) {
+			t.Fatalf("a signed %s verified", name)
+		}
+	}
 	otherPub, _, _ := ed25519.GenerateKey(rand.Reader)
 	if sth.Verify(otherPub) {
 		t.Fatal("STH verified under the wrong key")

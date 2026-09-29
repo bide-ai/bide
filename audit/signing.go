@@ -4,6 +4,7 @@ import (
 	"crypto/ed25519"
 	"crypto/mldsa"
 	"encoding/binary"
+	"fmt"
 )
 
 // Signature-scheme agility for signed tree heads. The audit trail signs an STH's canonical
@@ -48,8 +49,13 @@ type Ed25519Signer struct {
 // Alg reports the signature scheme (AlgEd25519).
 func (Ed25519Signer) Alg() string { return AlgEd25519 }
 
-// Sign returns the Ed25519 signature over m.
-func (s Ed25519Signer) Sign(m []byte) ([]byte, error) { return ed25519.Sign(s.Priv, m), nil }
+// Sign returns the Ed25519 signature over m, or an error if the private key has the wrong length.
+func (s Ed25519Signer) Sign(m []byte) ([]byte, error) {
+	if len(s.Priv) != ed25519.PrivateKeySize {
+		return nil, fmt.Errorf("audit: ed25519 private key is %d bytes, want %d", len(s.Priv), ed25519.PrivateKeySize)
+	}
+	return ed25519.Sign(s.Priv, m), nil
+}
 
 // Ed25519Verifier verifies with an Ed25519 public key.
 type Ed25519Verifier struct {
@@ -59,8 +65,11 @@ type Ed25519Verifier struct {
 // Alg reports the signature scheme (AlgEd25519).
 func (Ed25519Verifier) Alg() string { return AlgEd25519 }
 
-// Verify reports whether sig is a valid Ed25519 signature over m.
-func (v Ed25519Verifier) Verify(m, sig []byte) bool { return ed25519.Verify(v.Pub, m, sig) }
+// Verify reports whether sig is a valid Ed25519 signature over m. A public key of the wrong length
+// verifies nothing (it never panics).
+func (v Ed25519Verifier) Verify(m, sig []byte) bool {
+	return len(v.Pub) == ed25519.PublicKeySize && ed25519.Verify(v.Pub, m, sig)
+}
 
 // ---- ML-DSA-65 (FIPS 204) ----
 
@@ -152,27 +161,4 @@ func decodeHybrid(sig []byte) (ed, mldsaSig []byte, ok bool) {
 		return nil, nil, false
 	}
 	return sig[4 : 4+n], sig[4+n:], true
-}
-
-// VerifyWith is the scheme-agnostic form of ProofBundle.Verify: it authenticates the STH under
-// any Verifier (ed25519, ML-DSA, or hybrid), then binds and checks the inclusion proof.
-func (b ProofBundle) VerifyWith(v Verifier) (bool, error) {
-	if !b.STH.VerifyWith(v) {
-		return false, nil
-	}
-	if b.Inclusion.Size != b.STH.Size {
-		return false, nil
-	}
-	return VerifyInclusion(b.STH.Root, b.Record, b.Inclusion)
-}
-
-// VerifyWith is the scheme-agnostic form of AbsenceBundle.Verify.
-func (b AbsenceBundle) VerifyWith(v Verifier) (bool, error) {
-	if !b.STH.VerifyWith(v) {
-		return false, nil
-	}
-	if b.Absence.Size != b.STH.Size {
-		return false, nil
-	}
-	return VerifyAbsence(b.STH.Root, b.Absence)
 }
