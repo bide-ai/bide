@@ -467,7 +467,8 @@ It's a package function, not a method (Go methods can't add type parameters). Th
 decoded from the *journaled* tool call, so it's **resume-safe**: a crash mid-run recovers the
 typed answer from the log on resume. The first `final_answer` call the tool accepts ends the run.
 Only if the model never makes one (it replies in plain JSON text instead) does `RunTyped` parse
-that text. `T` is meant to be a struct.
+the text of the run's final turn. `T` must be a JSON object (a struct, a pointer to one, or a map),
+since providers take tool arguments only as an object; any other `T` is `ErrConfig`.
 
 On OpenAI-compatible providers with strict structured outputs, `RunTypedNative[T]` uses the
 provider's native JSON-schema response format instead of the tool (schema enforced provider-side,

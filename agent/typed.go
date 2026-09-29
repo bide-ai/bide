@@ -21,14 +21,24 @@ const finalAnswerTool = "final_answer"
 // The value is decoded from the JOURNALED tool-call args, not captured live, so it is
 // resume-safe: on resume the answer is recovered from the log without re-running anything.
 // Only if the model never makes an accepted final_answer call (it answers in plain text
-// instead) does RunTyped parse its last text as T.
+// instead) does RunTyped parse the text of the run's final turn (the message Run returns) as T.
 //
-// T is intended to be a struct (the usual structured-output shape). Because Go methods
-// cannot add type parameters, this is a package function: agent.RunTyped[MyResult](ctx, a, id, in).
+// T must be a type whose schema is a JSON object (a struct, a pointer to one, or a map): the
+// answer is a tool call's arguments, which providers take only as an object. Any other T is an
+// ErrConfig before the run starts. Because Go methods cannot add type parameters, this is a
+// package function: agent.RunTyped[MyResult](ctx, a, id, in).
 func RunTyped[T any](ctx context.Context, a *Agent, runID, input string) (T, error) {
 	var zero T
-	if _, err := schema.For[T](); err != nil {
+	sch, err := schema.For[T]()
+	if err != nil {
 		return zero, fmt.Errorf("typed: schema for %T: %w (%w)", zero, err, ErrConfig)
+	}
+	var shape struct {
+		Type string `json:"type"`
+	}
+	_ = json.Unmarshal(sch, &shape) // For's own output, always a JSON object
+	if shape.Type != "object" {
+		return zero, fmt.Errorf("typed: %T is not a JSON object, and a final_answer tool call's arguments must be one (wrap it in a struct field): %w", zero, ErrConfig)
 	}
 	if _, taken := a.tools[finalAnswerTool]; taken {
 		return zero, fmt.Errorf("typed: agent already registers a %q tool, which RunTyped needs: %w", finalAnswerTool, ErrConfig)
@@ -49,13 +59,14 @@ func RunTyped[T any](ctx context.Context, a *Agent, runID, input string) (T, err
 	// for another turn (which could only repeat the answer, or run into the turn cap).
 	typed := a.cloneWith(respond, injectSystem(instruction))
 	typed.terminalTool = finalAnswerTool
-	if _, err := typed.Run(ctx, runID, input); err != nil {
+	final, err := typed.Run(ctx, runID, input)
+	if err != nil {
 		return zero, err
 	}
 
 	// The answer is the journaled args of the first final_answer call the tool accepted
 	// (resume-safe). A call the tool rejected (arguments that do not decode as T) is not an
-	// answer. Only if no call was accepted does the model's last text stand in for one.
+	// answer. Only if no call was accepted does the final turn's text stand in for one.
 	recs, err := a.store.History(ctx, runID)
 	if err != nil {
 		return zero, fmt.Errorf("typed: load history %s: %w (%w)", runID, err, ErrStorage)
@@ -68,7 +79,6 @@ func RunTyped[T any](ctx context.Context, a *Agent, runID, input string) (T, err
 	}
 	var raw json.RawMessage
 	answered := false
-	var lastText string
 	for _, r := range recs {
 		if r.Kind != StepModel || r.Message == nil {
 			continue
@@ -77,9 +87,6 @@ func RunTyped[T any](ctx context.Context, a *Agent, runID, input string) (T, err
 			if !answered && tu.Name == finalAnswerTool && accepted[tu.ID] {
 				raw, answered = tu.Args, true
 			}
-		}
-		if t := firstText(*r.Message); t != "" {
-			lastText = t
 		}
 	}
 	var out T
@@ -92,7 +99,8 @@ func RunTyped[T any](ctx context.Context, a *Agent, runID, input string) (T, err
 		}
 		return out, nil
 	}
-	raw = json.RawMessage(lastText)
+	// The final turn, not an earlier one: text written beside a tool call is not the answer.
+	raw = json.RawMessage(firstText(final))
 	if len(raw) == 0 {
 		// The model neither called the final_answer tool nor produced any text to parse: there is
 		// no answer to decode. Report that directly rather than surfacing an opaque JSON error on "".
