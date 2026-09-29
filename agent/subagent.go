@@ -68,7 +68,7 @@ func (t *subAgentTool) Call(ctx context.Context, args json.RawMessage) (json.Raw
 		msg Message
 		err error
 	}
-	ch := make(chan result, 1) // buffered so the child never blocks if we've already returned
+	ch := make(chan result, 1)
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
@@ -85,13 +85,12 @@ func (t *subAgentTool) Call(ctx context.Context, args json.RawMessage) (json.Raw
 		ch <- result{msg: m, err: e}
 	}()
 
-	select {
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	case out := <-ch:
-		if out.err != nil {
-			return nil, out.err // SagaAborted / ResumeHalt / PendingApproval propagate up
-		}
-		return json.Marshal(firstText(out.msg))
+	// Wait for the child even when ctx is cancelled, as the loop waits for any tool call: the
+	// child runs under the same ctx and stops as promptly as its own tools do, and returning
+	// before it had would leave the sub-run's work in flight after the parent's Run returned.
+	out := <-ch
+	if out.err != nil {
+		return nil, out.err // SagaAborted / ResumeHalt / PendingApproval / cancellation propagate up
 	}
+	return json.Marshal(firstText(out.msg))
 }
