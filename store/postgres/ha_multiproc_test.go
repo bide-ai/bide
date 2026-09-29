@@ -3,7 +3,7 @@
 package postgres
 
 // A multi-process high-availability harness: real OS processes (this test binary, re-executed as
-// workers) drive the same runs through agent.Recover against one Postgres database, while the
+// workers) drive the same runs through agent.RecoverLoop against one Postgres database, while the
 // test kills, stalls and restarts them. Each run takes a non-retriable Step and two non-retriable
 // tool calls, and every one of those side effects is an INSERT into bide_ha_effects, so the
 // database itself counts how often each effect fired. Workers report what they did (entered an
@@ -73,7 +73,7 @@ const haSchema = `
 		at     timestamptz NOT NULL DEFAULT clock_timestamp()
 	);`
 
-// haWorker is a worker process: it runs Recover in a loop until SIGTERM, driving the runs whose
+// haWorker is a worker process: it runs agent.RecoverLoop until SIGTERM, driving the runs whose
 // IDs carry its prefix, then checks that no lease renewer is left running.
 func haWorker(name string) int {
 	holder, prefix := os.Getenv(haHolderEnv), os.Getenv(haPrefixEnv)
@@ -95,17 +95,16 @@ func haWorker(name string) int {
 	defer s.Close()
 	w := &haDriver{s: s, worker: name, prefix: prefix}
 
-	for ctx.Err() == nil {
-		if _, err := agent.Recover(ctx, s, w.resume, agent.WithLeaseHolder(holder), agent.WithLeaseTTL(ttl)); err != nil && ctx.Err() == nil {
-			fmt.Fprintf(os.Stderr, "worker %s: recover: %v\n", name, err)
-		}
-		select {
-		case <-ctx.Done():
-		case <-time.After(50 * time.Millisecond):
-		}
+	// One run at a time, so a killed worker leaves exactly one call in flight for the test to follow.
+	err = agent.RecoverLoop(ctx, s, w.resume, agent.WithLeaseHolder(holder), agent.WithLeaseTTL(ttl),
+		agent.WithRecoverInterval(50*time.Millisecond), agent.WithRecoverConcurrency(1),
+		agent.WithRecoverErrors(func(err error) { fmt.Fprintf(os.Stderr, "worker %s: recover: %v\n", name, err) }))
+	if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+		fmt.Fprintf(os.Stderr, "worker %s: RecoverLoop: %v\n", name, err)
+		return haExitSetup
 	}
 
-	// Every Lease call has returned, so every renewer must have exited with it.
+	// RecoverLoop waited for its drives, so every renewer must have exited with them.
 	var stacks bytes.Buffer
 	_ = pprof.Lookup("goroutine").WriteTo(&stacks, 1)
 	if strings.Contains(stacks.String(), "driveWithRenew") {
@@ -130,6 +129,8 @@ func (w *haDriver) resume(ctx context.Context, runID string) error {
 	err := w.drive(ctx, runID)
 	var halt *agent.ResumeHalt
 	switch {
+	case errors.Is(context.Cause(ctx), agent.ErrLeaseLost):
+		w.event(runID, "", "lost")
 	case errors.As(err, &halt):
 		w.event(runID, halt.ToolUseID, "halt")
 	case err != nil:
@@ -574,5 +575,10 @@ func stallPastTTL(t *testing.T, effect string) {
 	if got := fx[victim.run][effect]; len(got) != 1 || got[0] != victim.worker {
 		t.Errorf("the stalled effect was fired by %v, want only by the stalled worker %s, which held its claim", got, victim.worker)
 	}
+	// On waking, the stalled worker's renewer finds its lease gone and ends the drive with
+	// ErrLeaseLost.
+	c.waitEvent("the stalled worker to end its drive with ErrLeaseLost", 10*time.Second, func(e haEvent) bool {
+		return e.run == victim.run && e.worker == victim.worker && e.phase == "lost"
+	})
 	c.checkRecoverSkipsCompleted(c.runs)
 }
