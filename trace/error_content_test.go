@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -145,6 +146,90 @@ func TestPanicMarksSpanFailed(t *testing.T) {
 					t.Errorf("capture=%q: span %q carries the panic value: %s", capture, s.Name(), x)
 				}
 			}
+		}
+	}
+}
+
+// credURL is a request URL carrying credentials in each place redactURLs covers.
+const credURL = "https://user:PASSWORD-1@api.example.com/v1/charge?api_key=SECRET-KEY-123#TOKEN-FRAGMENT"
+
+var credentials = []string{"PASSWORD-1", "SECRET-KEY-123", "TOKEN-FRAGMENT", "ACCT-998877"}
+
+// failPing is the "ping" tool failing the way an HTTP client does, its error quoting the request
+// URL, with an account number in the text as well.
+type failPing struct{ pingTool }
+
+func (failPing) Call(context.Context, json.RawMessage) (json.RawMessage, error) {
+	return nil, fmt.Errorf("account ACCT-998877: %w", &url.Error{Op: "Post", URL: credURL, Err: errors.New("connection refused")})
+}
+
+// With capture on, a span records an error's text, but never a credential the agent keeps out of
+// the journal: content capture is for what the model reads, and the agent journals a failed tool
+// call's text, and sends it to the model, with its URLs redacted and after the agent's
+// WithToolErrorRedactor. The tool span records exactly that text, and the chat and run spans,
+// which no agent redactor covers, record their error text with its URLs redacted.
+func TestCaptureOnRecordsNoCredentials(t *testing.T) {
+	t.Setenv(captureEnv, "true")
+	sr, tp := recorder()
+	tracer := tp.Tracer("t")
+	store := agent.NewMemStore()
+	a := Instrument(agent.New(instrModel{}, store, failPing{}), tracer).
+		WithToolErrorRedactor(func(_ string, err error) string {
+			return strings.ReplaceAll(err.Error(), "ACCT-998877", "ACCT-XXXX")
+		})
+	if _, err := a.Run(context.Background(), "r", "hi"); err != nil {
+		t.Fatal(err)
+	}
+	var journaled string
+	recs, _ := store.History(context.Background(), "r")
+	for _, r := range recs {
+		if r.Kind == agent.StepToolResult {
+			if err := json.Unmarshal(r.Result, &journaled); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if journaled == "" || !strings.Contains(journaled, "ACCT-XXXX") {
+		t.Fatalf("journaled tool error = %q, want the redactor's text", journaled)
+	}
+
+	mh := Model(tracer)(func(context.Context, agent.Request) (agent.Message, agent.Usage, error) {
+		return agent.Message{}, agent.Usage{}, fmt.Errorf("openai: %w", &url.Error{Op: "Post", URL: credURL, Err: agent.ErrModel})
+	})
+	_, _, _ = mh(context.Background(), agent.Request{})
+	th := Tool(tracer)(func(context.Context, agent.ToolUse) (json.RawMessage, error) {
+		return nil, &url.Error{Op: "Get", URL: credURL, Err: errors.New("timeout")}
+	})
+	_, _ = th(context.Background(), agent.ToolUse{ID: "t2", Name: "fetch"})
+	_, end := Invoke(context.Background(), tracer, "a")
+	end(&url.Error{Op: "Get", URL: credURL, Err: errors.New("timeout")})
+
+	seen := map[string]bool{}
+	for _, s := range sr.Ended() {
+		for _, x := range spanTexts(s) {
+			for _, c := range credentials {
+				if strings.Contains(x, c) {
+					t.Errorf("span %q carries credential %q: %s", s.Name(), c, x)
+				}
+			}
+		}
+		if s.Status().Code != codes.Error {
+			continue
+		}
+		seen[s.Name()] = true
+		if len(s.Events()) != 1 || s.Events()[0].Name != "exception" {
+			t.Errorf("span %q events = %v, want one exception event", s.Name(), s.Events())
+		}
+		if s.Name() == "execute_tool ping" && s.Status().Description != journaled {
+			t.Errorf("tool span status = %q, want the journaled text %q", s.Status().Description, journaled)
+		}
+		if !strings.Contains(s.Status().Description, "api.example.com/v1/charge?api_key=REDACTED") {
+			t.Errorf("span %q status = %q, want the error text with its URL redacted", s.Name(), s.Status().Description)
+		}
+	}
+	for _, n := range []string{"execute_tool ping", "chat", "execute_tool fetch", "invoke_agent a"} {
+		if !seen[n] {
+			t.Errorf("no failed span %q", n)
 		}
 	}
 }
