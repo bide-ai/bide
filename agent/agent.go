@@ -229,32 +229,29 @@ func (a *Agent) WithToolErrorRedactor(fn func(tool string, err error) string) *A
 
 // generate runs one model call through the middleware chain. usedIDs holds the tool-use IDs
 // already in the run's conversation; a turn that reuses one is rejected (see checkToolUseIDs).
-// The innermost handler checks the model's response, below middleware, so a retry middleware
+// The innermost handler checks each model response, below middleware, so a retry middleware
 // sees the fault, and the check still holds when a middleware trims the history it sends. The
 // response the chain returns is checked again, since a middleware can return one it did not get
-// from the handler it wraps (a hedge backup, a fallback, a cache), and that response is what the
-// run records. CheckModelResponse lets such a middleware run the check itself.
+// from the handler it wraps (a fallback, a cache), and that response is what the run records.
+//
+// The innermost handler sends every request of the call: it goes to the model WithModel set, if
+// any, and runs the ModelCallHooks middleware installed around it.
 func (a *Agent) generate(ctx context.Context, req Request, usedIDs map[string]bool) (Message, Usage, error) {
-	ctx = context.WithValue(ctx, usedToolUseIDsKey, usedIDs)
+	ctx = inModelCall(ctx)
 	h := ModelHandler(func(ctx context.Context, req Request) (Message, Usage, error) {
-		// When a token sink is installed (Agent.Stream), stream the model call and
-		// forward deltas as they arrive while still assembling the message for the
-		// journal; otherwise take the plain blocking drain. Middleware wraps this
-		// either way and sees the assembled message + usage — streaming stays below it.
-		var (
-			msg Message
-			u   Usage
-			err error
-		)
-		if sink := modelSink(ctx); sink != nil {
-			sink(attemptStart{}) // a new attempt: any deltas an earlier one streamed are discarded
-			s, serr := a.model.Stream(ctx, req)
-			if serr != nil {
-				return Message{}, Usage{}, serr
+		hooks := modelHooks(ctx)
+		for _, hk := range hooks {
+			if hk.Before != nil {
+				if err := hk.Before(ctx); err != nil {
+					return Message{}, Usage{}, err
+				}
 			}
-			msg, u, err = s.drain(sink)
-		} else {
-			msg, u, err = Generate(ctx, a.model, req)
+		}
+		msg, u, err := a.send(ctx, modelFor(ctx, a.model), req)
+		for _, hk := range hooks {
+			if hk.After != nil {
+				hk.After(u)
+			}
 		}
 		if err != nil {
 			return msg, u, err
@@ -277,20 +274,21 @@ func (a *Agent) generate(ctx context.Context, req Request, usedIDs map[string]bo
 	return msg, u, nil
 }
 
-// CheckModelResponse applies to m the checks the agent makes on each model response, for the
-// model call ctx belongs to: every tool call in m must carry a tool-use id that no earlier turn
-// of the run used and that m does not repeat. It returns an error wrapping ErrToolUseIDReused
-// when one does not, and nil when ctx is not a model call's context. The agent checks every
-// response its middleware chain returns, and fails the turn on an invalid one. A middleware that
-// returns a response it did not get from the handler it wraps (a hedge backup, a fallback model,
-// a cache) can call it first, to treat an invalid response as that source failing while another
-// can still answer.
-func CheckModelResponse(ctx context.Context, m Message) error {
-	used, ok := ctx.Value(usedToolUseIDsKey).(map[string]bool)
-	if !ok {
-		return nil
+// send makes one model request. When a token sink is installed (Agent.Stream), it streams the
+// call and forwards deltas as they arrive while still assembling the message for the journal;
+// otherwise it takes the plain blocking drain. Middleware wraps this either way and sees the
+// assembled message and usage: streaming stays below it.
+func (a *Agent) send(ctx context.Context, m Model, req Request) (Message, Usage, error) {
+	sink := modelSink(ctx)
+	if sink == nil {
+		return Generate(ctx, m, req)
 	}
-	return checkToolUseIDs(m, used)
+	sink(attemptStart{}) // a new attempt: any deltas an earlier one streamed are discarded
+	s, err := m.Stream(ctx, req)
+	if err != nil {
+		return Message{}, Usage{}, err
+	}
+	return s.drain(sink)
 }
 
 // Run drives the agent to completion for runID, resuming from the journal if steps
@@ -785,14 +783,13 @@ func (a *Agent) toolList() []Tool {
 type ctxKey int
 
 const (
-	runScopeKey   ctxKey = 0
-	sagaKey       ctxKey = 1
-	modelSinkKey  ctxKey = 2
-	runContextKey ctxKey = 3
-	onceScopeKey  ctxKey = 4
-	// usedToolUseIDsKey carries the tool-use IDs already in the run's conversation into a model
-	// call's context, for CheckModelResponse.
-	usedToolUseIDsKey ctxKey = 5
+	runScopeKey      ctxKey = 0
+	sagaKey          ctxKey = 1
+	modelSinkKey     ctxKey = 2
+	runContextKey    ctxKey = 3
+	onceScopeKey     ctxKey = 4
+	modelHooksKey    ctxKey = 5 // []ModelCallHook; present only in an agent model call's context
+	modelOverrideKey ctxKey = 6 // Model set by WithModel
 )
 
 // runCtx carries the store + runID into a tool's context so Interrupt can journal and

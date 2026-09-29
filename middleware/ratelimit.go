@@ -69,12 +69,19 @@ func (r *RateLimiter) wait(ctx context.Context) error {
 	}
 }
 
-// RateLimit throttles model calls through the shared limiter, blocking (respecting context
+// RateLimit throttles model requests through the shared limiter, blocking (respecting context
 // cancellation) until a token is available. Proactive throttling complements Retry's reactive
 // Retry-After backoff: it keeps you under the provider's ceiling instead of bouncing off it.
+//
+// Under an agent it takes a token for every request the call sends, wherever it sits in the
+// chain: each attempt of a Retry below it and each target a Hedge below it launches waits for its
+// own token (see agent.ModelCallHook). A handler called outside an agent takes one token per call.
 func RateLimit(r *RateLimiter) agent.Middleware {
 	return func(next agent.ModelHandler) agent.ModelHandler {
 		return func(ctx context.Context, req agent.Request) (agent.Message, agent.Usage, error) {
+			if hctx, ok := agent.WithModelCallHook(ctx, agent.ModelCallHook{Before: r.wait}); ok {
+				return next(hctx, req)
+			}
 			if err := r.wait(ctx); err != nil {
 				return agent.Message{}, agent.Usage{}, err
 			}
