@@ -123,3 +123,55 @@ type retrieverFunc func(context.Context, string, int) ([]Doc, error)
 func (f retrieverFunc) Retrieve(ctx context.Context, q string, k int) ([]Doc, error) {
 	return f(ctx, q, k)
 }
+
+// k is how many documents to return, so a k below 1 asks for nothing a Retriever can serve
+// consistently (one store returns nothing, another ignores it): both helpers reject it when
+// they are built, as New rejects a nil model.
+func TestRetrieval_NonPositiveKPanics(t *testing.T) {
+	for _, k := range []int{0, -1} {
+		for name, build := range map[string]func(){
+			"RetrievalTool": func() { RetrievalTool(&fakeRetriever{}, k) },
+			"WithRetrieval": func() { WithRetrieval(&fakeRetriever{}, k) },
+		} {
+			func() {
+				defer func() {
+					if recover() == nil {
+						t.Errorf("%s(k=%d) did not panic", name, k)
+					}
+				}()
+				build()
+			}()
+		}
+	}
+}
+
+// Both helpers promise the top-k documents, so a Retriever that returns more than k is cut to
+// its first k, in the order it ranked them: the model is not sent, and the journal does not
+// hold, more than was asked for.
+func TestRetrieval_CapsAtK(t *testing.T) {
+	r := &fakeRetriever{docs: []Doc{{ID: "1", Text: "one"}, {ID: "2", Text: "two"}, {ID: "3", Text: "three"}}}
+
+	res, err := RetrievalTool(r, 2).Call(context.Background(), json.RawMessage(`{"query":"q"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []Doc
+	if err := json.Unmarshal(res, &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].ID != "1" || got[1].ID != "2" {
+		t.Fatalf("RetrievalTool(k=2) returned %s, want docs 1 and 2", res)
+	}
+
+	var seen Request
+	base := ModelHandler(func(_ context.Context, req Request) (Message, Usage, error) {
+		seen = req
+		return Message{}, Usage{}, nil
+	})
+	if _, _, err := WithRetrieval(r, 2)(base)(context.Background(), Request{Messages: []Message{UserText("q")}}); err != nil {
+		t.Fatal(err)
+	}
+	if block := seen.Messages[0].Text(); !strings.Contains(block, "two") || strings.Contains(block, "three") {
+		t.Fatalf("WithRetrieval(k=2) injected %q, want docs 1 and 2 only", block)
+	}
+}
