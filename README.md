@@ -443,13 +443,15 @@ for ev := range stream.Events() {
 answer, err := stream.Final() // terminal message + error (incl. *PendingApproval / *ResumeHalt)
 ```
 
-Events: `TurnStarted`, `ModelEvent` (the token feed), `AssistantTurn`, `ToolStarted` /
+Events: `TurnStarted`, `ModelEvent` (the token feed), `TurnRestarted`, `AssistantTurn`, `ToolStarted` /
 `ToolCompleted`, `ApprovalRequired`, `Finished`. Range `Events()` for a UI then call `Final()`,
 or call `Final()` alone to behave exactly like `Run` (it drains events for you).
 
 Two things worth knowing, both consequences of durability:
 - **Token deltas arrive below the middleware chain** (Retry / Cost still see whole
-  assembled messages), and **only on a fresh model call**.
+  assembled messages), and **only on a fresh model call**. When a middleware such as Retry
+  calls the model again after an attempt that already streamed deltas, `TurnRestarted` marks
+  those deltas as discarded: clear the turn's text when it arrives.
 - **On resume, the journaled transcript is re-emitted** as `AssistantTurn{Replayed: true}` +
   `ToolCompleted` before live progress, so a fresh UI reconstructs the whole story after a
   crash, and a replayed turn produces no token deltas (it was already decided).

@@ -80,7 +80,7 @@ Only journaled facts are reproduced:
 - `StepModel` records become `AssistantTurn{Message: ..., Replayed: true}`.
 - `StepToolResult` records become `ToolCompleted{ToolUseID, Name, Result, IsError}`.
 
-Live-loop-only signals (token-level `ModelEvent` deltas, `TurnStarted`, `ToolStarted`, and
+Live-loop-only signals (token-level `ModelEvent` deltas, `TurnStarted`, `TurnRestarted`, `ToolStarted`, and
 the terminal `Finished`) are not journaled and so are **not** part of the durable projection.
 The durable content is the assistant turns and the tool results.
 

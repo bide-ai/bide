@@ -243,6 +243,7 @@ func (a *Agent) generate(ctx context.Context, req Request, usedIDs map[string]bo
 			err error
 		)
 		if sink := modelSink(ctx); sink != nil {
+			sink(attemptStart{}) // a new attempt: any deltas an earlier one streamed are discarded
 			s, serr := a.model.Stream(ctx, req)
 			if serr != nil {
 				return Message{}, Usage{}, serr
@@ -415,7 +416,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 			// sink fires — an AssistantTurn{Replayed:true} was emitted during resume.
 			genCtx := ctx
 			if emit != nil {
-				genCtx = withModelSink(ctx, func(ev Event) { fire(ModelEvent{Event: ev}) })
+				genCtx = withModelSink(ctx, turnSink(modelSeq, fire))
 			}
 			genCtx = withModelRun(genCtx, a.store, runID) // model middleware can journal a step of this run (WithRetrieval)
 			var turnUsage Usage
@@ -794,6 +795,37 @@ func withModelSink(ctx context.Context, sink func(Event)) context.Context {
 	return context.WithValue(ctx, modelSinkKey, sink)
 }
 
+// attemptStart is sent to a run's model sink when a model attempt starts delivering a
+// response: the model handler starting a call, or EmitMessage. The sink does not forward it; it
+// marks where the previous attempt, if any, ended.
+type attemptStart struct{}
+
+func (attemptStart) event() {}
+
+// turnSink returns the model sink for turn seq. It forwards each model Event as a ModelEvent.
+// On an attemptStart that follows an attempt which streamed deltas, it emits TurnRestarted,
+// since those deltas are not part of the response the turn records: a middleware such as Retry
+// is calling the model again, or delivering a response from elsewhere.
+func turnSink(seq int, fire func(AgentEvent)) func(Event) {
+	var (
+		mu       sync.Mutex
+		streamed bool // the current attempt has forwarded a delta
+	)
+	return func(ev Event) {
+		mu.Lock()
+		defer mu.Unlock()
+		if _, ok := ev.(attemptStart); ok {
+			if streamed {
+				streamed = false
+				fire(TurnRestarted{Seq: seq})
+			}
+			return
+		}
+		streamed = true
+		fire(ModelEvent{Event: ev})
+	}
+}
+
 // modelSink returns the live token sink installed by Agent.Stream, or nil for a
 // blocking Run. The base model handler forwards each stream Event to it.
 func modelSink(ctx context.Context) func(Event) {
@@ -818,6 +850,7 @@ func EmitMessage(sink func(Event), m Message, u Usage) {
 	if sink == nil {
 		return
 	}
+	sink(attemptStart{}) // m replaces whatever an earlier attempt streamed
 	for _, e := range emitsFor(m, u) {
 		sink(e.Event)
 	}

@@ -102,6 +102,11 @@ func (cfg retryConfig) run(ctx context.Context, fn func(context.Context) error) 
 // *agent.RateLimited it sleeps for min(RetryAfter, max) instead.
 //
 // Default backoff: base=200ms, max=10s. Override with WithBackoff.
+//
+// Streaming: a streaming caller (Agent.Stream) sees each attempt's deltas live. When an attempt
+// that streamed deltas fails and Retry calls the model again, the stream emits
+// agent.TurnRestarted before the next attempt's deltas, so the caller can discard the failed
+// attempt's partial text.
 func Retry(n int, opts ...RetryOption) agent.Middleware {
 	cfg := retryConfig{base: defaultBackoffBase, max: defaultBackoffMax}
 	for _, o := range opts {

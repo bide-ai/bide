@@ -29,7 +29,9 @@ func (TurnStarted) agentEvent() {}
 // ModelEvent forwards one live model stream Event (TextDelta, ReasoningDelta,
 // ToolCallDelta, Finish) from the current turn — the token-by-token feed. Emitted
 // only for a FRESH model call; on durable replay the turn is reused from the journal
-// and produces no deltas (an AssistantTurn with Replayed=true is emitted instead).
+// and produces no deltas (an AssistantTurn with Replayed=true is emitted instead). When the
+// turn's model call starts over (see TurnRestarted), the deltas before it are not part of the
+// recorded turn.
 type ModelEvent struct{ Event Event }
 
 func (ModelEvent) agentEvent() {}
@@ -105,8 +107,9 @@ func (Finished) agentEvent() {}
 // It reconstructs from the journal alone, without re-running the model or tools. Only
 // journaled facts are reproduced: assembled assistant turns (StepModel) and completed tool
 // calls with their results (StepToolResult). Live-loop-only signals — token-level ModelEvent
-// deltas, TurnStarted, ToolStarted, and the terminal Finished — are not journaled and so are
-// not part of the durable projection; the durable content is the turns and tool results.
+// deltas, TurnStarted, TurnRestarted, ToolStarted, and the terminal Finished — are not
+// journaled and so are not part of the durable projection; the durable content is the turns and
+// tool results.
 func ReplayEvents(ctx context.Context, store Durable, runID string) ([]AgentEvent, error) {
 	recs, err := store.History(ctx, runID)
 	if err != nil {
