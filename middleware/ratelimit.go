@@ -23,6 +23,7 @@ type RateLimiter struct {
 
 // NewRateLimiter allows one call every `interval` (so rate = 1/interval), bursting up to `burst`
 // calls. A burst < 1 is treated as 1. Starts full so the first `burst` calls proceed immediately.
+// An interval <= 0 sets no limit: every call proceeds at once.
 func NewRateLimiter(interval time.Duration, burst int) *RateLimiter {
 	if burst < 1 {
 		burst = 1
@@ -30,19 +31,24 @@ func NewRateLimiter(interval time.Duration, burst int) *RateLimiter {
 	return &RateLimiter{interval: interval, burst: float64(burst), tokens: float64(burst)}
 }
 
-// wait blocks until a token is available or ctx is done, then consumes one token.
+// wait blocks until a token is available or ctx is done, then consumes one token. A call whose
+// ctx has ended takes no token, since it will not make the call the token is for.
 func (r *RateLimiter) wait(ctx context.Context) error {
+	if r.interval <= 0 {
+		return ctx.Err() // no limit; a zero interval would otherwise never refill the bucket
+	}
 	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		r.mu.Lock()
 		now := time.Now()
 		if r.last.IsZero() {
 			r.last = now
 		}
-		if r.interval > 0 {
-			r.tokens += float64(now.Sub(r.last)) / float64(r.interval)
-			if r.tokens > r.burst {
-				r.tokens = r.burst
-			}
+		r.tokens += float64(now.Sub(r.last)) / float64(r.interval)
+		if r.tokens > r.burst {
+			r.tokens = r.burst
 		}
 		r.last = now
 		if r.tokens >= 1 {
