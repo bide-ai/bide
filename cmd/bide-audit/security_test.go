@@ -179,7 +179,7 @@ func TestVerifyQuorumCLI_RejectsVoteFromAnotherRun(t *testing.T) {
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
 	bundles := map[string]string{}
 	for _, runID := range []string{"run1", "run2"} {
-		if _, err := govern.Quorum(ctx, store, runID, 2,
+		if _, err := govern.Quorum(ctx, store, runID, "refund", 2,
 			govern.Voter{Name: "model-A", Decide: decide("approve")},
 			govern.Voter{Name: "model-B", Decide: decide("approve")}); err != nil {
 			t.Fatal(err)
@@ -189,20 +189,20 @@ func TestVerifyQuorumCLI_RejectsVoteFromAnotherRun(t *testing.T) {
 			t.Fatal(err)
 		}
 		sth := audit.SignTreeHead(th, priv)
-		for _, name := range []string{"quorum/tally", "model-A", "model-B"} {
+		for _, name := range []string{"quorum/refund/tally", "quorum/refund/vote/model-A", "quorum/refund/vote/model-B"} {
 			pb, err := audit.ProveStep(ctx, store, runID, name, sth)
 			if err != nil {
 				t.Fatal(err)
 			}
 			p := filepath.Join(dir, runID+"-"+filepath.Base(name)+".json")
 			writeJSON(t, p, pb)
-			bundles[runID+"/"+name] = p
+			bundles[runID+"/"+filepath.Base(name)] = p
 		}
 	}
 	bin := buildCLI(t, dir)
 	pubHex := hex.EncodeToString(pub)
 	args := func(voteB string) []string {
-		return []string{"verify-quorum", "-tally", bundles["run1/quorum/tally"], "-vote", bundles["run1/model-A"], "-vote", voteB, "-pubkey", pubHex, "-k", "2"}
+		return []string{"verify-quorum", "-name", "refund", "-tally", bundles["run1/tally"], "-vote", bundles["run1/model-A"], "-vote", voteB, "-pubkey", pubHex, "-k", "2"}
 	}
 	if code, out := exitCode(t, bin, args(bundles["run1/model-B"])...); code != 0 {
 		t.Fatalf("the genuine quorum failed: exit %d\n%s", code, out)
