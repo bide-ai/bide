@@ -13,16 +13,16 @@ import (
 func TestLease_RejectsNonPositiveTTL(t *testing.T) {
 	for _, ttl := range []time.Duration{0, -time.Second, time.Nanosecond} {
 		ctx := context.Background()
-		s := NewMemStore()
+		s := &countingLister{MemStore: NewMemStore()}
 		ran := false
 		driven, err := Lease(ctx, s, "r", func(context.Context) error { ran = true; return nil }, WithLeaseTTL(ttl))
 		if ttl <= 0 {
 			if !errors.Is(err, ErrConfig) || driven || ran {
 				t.Fatalf("ttl %v: Lease = (%v, %v), ran=%v; want (false, ErrConfig) and no drive", ttl, driven, err, ran)
 			}
-			seedRun(t, s, "r")
-			if _, err := Recover(ctx, s, func(context.Context, string) error { ran = true; return nil }, WithLeaseTTL(ttl)); !errors.Is(err, ErrConfig) || ran {
-				t.Fatalf("ttl %v: Recover err = %v, ran=%v; want ErrConfig and no drive", ttl, err, ran)
+			seedRun(t, s.MemStore, "r")
+			if _, err := Recover(ctx, s, func(context.Context, string) error { ran = true; return nil }, WithLeaseTTL(ttl)); !errors.Is(err, ErrConfig) || ran || s.listed {
+				t.Fatalf("ttl %v: Recover err = %v, ran=%v, listed runs=%v; want ErrConfig before touching the store", ttl, err, ran, s.listed)
 			}
 			continue
 		}
@@ -31,4 +31,15 @@ func TestLease_RejectsNonPositiveTTL(t *testing.T) {
 			t.Fatalf("ttl %v: Lease = (%v, %v), ran=%v; want the drive to run", ttl, driven, err, ran)
 		}
 	}
+}
+
+// countingLister is a MemStore that records whether its runs were listed.
+type countingLister struct {
+	*MemStore
+	listed bool
+}
+
+func (l *countingLister) Runs(ctx context.Context) ([]string, error) {
+	l.listed = true
+	return l.MemStore.Runs(ctx)
 }

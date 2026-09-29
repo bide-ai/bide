@@ -20,6 +20,7 @@ func (l *blockingRenewLeaser) RenewLease(ctx context.Context, _, _ string, _ tim
 	l.inRenew <- struct{}{}
 	defer func() { <-l.inRenew }()
 	<-ctx.Done()
+	time.Sleep(20 * time.Millisecond) // a store call takes a moment to return after its cancellation
 	return false, ctx.Err()
 }
 
@@ -34,10 +35,26 @@ func (l *blockingRenewLeaser) ReleaseLease(ctx context.Context, runID, holder st
 // which a store whose renewal is not conditional on the holder would turn back into a lease.
 func TestLease_RenewerStopsBeforeRelease(t *testing.T) {
 	s := &blockingRenewLeaser{MemStore: NewMemStore(), inRenew: make(chan struct{}, 1)}
-	driven, err := Lease(context.Background(), s, "r", func(context.Context) error {
-		time.Sleep(50 * time.Millisecond) // long enough for a renewal (every ttl/2) to start and hang
-		return nil
-	}, WithLeaseHolder("a"), WithLeaseTTL(20*time.Millisecond))
+	type result struct {
+		driven bool
+		err    error
+	}
+	res := make(chan result, 1)
+	go func() {
+		driven, err := Lease(context.Background(), s, "r", func(context.Context) error {
+			time.Sleep(50 * time.Millisecond) // long enough for a renewal (every ttl/2) to start and hang
+			return nil
+		}, WithLeaseHolder("a"), WithLeaseTTL(20*time.Millisecond))
+		res <- result{driven, err}
+	}()
+	var driven bool
+	var err error
+	select {
+	case r := <-res:
+		driven, err = r.driven, r.err
+	case <-time.After(5 * time.Second):
+		t.Fatal("Lease never returned after its drive did: it is waiting on a renewal that nothing cancels")
+	}
 	if err != nil || !driven {
 		t.Fatalf("Lease = (%v, %v), want (true, nil)", driven, err)
 	}

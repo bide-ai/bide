@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 )
@@ -49,5 +50,21 @@ func TestLease_SameHolderDoesNotDriveTwice(t *testing.T) {
 	}
 	if ok, _ := s.AcquireLease(ctx, "r", "worker-2", time.Hour); !ok {
 		t.Fatal("the primary's lease was not released after its drive")
+	}
+}
+
+// A drive that outlasts several renewal periods keeps its lease: the renewer renews the claim this
+// Lease call made, so the drive is never cancelled while it still holds the run.
+func TestLease_RenewsItsOwnClaim(t *testing.T) {
+	driven, err := Lease(context.Background(), NewMemStore(), "r", func(ctx context.Context) error {
+		select {
+		case <-ctx.Done():
+			return errors.New("the drive was cancelled: its own lease was not renewed")
+		case <-time.After(100 * time.Millisecond): // five TTLs
+			return nil
+		}
+	}, WithLeaseHolder("worker-1"), WithLeaseTTL(20*time.Millisecond))
+	if err != nil || !driven {
+		t.Fatalf("Lease = (%v, %v), want (true, nil)", driven, err)
 	}
 }
