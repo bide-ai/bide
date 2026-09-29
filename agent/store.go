@@ -284,7 +284,7 @@ func ResolveHalt(ctx context.Context, store Durable, runID, toolUseID string, re
 			return &HaltTooYoung{RunID: runID, ToolUseID: toolUseID, Age: age, Min: cfg.minHaltAge}
 		}
 	}
-	b, err := json.Marshal(result)
+	b, err := marshalJournal(result) // not HTML-escaped: the model reads the injected result as written
 	if err != nil {
 		return fmt.Errorf("agent: encode resolve-halt result for %q: %w (%w)", toolUseID, err, ErrConfig)
 	}

@@ -108,5 +108,5 @@ func (t *funcTool[In, Out]) Call(ctx context.Context, args json.RawMessage) (jso
 	if err != nil {
 		return nil, err
 	}
-	return json.Marshal(out)
+	return marshalJournal(out) // not HTML-escaped: the model reads this JSON text as written
 }

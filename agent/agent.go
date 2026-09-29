@@ -565,7 +565,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 							return Record{Kind: StepSagaFail, ToolUseID: c.tu.ID, Result: mustJSON(callErr.Error())}, nil
 						}
 						r.IsError = true
-						r.Result, _ = json.Marshal(callErr.Error())
+						r.Result, _ = marshalJournal(callErr.Error()) // the model reads the error text as written
 					} else {
 						r.Result = res
 					}
