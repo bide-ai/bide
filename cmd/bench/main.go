@@ -4,7 +4,11 @@
 // throughput, latency percentiles, peak goroutines, and memory. Optional -latency simulates
 // per model-call I/O wait to show how Go absorbs large concurrent I/O-bound fan-out.
 //
-//	go run ./cmd/bench -runs 20000 -concurrency 512 -latency 50ms
+// The journal-records figure counts the records the runs actually wrote (read back from the
+// store after the timed section) and divides by the elapsed time. The store is the in-memory
+// MemStore, so it is not a durable-store write rate.
+//
+//	go run ./cmd/bench -runs 20000 -concurrency 5000 -latency 50ms
 package main
 
 import (
@@ -48,7 +52,8 @@ func main() {
 
 	tool := agent.Func("noop", "no-op", agent.Safety{ReadOnly: true},
 		func(_ context.Context, _ struct{}) (string, error) { return "ok", nil })
-	a := agent.New(stubModel{latency: *latency}, agent.NewMemStore(), tool)
+	store := agent.NewMemStore()
+	a := agent.New(stubModel{latency: *latency}, store, tool)
 
 	// Peak-goroutine sampler.
 	var peak int64
@@ -95,12 +100,23 @@ func main() {
 
 	var m1 runtime.MemStats
 	runtime.ReadMemStats(&m1)
+	// Count the journal records the runs wrote, outside the timed section.
+	var records int
+	for i := 0; i < *runs; i++ {
+		h, err := store.History(context.Background(), fmt.Sprintf("run-%d", i))
+		if err != nil {
+			atomic.AddInt64(&errs, 1)
+			continue
+		}
+		records += len(h)
+	}
+
 	sort.Slice(lat, func(i, j int) bool { return lat[i] < lat[j] })
 	pc := func(p float64) time.Duration { return lat[int(float64(len(lat)-1)*p)] }
 
 	fmt.Printf("runs=%d concurrency=%d sim-latency=%s\n", *runs, *conc, *latency)
-	fmt.Printf("elapsed=%s throughput=%.0f runs/s (~%.0f durable steps/s)\n",
-		elapsed.Round(time.Millisecond), float64(*runs)/elapsed.Seconds(), float64(*runs)*3/elapsed.Seconds())
+	fmt.Printf("elapsed=%s throughput=%.0f runs/s (%.0f journal records/s, in-memory store; %d records)\n",
+		elapsed.Round(time.Millisecond), float64(*runs)/elapsed.Seconds(), float64(records)/elapsed.Seconds(), records)
 	fmt.Printf("run latency: p50=%s p90=%s p99=%s max=%s\n", pc(0.50).Round(time.Microsecond), pc(0.90).Round(time.Microsecond), pc(0.99).Round(time.Microsecond), lat[len(lat)-1].Round(time.Microsecond))
 	fmt.Printf("peak goroutines=%d  heap alloc delta=%.1f MB  total alloc=%.1f MB  numGC=%d\n",
 		atomic.LoadInt64(&peak), float64(m1.HeapAlloc-m0.HeapAlloc)/1e6, float64(m1.TotalAlloc-m0.TotalAlloc)/1e6, m1.NumGC-m0.NumGC)

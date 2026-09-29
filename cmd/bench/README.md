@@ -26,6 +26,11 @@ run latency p50 1.1ms, p99 8.9ms
 peak goroutines 340, heap delta ~8.5 MB
 ```
 
+The step figure above was recorded by an earlier version of the harness, which multiplied runs by
+three. The harness now counts the journal records the runs actually wrote (four per run in this
+scenario) and reports them as journal records/s. Every run here journals to the in-memory
+`MemStore`, so that figure is an in-memory write rate, not a durable-store one.
+
 I/O-bound fan-out (each run makes two model calls at 50ms each, so ~100ms of unavoidable wait),
 20,000 runs at concurrency 5,000:
 
@@ -35,8 +40,8 @@ run latency p50 ~100ms (the model wait itself; runs fully overlap)
 peak goroutines ~5,470, heap delta ~35 MB
 ```
 
-The second run is the point: 5,000 runs that each block ~100ms on the model finish in under half
-a second because they overlap, on a few thousand goroutines and tens of MB. That is the cost and
+The second run is the point: 20,000 runs, 5,000 in flight at a time, each blocking ~100ms on the
+model, finish in about half a second because they overlap, on a few thousand goroutines and tens of MB. That is the cost and
 simplicity story, one commodity process instead of a cluster.
 
 ## What this does NOT claim
