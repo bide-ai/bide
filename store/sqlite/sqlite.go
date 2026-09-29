@@ -96,9 +96,17 @@ func (s *Store) Do(ctx context.Context, runID, name string, fn func(context.Cont
 			return nil, fmt.Errorf("insert step %q: %w (%w)", name, e, agent.ErrStorage)
 		}
 		if n, _ := res.RowsAffected(); n == 0 {
-			if existing, ok, e := s.load(ctx, runID, name); e == nil && ok {
-				return existing, nil // another process won the race
+			// Another process recorded this step first: its record is the step's. Return it or an
+			// error, never rec, which a caller such as ClaimAttempt would read as a win. The
+			// reload ignores cancellation so a caller cancelled mid-step still learns the truth.
+			existing, ok, e := s.load(context.WithoutCancel(ctx), runID, name)
+			if e != nil {
+				return nil, fmt.Errorf("reload step %q after a conflicting insert: %w (%w)", name, e, agent.ErrStorage)
 			}
+			if !ok {
+				return nil, fmt.Errorf("step %q: insert conflicted but no record exists (%w)", name, agent.ErrStorage)
+			}
+			return existing, nil
 		}
 		return rec, nil
 	})
