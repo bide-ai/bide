@@ -27,12 +27,31 @@ your deployment knows each run's original input and which waker and clock to bin
 `resume` function. A `resume` that does not own a run (for example, a sub-agent run, which its parent
 drives) should do nothing. See [Crash recovery](guides/debugging.md#4--crash-recovery-lister-and-recover).
 
+**Takeover needs a process that keeps looking.** `agent.Recover` is one pass: a run whose holder
+has died but whose lease has not yet expired is skipped. Run `agent.RecoverLoop` in every worker for
+the life of the process, and a dead holder's run is taken over within about one pass interval (half
+the lease TTL by default) of its lease expiring.
+
 **Leases prevent duplicate work, not duplicate side effects.** With a store that supports leases
-(`MemStore` in one process, Postgres across processes), each run is driven by one holder at a time,
-and another node takes over if the holder dies. A holder that stalls past its lease (a long GC pause,
-a suspended VM, a network partition) can wake up still driving. That is safe: at-most-once rests on
-the attempt claim written before each side effect, not on the lease, so the second driver stops with
-`*ResumeHalt` instead of firing again. The cost is repeated work, such as a model call made twice.
+(`MemStore` in one process, Postgres across processes), each run is normally driven by one holder at
+a time, and another node takes over if the holder dies. The holder renews its lease from half the
+TTL on, retries a failed renewal, and cancels its drive with `agent.ErrLeaseLost` if no renewal has
+succeeded by three quarters of the TTL, a quarter of the TTL before any other node could take the
+lease. That bound holds for a process that is running. A holder that stalls past its lease (a long
+GC pause, a suspended VM, a network partition) can wake up still driving and take a step before it
+notices. That is safe: at-most-once rests on the attempt claim written before each side effect, not
+on the lease, so the second driver stops with `*ResumeHalt` instead of firing again. The cost is
+repeated work, such as a model call made twice.
+
+**Leases are not fenced.** A fencing token (a number the lease hands out that every write must
+carry, so the store rejects a write from a holder whose lease was superseded) would turn the lease
+into mutual exclusion for journal writes. bide does not use one, for three reasons. The effect that
+matters happens outside the store (a charge, an email), where no token can be checked, so fencing
+the journal would not stop a stalled holder's effect; only the attempt claim, written before the
+effect, can stop a second one. The journal writes that a stalled holder can still make are safe
+without it: every step is recorded at most once by name, so its write either is the step's one
+record or loses to the one already there. And fencing would make every journal write depend on the
+lease, so a store without leases (SQLite) could not offer the guarantee at all.
 
 **Crash safety is tested, not formally proven.** The crash tests fail the store at every write point,
 across hundreds of randomized multi-crash schedules, and check that no side effect fires twice and

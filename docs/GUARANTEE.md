@@ -53,7 +53,10 @@ rather than pretending it knows.
   driver writes the attempt marker as an exclusive claim, and only the driver whose claim the store
   kept runs it; the other halts (`ResumeHalt`). This relies on the store recording a step name at
   most once across processes (the SQLite and Postgres stores use a primary key), which is the atomic
-  write above.
+  write above. Leases are deliberately not fenced (no token that the store checks on each write):
+  the side effect happens outside the store, where no token could be checked, so only a claim
+  written before the effect can stop a second one; see
+  [known limitations](KNOWN-LIMITATIONS.md#durability-and-recovery).
 - **The tool must declare its safety accurately.** `ReadOnly` re-runs freely, `Idempotent`
   retries, and only an unmarked non-idempotent write gets the attempt-marker/halt treatment.
   Mislabel a card-charge as idempotent and you have opted out of the protection.

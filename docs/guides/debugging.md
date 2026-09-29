@@ -164,6 +164,7 @@ type Lister interface {
 
 func IsComplete(ctx context.Context, store Durable, runID string) (bool, error)
 func Recover(ctx context.Context, store Durable, resume func(ctx context.Context, runID string) error, opts ...RecoverOption) (int, error)
+func RecoverLoop(ctx context.Context, store Durable, resume func(ctx context.Context, runID string) error, opts ...RecoverOption) error
 ```
 
 The options (`WithLeaseHolder`, `WithLeaseTTL`) apply when the store also implements `Leaser`:
@@ -186,6 +187,26 @@ n, err := agent.Recover(ctx, store, func(ctx context.Context, runID string) erro
 })
 // n = runs re-driven; err = joined genuine failures (nil if the only "errors" were pauses)
 ```
+
+**Keep recovering for the life of the process.** `Recover` is one pass: a run whose holder died
+a moment ago still has a live lease, so the pass skips it, and nothing re-drives it until someone
+calls `Recover` again. `RecoverLoop` is that someone. Start it once per worker; it runs a pass every
+`WithRecoverInterval` (half the lease TTL by default) until its context ends, so a dead holder's
+run is taken over within about one interval of its lease expiring:
+
+```go
+go func() {
+	err := agent.RecoverLoop(ctx, store, resume,
+		agent.WithLeaseHolder("worker-1"),
+		agent.WithRecoverErrors(func(err error) { log.Printf("recover: %v", err) }))
+	// err is ctx's error once ctx is done (or a configuration error at once)
+}()
+```
+
+It drives runs concurrently, up to `WithRecoverConcurrency` (16 by default), so one long drive does
+not hold up the others, and it never starts a run it is already driving. A genuine failure goes to
+the `WithRecoverErrors` handler and the run is tried again on the next pass; pauses and lost leases
+are not failures. On shutdown it waits for the drives it started to return.
 
 **The completion marker lets it skip finished runs.** When a run returns its final answer,
 the loop records one terminal `StepValue` named `run:complete` (it renders as
@@ -216,13 +237,29 @@ shared store they all enumerate the same in-flight runs. If the store implements
 lease per run before driving it and skips a run another holder currently leases, so competing
 recoverers do not both re-drive one run (redundant, and a hazard when the store's `Do` is not
 cross-process atomic). A crash lets the lease expire (default 30s, `WithLeaseTTL`) and another
-process takes over; that expiry-and-takeover is the high-availability property. `MemStore`
+process's `RecoverLoop` takes over; that expiry-and-takeover is the high-availability property. `MemStore`
 implements `Leaser` in-process (the reference and for tests); the cross-process backend is a shared
 store (`store/postgres`) implementing it with an atomic upsert over a leases table. Without
 `Leaser`, `Recover` drives every enumerated run, safe under at-most-once memoization, just redundant.
 A live primary driver wraps `Agent.Run` in `agent.Lease(ctx, store, runID, drive, ...)`, which holds
 the same lease, so a recoverer never grabs a run a worker is actively driving; recovery and primary
 driving coordinate through one mechanism (`Recover` itself drives each run via `Lease`).
+
+**A lease is renewed on a fixed schedule, and given up before it can lapse.** `Lease` claims the
+run under the holder name plus a token of the call's own, so two drivers that share a
+`WithLeaseHolder` name still exclude each other. Measured from when the last successful acquisition
+or renewal was issued, the lease cannot expire before one TTL has passed (the store sets the expiry
+from its own clock while serving the call, and only the store compares expiries, so clock offsets
+between nodes do not matter). The holder first renews at half the TTL, retries a renewal that fails
+with an error every twentieth of the TTL, and abandons each attempt at three quarters of the TTL. If
+the store reports the lease is no longer held, or no renewal succeeds by that cutoff, the drive's
+context is cancelled with `agent.ErrLeaseLost` as its cause (`context.Cause`), a quarter of the TTL
+before any other process could take the lease. `Lease` then returns the drive's error wrapped with
+`ErrLeaseLost`, so `errors.Is(err, agent.ErrLeaseLost)` tells a lost lease from a shutdown, and
+`Recover` does not count it as a failure. The quarter-TTL margin is for the cancellation to reach
+the drive and for the store's clock rate to differ slightly from the worker's; it cannot cover a
+worker that is stalled through the cutoff, which is why side effects rest on the attempt claim
+instead (see [known limitations](../KNOWN-LIMITATIONS.md)).
 
 **The idempotency-key retry path** reduces halt-for-a-human stops. On resume, a tool with an
 unknown outcome (invoked, no result journaled) normally fires `*ResumeHalt` unless it is
