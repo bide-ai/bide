@@ -151,6 +151,32 @@ func TestVerifyQuorumCLI_DisclosedVotesMustBeTheRecordedOnes(t *testing.T) {
 	}
 }
 
+// A tally that records one voter twice counts a single vote as two. govern.Quorum never writes such
+// a tally (voter names are unique), so the verifier must reject it rather than trust the producer:
+// with the voter's one vote bundle disclosed twice, one approval "meets" k = 2, and with another
+// voter's bundle beside it, the disclosed votes are not the votes the tally records.
+func TestVerifyQuorumCLI_OneVoterCountsOnce(t *testing.T) {
+	ctx := context.Background()
+	store := agent.NewMemStore()
+	record := func(step string, v any) {
+		t.Helper()
+		if _, err := agent.Step(ctx, store, "run", step, func(context.Context) (any, error) { return v, nil }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	record(govern.QuorumVoteStep("q", "a"), govern.Vote{Voter: "a", Decision: "approve"})
+	record(govern.QuorumVoteStep("q", "b"), govern.Vote{Voter: "b", Decision: "approve"})
+	record(govern.QuorumTallyStep("q"), govern.QuorumResult{Decision: "approve", VotesFor: 2, Total: 2, Agreed: true,
+		Votes: []govern.Vote{{Voter: "a", Decision: "approve"}, {Voter: "a", Decision: "approve"}}})
+	b := newQuorumBundles(t, store, "run")
+	a, bv := govern.QuorumVoteStep("q", "a"), govern.QuorumVoteStep("q", "b")
+	for _, votes := range [][]string{{a, a}, {a, bv}} {
+		if out, ok := b.verify("q", govern.QuorumTallyStep("q"), votes...); ok || !strings.Contains(out, "the tally records a vote by \"a\" more than once") {
+			t.Fatalf("a tally counting voter a twice was accepted with votes %v, or failed for another reason:\n%s", votes, out)
+		}
+	}
+}
+
 func fixedCLIVoter(name, decision string) govern.Voter {
 	return govern.Voter{Name: name, Decide: func(context.Context) (string, error) { return decision, nil }}
 }
