@@ -639,6 +639,27 @@ func modelSink(ctx context.Context) func(Event) {
 	return s
 }
 
+// DetachModelSink returns ctx with the run's token sink removed, and that sink (nil when the run
+// is not streaming). Agent.Stream installs the sink so a model's token deltas reach the caller as
+// they arrive. Middleware that sends one model call to several targets must detach it before
+// calling them: otherwise a target that loses streams text the run never records, and may keep
+// sending after the run has ended. Once it has chosen the response to return, the middleware can
+// deliver it to the caller with EmitMessage.
+func DetachModelSink(ctx context.Context) (context.Context, func(Event)) {
+	return context.WithValue(ctx, modelSinkKey, (func(Event))(nil)), modelSink(ctx)
+}
+
+// EmitMessage delivers m to sink as the events a model would have streamed for it. It does
+// nothing when sink is nil. See DetachModelSink.
+func EmitMessage(sink func(Event), m Message) {
+	if sink == nil {
+		return
+	}
+	for _, e := range emitsFor(m) {
+		sink(e.Event)
+	}
+}
+
 func withRunScope(ctx context.Context, scope string) context.Context {
 	return context.WithValue(ctx, runScopeKey, scope)
 }
