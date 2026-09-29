@@ -221,3 +221,40 @@ func TestSession_IDsCannotCollide(t *testing.T) {
 		t.Fatalf(`session "c1" answered event "t0" with %q, another session's reply`, msg.Text())
 	}
 }
+
+// One handle shared by concurrent callers (a server that caches the handle per conversation)
+// behaves as several handles do: every message is answered with its own reply and recorded once.
+// Before the handle guarded its state, this was a data race that could crash the process with
+// "concurrent map writes".
+func TestSession_OneHandleConcurrentCallers(t *testing.T) {
+	for range 20 {
+		a := New(&replyModel{}, NewMemStore())
+		s := openSession(t, a, "c1")
+		var wg sync.WaitGroup
+		for i := range 8 {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				key := fmt.Sprintf("k%d", i)
+				if msg, err := s.SendOnce(context.Background(), key, "m"+key); err != nil || msg.Text() != "re: m"+key {
+					t.Errorf("%s = %q, %v", key, msg.Text(), err)
+				}
+				_, _ = s.History(), s.Turns()
+			}()
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if msg, err := s.Send(context.Background(), "plain"); err != nil || msg.Text() != "re: plain" {
+				t.Errorf(`Send("plain") = %q, %v`, msg.Text(), err)
+			}
+		}()
+		wg.Wait()
+		if n := openSession(t, a, "c1").Turns(); n != 9 {
+			t.Fatalf("transcript holds %d turns after 9 messages, want 9", n)
+		}
+		if n := s.Turns(); n != 9 {
+			t.Fatalf("the shared handle reports %d turns, want 9", n)
+		}
+	}
+}
