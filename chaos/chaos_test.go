@@ -1,6 +1,9 @@
 package chaos
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // The Bide durable loop passes: the charge fires at most once under every crash schedule.
 func TestVerify_BidePasses(t *testing.T) {
@@ -87,6 +90,9 @@ func TestVerify_NeverFiringFails(t *testing.T) {
 	// The crash-free run, every sweep point, and every randomized schedule that ends all missed.
 	if want := 1 + rep.Schedules; rep.Missed != want {
 		t.Fatalf("Missed = %d, want %d (every run that ended): %+v", rep.Missed, want, rep)
+	}
+	if !strings.Contains(rep.String(), "completed without firing") {
+		t.Fatalf("the report line does not say runs completed without firing: %s", rep)
 	}
 }
 
