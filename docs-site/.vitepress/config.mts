@@ -68,6 +68,7 @@ export default defineConfig({
           { text: 'Security model', link: '/guides/security-model' },
           { text: 'Governance', link: '/guides/governance' },
           { text: 'Quorum', link: '/guides/quorum' },
+          { text: 'Approval', link: '/guides/approval' },
         ],
       },
       {

@@ -159,7 +159,10 @@ never implement this by hand: `agent.Func[In, Out](name, desc, safety, fn)` wrap
 function and derives `ArgsSchema` from `In` at construction, so changing `In` is a
 compile-time change. `Safety` declares retry behavior on resume (`ReadOnly`, `Idempotent`,
 `IdempotencyKey`, `RequiresApproval`) and maps directly onto MCP annotations (see
-[MCP.md](../guides/mcp.md)).
+[MCP.md](../guides/mcp.md)). Its optional `Approval` field upgrades the approval gate to a signed
+m-of-n policy; approver signatures are checked through the `ApproverVerifier` hook, which the
+`audit` package's Ed25519, ML-DSA, and hybrid verifiers satisfy (see
+[approval](../guides/approval.md)).
 
 ## `Compensator`: how a tool undoes its side effect
 

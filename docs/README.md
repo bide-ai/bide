@@ -28,6 +28,7 @@ Accountability and governance:
 - **[Delegation](guides/delegation.md)**: signed grants, attenuating delegation, and earned authority.
 - **[Security model](guides/security-model.md)**: the cryptographic guarantees and their exact scope (confidentiality is out of scope).
 - **[Governance](guides/governance.md)**: convergent governed state (Tier-2), federation, and gsm-backed synthesis and coordination.
+- **[Approval](guides/approval.md)**: human sign-off before a tool runs, 1-of-1 or signed m-of-n, provable offline.
 - **[Quorum](guides/quorum.md)**: governed k-of-n model agreement, verifiable offline.
 
 ## Reference
@@ -37,7 +38,7 @@ Accountability and governance:
 
 ## Design notes
 
-- **[Design](design/design.md)**, **[Durable signals](design/design-durable-signals.md)**, **[Compaction](design/compaction.md)**, **[Chaos benchmark](design/chaos-benchmark.md)**.
+- **[Design](design/design.md)**, **[Durable signals](design/design-durable-signals.md)**, **[m-of-n approval](design/design-mofn-approval.md)**, **[Compaction](design/compaction.md)**, **[Chaos benchmark](design/chaos-benchmark.md)**.
 
 ## Testing and evidence
 
