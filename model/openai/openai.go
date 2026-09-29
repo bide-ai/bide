@@ -133,10 +133,14 @@ func (m *Model) buildRequest(req agent.Request) ([]byte, error) {
 		}
 		fn := obj{"name": t.Name(), "description": t.Description(), "parameters": json.RawMessage(params)}
 		if m.strict {
-			if s, err := schema.OpenAIStrict(params); err == nil {
-				fn["parameters"] = json.RawMessage(s)
-				fn["strict"] = true
+			// A schema strict mode cannot express fails the request: sending it non-strict would
+			// quietly drop the strict mode the caller asked for.
+			s, err := schema.OpenAIStrict(params)
+			if err != nil {
+				return nil, fmt.Errorf("openai: tool %q: strict schema: %w (%w)", t.Name(), err, agent.ErrConfig)
 			}
+			fn["parameters"] = json.RawMessage(s)
+			fn["strict"] = true
 		}
 		tools = append(tools, obj{"type": "function", "function": fn})
 	}
@@ -185,10 +189,11 @@ func (m *Model) buildRequest(req agent.Request) ([]byte, error) {
 	}
 	if rf := req.ResponseFormat; rf != nil && len(rf.Schema) > 0 {
 		// OpenAI strict structured outputs: the schema must be closed (additionalProperties
-		// false, all keys required) — the same transform we apply to tool schemas.
-		sch := json.RawMessage(rf.Schema)
-		if strict, err := schema.OpenAIStrict(rf.Schema); err == nil {
-			sch = strict
+		// false, all keys required) — the same transform we apply to tool schemas. A schema
+		// strict mode cannot express fails the request rather than go out marked strict.
+		sch, err := schema.OpenAIStrict(rf.Schema)
+		if err != nil {
+			return nil, fmt.Errorf("openai: response format %q: strict schema: %w (%w)", rf.Name, err, agent.ErrConfig)
 		}
 		payload["response_format"] = obj{
 			"type": "json_schema",

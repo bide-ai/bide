@@ -78,10 +78,17 @@ func (s Safety) RetrySafe() bool { return s.retriableOnResume() }
 // return value is JSON-encoded. This is the compile-time-typed ergonomic: change In
 // and the handler won't compile. The Tool interface itself stays untyped so a map of
 // mixed tools (and runtime MCP tools) works.
+//
+// Func panics, as New does for a missing model, if schema.For cannot describe In: such a type
+// (a field reached through an embedded pointer to an unexported struct) could never be decoded
+// from a call's arguments, so the tool would fail every call.
 func Func[In, Out any](name, description string, safety Safety, fn func(context.Context, In) (Out, error)) Tool {
 	// Derive the provider-neutral argument schema from In once, at construction. Adapters
 	// dialectize it (schema.OpenAIStrict etc.) at request time.
-	argsSchema, _ := schema.For[In]()
+	argsSchema, err := schema.For[In]()
+	if err != nil {
+		panic(fmt.Errorf("agent: Func %q: argument type: %w", name, err))
+	}
 	return &funcTool[In, Out]{name: name, description: description, safety: safety, fn: fn, argsSchema: argsSchema}
 }
 

@@ -139,14 +139,15 @@ func TestFor_EmbeddedStructPromoted(t *testing.T) {
 	}
 }
 
-// Embedded via pointer is also promoted.
+// Embedded via pointer is also promoted. (The embedded type is exported: through a pointer to an
+// unexported struct encoding/json cannot decode, see TestFor_EmbeddedPointerToUnexportedStructIsRejected.)
 func TestFor_EmbeddedPointerPromoted(t *testing.T) {
 	type Doc struct {
-		*base
+		*Address
 		Title string `json:"title"`
 	}
 	props := schemaOf[Doc](t)["properties"].(map[string]any)
-	if _, ok := props["id"]; !ok {
+	if _, ok := props["city"]; !ok {
 		t.Errorf("pointer-embedded field not promoted: %v", props)
 	}
 }
