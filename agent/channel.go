@@ -16,6 +16,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -68,7 +69,7 @@ func Receive[T any](ctx context.Context, channel string) (Received[T], error) {
 		}
 	}
 
-	// The channel's messages are the StepSignal records under "chan:"+channel+":", in history
+	// The channel's messages are the StepSignal records under chanPrefix(channel), in history
 	// (delivery) order. Return the first whose ack is absent.
 	msgPrefix := chanPrefix(channel)
 	for _, r := range recs {
@@ -103,12 +104,18 @@ func Ack(ctx context.Context, d Durable, runID, channel, key string) error {
 	return err
 }
 
-// chanPrefix is the exact step-name boundary for a channel's messages. Matching is on the full
-// "chan:"+channel+":" so channel "a" does not match channel "ab"; the remainder is the key.
-func chanPrefix(channel string) string { return "chan:" + channel + ":" }
+// chanPrefix is the exact step-name boundary for a channel's messages: "chan:", the channel
+// name's length in bytes, ':', the channel name, ':'. The length makes the boundary exact even
+// when names contain ':', so no two (channel, key) pairs share a step name: channel "orders"
+// never matches a message on "orders:vip", and key "b:c" on channel "a" is not key "c" on
+// channel "a:b". The remainder after the prefix is the key.
+func chanPrefix(channel string) string { return "chan:" + lengthPrefixed(channel) + ":" }
 
 func chanStep(channel, key string) string { return chanPrefix(channel) + key }
 
-func chanAckPrefix(channel string) string { return "chanack:" + channel + ":" }
+// chanAckPrefix is chanPrefix for a channel's acks, under "chanack:".
+func chanAckPrefix(channel string) string { return "chanack:" + lengthPrefixed(channel) + ":" }
 
 func chanAckStep(channel, key string) string { return chanAckPrefix(channel) + key }
+
+func lengthPrefixed(s string) string { return strconv.Itoa(len(s)) + ":" + s }

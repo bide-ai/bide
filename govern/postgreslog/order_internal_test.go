@@ -32,11 +32,11 @@ func TestAppend_VisibleOrderIsAppendOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := appendIn(ctx, slow, entity, "slow"); err != nil {
+	if _, err := appendIn(ctx, slow, entity, "slow", "slow"); err != nil {
 		t.Fatal(err)
 	}
 	fast := make(chan error, 1)
-	go func() { _, err := l.Append(ctx, entity, "fast"); fast <- err }()
+	go func() { _, err := l.Append(ctx, entity, "fast", "fast"); fast <- err }()
 	time.Sleep(150 * time.Millisecond) // let the fast append commit, or block
 
 	first, err := l.Events(ctx, entity, 0)

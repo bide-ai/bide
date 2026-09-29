@@ -95,11 +95,12 @@ func usage() {
          hash to that digest, and (with -checker) the external oracle's verdict AGREES with the
          certificate's convergence claim, so a certificate that overstates convergence is caught
 
-  verify-quorum -tally <bundle> -vote <bundle> [-vote <bundle>...] -pubkey <hex|file> -k <n> [-commit <bundle>]
-         verify a governed k-of-n quorum: the tally and every vote bundle authentic and in the
-         same signed tree and run, the recorded tally recomputes from the disclosed votes (a
-         forged tally is caught), and votes_for >= k; with -commit, a governed commit is anchored
-         in the same tree
+  verify-quorum -name <quorum> -tally <bundle> -vote <bundle> [-vote <bundle>...] -pubkey <hex|file> -k <n> [-commit <bundle>]
+         verify a governed k-of-n quorum: the tally and every vote bundle authentic, in the
+         same signed tree and run, and recorded by the quorum named <quorum>; every vote the
+         tally records disclosed exactly once; the recorded tally recomputes from the disclosed
+         votes (a forged tally is caught); and votes_for >= k; with -commit, a governed commit
+         is anchored in the same tree
 
   verify-run -cert <file> -pubkey <hex|file> (-approved <digest>... | -approved-file <file>) [-checker <astchecker>]
          verify a proof-carrying run certificate: the used-policy set is bound to the run's
@@ -511,23 +512,28 @@ func (s *stringList) Set(v string) error { *s = append(*s, v); return nil }
 // verifyQuorum verifies a governed k-of-n quorum from public artifacts alone, and does not trust the
 // recorded tally: it recomputes the tally from the separately-anchored vote leaves and fails if they
 // disagree, so a forged tally is caught. Steps (all FAIL exit 1): (1) the tally and every vote bundle
-// authentic under the out-of-band key, (2) all in the same signed tree and the same run, (3) the
-// recorded tally (decision, votes_for, total) recomputes exactly from the disclosed votes with the
-// same plurality-and-lexical-tie-break rule govern.Quorum uses, and every vote is disclosed, (4)
-// votes_for >= k. With -commit, the governed commit is confirmed anchored in the same tree and run.
+// authentic under the out-of-band key, (2) all in the same signed tree and the same run, and all
+// recorded by the quorum named -name (the tally under quorum/<name>/tally, each vote under
+// quorum/<name>/vote/<voter> for the voter it records), so votes from another quorum in the run
+// cannot stand in, (3) the disclosed votes are exactly the votes the tally records, each once, and
+// the recorded tally (decision, votes_for, total) recomputes from them with the same
+// plurality-and-lexical-tie-break rule govern.Quorum uses, (4) votes_for >= k with a single
+// most-supported decision. With -commit, the governed commit is confirmed anchored in the same tree
+// and run.
 //
 // The CLI decodes the tally and vote leaves into local structs, so it imports neither gsm nor govern.
 func verifyQuorum(args []string) {
 	fs := flagSet("verify-quorum")
-	tallyPath := fs.String("tally", "", "path to the quorum tally ProofBundle JSON (the quorum/tally step)")
+	name := fs.String("name", "", "the quorum's name, as passed to govern.Quorum")
+	tallyPath := fs.String("tally", "", "path to the quorum tally ProofBundle JSON (the quorum/<name>/tally step)")
 	var votePaths stringList
-	fs.Var(&votePaths, "vote", "path to one vote ProofBundle JSON; repeat once per voter")
+	fs.Var(&votePaths, "vote", "path to one vote ProofBundle JSON (a quorum/<name>/vote/<voter> step); repeat once per voter")
 	commitPath := fs.String("commit", "", "path to the commit action ProofBundle JSON (optional)")
 	pubkey := fs.String("pubkey", "", "ed25519 public key as hex, or a path to a file containing it")
 	k := fs.Int("k", 0, "the quorum threshold to assert: votes_for must be >= k")
 	_ = fs.Parse(args)
 
-	if *tallyPath == "" || len(votePaths) == 0 || *pubkey == "" || *k <= 0 {
+	if *name == "" || *tallyPath == "" || len(votePaths) == 0 || *pubkey == "" || *k <= 0 {
 		usage()
 	}
 	pub := readPubKey(*pubkey)
@@ -562,25 +568,53 @@ func verifyQuorum(args []string) {
 		}
 	}
 
-	// (3) recompute the tally from the disclosed votes; it must match the recorded tally exactly.
+	// (2) every bundle was recorded by this quorum: the tally under its tally step, each vote under
+	// the vote step of the voter it records.
+	if want := "quorum/" + *name + "/tally"; tally.Record.Name != want {
+		fmt.Printf("FAIL: the tally bundle is step %q, not %q: it is not the tally of quorum %q\n", tally.Record.Name, want, *name)
+		os.Exit(1)
+	}
+	type vote struct {
+		Voter    string `json:"voter"`
+		Decision string `json:"decision"`
+	}
 	var rec struct {
 		Decision string `json:"decision"`
 		VotesFor int    `json:"votes_for"`
 		Total    int    `json:"total"`
+		Votes    []vote `json:"votes"`
 	}
 	if err := json.Unmarshal(tally.Record.Result, &rec); err != nil {
 		fatal(fmt.Errorf("tally bundle is not a quorum tally: %w", err))
 	}
+	disclosed := map[string]string{} // voter -> decision
 	counts := map[string]int{}
 	for i := range votes {
-		var v struct {
-			Voter    string `json:"voter"`
-			Decision string `json:"decision"`
-		}
+		var v vote
 		if err := json.Unmarshal(votes[i].Record.Result, &v); err != nil {
 			fatal(fmt.Errorf("vote bundle %d is not a vote leaf: %w", i, err))
 		}
+		if want := "quorum/" + *name + "/vote/" + v.Voter; votes[i].Record.Name != want {
+			fmt.Printf("FAIL: vote bundle %d is step %q, not %q: it is not %q's vote in quorum %q\n", i, votes[i].Record.Name, want, v.Voter, *name)
+			os.Exit(1)
+		}
+		disclosed[v.Voter] = v.Decision
 		counts[v.Decision]++
+	}
+
+	// (3) the disclosed votes are exactly the votes the tally records (each recorded vote is
+	// disclosed with the same decision here, and the count check below rules out extra or repeated
+	// bundles), and the tally recomputes from them.
+	for _, v := range rec.Votes {
+		d, ok := disclosed[v.Voter]
+		if !ok {
+			fmt.Printf("FAIL: the tally records a vote by %q that is not disclosed; all votes must be disclosed to verify the tally\n", v.Voter)
+			os.Exit(1)
+		}
+		if d != v.Decision {
+			fmt.Printf("FAIL: the tally records %q voting %q, but the disclosed vote is %q\n", v.Voter, v.Decision, d)
+			os.Exit(1)
+		}
 	}
 	decs := make([]string, 0, len(counts))
 	for d := range counts {
@@ -593,8 +627,8 @@ func verifyQuorum(args []string) {
 			winner, best = d, counts[d]
 		}
 	}
-	if len(votes) != rec.Total {
-		fmt.Printf("FAIL: %d vote bundles disclosed but the tally records total=%d; all votes must be disclosed to verify the tally\n", len(votes), rec.Total)
+	if len(votes) != len(rec.Votes) || len(votes) != rec.Total {
+		fmt.Printf("FAIL: %d vote bundles disclosed but the tally records %d votes and total=%d; disclose exactly the votes the tally records\n", len(votes), len(rec.Votes), rec.Total)
 		os.Exit(1)
 	}
 	if winner != rec.Decision || best != rec.VotesFor {

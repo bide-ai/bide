@@ -92,15 +92,20 @@ func (e *Awaiting) Error() string // "run <id> awaiting signal <name>"
 - **Single-shot delivery:** `Do(runID, "signal:"+name, ...)` records `Record{Kind:
   StepSignal, Result: payload}`. Idempotent by name. `Await` scans `History` for
   `"signal:"+name`: present decodes and returns; absent returns `*Awaiting`.
-- **AwaitFor:** journals a companion deadline through the existing `Sleep` mechanism
-  (`timer:await-timeout:<name>`). On each entry: if the signal is present, return
-  `(v, true)`; else if the timer is due, return `(zero, false)`; else schedule the waker
-  and return `*Awaiting`. It is `Await` and `Sleep` composed, nothing new.
-- **Ordered channel (shipped, explicit-Ack):** `Send` records `"chan:"+channel+":"+key`
-  (`StepSignal`), deduped by that name so a redelivery is a no-op. `Ack` records
-  `"chanack:"+channel+":"+key` (`StepValue`). `Receive` scans `History`, collects the acked
-  keys, and returns the first message under `"chan:"+channel+":"` (in delivery order) whose
-  ack is absent. `Receive` writes nothing; only `Ack` writes, so on a tool re-run `Receive`
+- **AwaitFor:** journals a companion deadline (`await-timeout:<name>`, the same pattern as
+  `Sleep`'s wake time), then resolves the race through one more named step,
+  `await-resolved:<name>`: if the signal is present it records `(v, true)`; else if the
+  deadline has passed it records `(zero, false)`; else it records nothing, schedules the
+  waker for the top-level run, and returns `*Awaiting`. Once the outcome is recorded every
+  later entry returns it, so a signal delivered after the timeout won cannot flip a re-run
+  tool to the signal branch.
+- **Ordered channel (shipped, explicit-Ack):** `Send` records
+  `"chan:"+len(channel)+":"+channel+":"+key` (`StepSignal`), deduped by that name so a
+  redelivery is a no-op. `Ack` records `"chanack:"+len(channel)+":"+channel+":"+key`
+  (`StepValue`). The channel name's byte length makes the boundary exact when names contain
+  `:`, so no two (channel, key) pairs share a step. `Receive` scans `History`, collects the
+  acked keys, and returns the first message under its channel's prefix (in delivery order)
+  whose ack is absent. `Receive` writes nothing; only `Ack` writes, so on a tool re-run `Receive`
   returns the same oldest-unacked message deterministically, and the run consumes exactly once
   by looping Receive, durably handle, Ack. This is replay-safe without any per-execution cursor
   state, so it needs no change to the `Durable` interface.

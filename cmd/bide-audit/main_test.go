@@ -262,7 +262,7 @@ func TestVerifyQuorumCLI(t *testing.T) {
 	decide := func(v string) func(context.Context) (string, error) {
 		return func(context.Context) (string, error) { return v, nil }
 	}
-	res, err := govern.Quorum(ctx, store, runID, 2,
+	res, err := govern.Quorum(ctx, store, runID, "q", 2,
 		govern.Voter{Name: "model-A", Decide: decide("approve")},
 		govern.Voter{Name: "model-B", Decide: decide("approve")},
 		govern.Voter{Name: "model-C", Decide: decide("deny")})
@@ -290,10 +290,10 @@ func TestVerifyQuorumCLI(t *testing.T) {
 		writeJSON(t, p, pb)
 		return p
 	}
-	tallyP := bundlePath("quorum/tally", "tally.json")
-	aP := bundlePath("model-A", "a.json")
-	bP := bundlePath("model-B", "b.json")
-	cP := bundlePath("model-C", "c.json")
+	tallyP := bundlePath(govern.QuorumTallyStep("q"), "tally.json")
+	aP := bundlePath(govern.QuorumVoteStep("q", "model-A"), "a.json")
+	bP := bundlePath(govern.QuorumVoteStep("q", "model-B"), "b.json")
+	cP := bundlePath(govern.QuorumVoteStep("q", "model-C"), "c.json")
 	pubHex := hex.EncodeToString(pub)
 
 	bin := auditBin(dir)
@@ -302,21 +302,27 @@ func TestVerifyQuorumCLI(t *testing.T) {
 	}
 
 	// 1) Quorum met (k=2), all three votes disclosed: passes.
-	pass := []string{"verify-quorum", "-tally", tallyP, "-vote", aP, "-vote", bP, "-vote", cP, "-pubkey", pubHex, "-k", "2"}
+	pass := []string{"verify-quorum", "-name", "q", "-tally", tallyP, "-vote", aP, "-vote", bP, "-vote", cP, "-pubkey", pubHex, "-k", "2"}
 	if out, err := exec.Command(bin, pass...).CombinedOutput(); err != nil {
 		t.Fatalf("quorum-met run should pass, got err %v\n%s", err, out)
 	}
 
 	// 2) Threshold not met (k=3 while votes_for=2): must FAIL.
-	k3 := []string{"verify-quorum", "-tally", tallyP, "-vote", aP, "-vote", bP, "-vote", cP, "-pubkey", pubHex, "-k", "3"}
+	k3 := []string{"verify-quorum", "-name", "q", "-tally", tallyP, "-vote", aP, "-vote", bP, "-vote", cP, "-pubkey", pubHex, "-k", "3"}
 	if out, err := exec.Command(bin, k3...).CombinedOutput(); err == nil {
 		t.Fatalf("k=3 with votes_for=2 must fail, but exited 0\n%s", out)
 	}
 
 	// 3) Not all votes disclosed (2 of 3) so the tally cannot be recomputed: must FAIL.
-	partial := []string{"verify-quorum", "-tally", tallyP, "-vote", aP, "-vote", bP, "-pubkey", pubHex, "-k", "2"}
+	partial := []string{"verify-quorum", "-name", "q", "-tally", tallyP, "-vote", aP, "-vote", bP, "-pubkey", pubHex, "-k", "2"}
 	if out, err := exec.Command(bin, partial...).CombinedOutput(); err == nil {
 		t.Fatalf("partial vote disclosure must fail, but exited 0\n%s", out)
+	}
+
+	// 4) One vote disclosed twice in place of another (A, A, C hides B): must FAIL.
+	dup := []string{"verify-quorum", "-name", "q", "-tally", tallyP, "-vote", aP, "-vote", aP, "-vote", cP, "-pubkey", pubHex, "-k", "2"}
+	if out, err := exec.Command(bin, dup...).CombinedOutput(); err == nil {
+		t.Fatalf("a vote disclosed twice in place of another must fail, but exited 0\n%s", out)
 	}
 }
 
@@ -330,7 +336,7 @@ func TestVerifyQuorumCLI_TieIsNotAgreement(t *testing.T) {
 	decide := func(v string) func(context.Context) (string, error) {
 		return func(context.Context) (string, error) { return v, nil }
 	}
-	_, _ = govern.Quorum(ctx, store, runID, 2,
+	_, _ = govern.Quorum(ctx, store, runID, "q", 2,
 		govern.Voter{Name: "model-A", Decide: decide("approve")},
 		govern.Voter{Name: "model-B", Decide: decide("approve")},
 		govern.Voter{Name: "model-C", Decide: decide("deny")},
@@ -341,8 +347,8 @@ func TestVerifyQuorumCLI_TieIsNotAgreement(t *testing.T) {
 		t.Fatal(err)
 	}
 	sth := audit.SignTreeHead(th, priv)
-	args := []string{"verify-quorum", "-pubkey", hex.EncodeToString(pub), "-k", "2"}
-	for _, name := range []string{"quorum/tally", "model-A", "model-B", "model-C", "model-D"} {
+	args := []string{"verify-quorum", "-name", "q", "-pubkey", hex.EncodeToString(pub), "-k", "2"}
+	for _, name := range []string{govern.QuorumTallyStep("q"), govern.QuorumVoteStep("q", "model-A"), govern.QuorumVoteStep("q", "model-B"), govern.QuorumVoteStep("q", "model-C"), govern.QuorumVoteStep("q", "model-D")} {
 		pb, err := audit.ProveStep(ctx, store, runID, name, sth)
 		if err != nil {
 			t.Fatalf("ProveStep %s: %v", name, err)
@@ -350,7 +356,7 @@ func TestVerifyQuorumCLI_TieIsNotAgreement(t *testing.T) {
 		p := filepath.Join(dir, strings.ReplaceAll(name, "/", "_")+".json")
 		writeJSON(t, p, pb)
 		flag := "-vote"
-		if name == "quorum/tally" {
+		if name == govern.QuorumTallyStep("q") {
 			flag = "-tally"
 		}
 		args = append(args, flag, p)
