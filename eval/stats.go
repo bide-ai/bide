@@ -253,7 +253,20 @@ func bhAdjust(p []float64) []float64 {
 // baselineRate in a two-proportion comparison at the given alpha (two-sided) and power, using the
 // standard normal-approximation formula. It rounds up. Use it to size an evaluation before running
 // it: a drop smaller than what RequiredRuns can resolve at your Runs will read as noise.
+//
+// baselineRate must be in [0, 1] and alpha and power in (0, 1); anything else (NaN included)
+// panics. A drop of zero or less returns 0 (nothing to detect), and a drop past the baseline is
+// sized as a drop to 0. A drop so small that the runs it needs exceed int returns math.MaxInt. When
+// power is so low that any sample reaches it, the answer is 1.
 func RequiredRuns(baselineRate, minDetectableDrop, alpha, power float64) int {
+	if !(baselineRate >= 0 && baselineRate <= 1) || math.IsNaN(minDetectableDrop) ||
+		!(alpha > 0 && alpha < 1) || !(power > 0 && power < 1) {
+		panic(fmt.Sprintf("eval: RequiredRuns(%g, %g, %g, %g): want baselineRate in [0,1], alpha and power in (0,1)",
+			baselineRate, minDetectableDrop, alpha, power))
+	}
+	if minDetectableDrop <= 0 {
+		return 0
+	}
 	p1 := baselineRate
 	p2 := baselineRate - minDetectableDrop
 	if p2 < 0 {
@@ -261,14 +274,20 @@ func RequiredRuns(baselineRate, minDetectableDrop, alpha, power float64) int {
 	}
 	delta := p1 - p2
 	if delta <= 0 {
-		return 0
+		return math.MaxInt // a positive drop that rounds away against the baseline
 	}
 	pbar := (p1 + p2) / 2
 	zAlpha := probit(1 - alpha/2)
 	zBeta := probit(power)
 	num := zAlpha*math.Sqrt(2*pbar*(1-pbar)) + zBeta*math.Sqrt(p1*(1-p1)+p2*(1-p2))
-	n := (num * num) / (delta * delta)
-	return int(math.Ceil(n))
+	if num <= 0 {
+		return 1 // the formula needs delta*sqrt(n) >= num, which every n meets
+	}
+	n := math.Ceil((num * num) / (delta * delta))
+	if n >= math.MaxInt {
+		return math.MaxInt
+	}
+	return int(n)
 }
 
 // probit is the inverse of the standard normal CDF (the quantile function), via the
