@@ -45,25 +45,27 @@ A redelivered event resumes the recorded run rather than re-calling the model an
 
 ### Conversational bot
 
-For multi-turn bots, use a `Session` keyed by the conversation/thread id for memory, and guard the
-inbound event with a `Step` keyed by the event id. `Session` alone is not enough: it keys turns by
-index, so a redelivery would open a second turn. The event-id `Step` is the idempotency guard. It is
-declared `Idempotent` because a retried `Send` resumes the same turn from the journal.
+For multi-turn bots, use a `Session` keyed by the conversation/thread id for memory, and send each
+inbound message with `SendOnce` keyed by its event id. `Send` alone is not enough: it keys turns by
+index, so a redelivery would open a second turn.
 
 ```go
-reply, err := agent.Step(ctx, store, "inbox/"+conversationID, eventID,
-	func(ctx context.Context) (string, error) {
-		sess, err := a.Session(ctx, conversationID)
-		if err != nil {
-			return "", err
-		}
-		msg, err := sess.Send(ctx, text)
-		if err != nil {
-			return "", err // a pause/error is not recorded, so the next redelivery retries the turn
-		}
-		return msg.Text(), nil
-	}, agent.StepSafety(agent.Safety{Idempotent: true}))
+sess, err := a.Session(ctx, conversationID)
+if err != nil {
+	return "", err
+}
+msg, err := sess.SendOnce(ctx, eventID, text)
+if err != nil {
+	return "", err // a pause/error: the redelivered event resumes the same turn
+}
+return msg.Text(), nil
 ```
+
+`SendOnce` answers a message at most once per key. A redelivered event whose turn completed returns
+the recorded answer without calling the model, even if the process died after the turn and before
+the reply went out. A turn interrupted by a crash or a pause resumes when the event is redelivered,
+in its own journal, so a different message arriving in between gets its own turn. Reusing a key for
+different text is `ErrConfig`. Deliver a conversation's messages one at a time.
 
 The first delivery runs the turn and records the reply under the event id; a redelivery returns the
 recorded reply without advancing the transcript. If the turn pauses (a tool needs approval) or

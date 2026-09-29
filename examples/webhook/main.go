@@ -90,23 +90,20 @@ func statelessCommand(ctx context.Context, a *agent.Agent, channelID, eventID, t
 }
 
 // handleConversational handles an event in a multi-turn conversation. The Session (keyed by the
-// conversation/thread id) carries memory across messages; wrapping Send in a Step keyed by the
-// event id makes a redelivered inbound message return the recorded reply instead of opening a
-// second turn. Session alone is NOT enough: it keys turns by index, so a redelivery would
-// advance the transcript. The event-id Step is the idempotency guard. It is Idempotent because a
-// retried Send resumes the same turn from the journal rather than starting another.
-func handleConversational(ctx context.Context, a *agent.Agent, store agent.Durable, conversationID, eventID, text string) (string, error) {
-	return agent.Step(ctx, store, "inbox/"+conversationID, eventID, func(ctx context.Context) (string, error) {
-		sess, err := a.Session(ctx, conversationID)
-		if err != nil {
-			return "", err
-		}
-		msg, err := sess.Send(ctx, text)
-		if err != nil {
-			return "", err // a pause/error is not recorded, so the next redelivery retries the turn
-		}
-		return msg.Text(), nil
-	}, agent.StepSafety(agent.Safety{Idempotent: true}))
+// conversation/thread id) carries memory across messages, and SendOnce keyed by the event id makes
+// a redelivered inbound message return the recorded reply instead of opening a second turn, even
+// if the process died after the turn and before the reply went out. A turn interrupted by a crash
+// or a pause resumes when the event is redelivered.
+func handleConversational(ctx context.Context, a *agent.Agent, conversationID, eventID, text string) (string, error) {
+	sess, err := a.Session(ctx, conversationID)
+	if err != nil {
+		return "", err
+	}
+	msg, err := sess.SendOnce(ctx, eventID, text)
+	if err != nil {
+		return "", err // a pause/error: the redelivered event resumes the same turn
+	}
+	return msg.Text(), nil
 }
 
 func main() {
@@ -126,10 +123,10 @@ func main() {
 	fmt.Println("== conversational bot ==")
 	atomic.StoreInt64(&tickets, 0)
 	// First inbound message, delivered twice (redelivery).
-	c1, _ := handleConversational(ctx, a, store, "thread-42", "evt-A", "I need help")
-	c1dup, _ := handleConversational(ctx, a, store, "thread-42", "evt-A", "I need help") // redelivery
+	c1, _ := handleConversational(ctx, a, "thread-42", "evt-A", "I need help")
+	c1dup, _ := handleConversational(ctx, a, "thread-42", "evt-A", "I need help") // redelivery
 	// A genuinely new inbound message in the same conversation.
-	c2, _ := handleConversational(ctx, a, store, "thread-42", "evt-B", "what is the status")
+	c2, _ := handleConversational(ctx, a, "thread-42", "evt-B", "what is the status")
 	fmt.Printf("event A reply:            %q\n", c1)
 	fmt.Printf("event A redelivery reply: %q (replayed, no second turn)\n", c1dup)
 	fmt.Printf("event B reply:            %q\n", c2)
