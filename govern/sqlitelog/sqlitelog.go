@@ -10,9 +10,11 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/bide-ai/bide/agent"
-	_ "modernc.org/sqlite"
+	"modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
 )
 
 // Log is an on-disk append-only event log per entity.
@@ -30,7 +32,11 @@ func Open(path string) (*Log, error) {
 	// A writer waits up to 30s for another process's write lock. SQLite's busy handler is not
 	// fair, so under a burst of writers on one file (or a slow disk) a single writer can wait
 	// well past a few seconds; failing then would lose a write whose side effect already ran.
-	if _, err := db.Exec(`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=30000;`); err != nil {
+	if _, err := db.Exec(`PRAGMA busy_timeout=30000;`); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if err := useWAL(db, busyWait); err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -41,11 +47,51 @@ func Open(path string) (*Log, error) {
 	return &Log{db: db}, nil
 }
 
+// busyWait bounds how long Open retries switching a busy file to WAL mode, as busy_timeout
+// bounds a write.
+const busyWait = 30 * time.Second
+
+// useWAL switches the file to WAL mode. The switch needs an exclusive lock, and SQLite answers
+// SQLITE_BUSY at once, without waiting on busy_timeout, when two connections that both read the
+// file race to take it, as processes opening one file at once do; so it retries for up to wait.
+func useWAL(db *sql.DB, wait time.Duration) error {
+	deadline := time.Now().Add(wait)
+	for {
+		_, err := db.Exec(`PRAGMA journal_mode=WAL`)
+		var se *sqlite.Error
+		if err == nil || !errors.As(err, &se) || se.Code()&0xff != sqlite3.SQLITE_BUSY || time.Now().After(deadline) {
+			return err
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 // migrate creates the events table, and adds the append_id column and its unique index to a table
 // created before appends carried ids. Rows from before that have no id; they never match a new
-// append.
+// append. It runs in one BEGIN IMMEDIATE transaction, which takes the database's write lock before
+// reading the schema, so processes opening one file at once migrate it one at a time: each later
+// one finds the column already added.
 func migrate(db *sql.DB) error {
-	if _, err := db.Exec(`
+	ctx := context.Background()
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
+		return err
+	}
+	// On an error Open closes the database, which rolls the transaction back.
+	if err := migrateLocked(ctx, conn); err != nil {
+		return err
+	}
+	_, err = conn.ExecContext(ctx, `COMMIT`)
+	return err
+}
+
+// migrateLocked is migrate's work; the caller holds the write lock.
+func migrateLocked(ctx context.Context, db *sql.Conn) error {
+	if _, err := db.ExecContext(ctx, `
 		CREATE TABLE IF NOT EXISTS events (
 			entity    text    NOT NULL,
 			seq       INTEGER NOT NULL,
@@ -56,15 +102,15 @@ func migrate(db *sql.DB) error {
 		return err
 	}
 	var has int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('events') WHERE name = 'append_id'`).Scan(&has); err != nil {
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM pragma_table_info('events') WHERE name = 'append_id'`).Scan(&has); err != nil {
 		return err
 	}
 	if has == 0 {
-		if _, err := db.Exec(`ALTER TABLE events ADD COLUMN append_id text`); err != nil {
+		if _, err := db.ExecContext(ctx, `ALTER TABLE events ADD COLUMN append_id text`); err != nil {
 			return err
 		}
 	}
-	_, err := db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS events_append_id ON events (entity, append_id)`)
+	_, err := db.ExecContext(ctx, `CREATE UNIQUE INDEX IF NOT EXISTS events_append_id ON events (entity, append_id)`)
 	return err
 }
 
