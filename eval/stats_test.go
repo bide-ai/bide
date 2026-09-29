@@ -162,6 +162,96 @@ func TestRequiredRuns(t *testing.T) {
 	}
 }
 
+// The Wilson interval for zero passes starts at exactly 0 and for all passes ends at exactly 1 (the
+// center and margin are equal there). Rounding in center-margin must not leave a positive lower
+// bound on a metric that never passed, or an upper bound below 1 on one that always did.
+func TestWilson_ExactAtAllFailAndAllPass(t *testing.T) {
+	for _, n := range []int{1, 3, 4, 6, 7, 10, 25, 100, 1000} {
+		if s := reportFor(0, n).Overall["contains:PASS"]; s.CILow != 0 {
+			t.Errorf("0/%d: ci_low = %g, want exactly 0", n, s.CILow)
+		}
+		if s := reportFor(n, n).Overall["contains:PASS"]; s.CIHigh != 1 {
+			t.Errorf("%d/%d: ci_high = %.17g, want exactly 1", n, n, s.CIHigh)
+		}
+	}
+}
+
+// With no runs there is no evidence, so the interval is the whole range [0, 1], the limit of the
+// Wilson interval as n goes to 0. [0, 0] would read as a rate known to be zero.
+func TestWilson_NoRunsIsTheWholeRange(t *testing.T) {
+	run := func(_ context.Context, _ string) eval.RunOutput { return eval.RunOutput{} }
+	rep := mustRun(t, context.Background(), run, nil, []eval.Metric{eval.NoError()}, eval.Options{Runs: 3})
+	if s := rep.Overall["no_error"]; s.Runs != 0 || s.CILow != 0 || s.CIHigh != 1 {
+		t.Fatalf("0 runs: %+v, want runs 0 and ci [0, 1]", s)
+	}
+}
+
+// RequiredRuns always returns a count a caller can use. A drop so small that the runs it needs
+// exceed int (or that rounds away against the baseline) saturates at math.MaxInt, instead of
+// converting an out-of-range float to int, which Go leaves to the platform (math.MinInt64 on
+// amd64), or reading the rounded-away drop as "nothing to detect". Arguments outside their domain
+// are a caller error and panic.
+func TestRequiredRuns_NonFiniteInputs(t *testing.T) {
+	for _, tc := range []struct {
+		name                         string
+		baseline, drop, alpha, power float64
+	}{
+		{"runs exceed int", 0.9, 1e-10, 0.05, 0.8},
+		{"drop rounds away", 0.9, 1e-200, 0.05, 0.8},
+	} {
+		if n := eval.RequiredRuns(tc.baseline, tc.drop, tc.alpha, tc.power); n != math.MaxInt {
+			t.Errorf("%s: RequiredRuns = %d, want math.MaxInt", tc.name, n)
+		}
+	}
+	for _, tc := range []struct {
+		name                         string
+		baseline, drop, alpha, power float64
+	}{
+		{"alpha 0", 0.9, 0.05, 0, 0.8},
+		{"alpha 1", 0.9, 0.05, 1, 0.8},
+		{"power 0", 0.9, 0.05, 0.05, 0},
+		{"power 1", 0.9, 0.05, 0.05, 1},
+		{"baseline above 1", 1.2, 0.05, 0.05, 0.8},
+		{"baseline below 0", -0.1, 0.05, 0.05, 0.8},
+		{"NaN baseline", math.NaN(), 0.05, 0.05, 0.8},
+		{"NaN drop", 0.9, math.NaN(), 0.05, 0.8},
+		{"NaN alpha", 0.9, 0.05, math.NaN(), 0.8},
+		{"NaN power", 0.9, 0.05, 0.05, math.NaN()},
+	} {
+		func() {
+			defer func() {
+				if recover() == nil {
+					t.Errorf("%s: RequiredRuns returned instead of panicking", tc.name)
+				}
+			}()
+			n := eval.RequiredRuns(tc.baseline, tc.drop, tc.alpha, tc.power)
+			t.Logf("%s: RequiredRuns = %d", tc.name, n)
+		}()
+	}
+}
+
+// The normal-approximation formula needs z_alpha*sigma0 + z_beta*sigma1 > 0. Below that (power so
+// low it sits under the false-positive rate) any sample reaches it, and squaring the negative sum
+// would instead ask for more runs the lower the power: 1 run per arm is the answer.
+func TestRequiredRuns_PowerBelowAlphaNeedsOneRun(t *testing.T) {
+	if n := eval.RequiredRuns(0.9, 0.05, 0.05, 0.001); n != 1 {
+		t.Fatalf("RequiredRuns at power 0.001 = %d, want 1", n)
+	}
+}
+
+// Wants that JSON cannot encode (NaN, infinities) must still distinguish case sets: two different
+// expectations must not hash alike.
+func TestHashCases_UnencodableWantsDiffer(t *testing.T) {
+	nan := eval.HashCases([]eval.Case{{Name: "a", Input: "x", Want: math.NaN()}})
+	inf := eval.HashCases([]eval.Case{{Name: "a", Input: "x", Want: math.Inf(1)}})
+	if nan == inf {
+		t.Fatalf("Want NaN and Want +Inf hash the same (%s)", nan)
+	}
+	if again := eval.HashCases([]eval.Case{{Name: "a", Input: "x", Want: math.NaN()}}); again != nan {
+		t.Fatalf("HashCases of an unencodable Want is not stable: %s vs %s", nan, again)
+	}
+}
+
 // TestHashCases confirms the case-set hash is stable, lowercase-hex, and changes when any case
 // changes (name, input, or want).
 func TestHashCases(t *testing.T) {
@@ -241,6 +331,26 @@ func TestByTag(t *testing.T) {
 	}
 	if easy <= hard {
 		t.Fatalf("per-tag rates should differ (easy %v > hard %v)", easy, hard)
+	}
+}
+
+// A case that carries the same tag twice is still one case in that stratum: its runs count once, so
+// the tag's interval is as wide as its real sample. Counting them twice halves the variance and
+// reports a narrower interval than the data supports.
+func TestByTag_RepeatedTagCountsRunsOnce(t *testing.T) {
+	var n int64
+	run := func(_ context.Context, _ string) eval.RunOutput {
+		if atomic.AddInt64(&n, 1)%2 == 0 {
+			return eval.RunOutput{Final: agent.UserText("YES")}
+		}
+		return eval.RunOutput{Final: agent.UserText("no")}
+	}
+	cases := []eval.Case{{Name: "h", Input: "x", Tags: []string{"hard", "hard"}}}
+	rep := mustRun(t, context.Background(), run, cases, []eval.Metric{eval.Contains("YES")}, eval.Options{Runs: 4})
+	got := rep.ByTag["hard"]["contains:YES"]
+	want := rep.Overall["contains:YES"]
+	if got != want {
+		t.Fatalf("tag stat = %+v, want the case's own %+v (2/4, one case)", got, want)
 	}
 }
 
