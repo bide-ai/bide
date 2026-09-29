@@ -26,9 +26,11 @@ type recoverConfig struct {
 	ttl    time.Duration
 }
 
-// WithLeaseHolder sets the identity this recoverer claims leases under. Defaults to a
-// host/pid/random string. Give each process a stable, distinct holder if you want lease ownership
-// to survive a restart of the same logical worker.
+// WithLeaseHolder names the worker that claims leases, as the leases table and logs show it.
+// Defaults to a host/pid/random string. The name identifies, it does not grant: each Lease call
+// (and each run Recover drives) claims under a token of its own derived from it, so two drivers
+// sharing a name still exclude each other, and a restarted worker waits out its predecessor's
+// lease (the TTL) like any other process rather than taking it over.
 func WithLeaseHolder(id string) RecoverOption { return func(c *recoverConfig) { c.holder = id } }
 
 // WithLeaseTTL sets how long an acquired lease is valid. Recover renews it while a run is driving,
@@ -200,7 +202,12 @@ func Lease(ctx context.Context, store Durable, runID string, drive func(context.
 	if !ok {
 		return true, drive(ctx) // no leasing available: drive unconditionally
 	}
-	got, err := leaser.AcquireLease(ctx, runID, cfg.holder, cfg.ttl)
+	// The lease is claimed under a token of this call's own, not the bare holder name: a Leaser
+	// grants a holder's own live lease again (a renewal), so two drivers sharing a name (a worker's
+	// primary and its recoverer, or a restarted worker and its stalled predecessor) would otherwise
+	// both hold the lease, renew it for each other, and release it from under each other.
+	owner := cfg.holder + "#" + leaseToken()
+	got, err := leaser.AcquireLease(ctx, runID, owner, cfg.ttl)
 	if err != nil {
 		return false, fmt.Errorf("acquire lease %s: %w (%w)", runID, err, ErrStorage)
 	}
@@ -212,10 +219,13 @@ func Lease(ctx context.Context, store Durable, runID string, drive func(context.
 	defer func() {
 		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 		defer cancel()
-		_ = leaser.ReleaseLease(rctx, runID, cfg.holder)
+		_ = leaser.ReleaseLease(rctx, runID, owner)
 	}()
-	return true, driveWithRenew(ctx, leaser, runID, cfg, drive)
+	return true, driveWithRenew(ctx, leaser, runID, owner, cfg.ttl, drive)
 }
+
+// leaseToken returns a random token that makes each Lease call's claim its own.
+func leaseToken() string { return fmt.Sprintf("%016x", rand.Uint64()) }
 
 // driveWithRenew runs the drive while renewing the lease every ttl/2, so a drive that outlasts the
 // TTL keeps its lease. The drive is given a derived context that is cancelled if the lease is lost
@@ -229,7 +239,7 @@ func Lease(ctx context.Context, store Durable, runID string, drive func(context.
 // When the drive returns (or panics), the renewer is stopped, abandoning any renewal it has in
 // flight, and waited for before driveWithRenew returns, so no renewal outlives the drive or races
 // the release that follows it.
-func driveWithRenew(ctx context.Context, leaser Leaser, runID string, cfg recoverConfig, run func(context.Context) error) error {
+func driveWithRenew(ctx context.Context, leaser Leaser, runID, owner string, ttl time.Duration, run func(context.Context) error) error {
 	dctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	rctx, stopRenew := context.WithCancel(ctx)
@@ -240,14 +250,14 @@ func driveWithRenew(ctx context.Context, leaser Leaser, runID string, cfg recove
 	}()
 	go func() {
 		defer close(renewerDone)
-		t := time.NewTicker(max(cfg.ttl/2, 1)) // a 1ns TTL halves to zero, which NewTicker rejects
+		t := time.NewTicker(max(ttl/2, 1)) // a 1ns TTL halves to zero, which NewTicker rejects
 		defer t.Stop()
 		for {
 			select {
 			case <-rctx.Done():
 				return
 			case <-t.C:
-				if ok, err := leaser.RenewLease(rctx, runID, cfg.holder, cfg.ttl); err != nil || !ok {
+				if ok, err := leaser.RenewLease(rctx, runID, owner, ttl); err != nil || !ok {
 					cancel() // lost the lease: stop the drive rather than run un-leased
 					return
 				}
