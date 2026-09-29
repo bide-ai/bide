@@ -110,6 +110,15 @@ tool errors. The wrapped tool's `Call` returns the server's result content as ra
 the server flags the result `IsError`, the content is surfaced as a Go error (wrapped with
 `agent.ErrTool`) so the agent core sees a failure and can self-correct.
 
+A call whose answer never arrives, because the connection dropped or the deadline passed after
+the request was sent, may still have run on the server. `Call` then fails with
+`agent.ErrToolOutcomeUnknown` rather than an ordinary failure. For a side effect the agent
+records no result: the run stops with that error and a resume halts (`ResumeHalt`) instead of
+telling the model the call failed, which would invite it to run the side effect again. A
+retry-safe tool's lost call is an ordinary failure the model sees. A JSON-RPC error from the
+server, or a call on a session that is already closed, is an ordinary failure too: the server
+answered, or the request was never sent.
+
 > The returned tools call back through the session, so **keep the session open for their
 > lifetime.** Close it (and any server-side session) when the agent is done.
 

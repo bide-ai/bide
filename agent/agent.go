@@ -647,6 +647,13 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 						// repeat.
 						return Record{}, callErr
 					}
+					if callErr != nil && errors.Is(callErr, ErrToolOutcomeUnknown) && !c.t.Safety().retriableOnResume() {
+						// The tool cannot tell whether its side effect took place (its connection
+						// dropped after the request went out). Recording a failure would tell the
+						// model it did not, and invite it to ask again. Record nothing: the attempt
+						// marker stays without a result, so a resume halts for confirmation.
+						return Record{}, callErr
+					}
 					if callErr != nil {
 						// A ResumeHalt or PendingApproval raised INSIDE this tool (a sub-agent
 						// whose own tool halted or needs approval) is a control-flow signal for

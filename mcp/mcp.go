@@ -35,8 +35,10 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/bide-ai/bide/agent"
@@ -198,15 +200,21 @@ func (t *tool) Safety() agent.Safety {
 
 // Call invokes the tool on the MCP server with the raw JSON args and returns the
 // result content as raw JSON. If the server flags the result IsError, the content is
-// returned as a Go error so the agent core sees a failure and can self-correct.
+// returned as a Go error so the agent core sees a failure and can self-correct. A call
+// that may have run on the server without its answer arriving fails with
+// agent.ErrToolOutcomeUnknown (see callError).
 func (t *tool) Call(ctx context.Context, args json.RawMessage) (json.RawMessage, error) {
 	params := &mcp.CallToolParams{Name: t.def.Name}
 	if len(args) > 0 {
+		// Checked here, so that a failure to encode the request is known not to have sent it.
+		if !json.Valid(args) {
+			return nil, fmt.Errorf("mcp: call tool %q: arguments are not valid JSON (%w)", t.def.Name, agent.ErrToolArgs)
+		}
 		params.Arguments = args
 	}
 	res, err := t.session.CallTool(ctx, params)
 	if err != nil {
-		return nil, fmt.Errorf("mcp: call tool %q: %w (%w)", t.def.Name, err, agent.ErrTool)
+		return nil, callError(t.def.Name, err)
 	}
 	out, err := json.Marshal(res.Content)
 	if err != nil {
@@ -216,4 +224,18 @@ func (t *tool) Call(ctx context.Context, args json.RawMessage) (json.RawMessage,
 		return nil, fmt.Errorf("mcp: tool %q reported error: %s (%w)", t.def.Name, out, agent.ErrTool)
 	}
 	return out, nil
+}
+
+// callError classifies a failed tools/call. The call failed for certain only when the request
+// never left the client (the session was already closed) or the server answered it with a
+// JSON-RPC error. Any other failure came after the request was
+// sent: the connection dropped, the deadline passed, or the answer could not be read. The server
+// may have run the tool, so the error wraps agent.ErrToolOutcomeUnknown and the agent does not
+// record the call as failed (which would invite the model to run a side effect again).
+func callError(name string, err error) error {
+	var wire *jsonrpc.Error
+	if errors.Is(err, mcp.ErrConnectionClosed) || errors.As(err, &wire) {
+		return fmt.Errorf("mcp: call tool %q: %w (%w)", name, err, agent.ErrTool)
+	}
+	return fmt.Errorf("mcp: call tool %q: %w (%w)", name, err, agent.ErrToolOutcomeUnknown)
 }

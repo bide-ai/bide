@@ -45,6 +45,14 @@ var (
 var (
 	ErrUnknownTool = fmt.Errorf("unknown tool: %w", ErrTool)
 	ErrToolArgs    = fmt.Errorf("invalid tool arguments: %w", ErrTool)
+	// ErrToolOutcomeUnknown is a tool call that may or may not have taken effect: the tool
+	// sent its request but lost the connection (or its deadline passed) before the answer
+	// came back. A tool returns an error wrapping it instead of an ordinary failure when it
+	// cannot tell. For a tool that is not retry-safe the agent records no result, as it does
+	// for a cancelled call: the run stops with this error, and a resume halts (*ResumeHalt)
+	// rather than run the side effect a second time. For a retry-safe tool the call is an
+	// ordinary failure the model sees, since running it again does no harm.
+	ErrToolOutcomeUnknown = fmt.Errorf("tool outcome unknown: %w", ErrTool)
 	// ErrToolReinvoked is a tool middleware calling a tool that is not retry-safe a second
 	// time for the same tool call. The agent refuses and does not run the tool again.
 	ErrToolReinvoked    = fmt.Errorf("tool invoked again for one call: %w", ErrConfig)
