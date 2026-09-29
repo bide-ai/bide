@@ -148,7 +148,7 @@ func (a *Agent) runSagaWithTelemetry(ctx context.Context, runID, input string, e
 }
 
 func (a *Agent) rollback(ctx context.Context, runID string, cause error) error {
-	comp, uncomp, cerr := a.rollbackRun(ctx, runID)
+	comp, uncomp, cerr := a.rollbackRun(ctx, runID, rootRunID(ctx, runID))
 	if cerr == nil {
 		// The rollback finished: the run is over. Mark it terminal so a recovery supervisor
 		// leaves it alone. A rollback that stopped (an unknown outcome, a failed compensator) is
@@ -172,12 +172,13 @@ func (a *Agent) rollback(ctx context.Context, runID string, cause error) error {
 //
 //   - a call with no result but an attempt marker (a side effect that started) has an unknown
 //     outcome, so the rollback stops there with a *ResumeHalt: a human, or a reconciler via
-//     ResolveHalt, records what happened, and the next RunSaga resumes the rollback;
+//     ResolveHalt, records what happened, and the next RunSaga resumes the rollback. The halt
+//     names root, the top-level run to re-invoke, even when the call is in a sub-agent's run;
 //   - a side effect with neither result nor marker never started, and is skipped;
 //   - a retry-safe call with a compensator and no result is run again to learn its result
 //     (safe by its declaration), then compensated;
 //   - a sub-agent call is always rolled back into, whether or not it finished.
-func (a *Agent) rollbackRun(ctx context.Context, runID string) (compensated, uncompensated []string, err error) {
+func (a *Agent) rollbackRun(ctx context.Context, runID, root string) (compensated, uncompensated []string, err error) {
 	recs, e := a.store.History(ctx, runID)
 	if e != nil {
 		return nil, nil, e
@@ -218,7 +219,7 @@ func (a *Agent) rollbackRun(ctx context.Context, runID string) (compensated, unc
 		// Sub-agent: recurse into its child run (using the SUB-agent's own tools), so its
 		// writes are compensated too, even if the call was cut off before it returned.
 		if sat, ok := tool.(*subAgentTool); ok {
-			cc, cu, ce := sat.sub.rollbackRun(ctx, runID+"/"+tu.ID)
+			cc, cu, ce := sat.sub.rollbackRun(ctx, runID+"/"+tu.ID, root)
 			compensated = append(compensated, cc...)
 			uncompensated = append(uncompensated, cu...)
 			if ce != nil {
@@ -241,7 +242,7 @@ func (a *Agent) rollbackRun(ctx context.Context, runID string) (compensated, unc
 					at = time.UnixMilli(ms)
 				}
 				uncompensated = append(uncompensated, tu.Name)
-				return compensated, uncompensated, &ResumeHalt{RunID: runID, ToolUseID: tu.ID, ToolName: tu.Name, AttemptedAt: at}
+				return compensated, uncompensated, &ResumeHalt{RunID: runID, RootRunID: root, ToolUseID: tu.ID, ToolName: tu.Name, AttemptedAt: at}
 			case !safety.RetrySafe():
 				continue // no attempt marker: it never started
 			case !canUndo:

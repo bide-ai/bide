@@ -86,6 +86,64 @@ func TestSaga_RollbackReachesACancelledSubAgent(t *testing.T) {
 	}
 }
 
+// A rollback that stops on an unknown outcome inside a sub-agent's run names the root run to
+// continue once the halt is resolved, as every other halt inside a sub-agent does: whether the
+// parent's rollback reached into the sub-run, or the sub-agent's own saga rolled back.
+func TestSaga_RollbackHaltInASubAgentNamesTheRoot(t *testing.T) {
+	for _, failIn := range []string{"parent", "sub-agent"} {
+		t.Run(failIn, func(t *testing.T) {
+			charging := make(chan struct{})
+			pay := CompensatedFunc("pay", "charge the card", Safety{},
+				func(ctx context.Context, _ struct{}) (string, error) {
+					close(charging) // the payment went through
+					<-ctx.Done()    // cancelled while waiting for the response
+					return "", ctx.Err()
+				},
+				func(context.Context, struct{}, string) error { return nil })
+			refuse := Func("visa", "apply for the visa", Safety{}, func(context.Context, struct{}) (string, error) {
+				<-charging
+				return "", errors.New("visa refused")
+			})
+			store := NewMemStore()
+			subTurn, parentTurn := [][3]string{{"p1", "pay", `{}`}}, [][3]string{{"s1", "clerk", `{"task":"pay"}`}}
+			subTools, parentTools := []Tool{pay}, []Tool{}
+			if failIn == "parent" {
+				parentTurn = append(parentTurn, [3]string{"v1", "visa", `{}`})
+				parentTools = append(parentTools, refuse)
+			} else {
+				subTurn = append(subTurn, [3]string{"v1", "visa", `{}`})
+				subTools = append(subTools, refuse)
+			}
+			clerk := New(&sagaTurns{turns: [][][3]string{subTurn}}, store, subTools...)
+			parentTools = append(parentTools, SubAgent("clerk", "pays", clerk))
+			_, err := New(&sagaTurns{turns: [][][3]string{parentTurn}}, store, parentTools...).RunSaga(context.Background(), "r1", "trip")
+			halt := rollbackHalt(err)
+			if halt == nil {
+				t.Fatalf("err = %v; want a rollback halted on p1", err)
+			}
+			if halt.RunID != "r1/s1" || halt.ToolUseID != "p1" || halt.RootRunID != "r1" {
+				t.Fatalf("halt on call %q in run %q names root %q; want p1 in r1/s1 with root r1", halt.ToolUseID, halt.RunID, halt.RootRunID)
+			}
+		})
+	}
+}
+
+// rollbackHalt returns the halt that stopped a saga rollback, following aborts whose cause is a
+// sub-agent's abort, or nil.
+func rollbackHalt(err error) *ResumeHalt {
+	for {
+		var ab *SagaAborted
+		if !errors.As(err, &ab) {
+			return nil
+		}
+		var halt *ResumeHalt
+		if errors.As(ab.CompensateErr, &halt) {
+			return halt
+		}
+		err = ab.Cause
+	}
+}
+
 // slowSecondTurn calls its first-turn tools, then blocks its second turn until cancelled.
 type slowSecondTurn struct {
 	first    [][3]string
