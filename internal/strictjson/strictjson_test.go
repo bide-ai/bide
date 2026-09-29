@@ -48,3 +48,18 @@ func TestUnmarshal_Contract(t *testing.T) {
 		t.Errorf("Unmarshal with trailing data = %v, want ErrTrailingData", err)
 	}
 }
+
+// With ExactFields (audit's reading), no field is required and every field takes null, as
+// encoding/json reads it: only SchemaFields rejects null for a required field.
+func TestUnmarshal_ExactFieldsTakeNull(t *testing.T) {
+	var v struct {
+		S string `json:"s"`
+		L []int  `json:"l"`
+	}
+	if err := Unmarshal([]byte(`{"s":null,"l":null}`), &v, nil); err != nil {
+		t.Fatalf("Unmarshal with ExactFields = %v, want null accepted", err)
+	}
+	if err := Unmarshal([]byte(`{"s":null}`), &v, &Options{Fields: SchemaFields}); err == nil {
+		t.Fatal("Unmarshal with SchemaFields accepted null for a required field")
+	}
+}

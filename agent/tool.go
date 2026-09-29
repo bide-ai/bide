@@ -78,7 +78,7 @@ func (s Safety) RetrySafe() bool { return s.retriableOnResume() }
 
 // Func wraps a typed Go function into a Tool. In is decoded from the args strictly, so the
 // tool reads exactly what the model sent: a missing required field (one schema.For lists as
-// required), an unknown name or a case variant of a field's name, a duplicate name, data after
+// required), null for a required field whose schema does not admit null, an unknown name or a case variant of a field's name, a duplicate name, data after
 // the value, invalid UTF-8, or an escaped lone surrogate is ErrToolArgs, which goes back to the
 // model as a tool error to correct. Empty args are the empty object. The return value is
 // JSON-encoded. This is the compile-time-typed ergonomic: change In and the
@@ -129,7 +129,7 @@ var argsOptions = &strictjson.Options{Fields: strictjson.SchemaFields}
 // decodeArgs decodes a tool call's arguments into v (a pointer) strictly, so the value holds
 // exactly what the arguments say. It rejects what encoding/json would accept loosely: a missing
 // required field (one schema.For lists as required: not a pointer, and no omitempty or omitzero
-// in its json tag), a name that is not a field (an unknown name, or a case variant of a field's
+// in its json tag) or null for one whose schema does not admit null, a name that is not a field (an unknown name, or a case variant of a field's
 // name), a duplicate name, data after the value, invalid UTF-8, and an escaped lone surrogate.
 // Empty arguments are the empty object. Func, SubAgent, and RunTyped's final_answer decode their
 // arguments with it.

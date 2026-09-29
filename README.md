@@ -404,7 +404,8 @@ Run the live smoke example: `OPENROUTER_API_KEY=sk-... go run ./examples/smoke`
 
 A `Func` tool decodes its arguments **strictly**, so the tool reads exactly what the model sent.
 A call that is missing a required field (one the schema lists as required: not a pointer, and no
-`omitempty` or `omitzero` in its json tag), uses a name that is not a field (an unknown name, or a
+`omitempty` or `omitzero` in its json tag) or sends it as `null` (unless its schema admits any
+value, as for `any` or `json.RawMessage`), uses a name that is not a field (an unknown name, or a
 case variant such as `"CITY"` for `city`), repeats a name, has data after the object, or holds
 invalid UTF-8 or an escaped lone surrogate is an `ErrToolArgs` error. That error goes back to the
 model as the call's result, so the model can correct the call. `encoding/json` would fill in zero

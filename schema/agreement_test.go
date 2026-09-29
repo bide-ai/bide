@@ -13,7 +13,7 @@ import (
 
 // The schema For describes and the strict decoder that reads tool arguments (strictjson with
 // SchemaFields) agree on every struct in this package's test corpus, at every depth: the same
-// property names, and the same required ones. So an argument the schema calls valid is never
+// property names, the same required ones, and, for each required one, whether null is valid. So an argument the schema calls valid is never
 // rejected for a missing or unknown name, and one the decoder accepts never lacks a name the
 // schema requires.
 func TestFor_AgreesWithTheStrictDecoder(t *testing.T) {
@@ -29,6 +29,12 @@ func TestFor_AgreesWithTheStrictDecoder(t *testing.T) {
 		Dash     string            `json:"-,"`
 		Untagged int
 		hidden   int
+		Any      any             `json:"any"`
+		Raw      json.RawMessage `json:"raw"`
+		Custom   customJSON      `json:"custom"`
+		Text     email           `json:"text"`
+		At       time.Time       `json:"at"`
+		Quoted   int             `json:"quoted,string"`
 	}
 	corpus := []reflect.Type{
 		reflect.TypeFor[local](), reflect.TypeFor[email](), reflect.TypeFor[customJSON](), reflect.TypeFor[base](),
@@ -57,6 +63,20 @@ func TestFor_AgreesWithTheStrictDecoder(t *testing.T) {
 	if structs < len(corpus) {
 		t.Fatalf("compared %d structs, want at least %d", structs, len(corpus))
 	}
+}
+
+// schemaAdmitsNull reports whether schema p admits null: it names no type, or its type is null
+// or lists null.
+func schemaAdmitsNull(p map[string]any) bool {
+	switch typ := p["type"].(type) {
+	case nil:
+		return true
+	case string:
+		return typ == "null"
+	case []any:
+		return slices.Contains(typ, any("null"))
+	}
+	return false
 }
 
 // agree compares schema s of type typ with the strict decoder's view of typ, recursively, and
@@ -98,6 +118,15 @@ func agree(t *testing.T, typ reflect.Type, s map[string]any, path string, seen m
 		}
 		if !slices.Equal(required, want) {
 			t.Errorf("%s: the decoder requires %v, the schema requires %v", path, required, want)
+		}
+		// A required field takes null exactly when its schema admits null (has no type, or lists
+		// null); an optional field always does.
+		for name, f := range fields {
+			p, _ := props[name].(map[string]any)
+			admitsNull := !f.Required || schemaAdmitsNull(p)
+			if f.NullOK != admitsNull {
+				t.Errorf("%s.%s: the decoder takes null %v, the schema admits null %v (%v)", path, name, f.NullOK, admitsNull, p)
+			}
 		}
 		for name, f := range fields {
 			if p, ok := props[name].(map[string]any); ok {

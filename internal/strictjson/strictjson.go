@@ -20,17 +20,19 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf16"
 	"unicode/utf8"
 
 	"github.com/bide-ai/bide/internal/jsonfields"
 )
 
-// Field is one name a struct accepts: the type its value decodes into, and whether a document
-// must include it.
+// Field is one name a struct accepts: the type its value decodes into, whether a document must
+// include it, and whether it may be null.
 type Field struct {
 	Type     reflect.Type
 	Required bool
+	NullOK   bool
 }
 
 // Options configure a check.
@@ -70,7 +72,8 @@ func Unmarshal(data []byte, v any, opts *Options) error {
 
 // Check consumes the one JSON value in data, checking it against t, and returns ErrTrailingData
 // if anything but whitespace follows. An object decoded into a struct may use only that struct's
-// exact JSON field names, each at most once, and must include each required one; every other
+// exact JSON field names, each at most once, and must include each required one, with a value
+// other than null unless the field takes null (Field.NullOK); every other
 // object (a map, raw JSON, a type with its own UnmarshalJSON, an interface) is checked for
 // duplicate names only, at any depth. Strings decoded into Go must have one spelling: no escaped
 // lone surrogate, and in a []byte, base64 that is the standard encoding of its bytes. JSON kept
@@ -95,6 +98,7 @@ func CheckValue(raw []byte, t reflect.Type, path string, opts *Options) error {
 var (
 	unmarshalerType = reflect.TypeFor[json.Unmarshaler]()
 	rawMessageType  = reflect.TypeFor[json.RawMessage]()
+	timeType        = reflect.TypeFor[time.Time]()
 )
 
 // decoder walks the tokens of data, which it keeps so it can read each token's raw spelling.
@@ -215,18 +219,23 @@ func (s *decoder) value(t reflect.Type, path string, verbatim bool) error {
 				}
 			}
 			var next reflect.Type
+			nullOK := true
 			switch {
 			case fields != nil:
 				f, ok := fields[key]
 				if !ok {
 					return fmt.Errorf("%s: %q is not a field of %s (names must match exactly)", path, key, t)
 				}
-				next = f.Type
+				next, nullOK = f.Type, f.NullOK
 			case mapElem != nil:
 				next = mapElem
 			}
+			start := s.dec.InputOffset()
 			if err := s.value(next, path+"."+key, verbatim); err != nil {
 				return err
+			}
+			if !nullOK && bytes.Equal(trimSeparators(s.data[start:s.dec.InputOffset()]), []byte("null")) {
+				return fmt.Errorf("%s: null for required field %q", path, key)
 			}
 		}
 		if _, err := s.dec.Token(); err != nil { // }
@@ -289,7 +298,11 @@ func escapedUnit(raw []byte, at int) rune {
 
 // SchemaFields returns the names struct type t accepts as schema.For describes them: the fields
 // encoding/json reads (jsonfields.Of), each required exactly when the schema lists it as
-// required. A type jsonfields cannot resolve accepts no names.
+// required. A required field takes null only when its schema admits any value (For leaves an
+// interface, json.RawMessage, or a json.Unmarshaler other than time.Time unconstrained);
+// otherwise encoding/json would read null as the zero value, one the document never gave. An
+// optional field takes null (OpenAI strict mode sends it). A type jsonfields cannot resolve
+// accepts no names.
 func SchemaFields(t reflect.Type) map[string]Field {
 	fs, err := jsonfields.Of(t)
 	if err != nil {
@@ -297,9 +310,20 @@ func SchemaFields(t reflect.Type) map[string]Field {
 	}
 	out := make(map[string]Field, len(fs))
 	for _, f := range fs {
-		out[f.Name] = Field{Type: f.Field.Type, Required: f.Required()}
+		out[f.Name] = Field{Type: f.Field.Type, Required: f.Required(), NullOK: !f.Required() || admitsAny(f.Field.Type)}
 	}
 	return out
+}
+
+// admitsAny reports whether schema.For describes t as unconstrained ({}), a schema null meets.
+func admitsAny(t reflect.Type) bool {
+	switch {
+	case t == timeType:
+		return false
+	case t == rawMessageType, t.Kind() == reflect.Interface:
+		return true
+	}
+	return t.Implements(unmarshalerType) || reflect.PointerTo(t).Implements(unmarshalerType)
 }
 
 // ExactFields returns the exact JSON names encoding/json decodes into struct type t, with each
@@ -307,7 +331,8 @@ func SchemaFields(t reflect.Type) map[string]Field {
 // skipped), and the fields of an untagged embedded struct promoted into t. When several fields
 // claim one name, the shallowest wins, and at equal depth a tagged field wins over an untagged one.
 // A name still claimed by several fields is one encoding/json ignores; it is kept here, and the
-// decode that follows (DisallowUnknownFields) rejects it. No field is required.
+// decode that follows (DisallowUnknownFields) rejects it. No field is required, and every field
+// takes null.
 func ExactFields(t reflect.Type) map[string]Field {
 	type cand struct {
 		t      reflect.Type
@@ -372,7 +397,7 @@ func ExactFields(t reflect.Type) map[string]Field {
 			top = tagged
 		}
 		if len(top) > 0 {
-			out[name] = Field{Type: top[0].t}
+			out[name] = Field{Type: top[0].t, NullOK: true}
 		}
 	}
 	return out
