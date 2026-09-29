@@ -116,3 +116,46 @@ func TestHedge_StreamMatchesRecordedAnswer(t *testing.T) {
 		t.Fatalf("the caller was streamed %q but the run recorded %q", streamed.String(), recorded.String())
 	}
 }
+
+// meteredStub answers with one text delta and a Finish carrying usage u.
+type meteredStub struct{ u agent.Usage }
+
+func (m meteredStub) Stream(context.Context, agent.Request) (*agent.Stream, error) {
+	ch := make(chan agent.Emit, 2)
+	ch <- agent.Emit{Event: agent.TextDelta{Text: "backup"}}
+	ch <- agent.Emit{Event: agent.Finish{Reason: "stop", Usage: m.u}}
+	close(ch)
+	return agent.NewStream(ch), nil
+}
+
+// The winning response delivered to a streaming caller ends with a Finish that carries the
+// usage the run records for the call, as a live stream does.
+func TestHedge_StreamedFinishCarriesWinnerUsage(t *testing.T) {
+	u := agent.Usage{InputTokens: 30, OutputTokens: 7, CacheReadTokens: 5}
+	store := agent.NewMemStore()
+	a := agent.New(earlyStreamer{}, store).Use(middleware.Hedge(0, meteredStub{u: u}))
+
+	as := a.Stream(context.Background(), "r1", "hi")
+	var finishes []agent.Finish
+	for ev := range as.Events() {
+		if me, ok := ev.(agent.ModelEvent); ok {
+			if f, ok := me.Event.(agent.Finish); ok {
+				finishes = append(finishes, f)
+			}
+		}
+	}
+	if _, err := as.Final(); err != nil {
+		t.Fatalf("Final: %v", err)
+	}
+	recs, err := store.History(context.Background(), "r1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recs) == 0 || recs[0].Kind != agent.StepModel || recs[0].Usage == nil || *recs[0].Usage != u {
+		t.Fatalf("setup: journaled model step = %+v, want usage %+v", recs, u)
+	}
+	want := agent.Finish{Reason: "stop", Usage: u}
+	if len(finishes) != 1 || finishes[0] != want {
+		t.Fatalf("streamed finishes = %+v, want [%+v]", finishes, want)
+	}
+}
