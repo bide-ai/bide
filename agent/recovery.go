@@ -113,7 +113,8 @@ func completedAnswer(recs []Record) (Message, bool) {
 // Recover detects those with errors.As and does NOT record them as errors: they mean
 // "recovered, still waiting", and the run resumes later when its condition is met (a
 // human approves, an interrupt is answered, a timer fires). Only a genuine error (a model
-// or storage fault, a bad tool) is joined into the returned error.
+// or storage fault, a bad tool) is joined into the returned error. A run whose lease was lost
+// mid-drive (ErrLeaseLost) is not joined either: another process holds it now and carries it on.
 //
 // resume is deployment POLICY, not a mechanism the SDK can supply: it alone knows a run's
 // original input and any Waker or clock to bind onto the context (a Waker-bound resume
@@ -173,7 +174,7 @@ func Recover(ctx context.Context, store Durable, resume func(ctx context.Context
 			continue // leased by another holder (err nil) or acquisition failed
 		}
 		recovered++
-		if err != nil && !isPause(err) {
+		if err != nil && !isPause(err) && !errors.Is(err, ErrLeaseLost) {
 			errs = append(errs, fmt.Errorf("recover run %s: %w", runID, err))
 		}
 	}
@@ -185,6 +186,11 @@ func Recover(ctx context.Context, store Durable, resume func(ctx context.Context
 // another holder currently leases the run, drive is NOT called and Lease returns (false, nil). If
 // the store does not implement Leaser, drive runs unconditionally. The bool reports whether drive
 // ran; the error is the acquisition error (when false) or drive's own error (when true).
+//
+// If the lease is lost while drive runs (see driveWithRenew for the renewal schedule), drive's
+// context is cancelled with ErrLeaseLost as its cause (context.Cause), and a drive that then
+// returns an error has it wrapped with ErrLeaseLost, so errors.Is(err, ErrLeaseLost) tells a lost
+// lease from a shutdown or a genuine failure. A drive that returns nil succeeded regardless.
 //
 // A primary driver wraps Agent.Run so a live run and a recoverer never both drive it, using the
 // same lease the recoverer respects:
@@ -258,8 +264,8 @@ func leaseToken() string { return fmt.Sprintf("%016x", rand.Uint64()) }
 // flight, and waited for before driveWithRenew returns, so no renewal outlives the drive or races
 // the release that follows it.
 func driveWithRenew(ctx context.Context, leaser Leaser, runID, owner string, ttl time.Duration, issued time.Time, run func(context.Context) error) error {
-	dctx, cancel := context.WithCancel(ctx)
-	defer cancel()
+	dctx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
 	rctx, stopRenew := context.WithCancel(ctx)
 	renewerDone := make(chan struct{})
 	defer func() {
@@ -268,46 +274,56 @@ func driveWithRenew(ctx context.Context, leaser Leaser, runID, owner string, ttl
 	}()
 	go func() {
 		defer close(renewerDone)
-		if !renewLoop(rctx, leaser, runID, owner, ttl, issued) {
-			cancel() // lost the lease: stop the drive rather than run un-leased
+		if lost := renewLoop(rctx, leaser, runID, owner, ttl, issued); lost != nil {
+			cancel(lost) // lost the lease: stop the drive rather than run un-leased
 		}
 	}()
-	return run(dctx)
+	err := run(dctx)
+	if cause := context.Cause(dctx); err != nil && errors.Is(cause, ErrLeaseLost) {
+		return fmt.Errorf("%w: %w", cause, err)
+	}
+	return err
 }
 
 // renewLoop keeps owner's lease on runID renewed on the schedule driveWithRenew documents. It
-// returns true when ctx is done (the drive finished) and false when the lease is lost.
-func renewLoop(ctx context.Context, leaser Leaser, runID, owner string, ttl time.Duration, issued time.Time) bool {
+// returns nil when ctx is done (the drive finished) and an error wrapping ErrLeaseLost when the
+// lease is lost.
+func renewLoop(ctx context.Context, leaser Leaser, runID, owner string, ttl time.Duration, issued time.Time) error {
 	retry := max(ttl/20, 1)
 	for {
 		if !sleepUntil(ctx, issued.Add(ttl/2)) {
-			return true
+			return nil
 		}
 		cutoff := issued.Add(ttl - ttl/4)
+		var lastErr error
 		for {
 			at := time.Now()
 			if !at.Before(cutoff) {
-				return false // could not renew in time
+				if lastErr == nil {
+					lastErr = errors.New("no renewal attempted: the process was not running")
+				}
+				return fmt.Errorf("lease on run %s not renewed within 3/4 of its %v TTL: %w: %w", runID, ttl, ErrLeaseLost, lastErr)
 			}
 			actx, cancel := context.WithDeadline(ctx, cutoff)
 			ok, err := leaser.RenewLease(actx, runID, owner, ttl)
 			cancel()
 			if ctx.Err() != nil {
-				return true
+				return nil
 			}
 			if err == nil && ok {
 				issued = at
 				break
 			}
 			if err == nil {
-				return false // the store says the lease is no longer ours
+				return fmt.Errorf("lease on run %s is no longer held (it lapsed and may have been taken): %w", runID, ErrLeaseLost)
 			}
+			lastErr = err
 			next := time.Now().Add(retry)
 			if next.After(cutoff) {
 				next = cutoff
 			}
 			if !sleepUntil(ctx, next) {
-				return true
+				return nil
 			}
 		}
 	}
