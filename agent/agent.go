@@ -274,6 +274,9 @@ func (a *Agent) generate(ctx context.Context, req Request, usedIDs map[string]bo
 	if err != nil {
 		return msg, u, err
 	}
+	if err := u.Validate(); err != nil {
+		return Message{}, Usage{}, err
+	}
 	if err := checkToolUseIDs(msg, usedIDs); err != nil {
 		return Message{}, u, err
 	}

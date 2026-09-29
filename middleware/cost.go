@@ -2,6 +2,8 @@ package middleware
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"sync"
 
 	"github.com/bide-ai/bide/agent"
@@ -87,6 +89,10 @@ func Cost(m *CostMeter, r Rates) agent.Middleware {
 		return func(ctx context.Context, req agent.Request) (agent.Message, agent.Usage, error) {
 			hctx, hooked := agent.WithModelCallHook(ctx, agent.ModelCallHook{After: func(u agent.Usage) { m.addSpent(r, u) }})
 			msg, u, err := next(hctx, req)
+			if verr := u.Validate(); verr != nil {
+				// A negative count would lower the totals: reject it, and record nothing.
+				return agent.Message{}, agent.Usage{}, errors.Join(err, fmt.Errorf("middleware: cost: %w", verr))
+			}
 			if !hooked {
 				m.addSpent(r, u)
 			}

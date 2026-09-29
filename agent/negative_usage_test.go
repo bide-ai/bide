@@ -46,3 +46,19 @@ func TestRun_NegativeUsageFromMiddlewareIsRejected(t *testing.T) {
 		t.Fatalf("err = %v, want a protocol error", err)
 	}
 }
+
+// A stream that fails after reporting negative usage reports none of the negative part.
+func TestStream_FailedStreamNeverReportsNegativeUsage(t *testing.T) {
+	ch := make(chan Emit, 3)
+	ch <- Emit{Event: TextDelta{Text: "x"}}
+	ch <- Emit{Event: Finish{Reason: "stop", Usage: Usage{InputTokens: -3, OutputTokens: 2}}}
+	ch <- Emit{Event: TextDelta{Text: "late"}}
+	close(ch)
+	_, u, err := NewStream(ch).Message()
+	if !errors.Is(err, ErrStreamProtocol) {
+		t.Fatalf("err = %v, want ErrStreamProtocol", err)
+	}
+	if u != (Usage{OutputTokens: 2}) {
+		t.Fatalf("usage = %+v, want the non-negative part {OutputTokens: 2}", u)
+	}
+}

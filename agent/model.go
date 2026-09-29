@@ -83,6 +83,19 @@ type Usage struct {
 // TotalInputTokens is every input token the call processed, cached or not.
 func (u Usage) TotalInputTokens() int { return u.InputTokens + u.CacheReadTokens + u.CacheWriteTokens }
 
+// Validate reports an error wrapping ErrNegativeUsage when any count in u is negative.
+func (u Usage) Validate() error {
+	if u.InputTokens < 0 || u.OutputTokens < 0 || u.CacheReadTokens < 0 || u.CacheWriteTokens < 0 {
+		return fmt.Errorf("%+v: %w", u, ErrNegativeUsage)
+	}
+	return nil
+}
+
+// billable is u with any negative count set to zero.
+func (u Usage) billable() Usage {
+	return Usage{max(u.InputTokens, 0), max(u.OutputTokens, 0), max(u.CacheReadTokens, 0), max(u.CacheWriteTokens, 0)}
+}
+
 // TotalTokens is every token the call processed: all input plus output.
 func (u Usage) TotalTokens() int { return u.TotalInputTokens() + u.OutputTokens }
 
@@ -240,7 +253,7 @@ func (s *Stream) drain(onEvent func(Event)) (Message, Usage, error) {
 	var b msgBuilder
 	for ev, err := range s.Events() {
 		if err != nil {
-			return Message{}, b.usage, err // the usage reported before the stream failed was billed
+			return Message{}, b.usage.billable(), err // the usage reported before the stream failed was billed
 		}
 		if onEvent != nil {
 			onEvent(ev)
@@ -248,7 +261,13 @@ func (s *Stream) drain(onEvent func(Event)) (Message, Usage, error) {
 		b.add(ev)
 	}
 	msg, err := b.finalize()
-	return msg, b.usage, err
+	if err == nil {
+		err = b.usage.Validate()
+	}
+	if err != nil {
+		return Message{}, b.usage.billable(), err
+	}
+	return msg, b.usage, nil
 }
 
 // Generate is the convenience drain: stream and assemble in one call.
