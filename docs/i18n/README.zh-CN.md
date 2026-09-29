@@ -200,7 +200,7 @@ answer, err := stream.Final() // terminal message + error (incl. *PendingApprova
 事件：`TurnStarted`、`ModelEvent`（token 流）、`AssistantTurn`、`ToolStarted` / `ToolCompleted`、`ApprovalRequired`、`Finished`。为 UI 而 range `Events()` 然后调用 `Final()`，或者单独调用 `Final()` 以表现得与 `Run` 完全一样（它会替你把事件排空）。
 
 有两件事值得知道，两者都是持久性的后果：
-- **token 增量在中间件链之下抵达**（Retry / TokenBudget 仍然看到整条组装好的消息），而且**只在一次全新的模型调用上**出现。
+- **token 增量在中间件链之下抵达**（Retry / Cost 仍然看到整条组装好的消息），而且**只在一次全新的模型调用上**出现。
 - **恢复时，记入日志的记录（transcript）会被重新发出**，作为 `AssistantTurn{Replayed: true}` + `ToolCompleted`，在实时进度之前，因此一个全新的 UI 能在一次崩溃之后重建整个故事，而一个被重放的轮次不产生 token 增量（它已经被决定了）。
 
 `StreamSaga` 是 `RunSaga` 的流式对应物。
@@ -242,7 +242,7 @@ a := agent.New(model, store, tools...).
 model := anthropic.New(key, anthropic.WithPromptCache())
 ```
 
-这会在系统块和工具定义上放置 `cache_control` 断点。OpenAI 自动缓存前缀（无需标志）。无论哪种方式，缓存效果都会体现在 `agent.Usage` 中（`CacheReadTokens`，自缓存供给；`CacheWriteTokens`，写入缓存），因此像 `TokenBudget` 和成本核算这样的中间件看到的是真实数字。
+这会在系统块和工具定义上放置 `cache_control` 断点。OpenAI 自动缓存前缀（无需标志）。无论哪种方式，缓存效果都会体现在 `agent.Usage` 中（`CacheReadTokens`，自缓存供给；`CacheWriteTokens`，写入缓存），因此像 `trace.Model` 和成本核算这样的中间件看到的是真实数字。
 
 ## 会话（多轮）
 
@@ -374,9 +374,9 @@ case errors.Is(err, agent.ErrStorage):      // durable-store I/O
 ```go
 var cost middleware.CostMeter
 a := agent.New(model, store, tools...).
+	WithTokenBudget(100_000). // per run, rebuilt from the journal on resume
 	Use(
 		middleware.Retry(3, middleware.WithBackoff(200*time.Millisecond, 10*time.Second)),
-		middleware.TokenBudget(100_000),
 		middleware.Cost(&cost, middleware.Rates{InputPer1M: 3, OutputPer1M: 15}),
 	).
 	UseTool(middleware.ToolLog(log.Printf), middleware.ToolCache(), middleware.ToolRetry(3))
@@ -422,7 +422,7 @@ model/anthropic  native Claude (thinking + signatures)
 model/openai     any OpenAI-compatible endpoint
 model/gemini     native Gemini (generativelanguage / Vertex via WithBaseURL)
 schema           reflect Go types → inline JSON Schema + OpenAIStrict
-middleware       Retry, TokenBudget
+middleware       Retry, RateLimit, Cost, Hedge
 trace            opt-in OTel gen_ai.* spans
 store/sqlite     on-disk durable resume (single binary, no cluster)
 store/postgres   HA durable resume (any node resumes any run)

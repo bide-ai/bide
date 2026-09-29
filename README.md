@@ -430,7 +430,7 @@ Events: `TurnStarted`, `ModelEvent` (the token feed), `AssistantTurn`, `ToolStar
 or call `Final()` alone to behave exactly like `Run` (it drains events for you).
 
 Two things worth knowing, both consequences of durability:
-- **Token deltas arrive below the middleware chain** (Retry / TokenBudget still see whole
+- **Token deltas arrive below the middleware chain** (Retry / Cost still see whole
   assembled messages), and **only on a fresh model call**.
 - **On resume, the journaled transcript is re-emitted** as `AssistantTurn{Replayed: true}` +
   `ToolCompleted` before live progress, so a fresh UI reconstructs the whole story after a
@@ -490,7 +490,7 @@ model := anthropic.New(key, anthropic.WithPromptCache())
 This places `cache_control` breakpoints on the system block and the tool definitions. OpenAI
 caches prefixes automatically (no flag needed). Either way, cache effectiveness surfaces in
 `agent.Usage` (`CacheReadTokens`, served from cache, and `CacheWriteTokens`, written to it),
-so middleware like `TokenBudget` and cost accounting see the real numbers.
+so cost accounting, tracing, and the run's token budget see the real numbers.
 
 ## Sessions (multi-turn)
 
@@ -591,7 +591,10 @@ double-fire is the documented LangGraph "nodes must be idempotent" window. langc
 durability at all, so retries re-run everything. Bide' attempt-marker closes the window entirely.
 
 `WithMaxTurns(n)` caps model turns per run so a model that keeps calling tools can't loop forever:
-hitting it returns `ErrMaxTurns` (which is `errors.Is` `ErrBudget`).
+hitting it returns `ErrMaxTurns` (which is `errors.Is` `ErrBudget`). `WithTokenBudget(n)` caps the
+tokens a run may use, cached input included: once the run has used `n`, it makes no further model
+call and returns `ErrBudgetExceeded`. Each call's usage is journaled with its turn, so both limits
+are rebuilt from the journal and hold across a crash and resume.
 
 ## Human-in-the-loop
 
@@ -696,9 +699,9 @@ short-circuiting*: rewrite what goes in, transform what comes out, or return wit
 ```go
 var cost middleware.CostMeter
 a := agent.New(model, store, tools...).
+	WithTokenBudget(100_000). // per run, rebuilt from the journal on resume
 	Use(
 		middleware.Retry(3, middleware.WithBackoff(200*time.Millisecond, 10*time.Second)),
-		middleware.TokenBudget(100_000),
 		middleware.Cost(&cost, middleware.Rates{InputPer1M: 3, OutputPer1M: 15}),
 	).
 	UseTool(middleware.ToolLog(log.Printf), middleware.ToolCache(), middleware.ToolRetry(3))
@@ -759,7 +762,7 @@ model/anthropic  native Claude (thinking + signatures)
 model/openai     any OpenAI-compatible endpoint
 model/gemini     native Gemini (generativelanguage / Vertex via WithBaseURL)
 schema           reflect Go types → inline JSON Schema + OpenAIStrict
-middleware       Retry, TokenBudget
+middleware       Retry, RateLimit, Cost, Hedge
 trace            opt-in OTel gen_ai.* spans
 store/sqlite     on-disk durable resume (single binary, no cluster)
 store/postgres   HA durable resume (any node resumes any run)

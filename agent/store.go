@@ -32,6 +32,7 @@ type Record struct {
 	Name      string          `json:"name"`
 	Kind      StepKind        `json:"kind"`
 	Message   *Message        `json:"message,omitempty"`     // StepModel
+	Usage     *Usage          `json:"usage,omitempty"`       // StepModel: the call's token usage
 	ToolUseID string          `json:"tool_use_id,omitempty"` // StepToolResult
 	Result    json.RawMessage `json:"result,omitempty"`      // StepToolResult / StepValue
 	IsError   bool            `json:"is_error,omitempty"`    // StepToolResult

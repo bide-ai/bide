@@ -70,7 +70,7 @@ An agent loop resends a large constant prefix (system prompt + tool schemas) eve
 - **OpenAI**: caches prefixes automatically, no flag needed.
 - **Gemini**: no explicit prompt-cache flag in this adapter.
 
-Cache effectiveness surfaces cross-provider in `agent.Usage`, so `TokenBudget` and cost accounting
+Cache effectiveness surfaces cross-provider in `agent.Usage`, so the run's token budget and cost accounting
 see the real numbers:
 
 - `CacheReadTokens`: Anthropic `cache_read_input_tokens`; OpenAI `prompt_tokens_details.cached_tokens`;

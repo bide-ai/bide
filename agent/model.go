@@ -70,13 +70,13 @@ type Sampling struct {
 // tokens), and adapters normalize to this form.
 type Usage struct {
 	// InputTokens is input tokens neither read from nor written to the prompt cache.
-	InputTokens  int
-	OutputTokens int
+	InputTokens  int `json:"input_tokens,omitempty"`
+	OutputTokens int `json:"output_tokens,omitempty"`
 	// CacheReadTokens is input tokens served from the provider's prompt cache (billed at
 	// a discount). CacheWriteTokens is input tokens written to the cache on this call
 	// (Anthropic cache creation; 0 for providers that cache implicitly, like OpenAI).
-	CacheReadTokens  int
-	CacheWriteTokens int
+	CacheReadTokens  int `json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens int `json:"cache_write_tokens,omitempty"`
 }
 
 // TotalInputTokens is every input token the call processed, cached or not.
