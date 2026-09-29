@@ -84,6 +84,10 @@ func TestVerify_NeverFiringFails(t *testing.T) {
 	if rep.OK() {
 		t.Fatalf("a system that never fires passed: %v", rep)
 	}
+	// The crash-free run, every sweep point, and every randomized schedule that ends all missed.
+	if want := 1 + rep.Schedules; rep.Missed != want {
+		t.Fatalf("Missed = %d, want %d (every run that ended): %+v", rep.Missed, want, rep)
+	}
 }
 
 // A system that fires on a clean run but loses the side effect across a crash (the resume ends

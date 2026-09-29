@@ -37,21 +37,34 @@ type Report struct {
 	Schedules  int // total crash schedules exercised (sweep + randomized)
 	MaxFired   int // worst side-effect count observed (want 1)
 	Violations int // schedules where the side effect fired more than once
+	// Missed counts runs that reached a terminal state (crash-free, or after resuming) with the
+	// side effect never fired. A system that never does the work never double-fires, so the
+	// at-most-once check alone would pass it; a completed run must have fired exactly once.
+	Missed int
 }
 
-// OK reports whether the at-most-once invariant held across every schedule.
-func (r Report) OK() bool { return r.Violations == 0 && r.MaxFired <= 1 }
+// OK reports whether the side effect fired at most once on every schedule and exactly once on
+// every run that reached a terminal state.
+func (r Report) OK() bool { return r.Violations == 0 && r.MaxFired <= 1 && r.Missed == 0 }
 
 func (r Report) String() string {
 	verdict := "PASS ✓ (at-most-once held)"
 	if !r.OK() {
 		verdict = fmt.Sprintf("FAIL ✗ (%d double-fires, worst=%d)", r.Violations, r.MaxFired)
+		if r.Missed > 0 {
+			verdict = fmt.Sprintf("FAIL ✗ (%d double-fires, worst=%d, %d completed without firing)", r.Violations, r.MaxFired, r.Missed)
+		}
 	}
 	return fmt.Sprintf("%-16s sweeps=%-3d schedules=%-5d maxFired=%d  %s",
 		r.Name, r.Sweeps, r.Schedules, r.MaxFired, verdict)
 }
 
-func (r *Report) record(fired int) {
+// record scores one schedule's side-effect count. terminal is true when the run reached a
+// terminal state; only then must it have fired (a run still crashing may not have got there).
+func (r *Report) record(fired int, terminal bool) {
+	if terminal && fired == 0 {
+		r.Missed++
+	}
 	if fired > r.MaxFired {
 		r.MaxFired = fired
 	}
@@ -60,12 +73,22 @@ func (r *Report) record(fired int) {
 	}
 }
 
-// Verify runs an exhaustive crash-point sweep plus `seeds` randomized multi-crash
-// schedules against sys, and returns a Report. The invariant checked is that the
-// non-idempotent side effect fires at most once, no matter where or how often it crashes.
+// Verify runs one crash-free run, an exhaustive crash-point sweep, and `seeds` randomized
+// multi-crash schedules against sys, and returns a Report. The invariant checked is that the
+// non-idempotent side effect fires at most once, no matter where or how often it crashes, and
+// exactly once on every run that reaches a terminal state. The crash-free run is checked but not
+// counted in Sweeps or Schedules.
 func Verify(name string, sys System, seeds int) Report {
 	rep := Report{Name: name}
 	bound := sys.Writes() + 2
+
+	// Crash-free: a run with no injected crash must end and fire exactly once.
+	clean := sys.NewRun()
+	terminal := false
+	for attempt := 0; attempt < 64 && !terminal; attempt++ {
+		terminal = !clean.Step(0)
+	}
+	rep.record(clean.Fired(), true)
 
 	// Exhaustive: a single crash at every write point, then resume to terminal.
 	for crashAt := 1; crashAt <= bound; crashAt++ {
@@ -76,20 +99,19 @@ func Verify(name string, sys System, seeds int) Report {
 		}
 		rep.Sweeps++
 		rep.Schedules++
-		rep.record(run.Fired())
+		rep.record(run.Fired(), true)
 	}
 
 	// Adversarial: randomized multi-crash schedules.
 	for s := 0; s < seeds; s++ {
 		rng := rand.New(rand.NewPCG(uint64(s)+1, 0x9E3779B97F4A7C15))
 		run := sys.NewRun()
-		for attempt := 0; attempt < 64; attempt++ {
-			if !run.Step(rng.IntN(bound) + 1) {
-				break // terminal
-			}
+		terminal := false
+		for attempt := 0; attempt < 64 && !terminal; attempt++ {
+			terminal = !run.Step(rng.IntN(bound) + 1)
 		}
 		rep.Schedules++
-		rep.record(run.Fired())
+		rep.record(run.Fired(), terminal)
 	}
 	return rep
 }
