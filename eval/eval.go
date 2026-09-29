@@ -190,16 +190,19 @@ func stat(passes, runs int) MetricStat {
 	s := MetricStat{Passes: passes, Runs: runs}
 	if runs > 0 {
 		s.Rate = float64(passes) / float64(runs)
-		s.CILow, s.CIHigh = wilson(passes, runs)
 	}
+	s.CILow, s.CIHigh = wilson(passes, runs)
 	return s
 }
 
 // wilson returns the 95% Wilson score interval for a binomial proportion. It is well-behaved for
-// small n and extreme rates, unlike the normal approximation.
+// small n and extreme rates, unlike the normal approximation. With no runs it is [0, 1] (no
+// evidence, and the interval's limit as n goes to 0). At zero passes the lower bound is exactly 0
+// and at all passes the upper bound is exactly 1; center and margin are equal there, so it is set
+// rather than left to rounding.
 func wilson(passes, n int) (lo, hi float64) {
 	if n == 0 {
-		return 0, 0
+		return 0, 1
 	}
 	const z = 1.96
 	nf := float64(n)
@@ -208,10 +211,10 @@ func wilson(passes, n int) (lo, hi float64) {
 	center := (phat + z*z/(2*nf)) / denom
 	margin := z * math.Sqrt(phat*(1-phat)/nf+z*z/(4*nf*nf)) / denom
 	lo, hi = center-margin, center+margin
-	if lo < 0 {
+	if lo < 0 || passes == 0 {
 		lo = 0
 	}
-	if hi > 1 {
+	if hi > 1 || passes == n {
 		hi = 1
 	}
 	return lo, hi
