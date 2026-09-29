@@ -224,23 +224,30 @@ func Lease(ctx context.Context, store Durable, runID string, drive func(context.
 // stalled past the TTL (a long GC pause, a suspended VM, a partition from the store) wakes still
 // driving and can take a step before its renewer notices. At-most-once does not depend on this;
 // the exclusive attempt claim (ClaimAttempt) stops two overlapping drivers from both running a
-// side effect. `defer close(done)` guarantees the renewer goroutine exits even if the drive panics.
+// side effect.
+//
+// When the drive returns (or panics), the renewer is stopped, abandoning any renewal it has in
+// flight, and waited for before driveWithRenew returns, so no renewal outlives the drive or races
+// the release that follows it.
 func driveWithRenew(ctx context.Context, leaser Leaser, runID string, cfg recoverConfig, run func(context.Context) error) error {
 	dctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	done := make(chan struct{})
-	defer close(done)
+	rctx, stopRenew := context.WithCancel(ctx)
+	renewerDone := make(chan struct{})
+	defer func() {
+		stopRenew()
+		<-renewerDone
+	}()
 	go func() {
+		defer close(renewerDone)
 		t := time.NewTicker(max(cfg.ttl/2, 1)) // a 1ns TTL halves to zero, which NewTicker rejects
 		defer t.Stop()
 		for {
 			select {
-			case <-done:
-				return
-			case <-ctx.Done():
+			case <-rctx.Done():
 				return
 			case <-t.C:
-				if ok, err := leaser.RenewLease(ctx, runID, cfg.holder, cfg.ttl); err != nil || !ok {
+				if ok, err := leaser.RenewLease(rctx, runID, cfg.holder, cfg.ttl); err != nil || !ok {
 					cancel() // lost the lease: stop the drive rather than run un-leased
 					return
 				}
