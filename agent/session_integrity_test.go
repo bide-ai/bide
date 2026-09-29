@@ -198,3 +198,26 @@ func TestSendOnce_SimultaneousAppends(t *testing.T) {
 		}
 	}
 }
+
+// A session's turns run under journals named from its id ("<id>/t<n>", "<id>/e/<key>"), so two
+// sessions must never derive the same name. Session "c1/e" sending its first message and
+// session "c1" answering event "t0" both named run "c1/e/t0": the second was handed the first's
+// recorded reply, to a different message in a different conversation, without a model call.
+func TestSession_IDsCannotCollide(t *testing.T) {
+	m := &replyModel{}
+	a := New(m, NewMemStore())
+	if s, err := a.Session(context.Background(), "c1/e"); err == nil {
+		if _, err := s.Send(context.Background(), "from c1/e"); err != nil {
+			t.Fatal(err)
+		}
+	} else if !errors.Is(err, ErrConfig) {
+		t.Fatalf(`Session("c1/e") = %v, want ErrConfig or a session`, err)
+	}
+	msg, err := openSession(t, a, "c1").SendOnce(context.Background(), "t0", "from c1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if msg.Text() != "re: from c1" {
+		t.Fatalf(`session "c1" answered event "t0" with %q, another session's reply`, msg.Text())
+	}
+}
