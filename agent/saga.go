@@ -28,7 +28,14 @@ type Compensator interface {
 }
 
 // CompensatedFunc is a typed tool that declares both its forward action and its
-// compensator. undo receives the same typed input and the output do produced.
+// compensator. undo receives the same typed input and the output do produced: the call's
+// recorded arguments decoded as the forward call decoded them, strictly (see Func). A record
+// written before tool arguments decoded strictly may hold arguments only encoding/json accepts;
+// the forward call of that time decoded them with encoding/json, so compensation does too, and
+// undoes the value that call acted on. Arguments neither decodes are ErrProtocol.
+//
+// The recorded arguments are the model's. A tool middleware that rewrites a compensable call's
+// arguments changes what do receives but not what undo receives.
 func CompensatedFunc[In, Out any](
 	name, description string,
 	safety Safety,
@@ -45,10 +52,8 @@ type compTool[In, Out any] struct {
 
 func (t *compTool[In, Out]) Compensate(ctx context.Context, args, result json.RawMessage) error {
 	var in In
-	if len(args) > 0 {
-		if err := json.Unmarshal(args, &in); err != nil {
-			return fmt.Errorf("saga compensate %q: decode recorded args: %w (%w)", t.Name(), err, ErrProtocol)
-		}
+	if err := decodeRecordedArgs(args, &in); err != nil {
+		return fmt.Errorf("saga compensate %q: decode recorded args: %w (%w)", t.Name(), err, ErrProtocol)
 	}
 	var out Out
 	if len(result) > 0 {
@@ -324,4 +329,18 @@ func argsFor(recs []Record, toolUseID string) (json.RawMessage, bool) {
 func mustJSON(s string) json.RawMessage {
 	b, _ := json.Marshal(s)
 	return b
+}
+
+// decodeRecordedArgs decodes a call's recorded arguments into in as its forward call decoded
+// them: strictly, with decodeArgs, which every call journaled since tool arguments decode strictly
+// passed. A record that does not decode strictly was written before that, when the forward call
+// decoded with encoding/json (empty arguments as the zero value), so it is decoded that way.
+func decodeRecordedArgs[In any](args json.RawMessage, in *In) error {
+	if err := decodeArgs(args, in); err == nil {
+		return nil
+	}
+	if len(args) == 0 {
+		return nil
+	}
+	return json.Unmarshal(args, in)
 }
