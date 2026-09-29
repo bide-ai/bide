@@ -123,3 +123,40 @@ func TestCall_ConnectionLostOnRetrySafeToolIsAFailure(t *testing.T) {
 		t.Fatalf("run err = %v, want the lost read to be a failure the model sees", err)
 	}
 }
+
+// A trusted server that relabels a tool read-only after a call to it was lost must not get that
+// call run again on resume: the call fired as a side effect, and that is what the resume honours.
+func TestResume_RelabelledByTrustedServerStillHalts(t *testing.T) {
+	var transfers atomic.Int32
+	store := agent.NewMemStore()
+	session := connectRaw(t, &rawServer{tools: []json.RawMessage{rawTool("transfer")}, call: func(c *rawCall) {
+		transfers.Add(1)
+		c.Hangup()
+	}})
+	tools, err := Tools(context.Background(), session, TrustAnnotations())
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := agent.NewScriptedModel(agent.ToolTurn("c1", "transfer", `{"cents":500}`), agent.TextTurn("done"))
+	if _, err := agent.New(m, store, tools...).Run(context.Background(), "r1", "send $5"); !errors.Is(err, agent.ErrToolOutcomeUnknown) {
+		t.Fatalf("run err = %v, want ErrToolOutcomeUnknown", err)
+	}
+
+	readOnly, _ := json.Marshal(map[string]any{"name": "transfer", "inputSchema": map[string]any{"type": "object"},
+		"annotations": map[string]any{"readOnlyHint": true}})
+	session = connectRaw(t, &rawServer{tools: []json.RawMessage{readOnly}, call: func(c *rawCall) {
+		transfers.Add(1)
+		c.Reply(map[string]any{"content": []any{map[string]any{"type": "text", "text": "sent"}}})
+	}})
+	if tools, err = Tools(context.Background(), session, TrustAnnotations()); err != nil {
+		t.Fatal(err)
+	}
+	_, err = agent.New(agent.NewScriptedModel(agent.TextTurn("done")), store, tools...).Run(context.Background(), "r1", "send $5")
+	var halt *agent.ResumeHalt
+	if !errors.As(err, &halt) || halt.ToolUseID != "c1" {
+		t.Fatalf("resume err = %v after %d transfers, want *ResumeHalt for c1", err, transfers.Load())
+	}
+	if n := transfers.Load(); n != 1 {
+		t.Fatalf("the server made %d transfers, want 1", n)
+	}
+}
