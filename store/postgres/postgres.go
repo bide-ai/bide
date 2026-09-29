@@ -118,7 +118,10 @@ func (s *Store) Do(ctx context.Context, runID, name string, fn func(context.Cont
 		if e != nil {
 			return nil, fmt.Errorf("marshal step %q: %w (%w)", name, e, agent.ErrStorage)
 		}
-		n, e := s.insert(ctx, runID, name, data)
+		// Record under a context that ignores cancellation: fn has run, so its side effect may
+		// have happened, and a driver whose lease lapsed or whose process is shutting down must
+		// still journal the outcome rather than leave it unknown (resume would halt on it).
+		n, e := s.insert(context.WithoutCancel(ctx), runID, name, data)
 		if e != nil {
 			return nil, fmt.Errorf("insert step %q: %w (%w)", name, e, agent.ErrStorage)
 		}
