@@ -3,12 +3,14 @@ package agent
 import (
 	"context"
 	"fmt"
+	"math"
 	"strings"
 )
 
 // Doc is a document returned by a Retriever: its text plus optional id, similarity score,
 // and metadata. This is the neutral shape the retrieval helpers speak; your Retriever
-// maps your store's results onto it.
+// maps your store's results onto it. A NaN or infinite Score (cosine similarity against a
+// zero vector is 0/0) has no JSON encoding, so the retrieval helpers drop it (report 0).
 type Doc struct {
 	ID       string         `json:"id,omitempty"`
 	Text     string         `json:"text"`
@@ -78,12 +80,24 @@ func checkK(fn string, k int) {
 	}
 }
 
-// topK returns the first k of docs, the top k in the order the Retriever ranked them.
+// topK returns the first k of docs, the top k in the order the Retriever ranked them, as a
+// copy with any NaN or infinite Score set to 0 (see Doc), so the result always encodes. The
+// Retriever's slice is not modified: it may be the store's own.
 func topK(docs []Doc, k int) []Doc {
-	if len(docs) > k {
-		return docs[:k]
+	if docs == nil {
+		return nil
 	}
-	return docs
+	if len(docs) > k {
+		docs = docs[:k]
+	}
+	out := make([]Doc, len(docs))
+	for i, d := range docs {
+		if math.IsNaN(d.Score) || math.IsInf(d.Score, 0) {
+			d.Score = 0
+		}
+		out[i] = d
+	}
+	return out
 }
 
 // lastUserQuery returns the text of the final message if it is a user turn (the point at
