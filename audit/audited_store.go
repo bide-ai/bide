@@ -27,7 +27,8 @@ type AuditedStore struct {
 	onErr  func(runID string, err error)
 
 	mu       sync.Mutex
-	lastSize map[string]int // per-run journal length already anchored (dedup on replay)
+	lastSize map[string]int         // per-run journal length already anchored (dedup on replay)
+	runLocks map[string]*sync.Mutex // serializes anchoring within a run (see anchorIfGrown)
 }
 
 // NewAuditedStore wraps inner so each journal growth is signed with priv and published to
@@ -39,6 +40,7 @@ func NewAuditedStore(inner agent.Durable, priv ed25519.PrivateKey, anchor Anchor
 		anchor:   anchor,
 		now:      func() int64 { return time.Now().UnixNano() },
 		lastSize: map[string]int{},
+		runLocks: map[string]*sync.Mutex{},
 	}
 }
 
@@ -71,16 +73,30 @@ func (a *AuditedStore) History(ctx context.Context, runID string) ([]agent.Recor
 
 // anchorIfGrown publishes a fresh STH iff runID's journal is longer than the last anchored
 // size — so a memoized replay (no growth) does not re-anchor, and each real step anchors once.
+//
+// Anchoring is serialized per run: the journal is read and its head published under the run's
+// lock, so a run's anchored heads only ever grow. Without it, two steps landing at once (parallel
+// tool calls) could publish their heads in the wrong order, and the anchor log would show the
+// run's committed size going down, which reads to a monitor as the journal being rolled back.
+// The anchored size advances only when a publish succeeds, so a failed publish is retried by the
+// run's next step. Different runs anchor independently.
 func (a *AuditedStore) anchorIfGrown(ctx context.Context, runID string) error {
+	a.mu.Lock()
+	rl, ok := a.runLocks[runID]
+	if !ok {
+		rl = &sync.Mutex{}
+		a.runLocks[runID] = rl
+	}
+	a.mu.Unlock()
+	rl.Lock()
+	defer rl.Unlock()
+
 	recs, err := a.inner.History(ctx, runID)
 	if err != nil {
 		return err
 	}
 	a.mu.Lock()
 	grown := len(recs) > a.lastSize[runID]
-	if grown {
-		a.lastSize[runID] = len(recs)
-	}
 	a.mu.Unlock()
 	if !grown {
 		return nil
@@ -90,7 +106,13 @@ func (a *AuditedStore) anchorIfGrown(ctx context.Context, runID string) error {
 		return err
 	}
 	th := TreeHead{Size: len(recs), Root: merkleRoot(leaves), Timestamp: a.now()}
-	return a.anchor.Publish(ctx, runID, SignTreeHead(th, a.priv))
+	if err := a.anchor.Publish(ctx, runID, SignTreeHead(th, a.priv)); err != nil {
+		return err
+	}
+	a.mu.Lock()
+	a.lastSize[runID] = len(recs)
+	a.mu.Unlock()
+	return nil
 }
 
 var _ agent.Durable = (*AuditedStore)(nil)

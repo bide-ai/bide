@@ -17,6 +17,11 @@ import (
 // trust domain separate from the app (a Certificate-Transparency-style log, a notary /
 // timestamping service, another account's WORM store, a public ledger). Bide ships
 // MemAnchorLog as a reference; you implement Publish against the external log you trust.
+//
+// Order: one AuditedStore publishes a run's heads in increasing size. When two processes anchor the
+// same run (around a lease handoff), a smaller head can arrive after a larger one. Both are valid
+// commitments to prefixes of one journal, so a monitor should check consistency between a run's
+// heads ordered by size, not by arrival.
 type Anchor interface {
 	Publish(ctx context.Context, runID string, sth SignedTreeHead) error
 }
