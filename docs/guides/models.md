@@ -65,11 +65,18 @@ provider lacks is not an error:
 
 | `agent.Sampling` field | anthropic | openai | gemini |
 |---|---|---|---|
-| `MaxTokens` | `max_tokens` | `max_tokens` | `maxOutputTokens` |
+| `MaxTokens` | `max_tokens` | `max_completion_tokens` or `max_tokens` (below) | `maxOutputTokens` |
 | `Temperature` | `temperature` | `temperature` | `temperature` |
 | `TopP` | `top_p` | `top_p` | `topP` |
 | `Stop` | `stop_sequences` | `stop` | `stopSequences` |
 | `Seed` | dropped (no seed param) | `seed` | dropped (no seed param) |
+
+The OpenAI adapter sends the token limit as `max_completion_tokens` on OpenAI's own endpoint
+(`api.openai.com`, where `max_tokens` is deprecated and the o-series and gpt-5 reasoning models
+reject it) and for an OpenAI reasoning model id (`o1`, `o3-mini`, `gpt-5`, ..., also behind a
+`vendor/` prefix) on any endpoint; other OpenAI-compatible servers get `max_tokens`, which is what
+they implement. `openai.WithMaxCompletionTokens(bool)` forces the choice, for example for Azure
+OpenAI serving a reasoning model under a deployment name.
 
 A request-level `MaxTokens` overrides the adapter's construction-time default. Because the fields
 are pointers, an explicit `Temperature(0)` is distinct from unset (which uses the provider default).
