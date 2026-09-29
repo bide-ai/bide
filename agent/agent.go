@@ -206,20 +206,37 @@ func (a *Agent) WithApproverVerifiers(fn ApproverVerifierFor) *Agent {
 	return a
 }
 
-func (a *Agent) generate(ctx context.Context, req Request) (Message, Usage, error) {
+// generate runs one model call through the middleware chain. usedIDs holds the tool-use IDs
+// already in the run's conversation; the innermost handler rejects a turn that reuses one (see
+// checkToolUseIDs). It is checked there, below middleware, so a retry middleware sees the fault,
+// and the check still holds when a middleware trims the history it sends.
+func (a *Agent) generate(ctx context.Context, req Request, usedIDs map[string]bool) (Message, Usage, error) {
 	h := ModelHandler(func(ctx context.Context, req Request) (Message, Usage, error) {
 		// When a token sink is installed (Agent.Stream), stream the model call and
 		// forward deltas as they arrive while still assembling the message for the
 		// journal; otherwise take the plain blocking drain. Middleware wraps this
 		// either way and sees the assembled message + usage — streaming stays below it.
+		var (
+			msg Message
+			u   Usage
+			err error
+		)
 		if sink := modelSink(ctx); sink != nil {
-			s, err := a.model.Stream(ctx, req)
-			if err != nil {
-				return Message{}, Usage{}, err
+			s, serr := a.model.Stream(ctx, req)
+			if serr != nil {
+				return Message{}, Usage{}, serr
 			}
-			return s.drain(sink)
+			msg, u, err = s.drain(sink)
+		} else {
+			msg, u, err = Generate(ctx, a.model, req)
 		}
-		return Generate(ctx, a.model, req)
+		if err != nil {
+			return msg, u, err
+		}
+		if err := checkToolUseIDs(msg, usedIDs); err != nil {
+			return Message{}, u, err
+		}
+		return msg, u, nil
 	})
 	for i := len(a.mw) - 1; i >= 0; i-- {
 		h = a.mw[i](h)
@@ -376,7 +393,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 			var turnUsage Usage
 			rec, err := a.store.Do(genCtx, runID, fmt.Sprintf("@llm/%d", modelSeq),
 				func(ctx context.Context) (Record, error) {
-					m, u, e := a.generate(ctx, Request{Messages: msgs, Tools: a.toolList(), Sampling: a.sampling, ResponseFormat: a.responseFormat, ToolChoice: a.toolChoice})
+					m, u, e := a.generate(ctx, Request{Messages: msgs, Tools: a.toolList(), Sampling: a.sampling, ResponseFormat: a.responseFormat, ToolChoice: a.toolChoice}, toolUseIDs(msgs))
 					if e != nil {
 						return Record{}, e
 					}
@@ -663,6 +680,38 @@ func (a *Agent) quorumTally(ctx context.Context, runID string, tu ToolUse, pol *
 		return ApprovalTally{}, false, fmt.Errorf("record %s (run %s): %w (%w)", name, runID, err, ErrStorage)
 	}
 	return tally, true, nil
+}
+
+// toolUseIDs returns the IDs of every tool call in msgs.
+func toolUseIDs(msgs []Message) map[string]bool {
+	ids := map[string]bool{}
+	for _, m := range msgs {
+		for _, tu := range m.toolUses() {
+			ids[tu.ID] = true
+		}
+	}
+	return ids
+}
+
+// checkToolUseIDs rejects a live model turn whose tool calls cannot each be keyed by their own
+// ID: a call with no ID, an ID already used earlier in the conversation (used), or an ID that
+// appears twice in the turn. The loop records each call's result and journal step under its ID,
+// so a reused ID would pass a new call off as one already done. Only live turns are checked; a
+// turn replayed from the journal is taken as recorded.
+func checkToolUseIDs(m Message, used map[string]bool) error {
+	seen := map[string]bool{}
+	for _, tu := range m.toolUses() {
+		switch {
+		case tu.ID == "":
+			return fmt.Errorf("model called tool %q with no tool-use id: %w", tu.Name, ErrToolUseIDReused)
+		case used[tu.ID]:
+			return fmt.Errorf("model called tool %q with tool-use id %q from an earlier turn: %w", tu.Name, tu.ID, ErrToolUseIDReused)
+		case seen[tu.ID]:
+			return fmt.Errorf("model called tool %q with tool-use id %q twice in one turn: %w", tu.Name, tu.ID, ErrToolUseIDReused)
+		}
+		seen[tu.ID] = true
+	}
+	return nil
 }
 
 func (a *Agent) toolList() []Tool {

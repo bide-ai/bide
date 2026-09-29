@@ -103,6 +103,19 @@ classify them ([retry docs in the README](../../README.md#middleware--observabil
 - Both wrap `agent.ErrModel`, so `errors.Is(err, agent.ErrModel)` holds either way (see the errors
   section of the README).
 
+## Tool-call IDs
+
+The agent keys each tool call's result and journal step by its tool-use ID, so every call in a
+run needs its own. Anthropic and OpenAI issue one per call. Gemini usually sends none: the Gemini
+adapter keeps an `id` when Gemini sends one and otherwise makes up a random `call_<24 hex digits>`,
+which carries nothing from the tool name or the call's position.
+
+The agent checks every live model turn whatever the adapter: a tool call with no ID, an ID already
+used earlier in the conversation, or one repeated within the turn fails the turn with
+`agent.ErrToolUseIDReused` (wrapping `ErrProtocol` and `ErrModel`) instead of passing the call off
+as already done. The check runs below middleware, so `middleware.Retry` retries it, and the rejected
+turn is never journaled. Turns replayed from an existing journal are not re-checked.
+
 ## Multimodal input (images)
 
 User messages carry mixed content parts, so an image can accompany text on a user turn. Build a

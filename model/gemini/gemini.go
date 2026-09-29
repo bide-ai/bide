@@ -16,12 +16,13 @@ package gemini
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
-	"strconv"
 	"strings"
 
 	"github.com/bide-ai/bide/agent"
@@ -270,6 +271,7 @@ type chunk struct {
 			Parts []struct {
 				Text         string `json:"text"`
 				FunctionCall *struct {
+					ID   string          `json:"id"`
 					Name string          `json:"name"`
 					Args json.RawMessage `json:"args"`
 				} `json:"functionCall"`
@@ -282,6 +284,16 @@ type chunk struct {
 		CandidatesTokenCount    int `json:"candidatesTokenCount"`
 		CachedContentTokenCount int `json:"cachedContentTokenCount"`
 	} `json:"usageMetadata"`
+}
+
+// newCallID returns a tool-call id for a call Gemini sent without one. The agent keys each
+// call's result and journal step by this id, so it must differ from every id issued before
+// it, in this response or any other: it is random, and carries nothing from the tool name or
+// the call's position that could make two calls collide.
+func newCallID() string {
+	var b [12]byte
+	rand.Read(b[:]) // never fails (crypto/rand panics rather than return an error)
+	return "call_" + hex.EncodeToString(b[:])
 }
 
 // mapFinishReason maps Gemini's finishReason onto the neutral reason strings the other
@@ -306,8 +318,8 @@ func mapFinishReason(reason string, sawToolCall bool) string {
 // streamSSE reads Gemini's SSE stream and pushes normalized agent events. It closes both
 // the body and the channel. Package-internal so it's unit-testable without a network
 // round-trip. Gemini sends complete functionCall objects, so each becomes one
-// ToolCallDelta carrying the whole args object; a stable synthetic id is assigned when
-// Gemini omits one (it does not send tool-call ids). Usage arrives on the usageMetadata
+// ToolCallDelta carrying the whole args object. Gemini usually sends no tool-call id, so
+// one is made up (see newCallID) when the call carries none. Usage arrives on the usageMetadata
 // of (typically) the final chunk; the terminal Finish carries it, matching the
 // anthropic/openai contract that the agent core's finalize() reads.
 func streamSSE(body io.ReadCloser, send func(agent.Emit) bool) {
@@ -342,8 +354,10 @@ func streamSSE(body io.ReadCloser, send func(agent.Emit) bool) {
 					if len(args) == 0 {
 						args = json.RawMessage("{}")
 					}
-					// Synthesize a stable id: Gemini does not send tool-call ids.
-					id := "call_" + fc.Name + strconv.Itoa(toolIndex)
+					id := fc.ID
+					if id == "" {
+						id = newCallID()
+					}
 					if !send(agent.Emit{Event: agent.ToolCallDelta{
 						Index: toolIndex, ID: id, Name: fc.Name, ArgsFragment: args,
 					}}) {

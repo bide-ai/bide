@@ -3,17 +3,18 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 )
 
-// loopModel always asks for a tool call — a runaway model — so the loop only ends if a
-// turn cap stops it.
+// loopModel always asks for a tool call, under a new ID each turn (a runaway model), so
+// the loop only ends if a turn cap stops it.
 type loopModel struct{ n int }
 
 func (m *loopModel) Stream(context.Context, Request) (*Stream, error) {
 	m.n++
 	ch := make(chan Emit, 2)
-	ch <- Emit{Event: ToolCallDelta{Index: 0, ID: "c", Name: "spin", ArgsFragment: []byte(`{}`)}}
+	ch <- Emit{Event: ToolCallDelta{Index: 0, ID: fmt.Sprintf("c%d", m.n), Name: "spin", ArgsFragment: []byte(`{}`)}}
 	ch <- Emit{Event: Finish{Reason: "tool_use"}}
 	close(ch)
 	return NewStream(ch), nil

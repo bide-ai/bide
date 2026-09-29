@@ -52,8 +52,15 @@ var (
 	// response stopped partway through a turn, so what arrived is not the model's answer.
 	ErrIncompleteResponse = fmt.Errorf("model response ended before the turn finished: %w", ErrModel)
 	ErrTruncatedToolArgs  = fmt.Errorf("truncated tool-call arguments: %w", ErrProtocol)
-	ErrBudgetExceeded     = fmt.Errorf("budget exceeded: %w", ErrBudget)
-	ErrMaxTurns           = fmt.Errorf("max turns exceeded: %w", ErrBudget)
+	// ErrToolUseIDReused is a model turn whose tool call has no ID, repeats an ID from an
+	// earlier turn of the conversation, or repeats one within the turn. The loop keys each
+	// call's result and journal step by its ID, so a reused ID would pass the call off as
+	// already done. It wraps ErrModel as well as ErrProtocol: the fault is in the model's
+	// output, the turn is not journaled, and a fresh attempt can issue a valid turn, so a
+	// retry middleware treats it as retryable.
+	ErrToolUseIDReused = fmt.Errorf("tool-use id missing or reused: %w (%w)", ErrProtocol, ErrModel)
+	ErrBudgetExceeded  = fmt.Errorf("budget exceeded: %w", ErrBudget)
+	ErrMaxTurns        = fmt.Errorf("max turns exceeded: %w", ErrBudget)
 	// ErrInvalidApproval is an approver decision rejected at submission by ApproveAs's
 	// WithDecisionCheck: no such tool call, an unknown approver, or a signature that does not
 	// verify for this exact call.
