@@ -28,7 +28,10 @@ session into agent tools.
   with an error wrapping `agent.ErrProtocol` if a tool's name is outside the MCP grammar (1 to
   128 of `A-Z a-z 0-9 _ - .`), so no control character, space, or Unicode lookalike reaches your
   logs, journal, or approval prompts; if two tools share a name; or if a tool's input schema is
-  not a JSON Schema object of type `"object"`.
+  not a JSON Schema object of type `"object"`. A server tool named like one of your own tools
+  (or like a tool from another server) does not replace it: `agent.New` records the clash and
+  every run of that agent fails with `agent.ErrConfig`, so the model's call never reaches the
+  wrong tool.
 - **Give each tool an `agent.Safety`.** Every MCP-sourced tool gets side-effect-safe
   durable resume. By default each is treated as a side effect; for a server you trust, its
   annotations decide.

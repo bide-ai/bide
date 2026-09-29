@@ -57,6 +57,7 @@ type Middleware func(ModelHandler) ModelHandler
 type Agent struct {
 	model        Model
 	tools        map[string]Tool
+	dupTool      string // a tool name New was given more than once; every run fails with ErrConfig
 	store        Durable
 	mw           []Middleware
 	toolMW       []ToolMiddleware
@@ -148,6 +149,7 @@ func (a *Agent) WithSystemPromptFunc(fn func(context.Context) string) *Agent {
 // New constructs an Agent. It panics if model or store is nil: both are load-bearing on every run
 // (the model drives turns, the store journals them for at-most-once resume), so a nil is a
 // construction-time programmer error, not a runtime condition to thread through every call.
+// Tool names must be unique: if two tools share a name, every run fails with ErrConfig.
 func New(model Model, store Durable, tools ...Tool) *Agent {
 	if model == nil {
 		panic("agent: New requires a non-nil Model")
@@ -156,10 +158,26 @@ func New(model Model, store Durable, tools ...Tool) *Agent {
 		panic("agent: New requires a non-nil Durable store")
 	}
 	m := make(map[string]Tool, len(tools))
+	dup := ""
 	for _, t := range tools {
+		if _, taken := m[t.Name()]; taken && dup == "" {
+			dup = t.Name()
+		}
 		m[t.Name()] = t
 	}
-	return &Agent{model: model, tools: m, store: store}
+	return &Agent{model: model, tools: m, dupTool: dup, store: store}
+}
+
+// checkTools reports a tool name New was given twice. The model calls a tool by name, so one of
+// the two could never be called, and which one a call reaches would depend on the order the host
+// listed them in: a host that adds tools from a runtime source such as an MCP server after its
+// own would send the model's call, arguments and all, to the server. It is an error rather than
+// a panic because a tool list read from a server at run time is data, not code.
+func (a *Agent) checkTools() error {
+	if a.dupTool != "" {
+		return fmt.Errorf("agent: two tools are named %q: %w", a.dupTool, ErrConfig)
+	}
+	return nil
 }
 
 // Use appends middleware wrapping the model call (first added = outermost). Returns the
@@ -323,6 +341,9 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 		// An empty runID would key every run to the same journal, silently cross-contaminating
 		// their memoized steps. Reject it rather than corrupt the log.
 		return Message{}, usageTotals{}, 0, fmt.Errorf("run: empty runID: %w", ErrConfig)
+	}
+	if err := a.checkTools(); err != nil {
+		return Message{}, usageTotals{}, 0, err
 	}
 	fire := func(e AgentEvent) {
 		if emit != nil {

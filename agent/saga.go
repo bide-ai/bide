@@ -120,6 +120,9 @@ func (a *Agent) RunSaga(ctx context.Context, runID, input string) (Message, erro
 // runSaga is the shared body of RunSaga and StreamSaga; emit (may be nil) receives
 // lifecycle events as the loop runs.
 func (a *Agent) runSaga(ctx context.Context, runID, input string, emit func(AgentEvent)) (Message, error) {
+	if err := a.checkTools(); err != nil {
+		return Message{}, err // before a rollback, which looks compensators up by name
+	}
 	recs, err := a.store.History(ctx, runID)
 	if err != nil {
 		return Message{}, err
@@ -139,6 +142,9 @@ func (a *Agent) runSaga(ctx context.Context, runID, input string, emit func(Agen
 // runSagaWithTelemetry is the counterpart of runSaga that returns usage and turn count
 // for RunSagaResult. It uses the richer run return values directly.
 func (a *Agent) runSagaWithTelemetry(ctx context.Context, runID, input string, emit func(AgentEvent)) (Message, usageTotals, int, error) {
+	if err := a.checkTools(); err != nil {
+		return Message{}, usageTotals{}, 0, err // before a rollback, which looks compensators up by name
+	}
 	recs, err := a.store.History(ctx, runID)
 	if err != nil {
 		return Message{}, usageTotals{}, 0, err
