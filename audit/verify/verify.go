@@ -8,7 +8,8 @@
 // It operates on canonical LEAF BYTES, not typed records, precisely so it needs no domain
 // types. A leaf's bytes are a versioned tag naming its kind followed by its content: JournalLeaf
 // builds a journal record's leaf from the record's journal encoding (the bytes a store persists,
-// the record's random salt included), KeyLeaf an absence key's, EventLeaf an event's, and
+// the record's random salt included), KeyLeaf an absence key's, EventLeaf an event's (its random
+// salt included), and
 // AnchorLeaf an anchor entry's. The algorithms mirror the audit package exactly and are
 // cross-checked against it in the tests, so the intentional duplication cannot drift.
 //
@@ -30,9 +31,10 @@ func JournalLeaf(record []byte) []byte { return tagged("bide.audit.journal-leaf.
 // KeyLeaf returns the leaf bytes of an absence key: "bide.audit.key-leaf.v1\x00" || key.
 func KeyLeaf(key string) []byte { return tagged("bide.audit.key-leaf.v1\x00", []byte(key)) }
 
-// EventLeaf returns the leaf bytes of an event from its canonical JSON ({"kind":...,"event":...}):
-// "bide.audit.event-leaf.v1\x00" || event.
-func EventLeaf(event []byte) []byte { return tagged("bide.audit.event-leaf.v1\x00", event) }
+// EventLeaf returns the leaf bytes of an event from its canonical JSON, the event's salt included
+// ({"kind":...,"event":...,"salt":...}, the salt the event's proof discloses, in base64):
+// "bide.audit.event-leaf.v2\x00" || event.
+func EventLeaf(event []byte) []byte { return tagged("bide.audit.event-leaf.v2\x00", event) }
 
 // AnchorLeaf returns the leaf bytes of an anchor log entry from its JSON:
 // "bide.audit.anchor-leaf.v1\x00" || entry.

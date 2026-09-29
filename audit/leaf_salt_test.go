@@ -119,6 +119,10 @@ func TestLeafFormats(t *testing.T) {
 		s := sha256.Sum256([]byte("\x00" + strings.Join(parts, "")))
 		return s[:]
 	}
+	h2 := func(parts ...string) []byte {
+		s := sha256.Sum256([]byte(strings.Join(parts, "")))
+		return s[:]
+	}
 
 	st := agent.NewMemStore()
 	if _, err := st.Do(ctx, "r", "s", func(context.Context) (agent.Record, error) {
@@ -145,8 +149,23 @@ func TestLeafFormats(t *testing.T) {
 	if err := log.Add(agent.TurnStarted{Seq: 1}); err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Equal(log.Root(), h("bide.audit.event-leaf.v1\x00", `{"kind":"TurnStarted","event":{"Seq":1}}`)) {
-		t.Error("an event leaf does not hash as SHA-256(0x00 || \"bide.audit.event-leaf.v1\\x00\" || event JSON)")
+	evProof, _ := log.Prove(0)
+	evJSON := fmt.Sprintf(`{"kind":"TurnStarted","event":{"Seq":1},"salt":"%s"}`, base64.StdEncoding.EncodeToString(evProof.Salt))
+	if len(evProof.Salt) != agent.SaltSize || !bytes.Equal(log.Root(), h("bide.audit.event-leaf.v2\x00", evJSON)) {
+		t.Error("an event leaf does not hash as SHA-256(0x00 || \"bide.audit.event-leaf.v2\\x00\" || event JSON with its salt)")
+	}
+
+	// A projected event's salt is SHA-256("bide.audit.event-salt.v1\x00" || its record's salt), the
+	// salt of the record it projects, not of a record before it that projects no event.
+	toolRec := agent.Record{Name: "c", Kind: agent.StepToolResult, ToolUseID: "c", Result: json.RawMessage(`1`), Salt: recs[0].Salt}
+	valueRec := agent.Record{Name: "v", Kind: agent.StepValue, Result: json.RawMessage(`2`), Salt: bytes.Repeat([]byte{5}, agent.SaltSize)}
+	projected, err := EventLogFromJournal(ctx, recordsStore{valueRec, toolRec}, "r")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pp, _ := projected.Prove(0)
+	if !bytes.Equal(pp.Salt, h2("bide.audit.event-salt.v1\x00", string(recs[0].Salt))) {
+		t.Error("a projected event's salt is not SHA-256(\"bide.audit.event-salt.v1\\x00\" || record salt)")
 	}
 
 	anchors := NewMemAnchorLog()
@@ -156,5 +175,77 @@ func TestLeafFormats(t *testing.T) {
 	entry, _ := json.Marshal(anchors.Entries()[0])
 	if root, _ := anchors.Root(); !bytes.Equal(root, h("bide.audit.anchor-leaf.v1\x00", string(entry))) {
 		t.Error("an anchor leaf does not hash as SHA-256(0x00 || \"bide.audit.anchor-leaf.v1\\x00\" || entry JSON)")
+	}
+}
+
+// An event-log proof's audit path holds the hashes of the proven event's neighbours, as a journal
+// bundle's does: path[0] is the adjacent event's leaf hash. Events carry content (a tool's result,
+// an assistant turn), so if that hash is a function of the event alone, anyone holding the proof
+// confirms a low-entropy neighbour by hashing each candidate and comparing. Every event leaf
+// therefore commits to a random salt that only its own event's proof discloses. This holds for a
+// log filled live, for the journal projection, and for a log rebuilt from an EventStore.
+func TestNeighbourEventNotGuessable(t *testing.T) {
+	ctx := context.Background()
+	result := func(id, res string) agent.ToolCompleted {
+		return agent.ToolCompleted{ToolUseID: id, Result: json.RawMessage(res)}
+	}
+
+	live := NewEventLog()
+	for _, e := range []agent.AgentEvent{result("toolu_A", `{"charged":true}`), result("toolu_B", `{"fraud_flag":true}`)} {
+		if err := live.Add(e); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	st := agent.NewMemStore()
+	for _, r := range []agent.Record{
+		{Kind: agent.StepToolResult, ToolUseID: "toolu_A", Result: json.RawMessage(`{"charged":true}`)},
+		{Kind: agent.StepToolResult, ToolUseID: "toolu_B", Result: json.RawMessage(`{"fraud_flag":true}`)},
+	} {
+		if _, err := st.Do(ctx, "run", r.ToolUseID, func(context.Context) (agent.Record, error) { return r, nil }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	projected, err := EventLogFromJournal(ctx, st, "run")
+	if err != nil {
+		t.Fatal(err)
+	}
+	evStore := NewMemEventStore()
+	if err := PersistJournal(ctx, evStore, st, "run"); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadEventLog(ctx, evStore, "run")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for name, log := range map[string]*EventLog{"live": live, "journal projection": projected, "event store": loaded} {
+		proof, err := log.Prove(0)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if len(proof.Path) != 1 {
+			t.Fatalf("%s: audit path has %d hashes, want 1", name, len(proof.Path))
+		}
+		// The auditor holds the proof and guesses the next event: its ID follows from the proven
+		// call, its result is one of two values. Every way the auditor can hash a guess, with what
+		// the proof discloses, must miss.
+		for _, guess := range []string{`{"fraud_flag":false}`, `{"fraud_flag":true}`} {
+			cand := result("toolu_B", guess)
+			inner, _ := json.Marshal(cand)
+			body, _ := json.Marshal(struct {
+				Kind  string          `json:"kind"`
+				Event json.RawMessage `json:"event"`
+			}{"ToolCompleted", inner})
+			tries := [][]byte{leafHash(body), leafHash(append([]byte("bide.audit.event-leaf.v1\x00"), body...)), leafHash(tagged(eventLeafTag, body))}
+			if leaf, err := canonicalEvent(cand, proof.Salt); err == nil { // the one salt the proof discloses
+				tries = append(tries, leafHash(leaf))
+			}
+			for _, h := range tries {
+				if bytes.Equal(h, proof.Path[0]) {
+					t.Errorf("%s: the undisclosed neighbour %s was confirmed from the proof's audit path", name, guess)
+				}
+			}
+		}
 	}
 }

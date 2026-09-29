@@ -44,6 +44,21 @@ post-quantum options below), with no external dependencies.
   neighbour's leaf hash (the first sibling on the path) is unguessable even when its content has
   only two possible values, such as an approve/deny decision or `{"fraud_flag":true}`. What the
   index and size reveal is the record's position and how many steps the run had taken.
+- **Event-log proofs disclose one event.** An event-log inclusion proof (`EventLog.Prove`, an
+  `EventInclusion`, checked with `VerifyEventInclusion`) discloses exactly: the proven event's
+  random 32-byte salt, its index in the log, the log's size, and the O(log n) sibling hashes on its
+  audit path; the verifier holds the event itself, and a signed event head adds kind, run ID, size,
+  root, and timestamp. Every event leaf (`bide.audit.event-leaf.v2`) commits to its own salt, so
+  the sibling hashes cannot be tested against a guessed neighbouring event, even a two-valued tool
+  result. A live `EventLog` draws each salt from `crypto/rand`; the journal projection
+  (`EventLogFromJournal`, `PersistJournal`) derives it one-way from the random salt of the journal
+  record the event projects, so a journal `ProofBundle` for that record lets its holder recompute
+  the event's leaf, which holds nothing the record does not.
+- **Anchor-log proofs.** Anchor-log leaves are not salted. An anchor proof's path covers
+  neighbouring entries, whose sequence numbers and run IDs may be guessable, but each entry also
+  holds a signed tree head: its root commits to salted leaves and its Ed25519 signature needs the
+  signing key, so a proof holder confirms a neighbouring entry only by already holding that exact
+  signed head. Do not anchor an unsigned head: it has no such entropy.
 - **Absence proofs name their neighbours.** An absence proof (`ProveAbsent`, `AbsenceBundle`)
   discloses the absent key, the number of distinct keys in the set, and, in plain text, the one
   or two committed keys adjacent to it in sort order with their positions: for tool calls, up to

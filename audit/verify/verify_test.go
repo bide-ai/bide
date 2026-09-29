@@ -195,7 +195,8 @@ func TestVerify_LeafKindsMatchAudit(t *testing.T) {
 	evJSON, _ := json.Marshal(struct {
 		Kind  string          `json:"kind"`
 		Event json.RawMessage `json:"event"`
-	}{"TurnStarted", inner})
+		Salt  []byte          `json:"salt"`
+	}{"TurnStarted", inner, evProof.Salt})
 
 	anchors := audit.NewMemAnchorLog()
 	_, priv, _ := ed25519.GenerateKey(nil)
@@ -213,7 +214,7 @@ func TestVerify_LeafKindsMatchAudit(t *testing.T) {
 		proof         audit.Inclusion
 	}{
 		"key":    {keyRoot, []byte(abs.Left.Key), func(b []byte) []byte { return verify.KeyLeaf(string(b)) }, abs.Left.Proof},
-		"event":  {events.Root(), evJSON, verify.EventLeaf, evProof},
+		"event":  {events.Root(), evJSON, verify.EventLeaf, evProof.Inclusion},
 		"anchor": {anchorRoot, entryJSON, verify.AnchorLeaf, anchorProof},
 	} {
 		if !verify.Inclusion(c.root, c.leaf(c.content), c.proof.Index, c.proof.Size, c.proof.Path) {

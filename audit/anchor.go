@@ -28,6 +28,13 @@ type Anchor interface {
 
 // AnchorEntry is one published commitment recorded by a transparency log: the run it commits
 // to, its signed tree head, and the entry's position in the anchor log.
+//
+// Anchor leaves are not salted. An anchor-log proof's path hashes cover neighbouring entries, and a
+// neighbour's sequence number and run ID may be guessable, but its signed head is not: the head's
+// root commits to salted leaves and its Ed25519 signature needs the signing key, so a proof holder
+// can confirm a neighbouring entry only by already holding that exact signed head, which tells
+// them only that the head they hold was anchored there. A head published without a signature has
+// no such entropy; do not anchor one.
 type AnchorEntry struct {
 	Seq   int            `json:"seq"`    // the entry's position in the anchor log
 	RunID string         `json:"run_id"` // the run whose commitment was published

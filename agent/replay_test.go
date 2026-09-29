@@ -85,3 +85,27 @@ func TestReplayEvents_AppendOnlyAcrossCrash(t *testing.T) {
 		}
 	}
 }
+
+// ProjectEvents names the record each event projects: records that project no event (a value
+// step, an attempt marker, a model step without a message) are skipped, not counted.
+func TestProjectEvents_Sources(t *testing.T) {
+	msg := UserText("done")
+	recs := []Record{
+		{Kind: StepValue},
+		{Kind: StepToolResult, ToolUseID: "a"},
+		{Kind: StepModel},
+		{Kind: StepAttempt},
+		{Kind: StepModel, Message: &msg},
+		{Kind: StepToolResult, ToolUseID: "b"},
+	}
+	evs, sources := ProjectEvents(recs)
+	if want := []int{1, 4, 5}; !reflect.DeepEqual(sources, want) {
+		t.Fatalf("sources = %v, want %v", sources, want)
+	}
+	if len(evs) != 3 {
+		t.Fatalf("%d events, want 3", len(evs))
+	}
+	if tc, ok := evs[2].(ToolCompleted); !ok || tc.ToolUseID != "b" {
+		t.Fatalf("event 2 = %#v, want the tool result b", evs[2])
+	}
+}

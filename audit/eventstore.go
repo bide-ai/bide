@@ -25,7 +25,9 @@ import (
 // EventStore is the bring-your-own port: append canonical event leaves to your append-only
 // backend (a Postgres table with UNIQUE(run_id, seq) and insert-only grants, object storage
 // with object-lock/WORM, or a log) and read them back. Bide ships MemEventStore as the
-// in-memory default; you implement Append/Load against infrastructure you already run.
+// in-memory default; you implement Append/Load against infrastructure you already run. A leaf
+// holds its event's salt (see EventInclusion), so a store must keep the bytes verbatim: a proof
+// built from the reloaded trail discloses the salt from there.
 type EventStore interface {
 	// Append durably records leaf at position seq (0-based, contiguous) for runID. It MUST be
 	// append-only and idempotent on (runID, seq): re-appending an already-stored seq with the
@@ -43,13 +45,17 @@ type EventStore interface {
 // what is new and never fork the trail, because the projection is deterministic and
 // resume-stable. After it returns, LoadEventLog(evStore, runID) reconstructs the committed
 // trail for anchoring/proofs even if the journal is later deleted.
+//
+// Each leaf commits to its event's salt, derived from the salt of the journal record the event
+// projects (see EventLogFromJournal), so a re-run computes the same leaf bytes and a stored leaf
+// carries the salt its proof discloses. It errors if a source record has no agent.SaltSize salt.
 func PersistJournal(ctx context.Context, evStore EventStore, jStore agent.Durable, runID string) error {
-	evs, err := agent.ReplayEvents(ctx, jStore, runID)
+	evs, salts, err := projectJournal(ctx, jStore, runID)
 	if err != nil {
 		return err
 	}
 	for seq, e := range evs {
-		leaf, err := canonicalEvent(e)
+		leaf, err := canonicalEvent(e, salts[seq])
 		if err != nil {
 			return err
 		}
@@ -60,11 +66,27 @@ func PersistJournal(ctx context.Context, evStore EventStore, jStore agent.Durabl
 	return nil
 }
 
-// PersistEvent appends one event's canonical leaf to evStore at position seq. The low-level
-// primitive behind PersistJournal, for callers streaming events into a store directly; prefer
-// PersistJournal for the crash-safe, idempotent path.
+// PersistEvent appends one event's canonical leaf to evStore at position seq, for callers
+// streaming events into a store directly; prefer PersistJournal for the crash-safe path. The
+// leaf commits to a fresh random salt (agent.SaltSize bytes from crypto/rand), which is stored
+// in the leaf. If seq is already stored, the event is salted with the stored leaf's salt, so a
+// retry of the same event is a no-op and a different event is still refused as a fork. Do not
+// mix it with PersistJournal on one run: the two salt the same event differently, so the second
+// reports a fork.
 func PersistEvent(ctx context.Context, evStore EventStore, runID string, seq int, e agent.AgentEvent) error {
-	leaf, err := canonicalEvent(e)
+	stored, err := evStore.Load(ctx, runID)
+	if err != nil {
+		return fmt.Errorf("audit: load event trail %s: %w", runID, err)
+	}
+	var salt []byte
+	if seq >= 0 && seq < len(stored) {
+		if salt, err = eventLeafSalt(stored[seq]); err != nil {
+			return fmt.Errorf("audit: event %d of run %s: %w", seq, runID, err)
+		}
+	} else if salt, err = newEventSalt(); err != nil {
+		return err
+	}
+	leaf, err := canonicalEvent(e, salt)
 	if err != nil {
 		return err
 	}
@@ -73,14 +95,21 @@ func PersistEvent(ctx context.Context, evStore EventStore, runID string, seq int
 
 // LoadEventLog rebuilds an EventLog from evStore's persisted leaves for runID, ready for
 // Root / Head / TreeHead / Prove / ProveConsistency — from the store alone, no journal needed.
-// The leaves were canonicalized when stored, so inclusion proofs verify against the original
-// events exactly as if the log had been built live.
+// The leaves were canonicalized, salts included, when stored, so inclusion proofs verify against
+// the original events exactly as if the log had been built live. It refuses a leaf that is not a
+// salted bide.audit.event-leaf.v2 leaf: its proof would have no salt to disclose.
 func LoadEventLog(ctx context.Context, evStore EventStore, runID string) (*EventLog, error) {
 	leaves, err := evStore.Load(ctx, runID)
 	if err != nil {
 		return nil, fmt.Errorf("audit: load event trail %s: %w", runID, err)
 	}
-	return &EventLog{leaves: leaves}, nil
+	salts := make([][]byte, len(leaves))
+	for i, leaf := range leaves {
+		if salts[i], err = eventLeafSalt(leaf); err != nil {
+			return nil, fmt.Errorf("audit: event %d of run %s: %w", i, runID, err)
+		}
+	}
+	return &EventLog{leaves: leaves, salts: salts}, nil
 }
 
 // MemEventStore is the in-memory reference EventStore for tests and local dev. A real backend

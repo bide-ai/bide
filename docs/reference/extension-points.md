@@ -295,7 +295,9 @@ grants, object storage with object-lock/WORM, or a log). The trail is fed from t
 journal projection (`agent.ReplayEvents`, see [debugging](../guides/debugging.md)), not the live
 stream, so re-mirroring after a crash appends the same leaves at the same positions
 (idempotent). `audit.PersistJournal` drives that mirroring; `audit.LoadEventLog` rebuilds an
-`EventLog` from the store for `Root` / STH / proofs even after the journal is deleted.
+`EventLog` from the store for `Root` / STH / proofs even after the journal is deleted. Each leaf
+holds its event's random salt, which a proof discloses from the stored bytes, so store leaves
+verbatim (see [audit](../guides/audit.md#committing-the-event-stream-not-just-the-journal)).
 
 **Reference adapter.** `audit.NewMemEventStore()` is the in-memory implementation; it
 enforces the same append-only, idempotent, contiguous contract a real backend would enforce

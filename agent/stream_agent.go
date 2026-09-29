@@ -102,19 +102,28 @@ func ReplayEvents(ctx context.Context, store Durable, runID string) ([]AgentEven
 	if err != nil {
 		return nil, fmt.Errorf("load history %s: %w (%w)", runID, err, ErrStorage)
 	}
-	var out []AgentEvent
-	for _, r := range recs {
+	evs, _ := ProjectEvents(recs)
+	return evs, nil
+}
+
+// ProjectEvents returns the events ReplayEvents returns for a journal holding recs, and for each
+// event the index in recs of the record it projects: each event comes from exactly one record.
+// The audit package uses the index to salt a projected event from its record's salt.
+func ProjectEvents(recs []Record) (events []AgentEvent, sources []int) {
+	for i, r := range recs {
 		switch r.Kind {
 		case StepModel:
 			if r.Message != nil {
-				out = append(out, AssistantTurn{Message: *r.Message, Replayed: true})
+				events = append(events, AssistantTurn{Message: *r.Message, Replayed: true})
+				sources = append(sources, i)
 			}
 		case StepToolResult:
 			name, _ := toolNameFor(recs, r.ToolUseID)
-			out = append(out, ToolCompleted{ToolUseID: r.ToolUseID, Name: name, Result: r.Result, IsError: r.IsError})
+			events = append(events, ToolCompleted{ToolUseID: r.ToolUseID, Name: name, Result: r.Result, IsError: r.IsError})
+			sources = append(sources, i)
 		}
 	}
-	return out, nil
+	return events, sources
 }
 
 // AgentStream is a live view of a running agent: range Events for progress, then call
