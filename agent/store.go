@@ -115,6 +115,24 @@ type Lister interface {
 // and Recover) without inspecting the model output.
 const runCompleteStep = "run:complete"
 
+// runAbortedStep is the journal name of the terminal marker a saga records once its rollback
+// has finished, so a recovery supervisor treats the aborted run as over.
+const runAbortedStep = "run:aborted"
+
+// hasValueStep reports whether runID's journal holds a StepValue record named name.
+func hasValueStep(ctx context.Context, store Durable, runID, name string) (bool, error) {
+	recs, err := store.History(ctx, runID)
+	if err != nil {
+		return false, fmt.Errorf("load history %s: %w (%w)", runID, err, ErrStorage)
+	}
+	for _, r := range recs {
+		if r.Kind == StepValue && r.Name == name {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // Step runs fn as a named durable step and returns its typed result. On resume, a
 // completed step returns its recorded result without re-running fn. This is the
 // Option-B authoring primitive: write plain Go control flow, and name the operations

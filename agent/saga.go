@@ -149,6 +149,16 @@ func (a *Agent) runSagaWithTelemetry(ctx context.Context, runID, input string, e
 
 func (a *Agent) rollback(ctx context.Context, runID string, cause error) error {
 	comp, uncomp, cerr := a.rollbackRun(ctx, runID)
+	if cerr == nil {
+		// The rollback finished: the run is over. Mark it terminal so a recovery supervisor
+		// leaves it alone. A rollback that stopped (an unknown outcome, a failed compensator) is
+		// not marked, so it is re-driven once the cause is resolved.
+		if _, err := a.store.Do(ctx, runID, runAbortedStep, func(context.Context) (Record, error) {
+			return Record{Kind: StepValue, Result: mustJSON(cause.Error())}, nil
+		}); err != nil {
+			cerr = fmt.Errorf("saga %s: record the finished rollback: %w (%w)", runID, err, ErrStorage)
+		}
+	}
 	return &SagaAborted{RunID: runID, Cause: cause, Compensated: comp, Uncompensated: uncomp, CompensateErr: cerr}
 }
 

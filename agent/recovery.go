@@ -140,6 +140,12 @@ func Recover(ctx context.Context, store Durable, resume func(ctx context.Context
 		if complete {
 			continue // finished before the crash: nothing to re-drive
 		}
+		if aborted, err := hasValueStep(ctx, store, runID, runAbortedStep); err != nil {
+			errs = append(errs, err)
+			continue
+		} else if aborted {
+			continue // a saga that aborted and finished its rollback: over
+		}
 
 		// Drive under the run's lease (when the store supports one). A run another holder currently
 		// leases is skipped; competing recoverers and live primary drivers coordinate through Lease.
