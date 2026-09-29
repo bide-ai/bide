@@ -138,6 +138,9 @@ const runCompleteStep = "run:complete"
 // with no error reported. Return exported fields, a map, or a pointer whose fields are exported.
 func Step[T any](ctx context.Context, d Durable, runID, name string, fn func(context.Context) (T, error), opts ...StepOption) (T, error) {
 	var out T
+	if err := ctx.Err(); err != nil {
+		return out, err // a cancelled caller starts no new step
+	}
 	var cfg stepConfig
 	for _, o := range opts {
 		o(&cfg)
