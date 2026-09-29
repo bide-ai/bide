@@ -48,21 +48,73 @@ import (
 // wrapped as an agent.Tool. The session must already be connected (see Connect). The
 // returned tools call back through the session, so keep it open for their lifetime.
 // Each tool is a side effect unless TrustAnnotations is passed (see the package doc).
+//
+// The server's tool list is untrusted input. Tools refuses the whole list, with an error
+// wrapping agent.ErrProtocol, if a tool's name is outside the MCP grammar (1 to 128 of A-Z a-z
+// 0-9 _ - .), two tools share a name, or a tool's input schema is not an object schema.
 func Tools(ctx context.Context, session *mcp.ClientSession, opts ...ToolsOption) ([]agent.Tool, error) {
 	var cfg toolsConfig
 	for _, o := range opts {
 		o(&cfg)
 	}
 	var tools []agent.Tool
+	seen := map[string]bool{}
 	// session.Tools follows the pagination cursor internally, so a server that
 	// splits its tool list across several pages is listed in full.
 	for def, err := range session.Tools(ctx, nil) {
 		if err != nil {
 			return nil, fmt.Errorf("mcp: list tools: %w (%w)", err, agent.ErrTool)
 		}
-		tools = append(tools, &tool{session: session, def: def, trust: cfg.trust})
+		if err := checkName(def.Name); err != nil {
+			return nil, fmt.Errorf("mcp: list tools: tool %s: %w (%w)", quoteName(def.Name), err, agent.ErrProtocol)
+		}
+		if seen[def.Name] {
+			return nil, fmt.Errorf("mcp: list tools: tool %q is listed twice (%w)", def.Name, agent.ErrProtocol)
+		}
+		seen[def.Name] = true
+		schema, err := inputSchema(def.InputSchema)
+		if err != nil {
+			return nil, fmt.Errorf("mcp: list tools: tool %q: %w (%w)", def.Name, err, agent.ErrProtocol)
+		}
+		tools = append(tools, &tool{session: session, def: def, schema: schema, trust: cfg.trust})
 	}
 	return tools, nil
+}
+
+// checkName reports whether name is a tool name the MCP specification allows: 1 to 128
+// characters, each an ASCII letter, a digit, '_', '-' or '.'. The server's names are untrusted
+// input that reaches logs, the journal, approval prompts and every model request, so a name with
+// a control character, a space, or a Unicode lookalike is refused rather than passed on.
+func checkName(name string) error {
+	if name == "" || len(name) > 128 {
+		return fmt.Errorf("name is %d bytes, want 1 to 128", len(name))
+	}
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		if !('a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' || '0' <= c && c <= '9' || c == '_' || c == '-' || c == '.') {
+			return fmt.Errorf("name has %q, want only letters, digits, '_', '-' and '.'", c)
+		}
+	}
+	return nil
+}
+
+// quoteName quotes a server's tool name for an error message, cut to its first 128 bytes.
+func quoteName(name string) string {
+	if len(name) > 128 {
+		return fmt.Sprintf("%q... (%d bytes)", name[:128], len(name))
+	}
+	return fmt.Sprintf("%q", name)
+}
+
+// inputSchema returns a tool's input schema as JSON, which the MCP specification requires to
+// be a JSON Schema object of type "object": the schema every provider requires of a tool's
+// arguments.
+func inputSchema(s any) (json.RawMessage, error) {
+	obj, _ := s.(map[string]any) // nil unless the schema is a JSON object
+	if obj["type"] != "object" {
+		return nil, errors.New(`input schema is not a JSON Schema object of type "object"`)
+	}
+	return json.Marshal(obj)
 }
 
 // ToolsOption configures Tools.
@@ -150,28 +202,16 @@ func Connect(ctx context.Context, transport mcp.Transport, opts ...Option) (*mcp
 type tool struct {
 	session *mcp.ClientSession
 	def     *mcp.Tool
-	trust   bool // map the server's annotations onto Safety (TrustAnnotations)
+	schema  json.RawMessage // def.InputSchema, checked to be an object schema
+	trust   bool            // map the server's annotations onto Safety (TrustAnnotations)
 }
 
 func (t *tool) Name() string        { return t.def.Name }
 func (t *tool) Description() string { return t.def.Description }
 
-// ArgsSchema returns the MCP tool's InputSchema as raw JSON. From the client side the
-// SDK delivers it as a map[string]any, so we marshal it back to json.RawMessage for
-// the schema/ package to dialectize per provider.
-func (t *tool) ArgsSchema() json.RawMessage {
-	if t.def.InputSchema == nil {
-		return nil
-	}
-	if raw, ok := t.def.InputSchema.(json.RawMessage); ok {
-		return raw
-	}
-	b, err := json.Marshal(t.def.InputSchema)
-	if err != nil {
-		return nil
-	}
-	return b
-}
+// ArgsSchema returns the MCP tool's InputSchema as raw JSON, checked and encoded once by Tools,
+// for the schema/ package to dialectize per provider.
+func (t *tool) ArgsSchema() json.RawMessage { return t.schema }
 
 // Safety is the zero agent.Safety (a side effect) unless the tool came from Tools with
 // TrustAnnotations, in which case it derives from the MCP tool annotations:

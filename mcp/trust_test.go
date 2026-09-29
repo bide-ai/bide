@@ -85,6 +85,7 @@ func TestTools_RejectsMalformedDefinitions(t *testing.T) {
 		{"right-to-left override", []json.RawMessage{rawTool("transfer\u202eyfirev")}},
 		{"space", []json.RawMessage{rawTool("transfer ")}},
 		{"too long", []json.RawMessage{rawTool(long)}},
+		{"huge", []json.RawMessage{rawTool(strings.Repeat("\n", 1<<20))}},
 		{"duplicate", []json.RawMessage{rawTool("transfer"), rawTool("transfer")}},
 		{"no input schema", []json.RawMessage{json.RawMessage(`{"name":"transfer"}`)}},
 		{"string schema", []json.RawMessage{json.RawMessage(`{"name":"transfer","inputSchema":{"type":"string"}}`)}},
@@ -99,6 +100,9 @@ func TestTools_RejectsMalformedDefinitions(t *testing.T) {
 			}
 			if err != nil && strings.ContainsAny(err.Error(), "\n\x1b\u202e") {
 				t.Errorf("the error prints the server's name unquoted: %q", err.Error())
+			}
+			if err != nil && len(err.Error()) > 1024 {
+				t.Errorf("the error is %d bytes: it prints the server's name in full", len(err.Error()))
 			}
 		})
 	}

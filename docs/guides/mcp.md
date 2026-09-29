@@ -24,6 +24,11 @@ session into agent tools.
   connect time, each wrapped tool follows the untyped `json.RawMessage` path rather than a Go
   struct: `ArgsSchema()` returns the server's `InputSchema` as raw JSON for the `schema`
   package to dialectize per provider.
+- **Refuse a malformed tool list.** The server's tool list is untrusted input. `Tools` fails
+  with an error wrapping `agent.ErrProtocol` if a tool's name is outside the MCP grammar (1 to
+  128 of `A-Z a-z 0-9 _ - .`), so no control character, space, or Unicode lookalike reaches your
+  logs, journal, or approval prompts; if two tools share a name; or if a tool's input schema is
+  not a JSON Schema object of type `"object"`.
 - **Give each tool an `agent.Safety`.** Every MCP-sourced tool gets side-effect-safe
   durable resume. By default each is treated as a side effect; for a server you trust, its
   annotations decide.
