@@ -119,7 +119,9 @@ type Durable interface {
 	// Do returns the recorded Record for (runID, name) without running fn if present;
 	// otherwise runs fn, records the returned Record (with Name set and a fresh Salt: persist
 	// the bytes JournalEntry returns), and returns it.
-	// If fn errors, nothing is recorded — the step re-runs on the next attempt.
+	// If fn errors, nothing is recorded — the step re-runs on the next attempt. Once fn has
+	// returned a record, Do records it even if ctx was cancelled meanwhile: fn may have fired a
+	// side effect, and its outcome must not be lost (see durabletest).
 	Do(ctx context.Context, runID, name string, fn func(context.Context) (Record, error)) (Record, error)
 	// History returns all recorded steps for a run, in order.
 	History(ctx context.Context, runID string) ([]Record, error)

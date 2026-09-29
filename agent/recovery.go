@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"os"
+	"sync"
 	"time"
 )
 
@@ -22,19 +23,65 @@ import (
 type RecoverOption func(*recoverConfig)
 
 type recoverConfig struct {
-	holder string
-	ttl    time.Duration
+	holder      string
+	ttl         time.Duration
+	interval    time.Duration // RecoverLoop only; 0 means ttl/2
+	concurrency int           // RecoverLoop only
+	onError     func(error)   // RecoverLoop only
+	intervalSet bool
 }
 
-// WithLeaseHolder sets the identity this recoverer claims leases under. Defaults to a
-// host/pid/random string. Give each process a stable, distinct holder if you want lease ownership
-// to survive a restart of the same logical worker.
+// WithLeaseHolder names the worker that claims leases, as the leases table and logs show it.
+// Defaults to a host/pid/random string. The name identifies, it does not grant: each Lease call
+// (and each run Recover drives) claims under a token of its own derived from it, so two drivers
+// sharing a name still exclude each other, and a restarted worker waits out its predecessor's
+// lease (the TTL) like any other process rather than taking it over.
 func WithLeaseHolder(id string) RecoverOption { return func(c *recoverConfig) { c.holder = id } }
 
-// WithLeaseTTL sets how long an acquired lease is valid. Recover renews it while a run is driving,
-// so a crash lets the lease expire after roughly this long and another process takes over. Defaults
-// to 30s. Set it comfortably above the store's clock skew.
+// WithLeaseTTL sets how long an acquired lease is valid. Lease renews it while a run is driving,
+// so a crash lets the lease expire after roughly this long and another process (RecoverLoop)
+// takes over. Defaults to 30s. Set it well above the store's round-trip time and the longest pause
+// you expect a process to take: renewal starts at half the TTL, and a drive that cannot renew
+// within three quarters of it is cancelled with ErrLeaseLost (see Lease). It must be positive:
+// Lease, Recover and RecoverLoop return an ErrConfig error otherwise.
 func WithLeaseTTL(d time.Duration) RecoverOption { return func(c *recoverConfig) { c.ttl = d } }
+
+// WithRecoverInterval sets how often RecoverLoop starts a recovery pass. Defaults to half the
+// lease TTL, so a dead holder's run is taken over within about 1.5 TTLs of its last renewal. It
+// must be positive. Only RecoverLoop reads it.
+func WithRecoverInterval(d time.Duration) RecoverOption {
+	return func(c *recoverConfig) { c.interval, c.intervalSet = d, true }
+}
+
+// WithRecoverConcurrency caps how many runs RecoverLoop drives at once. Defaults to 16. It must
+// be at least 1. Only RecoverLoop reads it.
+func WithRecoverConcurrency(n int) RecoverOption {
+	return func(c *recoverConfig) { c.concurrency = n }
+}
+
+// WithRecoverErrors sets the function RecoverLoop hands each genuine failure to: a store error
+// while enumerating runs or acquiring a lease, or a drive that failed. Pauses and lost leases are
+// not failures and are not reported. Without it, RecoverLoop drops failures (the next pass
+// retries the run). It may be called from several goroutines, one call at a time. Only
+// RecoverLoop reads it.
+func WithRecoverErrors(fn func(error)) RecoverOption {
+	return func(c *recoverConfig) { c.onError = fn }
+}
+
+// leaseConfig applies opts over the defaults and validates the result.
+func leaseConfig(opts []RecoverOption) (recoverConfig, error) {
+	cfg := recoverConfig{ttl: 30 * time.Second, concurrency: 16}
+	for _, o := range opts {
+		o(&cfg)
+	}
+	if cfg.ttl <= 0 {
+		return cfg, fmt.Errorf("lease TTL must be positive, got %v: %w", cfg.ttl, ErrConfig)
+	}
+	if cfg.holder == "" {
+		cfg.holder = defaultHolder()
+	}
+	return cfg, nil
+}
 
 func defaultHolder() string {
 	host, _ := os.Hostname()
@@ -76,7 +123,7 @@ func completedAnswer(recs []Record) (Message, bool) {
 	return Message{}, false
 }
 
-// Recover re-drives the runs that were in flight when the process died. It enumerates
+// Recover re-drives the runs that were in flight when the process died, in one pass. It enumerates
 // every run the store holds (via Lister), skips the ones already marked complete, and
 // calls resume for each remaining run to push it forward. It returns how many runs it
 // re-drove and the joined genuine failures (nil if none).
@@ -87,7 +134,8 @@ func completedAnswer(recs []Record) (Message, bool) {
 // If the store also implements Leaser, Recover coordinates across processes: it claims an
 // exclusive, renewed lease per run before driving it and skips a run another holder currently
 // leases, so competing recoverers do not both re-drive the same run. A crash lets the lease expire
-// (see WithLeaseTTL) and another process takes over. Without Leaser, Recover drives every
+// (see WithLeaseTTL), and the next pass of another process takes the run over: Recover is one
+// pass, so run RecoverLoop to keep passing. Without Leaser, Recover drives every
 // enumerated run, which is safe under at-most-once memoization but redundant across processes.
 //
 // A pause is a SUCCESS, not a failure. A re-driven run that is still waiting returns one
@@ -95,7 +143,8 @@ func completedAnswer(recs []Record) (Message, bool) {
 // Recover detects those with errors.As and does NOT record them as errors: they mean
 // "recovered, still waiting", and the run resumes later when its condition is met (a
 // human approves, an interrupt is answered, a timer fires). Only a genuine error (a model
-// or storage fault, a bad tool) is joined into the returned error.
+// or storage fault, a bad tool) is joined into the returned error. A run whose lease was lost
+// mid-drive (ErrLeaseLost) is not joined either: another process holds it now and carries it on.
 //
 // resume is deployment POLICY, not a mechanism the SDK can supply: it alone knows a run's
 // original input and any Waker or clock to bind onto the context (a Waker-bound resume
@@ -116,12 +165,9 @@ func Recover(ctx context.Context, store Durable, resume func(ctx context.Context
 	if !ok {
 		return 0, fmt.Errorf("Recover needs a store that implements Lister to enumerate runs: %w", ErrConfig)
 	}
-	cfg := recoverConfig{ttl: 30 * time.Second}
-	for _, o := range opts {
-		o(&cfg)
-	}
-	if cfg.holder == "" {
-		cfg.holder = defaultHolder()
+	cfg, err := leaseConfig(opts)
+	if err != nil {
+		return 0, err
 	}
 
 	runIDs, err := lister.Runs(ctx)
@@ -132,37 +178,170 @@ func Recover(ctx context.Context, store Durable, resume func(ctx context.Context
 	var recovered int
 	var errs []error
 	for _, runID := range runIDs {
-		complete, err := IsComplete(ctx, store, runID)
+		if ok, err := recoverable(ctx, store, runID); err != nil {
+			errs = append(errs, err)
+			continue
+		} else if !ok {
+			continue
+		}
+		driven, err := recoverRun(ctx, store, runID, resume, cfg)
+		if driven {
+			recovered++
+		}
 		if err != nil {
 			errs = append(errs, err)
-			continue
-		}
-		if complete {
-			continue // finished before the crash: nothing to re-drive
-		}
-		if aborted, err := hasValueStep(ctx, store, runID, runAbortedStep); err != nil {
-			errs = append(errs, err)
-			continue
-		} else if aborted {
-			continue // a saga that aborted and finished its rollback: over
-		}
-
-		// Drive under the run's lease (when the store supports one). A run another holder currently
-		// leases is skipped; competing recoverers and live primary drivers coordinate through Lease.
-		driven, err := Lease(ctx, store, runID, func(ctx context.Context) error { return resume(ctx, runID) },
-			WithLeaseHolder(cfg.holder), WithLeaseTTL(cfg.ttl))
-		if !driven {
-			if err != nil {
-				errs = append(errs, fmt.Errorf("recover run %s: %w", runID, err))
-			}
-			continue // leased by another holder (err nil) or acquisition failed
-		}
-		recovered++
-		if err != nil && !isPause(err) {
-			errs = append(errs, fmt.Errorf("recover run %s: %w", runID, err))
 		}
 	}
 	return recovered, errors.Join(errs...)
+}
+
+// recoverable reports whether runID still needs driving: it has neither completed nor finished
+// rolling back an aborted saga.
+func recoverable(ctx context.Context, store Durable, runID string) (bool, error) {
+	complete, err := IsComplete(ctx, store, runID)
+	if err != nil || complete {
+		return false, err // finished before the crash: nothing to re-drive
+	}
+	aborted, err := hasValueStep(ctx, store, runID, runAbortedStep)
+	if err != nil || aborted {
+		return false, err // a saga that aborted and finished its rollback: over
+	}
+	return true, nil
+}
+
+// recoverRun drives runID under its lease (when the store supports one) and reports whether it
+// drove it and the genuine failure, if any. A run another holder currently leases is skipped;
+// competing recoverers and live primary drivers coordinate through Lease. A pause and a lost lease
+// are not failures.
+func recoverRun(ctx context.Context, store Durable, runID string, resume func(ctx context.Context, runID string) error, cfg recoverConfig) (bool, error) {
+	driven, err := Lease(ctx, store, runID, func(ctx context.Context) error { return resume(ctx, runID) },
+		WithLeaseHolder(cfg.holder), WithLeaseTTL(cfg.ttl))
+	if err != nil && (!driven || !isPause(err) && !errors.Is(err, ErrLeaseLost)) {
+		return driven, fmt.Errorf("recover run %s: %w", runID, err)
+	}
+	return driven, nil
+}
+
+// RecoverLoop re-drives in-flight runs until ctx is done, so a run whose holder dies is taken over
+// automatically: Recover is a single pass, and a run another holder leases at that moment is left
+// for a later one. Each pass, started every WithRecoverInterval (half the lease TTL by default),
+// enumerates the store's runs as Recover does and drives each incomplete run it can lease, so a
+// dead holder's run is picked up within about one interval of its lease expiring (the TTL after
+// the holder's last renewal).
+//
+// Runs are driven concurrently, up to WithRecoverConcurrency at once (16 by default), so one long
+// drive does not hold up the others; a run this loop is already driving is not started again. A
+// pass that finds every slot busy waits for one, so each pass reaches every run it listed; the
+// next pass starts when this one has started all of its drives and the interval has elapsed. Genuine failures go
+// to the WithRecoverErrors handler, and the run is retried on the next pass; pauses and lost leases
+// are not failures (see Recover).
+//
+// Run it once per process, for the life of the process, with the same resume Recover takes:
+//
+//	go func() {
+//	    err := agent.RecoverLoop(ctx, store, resume,
+//	        agent.WithLeaseHolder("worker-1"),
+//	        agent.WithRecoverErrors(func(err error) { log.Print(err) }))
+//	    // err is ctx's error once ctx is done
+//	}()
+//
+// A configuration error (a store that does not implement Lister, a non-positive TTL, interval or
+// concurrency) is returned at once. Otherwise RecoverLoop returns ctx's error when ctx is done,
+// after the drives it started (whose contexts derive from ctx) have returned.
+func RecoverLoop(ctx context.Context, store Durable, resume func(ctx context.Context, runID string) error, opts ...RecoverOption) error {
+	lister, ok := store.(Lister)
+	if !ok {
+		return fmt.Errorf("RecoverLoop needs a store that implements Lister to enumerate runs: %w", ErrConfig)
+	}
+	cfg, err := leaseConfig(opts)
+	if err != nil {
+		return err
+	}
+	if !cfg.intervalSet {
+		cfg.interval = max(cfg.ttl/2, 1)
+	}
+	if cfg.interval <= 0 {
+		return fmt.Errorf("recover interval must be positive, got %v: %w", cfg.interval, ErrConfig)
+	}
+	if cfg.concurrency < 1 {
+		return fmt.Errorf("recover concurrency must be at least 1, got %d: %w", cfg.concurrency, ErrConfig)
+	}
+
+	var reportMu sync.Mutex
+	report := func(err error) {
+		if cfg.onError == nil || ctx.Err() != nil {
+			return // no handler, or a failure caused by the shutdown itself
+		}
+		reportMu.Lock()
+		defer reportMu.Unlock()
+		cfg.onError(err)
+	}
+	var (
+		wg       sync.WaitGroup
+		mu       sync.Mutex
+		inFlight = map[string]bool{}
+		slots    = make(chan struct{}, cfg.concurrency)
+	)
+	defer wg.Wait()
+	pass := func() {
+		runIDs, err := lister.Runs(ctx)
+		if err != nil {
+			report(fmt.Errorf("list runs for recovery: %w (%w)", err, ErrStorage))
+			return
+		}
+		for _, runID := range runIDs {
+			if ctx.Err() != nil {
+				return
+			}
+			mu.Lock()
+			busy := inFlight[runID]
+			mu.Unlock()
+			if busy {
+				continue // this loop is driving it already
+			}
+			if ok, err := recoverable(ctx, store, runID); err != nil {
+				report(err)
+				continue
+			} else if !ok {
+				continue
+			}
+			// Wait for a free slot rather than leave the rest of the list to the next pass: the next
+			// pass starts from the top again, so runs that stay incomplete on every pass (halted
+			// ones) would take the slots each time and starve the runs listed after them.
+			select {
+			case slots <- struct{}{}:
+			case <-ctx.Done():
+				return
+			}
+			mu.Lock()
+			inFlight[runID] = true
+			mu.Unlock()
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				defer func() {
+					mu.Lock()
+					delete(inFlight, runID)
+					mu.Unlock()
+					<-slots
+				}()
+				if _, err := recoverRun(ctx, store, runID, resume, cfg); err != nil {
+					report(err)
+				}
+			}()
+		}
+	}
+
+	t := time.NewTicker(cfg.interval)
+	defer t.Stop()
+	for {
+		pass()
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-t.C:
+		}
+	}
 }
 
 // Lease runs drive under an exclusive, auto-renewed lease on runID, so a primary driver and a
@@ -170,6 +349,11 @@ func Recover(ctx context.Context, store Durable, resume func(ctx context.Context
 // another holder currently leases the run, drive is NOT called and Lease returns (false, nil). If
 // the store does not implement Leaser, drive runs unconditionally. The bool reports whether drive
 // ran; the error is the acquisition error (when false) or drive's own error (when true).
+//
+// If the lease is lost while drive runs (see driveWithRenew for the renewal schedule), drive's
+// context is cancelled with ErrLeaseLost as its cause (context.Cause), and a drive that then
+// returns an error has it wrapped with ErrLeaseLost, so errors.Is(err, ErrLeaseLost) tells a lost
+// lease from a shutdown or a genuine failure. A drive that returns nil succeeded regardless.
 //
 // A primary driver wraps Agent.Run so a live run and a recoverer never both drive it, using the
 // same lease the recoverer respects:
@@ -179,18 +363,21 @@ func Recover(ctx context.Context, store Durable, resume func(ctx context.Context
 //	    return err
 //	}, agent.WithLeaseHolder("worker-1"))
 func Lease(ctx context.Context, store Durable, runID string, drive func(context.Context) error, opts ...RecoverOption) (bool, error) {
-	cfg := recoverConfig{ttl: 30 * time.Second}
-	for _, o := range opts {
-		o(&cfg)
-	}
-	if cfg.holder == "" {
-		cfg.holder = defaultHolder()
+	cfg, err := leaseConfig(opts)
+	if err != nil {
+		return false, err
 	}
 	leaser, ok := store.(Leaser)
 	if !ok {
 		return true, drive(ctx) // no leasing available: drive unconditionally
 	}
-	got, err := leaser.AcquireLease(ctx, runID, cfg.holder, cfg.ttl)
+	// The lease is claimed under a token of this call's own, not the bare holder name: a Leaser
+	// grants a holder's own live lease again (a renewal), so two drivers sharing a name (a worker's
+	// primary and its recoverer, or a restarted worker and its stalled predecessor) would otherwise
+	// both hold the lease, renew it for each other, and release it from under each other.
+	owner := cfg.holder + "#" + leaseToken()
+	issued := time.Now() // the lease cannot expire before issued+ttl (see driveWithRenew)
+	got, err := leaser.AcquireLease(ctx, runID, owner, cfg.ttl)
 	if err != nil {
 		return false, fmt.Errorf("acquire lease %s: %w (%w)", runID, err, ErrStorage)
 	}
@@ -202,42 +389,119 @@ func Lease(ctx context.Context, store Durable, runID string, drive func(context.
 	defer func() {
 		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 		defer cancel()
-		_ = leaser.ReleaseLease(rctx, runID, cfg.holder)
+		_ = leaser.ReleaseLease(rctx, runID, owner)
 	}()
-	return true, driveWithRenew(ctx, leaser, runID, cfg, drive)
+	return true, driveWithRenew(ctx, leaser, runID, owner, cfg.ttl, issued, drive)
 }
 
-// driveWithRenew runs the drive while renewing the lease every ttl/2, so a drive that outlasts the
-// TTL keeps its lease. The drive is given a derived context that is cancelled if the lease is lost
-// (renew fails or returns not-held) or the parent context is done, so a node that loses its lease
-// stops driving at its next cancellation check. That is best effort, not mutual exclusion: a node
-// stalled past the TTL (a long GC pause, a suspended VM, a partition from the store) wakes still
-// driving and can take a step before its renewer notices. At-most-once does not depend on this;
-// the exclusive attempt claim (ClaimAttempt) stops two overlapping drivers from both running a
-// side effect. `defer close(done)` guarantees the renewer goroutine exits even if the drive panics.
-func driveWithRenew(ctx context.Context, leaser Leaser, runID string, cfg recoverConfig, run func(context.Context) error) error {
-	dctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	done := make(chan struct{})
-	defer close(done)
+// leaseToken returns a random token that makes each Lease call's claim its own.
+func leaseToken() string { return fmt.Sprintf("%016x", rand.Uint64()) }
+
+// driveWithRenew runs the drive while renewing the lease, so a drive that outlasts the TTL keeps
+// its lease. The drive is given a derived context that is cancelled if the lease is lost or the
+// parent context is done, so a node that loses its lease stops driving at its next cancellation
+// check. That is best effort, not mutual exclusion: a node stalled past the TTL (a long GC pause,
+// a suspended VM, a partition from the store) wakes still driving and can take a step before its
+// renewer notices. At-most-once does not depend on this; the exclusive attempt claim
+// (ClaimAttempt) stops two overlapping drivers from both running a side effect.
+//
+// The renewal schedule, measured on this process's monotonic clock from the moment the last
+// successful acquisition or renewal was issued (issued):
+//
+//   - The lease cannot expire before issued+ttl. The store sets the expiry from its own clock
+//     while it serves the call, which is after the call was issued, and only the store compares
+//     expiries, so the offset between the clocks does not matter.
+//   - A renewal is first attempted at issued+ttl/2.
+//   - A renewal that fails with an error (the store is briefly unreachable, say) is retried every
+//     ttl/20 until the cutoff, issued+3*ttl/4. Each attempt is abandoned at the cutoff, so a
+//     renewal that hangs cannot hold the drive past it.
+//   - A renewal that reports the lease is no longer held cancels the drive at once, and so does
+//     reaching the cutoff without a successful renewal.
+//
+// So the drive is cancelled at least ttl/4 before any other process can take the lease. That
+// quarter is the margin for the cancellation to reach the drive and for the store's clock to run
+// at a slightly different rate than this one; it does not cover a process that is stalled through
+// the cutoff, which is the case the attempt claim exists for.
+//
+// When the drive returns (or panics), the renewer is stopped, abandoning any renewal it has in
+// flight, and waited for before driveWithRenew returns, so no renewal outlives the drive or races
+// the release that follows it.
+func driveWithRenew(ctx context.Context, leaser Leaser, runID, owner string, ttl time.Duration, issued time.Time, run func(context.Context) error) error {
+	dctx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
+	rctx, stopRenew := context.WithCancel(ctx)
+	renewerDone := make(chan struct{})
+	defer func() {
+		stopRenew()
+		<-renewerDone
+	}()
 	go func() {
-		t := time.NewTicker(cfg.ttl / 2)
-		defer t.Stop()
-		for {
-			select {
-			case <-done:
-				return
-			case <-ctx.Done():
-				return
-			case <-t.C:
-				if ok, err := leaser.RenewLease(ctx, runID, cfg.holder, cfg.ttl); err != nil || !ok {
-					cancel() // lost the lease: stop the drive rather than run un-leased
-					return
-				}
-			}
+		defer close(renewerDone)
+		if lost := renewLoop(rctx, leaser, runID, owner, ttl, issued); lost != nil {
+			cancel(lost) // lost the lease: stop the drive rather than run un-leased
 		}
 	}()
-	return run(dctx)
+	err := run(dctx)
+	if cause := context.Cause(dctx); err != nil && errors.Is(cause, ErrLeaseLost) {
+		return fmt.Errorf("%w: %w", cause, err)
+	}
+	return err
+}
+
+// renewLoop keeps owner's lease on runID renewed on the schedule driveWithRenew documents. It
+// returns nil when ctx is done (the drive finished) and an error wrapping ErrLeaseLost when the
+// lease is lost.
+func renewLoop(ctx context.Context, leaser Leaser, runID, owner string, ttl time.Duration, issued time.Time) error {
+	retry := max(ttl/20, 1)
+	for {
+		if !sleepUntil(ctx, issued.Add(ttl/2)) {
+			return nil
+		}
+		cutoff := issued.Add(ttl - ttl/4)
+		var lastErr error
+		for {
+			at := time.Now()
+			if !at.Before(cutoff) {
+				if lastErr == nil {
+					lastErr = errors.New("no renewal was attempted before the cutoff: the process did not run in time")
+				}
+				return fmt.Errorf("lease on run %s not renewed within 3/4 of its %v TTL: %w: %w", runID, ttl, ErrLeaseLost, lastErr)
+			}
+			actx, cancel := context.WithDeadline(ctx, cutoff)
+			ok, err := leaser.RenewLease(actx, runID, owner, ttl)
+			cancel()
+			if ctx.Err() != nil {
+				return nil
+			}
+			if err == nil && ok {
+				issued = at
+				break
+			}
+			if err == nil {
+				return fmt.Errorf("lease on run %s is no longer held (it lapsed and may have been taken): %w", runID, ErrLeaseLost)
+			}
+			lastErr = err
+			next := time.Now().Add(retry)
+			if next.After(cutoff) {
+				next = cutoff
+			}
+			if !sleepUntil(ctx, next) {
+				return nil
+			}
+		}
+	}
+}
+
+// sleepUntil waits until t or until ctx is done, and reports whether it reached t.
+func sleepUntil(ctx context.Context, t time.Time) bool {
+	timer := time.NewTimer(time.Until(t))
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
 }
 
 // isPause reports whether err is a durable pause signal (the run recovered and is still

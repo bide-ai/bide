@@ -108,13 +108,14 @@ provider failover), and a **rate limiter** for model and tool calls
 ([middleware](middleware), [docs/guides/reliability.md](docs/guides/reliability.md)).
 
 For high availability, any node resumes any run from the shared store, and competing drivers
-coordinate through a per-run **lease** (`agent.Lease`): only one process drives a run at a time, a
-crashed holder's lease expires so another node takes it over, and no run is ever double-driven. Like
-guarantee 1, this is verified, not asserted: concurrent-worker mutual exclusion, crash-and-takeover,
-and at-most-once under concurrent drivers on the in-memory store (`agent/ha_e2e_test.go`), and
-cross-process at-most-once on Postgres, two store instances sharing one database
-(`TestPostgres_HAAtMostOnceAcrossInstances` in `store/postgres/postgres_test.go`; the Postgres
-backend implements the lease with a DB-clock upsert).
+coordinate through a per-run **lease** (`agent.Lease`): normally one process drives a run at a time,
+and a crashed holder's lease expires so another node's `agent.RecoverLoop` takes it over. A holder
+that stalls past its lease can wake still driving, but it cannot fire a side effect a second time:
+at-most-once rests on the attempt claim, not on the lease. Like guarantee 1, this is verified, not
+asserted: concurrent-worker mutual exclusion, crash-and-takeover, and at-most-once under concurrent
+drivers on the in-memory store (`agent/ha_e2e_test.go`), and on Postgres across real processes that
+the tests kill, stall past their lease and restart (`store/postgres/ha_multiproc_test.go`; the
+Postgres backend implements the lease with a DB-clock upsert).
 
 ### 3 · A cryptographically verifiable audit spine, from the same journal
 
@@ -201,8 +202,8 @@ Beyond the four guarantees, the details that make it pleasant to build on:
 - **Any model, one adapter.** Native Claude, native Gemini, and any OpenAI-compatible endpoint
   (OpenAI, Ollama, DeepSeek, Groq, OpenRouter, vLLM, Azure, xAI…) via `WithBaseURL`.
 - **Multi-node failover, coordinated.** Any node resumes any run (Postgres, no single-writer lock);
-  a per-run lease keeps competing recoverers and live workers from double-driving, and a crashed
-  holder's runs are taken over on lease expiry.
+  a per-run lease keeps competing recoverers and live workers from double-driving, and
+  `agent.RecoverLoop` takes a crashed holder's runs over on lease expiry.
 
 ## Graphs
 

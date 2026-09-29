@@ -32,6 +32,7 @@ func Run(t *testing.T, open func(t *testing.T) agent.Durable) {
 	}
 	t.Run("ReturnedRecordIsACopy", func(t *testing.T) { returnedCopy(t, open(t)) })
 	t.Run("Salted", func(t *testing.T) { salted(t, open(t)) })
+	t.Run("RecordsAfterCancel", func(t *testing.T) { recordsAfterCancel(t, open(t)) })
 }
 
 // Case is one record the suite round-trips. Want, when set, is the Result the store must hand
@@ -210,5 +211,30 @@ func salted(t *testing.T, d agent.Durable) {
 	}
 	if bytes.Equal(hist[0].Salt, hist[1].Salt) {
 		t.Fatalf("two records share the salt %x", hist[0].Salt)
+	}
+}
+
+// recordsAfterCancel: once fn has returned a record, Do journals it even if the caller's context
+// was cancelled while fn ran. fn may have fired a side effect (a charge, a sent message) before
+// the cancellation arrived, and a driver loses its context whenever its lease lapses or its
+// process shuts down; a store that dropped the record then would leave the effect with no
+// recorded outcome, so the resumed run halts for a human although the outcome was known.
+func recordsAfterCancel(t *testing.T, d agent.Durable) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	id := runID(t)
+	got, err := d.Do(ctx, id, "effect", func(context.Context) (agent.Record, error) {
+		cancel() // the driver's context is cancelled while the effect is in flight
+		return agent.Record{Kind: agent.StepValue, Result: json.RawMessage(`"fired"`)}, nil
+	})
+	if err != nil {
+		t.Fatalf("Do dropped the outcome of a step whose fn returned, because the context was cancelled meanwhile: %v", err)
+	}
+	if string(got.Result) != `"fired"` {
+		t.Fatalf("Do returned %s, want \"fired\"", got.Result)
+	}
+	hist, err := d.History(context.Background(), id)
+	if err != nil || len(hist) != 1 || string(hist[0].Result) != `"fired"` {
+		t.Fatalf("History = %+v, %v; want the one recorded outcome", hist, err)
 	}
 }

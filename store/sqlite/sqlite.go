@@ -90,7 +90,10 @@ func (s *Store) Do(ctx context.Context, runID, name string, fn func(context.Cont
 		if e != nil {
 			return nil, fmt.Errorf("marshal step %q: %w (%w)", name, e, agent.ErrStorage)
 		}
-		res, e := s.db.ExecContext(ctx, `
+		// Record under a context that ignores cancellation: fn has run, so its side effect may
+		// have happened, and a driver whose lease lapsed or whose process is shutting down must
+		// still journal the outcome rather than leave it unknown (resume would halt on it).
+		res, e := s.db.ExecContext(context.WithoutCancel(ctx), `
 			INSERT OR IGNORE INTO steps (run_id, seq, name, data)
 			VALUES (?, (SELECT COALESCE(MAX(seq), -1) + 1 FROM steps WHERE run_id = ?), ?, ?)`,
 			runID, runID, name, data)
