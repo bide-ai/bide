@@ -247,7 +247,17 @@ type Report struct {
 // If ctx is cancelled before every execution has finished, Run starts no further executions and
 // returns ctx's error with an empty Report: executions cut short by the cancellation would score as
 // failures, and the ones that did finish are not a representative sample.
+//
+// A Report keys metrics by name, so every metric must have a distinct Name; Run returns an error
+// before executing anything if two share one.
 func Run(ctx context.Context, run RunFunc, cases []Case, metrics []Metric, opts Options) (Report, error) {
+	names := make(map[string]bool, len(metrics))
+	for _, m := range metrics {
+		if names[m.Name] {
+			return Report{}, fmt.Errorf("eval: two metrics are named %q; a report keys metrics by name", m.Name)
+		}
+		names[m.Name] = true
+	}
 	runs := opts.Runs
 	if runs < 1 {
 		runs = 1
