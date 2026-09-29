@@ -595,7 +595,7 @@ hitting it returns `ErrMaxTurns` (which is `errors.Is` `ErrBudget`).
 
 ## Human-in-the-loop
 
-Two flavors. **Approve/deny**: a tool marked `RequiresApproval` pauses *before* running; the
+Three flavors. **Approve/deny**: a tool marked `RequiresApproval` pauses *before* running; the
 human decision is a bool:
 
 ```go
@@ -633,6 +633,24 @@ if errors.As(err, &intr) {
 Both are durable: the decision/value is a journaled step, so it survives a crash. Interrupt
 must be in a retry-safe tool (`ReadOnly`/`Idempotent`): on resume the tool re-runs until the
 interrupt resolves, so everything before the `Interrupt` call must be safe to repeat.
+
+**m-of-n approval**: when one sign-off is not enough, require k signed decisions from a named set
+of n approvers. Each approver signs their decision; the gate proceeds at k approvals, denies once k
+is unreachable, and otherwise pauses with the running tally:
+
+```go
+refund := agent.Func("refund", "refund the order",
+	agent.Safety{Approval: &agent.ApprovalPolicy{Need: 2, Approvers: []string{"ops", "finance", "risk"}}},
+	doRefund)
+a := agent.New(model, store, refund).WithApproverVerifiers(keysByApprover)
+
+// each approver, out of band:
+sig, _ := signer.Sign(agent.ApprovalDecisionBytes(runID, toolUseID, "finance", true))
+agent.ApproveAs(ctx, store, runID, toolUseID, "finance", true, sig)
+```
+
+`audit.ApprovalEvidence` then proves offline that k named approvers signed off *before* the action
+ran. See the [approval guide](docs/guides/approval.md).
 
 ## Errors
 
@@ -804,6 +822,7 @@ New here? Start with **[Getting started](docs/getting-started.md)**, use the **[
 - **[Delegation](docs/guides/delegation.md)**: signed capability grants a sub-agent can only narrow (`Grant`/`SignGrant`), verified offline (`VerifyDelegationChain`), plus authority earned from a clean trail. Runnable: `examples/delegation`, `examples/authority`.
 - **[Security model](docs/guides/security-model.md)**: the exact scope of the cryptographic guarantees (integrity, authenticity, tamper-evidence, non-repudiation, selective disclosure) and what is out of scope (confidentiality). Read before relying on the trail.
 - **[Governance](docs/guides/governance.md)**: the Tier-2 governed-state substrate (gsm). Describe shared state as a registry, and `Build()` proves every interleaving converges or returns a counterexample. Runnable: `examples/mesh`, `examples/compose`.
+- **[Approval](docs/guides/approval.md)**: durable human sign-off before a tool runs, from 1-of-1 to signed m-of-n (`ApprovalPolicy`, `ApproveAs`), with offline proof that k named approvers approved before the action (`audit.ApprovalEvidence`).
 - **[Quorum](docs/guides/quorum.md)**: governed k-of-n model agreement (`govern.Quorum`), the tally anchored in the journal and re-checkable offline (`bide-audit verify-quorum`). Runnable: `examples/quorum`.
 
 **Reference and internals**

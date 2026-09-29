@@ -1,7 +1,24 @@
 # Design: m-of-n human approval
 
-Status: proposed. Composes existing seams (durable approval + the quorum tally semantics)
-into a k-of-n human gate. No new persistence model and no new executor.
+Status: shipped (not yet released). Composes existing seams (durable approval + the quorum tally
+semantics) into a k-of-n human gate. No new persistence model and no new executor. The user-facing
+guide is [docs/guides/approval.md](../guides/approval.md).
+
+Where the implementation refined this design:
+
+- **Verifier resolution.** `agent` cannot import `audit` (audit imports agent), so the gate verifies
+  through a local `ApproverVerifier` interface that the audit verifiers satisfy structurally, resolved
+  by id with `Agent.WithApproverVerifiers` (a chaining setter, matching the Agent's other options).
+- **Tally timing.** `approval-tally:<toolUseID>` is journaled only at a terminal outcome (proceed or
+  deny), never on a pause, because `Durable.Do` is at-most-once by name: journaling a pending tally
+  would freeze it. A resume reads the terminal record instead of recounting.
+- **Path isolation.** An `ApproveAs` decision never satisfies a 1-of-1 gate, and an `Approve`
+  decision never counts toward an m-of-n tally.
+- **Evidence.** `audit.ProveApproval` (one decision) and `audit.ApprovalEvidence` (decisions then
+  action, under one STH). The existing `ProveStep` matches only `StepValue` records, so it could not
+  reach a decision.
+- **Declarative config.** The `approval` block loads onto `Safety.Approval`, but the `plan` runtime
+  does not enforce the gate yet.
 
 ## Why
 

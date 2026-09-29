@@ -279,6 +279,24 @@ nodes:
 The join wiring element takes the same optional `safety` (shown in the diamond above), since a merge
 block carries no safety of its own.
 
+<a id="node-approval"></a>
+#### Node approval
+
+A node may also carry an `approval` block declaring an m-of-n human gate, which loads onto the node's
+`Safety.Approval` alongside any `safety` classification:
+
+```yaml
+nodes:
+  - name: refund
+    block: refund
+    safety: idempotent
+    approval: {need: 2, approvers: [ops, finance, risk]}
+```
+
+`Load` and `Validate` reject a block with no approvers, a `need` outside `1..len(approvers)`, or a
+duplicate approver id, naming the node. The `plan` runtime records the policy on the node but does not
+enforce the gate yet; the gate itself runs on agent tools (see [approval](approval.md)).
+
 ### Load-time validation
 
 Moving topology from Go to data trades compile-time type checking for load-time validation: a

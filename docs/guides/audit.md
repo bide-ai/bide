@@ -192,6 +192,25 @@ report flags them: grant issuer signatures (they need the issuers' keys, checked
 root). For the auditor who does not write Go, `bide-audit verify-evidence` verifies the same file and
 prints a plain-English PASS/FAIL.
 
+### Approval evidence: k approvers signed off before the action
+
+For a tool gated by an m-of-n approval policy, `audit.ApprovalEvidence` produces the proofs for its
+approver decisions and the action under one signed tree head, decisions first and the action last. To
+add the decisions to a package that already carries the action (built with `WithToolCall` or
+`WithAllToolCalls`), drop the trailing action entry:
+
+```go
+approvals, _ := audit.ApprovalEvidence(ctx, store, runID, toolUseID, policy.Approvers, pkg.STH)
+pkg.Actions = append(pkg.Actions, approvals[:len(approvals)-1]...) // the action is already packaged
+```
+
+`pkg.Verify` checks each decision's inclusion under the tree head like any other action. Like grant
+issuer signatures, the approver signatures and the count to k need inputs the package does not carry
+(the approvers' public keys and the policy), so the verifier checks them: each disclosed decision's
+signature over `agent.ApprovalDecisionBytes`, that the approver is eligible, that its journal index is
+below the action's, and that at least `Need` distinct approvers approved. `audit.ProveApproval` proves
+a single decision. See the [approval guide](approval.md#proving-the-gate-held).
+
 ## CLI reference: `bide-audit`
 
 The `bide-audit` command ([`cmd/bide-audit`](../../cmd/bide-audit)) is the auditor-facing
