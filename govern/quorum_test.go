@@ -30,7 +30,7 @@ func TestQuorumMet(t *testing.T) {
 	ctx := context.Background()
 	store := agent.NewMemStore()
 
-	res, err := govern.Quorum(ctx, store, "run/met", 2,
+	res, err := govern.Quorum(ctx, store, "run/met", "q", 2,
 		govern.Voter{Name: "a", Decide: func(context.Context) (string, error) { return "approve", nil }},
 		govern.Voter{Name: "b", Decide: func(context.Context) (string, error) { return "approve", nil }},
 		govern.Voter{Name: "c", Decide: func(context.Context) (string, error) { return "deny", nil }},
@@ -54,7 +54,7 @@ func TestQuorumNotMet(t *testing.T) {
 	ctx := context.Background()
 	store := agent.NewMemStore()
 
-	res, err := govern.Quorum(ctx, store, "run/split", 2,
+	res, err := govern.Quorum(ctx, store, "run/split", "q", 2,
 		govern.Voter{Name: "a", Decide: func(context.Context) (string, error) { return "approve", nil }},
 		govern.Voter{Name: "b", Decide: func(context.Context) (string, error) { return "deny", nil }},
 		govern.Voter{Name: "c", Decide: func(context.Context) (string, error) { return "escalate", nil }},
@@ -76,7 +76,7 @@ func TestQuorumPlurality(t *testing.T) {
 	store := agent.NewMemStore()
 
 	// deny gets 2, approve 1, escalate 1: deny is the plurality though it is not a majority of 4.
-	res, err := govern.Quorum(ctx, store, "run/plurality", 2,
+	res, err := govern.Quorum(ctx, store, "run/plurality", "q", 2,
 		govern.Voter{Name: "a", Decide: func(context.Context) (string, error) { return "deny", nil }},
 		govern.Voter{Name: "b", Decide: func(context.Context) (string, error) { return "deny", nil }},
 		govern.Voter{Name: "c", Decide: func(context.Context) (string, error) { return "approve", nil }},
@@ -103,7 +103,7 @@ func TestQuorumDurable(t *testing.T) {
 	store := agent.NewMemStore()
 	var callsA, callsB, callsC int32
 
-	first, err := govern.Quorum(ctx, store, "run/dur", 2,
+	first, err := govern.Quorum(ctx, store, "run/dur", "q", 2,
 		fixed("a", "approve", &callsA),
 		fixed("b", "approve", &callsB),
 		fixed("c", "deny", &callsC),
@@ -115,7 +115,7 @@ func TestQuorumDurable(t *testing.T) {
 		t.Fatalf("expected 3 voter invocations on first run, got %d", got)
 	}
 
-	second, err := govern.Quorum(ctx, store, "run/dur", 2,
+	second, err := govern.Quorum(ctx, store, "run/dur", "q", 2,
 		fixed("a", "approve", &callsA),
 		fixed("b", "approve", &callsB),
 		fixed("c", "deny", &callsC),
@@ -138,7 +138,7 @@ func TestQuorumProvenance(t *testing.T) {
 	store := agent.NewMemStore()
 	const runID = "run/prov"
 
-	res, err := govern.Quorum(ctx, store, runID, 2,
+	res, err := govern.Quorum(ctx, store, runID, "q", 2,
 		govern.Voter{Name: "gpt", Decide: func(context.Context) (string, error) { return "approve", nil }},
 		govern.Voter{Name: "claude", Decide: func(context.Context) (string, error) { return "approve", nil }},
 		govern.Voter{Name: "gemini", Decide: func(context.Context) (string, error) { return "deny", nil }},
@@ -158,7 +158,7 @@ func TestQuorumProvenance(t *testing.T) {
 	sth := audit.SignTreeHead(th, priv)
 
 	// Each named vote and the tally are provable on their own, without disclosing the others.
-	for _, name := range []string{"gpt", "claude", "gemini", "quorum/tally"} {
+	for _, name := range []string{govern.QuorumVoteStep("q", "gpt"), govern.QuorumVoteStep("q", "claude"), govern.QuorumVoteStep("q", "gemini"), govern.QuorumTallyStep("q")} {
 		pb, err := audit.ProveStep(ctx, store, runID, name, sth)
 		if err != nil {
 			t.Fatalf("prove %q: %v", name, err)
@@ -180,7 +180,7 @@ func TestQuorumVoterError(t *testing.T) {
 	store := agent.NewMemStore()
 	boom := errors.New("model unavailable")
 
-	res, err := govern.Quorum(ctx, store, "run/err", 2,
+	res, err := govern.Quorum(ctx, store, "run/err", "q", 2,
 		govern.Voter{Name: "a", Decide: func(context.Context) (string, error) { return "approve", nil }},
 		govern.Voter{Name: "b", Decide: func(context.Context) (string, error) { return "", boom }},
 		govern.Voter{Name: "c", Decide: func(context.Context) (string, error) { return "approve", nil }},

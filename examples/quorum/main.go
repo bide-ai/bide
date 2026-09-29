@@ -39,6 +39,10 @@ const (
 	k = 2
 )
 
+// quorumName names the quorum within its run: its votes and tally are recorded under
+// quorum/<name>/vote/<voter> and quorum/<name>/tally, so one run can hold several quorums.
+const quorumName = "release"
+
 func main() {
 	ctx := context.Background()
 
@@ -105,7 +109,7 @@ func runAgree(ctx context.Context, m *gsm.Machine, votesFor, committed gsm.Var, 
 		{Name: "model-B", Decide: decide("approve")},
 		{Name: "model-C", Decide: decide("deny")},
 	}
-	res, err := govern.Quorum(ctx, store, runID, k, voters...)
+	res, err := govern.Quorum(ctx, store, runID, quorumName, k, voters...)
 	if err != nil {
 		panic(err)
 	}
@@ -131,7 +135,7 @@ func runAgree(ctx context.Context, m *gsm.Machine, votesFor, committed gsm.Var, 
 	fmt.Printf("committed=%v (quorum met); leaf binds policy=%v state=%v\n",
 		gov.State().GetBool(committed), m2["policy_digest"].(string)[:12]+"...", m2["state_digest"].(string)[:12]+"...")
 
-	proveRun(ctx, store, runID, []string{"model-A", "model-B", "model-C", "quorum/tally"}, "commit/leaf")
+	proveRun(ctx, store, runID, quorumSteps(voters), "commit/leaf")
 }
 
 // runDisagree: three voters split three ways. Quorum is NOT met, so the guard makes commit a no-op
@@ -146,7 +150,7 @@ func runDisagree(ctx context.Context, m *gsm.Machine, votesFor, committed gsm.Va
 		{Name: "model-B", Decide: decide("deny")},
 		{Name: "model-C", Decide: decide("escalate")},
 	}
-	res, err := govern.Quorum(ctx, store, runID, k, voters...)
+	res, err := govern.Quorum(ctx, store, runID, quorumName, k, voters...)
 	if err != nil {
 		panic(err)
 	}
@@ -174,7 +178,7 @@ func runDisagree(ctx context.Context, m *gsm.Machine, votesFor, committed gsm.Va
 	esc := runWithApprovalGate(ctx, store, runID, escalate)
 	fmt.Printf("escalate path: %s\n", esc)
 
-	proveRun(ctx, store, runID, []string{"model-A", "model-B", "model-C", "quorum/tally"}, "")
+	proveRun(ctx, store, runID, quorumSteps(voters), "")
 }
 
 // runWithApprovalGate models the HITL seam: a tool that RequiresApproval does not execute until a
@@ -195,6 +199,15 @@ func runWithApprovalGate(ctx context.Context, store agent.Durable, runID string,
 		return "paused for human approval under dual control: " + pending.Error()
 	}
 	return "committed without approval"
+}
+
+// quorumSteps lists the steps to prove for the quorum: each voter's vote, then the tally.
+func quorumSteps(voters []govern.Voter) []string {
+	steps := make([]string, 0, len(voters)+1)
+	for _, v := range voters {
+		steps = append(steps, govern.QuorumVoteStep(quorumName, v.Name))
+	}
+	return append(steps, govern.QuorumTallyStep(quorumName))
 }
 
 // decide returns a Voter.Decide that yields a fixed normalized decision (a stand-in for a model
@@ -232,7 +245,7 @@ func proveRun(ctx context.Context, store agent.Durable, runID string, steps []st
 		if err != nil {
 			panic(err)
 		}
-		fmt.Printf("  %-14s inclusion proof verified: %v\n", name, ok)
+		fmt.Printf("  %-30s inclusion proof verified: %v\n", name, ok)
 	}
 	if toolUseID != "" {
 		pb, err := audit.ProveToolCall(ctx, store, runID, toolUseID, sth)
@@ -243,6 +256,6 @@ func proveRun(ctx context.Context, store agent.Durable, runID string, steps []st
 		if err != nil {
 			panic(err)
 		}
-		fmt.Printf("  %-14s inclusion proof verified: %v\n", toolUseID, ok)
+		fmt.Printf("  %-30s inclusion proof verified: %v\n", toolUseID, ok)
 	}
 }

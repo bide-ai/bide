@@ -14,7 +14,7 @@ func TestQuorum_TieIsNotAgreement(t *testing.T) {
 	vote := func(name, d string) Voter {
 		return Voter{Name: name, Decide: func(context.Context) (string, error) { return d, nil }}
 	}
-	res, err := Quorum(context.Background(), agent.NewMemStore(), "r1", 2,
+	res, err := Quorum(context.Background(), agent.NewMemStore(), "r1", "q", 2,
 		vote("a", "approve"), vote("b", "approve"), vote("c", "deny"), vote("d", "deny"))
 	if err != nil {
 		t.Fatal(err)

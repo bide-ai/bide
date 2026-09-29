@@ -2,21 +2,24 @@ package govern
 
 import (
 	"context"
+	"fmt"
+	"slices"
 	"sort"
+	"strings"
 
 	"github.com/bide-ai/bide/agent"
 )
 
 // Voter is one named unit that produces a normalized decision. Name identifies who voted
 // (a model, a provider/version, or any principal), so the recorded vote shows not just the
-// tally but who voted how; it doubles as the durable step key, so it must be unique across
-// the voters in one Quorum call. Decide returns a discrete decision string; the caller keeps
-// the model call and its parsing inside Decide, so Quorum stays model-agnostic and every vote
-// is already a comparable, normalized value. Free-form prose cannot be quorumed: Decide must
-// map to a small set of labels (an enum, a yes/no, a chosen action). Decide must have no side
-// effects: a vote not yet recorded when the process dies is cast again on resume.
+// tally but who voted how; it is part of the vote's durable step name, so it must be non-empty
+// and unique across the voters in one Quorum call. Decide returns a discrete decision string;
+// the caller keeps the model call and its parsing inside Decide, so Quorum stays model-agnostic
+// and every vote is already a comparable, normalized value. Free-form prose cannot be quorumed:
+// Decide must map to a small set of labels (an enum, a yes/no, a chosen action). Decide must have
+// no side effects: a vote not yet recorded when the process dies is cast again on resume.
 type Voter struct {
-	Name   string                                // identifies who voted; also the durable step key, so it must be unique per Quorum call
+	Name   string                                // identifies who voted; part of the vote's step name, so non-empty and unique per Quorum call
 	Decide func(context.Context) (string, error) // produces this voter's normalized decision label
 }
 
@@ -52,10 +55,16 @@ type QuorumResult struct {
 // express as a gsm invariant over VotesFor (see examples/quorum). Keeping the model call inside
 // each Voter.Decide keeps this helper model-agnostic and the votes normalized.
 //
-// Durability: the votes and the tally are memoized under runID by name. Re-running Quorum with
-// the same runID returns the recorded votes without re-invoking any Voter.Decide, so a resumed
-// run neither re-queries the models nor re-tallies. Voter names must therefore be unique within
-// one call. The tally is recorded under the step name "quorum/tally".
+// Naming: name identifies this quorum within the run, so one run can hold several quorums, even
+// over the same voters. It must be non-empty and contain no '/'. The quorum's steps are
+// QuorumConfigStep(name) (its k and voter names, recorded first), QuorumVoteStep(name, voter) for
+// each vote, and QuorumTallyStep(name) for the tally.
+//
+// Durability: the votes and the tally are memoized under runID by step name. Re-running Quorum
+// with the same runID and name returns the recorded votes without re-invoking any Voter.Decide, so
+// a resumed run neither re-queries the models nor re-tallies. A re-run must pass the same k and the
+// same voter names in the same order: any other call under a recorded name is an agent.ErrConfig
+// error, and nothing is cast or tallied, so one quorum's record never answers for another's.
 //
 // Tally: votes are grouped by decision value; the plurality value wins (ties broken by decision
 // string, deterministically, so the recorded tally is stable across replays). Agreed is
@@ -67,12 +76,41 @@ type QuorumResult struct {
 // The boundary, stated plainly: this returns a tally. The tally makes the k-of-n gate provable
 // once a caller wires VotesFor into an invariant; the agreement itself is statistical and never a
 // guarantee of correctness. Do not blur the two.
-func Quorum(ctx context.Context, store agent.Durable, runID string, k int, voters ...Voter) (QuorumResult, error) {
+func Quorum(ctx context.Context, store agent.Durable, runID, name string, k int, voters ...Voter) (QuorumResult, error) {
+	cfg := quorumConfig{K: k, Voters: make([]string, len(voters))}
+	if name == "" || strings.Contains(name, "/") {
+		return QuorumResult{}, fmt.Errorf("govern: quorum name %q must be non-empty and contain no '/': %w", name, agent.ErrConfig)
+	}
+	if len(voters) == 0 {
+		return QuorumResult{}, fmt.Errorf("govern: quorum %q has no voters: %w", name, agent.ErrConfig)
+	}
+	seen := map[string]bool{}
+	for i, v := range voters {
+		if v.Name == "" || seen[v.Name] {
+			return QuorumResult{}, fmt.Errorf("govern: quorum %q voter name %q must be non-empty and unique: %w", name, v.Name, agent.ErrConfig)
+		}
+		seen[v.Name] = true
+		cfg.Voters[i] = v.Name
+	}
+
+	// Record this quorum's k and voters before any vote, and hold every later call under the same
+	// name to them: a reused name with another voter set would otherwise mix two quorums' votes, and
+	// a changed k would be answered by a tally computed against the old one.
+	recorded, err := agent.Step(ctx, store, runID, QuorumConfigStep(name), func(context.Context) (quorumConfig, error) {
+		return cfg, nil
+	}, agent.StepSafety(agent.Safety{ReadOnly: true}))
+	if err != nil {
+		return QuorumResult{}, err
+	}
+	if recorded.K != cfg.K || !slices.Equal(recorded.Voters, cfg.Voters) {
+		return QuorumResult{}, fmt.Errorf("govern: quorum %q in run %q was started with k=%d and voters %q, not k=%d and voters %q: %w",
+			name, runID, recorded.K, recorded.Voters, cfg.K, cfg.Voters, agent.ErrConfig)
+	}
+
 	tasks := make([]agent.Task[Vote], len(voters))
 	for i, v := range voters {
-		v := v // capture per iteration
 		tasks[i] = agent.Task[Vote]{
-			Name:   v.Name,
+			Name:   QuorumVoteStep(name, v.Name),
 			Safety: agent.Safety{ReadOnly: true}, // a vote is a decision, not an effect (see Voter)
 			Fn: func(ctx context.Context) (Vote, error) {
 				decision, err := v.Decide(ctx)
@@ -96,7 +134,7 @@ func Quorum(ctx context.Context, store agent.Durable, runID string, k int, voter
 
 	// Record the tally as its own durable step so the tally itself is provable, not just the
 	// individual votes, and so a resumed run returns the same tally without recomputing it.
-	result, err := agent.Step(ctx, store, runID, "quorum/tally", func(context.Context) (QuorumResult, error) {
+	result, err := agent.Step(ctx, store, runID, QuorumTallyStep(name), func(context.Context) (QuorumResult, error) {
 		return tally(votes, k), nil
 	}, agent.StepSafety(agent.Safety{ReadOnly: true}))
 	if err != nil {
@@ -104,6 +142,23 @@ func Quorum(ctx context.Context, store agent.Durable, runID string, k int, voter
 	}
 	return result, nil
 }
+
+// quorumConfig is what a quorum records before it votes: its threshold and its voters, in order.
+type quorumConfig struct {
+	K      int      `json:"k"`
+	Voters []string `json:"voters"`
+}
+
+// QuorumConfigStep is the step name under which the quorum named name records its k and voters.
+func QuorumConfigStep(name string) string { return "quorum/" + name + "/config" }
+
+// QuorumVoteStep is the step name of voter's vote in the quorum named name. Because a quorum name
+// contains no '/', the name and voter are recoverable from it: everything after
+// "quorum/<name>/vote/" is the voter.
+func QuorumVoteStep(name, voter string) string { return "quorum/" + name + "/vote/" + voter }
+
+// QuorumTallyStep is the step name of the tally of the quorum named name.
+func QuorumTallyStep(name string) string { return "quorum/" + name + "/tally" }
 
 // recordedVotes drops the zero votes left by voters that errored (their Step was not journaled),
 // keeping only the votes that actually completed.

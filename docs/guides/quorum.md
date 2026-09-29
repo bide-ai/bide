@@ -23,7 +23,7 @@ decisions that are expensive or hard to undo.
 
 Give each voter a name and a `Decide` function that asks one model and returns a short label.
 `govern.Quorum` runs the voters in parallel, tallies their answers, and tells you whether at least
-`k` of them agreed.
+`k` of them agreed. You also give the quorum itself a name, so one run can hold several quorums.
 
 ```go
 // Each model answers with one label from a fixed set.
@@ -41,7 +41,7 @@ func voter(name string, a *agent.Agent, ticket string) govern.Voter {
     }
 }
 
-res, err := govern.Quorum(ctx, store, "refund-1234", 2,
+res, err := govern.Quorum(ctx, store, "refund-1234", "refund", 2,
     voter("claude", claudeAgent, ticket),
     voter("gpt", gptAgent, ticket),
     voter("gemini", geminiAgent, ticket),
@@ -85,10 +85,23 @@ A tie for the most votes is never agreement. With four voters and `k = 2`, a 2-2
   a forced tool choice), and normalize anything else before returning it. Open-ended text cannot be
   put to a quorum.
 
+## Naming a quorum
+
+The quorum's name (`"refund"` above) keeps its record apart from anything else in the run. A run
+that puts two questions to a quorum, say whether to refund and whether to flag the account, gives
+each its own name, and each gets its own votes and tally even when the same models vote on both.
+
+- The name must not be empty and must not contain `/`.
+- The votes are recorded as `quorum/<name>/vote/<voter>` and the tally as `quorum/<name>/tally`.
+  `govern.QuorumVoteStep` and `govern.QuorumTallyStep` build these for you.
+- A name stands for one quorum. Calling `Quorum` again in the same run with the same name but a
+  different `k`, different voters, or the voters in a different order is an error, and nothing is
+  asked or counted.
+
 ## Rules for voters
 
-- **`Name` must be unique** within one call. It identifies the voter in the record, and it is the
-  key the vote is stored under.
+- **`Name` must be non-empty and unique** within one call. It identifies the voter in the record,
+  and it is part of the key the vote is stored under.
 - **`Decide` must only decide.** It may be run again if the process stops before its vote is
   recorded, so it must not send, charge, or change anything. Act on `res.Decision` afterwards.
 - **Give each voter's agent run its own run ID**, as in the example (`refund-1234/vote/claude`), so
@@ -97,11 +110,11 @@ A tie for the most votes is never agreement. With four voters and `k = 2`, a 2-2
 ## Crashes, retries, and failed voters
 
 Each vote and the tally are durable steps. If the process stops partway, call `govern.Quorum`
-again with the same run ID: votes already recorded are replayed, not asked again, and only the
-missing voters run. The tally comes out the same.
+again with the same run ID, quorum name, `k`, and voters: votes already recorded are replayed, not
+asked again, and only the missing voters run. The tally comes out the same.
 
 If a voter returns an error, `Quorum` returns that error together with the tally of the votes that
-did arrive. The failed voter is asked again the next time you call `Quorum` with the same run ID.
+did arrive. The failed voter is asked again the next time you make the same call.
 
 ## When the models disagree
 
@@ -141,11 +154,19 @@ Commit through `govern.AttestedEventTool` to record the commit bound to the poli
 ## Verifying a decision offline
 
 Anyone holding the published proofs can check the decision without access to your systems. Export
-a proof for the tally and for every vote with `audit.ProveStep`, signed under the run's tree head,
-then run:
+a proof for the tally and for every vote with `audit.ProveStep`, signed under the run's tree head:
+
+```go
+tally, err := audit.ProveStep(ctx, store, "refund-1234", govern.QuorumTallyStep("refund"), sth)
+vote, err := audit.ProveStep(ctx, store, "refund-1234", govern.QuorumVoteStep("refund", "claude"), sth)
+// ... one proof per voter
+```
+
+Then run:
 
 ```bash
 bide-audit verify-quorum \
+  -name refund \
   -tally tally.json \
   -vote claude.json -vote gpt.json -vote gemini.json \
   -pubkey <signing key> -k 2 \
@@ -155,8 +176,10 @@ bide-audit verify-quorum \
 It fails unless all of the following hold:
 
 - every proof is authentic and from the same signed run;
-- every vote is disclosed, and the tally recomputes exactly from those votes, so a forged tally is
-  caught;
+- the tally and every vote were recorded by the quorum named with `-name`, so votes from another
+  quorum in the same run cannot stand in for this one's;
+- the disclosed votes are exactly the votes the tally records, each once, and the tally recomputes
+  exactly from them, so a forged tally is caught;
 - a single decision has the most votes, and at least `k` of them;
 - with `-commit`, the commit is recorded in the same run.
 
