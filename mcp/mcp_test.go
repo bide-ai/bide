@@ -48,7 +48,7 @@ func TestTools(t *testing.T) {
 	}
 	defer session.Close()
 
-	tools, err := Tools(ctx, session)
+	tools, err := Tools(ctx, session, TrustAnnotations()) // a server we trust to label its tools
 	if err != nil {
 		t.Fatalf("Tools: %v", err)
 	}
@@ -244,10 +244,13 @@ func TestSafetyMapping(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			tr := &tool{def: &mcp.Tool{Name: "x", Annotations: c.ann}}
+			tr := &tool{def: &mcp.Tool{Name: "x", Annotations: c.ann}, trust: true}
 			s := tr.Safety()
 			if s.ReadOnly != c.readOnly || s.Idempotent != c.idempotent {
-				t.Errorf("Safety() = %+v, want ReadOnly=%v Idempotent=%v", s, c.readOnly, c.idempotent)
+				t.Errorf("trusted: Safety() = %+v, want ReadOnly=%v Idempotent=%v", s, c.readOnly, c.idempotent)
+			}
+			if s := (&tool{def: tr.def}).Safety(); s.ReadOnly || s.Idempotent {
+				t.Errorf("untrusted: Safety() = %+v, want the zero Safety", s)
 			}
 		})
 	}

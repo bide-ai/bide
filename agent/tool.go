@@ -26,8 +26,8 @@ type Tool interface {
 
 // Safety declares how a tool may be retried when a run resumes after a crash and the
 // call's outcome is unknown (it was invoked, but no result was journaled). Replaces a
-// coarse Read/Write flag. Maps directly onto MCP tool annotations
-// (readOnlyHint / idempotentHint / destructiveHint) for MCP-sourced tools.
+// coarse Read/Write flag. For a trusted MCP server, its tool annotations
+// (readOnlyHint / idempotentHint) map onto it (see mcp.TrustAnnotations).
 type Safety struct {
 	// ReadOnly: no external side effects — always safe to re-run.
 	ReadOnly bool
