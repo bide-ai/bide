@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -75,4 +76,37 @@ func (namedTool) Safety() agent.Safety                                          
 func (namedTool) Call(context.Context, json.RawMessage) (json.RawMessage, error) { return nil, nil }
 func (namedTool) ArgsSchema() json.RawMessage {
 	return json.RawMessage(`{"type":"object","properties":{"q":{"type":"string"}},"required":["q"]}`)
+}
+
+// ToolNames checks the adapter's own tool-name rule against names an MCP server may list (the
+// MCP grammar is 1 to 128 of A-Z a-z 0-9 _ - ., wider than every provider's): each name in
+// refused must fail with agent.ErrConfig that quotes the name, before anything is sent, and each
+// name in accepted must reach the provider.
+func ToolNames(t *testing.T, newModel func(baseURL string, client *http.Client) agent.Model, refused, accepted []string) {
+	t.Helper()
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		http.Error(w, "modeltest: not a provider", http.StatusInternalServerError)
+	}))
+	t.Cleanup(srv.Close)
+	m := newModel(srv.URL, srv.Client())
+	msgs := []agent.Message{agent.UserText("hi")}
+	for _, n := range refused {
+		before := hits.Load()
+		_, err := m.Stream(context.Background(), agent.Request{Messages: msgs, Tools: []agent.Tool{namedTool("ok"), namedTool(n)}})
+		if !errors.Is(err, agent.ErrConfig) || !strings.Contains(err.Error(), strconv.Quote(n)) {
+			t.Errorf("%q: err = %v, want agent.ErrConfig naming the tool", n, err)
+		}
+		if hits.Load() != before {
+			t.Errorf("%q: the request reached the provider", n)
+		}
+	}
+	for _, n := range accepted {
+		before := hits.Load()
+		_, err := m.Stream(context.Background(), agent.Request{Messages: msgs, Tools: []agent.Tool{namedTool(n)}})
+		if errors.Is(err, agent.ErrConfig) || hits.Load() == before {
+			t.Errorf("%q: err = %v, want the request sent to the provider", n, err)
+		}
+	}
 }
