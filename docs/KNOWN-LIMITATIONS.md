@@ -73,10 +73,10 @@ Parallel tool execution is built: a turn's tool calls run concurrently via `errg
 
 - Adapters: Anthropic (native), Gemini (native), and one OpenAI-compatible adapter (OpenAI/Groq/
   DeepSeek/Ollama/Mistral/... via `WithBaseURL`). No **native Bedrock** adapter yet. The Gemini
-  adapter passes structured-output `responseSchema` through best-effort and drops request-side
-  reasoning parts (see the package comment).
-- `schema/` emits OpenAI-strict and a neutral dialect; a dedicated **Gemini** dialect
-  (strip `additionalProperties`/`$ref` per its subset) is not yet done.
+  adapter drops request-side reasoning text (it keeps the `thoughtSignature` on each call).
+- `schema.Gemini` translates to Gemini's OpenAPI subset and refuses what the subset cannot
+  express: a tool or typed output with a map, an `interface{}`/`json.RawMessage` field, or a
+  recursive type cannot be used with Gemini (`ErrConfig`).
 - Runtime (MCP) tools use the untyped path; there's no Go-struct typing for them (Go can't
   synthesize a struct type from a runtime schema).
 - **Multimodal input is images only.** Message parts are Text / Reasoning / ToolUse / ToolResult /

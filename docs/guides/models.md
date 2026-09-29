@@ -41,6 +41,15 @@ Adapter-specific options:
   wrapping `schema.ErrStrictUnsupported`, rather than being sent as a schema that changes what the
   model may answer.
 
+The Gemini adapter translates tool argument schemas and the `RunTypedNative` response schema to
+the OpenAPI subset Gemini reads (`schema.Gemini`): an optional field becomes `nullable`, a closed
+object drops `additionalProperties: false`, and keywords Gemini lacks that only annotate or
+further constrain a value are dropped. A tool with no arguments declares no `parameters` (Gemini
+rejects an object with no properties, so a tool whose schema is a bare `{"type":"object"}` is
+declared the same way). A schema the subset cannot express (a map, an `interface{}` or
+`json.RawMessage` field, a recursive type, `$ref`, `oneOf`, ...) fails the request with an
+`ErrConfig` error wrapping `schema.ErrGeminiUnsupported` that names the tool and the location.
+
 `WithBaseURL` is how one adapter reaches many providers. For OpenAI-compatible endpoints, set the
 base URL and the model, e.g. `openai.New("", openai.WithBaseURL("http://localhost:11434/v1"),
 openai.WithModel("llama3"))` for Ollama; the OpenAI adapter only sets the auth header when the API
@@ -132,7 +141,9 @@ msg := agent.UserParts(
 
 `agent.Image` sets exactly one of `Data` (raw bytes, plus `Mime`) or `URL` (a hosted image). All
 three adapters translate it to their native form (Anthropic base64 image source, OpenAI image-URL /
-data-URI content, Gemini `inlineData` / `fileData`). This is **input-only**: models emit text,
+data-URI content, Gemini `inlineData` / `fileData`). Gemini's `fileData` requires a MIME type:
+for an image by URL it is `Image.Mime`, or else the type the URL's file extension names; with
+neither, the request fails with `ErrConfig`. This is **input-only**: models emit text,
 reasoning, and tool calls, never images, so nothing produces an `Image` on the response path. Audio
 and video input are not modeled (see [KNOWN-LIMITATIONS.md](../KNOWN-LIMITATIONS.md)).
 
@@ -146,7 +157,13 @@ The OpenAI and Gemini adapters take the opposite, provider-correct stance: they 
 `Reasoning` part back on an assistant-input turn (the providers reject it, and there is no stable
 signature to echo), so request-side `Reasoning` parts are dropped rather than sent with an invalid
 token. The OpenAI adapter still surfaces inbound reasoning it receives (`reasoning_content` from
-DeepSeek / Ollama and similar) as a `ReasoningDelta` on the stream.
+DeepSeek / Ollama and similar) as a `ReasoningDelta` on the stream, and the Gemini adapter surfaces
+a part Gemini flags `thought` the same way.
+
+Gemini's thinking models attach a `thoughtSignature` to a `functionCall` part and reject the next
+turn unless it comes back on that part. The adapter keeps it on the call (`agent.ToolUse.Signature`,
+journaled with the call) and sends it back with the `functionCall`. Signatures Gemini puts on text
+parts are not kept; Gemini does not require them.
 
 ## GCF tool-result encoding (opt-in)
 
@@ -179,7 +196,4 @@ form for that result.
 ## What is not built
 
 - No **native Bedrock** adapter (reach Bedrock-hosted models through an OpenAI-compatible proxy).
-- `schema/` emits an OpenAI-strict and a neutral dialect; a dedicated **Gemini** schema dialect is
-  not yet done, so Gemini structured output passes the neutral `responseSchema` through
-  best-effort.
 - Settings are agent-level, not per-`Run` (see [KNOWN-LIMITATIONS.md](../KNOWN-LIMITATIONS.md)).

@@ -15,6 +15,7 @@ package gemini
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/rand"
 	"encoding/base64"
@@ -22,10 +23,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
+	"net/url"
+	"path"
+	"slices"
 	"strings"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/schema"
 )
 
 // Model is a Google Gemini generateContent API adapter implementing agent.Model.
@@ -78,8 +84,8 @@ func (m *Model) Stream(ctx context.Context, req agent.Request) (*agent.Stream, e
 	}
 	// alt=sse asks Gemini for server-sent events (one JSON object per data line) rather
 	// than the default streamed-JSON-array framing, which matches our SSE scanner.
-	url := m.baseURL + "/v1beta/models/" + m.model + ":streamGenerateContent?alt=sse"
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	endpoint := m.baseURL + "/v1beta/models/" + m.model + ":streamGenerateContent?alt=sse"
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
@@ -100,16 +106,26 @@ func (m *Model) Stream(ctx context.Context, req agent.Request) (*agent.Stream, e
 // buildRequest translates the provider-neutral request into a Gemini generateContent
 // payload. System turns fold into the top-level `systemInstruction`; RoleTool turns
 // become user turns carrying functionResponse parts (Gemini has no dedicated tool role).
+//
+// Gemini answers a model turn's function calls with one content holding a functionResponse
+// part per call, in the order of the calls. The agent sends one RoleTool message per result
+// (and, on a resumed run, in the order the results were journaled), so consecutive RoleTool
+// messages are gathered into one content and sorted into call order. Other consecutive
+// same-role turns are merged too, but function responses never share a content with other
+// parts. A turn left with no parts (an assistant turn holding only reasoning, an empty text)
+// is skipped: Gemini rejects a content with no parts.
 func (m *Model) buildRequest(req agent.Request) ([]byte, error) {
 	type obj = map[string]any
 
 	var systemParts []obj
 	var contents []obj
+	var responses []bool          // responses[i]: contents[i] holds function responses
+	callOrder := map[string]int{} // tool-use id -> position among all the calls so far
 
 	for _, msg := range req.Messages {
 		if msg.Role == agent.RoleSystem {
 			for _, p := range msg.Parts {
-				if t, ok := p.(agent.Text); ok {
+				if t, ok := p.(agent.Text); ok && t.Text != "" {
 					systemParts = append(systemParts, obj{"text": t.Text})
 				}
 			}
@@ -120,22 +136,34 @@ func (m *Model) buildRequest(req agent.Request) ([]byte, error) {
 		if msg.Role == agent.RoleAssistant {
 			role = "model"
 		}
+		isResponse := msg.Role == agent.RoleTool
 		var parts []obj
+		var order []int // for a tool turn, each part's position among the calls
 		for _, p := range msg.Parts {
+			if _, ok := p.(agent.ToolResult); isResponse && !ok {
+				continue // a tool turn carries only results, as in the other adapters
+			}
 			switch v := p.(type) {
 			case agent.Text:
+				if v.Text == "" {
+					continue // Gemini rejects an empty text part
+				}
 				parts = append(parts, obj{"text": v.Text})
 			case agent.Reasoning:
-				// Gemini's "thought" handling differs from Anthropic's echo-back-with-signature
-				// contract and has no stable request-side wire shape we can verify here, so prior
-				// Reasoning parts are dropped rather than fabricated onto the wire. Any text the
-				// model actually produced still round-trips via Text parts.
+				// Gemini does not take thought text back as input; what it needs from a thinking
+				// turn is the thoughtSignature, which rides on the functionCall part it came with
+				// (ToolUse.Signature). So prior Reasoning parts are dropped.
 			case agent.ToolUse:
 				var args any = map[string]any{}
 				if len(v.Args) > 0 {
 					args = json.RawMessage(v.Args)
 				}
-				parts = append(parts, obj{"functionCall": obj{"name": v.Name, "args": args}})
+				part := obj{"functionCall": obj{"name": v.Name, "args": args}}
+				if v.Signature != "" {
+					part["thoughtSignature"] = v.Signature
+				}
+				callOrder[v.ID] = len(callOrder)
+				parts = append(parts, part)
 			case agent.ToolResult:
 				// Gemini keys the response by tool name (not the call id). The ToolResult carries
 				// only the call id, so the name is best-effort recovered by scanning prior turns.
@@ -156,10 +184,19 @@ func (m *Model) buildRequest(req agent.Request) ([]byte, error) {
 				default:
 					response = obj{"result": string(v.Result)}
 				}
+				pos, ok := callOrder[v.ToolUseID]
+				if !ok {
+					pos = len(callOrder) // a result for no known call goes after the rest
+				}
 				parts = append(parts, obj{"functionResponse": obj{"name": name, "response": response}})
+				order = append(order, pos)
 			case agent.Image:
 				if v.URL != "" {
-					parts = append(parts, obj{"fileData": obj{"fileUri": v.URL}})
+					mime, err := fileMime(v)
+					if err != nil {
+						return nil, err
+					}
+					parts = append(parts, obj{"fileData": obj{"mimeType": mime, "fileUri": v.URL}})
 				} else {
 					parts = append(parts, obj{"inlineData": obj{
 						"mimeType": v.Mime,
@@ -168,7 +205,39 @@ func (m *Model) buildRequest(req agent.Request) ([]byte, error) {
 				}
 			}
 		}
-		contents = append(contents, obj{"role": role, "parts": parts})
+		if len(parts) == 0 {
+			continue
+		}
+		if n := len(contents); n > 0 && contents[n-1]["role"] == role && responses[n-1] == isResponse {
+			prev := contents[n-1]
+			prev["parts"] = append(prev["parts"].([]obj), parts...)
+			if isResponse {
+				prev["order"] = append(prev["order"].([]int), order...)
+			}
+			continue
+		}
+		c := obj{"role": role, "parts": parts}
+		if isResponse {
+			c["order"] = order
+		}
+		contents = append(contents, c)
+		responses = append(responses, isResponse)
+	}
+	for _, c := range contents {
+		if order, ok := c["order"].([]int); ok {
+			delete(c, "order")
+			parts := c["parts"].([]obj)
+			idx := make([]int, len(parts))
+			for i := range idx {
+				idx[i] = i
+			}
+			slices.SortStableFunc(idx, func(a, b int) int { return cmp.Compare(order[a], order[b]) })
+			sorted := make([]obj, len(parts))
+			for i, j := range idx {
+				sorted[i] = parts[j]
+			}
+			c["parts"] = sorted
+		}
 	}
 
 	payload := obj{
@@ -182,8 +251,12 @@ func (m *Model) buildRequest(req agent.Request) ([]byte, error) {
 	var decls []obj
 	for _, t := range req.Tools {
 		decl := obj{"name": t.Name(), "description": t.Description()}
-		if s := t.ArgsSchema(); len(s) > 0 {
-			decl["parameters"] = json.RawMessage(s)
+		params, err := toolParameters(t.ArgsSchema())
+		if err != nil {
+			return nil, fmt.Errorf("gemini: tool %q: %w (%w)", t.Name(), err, agent.ErrConfig)
+		}
+		if params != nil {
+			decl["parameters"] = params
 		}
 		decls = append(decls, decl)
 	}
@@ -234,20 +307,63 @@ func (m *Model) buildRequest(req agent.Request) ([]byte, error) {
 	}
 	// Gemini has no seed parameter; req.Sampling.Seed is intentionally ignored.
 
-	// Structured output: ask for JSON and hand Gemini the schema. Gemini accepts a
-	// responseSchema in an OpenAPI-subset dialect; we pass the provider-neutral JSON
-	// Schema through as-is. It covers the common object/array/string/number cases; exotic
-	// JSON Schema keywords (oneOf, $ref, etc.) may be rejected by Gemini, so this is a
-	// best-effort pass-through rather than a verified full-dialect translation.
+	// Structured output: ask for JSON and hand Gemini the schema, translated to the OpenAPI
+	// subset Gemini reads (schema.Gemini). A schema the subset cannot express fails the
+	// request rather than reach Gemini as one it would reject or read differently.
 	if rf := req.ResponseFormat; rf != nil && len(rf.Schema) > 0 {
+		s, err := schema.Gemini(rf.Schema)
+		if err != nil {
+			return nil, fmt.Errorf("gemini: response format %q: %w (%w)", rf.Name, err, agent.ErrConfig)
+		}
 		gen["responseMimeType"] = "application/json"
-		gen["responseSchema"] = json.RawMessage(rf.Schema)
+		gen["responseSchema"] = s
 	}
 	if len(gen) > 0 {
 		payload["generationConfig"] = gen
 	}
 
 	return json.Marshal(payload)
+}
+
+// toolParameters translates a tool's argument schema for a function declaration. A tool that
+// takes no arguments (no schema, or an object with no properties and no additionalProperties)
+// gets nil, so the declaration carries no parameters: Gemini rejects an OBJECT whose properties
+// are empty. Anything else goes through schema.Gemini.
+func toolParameters(s json.RawMessage) (json.RawMessage, error) {
+	if len(s) == 0 {
+		return nil, nil
+	}
+	var probe struct {
+		Type                 any             `json:"type"`
+		Properties           map[string]any  `json:"properties"`
+		AdditionalProperties json.RawMessage `json:"additionalProperties"`
+	}
+	if err := json.Unmarshal(s, &probe); err != nil {
+		return nil, err
+	}
+	if probe.Type == "object" && len(probe.Properties) == 0 &&
+		(probe.AdditionalProperties == nil || string(probe.AdditionalProperties) == "false") {
+		return nil, nil
+	}
+	return schema.Gemini(s)
+}
+
+// fileMime is the mimeType of an image sent by URL, which Gemini's fileData requires: the
+// Image's Mime, or else the type the URL path's extension names. An image with neither is a
+// config error.
+func fileMime(img agent.Image) (string, error) {
+	if img.Mime != "" {
+		return img.Mime, nil
+	}
+	p := img.URL
+	if u, err := url.Parse(img.URL); err == nil {
+		p = u.Path
+	}
+	if t := mime.TypeByExtension(path.Ext(p)); t != "" {
+		t, _, _ = strings.Cut(t, ";")
+		return t, nil
+	}
+	return "", fmt.Errorf("gemini: image %q: set Image.Mime, since the URL names no known file type: %w", img.URL, agent.ErrConfig)
 }
 
 // toolNameForResult recovers the tool name for a tool-result turn by finding the
@@ -269,8 +385,10 @@ type chunk struct {
 	Candidates []struct {
 		Content struct {
 			Parts []struct {
-				Text         string `json:"text"`
-				FunctionCall *struct {
+				Text             string `json:"text"`
+				Thought          bool   `json:"thought"`          // Text is a thought summary, not answer text
+				ThoughtSignature string `json:"thoughtSignature"` // opaque; sent back on the part it came with
+				FunctionCall     *struct {
 					ID   string          `json:"id"`
 					Name string          `json:"name"`
 					Args json.RawMessage `json:"args"`
@@ -318,10 +436,14 @@ func mapFinishReason(reason string, sawToolCall bool) string {
 // streamSSE reads Gemini's SSE stream and pushes normalized agent events. It closes both
 // the body and the channel. Package-internal so it's unit-testable without a network
 // round-trip. Gemini sends complete functionCall objects, so each becomes one
-// ToolCallDelta carrying the whole args object. Gemini usually sends no tool-call id, so
-// one is made up (see newCallID) when the call carries none. Usage arrives on the usageMetadata
-// of (typically) the final chunk; the terminal Finish carries it, matching the
+// ToolCallDelta carrying the whole args object and the part's thoughtSignature. Gemini
+// usually sends no tool-call id, so one is made up (see newCallID) when the call carries
+// none. A part flagged thought is reasoning, not answer text. Usage arrives on the
+// usageMetadata of (typically) the final chunk; the terminal Finish carries it, matching the
 // anthropic/openai contract that the agent core's finalize() reads.
+//
+// Thought signatures on text parts are not kept: Gemini requires them back only on
+// functionCall parts.
 func streamSSE(body io.ReadCloser, send func(agent.Emit) bool) {
 	defer body.Close()
 
@@ -344,7 +466,11 @@ func streamSSE(body io.ReadCloser, send func(agent.Emit) bool) {
 		for _, cand := range c.Candidates {
 			for _, part := range cand.Content.Parts {
 				if part.Text != "" {
-					if !send(agent.Emit{Event: agent.TextDelta{Text: part.Text}}) {
+					var ev agent.Event = agent.TextDelta{Text: part.Text}
+					if part.Thought {
+						ev = agent.ReasoningDelta{Text: part.Text}
+					}
+					if !send(agent.Emit{Event: ev}) {
 						return
 					}
 				}
@@ -359,7 +485,7 @@ func streamSSE(body io.ReadCloser, send func(agent.Emit) bool) {
 						id = newCallID()
 					}
 					if !send(agent.Emit{Event: agent.ToolCallDelta{
-						Index: toolIndex, ID: id, Name: fc.Name, ArgsFragment: args,
+						Index: toolIndex, ID: id, Name: fc.Name, ArgsFragment: args, Signature: part.ThoughtSignature,
 					}}) {
 						return
 					}

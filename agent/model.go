@@ -109,6 +109,7 @@ type ToolCallDelta struct {
 	ID           string
 	Name         string
 	ArgsFragment json.RawMessage
+	Signature    string // opaque provider token for this call, kept on ToolUse.Signature (Gemini thoughtSignature)
 }
 
 func (ToolCallDelta) event() {}
@@ -281,6 +282,9 @@ func (b *msgBuilder) add(ev Event) {
 		}
 		if e.Name != "" {
 			tu.Name = e.Name
+		}
+		if e.Signature != "" {
+			tu.Signature = e.Signature
 		}
 		tu.Args = append(tu.Args, e.ArgsFragment...) // fragments concatenated; validated in finalize()
 	case Finish:

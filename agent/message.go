@@ -58,11 +58,15 @@ type Reasoning struct {
 
 func (Reasoning) part() {}
 
-// ToolUse is the model's request to call a tool (assistant turn).
+// ToolUse is the model's request to call a tool (assistant turn). Signature is an opaque
+// provider token bound to this call that must be sent back with it on later turns (a Gemini
+// thoughtSignature); it is journaled with the call, and adapters that have no such token
+// leave it empty and ignore it.
 type ToolUse struct {
-	ID   string          `json:"id"`
-	Name string          `json:"name"`
-	Args json.RawMessage `json:"args,omitempty"`
+	ID        string          `json:"id"`
+	Name      string          `json:"name"`
+	Args      json.RawMessage `json:"args,omitempty"`
+	Signature string          `json:"signature,omitempty"`
 }
 
 func (ToolUse) part() {}
