@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 )
@@ -58,5 +59,42 @@ func TestStreamError_IsTerminal(t *testing.T) {
 	}
 	if len(errs) != 1 || !errors.Is(errs[0], boom) || events != 1 {
 		t.Fatalf("got events=%d errs=%v; want 1 event, then only boom", events, errs)
+	}
+}
+
+// finishedThen returns a stream that sends some text, a Finish, and then late.
+func finishedThen(late Event) *Stream {
+	ch := make(chan Emit, 3)
+	ch <- Emit{Event: TextDelta{Text: "done"}}
+	ch <- Emit{Event: Finish{Reason: "stop"}}
+	ch <- Emit{Event: late}
+	close(ch)
+	return NewStream(ch)
+}
+
+// A Finish ends the turn. An event after it (more content, or a second Finish) is a producer
+// that broke its protocol, not more of the answer: the stream ends with ErrStreamProtocol and
+// the consumer never sees the late event.
+func TestStreamEventAfterFinish_IsProtocolError(t *testing.T) {
+	for name, late := range map[string]Event{
+		"text":          TextDelta{Text: " and more"},
+		"tool call":     ToolCallDelta{Index: 0, ID: "c1", Name: "refund", ArgsFragment: json.RawMessage(`{}`)},
+		"second finish": Finish{Reason: "stop"},
+	} {
+		var got []Event
+		var errs []error
+		for ev, err := range finishedThen(late).Events() {
+			if err != nil {
+				errs = append(errs, err)
+				continue
+			}
+			got = append(got, ev)
+		}
+		if len(errs) != 1 || !errors.Is(errs[0], ErrStreamProtocol) || !errors.Is(errs[0], ErrModel) || len(got) != 2 {
+			t.Errorf("%s after Finish: events %+v, errs %v; want the 2 events, then only ErrStreamProtocol", name, got, errs)
+		}
+		if msg, _, err := finishedThen(late).Message(); !errors.Is(err, ErrStreamProtocol) {
+			t.Errorf("%s after Finish: Message = %q, %v; want ErrStreamProtocol", name, msg.Text(), err)
+		}
 	}
 }

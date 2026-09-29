@@ -194,13 +194,19 @@ func (s *Stream) Close() { s.stop.Do(func() { close(s.done) }) }
 
 // Events returns a range-over-func iterator (Go 1.23+) over streamed events. Breaking out
 // of the loop closes the stream. A stream that ends without a Finish event yields
-// ErrIncompleteResponse last: the response stopped partway through the turn.
+// ErrIncompleteResponse last: the response stopped partway through the turn. A Finish is the
+// turn's last event: an event after it yields ErrStreamProtocol and ends the stream.
 func (s *Stream) Events() iter.Seq2[Event, error] {
 	return func(yield func(Event, error) bool) {
 		var finished bool
 		for e := range s.ch {
 			if e.Err != nil {
 				yield(nil, e.Err)
+				s.Close()
+				return
+			}
+			if finished {
+				yield(nil, fmt.Errorf("%T after the turn's Finish: %w", e.Event, ErrStreamProtocol))
 				s.Close()
 				return
 			}

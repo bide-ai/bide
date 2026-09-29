@@ -285,14 +285,24 @@ type sseEvent struct {
 }
 
 // streamSSE reads Anthropic's SSE stream and pushes normalized agent events. It closes
-// both the body and the channel. Exported-package-internal so it's unit-testable
-// without a network round-trip.
+// the body. Package-internal so it's unit-testable without a network round-trip.
+//
+// The turn ends at message_stop, with one Finish carrying the stop reason and usage from the
+// last message_delta (Anthropic may send more than one; its usage is cumulative). The content
+// is complete once message_delta arrives: from then on a content event (a block's start, delta,
+// or stop) or a second message_start is agent.ErrStreamProtocol, not more of the answer, while
+// ping, a further message_delta, and event types this adapter does not know are allowed. Nothing
+// after message_stop is read. A message_stop with no message_delta before it is
+// agent.ErrStreamProtocol; a stream that ends before message_stop sends no Finish, so the
+// consumer sees agent.ErrIncompleteResponse.
 func streamSSE(body io.ReadCloser, send func(agent.Emit) bool) {
 	defer body.Close()
 
 	sc := agent.NewSSEScanner(body)
 
 	var in, out, cacheRead, cacheWrite int
+	var reason string
+	var delta bool // a message_delta has arrived: the content is complete
 	for sc.Scan() {
 		data, ok := agent.SSEPayload(sc.Text())
 		if !ok {
@@ -302,6 +312,13 @@ func streamSSE(body io.ReadCloser, send func(agent.Emit) bool) {
 		if err := json.Unmarshal([]byte(data), &ev); err != nil {
 			send(agent.Emit{Err: fmt.Errorf("anthropic sse decode: %w (%w)", err, agent.ErrModel)})
 			return
+		}
+		switch ev.Type {
+		case "message_start", "content_block_start", "content_block_delta", "content_block_stop":
+			if delta {
+				send(agent.Emit{Err: fmt.Errorf("anthropic: %s after message_delta: %w", ev.Type, agent.ErrStreamProtocol)})
+				return
+			}
 		}
 		switch ev.Type {
 		case "message_start":
@@ -346,19 +363,21 @@ func streamSSE(body io.ReadCloser, send func(agent.Emit) bool) {
 				}
 			}
 		case "message_delta":
+			delta = true
 			if ev.Usage != nil {
 				out = ev.Usage.OutputTokens
 			}
-			reason := ""
-			if ev.Delta != nil {
+			if ev.Delta != nil && ev.Delta.StopReason != "" {
 				reason = ev.Delta.StopReason
 			}
-			if !send(agent.Emit{Event: agent.Finish{Reason: reason, Usage: agent.Usage{
-				InputTokens: in, OutputTokens: out, CacheReadTokens: cacheRead, CacheWriteTokens: cacheWrite,
-			}}}) {
+		case "message_stop":
+			if !delta {
+				send(agent.Emit{Err: fmt.Errorf("anthropic: message_stop before message_delta: %w", agent.ErrStreamProtocol)})
 				return
 			}
-		case "message_stop":
+			send(agent.Emit{Event: agent.Finish{Reason: reason, Usage: agent.Usage{
+				InputTokens: in, OutputTokens: out, CacheReadTokens: cacheRead, CacheWriteTokens: cacheWrite,
+			}}})
 			return
 		case "error":
 			send(agent.Emit{Err: agent.ClassifyStreamError("anthropic", []byte(data))})

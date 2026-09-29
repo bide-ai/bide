@@ -446,6 +446,10 @@ func mapFinishReason(reason string, sawToolCall bool) string {
 // usageMetadata of (typically) the final chunk; the terminal Finish carries it, matching the
 // anthropic/openai contract that the agent core's finalize() reads.
 //
+// A finishReason ends the turn's content: a later chunk may repeat that reason or carry usage,
+// but text, a functionCall, or a different finishReason is agent.ErrStreamProtocol, not more of
+// the answer.
+//
 // Thought signatures on text parts are not kept: Gemini requires them back only on
 // functionCall parts.
 func streamSSE(body io.ReadCloser, send func(agent.Emit) bool) {
@@ -473,6 +477,10 @@ func streamSSE(body io.ReadCloser, send func(agent.Emit) bool) {
 		}
 		for _, cand := range c.Candidates {
 			for _, part := range cand.Content.Parts {
+				if lastReason != "" && (part.Text != "" || part.FunctionCall != nil) {
+					send(agent.Emit{Err: fmt.Errorf("gemini: content after finishReason %q: %w", lastReason, agent.ErrStreamProtocol)})
+					return
+				}
 				if part.Text != "" {
 					var ev agent.Event = agent.TextDelta{Text: part.Text}
 					if part.Thought {
@@ -501,6 +509,10 @@ func streamSSE(body io.ReadCloser, send func(agent.Emit) bool) {
 				}
 			}
 			if cand.FinishReason != "" {
+				if lastReason != "" && cand.FinishReason != lastReason {
+					send(agent.Emit{Err: fmt.Errorf("gemini: finishReason %q after %q: %w", cand.FinishReason, lastReason, agent.ErrStreamProtocol)})
+					return
+				}
 				lastReason = cand.FinishReason
 			}
 		}

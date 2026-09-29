@@ -335,13 +335,26 @@ type chunk struct {
 	} `json:"usage"`
 }
 
+// streamSSE reads OpenAI's SSE stream and pushes normalized agent events.
+//
+// The turn ends on a finish_reason or on [DONE], never on usage: some OpenAI-compatible servers
+// (vLLM with continuous usage stats, and similar) report usage on every chunk, so a chunk that
+// carries usage says nothing about whether the answer is complete. Usage is data, and the last
+// usage seen goes out with the single terminal Finish, which is sent after [DONE] or, for a server
+// that omits [DONE], when the stream ends after a finish_reason. A stream that ends with neither
+// sends no Finish, so the consumer sees agent.ErrIncompleteResponse.
+//
+// Once a finish_reason has arrived the turn is over: a later chunk may repeat that reason or carry
+// usage, but content (text, reasoning, a tool call) or a different finish_reason is
+// agent.ErrStreamProtocol, not more of the answer.
 func streamSSE(body io.ReadCloser, send func(agent.Emit) bool) {
 	defer body.Close()
 
 	sc := agent.NewSSEScanner(body)
 
-	var lastReason string
-	var finished, done bool
+	var reason string // the turn's finish_reason, once one has arrived
+	var usage agent.Usage
+	var done bool
 	for sc.Scan() {
 		data, ok := agent.SSEPayload(sc.Text())
 		if !ok {
@@ -361,17 +374,22 @@ func streamSSE(body io.ReadCloser, send func(agent.Emit) bool) {
 			return
 		}
 		for _, choice := range c.Choices {
-			if rc := choice.Delta.ReasoningContent; rc != "" {
+			d := choice.Delta
+			if reason != "" && (d.ReasoningContent != "" || d.Content != "" || len(d.ToolCalls) > 0) {
+				send(agent.Emit{Err: fmt.Errorf("openai: content after finish_reason %q: %w", reason, agent.ErrStreamProtocol)})
+				return
+			}
+			if rc := d.ReasoningContent; rc != "" {
 				if !send(agent.Emit{Event: agent.ReasoningDelta{Text: rc}}) {
 					return
 				}
 			}
-			if txt := choice.Delta.Content; txt != "" {
+			if txt := d.Content; txt != "" {
 				if !send(agent.Emit{Event: agent.TextDelta{Text: txt}}) {
 					return
 				}
 			}
-			for _, tc := range choice.Delta.ToolCalls {
+			for _, tc := range d.ToolCalls {
 				if !send(agent.Emit{Event: agent.ToolCallDelta{
 					Index: tc.Index, ID: tc.ID, Name: tc.Function.Name,
 					ArgsFragment: json.RawMessage(tc.Function.Arguments),
@@ -379,32 +397,29 @@ func streamSSE(body io.ReadCloser, send func(agent.Emit) bool) {
 					return
 				}
 			}
-			if choice.FinishReason != nil {
-				lastReason = *choice.FinishReason
+			if fr := choice.FinishReason; fr != nil && *fr != "" {
+				if reason != "" && *fr != reason {
+					send(agent.Emit{Err: fmt.Errorf("openai: finish_reason %q after %q: %w", *fr, reason, agent.ErrStreamProtocol)})
+					return
+				}
+				reason = *fr
 			}
 		}
 		if c.Usage != nil {
-			u := agent.Usage{InputTokens: c.Usage.PromptTokens, OutputTokens: c.Usage.CompletionTokens}
+			usage = agent.Usage{InputTokens: c.Usage.PromptTokens, OutputTokens: c.Usage.CompletionTokens}
 			// OpenAI caches prefixes automatically. prompt_tokens includes the cached tokens;
 			// agent.Usage counts them once, in CacheReadTokens.
 			if d := c.Usage.PromptTokensDetails; d != nil {
-				u.CacheReadTokens = d.CachedTokens
-				u.InputTokens -= d.CachedTokens
+				usage.CacheReadTokens = d.CachedTokens
+				usage.InputTokens -= d.CachedTokens
 			}
-			if !send(agent.Emit{Event: agent.Finish{Reason: lastReason, Usage: u}}) {
-				return
-			}
-			finished = true
 		}
 	}
 	if err := sc.Err(); err != nil {
 		send(agent.Emit{Err: agent.SSEReadError("openai", err)})
 		return
 	}
-	// A server that omits the usage chunk still ends the turn, with a finish_reason or [DONE],
-	// and gets a terminal Finish. Without either the response stopped partway: no Finish is
-	// sent, so the consumer sees agent.ErrIncompleteResponse.
-	if !finished && (done || lastReason != "") {
-		send(agent.Emit{Event: agent.Finish{Reason: lastReason}})
+	if done || reason != "" {
+		send(agent.Emit{Event: agent.Finish{Reason: reason, Usage: usage}})
 	}
 }
