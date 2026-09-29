@@ -341,6 +341,7 @@ func TestOpenAIStrict_ReachesItemsAndBranches(t *testing.T) {
 		`{"type":"array","items":{"type":"object","additionalProperties":{"type":"integer"}}}`,
 		`{"anyOf":[{"type":"string"},{"type":"object"}]}`,
 		`{"type":"object","properties":{"p":{"type":"object","patternProperties":{"^x":{}}, "properties":{}}}}`,
+		`{"type":"object","properties":{"a":{"type":"integer"}},"additionalProperties":{"type":"string"}}`,
 	} {
 		if s, err := OpenAIStrict(json.RawMessage(in)); !errors.Is(err, ErrStrictUnsupported) {
 			t.Errorf("%s: OpenAIStrict = %s, %v; want ErrStrictUnsupported", in, s, err)
@@ -360,5 +361,9 @@ func TestOpenAIStrict_EmptyStructIsFine(t *testing.T) {
 	neutral, _ := For[sEmpty]()
 	if _, err := OpenAIStrict(neutral); err != nil {
 		t.Fatalf("OpenAIStrict(struct{}) = %v", err)
+	}
+	// An object already closed with no properties is the same empty object.
+	if _, err := OpenAIStrict(json.RawMessage(`{"type":"object","additionalProperties":false}`)); err != nil {
+		t.Fatalf("OpenAIStrict(closed empty object) = %v", err)
 	}
 }
