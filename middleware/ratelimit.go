@@ -12,7 +12,9 @@ import (
 // RateLimiter is a token-bucket limiter shared across calls: it allows one token every
 // `interval` with a burst up to `burst`. It is dependency-free (no background goroutine): tokens
 // accrue lazily from elapsed time. Safe for concurrent use. Share one limiter across model and
-// tool middleware to cap a whole agent, or use separate limiters per surface.
+// tool middleware to cap a whole agent, or use separate limiters per surface. Waiters are not
+// served in arrival order: a call arriving as a token frees can take it ahead of one already
+// waiting.
 type RateLimiter struct {
 	mu       sync.Mutex
 	interval time.Duration
