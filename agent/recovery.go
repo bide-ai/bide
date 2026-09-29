@@ -22,8 +22,12 @@ import (
 type RecoverOption func(*recoverConfig)
 
 type recoverConfig struct {
-	holder string
-	ttl    time.Duration
+	holder      string
+	ttl         time.Duration
+	interval    time.Duration // RecoverLoop only; 0 means ttl/2
+	concurrency int           // RecoverLoop only
+	onError     func(error)   // RecoverLoop only
+	intervalSet bool
 }
 
 // WithLeaseHolder names the worker that claims leases, as the leases table and logs show it.
@@ -38,6 +42,28 @@ func WithLeaseHolder(id string) RecoverOption { return func(c *recoverConfig) { 
 // to 30s. Set it comfortably above the store's clock skew. It must be positive: Lease and Recover
 // return an ErrConfig error otherwise.
 func WithLeaseTTL(d time.Duration) RecoverOption { return func(c *recoverConfig) { c.ttl = d } }
+
+// WithRecoverInterval sets how often RecoverLoop starts a recovery pass. Defaults to half the
+// lease TTL, so a dead holder's run is taken over within about 1.5 TTLs of its last renewal. It
+// must be positive. Only RecoverLoop reads it.
+func WithRecoverInterval(d time.Duration) RecoverOption {
+	return func(c *recoverConfig) { c.interval, c.intervalSet = d, true }
+}
+
+// WithRecoverConcurrency caps how many runs RecoverLoop drives at once. Defaults to 16. It must
+// be at least 1. Only RecoverLoop reads it.
+func WithRecoverConcurrency(n int) RecoverOption {
+	return func(c *recoverConfig) { c.concurrency = n }
+}
+
+// WithRecoverErrors sets the function RecoverLoop hands each genuine failure to: a store error
+// while enumerating runs or acquiring a lease, or a drive that failed. Pauses and lost leases are
+// not failures and are not reported. Without it, RecoverLoop drops failures (the next pass
+// retries the run). It may be called from several goroutines, one call at a time. Only
+// RecoverLoop reads it.
+func WithRecoverErrors(fn func(error)) RecoverOption {
+	return func(c *recoverConfig) { c.onError = fn }
+}
 
 // leaseConfig applies opts over the defaults and validates the result.
 func leaseConfig(opts []RecoverOption) (recoverConfig, error) {
@@ -179,6 +205,15 @@ func Recover(ctx context.Context, store Durable, resume func(ctx context.Context
 		}
 	}
 	return recovered, errors.Join(errs...)
+}
+
+// RecoverLoop runs Recover repeatedly until ctx is done. SKELETON: one pass only.
+func RecoverLoop(ctx context.Context, store Durable, resume func(ctx context.Context, runID string) error, opts ...RecoverOption) error {
+	if _, err := Recover(ctx, store, resume, opts...); errors.Is(err, ErrConfig) {
+		return err
+	}
+	<-ctx.Done()
+	return ctx.Err()
 }
 
 // Lease runs drive under an exclusive, auto-renewed lease on runID, so a primary driver and a
