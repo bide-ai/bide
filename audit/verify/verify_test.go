@@ -3,6 +3,7 @@ package verify_test
 import (
 	"context"
 	"crypto/ed25519"
+	"encoding/binary"
 	"encoding/json"
 	"testing"
 
@@ -99,6 +100,34 @@ func TestVerify_ConsistencyMatchesAudit(t *testing.T) {
 	viaStandalone := verify.Consistency(proof.First, proof.Size, proof.Path, rootEarly, rootFull)
 	if !viaAudit || !viaStandalone {
 		t.Fatalf("consistency: audit=%v standalone=%v (both must be true)", viaAudit, viaStandalone)
+	}
+}
+
+// The signed tree head encoding names its version, bide.audit.sth.v3: v3 is the first whose
+// journal leaves are the journal encoding without HTML escaping, so a head over the older
+// encoding cannot be mistaken for a fork of a head over the newer one. Both the SDK and the
+// standalone verifier use exactly the documented encoding.
+func TestVerify_TreeHeadEncodingIsVersioned(t *testing.T) {
+	ctx := context.Background()
+	store, runID := journal(t)
+	pub, priv, _ := ed25519.GenerateKey(nil)
+	th, _ := audit.NewTreeHead(ctx, store, runID, 1700000000)
+	field := func(b, f []byte) []byte {
+		b = binary.BigEndian.AppendUint64(b, uint64(len(f)))
+		return append(b, f...)
+	}
+	msg := append([]byte(nil), "bide.audit.sth.v3\x00"...)
+	msg = field(msg, []byte(th.Kind))
+	msg = field(msg, []byte(th.RunID))
+	msg = binary.BigEndian.AppendUint64(msg, uint64(th.Size))
+	msg = field(msg, th.Root)
+	msg = binary.BigEndian.AppendUint64(msg, uint64(th.Timestamp))
+	msg = append(msg, 0)
+	if sth := audit.SignTreeHead(th, priv); !ed25519.Verify(pub, msg, sth.Signature) {
+		t.Fatal("the SDK does not sign the bide.audit.sth.v3 encoding of the head")
+	}
+	if !verify.TreeHead(th.Kind, th.RunID, th.Size, th.Root, th.Timestamp, nil, ed25519.Sign(priv, msg), pub) {
+		t.Fatal("the standalone verifier does not check the bide.audit.sth.v3 encoding of the head")
 	}
 }
 

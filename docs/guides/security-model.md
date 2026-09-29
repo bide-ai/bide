@@ -15,7 +15,7 @@ post-quantum options below), with no external dependencies.
   commitment was produced by the key holder and was not forged.
 - **Domain separation between trees.** One key signs several trees per run: the journal, the
   absence key sets projected from it (tool uses, used policies), and the event stream. The signed
-  encoding (`bide.audit.sth.v2`) commits to the tree's **kind** and the **run ID**, and a key-set
+  encoding (`bide.audit.sth.v3`) commits to the tree's **kind** and the **run ID**, and a key-set
   head also commits to the journal tree (size and root) it was projected from. Every verifier
   requires the kind it expects: a journal proof needs a journal head of the bundle's run, an
   absence proof needs a key-set head of the set its key belongs to, and a run certificate needs a

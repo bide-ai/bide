@@ -25,8 +25,11 @@ import (
 	"github.com/bide-ai/bide/agent"
 )
 
-// domain separates this hash use from any other, seeding the chain.
-var domain = sha256.Sum256([]byte("bide.audit.v1"))
+// domain separates this hash use from any other, seeding the chain. It names the version of the
+// record encoding the chain covers: v2 chains over the journal encoding (agent.EncodeRecord),
+// which does not HTML-escape, so a head over the v1 encoding (where <, >, and & were escaped) is
+// told apart from a head over the same journal in v2 rather than read as a fork.
+var domain = sha256.Sum256([]byte("bide.audit.v2"))
 
 // Head returns the hash-chain commitment to runID's journal: head_0 = H(domain), and
 // head_i = H(head_{i-1} || canonical(record_i)) over the records in persisted order, where

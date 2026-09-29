@@ -40,6 +40,15 @@ Merkle tree: the same commitment, but it supports per-record inclusion proofs an
 proofs. Use `Head` when you only ever reveal the whole run; use `Root` (+ STH) when selective
 disclosure or append-only proofs matter.
 
+**Encoding versions.** A journal leaf is the record's journal encoding (`agent.EncodeRecord`),
+which, unlike v0.6.0's, does not HTML-escape: a record containing `<`, `>`, or `&` hashes differently
+than it did in v0.6.0. The domain tags that commit to those bytes name the new encoding, so a head
+computed by v0.6.0 and a head computed now over the same journal differ by version, not as a fork:
+`Head` seeds its chain with `bide.audit.v2` (was `bide.audit.v1`), and signed tree heads sign the
+`bide.audit.sth.v3` encoding (v0.6.0 signed `bide.audit.sth.v1`), which `audit/verify` checks too.
+Re-anchor a run under the new version rather than comparing it with a v0.6.0 head. A bare `Root`
+carries no version of its own, so compare roots across versions only through their signed heads.
+
 ## Continuous anchoring: `AuditedStore` + the `Anchor` port
 
 The primitives above are pull-based (commit when you ask). `AuditedStore` makes anchoring
@@ -550,7 +559,7 @@ Signed tree heads sign under a pluggable scheme. `SignedTreeHead` carries an `Al
 (`omitempty`; empty means ed25519), so ed25519 heads from `SignTreeHead` / `Verify` carry no extra
 field. `SignTreeHeadWith` / `VerifyWith` (and `ProofBundle.VerifyWith` /
 `AbsenceBundle.VerifyWith`) carry the scheme end to end. Every scheme signs the same encoding
-(`bide.audit.sth.v2`: kind, run ID, size, root, timestamp, and the source journal of a key-set
+(`bide.audit.sth.v3`: kind, run ID, size, root, timestamp, and the source journal of a key-set
 head), so the kind and run binding hold whichever scheme signs. Three schemes
 are available, all in the Go 1.27 standard library, so this adds no dependency:
 
