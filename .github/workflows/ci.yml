@@ -40,6 +40,15 @@ jobs:
             echo "== vet $m =="
             ( cd "$m" && go vet ./... )
           done
+      - name: govulncheck (all modules)
+        # Known vulnerabilities in dependencies or the standard library that bide's code can reach
+        # fail the build.
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@v1.8.0
+          for m in $MODULES; do
+            echo "== govulncheck $m =="
+            ( cd "$m" && "$(go env GOPATH)/bin/govulncheck" ./... )
+          done
 
   test:
     name: Test

@@ -68,7 +68,7 @@ func valueString(v attribute.Value) string {
 	if v.Type() == attribute.FLOAT64 {
 		return fmt.Sprintf("%.6f", v.AsFloat64())
 	}
-	return v.Emit()
+	return v.String()
 }
 
 func main() {
