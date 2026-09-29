@@ -21,6 +21,11 @@ type Result struct {
 	// cache tokens accumulated across every turn).
 	Usage Usage
 
+	// Spend is every token the run's live model requests used: Usage plus the usage of requests
+	// whose responses were discarded (failed attempts a middleware retried, losing hedge
+	// targets). It is what the provider bills.
+	Spend Usage
+
 	// Turns is the number of live model turns executed during this run (replayed turns
 	// from the durable journal are not counted, since their usage was already accounted
 	// for in the original run).

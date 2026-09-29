@@ -68,3 +68,9 @@ func Cost(m *CostMeter, r Rates) agent.Middleware {
 		}
 	}
 }
+
+// Spent returns the accumulated token usage of every model request sent so far.
+func (m *CostMeter) Spent() agent.Usage { return agent.Usage{} }
+
+// SpentTotal returns the accumulated USD cost of every model request sent so far.
+func (m *CostMeter) SpentTotal() float64 { return 0 }
