@@ -77,14 +77,26 @@ func ToolRetry(n int, opts ...RetryOption) agent.ToolMiddleware {
 // agent.Agent.UseTool.
 //
 //	a := agent.New(model, store, tools...).UseTool(middleware.ToolLog(log.Printf))
-func ToolLog(logf func(format string, args ...any)) agent.ToolMiddleware {
+//
+// A failed call is logged by its ErrorSummary (category, condition, provider status), not its
+// text: a tool's error text commonly embeds the call's arguments or a URL with a credential in
+// it, and a log line is not the place for them. Pass LogErrorText to log the full text.
+func ToolLog(logf func(format string, args ...any), opts ...ToolLogOption) agent.ToolMiddleware {
+	var cfg toolLogConfig
+	for _, o := range opts {
+		o(&cfg)
+	}
 	return func(next agent.ToolHandler) agent.ToolHandler {
 		return func(ctx context.Context, tu agent.ToolUse) (json.RawMessage, error) {
 			start := time.Now()
 			res, err := next(ctx, tu)
 			dur := time.Since(start)
 			if err != nil {
-				logf("tool %s (%s) error in %s: %v", tu.Name, tu.ID, dur, err)
+				detail := ErrorSummary(err)
+				if cfg.errorText {
+					detail = err.Error()
+				}
+				logf("tool %s (%s) error in %s: %s", tu.Name, tu.ID, dur, detail)
 			} else {
 				logf("tool %s (%s) ok in %s (%d bytes)", tu.Name, tu.ID, dur, len(res))
 			}
@@ -92,6 +104,16 @@ func ToolLog(logf func(format string, args ...any)) agent.ToolMiddleware {
 		}
 	}
 }
+
+// ToolLogOption configures ToolLog.
+type ToolLogOption func(*toolLogConfig)
+
+type toolLogConfig struct{ errorText bool }
+
+// LogErrorText makes ToolLog log a failed call's full error text instead of its ErrorSummary.
+// The text can carry content (the call's arguments, a provider's echo of them, a credential in a
+// URL), so enable it only where the log may hold that content.
+func LogErrorText() ToolLogOption { return func(c *toolLogConfig) { c.errorText = true } }
 
 // ToolCache memoizes successful tool results by (name, args) in a process-local map and
 // short-circuits a repeat call — the tool never runs on a hit. It demonstrates the
