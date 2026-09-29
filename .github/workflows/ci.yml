@@ -65,3 +65,47 @@ jobs:
             echo "== $m =="
             ( cd "$m" && go build ./... && go test $race -count=1 ./... )
           done
+
+  integration:
+    name: Integration (Postgres, Redis)
+    runs-on: ubuntu-latest
+    # The Postgres store (cross-instance at-most-once, leases) and the shared governed-event logs
+    # need real services; their tests skip without PG_DSN / REDIS_ADDR, so the Test jobs above
+    # never run them. This job does, against service containers.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: bide
+          POSTGRES_PASSWORD: bide
+          POSTGRES_DB: bide_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U bide" --health-interval 5s --health-timeout 5s --health-retries 12
+      redis:
+        image: redis:7
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping" --health-interval 5s --health-timeout 5s --health-retries 12
+    env:
+      PG_DSN: postgres://bide:bide@localhost:5432/bide_test?sslmode=disable
+      REDIS_ADDR: localhost:6379
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27'
+      - name: Integration tests (twice each; a skip fails the job)
+        run: |
+          # -count=2 runs each suite twice against the same services, so a test that only passes
+          # on a fresh database fails here. A skip means the services were not reached, which
+          # would silently test nothing, so it fails the job.
+          for m in store/postgres govern/postgreslog govern/redislog; do
+            echo "== $m =="
+            out=$(cd "$m" && go test -race -count=2 -v ./... 2>&1) || { echo "$out"; exit 1; }
+            echo "$out" | grep -E '^(ok|FAIL|--- (PASS|FAIL|SKIP))'
+            if echo "$out" | grep -q -- '--- SKIP'; then
+              echo "::error::integration tests were skipped in $m (services not reachable?)"
+              exit 1
+            fi
+          done

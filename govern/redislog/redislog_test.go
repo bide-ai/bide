@@ -2,8 +2,10 @@ package redislog_test
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/bide-ai/bide/govern"
 	"github.com/bide-ai/bide/govern/redislog"
@@ -59,7 +61,7 @@ func TestRedisLog_ReconstructFromStream(t *testing.T) {
 	}
 	defer log.Close()
 
-	entity := "order-redis-" + t.Name()
+	entity := fmt.Sprintf("order-redis-%s-%d", t.Name(), time.Now().UnixNano()) // unique per run: the Redis instance persists
 	initial := m.NewState().SetInt(inv, 1)
 
 	pg1, err := govern.NewPersistent(ctx, m, log, entity, initial)

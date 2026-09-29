@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"sync"
 	"sync/atomic"
@@ -11,6 +12,12 @@ import (
 
 	"github.com/bide-ai/bide/agent"
 )
+
+// uniqueID returns prefix plus the test name and a per-run suffix, so the test can run again
+// against the same database or Redis instance without seeing a previous run's records.
+func uniqueID(t *testing.T, prefix string) string {
+	return fmt.Sprintf("%s%s-%d", prefix, t.Name(), time.Now().UnixNano())
+}
 
 func openTestStore(t *testing.T) (*Store, context.Context) {
 	t.Helper()
@@ -41,7 +48,7 @@ func TestPostgres_DoMemoizesAndHistory(t *testing.T) {
 	}
 	defer store.Close()
 
-	runID := "pg-test-" + t.Name()
+	runID := uniqueID(t, "pg-test-")
 	var runs int
 	mk := func(context.Context) (agent.Record, error) {
 		runs++
@@ -68,7 +75,7 @@ func TestPostgres_DoMemoizesAndHistory(t *testing.T) {
 // TestPostgres_ListerRuns checks Runs enumerates the runs the store holds (agent.Lister).
 func TestPostgres_ListerRuns(t *testing.T) {
 	store, ctx := openTestStore(t)
-	r1, r2 := "pg-list-1-"+t.Name(), "pg-list-2-"+t.Name()
+	r1, r2 := uniqueID(t, "pg-list-1-"), uniqueID(t, "pg-list-2-")
 	mk := func(context.Context) (agent.Record, error) {
 		return agent.Record{Kind: agent.StepValue, Result: json.RawMessage(`1`)}, nil
 	}
@@ -95,7 +102,7 @@ func TestPostgres_ListerRuns(t *testing.T) {
 // lease is exclusive, the holder can renew, a non-holder cannot renew, and release frees it.
 func TestPostgres_LeaseExclusiveRenewRelease(t *testing.T) {
 	store, ctx := openTestStore(t)
-	run := "pg-lease-" + t.Name()
+	run := uniqueID(t, "pg-lease-")
 	_ = store.ReleaseLease(ctx, run, "A")
 	_ = store.ReleaseLease(ctx, run, "B")
 
@@ -123,7 +130,7 @@ func TestPostgres_LeaseExclusiveRenewRelease(t *testing.T) {
 // TestPostgres_LeaseExpiry checks a lease is takeable once it expires by the database clock.
 func TestPostgres_LeaseExpiry(t *testing.T) {
 	store, ctx := openTestStore(t)
-	run := "pg-lease-expiry-" + t.Name()
+	run := uniqueID(t, "pg-lease-expiry-")
 	_ = store.ReleaseLease(ctx, run, "A")
 	_ = store.ReleaseLease(ctx, run, "B")
 
@@ -161,7 +168,7 @@ func TestPostgres_HAAtMostOnceAcrossInstances(t *testing.T) {
 	}
 	defer s2.Close()
 
-	run := "pg-ha-" + t.Name()
+	run := uniqueID(t, "pg-ha-")
 	_ = s1.ReleaseLease(ctx, run, "n1")
 	_ = s1.ReleaseLease(ctx, run, "n2")
 
