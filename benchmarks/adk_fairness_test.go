@@ -1,9 +1,12 @@
 package benchmarks
 
 import (
+	"context"
 	"sync"
 	"sync/atomic"
 	"testing"
+
+	"google.golang.org/adk/v2/session"
 )
 
 // TestFairness_ADKResumeOfCompleteRunIsNoop proves the ADK adapter is not a strawman: ADK's
@@ -55,5 +58,30 @@ func TestADK_NoChargeAfterTheCrash(t *testing.T) {
 	wg.Wait()
 	if n := late.Load(); n > 0 {
 		t.Fatalf("%d of %d runs charged after the crash at the function-call event", n, workers*per)
+	}
+}
+
+// After the injected crash the Step's process is dead: a later AppendEvent from ADK's still
+// running goroutines fails too and persists nothing.
+func TestADK_CrashSessionStaysDead(t *testing.T) {
+	ctx := context.Background()
+	inner := session.InMemoryService()
+	created, err := inner.Create(ctx, &session.CreateRequest{AppName: "chaos", UserID: "u", SessionID: "s"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cs := &crashSession{inner: inner, failAt: 1}
+	if err := cs.AppendEvent(ctx, created.Session, session.NewEvent(nil, "i")); err == nil {
+		t.Fatal("append 1 did not crash")
+	}
+	if err := cs.AppendEvent(ctx, created.Session, session.NewEvent(nil, "i")); err == nil {
+		t.Fatal("an append after the crash succeeded")
+	}
+	got, err := inner.Get(ctx, &session.GetRequest{AppName: "chaos", UserID: "u", SessionID: "s"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := got.Session.Events().Len(); n != 0 {
+		t.Fatalf("%d events persisted after the crash, want 0", n)
 	}
 }
