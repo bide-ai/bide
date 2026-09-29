@@ -239,7 +239,7 @@ func (t *tool) Safety() agent.Safety {
 }
 
 // Call invokes the tool on the MCP server with the raw JSON args and returns the
-// result content as raw JSON. If the server flags the result IsError, the content is
+// result content as raw JSON (the structured content, if the server sent no content). If the server flags the result IsError, the content is
 // returned as a Go error so the agent core sees a failure and can self-correct. A call
 // that may have run on the server without its answer arriving fails with
 // agent.ErrToolOutcomeUnknown (see callError).
@@ -256,7 +256,13 @@ func (t *tool) Call(ctx context.Context, args json.RawMessage) (json.RawMessage,
 	if err != nil {
 		return nil, callError(t.def.Name, err)
 	}
-	out, err := json.Marshal(res.Content)
+	var result any = res.Content
+	if len(res.Content) == 0 && res.StructuredContent != nil {
+		// The specification asks a tool that returns structured content to repeat it as text,
+		// but does not require it: without the text, the structured content is the result.
+		result = res.StructuredContent
+	}
+	out, err := json.Marshal(result)
 	if err != nil {
 		return nil, fmt.Errorf("mcp: marshal result of tool %q: %w (%w)", t.def.Name, err, agent.ErrProtocol)
 	}

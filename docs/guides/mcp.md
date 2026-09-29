@@ -114,7 +114,8 @@ func DeclineElicitation(context.Context, *mcp.ElicitRequest) (*mcp.ElicitResult,
 ```
 
 `Connect` and `Tools` wrap failures with `agent.ErrTool` so they classify alongside the framework's other
-tool errors. The wrapped tool's `Call` returns the server's result content as raw JSON; if
+tool errors. The wrapped tool's `Call` returns the server's result content as raw JSON (or its
+`structuredContent`, when the server sends that alone); if
 the server flags the result `IsError`, the content is surfaced as a Go error (wrapped with
 `agent.ErrTool`) so the agent core sees a failure and can self-correct.
 
