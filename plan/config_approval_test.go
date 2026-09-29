@@ -1,7 +1,9 @@
 package plan
 
 import (
-	"slices"
+	"context"
+	"errors"
+	"github.com/bide-ai/bide/agent"
 	"strings"
 	"testing"
 )
@@ -28,35 +30,24 @@ func approvalRegistry(t *testing.T) *Registry {
 	return reg
 }
 
-// TestLoadApprovalLowersToSafety asserts a config "approval" block lowers to
-// Safety.Approval on the built node, alongside (not replacing) the config "safety".
-func TestLoadApprovalLowersToSafety(t *testing.T) {
+// TestLoadApprovalIsRefusedUntilEnforced asserts a well-formed config "approval" block is a load
+// error naming the node: the plan runtime does not enforce the gate yet, and a gate that loads
+// but never stops anything would let the node run with no approval.
+func TestLoadApprovalIsRefusedUntilEnforced(t *testing.T) {
 	cfg := strings.Replace(approvalNodeConfig, "APPROVAL", `{"need": 2, "approvers": ["ops", "finance", "risk"]}`, 1)
-	flow, err := Load[int, int]([]byte(cfg), approvalRegistry(t))
-	if err != nil {
-		t.Fatalf("Load: %v", err)
+	_, err := Load[int, int]([]byte(cfg), approvalRegistry(t))
+	if !errors.Is(err, agent.ErrConfig) || !strings.Contains(err.Error(), `"refund"`) {
+		t.Fatalf("Load = %v; want an ErrConfig naming step \"refund\"", err)
 	}
-	var n *node
-	for _, cand := range flow.core.nodes {
-		if cand.name == "refund" {
-			n = cand
-		}
-	}
-	if n == nil {
-		t.Fatal("refund node not found in loaded flow")
-	}
-	ap := n.safety.Approval
-	if ap == nil {
-		t.Fatal("safety.Approval is nil; want the lowered approval policy")
-	}
-	if ap.Need != 2 {
-		t.Errorf("Need = %d, want 2", ap.Need)
-	}
-	if want := []string{"ops", "finance", "risk"}; !slices.Equal(ap.Approvers, want) {
-		t.Errorf("Approvers = %v, want %v", ap.Approvers, want)
-	}
-	if !n.safety.Idempotent {
-		t.Error("config safety \"idempotent\" was lost when the approval block was applied")
+}
+
+// A Tool node wrapping an agent tool that requires approval would run it with no approval.
+func TestBuildRefusesAnApprovalGatedTool(t *testing.T) {
+	gated := agent.Func("refund", "issue a refund", agent.Safety{RequiresApproval: true}, func(context.Context, int) (int, error) { return 0, nil })
+	b := New[int, int]("refunds")
+	b.Tool[int, int]("refund", gated)
+	if _, err := b.Build(); !errors.Is(err, agent.ErrConfig) {
+		t.Fatalf("Build = %v; want ErrConfig for an approval-gated tool", err)
 	}
 }
 

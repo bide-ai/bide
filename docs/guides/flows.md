@@ -95,6 +95,9 @@ Every node lowers to a memoized `Do` step under a two-phase attempt/result guard
   when that node has no side effect. A node may instead declare a `Safety` (read-only, idempotent, or
   retryable, via `ReadOnly()`/`Idempotent()`/`Retryable()` in Go, or `safety` in a declarative config) so
   it re-runs on resume instead of halting.
+- **A run keeps its flow.** `Run` records the flow's digest first and, on resume, refuses (`ErrConfig`)
+  to continue a run that started under a different digest: its journal only means what it meant
+  under that flow.
 - **Conformance.** Because the flow is authored and the actual path is derived from the journal, a run
   can be proven to have followed the declared topology, at node-visitation granularity plus the
   journaled branch choice. The blind spot: conformance sees *that* a node ran, not what its Go body did
@@ -294,8 +297,10 @@ nodes:
 ```
 
 `Load` and `Validate` reject a block with no approvers, a `need` outside `1..len(approvers)`, or a
-duplicate approver id, naming the node. The `plan` runtime records the policy on the node but does not
-enforce the gate yet; the gate itself runs on agent tools (see [approval](approval.md)).
+duplicate approver id, naming the node. The `plan` runtime does not enforce an approval gate yet, so a
+well-formed block is refused too (`ErrConfig`, naming the node), as is a `Tool` node wrapping an agent
+tool that requires approval: a gate that loaded but never stopped anything would let the node run
+unapproved. Until the runtime enforces it, put the gate on an agent tool (see [approval](approval.md)).
 
 ### Load-time validation
 
@@ -341,6 +346,10 @@ core dependency, so the two formats are just front-ends to one loader.
 ## Limits
 
 - Fan-in is fixed-arity (`Join2`/`Join3`); unbounded or ragged fan-in is not supported.
+- `Build` rejects wiring the runtime cannot execute as declared, naming the step: a step fed by more
+  than one producer without a Join, more than one Switch over a step, a Switch and an Edge from the
+  same step, a Switch inside a loop body other than the loop's own (so no nested loops), and an Edge
+  that leaves a loop body or enters it past its head.
 - `Model` decodes the response as JSON into `O` (no derived response schema yet), so `O` must be
   JSON-shaped and the prompt should instruct JSON output.
 - Requires Go 1.27.
