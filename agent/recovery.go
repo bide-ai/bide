@@ -57,6 +57,25 @@ func IsComplete(ctx context.Context, store Durable, runID string) (bool, error) 
 	return false, nil
 }
 
+// completedAnswer reports whether recs hold the completion marker and, if so, the run's
+// recorded final answer: the last model turn journaled before the marker. Records after the
+// marker (written by an older version that re-drove finished runs) are ignored, so the first
+// completion's answer stands.
+func completedAnswer(recs []Record) (Message, bool) {
+	for i, r := range recs {
+		if r.Kind != StepValue || r.Name != runCompleteStep {
+			continue
+		}
+		for j := i - 1; j >= 0; j-- {
+			if recs[j].Kind == StepModel && recs[j].Message != nil {
+				return *recs[j].Message, true
+			}
+		}
+		return Message{}, true
+	}
+	return Message{}, false
+}
+
 // Recover re-drives the runs that were in flight when the process died. It enumerates
 // every run the store holds (via Lister), skips the ones already marked complete, and
 // calls resume for each remaining run to push it forward. It returns how many runs it

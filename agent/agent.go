@@ -212,7 +212,9 @@ func (a *Agent) generate(ctx context.Context, req Request) (Message, Usage, erro
 // Run drives the agent to completion for runID, resuming from the journal if steps
 // already exist. Completed steps are reused; retry-safe tools with no recorded result
 // are re-run; a non-retry-safe tool with no result triggers ResumeHalt; a tool that
-// requires approval with no recorded decision triggers PendingApproval.
+// requires approval with no recorded decision triggers PendingApproval. A run that already
+// finished is final: Run returns its recorded answer without calling the model, whatever
+// input is passed, so retrying a completed run never repeats its side effects.
 func (a *Agent) Run(ctx context.Context, runID, input string) (Message, error) {
 	msg, _, _, err := a.run(ctx, runID, []Message{UserText(input)}, false, nil)
 	return msg, err
@@ -281,6 +283,16 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 			decided[r.ToolUseID] = true
 			approvals[r.ToolUseID] = r.Approved
 		}
+	}
+
+	// A finished run is final: return its recorded answer without asking the model for
+	// another turn. Re-invoking a finished run is routine (a client retrying after a lost
+	// response, a redelivered job, a sub-agent or session turn re-entered on resume), and a
+	// fresh model turn could request tools again under NEW tool-use ids, which at-most-once
+	// (keyed by tool-use id) would not recognize as repeats. The input is not consulted.
+	if final, ok := completedAnswer(recs); ok {
+		fire(Finished{Final: final})
+		return final, Usage{}, 0, nil
 	}
 
 	// Resume safety gate: a non-retriable tool that we ATTEMPTED (recorded a start marker

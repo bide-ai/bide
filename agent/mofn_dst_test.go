@@ -127,8 +127,7 @@ func TestMofnDST_AtMostOncePerApprover(t *testing.T) {
 }
 
 // Once the gate proceeds, further resumes with the same runID replay it: the tool does not
-// re-run, the tally step is not doubled, and the journal through the completion marker is
-// unchanged. The
+// re-run, the tally step is not doubled, and the journal is unchanged. The
 // journaled tally is authoritative, so the outcome holds even if the verifier set later
 // changes and would no longer verify the recorded signatures.
 func TestMofnDST_DeterministicAcrossResume(t *testing.T) {
@@ -183,17 +182,10 @@ func TestMofnDST_DeterministicAcrossResume(t *testing.T) {
 		if charged != 1 {
 			t.Fatalf("%s: charge ran %d times across resumes, want 1", r.name, charged)
 		}
-		// The journal through the completion marker is unchanged. Re-driving a finished run
-		// asks the model for one more turn (the loop does not consult the completion marker;
-		// supervisors skip finished runs via IsComplete), so only model turns may follow it.
-		after := mofnHistory(t, store, "r1")
-		if len(after) < len(before) || !reflect.DeepEqual(after[:len(before)], before) {
-			t.Fatalf("%s: journal through the completion marker changed on a redundant resume:\nbefore=%+v\nafter =%+v", r.name, before, after)
-		}
-		for _, rec := range after[len(before):] {
-			if rec.Kind != StepModel {
-				t.Fatalf("%s: redundant resume appended %s record %q after completion, want only model turns", r.name, rec.Kind, rec.Name)
-			}
+		// A finished run is final: re-driving it returns the recorded answer and appends
+		// nothing, not even a model turn.
+		if after := mofnHistory(t, store, "r1"); !reflect.DeepEqual(after, before) {
+			t.Fatalf("%s: a redundant resume changed the journal:\nbefore=%+v\nafter =%+v", r.name, before, after)
 		}
 		for _, name := range []string{"approval-tally:c1", "c1", runCompleteStep} {
 			if n := countSteps(t, store, "r1", name); n != 1 {

@@ -39,7 +39,8 @@ func (t *subAgentTool) Description() string         { return t.description }
 func (t *subAgentTool) ArgsSchema() json.RawMessage { return t.argsSchema }
 
 // Idempotent: re-running a sub-agent call on resume RESUMES the sub-run from its journal
-// (it doesn't restart it), so it's safe to retry. Any unsafe write inside the sub-run
+// (it doesn't restart it), and a sub-run that already finished returns its recorded answer,
+// so it's safe to retry. Any unsafe write inside the sub-run
 // halts via the sub-run's own ResumeHalt, which propagates up here.
 func (t *subAgentTool) Safety() Safety { return Safety{Idempotent: true} }
 
