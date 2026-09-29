@@ -231,6 +231,18 @@ type RunVerification struct {
 	ConvergenceCertified bool
 	// Reasons carries human-readable detail for any property that failed (empty on full success).
 	Reasons []string
+	// Policies carries, when ConvergenceCertified holds, what the verification read from each used
+	// policy's leaves, in UsedPolicies order, so a caller that cross-checks a policy (the CLI's
+	// -checker runs the external oracle on it) checks exactly the bytes that were verified.
+	Policies []VerifiedPolicy
+}
+
+// VerifiedPolicy is one used policy as VerifyRun read it from its anchored leaves: the policy
+// bytes from the policy leaf and the serialized convergence certificate from the convergence leaf.
+type VerifiedPolicy struct {
+	Digest      string
+	Policy      string
+	Certificate json.RawMessage
 }
 
 // VerifyRun checks a RunCertificate's claims against the disclosed proofs, the auditor's own
@@ -249,11 +261,12 @@ type RunVerification struct {
 //  2. policies-convergence-certified: for every used policy there is exactly one Convergence entry,
 //     in UsedPolicies order and none for an unused digest, whose policy-leaf and convergence-leaf
 //     bundles both verify under pub, are in the same tree as the run STH, and whose leaves link by
-//     digest. The oracle cross-check of the certificate's convergence claim is left to the caller
-//     (see the CLI's -checker).
+//     digest. The leaves are read with UnmarshalStrict, so a leaf that reads differently to a person
+//     than to encoding/json does not verify. The oracle cross-check of the certificate's convergence
+//     claim is left to the caller (see the CLI's -checker), on the contents returned in Policies.
 //
 // A false OK with populated Reasons means a well-formed-but-invalid certificate; an error means a
-// bundle could not be canonicalized (a malformed artifact).
+// bundle could not be canonicalized or a leaf could not be read (a malformed artifact).
 func VerifyRun(cert RunCertificate, approved []string, pub ed25519.PublicKey) (RunVerification, error) {
 	res := RunVerification{}
 	fail := func(ok *bool, format string, args ...any) {
@@ -304,20 +317,25 @@ func VerifyRun(cert RunCertificate, approved []string, pub ed25519.PublicKey) (R
 	if len(cert.Convergence) != len(cert.UsedPolicies) {
 		fail(&certified, "%d convergence entries for %d used policies", len(cert.Convergence), len(cert.UsedPolicies))
 	}
+	var policies []VerifiedPolicy
 	for i, d := range cert.UsedPolicies {
 		if i >= len(cert.Convergence) || cert.Convergence[i].Digest != d {
 			fail(&certified, "no convergence evidence for used policy %q", d)
 			continue
 		}
-		ok, reason, err := verifyPolicyConvergence(cert.Convergence[i], cert.STH, pub)
+		vp, ok, reason, err := verifyPolicyConvergence(cert.Convergence[i], cert.STH, pub)
 		if err != nil {
 			return RunVerification{}, err
 		}
 		if !ok {
 			fail(&certified, "policy %q: %s", d, reason)
 		}
+		policies = append(policies, vp)
 	}
 	res.ConvergenceCertified = certified
+	if certified {
+		res.Policies = policies
+	}
 
 	res.OK = res.OnlyApprovedPolicies && res.ConvergenceCertified
 	return res, nil
@@ -326,46 +344,47 @@ func VerifyRun(cert RunCertificate, approved []string, pub ed25519.PublicKey) (R
 // verifyPolicyConvergence checks one policy's anchored evidence against the run STH and pub: both
 // bundles authentic, both in the same tree as the run STH, and the leaves link to the used digest.
 // The oracle cross-check is intentionally not done here (it needs an external binary); the CLI adds
-// it. Returns (ok, reason-if-not-ok, error-if-malformed).
-func verifyPolicyConvergence(pc PolicyConvergence, runSTH SignedTreeHead, pub ed25519.PublicKey) (bool, string, error) {
+// it. The leaves are read with UnmarshalStrict, so what is verified is what the leaf shows a reader.
+// Returns (what was read, ok, reason-if-not-ok, error-if-malformed).
+func verifyPolicyConvergence(pc PolicyConvergence, runSTH SignedTreeHead, pub ed25519.PublicKey) (VerifiedPolicy, bool, string, error) {
 	okP, err := pc.PolicyLeaf.Verify(pub)
 	if err != nil {
-		return false, "", err
+		return VerifiedPolicy{}, false, "", err
 	}
 	if !okP {
-		return false, "policy-leaf bundle did not verify under this key", nil
+		return VerifiedPolicy{}, false, "policy-leaf bundle did not verify under this key", nil
 	}
 	okC, err := pc.Certificate.Verify(pub)
 	if err != nil {
-		return false, "", err
+		return VerifiedPolicy{}, false, "", err
 	}
 	if !okC {
-		return false, "convergence-leaf bundle did not verify under this key", nil
+		return VerifiedPolicy{}, false, "convergence-leaf bundle did not verify under this key", nil
 	}
 	if !pc.PolicyLeaf.STH.SameTree(runSTH.TreeHead) || !pc.Certificate.STH.SameTree(runSTH.TreeHead) {
-		return false, "policy or convergence leaf is not in the same signed tree as the run STH", nil
+		return VerifiedPolicy{}, false, "policy or convergence leaf is not in the same signed tree as the run STH", nil
 	}
 	if pl := pc.PolicyLeaf.Record; pl.Kind != agent.StepValue || pl.Name != policyLeafName(pc.Digest) {
-		return false, fmt.Sprintf("policy bundle proves record %q, not the policy leaf for %q", pl.Name, pc.Digest), nil
+		return VerifiedPolicy{}, false, fmt.Sprintf("policy bundle proves record %q, not the policy leaf for %q", pl.Name, pc.Digest), nil
 	}
 	if cl := pc.Certificate.Record; cl.Kind != agent.StepValue || cl.Name != convergenceLeafName(pc.Digest) {
-		return false, fmt.Sprintf("convergence bundle proves record %q, not the convergence leaf for %q", cl.Name, pc.Digest), nil
+		return VerifiedPolicy{}, false, fmt.Sprintf("convergence bundle proves record %q, not the convergence leaf for %q", cl.Name, pc.Digest), nil
 	}
 	var polC PolicyContent
-	if err := json.Unmarshal(pc.PolicyLeaf.Record.Result, &polC); err != nil {
-		return false, "", fmt.Errorf("audit: policy leaf is not a policy content leaf: %w", err)
+	if err := UnmarshalStrict(pc.PolicyLeaf.Record.Result, &polC); err != nil {
+		return VerifiedPolicy{}, false, "", fmt.Errorf("audit: policy leaf is not a policy content leaf: %w", err)
 	}
 	var convC ConvergenceContent
-	if err := json.Unmarshal(pc.Certificate.Record.Result, &convC); err != nil {
-		return false, "", fmt.Errorf("audit: convergence leaf is not a convergence content leaf: %w", err)
+	if err := UnmarshalStrict(pc.Certificate.Record.Result, &convC); err != nil {
+		return VerifiedPolicy{}, false, "", fmt.Errorf("audit: convergence leaf is not a convergence content leaf: %w", err)
 	}
 	if polC.Digest != pc.Digest {
-		return false, fmt.Sprintf("policy leaf digest %q does not match", polC.Digest), nil
+		return VerifiedPolicy{}, false, fmt.Sprintf("policy leaf digest %q does not match", polC.Digest), nil
 	}
 	if convC.Digest != pc.Digest {
-		return false, fmt.Sprintf("convergence certificate digest %q does not match", convC.Digest), nil
+		return VerifiedPolicy{}, false, fmt.Sprintf("convergence certificate digest %q does not match", convC.Digest), nil
 	}
-	return true, "", nil
+	return VerifiedPolicy{Digest: pc.Digest, Policy: polC.Policy, Certificate: convC.Certificate}, true, "", nil
 }
 
 // usedPolicyAbsenceRoot recomputes the RFC 6962 key-set root over the used-policy keys, using the
