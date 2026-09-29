@@ -65,7 +65,9 @@ return msg.Text(), nil
 the recorded answer without calling the model, even if the process died after the turn and before
 the reply went out. A turn interrupted by a crash or a pause resumes when the event is redelivered,
 in its own journal, so a different message arriving in between gets its own turn. Reusing a key for
-different text is `ErrConfig`. Deliver a conversation's messages one at a time.
+different text is `ErrConfig`. Several workers may hold handles on one conversation: every
+message is recorded once, and a handle that is behind catches up from the journal before
+answering, so each turn sees the conversation as it stands.
 
 The first delivery runs the turn and records the reply under the event id; a redelivery returns the
 recorded reply without advancing the transcript. If the turn pauses (a tool needs approval) or

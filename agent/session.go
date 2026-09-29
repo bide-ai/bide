@@ -2,9 +2,12 @@ package agent
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 )
 
 // Session is a durable multi-turn conversation. Each Send is one full agent run (tools,
@@ -12,27 +15,53 @@ import (
 // remembers earlier turns. The transcript is journaled turn-by-turn under the session id,
 // so a Session reloaded (after a restart) from the same store resumes the conversation.
 //
-// Layering: turn N runs under runID "<id>/tN" (its own durable journal handles crash
-// resume WITHIN the turn); the session-level journal under "<id>" records each completed
-// turn's (input, answer) so the transcript can be rebuilt. Intermediate tool calls stay
-// in the turn's journal and are NOT carried into later turns — the conversational memory
-// is the question/answer transcript, not every tool call.
+// Layering: a turn runs under its own run ID ("<id>/tN" for Send, "<id>/e/<key>" for
+// SendOnce), whose durable journal handles crash resume WITHIN the turn; the session-level
+// journal under "<id>" records which message started each Send turn and each completed turn's
+// (input, answer) so the transcript can be rebuilt. Intermediate tool calls stay in the
+// turn's journal and are NOT carried into later turns — the conversational memory is the
+// question/answer transcript, not every tool call.
+//
+// A turn belongs to the message that started it: while a Send turn is unfinished, Send with a
+// different message is ErrConfig rather than resuming that turn. Several handles on one session
+// (a stale handle, or two workers) never lose a turn or answer one message with another's
+// reply; a handle that finds the journal moved on reloads it.
 type Session struct {
 	agent   *Agent
 	id      string
 	history []Message // alternating user / final-assistant messages
 	turns   int
 	keyed   map[string]turnRecord // completed SendOnce turns by key
+	starts  int                   // Send turns started (start/N records)
+	open    *turnStart            // the Send turn started but not yet recorded, if any
 }
 
 // turnRecord is the journaled shape of one completed conversation turn.
 type turnRecord struct {
 	Input  string  `json:"input"`
 	Answer Message `json:"answer"`
-	Key    string  `json:"key,omitempty"` // SendOnce's key; empty for Send
+	Key    string  `json:"key,omitempty"`    // SendOnce's key; empty for Send
+	RunID  string  `json:"run_id,omitempty"` // the run that produced the answer
+	Claim  string  `json:"claim,omitempty"`  // random id of the writer, to tell its record from another's
 }
 
-func sessionTurnStep(n int) string { return "turn/" + strconv.Itoa(n) }
+// turnStart is the journaled start of a Send turn: which message owns turn run RunID.
+type turnStart struct {
+	Input string `json:"input"`
+	RunID string `json:"run_id"`
+	Claim string `json:"claim"`
+}
+
+func sessionTurnStep(n int) string  { return "turn/" + strconv.Itoa(n) }
+func sessionStartStep(n int) string { return "start/" + strconv.Itoa(n) }
+
+func newClaim() (string, error) {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", fmt.Errorf("session claim: %w (%w)", err, ErrStorage)
+	}
+	return hex.EncodeToString(b[:]), nil
+}
 
 // Session opens (or reopens) a multi-turn conversation with the given id, rebuilding the
 // transcript from the store so a restarted process continues where it left off.
@@ -40,36 +69,116 @@ func (a *Agent) Session(ctx context.Context, id string) (*Session, error) {
 	if id == "" {
 		return nil, fmt.Errorf("Session: empty id: %w", ErrConfig)
 	}
-	recs, err := a.store.History(ctx, id)
-	if err != nil {
-		return nil, fmt.Errorf("session %s: load transcript: %w (%w)", id, err, ErrStorage)
+	s := &Session{agent: a, id: id}
+	if err := s.reload(ctx); err != nil {
+		return nil, err
 	}
-	s := &Session{agent: a, id: id, keyed: map[string]turnRecord{}}
+	return s, nil
+}
+
+// reload rebuilds the session's state from its journal.
+func (s *Session) reload(ctx context.Context) error {
+	recs, err := s.agent.store.History(ctx, s.id)
+	if err != nil {
+		return fmt.Errorf("session %s: load transcript: %w (%w)", s.id, err, ErrStorage)
+	}
+	s.history, s.turns, s.keyed, s.starts, s.open = nil, 0, map[string]turnRecord{}, 0, nil
+	byName := make(map[string]Record, len(recs))
 	for _, r := range recs {
-		if r.Kind != StepValue || r.Name != sessionTurnStep(s.turns) {
-			continue
+		if r.Kind == StepValue {
+			byName[r.Name] = r
+		}
+	}
+	finished := map[string]bool{} // run IDs whose turn is recorded
+	for ; ; s.turns++ {
+		r, ok := byName[sessionTurnStep(s.turns)]
+		if !ok {
+			break
 		}
 		var tr turnRecord
 		if err := json.Unmarshal(r.Result, &tr); err != nil {
-			return nil, fmt.Errorf("session %s: decode turn %d: %w (%w)", id, s.turns, err, ErrProtocol)
+			return fmt.Errorf("session %s: decode turn %d: %w (%w)", s.id, s.turns, err, ErrProtocol)
 		}
 		s.history = append(s.history, UserText(tr.Input), tr.Answer)
-		s.turns++
 		if tr.Key != "" {
 			s.keyed[tr.Key] = tr
 		}
+		finished[tr.RunID] = true
 	}
-	return s, nil
+	for ; ; s.starts++ {
+		r, ok := byName[sessionStartStep(s.starts)]
+		if !ok {
+			break
+		}
+		var st turnStart
+		if err := json.Unmarshal(r.Result, &st); err != nil {
+			return fmt.Errorf("session %s: decode turn start %d: %w (%w)", s.id, s.starts, err, ErrProtocol)
+		}
+		if !finished[st.RunID] && s.open == nil {
+			s.open = &st
+		}
+	}
+	return nil
 }
 
 // Send runs one conversation turn: the agent answers `input` with the full prior
 // transcript in context, and the turn is journaled. Returns the assistant's answer.
 //
-// If the turn pauses (a tool needs approval or Interrupt), Send returns that error
-// (*PendingApproval / *Interrupted) and does NOT advance the transcript; resolve it
-// (Approve / Resume) and call Send again with the SAME input to resume that turn.
+// If the turn pauses (a tool needs approval or Interrupt) or fails, Send returns that error
+// (*PendingApproval / *Interrupted / ...) and does NOT advance the transcript; resolve it
+// (Approve / Resume) and call Send again with the SAME input to resume that turn. Until then,
+// Send with a different input is ErrConfig: the open turn belongs to its message.
 func (s *Session) Send(ctx context.Context, input string) (Message, error) {
-	return s.send(ctx, s.id+"/t"+strconv.Itoa(s.turns), "", input)
+	start, err := s.startTurn(ctx, input)
+	if err != nil {
+		return Message{}, err
+	}
+	return s.runTurn(ctx, start.RunID, "", input)
+}
+
+// startTurn returns the open Send turn for input, or claims a new one. A claim lost to another
+// handle reloads the journal and tries once more.
+func (s *Session) startTurn(ctx context.Context, input string) (turnStart, error) {
+	for attempt := 0; ; attempt++ {
+		if s.open != nil {
+			if s.open.Input != input {
+				return turnStart{}, fmt.Errorf("session %s: a turn for %q is still open; send that message again to finish it: %w", s.id, s.open.Input, ErrConfig)
+			}
+			return *s.open, nil
+		}
+		claim, err := newClaim()
+		if err != nil {
+			return turnStart{}, err
+		}
+		n := s.starts
+		st := turnStart{Input: input, RunID: s.id + "/t" + strconv.Itoa(n), Claim: claim}
+		b, err := json.Marshal(st)
+		if err != nil {
+			return turnStart{}, fmt.Errorf("session %s: encode turn start: %w (%w)", s.id, err, ErrConfig)
+		}
+		got, err := s.agent.store.Do(ctx, s.id, sessionStartStep(n), func(context.Context) (Record, error) {
+			return Record{Kind: StepValue, Result: b}, nil
+		})
+		if err != nil {
+			return turnStart{}, fmt.Errorf("session %s: record turn start %d: %w (%w)", s.id, n, err, ErrStorage)
+		}
+		var won turnStart
+		if err := json.Unmarshal(got.Result, &won); err != nil {
+			return turnStart{}, fmt.Errorf("session %s: decode turn start %d: %w (%w)", s.id, n, err, ErrProtocol)
+		}
+		if won.Claim == claim {
+			s.starts++
+			s.open = &st
+			return st, nil
+		}
+		// Another handle started turn n first: this handle is stale. Catch up and try again.
+		if attempt > 0 {
+			return turnStart{}, fmt.Errorf("session %s: another writer is sending on this session: %w", s.id, ErrConfig)
+		}
+		if err := s.reload(ctx); err != nil {
+			return turnStart{}, err
+		}
+	}
 }
 
 // SendOnce runs one conversation turn for an inbound message identified by key (an event or
@@ -77,14 +186,19 @@ func (s *Session) Send(ctx context.Context, input string) (Message, error) {
 // answer without running anything, so a redelivered message never opens a second turn, even
 // if the process died after the turn was recorded and before the caller replied. A key whose
 // turn was interrupted resumes that same turn: it runs under its own journal,
-// "<session id>/e/<key>", rather than the next turn index. Reusing a key with a different
-// input is ErrConfig.
-//
-// Like Send, it assumes one writer per session at a time; deliver a conversation's messages in
-// order.
+// "<session id>/e/<key>", so a different message arriving in between gets its own turn.
+// Reusing a key with a different input is ErrConfig.
 func (s *Session) SendOnce(ctx context.Context, key, input string) (Message, error) {
 	if key == "" {
 		return Message{}, fmt.Errorf("session %s: SendOnce: empty key: %w", s.id, ErrConfig)
+	}
+	if strings.ContainsRune(key, '/') {
+		return Message{}, fmt.Errorf("session %s: SendOnce: key %q contains '/': %w", s.id, key, ErrConfig)
+	}
+	if _, ok := s.keyed[key]; !ok {
+		if err := s.reload(ctx); err != nil { // another handle may have answered it
+			return Message{}, err
+		}
 	}
 	if tr, ok := s.keyed[key]; ok {
 		if tr.Input != input {
@@ -92,36 +206,59 @@ func (s *Session) SendOnce(ctx context.Context, key, input string) (Message, err
 		}
 		return tr.Answer, nil
 	}
-	return s.send(ctx, s.id+"/e/"+key, key, input)
+	return s.runTurn(ctx, s.id+"/e/"+key, key, input)
 }
 
-func (s *Session) send(ctx context.Context, turnRunID, key, input string) (Message, error) {
+// runTurn drives the turn's run and appends the completed turn to the transcript.
+func (s *Session) runTurn(ctx context.Context, runID, key, input string) (Message, error) {
 	seed := make([]Message, 0, len(s.history)+1)
 	seed = append(seed, s.history...)
 	seed = append(seed, UserText(input))
 
-	answer, _, _, err := s.agent.run(ctx, turnRunID, seed, false, nil)
+	answer, _, _, err := s.agent.run(ctx, runID, seed, false, nil)
 	if err != nil {
 		return answer, err // pause/error: transcript unadvanced; retry same input to resume
 	}
 
-	// Journal the completed turn so the transcript survives a restart.
-	rec := turnRecord{Input: input, Answer: answer, Key: key}
-	tr, err := json.Marshal(rec)
+	claim, err := newClaim()
 	if err != nil {
-		return answer, fmt.Errorf("session %s: encode turn %d: %w (%w)", s.id, s.turns, err, ErrConfig)
+		return answer, err
 	}
-	if _, err := s.agent.store.Do(ctx, s.id, sessionTurnStep(s.turns), func(context.Context) (Record, error) {
-		return Record{Kind: StepValue, Result: tr}, nil
-	}); err != nil {
-		return answer, fmt.Errorf("session %s: record turn %d: %w (%w)", s.id, s.turns, err, ErrStorage)
+	rec := turnRecord{Input: input, Answer: answer, Key: key, RunID: runID, Claim: claim}
+	if err := s.appendTurn(ctx, rec); err != nil {
+		return answer, err
 	}
-	s.history = append(s.history, UserText(input), answer)
-	s.turns++
-	if key != "" {
-		s.keyed[key] = rec
+	return answer, s.reload(ctx)
+}
+
+// appendTurn records rec at the next free turn index. A slot another handle filled first is
+// skipped rather than overwritten, so no turn is lost; a slot that already holds this run's
+// turn (another handle, or an earlier attempt, recorded it) ends the append, so no turn is
+// recorded twice. Every handle for one message drives the same run ID, which makes that check
+// sufficient.
+func (s *Session) appendTurn(ctx context.Context, rec turnRecord) error {
+	b, err := json.Marshal(rec)
+	if err != nil {
+		return fmt.Errorf("session %s: encode turn: %w (%w)", s.id, err, ErrConfig)
 	}
-	return answer, nil
+	for n := s.turns; ; n++ {
+		got, err := s.agent.store.Do(ctx, s.id, sessionTurnStep(n), func(context.Context) (Record, error) {
+			return Record{Kind: StepValue, Result: b}, nil
+		})
+		if err != nil {
+			return fmt.Errorf("session %s: record turn %d: %w (%w)", s.id, n, err, ErrStorage)
+		}
+		var at turnRecord
+		if err := json.Unmarshal(got.Result, &at); err != nil {
+			return fmt.Errorf("session %s: decode turn %d: %w (%w)", s.id, n, err, ErrProtocol)
+		}
+		if at.Claim == rec.Claim {
+			return nil
+		}
+		if at.RunID == rec.RunID {
+			return nil // this run's turn was already recorded (a retry after a lost reply)
+		}
+	}
 }
 
 // History returns a copy of the conversation transcript so far (alternating user and
