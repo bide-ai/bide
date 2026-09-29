@@ -49,3 +49,58 @@ func TestReferenceSystems_WritesMatchACleanRun(t *testing.T) {
 		}
 	}
 }
+
+// fakeSystem is a scripted System for testing the harness itself. A run crashes at any write
+// index up to writes, fires the side effect on a Step when fire says so, and ends on the first
+// Step that does not crash.
+type fakeSystem struct {
+	writes int
+	fire   func(crashAt, step int) bool
+}
+
+func (f fakeSystem) Writes() int   { return f.writes }
+func (f fakeSystem) NewRun() Run   { return &fakeRun{sys: f} }
+func (r *fakeRun) Fired() int      { return r.fired }
+func (r *fakeRun) Step(c int) bool { return r.step(c) }
+
+type fakeRun struct {
+	sys   fakeSystem
+	steps int
+	fired int
+}
+
+func (r *fakeRun) step(crashAt int) bool {
+	if r.sys.fire(crashAt, r.steps) {
+		r.fired++
+	}
+	r.steps++
+	return crashAt > 0 && crashAt <= r.sys.writes
+}
+
+// A system that never performs the side effect never double-fires, but it has not done the
+// work either: a run that ends, crash-free or after resuming, must have fired exactly once.
+func TestVerify_NeverFiringFails(t *testing.T) {
+	rep := Verify("never", fakeSystem{writes: 3, fire: func(int, int) bool { return false }}, 50)
+	if rep.OK() {
+		t.Fatalf("a system that never fires passed: %v", rep)
+	}
+}
+
+// A system that fires on a clean run but loses the side effect across a crash (the resume ends
+// without performing it) fails too: completing after a resume must also mean fired once.
+func TestVerify_LostOnResumeFails(t *testing.T) {
+	sys := fakeSystem{writes: 3, fire: func(crashAt, step int) bool { return crashAt == 0 && step == 0 }}
+	rep := Verify("loses-it", sys, 50)
+	if rep.OK() {
+		t.Fatalf("a system that loses the side effect across a crash passed: %v", rep)
+	}
+}
+
+// The two passing shapes stay passing: fired once on every completed run.
+func TestVerify_FiresOnceOnCompletionPasses(t *testing.T) {
+	// Fires on the step that completes (the first Step with no crash in range).
+	sys := fakeSystem{writes: 3, fire: func(crashAt, _ int) bool { return crashAt == 0 || crashAt > 3 }}
+	if rep := Verify("once", sys, 50); !rep.OK() {
+		t.Fatalf("a system that fires once per completed run failed: %+v", rep)
+	}
+}
