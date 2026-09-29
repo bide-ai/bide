@@ -307,7 +307,12 @@ launch:
 			totals[m] += passes[i][m]
 		}
 		rep.Cases = append(rep.Cases, cr)
+		seen := map[string]bool{}
 		for _, tag := range c.Tags {
+			if seen[tag] {
+				continue // a repeated tag is still one case in that stratum
+			}
+			seen[tag] = true
 			if _, ok := tagPasses[tag]; !ok {
 				tagPasses[tag] = make([]int64, len(metrics))
 			}
