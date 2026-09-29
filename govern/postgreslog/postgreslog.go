@@ -37,9 +37,10 @@ func Open(ctx context.Context, dsn string) (*Log, error) {
 	return l, nil
 }
 
-// migrate creates the events table. A global bigserial id gives a total append order and, unlike a
-// per-entity MAX(seq)+1, is race-free under concurrent appends (multiple nodes appending to the same
-// entity never collide on a computed sequence). Per-entity order is the id order.
+// migrate creates the events table. Per-entity order is the id order. A bigserial id is drawn at
+// insert but becomes visible at commit, and commits can land out of id order, so Append serializes
+// appends per entity (see appendIn): an entity's events then become visible in id order, and the log
+// a reader sees only ever grows at the end.
 func (l *Log) migrate(ctx context.Context) error {
 	_, err := l.db.ExecContext(ctx, `
 		CREATE TABLE IF NOT EXISTS events (
@@ -54,10 +55,30 @@ func (l *Log) migrate(ctx context.Context) error {
 // Close releases the underlying database connection pool.
 func (l *Log) Close() error { return l.db.Close() }
 
-// Append durably records an event for an entity. The bigserial id is assigned atomically, so
-// concurrent appends never race on a sequence.
+// Append durably records an event for an entity. Concurrent appends to the same entity, from any
+// number of processes, are serialized, so the entity's log is append-only as every reader sees it.
 func (l *Log) Append(ctx context.Context, entity, event string) error {
-	_, err := l.db.ExecContext(ctx, `INSERT INTO events (entity, event) VALUES ($1, $2)`, entity, event)
+	tx, err := l.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	if err := appendIn(ctx, tx, entity, event); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	return tx.Commit()
+}
+
+// appendIn inserts one event inside tx. It first takes a transaction-scoped advisory lock keyed by
+// the entity, held until tx commits, so a second append to the same entity cannot draw its id until
+// the first is visible. Without it, a slow append could draw a lower id than a fast one yet commit
+// after it, and a reader would see an event appear before one it had already seen. Appends to
+// different entities do not wait on each other (a hash collision only costs some serialization).
+func appendIn(ctx context.Context, tx *sql.Tx, entity, event string) error {
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, entity); err != nil {
+		return err
+	}
+	_, err := tx.ExecContext(ctx, `INSERT INTO events (entity, event) VALUES ($1, $2)`, entity, event)
 	return err
 }
 
