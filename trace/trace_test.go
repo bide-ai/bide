@@ -276,3 +276,18 @@ func TestInstrument_WiresChatAndToolSpans(t *testing.T) {
 		t.Errorf("no execute_tool span emitted; got %v", names)
 	}
 }
+
+// gen_ai.usage.input_tokens is the whole prompt, cached or not. A call whose prompt was mostly
+// served from the cache still processed every input token.
+func TestModel_InputTokensIncludeCachedInput(t *testing.T) {
+	sr, tp := recorder()
+	base := agent.ModelHandler(func(context.Context, agent.Request) (agent.Message, agent.Usage, error) {
+		return agent.Message{}, agent.Usage{InputTokens: 150, CacheReadTokens: 800, CacheWriteTokens: 50, OutputTokens: 7}, nil
+	})
+	if _, _, err := Model(tp.Tracer("test"))(base)(context.Background(), agent.Request{}); err != nil {
+		t.Fatal(err)
+	}
+	if got := spanAttrs(sr.Ended()[0])["gen_ai.usage.input_tokens"].AsInt64(); got != 1000 {
+		t.Errorf("gen_ai.usage.input_tokens = %d, want 1000 (150 uncached + 800 cache reads + 50 cache writes)", got)
+	}
+}

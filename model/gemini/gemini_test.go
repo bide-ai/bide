@@ -267,8 +267,9 @@ func TestStreamSSE_NormalizesTextToolCallAndUsage(t *testing.T) {
 	if finish.Reason != "tool_use" {
 		t.Errorf("finish reason = %q, want tool_use (a tool call was seen)", finish.Reason)
 	}
-	if finish.Usage.InputTokens != 11 || finish.Usage.OutputTokens != 9 || finish.Usage.CacheReadTokens != 4 {
-		t.Errorf("usage = %+v, want {In:11 Out:9 CacheRead:4}", finish.Usage)
+	// promptTokenCount 11 includes the 4 cached tokens, which are counted once, as cache reads.
+	if finish.Usage.InputTokens != 7 || finish.Usage.OutputTokens != 9 || finish.Usage.CacheReadTokens != 4 {
+		t.Errorf("usage = %+v, want {In:7 Out:9 CacheRead:4}", finish.Usage)
 	}
 }
 
@@ -293,7 +294,7 @@ func TestStreamSSE_AssemblesMessage(t *testing.T) {
 	if !gotTool {
 		t.Error("missing tool_use in assembled message")
 	}
-	if usage.InputTokens != 11 || usage.OutputTokens != 9 {
+	if usage.TotalInputTokens() != 11 || usage.OutputTokens != 9 {
 		t.Errorf("usage = %+v", usage)
 	}
 }

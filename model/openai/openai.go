@@ -316,8 +316,11 @@ func streamSSE(body io.ReadCloser, send func(agent.Emit) bool) {
 		}
 		if c.Usage != nil {
 			u := agent.Usage{InputTokens: c.Usage.PromptTokens, OutputTokens: c.Usage.CompletionTokens}
-			if d := c.Usage.PromptTokensDetails; d != nil { // OpenAI caches prefixes automatically
+			// OpenAI caches prefixes automatically. prompt_tokens includes the cached tokens;
+			// agent.Usage counts them once, in CacheReadTokens.
+			if d := c.Usage.PromptTokensDetails; d != nil {
 				u.CacheReadTokens = d.CachedTokens
+				u.InputTokens -= d.CachedTokens
 			}
 			if !send(agent.Emit{Event: agent.Finish{Reason: lastReason, Usage: u}}) {
 				return

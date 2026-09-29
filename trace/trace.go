@@ -97,7 +97,7 @@ func Model(tracer oteltrace.Tracer, opts ...Option) agent.Middleware {
 
 			msg, u, err := next(ctx, req)
 			span.SetAttributes(
-				attribute.Int(attrInputTokens, u.InputTokens),
+				attribute.Int(attrInputTokens, u.TotalInputTokens()), // semconv: includes cached input
 				attribute.Int(attrOutputTokens, u.OutputTokens),
 			)
 			if c.rates != nil {

@@ -62,8 +62,14 @@ type Sampling struct {
 	Seed        *int64   // best-effort determinism (OpenAI; ignored where unsupported)
 }
 
-// Usage is token accounting for a call; middleware turns it into cost.
+// Usage is token accounting for a call; middleware turns it into cost. The four counts are
+// disjoint, whatever the provider: each input token is counted in exactly one of
+// InputTokens, CacheReadTokens, or CacheWriteTokens, so each is billed once at its own rate
+// and TotalInputTokens is the whole prompt. Providers differ on the wire (Anthropic reports
+// uncached input separately; OpenAI and Gemini report a prompt total that includes cached
+// tokens), and adapters normalize to this form.
 type Usage struct {
+	// InputTokens is input tokens neither read from nor written to the prompt cache.
 	InputTokens  int
 	OutputTokens int
 	// CacheReadTokens is input tokens served from the provider's prompt cache (billed at
@@ -72,6 +78,12 @@ type Usage struct {
 	CacheReadTokens  int
 	CacheWriteTokens int
 }
+
+// TotalInputTokens is every input token the call processed, cached or not.
+func (u Usage) TotalInputTokens() int { return u.InputTokens + u.CacheReadTokens + u.CacheWriteTokens }
+
+// TotalTokens is every token the call processed: all input plus output.
+func (u Usage) TotalTokens() int { return u.TotalInputTokens() + u.OutputTokens }
 
 // Event is a normalized streamed model event. The stream/ package maps every
 // provider wire format (OpenAI SSE / Anthropic typed / Gemini NDJSON / Bedrock

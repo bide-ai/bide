@@ -375,6 +375,8 @@ func streamSSE(body io.ReadCloser, send func(agent.Emit) bool) {
 	// stream's usageMetadata, mirroring how anthropic/openai signal the end of a turn.
 	send(agent.Emit{Event: agent.Finish{
 		Reason: mapFinishReason(lastReason, sawToolCall),
-		Usage:  agent.Usage{InputTokens: in, OutputTokens: out, CacheReadTokens: cacheRead},
+		// promptTokenCount includes the cached tokens; agent.Usage counts them once, in
+		// CacheReadTokens.
+		Usage: agent.Usage{InputTokens: in - cacheRead, OutputTokens: out, CacheReadTokens: cacheRead},
 	}})
 }

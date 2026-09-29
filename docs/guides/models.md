@@ -77,6 +77,13 @@ see the real numbers:
   Gemini's cached-content tokens.
 - `CacheWriteTokens`: Anthropic `cache_creation_input_tokens`. OpenAI and Gemini do not report a
   separate cache-write count, so this stays zero for them.
+- `InputTokens`: the input tokens that were neither read from nor written to the cache. Anthropic
+  reports these directly as `input_tokens`. OpenAI's `prompt_tokens` and Gemini's
+  `promptTokenCount` include the cached tokens, so those adapters subtract them.
+
+The counts are disjoint, so each token is billed once at its own rate and the same call costs the
+same on every provider. `Usage.TotalInputTokens()` is the whole prompt and `Usage.TotalTokens()`
+adds the output.
 
 ## Error surfacing (shared across all three adapters)
 
