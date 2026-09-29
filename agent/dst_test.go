@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math/rand/v2"
 	"sync"
 	"testing"
@@ -52,13 +53,21 @@ func (c *crashStore) History(ctx context.Context, runID string) ([]Record, error
 
 // dstModel: call charge until there's a tool result in the conversation, then answer.
 // Deterministic on the messages → re-calling after a crash returns the same turn.
-type dstModel struct{}
+//
+// Because it answers the same way twice, a model call made after the final answer was
+// recorded would go unnoticed by the side-effect count alone; afterAnswer counts those calls
+// (a request that already holds an assistant turn with no tool calls), which a real model
+// could answer differently or with new tool calls.
+type dstModel struct{ afterAnswer *int }
 
-func (dstModel) Stream(_ context.Context, req Request) (*Stream, error) {
+func (m dstModel) Stream(_ context.Context, req Request) (*Stream, error) {
 	answered := false
-	for _, m := range req.Messages {
-		if m.Role == RoleTool {
+	for _, msg := range req.Messages {
+		if msg.Role == RoleTool {
 			answered = true
+		}
+		if msg.Role == RoleAssistant && len(msg.toolUses()) == 0 {
+			*m.afterAnswer++
 		}
 	}
 	emits := toolTurn("c1", "charge", `{}`)
@@ -85,10 +94,27 @@ func (t chargeTool) Call(context.Context, json.RawMessage) (json.RawMessage, err
 	return json.RawMessage(`{"charged":true}`), nil
 }
 
-func runOnce(mem Durable, tool chargeTool, crashAt int) error {
-	a := New(dstModel{}, &crashStore{inner: mem, crashAt: crashAt}, tool).SetMaxConcurrency(1)
-	_, err := a.Run(context.Background(), "dst", "charge me")
+func runOnce(mem Durable, tool chargeTool, afterAnswer *int, crashAt int) error {
+	a := New(dstModel{afterAnswer: afterAnswer}, &crashStore{inner: mem, crashAt: crashAt}, tool).SetMaxConcurrency(1)
+	out, err := a.Run(context.Background(), "dst", "charge me")
+	if err == nil && textOf(out) != "done" {
+		return fmt.Errorf("completed run answered %q, want done", textOf(out))
+	}
 	return err
+}
+
+// wantFinished checks the invariants of a run that ended: no model call after its final
+// answer was recorded, and a completed run is marked complete.
+func wantFinished(t *testing.T, mem Durable, err error, afterAnswer int, schedule string) {
+	t.Helper()
+	if afterAnswer != 0 {
+		t.Fatalf("%s: the model was called %d times after the final answer was recorded", schedule, afterAnswer)
+	}
+	if err == nil {
+		if done, ierr := IsComplete(context.Background(), mem, "dst"); ierr != nil || !done {
+			t.Fatalf("%s: completed run not marked complete (%v, %v)", schedule, done, ierr)
+		}
+	}
 }
 
 // Sweep a crash at every write point; the charge must fire at most once each time, and
@@ -97,15 +123,16 @@ func runOnce(mem Durable, tool chargeTool, crashAt int) error {
 func TestDST_NoDoubleFire_CrashSweep(t *testing.T) {
 	haltSeen := false
 	for crashAt := 1; crashAt <= 32; crashAt++ {
-		var count int
+		var count, afterAnswer int
 		mem := NewMemStore()
 		tool := chargeTool{count: &count}
 
-		err := runOnce(mem, tool, crashAt)
+		err := runOnce(mem, tool, &afterAnswer, crashAt)
 		crashed := errors.Is(err, errCrash)
 		for errors.Is(err, errCrash) { // resume without further crashes
-			err = runOnce(mem, tool, 0)
+			err = runOnce(mem, tool, &afterAnswer, 0)
 		}
+		wantFinished(t, mem, err, afterAnswer, fmt.Sprintf("crashAt=%d", crashAt))
 
 		if count > 1 {
 			t.Fatalf("crashAt=%d: charge fired %d times — DOUBLE FIRE", crashAt, count)
@@ -136,13 +163,13 @@ func TestDST_NoDoubleFire_CrashSweep(t *testing.T) {
 func TestDST_NoDoubleFire_Randomized(t *testing.T) {
 	for seed := uint64(1); seed <= 500; seed++ {
 		rng := rand.New(rand.NewPCG(seed, 0x9E3779B97F4A7C15))
-		var count int
+		var count, afterAnswer int
 		mem := NewMemStore()
 		tool := chargeTool{count: &count}
 
 		var err error
 		for attempt := 0; attempt < 50; attempt++ {
-			err = runOnce(mem, tool, rng.IntN(8)+1) // crash at a random write (or beyond → no crash)
+			err = runOnce(mem, tool, &afterAnswer, rng.IntN(8)+1) // crash at a random write (or beyond → no crash)
 			if count > 1 {
 				t.Fatalf("seed=%d attempt=%d: DOUBLE FIRE (count=%d)", seed, attempt, count)
 			}
@@ -153,6 +180,9 @@ func TestDST_NoDoubleFire_Randomized(t *testing.T) {
 		var halt *ResumeHalt
 		if !errors.Is(err, errCrash) && err != nil && !errors.As(err, &halt) {
 			t.Fatalf("seed=%d: unexpected terminal error: %v", seed, err)
+		}
+		if !errors.Is(err, errCrash) {
+			wantFinished(t, mem, err, afterAnswer, fmt.Sprintf("seed=%d", seed))
 		}
 	}
 }
