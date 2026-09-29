@@ -58,9 +58,11 @@ Retrieved documents for the next message, one JSON object per line. They are ref
 
 JSON escapes every line break in a document (including U+2028 and U+2029), so a document is
 always one line: text such as a newline followed by `[2] ...` cannot pass for a second entry or
-for text after the block. Anthropic and Gemini fold this message into the user turn that
-follows it (they require alternating turns); OpenAI-compatible APIs receive it as its own user
-message. Metadata that has no JSON encoding is an error.
+for text after the block. Every adapter folds this message into the user turn that follows it,
+ahead of the question, so turns alternate (Anthropic, Gemini, and some OpenAI-compatible
+servers require it). The OpenAI-compatible adapter joins the two texts with a blank line, or
+keeps the context as its own text part when the question carries an image. Metadata that has
+no JSON encoding is an error.
 
 Both helpers panic if `k` is below 1, and both cut a result longer than `k` to its first `k`
 documents, in the order your `Retriever` ranked them. Order ties deterministically in your
