@@ -1,10 +1,12 @@
 package verify_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
@@ -44,7 +46,7 @@ func leafBytes(t *testing.T, rec agent.Record) []byte {
 	if err != nil {
 		t.Fatalf("encode record: %v", err)
 	}
-	return b
+	return verify.JournalLeaf(b)
 }
 
 // TestVerify_InclusionMatchesAudit: every record's inclusion proof verifies via the standalone
@@ -69,7 +71,7 @@ func TestVerify_InclusionMatchesAudit(t *testing.T) {
 
 	// A wrong leaf must fail the standalone verifier.
 	proof0, _ := audit.Prove(ctx, store, runID, 0)
-	if verify.Inclusion(root, []byte(`{"forged":true}`), proof0.Index, proof0.Size, proof0.Path) {
+	if verify.Inclusion(root, verify.JournalLeaf([]byte(`{"forged":true}`)), proof0.Index, proof0.Size, proof0.Path) {
 		t.Fatal("standalone verifier accepted a forged leaf")
 	}
 }
@@ -86,15 +88,9 @@ func TestVerify_ConsistencyMatchesAudit(t *testing.T) {
 		t.Fatalf("ProveConsistency: %v", err)
 	}
 
-	// The size-2 root, recomputed by replaying just the first two steps into a fresh store.
-	twoStore := agent.NewMemStore()
-	for _, v := range []string{"a", "b"} {
-		vv := v
-		if _, err := agent.Step(ctx, twoStore, "run", vv, func(context.Context) (string, error) { return vv, nil }, agent.StepSafety(agent.Safety{ReadOnly: true})); err != nil {
-			t.Fatalf("two-step: %v", err)
-		}
-	}
-	rootEarly, _ := audit.Root(ctx, twoStore, "run")
+	// The size-2 root, recomputed from just the first two records (salts included).
+	recs, _ := store.History(ctx, runID)
+	rootEarly, _ := audit.Root(ctx, fixedHistory(recs[:2]), runID)
 
 	viaAudit := audit.VerifyConsistency(rootEarly, rootFull, proof)
 	viaStandalone := verify.Consistency(proof.First, proof.Size, proof.Path, rootEarly, rootFull)
@@ -103,8 +99,8 @@ func TestVerify_ConsistencyMatchesAudit(t *testing.T) {
 	}
 }
 
-// The signed tree head encoding names its version, bide.audit.sth.v3: v3 is the first whose
-// journal leaves are the journal encoding without HTML escaping, so a head over the older
+// The signed tree head encoding names its version, bide.audit.sth.v4: v4 is the first whose
+// leaves carry a versioned tag and whose journal records are salted, so a head over an older
 // encoding cannot be mistaken for a fork of a head over the newer one. Both the SDK and the
 // standalone verifier use exactly the documented encoding.
 func TestVerify_TreeHeadEncodingIsVersioned(t *testing.T) {
@@ -116,7 +112,7 @@ func TestVerify_TreeHeadEncodingIsVersioned(t *testing.T) {
 		b = binary.BigEndian.AppendUint64(b, uint64(len(f)))
 		return append(b, f...)
 	}
-	msg := append([]byte(nil), "bide.audit.sth.v3\x00"...)
+	msg := append([]byte(nil), "bide.audit.sth.v4\x00"...)
 	msg = field(msg, []byte(th.Kind))
 	msg = field(msg, []byte(th.RunID))
 	msg = binary.BigEndian.AppendUint64(msg, uint64(th.Size))
@@ -124,10 +120,10 @@ func TestVerify_TreeHeadEncodingIsVersioned(t *testing.T) {
 	msg = binary.BigEndian.AppendUint64(msg, uint64(th.Timestamp))
 	msg = append(msg, 0)
 	if sth := audit.SignTreeHead(th, priv); !ed25519.Verify(pub, msg, sth.Signature) {
-		t.Fatal("the SDK does not sign the bide.audit.sth.v3 encoding of the head")
+		t.Fatal("the SDK does not sign the bide.audit.sth.v4 encoding of the head")
 	}
 	if !verify.TreeHead(th.Kind, th.RunID, th.Size, th.Root, th.Timestamp, nil, ed25519.Sign(priv, msg), pub) {
-		t.Fatal("the standalone verifier does not check the bide.audit.sth.v3 encoding of the head")
+		t.Fatal("the standalone verifier does not check the bide.audit.sth.v4 encoding of the head")
 	}
 }
 
@@ -171,4 +167,72 @@ func TestVerify_TreeHeadMatchesAudit(t *testing.T) {
 	if verify.TreeHead(abs.Kind, abs.RunID, abs.Size, abs.Root, abs.Timestamp, &verify.TreeRef{Size: ref.Size + 1, Root: ref.Root}, abs.Signature, pub) {
 		t.Fatal("standalone verifier accepted an absence head with a tampered journal size")
 	}
+}
+
+// Each kind of leaf has its own tag, and the standalone leaf builders match the SDK's: a proof of
+// an absence key's neighbour, of an event, and of an anchor entry verify from KeyLeaf, EventLeaf,
+// and AnchorLeaf, and not from the untagged bytes or another kind's tag.
+func TestVerify_LeafKindsMatchAudit(t *testing.T) {
+	ctx := context.Background()
+	store, runID := journal(t)
+	recs, _ := store.History(ctx, runID)
+
+	keys := audit.ToolUseKeys
+	abs, err := audit.ProveAbsent(recs, keys, "tooluse:zzz")
+	if err != nil || abs.Left == nil {
+		t.Fatalf("ProveAbsent = %+v, %v", abs, err)
+	}
+	keyRoot := audit.AbsenceRoot(recs, keys)
+
+	events := audit.NewEventLog()
+	for i := range 3 {
+		if err := events.Add(agent.TurnStarted{Seq: i}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	evProof, _ := events.Prove(0)
+	inner, _ := json.Marshal(agent.TurnStarted{Seq: 0})
+	evJSON, _ := json.Marshal(struct {
+		Kind  string          `json:"kind"`
+		Event json.RawMessage `json:"event"`
+	}{"TurnStarted", inner})
+
+	anchors := audit.NewMemAnchorLog()
+	_, priv, _ := ed25519.GenerateKey(nil)
+	th, _ := audit.NewTreeHead(ctx, store, runID, 1)
+	if err := anchors.Publish(ctx, runID, audit.SignTreeHead(th, priv)); err != nil {
+		t.Fatal(err)
+	}
+	anchorRoot, _ := anchors.Root()
+	anchorProof, _ := anchors.Prove(0)
+	entryJSON, _ := json.Marshal(anchors.Entries()[0])
+
+	for name, c := range map[string]struct {
+		root, content []byte
+		leaf          func([]byte) []byte
+		proof         audit.Inclusion
+	}{
+		"key":    {keyRoot, []byte(abs.Left.Key), func(b []byte) []byte { return verify.KeyLeaf(string(b)) }, abs.Left.Proof},
+		"event":  {events.Root(), evJSON, verify.EventLeaf, evProof},
+		"anchor": {anchorRoot, entryJSON, verify.AnchorLeaf, anchorProof},
+	} {
+		if !verify.Inclusion(c.root, c.leaf(c.content), c.proof.Index, c.proof.Size, c.proof.Path) {
+			t.Errorf("%s: the standalone leaf does not verify against the SDK's proof", name)
+		}
+		for _, wrong := range [][]byte{c.content, verify.JournalLeaf(c.content), verify.KeyLeaf(string(c.content)), verify.EventLeaf(c.content), verify.AnchorLeaf(c.content)} {
+			if !bytes.Equal(wrong, c.leaf(c.content)) && verify.Inclusion(c.root, wrong, c.proof.Index, c.proof.Size, c.proof.Path) {
+				t.Errorf("%s: a leaf with the wrong tag verified: %q", name, wrong)
+			}
+		}
+	}
+}
+
+// fixedHistory is a read-only Durable whose history is exactly the records it holds, salts
+// included, as a journal exported from a store is.
+type fixedHistory []agent.Record
+
+func (h fixedHistory) History(context.Context, string) ([]agent.Record, error) { return h, nil }
+
+func (fixedHistory) Do(context.Context, string, string, func(context.Context) (agent.Record, error)) (agent.Record, error) {
+	return agent.Record{}, errors.New("fixedHistory is read-only")
 }

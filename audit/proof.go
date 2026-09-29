@@ -9,11 +9,13 @@ import (
 )
 
 // A ProofBundle is a single, portable, self-describing artifact that proves ONE action
-// happened inside a signed, committed run, disclosing nothing else. It is what "produce a
-// proof" returns: hand it (plus the signer's public key, obtained out-of-band) to an auditor
-// and they verify it offline. This turns the audit package's separate pieces (a record, its
-// inclusion path, a signed tree head) into one thing you can marshal to JSON, store, email, or
-// publish.
+// happened inside a signed, committed run. It discloses the record (with its salt), its index,
+// the run's size and signed head, and the sibling hashes on its path, and no other record: each
+// record's leaf commits to its own random salt, so the sibling hashes cannot be tested against a
+// guessed neighbour (see merkle.go). It is what "produce a proof" returns: hand it (plus the
+// signer's public key, obtained out-of-band) to an auditor and they verify it offline. This turns
+// the audit package's separate pieces (a record, its inclusion path, a signed tree head) into one
+// thing you can marshal to JSON, store, email, or publish.
 //
 // The trust model, stated precisely: the public key must come from OUT OF BAND (the anchor /
 // transparency log), NOT from the bundle. Given a trusted key, Verify checks (1) the STH's

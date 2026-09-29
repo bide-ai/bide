@@ -42,14 +42,18 @@ Merkle tree: the same commitment, but it supports per-record inclusion proofs an
 proofs. Use `Head` when you only ever reveal the whole run; use `Root` (+ STH) when selective
 disclosure or append-only proofs matter.
 
-**Encoding versions.** A journal leaf is the record's journal encoding (`agent.EncodeRecord`),
-which, unlike v0.6.0's, does not HTML-escape: a record containing `<`, `>`, or `&` hashes differently
-than it did in v0.6.0. The domain tags that commit to those bytes name the new encoding, so a head
-computed by v0.6.0 and a head computed now over the same journal differ by version, not as a fork:
-`Head` seeds its chain with `bide.audit.v2` (was `bide.audit.v1`), and signed tree heads sign the
-`bide.audit.sth.v3` encoding (v0.6.0 signed `bide.audit.sth.v1`), which `audit/verify` checks too.
-Re-anchor a run under the new version rather than comparing it with a v0.6.0 head. A bare `Root`
-carries no version of its own, so compare roots across versions only through their signed heads.
+**Encoding versions.** A journal leaf hashes as
+`SHA-256(0x00 || "bide.audit.journal-leaf.v1\x00" || agent.EncodeRecord(record))`. The journal
+encoding does not HTML-escape (unlike v0.6.0's) and includes the record's `salt`: 32 random bytes
+a store sets when it first journals the record (`agent.JournalEntry`), so that a proof's sibling
+hashes cannot be matched against a guessed neighbouring record. A record without a 32-byte salt
+is refused. Every other kind of leaf carries its own tag too (`bide.audit.key-leaf.v1`,
+`bide.audit.event-leaf.v1`, `bide.audit.anchor-leaf.v1`), so a leaf names its kind and version
+and a root over leaves of one version never equals a root over another's. Signed tree heads sign
+the `bide.audit.sth.v4` encoding (v3 signed untagged, unsalted leaves; v0.6.0 signed
+`bide.audit.sth.v1`), which `audit/verify` checks too, and `Head` seeds its chain with
+`bide.audit.v2`. A journal written before salts existed cannot be proven: re-run or re-journal
+it, and re-anchor under the new version rather than comparing with an older head.
 
 ## Continuous anchoring: `AuditedStore` + the `Anchor` port
 
@@ -169,6 +173,10 @@ idempotent on `(runID, seq)`: a different leaf at an existing position is reject
 Each leaf is a kind-tagged canonical encoding, so event types never collide, and `ModelEvent`
 carries the inner delta's kind. `Root`/`Head`/`Prove`/`Sign` behave exactly as they do over the
 journal; the `Inclusion` proof type and signing path are shared. (Prototype: `audit/eventsink.go`.)
+Unlike journal leaves, event leaves are not salted: an event proof's sibling hashes cover other
+events, and a holder of the proof can confirm a guessed event (an approval with a known call ID)
+against them. Prove from the journal (a `ProofBundle`) when the other steps must stay
+unconfirmable.
 
 ## Producing a proof: `ProofBundle`, the CLI, and the standalone verifier
 
@@ -562,7 +570,7 @@ Signed tree heads sign under a pluggable scheme. `SignedTreeHead` carries an `Al
 (`omitempty`; empty means ed25519), so ed25519 heads from `SignTreeHead` / `Verify` carry no extra
 field. `SignTreeHeadWith` / `VerifyWith` (and `ProofBundle.VerifyWith` /
 `AbsenceBundle.VerifyWith`) carry the scheme end to end. Every scheme signs the same encoding
-(`bide.audit.sth.v3`: kind, run ID, size, root, timestamp, and the source journal of a key-set
+(`bide.audit.sth.v4`: kind, run ID, size, root, timestamp, and the source journal of a key-set
 head), so the kind and run binding hold whichever scheme signs. Three schemes
 are available, all in the Go 1.27 standard library, so this adds no dependency:
 

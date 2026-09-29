@@ -86,9 +86,7 @@ func (s *Store) Do(ctx context.Context, runID, name string, fn func(context.Cont
 		if e != nil {
 			return nil, e // not recorded — re-runs on the next attempt
 		}
-		rec.Name = name
-
-		data, e := agent.EncodeRecord(rec)
+		data, e := agent.JournalEntry(name, rec) // names and salts the record
 		if e != nil {
 			return nil, fmt.Errorf("marshal step %q: %w (%w)", name, e, agent.ErrStorage)
 		}

@@ -79,6 +79,18 @@ default: content is only recorded when an operator deliberately turns it on. Whe
 `chat` span gains `gen_ai.input.messages` / `gen_ai.output.messages` and the `execute_tool`
 span gains `gen_ai.tool.call.arguments` / `gen_ai.tool.call.result`.
 
+Error text follows the same rule, because it often carries content: a provider's error body can
+echo the prompt, and a tool's error commonly embeds its arguments. With capture off, a failed
+span (`chat`, `execute_tool`, or `invoke_agent`) gets status Error with a description from
+`middleware.ErrorSummary`, which names only what failed: the control-flow signal, the provider's
+HTTP status and error type or code, and the condition or category sentinel the error wraps (for
+example `api error: status 400 (invalid_request_error): model`, or `unknown tool: tool`). No
+exception event is recorded. With capture on, the span records the error with `RecordError` and
+its full text as the status description.
+
+`middleware.ToolLog` applies the same rule to its log line: a failed call is logged by its
+`ErrorSummary`. Pass `middleware.LogErrorText()` to log the full error text instead.
+
 ## Attribute keys
 
 The package hardcodes the stable `gen_ai.*` attribute keys rather than importing the semconv

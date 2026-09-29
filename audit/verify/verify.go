@@ -6,9 +6,11 @@
 // the vendor" means in practice.
 //
 // It operates on canonical LEAF BYTES, not typed records, precisely so it needs no domain
-// types. The leaf for a journal record is the record's canonical JSON (what the audit package
-// hashes); the caller supplies those bytes. The algorithms mirror the audit package exactly
-// and are cross-checked against it in the tests, so the intentional duplication cannot drift.
+// types. A leaf's bytes are a versioned tag naming its kind followed by its content: JournalLeaf
+// builds a journal record's leaf from the record's journal encoding (the bytes a store persists,
+// the record's random salt included), KeyLeaf an absence key's, EventLeaf an event's, and
+// AnchorLeaf an anchor entry's. The algorithms mirror the audit package exactly and are
+// cross-checked against it in the tests, so the intentional duplication cannot drift.
 //
 // This mirror is verification-only, by design: it can check a proof, never mint one.
 package verify
@@ -21,7 +23,24 @@ import (
 	"math/bits"
 )
 
-// RFC 6962 domain-separated leaf/node hashing.
+// JournalLeaf returns the leaf bytes of a journal record from its journal encoding (the JSON a
+// store persists for it, including its "salt"): "bide.audit.journal-leaf.v1\x00" || record.
+func JournalLeaf(record []byte) []byte { return tagged("bide.audit.journal-leaf.v1\x00", record) }
+
+// KeyLeaf returns the leaf bytes of an absence key: "bide.audit.key-leaf.v1\x00" || key.
+func KeyLeaf(key string) []byte { return tagged("bide.audit.key-leaf.v1\x00", []byte(key)) }
+
+// EventLeaf returns the leaf bytes of an event from its canonical JSON ({"kind":...,"event":...}):
+// "bide.audit.event-leaf.v1\x00" || event.
+func EventLeaf(event []byte) []byte { return tagged("bide.audit.event-leaf.v1\x00", event) }
+
+// AnchorLeaf returns the leaf bytes of an anchor log entry from its JSON:
+// "bide.audit.anchor-leaf.v1\x00" || entry.
+func AnchorLeaf(entry []byte) []byte { return tagged("bide.audit.anchor-leaf.v1\x00", entry) }
+
+func tagged(tag string, data []byte) []byte { return append([]byte(tag), data...) }
+
+// RFC 6962 domain-separated leaf/node hashing: a leaf hashes as SHA-256(0x00 || leaf bytes).
 func leafHash(data []byte) []byte {
 	h := sha256.New()
 	h.Write([]byte{0x00})
@@ -38,7 +57,8 @@ func nodeHash(l, r []byte) []byte {
 }
 
 // Inclusion runs the RFC 6962 §2.1.1 inclusion-proof algorithm: leaf is the canonical leaf
-// bytes, index/size locate it in the tree, path is the sibling hashes leaf-to-root, and root
+// bytes (JournalLeaf, KeyLeaf, EventLeaf, or AnchorLeaf of the content), index/size locate it in
+// the tree, path is the sibling hashes leaf-to-root, and root
 // is the committed Merkle root (an STH's Root). Reports whether leaf is provably at index in a
 // size-leaf tree committed by root.
 func Inclusion(root, leaf []byte, index, size int, path [][]byte) bool {
@@ -145,7 +165,7 @@ func TreeHead(kind, runID string, size int, root []byte, timestamp int64, journa
 		b = binary.BigEndian.AppendUint64(b, uint64(len(f)))
 		return append(b, f...)
 	}
-	b := append([]byte(nil), "bide.audit.sth.v3\x00"...)
+	b := append([]byte(nil), "bide.audit.sth.v4\x00"...)
 	b = field(b, []byte(kind))
 	b = field(b, []byte(runID))
 	b = binary.BigEndian.AppendUint64(b, uint64(size))

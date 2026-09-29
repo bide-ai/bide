@@ -63,6 +63,9 @@ func (t *compTool[In, Out]) Compensate(ctx context.Context, args, result json.Ra
 type sagaTrip struct {
 	toolName, toolUseID string
 	cause               error
+	// journaled is the text the StepSagaFail record holds for cause: its error text as redacted
+	// for the journal (see toolErrorText).
+	journaled string
 }
 
 func (e *sagaTrip) Error() string { return fmt.Sprintf("saga step %q failed: %v", e.toolName, e.cause) }
@@ -117,13 +120,13 @@ func (a *Agent) runSaga(ctx context.Context, runID, input string, emit func(Agen
 		return Message{}, err
 	}
 	if cause, aborting := sagaFailure(recs); aborting {
-		return Message{}, a.rollback(ctx, runID, errors.New(cause))
+		return Message{}, a.rollback(ctx, runID, errors.New(cause), cause)
 	}
 
 	out, _, _, err := a.run(ctx, runID, []Message{UserText(input)}, true, emit)
 	var trip *sagaTrip
 	if errors.As(err, &trip) {
-		return Message{}, a.rollback(ctx, runID, trip.cause)
+		return Message{}, a.rollback(ctx, runID, trip.cause, trip.journaled)
 	}
 	return out, err
 }
@@ -136,25 +139,28 @@ func (a *Agent) runSagaWithTelemetry(ctx context.Context, runID, input string, e
 		return Message{}, Usage{}, 0, err
 	}
 	if cause, aborting := sagaFailure(recs); aborting {
-		return Message{}, Usage{}, 0, a.rollback(ctx, runID, errors.New(cause))
+		return Message{}, Usage{}, 0, a.rollback(ctx, runID, errors.New(cause), cause)
 	}
 
 	out, usage, turns, err := a.run(ctx, runID, []Message{UserText(input)}, true, emit)
 	var trip *sagaTrip
 	if errors.As(err, &trip) {
-		return Message{}, Usage{}, 0, a.rollback(ctx, runID, trip.cause)
+		return Message{}, Usage{}, 0, a.rollback(ctx, runID, trip.cause, trip.journaled)
 	}
 	return out, usage, turns, err
 }
 
-func (a *Agent) rollback(ctx context.Context, runID string, cause error) error {
+// rollback compensates runID's writes and returns *SagaAborted with cause. causeText is the text the
+// saga's failure record holds for cause, redacted for the journal; the terminal marker records it,
+// never cause's own text.
+func (a *Agent) rollback(ctx context.Context, runID string, cause error, causeText string) error {
 	comp, uncomp, cerr := a.rollbackRun(ctx, runID, rootRunID(ctx, runID))
 	if cerr == nil {
 		// The rollback finished: the run is over. Mark it terminal so a recovery supervisor
 		// leaves it alone. A rollback that stopped (an unknown outcome, a failed compensator) is
 		// not marked, so it is re-driven once the cause is resolved.
 		if _, err := a.store.Do(ctx, runID, runAbortedStep, func(context.Context) (Record, error) {
-			return Record{Kind: StepValue, Result: mustJSON(cause.Error())}, nil
+			return Record{Kind: StepValue, Result: mustJSON(causeText)}, nil
 		}); err != nil {
 			cerr = fmt.Errorf("saga %s: record the finished rollback: %w (%w)", runID, err, ErrStorage)
 		}

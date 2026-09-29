@@ -570,8 +570,9 @@ func TestWrongLengthKeys_DoNotPanic(t *testing.T) {
 
 // Two records that differ only in invalid UTF-8 must not share a leaf.
 func TestLeaf_InvalidUTF8DoesNotCollide(t *testing.T) {
-	a := agent.Record{Kind: agent.StepValue, Name: "pay\xff", Result: json.RawMessage(`1`)}
-	b := agent.Record{Kind: agent.StepValue, Name: "pay\xfe", Result: json.RawMessage(`1`)}
+	salt := make([]byte, agent.SaltSize)
+	a := agent.Record{Kind: agent.StepValue, Name: "pay\xff", Result: json.RawMessage(`1`), Salt: salt}
+	b := agent.Record{Kind: agent.StepValue, Name: "pay\xfe", Result: json.RawMessage(`1`), Salt: salt}
 	la, errA := canonicalLeaves([]agent.Record{a})
 	lb, errB := canonicalLeaves([]agent.Record{b})
 	if errA == nil && errB == nil && string(la[0]) == string(lb[0]) {
@@ -581,7 +582,7 @@ func TestLeaf_InvalidUTF8DoesNotCollide(t *testing.T) {
 		t.Fatalf("a record with invalid UTF-8 was committed: %v", errA)
 	}
 	// Deeper strings count too: a model turn's text.
-	m := agent.Record{Kind: agent.StepModel, Name: "turn", Message: &agent.Message{Role: agent.RoleAssistant, Parts: []agent.Part{agent.Text{Text: "ok\xff"}}}}
+	m := agent.Record{Kind: agent.StepModel, Name: "turn", Message: &agent.Message{Role: agent.RoleAssistant, Parts: []agent.Part{agent.Text{Text: "ok\xff"}}}, Salt: salt}
 	if _, err := canonicalLeaves([]agent.Record{m}); err == nil {
 		t.Fatal("a model turn with invalid UTF-8 text was committed")
 	}
@@ -589,7 +590,7 @@ func TestLeaf_InvalidUTF8DoesNotCollide(t *testing.T) {
 		t.Fatal("VerifyInclusion accepted a record with invalid UTF-8")
 	}
 	// Raw JSON is committed byte for byte, so it needs no check.
-	r := agent.Record{Kind: agent.StepValue, Name: "raw", Result: json.RawMessage("\"\xff\"")}
+	r := agent.Record{Kind: agent.StepValue, Name: "raw", Result: json.RawMessage("\"\xff\""), Salt: salt}
 	if _, err := canonicalLeaves([]agent.Record{r}); err != nil {
 		t.Fatalf("raw JSON bytes were refused: %v", err)
 	}

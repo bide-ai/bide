@@ -149,5 +149,5 @@ func canonicalAnchorEntry(e AnchorEntry) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("audit: canonicalize anchor entry: %w", err)
 	}
-	return b, nil
+	return tagged(anchorLeafTag, b), nil
 }

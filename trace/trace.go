@@ -9,7 +9,9 @@
 // which churns every release (v1.37 -> v1.41). Message and tool-argument CONTENT is not
 // captured unless OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT is set to "true" or "1"
 // (privacy-safe by default; unlike ADK #1634 which leaked tool args regardless), honoring the
-// OTel GenAI convention's opt-in. Pass WithRates to also record USD cost on the chat span.
+// OTel GenAI convention's opt-in. Neither is error text, which can carry that content: with
+// capture off a failed span records middleware.ErrorSummary (category, condition, provider
+// status) as its status. Pass WithRates to also record USD cost on the chat span.
 package trace
 
 import (
@@ -65,6 +67,23 @@ func captureContent() bool {
 	return v == "true" || v == "1"
 }
 
+// recordError marks span failed with err. An error's text can carry content (a provider error
+// body that echoes the prompt, a tool error that embeds the call's arguments), so with content
+// capture on the span records the text (RecordError and the status description), and with it
+// off the status description is middleware.ErrorSummary(err): the error's category, condition,
+// and provider status, never its text.
+func recordError(span oteltrace.Span, err error, capture bool) {
+	if err == nil {
+		return
+	}
+	if !capture {
+		span.SetStatus(codes.Error, middleware.ErrorSummary(err))
+		return
+	}
+	span.RecordError(err)
+	span.SetStatus(codes.Error, err.Error())
+}
+
 // Model returns middleware that wraps each model call in a gen_ai "chat" span with
 // token usage and status. Attach via agent.Agent.Use.
 func Model(tracer oteltrace.Tracer, opts ...Option) agent.Middleware {
@@ -108,10 +127,7 @@ func Model(tracer oteltrace.Tracer, opts ...Option) agent.Middleware {
 					span.SetAttributes(attribute.String(attrOutputMessages, string(b)))
 				}
 			}
-			if err != nil {
-				span.RecordError(err)
-				span.SetStatus(codes.Error, err.Error())
-			}
+			recordError(span, err, capture)
 			return msg, u, err
 		}
 	}
@@ -141,10 +157,7 @@ func Tool(tracer oteltrace.Tracer) agent.ToolMiddleware {
 			if capture && err == nil && len(res) > 0 {
 				span.SetAttributes(attribute.String(attrToolResult, string(res)))
 			}
-			if err != nil {
-				span.RecordError(err)
-				span.SetStatus(codes.Error, err.Error())
-			}
+			recordError(span, err, capture)
 			return res, err
 		}
 	}
@@ -172,11 +185,9 @@ func Invoke(ctx context.Context, tracer oteltrace.Tracer, name string) (context.
 	ctx, span := tracer.Start(ctx, "invoke_agent "+name, oteltrace.WithAttributes(
 		attribute.String(attrOperation, "invoke_agent"),
 	))
+	capture := captureContent()
 	return ctx, func(err error) {
-		if err != nil {
-			span.RecordError(err)
-			span.SetStatus(codes.Error, err.Error())
-		}
+		recordError(span, err, capture)
 		span.End()
 	}
 }

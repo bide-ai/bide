@@ -57,6 +57,32 @@ type Record struct {
 	// A driver runs the side effect only if the marker it gets back carries its own claim, so
 	// two drivers of the same run can never both run it, whatever their leases say.
 	Claim string `json:"claim,omitempty"`
+	// Salt is SaltSize random bytes a store sets when it first journals the record (see
+	// JournalEntry), replacing any salt the step returned. It is persisted with the record and
+	// read back verbatim, so it is stable across replay and across stores. It has no meaning to
+	// the run; the audit trail needs it. An audit leaf commits to the record's journal encoding,
+	// salt included, and an inclusion proof for one record carries its neighbours' leaf hashes, so
+	// without the salt anyone holding a proof could confirm a guessed neighbour (an approval, a
+	// small tool result) by hashing it. The salt is disclosed only with its own record.
+	Salt []byte `json:"salt,omitempty"`
+}
+
+// SaltSize is the length of Record.Salt: 32 bytes (256 bits) from crypto/rand.
+const SaltSize = 32
+
+// JournalEntry returns the bytes a store persists when it records rec as the step named name:
+// rec with Name set to name and a fresh random Salt (see Record.Salt), in its journal encoding
+// (EncodeRecord). Every Durable implementation must record a new step through it, so every
+// record carries a salt; the audit package refuses to commit a record without one. It errors
+// only if the system's random source fails or rec cannot be encoded.
+func JournalEntry(name string, rec Record) ([]byte, error) {
+	salt := make([]byte, SaltSize)
+	if _, err := rand.Read(salt); err != nil {
+		return nil, fmt.Errorf("salt step %q: %w (%w)", name, err, ErrStorage)
+	}
+	rec.Name = name
+	rec.Salt = salt
+	return EncodeRecord(rec)
 }
 
 // ClaimAttempt writes the attempt marker named name as an exclusive claim and reports whether
@@ -91,7 +117,8 @@ func ClaimAttempt(ctx context.Context, d Durable, runID, name string, rec Record
 // (Safety / ResumeHalt) sits ABOVE this and is substrate-agnostic (see Agent.Run).
 type Durable interface {
 	// Do returns the recorded Record for (runID, name) without running fn if present;
-	// otherwise runs fn, records the returned Record (with Name set), and returns it.
+	// otherwise runs fn, records the returned Record (with Name set and a fresh Salt: persist
+	// the bytes JournalEntry returns), and returns it.
 	// If fn errors, nothing is recorded — the step re-runs on the next attempt.
 	Do(ctx context.Context, runID, name string, fn func(context.Context) (Record, error)) (Record, error)
 	// History returns all recorded steps for a run, in order.
@@ -557,8 +584,7 @@ func (m *MemStore) Do(ctx context.Context, runID, name string, fn func(context.C
 		if e != nil {
 			return nil, e // not recorded — will re-run on the next attempt
 		}
-		rec.Name = name
-		b, e := EncodeRecord(rec)
+		b, e := JournalEntry(name, rec)
 		if e != nil {
 			return nil, fmt.Errorf("marshal step %q: %w (%w)", name, e, ErrStorage)
 		}

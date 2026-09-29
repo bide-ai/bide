@@ -66,6 +66,8 @@ func (l *EventLog) Head() []byte {
 
 // Prove returns an inclusion proof for the event at index against Root — enough to verify
 // that one event WITHOUT revealing any other (selective disclosure over the event stream).
+// Event leaves are not salted, so the proof's sibling hashes let its holder confirm a guessed
+// event; a journal ProofBundle, whose leaves are salted, does not.
 // The returned Inclusion is the same type journal proofs use, so audit.Sign over Root and
 // this proof compose exactly as they do for the journal.
 func (l *EventLog) Prove(index int) (Inclusion, error) {
@@ -165,7 +167,11 @@ func canonicalEvent(e agent.AgentEvent) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("audit: canonicalize event: %w", err)
 	}
-	return json.Marshal(eventLeaf{Kind: eventKind(e), Event: inner})
+	b, err := json.Marshal(eventLeaf{Kind: eventKind(e), Event: inner})
+	if err != nil {
+		return nil, fmt.Errorf("audit: canonicalize event: %w", err)
+	}
+	return tagged(eventLeafTag, b), nil
 }
 
 // eventKind is a stable, human-readable discriminator for an AgentEvent. ModelEvent carries

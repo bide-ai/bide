@@ -15,7 +15,7 @@ post-quantum options below), with no external dependencies.
   commitment was produced by the key holder and was not forged.
 - **Domain separation between trees.** One key signs several trees per run: the journal, the
   absence key sets projected from it (tool uses, used policies), and the event stream. The signed
-  encoding (`bide.audit.sth.v3`) commits to the tree's **kind** and the **run ID**, and a key-set
+  encoding (`bide.audit.sth.v4`) commits to the tree's **kind** and the **run ID**, and a key-set
   head also commits to the journal tree (size and root) it was projected from. Every verifier
   requires the kind it expects: a journal proof needs a journal head of the bundle's run, an
   absence proof needs a key-set head of the set its key belongs to, and a run certificate needs a
@@ -35,8 +35,23 @@ post-quantum options below), with no external dependencies.
   to a key holder who cannot later disown it. The proof commits to the identity *claim* embedded
   in a governed leaf (see the identity boundary below).
 - **Selective disclosure.** An inclusion proof (`Prove` / `VerifyInclusion`, or a portable
-  `ProofBundle`) proves that one record is in a committed run while revealing nothing else in the
-  run: no other customer, prompt, or field.
+  `ProofBundle`) proves that one record is in a committed run. A `ProofBundle` discloses exactly:
+  the record (its full content, including its random 32-byte salt), its index in the journal, the
+  run's size at the signed head, the signed head itself (kind, run ID, size, root, timestamp), and
+  the O(log n) sibling hashes on its audit path. It does not disclose any other record's content,
+  name, or kind, and those hashes cannot be tested against a guess: every journal record carries
+  its own random salt, set when the store first journals it and committed in its leaf, so a
+  neighbour's leaf hash (the first sibling on the path) is unguessable even when its content has
+  only two possible values, such as an approve/deny decision or `{"fraud_flag":true}`. What the
+  index and size reveal is the record's position and how many steps the run had taken.
+- **Absence proofs name their neighbours.** An absence proof (`ProveAbsent`, `AbsenceBundle`)
+  discloses the absent key, the number of distinct keys in the set, and, in plain text, the one
+  or two committed keys adjacent to it in sort order with their positions: for tool calls, up to
+  two tool-use IDs the run did make; for used policies, up to two policy digests it did use. This
+  is inherent to a sorted-set absence proof (the verifier must see the neighbours to check they
+  bracket the key). It does not disclose those calls' records. Key-set leaves are not salted, so
+  the sibling hashes on a neighbour's path can be tested against a guessed key (a policy digest
+  is usually public).
 - **Canonical encodings.** Records, grants, anchor entries, and evidence seals are hashed or signed
   over their JSON encoding, which is one-to-one only over valid UTF-8 (JSON rewrites invalid bytes
   to U+FFFD). A value with invalid UTF-8 in any string is refused, never committed, signed, or
@@ -59,6 +74,29 @@ The audit trail does not provide **confidentiality**. This is scoped out explici
   sensitive payloads before they enter the journal, or keep the journal itself in a trust domain
   with appropriate access control. The cryptography here proves *what happened*; it does not
   hide it.
+
+### Tool errors are redacted before they are journaled
+
+When a tool call fails, its error text becomes the call's result: it is journaled, sent to the
+model, and hashed into the Merkle tree, where a proof bundle for that call discloses it. Error
+text often quotes a URL (a net/http `*url.Error` quotes the whole request URL), and a URL can
+carry a credential. So by default the agent redacts every URL in the text before it is recorded:
+its userinfo, the value of each query parameter (the parameter names stay), and its fragment
+each become `REDACTED`, while the scheme, host, and path stay, so the model still learns what was
+called and why it failed:
+
+```
+Get "https://REDACTED@api.example.com/v1/items?key=REDACTED&page=REDACTED": dial tcp ...: connection refused
+```
+
+A `*url.Error`'s URL is redacted as a whole; every other URL is found by scanning the text.
+`Agent.WithToolErrorRedactor(func(tool string, err error) string)` chooses the recorded text for
+a failed call when URL redaction is not enough (an account number, a token a service echoed
+back); URL redaction still applies to what it returns. This covers every failed tool call, a
+failed sub-agent (its failure is its tool call's error), and the two records a saga journals
+for its failure. The error returned to the caller (for example `SagaAborted.Cause`) is the
+tool's own, unredacted. A secret that is not in a URL, and not removed by your redactor, is
+journaled as written.
 
 ## Anchoring: the condition on tamper-evidence
 
@@ -143,7 +181,8 @@ Verification never requires trusting the producer or importing the producer's ru
   the CI-gate contract. The `-pubkey` flag must come from the anchor operator out-of-band, never
   from the bundle: that is what makes it a proof you verify rather than a log you trust.
 - The **`audit/verify` package** is stdlib-only (no `agent` dependency) and checks inclusion,
-  consistency, and tree-head signatures from raw leaf bytes. A third party who will not import the
+  consistency, and tree-head signatures from raw leaf bytes (`verify.JournalLeaf` builds a record's
+  from the JSON a store persists for it, salt included). A third party who will not import the
   SDK at all can vendor just this package, or reimplement it from RFC 6962 and check the SDK
   against it. The two verification paths are cross-checked bit-for-bit in the tests, so the
   standalone mirror cannot drift.

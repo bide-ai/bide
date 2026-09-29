@@ -27,8 +27,9 @@
 //	    -need 2 -approvers ops,finance,risk -approver-keys approver-keys.json
 //
 // The keys are derived from fixed seeds so separate processes agree on them. That is for the
-// demo only: real approvers hold their own private keys, and the verifier's public keys come
-// from your PKI.
+// demo only, and it makes every private key here PREDICTABLE: each is SHA-256 of a public string
+// (see demoKey), so anyone can sign as any approver or as the log operator. Real approvers hold
+// their own randomly generated private keys, and the verifier's public keys come from your PKI.
 package main
 
 import (
@@ -63,6 +64,12 @@ var policy = agent.ApprovalPolicy{Need: 2, Approvers: []string{"ops", "finance",
 var registered = []string{"ops", "finance", "risk", "mallory"}
 
 // demoKey derives a fixed ed25519 key from a name. Demo only (see the package comment).
+//
+// WARNING: THESE ARE PREDICTABLE DEMO KEYS, NOT SECRETS. Each private key is SHA-256 of a
+// public string, so anyone who reads this file can compute every approver's key and the log
+// operator's key and sign any decision or tree head with them. Never use this function, or any
+// key derived from a name, outside this demo: generate real keys with ed25519.GenerateKey and keep
+// each private key with its holder.
 func demoKey(name string) ed25519.PrivateKey {
 	seed := sha256.Sum256([]byte("bide examples/approval " + name))
 	return ed25519.NewKeyFromSeed(seed[:])
