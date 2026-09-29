@@ -115,6 +115,15 @@ first payload wins, the same at-most-once intake as `Signal`. Matching is on the
 name, so channel `"a"` never picks up the messages or acks of channel `"ab"` or `"a:b"`, and
 names and keys may contain any characters.
 
+**Upgrading from v0.6.0.** v0.6.0 journaled a channel's messages as `chan:<channel>:<key>` and its
+acks as `chanack:<channel>:<key>`; the channel name is now length-prefixed
+(`chan:<len>:<channel>:<key>`) so that exact matching holds for any name. A run that v0.6.0 left
+with messages sent but not acked does not see them after the upgrade: `Receive` finds no message
+and the run waits, and a sender that redelivers such a message records it again under the new
+name, so it is received once more. Before upgrading, drain channels: let every run that uses
+`Send` / `Receive` handle and ack what it has been sent, or finish it, and start channel runs
+again on the new version.
+
 ## Waking the run: the deliver-then-wake pattern
 
 An `*Awaiting` run is paused exactly like a `Sleeping` one, so delivering a signal only records
