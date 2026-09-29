@@ -10,3 +10,5 @@ The core module lives at the repository root; adapters and backends (`trace`,
 separate modules stitched together by a `go.work` for local development. See
 [docs/reference/module-structure.md](reference/module-structure.md) for the
 layout and [README.md](../README.md) for the guarantees and their scope.
+- **mofn-approval**: completed 2026-09-28, 3 waves, 7 agents
+  - IMPL doc: docs/IMPL/complete/IMPL-mofn-approval.yaml
