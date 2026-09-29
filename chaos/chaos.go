@@ -82,12 +82,9 @@ func Verify(name string, sys System, seeds int) Report {
 	rep := Report{Name: name}
 	bound := sys.Writes() + 2
 
-	// Crash-free: a run with no injected crash must end and fire exactly once.
+	// Crash-free: with no crash injected, one Step runs the whole run, which must fire exactly once.
 	clean := sys.NewRun()
-	terminal := false
-	for attempt := 0; attempt < 64 && !terminal; attempt++ {
-		terminal = !clean.Step(0)
-	}
+	clean.Step(0)
 	rep.record(clean.Fired(), true)
 
 	// Exhaustive: a single crash at every write point, then resume to terminal.
