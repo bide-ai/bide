@@ -13,6 +13,20 @@ post-quantum options below), with no external dependencies.
 - **Authenticity.** A signed tree head (`SignTreeHead` / `Verify`) binds the root to a size and a
   timestamp under a signing key. A verifier with the corresponding public key confirms the
   commitment was produced by the key holder and was not forged.
+- **Domain separation between trees.** One key signs several trees per run: the journal, the
+  absence key sets projected from it (tool uses, used policies), and the event stream. The signed
+  encoding (`bide.audit.sth.v2`) commits to the tree's **kind** and the **run ID**, and a key-set
+  head also commits to the journal tree (size and root) it was projected from. Every verifier
+  requires the kind it expects: a journal proof needs a journal head of the bundle's run, an
+  absence proof needs a key-set head of the set its key belongs to, and a run certificate needs a
+  used-policy head of its own run projected from its own journal tree. So no head can be replayed
+  as another kind of tree or for another run, and every run ID a verifier reports is authenticated.
+- **Every reported field is verified.** An `EvidencePackage` is checked field by field: its format,
+  its key, its run (against the signed head), each item's kind and label (against the proven
+  record), its grant chain (against the anchored grant leaves), its run certificate (for this run
+  and tree, against the auditor's allowlist), and its consistency proof (between two signed heads
+  of the run). The package is sealed with the log key, so its label, the one field no proof covers,
+  cannot be edited after sealing.
 - **Append-only tamper-evidence.** A consistency proof (`ProveConsistency` / `VerifyConsistency`)
   between two signed tree heads proves the history was only appended to, never rewritten or
   reordered. Retroactive edits are detectable.
@@ -23,6 +37,14 @@ post-quantum options below), with no external dependencies.
 - **Selective disclosure.** An inclusion proof (`Prove` / `VerifyInclusion`, or a portable
   `ProofBundle`) proves that one record is in a committed run while revealing nothing else in the
   run: no other customer, prompt, or field.
+- **Canonical encodings.** Records, grants, anchor entries, and evidence seals are hashed or signed
+  over their JSON encoding, which is one-to-one only over valid UTF-8 (JSON rewrites invalid bytes
+  to U+FFFD). A value with invalid UTF-8 in any string is refused, never committed, signed, or
+  verified, so two different values never share a leaf or a signature. `bide-audit` reads every
+  artifact with `audit.UnmarshalStrict`, which rejects duplicate keys, keys that match a field only
+  case-insensitively, unknown fields, and invalid UTF-8, so a file cannot show a reader one value
+  while the verifier checks another. Malformed keys (the wrong length, or none) verify nothing;
+  they never panic.
 
 ## What is NOT guaranteed: confidentiality
 
@@ -67,7 +89,11 @@ Every guarantee above rests on the custody of the signing keys.
   re-signed root and the externally anchored one is what remains provable.
 - The **grant issuer key** (see delegation, below) signs authority statements and is deliberately
   distinct from the tree-head key, so authorization is attributable to the principal rather than
-  to the operator that runs the log.
+  to the operator that runs the log. A delegation chain holds only if each child is issued by its
+  parent's subject, expires no later than its parent, and keeps every one of its parent's scope
+  constraints, equal or narrower (`CheckAttenuation`); an earned-authority grant is current only
+  while it is the last leaf of its controller's ledger run, so a demotion revokes the higher grant
+  at once for any verifier holding the ledger's latest anchored head.
 
 Attribution is only as strong as the key custody behind these signatures. The runtime does not
 manage keys; supplying and protecting them is the deployment's responsibility.
@@ -100,8 +126,8 @@ one adds no dependency:
 Why it matters for audit specifically: anchors are long-lived, so they face a harvest-now,
 forge-later exposure. The signature is the quantum-vulnerable part; the SHA-256 Merkle hashing is
 not affected and is unchanged. `SignTreeHeadWith` / `VerifyWith` carry the scheme end to end
-(including `ProofBundle.VerifyWith` / `AbsenceBundle.VerifyWith`); the legacy `SignTreeHead` /
-`Verify` path is untouched, and existing ed25519 bundles keep verifying. One toolchain
+(including `ProofBundle.VerifyWith` / `AbsenceBundle.VerifyWith`), and every scheme signs the same
+kind- and run-bound encoding. One toolchain
 constraint: `crypto/mldsa` is unavailable under the FIPS 140-3 module, so FIPS mode and ML-DSA
 are mutually exclusive. A FIPS-required deployment takes ed25519; a post-quantum-focused one
 takes ML-DSA or hybrid.
