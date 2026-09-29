@@ -200,8 +200,11 @@ Beyond the four guarantees, the details that make it pleasant to build on:
 
 ## Graphs
 
-Most agent frameworks make a graph the thing you author: nodes, edges, a state object, sometimes a
-visual builder. Bide does not, and the reason is precise rather than ideological.
+Most agent frameworks make a graph the *foundation*: the thing you must author and the thing that
+executes, with nodes, edges, a state object, and sometimes a visual builder on top. Bide inverts
+that. The same authoring surfaces are available, up to and including a visual builder, but as layers
+you choose over a plain-Go journal substrate, never as the base. The reason is precise rather than
+ideological.
 
 A graph adds no expressive power. Anything a graph computes, ordinary control flow computes: a
 computation graph is a control-flow graph, and sequence, selection, and iteration suffice to express
