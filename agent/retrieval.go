@@ -47,7 +47,7 @@ func RetrievalTool(r Retriever, k int) Tool {
 
 // WithRetrieval is model middleware that auto-injects retrieved context (classic RAG):
 // when the model is responding to a fresh user turn, it retrieves the top-k documents for
-// that user message and prepends them as a system message. It does NOT retrieve on
+// that user message and adds them as a system message after the agent's system prompt. It does NOT retrieve on
 // tool-result turns (mid-loop). A retrieval error aborts the model call — have your
 // Retriever return (nil, nil) instead of an error if you prefer to degrade to no context.
 // A Retriever that returns more than k documents is cut to its first k. It panics if k is
@@ -63,7 +63,7 @@ func WithRetrieval(r Retriever, k int) Middleware {
 				}
 				docs = topK(docs, k)
 				if block := formatDocs(docs); block != "" {
-					req.Messages = append([]Message{SystemText(block)}, req.Messages...)
+					req.Messages = afterSystem(req.Messages, SystemText(block))
 				}
 			}
 			return next(ctx, req)
@@ -98,6 +98,20 @@ func topK(docs []Doc, k int) []Doc {
 		out[i] = d
 	}
 	return out
+}
+
+// afterSystem returns a copy of msgs with m inserted after the leading system messages (the
+// agent's system prompt), so the operator's instructions come first and stay a constant prefix
+// a provider's prompt cache can reuse.
+func afterSystem(msgs []Message, m Message) []Message {
+	i := 0
+	for i < len(msgs) && msgs[i].Role == RoleSystem {
+		i++
+	}
+	out := make([]Message, 0, len(msgs)+1)
+	out = append(out, msgs[:i]...)
+	out = append(out, m)
+	return append(out, msgs[i:]...)
 }
 
 // lastUserQuery returns the text of the final message if it is a user turn (the point at
