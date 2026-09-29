@@ -58,14 +58,33 @@ tools, err := mcp.Tools(ctx, session, mcp.TrustAnnotations())
 | `idempotentHint == true` | `Safety{Idempotent: true}` | safe to retry |
 | destructive or **unannotated** | `Safety{}` (the zero value) | halts the run on an unknown-outcome resume rather than risk firing a side effect twice |
 
+### Per-tool safety and approval gates
+
+`WithSafety(name, safety)` sets one tool's `agent.Safety` from the host side, in place of the
+default and of the server's annotations (trusted or not). It is how an MCP tool gets a human
+approval gate, 1-of-1 or m-of-n, and pauses and resumes exactly like a local tool:
+
+```go
+tools, err := mcp.Tools(ctx, session,
+	mcp.WithSafety("transfer", agent.Safety{RequiresApproval: true}),
+	mcp.WithSafety("wire", agent.Safety{Approval: &agent.ApprovalPolicy{Need: 2, Approvers: []string{"alice", "bob", "carol"}}}),
+	mcp.WithSafety("search", agent.Safety{ReadOnly: true}), // retry-safe on your word, not the server's
+)
+```
+
+The run returns `*agent.PendingApproval` before the server sees the call; record the decision
+with `agent.Approve` (or `agent.ApproveAs` for a quorum) and run it again. `Tools` fails with
+`agent.ErrConfig` if the server does not list a tool you named, so a misspelt gate never leaves
+the real tool ungated.
+
 A trusted server that changes a tool's annotations cannot make a call already in flight
 retry-safe after the fact: a call that fired as a side effect and lost its result halts the
 resume even if the server now labels the tool read-only.
 
 `ReadOnly` wins if both hints are set: a read-only tool has no side effect to double-fire.
 An absent `Annotations` block is treated as the destructive default per the MCP spec, which
-is the conservative choice for resume. Whether to trust the annotations at all is the only
-policy decision; the wrapped tool carries no other configuration.
+is the conservative choice for resume. Whether to trust the annotations is the policy decision for a whole server; `WithSafety`
+(below) decides for one tool.
 
 ## Limits
 
@@ -142,6 +161,9 @@ func Tools(ctx context.Context, session *mcp.ClientSession, opts ...ToolsOption)
 
 // TrustAnnotations maps a trusted server's annotations onto agent.Safety.
 func TrustAnnotations() ToolsOption
+
+// WithSafety sets one tool's agent.Safety (approval gates included), overriding annotations.
+func WithSafety(name string, s agent.Safety) ToolsOption
 
 // Limits (see Limits): a per-call timeout (no default) and caps on results and descriptions.
 func WithCallTimeout(d time.Duration) ToolsOption

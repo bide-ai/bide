@@ -37,6 +37,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
@@ -85,6 +87,11 @@ func Tools(ctx context.Context, session *mcp.ClientSession, opts ...ToolsOption)
 		}
 		tools = append(tools, &tool{session: session, def: def, schema: schema, cfg: cfg})
 	}
+	for _, name := range slices.Sorted(maps.Keys(cfg.safety)) {
+		if !seen[name] {
+			return nil, fmt.Errorf("mcp: WithSafety names tool %q, which the server does not list: %w", name, agent.ErrConfig)
+		}
+	}
 	return tools, nil
 }
 
@@ -128,10 +135,26 @@ func inputSchema(s any) (json.RawMessage, error) {
 type ToolsOption func(*toolsConfig)
 
 type toolsConfig struct {
-	trust          bool          // map the server's annotations onto Safety (TrustAnnotations)
-	timeout        time.Duration // per-call deadline (WithCallTimeout); 0 = none
-	maxResult      int           // largest result Call accepts, in bytes; <= 0 = no limit
-	maxDescription int           // longest description Tools accepts, in bytes; <= 0 = no limit
+	trust          bool                    // map the server's annotations onto Safety (TrustAnnotations)
+	timeout        time.Duration           // per-call deadline (WithCallTimeout); 0 = none
+	maxResult      int                     // largest result Call accepts, in bytes; <= 0 = no limit
+	maxDescription int                     // longest description Tools accepts, in bytes; <= 0 = no limit
+	safety         map[string]agent.Safety // per-tool Safety by name (WithSafety)
+}
+
+// WithSafety sets the agent.Safety of the server's tool named name, in place of the default
+// (a side effect) and of anything its annotations say, trusted or not. It is how an MCP tool
+// gets a human approval gate (RequiresApproval, or an m-of-n Approval policy), or is declared
+// retry-safe (ReadOnly, Idempotent, IdempotencyKey) by the host rather than by the server.
+// Tools fails with agent.ErrConfig if the server does not list a tool of that name, so a
+// misspelt gate never leaves the real tool ungated. A later WithSafety for the same name wins.
+func WithSafety(name string, s agent.Safety) ToolsOption {
+	return func(c *toolsConfig) {
+		if c.safety == nil {
+			c.safety = map[string]agent.Safety{}
+		}
+		c.safety[name] = s
+	}
 }
 
 // DefaultMaxResultBytes is the largest tool result, in bytes of JSON, that Call accepts unless
@@ -263,8 +286,9 @@ func (t *tool) Description() string { return t.def.Description }
 // for the schema/ package to dialectize per provider.
 func (t *tool) ArgsSchema() json.RawMessage { return t.schema }
 
-// Safety is the zero agent.Safety (a side effect) unless the tool came from Tools with
-// TrustAnnotations, in which case it derives from the MCP tool annotations:
+// Safety is the Safety WithSafety set for this tool, if any. Otherwise it is the zero
+// agent.Safety (a side effect) unless the tool came from Tools with TrustAnnotations, in which
+// case it derives from the MCP tool annotations:
 //
 //	readOnlyHint   == true -> Safety{ReadOnly: true}   // always safe to re-run
 //	idempotentHint == true -> Safety{Idempotent: true} // safe to retry
@@ -274,6 +298,9 @@ func (t *tool) ArgsSchema() json.RawMessage { return t.schema }
 // double-fire. An absent Annotations block is treated as the destructive default per
 // the MCP spec, which is the conservative choice for resume.
 func (t *tool) Safety() agent.Safety {
+	if s, ok := t.cfg.safety[t.def.Name]; ok {
+		return s
+	}
 	a := t.def.Annotations
 	if !t.cfg.trust || a == nil {
 		return agent.Safety{}
