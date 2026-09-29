@@ -92,7 +92,7 @@ func TestCertifyAndVerifyRun(t *testing.T) {
 		t.Fatalf("used policies = %v, want [%s]", cert.UsedPolicies, digest)
 	}
 
-	res, err := audit.VerifyRun(cert, pub)
+	res, err := audit.VerifyRun(cert, []string{digest}, pub)
 	if err != nil {
 		t.Fatalf("VerifyRun: %v", err)
 	}
@@ -147,8 +147,8 @@ func TestCertifyRunRejectsDisallowedPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CertifyRun (approved): %v", err)
 	}
-	cert.ApprovedPolicies = []string{"only-this-other-policy"} // verifier's allowlist excludes the used one
-	res, err := audit.VerifyRun(cert, pub)
+	// The verifier's allowlist excludes the used one.
+	res, err := audit.VerifyRun(cert, []string{"only-this-other-policy"}, pub)
 	if err != nil {
 		t.Fatalf("VerifyRun: %v", err)
 	}
@@ -185,7 +185,7 @@ func TestVerifyRunDetectsHiddenPolicy(t *testing.T) {
 	// Tamper: drop one used policy from the disclosed set (leaving the signed absence STH intact).
 	tampered := cert
 	tampered.UsedPolicies = []string{cert.UsedPolicies[0]}
-	res, err := audit.VerifyRun(tampered, pub)
+	res, err := audit.VerifyRun(tampered, []string{dA, dB}, pub)
 	if err != nil {
 		t.Fatalf("VerifyRun: %v", err)
 	}

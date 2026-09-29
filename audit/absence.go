@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/bide-ai/bide/agent"
 )
@@ -23,31 +24,73 @@ import (
 // hide a present key between them. Because our Inclusion proof carries Index and Size, we
 // verify Left.Index + 1 == Right.Index (and the boundary cases), closing that gap.
 //
-// Trust model: absence is "absent from the run committed by this key-set root." The key set is
-// a deterministic projection of the journal, so an auditor holding the journal recomputes
-// AbsenceRoot and confirms it equals the signed root before trusting any absence proof against
-// it. Combined with the journal's own append-only anchoring, that means absent from the real
-// history, not merely from a set the prover chose.
+// Domain separation: a run has several key sets (tool uses, used policies) and a journal, all
+// signed under one key. Each key set is a KeySet with its own tree Kind and key Prefix, and its
+// signed tree head commits to that Kind, to the run, and to the journal tree it was projected
+// from. A verifier names the KeySet it expects: the head must be of that kind and the key must
+// carry that prefix, so a tool-use head cannot prove a policy absent and a journal head cannot
+// prove anything absent.
+//
+// Trust model: absence is "absent from the key set the signer projected from this journal
+// tree." The key set is a deterministic projection of the journal, so an auditor holding the
+// journal recomputes it (ProveAbsentBundle does) before trusting any absence proof against it.
+// Combined with the journal's own append-only anchoring, that means absent from the real
+// history up to the committed journal size, not merely from a set the prover chose.
 
 // KeyFunc extracts an absence key from a record, returning false to exclude the record from the
 // key set. Absence is proven over the sorted set of distinct keys the KeyFunc yields.
 type KeyFunc func(agent.Record) (string, bool)
 
-// ToolUseKey is the default KeyFunc: completed tool calls, keyed by their ToolUseID. It lets
-// you prove "no tool call with this ID happened in the run."
+// KeySet names one absence key set: the tree Kind its signed heads commit to, the Prefix every
+// key it yields starts with, and the KeyFunc that projects a journal onto it. Kind must start
+// with "absence/" and be distinct per key set; Prefix must be distinct per key set.
+type KeySet struct {
+	Kind   string  // tree kind committed in the signed head, e.g. TreeToolUse
+	Prefix string  // every key the set yields (and every key proven absent from it) starts with Prefix
+	Key    KeyFunc // projects one journal record onto the set
+}
+
+// ToolUseKeys is the key set of completed tool calls, keyed "tooluse:<ToolUseID>". It proves "no
+// tool call with this ID happened in the run."
+var ToolUseKeys = KeySet{Kind: TreeToolUse, Prefix: toolUseKeyPrefix, Key: ToolUseKey}
+
+// PolicyUsedKeys is the key set of policy digests exercised by governed actions, keyed
+// "policy_used:<digest>" (see PolicyUsedKey).
+var PolicyUsedKeys = KeySet{Kind: TreePolicyUsed, Prefix: policyUsedKeyPrefix, Key: PolicyUsedKey}
+
+// KeySetForKey returns the built-in key set a key belongs to, by its prefix.
+func KeySetForKey(key string) (KeySet, bool) {
+	for _, s := range []KeySet{ToolUseKeys, PolicyUsedKeys} {
+		if strings.HasPrefix(key, s.Prefix) {
+			return s, true
+		}
+	}
+	return KeySet{}, false
+}
+
+func (s KeySet) check() error {
+	if !isAbsenceKind(s.Kind) || s.Prefix == "" || s.Key == nil {
+		return fmt.Errorf("audit: key set needs a kind starting with %q, a key prefix, and a key func (got kind %q, prefix %q)", absenceKindPrefix, s.Kind, s.Prefix)
+	}
+	return nil
+}
+
+const toolUseKeyPrefix = "tooluse:"
+
+// ToolUseKey is the KeyFunc of ToolUseKeys: completed tool calls, keyed by their ToolUseID.
 func ToolUseKey(r agent.Record) (string, bool) {
 	if r.Kind == agent.StepToolResult {
-		return "tooluse:" + r.ToolUseID, true
+		return toolUseKeyPrefix + r.ToolUseID, true
 	}
 	return "", false
 }
 
-// absenceKeys returns the sorted, de-duplicated keys the KeyFunc yields over records.
-func absenceKeys(records []agent.Record, keyFn KeyFunc) []string {
+// absenceKeys returns the sorted, de-duplicated keys the key set yields over records.
+func absenceKeys(records []agent.Record, set KeySet) []string {
 	seen := map[string]struct{}{}
 	keys := make([]string, 0, len(records))
 	for _, r := range records {
-		if k, ok := keyFn(r); ok {
+		if k, ok := set.Key(r); ok {
 			if _, dup := seen[k]; !dup {
 				seen[k] = struct{}{}
 				keys = append(keys, k)
@@ -66,11 +109,10 @@ func keyLeaves(keys []string) [][]byte {
 	return leaves
 }
 
-// AbsenceRoot is the RFC 6962 Merkle root over the run's sorted, distinct keys under keyFn.
-// Sign it (SignTreeHead) and anchor it like any root; anyone holding the journal recomputes it
-// to confirm the key set faithfully reflects the run.
-func AbsenceRoot(records []agent.Record, keyFn KeyFunc) []byte {
-	return merkleRoot(keyLeaves(absenceKeys(records, keyFn)))
+// AbsenceRoot is the RFC 6962 Merkle root over the run's sorted, distinct keys in set. Anyone
+// holding the journal recomputes it to confirm a signed key-set head reflects the run.
+func AbsenceRoot(records []agent.Record, set KeySet) []byte {
+	return merkleRoot(keyLeaves(absenceKeys(records, set)))
 }
 
 // Neighbor is one committed key adjacent to an absent key, with its inclusion proof.
@@ -89,10 +131,17 @@ type Absence struct {
 	Right *Neighbor `json:"right,omitempty"` // committed key just above Key in sort order; nil if Key sorts after all
 }
 
-// ProveAbsent builds an absence proof for key over records under keyFn, or errors if the key is
-// actually present (you cannot prove absence of something that happened).
-func ProveAbsent(records []agent.Record, keyFn KeyFunc, key string) (Absence, error) {
-	keys := absenceKeys(records, keyFn)
+// ProveAbsent builds an absence proof for key over records in set, or errors if the key is
+// actually present (you cannot prove absence of something that happened) or does not carry the
+// set's prefix (it could never be present, so its absence would say nothing).
+func ProveAbsent(records []agent.Record, set KeySet, key string) (Absence, error) {
+	if err := set.check(); err != nil {
+		return Absence{}, err
+	}
+	if !strings.HasPrefix(key, set.Prefix) {
+		return Absence{}, fmt.Errorf("audit: key %q is not in the %s key set (keys start with %q)", key, set.Kind, set.Prefix)
+	}
+	keys := absenceKeys(records, set)
 	leaves := keyLeaves(keys)
 	idx := sort.SearchStrings(keys, key)
 	if idx < len(keys) && keys[idx] == key {
@@ -113,10 +162,11 @@ func ProveAbsent(records []agent.Record, keyFn KeyFunc, key string) (Absence, er
 // each named neighbor is included at its index, they bracket Key in sort order, and they are
 // ADJACENT (or Key sits before the first / after the last / the set is empty). Adjacency is the
 // load-bearing check: without it, bracketing alone does not preclude Key being present between
-// two non-consecutive neighbors.
+// two non-consecutive neighbors. It checks the proof against a bare root; AbsenceBundle.Verify
+// is the form that also authenticates the root and its key set.
 func VerifyAbsence(root []byte, proof Absence) (bool, error) {
 	if proof.Size == 0 { // empty key set: everything is absent
-		return proof.Left == nil && proof.Right == nil, nil
+		return proof.Left == nil && proof.Right == nil && bytes.Equal(root, merkleRoot(nil)), nil
 	}
 	if proof.Left != nil {
 		if proof.Left.Proof.Size != proof.Size || proof.Left.Key >= proof.Key {
@@ -147,19 +197,40 @@ func VerifyAbsence(root []byte, proof Absence) (bool, error) {
 }
 
 // AbsenceBundle is the portable, anchorable form of an absence proof, mirroring ProofBundle:
-// the proof plus the signed tree head committing the key set it is proven against. Verify with
-// an out-of-band public key; it checks the STH signature, binds the proof to the signed size,
-// and verifies non-membership against the signed root.
+// the proof plus the signed tree head committing the key set it is proven against. The STH
+// commits to the key set's kind, the run, and the journal tree the set was projected from.
 type AbsenceBundle struct {
-	RunID   string         `json:"run_id"`  // the run whose key set the proof is against
+	RunID   string         `json:"run_id"`  // the run whose key set the proof is against; must equal STH.RunID
 	Absence Absence        `json:"absence"` // the non-membership proof
 	STH     SignedTreeHead `json:"sth"`     // the signed commitment to the key set the proof is proven against
 }
 
-// Verify reports whether the bundle authentically proves absence under pub.
-func (b AbsenceBundle) Verify(pub ed25519.PublicKey) (bool, error) {
-	if !b.STH.Verify(pub) {
+// Verify reports whether the bundle authentically proves Absence.Key absent from the key set
+// set of run RunID, under pub (obtained out of band). It checks the STH signature, that the STH
+// is a head of set's kind for RunID (with its source journal named), that the key carries the
+// set's prefix, that the proof is bound to the signed size, and non-membership under the signed
+// root. The absence holds for the journal prefix STH.Journal names; confirm from the anchor log
+// that it is the run's latest head before reading it as "never happened in the run."
+func (b AbsenceBundle) Verify(pub ed25519.PublicKey, set KeySet) (bool, error) {
+	if b.STH.Alg != "" && b.STH.Alg != AlgEd25519 {
 		return false, nil
+	}
+	return b.VerifyWith(Ed25519Verifier{Pub: pub}, set)
+}
+
+// VerifyWith is the scheme-agnostic form of Verify.
+func (b AbsenceBundle) VerifyWith(v Verifier, set KeySet) (bool, error) {
+	if err := set.check(); err != nil {
+		return false, err
+	}
+	if !b.STH.VerifyWith(v) {
+		return false, nil
+	}
+	if b.STH.Kind != set.Kind || b.STH.RunID != b.RunID || b.STH.Journal == nil {
+		return false, nil // a head of another tree, or another run
+	}
+	if !strings.HasPrefix(b.Absence.Key, set.Prefix) {
+		return false, nil // the key is not one this set could contain
 	}
 	if b.Absence.Size != b.STH.Size {
 		return false, nil
@@ -167,16 +238,27 @@ func (b AbsenceBundle) Verify(pub ed25519.PublicKey) (bool, error) {
 	return VerifyAbsence(b.STH.Root, b.Absence)
 }
 
-// ProveAbsentBundle builds an anchorable absence proof bound to sth, whose Root must be the
-// AbsenceRoot of records under keyFn (the fidelity guard: the STH must commit to THIS run's key
-// set, recomputed here, so a stale or foreign STH is rejected).
-func ProveAbsentBundle(records []agent.Record, keyFn KeyFunc, key string, runID string, sth SignedTreeHead) (AbsenceBundle, error) {
-	if sth.Size != len(absenceKeys(records, keyFn)) || !bytes.Equal(sth.Root, AbsenceRoot(records, keyFn)) {
-		return AbsenceBundle{}, fmt.Errorf("audit: STH does not commit to run %s's key set (wrong or stale STH)", runID)
+// ProveAbsentBundle builds an anchorable absence proof bound to sth, a signed key-set head of
+// set (see SignAbsenceRoot). records is the run's journal: its prefix of sth.Journal.Size records
+// must hash to sth.Journal.Root, and the key set projected from that prefix must be the one sth
+// signs (the fidelity guard: a stale, foreign, or wrong-kind STH is rejected).
+func ProveAbsentBundle(records []agent.Record, set KeySet, key string, sth SignedTreeHead) (AbsenceBundle, error) {
+	if err := set.check(); err != nil {
+		return AbsenceBundle{}, err
 	}
-	proof, err := ProveAbsent(records, keyFn, key)
+	if sth.Kind != set.Kind || sth.Journal == nil {
+		return AbsenceBundle{}, fmt.Errorf("audit: STH is a %q tree, not a %s key set", sth.Kind, set.Kind)
+	}
+	journal, err := journalPrefix(sth.RunID, records, TreeHead{Kind: TreeJournal, RunID: sth.RunID, Size: sth.Journal.Size, Root: sth.Journal.Root})
+	if err != nil {
+		return AbsenceBundle{}, fmt.Errorf("audit: STH's source journal: %w", err)
+	}
+	if sth.Size != len(absenceKeys(journal, set)) || !bytes.Equal(sth.Root, AbsenceRoot(journal, set)) {
+		return AbsenceBundle{}, fmt.Errorf("audit: STH does not commit to run %s's %s key set (wrong or stale STH)", sth.RunID, set.Kind)
+	}
+	proof, err := ProveAbsent(journal, set, key)
 	if err != nil {
 		return AbsenceBundle{}, err
 	}
-	return AbsenceBundle{RunID: runID, Absence: proof, STH: sth}, nil
+	return AbsenceBundle{RunID: sth.RunID, Absence: proof, STH: sth}, nil
 }

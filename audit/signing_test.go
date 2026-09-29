@@ -8,7 +8,7 @@ import (
 )
 
 func testTreeHead() TreeHead {
-	return TreeHead{Size: 3, Root: []byte("0123456789abcdef0123456789abcdef"), Timestamp: 42}
+	return TreeHead{Kind: TreeJournal, RunID: "run", Size: 3, Root: []byte("0123456789abcdef0123456789abcdef"), Timestamp: 42}
 }
 
 // TestSigningSchemes exercises ed25519, ML-DSA-65, and hybrid over a tree head: each signer's

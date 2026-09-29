@@ -53,20 +53,26 @@ func TestGovernanceAbsence_NoActionUnderDisallowedPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("keygen: %v", err)
 	}
-	root := AbsenceRoot(recs, PolicyUsedKey)
-	sth := SignTreeHead(TreeHead{Size: len(PoliciesUsed(recs)), Root: root, Timestamp: 1}, priv)
+	journal, err := NewTreeHead(ctx, store, runID, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sth, err := SignAbsenceRoot(recs, PolicyUsedKeys, journal, priv, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	// Prove no governed action ran under the disallowed policy.
-	bundle, err := ProveAbsentBundle(recs, PolicyUsedKey, PolicyUsedKeyFor(disallowed), runID, sth)
+	bundle, err := ProveAbsentBundle(recs, PolicyUsedKeys, PolicyUsedKeyFor(disallowed), sth)
 	if err != nil {
 		t.Fatalf("ProveAbsentBundle: %v", err)
 	}
-	if ok, err := bundle.Verify(pub); err != nil || !ok {
+	if ok, err := bundle.Verify(pub, PolicyUsedKeys); err != nil || !ok {
 		t.Fatalf("absence bundle did not verify: ok=%v err=%v", ok, err)
 	}
 
 	// The negative has teeth: you cannot prove absence of a policy that WAS used.
-	if _, err := ProveAbsent(recs, PolicyUsedKey, PolicyUsedKeyFor(approved)); err == nil {
+	if _, err := ProveAbsent(recs, PolicyUsedKeys, PolicyUsedKeyFor(approved)); err == nil {
 		t.Fatalf("expected error proving absence of an approved policy that was actually used")
 	}
 }

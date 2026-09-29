@@ -28,7 +28,9 @@ distinct from the log's tree-head key, so the authorization is attributable to t
 to the operator that runs the log. `Digest` is a stable, domain-separated SHA-256 over the grant,
 recomputable by any verifier from the disclosed grant, and is what `Identity.AuthorityRef` points
 at. `Grant.Expired(now)` reports expiry against a caller-supplied clock (a zero `NotAfter` never
-expires), so verification stays deterministic.
+expires), so verification stays deterministic. The digest and signature cover the grant's JSON
+encoding, which is one-to-one only over valid UTF-8, so `SignGrant` refuses, and
+`SignedGrant.Verify` rejects, a grant with invalid UTF-8 in any string.
 
 `RecordGrant` anchors a signed grant as a dedicated journal leaf keyed by its digest (idempotent
 per run), so it is covered by the same signed tree head and inclusion proofs as the actions taken
@@ -45,22 +47,34 @@ the chain back to the root stays provable.
 `VerifyDelegationChain` verifies a chain ordered root-first (index 0) to leaf-last:
 
 ```go
-ok, err := audit.VerifyDelegationChain(chain, issuerVerifier, audit.AttenuatesNumericScope("limit"))
+ok, err := audit.VerifyDelegationChain(chain, issuerVerifier, audit.ScopeRules{"limit": audit.NumericAtMost})
 ```
 
-It checks three things per hop:
+It checks each grant's signature under its issuer's verifier (resolved via the `issuerVerifier`
+callback, which maps an issuer name to its public key), that the root has no `ParentRef`, and that
+every other grant is a valid delegation of the one before it. `CheckAttenuation(parent, child,
+rules)` is that per-hop rule, and a child must satisfy all four parts:
 
-1. each grant's signature under its issuer's verifier (resolved via the `issuerVerifier`
-   callback, which maps an issuer name to its public key);
-2. the root has no `ParentRef`, and every other grant's `ParentRef` equals the previous grant's
-   digest (the chain is unbroken);
-3. every non-root grant is an attenuation of its parent, if an `Attenuator` is supplied.
+1. **Linked**: `child.ParentRef` is `parent.Digest()`.
+2. **Issued by the holder**: `child.Issuer` is `parent.Subject`. Only the principal a grant was
+   given to can delegate it; anyone else holding a signing key cannot mint a child of it.
+3. **Expires no later**: if the parent has a `NotAfter`, the child has one too, at or before the
+   parent's. A child of an expiring grant can never be non-expiring. A child of a non-expiring
+   parent may set any expiry, or none.
+4. **Keeps every constraint**: scope entries are constraints, each one restricting what the grant
+   allows. The child must carry every key of the parent's scope, with the same value or a value the
+   `ScopeRule` for that key accepts as narrower; a key with no rule can only be copied unchanged.
+   The child may add keys the parent lacks (adding a constraint narrows). So dropping `tool: refund`
+   from a child, which would let it call any tool, fails, as does raising a limit or changing a
+   value no rule governs.
 
-An `Attenuator` decides what "narrower" means for your domain. `AttenuatesNumericScope(key)`
-covers the common "lower the limit" case: it requires `child.Scope[key] <= parent.Scope[key]`
-parsed as integers, and **fails closed** on missing or unparseable values, so a sub-grant cannot
-widen authority by dropping or corrupting a bound. Expiry is left to the caller (`Grant.Expired`)
-since it needs a clock. A widening delegation cannot pass verification even if one is minted.
+`NumericAtMost` is the rule for an integer upper bound: the child's value must parse as a base-10
+integer no greater than the parent's, and unparseable values fail closed. A domain whose scope key
+grants rather than restricts (say, a comma-separated allowlist of tools) supplies a rule that
+requires a subset. The caller still checks two things the chain cannot: that the root's `Issuer`
+is a principal it trusts to grant that authority, and that the leaf is unexpired at the time of use
+(`Grant.Expired`, which needs a clock). A widening delegation cannot pass verification even if one
+is minted.
 
 ## Attenuation by default: AttenuatingSubAgent
 
@@ -73,9 +87,12 @@ ctx = audit.WithGrant(ctx, rootSG, signer)
 
 tool := audit.AttenuatingSubAgent("researcher", "does research", subAgent, store,
     func(parent audit.Grant, subAgent string) audit.Grant {
-        // return a STRICTLY narrower grant: lower the limit.
-        return audit.Grant{Scope: map[string]string{"limit": "100"}}
-    })
+        // return a narrower grant: keep every constraint, lower the limit.
+        scope := maps.Clone(parent.Scope)
+        scope["limit"] = "100"
+        return audit.Grant{Scope: scope}
+    },
+    audit.ScopeRules{"limit": audit.NumericAtMost})
 ```
 
 On each call, if a signed grant is bound to the context, the tool mints a narrower child grant
@@ -83,11 +100,17 @@ On each call, if a signed grant is bound to the context, the tool mints a narrow
 in the sub-run so the chain is anchored, rebinds the sub-run's identity to the child (`Actor` =
 this sub-agent, `OnBehalfOf` = the parent's `Subject`, `AuthorityRef` = the child's digest), and
 propagates the child grant so a deeper delegation narrows again. Your `AttenuateFunc` sets the
-narrower `Scope` (and may set `Subject`); the wrapper fills in `ParentRef`, and `Issuer` /
-`Subject` if you left them empty, then signs.
+narrower `Scope` (and may set `Subject` and an earlier `NotAfter`); the wrapper fills in
+`ParentRef`, and `Issuer` (the parent's `Subject`), `Subject` (the sub-agent's name), and `NotAfter`
+(the parent's) if you left them empty. It then checks the child with `CheckAttenuation` under the
+rules you pass, and refuses the delegation, signing nothing, if the child is not a valid
+delegation: a widening `AttenuateFunc` is caught when it runs, not later by a verifier.
 
-With no grant on the context it is a plain sub-agent that inherits the identity, so it is safe to
-use either way. The wrapped sub-agent still runs its own full agent loop and reasons
+The child grant is recorded in the sub-run the agent loop gives this call (`parentRunID/toolUseID`,
+unique per call), so each delegation's grant sits in its own journal. Called outside an agent run,
+where there is no such scope, the tool refuses rather than fall back to a sub-run ID that every
+parent run would share. With no grant on the context it is a plain sub-agent that inherits the
+identity, so it is safe to use either way. The wrapped sub-agent still runs its own full agent loop and reasons
 autonomously; only its authority shrinks. The result is that capabilities monotonically decrease
 down a delegation tree by construction, and the whole chain stays provable via
 `VerifyDelegationChain`.
@@ -99,22 +122,44 @@ record. Authority starts at the ladder's baseline rung, is promoted one rung aft
 (capped at the top rung), and resets to baseline the instant an anomaly is flagged.
 
 ```go
-ea, err := audit.NewEarnedAuthority(
+ea, err := audit.NewEarnedAuthority(ctx,
     []int{100, 500, 1000}, // ladder: rung 0 is baseline; top must not exceed the root ceiling
     5,                     // promote one rung every 5 compliant actions
-    rootSG, signer, "agent-1")
+    rootSG, signer, "agent-1",
+    ledger, "ledger/agent-1") // a store and run that hold only this controller's grants
 
-promoted, _ := ea.RecordCompliant() // note one clean action; may promote
-changed, _  := ea.FlagAnomaly()     // reset to baseline immediately
-grant := ea.Grant()                 // the current signed earned grant
+promoted, _ := ea.RecordCompliant(ctx) // note one clean action; may promote
+changed, _  := ea.FlagAnomaly(ctx)     // reset to baseline immediately
+grant := ea.Grant()                    // the current signed earned grant
 ```
 
 Each change re-issues a signed grant that is a **child of the root** (`ParentRef` to the root,
-scope limit = the current rung), so the earned limit provably never exceeds the root ceiling:
+every root scope constraint kept, `limit` = the current rung, and the root's `NotAfter`), so the
+earned limit provably never exceeds the root ceiling and no earned grant outlives the root:
 `NewEarnedAuthority` rejects a ladder whose top rung exceeds the root's numeric `limit` scope, and
-every earned grant passes `VerifyDelegationChain` against the root under
-`AttenuatesNumericScope("limit")`. So even a buggy or compromised controller cannot widen past
-what the root principal authorized.
+every earned grant passes `VerifyDelegationChain` against the root under `audit.EarnedRules`
+(`limit` may only go down). So even a buggy or compromised controller cannot widen past what the
+root principal authorized.
+
+**Revocation.** A demotion has to take the higher grant out of use at once, not when it expires,
+and an offline verifier has to be able to tell. Every grant the controller issues is appended to
+the ledger run as an anchored grant leaf, and the **current** grant is the ledger's last leaf; every
+earlier grant is superseded, whether the change was a promotion or a demotion. (Each issue's ID
+names its ledger position, so re-reaching a rung issues a new grant rather than reviving an old
+one.) A verifier checks a grant against the latest signed head of the ledger run:
+
+```go
+proof, _ := audit.ProveCurrentGrant(ctx, ledger, "ledger/agent-1", latestLedgerSTH)
+ok, err := audit.VerifyCurrentGrant(grant, proof, logPub) // the grant is the ledger's last leaf
+```
+
+`VerifyCurrentGrant` requires the proof to verify under the log key, its record to be the anchored
+leaf of exactly this grant, and that leaf to be the last one (index `Size-1`) of the signed ledger.
+The verifier learns the latest ledger head the way it learns any run's state: from the anchor log
+(anchor the ledger through an `AuditedStore`, or sign and publish its heads), checking consistency
+between the heads it has seen so the ledger cannot be rolled back to a superseded grant. A proof
+against an older head shows only that the grant was current then. Combine it with
+`VerifyDelegationChain` (the grant descends from the root) and `Grant.Expired` (it is in date).
 
 The asymmetry is the safety property: promotion is slow, capped, and evidence-gated; attenuation
 (the anomaly reset) is immediate and ungated, because shrinking authority is always safe. It is
@@ -124,9 +169,9 @@ enforcement of the limit it sets stays a convergent governance invariant on the 
 
 ## See also
 
-- `audit/grant.go`: `Grant`, `SignGrant`, `RecordGrant` / `ProveGrant`, `AttenuatesNumericScope`,
-  `VerifyDelegationChain`.
+- `audit/grant.go`: `Grant`, `SignGrant`, `RecordGrant` / `ProveGrant`, `CheckAttenuation`,
+  `ScopeRules`, `NumericAtMost`, `VerifyDelegationChain`.
 - `audit/delegate.go`: `WithGrant`, `AttenuatingSubAgent`, `AttenuateFunc`.
-- `audit/earned.go`: `EarnedAuthority`.
+- `audit/earned.go`: `EarnedAuthority`, `EarnedRules`, `ProveCurrentGrant`, `VerifyCurrentGrant`.
 - `examples/delegation`, `examples/authority`, `examples/earned-authority`: runnable end to end.
 - `docs/guides/security-model.md`: how grant signatures fit the overall trust model.

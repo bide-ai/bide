@@ -115,7 +115,7 @@ func chain(kr *keyring, leafLimit string) []SignedGrant {
 // sub-grant or a broken parent link is rejected.
 func TestDelegationChain(t *testing.T) {
 	kr := newKeyring("corp-treasury", "desk-EQ-US", "exec-agent@1.4.2")
-	atten := AttenuatesNumericScope("limit")
+	atten := ScopeRules{"limit": NumericAtMost}
 
 	// Valid: 10 -> 7 -> 3, each hop narrows.
 	ok, err := VerifyDelegationChain(chain(kr, "3"), kr.verifier, atten)

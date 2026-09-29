@@ -77,7 +77,7 @@ func chainBorderRight(seed []byte, proof [][]byte) []byte {
 // roots root1 and root2.
 func verifyConsistency(m, n int, proof [][]byte, root1, root2 []byte) bool {
 	switch {
-	case m > n:
+	case m < 0 || m > n: // a negative m is not a tree size; m > n then covers a negative n
 		return false
 	case m == n:
 		return len(proof) == 0 && bytes.Equal(root1, root2)

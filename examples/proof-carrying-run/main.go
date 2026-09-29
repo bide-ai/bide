@@ -102,7 +102,7 @@ func main() {
 	fmt.Printf("emitted RunCertificate for run %q\n", runCert.RunID)
 	fmt.Printf("  properties asserted: %v\n", runCert.Properties)
 	fmt.Printf("  policies used: %d, all in the approved allowlist\n", len(runCert.UsedPolicies))
-	fmt.Printf("  signed tree size %d, used-policy absence root committed to %d distinct policies\n\n",
+	fmt.Printf("  signed tree size %d, used-policy set (bound to that tree) committed to %d distinct policies\n\n",
 		runCert.STH.Size, runCert.UsedPolicyAbsence.Size)
 
 	// Anchor the certificate itself so it is provable in the run, then verify offline. The verifier
@@ -111,7 +111,7 @@ func main() {
 		panic(err)
 	}
 	fmt.Printf("verifying offline with the public key alone (%s):\n", short(hex.EncodeToString(pub)))
-	res, err := audit.VerifyRun(runCert, pub)
+	res, err := audit.VerifyRun(runCert, approvedAllowlist, pub)
 	if err != nil {
 		panic(err)
 	}
@@ -126,9 +126,7 @@ func main() {
 	// certificate's used set is still bound to the signed absence root (completeness), so it cannot be
 	// quietly narrowed; only-approved-policies fails because a used policy is outside the allowlist.
 	fmt.Println("now a stricter auditor whose allowlist EXCLUDES the policy this run used:")
-	strict := runCert
-	strict.ApprovedPolicies = []string{"a-different-approved-policy-digest"}
-	failRes, err := audit.VerifyRun(strict, pub)
+	failRes, err := audit.VerifyRun(runCert, []string{"a-different-approved-policy-digest"}, pub)
 	if err != nil {
 		panic(err)
 	}
@@ -146,11 +144,11 @@ func main() {
 	fmt.Println("and a producer who tries to HIDE the used policy by dropping it from the disclosed set:")
 	hidden := runCert
 	hidden.UsedPolicies = nil
-	hiddenRes, err := audit.VerifyRun(hidden, pub)
+	hiddenRes, err := audit.VerifyRun(hidden, approvedAllowlist, pub)
 	if err != nil {
 		panic(err)
 	}
-	fmt.Printf("  only-approved-policies:          %v (the signed absence root no longer matches)\n", hiddenRes.OnlyApprovedPolicies)
+	fmt.Printf("  only-approved-policies:          %v (the signed used-policy root no longer matches)\n", hiddenRes.OnlyApprovedPolicies)
 	fmt.Printf("  => PASS: %v (a used policy cannot be hidden)\n\n", hiddenRes.OK)
 	if hiddenRes.OK {
 		panic("expected hiding a used policy to break the absence-root binding")

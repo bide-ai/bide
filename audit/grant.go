@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strconv"
 
 	"github.com/bide-ai/bide/agent"
@@ -20,21 +21,24 @@ import (
 // ParentRef links a grant to the one it was attenuated from (empty for a root grant), forming a
 // hash-linked delegation chain: a holder of a grant may mint a strictly narrower sub-grant for a
 // sub-agent without returning to the root issuer (capability attenuation), and the chain back to
-// the root is provable. Scope semantics are domain-defined; the chain verifier takes an Attenuator
-// that decides what "narrower" means (a helper for numeric limits is provided).
+// the root is provable. Scope entries are constraints whose meaning is domain-defined; the chain
+// verifier requires a child to keep every one of its parent's, unchanged or narrowed by a ScopeRule
+// the verifier supplies (NumericAtMost is provided for limits). See CheckAttenuation.
 type Grant struct {
 	ID        string            `json:"id"`                   // unique identifier for this grant
 	Issuer    string            `json:"issuer"`               // principal that authorized the grant (resolves to the signing key)
 	Subject   string            `json:"subject"`              // actor the grant authorizes to act
-	Scope     map[string]string `json:"scope,omitempty"`      // domain-defined authority bounds (e.g. limits) the chain verifier attenuates over
-	NotAfter  int64             `json:"not_after,omitempty"`  // unix-seconds expiry; zero never expires
+	Scope     map[string]string `json:"scope,omitempty"`      // domain-defined constraints (e.g. limits); a child keeps every one, equal or narrower
+	NotAfter  int64             `json:"not_after,omitempty"`  // unix-seconds expiry; zero never expires, and only a grant whose parent never expires may be zero
 	ParentRef string            `json:"parent_ref,omitempty"` // Digest of the grant this was attenuated from; empty for a root grant
 }
 
 const grantDigestPrefix = "bide-grant-v1\n"
 
 // Bytes is the canonical serialization that is signed and digested. json.Marshal sorts map keys and
-// emits struct fields in declaration order, so it is deterministic in-ecosystem.
+// emits struct fields in declaration order, so it is deterministic in-ecosystem. It is injective only
+// over valid UTF-8 (JSON rewrites invalid bytes to U+FFFD), so SignGrant refuses, and
+// SignedGrant.Verify rejects, a grant with invalid UTF-8 in any string.
 func (g Grant) Bytes() []byte {
 	b, _ := json.Marshal(g)
 	return b
@@ -62,6 +66,9 @@ type SignedGrant struct {
 
 // SignGrant signs a grant with the issuer's key (Ed25519, ML-DSA, or hybrid, per the Signer).
 func SignGrant(g Grant, s Signer) (SignedGrant, error) {
+	if err := checkUTF8(g); err != nil {
+		return SignedGrant{}, fmt.Errorf("audit: sign grant %q: %w", g.ID, err)
+	}
 	sig, err := s.Sign(g.Bytes())
 	if err != nil {
 		return SignedGrant{}, fmt.Errorf("audit: sign grant %q: %w", g.ID, err)
@@ -73,13 +80,22 @@ func SignGrant(g Grant, s Signer) (SignedGrant, error) {
 // resolved by the caller's PKI; this is non-repudiation of the authorization, separate from the
 // log's tree-head signature.
 func (sg SignedGrant) Verify(v Verifier) (bool, error) {
+	if v == nil {
+		return false, fmt.Errorf("audit: no verifier for grant %q", sg.Grant.ID)
+	}
 	if sg.Alg != v.Alg() {
 		return false, fmt.Errorf("audit: grant alg %q does not match verifier alg %q", sg.Alg, v.Alg())
+	}
+	if err := checkUTF8(sg.Grant); err != nil {
+		return false, fmt.Errorf("audit: grant %q: %w", sg.Grant.ID, err)
 	}
 	return v.Verify(sg.Grant.Bytes(), sg.Sig), nil
 }
 
-func grantLeafName(digest string) string { return "audit:grant:" + digest }
+// grantLeafPrefix starts the journal name of every anchored grant leaf.
+const grantLeafPrefix = "audit:grant:"
+
+func grantLeafName(digest string) string { return grantLeafPrefix + digest }
 
 // RecordGrant commits a signed grant as a dedicated journal leaf keyed by its digest (idempotent per
 // (runID, digest)), so it is covered by the same signed tree head and inclusion proofs as the
@@ -117,31 +133,79 @@ func ProveGrant(ctx context.Context, store agent.Durable, runID, digest string, 
 	return ProveRecord(ctx, store, runID, idx, sth)
 }
 
-// Attenuator reports whether child's authority is within parent's (domain-specific "narrower").
-type Attenuator func(parent, child Grant) bool
+// ScopeRule reports whether child, a changed value for one scope key, is within parent, the
+// parent grant's value for that key.
+type ScopeRule func(parent, child string) bool
 
-// AttenuatesNumericScope requires child.Scope[key] <= parent.Scope[key] parsed as integers, the
-// common "lower the limit" narrowing. Missing or unparseable values fail closed (not an
-// attenuation), so a sub-grant cannot widen authority by dropping or corrupting a bound.
-func AttenuatesNumericScope(key string) Attenuator {
-	return func(parent, child Grant) bool {
-		pv, perr := strconv.Atoi(parent.Scope[key])
-		cv, cerr := strconv.Atoi(child.Scope[key])
-		if perr != nil || cerr != nil {
-			return false
-		}
-		return cv <= pv
+// ScopeRules maps a scope key to the rule that decides whether a changed value narrows it. A key
+// with no rule can only be carried to a child unchanged.
+type ScopeRules map[string]ScopeRule
+
+// NumericAtMost is the ScopeRule for an integer upper bound (a limit): the child's value, parsed as
+// a base-10 integer, must be at most the parent's. Unparseable values fail closed.
+func NumericAtMost(parent, child string) bool {
+	pv, perr := strconv.ParseInt(parent, 10, 64)
+	cv, cerr := strconv.ParseInt(child, 10, 64)
+	return perr == nil && cerr == nil && cv <= pv
+}
+
+// CheckAttenuation returns nil if child is a valid delegation of parent, and otherwise an error
+// naming the first rule it breaks:
+//
+//  1. child.ParentRef is parent's Digest (the hash link);
+//  2. child.Issuer is parent.Subject (only the holder of a grant can delegate it);
+//  3. child expires no later than parent: if parent.NotAfter is set, child.NotAfter is set and at
+//     most parent.NotAfter (a child of an expiring grant can never be non-expiring);
+//  4. every parent scope key is in child, with the same value or, where rules has a ScopeRule for
+//     that key, a value the rule accepts as narrower.
+//
+// Scope entries are constraints: each one restricts what the grant allows, so a child may add keys
+// its parent lacks (adding a constraint narrows) but never drop or loosen one. A domain whose scope
+// key grants rather than restricts must express it so that its ScopeRule decides narrowing (for
+// example a comma-separated allowlist whose rule requires a subset).
+func CheckAttenuation(parent, child Grant, rules ScopeRules) error {
+	if child.ParentRef != parent.Digest() {
+		return fmt.Errorf("audit: grant %q parent_ref does not link to %q", child.ID, parent.ID)
 	}
+	if child.Issuer != parent.Subject {
+		return fmt.Errorf("audit: grant %q is issued by %q, but only %q (the subject of %q) can delegate it", child.ID, child.Issuer, parent.Subject, parent.ID)
+	}
+	if parent.NotAfter != 0 && (child.NotAfter == 0 || child.NotAfter > parent.NotAfter) {
+		return fmt.Errorf("audit: grant %q expires at %d, after its parent %q (%d)", child.ID, child.NotAfter, parent.ID, parent.NotAfter)
+	}
+	keys := make([]string, 0, len(parent.Scope))
+	for k := range parent.Scope {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		pv := parent.Scope[k]
+		cv, ok := child.Scope[k]
+		switch {
+		case !ok:
+			return fmt.Errorf("audit: grant %q drops scope %q=%q of its parent %q", child.ID, k, pv, parent.ID)
+		case cv == pv:
+		case rules[k] == nil:
+			return fmt.Errorf("audit: grant %q changes scope %q from %q to %q, and no rule allows narrowing it", child.ID, k, pv, cv)
+		case !rules[k](pv, cv):
+			return fmt.Errorf("audit: grant %q widens scope %q from %q to %q", child.ID, k, pv, cv)
+		}
+	}
+	return nil
 }
 
 // VerifyDelegationChain verifies a delegation chain ordered root-first (index 0) to leaf-last:
 //  1. each grant's signature under its issuer's verifier (resolved via issuerVerifier),
-//  2. the root has no ParentRef; every other grant's ParentRef equals the previous grant's Digest,
-//  3. every non-root grant is an attenuation of its parent (if atten is non-nil).
+//  2. the root has no ParentRef,
+//  3. every other grant is a valid delegation of the previous one (CheckAttenuation with rules):
+//     hash-linked, issued by the parent's subject, expiring no later, and keeping every scope
+//     constraint equal or narrower.
 //
-// It establishes that the leaf's authority descends, unbroken and never widened, from a root grant
-// each hop's issuer signed. Expiry is left to the caller (grant.Expired) since it needs a clock.
-func VerifyDelegationChain(chain []SignedGrant, issuerVerifier func(issuer string) (Verifier, bool), atten Attenuator) (bool, error) {
+// It establishes that the leaf's authority descends, unbroken and never widened, from the root
+// grant, with each hop signed by the principal it names. The caller still checks that the root's
+// Issuer is a principal it trusts to grant that authority (issuerVerifier resolves any issuer it
+// knows), and that the leaf is unexpired at the time of use (grant.Expired, which needs a clock).
+func VerifyDelegationChain(chain []SignedGrant, issuerVerifier func(issuer string) (Verifier, bool), rules ScopeRules) (bool, error) {
 	if len(chain) == 0 {
 		return false, fmt.Errorf("audit: empty delegation chain")
 	}
@@ -159,12 +223,8 @@ func VerifyDelegationChain(chain []SignedGrant, issuerVerifier func(issuer strin
 			}
 			continue
 		}
-		parent := chain[i-1].Grant
-		if sg.Grant.ParentRef != parent.Digest() {
-			return false, fmt.Errorf("audit: grant %q parent_ref does not link to %q", sg.Grant.ID, parent.ID)
-		}
-		if atten != nil && !atten(parent, sg.Grant) {
-			return false, fmt.Errorf("audit: grant %q is not an attenuation of %q", sg.Grant.ID, parent.ID)
+		if err := CheckAttenuation(chain[i-1].Grant, sg.Grant, rules); err != nil {
+			return false, err
 		}
 	}
 	return true, nil

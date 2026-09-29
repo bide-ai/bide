@@ -240,6 +240,12 @@ func TestMofnEvidence_InPackage(t *testing.T) {
 		t.Fatal(err)
 	}
 	pkg.Actions = append(pkg.Actions, acts[:len(acts)-1]...) // the result is already packaged
+	if rep, _ := pkg.Verify(g.logPub); rep.OK {
+		t.Fatal("a package with actions appended after sealing verified")
+	}
+	if err := pkg.Seal(g.logPriv); err != nil {
+		t.Fatal(err)
+	}
 
 	raw, err := json.Marshal(pkg)
 	if err != nil {

@@ -14,6 +14,17 @@ what the agent did*. Stdlib-only (`crypto/sha256`, `crypto/ed25519`), no externa
   or Merkle tree stored in the same database an attacker fully controls can be rewritten and
   re-hashed. The guarantee is: *"you committed the root elsewhere, so divergence is provable."*
 - This is by design; anchoring is a real deployment requirement, not an optional extra.
+- **One key, many trees, no confusion**: the log key signs several kinds of tree for a run (its
+  journal, the absence key sets projected from it, its event stream). Every signed tree head
+  commits to its **kind** and its **run ID**, and a key-set head also commits to the journal tree it
+  was projected from. Every verifier requires the kind it expects, so a head signed for one tree
+  never verifies as another, and the run ID a verifier reports is the run the signer committed to.
+- **Canonical bytes**: leaves, grants, and seals are hashed or signed over JSON, which is injective
+  only over valid UTF-8 (encoding/json rewrites invalid bytes to U+FFFD). A record, grant, or
+  anchor entry with invalid UTF-8 in any string is refused rather than committed or verified.
+  `bide-audit` reads every artifact with `audit.UnmarshalStrict`, which rejects duplicate keys,
+  keys that differ from a field only in case, unknown fields, and invalid UTF-8, so the file a
+  person reads is exactly the data that is verified.
 
 ## The four primitives
 
@@ -22,7 +33,7 @@ what the agent did*. Stdlib-only (`crypto/sha256`, `crypto/ed25519`), no externa
 | `Head` + `Sign` / `VerifySignature` | the whole run is intact | the head + signature |
 | `Root` / `Prove` / `VerifyInclusion` | **one record** is in a committed run, without revealing the rest | that record + its O(log n) proof + the root |
 | `ProveConsistency` / `VerifyConsistency` | history was **only appended**, never rewritten/reordered | two roots + the proof |
-| `TreeHead` / `SignTreeHead` / `Verify` | a **signed** commitment binding root ↔ size ↔ time | the STH + public key |
+| `TreeHead` / `SignTreeHead` / `Verify` | a **signed** commitment binding kind, run, root, size, and time | the STH + public key |
 
 `Head` is a linear SHA-256 hash chain (simple whole-run commitment). `Root` is the RFC 6962
 Merkle tree: the same commitment, but it supports per-record inclusion proofs and consistency
@@ -86,7 +97,7 @@ The event log gets the **full transparency-log surface**, reusing the journal's 
 consistency machinery unchanged:
 
 ```go
-sth := audit.SignTreeHead(log.TreeHead(time.Now().UnixNano()), priv) // signs Root↔Size↔Time
+sth := audit.SignTreeHead(log.TreeHead(runID, time.Now().UnixNano()), priv) // kind "events", run, root, size, time
 sth.Verify(pub)                                                      // anchored commitment
 audit.VerifyEventInclusion(sth.Root, event, proof)                   // check proofs vs the STH root
 
@@ -96,7 +107,8 @@ audit.VerifyConsistency(sth1.Root, sth2.Root, cproof)
 ```
 
 `TreeHead` / `SignedTreeHead` / `Verify` / `Consistency` are the *same types* used over the
-journal (Size counts events instead of records), so an auditor learns one verification flow.
+journal (Size counts events instead of records, and Kind is `audit.TreeEvents`, so an event head
+never verifies as a journal head), so an auditor learns one verification flow.
 
 ### Durable vs live: where the event log lives
 
@@ -107,7 +119,7 @@ is already the crash-safe, at-most-once substrate.
 
 ```go
 log, _ := audit.EventLogFromJournal(ctx, store, runID) // projection of the DURABLE journal
-sth    := audit.SignTreeHead(log.TreeHead(ts), priv)   // anchor THIS: crash-durable, resume-stable
+sth    := audit.SignTreeHead(log.TreeHead(runID, ts), priv) // anchor THIS: crash-durable, resume-stable
 ```
 
 `EventLogFromJournal` projects the journal to the same semantic events `Agent.Stream` re-emits
@@ -132,7 +144,7 @@ audit.PersistJournal(ctx, evStore, journal, runID)
 
 // Later, even after the journal is deleted: anchor and prove from the store alone.
 log, _ := audit.LoadEventLog(ctx, evStore, runID)
-sth    := audit.SignTreeHead(log.TreeHead(ts), priv)
+sth    := audit.SignTreeHead(log.TreeHead(runID, ts), priv)
 proof, _ := log.Prove(i)   // + audit.VerifyEventInclusion(sth.Root, event, proof)
 ```
 
@@ -160,11 +172,11 @@ bundle, _ := audit.ProveToolCall(ctx, store, runID, toolUseID, sth)   // or audi
 blob, _  := json.Marshal(bundle)                                      // store / email / publish it
 
 // Verify: offline, trusting only the out-of-band public key.
-ok, _ := bundle.Verify(pub)   // checks STH signature, size-binding, and inclusion
+ok, _ := bundle.Verify(pub)   // checks STH signature, kind and run binding, size binding, and inclusion
 ```
 
-`Verify` fails closed on a forged record, a proof not bound to the signed size, or the wrong
-key. The public key must come from the anchor operator, not the bundle: that is what makes it
+`Verify` fails closed on a forged record, a proof not bound to the signed size, a head that is not
+a journal head of the bundle's `RunID`, or the wrong key. The public key must come from the anchor operator, not the bundle: that is what makes it
 **proofs you verify, not logs you trust.**
 
 For the auditor who does not write Go, the `bide-audit` CLI wraps this (`prove` over an
@@ -184,17 +196,33 @@ JSON (store it, email it, publish it) and verifies offline:
 
 ```go
 pkg, _ := audit.Evidence(ctx, store, runID, priv, time.Now().Unix(),
-	audit.WithAllToolCalls(), audit.WithRunCertificate(spec), audit.WithGrants())
-report, _ := pkg.Verify(pub) // per-action verdicts plus overall OK, trusting only the out-of-band key
+	audit.WithAllToolCalls(), audit.WithRunCertificate(spec), audit.WithGrants(),
+	audit.WithConsistencyFrom(earlierSTH)) // an earlier signed head of this run, e.g. from the anchor log
+report, _ := pkg.Verify(pub, audit.WithApprovedPolicies(allowlist...)) // trusting only the out-of-band key
 ```
 
-`Verify` trusts the key you pass, never the one embedded in the package. It confirms the tree-head
-signature, every action proof against that tree, and (when present) the run certificate, anchored
-grants, and consistency proof. Two checks need inputs the package deliberately does not carry, so the
-report flags them: grant issuer signatures (they need the issuers' keys, checked with
-`VerifyDelegationChain` against your own PKI) and the full consistency prefix (it needs the earlier
-root). For the auditor who does not write Go, `bide-audit verify-evidence` verifies the same file and
-prints a plain-English PASS/FAIL.
+`Verify` trusts the key you pass, never the one embedded in the package, and every field of the
+package is verified or derived from verified data:
+
+- `Format` must be `audit.EvidenceFormat` (`bide.audit.evidence.v2`), and `PublicKeyHex` must be the
+  key you pass.
+- The STH must be an authentic journal head of the package's `RunID`, so the run the report names is
+  the run the log key signed.
+- Each action proof must verify against that same tree, and its `Kind`, `Label`, and `Ref` must be
+  what the proven record says (a tool result cannot be shown as an approval by someone else).
+- `Grants.Chain` must be exactly the grants the anchored leaves prove, one per leaf, in order.
+- The run certificate must be for this run and this tree, and is checked against the allowlist you
+  pass with `WithApprovedPolicies`; a package that carries a certificate fails without one.
+- The consistency proof is checked from its earlier signed head (an authentic journal head of the
+  same run, of the size the proof starts from) to the package STH.
+- `Label`, the one field no proof covers, is covered by the seal: `Evidence` ends with `pkg.Seal(priv)`,
+  the log key's signature over the whole package, so nothing can be edited, added, or dropped after
+  sealing. A caller that adds actions afterwards reseals.
+
+One check needs inputs the package deliberately does not carry: grant issuer signatures (they need
+the issuers' keys, checked with `VerifyDelegationChain` against your own PKI). For the auditor who
+does not write Go, `bide-audit verify-evidence` verifies the same file and prints a plain-English
+PASS/FAIL.
 
 ### Approval evidence: k approvers signed off before the action
 
@@ -202,11 +230,12 @@ For a tool gated by an m-of-n approval policy, `audit.ApprovalEvidence` produces
 evidence under one signed tree head, in journal order: the model turn that requested the call, every
 decision record the gate read (valid or not), the gate's recorded tally, and the call's result. To add
 it to a package that already carries the call (built with `WithToolCall` or `WithAllToolCalls`), drop
-the trailing result entry:
+the trailing result entry and reseal the package:
 
 ```go
 approvals, _ := audit.ApprovalEvidence(ctx, store, runID, toolUseID, pkg.STH)
 pkg.Actions = append(pkg.Actions, approvals[:len(approvals)-1]...) // the result is already packaged
+_ = pkg.Seal(priv)                                                 // the package changed after Evidence sealed it
 ```
 
 `pkg.Verify` checks each item's inclusion under the tree head like any other action. Like grant
@@ -230,8 +259,12 @@ and every verify verb needs only a bundle and an out-of-band public key. Build i
 Conventions shared across verbs:
 
 - `-pubkey` accepts either a hex string directly or a path to a file whose trimmed contents are
-  hex. The key must come from the anchor operator out-of-band, never from the bundle: that is what
-  makes it a proof you verify rather than a log you trust.
+  hex, and must decode to a 32-byte ed25519 public key (anything else exits 1 with a message). The
+  key must come from the anchor operator out-of-band, never from the bundle: that is what makes it a
+  proof you verify rather than a log you trust.
+- Every JSON input is read strictly (`audit.UnmarshalStrict`): a duplicate key, a key that matches a
+  field only case-insensitively, an unknown field, or invalid UTF-8 exits 1, so a file cannot show a
+  reader one value while the verifier checks another.
 - Produce verbs (`prove`, `prove-absent`) write the bundle to `-out`, or to stdout if `-out` is
   omitted; the "wrote &lt;file&gt;" line goes to stderr so stdout stays clean for piping.
 - Verify verbs print a one-line `OK: ...` / `FAIL: ...` verdict and set the exit code: **0 =
@@ -240,16 +273,16 @@ Conventions shared across verbs:
 | Verb | Required flags | Optional flags | Proves / checks |
 |---|---|---|---|
 | `prove` | `-journal`, `-sth`, and one of `-tool <id>` / `-index <n>` | `-out` | Build a `ProofBundle` for one record (by tool-use id or journal index) against a signed tree head. |
-| `verify` | `-bundle`, `-pubkey` | | A `ProofBundle` is authentic under the key and bound to its signed size. |
-| `prove-absent` | `-journal`, `-sth`, `-key` (`tool:<id>` or `policy:<digest>`) | `-out` | Build an `AbsenceBundle` proving a tool call / governed policy never appears, against a signed **absence** tree head (`audit.SignAbsenceRoot`). |
-| `verify-absent` | `-bundle`, `-pubkey` | | An `AbsenceBundle` is authentic (the key really is absent from the signed key set). |
+| `verify` | `-bundle`, `-pubkey` | | A `ProofBundle` is authentic under the key, its head is a journal head of the bundle's run, and it is bound to its signed size. |
+| `prove-absent` | `-journal`, `-sth`, `-key` (`tool:<id>` or `policy:<digest>`) | `-out` | Build an `AbsenceBundle` proving a tool call / governed policy never appears, against a signed key-set head **of the matching kind** (`audit.SignAbsenceRoot` with `ToolUseKeys` or `PolicyUsedKeys`) whose source journal is the exported journal. |
+| `verify-absent` | `-bundle`, `-pubkey` | | An `AbsenceBundle` is authentic: its head is a signed key-set head of the kind the key belongs to (`tooluse:` keys need a tool-use head, `policy_used:` keys a used-policy head) for the bundle's run, and the key is absent from it. Reports the journal size the absence covers. |
 | `verify-governance` | `-policy` | `-digest <hex>`, `-checker <astchecker>` | Recompute the policy digest from the published bytes (independent of gsm); with `-digest`, assert it matches; with `-checker`, run the external verified oracle to certify the policy converges. |
 | `verify-governed-action` | `-action`, `-policy-bundle`, `-pubkey` | `-checker` | End to end: both bundles authentic and in the same signed tree, the action's embedded policy digest links to the anchored policy leaf, the leaf's bytes hash to that digest, and (with `-checker`) the policy converges. |
 | `verify-convergence` | `-cert-bundle`, `-policy-bundle`, `-pubkey` | `-checker` | An anchored `ConfluenceCertificate` links to the policy leaf; with `-checker`, the oracle's convergence AND compensation-free verdicts must AGREE with the certificate, so an overstated certificate is caught. |
 | `verify-quorum` | `-name`, `-tally`, `-vote` (repeatable), `-pubkey`, `-k` | `-commit` | A governed k-of-n quorum: the tally and every vote bundle authentic, in the same signed tree and run, and recorded by the quorum named `-name`; the disclosed votes exactly the votes the tally records; the recorded tally recomputes from them (a forged tally is caught); and `votes_for >= k`; with `-commit`, a governed commit is anchored in the same tree. |
-| `verify-run` | `-cert`, `-pubkey`, and one of `-approved <digest>` (repeatable) / `-approved-file <file>` | `-checker <astchecker>` | A proof-carrying run certificate: the used-policy set is bound to the run's signed absence root and is a subset of the approved allowlist (only-approved-policies), and every used policy has an anchored, digest-linked convergence certificate in the run's signed tree (policies-convergence-certified); with `-checker`, the oracle's convergence verdict on each used policy must AGREE with its certificate. |
+| `verify-run` | `-cert`, `-pubkey`, and one of `-approved <digest>` (repeatable) / `-approved-file <file>` | `-checker <astchecker>` | A proof-carrying run certificate: the used-policy set is bound by a signed used-policy head to this run and to the certificate's journal tree, and is a subset of the approved allowlist (only-approved-policies), and every used policy has an anchored, digest-linked convergence certificate in the run's signed tree (policies-convergence-certified); with `-checker`, the oracle's convergence verdict on each used policy must AGREE with its certificate. |
 | `verify-approvals` | `-evidence`, `-pubkey`, `-call`, `-need`, `-approvers`, `-approver-keys` | | An m-of-n approval gate from an `EvidencePackage`: the request, every decision the gate read, its recorded tally, and the call's result all verify in one signed tree and in order; recounting the decisions with the approvers' keys (a JSON object of id to ed25519 public key hex) against the exact call reproduces the recorded tally; the gate enforced the expected policy; and at least k approved. Catches an omitted decision, which `verify-evidence` alone cannot. |
-| `verify-evidence` | `-evidence`, `-pubkey` | | A run-level `EvidencePackage`: the signed tree head is authentic and every packaged action proof (plus any run certificate, anchored grant, and consistency proof) verifies against it. Prints one line per action and an overall PASS/FAIL. |
+| `verify-evidence` | `-evidence`, `-pubkey` | `-approved <digest>` (repeatable), `-approved-file <file>` | A run-level `EvidencePackage`: the format, seal, and key are right, the signed tree head is an authentic journal head of the package's run, every packaged action proof verifies against it with the kind and label its record says, the grant chain is the anchored grants, the consistency proof holds between its two signed heads, and any run certificate is for this run and passes against the given allowlist (required when the package carries one). Prints one line per item and an overall PASS/FAIL. |
 
 The `-checker` flag points at the external verified oracle binary (the `astchecker` extracted from
 the axiom-free Coq proof); the CLI does not ship it, and without it the governance verbs verify only
@@ -392,29 +425,36 @@ refinement gap stays open.
 ### Proving a negative: no action under a disallowed policy
 
 The set of policies a run exercised is itself provable. Governed-action leaves are keyed by their
-policy digest (`audit.PolicyUsedKey`), so the run's absence commitment (`AbsenceRoot`, a Merkle tree
-over the sorted distinct keys with adjacency-checked non-membership) commits exactly the policies
-that were used. An auditor:
+policy digest (the `audit.PolicyUsedKeys` key set), so the run's used-policy commitment
+(`AbsenceRoot`, a Merkle tree over the sorted distinct keys with adjacency-checked non-membership)
+commits exactly the policies that were used. An auditor:
 
 1. recomputes the used set with `audit.PoliciesUsed(records)` and confirms every digest is in the
    approved set (each approved policy having been oracle-certified convergent, as above);
 2. for any digest that is not approved, obtains an anchorable `audit.AbsenceBundle` via
-   `audit.ProveAbsentBundle(records, audit.PolicyUsedKey, audit.PolicyUsedKeyFor(digest), runID, sth)`
-   and verifies it offline with `AbsenceBundle.Verify(pub)`, proving no governed action ran under
-   that policy.
+   `audit.ProveAbsentBundle(records, audit.PolicyUsedKeys, audit.PolicyUsedKeyFor(digest), sth)`
+   and verifies it offline with `bundle.Verify(pub, audit.PolicyUsedKeys)`, proving no governed
+   action ran under that policy.
 
-The negative has teeth: the commitment is over the run's actual key set (the STH must commit to the
-`AbsenceRoot` of these records, or `ProveAbsentBundle` refuses), so you cannot prove absence of a
-policy that was in fact used.
+The negative has teeth: the commitment is over the run's actual key set (the head must commit to
+the key set of the journal it names, or `ProveAbsentBundle` refuses), so you cannot prove absence of
+a policy that was in fact used. And it cannot be borrowed from another tree: each key set is a
+`KeySet` with its own tree kind and key prefix (`ToolUseKeys` is `absence/tool-use` over
+`tooluse:` keys, `PolicyUsedKeys` is `absence/policy-used` over `policy_used:` keys), the signed
+head commits to its kind, its run, and its source journal tree, and `Verify` requires the head to be
+of the set you name and the key to carry that set's prefix. A tool-use head cannot prove a policy
+absent, and a journal head cannot prove anything absent. The absence covers the journal up to the
+size the head names; that it is the run's final head comes from the anchor log.
 
 The auditor persona produces and checks these from the command line, as with inclusion. Absence
-proofs verify against a separate absence commitment, signed in one call with
-`audit.SignAbsenceRoot(records, keyFn, priv, ts)`; keys are built with `audit.ToolUseKeyFor(id)` or
+proofs verify against a separate key-set commitment, signed in one call with
+`audit.SignAbsenceRoot(records, keySet, journalHead, priv, ts)` (it refuses records that are not the
+journal `journalHead` commits to); keys are built with `audit.ToolUseKeyFor(id)` or
 `audit.PolicyUsedKeyFor(digest)`:
 
 ```
 # prove no tool call with this ID, or no governed action under this policy digest, ever happened:
-bide-audit prove-absent -journal run.json -sth absence-sth.json -key policy:<digest> -out absent.json
+bide-audit prove-absent -journal run.json -sth used-policy-sth.json -key policy:<digest> -out absent.json
 bide-audit verify-absent -bundle absent.json -pubkey <hex>   # exit 0 = authentically absent
 ```
 
@@ -442,12 +482,20 @@ proofs.
 v1 asserts two properties, each dischargeable from a committed leaf:
 
 - **only-approved-policies**: every policy digest exercised by a governed action in the run is a
-  member of a caller-supplied approved allowlist. This is the **completeness-bearing** property: it
-  commits WHICH policies were used, via the policy-used absence commitment (`AbsenceRoot` over
-  `PolicyUsedKey`). The used set is exactly the sorted distinct keys the absence tree commits to, so
-  the verifier recomputes that root from the disclosed set and confirms the signed absence STH
-  commits to it. That is what gives the negative teeth: a policy that was in fact used cannot be
-  dropped from the disclosed set without changing the root and breaking the signature check.
+  member of the auditor's approved allowlist (an argument to `VerifyRun`; the certificate carries
+  no allowlist of its own). This is the **completeness-bearing** property: it commits WHICH policies
+  were used, via the used-policy commitment (a `PolicyUsedKeys` head). The used set is exactly the
+  sorted distinct keys that tree commits to, so the verifier recomputes that root from the disclosed
+  set and confirms the signed head commits to it. That is what gives the negative teeth: a policy
+  that was in fact used cannot be dropped from the disclosed set without changing the root and
+  breaking the signature check.
+- **binding**: the used-policy head is bound to this run and this journal, not merely signed by the
+  right key. Its signed encoding commits to kind `absence/policy-used`, to the run ID, and to the
+  journal tree (size and root) the set was projected from, and `VerifyRun` requires that journal
+  tree to be exactly the certificate's signed journal head, itself a journal head of the
+  certificate's run. A used-policy head from another run, from another point or history of this
+  run, or a tool-use head cannot stand in, and the used set is the projection of the same records
+  the convergence bundles are proven against.
 - **policies-convergence-certified**: for each used policy digest, an anchored convergence
   certificate leaf exists in the same signed tree as the policy leaf and links to its digest,
   exactly as `verify-convergence` establishes. With `-checker`, the external oracle is run on each
@@ -468,16 +516,15 @@ cert, _ := audit.CertifyRun(ctx, store, runID, sth,
 // Anchor the certificate itself so it is provable in the run (mirrors RecordPolicy / RecordConvergence):
 audit.RecordRunCertificate(ctx, store, runID, cert)   // + audit.ProveRunCertificate(..., laterSTH)
 
-// Verify: offline, trusting only the out-of-band public key.
-res, _ := audit.VerifyRun(cert, pub)   // res.OnlyApprovedPolicies && res.ConvergenceCertified
+// Verify: offline, against the auditor's allowlist, trusting only the out-of-band public key.
+res, _ := audit.VerifyRun(cert, allowlist, pub)   // res.OnlyApprovedPolicies && res.ConvergenceCertified
 ```
 
 The CLI verifies the same certificate for an auditor who does not write Go, and takes the allowlist
-as its own input (never the certificate's embedded list, so a producer cannot pass by widening its
-own set):
+as its own input (the certificate carries none, so a producer cannot pass by widening its own set):
 
 ```
-# only-approved-policies (used set bound to the signed absence root and a subset of the allowlist)
+# only-approved-policies (used set bound to the run's signed used-policy head and a subset of the allowlist)
 # and policies-convergence-certified (each used policy anchored and digest-linked); with -checker the
 # oracle's verdict on each policy must agree with its certificate:
 bide-audit verify-run -cert runcert.json -pubkey <hex> -approved <digest> -checker ./astchecker
@@ -488,8 +535,9 @@ of the run: which policies ran, that each is on the approved allowlist, and that
 anchored convergence certificate that (with the oracle) is confirmed convergent. It does NOT prove
 the model's judgment was correct, that ungoverned side effects were appropriate, or the
 runtime-refinement claim (the replay differential check covers the events this run took, not all
-inputs). The used-policy completeness rests entirely on the absence-root key-set commitment
-described above. Property support for **authority-bounded** (every governed action under a grant
+inputs). The used-policy completeness rests entirely on the used-policy key-set commitment
+described above, and covers the journal up to the certificate STH's size; that this STH is the
+run's final head is a fact the anchor log supplies, not the certificate. Property support for **authority-bounded** (every governed action under a grant
 descending from the root, via `VerifyDelegationChain`) and **quorum-backed** commits composes from
 the same seams and is deferred to a later version. Runnable end to end in
 `examples/proof-carrying-run`.
@@ -497,9 +545,11 @@ the same seams and is deferred to a later version. Runnable end to end in
 ## Signature schemes and post-quantum anchoring
 
 Signed tree heads sign under a pluggable scheme. `SignedTreeHead` carries an `Alg` field
-(`omitempty`), so existing ed25519 bundles are unchanged and keep verifying; the legacy
-`SignTreeHead` / `Verify` path is untouched. `SignTreeHeadWith` / `VerifyWith` (and
-`ProofBundle.VerifyWith` / `AbsenceBundle.VerifyWith`) carry the scheme end to end. Three schemes
+(`omitempty`; empty means ed25519), so ed25519 heads from `SignTreeHead` / `Verify` carry no extra
+field. `SignTreeHeadWith` / `VerifyWith` (and `ProofBundle.VerifyWith` /
+`AbsenceBundle.VerifyWith`) carry the scheme end to end. Every scheme signs the same encoding
+(`bide.audit.sth.v2`: kind, run ID, size, root, timestamp, and the source journal of a key-set
+head), so the kind and run binding hold whichever scheme signs. Three schemes
 are available, all in the Go 1.27 standard library, so this adds no dependency:
 
 - `ed25519` (default): small, fast, FIPS-approved.
@@ -526,17 +576,22 @@ a leaf like a policy, and a governed action's `agent.Identity.AuthorityRef` is s
 
 `ParentRef` hash-links a grant to the one it was attenuated from, so a holder can mint a strictly
 narrower sub-grant for a sub-agent without returning to the root issuer (capability attenuation).
-`VerifyDelegationChain` checks a root-to-leaf chain: each hop signed by its issuer, each `ParentRef`
-equal to the parent's digest, and each hop an attenuation of its parent (`AttenuatesNumericScope`
-covers the "lower the limit" case; scope semantics are otherwise domain-defined). An auditor thus
-confirms a sub-agent's authority descends, unbroken and never widened, from a root principal each
-hop signed. Runnable end to end in `examples/delegation`.
+`VerifyDelegationChain` checks a root-to-leaf chain: each hop signed by its issuer, and each child a
+valid delegation of its parent (`CheckAttenuation`): its `ParentRef` is the parent's digest, its
+issuer is the parent's subject (only the holder of a grant can delegate it), it expires no later than
+the parent (a child of an expiring grant is never non-expiring), and it keeps every one of the
+parent's scope constraints, unchanged or narrowed by the `ScopeRule` you supply for that key
+(`audit.ScopeRules{"limit": audit.NumericAtMost}` for a limit). An auditor thus confirms a
+sub-agent's authority descends, unbroken and never widened, from a root principal each hop signed.
+Runnable end to end in `examples/delegation`; the [delegation guide](delegation.md) states the rules
+in full.
 
 **Attenuation by default.** `AttenuatingSubAgent` wires this into the sub-agent seam so narrowing is
 the default, not something the caller remembers to do. Bind the acting grant and signer once at the
 root with `WithGrant`; then each delegation through the tool mints a narrower child grant (linked to
-the parent, signed, and anchored as a leaf), rebinds the sub-run's identity to it, and propagates it
-so a deeper delegation narrows again. With no grant on the context it is a plain sub-agent that
+the parent, expiring no later, checked with `CheckAttenuation` before it is signed, and anchored as a
+leaf of the call's own sub-run), rebinds the sub-run's identity to it, and propagates it so a deeper
+delegation narrows again. With no grant on the context it is a plain sub-agent that
 inherits identity, so it is safe either way. The wrapped sub-agent still runs its own full loop and
 reasons autonomously; only its authority shrinks. The result is that capabilities monotonically
 decrease down a delegation tree by construction, and the chain stays provable via
@@ -545,9 +600,13 @@ decrease down a delegation tree by construction, and the chain stays provable vi
 **Earned authority.** `audit.EarnedAuthority` drives a grant's scope from the agent's track record:
 authority starts at a baseline rung, is promoted one rung after a clean streak (capped by the
 ladder's top), and resets to baseline the instant an anomaly is flagged. Each change re-issues a
-signed grant that is a child of the root, so the earned limit provably never exceeds the root
-ceiling (every earned grant passes `VerifyDelegationChain`, so even a buggy controller cannot widen
-past what the root principal authorized). The asymmetry is the safety property: promotion is slow,
+signed grant that is a child of the root (keeping the root's expiry and every root constraint), so
+the earned limit provably never exceeds the root ceiling (every earned grant passes
+`VerifyDelegationChain` with `audit.EarnedRules`, so even a buggy controller cannot widen past what
+the root principal authorized). A demotion takes the higher grant out of use at once: every issued
+grant is appended to a ledger run, and only the ledger's last leaf is current
+(`ProveCurrentGrant` / `VerifyCurrentGrant` against the ledger's latest signed head, which an offline
+verifier takes from the anchor log). The asymmetry is the safety property: promotion is slow,
 capped, and evidence-gated; attenuation is immediate and ungated, because shrinking authority is
 always safe. It is deliberately a durable, sequential controller rather than a convergent machine,
 because earning is temporal and order-dependent (a promotion does not commute with a compliant
@@ -589,4 +648,5 @@ Candidate extensions if a use case needs them, in rough priority:
   boundary via a signed checkpoint chain; the load-bearing invariant is that only a closed prefix
   may be sealed, so at-most-once is never broken. Not implemented.
 - **Pinned cross-language canonicalization** so non-Go verifiers can reproduce leaf bytes (today
-  leaves are Go `json.Marshal`, deterministic in-ecosystem but not a pinned wire format).
+  leaves are Go `json.Marshal` over values refused if they hold invalid UTF-8, deterministic and
+  injective in-ecosystem but not a pinned wire format).

@@ -176,9 +176,10 @@ func TestApprovalAcrossProcesses(t *testing.T) {
 		t.Fatalf("verify-approvals accepted a policy mismatch (exit %d):\n%s", code, out)
 	}
 
-	// Tampering with a disclosed decision breaks verification in both verifiers.
+	// Tampering with a disclosed decision breaks verification in both verifiers, even when the log
+	// key holder reseals the package.
 	tampered := filepath.Join(dir, "tampered.json")
-	editEvidence(t, evidence, tampered, func(act *audit.EvidenceAction) bool {
+	editEvidence(t, evidence, tampered, true, func(act *audit.EvidenceAction) bool {
 		if act.Kind == audit.KindApproval && act.Bundle.Record.Approver == "ops" {
 			act.Bundle.Record.Approved = false
 		}
@@ -194,12 +195,20 @@ func TestApprovalAcrossProcesses(t *testing.T) {
 		t.Fatalf("bide-audit verify-approvals accepted tampered evidence:\n%s", out)
 	}
 
-	// Leaving a decision out of the file is caught by the approval check, even though every
-	// remaining proof is valid: verify-evidence, which checks proofs only, still passes it.
-	omitted := filepath.Join(dir, "omitted.json")
-	editEvidence(t, evidence, omitted, func(act *audit.EvidenceAction) bool {
+	// Leaving a decision out of the file breaks the package seal, so verify-evidence rejects it.
+	unsealed := filepath.Join(dir, "unsealed.json")
+	dropMallory := func(act *audit.EvidenceAction) bool {
 		return act.Kind != audit.KindApproval || act.Label != "mallory"
-	})
+	}
+	editEvidence(t, evidence, unsealed, false, dropMallory)
+	if out, code := run(t, auditCLI, "verify-evidence", "-evidence", unsealed, "-pubkey", logPub); code == 0 || !strings.Contains(out, "seal") {
+		t.Fatalf("verify-evidence accepted evidence edited after sealing (exit %d):\n%s", code, out)
+	}
+
+	// The log key holder can omit a decision and reseal: every remaining proof is valid, so
+	// verify-evidence, which checks proofs only, passes it, but the approval check catches it.
+	omitted := filepath.Join(dir, "omitted.json")
+	editEvidence(t, evidence, omitted, true, dropMallory)
 	out, code := run(t, app, "verify", "-in", omitted)
 	if code == 0 || !strings.Contains(out, "problem: the evidence omits") {
 		t.Fatalf("verify accepted evidence with a decision left out (exit %d):\n%s", code, out)
@@ -215,8 +224,8 @@ func TestApprovalAcrossProcesses(t *testing.T) {
 // editEvidence rewrites the evidence file's actions through the typed package, which keeps
 // every recorded byte intact (a generic JSON edit would re-order object keys and invalidate
 // proofs that commit to the exact bytes). edit may modify an action in place, and returns false
-// to drop it.
-func editEvidence(t *testing.T, in, out string, edit func(act *audit.EvidenceAction) bool) {
+// to drop it. With reseal, the package is resealed with the log key, as its producer could.
+func editEvidence(t *testing.T, in, out string, reseal bool, edit func(act *audit.EvidenceAction) bool) {
 	t.Helper()
 	b, err := os.ReadFile(in)
 	if err != nil {
@@ -233,6 +242,11 @@ func editEvidence(t *testing.T, in, out string, edit func(act *audit.EvidenceAct
 		}
 	}
 	pkg.Actions = kept
+	if reseal {
+		if err := pkg.Seal(logKey()); err != nil {
+			t.Fatal(err)
+		}
+	}
 	b, err = json.Marshal(pkg)
 	if err != nil {
 		t.Fatal(err)

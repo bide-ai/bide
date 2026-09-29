@@ -138,7 +138,7 @@ func TestEventLog_STH(t *testing.T) {
 	evs := sampleEvents()
 	log := buildLog(t, evs)
 
-	sth := audit.SignTreeHead(log.TreeHead(1_700_000_000), priv)
+	sth := audit.SignTreeHead(log.TreeHead("run", 1_700_000_000), priv)
 	if !sth.Verify(pub) {
 		t.Fatal("event-log STH did not verify")
 	}
@@ -261,7 +261,7 @@ func TestEventLogFromJournal(t *testing.T) {
 
 	// Composes with the STH anchor.
 	pub, priv, _ := ed25519.GenerateKey(nil)
-	sth := audit.SignTreeHead(log1.TreeHead(1000), priv)
+	sth := audit.SignTreeHead(log1.TreeHead("run", 1000), priv)
 	if !sth.Verify(pub) || sth.Size != log1.Len() {
 		t.Fatalf("durable event STH failed (verify=%v size=%d/%d)", sth.Verify(pub), sth.Size, log1.Len())
 	}

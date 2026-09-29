@@ -70,7 +70,7 @@ func Inclusion(root, leaf []byte, index, size int, path [][]byte) bool {
 // (over the first `first` leaves) is an append-only prefix of laterRoot (over `size` leaves).
 func Consistency(first, size int, path [][]byte, firstRoot, laterRoot []byte) bool {
 	switch {
-	case first > size:
+	case first < 0 || first > size: // first > size then covers a negative size
 		return false
 	case first == size:
 		return len(path) == 0 && bytes.Equal(firstRoot, laterRoot)
@@ -125,18 +125,38 @@ func Consistency(first, size int, path [][]byte, firstRoot, laterRoot []byte) bo
 	return bytes.Equal(hash1, firstRoot) && bytes.Equal(hash2, laterRoot)
 }
 
-// TreeHead reports whether sig is a valid Ed25519 signature, under pub, of the signed tree
-// head committing to (root, size, timestamp). The canonical encoding is domain-separated and
+// TreeRef names one tree by its size and root: the source journal of an absence key-set head.
+type TreeRef struct {
+	Size int
+	Root []byte
+}
+
+// TreeHead reports whether sig is a valid Ed25519 signature, under pub, of the signed tree head
+// committing to (kind, runID, size, root, timestamp, journal). kind is the tree's kind
+// ("journal", "events", or an "absence/..." key set); journal is the source journal tree of an
+// absence key-set head and nil otherwise. The canonical encoding is domain-separated and
 // length-prefixed, byte-identical to audit.TreeHead.canonical(), so an STH signed by the SDK
-// verifies here and vice versa.
-func TreeHead(root []byte, size int, timestamp int64, sig, pub []byte) bool {
-	if len(pub) != ed25519.PublicKeySize {
+// verifies here and vice versa. The caller checks that kind and runID are the tree it expects.
+func TreeHead(kind, runID string, size int, root []byte, timestamp int64, journal *TreeRef, sig, pub []byte) bool {
+	if len(pub) != ed25519.PublicKeySize || size < 0 || (journal != nil && journal.Size < 0) {
 		return false
 	}
-	b := append([]byte(nil), "bide.audit.sth.v1\x00"...)
+	field := func(b, f []byte) []byte {
+		b = binary.BigEndian.AppendUint64(b, uint64(len(f)))
+		return append(b, f...)
+	}
+	b := append([]byte(nil), "bide.audit.sth.v2\x00"...)
+	b = field(b, []byte(kind))
+	b = field(b, []byte(runID))
 	b = binary.BigEndian.AppendUint64(b, uint64(size))
-	b = binary.BigEndian.AppendUint64(b, uint64(len(root)))
-	b = append(b, root...)
+	b = field(b, root)
 	b = binary.BigEndian.AppendUint64(b, uint64(timestamp))
+	if journal == nil {
+		b = append(b, 0)
+	} else {
+		b = append(b, 1)
+		b = binary.BigEndian.AppendUint64(b, uint64(journal.Size))
+		b = field(b, journal.Root)
+	}
 	return ed25519.Verify(pub, b, sig)
 }

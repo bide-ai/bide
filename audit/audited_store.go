@@ -101,11 +101,10 @@ func (a *AuditedStore) anchorIfGrown(ctx context.Context, runID string) error {
 	if !grown {
 		return nil
 	}
-	leaves, err := canonicalLeaves(recs)
+	th, err := journalHead(runID, recs, a.now())
 	if err != nil {
 		return err
 	}
-	th := TreeHead{Size: len(recs), Root: merkleRoot(leaves), Timestamp: a.now()}
 	if err := a.anchor.Publish(ctx, runID, SignTreeHead(th, a.priv)); err != nil {
 		return err
 	}

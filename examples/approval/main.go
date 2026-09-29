@@ -223,6 +223,10 @@ func cmdEvidence(ctx context.Context, store agent.Durable, outPath, keysPath str
 		return err
 	}
 	pkg.Actions = append(pkg.Actions, decisions[:len(decisions)-1]...) // the action is already packaged
+	// Reseal: the package changed after Evidence sealed it.
+	if err := pkg.Seal(logKey()); err != nil {
+		return err
+	}
 	b, err := json.MarshalIndent(pkg, "", "  ")
 	if err != nil {
 		return err

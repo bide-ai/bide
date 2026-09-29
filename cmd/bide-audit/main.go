@@ -16,6 +16,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -78,7 +79,8 @@ func usage() {
          build a ProofBundle for one record against a signed tree head
 
   verify -bundle <file> -pubkey <hex|file>
-         verify a ProofBundle offline; exit 0 if authentic, 1 otherwise
+         verify a ProofBundle offline (its head must be a journal head of the bundle's run);
+         exit 0 if authentic, 1 otherwise
 
   verify-governance -policy <file> [-digest <hex>] [-checker <astchecker>]
          recompute the policy digest and, with -checker, run the external verified
@@ -103,16 +105,18 @@ func usage() {
          is anchored in the same tree
 
   verify-run -cert <file> -pubkey <hex|file> (-approved <digest>... | -approved-file <file>) [-checker <astchecker>]
-         verify a proof-carrying run certificate: the used-policy set is bound to the run's
-         signed absence commitment and is a subset of the approved allowlist (only-approved-
-         policies), and every used policy has an anchored, digest-linked convergence certificate
+         verify a proof-carrying run certificate: the used-policy set is bound by a signed
+         used-policy head to this run and its journal tree, and is a subset of the approved
+         allowlist (only-approved-policies), and every used policy has an anchored, digest-linked convergence certificate
          in the run's signed tree (policies-convergence-certified); with -checker, the external
          oracle's convergence verdict on each used policy must AGREE with its certificate
 
-  verify-evidence -evidence <file> -pubkey <hex|file>
-         verify a portable evidence package offline and print a plain-English report: one line
-         per proven action (tool call, step, grant), plus the run certificate and consistency
-         proof if present; exit 0 if the whole package verifies, 1 otherwise
+  verify-evidence -evidence <file> -pubkey <hex|file> [-approved <digest>... | -approved-file <file>]
+         verify a portable evidence package offline and print a plain-English report: the
+         format, seal, key, and run binding, then one line per proven action (tool call, step,
+         grant), plus the run certificate (checked against the given allowlist, required when
+         the package carries one) and consistency proof if present; exit 0 if the whole package
+         verifies, 1 otherwise
 
   verify-approvals -evidence <file> -pubkey <hex|file> -call <tool-use-id> -need <k>
                    -approvers <id,id,...> -approver-keys <file>
@@ -125,12 +129,15 @@ func usage() {
 
   prove-absent -journal <file> -sth <file> -key (tool:<id>|policy:<digest>) [-out <file>]
          prove a thing did NOT happen (no such tool call / no action under that policy)
-         against a signed absence tree head (see audit.SignAbsenceRoot)
+         against a signed key-set head of the matching kind (see audit.SignAbsenceRoot)
 
   verify-absent -bundle <file> -pubkey <hex|file>
-         verify an absence proof offline; exit 0 if authentic, 1 otherwise
+         verify an absence proof offline against a head of the key's own key set; exit 0 if
+         authentic, 1 otherwise
 
-Export a journal for `+"`prove`"+` with: json.Marshal(store.History(ctx, runID)).
+Export a journal for `+"`prove`"+` with: json.Marshal(store.History(ctx, runID)). Every JSON
+input is parsed strictly: a duplicate or case-variant key, an unknown field, or invalid UTF-8 is
+an error, and a public key must be 32 bytes of hex.
 `)
 	os.Exit(2)
 }
@@ -168,9 +175,9 @@ func prove(args []string) {
 		err    error
 	)
 	if *tool != "" {
-		bundle, err = audit.ProveToolCall(context.Background(), store, "", *tool, sth)
+		bundle, err = audit.ProveToolCall(context.Background(), store, sth.RunID, *tool, sth)
 	} else {
-		bundle, err = audit.ProveRecord(context.Background(), store, "", *index, sth)
+		bundle, err = audit.ProveRecord(context.Background(), store, sth.RunID, *index, sth)
 	}
 	if err != nil {
 		fatal(err)
@@ -300,8 +307,8 @@ func verifyGovernedAction(args []string) {
 		os.Exit(1)
 	}
 
-	// (2) same signed tree.
-	if action.STH.Size != policy.STH.Size || string(action.STH.Root) != string(policy.STH.Root) {
+	// (2) same signed tree (of the same run).
+	if !action.STH.SameTree(policy.STH.TreeHead) {
 		fmt.Println("FAIL: the action and policy are not committed in the same signed tree")
 		os.Exit(1)
 	}
@@ -398,8 +405,8 @@ func verifyConvergence(args []string) {
 		os.Exit(1)
 	}
 
-	// (2) same signed tree.
-	if certBundle.STH.Size != policy.STH.Size || string(certBundle.STH.Root) != string(policy.STH.Root) {
+	// (2) same signed tree (of the same run).
+	if !certBundle.STH.SameTree(policy.STH.TreeHead) {
 		fmt.Println("FAIL: the certificate and policy are not committed in the same signed tree")
 		os.Exit(1)
 	}
@@ -558,12 +565,9 @@ func verifyQuorum(args []string) {
 	mustVerify(tally, "tally")
 	for i := range votes {
 		mustVerify(votes[i], fmt.Sprintf("vote %d", i))
-		if votes[i].STH.Size != tally.STH.Size || string(votes[i].STH.Root) != string(tally.STH.Root) {
-			fmt.Println("FAIL: a vote is not committed in the same signed tree as the tally")
-			os.Exit(1)
-		}
-		if votes[i].RunID != tally.RunID {
-			fmt.Println("FAIL: a vote is not from the same run as the tally")
+		// The signed head commits to the run, so the same tree is also the same run.
+		if !votes[i].STH.SameTree(tally.STH.TreeHead) {
+			fmt.Println("FAIL: a vote is not committed in the same signed tree and run as the tally")
 			os.Exit(1)
 		}
 	}
@@ -657,7 +661,7 @@ func verifyQuorum(args []string) {
 		var commit audit.ProofBundle
 		readJSON(*commitPath, &commit)
 		mustVerify(commit, "commit")
-		if commit.STH.Size != tally.STH.Size || string(commit.STH.Root) != string(tally.STH.Root) || commit.RunID != tally.RunID {
+		if !commit.STH.SameTree(tally.STH.TreeHead) {
 			fmt.Println("FAIL: the commit is not in the same signed tree and run as the quorum")
 			os.Exit(1)
 		}
@@ -673,13 +677,13 @@ func verifyQuorum(args []string) {
 }
 
 // verifyRun verifies a proof-carrying run certificate from public artifacts alone: the certificate
-// bundle, an out-of-band public key, and the AUDITOR's own approved allowlist (never the certificate's
-// embedded list, which the producer chose). It re-derives every property rather than trusting the
-// certificate:
+// bundle, an out-of-band public key, and the AUDITOR's own approved allowlist (the certificate
+// carries none). It re-derives every property rather than trusting the certificate:
 //
 //  1. only-approved-policies (completeness-bearing): audit.VerifyRun confirms the used-policy set is
-//     bound to the run's signed absence commitment (recomputing the absence root, so a used policy
-//     cannot be hidden) and is a subset of the auditor-supplied allowlist.
+//     bound by a signed used-policy head to this run and to the certificate's journal tree
+//     (recomputing its root, so a used policy cannot be hidden and a head from another run or
+//     history cannot stand in) and is a subset of the auditor-supplied allowlist.
 //  2. policies-convergence-certified: audit.VerifyRun confirms every used policy has an anchored,
 //     digest-linked policy leaf and convergence-certificate leaf in the run's signed tree.
 //  3. with -checker, the independent mathematical root: for each used policy the external oracle is
@@ -706,15 +710,14 @@ func verifyRun(args []string) {
 	readJSON(*certPath, &cert)
 	pub := readPubKey(*pubkey)
 
-	// The auditor's own allowlist governs the only-approved-policies check, not the certificate's
-	// embedded list: overwrite it before verifying, so a producer cannot pass by widening its own set.
+	// The auditor's own allowlist governs the only-approved-policies check; the certificate carries
+	// none, so a producer cannot pass by widening its own set.
 	allow := append([]string(nil), approved...)
 	if *approvedFile != "" {
 		allow = append(allow, readDigestLines(*approvedFile)...)
 	}
-	cert.ApprovedPolicies = allow
 
-	res, err := audit.VerifyRun(cert, pub)
+	res, err := audit.VerifyRun(cert, allow, pub)
 	if err != nil {
 		fatal(err)
 	}
@@ -726,7 +729,7 @@ func verifyRun(args []string) {
 			cert.RunID, res.OnlyApprovedPolicies, res.ConvergenceCertified)
 		os.Exit(1)
 	}
-	fmt.Printf("OK: run %q: %d policies used, all in the approved set and bound to the signed absence root; each has an anchored convergence certificate in a signed tree of size %d\n",
+	fmt.Printf("OK: run %q: %d policies used, all in the approved set and bound to the run's signed used-policy set; each has an anchored convergence certificate in a signed tree of size %d\n",
 		cert.RunID, len(cert.UsedPolicies), cert.STH.Size)
 
 	// The independent mathematical root: cross-check each used policy's certificate against the oracle.
@@ -785,14 +788,19 @@ func verifyRun(args []string) {
 }
 
 // verifyEvidence verifies a portable evidence package (audit.Evidence) from public artifacts alone:
-// the package JSON and an out-of-band public key. It re-checks every proof the package carries via
-// audit.EvidencePackage.Verify (the STH signature, each action's inclusion proof against the signed
-// root, the run certificate and consistency proof if present) and prints a plain-English report, one
-// line per proven item, then an overall verdict. It exits non-zero if the package did not verify.
+// the package JSON, an out-of-band public key, and (for a package with a run certificate) the
+// auditor's approved-policy allowlist. It re-checks every field the package carries via
+// audit.EvidencePackage.Verify (format, seal, key, the STH and its run, each action's inclusion proof
+// and label, the grant chain, the run certificate and consistency proof if present) and prints a
+// plain-English report, one line per proven item, then an overall verdict. It exits non-zero if the
+// package did not verify.
 func verifyEvidence(args []string) {
 	fs := flagSet("verify-evidence")
 	evidencePath := fs.String("evidence", "", "path to the EvidencePackage JSON (from audit.Evidence)")
 	pubkey := fs.String("pubkey", "", "ed25519 public key as hex, or a path to a file containing it")
+	var approved stringList
+	fs.Var(&approved, "approved", "an approved policy digest for the run certificate; repeat once per allowed policy")
+	approvedFile := fs.String("approved-file", "", "path to a file of approved policy digests, one per line")
 	_ = fs.Parse(args)
 
 	if *evidencePath == "" || *pubkey == "" {
@@ -803,7 +811,15 @@ func verifyEvidence(args []string) {
 	readJSON(*evidencePath, &pkg)
 	pub := readPubKey(*pubkey)
 
-	rep, err := pkg.Verify(pub)
+	var opts []audit.EvidenceVerifyOption
+	if len(approved) > 0 || *approvedFile != "" {
+		allow := append([]string(nil), approved...)
+		if *approvedFile != "" {
+			allow = append(allow, readDigestLines(*approvedFile)...)
+		}
+		opts = append(opts, audit.WithApprovedPolicies(allow...))
+	}
+	rep, err := pkg.Verify(pub, opts...)
 	if err != nil {
 		fatal(err)
 	}
@@ -817,6 +833,9 @@ func verifyEvidence(args []string) {
 		fmt.Printf("PASS  signed tree head authentic (size %d)\n", pkg.STH.Size)
 	} else {
 		fmt.Println("FAIL  signed tree head is NOT authentic under this key")
+	}
+	for _, p := range rep.Problems {
+		fmt.Printf("FAIL  %s\n", p)
 	}
 	for _, it := range rep.Items {
 		status := "FAIL"
@@ -859,6 +878,9 @@ func verifyApprovals(args []string) {
 		k, err := hex.DecodeString(strings.TrimSpace(h))
 		if err != nil {
 			fatal(fmt.Errorf("approver %q key must be hex: %w", id, err))
+		}
+		if len(k) != ed25519.PublicKeySize {
+			fatal(fmt.Errorf("approver %q key is %d bytes, want a %d-byte ed25519 public key", id, len(k), ed25519.PublicKeySize))
 		}
 		keys[id] = k
 	}
@@ -955,17 +977,17 @@ func readDigestLines(path string) []string {
 	return out
 }
 
-// absenceSelector maps a CLI -key selector to the KeyFunc and the exact absence key to prove
+// absenceSelector maps a CLI -key selector to the key set and the exact absence key to prove
 // missing. "tool:<id>" proves no tool call with that id happened; "policy:<digest>" proves no
 // governed action ran under that policy.
-func absenceSelector(key string) (audit.KeyFunc, string, error) {
+func absenceSelector(key string) (audit.KeySet, string, error) {
 	switch {
 	case strings.HasPrefix(key, "tool:"):
-		return audit.ToolUseKey, audit.ToolUseKeyFor(strings.TrimPrefix(key, "tool:")), nil
+		return audit.ToolUseKeys, audit.ToolUseKeyFor(strings.TrimPrefix(key, "tool:")), nil
 	case strings.HasPrefix(key, "policy:"):
-		return audit.PolicyUsedKey, audit.PolicyUsedKeyFor(strings.TrimPrefix(key, "policy:")), nil
+		return audit.PolicyUsedKeys, audit.PolicyUsedKeyFor(strings.TrimPrefix(key, "policy:")), nil
 	default:
-		return nil, "", fmt.Errorf("key must be tool:<id> or policy:<digest>, got %q", key)
+		return audit.KeySet{}, "", fmt.Errorf("key must be tool:<id> or policy:<digest>, got %q", key)
 	}
 }
 
@@ -980,7 +1002,7 @@ func proveAbsent(args []string) {
 	if *journal == "" || *sthPath == "" || *key == "" {
 		usage()
 	}
-	keyFn, absKey, err := absenceSelector(*key)
+	set, absKey, err := absenceSelector(*key)
 	if err != nil {
 		fatal(err)
 	}
@@ -989,7 +1011,7 @@ func proveAbsent(args []string) {
 	var sth audit.SignedTreeHead
 	readJSON(*sthPath, &sth)
 
-	bundle, err := audit.ProveAbsentBundle(recs, keyFn, absKey, "", sth)
+	bundle, err := audit.ProveAbsentBundle(recs, set, absKey, sth)
 	if err != nil {
 		fatal(err)
 	}
@@ -1017,7 +1039,13 @@ func verifyAbsent(args []string) {
 	readJSON(*bundlePath, &bundle)
 	pub := readPubKey(*pubkey)
 
-	ok, err := bundle.Verify(pub)
+	// The key names the key set it can be absent from; the bundle's head must be of that set.
+	set, known := audit.KeySetForKey(bundle.Absence.Key)
+	if !known {
+		fmt.Printf("FAIL: %q is not a tool-use or used-policy key\n", bundle.Absence.Key)
+		os.Exit(1)
+	}
+	ok, err := bundle.Verify(pub, set)
 	if err != nil {
 		fatal(err)
 	}
@@ -1025,7 +1053,8 @@ func verifyAbsent(args []string) {
 		fmt.Println("FAIL: absence proof did not verify under this key")
 		os.Exit(1)
 	}
-	fmt.Printf("OK: %q is absent from run %q in a signed key set of size %d\n", bundle.Absence.Key, bundle.RunID, bundle.Absence.Size)
+	fmt.Printf("OK: %q is absent from run %q's first %d records (its signed %s key set of size %d)\n",
+		bundle.Absence.Key, bundle.RunID, bundle.STH.Journal.Size, set.Kind, bundle.Absence.Size)
 }
 
 // readPubKey accepts a hex string directly, or a path to a file whose (trimmed) contents are
@@ -1039,6 +1068,9 @@ func readPubKey(s string) []byte {
 	key, err := hex.DecodeString(raw)
 	if err != nil {
 		fatal(fmt.Errorf("public key must be hex (or a file of hex): %w", err))
+	}
+	if len(key) != ed25519.PublicKeySize {
+		fatal(fmt.Errorf("public key is %d bytes, want a %d-byte ed25519 public key", len(key), ed25519.PublicKeySize))
 	}
 	return key
 }
@@ -1058,7 +1090,9 @@ func readJSON(path string, v any) {
 	if err != nil {
 		fatal(err)
 	}
-	if err := json.Unmarshal(b, v); err != nil {
+	// Strict: a duplicate or case-variant key, an unknown field, or invalid UTF-8 is an error, so the
+	// file a person reads is exactly the data the verifier checks.
+	if err := audit.UnmarshalStrict(b, v); err != nil {
 		fatal(fmt.Errorf("parse %s: %w", path, err))
 	}
 }

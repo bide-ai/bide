@@ -48,6 +48,29 @@ func buildEvidenceRun(t *testing.T) (agent.Durable, string, ed25519.PublicKey, e
 	return store, runID, pub, priv
 }
 
+// earlyHead signs, with priv, the journal head runID had after its first n records, standing in for
+// an earlier head an auditor took from the anchor log.
+func earlyHead(t *testing.T, store agent.Durable, runID string, n int, priv ed25519.PrivateKey) audit.SignedTreeHead {
+	t.Helper()
+	ctx := context.Background()
+	recs, err := store.History(ctx, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prefix := agent.NewMemStore()
+	for _, r := range recs[:n] {
+		r := r
+		if _, err := prefix.Do(ctx, runID, r.Name, func(context.Context) (agent.Record, error) { return r, nil }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	th, err := audit.NewTreeHead(ctx, prefix, runID, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return audit.SignTreeHead(th, priv)
+}
+
 // TestEvidence_VerifyReportsEachAction: Evidence packages the run's proofs, Verify passes under the
 // log key, and the report names each proven action (both tool calls and the anchored grant).
 func TestEvidence_VerifyReportsEachAction(t *testing.T) {
@@ -58,7 +81,7 @@ func TestEvidence_VerifyReportsEachAction(t *testing.T) {
 		audit.WithLabel("charge run"),
 		audit.WithAllToolCalls(),
 		audit.WithGrants(),
-		audit.WithConsistency(1),
+		audit.WithConsistencyFrom(earlyHead(t, store, runID, 1, priv)),
 	)
 	if err != nil {
 		t.Fatalf("Evidence: %v", err)
@@ -104,7 +127,7 @@ func TestEvidence_VerifyReportsEachAction(t *testing.T) {
 			t.Fatalf("report is missing tool call %q", id)
 		}
 	}
-	// The consistency item is reported and bound to the signed size.
+	// The consistency item is reported and verified between the two signed heads.
 	sawConsistency := false
 	for _, it := range report.Items {
 		if it.Kind == "consistency" {
@@ -174,7 +197,7 @@ func TestEvidence_JSONRoundTrip(t *testing.T) {
 	pkg, err := audit.Evidence(ctx, store, runID, priv, 1700000000,
 		audit.WithAllToolCalls(),
 		audit.WithGrants(),
-		audit.WithConsistency(2),
+		audit.WithConsistencyFrom(earlyHead(t, store, runID, 2, priv)),
 	)
 	if err != nil {
 		t.Fatalf("Evidence: %v", err)
@@ -190,5 +213,12 @@ func TestEvidence_JSONRoundTrip(t *testing.T) {
 	}
 	if !reflect.DeepEqual(pkg, round) {
 		t.Fatalf("round trip lost data:\n got: %+v\nwant: %+v", round, pkg)
+	}
+	var strict audit.EvidencePackage
+	if err := audit.UnmarshalStrict(b, &strict); err != nil {
+		t.Fatalf("strict unmarshal: %v", err)
+	}
+	if !reflect.DeepEqual(pkg, strict) {
+		t.Fatalf("strict round trip lost data:\n got: %+v\nwant: %+v", strict, pkg)
 	}
 }

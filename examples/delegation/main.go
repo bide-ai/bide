@@ -54,7 +54,7 @@ func main() {
 	s2, _ := audit.SignGrant(g2, signer("exec-agent@1.4.2"))
 	grantChain := []audit.SignedGrant{s0, s1, s2}
 
-	ok, err := audit.VerifyDelegationChain(grantChain, verifier, audit.AttenuatesNumericScope("limit"))
+	ok, err := audit.VerifyDelegationChain(grantChain, verifier, audit.ScopeRules{"limit": audit.NumericAtMost})
 	if err != nil || !ok {
 		panic(fmt.Sprintf("delegation chain invalid: %v", err))
 	}

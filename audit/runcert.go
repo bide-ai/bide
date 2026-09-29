@@ -6,6 +6,7 @@ import (
 	"crypto/ed25519"
 	"encoding/json"
 	"fmt"
+	"slices"
 
 	"github.com/bide-ai/bide/agent"
 )
@@ -20,61 +21,66 @@ import (
 // v1 asserts these properties, each dischargeable from a committed leaf:
 //
 //   - only-approved-policies: every policy digest exercised by a governed action in the run is a
-//     member of a caller-supplied approved allowlist. This is the COMPLETENESS-bearing property: it
-//     commits WHICH policies were used, via the policy-used absence commitment (AbsenceRoot over
-//     PolicyUsedKey). The used set is exactly the sorted distinct keys the absence tree commits to,
-//     so a verifier recomputes that root from the disclosed set and confirms the signed absence STH
-//     commits to it; that closes the "some other policy was quietly used" gap that disclosing only
-//     positive leaves would leave open.
+//     member of the AUDITOR's approved allowlist (passed to VerifyRun; the certificate carries no
+//     allowlist of its own). This is the COMPLETENESS-bearing property: it commits WHICH policies
+//     were used, via the policy-used absence commitment (a PolicyUsedKeys tree head). The used set is
+//     exactly the sorted distinct keys that tree commits to, so a verifier recomputes its root from
+//     the disclosed set and confirms the signed head commits to it; that closes the "some other
+//     policy was quietly used" gap that disclosing only positive leaves would leave open.
 //   - policies-convergence-certified: for each used policy digest, an anchored convergence
 //     certificate leaf exists in the same signed tree as the policy leaf and links to its digest.
 //     The certificate is a producer claim; a rigorous verifier cross-checks it against the external
 //     oracle (bide-audit verify-run -checker), exactly as verify-convergence does, so a
 //     certificate that overstates convergence is caught outside this package.
 //
+// Binding. The used-policy head is bound to this run and to this journal, not merely signed by
+// the right key: its signed encoding commits to Kind TreePolicyUsed, to RunID, and to the journal
+// tree (Size and Root) whose records the used set was projected from. VerifyRun requires that
+// journal tree to be exactly STH (the certificate's signed journal head, itself a journal head of
+// RunID). So a used-policy head from another run, from a different point in this run, or from a
+// tool-use key set cannot stand in, and the used set is the projection of the same records the
+// convergence bundles are proven against.
+//
 // What the certificate proves, stated precisely: it proves properties of the GOVERNED, COMMITTED
-// boundary of the run: which policies ran, that each is on the approved allowlist, and that each has
-// an anchored convergence certificate that (with the oracle) is confirmed convergent. Composing the
-// two properties yields "every governed state in the run was produced by an approved,
-// oracle-certified-convergent policy," so the enforced invariant held throughout the governed
-// boundary. It does NOT prove the model's judgment was correct, that ungoverned side effects were
-// appropriate, or the runtime-refinement claim (the replay differential check covers the events this
-// run took, not all inputs). The used-policy completeness rests entirely on the absence-root key-set
-// commitment described above.
+// boundary of the run up to STH.Size records: which policies ran, that each is on the approved
+// allowlist, and that each has an anchored convergence certificate that (with the oracle) is
+// confirmed convergent. Composing the two properties yields "every governed state in the run was
+// produced by an approved, oracle-certified-convergent policy," so the enforced invariant held
+// throughout the governed boundary. It does NOT prove the model's judgment was correct, that
+// ungoverned side effects were appropriate, or the runtime-refinement claim (the replay
+// differential check covers the events this run took, not all inputs). It covers the journal up to
+// STH.Size; that STH is the run's final head is a fact the anchor log supplies, not the certificate.
 type RunCertificate struct {
-	// RunID is the run this certificate is about.
+	// RunID is the run this certificate is about. It must equal STH.RunID and
+	// UsedPolicyAbsence.RunID, both signed.
 	RunID string `json:"run_id"`
 
 	// Properties names the asserted properties, so a reader sees the scope without decoding the
-	// bindings. v1: "only-approved-policies", "policies-convergence-certified".
+	// bindings. v1: exactly "only-approved-policies", "policies-convergence-certified".
 	Properties []string `json:"properties"`
-
-	// ApprovedPolicies is the caller-supplied allowlist of policy digests the run was permitted to
-	// exercise. The certificate binds to it so an auditor sees exactly which allowlist was asserted.
-	ApprovedPolicies []string `json:"approved_policies"`
 
 	// UsedPolicies is the sorted, distinct set of policy digests exercised by governed actions in the
 	// run, recomputed from the committed leaves (PoliciesUsed). It is disclosed in full because the
-	// only-approved-policies property is completeness-bearing: the verifier recomputes the absence
-	// root over this set and confirms UsedPolicyAbsence.STH commits to it, so the set cannot omit a
+	// only-approved-policies property is completeness-bearing: the verifier recomputes the key-set
+	// root over this set and confirms UsedPolicyAbsence commits to it, so the set cannot omit a
 	// policy that was in fact used.
 	UsedPolicies []string `json:"used_policies"`
 
-	// UsedPolicyAbsence is the signed commitment to the run's used-policy key set: an STH over
-	// AbsenceRoot(records, PolicyUsedKey). Its Size is the number of distinct used policies and its
-	// Root is the RFC 6962 root over their sorted keys, so recomputing that root from UsedPolicies and
-	// comparing binds the disclosed set to what the run actually committed. See SignAbsenceRoot.
+	// UsedPolicyAbsence is the signed commitment to the run's used-policy key set: a PolicyUsedKeys
+	// tree head (NewAbsenceTreeHead) whose Journal is STH's tree. Its Size is the number of distinct
+	// used policies and its Root is the RFC 6962 root over their sorted keys.
 	UsedPolicyAbsence SignedTreeHead `json:"used_policy_absence"`
 
-	// Convergence carries, per used policy digest, the anchored evidence that the policy is certified
-	// convergent: the policy-leaf ProofBundle and the convergence-leaf ProofBundle, both bound to the
-	// run STH below. The oracle cross-check (does the policy actually converge) is performed by the
-	// verifier with a checker, as verify-convergence does; these bundles establish the cryptographic
-	// root (anchored, digest-linked, same tree) that the oracle check hangs off.
+	// Convergence carries, per used policy digest and in UsedPolicies order, the anchored evidence
+	// that the policy is certified convergent: the policy-leaf ProofBundle and the convergence-leaf
+	// ProofBundle, both bound to the run STH below. The oracle cross-check (does the policy actually
+	// converge) is performed by the verifier with a checker, as verify-convergence does; these
+	// bundles establish the cryptographic root (anchored, digest-linked, same tree) that the oracle
+	// check hangs off.
 	Convergence []PolicyConvergence `json:"convergence"`
 
-	// STH is the run's signed tree head: the {Size, Root, Timestamp} commitment the policy and
-	// convergence bundles are proven against. It is the same tree the whole run's journal commits.
+	// STH is the run's signed journal head: the commitment the policy and convergence bundles are
+	// proven against and the journal tree the used-policy set was projected from.
 	STH SignedTreeHead `json:"sth"`
 }
 
@@ -95,7 +101,8 @@ type PolicyConvergence struct {
 type RunCertSpec struct {
 	// ApprovedPolicies is the allowlist of policy digests the run was permitted to exercise. Every
 	// policy the run actually used must be a member, or CertifyRun fails: a certificate cannot be
-	// issued for a run that exercised a disallowed policy.
+	// issued for a run that exercised a disallowed policy. It is not written into the certificate:
+	// the verifier supplies its own allowlist.
 	ApprovedPolicies []string
 }
 
@@ -103,20 +110,25 @@ type RunCertSpec struct {
 var runCertProperties = []string{"only-approved-policies", "policies-convergence-certified"}
 
 // CertifyRun assembles a RunCertificate for runID from its committed leaves, against the run's signed
-// tree head sth. It recomputes the used-policy set from the journal (PoliciesUsed), confirms every
+// journal head sth. It confirms sth is a journal head of runID that matches the journal, recomputes
+// the used-policy set from exactly the sth.Size records sth commits to (PoliciesUsed), confirms every
 // used policy is in spec.ApprovedPolicies (refusing to certify a run that used a disallowed policy),
-// signs the used-policy absence commitment with priv, and for each used policy assembles the anchored
-// policy-leaf and convergence-leaf proof bundles against sth. It fails if a used policy has no
-// anchored policy leaf or no anchored convergence leaf, so the certificate can only be issued for a
-// run whose governed policies are fully anchored and certified.
+// signs the used-policy key-set head bound to sth's tree with priv, and for each used policy
+// assembles the anchored policy-leaf and convergence-leaf proof bundles against sth. It fails if a
+// used policy has no anchored policy leaf or no anchored convergence leaf, so the certificate can
+// only be issued for a run whose governed policies are fully anchored and certified.
 //
-// priv is the same signing key that produced sth (the log's tree-head key): the used-policy absence
-// STH is a second commitment over the SAME run, signed the same way, so a verifier checks both under
-// one out-of-band public key. timestamp stamps the absence STH.
+// priv is the same signing key that produced sth (the log's tree-head key): the used-policy head is
+// a second commitment over the SAME run, signed the same way, so a verifier checks both under one
+// out-of-band public key. timestamp stamps the used-policy head.
 func CertifyRun(ctx context.Context, store agent.Durable, runID string, sth SignedTreeHead, spec RunCertSpec, priv ed25519.PrivateKey, timestamp int64) (RunCertificate, error) {
-	recs, err := store.History(ctx, runID)
+	all, err := store.History(ctx, runID)
 	if err != nil {
 		return RunCertificate{}, fmt.Errorf("audit: load journal %s: %w", runID, err)
+	}
+	recs, err := journalPrefix(runID, all, sth.TreeHead)
+	if err != nil {
+		return RunCertificate{}, fmt.Errorf("audit: certify run %s: %w", runID, err)
 	}
 
 	used := PoliciesUsed(recs)
@@ -130,9 +142,12 @@ func CertifyRun(ctx context.Context, store agent.Durable, runID string, sth Sign
 		}
 	}
 
-	// The used-policy set is the key set of the absence commitment. Sign that commitment so the
-	// disclosed UsedPolicies can be bound to what the run actually committed (completeness).
-	absSTH := SignAbsenceRoot(recs, PolicyUsedKey, priv, timestamp)
+	// The used-policy set is the key set of the absence commitment. Sign that commitment, bound to
+	// sth's journal tree, so the disclosed UsedPolicies can be bound to what the run committed.
+	absSTH, err := SignAbsenceRoot(recs, PolicyUsedKeys, sth.TreeHead, priv, timestamp)
+	if err != nil {
+		return RunCertificate{}, fmt.Errorf("audit: certify run %s: %w", runID, err)
+	}
 
 	conv := make([]PolicyConvergence, 0, len(used))
 	for _, d := range used {
@@ -150,7 +165,6 @@ func CertifyRun(ctx context.Context, store agent.Durable, runID string, sth Sign
 	return RunCertificate{
 		RunID:             runID,
 		Properties:        append([]string(nil), runCertProperties...),
-		ApprovedPolicies:  append([]string(nil), spec.ApprovedPolicies...),
 		UsedPolicies:      used,
 		UsedPolicyAbsence: absSTH,
 		Convergence:       conv,
@@ -209,7 +223,7 @@ type RunVerification struct {
 	// OK is the overall verdict: true only when every asserted property held.
 	OK bool
 	// OnlyApprovedPolicies is true when every used policy is in the allowlist AND the disclosed
-	// used-policy set is bound to the run's absence commitment (completeness).
+	// used-policy set is bound to this run's journal by the signed used-policy head (completeness).
 	OnlyApprovedPolicies bool
 	// ConvergenceCertified is true when every used policy has an anchored policy leaf and convergence
 	// leaf, authentic and in the same signed tree, with linking digests. It does NOT include the
@@ -219,82 +233,88 @@ type RunVerification struct {
 	Reasons []string
 }
 
-// VerifyRun checks a RunCertificate's claims against the disclosed proofs and the out-of-band public
-// key pub, entirely offline. It does NOT trust the certificate; it re-derives each property from the
-// bundles it carries:
+// VerifyRun checks a RunCertificate's claims against the disclosed proofs, the auditor's own
+// approved allowlist, and the out-of-band public key pub, entirely offline. It does NOT trust the
+// certificate; it re-derives each property from the bundles it carries:
 //
-//  1. only-approved-policies (completeness-bearing): the used-policy absence STH is authentic under
-//     pub, its Root equals the RFC 6962 root recomputed from the disclosed UsedPolicies key set (so
-//     the disclosed set IS what the run committed, not a set the producer chose), and every used
-//     policy is a member of ApprovedPolicies. Recomputing the absence root is what gives the negative
-//     teeth: a policy that was actually used cannot be dropped from UsedPolicies without changing the
-//     root and breaking the signature check.
-//  2. policies-convergence-certified: the run STH is authentic under pub; and for every used policy
-//     there is a Convergence entry whose policy-leaf and convergence-leaf bundles both verify under
-//     pub, are in the same tree as the run STH, and whose leaves link by digest (the policy leaf's
-//     PolicyContent.Digest and the convergence leaf's ConvergenceContent.Digest both equal the used
-//     digest). The oracle cross-check of the certificate's convergence claim is left to the caller
-//     (see the CLI's -checker); VerifyRun establishes the anchored, digest-linked cryptographic root
-//     it hangs off.
+//  0. the certificate itself: Properties is exactly the v1 list, and STH is an authentic journal
+//     head of RunID.
+//  1. only-approved-policies (completeness-bearing): the used-policy head is authentic under pub, is
+//     a TreePolicyUsed head of RunID whose source journal is exactly STH's tree, and its Root equals
+//     the RFC 6962 root recomputed from the disclosed UsedPolicies (in the sorted, distinct order the
+//     tree commits; any other order, a duplicate, or a missing or extra digest changes the root), so
+//     the disclosed set IS what this run's journal committed; and every used policy is
+//     a member of approved. A policy that was actually used cannot be dropped from UsedPolicies
+//     without changing the root, and a head for another run or journal cannot be swapped in.
+//  2. policies-convergence-certified: for every used policy there is exactly one Convergence entry,
+//     in UsedPolicies order and none for an unused digest, whose policy-leaf and convergence-leaf
+//     bundles both verify under pub, are in the same tree as the run STH, and whose leaves link by
+//     digest. The oracle cross-check of the certificate's convergence claim is left to the caller
+//     (see the CLI's -checker).
 //
 // A false OK with populated Reasons means a well-formed-but-invalid certificate; an error means a
 // bundle could not be canonicalized (a malformed artifact).
-func VerifyRun(cert RunCertificate, pub ed25519.PublicKey) (RunVerification, error) {
+func VerifyRun(cert RunCertificate, approved []string, pub ed25519.PublicKey) (RunVerification, error) {
 	res := RunVerification{}
+	fail := func(ok *bool, format string, args ...any) {
+		*ok = false
+		res.Reasons = append(res.Reasons, fmt.Sprintf(format, args...))
+	}
+
+	// The run STH anchors both properties.
+	runSTH := true
+	if !slices.Equal(cert.Properties, runCertProperties) {
+		fail(&runSTH, "properties %q are not the v1 set %q", cert.Properties, runCertProperties)
+	}
+	if !cert.STH.Verify(pub) {
+		fail(&runSTH, "run STH is not authentic under this key")
+	}
+	if cert.STH.Kind != TreeJournal || cert.STH.RunID != cert.RunID {
+		fail(&runSTH, "run STH is a %q head of run %q, not the journal of run %q", cert.STH.Kind, cert.STH.RunID, cert.RunID)
+	}
 
 	// Property 1: only-approved-policies (completeness-bearing).
-	onlyApproved := true
-	if !cert.UsedPolicyAbsence.Verify(pub) {
-		onlyApproved = false
-		res.Reasons = append(res.Reasons, "used-policy absence STH is not authentic under this key")
+	onlyApproved := runSTH
+	abs := cert.UsedPolicyAbsence
+	if !abs.Verify(pub) {
+		fail(&onlyApproved, "used-policy head is not authentic under this key")
 	}
-	if cert.UsedPolicyAbsence.Size != len(cert.UsedPolicies) {
-		onlyApproved = false
-		res.Reasons = append(res.Reasons, fmt.Sprintf("absence STH size %d does not match %d disclosed used policies", cert.UsedPolicyAbsence.Size, len(cert.UsedPolicies)))
+	if abs.Kind != TreePolicyUsed || abs.RunID != cert.RunID {
+		fail(&onlyApproved, "used-policy head is a %q head of run %q, not the used-policy set of run %q", abs.Kind, abs.RunID, cert.RunID)
 	}
-	// Recompute the absence root over the disclosed used set and bind it to the signed root. The keys
-	// committed by the absence tree are the PolicyUsedKey-namespaced digests, so we recompute with the
-	// same key form the run committed (PolicyUsedKeyFor), sorted, and compare.
-	if !bytes.Equal(cert.UsedPolicyAbsence.Root, usedPolicyAbsenceRoot(cert.UsedPolicies)) {
-		onlyApproved = false
-		res.Reasons = append(res.Reasons, "used-policy set does not match the signed absence root (the disclosed set is not what the run committed)")
+	if abs.Journal == nil || abs.Journal.Size != cert.STH.Size || !bytes.Equal(abs.Journal.Root, cert.STH.Root) {
+		fail(&onlyApproved, "used-policy head was not projected from the certificate's journal tree")
 	}
-	approved := make(map[string]struct{}, len(cert.ApprovedPolicies))
-	for _, d := range cert.ApprovedPolicies {
-		approved[d] = struct{}{}
+	if !bytes.Equal(abs.Root, usedPolicyAbsenceRoot(cert.UsedPolicies)) {
+		fail(&onlyApproved, "used-policy set does not match the signed root (the disclosed set is not what the run committed)")
+	}
+	allow := make(map[string]struct{}, len(approved))
+	for _, d := range approved {
+		allow[d] = struct{}{}
 	}
 	for _, d := range cert.UsedPolicies {
-		if _, ok := approved[d]; !ok {
-			onlyApproved = false
-			res.Reasons = append(res.Reasons, fmt.Sprintf("policy %q was used but is not in the approved set", d))
+		if _, ok := allow[d]; !ok {
+			fail(&onlyApproved, "policy %q was used but is not in the approved set", d)
 		}
 	}
 	res.OnlyApprovedPolicies = onlyApproved
 
 	// Property 2: policies-convergence-certified.
-	certified := true
-	if !cert.STH.Verify(pub) {
-		certified = false
-		res.Reasons = append(res.Reasons, "run STH is not authentic under this key")
+	certified := runSTH
+	if len(cert.Convergence) != len(cert.UsedPolicies) {
+		fail(&certified, "%d convergence entries for %d used policies", len(cert.Convergence), len(cert.UsedPolicies))
 	}
-	byDigest := make(map[string]PolicyConvergence, len(cert.Convergence))
-	for _, pc := range cert.Convergence {
-		byDigest[pc.Digest] = pc
-	}
-	for _, d := range cert.UsedPolicies {
-		pc, ok := byDigest[d]
-		if !ok {
-			certified = false
-			res.Reasons = append(res.Reasons, fmt.Sprintf("no convergence evidence for used policy %q", d))
+	for i, d := range cert.UsedPolicies {
+		if i >= len(cert.Convergence) || cert.Convergence[i].Digest != d {
+			fail(&certified, "no convergence evidence for used policy %q", d)
 			continue
 		}
-		ok, reason, err := verifyPolicyConvergence(pc, cert.STH, pub)
+		ok, reason, err := verifyPolicyConvergence(cert.Convergence[i], cert.STH, pub)
 		if err != nil {
 			return RunVerification{}, err
 		}
 		if !ok {
-			certified = false
-			res.Reasons = append(res.Reasons, fmt.Sprintf("policy %q: %s", d, reason))
+			fail(&certified, "policy %q: %s", d, reason)
 		}
 	}
 	res.ConvergenceCertified = certified
@@ -322,8 +342,14 @@ func verifyPolicyConvergence(pc PolicyConvergence, runSTH SignedTreeHead, pub ed
 	if !okC {
 		return false, "convergence-leaf bundle did not verify under this key", nil
 	}
-	if !sameTree(pc.PolicyLeaf.STH, runSTH) || !sameTree(pc.Certificate.STH, runSTH) {
+	if !pc.PolicyLeaf.STH.SameTree(runSTH.TreeHead) || !pc.Certificate.STH.SameTree(runSTH.TreeHead) {
 		return false, "policy or convergence leaf is not in the same signed tree as the run STH", nil
+	}
+	if pl := pc.PolicyLeaf.Record; pl.Kind != agent.StepValue || pl.Name != policyLeafName(pc.Digest) {
+		return false, fmt.Sprintf("policy bundle proves record %q, not the policy leaf for %q", pl.Name, pc.Digest), nil
+	}
+	if cl := pc.Certificate.Record; cl.Kind != agent.StepValue || cl.Name != convergenceLeafName(pc.Digest) {
+		return false, fmt.Sprintf("convergence bundle proves record %q, not the convergence leaf for %q", cl.Name, pc.Digest), nil
 	}
 	var polC PolicyContent
 	if err := json.Unmarshal(pc.PolicyLeaf.Record.Result, &polC); err != nil {
@@ -342,21 +368,16 @@ func verifyPolicyConvergence(pc PolicyConvergence, runSTH SignedTreeHead, pub ed
 	return true, "", nil
 }
 
-// sameTree reports whether two signed tree heads commit to the same tree (same size and root).
-func sameTree(a, b SignedTreeHead) bool {
-	return a.Size == b.Size && bytes.Equal(a.Root, b.Root)
-}
-
-// usedPolicyAbsenceRoot recomputes the RFC 6962 absence root over the sorted, distinct used-policy
-// keys, using the same PolicyUsedKeyFor key form the run committed. It mirrors what
-// AbsenceRoot(records, PolicyUsedKey) computes, but from the disclosed digest set alone, so a
-// verifier holding only the certificate can bind the set to the signed root.
+// usedPolicyAbsenceRoot recomputes the RFC 6962 key-set root over the used-policy keys, using the
+// same PolicyUsedKeyFor key form the run committed. It mirrors what AbsenceRoot(records,
+// PolicyUsedKeys) computes, but from the disclosed digest list alone, in the order given: it equals
+// the signed root only for the sorted, distinct list the run committed (PolicyUsedKeyFor is a fixed
+// prefix, so key order is digest order). A verifier holding only the certificate binds the list to
+// the signed root with it.
 func usedPolicyAbsenceRoot(usedDigests []string) []byte {
 	keys := make([]string, len(usedDigests))
 	for i, d := range usedDigests {
 		keys[i] = PolicyUsedKeyFor(d)
 	}
-	// UsedPolicies is already sorted-distinct (PoliciesUsed), and PolicyUsedKeyFor is a stable prefix,
-	// so sort order is preserved; keyLeaves + merkleRoot reproduce AbsenceRoot exactly.
 	return merkleRoot(keyLeaves(keys))
 }
