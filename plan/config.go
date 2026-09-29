@@ -301,6 +301,10 @@ func assemble(cfg *config, reg *Registry) (*builderCore, error) {
 			}
 			seenApprover := make(map[string]bool, n)
 			for _, id := range cn.Approval.Approvers {
+				if id == "" {
+					problems = append(problems, fmt.Sprintf("node %q approval.approvers has an empty id", cn.Name))
+					continue
+				}
 				if seenApprover[id] {
 					problems = append(problems, fmt.Sprintf("node %q approval.approvers lists %q more than once", cn.Name, id))
 				}

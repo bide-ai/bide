@@ -48,6 +48,13 @@ var (
 	ErrTruncatedToolArgs = fmt.Errorf("truncated tool-call arguments: %w", ErrProtocol)
 	ErrBudgetExceeded    = fmt.Errorf("budget exceeded: %w", ErrBudget)
 	ErrMaxTurns          = fmt.Errorf("max turns exceeded: %w", ErrBudget)
+	// ErrInvalidApproval is an approver decision rejected at submission by ApproveAs's
+	// WithDecisionCheck: no such tool call, an unknown approver, or a signature that does not
+	// verify for this exact call.
+	ErrInvalidApproval = fmt.Errorf("invalid approval: %w", ErrConfig)
+	// ErrAlreadyDecided is a decision submitted (with WithDecisionCheck) by an approver whose
+	// earlier valid decision on the same call already counts; the new one would be ignored.
+	ErrAlreadyDecided = fmt.Errorf("approver already decided: %w", ErrConfig)
 )
 
 // RateLimited is returned by a provider adapter when it receives HTTP 429. It

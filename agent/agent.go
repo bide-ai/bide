@@ -397,7 +397,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 						fire(ApprovalRequired{ToolUseID: tu.ID, Name: tu.Name, Args: tu.Args, Quorum: &evTally})
 						return Message{}, totalUsage, liveTurns, &PendingApproval{RunID: runID, ToolUseID: tu.ID, ToolName: tu.Name, Args: tu.Args, Quorum: &tally}
 					}
-					approved = tally.Approved >= tally.Need
+					approved = tally.Passed()
 				} else {
 					if !decided[tu.ID] {
 						fire(ApprovalRequired{ToolUseID: tu.ID, Name: tu.Name, Args: tu.Args})
@@ -528,32 +528,30 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 	}
 }
 
-// approvalTallyStep is the journal name of the final m-of-n tally for toolUseID.
-func approvalTallyStep(toolUseID string) string { return "approval-tally:" + toolUseID }
-
 // quorumTally evaluates the m-of-n gate for tu. It re-reads the run's journal (the
-// authoritative source of the per-approver decisions ApproveAs recorded) and tallies it with
-// tallyApprovals. final reports whether the gate has reached a terminal decision: approved
-// (Approved >= Need) or unreachable (fewer undecided-or-approving eligible approvers remain
-// than Need, so it can never pass). A non-final tally means the run must stay paused.
+// authoritative source of the decisions ApproveAs recorded) and counts it with
+// TallyApprovals, the same rule offline verification runs. final reports whether the gate
+// has reached a terminal outcome: passed (Need approvals) or unreachable (too few approvers
+// remain who have not validly denied). A non-final tally means the run must stay paused.
 //
-// Only a final tally is journaled, as a StepValue named approvalTallyStep(tu.ID). Steps are
-// append-once by name, so writing a still-pending count would freeze a stale tally under that
-// name; recording only the terminal decision keeps it a single, final, provable record per
-// resolved gate. Once that record exists it is authoritative: a replay reuses it rather than
-// recomputing, so the gate's outcome cannot drift if the verifier configuration later changes.
+// Only a terminal tally is journaled, as a StepValue named ApprovalTallyStep(tu.ID), before
+// the tool runs. Steps are append-once by name, so writing a still-pending count would freeze
+// a stale tally; recording only the terminal outcome keeps one final, provable record per
+// resolved gate, carrying the policy it enforced and every decision record it read. Once that
+// record exists it is authoritative: a replay reuses it rather than recounting, so the outcome
+// cannot drift if keys or policy change later.
 func (a *Agent) quorumTally(ctx context.Context, runID string, tu ToolUse, pol *ApprovalPolicy) (ApprovalTally, bool, error) {
+	if err := pol.Validate(); err != nil {
+		return ApprovalTally{}, false, fmt.Errorf("agent: tool %q: %w", tu.Name, err)
+	}
 	if a.approverVerifiers == nil {
 		return ApprovalTally{}, false, fmt.Errorf("agent: tool %q has an m-of-n Approval policy but no approver verifiers are configured (see WithApproverVerifiers): %w", tu.Name, ErrConfig)
-	}
-	if pol.Need < 1 || pol.Need > len(pol.Approvers) {
-		return ApprovalTally{}, false, fmt.Errorf("agent: tool %q Approval.Need = %d, want 1 <= Need <= %d approvers: %w", tu.Name, pol.Need, len(pol.Approvers), ErrConfig)
 	}
 	recs, err := a.store.History(ctx, runID)
 	if err != nil {
 		return ApprovalTally{}, false, fmt.Errorf("load history %s: %w (%w)", runID, err, ErrStorage)
 	}
-	name := approvalTallyStep(tu.ID)
+	name := ApprovalTallyStep(tu.ID)
 	for _, r := range recs {
 		if r.Name == name && r.Kind == StepValue {
 			var t ApprovalTally
@@ -563,8 +561,9 @@ func (a *Agent) quorumTally(ctx context.Context, runID string, tu ToolUse, pol *
 			return t, true, nil
 		}
 	}
-	tally := tallyApprovals(recs, runID, tu.ID, pol.Need, pol.Approvers, a.approverVerifiers)
-	if tally.Approved < pol.Need && len(pol.Approvers)-tally.Denied >= pol.Need {
+	subject := ApprovalSubject{RunID: runID, ToolUseID: tu.ID, ToolName: tu.Name, Args: tu.Args}
+	tally, _ := TallyApprovals(recs, subject, *pol, a.approverVerifiers)
+	if !tally.Passed() && !tally.Unreachable() {
 		return tally, false, nil
 	}
 	tally, err = Step(ctx, a.store, runID, name, func(context.Context) (ApprovalTally, error) { return tally, nil })

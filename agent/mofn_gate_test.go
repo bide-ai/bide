@@ -34,13 +34,47 @@ func fakeVerifiers(known ...string) ApproverVerifierFor {
 	}
 }
 
-// approveAs records a correctly signed decision for approverID.
+// subjectOf reads the recorded call, the way an approver works from pend.Subject().
+func subjectOf(t *testing.T, store Durable, runID, toolUseID string) ApprovalSubject {
+	t.Helper()
+	recs, err := store.History(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, call, ok := FindToolCall(recs, toolUseID)
+	if !ok {
+		t.Fatalf("no recorded call %s in run %s", toolUseID, runID)
+	}
+	return ApprovalSubject{RunID: runID, ToolUseID: toolUseID, ToolName: call.Name, Args: call.Args}
+}
+
+// approveAs records a correctly signed decision for approverID on the recorded call.
 func approveAs(t *testing.T, store Durable, runID, toolUseID, approverID string, approved bool) {
 	t.Helper()
-	sig := fakeSign(approverID, ApprovalDecisionBytes(runID, toolUseID, approverID, approved))
+	sig := fakeSign(approverID, ApprovalDecisionBytes(subjectOf(t, store, runID, toolUseID), approverID, approved))
 	if err := ApproveAs(context.Background(), store, runID, toolUseID, approverID, approved, sig); err != nil {
 		t.Fatalf("ApproveAs(%s): %v", approverID, err)
 	}
+}
+
+// writeRaw appends a decision record directly, bypassing ApproveAs, the way someone with
+// write access to the journal could.
+func writeRaw(t *testing.T, store Durable, runID, name string, rec Record) {
+	t.Helper()
+	if _, err := store.Do(context.Background(), runID, name, func(context.Context) (Record, error) { return rec, nil }); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// counts is the part of a tally a test asserts: the numbers and who, not record names.
+type counts struct {
+	Need, Approved, Denied int
+	ApprovedBy, DeniedBy   []string
+	Pending                []string
+}
+
+func countsOf(t ApprovalTally) counts {
+	return counts{t.Need, t.Approved, t.Denied, t.ApprovedBy, t.DeniedBy, t.Pending}
 }
 
 // mofnRun drives one run of a fresh agent over store with a quorum-gated "charge" tool. The
@@ -58,7 +92,7 @@ func mofnRun(store Durable, runID string, first bool, pol *ApprovalPolicy, verif
 	return a.Run(context.Background(), runID, "pay")
 }
 
-func wantPending(t *testing.T, err error, want ApprovalTally) {
+func wantPending(t *testing.T, err error, want counts) {
 	t.Helper()
 	var pend *PendingApproval
 	if !errors.As(err, &pend) {
@@ -67,8 +101,8 @@ func wantPending(t *testing.T, err error, want ApprovalTally) {
 	if pend.Quorum == nil {
 		t.Fatalf("PendingApproval.Quorum = nil, want %+v", want)
 	}
-	if !reflect.DeepEqual(*pend.Quorum, want) {
-		t.Fatalf("Quorum = %+v, want %+v", *pend.Quorum, want)
+	if got := countsOf(*pend.Quorum); !reflect.DeepEqual(got, want) {
+		t.Fatalf("Quorum = %+v, want %+v", got, want)
 	}
 	if pend.ToolUseID != "c1" || pend.ToolName != "charge" {
 		t.Fatalf("pend = %+v, want charge/c1", pend)
@@ -99,11 +133,11 @@ func TestMofn_ProceedsAtNeed(t *testing.T) {
 	var charged int
 
 	_, err := mofnRun(store, "r1", true, pol, vf, &charged)
-	wantPending(t, err, ApprovalTally{Need: 2, Pending: []string{"alice", "bob", "carol"}})
+	wantPending(t, err, counts{Need: 2, Pending: []string{"alice", "bob", "carol"}})
 
 	approveAs(t, store, "r1", "c1", "alice", true)
 	_, err = mofnRun(store, "r1", false, pol, vf, &charged)
-	wantPending(t, err, ApprovalTally{Need: 2, Approved: 1, Pending: []string{"bob", "carol"}})
+	wantPending(t, err, counts{Need: 2, Approved: 1, ApprovedBy: []string{"alice"}, Pending: []string{"bob", "carol"}})
 	if charged != 0 {
 		t.Fatalf("charge ran %d times below quorum, want 0", charged)
 	}
@@ -146,9 +180,13 @@ func TestMofn_TallyStepJournaled(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := ApprovalTally{Need: 2, Approved: 2, Pending: []string{"bob"}}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("journaled tally = %+v, want %+v", got, want)
+	want := counts{Need: 2, Approved: 2, ApprovedBy: []string{"alice", "carol"}, Pending: []string{"bob"}}
+	if c := countsOf(got); !reflect.DeepEqual(c, want) {
+		t.Fatalf("journaled tally = %+v, want %+v", c, want)
+	}
+	// It records the policy it enforced and every decision record it read.
+	if !reflect.DeepEqual(got.Approvers, abc) || len(got.Records) != 2 {
+		t.Fatalf("journaled tally Approvers=%v Records=%v, want the policy set and 2 records", got.Approvers, got.Records)
 	}
 }
 
@@ -163,7 +201,7 @@ func TestMofn_AutoDenyWhenUnreachable(t *testing.T) {
 	_, _ = mofnRun(store, "r1", true, pol, vf, &charged)
 	approveAs(t, store, "r1", "c1", "bob", false)
 	_, err := mofnRun(store, "r1", false, pol, vf, &charged)
-	wantPending(t, err, ApprovalTally{Need: 2, Denied: 1, Pending: []string{"alice", "carol"}})
+	wantPending(t, err, counts{Need: 2, Denied: 1, DeniedBy: []string{"bob"}, Pending: []string{"alice", "carol"}})
 
 	approveAs(t, store, "r1", "c1", "carol", false)
 	out, err := mofnRun(store, "r1", false, pol, vf, &charged)
@@ -208,7 +246,7 @@ func TestMofn_IneligibleApproverIgnored(t *testing.T) {
 	_, _ = mofnRun(store, "r1", true, pol, vf, &charged)
 	approveAs(t, store, "r1", "c1", "mallory", true)
 	_, err := mofnRun(store, "r1", false, pol, vf, &charged)
-	wantPending(t, err, ApprovalTally{Need: 1, Pending: []string{"alice", "bob"}})
+	wantPending(t, err, counts{Need: 1, Pending: []string{"alice", "bob"}})
 	if charged != 0 {
 		t.Fatalf("charge ran %d times on an ineligible approval, want 0", charged)
 	}
@@ -223,18 +261,19 @@ func TestMofn_BadSignatureIgnored(t *testing.T) {
 
 	_, _ = mofnRun(store, "r1", true, pol, vf, &charged)
 	// bob signs alice's decision: the signature is well formed but not alice's.
-	forged := fakeSign("bob", ApprovalDecisionBytes("r1", "c1", "alice", true))
+	forged := fakeSign("bob", ApprovalDecisionBytes(subjectOf(t, store, "r1", "c1"), "alice", true))
 	if err := ApproveAs(context.Background(), store, "r1", "c1", "alice", true, forged); err != nil {
 		t.Fatal(err)
 	}
 	_, err := mofnRun(store, "r1", false, pol, vf, &charged)
-	wantPending(t, err, ApprovalTally{Need: 1, Pending: []string{"alice", "bob"}})
+	wantPending(t, err, counts{Need: 1, Pending: []string{"alice", "bob"}})
 	if charged != 0 {
 		t.Fatalf("charge ran %d times on a forged approval, want 0", charged)
 	}
 }
 
-// An approver's second, flipped decision is ignored: the first one counts.
+// An approver's later valid decision is superseded: the first valid one counts, and an
+// identical resubmission is a no-op.
 func TestMofn_DuplicateApproverDeduped(t *testing.T) {
 	store := NewMemStore()
 	pol := &ApprovalPolicy{Need: 2, Approvers: abc}
@@ -243,9 +282,16 @@ func TestMofn_DuplicateApproverDeduped(t *testing.T) {
 
 	_, _ = mofnRun(store, "r1", true, pol, vf, &charged)
 	approveAs(t, store, "r1", "c1", "alice", true)
+	approveAs(t, store, "r1", "c1", "alice", true) // identical: same record name, no-op
 	approveAs(t, store, "r1", "c1", "alice", false)
 	_, err := mofnRun(store, "r1", false, pol, vf, &charged)
-	wantPending(t, err, ApprovalTally{Need: 2, Approved: 1, Pending: []string{"bob", "carol"}})
+	wantPending(t, err, counts{Need: 2, Approved: 1, ApprovedBy: []string{"alice"}, Pending: []string{"bob", "carol"}})
+
+	recs, _ := store.History(context.Background(), "r1")
+	tally, checks := TallyApprovals(recs, subjectOf(t, store, "r1", "c1"), *pol, vf)
+	if len(tally.Records) != 2 || len(checks) != 2 || checks[1].Reason != ReasonSuperseded {
+		t.Fatalf("records=%v checks=%+v, want 2 records with the flip superseded", tally.Records, checks)
+	}
 }
 
 // A tool with a nil Approval keeps the 1-of-1 path: it pauses with no Quorum, a per-approver
@@ -295,6 +341,9 @@ func TestMofn_ConfigErrors(t *testing.T) {
 		{"no-verifiers", &ApprovalPolicy{Need: 1, Approvers: abc}, nil},
 		{"need-zero", &ApprovalPolicy{Need: 0, Approvers: abc}, fakeVerifiers(abc...)},
 		{"need-above-n", &ApprovalPolicy{Need: 4, Approvers: abc}, fakeVerifiers(abc...)},
+		{"duplicate-approver", &ApprovalPolicy{Need: 2, Approvers: []string{"alice", "alice", "bob"}}, fakeVerifiers(abc...)},
+		{"empty-approver", &ApprovalPolicy{Need: 1, Approvers: []string{"alice", ""}}, fakeVerifiers(abc...)},
+		{"no-approvers", &ApprovalPolicy{Need: 1}, fakeVerifiers(abc...)},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
@@ -24,7 +26,7 @@ func (chargeModel) Stream(_ context.Context, req agent.Request) (*agent.Stream, 
 		ch <- agent.Emit{Event: agent.TextDelta{Text: "charged"}}
 		ch <- agent.Emit{Event: agent.Finish{Reason: "stop"}}
 	} else {
-		ch <- agent.Emit{Event: agent.ToolCallDelta{Index: 0, ID: "c1", Name: "charge", ArgsFragment: json.RawMessage(`{}`)}}
+		ch <- agent.Emit{Event: agent.ToolCallDelta{Index: 0, ID: "c1", Name: "charge", ArgsFragment: json.RawMessage(`{"amount":120}`)}}
 		ch <- agent.Emit{Event: agent.Finish{Reason: "tool_use"}}
 	}
 	close(ch)
@@ -42,277 +44,224 @@ func hasToolResult(msgs []agent.Message) bool {
 	return false
 }
 
-// kofnRun is a run whose 2-of-3 gated "charge" call proceeded, plus the keys an offline
-// auditor holds: each approver's decision key and the log operator's STH key.
-type kofnRun struct {
-	store     agent.Durable
-	policy    *agent.ApprovalPolicy
-	approvers map[string]ed25519.PublicKey // every registered decision key, eligible or not
-	logPub    ed25519.PublicKey
-	logPriv   ed25519.PrivateKey
-	sth       audit.SignedTreeHead
-	charged   int
+const gateRun = "run-kofn"
+
+// gate is a real agent run through an m-of-n gate on the "charge" tool, plus the keys an
+// offline auditor holds: each registered approver's key and the log operator's key.
+type gate struct {
+	store   agent.Durable
+	policy  agent.ApprovalPolicy
+	pubs    map[string]ed25519.PublicKey
+	privs   map[string]ed25519.PrivateKey
+	logPub  ed25519.PublicKey
+	logPriv ed25519.PrivateKey
+	charged int
 }
 
-// buildKofnRun drives a real agent through a Need=2 of {alice, bob, carol} gate. Before the
-// gate can pass, mallory (a registered key, but not in the eligible set) records a validly
-// signed approval and carol records an approval whose signature is tampered; neither counts.
-// alice then approves (still paused at 1 of 2), bob approves, and the resumed run executes the
-// tool. One STH is signed over the finished journal.
-func buildKofnRun(t *testing.T) *kofnRun {
-	t.Helper()
-	ctx := context.Background()
-	const runID = "run-kofn"
-	k := &kofnRun{
-		store:     agent.NewMemStore(),
-		policy:    &agent.ApprovalPolicy{Need: 2, Approvers: []string{"alice", "bob", "carol"}},
-		approvers: map[string]ed25519.PublicKey{},
+// newGate registers a key for every id in registered (eligible or not).
+func newGate(need int, approvers, registered []string) *gate {
+	g := &gate{
+		store:  agent.NewMemStore(),
+		policy: agent.ApprovalPolicy{Need: need, Approvers: approvers},
+		pubs:   map[string]ed25519.PublicKey{},
+		privs:  map[string]ed25519.PrivateKey{},
 	}
-	signers := map[string]audit.Ed25519Signer{}
-	for _, id := range []string{"alice", "bob", "carol", "mallory"} {
-		pub, priv, _ := ed25519.GenerateKey(rand.Reader)
-		k.approvers[id] = pub
-		signers[id] = audit.Ed25519Signer{Priv: priv}
+	for _, id := range registered {
+		g.pubs[id], g.privs[id], _ = ed25519.GenerateKey(rand.Reader)
 	}
-	verifiers := func(id string) (agent.ApproverVerifier, bool) {
-		pub, ok := k.approvers[id]
+	g.logPub, g.logPriv, _ = ed25519.GenerateKey(rand.Reader)
+	return g
+}
+
+// resolver maps approver ids to keys, the same shape the gate uses at run time.
+func (g *gate) resolver() agent.ApproverVerifierFor {
+	return func(id string) (agent.ApproverVerifier, bool) {
+		pub, ok := g.pubs[id]
 		if !ok {
 			return nil, false
 		}
 		return audit.Ed25519Verifier{Pub: pub}, true
 	}
-	decide := func(id string, tamper bool) {
-		t.Helper()
-		sig, err := signers[id].Sign(agent.ApprovalDecisionBytes(runID, "c1", id, true))
-		if err != nil {
-			t.Fatalf("sign %s: %v", id, err)
-		}
-		if tamper {
-			sig[0] ^= 0xff
-		}
-		if err := agent.ApproveAs(ctx, k.store, runID, "c1", id, true, sig); err != nil {
-			t.Fatalf("ApproveAs %s: %v", id, err)
-		}
-	}
-	run := func() error {
-		charge := agent.Func("charge", "charge the card", agent.Safety{Approval: k.policy},
-			func(context.Context, struct{}) (string, error) { k.charged++; return "ok", nil })
-		_, err := agent.New(chargeModel{}, k.store, charge).WithApproverVerifiers(verifiers).Run(ctx, runID, "pay")
-		return err
-	}
-	wantPaused := func(err error, approved int) {
-		t.Helper()
-		var pend *agent.PendingApproval
-		if !errors.As(err, &pend) || pend.Quorum == nil {
-			t.Fatalf("err = %v, want an m-of-n *PendingApproval", err)
-		}
-		if pend.Quorum.Approved != approved || k.charged != 0 {
-			t.Fatalf("paused with %d approved (charged %d), want %d approved and no charge", pend.Quorum.Approved, k.charged, approved)
-		}
-	}
+}
 
-	wantPaused(run(), 0)
-	decide("mallory", false) // valid signature, ineligible approver
-	decide("carol", true)    // eligible approver, tampered signature
-	wantPaused(run(), 0)
-	decide("alice", false)
-	wantPaused(run(), 1)
-	decide("bob", false)
-	if err := run(); err != nil {
+// run drives the agent once and returns its error (nil when the run completes).
+func (g *gate) run() error {
+	charge := agent.Func("charge", "charge the card", agent.Safety{Approval: &g.policy},
+		func(context.Context, struct{ Amount int }) (string, error) { g.charged++; return "ok", nil })
+	_, err := agent.New(chargeModel{}, g.store, charge).WithApproverVerifiers(g.resolver()).Run(context.Background(), gateRun, "pay")
+	return err
+}
+
+// subject is the recorded call, which is what approvers sign.
+func (g *gate) subject(t *testing.T) agent.ApprovalSubject {
+	t.Helper()
+	recs, err := g.store.History(context.Background(), gateRun)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, call, ok := agent.FindToolCall(recs, "c1")
+	if !ok {
+		t.Fatal("no recorded call c1")
+	}
+	return agent.ApprovalSubject{RunID: gateRun, ToolUseID: "c1", ToolName: call.Name, Args: call.Args}
+}
+
+// decide records id's signed decision; tamper corrupts the signature.
+func (g *gate) decide(t *testing.T, id string, approved, tamper bool) {
+	t.Helper()
+	sig := ed25519.Sign(g.privs[id], agent.ApprovalDecisionBytes(g.subject(t), id, approved))
+	if tamper {
+		sig[0] ^= 0xff
+	}
+	if err := agent.ApproveAs(context.Background(), g.store, gateRun, "c1", id, approved, sig); err != nil {
+		t.Fatalf("ApproveAs %s: %v", id, err)
+	}
+}
+
+// sth signs a tree head over the whole journal.
+func (g *gate) sth(t *testing.T, ts int64) audit.SignedTreeHead {
+	t.Helper()
+	th, err := audit.NewTreeHead(context.Background(), g.store, gateRun, ts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return audit.SignTreeHead(th, g.logPriv)
+}
+
+func wantPaused(t *testing.T, err error, approved int) {
+	t.Helper()
+	var pend *agent.PendingApproval
+	if !errors.As(err, &pend) || pend.Quorum == nil || pend.Quorum.Approved != approved {
+		t.Fatalf("err = %v, want an m-of-n pause at %d approved", err, approved)
+	}
+}
+
+// passedGate: a Need=2 of {alice, bob, carol} gate. Before it passes, mallory (a registered
+// key, not eligible) approves with a valid signature and carol approves with a tampered one;
+// neither counts. alice then approves (1 of 2) and bob approves, and the charge runs.
+func passedGate(t *testing.T) *gate {
+	t.Helper()
+	g := newGate(2, []string{"alice", "bob", "carol"}, []string{"alice", "bob", "carol", "mallory"})
+	wantPaused(t, g.run(), 0)
+	g.decide(t, "mallory", true, false)
+	g.decide(t, "carol", true, true)
+	wantPaused(t, g.run(), 0)
+	g.decide(t, "alice", true, false)
+	wantPaused(t, g.run(), 1)
+	g.decide(t, "bob", true, false)
+	if err := g.run(); err != nil {
 		t.Fatalf("run at quorum: %v", err)
 	}
-	if k.charged != 1 {
-		t.Fatalf("charge ran %d times, want 1", k.charged)
+	if g.charged != 1 {
+		t.Fatalf("charge ran %d times, want 1", g.charged)
 	}
-
-	k.logPub, k.logPriv, _ = ed25519.GenerateKey(rand.Reader)
-	th, err := audit.NewTreeHead(ctx, k.store, runID, 1700000000)
-	if err != nil {
-		t.Fatalf("NewTreeHead: %v", err)
-	}
-	k.sth = audit.SignTreeHead(th, k.logPriv)
-	return k
+	return g
 }
 
-// countEligibleSigned is the offline auditor's tally: from the disclosed decision records it
-// counts distinct approvers that are in the policy's eligible set, approved, decided before
-// the action, and whose signature verifies under that approver's key over
-// agent.ApprovalDecisionBytes. It uses only the evidence and out-of-band keys, never the store.
-func countEligibleSigned(t *testing.T, acts []audit.EvidenceAction, policy *agent.ApprovalPolicy, keys map[string]ed25519.PublicKey, logPub ed25519.PublicKey) (counted []string) {
-	t.Helper()
-	action := acts[len(acts)-1]
-	if action.Kind != "tool" {
-		t.Fatalf("last evidence action kind %q, want tool", action.Kind)
-	}
-	eligible := map[string]bool{}
-	for _, a := range policy.Approvers {
-		eligible[a] = true
-	}
-	seen := map[string]bool{}
-	for _, a := range acts[:len(acts)-1] {
-		if ok, err := a.Bundle.Verify(logPub); err != nil || !ok {
-			continue
-		}
-		r := a.Bundle.Record
-		if a.Kind != "approval" || r.Kind != agent.StepApproval || r.ToolUseID != action.Bundle.Record.ToolUseID {
-			continue
-		}
-		if !eligible[r.Approver] || seen[r.Approver] || !r.Approved {
-			continue
-		}
-		if a.Bundle.Inclusion.Index >= action.Bundle.Inclusion.Index {
-			continue
-		}
-		pub, ok := keys[r.Approver]
-		if !ok || !ed25519.Verify(pub, agent.ApprovalDecisionBytes(a.Bundle.RunID, r.ToolUseID, r.Approver, r.Approved), r.Signature) {
-			continue
-		}
-		seen[r.Approver] = true
-		counted = append(counted, r.Approver)
-	}
-	return counted
+func hasProblem(v audit.ApprovalVerdict, substr string) bool {
+	return slices.ContainsFunc(v.Problems, func(p string) bool { return strings.Contains(p, substr) })
 }
 
-// TestMofnEvidence_KofNVerifiesOffline: a 2-of-3 gate proceeds after two eligible signed
-// approvals; under ONE STH, the tool action and every decision prove included, all bind to the
-// STH size, the decisions precede the action in journal order, and an offline tally counts
-// exactly alice and bob: carol's tampered signature and mallory's ineligible approval are
-// rejected. Editing a disclosed signature breaks the inclusion proof itself.
+func ignoredReason(v audit.ApprovalVerdict, approver string) string {
+	for _, d := range v.Ignored {
+		if d.Approver == approver {
+			return d.Reason
+		}
+	}
+	return ""
+}
+
+// The evidence carries, under one STH and in journal order, the request, every decision the
+// gate read (including the ineligible and forged ones), the tally, and the result; the offline
+// check recounts it to exactly alice and bob and explains the rest.
 func TestMofnEvidence_KofNVerifiesOffline(t *testing.T) {
-	ctx := context.Background()
-	k := buildKofnRun(t)
-
-	candidates := []string{"alice", "bob", "carol", "mallory"}
-	acts, err := audit.ApprovalEvidence(ctx, k.store, "run-kofn", "c1", candidates, k.sth)
+	g := passedGate(t)
+	sth := g.sth(t, 1700000000)
+	acts, err := audit.ApprovalEvidence(context.Background(), g.store, gateRun, "c1", sth)
 	if err != nil {
 		t.Fatalf("ApprovalEvidence: %v", err)
 	}
-	if len(acts) != len(candidates)+1 {
-		t.Fatalf("got %d evidence actions, want %d decisions + the action", len(acts), len(candidates))
-	}
-	action := acts[len(acts)-1]
-	if action.Kind != "tool" || action.Bundle.Record.Kind != agent.StepToolResult || action.Bundle.Record.ToolUseID != "c1" {
-		t.Fatalf("last evidence action is not the c1 tool result: %+v", action)
-	}
+
+	var kinds []string
 	for i, a := range acts {
-		if ok, err := a.Bundle.Verify(k.logPub); err != nil || !ok {
-			t.Fatalf("evidence %d (%s) failed to verify (ok=%v err=%v)", i, a.Label, ok, err)
+		kinds = append(kinds, a.Kind)
+		if ok, err := a.Bundle.Verify(g.logPub); err != nil || !ok {
+			t.Fatalf("evidence %d (%s %s) failed to verify (ok=%v err=%v)", i, a.Kind, a.Label, ok, err)
 		}
-		if !reflect.DeepEqual(a.Bundle.STH, k.sth) || a.Bundle.Inclusion.Size != k.sth.Size {
-			t.Fatalf("evidence %d (%s) not bound to the one STH (size %d)", i, a.Label, k.sth.Size)
+		if !reflect.DeepEqual(a.Bundle.STH, sth) {
+			t.Fatalf("evidence %d (%s) not under the one STH", i, a.Kind)
 		}
-		if i < len(acts)-1 && a.Bundle.Inclusion.Index >= action.Bundle.Inclusion.Index {
-			t.Fatalf("decision %s at index %d does not precede the action at %d", a.Label, a.Bundle.Inclusion.Index, action.Bundle.Inclusion.Index)
-		}
-	}
-
-	// The same evidence also matches ProveApproval for each decision.
-	for _, a := range acts[:len(acts)-1] {
-		pb, err := audit.ProveApproval(ctx, k.store, "run-kofn", "c1", a.Label, k.sth)
-		if err != nil {
-			t.Fatalf("ProveApproval %s: %v", a.Label, err)
-		}
-		if pb.Inclusion.Index != a.Bundle.Inclusion.Index {
-			t.Fatalf("ProveApproval %s index %d, ApprovalEvidence index %d", a.Label, pb.Inclusion.Index, a.Bundle.Inclusion.Index)
+		if i > 0 && a.Bundle.Inclusion.Index <= acts[i-1].Bundle.Inclusion.Index {
+			t.Fatalf("evidence %d (%s) is not after evidence %d in the journal", i, a.Kind, i-1)
 		}
 	}
-
-	counted := countEligibleSigned(t, acts, k.policy, k.approvers, k.logPub)
-	if len(counted) < k.policy.Need {
-		t.Fatalf("offline tally counted %v, want at least Need=%d", counted, k.policy.Need)
-	}
-	if len(counted) != 2 || counted[0] != "alice" || counted[1] != "bob" {
-		t.Fatalf("offline tally counted %v, want exactly [alice bob]", counted)
+	want := []string{audit.KindCall, audit.KindApproval, audit.KindApproval, audit.KindApproval, audit.KindApproval, audit.KindApprovalTally, audit.KindTool}
+	if !slices.Equal(kinds, want) {
+		t.Fatalf("evidence kinds = %v, want %v", kinds, want)
 	}
 
-	// Tampering with a disclosed signature is caught twice: the record no longer matches its
-	// committed leaf, and the forged signature does not verify under the approver's key.
-	forged := acts[0]
-	forged.Bundle.Record.Signature = append([]byte(nil), forged.Bundle.Record.Signature...)
-	forged.Bundle.Record.Signature[0] ^= 0xff
-	if ok, _ := forged.Bundle.Verify(k.logPub); ok {
-		t.Fatal("bundle with a tampered approver signature still verified")
+	v, err := audit.VerifyApprovals(acts, "c1", g.policy, g.resolver(), g.logPub)
+	if err != nil {
+		t.Fatalf("VerifyApprovals: %v", err)
 	}
-	if n := countEligibleSigned(t, []audit.EvidenceAction{forged, action}, k.policy, k.approvers, k.logPub); len(n) != 0 {
-		t.Fatalf("tampered decision counted: %v", n)
+	if !v.OK || len(v.Problems) != 0 || !slices.Equal(v.Counted, []string{"alice", "bob"}) {
+		t.Fatalf("verdict = %+v, want OK with alice and bob counted", v)
 	}
-
-	// Swapping an ineligible approver in for an eligible one does not reach Need.
-	swapped := []audit.EvidenceAction{acts[0], acts[3], action} // alice + mallory
-	if acts[3].Label != "mallory" {
-		t.Fatalf("expected mallory at position 3, got %s", acts[3].Label)
+	if v.ToolName != "charge" || string(v.Args) != `{"amount":120}` {
+		t.Fatalf("verdict call = %s %s, want charge {\"amount\":120}", v.ToolName, v.Args)
 	}
-	if n := countEligibleSigned(t, swapped, k.policy, k.approvers, k.logPub); len(n) >= k.policy.Need {
-		t.Fatalf("ineligible approver helped reach Need: counted %v", n)
+	if ignoredReason(v, "mallory") != agent.ReasonNotEligible || ignoredReason(v, "carol") != agent.ReasonBadSig {
+		t.Fatalf("ignored = %+v, want mallory not eligible and carol's signature rejected", v.Ignored)
 	}
 
+	// Every decision also proves on its own, by its record name.
+	for _, a := range acts {
+		if a.Kind != audit.KindApproval {
+			continue
+		}
+		pb, err := audit.ProveApproval(context.Background(), g.store, gateRun, a.Ref, sth)
+		if err != nil || pb.Inclusion.Index != a.Bundle.Inclusion.Index {
+			t.Fatalf("ProveApproval(%s): index %d err %v, want index %d", a.Ref, pb.Inclusion.Index, err, a.Bundle.Inclusion.Index)
+		}
+	}
 }
 
-// TestMofnEvidence_PackageAndTallyStep: the k-of-n evidence appends directly to an
-// EvidencePackage built over the same STH, the package verifies as a whole, and the gate's
-// final "approval-tally:c1" step proves as a single record reporting Approved >= Need.
-func TestMofnEvidence_PackageAndTallyStep(t *testing.T) {
+// The approval evidence composes with a whole EvidencePackage: it survives a JSON round trip,
+// the package verifies, and VerifyApprovals reads the package's actions directly.
+func TestMofnEvidence_InPackage(t *testing.T) {
 	ctx := context.Background()
-	k := buildKofnRun(t)
-
-	tallyName := "approval-tally:c1"
-	pkg, err := audit.Evidence(ctx, k.store, "run-kofn", k.logPriv, 1700000000,
-		audit.WithLabel("2-of-3 charge approval"),
-		audit.WithToolCall("c1"),
-		audit.WithStep(tallyName),
-	)
+	g := passedGate(t)
+	pkg, err := audit.Evidence(ctx, g.store, gateRun, g.logPriv, 1700000000, audit.WithToolCall("c1"))
 	if err != nil {
-		t.Fatalf("Evidence: %v", err)
+		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(pkg.STH, k.sth) {
-		t.Fatal("Evidence minted a different STH than the audited one; approval proofs would not share its root")
-	}
-	decisions, err := audit.ApprovalEvidence(ctx, k.store, "run-kofn", "c1", k.policy.Approvers, pkg.STH)
+	acts, err := audit.ApprovalEvidence(ctx, g.store, gateRun, "c1", pkg.STH)
 	if err != nil {
-		t.Fatalf("ApprovalEvidence: %v", err)
+		t.Fatal(err)
 	}
-	pkg.Actions = append(pkg.Actions, decisions[:len(decisions)-1]...) // the action is already packaged
+	pkg.Actions = append(pkg.Actions, acts[:len(acts)-1]...) // the result is already packaged
 
-	// Round-trip through JSON, as an auditor receiving the file would.
 	raw, err := json.Marshal(pkg)
 	if err != nil {
-		t.Fatalf("marshal: %v", err)
+		t.Fatal(err)
 	}
 	var got audit.EvidencePackage
 	if err := json.Unmarshal(raw, &got); err != nil {
-		t.Fatalf("unmarshal: %v", err)
+		t.Fatal(err)
 	}
-	report, err := got.Verify(k.logPub)
-	if err != nil {
-		t.Fatalf("Verify: %v", err)
+	rep, err := got.Verify(g.logPub)
+	if err != nil || !rep.OK {
+		t.Fatalf("package Verify: ok=%v err=%v items=%+v", rep.OK, err, rep.Items)
 	}
-	if !report.OK {
-		t.Fatalf("package did not verify: %+v", report.Items)
+	counts := map[string]int{}
+	for _, it := range rep.Items {
+		counts[it.Kind]++
 	}
-	kinds := map[string]int{}
-	for _, it := range report.Items {
-		kinds[it.Kind]++
+	if counts[audit.KindTool] != 1 || counts[audit.KindCall] != 1 || counts[audit.KindApproval] != 4 || counts[audit.KindApprovalTally] != 1 {
+		t.Fatalf("report kinds = %v", counts)
 	}
-	if kinds["tool"] != 1 || kinds["step"] != 1 || kinds["approval"] != 3 {
-		t.Fatalf("report kinds = %v, want 1 tool, 1 step, 3 approval", kinds)
-	}
-
-	// The final tally is itself one provable record.
-	pb, err := audit.ProveStep(ctx, k.store, "run-kofn", tallyName, k.sth)
-	if err != nil {
-		t.Fatalf("ProveStep %s: %v", tallyName, err)
-	}
-	if ok, err := pb.Verify(k.logPub); err != nil || !ok {
-		t.Fatalf("tally bundle failed to verify (ok=%v err=%v)", ok, err)
-	}
-	var tally agent.ApprovalTally
-	if err := json.Unmarshal(pb.Record.Result, &tally); err != nil {
-		t.Fatalf("decode tally: %v", err)
-	}
-	if tally.Need != 2 || tally.Approved != 2 || tally.Denied != 0 {
-		t.Fatalf("journaled tally = %+v, want Need=2 Approved=2 Denied=0", tally)
-	}
-	if len(tally.Pending) != 1 || tally.Pending[0] != "carol" {
-		t.Fatalf("journaled tally Pending = %v, want [carol] (her tampered decision did not count)", tally.Pending)
+	v, err := audit.VerifyApprovals(got.Actions, "c1", g.policy, g.resolver(), g.logPub)
+	if err != nil || !v.OK || !slices.Equal(v.Counted, []string{"alice", "bob"}) {
+		t.Fatalf("verdict = %+v, err = %v, want alice and bob counted", v, err)
 	}
 }

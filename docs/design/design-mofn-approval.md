@@ -10,16 +10,81 @@ Where the implementation refined this design:
   through a local `ApproverVerifier` interface that the audit verifiers satisfy structurally, resolved
   by id with `Agent.WithApproverVerifiers` (a chaining setter, matching the Agent's other options).
 - **Tally timing.** `approval-tally:<toolUseID>` is journaled only at a terminal outcome (proceed or
-  deny), never on a pause, because `Durable.Do` is at-most-once by name: journaling a pending tally
-  would freeze it. A resume reads the terminal record instead of recounting.
+  deny), before the tool runs, never on a pause, because `Durable.Do` is at-most-once by name:
+  journaling a pending tally would freeze it. A resume reads the terminal record instead of recounting.
 - **Path isolation.** An `ApproveAs` decision never satisfies a 1-of-1 gate, and an `Approve`
   decision never counts toward an m-of-n tally.
-- **Evidence.** `audit.ProveApproval` (one decision) and `audit.ApprovalEvidence` (decisions then
-  action, under one STH). The existing `ProveStep` matches only `StepValue` records, so it could not
-  reach a decision. `audit.VerifyApprovals` does the offline count, so an auditor does not reimplement
-  it, and reports every decision that did not count with a reason.
 - **Declarative config.** The `approval` block loads onto `Safety.Approval`, but the `plan` runtime
   does not enforce the gate yet.
+- **v2 decisions and evidence** (below). The first implementation followed this document's "first
+  decision per approver wins" literally, and an end-to-end test found that it let a bad record lock
+  an approver out. v2 closes that and three related gaps.
+
+## v2: decisions and evidence
+
+### Threat model
+
+The approval claim must hold against an operator who controls the journal and the evidence file
+but holds no approver's private key, and against innocent mistakes (an approver signing with the
+wrong key, a UI showing stale arguments). The first implementation had four gaps under that model:
+
+1. **Lockout.** Decisions were keyed one per approver, first write wins. A forged, mistaken, or
+   directly written record took the approver's only slot; their real decision was silently dropped,
+   and since the bad record was not a valid denial, enough of them could hang the gate forever.
+2. **Unbound approvals.** Approvers signed (run, call id, approver, decision), not what the call did.
+   Evidence could not show that an approval was for "$120 to order 42" rather than whatever the
+   operator said the call was.
+3. **Omittable evidence.** Evidence disclosed one decision per listed approver. An evidence producer
+   could drop an approver's earlier valid denial and show a later approval, undetectably.
+4. **Unrecorded policy.** Nothing recorded the policy the gate enforced, so a gate misconfigured as
+   1 of 3 produced evidence indistinguishable from a 2 of 3 gate's.
+
+### Design
+
+- **One record per decision, first valid decision counts.** Decision records are named
+  `approval:<call>:<approver>:<sha256(approved || signature)>`, so an approver's records never
+  collide and an identical resubmission is a no-op. The counting rule takes each approver's first
+  record that is eligible and whose signature verifies; invalid records never occupy a place and
+  never count toward "unreachable". (Closes 1.)
+- **The signature binds the call.** `ApprovalDecisionBytes` v2 (`bide.approval.v2`) adds the tool
+  name and SHA-256 of the canonical arguments. Canonicalization (sorted keys, no insignificant
+  whitespace, no HTML escaping, number literals verbatim) is required, not cosmetic: the same call's
+  arguments arrive as live-stream bytes, then as journaled bytes that encoding/json has compacted and
+  HTML-escaped, then re-indented inside an evidence file. (Closes 2.)
+- **The tally records what the gate enforced and read.** The terminal tally carries `Need`,
+  `Approvers`, `ApprovedBy`, `DeniedBy`, and `Records`, the name of every decision record the gate
+  read. It is journaled before the tool runs, so it is fixed before the action and covered by the
+  same append-only log. (Enables 3 and 4.)
+- **Complete evidence and a verifier that uses it.** `ApprovalEvidence` discloses the request (the
+  model turn carrying the call's name and arguments), every record in the tally's `Records`, the
+  tally, and the result. `VerifyApprovals` recounts with the same pure function the gate runs
+  (`agent.TallyApprovals`), against the proven call, and reports a problem for any omitted record, a
+  recount that disagrees with the tally, a policy other than the auditor's, or records out of order.
+  (Closes 3 and 4.)
+- **Feedback at submission.** `ApproveAs(..., WithDecisionCheck(resolver))` verifies against the
+  recorded call before writing and returns `ErrInvalidApproval` or `ErrAlreadyDecided`. It is for
+  the approver's benefit only; the gate never depends on it.
+- **A non-Go auditor path.** `bide-audit verify-approvals` runs `VerifyApprovals` from the evidence
+  file, a key file, and the expected policy on the command line.
+
+### What remains trusted, stated precisely
+
+- **The runtime at decision time.** A compromised runtime could record a false tally, but it cannot
+  forge an approver's signature, and the recount against the disclosed signed decisions would
+  disagree with a tally that overstates approvals. What it could do is ignore a valid decision it
+  never wrote to the journal; that is the limit of any system whose log is written by the party
+  being audited, and anchoring the tree head externally bounds when such an omission could occur.
+- **Key history.** The tally does not record which key verified each approver. An auditor needs the
+  keys that were valid at decision time.
+- **Byte-exact evidence.** Proofs commit to the exact recorded bytes; a tool that re-orders JSON keys
+  inside a recorded message breaks that record's proof. The approval signature itself is robust to
+  reformatting (canonical arguments); the Merkle leaf encoding is not.
+
+## Original design
+
+The sections below are the design as first proposed, kept as the record of the reasoning. Where
+they differ from v2 above (decision keys, the signed bytes, the tally's fields, the evidence
+contents), v2 is what shipped.
 
 ## Why
 
