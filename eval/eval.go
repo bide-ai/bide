@@ -190,16 +190,19 @@ func stat(passes, runs int) MetricStat {
 	s := MetricStat{Passes: passes, Runs: runs}
 	if runs > 0 {
 		s.Rate = float64(passes) / float64(runs)
-		s.CILow, s.CIHigh = wilson(passes, runs)
 	}
+	s.CILow, s.CIHigh = wilson(passes, runs)
 	return s
 }
 
 // wilson returns the 95% Wilson score interval for a binomial proportion. It is well-behaved for
-// small n and extreme rates, unlike the normal approximation.
+// small n and extreme rates, unlike the normal approximation. With no runs it is [0, 1] (no
+// evidence, and the interval's limit as n goes to 0). At zero passes the lower bound is exactly 0
+// and at all passes the upper bound is exactly 1; center and margin are equal there, so it is set
+// rather than left to rounding.
 func wilson(passes, n int) (lo, hi float64) {
 	if n == 0 {
-		return 0, 0
+		return 0, 1
 	}
 	const z = 1.96
 	nf := float64(n)
@@ -208,10 +211,10 @@ func wilson(passes, n int) (lo, hi float64) {
 	center := (phat + z*z/(2*nf)) / denom
 	margin := z * math.Sqrt(phat*(1-phat)/nf+z*z/(4*nf*nf)) / denom
 	lo, hi = center-margin, center+margin
-	if lo < 0 {
+	if lo < 0 || passes == 0 {
 		lo = 0
 	}
-	if hi > 1 {
+	if hi > 1 || passes == n {
 		hi = 1
 	}
 	return lo, hi
@@ -247,7 +250,17 @@ type Report struct {
 // If ctx is cancelled before every execution has finished, Run starts no further executions and
 // returns ctx's error with an empty Report: executions cut short by the cancellation would score as
 // failures, and the ones that did finish are not a representative sample.
+//
+// A Report keys metrics by name, so every metric must have a distinct Name; Run returns an error
+// before executing anything if two share one.
 func Run(ctx context.Context, run RunFunc, cases []Case, metrics []Metric, opts Options) (Report, error) {
+	names := make(map[string]bool, len(metrics))
+	for _, m := range metrics {
+		if names[m.Name] {
+			return Report{}, fmt.Errorf("eval: two metrics are named %q; a report keys metrics by name", m.Name)
+		}
+		names[m.Name] = true
+	}
 	runs := opts.Runs
 	if runs < 1 {
 		runs = 1
@@ -307,7 +320,12 @@ launch:
 			totals[m] += passes[i][m]
 		}
 		rep.Cases = append(rep.Cases, cr)
+		seen := map[string]bool{}
 		for _, tag := range c.Tags {
+			if seen[tag] {
+				continue // a repeated tag is still one case in that stratum
+			}
+			seen[tag] = true
 			if _, ok := tagPasses[tag]; !ok {
 				tagPasses[tag] = make([]int64, len(metrics))
 			}

@@ -7,7 +7,7 @@ pointed at *any* Go agent SDK.
 
 ```
 $ go run ./examples/chaosbench
-  Bide    sweeps=6   schedules=1006  maxFired=1  PASS ✓ (at-most-once held)
+  Bide    sweeps=7   schedules=1007  maxFired=1  PASS ✓ (at-most-once held)
   naive-loop   sweeps=5   schedules=1005  maxFired=5  FAIL ✗ (240 double-fires, worst=5)
 ```
 

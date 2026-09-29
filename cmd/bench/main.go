@@ -15,6 +15,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"os"
 	"runtime"
 	"sort"
 	"sync"
@@ -49,6 +50,16 @@ func main() {
 	conc := flag.Int("concurrency", 256, "max concurrent runs")
 	latency := flag.Duration("latency", 0, "simulated per model-call latency")
 	flag.Parse()
+	for _, f := range []struct {
+		name string
+		v    int
+	}{{"runs", *runs}, {"concurrency", *conc}} {
+		if f.v < 1 {
+			fmt.Fprintf(os.Stderr, "bench: -%s must be at least 1, got %d\n", f.name, f.v)
+			flag.Usage()
+			os.Exit(2)
+		}
+	}
 
 	tool := agent.Func("noop", "no-op", agent.Safety{ReadOnly: true},
 		func(_ context.Context, _ struct{}) (string, error) { return "ok", nil })

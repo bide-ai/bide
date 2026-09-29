@@ -253,7 +253,20 @@ func bhAdjust(p []float64) []float64 {
 // baselineRate in a two-proportion comparison at the given alpha (two-sided) and power, using the
 // standard normal-approximation formula. It rounds up. Use it to size an evaluation before running
 // it: a drop smaller than what RequiredRuns can resolve at your Runs will read as noise.
-func RequiredRuns(baselineRate, minDetectableDrop, alpha, power float64) int {
+//
+// baselineRate must be in [0, 1] and alpha and power in (0, 1); anything else (NaN included)
+// returns an error and no count. A drop of zero or less returns 0 (nothing to detect), and a drop
+// past the baseline is sized as a drop to 0. A drop so small that the runs it needs exceed int
+// returns math.MaxInt. When power is so low that any sample reaches it, the answer is 1.
+func RequiredRuns(baselineRate, minDetectableDrop, alpha, power float64) (int, error) {
+	if !(baselineRate >= 0 && baselineRate <= 1) || math.IsNaN(minDetectableDrop) ||
+		!(alpha > 0 && alpha < 1) || !(power > 0 && power < 1) {
+		return 0, fmt.Errorf("eval: RequiredRuns(%g, %g, %g, %g): want baselineRate in [0,1], a non-NaN drop, and alpha and power in (0,1)",
+			baselineRate, minDetectableDrop, alpha, power)
+	}
+	if minDetectableDrop <= 0 {
+		return 0, nil
+	}
 	p1 := baselineRate
 	p2 := baselineRate - minDetectableDrop
 	if p2 < 0 {
@@ -261,14 +274,20 @@ func RequiredRuns(baselineRate, minDetectableDrop, alpha, power float64) int {
 	}
 	delta := p1 - p2
 	if delta <= 0 {
-		return 0
+		return math.MaxInt, nil // a positive drop that rounds away against the baseline
 	}
 	pbar := (p1 + p2) / 2
 	zAlpha := probit(1 - alpha/2)
 	zBeta := probit(power)
 	num := zAlpha*math.Sqrt(2*pbar*(1-pbar)) + zBeta*math.Sqrt(p1*(1-p1)+p2*(1-p2))
-	n := (num * num) / (delta * delta)
-	return int(math.Ceil(n))
+	if num <= 0 {
+		return 1, nil // the formula needs delta*sqrt(n) >= num, which every n meets
+	}
+	n := math.Ceil((num * num) / (delta * delta))
+	if n >= math.MaxInt {
+		return math.MaxInt, nil
+	}
+	return int(n), nil
 }
 
 // probit is the inverse of the standard normal CDF (the quantile function), via the
@@ -328,11 +347,16 @@ type Provenance struct {
 // HashCases returns a stable lowercase-hex sha256 over the case set, in order. Each case contributes
 // its Name, Input, and the JSON encoding of its Want, so the hash changes if any case's identity,
 // input, or expectation changes but stays stable across runs of the same set. Use it to confirm two
-// Reports scored the same cases before comparing them.
+// Reports scored the same cases before comparing them. A Want JSON cannot encode (a NaN or infinite
+// float, a channel, a func) contributes its Go type and %#v form instead, marked apart from JSON;
+// for a func or channel that form is an address, so it is stable only within one process.
 func HashCases(cases []Case) string {
 	h := sha256.New()
 	for _, c := range cases {
-		want, _ := json.Marshal(c.Want)
+		want, err := json.Marshal(c.Want)
+		if err != nil {
+			want = fmt.Appendf([]byte("\x01"), "%T:%#v", c.Want, c.Want)
+		}
 		fmt.Fprintf(h, "%d:%s\x00%d:%s\x00%d:%s\x00", len(c.Name), c.Name, len(c.Input), c.Input, len(want), want)
 	}
 	return hex.EncodeToString(h.Sum(nil))

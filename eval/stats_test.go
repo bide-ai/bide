@@ -145,11 +145,11 @@ func TestProbit_KnownQuantiles(t *testing.T) {
 // TestRequiredRuns checks the sample-size helper is sane and monotone: detecting a 5-point drop from
 // 0.9 at alpha 0.05 power 0.8 needs a few hundred per arm, and a larger drop needs fewer runs.
 func TestRequiredRuns(t *testing.T) {
-	n5 := eval.RequiredRuns(0.9, 0.05, 0.05, 0.8)
+	n5 := requiredRuns(t, 0.9, 0.05, 0.05, 0.8)
 	if n5 < 200 || n5 > 900 {
 		t.Fatalf("detecting a 5-point drop from 0.9 should need a few hundred per arm, got %d", n5)
 	}
-	n15 := eval.RequiredRuns(0.9, 0.15, 0.05, 0.8)
+	n15 := requiredRuns(t, 0.9, 0.15, 0.05, 0.8)
 	if n15 >= n5 {
 		t.Fatalf("a larger drop should need fewer runs: 15pp=%d must be < 5pp=%d", n15, n5)
 	}
@@ -159,6 +159,110 @@ func TestRequiredRuns(t *testing.T) {
 	// (0.91669+0.39250)^2 / 0.05^2 = 685.6 -> ceil 686.
 	if n5 != 686 {
 		t.Fatalf("5-point drop from 0.9 should be 686 per arm (pooled formula), got %d", n5)
+	}
+}
+
+// The Wilson interval for zero passes starts at exactly 0 and for all passes ends at exactly 1 (the
+// center and margin are equal there). Rounding in center-margin must not leave a positive lower
+// bound on a metric that never passed, or an upper bound below 1 on one that always did.
+func TestWilson_ExactAtAllFailAndAllPass(t *testing.T) {
+	for _, n := range []int{1, 3, 4, 6, 7, 10, 25, 100, 1000} {
+		if s := reportFor(0, n).Overall["contains:PASS"]; s.CILow != 0 {
+			t.Errorf("0/%d: ci_low = %g, want exactly 0", n, s.CILow)
+		}
+		if s := reportFor(n, n).Overall["contains:PASS"]; s.CIHigh != 1 {
+			t.Errorf("%d/%d: ci_high = %.17g, want exactly 1", n, n, s.CIHigh)
+		}
+	}
+}
+
+// With no runs there is no evidence, so the interval is the whole range [0, 1], the limit of the
+// Wilson interval as n goes to 0. [0, 0] would read as a rate known to be zero.
+func TestWilson_NoRunsIsTheWholeRange(t *testing.T) {
+	run := func(_ context.Context, _ string) eval.RunOutput { return eval.RunOutput{} }
+	rep := mustRun(t, context.Background(), run, nil, []eval.Metric{eval.NoError()}, eval.Options{Runs: 3})
+	if s := rep.Overall["no_error"]; s.Runs != 0 || s.CILow != 0 || s.CIHigh != 1 {
+		t.Fatalf("0 runs: %+v, want runs 0 and ci [0, 1]", s)
+	}
+}
+
+// requiredRuns calls RequiredRuns on arguments that are in its domain and fails the test on an error.
+func requiredRuns(t *testing.T, baseline, drop, alpha, power float64) int {
+	t.Helper()
+	n, err := eval.RequiredRuns(baseline, drop, alpha, power)
+	if err != nil {
+		t.Fatalf("RequiredRuns(%g, %g, %g, %g): %v", baseline, drop, alpha, power, err)
+	}
+	return n
+}
+
+// RequiredRuns always returns a count a caller can use. A drop so small that the runs it needs
+// exceed int (or that rounds away against the baseline) saturates at math.MaxInt, instead of
+// converting an out-of-range float to int, which Go leaves to the platform (math.MinInt64 on
+// amd64), or reading the rounded-away drop as "nothing to detect". Arguments outside their domain
+// return an error and no count.
+func TestRequiredRuns_NonFiniteInputs(t *testing.T) {
+	for _, tc := range []struct {
+		name                         string
+		baseline, drop, alpha, power float64
+	}{
+		{"runs exceed int", 0.9, 1e-10, 0.05, 0.8},
+		{"drop rounds away", 0.9, 1e-200, 0.05, 0.8},
+	} {
+		if n := requiredRuns(t, tc.baseline, tc.drop, tc.alpha, tc.power); n != math.MaxInt {
+			t.Errorf("%s: RequiredRuns = %d, want math.MaxInt", tc.name, n)
+		}
+	}
+	for _, tc := range []struct {
+		name                         string
+		baseline, drop, alpha, power float64
+	}{
+		{"alpha 0", 0.9, 0.05, 0, 0.8},
+		{"alpha 1", 0.9, 0.05, 1, 0.8},
+		{"power 0", 0.9, 0.05, 0.05, 0},
+		{"power 1", 0.9, 0.05, 0.05, 1},
+		{"baseline above 1", 1.2, 0.05, 0.05, 0.8},
+		{"baseline below 0", -0.1, 0.05, 0.05, 0.8},
+		{"NaN baseline", math.NaN(), 0.05, 0.05, 0.8},
+		{"NaN drop", 0.9, math.NaN(), 0.05, 0.8},
+		{"NaN alpha", 0.9, 0.05, math.NaN(), 0.8},
+		{"NaN power", 0.9, 0.05, 0.05, math.NaN()},
+	} {
+		n, err := eval.RequiredRuns(tc.baseline, tc.drop, tc.alpha, tc.power)
+		if err == nil || n != 0 {
+			t.Errorf("%s: RequiredRuns = %d, %v; want 0 and an error", tc.name, n, err)
+		}
+	}
+}
+
+// A drop of zero or less leaves nothing to detect, so no runs are needed.
+func TestRequiredRuns_NoDropNeedsNoRuns(t *testing.T) {
+	for _, drop := range []float64{0, -0.05} {
+		if n := requiredRuns(t, 0.9, drop, 0.05, 0.8); n != 0 {
+			t.Errorf("RequiredRuns with drop %g = %d, want 0", drop, n)
+		}
+	}
+}
+
+// The normal-approximation formula needs z_alpha*sigma0 + z_beta*sigma1 > 0. Below that (power so
+// low it sits under the false-positive rate) any sample reaches it, and squaring the negative sum
+// would instead ask for more runs the lower the power: 1 run per arm is the answer.
+func TestRequiredRuns_PowerBelowAlphaNeedsOneRun(t *testing.T) {
+	if n := requiredRuns(t, 0.9, 0.05, 0.05, 0.001); n != 1 {
+		t.Fatalf("RequiredRuns at power 0.001 = %d, want 1", n)
+	}
+}
+
+// Wants that JSON cannot encode (NaN, infinities) must still distinguish case sets: two different
+// expectations must not hash alike.
+func TestHashCases_UnencodableWantsDiffer(t *testing.T) {
+	nan := eval.HashCases([]eval.Case{{Name: "a", Input: "x", Want: math.NaN()}})
+	inf := eval.HashCases([]eval.Case{{Name: "a", Input: "x", Want: math.Inf(1)}})
+	if nan == inf {
+		t.Fatalf("Want NaN and Want +Inf hash the same (%s)", nan)
+	}
+	if again := eval.HashCases([]eval.Case{{Name: "a", Input: "x", Want: math.NaN()}}); again != nan {
+		t.Fatalf("HashCases of an unencodable Want is not stable: %s vs %s", nan, again)
 	}
 }
 
@@ -241,6 +345,26 @@ func TestByTag(t *testing.T) {
 	}
 	if easy <= hard {
 		t.Fatalf("per-tag rates should differ (easy %v > hard %v)", easy, hard)
+	}
+}
+
+// A case that carries the same tag twice is still one case in that stratum: its runs count once, so
+// the tag's interval is as wide as its real sample. Counting them twice halves the variance and
+// reports a narrower interval than the data supports.
+func TestByTag_RepeatedTagCountsRunsOnce(t *testing.T) {
+	var n int64
+	run := func(_ context.Context, _ string) eval.RunOutput {
+		if atomic.AddInt64(&n, 1)%2 == 0 {
+			return eval.RunOutput{Final: agent.UserText("YES")}
+		}
+		return eval.RunOutput{Final: agent.UserText("no")}
+	}
+	cases := []eval.Case{{Name: "h", Input: "x", Tags: []string{"hard", "hard"}}}
+	rep := mustRun(t, context.Background(), run, cases, []eval.Metric{eval.Contains("YES")}, eval.Options{Runs: 4})
+	got := rep.ByTag["hard"]["contains:YES"]
+	want := rep.Overall["contains:YES"]
+	if got != want {
+		t.Fatalf("tag stat = %+v, want the case's own %+v (2/4, one case)", got, want)
 	}
 }
 

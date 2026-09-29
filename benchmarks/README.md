@@ -14,7 +14,7 @@ cd benchmarks && GOWORK=off go test -run Comparison -v
 
 ```
 Bide        maxFired=1   PASS ✓ (at-most-once held)
-trpc-agent-go    maxFired=5   FAIL ✗ (70 double-fires, worst=5)
+trpc-agent-go    maxFired=6   FAIL ✗ (119 double-fires, worst=6)
 adk-go           maxFired=4   FAIL ✗ (45 double-fires, worst=4)
 langchaingo      maxFired=64  FAIL ✗ (204 double-fires, worst=64)
 eino             maxFired=64  FAIL ✗ (204 double-fires, worst=64)
@@ -25,7 +25,7 @@ naive-loop       maxFired=5   FAIL ✗ (45 double-fires, worst=5)
 executed across a crash schedule. **1 is correct; anything higher is a double-charge.** The
 failure shapes fall into two camps. **Real persistence, narrow re-fire window** (trpc-agent-go,
 adk-go): resume genuinely works, but a crash in the window between a side effect *executing*
-and its record *persisting* re-fires it (worst 4–5). **No crash durability at all**
+and its record *persisting* re-fires it (worst 4 to 6). **No crash durability at all**
 (langchaingo, eino): a crash loses the run and re-invoking re-runs everything unboundedly (up
 to 64 charges). The naive baseline sits with the first camp's shape but for a different
 reason (at-least-once loop, no attempt marker).

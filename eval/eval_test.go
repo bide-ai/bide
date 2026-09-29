@@ -40,6 +40,19 @@ func TestRun_StatisticalPassRate(t *testing.T) {
 	}
 }
 
+// Reports key metrics by name, so two metrics sharing a name would leave one's results in the
+// report under the other's name and drop the rest. Run refuses the metric set instead.
+func TestRun_DuplicateMetricNameIsAnError(t *testing.T) {
+	run := func(_ context.Context, _ string) eval.RunOutput { return eval.RunOutput{Final: agent.UserText("ok")} }
+	always := eval.Custom("ok", func(context.Context, eval.Case, eval.RunOutput) bool { return true })
+	never := eval.Custom("ok", func(context.Context, eval.Case, eval.RunOutput) bool { return false })
+	rep, err := eval.Run(context.Background(), run, []eval.Case{{Name: "c", Input: "x"}},
+		[]eval.Metric{always, never}, eval.Options{Runs: 2})
+	if err == nil {
+		t.Fatalf("two metrics named %q ran; the report keeps one: %+v", "ok", rep.Overall)
+	}
+}
+
 // judgeModel is a stub judge returning a fixed verdict so the Judge metric is testable offline.
 type judgeModel struct{ verdict string }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"iter"
+	"sync"
 
 	"github.com/bide-ai/bide/chaos"
 	"google.golang.org/adk/v2/agent"
@@ -67,13 +68,30 @@ func (adkModel) GenerateContent(_ context.Context, req *model.LLMRequest, _ bool
 	}
 }
 
-// crashSession wraps a real in-memory session.Service and fails the failAt-th AppendEvent of
-// the current Step, modelling a process crash mid-persist. failAt<=0 disables injection.
+// crashSession wraps the run's persistent session.Service for one Step and fails the failAt-th
+// AppendEvent, modelling a process crash mid-persist. failAt<=0 disables injection. A crash is the
+// process dying, so once it has happened the Step is dead: every later AppendEvent fails too, and
+// the charge does not run (see adkRun.Step). ADK keeps running the agent in a scheduler goroutine
+// after the runner stops on the failed append, and that goroutine can still reach the tool; a
+// real crash would not let it.
 type crashSession struct {
 	inner   session.Service
-	failAt  int  // 1-based append index to fail on, within the current Step
+	failAt  int // 1-based append index to fail on, within this Step
+	mu      sync.Mutex
 	appends int  // appends seen so far this Step
-	dropped bool // an append was failed this Step
+	dropped bool // the crash happened: this Step is dead
+}
+
+// alive reports whether the Step's process is still running (no crash yet) and, if so, runs fn
+// while holding the lock, so fn cannot interleave with the crash.
+func (c *crashSession) alive(fn func()) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.dropped {
+		return false
+	}
+	fn()
+	return true
 }
 
 func (c *crashSession) Create(ctx context.Context, r *session.CreateRequest) (*session.CreateResponse, error) {
@@ -89,6 +107,11 @@ func (c *crashSession) Delete(ctx context.Context, r *session.DeleteRequest) err
 	return c.inner.Delete(ctx, r)
 }
 func (c *crashSession) AppendEvent(ctx context.Context, s session.Session, e *session.Event) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.dropped {
+		return fmt.Errorf("chaos: process crashed at append #%d", c.failAt)
+	}
 	c.appends++
 	if c.failAt > 0 && c.appends == c.failAt {
 		c.dropped = true
@@ -102,29 +125,38 @@ func ADK() chaos.System { return adkSys{} }
 
 type adkSys struct{}
 
-// Writes is the number of AppendEvents in a clean run (measured; see adk_writes_test.go).
+// Writes is the number of AppendEvents in a clean run (measured; see writes_test.go).
 func (adkSys) Writes() int { return 4 }
 
 func (adkSys) NewRun() chaos.Run {
-	svc := &crashSession{inner: session.InMemoryService()}
-	return &adkRun{fired: new(int), svc: svc}
+	return &adkRun{fired: new(int), store: session.InMemoryService()}
 }
 
 type adkRun struct {
+	mu    sync.Mutex // guards fired
 	fired *int
-	svc   *crashSession // one persisted session across Steps — ADK's durability
+	store session.Service // one persisted session across Steps — ADK's durability
 }
 
-func (r *adkRun) Fired() int { return *r.fired }
+func (r *adkRun) Fired() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return *r.fired
+}
 
 func (r *adkRun) Step(crashAt int) bool {
 	ctx := context.Background()
+	svc := &crashSession{inner: r.store, failAt: crashAt}
 
 	charge, err := functiontool.New(functiontool.Config{
 		Name:        "charge",
 		Description: "Charge the customer once.",
 	}, func(_ agent.Context, _ struct{}) (struct{}, error) {
-		*r.fired++ // the non-idempotent side effect
+		svc.alive(func() {
+			r.mu.Lock()
+			*r.fired++ // the non-idempotent side effect
+			r.mu.Unlock()
+		})
 		return struct{}{}, nil
 	})
 	if err != nil {
@@ -145,22 +177,19 @@ func (r *adkRun) Step(crashAt int) bool {
 	run, err := runner.New(runner.Config{
 		AppName:           "chaos",
 		Agent:             ag,
-		SessionService:    r.svc,
+		SessionService:    svc,
 		AutoCreateSession: true,
 	})
 	if err != nil {
 		return false
 	}
 
-	// Arm the crash for this Step and drain the run to completion (or to the injected fault).
-	r.svc.appends = 0
-	r.svc.dropped = false
-	r.svc.failAt = crashAt
+	// Drain the run to completion (or to the injected fault).
 	msg := genai.NewContentFromText("charge the customer", genai.RoleUser)
 	for _, err := range run.Run(ctx, "u", "s", msg, agent.RunConfig{}) {
 		if err != nil {
 			break // the injected persist failure aborts the run, as a crash would
 		}
 	}
-	return r.svc.dropped // crashed → the harness resumes with Step(0) on the same session
+	return !svc.alive(func() {}) // crashed → the harness resumes with Step(0) on the same session
 }

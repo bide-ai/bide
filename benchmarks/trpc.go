@@ -87,7 +87,9 @@ func TRPC() chaos.System { return trpcSys{} }
 
 type trpcSys struct{}
 
-func (trpcSys) Writes() int { return 6 }
+// Writes is the checkpoint writes (Put, PutFull, PutWrites) a clean run makes with
+// trpc-agent-go v1.11.2 (measured; see writes_test.go).
+func (trpcSys) Writes() int { return 3 }
 
 func (trpcSys) NewRun() chaos.Run {
 	return &trpcRun{store: inmemory.NewSaver(), fired: new(int)}
