@@ -60,7 +60,9 @@ func implements(t, iface reflect.Type) bool {
 //
 // It returns an error wrapping ErrUnsupportedType for a type encoding/json cannot decode as any
 // schema would describe it: a field reached through an embedded pointer to an unexported struct
-// type, which encoding/json cannot allocate.
+// type, which encoding/json cannot allocate, or a json tag name encoding/json does not accept
+// (one with a quote, a backslash, or another reserved character), which encoding/json reads
+// differently depending on how it is built.
 func For[T any]() (json.RawMessage, error) {
 	s, err := reflectSchema(reflect.TypeFor[T](), map[reflect.Type]bool{})
 	if err != nil {
@@ -128,7 +130,11 @@ func reflectSchema(t reflect.Type, seen map[reflect.Type]bool) (map[string]any, 
 
 		props := map[string]any{}
 		var required []string
-		for _, f := range jsonFields(t) {
+		fields, err := jsonFields(t)
+		if err != nil {
+			return nil, err
+		}
+		for _, f := range fields {
 			if f.viaUnexportedPtr != "" {
 				return nil, fmt.Errorf("%w: %s: field %q is reached through the embedded pointer to the unexported struct type %s, which encoding/json cannot allocate when decoding", ErrUnsupportedType, t, f.name, f.viaUnexportedPtr)
 			}
@@ -194,8 +200,9 @@ type jsonField struct {
 // jsonFields returns the fields encoding/json reads for struct type t, in index order. It is a
 // port of encoding/json's typeFields: a breadth-first walk over embedded structs, then Go's
 // dominance rules (the shallowest name wins, a json tag breaks a tie at one depth, and any other
-// tie removes the name).
-func jsonFields(t reflect.Type) []jsonField {
+// tie removes the name). A json tag name encoding/json does not accept is an error wrapping
+// ErrUnsupportedType, since encoding/json's two implementations read such a name differently.
+func jsonFields(t reflect.Type) ([]jsonField, error) {
 	type level struct {
 		typ              reflect.Type
 		index            []int
@@ -233,8 +240,10 @@ func jsonFields(t reflect.Type) []jsonField {
 					continue
 				}
 				name, opts, _ := strings.Cut(tag, ",")
-				if !validTagName(name) {
-					name = ""
+				if name != "" && !validTagName(name) {
+					// encoding/json v1 falls back to the Go name here and its v2 implementation
+					// reads the name differently, so the field has no one JSON name.
+					return nil, fmt.Errorf("%w: %s: field %s has the json tag name %q, which encoding/json does not accept as a name", ErrUnsupportedType, f.typ, sf.Name, name)
 				}
 				index := append(slices.Clip(f.index), i)
 				ft := sf.Type
@@ -307,7 +316,7 @@ func jsonFields(t reflect.Type) []jsonField {
 		i = j
 	}
 	slices.SortFunc(out, func(a, b jsonField) int { return slices.Compare(a.index, b.index) })
-	return out
+	return out, nil
 }
 
 // validTagName reports whether encoding/json accepts s as a field name in a json tag.

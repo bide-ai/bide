@@ -176,6 +176,73 @@ func TestFor_FieldDominanceMatchesEncodingJSON(t *testing.T) {
 	}
 }
 
+type DTaggedS struct {
+	S string `json:"X"`
+}
+type DTagWinsS struct {
+	DX
+	DTaggedS
+}
+
+// At one depth a tagged field beats an untagged one of the same name, whichever comes first.
+func TestFor_TaggedFieldWinsATie(t *testing.T) {
+	x := schemaOf[DTagWinsS](t)["properties"].(map[string]any)["X"].(map[string]any)
+	if x["type"] != "string" {
+		t.Fatalf("X is %v, want the tagged string field", x)
+	}
+	b, _ := json.Marshal(DTagWinsS{DX{1}, DTaggedS{"s"}})
+	if string(b) != `{"X":"s"}` {
+		t.Fatalf("encoding/json writes %s; the premise of this test is wrong", b)
+	}
+}
+
+type myInt int
+type fUnexportedEmbed struct {
+	myInt // an embedded unexported non-struct type: encoding/json ignores it
+	Y     int
+}
+
+// An embedded unexported non-struct type contributes nothing.
+func TestFor_UnexportedNonStructEmbedIsIgnored(t *testing.T) {
+	s := schemaOf[fUnexportedEmbed](t)
+	if got, want := propertyNames(t, s), marshaledKeys(t, fUnexportedEmbed{1, 2}); !slices.Equal(got, want) {
+		t.Fatalf("schema properties %v, encoding/json writes %v", got, want)
+	}
+}
+
+type fBadTagName struct {
+	Bad int `json:"na\\me"`
+}
+type fBadTagNameEmbedded struct {
+	fBadTagName
+}
+
+// A json tag name with a character encoding/json reserves has no one meaning: encoding/json on
+// its v2 implementation (the Go 1.27 default) cuts the name short, and built with
+// GOEXPERIMENT=nojsonv2 it falls back to the Go field name. For refuses it rather than describe
+// one of the two.
+func TestFor_MalformedTagNameIsRejected(t *testing.T) {
+	if _, err := For[fBadTagName](); !errors.Is(err, ErrUnsupportedType) || !strings.Contains(err.Error(), "Bad") {
+		t.Fatalf("For = %v, want ErrUnsupportedType naming field Bad", err)
+	}
+	if _, err := For[fBadTagNameEmbedded](); !errors.Is(err, ErrUnsupportedType) {
+		t.Fatalf("For (promoted) = %v, want ErrUnsupportedType", err)
+	}
+}
+
+type Cyc struct {
+	A int
+	*Cyc
+}
+
+// A struct that embeds a pointer to itself terminates, with the fields encoding/json uses.
+func TestFor_SelfEmbeddingTerminates(t *testing.T) {
+	s := schemaOf[Cyc](t)
+	if got, want := propertyNames(t, s), marshaledKeys(t, Cyc{A: 1}); !slices.Equal(got, want) {
+		t.Fatalf("schema properties %v, encoding/json writes %v", got, want)
+	}
+}
+
 // json:"-," names a field "-"; json:"-" omits it.
 func TestFor_DashTag(t *testing.T) {
 	s := schemaOf[fDash](t)
