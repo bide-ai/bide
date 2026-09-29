@@ -423,6 +423,44 @@ func TestOpenAIStrict_ReachesItemsAndBranches(t *testing.T) {
 	}
 }
 
+type sUntyped struct {
+	A   any             `json:"a"`
+	Raw json.RawMessage `json:"raw,omitempty"`
+	N   int             `json:"n"`
+}
+
+// An untyped schema ({}, from any or json.RawMessage) admits every value, which strict mode cannot
+// express: every schema there must say what it admits. It is an error naming the location, wherever
+// it sits, rather than a schema the API refuses or reads its own way.
+func TestOpenAIStrict_UntypedSchemaIsAnError(t *testing.T) {
+	neutral, _ := For[sUntyped]()
+	if s, err := OpenAIStrict(neutral); !errors.Is(err, ErrStrictUnsupported) || !strings.Contains(err.Error(), "properties.a") {
+		t.Fatalf("OpenAIStrict = %s, %v; want ErrStrictUnsupported naming properties.a", s, err)
+	}
+	for _, in := range []string{
+		`{}`,
+		`{"description":"anything"}`,
+		`{"type":"object","properties":{"raw":{}}}`,
+		`{"type":"object","properties":{"raw":{"description":"any JSON"}}}`,
+		`{"type":"array","items":{}}`,
+		`{"type":"array","items":true}`,
+		`{"anyOf":[{"type":"string"},{}]}`,
+	} {
+		if s, err := OpenAIStrict(json.RawMessage(in)); !errors.Is(err, ErrStrictUnsupported) {
+			t.Errorf("%s: OpenAIStrict = %s, %v; want ErrStrictUnsupported", in, s, err)
+		}
+	}
+	// A schema without a type that still says what it admits is fine.
+	for _, in := range []string{
+		`{"type":"object","properties":{"e":{"enum":["a","b"]},"c":{"const":1},"u":{"anyOf":[{"type":"string"},{"type":"null"}]},"o":{"oneOf":[{"type":"string"}]},"l":{"allOf":[{"type":"string"}]},"r":{"$ref":"#/$defs/t"}},"required":["e","c","u","o","l","r"],"$defs":{"t":{"type":"string"}}}`,
+		`{"type":"array","items":{"type":"integer"}}`,
+	} {
+		if _, err := OpenAIStrict(json.RawMessage(in)); err != nil {
+			t.Errorf("%s: OpenAIStrict = %v", in, err)
+		}
+	}
+}
+
 // An empty struct is a closed object with no properties, which strict mode expresses exactly.
 func TestOpenAIStrict_EmptyStructIsFine(t *testing.T) {
 	neutral, _ := For[sEmpty]()

@@ -36,9 +36,10 @@ Adapter-specific options:
   Note this flag governs only tool schemas: `RunTypedNative[T]` always emits a strict
   `response_format` JSON schema regardless, so the native typed-output path does not need it.
   In strict mode an optional field (a pointer or `omitempty`) is required but nullable, so the
-  model sends `null` for it. A type strict mode cannot express (a map, a recursive type) fails the
-  request with an `ErrConfig` error wrapping `schema.ErrStrictUnsupported`, rather than being sent
-  as a schema whose only valid instance is empty.
+  model sends `null` for it. A type strict mode cannot express (a map, a recursive type, or an
+  untyped field such as `any` or `json.RawMessage`) fails the request with an `ErrConfig` error
+  wrapping `schema.ErrStrictUnsupported`, rather than being sent as a schema that changes what the
+  model may answer.
 
 `WithBaseURL` is how one adapter reaches many providers. For OpenAI-compatible endpoints, set the
 base URL and the model, e.g. `openai.New("", openai.WithBaseURL("http://localhost:11434/v1"),

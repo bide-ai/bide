@@ -360,6 +360,9 @@ func hasOption(opts, opt string) bool {
 //     properties or with additionalProperties or patternProperties) is an error wrapping
 //     ErrStrictUnsupported that names the offending location. Closing it would admit only {},
 //     so every answer would arrive empty.
+//   - An untyped schema ({}, which For gives any and json.RawMessage, or the schema true) admits
+//     every value, which strict mode cannot express; it is an error wrapping ErrStrictUnsupported
+//     too.
 //
 // Operates on the inline schema.
 func OpenAIStrict(neutral json.RawMessage) (json.RawMessage, error) {
@@ -374,9 +377,16 @@ func OpenAIStrict(neutral json.RawMessage) (json.RawMessage, error) {
 }
 
 func strictify(v any, path string) error {
+	where := cmp.Or(path, "the root schema")
+	if v == true {
+		return fmt.Errorf("%w: %s admits any value (the schema true)", ErrStrictUnsupported, where)
+	}
 	s, ok := v.(map[string]any)
 	if !ok {
 		return nil
+	}
+	if unconstrained(s) {
+		return fmt.Errorf("%w: %s admits any value (an untyped schema, from any or json.RawMessage)", ErrStrictUnsupported, where)
 	}
 	at := func(p string) string {
 		if path == "" {
@@ -385,7 +395,6 @@ func strictify(v any, path string) error {
 		return path + "." + p
 	}
 	if isObject(s) {
-		where := cmp.Or(path, "the root object")
 		if _, ok := s["patternProperties"]; ok {
 			return fmt.Errorf("%w: %s has patternProperties", ErrStrictUnsupported, where)
 		}
@@ -432,6 +441,17 @@ func strictify(v any, path string) error {
 		}
 	}
 	return nil
+}
+
+// unconstrained reports whether schema s names nothing it admits: no type, enum, const, branches,
+// or reference. Such a schema admits every value, which strict mode cannot express.
+func unconstrained(s map[string]any) bool {
+	for _, kw := range []string{"type", "enum", "const", "anyOf", "oneOf", "allOf", "$ref"} {
+		if _, ok := s[kw]; ok {
+			return false
+		}
+	}
+	return true
 }
 
 // isObject reports whether schema s describes an object (type "object", alone or in a list).
