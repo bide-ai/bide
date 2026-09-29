@@ -23,7 +23,7 @@ func TestRun_StatisticalPassRate(t *testing.T) {
 	cases := []eval.Case{{Name: "kyc_case", Input: "applicant 42"}}
 	metrics := []eval.Metric{eval.NoError(), eval.Contains("APPROVED")}
 
-	rep := eval.Run(context.Background(), stochastic, cases, metrics, eval.Options{Runs: 4})
+	rep := mustRun(t, context.Background(), stochastic, cases, metrics, eval.Options{Runs: 4})
 
 	if rep.RunsPerCase != 4 || rep.TotalRuns != 4 {
 		t.Fatalf("runs=%d total=%d, want 4,4", rep.RunsPerCase, rep.TotalRuns)
@@ -56,12 +56,12 @@ func TestJudge(t *testing.T) {
 	run := func(_ context.Context, _ string) eval.RunOutput {
 		return eval.RunOutput{Final: agent.UserText("some answer")}
 	}
-	pass := eval.Run(context.Background(), run, cases,
+	pass := mustRun(t, context.Background(), run, cases,
 		[]eval.Metric{eval.Judge("rubric", judgeModel{"PASS"}, "is it fine")}, eval.Options{Runs: 1})
 	if pass.Overall["rubric"].Rate != 1.0 {
 		t.Fatalf("judge PASS should score 1.0, got %v", pass.Overall["rubric"].Rate)
 	}
-	fail := eval.Run(context.Background(), run, cases,
+	fail := mustRun(t, context.Background(), run, cases,
 		[]eval.Metric{eval.Judge("rubric", judgeModel{"FAIL: off topic"}, "is it fine")}, eval.Options{Runs: 1})
 	if fail.Overall["rubric"].Rate != 0.0 {
 		t.Fatalf("judge FAIL should score 0.0, got %v", fail.Overall["rubric"].Rate)
@@ -95,7 +95,7 @@ func TestTrajectoryMetrics(t *testing.T) {
 	run := eval.AgentRunner(a, store, "traj")
 	cases := []eval.Case{{Name: "with_tool", Input: "go"}}
 
-	rep := eval.Run(context.Background(), run, cases, []eval.Metric{
+	rep := mustRun(t, context.Background(), run, cases, []eval.Metric{
 		eval.NoError(),
 		eval.CalledTool("lookup"),
 		eval.MaxSteps(2),
@@ -118,4 +118,14 @@ func TestTrajectoryMetrics(t *testing.T) {
 	if rep.Overall["tool_order:lookup"].Rate != 1.0 {
 		t.Fatalf("expected tool_order:lookup to hold, got %v", rep.Overall["tool_order:lookup"].Rate)
 	}
+}
+
+// mustRun is eval.Run for a context that is never cancelled.
+func mustRun(t testing.TB, ctx context.Context, run eval.RunFunc, cases []eval.Case, metrics []eval.Metric, opts eval.Options) eval.Report {
+	t.Helper()
+	rep, err := eval.Run(ctx, run, cases, metrics, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return rep
 }

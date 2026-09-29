@@ -20,8 +20,12 @@ func reportFor(passes, runs int) eval.Report {
 		}
 		return eval.RunOutput{Final: agent.UserText("nope")}
 	}
-	return eval.Run(context.Background(), run, []eval.Case{{Name: "c", Input: "x"}},
+	rep, err := eval.Run(context.Background(), run, []eval.Case{{Name: "c", Input: "x"}},
 		[]eval.Metric{eval.Contains("PASS")}, eval.Options{Runs: runs})
+	if err != nil {
+		panic(err) // a background context is never cancelled
+	}
+	return rep
 }
 
 // TestCompare_ClearRegression: a large drop (95/100 -> 70/100) is significant and flagged a
@@ -199,7 +203,7 @@ func TestHashCases(t *testing.T) {
 func TestProvenanceOnReport(t *testing.T) {
 	cases := []eval.Case{{Name: "c", Input: "x"}}
 	run := func(_ context.Context, _ string) eval.RunOutput { return eval.RunOutput{Final: agent.UserText("ok")} }
-	rep := eval.Run(context.Background(), run, cases, []eval.Metric{eval.NoError()},
+	rep := mustRun(t, context.Background(), run, cases, []eval.Metric{eval.NoError()},
 		eval.Options{Runs: 1, Provenance: eval.Provenance{ModelID: "m-1", Temperature: 0, Seed: 42}})
 	if rep.Provenance.ModelID != "m-1" || rep.Provenance.Seed != 42 {
 		t.Fatalf("provenance not carried through: %+v", rep.Provenance)
@@ -223,7 +227,7 @@ func TestByTag(t *testing.T) {
 		{Name: "e", Input: "easy-in", Tags: []string{"easy"}},
 		{Name: "h", Input: "hard-in", Tags: []string{"hard"}},
 	}
-	rep := eval.Run(context.Background(), run, cases, []eval.Metric{eval.Contains("YES")}, eval.Options{Runs: 4})
+	rep := mustRun(t, context.Background(), run, cases, []eval.Metric{eval.Contains("YES")}, eval.Options{Runs: 4})
 	if rep.ByTag == nil {
 		t.Fatal("expected ByTag to be populated")
 	}
@@ -256,7 +260,7 @@ func TestGovernanceHeld(t *testing.T) {
 	governance := eval.GovernanceHeld("governance_held", func(out eval.RunOutput) bool {
 		return contains(out.Final.Text(), "compliant")
 	})
-	rep := eval.Run(context.Background(), run, cases, []eval.Metric{rawJudgment, governance}, eval.Options{Runs: 4})
+	rep := mustRun(t, context.Background(), run, cases, []eval.Metric{rawJudgment, governance}, eval.Options{Runs: 4})
 
 	rawRate := rep.Overall["contains:CORRECT"].Rate
 	govRate := rep.Overall["governance_held"].Rate

@@ -287,8 +287,11 @@ blurred in a claim:
   deterministically by governance; the record is provable by audit. Never present an eval pass rate
   as one of the machine-checked guarantees.
 
-`eval.AgentRunner` wraps an agent as an eval `RunFunc` (unique runID per run), so evaluation runs are
-themselves durable and can be replayed and audited like any other run. A runnable, self-contained
+`eval.AgentRunner` wraps an agent as an eval `RunFunc`, so evaluation runs are themselves durable
+and can be replayed and audited like any other run. Each run ID carries a nonce drawn per runner,
+so a second eval over the same store samples the model again rather than replaying the first
+eval's recorded answers. If the context is cancelled before every run finishes, `eval.Run` returns
+the error and no report, since a partial report would count cut-short runs as failures. A runnable, self-contained
 walkthrough (labeled cases, rule-based and stub metrics, a deliberately flaky model so the report
 shows a rate below 100%) is [`examples/eval`](../../examples/eval/main.go): `go run ./examples/eval`.
 

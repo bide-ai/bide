@@ -73,7 +73,10 @@ func main() {
 	metrics := []eval.Metric{eval.NoError(), correct, eval.MaxSteps(1)}
 
 	// 4) Run each case 5 times (sampling the stochastic model) and print the pass-rate report.
-	rep := eval.Run(ctx, eval.AgentRunner(a, store, "sentiment"), cases, metrics, eval.Options{Runs: 5, Concurrency: 4})
+	rep, err := eval.Run(ctx, eval.AgentRunner(a, store, "sentiment"), cases, metrics, eval.Options{Runs: 5, Concurrency: 4})
+	if err != nil {
+		panic(err)
+	}
 	fmt.Print(rep.String())
 	fmt.Printf("\noverall correct_label rate: %.0f%% (a distribution over runs, not a guarantee)\n",
 		rep.Overall["correct_label"].Rate*100)

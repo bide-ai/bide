@@ -17,6 +17,8 @@ package eval
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"math"
 	"regexp"
@@ -241,7 +243,11 @@ type Report struct {
 // returns a Report of pass rates (with Wilson confidence intervals) and latency percentiles.
 // Executions run concurrently up to Options.Concurrency. Because the model is stochastic, the report
 // is a distribution over runs, not a single pass/fail.
-func Run(ctx context.Context, run RunFunc, cases []Case, metrics []Metric, opts Options) Report {
+//
+// If ctx is cancelled before every execution has finished, Run starts no further executions and
+// returns ctx's error with an empty Report: executions cut short by the cancellation would score as
+// failures, and the ones that did finish are not a representative sample.
+func Run(ctx context.Context, run RunFunc, cases []Case, metrics []Metric, opts Options) (Report, error) {
 	runs := opts.Runs
 	if runs < 1 {
 		runs = 1
@@ -260,10 +266,15 @@ func Run(ctx context.Context, run RunFunc, cases []Case, metrics []Metric, opts 
 
 	sem := make(chan struct{}, conc)
 	var wg sync.WaitGroup
+launch:
 	for i := range cases {
 		for r := 0; r < runs; r++ {
+			select {
+			case sem <- struct{}{}:
+			case <-ctx.Done():
+				break launch
+			}
 			wg.Add(1)
-			sem <- struct{}{}
 			go func(i, r int) {
 				defer wg.Done()
 				defer func() { <-sem }()
@@ -279,6 +290,9 @@ func Run(ctx context.Context, run RunFunc, cases []Case, metrics []Metric, opts 
 		}
 	}
 	wg.Wait()
+	if err := ctx.Err(); err != nil {
+		return Report{}, fmt.Errorf("eval: cancelled before all %d runs finished: %w", total, err)
+	}
 
 	rep := Report{RunsPerCase: runs, TotalRuns: total, Overall: map[string]MetricStat{}, Provenance: opts.Provenance}
 	rep.Provenance.CaseSetHash = HashCases(cases)
@@ -321,7 +335,7 @@ func Run(ctx context.Context, run RunFunc, cases []Case, metrics []Metric, opts 
 		rep.LatencyP50 = latencies[pctIndex(total, 50)]
 		rep.LatencyP95 = latencies[pctIndex(total, 95)]
 	}
-	return rep
+	return rep, nil
 }
 
 func pctIndex(n, p int) int {
@@ -332,13 +346,21 @@ func pctIndex(n, p int) int {
 	return i
 }
 
-// AgentRunner wraps an Agent as a RunFunc, giving each run a unique runID (prefix plus a counter)
-// so evaluation runs are independent, durable, and auditable. It reads the run's journal from store
-// (the same Durable the Agent was built with) to populate the Trajectory for trajectory metrics.
+// AgentRunner wraps an Agent as a RunFunc, giving each run a unique runID so evaluation runs are
+// independent, durable, and auditable. The ID is the prefix, a random nonce drawn once per
+// AgentRunner, and a counter: an eval never reuses an earlier eval's runs, which would replay their
+// recorded answers instead of sampling the model, even over a store kept between evals. It reads
+// the run's journal from store (the same Durable the Agent was built with) to populate the
+// Trajectory for trajectory metrics.
 func AgentRunner(a *agent.Agent, store agent.Durable, runIDPrefix string) RunFunc {
 	var n int64
+	var b [6]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		panic(fmt.Sprintf("eval: AgentRunner: read random nonce: %v", err))
+	}
+	nonce := hex.EncodeToString(b[:])
 	return func(ctx context.Context, input string) RunOutput {
-		id := fmt.Sprintf("%s-%d", runIDPrefix, atomic.AddInt64(&n, 1))
+		id := fmt.Sprintf("%s-%s-%d", runIDPrefix, nonce, atomic.AddInt64(&n, 1))
 		msg, err := a.Run(ctx, id, input)
 		recs, _ := store.History(ctx, id)
 		return RunOutput{Final: msg, Err: err, RunID: id, Trace: TrajectoryFrom(recs)}
