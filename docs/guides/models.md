@@ -172,7 +172,16 @@ and video input are not modeled (see [KNOWN-LIMITATIONS.md](../KNOWN-LIMITATIONS
 
 The Anthropic adapter preserves extended-thinking **signatures**: a `Reasoning` part carries the
 provider's opaque `Signature`, which is echoed back on later turns. Dropping it corrupts thinking +
-tool use, which is why message content is typed parts rather than a flat string.
+tool use, which is why message content is typed parts rather than a flat string. Each thinking
+block is its own `Reasoning` part with its own signature, in the order the model produced them,
+and a `redacted_thinking` block is kept as a `Reasoning` part whose `Redacted` field holds its
+encrypted data, sent back unchanged. A `Reasoning` part with neither a signature nor redacted data
+(reasoning from another provider) is not sent to Anthropic, which would reject it.
+
+Other Anthropic request details: empty or whitespace-only text blocks are left out (Anthropic
+rejects them), system text from several parts or turns is joined with a blank line, and
+`ToolChoice{Mode: "none"}` is sent as `{"type": "none"}` with the tools still declared (Anthropic
+requires the declarations whenever the history holds `tool_use` blocks).
 
 The OpenAI and Gemini adapters take the opposite, provider-correct stance: they do not send a prior
 `Reasoning` part back on an assistant-input turn (the providers reject it, and there is no stable

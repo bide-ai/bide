@@ -11,6 +11,8 @@ import (
 // would have.
 func TestEncodeRecord_KeepsProviderTokens(t *testing.T) {
 	msg := Message{Role: RoleAssistant, Parts: []Part{
+		Reasoning{Text: "t", Signature: "s1"},
+		Reasoning{Redacted: "ENCRYPTED"},
 		ToolUse{ID: "c1", Name: "t", Args: json.RawMessage(`{}`), Signature: "sig"},
 	}}
 	b, err := EncodeRecord(Record{Name: "@llm/0", Kind: StepModel, Message: &msg})

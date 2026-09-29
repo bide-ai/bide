@@ -51,9 +51,14 @@ func (Text) part() {}
 // Reasoning is model thinking. Signature is the provider's opaque token that must be
 // echoed back on later turns (Anthropic extended thinking); dropping it corrupts the
 // conversation — which is exactly why Content can't be a flat string.
+//
+// Redacted holds reasoning the provider returned encrypted (Anthropic redacted_thinking
+// data), which must also go back unchanged; Text and Signature are empty when it is set.
+// Each thinking block is its own Reasoning part, in the order the model produced them.
 type Reasoning struct {
 	Text      string `json:"text"`
 	Signature string `json:"signature,omitempty"`
+	Redacted  string `json:"redacted,omitempty"`
 }
 
 func (Reasoning) part() {}

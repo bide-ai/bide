@@ -94,9 +94,13 @@ type TextDelta struct{ Text string }
 
 func (TextDelta) event() {}
 
+// ReasoningDelta is a fragment of model thinking. A Signature ends the thinking block it
+// belongs to, so the next ReasoningDelta starts a new Reasoning part. Redacted carries a whole
+// encrypted block (Anthropic redacted_thinking), which becomes a Reasoning part of its own.
 type ReasoningDelta struct {
 	Text      string
 	Signature string // opaque provider token to echo back on later turns (Anthropic thinking)
+	Redacted  string // encrypted reasoning to echo back unchanged (Anthropic redacted_thinking)
 }
 
 func (ReasoningDelta) event() {}
@@ -250,8 +254,9 @@ func Generate(ctx context.Context, m Model, req Request) (Message, Usage, error)
 
 // msgBuilder assembles streamed events into a Message.
 type msgBuilder struct {
-	reasoning    strings.Builder
-	reasoningSig string
+	reasoning    []Reasoning     // completed thinking blocks, in order
+	thinking     strings.Builder // the open thinking block's text
+	thinkingOpen bool
 	text         strings.Builder
 	calls        map[int]*ToolUse
 	order        []int
@@ -263,9 +268,15 @@ func (b *msgBuilder) add(ev Event) {
 	case TextDelta:
 		b.text.WriteString(e.Text)
 	case ReasoningDelta:
-		b.reasoning.WriteString(e.Text)
+		if e.Redacted != "" {
+			b.closeThinking()
+			b.reasoning = append(b.reasoning, Reasoning{Redacted: e.Redacted})
+			break
+		}
+		b.thinkingOpen = true
+		b.thinking.WriteString(e.Text)
 		if e.Signature != "" {
-			b.reasoningSig = e.Signature
+			b.closeThinking(e.Signature)
 		}
 	case ToolCallDelta:
 		if b.calls == nil {
@@ -292,14 +303,30 @@ func (b *msgBuilder) add(ev Event) {
 	}
 }
 
+// closeThinking ends the open thinking block, if any, as a Reasoning part with the given
+// signature (at most one).
+func (b *msgBuilder) closeThinking(signature ...string) {
+	if !b.thinkingOpen {
+		return
+	}
+	r := Reasoning{Text: b.thinking.String()}
+	if len(signature) > 0 {
+		r.Signature = signature[0]
+	}
+	b.reasoning = append(b.reasoning, r)
+	b.thinking.Reset()
+	b.thinkingOpen = false
+}
+
 // finalize assembles the streamed events into a Message, validating that each tool
 // call's concatenated argument fragments form complete JSON. A truncated stream
 // yields invalid JSON — surface it rather than hand malformed args to a tool.
 // (v1 json.Valid today; swaps to jsontext when we adopt json/v2 at the model layer.)
 func (b *msgBuilder) finalize() (Message, error) {
 	var parts []Part
-	if b.reasoning.Len() > 0 || b.reasoningSig != "" {
-		parts = append(parts, Reasoning{Text: b.reasoning.String(), Signature: b.reasoningSig})
+	b.closeThinking()
+	for _, r := range b.reasoning {
+		parts = append(parts, r)
 	}
 	if b.text.Len() > 0 {
 		parts = append(parts, Text{Text: b.text.String()})
