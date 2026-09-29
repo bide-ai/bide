@@ -84,6 +84,19 @@ func recordError(span oteltrace.Span, err error, capture bool) {
 	span.SetStatus(codes.Error, err.Error())
 }
 
+// end ends span, marking it failed if the call it covers panicked; deferred, it sees the panic
+// before it propagates, and re-raises it. The status names the panic and not its value, which can
+// carry content. It recovers the panic itself so that the SDK's span.End, which would otherwise
+// record the value as an exception event whatever the capture setting, never sees it.
+func end(span oteltrace.Span) {
+	if r := recover(); r != nil {
+		span.SetStatus(codes.Error, "panic")
+		span.End()
+		panic(r)
+	}
+	span.End()
+}
+
 // Model returns middleware that wraps each model call in a gen_ai "chat" span with
 // token usage and status. Attach via agent.Agent.Use.
 func Model(tracer oteltrace.Tracer, opts ...Option) agent.Middleware {
@@ -101,7 +114,7 @@ func Model(tracer oteltrace.Tracer, opts ...Option) agent.Middleware {
 			ctx, span := tracer.Start(ctx, name, oteltrace.WithAttributes(
 				attribute.String(attrOperation, "chat"),
 			))
-			defer span.End()
+			defer end(span)
 			if c.system != "" {
 				span.SetAttributes(attribute.String(attrSystem, c.system))
 			}
@@ -146,7 +159,7 @@ func Tool(tracer oteltrace.Tracer) agent.ToolMiddleware {
 				attribute.String(attrOperation, "execute_tool"),
 				attribute.String(attrToolName, tu.Name),
 			))
-			defer span.End()
+			defer end(span)
 			if tu.ID != "" {
 				span.SetAttributes(attribute.String(attrToolCallID, tu.ID))
 			}
