@@ -53,7 +53,7 @@ Temporal 拥有这些保证，但需要一个服务器加一支 worker 机群才
 
 而且，因为它是一个 Go 库，单个进程可以同时让数量极其庞大的这类持久化运行处于进行中。智能体的工作是 I/O 密集型的（在等待模型和工具调用），而 goroutine 无需集群即可吸收这类等待。[`cmd/bench`](../../cmd/bench/README.md) 测试工具对此做了测量：20,000 次运行，每次同时有 5,000 次处于进行中，每次运行在模型上阻塞约 100ms，在**10 核 Apple silicon Mac 上约半秒（约 470ms）、标准 4 vCPU CI 运行器上约一秒的墙钟时间**内完成，跑在几千个 goroutine 和数十 MB 之上（`go run ./cmd/bench -runs 20000 -concurrency 5000 -latency 50ms`）。它的优势在于吞吐量和运维简洁性，而不是比模型更低的延迟（每次调用的延迟由提供商决定）；在高扇出下，持久化存储的写入吞吐量才是上限，而非 goroutine。每一个并发运行都保有全部四项保证。这种负载下的可靠性是内建的：按尝试计的**超时**、带退避（backoff）且能**区分**瞬时错误与终结性错误的重试、**对冲式（hedged）**模型调用（同时发起一个备份调用，取先到者，用于降低尾延迟并实现提供商故障切换），以及用于模型和工具调用的**限流器（rate limiter）**（[middleware](../../middleware)、[docs/guides/reliability.md](../../docs/guides/reliability.md)）。
 
-为实现高可用，任意节点都能从共享存储恢复任意运行，而相互竞争的驱动方通过一个按运行计的**租约（lease）**（`agent.Lease`）来协调：同一时刻只有一个进程驱动某个运行，崩溃持有者的租约会过期从而由另一个节点接管，任何运行都不会被双重驱动。与保证 1 一样，这是经过验证的，而非断言的：内存存储上的并发 worker 互斥、崩溃接管，以及并发驱动方下的至多一次（`agent/ha_e2e_test.go`），还有 Postgres 上的跨进程至多一次，即两个存储实例共享同一个数据库（`store/postgres/postgres_test.go` 中的 `TestPostgres_HAAtMostOnceAcrossInstances`；Postgres 后端用一次 DB 时钟 upsert 实现该租约）。
+为实现高可用，任意节点都能从共享存储恢复任意运行，而相互竞争的驱动方通过一个按运行计的**租约（lease）**（`agent.Lease`）来协调：通常同一时刻只有一个进程驱动某个运行，崩溃持有者的租约会过期，从而由另一个节点的 `agent.RecoverLoop` 接管。停顿超过租约期限的持有者可能醒来时仍在驱动该运行，但它无法再次触发副作用：至多一次依靠的是尝试声明（attempt claim），而不是租约。与保证 1 一样，这是经过验证的，而非断言的：内存存储上的并发 worker 互斥、崩溃接管，以及并发驱动方下的至多一次（`agent/ha_e2e_test.go`），还有 Postgres 上的跨进程至多一次，即两个存储实例共享同一个数据库（`store/postgres/postgres_test.go` 中的 `TestPostgres_HAAtMostOnceAcrossInstances`；Postgres 后端用一次 DB 时钟 upsert 实现该租约）。
 
 ### 3 · 一条可加密验证的审计脊柱，出自同一条日志
 
