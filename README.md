@@ -472,7 +472,8 @@ since providers take tool arguments only as an object; any other `T` is `ErrConf
 
 On OpenAI-compatible providers with strict structured outputs, `RunTypedNative[T]` uses the
 provider's native JSON-schema response format instead of the tool (schema enforced provider-side,
-no tool round-trip); Anthropic ignores it, so use `RunTyped` there for provider-agnostic output.
+no tool round-trip); the Anthropic adapter does not support it and returns `ErrConfig`, so use
+`RunTyped` there for provider-agnostic output.
 
 ## Sampling
 

@@ -109,6 +109,12 @@ func (m *Model) buildRequest(req agent.Request) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	// This adapter does not send a JSON-schema response format. Sending the request without it
+	// would drop the constraint silently: the model answers in free text, which RunTypedNative
+	// fails to decode only after the run completes, or decodes JSON no schema constrained.
+	if rf := req.ResponseFormat; rf != nil && len(rf.Schema) > 0 {
+		return nil, fmt.Errorf("anthropic: response format %q: the Anthropic adapter does not support a JSON-schema response format (use agent.RunTyped): %w", rf.Name, agent.ErrConfig)
+	}
 	type block map[string]any
 
 	var systemTexts []string

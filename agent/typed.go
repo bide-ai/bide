@@ -116,9 +116,9 @@ func RunTyped[T any](ctx context.Context, a *Agent, runID, input string) (T, err
 // constraint (a JSON-schema response format) instead of the injected final_answer tool:
 // it sets Request.ResponseFormat from T's schema and decodes the model's direct JSON
 // output. Prefer it on OpenAI-compatible providers with strict structured outputs (schema
-// adherence is enforced provider-side, no tool round-trip). Providers that don't support
-// response formats (e.g. Anthropic) ignore the constraint — use the provider-agnostic
-// RunTyped there. Package function (Go methods can't add type parameters).
+// adherence is enforced provider-side, no tool round-trip). An adapter that does not support
+// response formats (Anthropic) fails the run with ErrConfig before calling the model; use
+// the provider-agnostic RunTyped there. Package function (Go methods can't add type parameters).
 func RunTypedNative[T any](ctx context.Context, a *Agent, runID, input string) (T, error) {
 	var zero T
 	sch, err := schema.For[T]()

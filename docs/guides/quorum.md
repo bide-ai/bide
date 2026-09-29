@@ -35,7 +35,8 @@ func voter(name string, a *agent.Agent, ticket string) govern.Voter {
     return govern.Voter{
         Name: name,
         Decide: func(ctx context.Context) (string, error) {
-            v, err := agent.RunTypedNative[verdict](ctx, a, "refund-1234/vote/"+name, ticket)
+            // RunTyped works with every provider; RunTypedNative is ErrConfig on Anthropic.
+            v, err := agent.RunTyped[verdict](ctx, a, "refund-1234/vote/"+name, ticket)
             return v.Decision, err
         },
     }
@@ -81,9 +82,9 @@ A tie for the most votes is never agreement. With four voters and `k = 2`, a 2-2
   less lets two different decisions both reach `k`; the tie rule above keeps that from counting as
   agreement.
 - **Keep the answers comparable.** Votes are compared as exact strings, so each model must answer
-  from a small fixed set of labels. Use structured output (`RunTypedNative`, a response format, or
-  a forced tool choice), and normalize anything else before returning it. Open-ended text cannot be
-  put to a quorum.
+  from a small fixed set of labels. Use structured output (`RunTyped`, or `RunTypedNative` on a
+  provider with a response format, or a forced tool choice), and normalize anything else before
+  returning it. Open-ended text cannot be put to a quorum.
 
 ## Naming a quorum
 
