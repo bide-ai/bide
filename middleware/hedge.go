@@ -28,6 +28,11 @@ import (
 // a derived context. If every target fails, Hedge returns the joined error. With no backups it is
 // a pass-through, so it is safe to wire unconditionally and add backups later.
 //
+// Streaming: with backups, a streaming caller (Agent.Stream) receives the winning response's
+// events once the winner is chosen, not token by token. The targets race without access to the
+// caller's stream, so a target that loses can never show the caller text the run does not
+// record, or send anything after the run has ended. With no backups, streaming is live as usual.
+//
 // Hedge only races the model generation. It does not duplicate tool calls or any other side
 // effect: those run in the agent loop, above this middleware, under the at-most-once journal and
 // the Safety layer. Note it hedges latency and availability, not correctness: taking the first
@@ -55,10 +60,13 @@ func Hedge(delay time.Duration, backups ...agent.Model) agent.Middleware {
 		}
 
 		return func(ctx context.Context, req agent.Request) (agent.Message, agent.Usage, error) {
-			if len(handlers) == 1 { // no backups: plain pass-through
+			if len(handlers) == 1 { // no backups: plain pass-through, streaming live
 				return next(ctx, req)
 			}
 
+			// The targets race without the caller's token sink: only the winner's response is
+			// delivered to it, once chosen (see the Streaming note above).
+			ctx, sink := agent.DetachModelSink(ctx)
 			hctx, cancel := context.WithCancel(ctx)
 			defer cancel() // returning cancels every loser still in flight
 
@@ -106,7 +114,8 @@ func Hedge(delay time.Duration, backups ...agent.Model) agent.Middleware {
 					timerC = nil
 				case r := <-results:
 					if r.err == nil {
-						return r.msg, r.u, nil // first success wins; defer cancel() kills the rest
+						agent.EmitMessage(sink, r.msg) // the caller sees exactly what the run records
+						return r.msg, r.u, nil         // first success wins; defer cancel() kills the rest
 					}
 					errs = append(errs, r.err)
 					// A target failed: bring the backups forward now instead of waiting out delay.

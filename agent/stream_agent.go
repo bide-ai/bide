@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"iter"
+	"sync"
 )
 
 // AgentEvent is a lifecycle event emitted by Agent.Stream as the run loop advances:
@@ -178,14 +179,33 @@ func (a *Agent) StreamSaga(ctx context.Context, runID, input string) *AgentStrea
 
 func (a *Agent) stream(ctx context.Context, runID, input string, saga bool) *AgentStream {
 	as := &AgentStream{ch: make(chan AgentEvent), result: make(chan agentResult, 1)}
+	// mu and closed let an event that arrives after the run has ended be dropped rather than
+	// sent on the closed channel, which would panic and take down the process. That can happen
+	// only through a goroutine outliving its call, such as a middleware that fans a model call
+	// out and leaves a loser running; Middleware is a public extension point, so the stream does
+	// not rely on every middleware getting that right.
+	var (
+		mu     sync.Mutex
+		closed bool
+	)
 	emit := func(e AgentEvent) {
+		mu.Lock()
+		defer mu.Unlock()
+		if closed {
+			return
+		}
 		select {
 		case as.ch <- e:
 		case <-ctx.Done():
 		}
 	}
 	go func() {
-		defer close(as.ch)
+		defer func() {
+			mu.Lock()
+			closed = true
+			close(as.ch)
+			mu.Unlock()
+		}()
 		var msg Message
 		var err error
 		if saga {
