@@ -45,7 +45,9 @@ import (
 func Hedge(delay time.Duration, backups ...agent.Model) agent.Middleware {
 	return func(next agent.ModelHandler) agent.ModelHandler {
 		// One handler per target: the primary is `next`; each backup adapts its streaming
-		// Model into the same assembled-message handler shape.
+		// Model into the same assembled-message handler shape. A backup's response does not
+		// pass through the agent's model handler, so it is checked here the way that handler
+		// checks the primary's: an invalid response is that backup failing, not a win.
 		handlers := make([]agent.ModelHandler, 0, 1+len(backups))
 		handlers = append(handlers, next)
 		for _, b := range backups {
@@ -55,7 +57,14 @@ func Hedge(delay time.Duration, backups ...agent.Model) agent.Middleware {
 				if err != nil {
 					return agent.Message{}, agent.Usage{}, err
 				}
-				return s.Message()
+				msg, u, err := s.Message()
+				if err != nil {
+					return agent.Message{}, u, err
+				}
+				if err := agent.CheckModelResponse(ctx, msg); err != nil {
+					return agent.Message{}, u, err
+				}
+				return msg, u, nil
 			})
 		}
 

@@ -228,10 +228,14 @@ func (a *Agent) WithToolErrorRedactor(fn func(tool string, err error) string) *A
 }
 
 // generate runs one model call through the middleware chain. usedIDs holds the tool-use IDs
-// already in the run's conversation; the innermost handler rejects a turn that reuses one (see
-// checkToolUseIDs). It is checked there, below middleware, so a retry middleware sees the fault,
-// and the check still holds when a middleware trims the history it sends.
+// already in the run's conversation; a turn that reuses one is rejected (see checkToolUseIDs).
+// The innermost handler checks the model's response, below middleware, so a retry middleware
+// sees the fault, and the check still holds when a middleware trims the history it sends. The
+// response the chain returns is checked again, since a middleware can return one it did not get
+// from the handler it wraps (a hedge backup, a fallback, a cache), and that response is what the
+// run records. CheckModelResponse lets such a middleware run the check itself.
 func (a *Agent) generate(ctx context.Context, req Request, usedIDs map[string]bool) (Message, Usage, error) {
+	ctx = context.WithValue(ctx, usedToolUseIDsKey, usedIDs)
 	h := ModelHandler(func(ctx context.Context, req Request) (Message, Usage, error) {
 		// When a token sink is installed (Agent.Stream), stream the model call and
 		// forward deltas as they arrive while still assembling the message for the
@@ -263,7 +267,30 @@ func (a *Agent) generate(ctx context.Context, req Request, usedIDs map[string]bo
 	for i := len(a.mw) - 1; i >= 0; i-- {
 		h = a.mw[i](h)
 	}
-	return h(ctx, req)
+	msg, u, err := h(ctx, req)
+	if err != nil {
+		return msg, u, err
+	}
+	if err := checkToolUseIDs(msg, usedIDs); err != nil {
+		return Message{}, u, err
+	}
+	return msg, u, nil
+}
+
+// CheckModelResponse applies to m the checks the agent makes on each model response, for the
+// model call ctx belongs to: every tool call in m must carry a tool-use id that no earlier turn
+// of the run used and that m does not repeat. It returns an error wrapping ErrToolUseIDReused
+// when one does not, and nil when ctx is not a model call's context. The agent checks every
+// response its middleware chain returns, and fails the turn on an invalid one. A middleware that
+// returns a response it did not get from the handler it wraps (a hedge backup, a fallback model,
+// a cache) can call it first, to treat an invalid response as that source failing while another
+// can still answer.
+func CheckModelResponse(ctx context.Context, m Message) error {
+	used, ok := ctx.Value(usedToolUseIDsKey).(map[string]bool)
+	if !ok {
+		return nil
+	}
+	return checkToolUseIDs(m, used)
 }
 
 // Run drives the agent to completion for runID, resuming from the journal if steps
@@ -763,6 +790,9 @@ const (
 	modelSinkKey  ctxKey = 2
 	runContextKey ctxKey = 3
 	onceScopeKey  ctxKey = 4
+	// usedToolUseIDsKey carries the tool-use IDs already in the run's conversation into a model
+	// call's context, for CheckModelResponse.
+	usedToolUseIDsKey ctxKey = 5
 )
 
 // runCtx carries the store + runID into a tool's context so Interrupt can journal and
