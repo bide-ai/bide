@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1546" height="156" viewBox="0 0 1546 156">
+  <defs>
+    <!-- Soft outer glow around the tube. -->
+    <filter id="glow" x="-5%" y="-100%" width="110%" height="300%">
+      <feGaussianBlur stdDeviation="5" result="b"/>
+      <feMerge>
+        <feMergeNode in="b"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <!-- userSpaceOnUse so the fade spans the canvas, not the path's bounding box. -->
+    <linearGradient id="edge" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="1546" y2="0">
+      <stop offset="0" stop-color="#E8A33D" stop-opacity="0"/>
+      <stop offset="0.08" stop-color="#E8A33D" stop-opacity="0.95"/>
+      <stop offset="0.92" stop-color="#E8A33D" stop-opacity="0.95"/>
+      <stop offset="1" stop-color="#E8A33D" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="core" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="1546" y2="0">
+      <stop offset="0" stop-color="#FFE9C4" stop-opacity="0"/>
+      <stop offset="0.08" stop-color="#FFE9C4" stop-opacity="0.95"/>
+      <stop offset="0.92" stop-color="#FFE9C4" stop-opacity="0.95"/>
+      <stop offset="1" stop-color="#FFE9C4" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <!-- The wave: flat, a small hump, a dip, a larger hump, then flat again. -->
+    <path id="wave" d="M0 107 L500 107 C590 107 610 80 660 80 C705 80 715 97 735 97 C770 97 790 45 848 45 C910 45 950 107 1060 107 L1546 107"
+          stroke="url(#edge)" stroke-width="5" filter="url(#glow)"/>
+    <path d="M0 107 L500 107 C590 107 610 80 660 80 C705 80 715 97 735 97 C770 97 790 45 848 45 C910 45 950 107 1060 107 L1546 107"
+          stroke="url(#core)" stroke-width="1.6"/>
+  </g>
+</svg>
