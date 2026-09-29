@@ -84,6 +84,14 @@ var (
 	ErrAlreadyDecided = fmt.Errorf("approver already decided: %w", ErrConfig)
 )
 
+// ErrLeaseLost ends a drive whose run lease was lost while it ran: the store reported the lease
+// no longer held (it lapsed and another process took it), or no renewal succeeded before the
+// renewal cutoff (see Lease). The drive's context is cancelled with it as the cause
+// (context.Cause), and Lease returns the drive's error wrapped with it. It is a coordination
+// signal, not a fault, so like context.Canceled it wraps no category: the run is not failed, it is
+// another driver's to continue. Recover does not count it as a failure.
+var ErrLeaseLost = errors.New("run lease lost")
+
 // RateLimited is returned by a provider adapter when it is rate limited (HTTP 429 that is not an
 // exhausted quota; see ClassifyHTTPError). It carries an optional RetryAfter hint from the
 // Retry-After response header or the provider's own retry delay (0 means no hint was provided),
