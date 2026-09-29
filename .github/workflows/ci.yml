@@ -16,8 +16,39 @@ env:
   MODULES: ". mcp trace store/sqlite store/postgres govern/redislog govern/sqlitelog govern/postgreslog codec/gcf examples/approval examples/plan examples/mcp examples/observability"
 
 jobs:
+  # Decides whether a pull request touches anything the Go jobs test. A PR that changes only
+  # documentation skips their steps, but every job still runs and reports under its usual name,
+  # so the required checks pass instead of waiting forever. Pushes to main always run everything,
+  # and any doubt (a failed diff, an unexpected event, this job failing) counts as a code change:
+  # the gated jobs run unless this job succeeded and said otherwise.
+  changes:
+    name: Changes
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.diff.outputs.code }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: diff
+        shell: bash
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          code=true
+          if [ "${{ github.event_name }}" = "pull_request" ] && files=$(git diff --name-only "$BASE" "$HEAD"); then
+            echo "Changed files:"; echo "$files"
+            # Paths no Go build or test reads. Everything else is code.
+            other=$(echo "$files" | grep -vE '^(docs/|docs-site/|assets/|\.github/ISSUE_TEMPLATE/)|\.md$|^(LICENSE|NOTICE|DCO)$|^\.github/workflows/(docs|bench)\.yml$' || true)
+            [ -n "$files" ] && [ -z "$other" ] && code=false
+          fi
+          echo "code=$code" | tee -a "$GITHUB_OUTPUT"
+
   lint:
     name: Lint
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -52,17 +83,26 @@ jobs:
 
   test:
     name: Test
+    needs: changes
+    # Gated per step, not per job: a skipped matrix job never reports its per-OS checks.
+    if: ${{ !cancelled() }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
+      - name: Documentation-only change
+        if: needs.changes.outputs.code == 'false'
+        run: echo "Only documentation changed; the Go build and tests are skipped."
       - uses: actions/checkout@v4
+        if: needs.changes.outputs.code != 'false'
       - uses: actions/setup-go@v5
+        if: needs.changes.outputs.code != 'false'
         with:
           go-version: '1.27'
       - name: Build & test (all modules)
+        if: needs.changes.outputs.code != 'false'
         shell: bash
         # The race detector needs a C toolchain (absent on the Windows runner), so run
         # it on Linux/macOS and a plain test on Windows. Postgres/Redis integration tests
@@ -75,7 +115,7 @@ jobs:
             ( cd "$m" && go build ./... && go test $race -count=1 ./... )
           done
       - name: Test without encoding/json/v2 (core module)
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && needs.changes.outputs.code != 'false'
         shell: bash
         # encoding/json/v2 is a Go experiment in Go 1.27, on by default. bide does not depend on it,
         # and the journal encoding must be identical with and without it, so the core module is
@@ -84,6 +124,8 @@ jobs:
 
   integration:
     name: Integration (Postgres, Redis)
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-latest
     # The Postgres store (cross-instance at-most-once, leases) and the shared governed-event logs
     # need real services; their tests skip without PG_DSN / REDIS_ADDR, so the Test jobs above
