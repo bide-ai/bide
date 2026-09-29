@@ -27,10 +27,9 @@ data: [DONE]
 `
 
 func TestStreamSSE_NormalizesToolCallAndUsage(t *testing.T) {
-	ch := make(chan agent.Emit)
-	go streamSSE(io.NopCloser(strings.NewReader(sample)), ch)
+	stream := testStream(sample)
 
-	msg, usage, err := agent.NewStream(ch).Message()
+	msg, usage, err := stream.Message()
 	if err != nil {
 		t.Fatalf("Message: %v", err)
 	}
@@ -114,4 +113,11 @@ func TestBuildRequest_MessagesAndStrictSchema(t *testing.T) {
 	if params["additionalProperties"] != false {
 		t.Errorf("strict schema must set additionalProperties:false, got %+v", params)
 	}
+}
+
+// testStream feeds src through streamSSE the way Stream does.
+func testStream(src string) *agent.Stream {
+	return agent.NewStreamFunc(context.Background(), func(send func(agent.Emit) bool) {
+		streamSSE(io.NopCloser(strings.NewReader(src)), send)
+	})
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"iter"
 	"strings"
+	"sync"
 )
 
 // Model is the provider primitive. Streaming is FIRST-CLASS: Stream is the only
@@ -116,20 +117,76 @@ type Emit struct {
 // Stream is a live model response. Range over Events() for a streaming UI, OR call
 // Message() to drain it into the fully-assembled assistant Message — not both (a
 // Stream is consumed once).
+//
+// A consumer that stops early releases the producer: breaking out of Events() does it,
+// and so does Close. Cancelling the context passed to Model.Stream also releases it.
 type Stream struct {
-	ch <-chan Emit
+	ch   <-chan Emit
+	done chan struct{} // closed when the consumer stops reading
+	stop sync.Once
+	err  error // a terminal error set by the producer before ch closes (NewStreamFunc)
 }
 
-// NewStream is used by provider adapters to wrap their event channel.
-func NewStream(ch <-chan Emit) *Stream { return &Stream{ch: ch} }
+// NewStream wraps an event channel the caller fills and closes. It suits producers that
+// buffer their whole response up front. A producer that sends as it reads (a network
+// adapter) should use NewStreamFunc, so it is released when the consumer stops reading;
+// a goroutine blocked sending on ch is not.
+func NewStream(ch <-chan Emit) *Stream { return &Stream{ch: ch, done: make(chan struct{})} }
 
-// Events returns a range-over-func iterator (Go 1.23+) over streamed events.
+// NewStreamFunc runs produce in its own goroutine and returns the Stream it feeds.
+// produce delivers each event through send, which blocks until the consumer takes it and
+// returns false once the consumer has stopped reading (it broke out of Events or called
+// Close) or ctx is cancelled; produce should then return promptly, releasing whatever it
+// holds, such as a response body. The stream ends when produce returns.
+//
+// If ctx cancels an event the consumer has not yet taken, the stream ends with ctx's error,
+// so a consumer never mistakes a response cut short by cancellation for a complete one.
+func NewStreamFunc(ctx context.Context, produce func(send func(Emit) bool)) *Stream {
+	ch := make(chan Emit)
+	s := &Stream{ch: ch, done: make(chan struct{})}
+	go func() {
+		defer close(ch)
+		var cancelled bool
+		produce(func(e Emit) bool {
+			// Checked first because select picks among ready cases at random: once ctx is done,
+			// no further event is delivered, even to a consumer that is waiting for one.
+			if cancelled || ctx.Err() != nil {
+				cancelled = true
+				return false
+			}
+			select {
+			case ch <- e:
+				return true
+			case <-s.done:
+				return false
+			case <-ctx.Done():
+				cancelled = true
+				return false
+			}
+		})
+		if cancelled {
+			s.err = ctx.Err() // published to the consumer by close(ch)
+		}
+	}()
+	return s
+}
+
+// Close tells the producer the consumer will read no further events, so it can stop and
+// release its resources. It is safe to call more than once, and after the stream ends.
+func (s *Stream) Close() { s.stop.Do(func() { close(s.done) }) }
+
+// Events returns a range-over-func iterator (Go 1.23+) over streamed events. Breaking out
+// of the loop closes the stream.
 func (s *Stream) Events() iter.Seq2[Event, error] {
 	return func(yield func(Event, error) bool) {
 		for e := range s.ch {
 			if !yield(e.Event, e.Err) {
+				s.Close()
 				return
 			}
+		}
+		if s.err != nil {
+			yield(nil, s.err)
 		}
 	}
 }

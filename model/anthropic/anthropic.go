@@ -90,9 +90,7 @@ func (m *Model) Stream(ctx context.Context, req agent.Request) (*agent.Stream, e
 		return nil, agent.ClassifyHTTPError("anthropic", resp)
 	}
 
-	ch := make(chan agent.Emit)
-	go streamSSE(resp.Body, ch)
-	return agent.NewStream(ch), nil
+	return agent.NewStreamFunc(ctx, func(send func(agent.Emit) bool) { streamSSE(resp.Body, send) }), nil
 }
 
 // buildRequest translates the provider-neutral request into an Anthropic Messages
@@ -271,8 +269,7 @@ type sseEvent struct {
 // streamSSE reads Anthropic's SSE stream and pushes normalized agent events. It closes
 // both the body and the channel. Exported-package-internal so it's unit-testable
 // without a network round-trip.
-func streamSSE(body io.ReadCloser, ch chan<- agent.Emit) {
-	defer close(ch)
+func streamSSE(body io.ReadCloser, send func(agent.Emit) bool) {
 	defer body.Close()
 
 	sc := agent.NewSSEScanner(body)
@@ -285,7 +282,7 @@ func streamSSE(body io.ReadCloser, ch chan<- agent.Emit) {
 		}
 		var ev sseEvent
 		if err := json.Unmarshal([]byte(data), &ev); err != nil {
-			ch <- agent.Emit{Err: fmt.Errorf("anthropic sse decode: %w (%w)", err, agent.ErrModel)}
+			send(agent.Emit{Err: fmt.Errorf("anthropic sse decode: %w (%w)", err, agent.ErrModel)})
 			return
 		}
 		switch ev.Type {
@@ -297,7 +294,9 @@ func streamSSE(body io.ReadCloser, ch chan<- agent.Emit) {
 			}
 		case "content_block_start":
 			if ev.ContentBlock != nil && ev.ContentBlock.Type == "tool_use" {
-				ch <- agent.Emit{Event: agent.ToolCallDelta{Index: ev.Index, ID: ev.ContentBlock.ID, Name: ev.ContentBlock.Name}}
+				if !send(agent.Emit{Event: agent.ToolCallDelta{Index: ev.Index, ID: ev.ContentBlock.ID, Name: ev.ContentBlock.Name}}) {
+					return
+				}
 			}
 		case "content_block_delta":
 			if ev.Delta == nil {
@@ -305,13 +304,21 @@ func streamSSE(body io.ReadCloser, ch chan<- agent.Emit) {
 			}
 			switch ev.Delta.Type {
 			case "text_delta":
-				ch <- agent.Emit{Event: agent.TextDelta{Text: ev.Delta.Text}}
+				if !send(agent.Emit{Event: agent.TextDelta{Text: ev.Delta.Text}}) {
+					return
+				}
 			case "input_json_delta":
-				ch <- agent.Emit{Event: agent.ToolCallDelta{Index: ev.Index, ArgsFragment: json.RawMessage(ev.Delta.PartialJSON)}}
+				if !send(agent.Emit{Event: agent.ToolCallDelta{Index: ev.Index, ArgsFragment: json.RawMessage(ev.Delta.PartialJSON)}}) {
+					return
+				}
 			case "thinking_delta":
-				ch <- agent.Emit{Event: agent.ReasoningDelta{Text: ev.Delta.Thinking}}
+				if !send(agent.Emit{Event: agent.ReasoningDelta{Text: ev.Delta.Thinking}}) {
+					return
+				}
 			case "signature_delta":
-				ch <- agent.Emit{Event: agent.ReasoningDelta{Signature: ev.Delta.Signature}}
+				if !send(agent.Emit{Event: agent.ReasoningDelta{Signature: ev.Delta.Signature}}) {
+					return
+				}
 			}
 		case "message_delta":
 			if ev.Usage != nil {
@@ -321,17 +328,19 @@ func streamSSE(body io.ReadCloser, ch chan<- agent.Emit) {
 			if ev.Delta != nil {
 				reason = ev.Delta.StopReason
 			}
-			ch <- agent.Emit{Event: agent.Finish{Reason: reason, Usage: agent.Usage{
+			if !send(agent.Emit{Event: agent.Finish{Reason: reason, Usage: agent.Usage{
 				InputTokens: in, OutputTokens: out, CacheReadTokens: cacheRead, CacheWriteTokens: cacheWrite,
-			}}}
+			}}}) {
+				return
+			}
 		case "message_stop":
 			return
 		case "error":
-			ch <- agent.Emit{Err: fmt.Errorf("anthropic stream error: %s (%w)", data, agent.ErrModel)}
+			send(agent.Emit{Err: fmt.Errorf("anthropic stream error: %s (%w)", data, agent.ErrModel)})
 			return
 		}
 	}
 	if err := sc.Err(); err != nil {
-		ch <- agent.Emit{Err: err}
+		send(agent.Emit{Err: err})
 	}
 }

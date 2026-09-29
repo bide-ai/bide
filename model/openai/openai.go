@@ -85,9 +85,7 @@ func (m *Model) Stream(ctx context.Context, req agent.Request) (*agent.Stream, e
 		return nil, agent.ClassifyHTTPError("openai", resp)
 	}
 
-	ch := make(chan agent.Emit)
-	go streamSSE(resp.Body, ch)
-	return agent.NewStream(ch), nil
+	return agent.NewStreamFunc(ctx, func(send func(agent.Emit) bool) { streamSSE(resp.Body, send) }), nil
 }
 
 func (m *Model) buildRequest(req agent.Request) ([]byte, error) {
@@ -272,8 +270,7 @@ type chunk struct {
 	} `json:"usage"`
 }
 
-func streamSSE(body io.ReadCloser, ch chan<- agent.Emit) {
-	defer close(ch)
+func streamSSE(body io.ReadCloser, send func(agent.Emit) bool) {
 	defer body.Close()
 
 	sc := agent.NewSSEScanner(body)
@@ -290,21 +287,27 @@ func streamSSE(body io.ReadCloser, ch chan<- agent.Emit) {
 		}
 		var c chunk
 		if err := json.Unmarshal([]byte(data), &c); err != nil {
-			ch <- agent.Emit{Err: fmt.Errorf("openai sse decode: %w (%w)", err, agent.ErrModel)}
+			send(agent.Emit{Err: fmt.Errorf("openai sse decode: %w (%w)", err, agent.ErrModel)})
 			return
 		}
 		for _, choice := range c.Choices {
 			if rc := choice.Delta.ReasoningContent; rc != "" {
-				ch <- agent.Emit{Event: agent.ReasoningDelta{Text: rc}}
+				if !send(agent.Emit{Event: agent.ReasoningDelta{Text: rc}}) {
+					return
+				}
 			}
 			if txt := choice.Delta.Content; txt != "" {
-				ch <- agent.Emit{Event: agent.TextDelta{Text: txt}}
+				if !send(agent.Emit{Event: agent.TextDelta{Text: txt}}) {
+					return
+				}
 			}
 			for _, tc := range choice.Delta.ToolCalls {
-				ch <- agent.Emit{Event: agent.ToolCallDelta{
+				if !send(agent.Emit{Event: agent.ToolCallDelta{
 					Index: tc.Index, ID: tc.ID, Name: tc.Function.Name,
 					ArgsFragment: json.RawMessage(tc.Function.Arguments),
-				}}
+				}}) {
+					return
+				}
 			}
 			if choice.FinishReason != nil {
 				lastReason = *choice.FinishReason
@@ -315,14 +318,18 @@ func streamSSE(body io.ReadCloser, ch chan<- agent.Emit) {
 			if d := c.Usage.PromptTokensDetails; d != nil { // OpenAI caches prefixes automatically
 				u.CacheReadTokens = d.CachedTokens
 			}
-			ch <- agent.Emit{Event: agent.Finish{Reason: lastReason, Usage: u}}
+			if !send(agent.Emit{Event: agent.Finish{Reason: lastReason, Usage: u}}) {
+				return
+			}
 			finished = true
 		}
 	}
 	if !finished { // servers that omit a usage chunk still get a terminal Finish
-		ch <- agent.Emit{Event: agent.Finish{Reason: lastReason}}
+		if !send(agent.Emit{Event: agent.Finish{Reason: lastReason}}) {
+			return
+		}
 	}
 	if err := sc.Err(); err != nil {
-		ch <- agent.Emit{Err: err}
+		send(agent.Emit{Err: err})
 	}
 }

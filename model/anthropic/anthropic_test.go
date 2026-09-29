@@ -1,6 +1,7 @@
 package anthropic
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"strings"
@@ -49,10 +50,9 @@ data: {"type":"message_stop"}
 `
 
 func TestStreamSSE_NormalizesAndAssembles(t *testing.T) {
-	ch := make(chan agent.Emit)
-	go streamSSE(io.NopCloser(strings.NewReader(sample)), ch)
+	stream := testStream(sample)
 
-	msg, usage, err := agent.NewStream(ch).Message()
+	msg, usage, err := stream.Message()
 	if err != nil {
 		t.Fatalf("Message: %v", err)
 	}
@@ -186,4 +186,11 @@ func TestBuildRequest_MergesConsecutiveSameRole(t *testing.T) {
 	if b := merged[1].(map[string]any); b["tool_use_id"] != "t2" {
 		t.Errorf("second merged block = %+v, want tool_use_id t2", b)
 	}
+}
+
+// testStream feeds src through streamSSE the way Stream does.
+func testStream(src string) *agent.Stream {
+	return agent.NewStreamFunc(context.Background(), func(send func(agent.Emit) bool) {
+		streamSSE(io.NopCloser(strings.NewReader(src)), send)
+	})
 }

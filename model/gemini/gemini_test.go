@@ -224,15 +224,14 @@ data: {"candidates":[{"content":{"parts":[]},"finishReason":"STOP"}],"usageMetad
 `
 
 func TestStreamSSE_NormalizesTextToolCallAndUsage(t *testing.T) {
-	ch := make(chan agent.Emit)
-	go streamSSE(io.NopCloser(strings.NewReader(sample)), ch)
+	stream := testStream(sample)
 
 	// Collect the raw event stream to assert on deltas and the terminal Finish.
 	var text string
 	var gotToolDelta bool
 	var finish agent.Finish
 	var sawFinish bool
-	for ev, err := range agent.NewStream(ch).Events() {
+	for ev, err := range stream.Events() {
 		if err != nil {
 			t.Fatalf("stream error: %v", err)
 		}
@@ -276,10 +275,9 @@ func TestStreamSSE_NormalizesTextToolCallAndUsage(t *testing.T) {
 // The assembled Message drains cleanly: a complete functionCall yields valid JSON args
 // through the core's finalize() json.Valid gate.
 func TestStreamSSE_AssemblesMessage(t *testing.T) {
-	ch := make(chan agent.Emit)
-	go streamSSE(io.NopCloser(strings.NewReader(sample)), ch)
+	stream := testStream(sample)
 
-	msg, usage, err := agent.NewStream(ch).Message()
+	msg, usage, err := stream.Message()
 	if err != nil {
 		t.Fatalf("Message: %v", err)
 	}
@@ -298,4 +296,11 @@ func TestStreamSSE_AssemblesMessage(t *testing.T) {
 	if usage.InputTokens != 11 || usage.OutputTokens != 9 {
 		t.Errorf("usage = %+v", usage)
 	}
+}
+
+// testStream feeds src through streamSSE the way Stream does.
+func testStream(src string) *agent.Stream {
+	return agent.NewStreamFunc(context.Background(), func(send func(agent.Emit) bool) {
+		streamSSE(io.NopCloser(strings.NewReader(src)), send)
+	})
 }
