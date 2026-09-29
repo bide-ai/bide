@@ -41,8 +41,10 @@ func retrievalRequest(t *testing.T) agent.Request {
 	return seen
 }
 
-// Chat Completions takes consecutive user messages as they are: the retrieved context is its
-// own user message just before the question, and only the operator's prompt is system.
+// Some OpenAI-compatible servers (vLLM with a Mistral or Llama chat template, say) reject two
+// user messages in a row, so the retrieved-context message is merged into the user message it
+// precedes: one user turn, the context first, then a blank line, then the question. Only the
+// operator's prompt is system, and turns alternate.
 func TestBuildRequest_RetrievedContext(t *testing.T) {
 	body, err := New("k").buildRequest(retrievalRequest(t))
 	if err != nil {
@@ -57,7 +59,7 @@ func TestBuildRequest_RetrievedContext(t *testing.T) {
 	if err := json.Unmarshal(body, &p); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"system", "user", "assistant", "user", "user", "assistant", "tool"}
+	want := []string{"system", "user", "assistant", "user", "assistant", "tool"}
 	if len(p.Messages) != len(want) {
 		t.Fatalf("got %d messages, want %d: %s", len(p.Messages), len(want), body)
 	}
@@ -69,10 +71,53 @@ func TestBuildRequest_RetrievedContext(t *testing.T) {
 	if c := string(p.Messages[0].Content); c != `"OPERATOR"` {
 		t.Errorf("system content = %s, want only the operator's prompt", c)
 	}
-	if c := string(p.Messages[3].Content); !strings.Contains(c, "Retrieved documents") || !strings.Contains(c, "Paris") {
-		t.Errorf("message 3 content = %s, want the retrieved context", c)
+	var turn string
+	if err := json.Unmarshal(p.Messages[3].Content, &turn); err != nil {
+		t.Fatalf("user turn content = %s, want a string: %v", p.Messages[3].Content, err)
 	}
-	if c := string(p.Messages[4].Content); !strings.Contains(c, "what's the capital?") || strings.Contains(c, "Retrieved documents") {
-		t.Errorf("message 4 content = %s, want the question alone", c)
+	if !strings.HasPrefix(turn, "Retrieved documents") || !strings.Contains(turn, "Paris") || !strings.HasSuffix(turn, "\n\nwhat's the capital?") {
+		t.Errorf("user turn = %q, want the retrieved context, a blank line, then the question", turn)
+	}
+}
+
+// When the question carries an image, the user turn is already in content-parts form: the
+// context is merged as its own text part, ahead of the question's parts.
+func TestBuildRequest_RetrievedContextWithImage(t *testing.T) {
+	var seen agent.Request
+	h := agent.WithRetrieval(retrievalDocs{{Text: "Paris is the capital of France."}}, 1)(
+		func(_ context.Context, req agent.Request) (agent.Message, agent.Usage, error) {
+			seen = req
+			return agent.Message{}, agent.Usage{}, nil
+		})
+	q := agent.UserParts(agent.Text{Text: "what city is this?"}, agent.Image{URL: "https://example.com/paris.png"})
+	if _, _, err := h(context.Background(), agent.Request{Messages: []agent.Message{q}}); err != nil {
+		t.Fatal(err)
+	}
+	body, err := New("k").buildRequest(seen)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var p struct {
+		Messages []struct {
+			Role    string `json:"role"`
+			Content []struct {
+				Type     string `json:"type"`
+				Text     string `json:"text"`
+				ImageURL struct {
+					URL string `json:"url"`
+				} `json:"image_url"`
+			} `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(body, &p); err != nil {
+		t.Fatalf("%v: %s", err, body)
+	}
+	if len(p.Messages) != 1 || p.Messages[0].Role != "user" {
+		t.Fatalf("messages = %s, want one user turn", body)
+	}
+	parts := p.Messages[0].Content
+	if len(parts) != 3 || !strings.HasPrefix(parts[0].Text, "Retrieved documents") ||
+		parts[1].Text != "what city is this?" || parts[2].ImageURL.URL != "https://example.com/paris.png" {
+		t.Errorf("user turn parts = %+v, want the context, then the question's text and image", parts)
 	}
 }
