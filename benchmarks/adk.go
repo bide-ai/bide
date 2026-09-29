@@ -102,7 +102,7 @@ func ADK() chaos.System { return adkSys{} }
 
 type adkSys struct{}
 
-// Writes is the number of AppendEvents in a clean run (measured; see adk_writes_test.go).
+// Writes is the number of AppendEvents in a clean run (measured; see writes_test.go).
 func (adkSys) Writes() int { return 4 }
 
 func (adkSys) NewRun() chaos.Run {
