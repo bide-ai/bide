@@ -28,15 +28,18 @@ type Retriever interface {
 
 // RetrievalTool exposes a Retriever as a tool the model can call to search on demand
 // (agentic RAG): the model decides when to retrieve and with what query. It returns the
-// top-k documents. Read-only (retry-safe).
+// top-k documents: a Retriever that returns more is cut to its first k. Read-only (retry-safe).
+// It panics if k is below 1.
 func RetrievalTool(r Retriever, k int) Tool {
+	checkK("RetrievalTool", k)
 	type args struct {
 		Query string `json:"query" desc:"what to search the knowledge base for"`
 	}
 	return Func("retrieve", "Search the knowledge base and return the most relevant documents.",
 		Safety{ReadOnly: true},
 		func(ctx context.Context, in args) ([]Doc, error) {
-			return r.Retrieve(ctx, in.Query, k)
+			docs, err := r.Retrieve(ctx, in.Query, k)
+			return topK(docs, k), err
 		})
 }
 
@@ -45,7 +48,10 @@ func RetrievalTool(r Retriever, k int) Tool {
 // that user message and prepends them as a system message. It does NOT retrieve on
 // tool-result turns (mid-loop). A retrieval error aborts the model call — have your
 // Retriever return (nil, nil) instead of an error if you prefer to degrade to no context.
+// A Retriever that returns more than k documents is cut to its first k. It panics if k is
+// below 1.
 func WithRetrieval(r Retriever, k int) Middleware {
+	checkK("WithRetrieval", k)
 	return func(next ModelHandler) ModelHandler {
 		return func(ctx context.Context, req Request) (Message, Usage, error) {
 			if q := lastUserQuery(req.Messages); q != "" {
@@ -53,6 +59,7 @@ func WithRetrieval(r Retriever, k int) Middleware {
 				if err != nil {
 					return Message{}, Usage{}, fmt.Errorf("retrieval: %w", err)
 				}
+				docs = topK(docs, k)
 				if block := formatDocs(docs); block != "" {
 					req.Messages = append([]Message{SystemText(block)}, req.Messages...)
 				}
@@ -60,6 +67,23 @@ func WithRetrieval(r Retriever, k int) Middleware {
 			return next(ctx, req)
 		}
 	}
+}
+
+// checkK panics unless k is at least 1: k is how many documents to return, and a k below 1
+// asks for none, which a Retriever would serve inconsistently (one store returns nothing,
+// another ignores the limit), so it is a construction-time programmer error.
+func checkK(fn string, k int) {
+	if k < 1 {
+		panic(fmt.Sprintf("agent: %s requires k >= 1, got %d", fn, k))
+	}
+}
+
+// topK returns the first k of docs, the top k in the order the Retriever ranked them.
+func topK(docs []Doc, k int) []Doc {
+	if len(docs) > k {
+		return docs[:k]
+	}
+	return docs
 }
 
 // lastUserQuery returns the text of the final message if it is a user turn (the point at
