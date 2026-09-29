@@ -118,7 +118,9 @@ should your own. Adapters:
 - `govern.NewMemEventLog()`: in-memory (tests / local).
 - `govern/sqlitelog`: on-disk SQLite.
 - `govern/postgreslog`: Postgres, for several processes on a shared database.
-- `govern/redislog`: Redis Streams (networked, "no SQL DB required").
+- `govern/redislog`: Redis Streams (networked, "no SQL DB required"). An entity's stream and its
+  append-id hash share the Redis Cluster hash tag `{<len>:<entity>}`, so the append script, which
+  touches both, runs on Redis Cluster; a key prefix must not contain `{` or `}`.
 
 The in-memory `Governor` holds its state in one process. Use a `PersistentGovernor` whenever more than
 one process acts on the same state, or when recorded state digests must be checked later against a

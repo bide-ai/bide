@@ -8,6 +8,7 @@ package redislog
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/bide-ai/bide/agent"
@@ -21,7 +22,7 @@ type Log struct {
 }
 
 // Open connects to Redis at addr (e.g. "localhost:6379") and pings it. Streams are keyed
-// "govern:<entity>".
+// "govern:{<len>:<entity>}" (see key).
 func Open(ctx context.Context, addr string) (*Log, error) {
 	rc := redis.NewClient(&redis.Options{Addr: addr})
 	if err := rc.Ping(ctx).Err(); err != nil {
@@ -40,10 +41,22 @@ func (l *Log) Close() error { return l.rc.Close() }
 // key is the entity's stream. idsKey is the hash of the entity's append ids, each mapped to its
 // position; its name ends in a NUL byte, which no entity name may contain, so it is never another
 // entity's stream.
-func (l *Log) key(entity string) string    { return l.prefix + entity }
-func (l *Log) idsKey(entity string) string { return l.prefix + entity + "\x00append-ids" }
+//
+// Both keys carry the Redis Cluster hash tag {<len>:<entity>} (the entity name's length in bytes,
+// then the name), so they hash to one slot and the append script, which touches both, runs on
+// Redis Cluster instead of failing with CROSSSLOT. The keys share everything up to and including
+// that tag, and the tag never starts with '}' (Redis ignores an empty tag), so even an entity name
+// with a brace in it gives both keys the same tag. A brace in the prefix would come first and
+// decide the tag instead, so checkNames refuses one.
+func (l *Log) key(entity string) string {
+	return l.prefix + "{" + strconv.Itoa(len(entity)) + ":" + entity + "}"
+}
+func (l *Log) idsKey(entity string) string { return l.key(entity) + "\x00append-ids" }
 
-func checkEntity(entity string) error {
+func (l *Log) checkNames(entity string) error {
+	if strings.ContainsAny(l.prefix, "{}") {
+		return fmt.Errorf("redislog: key prefix %q contains a brace, which would decide the keys' cluster hash tag: %w", l.prefix, agent.ErrConfig)
+	}
 	if strings.Contains(entity, "\x00") {
 		return fmt.Errorf("redislog: entity name %q contains a NUL byte: %w", entity, agent.ErrConfig)
 	}
@@ -90,7 +103,7 @@ func (l *Log) Append(ctx context.Context, entity, id, event string) (int64, erro
 	if id == "" {
 		return 0, fmt.Errorf("redislog: empty append id: %w", agent.ErrConfig)
 	}
-	if err := checkEntity(entity); err != nil {
+	if err := l.checkNames(entity); err != nil {
 		return 0, err
 	}
 	res, err := appendScript.Run(ctx, l.rc, []string{l.key(entity), l.idsKey(entity)}, event, id).Slice()
@@ -113,7 +126,7 @@ func (l *Log) Append(ctx context.Context, entity, id, event string) (int64, erro
 
 // Events returns the entity's events at positions from onward, in log order.
 func (l *Log) Events(ctx context.Context, entity string, from int64) ([]string, error) {
-	if err := checkEntity(entity); err != nil {
+	if err := l.checkNames(entity); err != nil {
 		return nil, err
 	}
 	if from < 0 {
