@@ -33,12 +33,18 @@ func New() agent.ToolResultCodec { return Codec{} }
 // every number at exactly the value the tool returned. Integers are carried as int64 and other
 // numbers as float64, in GCF's canonical spelling (1e20 is written 1e+20, 1.50 as 1.5). A number
 // GCF cannot carry exactly (an integer outside int64, or a decimal such as 0.30000000000000000001
-// that no float64 equals) is an error rather than a silently different value, as is a JSON decode
-// error, so the caller can fall back to JSON (agent.EncodeToolResultOr does this). Empty input
+// that no float64 equals) is an error rather than a silently different value, as is input that is
+// not exactly one valid JSON value (invalid JSON, or trailing data after the value), so the caller can fall back to JSON (agent.EncodeToolResultOr does this). Empty input
 // yields an empty string.
 func (Codec) EncodeToolResult(raw json.RawMessage) (string, error) {
 	if len(raw) == 0 {
 		return "", nil
+	}
+	// Exactly one JSON value. json.Decoder.Token (checkNumbers) reads a stream of top-level values
+	// and ParseJSONOrdered stops after the first, so without this a second value would be dropped
+	// from what the model reads.
+	if !json.Valid(raw) {
+		return "", fmt.Errorf("gcf: tool result is not exactly one valid JSON value")
 	}
 	if err := checkNumbers(raw); err != nil {
 		return "", err
@@ -53,8 +59,8 @@ func (Codec) EncodeToolResult(raw json.RawMessage) (string, error) {
 }
 
 // checkNumbers reports an error for the first non-integer number in raw whose float64 does not
-// print back as the same decimal value, the text GCF would show the model in its place. It also
-// rejects invalid JSON and trailing data.
+// print back as the same decimal value, the text GCF would show the model in its place. raw must
+// already be one valid JSON value (EncodeToolResult checks this first).
 func checkNumbers(raw []byte) error {
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.UseNumber()
