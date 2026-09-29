@@ -14,6 +14,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -59,6 +60,8 @@ func main() {
 		verifyRun(os.Args[2:])
 	case "verify-evidence":
 		verifyEvidence(os.Args[2:])
+	case "verify-approvals":
+		verifyApprovals(os.Args[2:])
 	case "prove-absent":
 		proveAbsent(os.Args[2:])
 	case "verify-absent":
@@ -109,6 +112,15 @@ func usage() {
          verify a portable evidence package offline and print a plain-English report: one line
          per proven action (tool call, step, grant), plus the run certificate and consistency
          proof if present; exit 0 if the whole package verifies, 1 otherwise
+
+  verify-approvals -evidence <file> -pubkey <hex|file> -call <tool-use-id> -need <k>
+                   -approvers <id,id,...> -approver-keys <file>
+         verify an m-of-n human approval gate from an evidence package: the request, every
+         decision the gate read, its recorded tally, and the call's result all verify under the
+         log key in one signed tree; recounting the decisions with each approver's key (a JSON
+         object of approver id to ed25519 public key hex) against the exact call reproduces the
+         recorded tally; the gate enforced the expected policy; and at least k approved. Exit 0
+         if all hold, 1 otherwise
 
   prove-absent -journal <file> -sth <file> -key (tool:<id>|policy:<digest>) [-out <file>]
          prove a thing did NOT happen (no such tool call / no action under that policy)
@@ -778,6 +790,87 @@ func verifyEvidence(args []string) {
 		os.Exit(1)
 	}
 	fmt.Printf("PASS: run %q evidence verified (%d items) in a signed tree of size %d\n", rep.RunID, len(rep.Items), pkg.STH.Size)
+}
+
+// verifyApprovals checks an m-of-n approval gate from an evidence package with
+// audit.VerifyApprovals, trusting only the log key, the approvers' keys, and the expected
+// policy given on the command line.
+func verifyApprovals(args []string) {
+	fs := flagSet("verify-approvals")
+	evidencePath := fs.String("evidence", "", "path to the EvidencePackage JSON carrying the approval evidence")
+	pubkey := fs.String("pubkey", "", "the log's ed25519 public key as hex, or a path to a file containing it")
+	call := fs.String("call", "", "the gated call's tool-use id")
+	need := fs.Int("need", 0, "approvals the policy requires (k)")
+	approvers := fs.String("approvers", "", "the policy's eligible approver ids, comma-separated, in policy order")
+	keysPath := fs.String("approver-keys", "", `JSON object of approver id to ed25519 public key hex, e.g. {"ops":"ab12..."}`)
+	_ = fs.Parse(args)
+
+	if *evidencePath == "" || *pubkey == "" || *call == "" || *need == 0 || *approvers == "" || *keysPath == "" {
+		usage()
+	}
+	var pkg audit.EvidencePackage
+	readJSON(*evidencePath, &pkg)
+	logPub := readPubKey(*pubkey)
+	var keyHex map[string]string
+	readJSON(*keysPath, &keyHex)
+	keys := make(map[string][]byte, len(keyHex))
+	for id, h := range keyHex {
+		k, err := hex.DecodeString(strings.TrimSpace(h))
+		if err != nil {
+			fatal(fmt.Errorf("approver %q key must be hex: %w", id, err))
+		}
+		keys[id] = k
+	}
+	policy := agent.ApprovalPolicy{Need: *need, Approvers: strings.Split(*approvers, ",")}
+	verifierFor := func(id string) (agent.ApproverVerifier, bool) {
+		k, ok := keys[id]
+		if !ok {
+			return nil, false
+		}
+		return audit.Ed25519Verifier{Pub: k}, true
+	}
+
+	rep, err := pkg.Verify(logPub)
+	if err != nil {
+		fatal(err)
+	}
+	v, err := audit.VerifyApprovals(pkg.Actions, *call, policy, verifierFor, logPub)
+	if err != nil {
+		fmt.Printf("FAIL  %v\n", err)
+		os.Exit(1)
+	}
+	var callArgs bytes.Buffer
+	if err := json.Compact(&callArgs, v.Args); err != nil {
+		callArgs.Reset()
+		callArgs.Write(v.Args)
+	}
+	fmt.Printf("approval gate on call %q: %s %s\n", *call, v.ToolName, callArgs.String())
+	proofs := "FAIL"
+	if rep.OK {
+		proofs = "PASS"
+	}
+	fmt.Printf("%s  every proof in the package verifies under the log key\n", proofs)
+	for _, id := range v.Counted {
+		fmt.Printf("PASS  %s approved (signature verifies for this exact call)\n", id)
+	}
+	for _, id := range v.DeniedBy {
+		fmt.Printf("INFO  %s denied\n", id)
+	}
+	for _, d := range v.Ignored {
+		fmt.Printf("INFO  ignored %s: %s\n", d.Approver, d.Reason)
+	}
+	for _, p := range v.Problems {
+		fmt.Printf("FAIL  %s\n", p)
+	}
+	if !rep.OK || !v.OK {
+		fmt.Printf("FAIL: %d of %d required approvals verified", len(v.Counted), v.Need)
+		if len(v.Problems) > 0 || !rep.OK {
+			fmt.Print(", and the evidence is not consistent")
+		}
+		fmt.Println()
+		os.Exit(1)
+	}
+	fmt.Printf("PASS: %d of %d required approvals verified, from complete evidence\n", len(v.Counted), v.Need)
 }
 
 // evidenceItemLine phrases one report line in plain English, e.g.

@@ -36,19 +36,19 @@ func TestMofn_StreamEmitsTally(t *testing.T) {
 	vf := fakeVerifiers(abc...)
 	var charged int
 
-	wantPause := func(reqs []ApprovalRequired, err error, want ApprovalTally) {
+	wantPause := func(reqs []ApprovalRequired, err error, want counts) {
 		t.Helper()
 		if len(reqs) != 1 || reqs[0].Quorum == nil {
 			t.Fatalf("ApprovalRequired events = %+v, want one carrying a tally", reqs)
 		}
-		if !reflect.DeepEqual(*reqs[0].Quorum, want) {
-			t.Fatalf("event Quorum = %+v, want %+v", *reqs[0].Quorum, want)
+		if got := countsOf(*reqs[0].Quorum); !reflect.DeepEqual(got, want) {
+			t.Fatalf("event Quorum = %+v, want %+v", got, want)
 		}
 		wantPending(t, err, want)
 	}
 
 	reqs, _, err := streamMofn(t, store, "s1", true, pol, vf, &charged)
-	wantPause(reqs, err, ApprovalTally{Need: 2, Pending: []string{"alice", "bob", "carol"}})
+	wantPause(reqs, err, counts{Need: 2, Pending: []string{"alice", "bob", "carol"}})
 
 	// The event's tally is its own copy: mutating it does not reach the returned PendingApproval.
 	reqs[0].Quorum.Pending[0] = "mutated"
@@ -60,7 +60,7 @@ func TestMofn_StreamEmitsTally(t *testing.T) {
 
 	approveAs(t, store, "s1", "c1", "alice", true)
 	reqs, _, err = streamMofn(t, store, "s1", false, pol, vf, &charged)
-	wantPause(reqs, err, ApprovalTally{Need: 2, Approved: 1, Pending: []string{"bob", "carol"}})
+	wantPause(reqs, err, counts{Need: 2, Approved: 1, ApprovedBy: []string{"alice"}, Pending: []string{"bob", "carol"}})
 	if charged != 0 {
 		t.Fatalf("charge ran %d times below quorum, want 0", charged)
 	}
@@ -102,10 +102,10 @@ func TestMofn_StreamOneOfOneHasNoTally(t *testing.T) {
 }
 
 // An m-of-n gate on a tool inside a sub-agent pauses the whole tree: the parent's Run
-// surfaces the sub-run's *PendingApproval (with its tally), and approvers must sign against
-// that SUB-run's id, because the run id is part of the signed decision bytes. A decision
-// signed against the parent's run id does not count. At Need the parent completes and the
-// tool runs exactly once.
+// surfaces the sub-run's *PendingApproval (with its tally), and approvers sign its Subject(),
+// whose RunID is the SUB-run's id, because the run id is part of the signed decision bytes. A
+// decision signed against the parent's run id does not count, and does not lock the approver
+// out: re-signed correctly, it counts. At Need the parent completes and the tool runs once.
 func TestMofn_InsideSubAgent(t *testing.T) {
 	ctx := context.Background()
 	store := NewMemStore()
@@ -136,7 +136,9 @@ func TestMofn_InsideSubAgent(t *testing.T) {
 
 	// Signed against the PARENT run id: the signature does not verify for the sub-run's
 	// decision bytes, so it is ignored.
-	sig := fakeSign("alice", ApprovalDecisionBytes("root", "s1", "alice", true))
+	wrong := pend.Subject()
+	wrong.RunID = "root"
+	sig := fakeSign("alice", ApprovalDecisionBytes(wrong, "alice", true))
 	if err := ApproveAs(ctx, store, subRunID, "s1", "alice", true, sig); err != nil {
 		t.Fatal(err)
 	}
@@ -145,10 +147,12 @@ func TestMofn_InsideSubAgent(t *testing.T) {
 		t.Fatalf("after a parent-run-id signature: err=%v, want still 0 approved", err)
 	}
 
-	// bob and carol sign against the sub-run id (alice's slot is already used by her first,
-	// mis-signed decision, so she cannot count).
+	// alice re-signs pend.Subject() correctly: her mistaken record did not take her place.
+	sig = fakeSign("alice", ApprovalDecisionBytes(pend.Subject(), "alice", true))
+	if err := ApproveAs(ctx, store, subRunID, "s1", "alice", true, sig); err != nil {
+		t.Fatal(err)
+	}
 	approveAs(t, store, subRunID, "s1", "bob", true)
-	approveAs(t, store, subRunID, "s1", "carol", true)
 	out, err := parent.Run(ctx, "root", "delegate")
 	if err != nil {
 		t.Fatalf("parent re-run at quorum: %v", err)

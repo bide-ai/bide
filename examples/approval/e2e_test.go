@@ -15,6 +15,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/bide-ai/bide/audit"
 )
 
 // exe adds the platform's executable suffix, so the built binaries run on Windows too.
@@ -91,6 +93,7 @@ func TestApprovalAcrossProcesses(t *testing.T) {
 	db := filepath.Join(dir, "approval.db")
 	witness := filepath.Join(dir, "refunds.txt")
 	evidence := filepath.Join(dir, "evidence.json")
+	keys := filepath.Join(dir, "approver-keys.json")
 
 	// The agent asks to refund and the gate pauses the run; the process exits.
 	out := mustRun(t, app, "run", "-db", db, "-witness", witness)
@@ -102,14 +105,23 @@ func TestApprovalAcrossProcesses(t *testing.T) {
 	out = mustRun(t, app, "run", "-db", db, "-witness", witness)
 	wantLines(t, out, "status: paused", "approved: 0 of 2")
 
-	mustRun(t, app, "approve", "-db", db, "-as", "ops")
+	// risk's real decision still counts: the forgery did not take risk's place.
+	mustRun(t, app, "approve", "-db", db, "-as", "risk")
 	out = mustRun(t, app, "run", "-db", db, "-witness", witness)
-	wantLines(t, out, "status: paused", "approved: 1 of 2")
+	wantLines(t, out, "status: paused", "approved: 1 of 2", "waiting on: ops, finance")
 	if n := refunds(t, witness); n != 0 {
 		t.Fatalf("refund ran %d times below quorum, want 0", n)
 	}
 
-	mustRun(t, app, "approve", "-db", db, "-as", "finance")
+	// With -check, a decision that would not count is refused at submission, not recorded.
+	out = mustRun(t, app, "approve", "-db", db, "-as", "ops", "-forge", "-check")
+	if !strings.Contains(out, "refused:") {
+		t.Fatalf("a forged decision with -check was not refused:\n%s", out)
+	}
+	out = mustRun(t, app, "run", "-db", db, "-witness", witness)
+	wantLines(t, out, "status: paused", "approved: 1 of 2")
+
+	mustRun(t, app, "approve", "-db", db, "-as", "ops", "-check")
 	out = mustRun(t, app, "run", "-db", db, "-witness", witness)
 	wantLines(t, out, "status: done")
 	if n := refunds(t, witness); n != 1 {
@@ -123,7 +135,7 @@ func TestApprovalAcrossProcesses(t *testing.T) {
 	}
 
 	// Export evidence, then verify it as an auditor with public keys only.
-	out = mustRun(t, app, "evidence", "-db", db, "-out", evidence)
+	out = mustRun(t, app, "evidence", "-db", db, "-out", evidence, "-keys-out", keys)
 	var logPub string
 	for _, l := range strings.Split(out, "\n") {
 		if v, ok := strings.CutPrefix(l, "log public key: "); ok {
@@ -136,55 +148,91 @@ func TestApprovalAcrossProcesses(t *testing.T) {
 	out = mustRun(t, app, "verify", "-in", evidence)
 	wantLines(t, out,
 		"proofs: PASS",
-		"counted: ops, finance",
-		"ignored: risk (signature does not verify under the approver's key)",
+		`call: refund {"order":42,"amount":120}`,
+		"counted: risk, ops",
+		"ignored: mallory (not an eligible approver)",
+		"ignored: risk (signature does not verify for this call)",
 		"k-of-n: PASS (2 of 2)")
 
-	// The standalone CLI verifies the same file against the log key.
-	audit := build(t, dir, "bide-audit", "github.com/bide-ai/bide/cmd/bide-audit")
-	out = mustRun(t, audit, "verify-evidence", "-evidence", evidence, "-pubkey", logPub)
+	// The standalone CLI verifies the same files, for an auditor who does not write Go:
+	// every proof, then the full m-of-n check against the expected policy and approver keys.
+	auditCLI := build(t, dir, "bide-audit", "github.com/bide-ai/bide/cmd/bide-audit")
+	out = mustRun(t, auditCLI, "verify-evidence", "-evidence", evidence, "-pubkey", logPub)
 	if !strings.Contains(out, "PASS") {
 		t.Fatalf("bide-audit verify-evidence did not pass:\n%s", out)
+	}
+	approvals := func(file, need string) []string {
+		return []string{"verify-approvals", "-evidence", file, "-pubkey", logPub, "-call", "refund-1",
+			"-need", need, "-approvers", "ops,finance,risk", "-approver-keys", keys}
+	}
+	out = mustRun(t, auditCLI, approvals(evidence, "2")...)
+	wantLines(t, out,
+		`approval gate on call "refund-1": refund {"order":42,"amount":120}`,
+		"PASS  risk approved (signature verifies for this exact call)",
+		"PASS  ops approved (signature verifies for this exact call)",
+		"PASS: 2 of 2 required approvals verified, from complete evidence")
+	// An auditor who expects a stricter policy than the one enforced is told so.
+	if out, code := run(t, auditCLI, approvals(evidence, "3")...); code == 0 || !strings.Contains(out, "enforced") {
+		t.Fatalf("verify-approvals accepted a policy mismatch (exit %d):\n%s", code, out)
 	}
 
 	// Tampering with a disclosed decision breaks verification in both verifiers.
 	tampered := filepath.Join(dir, "tampered.json")
-	tamperApproval(t, evidence, tampered)
+	editEvidence(t, evidence, tampered, func(act *audit.EvidenceAction) bool {
+		if act.Kind == audit.KindApproval && act.Bundle.Record.Approver == "ops" {
+			act.Bundle.Record.Approved = false
+		}
+		return true
+	})
 	if out, code := run(t, app, "verify", "-in", tampered); code == 0 {
 		t.Fatalf("verify accepted tampered evidence:\n%s", out)
 	}
-	if out, code := run(t, audit, "verify-evidence", "-evidence", tampered, "-pubkey", logPub); code == 0 {
+	if out, code := run(t, auditCLI, "verify-evidence", "-evidence", tampered, "-pubkey", logPub); code == 0 {
 		t.Fatalf("bide-audit accepted tampered evidence:\n%s", out)
+	}
+	if out, code := run(t, auditCLI, approvals(tampered, "2")...); code == 0 {
+		t.Fatalf("bide-audit verify-approvals accepted tampered evidence:\n%s", out)
+	}
+
+	// Leaving a decision out of the file is caught by the approval check, even though every
+	// remaining proof is valid: verify-evidence, which checks proofs only, still passes it.
+	omitted := filepath.Join(dir, "omitted.json")
+	editEvidence(t, evidence, omitted, func(act *audit.EvidenceAction) bool {
+		return act.Kind != audit.KindApproval || act.Label != "mallory"
+	})
+	out, code := run(t, app, "verify", "-in", omitted)
+	if code == 0 || !strings.Contains(out, "problem: the evidence omits") {
+		t.Fatalf("verify accepted evidence with a decision left out (exit %d):\n%s", code, out)
+	}
+	if out, code := run(t, auditCLI, "verify-evidence", "-evidence", omitted, "-pubkey", logPub); code != 0 {
+		t.Fatalf("verify-evidence rejected evidence whose remaining proofs are all valid:\n%s", out)
+	}
+	if out, code := run(t, auditCLI, approvals(omitted, "2")...); code == 0 || !strings.Contains(out, "omits") {
+		t.Fatalf("verify-approvals accepted evidence with a decision left out (exit %d):\n%s", code, out)
 	}
 }
 
-// tamperApproval flips finance's disclosed decision to a denial in the evidence file. The
-// record no longer matches its inclusion proof, so the proof fails.
-func tamperApproval(t *testing.T, in, out string) {
+// editEvidence rewrites the evidence file's actions through the typed package, which keeps
+// every recorded byte intact (a generic JSON edit would re-order object keys and invalidate
+// proofs that commit to the exact bytes). edit may modify an action in place, and returns false
+// to drop it.
+func editEvidence(t *testing.T, in, out string, edit func(act *audit.EvidenceAction) bool) {
 	t.Helper()
 	b, err := os.ReadFile(in)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var pkg map[string]any
+	var pkg audit.EvidencePackage
 	if err := json.Unmarshal(b, &pkg); err != nil {
 		t.Fatal(err)
 	}
-	found := false
-	for _, a := range pkg["actions"].([]any) {
-		act := a.(map[string]any)
-		if act["kind"] != "approval" {
-			continue
-		}
-		rec := act["bundle"].(map[string]any)["record"].(map[string]any)
-		if rec["approver"] == "finance" {
-			rec["approved"] = false
-			found = true
+	var kept []audit.EvidenceAction
+	for i := range pkg.Actions {
+		if edit(&pkg.Actions[i]) {
+			kept = append(kept, pkg.Actions[i])
 		}
 	}
-	if !found {
-		t.Fatal("no finance approval in the evidence to tamper with")
-	}
+	pkg.Actions = kept
 	b, err = json.Marshal(pkg)
 	if err != nil {
 		t.Fatal(err)

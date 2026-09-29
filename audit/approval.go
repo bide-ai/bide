@@ -4,182 +4,284 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"encoding/json"
 	"fmt"
+	"slices"
+	"sort"
 
 	"github.com/bide-ai/bide/agent"
 )
 
-// findApproval returns the journal index of approverID's decision record for toolUseID, or -1.
-func findApproval(recs []agent.Record, toolUseID, approverID string) int {
-	name := agent.ApprovalStepName(toolUseID, approverID)
-	for i, r := range recs {
-		if r.Kind == agent.StepApproval && r.Name == name {
-			return i
-		}
-	}
-	return -1
-}
+// Evidence kinds for an m-of-n approval, in the order ApprovalEvidence emits them.
+const (
+	KindCall          = "call"           // the model turn that requested the gated call (its name and arguments)
+	KindApproval      = "approval"       // one approver decision record
+	KindApprovalTally = "approval-tally" // the gate's journaled terminal tally
+	KindTool          = "tool"           // the call's result: the action, or the denial the model received
+)
 
-// ProveApproval builds a ProofBundle proving the approver-decision record keyed
-// "approval:"+toolUseID+":"+approverID (a StepApproval) is committed in the tree sth signs.
-// Resolves the record by its step name and delegates to ProveRecord. Fan-in counterpart to
-// ProveToolCall for approvals: ProveStep matches only StepValue records, so it cannot find a
-// decision. The disclosed record carries the approver id and signature, so a verifier holding
-// the approver's key can check it over agent.ApprovalDecisionBytes independently.
-func ProveApproval(ctx context.Context, store agent.Durable, runID, toolUseID, approverID string, sth SignedTreeHead) (ProofBundle, error) {
+// ProveApproval builds a ProofBundle proving one approver-decision record, named step, is
+// committed in the tree sth signs. Decision records are named per decision (see
+// agent.ApprovalTally.Records and agent.DecisionCheck.Step), so the step name identifies one
+// exactly. The disclosed record carries the approver id and signature, so a verifier holding
+// the approver's key can check it over agent.ApprovalDecisionBytes independently. ProveStep
+// matches only StepValue records, so it cannot reach a decision.
+func ProveApproval(ctx context.Context, store agent.Durable, runID, step string, sth SignedTreeHead) (ProofBundle, error) {
 	recs, err := store.History(ctx, runID)
 	if err != nil {
 		return ProofBundle{}, fmt.Errorf("audit: load journal %s: %w", runID, err)
 	}
-	idx := findApproval(recs, toolUseID, approverID)
-	if idx < 0 {
-		return ProofBundle{}, fmt.Errorf("audit: no decision by approver %q on tool call %q in run %s", approverID, toolUseID, runID)
+	for i, r := range recs {
+		if r.Kind == agent.StepApproval && r.Name == step && r.Approver != "" {
+			return ProveRecord(ctx, store, runID, i, sth)
+		}
 	}
-	return ProveRecord(ctx, store, runID, idx, sth)
+	return ProofBundle{}, fmt.Errorf("audit: no approver decision %q in run %s", step, runID)
 }
 
-// ApprovalEvidence builds, under one STH, one EvidenceAction per approver in approvers that
-// recorded a decision on toolUseID before the tool call completed, followed by the
-// EvidenceAction for the tool-result record itself. The ordering is explicit and load-bearing:
-// approver decisions first (in the order given by approvers), the action last, and every
-// included decision sits at a lower journal index than the action. That lets an offline
-// verifier confirm k distinct signed eligible approvers decided BEFORE the action executed by
-// checking each decision's signature (Record.Approver, Record.Signature over
-// agent.ApprovalDecisionBytes) and comparing Inclusion.Index against the action's.
+// ApprovalEvidence builds the complete evidence for an m-of-n gated call under one STH, in
+// this order: the model turn that requested the call (Kind "call"), every decision record the
+// gate read (Kind "approval", from the journaled tally's Records, in journal order), the
+// gate's terminal tally (Kind "approval-tally"), and the call's result (Kind "tool"). The
+// result appends to EvidencePackage.Actions; drop the trailing "tool" entry if the package
+// already carries the call.
 //
-// Approvers with no decision, or whose decision was journaled after the action (and so could
-// not have gated it), are omitted rather than failing the call; duplicate ids are proven once.
-// It errors if the tool call has no completed result, or if any proof cannot be built against
-// sth. Decisions carry Kind "approval" and Ref set to the decision's step name; the action
-// carries Kind "tool" and Ref toolUseID, so the result appends directly to
-// EvidencePackage.Actions.
-func ApprovalEvidence(ctx context.Context, store agent.Durable, runID, toolUseID string, approvers []string, sth SignedTreeHead) ([]EvidenceAction, error) {
-	action, err := ProveToolCall(ctx, store, runID, toolUseID, sth)
-	if err != nil {
-		return nil, err
-	}
+// It discloses everything the gate read, valid or not, so VerifyApprovals can recount from the
+// same inputs and detect an omission. It errors if the call has no journaled tally (it was not
+// m-of-n gated, or its gate has not reached an outcome), no recorded request, or no result, or
+// if a proof cannot be built against sth.
+func ApprovalEvidence(ctx context.Context, store agent.Durable, runID, toolUseID string, sth SignedTreeHead) ([]EvidenceAction, error) {
 	recs, err := store.History(ctx, runID)
 	if err != nil {
 		return nil, fmt.Errorf("audit: load journal %s: %w", runID, err)
 	}
-	out := make([]EvidenceAction, 0, len(approvers)+1)
-	seen := make(map[string]bool, len(approvers))
-	for _, id := range approvers {
-		if seen[id] {
-			continue
+	index := make(map[string]int, len(recs))
+	for i, r := range recs {
+		if _, dup := index[r.Name]; !dup {
+			index[r.Name] = i
 		}
-		seen[id] = true
-		idx := findApproval(recs, toolUseID, id)
-		if idx < 0 || idx >= action.Inclusion.Index {
-			continue
+	}
+	tallyName := agent.ApprovalTallyStep(toolUseID)
+	tallyIdx, ok := index[tallyName]
+	if !ok || recs[tallyIdx].Kind != agent.StepValue {
+		return nil, fmt.Errorf("audit: no journaled approval tally for call %q in run %s (not m-of-n gated, or its gate has not decided)", toolUseID, runID)
+	}
+	var tally agent.ApprovalTally
+	if err := json.Unmarshal(recs[tallyIdx].Result, &tally); err != nil {
+		return nil, fmt.Errorf("audit: decode %s: %w", tallyName, err)
+	}
+	callIdx, call, ok := agent.FindToolCall(recs, toolUseID)
+	if !ok {
+		return nil, fmt.Errorf("audit: no recorded request for call %q in run %s", toolUseID, runID)
+	}
+	action, err := ProveToolCall(ctx, store, runID, toolUseID, sth)
+	if err != nil {
+		return nil, err
+	}
+
+	prove := func(i int) (ProofBundle, error) { return ProveRecord(ctx, store, runID, i, sth) }
+	callPB, err := prove(callIdx)
+	if err != nil {
+		return nil, err
+	}
+	out := []EvidenceAction{{Label: call.Name, Kind: KindCall, Ref: toolUseID, Bundle: callPB}}
+	for _, name := range tally.Records {
+		i, ok := index[name]
+		if !ok {
+			return nil, fmt.Errorf("audit: the tally for call %q names decision %q, which is not in run %s", toolUseID, name, runID)
 		}
-		pb, err := ProveRecord(ctx, store, runID, idx, sth)
+		pb, err := prove(i)
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, EvidenceAction{Label: id, Kind: "approval", Ref: agent.ApprovalStepName(toolUseID, id), Bundle: pb})
+		out = append(out, EvidenceAction{Label: recs[i].Approver, Kind: KindApproval, Ref: name, Bundle: pb})
 	}
-	return append(out, EvidenceAction{Label: toolUseID, Kind: "tool", Ref: toolUseID, Bundle: action}), nil
+	tallyPB, err := prove(tallyIdx)
+	if err != nil {
+		return nil, err
+	}
+	out = append(out,
+		EvidenceAction{Label: "approval tally", Kind: KindApprovalTally, Ref: tallyName, Bundle: tallyPB},
+		EvidenceAction{Label: call.Name, Kind: KindTool, Ref: toolUseID, Bundle: action})
+	return out, nil
 }
 
 // ApprovalVerdict is the offline result of checking an m-of-n approval gate from evidence.
 type ApprovalVerdict struct {
-	// Need is the policy's k.
+	// Need is the expected policy's k.
 	Need int `json:"need"`
-	// Counted lists the approvers whose approval counted, in evidence order: eligible, signed
-	// with a signature that verifies under the approver's key, proven under the action's
-	// signed tree head, and journaled before the action.
+	// ToolName and Args are the call the approvers decided on, from the proven request.
+	ToolName string          `json:"tool_name"`
+	Args     json.RawMessage `json:"args,omitempty"`
+	// Counted lists the approvers whose approval counted in the recount, in journal order.
 	Counted []string `json:"counted"`
-	// Ignored lists every other decision on the action, with the reason it did not count.
+	// DeniedBy lists the approvers whose counted decision was a denial.
+	DeniedBy []string `json:"denied_by,omitempty"`
+	// Ignored lists every other disclosed decision, with the reason it did not count.
 	Ignored []IgnoredDecision `json:"ignored,omitempty"`
-	// OK reports len(Counted) >= Need.
+	// Problems lists every way the evidence is inconsistent with itself or with the expected
+	// policy: an omitted decision the gate read, a recount that disagrees with the gate's
+	// journaled tally, a different enforced policy, or records out of order. Any problem fails
+	// the verdict.
+	Problems []string `json:"problems,omitempty"`
+	// OK reports no Problems and at least Need approvals counted.
 	OK bool `json:"ok"`
 }
 
-// IgnoredDecision is one approver decision that did not count toward the gate, and why.
+// IgnoredDecision is one disclosed approver decision that did not count toward the gate.
 type IgnoredDecision struct {
 	Approver string `json:"approver"`
+	Step     string `json:"step"`
 	Reason   string `json:"reason"`
 }
 
-// VerifyApprovals checks offline that k distinct eligible approvers signed approval of the
-// tool call toolUseID before it executed. actions is either the output of ApprovalEvidence or
-// a whole EvidencePackage's Actions with the decisions appended; the action is located by
-// Kind "tool" and its tool-use id, and decisions by Kind "approval" on the same tool call, so
-// order does not matter.
+// VerifyApprovals checks offline that the m-of-n gate on toolUseID held, trusting only its
+// inputs: actions (ApprovalEvidence's output, alone or inside an EvidencePackage), the policy
+// the auditor expects, verifierFor (each approver's key, the same resolver shape the gate uses
+// at run time), and logPub (the log operator's key, obtained out of band).
 //
-// It trusts only its inputs: logPub is the log operator's key (obtained out of band), and
-// verifierFor resolves an approver id to the key that verifies that approver's signature. The
-// same resolver the gate uses at run time (agent.Agent.WithApproverVerifiers) works here. A
-// decision counts only if its proof verifies under logPub against the SAME signed tree head
-// as the action, it belongs to the same run, the approver is in policy.Approvers, it is an
-// approval, its journal index is below the action's, its signature verifies over
-// agent.ApprovalDecisionBytes, and it is that approver's first counted decision. Every other
-// decision is reported in Ignored with a reason.
+// It verifies the proofs of the request, the gate's journaled tally, and the call's result,
+// all under one signed tree head and in that journal order, then recounts the disclosed
+// decisions with agent.TallyApprovals, the exact rule the gate ran, against the proven call's
+// name and arguments. It reports a Problem if the evidence omits a decision the gate read, if
+// the recount disagrees with the journaled tally, or if the gate enforced a different policy
+// than expected. A decision signed for other arguments, another run, or another call does not
+// verify and is listed in Ignored.
 //
-// It returns an error, rather than a verdict, when the evidence cannot be evaluated at all:
-// an invalid policy, no action for toolUseID, or an action whose own proof does not verify.
-// It certifies that the gate held, not that the approvers' judgment was right.
+// It returns an error, not a verdict, when the evidence cannot be evaluated: an invalid
+// policy, a missing request, tally, or result, or one of those whose proof does not verify.
+// It certifies that the gate held as recorded, not that the approvers' judgment was right.
 func VerifyApprovals(actions []EvidenceAction, toolUseID string, policy agent.ApprovalPolicy, verifierFor agent.ApproverVerifierFor, logPub ed25519.PublicKey) (ApprovalVerdict, error) {
 	v := ApprovalVerdict{Need: policy.Need}
-	if policy.Need < 1 || policy.Need > len(policy.Approvers) {
-		return v, fmt.Errorf("audit: approval policy Need = %d, want 1 <= Need <= %d approvers", policy.Need, len(policy.Approvers))
+	if err := policy.Validate(); err != nil {
+		return v, fmt.Errorf("audit: expected policy: %w", err)
 	}
 	if verifierFor == nil {
 		return v, fmt.Errorf("audit: no approver verifier resolver")
 	}
 
-	var action *EvidenceAction
-	for i := range actions {
-		a := &actions[i]
-		if a.Kind == "tool" && a.Bundle.Record.ToolUseID == toolUseID {
-			action = a
-			break
+	find := func(match func(EvidenceAction) bool, what string) (*EvidenceAction, error) {
+		for i := range actions {
+			if match(actions[i]) {
+				return &actions[i], nil
+			}
+		}
+		return nil, fmt.Errorf("audit: the evidence has no %s for call %q", what, toolUseID)
+	}
+	var call agent.ToolUse
+	req, err := find(func(a EvidenceAction) bool {
+		if a.Kind != KindCall {
+			return false
+		}
+		_, tu, ok := agent.FindToolCall([]agent.Record{a.Bundle.Record}, toolUseID)
+		call = tu
+		return ok
+	}, "request")
+	if err != nil {
+		return v, err
+	}
+	tallyName := agent.ApprovalTallyStep(toolUseID)
+	tallyAct, err := find(func(a EvidenceAction) bool {
+		return a.Kind == KindApprovalTally && a.Bundle.Record.Name == tallyName
+	}, "approval tally")
+	if err != nil {
+		return v, err
+	}
+	result, err := find(func(a EvidenceAction) bool {
+		return a.Kind == KindTool && a.Bundle.Record.Kind == agent.StepToolResult && a.Bundle.Record.ToolUseID == toolUseID
+	}, "result")
+	if err != nil {
+		return v, err
+	}
+	sth, runID := result.Bundle.STH, result.Bundle.RunID
+	for _, a := range []*EvidenceAction{req, tallyAct, result} {
+		if !verifyBundle(a.Bundle, logPub) {
+			return v, fmt.Errorf("audit: the proof of the %s for call %q does not verify under the log key", a.Kind, toolUseID)
+		}
+		if !sameTreeHead(a.Bundle.STH, sth) || a.Bundle.RunID != runID {
+			return v, fmt.Errorf("audit: the %s for call %q is not proven under the same signed tree head and run as its result", a.Kind, toolUseID)
 		}
 	}
-	if action == nil {
-		return v, fmt.Errorf("audit: no tool action for tool call %q in the evidence", toolUseID)
+	v.ToolName, v.Args = call.Name, call.Args
+	var tally agent.ApprovalTally
+	if err := json.Unmarshal(tallyAct.Bundle.Record.Result, &tally); err != nil {
+		return v, fmt.Errorf("audit: decode the journaled tally: %w", err)
 	}
-	if ok, err := action.Bundle.Verify(logPub); err != nil || !ok {
-		return v, fmt.Errorf("audit: the proof for tool call %q does not verify under the log key", toolUseID)
+	problem := func(format string, args ...any) { v.Problems = append(v.Problems, fmt.Sprintf(format, args...)) }
+
+	reqIdx, tallyIdx, resultIdx := req.Bundle.Inclusion.Index, tallyAct.Bundle.Inclusion.Index, result.Bundle.Inclusion.Index
+	if !(reqIdx < tallyIdx && tallyIdx < resultIdx) {
+		problem("records out of order: request at %d, tally at %d, result at %d (want request < tally < result)", reqIdx, tallyIdx, resultIdx)
+	}
+	if tally.Need != policy.Need || !slices.Equal(tally.Approvers, policy.Approvers) {
+		problem("the gate enforced need %d of %v, not the expected need %d of %v", tally.Need, tally.Approvers, policy.Need, policy.Approvers)
 	}
 
-	eligible := make(map[string]bool, len(policy.Approvers))
-	for _, id := range policy.Approvers {
-		eligible[id] = true
+	// The disclosed decisions whose proofs hold, keyed by record name.
+	type disclosed struct {
+		rec   agent.Record
+		index int
 	}
-	counted := map[string]bool{}
-	ignore := func(id, reason string) {
-		v.Ignored = append(v.Ignored, IgnoredDecision{Approver: id, Reason: reason})
+	read := make(map[string]bool, len(tally.Records))
+	for _, name := range tally.Records {
+		read[name] = true
 	}
+	proven := map[string]disclosed{}
 	for _, a := range actions {
 		r := a.Bundle.Record
-		if a.Kind != "approval" || r.Kind != agent.StepApproval || r.ToolUseID != toolUseID {
+		if a.Kind != KindApproval || !agent.IsApprovalDecision(r, toolUseID) {
 			continue
 		}
+		if _, dup := proven[r.Name]; dup {
+			continue
+		}
+		ignore := func(reason string) {
+			v.Ignored = append(v.Ignored, IgnoredDecision{Approver: r.Approver, Step: r.Name, Reason: reason})
+		}
 		switch {
-		case !sameTreeHead(a.Bundle.STH, action.Bundle.STH):
-			ignore(r.Approver, "not proven under the action's signed tree head")
-		case a.Bundle.RunID != action.Bundle.RunID:
-			ignore(r.Approver, "belongs to a different run")
 		case !verifyBundle(a.Bundle, logPub):
-			ignore(r.Approver, "inclusion proof does not verify under the log key")
-		case !eligible[r.Approver]:
-			ignore(r.Approver, "not an eligible approver")
-		case counted[r.Approver]:
-			ignore(r.Approver, "duplicate decision")
-		case !r.Approved:
-			ignore(r.Approver, "denied")
-		case a.Bundle.Inclusion.Index >= action.Bundle.Inclusion.Index:
-			ignore(r.Approver, "recorded after the action")
-		case !verifyDecision(verifierFor, a.Bundle.RunID, r):
-			ignore(r.Approver, "signature does not verify under the approver's key")
+			ignore("inclusion proof does not verify under the log key")
+		case !sameTreeHead(a.Bundle.STH, sth) || a.Bundle.RunID != runID:
+			ignore("not proven under the same signed tree head and run as the result")
+		case !read[r.Name]:
+			ignore("not read by the gate (recorded after it decided)")
 		default:
-			counted[r.Approver] = true
-			v.Counted = append(v.Counted, r.Approver)
+			proven[r.Name] = disclosed{r, a.Bundle.Inclusion.Index}
 		}
 	}
-	v.OK = len(v.Counted) >= policy.Need
+
+	// Completeness: every decision the gate read is disclosed, proven, and before the tally.
+	var recount []disclosed
+	for _, name := range tally.Records {
+		d, ok := proven[name]
+		switch {
+		case !ok:
+			problem("the evidence omits, or cannot prove, decision %q that the gate read", name)
+		case d.index >= tallyIdx:
+			problem("decision %q is at %d, not before the tally at %d", name, d.index, tallyIdx)
+		default:
+			recount = append(recount, d)
+		}
+	}
+	sort.Slice(recount, func(i, j int) bool { return recount[i].index < recount[j].index })
+	recs := make([]agent.Record, len(recount))
+	for i, d := range recount {
+		recs[i] = d.rec
+	}
+
+	subject := agent.ApprovalSubject{RunID: runID, ToolUseID: toolUseID, ToolName: call.Name, Args: call.Args}
+	got, checks := agent.TallyApprovals(recs, subject, policy, verifierFor)
+	for _, c := range checks {
+		if !c.Counted {
+			v.Ignored = append(v.Ignored, IgnoredDecision{Approver: c.Approver, Step: c.Step, Reason: c.Reason})
+		}
+	}
+	v.Counted, v.DeniedBy = got.ApprovedBy, got.DeniedBy
+	if !slices.Equal(got.ApprovedBy, tally.ApprovedBy) || !slices.Equal(got.DeniedBy, tally.DeniedBy) {
+		problem("the recount (approved by %v, denied by %v) disagrees with the gate's journaled tally (approved by %v, denied by %v)",
+			got.ApprovedBy, got.DeniedBy, tally.ApprovedBy, tally.DeniedBy)
+	}
+	v.OK = len(v.Problems) == 0 && got.Passed()
 	return v, nil
 }
 
@@ -190,12 +292,4 @@ func sameTreeHead(a, b SignedTreeHead) bool {
 func verifyBundle(b ProofBundle, logPub ed25519.PublicKey) bool {
 	ok, err := b.Verify(logPub)
 	return err == nil && ok
-}
-
-func verifyDecision(verifierFor agent.ApproverVerifierFor, runID string, r agent.Record) bool {
-	ver, ok := verifierFor(r.Approver)
-	if !ok || ver == nil {
-		return false
-	}
-	return ver.Verify(agent.ApprovalDecisionBytes(runID, r.ToolUseID, r.Approver, r.Approved), r.Signature)
 }

@@ -1,8 +1,10 @@
 // Command approval shows an m-of-n human approval gate end to end, across separate
 // processes, against an on-disk SQLite journal. An agent wants to refund an order; the
-// refund tool requires 2 of 3 named approvers (ops, finance, risk), each signing their
-// decision with their own key. Then an auditor proves offline, from a portable evidence
-// file, that two eligible approvers signed off BEFORE the refund ran.
+// refund tool requires 2 of 3 named approvers (ops, finance, risk), each signing the exact
+// call (tool and arguments) with their own key. A forged or mistaken decision is ignored and
+// does not lock its approver out. Then an auditor proves offline, from a portable evidence
+// file, that two eligible approvers signed off on this exact refund BEFORE it ran, and that
+// the evidence leaves nothing out.
 //
 // With no arguments it runs the whole story in one process (no API key, no network):
 //
@@ -14,13 +16,15 @@
 //	go run . run      -db approval.db               # drive the agent: pauses, or refunds
 //	go run . approve  -db approval.db -as ops       # one approver signs and records a decision
 //	go run . approve  -db approval.db -as risk -forge   # a decision with a forged signature
+//	go run . approve  -db approval.db -as ops -check    # verify before recording; refuse if it would not count
 //	go run . evidence -db approval.db -out evidence.json
 //	go run . verify   -in evidence.json             # the auditor: public keys only
 //
-// The evidence file also verifies with the standalone CLI, which checks every inclusion
-// proof against the log key:
+// The standalone CLI verifies the same files, for an auditor who does not write Go:
 //
-//	bide-audit verify-evidence -evidence evidence.json -pubkey <hex printed by "evidence">
+//	bide-audit verify-evidence  -evidence evidence.json -pubkey <log key hex printed by "evidence">
+//	bide-audit verify-approvals -evidence evidence.json -pubkey <log key hex> -call refund-1 \
+//	    -need 2 -approvers ops,finance,risk -approver-keys approver-keys.json
 //
 // The keys are derived from fixed seeds so separate processes agree on them. That is for the
 // demo only: real approvers hold their own private keys, and the verifier's public keys come
@@ -28,6 +32,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
@@ -163,15 +168,34 @@ func cmdRun(ctx context.Context, store agent.Durable, witness string) error {
 	return nil
 }
 
-// cmdApprove records one approver's signed decision. forge signs with a key that is not the
-// approver's, to show the gate ignores it.
-func cmdApprove(ctx context.Context, store agent.Durable, as string, approved, forge bool) error {
+// cmdApprove records one approver's signed decision on the recorded call. An approver signs
+// exactly what they were shown: the paused call's Subject (run, call id, tool, arguments). forge
+// signs with a key that is not the approver's, to show the gate ignores it. check verifies the
+// decision before recording it, and refuses one that would not count.
+func cmdApprove(ctx context.Context, store agent.Durable, as string, approved, forge, check bool) error {
+	recs, err := store.History(ctx, runID)
+	if err != nil {
+		return err
+	}
+	_, call, ok := agent.FindToolCall(recs, callID)
+	if !ok {
+		return fmt.Errorf("no pending call %s in run %s (run the agent first)", callID, runID)
+	}
+	subject := agent.ApprovalSubject{RunID: runID, ToolUseID: callID, ToolName: call.Name, Args: call.Args}
 	key := demoKey("approver " + as)
 	if forge {
 		key = demoKey("forger")
 	}
-	sig := ed25519.Sign(key, agent.ApprovalDecisionBytes(runID, callID, as, approved))
-	if err := agent.ApproveAs(ctx, store, runID, callID, as, approved, sig); err != nil {
+	sig := ed25519.Sign(key, agent.ApprovalDecisionBytes(subject, as, approved))
+	var opts []agent.ApproveOption
+	if check {
+		opts = append(opts, agent.WithDecisionCheck(approverVerifiers()))
+	}
+	if err := agent.ApproveAs(ctx, store, runID, callID, as, approved, sig, opts...); err != nil {
+		if errors.Is(err, agent.ErrInvalidApproval) || errors.Is(err, agent.ErrAlreadyDecided) {
+			fmt.Printf("refused: %v\n", err)
+			return nil
+		}
 		return err
 	}
 	verb := "approved"
@@ -186,14 +210,15 @@ func cmdApprove(ctx context.Context, store agent.Durable, as string, approved, f
 	return nil
 }
 
-// cmdEvidence writes a portable evidence package: the refund's inclusion proof plus one per
-// approver decision, all under one signed tree head.
-func cmdEvidence(ctx context.Context, store agent.Durable, outPath string) error {
+// cmdEvidence writes a portable evidence package (the request, every decision the gate read,
+// its tally, and the refund, all under one signed tree head) and the approvers' public keys an
+// auditor would hold, as a JSON object of approver id to ed25519 key hex.
+func cmdEvidence(ctx context.Context, store agent.Durable, outPath, keysPath string) error {
 	pkg, err := audit.Evidence(ctx, store, runID, logKey(), time.Now().Unix(), audit.WithToolCall(callID))
 	if err != nil {
 		return err
 	}
-	decisions, err := audit.ApprovalEvidence(ctx, store, runID, callID, policy.Approvers, pkg.STH)
+	decisions, err := audit.ApprovalEvidence(ctx, store, runID, callID, pkg.STH)
 	if err != nil {
 		return err
 	}
@@ -206,6 +231,18 @@ func cmdEvidence(ctx context.Context, store agent.Durable, outPath string) error
 		return err
 	}
 	fmt.Printf("wrote: %s (%d proofs)\n", outPath, len(pkg.Actions))
+	keys := map[string]string{}
+	for _, id := range registered {
+		keys[id] = hex.EncodeToString(demoKey("approver " + id).Public().(ed25519.PublicKey))
+	}
+	kb, err := json.MarshalIndent(keys, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(keysPath, kb, 0o644); err != nil {
+		return err
+	}
+	fmt.Printf("wrote: %s (approver public keys)\n", keysPath)
 	fmt.Printf("log public key: %s\n", hex.EncodeToString(logKey().Public().(ed25519.PublicKey)))
 	return nil
 }
@@ -232,9 +269,17 @@ func cmdVerify(inPath string) error {
 	if err != nil {
 		return err
 	}
+	var args bytes.Buffer
+	if json.Compact(&args, v.Args) != nil {
+		args.Write(v.Args)
+	}
+	fmt.Printf("call: %s %s\n", v.ToolName, args.String())
 	fmt.Printf("counted: %s\n", strings.Join(v.Counted, ", "))
 	for _, d := range v.Ignored {
 		fmt.Printf("ignored: %s (%s)\n", d.Approver, d.Reason)
+	}
+	for _, p := range v.Problems {
+		fmt.Printf("problem: %s\n", p)
 	}
 	fmt.Printf("k-of-n: %s (%d of %d)\n", passFail(v.OK), len(v.Counted), v.Need)
 	if !rep.OK || !v.OK {
@@ -273,15 +318,18 @@ func demo(ctx context.Context) error {
 		f     func() error
 	}{
 		{"The agent asks to refund; the gate pauses it", func() error { return cmdRun(ctx, store, witness) }},
-		{"mallory approves (has a key, but is not an eligible approver)", func() error { return cmdApprove(ctx, store, "mallory", true, false) }},
-		{"risk's approval arrives with a forged signature", func() error { return cmdApprove(ctx, store, "risk", true, true) }},
+		{"mallory approves (has a key, but is not an eligible approver)", func() error { return cmdApprove(ctx, store, "mallory", true, false, false) }},
+		{"An approval for risk arrives with a forged signature", func() error { return cmdApprove(ctx, store, "risk", true, true, false) }},
 		{"Resume: neither counts", func() error { return cmdRun(ctx, store, witness) }},
-		{"ops approves", func() error { return cmdApprove(ctx, store, "ops", true, false) }},
+		{"risk approves for real: the forgery did not lock risk out", func() error { return cmdApprove(ctx, store, "risk", true, false, false) }},
 		{"Resume: 1 of 2", func() error { return cmdRun(ctx, store, witness) }},
-		{"finance approves", func() error { return cmdApprove(ctx, store, "finance", true, false) }},
+		{"A forged approval for ops, submitted with -check, is refused on the spot", func() error { return cmdApprove(ctx, store, "ops", true, true, true) }},
+		{"ops approves, with -check", func() error { return cmdApprove(ctx, store, "ops", true, false, true) }},
 		{"Resume: 2 of 2, the refund runs", func() error { return cmdRun(ctx, store, witness) }},
 		{"Resume again: nothing runs twice", func() error { return cmdRun(ctx, store, witness) }},
-		{"Export evidence", func() error { return cmdEvidence(ctx, store, filepath.Join(dir, "evidence.json")) }},
+		{"Export evidence", func() error {
+			return cmdEvidence(ctx, store, filepath.Join(dir, "evidence.json"), filepath.Join(dir, "approver-keys.json"))
+		}},
 		{"An auditor verifies offline", func() error { return cmdVerify(filepath.Join(dir, "evidence.json")) }},
 	}
 	for _, s := range steps {
@@ -323,7 +371,9 @@ func main() {
 	as := fs.String("as", "", "approver id (approve)")
 	deny := fs.Bool("deny", false, "record a denial instead of an approval (approve)")
 	forge := fs.Bool("forge", false, "sign with a key that is not the approver's (approve)")
+	check := fs.Bool("check", false, "verify the decision before recording it, and refuse one that would not count (approve)")
 	out := fs.String("out", "evidence.json", "evidence file to write (evidence)")
+	keysOut := fs.String("keys-out", "approver-keys.json", "approver public keys file to write (evidence)")
 	in := fs.String("in", "evidence.json", "evidence file to verify (verify)")
 	_ = fs.Parse(args)
 
@@ -345,9 +395,9 @@ func main() {
 		if *as == "" {
 			fatal(errors.New("approve: -as is required"))
 		}
-		err = cmdApprove(ctx, store, *as, !*deny, *forge)
+		err = cmdApprove(ctx, store, *as, !*deny, *forge, *check)
 	case "evidence":
-		err = cmdEvidence(ctx, store, *out)
+		err = cmdEvidence(ctx, store, *out, *keysOut)
 	default:
 		err = fmt.Errorf("unknown command %q (want run, approve, evidence, or verify)", cmd)
 	}

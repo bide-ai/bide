@@ -194,23 +194,24 @@ prints a plain-English PASS/FAIL.
 
 ### Approval evidence: k approvers signed off before the action
 
-For a tool gated by an m-of-n approval policy, `audit.ApprovalEvidence` produces the proofs for its
-approver decisions and the action under one signed tree head, decisions first and the action last. To
-add the decisions to a package that already carries the action (built with `WithToolCall` or
-`WithAllToolCalls`), drop the trailing action entry:
+For a tool gated by an m-of-n approval policy, `audit.ApprovalEvidence` produces the complete
+evidence under one signed tree head, in journal order: the model turn that requested the call, every
+decision record the gate read (valid or not), the gate's recorded tally, and the call's result. To add
+it to a package that already carries the call (built with `WithToolCall` or `WithAllToolCalls`), drop
+the trailing result entry:
 
 ```go
-approvals, _ := audit.ApprovalEvidence(ctx, store, runID, toolUseID, policy.Approvers, pkg.STH)
-pkg.Actions = append(pkg.Actions, approvals[:len(approvals)-1]...) // the action is already packaged
+approvals, _ := audit.ApprovalEvidence(ctx, store, runID, toolUseID, pkg.STH)
+pkg.Actions = append(pkg.Actions, approvals[:len(approvals)-1]...) // the result is already packaged
 ```
 
-`pkg.Verify` checks each decision's inclusion under the tree head like any other action. Like grant
-issuer signatures, the approver signatures and the count to k need inputs the package does not carry
-(the approvers' public keys and the policy), so `audit.VerifyApprovals` checks them from the package
-and those keys: each decision's signature over `agent.ApprovalDecisionBytes`, that the approver is
-eligible, that it sits under the action's tree head and before the action, and that at least `Need`
-distinct approvers approved. It reports every decision that did not count, with a reason.
-`audit.ProveApproval` proves a single decision. See the
+`pkg.Verify` checks each item's inclusion under the tree head like any other action. Like grant
+issuer signatures, the approval claim needs inputs the package does not carry (the approvers' public
+keys and the expected policy), so `audit.VerifyApprovals` checks it from the package and those keys:
+it recounts the decisions with the gate's own rule against the proven call, and reports a problem if
+the evidence omits a decision the gate read, if the recount disagrees with the recorded tally, or if
+the gate enforced a different policy. `bide-audit verify-approvals` runs the same check from the
+command line. `audit.ProveApproval` proves a single decision by its record name. See the
 [approval guide](approval.md#proving-the-gate-held) and `examples/approval`.
 
 ## CLI reference: `bide-audit`
@@ -243,6 +244,7 @@ Conventions shared across verbs:
 | `verify-convergence` | `-cert-bundle`, `-policy-bundle`, `-pubkey` | `-checker` | An anchored `ConfluenceCertificate` links to the policy leaf; with `-checker`, the oracle's convergence AND compensation-free verdicts must AGREE with the certificate, so an overstated certificate is caught. |
 | `verify-quorum` | `-tally`, `-vote` (repeatable), `-pubkey`, `-k` | `-commit` | A governed k-of-n quorum: the tally and every vote bundle authentic and in the same signed tree and run, the recorded tally recomputes from the disclosed votes (a forged tally is caught), and `votes_for >= k`; with `-commit`, a governed commit is anchored in the same tree. |
 | `verify-run` | `-cert`, `-pubkey`, and one of `-approved <digest>` (repeatable) / `-approved-file <file>` | `-checker <astchecker>` | A proof-carrying run certificate: the used-policy set is bound to the run's signed absence root and is a subset of the approved allowlist (only-approved-policies), and every used policy has an anchored, digest-linked convergence certificate in the run's signed tree (policies-convergence-certified); with `-checker`, the oracle's convergence verdict on each used policy must AGREE with its certificate. |
+| `verify-approvals` | `-evidence`, `-pubkey`, `-call`, `-need`, `-approvers`, `-approver-keys` | | An m-of-n approval gate from an `EvidencePackage`: the request, every decision the gate read, its recorded tally, and the call's result all verify in one signed tree and in order; recounting the decisions with the approvers' keys (a JSON object of id to ed25519 public key hex) against the exact call reproduces the recorded tally; the gate enforced the expected policy; and at least k approved. Catches an omitted decision, which `verify-evidence` alone cannot. |
 | `verify-evidence` | `-evidence`, `-pubkey` | | A run-level `EvidencePackage`: the signed tree head is authentic and every packaged action proof (plus any run certificate, anchored grant, and consistency proof) verifies against it. Prints one line per action and an overall PASS/FAIL. |
 
 The `-checker` flag points at the external verified oracle binary (the `astchecker` extracted from

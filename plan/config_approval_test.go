@@ -89,6 +89,7 @@ func TestLoadApprovalInvalidIsError(t *testing.T) {
 		{"empty approvers", `{"need": 1, "approvers": []}`, "approval.approvers must be non-empty"},
 		{"missing approvers", `{"need": 1}`, "approval.approvers must be non-empty"},
 		{"duplicate approvers", `{"need": 2, "approvers": ["ops", "finance", "ops"]}`, `approval.approvers lists "ops" more than once`},
+		{"empty approver id", `{"need": 1, "approvers": ["ops", ""]}`, "approval.approvers has an empty id"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

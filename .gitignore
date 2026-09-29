@@ -33,6 +33,7 @@ examples/observability/observability
 examples/plan/plan
 examples/approval/approval
 examples/approval/evidence.json
+examples/approval/approver-keys.json
 
 # internal strategy/positioning docs (not published)
 /internal/

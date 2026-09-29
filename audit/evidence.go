@@ -72,7 +72,7 @@ type EvidencePackage struct {
 type EvidenceAction struct {
 	// Label is a short human description of the action (e.g. the tool name, or a step name).
 	Label string `json:"label"`
-	// Kind is the action category, one of "tool", "step", "grant", or "approval", used only to phrase the report.
+	// Kind is the action category, one of "tool", "step", "grant", "call", "approval", or "approval-tally", used only to phrase the report.
 	Kind string `json:"kind"`
 	// Ref is the identifier the action was selected by (the tool-use id, step name, or grant digest),
 	// surfaced in the report so a reader can trace it back.
@@ -333,7 +333,7 @@ type EvidenceReport struct {
 // EvidenceItem is one line of an EvidenceReport: what was checked, whether it verified, and a short
 // human note (the reason on failure, or a one-line description on success).
 type EvidenceItem struct {
-	Kind     string `json:"kind"`  // "tool", "step", "grant", "approval", "run-certificate", or "consistency"
+	Kind     string `json:"kind"`  // "tool", "step", "grant", "call", "approval", "approval-tally", "run-certificate", or "consistency"
 	Label    string `json:"label"` // the human label for the item
 	Ref      string `json:"ref,omitempty"`
 	Verified bool   `json:"verified"` // whether this item verified under the key
@@ -457,8 +457,12 @@ func itemSuccessNote(kind, label string) string {
 		return "step included in the signed log"
 	case "grant":
 		return "grant anchored in the signed log"
+	case "call":
+		return "the request for the gated call (its tool and arguments) included in the signed log"
 	case "approval":
 		return "approver decision included in the signed log (check the signatures and the count with VerifyApprovals)"
+	case "approval-tally":
+		return "the approval gate's recorded tally included in the signed log"
 	default:
 		return "included in the signed log"
 	}

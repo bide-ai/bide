@@ -635,8 +635,9 @@ must be in a retry-safe tool (`ReadOnly`/`Idempotent`): on resume the tool re-ru
 interrupt resolves, so everything before the `Interrupt` call must be safe to repeat.
 
 **m-of-n approval**: when one sign-off is not enough, require k signed decisions from a named set
-of n approvers. Each approver signs their decision; the gate proceeds at k approvals, denies once k
-is unreachable, and otherwise pauses with the running tally:
+of n approvers. Each approver signs the exact call (tool and arguments); the gate proceeds at k
+approvals, denies once k is unreachable, and otherwise pauses with the running tally. A forged or
+mistaken decision is ignored without locking its approver out:
 
 ```go
 refund := agent.Func("refund", "refund the order",
@@ -644,13 +645,14 @@ refund := agent.Func("refund", "refund the order",
 	doRefund)
 a := agent.New(model, store, refund).WithApproverVerifiers(keysByApprover)
 
-// each approver, out of band:
-sig, _ := signer.Sign(agent.ApprovalDecisionBytes(runID, toolUseID, "finance", true))
-agent.ApproveAs(ctx, store, runID, toolUseID, "finance", true, sig)
+// each approver, out of band, signs the paused call they were shown:
+sig, _ := signer.Sign(agent.ApprovalDecisionBytes(pend.Subject(), "finance", true))
+agent.ApproveAs(ctx, store, pend.RunID, pend.ToolUseID, "finance", true, sig)
 ```
 
-`audit.ApprovalEvidence` and `audit.VerifyApprovals` then prove offline that k named approvers signed
-off *before* the action ran. See the [approval guide](docs/guides/approval.md); runnable across
+`audit.ApprovalEvidence` and `audit.VerifyApprovals` (or `bide-audit verify-approvals`) then prove
+offline that k named approvers signed off on this exact call *before* it ran, under the expected
+policy, from evidence that cannot leave a decision out unnoticed. See the [approval guide](docs/guides/approval.md); runnable across
 separate processes in `examples/approval`.
 
 ## Errors
