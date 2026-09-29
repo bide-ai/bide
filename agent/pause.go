@@ -286,8 +286,13 @@ func (w *MemWaker) Fire(ctx context.Context, now time.Time) (int, error) {
 // Start runs Fire on a ticker every `every` until ctx is cancelled, so sleeping runs wake on their
 // own. Resume errors go to onError if non-nil. It is the turnkey local loop; a production deployment
 // may prefer an external scheduler that owns the trigger and durable timer set.
-func (w *MemWaker) Start(ctx context.Context, every time.Duration, onError func(error)) {
+//
+// The returned channel closes once the loop has stopped, after any Fire in flight when ctx was
+// cancelled has returned. Wait on it before closing the store the resumed runs write to.
+func (w *MemWaker) Start(ctx context.Context, every time.Duration, onError func(error)) <-chan struct{} {
+	stopped := make(chan struct{})
 	go func() {
+		defer close(stopped)
 		t := time.NewTicker(every)
 		defer t.Stop()
 		for {
@@ -301,6 +306,7 @@ func (w *MemWaker) Start(ctx context.Context, every time.Duration, onError func(
 			}
 		}
 	}()
+	return stopped
 }
 
 // ===========================================================================
