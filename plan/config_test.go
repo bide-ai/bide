@@ -226,7 +226,6 @@ func TestPredicateTypeMismatch(t *testing.T) {
 
 // TestEdgeTypeMismatch asserts an edge whose endpoints' types differ is a load error.
 func TestEdgeTypeMismatch(t *testing.T) {
-	reg := triageRegistry(t)
 	// An edge classify(-> cfgAssessment) to finalize(cfgReservation -> ) does not
 	// type-check: cfgAssessment != cfgReservation. Rewire so classify edges to
 	// finalize (and drop the switch to keep the union valid) by loading a bespoke
@@ -242,7 +241,7 @@ func TestEdgeTypeMismatch(t *testing.T) {
     }`
 	// finalize is used, reserve/decline are not; that would also be flagged, so use a
 	// registry with just the two blocks to isolate the type-mismatch error.
-	reg = NewRegistry()
+	reg := NewRegistry()
 	_ = RegisterStep(reg, "classify", cfgClassify)
 	_ = RegisterStep(reg, "finalize", cfgFinalize)
 	_, err := Load[cfgOrder, cfgReceipt]([]byte(cfg), reg)

@@ -277,9 +277,28 @@ func TestLoopDigestStableAndShapeSensitive(t *testing.T) {
 	}
 
 	// The runtime iteration count must NOT affect the digest: two runs of the SAME flow
-	// with different inputs (hence different iteration counts) share one Digest.
-	if a.Digest() != a.Digest() {
-		t.Fatal("Digest is not idempotent")
+	// with different inputs (hence different iteration counts) record one digest, and the
+	// flow's Digest is unchanged by having run.
+	before := a.Digest()
+	recorded := map[string]string{}
+	for _, n := range []int{1, 5} {
+		store := agent.NewMemStore()
+		runID := fmt.Sprintf("iter-%d", n)
+		if _, err := a.Run(context.Background(), store, runID, n); err != nil {
+			t.Fatalf("run with %d iterations: %v", n, err)
+		}
+		recs, _ := store.History(context.Background(), runID)
+		for _, r := range recs {
+			if r.Name == flowDigestStep {
+				recorded[runID] = string(r.Result)
+			}
+		}
+	}
+	if len(recorded) != 2 || recorded["iter-1"] != recorded["iter-5"] {
+		t.Fatalf("runs with different iteration counts recorded different digests: %v", recorded)
+	}
+	if a.Digest() != before {
+		t.Fatal("running the flow changed its Digest")
 	}
 }
 
