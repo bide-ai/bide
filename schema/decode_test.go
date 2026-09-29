@@ -22,6 +22,11 @@ import (
 type recSlice []recSlice
 type recMap map[string]recMap
 type recPtr *recPtr
+type recPtrA *recPtrB
+type recPtrB *recPtrA
+type recNode struct {
+	Next *recNode `json:"next,omitempty"`
+}
 
 // A recursive named slice or map type is cut off like a recursive struct, and a pointer type
 // that points to itself (which encoding/json cannot decode a value into) is rejected. For used
@@ -65,6 +70,16 @@ func recursionChild(t *testing.T, name string) {
 		}
 		if _, err := For[holder](); !errors.Is(err, ErrUnsupportedType) {
 			t.Fatalf("For(a self-referential pointer) = %v, want ErrUnsupportedType", err)
+		}
+		type mutual struct {
+			P *recPtrA `json:"p"`
+		}
+		if _, err := For[mutual](); !errors.Is(err, ErrUnsupportedType) {
+			t.Fatalf("For(mutually referential pointers) = %v, want ErrUnsupportedType", err)
+		}
+		// A pointer met again through a struct is ordinary recursion, not a pointer cycle.
+		if _, err := For[*recNode](); err != nil {
+			t.Fatalf("For(*recNode) = %v, want no error", err)
 		}
 	}
 }
@@ -185,7 +200,7 @@ func TestFor_IntegerBounds(t *testing.T) {
 func TestFor_UndecodableKindsAreRejected(t *testing.T) {
 	check := func(name string, err error) {
 		t.Helper()
-		if !errors.Is(err, ErrUnsupportedType) || !strings.Contains(err.Error(), "F") {
+		if !errors.Is(err, ErrUnsupportedType) || !strings.Contains(err.Error(), "field F") {
 			t.Errorf("%s: For = %v, want ErrUnsupportedType naming field F", name, err)
 		}
 	}
@@ -237,6 +252,7 @@ func TestFor_IntegerMapKeys(t *testing.T) {
 	type holder struct {
 		Signed   map[int]string     `json:"signed"`
 		Unsigned map[uint8]string   `json:"unsigned"`
+		Ptr      map[uintptr]string `json:"ptr"`
 		Text     map[textKey]string `json:"text"`
 		Str      map[string]string  `json:"str"`
 	}
@@ -250,7 +266,7 @@ func TestFor_IntegerMapKeys(t *testing.T) {
 		t.Errorf("text and string keys = %v, %v; want no propertyNames", props["text"], props["str"])
 	}
 	signed, unsigned := pattern("signed"), pattern("unsigned")
-	if signed == "" || unsigned == "" {
+	if signed == "" || unsigned == "" || pattern("ptr") != unsigned {
 		t.Fatalf("integer keys: signed %v, unsigned %v; want a propertyNames pattern on each", props["signed"], props["unsigned"])
 	}
 

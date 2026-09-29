@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"math"
 	"reflect"
 	"slices"
 	"strings"
@@ -24,10 +25,10 @@ import (
 )
 
 var (
-	timeType       = reflect.TypeOf(time.Time{})
-	rawMessageType = reflect.TypeOf(json.RawMessage{})
-	textMarshaler  = reflect.TypeOf((*encoding.TextMarshaler)(nil)).Elem()
-	jsonMarshaler  = reflect.TypeOf((*json.Marshaler)(nil)).Elem()
+	timeType        = reflect.TypeOf(time.Time{})
+	rawMessageType  = reflect.TypeOf(json.RawMessage{})
+	textUnmarshaler = reflect.TypeFor[encoding.TextUnmarshaler]()
+	jsonUnmarshaler = reflect.TypeFor[json.Unmarshaler]()
 )
 
 // ErrUnsupportedType reports a Go type For cannot describe: a document valid under any schema
@@ -52,17 +53,24 @@ func implements(t, iface reflect.Type) bool {
 // promoted into the parent unless the tag names them, and Go's dominance rules for fields that
 // embedding supplies more than once, where a tie removes the name altogether). A ",string" field
 // is a JSON string holding the value. []byte is a base64 string but a byte array is an array of
-// numbers; a Go array has exactly its length in items. time.Time is a date-time string;
-// json.RawMessage and interface{} are unconstrained. A type with a custom marshaler is not
-// reflected field by field (reflection cannot see the custom shape): encoding.TextMarshaler is a
-// string, any other json.Marshaler is unconstrained. A recursive reference is cut off as an
-// unconstrained object.
+// numbers; a Go array has exactly its length in items. An integer is bounded by its Go kind
+// (minimum 0 for an unsigned kind, and both bounds for a kind of 32 bits or fewer), and the keys
+// of a map with integer keys are decimal integers (propertyNames). time.Time is a date-time
+// string; json.RawMessage and interface{} are unconstrained. A type that decodes itself is not
+// reflected field by field (reflection cannot see the custom shape), and its DECODING methods
+// decide, as they do for encoding/json: a json.Unmarshaler is unconstrained, and otherwise an
+// encoding.TextUnmarshaler is a string. (A type that only marshals itself is decoded field by
+// field, so it is reflected like any other.) A recursive reference is cut off as an unconstrained
+// object or array.
 //
 // It returns an error wrapping ErrUnsupportedType for a type encoding/json cannot decode as any
 // schema would describe it: a field reached through an embedded pointer to an unexported struct
-// type, which encoding/json cannot allocate, or a json tag name encoding/json does not accept
-// (one with a quote, a backslash, or another reserved character), which encoding/json reads
-// differently depending on how it is built.
+// type, which encoding/json cannot allocate; a json tag name encoding/json does not accept (one
+// with a quote, a backslash, or another reserved character), which encoding/json reads
+// differently depending on how it is built; a kind encoding/json decodes no value but null into
+// (a channel, a function, a complex number, an unsafe.Pointer, an interface with methods, or a
+// map whose key type is not a string, an integer, or an encoding.TextUnmarshaler); and a pointer
+// type that points to itself.
 func For[T any]() (json.RawMessage, error) {
 	s, err := reflectSchema(reflect.TypeFor[T](), map[reflect.Type]bool{})
 	if err != nil {
@@ -72,30 +80,56 @@ func For[T any]() (json.RawMessage, error) {
 }
 
 func reflectSchema(t reflect.Type, seen map[reflect.Type]bool) (map[string]any, error) {
-	for t.Kind() == reflect.Pointer {
-		t = t.Elem()
+	for ptrs := map[reflect.Type]bool{}; t.Kind() == reflect.Pointer; t = t.Elem() {
+		if ptrs[t] { // a pointer type that points to itself: encoding/json recurses forever on it
+			return nil, fmt.Errorf("%w: %s is a pointer type that points to itself", ErrUnsupportedType, t)
+		}
+		ptrs[t] = true
 	}
-	// Types with custom JSON marshaling can't be inferred from their fields. Handle the
-	// common ones precisely, then fall back: TextMarshaler always emits a JSON string;
-	// any other json.Marshaler emits a shape we can't see, so leave it unconstrained.
+	// Types that decode themselves can't be inferred from their fields. encoding/json prefers
+	// UnmarshalJSON, whose accepted shape we can't see, so leave it unconstrained; otherwise
+	// UnmarshalText reads a JSON string. (time.Time and json.RawMessage are the common
+	// json.Unmarshalers, handled precisely.)
 	switch {
 	case t == timeType:
 		return map[string]any{"type": "string", "format": "date-time"}, nil
 	case t == rawMessageType:
 		return map[string]any{}, nil // json.RawMessage is arbitrary JSON
-	case implements(t, textMarshaler):
-		return map[string]any{"type": "string"}, nil
-	case implements(t, jsonMarshaler):
+	case implements(t, jsonUnmarshaler):
 		return map[string]any{}, nil
+	case implements(t, textUnmarshaler):
+		return map[string]any{"type": "string"}, nil
+	}
+	// A named slice, array, or map can refer to itself (type Tree map[string]Tree): cut the
+	// recursion off, as for a struct below, with the kind's permissive schema.
+	switch t.Kind() {
+	case reflect.Slice, reflect.Array, reflect.Map:
+		if seen[t] {
+			if t.Kind() == reflect.Map {
+				return map[string]any{"type": "object"}, nil
+			}
+			return map[string]any{"type": "array"}, nil
+		}
+		seen[t] = true
+		defer delete(seen, t)
 	}
 	switch t.Kind() {
 	case reflect.String:
 		return map[string]any{"type": "string"}, nil
 	case reflect.Bool:
 		return map[string]any{"type": "boolean"}, nil
-	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
-		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-		return map[string]any{"type": "integer"}, nil
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		s := map[string]any{"type": "integer"}
+		if t.Bits() <= 32 { // wider bounds are not exact in the float64 that readers parse into
+			s["minimum"], s["maximum"] = -int64(1)<<(t.Bits()-1), int64(1)<<(t.Bits()-1)-1
+		}
+		return s, nil
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		s := map[string]any{"type": "integer", "minimum": 0}
+		if t.Bits() <= 32 {
+			s["maximum"] = uint64(math.MaxUint64) >> (64 - t.Bits())
+		}
+		return s, nil
 	case reflect.Float32, reflect.Float64:
 		return map[string]any{"type": "number"}, nil
 	case reflect.Slice:
@@ -116,11 +150,33 @@ func reflectSchema(t reflect.Type, seen map[reflect.Type]bool) (map[string]any, 
 		}
 		return map[string]any{"type": "array", "items": items, "minItems": t.Len(), "maxItems": t.Len()}, nil
 	case reflect.Map:
+		// encoding/json reads a key with the key type's UnmarshalText if it has one, else by its
+		// kind: a string as is, an integer in decimal (strconv.ParseInt or ParseUint). It reads no
+		// other key type, so such a map decodes only when empty.
+		var keys string
+		switch kt := t.Key(); {
+		case reflect.PointerTo(kt).Implements(textUnmarshaler), kt.Kind() == reflect.String:
+		case kt.Kind() >= reflect.Int && kt.Kind() <= reflect.Int64:
+			keys = `^[+-]?[0-9]+$`
+		case kt.Kind() >= reflect.Uint && kt.Kind() <= reflect.Uintptr:
+			keys = `^[0-9]+$`
+		default:
+			return nil, fmt.Errorf("%w: %s has the key type %s, which encoding/json cannot read a key into", ErrUnsupportedType, t, kt)
+		}
 		values, err := reflectSchema(t.Elem(), seen)
 		if err != nil {
 			return nil, err
 		}
-		return map[string]any{"type": "object", "additionalProperties": values}, nil
+		s := map[string]any{"type": "object", "additionalProperties": values}
+		if keys != "" {
+			s["propertyNames"] = map[string]any{"pattern": keys}
+		}
+		return s, nil
+	case reflect.Interface:
+		if t.NumMethod() > 0 { // encoding/json stores a decoded value only in an empty interface
+			return nil, fmt.Errorf("%w: %s is an interface with methods, which encoding/json cannot decode a value into", ErrUnsupportedType, t)
+		}
+		return map[string]any{}, nil // any value
 	case reflect.Struct:
 		if seen[t] { // recursion guard — emit a permissive object rather than loop forever
 			return map[string]any{"type": "object"}, nil
@@ -144,7 +200,7 @@ func reflectSchema(t reflect.Type, seen map[reflect.Type]bool) (map[string]any, 
 			} else {
 				var err error
 				if fs, err = reflectSchema(f.field.Type, seen); err != nil {
-					return nil, err
+					return nil, fmt.Errorf("%s field %s: %w", t, f.field.Name, err)
 				}
 			}
 			if d := f.field.Tag.Get("desc"); d != "" {
@@ -161,8 +217,8 @@ func reflectSchema(t reflect.Type, seen map[reflect.Type]bool) (map[string]any, 
 			out["required"] = required
 		}
 		return out, nil
-	default: // interface{}, chan, func, etc. → unconstrained
-		return map[string]any{}, nil
+	default: // chan, func, complex, unsafe.Pointer: encoding/json decodes no value but null into them
+		return nil, fmt.Errorf("%w: %s is a kind encoding/json cannot decode a value into", ErrUnsupportedType, t)
 	}
 }
 
@@ -362,7 +418,8 @@ func hasOption(opts, opt string) bool {
 //     so every answer would arrive empty.
 //   - An untyped schema ({}, which For gives any and json.RawMessage, or the schema true) admits
 //     every value, which strict mode cannot express; it is an error wrapping ErrStrictUnsupported
-//     too.
+//     too. So is an array with no items schema (a recursive slice, which For cuts off that way),
+//     whose items are untyped.
 //
 // Operates on the inline schema.
 func OpenAIStrict(neutral json.RawMessage) (json.RawMessage, error) {
@@ -429,6 +486,11 @@ func strictify(v any, path string) error {
 		s["additionalProperties"] = false
 		s["required"] = keys
 	}
+	if hasType(s, "array") {
+		if _, ok := s["items"]; !ok {
+			return fmt.Errorf("%w: %s is an array with no items schema, so it admits any items (For cuts off a recursive slice this way)", ErrStrictUnsupported, where)
+		}
+	}
 	if err := strictify(s["items"], at("items")); err != nil {
 		return err
 	}
@@ -455,12 +517,15 @@ func unconstrained(s map[string]any) bool {
 }
 
 // isObject reports whether schema s describes an object (type "object", alone or in a list).
-func isObject(s map[string]any) bool {
+func isObject(s map[string]any) bool { return hasType(s, "object") }
+
+// hasType reports whether schema s names the type name, alone or in a list.
+func hasType(s map[string]any, name string) bool {
 	switch t := s["type"].(type) {
 	case string:
-		return t == "object"
+		return t == name
 	case []any:
-		return slices.Contains(t, any("object"))
+		return slices.Contains(t, any(name))
 	}
 	return false
 }

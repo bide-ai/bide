@@ -445,6 +445,7 @@ func TestOpenAIStrict_UntypedSchemaIsAnError(t *testing.T) {
 		`{"type":"array","items":{}}`,
 		`{"type":"array","items":true}`,
 		`{"type":"array"}`, // no items: any items, as For cuts off a recursive slice
+		`{"type":["array","null"]}`,
 		`{"type":"object","properties":{"a":{"type":"array"}},"required":["a"]}`,
 		`{"anyOf":[{"type":"string"},{}]}`,
 	} {
