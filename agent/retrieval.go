@@ -24,6 +24,9 @@ type Doc struct {
 // already run, and wire it in with RetrievalTool (agentic — the model searches on demand)
 // or WithRetrieval (classic — top-k auto-injected as context on each user turn). Sessions
 // already give conversational memory; this is the seam for semantic / long-term memory.
+//
+// Retrieve must be safe for concurrent use: parallel tool calls in one turn, concurrent runs
+// on one Agent, and sub-agents sharing a Retriever call it at once.
 type Retriever interface {
 	Retrieve(ctx context.Context, query string, k int) ([]Doc, error)
 }

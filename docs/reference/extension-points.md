@@ -249,8 +249,9 @@ The bring-your-own-RAG port: given a query, return the top-k relevant `Doc` valu
 store (pgvector, Pinecone, a file index, anything). Bide ships no vector store and no
 embedder; you implement `Retrieve` against infrastructure you already run and wire it in with
 `agent.RetrievalTool(r, k)` (agentic: the model searches on demand) or
-`agent.WithRetrieval(r, k)` (classic: top-k auto-injected as context on each user turn). See
-[RAG and memory](../guides/rag-memory.md).
+`agent.WithRetrieval(r, k)` (classic: top-k auto-injected as context on each user turn). Both
+journal what was retrieved, so a resumed run sees the same documents, and both call `Retrieve`
+concurrently, so it must be safe for concurrent use. See [RAG and memory](../guides/rag-memory.md).
 
 ## `Anchor`: out-of-band anchoring (`audit`)
 
