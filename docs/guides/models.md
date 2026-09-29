@@ -169,10 +169,13 @@ adapter keeps an `id` when Gemini sends one and otherwise makes up a random `cal
 which carries nothing from the tool name or the call's position.
 
 The agent checks every live model turn whatever the adapter: a tool call with no ID, an ID already
-used earlier in the conversation, or one repeated within the turn fails the turn with
+used earlier in the conversation, one repeated within the turn, or one with a character outside
+`[A-Za-z0-9_-]` fails the turn with
 `agent.ErrToolUseIDReused` (wrapping `ErrProtocol` and `ErrModel`) instead of passing the call off
 as already done. The check runs below middleware, so `middleware.Retry` retries it, and the rejected
-turn is never journaled. Turns replayed from an existing journal are not re-checked.
+turn is never journaled. Turns replayed from an existing journal are not re-checked. The alphabet
+is the one Anthropic requires and the other providers use; it keeps an ID from naming one of the
+run's own journal steps (`@llm/1`, `run:complete`) or another call's sub-agent run (`<run>/<ID>`).
 
 ## Multimodal input (images)
 

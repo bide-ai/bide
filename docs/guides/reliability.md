@@ -41,9 +41,9 @@ exponential backoff between attempts and honoring context cancellation.
   provider cannot take), `agent.ErrQuotaExhausted` (used-up quota or credit, even when the provider
   sends it as a 429), `agent.ErrResponseTooLarge`, and `agent.ErrTruncatedToolArgs` (a tool call cut
   off by the output token limit, which the same request hits again). It retries
-  `agent.ErrToolUseIDReused` (a model turn that reused a tool-use ID; a fresh attempt can issue
-  valid ones), `agent.ErrStreamProtocol` (a stream that broke its provider's event protocol, a fault
-  of that one response), and a provider's mid-stream server error. See [error surfacing](models.md#error-surfacing-shared-across-all-three-adapters)
+  `agent.ErrToolUseIDReused` (a model turn with a missing, reused, or malformed tool-use ID; a fresh
+  attempt can issue valid ones), `agent.ErrStreamProtocol` (a stream that broke its provider's event
+  protocol, a fault of that one response), and a provider's mid-stream server error. See [error surfacing](models.md#error-surfacing-shared-across-all-three-adapters)
   for how adapters classify provider errors.
 
 ```go

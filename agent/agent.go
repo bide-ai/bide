@@ -823,14 +823,19 @@ func toolUseIDs(msgs []Message) map[string]bool {
 // checkToolUseIDs rejects a live model turn whose tool calls cannot each be keyed by their own
 // ID: a call with no ID, an ID already used earlier in the conversation (used), or an ID that
 // appears twice in the turn. The loop records each call's result and journal step under its ID,
-// so a reused ID would pass a new call off as one already done. Only live turns are checked; a
-// turn replayed from the journal is taken as recorded.
+// so a reused ID would pass a new call off as one already done. The ID is also a journal key in
+// the run's own namespace and the last segment of a sub-agent's run ID ("<run>/<ID>"), so an ID
+// outside [A-Za-z0-9_-] is refused: that keeps it clear of every key the engine derives (each
+// has a ':' or a '/') and of other calls' sub-runs. Only live turns are checked; a turn
+// replayed from the journal is taken as recorded.
 func checkToolUseIDs(m Message, used map[string]bool) error {
 	seen := map[string]bool{}
 	for _, tu := range m.toolUses() {
 		switch {
 		case tu.ID == "":
 			return fmt.Errorf("model called tool %q with no tool-use id: %w", tu.Name, ErrToolUseIDReused)
+		case !validToolUseID(tu.ID):
+			return fmt.Errorf("model called tool %q with tool-use id %q, which has a character outside [A-Za-z0-9_-]: %w", tu.Name, tu.ID, ErrToolUseIDReused)
 		case used[tu.ID]:
 			return fmt.Errorf("model called tool %q with tool-use id %q from an earlier turn: %w", tu.Name, tu.ID, ErrToolUseIDReused)
 		case seen[tu.ID]:
@@ -839,6 +844,18 @@ func checkToolUseIDs(m Message, used map[string]bool) error {
 		seen[tu.ID] = true
 	}
 	return nil
+}
+
+// validToolUseID reports whether id uses only ASCII letters, digits, '_' and '-', the
+// alphabet Anthropic requires of tool-use IDs and the one OpenAI, Gemini, and Mistral IDs use.
+func validToolUseID(id string) bool {
+	for i := 0; i < len(id); i++ {
+		c := id[i]
+		if !('a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' || '0' <= c && c <= '9' || c == '_' || c == '-') {
+			return false
+		}
+	}
+	return true
 }
 
 func (a *Agent) toolList() []Tool {
