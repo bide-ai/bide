@@ -33,8 +33,24 @@ func WithLeaseHolder(id string) RecoverOption { return func(c *recoverConfig) { 
 
 // WithLeaseTTL sets how long an acquired lease is valid. Recover renews it while a run is driving,
 // so a crash lets the lease expire after roughly this long and another process takes over. Defaults
-// to 30s. Set it comfortably above the store's clock skew.
+// to 30s. Set it comfortably above the store's clock skew. It must be positive: Lease and Recover
+// return an ErrConfig error otherwise.
 func WithLeaseTTL(d time.Duration) RecoverOption { return func(c *recoverConfig) { c.ttl = d } }
+
+// leaseConfig applies opts over the defaults and validates the result.
+func leaseConfig(opts []RecoverOption) (recoverConfig, error) {
+	cfg := recoverConfig{ttl: 30 * time.Second}
+	for _, o := range opts {
+		o(&cfg)
+	}
+	if cfg.ttl <= 0 {
+		return cfg, fmt.Errorf("lease TTL must be positive, got %v: %w", cfg.ttl, ErrConfig)
+	}
+	if cfg.holder == "" {
+		cfg.holder = defaultHolder()
+	}
+	return cfg, nil
+}
 
 func defaultHolder() string {
 	host, _ := os.Hostname()
@@ -116,12 +132,9 @@ func Recover(ctx context.Context, store Durable, resume func(ctx context.Context
 	if !ok {
 		return 0, fmt.Errorf("Recover needs a store that implements Lister to enumerate runs: %w", ErrConfig)
 	}
-	cfg := recoverConfig{ttl: 30 * time.Second}
-	for _, o := range opts {
-		o(&cfg)
-	}
-	if cfg.holder == "" {
-		cfg.holder = defaultHolder()
+	cfg, err := leaseConfig(opts)
+	if err != nil {
+		return 0, err
 	}
 
 	runIDs, err := lister.Runs(ctx)
@@ -179,12 +192,9 @@ func Recover(ctx context.Context, store Durable, resume func(ctx context.Context
 //	    return err
 //	}, agent.WithLeaseHolder("worker-1"))
 func Lease(ctx context.Context, store Durable, runID string, drive func(context.Context) error, opts ...RecoverOption) (bool, error) {
-	cfg := recoverConfig{ttl: 30 * time.Second}
-	for _, o := range opts {
-		o(&cfg)
-	}
-	if cfg.holder == "" {
-		cfg.holder = defaultHolder()
+	cfg, err := leaseConfig(opts)
+	if err != nil {
+		return false, err
 	}
 	leaser, ok := store.(Leaser)
 	if !ok {
@@ -221,7 +231,7 @@ func driveWithRenew(ctx context.Context, leaser Leaser, runID string, cfg recove
 	done := make(chan struct{})
 	defer close(done)
 	go func() {
-		t := time.NewTicker(cfg.ttl / 2)
+		t := time.NewTicker(max(cfg.ttl/2, 1)) // a 1ns TTL halves to zero, which NewTicker rejects
 		defer t.Stop()
 		for {
 			select {
