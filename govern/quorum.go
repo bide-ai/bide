@@ -138,9 +138,17 @@ func tally(votes []Vote, k int) QuorumResult {
 		}
 	}
 
-	agreed := best >= k
+	// A tie for the most votes is not agreement: no decision has more support than another, and
+	// Decision (the lexically smallest of the tied labels) is only a deterministic placeholder.
+	tied := false
+	for _, d := range decisions {
+		if d != winner && counts[d] == best {
+			tied = true
+		}
+	}
+	agreed := best >= k && !tied
 	if k <= 0 {
-		agreed = len(votes) > 0
+		agreed = len(votes) > 0 && !tied
 	}
 	return QuorumResult{
 		Decision: winner,

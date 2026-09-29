@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
@@ -316,5 +317,49 @@ func TestVerifyQuorumCLI(t *testing.T) {
 	partial := []string{"verify-quorum", "-tally", tallyP, "-vote", aP, "-vote", bP, "-pubkey", pubHex, "-k", "2"}
 	if out, err := exec.Command(bin, partial...).CombinedOutput(); err == nil {
 		t.Fatalf("partial vote disclosure must fail, but exited 0\n%s", out)
+	}
+}
+
+// A 2-2 split meets k = 2 for both decisions, but no decision has the most votes, so the quorum
+// is not met. verify-quorum must not report agreement on whichever label sorts first.
+func TestVerifyQuorumCLI_TieIsNotAgreement(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	store := agent.NewMemStore()
+	const runID = "run1"
+	decide := func(v string) func(context.Context) (string, error) {
+		return func(context.Context) (string, error) { return v, nil }
+	}
+	_, _ = govern.Quorum(ctx, store, runID, 2,
+		govern.Voter{Name: "model-A", Decide: decide("approve")},
+		govern.Voter{Name: "model-B", Decide: decide("approve")},
+		govern.Voter{Name: "model-C", Decide: decide("deny")},
+		govern.Voter{Name: "model-D", Decide: decide("deny")})
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	th, err := audit.NewTreeHead(ctx, store, runID, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sth := audit.SignTreeHead(th, priv)
+	args := []string{"verify-quorum", "-pubkey", hex.EncodeToString(pub), "-k", "2"}
+	for _, name := range []string{"quorum/tally", "model-A", "model-B", "model-C", "model-D"} {
+		pb, err := audit.ProveStep(ctx, store, runID, name, sth)
+		if err != nil {
+			t.Fatalf("ProveStep %s: %v", name, err)
+		}
+		p := filepath.Join(dir, strings.ReplaceAll(name, "/", "_")+".json")
+		writeJSON(t, p, pb)
+		flag := "-vote"
+		if name == "quorum/tally" {
+			flag = "-tally"
+		}
+		args = append(args, flag, p)
+	}
+	bin := auditBin(dir)
+	if out, err := exec.Command("go", "build", "-o", bin, ".").CombinedOutput(); err != nil {
+		t.Fatalf("build binary: %v\n%s", err, out)
+	}
+	if out, err := exec.Command(bin, args...).CombinedOutput(); err == nil {
+		t.Fatalf("a 2-2 split verified as a quorum:\n%s", out)
 	}
 }
