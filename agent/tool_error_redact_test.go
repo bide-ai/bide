@@ -97,8 +97,8 @@ func TestToolErrorURLCredentialsNotJournaled(t *testing.T) {
 	}
 	s.journal(t, st, "r1")
 	// The model still learns the operation, where it went, which parameters it sent, and why it
-	// failed.
-	s.check(t, urlSecrets, `Get \"http://REDACTED@127.0.0.1:1/v1/items?key=REDACTED`, "page=REDACTED#REDACTED", "connection refused")
+	// failed (the dial error; its wording after "dial tcp" differs by OS).
+	s.check(t, urlSecrets, `Get \"http://REDACTED@127.0.0.1:1/v1/items?key=REDACTED`, "page=REDACTED#REDACTED", "dial tcp 127.0.0.1:1")
 }
 
 // A URL written into an error's text by hand (not a *url.Error) is redacted the same way.
