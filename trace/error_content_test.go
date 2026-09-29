@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"go.opentelemetry.io/otel/codes"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 
 	"github.com/bide-ai/bide/agent"
@@ -97,6 +98,53 @@ func TestErrorContentCapturedWhenCaptureOn(t *testing.T) {
 	for _, c := range errorContent {
 		if !found[c] {
 			t.Errorf("error content %q not recorded with capture on", c)
+		}
+	}
+}
+
+// A model or tool call that panics must still end its span marked failed. The agent recovers a
+// panic inside a sub-agent and reports it as the sub-agent's tool error, so the run goes on and
+// the panicked call's span is exported: left unmarked, it reads as a call that succeeded. The
+// panic value can carry content, so the status names the panic and nothing more.
+func TestPanicMarksSpanFailed(t *testing.T) {
+	for _, capture := range []string{"", "true"} {
+		t.Setenv(captureEnv, capture)
+		sr, tp := recorder()
+		tracer := tp.Tracer("t")
+		mustPanic := func(call func()) {
+			t.Helper()
+			defer func() {
+				if r := recover(); r != "PATIENT-SSN-123-45-6789" {
+					t.Errorf("recovered %v, want the handler's own panic value re-raised", r)
+				}
+			}()
+			call()
+		}
+		mustPanic(func() {
+			h := Model(tracer)(func(context.Context, agent.Request) (agent.Message, agent.Usage, error) {
+				panic("PATIENT-SSN-123-45-6789")
+			})
+			_, _, _ = h(context.Background(), agent.Request{})
+		})
+		mustPanic(func() {
+			h := Tool(tracer)(func(context.Context, agent.ToolUse) (json.RawMessage, error) {
+				panic("PATIENT-SSN-123-45-6789")
+			})
+			_, _ = h(context.Background(), agent.ToolUse{ID: "t1", Name: "charge"})
+		})
+		spans := sr.Ended()
+		if len(spans) != 2 {
+			t.Fatalf("capture=%q: %d spans ended, want 2", capture, len(spans))
+		}
+		for _, s := range spans {
+			if st := s.Status(); st.Code != codes.Error || st.Description != "panic" {
+				t.Errorf("capture=%q: span %q status = %v %q, want Error \"panic\"", capture, s.Name(), st.Code, st.Description)
+			}
+			for _, x := range spanTexts(s) {
+				if strings.Contains(x, "PATIENT-SSN-123-45-6789") {
+					t.Errorf("capture=%q: span %q carries the panic value: %s", capture, s.Name(), x)
+				}
+			}
 		}
 	}
 }
