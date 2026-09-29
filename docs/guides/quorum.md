@@ -14,7 +14,7 @@ voted, and anyone can later verify, offline, exactly how the decision was reache
 |---|---|
 | A fast answer, even when a provider is slow or down | [Hedging](reliability.md#when-to-hedge-vs-retry): the first good answer wins |
 | A decision several independent models agree on | A quorum |
-| A person to sign off | [Approval](approval.md); combine it with a quorum to escalate disagreements |
+| One person, or k of n named people, to sign off | [Approval](approval.md); combine it with a quorum to escalate disagreements |
 
 A quorum costs one model call per voter and waits for all of them, so reserve it for the few
 decisions that are expensive or hard to undo.
@@ -127,8 +127,11 @@ did arrive. The failed voter is asked again the next time you make the same call
 
 Decide in advance what a failed quorum means, and make it the same every time:
 
-- **Ask a person.** Route the decision to a tool marked `agent.Safety{RequiresApproval: true}`, so
-  the run pauses until someone approves it (see [Approval](approval.md)).
+- **Ask people.** Route the decision to a tool that requires approval, so the run pauses until it
+  is signed off: by one person (`agent.Safety{RequiresApproval: true}`), or by k of n named approvers
+  (`agent.Safety{Approval: &agent.ApprovalPolicy{Need: 2, Approvers: []string{"ops", "finance", "risk"}}}`)
+  when the decision needs more than one sign-off. Each approver's decision is signed over the exact
+  call, so like the votes, it can be verified offline (see [Approval](approval.md#m-of-n)).
 - **Fall back to a safe default,** such as "deny" or "hold for review".
 
 Either way, the split vote itself is part of the record.
