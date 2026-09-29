@@ -43,10 +43,14 @@ agent.New(model, store, tools...).Run(ctx, runID, input)   // each step → a si
 ```
 
 On every journal growth `AuditedStore` commits the run's Merkle root, signs an STH, and calls
-`Anchor.Publish`. A memoized replay (resume) does **not** re-anchor; each record is anchored
-exactly once, even across a crash. Anchoring is a **side channel**: a `Publish` failure never
+`Anchor.Publish`. A memoized replay (resume) does **not** re-anchor an already anchored head.
+Anchoring is serialized per run, so the heads one `AuditedStore` publishes for a run only ever grow,
+even when parallel tool calls land at once. Anchoring is a **side channel**: a `Publish` failure never
 fails the durable step (the write already succeeded; failing it could wrongly retry a
-non-idempotent step), so publish errors go to an optional `OnError` hook instead.
+non-idempotent step), so publish errors go to an optional `OnError` hook instead, and the run's next
+step retries the unanchored head. When two processes anchor the same run (around a lease handoff),
+a smaller head can reach the anchor after a larger one; both are valid, so monitors compare a run's
+heads by size, not by arrival.
 
 **`Anchor` is a bring-your-own port**: implement `Publish(ctx, runID, sth)` against the
 transparency log you trust (a CT-style log, a notary/timestamping service, another account's
