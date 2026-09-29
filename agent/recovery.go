@@ -384,14 +384,22 @@ func (m *replayModel) Stream(_ context.Context, _ Request) (*Stream, error) {
 }
 
 // emitsFor converts an assistant Message back into the stream events that would have
-// produced it (the inverse of msgBuilder).
+// produced it (the inverse of msgBuilder). Every message msgBuilder produces round-trips.
+// A message it cannot produce may not: an unsigned thinking block stays open until a
+// redacted block or the end of the stream, so one followed by text or another thinking
+// block merges with it.
 func emitsFor(msg Message) []Emit {
 	var out []Emit
 	idx := 0
 	for _, p := range msg.Parts {
 		switch v := p.(type) {
 		case Reasoning:
-			if v.Text != "" {
+			if v.Redacted != "" {
+				out = append(out, Emit{Event: ReasoningDelta{Redacted: v.Redacted}})
+				continue
+			}
+			// A block with no text and no signature still opens a thinking block.
+			if v.Text != "" || v.Signature == "" {
 				out = append(out, Emit{Event: ReasoningDelta{Text: v.Text}})
 			}
 			if v.Signature != "" {
@@ -400,7 +408,7 @@ func emitsFor(msg Message) []Emit {
 		case Text:
 			out = append(out, Emit{Event: TextDelta{Text: v.Text}})
 		case ToolUse:
-			out = append(out, Emit{Event: ToolCallDelta{Index: idx, ID: v.ID, Name: v.Name, ArgsFragment: v.Args}})
+			out = append(out, Emit{Event: ToolCallDelta{Index: idx, ID: v.ID, Name: v.Name, ArgsFragment: v.Args, Signature: v.Signature}})
 			idx++
 		}
 	}

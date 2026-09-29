@@ -167,6 +167,31 @@ func TestEmitsFor_NamedLayouts(t *testing.T) {
 	}
 }
 
+// TestEmitsFor_UnsignedBlockMergesByDesign pins the layouts the property excludes. The
+// stream has no event that closes an unsigned thinking block, so replaying one followed by
+// another thinking block merges the two. msgBuilder never produces these layouts; if it ever
+// does, this test and the exclusion in reasoningKind.closed must be revisited.
+func TestEmitsFor_UnsignedBlockMergesByDesign(t *testing.T) {
+	cases := map[string]struct{ in, want []Part }{
+		"unsigned then signed": {
+			in:   []Part{Reasoning{Text: "a"}, Reasoning{Text: "b", Signature: "s"}},
+			want: []Part{Reasoning{Text: "ab", Signature: "s"}},
+		},
+		"unsigned then unsigned": {
+			in:   []Part{Reasoning{Text: "a"}, Reasoning{Text: "b"}},
+			want: []Part{Reasoning{Text: "ab"}},
+		},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			got := buildFrom(t, emitsFor(Message{Role: RoleAssistant, Parts: c.in}))
+			if want := (Message{Role: RoleAssistant, Parts: c.want}); !reflect.DeepEqual(got, want) {
+				t.Fatalf("got %#v, want %#v", got.Parts, want.Parts)
+			}
+		})
+	}
+}
+
 // TestReplay_StreamKeepsRedactedReasoningAndCallSignature drives the public replay path: a
 // run recorded with a redacted thinking block and a signed tool call is replayed with Replay,
 // and both the replay model's stream and the replayed run's journal carry the same message.
