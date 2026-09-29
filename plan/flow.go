@@ -72,14 +72,22 @@ func (f *Flow[In, Out]) Run(ctx context.Context, store agent.Durable, runID stri
 	// tree head cover it (see Digest). store.Do memoizes it by name, so a resumed run
 	// replays the recorded digest rather than recomputing and re-recording it. This is
 	// what makes it offline-verifiable that the run followed THIS declared topology.
-	if _, err := store.Do(ctx, runID, flowDigestStep, func(context.Context) (agent.Record, error) {
-		encoded, encErr := json.Marshal(c.digest())
-		if encErr != nil {
-			return agent.Record{}, fmt.Errorf("plan: run %q: encode topology digest: %w", c.flowName, encErr)
-		}
-		return agent.Record{Kind: agent.StepValue, Result: encoded}, nil
-	}); err != nil {
+	want, encErr := json.Marshal(c.digest())
+	if encErr != nil {
+		return out, fmt.Errorf("plan: run %q: encode topology digest: %w", c.flowName, encErr)
+	}
+	rec, err := store.Do(ctx, runID, flowDigestStep, func(context.Context) (agent.Record, error) {
+		return agent.Record{Kind: agent.StepValue, Result: want}, nil
+	})
+	if err != nil {
 		return out, fmt.Errorf("plan: run %q: record topology digest: %w", c.flowName, err)
+	}
+	// A resumed run must follow the topology it started under: its journal (node keys, branch
+	// choices, loop iterations) only means what it meant under that flow. Resuming it with a
+	// changed flow would reuse stale results under a different graph, so refuse.
+	var got string
+	if err := json.Unmarshal(rec.Result, &got); err != nil || got != c.digest() {
+		return out, fmt.Errorf("plan: run %q: run %s was started under flow digest %s, not this flow's %s; resume it with the flow it started with: %w", c.flowName, runID, rec.Result, c.digest(), agent.ErrConfig)
 	}
 
 	if c.byName[c.entry] == nil {

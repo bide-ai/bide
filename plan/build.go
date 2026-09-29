@@ -3,6 +3,8 @@ package plan
 import (
 	"errors"
 	"fmt"
+	"github.com/bide-ai/bide/agent"
+	"sort"
 )
 
 // Build validates the accumulated spec for whole-graph coherence and freezes it
@@ -55,6 +57,9 @@ func (b *Builder[In, Out]) Build() (*Flow[In, Out], error) {
 	for _, br := range c.branches {
 		if c.byName[br.over] == nil {
 			return nil, fmt.Errorf("plan: build %q: Switch over unknown step %q", c.flowName, br.over)
+		}
+		if switchedOver[br.over] {
+			return nil, fmt.Errorf("plan: build %q: step %q has more than one Switch; declare its arms in one Switch", c.flowName, br.over)
 		}
 		switchedOver[br.over] = true
 		elses := 0
@@ -122,6 +127,21 @@ func (b *Builder[In, Out]) Build() (*Flow[In, Out], error) {
 	//     Join) is rejected, because the Join would then run with a missing input. See
 	//     joinInputGate.
 	if err := c.checkJoins(); err != nil {
+		return nil, err
+	}
+
+	// 5d. Approval gates. The plan runtime does not enforce a human approval gate yet, so a
+	// node that declares one (RequiresApproval or an m-of-n Approval, from a wrapped agent tool
+	// or a config "approval" block) would run with no approval at all. Refuse it.
+	for _, n := range c.nodes {
+		if n.safety.RequiresApproval || n.safety.Approval != nil {
+			return nil, fmt.Errorf("plan: build %q: step %q requires approval, which plan flows do not enforce yet; gate it in an agent tool instead (see docs/guides/approval.md): %w", c.flowName, n.name, agent.ErrConfig)
+		}
+	}
+
+	// 5c. Shapes Run executes. Reject wiring the runtime cannot follow faithfully rather
+	// than run it wrong: see checkShapes.
+	if err := c.checkShapes(); err != nil {
 		return nil, err
 	}
 
@@ -610,4 +630,73 @@ func (c *builderCore) seal() *builderCore {
 		sealed.loops[i] = loopSpec{head: lp.head, over: lp.over, body: body, max: lp.max, headIdx: lp.headIdx, overIdx: lp.overIdx}
 	}
 	return sealed
+}
+
+// checkShapes rejects wiring the runtime cannot execute as declared, naming the offending step:
+//
+//   - a switched step with an outgoing Edge: Run follows only the chosen arm, so the Edge would
+//     never be taken;
+//   - a step (other than a Join) with more than one incoming source, whether plain Edges or
+//     Switch arms from different Switches: its input would depend on which ran, and a Join is
+//     how several producers are combined;
+//   - inside a loop body: a Switch other than the loop's own (Run sweeps the body in order and
+//     evaluates only the loop Switch, so an inner Switch's arms would all run), which also rules
+//     out a nested loop; and an Edge that leaves the body or enters it anywhere but the head
+//     (Run drives only the body region each iteration).
+func (c *builderCore) checkShapes() error {
+	switched := make(map[string]bool, len(c.branches))
+	for _, br := range c.branches {
+		switched[br.over] = true
+	}
+	sources := make(map[string]map[string]bool, len(c.nodes))
+	addSource := func(to, from string) {
+		if sources[to] == nil {
+			sources[to] = map[string]bool{}
+		}
+		sources[to][from] = true
+	}
+	for _, e := range c.edges {
+		if switched[e.from] {
+			return fmt.Errorf("plan: build %q: step %q has both a Switch and an Edge to %q; a switched step continues only through its arms", c.flowName, e.from, e.to)
+		}
+		addSource(e.to, e.from)
+	}
+	for _, br := range c.branches {
+		for _, a := range br.arms {
+			if !a.loopBack {
+				addSource(a.target, br.over)
+			}
+		}
+	}
+	for _, n := range c.nodes {
+		if n.kind == kindJoin || len(sources[n.name]) <= 1 {
+			continue
+		}
+		var from []string
+		for src := range sources[n.name] {
+			from = append(from, src)
+		}
+		sort.Strings(from)
+		return fmt.Errorf("plan: build %q: step %q is fed by %v; combine several producers with a Join", c.flowName, n.name, from)
+	}
+	for _, lp := range c.loops {
+		inBody := make(map[string]bool, len(lp.body))
+		for _, name := range lp.body {
+			inBody[name] = true
+		}
+		for _, name := range lp.body {
+			if switched[name] && name != lp.over {
+				return fmt.Errorf("plan: build %q: step %q inside the loop over %q has its own Switch; a loop body may branch only at its loop Switch (no inner Switch or nested loop)", c.flowName, name, lp.over)
+			}
+		}
+		for _, e := range c.edges {
+			if inBody[e.from] && !inBody[e.to] {
+				return fmt.Errorf("plan: build %q: Edge %q -> %q leaves the loop over %q; leave a loop only through its Switch's exit arms", c.flowName, e.from, e.to, lp.over)
+			}
+			if !inBody[e.from] && inBody[e.to] && e.to != lp.head {
+				return fmt.Errorf("plan: build %q: Edge %q -> %q enters the loop over %q past its head %q", c.flowName, e.from, e.to, lp.over, lp.head)
+			}
+		}
+	}
+	return nil
 }
