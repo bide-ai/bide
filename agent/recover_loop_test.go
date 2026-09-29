@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -262,4 +263,38 @@ func TestRecoverLoop_RejectsBadConfig(t *testing.T) {
 			t.Fatalf("%s: RecoverLoop kept running instead of reporting its configuration error", name)
 		}
 	}
+}
+
+// Runs that stay incomplete on every pass (halted ones, say) do not starve the runs listed after
+// them when every drive slot is taken: each pass reaches every run.
+func TestRecoverLoop_EveryPassReachesEveryRun(t *testing.T) {
+	s := sortedStore{NewMemStore()}
+	for _, id := range []string{"a1", "a2", "a3", "a4", "z"} {
+		seedRun(t, s.MemStore, id)
+	}
+	zDriven := make(chan struct{})
+	var once sync.Once
+	stop := runLoop(t, s, func(ctx context.Context, id string) error {
+		if id == "z" {
+			once.Do(func() { close(zDriven) })
+			return nil
+		}
+		time.Sleep(5 * time.Millisecond)
+		return &ResumeHalt{RunID: id} // stays incomplete: re-driven every pass
+	}, WithRecoverInterval(10*time.Millisecond), WithRecoverConcurrency(1))
+	defer stop()
+	select {
+	case <-zDriven:
+	case <-time.After(3 * time.Second):
+		t.Fatal("run z was never driven: the halted runs listed before it took the only slot on every pass")
+	}
+}
+
+// sortedStore is a MemStore that lists its runs in order, as the SQL stores do.
+type sortedStore struct{ *MemStore }
+
+func (s sortedStore) Runs(ctx context.Context) ([]string, error) {
+	ids, err := s.MemStore.Runs(ctx)
+	slices.Sort(ids)
+	return ids, err
 }
