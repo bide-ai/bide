@@ -382,9 +382,15 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 	for {
 		// If the last turn is an assistant message with tool calls still pending (a
 		// resumed journal), execute those; otherwise ask the model for the next turn.
+		//
+		// A replayed assistant turn with no tool calls is the run's final answer: the crash came
+		// after it was recorded and before the completion marker. It is taken as the turn too, so
+		// the run finishes with it (below) rather than ask the model for another turn, which could
+		// answer differently or call tools under new tool-use ids. A live turn like it returns in
+		// the same iteration, so only the first iteration of a resume sees one.
 		var asst Message
 		terminal := false // the latest turn's terminal-tool call succeeded, which ends the run
-		if n := len(msgs); n > 0 && msgs[n-1].Role == RoleAssistant && pending(msgs[n-1], done) {
+		if n := len(msgs); n > 0 && msgs[n-1].Role == RoleAssistant && (pending(msgs[n-1], done) || len(msgs[n-1].toolUses()) == 0) {
 			asst = msgs[n-1]
 		} else if last, ok := terminalCallDone(msgs, a.terminalTool); ok {
 			asst, terminal = last, true
