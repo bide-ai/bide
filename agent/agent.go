@@ -37,7 +37,7 @@ type ModelHandler func(context.Context, Request) (Message, Usage, error)
 
 // Middleware wraps a ModelHandler — the net/http-style func(Handler) Handler chain, at
 // the SEMANTIC layer (it sees messages, tool calls, token usage — not bytes). Batteries
-// live in the middleware/ package (Retry, TokenBudget, ...).
+// live in the middleware/ package (Retry, RateLimit, Cost, ...).
 type Middleware func(ModelHandler) ModelHandler
 
 // Agent binds a model, a tool set, a durable store, and a middleware chain.
@@ -61,6 +61,7 @@ type Agent struct {
 	sampling     Sampling // generation controls applied to every model call
 	maxConc      int      // max concurrent tool calls per turn; 0 = unbounded (default)
 	maxTurns     int      // max model turns per run; 0 = unbounded (default)
+	tokenBudget  int      // max tokens per run (Usage.TotalTokens); 0 = unbounded (default)
 	systemPrompt string   // optional static system message prepended to every model call
 	// systemPromptFn, if set, computes the system message per run (dynamic context:
 	// current time, tenant, retrieved state). Takes precedence over systemPrompt.
@@ -171,6 +172,21 @@ func (a *Agent) WithMaxTurns(n int) *Agent {
 	return a
 }
 
+// WithTokenBudget caps the tokens a single run may use: once the run's model calls have used
+// max tokens or more (Usage.TotalTokens, cached input included), the run makes no further
+// model call and returns ErrBudgetExceeded (category ErrBudget). A call's usage is known only
+// after it returns, so the call that crosses max completes; the next one is refused. max <= 0
+// means unbounded (the default). Returns the agent for chaining.
+//
+// The budget is per run and durable: each model call's usage is journaled with its turn, and
+// the count is rebuilt from the journal, so a resumed run, on any process, is held to what it
+// has already used. Like WithMaxTurns it applies per run (per Session.Send turn), and a
+// sub-agent's run has its own budget.
+func (a *Agent) WithTokenBudget(max int) *Agent {
+	a.tokenBudget = max
+	return a
+}
+
 // SetMaxConcurrency bounds how many tool calls run in parallel within a single turn.
 // n <= 0 means unbounded (the default). Returns the agent for chaining; use
 // SetMaxConcurrency(1) to force fully sequential tool execution.
@@ -256,10 +272,14 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 	decided := map[string]bool{}        // tool-use IDs with a recorded approval decision
 	approvals := map[string]bool{}      // tool-use ID -> approve(true)/deny(false)
 	modelSeq := 0
+	var runUsage Usage // token usage across all of this run's model calls, replayed and live
 	for _, r := range recs {
 		switch r.Kind {
 		case StepModel:
 			modelSeq++
+			if r.Usage != nil {
+				addUsage(&runUsage, *r.Usage)
+			}
 			if r.Message != nil {
 				msgs = append(msgs, *r.Message)
 				fire(AssistantTurn{Message: *r.Message, Replayed: true})
@@ -337,6 +357,9 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 			if a.maxTurns > 0 && modelSeq >= a.maxTurns {
 				return Message{}, totalUsage, liveTurns, fmt.Errorf("run %s: %w (%d turns)", runID, ErrMaxTurns, modelSeq)
 			}
+			if a.tokenBudget > 0 && runUsage.TotalTokens() >= a.tokenBudget {
+				return Message{}, totalUsage, liveTurns, fmt.Errorf("run %s: %d tokens used, budget %d: %w", runID, runUsage.TotalTokens(), a.tokenBudget, ErrBudgetExceeded)
+			}
 			fire(TurnStarted{Seq: modelSeq})
 			// Install the token sink so a live (non-replayed) model call forwards its
 			// deltas as ModelEvents. On memoized replay store.Do skips the fn, so no
@@ -353,12 +376,15 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 						return Record{}, e
 					}
 					turnUsage = u
-					return Record{Kind: StepModel, Message: &m}, nil
+					return Record{Kind: StepModel, Message: &m, Usage: &u}, nil
 				})
 			if err != nil {
 				return Message{}, totalUsage, liveTurns, fmt.Errorf("generate (run %s): %w (%w)", runID, err, ErrModel)
 			}
 			addUsage(&totalUsage, turnUsage)
+			if rec.Usage != nil {
+				addUsage(&runUsage, *rec.Usage)
+			}
 			liveTurns++
 			asst = *rec.Message
 			modelSeq++

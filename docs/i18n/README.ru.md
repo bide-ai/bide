@@ -200,7 +200,7 @@ answer, err := stream.Final() // terminal message + error (incl. *PendingApprova
 События: `TurnStarted`, `ModelEvent` (поток токенов), `AssistantTurn`, `ToolStarted` / `ToolCompleted`, `ApprovalRequired`, `Finished`. Пройдитесь по `Events()` ради UI, затем вызовите `Final()`, или вызовите `Final()` в одиночку, чтобы вести себя точно как `Run` (он осушит события за вас).
 
 Две вещи, которые стоит знать, обе — следствия надёжности:
-- **Дельты токенов приходят ниже цепочки middleware** (Retry / TokenBudget всё равно видят целые собранные сообщения) и **только при свежем вызове модели**.
+- **Дельты токенов приходят ниже цепочки middleware** (Retry / Cost всё равно видят целые собранные сообщения) и **только при свежем вызове модели**.
 - **При возобновлении записанный в журнал транскрипт переиздаётся** как `AssistantTurn{Replayed: true}` + `ToolCompleted` перед живым прогрессом, так что свежий UI реконструирует всю историю после сбоя, а переигранный ход не производит дельт токенов (он уже был решён).
 
 `StreamSaga` — это стриминговый аналог `RunSaga`.
@@ -242,7 +242,7 @@ a := agent.New(model, store, tools...).
 model := anthropic.New(key, anthropic.WithPromptCache())
 ```
 
-Это ставит точки разрыва `cache_control` на системный блок и определения инструментов. OpenAI кэширует префиксы автоматически (флаг не нужен). В любом случае эффективность кэша всплывает в `agent.Usage` (`CacheReadTokens`, поданные из кэша, и `CacheWriteTokens`, записанные в него), так что middleware вроде `TokenBudget` и учёт стоимости видят реальные числа.
+Это ставит точки разрыва `cache_control` на системный блок и определения инструментов. OpenAI кэширует префиксы автоматически (флаг не нужен). В любом случае эффективность кэша всплывает в `agent.Usage` (`CacheReadTokens`, поданные из кэша, и `CacheWriteTokens`, записанные в него), так что middleware вроде `trace.Model` и учёт стоимости видят реальные числа.
 
 ## Сессии (многоходовые)
 
@@ -374,9 +374,9 @@ case errors.Is(err, agent.ErrStorage):      // durable-store I/O
 ```go
 var cost middleware.CostMeter
 a := agent.New(model, store, tools...).
+	WithTokenBudget(100_000). // per run, rebuilt from the journal on resume
 	Use(
 		middleware.Retry(3, middleware.WithBackoff(200*time.Millisecond, 10*time.Second)),
-		middleware.TokenBudget(100_000),
 		middleware.Cost(&cost, middleware.Rates{InputPer1M: 3, OutputPer1M: 15}),
 	).
 	UseTool(middleware.ToolLog(log.Printf), middleware.ToolCache(), middleware.ToolRetry(3))
@@ -422,7 +422,7 @@ model/anthropic  native Claude (thinking + signatures)
 model/openai     any OpenAI-compatible endpoint
 model/gemini     native Gemini (generativelanguage / Vertex via WithBaseURL)
 schema           reflect Go types → inline JSON Schema + OpenAIStrict
-middleware       Retry, TokenBudget
+middleware       Retry, RateLimit, Cost, Hedge
 trace            opt-in OTel gen_ai.* spans
 store/sqlite     on-disk durable resume (single binary, no cluster)
 store/postgres   HA durable resume (any node resumes any run)

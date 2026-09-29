@@ -3,42 +3,10 @@
 // calls, and token usage, not raw bytes). Attach with agent.Agent.Use.
 //
 //	a := agent.New(model, store, tools...).Use(
-//		middleware.Retry(3),
-//		middleware.TokenBudget(100_000),
+//		middleware.Retry(3, middleware.WithRetryIf(middleware.Retryable)),
+//		middleware.RateLimit(middleware.NewRateLimiter(time.Second, 5)),
 //	)
+//
+// Per-run limits that must hold across a resume live on the agent, where the journal is:
+// Agent.WithTokenBudget and Agent.WithMaxTurns.
 package middleware
-
-import (
-	"context"
-	"fmt"
-	"sync"
-
-	"github.com/bide-ai/bide/agent"
-)
-
-// TokenBudget aborts the run once cumulative tokens (input+output) across the run's
-// model calls exceed max. The cap is a HARD ceiling: the call that would exceed it is
-// refused. State is per-middleware-instance, so it accumulates across the loop's turns.
-func TokenBudget(max int) agent.Middleware {
-	var (
-		mu   sync.Mutex
-		used int
-	)
-	return func(next agent.ModelHandler) agent.ModelHandler {
-		return func(ctx context.Context, req agent.Request) (agent.Message, agent.Usage, error) {
-			mu.Lock()
-			over := used >= max
-			mu.Unlock()
-			if over {
-				return agent.Message{}, agent.Usage{}, fmt.Errorf("%d used, cap %d: %w", used, max, agent.ErrBudgetExceeded)
-			}
-			msg, u, err := next(ctx, req)
-			if err == nil {
-				mu.Lock()
-				used += u.InputTokens + u.OutputTokens
-				mu.Unlock()
-			}
-			return msg, u, err
-		}
-	}
-}

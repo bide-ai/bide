@@ -308,7 +308,7 @@ answer, err := stream.Final() // terminal message + error (incl. *PendingApprova
 وحدها لتتصرّف تمامًا كـ `Run` (تستنزف الأحداث نيابةً عنك).
 
 شيئان جديران بالمعرفة، وكلاهما نتيجة للمعمورية:
-- **فروق الرموز تصل أسفل سلسلة الـ middleware** (يظل Retry / TokenBudget يريان الرسائل المُجمَّعة كاملة)،
+- **فروق الرموز تصل أسفل سلسلة الـ middleware** (يظل Retry / Cost يريان الرسائل المُجمَّعة كاملة)،
   و**فقط عند نداء نموذج جديد**.
 - **عند الاستئناف، يُعاد إصدار النصّ المُسجَّل** كـ `AssistantTurn{Replayed: true}` + `ToolCompleted`
   قبل التقدّم الحيّ، فتعيد واجهةٌ جديدة بناء القصة كاملة بعد انهيار، والدور المُعاد لا يُنتج فروق رموز (كان
@@ -366,7 +366,7 @@ model := anthropic.New(key, anthropic.WithPromptCache())
 
 هذا يضع نقاط قطع `cache_control` على كتلة النظام وتعريفات الأدوات. وOpenAI تخزّن البادئات تلقائيًّا (بلا
 حاجة إلى علَم). في كلتا الحالتين، تظهر فاعلية التخزين المؤقت في `agent.Usage` (`CacheReadTokens`، مُقدَّمة
-من التخزين المؤقت، و`CacheWriteTokens`، مكتوبة إليه)، فترى الـ middleware مثل `TokenBudget` وحساب التكلفة
+من التخزين المؤقت، و`CacheWriteTokens`، مكتوبة إليه)، فترى الـ middleware مثل `trace.Model` وحساب التكلفة
 الأرقام الحقيقية.
 
 ## الجلسات (متعدّدة الأدوار)
@@ -539,9 +539,9 @@ case errors.Is(err, agent.ErrStorage):      // durable-store I/O
 ```go
 var cost middleware.CostMeter
 a := agent.New(model, store, tools...).
+	WithTokenBudget(100_000). // per run, rebuilt from the journal on resume
 	Use(
 		middleware.Retry(3, middleware.WithBackoff(200*time.Millisecond, 10*time.Second)),
-		middleware.TokenBudget(100_000),
 		middleware.Cost(&cost, middleware.Rates{InputPer1M: 3, OutputPer1M: 15}),
 	).
 	UseTool(middleware.ToolLog(log.Printf), middleware.ToolCache(), middleware.ToolRetry(3))
@@ -600,7 +600,7 @@ model/anthropic  native Claude (thinking + signatures)
 model/openai     any OpenAI-compatible endpoint
 model/gemini     native Gemini (generativelanguage / Vertex via WithBaseURL)
 schema           reflect Go types → inline JSON Schema + OpenAIStrict
-middleware       Retry, TokenBudget
+middleware       Retry, RateLimit, Cost, Hedge
 trace            opt-in OTel gen_ai.* spans
 store/sqlite     on-disk durable resume (single binary, no cluster)
 store/postgres   HA durable resume (any node resumes any run)
