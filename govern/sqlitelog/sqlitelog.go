@@ -44,18 +44,23 @@ func Open(path string) (*Log, error) {
 // Close releases the underlying database handle.
 func (l *Log) Close() error { return l.db.Close() }
 
-// Append durably records an event for an entity (monotonic seq).
-func (l *Log) Append(ctx context.Context, entity, event string) error {
-	_, err := l.db.ExecContext(ctx, `
+// Append durably records an event for an entity and returns its position (its seq). The seq is
+// computed and inserted in one statement; SQLite serializes writers, and the (entity, seq) primary
+// key rejects a duplicate, so concurrent appends from any number of processes get distinct, dense
+// positions.
+func (l *Log) Append(ctx context.Context, entity, event string) (int64, error) {
+	var seq int64
+	err := l.db.QueryRowContext(ctx, `
 		INSERT INTO events (entity, seq, event)
-		VALUES (?, (SELECT COALESCE(MAX(seq), -1) + 1 FROM events WHERE entity = ?), ?)`,
-		entity, entity, event)
-	return err
+		VALUES (?, (SELECT COALESCE(MAX(seq), -1) + 1 FROM events WHERE entity = ?), ?)
+		RETURNING seq`,
+		entity, entity, event).Scan(&seq)
+	return seq, err
 }
 
-// Events returns an entity's events in append order.
-func (l *Log) Events(ctx context.Context, entity string) ([]string, error) {
-	rows, err := l.db.QueryContext(ctx, `SELECT event FROM events WHERE entity = ? ORDER BY seq`, entity)
+// Events returns an entity's events at positions from onward, in log order.
+func (l *Log) Events(ctx context.Context, entity string, from int64) ([]string, error) {
+	rows, err := l.db.QueryContext(ctx, `SELECT event FROM events WHERE entity = ? AND seq >= ? ORDER BY seq`, entity, from)
 	if err != nil {
 		return nil, err
 	}

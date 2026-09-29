@@ -242,12 +242,12 @@ func TestPersistentGovernor_ReplayOrderIndependent(t *testing.T) {
 
 	// Two logs holding the same independent event set (payment ⊥ restock) in opposite order.
 	logA := NewMemEventLog()
-	_ = logA.Append(ctx, "e", "process_payment")
-	_ = logA.Append(ctx, "e", "restock")
+	_, _ = logA.Append(ctx, "e", "process_payment")
+	_, _ = logA.Append(ctx, "e", "restock")
 
 	logB := NewMemEventLog()
-	_ = logB.Append(ctx, "e", "restock")
-	_ = logB.Append(ctx, "e", "process_payment")
+	_, _ = logB.Append(ctx, "e", "restock")
+	_, _ = logB.Append(ctx, "e", "process_payment")
 
 	a, _ := NewPersistent(ctx, m, logA, "e", initial)
 	b, _ := NewPersistent(ctx, m, logB, "e", initial)
