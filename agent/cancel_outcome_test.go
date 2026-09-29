@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 )
@@ -16,9 +17,10 @@ func TestCancelledToolCall_IsNotRecordedAsItsOutcome(t *testing.T) {
 	store := NewMemStore()
 	var charged int
 	fired := make(chan struct{})
+	var fireOnce sync.Once
 	charge := Func("charge", "charge the card", Safety{}, func(ctx context.Context, _ struct{}) (string, error) {
 		charged++ // the request reached the provider
-		close(fired)
+		fireOnce.Do(func() { close(fired) })
 		<-ctx.Done() // cancelled while waiting for the response
 		return "", ctx.Err()
 	})
@@ -35,6 +37,9 @@ func TestCancelledToolCall_IsNotRecordedAsItsOutcome(t *testing.T) {
 	}
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("run err = %v, want a cancellation", err)
+	}
+	if errors.Is(err, ErrTool) {
+		t.Fatalf("run err = %v reports the cancellation as a tool fault", err)
 	}
 
 	// Resume: the charge was attempted with no recorded result, so the run halts for
@@ -105,5 +110,32 @@ func TestCancelledToolCall_ResumeDoesNotChargeTwice(t *testing.T) {
 	var halt *ResumeHalt
 	if !errors.As(err, &halt) || halt.ToolUseID != "c1" {
 		t.Fatalf("resume err = %v, want ResumeHalt for c1", err)
+	}
+}
+
+// A run cancelled while a tool is running stops there, even when the tool finishes anyway and the
+// model adapter ignores cancellation: the finished call's result is its known outcome and is
+// journaled, but the run asks for no further turn and is not marked complete, so a resume
+// continues from the journal instead of the cancelled run answering on its own.
+func TestCancelledRun_StopsBeforeTheNextTurn(t *testing.T) {
+	store := NewMemStore()
+	ctx, cancel := context.WithCancel(context.Background())
+	lookup := Func("lookup", "look up the order", Safety{ReadOnly: true}, func(context.Context, struct{}) (string, error) {
+		cancel() // the caller cancels while the call is in flight; the call completes regardless
+		return "shipped", nil
+	})
+	m := &greedyModel{script: [][]Emit{toolTurn("c1", "lookup", `{}`), textTurn("done")}}
+	_, err := New(m, store, lookup).Run(ctx, "r1", "status?")
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("run err = %v, want a cancellation", err)
+	}
+	if m.calls != 1 {
+		t.Errorf("the model was asked for %d turns after the run was cancelled, want 0 (calls = %d)", m.calls-1, m.calls)
+	}
+	if complete, _ := IsComplete(context.Background(), store, "r1"); complete {
+		t.Errorf("the cancelled run was marked complete")
+	}
+	if rec, ok := hasStep(t, store, "r1", "c1"); !ok || rec.IsError {
+		t.Errorf("the completed call's result was not journaled (found=%v, rec=%+v)", ok, rec)
 	}
 }
