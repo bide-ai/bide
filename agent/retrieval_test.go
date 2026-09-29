@@ -537,3 +537,38 @@ func TestWithRetrieval_NoTextNoRetrieval(t *testing.T) {
 		t.Fatalf("retriever called %d times for a message with no text, want 0", r.calls)
 	}
 }
+
+// One agent can search two stores through two RetrievalTools, each with its own name and
+// description; the model's call to each reaches that tool's Retriever. The default name is
+// "retrieve", and an empty name is rejected when the tool is built.
+func TestRetrievalTool_Named(t *testing.T) {
+	docsR := &fakeRetriever{docs: []Doc{{Text: "from-docs"}}}
+	ticketsR := &fakeRetriever{docs: []Doc{{Text: "from-tickets"}}}
+	docs := RetrievalTool(docsR, 1, RetrievalName("search_docs"), RetrievalDescription("Search the product docs."))
+	tickets := RetrievalTool(ticketsR, 1, RetrievalName("search_tickets"))
+	if docs.Name() != "search_docs" || docs.Description() != "Search the product docs." || tickets.Name() != "search_tickets" {
+		t.Fatalf("tools = %q (%q), %q; want the configured names and description", docs.Name(), docs.Description(), tickets.Name())
+	}
+	if def := RetrievalTool(docsR, 1); def.Name() != "retrieve" {
+		t.Errorf("default name = %q, want retrieve", def.Name())
+	}
+
+	m := NewScriptedModel(
+		ToolTurn("c1", "search_docs", `{"query":"install"}`),
+		ToolTurn("c2", "search_tickets", `{"query":"outage"}`),
+		TextTurn("done"),
+	)
+	if _, err := New(m, NewMemStore(), docs, tickets).Run(context.Background(), "run-1", "q"); err != nil {
+		t.Fatal(err)
+	}
+	if docsR.lastQ != "install" || ticketsR.lastQ != "outage" {
+		t.Errorf("queries = %q and %q, want install to the docs store and outage to the tickets store", docsR.lastQ, ticketsR.lastQ)
+	}
+
+	defer func() {
+		if recover() == nil {
+			t.Error("RetrievalTool with an empty name did not panic")
+		}
+	}()
+	RetrievalTool(docsR, 1, RetrievalName(""))
+}

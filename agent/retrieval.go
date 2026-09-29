@@ -34,18 +34,46 @@ type Retriever interface {
 // RetrievalTool exposes a Retriever as a tool the model can call to search on demand
 // (agentic RAG): the model decides when to retrieve and with what query. It returns the
 // top-k documents: a Retriever that returns more is cut to its first k. Read-only
-// (retry-safe). It panics if k is below 1.
-func RetrievalTool(r Retriever, k int) Tool {
+// (retry-safe). The tool is named "retrieve" unless RetrievalName says otherwise; an agent's
+// tools need distinct names, so give each its own when one agent searches several stores. It
+// panics if k is below 1 or a name is empty.
+func RetrievalTool(r Retriever, k int, opts ...RetrievalOption) Tool {
 	checkK("RetrievalTool", k)
+	cfg := retrievalToolConfig{
+		name:        "retrieve",
+		description: "Search the knowledge base and return the most relevant documents.",
+	}
+	for _, o := range opts {
+		o(&cfg)
+	}
+	if cfg.name == "" {
+		panic("agent: RetrievalTool requires a non-empty name")
+	}
 	type args struct {
 		Query string `json:"query" desc:"what to search the knowledge base for"`
 	}
-	return Func("retrieve", "Search the knowledge base and return the most relevant documents.",
-		Safety{ReadOnly: true},
+	return Func(cfg.name, cfg.description, Safety{ReadOnly: true},
 		func(ctx context.Context, in args) ([]Doc, error) {
 			docs, err := r.Retrieve(ctx, in.Query, k)
 			return topK(docs, k), err
 		})
+}
+
+// RetrievalOption configures a RetrievalTool.
+type RetrievalOption func(*retrievalToolConfig)
+
+type retrievalToolConfig struct{ name, description string }
+
+// RetrievalName names the tool (the default is "retrieve"), for an agent that searches more
+// than one store, each through its own RetrievalTool.
+func RetrievalName(name string) RetrievalOption {
+	return func(c *retrievalToolConfig) { c.name = name }
+}
+
+// RetrievalDescription sets the description the model reads to decide when to call the tool,
+// such as what the store holds.
+func RetrievalDescription(description string) RetrievalOption {
+	return func(c *retrievalToolConfig) { c.description = description }
 }
 
 // WithRetrieval is model middleware that auto-injects retrieved context (classic RAG): it
