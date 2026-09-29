@@ -316,6 +316,9 @@ Conventions shared across verbs:
   omitted; the "wrote &lt;file&gt;" line goes to stderr so stdout stays clean for piping.
 - Verify verbs print a one-line `OK: ...` / `FAIL: ...` verdict and set the exit code: **0 =
   authentic / all checks passed, 1 = failed** (a usage error exits 2). This is the CI-gate contract.
+- A usage error is any command line the CLI does not read in full: a missing required flag, an
+  unknown flag, a help request (`-h`), or an argument that is not a flag (flag parsing stops
+  there, so a flag after it would go unread). None of them is a verdict, so none exits 0.
 
 | Verb | Required flags | Optional flags | Proves / checks |
 |---|---|---|---|

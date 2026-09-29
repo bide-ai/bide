@@ -38,7 +38,22 @@ import (
 // gsm, so the two roots of trust (the log and the proof) stay independent of the producer.
 const policyFormatVersion = "gsm-policy-v1"
 
-func flagSet(name string) *flag.FlagSet { return flag.NewFlagSet(name, flag.ExitOnError) }
+func flagSet(name string) *flag.FlagSet { return flag.NewFlagSet(name, flag.ContinueOnError) }
+
+// parse parses a verb's flags and exits 2, a usage error, unless it read the whole command line.
+// Flag parsing stops at the first argument that is not a flag, so a stray argument would otherwise
+// drop every flag after it (a -digest or -checker the auditor asked for) and the verb would still
+// report a verdict. A help request verifies nothing, so it exits 2 as well rather than 0, which
+// the verify verbs reserve for "verified".
+func parse(fs *flag.FlagSet, args []string) {
+	if err := fs.Parse(args); err != nil {
+		os.Exit(2) // fs has printed the error, or the help text, and its flags
+	}
+	if fs.NArg() > 0 {
+		fmt.Fprintf(os.Stderr, "%s: unexpected argument %q: every input is a flag, and no flag after an argument is read\n", fs.Name(), fs.Arg(0))
+		os.Exit(2)
+	}
+}
 
 func main() {
 	if len(os.Args) < 2 {
@@ -158,9 +173,9 @@ func prove(args []string) {
 	tool := fs.String("tool", "", "prove the tool call with this ToolUseID")
 	index := fs.Int("index", -1, "prove the record at this journal index")
 	out := fs.String("out", "", "write the bundle here (default: stdout)")
-	_ = fs.Parse(args)
+	parse(fs, args)
 
-	if *journal == "" || *sthPath == "" || (*tool == "" && *index < 0) {
+	if *journal == "" || *sthPath == "" || (*tool == "") == (*index < 0) {
 		usage()
 	}
 
@@ -198,7 +213,7 @@ func verify(args []string) {
 	fs := flagSet("verify")
 	bundlePath := fs.String("bundle", "", "path to the ProofBundle JSON")
 	pubkey := fs.String("pubkey", "", "ed25519 public key as hex, or a path to a file containing it")
-	_ = fs.Parse(args)
+	parse(fs, args)
 
 	if *bundlePath == "" || *pubkey == "" {
 		usage()
@@ -230,7 +245,7 @@ func verifyGovernance(args []string) {
 	policyPath := fs.String("policy", "", "path to the serialized combinator policy (gsm PolicyBytes / WriteMachineAST output)")
 	expected := fs.String("digest", "", "expected policy digest as hex (e.g. from a ProofBundle or the anchor); must match if set")
 	checker := fs.String("checker", "", "path to the external verified oracle (astchecker); if set, it is run on the policy")
-	_ = fs.Parse(args)
+	parse(fs, args)
 
 	if *policyPath == "" {
 		usage()
@@ -283,7 +298,7 @@ func verifyGovernedAction(args []string) {
 	policyPath := fs.String("policy-bundle", "", "path to the policy-leaf ProofBundle JSON (from ProvePolicy)")
 	pubkey := fs.String("pubkey", "", "ed25519 public key as hex, or a path to a file containing it")
 	checker := fs.String("checker", "", "path to the external verified oracle (astchecker); if set, it certifies the policy converges")
-	_ = fs.Parse(args)
+	parse(fs, args)
 
 	if *actionPath == "" || *policyPath == "" || *pubkey == "" {
 		usage()
@@ -377,7 +392,7 @@ func verifyConvergence(args []string) {
 	policyPath := fs.String("policy-bundle", "", "path to the policy-leaf ProofBundle JSON (from ProvePolicy)")
 	pubkey := fs.String("pubkey", "", "ed25519 public key as hex, or a path to a file containing it")
 	checker := fs.String("checker", "", "path to the external verified oracle (astchecker); if set, its verdict must agree with the certificate")
-	_ = fs.Parse(args)
+	parse(fs, args)
 
 	if *certPath == "" || *policyPath == "" || *pubkey == "" {
 		usage()
@@ -524,7 +539,7 @@ func verifyQuorum(args []string) {
 	commitPath := fs.String("commit", "", "path to the commit action ProofBundle JSON (optional)")
 	pubkey := fs.String("pubkey", "", "ed25519 public key as hex, or a path to a file containing it")
 	k := fs.Int("k", 0, "the quorum threshold to assert: votes_for must be >= k")
-	_ = fs.Parse(args)
+	parse(fs, args)
 
 	if *name == "" || *tallyPath == "" || len(votePaths) == 0 || *pubkey == "" || *k <= 0 {
 		usage()
@@ -678,7 +693,7 @@ func verifyRun(args []string) {
 	fs.Var(&approved, "approved", "an approved policy digest; repeat once per allowed policy")
 	approvedFile := fs.String("approved-file", "", "path to a file of approved policy digests, one per line")
 	checker := fs.String("checker", "", "path to the external verified oracle (astchecker); if set, its verdict must agree with each policy's certificate")
-	_ = fs.Parse(args)
+	parse(fs, args)
 
 	if *certPath == "" || *pubkey == "" || (len(approved) == 0 && *approvedFile == "") {
 		usage()
@@ -770,7 +785,7 @@ func verifyEvidence(args []string) {
 	var approved stringList
 	fs.Var(&approved, "approved", "an approved policy digest for the run certificate; repeat once per allowed policy")
 	approvedFile := fs.String("approved-file", "", "path to a file of approved policy digests, one per line")
-	_ = fs.Parse(args)
+	parse(fs, args)
 
 	if *evidencePath == "" || *pubkey == "" {
 		usage()
@@ -832,7 +847,7 @@ func verifyApprovals(args []string) {
 	need := fs.Int("need", 0, "approvals the policy requires (k)")
 	approvers := fs.String("approvers", "", "the policy's eligible approver ids, comma-separated, in policy order")
 	keysPath := fs.String("approver-keys", "", `JSON object of approver id to ed25519 public key hex, e.g. {"ops":"ab12..."}`)
-	_ = fs.Parse(args)
+	parse(fs, args)
 
 	if *evidencePath == "" || *pubkey == "" || *call == "" || *need == 0 || *approvers == "" || *keysPath == "" {
 		usage()
@@ -966,7 +981,7 @@ func proveAbsent(args []string) {
 	sthPath := fs.String("sth", "", "path to the signed absence tree head JSON (see audit.SignAbsenceRoot)")
 	key := fs.String("key", "", "what to prove absent: tool:<id> or policy:<digest>")
 	out := fs.String("out", "", "write the absence bundle here (default: stdout)")
-	_ = fs.Parse(args)
+	parse(fs, args)
 
 	if *journal == "" || *sthPath == "" || *key == "" {
 		usage()
@@ -999,7 +1014,7 @@ func verifyAbsent(args []string) {
 	fs := flagSet("verify-absent")
 	bundlePath := fs.String("bundle", "", "path to the AbsenceBundle JSON")
 	pubkey := fs.String("pubkey", "", "ed25519 public key as hex, or a path to a file containing it")
-	_ = fs.Parse(args)
+	parse(fs, args)
 
 	if *bundlePath == "" || *pubkey == "" {
 		usage()
