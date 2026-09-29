@@ -347,11 +347,16 @@ type Provenance struct {
 // HashCases returns a stable lowercase-hex sha256 over the case set, in order. Each case contributes
 // its Name, Input, and the JSON encoding of its Want, so the hash changes if any case's identity,
 // input, or expectation changes but stays stable across runs of the same set. Use it to confirm two
-// Reports scored the same cases before comparing them.
+// Reports scored the same cases before comparing them. A Want JSON cannot encode (a NaN or infinite
+// float, a channel, a func) contributes its Go type and %#v form instead, marked apart from JSON;
+// for a func or channel that form is an address, so it is stable only within one process.
 func HashCases(cases []Case) string {
 	h := sha256.New()
 	for _, c := range cases {
-		want, _ := json.Marshal(c.Want)
+		want, err := json.Marshal(c.Want)
+		if err != nil {
+			want = fmt.Appendf([]byte("\x01"), "%T:%#v", c.Want, c.Want)
+		}
 		fmt.Fprintf(h, "%d:%s\x00%d:%s\x00%d:%s\x00", len(c.Name), c.Name, len(c.Input), c.Input, len(want), want)
 	}
 	return hex.EncodeToString(h.Sum(nil))
