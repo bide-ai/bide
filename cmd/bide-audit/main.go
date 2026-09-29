@@ -119,14 +119,15 @@ func usage() {
          votes (a forged tally is caught); and votes_for >= k; with -commit, a governed commit
          is anchored in the same tree
 
-  verify-run -cert <file> -pubkey <hex|file> (-approved <digest>... | -approved-file <file>) [-checker <astchecker>]
+  verify-run -cert <file> -pubkey <hex|file> [-approved <digest>...] [-approved-file <file>] [-checker <astchecker>]
+         (at least one of -approved and -approved-file; together they form one allowlist)
          verify a proof-carrying run certificate: the used-policy set is bound by a signed
          used-policy head to this run and its journal tree, and is a subset of the approved
          allowlist (only-approved-policies), and every used policy has an anchored, digest-linked convergence certificate
          in the run's signed tree (policies-convergence-certified); with -checker, the external
          oracle's convergence verdict on each used policy must AGREE with its certificate
 
-  verify-evidence -evidence <file> -pubkey <hex|file> [-approved <digest>... | -approved-file <file>]
+  verify-evidence -evidence <file> -pubkey <hex|file> [-approved <digest>...] [-approved-file <file>]
          verify a portable evidence package offline and print a plain-English report: the
          format, seal, key, and run binding, then one line per proven action (tool call, step,
          grant), plus the run certificate (checked against the given allowlist, required when
