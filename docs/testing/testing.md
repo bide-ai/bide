@@ -258,8 +258,9 @@ For rigor it does more than a bare pass-count:
   gate can fail the build on a significant regression rather than on a raw rate dip.
 - **Pre-registered sample sizing.** `RequiredRuns(baselineRate, minDetectableDrop, alpha, power)`
   returns the runs-per-arm needed to detect a given regression, using the pooled-variance normal
-  approximation (probit via Beasley-Springer/Moro). Size the run before spending on it, rather than
-  reading significance into an underpowered sample.
+  approximation (probit via Beasley-Springer/Moro), or an error for arguments outside their domain
+  (a baseline outside [0, 1], alpha or power outside (0, 1), NaN). Size the run before spending on
+  it, rather than reading significance into an underpowered sample.
 - **Reproducibility provenance.** Each `Report` carries a `Provenance{ModelID, Temperature, Seed,
   Timestamp, CaseSetHash}`; `Run` always fills `CaseSetHash` from `HashCases` (a length-prefixed
   sha256 over the case set) so a comparison across two reports can confirm they ran the same cases
