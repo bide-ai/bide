@@ -147,6 +147,13 @@ These are stated in full in [KNOWN-LIMITATIONS.md](../KNOWN-LIMITATIONS.md); in 
 - **Unknown-outcome resume halts, it does not auto-roll-back.** If a non-retriable step crashes
   after its attempt marker but before any result, `RunSaga` returns `*ResumeHalt`: a human decides,
   because you cannot safely roll back a step that may have committed.
+- **Rollback covers calls the abort cut off.** Rollback walks every tool call the model made, not
+  only those that returned. A side effect that started but has no recorded outcome (a sibling the
+  failure cancelled mid-call) stops the rollback with a `*ResumeHalt` in
+  `SagaAborted.CompensateErr`; resolve it with `ResolveHalt` and call `RunSaga` again to finish the
+  rollback. A retry-safe call with a compensator is run again to learn its result, then undone. A
+  sub-agent call is rolled back into whether or not it returned. A completed write with no
+  compensator, idempotent or not, is listed in `SagaAborted.Uncompensated`.
 - **Compensation is hierarchical, not concurrent.** Rollback recurses through a sub-agent *tree*
   (one causal order). Truly concurrent agents mutating shared state out of order need the provable
   convergence of the governance tier ([GOVERNANCE.md](governance.md)), not a saga.

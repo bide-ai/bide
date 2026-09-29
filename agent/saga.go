@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 )
 
 // Compensator is an optional interface a Tool implements to declare how to UNDO its side
@@ -151,33 +152,63 @@ func (a *Agent) rollback(ctx context.Context, runID string, cause error) error {
 	return &SagaAborted{RunID: runID, Cause: cause, Compensated: comp, Uncompensated: uncomp, CompensateErr: cerr}
 }
 
-// rollbackRun compensates a run's completed writes in reverse execution order, recursing
-// into sub-agent child runs so a whole agent tree rolls back as a unit (distributed
-// saga). Each compensation is a durable, memoized step: a completed one never re-runs, and
-// a crash mid-compensation re-runs it on resume (at-least-once; see Compensator).
+// rollbackRun compensates a run's writes in reverse call order, recursing into sub-agent
+// child runs so a whole agent tree rolls back as a unit (distributed saga). Each compensation
+// is a durable, memoized step: a completed one never re-runs, and a crash mid-compensation
+// re-runs it on resume (at-least-once; see Compensator).
+//
+// It walks every tool call the model made, not only those with a recorded result, because a
+// call cut off by the abort (or by a crash) may still have taken effect:
+//
+//   - a call with no result but an attempt marker (a side effect that started) has an unknown
+//     outcome, so the rollback stops there with a *ResumeHalt: a human, or a reconciler via
+//     ResolveHalt, records what happened, and the next RunSaga resumes the rollback;
+//   - a side effect with neither result nor marker never started, and is skipped;
+//   - a retry-safe call with a compensator and no result is run again to learn its result
+//     (safe by its declaration), then compensated;
+//   - a sub-agent call is always rolled back into, whether or not it finished.
 func (a *Agent) rollbackRun(ctx context.Context, runID string) (compensated, uncompensated []string, err error) {
 	recs, e := a.store.History(ctx, runID)
 	if e != nil {
 		return nil, nil, e
 	}
-	for i := len(recs) - 1; i >= 0; i-- {
-		r := recs[i]
-		if r.Kind != StepToolResult || r.IsError {
-			continue
+	var calls []ToolUse
+	results := map[string]Record{}
+	failed := map[string]bool{}
+	attemptedAt := map[string]int64{}
+	started := map[string]bool{}
+	for _, r := range recs {
+		switch r.Kind {
+		case StepModel:
+			if r.Message != nil {
+				calls = append(calls, r.Message.toolUses()...)
+			}
+		case StepToolResult:
+			results[r.ToolUseID] = r
+		case StepSagaFail:
+			failed[r.ToolUseID] = true
+		case StepAttempt:
+			if r.ToolUseID != "" {
+				started[r.ToolUseID] = true
+				attemptedAt[r.ToolUseID] = r.AttemptedAt
+			}
 		}
-		name, ok := toolNameFor(recs, r.ToolUseID)
-		if !ok {
-			continue
+	}
+	for i := len(calls) - 1; i >= 0; i-- {
+		tu := calls[i]
+		tool := a.tools[tu.Name]
+		if tool == nil || failed[tu.ID] {
+			continue // unknown tool, or the step whose failure aborted the saga (not compensated)
 		}
-		tool := a.tools[name]
-		if tool == nil {
-			continue
+		res, done := results[tu.ID]
+		if done && res.IsError {
+			continue // a failed call made no change (saga steps must be atomic)
 		}
 
 		// Sub-agent: recurse into its child run (using the SUB-agent's own tools), so its
-		// writes are compensated too. This is the distributed saga.
+		// writes are compensated too, even if the call was cut off before it returned.
 		if sat, ok := tool.(*subAgentTool); ok {
-			cc, cu, ce := sat.sub.rollbackRun(ctx, runID+"/"+r.ToolUseID)
+			cc, cu, ce := sat.sub.rollbackRun(ctx, runID+"/"+tu.ID)
 			compensated = append(compensated, cc...)
 			uncompensated = append(uncompensated, cu...)
 			if ce != nil {
@@ -186,25 +217,61 @@ func (a *Agent) rollbackRun(ctx context.Context, runID string) (compensated, unc
 			continue
 		}
 
-		if comp, ok := tool.(Compensator); ok {
-			args, _ := argsFor(recs, r.ToolUseID)
-			if _, ce := a.store.Do(ctx, runID, "@saga/compensate/"+r.ToolUseID, func(ctx context.Context) (Record, error) {
-				if e := comp.Compensate(ctx, args, r.Result); e != nil {
+		safety := tool.Safety()
+		if safety.ReadOnly {
+			continue
+		}
+		comp, canUndo := tool.(Compensator)
+		if !done {
+			switch {
+			case started[tu.ID]:
+				// Started, no recorded outcome: it may have taken effect. Stop for a human.
+				var at time.Time
+				if ms := attemptedAt[tu.ID]; ms != 0 {
+					at = time.UnixMilli(ms)
+				}
+				uncompensated = append(uncompensated, tu.Name)
+				return compensated, uncompensated, &ResumeHalt{RunID: runID, ToolUseID: tu.ID, ToolName: tu.Name, AttemptedAt: at}
+			case !safety.RetrySafe():
+				continue // no attempt marker: it never started
+			case !canUndo:
+				uncompensated = append(uncompensated, tu.Name) // may have run; nothing can undo it
+				continue
+			default:
+				// Retry-safe: running it again is safe, and yields the result to compensate.
+				rec, ce := a.store.Do(ctx, runID, tu.ID, func(ctx context.Context) (Record, error) {
+					out, e := tool.Call(ctx, tu.Args)
+					if e != nil {
+						return Record{}, e
+					}
+					return Record{Kind: StepToolResult, ToolUseID: tu.ID, Result: out}, nil
+				})
+				if ce != nil {
+					uncompensated = append(uncompensated, tu.Name)
+					return compensated, uncompensated, fmt.Errorf("saga rollback: learn the outcome of %q (call %s): %w", tu.Name, tu.ID, ce)
+				}
+				res = rec
+			}
+		}
+
+		if canUndo {
+			args, _ := argsFor(recs, tu.ID)
+			if _, ce := a.store.Do(ctx, runID, "@saga/compensate/"+tu.ID, func(ctx context.Context) (Record, error) {
+				if e := comp.Compensate(ctx, args, res.Result); e != nil {
 					return Record{}, e
 				}
 				return Record{Kind: StepValue}, nil
 			}); ce != nil {
 				return compensated, uncompensated, ce // stop; earlier writes stay uncompensated
 			}
-			compensated = append(compensated, name)
+			compensated = append(compensated, tu.Name)
 			continue
 		}
 
-		// A completed WRITE with no compensator → dangling. Surface it; never report a
-		// clean rollback while side effects remain.
-		if s := tool.Safety(); !s.ReadOnly && !s.Idempotent {
-			uncompensated = append(uncompensated, name)
-		}
+		// A completed write with no compensator → dangling. Idempotent is not effect-free (a
+		// status set twice is still set), so only ReadOnly calls are exempt. Surface it; never
+		// report a clean rollback while side effects remain.
+		uncompensated = append(uncompensated, tu.Name)
 	}
 	return compensated, uncompensated, nil
 }
