@@ -10,10 +10,19 @@ import (
 	gsm "github.com/blackwell-systems/gsm"
 )
 
+// FedApplied is the outcome of applying one federated event: the federated normal form after it,
+// and the event's position in the shared EventLog. Replaying the log's events at positions
+// [0, Position] from the initial federated state reproduces State.
+type FedApplied struct {
+	State    gsm.FedState
+	Position int64
+}
+
 // FederatedApplier is the federated analogue of Applier: it applies a named event to a
-// named component registry of a gsm federation, returning the new federated normal form.
+// named component registry of a gsm federation.
 type FederatedApplier interface {
-	Apply(ctx context.Context, registry, event string) (gsm.FedState, error)
+	Apply(ctx context.Context, registry, event string) (FedApplied, error)
+	// State returns the governor's view of the federated state as of its last Apply or Sync.
 	State() gsm.FedState
 }
 
@@ -24,73 +33,104 @@ var _ FederatedApplier = (*FederatedGovernor)(nil)
 // do so the encoding stays unambiguous.
 const fedSep = "\x1f"
 
-// FederatedGovernor is a crash-recoverable governor over a gsm federation (multiple
-// component registries linked by directed morphisms). Each applied event is durably
-// appended to an EventLog as a (registry, event) pair; state is reconstructed by replaying
-// the log through the federated machine.
+// FederatedGovernor is a governor over a gsm federation (multiple component registries linked by
+// directed morphisms), backed by a shared, durable EventLog. Each applied event is appended to the
+// log as a (registry, event) pair, and the governor's state is the log replayed through the
+// federated machine: before answering, Apply folds in every event the log holds up to and including
+// its own, in log order, including other processes' events. So any number of processes sharing the
+// log act on the same federated state, and a recorded state matches an auditor's replay of the log.
 //
-// Two guarantees carry over from the federated convergence theorem (paper §8):
-//   - Replay is exact and, for events the network proved independent, order-independent —
-//     so a shared durable log lets multiple processes converge on the same federated state.
-//   - Cross-registry conflicts resolve WITHOUT coordination via the authority argument
-//     (§8.3): a source registry deterministically fixes its targets' shared components, so
-//     a target-side event that collides with its source is overwritten on the next ρ_Fed.
-//     This is the "distributed compensating agents across ownership boundaries" tier: each
-//     component registry is an organization / agent subtree, morphisms are the cross-org
-//     constraints.
+// Cross-registry conflicts resolve WITHOUT coordination via the authority argument (paper §8.3): a
+// source registry deterministically fixes its targets' shared components, so a target-side event
+// that collides with its source is overwritten on the next ρ_Fed. This is the "distributed
+// compensating agents across ownership boundaries" tier: each component registry is an organization
+// or agent subtree, and morphisms are the cross-org constraints.
 type FederatedGovernor struct {
 	m      *gsm.FedMachine
 	log    EventLog
 	entity string
 	mu     sync.Mutex
 	state  gsm.FedState
+	next   int64 // position of the next log entry to fold into state
 }
 
-// NewFederated constructs a federated governor and reconstructs its state by replaying the
-// entity's event log from the initial federated state.
+// NewFederated constructs a federated governor over the entity's log and reconstructs its state by
+// replaying the log from the initial federated state.
 func NewFederated(ctx context.Context, m *gsm.FedMachine, log EventLog, entity string, initial gsm.FedState) (*FederatedGovernor, error) {
 	fg := &FederatedGovernor{m: m, log: log, entity: entity, state: initial}
-	entries, err := log.Events(ctx, entity)
-	if err != nil {
+	if _, err := fg.Sync(ctx); err != nil {
 		return nil, err
-	}
-	for _, enc := range entries {
-		registry, event, err := decodeFedEvent(enc)
-		if err != nil {
-			return nil, err
-		}
-		st, err := m.ApplyNamed(fg.state, registry, event)
-		if err != nil {
-			return nil, fmt.Errorf("govern: replaying %q: %w (%w)", enc, err, agent.ErrStorage)
-		}
-		fg.state = st
 	}
 	return fg, nil
 }
 
-// Apply validates the (registry, event) against the federation, durably records it, then
-// advances the federated state. Validation runs before the append (via the pure ApplyNamed,
-// which does not mutate), so a rejected event is never written to the log; if the append
-// fails, the in-memory state is left untouched.
-func (fg *FederatedGovernor) Apply(ctx context.Context, registry, event string) (gsm.FedState, error) {
+// Apply validates the (registry, event) against the federation, appends it to the shared log, then
+// folds the log into the state up to and including its position. Validation runs before the append
+// (via the pure ApplyNamed, which does not mutate), so an unknown registry or event is never written
+// to the log. If the append succeeds but reading the log fails, the event is still recorded; the
+// next Apply or Sync folds it in.
+func (fg *FederatedGovernor) Apply(ctx context.Context, registry, event string) (FedApplied, error) {
 	if strings.Contains(registry, fedSep) || strings.Contains(event, fedSep) {
-		return fg.State(), fmt.Errorf("govern: registry/event name may not contain the separator byte: %w", agent.ErrConfig)
+		return FedApplied{State: fg.State(), Position: -1}, fmt.Errorf("govern: registry/event name may not contain the separator byte: %w", agent.ErrConfig)
 	}
 	fg.mu.Lock()
 	defer fg.mu.Unlock()
 
-	next, err := fg.m.ApplyNamed(fg.state, registry, event)
+	if _, err := fg.m.ApplyNamed(fg.state, registry, event); err != nil {
+		return FedApplied{State: fg.state, Position: -1}, err
+	}
+	pos, err := fg.log.Append(ctx, fg.entity, encodeFedEvent(registry, event))
 	if err != nil {
-		return fg.state, err
+		return FedApplied{State: fg.state, Position: -1}, fmt.Errorf("govern: append log: %w (%w)", err, agent.ErrStorage)
 	}
-	if err := fg.log.Append(ctx, fg.entity, encodeFedEvent(registry, event)); err != nil {
-		return fg.state, fmt.Errorf("govern: append log: %w (%w)", err, agent.ErrStorage)
+	if err := fg.foldThrough(ctx, pos); err != nil {
+		return FedApplied{State: fg.state, Position: pos}, err
 	}
-	fg.state = next
-	return fg.state, nil
+	return FedApplied{State: fg.state, Position: pos}, nil
 }
 
-// State returns the current federated normal-form state.
+// Sync folds every entry the log currently holds into the state and returns it, so the governor
+// reflects other processes' events without applying one of its own.
+func (fg *FederatedGovernor) Sync(ctx context.Context) (gsm.FedState, error) {
+	fg.mu.Lock()
+	defer fg.mu.Unlock()
+	return fg.state, fg.foldThrough(ctx, -1)
+}
+
+// foldThrough applies the log's entries from fg.next through position last (or to the end of the
+// log when last is -1) to the state. The caller holds fg.mu.
+func (fg *FederatedGovernor) foldThrough(ctx context.Context, last int64) error {
+	if last >= 0 && last < fg.next {
+		return nil
+	}
+	entries, err := fg.log.Events(ctx, fg.entity, fg.next)
+	if err != nil {
+		return fmt.Errorf("govern: read log: %w (%w)", err, agent.ErrStorage)
+	}
+	n := int64(len(entries))
+	if last >= 0 {
+		want := last - fg.next + 1
+		if n < want {
+			return fmt.Errorf("govern: log for %q returned %d entries from position %d, want at least %d: %w", fg.entity, n, fg.next, want, agent.ErrStorage)
+		}
+		n = want
+	}
+	for _, enc := range entries[:n] {
+		registry, event, err := decodeFedEvent(enc)
+		if err != nil {
+			return err
+		}
+		st, err := fg.m.ApplyNamed(fg.state, registry, event)
+		if err != nil {
+			return fmt.Errorf("govern: replaying %q: %w (%w)", enc, err, agent.ErrStorage)
+		}
+		fg.state = st
+		fg.next++
+	}
+	return nil
+}
+
+// State returns the governor's view of the federated state as of its last Apply or Sync.
 func (fg *FederatedGovernor) State() gsm.FedState {
 	fg.mu.Lock()
 	defer fg.mu.Unlock()
@@ -116,9 +156,10 @@ func decodeFedEvent(enc string) (registry, event string, err error) {
 func FederatedEventTool(gov FederatedApplier, name, description, registry, event string, safety agent.Safety) agent.Tool {
 	return agent.Func(name, description, safety,
 		func(ctx context.Context, _ struct{}) (map[string]any, error) {
-			if _, err := gov.Apply(ctx, registry, event); err != nil {
+			a, err := gov.Apply(ctx, registry, event)
+			if err != nil {
 				return nil, err
 			}
-			return map[string]any{"registry": registry, "event": event, "applied": true}, nil
+			return map[string]any{"registry": registry, "event": event, "applied": true, "position": a.Position}, nil
 		})
 }

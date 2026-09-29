@@ -283,11 +283,83 @@ func TestFederatedGovernor_RejectsUnknown(t *testing.T) {
 		t.Fatal("expected error applying event to unknown registry")
 	}
 	// Nothing should have been logged, so reconstruction is a clean initial state.
-	entries, err := log.Events(ctx, "order-X")
+	entries, err := log.Events(ctx, "order-X", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(entries) != 0 {
 		t.Fatalf("rejected event was written to the log: %v", entries)
+	}
+}
+
+// Two FederatedGovernors sharing one EventLog stand in for two processes sharing a durable log.
+// Each Apply must return exactly the federated state an auditor gets by replaying the shared log
+// through that event's position, and after Sync both governors must hold the shared state. The
+// manufacturer's publish sets the supplier's shared field through the morphism, so a governor that
+// has not folded it in resolves a supplier-side event differently.
+func TestFederatedGovernor_SharedLogStaysConsistent(t *testing.T) {
+	ctx := context.Background()
+	m, mfr, sup, _, _ := buildMfrSupFederation(t)
+	shared := govern.NewMemEventLog()
+	const entity = "order-shared"
+	gA, err := govern.NewFederated(ctx, m, shared, entity, m.NewState())
+	if err != nil {
+		t.Fatal(err)
+	}
+	gB, err := govern.NewFederated(ctx, m, shared, entity, m.NewState())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// replayThrough is the auditor's view: the federated state after the shared log's events at
+	// positions [0, pos].
+	replayThrough := func(pos int64) gsm.FedState {
+		t.Helper()
+		entries, err := shared.Events(ctx, entity, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		prefix := govern.NewMemEventLog()
+		for _, e := range entries[:pos+1] {
+			if _, err := prefix.Append(ctx, entity, e); err != nil {
+				t.Fatal(err)
+			}
+		}
+		g, err := govern.NewFederated(ctx, m, prefix, entity, m.NewState())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return g.State()
+	}
+	same := func(a, b gsm.FedState) bool {
+		return m.Of(a, mfr).ID() == m.Of(b, mfr).ID() && m.Of(a, sup).ID() == m.Of(b, sup).ID()
+	}
+
+	steps := []struct {
+		g        *govern.FederatedGovernor
+		who      string
+		registry string
+		event    string
+	}{
+		{gA, "A", "manufacturer", "epub"},
+		{gB, "B", "supplier", "eexp"},
+	}
+	for _, s := range steps {
+		a, err := s.g.Apply(ctx, s.registry, s.event)
+		if err != nil {
+			t.Fatalf("%s applying %s/%s: %v", s.who, s.registry, s.event, err)
+		}
+		if want := replayThrough(a.Position); !same(a.State, want) {
+			t.Errorf("%s applied %s/%s at position %d and got a state that differs from replaying the shared log through it", s.who, s.registry, s.event, a.Position)
+		}
+	}
+	head := replayThrough(1)
+	for name, g := range map[string]*govern.FederatedGovernor{"A": gA, "B": gB} {
+		st, err := g.Sync(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !same(st, head) {
+			t.Errorf("governor %s syncs to a state that differs from the shared log's", name)
+		}
 	}
 }

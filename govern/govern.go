@@ -15,17 +15,31 @@ package govern
 
 import (
 	"context"
+	"fmt"
 	"sync"
 
 	"github.com/bide-ai/bide/agent"
 	gsm "github.com/blackwell-systems/gsm"
 )
 
-// Applier applies a named governed event to shared state, returning the new normal form.
-// Both the in-memory Governor and the crash-recoverable PersistentGovernor satisfy it, so
-// EventTool works with either.
+// Applied is the outcome of applying one governed event.
+type Applied struct {
+	// State is the shared normal form after the event.
+	State gsm.State
+	// Position is the event's place in the order State is a replay of: its position in the shared
+	// EventLog for a log-backed governor, or in the governor's own sequence for the in-memory
+	// Governor. Replaying the events at positions [0, Position] from the initial state through the
+	// same policy reproduces State exactly, which is what lets an auditor check a recorded state.
+	Position int64
+}
+
+// Applier applies a named governed event to shared state. Both the in-memory Governor and the
+// log-backed PersistentGovernor satisfy it, so EventTool works with either.
 type Applier interface {
-	Apply(ctx context.Context, event string) (gsm.State, error)
+	Apply(ctx context.Context, event string) (Applied, error)
+	// State returns the governor's current view of the shared state. For a log-backed governor
+	// it is as of the last Apply or Sync; other processes' later appends are folded in by the
+	// next one.
 	State() gsm.State
 }
 
@@ -36,13 +50,15 @@ var (
 	_ EventLog = (*MemEventLog)(nil)
 )
 
-// Governor applies agents' events to one in-memory, gsm-governed state. Apply is
-// convergent and thread-safe: because the machine was verified at Build time (WFC + CC),
-// any order of the same event set lands on the same valid normal form.
+// Governor applies agents' events to one in-memory, gsm-governed state. Apply is convergent and
+// thread-safe: because the machine was verified at Build time (WFC + CC), any order of the same
+// event set lands on the same valid normal form. Its state lives only in this process; use a
+// PersistentGovernor over a shared EventLog when several processes act on the same state.
 type Governor struct {
 	m     *gsm.Machine
 	mu    sync.Mutex
 	state gsm.State
+	next  int64 // position of the next event in this governor's sequence
 }
 
 // New wraps a built, verified gsm.Machine with an initial state.
@@ -50,14 +66,16 @@ func New(m *gsm.Machine, initial gsm.State) *Governor {
 	return &Governor{m: m, state: initial}
 }
 
-// Apply advances the shared state by one event (O(1) table lookup; compensation to a
-// valid normal form is baked in). The error is always nil for the in-memory Governor; it
-// exists to satisfy Applier alongside PersistentGovernor.
-func (g *Governor) Apply(_ context.Context, event string) (gsm.State, error) {
+// Apply advances the shared state by one event (O(1) table lookup; compensation to a valid normal
+// form is baked in). Position is the event's place in this governor's sequence. The error is always
+// nil for the in-memory Governor; it exists to satisfy Applier alongside PersistentGovernor.
+func (g *Governor) Apply(_ context.Context, event string) (Applied, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.state = g.m.Apply(g.state, event)
-	return g.state, nil
+	pos := g.next
+	g.next++
+	return Applied{State: g.state, Position: pos}, nil
 }
 
 // State returns the current shared normal-form state.
@@ -67,13 +85,21 @@ func (g *Governor) State() gsm.State {
 	return g.state
 }
 
-// EventLog is an append-only log of governed events per entity. Order is preserved on
-// append but is NOT required for correctness — gsm convergence guarantees any replay order
-// of the same event set reaches the same state. Implementations: MemEventLog (below),
-// and any durable backend (SQLite/Postgres) with the same two methods.
+// EventLog is an append-only, totally ordered log of governed events per entity: the durable
+// shared record several processes' governors act on (MemEventLog below; govern/sqlitelog,
+// govern/postgreslog, and govern/redislog for durable backends).
+//
+// Positions are dense and never change. The first event appended for an entity is at position 0,
+// and once a reader has seen the events at positions [0, n), every later read returns those same
+// events first. Governors rely on this to fold other processes' events into their state in exactly
+// the order an auditor will replay them.
 type EventLog interface {
-	Append(ctx context.Context, entity, event string) error
-	Events(ctx context.Context, entity string) ([]string, error)
+	// Append records event at the end of entity's log and returns its position: the number of
+	// the entity's events recorded before it. It must be safe to call concurrently from many
+	// processes, which must never be assigned the same position.
+	Append(ctx context.Context, entity, event string) (int64, error)
+	// Events returns entity's events at positions from onward, in log order.
+	Events(ctx context.Context, entity string, from int64) ([]string, error)
 }
 
 // MemEventLog is an in-memory EventLog for tests/local dev.
@@ -85,64 +111,108 @@ type MemEventLog struct {
 // NewMemEventLog returns an empty in-memory EventLog.
 func NewMemEventLog() *MemEventLog { return &MemEventLog{logs: map[string][]string{}} }
 
-// Append records an event for the entity, preserving append order.
-func (l *MemEventLog) Append(_ context.Context, entity, event string) error {
+// Append records an event for the entity and returns its position.
+func (l *MemEventLog) Append(_ context.Context, entity, event string) (int64, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	pos := int64(len(l.logs[entity]))
 	l.logs[entity] = append(l.logs[entity], event)
-	return nil
+	return pos, nil
 }
 
-// Events returns a copy of the entity's events in append order.
-func (l *MemEventLog) Events(_ context.Context, entity string) ([]string, error) {
+// Events returns a copy of the entity's events at positions from onward.
+func (l *MemEventLog) Events(_ context.Context, entity string, from int64) ([]string, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	out := make([]string, len(l.logs[entity]))
-	copy(out, l.logs[entity])
+	evs := l.logs[entity]
+	if from < 0 {
+		from = 0
+	}
+	if from >= int64(len(evs)) {
+		return nil, nil
+	}
+	out := make([]string, len(evs)-int(from))
+	copy(out, evs[from:])
 	return out, nil
 }
 
-// PersistentGovernor is a crash-recoverable Governor: every applied event is durably
-// appended to an EventLog, and the current state is reconstructed by REPLAYING the log
-// through the machine on startup. Because gsm.Apply is convergent, replay is exact — and
-// (for the events gsm proved independent) order-independent. Back it with a shared durable
-// EventLog and multiple processes converge on the same governed state.
+// PersistentGovernor is a governor over a shared, durable EventLog. Every event is appended to the
+// log, and the governor's state is the log replayed through the machine, so any number of
+// processes sharing the log act on the same state: before answering, Apply folds in every event
+// the log holds up to and including its own, in log order, including other processes' events.
+// The state an Apply returns is therefore exactly what an auditor gets by replaying the shared log
+// through that event's position.
 type PersistentGovernor struct {
-	m       *gsm.Machine
-	log     EventLog
-	entity  string
-	initial gsm.State
-	mu      sync.Mutex
-	state   gsm.State
+	m      *gsm.Machine
+	log    EventLog
+	entity string
+	mu     sync.Mutex
+	state  gsm.State
+	next   int64 // position of the next log event to fold into state
 }
 
-// NewPersistent constructs a governor and reconstructs its state by replaying the entity's
-// event log from the initial state.
+// NewPersistent constructs a governor over the entity's log and reconstructs its state by replaying
+// the log from the initial state.
 func NewPersistent(ctx context.Context, m *gsm.Machine, log EventLog, entity string, initial gsm.State) (*PersistentGovernor, error) {
-	pg := &PersistentGovernor{m: m, log: log, entity: entity, initial: initial, state: initial}
-	events, err := log.Events(ctx, entity)
-	if err != nil {
+	pg := &PersistentGovernor{m: m, log: log, entity: entity, state: initial}
+	if _, err := pg.Sync(ctx); err != nil {
 		return nil, err
-	}
-	for _, e := range events {
-		pg.state = m.Apply(pg.state, e) // replay-to-reconstruct
 	}
 	return pg, nil
 }
 
-// Apply durably records the event, then advances the shared state. On a later restart,
-// NewPersistent replays the log to the same state.
-func (pg *PersistentGovernor) Apply(ctx context.Context, event string) (gsm.State, error) {
+// Apply appends the event to the shared log, then folds the log into the state up to and including
+// the event's position (so every earlier event, from any process, is applied first, in log order),
+// and returns that state and position. Events appended after it by other processes are folded in by
+// the next Apply or Sync. If the append succeeds but reading the log fails, the event is still
+// recorded; the next Apply or Sync folds it in.
+func (pg *PersistentGovernor) Apply(ctx context.Context, event string) (Applied, error) {
 	pg.mu.Lock()
 	defer pg.mu.Unlock()
-	if err := pg.log.Append(ctx, pg.entity, event); err != nil {
-		return pg.state, err
+	pos, err := pg.log.Append(ctx, pg.entity, event)
+	if err != nil {
+		return Applied{State: pg.state, Position: -1}, fmt.Errorf("govern: append log: %w (%w)", err, agent.ErrStorage)
 	}
-	pg.state = pg.m.Apply(pg.state, event)
-	return pg.state, nil
+	if err := pg.foldThrough(ctx, pos); err != nil {
+		return Applied{State: pg.state, Position: pos}, err
+	}
+	return Applied{State: pg.state, Position: pos}, nil
 }
 
-// State returns the current shared normal-form state.
+// Sync folds every event the log currently holds into the state and returns it, so the governor
+// reflects other processes' events without applying one of its own.
+func (pg *PersistentGovernor) Sync(ctx context.Context) (gsm.State, error) {
+	pg.mu.Lock()
+	defer pg.mu.Unlock()
+	return pg.state, pg.foldThrough(ctx, -1)
+}
+
+// foldThrough applies the log's events from pg.next through position last (or to the end of the
+// log when last is -1) to the state. The caller holds pg.mu.
+func (pg *PersistentGovernor) foldThrough(ctx context.Context, last int64) error {
+	if last >= 0 && last < pg.next {
+		return nil
+	}
+	evs, err := pg.log.Events(ctx, pg.entity, pg.next)
+	if err != nil {
+		return fmt.Errorf("govern: read log: %w (%w)", err, agent.ErrStorage)
+	}
+	n := int64(len(evs))
+	if last >= 0 {
+		if want := last - pg.next + 1; n < want {
+			return fmt.Errorf("govern: log for %q returned %d events from position %d, want at least %d: %w", pg.entity, n, pg.next, want, agent.ErrStorage)
+		} else {
+			n = want
+		}
+	}
+	for _, e := range evs[:n] {
+		pg.state = pg.m.Apply(pg.state, e)
+	}
+	pg.next += n
+	return nil
+}
+
+// State returns the governor's view of the shared state as of its last Apply or Sync.
 func (pg *PersistentGovernor) State() gsm.State {
 	pg.mu.Lock()
 	defer pg.mu.Unlock()
@@ -161,10 +231,11 @@ func (pg *PersistentGovernor) State() gsm.State {
 func EventTool(gov Applier, name, description, event string, safety agent.Safety) agent.Tool {
 	return agent.Func(name, description, safety,
 		func(ctx context.Context, _ struct{}) (map[string]any, error) {
-			if _, err := gov.Apply(ctx, event); err != nil {
+			a, err := gov.Apply(ctx, event)
+			if err != nil {
 				return nil, err
 			}
-			return map[string]any{"event": event, "applied": true}, nil
+			return map[string]any{"event": event, "applied": true, "position": a.Position}, nil
 		})
 }
 
@@ -183,19 +254,22 @@ func EventTool(gov Applier, name, description, event string, safety agent.Safety
 func AttestedEventTool(gov Applier, name, description, event, policyDigest string, safety agent.Safety) agent.Tool {
 	return agent.Func(name, description, safety,
 		func(ctx context.Context, _ struct{}) (map[string]any, error) {
-			st, err := gov.Apply(ctx, event)
+			a, err := gov.Apply(ctx, event)
 			if err != nil {
 				return nil, err
 			}
-			// One leaf binds the action (this tool call), the policy that admitted it, and the
-			// exact resulting state. A verifier replaying the policy over the run's governed
-			// events reproduces each state_digest, so the runtime's state is checkable against
-			// the verified reference at every transition.
+			// One leaf binds the action (this tool call), the policy that admitted it, the exact
+			// resulting state, and the event's position in the governor's order. A verifier
+			// replaying the policy over the governed events at positions [0, position] (the shared
+			// log for a log-backed governor) reproduces state_digest, so the runtime's state is
+			// checkable against the verified reference at every transition, however many processes
+			// or runs share the state.
 			result := map[string]any{
 				"event":         event,
 				"applied":       true,
 				"policy_digest": policyDigest,
-				"state_digest":  st.Digest(),
+				"state_digest":  a.State.Digest(),
+				"position":      a.Position,
 			}
 			// If the deployment bound an acting identity to the run (agent.WithIdentity), stamp it
 			// into the same leaf, so an inclusion proof commits to WHO acted, on whose behalf, and

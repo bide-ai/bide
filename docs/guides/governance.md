@@ -82,12 +82,29 @@ gov := govern.New(m, m.NewState())                        // in-memory, thread-s
 pg, _ := govern.NewPersistent(ctx, m, log, "order-42", m.NewState()) // event-sourced
 ```
 
-`PersistentGovernor` appends every event to an `EventLog` and **reconstructs state by
-replaying the log** on startup: crash-recoverable. `EventLog` is a port; adapters:
+`PersistentGovernor` appends every event to an `EventLog`, and its state **is the log replayed**
+through the machine: crash-recoverable, and shared. Any number of processes can run a governor over
+the same log. Before answering, `Apply` folds in every event the log holds up to and including its
+own, in log order, including other processes' events, so the state it returns (and the
+`state_digest` an `AttestedEventTool` records) is exactly what an auditor gets by replaying the log
+through that event's position, reported as `Applied.Position`. Events other processes append later
+are folded in by the next `Apply`, or on demand with `Sync(ctx)`; `State()` is the view as of the last
+of those. `FederatedGovernor` works the same way for a federation.
+
+`EventLog` is a port with a precise contract: `Append` returns the event's position, positions are
+dense and never change, and `Events(ctx, entity, from)` reads from any position, so a reader that has
+seen positions `[0, n)` always sees them first again. `govern/eventlogtest.Run` checks that contract,
+including concurrent appends from independent handles; every adapter below runs it, and so should
+your own. Adapters:
 
 - `govern.NewMemEventLog()`: in-memory (tests / local).
 - `govern/sqlitelog`: on-disk SQLite.
+- `govern/postgreslog`: Postgres, for several processes on a shared database.
 - `govern/redislog`: Redis Streams (networked, "no SQL DB required").
+
+The in-memory `Governor` holds its state in one process. Use a `PersistentGovernor` whenever more than
+one process acts on the same state, or when recorded state digests must be checked later against a
+durable log.
 
 ## The agent boundary
 

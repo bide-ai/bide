@@ -37,54 +37,60 @@ func Open(ctx context.Context, dsn string) (*Log, error) {
 	return l, nil
 }
 
-// migrate creates the events table. Per-entity order is the id order. A bigserial id is drawn at
-// insert but becomes visible at commit, and commits can land out of id order, so Append serializes
-// appends per entity (see appendIn): an entity's events then become visible in id order, and the log
-// a reader sees only ever grows at the end.
+// migrate creates the governed_events table. Each entity's events carry a dense position (seq),
+// unique per entity, assigned by Append under a per-entity lock.
 func (l *Log) migrate(ctx context.Context) error {
 	_, err := l.db.ExecContext(ctx, `
-		CREATE TABLE IF NOT EXISTS events (
-			id     bigserial PRIMARY KEY,
-			entity text      NOT NULL,
-			event  text      NOT NULL
-		);
-		CREATE INDEX IF NOT EXISTS idx_events_entity_id ON events (entity, id);`)
+		CREATE TABLE IF NOT EXISTS governed_events (
+			entity text   NOT NULL,
+			seq    bigint NOT NULL,
+			event  text   NOT NULL,
+			PRIMARY KEY (entity, seq)
+		);`)
 	return err
 }
 
 // Close releases the underlying database connection pool.
 func (l *Log) Close() error { return l.db.Close() }
 
-// Append durably records an event for an entity. Concurrent appends to the same entity, from any
-// number of processes, are serialized, so the entity's log is append-only as every reader sees it.
-func (l *Log) Append(ctx context.Context, entity, event string) error {
+// Append durably records an event for an entity and returns its position (its seq). Concurrent
+// appends to the same entity, from any number of processes, are serialized, so positions are dense
+// and unique and the entity's log is append-only as every reader sees it.
+func (l *Log) Append(ctx context.Context, entity, event string) (int64, error) {
 	tx, err := l.db.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return 0, err
 	}
-	if err := appendIn(ctx, tx, entity, event); err != nil {
+	seq, err := appendIn(ctx, tx, entity, event)
+	if err != nil {
 		_ = tx.Rollback()
-		return err
+		return 0, err
 	}
-	return tx.Commit()
+	return seq, tx.Commit()
 }
 
-// appendIn inserts one event inside tx. It first takes a transaction-scoped advisory lock keyed by
-// the entity, held until tx commits, so a second append to the same entity cannot draw its id until
-// the first is visible. Without it, a slow append could draw a lower id than a fast one yet commit
-// after it, and a reader would see an event appear before one it had already seen. Appends to
-// different entities do not wait on each other (a hash collision only costs some serialization).
-func appendIn(ctx context.Context, tx *sql.Tx, entity, event string) error {
+// appendIn inserts one event inside tx and returns its position. It first takes a
+// transaction-scoped advisory lock keyed by the entity, held until tx commits, so a second append
+// to the same entity cannot compute its position until the first is visible. Without it, two
+// overlapping appends could both compute the same next position, or a slow append could become
+// visible after a fast one that followed it, and a reader would see an event appear before one it
+// had already seen. Appends to different entities do not wait on each other (a hash collision
+// only costs some serialization). The primary key rejects a duplicate position regardless.
+func appendIn(ctx context.Context, tx *sql.Tx, entity, event string) (int64, error) {
 	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, entity); err != nil {
-		return err
+		return 0, err
 	}
-	_, err := tx.ExecContext(ctx, `INSERT INTO events (entity, event) VALUES ($1, $2)`, entity, event)
-	return err
+	var seq int64
+	err := tx.QueryRowContext(ctx, `
+		INSERT INTO governed_events (entity, seq, event)
+		SELECT $1, COALESCE(MAX(seq) + 1, 0), $2 FROM governed_events WHERE entity = $1
+		RETURNING seq`, entity, event).Scan(&seq)
+	return seq, err
 }
 
-// Events returns an entity's events in append order.
-func (l *Log) Events(ctx context.Context, entity string) ([]string, error) {
-	rows, err := l.db.QueryContext(ctx, `SELECT event FROM events WHERE entity = $1 ORDER BY id`, entity)
+// Events returns an entity's events at positions from onward, in log order.
+func (l *Log) Events(ctx context.Context, entity string, from int64) ([]string, error) {
+	rows, err := l.db.QueryContext(ctx, `SELECT event FROM governed_events WHERE entity = $1 AND seq >= $2 ORDER BY seq`, entity, from)
 	if err != nil {
 		return nil, err
 	}

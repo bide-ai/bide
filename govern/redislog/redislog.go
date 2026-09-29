@@ -38,17 +38,29 @@ func (l *Log) Close() error { return l.rc.Close() }
 
 func (l *Log) key(entity string) string { return l.prefix + entity }
 
-// Append durably appends an event to the entity's stream (auto-assigned monotonic ID).
-func (l *Log) Append(ctx context.Context, entity, event string) error {
-	return l.rc.XAdd(ctx, &redis.XAddArgs{
-		Stream: l.key(entity),
-		Values: map[string]any{"event": event},
-	}).Err()
+// appendScript appends one event and returns its position. The position is the stream's length
+// before the append, and the entry is stored under the explicit ID "<position+1>-0", so an entity's
+// entries sit at IDs 1-0, 2-0, ... and reading from a position is one XRANGE. Redis runs a script
+// atomically, so concurrent appends from any number of processes get distinct, dense positions.
+var appendScript = redis.NewScript(`
+local n = redis.call('XLEN', KEYS[1])
+redis.call('XADD', KEYS[1], (n + 1) .. '-0', 'event', ARGV[1])
+return n
+`)
+
+// Append durably appends an event to the entity's stream and returns its position. The stream
+// must be written only through this adapter: an entry added with an auto-assigned ID would break
+// the position-to-ID mapping.
+func (l *Log) Append(ctx context.Context, entity, event string) (int64, error) {
+	return appendScript.Run(ctx, l.rc, []string{l.key(entity)}, event).Int64()
 }
 
-// Events returns the entity's events in append (stream ID) order.
-func (l *Log) Events(ctx context.Context, entity string) ([]string, error) {
-	msgs, err := l.rc.XRange(ctx, l.key(entity), "-", "+").Result()
+// Events returns the entity's events at positions from onward, in log order.
+func (l *Log) Events(ctx context.Context, entity string, from int64) ([]string, error) {
+	if from < 0 {
+		from = 0
+	}
+	msgs, err := l.rc.XRange(ctx, l.key(entity), fmt.Sprintf("%d-0", from+1), "+").Result()
 	if err != nil {
 		return nil, err
 	}

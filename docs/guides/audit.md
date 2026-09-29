@@ -371,11 +371,15 @@ bide-audit verify-convergence -cert-bundle cert.json -policy-bundle policy.json 
 ### Binding the resulting state, and checking it by replay
 
 Each governed leaf also commits the `state_digest` the action produced (`gsm.State.Digest`, a stable
-domain-separated hash over the packed state, meaningful because the policy pins the layout). Because
-`gsm`'s convergence engine is deterministic given a policy and an event set, a verifier holding the
-policy and the run's governed events can build a reference machine, replay those events, and
-reproduce every committed `state_digest`. Any divergence means the runtime's committed state does not
-match what the verified reference computes for that policy. This is a per-run differential check of
+domain-separated hash over the packed state, meaningful because the policy pins the layout) and the
+event's `position` in the governor's order. Because `gsm`'s convergence engine is deterministic given
+a policy and an event sequence, a verifier holding the policy can build a reference machine, replay
+the governor's events at positions `[0, position]`, and reproduce the committed `state_digest`. For a
+`PersistentGovernor` those events are its shared `EventLog`, whichever processes and runs wrote them;
+for an in-memory `Governor` shared by several runs, they are the governed leaves of all those runs
+ordered by position. Replaying one run's own events is enough only when nothing else acts on the same
+governor. Any divergence means the runtime's committed state does not match what the verified
+reference computes for that policy. This is a per-run differential check of
 the actual execution against the verified reference, not merely of the policy in isolation
 (`govern/attested_replay_test.go` demonstrates it end to end). It is not a refinement proof: it
 checks the events this run actually took, not the runtime's behavior for all possible inputs, so the

@@ -13,9 +13,9 @@ import (
 // Governor so the attestation test does not need a built machine.
 type fakeApplier struct{ applied []string }
 
-func (f *fakeApplier) Apply(_ context.Context, event string) (gsm.State, error) {
+func (f *fakeApplier) Apply(_ context.Context, event string) (Applied, error) {
 	f.applied = append(f.applied, event)
-	return gsm.State{}, nil
+	return Applied{Position: int64(len(f.applied) - 1)}, nil
 }
 func (f *fakeApplier) State() gsm.State { return gsm.State{} }
 

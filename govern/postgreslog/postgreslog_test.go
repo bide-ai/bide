@@ -42,23 +42,30 @@ func TestPostgresLog_AppendEventsOrder(t *testing.T) {
 	a := uniqueID(t, "pg-evlog-a-")
 	b := uniqueID(t, "pg-evlog-b-")
 
-	for _, e := range []string{"e1", "e2", "e3"} {
-		if err := l.Append(ctx, a, e); err != nil {
+	for i, e := range []string{"e1", "e2", "e3"} {
+		pos, err := l.Append(ctx, a, e)
+		if err != nil {
 			t.Fatalf("append %s: %v", e, err)
 		}
+		if pos != int64(i) {
+			t.Fatalf("append %s returned position %d, want %d", e, pos, i)
+		}
 	}
-	if err := l.Append(ctx, b, "other"); err != nil {
+	if _, err := l.Append(ctx, b, "other"); err != nil {
 		t.Fatalf("append other: %v", err)
 	}
 
-	got, err := l.Events(ctx, a)
+	got, err := l.Events(ctx, a, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(got) != 3 || got[0] != "e1" || got[1] != "e2" || got[2] != "e3" {
 		t.Fatalf("entity a events = %v, want [e1 e2 e3] in order", got)
 	}
-	gotB, err := l.Events(ctx, b)
+	if tail, err := l.Events(ctx, a, 1); err != nil || len(tail) != 2 || tail[0] != "e2" || tail[1] != "e3" {
+		t.Fatalf("entity a events from position 1 = %v (%v), want [e2 e3]", tail, err)
+	}
+	gotB, err := l.Events(ctx, b, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
