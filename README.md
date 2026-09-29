@@ -520,7 +520,8 @@ a turn pauses (approval / `Interrupt`), `Send` returns that error; resolve it an
 with the same input to resume. Until then, `Send` with a different message returns `ErrConfig`: the
 open turn belongs to its message. For inbound messages that may be redelivered, `SendOnce(ctx, id,
 text)` answers each message id once. Several handles on one session never lose a turn or answer
-one message with another's reply.
+one message with another's reply. A turn resumed after a crash is seeded with the same transcript
+it started with, even if other messages were answered in between.
 
 ## Auditability (tamper-evident journal)
 

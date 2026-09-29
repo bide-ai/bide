@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -21,7 +22,9 @@ import (
 // journal under "<id>" records which message started each Send turn and each completed turn's
 // (input, answer) so the transcript can be rebuilt. Intermediate tool calls stay in the
 // turn's journal and are NOT carried into later turns — the conversational memory is the
-// question/answer transcript, not every tool call.
+// question/answer transcript, not every tool call. Each turn also journals the transcript it
+// started from (as "from/<turn run>"), so a turn resumed after a crash is seeded with exactly the
+// turns its earlier model calls saw, even if other messages were answered in between.
 //
 // A turn belongs to the message that started it: while a Send turn is unfinished, Send with a
 // different message is ErrConfig rather than resuming that turn. Several handles on one session
@@ -38,6 +41,7 @@ type Session struct {
 	// never while a turn's run is in progress.
 	mu      sync.Mutex
 	history []Message // alternating user / final-assistant messages
+	chain   []string  // chain[n] is the digest of the first n recorded turns
 	turns   int
 	keyed   map[string]turnRecord // completed SendOnce turns by key
 	starts  int                   // Send turns started (start/N records)
@@ -60,8 +64,28 @@ type turnStart struct {
 	Claim string `json:"claim"`
 }
 
-func sessionTurnStep(n int) string  { return "turn/" + strconv.Itoa(n) }
-func sessionStartStep(n int) string { return "start/" + strconv.Itoa(n) }
+// turnFrom is the journaled starting point of a turn: it was seeded with the session's first
+// Turns recorded turns, whose chained digest (see chainTurn) is Digest.
+type turnFrom struct {
+	Turns  int    `json:"turns"`
+	Digest string `json:"digest"`
+}
+
+func sessionTurnStep(n int) string        { return "turn/" + strconv.Itoa(n) }
+func sessionStartStep(n int) string       { return "start/" + strconv.Itoa(n) }
+func sessionFromStep(runID string) string { return "from/" + runID }
+
+// chainTurn extends the digest of the turns before tr with tr. It hashes the run ID and claim,
+// which identify the exact record written, rather than its encoding, which a store may change.
+func chainTurn(prev string, tr turnRecord) string {
+	h := sha256.New()
+	for _, f := range []string{prev, tr.RunID, tr.Claim} {
+		h.Write([]byte(strconv.Itoa(len(f))))
+		h.Write([]byte{':'})
+		h.Write([]byte(f))
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
 
 func newClaim() (string, error) {
 	var b [16]byte
@@ -100,7 +124,7 @@ func (s *Session) reload(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("session %s: load transcript: %w (%w)", s.id, err, ErrStorage)
 	}
-	s.history, s.turns, s.keyed, s.starts, s.open = nil, 0, map[string]turnRecord{}, 0, nil
+	s.history, s.chain, s.turns, s.keyed, s.starts, s.open = nil, []string{""}, 0, map[string]turnRecord{}, 0, nil
 	byName := make(map[string]Record, len(recs))
 	for _, r := range recs {
 		if r.Kind == StepValue {
@@ -118,6 +142,7 @@ func (s *Session) reload(ctx context.Context) error {
 			return fmt.Errorf("session %s: decode turn %d: %w (%w)", s.id, s.turns, err, ErrProtocol)
 		}
 		s.history = append(s.history, UserText(tr.Input), tr.Answer)
+		s.chain = append(s.chain, chainTurn(s.chain[s.turns], tr))
 		if tr.Key != "" {
 			s.keyed[tr.Key] = tr
 		}
@@ -244,10 +269,10 @@ func (s *Session) keyedTurn(ctx context.Context, key string) (turnRecord, bool, 
 
 // runTurn drives the turn's run and appends the completed turn to the transcript.
 func (s *Session) runTurn(ctx context.Context, runID, key, input string) (Message, error) {
-	s.mu.Lock()
-	seed := make([]Message, 0, len(s.history)+1)
-	seed = append(seed, s.history...)
-	s.mu.Unlock()
+	seed, err := s.turnSeed(ctx, runID)
+	if err != nil {
+		return Message{}, err
+	}
 	seed = append(seed, UserText(input))
 
 	answer, _, _, err := s.agent.run(ctx, runID, seed, false, nil)
@@ -266,6 +291,41 @@ func (s *Session) runTurn(ctx context.Context, runID, key, input string) (Messag
 		return answer, err
 	}
 	return answer, s.reload(ctx)
+}
+
+// turnSeed returns the transcript the turn run runID is seeded with. The first time the turn runs,
+// it is the transcript this handle holds, and that starting point is journaled before the run
+// makes any model call; every later attempt, on any handle, is seeded from the journaled one.
+// A turn begun by a version that journaled no starting point is seeded, as it was then, from the
+// transcript this handle holds when it resumes.
+func (s *Session) turnSeed(ctx context.Context, runID string) ([]Message, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	b, err := json.Marshal(turnFrom{Turns: s.turns, Digest: s.chain[s.turns]})
+	if err != nil {
+		return nil, fmt.Errorf("session %s: encode turn start point: %w (%w)", s.id, err, ErrConfig)
+	}
+	name := sessionFromStep(runID)
+	got, err := s.agent.store.Do(ctx, s.id, name, func(context.Context) (Record, error) {
+		return Record{Kind: StepValue, Result: b}, nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("session %s: record %s: %w (%w)", s.id, name, err, ErrStorage)
+	}
+	var from turnFrom
+	if err := json.Unmarshal(got.Result, &from); err != nil {
+		return nil, fmt.Errorf("session %s: decode %s: %w (%w)", s.id, name, err, ErrProtocol)
+	}
+	if from.Turns > s.turns { // another handle started the turn having seen more of the journal
+		if err := s.reload(ctx); err != nil {
+			return nil, err
+		}
+	}
+	if from.Turns < 0 || from.Turns > s.turns || s.chain[from.Turns] != from.Digest {
+		return nil, fmt.Errorf("session %s: %s names %d turns the journal does not hold: %w", s.id, name, from.Turns, ErrProtocol)
+	}
+	seed := make([]Message, 0, 2*from.Turns+1)
+	return append(seed, s.history[:2*from.Turns]...), nil
 }
 
 // appendTurn records rec at the next free turn index. A slot another handle filled first is
