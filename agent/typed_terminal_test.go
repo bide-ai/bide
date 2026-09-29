@@ -77,19 +77,32 @@ func TestRunTyped_AnswerIsTheAcceptedCall(t *testing.T) {
 	}
 }
 
-// A final_answer call with no arguments is the answer the tool accepted, the zero value. It is
-// not replaced by whatever prose the model wrote.
+// optionalAnswer has no required field, so a final_answer call with no arguments is accepted.
+type optionalAnswer struct {
+	Name string `json:"name,omitempty"`
+}
+
+// A final_answer call with no arguments, for a T with no required field, is the answer the tool
+// accepted, the zero value. It is not replaced by whatever prose the model wrote.
 func TestRunTyped_EmptyFinalAnswerIsNotReplacedByProse(t *testing.T) {
 	m := eventTurnsModel{
 		{ToolCallDelta{Index: 0, ID: "f1", Name: finalAnswerTool}, Finish{Reason: "tool_use"}},
 		{TextDelta{Text: `{"name":"from prose"}`}, Finish{Reason: "stop"}},
 	}
-	got, err := RunTyped[typedAnswer](context.Background(), New(m, NewMemStore()), "r", "go")
+	store := NewMemStore()
+	got, err := RunTyped[optionalAnswer](context.Background(), New(m, store), "r", "go")
 	if err != nil {
 		t.Fatalf("RunTyped: %v", err)
 	}
-	if got != (typedAnswer{}) {
+	if got != (optionalAnswer{}) {
 		t.Fatalf("RunTyped = %+v, want the zero answer the final_answer call carried", got)
+	}
+	// The call's empty arguments are journaled as the empty object the tool decoded.
+	recs, _ := store.History(context.Background(), "r")
+	for _, r := range recs {
+		if r.Kind == StepToolResult && r.ToolUseID == "f1" && string(r.Result) != `{"accepted":{}}` {
+			t.Fatalf("final_answer result = %s, want {\"accepted\":{}}", r.Result)
+		}
 	}
 }
 

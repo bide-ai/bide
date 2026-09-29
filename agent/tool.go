@@ -1,10 +1,12 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 
+	"github.com/bide-ai/bide/internal/strictjson"
 	"github.com/bide-ai/bide/schema"
 )
 
@@ -74,10 +76,14 @@ func (s Safety) retriableOnResume() bool {
 // resume, and the one tool middleware applies before retrying a call (see ToolSafety).
 func (s Safety) RetrySafe() bool { return s.retriableOnResume() }
 
-// Func wraps a typed Go function into a Tool. In is JSON-decoded from the args; the
-// return value is JSON-encoded. This is the compile-time-typed ergonomic: change In
-// and the handler won't compile. The Tool interface itself stays untyped so a map of
-// mixed tools (and runtime MCP tools) works.
+// Func wraps a typed Go function into a Tool. In is decoded from the args strictly, so the
+// tool reads exactly what the model sent: a missing required field (one schema.For lists as
+// required), an unknown name or a case variant of a field's name, a duplicate name, data after
+// the value, invalid UTF-8, or an escaped lone surrogate is ErrToolArgs, which goes back to the
+// model as a tool error to correct. Empty args are the empty object. The return value is
+// JSON-encoded. This is the compile-time-typed ergonomic: change In and the
+// handler won't compile. The Tool interface itself stays untyped so a map of mixed tools (and
+// runtime MCP tools) works.
 //
 // Func panics, as New does for a missing model, if schema.For cannot describe In: such a type
 // (a field reached through an embedded pointer to an unexported struct) could never be decoded
@@ -106,14 +112,30 @@ func (t *funcTool[In, Out]) ArgsSchema() json.RawMessage { return t.argsSchema }
 
 func (t *funcTool[In, Out]) Call(ctx context.Context, args json.RawMessage) (json.RawMessage, error) {
 	var in In
-	if len(args) > 0 {
-		if err := json.Unmarshal(args, &in); err != nil {
-			return nil, fmt.Errorf("decode args for tool %q: %w (%w)", t.name, err, ErrToolArgs)
-		}
+	if err := decodeArgs(args, &in); err != nil {
+		return nil, fmt.Errorf("decode args for tool %q: %w (%w)", t.name, err, ErrToolArgs)
 	}
 	out, err := t.fn(ctx, in)
 	if err != nil {
 		return nil, err
 	}
 	return marshalJournal(out) // not HTML-escaped: the model reads this JSON text as written
+}
+
+// argsOptions check tool arguments against the fields schema.For describes: exact names, and
+// every field the schema lists as required.
+var argsOptions = &strictjson.Options{Fields: strictjson.SchemaFields}
+
+// decodeArgs decodes a tool call's arguments into v (a pointer) strictly, so the value holds
+// exactly what the arguments say. It rejects what encoding/json would accept loosely: a missing
+// required field (one schema.For lists as required: not a pointer, and no omitempty or omitzero
+// in its json tag), a name that is not a field (an unknown name, or a case variant of a field's
+// name), a duplicate name, data after the value, invalid UTF-8, and an escaped lone surrogate.
+// Empty arguments are the empty object. Func, SubAgent, and RunTyped's final_answer decode their
+// arguments with it.
+func decodeArgs(args json.RawMessage, v any) error {
+	if len(bytes.TrimSpace(args)) == 0 {
+		args = json.RawMessage("{}")
+	}
+	return strictjson.Unmarshal(args, v, argsOptions)
 }

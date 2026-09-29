@@ -182,8 +182,45 @@ func (legacyAnswerTool) Safety() Safety              { return Safety{ReadOnly: t
 func (legacyAnswerTool) ArgsSchema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
 func (legacyAnswerTool) Call(_ context.Context, args json.RawMessage) (json.RawMessage, error) {
 	var v typedAnswer
-	if err := json.Unmarshal(args, &v); err != nil {
-		return nil, err
+	if len(args) > 0 { // empty arguments were the zero value
+		if err := json.Unmarshal(args, &v); err != nil {
+			return nil, err
+		}
 	}
 	return json.RawMessage(`{}`), nil
+}
+
+// An older journal whose final_answer call had no arguments answers the zero value, as the older
+// tool accepted it.
+func TestRunTyped_EmptyAnswerFromAnOlderJournal(t *testing.T) {
+	store := NewMemStore()
+	m := &countModel{inner: eventTurnsModel{{ToolCallDelta{Index: 0, ID: "f1", Name: finalAnswerTool}, Finish{Reason: "tool_use"}}}}
+	old := New(m, store).cloneWith(legacyAnswerTool{})
+	old.terminalTool = finalAnswerTool
+	if _, err := old.Run(context.Background(), "r", "go"); err != nil {
+		t.Fatalf("old run: %v", err)
+	}
+	got, err := RunTyped[typedAnswer](context.Background(), New(m, store), "r", "go")
+	if err != nil || got != (typedAnswer{}) || m.calls.Load() != 1 {
+		t.Fatalf("RunTyped over an older journal = %+v, %v after %d model calls; want the zero answer after 1", got, err, m.calls.Load())
+	}
+}
+
+// The journaled final_answer result is read strictly too: a tool middleware that rewrites it into
+// something other than one accepted answer makes the answer ErrProtocol, not a guess.
+func TestRunTyped_RewrittenResultIsReadStrictly(t *testing.T) {
+	for _, result := range []string{`{"accepted":{"name":"a"},"extra":1}`, `{"Accepted":{"name":"a"}}`, `{"accepted":{"name":"a","x":1}}`} {
+		m := NewScriptedModel(ToolTurn("f1", finalAnswerTool, `{"name":"a"}`))
+		a := New(m, NewMemStore()).UseTool(func(next ToolHandler) ToolHandler {
+			return func(ctx context.Context, tu ToolUse) (json.RawMessage, error) {
+				if _, err := next(ctx, tu); err != nil {
+					return nil, err
+				}
+				return json.RawMessage(result), nil
+			}
+		})
+		if got, err := RunTyped[typedAnswer](context.Background(), a, "r", "go"); !errors.Is(err, ErrProtocol) {
+			t.Errorf("result %s: RunTyped = %+v, %v; want ErrProtocol", result, got, err)
+		}
+	}
 }

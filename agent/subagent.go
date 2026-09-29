@@ -46,10 +46,8 @@ func (t *subAgentTool) Safety() Safety { return Safety{Idempotent: true} }
 
 func (t *subAgentTool) Call(ctx context.Context, args json.RawMessage) (json.RawMessage, error) {
 	var in subAgentArgs
-	if len(args) > 0 {
-		if err := json.Unmarshal(args, &in); err != nil {
-			return nil, err
-		}
+	if err := decodeArgs(args, &in); err != nil {
+		return nil, fmt.Errorf("decode args for sub-agent %q: %w (%w)", t.name, err, ErrToolArgs)
 	}
 	subRunID := RunScope(ctx) // parentRunID/toolUseID: stable and unique per call site
 	if subRunID == "" {
