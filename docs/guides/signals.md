@@ -72,6 +72,12 @@ instant rather than restarting the clock. While neither side has resolved, `Awai
 `*Awaiting` and pauses the run, exactly like `Await`. This is the ambient "wait for X, but give
 up after D" case, and it survives a crash.
 
+The outcome is journaled the first time either side wins, so it is decided once. If the tool
+re-runs after the await resolved (it pauses later, or the process dies before the tool's result
+is recorded), `AwaitFor` returns the recorded outcome: a signal that arrives after the timeout
+won does not switch the call to the signal branch. Inside a sub-agent, the deadline wake is
+scheduled for the top-level run, which re-enters the sub-agent on resume.
+
 ## Ordered channels: Send / Receive / Ack
 
 A channel is the multi-message form of a signal: an ordered, per-run stream you consume

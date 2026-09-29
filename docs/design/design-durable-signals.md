@@ -92,10 +92,13 @@ func (e *Awaiting) Error() string // "run <id> awaiting signal <name>"
 - **Single-shot delivery:** `Do(runID, "signal:"+name, ...)` records `Record{Kind:
   StepSignal, Result: payload}`. Idempotent by name. `Await` scans `History` for
   `"signal:"+name`: present decodes and returns; absent returns `*Awaiting`.
-- **AwaitFor:** journals a companion deadline through the existing `Sleep` mechanism
-  (`timer:await-timeout:<name>`). On each entry: if the signal is present, return
-  `(v, true)`; else if the timer is due, return `(zero, false)`; else schedule the waker
-  and return `*Awaiting`. It is `Await` and `Sleep` composed, nothing new.
+- **AwaitFor:** journals a companion deadline (`await-timeout:<name>`, the same pattern as
+  `Sleep`'s wake time), then resolves the race through one more named step,
+  `await-resolved:<name>`: if the signal is present it records `(v, true)`; else if the
+  deadline has passed it records `(zero, false)`; else it records nothing, schedules the
+  waker for the top-level run, and returns `*Awaiting`. Once the outcome is recorded every
+  later entry returns it, so a signal delivered after the timeout won cannot flip a re-run
+  tool to the signal branch.
 - **Ordered channel (shipped, explicit-Ack):** `Send` records `"chan:"+channel+":"+key`
   (`StepSignal`), deduped by that name so a redelivery is a no-op. `Ack` records
   `"chanack:"+channel+":"+key` (`StepValue`). `Receive` scans `History`, collects the acked
