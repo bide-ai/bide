@@ -92,5 +92,5 @@ func (t *subAgentTool) Call(ctx context.Context, args json.RawMessage) (json.Raw
 	if out.err != nil {
 		return nil, out.err // SagaAborted / ResumeHalt / PendingApproval / cancellation propagate up
 	}
-	return json.Marshal(firstText(out.msg))
+	return marshalJournal(firstText(out.msg)) // not HTML-escaped: the parent model reads it as written
 }

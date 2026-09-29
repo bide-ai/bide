@@ -20,7 +20,6 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
-	"encoding/json"
 	"fmt"
 
 	"github.com/bide-ai/bide/agent"
@@ -30,7 +29,8 @@ import (
 var domain = sha256.Sum256([]byte("bide.audit.v1"))
 
 // Head returns the hash-chain commitment to runID's journal: head_0 = H(domain), and
-// head_i = H(head_{i-1} || canonical(record_i)) over the records in persisted order. Two
+// head_i = H(head_{i-1} || canonical(record_i)) over the records in persisted order, where
+// canonical is agent.EncodeRecord: the bytes the store persisted for the record. Two
 // runs produce the same head iff their journals are byte-identical in the same order, so
 // the head is a deterministic fingerprint of the entire execution history.
 func Head(ctx context.Context, store agent.Durable, runID string) ([]byte, error) {
@@ -40,7 +40,7 @@ func Head(ctx context.Context, store agent.Durable, runID string) ([]byte, error
 	}
 	head := domain[:]
 	for i, r := range recs {
-		b, err := json.Marshal(r)
+		b, err := agent.EncodeRecord(r)
 		if err != nil {
 			return nil, fmt.Errorf("audit: canonicalize record %d: %w", i, err)
 		}

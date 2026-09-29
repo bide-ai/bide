@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"encoding/json"
 	"fmt"
 
 	"github.com/bide-ai/bide/agent"
@@ -100,13 +99,15 @@ func verifyPath(root, leaf []byte, index, size int, path [][]byte) bool {
 	return sn == 0 && bytes.Equal(r, root)
 }
 
-// canonicalRecord is the leaf encoding of one journal record: its JSON, refused for a record with
-// invalid UTF-8 (see checkUTF8), whose JSON would collide with another record's.
+// canonicalRecord is the leaf encoding of one journal record: its journal encoding
+// (agent.EncodeRecord), which is exactly the bytes a store persisted for it, so a proof commits to
+// what the journal holds. A record with invalid UTF-8 in a string field is refused (see
+// checkUTF8): encoding replaces those bytes, so its leaf would collide with another record's.
 func canonicalRecord(r agent.Record) ([]byte, error) {
 	if err := checkUTF8(r); err != nil {
 		return nil, err
 	}
-	return json.Marshal(r)
+	return agent.EncodeRecord(r)
 }
 
 func canonicalLeaves(recs []agent.Record) ([][]byte, error) {

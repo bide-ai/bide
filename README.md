@@ -459,8 +459,9 @@ w, err := agent.RunTyped[Weather](ctx, a, runID, "weather in SF?")
 
 It's a package function, not a method (Go methods can't add type parameters). The value is
 decoded from the *journaled* tool call, so it's **resume-safe**: a crash mid-run recovers the
-typed answer from the log on resume. If the model replies in plain JSON text instead of calling
-the tool, `RunTyped` falls back to parsing that text. `T` is meant to be a struct.
+typed answer from the log on resume. The first `final_answer` call the tool accepts ends the run.
+Only if the model never makes one (it replies in plain JSON text instead) does `RunTyped` parse
+that text. `T` is meant to be a struct.
 
 On OpenAI-compatible providers with strict structured outputs, `RunTypedNative[T]` uses the
 provider's native JSON-schema response format instead of the tool (schema enforced provider-side,

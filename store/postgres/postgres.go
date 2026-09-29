@@ -8,7 +8,6 @@ package postgres
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"time"
 
@@ -48,18 +47,32 @@ func Open(ctx context.Context, dsn string) (*Store, error) {
 	return s, nil
 }
 
-// stepsTable is the journal table. data holds each record's JSON as written (text, not jsonb:
-// jsonb reorders object keys and rejects the \u0000 escape, so a record would not come back
-// byte for byte, or not be stored at all). seq is unique per run, so History has one order.
+// stepsTable is the journal table. data holds each record's journal encoding (agent.EncodeRecord)
+// byte for byte, as bytea. Not jsonb, which reorders object keys and rejects the NUL escape, and
+// not text, which rejects invalid UTF-8: a tool may return JSON with invalid UTF-8 inside a string,
+// MemStore and SQLite record it, and refusing it here would fail the step after the tool's side
+// effect already happened. seq is unique per run, so History has one order.
 const stepsTable = "bide_steps"
 
+// migrateLock is the advisory lock key that serializes schema migration across nodes opening the
+// store at once ("bide" in ASCII).
+const migrateLock = 0x62696465
+
 func (s *Store) migrate(ctx context.Context) error {
-	_, err := s.db.ExecContext(ctx, `
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock($1)`, migrateLock); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
 		CREATE TABLE IF NOT EXISTS bide_steps (
 			run_id text   NOT NULL,
 			seq    bigint NOT NULL,
 			name   text   NOT NULL,
-			data   text   NOT NULL,
+			data   bytea  NOT NULL,
 			PRIMARY KEY (run_id, name),
 			UNIQUE (run_id, seq)
 		);
@@ -67,8 +80,23 @@ func (s *Store) migrate(ctx context.Context) error {
 			run_id text        PRIMARY KEY,
 			holder text        NOT NULL,
 			expiry timestamptz NOT NULL
-		);`)
-	return err
+		);`); err != nil {
+		return err
+	}
+	// A journal created while data was text is converted in place. Its rows are valid UTF-8 (text
+	// admits nothing else), and convert_to keeps their bytes exactly.
+	var typ string
+	if err := tx.QueryRowContext(ctx, `
+		SELECT data_type FROM information_schema.columns
+		WHERE table_schema = current_schema() AND table_name = 'bide_steps' AND column_name = 'data'`).Scan(&typ); err != nil {
+		return fmt.Errorf("inspect %s: %w", stepsTable, err)
+	}
+	if typ == "text" {
+		if _, err := tx.ExecContext(ctx, `ALTER TABLE bide_steps ALTER COLUMN data TYPE bytea USING convert_to(data, 'UTF8')`); err != nil {
+			return fmt.Errorf("convert %s.data to bytea: %w", stepsTable, err)
+		}
+	}
+	return tx.Commit()
 }
 
 func (s *Store) Close() error { return s.db.Close() }
@@ -78,12 +106,14 @@ func (s *Store) Close() error { return s.db.Close() }
 // nodes racing the same step converge on one recorded result.
 func (s *Store) Do(ctx context.Context, runID, name string, fn func(context.Context) (agent.Record, error)) (agent.Record, error) {
 	// Single-flight per (runID,name): concurrent in-process callers run fn ONCE. The
-	// INSERT ... ON CONFLICT DO NOTHING additionally dedupes across nodes (HA).
+	// INSERT ... ON CONFLICT DO NOTHING additionally dedupes across nodes (HA). The callers
+	// share the stored bytes, and each decodes its own copy below, so the record Do returns is
+	// the one History returns for this step, on the live path too.
 	v, err, _ := s.sf.Do(runID+"\x00"+name, func() (any, error) {
-		if rec, ok, e := s.load(ctx, runID, name); e != nil {
+		if data, ok, e := s.load(ctx, runID, name); e != nil {
 			return nil, e
 		} else if ok {
-			return rec, nil
+			return data, nil
 		}
 
 		rec, e := fn(ctx) // run outside any transaction (may do slow model/tool I/O)
@@ -92,7 +122,7 @@ func (s *Store) Do(ctx context.Context, runID, name string, fn func(context.Cont
 		}
 		rec.Name = name
 
-		data, e := json.Marshal(rec)
+		data, e := agent.EncodeRecord(rec)
 		if e != nil {
 			return nil, fmt.Errorf("marshal step %q: %w (%w)", name, e, agent.ErrStorage)
 		}
@@ -113,12 +143,12 @@ func (s *Store) Do(ctx context.Context, runID, name string, fn func(context.Cont
 			}
 			return existing, nil
 		}
-		return rec, nil
+		return data, nil
 	})
 	if err != nil {
 		return agent.Record{}, err
 	}
-	return v.(agent.Record), nil
+	return agent.DecodeRecord(v.([]byte))
 }
 
 // insert appends one step to runID's journal and reports whether it was written (0 when the
@@ -138,7 +168,7 @@ func (s *Store) insert(ctx context.Context, runID, name string, data []byte) (in
 		INSERT INTO bide_steps (run_id, seq, name, data)
 		VALUES ($1, (SELECT COALESCE(MAX(seq), -1) + 1 FROM bide_steps WHERE run_id = $1), $2, $3)
 		ON CONFLICT (run_id, name) DO NOTHING`,
-		runID, name, string(data))
+		runID, name, data)
 	if err != nil {
 		return 0, err
 	}
@@ -160,29 +190,26 @@ func (s *Store) History(ctx context.Context, runID string) ([]agent.Record, erro
 		if err := rows.Scan(&data); err != nil {
 			return nil, fmt.Errorf("scan step: %w (%w)", err, agent.ErrStorage)
 		}
-		var rec agent.Record
-		if err := json.Unmarshal(data, &rec); err != nil {
-			return nil, fmt.Errorf("unmarshal step: %w (%w)", err, agent.ErrStorage)
+		rec, err := agent.DecodeRecord(data)
+		if err != nil {
+			return nil, err
 		}
 		out = append(out, rec)
 	}
 	return out, rows.Err()
 }
 
-func (s *Store) load(ctx context.Context, runID, name string) (agent.Record, bool, error) {
+// load returns the stored encoding of the step (runID, name), if it is recorded.
+func (s *Store) load(ctx context.Context, runID, name string) ([]byte, bool, error) {
 	var data []byte
 	err := s.db.QueryRowContext(ctx, `SELECT data FROM bide_steps WHERE run_id = $1 AND name = $2`, runID, name).Scan(&data)
 	if err == sql.ErrNoRows {
-		return agent.Record{}, false, nil
+		return nil, false, nil
 	}
 	if err != nil {
-		return agent.Record{}, false, fmt.Errorf("load step %q: %w (%w)", name, err, agent.ErrStorage)
+		return nil, false, fmt.Errorf("load step %q: %w (%w)", name, err, agent.ErrStorage)
 	}
-	var rec agent.Record
-	if err := json.Unmarshal(data, &rec); err != nil {
-		return agent.Record{}, false, fmt.Errorf("unmarshal step %q: %w (%w)", name, err, agent.ErrStorage)
-	}
-	return rec, true, nil
+	return data, true, nil
 }
 
 // Runs implements agent.Lister: the distinct run IDs the store holds, so a crash-recovery

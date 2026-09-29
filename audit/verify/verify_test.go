@@ -13,8 +13,9 @@ import (
 
 // The standalone verifier must agree, bit for bit, with the full audit package on the same
 // proofs; that cross-check is what licenses the intentional duplication. It also must depend
-// on nothing but the record's canonical leaf bytes (json.Marshal of the record), never the
-// typed record, so a third party can verify without the SDK.
+// on nothing but the record's canonical leaf bytes (agent.EncodeRecord of the record, which is
+// exactly what a store persists), never the typed record, so a third party can verify without
+// the SDK.
 
 func journal(t *testing.T) (agent.Durable, string) {
 	t.Helper()
@@ -26,14 +27,21 @@ func journal(t *testing.T) (agent.Durable, string) {
 			t.Fatalf("step %d: %v", i, err)
 		}
 	}
+	// A tool result whose JSON carries HTML-significant characters: the leaf is the journal's
+	// bytes for it, which keep them as written.
+	if _, err := store.Do(ctx, "run", "c1", func(context.Context) (agent.Record, error) {
+		return agent.Record{Kind: agent.StepToolResult, ToolUseID: "c1", Result: json.RawMessage(`{"html":"<b>a & b</b>"}`)}, nil
+	}); err != nil {
+		t.Fatalf("tool result: %v", err)
+	}
 	return store, "run"
 }
 
 func leafBytes(t *testing.T, rec agent.Record) []byte {
 	t.Helper()
-	b, err := json.Marshal(rec)
+	b, err := agent.EncodeRecord(rec)
 	if err != nil {
-		t.Fatalf("marshal record: %v", err)
+		t.Fatalf("encode record: %v", err)
 	}
 	return b
 }

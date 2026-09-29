@@ -92,11 +92,11 @@ func TestRunTyped_WithWorkTool(t *testing.T) {
 // The typed value is recovered from the journal on resume — a crash after the
 // final_answer call is recorded still yields the value.
 func TestRunTyped_ResumeSafe(t *testing.T) {
-	store := NewMemStore()
+	// The accepted final_answer ends the run, so the crash comes as the run is marked complete.
+	store := &failOnceStore{MemStore: NewMemStore(), name: runCompleteStep}
 
 	crashy := &scriptModel{turns: [][]Emit{
 		toolTurn("c1", "final_answer", `{"answer":"42","score":9}`),
-		errTurn(errCrash),
 	}}
 	if _, err := RunTyped[answer](context.Background(), New(crashy, store), "r", "q"); err == nil {
 		t.Fatal("expected crash on first attempt")

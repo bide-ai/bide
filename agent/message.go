@@ -138,7 +138,7 @@ func (m Message) MarshalJSON() ([]byte, error) {
 		}
 		w.Parts = append(w.Parts, b)
 	}
-	return json.Marshal(w)
+	return marshalJournal(w)
 }
 
 func (m *Message) UnmarshalJSON(b []byte) error {
@@ -180,7 +180,7 @@ func marshalPart(p Part) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	inner, err := json.Marshal(p)
+	inner, err := marshalJournal(p)
 	if err != nil {
 		return nil, err
 	}
@@ -189,7 +189,7 @@ func marshalPart(p Part) ([]byte, error) {
 		return nil, err
 	}
 	fields["type"], _ = json.Marshal(kind)
-	return json.Marshal(fields)
+	return marshalJournal(fields)
 }
 
 func unmarshalPart(raw []byte) (Part, error) {
