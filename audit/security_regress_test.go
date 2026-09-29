@@ -439,12 +439,12 @@ func TestEarnedAuthority_DemotionRevokesOldGrant(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	current := func() ProofBundle {
+	current := func() CurrentGrantProof {
 		th, err := NewTreeHead(ctx, ledger, "ledger", 1)
 		if err != nil {
 			t.Fatal(err)
 		}
-		pb, err := ProveCurrentGrant(ctx, ledger, "ledger", SignTreeHead(th, logPriv))
+		pb, err := ProveCurrentGrant(ctx, ledger, "ledger", SignTreeHead(th, logPriv), 0)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -455,20 +455,20 @@ func TestEarnedAuthority_DemotionRevokesOldGrant(t *testing.T) {
 		t.Fatal(err)
 	}
 	high := ea.Grant()
-	if ok, err := VerifyCurrentGrant(high, current(), logPub); !ok {
+	if ok, err := VerifyCurrentGrant(high, "ledger", current(), nil, logPub); !ok {
 		t.Fatalf("the promoted grant is not current: %v", err)
 	}
-	if ok, _ := VerifyCurrentGrant(low, current(), logPub); ok {
+	if ok, _ := VerifyCurrentGrant(low, "ledger", current(), nil, logPub); ok {
 		t.Fatal("the baseline grant is still current after promotion")
 	}
 	if _, err := ea.FlagAnomaly(ctx); err != nil {
 		t.Fatal(err)
 	}
 	demoted := ea.Grant()
-	if ok, err := VerifyCurrentGrant(demoted, current(), logPub); !ok {
+	if ok, err := VerifyCurrentGrant(demoted, "ledger", current(), nil, logPub); !ok {
 		t.Fatalf("the demoted grant is not current: %v", err)
 	}
-	if ok, _ := VerifyCurrentGrant(high, current(), logPub); ok {
+	if ok, _ := VerifyCurrentGrant(high, "ledger", current(), nil, logPub); ok {
 		t.Fatalf("after demotion to limit %d, the limit %s grant is still current", ea.Limit(), high.Grant.Scope["limit"])
 	}
 	// The demoted grant is a new issue, not the old baseline one, so the old baseline stays superseded.
@@ -484,11 +484,11 @@ func TestEarnedAuthority_DemotionRevokesOldGrant(t *testing.T) {
 	}
 	// A proof from another ledger head or signed by another key does not count.
 	pb := current()
-	pb.Inclusion.Index = 0
-	if ok, _ := VerifyCurrentGrant(demoted, pb, logPub); ok {
+	pb.Leaf.Inclusion.Index = 0
+	if ok, _ := VerifyCurrentGrant(demoted, "ledger", pb, nil, logPub); ok {
 		t.Fatal("a tampered current-grant proof verified")
 	}
-	if ok, _ := VerifyCurrentGrant(demoted, current(), pub); ok {
+	if ok, _ := VerifyCurrentGrant(demoted, "ledger", current(), nil, pub); ok {
 		t.Fatal("a current-grant proof verified under the wrong log key")
 	}
 }
@@ -946,7 +946,7 @@ func TestEarnedAuthority_OldLeafIsNotCurrent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ok, _ := VerifyCurrentGrant(first, old, logPub); ok {
+	if ok, _ := VerifyCurrentGrant(first, "ledger", CurrentGrantProof{Leaf: old}, nil, logPub); ok {
 		t.Fatal("a superseded grant verified as current from a proof of its (non-last) ledger leaf")
 	}
 }

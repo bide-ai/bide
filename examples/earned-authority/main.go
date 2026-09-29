@@ -52,17 +52,27 @@ func main() {
 		panic(err)
 	}
 
-	// isCurrent checks a grant against the ledger's latest signed head, as an offline verifier does.
+	// isCurrent checks a grant against the ledger's latest signed head, as an offline verifier does:
+	// the head must extend the last head the verifier saw, which it then remembers.
+	var lastSeen *audit.SignedTreeHead
 	isCurrent := func(sg audit.SignedGrant) bool {
 		th, err := audit.NewTreeHead(ctx, ledger, ledgerRun, 1)
 		if err != nil {
 			panic(err)
 		}
-		proof, err := audit.ProveCurrentGrant(ctx, ledger, ledgerRun, audit.SignTreeHead(th, logPriv))
+		head := audit.SignTreeHead(th, logPriv)
+		seenSize := 0
+		if lastSeen != nil {
+			seenSize = lastSeen.Size
+		}
+		proof, err := audit.ProveCurrentGrant(ctx, ledger, ledgerRun, head, seenSize)
 		if err != nil {
 			panic(err)
 		}
-		ok, _ := audit.VerifyCurrentGrant(sg, proof, logPub)
+		ok, _ := audit.VerifyCurrentGrant(sg, ledgerRun, proof, lastSeen, logPub)
+		if ok {
+			lastSeen = &head
+		}
 		return ok
 	}
 	verify := func() string {

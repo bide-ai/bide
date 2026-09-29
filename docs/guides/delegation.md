@@ -149,17 +149,25 @@ names its ledger position, so re-reaching a rung issues a new grant rather than 
 one.) A verifier checks a grant against the latest signed head of the ledger run:
 
 ```go
-proof, _ := audit.ProveCurrentGrant(ctx, ledger, "ledger/agent-1", latestLedgerSTH)
-ok, err := audit.VerifyCurrentGrant(grant, proof, logPub) // the grant is the ledger's last leaf
+// lastSeen is the newest ledger head this verifier has verified before; on first contact pass
+// size 0 and a nil lastSeen.
+proof, _ := audit.ProveCurrentGrant(ctx, ledger, "ledger/agent-1", latestLedgerSTH, lastSeen.Size)
+ok, err := audit.VerifyCurrentGrant(grant, "ledger/agent-1", proof, lastSeen, logPub)
 ```
 
-`VerifyCurrentGrant` requires the proof to verify under the log key, its record to be the anchored
-leaf of exactly this grant, and that leaf to be the last one (index `Size-1`) of the signed ledger.
-The verifier learns the latest ledger head the way it learns any run's state: from the anchor log
-(anchor the ledger through an `AuditedStore`, or sign and publish its heads), checking consistency
-between the heads it has seen so the ledger cannot be rolled back to a superseded grant. A proof
-against an older head shows only that the grant was current then. Combine it with
-`VerifyDelegationChain` (the grant descends from the root) and `Grant.Expired` (it is in date).
+`VerifyCurrentGrant` requires the proof to be about the named ledger run (a grant that is the last
+leaf of some other run signed by the same key, such as an agent run that records the grant it acts
+under, proves nothing), to verify under the log key, its record to be the anchored leaf of exactly
+this grant, and that leaf to be the last one (index `Size-1`) of the signed ledger head. When the
+verifier passes its last-seen ledger head, the proof must also carry a consistency proof showing
+the presented head extends it, so a head older than one the verifier already saw fails.
+
+The verifier learns the latest ledger head the way it learns any run's state: it takes the newest
+head of the ledger run from the anchor log (anchor the ledger through an `AuditedStore`, or sign
+and publish its heads), confirms the head is in the anchor log, and keeps the newest head it has
+verified as `lastSeen` for its next check. Without a last-seen head, a proof against an older head
+shows only that the grant was current then. Combine it with `VerifyDelegationChain` (the grant
+descends from the root) and `Grant.Expired` (it is in date).
 
 The asymmetry is the safety property: promotion is slow, capped, and evidence-gated; attenuation
 (the anomaly reset) is immediate and ungated, because shrinking authority is always safe. It is

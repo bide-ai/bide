@@ -608,7 +608,9 @@ the earned limit provably never exceeds the root ceiling (every earned grant pas
 the root principal authorized). A demotion takes the higher grant out of use at once: every issued
 grant is appended to a ledger run, and only the ledger's last leaf is current
 (`ProveCurrentGrant` / `VerifyCurrentGrant` against the ledger's latest signed head, which an offline
-verifier takes from the anchor log). The asymmetry is the safety property: promotion is slow,
+verifier takes from the anchor log; the proof must name the ledger run, and must extend the last
+ledger head the verifier saw, so neither another run's leaf nor an older head passes as current).
+The asymmetry is the safety property: promotion is slow,
 capped, and evidence-gated; attenuation is immediate and ungated, because shrinking authority is
 always safe. It is deliberately a durable, sequential controller rather than a convergent machine,
 because earning is temporal and order-dependent (a promotion does not commute with a compliant
