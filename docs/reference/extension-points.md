@@ -53,6 +53,10 @@ never read as a complete one. A turn ends with a `Finish` event, sent only once 
 has signalled the end of the turn: a stream that closes without one reads as
 `agent.ErrIncompleteResponse` (an `ErrModel`), so a response cut off partway fails the model
 call, which retry middleware can repeat, instead of being journaled as the model's answer.
+The `Finish` is the turn's last event: an event after it reads as `agent.ErrStreamProtocol`
+(an `ErrModel` and an `ErrProtocol`). An adapter sends it on the provider's end-of-turn signal
+only, never on usage alone, and fails with `agent.ErrStreamProtocol` on content the provider
+sends after that signal.
 `agent.NewStream` wraps a channel the caller fills itself, which suits a response buffered up
 front. `model/modeltest.Run` checks an HTTP adapter against this
 contract, including the truncation case.

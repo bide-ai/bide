@@ -691,9 +691,10 @@ Categories: `ErrConfig`, `ErrModel`, `ErrTool`, `ErrStorage`, `ErrProtocol`, `Er
 Conditions (each wraps a category): `ErrUnknownTool`, `ErrToolArgs` (wrap `ErrTool`),
 `ErrToolReinvoked`, `ErrInvalidApproval`, `ErrAlreadyDecided` (wrap `ErrConfig`),
 `ErrNoRecordedOutput`, `ErrIncompleteResponse` (wrap `ErrModel`), `ErrTruncatedToolArgs` (wraps
-`ErrProtocol`), `ErrBudgetExceeded`, `ErrMaxTurns` (wrap `ErrBudget`). Provider adapters also
-return `*RateLimited` (HTTP 429, with a `RetryAfter` hint) and `*APIError` (other non-2xx, with the
-`StatusCode`), both wrapping `ErrModel`. Every error the
+`ErrProtocol`), `ErrStreamProtocol` (wraps `ErrProtocol` and `ErrModel`), `ErrBudgetExceeded`,
+`ErrMaxTurns` (wrap `ErrBudget`). Provider adapters also return `*RateLimited` (HTTP 429, with a
+`RetryAfter` hint) and `*APIError` (other non-2xx, with the `StatusCode`), both wrapping
+`ErrModel`. Every error the
 toolkit returns (including from the model, MCP, store, and governance adapters) carries a category,
 so `errors.Is` is reliable across the whole surface.
 

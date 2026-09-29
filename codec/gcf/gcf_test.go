@@ -49,6 +49,20 @@ func TestEncodeToolResult_InvalidJSON(t *testing.T) {
 	}
 }
 
+// A tool result is one JSON value. Input with a second value after the first is an error, so the
+// caller falls back to JSON; encoding only the first would drop the rest from what the model reads.
+func TestEncodeToolResult_TrailingDataIsAnError(t *testing.T) {
+	for _, raw := range []string{`{"a":1} {"b":2}`, `[1][2]`, `""0`, `1 2`, `null null`, `{"a":1}]`} {
+		if out, err := New().EncodeToolResult(json.RawMessage(raw)); err == nil {
+			t.Errorf("EncodeToolResult(%q) = %q, want an error (trailing data)", raw, out)
+		}
+	}
+	// Surrounding whitespace is not data.
+	if _, err := New().EncodeToolResult(json.RawMessage(" {\"a\":1}\n\t ")); err != nil {
+		t.Errorf("whitespace around one value: %v", err)
+	}
+}
+
 // normalize re-encodes through JSON so numeric types (int vs float64) and map
 // key ordering compare equal regardless of the decoder that produced them.
 func normalize(v any) any {

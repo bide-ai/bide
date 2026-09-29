@@ -314,18 +314,14 @@ func verifyGovernedAction(args []string) {
 	}
 
 	// (3) the action's embedded policy digest matches the anchored policy leaf's digest.
-	var actionPayload struct {
-		PolicyDigest string `json:"policy_digest"`
-	}
-	if err := json.Unmarshal(action.Record.Result, &actionPayload); err != nil {
+	actionDigest, err := governedPolicyDigest(action.Record.Result)
+	if err != nil {
 		fatal(fmt.Errorf("action result is not a governed-action payload: %w", err))
 	}
 	var pc audit.PolicyContent
-	if err := json.Unmarshal(policy.Record.Result, &pc); err != nil {
-		fatal(fmt.Errorf("policy bundle is not a policy leaf: %w", err))
-	}
-	if actionPayload.PolicyDigest == "" || actionPayload.PolicyDigest != pc.Digest {
-		fmt.Printf("FAIL: action policy digest %q does not link to the anchored policy leaf %q\n", actionPayload.PolicyDigest, pc.Digest)
+	readLeaf(policy, &pc, "policy bundle is not a policy leaf")
+	if actionDigest == "" || actionDigest != pc.Digest {
+		fmt.Printf("FAIL: action policy digest %q does not link to the anchored policy leaf %q\n", actionDigest, pc.Digest)
 		os.Exit(1)
 	}
 
@@ -414,13 +410,9 @@ func verifyConvergence(args []string) {
 	// (3) the certificate certifies the same digest the policy leaf carries. The certificate is
 	// decoded into a local struct so the CLI imports neither gsm nor govern.
 	var cc audit.ConvergenceContent
-	if err := json.Unmarshal(certBundle.Record.Result, &cc); err != nil {
-		fatal(fmt.Errorf("certificate bundle is not a convergence leaf: %w", err))
-	}
+	readLeaf(certBundle, &cc, "certificate bundle is not a convergence leaf")
 	var pc audit.PolicyContent
-	if err := json.Unmarshal(policy.Record.Result, &pc); err != nil {
-		fatal(fmt.Errorf("policy bundle is not a policy leaf: %w", err))
-	}
+	readLeaf(policy, &pc, "policy bundle is not a policy leaf")
 	if cc.Digest == "" || cc.Digest != pc.Digest {
 		fmt.Printf("FAIL: certificate digest %q does not link to the anchored policy leaf %q\n", cc.Digest, pc.Digest)
 		os.Exit(1)
@@ -435,14 +427,8 @@ func verifyConvergence(args []string) {
 		os.Exit(1)
 	}
 
-	var cert struct {
-		Machine          string `json:"machine"`
-		Converges        bool   `json:"converges"`
-		MaxRepairLen     int    `json:"max_repair_len"`
-		States           int    `json:"states"`
-		CompensationFree bool   `json:"compensation_free"`
-	}
-	if err := json.Unmarshal(cc.Certificate, &cert); err != nil {
+	var cert confluenceCert
+	if err := audit.UnmarshalStrict(cc.Certificate, &cert); err != nil {
 		fatal(fmt.Errorf("convergence certificate payload: %w", err))
 	}
 	fragment := "governed (compensation-bearing)"
@@ -578,26 +564,13 @@ func verifyQuorum(args []string) {
 		fmt.Printf("FAIL: the tally bundle is step %q, not %q: it is not the tally of quorum %q\n", tally.Record.Name, want, *name)
 		os.Exit(1)
 	}
-	type vote struct {
-		Voter    string `json:"voter"`
-		Decision string `json:"decision"`
-	}
-	var rec struct {
-		Decision string `json:"decision"`
-		VotesFor int    `json:"votes_for"`
-		Total    int    `json:"total"`
-		Votes    []vote `json:"votes"`
-	}
-	if err := json.Unmarshal(tally.Record.Result, &rec); err != nil {
-		fatal(fmt.Errorf("tally bundle is not a quorum tally: %w", err))
-	}
+	var rec quorumTally
+	readLeaf(tally, &rec, "tally bundle is not a quorum tally")
 	disclosed := map[string]string{} // voter -> decision
 	counts := map[string]int{}
 	for i := range votes {
-		var v vote
-		if err := json.Unmarshal(votes[i].Record.Result, &v); err != nil {
-			fatal(fmt.Errorf("vote bundle %d is not a vote leaf: %w", i, err))
-		}
+		var v quorumVote
+		readLeaf(votes[i], &v, fmt.Sprintf("vote bundle %d is not a vote leaf", i))
 		if want := "quorum/" + *name + "/vote/" + v.Voter; votes[i].Record.Name != want {
 			fmt.Printf("FAIL: vote bundle %d is step %q, not %q: it is not %q's vote in quorum %q\n", i, votes[i].Record.Name, want, v.Voter, *name)
 			os.Exit(1)
@@ -665,14 +638,12 @@ func verifyQuorum(args []string) {
 			fmt.Println("FAIL: the commit is not in the same signed tree and run as the quorum")
 			os.Exit(1)
 		}
-		var payload struct {
-			PolicyDigest string `json:"policy_digest"`
-		}
-		if err := json.Unmarshal(commit.Record.Result, &payload); err != nil || payload.PolicyDigest == "" {
+		commitDigest, err := governedPolicyDigest(commit.Record.Result)
+		if err != nil || commitDigest == "" {
 			fmt.Println("FAIL: commit bundle is not a governed-action leaf")
 			os.Exit(1)
 		}
-		fmt.Printf("OK: a governed commit under policy %s is anchored in the same tree; the decision committed under k-of-n agreement\n", payload.PolicyDigest)
+		fmt.Printf("OK: a governed commit under policy %s is anchored in the same tree; the decision committed under k-of-n agreement\n", commitDigest)
 	}
 }
 
@@ -737,21 +708,12 @@ func verifyRun(args []string) {
 		fmt.Println("OK: cryptographic root verified. Pass -checker <astchecker> to cross-check each policy's convergence claim against the oracle.")
 		return
 	}
-	for _, pc := range cert.Convergence {
-		var polC audit.PolicyContent
-		if err := json.Unmarshal(pc.PolicyLeaf.Record.Result, &polC); err != nil {
-			fatal(fmt.Errorf("policy leaf for %s is not a policy content leaf: %w", pc.Digest, err))
-		}
-		var convC audit.ConvergenceContent
-		if err := json.Unmarshal(pc.Certificate.Record.Result, &convC); err != nil {
-			fatal(fmt.Errorf("convergence leaf for %s is not a convergence content leaf: %w", pc.Digest, err))
-		}
-		var claim struct {
-			Converges        bool `json:"converges"`
-			CompensationFree bool `json:"compensation_free"`
-		}
-		if err := json.Unmarshal(convC.Certificate, &claim); err != nil {
-			fatal(fmt.Errorf("convergence certificate payload for %s: %w", pc.Digest, err))
+	// res.Policies is what VerifyRun read (strictly) from the leaves it verified, so the oracle
+	// checks exactly those bytes.
+	for _, polC := range res.Policies {
+		var claim confluenceCert
+		if err := audit.UnmarshalStrict(polC.Certificate, &claim); err != nil {
+			fatal(fmt.Errorf("convergence certificate payload for %s: %w", polC.Digest, err))
 		}
 
 		tmp, err := os.CreateTemp("", "policy-*.machine")
@@ -1083,6 +1045,67 @@ func trimSpace(s string) string {
 		s = s[1:]
 	}
 	return s
+}
+
+// confluenceCert is the wire form of govern.ConfluenceCertificate, mirrored so the CLI imports
+// neither gsm nor govern. It has every field govern writes, so a certificate decodes strictly
+// (TestWireMirrorsMatchGovern keeps the two in step).
+type confluenceCert struct {
+	Machine          string `json:"machine"`
+	PolicyDigest     string `json:"policy_digest"`
+	Converges        bool   `json:"converges"`
+	WFC              bool   `json:"wfc"`
+	CC               bool   `json:"cc"`
+	MaxRepairLen     int    `json:"max_repair_len"`
+	PairsTotal       int    `json:"pairs_total"`
+	PairsDisjoint    int    `json:"pairs_disjoint"`
+	PairsBrute       int    `json:"pairs_brute"`
+	States           int    `json:"states"`
+	CompensationFree bool   `json:"compensation_free"`
+}
+
+// quorumVote and quorumTally are the wire forms of govern.Vote and govern.QuorumResult, mirrored
+// like confluenceCert.
+type quorumVote struct {
+	Voter    string `json:"voter"`
+	Decision string `json:"decision"`
+}
+
+type quorumTally struct {
+	Decision string       `json:"decision"`
+	VotesFor int          `json:"votes_for"`
+	Total    int          `json:"total"`
+	Agreed   bool         `json:"agreed"`
+	Votes    []quorumVote `json:"votes"`
+}
+
+// readLeaf decodes a proven record's Result into v with audit.UnmarshalStrict, as readJSON does a
+// file: the leaf is committed as written, so it must read as written. what names the failure.
+func readLeaf(b audit.ProofBundle, v any, what string) {
+	if err := audit.UnmarshalStrict(b.Record.Result, v); err != nil {
+		fatal(fmt.Errorf("%s: %w", what, err))
+	}
+}
+
+// governedPolicyDigest returns the policy digest a governed-action payload (a tool result, as
+// govern journals it) carries. The payload is open: it may hold other fields, such as the acting
+// identity, so its names are not checked against a type. It must still decode strictly as an object
+// (no duplicate names, no lone surrogate escapes), and the digest is read from the exact name
+// "policy_digest" only, never from a case variant, as a reader of the file would read it.
+func governedPolicyDigest(result json.RawMessage) (string, error) {
+	var fields map[string]json.RawMessage
+	if err := audit.UnmarshalStrict(result, &fields); err != nil {
+		return "", err
+	}
+	raw, ok := fields["policy_digest"]
+	if !ok {
+		return "", errors.New("no \"policy_digest\"")
+	}
+	var digest string
+	if err := audit.UnmarshalStrict(raw, &digest); err != nil {
+		return "", fmt.Errorf("policy_digest: %w", err)
+	}
+	return digest, nil
 }
 
 func readJSON(path string, v any) {

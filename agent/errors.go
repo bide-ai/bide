@@ -53,6 +53,11 @@ var (
 	// response stopped partway through a turn, so what arrived is not the model's answer.
 	ErrIncompleteResponse = fmt.Errorf("model response ended before the turn finished: %w", ErrModel)
 	ErrTruncatedToolArgs  = fmt.Errorf("truncated tool-call arguments: %w", ErrProtocol)
+	// ErrStreamProtocol is a model stream that broke its provider's event protocol, such as
+	// content after the turn's end or an event after the Finish. What arrived is not a turn the
+	// model finished, so it is not the answer. It wraps ErrModel as well as ErrProtocol: the
+	// turn is not journaled and a fresh attempt can succeed, so a retry middleware retries it.
+	ErrStreamProtocol = fmt.Errorf("model stream broke its protocol: %w (%w)", ErrProtocol, ErrModel)
 	// ErrToolUseIDReused is a model turn whose tool call has no ID, repeats an ID from an
 	// earlier turn of the conversation, or repeats one within the turn. The loop keys each
 	// call's result and journal step by its ID, so a reused ID would pass the call off as

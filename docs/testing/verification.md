@@ -68,9 +68,33 @@ implementation, bide's or yours, can run:
   appends from separate handles, and appends idempotent by id, so a repeated append (a retry, even
   concurrent with the original) is recorded once.
 - `model/modeltest` checks a model adapter: an abandoned stream releases its response, and a
-  response that ends before the turn finishes is an error, not an answer.
+  response that ends before the turn finishes is an error, not an answer. Its `ReadSSE` and
+  `CheckSSEPrefix` hold an adapter's SSE reader to one `Finish`, sent last, and to never turning a
+  response cut short into a different complete answer.
 - RFC 6962 reference vectors check the Merkle tree and proofs
   ([Pillar 4](testing.md#pillar-4-rfc-6962-conformance)).
+
+**Fuzzing.** The parsers and verifiers that read untrusted bytes have Go fuzz targets, each checking
+a property, not only the absence of panics:
+
+- `agent`: `FuzzRecordRoundTrip` and `FuzzDecodeRecord` (a journal record decodes back to what was
+  encoded, and re-encoding is a fixed point), `FuzzSSEScanner` (the shared SSE framing).
+- `model/anthropic`, `model/openai`, `model/gemini`: `FuzzStreamSSE` (one `Finish`, last; every
+  failure an `ErrModel`; a response cut at any byte never succeeds with a different message).
+- `audit`: `FuzzUnmarshalStrict` (an accepted proof file reads exactly as it decodes, and agrees
+  with `encoding/json`), `FuzzArtifactVerify` (only a genuine artifact verifies),
+  `FuzzInclusionProof`, `FuzzConsistencyProof`, `FuzzInclusionRaw`, `FuzzConsistencyRaw` (a
+  mutated proof is rejected, and `audit` agrees with the standalone `audit/verify`).
+- `plan`: `FuzzLoadConfig` (a config that loads validates, has a stable digest, and runs).
+- `codec/gcf` (its own module): `FuzzEncodeToolResult` (GCF output reads back as exactly the tool's
+  JSON value).
+
+Each target's seed corpus holds the inputs of the bugs fuzzing has found, so `go test ./...`, which
+runs the seeds only, keeps them fixed in CI. To fuzz one target:
+
+```bash
+go test -run '^$' -fuzz=FuzzStreamSSE -fuzztime=5m ./model/openai
+```
 
 **Race detection and stress.** Every CI test run on Linux and macOS uses `-race`. The
 concurrency-heavy packages are also run repeatedly under `-race -count=N -cpu=1,2,8`, so
@@ -94,6 +118,8 @@ lands on.
 
 - **Mutation checks are per fix, not exhaustive.** Each fix is checked by hand against its own
   mutants; the codebase as a whole is not put through automated mutation testing.
+- **CI runs fuzz seeds, not fuzzing.** New inputs are searched for when someone runs the fuzzer;
+  CI replays the seed corpus.
 - **Tests cover the scenarios they model.** The deterministic sweeps and forced interleavings cover
   the windows each guarantee depends on, but a scenario nobody has modelled is not covered until
   someone does.
@@ -110,6 +136,7 @@ go test -race ./...                                   # core module
 (cd store/postgres && PG_DSN='postgres://user:pass@localhost:5432/db?sslmode=disable' \
   go test -race -count=2 ./...)                       # integration, against your Postgres
 go test -race -count=20 -cpu=1,2,8 ./agent ./plan     # stress
+go test -run '^$' -fuzz=FuzzUnmarshalStrict -fuzztime=5m ./audit   # fuzz one target
 ```
 
 A report that comes with a failing test is the fastest kind to fix; see
