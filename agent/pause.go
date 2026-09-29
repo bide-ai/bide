@@ -191,7 +191,7 @@ func timerStep(name string) string { return "timer:" + name }
 // registers a wake with the Waker bound to the run's context (WithWaker); the Waker later calls back
 // to resume the run. The SDK provides the durable, at-most-once timer and its resume safety; what
 // re-invokes the run at the wake time is deployment policy (an in-process loop, a cron, a queue),
-// exactly as the inbound trigger for an event-driven run is (see docs/MESSAGING.md). MemWaker is the
+// exactly as the inbound trigger for an event-driven run is (see docs/guides/messaging.md). MemWaker is the
 // reference in-process implementation.
 type Waker interface {
 	// Schedule registers that runID should be resumed at fireAt, idempotent per (runID, name).
