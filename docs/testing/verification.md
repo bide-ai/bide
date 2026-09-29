@@ -59,7 +59,8 @@ including tampered and incomplete evidence that must be rejected.
 implementation, bide's or yours, can run:
 
 - `govern/eventlogtest` checks a governed event log: dense, unique positions under concurrent
-  appends from separate handles.
+  appends from separate handles, and appends idempotent by id, so a repeated append (a retry, even
+  concurrent with the original) is recorded once.
 - `model/modeltest` checks a model adapter: an abandoned stream releases its response, and a
   response that ends before the turn finishes is an error, not an answer.
 - RFC 6962 reference vectors check the Merkle tree and proofs

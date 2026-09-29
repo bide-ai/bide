@@ -2,6 +2,7 @@ package govern_test
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/bide-ai/bide/govern"
@@ -319,8 +320,8 @@ func TestFederatedGovernor_SharedLogStaysConsistent(t *testing.T) {
 			t.Fatal(err)
 		}
 		prefix := govern.NewMemEventLog()
-		for _, e := range entries[:pos+1] {
-			if _, err := prefix.Append(ctx, entity, e); err != nil {
+		for i, e := range entries[:pos+1] {
+			if _, err := prefix.Append(ctx, entity, fmt.Sprint(i), e); err != nil {
 				t.Fatal(err)
 			}
 		}

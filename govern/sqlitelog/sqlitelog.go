@@ -8,7 +8,10 @@ package sqlitelog
 import (
 	"context"
 	"database/sql"
+	"errors"
+	"fmt"
 
+	"github.com/bide-ai/bide/agent"
 	_ "modernc.org/sqlite"
 )
 
@@ -31,34 +34,74 @@ func Open(path string) (*Log, error) {
 		db.Close()
 		return nil, err
 	}
-	if _, err := db.Exec(`
-		CREATE TABLE IF NOT EXISTS events (
-			entity text    NOT NULL,
-			seq    INTEGER NOT NULL,
-			event  text    NOT NULL,
-			PRIMARY KEY (entity, seq)
-		);`); err != nil {
+	if err := migrate(db); err != nil {
 		db.Close()
 		return nil, err
 	}
 	return &Log{db: db}, nil
 }
 
+// migrate creates the events table, and adds the append_id column and its unique index to a table
+// created before appends carried ids. Rows from before that have no id; they never match a new
+// append.
+func migrate(db *sql.DB) error {
+	if _, err := db.Exec(`
+		CREATE TABLE IF NOT EXISTS events (
+			entity    text    NOT NULL,
+			seq       INTEGER NOT NULL,
+			event     text    NOT NULL,
+			append_id text,
+			PRIMARY KEY (entity, seq)
+		);`); err != nil {
+		return err
+	}
+	var has int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('events') WHERE name = 'append_id'`).Scan(&has); err != nil {
+		return err
+	}
+	if has == 0 {
+		if _, err := db.Exec(`ALTER TABLE events ADD COLUMN append_id text`); err != nil {
+			return err
+		}
+	}
+	_, err := db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS events_append_id ON events (entity, append_id)`)
+	return err
+}
+
 // Close releases the underlying database handle.
 func (l *Log) Close() error { return l.db.Close() }
 
-// Append durably records an event for an entity and returns its position (its seq). The seq is
-// computed and inserted in one statement; SQLite serializes writers, and the (entity, seq) primary
-// key rejects a duplicate, so concurrent appends from any number of processes get distinct, dense
-// positions.
-func (l *Log) Append(ctx context.Context, entity, event string) (int64, error) {
+// Append durably records an event for an entity under id and returns its position (its seq). The
+// seq is computed and inserted in one statement; SQLite serializes writers, and the (entity, seq)
+// primary key rejects a duplicate, so concurrent appends from any number of processes get
+// distinct, dense positions. The unique (entity, append_id) index makes the append idempotent: if
+// the entity already holds id, nothing is inserted and the recorded position is returned.
+func (l *Log) Append(ctx context.Context, entity, id, event string) (int64, error) {
+	if id == "" {
+		return 0, fmt.Errorf("sqlitelog: empty append id: %w", agent.ErrConfig)
+	}
 	var seq int64
 	err := l.db.QueryRowContext(ctx, `
-		INSERT INTO events (entity, seq, event)
-		VALUES (?, (SELECT COALESCE(MAX(seq), -1) + 1 FROM events WHERE entity = ?), ?)
+		INSERT INTO events (entity, seq, event, append_id)
+		VALUES (?, (SELECT COALESCE(MAX(seq), -1) + 1 FROM events WHERE entity = ?), ?, ?)
+		ON CONFLICT (entity, append_id) DO NOTHING
 		RETURNING seq`,
-		entity, entity, event).Scan(&seq)
-	return seq, err
+		entity, entity, event, id).Scan(&seq)
+	if err == nil {
+		return seq, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return 0, err
+	}
+	// The id is already recorded: return its position, if it holds the same event.
+	var recorded string
+	if err := l.db.QueryRowContext(ctx, `SELECT seq, event FROM events WHERE entity = ? AND append_id = ?`, entity, id).Scan(&seq, &recorded); err != nil {
+		return 0, fmt.Errorf("sqlitelog: read the append recorded for id %q: %w", id, err)
+	}
+	if recorded != event {
+		return 0, fmt.Errorf("sqlitelog: append id %q holds event %q, not %q: %w", id, recorded, event, agent.ErrConfig)
+	}
+	return seq, nil
 }
 
 // Events returns an entity's events at positions from onward, in log order.

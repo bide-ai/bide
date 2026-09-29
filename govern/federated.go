@@ -2,6 +2,7 @@ package govern
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -21,7 +22,12 @@ type FedApplied struct {
 // FederatedApplier is the federated analogue of Applier: it applies a named event to a
 // named component registry of a gsm federation.
 type FederatedApplier interface {
+	// Apply applies event to registry as a new action, once per call.
 	Apply(ctx context.Context, registry, event string) (FedApplied, error)
+	// ApplyOnce applies event to registry at most once per id, like Applier.ApplyOnce: a later
+	// call with the same id applies nothing and returns the first call's position and the state
+	// replayed through it.
+	ApplyOnce(ctx context.Context, id, registry, event string) (FedApplied, error)
 	// State returns the governor's view of the federated state as of its last Apply or Sync.
 	State() gsm.FedState
 }
@@ -46,18 +52,20 @@ const fedSep = "\x1f"
 // compensating agents across ownership boundaries" tier: each component registry is an organization
 // or agent subtree, and morphisms are the cross-org constraints.
 type FederatedGovernor struct {
-	m      *gsm.FedMachine
-	log    EventLog
-	entity string
-	mu     sync.Mutex
-	state  gsm.FedState
-	next   int64 // position of the next log entry to fold into state
+	m       *gsm.FedMachine
+	log     EventLog
+	entity  string
+	initial gsm.FedState // the state the log is replayed from
+	mu      sync.Mutex
+	state   gsm.FedState
+	next    int64 // position of the next log entry to fold into state
 }
 
 // NewFederated constructs a federated governor over the entity's log and reconstructs its state by
-// replaying the log from the initial federated state.
+// replaying the log from the initial federated state. A log holding an entry the federation cannot
+// apply is an ErrProtocol error here and on every later fold.
 func NewFederated(ctx context.Context, m *gsm.FedMachine, log EventLog, entity string, initial gsm.FedState) (*FederatedGovernor, error) {
-	fg := &FederatedGovernor{m: m, log: log, entity: entity, state: initial}
+	fg := &FederatedGovernor{m: m, log: log, entity: entity, initial: initial, state: initial}
 	if _, err := fg.Sync(ctx); err != nil {
 		return nil, err
 	}
@@ -67,26 +75,81 @@ func NewFederated(ctx context.Context, m *gsm.FedMachine, log EventLog, entity s
 // Apply validates the (registry, event) against the federation, appends it to the shared log, then
 // folds the log into the state up to and including its position. Validation runs before the append
 // (via the pure ApplyNamed, which does not mutate), so an unknown registry or event is never written
-// to the log. If the append succeeds but reading the log fails, the event is still recorded; the
-// next Apply or Sync folds it in.
+// to the log. If the append succeeds but reading the log fails, the event is still recorded (the
+// error says at which position); the next Apply or Sync folds it in. The append carries a fresh
+// random id, so a log adapter whose transport retries it still records it once.
 func (fg *FederatedGovernor) Apply(ctx context.Context, registry, event string) (FedApplied, error) {
+	id, err := newApplyID()
+	if err != nil {
+		return FedApplied{State: fg.State(), Position: -1}, err
+	}
+	return fg.ApplyOnce(ctx, id, registry, event)
+}
+
+// ApplyOnce is Apply at most once per id, across every process sharing the log (see
+// FederatedApplier). A repeated id returns the first append's position and the federated state an
+// auditor gets by replaying the log through it.
+func (fg *FederatedGovernor) ApplyOnce(ctx context.Context, id, registry, event string) (FedApplied, error) {
 	if strings.Contains(registry, fedSep) || strings.Contains(event, fedSep) {
 		return FedApplied{State: fg.State(), Position: -1}, fmt.Errorf("govern: registry/event name may not contain the separator byte: %w", agent.ErrConfig)
 	}
 	fg.mu.Lock()
 	defer fg.mu.Unlock()
-
 	if _, err := fg.m.ApplyNamed(fg.state, registry, event); err != nil {
-		return FedApplied{State: fg.state, Position: -1}, err
+		return FedApplied{State: fg.state, Position: -1}, fmt.Errorf("govern: %w (%w)", err, agent.ErrConfig)
 	}
-	pos, err := fg.log.Append(ctx, fg.entity, encodeFedEvent(registry, event))
+	pos, err := fg.log.Append(ctx, fg.entity, id, encodeFedEvent(registry, event))
+	if errors.Is(err, agent.ErrConfig) {
+		return FedApplied{State: fg.state, Position: -1}, fmt.Errorf("govern: append log: %w", err)
+	}
 	if err != nil {
 		return FedApplied{State: fg.state, Position: -1}, fmt.Errorf("govern: append log: %w (%w)", err, agent.ErrStorage)
 	}
+	if pos < fg.next {
+		// The log already held this id, and this governor has folded past it: rebuild the state
+		// as of its position rather than report the current one.
+		st, err := fg.replayThrough(ctx, pos)
+		if err != nil {
+			return FedApplied{State: fg.state, Position: pos}, recordedButUnknown(encodeFedEvent(registry, event), pos, err)
+		}
+		return FedApplied{State: st, Position: pos}, nil
+	}
 	if err := fg.foldThrough(ctx, pos); err != nil {
-		return FedApplied{State: fg.state, Position: pos}, err
+		return FedApplied{State: fg.state, Position: pos}, recordedButUnknown(encodeFedEvent(registry, event), pos, err)
 	}
 	return FedApplied{State: fg.state, Position: pos}, nil
+}
+
+// replayThrough replays the log's entries at positions [0, last] from the initial federated state
+// and returns the result, without changing the governor's state. The caller holds fg.mu.
+func (fg *FederatedGovernor) replayThrough(ctx context.Context, last int64) (gsm.FedState, error) {
+	entries, err := fg.log.Events(ctx, fg.entity, 0)
+	if err != nil {
+		return gsm.FedState{}, fmt.Errorf("govern: read log: %w (%w)", err, agent.ErrStorage)
+	}
+	if int64(len(entries)) <= last {
+		return gsm.FedState{}, fmt.Errorf("govern: log for %q returned %d entries, want at least %d: %w", fg.entity, len(entries), last+1, agent.ErrStorage)
+	}
+	st := fg.initial
+	for i, enc := range entries[:last+1] {
+		if st, err = fg.applyEntry(st, enc, int64(i)); err != nil {
+			return gsm.FedState{}, err
+		}
+	}
+	return st, nil
+}
+
+// applyEntry applies one encoded log entry, found at position pos, to st.
+func (fg *FederatedGovernor) applyEntry(st gsm.FedState, enc string, pos int64) (gsm.FedState, error) {
+	registry, event, err := decodeFedEvent(enc)
+	if err != nil {
+		return st, err
+	}
+	next, err := fg.m.ApplyNamed(st, registry, event)
+	if err != nil {
+		return st, fmt.Errorf("govern: log for %q holds entry %q at position %d, which the federation cannot apply: %w (%w)", fg.entity, enc, pos, err, agent.ErrProtocol)
+	}
+	return next, nil
 }
 
 // Sync folds every entry the log currently holds into the state and returns it, so the governor
@@ -116,13 +179,9 @@ func (fg *FederatedGovernor) foldThrough(ctx context.Context, last int64) error 
 		n = want
 	}
 	for _, enc := range entries[:n] {
-		registry, event, err := decodeFedEvent(enc)
+		st, err := fg.applyEntry(fg.state, enc, fg.next)
 		if err != nil {
 			return err
-		}
-		st, err := fg.m.ApplyNamed(fg.state, registry, event)
-		if err != nil {
-			return fmt.Errorf("govern: log for %q holds entry %q at position %d, which the federation cannot apply: %w (%w)", fg.entity, enc, fg.next, err, agent.ErrProtocol)
 		}
 		fg.state = st
 		fg.next++
@@ -153,13 +212,22 @@ func decodeFedEvent(enc string) (registry, event string, err error) {
 // conflicts resolved by the authority argument — no locking. This is the federated twin of
 // EventTool: the point where an agent tool call becomes a verified event on shared,
 // cross-organizational governed state.
+//
+// Inside a run, the event is applied with ApplyOnce keyed by the tool call, as for EventTool.
 func FederatedEventTool(gov FederatedApplier, name, description, registry, event string, safety agent.Safety) agent.Tool {
 	return agent.Func(name, description, safety,
 		func(ctx context.Context, _ struct{}) (map[string]any, error) {
-			a, err := gov.Apply(ctx, registry, event)
+			a, err := applyFedForCall(ctx, gov, registry, event)
 			if err != nil {
 				return nil, err
 			}
 			return map[string]any{"registry": registry, "event": event, "applied": true, "position": a.Position}, nil
 		})
+}
+
+func applyFedForCall(ctx context.Context, gov FederatedApplier, registry, event string) (FedApplied, error) {
+	if id := callApplyID(ctx); id != "" {
+		return gov.ApplyOnce(ctx, id, registry, event)
+	}
+	return gov.Apply(ctx, registry, event)
 }

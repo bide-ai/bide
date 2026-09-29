@@ -32,7 +32,7 @@ func TestAppend_WaitsOutABusyWriter(t *testing.T) {
 		t.Fatal(err)
 	}
 	go func() { time.Sleep(6 * time.Second); tx.Commit() }()
-	if _, err := l.Append(context.Background(), "e", "ev"); err != nil {
+	if _, err := l.Append(context.Background(), "e", "id", "ev"); err != nil {
 		t.Fatalf("append while another writer held the lock for 6s: %v", err)
 	}
 }

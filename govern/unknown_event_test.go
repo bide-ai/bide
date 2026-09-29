@@ -71,7 +71,7 @@ func TestPersistentGovernor_BadLogEntryIsAnErrorNotAPanic(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, ev := range []string{"inc_a", "inc_typo"} { // a foreign writer, bypassing validation
-		if _, err := log.Append(ctx, "e", ev); err != nil {
+		if _, err := log.Append(ctx, "e", "foreign-"+ev, ev); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -143,7 +143,7 @@ func TestFederatedGovernor_BadLogEntryIsAnErrorNotAPanic(t *testing.T) {
 	}
 	for _, entry := range []string{"manufacturer\x1fepub", "manufacturer\x1fnonesuch", "no-separator"} {
 		l := govern.NewMemEventLog()
-		if _, err := l.Append(ctx, "e", entry); err != nil {
+		if _, err := l.Append(ctx, "e", "foreign", entry); err != nil {
 			t.Fatal(err)
 		}
 		noPanic(t, "NewFederated over "+entry, func() {
@@ -159,7 +159,7 @@ func TestFederatedGovernor_BadLogEntryIsAnErrorNotAPanic(t *testing.T) {
 			}
 		})
 	}
-	if _, err := log.Append(ctx, "e", "manufacturer\x1fnonesuch"); err != nil {
+	if _, err := log.Append(ctx, "e", "foreign", "manufacturer\x1fnonesuch"); err != nil {
 		t.Fatal(err)
 	}
 	noPanic(t, "federated Sync over a bad log", func() {

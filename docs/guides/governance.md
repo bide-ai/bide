@@ -91,11 +91,24 @@ through that event's position, reported as `Applied.Position`. Events other proc
 are folded in by the next `Apply`, or on demand with `Sync(ctx)`; `State()` is the view as of the last
 of those. `FederatedGovernor` works the same way for a federation.
 
-`EventLog` is a port with a precise contract: `Append` returns the event's position, positions are
-dense and never change, and `Events(ctx, entity, from)` reads from any position, so a reader that has
-seen positions `[0, n)` always sees them first again. `govern/eventlogtest.Run` checks that contract,
-including concurrent appends from independent handles; every adapter below runs it, and so should
-your own. Adapters:
+An event name the machine does not declare is rejected before anything is written (an
+`agent.ErrConfig` error), so a typo in one process never reaches the shared log. If a log already
+holds such an entry (from an older policy or another writer), every fold (`NewPersistent`, `Sync`,
+`Apply`) stops there with an `agent.ErrProtocol` error rather than crashing.
+
+`ApplyOnce(ctx, id, event)` applies an event at most once per id, across every process sharing the
+log: a repeat returns the first call's position and the state replayed through it. `EventTool`
+uses it with the tool call's id, so a governed tool call that runs again (its process died after the
+event was appended but before the call's result was recorded) records its event once.
+
+`EventLog` is a port with a precise contract: `Append(ctx, entity, id, event)` returns the event's
+position, positions are dense and never change, and `Events(ctx, entity, from)` reads from any
+position, so a reader that has seen positions `[0, n)` always sees them first again. Appends are
+idempotent by id: an append whose id the entity's log already holds records nothing and returns the
+recorded position, so a transport retry (a Redis client resending a command whose reply was lost)
+cannot record an event twice. `govern/eventlogtest.Run` checks that contract, including concurrent
+appends and concurrent repeated appends from independent handles; every adapter below runs it, and so
+should your own. Adapters:
 
 - `govern.NewMemEventLog()`: in-memory (tests / local).
 - `govern/sqlitelog`: on-disk SQLite.

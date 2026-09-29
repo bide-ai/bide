@@ -43,7 +43,7 @@ func TestPostgresLog_AppendEventsOrder(t *testing.T) {
 	b := uniqueID(t, "pg-evlog-b-")
 
 	for i, e := range []string{"e1", "e2", "e3"} {
-		pos, err := l.Append(ctx, a, e)
+		pos, err := l.Append(ctx, a, e, e)
 		if err != nil {
 			t.Fatalf("append %s: %v", e, err)
 		}
@@ -51,7 +51,7 @@ func TestPostgresLog_AppendEventsOrder(t *testing.T) {
 			t.Fatalf("append %s returned position %d, want %d", e, pos, i)
 		}
 	}
-	if _, err := l.Append(ctx, b, "other"); err != nil {
+	if _, err := l.Append(ctx, b, "other", "other"); err != nil {
 		t.Fatalf("append other: %v", err)
 	}
 

@@ -17,6 +17,9 @@ func (f *fakeApplier) Apply(_ context.Context, event string) (Applied, error) {
 	f.applied = append(f.applied, event)
 	return Applied{Position: int64(len(f.applied) - 1)}, nil
 }
+func (f *fakeApplier) ApplyOnce(ctx context.Context, _ string, event string) (Applied, error) {
+	return f.Apply(ctx, event)
+}
 func (f *fakeApplier) State() gsm.State { return gsm.State{} }
 
 // TestAttestedEventTool_EmbedsPolicyDigest confirms the governed tool applies the event and
