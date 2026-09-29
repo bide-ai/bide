@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -68,10 +69,15 @@ func TestWithRetrieval_InjectsOnUserTurn(t *testing.T) {
 	}
 }
 
-// WithRetrieval does NOT retrieve on a tool-result turn (mid-loop).
-func TestWithRetrieval_SkipsOnToolResultTurn(t *testing.T) {
-	r := &fakeRetriever{docs: []Doc{{Text: "x"}}}
-	base := ModelHandler(func(context.Context, Request) (Message, Usage, error) { return Message{}, Usage{}, nil })
+// Outside a run there is no journal to hold the documents, so a tool-result turn retrieves
+// again for the latest user message: the model is not left without the context mid-loop.
+func TestWithRetrieval_ToolResultTurnOutsideRunKeepsContext(t *testing.T) {
+	r := &fakeRetriever{docs: []Doc{{Text: "x marks the spot"}}}
+	var seen Request
+	base := ModelHandler(func(_ context.Context, req Request) (Message, Usage, error) {
+		seen = req
+		return Message{}, Usage{}, nil
+	})
 	h := WithRetrieval(r, 2)(base)
 
 	// Last message is a tool result, not a user turn.
@@ -83,8 +89,11 @@ func TestWithRetrieval_SkipsOnToolResultTurn(t *testing.T) {
 	if _, _, err := h(context.Background(), Request{Messages: msgs}); err != nil {
 		t.Fatal(err)
 	}
-	if r.calls != 0 {
-		t.Fatalf("retriever called %d times on a tool-result turn, want 0", r.calls)
+	if r.lastQ != "q" {
+		t.Fatalf("retriever query = %q, want the latest user message", r.lastQ)
+	}
+	if !strings.Contains(seen.Messages[0].Text(), "x marks the spot") {
+		t.Fatalf("first message = %+v, want the retrieved context", seen.Messages[0])
 	}
 }
 
@@ -240,5 +249,133 @@ func TestWithRetrieval_ContextFollowsSystemPrompt(t *testing.T) {
 	}
 	if req.Messages[0].Text() != "OPERATOR" || len(req.Messages) != 2 {
 		t.Errorf("the caller's request was modified: %+v", req.Messages)
+	}
+}
+
+// seqRetriever returns a different document on every call, as a store does when its contents
+// change, so a test can tell which retrieval a model call saw.
+type seqRetriever struct {
+	mu    sync.Mutex
+	calls int
+}
+
+func (r *seqRetriever) Retrieve(context.Context, string, int) ([]Doc, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls++
+	return []Doc{{ID: "d", Text: fmt.Sprintf("version-%d", r.calls), Score: math.NaN()}}, nil
+}
+
+func (r *seqRetriever) count() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.calls
+}
+
+// captureRequests is model middleware (install it inside WithRetrieval) that records the
+// context block each live model call was sent, or "" for a call sent none.
+func captureRequests(got *[]string) Middleware {
+	return func(next ModelHandler) ModelHandler {
+		return func(ctx context.Context, req Request) (Message, Usage, error) {
+			block := ""
+			for _, m := range req.Messages {
+				if m.Role == RoleSystem && strings.HasPrefix(m.Text(), "Relevant context:") {
+					block = m.Text()
+				}
+			}
+			*got = append(*got, block)
+			return next(ctx, req)
+		}
+	}
+}
+
+// noopTool is a read-only tool for driving the loop through a tool-result turn.
+var noopTool = Func("noop", "does nothing", Safety{ReadOnly: true},
+	func(context.Context, struct{}) (string, error) { return "ok", nil })
+
+// Within a run, the model call that follows a tool result still sees the retrieved context:
+// the same documents the first call saw, recorded once in the journal, not retrieved again.
+func TestWithRetrieval_ContextKeptAcrossTheRun(t *testing.T) {
+	r := &seqRetriever{}
+	var got []string
+	m := NewScriptedModel(ToolTurn("c1", "noop", `{}`), TextTurn("done"))
+	a := New(m, NewMemStore(), noopTool).WithSystemPrompt("OPERATOR").Use(WithRetrieval(r, 2), captureRequests(&got))
+	if _, err := a.Run(context.Background(), "run-1", "q"); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("model called %d times, want 2", len(got))
+	}
+	for i, block := range got {
+		if !strings.Contains(block, "version-1") {
+			t.Errorf("model call %d got context %q, want the first retrieval (version-1)", i, block)
+		}
+	}
+	if n := r.count(); n != 1 {
+		t.Errorf("retriever called %d times in one run, want 1", n)
+	}
+}
+
+// A resumed run shows the model exactly the documents the original run retrieved, even when
+// the store has changed since, and the journal holds what was retrieved, so the context a
+// recorded answer was given can be audited.
+func TestWithRetrieval_ResumeInjectsRecordedDocs(t *testing.T) {
+	r := &seqRetriever{}
+	store := NewMemStore()
+	crash := NewScriptedModel(ToolTurn("c1", "noop", `{}`), ErrorTurn(errors.New("process died")))
+	if _, err := New(crash, store, noopTool).Use(WithRetrieval(r, 2)).Run(context.Background(), "run-1", "q"); err == nil {
+		t.Fatal("first run: want the scripted crash")
+	}
+
+	var got []string
+	m := NewScriptedModel(ToolTurn("c1", "noop", `{}`), TextTurn("done"))
+	a := New(m, store, noopTool).Use(WithRetrieval(r, 2), captureRequests(&got))
+	if _, err := a.Run(context.Background(), "run-1", "q"); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || !strings.Contains(got[0], "version-1") {
+		t.Fatalf("resumed model call got context %q, want the original retrieval (version-1)", got)
+	}
+	if n := r.count(); n != 1 {
+		t.Errorf("retriever called %d times across a crash and resume, want 1", n)
+	}
+
+	recs, err := store.History(context.Background(), "run-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var journaled bool
+	for _, rec := range recs {
+		if rec.Kind == StepValue && strings.Contains(string(rec.Result), "version-1") {
+			journaled = true
+		}
+	}
+	if !journaled {
+		t.Errorf("no journal record holds the retrieved documents: %+v", recs)
+	}
+}
+
+// A sub-agent's retrieval is its own: it is journaled in the sub-run, not in the parent run
+// whose tool called it, so each run's model sees the documents retrieved for its own input.
+func TestWithRetrieval_SubAgentRetrievesForItself(t *testing.T) {
+	parentR, subR := &seqRetriever{}, &fakeRetriever{docs: []Doc{{Text: "sub-doc"}}}
+	var parentGot, subGot []string
+	store := NewMemStore()
+	sub := New(NewScriptedModel(TextTurn("sub answer")), store).Use(WithRetrieval(subR, 1), captureRequests(&subGot))
+	parent := New(NewScriptedModel(ToolTurn("c1", "helper", `{"task":"sub question"}`), TextTurn("done")), store,
+		SubAgent("helper", "a helper", sub)).Use(WithRetrieval(parentR, 1), captureRequests(&parentGot))
+	if _, err := parent.Run(context.Background(), "run-1", "q"); err != nil {
+		t.Fatal(err)
+	}
+	if len(subGot) != 1 || !strings.Contains(subGot[0], "sub-doc") {
+		t.Errorf("sub-agent got context %q, want its own retrieval (sub-doc)", subGot)
+	}
+	if subR.lastQ != "sub question" {
+		t.Errorf("sub-agent retrieved for %q, want its own input", subR.lastQ)
+	}
+	for i, block := range parentGot {
+		if !strings.Contains(block, "version-1") {
+			t.Errorf("parent model call %d got context %q, want its own retrieval (version-1)", i, block)
+		}
 	}
 }
