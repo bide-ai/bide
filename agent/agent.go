@@ -69,6 +69,7 @@ type Agent struct {
 	systemPromptFn func(context.Context) string
 	responseFormat *ResponseFormat // native structured-output constraint (see RunTypedNative)
 	toolChoice     *ToolChoice     // tool-choice control applied to every model call (see WithToolChoice)
+	terminalTool   string          // a successful call to this tool ends the run (RunTyped's final_answer)
 	// approverVerifiers resolves an approver id to the verifier for its decision
 	// signature; required by any tool with a non-nil Safety.Approval (see WithApproverVerifiers).
 	approverVerifiers ApproverVerifierFor
@@ -344,8 +345,11 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 		// If the last turn is an assistant message with tool calls still pending (a
 		// resumed journal), execute those; otherwise ask the model for the next turn.
 		var asst Message
+		terminal := false // the latest turn's terminal-tool call succeeded, which ends the run
 		if n := len(msgs); n > 0 && msgs[n-1].Role == RoleAssistant && pending(msgs[n-1], done) {
 			asst = msgs[n-1]
+		} else if last, ok := terminalCallDone(msgs, a.terminalTool); ok {
+			asst, terminal = last, true
 		} else {
 			// Safety valve: cap model turns so a model that keeps calling tools can't loop
 			// forever. modelSeq counts turns including replayed ones, so a resumed run that
@@ -394,7 +398,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 		}
 
 		uses := asst.toolUses()
-		if len(uses) == 0 {
+		if len(uses) == 0 || terminal {
 			// Terminal: record a durable completion marker so a crash-recovery supervisor
 			// can skip this run (see IsComplete / Recover). Appended only at the terminal,
 			// so it never shifts an earlier record's index; at-most-once by name, so a
@@ -782,6 +786,36 @@ func toolNameFor(recs []Record, id string) (string, bool) {
 }
 
 // pending reports whether an assistant message has tool calls without recorded results.
+// terminalCallDone reports whether the latest assistant turn in msgs called the terminal tool
+// named tool and that call succeeded (its result is recorded and is not an error), and returns
+// that turn. The result is read from msgs, so a resumed run that crashed after recording the
+// call ends the same way a live one does. An empty tool name never matches.
+func terminalCallDone(msgs []Message, tool string) (Message, bool) {
+	if tool == "" {
+		return Message{}, false
+	}
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role != RoleAssistant {
+			continue
+		}
+		calls := map[string]bool{}
+		for _, tu := range msgs[i].toolUses() {
+			if tu.Name == tool {
+				calls[tu.ID] = true
+			}
+		}
+		for _, m := range msgs[i+1:] {
+			for _, p := range m.Parts {
+				if tr, ok := p.(ToolResult); ok && calls[tr.ToolUseID] && !tr.IsError {
+					return msgs[i], true
+				}
+			}
+		}
+		return Message{}, false
+	}
+	return Message{}, false
+}
+
 func pending(m Message, done map[string]bool) bool {
 	for _, tu := range m.toolUses() {
 		if !done[tu.ID] {
