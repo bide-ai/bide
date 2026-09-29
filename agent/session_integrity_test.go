@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -256,5 +257,61 @@ func TestSession_OneHandleConcurrentCallers(t *testing.T) {
 		if n := s.Turns(); n != 9 {
 			t.Fatalf("the shared handle reports %d turns, want 9", n)
 		}
+	}
+}
+
+// toolThenContext calls "lookup" first, then answers with every user message it was given,
+// joined by "+", so a test can see what conversation the turn was answered in.
+type toolThenContext struct{}
+
+func (toolThenContext) Stream(ctx context.Context, req Request) (*Stream, error) {
+	if req.Messages[len(req.Messages)-1].Role != RoleTool {
+		ch := make(chan Emit, 2)
+		ch <- Emit{Event: ToolCallDelta{Index: 0, ID: "c1", Name: "lookup", ArgsFragment: []byte(`{}`)}}
+		ch <- Emit{Event: Finish{Reason: "tool_use"}}
+		close(ch)
+		return NewStream(ch), nil
+	}
+	return contextModel{}.Stream(ctx, req)
+}
+
+// A turn interrupted mid-run resumes in the conversation it started in. Message "a" starts a
+// turn, makes its first model call and is cut off in its tool call; message "b" is answered
+// meanwhile. When "a" resumes, its journaled first call was made without "b", so the rest of the
+// turn must not see "b" either: the turn answers "a", not "b+a".
+func TestSession_ResumedTurnKeepsItsTranscript(t *testing.T) {
+	for _, send := range []string{"Send", "SendOnce"} {
+		t.Run(send, func(t *testing.T) {
+			var cut atomic.Bool
+			ctx, cancel := context.WithCancel(context.Background())
+			a := New(toolThenContext{}, NewMemStore(), Func("lookup", "look up", Safety{ReadOnly: true},
+				func(ctx context.Context, _ struct{}) (string, error) {
+					if !cut.Swap(true) {
+						cancel() // the process dies inside turn "a"'s tool call
+					}
+					return "found", ctx.Err()
+				}))
+			do := func(ctx context.Context, key, text string) (Message, error) {
+				s := openSession(t, a, "c1")
+				if send == "Send" {
+					return s.Send(ctx, text)
+				}
+				return s.SendOnce(ctx, key, text)
+			}
+			if _, err := do(ctx, "ka", "a"); !errors.Is(err, context.Canceled) {
+				t.Fatalf(`turn "a": err = %v, want context.Canceled`, err)
+			}
+			// "b" is answered while "a" is unfinished (a Send turn is open, so "b" comes via SendOnce).
+			if msg, err := openSession(t, a, "c1").SendOnce(context.Background(), "kb", "b"); err != nil || msg.Text() != "b" {
+				t.Fatalf(`"b" = %q, %v; want "b"`, msg.Text(), err)
+			}
+			msg, err := do(context.Background(), "ka", "a")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if msg.Text() != "a" {
+				t.Fatalf(`resumed turn "a" answered %q, want "a": it saw a message that arrived after it started`, msg.Text())
+			}
+		})
 	}
 }
