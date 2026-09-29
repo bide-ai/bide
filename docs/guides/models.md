@@ -140,6 +140,19 @@ the body, message, type, and code an error carries are each cut to 8KB (a cut bo
 `...(truncated)`), so a broken endpoint, or one that echoes the prompt back, cannot put megabytes
 into memory, logs, or traces.
 
+## Tool names and tool choice
+
+Each adapter checks a request's tools and tool choice against the provider's rules before sending
+it, and refuses a setup the provider would answer with a 400 as an `ErrConfig` that says what is
+wrong:
+
+- A tool name must match `^[a-zA-Z0-9_-]{1,64}$` (OpenAI, Anthropic) or
+  `^[a-zA-Z_][a-zA-Z0-9_.:-]{0,63}$` (Gemini), and no two tools may share a name.
+- A `ToolChoice` mode must be `""`, `auto`, `none`, `required`, or `tool`. `required` and `tool`
+  need declared tools, and `tool` must name one of them.
+- `auto` or `none` with no tools declared is already met, so no tool choice is sent (the providers
+  reject one with no tools).
+
 ## Tool-call IDs
 
 The agent keys each tool call's result and journal step by its tool-use ID, so every call in a

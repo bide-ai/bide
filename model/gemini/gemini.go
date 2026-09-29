@@ -31,6 +31,7 @@ import (
 	"strings"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/model/internal/toolcfg"
 	"github.com/bide-ai/bide/schema"
 )
 
@@ -115,6 +116,12 @@ func (m *Model) Stream(ctx context.Context, req agent.Request) (*agent.Stream, e
 // parts. A turn left with no parts (an assistant turn holding only reasoning, an empty text)
 // is skipped: Gemini rejects a content with no parts.
 func (m *Model) buildRequest(req agent.Request) ([]byte, error) {
+	// Tool names and the tool choice are checked first, so a setup the provider would reject
+	// is a config error here rather than a 400.
+	sendChoice, err := toolcfg.Check("gemini", toolcfg.GeminiName, req)
+	if err != nil {
+		return nil, err
+	}
 	type obj = map[string]any
 
 	var systemParts []obj
@@ -266,7 +273,7 @@ func (m *Model) buildRequest(req agent.Request) ([]byte, error) {
 
 	// toolConfig.functionCallingConfig.mode: AUTO / ANY / NONE. "tool" forces ANY and
 	// restricts the callable set to the named tool via allowedFunctionNames.
-	if tc := req.ToolChoice; tc != nil {
+	if tc := req.ToolChoice; tc != nil && sendChoice {
 		fcc := obj{}
 		switch tc.Mode {
 		case "", "auto":
@@ -277,13 +284,9 @@ func (m *Model) buildRequest(req agent.Request) ([]byte, error) {
 			fcc["mode"] = "NONE"
 		case "tool":
 			fcc["mode"] = "ANY"
-			if tc.Name != "" {
-				fcc["allowedFunctionNames"] = []string{tc.Name}
-			}
+			fcc["allowedFunctionNames"] = []string{tc.Name} // toolcfg.Check ensured it names a declared tool
 		}
-		if len(fcc) > 0 {
-			payload["toolConfig"] = obj{"functionCallingConfig": fcc}
-		}
+		payload["toolConfig"] = obj{"functionCallingConfig": fcc}
 	}
 
 	// generationConfig: sampling controls. maxOutputTokens comes from the construction

@@ -22,6 +22,7 @@ import (
 	"strings"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/model/internal/toolcfg"
 	"github.com/bide-ai/bide/schema"
 )
 
@@ -106,6 +107,12 @@ func (m *Model) Stream(ctx context.Context, req agent.Request) (*agent.Stream, e
 }
 
 func (m *Model) buildRequest(req agent.Request) ([]byte, error) {
+	// Tool names and the tool choice are checked first, so a setup the provider would reject
+	// is a config error here rather than a 400.
+	sendChoice, err := toolcfg.Check("openai", toolcfg.OpenAIName, req)
+	if err != nil {
+		return nil, err
+	}
 	type obj = map[string]any
 	var msgs []obj
 
@@ -208,7 +215,7 @@ func (m *Model) buildRequest(req agent.Request) ([]byte, error) {
 		payload["tools"] = tools
 	}
 	// tool_choice: "auto" / "none" / "required" / {"type":"function","function":{"name":...}}.
-	if tc := req.ToolChoice; tc != nil {
+	if tc := req.ToolChoice; tc != nil && sendChoice {
 		switch tc.Mode {
 		case "", "auto":
 			payload["tool_choice"] = "auto"

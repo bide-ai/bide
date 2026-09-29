@@ -20,6 +20,7 @@ import (
 	"strings"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/model/internal/toolcfg"
 )
 
 // Model is an Anthropic Messages API adapter implementing agent.Model.
@@ -102,6 +103,12 @@ func (m *Model) Stream(ctx context.Context, req agent.Request) (*agent.Stream, e
 // accepts the schema/ package's neutral form directly, so no provider dialect transform is
 // needed (unlike OpenAI strict mode).
 func (m *Model) buildRequest(req agent.Request) ([]byte, error) {
+	// Tool names and the tool choice are checked first, so a setup the provider would reject
+	// is a config error here rather than a 400.
+	sendChoice, err := toolcfg.Check("anthropic", toolcfg.AnthropicName, req)
+	if err != nil {
+		return nil, err
+	}
 	type block map[string]any
 
 	var systemTexts []string
@@ -232,7 +239,7 @@ func (m *Model) buildRequest(req agent.Request) ([]byte, error) {
 	// tool_choice: {"type":"auto"} / {"type":"any"} (for "required") / {"type":"tool","name":...}
 	// / {"type":"none"}. "none" keeps the tool declarations: Anthropic requires them whenever
 	// the history holds tool_use blocks.
-	if tc := req.ToolChoice; tc != nil {
+	if tc := req.ToolChoice; tc != nil && sendChoice {
 		switch tc.Mode {
 		case "", "auto":
 			payload["tool_choice"] = map[string]any{"type": "auto"}
