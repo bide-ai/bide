@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -25,7 +26,7 @@ func buildExample(t *testing.T) string {
 	if _, err := exec.LookPath("go"); err != nil {
 		t.Skip("go toolchain not on PATH; skipping cross-process e2e")
 	}
-	bin := filepath.Join(t.TempDir(), "plan-example")
+	bin := filepath.Join(t.TempDir(), exe("plan-example"))
 	build := exec.Command("go", "build", "-o", bin, ".")
 	build.Env = append(os.Environ(), "GOWORK=off")
 	if out, err := build.CombinedOutput(); err != nil {
@@ -165,4 +166,12 @@ func TestE2E_HaltOnAmbiguityAcrossProcesses(t *testing.T) {
 	if !strings.Contains(out2, "Conform: the run followed the declared graph") {
 		t.Fatalf("a halted run's partial journal should still Conform (no divergence)\n%s", out2)
 	}
+}
+
+// exe names a built binary for the host OS: Windows only runs a file with the .exe suffix.
+func exe(name string) string {
+	if runtime.GOOS == "windows" {
+		return name + ".exe"
+	}
+	return name
 }
