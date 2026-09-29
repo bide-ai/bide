@@ -820,7 +820,7 @@ New here? Start with **[Getting started](docs/getting-started.md)**, use the **[
 - **[Reliability](docs/guides/reliability.md)**: per-attempt timeouts, classified retry, hedged model calls, rate limiting, and cost tracking, and how they compose. Runnable: `examples/hedge`.
 - **[Signals and ambient](docs/guides/signals.md)**: external events into a run: durable timers and the `Waker`, human-in-the-loop (`Interrupt`/`Resume`), and durable signals (at-least-once in, exactly-once applied). Runnable: `examples/signals`, `examples/interrupt`.
 - **[Models](docs/guides/models.md)**: the Anthropic, OpenAI-compatible, and Gemini adapters: `WithBaseURL`, sampling, prompt caching, typed errors, and multimodal image input.
-- **[MCP](docs/guides/mcp.md)**: connect an MCP server as a runtime tool source, with side-effect-safe resume inherited from its tool annotations.
+- **[MCP](docs/guides/mcp.md)**: connect an MCP server as a runtime tool source, with side-effect-safe resume; a trusted server's tool annotations can mark tools safe to re-run.
 - **[Observability](docs/guides/observability.md)**: OTel gen_ai spans in one line (`trace.Instrument`): span taxonomy, sub-agent nesting, token-to-cost, and the content-capture privacy default. Runnable: `examples/observability`.
 - **[Messaging](docs/guides/messaging.md)**: drive an agent from an inbound webhook (Slack, Telegram, SMS, Discord), redelivery-safe: a retried webhook replays instead of double-firing. Runnable: `examples/webhook`.
 - **[Debugging and recovery](docs/guides/debugging.md)**: deterministic replay (`Replay`), event reconstruction (`ReplayEvents`), Mermaid run diagrams, and crash recovery (`Recover`) that re-drives interrupted runs.

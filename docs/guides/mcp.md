@@ -22,12 +22,25 @@ session into agent tools.
   connect time, each wrapped tool follows the untyped `json.RawMessage` path rather than a Go
   struct: `ArgsSchema()` returns the server's `InputSchema` as raw JSON for the `schema`
   package to dialectize per provider.
-- **Map MCP annotations onto `agent.Safety`.** This is the payoff. An MCP-sourced tool
-  inherits side-effect-safe durable resume with no per-tool configuration on your side.
+- **Give each tool an `agent.Safety`.** Every MCP-sourced tool gets side-effect-safe
+  durable resume. By default each is treated as a side effect; for a server you trust, its
+  annotations decide.
 
 ## Safety mapping
 
-`Safety()` derives `agent.Safety` from the MCP tool's `Annotations` block:
+MCP tool annotations are hints, and the spec says to treat them as untrusted unless they come
+from a trusted server. A server that labelled a destructive tool read-only would otherwise have
+it re-run on resume, retried by `ToolRetry`, and cached by `ToolCache`. So by default every tool
+from `Tools` has the zero `agent.Safety`: it runs at most once, and halts the run on an
+unknown-outcome resume.
+
+For a server you trust to label its tools, pass `TrustAnnotations()`:
+
+```go
+tools, err := mcp.Tools(ctx, session, mcp.TrustAnnotations())
+```
+
+`Safety()` then derives `agent.Safety` from the MCP tool's `Annotations` block:
 
 | MCP annotation | Derived `agent.Safety` | Resume behavior |
 |---|---|---|
@@ -37,8 +50,8 @@ session into agent tools.
 
 `ReadOnly` wins if both hints are set: a read-only tool has no side effect to double-fire.
 An absent `Annotations` block is treated as the destructive default per the MCP spec, which
-is the conservative choice for resume. This is the only place a policy decision is made; the
-wrapped tool carries no other configuration.
+is the conservative choice for resume. Whether to trust the annotations at all is the only
+policy decision; the wrapped tool carries no other configuration.
 
 ## Optional client capabilities
 
@@ -54,8 +67,8 @@ default `Connect(ctx, transport)` behaves exactly as before.
 
   **Durability boundary.** The resolver answers elicitation live, within the interaction that
   requested it; it is not a durable, resume-across-crash pause. Durability is inherited at the
-  tool-call boundary (a read-only or idempotent tool re-runs, and so re-elicits, on resume,
-  while an unannotated tool halts on an unknown-outcome resume). For input that must survive a
+  tool-call boundary (a tool trusted as read-only or idempotent re-runs, and so re-elicits, on
+  resume, while any other tool halts on an unknown-outcome resume). For input that must survive a
   crash and resume in a fresh process, use the native `agent.Interrupt` in a native tool.
 
 - **`WithToolListChanged(callback)`** fires the callback when the server notifies that its
@@ -74,7 +87,11 @@ default `Connect(ctx, transport)` behaves exactly as before.
 func Connect(ctx context.Context, transport mcp.Transport, opts ...Option) (*mcp.ClientSession, error)
 
 // Tools lists a connected session's tools (paginated in full), each wrapped as an agent.Tool.
-func Tools(ctx context.Context, session *mcp.ClientSession) ([]agent.Tool, error)
+// Each is a side effect unless TrustAnnotations is passed.
+func Tools(ctx context.Context, session *mcp.ClientSession, opts ...ToolsOption) ([]agent.Tool, error)
+
+// TrustAnnotations maps a trusted server's annotations onto agent.Safety.
+func TrustAnnotations() ToolsOption
 
 // Options for Connect.
 func WithElicitation(f ElicitFunc) Option
@@ -145,7 +162,7 @@ func main() {
 	}
 	defer session.Close()
 
-	tools, err := mcp.Tools(ctx, session)
+	tools, err := mcp.Tools(ctx, session, mcp.TrustAnnotations()) // our own in-memory server
 	if err != nil {
 		log.Fatal(err)
 	}

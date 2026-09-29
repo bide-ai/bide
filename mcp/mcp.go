@@ -5,12 +5,13 @@
 // core can call it like any native tool. Built on the official SDK,
 // github.com/modelcontextprotocol/go-sdk.
 //
-// The payoff is in Safety(): MCP tool annotations map directly onto agent.Safety, so
-// an MCP-sourced tool inherits side-effect-safe durable resume for free. A tool the
-// server marks readOnlyHint is always safe to re-run after a crash; one marked
-// idempotentHint is safe to retry; an unannotated (destructive or unknown) tool gets
-// the zero Safety, which halts the run on an unknown-outcome resume rather than risk
-// firing a side effect twice. No per-tool configuration on our side.
+// Safety: by default every MCP tool is treated as a side effect (the zero agent.Safety), so it
+// runs at most once and halts the run on an unknown-outcome resume rather than risk firing
+// twice. MCP tool annotations are hints, and the spec says to treat them as untrusted unless
+// they come from a trusted server: a server that labels a destructive tool read-only would
+// otherwise have it re-run on resume, retried, and cached. For a server you trust, pass
+// TrustAnnotations to Tools and the hints map onto agent.Safety: readOnlyHint is always safe
+// to re-run after a crash, and idempotentHint is safe to retry.
 //
 // Connect optionally wires three more client capabilities (see Option): an
 // elicitation resolver (WithElicitation) the server can call to request
@@ -25,9 +26,9 @@
 //
 // Durability boundary: the resolver answers elicitation live, within the
 // interaction that requested it; it is not a durable, resume-across-crash pause.
-// Durability is inherited at the tool-call boundary (a read-only or idempotent
-// tool re-runs, and so re-elicits, on resume, while an unannotated tool halts on
-// an unknown-outcome resume). For input that must survive a crash and resume in a
+// Durability is inherited at the tool-call boundary (a tool trusted as read-only or
+// idempotent re-runs, and so re-elicits, on resume, while any other tool halts on an
+// unknown-outcome resume). For input that must survive a crash and resume in a
 // fresh process, use the native agent.Interrupt in a native tool.
 package mcp
 
@@ -44,7 +45,12 @@ import (
 // Tools lists the tools exposed by a connected MCP client session and returns each one
 // wrapped as an agent.Tool. The session must already be connected (see Connect). The
 // returned tools call back through the session, so keep it open for their lifetime.
-func Tools(ctx context.Context, session *mcp.ClientSession) ([]agent.Tool, error) {
+// Each tool is a side effect unless TrustAnnotations is passed (see the package doc).
+func Tools(ctx context.Context, session *mcp.ClientSession, opts ...ToolsOption) ([]agent.Tool, error) {
+	var cfg toolsConfig
+	for _, o := range opts {
+		o(&cfg)
+	}
 	var tools []agent.Tool
 	// session.Tools follows the pagination cursor internally, so a server that
 	// splits its tool list across several pages is listed in full.
@@ -52,10 +58,20 @@ func Tools(ctx context.Context, session *mcp.ClientSession) ([]agent.Tool, error
 		if err != nil {
 			return nil, fmt.Errorf("mcp: list tools: %w (%w)", err, agent.ErrTool)
 		}
-		tools = append(tools, &tool{session: session, def: def})
+		tools = append(tools, &tool{session: session, def: def, trust: cfg.trust})
 	}
 	return tools, nil
 }
+
+// ToolsOption configures Tools.
+type ToolsOption func(*toolsConfig)
+
+type toolsConfig struct{ trust bool }
+
+// TrustAnnotations maps the server's tool annotations onto agent.Safety: readOnlyHint becomes
+// ReadOnly and idempotentHint becomes Idempotent. Pass it only for a server you trust to label
+// its tools correctly; a mislabelled side effect would be re-run, retried, or cached.
+func TrustAnnotations() ToolsOption { return func(c *toolsConfig) { c.trust = true } }
 
 // ElicitFunc answers an MCP server's elicitation/create request: the server asks
 // the host for structured input (a message plus a JSON schema), either as a
@@ -132,6 +148,7 @@ func Connect(ctx context.Context, transport mcp.Transport, opts ...Option) (*mcp
 type tool struct {
 	session *mcp.ClientSession
 	def     *mcp.Tool
+	trust   bool // map the server's annotations onto Safety (TrustAnnotations)
 }
 
 func (t *tool) Name() string        { return t.def.Name }
@@ -154,8 +171,8 @@ func (t *tool) ArgsSchema() json.RawMessage {
 	return b
 }
 
-// Safety derives agent.Safety from the MCP tool annotations. This mapping is what gives
-// MCP tools side-effect-safe durable resume without any per-tool config:
+// Safety is the zero agent.Safety (a side effect) unless the tool came from Tools with
+// TrustAnnotations, in which case it derives from the MCP tool annotations:
 //
 //	readOnlyHint   == true -> Safety{ReadOnly: true}   // always safe to re-run
 //	idempotentHint == true -> Safety{Idempotent: true} // safe to retry
@@ -166,7 +183,7 @@ func (t *tool) ArgsSchema() json.RawMessage {
 // the MCP spec, which is the conservative choice for resume.
 func (t *tool) Safety() agent.Safety {
 	a := t.def.Annotations
-	if a == nil {
+	if !t.trust || a == nil {
 		return agent.Safety{}
 	}
 	switch {

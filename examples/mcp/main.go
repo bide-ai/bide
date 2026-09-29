@@ -1,9 +1,10 @@
 // Command mcp shows the mcp package adapting a Model Context Protocol server's tools into
 // agent.Tool values. It stands up an in-memory MCP client/server pair (no network, no
 // subprocess), discovers the server's one read-only tool at runtime, and hands the wrapped
-// tool straight to an Agent. The server's readOnlyHint annotation becomes
-// agent.Safety{ReadOnly: true}, so the MCP-sourced tool is retry-safe on resume with no
-// per-tool configuration on the client side.
+// tool straight to an Agent. The server is our own, so we trust its annotations
+// (mcp.TrustAnnotations): its readOnlyHint becomes agent.Safety{ReadOnly: true}, and the
+// MCP-sourced tool is retry-safe on resume with no per-tool configuration. Tools from a server
+// you do not trust are side effects by default.
 //
 // It runs with NO API key: the model is a small inline scripted Model that calls the
 // discovered MCP tool once, then answers in text. Swap it for a real provider (and the
@@ -72,7 +73,7 @@ func main() {
 	}
 	defer session.Close()
 
-	tools, err := mcp.Tools(ctx, session)
+	tools, err := mcp.Tools(ctx, session, mcp.TrustAnnotations()) // our own server: trust its labels
 	if err != nil {
 		log.Fatal(err)
 	}
