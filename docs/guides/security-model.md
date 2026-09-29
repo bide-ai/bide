@@ -193,7 +193,8 @@ Verification never requires trusting the producer or importing the producer's ru
 - The **`bide-audit` CLI** (`cmd/bide-audit`) is the auditor-facing front end. It imports
   only the core and `audit` packages and no store backend, so it operates on an exported journal
   (a JSON array of `Record`) plus a signed tree head. `verify` and the other verify verbs print a
-  one-line verdict and set the exit code (**0 = passed, 1 = failed**, 2 = usage error), which is
+  one-line verdict and set the exit code (**0 = passed, 1 = failed**, 2 = usage error, 3 = the
+  external `-checker` gave no verdict), which is
   the CI-gate contract. The `-pubkey` flag must come from the anchor operator out-of-band, never
   from the bundle: that is what makes it a proof you verify rather than a log you trust.
 - The **`audit/verify` package** is stdlib-only (no `agent` dependency) and checks inclusion,

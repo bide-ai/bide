@@ -126,7 +126,8 @@ func TestVerifyConvergenceCLI(t *testing.T) {
 
 // fakeChecker writes an executable script that ignores its argument, prints the given
 // classification line, and exits with the given code, standing in for the external oracle
-// (exit 0 = convergent, non-zero = not; the printed line is the compensation-free verdict).
+// (exit 0 = convergent, 1 = not, as the astchecker does; the printed line is the compensation-free
+// verdict).
 func fakeChecker(t *testing.T, dir, name string, code int, line string) string {
 	t.Helper()
 	// The stand-in oracle is a POSIX shell script, which Windows cannot exec

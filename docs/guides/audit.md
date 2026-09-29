@@ -315,7 +315,8 @@ Conventions shared across verbs:
 - Produce verbs (`prove`, `prove-absent`) write the bundle to `-out`, or to stdout if `-out` is
   omitted; the "wrote &lt;file&gt;" line goes to stderr so stdout stays clean for piping.
 - Verify verbs print a one-line `OK: ...` / `FAIL: ...` verdict and set the exit code: **0 =
-  authentic / all checks passed, 1 = failed** (a usage error exits 2). This is the CI-gate contract.
+  authentic / all checks passed, 1 = failed** (a usage error exits 2, and a `-checker` that gives no
+  verdict exits 3). This is the CI-gate contract: only 0 means verified.
 - A usage error is any command line the CLI does not read in full: a missing required flag, an
   unknown flag, a help request (`-h`), or an argument that is not a flag (flag parsing stops
   there, so a flag after it would go unread). None of them is a verdict, so none exits 0.
@@ -336,7 +337,13 @@ Conventions shared across verbs:
 
 The `-checker` flag points at the external verified oracle binary (the `astchecker` extracted from
 the axiom-free Coq proof); the CLI does not ship it, and without it the governance verbs verify only
-the cryptographic root and say so. The digest is recomputed here from a hardcoded
+the cryptographic root and say so. The checker's verdict is its exit status: 0 for a convergent
+policy, 1 for one that does not converge. Anything else gives no verdict: a checker that cannot be
+started, exits with another status (the astchecker exits 2 on a usage or parse error), or is
+killed by a signal, or whose output has a `compensation_free` line that reads as neither `true` nor
+`false`, or as both. Then the verb prints an `ERROR: ...` line, not a `FAIL` verdict, and exits 3,
+so a broken checker is never reported as a policy that does not converge, nor as agreement with a
+certificate. The digest is recomputed here from a hardcoded
 `gsm-policy-v1` domain-separation tag rather than taken from gsm, so neither root of trust depends
 on the producer. The CLI reads no environment variables.
 

@@ -154,6 +154,10 @@ func usage() {
 Export a journal for `+"`prove`"+` with: json.Marshal(store.History(ctx, runID)). Every JSON
 input is parsed strictly: a duplicate or case-variant key, an unknown field, or invalid UTF-8 is
 an error, and a public key must be 32 bytes of hex.
+
+Exit status: 0 = verified, 1 = failed, 2 = usage error, 3 = the -checker gave no verdict (it could
+not be started, exited with a status other than 0 or 1, was killed, or printed an unreadable
+compensation_free line).
 `)
 	os.Exit(2)
 }
@@ -274,12 +278,7 @@ func verifyGovernance(args []string) {
 		return
 	}
 
-	out, runErr := exec.Command(*checker, *policyPath).CombinedOutput()
-	fmt.Printf("oracle: %s", out)
-	if len(out) > 0 && out[len(out)-1] != '\n' {
-		fmt.Println()
-	}
-	if runErr != nil {
+	if !checkPolicyFile(*checker, *policyPath, "oracle").converges {
 		fmt.Println("FAIL: the verified oracle did not certify this policy as convergent")
 		os.Exit(1)
 	}
@@ -356,21 +355,7 @@ func verifyGovernedAction(args []string) {
 		fmt.Println("OK: cryptographic root verified. Pass -checker <astchecker> to also certify the policy converges.")
 		return
 	}
-	tmp, err := os.CreateTemp("", "policy-*.machine")
-	if err != nil {
-		fatal(err)
-	}
-	defer os.Remove(tmp.Name())
-	if _, err := tmp.WriteString(pc.Policy); err != nil {
-		fatal(err)
-	}
-	_ = tmp.Close()
-	out, runErr := exec.Command(*checker, tmp.Name()).CombinedOutput()
-	fmt.Printf("oracle: %s", out)
-	if len(out) > 0 && out[len(out)-1] != '\n' {
-		fmt.Println()
-	}
-	if runErr != nil {
+	if !checkPolicy(*checker, pc.Policy, "oracle").converges {
 		fmt.Println("FAIL: the verified oracle did not certify the anchored policy as convergent")
 		os.Exit(1)
 	}
@@ -460,31 +445,17 @@ func verifyConvergence(args []string) {
 		fmt.Println("OK: cryptographic root verified. Pass -checker <astchecker> to cross-check the convergence claim against the oracle.")
 		return
 	}
-	tmp, err := os.CreateTemp("", "policy-*.machine")
-	if err != nil {
-		fatal(err)
-	}
-	defer os.Remove(tmp.Name())
-	if _, err := tmp.WriteString(pc.Policy); err != nil {
-		fatal(err)
-	}
-	_ = tmp.Close()
-	out, runErr := exec.Command(*checker, tmp.Name()).CombinedOutput()
-	fmt.Printf("oracle: %s", out)
-	if len(out) > 0 && out[len(out)-1] != '\n' {
-		fmt.Println()
-	}
-	oracleConverges := runErr == nil
-	if oracleConverges != cert.Converges {
-		fmt.Printf("FAIL: certificate claims converges=%v but the verified oracle says converges=%v\n", cert.Converges, oracleConverges)
+	oracle := checkPolicy(*checker, pc.Policy, "oracle")
+	if oracle.converges != cert.Converges {
+		fmt.Printf("FAIL: certificate claims converges=%v but the verified oracle says converges=%v\n", cert.Converges, oracle.converges)
 		os.Exit(1)
 	}
 	// If the oracle also certifies the CRDT-fragment classification (compensation_free=<bool>),
 	// cross-check it, so a certificate cannot overstate that either. Older oracles omit the line;
 	// then the classification stays producer-reported, which we say rather than silently pass.
-	if cf, ok := parseCompensationFree(out); ok {
-		if cf != cert.CompensationFree {
-			fmt.Printf("FAIL: certificate claims compensation_free=%v but the verified oracle says compensation_free=%v\n", cert.CompensationFree, cf)
+	if oracle.classified {
+		if oracle.compensationFree != cert.CompensationFree {
+			fmt.Printf("FAIL: certificate claims compensation_free=%v but the verified oracle says compensation_free=%v\n", cert.CompensationFree, oracle.compensationFree)
 			os.Exit(1)
 		}
 	} else {
@@ -497,19 +468,101 @@ func verifyConvergence(args []string) {
 	fmt.Println("OK: the verified oracle's verdict agrees with the certificate: the anchored policy provably converges")
 }
 
-// parseCompensationFree scans the oracle's output for a machine-readable classification line
-// (compensation_free=true / compensation_free=false). The second return is false if no such line
-// is present, so a caller can distinguish "oracle disagrees" from "oracle does not report it".
-func parseCompensationFree(out []byte) (bool, bool) {
-	for _, line := range strings.Split(string(out), "\n") {
-		switch strings.TrimSpace(line) {
-		case "compensation_free=true":
-			return true, true
-		case "compensation_free=false":
-			return false, true
-		}
+// exitNoVerdict is the exit status when the external checker gives no verdict: it could not be
+// started, it failed, or its output cannot be read. It is not a verification failure (exit 1), since
+// nothing about the policy was learned, and it is never 0.
+const exitNoVerdict = 3
+
+// oracleVerdict is the external checker's verdict on one policy.
+type oracleVerdict struct {
+	converges bool
+	// compensationFree is the checker's compensation_free=<bool> classification; classified is
+	// false when it printed none (an older checker), so the caller can tell "the checker
+	// disagrees" from "the checker does not report it".
+	compensationFree, classified bool
+}
+
+// runOracle runs the external checker on the policy file at path, prints its output after label,
+// and returns its verdict. The astchecker exits 0 for a convergent policy, 1 for one that does not
+// converge, and 2 for a usage or parse error (as does any uncaught OCaml exception), so only 0 and
+// 1 are verdicts. A checker that cannot be started, exits with any other status, or is killed by a
+// signal gives none, and neither does output with a compensation_free line that reads as neither
+// true nor false, or as both: runOracle returns an error, which the caller must not read as "does
+// not converge".
+func runOracle(checker, path, label string) (oracleVerdict, error) {
+	out, err := exec.Command(checker, path).CombinedOutput()
+	fmt.Printf("%s: %s", label, out)
+	if len(out) > 0 && out[len(out)-1] != '\n' {
+		fmt.Println()
 	}
-	return false, false
+	var v oracleVerdict
+	var exit *exec.ExitError
+	switch {
+	case err == nil:
+		v.converges = true
+	case errors.As(err, &exit) && exit.ExitCode() == 1:
+		v.converges = false
+	default:
+		return v, fmt.Errorf("the checker %s gave no verdict (%v)", checker, err)
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "compensation_free") {
+			continue
+		}
+		var cf bool
+		switch line {
+		case "compensation_free=true":
+			cf = true
+		case "compensation_free=false":
+		default:
+			return v, fmt.Errorf("the checker %s printed an unreadable classification line %q", checker, line)
+		}
+		if v.classified && cf != v.compensationFree {
+			return v, fmt.Errorf("the checker %s printed both compensation_free=true and compensation_free=false", checker)
+		}
+		v.compensationFree, v.classified = cf, true
+	}
+	return v, nil
+}
+
+// checkPolicyFile runs the external checker on the policy file at path (see runOracle), and exits
+// with exitNoVerdict if it gives no verdict.
+func checkPolicyFile(checker, path, label string) oracleVerdict {
+	v, err := runOracle(checker, path, label)
+	if err != nil {
+		noVerdict(err)
+	}
+	return v
+}
+
+// checkPolicy runs the external checker on policy, written to a temporary file for it (see
+// runOracle), and exits with exitNoVerdict if it gives no verdict.
+func checkPolicy(checker, policy, label string) oracleVerdict {
+	tmp, err := os.CreateTemp("", "policy-*.machine")
+	if err != nil {
+		fatal(err)
+	}
+	_, err = tmp.WriteString(policy)
+	if cerr := tmp.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		os.Remove(tmp.Name())
+		fatal(err)
+	}
+	v, err := runOracle(checker, tmp.Name(), label)
+	os.Remove(tmp.Name())
+	if err != nil {
+		noVerdict(err)
+	}
+	return v
+}
+
+// noVerdict reports that the external checker gave no verdict and exits with exitNoVerdict.
+func noVerdict(err error) {
+	fmt.Printf("ERROR: %v; the policy was not checked, so this is no verdict on whether it converges\n", err)
+	os.Exit(exitNoVerdict)
 }
 
 // stringList is a repeatable string flag (one -vote per voter bundle).
@@ -739,30 +792,14 @@ func verifyRun(args []string) {
 			fatal(fmt.Errorf("convergence certificate payload for %s: %w", polC.Digest, err))
 		}
 
-		tmp, err := os.CreateTemp("", "policy-*.machine")
-		if err != nil {
-			fatal(err)
-		}
-		if _, err := tmp.WriteString(polC.Policy); err != nil {
-			fatal(err)
-		}
-		_ = tmp.Close()
-		out, runErr := exec.Command(*checker, tmp.Name()).CombinedOutput()
-		os.Remove(tmp.Name())
-		fmt.Printf("oracle (%s): %s", polC.Digest, out)
-		if len(out) > 0 && out[len(out)-1] != '\n' {
-			fmt.Println()
-		}
-		oracleConverges := runErr == nil
-		if oracleConverges != claim.Converges {
-			fmt.Printf("FAIL: policy %s certificate claims converges=%v but the verified oracle says converges=%v\n", polC.Digest, claim.Converges, oracleConverges)
+		oracle := checkPolicy(*checker, polC.Policy, "oracle ("+polC.Digest+")")
+		if oracle.converges != claim.Converges {
+			fmt.Printf("FAIL: policy %s certificate claims converges=%v but the verified oracle says converges=%v\n", polC.Digest, claim.Converges, oracle.converges)
 			os.Exit(1)
 		}
-		if cf, ok := parseCompensationFree(out); ok {
-			if cf != claim.CompensationFree {
-				fmt.Printf("FAIL: policy %s certificate claims compensation_free=%v but the verified oracle says compensation_free=%v\n", polC.Digest, claim.CompensationFree, cf)
-				os.Exit(1)
-			}
+		if oracle.classified && oracle.compensationFree != claim.CompensationFree {
+			fmt.Printf("FAIL: policy %s certificate claims compensation_free=%v but the verified oracle says compensation_free=%v\n", polC.Digest, claim.CompensationFree, oracle.compensationFree)
+			os.Exit(1)
 		}
 		if !claim.Converges {
 			fmt.Printf("FAIL: policy %s does NOT converge (certificate and oracle agree); do not deploy it\n", polC.Digest)
