@@ -1,6 +1,6 @@
 # Deterministic replay and run visualization
 
-Every run journals its steps to a `Durable` store (see [EXTENSION-POINTS.md](../reference/extension-points.md)).
+Every run journals its steps to a `Durable` store (see [extension points](../reference/extension-points.md)).
 Because that journal is a complete, ordered history of what happened, three debugging and
 observability tools fall out of it directly, each a pure function of the recorded records:
 
@@ -158,8 +158,12 @@ type Lister interface {
 }
 
 func IsComplete(ctx context.Context, store Durable, runID string) (bool, error)
-func Recover(ctx context.Context, store Durable, resume func(ctx context.Context, runID string) error) (int, error)
+func Recover(ctx context.Context, store Durable, resume func(ctx context.Context, runID string) error, opts ...RecoverOption) (int, error)
 ```
+
+The options (`WithLeaseHolder`, `WithLeaseTTL`) apply when the store also implements `Leaser`:
+`Recover` then drives each run under a per-run lease and skips runs another holder leases (see
+[known limitations](../KNOWN-LIMITATIONS.md) for what the lease does and does not guarantee).
 
 `Lister` is an OPTIONAL capability, kept off the base `Durable` interface on purpose:
 memoization and replay are the crash-safety core, and enumeration is a separate,
@@ -185,14 +189,15 @@ skips any run that has it. The marker is appended only at the terminal and is at
 name, so a replayed run never adds a second one and no earlier record's index shifts.
 
 **Pauses re-surface; they are not errors.** A re-driven run that is still waiting returns one
-of the durable pause signals (`*PendingApproval`, `*Interrupted`, `*Sleeping`, `*ResumeHalt`).
+of the durable pause signals (`*PendingApproval`, `*Interrupted`, `*Sleeping`, `*Awaiting`,
+`*ResumeHalt`).
 `Recover` detects these with `errors.As` and treats them as SUCCESSFUL recoveries: the run is
 back in memory and will resume when its condition is met (a human approves, an interrupt is
 answered, a timer fires). Only a genuine model, storage, or tool fault is joined into the
 returned error.
 
 **A Waker-bound resume rebuilds the timer set** with no separate journal scan. A sleeping run
-journals its wake time (see `MESSAGING.md` / `pause.go`). When `Recover` re-drives it with a
+journals its wake time (see [Messaging](messaging.md) and `agent/pause.go`). When `Recover` re-drives it with a
 `resume` that binds a `Waker` (`agent.WithWaker`), the run replays into its durable `Sleep`,
 which sees the `Waker` on the context and re-registers the journaled wake automatically.
 Advancing the clock and firing the waker then resumes the run to completion. The rebuild

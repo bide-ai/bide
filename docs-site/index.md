@@ -25,7 +25,7 @@ features:
   - title: HA in one process
     details: Thousands of concurrent durable runs survive crashes and node handoffs. No cluster, no separate workflow engine to operate.
   - title: Verifiable audit trail
-    details: Every run emits RFC 6962 Merkle proofs, checkable offline without trusting the vendor or the process that produced them.
+    details: Every run's journal is committed to an RFC 6962 Merkle tree. Build inclusion and consistency proofs for any record on demand and check them offline, without trusting the vendor or the process that produced them.
   - title: Provably convergent state
     details: Shared governed state carries machine-checked convergence, not eventual hope. Coordinate agents on state you can prove settles.
   - title: The whole agent surface

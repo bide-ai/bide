@@ -100,20 +100,28 @@ mid-instruction faults.
 
 ## Crash recovery: mechanism ships, durability of the re-driver is deployment policy
 
-`agent.Recover(ctx, store, resume)` is the crash-recovery re-driver (docs/DEBUGGING.md): it
+`agent.Recover(ctx, store, resume)` is the crash-recovery re-driver ([debugging](guides/debugging.md)): it
 enumerates runs via the optional `Lister` capability, skips the ones marked complete (the
 `run:complete` terminal marker checked by `agent.IsComplete`), and re-drives the rest, treating a
-durable pause (`*PendingApproval` / `*Interrupted` / `*Sleeping` / `*ResumeHalt`) as a successful
+durable pause (`*PendingApproval` / `*Interrupted` / `*Sleeping` / `*Awaiting` / `*ResumeHalt`) as a successful
 recovery. The bounds:
 
 - **`resume` is deployment policy, not a mechanism the SDK supplies.** Only the deployment knows a
   run's original input and which `Waker` / clock to bind onto the context. `Recover` re-drives every
   incomplete run it enumerates; a `resume` that does not own a given run should no-op it (a sub-agent
   run is driven by its parent).
-- **No run leasing yet.** Two processes both calling `Recover` against a shared store will both
-  re-drive the same in-flight runs. That is safe under at-most-once memoization (a completed step is
-  not re-run), but it is redundant work; a lease so only one recoverer claims a run is forward work
-  (see STATE.md, "Distributed at scale / HA").
+- **Leases coordinate drivers; they are not the safety mechanism.** When the store implements
+  `agent.Leaser` (`MemStore` in-process, `store/postgres` across processes through a leases table
+  and a DB-clock upsert; `store/sqlite` does not), `Recover` drives each run under a per-run lease
+  and skips runs another holder leases, and a primary driver wraps `Run` in `agent.Lease` so it and
+  the recoverers do not drive the same run at once. The lease is renewed while the run drives and
+  expires after `WithLeaseTTL` (default 30s) if its holder dies, so another node takes over. The
+  bound: a lease saves redundant work and gives takeover, but it cannot exclude a holder that stalls
+  past its TTL (a long GC pause, a suspended VM, a partition from the store) and wakes still
+  driving. At-most-once does not rest on the lease: the exclusive attempt claim written before each
+  side effect is what stops a second driver, which halts with `*ResumeHalt` instead of re-firing.
+  Without a `Leaser`, `Recover` and `Lease` drive unconditionally, which is still safe for the same
+  reason.
 - **`MemStore` and `MemWaker` are local-dev defaults, not durable.** `MemStore` implements `Lister`,
   so `Recover` works against it in-process, but its journal is lost on process exit, so there is
   nothing to recover after a real crash. `MemWaker`'s timer set is likewise in-memory: `Sleep`

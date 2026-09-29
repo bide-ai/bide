@@ -78,7 +78,7 @@ errors, nothing is recorded, so the next redelivery correctly retries it.
 For the governed and audited story, carry the messenger user's identity into the run so the audit
 record ties the action to who asked. Put it in the system prompt, the tool context, or a governed
 input field. The run is then replayable and provable like any other, with the requester on the
-record. See [AUDIT.md](audit.md) and [GOVERNANCE.md](governance.md).
+record. See [Audit](audit.md) and [Governance](governance.md).
 
 ## What stays your responsibility
 

@@ -224,7 +224,9 @@ object keys inside a recorded message breaks that record's proof.
 - The tally does not record which key verified each approver. An auditor needs the keys that were
   valid when the gate decided; after a rotation, keep the old public keys to verify old evidence.
 - A declarative `plan` config can carry an `approval` block (see [Flows](flows.md#node-approval)),
-  but the `plan` runtime does not enforce it yet; the gate is enforced on agent tools.
+  but the `plan` runtime does not enforce an approval gate yet, so building such a flow fails with
+  `ErrConfig` naming the node (as does a `Tool` node wrapping an agent tool that requires approval)
+  rather than letting the node run unapproved. Put the gate on an agent tool.
 
 ## Runnable example
 

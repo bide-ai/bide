@@ -33,7 +33,10 @@ All three ride the same substrate: a named durable step (`Durable.Do`, at-most-o
 name) plus `History` replay, and a typed pause error that `Run` propagates. No new
 persistence model.
 
-## API (new file `signal.go`)
+## API
+
+The signatures below match the shipped code (`agent/pause.go` for `Await`, `Signal`, and
+`Awaiting`; `agent/awaitfor.go` for `AwaitFor`; `agent/channel.go` for the ordered channel).
 
 ### Consume (run-side, inside a retry-safe tool)
 
@@ -78,9 +81,13 @@ func Send[T any](ctx context.Context, d Durable, runID, channel, key string, pay
 
 ```go
 type Awaiting struct {
-	RunID  string
-	Name   string
-	Prompt any // optional caller payload: what the run is waiting for
+	RunID string
+	// RootRunID is the run to re-invoke to continue: the top-level run. It differs from RunID
+	// when the await is inside a sub-agent, whose journal is RunID. Deliver the signal against
+	// RunID, then run RootRunID with the root agent.
+	RootRunID string
+	Name      string
+	Prompt    any // optional caller payload: what the run is waiting for
 }
 
 func (e *Awaiting) Error() string // "run <id> awaiting signal <name>"

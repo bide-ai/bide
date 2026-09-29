@@ -1,7 +1,7 @@
 # Model adapters: configuration and multimodal input
 
 The `Model` port is a single method, `Stream(ctx, Request) (*Stream, error)`
-([EXTENSION-POINTS.md](../reference/extension-points.md)). Three reference adapters ship, all in the zero-dep
+([extension points](../reference/extension-points.md)). Three reference adapters ship, all in the zero-dep
 core module (net/http + stdlib, no provider SDK, enforced by `architecture_test.go`):
 
 | Adapter | Package | Wire API | Covers |

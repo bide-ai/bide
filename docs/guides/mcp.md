@@ -6,7 +6,9 @@ schemas are only known at connect time. `Tools()` lists a connected session's to
 wraps each one so the agent core can call it like any native tool. It is built on the
 official SDK, `github.com/modelcontextprotocol/go-sdk`.
 
-The package is deliberately thin: two exported functions and an internal adapter. It does
+The package is deliberately thin: two entry points (`Connect` and `Tools`), a handful of options
+(`TrustAnnotations`, `WithElicitation`, `DeclineElicitation`, `WithToolListChanged`,
+`WithClientInfo`), and an internal adapter. It does
 not embed a server, spawn processes, or manage transports for you; you bring a
 `mcp.Transport` (stdio, in-memory, streamable HTTP, ...) and the package turns a connected
 session into agent tools.
@@ -77,7 +79,7 @@ default `Connect(ctx, transport)` behaves exactly as before.
   already in flight.
 
 - **`WithClientInfo(name, version)`** overrides the client name and version reported to the
-  server (default `"Bide"` / `"0.1.0"`).
+  server (default `"bide"` / `"0.1.0"`).
 
 ## Exported API
 
@@ -103,7 +105,7 @@ type ElicitFunc func(context.Context, *mcp.ElicitRequest) (*mcp.ElicitResult, er
 func DeclineElicitation(context.Context, *mcp.ElicitRequest) (*mcp.ElicitResult, error)
 ```
 
-Both wrap failures with `agent.ErrTool` so they classify alongside the framework's other
+`Connect` and `Tools` wrap failures with `agent.ErrTool` so they classify alongside the framework's other
 tool errors. The wrapped tool's `Call` returns the server's result content as raw JSON; if
 the server flags the result `IsError`, the content is surfaced as a Go error (wrapped with
 `agent.ErrTool`) so the agent core sees a failure and can self-correct.

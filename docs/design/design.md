@@ -26,7 +26,7 @@ Pitch: **"Type-safe agents that survive a crash. Single binary. No cluster."**
 - **Typed tools alone is NOT a moat vs Eino.** Eino already auto-generates schema from struct
   tags (`InferTool[T,D]`). Our typed-tools story wins decisively vs LangChainGo (`Call(ctx,
   string) (string, error)`, no schema) and the small frameworks, but **not** vs Eino.
-- **Where we actually beat Eino** (all verified in COMPETITIVE.md):
+- **Where we actually beat Eino** (verified in the research passes below):
   - **No string-keyed graph DSL.** Eino wires nodes with string keys; type/wiring errors land
     at `Compile()` (runtime), some at execution. We use plain Go funcs + generics + channels →
     real `go build` errors. "Compile-time" for us means the Go compiler, not their `Compile()`.
@@ -48,7 +48,7 @@ building here anyway because it's what we want to build. Winning ≠ more integr
 winning = a violently opinionated take on the two wedge features + Go-idiomatic ergonomics.
 (Go evals were the other empty lane. We now ship a statistical `eval` package, but as a
 supporting layer subordinate to the provable governance/audit moats, not as the product wedge:
-it measures the model statistically and says so; see docs/TESTING.md for the boundary.)
+it measures the model statistically and says so; see [testing](../testing/testing.md) for the boundary.)
 
 ---
 
@@ -70,8 +70,8 @@ it measures the model statistically and says so; see docs/TESTING.md for the bou
 - **Genkit/ADK are cloud-flavored**: Vertex/Firebase pull, thin vector stores, agent packages
   still experimental.
 
-> DONE: 4 research passes complete; see `COMPETITIVE.md` for the cited teardowns (LangChainGo +
-> small frameworks, Eino, Genkit + ADK, cross-cutting gaps).
+> DONE: 4 research passes complete (LangChainGo + small frameworks, Eino, Genkit + ADK,
+> cross-cutting gaps). The cited teardowns were working notes and are not kept in this repo.
 >
 > **Convergence conclusion:** durable execution is punted by ALL THREE Tier-1 frameworks: Eino
 > ships zero persistent store; Genkit *removed* durable flows ("not durable execution"); ADK gives
@@ -108,8 +108,8 @@ trace/named-steps for the Dev UI + `RenderGraph(runID)`), never something the us
 Optional thin graph-builder ("Option C") only if user research shows buyers won't adopt without a
 hand-authored graph; build speculatively = no.
 
-Why B, tested against Eino's own strongest case (see COMPETITIVE.md + the two Eino orchestration
-docs):
+Why B, tested against Eino's own strongest case (the research passes above + the two Eino
+orchestration docs):
 - **Even Eino treats the agent as a LOOP, not a graph.** Their "Graph or Agent" page: agent =
   autonomous/stateful/process-matters (a ReAct loop); graph = deterministic/stateless/final-result
   (a tool the loop calls). Their recommended integration is "encapsulate Graph as Agent's Tool."
@@ -274,7 +274,7 @@ underlying SDK's own retry so budgets/retries compose predictably.
 
 ## Open questions / next steps
 
-- [x] Fold in the 4 flaw-research agents' findings → see `COMPETITIVE.md`.
+- [x] Fold in the 4 flaw-research agents' findings (summarized above).
 - [ ] Confirm Go 1.26/1.27 relevant features.
 - [ ] Prototype the `select`-driven loop + typed-tool registry to feel the ergonomics.
 - [ ] Decide the durable-store interface (SQLite first? Postgres? pluggable `Store`).
@@ -287,7 +287,7 @@ underlying SDK's own retry so budgets/retries compose predictably.
       via the stdlib v1 import; this is for v2 *semantics* + `jsontext`, still GOEXPERIMENT-gated,
       hence the one-file isolation.
 
-### From the Eino design study (things to build / match; see COMPETITIVE.md)
+### From the Eino design study (things to build / match)
 - [ ] Add `ToolChoice` (auto/required/none) to `Request`: Eino has it, we don't.
 - [ ] Extend `Part` to multimodal: `Image`/`Audio`/`Video`/`File` (Eino covers these).
 - [x] Match Eino's HITL: `StatefulInterrupt` + `ResumeWithData` equivalent. DONE: durable typed

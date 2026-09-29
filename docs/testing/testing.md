@@ -26,8 +26,12 @@ an idealized plan. One item is stated differently here than you may expect:
 
 Two module boundaries matter for running tests. The competitor benchmark adapters live in a
 **separate module** (`benchmarks/`, its own `go.mod`) so their large dependency trees never
-touch the Bide core. The workspace (`go.work`) also stitches in `govern/redislog`,
-`govern/sqlitelog`, `mcp`, `store/postgres`, `store/sqlite`, and `trace`.
+touch the Bide core; `benchmarks` is not in the workspace, so run its tests with `GOWORK=off`. The
+workspace (`go.work`) stitches in the adapter modules `codec/gcf`, `govern/postgreslog`,
+`govern/redislog`, `govern/sqlitelog`, `mcp`, `store/postgres`, `store/sqlite`, and `trace`, plus
+the example modules `examples/approval`, `examples/mcp`, `examples/observability`, and
+`examples/plan`. `go test ./...` from the root covers the core module only; run each module's tests
+from its own directory.
 
 ## Pillar 1: fair crash-injection chaos benchmark
 
@@ -183,7 +187,7 @@ vectors, so it is the real RFC 6962 construction and not a homegrown look-alike.
 
 Bounds: conformance to the published vectors establishes the commitment is spec-correct. It does
 not, by itself, provide tamper-evidence; that requires anchoring the commitment out-of-band, which
-is a deployment requirement documented in `docs/AUDIT.md`.
+is a deployment requirement documented in the [audit guide](../guides/audit.md).
 
 ## Pillar 5: architecture enforcement
 
@@ -207,7 +211,7 @@ confirms the journal projection reproduces the same semantic events the live str
 not inventing a different history), and `TestReplayEvents_AppendOnlyAcrossCrash` confirms that a
 crash mid-run leaves a prefix of the events, that resuming appends the rest without rewriting the
 prefix, and that recomputing from the same journal is deterministic. See
-[docs/DEBUGGING.md](../guides/debugging.md) for the replay, event-reconstruction, and Mermaid tools built on
+[the debugging guide](../guides/debugging.md) for the replay, event-reconstruction, and Mermaid tools built on
 the journal.
 
 ## Pillar 7: standard per-package unit tests
@@ -269,8 +273,9 @@ For rigor it does more than a bare pass-count:
 
 Remaining bounds (stated so the harness is not oversold): there is no built-in persistent result
 store yet (you keep the JSON `Report`s, though `Compare` now does the cross-version diff with a
-significance test), and per-run token cost is not captured because the public `Run` does not expose
-usage. Dataset discipline (labels, held-out splits, adversarial coverage) is the user's to bring:
+significance test), and per-run token cost is not captured: `Agent.RunResult` returns the run's
+`Usage`, but `eval.AgentRunner` drives `Run` and `eval.RunOutput` has no usage field, so a report
+carries no token counts. Dataset discipline (labels, held-out splits, adversarial coverage) is the user's to bring:
 the harness measures whatever cases it is given, so a weak case set yields a confident-looking but
 uninformative report. Those are additive, not corrections.
 
@@ -329,9 +334,9 @@ go test ./chaos -run Verify -v
 cd benchmarks && GOWORK=off go test -run Comparison -v
 
 # E2E convergence + traceability at larger scale (gated by wall time).
-E2E_HUGE=1          go test -run TestE2E_ManyAgentsConvergeAndAreTraceable -v   # adds 100k
-E2E_HUGE=million    go test -run TestE2E_ManyAgentsConvergeAndAreTraceable -v   # adds 100k + 1,000,000
-E2E_HUGE=tenmillion go test -run TestE2E_ManyAgentsConvergeAndAreTraceable -v   # adds 10,000,000
+E2E_HUGE=1          go test ./agent -run TestE2E_ManyAgentsConvergeAndAreTraceable -v   # adds 100k
+E2E_HUGE=million    go test ./agent -run TestE2E_ManyAgentsConvergeAndAreTraceable -v   # adds 100k + 1,000,000
+E2E_HUGE=tenmillion go test ./agent -run TestE2E_ManyAgentsConvergeAndAreTraceable -v -timeout 0   # adds 10,000,000 (~13 min)
 
 # Second trust root: re-certify the anchored policy with the external verified oracle.
 GSM_AST_CHECKER=/path/to/checker go test ./govern -run TestAttestedEventTool_RealPolicyDigest -v

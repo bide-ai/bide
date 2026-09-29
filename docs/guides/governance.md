@@ -145,7 +145,7 @@ a.Run(agent.WithIdentity(ctx, id), runID, input) // propagates to governed tools
 
 An inclusion proof then commits to who acted, on whose behalf, and under what authority. The SDK
 proves the identity CLAIM; authenticating the principal is the operator's IdP/PKI, and the
-attribution is only as strong as the key custody behind the run's signatures (see AUDIT.md).
+attribution is only as strong as the key custody behind the run's signatures (see [Audit](audit.md)).
 
 **Authority as governed state.** The cleaner move is to make the delegated authority part of the
 state the invariants read, so the rule is scoped per principal. Model the limit as a variable and
@@ -170,7 +170,7 @@ The same pattern (an external fact seeded into governed state, gated by an invar
 count into state, and gate the commit on `votes_for >= k`, so a high-stakes action requires
 agreement or escalates. It is a composition of existing seams, not a new agent type, and it is
 implemented: `govern.Quorum` (k-of-n model agreement over `agent.Parallel`) plus the
-`bide-audit verify-quorum` verb and `examples/quorum`. See [QUORUM.md](quorum.md).
+`bide-audit verify-quorum` verb and `examples/quorum`. See [Quorum](quorum.md).
 
 ## Federation: constraints across agents
 
@@ -313,4 +313,4 @@ for machines whose global state space is too large to enumerate, gsm verifies **
 Because the policy is inspectable, serializable data, it also becomes an audit artifact:
 `govern.AttestedEventTool` records which policy admitted each governed action, and the policy is
 anchored as a log leaf an auditor cross-links to the action and re-checks with the external oracle.
-See [AUDIT.md](audit.md) for the attestation and `bide-audit verify-governed-action`.
+See [Audit](audit.md) for the attestation and `bide-audit verify-governed-action`.

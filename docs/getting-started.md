@@ -7,7 +7,7 @@
 
 ## Install
 
-Once published: `go get github.com/bide-ai/bide/agent`. To build against the repo today, clone it and use a local `replace` directive or `go.work` (this repo already ships a `go.work`; see [Building the repository](#building-the-repository)).
+The core module is published: `go get github.com/bide-ai/bide@latest` gives you the `agent` package and everything else in the core (the model adapters, `plan`, `audit`, `govern`). The adapter modules (`store/sqlite`, `store/postgres`, `mcp`, `trace`, `codec/gcf`, and the `govern/*log` backends) are not tagged separately yet: to use one, clone the repository and point at it with a local `replace` directive or `go.work` (this repo already ships a `go.work`; see [Building the repository](#building-the-repository)).
 
 ## Your first agent
 
