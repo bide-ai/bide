@@ -15,7 +15,8 @@ data: [DONE]
 	if err != nil {
 		t.Fatal(err)
 	}
-	if u.InputTokens != 1000 || u.OutputTokens != 5 {
+	// prompt_tokens 1000 includes the 800 cached tokens, which are counted once, as cache reads.
+	if u.InputTokens != 200 || u.OutputTokens != 5 {
 		t.Fatalf("usage = %+v", u)
 	}
 	if u.CacheReadTokens != 800 {
