@@ -24,7 +24,7 @@ Temporal、DBOS、trpc-agent-go、ADK、eino 全都通过**重新运行**来恢�
 
 ```
 Bide      maxFired=1    ✓ at-most-once held
-trpc-agent-go  maxFired=5    ✗ double-charged
+trpc-agent-go  maxFired=6    ✗ double-charged
 adk-go         maxFired=4    ✗
 langchaingo    maxFired=64   ✗
 eino           maxFired=64   ✗
@@ -388,7 +388,7 @@ agent.Safety{RequiresApproval: true}  // pause for human approval before executi
 
 这是**被证明的，而非被断言的。** `dst_test.go` 是一个确定性模拟测试：一个故障注入的存储在*每一个*写入点崩溃（并跨越数百个随机化的多次崩溃调度），而该测试工具断言一个非幂等副作用每一次都**至多触发一次**，且运行总是以完成或停机告终，从不双重触发。
 
-该测试工具是导出的（`chaos/`），并在 `benchmarks/` 中被指向其他 SDK。实测结果：**Bide `maxFired=1`（通过）；trpc-agent-go `maxFired=5`；langchaingo `maxFired=64`（两者均失败）。** trpc 的检查点/恢复确实有效（已验证：恢复一次已完成的运行是一个空操作）；它的双重触发是那个有文档记载的 LangGraph"节点必须幂等"窗口。langchaingo 完全没有持久性，所以重试会把一切重新运行。Bide 的尝试标记把那个窗口彻底关闭。
+该测试工具是导出的（`chaos/`），并在 `benchmarks/` 中被指向其他 SDK。实测结果：**Bide `maxFired=1`（通过）；trpc-agent-go `maxFired=6`；langchaingo `maxFired=64`（两者均失败）。** trpc 的检查点/恢复确实有效（已验证：恢复一次已完成的运行是一个空操作）；它的双重触发是那个有文档记载的 LangGraph"节点必须幂等"窗口。langchaingo 完全没有持久性，所以重试会把一切重新运行。Bide 的尝试标记把那个窗口彻底关闭。
 
 `WithMaxTurns(n)` 为每次运行的模型轮次设上限，使一个不停调用工具的模型无法永远循环下去：触及它会返回 `ErrMaxTurns`（它是 `errors.Is` `ErrBudget` 的）。`WithTokenBudget(n)` 为一次运行可使用的 token 设上限，缓存的输入也计算在内：一旦运行已用掉 `n`，它就不再发起任何模型调用，并返回 `ErrBudgetExceeded`。每次调用的用量都随其轮次记入日志，因此两项限制都从日志中重建，并在崩溃与恢复之后依然成立。
 

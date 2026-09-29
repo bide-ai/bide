@@ -48,7 +48,7 @@ of 1 means the guarantee held; anything higher is a double-charge.
   proves the harness is **non-vacuous** (a correct loop passes, an incorrect one fails).
 - `benchmarks/` runs the same harness against other Go agent SDKs from that separate module
   (`cd benchmarks && GOWORK=off go test -run Comparison -v`). The published cross-SDK result
-  in `benchmarks/README.md`: Bide `maxFired=1` (PASS); trpc-agent-go `maxFired=5`; adk-go
+  in `benchmarks/README.md`: Bide `maxFired=1` (PASS); trpc-agent-go `maxFired=6`; adk-go
   `maxFired=4`; langchaingo `maxFired=64`; eino `maxFired=64`; naive-loop `maxFired=5`.
 
 **Fairness is the discipline that makes this credible, not a strawman contest.** Every

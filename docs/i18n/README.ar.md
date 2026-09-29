@@ -41,7 +41,7 @@
 
 ```
 Bide      maxFired=1    ✓ at-most-once held
-trpc-agent-go  maxFired=5    ✗ double-charged
+trpc-agent-go  maxFired=6    ✗ double-charged
 adk-go         maxFired=4    ✗
 langchaingo    maxFired=64   ✗
 eino           maxFired=64   ✗
@@ -556,7 +556,7 @@ agent.Safety{RequiresApproval: true}  // pause for human approval before executi
 **مرة واحدة على الأكثر** في كل مرة، مع انتهاء التشغيلة دائمًا مكتملة أو مُتوقّفة، لا مضاعفة أبدًا.
 
 المُختبِر مُصدَّر (`chaos/`) ومُوجَّه إلى SDKs أخرى في `benchmarks/`. النتيجة المقيسة:
-**Bide `maxFired=1` (نجاح)؛ trpc-agent-go `maxFired=5`؛ langchaingo `maxFired=64` (كلاهما فشل).**
+**Bide `maxFired=1` (نجاح)؛ trpc-agent-go `maxFired=6`؛ langchaingo `maxFired=64` (كلاهما فشل).**
 نقطة التحقّق/الاستئناف في trpc تعمل حقًّا (مُتحقَّق: استئناف تشغيلة مكتملة لا عملية له)؛ وتضاعُفها هو نافذة
 LangGraph الموثّقة «يجب أن تكون العُقَد عديمة الأثر عند التكرار». وlangchaingo بلا معمورية إطلاقًا، فإعادة
 المحاولات تعيد تشغيل كل شيء. وعلامة محاولة Bide تُغلِق النافذة تمامًا.

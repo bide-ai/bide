@@ -49,7 +49,7 @@ every crash point. The number *is* the product:
 
 ```
 Bide      maxFired=1    ✓ at-most-once held
-trpc-agent-go  maxFired=5    ✗ double-charged
+trpc-agent-go  maxFired=6    ✗ double-charged
 adk-go         maxFired=4    ✗
 langchaingo    maxFired=64   ✗
 eino           maxFired=64   ✗
@@ -597,7 +597,7 @@ multi-crash schedules), and the harness asserts a non-idempotent side effect fir
 once** every time, with the run always ending completed or halted, never double-firing.
 
 The harness is exported (`chaos/`) and pointed at other SDKs in `benchmarks/`. The measured result:
-**Bide `maxFired=1` (PASS); trpc-agent-go `maxFired=5`; langchaingo `maxFired=64` (both FAIL).**
+**Bide `maxFired=1` (PASS); trpc-agent-go `maxFired=6`; langchaingo `maxFired=64` (both FAIL).**
 trpc's checkpoint/resume genuinely works (verified: resuming a completed run is a no-op); its
 double-fire is the documented LangGraph "nodes must be idempotent" window. langchaingo has no
 durability at all, so retries re-run everything. Bide' attempt-marker closes the window entirely.
