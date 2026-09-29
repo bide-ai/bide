@@ -581,8 +581,15 @@ func verifyQuorum(args []string) {
 
 	// (3) the disclosed votes are exactly the votes the tally records (each recorded vote is
 	// disclosed with the same decision here, and the count check below rules out extra or repeated
-	// bundles), and the tally recomputes from them.
+	// bundles), and the tally recomputes from them. A voter the tally records twice would let one
+	// disclosed vote count twice, so each recorded voter must be distinct.
+	recorded := map[string]bool{}
 	for _, v := range rec.Votes {
+		if recorded[v.Voter] {
+			fmt.Printf("FAIL: the tally records a vote by %q more than once\n", v.Voter)
+			os.Exit(1)
+		}
+		recorded[v.Voter] = true
 		d, ok := disclosed[v.Voter]
 		if !ok {
 			fmt.Printf("FAIL: the tally records a vote by %q that is not disclosed; all votes must be disclosed to verify the tally\n", v.Voter)
