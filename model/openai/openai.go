@@ -189,7 +189,7 @@ func (m *Model) buildRequest(req agent.Request) ([]byte, error) {
 	}
 	if rf := req.ResponseFormat; rf != nil && len(rf.Schema) > 0 {
 		// OpenAI strict structured outputs: the schema must be closed (additionalProperties
-		// false, all keys required) — the same transform we apply to tool schemas. A schema
+		// false, all keys required), the same transform we apply to tool schemas. A schema
 		// strict mode cannot express fails the request rather than go out marked strict.
 		sch, err := schema.OpenAIStrict(rf.Schema)
 		if err != nil {

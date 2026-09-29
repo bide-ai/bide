@@ -549,7 +549,7 @@ func (m *MemStore) Do(ctx context.Context, runID, name string, fn func(context.C
 		if i, ok := rl.byName[name]; ok {
 			b := rl.order[i]
 			m.mu.Unlock()
-			return b, nil // memoized — do not re-run fn
+			return b, nil // memoized: do not re-run fn
 		}
 		m.mu.Unlock() // run fn without holding the lock (it may do model/tool I/O)
 
