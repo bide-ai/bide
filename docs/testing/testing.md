@@ -124,10 +124,13 @@ total N:
 
 - Default scales (5,000 / 10,000 / 20,000): each converges and verifies in well under two seconds,
   live heap a few MB.
-- 1,000,000 agents (`E2E_HUGE=million`): ~34s at ~30k agents/s, peak ~2,560 goroutines.
-- 10,000,000 agents (`E2E_HUGE=tenmillion`): ~8m27s at ~19.7k agents/s, peak ~2,833 goroutines,
-  live heap ~4 MB. The ~839 GB "total alloc" is cumulative allocation churned and freed across the
+- 1,000,000 agents (`E2E_HUGE=million`): ~1m18s at ~12.8k agents/s, peak ~2,600 goroutines.
+- 10,000,000 agents (`E2E_HUGE=tenmillion`): ~13m19s at ~12.5k agents/s, peak ~2,667 goroutines,
+  live heap ~3 MB. The ~1,420 GB "total alloc" is cumulative allocation churned and freed across the
   run; the live heap does not grow, which is the point.
+
+The in-memory store encodes each record to JSON on write and decodes it on read, the same work the
+SQLite and Postgres stores do, so these figures include that cost.
 
 The shape is the result: throughput roughly flat and live heap flat from thousands to ten million
 agents. The ceiling is time (and, in production, the durable store's write throughput), not process

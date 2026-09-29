@@ -308,6 +308,11 @@ func (e *ResumeHalt) Error() string {
 
 // MemStore is an in-memory Durable for tests and local dev. SQLite is the shipping
 // default; store/postgres is the high-availability backend.
+//
+// It keeps each record as its JSON encoding and decodes on every read, the same way the SQL
+// stores do. So a record a caller gets back is always an independent copy (modifying it
+// cannot change the journal), and it has the same byte-normalized form a production store
+// returns, which keeps tests on MemStore faithful to SQLite and Postgres.
 type MemStore struct {
 	mu     sync.Mutex
 	sf     singleflight.Group // collapses concurrent Do on the same (runID,name) — at-most-once fn
@@ -317,8 +322,17 @@ type MemStore struct {
 }
 
 type runLog struct {
-	order  []Record
+	order  [][]byte // each record's JSON encoding, in append order
 	byName map[string]int
+}
+
+// decodeRecord decodes one stored record into an independent copy.
+func decodeRecord(b []byte) (Record, error) {
+	var r Record
+	if err := json.Unmarshal(b, &r); err != nil {
+		return Record{}, fmt.Errorf("decode stored record: %w (%w)", err, ErrStorage)
+	}
+	return r, nil
 }
 
 func NewMemStore() *MemStore {
@@ -349,9 +363,9 @@ func (m *MemStore) Do(ctx context.Context, runID, name string, fn func(context.C
 			m.runs[runID] = rl
 		}
 		if i, ok := rl.byName[name]; ok {
-			rec := rl.order[i]
+			b := rl.order[i]
 			m.mu.Unlock()
-			return rec, nil // memoized — do not re-run fn
+			return decodeRecord(b) // memoized — do not re-run fn
 		}
 		m.mu.Unlock() // run fn without holding the lock (it may do model/tool I/O)
 
@@ -360,15 +374,19 @@ func (m *MemStore) Do(ctx context.Context, runID, name string, fn func(context.C
 			return nil, e // not recorded — will re-run on the next attempt
 		}
 		rec.Name = name
+		b, e := json.Marshal(rec)
+		if e != nil {
+			return nil, fmt.Errorf("marshal step %q: %w (%w)", name, e, ErrStorage)
+		}
 
 		m.mu.Lock()
 		defer m.mu.Unlock()
 		if i, ok := rl.byName[name]; ok { // a prior write landed
-			return rl.order[i], nil
+			return decodeRecord(rl.order[i])
 		}
 		rl.byName[name] = len(rl.order)
-		rl.order = append(rl.order, rec)
-		return rec, nil
+		rl.order = append(rl.order, b)
+		return rec, nil // the caller's own record, as the SQL stores return it
 	})
 	if err != nil {
 		return Record{}, err
@@ -396,6 +414,12 @@ func (m *MemStore) History(_ context.Context, runID string) ([]Record, error) {
 		return nil, nil
 	}
 	out := make([]Record, len(rl.order))
-	copy(out, rl.order)
+	for i, b := range rl.order {
+		r, err := decodeRecord(b)
+		if err != nil {
+			return nil, err
+		}
+		out[i] = r
+	}
 	return out, nil
 }
