@@ -789,11 +789,8 @@ func toolNameFor(recs []Record, id string) (string, bool) {
 // terminalCallDone reports whether the latest assistant turn in msgs called the terminal tool
 // named tool and that call succeeded (its result is recorded and is not an error), and returns
 // that turn. The result is read from msgs, so a resumed run that crashed after recording the
-// call ends the same way a live one does. An empty tool name never matches.
+// call ends the same way a live one does. With no terminal tool (tool is ""), no call matches.
 func terminalCallDone(msgs []Message, tool string) (Message, bool) {
-	if tool == "" {
-		return Message{}, false
-	}
 	for i := len(msgs) - 1; i >= 0; i-- {
 		if msgs[i].Role != RoleAssistant {
 			continue
