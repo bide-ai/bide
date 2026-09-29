@@ -73,6 +73,9 @@ type Agent struct {
 	// approverVerifiers resolves an approver id to the verifier for its decision
 	// signature; required by any tool with a non-nil Safety.Approval (see WithApproverVerifiers).
 	approverVerifiers ApproverVerifierFor
+	// toolErrRedact, if set, chooses the text journaled and sent to the model for a failed tool
+	// call (see WithToolErrorRedactor).
+	toolErrRedact func(tool string, err error) string
 }
 
 // systemMessage returns the system prompt for this run — the dynamic function if set,
@@ -203,6 +206,24 @@ func (a *Agent) SetMaxConcurrency(n int) *Agent {
 // silently counting zero decisions. Returns the agent for chaining.
 func (a *Agent) WithApproverVerifiers(fn ApproverVerifierFor) *Agent {
 	a.approverVerifiers = fn
+	return a
+}
+
+// WithToolErrorRedactor sets the text recorded for a tool call that fails. A failed call's
+// error text is journaled as the call's result, sent to the model, and hashed into the audit
+// trail, where a proof can disclose it, so it must not carry secrets. By default the text is the
+// error's own, with every URL in it redacted: its userinfo, each query parameter's value, and
+// its fragment become REDACTED (a net/http *url.Error quotes the whole request URL, API key
+// parameter included). fn receives the tool's name and its error and returns the text to record
+// instead; the same URL redaction then applies to what fn returns. Use it to scrub what URL
+// redaction cannot know about (an account number, a token in a header echoed back), and keep
+// the text useful: the model reads it to decide what to do next.
+//
+// It applies to every failed call, a sub-agent's included (a sub-agent's failure is its tool
+// call's error), and to the failure a saga journals. The error the caller gets back
+// (SagaAborted.Cause, for one) is the tool's own. Returns the agent for chaining.
+func (a *Agent) WithToolErrorRedactor(fn func(tool string, err error) string) *Agent {
+	a.toolErrRedact = fn
 	return a
 }
 
@@ -583,10 +604,12 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 						}
 						if saga {
 							toolCallErr = callErr
-							return Record{Kind: StepSagaFail, ToolUseID: c.tu.ID, Result: mustJSON(callErr.Error())}, nil
+							return Record{Kind: StepSagaFail, ToolUseID: c.tu.ID, Result: mustJSON(toolErrorText(a.toolErrRedact, c.tu.Name, callErr))}, nil
 						}
+						// The model reads the error text as written, less any credential in a URL (and
+						// whatever else the agent's tool-error redactor removes): see toolErrorText.
 						r.IsError = true
-						r.Result, _ = marshalJournal(callErr.Error()) // the model reads the error text as written
+						r.Result, _ = marshalJournal(toolErrorText(a.toolErrRedact, c.tu.Name, callErr))
 					} else {
 						r.Result = res
 					}
@@ -594,7 +617,9 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 				})
 				if saga && toolCallErr != nil {
 					fire(ToolCompleted{ToolUseID: c.tu.ID, Name: c.tu.Name, Result: rec.Result, IsError: true})
-					return &sagaTrip{toolName: c.tu.Name, toolUseID: c.tu.ID, cause: toolCallErr}
+					var journaled string
+					_ = json.Unmarshal(rec.Result, &journaled)
+					return &sagaTrip{toolName: c.tu.Name, toolUseID: c.tu.ID, cause: toolCallErr, journaled: journaled}
 				}
 				if err != nil {
 					var subHalt *ResumeHalt

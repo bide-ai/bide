@@ -60,6 +60,29 @@ The audit trail does not provide **confidentiality**. This is scoped out explici
   with appropriate access control. The cryptography here proves *what happened*; it does not
   hide it.
 
+### Tool errors are redacted before they are journaled
+
+When a tool call fails, its error text becomes the call's result: it is journaled, sent to the
+model, and hashed into the Merkle tree, where a proof bundle for that call discloses it. Error
+text often quotes a URL (a net/http `*url.Error` quotes the whole request URL), and a URL can
+carry a credential. So by default the agent redacts every URL in the text before it is recorded:
+its userinfo, the value of each query parameter (the parameter names stay), and its fragment
+each become `REDACTED`, while the scheme, host, and path stay, so the model still learns what was
+called and why it failed:
+
+```
+Get "https://REDACTED@api.example.com/v1/items?key=REDACTED&page=REDACTED": dial tcp ...: connection refused
+```
+
+A `*url.Error`'s URL is redacted as a whole; every other URL is found by scanning the text.
+`Agent.WithToolErrorRedactor(func(tool string, err error) string)` chooses the recorded text for
+a failed call when URL redaction is not enough (an account number, a token a service echoed
+back); URL redaction still applies to what it returns. This covers every failed tool call, a
+failed sub-agent (its failure is its tool call's error), and the two records a saga journals
+for its failure. The error returned to the caller (for example `SagaAborted.Cause`) is the
+tool's own, unredacted. A secret that is not in a URL, and not removed by your redactor, is
+journaled as written.
+
 ## Anchoring: the condition on tamper-evidence
 
 Integrity is unconditional: any edit changes the root. But a hash chain or Merkle tree stored in
