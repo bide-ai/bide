@@ -122,7 +122,7 @@ func (fg *FederatedGovernor) foldThrough(ctx context.Context, last int64) error 
 		}
 		st, err := fg.m.ApplyNamed(fg.state, registry, event)
 		if err != nil {
-			return fmt.Errorf("govern: replaying %q: %w (%w)", enc, err, agent.ErrStorage)
+			return fmt.Errorf("govern: log for %q holds entry %q at position %d, which the federation cannot apply: %w (%w)", fg.entity, enc, fg.next, err, agent.ErrProtocol)
 		}
 		fg.state = st
 		fg.next++

@@ -55,23 +55,28 @@ var (
 // event set lands on the same valid normal form. Its state lives only in this process; use a
 // PersistentGovernor over a shared EventLog when several processes act on the same state.
 type Governor struct {
-	m     *gsm.Machine
-	mu    sync.Mutex
-	state gsm.State
-	next  int64 // position of the next event in this governor's sequence
+	m      *gsm.Machine
+	events map[string]bool // the events m declares
+	mu     sync.Mutex
+	state  gsm.State
+	next   int64 // position of the next event in this governor's sequence
 }
 
 // New wraps a built, verified gsm.Machine with an initial state.
 func New(m *gsm.Machine, initial gsm.State) *Governor {
-	return &Governor{m: m, state: initial}
+	return &Governor{m: m, events: eventSet(m), state: initial}
 }
 
 // Apply advances the shared state by one event (O(1) table lookup; compensation to a valid normal
-// form is baked in). Position is the event's place in this governor's sequence. The error is always
-// nil for the in-memory Governor; it exists to satisfy Applier alongside PersistentGovernor.
+// form is baked in). Position is the event's place in this governor's sequence. An event the
+// machine does not declare is rejected with an ErrConfig error and Position -1, and the state is
+// unchanged.
 func (g *Governor) Apply(_ context.Context, event string) (Applied, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	if !g.events[event] {
+		return Applied{State: g.state, Position: -1}, unknownEvent(g.m, event)
+	}
 	g.state = g.m.Apply(g.state, event)
 	pos := g.next
 	g.next++
@@ -83,6 +88,20 @@ func (g *Governor) State() gsm.State {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	return g.state
+}
+
+// eventSet returns the set of events m declares. gsm.Machine.Apply panics on any other name, so
+// every governor checks a name against this set before applying it.
+func eventSet(m *gsm.Machine) map[string]bool {
+	set := map[string]bool{}
+	for _, e := range m.Events() {
+		set[e] = true
+	}
+	return set
+}
+
+func unknownEvent(m *gsm.Machine, event string) error {
+	return fmt.Errorf("govern: machine %q has no event %q: %w", m.Name(), event, agent.ErrConfig)
 }
 
 // EventLog is an append-only, totally ordered log of governed events per entity: the durable
@@ -144,6 +163,7 @@ func (l *MemEventLog) Events(_ context.Context, entity string, from int64) ([]st
 // through that event's position.
 type PersistentGovernor struct {
 	m      *gsm.Machine
+	events map[string]bool // the events m declares
 	log    EventLog
 	entity string
 	mu     sync.Mutex
@@ -152,9 +172,10 @@ type PersistentGovernor struct {
 }
 
 // NewPersistent constructs a governor over the entity's log and reconstructs its state by replaying
-// the log from the initial state.
+// the log from the initial state. A log holding an event the machine does not declare (written by
+// an older policy or a foreign writer) is an ErrProtocol error here and on every later fold.
 func NewPersistent(ctx context.Context, m *gsm.Machine, log EventLog, entity string, initial gsm.State) (*PersistentGovernor, error) {
-	pg := &PersistentGovernor{m: m, log: log, entity: entity, state: initial}
+	pg := &PersistentGovernor{m: m, events: eventSet(m), log: log, entity: entity, state: initial}
 	if _, err := pg.Sync(ctx); err != nil {
 		return nil, err
 	}
@@ -166,9 +187,16 @@ func NewPersistent(ctx context.Context, m *gsm.Machine, log EventLog, entity str
 // and returns that state and position. Events appended after it by other processes are folded in by
 // the next Apply or Sync. If the append succeeds but reading the log fails, the event is still
 // recorded; the next Apply or Sync folds it in.
+//
+// The event is validated before the append: a name the machine does not declare is rejected with
+// an ErrConfig error and Position -1, and nothing is written, so no process sharing the log ever
+// reads it.
 func (pg *PersistentGovernor) Apply(ctx context.Context, event string) (Applied, error) {
 	pg.mu.Lock()
 	defer pg.mu.Unlock()
+	if !pg.events[event] {
+		return Applied{State: pg.state, Position: -1}, unknownEvent(pg.m, event)
+	}
 	pos, err := pg.log.Append(ctx, pg.entity, event)
 	if err != nil {
 		return Applied{State: pg.state, Position: -1}, fmt.Errorf("govern: append log: %w (%w)", err, agent.ErrStorage)
@@ -188,7 +216,10 @@ func (pg *PersistentGovernor) Sync(ctx context.Context) (gsm.State, error) {
 }
 
 // foldThrough applies the log's events from pg.next through position last (or to the end of the
-// log when last is -1) to the state. The caller holds pg.mu.
+// log when last is -1) to the state. An event the machine does not declare stops the fold with an
+// ErrProtocol error: the state stays at the last event before it, and the entry is not skipped,
+// since skipping it would diverge from what an auditor replaying the log computes. The caller
+// holds pg.mu.
 func (pg *PersistentGovernor) foldThrough(ctx context.Context, last int64) error {
 	if last >= 0 && last < pg.next {
 		return nil
@@ -206,9 +237,12 @@ func (pg *PersistentGovernor) foldThrough(ctx context.Context, last int64) error
 		}
 	}
 	for _, e := range evs[:n] {
+		if !pg.events[e] {
+			return fmt.Errorf("govern: log for %q holds event %q at position %d, which machine %q does not declare: %w", pg.entity, e, pg.next, pg.m.Name(), agent.ErrProtocol)
+		}
 		pg.state = pg.m.Apply(pg.state, e)
+		pg.next++
 	}
-	pg.next += n
 	return nil
 }
 
