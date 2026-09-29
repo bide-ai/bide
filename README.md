@@ -166,8 +166,8 @@ asynchronous (chaotic) order-independence.
 Made concrete at scale: an integration test drives up to **10,000,000 concurrent governed agents**
 through *random, invariant-violating* orders (every run breaches a capped invariant and is
 compensated), and asserts that every agent converges to the same valid normal form *and* produces
-an audit proof that verifies offline, in one process with a flat ~4 MB live heap (~8.5 min,
-~20k agents/s). This is a framework-level test (stub model, in-memory store): it exercises the
+an audit proof that verifies offline, in one process with a flat ~3 MB live heap (~13 min,
+~12.5k agents/s). This is a framework-level test (stub model, in-memory store): it exercises the
 governance and audit machinery at scale, not a live LLM or a production database. See
 [docs/testing/testing.md](docs/testing/testing.md).
 

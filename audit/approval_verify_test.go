@@ -181,7 +181,11 @@ func TestVerifyApprovals_Tampering(t *testing.T) {
 			if acts[i].Kind == kind {
 				switch kind {
 				case audit.KindCall:
-					acts[i].Bundle.Record.Message.Parts = []agent.Part{agent.ToolUse{ID: "c1", Name: "charge", Args: json.RawMessage(`{"amount":999}`)}}
+					// Edit a copy: the record's Message is a pointer, so editing it in place
+					// could reach data other evidence shares.
+					m := *acts[i].Bundle.Record.Message
+					m.Parts = []agent.Part{agent.ToolUse{ID: "c1", Name: "charge", Args: json.RawMessage(`{"amount":999}`)}}
+					acts[i].Bundle.Record.Message = &m
 				default:
 					acts[i].Bundle.Record.Result = json.RawMessage(`"edited"`)
 				}

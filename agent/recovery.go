@@ -273,7 +273,8 @@ type memLease struct {
 	expiry time.Time
 }
 
-// held reports whether the lease for runID is currently held by someone other than holder.
+// heldByOther reports whether the lease for runID is currently held by someone other than
+// holder. The caller must hold m.mu.
 func (m *MemStore) heldByOther(runID, holder string, now time.Time) bool {
 	cur, ok := m.leases[runID]
 	return ok && cur.holder != holder && now.Before(cur.expiry)

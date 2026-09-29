@@ -53,7 +53,7 @@ Temporal 拥有这些保证，但需要一个服务器加一支 worker 机群才
 
 受治理的状态层：多个进程重放同一条持久化日志会**收敛到完全相同的状态**，并有一份**机器核验的证明**作后盾。**gsm** 收敛引擎的规范化重写系统是合流的（confluent），因此各步骤重放的顺序无法改变结果。该证明是无公理的，并在 Coq 8.18 与 8.20 上经 CI 验证（`Print Assumptions` 报告 "Closed under the global context"）：[Coq/Rocq 证明](https://github.com/blackwell-systems/normalization-confluence/tree/main/coq)（[![verify](https://github.com/blackwell-systems/normalization-confluence/actions/workflows/verify.yml/badge.svg)](https://github.com/blackwell-systems/normalization-confluence/actions/workflows/verify.yml)）。而且这份证明并不只是躺在代码旁边：gsm 自身对每台机器的判定会被**从该证明中提取出来的两个独立检查器重新认证**（一个从发出的步骤表重新计算收敛性，另一个直接从规则重新计算），因此 gsm 的 Go 验证器里的 bug 不可能让一台非收敛的机器蒙混过关。规则被表达为**可检视的组合子（combinator）数据**，而非不透明的闭包，正是这一点使它们可序列化、可移植、可重新核验；验证还可以以**局部足迹（footprint-local）**的方式运行（`BuildCompositional`），以认证那些全局状态空间大到无法枚举的机器。这就是独立的智能体在没有单一写者的情况下共享状态的方式。这个论断是精确的：*重放的顺序无关收敛性*，已被证明，而非"智能体总能达成一致"。这一联邦化结果被完整地机械化了，包括异步（混沌）顺序无关性。
 
-在规模上具体化：一个集成测试驱动多达 **1,000 万个并发的受治理智能体**，让它们经历*随机的、违反不变量的*顺序（每一次运行都突破一个设了上限的不变量并被补偿），并断言每一个智能体都收敛到同一个有效的规范形式*且*产出一份可离线核验的审计证明，全在单个进程内、以约 4 MB 的扁平活跃堆完成（约 8.5 分钟，约每秒 2 万个智能体）。这是一个框架级的测试（桩模型、内存存储）：它在规模上考验治理和审计机器，而非一个真实的 LLM 或一个生产数据库。见 [docs/testing/testing.md](../../docs/testing/testing.md)。
+在规模上具体化：一个集成测试驱动多达 **1,000 万个并发的受治理智能体**，让它们经历*随机的、违反不变量的*顺序（每一次运行都突破一个设了上限的不变量并被补偿），并断言每一个智能体都收敛到同一个有效的规范形式*且*产出一份可离线核验的审计证明，全在单个进程内、以约 3 MB 的扁平活跃堆完成（约 13 分钟，约每秒 1.25 万个智能体）。这是一个框架级的测试（桩模型、内存存储）：它在规模上考验治理和审计机器，而非一个真实的 LLM 或一个生产数据库。见 [docs/testing/testing.md](../../docs/testing/testing.md)。
 
 ### 与持久化执行及智能体运行时的对比
 
