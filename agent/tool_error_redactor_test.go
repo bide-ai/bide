@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
@@ -74,5 +75,48 @@ func TestWithToolErrorRedactor(t *testing.T) {
 	// A derived agent (RunTyped clones the agent) keeps the redactor.
 	if c := a.clone(); c.toolErrRedact == nil {
 		t.Error("a cloned agent dropped its tool-error redactor")
+	}
+}
+
+// ToolErrorText gives a tool middleware the text the agent journals for a failed call: the
+// agent's redactor's, with URLs redacted. Outside an agent's tool call it redacts URLs only.
+func TestToolErrorTextInMiddleware(t *testing.T) {
+	type in struct{}
+	tool := Func("lookup", "lookup", Safety{ReadOnly: true}, func(context.Context, in) (string, error) {
+		return "", errors.New("account ACCT-NUMBER-SECRET: https://h.test/x?key=SK-SECRET")
+	})
+	var seen string
+	st := NewMemStore()
+	a := New(NewScriptedModel(ToolTurn("tu1", "lookup", `{}`), TextTurn("done")), st, tool).
+		WithToolErrorRedactor(func(_ string, err error) string {
+			return strings.ReplaceAll(err.Error(), "ACCT-NUMBER-SECRET", "ACCT")
+		}).
+		UseTool(func(next ToolHandler) ToolHandler {
+			return func(ctx context.Context, tu ToolUse) (json.RawMessage, error) {
+				res, err := next(ctx, tu)
+				if err != nil {
+					seen = ToolErrorText(ctx, tu.Name, err)
+				}
+				return res, err
+			}
+		})
+	if _, err := a.Run(context.Background(), "r1", "go"); err != nil {
+		t.Fatal(err)
+	}
+	recs, _ := st.History(context.Background(), "r1")
+	var journaled string
+	for _, r := range recs {
+		if r.Kind == StepToolResult {
+			_ = json.Unmarshal(r.Result, &journaled)
+		}
+	}
+	if want := "account ACCT: https://h.test/x?key=REDACTED"; seen != want || journaled != want {
+		t.Errorf("middleware saw %q and the journal holds %q, want both %q", seen, journaled, want)
+	}
+	if got := ToolErrorText(context.Background(), "lookup", errors.New("at https://h.test/x?key=SK-SECRET")); got != "at https://h.test/x?key=REDACTED" {
+		t.Errorf("ToolErrorText outside a tool call = %q", got)
+	}
+	if got := RedactURLs("https://u:p@h.test/x?key=SK-SECRET"); got != "https://REDACTED@h.test/x?key=REDACTED" {
+		t.Errorf("RedactURLs = %q", got)
 	}
 }

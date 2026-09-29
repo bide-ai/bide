@@ -219,6 +219,14 @@ func TestCaptureOnRecordsNoCredentials(t *testing.T) {
 		seen[s.Name()] = true
 		if len(s.Events()) != 1 || s.Events()[0].Name != "exception" {
 			t.Errorf("span %q events = %v, want one exception event", s.Name(), s.Events())
+		} else {
+			ev := map[string]string{}
+			for _, kv := range s.Events()[0].Attributes {
+				ev[string(kv.Key)] = kv.Value.Emit()
+			}
+			if ev["exception.message"] != s.Status().Description || ev["exception.type"] == "" {
+				t.Errorf("span %q exception event = %v, want its type and the status text", s.Name(), ev)
+			}
 		}
 		if s.Name() == "execute_tool ping" && s.Status().Description != journaled {
 			t.Errorf("tool span status = %q, want the journaled text %q", s.Status().Description, journaled)

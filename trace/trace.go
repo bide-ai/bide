@@ -11,12 +11,14 @@
 // (privacy-safe by default; unlike ADK #1634 which leaked tool args regardless), honoring the
 // OTel GenAI convention's opt-in. Neither is error text, which can carry that content: with
 // capture off a failed span records middleware.ErrorSummary (category, condition, provider
-// status) as its status. Pass WithRates to also record USD cost on the chat span.
+// status) as its status, and with it on its text, with every URL in it redacted. Pass WithRates
+// to also record USD cost on the chat span.
 package trace
 
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -69,10 +71,12 @@ func captureContent() bool {
 
 // recordError marks span failed with err. An error's text can carry content (a provider error
 // body that echoes the prompt, a tool error that embeds the call's arguments), so with content
-// capture on the span records the text (RecordError and the status description), and with it
-// off the status description is middleware.ErrorSummary(err): the error's category, condition,
-// and provider status, never its text.
-func recordError(span oteltrace.Span, err error, capture bool) {
+// capture on the span records text(), the error's text as the agent would journal it (an
+// exception event and the status description), and with it off the status description is
+// middleware.ErrorSummary(err): the error's category, condition, and provider status, never its
+// text. Capture is for content, not credentials: text() redacts every URL in the text and, for a
+// tool call, applies the agent's WithToolErrorRedactor, so a span holds no more than the journal.
+func recordError(span oteltrace.Span, err error, capture bool, text func() string) {
 	if err == nil {
 		return
 	}
@@ -80,8 +84,17 @@ func recordError(span oteltrace.Span, err error, capture bool) {
 		span.SetStatus(codes.Error, middleware.ErrorSummary(err))
 		return
 	}
-	span.RecordError(err)
-	span.SetStatus(codes.Error, err.Error())
+	msg := text()
+	span.AddEvent("exception", oteltrace.WithAttributes(
+		attribute.String("exception.type", fmt.Sprintf("%T", err)),
+		attribute.String("exception.message", msg),
+	))
+	span.SetStatus(codes.Error, msg)
+}
+
+// errorText is err's text with every URL in it redacted, for an error no tool redactor covers.
+func errorText(err error) func() string {
+	return func() string { return agent.RedactURLs(err.Error()) }
 }
 
 // end ends span, marking it failed if the call it covers panicked; deferred, it sees the panic
@@ -140,7 +153,7 @@ func Model(tracer oteltrace.Tracer, opts ...Option) agent.Middleware {
 					span.SetAttributes(attribute.String(attrOutputMessages, string(b)))
 				}
 			}
-			recordError(span, err, capture)
+			recordError(span, err, capture, errorText(err))
 			return msg, u, err
 		}
 	}
@@ -170,7 +183,7 @@ func Tool(tracer oteltrace.Tracer) agent.ToolMiddleware {
 			if capture && err == nil && len(res) > 0 {
 				span.SetAttributes(attribute.String(attrToolResult, string(res)))
 			}
-			recordError(span, err, capture)
+			recordError(span, err, capture, func() string { return agent.ToolErrorText(ctx, tu.Name, err) })
 			return res, err
 		}
 	}
@@ -200,7 +213,7 @@ func Invoke(ctx context.Context, tracer oteltrace.Tracer, name string) (context.
 	))
 	capture := captureContent()
 	return ctx, func(err error) {
-		recordError(span, err, capture)
+		recordError(span, err, capture, errorText(err))
 		span.End()
 	}
 }

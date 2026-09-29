@@ -67,6 +67,9 @@ func (a *Agent) toolHandler() ToolHandler {
 		if t, ok := a.tools[tu.Name]; ok {
 			ctx = WithToolSafety(ctx, t.Safety())
 		}
+		if a.toolErrRedact != nil {
+			ctx = context.WithValue(ctx, toolErrRedactKey{}, a.toolErrRedact)
+		}
 		return h(ctx, tu)
 	}
 }

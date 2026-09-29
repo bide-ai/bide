@@ -110,7 +110,8 @@ a failed call when URL redaction is not enough (an account number, a token a ser
 back); URL redaction still applies to what it returns. This covers every failed tool call, a
 failed sub-agent (its failure is its tool call's error), and the two records a saga journals
 for its failure. The error returned to the caller (for example `SagaAborted.Cause`) is the
-tool's own, unredacted. A secret that is not in a URL, and not removed by your redactor, is
+tool's own, unredacted. With content capture on, `trace` records a failed call's journaled text
+on its span, and redacts the URLs in the chat and run spans' error text the same way. A secret that is not in a URL, and not removed by your redactor, is
 journaled as written.
 
 ## Anchoring: the condition on tamper-evidence
