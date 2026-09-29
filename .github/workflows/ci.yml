@@ -13,7 +13,7 @@ permissions:
 # built/tested in its own directory (its go.mod resolves the core via a replace
 # directive; a root go.work also ties them together for local dev).
 env:
-  MODULES: ". mcp trace store/sqlite store/postgres govern/redislog govern/sqlitelog govern/postgreslog codec/gcf"
+  MODULES: ". mcp trace store/sqlite store/postgres govern/redislog govern/sqlitelog govern/postgreslog codec/gcf examples/approval"
 
 jobs:
   lint:

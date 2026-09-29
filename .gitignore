@@ -31,6 +31,8 @@ coverage.*
 examples/mcp/mcp
 examples/observability/observability
 examples/plan/plan
+examples/approval/approval
+examples/approval/evidence.json
 
 # internal strategy/positioning docs (not published)
 /internal/

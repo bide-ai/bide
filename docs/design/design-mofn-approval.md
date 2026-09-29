@@ -16,7 +16,8 @@ Where the implementation refined this design:
   decision never counts toward an m-of-n tally.
 - **Evidence.** `audit.ProveApproval` (one decision) and `audit.ApprovalEvidence` (decisions then
   action, under one STH). The existing `ProveStep` matches only `StepValue` records, so it could not
-  reach a decision.
+  reach a decision. `audit.VerifyApprovals` does the offline count, so an auditor does not reimplement
+  it, and reports every decision that did not count with a reason.
 - **Declarative config.** The `approval` block loads onto `Safety.Approval`, but the `plan` runtime
   does not enforce the gate yet.
 

@@ -65,12 +65,16 @@ type ToolCompleted struct {
 func (ToolCompleted) agentEvent() {}
 
 // ApprovalRequired fires immediately before the run pauses for a human decision on a
-// tool that RequiresApproval. The run then returns *PendingApproval from Final; record
-// a decision (Durable.RecordApproval) and re-invoke to continue.
+// tool that requires approval. The run then returns *PendingApproval from Final; record
+// a decision (Approve, or ApproveAs for an m-of-n gate) and re-invoke to continue.
 type ApprovalRequired struct {
 	ToolUseID string
 	Name      string
 	Args      json.RawMessage
+	// Quorum is the running tally when the tool has an m-of-n Safety.Approval policy, so a
+	// streaming UI can show progress ("1 of 2 approved") without waiting for Final. Nil for
+	// a 1-of-1 gate.
+	Quorum *ApprovalTally
 }
 
 func (ApprovalRequired) agentEvent() {}
