@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"strings"
 
 	"github.com/bide-ai/bide/agent"
 )
@@ -93,11 +94,17 @@ func safetyFromOptions(base agent.Safety, opts []NodeOption) agent.Safety {
 	return applyNodeOptions(&node{safety: base}, opts).safety
 }
 
-// register appends n to the core, enforcing name uniqueness. A duplicate name is
-// recorded as a deferred error on core.errs (surfaced at Build) rather than
-// panicking, so authoring never aborts mid-construction. The first registered
+// register appends n to the core, enforcing name uniqueness.
+// A bad name is recorded as a deferred error on core.errs (surfaced at Build) rather
+// than panicking, so authoring never aborts mid-construction. The first registered
 // node becomes the entry step.
+//
+// A name checkStepName refuses is recorded the same way.
 func (c *builderCore) register(n *node) {
+	if err := checkStepName(n.name); err != nil {
+		c.errs = append(c.errs, fmt.Errorf("plan: %w", err))
+		return
+	}
 	if _, dup := c.byName[n.name]; dup {
 		c.errs = append(c.errs, fmt.Errorf("plan: duplicate step name %q", n.name))
 		return
@@ -107,6 +114,16 @@ func (c *builderCore) register(n *node) {
 	}
 	c.byName[n.name] = n
 	c.nodes = append(c.nodes, n)
+}
+
+// checkStepName refuses a step name with a ':'. A node's name is its journal key, and Run
+// derives every other key it writes with ':' ("attempt:<key>", "iter:<n>:<node>",
+// "switch:<node>", "flow:digest"), so such a name could name another step's record.
+func checkStepName(name string) error {
+	if strings.ContainsRune(name, ':') {
+		return fmt.Errorf("step name %q contains ':', which Run reserves for the journal keys it derives", name)
+	}
+	return nil
 }
 
 // Step registers an arbitrary func(I)(O,error) as a durable step named name. name

@@ -61,8 +61,9 @@ production). `runID` is the durable identity: re-running the same `runID` resume
     typed input `I`, calls the bound model, and decodes the structured response into `O` (so `O` must
     be JSON-shaped and the prompt should ask for matching JSON). Build errors if a `Model` node has no
     bound model, naming it.
-  - The string `name` is the node's **durable journal key**: it must be unique (Build enforces it) and
-    stable across code edits, because resume finds a step by this name. It is not just a label.
+  - The string `name` is the node's **durable journal key**: it must be unique and contain no `:`
+    (Build enforces both; Run derives its other keys, such as `attempt:<name>`, with `:`), and stable
+    across code edits, because resume finds a step by this name. It is not just a label.
 - **Wiring** takes handles, so a miswired connection does not compile:
   - `Edge[M](from, to)` connects a producer to a consumer, unifying the connecting type `M`.
   - `Switch[M](over, When(pred, to)..., Else(to))` routes on a node's output to exactly one arm.
