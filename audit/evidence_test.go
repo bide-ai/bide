@@ -57,14 +57,7 @@ func earlyHead(t *testing.T, store agent.Durable, runID string, n int, priv ed25
 	if err != nil {
 		t.Fatal(err)
 	}
-	prefix := agent.NewMemStore()
-	for _, r := range recs[:n] {
-		r := r
-		if _, err := prefix.Do(ctx, runID, r.Name, func(context.Context) (agent.Record, error) { return r, nil }); err != nil {
-			t.Fatal(err)
-		}
-	}
-	th, err := audit.NewTreeHead(ctx, prefix, runID, 1)
+	th, err := audit.NewTreeHead(ctx, fixedHistory(recs[:n]), runID, 1)
 	if err != nil {
 		t.Fatal(err)
 	}

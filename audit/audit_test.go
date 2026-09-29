@@ -35,9 +35,13 @@ func head(t *testing.T, store agent.Durable, runID string) []byte {
 
 // Byte-identical journals commit to the same head; a single differing record diverges.
 func TestHead_DeterministicAndTamperEvident(t *testing.T) {
-	s1, s2 := agent.NewMemStore(), agent.NewMemStore()
+	s1 := agent.NewMemStore()
 	record(t, s1, "r", "alpha", "beta", "gamma")
-	record(t, s2, "r", "alpha", "beta", "gamma")
+	recs, err := s1.History(context.Background(), "r")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s2 := fixedHistory(recs) // the same records, salts included, held elsewhere
 	if !bytes.Equal(head(t, s1, "r"), head(t, s2, "r")) {
 		t.Fatal("identical journals must have the same head")
 	}
@@ -53,10 +57,16 @@ func TestHead_DeterministicAndTamperEvident(t *testing.T) {
 	}
 
 	// Order matters: same records, different order -> different head.
-	s4 := agent.NewMemStore()
-	record(t, s4, "r", "beta", "alpha", "gamma")
+	s4 := fixedHistory{recs[1], recs[0], recs[2]}
 	if bytes.Equal(head(t, s1, "r"), head(t, s4, "r")) {
 		t.Fatal("reordering records must change the head")
+	}
+
+	// The head commits to each record's salt: the same content under another salt diverges.
+	resalted := append(fixedHistory(nil), recs...)
+	resalted[1].Salt = bytes.Repeat([]byte{1}, agent.SaltSize)
+	if bytes.Equal(head(t, s1, "r"), head(t, resalted, "r")) {
+		t.Fatal("a record's salt must be part of the head")
 	}
 }
 

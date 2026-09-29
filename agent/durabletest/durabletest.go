@@ -31,6 +31,7 @@ func Run(t *testing.T, open func(t *testing.T) agent.Durable) {
 		t.Run(c.Name, func(t *testing.T) { fidelity(t, open(t), c) })
 	}
 	t.Run("ReturnedRecordIsACopy", func(t *testing.T) { returnedCopy(t, open(t)) })
+	t.Run("Salted", func(t *testing.T) { salted(t, open(t)) })
 }
 
 // Case is one record the suite round-trips. Want, when set, is the Result the store must hand
@@ -148,7 +149,8 @@ func fidelity(t *testing.T, d agent.Durable, c Case) {
 		t.Fatalf("the replayed record is not a fixed point of the journal encoding\nreplay: %s\nagain:  %s", show(replay), show(back))
 	}
 	want, err := agent.EncodeRecord(agent.Record{Name: "step", Kind: c.Record.Kind, Message: c.Record.Message, Usage: c.Record.Usage,
-		ToolUseID: c.Record.ToolUseID, Result: c.Record.Result, IsError: c.Record.IsError, Reconciled: c.Record.Reconciled, Evidence: c.Record.Evidence})
+		ToolUseID: c.Record.ToolUseID, Result: c.Record.Result, IsError: c.Record.IsError, Reconciled: c.Record.Reconciled, Evidence: c.Record.Evidence,
+		Salt: replay.Salt})
 	if err != nil {
 		t.Fatalf("EncodeRecord(input): %v", err)
 	}
@@ -180,5 +182,33 @@ func returnedCopy(t *testing.T, d agent.Durable) {
 	}
 	if string(again[0].Result) != `"abc"` {
 		t.Fatalf("the journal holds %s after callers modified their copies, want \"abc\"", again[0].Result)
+	}
+}
+
+// salted: every record a store journals carries a fresh agent.SaltSize salt (agent.JournalEntry),
+// distinct per record and never the one the step returned. The audit trail needs it so that an
+// inclusion proof does not let its holder confirm a guessed neighbouring record.
+func salted(t *testing.T, d agent.Durable) {
+	ctx := context.Background()
+	id := runID(t)
+	chosen := bytes.Repeat([]byte{7}, agent.SaltSize)
+	for _, name := range []string{"a", "b"} {
+		if _, err := d.Do(ctx, id, name, func(context.Context) (agent.Record, error) {
+			return agent.Record{Kind: agent.StepValue, Result: json.RawMessage(`1`), Salt: chosen}, nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	hist, err := d.History(ctx, id)
+	if err != nil || len(hist) != 2 {
+		t.Fatalf("History = %d records, %v; want 2", len(hist), err)
+	}
+	for _, r := range hist {
+		if len(r.Salt) != agent.SaltSize || bytes.Equal(r.Salt, chosen) {
+			t.Fatalf("record %q has salt %x, want a fresh %d-byte salt set by the store", r.Name, r.Salt, agent.SaltSize)
+		}
+	}
+	if bytes.Equal(hist[0].Salt, hist[1].Salt) {
+		t.Fatalf("two records share the salt %x", hist[0].Salt)
 	}
 }

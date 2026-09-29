@@ -101,10 +101,13 @@ func absenceKeys(records []agent.Record, set KeySet) []string {
 	return keys
 }
 
+// keyLeaf is the leaf data of one absence key: the key leaf tag followed by the key.
+func keyLeaf(key string) []byte { return tagged(keyLeafTag, []byte(key)) }
+
 func keyLeaves(keys []string) [][]byte {
 	leaves := make([][]byte, len(keys))
 	for i, k := range keys {
-		leaves[i] = []byte(k) // leaf order == key order, so bracketing is sound
+		leaves[i] = keyLeaf(k) // leaf order == key order, so bracketing is sound
 	}
 	return leaves
 }
@@ -124,6 +127,16 @@ type Neighbor struct {
 // Absence is a non-membership proof: Key is not among the Size committed keys, shown by the
 // adjacent committed keys that bracket it. Left is nil when Key sorts before all keys; Right is
 // nil when it sorts after all; both nil only for the empty key set.
+//
+// What it discloses: the absent key, the number of distinct keys in the set (Size), and, in
+// plain text, the one or two committed keys adjacent to it in sort order with their indices,
+// which place them in the sorted set. For ToolUseKeys that is the ID of up to two tool calls
+// the run did make; for PolicyUsedKeys, up to two policy digests the run did use. This is
+// inherent to a sorted-set absence proof: the verifier must see the neighbours to check they
+// bracket the key. It does not disclose the neighbours' journal records (their tool names,
+// arguments, or results), and each neighbour's audit path carries hashes of further keys, which
+// are not salted: a holder of the proof who can guess a key of the set (a policy digest is
+// public; a tool-use ID usually is not) can confirm it against those hashes.
 type Absence struct {
 	Key   string    `json:"key"`             // the key claimed absent from the committed set
 	Size  int       `json:"size"`            // number of committed keys the proof is against
@@ -172,7 +185,7 @@ func VerifyAbsence(root []byte, proof Absence) (bool, error) {
 		if proof.Left.Proof.Size != proof.Size || proof.Left.Key >= proof.Key {
 			return false, nil
 		}
-		if !verifyPath(root, []byte(proof.Left.Key), proof.Left.Proof.Index, proof.Size, proof.Left.Proof.Path) {
+		if !verifyPath(root, keyLeaf(proof.Left.Key), proof.Left.Proof.Index, proof.Size, proof.Left.Proof.Path) {
 			return false, nil
 		}
 	}
@@ -180,7 +193,7 @@ func VerifyAbsence(root []byte, proof Absence) (bool, error) {
 		if proof.Right.Proof.Size != proof.Size || proof.Key >= proof.Right.Key {
 			return false, nil
 		}
-		if !verifyPath(root, []byte(proof.Right.Key), proof.Right.Proof.Index, proof.Size, proof.Right.Proof.Path) {
+		if !verifyPath(root, keyLeaf(proof.Right.Key), proof.Right.Proof.Index, proof.Size, proof.Right.Proof.Path) {
 			return false, nil
 		}
 	}

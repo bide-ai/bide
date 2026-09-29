@@ -126,7 +126,8 @@ buyer: this is **verifiable, not merely logged**. A third party checks a proof *
 you, your database, or your logs*:
 
 - **Inclusion proof**: prove one specific action happened (this charge, this approval) in
-  O(log n), revealing nothing else. Selective disclosure for an auditor.
+  O(log n), revealing no other record (only its position and the run's size). Selective
+  disclosure for an auditor.
 - **Consistency proof**: prove the history was only ever appended to, never rewritten or
   reordered.
 - **Signed tree head + continuous anchoring**: `AuditedStore` signs a commitment per step and

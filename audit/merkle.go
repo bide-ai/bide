@@ -15,11 +15,46 @@ import (
 // audit path) without revealing any other record. Same anchoring caveat as Head: the root
 // must be signed/published out-of-band to be tamper-evident against a DB-controlling
 // attacker. Domain-separated leaf/node hashing follows RFC 6962 §2.1 exactly.
+//
+// What an inclusion proof discloses: the record, its index, the size of the tree, and the
+// sibling hashes on its path. Each sibling hash covers other leaves, and path[0] is a single
+// neighbour's leaf hash, so a leaf must not be a function of guessable content alone: a verifier
+// could hash each candidate for a low-entropy neighbour (an approval, a {"fraud_flag":true}
+// result) and compare. Every journal record therefore carries a random 32-byte salt
+// (agent.Record.Salt), set when a store first journals it and committed in its leaf, and a
+// proof discloses only its own record's salt. The other hashes on the path cannot be matched
+// against a guess without the salts they cover.
+//
+// Every leaf's data starts with a versioned tag naming what kind of leaf it is, so a leaf of one
+// kind or version never hashes like another's:
+//
+//	journal record: SHA-256(0x00 || "bide.audit.journal-leaf.v1\x00" || agent.EncodeRecord(record))
+//	absence key:    SHA-256(0x00 || "bide.audit.key-leaf.v1\x00" || key)
+//	event:          SHA-256(0x00 || "bide.audit.event-leaf.v1\x00" || event JSON)
+//	anchor entry:   SHA-256(0x00 || "bide.audit.anchor-leaf.v1\x00" || entry JSON)
+//
+// A journal record's encoding includes its salt (the "salt" field, base64). Key, event, and
+// anchor leaves are not salted: an absence proof names its neighbouring keys in the clear anyway
+// (see Absence), and an event or anchor proof's path hashes cover leaves that are as guessable as
+// their content.
 
 const (
 	rfc6962LeafPrefix = 0x00 // hash of a leaf   = SHA-256(0x00 || data)
 	rfc6962NodePrefix = 0x01 // hash of a node   = SHA-256(0x01 || left || right)
 )
+
+// Leaf tags: the versioned prefix of each kind of leaf's data (see above).
+const (
+	journalLeafTag = "bide.audit.journal-leaf.v1\x00"
+	keyLeafTag     = "bide.audit.key-leaf.v1\x00"
+	eventLeafTag   = "bide.audit.event-leaf.v1\x00"
+	anchorLeafTag  = "bide.audit.anchor-leaf.v1\x00"
+)
+
+// tagged returns tag followed by data, a leaf's data.
+func tagged(tag string, data []byte) []byte {
+	return append([]byte(tag), data...)
+}
 
 func leafHash(data []byte) []byte {
 	h := sha256.New()
@@ -99,15 +134,25 @@ func verifyPath(root, leaf []byte, index, size int, path [][]byte) bool {
 	return sn == 0 && bytes.Equal(r, root)
 }
 
-// canonicalRecord is the leaf encoding of one journal record: its journal encoding
-// (agent.EncodeRecord), which is exactly the bytes a store persisted for it, so a proof commits to
-// what the journal holds. A record with invalid UTF-8 in a string field is refused (see
-// checkUTF8): encoding replaces those bytes, so its leaf would collide with another record's.
+// canonicalRecord is the leaf data of one journal record: the journal leaf tag followed by its
+// journal encoding (agent.EncodeRecord), which is exactly the bytes a store persisted for it, so a
+// proof commits to what the journal holds. A record without an agent.SaltSize salt is refused: its
+// leaf would be a function of its content alone, which a proof for its neighbour lets anyone
+// confirm by guessing (see the top of this file). Every store sets the salt (agent.JournalEntry).
+// A record with invalid UTF-8 in a string field is refused too (see checkUTF8): encoding replaces
+// those bytes, so its leaf would collide with another record's.
 func canonicalRecord(r agent.Record) ([]byte, error) {
+	if len(r.Salt) != agent.SaltSize {
+		return nil, fmt.Errorf("record %q has a %d-byte salt, want %d (a store sets it when it journals the record; see agent.JournalEntry)", r.Name, len(r.Salt), agent.SaltSize)
+	}
 	if err := checkUTF8(r); err != nil {
 		return nil, err
 	}
-	return agent.EncodeRecord(r)
+	b, err := agent.EncodeRecord(r)
+	if err != nil {
+		return nil, err
+	}
+	return tagged(journalLeafTag, b), nil
 }
 
 func canonicalLeaves(recs []agent.Record) ([][]byte, error) {
