@@ -8,7 +8,7 @@ on:
     inputs:
       repeats:
         description: Runs per scenario (the median is reported)
-        default: '7'
+        default: '21'
 
 permissions:
   contents: read
@@ -24,6 +24,10 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.27'
+      - name: Runner
+        run: |
+          echo "$(nproc) vCPU: $(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2 | sed 's/^ //')"
+          go version
       - name: Build
         run: go build -o bench ./cmd/bench
       - name: Run scenarios

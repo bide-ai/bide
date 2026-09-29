@@ -16,33 +16,36 @@ tool calls. Go's scheduler and cheap goroutines mean one process can keep a very
 those durable, journaled runs in flight at once. That is the "library, not cluster" pillar with
 the concurrency turned up.
 
-## Measured (illustrative, one dev machine, darwin/arm64, Go 1.27)
+## Measured
 
-Framework overhead only (no simulated latency), 5,000 runs at concurrency 256:
+Two environments, each scenario run seven times, medians reported. Every run journals to the
+in-memory `MemStore`, so the journal-records figure is an in-memory write rate, not a durable-store
+one. Each run writes four journal records in these scenarios.
 
-```
-throughput ~128,000 runs/s (~383,000 durable steps/s)
-run latency p50 1.1ms, p99 8.9ms
-peak goroutines 340, heap delta ~8.5 MB
-```
+**A standard GitHub Actions runner** (`ubuntu-latest`, 4 vCPU, Go 1.27), from the
+[Benchmark workflow](../../.github/workflows/bench.yml). Anyone can reproduce these: Actions,
+Benchmark, Run workflow.
 
-The step figure above was recorded by an earlier version of the harness, which multiplied runs by
-three. The harness now counts the journal records the runs actually wrote (four per run in this
-scenario) and reports them as journal records/s. Every run here journals to the in-memory
-`MemStore`, so that figure is an in-memory write rate, not a durable-store one.
+| Scenario | Wall-clock | Runs/s | Journal records/s | p50 | p99 | Peak goroutines | Heap delta |
+|---|---|---|---|---|---|---|---|
+| Overhead: `-runs 5000 -concurrency 256` | ~209 ms | ~23,900 | ~95,700 | 0.14 ms | 62 ms | 293 | ~10 MB |
+| I/O fan-out: `-runs 20000 -concurrency 5000 -latency 50ms` | ~980 ms | ~20,400 | ~81,400 | 193 ms | 381 ms | 5,575 | ~44 MB |
 
-I/O-bound fan-out (each run makes two model calls at 50ms each, so ~100ms of unavoidable wait),
-20,000 runs at concurrency 5,000:
+**A 10-core Apple silicon Mac** (darwin/arm64, Go 1.27), measured with other work running (a
+virtual machine using a full core, load average about 4), so treat it as a lower bound for that
+machine.
 
-```
-20,000 runs complete in ~448ms (throughput ~44,600 runs/s)
-run latency p50 ~100ms (the model wait itself; runs fully overlap)
-peak goroutines ~5,470, heap delta ~35 MB
-```
+| Scenario | Wall-clock | Runs/s | Journal records/s | p50 | p99 | Peak goroutines | Heap delta |
+|---|---|---|---|---|---|---|---|
+| Overhead: `-runs 5000 -concurrency 256` | ~95 ms | ~52,700 | ~210,700 | 2.4 ms | 25 ms | 319 | ~9 MB |
+| I/O fan-out: `-runs 20000 -concurrency 5000 -latency 50ms` | ~469 ms | ~42,600 | ~170,500 | 101 ms | 139 ms | 5,563 | ~62 MB |
 
-The second run is the point: 20,000 runs, 5,000 in flight at a time, each blocking ~100ms on the
-model, finish in about half a second because they overlap, on a few thousand goroutines and tens of MB. That is the cost and
-simplicity story, one commodity process instead of a cluster.
+The fan-out rows are the point. Each run makes two model calls at 50ms each, so ~100ms of
+unavoidable wait, and 20,000 of them, 5,000 in flight at a time, finish in about half a second on
+the Mac, where the median run takes the model's own ~100ms because the runs fully overlap. On the
+4-vCPU runner the same work takes about one second: with fewer cores the framework's CPU work, not
+the model wait, sets the pace. Either way it is a few thousand goroutines and tens of MB in one
+commodity process instead of a cluster.
 
 ## What this does NOT claim
 

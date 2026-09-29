@@ -96,9 +96,10 @@ by `architecture_test.go`). Import it; don't operate it.
 And because it is a Go library, one process keeps a very large number of these durable runs in
 flight at once. Agent work is I/O-bound (waiting on model and tool calls), which goroutines absorb
 without a cluster. The [`cmd/bench`](cmd/bench/README.md) harness measures it: 20,000 runs, 5,000 in
-flight at a time, each blocking ~100ms on the model, finish in **about half a second (~450ms) of
-wall-clock** on a few thousand goroutines and tens of MB (`go run ./cmd/bench -runs 20000
--concurrency 5000 -latency 50ms`). The win is throughput and operational simplicity, not lower latency than the model
+flight at a time, each blocking ~100ms on the model, finish in **about half a second (~470ms) of
+wall-clock on a 10-core Apple silicon Mac, and about one second on a standard 4-vCPU CI runner**,
+on a few thousand goroutines and tens of MB (`go run ./cmd/bench -runs 20000 -concurrency 5000
+-latency 50ms`; reproducible with the [Benchmark workflow](.github/workflows/bench.yml)). The win is throughput and operational simplicity, not lower latency than the model
 (the provider owns per-call latency); at high fan-out the durable store's write throughput is the
 ceiling, not goroutines. Every concurrent run keeps all four guarantees. Reliability under that
 load is built in: per-attempt **timeouts**, retry with backoff that **classifies** transient vs
