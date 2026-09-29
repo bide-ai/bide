@@ -114,8 +114,8 @@ func Hedge(delay time.Duration, backups ...agent.Model) agent.Middleware {
 					timerC = nil
 				case r := <-results:
 					if r.err == nil {
-						agent.EmitMessage(sink, r.msg) // the caller sees exactly what the run records
-						return r.msg, r.u, nil         // first success wins; defer cancel() kills the rest
+						agent.EmitMessage(sink, r.msg, r.u) // the caller sees exactly what the run records
+						return r.msg, r.u, nil              // first success wins; defer cancel() kills the rest
 					}
 					errs = append(errs, r.err)
 					// A target failed: bring the backups forward now instead of waiting out delay.

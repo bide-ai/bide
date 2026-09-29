@@ -804,13 +804,14 @@ func DetachModelSink(ctx context.Context) (context.Context, func(Event)) {
 	return context.WithValue(ctx, modelSinkKey, (func(Event))(nil)), modelSink(ctx)
 }
 
-// EmitMessage delivers m to sink as the events a model would have streamed for it. It does
-// nothing when sink is nil. See DetachModelSink.
-func EmitMessage(sink func(Event), m Message) {
+// EmitMessage delivers a model call's response, m and its usage u, to sink as the events a
+// model would have streamed for it, ending with a Finish that carries u. It does nothing when
+// sink is nil. See DetachModelSink.
+func EmitMessage(sink func(Event), m Message, u Usage) {
 	if sink == nil {
 		return
 	}
-	for _, e := range emitsFor(m) {
+	for _, e := range emitsFor(m, u) {
 		sink(e.Event)
 	}
 }

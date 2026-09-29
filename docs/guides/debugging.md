@@ -32,6 +32,11 @@ replay is exact. Use it for:
   `testing/synctest`), assert behavior did not drift.
 - **Evals over real traffic**: the journal *is* a golden dataset.
 
+Each replayed turn also reports the token usage recorded with it, so the replayed run's
+`RunResult` usage and journal match the original, and a run that `WithTokenBudget` stopped
+stops at the same point on replay. The turn's `Finish` reason is derived from the message
+(`tool_use` or `stop`); the provider's own reason is not journaled.
+
 If the replay model is asked for more turns than were recorded, its `Stream` returns
 `agent.ErrNoRecordedOutput`; that is the signal that the replayed loop diverged from the
 original (it wanted a turn the recording never produced).
