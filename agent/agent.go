@@ -446,12 +446,22 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 				if saga {
 					sctx = withSaga(sctx)
 				}
-				// Attempt marker before a non-retriable side effect (crash-mid-write → halt).
+				// Attempt marker before a non-retriable side effect (crash-mid-write → halt),
+				// written as an exclusive claim: if another driver of this run claimed the call
+				// first (overlapping drivers, e.g. after a lease lapsed), it owns the side effect
+				// and this driver halts rather than run it a second time.
 				if !c.t.Safety().retriableOnResume() {
-					if _, err := a.store.Do(gctx, runID, "attempt:"+c.tu.ID, func(context.Context) (Record, error) {
-						return Record{Kind: StepAttempt, ToolUseID: c.tu.ID, AttemptedAt: time.Now().UnixMilli()}, nil
-					}); err != nil {
+					won, got, err := ClaimAttempt(gctx, a.store, runID, "attempt:"+c.tu.ID,
+						Record{Kind: StepAttempt, ToolUseID: c.tu.ID, AttemptedAt: time.Now().UnixMilli()})
+					if err != nil {
 						return err
+					}
+					if !won {
+						var at time.Time
+						if got.AttemptedAt != 0 {
+							at = time.UnixMilli(got.AttemptedAt)
+						}
+						return &ResumeHalt{RunID: runID, ToolUseID: c.tu.ID, ToolName: c.tu.Name, AttemptedAt: at}
 					}
 				}
 				fire(ToolStarted{ToolUseID: c.tu.ID, Name: c.tu.Name, Args: c.tu.Args})

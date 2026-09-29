@@ -2,6 +2,8 @@ package agent
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"sync"
@@ -49,6 +51,35 @@ type Record struct {
 	// a message id, a log line). It is carried on the reconciled result and signed with it,
 	// so the verdict and its basis live in the journal beside the outcome.
 	Evidence json.RawMessage `json:"evidence,omitempty"`
+	// Claim is the random id of the driver that wrote an attempt marker (see ClaimAttempt).
+	// A driver runs the side effect only if the marker it gets back carries its own claim, so
+	// two drivers of the same run can never both run it, whatever their leases say.
+	Claim string `json:"claim,omitempty"`
+}
+
+// ClaimAttempt writes the attempt marker named name as an exclusive claim and reports whether
+// the caller won it. It stamps rec with a fresh random claim id and records it with Do; because
+// Do records a name at most once, exactly one driver's marker is stored, and a driver won only
+// if the marker Do returns carries its own claim. A driver that loses must not run the side
+// effect the marker guards: another driver owns it and may be running it right now.
+//
+// This makes at-most-once independent of leasing. A lease cannot guarantee mutual exclusion (a
+// holder stalled past its TTL wakes still believing it holds the lease), but two drivers that
+// overlap still cannot both win the claim, since the store's atomic insert decides the winner.
+// With a single driver the claim is always won, so a run with no contention behaves exactly as
+// before.
+func ClaimAttempt(ctx context.Context, d Durable, runID, name string, rec Record) (won bool, got Record, err error) {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return false, Record{}, fmt.Errorf("claim %s: %w (%w)", name, err, ErrStorage)
+	}
+	claim := hex.EncodeToString(b[:])
+	rec.Claim = claim
+	got, err = d.Do(ctx, runID, name, func(context.Context) (Record, error) { return rec, nil })
+	if err != nil {
+		return false, Record{}, err
+	}
+	return got.Claim == claim, got, nil
 }
 
 // Durable is the crash-safe substrate: named-step memoization. Do runs a step at
@@ -290,6 +321,10 @@ func (e *PendingApproval) Error() string {
 // ResumeHalt is returned when resume can't safely proceed: a non-retriable tool was
 // invoked but no result was recorded, so its outcome is unknown. The run stops for
 // confirmation rather than risk a double side effect (e.g. a double charge).
+//
+// It is also returned when another driver of the same run claimed the call first (see
+// ClaimAttempt), for example a second node that took over after this node's lease lapsed. That
+// driver owns the side effect; once it records the result, re-running proceeds normally.
 type ResumeHalt struct {
 	RunID     string
 	ToolUseID string

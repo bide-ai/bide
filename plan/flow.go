@@ -488,12 +488,16 @@ func runNodeKeyed(ctx context.Context, store agent.Durable, runID string, model 
 	} else {
 		// case 3 (fresh): record the attempt marker BEFORE running the body, so a crash
 		// between the effect and its result leaves the marker persisted and the result
-		// missing, which case 2 detects on resume. The marker carries no payload. A
-		// retry-safe node in case 2 skips this because its marker already exists.
-		if _, err := store.Do(ctx, runID, marker, func(context.Context) (agent.Record, error) {
-			return agent.Record{Kind: agent.StepValue}, nil
-		}); err != nil {
+		// missing, which case 2 detects on resume. A retry-safe node in case 2 skips this
+		// because its marker already exists. The marker is an exclusive claim
+		// (agent.ClaimAttempt): if another driver of this run claimed the step first, it owns
+		// the body, and a non-idempotent step halts here rather than run it a second time.
+		won, _, err := agent.ClaimAttempt(ctx, store, runID, marker, agent.Record{Kind: agent.StepValue})
+		if err != nil {
 			return agent.Record{}, fmt.Errorf("plan: run %s: record attempt for step %q: %w", runID, key, err)
+		}
+		if !won && !nodeRetriableOnResume(node.safety) {
+			return agent.Record{}, &HaltAmbiguous{RunID: runID, Step: key}
 		}
 	}
 
