@@ -572,3 +572,21 @@ func TestRetrievalTool_Named(t *testing.T) {
 	}()
 	RetrievalTool(docsR, 1, RetrievalName(""))
 }
+
+// Metadata with no JSON encoding cannot be written into the context message, so the model call
+// fails with an error naming the document rather than sending the document without it.
+func TestWithRetrieval_UnencodableMetadataIsAnError(t *testing.T) {
+	r := &fakeRetriever{docs: []Doc{{Text: "fine"}, {Text: "bad", Metadata: map[string]any{"ch": make(chan int)}}}}
+	called := false
+	base := ModelHandler(func(context.Context, Request) (Message, Usage, error) {
+		called = true
+		return Message{}, Usage{}, nil
+	})
+	_, _, err := WithRetrieval(r, 2)(base)(context.Background(), Request{Messages: []Message{UserText("q")}})
+	if err == nil || !strings.Contains(err.Error(), "document 2") {
+		t.Fatalf("err = %v, want an error naming document 2", err)
+	}
+	if called {
+		t.Error("the model was called without the document's metadata")
+	}
+}
