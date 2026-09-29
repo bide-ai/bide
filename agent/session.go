@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 // Session is a durable multi-turn conversation. Each Send is one full agent run (tools,
@@ -26,9 +27,16 @@ import (
 // different message is ErrConfig rather than resuming that turn. Several handles on one session
 // (a stale handle, or two workers) never lose a turn or answer one message with another's
 // reply; a handle that finds the journal moved on reloads it.
+//
+// A Session is safe for concurrent use: callers sharing one handle behave as callers on separate
+// handles do, and their turns run in parallel.
 type Session struct {
-	agent   *Agent
-	id      string
+	agent *Agent
+	id    string
+
+	// mu guards the fields below. It is held while the session journal is read or written,
+	// never while a turn's run is in progress.
+	mu      sync.Mutex
 	history []Message // alternating user / final-assistant messages
 	turns   int
 	keyed   map[string]turnRecord // completed SendOnce turns by key
@@ -85,7 +93,8 @@ func (a *Agent) Session(ctx context.Context, id string) (*Session, error) {
 	return s, nil
 }
 
-// reload rebuilds the session's state from its journal.
+// reload rebuilds the session's state from its journal. The caller holds s.mu, or has not
+// shared s yet.
 func (s *Session) reload(ctx context.Context) error {
 	recs, err := s.agent.store.History(ctx, s.id)
 	if err != nil {
@@ -148,6 +157,8 @@ func (s *Session) Send(ctx context.Context, input string) (Message, error) {
 // startTurn returns the open Send turn for input, or claims a new one. A claim lost to another
 // handle reloads the journal and tries once more.
 func (s *Session) startTurn(ctx context.Context, input string) (turnStart, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	for attempt := 0; ; attempt++ {
 		if s.open != nil {
 			if s.open.Input != input {
@@ -204,12 +215,11 @@ func (s *Session) SendOnce(ctx context.Context, key, input string) (Message, err
 	if strings.ContainsRune(key, '/') {
 		return Message{}, fmt.Errorf("session %s: SendOnce: key %q contains '/': %w", s.id, key, ErrConfig)
 	}
-	if _, ok := s.keyed[key]; !ok {
-		if err := s.reload(ctx); err != nil { // another handle may have answered it
-			return Message{}, err
-		}
+	tr, ok, err := s.keyedTurn(ctx, key)
+	if err != nil {
+		return Message{}, err
 	}
-	if tr, ok := s.keyed[key]; ok {
+	if ok {
 		if tr.Input != input {
 			return Message{}, fmt.Errorf("session %s: key %q was already used for a different message: %w", s.id, key, ErrConfig)
 		}
@@ -218,10 +228,26 @@ func (s *Session) SendOnce(ctx context.Context, key, input string) (Message, err
 	return s.runTurn(ctx, s.id+"/e/"+key, key, input)
 }
 
+// keyedTurn returns the completed SendOnce turn for key, reloading the journal first if this
+// handle has not seen one: another handle may have answered it.
+func (s *Session) keyedTurn(ctx context.Context, key string) (turnRecord, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.keyed[key]; !ok {
+		if err := s.reload(ctx); err != nil {
+			return turnRecord{}, false, err
+		}
+	}
+	tr, ok := s.keyed[key]
+	return tr, ok, nil
+}
+
 // runTurn drives the turn's run and appends the completed turn to the transcript.
 func (s *Session) runTurn(ctx context.Context, runID, key, input string) (Message, error) {
+	s.mu.Lock()
 	seed := make([]Message, 0, len(s.history)+1)
 	seed = append(seed, s.history...)
+	s.mu.Unlock()
 	seed = append(seed, UserText(input))
 
 	answer, _, _, err := s.agent.run(ctx, runID, seed, false, nil)
@@ -234,6 +260,8 @@ func (s *Session) runTurn(ctx context.Context, runID, key, input string) (Messag
 		return answer, err
 	}
 	rec := turnRecord{Input: input, Answer: answer, Key: key, RunID: runID, Claim: claim}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if err := s.appendTurn(ctx, rec); err != nil {
 		return answer, err
 	}
@@ -244,7 +272,7 @@ func (s *Session) runTurn(ctx context.Context, runID, key, input string) (Messag
 // skipped rather than overwritten, so no turn is lost; a slot that already holds this run's
 // turn (another handle, or an earlier attempt, recorded it) ends the append, so no turn is
 // recorded twice. Every handle for one message drives the same run ID, which makes that check
-// sufficient.
+// sufficient. The caller holds s.mu.
 func (s *Session) appendTurn(ctx context.Context, rec turnRecord) error {
 	b, err := json.Marshal(rec)
 	if err != nil {
@@ -273,10 +301,16 @@ func (s *Session) appendTurn(ctx context.Context, rec turnRecord) error {
 // History returns a copy of the conversation transcript so far (alternating user and
 // final-assistant messages).
 func (s *Session) History() []Message {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	out := make([]Message, len(s.history))
 	copy(out, s.history)
 	return out
 }
 
 // Turns returns the number of completed turns.
-func (s *Session) Turns() int { return s.turns }
+func (s *Session) Turns() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.turns
+}
