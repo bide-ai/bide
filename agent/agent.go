@@ -329,6 +329,11 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 			// Safety valve: cap model turns so a model that keeps calling tools can't loop
 			// forever. modelSeq counts turns including replayed ones, so a resumed run that
 			// already hit the cap stops immediately.
+			// A cancelled run stops before asking for another turn, rather than relying on the
+			// model adapter to notice the cancellation.
+			if err := ctx.Err(); err != nil {
+				return Message{}, totalUsage, liveTurns, err
+			}
 			if a.maxTurns > 0 && modelSeq >= a.maxTurns {
 				return Message{}, totalUsage, liveTurns, fmt.Errorf("run %s: %w (%d turns)", runID, ErrMaxTurns, modelSeq)
 			}
@@ -475,6 +480,16 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 				rec, err := a.store.Do(context.WithoutCancel(gctx), runID, c.tu.ID, func(context.Context) (Record, error) {
 					res, callErr := toolH(sctx, c.tu)
 					r := Record{Kind: StepToolResult, ToolUseID: c.tu.ID}
+					if callErr != nil && sctx.Err() != nil {
+						// The call was cancelled (the run was cancelled, or a sibling paused or
+						// failed the group) before it could report back, so its outcome is
+						// unknown, not failed: a request may already have reached a provider.
+						// Record nothing. A retry-safe tool re-runs on resume; a non-retriable
+						// one has its attempt marker and no result, so resume halts for
+						// confirmation instead of the journal claiming a failure a retry would
+						// repeat.
+						return Record{}, callErr
+					}
 					if callErr != nil {
 						// A ResumeHalt or PendingApproval raised INSIDE this tool (a sub-agent
 						// whose own tool halted or needs approval) is a control-flow signal for
@@ -524,6 +539,9 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 					if errors.As(err, &subHalt) || errors.As(err, &subApproval) ||
 						errors.As(err, &intr) || errors.As(err, &slp) || errors.As(err, &awt) {
 						return err // propagate the pause / sub-tree halt unwrapped
+					}
+					if sctx.Err() != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
+						return err // a cancellation, not a tool fault: surface it as one
 					}
 					return fmt.Errorf("tool %q: %w (%w)", c.tu.Name, err, ErrTool)
 				}
