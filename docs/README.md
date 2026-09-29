@@ -42,6 +42,7 @@ Accountability and governance:
 
 ## Testing and evidence
 
+- **[How bide is verified](testing/verification.md)** (evaluator): the discipline behind the guarantees: no fix without a failing test, mutation checks, crash and cancellation sweeps, forced interleavings, conformance suites, and CI.
 - **[Testing](testing/testing.md)**: what is tested and how, the chaos crash-injection benchmark, differential oracles, and the statistical `eval` boundary.
 
 ## Examples
