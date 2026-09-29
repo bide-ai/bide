@@ -799,21 +799,28 @@ func modelSink(ctx context.Context) func(Event) {
 // they arrive. Middleware that sends one model call to several targets must detach it before
 // calling them: otherwise a target that loses streams text the run never records, and may keep
 // sending after the run has ended. Once it has chosen the response to return, the middleware can
-// deliver it to the caller with EmitMessage.
+// deliver it to the caller with EmitResponse.
 func DetachModelSink(ctx context.Context) (context.Context, func(Event)) {
 	return context.WithValue(ctx, modelSinkKey, (func(Event))(nil)), modelSink(ctx)
 }
 
-// EmitMessage delivers m to sink as the events a model would have streamed for it. It does
-// nothing when sink is nil. See DetachModelSink.
-func EmitMessage(sink func(Event), m Message) {
+// EmitResponse delivers a model call's response, m and its usage u, to sink as the events a
+// model would have streamed for it, ending with a Finish that carries u. It does nothing when
+// sink is nil. See DetachModelSink.
+func EmitResponse(sink func(Event), m Message, u Usage) {
 	if sink == nil {
 		return
 	}
-	for _, e := range emitsFor(m) {
+	for _, e := range emitsFor(m, u) {
 		sink(e.Event)
 	}
 }
+
+// EmitMessage is EmitResponse with zero usage.
+//
+// Deprecated: its Finish reports no usage, unlike the live stream it stands in for. Use
+// EmitResponse with the usage the model call returns.
+func EmitMessage(sink func(Event), m Message) { EmitResponse(sink, m, Usage{}) }
 
 func withRunScope(ctx context.Context, scope string) context.Context {
 	return withOnceScope(context.WithValue(ctx, runScopeKey, scope), scope)

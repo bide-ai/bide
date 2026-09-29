@@ -142,3 +142,14 @@ func dumpRecords(rs []Record) string {
 	}
 	return string(out)
 }
+
+// EmitMessage is EmitResponse with zero usage.
+func TestEmitMessage_IsEmitResponseWithoutUsage(t *testing.T) {
+	m := Message{Role: RoleAssistant, Parts: []Part{Text{Text: "hi"}}}
+	var got, want []Event
+	EmitMessage(func(e Event) { got = append(got, e) }, m)
+	EmitResponse(func(e Event) { want = append(want, e) }, m, Usage{})
+	if len(got) == 0 || !reflect.DeepEqual(got, want) {
+		t.Fatalf("EmitMessage sent %+v, want %+v", got, want)
+	}
+}

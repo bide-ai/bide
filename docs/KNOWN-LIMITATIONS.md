@@ -102,6 +102,11 @@ the adapter sends back only the thought signatures Gemini needs to continue a th
 but it is laid out as reasoning blocks, then the text, then the tool calls. Text that appeared
 between two reasoning blocks is moved after them, and separate text blocks are joined into one.
 
+**Replay does not know the provider's finish reason.** The journal records each turn's message and
+token usage, so a replayed run reports the same usage and stops on the same token budget. The finish
+reason is not recorded: a replayed turn ends with `tool_use` when it has tool calls and `stop`
+otherwise, so a provider reason such as a length cutoff reads as `stop` on replay.
+
 **MCP tools are untyped.** Tools discovered from an MCP server at runtime use raw JSON arguments,
 because Go cannot create a struct type from a schema at runtime.
 

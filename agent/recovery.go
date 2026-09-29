@@ -353,28 +353,38 @@ func Replay(ctx context.Context, source Durable, runID string) (Model, error) {
 	if err != nil {
 		return nil, err
 	}
-	var msgs []Message
+	var turns []recordedTurn
 	for _, r := range recs {
 		if r.Kind == StepModel && r.Message != nil {
-			msgs = append(msgs, *r.Message)
+			t := recordedTurn{msg: *r.Message}
+			if r.Usage != nil {
+				t.usage = *r.Usage
+			}
+			turns = append(turns, t)
 		}
 	}
-	return &replayModel{msgs: msgs}, nil
+	return &replayModel{turns: turns}, nil
+}
+
+// recordedTurn is one journaled model call: its message and the usage it reported.
+type recordedTurn struct {
+	msg   Message
+	usage Usage
 }
 
 type replayModel struct {
-	msgs []Message
-	i    int
+	turns []recordedTurn
+	i     int
 }
 
 func (m *replayModel) Stream(_ context.Context, _ Request) (*Stream, error) {
-	if m.i >= len(m.msgs) {
+	if m.i >= len(m.turns) {
 		return nil, fmt.Errorf("replay: %w", ErrNoRecordedOutput)
 	}
-	msg := m.msgs[m.i]
+	t := m.turns[m.i]
 	m.i++
 
-	evs := emitsFor(msg)
+	evs := emitsFor(t.msg, t.usage)
 	ch := make(chan Emit, len(evs))
 	for _, e := range evs {
 		ch <- e
@@ -383,12 +393,17 @@ func (m *replayModel) Stream(_ context.Context, _ Request) (*Stream, error) {
 	return NewStream(ch), nil
 }
 
-// emitsFor converts an assistant Message back into the stream events that would have
-// produced it (the inverse of msgBuilder). Every message msgBuilder produces round-trips.
+// emitsFor converts an assistant Message and the call's usage back into the stream events
+// that would have produced them (the inverse of msgBuilder). Every message msgBuilder produces round-trips.
 // A message it cannot produce may not: an unsigned thinking block stays open until a
 // redacted block or the end of the stream, so one followed by text or another thinking
 // block merges with it.
-func emitsFor(msg Message) []Emit {
+//
+// The Finish carries u and a reason derived from the message: "tool_use" when it has tool
+// calls, else "stop". The provider's own reason (such as a length cutoff) is not journaled:
+// a ModelHandler returns only the message and usage, and middleware may answer with a
+// message no stream produced.
+func emitsFor(msg Message, u Usage) []Emit {
 	var out []Emit
 	idx := 0
 	for _, p := range msg.Parts {
@@ -412,5 +427,9 @@ func emitsFor(msg Message) []Emit {
 			idx++
 		}
 	}
-	return append(out, Emit{Event: Finish{Reason: "stop"}})
+	reason := "stop"
+	if idx > 0 {
+		reason = "tool_use"
+	}
+	return append(out, Emit{Event: Finish{Reason: reason, Usage: u}})
 }
