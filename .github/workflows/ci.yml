@@ -79,9 +79,16 @@ jobs:
           # scripts/release.sh tags the published modules at each release and never the repo-only
           # ones; a module in neither list, or a published module requiring a repo-only one, fails.
           # The self-test proves the release-time go.mod check refuses a v0.0.0 requirement and a
-          # replace directive. The same check runs on every pushed nested tag (release-modules.yml).
+          # replace directive, and that no push carries more than three tags (GitHub runs no
+          # workflow for the tags of a larger push). The same go.mod check runs on every pushed
+          # nested tag (release-modules.yml).
           scripts/release.sh --self-test
           scripts/release.sh --check-classification
+      - name: Benchmark summary script
+        if: needs.changes.outputs.code != 'false'
+        run: |
+          # bench.yml's medians, percentage changes and interleaved A/B runs come from this script.
+          .github/scripts/bench.sh --self-test
       - name: gofmt
         if: needs.changes.outputs.code != 'false'
         run: |

@@ -23,9 +23,11 @@ journal-records figure is an in-memory write rate, not a durable-store one. Each
 journal records in these scenarios.
 
 **A standard GitHub Actions runner** (`ubuntu-latest`, 4 vCPU AMD EPYC 7763, Go 1.27), each
-scenario run 21 times, from the [Benchmark workflow](../../.github/workflows/bench.yml) at v0.8.0.
-Anyone can reproduce these: Actions, Benchmark, Run workflow. Runner CPU models vary between
-jobs, so compare runs on the same model.
+scenario run 21 times, from a single-ref run of the [Benchmark workflow](../../.github/workflows/bench.yml)
+at v0.8.0. Anyone can reproduce these: Actions, Benchmark, Run workflow, with `base` and `head`
+empty. Runner CPU models vary between jobs (AMD EPYC 7763 and 9V74 among them), and the job summary
+states the model; published numbers always come from a single-ref run and name its CPU model, and
+a reproduction is comparable only on the same model.
 
 | Scenario | Wall-clock | Runs/s | Journal records/s | p50 | p99 | Peak goroutines | Heap delta |
 |---|---|---|---|---|---|---|---|
@@ -48,6 +50,25 @@ the Mac (measured at v0.7.0), where the median run takes the model's own ~100ms 
 fully overlap. On the 4-vCPU runner the same work takes about one second: with fewer cores the
 framework's CPU work, not the model wait, sets the pace. Either way it is a few thousand goroutines
 and tens of MB in one commodity process instead of a cluster.
+
+## Comparing two refs
+
+Two single-ref runs can land on different CPU models, which moves the numbers more than most
+changes do, so do not compare them. The workflow's A/B mode compares two refs on one machine: it
+builds `cmd/bench` at `base` and at `head` in one job and runs the two binaries interleaved (base,
+head, base, head, ...) for the configured repeats, so drift in the machine's speed during the job
+reaches both. The job summary states the CPU model and gives, for each scenario and metric, the
+median at base, the median at head and the percentage change from base to head.
+
+```
+gh workflow run bench.yml -R bide-ai/bide --ref main -f base=v0.8.0 -f head=main
+```
+
+`base` and `head` take a tag, a branch or a commit; `repeats` (default 21) counts runs per scenario
+and per ref. To see the noise floor of a comparison, run it with the same ref as base and head. A/B
+results are for judging a change, not for publishing: published numbers come from single-ref runs.
+The scenarios, medians and percentage changes are in
+[`.github/scripts/bench.sh`](../../.github/scripts/bench.sh), whose `--self-test` runs in CI.
 
 ## What this does NOT claim
 

@@ -1,14 +1,32 @@
 name: Benchmark
+run-name: Benchmark ${{ (inputs.base != '' || inputs.head != '') && format('{0} vs {1}', inputs.base, inputs.head) || github.ref_name }}
 
 # Runs cmd/bench on a standard GitHub-hosted runner, so the published numbers come from an
 # environment anyone can reproduce: Actions -> Benchmark -> Run workflow. Each scenario runs
-# several times and the job summary reports the median of each metric, plus the raw output.
+# several times and the job summary reports the median of each metric, the runner's CPU model,
+# and the raw output. The scenarios and the summary live in .github/scripts/bench.sh.
+#
+# Two modes:
+#   - Single ref (base and head empty): benchmarks the ref the workflow runs on. Published numbers
+#     come from this mode, with the CPU model stated.
+#   - A/B (base and head set): builds cmd/bench at both refs and runs the two binaries interleaved
+#     (base, head, base, head, ...) in one job, so both run on the same machine. Runner CPU models
+#     vary between jobs (AMD EPYC 7763, 9V74, ...), so numbers from separate runs are not
+#     comparable; use this mode to compare two refs.
+#
+#   gh workflow run bench.yml -R bide-ai/bide --ref main -f base=v0.8.0 -f head=main
 on:
   workflow_dispatch:
     inputs:
       repeats:
-        description: Runs per scenario (the median is reported)
+        description: Runs per scenario (and per ref, in A/B mode); the median is reported
         default: '21'
+      base:
+        description: 'A/B mode: the baseline ref (tag, branch or commit). Leave base and head empty for a single-ref run.'
+        default: ''
+      head:
+        description: 'A/B mode: the ref compared with base'
+        default: ''
 
 permissions:
   contents: read
@@ -16,9 +34,11 @@ permissions:
 jobs:
   bench:
     name: cmd/bench (ubuntu-latest)
+    if: inputs.base == '' && inputs.head == ''
     runs-on: ubuntu-latest
     env:
       GOWORK: 'off'
+      REPEATS: ${{ inputs.repeats }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -26,57 +46,87 @@ jobs:
           go-version: '1.27'
       - name: Runner
         run: |
-          echo "$(nproc) vCPU: $(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2 | sed 's/^ //')"
+          .github/scripts/bench.sh cpu
           go version
       - name: Build
         run: go build -o bench ./cmd/bench
       - name: Run scenarios
-        shell: bash
-        run: |
-          set -euo pipefail
-          n="${{ inputs.repeats }}"
-          run() { # name, args...
-            local name=$1; shift
-            for i in $(seq 1 "$n"); do ./bench "$@" > "out-$name-$i.txt"; done
-          }
-          run overhead -runs 5000 -concurrency 256
-          run fanout -runs 20000 -concurrency 5000 -latency 50ms
+        run: .github/scripts/bench.sh run "$REPEATS" out run=./bench
       - name: Summarize (medians)
-        shell: bash
         run: |
-          set -euo pipefail
-          # Durations are printed with units (µs, ms, s); convert to ms before taking medians.
-          ms() { awk '{ v=$1; if (v ~ /µs$/) { sub(/µs$/,"",v); v=v/1000 } else if (v ~ /ms$/) { sub(/ms$/,"",v) } else if (v ~ /s$/) { sub(/s$/,"",v); v=v*1000 } print v }'; }
-          median() { sort -g | awk '{ a[NR]=$1 } END { if (NR%2) print a[(NR+1)/2]; else print (a[NR/2]+a[NR/2+1])/2 }'; }
-          field() { grep -ho "$2=[^ ]*" out-$1-*.txt | cut -d= -f2; }
           {
             echo "## cmd/bench on ubuntu-latest"
             echo
-            echo "Runner: $(nproc) vCPU, $(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2 | sed 's/^ //'), $(go version | cut -d' ' -f3-4). ${{ inputs.repeats }} runs per scenario; each figure is the median."
+            echo "Ref: \`$GITHUB_REF_NAME\` ($GITHUB_SHA). Runner: $(.github/scripts/bench.sh cpu), $(go version | cut -d' ' -f3-4)."
             echo
-            echo "| Scenario | Wall-clock | Runs/s | Journal records/s | p50 | p99 | Peak goroutines | Heap delta |"
-            echo "|---|---|---|---|---|---|---|---|"
-            for s in overhead fanout; do
-              wall=$(field $s elapsed | ms | median)
-              rps=$(grep -ho 'throughput=[0-9]*' out-$s-*.txt | cut -d= -f2 | median)
-              recs=$(grep -ho '([0-9]* journal records/s' out-$s-*.txt | tr -dc '0-9\n' | median)
-              p50=$(field $s p50 | ms | median)
-              p99=$(field $s p99 | ms | median)
-              gor=$(field $s goroutines | median)
-              heap=$(grep -ho 'heap alloc delta=[0-9.]* MB' out-$s-*.txt | grep -o '[0-9.]*' | median)
-              echo "| $s | ${wall} ms | ${rps} | ${recs} | ${p50} ms | ${p99} ms | ${gor} | ${heap} MB |"
-            done
-            echo
-            echo "overhead: \`-runs 5000 -concurrency 256\`; fanout: \`-runs 20000 -concurrency 5000 -latency 50ms\`."
+            .github/scripts/bench.sh summary out run "$REPEATS"
             echo
             echo "<details><summary>Raw output</summary>"
             echo
             echo '```'
-            for f in out-*.txt; do echo "== $f"; cat "$f"; done
+            for f in out/run/*.txt; do echo "== $f"; cat "$f"; done
             echo '```'
             echo "</details>"
           } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         with:
           name: bench-output
-          path: out-*.txt
+          path: out/
+
+  ab:
+    name: cmd/bench A/B (ubuntu-latest)
+    if: inputs.base != '' || inputs.head != ''
+    runs-on: ubuntu-latest
+    env:
+      GOWORK: 'off'
+      REPEATS: ${{ inputs.repeats }}
+      BASE: ${{ inputs.base }}
+      HEAD: ${{ inputs.head }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27'
+      - name: Runner
+        run: |
+          .github/scripts/bench.sh cpu
+          go version
+      - name: Build cmd/bench at base and head
+        run: |
+          [ -n "$BASE" ] && [ -n "$HEAD" ] || { echo "::error::A/B mode needs both base and head"; exit 1; }
+          resolve() { # ref: its commit, as given or as a branch of origin
+            git rev-parse --verify --quiet "$1^{commit}" || git rev-parse --verify --quiet "origin/$1^{commit}" ||
+              { echo "::error::$1 is not a tag, branch or commit of this repository" >&2; return 1; }
+          }
+          base_sha=$(resolve "$BASE"); head_sha=$(resolve "$HEAD")
+          echo "BASE_SHA=$base_sha" >> "$GITHUB_ENV"; echo "HEAD_SHA=$head_sha" >> "$GITHUB_ENV"
+          git worktree add --detach "$RUNNER_TEMP/src-base" "$base_sha"
+          git worktree add --detach "$RUNNER_TEMP/src-head" "$head_sha"
+          (cd "$RUNNER_TEMP/src-base" && go build -o "$GITHUB_WORKSPACE/bench-base" ./cmd/bench)
+          (cd "$RUNNER_TEMP/src-head" && go build -o "$GITHUB_WORKSPACE/bench-head" ./cmd/bench)
+      - name: Run scenarios, interleaved
+        run: .github/scripts/bench.sh run "$REPEATS" out base=./bench-base head=./bench-head
+      - name: Summarize (medians and change)
+        run: |
+          {
+            echo "## cmd/bench A/B on ubuntu-latest"
+            echo
+            echo "base: \`$BASE\` ($BASE_SHA); head: \`$HEAD\` ($HEAD_SHA)."
+            echo
+            echo "Runner: $(.github/scripts/bench.sh cpu), $(go version | cut -d' ' -f3-4). Both binaries ran on this machine in one job."
+            echo
+            .github/scripts/bench.sh compare out base head "$REPEATS"
+            echo
+            echo "<details><summary>Raw output</summary>"
+            echo
+            echo '```'
+            for f in out/base/*.txt out/head/*.txt; do echo "== $f"; cat "$f"; done
+            echo '```'
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bench-ab-output
+          path: out/
