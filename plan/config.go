@@ -1,7 +1,6 @@
 package plan
 
 import (
-	"encoding/json"
 	"fmt"
 	"io"
 	"reflect"
@@ -9,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/internal/strictjson"
 )
 
 // config is the decoded rung-2 topology: pure topology plus block references.
@@ -145,7 +145,7 @@ func (w configWire) isJoin() bool {
 // hands the assembled spec to the existing Build (whole-graph validation) and seal.
 func Load[In, Out any](data []byte, reg *Registry, opts ...LoadOption) (*Flow[In, Out], error) {
 	var cfg config
-	if err := json.Unmarshal(data, &cfg); err != nil {
+	if err := parseConfig(data, &cfg); err != nil {
 		return nil, fmt.Errorf("plan: load: parse config: %w", err)
 	}
 
@@ -218,11 +218,20 @@ func LoadReader[In, Out any](r io.Reader, reg *Registry, opts ...LoadOption) (*F
 // Load is the full typed check.
 func Validate(data []byte, reg *Registry) error {
 	var cfg config
-	if err := json.Unmarshal(data, &cfg); err != nil {
+	if err := parseConfig(data, &cfg); err != nil {
 		return fmt.Errorf("plan: validate: parse config: %w", err)
 	}
 	_, err := assemble(&cfg, reg)
 	return err
+}
+
+// parseConfig decodes a config strictly, so the topology loaded is the one the text shows: a name
+// that is not a field (a misspelling such as "aproval", or a case variant such as "Safety"), a
+// name given twice, data after the value, and invalid UTF-8 are errors. encoding/json would skip
+// the first, keep the last of the second, and so load a node without the gate or entry its author
+// wrote.
+func parseConfig(data []byte, cfg *config) error {
+	return strictjson.Unmarshal(data, cfg, nil)
 }
 
 // assemble resolves the config against reg and builds a checked builderCore,

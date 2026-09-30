@@ -318,7 +318,10 @@ unapproved. Until the runtime enforces it, put the gate on an agent tool (see [a
 
 Moving topology from Go to data trades compile-time type checking for load-time validation: a
 miswired config does not fail at `go build`, it fails at `Load`, with a worded error that names the
-offending nodes and types. `Load` runs, by `reflect.Type` identity:
+offending nodes and types. The JSON is read as written: a name that is not a config field (a
+misspelling such as `aproval`, or a case variant such as `Safety`), a name given twice, and data after
+the value are parse errors, so a typo cannot silently drop a gate or an entry. `Load` then runs, by
+`reflect.Type` identity:
 
 - **Predicate typing:** every switch arm's registered predicate `M` equals the switched node's output
   type. This is a strict improvement over the Go builder, which only checks a predicate at its
