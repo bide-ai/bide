@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
 )
@@ -139,5 +140,38 @@ func TestSaga_JournalWithoutAcceptedArgumentsUsesTheModelArguments(t *testing.T)
 	var aborted *SagaAborted
 	if !errors.As(err, &aborted) || charged != 5 || refunded != 5 {
 		t.Fatalf("RunSaga = %v; charged %d, refunded %d; want 5 and 5", err, charged, refunded)
+	}
+}
+
+// A retry-safe compensable call that a sibling's failure cut off has no recorded result, so the
+// rollback runs it again to learn the result it compensates. That run goes through the tool
+// middleware like the first: it used to call the tool directly with the model's arguments, so
+// the charge the live call made at 500 was repeated at 5 and refunded at 5.
+func TestSaga_RollbackRerunGoesThroughToolMiddleware(t *testing.T) {
+	var calls atomic.Int32
+	var charges, refunded []int
+	var mu sync.Mutex
+	record := func(list *[]int, v int) { mu.Lock(); *list = append(*list, v); mu.Unlock() }
+	charge := CompensatedFunc("charge", "charge the card", Safety{Idempotent: true},
+		func(ctx context.Context, in chargeArgs) (string, error) {
+			record(&charges, in.Amount)
+			if calls.Add(1) == 1 {
+				<-ctx.Done() // the live call is cut off waiting for its response
+				return "", ctx.Err()
+			}
+			return "ok", nil
+		},
+		func(_ context.Context, in chargeArgs, _ string) error { record(&refunded, in.Amount); return nil })
+	book := Func("book", "book the flight", Safety{}, func(context.Context, struct{}) (string, error) {
+		return "", errors.New("no seats")
+	})
+	m := &sagaTurns{turns: [][][3]string{{{"c1", "charge", `{"amount":5}`}, {"b1", "book", `{}`}}}}
+	_, err := New(m, NewMemStore(), charge, book).UseTool(scaleCharge).RunSaga(context.Background(), "r", "trip")
+	var aborted *SagaAborted
+	if !errors.As(err, &aborted) || aborted.CompensateErr != nil {
+		t.Fatalf("RunSaga = %v, want a clean *SagaAborted", err)
+	}
+	if len(charges) != 2 || charges[0] != 500 || charges[1] != 500 || len(refunded) != 1 || refunded[0] != 500 {
+		t.Fatalf("charges %v, refunds %v; want the re-run to charge 500 like the live call, and a refund of 500", charges, refunded)
 	}
 }
