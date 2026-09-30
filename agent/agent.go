@@ -838,7 +838,12 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 				if err == nil {
 					carried[c.idx] = journalTotals([]Record{rec})
 				}
-				if saga && toolCallErr != nil {
+				// The saga aborts on a failure it has recorded. If the failure record could not be
+				// written, the abort is not durable, and a rollback now would read a journal in
+				// which the failed step looks unfinished (so possibly run, to be undone or reported
+				// as dangling): stop with the storage error instead, and let the resumed run meet
+				// the failure again (a retry-safe step re-runs; any other halts for its outcome).
+				if saga && toolCallErr != nil && err == nil {
 					fire(ToolCompleted{ToolUseID: c.tu.ID, Name: c.tu.Name, Result: rec.Result, IsError: true})
 					var journaled string
 					_ = json.Unmarshal(rec.Result, &journaled)
