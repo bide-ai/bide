@@ -18,8 +18,10 @@ import (
 // carries the earlier signed head a consistency proof starts from. v3 is v2 over journals that
 // key a tool call's records by its encoded ID (agent.ToolResultStep, agent.ApprovalTallyStep)
 // and a sub-agent's run by agent.SubRunID, so the record names a v3 package proves differ from
-// a v2 package's for the same run.
-const EvidenceFormat = "bide.audit.evidence.v3"
+// a v2 package's for the same run. v4 is v3 with snake_case names in every proof it carries (the
+// inclusion and consistency proofs spelled "Index", "Size", "Path" and "First" before) and a
+// "format" on each ProofBundle and on the RunCertificate.
+const EvidenceFormat = "bide.audit.evidence.v4"
 
 // evidenceSealTag domain-separates the package seal from every other message the log key signs.
 const evidenceSealTag = EvidenceFormat + ".seal\x00"

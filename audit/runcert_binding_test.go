@@ -130,7 +130,7 @@ func TestVerifyRun_UsedPolicyHeadIsBoundToRunAndJournal(t *testing.T) {
 		t.Fatal(err)
 	}
 	props := []string{"only-approved-policies", "policies-convergence-certified"}
-	genuine := audit.RunCertificate{RunID: "X", Properties: props, UsedPolicies: []string{}, UsedPolicyAbsence: absX, STH: audit.SignTreeHead(thX, priv)}
+	genuine := audit.RunCertificate{Format: audit.RunCertificateFormat, RunID: "X", Properties: props, UsedPolicies: []string{}, UsedPolicyAbsence: absX, STH: audit.SignTreeHead(thX, priv)}
 	if res, _ := audit.VerifyRun(genuine, nil, pub); !res.OK {
 		t.Fatalf("the genuine certificate of a run that used no policy does not verify: %+v", res)
 	}

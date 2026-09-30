@@ -26,6 +26,7 @@ import (
 // verifier to trust the producer, its database, or its logs. For full tamper-evidence the
 // auditor also confirms the STH itself appears in the anchor log (MemAnchorLog.Prove).
 type ProofBundle struct {
+	Format    string         `json:"format"`    // ProofFormat
 	RunID     string         `json:"run_id"`    // the run whose journal the record and STH belong to; must equal STH.RunID
 	Record    agent.Record   `json:"record"`    // the single disclosed action
 	Inclusion Inclusion      `json:"inclusion"` // its RFC 6962 audit path
@@ -45,6 +46,9 @@ func (b ProofBundle) Verify(pub ed25519.PublicKey) (bool, error) {
 // VerifyWith is the scheme-agnostic form of Verify: it authenticates the STH under any Verifier
 // (ed25519, ML-DSA, or hybrid), then binds and checks the inclusion proof.
 func (b ProofBundle) VerifyWith(v Verifier) (bool, error) {
+	if err := formatOf(b, b.Format); err != nil {
+		return false, err
+	}
 	if !b.STH.VerifyWith(v) {
 		return false, nil // the signed commitment is not authentic under this key
 	}
@@ -79,6 +83,7 @@ func ProveRecord(ctx context.Context, store agent.Durable, runID string, index i
 		return ProofBundle{}, err
 	}
 	return ProofBundle{
+		Format:    ProofFormat,
 		RunID:     runID,
 		Record:    recs[index],
 		Inclusion: Inclusion{Index: index, Size: sth.Size, Path: auditPath(index, leaves)},

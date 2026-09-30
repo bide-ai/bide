@@ -238,6 +238,38 @@ leaf bytes: they can vendor just that, or reimplement it from RFC 6962 and check
 The two verification paths are cross-checked bit-for-bit in the tests so the standalone mirror
 cannot drift.
 
+### Artifact formats
+
+Every proof artifact is JSON with snake_case names throughout, and each top-level artifact names
+its layout in a `"format"` field:
+
+| Artifact | `format` | Constant |
+|---|---|---|
+| `ProofBundle` | `bide.audit.proof.v2` | `audit.ProofFormat` |
+| `AbsenceBundle` | `bide.audit.absence.v2` | `audit.AbsenceFormat` |
+| `RunCertificate` | `bide.audit.runcert.v2` | `audit.RunCertificateFormat` |
+| `CurrentGrantProof` | `bide.audit.current-grant.v2` | `audit.CurrentGrantFormat` |
+| `EventInclusion` | `bide.audit.event-inclusion.v2` | `audit.EventInclusionFormat` |
+| `EvidencePackage` | `bide.audit.evidence.v4` | `audit.EvidenceFormat` |
+
+A bundle looks like this (the record and signature abbreviated):
+
+```json
+{"format":"bide.audit.proof.v2","run_id":"r1","record":{"name":"tool:c1","kind":"tool_result","tool_use_id":"c1",...},
+ "inclusion":{"index":1,"size":3,"path":["...","..."]},
+ "sth":{"kind":"journal","run_id":"r1","size":3,"root":"...","timestamp":1000,"signature":"..."}}
+```
+
+The producers (`ProveRecord`, `ProveAbsentBundle`, `CertifyRun`, `ProveCurrentGrant`,
+`EventLog.Prove`, `Evidence`) set the format; every verifier requires it, and
+`audit.UnmarshalStrict` checks it before it reads anything else. An artifact without a format (one
+made before formats existed, whose inclusion and consistency proofs spelled `"Index"`, `"Size"`,
+`"Path"`, `"First"` and `"Salt"` in Go case) or with another one fails with an error wrapping
+`audit.ErrFormat` that names the format this version reads. Proofs are cheap to remake from the
+journal, so re-create an old artifact with the current producer rather than converting it. Signed
+tree heads, grants, and anchor entries did not change: their bytes are signed or hashed, and their
+names were snake_case already.
+
 ### The run-level evidence bundle: `EvidencePackage`
 
 A `ProofBundle` proves one disclosed action. For a whole run, `audit.Evidence` assembles the run's
@@ -255,7 +287,7 @@ report, _ := pkg.Verify(pub, audit.WithApprovedPolicies(allowlist...)) // trusti
 `Verify` trusts the key you pass, never the one embedded in the package, and every field of the
 package is verified or derived from verified data:
 
-- `Format` must be `audit.EvidenceFormat` (`bide.audit.evidence.v3`), and `PublicKeyHex` must be the
+- `Format` must be `audit.EvidenceFormat` (`bide.audit.evidence.v4`), and `PublicKeyHex` must be the
   key you pass.
 - The STH must be an authentic journal head of the package's `RunID`, so the run the report names is
   the run the log key signed.
@@ -313,6 +345,8 @@ Conventions shared across verbs:
   hex, and must decode to a 32-byte ed25519 public key (anything else exits 1 with a message). The
   key must come from the anchor operator out-of-band, never from the bundle: that is what makes it a
   proof you verify rather than a log you trust.
+- Every artifact must carry the format this version reads (see [Artifact formats](#artifact-formats));
+  one made by an older release exits 1 with a message naming the format.
 - Every JSON input is read strictly (`audit.UnmarshalStrict`): a duplicate key, a key that matches a
   field only case-insensitively, an unknown field, invalid UTF-8, an escaped lone surrogate, or
   base64 that is not the standard encoding of its bytes exits 1, so a file cannot show a reader one

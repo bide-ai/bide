@@ -149,8 +149,8 @@ func Consistency(first, size int, path [][]byte, firstRoot, laterRoot []byte) bo
 
 // TreeRef names one tree by its size and root: the source journal of an absence key-set head.
 type TreeRef struct {
-	Size int
-	Root []byte
+	Size int    `json:"size"`
+	Root []byte `json:"root"`
 }
 
 // TreeHead reports whether sig is a valid Ed25519 signature, under pub, of the signed tree head

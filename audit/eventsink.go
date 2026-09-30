@@ -85,7 +85,8 @@ func (l *EventLog) Head() []byte {
 // commits to its own random salt, so a holder of the proof cannot confirm a guess about any other
 // event by hashing it: the salt a guess would need is disclosed only by that event's own proof.
 type EventInclusion struct {
-	Salt []byte // the proven event's salt (agent.SaltSize bytes)
+	Format string `json:"format"` // EventInclusionFormat
+	Salt   []byte `json:"salt"`   // the proven event's salt (agent.SaltSize bytes)
 	Inclusion
 }
 
@@ -98,6 +99,7 @@ func (l *EventLog) Prove(index int) (EventInclusion, error) {
 		return EventInclusion{}, fmt.Errorf("audit: event index %d out of range [0,%d)", index, len(l.leaves))
 	}
 	return EventInclusion{
+		Format:    EventInclusionFormat,
 		Salt:      append([]byte(nil), l.salts[index]...),
 		Inclusion: Inclusion{Index: index, Size: len(l.leaves), Path: auditPath(index, l.leaves)},
 	}, nil
@@ -128,8 +130,12 @@ func (l *EventLog) ProveConsistency(first int) (Consistency, error) {
 // VerifyEventInclusion reports whether event, under the salt proof discloses, is the leaf at
 // proof.Index in a log of proof.Size events committed by root: from the event and proof alone,
 // no other events needed. The event must canonicalize identically to when it was added. It
-// errors if the event cannot be canonicalized or proof.Salt is not agent.SaltSize bytes.
+// errors if the event cannot be canonicalized, proof.Salt is not agent.SaltSize bytes, or
+// proof.Format is not EventInclusionFormat (ErrFormat).
 func VerifyEventInclusion(root []byte, event agent.AgentEvent, proof EventInclusion) (bool, error) {
+	if err := formatOf(proof, proof.Format); err != nil {
+		return false, err
+	}
 	leaf, err := canonicalEvent(event, proof.Salt)
 	if err != nil {
 		return false, err

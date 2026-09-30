@@ -187,9 +187,9 @@ func Root(ctx context.Context, store agent.Durable, runID string) ([]byte, error
 
 // Inclusion is an RFC 6962 audit path proving one record's membership in a committed run.
 type Inclusion struct {
-	Index int      // the record's position in the journal
-	Size  int      // the journal length the root committed to
-	Path  [][]byte // sibling hashes, leaf-to-root
+	Index int      `json:"index"` // the record's position in the journal
+	Size  int      `json:"size"`  // the journal length the root committed to
+	Path  [][]byte `json:"path"`  // sibling hashes, leaf-to-root
 }
 
 // Prove returns an inclusion proof for the record at index in runID's journal — enough to

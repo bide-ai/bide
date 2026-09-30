@@ -153,7 +153,9 @@ func usage() {
 
 Export a journal for `+"`prove`"+` with: json.Marshal(store.History(ctx, runID)). Every JSON
 input is parsed strictly: a duplicate or case-variant key, an unknown field, or invalid UTF-8 is
-an error, and a public key must be 32 bytes of hex.
+an error, a bundle, certificate or package must carry the "format" this version reads (one made
+by an older release is refused with a message naming the format), and a public key must be 32
+bytes of hex.
 
 Exit status: 0 = verified, 1 = failed, 2 = usage error, 3 = the -checker gave no verdict (it could
 not be started, exited with a status other than 0 or 1, was killed, or printed an unreadable

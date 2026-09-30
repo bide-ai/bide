@@ -30,6 +30,11 @@ import (
 // UnmarshalStrict checks it against its wire shape: exactly "role" and "parts", and each part
 // exactly the fields of the part its "type" names.
 //
+// An artifact with a format (ProofBundle, AbsenceBundle, RunCertificate, CurrentGrantProof,
+// EventInclusion, EvidencePackage) is checked for its "format" first: one that has none, or not the
+// one this version reads, is refused with an error wrapping ErrFormat, before any rule above can
+// report a field its own format names differently.
+//
 // It uses only the standard encoding/json: the input is checked token by token against the target
 // type before it is decoded, so the rules above hold without depending on encoding/json/v2.
 func UnmarshalStrict(data []byte, v any) error {
@@ -39,6 +44,11 @@ func UnmarshalStrict(data []byte, v any) error {
 	rv := reflect.ValueOf(v)
 	if rv.Kind() != reflect.Pointer || rv.IsNil() {
 		return fmt.Errorf("audit: strict json: decode target must be a non-nil pointer, got %T", v)
+	}
+	if f, ok := reflect.Zero(rv.Type().Elem()).Interface().(formatted); ok {
+		if err := checkDataFormat(data, f); err != nil {
+			return fmt.Errorf("audit: strict json: %w", err)
+		}
 	}
 	if err := strictjson.Check(data, rv.Type().Elem(), strictOptions); err != nil {
 		return fmt.Errorf("audit: strict json: %w", err)

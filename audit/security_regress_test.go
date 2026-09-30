@@ -63,7 +63,7 @@ func TestAbsence_ToolUseTreeCannotProvePolicyAbsent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	forged := AbsenceBundle{RunID: "r", STH: toolSTH, Absence: Absence{Key: PolicyUsedKeyFor("EVIL"), Size: 1,
+	forged := AbsenceBundle{Format: AbsenceFormat, RunID: "r", STH: toolSTH, Absence: Absence{Key: PolicyUsedKeyFor("EVIL"), Size: 1,
 		Right: &Neighbor{Key: "tooluse:charge", Proof: Inclusion{Index: 0, Size: 1}}}}
 	for _, set := range []KeySet{PolicyUsedKeys, ToolUseKeys} {
 		if ok, _ := forged.Verify(pub, set); ok {
@@ -87,7 +87,7 @@ func TestAbsence_JournalTreeCannotProveAbsence(t *testing.T) {
 	recs, th := secHead(t, s, "r")
 	sth := SignTreeHead(th, priv)
 	leaf0, _ := json.Marshal(recs[0])
-	forged := AbsenceBundle{RunID: "r", STH: sth, Absence: Absence{Key: "tooluse:charge", Size: 1,
+	forged := AbsenceBundle{Format: AbsenceFormat, RunID: "r", STH: sth, Absence: Absence{Key: "tooluse:charge", Size: 1,
 		Right: &Neighbor{Key: string(leaf0), Proof: Inclusion{Index: 0, Size: 1}}}}
 	if ok, _ := forged.Verify(pub, ToolUseKeys); ok {
 		t.Fatal("the journal STH proves the executed tool call 'charge' absent")
@@ -97,7 +97,7 @@ func TestAbsence_JournalTreeCannotProveAbsence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	pb := ProofBundle{RunID: "r", Record: agent.Record{}, Inclusion: Inclusion{Index: 0, Size: 1}, STH: abs}
+	pb := ProofBundle{Format: ProofFormat, RunID: "r", Record: agent.Record{}, Inclusion: Inclusion{Index: 0, Size: 1}, STH: abs}
 	if ok, _ := pb.Verify(pub); ok {
 		t.Fatal("an absence head verified as a journal head")
 	}
@@ -136,7 +136,7 @@ func TestVerifyRun_RejectsSubstitutedAbsenceSTH(t *testing.T) {
 		"run X's empty prefix":              emptyPrefix,
 		"run X's tool-use set":              toolX,
 	} {
-		cert := RunCertificate{RunID: "X", Properties: runCertProperties, UsedPolicies: []string{}, UsedPolicyAbsence: abs, STH: sth}
+		cert := RunCertificate{Format: RunCertificateFormat, RunID: "X", Properties: runCertProperties, UsedPolicies: []string{}, UsedPolicyAbsence: abs, STH: sth}
 		if res, _ := VerifyRun(cert, []string{"GOOD"}, pub); res.OK || res.OnlyApprovedPolicies {
 			t.Errorf("%s: run X used %v but its certificate verifies only-approved-policies", name, PoliciesUsed(recs))
 		}
@@ -804,7 +804,7 @@ func TestAbsenceBundle_EveryBindingIsChecked(t *testing.T) {
 		t.Fatal("run A's absence bundle verified as run B's")
 	}
 	// A key set with no prefix would accept any key, e.g. a policy key in the tool-use tree.
-	forged := AbsenceBundle{RunID: "A", STH: toolSTH, Absence: Absence{Key: PolicyUsedKeyFor("EVIL"), Size: 3,
+	forged := AbsenceBundle{Format: AbsenceFormat, RunID: "A", STH: toolSTH, Absence: Absence{Key: PolicyUsedKeyFor("EVIL"), Size: 3,
 		Right: good.Absence.Left}}
 	if ok, err := forged.Verify(pub, KeySet{Kind: TreeToolUse, Key: ToolUseKey}); ok || err == nil {
 		t.Fatalf("a bundle verified against a key set with no prefix (ok=%v err=%v)", ok, err)
@@ -947,7 +947,7 @@ func TestEarnedAuthority_OldLeafIsNotCurrent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ok, _ := VerifyCurrentGrant(first, "ledger", CurrentGrantProof{Leaf: old}, nil, logPub); ok {
+	if ok, _ := VerifyCurrentGrant(first, "ledger", CurrentGrantProof{Format: CurrentGrantFormat, Leaf: old}, nil, logPub); ok {
 		t.Fatal("a superseded grant verified as current from a proof of its (non-last) ledger leaf")
 	}
 }

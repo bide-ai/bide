@@ -42,7 +42,7 @@ func strictSeeds(tb testing.TB) [][]byte {
 	if err != nil {
 		tb.Fatal(err)
 	}
-	rc := RunCertificate{RunID: "run", Properties: []string{"a"}, UsedPolicies: []string{"p"}, STH: sth}
+	rc := RunCertificate{Format: RunCertificateFormat, RunID: "run", Properties: []string{"a"}, UsedPolicies: []string{"p"}, STH: sth}
 	var out [][]byte
 	for _, v := range []any{pb, ab, ev, sth, rc} {
 		b, err := json.Marshal(v)

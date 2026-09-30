@@ -213,6 +213,7 @@ func VerifyAbsence(root []byte, proof Absence) (bool, error) {
 // the proof plus the signed tree head committing the key set it is proven against. The STH
 // commits to the key set's kind, the run, and the journal tree the set was projected from.
 type AbsenceBundle struct {
+	Format  string         `json:"format"`  // AbsenceFormat
 	RunID   string         `json:"run_id"`  // the run whose key set the proof is against; must equal STH.RunID
 	Absence Absence        `json:"absence"` // the non-membership proof
 	STH     SignedTreeHead `json:"sth"`     // the signed commitment to the key set the proof is proven against
@@ -234,6 +235,9 @@ func (b AbsenceBundle) Verify(pub ed25519.PublicKey, set KeySet) (bool, error) {
 // VerifyWith is the scheme-agnostic form of Verify.
 func (b AbsenceBundle) VerifyWith(v Verifier, set KeySet) (bool, error) {
 	if err := set.check(); err != nil {
+		return false, err
+	}
+	if err := formatOf(b, b.Format); err != nil {
 		return false, err
 	}
 	if !b.STH.VerifyWith(v) {
@@ -273,5 +277,5 @@ func ProveAbsentBundle(records []agent.Record, set KeySet, key string, sth Signe
 	if err != nil {
 		return AbsenceBundle{}, err
 	}
-	return AbsenceBundle{RunID: sth.RunID, Absence: proof, STH: sth}, nil
+	return AbsenceBundle{Format: AbsenceFormat, RunID: sth.RunID, Absence: proof, STH: sth}, nil
 }

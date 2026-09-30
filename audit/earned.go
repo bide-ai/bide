@@ -164,6 +164,7 @@ func (e *EarnedAuthority) reissue(ctx context.Context) error {
 // of the head the verifier saw last, so a verifier that remembers its last-seen head cannot be
 // shown an older head as current.
 type CurrentGrantProof struct {
+	Format      string      `json:"format"`      // CurrentGrantFormat
 	Leaf        ProofBundle `json:"leaf"`        // the ledger's last leaf under the presented head
 	Consistency Consistency `json:"consistency"` // from the verifier's last-seen size to Leaf.STH.Size
 }
@@ -197,6 +198,7 @@ func ProveCurrentGrant(ctx context.Context, ledger agent.Durable, ledgerRunID st
 		return CurrentGrantProof{}, err
 	}
 	return CurrentGrantProof{
+		Format:      CurrentGrantFormat,
 		Leaf:        leaf,
 		Consistency: Consistency{First: lastSeenSize, Size: sth.Size, Path: consistencyProof(lastSeenSize, leaves)},
 	}, nil
@@ -225,6 +227,9 @@ func ProveCurrentGrant(ctx context.Context, ledger agent.Durable, ledgerRunID st
 // It does not check sg's chain to the root or its expiry; do that with
 // VerifyDelegationChain(..., EarnedRules) and Grant.Expired.
 func VerifyCurrentGrant(sg SignedGrant, ledgerRunID string, p CurrentGrantProof, lastSeen *SignedTreeHead, logPub ed25519.PublicKey) (bool, error) {
+	if err := formatOf(p, p.Format); err != nil {
+		return false, err
+	}
 	if p.Leaf.RunID != ledgerRunID {
 		return false, fmt.Errorf("audit: the proof is over run %q, not ledger %q", p.Leaf.RunID, ledgerRunID)
 	}

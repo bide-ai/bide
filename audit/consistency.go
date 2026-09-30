@@ -109,9 +109,9 @@ func verifyConsistency(m, n int, proof [][]byte, root1, root2 []byte) bool {
 // Consistency is an RFC 6962 consistency proof: the first First records are an append-only
 // prefix of the Size-record tree.
 type Consistency struct {
-	First int      // m — the earlier tree size
-	Size  int      // n — the current tree size
-	Path  [][]byte // proof hashes
+	First int      `json:"first"` // m: the earlier tree size
+	Size  int      `json:"size"`  // n: the current tree size
+	Path  [][]byte `json:"path"`  // proof hashes
 }
 
 // ProveConsistency proves that runID's first `first` records are an append-only prefix of

@@ -59,7 +59,7 @@ func TestVerifyAbsentCLI_RejectsCrossKindForgery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	forged := audit.AbsenceBundle{RunID: "r", STH: toolSTH, Absence: audit.Absence{Key: audit.PolicyUsedKeyFor("EVIL"), Size: 1,
+	forged := audit.AbsenceBundle{Format: audit.AbsenceFormat, RunID: "r", STH: toolSTH, Absence: audit.Absence{Key: audit.PolicyUsedKeyFor("EVIL"), Size: 1,
 		Right: &audit.Neighbor{Key: "tooluse:charge", Proof: audit.Inclusion{Index: 0, Size: 1}}}}
 	path := filepath.Join(dir, "forged.json")
 	writeJSON(t, path, forged)
@@ -89,7 +89,7 @@ func TestVerifyAbsentCLI_RejectsCrossKindForgery(t *testing.T) {
 func TestCLI_ShortPublicKeyExitsOne(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "bundle.json")
-	writeJSON(t, path, audit.ProofBundle{})
+	writeJSON(t, path, audit.ProofBundle{Format: audit.ProofFormat})
 	bin := buildCLI(t, dir)
 	code, out := exitCode(t, bin, "verify", "-bundle", path, "-pubkey", "ab")
 	if code != 1 || bytes.Contains([]byte(out), []byte("panic")) || !bytes.Contains([]byte(out), []byte("public key")) {
