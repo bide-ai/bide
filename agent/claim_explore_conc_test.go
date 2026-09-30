@@ -17,6 +17,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/bide-ai/bide/agent"
@@ -31,49 +32,199 @@ func cDrv(ctx context.Context) int {
 	return -1
 }
 
+// The scheduler runs one driver at a time. A driver runs until it parks: at a hook (a store call
+// or an effect call, the points the exploration interleaves), at a join of another driver's step
+// call in flight in its process (it would wait there for that call), or at the end of a call it
+// owned that another driver joined. Quiescence is exact: synctest.Wait returns once every other
+// goroutine of the bubble is durably blocked, so the driver let run has parked, finished, or
+// blocked inside the agent. No timers decide anything.
+//
+// A join is where the drivers would race without the scheduler: when a shared call returns, its
+// owner and its joiners all resume, and whichever runs first may start the next shared call,
+// which the others then join. The scheduler turns that race into a branch point (race[...]): one
+// of them runs first, until it parks, then the others in order. It costs no preemption, so it
+// covers both outcomes of every such race where the timing-based scheduler covered whichever
+// the machine's timing picked.
+
+// cPark kinds.
+const (
+	cAtHook  = iota // at a store or effect call: a candidate for the next decision
+	cAtStart        // started, not yet run
+	cAtJoin         // joined another driver's call in flight, and would wait for it to return
+	cAtEnd          // owned a call that others joined; it has just returned
+)
+
+type cPark struct {
+	ch       chan struct{}
+	what     string
+	kind     int
+	returned func() bool // cAtJoin: whether the joined call has returned
+	claimed  bool        // cAtJoin: queued by the end of the joined call
+	joiners  []int       // cAtEnd: the drivers that joined the call and are released after it
+}
+
 type cSched struct {
 	mu      sync.Mutex
-	waiting map[int]chan struct{}
-	what    map[int]string
+	parked  map[int]*cPark
 	active  map[int]bool // started and not done
+	running int          // the driver let run; the others are parked or done
+	queue   []int        // parked (not at a hook) drivers to let run, in order, before the next decision
 	last    int
 	preempt int
 	maxPre  int
 	ex      *hExplorer
 	on      bool
 	stuck   bool
+	races   int   // race branch points recorded
+	start   []int // the starters, while their start branch point is to be recorded
+	startC  int   // the starter run first
+	late    int   // joiners released after a call whose owner decoded nothing after it (an error)
 }
 
+// cCur is the scheduler the flight hooks park drivers for (see SetExploreFlightHooks).
+var cCur atomic.Pointer[cSched]
+
+// cFlightHooks installs the flight hooks for the test and removes them when it ends.
+func cFlightHooks(t *testing.T) {
+	restore := agent.SetExploreFlightHooks(
+		func(returned func() bool) {
+			if s := cCur.Load(); s != nil {
+				s.join(returned)
+			}
+		},
+		func() {
+			if s := cCur.Load(); s != nil {
+				s.decoded()
+			}
+		})
+	t.Cleanup(restore)
+}
+
+// park parks driver d (s.mu held; released) until the scheduler lets it run.
+func (s *cSched) park(d int, p *cPark) {
+	if _, dup := s.parked[d]; dup {
+		s.mu.Unlock()
+		panic(fmt.Sprintf("cSched: driver %d parks at %q while parked at %q", d, p.what, s.parked[d].what))
+	}
+	p.ch = make(chan struct{})
+	s.parked[d] = p
+	s.mu.Unlock()
+	<-p.ch
+}
+
+// yield is the hook at a store or effect call of the driver ctx names.
 func (s *cSched) yield(d int, what string) {
 	s.mu.Lock()
 	if !s.on || d < 0 || !s.active[d] {
 		s.mu.Unlock()
 		return
 	}
-	ch := make(chan struct{})
-	s.waiting[d] = ch
-	s.what[d] = what
-	s.mu.Unlock()
-	<-ch
+	if d != s.running {
+		s.mu.Unlock()
+		panic(fmt.Sprintf("cSched: driver %d reached %q while driver %d runs", d, what, s.running))
+	}
+	s.park(d, &cPark{what: what, kind: cAtHook})
 }
 
-func (s *cSched) point(n int) int {
-	return s.ex.choose("sched", 0, n)
+// join is the hook of the running driver joining a call in flight.
+func (s *cSched) join(returned func() bool) {
+	s.mu.Lock()
+	if !s.on || !s.active[s.running] {
+		s.mu.Unlock()
+		return
+	}
+	s.park(s.running, &cPark{what: "join", kind: cAtJoin, returned: returned})
 }
 
-// run drives the given drivers to completion under the scheduler.
+// decoded is the hook at a record decode by the running driver. Right after a call it owned
+// returns, the owner decodes its outcome: if drivers joined the call, the owner parks there, and
+// the scheduler decides who runs first.
+func (s *cSched) decoded() {
+	s.mu.Lock()
+	d := s.running
+	if !s.on || !s.active[d] {
+		s.mu.Unlock()
+		return
+	}
+	js := s.returnedJoiners()
+	if len(js) == 0 {
+		s.mu.Unlock()
+		return
+	}
+	for _, j := range js {
+		s.parked[j].claimed = true
+	}
+	s.park(d, &cPark{what: "flight-end", kind: cAtEnd, joiners: js})
+}
+
+// returnedJoiners are the drivers parked at a join whose call has returned and that no end has
+// queued yet, in order (s.mu held).
+func (s *cSched) returnedJoiners() []int {
+	var js []int
+	for j, p := range s.parked {
+		if p.kind == cAtJoin && !p.claimed && p.returned() {
+			js = append(js, j)
+		}
+	}
+	sort.Ints(js)
+	return js
+}
+
+// point records a scheduling decision among order (the drivers at a hook, the default first).
+// Its name spells the drivers and their pending calls, so the trace of a run is its schedule
+// signature (see cSigRecord).
+func (s *cSched) point(order []int, n int) int {
+	parts := make([]string, len(order))
+	for i, d := range order {
+		parts[i] = fmt.Sprintf("d%d:%s", d, s.parked[d].what)
+	}
+	return s.ex.choose("sched["+strings.Join(parts, ",")+"]", 0, n)
+}
+
+// release lets parked driver d run (s.mu held).
+func (s *cSched) release(d int) {
+	p := s.parked[d]
+	delete(s.parked, d)
+	s.running = d
+	close(p.ch)
+}
+
+// cStuckAfter is how long, on the bubble's fake clock, every active driver may stay blocked
+// outside the hooks before run reports a deadlock. It costs no real time.
+const cStuckAfter = 10 * time.Minute
+
+// run drives the given drivers to completion under the scheduler. It must run in a synctest
+// bubble. The drivers start one at a time, in order.
 func (s *cSched) run(drivers map[int]func()) {
 	var wg sync.WaitGroup
 	s.mu.Lock()
 	s.on = true
+	s.queue = s.queue[:0]
 	for d := range drivers {
 		s.active[d] = true
+		s.queue = append(s.queue, d)
 	}
+	sort.Ints(s.queue)
+	// The drivers start at once: which runs first matters when one joins a call another started
+	// (they raced to start it). The branch is recorded once they have all run to their first park,
+	// with alternatives only if a starter joined; the replayed choice is read ahead to pick the
+	// order.
+	s.start = append([]int(nil), s.queue...)
+	s.startC = s.ex.peek()
+	if s.startC >= len(s.start) {
+		s.startC = 0
+	}
+	s.queue = append([]int{s.start[s.startC]}, append(append([]int(nil), s.start[:s.startC]...), s.start[s.startC+1:]...)...)
+	s.running = -1
 	s.mu.Unlock()
+	cCur.Store(s)
+	defer cCur.Store(nil)
 	for d, f := range drivers {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			s.mu.Lock()
+			s.park(d, &cPark{what: "start", kind: cAtStart})
 			f()
 			s.mu.Lock()
 			delete(s.active, d)
@@ -82,41 +233,106 @@ func (s *cSched) run(drivers map[int]func()) {
 	}
 	allDone := make(chan struct{})
 	go func() { wg.Wait(); close(allDone) }()
+	var blockedSince time.Time
 	for {
-		// quiescence: every active driver waiting, or nothing changed for a while.
-		deadline := time.Now().Add(3 * time.Millisecond)
-		for {
-			s.mu.Lock()
-			na, nw := len(s.active), len(s.waiting)
+		synctest.Wait()
+		s.mu.Lock()
+		if len(s.active) == 0 {
+			s.on = false
 			s.mu.Unlock()
-			if na == 0 {
-				<-allDone
+			<-allDone
+			return
+		}
+		// Drivers queued to run before the next decision: the starters, and the drivers of a
+		// race, in the order the race branch chose.
+		if len(s.queue) > 0 {
+			d := s.queue[0]
+			s.queue = s.queue[1:]
+			if _, ok := s.parked[d]; ok {
+				s.release(d)
+			}
+			s.mu.Unlock()
+			blockedSince = time.Time{}
+			continue
+		}
+		if s.start != nil {
+			n := 1
+			if _, p := s.parkedAt(cAtJoin); p != nil || s.startC > 0 {
+				n = len(s.start)
+			}
+			parts := make([]string, len(s.start))
+			for i, d := range s.start {
+				parts[i] = fmt.Sprintf("d%d", d)
+			}
+			if n > 1 {
+				s.races++
+			}
+			s.ex.choose("race[start:"+strings.Join(parts, ",")+"]", 0, n)
+			s.start = nil
+			s.mu.Unlock()
+			continue
+		}
+		// The end of a joined call: its owner and its joiners race; branch on who runs first.
+		if e, p := s.parkedAt(cAtEnd); p != nil {
+			order := append([]int{e}, p.joiners...)
+			parts := make([]string, len(order))
+			for i, d := range order {
+				parts[i] = fmt.Sprintf("d%d", d)
+			}
+			c := s.ex.choose("race["+strings.Join(parts, ",")+"]", 0, len(order))
+			s.races++
+			s.queue = append(s.queue, order[c])
+			for i, d := range order {
+				if i != c {
+					s.queue = append(s.queue, d)
+				}
+			}
+			s.mu.Unlock()
+			continue
+		}
+		// A joined call that returned with no decode after it (it failed): its joiners run now,
+		// after the owner, as they would have woken while it went on.
+		if js := s.returnedJoiners(); len(js) > 0 {
+			for _, j := range js {
+				s.parked[j].claimed = true
+			}
+			s.late++
+			s.queue = append(s.queue, js...)
+			s.mu.Unlock()
+			continue
+		}
+		var ids []int
+		for d, p := range s.parked {
+			if p.kind == cAtHook {
+				ids = append(ids, d)
+			}
+		}
+		if len(ids) == 0 {
+			// Every active driver is blocked outside the hooks, or at a join of a call whose owner
+			// is. A driver on a timer wakes when the bubble's clock advances, which this sleep
+			// does at once (the clock is fake); a driver blocked for good is a deadlock, reported
+			// once the fake clock has moved on by cStuckAfter with no driver at a hook.
+			s.mu.Unlock()
+			if blockedSince.IsZero() {
+				blockedSince = time.Now()
+			}
+			if time.Since(blockedSince) > cStuckAfter {
 				s.mu.Lock()
+				s.stuck = true
 				s.on = false
 				s.mu.Unlock()
 				return
 			}
-			if nw == na || (nw > 0 && time.Now().After(deadline)) {
-				break
-			}
-			if nw == 0 && time.Now().After(deadline.Add(2*time.Second)) {
-				s.mu.Lock()
-				s.stuck = true
-				s.mu.Unlock()
-				<-allDone
-				return
-			}
-			time.Sleep(20 * time.Microsecond)
+			time.Sleep(time.Second)
+			continue
 		}
-		s.mu.Lock()
-		var ids []int
-		for d := range s.waiting {
-			ids = append(ids, d)
-		}
+		blockedSince = time.Time{}
 		sort.Ints(ids)
 		// default: keep running the last driver; alternatives are preemptions.
+		_, lastAt := s.parked[s.last]
+		lastAt = lastAt && s.parked[s.last].kind == cAtHook
 		order := ids
-		if _, ok := s.waiting[s.last]; ok {
+		if lastAt {
 			order = []int{s.last}
 			for _, d := range ids {
 				if d != s.last {
@@ -125,20 +341,29 @@ func (s *cSched) run(drivers map[int]func()) {
 			}
 		}
 		n := len(order)
-		if _, ok := s.waiting[s.last]; ok && s.preempt >= s.maxPre {
+		if lastAt && s.preempt >= s.maxPre {
 			n = 1
 		}
-		c := s.point(n)
+		c := s.point(order, n)
 		d := order[c]
 		if c > 0 {
 			s.preempt++
 		}
 		s.last = d
-		ch := s.waiting[d]
-		delete(s.waiting, d)
+		s.release(d)
 		s.mu.Unlock()
-		close(ch)
 	}
+}
+
+// parkedAt returns the lowest driver parked with the given kind, and its park (s.mu held).
+func (s *cSched) parkedAt(kind int) (int, *cPark) {
+	best, bp := -1, (*cPark)(nil)
+	for d, p := range s.parked {
+		if p.kind == kind && (bp == nil || d < best) {
+			best, bp = d, p
+		}
+	}
+	return best, bp
 }
 
 type cProc struct {
@@ -346,10 +571,38 @@ func cSubjects() []cSubject {
 
 var cRunSeq int
 
+// cSigRecord appends the signature of the schedule ex just ran (its trace: every scheduling
+// decision with the waiting drivers, and every fault choice) to the file BIDE_EXPLORE_SIGS names,
+// one line per schedule prefixed by cfg, so two versions of the harness can be compared for
+// coverage. It does nothing when BIDE_EXPLORE_SIGS is unset.
+func cSigRecord(t *testing.T, cfg string, ex *hExplorer) {
+	path := os.Getenv("BIDE_EXPLORE_SIGS")
+	if path == "" {
+		return
+	}
+	var b strings.Builder
+	b.WriteString(t.Name() + "/" + cfg + "\t")
+	for i, p := range ex.trace {
+		if i > 0 {
+			b.WriteString(" ")
+		}
+		fmt.Fprintf(&b, "%s@%d=%d/%d", p.name, p.drive, p.choice, p.n)
+	}
+	b.WriteString("\n")
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if _, err := f.WriteString(b.String()); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // cRun: topo 0 = both phase-1 drivers in one process, 1 = two processes. p2 0 = phase 2 in
 // driver 1's process (if alive), 1 = a new process.
 func cRun(sub cSubject, topo, p2 int, ex *hExplorer, maxPre int) (viol []hViolation, h *cHarness) {
-	sc := &cSched{waiting: map[int]chan struct{}{}, what: map[int]string{}, active: map[int]bool{}, ex: ex, maxPre: maxPre, last: 1}
+	sc := &cSched{parked: map[int]*cPark{}, active: map[int]bool{}, ex: ex, maxPre: maxPre, last: 1}
 	h = &cHarness{mem: agent.NewMemStore(), ex: ex, sc: sc, faults: map[int]int{}, cancels: map[int]context.CancelFunc{},
 		lastWon: map[int][2]string{}, acked: map[string]string{}, nsFailed: map[string]bool{}, result: sub.result}
 	cRunSeq++
@@ -487,51 +740,56 @@ func cRun(sub cSubject, topo, p2 int, ex *hExplorer, maxPre int) (viol []hViolat
 // drivers run concurrently, one in the driver after them); set BIDE_EXPLORE=1 for the full
 // exploration (two preemptions, one fault per concurrent driver, two after; minutes).
 func TestExploreClaimProtocolConcurrent(t *testing.T) {
-	maxPre := 1
-	if exploreFull() {
-		maxPre = 2
-	}
-	total := 0
-	only := os.Getenv("BIDE_SUBJECT")
-	for _, sub := range cSubjects() {
-		if only != "" && only != sub.name {
-			continue
+	// The scheduler needs a synctest bubble: synctest.Wait is its quiescence detector.
+	synctest.Test(t, func(t *testing.T) {
+		cFlightHooks(t)
+		maxPre := 1
+		if exploreFull() {
+			maxPre = 2
 		}
-		for topo := 0; topo < 2; topo++ {
-			for p2 := 0; p2 < 2; p2++ {
-				ex := &hExplorer{}
-				n := 0
-				counts := map[string]int{}
-				examples := map[string]string{}
-				for {
-					viol, h := cRun(sub, topo, p2, ex, maxPre)
-					n++
-					for _, v := range viol {
-						counts[v.kind]++
-						if _, ok := examples[v.kind]; !ok {
-							examples[v.kind] = v.detail + "\n      " + strings.Join(h.log, "\n      ")
+		total := 0
+		only := os.Getenv("BIDE_SUBJECT")
+		for _, sub := range cSubjects() {
+			if only != "" && only != sub.name {
+				continue
+			}
+			for topo := 0; topo < 2; topo++ {
+				for p2 := 0; p2 < 2; p2++ {
+					ex := &hExplorer{}
+					n := 0
+					counts := map[string]int{}
+					examples := map[string]string{}
+					for {
+						viol, h := cRun(sub, topo, p2, ex, maxPre)
+						cSigRecord(t, fmt.Sprintf("%s/%d/%d", sub.name, topo, p2), ex)
+						n++
+						for _, v := range viol {
+							counts[v.kind]++
+							if _, ok := examples[v.kind]; !ok {
+								examples[v.kind] = v.detail + "\n      " + strings.Join(h.log, "\n      ")
+							}
+						}
+						if !ex.next() {
+							break
 						}
 					}
-					if !ex.next() {
-						break
+					total += n
+					t.Logf("%s topo=%s phase2=%s: %d schedules", sub.name, []string{"one-process", "two-processes"}[topo], []string{"driver1-process", "new-process"}[p2], n)
+					keys := make([]string, 0, len(counts))
+					for k := range counts {
+						keys = append(keys, k)
 					}
-				}
-				total += n
-				t.Logf("%s topo=%s phase2=%s: %d schedules", sub.name, []string{"one-process", "two-processes"}[topo], []string{"driver1-process", "new-process"}[p2], n)
-				keys := make([]string, 0, len(counts))
-				for k := range counts {
-					keys = append(keys, k)
-				}
-				sort.Strings(keys)
-				for _, k := range keys {
-					if allowedViolation(k) {
-						t.Logf("   %s (allowed): %d", k, counts[k])
-						continue
+					sort.Strings(keys)
+					for _, k := range keys {
+						if allowedViolation(k) {
+							t.Logf("   %s (allowed): %d", k, counts[k])
+							continue
+						}
+						t.Errorf("   %s: %d   e.g. %s", k, counts[k], examples[k])
 					}
-					t.Errorf("   %s: %d   e.g. %s", k, counts[k], examples[k])
 				}
 			}
 		}
-	}
-	t.Logf("TOTAL concurrent schedules explored: %d", total)
+		t.Logf("TOTAL concurrent schedules explored: %d", total)
+	})
 }
