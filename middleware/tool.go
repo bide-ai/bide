@@ -20,6 +20,9 @@ import (
 //
 // Default backoff: base=200ms, max=10s. Override with WithBackoff.
 //
+// n must be at least 0 (0 runs the tool once). With n < 0 every call fails with an error wrapping
+// agent.ErrConfig without running the tool, whatever its safety.
+//
 //	a := agent.New(model, store, tools...).UseTool(middleware.ToolRetry(3))
 func ToolRetry(n int, opts ...RetryOption) agent.ToolMiddleware {
 	cfg := retryConfig{base: defaultBackoffBase, max: defaultBackoffMax}
@@ -29,6 +32,9 @@ func ToolRetry(n int, opts ...RetryOption) agent.ToolMiddleware {
 
 	return func(next agent.ToolHandler) agent.ToolHandler {
 		return func(ctx context.Context, tu agent.ToolUse) (json.RawMessage, error) {
+			if err := checkRetryCount("ToolRetry", n); err != nil {
+				return nil, err
+			}
 			if s, ok := agent.ToolSafety(ctx); !ok || !s.RetrySafe() {
 				return next(ctx, tu)
 			}

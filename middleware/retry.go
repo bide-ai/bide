@@ -3,6 +3,7 @@ package middleware
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math/rand/v2"
 	"time"
 
@@ -91,6 +92,16 @@ func Retryable(err error) bool {
 	return true
 }
 
+// checkRetryCount refuses a negative retry count. The middleware constructors return no error, so
+// the handler returns it on every call, before calling anything: a loop of n+1 attempts would
+// otherwise run no attempt at all and return an empty success.
+func checkRetryCount(name string, n int) error {
+	if n < 0 {
+		return fmt.Errorf("middleware.%s: retry count %d is negative; want 0 or more: %w", name, n, agent.ErrConfig)
+	}
+	return nil
+}
+
 // attempt runs fn under a per-attempt timeout if configured, returning its error.
 func (cfg retryConfig) run(ctx context.Context, fn func(context.Context) error) error {
 	if cfg.timeout <= 0 {
@@ -108,6 +119,9 @@ func (cfg retryConfig) run(ctx context.Context, fn func(context.Context) error) 
 //
 // Default backoff: base=200ms, max=10s. Override with WithBackoff.
 //
+// n must be at least 0 (0 calls the model once). With n < 0 every call fails with an error
+// wrapping agent.ErrConfig without calling the model (see checkRetryCount).
+//
 // Streaming: a streaming caller (Agent.Stream) sees each attempt's deltas live. When an attempt
 // that streamed deltas fails and Retry calls the model again, the stream emits
 // agent.TurnRestarted before the next attempt's deltas, so the caller can discard the failed
@@ -120,6 +134,9 @@ func Retry(n int, opts ...RetryOption) agent.Middleware {
 
 	return func(next agent.ModelHandler) agent.ModelHandler {
 		return func(ctx context.Context, req agent.Request) (agent.Message, agent.Usage, error) {
+			if err := checkRetryCount("Retry", n); err != nil {
+				return agent.Message{}, agent.Usage{}, err
+			}
 			var (
 				msg agent.Message
 				u   agent.Usage
