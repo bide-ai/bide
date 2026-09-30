@@ -33,11 +33,25 @@
 // transaction changed after the statement began waits for that transaction and then acts on the
 // row's latest version. At repeatable read or serializable, Postgres fails the statement with a
 // serialization failure (40001) instead, and at serializable it may fail a read that conflicts
-// with concurrent serializable writes the same way. The store then runs the statement again, with
-// a new snapshot that sees the other transaction's commit, which is the outcome read committed
-// reaches in one attempt. A statement that fails that way has changed nothing, so running it again
-// is safe, and each retry follows another transaction's commit, so the retries end. The schema migration in Open
-// is the one transaction of several statements; it sets read committed itself (see txOptions).
+// with concurrent serializable writes the same way. A statement that fails that way has changed
+// nothing, so the store runs it again, with a new snapshot; once the conflicting transaction has
+// committed, that is the outcome read committed reaches in one attempt. The schema migration in
+// Open is the one transaction of several statements; it sets read committed itself (see
+// txOptions).
+//
+// # Retries and deadlines
+//
+// A statement is run again after a serialization failure or a deadlock, and an insert also after
+// losing its position to another insert. A retry does not always follow another transaction's
+// commit: at serializable, Postgres may fail a statement for a conflict with a transaction that
+// has not committed yet, and that transaction may itself abort. Under heavy contention on one run
+// (many writers inserting into it at once) an insert may lose its position several times. So the
+// store spaces the attempts with a capped, jittered exponential backoff (from 1ms up to 100ms, a
+// random fraction of it each time, so contending writers do not retry in lockstep), and keeps
+// retrying until the statement succeeds, fails for another reason, or ctx is done: a bound on the
+// attempts would turn contention into errors. A caller that needs a bound on the time a call may
+// take sets a deadline on ctx; when ctx ends, the call returns an error that wraps both ctx's error
+// and the last attempt's.
 //
 // The migration also sets idle_in_transaction_session_timeout for its own transaction, so a node
 // stopped inside it cannot hold the migration lock. The store sets no session-wide timeout: no
@@ -52,6 +66,7 @@ import (
 	"errors"
 	"fmt"
 	"iter"
+	"math/rand/v2"
 	"regexp"
 	"strings"
 	"sync"
@@ -353,6 +368,7 @@ func (s *Store) Insert(ctx context.Context, runID, name string, data []byte) (ag
 }
 
 func (s *Store) insert(ctx context.Context, runID, name string, data []byte) (agent.Entry, bool, error) {
+	var b backoff
 	for {
 		var seq int64
 		err := s.db.QueryRowContext(ctx, string(s.t.insert), runID, name, data).Scan(&seq)
@@ -367,10 +383,13 @@ func (s *Store) insert(ctx context.Context, runID, name string, data []byte) (ag
 				return agent.Entry{}, false, fmt.Errorf("the insert conflicted, then reading the stored entry failed: %w", err)
 			}
 			return e, false, nil
-		case (retryable(err) || sqlState(err) == uniqueViolation) && ctx.Err() == nil:
+		case retryable(err) || sqlState(err) == uniqueViolation:
 			// Nothing was written. A unique violation can only be on (run_id, seq), since a
 			// conflict on the name does nothing: another insert took the position after this
 			// one's snapshot, and has committed.
+			if werr := b.wait(ctx); werr != nil {
+				return agent.Entry{}, false, fmt.Errorf("%w (the last attempt failed: %w)", werr, err)
+			}
 		default:
 			return agent.Entry{}, false, err
 		}
@@ -555,15 +574,56 @@ func (s *Store) write(ctx context.Context, query writeSQL, args ...any) (int64, 
 	})
 }
 
-// retry runs fn, which sends one statement, again for as long as it fails with an error retryable
-// accepts and ctx is live. At serializable, Postgres may fail even a lone SELECT with a
-// serialization failure when it conflicts with concurrent serializable writes, so reads retry too.
+// retry runs fn, which sends one statement, again after a backoff for as long as it fails with an
+// error retryable accepts, until ctx is done (see the package documentation). At serializable,
+// Postgres may fail even a lone SELECT with a serialization failure when it conflicts with
+// concurrent serializable writes, so reads retry too.
 func retry[T any](ctx context.Context, fn func() (T, error)) (T, error) {
+	var b backoff
 	for {
 		v, err := fn()
-		if err == nil || !retryable(err) || ctx.Err() != nil {
+		if err == nil || !retryable(err) {
 			return v, err
 		}
+		if werr := b.wait(ctx); werr != nil {
+			return v, fmt.Errorf("%w (the last attempt failed: %w)", werr, err)
+		}
+	}
+}
+
+// The backoff between attempts of one statement: before attempt n+1 it waits a random duration
+// in [0, min(backoffCap, backoffBase<<(n-1))), so the first retry waits under 1ms and the wait
+// doubles up to the cap.
+const (
+	backoffBase = time.Millisecond
+	backoffCap  = 100 * time.Millisecond
+)
+
+// backoff counts the failed attempts of one statement and spaces the next.
+type backoff struct{ failed int }
+
+// ceiling returns the upper bound of the wait after the failed-th failure.
+func (b *backoff) ceiling() time.Duration {
+	if b.failed >= 8 { // backoffBase<<7 already exceeds the cap
+		return backoffCap
+	}
+	return min(backoffCap, backoffBase<<(b.failed-1))
+}
+
+// wait records a failed attempt and waits before the next one, or returns ctx's error as soon as
+// ctx is done.
+func (b *backoff) wait(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	b.failed++
+	t := time.NewTimer(rand.N(b.ceiling()))
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
 	}
 }
 
@@ -575,9 +635,10 @@ const (
 )
 
 // retryable reports whether err is a failure after which a single statement, run as its own
-// transaction, has changed nothing and may be run again: a serialization failure, which another
-// transaction's commit caused, or a deadlock (which one-row statements do not form, but which
-// Postgres resolves by failing a statement that then changed nothing).
+// transaction, has changed nothing and may be run again: a serialization failure, which a
+// conflict with another transaction caused (one that has committed, or at serializable one that
+// may not have yet), or a deadlock (which one-row statements do not form, but which Postgres
+// resolves by failing a statement that then changed nothing).
 func retryable(err error) bool {
 	switch sqlState(err) {
 	case serializationFailure, deadlockDetected:

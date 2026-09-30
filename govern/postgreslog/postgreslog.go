@@ -13,6 +13,15 @@
 // serialization failure (40001), which repeatable read or serializable reports where read
 // committed would act on the latest row, changed nothing and is run again. The schema migration is
 // the one transaction of several statements; it sets read committed itself (see txOptions).
+//
+// A retry does not always follow another transaction's commit: at serializable, Postgres may fail
+// a statement for a conflict with a transaction that has not committed yet, and many processes
+// appending to one entity may each lose their position several times. So the log spaces the
+// attempts with a capped, jittered exponential backoff (from 1ms up to 100ms, a random fraction of
+// it each time) and keeps retrying until the statement succeeds, fails for another reason, or ctx
+// is done: a bound on the attempts would turn contention into errors. A caller that needs a bound
+// on the time an append may take sets a deadline on ctx; when ctx ends, the call returns an error
+// that wraps both ctx's error and the last attempt's.
 package postgreslog
 
 import (
@@ -20,6 +29,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"time"
 
 	"github.com/bide-ai/bide/agent"
@@ -155,6 +165,7 @@ func (l *Log) Append(ctx context.Context, entity, id, event string) (int64, erro
 	if id == "" {
 		return 0, fmt.Errorf("postgreslog: empty append id: %w", agent.ErrConfig)
 	}
+	var b backoff
 	for {
 		var seq int64
 		err := l.db.QueryRowContext(ctx, `INSERT INTO governed_events (entity, seq, event, append_id)
@@ -176,10 +187,13 @@ func (l *Log) Append(ctx context.Context, entity, id, event string) (int64, erro
 				return 0, fmt.Errorf("postgreslog: append id %q holds event %q, not %q: %w", id, recorded, event, agent.ErrConfig)
 			}
 			return seq, nil
-		case (retryable(err) || sqlState(err) == uniqueViolation) && ctx.Err() == nil:
+		case retryable(err) || sqlState(err) == uniqueViolation:
 			// Nothing was written. A unique violation can only be on (entity, seq), since a
 			// conflict on the id does nothing: another append took the position after this one's
 			// snapshot, and has committed.
+			if werr := b.wait(ctx); werr != nil {
+				return 0, fmt.Errorf("%w (the last attempt failed: %w)", werr, err)
+			}
 		default:
 			return 0, err
 		}
@@ -194,8 +208,9 @@ const (
 )
 
 // retryable reports whether err is a failure after which a single statement, run as its own
-// transaction, has changed nothing and may be run again: a serialization failure, which another
-// transaction's commit caused, or a deadlock, which Postgres resolves by failing a statement.
+// transaction, has changed nothing and may be run again: a serialization failure, which a
+// conflict with another transaction caused (one that has committed, or at serializable one that
+// may not have yet), or a deadlock, which Postgres resolves by failing a statement.
 func retryable(err error) bool {
 	switch sqlState(err) {
 	case serializationFailure, deadlockDetected:
@@ -213,15 +228,56 @@ func sqlState(err error) string {
 	return ""
 }
 
-// retry runs fn, which sends one statement, again for as long as it fails with an error retryable
-// accepts and ctx is live. At serializable, Postgres may fail even a lone SELECT with a
-// serialization failure when it conflicts with concurrent serializable writes.
+// retry runs fn, which sends one statement, again after a backoff for as long as it fails with an
+// error retryable accepts, until ctx is done (see the package documentation). At serializable,
+// Postgres may fail even a lone SELECT with a serialization failure when it conflicts with
+// concurrent serializable writes.
 func retry(ctx context.Context, fn func() error) error {
+	var b backoff
 	for {
 		err := fn()
-		if err == nil || !retryable(err) || ctx.Err() != nil {
+		if err == nil || !retryable(err) {
 			return err
 		}
+		if werr := b.wait(ctx); werr != nil {
+			return fmt.Errorf("%w (the last attempt failed: %w)", werr, err)
+		}
+	}
+}
+
+// The backoff between attempts of one statement: before attempt n+1 it waits a random duration
+// in [0, min(backoffCap, backoffBase<<(n-1))), so the first retry waits under 1ms and the wait
+// doubles up to the cap.
+const (
+	backoffBase = time.Millisecond
+	backoffCap  = 100 * time.Millisecond
+)
+
+// backoff counts the failed attempts of one statement and spaces the next.
+type backoff struct{ failed int }
+
+// ceiling returns the upper bound of the wait after the failed-th failure.
+func (b *backoff) ceiling() time.Duration {
+	if b.failed >= 8 { // backoffBase<<7 already exceeds the cap
+		return backoffCap
+	}
+	return min(backoffCap, backoffBase<<(b.failed-1))
+}
+
+// wait records a failed attempt and waits before the next one, or returns ctx's error as soon as
+// ctx is done.
+func (b *backoff) wait(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	b.failed++
+	t := time.NewTimer(rand.N(b.ceiling()))
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
 	}
 }
 
