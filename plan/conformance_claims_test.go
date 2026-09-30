@@ -9,9 +9,9 @@ import (
 )
 
 // A claim's bookkeeping (a not-started record, written when a node's claim failed before its body
-// ran, and a claim-held record, written when the claim was then taken back) says nothing about the
-// flow's topology: Conform does not report it as a step, or as an attempt for an undeclared one.
-func TestConformIgnoresClaimBookkeeping(t *testing.T) {
+// ran) says nothing about the flow's topology: Conform does not report it as a step, or as an
+// attempt for an undeclared one.
+func TestConformIgnoresNotStartedRecords(t *testing.T) {
 	b := New[int, int]("conform-claims")
 	b.Step("entry", func(_ context.Context, n int) (int, error) { return n + 1, nil })
 	flow, err := b.Build()
@@ -25,7 +25,6 @@ func TestConformIgnoresClaimBookkeeping(t *testing.T) {
 	}
 	for name, kind := range map[string]agent.StepKind{
 		"attempt:not-started:0123abcd:attempt:entry": agent.StepNotStarted,
-		"attempt:not-started:4567ef01:attempt:entry": agent.StepClaimHeld,
 	} {
 		rec := journalhook.WithClaim(agent.Record{Kind: kind}, name[len("attempt:not-started:"):len("attempt:not-started:")+8]).(agent.Record)
 		if _, err := mem.Do(ctx, "r", name, func(context.Context) (agent.Record, error) { return rec, nil }); err != nil {

@@ -132,6 +132,10 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 	// A call's attempt markers count unless recorded as never started (see attempt.go).
 	for _, r := range liveAttempts(recs) {
 		if isToolAttempt(r) { // a Step's marker is not a call's
+			// An attempt this process claimed and could not record as not started: record it now.
+			if j := journalOf(a.store); j != nil && !done[r.ToolUseID] && j.retryNotStarted(ctx, runID, r.Name, r) {
+				continue
+			}
 			attempted[r.ToolUseID] = true
 			attemptedAtMs[r.ToolUseID] = r.AttemptedAt
 		}

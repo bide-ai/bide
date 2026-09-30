@@ -315,8 +315,8 @@ func (c *commitThenFail) Insert(ctx context.Context, runID, name string, data []
 // A claim whose insert failed but committed does not halt a re-drive over an effect that never
 // ran: the claimant records that its attempt did not start, so the next claim re-attempts it, in
 // this process or another, and the effect runs exactly once. When that record cannot be written
-// either, a re-drive in the same process through the same store takes the claim back; two
-// re-drives racing never both run the effect.
+// either (or is written and reported failed), a re-drive in the same process through the same
+// store writes it again and re-attempts; two re-drives racing never both run the effect.
 func ambiguousClaim(t *testing.T, s agent.Store) {
 	ctx := context.Background()
 	const marker = "attempt:step:pay"
@@ -355,7 +355,7 @@ func ambiguousClaim(t *testing.T, s agent.Store) {
 	redrive(t, id, &commitThenFail{Store: s}, 2)
 
 	// The not-started record cannot be written either: a re-drive in the same process, through
-	// the same store, takes the claim back.
+	// the same store, writes it again and re-attempts the effect.
 	fired.Store(0)
 	id = runID(t)
 	w = &commitThenFail{Store: s, fail: marker, refuse: "attempt:not-started:"}
@@ -364,31 +364,10 @@ func ambiguousClaim(t *testing.T, s agent.Store) {
 	}
 	w.refuse = ""
 	redrive(t, id, w, 2)
-	// The claim taken back pinned its not-started key with a claim-held record, a kind of its own
-	// that no reader takes for a value or for a not-started record.
-	held := 0
-	for e, err := range s.Load(ctx, id, -1) {
-		if err != nil {
-			t.Fatal(err)
-		}
-		if strings.HasPrefix(e.Name, "attempt:not-started:") {
-			var r struct {
-				Kind agent.StepKind `json:"kind"`
-			}
-			if err := json.Unmarshal(e.Data, &r); err != nil || r.Kind != agent.StepClaimHeld {
-				t.Fatalf("the record under %s is of kind %q (%v), want %q", e.Name, r.Kind, err, agent.StepClaimHeld)
-			}
-			held++
-		}
-	}
-	if held != 1 {
-		t.Fatalf("the run holds %d records under attempt:not-started:, want the one claim-held record", held)
-	}
-
-	// The not-started record commits and then reports an error too. The claim id is remembered,
-	// but the marker is voided: a re-drive in the same process must not run the effect under it
-	// (a later loss of its result would then be re-attempted by the next driver, and fire the
-	// effect again), and re-attempts it under the next marker instead.
+	// The not-started record commits and then reports an error too. The marker is voided: a
+	// re-drive in the same process must not run the effect under it (a later loss of its result
+	// would then be re-attempted by the next driver, and fire the effect again), and re-attempts it
+	// under the next marker instead.
 	fired.Store(0)
 	id = runID(t)
 	w = &commitThenFail{Store: s, fail: marker, lose: "attempt:not-started:"}

@@ -1,7 +1,8 @@
 package agent_test
 
-// Deterministic reproductions for the review of the claim protocol (claim-held pin, pending-claim
-// reuse). Each test states the property it expects; a failing test is a finding.
+// Deterministic reproductions of the claim-protocol review's findings against an earlier design
+// (a claim-held pin on a reused claim id), kept as regressions: each test states the liveness or
+// safety property it expects of the current design, where every claim takes a fresh id.
 
 import (
 	"context"
@@ -226,5 +227,34 @@ func TestPostClaimNotStartedFailureNotRemembered(t *testing.T) {
 	var halt *agent.ResumeHalt
 	if fired == 0 && errors.As(err2, &halt) {
 		t.Fatalf("the process knows its claim never started, yet halts on it")
+	}
+}
+
+// A process that remembers its own claim of a call must not record another driver's attempt as
+// not started. Process A's claim of the call fails outright (its marker and its not-started record
+// are both lost), so A remembers its id. Process B then claims the call, runs it, and loses its
+// result. When A resumes, the live marker is B's, not A's: A halts rather than void B's attempt
+// and run the call a second time.
+func TestRememberedClaimDoesNotVoidAnotherDriversAttempt(t *testing.T) {
+	ctx := context.Background()
+	m := agent.NewMemStore()
+	fired := 0
+	charge := agent.Func("charge", "", agent.Safety{}, func(context.Context, struct{}) (string, error) { fired++; return "ok", nil })
+	model := func() agent.Model {
+		return agent.NewScriptedModel(agent.ToolTurn("c1", "charge", `{}`), agent.TextTurn("done"))
+	}
+	a := &r3Store{m: m, faults: []r3Fault{{"attempt:tool:c1", "nc"}, {"attempt:not-started:", "nc"}}}
+	ja, _ := agent.NewJournal(a)
+	_, errA1 := agent.New(model(), ja, charge).SetMaxConcurrency(1).Run(ctx, "r", "hi")
+
+	b := &r3Store{m: m, faults: []r3Fault{{"tool:c1", "nc"}}} // B fires, then loses its result
+	jb, _ := agent.NewJournal(b)
+	_, errB := agent.New(model(), jb, charge).SetMaxConcurrency(1).Run(ctx, "r", "hi")
+
+	_, errA2 := agent.New(model(), ja, charge).SetMaxConcurrency(1).Run(ctx, "r", "hi")
+	t.Logf("A: %v\nB: %v (fired %d)\nA again: %v", errA1, errB, fired, errA2)
+	var halt *agent.ResumeHalt
+	if fired != 1 || !errors.As(errA2, &halt) {
+		t.Fatalf("A's resume = %v with the call fired %d times; want a halt and once", errA2, fired)
 	}
 }

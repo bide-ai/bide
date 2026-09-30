@@ -637,41 +637,40 @@ func newClaimID() string {
 	return hex.EncodeToString(b[:])
 }
 
-// claim inserts rec as the attempt marker key, stamped with a claim id, and reports whether this
-// caller won it: whether the marker the journal holds carries that id. One Insert decides it.
+// claim inserts rec as the attempt marker key, stamped with a fresh claim id, and reports whether
+// this caller won it: whether the marker the journal holds carries that id. One Insert decides it.
 //
-// The invariant every claim keeps: an effect runs only under a marker that is not, and can never
-// become, voided, that is, whose not-started key (notStartedStep(key, id)) does not hold a
-// not-started record and never will. Only the holder of a claim id writes under its not-started
-// key, and a fresh id's key is empty, so a claim won with a fresh id keeps it.
+// The invariant every claim keeps: every won claim has a fresh id, so its not-started key
+// (notStartedStep(key, id)) is empty, and nothing but its own holder can void the attempt; an
+// effect runs only under a marker no not-started record voids.
 //
 // If the marker's Insert fails, it may still have committed (a connection lost after the commit, a
 // timeout). The effect was not called either way, so the claim records that its attempt did not
 // start (see notStarted), and the next claim of the effect re-attempts it instead of halting over
-// an effect that never ran. If that record's Insert fails too, it may also have committed; the
-// claim id is then remembered, and the next claim of the same key in this process takes it back,
-// recognizing a marker that did commit as its own. A remembered id is taken by one claimant only,
-// so two claimants never both win. Before a reused id's win counts, its not-started key is pinned
-// with a claim-held record (holdClaim, StepClaimHeld): if a not-started record got there first, the marker is
-// voided and the claim is lost, and the next attempt is claimed instead.
+// an effect that never ran. If that record cannot be written (it may have committed too), the
+// claim id is remembered, and the next claim of the same key in this process writes it again
+// before it claims with a fresh id of its own: the marker it may have left is then void, and the
+// fresh claim loses to it and moves to the next attempt (see claimNext). A single-key claim
+// (ClaimAttempt) halts instead, which is safe.
 func (j *Journal) claim(ctx context.Context, runID, key string, rec Record) (bool, Record, error) {
 	if err := j.ensureHeader(ctx, runID); err != nil {
 		return false, Record{}, err
 	}
-	ck := flightKey{j.id, runID, key}
-	id, reused := pendingClaims.take(ck)
-	if !reused {
-		id = newClaimID()
+	if old, ok := pendingClaims.take(flightKey{j.id, runID, key}); ok {
+		m := rec
+		m.claim = old
+		if err := j.notStarted(ctx, runID, key, m); err != nil {
+			return false, Record{}, fmt.Errorf("claim %s: %w", key, err)
+		}
 	}
+	id := newClaimID()
 	rec.claim = id
 	b, err := j.insert(ctx, runID, key, rec)
 	if err != nil {
 		// The marker may have committed all the same. This driver knows it never called the
 		// effect, so it records that under its own claim: whoever claims next, in any process,
-		// re-attempts instead of halting. If even that cannot be written, the claim id is
-		// remembered for the next claim in this process.
+		// re-attempts instead of halting.
 		if nerr := j.notStarted(ctx, runID, key, rec); nerr != nil {
-			pendingClaims.remember(ck, id)
 			return false, Record{}, fmt.Errorf("claim %s: %w (%w)", key, err, nerr)
 		}
 		return false, Record{}, fmt.Errorf("claim %s: %w", key, err)
@@ -680,38 +679,24 @@ func (j *Journal) claim(ctx context.Context, runID, key string, rec Record) (boo
 	if err != nil {
 		return false, Record{}, err
 	}
-	if got.claim != id {
-		return false, got, nil
-	}
-	if reused {
-		held, err := j.holdClaim(ctx, runID, key, rec)
-		if err != nil {
-			pendingClaims.remember(ck, id)
-			return false, Record{}, fmt.Errorf("claim %s: %w", key, err)
-		}
-		if !held {
-			return false, got, nil // voided by this claim's own earlier not-started record
-		}
-	}
-	return true, got, nil
+	return got.claim == id, got, nil
 }
 
-// holdClaim pins the not-started key of the marker key, claimed under rec's claim id, with a
-// claim-held record (StepClaimHeld), so no not-started record can void the marker later, and
-// reports whether it holds the key: false when a not-started record is there already. voided and
-// liveAttempts void an attempt only by a StepNotStarted record, never by a claim-held one.
-func (j *Journal) holdClaim(ctx context.Context, runID, key string, rec Record) (bool, error) {
-	name := notStartedStep(key, rec.claim)
-	b, err := j.insert(context.WithoutCancel(ctx), runID, name,
-		Record{Kind: StepClaimHeld, ToolUseID: rec.ToolUseID, claim: rec.claim})
-	if err != nil {
-		return false, fmt.Errorf("hold the claim on %s: %w", key, err)
+// retryNotStarted writes again the not-started record of the attempt with marker key key, whose
+// marker is marker, when this process holds that attempt's claim id as remembered (its earlier
+// not-started write failed), and reports whether the attempt is now recorded as not started. A
+// resume uses it before it halts on the attempt.
+func (j *Journal) retryNotStarted(ctx context.Context, runID, key string, marker Record) bool {
+	ck := flightKey{j.id, runID, key}
+	old, ok := pendingClaims.take(ck)
+	if !ok {
+		return false
 	}
-	h, err := decodeStored(runID, name, b)
-	if err != nil {
-		return false, err
+	if old != marker.claim || marker.claim == "" {
+		pendingClaims.remember(ck, old)
+		return false
 	}
-	return h.Kind != StepNotStarted, nil
+	return j.notStarted(ctx, runID, key, marker) == nil
 }
 
 // claimNext claims the next attempt of the effect whose first marker key is base (see
@@ -757,11 +742,14 @@ func (j *Journal) liveAttempt(ctx context.Context, runID, base string) (Record, 
 }
 
 // notStarted records that the attempt with marker key key, which this driver claimed with marker,
-// never called its effect. It is written whatever ctx's state.
+// never called its effect. It is written whatever ctx's state. If it cannot be written, the claim
+// id is remembered, so the next claim of the key in this process (or a resume that meets the
+// attempt) writes it again.
 func (j *Journal) notStarted(ctx context.Context, runID, key string, marker Record) error {
 	_, err := j.put(context.WithoutCancel(ctx), runID, notStartedStep(key, marker.claim),
 		Record{Kind: StepNotStarted, ToolUseID: marker.ToolUseID, claim: marker.claim})
 	if err != nil {
+		pendingClaims.remember(flightKey{j.id, runID, key}, marker.claim)
 		return fmt.Errorf("record that %s did not start: %w", key, err)
 	}
 	return nil
@@ -1015,8 +1003,8 @@ func joinFlight(k flightKey) ([]byte, bool, error) {
 	return f.val, true, f.err
 }
 
-// pendingClaims holds the claim ids whose Insert failed and so may have committed, by store, run
-// and marker key (see Journal.claim). It is bounded: past maxPendingClaims the oldest are dropped,
+// pendingClaims holds, by store, run and marker key, the claim ids whose not-started record could
+// not be written, so their markers may be live though their effect never ran (see Journal.claim). It is bounded: past maxPendingClaims the oldest are dropped,
 // which only costs a halt that remembering would have avoided.
 var pendingClaims = &claimMemo{m: map[flightKey]string{}}
 

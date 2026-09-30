@@ -165,11 +165,10 @@ func TestTwoDriversBothRecordNotStarted(t *testing.T) {
 	}
 }
 
-// A claim taken back and held (its not-started write never committed) runs the effect, and its
-// result write is lost. A new process finds the marker, which the claim-held record does not void,
-// and halts: the effect fires once. For a tool call, the claim is taken back only when its
-// marker's insert did not commit either (a committed marker halts the resume before any claim).
-func TestHeldClaimWhoseResultIsLostHalts(t *testing.T) {
+// A claim whose marker and not-started writes both failed is recorded as not started by the next
+// drive in the process, which re-attempts the effect under a fresh claim; its result write is then
+// lost. A new process finds that live marker and halts: the effect fires once.
+func TestReattemptWhoseResultIsLostHalts(t *testing.T) {
 	ctx := context.Background()
 	t.Run("tool", func(t *testing.T) {
 		m := agent.NewMemStore()
@@ -197,8 +196,8 @@ func TestHeldClaimWhoseResultIsLostHalts(t *testing.T) {
 		if fired != 1 || !errors.As(err3, &halt) {
 			t.Fatalf("a new process = %v with the effect fired %d times; want a halt and once", err3, fired)
 		}
-		// The halt comes from the drive's own read of the run: the claim-held record leaves the
-		// marker live, so no claim is even attempted.
+		// The halt comes from the drive's own read of the run: the marker is live, so no claim is
+		// even attempted.
 		if c := cs.Counts(); c.Insert != 0 {
 			t.Fatalf("the halted drive made %d Inserts (%v); want none", c.Insert, c.Names)
 		}
