@@ -34,6 +34,7 @@ minor version (0.x.0) may include breaking API or journal-format changes; each o
 - Benchmarks `BenchmarkRunTurns`, `BenchmarkToolCallSideEffect`, `BenchmarkStep`, `BenchmarkRecoverPass10k`, `BenchmarkAnchoredInsert`, `BenchmarkSQLiteInsert` and `BenchmarkPostgresInsert` ([#92]).
 - `agent.ApprovalPolicy.ValidateKeys`, `agent.ApprovalTally.Excluded`, `agent.ReasonSharedKey`, `agent.ReasonNoKeyID`, `audit.KeyID`, `audit.CheckEd25519PublicKey` and `audit.ErrWeakKey`; `KeyIDs` on `audit.Ed25519Verifier`, `MLDSAVerifier` and `HybridVerifier` ([#109]).
 - `agent.RunStart.Kind` (`agent.RunKind`: `RunKindAgent`, `RunKindFlow`) and `agent.RunStart.Flow` (`agent.FlowRef`): a `plan` flow's run records `run:start` with kind `flow`, its flow's name and its input as JSON, and `RecordedStart` reads them back. An agent run's `run:start` records no kind, which reads as `RunKindAgent` ([#P5B]).
+- `agent.RunStart.Kind` (`agent.RunKind`: `RunKindAgent`, `RunKindFlow`) and `agent.RunStart.Flow` (`agent.FlowRef`): a `plan` flow's run records `run:start` with kind `flow`, its flow's name and its input as JSON, and `RecordedStart` reads them back. An agent run's `run:start` records no kind, which reads as `RunKindAgent` ([#103]).
 
 ### Changed
 
@@ -68,6 +69,11 @@ minor version (0.x.0) may include breaking API or journal-format changes; each o
 - **Breaking:** a flow's `Run` records `run:start` before `flow:digest`; resuming a flow run with an input whose JSON differs, under another flow's name, or driving it with an `Agent` (or a flow over an agent's run) is `ErrConfig`, and records nothing. `Conform` requires `run:start` to name the flow and recognizes the Step markers; it ignores the journal header and not-started records ([#P5B]).
 - **Breaking:** `node:`, `switch:` and `flow:` are reserved step-name prefixes, so a `Step` inside a flow body cannot collide with a flow's records. `ResolveHaltRef` (and `ResolveStepHalt`) accept a flow node's key as a step name ([#P5B]).
 - **Breaking:** the journal format is `bide.journal.v1-dev.2`, since a flow's keys changed; a `v1-dev.1` journal is refused with `*agent.JournalVersionError` ([#P5B]).
+- **Breaking:** `plan` lowers every node onto `agent.Step` through the engine's step hook: a node runs as the Step named by its node key, `node:<name>` (`node:iter:<n>:<name>` in a loop body), so it has the Step's claim protocol (a fresh claim id, the not-started record, numbered re-attempts) and pause guard. A node that halts returns `*agent.OutcomeUnknown` with `Op: agent.OpRef{Kind: agent.OpStep, ID: "node:<name>"}`, a pause that `RecoverLoop` does not report as a failure, and `agent.ResolveHaltRef` clears it with the node's output. A node cancelled after its claim and before its body is re-attempted on the next drive instead of halting. A node's body that returns a pause from a node that is not retry-safe is `ErrConfig`. A node reads the journal by point reads, never by loading the run. `plan.HaltAmbiguous` is removed ([#103]).
+- **Breaking:** the keys a flow writes change: a node's result is `node:<name>` (was `<name>`), its attempt marker the Step's `attempt:step:node:<name>` (was `attempt:<name>`, a `StepValue` recording `{"retry_safe":...}`, which is no longer written or read: the Step marker is itself the attempt's recorded safety), and a loop iteration's keys are `node:iter:<n>:<name>` (was `iter:<n>:<name>`). A retry-safe node writes no marker, so a node attempted as retry-safe and relabelled a side effect since runs again under a claim, as a `Step` does; a node attempted as a side effect still halts if it is relabelled retry-safe ([#103]).
+- **Breaking:** a flow's `Run` records `run:start` before `flow:digest`; resuming a flow run with an input whose JSON differs, under another flow's name, or driving it with an `Agent` (or a flow over an agent's run) is `ErrConfig`, and records nothing. `Conform` requires `run:start` to name the flow and recognizes the Step markers; it ignores the journal header and not-started records ([#103]).
+- **Breaking:** `node:`, `switch:` and `flow:` are reserved step-name prefixes, so a `Step` inside a flow body cannot collide with a flow's records. `ResolveHaltRef` (and `ResolveStepHalt`) accept a flow node's key as a step name ([#103]).
+- **Breaking:** the journal format is `bide.journal.v1-dev.2`, since a flow's keys changed; a `v1-dev.1` journal is refused with `*agent.JournalVersionError` ([#103]).
 
 ## [0.8.0] - 2026-09-30
 
@@ -506,6 +512,7 @@ First public release.
 [#111]: https://github.com/bide-ai/bide/pull/111
 [#112]: https://github.com/bide-ai/bide/pull/112
 [#P5B]: https://github.com/bide-ai/bide/pull/P5B
+[#103]: https://github.com/bide-ai/bide/pull/103
 [78f8db6]: https://github.com/bide-ai/bide/commit/78f8db6
 [994721b]: https://github.com/bide-ai/bide/commit/994721b
 [3262cd1]: https://github.com/bide-ai/bide/commit/3262cd1
