@@ -123,7 +123,19 @@ identity, so it is safe to use either way; inside a run it journals that it ran 
 A delegation re-entered on resume (its sub-run paused, or was cut off) runs under the grant it
 journaled the first time, verified against the bound parent and signer, so the sub-run holds one
 grant whatever your `AttenuateFunc` returns now. A delegation resumed under other authority than
-it began with (with no grant after a grant, or the reverse) is refused. In a saga, a rollback into
+it began with (with no grant after a grant, the reverse, or another parent grant or signer) is
+refused with `ErrConfig` and records nothing: the run stops, and driving it again with the right
+grant bound continues the delegation. A delegation cannot run past its grant's `NotAfterUnix`:
+minting from an expired grant, or continuing under an expired journaled one, is refused the same
+way. A child grant's `Subject` is always the sub-agent's name; an `AttenuateFunc` that sets another
+is refused.
+
+**Upgrading from a journal written before this release.** A delegation that ran without a grant
+now journals that (`audit:delegation:ungranted`), and a rollback into a sub-run with records but
+no journaled authority stops rather than guess. A saga journaled by an earlier pre-release that
+holds an ungranted `AttenuatingSubAgent` delegation therefore cannot be rolled back after the
+upgrade (`ErrProtocol`). Journals are not promised across pre-releases: finish or roll back such
+sagas before upgrading. In a saga, a rollback into
 the sub-run compensates under that journaled grant and identity, never the parent's: it verifies
 the grant (its signature under the bound signer's key, and that it attenuates the bound parent)
 before it binds it, so resume a saga whose delegations ran under a grant with the grant and signer

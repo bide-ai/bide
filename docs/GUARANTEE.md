@@ -43,7 +43,7 @@ store, it is safe: resume replays it from the journal rather than re-running it.
    records its claim as never started. A chain that returned an error without entering the base
    handler, and without `ErrToolNotCalled`, may have reached the tool some other way, so a side
    effect's outcome is unknown and a resume halts; the base handler refuses any invocation that
-   comes after the chain returned.
+   comes after the chain returned, whether the call was refused before or never entered.
 
 The same holds when nothing crashed and a caller simply invokes the run again (a client retrying
 after a lost response, a redelivered job, a sub-agent or session turn re-entered on resume):
