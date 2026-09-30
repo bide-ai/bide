@@ -36,10 +36,38 @@ var reservedPrefixes = []string{
 	"start/",          // a session's started turns
 	"from/",           // a session turn's starting transcript
 	"audit:",          // the audit package's leaves
+	"node:",           // a plan flow's nodes, run as Steps: node:<name>, node:iter:<n>:<name> (see planNodeStep)
+	"switch:",         // a plan flow's branch choices: switch:<over>, switch:iter:<n>:<over>
+	"flow:",           // a plan flow's topology digest: flow:digest
+}
+
+// planNodePrefix starts the key of every plan flow node, which package plan runs as a Step through
+// the engine step hook (internal/journalhook.Step).
+const planNodePrefix = "node:"
+
+// planNodeStep reports whether name is the key of a plan flow node: "node:<name>" or
+// "node:iter:<n>:<name>", where <n> is decimal digits and <name> is not empty and holds no ':'
+// (package plan refuses a node name with one). These are the reserved names a Step may run under
+// through the step hook, and the reserved step names ResolveHaltRef accepts, since a node halts as
+// a Step does.
+func planNodeStep(name string) bool {
+	rest, ok := strings.CutPrefix(name, planNodePrefix)
+	if !ok {
+		return false
+	}
+	if it, ok := strings.CutPrefix(rest, "iter:"); ok {
+		digits, node, ok := strings.Cut(it, ":")
+		if !ok || digits == "" || strings.Trim(digits, "0123456789") != "" {
+			return false
+		}
+		rest = node
+	}
+	return rest != "" && !strings.Contains(rest, ":")
 }
 
 // IsReservedStepName reports whether name starts with a prefix the engine reserves for its own
-// journal keys. Step, Parallel and ResolveStepHalt refuse such a name.
+// journal keys. Step and Parallel refuse such a name, and so do ResolveHaltRef and ResolveStepHalt
+// for a step, except a plan flow node's key ("node:<name>"), which halts as a Step does.
 func IsReservedStepName(name string) bool {
 	for _, p := range reservedPrefixes {
 		if strings.HasPrefix(name, p) {

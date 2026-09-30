@@ -121,6 +121,10 @@ type Outcome struct {
 //
 // WithoutLiveDriverCheck skips all of these, for an operator who knows no driver is running.
 //
+// A plan flow's node runs as a Step under its node key, so its halt is OpRef{Kind: OpStep, ID:
+// "node:<name>"} (or "node:iter:<n>:<name>" inside a loop), resolved like any Step's; the recorded
+// Result is the node's output, as JSON of the node's output type.
+//
 // It refuses (ErrConfig) a ref with no valid Cause or Op.Kind, and an operation that only the
 // other kind of operation attempted. WithMinHaltAge(d) refuses (*HaltTooYoung) a halt younger
 // than d, measured from the live attempt's marker, so a reconciler cannot query and resolve
@@ -181,7 +185,8 @@ func resolveHalt(ctx context.Context, store Durable, op string, ref HaltRef, out
 		h = haltKeys{id: id, attempt: toolAttemptStep(id), other: stepAttemptStep(id), otherHint: "a Step (OpStep)",
 			result: ToolResultStep(id), kind: StepToolResult}
 	case OpStep:
-		if err := checkStepName(op, id); err != nil {
+		// A plan flow's node halts as the Step named by its node key, which is reserved.
+		if err := checkStepName(op, id); err != nil && !planNodeStep(id) {
 			return err
 		}
 		h = haltKeys{id: id, attempt: stepAttemptStep(id), other: toolAttemptStep(id), otherHint: "a tool call (OpTool)",

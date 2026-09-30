@@ -26,6 +26,34 @@ func init() {
 			return rec, nil
 		})
 	}
+	journalhook.Step = func(ctx context.Context, j any, runID, name string, safety any, fn func(context.Context) (json.RawMessage, error)) (json.RawMessage, error) {
+		d, ok := j.(Durable)
+		if !ok {
+			return nil, fmt.Errorf("journalhook.Step: %T is not a journal: %w", j, ErrConfig)
+		}
+		if !planNodeStep(name) {
+			return nil, fmt.Errorf("journalhook.Step: %q is not a plan node key: %w", name, ErrConfig)
+		}
+		s, ok := safety.(Safety)
+		if !ok {
+			return nil, fmt.Errorf("journalhook.Step: safety is %T, not an agent.Safety: %w", safety, ErrConfig)
+		}
+		return step(ctx, d, runID, name, fn, StepSafety(s))
+	}
+	journalhook.HoldStart = func(ctx context.Context, j any, runID string, start any) error {
+		d, ok := j.(Durable)
+		if !ok {
+			return fmt.Errorf("journalhook.HoldStart: %T is not a journal: %w", j, ErrConfig)
+		}
+		want, ok := start.(RunStart)
+		if !ok {
+			return fmt.Errorf("journalhook.HoldStart: start is %T, not an agent.RunStart: %w", start, ErrConfig)
+		}
+		if err := checkDurable(d); err != nil {
+			return err
+		}
+		return holdToStart(ctx, d, runID, nil, want)
+	}
 	journalhook.WithSalt = func(rec any, salt []byte) any {
 		r := rec.(Record)
 		r.salt = append([]byte(nil), salt...)
