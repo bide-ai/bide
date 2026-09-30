@@ -40,3 +40,4 @@ examples/approval/approver-keys.json
 !/internal/jsonfields/
 !/internal/strictjson/
 !/internal/mermaid/
+!/internal/tools/

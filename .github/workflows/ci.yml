@@ -73,6 +73,27 @@ jobs:
             echo "== vet $m =="
             ( cd "$m" && go vet ./... )
           done
+      - name: doccheck (all modules)
+        # Every exported identifier has a doc comment that starts with its name, and every package
+        # has a package comment. One parse-only pass from the root covers every module. The
+        # allowlist only shrinks: doccheck fails on an entry that is now documented, and a pull
+        # request may not add entries.
+        shell: bash
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          go run ./internal/tools/doccheck -root . -allow .doccheck-allow
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            git fetch --no-tags --depth=1 origin "$BASE"
+            if base=$(git show "$BASE:.doccheck-allow" 2>/dev/null); then
+              added=$(LC_ALL=C comm -13 <(echo "$base" | grep -v '^#' | LC_ALL=C sort) <(grep -v '^#' .doccheck-allow | LC_ALL=C sort) | grep -v '^$' || true)
+              if [ -n "$added" ]; then
+                echo "::error::this pull request adds .doccheck-allow entries; document these identifiers instead:"
+                echo "$added"
+                exit 1
+              fi
+            fi
+          fi
       - name: govulncheck (all modules)
         # Known vulnerabilities in dependencies or the standard library that bide's code can reach
         # fail the build.
