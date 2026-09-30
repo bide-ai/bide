@@ -119,7 +119,8 @@ should your own. Adapters:
 
 - `govern.NewMemEventLog()`: in-memory (tests / local).
 - `govern/sqlitelog`: on-disk SQLite.
-- `govern/postgreslog`: Postgres, for several processes on a shared database.
+- `govern/postgreslog`: Postgres, for several processes on a shared database. Appends run at read
+  committed, set by the log itself, whatever the database's default isolation.
 - `govern/redislog`: Redis Streams (networked, "no SQL DB required"). An entity's stream and its
   append-id hash share the Redis Cluster hash tag `{<len>:<entity>}`, so the append script, which
   touches both, runs on Redis Cluster; a key prefix must not contain `{` or `}`.
