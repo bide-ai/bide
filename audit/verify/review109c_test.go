@@ -14,7 +14,9 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 type corpusEntry struct {
@@ -203,10 +205,13 @@ func affDouble(x, y *big.Int) edPoint {
 
 // The same cache defects as audit's (see audit/review109c_test.go), in this package's copy.
 
-// Past usableKeyCacheMax distinct keys the cache admits nothing and evicts nothing, so a key first
-// seen after that is recomputed on every call.
+// Once the cache is full it evicts the least recently used key, so a key first seen after that
+// is cached.
 func TestReview109cVerifyCacheFullNoEviction(t *testing.T) {
-	for i := 0; usableKeyCacheLen.Load() <= usableKeyCacheMax; i++ {
+	for i := 0; usableKeys.len() < usableKeyCacheMax; i++ {
+		if i > 64*usableKeyCacheMax {
+			t.Fatal("setup: the keys did not fill the cache")
+		}
 		var r [32]byte
 		r[0], r[1], r[2] = byte(i), byte(i>>8), byte(i>>16)
 		r[3] = 0xa5
@@ -214,31 +219,50 @@ func TestReview109cVerifyCacheFullNoEviction(t *testing.T) {
 	}
 	pub := goodKey(t)
 	usableKey(pub)
-	usableKey(pub)
-	if _, cached := usableKeyCache.Load(string(pub)); !cached {
-		t.Error("a key checked twice is not cached once the cache is full (no eviction)")
+	if !usableKeys.contains(string(pub)) || usableKeys.len() != usableKeyCacheMax {
+		t.Error("a key checked once the cache is full is not cached (no eviction)")
 	}
 }
 
-// Concurrent first checks of one key each take a slot of the cache's budget.
+// Concurrent first checks of one key run the check once and take one slot of the cache.
 func TestReview109cVerifyCacheBudgetSpentOnDuplicateMisses(t *testing.T) {
-	if usableKeyCacheLen.Load() != 0 {
-		t.Skip("run alone: the cache is already in use")
-	}
+	c := newKeyCache[bool](4)
 	const g = 16
 	pub := goodKey(t)
+	var runs atomic.Int32
+	release := make(chan struct{})
+	compute := func() (bool, bool) {
+		runs.Add(1)
+		<-release
+		return checkUsableKeyCacheable(pub)
+	}
 	var wg sync.WaitGroup
-	start := make(chan struct{})
-	for range g {
+	wg.Go(func() { c.get(string(pub), compute) })
+	waitFor(t, func() bool { c.mu.Lock(); defer c.mu.Unlock(); return c.inflight[string(pub)] != nil })
+	for range g - 1 {
 		wg.Go(func() {
-			<-start
-			usableKey(pub)
+			if !c.get(string(pub), compute) {
+				t.Error("a waiter got the wrong result")
+			}
 		})
 	}
-	close(start)
+	waitFor(t, func() bool { c.mu.Lock(); defer c.mu.Unlock(); return c.inflight[string(pub)].waiters == g-1 })
+	close(release)
 	wg.Wait()
-	if n := usableKeyCacheLen.Load(); n != 1 {
-		t.Errorf("one key checked by %d goroutines took %d slots of the cache's budget, want 1", g, n)
+	if n := runs.Load(); n != 1 || c.len() != 1 {
+		t.Errorf("one key checked by %d goroutines at once ran the check %d times and holds %d slots, want 1 and 1", g, n, c.len())
+	}
+}
+
+// waitFor yields until cond holds, failing after a generous bound rather than sleeping a fixed time.
+func waitFor(t *testing.T, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatal("condition not reached")
+		}
+		runtime.Gosched()
 	}
 }
 

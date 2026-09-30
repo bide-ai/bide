@@ -89,7 +89,7 @@ func TestReview109cOracleAuditCachedConcurrent(t *testing.T) {
 		}
 		return true
 	})
-	t.Logf("%d entries; cache counter %d", len(c), keyCheckCacheLen.Load())
+	t.Logf("%d entries; %d cached", len(c), keyChecks.len())
 }
 
 // Poisoning: the caller's slice is copied into the cache key, so mutating it after a check
@@ -111,10 +111,14 @@ func TestReview109cCacheKeyIsACopy(t *testing.T) {
 	}
 }
 
-// Past keyCheckCacheMax distinct keys the cache stops admitting new entries and never evicts:
-// a key first seen after that is recomputed on every call, for the life of the process.
+// Once the cache is full it evicts the least recently used key: a key first seen after that is
+// computed once and then served from the cache. (Before the fix the cache admitted nothing once
+// full, so such a key was recomputed on every call for the life of the process.)
 func TestReview109cCacheFullNoEviction(t *testing.T) {
-	for keyCheckCacheLen.Load() <= keyCheckCacheMax {
+	for i := 0; keyChecks.len() < keyCheckCacheMax; i++ {
+		if i > 64*keyCheckCacheMax {
+			t.Fatal("setup: random keys did not fill the cache")
+		}
 		var r [32]byte
 		rand.Read(r[:])
 		CheckEd25519PublicKey(r[:])
@@ -128,10 +132,10 @@ func TestReview109cCacheFullNoEviction(t *testing.T) {
 		}
 	}
 	per := time.Since(start) / n
-	_, cached := keyCheckCache.Load(string(pub))
+	cached := keyChecks.contains(string(pub))
 	t.Logf("after filling the cache: key cached=%v, %v per check of one repeated good key", cached, per)
-	if !cached {
-		t.Errorf("a key checked %d times is still not cached once the cache is full (no eviction); %v per call", n, per)
+	if !cached || keyChecks.len() != keyCheckCacheMax {
+		t.Errorf("a key checked %d times is not cached once the cache is full (cached=%v, %d of %d); %v per call", n, cached, keyChecks.len(), keyCheckCacheMax, per)
 	}
 }
 
@@ -145,7 +149,7 @@ func BenchmarkReview109cUncachedCheck(b *testing.B) {
 // Concurrent first checks of one key each take a slot of the cache's budget, so the cache
 // closes long before it holds keyCheckCacheMax distinct keys. Run alone (fresh process).
 func TestReview109cCacheBudgetSpentOnDuplicateMisses(t *testing.T) {
-	if keyCheckCacheLen.Load() != 0 {
+	if keyChecks.len() != 0 {
 		t.Skip("run alone: the cache is already in use")
 	}
 	const distinct, g = 1500, 16
@@ -165,12 +169,11 @@ func TestReview109cCacheBudgetSpentOnDuplicateMisses(t *testing.T) {
 	}
 	close(start)
 	wg.Wait()
-	stored := 0
-	keyCheckCache.Range(func(_, _ any) bool { stored++; return true })
-	t.Logf("%d distinct keys checked by %d goroutines: counter %d, stored %d, max %d", distinct, g, keyCheckCacheLen.Load(), stored, keyCheckCacheMax)
+	stored := keyChecks.len()
+	t.Logf("%d distinct keys checked by %d goroutines: stored %d, max %d", distinct, g, stored, keyCheckCacheMax)
 	fresh, _, _ := ed25519.GenerateKey(nil)
 	CheckEd25519PublicKey(fresh)
-	if _, ok := keyCheckCache.Load(string(fresh)); !ok {
+	if !keyChecks.contains(string(fresh)) {
 		t.Errorf("cache holds %d of %d allowed keys but refuses a new one: the budget went to duplicate misses", stored+0, keyCheckCacheMax)
 	}
 }

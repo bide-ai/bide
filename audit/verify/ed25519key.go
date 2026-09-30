@@ -3,8 +3,6 @@ package verify
 import (
 	"crypto/ed25519"
 	"math/big"
-	"sync"
-	"sync/atomic"
 )
 
 // usableKey mirrors audit.CheckEd25519PublicKey, so this package keeps to the standard library:
@@ -13,35 +11,36 @@ import (
 // a signature, and mixed-order or non-canonical keys, which are second spellings of a key. The
 // two copies are cross-checked in audit's tests.
 //
-// Results for 32-byte keys are cached, up to usableKeyCacheMax distinct keys, as audit does.
+// Keys that decode to a point cost a subgroup check of a few milliseconds; their results are kept
+// in a small LRU cache (usableKeyCacheMax keys) with single-flight misses, as audit does, and keys
+// that do not decode are refused cheaply and not cached. See audit.CheckEd25519PublicKey for the
+// cost to an application that takes keys from untrusted input.
 func usableKey(pub []byte) bool {
 	if len(pub) != ed25519.PublicKeySize {
 		return false
 	}
-	if r, ok := usableKeyCache.Load(string(pub)); ok {
-		return r.(bool)
-	}
-	ok := checkUsableKey(pub)
-	if usableKeyCacheLen.Add(1) <= usableKeyCacheMax {
-		usableKeyCache.Store(string(pub), ok)
-	}
+	return usableKeys.get(string(pub), func() (bool, bool) { return checkUsableKeyCacheable(pub) })
+}
+
+// usableKeyCacheMax bounds usableKey's cache; past it the least recently used key is evicted.
+const usableKeyCacheMax = 1024
+
+var usableKeys = newKeyCache[bool](usableKeyCacheMax)
+
+// checkUsableKey is usableKey without the cache.
+func checkUsableKey(pub []byte) bool {
+	ok, _ := checkUsableKeyCacheable(pub)
 	return ok
 }
 
-// usableKeyCacheMax bounds usableKey's cache.
-const usableKeyCacheMax = 4096
-
-var (
-	usableKeyCache    sync.Map // string(pub) -> bool
-	usableKeyCacheLen atomic.Int64
-)
-
-func checkUsableKey(pub []byte) bool {
+// checkUsableKeyCacheable is checkUsableKey, and reports whether the result may be cached: only a
+// key that decodes (and is not the identity) costs a subgroup check.
+func checkUsableKeyCacheable(pub []byte) (usable, cacheable bool) {
 	x, y, ok := edDecode(pub)
 	if !ok || (x.Sign() == 0 && y.Cmp(big.NewInt(1)) == 0) {
-		return false
+		return false, false
 	}
-	return edMul(edL, edFromAffine(x, y)).isIdentity()
+	return edMul(edL, edFromAffine(x, y)).isIdentity(), true
 }
 
 var (

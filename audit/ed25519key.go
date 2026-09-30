@@ -5,8 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
-	"sync"
-	"sync/atomic"
 )
 
 // Weak Ed25519 public keys. crypto/ed25519.Verify follows RFC 8032's cofactorless check and
@@ -35,46 +33,41 @@ var ErrWeakKey = errors.New("audit: weak ed25519 public key")
 // ErrWeakKey otherwise. The check does arithmetic on the public key only, so it need not run in
 // constant time.
 //
-// The subgroup check costs about a millisecond, so results for 32-byte keys are cached (up to
-// keyCheckCacheMax distinct keys; past that, keys are checked each time): a verifier checks the
-// same few keys over and over.
+// Cost: a key that decodes to a curve point needs a subgroup check, a scalar multiplication in
+// math/big that takes milliseconds of CPU: 1.1 to 3.6 ms per key measured on an Apple M1 Pro,
+// depending on load, against about 45 microseconds for a signature check. Results for such keys are kept in a
+// small LRU cache (keyCheckCacheMax keys), and concurrent first checks of one key run it once, so
+// a verifier that checks the same few keys pays it once per key. An application that resolves keys
+// from untrusted input pays it for every new key an attacker sends that decodes to a point:
+// bound or rate-limit such lookups. Keys that do not decode are refused cheaply and not cached,
+// so they cannot fill the cache.
 func CheckEd25519PublicKey(pub []byte) error {
 	if len(pub) != ed25519.PublicKeySize {
 		return fmt.Errorf("%w: %d bytes, want %d", ErrWeakKey, len(pub), ed25519.PublicKeySize)
 	}
-	if r, ok := keyCheckCache.Load(string(pub)); ok {
-		return r.(keyCheckResult).err
-	}
-	err := checkEd25519PublicKey(pub)
-	if keyCheckCacheLen.Add(1) <= keyCheckCacheMax {
-		keyCheckCache.Store(string(pub), keyCheckResult{err})
-	}
-	return err
+	return keyChecks.get(string(pub), func() (error, bool) { return checkEd25519PublicKey(pub) })
 }
 
-// keyCheckCacheMax bounds the check's cache, so a stream of distinct keys cannot grow it without
-// limit.
-const keyCheckCacheMax = 4096
+// keyCheckCacheMax bounds the check's cache; past it the least recently used key is evicted.
+const keyCheckCacheMax = 1024
 
-var (
-	keyCheckCache    sync.Map // string(pub) -> keyCheckResult
-	keyCheckCacheLen atomic.Int64
-)
+var keyChecks = newKeyCache[error](keyCheckCacheMax)
 
-type keyCheckResult struct{ err error }
-
-func checkEd25519PublicKey(pub []byte) error {
+// checkEd25519PublicKey is CheckEd25519PublicKey without the cache. It reports whether its result
+// may be cached: only a key that decodes (and is not the identity) costs a subgroup check, so only
+// that result is worth keeping.
+func checkEd25519PublicKey(pub []byte) (error, bool) {
 	x, y, ok := edDecode(pub)
 	if !ok {
-		return fmt.Errorf("%w: not the canonical encoding of a curve point", ErrWeakKey)
+		return fmt.Errorf("%w: not the canonical encoding of a curve point", ErrWeakKey), false
 	}
 	if x.Sign() == 0 && y.Cmp(big.NewInt(1)) == 0 {
-		return fmt.Errorf("%w: the identity point", ErrWeakKey)
+		return fmt.Errorf("%w: the identity point", ErrWeakKey), false
 	}
 	if !edMul(edL, edFromAffine(x, y)).isIdentity() {
-		return fmt.Errorf("%w: not in the prime-order subgroup (small or mixed order)", ErrWeakKey)
+		return fmt.Errorf("%w: not in the prime-order subgroup (small or mixed order)", ErrWeakKey), true
 	}
-	return nil
+	return nil, true
 }
 
 var (

@@ -207,7 +207,11 @@ never from a configured name, so that two verifiers built over one key report th
   all of them. Under a small-order key anyone can forge a signature; a mixed-order key `A + T` is a
   second public key for `A`'s secret, and a non-canonical encoding is a second spelling of a key, so
   either would give one secret two identities and two seats. `Ed25519Verifier` (and so a hybrid's
-  Ed25519 component) verifies nothing under a weak key and reports no identity for it.
+  Ed25519 component) verifies nothing under a weak key and reports no identity for it. The subgroup
+  check costs 1 to 4 ms of CPU per key (against about 45 microseconds for a signature check); results
+  are kept in a small LRU cache, so a resolver that returns the same few keys pays it once per key.
+  If your resolver takes keys from untrusted input, each new key that decodes to a curve point costs
+  a check: bound or rate-limit those lookups.
 - `audit.HybridVerifier` reports both component keys. A hybrid signature is meant to hold while either
   scheme holds, so if one scheme breaks, the other component's key alone signs: two approvers sharing
   either component are one seat.

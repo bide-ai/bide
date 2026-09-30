@@ -1,8 +1,8 @@
 // Package verify is a dependency-light, standalone verifier for Bide audit proofs. It
 // depends on nothing but the Go standard library (crypto/sha256, crypto/ed25519,
-// encoding/binary, bytes, math/big, math/bits, strings, sync), deliberately NOT the agent core or gsm, so a third
-// party (an auditor, a regulator) can verify a proof without importing the SDK, or reimplement
-// this file from RFC 6962 and check us against it. That is what "verifiable without trusting
+// encoding/binary, bytes, container/list, math/big, math/bits, strings, sync), deliberately NOT
+// the agent core or gsm, so a third party (an auditor, a regulator) can verify a proof without
+// importing the SDK, or reimplement this file from RFC 6962 and check us against it. That is what "verifiable without trusting
 // the vendor" means in practice.
 //
 // It operates on canonical LEAF BYTES, not typed records, precisely so it needs no domain
