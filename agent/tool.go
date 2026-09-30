@@ -133,28 +133,30 @@ func (p ApprovalPolicy) MarshalJSON() ([]byte, error) {
 	return json.Marshal(approvalWire{Need: p.Need, Approvers: p.Approvers})
 }
 
-// UnmarshalJSON decodes what MarshalJSON encodes: {"single":true} is SingleApproval (and carries no
-// need or approvers), anything else an m-of-n policy.
+// UnmarshalJSON decodes what MarshalJSON encodes, strictly, as the bide protocol writes the gate:
+// {"single":true}, with no other member, is SingleApproval; any other policy has need (and
+// approvers) and no single. "single" with any other value, beside need or approvers, a policy
+// with no need, a duplicate or unknown member, or a value of the wrong type is ErrProtocol.
 func (p *ApprovalPolicy) UnmarshalJSON(b []byte) error {
-	var w struct {
-		Single    bool     `json:"single"`
-		Need      *int     `json:"need"`
-		Approvers []string `json:"approvers"`
+	var members map[string]json.RawMessage
+	if err := strictjson.Unmarshal(b, &members, nil); err != nil {
+		return fmt.Errorf("approval policy: %w (%w)", err, ErrProtocol)
 	}
-	if err := json.Unmarshal(b, &w); err != nil {
-		return err
-	}
-	if w.Single {
-		if w.Need != nil || w.Approvers != nil {
-			return fmt.Errorf(`approval policy {"single":true} carries need or approvers: %w`, ErrProtocol)
+	if raw, ok := members["single"]; ok {
+		if string(bytes.TrimSpace(raw)) != "true" || len(members) != 1 {
+			return fmt.Errorf(`approval policy: "single" must be true and alone, as {"single":true}: %w`, ErrProtocol)
 		}
 		*p = *SingleApproval()
 		return nil
 	}
-	*p = ApprovalPolicy{Approvers: w.Approvers}
-	if w.Need != nil {
-		p.Need = *w.Need
+	if _, ok := members["need"]; !ok {
+		return fmt.Errorf(`approval policy has neither "single" nor "need": %w`, ErrProtocol)
 	}
+	var w approvalWire
+	if err := strictjson.Unmarshal(b, &w, &strictjson.Options{Fields: strictjson.SchemaFields}); err != nil {
+		return fmt.Errorf("approval policy: %w (%w)", err, ErrProtocol)
+	}
+	*p = ApprovalPolicy{Need: w.Need, Approvers: w.Approvers}
 	return nil
 }
 

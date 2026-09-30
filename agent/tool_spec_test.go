@@ -432,8 +432,14 @@ func TestApprovalPolicy_JSON(t *testing.T) {
 	if err := json.Unmarshal(b, &mb); err != nil || mb.single() || mb.Need != 2 || len(mb.Approvers) != 2 {
 		t.Fatalf("m-of-n decoded %+v, %v", mb, err)
 	}
-	if err := json.Unmarshal([]byte(`{"single":true,"need":1}`), &mb); !errors.Is(err, ErrProtocol) {
-		t.Fatalf(`{"single":true,"need":1} decoded: %v, want ErrProtocol`, err)
+	for _, bad := range []string{
+		`{"single":true,"need":1}`, `{"single":true,"approvers":[]}`, `{"single":false}`,
+		`{"single":false,"need":1,"approvers":["a"]}`, `{"single":1}`, `{"approvers":["a"]}`, `{}`,
+		`{"need":1,"approvers":["a"],"extra":1}`, `{"need":1,"need":2,"approvers":["a"]}`, `{"need":"1","approvers":["a"]}`,
+	} {
+		if err := json.Unmarshal([]byte(bad), &mb); !errors.Is(err, ErrProtocol) {
+			t.Errorf("%s decoded: %v, want ErrProtocol", bad, err)
+		}
 	}
 	p := SingleApproval()
 	p.Need = 2
