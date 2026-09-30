@@ -68,17 +68,20 @@ type Ed25519Verifier struct {
 // Alg reports the signature scheme (AlgEd25519).
 func (Ed25519Verifier) Alg() string { return AlgEd25519 }
 
-// Verify reports whether sig is a valid Ed25519 signature over m. A public key of the wrong length
-// verifies nothing (it never panics).
+// Verify reports whether sig is a valid Ed25519 signature over m. A weak public key (see
+// CheckEd25519PublicKey: the wrong length, not canonically encoded, or not in the prime-order
+// subgroup) verifies nothing, since a small-order key accepts forged signatures; it never panics.
 func (v Ed25519Verifier) Verify(m, sig []byte) bool {
-	return len(v.Pub) == ed25519.PublicKeySize && ed25519.Verify(v.Pub, m, sig)
+	return CheckEd25519PublicKey(v.Pub) == nil && ed25519.Verify(v.Pub, m, sig)
 }
 
 // KeyIDs identifies the public key, for agent.ApproverVerifier: one entry, KeyID(AlgEd25519,
-// Pub). A public key of the wrong length verifies nothing and reports no entry, so an approval
-// gate refuses it as a configuration error rather than counting a seat no one can fill.
+// Pub). A weak public key (see CheckEd25519PublicKey) verifies nothing and reports no entry, so an
+// approval gate refuses it as a configuration error rather than seating it. This also keeps one
+// secret to one identity: a mixed-order key A + T, which A's secret can sign for, and a
+// non-canonical spelling of A are both refused.
 func (v Ed25519Verifier) KeyIDs() []string {
-	if len(v.Pub) != ed25519.PublicKeySize {
+	if CheckEd25519PublicKey(v.Pub) != nil {
 		return nil
 	}
 	return []string{KeyID(AlgEd25519, v.Pub)}

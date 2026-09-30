@@ -10,8 +10,11 @@ import (
 	"crypto/ed25519"
 	"crypto/sha512"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"math/big"
+	"os"
+	"strings"
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
@@ -286,5 +289,36 @@ func TestEd25519SmallOrderKeysRefused(t *testing.T) {
 	good := audit.Ed25519Verifier{Pub: priv.Public().(ed25519.PublicKey)}
 	if good.KeyIDs() == nil || !good.Verify([]byte("m"), ed25519.Sign(priv, []byte("m"))) {
 		t.Fatal("a good key was refused")
+	}
+}
+
+// CheckEd25519PublicKey agrees with the vectors audit/verify's copy of the check is tested
+// against, which an independent implementation decided (see audit/verify/testdata).
+func TestEd25519KeyVectors(t *testing.T) {
+	data, err := os.ReadFile("verify/testdata/ed25519-keys.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.HasPrefix(line, "#") || line == "" {
+			continue
+		}
+		fs := strings.Fields(line)
+		k, err := hex.DecodeString(fs[0])
+		if err != nil || len(fs) != 3 {
+			t.Fatalf("bad vector line %q", line)
+		}
+		n++
+		err = audit.CheckEd25519PublicKey(k)
+		if want := fs[1] == "true"; (err == nil) != want {
+			t.Errorf("%s (%s): CheckEd25519PublicKey = %v, want usable=%v", fs[2], fs[0], err, want)
+		}
+		if err != nil && !errors.Is(err, audit.ErrWeakKey) {
+			t.Errorf("%s: error %v does not wrap ErrWeakKey", fs[2], err)
+		}
+	}
+	if n < 200 {
+		t.Fatalf("only %d vectors", n)
 	}
 }

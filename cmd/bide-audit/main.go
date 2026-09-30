@@ -1015,6 +1015,8 @@ func (c *cli) verifyApprovals(args []string) {
 			okKeys = c.note(unusable(fmt.Errorf("approver %q key must be hex: %w", id, err)))
 		case len(k) != ed25519.PublicKeySize:
 			okKeys = c.note(unusable(fmt.Errorf("approver %q key is %d bytes, want a %d-byte ed25519 public key", id, len(k), ed25519.PublicKeySize)))
+		case audit.CheckEd25519PublicKey(k) != nil:
+			okKeys = c.note(unusable(fmt.Errorf("approver %q key: %w", id, audit.CheckEd25519PublicKey(k))))
 		default:
 			keys[id] = k
 		}
@@ -1215,6 +1217,19 @@ func (c *cli) verifyAbsent(args []string) {
 // whole point of the trust model. A value that is neither is an unusable input: it may be the
 // path of a file that is missing.
 func readPubKey(s string) ([]byte, error) {
+	key, err := readPubKeyBytes(s)
+	if err != nil {
+		return nil, err
+	}
+	// A small-order key verifies forged signatures, so it is refused as unusable, not verified.
+	if err := audit.CheckEd25519PublicKey(key); err != nil {
+		return nil, unusable(fmt.Errorf("public key: %w", err))
+	}
+	return key, nil
+}
+
+// readPubKeyBytes reads a 32-byte public key as hex, or from a file of hex.
+func readPubKeyBytes(s string) ([]byte, error) {
 	if key, err := hex.DecodeString(trimSpace(s)); err == nil && len(key) == ed25519.PublicKeySize {
 		return key, nil
 	}

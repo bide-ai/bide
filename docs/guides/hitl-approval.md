@@ -200,9 +200,14 @@ never from a configured name, so that two verifiers built over one key report th
 (`audit.KeyID`, for example `ed25519:3b6a27bc...`):
 
 - `audit.Ed25519Verifier` and `audit.MLDSAVerifier` report one identity. The ML-DSA label names the
-  key's parameter set (`ml-dsa-44`, `ml-dsa-65` or `ml-dsa-87`). A key that verifies nothing (an
-  Ed25519 key of the wrong length, a nil ML-DSA key) reports none, so the gate refuses it rather
-  than seating it.
+  key's parameter set (`ml-dsa-44`, `ml-dsa-65` or `ml-dsa-87`). A key that verifies nothing (a nil
+  ML-DSA key, or a weak Ed25519 key) reports none, so the gate refuses it rather than seating it.
+- A weak Ed25519 key is one `audit.CheckEd25519PublicKey` refuses: the wrong length, not the
+  canonical encoding of a curve point, or outside the prime-order subgroup. `crypto/ed25519` accepts
+  all of them. Under a small-order key anyone can forge a signature; a mixed-order key `A + T` is a
+  second public key for `A`'s secret, and a non-canonical encoding is a second spelling of a key, so
+  either would give one secret two identities and two seats. `Ed25519Verifier` (and so a hybrid's
+  Ed25519 component) verifies nothing under a weak key and reports no identity for it.
 - `audit.HybridVerifier` reports both component keys. A hybrid signature is meant to hold while either
   scheme holds, so if one scheme breaks, the other component's key alone signs: two approvers sharing
   either component are one seat.

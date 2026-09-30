@@ -60,8 +60,9 @@ func Sign(head []byte, priv ed25519.PrivateKey) []byte {
 	return ed25519.Sign(priv, head)
 }
 
-// VerifySignature reports whether sig is a valid signature of head under pub. A public key of the
-// wrong length is reported as not verifying rather than panicking.
+// VerifySignature reports whether sig is a valid signature of head under pub. A weak public key
+// (see CheckEd25519PublicKey) is reported as not verifying rather than panicking or accepting a
+// forged signature.
 func VerifySignature(head, sig []byte, pub ed25519.PublicKey) bool {
-	return len(pub) == ed25519.PublicKeySize && ed25519.Verify(pub, head, sig)
+	return CheckEd25519PublicKey(pub) == nil && ed25519.Verify(pub, head, sig)
 }
