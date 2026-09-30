@@ -32,6 +32,7 @@ CONSTANTS
   MaxEngineCrash,\* budget of engine crashes (new instances)
   MaxWorkerCrash,\* budget of worker crashes
   HasResolver,   \* whether an operator resolves halts
+  Kind,          \* "side_effect" (claim, begin, abandon) or "retry_safe" (re-dispatch, 10.9)
   Bug            \* "none" or a rule section 18 requires to fail, see regress/
 
 None == "none"
@@ -41,7 +42,9 @@ NoBegin == [set |-> FALSE, ab |-> FALSE, d |-> 0, n |-> <<None, 0>>, stamp |-> 0
 ResolverSet == IF HasResolver THEN {"resolver"} ELSE {}
 
 ASSUME Bug \in {"none", "InsertedFlagWon", "DeliveryIdOnly", "NotStartedFromBegun", "ByteEqualWon",
-                "AbandonWithoutKey", "CallerCause", "CheckBeforeRead"}
+                "AbandonWithoutKey", "CallerCause", "CheckBeforeRead", "LostIsExhausted",
+                "NewScopePerDelivery"}
+ASSUME Kind \in {"side_effect", "retry_safe"}
 
 (* --algorithm protocol
 variables
@@ -74,6 +77,11 @@ variables
   liveRun = {},
   \* The delivery (and nonce) each worker holds, for the resolver's floor assumption.
   hold    = [w \in Workers |-> [d |-> 0, n |-> <<None, 0>>]],
+  \* Retry-safe calls: the journaled unknown and not-started reports, the halt when the retry
+  \* window closes with an unknown outcome, and a ghost: the once-key scopes whose downstream
+  \* effect took place (a downstream deduplicates by once key, so one scope applies once).
+  unknownN = 0, nsRep = 0, halted = FALSE,
+  applied  = {},
   badBegin = FALSE;
 
 define
@@ -106,8 +114,30 @@ variables er = "", eg = 0, ed = 0, ecid = 0;
 begin
 EIdle:
   either
+    \* Retry-safe: dispatch (again) under the call's once-key scope while no delivery is live.
+    await Kind = "retry_safe" /\ result = None /\ ~halted /\ nextD < MaxDeliveries;
+    await \A x \in DIds : table[x] # "assigned";
+    with nd = nextD + 1, w \in Workers do
+      nextD := nd; table[nd] := "assigned";
+      net := net \cup {[d |-> nd, g |-> 0, cid |-> 0, w |-> w]};
+    end with;
+    goto EIdle;
+  or
+    \* Retry-safe: the retry window closes (deliveries exhausted) with no outcome. A journaled
+    \* unknown report halts (crashed). Revision 2 records DELIVERY_EXHAUSTED when the deliveries
+    \* were only lost (LostIsExhausted); but a lost delivery, or a duplicate of one whose holder
+    \* refused it, may have run its handler, and nothing journaled says otherwise, so the model's
+    \* rule halts (finding P2).
+    await Kind = "retry_safe" /\ result = None /\ ~halted /\ nextD >= MaxDeliveries;
+    await \A x \in DIds : table[x] # "assigned";
+    if unknownN > 0 \/ Bug # "LostIsExhausted" then
+      halted := TRUE; goto EIdle;
+    else
+      goto EExhausted;
+    end if;
+  or
     \* Assign: a worker polls; the engine claims the next attempt at assignment (I1).
-    await result = None /\ nextD < MaxDeliveries /\ NextAtt # -1;
+    await Kind = "side_effect" /\ result = None /\ nextD < MaxDeliveries /\ NextAtt # -1;
     with nd = nextD + 1 do
       eg := NextAtt; nextD := nd; ed := nd; ecid := nd;
     end with;
@@ -131,7 +161,7 @@ EIdle:
     goto ENotStarted;
   or
     \* All attempts voided: DELIVERY_EXHAUSTED, a truthful error (no effect ran).
-    await result = None /\ Exhausted;
+    await Kind = "side_effect" /\ result = None /\ Exhausted;
     goto EExhausted;
   end either;
 EAssign:
@@ -233,7 +263,9 @@ EBeginRead:
   goto RIdle;
 EReport:
   \* An outcome report: only the begun delivery completes (NOT_BEGUN_BY_DELIVERY otherwise).
-  if erep.kind = "not_started" then
+  if Kind = "retry_safe" then
+    goto SReport;
+  elsif erep.kind = "not_started" then
     \* not_started only before a begin: the engine abandons that delivery (6.3); from a delivery
     \* that has begun it is rejected, historically accepted (the attempt voided).
     if Bug = "NotStartedFromBegun" /\ marker[erep.g].set /\ bgn[erep.g].set
@@ -255,6 +287,22 @@ RNotStarted:
   Reply(er2);
   if er2 # "err_nc" then nsIds[erep.g] := nsIds[erep.g] \cup {marker[erep.g].cid}; end if;
   goto RIdle;
+SReport:
+  \* Retry-safe: any assigned delivery may complete (the first wins); an unknown report is
+  \* journaled and the call is dispatched again under the same scope; not_started too.
+  if erep.kind = "complete" then
+    goto EComplete;
+  elsif erep.kind = "unknown" then
+    Reply(er2);
+    if er2 # "err_nc" then unknownN := unknownN + 1; end if;
+    table[erep.d] := "reported";
+    goto RIdle;
+  else
+    Reply(er2);
+    if er2 # "err_nc" then nsRep := nsRep + 1; end if;
+    table[erep.d] := "reported";
+    goto RIdle;
+  end if;
 EComplete:
   \* CompleteTask: the result, inserted if absent (a late completion after a resolution is a
   \* conflict and never overwrites).
@@ -279,6 +327,7 @@ WIdle:
     hold[self] := [d |-> t.d, n |-> <<self, t.d>>];
   end with;
   wst := "got";
+  if Kind = "retry_safe" then goto WSafe; end if;
 WBegin:
   \* BeginTask with this delivery's nonce; a retry rebuilds its record (a new stamp).
   stamp := stamp + 1;
@@ -301,6 +350,18 @@ WWait:
     end if;
     wst := "idle"; hold[self] := [d |-> 0, n |-> <<None, 0>>]; goto WIdle;
   end if;
+WSafe:
+  \* A retry-safe task (pull): no begin. The worker refuses it (not_started), or runs the handler,
+  \* whose downstream effect is deduplicated by the once key: every delivery of the call shares
+  \* its scope (historically, a new scope per delivery: NewScopePerDelivery).
+  either
+    reports := reports \cup {[w |-> self, d |-> wd, g |-> 0, kind |-> "not_started"]};
+    goto WReported;
+  or
+    applied := applied \cup {IF Bug = "NewScopePerDelivery" THEN wd ELSE 0};
+    liveRun := liveRun \cup {self};
+    goto WReport;
+  end either;
 WRun:
   \* The handler: the effect fires under this attempt's claim.
   fired := fired + 1;
@@ -344,7 +405,7 @@ end algorithm; *)
 \* BEGIN TRANSLATION
 VARIABLES marker, bgn, nsIds, unknown, result, table, nextD, net, breq, bans, 
           reports, ambig, loss, dups, ecrash, wcrash, fired, firedAt, runners, 
-          liveRun, hold, badBegin, pc
+          liveRun, hold, unknownN, nsRep, halted, applied, badBegin, pc
 
 (* define statement *)
 Voided(g) == marker[g].set /\ marker[g].cid \in nsIds[g]
@@ -366,8 +427,9 @@ VARIABLES er, eg, ed, ecid, er2, ereq, erep, wd, wg, wcid, wn, stamp, wst
 
 vars == << marker, bgn, nsIds, unknown, result, table, nextD, net, breq, bans, 
            reports, ambig, loss, dups, ecrash, wcrash, fired, firedAt, 
-           runners, liveRun, hold, badBegin, pc, er, eg, ed, ecid, er2, ereq, 
-           erep, wd, wg, wcid, wn, stamp, wst >>
+           runners, liveRun, hold, unknownN, nsRep, halted, applied, badBegin, 
+           pc, er, eg, ed, ecid, er2, ereq, erep, wd, wg, wcid, wn, stamp, 
+           wst >>
 
 ProcSet == {"engine"} \cup {"rpc"} \cup (Workers) \cup (ResolverSet)
 
@@ -393,6 +455,10 @@ Init == (* Global variables *)
         /\ runners = [g \in Gens |-> {}]
         /\ liveRun = {}
         /\ hold = [w \in Workers |-> [d |-> 0, n |-> <<None, 0>>]]
+        /\ unknownN = 0
+        /\ nsRep = 0
+        /\ halted = FALSE
+        /\ applied = {}
         /\ badBegin = FALSE
         (* Process engine *)
         /\ er = ""
@@ -416,36 +482,54 @@ Init == (* Global variables *)
                                         [] self \in ResolverSet -> "RPick"]
 
 EIdle == /\ pc["engine"] = "EIdle"
-         /\ \/ /\ result = None /\ nextD < MaxDeliveries /\ NextAtt # -1
+         /\ \/ /\ Kind = "retry_safe" /\ result = None /\ ~halted /\ nextD < MaxDeliveries
+               /\ \A x \in DIds : table[x] # "assigned"
+               /\ LET nd == nextD + 1 IN
+                    \E w \in Workers:
+                      /\ nextD' = nd
+                      /\ table' = [table EXCEPT ![nd] = "assigned"]
+                      /\ net' = (net \cup {[d |-> nd, g |-> 0, cid |-> 0, w |-> w]})
+               /\ pc' = [pc EXCEPT !["engine"] = "EIdle"]
+               /\ UNCHANGED <<halted, eg, ed, ecid>>
+            \/ /\ Kind = "retry_safe" /\ result = None /\ ~halted /\ nextD >= MaxDeliveries
+               /\ \A x \in DIds : table[x] # "assigned"
+               /\ IF unknownN > 0 \/ Bug # "LostIsExhausted"
+                     THEN /\ halted' = TRUE
+                          /\ pc' = [pc EXCEPT !["engine"] = "EIdle"]
+                     ELSE /\ pc' = [pc EXCEPT !["engine"] = "EExhausted"]
+                          /\ UNCHANGED halted
+               /\ UNCHANGED <<table, nextD, net, eg, ed, ecid>>
+            \/ /\ Kind = "side_effect" /\ result = None /\ nextD < MaxDeliveries /\ NextAtt # -1
                /\ LET nd == nextD + 1 IN
                     /\ eg' = NextAtt
                     /\ nextD' = nd
                     /\ ed' = nd
                     /\ ecid' = nd
                /\ pc' = [pc EXCEPT !["engine"] = "EAssign"]
-               /\ table' = table
+               /\ UNCHANGED <<table, net, halted>>
             \/ /\ \E d \in {x \in DIds : table[x] = "assigned"}:
                     table' = [table EXCEPT ![d] = "lapsed"]
                /\ pc' = [pc EXCEPT !["engine"] = "EIdle"]
-               /\ UNCHANGED <<nextD, eg, ed, ecid>>
+               /\ UNCHANGED <<nextD, net, halted, eg, ed, ecid>>
             \/ /\ result = None
                /\ \E g \in {x \in Gens : marker[x].set /\ ~bgn[x].set /\ ~Voided(x)
                                          /\ ~LiveDelivery(marker[x].d)}:
                     eg' = g
                /\ pc' = [pc EXCEPT !["engine"] = "EAbandon"]
-               /\ UNCHANGED <<table, nextD, ed, ecid>>
+               /\ UNCHANGED <<table, nextD, net, halted, ed, ecid>>
             \/ /\ result = None
                /\ \E g \in {x \in Gens : marker[x].set /\ bgn[x].set /\ bgn[x].ab /\ ~Voided(x)}:
                     eg' = g
                /\ pc' = [pc EXCEPT !["engine"] = "ENotStarted"]
-               /\ UNCHANGED <<table, nextD, ed, ecid>>
-            \/ /\ result = None /\ Exhausted
+               /\ UNCHANGED <<table, nextD, net, halted, ed, ecid>>
+            \/ /\ Kind = "side_effect" /\ result = None /\ Exhausted
                /\ pc' = [pc EXCEPT !["engine"] = "EExhausted"]
-               /\ UNCHANGED <<table, nextD, eg, ed, ecid>>
-         /\ UNCHANGED << marker, bgn, nsIds, unknown, result, net, breq, bans, 
+               /\ UNCHANGED <<table, nextD, net, halted, eg, ed, ecid>>
+         /\ UNCHANGED << marker, bgn, nsIds, unknown, result, breq, bans, 
                          reports, ambig, loss, dups, ecrash, wcrash, fired, 
-                         firedAt, runners, liveRun, hold, badBegin, er, er2, 
-                         ereq, erep, wd, wg, wcid, wn, stamp, wst >>
+                         firedAt, runners, liveRun, hold, unknownN, nsRep, 
+                         applied, badBegin, er, er2, ereq, erep, wd, wg, wcid, 
+                         wn, stamp, wst >>
 
 EAssign == /\ pc["engine"] = "EAssign"
            /\ \E w \in Workers:
@@ -469,8 +553,9 @@ EAssign == /\ pc["engine"] = "EAssign"
                            /\ UNCHANGED << table, net >>
            /\ UNCHANGED << bgn, nsIds, unknown, result, nextD, breq, bans, 
                            reports, loss, dups, ecrash, wcrash, fired, firedAt, 
-                           runners, liveRun, hold, badBegin, eg, ed, ecid, er2, 
-                           ereq, erep, wd, wg, wcid, wn, stamp, wst >>
+                           runners, liveRun, hold, unknownN, nsRep, halted, 
+                           applied, badBegin, eg, ed, ecid, er2, ereq, erep, 
+                           wd, wg, wcid, wn, stamp, wst >>
 
 EClaimNS == /\ pc["engine"] = "EClaimNS"
             /\ \/ /\ er' = "ok"
@@ -488,9 +573,9 @@ EClaimNS == /\ pc["engine"] = "EClaimNS"
             /\ pc' = [pc EXCEPT !["engine"] = "EIdle"]
             /\ UNCHANGED << marker, bgn, unknown, result, table, nextD, net, 
                             breq, bans, reports, loss, dups, ecrash, wcrash, 
-                            fired, firedAt, runners, liveRun, hold, badBegin, 
-                            eg, ed, ecid, er2, ereq, erep, wd, wg, wcid, wn, 
-                            stamp, wst >>
+                            fired, firedAt, runners, liveRun, hold, unknownN, 
+                            nsRep, halted, applied, badBegin, eg, ed, ecid, 
+                            er2, ereq, erep, wd, wg, wcid, wn, stamp, wst >>
 
 EAbandon == /\ pc["engine"] = "EAbandon"
             /\ \/ /\ er' = "ok"
@@ -510,9 +595,9 @@ EAbandon == /\ pc["engine"] = "EAbandon"
                   ELSE /\ pc' = [pc EXCEPT !["engine"] = "EAbandonRead"]
             /\ UNCHANGED << marker, nsIds, unknown, result, table, nextD, net, 
                             breq, bans, reports, loss, dups, ecrash, wcrash, 
-                            fired, firedAt, runners, liveRun, hold, badBegin, 
-                            eg, ed, ecid, er2, ereq, erep, wd, wg, wcid, wn, 
-                            stamp, wst >>
+                            fired, firedAt, runners, liveRun, hold, unknownN, 
+                            nsRep, halted, applied, badBegin, eg, ed, ecid, 
+                            er2, ereq, erep, wd, wg, wcid, wn, stamp, wst >>
 
 EAbandonRead == /\ pc["engine"] = "EAbandonRead"
                 /\ IF (bgn[eg].set /\ bgn[eg].ab) \/ Bug = "AbandonWithoutKey"
@@ -521,8 +606,9 @@ EAbandonRead == /\ pc["engine"] = "EAbandonRead"
                 /\ UNCHANGED << marker, bgn, nsIds, unknown, result, table, 
                                 nextD, net, breq, bans, reports, ambig, loss, 
                                 dups, ecrash, wcrash, fired, firedAt, runners, 
-                                liveRun, hold, badBegin, er, eg, ed, ecid, er2, 
-                                ereq, erep, wd, wg, wcid, wn, stamp, wst >>
+                                liveRun, hold, unknownN, nsRep, halted, 
+                                applied, badBegin, er, eg, ed, ecid, er2, ereq, 
+                                erep, wd, wg, wcid, wn, stamp, wst >>
 
 ENotStarted == /\ pc["engine"] = "ENotStarted"
                /\ \/ /\ er' = "ok"
@@ -541,8 +627,9 @@ ENotStarted == /\ pc["engine"] = "ENotStarted"
                /\ UNCHANGED << marker, bgn, unknown, result, table, nextD, net, 
                                breq, bans, reports, loss, dups, ecrash, wcrash, 
                                fired, firedAt, runners, liveRun, hold, 
-                               badBegin, eg, ed, ecid, er2, ereq, erep, wd, wg, 
-                               wcid, wn, stamp, wst >>
+                               unknownN, nsRep, halted, applied, badBegin, eg, 
+                               ed, ecid, er2, ereq, erep, wd, wg, wcid, wn, 
+                               stamp, wst >>
 
 EExhausted == /\ pc["engine"] = "EExhausted"
               /\ \/ /\ er' = "ok"
@@ -560,9 +647,9 @@ EExhausted == /\ pc["engine"] = "EExhausted"
               /\ pc' = [pc EXCEPT !["engine"] = "EIdle"]
               /\ UNCHANGED << marker, bgn, nsIds, unknown, table, nextD, net, 
                               breq, bans, reports, loss, dups, ecrash, wcrash, 
-                              fired, firedAt, runners, liveRun, hold, badBegin, 
-                              eg, ed, ecid, er2, ereq, erep, wd, wg, wcid, wn, 
-                              stamp, wst >>
+                              fired, firedAt, runners, liveRun, hold, unknownN, 
+                              nsRep, halted, applied, badBegin, eg, ed, ecid, 
+                              er2, ereq, erep, wd, wg, wcid, wn, stamp, wst >>
 
 engine == EIdle \/ EAssign \/ EClaimNS \/ EAbandon \/ EAbandonRead
              \/ ENotStarted \/ EExhausted
@@ -580,8 +667,9 @@ RIdle == /\ pc["rpc"] = "RIdle"
                /\ UNCHANGED <<breq, ereq>>
          /\ UNCHANGED << marker, bgn, nsIds, unknown, result, table, nextD, 
                          net, bans, ambig, loss, dups, ecrash, wcrash, fired, 
-                         firedAt, runners, liveRun, hold, badBegin, er, eg, ed, 
-                         ecid, er2, wd, wg, wcid, wn, stamp, wst >>
+                         firedAt, runners, liveRun, hold, unknownN, nsRep, 
+                         halted, applied, badBegin, er, eg, ed, ecid, er2, wd, 
+                         wg, wcid, wn, stamp, wst >>
 
 EBeginCheck == /\ pc["rpc"] = "EBeginCheck"
                /\ IF Bug # "CheckBeforeRead" /\ BegunFor(ereq.g, ereq.d, ereq.n, ereq.stamp)
@@ -595,8 +683,9 @@ EBeginCheck == /\ pc["rpc"] = "EBeginCheck"
                /\ UNCHANGED << marker, bgn, nsIds, unknown, result, table, 
                                nextD, net, breq, reports, ambig, loss, dups, 
                                ecrash, wcrash, fired, firedAt, runners, 
-                               liveRun, hold, badBegin, er, eg, ed, ecid, er2, 
-                               ereq, erep, wd, wg, wcid, wn, stamp, wst >>
+                               liveRun, hold, unknownN, nsRep, halted, applied, 
+                               badBegin, er, eg, ed, ecid, er2, ereq, erep, wd, 
+                               wg, wcid, wn, stamp, wst >>
 
 EBeginInsert == /\ pc["rpc"] = "EBeginInsert"
                 /\ \/ /\ er2' = "ok"
@@ -615,8 +704,9 @@ EBeginInsert == /\ pc["rpc"] = "EBeginInsert"
                 /\ UNCHANGED << marker, nsIds, unknown, result, table, nextD, 
                                 net, breq, bans, reports, loss, dups, ecrash, 
                                 wcrash, fired, firedAt, runners, liveRun, hold, 
-                                badBegin, er, eg, ed, ecid, ereq, erep, wd, wg, 
-                                wcid, wn, stamp, wst >>
+                                unknownN, nsRep, halted, applied, badBegin, er, 
+                                eg, ed, ecid, ereq, erep, wd, wg, wcid, wn, 
+                                stamp, wst >>
 
 EBeginRead == /\ pc["rpc"] = "EBeginRead"
               /\ IF er2 # "ok" /\ ambig < MaxAmbig /\ Bug # "InsertedFlagWon"
@@ -638,32 +728,37 @@ EBeginRead == /\ pc["rpc"] = "EBeginRead"
               /\ pc' = [pc EXCEPT !["rpc"] = "RIdle"]
               /\ UNCHANGED << marker, bgn, nsIds, unknown, result, table, 
                               nextD, net, reports, loss, dups, ecrash, wcrash, 
-                              fired, firedAt, runners, liveRun, hold, badBegin, 
-                              er, eg, ed, ecid, er2, ereq, erep, wd, wg, wcid, 
-                              wn, stamp, wst >>
+                              fired, firedAt, runners, liveRun, hold, unknownN, 
+                              nsRep, halted, applied, badBegin, er, eg, ed, 
+                              ecid, er2, ereq, erep, wd, wg, wcid, wn, stamp, 
+                              wst >>
 
 EReport == /\ pc["rpc"] = "EReport"
-           /\ IF erep.kind = "not_started"
-                 THEN /\ IF Bug = "NotStartedFromBegun" /\ marker[erep.g].set /\ bgn[erep.g].set
-                            /\ ~bgn[erep.g].ab /\ bgn[erep.g].d = erep.d /\ ~Voided(erep.g)
-                            THEN /\ pc' = [pc EXCEPT !["rpc"] = "RNotStarted"]
-                                 /\ table' = table
-                            ELSE /\ IF marker[erep.g].set /\ ~bgn[erep.g].set
-                                       THEN /\ table' = [table EXCEPT ![erep.d] = "lapsed"]
-                                            /\ pc' = [pc EXCEPT !["rpc"] = "RIdle"]
-                                       ELSE /\ pc' = [pc EXCEPT !["rpc"] = "RIdle"]
-                                            /\ table' = table
-                 ELSE /\ IF ~(bgn[erep.g].set /\ ~bgn[erep.g].ab /\ bgn[erep.g].d = erep.d)
-                            THEN /\ pc' = [pc EXCEPT !["rpc"] = "RIdle"]
-                            ELSE /\ IF erep.kind = "unknown"
-                                       THEN /\ pc' = [pc EXCEPT !["rpc"] = "EUnknown"]
-                                       ELSE /\ pc' = [pc EXCEPT !["rpc"] = "EComplete"]
+           /\ IF Kind = "retry_safe"
+                 THEN /\ pc' = [pc EXCEPT !["rpc"] = "SReport"]
                       /\ table' = table
+                 ELSE /\ IF erep.kind = "not_started"
+                            THEN /\ IF Bug = "NotStartedFromBegun" /\ marker[erep.g].set /\ bgn[erep.g].set
+                                       /\ ~bgn[erep.g].ab /\ bgn[erep.g].d = erep.d /\ ~Voided(erep.g)
+                                       THEN /\ pc' = [pc EXCEPT !["rpc"] = "RNotStarted"]
+                                            /\ table' = table
+                                       ELSE /\ IF marker[erep.g].set /\ ~bgn[erep.g].set
+                                                  THEN /\ table' = [table EXCEPT ![erep.d] = "lapsed"]
+                                                       /\ pc' = [pc EXCEPT !["rpc"] = "RIdle"]
+                                                  ELSE /\ pc' = [pc EXCEPT !["rpc"] = "RIdle"]
+                                                       /\ table' = table
+                            ELSE /\ IF ~(bgn[erep.g].set /\ ~bgn[erep.g].ab /\ bgn[erep.g].d = erep.d)
+                                       THEN /\ pc' = [pc EXCEPT !["rpc"] = "RIdle"]
+                                       ELSE /\ IF erep.kind = "unknown"
+                                                  THEN /\ pc' = [pc EXCEPT !["rpc"] = "EUnknown"]
+                                                  ELSE /\ pc' = [pc EXCEPT !["rpc"] = "EComplete"]
+                                 /\ table' = table
            /\ UNCHANGED << marker, bgn, nsIds, unknown, result, nextD, net, 
                            breq, bans, reports, ambig, loss, dups, ecrash, 
                            wcrash, fired, firedAt, runners, liveRun, hold, 
-                           badBegin, er, eg, ed, ecid, er2, ereq, erep, wd, wg, 
-                           wcid, wn, stamp, wst >>
+                           unknownN, nsRep, halted, applied, badBegin, er, eg, 
+                           ed, ecid, er2, ereq, erep, wd, wg, wcid, wn, stamp, 
+                           wst >>
 
 RNotStarted == /\ pc["rpc"] = "RNotStarted"
                /\ \/ /\ er2' = "ok"
@@ -682,8 +777,50 @@ RNotStarted == /\ pc["rpc"] = "RNotStarted"
                /\ UNCHANGED << marker, bgn, unknown, result, table, nextD, net, 
                                breq, bans, reports, loss, dups, ecrash, wcrash, 
                                fired, firedAt, runners, liveRun, hold, 
-                               badBegin, er, eg, ed, ecid, ereq, erep, wd, wg, 
-                               wcid, wn, stamp, wst >>
+                               unknownN, nsRep, halted, applied, badBegin, er, 
+                               eg, ed, ecid, ereq, erep, wd, wg, wcid, wn, 
+                               stamp, wst >>
+
+SReport == /\ pc["rpc"] = "SReport"
+           /\ IF erep.kind = "complete"
+                 THEN /\ pc' = [pc EXCEPT !["rpc"] = "EComplete"]
+                      /\ UNCHANGED << table, ambig, unknownN, nsRep, er2 >>
+                 ELSE /\ IF erep.kind = "unknown"
+                            THEN /\ \/ /\ er2' = "ok"
+                                       /\ ambig' = ambig
+                                    \/ /\ ambig < MaxAmbig
+                                       /\ ambig' = ambig + 1
+                                       /\ er2' = "err_nc"
+                                    \/ /\ ambig < MaxAmbig
+                                       /\ ambig' = ambig + 1
+                                       /\ er2' = "err_c"
+                                 /\ IF er2' # "err_nc"
+                                       THEN /\ unknownN' = unknownN + 1
+                                       ELSE /\ TRUE
+                                            /\ UNCHANGED unknownN
+                                 /\ table' = [table EXCEPT ![erep.d] = "reported"]
+                                 /\ pc' = [pc EXCEPT !["rpc"] = "RIdle"]
+                                 /\ nsRep' = nsRep
+                            ELSE /\ \/ /\ er2' = "ok"
+                                       /\ ambig' = ambig
+                                    \/ /\ ambig < MaxAmbig
+                                       /\ ambig' = ambig + 1
+                                       /\ er2' = "err_nc"
+                                    \/ /\ ambig < MaxAmbig
+                                       /\ ambig' = ambig + 1
+                                       /\ er2' = "err_c"
+                                 /\ IF er2' # "err_nc"
+                                       THEN /\ nsRep' = nsRep + 1
+                                       ELSE /\ TRUE
+                                            /\ nsRep' = nsRep
+                                 /\ table' = [table EXCEPT ![erep.d] = "reported"]
+                                 /\ pc' = [pc EXCEPT !["rpc"] = "RIdle"]
+                                 /\ UNCHANGED unknownN
+           /\ UNCHANGED << marker, bgn, nsIds, unknown, result, nextD, net, 
+                           breq, bans, reports, loss, dups, ecrash, wcrash, 
+                           fired, firedAt, runners, liveRun, hold, halted, 
+                           applied, badBegin, er, eg, ed, ecid, ereq, erep, wd, 
+                           wg, wcid, wn, stamp, wst >>
 
 EComplete == /\ pc["rpc"] = "EComplete"
              /\ \/ /\ er2' = "ok"
@@ -701,9 +838,9 @@ EComplete == /\ pc["rpc"] = "EComplete"
              /\ pc' = [pc EXCEPT !["rpc"] = "RIdle"]
              /\ UNCHANGED << marker, bgn, nsIds, unknown, table, nextD, net, 
                              breq, bans, reports, loss, dups, ecrash, wcrash, 
-                             fired, firedAt, runners, liveRun, hold, badBegin, 
-                             er, eg, ed, ecid, ereq, erep, wd, wg, wcid, wn, 
-                             stamp, wst >>
+                             fired, firedAt, runners, liveRun, hold, unknownN, 
+                             nsRep, halted, applied, badBegin, er, eg, ed, 
+                             ecid, ereq, erep, wd, wg, wcid, wn, stamp, wst >>
 
 EUnknown == /\ pc["rpc"] = "EUnknown"
             /\ \/ /\ er2' = "ok"
@@ -721,12 +858,12 @@ EUnknown == /\ pc["rpc"] = "EUnknown"
             /\ pc' = [pc EXCEPT !["rpc"] = "RIdle"]
             /\ UNCHANGED << marker, bgn, nsIds, result, table, nextD, net, 
                             breq, bans, reports, loss, dups, ecrash, wcrash, 
-                            fired, firedAt, runners, liveRun, hold, badBegin, 
-                            er, eg, ed, ecid, ereq, erep, wd, wg, wcid, wn, 
-                            stamp, wst >>
+                            fired, firedAt, runners, liveRun, hold, unknownN, 
+                            nsRep, halted, applied, badBegin, er, eg, ed, ecid, 
+                            ereq, erep, wd, wg, wcid, wn, stamp, wst >>
 
 rpc == RIdle \/ EBeginCheck \/ EBeginInsert \/ EBeginRead \/ EReport
-          \/ RNotStarted \/ EComplete \/ EUnknown
+          \/ RNotStarted \/ SReport \/ EComplete \/ EUnknown
 
 WIdle(self) == /\ pc[self] = "WIdle"
                /\ \E t \in {x \in net : x.w = self}:
@@ -738,12 +875,14 @@ WIdle(self) == /\ pc[self] = "WIdle"
                     /\ stamp' = [stamp EXCEPT ![self] = 0]
                     /\ hold' = [hold EXCEPT ![self] = [d |-> t.d, n |-> <<self, t.d>>]]
                /\ wst' = [wst EXCEPT ![self] = "got"]
-               /\ pc' = [pc EXCEPT ![self] = "WBegin"]
+               /\ IF Kind = "retry_safe"
+                     THEN /\ pc' = [pc EXCEPT ![self] = "WSafe"]
+                     ELSE /\ pc' = [pc EXCEPT ![self] = "WBegin"]
                /\ UNCHANGED << marker, bgn, nsIds, unknown, result, table, 
                                nextD, breq, bans, reports, ambig, loss, dups, 
                                ecrash, wcrash, fired, firedAt, runners, 
-                               liveRun, badBegin, er, eg, ed, ecid, er2, ereq, 
-                               erep >>
+                               liveRun, unknownN, nsRep, halted, applied, 
+                               badBegin, er, eg, ed, ecid, er2, ereq, erep >>
 
 WBegin(self) == /\ pc[self] = "WBegin"
                 /\ stamp' = [stamp EXCEPT ![self] = stamp[self] + 1]
@@ -753,8 +892,9 @@ WBegin(self) == /\ pc[self] = "WBegin"
                 /\ UNCHANGED << marker, bgn, nsIds, unknown, result, table, 
                                 nextD, net, reports, ambig, loss, dups, ecrash, 
                                 wcrash, fired, firedAt, runners, liveRun, hold, 
-                                badBegin, er, eg, ed, ecid, er2, ereq, erep, 
-                                wd, wg, wcid, wn, wst >>
+                                unknownN, nsRep, halted, applied, badBegin, er, 
+                                eg, ed, ecid, er2, ereq, erep, wd, wg, wcid, 
+                                wn, wst >>
 
 WWait(self) == /\ pc[self] = "WWait"
                /\ bans[self].d = wd[self] /\ bans[self].a # None
@@ -779,8 +919,24 @@ WWait(self) == /\ pc[self] = "WWait"
                /\ UNCHANGED << marker, bgn, nsIds, unknown, result, table, 
                                nextD, net, breq, bans, ambig, loss, dups, 
                                ecrash, wcrash, fired, firedAt, runners, 
-                               liveRun, er, eg, ed, ecid, er2, ereq, erep, wd, 
-                               wg, wcid, wn, stamp >>
+                               liveRun, unknownN, nsRep, halted, applied, er, 
+                               eg, ed, ecid, er2, ereq, erep, wd, wg, wcid, wn, 
+                               stamp >>
+
+WSafe(self) == /\ pc[self] = "WSafe"
+               /\ \/ /\ reports' = (reports \cup {[w |-> self, d |-> wd[self], g |-> 0, kind |-> "not_started"]})
+                     /\ pc' = [pc EXCEPT ![self] = "WReported"]
+                     /\ UNCHANGED <<liveRun, applied>>
+                  \/ /\ applied' = (applied \cup {IF Bug = "NewScopePerDelivery" THEN wd[self] ELSE 0})
+                     /\ liveRun' = (liveRun \cup {self})
+                     /\ pc' = [pc EXCEPT ![self] = "WReport"]
+                     /\ UNCHANGED reports
+               /\ UNCHANGED << marker, bgn, nsIds, unknown, result, table, 
+                               nextD, net, breq, bans, ambig, loss, dups, 
+                               ecrash, wcrash, fired, firedAt, runners, hold, 
+                               unknownN, nsRep, halted, badBegin, er, eg, ed, 
+                               ecid, er2, ereq, erep, wd, wg, wcid, wn, stamp, 
+                               wst >>
 
 WRun(self) == /\ pc[self] = "WRun"
               /\ fired' = fired + 1
@@ -791,8 +947,9 @@ WRun(self) == /\ pc[self] = "WRun"
               /\ pc' = [pc EXCEPT ![self] = "WReport"]
               /\ UNCHANGED << marker, bgn, nsIds, unknown, result, table, 
                               nextD, net, breq, bans, reports, ambig, loss, 
-                              dups, ecrash, wcrash, hold, badBegin, er, eg, ed, 
-                              ecid, er2, ereq, erep, wd, wg, wcid, wn, stamp >>
+                              dups, ecrash, wcrash, hold, unknownN, nsRep, 
+                              halted, applied, badBegin, er, eg, ed, ecid, er2, 
+                              ereq, erep, wd, wg, wcid, wn, stamp >>
 
 WReport(self) == /\ pc[self] = "WReport"
                  /\ \/ /\ reports' = (reports \cup {[w |-> self, d |-> wd[self], g |-> wg[self], kind |-> "complete"]})
@@ -803,8 +960,9 @@ WReport(self) == /\ pc[self] = "WReport"
                  /\ UNCHANGED << marker, bgn, nsIds, unknown, result, table, 
                                  nextD, net, breq, bans, ambig, loss, dups, 
                                  ecrash, wcrash, fired, firedAt, runners, hold, 
-                                 badBegin, er, eg, ed, ecid, er2, ereq, erep, 
-                                 wd, wg, wcid, wn, stamp, wst >>
+                                 unknownN, nsRep, halted, applied, badBegin, 
+                                 er, eg, ed, ecid, er2, ereq, erep, wd, wg, 
+                                 wcid, wn, stamp, wst >>
 
 WReported(self) == /\ pc[self] = "WReported"
                    /\ ~\E p \in reports : p.w = self /\ p.d = wd[self]
@@ -814,12 +972,12 @@ WReported(self) == /\ pc[self] = "WReported"
                    /\ UNCHANGED << marker, bgn, nsIds, unknown, result, table, 
                                    nextD, net, breq, bans, reports, ambig, 
                                    loss, dups, ecrash, wcrash, fired, firedAt, 
-                                   runners, liveRun, badBegin, er, eg, ed, 
-                                   ecid, er2, ereq, erep, wd, wg, wcid, wn, 
-                                   stamp >>
+                                   runners, liveRun, unknownN, nsRep, halted, 
+                                   applied, badBegin, er, eg, ed, ecid, er2, 
+                                   ereq, erep, wd, wg, wcid, wn, stamp >>
 
-worker(self) == WIdle(self) \/ WBegin(self) \/ WWait(self) \/ WRun(self)
-                   \/ WReport(self) \/ WReported(self)
+worker(self) == WIdle(self) \/ WBegin(self) \/ WWait(self) \/ WSafe(self)
+                   \/ WRun(self) \/ WReport(self) \/ WReported(self)
 
 RPick(self) == /\ pc[self] = "RPick"
                /\ result = None
@@ -831,8 +989,9 @@ RPick(self) == /\ pc[self] = "RPick"
                /\ UNCHANGED << marker, bgn, nsIds, unknown, result, table, 
                                nextD, net, breq, bans, reports, ambig, loss, 
                                dups, ecrash, wcrash, fired, firedAt, runners, 
-                               liveRun, hold, badBegin, er, eg, ed, ecid, er2, 
-                               ereq, erep, wd, wg, wcid, wn, stamp, wst >>
+                               liveRun, hold, unknownN, nsRep, halted, applied, 
+                               badBegin, er, eg, ed, ecid, er2, ereq, erep, wd, 
+                               wg, wcid, wn, stamp, wst >>
 
 RWrite(self) == /\ pc[self] = "RWrite"
                 /\ IF result = None
@@ -843,8 +1002,9 @@ RWrite(self) == /\ pc[self] = "RWrite"
                 /\ UNCHANGED << marker, bgn, nsIds, unknown, table, nextD, net, 
                                 breq, bans, reports, ambig, loss, dups, ecrash, 
                                 wcrash, fired, firedAt, runners, liveRun, hold, 
-                                badBegin, er, eg, ed, ecid, er2, ereq, erep, 
-                                wd, wg, wcid, wn, stamp, wst >>
+                                unknownN, nsRep, halted, applied, badBegin, er, 
+                                eg, ed, ecid, er2, ereq, erep, wd, wg, wcid, 
+                                wn, stamp, wst >>
 
 resolver(self) == RPick(self) \/ RWrite(self)
 
@@ -875,7 +1035,7 @@ LoseTask ==
   /\ \E t \in net : net' = net \ {t}
   /\ loss' = loss + 1
   /\ UNCHANGED <<marker, bgn, nsIds, unknown, result, table, nextD, breq, bans, reports, ambig,
-                 dups, ecrash, wcrash, fired, firedAt, runners, liveRun, hold, badBegin, pc, er, er2, eg, ed,
+                 dups, ecrash, wcrash, fired, firedAt, runners, liveRun, hold, unknownN, nsRep, halted, applied, badBegin, pc, er, er2, eg, ed,
                  ecid, ereq, erep, wd, wg, wcid, wn, stamp, wst>>
 
 DupTask ==
@@ -883,7 +1043,7 @@ DupTask ==
   /\ \E t \in net, w \in Workers : net' = net \cup {[t EXCEPT !.w = w]} /\ [t EXCEPT !.w = w] \notin net
   /\ dups' = dups + 1
   /\ UNCHANGED <<marker, bgn, nsIds, unknown, result, table, nextD, breq, bans, reports, ambig,
-                 loss, ecrash, wcrash, fired, firedAt, runners, liveRun, hold, badBegin, pc, er, er2, eg, ed,
+                 loss, ecrash, wcrash, fired, firedAt, runners, liveRun, hold, unknownN, nsRep, halted, applied, badBegin, pc, er, er2, eg, ed,
                  ecid, ereq, erep, wd, wg, wcid, wn, stamp, wst>>
 
 LoseAnswer ==
@@ -892,7 +1052,7 @@ LoseAnswer ==
                         /\ bans' = [bans EXCEPT ![w].a = "unavailable"]
   /\ loss' = loss + 1
   /\ UNCHANGED <<marker, bgn, nsIds, unknown, result, table, nextD, net, breq, reports, ambig,
-                 dups, ecrash, wcrash, fired, firedAt, runners, liveRun, hold, badBegin, pc, er, er2, eg, ed,
+                 dups, ecrash, wcrash, fired, firedAt, runners, liveRun, hold, unknownN, nsRep, halted, applied, badBegin, pc, er, er2, eg, ed,
                  ecid, ereq, erep, wd, wg, wcid, wn, stamp, wst>>
 
 \* An engine crash: a new instance with an empty dispatch table; begin requests and reports in
@@ -909,7 +1069,7 @@ EngineCrash ==
   /\ reports' = IF pc["rpc"] \in {"EReport", "RNotStarted", "EComplete", "EUnknown"}
                 THEN reports \cup {erep} ELSE reports
   /\ UNCHANGED <<marker, bgn, nsIds, unknown, result, nextD, net, breq, ambig,
-                 loss, dups, wcrash, fired, firedAt, runners, liveRun, hold, badBegin, er, er2, eg, ed, ecid,
+                 loss, dups, wcrash, fired, firedAt, runners, liveRun, hold, unknownN, nsRep, halted, applied, badBegin, er, er2, eg, ed, ecid,
                  ereq, erep, wd, wg, wcid, wn, stamp, wst>>
 
 \* A worker crash: it forgets its task (no SDK-side durability, I6); one killed after Run leaves a
@@ -924,7 +1084,7 @@ WorkerCrash(w) ==
   /\ breq' = {q \in breq : q.w # w}
   /\ bans' = [bans EXCEPT ![w] = [d |-> 0, a |-> None]]
   /\ UNCHANGED <<marker, bgn, nsIds, unknown, result, table, nextD, net, reports, ambig, loss,
-                 dups, ecrash, fired, firedAt, runners, badBegin, er, er2, eg, ed, ecid, ereq, erep, wd,
+                 dups, ecrash, fired, firedAt, runners, unknownN, nsRep, halted, applied, badBegin, er, er2, eg, ed, ecid, ereq, erep, wd,
                  wg, wcid, wn, stamp, wst>>
 
 FullNext == Next \/ LoseTask \/ DupTask \/ LoseAnswer \/ EngineCrash \/ \E w \in Workers : WorkerCrash(w)
@@ -958,9 +1118,14 @@ NoLiveOverride == result = "resolved" => liveRun = {}
 \* The recorded outcome is never replaced.
 ResultStable == [][result # None => result' = result]_vars
 
-\* A DELIVERY_EXHAUSTED error is truthful: no effect ran.
-ExhaustedTruthful == result = "exhausted" => fired = 0
+\* A DELIVERY_EXHAUSTED error is truthful: no effect ran (for a retry-safe call, no delivery's
+\* downstream effect took place), so the caller asking again under a new call cannot repeat it.
+ExhaustedTruthful == result = "exhausted" => fired = 0 /\ applied = {}
+
+\* A retry-safe call's re-dispatches share one once-key scope, so its downstream effect applies
+\* once.
+DownstreamOnce == Cardinality(applied) <= 1
 
 \* Vacuity, expected violated: the effect fires and its completion is recorded.
-EffectNotReachable == ~(fired > 0 /\ result = "ok")
+EffectNotReachable == ~((fired > 0 \/ applied # {}) /\ result = "ok")
 =============================================================================
