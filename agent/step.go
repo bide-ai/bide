@@ -20,6 +20,12 @@ import (
 // overlap still cannot both win the claim, since the store's atomic insert decides the winner.
 // With a single driver the claim is always won, so a run with no contention behaves exactly as
 // before.
+//
+// Every claim is made with a fresh id. If the marker cannot be written, the claim records that
+// its attempt did not start, and if even that record cannot be written, the process remembers it
+// and writes it again at the next claim of the same name, which then loses to the marker its
+// earlier claim may have left: a caller that claims one name only (rather than numbered
+// re-attempts, as Step and tool calls do) halts on it, which is safe.
 func ClaimAttempt(ctx context.Context, d Durable, runID, name string, rec Record) (won bool, got Record, err error) {
 	if j := journalOf(d); j != nil {
 		return j.claim(ctx, runID, name, rec)

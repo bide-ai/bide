@@ -128,10 +128,9 @@ Each record maps to a node in run order:
 - `StepApproval` -> `approved ✓` or `denied ✗`
 - `StepValue` -> `step: <name>` (a user-authored durable step, or the run's `run:start` and
   `run:complete` records)
-- `StepHeader`, `StepAttempt`, `StepNotStarted` and `StepClaimHeld` records are skipped: they are
-  the journal header, the internal side-effect-safety marker, the record that an attempt never
-  started, and the record that pins a claim taken back after a failed insert, not part of the
-  visual flow.
+- `StepHeader`, `StepAttempt` and `StepNotStarted` records are skipped: they are the journal
+  header, the internal side-effect-safety marker and the record that an attempt never started, not
+  part of the visual flow.
 
 The chart opens with a `start([user])` node and closes with a `done([done])` node.
 

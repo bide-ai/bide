@@ -25,7 +25,7 @@ minor version (0.x.0) may include breaking API or journal-format changes; each o
 - `Record.Raw` (the stored bytes), `Record.Salt()`, `Record.ClaimID()`, `Record.Format`, `Record.Redacted` (the reserved redaction tombstone), and `Record.MarshalJSON`, which writes the journal encoding ([#92]).
 - `store/sqlite` implements `agent.Leaser`, on a lease connection of its own with a short busy timeout and expiry from the database's clock; `Open` opens a writer, readers and a lease pool ([#92]).
 - `store/sqlite.New` and `store/postgres.New` over a `*sql.DB`, `WithTablePrefix`, and a schema version row: a database with a newer schema is refused ([#92]).
-- Journals in one process over one store share in-flight steps. A claim whose insert failed (it may have committed) records that its attempt did not start, keyed by its claim (`attempt:not-started:<claim>:<marker>`), so a re-drive in any process re-attempts the effect instead of halting over one that never ran. If that record cannot be written either, the next claim of the marker in the process reuses the claim, after pinning the claim's not-started key with a record of the new kind `agent.StepClaimHeld` (`claim_held`), so the marker can never be voided under an effect that runs; `plan`'s conformance check ignores both kinds of claim bookkeeping ([#92]).
+- Journals in one process over one store share in-flight steps. A claim whose insert failed (it may have committed) records that its attempt did not start, keyed by its claim (`attempt:not-started:<claim>:<marker>`), so a re-drive in any process re-attempts the effect instead of halting over one that never ran. If that record cannot be written either (or is written and reported failed), the process remembers the claim, and the next claim of the marker in the process, or a resume that meets it, writes the record again; every claim takes a fresh id, so an effect never runs under a marker that is, or can become, recorded as not started. `plan`'s conformance check ignores not-started records ([#92]).
 - `agent/storetest.CheckWrapper` checks, given at least two contexts that differ in what the wrapper reads from a context, that a store wrapper's mapping of run IDs and names does not depend on the context (A1), and its use of `Unwrap` ([#92]).
 - Benchmarks `BenchmarkRunTurns`, `BenchmarkToolCallSideEffect`, `BenchmarkStep`, `BenchmarkRecoverPass10k`, `BenchmarkAnchoredInsert`, `BenchmarkSQLiteInsert` and `BenchmarkPostgresInsert` ([#92]).
 
@@ -46,6 +46,8 @@ minor version (0.x.0) may include breaking API or journal-format changes; each o
 - `agent.Durable` and the `Do` and `History` methods of `MemStore` and the SQL stores are transitional: they go through a Journal over the store, so existing code keeps working. `*Journal` implements `Durable`. `agent/durabletest` is `agent/storetest` under its former name ([#92]).
 - `MemStore` honors its context, and lists runs in order ([#92]).
 - A live tool result, a claim and a completion are written with one Insert, without a read first ([#92]).
+- A `SagaAborted` error lists its uncompensated writes without saying each lacked a compensator: the list also holds a call whose outcome is unknown and a call whose tool is gone ([#92]).
+- The DST and reference-model crash suites inject their crashes at the storage port, under a Journal, so they cover the journal header, claims and not-started records; `agent` also carries an exhaustive fault-schedule exploration of the claim protocol, bounded by default (`BIDE_EXPLORE=1` runs the full exploration) ([#92]).
 
 ## [0.8.0] - 2026-09-30
 

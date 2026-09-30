@@ -1,6 +1,6 @@
 package agent_test
 
-// Saga rollback's reading of not-started and claim-held records (review of the claim protocol).
+// Saga rollback's reading of not-started records and re-attempted calls (review of the claim protocol).
 
 import (
 	"context"
@@ -58,7 +58,7 @@ func TestSagaSkipsVoidedAttempt(t *testing.T) {
 	}
 }
 
-// A call that fired under a claim taken back (claim-held pin) and recorded its result is a write:
+// A call that fired under a re-attempt after a claim whose writes failed and recorded its result is a write:
 // the rollback compensates it.
 func TestSagaCompensatesCallFiredUnderHeldClaim(t *testing.T) {
 	ctx := context.Background()

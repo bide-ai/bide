@@ -1,7 +1,7 @@
 package agent_test
 
 // Audit's reading of the claim bookkeeping kinds (review of the claim protocol): a journal holding
-// not-started and claim-held records proves and verifies like any other; neither kind is taken for
+// not-started records proves and verifies like any other; no such record is taken for
 // a completed call or step; a call voided by a not-started record is provably absent from the
 // tool-use key set, and a call that fired under a held claim is provably present.
 
