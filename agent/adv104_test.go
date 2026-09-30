@@ -27,6 +27,10 @@ type faultStore struct {
 	failGet map[string]bool
 	// armGetOnFault: when the commitThenErr fault of this name fires, failGet[name] is set.
 	armGetOnFault map[string]bool
+	// commitThenErrPrefix: the first Insert of a name with this prefix lands, then reports an error.
+	commitThenErrPrefix string
+	// failNoCommitPrefix: the first Insert of a name with this prefix fails without landing.
+	failNoCommitPrefix string
 }
 
 func newFaultStore() *faultStore {
@@ -35,6 +39,11 @@ func newFaultStore() *faultStore {
 
 func (s *faultStore) Insert(ctx context.Context, runID, name string, data []byte) (Entry, bool, error) {
 	s.mu.Lock()
+	if s.failNoCommitPrefix != "" && strings.HasPrefix(name, s.failNoCommitPrefix) {
+		s.failNoCommitPrefix = ""
+		s.mu.Unlock()
+		return Entry{}, false, errors.New("injected: write failed, not committed")
+	}
 	if s.failNoCommit[name] {
 		delete(s.failNoCommit, name)
 		s.mu.Unlock()
@@ -47,6 +56,10 @@ func (s *faultStore) Insert(ctx context.Context, runID, name string, data []byte
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err == nil && s.commitThenErrPrefix != "" && strings.HasPrefix(name, s.commitThenErrPrefix) {
+		s.commitThenErrPrefix = ""
+		return Entry{}, false, errors.New("injected: connection reset after commit")
+	}
 	if err == nil && s.commitThenErr[name] {
 		delete(s.commitThenErr, name)
 		if s.armGetOnFault[name] {
@@ -203,14 +216,14 @@ func TestAdv104_F3FailedTurnWaitsTwice(t *testing.T) {
 	})
 }
 
-// Probe (expected to hold): the @spend-late/0 write errors after committing (A3). The run
+// Probe (expected to hold): the late spend record's write errors after committing (A3). The run
 // reports the error and writes no run:complete; the re-drive counts the late spend once and
 // writes no second late record.
 func TestAdv104_LateSpendCommittedThenErrored(t *testing.T) {
 	ctx := context.Background()
 	bg := &lateModel{u: late, started: make(chan struct{}), gate: make(chan struct{})}
 	st := newFaultStore()
-	st.commitThenErr[lateSpendStep(0)] = true
+	st.commitThenErrPrefix = lateSpendPrefix
 	st.afterInsert = func(name string) {
 		if name == modelStep(0) {
 			close(bg.gate)

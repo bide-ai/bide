@@ -41,6 +41,18 @@ func Replay(ctx context.Context, source Durable, runID string) (Model, error) {
 		return nil, err
 	}
 	var turns []recordedTurn
+	// carry is late spend journaled before any turn it could go with (a late record another
+	// driver of the run wrote ahead of the first model record): the next turn reports it.
+	var carry Usage
+	add := func(t recordedTurn) {
+		if t.failed {
+			addUsage(&t.usage, carry)
+		} else {
+			addUsage(&t.discarded, carry)
+		}
+		carry = Usage{}
+		turns = append(turns, t)
+	}
 	for _, r := range recs {
 		switch {
 		case r.Kind == StepModel && r.Message != nil:
@@ -51,13 +63,16 @@ func Replay(ctx context.Context, source Durable, runID string) (Model, error) {
 			if r.DiscardedUsage != nil {
 				t.discarded = *r.DiscardedUsage
 			}
-			turns = append(turns, t)
+			add(t)
 		case strings.HasPrefix(r.Name, spendStepPrefix) && r.DiscardedUsage != nil:
-			turns = append(turns, recordedTurn{usage: *r.DiscardedUsage, failed: true})
-		case strings.HasPrefix(r.Name, lateSpendPrefix) && r.DiscardedUsage != nil && len(turns) > 0:
-			// Requests of earlier turns that ended late: the turn before reports their spend, so the
-			// replayed run's spend matches (in that turn's record rather than a record of its own).
-			if last := &turns[len(turns)-1]; last.failed {
+			add(recordedTurn{usage: *r.DiscardedUsage, failed: true, spendID: strings.TrimPrefix(r.Name, spendStepPrefix)})
+		case strings.HasPrefix(r.Name, lateSpendPrefix) && r.DiscardedUsage != nil:
+			// Requests that ended after their turn was recorded: the turn before reports their spend,
+			// so the replayed run's spend matches (in that turn's record rather than a record of its
+			// own); before any turn, the next one does.
+			if len(turns) == 0 {
+				addUsage(&carry, *r.DiscardedUsage)
+			} else if last := &turns[len(turns)-1]; last.failed {
 				addUsage(&last.usage, *r.DiscardedUsage)
 			} else {
 				addUsage(&last.discarded, *r.DiscardedUsage)
@@ -75,6 +90,7 @@ type recordedTurn struct {
 	reason           FinishReason
 	raw              string
 	model            *ModelInfo
+	spendID          string // a failed call's spend record id
 	usage, discarded Usage
 	failed           bool
 }
@@ -97,26 +113,20 @@ func (m *replayModel) Stream(context.Context, Request) (*Stream, error) {
 	if t.failed {
 		// The usage, then the failure: the stream reports what the original call spent.
 		ch := make(chan Emit, 2)
-		ch <- Emit{Event: Finish{Reason: FinishStop, Usage: t.usage}}
+		ch <- Emit{Event: Finish{Reason: FinishStop, Usage: t.usage, replay: &replayMark{spendID: t.spendID}}}
 		ch <- Emit{Err: errReplayedFailure}
 		close(ch)
-		return replayed(NewStream(ch), nil), nil
+		return NewStream(ch), nil
 	}
 	// The original turn's other requests were billed too: Discarded reports them to the run as
 	// spend.
-	evs := emitsFor(t.msg, Finish{Reason: t.reason, Raw: t.raw, Usage: t.usage, Discarded: t.discarded})
+	evs := emitsFor(t.msg, Finish{Reason: t.reason, Raw: t.raw, Usage: t.usage, Discarded: t.discarded, replay: &replayMark{model: t.model}})
 	ch := make(chan Emit, len(evs))
 	for _, e := range evs {
 		ch <- e
 	}
 	close(ch)
-	return replayed(NewStream(ch), t.model), nil
-}
-
-// replayed marks s as a replayed turn's stream whose record names model m (nil for none).
-func replayed(s *Stream, m *ModelInfo) *Stream {
-	s.replayed, s.recorded = true, m
-	return s
+	return NewStream(ch), nil
 }
 
 // emitsFor converts an assistant Message and the Finish that ended it back into the stream events

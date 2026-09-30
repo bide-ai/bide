@@ -101,7 +101,7 @@ func TestAdv104_TwoDriversLateSpend(t *testing.T) {
 func TestAdv104_ReplayLateRecordBeforeAnyTurn(t *testing.T) {
 	ctx := context.Background()
 	src := NewMemStore()
-	if _, err := src.Do(ctx, "r", lateSpendStep(0), func(context.Context) (Record, error) {
+	if _, err := src.Do(ctx, "r", lateSpendStep("x"), func(context.Context) (Record, error) {
 		return Record{Kind: StepValue, DiscardedUsage: &late}, nil
 	}); err != nil {
 		t.Fatal(err)
@@ -166,5 +166,137 @@ func TestAdv104_ReplayThroughADecoratorKeepsModel(t *testing.T) {
 	a, b := modelRecords(t, src, "r"), modelRecords(t, dst, "r")
 	if a[0].Model == nil || b[0].Model == nil || *a[0].Model != *b[0].Model {
 		t.Fatalf("replayed Model = %v, original %v", b[0].Model, a[0].Model)
+	}
+}
+
+// When a model record's write reports an error and the read that should settle its fate fails
+// too, the turn's answer functions wait for the run's next drive in the process: the record
+// landed, so they run then, once.
+func TestAdv104_LookupErrorAnswerRunsOnNextDrive(t *testing.T) {
+	ctx := context.Background()
+	st := newFaultStore()
+	st.commitThenErr[modelStep(0)] = true
+	st.armGetOnFault[modelStep(0)] = true
+	j, err := NewJournal(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var answers int
+	key := new(int)
+	count := func(next ModelHandler) ModelHandler {
+		return func(ctx context.Context, call ModelCall) (ModelResponse, error) {
+			call.OnAnswer(key, func(context.Context, ModelResponse) { answers++ })
+			return next(ctx, call)
+		}
+	}
+	m := &scriptModel{turns: [][]Emit{textTurnWithUsage("done", billed)}}
+	if _, err := New(m, j).Use(count).RunResult(ctx, "r", "go"); err == nil {
+		t.Fatal("want the write failure")
+	}
+	if answers != 0 {
+		t.Fatalf("answers ran %d times before the record's fate was known", answers)
+	}
+	st.mu.Lock()
+	st.failGet = map[string]bool{}
+	st.mu.Unlock()
+	if _, err := New(&scriptModel{}, j).RunResult(ctx, "r", "go"); err != nil {
+		t.Fatal(err)
+	}
+	if answers != 1 {
+		t.Fatalf("answers ran %d times, want once for the one recorded turn", answers)
+	}
+}
+
+// gatedTurn answers after every gatedTurn sharing its gate has been called, so two drivers' calls
+// of one turn are both made before either is recorded.
+type gatedTurn struct {
+	g    *twoGate
+	text string
+	u    Usage
+}
+
+type twoGate struct {
+	mu   sync.Mutex
+	n    int
+	open chan struct{}
+}
+
+func (m *gatedTurn) Stream(context.Context, Request) (*Stream, error) {
+	m.g.mu.Lock()
+	if m.g.n++; m.g.n == 2 {
+		close(m.g.open)
+	}
+	m.g.mu.Unlock()
+	<-m.g.open
+	ch := make(chan Emit, 2)
+	ch <- Emit{Event: TextDelta{Text: m.text}}
+	ch <- Emit{Event: Finish{Reason: FinishStop, Usage: m.u}}
+	close(ch)
+	return NewStream(ch), nil
+}
+
+// Two drivers of one run both answer its turn; one records it. The other's request was billed all
+// the same: its spend is journaled as late spend, so the run's Spend counts both requests, and only
+// the recorded turn's driver runs its answer functions.
+func TestAdv104_LostRaceSpendIsLate(t *testing.T) {
+	ctx := context.Background()
+	mem := NewMemStore()
+	g := &twoGate{open: make(chan struct{})}
+	uA, uB := Usage{InputTokens: 5}, Usage{InputTokens: 9}
+	var wg sync.WaitGroup
+	for _, m := range []*gatedTurn{{g: g, text: "a", u: uA}, {g: g, text: "b", u: uB}} {
+		j, err := NewJournal(procStore{mem})
+		if err != nil {
+			t.Fatal(err)
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := New(m, j).RunResult(ctx, "r", "go"); err != nil {
+				t.Error(err)
+			}
+		}()
+	}
+	wg.Wait()
+	j, _ := NewJournal(procStore{mem})
+	res, err := New(&scriptModel{}, j).RunResult(ctx, "r", "go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := uA
+	addUsage(&want, uB)
+	if res.Spend != want {
+		t.Fatalf("Spend = %+v, want both requests' %+v; journal %v", res.Spend, want, names(t, j, "r"))
+	}
+}
+
+// A late spend record whose write fails without landing is kept by the process and written by the
+// run's next drive in it, so the run's Spend still counts the request, once.
+func TestAdv104_FailedLateSpendWriteIsWrittenNextDrive(t *testing.T) {
+	ctx := context.Background()
+	bg := &lateModel{u: late, started: make(chan struct{}), gate: make(chan struct{})}
+	st := newFaultStore()
+	st.failNoCommitPrefix = lateSpendPrefix
+	st.afterInsert = func(name string) {
+		if name == modelStep(0) {
+			close(bg.gate)
+		}
+	}
+	j, err := NewJournal(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := &scriptModel{turns: [][]Emit{textTurnWithUsage("done", billed)}}
+	if _, err := New(m, j).Use(answerAndLeave(bg)).RunResult(ctx, "r", "go"); err == nil {
+		t.Fatal("want the late spend write's error")
+	}
+	res, err := New(&scriptModel{}, j).RunResult(ctx, "r", "go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := billed
+	addUsage(&want, late)
+	if res.Spend != want {
+		t.Fatalf("Spend = %+v, want %+v; journal %v", res.Spend, want, names(t, j, "r"))
 	}
 }

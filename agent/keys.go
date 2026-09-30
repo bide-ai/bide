@@ -19,7 +19,7 @@ import (
 // or a session's. The functions and constants named *Step build those keys; a test asserts each
 // one starts with a prefix listed here.
 var reservedPrefixes = []string{
-	"@",               // the journal header @journal, and engine-internal steps: @llm/<n>, @saga/compensate/<call>, @saga/args/<call>, @retrieval/<layer>, @spend/<n>
+	"@",               // the journal header @journal, and engine-internal steps: @llm/<n>, @saga/compensate/<call>, @saga/args/<call>, @retrieval/<layer>, @spend/<id>, @spend-late/<id>
 	"run:",            // run:start, run:complete, run:aborted, run:cancelled, run:limits:<n>
 	"tool:",           // a tool call's result: tool:<call>
 	"attempt:",        // attempt markers: attempt:tool:<call>, attempt:step:<name>, attempt:retry:<n>:..., attempt:not-started:<claim>:<marker>
@@ -244,8 +244,9 @@ func encodeID(id string) string {
 // retrievalStep is the key of the documents retrieval layer layer fetched for the run.
 func retrievalStep(layer int) string { return "@retrieval/" + strconv.Itoa(layer) }
 
-// spendStep is the key of the run's n-th spend record (a failed model call's usage).
-func spendStep(n int) string { return spendStepPrefix + strconv.Itoa(n) }
+// spendStep is the key of a spend record (a failed model call's usage). id is fresh for each record
+// (newSpendID), so two drivers of one run never write their spend under one key.
+func spendStep(id string) string { return spendStepPrefix + id }
 
 // modelStep is the key of the run's n-th model turn.
 func modelStep(n int) string { return "@llm/" + strconv.Itoa(n) }

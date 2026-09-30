@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -90,16 +89,8 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 	// run writes, so it is the whole run's however many invocations the run took. Its spend is
 	// what WithTokenBudget counts.
 	var tot usageTotals
-	spendSeq := 0 // spend records ("@spend/<n>") already in the journal
-	lateSeq := 0  // late spend records ("@spend-late/<n>") already in the journal
 	for _, r := range recs {
 		tot.add(r)
-		if strings.HasPrefix(r.Name, spendStepPrefix) {
-			spendSeq++
-		}
-		if strings.HasPrefix(r.Name, lateSpendPrefix) {
-			lateSeq++
-		}
 		switch r.Kind {
 		case StepModel:
 			modelSeq++
@@ -202,22 +193,45 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 
 	meter := &spendMeter{}  // usage of every model request this invocation sends
 	chain := a.modelChain() // the model call chain every turn of this invocation goes through
-	// settle waits, bounded, for the model requests still in flight (a hedge loser that outlived
-	// its turn) and journals the spend no record carries yet, so a run that ends leaves every
-	// request it knows was billed in its journal. leave settles and returns err.
-	settle := func() error {
-		meter.wait(ctx, lateRequestWait)
-		spent := meter.take()
-		if spent == (Usage{}) {
-			return nil
-		}
-		rec, err := a.recordSpend(ctx, runID, lateSpendStep(lateSeq), spent)
+	// writeSpend journals spent, billed usage no model record carries, as the step name. A write
+	// that fails is kept for the run's next drive in this process (see settlePending).
+	writeSpend := func(name string, spent Usage) error {
+		rec, err := a.recordSpend(ctx, runID, name, spent)
 		if err != nil {
+			a.keepSpend(runID, pendingSpend{name: name, spent: spent})
 			return err
 		}
-		lateSeq++
 		tot.add(rec)
 		node.add(journalTotals([]Record{rec}).spend)
+		return nil
+	}
+	// The spend an earlier drive in this process could not journal is journaled first.
+	wrote, err := a.settlePending(ctx, runID, recs)
+	for _, r := range wrote {
+		tot.add(r)
+		node.add(journalTotals([]Record{r}).spend)
+	}
+	if err != nil {
+		return Message{}, tot, 0, err
+	}
+	// waitEnd waits for the model requests still in flight (a hedge loser that outlived its turn),
+	// once per drive: the first call sets the deadline, lateRequestWait away, and a later one waits
+	// only for what is left of it.
+	var endBy time.Time
+	waitEnd := func() {
+		if endBy.IsZero() {
+			endBy = time.Now().Add(lateRequestWait)
+		}
+		meter.waitUntil(ctx, endBy)
+	}
+	// settle waits for the requests still in flight and journals the spend no record carries yet
+	// in a late spend record, so a run that ends leaves every request it knows was billed in its
+	// journal. leave settles and returns err.
+	settle := func() error {
+		waitEnd()
+		if spent := meter.take(); spent != (Usage{}) {
+			return writeSpend(lateSpendStep(newSpendID()), spent)
+		}
 		return nil
 	}
 	var liveTurns int // number of live (non-replayed) model calls this run
@@ -273,7 +287,11 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 				ts.sink = newTurnSink(modelSeq, fire)
 			}
 			seq := modelSeq
-			var taken Usage // the spend the turn's record carries, once the step has built it
+			var (
+				taken  Usage         // the spend the turn's record carries, once the step has built it
+				built  *Record       // the record the step built, if it ran
+				answer ModelResponse // the response it records
+			)
 			rec, err := a.store.Do(ctx, runID, modelStep(modelSeq),
 				func(ctx context.Context) (Record, error) {
 					ts.usedIDs = toolUseIDs(msgs)
@@ -291,31 +309,59 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 					}
 					taken = spent
 					addUsage(&taken, discardedSpend(resp.Usage, spent)) // a supplied response's usage beyond what was metered
+					built, answer = &r, resp
 					return r, nil
 				})
+			// recorded settles a record the step built: if the journal holds it, the turn's answer
+			// functions run (ModelCall.OnAnswer); if another driver's record holds the turn, this
+			// drive's requests were billed all the same, and their spend is late.
+			recorded := func(held Record) {
+				if sameTurnRecord(held, *built) {
+					ts.answer(ctx, answer)
+				} else {
+					meter.add(taken)
+				}
+			}
 			if err != nil {
 				err = fmt.Errorf("generate (run %s): %w (%w)", runID, err, ErrModel)
 				// The call failed for good, but its requests were billed: journal their spend so the
 				// budget counts it on this and every later invocation of the run. Requests still in
-				// flight are waited for (bounded), so their spend is in the same record. When the
-				// step built its record and only writing it failed, the spend that record carried is
-				// journaled here instead, unless the write did land after all.
-				meter.wait(ctx, lateRequestWait)
-				spent := meter.take()
-				if taken != (Usage{}) {
-					if _, landed, lerr := lookup(context.WithoutCancel(ctx), a.store, runID, modelStep(seq)); lerr != nil || !landed {
-						addUsage(&spent, taken)
-					}
+				// flight are waited for (bounded, once per drive), so their spend is in the same
+				// record. When the step built its record and only writing it failed, the journal
+				// decides: a record that landed after all is the turn's (the rest of the spend is
+				// late), one that did not is a failed call's, and when the journal cannot be read
+				// the spend is kept for the run's next drive in this process, which reads it.
+				waitEnd()
+				var held Record
+				landed := false
+				var lerr error
+				if built != nil {
+					held, landed, lerr = lookup(context.WithoutCancel(ctx), a.store, runID, modelStep(seq))
 				}
-				if spent != (Usage{}) {
-					srec, serr := a.recordSpend(ctx, runID, spendStep(spendSeq), spent)
-					if serr != nil {
-						err = errors.Join(err, serr)
+				switch {
+				case built != nil && lerr != nil:
+					fns := func(ctx context.Context) { ts.answer(ctx, answer) }
+					a.keepSpend(runID, pendingSpend{name: modelStep(seq), spent: taken, turn: true, built: built, answer: fns})
+					err = errors.Join(err, lerr)
+				case landed:
+					recorded(held)
+				default:
+					spent := meter.take()
+					addUsage(&spent, taken)
+					id := newSpendID()
+					if r := ts.replaySpend.Load(); r != nil {
+						id = *r // a replayed failure keeps the original's key
 					}
-					tot.add(srec)
-					node.add(journalTotals([]Record{srec}).spend)
+					if spent != (Usage{}) {
+						if serr := writeSpend(spendStep(id), spent); serr != nil {
+							err = errors.Join(err, serr)
+						}
+					}
 				}
 				return leave(err)
+			}
+			if built != nil {
+				recorded(rec)
 			}
 			tot.add(rec) // the recorded turn, which another driver of the run may have written
 			node.add(journalTotals([]Record{rec}).spend)
@@ -334,7 +380,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 			// replay of a finished run does not add a second one. Requests still in flight are
 			// waited for first, and their spend journaled, so a finished run's journal holds it.
 			if err := settle(); err != nil {
-				return Message{}, tot, liveTurns, err
+				return leave(err)
 			}
 			if _, err := putRecord(ctx, a.store, runID, runCompleteStep, Record{Kind: StepValue}); err != nil {
 				return leave(fmt.Errorf("mark complete (run %s): %w (%w)", runID, err, ErrStorage))

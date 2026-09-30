@@ -200,6 +200,19 @@ type Finish struct {
 	Raw       string       `json:"raw"` // the provider's own finish reason, as it sent it ("end_turn", "STOP"); empty if it sent none
 	Usage     Usage        `json:"usage"`
 	Discarded Usage        `json:"discarded"`
+
+	// replay marks a Finish that Replay sent for a recorded turn: the agent journals the model the
+	// record names, not the replaying Model. It is carried by the event itself, so a Model that
+	// wraps the replay model and forwards its events keeps it.
+	replay *replayMark
+}
+
+// replayMark is what a replayed turn's Finish carries: the model its record names (nil for none),
+// and for a model call that failed for good, the id of the spend record that journaled it, so the
+// replayed run journals it under the same key.
+type replayMark struct {
+	model   *ModelInfo
+	spendID string
 }
 
 // FinishReason is why a model turn ended, in a neutral vocabulary every adapter maps its
@@ -234,10 +247,6 @@ type Stream struct {
 	done chan struct{} // closed when the consumer stops reading
 	stop sync.Once
 	err  error // a terminal error set by the producer before ch closes (NewStreamFunc)
-	// replayed marks a stream Replay built, and recorded is the model the replayed turn's record
-	// names (nil when it names none): the agent journals that model, not the replaying one.
-	replayed bool
-	recorded *ModelInfo
 }
 
 // NewStream wraps an event channel the caller fills and closes. It suits producers that

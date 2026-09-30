@@ -135,6 +135,21 @@ hedge loser, and journals their usage in a late spend record. The wait is bounde
 not past the run's context. A request whose model ignores the cancellation it was sent for longer
 than that is billed by the provider but is not in `Result.Spend`, the journal, or the token budget.
 
+**Spend a drive could not journal waits in its process.** When a spend record's write fails, or a
+model record's write reports an error and the read that should settle it fails too, the process
+keeps the spend (and the turn's `OnAnswer` functions) and the run's next drive in the same process
+journals it, deciding from the journal so nothing is counted twice. If the process ends first,
+that spend is not journaled.
+
+**Two drivers' identical turns are not told apart.** When two drivers of one run (no lease) both
+answer a turn and the journal holds one's record, the other journals its request's spend as late
+spend. Records equal in message, usage, finish, digests and model are taken as each driver's own,
+so in that case the other request's spend is not journaled.
+
+**Replay's recorded model travels on the replayed Finish.** A Model that wraps the replay model
+and forwards its events keeps it; one that builds its own `Finish` events does not, and the
+replayed turn then journals what `agent.ModelInfoOf` reports for the wrapper.
+
 **Replay of a turn journaled before finish reasons were.** Each model record journals the turn's
 finish reason and the provider's raw reason (`Record.Finish`, `Record.RawFinish`), and a replayed
 turn ends with them. A record written before they were journaled has neither: its replayed turn ends

@@ -53,8 +53,8 @@ minor version (0.x.0) may include breaking API or journal-format changes; each o
 - Model records journal `Record.Finish`, `Record.RawFinish`, `Record.Model` (the `ModelInfo` of the model that answered) and per-turn `Record.PromptDigest` and `Record.ToolsDigest` (`agent.PromptDigest`, `agent.ToolsDigest`: SHA-256 of the system prompt and of the tool set the turn was sent, after middleware). `ModelInfo` has JSON tags ([#104]).
 - `middleware.CostMeter.Snapshot()` returns a `CostSnapshot` (`Answer`, `Spend`, `AnswerUSD`, `SpendUSD`) read under one lock ([#104]).
 - `trace.Model` records `gen_ai.response.finish_reasons`; an empty reason is recorded as `stop`, as the journal records it ([#104]).
-- `agent.ModelCall.OnAnswer(key, fn)`: `fn` runs once per turn with the turn's answer, the response the agent records, however many targets or attempts a middleware sees ([#104]).
-- A run that ends (completes, pauses or fails) waits, for at most two seconds and not past its context, for model requests still in flight (a hedge loser, a request a middleware left running) and journals their usage in a late spend record, `@spend-late/<n>`, which `Result.Spend`, the budget and `Replay` count ([#104]).
+- `agent.ModelCall.OnAnswer(key, fn)`: `fn` runs once per recorded turn with the turn's answer, after the journal holds it, however many targets or attempts a middleware sees; it reports whether the call belongs to a turn ([#104]).
+- A run that ends (completes, pauses or fails) waits, for at most two seconds in all and not past its context, for model requests still in flight (a hedge loser, a request a middleware left running) and journals their usage in a late spend record, `@spend-late/<id>`, which `Result.Spend`, the budget and `Replay` count. A driver whose model record another driver of the run recorded first journals its request's spend there too ([#104]).
 
 ### Changed
 
@@ -123,8 +123,9 @@ minor version (0.x.0) may include breaking API or journal-format changes; each o
 - `agent.Replay` ends each turn with the finish reason and raw reason its record journaled, and reports the turn's discarded spend in `Finish.Discarded`, where it used to reach the run through the context; `middleware.Cost` on a replaying agent counts it too ([#104]).
 - `middleware.Hedge` is `c := call; c.Model = backup` and has no streaming code; `Retry` loops `next(ctx, call)`; `RateLimit` and `Cost` add hooks, and count requests outside an agent only through `agent.CallModel`; `trace.Model` names the provider and model from `agent.ModelInfoOf(call.Model)`; `WithRetrieval` journals through the call's run, not the context ([#104]).
 - `middleware.Cost` counts each call's answer once, the response the agent records, wherever it sits: inside a `Hedge` a losing target's response is no longer counted as an answer ([#104]).
-- `agent.Replay` journals the replayed turn with the model its original record named (`Record.Model`), not the replaying Model ([#104]).
-- A model turn whose record fails to write journals the spend that record carried in the failed call's `@spend/<n>` record, unless the write landed after all ([#104]).
+- `agent.Replay` journals the replayed turn with the model its original record named (`Record.Model`), not the replaying Model, also through a Model that wraps the replay model and forwards its events; late spend journaled before any turn is reported with the first ([#104]).
+- A model turn whose record write reports an error is settled from the journal: a record that landed is the turn's (its answer functions run, and the rest of the spend is late), one that did not is a failed call's `@spend/<id>`, and when the journal cannot be read the spend and the answer functions are kept by the process for the run's next drive in it, which decides from the journal; a spend record whose write failed is kept and written by that drive too. Nothing is counted twice ([#104]).
+- **Breaking:** spend records are keyed by a fresh id, `@spend/<id>` (a replayed run keeps the original's), so two drivers of one run never write their spend under one key ([#104]).
 - **Breaking:** a request of a model turn that is over (its call already returned, so nothing would record it) is refused with `ErrConfig` ([#104]).
 - `ModelCall.Attempt` is documented precisely: a request is numbered when it reaches the model handler, before its Before hooks, so a request a Before hook refused keeps its number ([#104]).
 

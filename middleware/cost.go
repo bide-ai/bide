@@ -80,8 +80,10 @@ func (m *CostMeter) addAnswer(r Rates, u agent.Usage) {
 // (see agent.ModelCallHook): each attempt of a Retry and each target of a Hedge below it, the usage
 // a failed request reported before failing, and the discarded spend a replayed turn reports
 // (agent.ModelAttempt.Discarded). Outside an agent, call the model through agent.CallModel, whose
-// model handler runs the hooks and reports the answer too; a Cost handler called directly counts
-// the response it returns as the answer. The caller reads the totals with m.Snapshot.
+// model handler runs the hooks and reports the answer too; a Cost handler called directly, on a
+// call that belongs to no turn, counts the response it returns as the answer. A call a middleware
+// kept and passes on after its turn is over counts no answer: the turn's is already counted. The
+// caller reads the totals with m.Snapshot.
 func Cost(m *CostMeter, r Rates) agent.Middleware {
 	hook := agent.ModelCallHook{After: func(_ context.Context, _ agent.ModelCall, a agent.ModelAttempt) {
 		m.addSpent(r, a.Response.Usage)

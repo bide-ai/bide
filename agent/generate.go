@@ -43,29 +43,30 @@ type turnState struct {
 	sink     *turnSink       // the live token stream (Agent.Stream); nil when not streaming
 	usedIDs  map[string]bool // the tool-use IDs already in the run's conversation (see checkToolUseIDs)
 	finished atomic.Bool     // the chain has returned: the turn sends no new request
+	// replaySpend is the spend record id a replayed failed call reported (replayMark), under which
+	// the turn journals its failure, so a replayed journal keeps the original's keys.
+	replaySpend atomic.Pointer[string]
 
 	answerMu sync.Mutex
 	answers  map[any]func(context.Context, ModelResponse) // run once with the turn's answer (ModelCall.OnAnswer)
 	order    []any                                        // the keys of answers, in registration order
 }
 
-// onAnswer registers fn under key, unless key is registered already. It reports false once the
-// turn is over.
-func (ts *turnState) onAnswer(key any, fn func(context.Context, ModelResponse)) bool {
+// onAnswer registers fn under key, unless key is registered already or the turn is over.
+func (ts *turnState) onAnswer(key any, fn func(context.Context, ModelResponse)) {
 	ts.answerMu.Lock()
 	defer ts.answerMu.Unlock()
 	if ts.finished.Load() {
-		return false
+		return
 	}
 	if _, ok := ts.answers[key]; ok {
-		return true
+		return
 	}
 	if ts.answers == nil {
 		ts.answers = map[any]func(context.Context, ModelResponse){}
 	}
 	ts.answers[key] = fn
 	ts.order = append(ts.order, key)
-	return true
 }
 
 // finish ends the turn: no request starts after it, and no answer function registers.
@@ -105,7 +106,6 @@ func (c *modelChain) call(ctx context.Context, call ModelCall, ts *turnState) (M
 		return ModelResponse{}, err
 	}
 	ts.sink.finish(resp)
-	ts.answer(ctx, resp)
 	return resp, nil
 }
 
@@ -195,6 +195,12 @@ func (ts *turnState) send(ctx context.Context, call ModelCall) (ModelResponse, U
 	msg, u, err := s.drain(func(ev Event) {
 		if f, ok := ev.(Finish); ok {
 			fin = f
+			if f.replay != nil && f.replay.spendID != "" {
+				id := f.replay.spendID
+				ts.replaySpend.Store(&id)
+			}
+			f.replay = nil // the caller's stream gets the Finish a live model sends
+			ev = f
 		}
 		if claimed {
 			ts.sink.forward(n, ev)
@@ -205,11 +211,11 @@ func (ts *turnState) send(ctx context.Context, call ModelCall) (ModelResponse, U
 		return ModelResponse{Usage: u}, discarded, err
 	}
 	info, described := ModelInfoOf(call.Model)
-	if s.replayed {
+	if fin.replay != nil {
 		// A replayed turn answers as the model its record names, not as the replaying Model.
-		info, described = ModelInfo{}, s.recorded != nil
+		info, described = ModelInfo{}, fin.replay.model != nil
 		if described {
-			info = *s.recorded
+			info = *fin.replay.model
 		}
 	}
 	return ModelResponse{

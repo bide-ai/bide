@@ -4,7 +4,9 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -70,19 +72,25 @@ func (c ModelCall) AddHook(h ModelCallHook) ModelCall {
 func (c ModelCall) Attempt() int { return c.attempt }
 
 // OnAnswer registers fn to run once with the call's answer: the response the whole chain returns
-// to the agent (or to CallModel), after the agent's checks, which is the response the turn
-// records. It runs after every request of the call has had its hooks, and only when the call
-// succeeds. Registrations are keyed: a key registered again for the same turn (a middleware inside
-// a Hedge or a Retry registers once per target or attempt) keeps the first registration, so fn runs
-// once per turn wherever the middleware sits; key must be comparable, and a pointer the middleware
-// allocates is the usual choice. Cost counts answers this way. It reports false when the call
-// belongs to no turn (a handler called directly, not through an agent or CallModel) or the turn is
-// over, where fn never runs.
+// to the agent, after the agent's checks, once the journal holds it as the turn's record (for
+// CallModel, which has no journal, once the call returns it). It runs after every request of the
+// call has had its hooks, only when the call succeeds, and not at all when the turn's record is
+// not written (the write failed, or another driver of the run recorded the turn first): fn runs
+// once per recorded turn. Registrations are keyed: a key registered again for the same turn (a
+// middleware inside a Hedge or a Retry registers once per target or attempt) keeps the first
+// registration, so fn runs once per turn wherever the middleware sits; key must be comparable, and
+// a pointer the middleware allocates is the usual choice. Cost counts answers this way.
+//
+// It reports whether the call belongs to a turn. A call a middleware kept and passes on after its
+// turn is over belongs to that turn: OnAnswer reports true and fn never runs, since the turn's
+// answer is already decided. It reports false only for a call that belongs to no turn (a handler
+// called directly, not through an agent or CallModel).
 func (c ModelCall) OnAnswer(key any, fn func(ctx context.Context, resp ModelResponse)) bool {
 	if c.turn == nil {
 		return false
 	}
-	return c.turn.onAnswer(key, fn)
+	c.turn.onAnswer(key, fn)
+	return true
 }
 
 // ModelCallHook runs around each request the agent's model handler sends: every retried attempt
@@ -147,7 +155,13 @@ func CallModel(ctx context.Context, m Model, req Request, mw ...Middleware) (Mod
 	if m == nil {
 		return ModelResponse{}, fmt.Errorf("agent: CallModel with a nil Model: %w", ErrConfig)
 	}
-	return newModelChain(mw).call(ctx, ModelCall{Request: req, Model: m}, &turnState{meter: &spendMeter{}})
+	ts := &turnState{meter: &spendMeter{}}
+	resp, err := newModelChain(mw).call(ctx, ModelCall{Request: req, Model: m}, ts)
+	if err != nil {
+		return ModelResponse{}, err
+	}
+	ts.answer(ctx, resp)
+	return resp, nil
 }
 
 // journal returns what a model record journals about resp beside its message and usage: the model
@@ -273,12 +287,17 @@ func (m *spendMeter) end() {
 	}
 }
 
-// wait waits until no request is in flight, ctx is done, or d has passed, whichever is first.
-func (m *spendMeter) wait(ctx context.Context, d time.Duration) {
+// waitUntil waits until no request is in flight, ctx is done, or the deadline has passed,
+// whichever is first.
+func (m *spendMeter) waitUntil(ctx context.Context, deadline time.Time) {
 	m.mu.Lock()
 	idle := m.idle
 	m.mu.Unlock()
 	if idle == nil {
+		return
+	}
+	d := time.Until(deadline)
+	if d <= 0 {
 		return
 	}
 	t := time.NewTimer(d)
@@ -317,8 +336,8 @@ func discardedSpend(spent, answer Usage) Usage {
 	}
 }
 
-// spendStepPrefix names the records that journal a failed model call's spend: "@spend/0",
-// "@spend/1", and so on, numbered in the order the run wrote them.
+// spendStepPrefix names the records that journal a failed model call's spend: "@spend/<id>", with
+// a fresh id per record (a replayed run keeps the original's).
 const spendStepPrefix = "@spend/"
 
 // recordSpend journals spent, billed usage no model record carries, as the step name: a
@@ -335,15 +354,139 @@ func (a *Agent) recordSpend(ctx context.Context, runID, name string, spent Usage
 	return rec, nil
 }
 
-// lateRequestWait bounds how long a run waits, when it ends (completes, pauses, fails) and before
-// it records a failed call's spend, for model requests still in flight: a hedge loser that ends
+// lateRequestWait bounds how long a drive waits in all, when it ends (completes, pauses, fails)
+// and before it records a failed call's spend, for model requests still in flight: a hedge loser that ends
 // after the winner was returned, a request a middleware left running. A request that ignores the
 // cancellation it was sent for longer than this is not in the run's spend.
 var lateRequestWait = 2 * time.Second
 
 // lateSpendPrefix names the records that journal the spend of requests that ended after their
-// turn was recorded, at the run's end: "@spend-late/0", "@spend-late/1", and so on.
+// turn was recorded, or whose turn another driver recorded: "@spend-late/<id>".
 const lateSpendPrefix = "@spend-late/"
 
-// lateSpendStep is the key of the run's n-th late spend record.
-func lateSpendStep(n int) string { return lateSpendPrefix + strconv.Itoa(n) }
+// lateSpendStep is the key of a late spend record. id is fresh for each record (newSpendID), so
+// two drivers of one run never write their spend under one key, where the second would be lost.
+func lateSpendStep(id string) string { return lateSpendPrefix + id }
+
+// newSpendID is a fresh id for a spend record's key.
+func newSpendID() string { return newClaimID() }
+
+// pendingSpend is spend a drive could not journal, kept by the process for the run's next drive
+// in it: a spend record whose write failed (written again under the same name, at most once), or a
+// model turn whose record write reported an error and whose fate a read could not settle (turn).
+type pendingSpend struct {
+	name   string
+	spent  Usage
+	turn   bool
+	built  *Record               // turn: the record the drive built, to tell whether the journal holds it
+	answer func(context.Context) // turn: the turn's answer functions (ModelCall.OnAnswer)
+}
+
+// pendingKey names a run in the journal of this process's handle on its store.
+type pendingKey struct {
+	store any
+	runID string
+}
+
+// pendingSpends is the process's spend waiting for a run's next drive.
+var pendingSpends = struct {
+	sync.Mutex
+	m map[pendingKey][]pendingSpend
+}{m: map[pendingKey][]pendingSpend{}}
+
+// spendKey is the key of runID's pending spend for a's store: its Journal, or the store itself when
+// it is a pointer. ok is false for a store with neither, whose pending spend is not kept.
+func (a *Agent) spendKey(runID string) (pendingKey, bool) {
+	if j := journalOf(a.store); j != nil {
+		return pendingKey{j, runID}, true
+	}
+	if a.store != nil && reflect.ValueOf(a.store).Kind() == reflect.Pointer {
+		return pendingKey{a.store, runID}, true
+	}
+	return pendingKey{}, false
+}
+
+// keepSpend keeps p for runID's next drive in this process.
+func (a *Agent) keepSpend(runID string, p pendingSpend) {
+	k, ok := a.spendKey(runID)
+	if !ok {
+		return
+	}
+	pendingSpends.Lock()
+	defer pendingSpends.Unlock()
+	pendingSpends.m[k] = append(pendingSpends.m[k], p)
+}
+
+// takeSpend returns and forgets runID's pending spend.
+func (a *Agent) takeSpend(runID string) []pendingSpend {
+	k, ok := a.spendKey(runID)
+	if !ok {
+		return nil
+	}
+	pendingSpends.Lock()
+	defer pendingSpends.Unlock()
+	ps := pendingSpends.m[k]
+	delete(pendingSpends.m, k)
+	return ps
+}
+
+// settlePending journals runID's pending spend at the start of a drive, from recs, the run's
+// records: a spend record is written again under its name (a write that landed after all is not
+// repeated), and a turn whose record the journal holds runs its answer functions, while one it
+// does not hold is journaled as a failed call's spend, since the drive will ask for the turn
+// again. It returns the records it wrote; what it could not write is kept for the next drive.
+func (a *Agent) settlePending(ctx context.Context, runID string, recs []Record) ([]Record, error) {
+	var (
+		wrote []Record
+		errs  []error
+	)
+	for _, p := range a.takeSpend(runID) {
+		if _, ok := recordNamed(recs, p.name); ok && !p.turn {
+			continue // the write landed after all
+		}
+		if p.turn {
+			rec, ok := recordNamed(recs, p.name)
+			switch {
+			case ok && sameTurnRecord(rec, *p.built):
+				if p.answer != nil {
+					p.answer(ctx)
+				}
+				continue
+			case ok:
+				// Another driver recorded the turn: this drive's requests were billed all the same.
+				p = pendingSpend{name: lateSpendStep(newSpendID()), spent: p.spent}
+			default:
+				p = pendingSpend{name: spendStep(newSpendID()), spent: p.spent}
+			}
+		}
+		rec, err := a.recordSpend(ctx, runID, p.name, p.spent)
+		if err != nil {
+			a.keepSpend(runID, p)
+			errs = append(errs, err)
+			continue
+		}
+		wrote = append(wrote, rec)
+	}
+	return wrote, errors.Join(errs...)
+}
+
+// recordNamed returns the record of recs named name.
+func recordNamed(recs []Record, name string) (Record, bool) {
+	for _, r := range recs {
+		if r.Name == name {
+			return r, true
+		}
+	}
+	return Record{}, false
+}
+
+// sameTurnRecord reports whether got, a model record read from the journal, is the record want a
+// drive built: same message, usage, finish, digests and model. Two drivers' records of one turn
+// with all of these equal are not told apart; either is taken as the drive's own.
+func sameTurnRecord(got, want Record) bool {
+	eqUsage := func(a, b *Usage) bool { return (a == nil) == (b == nil) && (a == nil || *a == *b) }
+	eqModel := func(a, b *ModelInfo) bool { return (a == nil) == (b == nil) && (a == nil || *a == *b) }
+	return got.Kind == want.Kind && reflect.DeepEqual(got.Message, want.Message) && eqUsage(got.Usage, want.Usage) &&
+		eqUsage(got.DiscardedUsage, want.DiscardedUsage) && got.Finish == want.Finish && got.RawFinish == want.RawFinish &&
+		got.PromptDigest == want.PromptDigest && got.ToolsDigest == want.ToolsDigest && eqModel(got.Model, want.Model)
+}

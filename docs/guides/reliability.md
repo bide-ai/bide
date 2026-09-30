@@ -80,7 +80,7 @@ a.Use(middleware.Hedge(800*time.Millisecond, openaiModel))
   nothing else changes.
 - `Hedge` does not wait for the losers: it returns as soon as one target wins. The run counts a
   loser's spend with its next turn or, when the run ends first, waits for it (at most two seconds,
-  and not past the run's context) and journals it in a late spend record (`@spend-late/<n>`). A
+  and not past the run's context) and journals it in a late spend record (`@spend-late/<id>`). A
   loser that has not reached the model when the turn ends is not sent. A loser whose model ignores
   cancellation longer keeps running, with the middleware inside `Hedge` on its path, after the run
   has ended, and is not in `Result.Spend`.

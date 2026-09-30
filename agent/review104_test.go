@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -57,8 +58,8 @@ func TestF3_InFlightRequestOfFailedTurnIsJournaled(t *testing.T) {
 			names = append(names, r.Name)
 		}
 	}
-	if journaled != billed || len(names) != 1 || names[0] != spendStep(0) {
-		t.Fatalf("journaled spend %+v in %q, want %+v in %s alone", journaled, names, billed, spendStep(0))
+	if journaled != billed || len(names) != 1 || !strings.HasPrefix(names[0], spendStepPrefix) {
+		t.Fatalf("journaled spend %+v in %q, want %+v in one %s record", journaled, names, billed, spendStepPrefix)
 	}
 }
 

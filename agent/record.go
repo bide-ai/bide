@@ -42,7 +42,9 @@ type Record struct {
 	Usage *Usage `json:"usage,omitempty"`
 	// DiscardedUsage is billed usage no recorded response carries. On a StepModel record, the
 	// turn's other model requests: failed attempts a middleware retried, losing hedge targets. On
-	// a StepValue record named "@spend/<n>", a model call that failed for good. On a
+	// a StepValue record named "@spend/<id>", a model call that failed for good; on one named
+	// "@spend-late/<id>", requests that ended after their turn was recorded, or whose turn another
+	// driver recorded. On a
 	// StepToolResult or StepSagaFail record, the rest of the Spend of the runs the tool call
 	// started. Nil when there was none. WithTokenBudget counts it.
 	DiscardedUsage *Usage `json:"discarded_usage,omitempty"`

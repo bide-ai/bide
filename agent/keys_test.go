@@ -54,6 +54,8 @@ var keyConstructors = map[string]func(string) string{
 		return planScopedStep(context.WithValue(context.Background(), planScopeKey{}, planScope{runID: "r", node: "node:n"}), "r", s)
 	},
 	"lateSpendStep": func(s string) string { return lateSpendStep(len(s)) },
+	"spendStep":     spendStep,
+	"lateSpendStep": lateSpendStep,
 }
 
 // Every key the engine builds starts with a prefix a developer-chosen step name may not use.
@@ -83,7 +85,7 @@ func TestEngineKeys_AreDistinct(t *testing.T) {
 			if name == "runCompleteStep" || name == "runAbortedStep" || name == "runStartStep" || name == "runCancelledStep" || name == "headerStep" {
 				from = name // a constant
 			}
-			if name == "sessionTurnStep" || name == "sessionStartStep" || name == "modelStep" || name == "retrievalStep" || name == "spendStep" || name == "lateSpendStep" || name == "runLimitsStep" {
+			if name == "sessionTurnStep" || name == "sessionStartStep" || name == "modelStep" || name == "retrievalStep" || name == "runLimitsStep" {
 				from = name + "(" + build(s) + ")" // takes a number: equal numbers give equal keys
 			}
 			add(build(s), from)
