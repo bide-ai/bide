@@ -497,10 +497,10 @@ a := agent.New(model, store, tools...).
 	).
 	UseTool(middleware.ToolLog(log.Printf), middleware.ToolCache(), middleware.ToolRetry(3))
 
-// opt-in OTel gen_ai.* spans; the core has no OTel dependency:
-a.Use(trace.Model(tracer, trace.WithSystem("openai"), trace.WithModel("gpt-4o-mini")))
+// opt-in OTel gen_ai.* spans (provider and model from agent.ModelInfoOf); the core has no OTel dependency:
+a.Use(trace.Model(tracer))
 a.UseTool(trace.Tool(tracer)) // execute_tool span per call; nests across the sub-agent boundary
-// ... after the run: cost.Total() (USD), cost.Usage()
+// ... after the run: cost.Snapshot() (answer and spend, in tokens and USD)
 ```
 
 `Retry` जिटर के साथ घातांकीय बैकऑफ़ करता है और एक प्रदाता 429 पर एक `Retry-After` का सम्मान करता है (अडैप्टर एक टाइप-किया गया `*agent.RateLimited` लौटाता है); `Cost` टोकन उपयोग (कैश-रीड/राइट सहित) से USD को एक `CostMeter` में जमा करता है जिसे आप रन के बाद पढ़ते हैं।

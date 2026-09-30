@@ -699,10 +699,10 @@ a := agent.New(model, store, tools...).
 	).
 	UseTool(middleware.ToolLog(log.Printf), middleware.ToolCache(), middleware.ToolRetry(3))
 
-// opt-in OTel gen_ai.* spans; the core has no OTel dependency:
-a.Use(trace.Model(tracer, trace.WithSystem("openai"), trace.WithModel("gpt-4o-mini")))
+// opt-in OTel gen_ai.* spans (provider and model from agent.ModelInfoOf); the core has no OTel dependency:
+a.Use(trace.Model(tracer))
 a.UseTool(trace.Tool(tracer)) // execute_tool span per call; nests across the sub-agent boundary
-// ... after the run: cost.Total() (USD), cost.Usage()
+// ... after the run: cost.Snapshot() (answer and spend, in tokens and USD)
 ```
 
 يقوم `Retry` بتراجع أُسّي مع اهتزاز (jitter) ويحترم `Retry-After` عند 429 من المورّد (يُرجِع المُحوّل نوعًا

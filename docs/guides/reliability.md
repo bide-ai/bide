@@ -21,7 +21,10 @@ a := agent.New(model, store, tools...).
 Put `Hedge` outermost (it should race whole attempts) and `Retry` inside it (retry a target that
 failed): middleware inside `Hedge` wraps every target, backups included. Order is a real choice;
 this is the usual one. `RateLimit` and `Cost` count every request actually sent wherever they sit,
-so each retried attempt and each hedged target takes a token and counts as spend.
+so each retried attempt and each hedged target takes a token and counts as spend: each adds a hook to
+the call (`agent.ModelCall.AddHook`), and the agent's model handler runs every hook once around each
+request it sends, numbering the requests of a turn 1, 2, 3 across every attempt and target
+(`ModelCall.Attempt`).
 
 ## Model middleware (`agent.Use`)
 
@@ -73,9 +76,15 @@ a.Use(middleware.Hedge(800*time.Millisecond, openaiModel))
   joined error is returned. With no backups it is a pass-through.
 - Every target, backups included, goes through the middleware listed after `Hedge` and the agent's
   checks on each model response.
+- A backup is the same call with its `Model` set to the backup (`c := call; c.Model = backup`);
+  nothing else changes.
 - `Hedge` does not wait for the losers: it returns as soon as one target wins. A loser whose model
   ignores cancellation keeps running, with the middleware inside `Hedge` on its path, after the turn
   has ended.
+- Streaming (`Agent.Stream`) needs no code in `Hedge`. One request of a turn streams live at a time,
+  the first to start; the others run without streaming. If the streaming target wins, the caller saw
+  it live. If another target wins, the caller gets `agent.TurnRestarted`, which retracts what was
+  streamed, then the winner's response. Nothing a loser sends reaches the caller after the turn.
 
 ### Rate limiting: `RateLimit`
 
@@ -102,15 +111,36 @@ so you can read spend across a run without touching the loop.
 meter := &middleware.CostMeter{}
 a.Use(middleware.Cost(meter, middleware.Rates{InputPer1M: 3.00, OutputPer1M: 15.00})) // USD per 1M tokens
 // ... after running ...
-fmt.Printf("spent $%.4f, usage %+v\n", meter.SpentTotal(), meter.Spent())
+s := meter.Snapshot()
+fmt.Printf("spent $%.4f, usage %+v\n", s.SpendUSD, s.Spend)
 ```
 
-The meter keeps two views. `Usage` and `Total` count the answers, the responses the calls
-returned and the run records. `Spent` and `SpentTotal` count every request sent, wherever `Cost`
-sits: failed attempts a `Retry` repeated and losing `Hedge` targets are billed too. The run itself
+The meter keeps two views, read together with `Snapshot()`. `Answer` and `AnswerUSD` count the
+answers, the responses the calls returned and the run records. `Spend` and `SpendUSD` count every
+request sent, wherever `Cost` sits: failed attempts a `Retry` repeated and losing `Hedge` targets
+are billed too, and under `agent.Replay` so is the discarded spend the original run recorded. The run itself
 keeps the same split: `Result.Usage` is the answers, `Result.Spend` everything, and
 `WithTokenBudget` stops on everything, including model calls that failed for good. Both cover the
 run's agent tree: a sub-agent's model calls count toward its parent's `Result` and budget.
+
+### Writing model middleware
+
+A model middleware is a `func(next agent.ModelHandler) agent.ModelHandler`, where
+`agent.ModelHandler` is `func(ctx, agent.ModelCall) (agent.ModelResponse, error)`. The rules that
+keep the run's accounting and streaming correct are enforced, not conventions:
+
+- Pass on the call you received, or a copy with fields changed. A `ModelCall` built from scratch
+  would drop the hooks outer middleware added, so the agent's model handler refuses it with
+  `agent.ErrConfig`.
+- `Request.Messages` and `Request.Tools` arrive clipped at every handler, so an `append` allocates:
+  two hedged branches that append to the same call never share a backing array.
+- Hooks are append-only (`AddHook`). The run's spend meter is not a hook, so a middleware cannot hide
+  a request from `WithTokenBudget` or `Result.Spend`.
+- A response you build yourself (a cache, a fallback) is checked like a model's, and a streaming
+  caller gets it replayed after a `TurnRestarted`.
+
+Outside an agent, `agent.CallModel(ctx, model, req, mw...)` sends one call through the same model
+handler, hooks included.
 
 ## Tool middleware
 

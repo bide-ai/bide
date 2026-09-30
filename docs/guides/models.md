@@ -123,6 +123,28 @@ A turn that is cut off or filtered is not journaled, so a run never records half
 final one. All three errors wrap `agent.ErrModel`, so `middleware.Retryable` retries them; a
 turn cut off at the token limit usually ends the same way again, so raise `MaxTokens` for it.
 
+## What a model turn journals
+
+The agent's model handler returns an `agent.ModelResponse`: the `Message`, its `Usage`, the
+neutral `Finish` reason and the provider's `RawFinish`. An empty reason (a custom `Model` that does
+not report one) is recorded as `agent.FinishStop`. A response a middleware builds itself (a
+fallback, a cache) is checked the same way: `FinishLength` and `FinishFiltered` are the errors
+above, and an unknown reason is `agent.ErrStreamProtocol`.
+
+Each model record (`agent.Record` of kind `StepModel`) journals, beside the message and usage:
+
+- `Finish` and `RawFinish`, which `agent.Replay` reproduces;
+- `Model`, the `agent.ModelInfo` of the model that answered (`nil` when it does not describe
+  itself, or when a middleware built the response), so a run that fell back to another provider
+  shows which turn went where;
+- `PromptDigest` and `ToolsDigest`, SHA-256 digests (`agent.PromptDigest`, `agent.ToolsDigest`) of
+  the system prompt and the tool set that turn was sent, after middleware. Agent-level defaults stay
+  live across a redeploy; the digests let an auditor tell which instructions and tools each answer
+  was given.
+
+To call a model outside an agent through the same checks and middleware, use
+`agent.CallModel(ctx, model, req, mw...)`.
+
 ## Prompt caching and usage accounting
 
 An agent loop resends a large constant prefix (system prompt + tool schemas) every turn.

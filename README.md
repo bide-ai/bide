@@ -459,9 +459,12 @@ not started) emits neither `ToolStarted` nor `ToolCompleted`.
 
 Two things worth knowing, both consequences of durability:
 - **Token deltas arrive below the middleware chain** (Retry / Cost still see whole
-  assembled messages), and **only on a fresh model call**. When a middleware such as Retry
-  calls the model again after an attempt that already streamed deltas, `TurnRestarted` marks
-  those deltas as discarded: clear the turn's text when it arrives.
+  assembled messages), and **only on a fresh model call**. One request of a turn streams at a
+  time. When a middleware such as Retry calls the model again after an attempt that already
+  streamed deltas, or the turn's response is not the one that streamed (a Hedge backup won, a
+  fallback or a cache answered), `TurnRestarted` marks those deltas as discarded, and the
+  response the turn records follows: clear the turn's text when it arrives. Middleware has no
+  streaming code for this; the agent does it.
 - **On resume, the journaled transcript is re-emitted** as `AssistantTurn{Replayed: true}` +
   `ToolCompleted` before live progress, so a fresh UI reconstructs the whole story after a
   crash, and a replayed turn produces no token deltas (it was already decided).
@@ -777,15 +780,40 @@ a := agent.New(model, store, tools...).
 	).
 	UseTool(middleware.ToolLog(log.Printf), middleware.ToolCache(), middleware.ToolRetry(3))
 
-// opt-in OTel gen_ai.* spans; the core has no OTel dependency:
-a.Use(trace.Model(tracer, trace.WithSystem("openai"), trace.WithModel("gpt-4o-mini")))
+// opt-in OTel gen_ai.* spans (provider and model from agent.ModelInfoOf); the core has no OTel dependency:
+a.Use(trace.Model(tracer))
 a.UseTool(trace.Tool(tracer)) // execute_tool span per call; nests across the sub-agent boundary
-// ... after the run: cost.Total() (USD), cost.Usage()
+// ... after the run: cost.Snapshot() (answer and spend, in tokens and USD)
 ```
 
 `Retry` does exponential backoff with jitter and honors a `Retry-After` on a provider 429 (the
 adapter returns a typed `*agent.RateLimited`); `Cost` accumulates USD from token usage (incl.
 cache-read/write) into a `CostMeter` you read after the run.
+
+A model middleware is a `func(next agent.ModelHandler) agent.ModelHandler`. It receives an
+`agent.ModelCall` (the `Request`, the target `Model`, `RunID` and `Turn`) and returns an
+`agent.ModelResponse` (the `Message`, its `Usage`, and the `Finish` reason). The call is a value:
+change a copy and pass it on (`c := call; c.Model = backup` is all `Hedge` does). Work that belongs
+to each request actually sent, rather than to the call, goes in a hook, which runs once around every
+request of every retried attempt and hedged target below it:
+
+<!-- docsnip: setup import "log" -->
+```go
+// Log every request a turn sends, with its number within the turn.
+func LogRequests(next agent.ModelHandler) agent.ModelHandler {
+	return func(ctx context.Context, call agent.ModelCall) (agent.ModelResponse, error) {
+		return next(ctx, call.AddHook(agent.ModelCallHook{
+			After: func(_ context.Context, c agent.ModelCall, a agent.ModelAttempt) {
+				log.Printf("run %s turn %d request %d: %d tokens, err %v", c.RunID, c.Turn, c.Attempt(), a.Response.Usage.TotalTokens(), a.Err)
+			},
+		}))
+	}
+}
+```
+
+Hooks are append-only, and the run's own spend accounting is not a hook, so no middleware can hide a
+request from `WithTokenBudget` or `Result.Spend`. Outside an agent, `agent.CallModel(ctx, model,
+req, mw...)` sends one call through the same chain.
 
 Because `trace.Tool` runs inside the loop, its span sits in the context handed to the tool, so
 when a tool is itself a sub-agent, the sub-agent's run and its own spans nest as children. The
