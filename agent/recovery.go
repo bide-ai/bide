@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"os"
+	"slices"
 	"sync"
 	"time"
 )
@@ -124,9 +125,12 @@ func completedAnswer(recs []Record) (Message, bool) {
 }
 
 // Recover re-drives the runs that were in flight when the process died, in one pass. It enumerates
-// every run the store holds (via Lister), skips the ones already marked complete, and
-// calls resume for each remaining run to push it forward. It returns how many runs it
-// re-drove and the joined genuine failures (nil if none).
+// the runs the store holds that are not over (via Lister, which filters out every run holding a
+// terminal marker: run:complete, run:aborted or run:cancelled), and calls resume for each to push
+// it forward. A run another driver finished after the listing is not resumed: holding the run's
+// lease, Recover checks the terminal markers again before it calls resume (over a Journal, three
+// point reads per run it drives). It returns how many runs it re-drove and the joined genuine
+// failures (nil if none).
 //
 // The store must implement Lister; a store that cannot enumerate its runs (the base
 // Durable contract does not require it) yields an ErrConfig-wrapped error.
@@ -206,26 +210,76 @@ func Recover(ctx context.Context, store Durable, resume func(ctx context.Context
 	return recovered, errors.Join(errs...)
 }
 
-// recoverFilter is the runs a recovery pass enumerates: those holding no terminal marker. A run
-// that completed, a saga that aborted and finished its rollback, and a cancelled run are over. A
-// SQL store evaluates the filter in its query, so a pass reads none of the finished runs.
-var recoverFilter = RunFilter{ExcludeHolding: []string{runCompleteStep, runAbortedStep, runCancelledStep}}
+// endOfRunMarkers are the journal names of the terminal markers: a run that completed, a saga
+// that aborted and finished its rollback, and a cancelled run are over.
+var endOfRunMarkers = []string{runCompleteStep, runAbortedStep, runCancelledStep}
+
+// recoverFilter is the runs a recovery pass enumerates: those holding no terminal marker. A SQL
+// store evaluates the filter in its query, so a pass reads none of the finished runs.
+var recoverFilter = RunFilter{ExcludeHolding: endOfRunMarkers}
+
+// runEnded reports whether runID holds an entry named by a terminal marker (see endOfRunMarkers):
+// recoverFilter's test, applied to one run. Like the filter, it asks only whether the entry exists,
+// so it reads no header and decodes nothing: a run in a format this version cannot read that is
+// not over still reaches resume, which refuses it. Over a Journal it costs one point read (Store.Get)
+// per marker, stopping at the first it finds; over another Durable, one History.
+func runEnded(ctx context.Context, store Durable, runID string) (bool, error) {
+	if j := journalOf(store); j != nil {
+		for _, name := range endOfRunMarkers {
+			if _, ok, err := j.store.Get(ctx, runID, name); err != nil || ok {
+				if err != nil {
+					return false, storageErr(fmt.Sprintf("read step %q of run %s", name, runID), err)
+				}
+				return true, nil
+			}
+		}
+		return false, nil
+	}
+	recs, err := store.History(ctx, runID)
+	if err != nil {
+		return false, storageErr("load history "+runID, err) // a format refusal stays one
+	}
+	for _, r := range recs {
+		if slices.Contains(endOfRunMarkers, r.Name) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
 
 // recoverable reports whether a run the recovery filter admits is one a recovery pass drives: not a
 // sub-agent's run (its root's re-run resumes it) or a session's (the session resumes it).
 func recoverable(runID string) bool { return !IsSubRun(runID) && !IsSessionRun(runID) }
 
 // recoverRun drives runID under its lease (when the store supports one) and reports whether it
-// drove it and the genuine failure, if any. A run another holder currently leases is skipped;
-// competing recoverers and live primary drivers coordinate through Lease. A pause and a lost lease
-// are not failures.
+// called resume for it and the genuine failure, if any. A run another holder currently leases is
+// skipped; competing recoverers and live primary drivers coordinate through Lease. A pause and a
+// lost lease are not failures.
+//
+// The pass listed runID before it held the lease, and another driver may have finished the run
+// since (while the pass waited for a slot, or drove the runs listed before it). So under the lease,
+// before resume, recoverRun checks the terminal markers again and leaves a run that is over
+// undriven; a run it could not check is not driven either, and the failure is reported. The check
+// cannot miss a finish by a driver that holds the run's lease (Lease, Recover, RecoverLoop): such a
+// driver records its marker before it releases the lease, and this drive holds the lease from
+// before the check until after resume returns. It can miss a finish by a driver that holds no
+// lease (a plain Agent.Run), and one by a lease holder that stalled past its TTL: a drive that
+// stalls past the TTL between the check and resume loses the lease, and another driver may finish
+// the run in that window. Either way at-most-once still holds: resume is handed a finished run,
+// which a resume that calls Run or RunSaga replays without firing anything again.
 func recoverRun(ctx context.Context, store Durable, runID string, resume func(ctx context.Context, runID string) error, cfg recoverConfig) (bool, error) {
-	driven, err := Lease(ctx, store, runID, func(ctx context.Context) error { return resume(ctx, runID) },
-		WithLeaseHolder(cfg.holder), WithLeaseTTL(cfg.ttl))
+	var resumed bool
+	driven, err := Lease(ctx, store, runID, func(ctx context.Context) error {
+		if over, err := runEnded(ctx, store, runID); err != nil || over {
+			return err
+		}
+		resumed = true
+		return resume(ctx, runID)
+	}, WithLeaseHolder(cfg.holder), WithLeaseTTL(cfg.ttl))
 	if err != nil && (!driven || !IsPause(err) && !errors.Is(err, ErrLeaseLost)) {
-		return driven, fmt.Errorf("recover run %s: %w", runID, err)
+		return resumed, fmt.Errorf("recover run %s: %w", runID, err)
 	}
-	return driven, nil
+	return resumed, nil
 }
 
 // RecoverLoop re-drives in-flight runs until ctx is done, so a run whose holder dies is taken over

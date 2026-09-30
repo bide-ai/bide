@@ -176,8 +176,12 @@ func (c *countingLister) Runs(ctx context.Context, f agent.RunFilter) iter.Seq2[
 	return c.MemStore.Runs(ctx, f)
 }
 
-// A recovery pass lists the runs that are not over in one call and reads none of them: the
-// finished ones are filtered out by the store.
+// A recovery pass lists the runs that are not over in one call, and reads nothing of the finished
+// ones: the store filters them out. For each run it drives, it makes three point reads under the
+// run's lease, one per end-of-run marker, to see that no other driver finished the run after the
+// listing (a run it finds over there is not driven, and costs up to three). It loads no run. These
+// reads raised this budget from none, with the maintainer's approval: without them a pass called
+// resume for a run another driver finished after the listing.
 func TestBudget_RecoverPass(t *testing.T) {
 	ctx := context.Background()
 	m := agent.NewMemStore()
@@ -206,5 +210,9 @@ func TestBudget_RecoverPass(t *testing.T) {
 	if l.calls.Load() != 1 {
 		t.Errorf("Recover listed runs %d times, want once", l.calls.Load())
 	}
-	wantCounts(t, cs, "recovery pass", nil, 0, 0)
+	want := make([]string, 0, 3*runs/2)
+	for range runs / 2 {
+		want = append(want, "get run:complete", "get run:aborted", "get run:cancelled")
+	}
+	wantCounts(t, cs, "recovery pass", want, 0, 0)
 }
