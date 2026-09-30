@@ -29,7 +29,8 @@ type Task[T any] struct {
 // hide the others). The returned error joins every task's error and is nil only if all succeeded.
 // Succeeded tasks are memoized on a later resume. A failed task was not journaled: one marked
 // retry-safe (Task.Safety) re-runs, and a side effect halts with *OutcomeUnknown, as Step does, since a
-// failed effect may still have landed. Task names must be unique; a repeated name is ErrConfig.
+// failed effect may still have landed. Task names must be unique and not empty; a repeated or empty
+// name is ErrConfig.
 // maxConcurrency caps in-flight tasks; <= 0 means one goroutine per task.
 //
 // This is deliberately a thin primitive over the durable journal, not a graph engine: dynamic,

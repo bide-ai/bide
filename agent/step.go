@@ -91,7 +91,7 @@ func hasValueStep(ctx context.Context, store Durable, runID, name string) (bool,
 // body's step runs once per iteration, and name need be unique only within the node. Its halt names
 // that key (OutcomeUnknown.Op.ID); resolve it with the halt's Ref.
 //
-// name must not start with a prefix the engine reserves for its own journal keys ("@", "run:",
+// name must not be empty, and must not start with a prefix the engine reserves for its own journal keys ("@", "run:",
 // "tool:", "attempt:", "approval:", "signal:", and the rest; see IsReservedStepName): such a
 // name is ErrConfig.
 func Step[T any](ctx context.Context, d Durable, runID, name string, fn func(context.Context) (T, error), opts ...StepOption) (T, error) {

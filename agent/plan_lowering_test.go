@@ -180,8 +180,9 @@ func TestResolveHaltRef_RefusesAnOperationWithNoLiveAttempt(t *testing.T) {
 }
 
 // A flow's input is held by its canonical JSON: key order and a number's spelling do not tell two
-// inputs apart, and neither do integers beyond 2^53 that are one double, so an input decoded from
-// RecordedStart and encoded again resumes the run; a different value does not.
+// inputs apart, so an input decoded from RecordedStart and encoded again resumes the run; a
+// different value does not, however close (integers beyond 2^53, and near the uint64 maximum,
+// are compared exactly).
 func TestSameCanonicalJSON(t *testing.T) {
 	for _, tc := range []struct {
 		a, b string
@@ -191,7 +192,20 @@ func TestSameCanonicalJSON(t *testing.T) {
 		{`{"a":1}`, `{"a":1.0}`, true},
 		{`{"a":1e2}`, `{"a":100}`, true},
 		{`{"a":-0}`, `{"a":0}`, true},
-		{`{"id":9007199254740993}`, `{"id":9007199254740992}`, true},
+		{`{"id":9007199254740993}`, `{"id":9007199254740992}`, false},
+		{`9007199254740993`, `9007199254740993.0`, true},
+		{`18446744073709551615`, `18446744073709551614`, false},
+		{`18446744073709551615`, `1.8446744073709551615e19`, true},
+		{`-9223372036854775808`, `-9223372036854775807`, false},
+		{`0.1`, `1e-1`, true},
+		{`0.10`, `0.1`, true},
+		{`100`, `1E+2`, true},
+		{`-0.0`, `0`, true},
+		{`0e7`, `0`, true},
+		{`1.5`, `15e-1`, true},
+		{`1.5`, `1.50001`, false},
+		{`-1`, `1`, false},
+		{`1e9223372036854775807`, `1e9223372036854775807`, true},
 		{` [1, "x" ] `, `[1,"x"]`, true},
 		{`"<"`, `"<"`, true},
 		{`{"a":1}`, `{"a":2}`, false},
@@ -204,5 +218,33 @@ func TestSameCanonicalJSON(t *testing.T) {
 		if got := sameCanonicalJSON(tc.a, tc.b); got != tc.same {
 			t.Errorf("sameCanonicalJSON(%s, %s) = %v, want %v", tc.a, tc.b, got, tc.same)
 		}
+	}
+}
+
+// An empty step name is ErrConfig for Step, a Parallel task and a Step's resolution, inside a flow
+// node or not: it would record a step under a key no resolution or conformance check names.
+func TestEmptyStepNameIsRefused(t *testing.T) {
+	ctx := context.Background()
+	m := NewMemStore()
+	ran := 0
+	fn := func(context.Context) (int, error) { ran++; return 1, nil }
+	if _, err := Step(ctx, m, "r", "", fn); !errors.Is(err, ErrConfig) {
+		t.Errorf("Step(\"\"): %v, want ErrConfig", err)
+	}
+	inNode := context.WithValue(ctx, planScopeKey{}, planScope{runID: "r", node: "node:a"})
+	if _, err := Step(inNode, m, "r", "", fn); !errors.Is(err, ErrConfig) {
+		t.Errorf("Step(\"\") in a node: %v, want ErrConfig", err)
+	}
+	if _, err := Parallel(ctx, m, "r", 0, Task[int]{Name: "", Fn: fn}); !errors.Is(err, ErrConfig) {
+		t.Errorf("Parallel with an empty task name: %v, want ErrConfig", err)
+	}
+	if err := ResolveHaltRef(ctx, m, HaltRef{RunID: "r", Op: OpRef{Kind: OpStep, ID: ""}, Cause: HaltCrashed}, Outcome{Result: 1}); !errors.Is(err, ErrConfig) {
+		t.Errorf("ResolveHaltRef of an empty step: %v, want ErrConfig", err)
+	}
+	if ran != 0 {
+		t.Fatalf("a refused step ran %d times", ran)
+	}
+	if recs, err := m.History(ctx, "r"); err != nil || len(recs) != 0 {
+		t.Fatalf("refused steps recorded %d records (err %v)", len(recs), err)
 	}
 }

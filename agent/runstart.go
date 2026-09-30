@@ -220,11 +220,10 @@ func sameCanonicalJSON(a, b string) bool {
 	return ca == cb
 }
 
-// canonicalJSON re-encodes the JSON text s canonically, in the manner of RFC 8785: objects with
-// their keys sorted, no insignificant whitespace, and every number as the IEEE 754 double it
-// denotes, written in its shortest form (so 1, 1.0 and 1e0 are one value, and two integers
-// beyond 2^53 that round to one double are one value, as for any JSON reader that decodes numbers
-// as doubles). A number beyond the double range keeps its text.
+// canonicalJSON re-encodes the JSON text s canonically: objects with their keys sorted, no
+// insignificant whitespace, and every number as the exact decimal value it denotes (see
+// canonicalNumber), so 1, 1.0 and 1e0 are one value while 2^53 and 2^53+1 are two: no number is
+// rounded through a float.
 func canonicalJSON(s string) (string, error) {
 	dec := json.NewDecoder(strings.NewReader(s))
 	dec.UseNumber()
@@ -240,6 +239,41 @@ func canonicalJSON(s string) (string, error) {
 		return "", err
 	}
 	return b.String(), nil
+}
+
+// canonicalNumber writes the JSON number text t (valid JSON number grammar) as its exact decimal
+// value: "0" for zero, and otherwise an optional "-", the significant digits with no leading or
+// trailing zero, "e", and the exponent that makes them the value. Two number texts denote the
+// same decimal value if and only if their canonical forms are equal. A number whose exponent does
+// not fit an int64 keeps its text.
+func canonicalNumber(t string) string {
+	neg := strings.HasPrefix(t, "-")
+	mant, expText, hasExp := strings.Cut(strings.TrimPrefix(t, "-"), "e")
+	if !hasExp {
+		mant, expText, hasExp = strings.Cut(mant, "E")
+	}
+	var exp int64
+	if hasExp {
+		e, err := strconv.ParseInt(expText, 10, 64) // ParseInt takes a leading "+"
+		if err != nil || e > 1<<62 || e < -(1<<62) {
+			return t
+		}
+		exp = e
+	}
+	intPart, frac, _ := strings.Cut(mant, ".")
+	digits := intPart + frac
+	exp -= int64(len(frac))
+	digits = strings.TrimLeft(digits, "0")
+	if digits == "" {
+		return "0" // every zero, -0 and 0e5 among them
+	}
+	trimmed := strings.TrimRight(digits, "0")
+	exp += int64(len(digits) - len(trimmed))
+	sign := ""
+	if neg {
+		sign = "-"
+	}
+	return sign + trimmed + "e" + strconv.FormatInt(exp, 10)
 }
 
 func writeCanonical(b *strings.Builder, v any) error {
@@ -278,15 +312,7 @@ func writeCanonical(b *strings.Builder, v any) error {
 		}
 		b.WriteByte(']')
 	case json.Number:
-		f, err := strconv.ParseFloat(string(x), 64)
-		if err != nil {
-			b.WriteString(string(x)) // beyond the double range: the text is all there is
-			return nil
-		}
-		if f == 0 {
-			f = 0 // -0 is 0
-		}
-		b.WriteString(strconv.FormatFloat(f, 'g', -1, 64))
+		b.WriteString(canonicalNumber(string(x)))
 	default:
 		eb, err := json.Marshal(x)
 		if err != nil {

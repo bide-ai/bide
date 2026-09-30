@@ -133,8 +133,11 @@ func IsReservedStepName(name string) bool {
 	return false
 }
 
-// checkStepName refuses a developer-chosen step name the engine reserves.
+// checkStepName refuses an empty developer-chosen step name, and one the engine reserves.
 func checkStepName(op, name string) error {
+	if name == "" {
+		return fmt.Errorf("%s: empty step name: %w", op, ErrConfig)
+	}
 	for _, p := range reservedPrefixes {
 		if strings.HasPrefix(name, p) {
 			return fmt.Errorf("%s: step name %q starts with %q, which the engine reserves for its own journal keys: %w", op, name, p, ErrConfig)
