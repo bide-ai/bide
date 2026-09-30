@@ -21,7 +21,8 @@
 #
 # Needs Java 11 or later (JAVA_HOME or java on PATH), curl, and sha256sum or shasum.
 # Environment: BIDE_TLA_CACHE (tool cache; default ~/.cache/bide-tla), TLC_WORKERS (default auto),
-# TLC_JAVA_OPTS (extra JVM options).
+# TLC_JOBS (default 1: how many regress, finding and limit configs run at a time), TLC_JAVA_OPTS
+# (extra JVM options).
 set -euo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -195,17 +196,44 @@ run_cfg() {
 }
 
 run_group() {
-  local cfg found=0
+  local cfg cfgs=()
   for cfg in "$here"/*/*.cfg "$here"/*/regress/*.cfg "$here"/*/findings/*.cfg "$here"/*/limits/*.cfg; do
     [ -f "$cfg" ] || continue
     [ "$(meta GROUP "$cfg")" = "$1" ] || continue
-    found=1
-    run_cfg "$cfg"
+    cfgs+=("$cfg")
   done
-  if [ $found = 0 ]; then
+  if [ ${#cfgs[@]} = 0 ]; then
     # finding and limit may be empty (no open finding); ci and regress never are.
     case "$1" in finding|limit) echo "no configs in group $1" ;; *) die "no configs in group $1" ;; esac
+    return
   fi
+  # The regress, finding and limit configs are small: with TLC_JOBS > 1 they run that many at a
+  # time, one TLC worker each, so JVM starts overlap instead of adding up.
+  if [ "${TLC_JOBS:-1}" -gt 1 ] && case "$1" in regress|finding|limit) true ;; *) false ;; esac; then
+    run_parallel "${cfgs[@]}"
+  else
+    for cfg in "${cfgs[@]}"; do run_cfg "$cfg"; done
+  fi
+}
+
+# run_parallel CFG...: run each config in a child check.sh, TLC_JOBS at a time, and collect their
+# summaries and failures.
+run_parallel() {
+  local tmp i=0 f line
+  tmp=$(mktemp -d)
+  for f in "$@"; do i=$((i + 1)); printf '%s\n' "$f" >"$tmp/$(printf '%04d' $i).path"; done
+  export BIDE_TLA_CACHE="$cache"
+  ls "$tmp"/*.path | xargs -P "$TLC_JOBS" -I{} bash -c \
+    'TLC_WORKERS=1 TLC_JOBS=1 GITHUB_STEP_SUMMARY= "$0" run "$(cat "$1")" >"$1.log" 2>&1' "$here/check.sh" {}
+  for f in "$tmp"/*.path; do
+    sed -n '1,/^Summary:$/p' "$f.log" | grep -v '^Summary:$' | grep -v '^$'
+    while IFS= read -r line; do
+      case "$line" in ''|check.sh:*) continue ;; esac
+      summary+=("$line")
+      case "$line" in *" FAIL "*) failures=$((failures + 1)) ;; esac
+    done < <(sed -n '/^Summary:$/,$p' "$f.log" | tail -n +2)
+  done
+  rm -rf "$tmp"
 }
 
 self_test() {

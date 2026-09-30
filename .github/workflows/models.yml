@@ -62,8 +62,10 @@ jobs:
       - name: Checker self-test (a stale translation and a wrong jar checksum both fail)
         if: steps.changes.outputs.run != 'false'
         run: spec/tla/check.sh self-test
-      - name: Translation check, then the ci, regress and finding configurations
+      - name: Translation check, then the ci, regress, finding and limit configurations
         if: steps.changes.outputs.run != 'false'
+        env:
+          TLC_JOBS: '4'
         run: spec/tla/check.sh
 
   models-nightly:
