@@ -31,6 +31,14 @@ func (b *Builder[In, Out]) Build() (*Flow[In, Out], error) {
 		return nil, fmt.Errorf("plan: build %q: %w", c.flowName, errors.Join(c.errs...))
 	}
 
+	// Every node needs a name: it is the node's journal key, and register makes the first
+	// NAMED node the entry, so an empty name would also move the entry to a later node.
+	for _, n := range c.nodes {
+		if n.name == "" {
+			return nil, fmt.Errorf("plan: build %q: a step or join has an empty name: %w", c.flowName, agent.ErrConfig)
+		}
+	}
+
 	// A flow needs an entry step: the first constructed node. An empty flow cannot
 	// consume In or produce Out.
 	if c.entry == "" {
