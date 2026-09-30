@@ -151,3 +151,42 @@ func TestAdv117c_ExpiredOrForeignGrantIsRefusedUnrecorded(t *testing.T) {
 		})
 	}
 }
+
+// An AttenuateFunc that gives the child an expiry already past, or another subject than the
+// sub-agent's name, is refused before anything is signed or journaled.
+func TestAdv117c_MintRefusesExpiredOrForeignChild(t *testing.T) {
+	_, priv, _ := ed25519.GenerateKey(rand.Reader)
+	signer := Ed25519Signer{Priv: priv}
+	root, _ := SignGrant(Grant{ID: "g0", Issuer: "corp", Subject: "desk", Scope: map[string]string{"limit": "7"}}, signer)
+	for name, narrow := range map[string]AttenuateFunc{
+		"expired child": func(Grant, string) Grant {
+			return Grant{ID: "c", Scope: map[string]string{"limit": "4"}, NotAfterUnix: time.Now().Add(-time.Hour).Unix()}
+		},
+		"foreign subject": func(Grant, string) Grant {
+			return Grant{ID: "c", Subject: "someone-else", Scope: map[string]string{"limit": "4"}}
+		},
+	} {
+		ctx := context.Background()
+		store := agent.NewMemStore()
+		sub := agent.New(agent.NewScriptedModel(agent.TextTurn("done")), store)
+		exec := AttenuatingSubAgent("exec", "", sub, AttenuationConfig{Store: store, Narrow: narrow, Rules: ScopeRules{"limit": NumericAtMost}})
+		parent := agent.New(agent.NewScriptedModel(agent.ToolTurn("c1", "exec", `{"task":"x"}`), agent.TextTurn("done")), store, exec)
+		_, err := parent.Run(WithGrant(ctx, root, signer), "r", "go")
+		recs, _ := store.History(ctx, agent.SubRunID("r", "c1"))
+		if len(recs) != 0 || (name == "expired child" && !errors.Is(err, agent.ErrConfig)) {
+			t.Errorf("%s: Run = %v with %d sub-run records; want the delegation refused before anything is journaled", name, err, len(recs))
+		}
+		if name == "foreign subject" {
+			res, _ := store.History(ctx, "r")
+			found := false
+			for _, r := range res {
+				if r.Kind == agent.StepToolResult && r.ToolUseID == "c1" && r.IsError {
+					found = true
+				}
+			}
+			if !found {
+				t.Errorf("foreign subject: want the refusal recorded as the delegation's failure (%v)", err)
+			}
+		}
+	}
+}

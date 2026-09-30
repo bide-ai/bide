@@ -149,10 +149,7 @@ func (p *ApprovalPolicy) UnmarshalJSON(b []byte) error {
 		*p = *SingleApproval()
 		return nil
 	}
-	if _, ok := members["need"]; !ok {
-		return fmt.Errorf(`approval policy has neither "single" nor "need": %w`, ErrProtocol)
-	}
-	var w approvalWire
+	var w approvalWire // need is required: its tag has no omitempty
 	if err := strictjson.Unmarshal(b, &w, &strictjson.Options{Fields: strictjson.SchemaFields}); err != nil {
 		return fmt.Errorf("approval policy: %w (%w)", err, ErrProtocol)
 	}

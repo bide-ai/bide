@@ -264,9 +264,6 @@ func (t *attenuatingSubAgent) Call(ctx context.Context, args json.RawMessage) (j
 		}
 		childSG = *existing
 	} else {
-		if parentSG.Grant.Expired(now) {
-			return nil, unrecorded(fmt.Errorf("audit: attenuating delegation to %q: the bound grant expired at %d: %w", t.name, parentSG.Grant.NotAfterUnix, agent.ErrConfig))
-		}
 		child := t.narrow(parentSG.Grant, t.name)
 		child.ParentRef = parentSG.Grant.Digest()
 		if child.Issuer == "" {
@@ -284,8 +281,10 @@ func (t *attenuatingSubAgent) Call(ctx context.Context, args json.RawMessage) (j
 		if err := CheckAttenuation(parentSG.Grant, child, t.rules); err != nil {
 			return nil, fmt.Errorf("audit: attenuating delegation to %q: %w", t.name, err)
 		}
+		// CheckAttenuation holds the child to its parent's expiry, so this refuses an expired bound
+		// grant too.
 		if child.Expired(now) {
-			return nil, unrecorded(fmt.Errorf("audit: attenuating delegation to %q: the child grant expires at %d, already past: %w", t.name, child.NotAfterUnix, agent.ErrConfig))
+			return nil, unrecorded(fmt.Errorf("audit: attenuating delegation to %q: its grant expires at %d, already past: %w", t.name, child.NotAfterUnix, agent.ErrConfig))
 		}
 		if subRunID == "" {
 			return nil, fmt.Errorf("audit: attenuating delegation to %q needs a run scope: call it from an agent run", t.name)
