@@ -241,7 +241,7 @@ func IsApprovalDecision(r Record, toolUseID string) bool {
 }
 
 // ApprovalTallyStep is the journal name of the gate's terminal tally for toolUseID.
-func ApprovalTallyStep(toolUseID string) string { return "approval-tally:" + toolUseID }
+func ApprovalTallyStep(toolUseID string) string { return "approval-tally:" + encodeID(toolUseID) }
 
 // FindToolCall returns the journal index of the model turn that requested toolUseID, and the
 // call itself (its name and arguments), or ok=false if no recorded turn requested it.
@@ -259,12 +259,12 @@ func FindToolCall(recs []Record, toolUseID string) (idx int, call ToolUse, ok bo
 	return -1, ToolUse{}, false
 }
 
-// approvalStepName is the journal name of one decision. It is distinct per decision (the
+// approvalDecisionStep is the journal name of one decision. It is distinct per decision (the
 // approved flag and signature are hashed into it), so an approver's records never collide: a
 // bad record cannot take the name a later valid one needs, and an identical resubmission maps
 // to the same name and stays a no-op. Deterministic signatures (ed25519) resubmit to the same
 // name; randomized ones (ML-DSA) add a record the counting rule supersedes.
-func approvalStepName(toolUseID, approverID string, approved bool, sig []byte) string {
+func approvalDecisionStep(toolUseID, approverID string, approved bool, sig []byte) string {
 	h := sha256.New()
 	if approved {
 		h.Write([]byte{1})
@@ -272,7 +272,7 @@ func approvalStepName(toolUseID, approverID string, approved bool, sig []byte) s
 		h.Write([]byte{0})
 	}
 	h.Write(sig)
-	return "approval:" + toolUseID + ":" + approverID + ":" + hex.EncodeToString(h.Sum(nil))
+	return approvalStep(toolUseID) + ":" + approverID + ":" + hex.EncodeToString(h.Sum(nil))
 }
 
 // ApproveOption configures ApproveAs.
@@ -319,7 +319,7 @@ func ApproveAs(ctx context.Context, d Durable, runID, toolUseID, approverID stri
 	for _, opt := range opts {
 		opt(&o)
 	}
-	name := approvalStepName(toolUseID, approverID, approved, sig)
+	name := approvalDecisionStep(toolUseID, approverID, approved, sig)
 	if o.verifierFor != nil {
 		if err := checkDecision(ctx, d, runID, toolUseID, approverID, approved, sig, name, o.verifierFor); err != nil {
 			return err

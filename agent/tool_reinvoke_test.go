@@ -39,7 +39,7 @@ func chargeRun(t *testing.T, mw ToolMiddleware) (charged int, result string) {
 	if _, err := New(m, store, charge).UseTool(mw).Run(context.Background(), "r1", "pay"); err != nil {
 		t.Fatal(err)
 	}
-	rec, _ := hasStep(t, store, "r1", "c1")
+	rec, _ := hasStep(t, store, "r1", ToolResultStep("c1"))
 	return charged, string(rec.Result)
 }
 
@@ -66,7 +66,7 @@ func TestToolReinvoke_RetrySafeToolMayRetry(t *testing.T) {
 	if _, err := New(m, store, flaky).UseTool(naiveRetry(3, false)).Run(context.Background(), "r1", "q"); err != nil {
 		t.Fatal(err)
 	}
-	if rec, _ := hasStep(t, store, "r1", "c1"); calls != 3 || rec.IsError || !strings.Contains(string(rec.Result), "found") {
+	if rec, _ := hasStep(t, store, "r1", ToolResultStep("c1")); calls != 3 || rec.IsError || !strings.Contains(string(rec.Result), "found") {
 		t.Fatalf("calls = %d, result %s (is_error=%v); want 3 calls ending in found", calls, rec.Result, rec.IsError)
 	}
 }

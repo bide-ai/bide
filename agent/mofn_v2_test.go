@@ -87,7 +87,7 @@ func TestMofn_JunkCannotBlockOrDeny(t *testing.T) {
 
 	_, _ = mofnRun(store, "r1", true, pol, vf, &charged)
 	for _, id := range abc {
-		writeRaw(t, store, "r1", "approval:c1:"+id+":junk", Record{Kind: StepApproval, ToolUseID: "c1", Approver: id, Approved: false, Signature: []byte("junk")})
+		writeRaw(t, store, "r1", approvalStep("c1")+":"+id+":junk", Record{Kind: StepApproval, ToolUseID: "c1", Approver: id, Approved: false, Signature: []byte("junk")})
 	}
 	_, err := mofnRun(store, "r1", false, pol, vf, &charged)
 	wantPending(t, err, counts{Need: 2, Pending: abc})

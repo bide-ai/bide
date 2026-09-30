@@ -32,7 +32,7 @@ func TestSubAgent_CancelledParentWaitsForTheChild(t *testing.T) {
 	if !finished.Load() {
 		t.Fatal("Run returned while the sub-agent's write was still in flight")
 	}
-	if _, ok := hasStep(t, store, "r1/s1", "w1"); !ok {
+	if _, ok := hasStep(t, store, "r1>s1", ToolResultStep("w1")); !ok {
 		t.Fatal("the sub-agent's completed write was not journaled by the time Run returned")
 	}
 }

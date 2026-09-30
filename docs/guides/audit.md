@@ -250,7 +250,7 @@ report, _ := pkg.Verify(pub, audit.WithApprovedPolicies(allowlist...)) // trusti
 `Verify` trusts the key you pass, never the one embedded in the package, and every field of the
 package is verified or derived from verified data:
 
-- `Format` must be `audit.EvidenceFormat` (`bide.audit.evidence.v2`), and `PublicKeyHex` must be the
+- `Format` must be `audit.EvidenceFormat` (`bide.audit.evidence.v3`), and `PublicKeyHex` must be the
   key you pass.
 - The STH must be an authentic journal head of the package's `RunID`, so the run the report names is
   the run the log key signed.

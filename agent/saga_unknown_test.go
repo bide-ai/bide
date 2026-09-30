@@ -121,8 +121,8 @@ func TestSaga_RollbackHaltInASubAgentNamesTheRoot(t *testing.T) {
 			if halt == nil {
 				t.Fatalf("err = %v; want a rollback halted on p1", err)
 			}
-			if halt.RunID != "r1/s1" || halt.ToolUseID != "p1" || halt.RootRunID != "r1" {
-				t.Fatalf("halt on call %q in run %q names root %q; want p1 in r1/s1 with root r1", halt.ToolUseID, halt.RunID, halt.RootRunID)
+			if halt.RunID != "r1>s1" || halt.ToolUseID != "p1" || halt.RootRunID != "r1" {
+				t.Fatalf("halt on call %q in run %q names root %q; want p1 in r1>s1 with root r1", halt.ToolUseID, halt.RunID, halt.RootRunID)
 			}
 		})
 	}

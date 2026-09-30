@@ -678,7 +678,7 @@ func TestAttenuatingSubAgent_InheritsNotAfter(t *testing.T) {
 	if err := secDelegate(t, store, tool, WithGrant(context.Background(), rootSG, signer), "p1"); err != nil {
 		t.Fatal(err)
 	}
-	grants := secGrantsIn(t, store, "p1/c1")
+	grants := secGrantsIn(t, store, agent.SubRunID("p1", "c1"))
 	if len(grants) != 1 || grants[0].Grant.NotAfter != 1000 {
 		t.Fatalf("child grants %+v, want one with the parent's not_after 1000", grants)
 	}
@@ -706,7 +706,7 @@ func TestAttenuatingSubAgent_DoesNotShareSubRunAcrossParents(t *testing.T) {
 		t.Fatalf("%d grants recorded in the shared sub-run %q", n, "sub/exec")
 	}
 	for _, desk := range []string{"desk-a", "desk-b"} {
-		grants := secGrantsIn(t, store, "run-"+desk+"/c1")
+		grants := secGrantsIn(t, store, agent.SubRunID("run-"+desk, "c1"))
 		if len(grants) != 1 || grants[0].Grant.Issuer != desk {
 			t.Fatalf("sub-run of run-%s holds grants %+v, want only its own", desk, grants)
 		}

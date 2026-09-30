@@ -22,6 +22,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"golang.org/x/sync/errgroup"
 )
@@ -337,10 +338,8 @@ func (a *Agent) Run(ctx context.Context, runID, input string) (Message, error) {
 // It returns the final message, accumulated token usage across all model turns, the
 // number of live model turns (replayed journal turns are not counted), and any error.
 func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool, emit func(AgentEvent)) (Message, usageTotals, int, error) {
-	if runID == "" {
-		// An empty runID would key every run to the same journal, silently cross-contaminating
-		// their memoized steps. Reject it rather than corrupt the log.
-		return Message{}, usageTotals{}, 0, fmt.Errorf("run: empty runID: %w", ErrConfig)
+	if err := checkRunID(ctx, runID); err != nil {
+		return Message{}, usageTotals{}, 0, err
 	}
 	if err := a.checkTools(); err != nil {
 		return Message{}, usageTotals{}, 0, err
@@ -397,6 +396,9 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 			name, _ := toolNameFor(recs, r.ToolUseID)
 			fire(ToolCompleted{ToolUseID: r.ToolUseID, Name: name, Result: r.Result, IsError: r.IsError})
 		case StepAttempt:
+			if !isToolAttempt(r) {
+				continue // a Step's marker, not a call's
+			}
 			attempted[r.ToolUseID] = true
 			attemptedAtMs[r.ToolUseID] = r.AttemptedAt
 		case StepSagaFail:
@@ -489,7 +491,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 			}
 			genCtx = withModelRun(genCtx, a.store, runID) // model middleware can journal a step of this run (WithRetrieval)
 			var turnUsage Usage
-			rec, err := a.store.Do(genCtx, runID, fmt.Sprintf("@llm/%d", modelSeq),
+			rec, err := a.store.Do(genCtx, runID, modelStep(modelSeq),
 				func(ctx context.Context) (Record, error) {
 					m, u, e := a.generate(ctx, Request{Messages: msgs, Tools: a.toolList(), Sampling: a.sampling, ResponseFormat: a.responseFormat, ToolChoice: a.toolChoice}, toolUseIDs(msgs), meter)
 					if e != nil {
@@ -588,7 +590,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 				}
 				if !approved { // denied — record a denial and let the model react
 					const denied = `"tool call denied by human"`
-					if _, err := a.store.Do(ctx, runID, tu.ID, func(context.Context) (Record, error) {
+					if _, err := a.store.Do(ctx, runID, ToolResultStep(tu.ID), func(context.Context) (Record, error) {
 						return Record{Kind: StepToolResult, ToolUseID: tu.ID, IsError: true, Result: json.RawMessage(denied)}, nil
 					}); err != nil {
 						return Message{}, totalUsage, liveTurns, err
@@ -628,8 +630,8 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 						err = nil
 					}
 				}()
-				sctx := withRunScope(gctx, runID+"/"+c.tu.ID) // hierarchical sub-run ID
-				sctx = withRunContext(sctx, a.store, runID)   // lets the tool call Interrupt
+				sctx := withRunScope(gctx, SubRunID(runID, c.tu.ID)) // hierarchical sub-run ID
+				sctx = withRunContext(sctx, a.store, runID)          // lets the tool call Interrupt
 				if saga {
 					sctx = withSaga(sctx)
 				}
@@ -638,7 +640,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 				// first (overlapping drivers, e.g. after a lease lapsed), it owns the side effect
 				// and this driver halts rather than run it a second time.
 				if !c.t.Safety().retriableOnResume() {
-					won, got, err := ClaimAttempt(gctx, a.store, runID, "attempt:"+c.tu.ID,
+					won, got, err := ClaimAttempt(gctx, a.store, runID, toolAttemptStep(c.tu.ID),
 						Record{Kind: StepAttempt, ToolUseID: c.tu.ID, AttemptedAt: time.Now().UnixMilli()})
 					if err != nil {
 						return err
@@ -659,7 +661,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 				// side effect is left with no recorded outcome and resume would halt on it (or, worse,
 				// re-fire it). The attempt marker above stays on gctx: if we are cancelled before it
 				// commits, the tool has not started, so there is nothing to record.
-				rec, err := a.store.Do(context.WithoutCancel(gctx), runID, c.tu.ID, func(context.Context) (Record, error) {
+				rec, err := a.store.Do(context.WithoutCancel(gctx), runID, ToolResultStep(c.tu.ID), func(context.Context) (Record, error) {
 					res, callErr := toolH(sctx, c.tu)
 					r := Record{Kind: StepToolResult, ToolUseID: c.tu.ID}
 					if callErr != nil && sctx.Err() != nil {
@@ -802,7 +804,7 @@ func (a *Agent) quorumTally(ctx context.Context, runID string, tu ToolUse, pol *
 	if !tally.Passed() && !tally.Unreachable() {
 		return tally, false, nil
 	}
-	tally, err = Step(ctx, a.store, runID, name, func(context.Context) (ApprovalTally, error) { return tally, nil }, StepSafety(Safety{ReadOnly: true}))
+	tally, err = step(ctx, a.store, runID, name, func(context.Context) (ApprovalTally, error) { return tally, nil }, StepSafety(Safety{ReadOnly: true}))
 	if err != nil {
 		return ApprovalTally{}, false, fmt.Errorf("record %s (run %s): %w (%w)", name, runID, err, ErrStorage)
 	}
@@ -821,16 +823,20 @@ func toolUseIDs(msgs []Message) map[string]bool {
 }
 
 // checkToolUseIDs rejects a live model turn whose tool calls cannot each be keyed by their own
-// ID: a call with no ID, an ID already used earlier in the conversation (used), or an ID that
-// appears twice in the turn. The loop records each call's result and journal step under its ID,
-// so a reused ID would pass a new call off as one already done. Only live turns are checked; a
-// turn replayed from the journal is taken as recorded.
+// ID: a call with no ID, an ID already used earlier in the conversation (used), an ID that
+// appears twice in the turn, or an ID that is not valid UTF-8 (the journal's JSON cannot hold
+// it, so the replayed ID would differ from the live one). The loop records each call's result
+// and journal step under its ID, so a reused ID would pass a new call off as one already done.
+// Any other ID is safe: the keys and sub-run ID derived from it encode it (see encodeID). Only
+// live turns are checked; a turn replayed from the journal is taken as recorded.
 func checkToolUseIDs(m Message, used map[string]bool) error {
 	seen := map[string]bool{}
 	for _, tu := range m.toolUses() {
 		switch {
 		case tu.ID == "":
 			return fmt.Errorf("model called tool %q with no tool-use id: %w", tu.Name, ErrToolUseIDReused)
+		case !utf8.ValidString(tu.ID):
+			return fmt.Errorf("model called tool %q with tool-use id %q, which is not valid UTF-8: %w", tu.Name, tu.ID, ErrToolUseIDReused)
 		case used[tu.ID]:
 			return fmt.Errorf("model called tool %q with tool-use id %q from an earlier turn: %w", tu.Name, tu.ID, ErrToolUseIDReused)
 		case seen[tu.ID]:
@@ -957,7 +963,7 @@ func withRunScope(ctx context.Context, scope string) context.Context {
 }
 
 // RunScope returns the hierarchical run scope for the current tool execution
-// (parentRunID/toolUseID). Sub-agents use it to derive a stable, resumable sub-run ID.
+// (SubRunID: the parent run ID, '>', the encoded tool-use ID). Sub-agents use it to derive a stable, resumable sub-run ID.
 func RunScope(ctx context.Context) string {
 	s, _ := ctx.Value(runScopeKey).(string)
 	return s

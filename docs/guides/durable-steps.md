@@ -27,7 +27,7 @@ building block the agent loop itself is made of, exposed for your own orchestrat
 A step is a side effect unless you say otherwise, and it gets the same guarantee as a tool call:
 it runs **at most once**. An attempt marker is journaled before `fn` runs, so if the process dies
 after `fn`'s effect and before its result is recorded, the resumed step returns `*ResumeHalt`
-instead of running `fn` again; `ResolveHalt` (with the step name as the ID) records the confirmed
+instead of running `fn` again; `ResolveStepHalt` (with the step name) records the confirmed
 outcome. The same holds when `fn` returns an error, since a failed call may still have taken
 effect. A step that is safe to re-run declares it with `StepSafety`, and then simply re-runs after
 a crash or an error:
@@ -45,7 +45,11 @@ res, err := agent.Step(ctx, store, runID, "reserve", // at most once; halts on a
 result is journaled as a `StepValue` record, so it shows up in `RenderMermaid` as `step: <name>`
 and is independently provable via `audit.ProveStep` (see [Audit](audit.md)). `name` must be
 unique within the run: a second `Step` with the same `(runID, name)` returns the first one's
-recorded result.
+recorded result. It shares the run's journal with the engine's own records, so a name that starts
+with a prefix the engine reserves for them (`@`, `run:`, `tool:`, `attempt:`, `approval:`,
+`approval-tally:`, `signal:`, `await-timeout:`, `await-resolved:`, `timer:`, `interrupt:`, `chan:`,
+`chanack:`, `turn/`, `start/`, `from/`, `audit:`; see `agent.IsReservedStepName`) is `ErrConfig`,
+for `Step` and for a `Parallel` task alike.
 
 `Step` is the idempotency guard the [Messaging](messaging.md) webhook pattern uses to make a
 redelivered inbound event replay instead of re-fire.
@@ -174,6 +178,12 @@ signal (`RunID`, `ToolUseID`), then re-run the run named by `RootRunID`, the top
 the root agent to resume down the path. The same holds for `Interrupted`, `Awaiting`, and
 `Sleeping` from a sub-agent; a `Sleep` in a sub-agent schedules its wake for the root run.
 
+A sub-run's ID is `agent.SubRunID(parentRunID, toolUseID)`: the parent's run ID, `>`, and the
+tool-use ID encoded so that no ID a model sends can name another call's sub-run. A top-level run ID
+therefore may not contain `>` (`Run`, `RunSaga`, `Stream` and the rest return `ErrConfig`); `/` is
+fine (`tenant/123`). `agent.IsSubRun` tells the two apart, and `Recover` skips sub-runs, which
+their root's re-run resumes.
+
 ### Clearing a `ResumeHalt`: `ResolveHalt`
 
 A `ResumeHalt` is deliberately terminal until a human confirms the real outcome: the runtime cannot
@@ -194,6 +204,11 @@ if errors.As(err, &halt) {
 Pass the result value an actual call would have returned, and `isError=true` if the verified outcome
 was a failure the model should react to. It is idempotent (first result for a `(runID, toolUseID)`
 wins), so a retry or a racing driver injects it at most once.
+
+A halted `Step` (its `ResumeHalt` has an empty `ToolName`; `ToolUseID` is the step name) is cleared
+the same way with `ResolveStepHalt(ctx, store, halt.RunID, halt.ToolUseID, result, isError)`, which
+takes the same options. A tool call's result and a step's are separate journal records, so each
+function refuses a name that only the other kind of operation attempted.
 
 ### Resolving without a human: reconcilers
 

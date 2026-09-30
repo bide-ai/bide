@@ -89,7 +89,7 @@ func TestModelVisibleJSON_NotHTMLEscaped(t *testing.T) {
 		store := NewMemStore()
 		m := &lastToolResultModel{script: script()}
 		tool := Func("t", "", Safety{}, func(context.Context, struct{}) (string, error) { return "", nil })
-		if _, err := store.Do(ctx, "r", "attempt:c1", func(context.Context) (Record, error) {
+		if _, err := store.Do(ctx, "r", toolAttemptStep("c1"), func(context.Context) (Record, error) {
 			return Record{Kind: StepAttempt, ToolUseID: "c1"}, nil
 		}); err != nil {
 			t.Fatal(err)

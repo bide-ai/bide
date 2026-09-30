@@ -67,9 +67,10 @@ the recorded answer without calling the model, even if the process died after th
 the reply went out. A turn interrupted by a crash or a pause resumes when the event is redelivered,
 in its own journal, so a different message arriving in between gets its own turn; the resumed turn
 still sees the conversation as it stood when the turn started, since that starting point is
-journaled. Reusing a key for different text is `ErrConfig`. Several workers may hold handles on one
-conversation: every message is recorded once, and a handle that is behind catches up from the
-journal before answering, so each new turn sees the conversation as it stands.
+journaled. Reusing a key for different text is `ErrConfig`, as is a key containing `/` or `>` (the
+key names that journal). Several workers may hold handles on one conversation: every message is
+recorded once, and a handle that is behind catches up from the journal before answering, so each
+new turn sees the conversation as it stands.
 
 The first delivery runs the turn and records the reply under the event id; a redelivery returns the
 recorded reply without advancing the transcript. If the turn pauses (a tool needs approval) or

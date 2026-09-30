@@ -106,8 +106,8 @@ narrower `Scope` (and may set `Subject` and an earlier `NotAfter`); the wrapper 
 rules you pass, and refuses the delegation, signing nothing, if the child is not a valid
 delegation: a widening `AttenuateFunc` is caught when it runs, not later by a verifier.
 
-The child grant is recorded in the sub-run the agent loop gives this call (`parentRunID/toolUseID`,
-unique per call), so each delegation's grant sits in its own journal. Called outside an agent run,
+The child grant is recorded in the sub-run the agent loop gives this call (`agent.SubRunID(parentRunID,
+toolUseID)`, unique per call), so each delegation's grant sits in its own journal. Called outside an agent run,
 where there is no such scope, the tool refuses rather than fall back to a sub-run ID that every
 parent run would share. With no grant on the context it is a plain sub-agent that inherits the
 identity, so it is safe to use either way. The wrapped sub-agent still runs its own full agent loop and reasons

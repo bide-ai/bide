@@ -27,8 +27,8 @@ func TestSubAgentHalt_ResolvedAndContinuedFromTheRoot(t *testing.T) {
 	_, _ = root.Run(ctx, "p", "go")
 	_, err := root.Run(context.Background(), "p", "go")
 	var halt *ResumeHalt
-	if !errors.As(err, &halt) || halt.RunID != "p/s1" || halt.RootRunID != "p" {
-		t.Fatalf("halt = %+v (%v); want RunID p/s1 and RootRunID p", halt, err)
+	if !errors.As(err, &halt) || halt.RunID != "p>s1" || halt.RootRunID != "p" {
+		t.Fatalf("halt = %+v (%v); want RunID p>s1 and RootRunID p", halt, err)
 	}
 	if err := ResolveHalt(context.Background(), store, halt.RunID, halt.ToolUseID, "charged", false); err != nil {
 		t.Fatal(err)
@@ -37,7 +37,7 @@ func TestSubAgentHalt_ResolvedAndContinuedFromTheRoot(t *testing.T) {
 	if err != nil || msg.Text() != "parent done" {
 		t.Fatalf("continue from the root = %q, %v", msg.Text(), err)
 	}
-	if rec, ok := hasStep(t, store, "p", "s1"); !ok || string(rec.Result) != `"sub done"` {
+	if rec, ok := hasStep(t, store, "p", ToolResultStep("s1")); !ok || string(rec.Result) != `"sub done"` {
 		t.Fatalf("the parent recorded %s for the sub-agent, want its own answer", rec.Result)
 	}
 }
@@ -51,8 +51,8 @@ func TestSubAgentInterrupt_AnsweredAndContinuedFromTheRoot(t *testing.T) {
 	root := clerkTree(store, ask)
 	_, err := root.Run(context.Background(), "p", "go")
 	var intr *Interrupted
-	if !errors.As(err, &intr) || intr.RunID != "p/s1" || intr.RootRunID != "p" {
-		t.Fatalf("interrupt = %+v (%v); want RunID p/s1 and RootRunID p", intr, err)
+	if !errors.As(err, &intr) || intr.RunID != "p>s1" || intr.RootRunID != "p" {
+		t.Fatalf("interrupt = %+v (%v); want RunID p>s1 and RootRunID p", intr, err)
 	}
 	if err := Resume(context.Background(), store, intr.RunID, intr.Key, "yes"); err != nil {
 		t.Fatal(err)

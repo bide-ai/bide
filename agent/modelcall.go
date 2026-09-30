@@ -112,7 +112,7 @@ const spendStepPrefix = "@spend/"
 // record: a StepValue carrying it as DiscardedUsage. It is written even when ctx is cancelled,
 // the common way a call fails, since the requests were billed either way.
 func (a *Agent) recordSpend(ctx context.Context, runID string, n int, spent Usage) error {
-	_, err := a.store.Do(context.WithoutCancel(ctx), runID, fmt.Sprintf("%s%d", spendStepPrefix, n), func(context.Context) (Record, error) {
+	_, err := a.store.Do(context.WithoutCancel(ctx), runID, spendStep(n), func(context.Context) (Record, error) {
 		return Record{Kind: StepValue, DiscardedUsage: &spent}, nil
 	})
 	if err != nil {

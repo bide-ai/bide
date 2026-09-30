@@ -270,6 +270,9 @@ func assemble(cfg *config, reg *Registry) (*builderCore, error) {
 			problems = append(problems, fmt.Sprintf("node %q is declared more than once", cn.Name))
 		}
 		seenNodeName[cn.Name] = true
+		if err := checkStepName(cn.Name); err != nil {
+			problems = append(problems, err.Error())
+		}
 
 		b, ok := reg.blocks[cn.Block]
 		if !ok {
@@ -416,6 +419,9 @@ func assemble(cfg *config, reg *Registry) (*builderCore, error) {
 			// edges, so a config diamond and a hand-built one share node/edge insertion
 			// order and therefore one Digest.
 			m := reg.merges[w.Merge] // resolved above
+			if err := checkStepName(w.Join); err != nil {
+				return nil, fmt.Errorf("plan: load %q: wiring[%d] join: %w", cfg.Flow, i, err)
+			}
 			if core.byName[w.Join] != nil {
 				return nil, fmt.Errorf("plan: load %q: wiring[%d] join names %q, which is already a declared node; a join creates its own node", cfg.Flow, i, w.Join)
 			}

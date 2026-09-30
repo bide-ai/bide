@@ -34,7 +34,7 @@ func runToolTwice(t *testing.T, tool agent.Tool, between func()) map[string]any 
 	t.Helper()
 	ctx := context.Background()
 	store := agent.NewMemStore()
-	crashing := &crashAfterStep{Durable: store, name: "c1"}
+	crashing := &crashAfterStep{Durable: store, name: agent.ToolResultStep("c1")}
 	first := agent.New(agent.NewScriptedModel(agent.ToolTurn("c1", tool.Name(), `{}`), agent.TextTurn("done")), crashing, tool)
 	if _, err := first.Run(ctx, "r", "go"); err == nil {
 		t.Fatal("the first run did not crash")
@@ -51,7 +51,7 @@ func runToolTwice(t *testing.T, tool agent.Tool, between func()) map[string]any 
 		t.Fatal(err)
 	}
 	for _, r := range recs {
-		if r.Name == "c1" {
+		if r.Name == agent.ToolResultStep("c1") {
 			var m map[string]any
 			if err := json.Unmarshal(r.Result, &m); err != nil {
 				t.Fatalf("tool result %s: %v", r.Result, err)

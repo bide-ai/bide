@@ -41,6 +41,9 @@ type Task[T any] struct {
 func Parallel[T any](ctx context.Context, d Durable, runID string, maxConcurrency int, tasks ...Task[T]) ([]T, error) {
 	seen := make(map[string]bool, len(tasks))
 	for _, t := range tasks {
+		if err := checkStepName("agent: Parallel", t.Name); err != nil {
+			return nil, err // refused before any task runs
+		}
 		if seen[t.Name] {
 			// Two tasks sharing a journal key would share one result: one of them would never run.
 			return nil, fmt.Errorf("agent: Parallel: task name %q is used twice: %w", t.Name, ErrConfig)

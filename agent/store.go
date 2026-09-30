@@ -180,8 +180,8 @@ func hasValueStep(ctx context.Context, store Durable, runID, name string) (bool,
 // A step runs at most once, like a tool call. By default it is treated as a side effect: an
 // attempt marker is journaled before fn runs, so if the process dies after fn's effect and
 // before its result is recorded, the resumed step returns *ResumeHalt instead of running fn
-// again. Clear it with ResolveHalt (the halt's ToolUseID is the step name) once the true
-// outcome is known. A step that is safe to re-run declares it with StepSafety (ReadOnly,
+// again. Clear it with ResolveStepHalt (the halt's ToolUseID is the step name; its ToolName is
+// empty) once the true outcome is known. A step that is safe to re-run declares it with StepSafety (ReadOnly,
 // Idempotent, or an IdempotencyKey); it then skips the marker and simply re-runs after a crash.
 //
 // If fn returns an error, nothing is recorded but the marker: a side-effecting step whose fn
@@ -190,7 +190,20 @@ func hasValueStep(ctx context.Context, store Durable, runID, name string) (bool,
 // T must be JSON-serializable: the result is marshaled into the journal, so a struct with
 // unexported fields round-trips those fields to their zero values (encoding/json skips them)
 // with no error reported. Return exported fields, a map, or a pointer whose fields are exported.
+//
+// name must not start with a prefix the engine reserves for its own journal keys ("@", "run:",
+// "tool:", "attempt:", "approval:", "signal:", and the rest; see IsReservedStepName): such a
+// name is ErrConfig.
 func Step[T any](ctx context.Context, d Durable, runID, name string, fn func(context.Context) (T, error), opts ...StepOption) (T, error) {
+	if err := checkStepName("Step", name); err != nil {
+		var zero T
+		return zero, err
+	}
+	return step(ctx, d, runID, name, fn, opts...)
+}
+
+// step is Step without the check on name, for the engine's own steps.
+func step[T any](ctx context.Context, d Durable, runID, name string, fn func(context.Context) (T, error), opts ...StepOption) (T, error) {
 	var out T
 	if err := ctx.Err(); err != nil {
 		return out, err // a cancelled caller starts no new step
@@ -204,7 +217,7 @@ func Step[T any](ctx context.Context, d Durable, runID, name string, fn func(con
 	claimed := true
 	var attemptedAt time.Time
 	if !cfg.safety.RetrySafe() {
-		won, got, err := ClaimAttempt(ctx, d, runID, "attempt:step:"+name,
+		won, got, err := ClaimAttempt(ctx, d, runID, stepAttemptStep(name),
 			Record{Kind: StepAttempt, ToolUseID: name, AttemptedAt: time.Now().UnixMilli()})
 		if err != nil {
 			return out, err
@@ -219,7 +232,7 @@ func Step[T any](ctx context.Context, d Durable, runID, name string, fn func(con
 			// A retry-safe step writes no marker, but an earlier attempt of it may have, if it
 			// was declared a side effect then. The marker is the attempt's recorded safety, so
 			// the step halts as it would have, rather than run a side effect a second time.
-			marker, err := d.Do(ctx, runID, "attempt:step:"+name, func(context.Context) (Record, error) {
+			marker, err := d.Do(ctx, runID, stepAttemptStep(name), func(context.Context) (Record, error) {
 				return Record{}, errNoAttempt
 			})
 			switch {
@@ -280,19 +293,20 @@ func Approve(ctx context.Context, d Durable, runID, toolUseID string, approved b
 	if runID == "" {
 		return fmt.Errorf("Approve: empty runID: %w", ErrConfig)
 	}
-	_, err := d.Do(ctx, runID, "approval:"+toolUseID, func(context.Context) (Record, error) {
+	_, err := d.Do(ctx, runID, approvalStep(toolUseID), func(context.Context) (Record, error) {
 		return Record{Kind: StepApproval, ToolUseID: toolUseID, Approved: approved}, nil
 	})
 	return err
 }
 
-// ResolveHalt is the sanctioned escape from a ResumeHalt. After a non-retriable tool
-// halted with an unknown outcome (see ResumeHalt), an operator who has verified the real
+// ResolveHalt is the sanctioned escape from a ResumeHalt on a tool call. After a non-retriable
+// tool halted with an unknown outcome (see ResumeHalt), an operator who has verified the real
 // side effect out of band injects the missing tool result directly, keyed by the halted
-// tool-use ID (the same key the agent loop uses), so a re-run proceeds past the halt
-// instead of halting again. Pass the result value (JSON-marshalled here) an actual call
+// tool-use ID (under ToolResultStep, the key the agent loop uses), so a re-run proceeds past the
+// halt instead of halting again. Pass the result value (JSON-marshalled here) an actual call
 // would have returned, and isError if the verified outcome was a failure the model should
-// react to.
+// react to. A halted Step (its ResumeHalt has no ToolName) is cleared with ResolveStepHalt:
+// ResolveHalt refuses an ID that only a Step has attempted.
 //
 // It is idempotent: the first result for a (runID, toolUseID) wins, so calling it twice or
 // racing a concurrent driver injects the record at most once. runID and toolUseID come
@@ -315,11 +329,37 @@ func Approve(ctx context.Context, d Durable, runID, toolUseID string, approved b
 // This is the only supported way to clear a ResumeHalt for a non-idempotent side effect;
 // deciding the true outcome is a human (or reconciler) judgment the runtime cannot make for you.
 func ResolveHalt(ctx context.Context, store Durable, runID, toolUseID string, result any, isError bool, opts ...ResolveOption) error {
-	if runID == "" {
-		return fmt.Errorf("ResolveHalt: empty runID: %w", ErrConfig)
-	}
 	if toolUseID == "" {
 		return fmt.Errorf("ResolveHalt: empty toolUseID: %w", ErrConfig)
+	}
+	h := haltKeys{op: "ResolveHalt", id: toolUseID, attempt: toolAttemptStep(toolUseID), other: stepAttemptStep(toolUseID), otherOp: "ResolveStepHalt",
+		result: ToolResultStep(toolUseID), kind: StepToolResult}
+	return resolve(ctx, store, runID, h, result, isError, opts)
+}
+
+// ResolveStepHalt clears a ResumeHalt on the Step named name, as ResolveHalt does for a tool
+// call: it records the verified outcome as the step's result, so the resumed Step returns it
+// (or, with isError, fails with it) instead of halting again. It takes the same options.
+func ResolveStepHalt(ctx context.Context, store Durable, runID, name string, result any, isError bool, opts ...ResolveOption) error {
+	if err := checkStepName("ResolveStepHalt", name); err != nil {
+		return err
+	}
+	h := haltKeys{op: "ResolveStepHalt", id: name, attempt: stepAttemptStep(name), other: toolAttemptStep(name), otherOp: "ResolveHalt",
+		result: name, kind: StepValue}
+	return resolve(ctx, store, runID, h, result, isError, opts)
+}
+
+// haltKeys names what a resolution reads and writes: the halted operation's attempt marker, the
+// marker a same-named operation of the other kind would have (to refuse the wrong function),
+// and the key and kind of the result it records.
+type haltKeys struct {
+	op, id, attempt, other, otherOp, result string
+	kind                                    StepKind
+}
+
+func resolve(ctx context.Context, store Durable, runID string, h haltKeys, result any, isError bool, opts []ResolveOption) error {
+	if runID == "" {
+		return fmt.Errorf("%s: empty runID: %w", h.op, ErrConfig)
 	}
 	cfg := resolveConfig{now: time.Now}
 	for _, o := range opts {
@@ -328,25 +368,39 @@ func ResolveHalt(ctx context.Context, store Durable, runID, toolUseID string, re
 	if cfg.evErr != nil {
 		return cfg.evErr
 	}
+	recs, err := store.History(ctx, runID)
+	if err != nil {
+		return fmt.Errorf("%s: read history for %s: %w (%w)", h.op, runID, err, ErrStorage)
+	}
+	var attempt, other *Record
+	for i := range recs {
+		switch recs[i].Name {
+		case h.attempt:
+			attempt = &recs[i]
+		case h.other:
+			other = &recs[i]
+		}
+	}
+	if attempt == nil && other != nil {
+		return fmt.Errorf("%s: %q in run %s was attempted by the other kind of operation; resolve it with %s: %w", h.op, h.id, runID, h.otherOp, ErrConfig)
+	}
 	if cfg.minHaltAge > 0 {
-		attemptedAt, ok, err := attemptTime(ctx, store, runID, toolUseID)
-		if err != nil {
-			return err
+		if attempt == nil || attempt.AttemptedAt == 0 {
+			return fmt.Errorf("%s: cannot enforce min halt age for %q: no attempt marker carries a timestamp: %w", h.op, h.id, ErrConfig)
 		}
-		if !ok {
-			return fmt.Errorf("ResolveHalt: cannot enforce min halt age for %q: no attempt marker carries a timestamp: %w", toolUseID, ErrConfig)
-		}
-		if age := cfg.now().Sub(attemptedAt); age < cfg.minHaltAge {
-			return &HaltTooYoung{RunID: runID, ToolUseID: toolUseID, Age: age, Min: cfg.minHaltAge}
+		if age := cfg.now().Sub(time.UnixMilli(attempt.AttemptedAt)); age < cfg.minHaltAge {
+			return &HaltTooYoung{RunID: runID, ToolUseID: h.id, Age: age, Min: cfg.minHaltAge}
 		}
 	}
 	b, err := marshalJournal(result) // not HTML-escaped: the model reads the injected result as written
 	if err != nil {
-		return fmt.Errorf("agent: encode resolve-halt result for %q: %w (%w)", toolUseID, err, ErrConfig)
+		return fmt.Errorf("agent: encode resolve-halt result for %q: %w (%w)", h.id, err, ErrConfig)
 	}
-	_, err = store.Do(ctx, runID, toolUseID, func(context.Context) (Record, error) {
-		return Record{Kind: StepToolResult, ToolUseID: toolUseID, Result: b, IsError: isError, Reconciled: cfg.reconciled, Evidence: cfg.evidence}, nil
-	})
+	rec := Record{Kind: h.kind, Result: b, IsError: isError, Reconciled: cfg.reconciled, Evidence: cfg.evidence}
+	if h.kind == StepToolResult {
+		rec.ToolUseID = h.id
+	}
+	_, err = store.Do(ctx, runID, h.result, func(context.Context) (Record, error) { return rec, nil })
 	return err
 }
 
@@ -410,22 +464,6 @@ type HaltTooYoung struct {
 func (e *HaltTooYoung) Error() string {
 	return fmt.Sprintf("resolve-halt for call %s (run %s) too soon: attempted %s ago, need %s before resolving",
 		e.ToolUseID, e.RunID, e.Age, e.Min)
-}
-
-// attemptTime returns the AttemptedAt of the StepAttempt marker for toolUseID in the run's
-// history. ok is false when there is no attempt marker for it or the marker carries no
-// timestamp (e.g. a journal written before AttemptedAt existed).
-func attemptTime(ctx context.Context, store Durable, runID, toolUseID string) (time.Time, bool, error) {
-	recs, err := store.History(ctx, runID)
-	if err != nil {
-		return time.Time{}, false, fmt.Errorf("ResolveHalt: read history for %s: %w", runID, err)
-	}
-	for _, r := range recs {
-		if r.Kind == StepAttempt && r.ToolUseID == toolUseID && r.AttemptedAt != 0 {
-			return time.UnixMilli(r.AttemptedAt), true, nil
-		}
-	}
-	return time.Time{}, false, nil
 }
 
 // PendingApproval is returned by Agent.Run when a tool requiring human approval has no

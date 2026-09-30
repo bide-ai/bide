@@ -266,9 +266,9 @@ func TestFinalAnswerCrash_SubAgentResume(t *testing.T) {
 	var charged int
 	charge := &countingTool{name: "charge", safety: Safety{}, calls: &charged}
 
-	const subRunID = "root/c1"
+	subRunID := SubRunID("root", "c1")
 	subFirst := &greedyModel{script: [][]Emit{toolTurn("s1", "charge", `{}`), textTurn("sub-done")}}
-	if _, err := New(subFirst, &markerCrashStore{inner: store, runID: subRunID}, charge).Run(ctx, subRunID, "charge it"); !errors.Is(err, errCrash) {
+	if _, err := New(subFirst, &markerCrashStore{inner: store, runID: subRunID}, charge).Run(withRunScope(ctx, subRunID), subRunID, "charge it"); !errors.Is(err, errCrash) {
 		t.Fatalf("sub-run: err = %v, want the injected crash at the completion marker", err)
 	}
 	before := wantAnswerRecordedNoMarker(t, store, subRunID, 2)

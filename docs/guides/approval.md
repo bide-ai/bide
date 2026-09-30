@@ -141,7 +141,7 @@ An m-of-n tool inside a `SubAgent` pauses the whole tree: the parent's `Run` ret
 
 - set `WithApproverVerifiers` on the **sub**-agent, since that is the agent whose tool is gated;
 - approvers sign `pend.Subject()` and record against `pend.RunID`, the sub-run's id
-  (`<parentRunID>/<toolUseID>`). A decision signed against the parent's run id does not verify, and
+  (`agent.SubRunID(parentRunID, toolUseID)`, `<parentRunID>><encoded toolUseID>`). A decision signed against the parent's run id does not verify, and
   does not lock the approver out: re-signed correctly, it counts.
 
 ### Configuration errors

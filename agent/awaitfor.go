@@ -44,8 +44,7 @@ func AwaitFor[T any](ctx context.Context, name string, d time.Duration) (T, bool
 	// Journal the deadline once (at-most-once by name), computed as now()+d on the first
 	// encounter, so it is stable across resume and restart (same pattern as waitUntil).
 	now := clockFrom(ctx)
-	timeout := "await-timeout:" + name
-	rec, err := dur.Do(ctx, runID, timeout, func(context.Context) (Record, error) {
+	rec, err := dur.Do(ctx, runID, awaitTimeoutStep(name), func(context.Context) (Record, error) {
 		b, err := json.Marshal(now().Add(d))
 		if err != nil {
 			return Record{}, fmt.Errorf("agent: encode deadline for %q: %w (%w)", name, err, ErrConfig)
@@ -86,7 +85,7 @@ func AwaitFor[T any](ctx context.Context, name string, d time.Duration) (T, bool
 		// sub-agent down to this AwaitFor, while the sub-run alone cannot be driven by the root
 		// agent's resume callback (the same rule as Sleep).
 		if w := wakerFrom(ctx); w != nil {
-			w.Schedule(rootRunID(ctx, runID), timeout, deadline)
+			w.Schedule(rootRunID(ctx, runID), awaitTimeoutStep(name), deadline)
 		}
 		return zero, false, &Awaiting{RunID: runID, RootRunID: rootRunID(ctx, runID), Name: name}
 	}
