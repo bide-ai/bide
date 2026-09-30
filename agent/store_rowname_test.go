@@ -69,3 +69,18 @@ func TestMemStore_UnknownFieldStillReads(t *testing.T) {
 		t.Fatalf("Do = %+v, %v", rec, err)
 	}
 }
+
+// A row that does not decode at all is reported as such (with its run and key), not as a record
+// under another name.
+func TestMemStore_UndecodableRowIsReportedAsUndecodable(t *testing.T) {
+	ctx := context.Background()
+	m := NewMemStore()
+	if _, err := m.Do(ctx, "r", "x", func(context.Context) (Record, error) { return Record{Kind: StepValue}, nil }); err != nil {
+		t.Fatal(err)
+	}
+	memTamper(t, m, "r", "x", []byte(`not json`))
+	_, err := m.History(ctx, "r")
+	if !errors.Is(err, ErrStorage) || !strings.Contains(err.Error(), "decode stored record") || !strings.Contains(err.Error(), `"x"`) {
+		t.Fatalf("History = %v; want the decode failure, naming the key", err)
+	}
+}
