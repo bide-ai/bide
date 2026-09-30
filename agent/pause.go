@@ -401,3 +401,16 @@ func Signal[T any](ctx context.Context, d Durable, runID, name string, payload T
 }
 
 func signalStep(name string) string { return "signal:" + name }
+
+// isPause reports whether err is a durable pause signal (the run recovered and is still
+// waiting) rather than a genuine failure.
+func isPause(err error) bool {
+	var (
+		pa  *PendingApproval
+		itr *Interrupted
+		slp *Sleeping
+		awt *Awaiting
+		rh  *ResumeHalt
+	)
+	return errors.As(err, &pa) || errors.As(err, &itr) || errors.As(err, &slp) || errors.As(err, &awt) || errors.As(err, &rh)
+}

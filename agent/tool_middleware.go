@@ -1,11 +1,8 @@
 package agent
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
-	"sync"
 )
 
 // ToolHandler executes one tool call: given the ToolUse (ID, Name, Args), it returns
@@ -41,44 +38,6 @@ func (a *Agent) UseTool(mw ...ToolMiddleware) *Agent {
 	return a
 }
 
-// toolHandler builds the wrapped tool-execution chain once per run: a base handler that
-// dispatches by name to the registered tool, wrapped by the middleware in order.
-func (a *Agent) toolHandler() ToolHandler {
-	// ran holds the tool-use IDs of tools that are not retry-safe and have been invoked in this
-	// run. It lives here, in the base handler, rather than in the context, so no middleware can
-	// get around it: such a tool runs at most once per tool call, however often a middleware
-	// calls next. (A resume builds a new chain, and the journal's attempt marker decides there.)
-	var ran sync.Map
-	h := ToolHandler(func(ctx context.Context, tu ToolUse) (json.RawMessage, error) {
-		t, ok := a.tools[tu.Name]
-		if !ok {
-			return nil, fmt.Errorf("call to unknown tool %q: %w", cutName(tu.Name), ErrUnknownTool)
-		}
-		if !t.Safety().RetrySafe() {
-			if _, again := ran.LoadOrStore(tu.ID, true); again {
-				return nil, fmt.Errorf("tool %q (call %s) already ran and is not retry-safe: %w", tu.Name, tu.ID, ErrToolReinvoked)
-			}
-		}
-		if err := journalAcceptedArgs(ctx, t, tu); err != nil {
-			return nil, err
-		}
-		return t.Call(ctx, tu.Args)
-	})
-	for i := len(a.toolMW) - 1; i >= 0; i-- {
-		h = a.toolMW[i](h)
-	}
-	return func(ctx context.Context, tu ToolUse) (json.RawMessage, error) {
-		if t, ok := a.tools[tu.Name]; ok {
-			ctx = WithToolSafety(ctx, t.Safety())
-		}
-		ctx = context.WithValue(ctx, modelArgsKey{}, tu.Args)
-		if a.toolErrRedact != nil {
-			ctx = context.WithValue(ctx, toolErrRedactKey{}, a.toolErrRedact)
-		}
-		return h(ctx, tu)
-	}
-}
-
 type toolSafetyKey struct{}
 
 // ToolSafety returns the Safety of the tool that a tool-middleware call is for, so a
@@ -100,26 +59,3 @@ func WithToolSafety(ctx context.Context, s Safety) context.Context {
 
 // modelArgsKey carries a call's arguments as the model sent them, before tool middleware.
 type modelArgsKey struct{}
-
-// journalAcceptedArgs records, before the side effect fires, the arguments a compensable call in
-// a saga is about to run with, when a tool middleware changed them from the model's (see
-// sagaArgsStep): compensation then undoes what the tool did, even when the call's outcome is
-// later resolved by ResolveHalt. It is a memoized step, so a retry-safe call that runs again
-// keeps the first record; a middleware that rewrites arguments must rewrite them the same way
-// every time. Unchanged arguments, or a call outside a saga, journal nothing, so compensation
-// reads the model's arguments, as for a journal written before this record existed.
-func journalAcceptedArgs(ctx context.Context, t Tool, tu ToolUse) error {
-	if _, ok := t.(Compensator); !ok || !InSaga(ctx) {
-		return nil
-	}
-	if model, _ := ctx.Value(modelArgsKey{}).(json.RawMessage); bytes.Equal(model, tu.Args) {
-		return nil
-	}
-	store, runID, _ := runContext(ctx) // the loop and the rollback both set it
-	if _, err := store.Do(ctx, runID, sagaArgsStep(tu.ID), func(context.Context) (Record, error) {
-		return Record{Kind: StepValue, Result: tu.Args}, nil
-	}); err != nil {
-		return fmt.Errorf("journal the arguments tool %q (call %s) accepted: %w (%w)", tu.Name, tu.ID, err, ErrStorage)
-	}
-	return nil
-}
