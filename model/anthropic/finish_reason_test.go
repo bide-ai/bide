@@ -35,9 +35,9 @@ func TestStreamSSE_StopReasonsAreMapped(t *testing.T) {
 	}{
 		"end_turn":                      {"stop", nil},
 		"stop_sequence":                 {"stop", nil},
-		"max_tokens":                    {"length", agent.ErrModel},
-		"model_context_window_exceeded": {"length", agent.ErrModel},
-		"refusal":                       {"filtered", agent.ErrModel},
+		"max_tokens":                    {"length", agent.ErrOutputTruncated},
+		"model_context_window_exceeded": {"length", agent.ErrOutputTruncated},
+		"refusal":                       {"filtered", agent.ErrOutputFiltered},
 		"pause_turn":                    {"pause_turn", agent.ErrStreamProtocol},
 	} {
 		reason, err := reasonOf(t, stop)

@@ -61,6 +61,15 @@ var (
 	// response stopped partway through a turn, so what arrived is not the model's answer.
 	ErrIncompleteResponse = fmt.Errorf("model response ended before the turn finished: %w", ErrModel)
 	ErrTruncatedToolArgs  = fmt.Errorf("truncated tool-call arguments: %w", ErrProtocol)
+	// ErrOutputTruncated is a model turn that ended at its output token limit (or the context
+	// window): Finish reason FinishLength. What arrived is only the start of the model's answer,
+	// so it is not journaled. It wraps ErrModel, so middleware.Retryable retries it; the same
+	// request usually ends the same way, so raise the limit (MaxTokens) rather than rely on a retry.
+	ErrOutputTruncated = fmt.Errorf("model output cut off at its token limit: %w", ErrModel)
+	// ErrOutputFiltered is a model turn that a provider's safety or content filter stopped, or
+	// that the model refused: Finish reason FinishFiltered. What arrived is not the model's whole
+	// answer, so it is not journaled. It wraps ErrModel, so middleware.Retryable retries it.
+	ErrOutputFiltered = fmt.Errorf("model output stopped by a content filter or refusal: %w", ErrModel)
 	// ErrStreamProtocol is a model stream that broke its provider's event protocol, such as
 	// content after the turn's end or an event after the Finish. What arrived is not a turn the
 	// model finished, so it is not the answer. It wraps ErrModel as well as ErrProtocol: the

@@ -290,6 +290,24 @@ type sseEvent struct {
 	} `json:"usage"`
 }
 
+// finishReason maps an Anthropic stop_reason onto the neutral finish reasons (see agent.Finish).
+// A reason it does not know (pause_turn, which asks for the turn to be continued, or one added
+// later) is passed through unchanged, and the core refuses it rather than take the turn as done.
+func finishReason(stop string) string {
+	switch stop {
+	case "end_turn", "stop_sequence":
+		return agent.FinishStop
+	case "tool_use":
+		return agent.FinishToolUse
+	case "max_tokens", "model_context_window_exceeded":
+		return agent.FinishLength
+	case "refusal":
+		return agent.FinishFiltered
+	default:
+		return stop
+	}
+}
+
 // streamSSE reads Anthropic's SSE stream and pushes normalized agent events. It closes
 // the body. Package-internal so it's unit-testable without a network round-trip.
 //
@@ -381,7 +399,7 @@ func streamSSE(body io.ReadCloser, send func(agent.Emit) bool) {
 				send(agent.Emit{Err: fmt.Errorf("anthropic: message_stop before message_delta: %w", agent.ErrStreamProtocol)})
 				return
 			}
-			send(agent.Emit{Event: agent.Finish{Reason: reason, Usage: agent.Usage{
+			send(agent.Emit{Event: agent.Finish{Reason: finishReason(reason), Usage: agent.Usage{
 				InputTokens: in, OutputTokens: out, CacheReadTokens: cacheRead, CacheWriteTokens: cacheWrite,
 			}}})
 			return

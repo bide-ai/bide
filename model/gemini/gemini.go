@@ -419,22 +419,25 @@ func newCallID() string {
 	return "call_" + hex.EncodeToString(b[:])
 }
 
-// mapFinishReason maps Gemini's finishReason onto the neutral reason strings the other
-// adapters emit (Anthropic "end_turn"/"tool_use"; OpenAI "stop"/"tool_calls"). The agent
-// core's finalize() does not branch on the string, so this is for the caller's benefit.
+// mapFinishReason maps Gemini's finishReason onto the neutral finish reasons (see agent.Finish).
+// A natural stop is tool_use when the turn made a tool call. A turn cut off at the token limit is
+// FinishLength even when it made one: the model may have meant to say or call more. A reason a
+// safety, recitation, or blocklist filter gives is FinishFiltered. Any other reason
+// (MALFORMED_FUNCTION_CALL, OTHER, one added later) is passed through unchanged, and the core
+// refuses it rather than take the turn as done.
 func mapFinishReason(reason string, sawToolCall bool) string {
-	if sawToolCall {
-		return "tool_use"
-	}
 	switch reason {
 	case "STOP":
-		return "stop"
+		if sawToolCall {
+			return agent.FinishToolUse
+		}
+		return agent.FinishStop
 	case "MAX_TOKENS":
-		return "length"
-	case "":
-		return "stop"
+		return agent.FinishLength
+	case "SAFETY", "RECITATION", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII", "IMAGE_SAFETY":
+		return agent.FinishFiltered
 	default:
-		return strings.ToLower(reason)
+		return reason
 	}
 }
 

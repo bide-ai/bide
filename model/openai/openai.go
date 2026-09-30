@@ -368,6 +368,24 @@ type chunk struct {
 	} `json:"usage"`
 }
 
+// finishReason maps an OpenAI finish_reason onto the neutral finish reasons (see agent.Finish).
+// A reason it does not know is passed through unchanged, and the core refuses it rather than take
+// the turn as done. A stream that ends with [DONE] and no finish_reason reports none ("").
+func finishReason(r string) string {
+	switch r {
+	case "stop":
+		return agent.FinishStop
+	case "tool_calls", "function_call":
+		return agent.FinishToolUse
+	case "length":
+		return agent.FinishLength
+	case "content_filter":
+		return agent.FinishFiltered
+	default:
+		return r
+	}
+}
+
 // streamSSE reads OpenAI's SSE stream and pushes normalized agent events.
 //
 // The turn ends on a finish_reason or on [DONE], never on usage: some OpenAI-compatible servers
@@ -453,6 +471,6 @@ func streamSSE(body io.ReadCloser, send func(agent.Emit) bool) {
 		return
 	}
 	if done || reason != "" {
-		send(agent.Emit{Event: agent.Finish{Reason: reason, Usage: usage}})
+		send(agent.Emit{Event: agent.Finish{Reason: finishReason(reason), Usage: usage}})
 	}
 }

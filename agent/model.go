@@ -132,10 +132,27 @@ type ToolCallDelta struct {
 
 func (ToolCallDelta) event() {}
 
+// Finish ends a model turn. Reason says why the turn ended, in the neutral vocabulary below; an
+// adapter maps its provider's reasons onto it where they enter. A Model that does not know the
+// reason leaves it empty, which counts as a natural stop.
+//
+// The reason decides whether the turn is the model's answer. Stream.Message (and so every agent
+// run) returns ErrOutputTruncated for FinishLength and ErrOutputFiltered for FinishFiltered rather
+// than a message, since what arrived is only part of what the model would have said, and a run
+// that recorded it would end with that part as its final answer. Any other reason is
+// ErrStreamProtocol: the core does not guess what a provider's own word means.
 type Finish struct {
 	Reason string
 	Usage  Usage
 }
+
+// The neutral finish reasons (see Finish).
+const (
+	FinishStop     = "stop"     // the model ended its answer (end of turn, a stop sequence)
+	FinishToolUse  = "tool_use" // the model ended its turn to call tools
+	FinishLength   = "length"   // the output hit its token limit (or the context window) and was cut off
+	FinishFiltered = "filtered" // a safety or content filter, or a refusal, stopped the output
+)
 
 func (Finish) event() {}
 
@@ -288,6 +305,7 @@ type msgBuilder struct {
 	calls        map[int]*ToolUse
 	order        []int
 	usage        Usage
+	reason       string // the Finish reason
 }
 
 func (b *msgBuilder) add(ev Event) {
@@ -327,6 +345,7 @@ func (b *msgBuilder) add(ev Event) {
 		tu.Args = append(tu.Args, e.ArgsFragment...) // fragments concatenated; validated in finalize()
 	case Finish:
 		b.usage = e.Usage
+		b.reason = e.Reason
 	}
 }
 
@@ -364,6 +383,15 @@ func (b *msgBuilder) finalize() (Message, error) {
 			return Message{}, fmt.Errorf("tool call %q: %w: %d bytes: %s", cutName(tu.Name), ErrTruncatedToolArgs, len(tu.Args), truncate(string(tu.Args)))
 		}
 		parts = append(parts, *tu)
+	}
+	switch b.reason {
+	case "", FinishStop, FinishToolUse:
+	case FinishLength:
+		return Message{}, ErrOutputTruncated
+	case FinishFiltered:
+		return Message{}, ErrOutputFiltered
+	default:
+		return Message{}, fmt.Errorf("finish reason %q is not one of the neutral reasons: %w", cutName(b.reason), ErrStreamProtocol)
 	}
 	return Message{Role: RoleAssistant, Parts: parts}, nil
 }

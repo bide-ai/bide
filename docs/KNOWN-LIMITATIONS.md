@@ -125,7 +125,9 @@ between two reasoning blocks is moved after them, and separate text blocks are j
 **Replay does not know the provider's finish reason.** The journal records each turn's message and
 token usage, so a replayed run reports the same usage and stops on the same token budget. The finish
 reason is not recorded: a replayed turn ends with `tool_use` when it has tool calls and `stop`
-otherwise, so a provider reason such as a length cutoff reads as `stop` on replay.
+otherwise. Only turns that ended with one of those two reasons are journaled (a turn cut off at its
+token limit or stopped by a filter is an error; see the finish reasons in docs/guides/models.md), so
+no journaled turn's outcome changes on replay.
 
 **MCP tools are untyped.** Tools discovered from an MCP server at runtime use raw JSON arguments,
 because Go cannot create a struct type from a schema at runtime.

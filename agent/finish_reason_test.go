@@ -23,8 +23,8 @@ func TestStream_FinishReasonDecidesTheTurn(t *testing.T) {
 		"":           nil, // a Model that does not report a reason
 		"stop":       nil,
 		"tool_use":   nil,
-		"length":     ErrModel,
-		"filtered":   ErrModel,
+		"length":     ErrOutputTruncated,
+		"filtered":   ErrOutputFiltered,
 		"end_turn":   ErrStreamProtocol, // a provider's own word: adapters map it, the core does not guess
 		"pause_turn": ErrStreamProtocol,
 	} {

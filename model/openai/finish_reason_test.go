@@ -37,8 +37,8 @@ func TestStreamSSE_FinishReasonsAreMapped(t *testing.T) {
 		"stop":           {text("stop"), "stop", nil},
 		"tool_calls":     {call("tool_calls"), "tool_use", nil},
 		"function_call":  {call("function_call"), "tool_use", nil},
-		"length":         {text("length"), "length", agent.ErrModel},
-		"content_filter": {text("content_filter"), "filtered", agent.ErrModel},
+		"length":         {text("length"), "length", agent.ErrOutputTruncated},
+		"content_filter": {text("content_filter"), "filtered", agent.ErrOutputFiltered},
 		"unknown":        {text("something_new"), "something_new", agent.ErrStreamProtocol},
 	} {
 		reason, err := reasonOf(tc.src)

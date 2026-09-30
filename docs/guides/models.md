@@ -89,6 +89,28 @@ OpenAI serving a reasoning model under a deployment name.
 A request-level `MaxTokens` overrides the adapter's construction-time default. Because the fields
 are pointers, an explicit `Temperature(0)` is distinct from unset (which uses the provider default).
 
+## Finish reasons
+
+Each adapter maps its provider's reason for ending a turn onto `agent.Finish.Reason` in one neutral
+vocabulary, and the core decides from it whether the turn is the model's answer:
+
+| Neutral reason | Anthropic `stop_reason` | OpenAI `finish_reason` | Gemini `finishReason` | Result |
+|---|---|---|---|---|
+| `agent.FinishStop` (`stop`) | `end_turn`, `stop_sequence` | `stop` | `STOP` | the message |
+| `agent.FinishToolUse` (`tool_use`) | `tool_use` | `tool_calls`, `function_call` | `STOP` with a call | the message |
+| `agent.FinishLength` (`length`) | `max_tokens`, `model_context_window_exceeded` | `length` | `MAX_TOKENS` (with or without a call) | `agent.ErrOutputTruncated` |
+| `agent.FinishFiltered` (`filtered`) | `refusal` | `content_filter` | `SAFETY`, `RECITATION`, `BLOCKLIST`, `PROHIBITED_CONTENT`, `SPII`, `IMAGE_SAFETY` | `agent.ErrOutputFiltered` |
+
+A reason an adapter does not map (Anthropic `pause_turn`, Gemini `MALFORMED_FUNCTION_CALL` or
+`OTHER`, one a provider adds later) reaches the core unchanged and fails the turn with
+`agent.ErrStreamProtocol`: the core does not guess what it means. An empty reason (a `Model` that
+does not report one, or an OpenAI-compatible server that sends `[DONE]` with no `finish_reason`)
+counts as a stop.
+
+A turn that is cut off or filtered is not journaled, so a run never records half an answer as its
+final one. All three errors wrap `agent.ErrModel`, so `middleware.Retryable` retries them; a
+turn cut off at the token limit usually ends the same way again, so raise `MaxTokens` for it.
+
 ## Prompt caching and usage accounting
 
 An agent loop resends a large constant prefix (system prompt + tool schemas) every turn.
