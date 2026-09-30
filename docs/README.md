@@ -46,6 +46,7 @@ Accountability and governance:
 
 - **[How bide is verified](testing/verification.md)** (evaluator): the discipline behind the guarantees: no fix without a failing test, mutation checks, crash and cancellation sweeps, forced interleavings, conformance suites, and CI.
 - **[Testing](testing/testing.md)**: what is tested and how, the chaos crash-injection benchmark, differential oracles, and the statistical `eval` boundary.
+- **[Formal models](../spec/tla/README.md)**: the TLA+ model of the claim protocol, what TLC checks on every pull request, and the bounds.
 
 ## Examples
 

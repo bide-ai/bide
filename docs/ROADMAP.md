@@ -34,7 +34,7 @@ The hardest bugs in a durable runtime live in interleavings: two drivers, a cras
 
 Models live in the repository and run in CI. A counterexample the checker finds becomes a deterministic Go regression test.
 
-The design and plan: [formal models of the coordination protocols](design/formal-models.md) (accepted, in progress).
+The design and plan: [formal models of the coordination protocols](design/formal-models.md) (accepted, in progress). Started: model 1 (claims and attempts) is in [spec/tla](../spec/tla/README.md) and checked on every pull request. Next: trace validation, so the Go test suites check that the code implements the model.
 
 ### bide underneath other agent frameworks (Go)
 

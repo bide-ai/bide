@@ -1,7 +1,14 @@
 # Formal models of the coordination protocols (design proposal and plan)
 
-Status: accepted, in progress. Model 1 (the claim protocol) is being built, and PR #92 merges only once it passes. It expands the
-[roadmap item](../ROADMAP.md#formal-models-of-the-coordination-protocols) into a plan.
+Status: accepted, in progress. It expands the
+[roadmap item](../ROADMAP.md#formal-models-of-the-coordination-protocols) into a plan. Model 1 (the
+claim protocol) is implemented in [spec/tla](../../spec/tla/README.md), with the tooling of M0 and
+the regression configurations of M2 (the counterexample-to-test helper of M2 is not built yet), and
+PR #92 merges only once it passes. Where this plan and `spec/tla/README.md` differ, the README
+states what is checked: the model states #92's final rules, in which the claim-held pin and the
+reuse of a remembered claim id are gone (sections 4.2, 4.4, 4.8 and 5.1 describe the rules as they
+stood at `9ace7c6`; the pin is now the regression configuration `regress/held-pin`), the script is
+`spec/tla/check.sh`, and the configurations have other names and bounds.
 
 Grounded in: draft PR [#92](https://github.com/bide-ai/bide/pull/92) (P6a, head `9ace7c6`: `Store`,
 `Journal`, the claim protocol after both reviews) and draft PR
@@ -660,8 +667,9 @@ speak about the same records:
 - **CommunityModules** (for `Json` and `IOUtils`, needed by trace validation):
   `CommunityModules-deps-202609120237.jar`, SHA-256
   `3d9a282c360e90d55e9bbe99caa2987d508fef1556d652760b4af4455e283733`.
-- Both are recorded in `spec/tla/tools.lock` (URL, version, SHA-256). `scripts/tla.sh` downloads
-  them into a cache directory and refuses a jar whose checksum differs. Upgrades are a pull request
+- Both are recorded in `spec/tla/tools.lock` (URL, version, SHA-256); CommunityModules is added
+  when trace validation needs it. `spec/tla/check.sh` downloads them into a cache directory and
+  refuses a jar whose checksum differs. Upgrades are a pull request
   that changes the lock file and re-runs every configuration.
 - **Java in CI:** `actions/setup-java` with Temurin 21, and `actions/cache` for the jars keyed by
   `tools.lock`'s hash. TLC runs with `-XX:+UseParallelGC` and `-workers auto`.
@@ -672,29 +680,14 @@ speak about the same records:
 - **Expected-violation check:** for each regression config, CI runs TLC, requires exit status 12
   (safety violation) or 13 (liveness), and requires the reported invariant's name to match the
   config's `EXPECT` comment. A violation of any other invariant fails the check.
-- **Layout:**
-
-```text
-spec/tla/
-  README.md              how to run; the model-code map; bounds and what they do not cover
-  tools.lock             pinned tool versions and checksums
-  claims/
-    Claims.tla           PlusCal algorithm plus its translation; Crash and trace hooks after it
-    ClaimsMC.tla         model values, symmetry sets, constant overrides
-    ci-same.cfg  ci-cross.cfg  ci-resolve.cfg
-    deep-drivers.cfg  deep-calls.cfg  deep-faults.cfg  live.cfg  late.cfg
-    regress/             nohold-same.cfg, nohold-fire.cfg, pause-as-failure.cfg,
-                         legacy-empty.cfg, loser-leads.cfg, live-check-cause.cfg,
-                         lease-unleased-driver.cfg (each with an EXPECT line)
-    ClaimsTrace.tla      the trace spec
-scripts/tla.sh           fetch, translate, check, regress, trace
-```
-
-- **Running it locally:** `scripts/tla.sh check` (every CI config), `scripts/tla.sh check deep-faults`,
-  `scripts/tla.sh regress`, `scripts/tla.sh translate` (re-translate in place),
-  `scripts/tla.sh trace <dir-or-file>`. The script needs Java 17 or later on `PATH` or in
-  `JAVA_HOME`; nothing else. The repository has no Makefile, and adding one only for this is not
-  worth a second entry point.
+- **Layout:** as built, see [spec/tla/README.md](../../spec/tla/README.md#layout): `check.sh`,
+  `tools.lock`, and `claims/` with `Claims.tla`, `ClaimsMC.tla`, the configurations, `regress/` and
+  `findings/`. The trace spec `ClaimsTrace.tla` comes with M3.
+- **Running it locally:** `spec/tla/check.sh` (what CI runs on a pull request),
+  `spec/tla/check.sh nightly`, `spec/tla/check.sh run <file.cfg>`, `spec/tla/check.sh translate`
+  (re-translate in place). The script needs Java 11 or later on `PATH` or in `JAVA_HOME`, `curl`
+  and a SHA-256 tool; nothing else. The repository has no Makefile, and adding one only for this is
+  not worth a second entry point.
 - **Apalache (optional):** v0.62.2 can check an inductive invariant symbolically, with no bound on
   claim ids or re-drives. It is not needed for model 1's plan; it is worth trying once model 1 is
   stable, to find an inductive strengthening of `NotStartedExclusive`, and for model 4, where
@@ -760,7 +753,8 @@ here.
    Postgres, cancel and confirm the transaction's fate before returning) or the claim rules must
    change; decide before #92 merges. First reasoning suggests the claim-held pin is safe under the
    weak reading, since the pin and a late not-started record race on one key and the first
-   writer wins either way, but the model should say so.
+   writer wins either way, but the model should say so. Model 1's answer, for #92's final rules
+   (no pin): every invariant holds under both readings at the checked bounds (`late-*` configs).
 3. **How to treat the minimum halt age.** Recommendation: model 1 keeps it as the explicit
    assumption of section 4.4; model 3 adds a clock and checks it, together with lease expiry.
 4. **Does pending-claim reuse help tool calls?** On the tool path, the resume gate halts on any
@@ -768,7 +762,9 @@ here.
    never reused through a resume; reuse is reachable there only between two drivers of one process
    that both passed the gate. Recommendation: add a reachability check to M1 ("a reused id wins a
    marker it committed earlier, on the tool path") and, if it is unreachable through a resume,
-   document that B11 reuse benefits Steps only, rather than change code.
+   document that B11 reuse benefits Steps only, rather than change code. Superseded: #92's final
+   rules never reuse a remembered id, and the resume gate retries its not-started record instead
+   (checked by `regress/gate-no-retry`).
 5. **Where the hooks live.** Recommendation: store events through the `tracestore` wrapper (no
    production change), engine events through build-tagged hooks; no runtime hook variable, so a
    release binary cannot be made to emit traces.
@@ -779,7 +775,8 @@ here.
 7. **Liveness on every PR?** Recommendation: no. Liveness cannot use symmetry, and the prototype's
    liveness check at the `ci-same` bounds took 15 minutes against 1 minute 19 seconds for safety
    over the same 16.6 million states; run `live` nightly and on PRs that change `Claims.tla`
-   itself.
+   itself. As built: liveness runs on every pull request at one error reply, where it takes
+   seconds, and at two nightly.
 8. **PlusCal or plain TLA+?** The roadmap says PlusCal. It fits the drivers, which are sequential
    programs; crash, delayed commit and the trace spec are written in TLA+ beside the translation.
    Recommendation: keep PlusCal for the driver and resolver processes and accept the split.
