@@ -106,3 +106,26 @@ func TestCallState_RefusedSurvivesAReplacedError(t *testing.T) {
 		t.Fatalf("calls %d, result %s (recorded %v); want the refused call recorded as a known failure", calls.Load(), rec.Result, ok)
 	}
 }
+
+// A call the base handler refused because the run was cancelled first is recorded as never
+// started, so a resume calls the tool instead of halting for it.
+func TestCallState_RefusedOnCancelRecordsNotStarted(t *testing.T) {
+	var calls atomic.Int32
+	charge := Func("charge", "", Safety{}, func(context.Context, struct{}) (string, error) { calls.Add(1); return "ok", nil })
+	ctx, cancel := context.WithCancel(context.Background())
+	cancelFirst := func(next ToolHandler) ToolHandler {
+		return func(c context.Context, call ToolCall) (json.RawMessage, error) {
+			cancel() // the run is cancelled, then the call goes on: the base handler refuses it
+			<-c.Done()
+			return next(c, call)
+		}
+	}
+	store := NewMemStore()
+	m := NewScriptedModel(ToolTurn("c1", "charge", `{}`), TextTurn("done"))
+	if _, err := New(m, store, charge).UseTool(cancelFirst).Run(ctx, "r1", "go"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("first drive: %v, want context.Canceled", err)
+	}
+	if _, err := New(m, store, charge).Run(context.Background(), "r1", "go"); err != nil || calls.Load() != 1 {
+		t.Fatalf("resume: %v after %d calls; want the call attempted again, once", err, calls.Load())
+	}
+}
