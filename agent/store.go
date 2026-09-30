@@ -141,12 +141,14 @@ func ClaimAttempt(ctx context.Context, d Durable, runID, name string, rec Record
 type Durable interface {
 	// Do returns the recorded Record for (runID, name) without running fn if present;
 	// otherwise runs fn, records the returned Record (with Name set and a fresh Salt: persist
-	// the bytes JournalEntry returns), and returns it.
+	// the bytes JournalEntry returns), and returns it. A recorded Record is read back with
+	// DecodeStoredRecord, which refuses a row whose record names another step.
 	// If fn errors, nothing is recorded — the step re-runs on the next attempt. Once fn has
 	// returned a record, Do records it even if ctx was cancelled meanwhile: fn may have fired a
 	// side effect, and its outcome must not be lost (see durabletest).
 	Do(ctx context.Context, runID, name string, fn func(context.Context) (Record, error)) (Record, error)
-	// History returns all recorded steps for a run, in order.
+	// History returns all recorded steps for a run, in order, each read back with
+	// DecodeStoredRecord under the name it is stored under.
 	History(ctx context.Context, runID string) ([]Record, error)
 }
 
@@ -616,6 +618,28 @@ func DecodeRecord(b []byte) (Record, error) {
 	return r, nil
 }
 
+// DecodeStoredRecord decodes the record a store holds for the step name of run runID (see
+// DecodeRecord) and checks that the record carries that name. Every record is journaled with the
+// name it is stored under (JournalEntry), and the engine finds records by the name inside them
+// (IsComplete, the approval tally, a signal, an attempt marker), so a row whose record names
+// another step (a row edited or copied in the backing store) would be read as that step: a row
+// under "x" holding a record named run:complete would mark an unfinished run complete. Such a row
+// is ErrStorage, naming the run and the key, like any other stored record that does not decode:
+// the store's contents are wrong, whatever wrote them. Fields this version does not know still
+// decode, so a journal a newer version wrote stays readable.
+//
+// Every Durable implementation must read a record back through it, in Do and in History.
+func DecodeStoredRecord(runID, name string, b []byte) (Record, error) {
+	r, err := DecodeRecord(b)
+	if err != nil {
+		return Record{}, fmt.Errorf("run %s, step %q: %w", runID, name, err)
+	}
+	if r.Name != name {
+		return Record{}, fmt.Errorf("run %s: the row stored as step %q holds a record named %q: %w", runID, name, r.Name, ErrStorage)
+	}
+	return r, nil
+}
+
 // marshalJournal is json.Marshal without HTML escaping and without the newline an Encoder
 // appends.
 //
@@ -659,6 +683,7 @@ type MemStore struct {
 
 type runLog struct {
 	order  [][]byte // each record's journal encoding, in append order
+	names  []string // the step name each encoding in order is stored under
 	byName map[string]int
 }
 
@@ -713,13 +738,14 @@ func (m *MemStore) Do(ctx context.Context, runID, name string, fn func(context.C
 		}
 		rl.byName[name] = len(rl.order)
 		rl.order = append(rl.order, b)
+		rl.names = append(rl.names, name)
 		return b, nil
 	})
 	if err != nil {
 		return Record{}, err
 	}
 	// The stored record, decoded: what History returns for this step, never the caller's own.
-	return DecodeRecord(v.([]byte))
+	return DecodeStoredRecord(runID, name, v.([]byte))
 }
 
 // stepKey is the in-process deduplication key of step name of runID: the run ID's length in
@@ -749,7 +775,7 @@ func (m *MemStore) History(_ context.Context, runID string) ([]Record, error) {
 	}
 	out := make([]Record, len(rl.order))
 	for i, b := range rl.order {
-		r, err := DecodeRecord(b)
+		r, err := DecodeStoredRecord(runID, rl.names[i], b)
 		if err != nil {
 			return nil, err
 		}

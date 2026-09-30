@@ -144,7 +144,7 @@ func (s *Store) Do(ctx context.Context, runID, name string, fn func(context.Cont
 	if err != nil {
 		return agent.Record{}, err
 	}
-	return agent.DecodeRecord(v.([]byte))
+	return agent.DecodeStoredRecord(runID, name, v.([]byte))
 }
 
 // insert appends one step to runID's journal and reports whether it was written (0 when the
@@ -180,7 +180,7 @@ func stepKey(runID, name string) string { return strconv.Itoa(len(runID)) + ":" 
 
 // History implements agent.Durable.
 func (s *Store) History(ctx context.Context, runID string) ([]agent.Record, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT data FROM bide_steps WHERE run_id = $1 ORDER BY seq`, runID)
+	rows, err := s.db.QueryContext(ctx, `SELECT name, data FROM bide_steps WHERE run_id = $1 ORDER BY seq`, runID)
 	if err != nil {
 		return nil, fmt.Errorf("query history %q: %w (%w)", runID, err, agent.ErrStorage)
 	}
@@ -188,11 +188,12 @@ func (s *Store) History(ctx context.Context, runID string) ([]agent.Record, erro
 
 	var out []agent.Record
 	for rows.Next() {
+		var name string
 		var data []byte
-		if err := rows.Scan(&data); err != nil {
+		if err := rows.Scan(&name, &data); err != nil {
 			return nil, fmt.Errorf("scan step: %w (%w)", err, agent.ErrStorage)
 		}
-		rec, err := agent.DecodeRecord(data)
+		rec, err := agent.DecodeStoredRecord(runID, name, data)
 		if err != nil {
 			return nil, err
 		}
