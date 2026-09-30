@@ -3,7 +3,6 @@ package postgres
 // The next_seq function's lookup, body and owner against schema names, overloads and other
 // roles. (From the reviews of #113.)
 
-
 import (
 	"context"
 	"database/sql"

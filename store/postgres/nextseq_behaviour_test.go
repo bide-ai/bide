@@ -4,7 +4,6 @@ package postgres
 // the run lock in a statement of their own, resends of one name, and table prefixes. Every wait
 // is on a pg_locks condition, never a fixed sleep. (From the reviews of #113.)
 
-
 import (
 	"context"
 	"database/sql"

@@ -5,7 +5,6 @@ package postgres
 // and found it missing: the cache is not refreshed by taking an advisory lock, so the lookup reads
 // pg_proc with the statement's snapshot. The test kills the mutant that asks to_regprocedure.
 
-
 import (
 	"context"
 	"database/sql"
