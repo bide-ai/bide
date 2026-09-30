@@ -23,8 +23,9 @@ pending `Sleep` has no timer to wake it. In production, use SQLite or Postgres, 
 waker or an external scheduler that re-drives sleeping runs.
 
 **You supply the resume function.** `agent.Recover` finds incomplete runs and re-drives them, but only
-your deployment knows each run's original input and which waker and clock to bind. Pass that as the
-`resume` function. A `resume` that does not own a run (for example, a sub-agent run, which its parent
+your deployment knows which agent drives each run and which waker and clock to bind. Pass that as the
+`resume` function. The run's input and entry point are journaled at its first drive (read them with
+`agent.RecordedStart`), and a resume with a different input or entry point is `ErrConfig`. A `resume` that does not own a run (for example, a sub-agent run, which its parent
 drives) should do nothing. See [Crash recovery](guides/debugging.md#4--crash-recovery-lister-and-recover).
 
 **Takeover needs a process that keeps looking.** `agent.Recover` is one pass: a run whose holder

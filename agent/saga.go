@@ -225,13 +225,26 @@ func (a *Agent) rollbackRun(ctx context.Context, runID, root string) (compensate
 	}
 	for i := len(calls) - 1; i >= 0; i-- {
 		tu := calls[i]
-		tool := a.tools[tu.Name]
-		if tool == nil || failed[tu.ID] {
-			continue // unknown tool, or the step whose failure aborted the saga (not compensated)
+		if failed[tu.ID] {
+			continue // the step whose failure aborted the saga (not compensated)
 		}
 		res, done := results[tu.ID]
 		if done && res.IsError {
 			continue // a failed call made no change (saga steps must be atomic)
+		}
+		tool := a.tools[tu.Name]
+		if tool == nil {
+			// The call's tool is no longer registered, so neither its safety nor its compensator
+			// is known. Decide from the journal alone: a call attempted as a side effect with no
+			// recorded outcome may have taken effect, so stop for a human as below; any other
+			// call may have taken effect too (a completed write, or a retry-safe call cut off),
+			// and nothing here can undo it, so report it rather than a clean rollback.
+			if !done && started[tu.ID] {
+				uncompensated = append(uncompensated, tu.Name)
+				return compensated, uncompensated, &ResumeHalt{RunID: runID, RootRunID: root, ToolUseID: tu.ID, ToolName: tu.Name, AttemptedAt: markerTime(attemptedAt[tu.ID])}
+			}
+			uncompensated = append(uncompensated, tu.Name)
+			continue
 		}
 
 		// Sub-agent: recurse into its child run (using the SUB-agent's own tools), so its

@@ -56,7 +56,9 @@ type Flow[In, Out any] struct {
 //     recognises it and verifies it equals the current flow's Digest() (see Conform).
 //
 // then, per node named N:
-//   - "attempt:"+N  -- the attempt marker (StepValue, no Result), recorded before N runs;
+//   - "attempt:"+N  -- the attempt marker, recorded before N runs (StepValue whose Result is
+//     {"retry_safe":<bool>}: whether N was retry-safe when it was attempted, which is what a
+//     resume decides by, together with N's Safety now);
 //   - N             -- N's result (StepValue whose Result is the JSON-encoded output);
 //   - "switch:"+over -- for a switched node, the journaled arm choice (StepValue whose
 //     Result is the JSON-encoded chosen target step name).
@@ -417,6 +419,30 @@ func (e *HaltAmbiguous) Error() string {
 // step of the node named name, not a separate declared node.
 func attemptMarker(name string) string { return "attempt:" + name }
 
+// attemptRecord is the Result of a node's attempt marker: whether the node was retry-safe
+// (nodeRetriableOnResume) when it was attempted.
+type attemptRecord struct {
+	RetrySafe bool `json:"retry_safe"`
+}
+
+// attemptSafety returns the attempt marker Result for a node with safety s.
+func attemptSafety(s agent.Safety) json.RawMessage {
+	b, _ := json.Marshal(attemptRecord{RetrySafe: nodeRetriableOnResume(s)}) // a struct of one bool always encodes
+	return b
+}
+
+// retrySafeAttempt reports whether a node whose attempt marker is marker and whose Safety is
+// now s may re-run its body: only if it was retry-safe when it was attempted and is retry-safe
+// now. A marker written before markers recorded safety (an empty Result) or one that does not
+// decode counts as not retry-safe, so such a resume halts rather than guess.
+func retrySafeAttempt(marker agent.Record, s agent.Safety) bool {
+	var at attemptRecord
+	if err := json.Unmarshal(marker.Result, &at); err != nil {
+		return false
+	}
+	return at.RetrySafe && nodeRetriableOnResume(s)
+}
+
 // iterKey returns the ITERATION-SCOPED journal key for a node executed on iteration
 // iter of a bounded loop body: "iter:<n>:<node>". Run journals every loop-body node
 // under this key, so the two-phase attempt/result guard, at-most-once,
@@ -473,7 +499,7 @@ func runNodeKeyed(ctx context.Context, store agent.Durable, runID string, model 
 		return agent.Record{}, fmt.Errorf("plan: run %s: load history for step %q: %w", runID, key, err)
 	}
 	var haveResult, haveAttempt bool
-	var resultRec agent.Record
+	var resultRec, markerRec agent.Record
 	marker := attemptMarker(key)
 	for _, r := range recs {
 		switch r.Name {
@@ -482,18 +508,20 @@ func runNodeKeyed(ctx context.Context, store agent.Durable, runID string, model 
 			resultRec = r
 		case marker:
 			haveAttempt = true
+			markerRec = r
 		}
 	}
 	if haveResult {
 		return resultRec, nil // case 1: memoized result, do not re-run the body
 	}
 	if haveAttempt {
-		// case 2: the effect was attempted but its result was lost to a crash. A
-		// retry-safe node (ReadOnly/Idempotent, mirroring the core loop) may safely
-		// re-run its body from the top, so fall through to record the result below (the
-		// attempt marker is already persisted, so it is not re-recorded). A
-		// non-idempotent node HALTS rather than risk a double side effect.
-		if !nodeRetriableOnResume(node.safety) {
+		// case 2: the effect was attempted but its result was lost to a crash. A node that
+		// was retry-safe when it was attempted (its marker records that) and is retry-safe
+		// now may safely re-run its body from the top, so fall through to record the result
+		// below (the attempt marker is already persisted, so it is not re-recorded). Any
+		// other node HALTS rather than risk a double side effect: Safety is not part of the
+		// flow digest, so the node may have been relabelled since it was attempted.
+		if !retrySafeAttempt(markerRec, node.safety) {
 			return agent.Record{}, &HaltAmbiguous{RunID: runID, Step: key}
 		}
 	} else {
@@ -502,12 +530,14 @@ func runNodeKeyed(ctx context.Context, store agent.Durable, runID string, model 
 		// missing, which case 2 detects on resume. A retry-safe node in case 2 skips this
 		// because its marker already exists. The marker is an exclusive claim
 		// (agent.ClaimAttempt): if another driver of this run claimed the step first, it owns
-		// the body, and a non-idempotent step halts here rather than run it a second time.
-		won, _, err := agent.ClaimAttempt(ctx, store, runID, marker, agent.Record{Kind: agent.StepValue})
+		// the body, and a step not retry-safe by the winner's marker halts here rather than
+		// run it a second time. The marker records whether the node was retry-safe (see
+		// attemptSafety), so a resume decides by what the node was when it was attempted.
+		won, got, err := agent.ClaimAttempt(ctx, store, runID, marker, agent.Record{Kind: agent.StepValue, Result: attemptSafety(node.safety)})
 		if err != nil {
 			return agent.Record{}, fmt.Errorf("plan: run %s: record attempt for step %q: %w", runID, key, err)
 		}
-		if !won && !nodeRetriableOnResume(node.safety) {
+		if !won && !retrySafeAttempt(got, node.safety) {
 			return agent.Record{}, &HaltAmbiguous{RunID: runID, Step: key}
 		}
 	}

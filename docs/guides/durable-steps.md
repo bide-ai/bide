@@ -172,7 +172,11 @@ These are stated in full in [KNOWN-LIMITATIONS.md](../KNOWN-LIMITATIONS.md); in 
   `SagaAborted.CompensateErr`; resolve it with `ResolveHalt` and call `RunSaga` again to finish the
   rollback. A retry-safe call with a compensator is run again to learn its result, then undone. A
   sub-agent call is rolled back into whether or not it returned. A completed write with no
-  compensator, idempotent or not, is listed in `SagaAborted.Uncompensated`.
+  compensator, idempotent or not, is listed in `SagaAborted.Uncompensated`. So is any call whose
+  tool is no longer registered when the rollback runs (its compensator and safety are unknown), and
+  one of those with an attempt marker and no result stops the rollback with a `*ResumeHalt`.
+- **A saga resumes as a saga.** A run's first drive records whether it runs as a saga, and resuming
+  an unfinished saga through `Run` (or a run through `RunSaga`) is `ErrConfig`.
 - **Compensation is hierarchical, not concurrent.** Rollback recurses through a sub-agent *tree*
   (one causal order). Truly concurrent agents mutating shared state out of order need the provable
   convergence of the governance tier ([Governance](governance.md)), not a saga.

@@ -61,6 +61,10 @@ func TestResume_DifferentInputIsRefused(t *testing.T) {
 	if u := userTexts(got.Messages); !slices.Equal(u, []string{"refund order 17"}) {
 		t.Fatalf("model was sent user messages %q, want the run's input", u)
 	}
+	start, ok, err := RecordedStart(ctx, store, "r")
+	if err != nil || !ok || start.Input != "refund order 17" || start.Saga {
+		t.Fatalf("RecordedStart = %+v, %v, %v; want the run's input, not a saga", start, ok, err)
+	}
 }
 
 // SendOnce documents that reusing a key with a different input is ErrConfig. That held only
@@ -130,6 +134,10 @@ func TestResume_SagaRunThroughRunIsRefused(t *testing.T) {
 	var aborted *SagaAborted
 	if _, err := a.RunSaga(ctx, "r", "trip"); !errors.As(err, &aborted) || undone != 1 {
 		t.Fatalf("saga resumed through RunSaga: err = %v, compensations %d; want *SagaAborted and 1", err, undone)
+	}
+	start, ok, err := RecordedStart(ctx, store, "r")
+	if err != nil || !ok || !start.Saga || start.Input != "trip" {
+		t.Fatalf("RecordedStart = %+v, %v, %v; want the saga's input", start, ok, err)
 	}
 }
 
@@ -318,6 +326,26 @@ func TestSaga_UnregisteredAttemptedCallStillHalts(t *testing.T) {
 	wantHalt(err)
 	if done, _ := hasValueStep(ctx, store, "r", runAbortedStep); done {
 		t.Fatal("the run was marked aborted with a call of unknown outcome")
+	}
+}
+
+// RecordedStart finds the start record among the run's other values: an answer recorded for an
+// interrupt before the run's first drive comes first in its journal.
+func TestRecordedStart_AmongOtherValues(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemStore()
+	if err := Resume(ctx, store, "r", "k", "early"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := New(NewScriptedModel(TextTurn("ok")), store).Run(ctx, "r", "hello"); err != nil {
+		t.Fatal(err)
+	}
+	start, ok, err := RecordedStart(ctx, store, "r")
+	if err != nil || !ok || start != (RunStart{Input: "hello"}) {
+		t.Fatalf("RecordedStart = %+v, %v, %v; want the run's input", start, ok, err)
+	}
+	if _, ok, err := RecordedStart(ctx, store, "never"); ok || err != nil {
+		t.Fatalf("RecordedStart for a run never driven: ok %v, err %v", ok, err)
 	}
 }
 

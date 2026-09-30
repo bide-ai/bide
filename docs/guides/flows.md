@@ -101,7 +101,11 @@ Every node lowers to a memoized `Do` step under a two-phase attempt/result guard
   default (no classification) never double-fires, but completing after a mid-node crash then requires
   resolving the halt out of band (record the halted node's result, then continue), which is only safe
   when that node has no side effect. A node may instead declare a `Safety` (read-only or idempotent,
-  via `ReadOnly()`/`Idempotent()` in Go) so it re-runs on resume instead of halting. A declarative config's `safety` may only lower that (see "Node and join safety").
+  via `ReadOnly()`/`Idempotent()` in Go) so it re-runs on resume instead of halting. A declarative config's `safety` may only lower that (see "Node and join safety"). The
+  attempt marker records whether the node was retry-safe when it was attempted, and a node re-runs
+  only if it was then and is now: `Safety` is not part of the digest, so a node relabelled between a
+  crash and its resume (in either direction, in Go or by a config lowering it) halts. A marker written
+  before markers recorded this halts too.
 - **A run keeps its flow.** `Run` records the flow's digest first and, on resume, refuses (`ErrConfig`)
   to continue a run that started under a different digest: its journal only means what it meant
   under that flow.

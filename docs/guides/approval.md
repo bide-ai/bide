@@ -29,6 +29,11 @@ if errors.As(err, &pend) {
 The first decision recorded for a tool call wins. A denial is fed back to the model as the tool
 result `tool call denied by human`, so the model can react rather than the run failing.
 
+A recorded denial is final even if the tool's gate is removed or loosened before the run is driven
+again: the call is denied, not run. An approval is not carried over the same way. While a gate is
+configured, the call's decision is taken under the gate's current policy, so a gate tightened (from
+1-of-1 to m-of-n, say) before the call ran asks again.
+
 ## m-of-n
 
 Declare the policy on the tool, and tell the agent how to resolve an approver id to the key that

@@ -44,7 +44,8 @@ func (f *Flow[In, Out]) Conform(ctx context.Context, store agent.Durable, runID 
 //     different topology").
 //   - "<N>"            -- node N's result (StepValue whose Result is N's JSON output).
 //   - "attempt:<N>"    -- an attempt marker written BEFORE node N's body runs
-//     (StepValue, empty Result). It is an INTERNAL step of node N, not a distinct
+//     (StepValue whose Result records whether N was retry-safe when attempted, or is
+//     empty in a journal written before it did). It is an INTERNAL step of node N, not a distinct
 //     declared node, so it maps to N and is never a divergence on its own.
 //   - "switch:<over>"  -- a switched node's journaled arm choice (StepValue whose
 //     Result is the JSON-encoded chosen target step name). It maps to the Switch

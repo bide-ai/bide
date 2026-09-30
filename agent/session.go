@@ -237,7 +237,8 @@ func (s *Session) startTurn(ctx context.Context, input string) (turnStart, error
 // if the process died after the turn was recorded and before the caller replied. A key whose
 // turn was interrupted resumes that same turn: it runs under its own journal,
 // "<session id>/e/<key>", so a different message arriving in between gets its own turn.
-// Reusing a key with a different input is ErrConfig.
+// Reusing a key with a different input is ErrConfig, whether the key's turn has finished or is
+// still open: the turn's run records the message it answers (see RunStart).
 func (s *Session) SendOnce(ctx context.Context, key, input string) (Message, error) {
 	if key == "" {
 		return Message{}, fmt.Errorf("session %s: SendOnce: empty key: %w", s.id, ErrConfig)
