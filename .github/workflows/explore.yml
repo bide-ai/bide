@@ -100,6 +100,6 @@ jobs:
           path: |
             ${{ runner.temp }}/explore/sigs.tsv.gz
             ${{ runner.temp }}/explore/test.log
-          retention-days: 90
+          retention-days: 30
           compression-level: 1
           if-no-files-found: warn
