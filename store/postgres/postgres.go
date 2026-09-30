@@ -145,26 +145,42 @@ type selectSQL string
 // allows a value of this type on the pool. Only newWrite makes one.
 type writeSQL string
 
-// newWrite returns q as a writeSQL, or an error if q does not start with INSERT, UPDATE or DELETE
-// or holds a semicolon (it would then be more than one statement under the simple protocol, which
-// a DSN can select).
+// newWrite returns q as a writeSQL, or an error unless q is one statement the pool may run on its
+// own (see oneStatement) that starts with INSERT, UPDATE or DELETE.
 func newWrite(q string) (writeSQL, error) {
-	t := strings.TrimLeftFunc(q, unicode.IsSpace)
 	for _, kw := range []string{"INSERT", "UPDATE", "DELETE"} {
-		if len(t) > len(kw) && strings.EqualFold(t[:len(kw)], kw) && unicode.IsSpace(rune(t[len(kw)])) && !strings.Contains(q, ";") {
+		if startsWith(q, kw) && oneStatement(q) {
 			return writeSQL(q), nil
 		}
 	}
 	return "", fmt.Errorf("postgres: a write on the pool must be one INSERT, UPDATE or DELETE statement, got %.40q: %w", q, agent.ErrConfig)
 }
 
-// newSelect returns q as a selectSQL, or an error if q does not start with the SELECT keyword.
+// newSelect returns q as a selectSQL, or an error unless q is one statement the pool may run on
+// its own (see oneStatement) that starts with SELECT.
 func newSelect(q string) (selectSQL, error) {
-	t := strings.TrimLeftFunc(q, unicode.IsSpace)
-	if len(t) <= len("SELECT") || !strings.EqualFold(t[:len("SELECT")], "SELECT") || !unicode.IsSpace(rune(t[len("SELECT")])) {
-		return "", fmt.Errorf("postgres: a read on the pool must be a SELECT, got %.40q: %w", q, agent.ErrConfig)
+	if !startsWith(q, "SELECT") || !oneStatement(q) {
+		return "", fmt.Errorf("postgres: a read on the pool must be one SELECT statement, got %.40q: %w", q, agent.ErrConfig)
 	}
 	return selectSQL(q), nil
+}
+
+// sessionLock matches the session-level advisory lock functions (pg_advisory_lock,
+// pg_advisory_lock_shared, pg_try_advisory_lock and pg_try_advisory_lock_shared), whose lock
+// outlives the statement's transaction and so would be held across round trips.
+var sessionLock = regexp.MustCompile(`(?i)pg_(try_)?advisory_lock`)
+
+// oneStatement reports whether q can only be one statement that holds nothing after it ends: it
+// holds no semicolon (under the simple protocol, which a DSN can select, a semicolon separates
+// statements, one of which could be BEGIN) and names no session-level advisory lock.
+func oneStatement(q string) bool {
+	return !strings.Contains(q, ";") && !sessionLock.MatchString(q)
+}
+
+// startsWith reports whether q starts with the keyword kw, after leading white space.
+func startsWith(q, kw string) bool {
+	t := strings.TrimLeftFunc(q, unicode.IsSpace)
+	return len(t) > len(kw) && strings.EqualFold(t[:len(kw)], kw) && unicode.IsSpace(rune(t[len(kw)]))
 }
 
 // txOptions are the options of the one transaction the store begins, the schema migration. The

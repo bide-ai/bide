@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"unicode"
@@ -26,22 +27,26 @@ import (
 // tests check the behaviour; this check holds every statement a later change adds to the rules.
 //
 // A value of the package's type selectSQL, converted to string at the call, counts as a SELECT:
-// newSelect makes one only from a query that starts with SELECT (see TestNewSelect). A value of
-// the type writeSQL counts as one write statement: newWrite makes one only from a query that
-// starts with INSERT, UPDATE or DELETE and holds no semicolon (see TestNewWrite).
+// newSelect makes one only from one SELECT statement (see TestNewSelect). A value of the type
+// writeSQL counts as one write statement: newWrite makes one only from one INSERT, UPDATE or
+// DELETE (see TestNewWrite). Neither accepts a semicolon or a session-level advisory lock.
 //
 // The check type-checks the package's source, so it follows types, not names: every method of
 // *sql.DB or *sql.Conn that runs SQL or begins a transaction is found whatever its receiver is
 // called or however it is reached (a field, a parameter, a local, an embedded field). On those:
 //   - BeginTx may be called only in the method migrate, and must pass the package-level txOptions
 //     (a local of the same name does not count);
-//   - Exec, Query and QueryRow (and their Context forms) must pass a constant query that starts
-//     with SELECT, a selectSQL or a writeSQL;
+//   - Exec, Query and QueryRow (and their Context forms) must pass a constant query that is one
+//     SELECT statement, a selectSQL or a writeSQL;
 //   - Begin, Prepare and Raw, which could run anything, and a method value that escapes the check,
 //     are refused.
 //
-// The same methods called through an interface are refused, since the check cannot tell which
-// handle they reach; and nothing may assign to txOptions or through it.
+// The same methods called through an interface or a method expression are refused, since the check
+// cannot tell which handle they reach, and nothing may assign to txOptions or through it. Beyond
+// the pool (see checkExpr): no function of a pgx package may be used outside migrate, no constant
+// or conversion of the type writeSQL or selectSQL may appear outside newWrite and newSelect, a
+// constant query holds no semicolon, and no constant names a session-level advisory lock.
+// TestStatementCheckCatchesBypasses holds the check to a fixture of ways around it.
 func TestStatementsOnThePool(t *testing.T) {
 	if txOptions == nil || txOptions.Isolation != sql.LevelReadCommitted || txOptions.ReadOnly {
 		t.Fatalf("txOptions = %+v, want read committed", txOptions)
@@ -182,6 +187,9 @@ func statementProblems(t *testing.T, dir string, extra ...string) []string {
 				fnName = fd.Name.Name
 			}
 			ast.Inspect(decl, func(n ast.Node) bool {
+				if e, ok := n.(ast.Expr); ok {
+					checkExpr(e, fnName, info, report)
+				}
 				switch n := n.(type) {
 				case *ast.AssignStmt:
 					for _, lhs := range n.Lhs {
@@ -199,7 +207,7 @@ func statementProblems(t *testing.T, dir string, extra ...string) []string {
 					}
 				case *ast.SelectorExpr:
 					sel := info.Selections[n]
-					if sel == nil || sel.Kind() != types.MethodVal {
+					if sel == nil || sel.Kind() == types.FieldVal {
 						return true
 					}
 					idx, governed := poolMethods[n.Sel.Name]
@@ -208,6 +216,12 @@ func statementProblems(t *testing.T, dir string, extra ...string) []string {
 					}
 					fn := sel.Obj().(*types.Func)
 					recv := fn.Signature().Recv().Type()
+					if sel.Kind() == types.MethodExpr {
+						if types.IsInterface(recv) || isPoolHandle(fn, recv) {
+							report(n, "%s through a method expression, which hides the call from the check", n.Sel.Name)
+						}
+						return true
+					}
 					if types.IsInterface(recv) {
 						report(n, "%s through an interface: the check cannot tell whether it reaches the pool", n.Sel.Name)
 						return true
@@ -243,7 +257,9 @@ func statementProblems(t *testing.T, dir string, extra ...string) []string {
 						tv := info.Types[call.Args[idx]]
 						if tv.Value == nil || tv.Value.Kind() != constant.String {
 							report(call.Args[idx], "%s on %s with a query that is not a constant string", n.Sel.Name, recv)
-						} else if !isSelect(constant.StringVal(tv.Value)) {
+						} else if q := constant.StringVal(tv.Value); strings.Contains(q, ";") {
+							report(call.Args[idx], "%s on %s runs more than one statement", n.Sel.Name, recv)
+						} else if !isSelect(q) {
 							report(call.Args[idx], "%s on %s runs a statement other than SELECT outside a transaction begun with txOptions", n.Sel.Name, recv)
 						} else {
 							reads++
@@ -258,6 +274,54 @@ func statementProblems(t *testing.T, dir string, extra ...string) []string {
 		t.Fatalf("found %d BeginTx calls, %d reads and %d writes on the pool; the check is not seeing the package's calls", begins, reads, writes)
 	}
 	return problems
+}
+
+// sessionLockCall matches the session-level advisory lock functions, whose lock outlives the
+// statement and so is held across round trips. The transaction-level forms (pg_advisory_xact_lock
+// and pg_try_advisory_xact_lock) end with the statement's transaction.
+var sessionLockCall = regexp.MustCompile(`(?i)pg_(try_)?advisory_lock`)
+
+// pgxPackage reports whether path is one of the pgx packages, whose connections and transactions
+// the database/sql rules do not see.
+func pgxPackage(path string) bool {
+	return path == "github.com/jackc/pgx/v5" || strings.HasPrefix(path, "github.com/jackc/pgx/v5/")
+}
+
+// vouchedBy maps the package's statement types to the one function that may make a value of each.
+var vouchedBy = map[string]string{"writeSQL": "newWrite", "selectSQL": "newSelect"}
+
+// checkExpr applies the rules that hold for any expression in the function fnName (empty outside
+// a function):
+//   - a function or method of a pgx package may be used only in migrate: the store reaches the
+//     database through database/sql, and a pgx connection or transaction would escape every rule;
+//   - a constant or a conversion of the type writeSQL or selectSQL may appear only in newWrite or
+//     newSelect, which vouch for the statement;
+//   - no constant string may name a session-level advisory lock.
+//
+// A constant identifier is reported where the constant is declared, not where it is used.
+func checkExpr(e ast.Expr, fnName string, info *types.Info, report func(ast.Node, string, ...any)) {
+	if id, ok := e.(*ast.Ident); ok {
+		if fn, ok := info.Uses[id].(*types.Func); ok && fn.Pkg() != nil && pgxPackage(fn.Pkg().Path()) && fnName != "migrate" {
+			report(id, "%s of %s outside migrate: a pgx connection or transaction escapes the database/sql rules", id.Name, fn.Pkg().Path())
+		}
+		return
+	}
+	tv, ok := info.Types[e]
+	if !ok {
+		return
+	}
+	if named, ok := tv.Type.(*types.Named); ok && named.Obj().Pkg() != nil && named.Obj().Pkg().Name() == "postgres" {
+		if maker, ok := vouchedBy[named.Obj().Name()]; ok && fnName != maker {
+			if tv.Value != nil {
+				report(e, "a constant of type %s outside %s, which alone vouches for the statement", named.Obj().Name(), maker)
+			} else if call, ok := e.(*ast.CallExpr); ok && info.Types[call.Fun].IsType() {
+				report(e, "a conversion to %s outside %s, which alone vouches for the statement", named.Obj().Name(), maker)
+			}
+		}
+	}
+	if tv.Value != nil && tv.Value.Kind() == constant.String && sessionLockCall.MatchString(constant.StringVal(tv.Value)) {
+		report(e, "a session-level advisory lock, held across round trips")
+	}
 }
 
 // isConverted reports whether e is string(x) for an x of the package's type named typ.

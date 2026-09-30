@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"unicode"
@@ -35,8 +36,11 @@ import (
 //   - Begin, Prepare and Raw, which could run anything, and a method value that escapes the check,
 //     are refused.
 //
-// The same methods called through an interface are refused, since the check cannot tell which
-// handle they reach; and nothing may assign to txOptions or through it.
+// The same methods called through an interface or a method expression are refused, since the check
+// cannot tell which handle they reach, and nothing may assign to txOptions or through it. Beyond
+// the pool (see checkExpr): no function of a pgx package may be used outside migrate, and no
+// constant names a session-level advisory lock. TestStatementCheckCatchesBypasses holds the check
+// to a fixture of ways around it.
 func TestStatementsOnThePool(t *testing.T) {
 	if txOptions == nil || txOptions.Isolation != sql.LevelReadCommitted || txOptions.ReadOnly {
 		t.Fatalf("txOptions = %+v, want read committed", txOptions)
@@ -177,6 +181,9 @@ func statementProblems(t *testing.T, dir string, extra ...string) []string {
 				fnName = fd.Name.Name
 			}
 			ast.Inspect(decl, func(n ast.Node) bool {
+				if e, ok := n.(ast.Expr); ok {
+					checkExpr(e, fnName, info, report)
+				}
 				switch n := n.(type) {
 				case *ast.AssignStmt:
 					for _, lhs := range n.Lhs {
@@ -194,7 +201,7 @@ func statementProblems(t *testing.T, dir string, extra ...string) []string {
 					}
 				case *ast.SelectorExpr:
 					sel := info.Selections[n]
-					if sel == nil || sel.Kind() != types.MethodVal {
+					if sel == nil || sel.Kind() == types.FieldVal {
 						return true
 					}
 					idx, governed := poolMethods[n.Sel.Name]
@@ -203,6 +210,12 @@ func statementProblems(t *testing.T, dir string, extra ...string) []string {
 					}
 					fn := sel.Obj().(*types.Func)
 					recv := fn.Signature().Recv().Type()
+					if sel.Kind() == types.MethodExpr {
+						if types.IsInterface(recv) || isPoolHandle(fn, recv) {
+							report(n, "%s through a method expression, which hides the call from the check", n.Sel.Name)
+						}
+						return true
+					}
 					if types.IsInterface(recv) {
 						report(n, "%s through an interface: the check cannot tell whether it reaches the pool", n.Sel.Name)
 						return true
@@ -249,6 +262,34 @@ func statementProblems(t *testing.T, dir string, extra ...string) []string {
 		t.Fatalf("found %d BeginTx calls, %d reads and %d writes on the pool; the check is not seeing the package's calls", begins, reads, writes)
 	}
 	return problems
+}
+
+// sessionLockCall matches the session-level advisory lock functions, whose lock outlives the
+// statement and so is held across round trips. The transaction-level forms (pg_advisory_xact_lock
+// and pg_try_advisory_xact_lock) end with the statement's transaction.
+var sessionLockCall = regexp.MustCompile(`(?i)pg_(try_)?advisory_lock`)
+
+// pgxPackage reports whether path is one of the pgx packages, whose connections and transactions
+// the database/sql rules do not see.
+func pgxPackage(path string) bool {
+	return path == "github.com/jackc/pgx/v5" || strings.HasPrefix(path, "github.com/jackc/pgx/v5/")
+}
+
+// checkExpr applies the rules that hold for any expression in the function fnName (empty outside
+// a function): a function or method of a pgx package may be used only in migrate, since the log
+// reaches the database through database/sql and a pgx connection or transaction would escape
+// every rule; and no constant string may name a session-level advisory lock. A constant
+// identifier is reported where the constant is declared, not where it is used.
+func checkExpr(e ast.Expr, fnName string, info *types.Info, report func(ast.Node, string, ...any)) {
+	if id, ok := e.(*ast.Ident); ok {
+		if fn, ok := info.Uses[id].(*types.Func); ok && fn.Pkg() != nil && pgxPackage(fn.Pkg().Path()) && fnName != "migrate" {
+			report(id, "%s of %s outside migrate: a pgx connection or transaction escapes the database/sql rules", id.Name, fn.Pkg().Path())
+		}
+		return
+	}
+	if tv, ok := info.Types[e]; ok && tv.Value != nil && tv.Value.Kind() == constant.String && sessionLockCall.MatchString(constant.StringVal(tv.Value)) {
+		report(e, "a session-level advisory lock, held across round trips")
+	}
 }
 
 // isPoolHandle reports whether fn is a method of *sql.DB or *sql.Conn, whose statements run
