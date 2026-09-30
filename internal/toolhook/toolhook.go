@@ -28,5 +28,8 @@ var CheckTool func(t any) error
 // attempt marker halts on the re-drive, as any call that recorded nothing does).
 type Unrecorded struct{ Err error }
 
+// Error returns Err's text.
 func (e *Unrecorded) Error() string { return e.Err.Error() }
+
+// Unwrap returns Err, so errors.Is sees its category.
 func (e *Unrecorded) Unwrap() error { return e.Err }
