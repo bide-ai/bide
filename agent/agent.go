@@ -693,9 +693,10 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 			g.SetLimit(a.maxConc)
 		}
 		var (
-			pauseMu  sync.Mutex
-			pauseIdx = -1
-			pauseErr error
+			pauseMu   sync.Mutex
+			pauseIdx  = -1
+			pauseErr  error
+			pauseHalt bool // pauseErr is a *ResumeHalt
 			// carried[i] is the usage the record of uses[i] carries: that of the runs it started.
 			// The runs counted their spend in the tree as it happened, so it goes into tot only.
 			carried = make([]usageTotals, len(uses))
@@ -709,13 +710,18 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 			g.Go(func() (err error) {
 				defer func() {
 					if err != nil && isPause(err) {
+						var halt *ResumeHalt
+						isHalt := errors.As(err, &halt)
 						pauseMu.Lock()
-						if pauseIdx < 0 || c.idx < pauseIdx { // report the first call's pause
-							pauseIdx, pauseErr = c.idx, err
+						// Report a halt ahead of any other pause, then the first call's. A halt is a
+						// side effect whose outcome nobody knows, and the run stays stuck on it
+						// whatever else is answered; reported behind an approval, it would surface
+						// only once that was decided, and never if it is not.
+						if pauseIdx < 0 || isHalt && !pauseHalt || isHalt == pauseHalt && c.idx < pauseIdx {
+							pauseIdx, pauseErr, pauseHalt = c.idx, err, isHalt
 						}
 						pauseMu.Unlock()
-						var halt *ResumeHalt
-						if saga && errors.As(err, &halt) {
+						if saga && isHalt {
 							halted.Store(true)
 						}
 						err = nil
