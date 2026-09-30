@@ -88,13 +88,21 @@ func Test_R105c_CheckFormatsZeroAndNilValues(t *testing.T) {
 	signer := p11Signers(t)["ed25519"]
 	v := p11Verifier(t, signer)
 	for name, f := range map[string]func(){
-		"zero cert":      func() { _, _ = audit.VerifyRun(audit.RunCertificate{}, nil, v) },
-		"zero package":   func() { _, _ = audit.EvidencePackage{}.Verify(v) },
-		"nil pointers":   func() { _, _ = audit.EvidencePackage{Format: audit.EvidenceFormat, Grants: nil, RunCertificate: nil, Consistency: nil}.Verify(v) },
-		"empty grants":   func() { _, _ = audit.EvidencePackage{Format: audit.EvidenceFormat, Grants: &audit.EvidenceGrants{}}.Verify(v) },
-		"zero anchor":    func() { _ = audit.VerifyAnchorInclusion(nil, audit.AnchorEntry{}, audit.Inclusion{}) },
-		"cert in pkg":    func() { _, _ = audit.EvidencePackage{Format: audit.EvidenceFormat, RunCertificate: &audit.RunCertificate{}}.Verify(v) },
-		"conv zero cert": func() { _, _ = audit.VerifyRun(audit.RunCertificate{Format: audit.RunCertificateFormat, Convergence: make([]audit.PolicyConvergence, 3)}, nil, v) },
+		"zero cert":    func() { _, _ = audit.VerifyRun(audit.RunCertificate{}, nil, v) },
+		"zero package": func() { _, _ = audit.EvidencePackage{}.Verify(v) },
+		"nil pointers": func() {
+			_, _ = audit.EvidencePackage{Format: audit.EvidenceFormat, Grants: nil, RunCertificate: nil, Consistency: nil}.Verify(v)
+		},
+		"empty grants": func() {
+			_, _ = audit.EvidencePackage{Format: audit.EvidenceFormat, Grants: &audit.EvidenceGrants{}}.Verify(v)
+		},
+		"zero anchor": func() { _ = audit.VerifyAnchorInclusion(nil, audit.AnchorEntry{}, audit.Inclusion{}) },
+		"cert in pkg": func() {
+			_, _ = audit.EvidencePackage{Format: audit.EvidenceFormat, RunCertificate: &audit.RunCertificate{}}.Verify(v)
+		},
+		"conv zero cert": func() {
+			_, _ = audit.VerifyRun(audit.RunCertificate{Format: audit.RunCertificateFormat, Convergence: make([]audit.PolicyConvergence, 3)}, nil, v)
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			defer func() {

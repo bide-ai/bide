@@ -110,8 +110,8 @@ func ToolUseKey(r agent.Record) []string {
 }
 
 // absenceKeys returns the sorted, de-duplicated keys the key set yields over records. It projects
-// records as they are; the exported producers call projectKeys, which first checks that they can
-// be projected.
+// records as they are; the exported producers call projectKeys, which projects what each record's
+// stored bytes say (projectRecords).
 func absenceKeys(records []agent.Record, set KeySet) []string {
 	seen := map[string]struct{}{}
 	keys := make([]string, 0, len(records))
@@ -127,35 +127,57 @@ func absenceKeys(records []agent.Record, set KeySet) []string {
 	return keys
 }
 
-// projectKeys returns the sorted, de-duplicated keys set yields over records, once projectable
-// accepts records (what names the projection, for errors).
+// projectKeys returns the sorted, de-duplicated keys set yields over what records' stored bytes
+// say (projectRecords; what names the projection, for errors).
 func projectKeys(records []agent.Record, set KeySet, what string) ([]string, error) {
-	if err := projectable(records, what); err != nil {
+	recs, err := projectRecords(records, what)
+	if err != nil {
 		return nil, err
 	}
-	return absenceKeys(records, set), nil
+	return absenceKeys(recs, set), nil
 }
 
-// projectable reports whether a projection of records (an absence key set, the used-policy set)
-// reads each record as a proof of it would: no record is redacted (ErrRedacted: its content is
-// gone, so the projection would omit it), and each record read back from a journal has stored
-// bytes that read one way to every JSON reader (checkRecordBytes; ErrMalformed), so the key set
-// cannot be projected from one reading of a record while a reader of the journal sees another. A
-// record built in memory has no stored bytes and is projected as it is.
-func projectable(records []agent.Record, what string) error {
+// projectRecords returns the records a projection (an absence key set, the used-policy set, the
+// event stream) reads: for each record read back from a journal, the record its stored bytes
+// decode to, since the journal tree binds those bytes (Raw) and not the record's fields, which a
+// caller can change in memory. It refuses:
+//   - a redacted record (ErrRedacted): its content is gone, so the projection would omit it;
+//   - stored bytes that do not read one way to every JSON reader (checkRecordBytes; ErrMalformed),
+//     so nothing is projected from one reading of a record while a reader of the journal sees
+//     another;
+//   - a record whose fields do not say what its stored bytes say (ErrMalformed), so a projection
+//     never differs from the one the journal tree commits.
+//
+// A record built in memory has no stored bytes and is projected as it is.
+func projectRecords(records []agent.Record, what string) ([]agent.Record, error) {
 	if err := refuseRedacted(records, what); err != nil {
-		return err
+		return nil, err
 	}
+	out := make([]agent.Record, len(records))
 	for i, r := range records {
 		raw := r.Raw()
 		if len(raw) == 0 {
+			out[i] = r
 			continue
 		}
-		if err := checkRecordBytes(raw); err != nil {
-			return fmt.Errorf("audit: %s: the stored bytes of record %d (%q) do not read one way to every JSON reader (%v): %w", what, i, r.Name, err, ErrMalformed)
+		bad := func(format string, args ...any) error {
+			return fmt.Errorf("audit: %s: record %d (%q): %s: %w", what, i, r.Name, fmt.Sprintf(format, args...), ErrMalformed)
 		}
+		if err := checkRecordBytes(raw); err != nil {
+			return nil, bad("its stored bytes do not read one way to every JSON reader (%v)", err)
+		}
+		stored, err := agent.DecodeRecord(raw)
+		if err != nil {
+			return nil, bad("its stored bytes do not decode as a journal record (%v)", err)
+		}
+		got, err1 := agent.EncodeRecord(r)
+		want, err2 := agent.EncodeRecord(stored)
+		if err1 != nil || err2 != nil || !bytes.Equal(got, want) {
+			return nil, bad("its fields do not say what its stored bytes say")
+		}
+		out[i] = stored
 	}
-	return nil
+	return out, nil
 }
 
 // keyLeaf is the leaf data of one absence key: the key leaf tag followed by the key.

@@ -200,8 +200,10 @@ func projectJournal(ctx context.Context, store agent.Durable, runID string) ([]a
 	// A redacted record's events cannot be projected (its content is gone) nor given a place of
 	// their own (its tombstone keeps only the journal leaf hash), so the event tree of a redacted
 	// journal would silently differ from the one taken before: refuse it. A record whose stored
-	// bytes read two ways would project one reading of them: refuse it too (projectable).
-	if err := projectable(recs, "the event stream of run "+runID); err != nil {
+	// bytes read two ways would project one reading of them: refuse it too. The events come from
+	// what each record's stored bytes say (projectRecords), which is what the journal tree binds.
+	recs, err = projectRecords(recs, "the event stream of run "+runID)
+	if err != nil {
 		return nil, nil, err
 	}
 	evs, sources := agent.ProjectEvents(recs)

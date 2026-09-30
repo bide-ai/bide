@@ -75,7 +75,10 @@ used-policy set (`CertifyRun`), and the event stream (`EventLogFromJournal`, `Pe
 it with `audit.ErrRedacted`, rather than omit the record and, say, prove absent a call the journal
 tree commits. They refuse a record whose stored bytes read two ways to JSON readers too
 (`audit.ErrMalformed`, the rule a proof's record bytes follow), so nothing is projected from one
-reading of a record while a reader of the journal sees another. A redaction reaches only the
+reading of a record while a reader of the journal sees another. A projection reads what each
+record's stored bytes (`Record.Raw`) decode to, since the journal tree binds those bytes and not the
+record's fields, and refuses a record whose fields were changed after it was read
+(`audit.ErrMalformed`). A redaction reaches only the
 journal: event leaves `PersistJournal` wrote before it keep the redacted record's content, so a
 deployment that redacts deletes or redacts the run's event trail in its `EventStore` too. The stored bytes do not HTML-escape (unlike v0.6.0's) and include the record's `salt`: 32 random bytes
 a store sets when it first journals the record (`agent.JournalEntry`), so that a proof's sibling
