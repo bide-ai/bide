@@ -296,7 +296,8 @@ const migrateLock = 0x62696465
 
 // migrate creates the tables if they do not exist and checks the schema version. It never alters
 // an existing table: altering a table other nodes are running on would take its exclusive lock and
-// change what they write.
+// change what they write. So it checks that an existing table has each uniqueness the store's
+// single statements depend on (see requiredUnique), and refuses one that does not.
 func (s *Store) migrate(ctx context.Context) error {
 	tx, err := s.db.BeginTx(ctx, txOptions)
 	if err != nil {
@@ -339,11 +340,40 @@ func (s *Store) migrate(ctx context.Context) error {
 	if v > schemaVersion {
 		return fmt.Errorf("postgres: the database's schema version is %d, newer than this version's %d: %w", v, schemaVersion, agent.ErrConfig)
 	}
+	for _, u := range []struct {
+		table string
+		cols  []string
+	}{
+		{s.t.steps, []string{"run_id", "seq"}},
+		{s.t.steps, []string{"run_id", "name"}},
+		{s.t.leases, []string{"run_id"}},
+	} {
+		var ok bool
+		if err := tx.QueryRowContext(ctx, requiredUnique, u.table, u.cols).Scan(&ok); err != nil {
+			return fmt.Errorf("postgres: check the uniqueness of %s: %w (%w)", u.table, err, agent.ErrStorage)
+		}
+		if !ok {
+			return fmt.Errorf("postgres: table %s has no unique index on exactly (%s) that is checked at once and covers every row; the store depends on it (it turns a race for a position into a retry, or arbitrates ON CONFLICT) and never alters an existing table: %w",
+				u.table, strings.Join(u.cols, ", "), agent.ErrConfig)
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("postgres: migrate: %w (%w)", err, agent.ErrStorage)
 	}
 	return nil
 }
+
+// requiredUnique reports whether the table $1 (resolved by the search path, as the store's
+// statements resolve it) has a valid unique index whose key is exactly the column set $2, with no
+// included columns, no expressions and no predicate, checked when each statement runs rather than
+// deferred to commit. The store's inserts and lease upsert rely on each such index: a race for a
+// position fails on it and is retried, and ON CONFLICT needs it as its arbiter.
+const requiredUnique = `SELECT EXISTS (SELECT 1 FROM pg_index i
+	WHERE i.indrelid = to_regclass($1) AND i.indisunique AND i.indisvalid AND i.indimmediate
+		AND i.indpred IS NULL AND i.indexprs IS NULL AND i.indnkeyatts = i.indnatts
+		AND (SELECT array_agg(a.attname::text ORDER BY a.attname::text)
+			FROM unnest(i.indkey::int2[]) AS k JOIN pg_attribute AS a ON a.attrelid = i.indrelid AND a.attnum = k)
+			= (SELECT array_agg(c ORDER BY c) FROM unnest($2::text[]) AS c))`
 
 // Close closes the connection pool Open opened. A Store made with New leaves its db open.
 func (s *Store) Close() error {

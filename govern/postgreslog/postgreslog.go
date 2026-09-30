@@ -30,6 +30,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand/v2"
+	"strings"
 	"time"
 
 	"github.com/bide-ai/bide/agent"
@@ -58,7 +59,34 @@ func Open(ctx context.Context, dsn string) (*Log, error) {
 		db.Close()
 		return nil, err
 	}
+	if err := l.checkUnique(ctx); err != nil {
+		db.Close()
+		return nil, err
+	}
 	return l, nil
+}
+
+// checkUnique checks that governed_events has each uniqueness Append depends on: (entity, seq),
+// on which a race for a position fails and is retried, and (entity, append_id), the arbiter of its
+// ON CONFLICT. The migration never alters an existing table, and it skips a table whose append_id
+// index exists by name, so the columns and kind of each index are checked here.
+func (l *Log) checkUnique(ctx context.Context) error {
+	for _, cols := range [][]string{{"entity", "seq"}, {"entity", "append_id"}} {
+		var ok bool
+		if err := l.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM pg_index i
+			WHERE i.indrelid = to_regclass('governed_events') AND i.indisunique AND i.indisvalid AND i.indimmediate
+				AND i.indpred IS NULL AND i.indexprs IS NULL AND i.indnkeyatts = i.indnatts
+				AND (SELECT array_agg(a.attname::text ORDER BY a.attname::text)
+					FROM unnest(i.indkey::int2[]) AS k JOIN pg_attribute AS a ON a.attrelid = i.indrelid AND a.attnum = k)
+					= (SELECT array_agg(c ORDER BY c) FROM unnest($1::text[]) AS c))`, cols).Scan(&ok); err != nil {
+			return fmt.Errorf("postgreslog: check the uniqueness of governed_events: %w", err)
+		}
+		if !ok {
+			return fmt.Errorf("postgreslog: governed_events has no unique index on exactly (%s) that is checked at once and covers every row; Append depends on it and Open never alters an existing index: %w",
+				strings.Join(cols, ", "), agent.ErrConfig)
+		}
+	}
+	return nil
 }
 
 // txOptions are the options of the one transaction the log begins, the schema migration. The
