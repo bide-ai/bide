@@ -1,0 +1,4 @@
+# Pinned model-checking tools. check.sh downloads each file into its cache and refuses one whose
+# SHA-256 differs. An upgrade is a pull request that changes this file and re-runs every config.
+# name       version  sha256                                                            url
+tla2tools    1.7.4    936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88  https://github.com/tlaplus/tlaplus/releases/download/v1.7.4/tla2tools.jar

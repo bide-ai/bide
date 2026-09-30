@@ -60,6 +60,16 @@ restarts them, and the database counts how often each side effect fired.
 and resume them across processes, and verify the resulting evidence with the `bide-audit` CLI,
 including tampered and incomplete evidence that must be rejected.
 
+**Model checking.** The claim protocol is also modelled in TLA+ ([spec/tla](../../spec/tla/README.md))
+and checked with TLC: every interleaving of two drivers, in one process or two, with every placement
+of up to two ambiguous store replies (an error that did or did not commit, and, in separate
+configurations, an error that commits later), a crash and a cancellation. The invariants are the
+guarantees: at most one fire per call, no not-started record for a claim that fired, a recorded
+result never replaced, a resolution never overriding a live driver; a liveness property states that
+an effect that provably never started does not halt for ever. Each rule an earlier review found
+wrong is kept as a configuration that must still produce its counterexample, so the model cannot
+quietly lose the power to find it.
+
 **Conformance suites.** A port is held to its contract by a reusable suite that any
 implementation, bide's or yours, can run:
 
@@ -127,11 +137,14 @@ Every pull request must pass, before it can merge:
   services, so a test that passes only on a fresh database fails, and a skipped test fails the job,
   since a skip would mean nothing was tested.
 - **DCO** sign-off on every commit.
+- **Models:** the TLA+ models under `spec/tla/` are checked with TLC (`.github/workflows/models.yml`):
+  the committed PlusCal translation must be current, every configuration must pass, and every
+  regression configuration must still fail with its named property. Larger bounds run nightly.
 
 Pull requests merge through a merge queue, which runs the required checks again on the change
 combined with `main` and any changes queued ahead of it, so every merge is tested against the code
-it lands on. A pull request that changes only documentation skips the Go lint, build and tests;
-the required checks still report, so it can merge.
+it lands on. A pull request that changes only documentation (or only the models under `spec/tla/`)
+skips the Go lint, build and tests; the required checks still report, so it can merge.
 
 ## What this does not prove
 
@@ -142,6 +155,11 @@ the required checks still report, so it can merge.
 - **Tests cover the scenarios they model.** The deterministic sweeps and forced interleavings cover
   the windows each guarantee depends on, but a scenario nobody has modelled is not covered until
   someone does.
+- **Model checking is bounded, and checks the design, not the code.** TLC explores every
+  interleaving within the bounds each configuration states (drivers, faults, attempts); a bug that
+  needs more is outside it. Until trace validation lands, nothing checks mechanically that the Go
+  code implements the model; the map from model steps to Go functions in `spec/tla/README.md` is
+  reviewed by hand.
 - **Model behaviour is measured, not proven.** Whether a model decides well is evaluated
   statistically with `eval`, and an eval pass rate is not one of the guarantees above (see
   [Evaluation](testing.md#evaluation-statistical-and-distinct-from-the-provable-layer)).

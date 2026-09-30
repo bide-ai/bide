@@ -178,10 +178,24 @@ or delete a pushed tag (the proxy and the checksum database keep the first versi
 forward with a patch release. `--ref <commit>` dry-runs a commit other than HEAD, `--no-test` skips
 the module tests, and `--keep` keeps the scratch work tree for inspection.
 
+## Formal models
+
+The claim protocol (attempt markers, not-started records, numbered retries, pendingClaims, the
+resume gate, the Step flight and halt resolution) is modelled in TLA+ under `spec/tla/`, and the
+Models workflow checks it with TLC on every pull request. A change to those rules changes the model
+in the same pull request: edit the PlusCal in `spec/tla/claims/Claims.tla`, re-translate it with
+`spec/tla/check.sh translate` (CI fails on a stale translation), and run `spec/tla/check.sh`, which
+needs Java 11 or later and downloads the pinned `tla2tools.jar` (checked against its SHA-256 in
+`spec/tla/tools.lock`). A counterexample TLC finds in the current rules is a bug: reproduce it as a
+deterministic Go test before fixing it, as for any bug. A rule replaced by the change becomes a
+`Bug` value and a configuration in `spec/tla/claims/regress/` that must keep failing. See
+[spec/tla/README.md](spec/tla/README.md).
+
 ## Before opening a change
 
 - `GOWORK=off go build ./...`, `GOWORK=off go test ./...`, `GOWORK=off go vet ./...`, and `gofmt -l .` are clean (run `gofmt` from the go1.27 toolchain via `export PATH="$(go env GOROOT)/bin:$PATH"`, or use `go fmt ./...`; the base gofmt predates Go 1.27 generic methods and reports false errors).
 - New exported symbols have doc comments that start with their name, and every package has a package comment; CI checks this with `go run ./internal/tools/doccheck -root . -allow .doccheck-allow` from the root, and a pull request may not add entries to `.doccheck-allow`.
 - `go run ./internal/tools/docsnip` is clean: the Go blocks of the docs compile (see [Go code in the docs](#go-code-in-the-docs)).
+- `spec/tla/check.sh` passes when the change touches the claim protocol (see [Formal models](#formal-models)).
 - `CHANGELOG.md` has an entry under Unreleased, or the change is not user-facing.
 - New docs are linked from the [docs index](docs/README.md) and honor the style above.

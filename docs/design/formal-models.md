@@ -1,7 +1,13 @@
 # Formal models of the coordination protocols (design proposal and plan)
 
-Status: accepted, in progress. Model 1 (the claim protocol) is being built, and PR #92 merges only once it passes. It expands the
-[roadmap item](../ROADMAP.md#formal-models-of-the-coordination-protocols) into a plan.
+Status: accepted, in progress. It expands the
+[roadmap item](../ROADMAP.md#formal-models-of-the-coordination-protocols) into a plan. Model 1 (the
+claim protocol) is implemented in [spec/tla](../../spec/tla/README.md), with the tooling of M0 and
+the regression configurations of M2 (the counterexample-to-test helper of M2 is not built yet), and
+PR #92 merges only once it passes. Where this plan and `spec/tla/README.md` differ, the README
+states what is checked. Sections 4 and 5 below describe #92's final rules, in which the claim-held
+pin and the reuse of a remembered claim id are gone (the prototype of section 4.8 predates them);
+the script is `spec/tla/check.sh`, and the configurations have other names and bounds.
 
 Grounded in: draft PR [#92](https://github.com/bide-ai/bide/pull/92) (P6a, head `9ace7c6`: `Store`,
 `Journal`, the claim protocol after both reviews) and draft PR
@@ -63,7 +69,7 @@ the design exhaustively, for three reasons:
 
 | # | Model | When | Trigger to start |
 |---|---|---|---|
-| 1 | **Claims and attempts:** `Journal.claim`, `claimNext`, numbered retries, not-started records, pending-claim reuse and the claim-held pin, the resume gate, the Step loser path through shared flights, `ResolveHaltRef`'s live-driver check. | Now, as part of finishing #92 (see open question 1). | None: P6a's rules are final after the second review. |
+| 1 | **Claims and attempts:** `Journal.claim`, `claimNext`, numbered retries, not-started records, remembered claims and their retried not-started records, the resume gate, the Step loser path through shared flights, `ResolveHaltRef`'s live-driver check. | Now, as part of finishing #92 (see open question 1). | None: P6a's rules are final after the second review. |
 | 2 | **The bide protocol:** the wire protocol of [#95](https://github.com/bide-ai/bide/pull/95), a remote worker running a tool under the engine's claim, redelivery, a worker that dies or answers late. | Deferred. | #95 is accepted and its message set is frozen, and before the first SDK is built on it. |
 | 3 | **Leases and recovery:** acquire, renew, release, takeover, a holder that stalls past its TTL, `Recover`/`RecoverLoop` dispatch, and the lease that `checkNoLiveDriver` takes. Invariant: at-most-once holds with leases failing arbitrarily. | Deferred. | P13 (the `LeaseControl` option) and P14 (recovery dispatch, not-started runs skipped) are merged. |
 | 4 | **The store contract and journal header:** A1 to A8 as an abstract store with concurrent readers, prefix-closed visibility (A2), first-writer races, the `@journal` header rules, refusal of other formats, redaction. | Deferred. | The first change to A1 to A8 or to the header rules after #92 merges, the runs-table follow-up, or P16 setting the final `JournalFormat`, whichever comes first. |
@@ -81,7 +87,7 @@ driver path in model 1 rather than a model of its own.
 Modelled: one run; a set of logical calls (tool calls and Steps); for each call, the attempt
 markers `attempt:tool:<id>` or `attempt:step:<name>` and their numbered re-attempts
 `attempt:retry:<n>:...`, the not-started keys `attempt:not-started:<claim>:<marker>` holding
-either a not-started record or a claim-held record, and the result key (`tool:<id>` or the step
+a not-started record, and the result key (`tool:<id>` or the step
 name); drivers grouped into processes; the process-wide `pendingClaims` memo and in-flight steps;
 crashes; ambiguous store replies; context cancellation before the effect; the resume gate; the
 Step loser path; halt resolution.
@@ -96,11 +102,11 @@ minimum halt age is an assumption, section 4.4); lease internals (a flag per dri
 | Variable | Meaning | Go counterpart |
 |---|---|---|
 | `marker[c][g]` | claim id stored under call `c`'s attempt `g`, or 0 | `retryAttemptStep(base, g)` entries |
-| `ns[c][g][i]` | `None`, `"ns"` (StepNotStarted) or `"held"` (the claim-held StepValue) | `notStartedStep(key, i)` entries |
+| `nsSet` | the `<<c, g, i>>` whose not-started key holds a `StepNotStarted` record | `notStartedStep(key, i)` entries |
 | `result[c]` | `None`, or who recorded it and what it says (`driver`/`resolver`, `ok`/`error`) | `ToolResultStep(id)` or the step name |
-| `pending[p][c][g]` | claim id remembered by process `p` for that marker key, or 0 | `pendingClaims` (`claimMemo`) |
+| `pending[p][c][g]` | the claim ids remembered by process `p` for that marker key (a set; see finding F1 in `spec/tla/README.md`) | `pendingClaims` (`claimMemo`) |
 | `flight[p][c]` | `None` or the driver leading process `p`'s in-flight call of `c`'s result key | `flights` (`shareFlight`, `joinFlight`) |
-| `pc[d]`, `g[d]`, `cid[d]`, `reused[d]`, `won[d]`, `reply[d]`, `outcome[d]` | driver `d`'s position and locals | the call stack of one drive |
+| `pc[d]`, `g[d]`, `cid[d]`, `oldId[d]`, `won[d]`, `reply[d]`, `outcome[d]` | driver `d`'s position and locals | the call stack of one drive |
 | `lease[d]` | whether `d` holds the run's lease (leased drivers only) | `Leaser` |
 | `ambig`, `crashes`, `cancels` | fault budgets used so far | none (bounds) |
 | `fired[c]`, `firedAt[c][g]` | ghost: effect calls, and the claim each fired under | the counters in the tests |
@@ -152,20 +158,20 @@ step abstracts is named, so the model-code map is explicit.
 
 | Label | Go | Step |
 |---|---|---|
-| `Open` | `Journal.open`, `liveAttempts`, the resume gate in `loop.go` (the `for id := range attempted` halt) | One `Load`. If the result is recorded, the drive returns it. On the tool path, a marker that is not voided and has no result halts (`HaltCrashed`). The Step path has no gate: `journalStep` goes to `Get` and then `claimNext`. |
-| `Claim` | `Journal.claim` (first half) | Take the process's remembered id for this marker key (`pendingClaims.take`), or a fresh one. |
-| `ClaimInsert` | `Journal.claim` → `Journal.insert` → `Store.Insert` | Insert the marker (three replies). |
-| `ClaimCheck` | `Journal.claim` | On error: go to `ClaimNotStarted`. If the stored marker carries another id: `Lost`. If the id was reused: `Hold`. Else the claim is won: `Call`. |
-| `ClaimNotStarted` | `Journal.claim` → `Journal.notStarted` | Insert the not-started record under the claim's own id (three replies). On error: `pendingClaims.remember`. The drive fails. |
-| `Hold` | `Journal.holdClaim` | Insert the claim-held record under the reused id's not-started key. On error: remember the id again, the drive fails. If a not-started record is there: `Lost`. Else: `Call`. |
+| `Open` | `Journal.open`, `liveAttempts`, the resume gate in `loop.go` (the `for id := range attempted` halt) | One `Load`. If the result is recorded, the drive returns it. On the tool path, a marker that is not voided and has no result halts (`HaltCrashed`), unless the process remembers that marker's own claim id: then `GateTake`/`GateWrite` retry its not-started record (`Journal.retryNotStarted`), and on success the call claims its next attempt. The Step path has no gate: `journalStep` goes to `Get` and then `claimNext`. |
+| `Claim`, `ClaimRetry` | `Journal.claim` (first half) | Take an id the process remembers for this marker key (`pendingClaims.take`) and write its not-started record again (`Journal.notStarted`); on error the id is remembered again and the drive fails. A remembered id is never used to claim. |
+| `ClaimInsert` | `Journal.claim` → `newClaimID`, `Journal.insert` → `Store.Insert` | Insert the marker under a fresh id (three replies). On error: `ClaimNS`. If the stored marker carries another id: `Lost`. Else the claim is won, and its not-started key is empty. |
+| `ClaimNS` | `Journal.claim` → `Journal.notStarted` | Insert the not-started record under the claim's own id (three replies). On error: `pendingClaims.remember`. The drive fails. |
 | `Lost` | `Journal.claimNext`, `Journal.voided` | If the stored marker is voided by its claimant's not-started record: next `g`, back to `Claim`. Else the tool path halts (`HaltContended`); the Step path goes to `JoinOrRead`. |
-| `JoinOrRead` | `journalStep` loser branch: `joinFlight`, then `Journal.Get` | Join the process's in-flight call if there is one and take its outcome; else read the result; else halt. Never lead a flight. |
+| `JoinOrRead` | `journalStep` loser branch: `joinFlight`, then `Journal.Get` | Join the process's in-flight call if there is one and take its outcome (if it fails, halt `HaltContended`); else read the result; else halt (`HaltCrashed`). Never lead a flight. |
 | `Call` | `journalStep`'s `doFresh` closure; `loop.go`'s `recordFresh` closure (`sctx.Err()` check, `called.Store(true)`) | Either the context is cancelled (the effect is not called: `NotStarted`), or the effect is called: `fired[c]` increments and `firedAt[c][g]` is set. |
 | `Record` | `Journal.doFresh` → `Journal.insert` | Insert the result (three replies). An error leaves the marker without a result: the next drive halts. |
-| `NotStarted` | `recordNotStarted` → `Journal.notStarted` | Insert the not-started record (three replies). No memo on error. |
+| `NotStarted` | `recordNotStarted` → `Journal.notStarted` | Insert the not-started record (three replies). On error: `pendingClaims.remember`, as for every failed not-started write. |
 | `Finish` | the caller, `Recover`/`RecoverLoop` | A drive that did not end with a result is driven again. |
 | `Crash(p)` | process death | Every driver of `p` restarts at `Open` with empty locals; `pending[p]` and `flight[p]` are emptied. A TLA+ action added beside the translated `Next`, since PlusCal cannot reset another process's `pc`. |
-| `Resolve` | `resolveHalt`, `checkNoLiveDriver` | If the call has no result and a live marker: under `LiveCheck = "lease"`, take the lease if no leased driver holds it; under `"minAge"`, the assumption below; under `"none"` (`WithoutLiveDriverCheck`), nothing. Then insert the result through the result key (first writer wins). |
+| `Resolve` | `resolveHalt`, `checkNoLiveDriver` | If the call has no result and a live marker: under `LiveCheck = "lease"`, take the lease if no leased driver holds it; under `"minAge"`, the assumption below; under `"none"` (`WithoutLiveDriverCheck`), nothing. The
+lease check covers every store that leases runs (MemStore, `store/postgres`, and `store/sqlite`
+after #92). Then insert the result through the result key (first writer wins). |
 
 `WithMinHaltAge` cannot be checked in an untimed model. Model 1 treats it as an assumption that a
 driver which called the effect records its outcome (or dies) before the age has passed, encoded as
@@ -304,7 +310,8 @@ configuration runs without either. Calls are not symmetric once one is a tool an
 
 ### 4.8 The prototype
 
-The prototype that produced these numbers is not proposed for commit as is. It models one call,
+The prototype that produced these numbers is not proposed for commit as is, and it models the
+rules of `9ace7c6`, with the claim-held pin (`Hold`) that #92 has since dropped. It models one call,
 with the tool path reduced to the resume gate, and omits the Step flight, result values, nested
 calls and the caller; its resolver has only the `none` and `lease` checks. Its claim
 section shows the intended density: one label per round trip.
@@ -355,11 +362,14 @@ historical bug, it is missing something, and that gap is fixed before the model 
 ### 5.1 Double fire 1: a remembered claim runs under a voided marker
 
 Found by #92's second review (tests `TestRememberedClaimRunsUnderAVoidedMarker_Tool` and `_Step`,
-now in `agent/claim_reuse_test.go`). Fixed by `Journal.holdClaim`: a reused id's win counts only
-after its not-started key is pinned with a claim-held record.
+now in `agent/claim_reuse_test.go`). First fixed by pinning a reused id's not-started key with a
+claim-held record, which the third review showed can halt an effect that never started for ever
+(its not-started record lands on the pin); fixed for good by never claiming with a remembered id:
+the id's not-started record is written again and every claim takes a fresh id. The pin is kept as
+the regression configuration `regress/held-pin` (expects a `Progress` violation).
 
-- **Buggy rule** (`Bug = "NoHold"`): in `ClaimCheck`, a won claim with a reused id goes straight to
-  `Call`.
+- **Buggy rule** (`Bug = "ReuseNoHold"`): a remembered id is taken back and used for the claim
+  itself, and a win with it goes straight to `Call`.
 - **The review's counterexample:** drive 1's marker insert commits and errors; its not-started
   insert commits and errors, so the id is remembered. Drive 2, in the same process, takes the id,
   "wins" the marker that the not-started record already voids, and fires; its result write is
@@ -374,8 +384,8 @@ after its not-started key is pinned with a claim-held record.
     inserts both commit and error; driver 2 in the same process takes the remembered id and wins
     attempt 0 (the marker already carries that id) and fires; driver 1, re-driving, loses attempt
     0, finds it voided, claims attempt 1 and fires.
-- **Regression configs:** `regress/nohold-same.cfg` (expects `NotStartedExclusive`) and
-  `regress/nohold-fire.cfg` (invariants reduced to `AtMostOnce`, expects `AtMostOnce`).
+- **Regression configs:** `regress/reuse-nohold.cfg` (expects `NotStartedExclusive`) and
+  `regress/reuse-nohold-fire.cfg` (invariants reduced to `AtMostOnce`, expects `AtMostOnce`).
 
 ### 5.2 Double fire 2: a Step's pause guard recorded as a tool failure
 
@@ -419,7 +429,8 @@ finished v0.7.0 run looked empty, and a re-drive ran its side effect again. Fixe
   it.
 - **Expected counterexample:** initial state with `legacy`, a recorded result and `fired = 1`; one
   driver opens it, sees no marker, claims attempt 0, fires. Two steps, no fault.
-- **Regression config:** `regress/legacy-empty.cfg` (expects `AtMostOnce`).
+- **Regression config:** `regress/legacy-empty.cfg` (expects `AtMostOnce`). Not built yet: model 1
+  as implemented has no journal-format guard (section 4.9), so this configuration comes with it.
 
 This one is nearly trivial in the model, and that is the point of including it: it pins that the
 model's `Open` refuses an unreadable run rather than treating it as new. Model 4 checks the header
@@ -442,14 +453,17 @@ properties:
   effect, and the first driver's real result then lost the insert. Buggy rule
   `LiveCheck = "cause"`: `Resolve` is enabled at once for a halt the gate labelled crashed.
   Expected: `NoLiveOverride` violated, and with the caller of 5.2, `AtMostOncePerIntent` (the
-  operator's "not charged" is read as a failure and the caller asks again).
+  operator's "not charged" is read as a failure and the caller asks again). As built, the model's
+  resolver does not read the halt's cause, so the rule is `LiveCheck = "none"`
+  (`regress/resolve-no-check.cfg` and `regress/resolve-no-check-intent.cfg`).
 
 The prototype reproduces `NoLiveOverride` in a 7-state trace with `LiveCheck = "none"` (the
 resolver writes between the winner's claim and its call). It also shows that the fixed lease check
 is safe only when every driver that can run the call holds the lease: with one unleased driver,
 `NoLiveOverride` fails at depth 12; with both leased, the configuration passes (0.4 M states). That
 matches the limitation #90 documents ("a plain Run holds no lease"). It stays as a regression config
-that is expected to fail, `lease-unleased-driver.cfg`, so the limitation cannot change silently.
+that is expected to fail, `regress/resolve-unleased-driver.cfg`, so the limitation cannot change
+silently.
 
 ## 6. Keeping the model and the code in sync
 
@@ -475,10 +489,10 @@ Journal and engine events are recorded by hook calls at these sites:
 
 | Event | Function (P6a head) | Where |
 |---|---|---|
-| `claim_start` (id, reused) | `Journal.claim` | after `pendingClaims.take` / `newClaimID` |
+| `claim_start` (id) | `Journal.claim` | after `newClaimID` |
+| `pending_retry` (id, result) | `Journal.claim`, `Journal.retryNotStarted` | after `pendingClaims.take` and the not-started write |
 | `claim_won`, `claim_lost` | `Journal.claim` | at each return |
 | `pending_remember` | `claimMemo.remember` (called from `Journal.claim`) | entry |
-| `hold` (held or voided) | `Journal.holdClaim` | return |
 | `voided_check` (result) | `Journal.claimNext`, `Journal.voided` | after the check |
 | `gate_halt` | the resume gate in `loop.go` (`Agent.run`'s `for id := range attempted`) | before the `ResumeHalt` return |
 | `effect_skip` (cancelled before the call) | `journalStep` (`ctx.Err()` in the `doFresh` closure), `loop.go` (`sctx.Err()` in the `recordFresh` closure), `durableStep` | the early return |
@@ -509,7 +523,7 @@ const traceOn = true
 func trace(ev prototrace.Event) { prototrace.Emit(ev) }
 
 // At a hook site, in either build:
-//	if traceOn { trace(prototrace.Event{Ev: "claim_start", Key: key, Claim: id, Reused: reused}) }
+//	if traceOn { trace(prototrace.Event{Ev: "claim_start", Key: key, Claim: id}) }
 ```
 
 **Event schema** (JSON lines, one file per test, one line per event, in emission order):
@@ -518,7 +532,7 @@ func trace(ev prototrace.Event) { prototrace.Emit(ev) }
 {"i":7,"proc":"p1","drv":"d1","ev":"insert","key":{"kind":"marker","call":"c1","gen":0},"claim":2,"reply":"err","truth":"committed"}
 {"i":8,"proc":"p1","drv":"d1","ev":"insert","key":{"kind":"not_started","call":"c1","gen":0,"claim":2},"rec":"not_started","reply":"err","truth":"committed"}
 {"i":9,"proc":"p1","drv":"d1","ev":"pending_remember","call":"c1","gen":0,"claim":2}
-{"i":10,"proc":"p1","drv":"d2","ev":"claim_start","call":"c1","gen":0,"claim":2,"reused":true}
+{"i":10,"proc":"p1","drv":"d2","ev":"pending_retry","call":"c1","gen":0,"claim":2,"result":"ok"}
 ```
 
 The emitter normalizes identifiers before writing: run IDs are dropped (one run per trace),
@@ -550,7 +564,7 @@ One caveat on the producers. The DST and reference-model suites crash through a 
 that intercepts `Do` (`crashStore` in `agent/dst_test.go`, `rmCrashStore` in
 `agent/refmodel_test.go`). `journalOf` returns nil for such a wrapper, so those runs take the
 transitional `Durable` path (`ClaimAttempt` without a Journal, `claimAttempt`, `probe`,
-`durableStep`), which has no pending-claim reuse and no claim-held pin. Their traces validate that
+`durableStep`), which has no remembered claims. Their traces validate that
 path, not the Journal's. See open question 10.
 
 **How TLC checks a trace.** A trace spec, `ClaimsTrace.tla`, extends the model. It reads the
@@ -612,11 +626,11 @@ speak about the same records:
 
 - The spec declares its record kinds in one delimited block of `Claims.tla`:
   `\* vocabulary: begin` ... `\* vocabulary: end`, for example
-  `RecordKinds == {"marker", "retry_marker", "not_started", "claim_held", "result_tool", "result_step"}`.
+  `RecordKinds == {"marker", "retry_marker", "not_started", "result_tool", "result_step"}`.
 - The test holds a table from each key constructor the claim code writes through
   (`toolAttemptStep`, `stepAttemptStep`, `retryAttemptStep`, `notStartedStep`, `ToolResultStep`,
-  and the step name) and each record kind (`StepAttempt`, `StepNotStarted`, the claim-held
-  `StepValue`, `StepToolResult`, `StepValue`) to a spec kind.
+  and the step name) and each record kind (`StepAttempt`, `StepNotStarted`, `StepToolResult`,
+  `StepValue`) to a spec kind.
 - It fails if the table and the spec block differ in either direction, if a constructor in the
   `keyConstructors` map of `agent/keys_test.go` with an `attempt:` prefix is missing from the
   table, and if the trace emitter's key parser does not round-trip each constructor's output.
@@ -660,8 +674,9 @@ speak about the same records:
 - **CommunityModules** (for `Json` and `IOUtils`, needed by trace validation):
   `CommunityModules-deps-202609120237.jar`, SHA-256
   `3d9a282c360e90d55e9bbe99caa2987d508fef1556d652760b4af4455e283733`.
-- Both are recorded in `spec/tla/tools.lock` (URL, version, SHA-256). `scripts/tla.sh` downloads
-  them into a cache directory and refuses a jar whose checksum differs. Upgrades are a pull request
+- Both are recorded in `spec/tla/tools.lock` (URL, version, SHA-256); CommunityModules is added
+  when trace validation needs it. `spec/tla/check.sh` downloads them into a cache directory and
+  refuses a jar whose checksum differs. Upgrades are a pull request
   that changes the lock file and re-runs every configuration.
 - **Java in CI:** `actions/setup-java` with Temurin 21, and `actions/cache` for the jars keyed by
   `tools.lock`'s hash. TLC runs with `-XX:+UseParallelGC` and `-workers auto`.
@@ -672,29 +687,14 @@ speak about the same records:
 - **Expected-violation check:** for each regression config, CI runs TLC, requires exit status 12
   (safety violation) or 13 (liveness), and requires the reported invariant's name to match the
   config's `EXPECT` comment. A violation of any other invariant fails the check.
-- **Layout:**
-
-```text
-spec/tla/
-  README.md              how to run; the model-code map; bounds and what they do not cover
-  tools.lock             pinned tool versions and checksums
-  claims/
-    Claims.tla           PlusCal algorithm plus its translation; Crash and trace hooks after it
-    ClaimsMC.tla         model values, symmetry sets, constant overrides
-    ci-same.cfg  ci-cross.cfg  ci-resolve.cfg
-    deep-drivers.cfg  deep-calls.cfg  deep-faults.cfg  live.cfg  late.cfg
-    regress/             nohold-same.cfg, nohold-fire.cfg, pause-as-failure.cfg,
-                         legacy-empty.cfg, loser-leads.cfg, live-check-cause.cfg,
-                         lease-unleased-driver.cfg (each with an EXPECT line)
-    ClaimsTrace.tla      the trace spec
-scripts/tla.sh           fetch, translate, check, regress, trace
-```
-
-- **Running it locally:** `scripts/tla.sh check` (every CI config), `scripts/tla.sh check deep-faults`,
-  `scripts/tla.sh regress`, `scripts/tla.sh translate` (re-translate in place),
-  `scripts/tla.sh trace <dir-or-file>`. The script needs Java 17 or later on `PATH` or in
-  `JAVA_HOME`; nothing else. The repository has no Makefile, and adding one only for this is not
-  worth a second entry point.
+- **Layout:** as built, see [spec/tla/README.md](../../spec/tla/README.md#layout): `check.sh`,
+  `tools.lock`, and `claims/` with `Claims.tla`, `ClaimsMC.tla`, the configurations, `regress/` and
+  `findings/`. The trace spec `ClaimsTrace.tla` comes with M3.
+- **Running it locally:** `spec/tla/check.sh` (what CI runs on a pull request),
+  `spec/tla/check.sh nightly`, `spec/tla/check.sh run <file.cfg>`, `spec/tla/check.sh translate`
+  (re-translate in place). The script needs Java 11 or later on `PATH` or in `JAVA_HOME`, `curl`
+  and a SHA-256 tool; nothing else. The repository has no Makefile, and adding one only for this is
+  not worth a second entry point.
 - **Apalache (optional):** v0.62.2 can check an inductive invariant symbolically, with no bound on
   claim ids or re-drives. It is not needed for model 1's plan; it is worth trying once model 1 is
   stable, to find an inductive strengthening of `NotStartedExclusive`, and for model 4, where
@@ -706,8 +706,8 @@ scripts/tla.sh           fetch, translate, check, regress, trace
 |---|---|---|---|
 | M0 | `spec/tla/` skeleton, `tools.lock`, `scripts/tla.sh`, CI job with the translation check on a trivial spec | 0.5 day | CI fails on a stale translation and on a jar with a wrong checksum. |
 | M1 | Model 1: `Claims.tla` with both paths, the flight, the resolver, `Crash`; configs `ci-*`, `deep-*`, `live`, `late`; the README with the model-code map | 4 to 5 days | Every `ci-*` config passes within its budget on the CI runner; `deep-*` and `live` pass nightly; `EffectReachable` is reported violated and `BoundNotHit` holds in every config; the map covers every function in section 4.4; a second person has reviewed the map against the #92 head. |
-| M2 | Regression configs of section 5, the expected-violation check, `agent/internal/interleave` and one Go test generated from a model trace | 2 to 3 days | Each regression config fails with its named invariant; the double fire of 5.1 found by the prototype (no crash, 21-state trace) is reproduced as a Go test that fails with the `holdClaim` check removed and passes with it. |
-| M3 | Trace hooks (build tag `bidetrace`), `tracestore`, the emitter and normalizer, `ClaimsTrace.tla`, the `trace-validate` job for the single-process producers | 5 to 7 days | Every trace from the producers is accepted; three Go mutants of the claim code (drop `holdClaim`; remember nothing on a failed not-started write; let the Step loser lead a flight) each produce a trace that TLC rejects or that violates an invariant; the default build contains no hook code (no `trace` symbol in `go tool nm`) and the benchmarks are unchanged. |
+| M2 | Regression configs of section 5, the expected-violation check, `agent/internal/interleave` and one Go test generated from a model trace | 2 to 3 days | Each regression config fails with its named invariant; the double fire of 5.1 found by the prototype (no crash, 21-state trace) is reproduced as a Go test that fails when a remembered id is used for the claim and passes with the fresh-id rule. |
+| M3 | Trace hooks (build tag `bidetrace`), `tracestore`, the emitter and normalizer, `ClaimsTrace.tla`, the `trace-validate` job for the single-process producers | 5 to 7 days | Every trace from the producers is accepted; three Go mutants of the claim code (claim with a remembered id; remember nothing on a failed not-started write; let the Step loser lead a flight) each produce a trace that TLC rejects or that violates an invariant; the default build contains no hook code (no `trace` symbol in `go tool nm`) and the benchmarks are unchanged. |
 | M4 | `TestProtocolVocabulary`, region markers, the path-rule job, the review checklist entry | 1 to 2 days | The path rule blocks a test PR that edits a marked region alone, and passes with a spec change or a `Protocol-Impact` line. |
 | M5 | Multi-process trace merge and validation of the HA harness (nightly) | 3 to 4 days | The two HA tests' traces are accepted nightly for a week. |
 
@@ -760,7 +760,8 @@ here.
    Postgres, cancel and confirm the transaction's fate before returning) or the claim rules must
    change; decide before #92 merges. First reasoning suggests the claim-held pin is safe under the
    weak reading, since the pin and a late not-started record race on one key and the first
-   writer wins either way, but the model should say so.
+   writer wins either way, but the model should say so. Model 1's answer, for #92's final rules
+   (no pin): every invariant holds under both readings at the checked bounds (`late-*` configs).
 3. **How to treat the minimum halt age.** Recommendation: model 1 keeps it as the explicit
    assumption of section 4.4; model 3 adds a clock and checks it, together with lease expiry.
 4. **Does pending-claim reuse help tool calls?** On the tool path, the resume gate halts on any
@@ -768,7 +769,9 @@ here.
    never reused through a resume; reuse is reachable there only between two drivers of one process
    that both passed the gate. Recommendation: add a reachability check to M1 ("a reused id wins a
    marker it committed earlier, on the tool path") and, if it is unreachable through a resume,
-   document that B11 reuse benefits Steps only, rather than change code.
+   document that B11 reuse benefits Steps only, rather than change code. Superseded: #92's final
+   rules never reuse a remembered id, and the resume gate retries its not-started record instead
+   (checked by `regress/gate-no-retry`).
 5. **Where the hooks live.** Recommendation: store events through the `tracestore` wrapper (no
    production change), engine events through build-tagged hooks; no runtime hook variable, so a
    release binary cannot be made to emit traces.
@@ -779,7 +782,8 @@ here.
 7. **Liveness on every PR?** Recommendation: no. Liveness cannot use symmetry, and the prototype's
    liveness check at the `ci-same` bounds took 15 minutes against 1 minute 19 seconds for safety
    over the same 16.6 million states; run `live` nightly and on PRs that change `Claims.tla`
-   itself.
+   itself. As built: liveness runs on every pull request at one error reply, where it takes
+   seconds, and at two nightly.
 8. **PlusCal or plain TLA+?** The roadmap says PlusCal. It fits the drivers, which are sequential
    programs; crash, delayed commit and the trace spec are written in TLA+ beside the translation.
    Recommendation: keep PlusCal for the driver and resolver processes and accept the split.
@@ -791,4 +795,4 @@ here.
     (section 6.1). Recommendation: move both suites' crash injection to the storage port, as #92
     did for chaos (`crashingStore` under a Journal), so they exercise the rules the model states;
     keep one `Durable`-path suite until P15 removes that path, and validate its traces against a
-    `DurablePath` variant of the model (no reuse, no pin) rather than leave it unchecked.
+    `DurablePath` variant of the model (no remembered claims) rather than leave it unchecked.
