@@ -152,7 +152,9 @@ func (f RunFilter) Admits(runID string, holds func(name string) bool) bool {
 // exposes exactly the capabilities of the store it wraps, with no forwarding methods to keep in
 // step with new capabilities. A wrapper that must change what a capability means implements that
 // capability itself, which takes precedence over the wrapped store's, as with errors.As. Only a
-// wrapper that passes run IDs and names through unchanged may implement Unwrap (see Store).
+// wrapper that passes run IDs and names through unchanged may implement Unwrap (see Store). The
+// same holds for a Durable wrapper's Unwrap() Durable (see Durable), which the engine follows to
+// the store beneath for its capabilities and for what the process keeps per run.
 func Capability[T any](store Store) (T, bool) {
 	for store != nil {
 		if c, ok := store.(T); ok {
@@ -207,6 +209,18 @@ func capabilityOf[T any](d Durable) (T, bool) {
 // journal holds); it calls fn at most once per record it writes, never again for a name already
 // recorded; and it keeps each record's bytes, the salt among them, exactly as JournalEntry built
 // them (a salt a step's record carries from the engine is the one the journal must hold).
+//
+// A Durable that wraps another (such as audit.AuditedStore) may implement
+//
+//	Unwrap() Durable
+//
+// so the engine reaches the store beneath it: its capabilities (Lister, Leaser, as Capability
+// finds them), and the identity under which the process keeps what it keeps per run (claims it
+// could not record as not started, spend it could not journal), which every Journal and wrapper
+// over that store then shares. It may do so only if it passes run IDs and step names through
+// unchanged, as for Unwrap() Store. A wrapper that rewrites keys (a tenant prefix, say) must not
+// implement Unwrap: its runs would be kept under the run IDs it was given, and two tenants' runs
+// of one name would share them. storetest.CheckDurableWrapper checks this.
 type Durable interface {
 	// Do returns the recorded Record for (runID, name) without running fn if present; otherwise
 	// runs fn, records the returned Record (with Name set and a fresh salt), and returns the

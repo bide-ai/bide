@@ -141,6 +141,14 @@ embeds one, directly or through another wrapper, or embeds an `agent.Durable`) w
 `Get` or `Load` comes from elsewhere would have every write bypass those methods: the engine
 refuses it with `ErrConfig`, so use it through `agent.NewJournal(wrapper)`.
 
+**A `Durable` wrapper.** A `Durable` that wraps another (such as `audit.AuditedStore`) may implement
+`Unwrap() Durable`, so the engine reaches the store beneath it: its capabilities, and the identity
+under which the process keeps per-run state (claims it could not record as not started, spend it
+could not journal), shared by every Journal and wrapper over that store. As for `Unwrap() Store`,
+only a wrapper that passes run IDs and step names through unchanged may implement it; one that
+rewrites keys (a tenant prefix) must not, or two tenants' runs of one name would share that state.
+`storetest.CheckDurableWrapper(t, wrap, ctxA, ctxB)` checks this.
+
 **A custom `Durable`.** A `Durable` that is not a `Journal` (one that intercepts `Do`) must keep the
 Journal's guarantees, which the engine's accounting relies on as much as at-most-once does: it
 records a step's result at most once under one name, and `Do` returns the record the journal holds;

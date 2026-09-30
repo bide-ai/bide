@@ -486,6 +486,52 @@ func CheckWrapper(t testing.TB, wrap func(agent.Store) agent.Store, ctxs ...cont
 	checkWrapper(t, wrap, ctxs...)
 }
 
+// CheckDurableWrapper checks a Durable wrapper (one the engine drives through its Do and History,
+// such as audit.AuditedStore) against the same rules (see agent.Durable): its mapping of run IDs
+// and names to recorded steps does not depend on the context, and it implements Unwrap() Durable
+// only if it passes run IDs and names through unchanged. A wrapper that rewrites keys (a tenant
+// prefix) and unwraps would share with other wrappers over the same store what the process keeps
+// per run (remembered claims, kept spend), under the rewritten run's name; it must not unwrap.
+// wrap wraps the Durable it is given; CheckDurableWrapper wraps a MemStore. ctxs are as for
+// CheckWrapper: at least two contexts that differ in the values the wrapper reads.
+func CheckDurableWrapper(t testing.TB, wrap func(agent.Durable) agent.Durable, ctxs ...context.Context) {
+	t.Helper()
+	checkDurableWrapper(t, wrap, ctxs...)
+}
+
+func checkDurableWrapper(t reporter, wrap func(agent.Durable) agent.Durable, ctxs ...context.Context) {
+	t.Helper()
+	if len(ctxs) < 2 {
+		t.Fatalf("CheckDurableWrapper needs at least two contexts that differ in the values the wrapper reads, got %d", len(ctxs))
+	}
+	inner := agent.NewMemStore()
+	w := wrap(inner)
+	id := fmt.Sprintf("checkdurablewrapper-%d-%d", time.Now().UnixNano(), runIDs.Add(1))
+	want := agent.Record{Kind: agent.StepValue, Result: []byte(`"v"`)}
+	if _, err := w.Do(ctxs[0], id, "k", func(context.Context) (agent.Record, error) { return want, nil }); err != nil {
+		t.Fatalf("Do through the wrapper: %v", err)
+	}
+	for i, c := range ctxs[1:] {
+		rec, err := w.Do(c, id, "k", func(context.Context) (agent.Record, error) {
+			return agent.Record{}, fmt.Errorf("the step ran again")
+		})
+		if err != nil || string(rec.Result) != `"v"` {
+			t.Errorf("a step recorded through %T under one context reads back as %q, %v under context %d: a Durable's mapping of run IDs and names must not depend on the context", w, rec.Result, err, i+1)
+		}
+	}
+	recs, err := inner.History(context.Background(), id)
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+	same := false
+	for _, r := range recs {
+		same = same || (r.Name == "k" && string(r.Result) == `"v"`)
+	}
+	if _, unwraps := w.(interface{ Unwrap() agent.Durable }); unwraps && !same {
+		t.Errorf("%T rewrites run IDs or names but implements Unwrap() Durable, so the engine keeps what it keeps per run (remembered claims, kept spend) under the store beneath it with the run ID it was given, shared with every other wrapper over that store; a key-rewriting wrapper must not implement Unwrap", w)
+	}
+}
+
 // reporter is the part of testing.TB CheckWrapper uses.
 type reporter interface {
 	Helper()

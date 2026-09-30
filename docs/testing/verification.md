@@ -88,7 +88,8 @@ implementation, bide's or yours, can run:
   `store/postgres` run it; see
   [extension points](../reference/extension-points.md#implement-your-own-store).
   `storetest.CheckWrapper` checks a store wrapper's use of `Unwrap`, and, given two contexts that
-  differ in what the wrapper reads from a context, that its keys do not depend on the context.
+  differ in what the wrapper reads from a context, that its keys do not depend on the context;
+  `storetest.CheckDurableWrapper` checks the same of a `Durable` wrapper and its `Unwrap() Durable`.
 - `govern/eventlogtest` checks a governed event log: dense, unique positions under concurrent
   appends from separate handles, and appends idempotent by id, so a repeated append (a retry, even
   concurrent with the original) is recorded once.

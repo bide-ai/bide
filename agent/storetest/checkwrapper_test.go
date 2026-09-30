@@ -69,3 +69,68 @@ func TestCheckWrapper(t *testing.T) {
 		t.Error("CheckWrapper with no contexts passed: it cannot check the context rule without two")
 	}
 }
+
+func checkDurable(wrap func(agent.Durable) agent.Durable, ctxs ...context.Context) (failed []string) {
+	r := &recorder{}
+	defer func() {
+		if v := recover(); v != nil && v != r {
+			panic(v)
+		}
+		failed = r.failed
+	}()
+	checkDurableWrapper(r, wrap, ctxs...)
+	return r.failed
+}
+
+// tenantDurable prefixes every run ID with a fixed tenant.
+type tenantDurable struct {
+	agent.Durable
+	tenant string
+}
+
+func (w tenantDurable) Do(ctx context.Context, runID, name string, fn func(context.Context) (agent.Record, error)) (agent.Record, error) {
+	return w.Durable.Do(ctx, w.tenant+"/"+runID, name, fn)
+}
+func (w tenantDurable) History(ctx context.Context, runID string) ([]agent.Record, error) {
+	return w.Durable.History(ctx, w.tenant+"/"+runID)
+}
+
+// unwrappingTenant is tenantDurable that implements Unwrap() Durable, which the contract forbids.
+type unwrappingTenant struct{ tenantDurable }
+
+func (w unwrappingTenant) Unwrap() agent.Durable { return w.Durable }
+
+// passDurable forwards everything unchanged and unwraps: what audit.AuditedStore does with keys.
+type passDurable struct{ agent.Durable }
+
+func (p passDurable) Unwrap() agent.Durable { return p.Durable }
+
+// ctxTenantDurable picks the tenant from the context: a mapping the rules forbid.
+type ctxTenantDurable struct{ agent.Durable }
+
+func (w ctxTenantDurable) Do(ctx context.Context, runID, name string, fn func(context.Context) (agent.Record, error)) (agent.Record, error) {
+	return w.Durable.Do(ctx, tenant(ctx, runID), name, fn)
+}
+func (w ctxTenantDurable) History(ctx context.Context, runID string) ([]agent.Record, error) {
+	return w.Durable.History(ctx, tenant(ctx, runID))
+}
+
+func TestCheckDurableWrapper(t *testing.T) {
+	a := context.WithValue(context.Background(), tenantKey{}, "A")
+	b := context.WithValue(context.Background(), tenantKey{}, "B")
+	if f := checkDurable(func(d agent.Durable) agent.Durable { return unwrappingTenant{tenantDurable{d, "T"}} }, a, b); len(f) == 0 {
+		t.Error("CheckDurableWrapper passed a key-rewriting wrapper that implements Unwrap() Durable")
+	}
+	if f := checkDurable(func(d agent.Durable) agent.Durable { return tenantDurable{d, "T"} }, a, b); len(f) != 0 {
+		t.Errorf("CheckDurableWrapper failed a key-rewriting wrapper that does not unwrap: %v", f)
+	}
+	if f := checkDurable(func(d agent.Durable) agent.Durable { return passDurable{d} }, a, b); len(f) != 0 {
+		t.Errorf("CheckDurableWrapper failed a pass-through wrapper: %v", f)
+	}
+	if f := checkDurable(func(d agent.Durable) agent.Durable { return ctxTenantDurable{d} }, a, b); len(f) == 0 {
+		t.Error("CheckDurableWrapper passed a wrapper whose keys depend on the context")
+	}
+	if f := checkDurable(func(d agent.Durable) agent.Durable { return passDurable{d} }); len(f) == 0 {
+		t.Error("CheckDurableWrapper with no contexts passed")
+	}
+}
