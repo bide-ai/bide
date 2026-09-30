@@ -1,3 +1,6 @@
+// lease.go holds run leasing: the Leaser capability, MemStore's in-process leases, and Lease,
+// which drives a run under a renewed lease. Recover uses it; see recovery.go.
+
 package agent
 
 import (

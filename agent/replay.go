@@ -1,3 +1,5 @@
+// replay.go holds Replay, which re-emits a journaled run's recorded model outputs as a Model.
+
 package agent
 
 import (

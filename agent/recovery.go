@@ -1,7 +1,7 @@
 // recovery.go groups the read side of the durable journal: Recover re-drives in-flight runs
-// after a restart, run leasing (Leaser) coordinates a single driver per run under HA, and
-// replay deterministically re-emits a journaled run. Given a store of recorded runs, these
-// bring survivors back to life exactly once.
+// after a restart, run leasing (Leaser, in lease.go) coordinates a single driver per run under
+// HA, and replay (Replay, in replay.go) deterministically re-emits a journaled run. Given a
+// store of recorded runs, these bring survivors back to life exactly once.
 
 package agent
 
