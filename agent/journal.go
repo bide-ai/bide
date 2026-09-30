@@ -652,16 +652,22 @@ func newClaimID() string {
 // before it claims with a fresh id of its own: the marker it may have left is then void, and the
 // fresh claim loses to it and moves to the next attempt (see claimNext). A single-key claim
 // (ClaimAttempt) halts instead, which is safe.
+//
+// The process remembers every such id of a key, not the last one: two claims of one key can each
+// fail to record that they did not start (one that won the marker and was cancelled, one whose
+// marker Insert failed), and forgetting either could leave a marker no record ever voids, so a
+// never-started effect would halt forever. The claim writes the not-started record of each
+// remembered id, one at a time, and remembers again any it cannot write; then it claims with a
+// fresh id. An id whose record is still missing leaves at worst a live marker, which the fresh
+// claim loses to, so the effect halts rather than runs.
 func (j *Journal) claim(ctx context.Context, runID, key string, rec Record) (bool, Record, error) {
 	if err := j.ensureHeader(ctx, runID); err != nil {
 		return false, Record{}, err
 	}
-	if old, ok := pendingClaims.take(flightKey{j.id, runID, key}); ok {
+	for _, old := range pendingClaims.takeAll(flightKey{j.id, runID, key}) {
 		m := rec
 		m.claim = old
-		if err := j.notStarted(ctx, runID, key, m); err != nil {
-			return false, Record{}, fmt.Errorf("claim %s: %w", key, err)
-		}
+		_ = j.notStarted(ctx, runID, key, m) // on failure it remembers old again
 	}
 	id := newClaimID()
 	rec.claim = id
@@ -683,17 +689,12 @@ func (j *Journal) claim(ctx context.Context, runID, key string, rec Record) (boo
 }
 
 // retryNotStarted writes again the not-started record of the attempt with marker key key, whose
-// marker is marker, when this process holds that attempt's claim id as remembered (its earlier
+// marker is marker, when this process remembers that marker's own claim id (its earlier
 // not-started write failed), and reports whether the attempt is now recorded as not started. A
-// resume uses it before it halts on the attempt.
+// resume uses it before it halts on the attempt. It takes only the marker's id from the ids the
+// process remembers for the key; the others stay for the next claim of the key.
 func (j *Journal) retryNotStarted(ctx context.Context, runID, key string, marker Record) bool {
-	ck := flightKey{j.id, runID, key}
-	old, ok := pendingClaims.take(ck)
-	if !ok {
-		return false
-	}
-	if old != marker.claim || marker.claim == "" {
-		pendingClaims.remember(ck, old)
+	if marker.claim == "" || !pendingClaims.takeID(flightKey{j.id, runID, key}, marker.claim) {
 		return false
 	}
 	return j.notStarted(ctx, runID, key, marker) == nil
@@ -1004,28 +1005,43 @@ func joinFlight(k flightKey) ([]byte, bool, error) {
 }
 
 // pendingClaims holds, by store, run and marker key, the claim ids whose not-started record could
-// not be written, so their markers may be live though their effect never ran (see Journal.claim). It is bounded: past maxPendingClaims the oldest are dropped,
-// which only costs a halt that remembering would have avoided.
-var pendingClaims = &claimMemo{m: map[flightKey]string{}}
+// not be written, so their markers may be live though their effect never ran (see Journal.claim).
+// A key holds a set of ids: every claim of the key that failed that way.
+//
+// It is bounded: past maxPendingClaims ids, whole keys are dropped, oldest first (a key taken and
+// remembered again may be dropped by its earlier position). Dropping is safe: a forgotten id's
+// marker stays unvoided, which only costs a halt that remembering would have avoided; it never
+// voids a marker, so it cannot let an effect run twice.
+var pendingClaims = &claimMemo{m: map[flightKey]map[string]struct{}{}}
 
 const maxPendingClaims = 4096
 
 type claimMemo struct {
 	mu    sync.Mutex
-	m     map[flightKey]string
-	order []flightKey // insertion order, oldest first; may hold keys already taken
+	m     map[flightKey]map[string]struct{}
+	n     int         // ids held, over every key
+	order []flightKey // keys in the order first remembered, oldest first; may hold keys already taken
 }
 
+// remember adds id to the ids remembered for k.
 func (c *claimMemo) remember(k flightKey, id string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if _, ok := c.m[k]; !ok {
+	ids, ok := c.m[k]
+	if !ok {
+		ids = map[string]struct{}{}
+		c.m[k] = ids
 		c.order = append(c.order, k)
 	}
-	c.m[k] = id
-	for len(c.m) > maxPendingClaims && len(c.order) > 0 {
-		delete(c.m, c.order[0])
+	if _, ok := ids[id]; !ok {
+		ids[id] = struct{}{}
+		c.n++
+	}
+	for c.n > maxPendingClaims && len(c.order) > 0 {
+		old := c.order[0]
 		c.order = c.order[1:]
+		c.n -= len(c.m[old])
+		delete(c.m, old)
 	}
 	if len(c.order) > 2*maxPendingClaims { // drop keys already taken
 		live := c.order[:0]
@@ -1038,12 +1054,35 @@ func (c *claimMemo) remember(k flightKey, id string) {
 	}
 }
 
-func (c *claimMemo) take(k flightKey) (string, bool) {
+// takeAll removes and returns every id remembered for k, in sorted order.
+func (c *claimMemo) takeAll(k flightKey) []string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	id, ok := c.m[k]
+	ids := c.m[k]
 	delete(c.m, k)
-	return id, ok
+	c.n -= len(ids)
+	out := make([]string, 0, len(ids))
+	for id := range ids {
+		out = append(out, id)
+	}
+	slices.Sort(out)
+	return out
+}
+
+// takeID removes id from the ids remembered for k, and reports whether it was there.
+func (c *claimMemo) takeID(k flightKey, id string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	ids := c.m[k]
+	if _, ok := ids[id]; !ok {
+		return false
+	}
+	delete(ids, id)
+	c.n--
+	if len(ids) == 0 {
+		delete(c.m, k)
+	}
+	return true
 }
 
 // runSet is a bounded set of run IDs: past maxKnownRuns, the least recently used is forgotten.
