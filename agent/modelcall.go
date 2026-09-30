@@ -69,10 +69,10 @@ type usageTotals struct {
 	answer, spend Usage
 }
 
-// add counts the usage journaled in r: a model turn's response and discarded spend, or a failed
-// model call's spend.
+// add counts the usage journaled in r: a model turn's response and discarded spend, a failed
+// model call's spend, or a tool call's record carrying the usage of the runs it started.
 func (t *usageTotals) add(r Record) {
-	if r.Kind == StepModel && r.Usage != nil {
+	if r.Usage != nil {
 		addUsage(&t.answer, *r.Usage)
 		addUsage(&t.spend, *r.Usage)
 	}

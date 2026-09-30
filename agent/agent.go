@@ -209,8 +209,16 @@ func (a *Agent) WithMaxTurns(n int) *Agent {
 // journaled with it, a failed call's spend is journaled as its own record, and the count is
 // rebuilt from the journal, so a resumed run, on any process, is held to what it has already
 // used. A request still running when the run returns (a hedge loser whose model ignores
-// cancellation) is not counted. Like WithMaxTurns it applies per run (per Session.Send turn), and a
-// sub-agent's run has its own budget.
+// cancellation) is not counted. Like WithMaxTurns it applies per run (per Session.Send turn).
+//
+// The budget covers the run's agent tree: every run started from its tool calls (sub-agents,
+// and theirs) counts against it, and each of those runs checks it, with its own budget if it has
+// one, before each model call. A resumed tree first counts the journals of its sub-agents cut
+// off mid-run, so it is held to everything it used before any of it calls the model again.
+// Overshoot: a check sees every call that has returned, so the tree passes max only by calls in
+// flight when it reached max. Each agent run has at most one model call in flight, so with k
+// runs of the tree calling the model at that moment (k parallel sub-agents; 1 with none) the
+// tree uses less than max plus k calls' usage.
 func (a *Agent) WithTokenBudget(max int) *Agent {
 	a.tokenBudget = max
 	return a
@@ -409,6 +417,19 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 		}
 	}
 
+	// Report the run's usage to the tool call that started it, if any, however the run returns,
+	// so that call's record carries it (see callUsage).
+	defer func() { reportUsage(ctx, runID, tot) }()
+
+	// Join the agent tree's live token count, counting the journaled spend of this run and of
+	// its sub-agents cut off mid-run, before any of the tree calls the model (see budget_tree.go).
+	node, created := joinBudgetTree(ctx, runID, a.tokenBudget, tot.spend)
+	if created {
+		if err := a.preloadSubRuns(ctx, runID, recs, node); err != nil {
+			return Message{}, tot, 0, err
+		}
+	}
+
 	// A finished run is final: return its recorded answer without asking the model for
 	// another turn. Re-invoking a finished run is routine (a client retrying after a lost
 	// response, a redelivered job, a sub-agent or session turn re-entered on resume), and a
@@ -474,8 +495,8 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 			if a.maxTurns > 0 && modelSeq >= a.maxTurns {
 				return Message{}, tot, liveTurns, fmt.Errorf("run %s: %w (%d turns)", runID, ErrMaxTurns, modelSeq)
 			}
-			if a.tokenBudget > 0 && tot.spend.TotalTokens() >= a.tokenBudget {
-				return Message{}, tot, liveTurns, fmt.Errorf("run %s: %d tokens used, budget %d: %w", runID, tot.spend.TotalTokens(), a.tokenBudget, ErrBudgetExceeded)
+			if err := node.exceeded(runID); err != nil {
+				return Message{}, tot, liveTurns, err
 			}
 			fire(TurnStarted{Seq: modelSeq})
 			// Install the token sink so a live (non-replayed) model call forwards its
@@ -509,10 +530,12 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 						err = errors.Join(err, serr)
 					}
 					tot.add(srec)
+					node.add(journalTotals([]Record{srec}).spend)
 				}
 				return Message{}, tot, liveTurns, err
 			}
 			tot.add(rec) // the recorded turn, which another driver of the run may have written
+			node.add(journalTotals([]Record{rec}).spend)
 			liveTurns++
 			asst = *rec.Message
 			modelSeq++
@@ -605,6 +628,9 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 			pauseMu  sync.Mutex
 			pauseIdx = -1
 			pauseErr error
+			// carried[i] is the usage the record of uses[i] carries: that of the runs it started.
+			// The runs counted their spend in the tree as it happened, so it goes into tot only.
+			carried = make([]usageTotals, len(uses))
 		)
 		for _, c := range toRun {
 			g.Go(func() (err error) {
@@ -620,6 +646,8 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 				}()
 				sctx := withRunScope(gctx, SubRunID(runID, c.tu.ID)) // hierarchical sub-run ID
 				sctx = withRunContext(sctx, a.store, runID)          // lets the tool call Interrupt
+				started := &callUsage{}                              // usage of the runs this call starts
+				sctx = withCallUsage(withBudgetNode(sctx, node), started)
 				if saga {
 					sctx = withSaga(sctx)
 				}
@@ -696,7 +724,9 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 						}
 						if saga {
 							toolCallErr = callErr
-							return Record{Kind: StepSagaFail, ToolUseID: c.tu.ID, Result: mustJSON(toolErrorText(a.toolErrRedact, c.tu.Name, callErr))}, nil
+							f := Record{Kind: StepSagaFail, ToolUseID: c.tu.ID, Result: mustJSON(toolErrorText(a.toolErrRedact, c.tu.Name, callErr))}
+							started.carry(&f)
+							return f, nil
 						}
 						// The model reads the error text as written, less any credential in a URL (and
 						// whatever else the agent's tool-error redactor removes): see toolErrorText.
@@ -705,8 +735,12 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 					} else {
 						r.Result = res
 					}
+					started.carry(&r)
 					return r, nil
 				})
+				if err == nil {
+					carried[c.idx] = journalTotals([]Record{rec})
+				}
 				if saga && toolCallErr != nil {
 					fire(ToolCompleted{ToolUseID: c.tu.ID, Name: c.tu.Name, Result: rec.Result, IsError: true})
 					var journaled string
@@ -733,7 +767,12 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 				return nil
 			})
 		}
-		if err := g.Wait(); err != nil {
+		werr := g.Wait()
+		for _, t := range carried {
+			addUsage(&tot.answer, t.answer)
+			addUsage(&tot.spend, t.spend)
+		}
+		if err := werr; err != nil {
 			var trip *sagaTrip
 			if errors.As(err, &trip) {
 				return Message{}, tot, liveTurns, trip // RunSaga catches → compensates

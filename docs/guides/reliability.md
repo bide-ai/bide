@@ -103,7 +103,8 @@ The meter keeps two views. `Usage` and `Total` count the answers, the responses 
 returned and the run records. `Spent` and `SpentTotal` count every request sent, wherever `Cost`
 sits: failed attempts a `Retry` repeated and losing `Hedge` targets are billed too. The run itself
 keeps the same split: `Result.Usage` is the answers, `Result.Spend` everything, and
-`WithTokenBudget` stops on everything, including model calls that failed for good.
+`WithTokenBudget` stops on everything, including model calls that failed for good. Both cover the
+run's agent tree: a sub-agent's model calls count toward its parent's `Result` and budget.
 
 ## Tool middleware
 
