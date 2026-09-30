@@ -132,6 +132,10 @@ minor version (0.x.0) may include breaking API or journal-format changes; each o
   **Upgrading:** the check covers tallies this version counts. A terminal tally already in a journal is reused, not recounted, so a passed tally recorded by an earlier version stands even if two of its approvers shared a key, and its tool runs when the run resumes. Journals are not promised to resume across pre-releases; before upgrading, finish the runs paused on an m-of-n gate, or audit each one that holds a recorded tally (`audit.VerifyApprovals` under the new rules refuses a shared key) and resolve it by hand if two approvers shared a key.
 - Weak Ed25519 public keys are refused. `crypto/ed25519` accepts keys that are not canonically encoded, small order, or mixed order: under a small-order key (such as any of the identity point's four accepted encodings) anyone can forge a signature for any message, and a mixed-order key `A + T` is a second public key for `A`'s secret, which gave one secret two approval seats. `audit.Ed25519Verifier` (and so `HybridVerifier`), `audit.VerifySignature` and `audit/verify.TreeHead` now verify nothing under such a key, `Ed25519Verifier.KeyIDs` reports no identity for it (so the approval gate refuses it with `ErrConfig`), and `bide-audit` refuses it as `-pubkey` or in `-approver-keys` (exit 4). The check costs 1 to 4 ms of CPU per new key; results are cached (a 1,024-key LRU, single-flight), so an application that resolves Ed25519 keys from untrusted input should bound or rate-limit those lookups. Found in the adversarial review of [#109].
 
+### Fixed
+
+- `Recover` and `RecoverLoop` no longer call `resume` for a run another driver finished after the pass listed it (while the pass drove the runs listed before it, or waited for a free slot). Nothing ran twice and nothing was written, but `resume` was handed a completed run. Holding the run's lease, the pass now checks the terminal markers (`run:complete`, `run:aborted`, `run:cancelled`) again before it calls `resume`, leaves a run that is over alone and does not count it as re-driven. **Budget:** a recovery pass now makes three point reads (`Store.Get`) for each run it drives, where it read no run before; the finished runs the listing excludes still cost nothing ([#114]).
+
 ## [0.8.0] - 2026-09-30
 
 ### Added
@@ -572,6 +576,7 @@ First public release.
 [#112]: https://github.com/bide-ai/bide/pull/112
 [#115]: https://github.com/bide-ai/bide/pull/115
 [#104]: https://github.com/bide-ai/bide/pull/104
+[#114]: https://github.com/bide-ai/bide/pull/114
 [78f8db6]: https://github.com/bide-ai/bide/commit/78f8db6
 [994721b]: https://github.com/bide-ai/bide/commit/994721b
 [3262cd1]: https://github.com/bide-ai/bide/commit/3262cd1
