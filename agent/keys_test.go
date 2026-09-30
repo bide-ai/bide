@@ -49,11 +49,9 @@ var keyConstructors = map[string]func(string) string{
 	"sessionStartStep":     func(s string) string { return sessionStartStep(len(s)) },
 	"sessionFromStep":      sessionFromStep,
 	"retrievalStep":        func(s string) string { return retrievalStep(len(s)) },
-	"spendStep":            func(s string) string { return spendStep(len(s)) },
 	"planScopedStep": func(s string) string {
 		return planScopedStep(context.WithValue(context.Background(), planScopeKey{}, planScope{runID: "r", node: "node:n"}), "r", s)
 	},
-	"lateSpendStep": func(s string) string { return lateSpendStep(len(s)) },
 	"spendStep":     spendStep,
 	"lateSpendStep": lateSpendStep,
 }
