@@ -525,6 +525,55 @@ resolution through another flow or digest recorded a value this flow cannot read
 Not modelled here: the flow input's canonical comparison (#103 F2, a Go encoding question), the
 run ID check (F6), and joins (a Join is ordinary sequential Step under topological order).
 
+## Model 8: spend accounting
+
+`spend/Spend.tla` checks that the journal holds every billed model request exactly once (P9,
+#104). Every request bills one unit. A turn's primary request is its answer; an extra request (a
+hedge loser, a retried attempt) ends before the turn's record is built (its usage is the
+record's discarded usage), or stays in flight and ends later (the next turn's record takes it, or
+the drive's end journals it as late spend), or ignores its cancellation past the drive's bounded
+wait. Drivers are in separate processes; faults are failed model calls, ambiguous writes, a failed
+read of a turn's record after its write errored, crashes, and requests outliving the wait.
+
+| Label | Go |
+|---|---|
+| `Open`, `SettlePending` | `Agent.run`'s Load and `settlePending` (spend a drive of this process could not journal, decided from the journal) |
+| `Turn`, `Call` | a model turn: `chain.call` through the spend meter; `meter.take()` into the record's `DiscardedUsage` |
+| `Insert`, `Recorded` | `store.Do` of `@llm/<n>` and `recorded` (another driver's record: this drive's spend is late) |
+| `FailPath`, `FailLookup`, `FailSpend` | the failed turn: `waitEnd`, `lookup` of the record, `keepSpend`, `@spend/<id>` |
+| `Leave`, `LeaveLate`, `End`, `EndLate` | `settle`: the bounded wait and `@spend-late/<id>` |
+| `Complete` | `run:complete` |
+| `RequestEnds`, `EndsAfterReturn` | a request in flight ends; one that outlived a drive that did not wait for it |
+| `Crash(d)` | the process dies: its meter, requests in flight and kept spend are gone |
+
+| Property | Kind | Statement |
+|---|---|---|
+| `NoDoubleCount` | invariant | the journal's spend never exceeds the billed spend |
+| `SpendExact` | invariant | once every drive is done and nothing is in flight, the journal holds every billed unit, except what a documented limit lost (a crash, a request that outlived the wait) and what a process still keeps for a drive that will not come |
+| `ResultSpend` | invariant | a drive's `Result.Spend` never exceeds the journal's spend, and with one driver it equals it |
+
+`Replay`'s spend is the journal's (it reads the same records, and carries late spend to the turn
+before it or the first turn), so `SpendExact` is its property too.
+
+| Config | Group | What | States | Time |
+|---|---|---|---|---|
+| `spend-one` | ci | one driver, two turns, every fault | 38,921 | <1 s |
+| `spend-two` | ci | two drivers (no lease): both may answer a turn; one extra request, a failed call, an ambiguous write, a crash | 1,789,459 | 6 s |
+| `deep-spend-two` | nightly | two drivers, every fault | 18,110,591 | 1 min |
+
+Regressions: `spend/regress/shared-late-key` (#104 re-review suspicion (a): late spend keyed by a
+sequence number each drive counted itself, so two drivers wrote one key and the second's spend
+was lost; `SpendExact`, 25 states), `spend/regress/lost-turn-not-late` (the same review: a driver
+whose `@llm/<n>` insert lost to another driver's record dropped its requests' spend;
+`SpendExact`, 29 states), `spend/regress/no-landed-lookup` (#104 review F4: a turn whose record
+write errored journaled its spend as a failed call's though the record had landed;
+`NoDoubleCount`, 26 states), `spend/regress/no-settle` (#104 review F3: a run ended without
+waiting for requests in flight; `SpendExact`, 17 states).
+
+Not modelled: two drivers' records equal in every journaled field (KNOWN-LIMITATIONS: taken as
+each driver's own), `OnAnswer` and `Cost`, and the token budget's stop (it reads the same
+totals).
+
 ## What the bounds do not cover
 
 Model 1b adds: three approvers and a policy of 2 of 3 (tightened to 3 or loosened to 1 by a
