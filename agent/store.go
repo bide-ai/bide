@@ -252,8 +252,11 @@ func (m *MemStore) Do(ctx context.Context, runID, name string, fn func(context.C
 	}
 	// The stored record, decoded: what History returns for this step, never the caller's own. A
 	// caller whose fn wrote it may already hold that decoding (see encodeRecord). It is this
-	// caller's alone: singleflight runs the closure above in the calling goroutine, once, and every
-	// caller that shared the write decodes its own copy. The name check is DecodeStoredRecord's.
+	// caller's alone, and reading it here without a lock is safe, because singleflight's Do runs the
+	// closure above in the calling goroutine and returns only after it has finished; the callers
+	// that shared the write never run it, so they decode their own copy. This relies on that
+	// property of golang.org/x/sync/singleflight: a Do that ran the closure on another goroutine
+	// would race on decoded and own. The name check is DecodeStoredRecord's.
 	if own && decoded.Name == name {
 		return decoded, nil
 	}

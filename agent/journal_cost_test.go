@@ -207,3 +207,19 @@ func TestLiveRun_JournalOperations(t *testing.T) {
 		t.Fatalf("the run decoded the four records that carry the marker %d times, want once each", n)
 	}
 }
+
+// A raw value holding one line or paragraph separator alone is written with that separator's
+// escape: the encoder's fast check for the separators' lead byte must skip neither replacement.
+// The default JSON build escapes both itself, so this pins the check in a GOEXPERIMENT=nojsonv2
+// build (CI runs one).
+func TestEncodeRecord_SeparatorAloneEscaped(t *testing.T) {
+	for _, c := range []struct{ sep, esc string }{{lineSep, jsonEscape + "2028"}, {paraSep, jsonEscape + "2029"}} {
+		b, err := EncodeRecord(Record{Name: "v", Kind: StepValue, Result: json.RawMessage(`"` + c.sep + `"`)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := `{"name":"v","kind":"value","result":"` + c.esc + `"}`; string(b) != want {
+			t.Errorf("EncodeRecord = %q, want %q", b, want)
+		}
+	}
+}

@@ -224,6 +224,11 @@ type partMember struct{ name, raw []byte }
 // that is what tagPart's map encoding writes, since the encoder keeps a compact value from
 // marshalJournal byte for byte (see EncodeRecord) and sorts a map's names as bytes, which for
 // ASCII names is the order it uses. Anything else reports false, and marshalPart takes tagPart.
+//
+// The caller guarantees inner is marshalJournal's output for one of the part structs (Text,
+// Reasoning, ToolUse, ToolResult, Image): valid, compact JSON. spliceType does not validate or
+// compact arbitrary input. It declines what it cannot split, but a malformed value inside an
+// otherwise well-formed member would be copied as it is, where tagPart would reject it.
 func spliceType(inner []byte, kind string) ([]byte, bool) {
 	n := len(inner)
 	if n < 2 || inner[0] != '{' || inner[n-1] != '}' {
