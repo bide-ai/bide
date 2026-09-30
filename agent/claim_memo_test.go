@@ -2,7 +2,9 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -52,5 +54,56 @@ func TestClaimMemo_DropsWholeKeysPastTheBound(t *testing.T) {
 	}
 	if total != c.n {
 		t.Fatalf("count %d, ids held %d", c.n, total)
+	}
+}
+
+// failNames fails, not committed, every Insert whose name contains one of its substrings.
+type failNames struct {
+	Store
+	subs []string
+}
+
+func (f failNames) Insert(ctx context.Context, runID, name string, data []byte) (Entry, bool, error) {
+	for _, s := range f.subs {
+		if strings.Contains(name, s) {
+			return Entry{}, false, errors.New("injected store fault")
+		}
+	}
+	return f.Store.Insert(ctx, runID, name, data)
+}
+
+// A claim writes the not-started record of every id remembered for its key, one at a time: one
+// that cannot be written is remembered again and does not stop the others, and the claim then
+// goes on with a fresh id of its own.
+func TestClaimMemo_ClaimRetriesEveryRememberedID(t *testing.T) {
+	ctx := context.Background()
+	mem := NewMemStore()
+	j := newJournal(failNames{mem, []string{"aaaa"}})
+	if err := j.ensureHeader(ctx, "r"); err != nil {
+		t.Fatal(err)
+	}
+	key := stepAttemptStep("s")
+	k := flightKey{j.id, "r", key}
+	pendingClaims.remember(k, "aaaa")
+	pendingClaims.remember(k, "bbbb")
+	won, _, err := j.claim(ctx, "r", key, Record{Kind: StepAttempt, ToolUseID: "s", AttemptedAt: 1})
+	if err != nil || !won {
+		t.Fatalf("claim = %v, %v; want a won claim under a fresh id (no remembered marker was written)", won, err)
+	}
+	if rec, ok, err := j.Get(ctx, "r", notStartedStep(key, "bbbb")); err != nil || !ok || rec.Kind != StepNotStarted {
+		t.Fatalf("bbbb's not-started record = %v, %v; want it written though aaaa's failed", ok, err)
+	}
+	if got := pendingClaims.takeAll(k); !slices.Equal(got, []string{"aaaa"}) {
+		t.Fatalf("remembered after the claim: %v; want [aaaa], whose record could not be written", got)
+	}
+}
+
+func TestNextAttemptStep(t *testing.T) {
+	for _, base := range []string{toolAttemptStep("c:1"), stepAttemptStep("charge")} {
+		for gen := range 12 {
+			if got, want := nextAttemptStep(retryAttemptStep(base, gen)), retryAttemptStep(base, gen+1); got != want {
+				t.Errorf("nextAttemptStep(%q) = %q, want %q", retryAttemptStep(base, gen), got, want)
+			}
+		}
 	}
 }
