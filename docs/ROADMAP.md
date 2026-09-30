@@ -34,7 +34,14 @@ The hardest bugs in a durable runtime live in interleavings: two drivers, a cras
 
 Models live in the repository and run in CI. A counterexample the checker finds becomes a deterministic Go regression test.
 
-The design and plan: [formal models of the coordination protocols](design/formal-models.md) (proposal).
+The design and plan: [formal models of the coordination protocols](design/formal-models.md) (accepted, in progress).
+
+### bide underneath other agent frameworks (Go)
+
+bide is a durability and accountability layer, not only a framework of its own. Go teams using other agent frameworks can keep them and put bide under the dangerous parts: wrapping a tool's side effect in `agent.Step` gives it bide's guarantees (claimed before it runs, recorded after, halted on an ambiguous outcome, provable afterwards) without changing the rest of the framework. The benchmark harness already drives Google's ADK for Go, trpc-agent-go, Eino and langchaingo this way.
+
+- Worked examples and a guide for using bide under ADK for Go, Eino, trpc-agent-go and langchaingo, stating exactly what bide guards (each wrapped side effect, approvals, proofs) and what it does not (the framework's own loop resumes as it always did).
+- Where a framework exposes a pluggable persistence hook (a session, checkpoint or memory service), a bide-backed implementation, so the framework's own state is journaled and its resume becomes exact.
 
 ## Later: bide beyond Go
 
@@ -44,4 +51,8 @@ A versioned wire protocol ([design proposal](https://github.com/bide-ai/bide/pul
 
 ### Python and TypeScript SDKs
 
-Thin SDKs over the bide protocol, plus adapters that bring bide's guarantees to agents built with existing Python and TypeScript frameworks. A pip-installable `bide-audit` lets Python teams verify bide proofs directly.
+Thin SDKs over the bide protocol, so agents written in Python and TypeScript get the same guarantees the Go engine enforces, plus a pip-installable `bide-audit` so Python teams can verify bide proofs directly.
+
+### Adapters for Python and TypeScript agent frameworks
+
+The same idea as for Go, across languages: adapters that route the tool calls of agents built with existing frameworks (for example LangGraph, the OpenAI Agents SDK and CrewAI in Python; the Vercel AI SDK, Mastra and LangChain.js in TypeScript) through bide, and bide-backed implementations of those frameworks' persistence hooks where they have one. Teams keep the framework they chose and gain at-most-once side effects, human approval and verifiable proofs.
