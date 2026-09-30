@@ -152,7 +152,7 @@ func (ts *turnState) send(ctx context.Context, call ModelCall) (ModelResponse, U
 		Usage:     u,
 		Finish:    fin.Reason,
 		RawFinish: fin.Raw,
-		origin:    responseOrigin{attempt: n, req: call.Request, info: info, described: described},
+		origin:    responseOrigin{attempt: n, msgs: call.Request.Messages, tools: call.Request.Tools, info: info, described: described},
 	}, discarded, nil
 }
 

@@ -110,10 +110,11 @@ type ModelResponse struct {
 }
 
 // responseOrigin identifies the request that produced a response: its number within the turn
-// (never 0), what it asked and where it went, for the journal.
+// (never 0), the messages and tools it sent and the model it went to, for the journal.
 type responseOrigin struct {
 	attempt   int
-	req       Request
+	msgs      []Message
+	tools     []Tool
 	info      ModelInfo
 	described bool
 }
@@ -134,15 +135,15 @@ func CallModel(ctx context.Context, m Model, req Request, mw ...Middleware) (Mod
 // turn was sent (see Record.PromptDigest). For a response no request produced (a middleware built
 // it), there is no model, and the digests are of sent, the request the agent passed to the chain.
 func (resp ModelResponse) journal(sent Request) (model *ModelInfo, prompt, tools string) {
-	req := sent
+	msgs, set := sent.Messages, sent.Tools
 	if o := resp.origin; o.attempt != 0 {
-		req = o.req
+		msgs, set = o.msgs, o.tools
 		if o.described {
 			info := o.info
 			model = &info
 		}
 	}
-	return model, PromptDigest(req.Messages), ToolsDigest(req.Tools)
+	return model, PromptDigest(msgs), ToolsDigest(set)
 }
 
 // PromptDigest is the hex SHA-256 digest a model record journals of the system prompt a turn was
