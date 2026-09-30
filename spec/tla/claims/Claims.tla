@@ -34,7 +34,7 @@ CONSTANTS
   Calls,         \* logical calls (a tool-use id or a Step name)
   ProcOf,        \* driver -> process
   CallOf,        \* driver -> the call it drives
-  Kind,          \* call -> "tool" | "step"
+  Kind,          \* call -> "tool" | "step" | "flow" (one marker key, ClaimAttempt: plan flows)
   PauseCalls,    \* Steps whose body fires and then pauses (stepPauseError)
   NextOf,        \* call -> the call the caller issues when it reads a failure, or "none"
   FirstCalls,    \* calls issued from the start
@@ -43,11 +43,15 @@ CONSTANTS
   MaxAmbig,      \* budget of error replies (either kind)
   MaxCrash,      \* budget of process crashes
   MaxCancel,     \* budget of cancellations between a won claim and the call
+  MaxEvict,      \* budget of pendingClaims evictions (maxPendingClaims), one marker key each
   LateCommit,    \* TRUE: an errored write may commit at any later time (weak A3)
   HasResolver,   \* whether an operator resolves halts (ResolveHaltRef)
   LiveCheck,     \* "lease" | "minAge" | "none" (WithoutLiveDriverCheck)
   LeasedDrivers, \* drivers that hold the run's lease while they drive
-  ResolveClaim,  \* TRUE: the resolver first claims the attempt after the live one (a proposed fix)
+  ResolveClaim,  \* TRUE: the resolver first claims the attempt after the live one (F2's fix)
+  ResolverProc,  \* the process the resolver runs in (sharing its pendingClaims and flights), or "none"
+  ResolveVoidOnError, \* TRUE: a resolution whose result write errored records its own attempt as not
+                      \* started (#92 at 06408db); FALSE: it leaves that attempt live (finding F3's fix)
   Bug            \* "none" or a historical rule, see the regression configs
 
 None == "none"
@@ -61,7 +65,8 @@ ASSUME LiveCheck \in {"lease", "minAge", "none"}
 ASSUME ResolveClaim \in BOOLEAN /\ LateCommit \in BOOLEAN /\ HasResolver \in BOOLEAN
 ASSUME Bug \in {"none", "ReuseNoHold", "HeldPin", "GateNoRetry", "NoMemoAfterCall",
                 "MemoOverwrite", "LoserLeads", "PauseAsFailure"}
-ASSUME \A c \in Calls : Kind[c] \in {"tool", "step"}
+ASSUME \A c \in Calls : Kind[c] \in {"tool", "step", "flow"}
+ASSUME MaxEvict \in Nat /\ ResolverProc \in Procs \cup {"none"} /\ ResolveVoidOnError \in BOOLEAN
 ASSUME PauseCalls \subseteq {c \in Calls : Kind[c] = "step"}
 
 (* --algorithm claims
@@ -83,18 +88,22 @@ variables
   \* fl[p][c]: the driver leading p's in-flight call of c's result key; waiters: who joined it.
   fl         = [p \in Procs |-> [c \in Calls |-> None]],
   waiters    = [p \in Procs |-> [c \in Calls |-> {}]],
-  jres       = [d \in Drivers |-> None],     \* the outcome a joined flight handed to d
+  jres       = [d \in Drivers \cup ResolverSet |-> None], \* the outcome a joined flight handed to d
   cid        = [d \in Drivers |-> 0],        \* d's current claim id
   oldId      = [d \in Drivers |-> 0],        \* a remembered id d took back to retry its record
   lease      = None,
   rids       = {},                          \* claim ids the resolver used (ResolveClaim)
+  rcid       = 0,                           \* the resolver's current claim id
+  rold       = 0,                           \* a remembered id the resolver took back
   \* Fault budgets used.
-  ambig = 0, crashes = 0, cancels = 0,
+  ambig = 0, crashes = 0, cancels = 0, evictions = 0,
   \* Ghosts: effect calls per call, the claim each fired under per attempt, and the claim ids
   \* whose holder's knowledge a crash erased.
   fired      = [c \in Calls |-> 0],
   firedAt    = [c \in Calls |-> [x \in Gens |-> 0]],
-  lost       = {};
+  lost       = {},
+  \* Ghost: the claim ids an eviction from pendingClaims forgot.
+  evicted    = {};
 
 define
   Voided(c, x)  == marker[c][x] # 0 /\ <<c, x, marker[c][x]>> \in nsSet
@@ -112,6 +121,7 @@ define
           \cup UNION {pending[p][c][x] : p \in Procs, c \in Calls, x \in Gens}
           \cup {cid[d] : d \in Drivers} \cup {oldId[d] : d \in Drivers}
           \cup {k[3] : k \in lateMarker} \cup {k[3] : k \in lateNS} \cup lost \cup rids
+          \cup {rcid, rold} \cup evicted
   Free    == Ids \ Used
   Min(S)  == CHOOSE i \in S : \A j \in S : i <= j
   MinFree == Min(Free)
@@ -130,10 +140,14 @@ macro Reply(r) begin
   end either;
 end macro;
 
-\* pendingClaims.remember: add the id to the ids remembered for the marker key (historically, and
-\* under Bug = "MemoOverwrite", replace them).
+\* pendingClaims.remember: add the id to the ids process p remembers for the marker key
+\* (historically, and under Bug = "MemoOverwrite", replace them).
+macro RememberIn(p, c, x, i) begin
+  pending[p][c][x] := IF Bug = "MemoOverwrite" THEN {i} ELSE pending[p][c][x] \cup {i};
+end macro;
+
 macro Remember(x, i) begin
-  pending[ProcOf[self]][CallOf[self]][x] := IF Bug = "MemoOverwrite" THEN {i} ELSE pending[ProcOf[self]][CallOf[self]][x] \cup {i};
+  RememberIn(ProcOf[self], CallOf[self], x, i);
 end macro;
 
 \* The first writer of a key wins (A1).
@@ -161,11 +175,15 @@ macro WriteResult(c, v, r) begin
   end if;
 end macro;
 
-\* shareFlight's return: hand the outcome to every driver that joined the flight.
+\* shareFlight's return: hand the outcome to every caller that joined the flight.
+macro EndFlightIn(p, c, v) begin
+  fl[p][c] := None;
+  jres := [x \in DOMAIN jres |-> IF x \in waiters[p][c] THEN v ELSE jres[x]];
+  waiters[p][c] := {};
+end macro;
+
 macro EndFlight(v) begin
-  fl[ProcOf[self]][CallOf[self]] := None;
-  jres := [x \in Drivers |-> IF x \in waiters[ProcOf[self]][CallOf[self]] THEN v ELSE jres[x]];
-  waiters[ProcOf[self]][CallOf[self]] := {};
+  EndFlightIn(ProcOf[self], CallOf[self], v);
 end macro;
 
 fair process driver \in Drivers
@@ -182,6 +200,9 @@ Open:
   won := FALSE; reused := FALSE; g := 0; cid[self] := 0;
   if Recorded(CallOf[self]) then
     outcome := "done"; goto Finish;
+  elsif Kind[CallOf[self]] = "flow" /\ marker[CallOf[self]][0] # 0 then
+    \* A flow node that is not retry-safe halts on any marker of its step (plan's case 2).
+    outcome := "halt_crashed"; goto Finish;
   elsif Kind[CallOf[self]] = "tool" /\ AnyLive(CallOf[self]) then
     \* The resume gate: a live marker halts, unless this process remembers its claim.
     with x = CHOOSE x \in Gens : Live(CallOf[self], x) do
@@ -277,7 +298,10 @@ Hold:
     won := TRUE; goto Win;
   end if;
 Lost:
-  if Voided(CallOf[self], g) then
+  if Kind[CallOf[self]] = "flow" then
+    \* ClaimAttempt claims one key: a lost claim halts, voided or not.
+    outcome := "halt_contended"; goto Finish;
+  elsif Voided(CallOf[self], g) then
     g := g + 1; goto Claim;
   elsif Kind[CallOf[self]] = "tool" then
     outcome := "halt_contended"; goto Finish;
@@ -330,7 +354,9 @@ Call:
     await cancels < MaxCancel;
     cancels := cancels + 1;
     EndFlight("err");
-    outcome := "error"; goto NotStarted;
+    outcome := "error";
+    \* A flow node's body error records nothing: its marker stays, and the node halts.
+    if Kind[CallOf[self]] = "flow" then goto Finish; else goto NotStarted; end if;
   or
     fired[CallOf[self]] := fired[CallOf[self]] + 1;
     firedAt[CallOf[self]][g] := cid[self];
@@ -362,12 +388,12 @@ Finish:
 end process;
 
 fair process resolver \in ResolverSet
-variables rc = None, rg = 0, rreply = "";
+variables rc = None, rg = 0, rreply = "", rclaimed = FALSE;
 begin
 RCheck:-
   \* ResolveHaltRef on a halted call: checkNoLiveDriver, then History and the age check.
   with c \in Calls, x \in Gens do
-    await result[c] = None /\ Live(c, x);
+    await Kind[c] # "flow" /\ result[c] = None /\ Live(c, x);
     await LiveCheck = "lease" => lease = None;
     \* WithMinHaltAge, as an assumption: a drive holding the live claim is over before the
     \* minimum age has passed. A remembered claim (pendingClaims) is not a drive: its process
@@ -379,29 +405,86 @@ RCheck:-
   end with;
   if ~ResolveClaim then goto RWrite; end if;
 RClaim:
-  \* Proposed fix: claim the attempt after the live one, so a driver that voids the live attempt
-  \* later cannot win a re-attempt; if a driver already holds it, refuse.
-  await rg + 1 <= MaxGen /\ Free # {};
+  \* F2's fix: ClaimAttempt on the attempt after the live one. Through a Journal in a driver's
+  \* process, the claim first retries the ids that process remembers for that key.
+  await rg + 1 <= MaxGen;
+  if ResolverProc # "none" /\ pending[ResolverProc][rc][rg + 1] # {} then
+    with i = Min(pending[ResolverProc][rc][rg + 1]) do
+      pending[ResolverProc][rc][rg + 1] := pending[ResolverProc][rc][rg + 1] \ {i};
+      rold := i;
+    end with;
+  else
+    goto RInsert;
+  end if;
+RRetry:
+  Reply(rreply);
+  WriteNS(rc, rg + 1, rold, rreply);
+  if rreply # "ok" then
+    RememberIn(ResolverProc, rc, rg + 1, rold);
+    rold := 0;
+    goto RRelease;
+  else
+    rold := 0; goto RClaim;
+  end if;
+RInsert:
+  await Free # {};
   with i = MinFree do
-    rids := rids \cup {i};
+    rcid := i; rids := rids \cup {i};
     Reply(rreply);
     WriteMarker(rc, rg + 1, i, rreply);
-    if rreply # "ok" \/ marker[rc][rg + 1] \notin {0, i} then
-      if lease = self then lease := None; end if;
-      goto Done;
+    if rreply # "ok" then
+      goto RClaimNS;
+    elsif marker[rc][rg + 1] \notin {0, i} then
+      goto RRelease;                        \* a driver holds it: HaltInFlight
+    else
+      rclaimed := TRUE; goto RWrite;
     end if;
   end with;
+RClaimNS:
+  Reply(rreply);
+  WriteNS(rc, rg + 1, rcid, rreply);
+  if rreply # "ok" /\ ResolverProc # "none" then RememberIn(ResolverProc, rc, rg + 1, rcid); end if;
+  goto RRelease;
 RWrite:
+  \* store.Do on the result key: in a driver's process, shareFlight joins or leads that
+  \* process's in-flight call of the key.
+  if ResolverProc # "none" /\ fl[ResolverProc][rc] # None then
+    waiters[ResolverProc][rc] := waiters[ResolverProc][rc] \cup {self};
+    goto RWait;
+  elsif ResolverProc # "none" then
+    fl[ResolverProc][rc] := self;
+  end if;
+RRecord:
   \* The operator's verdict is true when written: charged if the effect has fired.
   Reply(rreply);
   WriteResult(rc, IF fired[rc] > 0 THEN "res_ok" ELSE "res_err", rreply);
+  if ResolverProc # "none" then
+    EndFlightIn(ResolverProc, rc, IF rreply = "ok" THEN "ok" ELSE "err");
+  end if;
+  if rreply # "ok" /\ rclaimed /\ ResolveVoidOnError then goto RNotStarted; else goto RRelease; end if;
+RWait:
+  await jres[self] # None;
+  if jres[self] # "ok" /\ rclaimed /\ ResolveVoidOnError then
+    jres[self] := None; goto RNotStarted;
+  else
+    jres[self] := None; goto RRelease;
+  end if;
+RNotStarted:
+  \* "Nothing was resolved": the resolution's own attempt is recorded as never started. But the
+  \* errored result write may have committed, and a driver in its claim loop then re-attempts
+  \* past the voided attempt and fires under a recorded resolution (finding F3).
+  Reply(rreply);
+  WriteNS(rc, rg + 1, rcid, rreply);
+  if rreply # "ok" /\ ResolverProc # "none" then RememberIn(ResolverProc, rc, rg + 1, rcid); end if;
+RRelease:
   if lease = self then lease := None; end if;
 end process;
 end algorithm; *)
 \* BEGIN TRANSLATION
 VARIABLES marker, nsSet, heldSet, result, toolFail, lateMarker, lateNS, 
           lateResult, pending, fl, waiters, jres, cid, oldId, lease, rids, 
-          ambig, crashes, cancels, fired, firedAt, lost, pc
+          rcid, rold, ambig, crashes, cancels, evictions, fired, firedAt, 
+          lost, evicted, pc
 
 (* define statement *)
 Voided(c, x)  == marker[c][x] # 0 /\ <<c, x, marker[c][x]>> \in nsSet
@@ -419,6 +502,7 @@ Used == {marker[c][x] : c \in Calls, x \in Gens}
         \cup UNION {pending[p][c][x] : p \in Procs, c \in Calls, x \in Gens}
         \cup {cid[d] : d \in Drivers} \cup {oldId[d] : d \in Drivers}
         \cup {k[3] : k \in lateMarker} \cup {k[3] : k \in lateNS} \cup lost \cup rids
+        \cup {rcid, rold} \cup evicted
 Free    == Ids \ Used
 Min(S)  == CHOOSE i \in S : \A j \in S : i <= j
 MinFree == Min(Free)
@@ -426,12 +510,13 @@ MinFree == Min(Free)
 
 Window  == {"ClaimNS", "Hold", "Win", "WinnerWait", "Call", "Record", "NotStarted"}
 
-VARIABLES g, gg, reply, outcome, won, reused, rc, rg, rreply
+VARIABLES g, gg, reply, outcome, won, reused, rc, rg, rreply, rclaimed
 
 vars == << marker, nsSet, heldSet, result, toolFail, lateMarker, lateNS, 
            lateResult, pending, fl, waiters, jres, cid, oldId, lease, rids, 
-           ambig, crashes, cancels, fired, firedAt, lost, pc, g, gg, reply, 
-           outcome, won, reused, rc, rg, rreply >>
+           rcid, rold, ambig, crashes, cancels, evictions, fired, firedAt, 
+           lost, evicted, pc, g, gg, reply, outcome, won, reused, rc, rg, 
+           rreply, rclaimed >>
 
 ProcSet == (Drivers) \cup (ResolverSet)
 
@@ -447,17 +532,21 @@ Init == (* Global variables *)
         /\ pending = [p \in Procs |-> [c \in Calls |-> [x \in Gens |-> {}]]]
         /\ fl = [p \in Procs |-> [c \in Calls |-> None]]
         /\ waiters = [p \in Procs |-> [c \in Calls |-> {}]]
-        /\ jres = [d \in Drivers |-> None]
+        /\ jres = [d \in Drivers \cup ResolverSet |-> None]
         /\ cid = [d \in Drivers |-> 0]
         /\ oldId = [d \in Drivers |-> 0]
         /\ lease = None
         /\ rids = {}
+        /\ rcid = 0
+        /\ rold = 0
         /\ ambig = 0
         /\ crashes = 0
         /\ cancels = 0
+        /\ evictions = 0
         /\ fired = [c \in Calls |-> 0]
         /\ firedAt = [c \in Calls |-> [x \in Gens |-> 0]]
         /\ lost = {}
+        /\ evicted = {}
         (* Process driver *)
         /\ g = [self \in Drivers |-> 0]
         /\ gg = [self \in Drivers |-> 0]
@@ -469,6 +558,7 @@ Init == (* Global variables *)
         /\ rc = [self \in ResolverSet |-> None]
         /\ rg = [self \in ResolverSet |-> 0]
         /\ rreply = [self \in ResolverSet |-> ""]
+        /\ rclaimed = [self \in ResolverSet |-> FALSE]
         /\ pc = [self \in ProcSet |-> CASE self \in Drivers -> "Start"
                                         [] self \in ResolverSet -> "RCheck"]
 
@@ -477,9 +567,10 @@ Start(self) == /\ pc[self] = "Start"
                /\ pc' = [pc EXCEPT ![self] = "Open"]
                /\ UNCHANGED << marker, nsSet, heldSet, result, toolFail, 
                                lateMarker, lateNS, lateResult, pending, fl, 
-                               waiters, jres, cid, oldId, lease, rids, ambig, 
-                               crashes, cancels, fired, firedAt, lost, g, gg, 
-                               reply, outcome, won, reused, rc, rg, rreply >>
+                               waiters, jres, cid, oldId, lease, rids, rcid, 
+                               rold, ambig, crashes, cancels, evictions, fired, 
+                               firedAt, lost, evicted, g, gg, reply, outcome, 
+                               won, reused, rc, rg, rreply, rclaimed >>
 
 Open(self) == /\ pc[self] = "Open"
               /\ IF self \in LeasedDrivers
@@ -495,19 +586,24 @@ Open(self) == /\ pc[self] = "Open"
                     THEN /\ outcome' = [outcome EXCEPT ![self] = "done"]
                          /\ pc' = [pc EXCEPT ![self] = "Finish"]
                          /\ UNCHANGED << oldId, gg >>
-                    ELSE /\ IF Kind[CallOf[self]] = "tool" /\ AnyLive(CallOf[self])
-                               THEN /\ LET x == CHOOSE x \in Gens : Live(CallOf[self], x) IN
-                                         /\ gg' = [gg EXCEPT ![self] = x]
-                                         /\ oldId' = [oldId EXCEPT ![self] = marker[CallOf[self]][x]]
-                                    /\ outcome' = [outcome EXCEPT ![self] = None]
-                                    /\ pc' = [pc EXCEPT ![self] = "GateTake"]
-                               ELSE /\ outcome' = [outcome EXCEPT ![self] = None]
-                                    /\ pc' = [pc EXCEPT ![self] = "Claim"]
+                    ELSE /\ IF Kind[CallOf[self]] = "flow" /\ marker[CallOf[self]][0] # 0
+                               THEN /\ outcome' = [outcome EXCEPT ![self] = "halt_crashed"]
+                                    /\ pc' = [pc EXCEPT ![self] = "Finish"]
                                     /\ UNCHANGED << oldId, gg >>
+                               ELSE /\ IF Kind[CallOf[self]] = "tool" /\ AnyLive(CallOf[self])
+                                          THEN /\ LET x == CHOOSE x \in Gens : Live(CallOf[self], x) IN
+                                                    /\ gg' = [gg EXCEPT ![self] = x]
+                                                    /\ oldId' = [oldId EXCEPT ![self] = marker[CallOf[self]][x]]
+                                               /\ outcome' = [outcome EXCEPT ![self] = None]
+                                               /\ pc' = [pc EXCEPT ![self] = "GateTake"]
+                                          ELSE /\ outcome' = [outcome EXCEPT ![self] = None]
+                                               /\ pc' = [pc EXCEPT ![self] = "Claim"]
+                                               /\ UNCHANGED << oldId, gg >>
               /\ UNCHANGED << marker, nsSet, heldSet, result, toolFail, 
                               lateMarker, lateNS, lateResult, pending, fl, 
-                              waiters, jres, rids, ambig, crashes, cancels, 
-                              fired, firedAt, lost, reply, rc, rg, rreply >>
+                              waiters, jres, rids, rcid, rold, ambig, crashes, 
+                              cancels, evictions, fired, firedAt, lost, 
+                              evicted, reply, rc, rg, rreply, rclaimed >>
 
 GateTake(self) == /\ pc[self] = "GateTake"
                   /\ IF Bug # "GateNoRetry" /\ oldId[self] \in pending[ProcOf[self]][CallOf[self]][gg[self]]
@@ -520,9 +616,10 @@ GateTake(self) == /\ pc[self] = "GateTake"
                              /\ UNCHANGED pending
                   /\ UNCHANGED << marker, nsSet, heldSet, result, toolFail, 
                                   lateMarker, lateNS, lateResult, fl, waiters, 
-                                  jres, cid, lease, rids, ambig, crashes, 
-                                  cancels, fired, firedAt, lost, g, gg, reply, 
-                                  won, reused, rc, rg, rreply >>
+                                  jres, cid, lease, rids, rcid, rold, ambig, 
+                                  crashes, cancels, evictions, fired, firedAt, 
+                                  lost, evicted, g, gg, reply, won, reused, rc, 
+                                  rg, rreply, rclaimed >>
 
 GateWrite(self) == /\ pc[self] = "GateWrite"
                    /\ \/ /\ reply' = [reply EXCEPT ![self] = "ok"]
@@ -548,7 +645,7 @@ GateWrite(self) == /\ pc[self] = "GateWrite"
                                          /\ UNCHANGED lateNS
                               /\ nsSet' = nsSet
                    /\ IF reply'[self] # "ok"
-                         THEN /\ pending' = [pending EXCEPT ![ProcOf[self]][CallOf[self]][gg[self]] = IF Bug = "MemoOverwrite" THEN {(oldId[self])} ELSE pending[ProcOf[self]][CallOf[self]][gg[self]] \cup {(oldId[self])}]
+                         THEN /\ pending' = [pending EXCEPT ![(ProcOf[self])][(CallOf[self])][gg[self]] = IF Bug = "MemoOverwrite" THEN {(oldId[self])} ELSE pending[(ProcOf[self])][(CallOf[self])][gg[self]] \cup {(oldId[self])}]
                               /\ oldId' = [oldId EXCEPT ![self] = 0]
                               /\ outcome' = [outcome EXCEPT ![self] = "halt_crashed"]
                               /\ pc' = [pc EXCEPT ![self] = "Finish"]
@@ -557,9 +654,10 @@ GateWrite(self) == /\ pc[self] = "GateWrite"
                               /\ UNCHANGED << pending, outcome >>
                    /\ UNCHANGED << marker, heldSet, result, toolFail, 
                                    lateMarker, lateResult, fl, waiters, jres, 
-                                   cid, lease, rids, crashes, cancels, fired, 
-                                   firedAt, lost, g, gg, won, reused, rc, rg, 
-                                   rreply >>
+                                   cid, lease, rids, rcid, rold, crashes, 
+                                   cancels, evictions, fired, firedAt, lost, 
+                                   evicted, g, gg, won, reused, rc, rg, rreply, 
+                                   rclaimed >>
 
 Claim(self) == /\ pc[self] = "Claim"
                /\ g[self] <= MaxGen
@@ -579,9 +677,10 @@ Claim(self) == /\ pc[self] = "Claim"
                           /\ UNCHANGED << pending, cid, oldId >>
                /\ UNCHANGED << marker, nsSet, heldSet, result, toolFail, 
                                lateMarker, lateNS, lateResult, fl, waiters, 
-                               jres, lease, rids, ambig, crashes, cancels, 
-                               fired, firedAt, lost, g, gg, reply, outcome, 
-                               won, rc, rg, rreply >>
+                               jres, lease, rids, rcid, rold, ambig, crashes, 
+                               cancels, evictions, fired, firedAt, lost, 
+                               evicted, g, gg, reply, outcome, won, rc, rg, 
+                               rreply, rclaimed >>
 
 ClaimRetry(self) == /\ pc[self] = "ClaimRetry"
                     /\ \/ /\ reply' = [reply EXCEPT ![self] = "ok"]
@@ -607,7 +706,7 @@ ClaimRetry(self) == /\ pc[self] = "ClaimRetry"
                                           /\ UNCHANGED lateNS
                                /\ nsSet' = nsSet
                     /\ IF reply'[self] # "ok"
-                          THEN /\ pending' = [pending EXCEPT ![ProcOf[self]][CallOf[self]][g[self]] = IF Bug = "MemoOverwrite" THEN {(oldId[self])} ELSE pending[ProcOf[self]][CallOf[self]][g[self]] \cup {(oldId[self])}]
+                          THEN /\ pending' = [pending EXCEPT ![(ProcOf[self])][(CallOf[self])][g[self]] = IF Bug = "MemoOverwrite" THEN {(oldId[self])} ELSE pending[(ProcOf[self])][(CallOf[self])][g[self]] \cup {(oldId[self])}]
                                /\ oldId' = [oldId EXCEPT ![self] = 0]
                                /\ outcome' = [outcome EXCEPT ![self] = "error"]
                                /\ pc' = [pc EXCEPT ![self] = "Finish"]
@@ -616,9 +715,10 @@ ClaimRetry(self) == /\ pc[self] = "ClaimRetry"
                                /\ UNCHANGED << pending, outcome >>
                     /\ UNCHANGED << marker, heldSet, result, toolFail, 
                                     lateMarker, lateResult, fl, waiters, jres, 
-                                    cid, lease, rids, crashes, cancels, fired, 
-                                    firedAt, lost, g, gg, won, reused, rc, rg, 
-                                    rreply >>
+                                    cid, lease, rids, rcid, rold, crashes, 
+                                    cancels, evictions, fired, firedAt, lost, 
+                                    evicted, g, gg, won, reused, rc, rg, 
+                                    rreply, rclaimed >>
 
 ClaimInsert(self) == /\ pc[self] = "ClaimInsert"
                      /\ reused[self] \/ Free # {}
@@ -659,9 +759,10 @@ ClaimInsert(self) == /\ pc[self] = "ClaimInsert"
                                                 /\ won' = won
                      /\ UNCHANGED << nsSet, heldSet, result, toolFail, lateNS, 
                                      lateResult, pending, fl, waiters, jres, 
-                                     oldId, lease, rids, crashes, cancels, 
-                                     fired, firedAt, lost, g, gg, outcome, 
-                                     reused, rc, rg, rreply >>
+                                     oldId, lease, rids, rcid, rold, crashes, 
+                                     cancels, evictions, fired, firedAt, lost, 
+                                     evicted, g, gg, outcome, reused, rc, rg, 
+                                     rreply, rclaimed >>
 
 ClaimNS(self) == /\ pc[self] = "ClaimNS"
                  /\ \/ /\ reply' = [reply EXCEPT ![self] = "ok"]
@@ -687,15 +788,16 @@ ClaimNS(self) == /\ pc[self] = "ClaimNS"
                                        /\ UNCHANGED lateNS
                             /\ nsSet' = nsSet
                  /\ IF reply'[self] # "ok"
-                       THEN /\ pending' = [pending EXCEPT ![ProcOf[self]][CallOf[self]][g[self]] = IF Bug = "MemoOverwrite" THEN {(cid[self])} ELSE pending[ProcOf[self]][CallOf[self]][g[self]] \cup {(cid[self])}]
+                       THEN /\ pending' = [pending EXCEPT ![(ProcOf[self])][(CallOf[self])][g[self]] = IF Bug = "MemoOverwrite" THEN {(cid[self])} ELSE pending[(ProcOf[self])][(CallOf[self])][g[self]] \cup {(cid[self])}]
                        ELSE /\ TRUE
                             /\ UNCHANGED pending
                  /\ outcome' = [outcome EXCEPT ![self] = "error"]
                  /\ pc' = [pc EXCEPT ![self] = "Finish"]
                  /\ UNCHANGED << marker, heldSet, result, toolFail, lateMarker, 
                                  lateResult, fl, waiters, jres, cid, oldId, 
-                                 lease, rids, crashes, cancels, fired, firedAt, 
-                                 lost, g, gg, won, reused, rc, rg, rreply >>
+                                 lease, rids, rcid, rold, crashes, cancels, 
+                                 evictions, fired, firedAt, lost, evicted, g, 
+                                 gg, won, reused, rc, rg, rreply, rclaimed >>
 
 Hold(self) == /\ pc[self] = "Hold"
               /\ \/ /\ reply' = [reply EXCEPT ![self] = "ok"]
@@ -714,7 +816,7 @@ Hold(self) == /\ pc[self] = "Hold"
                     ELSE /\ TRUE
                          /\ UNCHANGED heldSet
               /\ IF reply'[self] # "ok"
-                    THEN /\ pending' = [pending EXCEPT ![ProcOf[self]][CallOf[self]][g[self]] = IF Bug = "MemoOverwrite" THEN {(cid[self])} ELSE pending[ProcOf[self]][CallOf[self]][g[self]] \cup {(cid[self])}]
+                    THEN /\ pending' = [pending EXCEPT ![(ProcOf[self])][(CallOf[self])][g[self]] = IF Bug = "MemoOverwrite" THEN {(cid[self])} ELSE pending[(ProcOf[self])][(CallOf[self])][g[self]] \cup {(cid[self])}]
                          /\ outcome' = [outcome EXCEPT ![self] = "error"]
                          /\ pc' = [pc EXCEPT ![self] = "Finish"]
                          /\ won' = won
@@ -726,25 +828,31 @@ Hold(self) == /\ pc[self] = "Hold"
                          /\ UNCHANGED << pending, outcome >>
               /\ UNCHANGED << marker, nsSet, result, toolFail, lateMarker, 
                               lateNS, lateResult, fl, waiters, jres, cid, 
-                              oldId, lease, rids, crashes, cancels, fired, 
-                              firedAt, lost, g, gg, reused, rc, rg, rreply >>
+                              oldId, lease, rids, rcid, rold, crashes, cancels, 
+                              evictions, fired, firedAt, lost, evicted, g, gg, 
+                              reused, rc, rg, rreply, rclaimed >>
 
 Lost(self) == /\ pc[self] = "Lost"
-              /\ IF Voided(CallOf[self], g[self])
-                    THEN /\ g' = [g EXCEPT ![self] = g[self] + 1]
-                         /\ pc' = [pc EXCEPT ![self] = "Claim"]
-                         /\ UNCHANGED outcome
-                    ELSE /\ IF Kind[CallOf[self]] = "tool"
-                               THEN /\ outcome' = [outcome EXCEPT ![self] = "halt_contended"]
-                                    /\ pc' = [pc EXCEPT ![self] = "Finish"]
-                               ELSE /\ pc' = [pc EXCEPT ![self] = "Join"]
-                                    /\ UNCHANGED outcome
+              /\ IF Kind[CallOf[self]] = "flow"
+                    THEN /\ outcome' = [outcome EXCEPT ![self] = "halt_contended"]
+                         /\ pc' = [pc EXCEPT ![self] = "Finish"]
                          /\ g' = g
+                    ELSE /\ IF Voided(CallOf[self], g[self])
+                               THEN /\ g' = [g EXCEPT ![self] = g[self] + 1]
+                                    /\ pc' = [pc EXCEPT ![self] = "Claim"]
+                                    /\ UNCHANGED outcome
+                               ELSE /\ IF Kind[CallOf[self]] = "tool"
+                                          THEN /\ outcome' = [outcome EXCEPT ![self] = "halt_contended"]
+                                               /\ pc' = [pc EXCEPT ![self] = "Finish"]
+                                          ELSE /\ pc' = [pc EXCEPT ![self] = "Join"]
+                                               /\ UNCHANGED outcome
+                                    /\ g' = g
               /\ UNCHANGED << marker, nsSet, heldSet, result, toolFail, 
                               lateMarker, lateNS, lateResult, pending, fl, 
-                              waiters, jres, cid, oldId, lease, rids, ambig, 
-                              crashes, cancels, fired, firedAt, lost, gg, 
-                              reply, won, reused, rc, rg, rreply >>
+                              waiters, jres, cid, oldId, lease, rids, rcid, 
+                              rold, ambig, crashes, cancels, evictions, fired, 
+                              firedAt, lost, evicted, gg, reply, won, reused, 
+                              rc, rg, rreply, rclaimed >>
 
 Join(self) == /\ pc[self] = "Join"
               /\ IF fl[ProcOf[self]][CallOf[self]] # None
@@ -759,9 +867,10 @@ Join(self) == /\ pc[self] = "Join"
                          /\ UNCHANGED waiters
               /\ UNCHANGED << marker, nsSet, heldSet, result, toolFail, 
                               lateMarker, lateNS, lateResult, pending, jres, 
-                              cid, oldId, lease, rids, ambig, crashes, cancels, 
-                              fired, firedAt, lost, g, gg, reply, outcome, won, 
-                              reused, rc, rg, rreply >>
+                              cid, oldId, lease, rids, rcid, rold, ambig, 
+                              crashes, cancels, evictions, fired, firedAt, 
+                              lost, evicted, g, gg, reply, outcome, won, 
+                              reused, rc, rg, rreply, rclaimed >>
 
 LoserRead(self) == /\ pc[self] = "LoserRead"
                    /\ IF result[CallOf[self]] # None
@@ -771,23 +880,25 @@ LoserRead(self) == /\ pc[self] = "LoserRead"
                    /\ UNCHANGED << marker, nsSet, heldSet, result, toolFail, 
                                    lateMarker, lateNS, lateResult, pending, fl, 
                                    waiters, jres, cid, oldId, lease, rids, 
-                                   ambig, crashes, cancels, fired, firedAt, 
-                                   lost, g, gg, reply, won, reused, rc, rg, 
-                                   rreply >>
+                                   rcid, rold, ambig, crashes, cancels, 
+                                   evictions, fired, firedAt, lost, evicted, g, 
+                                   gg, reply, won, reused, rc, rg, rreply, 
+                                   rclaimed >>
 
 LoserLead(self) == /\ pc[self] = "LoserLead"
-                   /\ fl' = [fl EXCEPT ![ProcOf[self]][CallOf[self]] = None]
-                   /\ jres' = [x \in Drivers |-> IF x \in waiters[ProcOf[self]][CallOf[self]] THEN (IF result[CallOf[self]] # None THEN "ok" ELSE "halt") ELSE jres[x]]
-                   /\ waiters' = [waiters EXCEPT ![ProcOf[self]][CallOf[self]] = {}]
+                   /\ fl' = [fl EXCEPT ![(ProcOf[self])][(CallOf[self])] = None]
+                   /\ jres' = [x \in DOMAIN jres |-> IF x \in waiters[(ProcOf[self])][(CallOf[self])] THEN (IF result[CallOf[self]] # None THEN "ok" ELSE "halt") ELSE jres[x]]
+                   /\ waiters' = [waiters EXCEPT ![(ProcOf[self])][(CallOf[self])] = {}]
                    /\ IF result[CallOf[self]] # None
                          THEN /\ outcome' = [outcome EXCEPT ![self] = "done"]
                          ELSE /\ outcome' = [outcome EXCEPT ![self] = "halt_contended"]
                    /\ pc' = [pc EXCEPT ![self] = "Finish"]
                    /\ UNCHANGED << marker, nsSet, heldSet, result, toolFail, 
                                    lateMarker, lateNS, lateResult, pending, 
-                                   cid, oldId, lease, rids, ambig, crashes, 
-                                   cancels, fired, firedAt, lost, g, gg, reply, 
-                                   won, reused, rc, rg, rreply >>
+                                   cid, oldId, lease, rids, rcid, rold, ambig, 
+                                   crashes, cancels, evictions, fired, firedAt, 
+                                   lost, evicted, g, gg, reply, won, reused, 
+                                   rc, rg, rreply, rclaimed >>
 
 LoserWait(self) == /\ pc[self] = "LoserWait"
                    /\ jres[self] # None
@@ -798,9 +909,10 @@ LoserWait(self) == /\ pc[self] = "LoserWait"
                    /\ pc' = [pc EXCEPT ![self] = "Finish"]
                    /\ UNCHANGED << marker, nsSet, heldSet, result, toolFail, 
                                    lateMarker, lateNS, lateResult, pending, fl, 
-                                   waiters, cid, oldId, lease, rids, ambig, 
-                                   crashes, cancels, fired, firedAt, lost, g, 
-                                   gg, reply, won, reused, rc, rg, rreply >>
+                                   waiters, cid, oldId, lease, rids, rcid, 
+                                   rold, ambig, crashes, cancels, evictions, 
+                                   fired, firedAt, lost, evicted, g, gg, reply, 
+                                   won, reused, rc, rg, rreply, rclaimed >>
 
 Win(self) == /\ pc[self] = "Win"
              /\ IF fl[ProcOf[self]][CallOf[self]] # None
@@ -812,9 +924,10 @@ Win(self) == /\ pc[self] = "Win"
                         /\ UNCHANGED waiters
              /\ UNCHANGED << marker, nsSet, heldSet, result, toolFail, 
                              lateMarker, lateNS, lateResult, pending, jres, 
-                             cid, oldId, lease, rids, ambig, crashes, cancels, 
-                             fired, firedAt, lost, g, gg, reply, outcome, won, 
-                             reused, rc, rg, rreply >>
+                             cid, oldId, lease, rids, rcid, rold, ambig, 
+                             crashes, cancels, evictions, fired, firedAt, lost, 
+                             evicted, g, gg, reply, outcome, won, reused, rc, 
+                             rg, rreply, rclaimed >>
 
 WinnerWait(self) == /\ pc[self] = "WinnerWait"
                     /\ jres[self] # None
@@ -827,26 +940,29 @@ WinnerWait(self) == /\ pc[self] = "WinnerWait"
                                /\ pc' = [pc EXCEPT ![self] = "NotStarted"]
                     /\ UNCHANGED << marker, nsSet, heldSet, result, toolFail, 
                                     lateMarker, lateNS, lateResult, pending, 
-                                    fl, waiters, cid, oldId, lease, rids, 
-                                    ambig, crashes, cancels, fired, firedAt, 
-                                    lost, g, gg, reply, won, reused, rc, rg, 
-                                    rreply >>
+                                    fl, waiters, cid, oldId, lease, rids, rcid, 
+                                    rold, ambig, crashes, cancels, evictions, 
+                                    fired, firedAt, lost, evicted, g, gg, 
+                                    reply, won, reused, rc, rg, rreply, 
+                                    rclaimed >>
 
 Call(self) == /\ pc[self] = "Call"
               /\ \/ /\ cancels < MaxCancel
                     /\ cancels' = cancels + 1
-                    /\ fl' = [fl EXCEPT ![ProcOf[self]][CallOf[self]] = None]
-                    /\ jres' = [x \in Drivers |-> IF x \in waiters[ProcOf[self]][CallOf[self]] THEN "err" ELSE jres[x]]
-                    /\ waiters' = [waiters EXCEPT ![ProcOf[self]][CallOf[self]] = {}]
+                    /\ fl' = [fl EXCEPT ![(ProcOf[self])][(CallOf[self])] = None]
+                    /\ jres' = [x \in DOMAIN jres |-> IF x \in waiters[(ProcOf[self])][(CallOf[self])] THEN "err" ELSE jres[x]]
+                    /\ waiters' = [waiters EXCEPT ![(ProcOf[self])][(CallOf[self])] = {}]
                     /\ outcome' = [outcome EXCEPT ![self] = "error"]
-                    /\ pc' = [pc EXCEPT ![self] = "NotStarted"]
+                    /\ IF Kind[CallOf[self]] = "flow"
+                          THEN /\ pc' = [pc EXCEPT ![self] = "Finish"]
+                          ELSE /\ pc' = [pc EXCEPT ![self] = "NotStarted"]
                     /\ UNCHANGED <<toolFail, fired, firedAt>>
                  \/ /\ fired' = [fired EXCEPT ![CallOf[self]] = fired[CallOf[self]] + 1]
                     /\ firedAt' = [firedAt EXCEPT ![CallOf[self]][g[self]] = cid[self]]
                     /\ IF CallOf[self] \in PauseCalls
-                          THEN /\ fl' = [fl EXCEPT ![ProcOf[self]][CallOf[self]] = None]
-                               /\ jres' = [x \in Drivers |-> IF x \in waiters[ProcOf[self]][CallOf[self]] THEN "err" ELSE jres[x]]
-                               /\ waiters' = [waiters EXCEPT ![ProcOf[self]][CallOf[self]] = {}]
+                          THEN /\ fl' = [fl EXCEPT ![(ProcOf[self])][(CallOf[self])] = None]
+                               /\ jres' = [x \in DOMAIN jres |-> IF x \in waiters[(ProcOf[self])][(CallOf[self])] THEN "err" ELSE jres[x]]
+                               /\ waiters' = [waiters EXCEPT ![(ProcOf[self])][(CallOf[self])] = {}]
                                /\ outcome' = [outcome EXCEPT ![self] = "pause"]
                                /\ IF Bug = "PauseAsFailure"
                                      THEN /\ toolFail' = [toolFail EXCEPT ![CallOf[self]] = TRUE]
@@ -859,8 +975,9 @@ Call(self) == /\ pc[self] = "Call"
                     /\ UNCHANGED cancels
               /\ UNCHANGED << marker, nsSet, heldSet, result, lateMarker, 
                               lateNS, lateResult, pending, cid, oldId, lease, 
-                              rids, ambig, crashes, lost, g, gg, reply, won, 
-                              reused, rc, rg, rreply >>
+                              rids, rcid, rold, ambig, crashes, evictions, 
+                              lost, evicted, g, gg, reply, won, reused, rc, rg, 
+                              rreply, rclaimed >>
 
 Record(self) == /\ pc[self] = "Record"
                 /\ \/ /\ reply' = [reply EXCEPT ![self] = "ok"]
@@ -885,17 +1002,18 @@ Record(self) == /\ pc[self] = "Record"
                                  ELSE /\ TRUE
                                       /\ UNCHANGED lateResult
                            /\ UNCHANGED result
-                /\ fl' = [fl EXCEPT ![ProcOf[self]][CallOf[self]] = None]
-                /\ jres' = [x \in Drivers |-> IF x \in waiters[ProcOf[self]][CallOf[self]] THEN (IF reply'[self] = "ok" THEN "ok" ELSE "err") ELSE jres[x]]
-                /\ waiters' = [waiters EXCEPT ![ProcOf[self]][CallOf[self]] = {}]
+                /\ fl' = [fl EXCEPT ![(ProcOf[self])][(CallOf[self])] = None]
+                /\ jres' = [x \in DOMAIN jres |-> IF x \in waiters[(ProcOf[self])][(CallOf[self])] THEN (IF reply'[self] = "ok" THEN "ok" ELSE "err") ELSE jres[x]]
+                /\ waiters' = [waiters EXCEPT ![(ProcOf[self])][(CallOf[self])] = {}]
                 /\ IF reply'[self] = "ok"
                       THEN /\ outcome' = [outcome EXCEPT ![self] = "done"]
                       ELSE /\ outcome' = [outcome EXCEPT ![self] = "error"]
                 /\ pc' = [pc EXCEPT ![self] = "Finish"]
                 /\ UNCHANGED << marker, nsSet, heldSet, toolFail, lateMarker, 
-                                lateNS, pending, cid, oldId, lease, rids, 
-                                crashes, cancels, fired, firedAt, lost, g, gg, 
-                                won, reused, rc, rg, rreply >>
+                                lateNS, pending, cid, oldId, lease, rids, rcid, 
+                                rold, crashes, cancels, evictions, fired, 
+                                firedAt, lost, evicted, g, gg, won, reused, rc, 
+                                rg, rreply, rclaimed >>
 
 NotStarted(self) == /\ pc[self] = "NotStarted"
                     /\ \/ /\ reply' = [reply EXCEPT ![self] = "ok"]
@@ -921,15 +1039,16 @@ NotStarted(self) == /\ pc[self] = "NotStarted"
                                           /\ UNCHANGED lateNS
                                /\ nsSet' = nsSet
                     /\ IF reply'[self] # "ok" /\ Bug # "NoMemoAfterCall"
-                          THEN /\ pending' = [pending EXCEPT ![ProcOf[self]][CallOf[self]][g[self]] = IF Bug = "MemoOverwrite" THEN {(cid[self])} ELSE pending[ProcOf[self]][CallOf[self]][g[self]] \cup {(cid[self])}]
+                          THEN /\ pending' = [pending EXCEPT ![(ProcOf[self])][(CallOf[self])][g[self]] = IF Bug = "MemoOverwrite" THEN {(cid[self])} ELSE pending[(ProcOf[self])][(CallOf[self])][g[self]] \cup {(cid[self])}]
                           ELSE /\ TRUE
                                /\ UNCHANGED pending
                     /\ pc' = [pc EXCEPT ![self] = "Finish"]
                     /\ UNCHANGED << marker, heldSet, result, toolFail, 
                                     lateMarker, lateResult, fl, waiters, jres, 
-                                    cid, oldId, lease, rids, crashes, cancels, 
-                                    fired, firedAt, lost, g, gg, outcome, won, 
-                                    reused, rc, rg, rreply >>
+                                    cid, oldId, lease, rids, rcid, rold, 
+                                    crashes, cancels, evictions, fired, 
+                                    firedAt, lost, evicted, g, gg, outcome, 
+                                    won, reused, rc, rg, rreply, rclaimed >>
 
 Finish(self) == /\ pc[self] = "Finish"
                 /\ IF lease = self
@@ -941,9 +1060,10 @@ Finish(self) == /\ pc[self] = "Finish"
                       ELSE /\ pc' = [pc EXCEPT ![self] = "Done"]
                 /\ UNCHANGED << marker, nsSet, heldSet, result, toolFail, 
                                 lateMarker, lateNS, lateResult, pending, fl, 
-                                waiters, jres, cid, oldId, rids, ambig, 
-                                crashes, cancels, fired, firedAt, lost, g, gg, 
-                                reply, outcome, won, reused, rc, rg, rreply >>
+                                waiters, jres, cid, oldId, rids, rcid, rold, 
+                                ambig, crashes, cancels, evictions, fired, 
+                                firedAt, lost, evicted, g, gg, reply, outcome, 
+                                won, reused, rc, rg, rreply, rclaimed >>
 
 driver(self) == Start(self) \/ Open(self) \/ GateTake(self)
                    \/ GateWrite(self) \/ Claim(self) \/ ClaimRetry(self)
@@ -956,7 +1076,7 @@ driver(self) == Start(self) \/ Open(self) \/ GateTake(self)
 RCheck(self) == /\ pc[self] = "RCheck"
                 /\ \E c \in Calls:
                      \E x \in Gens:
-                       /\ result[c] = None /\ Live(c, x)
+                       /\ Kind[c] # "flow" /\ result[c] = None /\ Live(c, x)
                        /\ LiveCheck = "lease" => lease = None
                        /\ LiveCheck = "minAge" =>
                             \A d \in Drivers : ~(CallOf[d] = c /\ cid[d] = marker[c][x] /\ pc[d] \in Window)
@@ -971,50 +1091,28 @@ RCheck(self) == /\ pc[self] = "RCheck"
                       ELSE /\ pc' = [pc EXCEPT ![self] = "RClaim"]
                 /\ UNCHANGED << marker, nsSet, heldSet, result, toolFail, 
                                 lateMarker, lateNS, lateResult, pending, fl, 
-                                waiters, jres, cid, oldId, rids, ambig, 
-                                crashes, cancels, fired, firedAt, lost, g, gg, 
-                                reply, outcome, won, reused, rreply >>
+                                waiters, jres, cid, oldId, rids, rcid, rold, 
+                                ambig, crashes, cancels, evictions, fired, 
+                                firedAt, lost, evicted, g, gg, reply, outcome, 
+                                won, reused, rreply, rclaimed >>
 
 RClaim(self) == /\ pc[self] = "RClaim"
-                /\ rg[self] + 1 <= MaxGen /\ Free # {}
-                /\ LET i == MinFree IN
-                     /\ rids' = (rids \cup {i})
-                     /\ \/ /\ rreply' = [rreply EXCEPT ![self] = "ok"]
-                           /\ ambig' = ambig
-                        \/ /\ ambig < MaxAmbig
-                           /\ ambig' = ambig + 1
-                           /\ rreply' = [rreply EXCEPT ![self] = "err_nc"]
-                        \/ /\ ambig < MaxAmbig
-                           /\ ambig' = ambig + 1
-                           /\ rreply' = [rreply EXCEPT ![self] = "err_c"]
-                        \/ /\ LateCommit /\ ambig < MaxAmbig
-                           /\ ambig' = ambig + 1
-                           /\ rreply' = [rreply EXCEPT ![self] = "err_late"]
-                     /\ IF rreply'[self] \in {"ok", "err_c"}
-                           THEN /\ IF marker[rc[self]][(rg[self] + 1)] = 0
-                                      THEN /\ marker' = [marker EXCEPT ![rc[self]][(rg[self] + 1)] = i]
-                                      ELSE /\ TRUE
-                                           /\ UNCHANGED marker
-                                /\ UNCHANGED lateMarker
-                           ELSE /\ IF rreply'[self] = "err_late"
-                                      THEN /\ lateMarker' = (lateMarker \cup {<<rc[self], (rg[self] + 1), i>>})
-                                      ELSE /\ TRUE
-                                           /\ UNCHANGED lateMarker
-                                /\ UNCHANGED marker
-                     /\ IF rreply'[self] # "ok" \/ marker'[rc[self]][rg[self] + 1] \notin {0, i}
-                           THEN /\ IF lease = self
-                                      THEN /\ lease' = None
-                                      ELSE /\ TRUE
-                                           /\ lease' = lease
-                                /\ pc' = [pc EXCEPT ![self] = "Done"]
-                           ELSE /\ pc' = [pc EXCEPT ![self] = "RWrite"]
-                                /\ lease' = lease
-                /\ UNCHANGED << nsSet, heldSet, result, toolFail, lateNS, 
-                                lateResult, pending, fl, waiters, jres, cid, 
-                                oldId, crashes, cancels, fired, firedAt, lost, 
-                                g, gg, reply, outcome, won, reused, rc, rg >>
+                /\ rg[self] + 1 <= MaxGen
+                /\ IF ResolverProc # "none" /\ pending[ResolverProc][rc[self]][rg[self] + 1] # {}
+                      THEN /\ LET i == Min(pending[ResolverProc][rc[self]][rg[self] + 1]) IN
+                                /\ pending' = [pending EXCEPT ![ResolverProc][rc[self]][rg[self] + 1] = pending[ResolverProc][rc[self]][rg[self] + 1] \ {i}]
+                                /\ rold' = i
+                           /\ pc' = [pc EXCEPT ![self] = "RRetry"]
+                      ELSE /\ pc' = [pc EXCEPT ![self] = "RInsert"]
+                           /\ UNCHANGED << pending, rold >>
+                /\ UNCHANGED << marker, nsSet, heldSet, result, toolFail, 
+                                lateMarker, lateNS, lateResult, fl, waiters, 
+                                jres, cid, oldId, lease, rids, rcid, ambig, 
+                                crashes, cancels, evictions, fired, firedAt, 
+                                lost, evicted, g, gg, reply, outcome, won, 
+                                reused, rc, rg, rreply, rclaimed >>
 
-RWrite(self) == /\ pc[self] = "RWrite"
+RRetry(self) == /\ pc[self] = "RRetry"
                 /\ \/ /\ rreply' = [rreply EXCEPT ![self] = "ok"]
                       /\ ambig' = ambig
                    \/ /\ ambig < MaxAmbig
@@ -1027,27 +1125,228 @@ RWrite(self) == /\ pc[self] = "RWrite"
                       /\ ambig' = ambig + 1
                       /\ rreply' = [rreply EXCEPT ![self] = "err_late"]
                 /\ IF rreply'[self] \in {"ok", "err_c"}
-                      THEN /\ IF result[rc[self]] = None
-                                 THEN /\ result' = [result EXCEPT ![rc[self]] = IF fired[rc[self]] > 0 THEN "res_ok" ELSE "res_err"]
+                      THEN /\ IF ~NSTaken(rc[self], (rg[self] + 1), rold)
+                                 THEN /\ nsSet' = (nsSet \cup {<<rc[self], (rg[self] + 1), rold>>})
                                  ELSE /\ TRUE
-                                      /\ UNCHANGED result
-                           /\ UNCHANGED lateResult
+                                      /\ nsSet' = nsSet
+                           /\ UNCHANGED lateNS
                       ELSE /\ IF rreply'[self] = "err_late"
-                                 THEN /\ lateResult' = (lateResult \cup {<<rc[self], (IF fired[rc[self]] > 0 THEN "res_ok" ELSE "res_err")>>})
+                                 THEN /\ lateNS' = (lateNS \cup {<<rc[self], (rg[self] + 1), rold>>})
                                  ELSE /\ TRUE
-                                      /\ UNCHANGED lateResult
-                           /\ UNCHANGED result
-                /\ IF lease = self
-                      THEN /\ lease' = None
-                      ELSE /\ TRUE
-                           /\ lease' = lease
-                /\ pc' = [pc EXCEPT ![self] = "Done"]
-                /\ UNCHANGED << marker, nsSet, heldSet, toolFail, lateMarker, 
-                                lateNS, pending, fl, waiters, jres, cid, oldId, 
-                                rids, crashes, cancels, fired, firedAt, lost, 
-                                g, gg, reply, outcome, won, reused, rc, rg >>
+                                      /\ UNCHANGED lateNS
+                           /\ nsSet' = nsSet
+                /\ IF rreply'[self] # "ok"
+                      THEN /\ pending' = [pending EXCEPT ![ResolverProc][rc[self]][(rg[self] + 1)] = IF Bug = "MemoOverwrite" THEN {rold} ELSE pending[ResolverProc][rc[self]][(rg[self] + 1)] \cup {rold}]
+                           /\ rold' = 0
+                           /\ pc' = [pc EXCEPT ![self] = "RRelease"]
+                      ELSE /\ rold' = 0
+                           /\ pc' = [pc EXCEPT ![self] = "RClaim"]
+                           /\ UNCHANGED pending
+                /\ UNCHANGED << marker, heldSet, result, toolFail, lateMarker, 
+                                lateResult, fl, waiters, jres, cid, oldId, 
+                                lease, rids, rcid, crashes, cancels, evictions, 
+                                fired, firedAt, lost, evicted, g, gg, reply, 
+                                outcome, won, reused, rc, rg, rclaimed >>
 
-resolver(self) == RCheck(self) \/ RClaim(self) \/ RWrite(self)
+RInsert(self) == /\ pc[self] = "RInsert"
+                 /\ Free # {}
+                 /\ LET i == MinFree IN
+                      /\ rcid' = i
+                      /\ rids' = (rids \cup {i})
+                      /\ \/ /\ rreply' = [rreply EXCEPT ![self] = "ok"]
+                            /\ ambig' = ambig
+                         \/ /\ ambig < MaxAmbig
+                            /\ ambig' = ambig + 1
+                            /\ rreply' = [rreply EXCEPT ![self] = "err_nc"]
+                         \/ /\ ambig < MaxAmbig
+                            /\ ambig' = ambig + 1
+                            /\ rreply' = [rreply EXCEPT ![self] = "err_c"]
+                         \/ /\ LateCommit /\ ambig < MaxAmbig
+                            /\ ambig' = ambig + 1
+                            /\ rreply' = [rreply EXCEPT ![self] = "err_late"]
+                      /\ IF rreply'[self] \in {"ok", "err_c"}
+                            THEN /\ IF marker[rc[self]][(rg[self] + 1)] = 0
+                                       THEN /\ marker' = [marker EXCEPT ![rc[self]][(rg[self] + 1)] = i]
+                                       ELSE /\ TRUE
+                                            /\ UNCHANGED marker
+                                 /\ UNCHANGED lateMarker
+                            ELSE /\ IF rreply'[self] = "err_late"
+                                       THEN /\ lateMarker' = (lateMarker \cup {<<rc[self], (rg[self] + 1), i>>})
+                                       ELSE /\ TRUE
+                                            /\ UNCHANGED lateMarker
+                                 /\ UNCHANGED marker
+                      /\ IF rreply'[self] # "ok"
+                            THEN /\ pc' = [pc EXCEPT ![self] = "RClaimNS"]
+                                 /\ UNCHANGED rclaimed
+                            ELSE /\ IF marker'[rc[self]][rg[self] + 1] \notin {0, i}
+                                       THEN /\ pc' = [pc EXCEPT ![self] = "RRelease"]
+                                            /\ UNCHANGED rclaimed
+                                       ELSE /\ rclaimed' = [rclaimed EXCEPT ![self] = TRUE]
+                                            /\ pc' = [pc EXCEPT ![self] = "RWrite"]
+                 /\ UNCHANGED << nsSet, heldSet, result, toolFail, lateNS, 
+                                 lateResult, pending, fl, waiters, jres, cid, 
+                                 oldId, lease, rold, crashes, cancels, 
+                                 evictions, fired, firedAt, lost, evicted, g, 
+                                 gg, reply, outcome, won, reused, rc, rg >>
+
+RClaimNS(self) == /\ pc[self] = "RClaimNS"
+                  /\ \/ /\ rreply' = [rreply EXCEPT ![self] = "ok"]
+                        /\ ambig' = ambig
+                     \/ /\ ambig < MaxAmbig
+                        /\ ambig' = ambig + 1
+                        /\ rreply' = [rreply EXCEPT ![self] = "err_nc"]
+                     \/ /\ ambig < MaxAmbig
+                        /\ ambig' = ambig + 1
+                        /\ rreply' = [rreply EXCEPT ![self] = "err_c"]
+                     \/ /\ LateCommit /\ ambig < MaxAmbig
+                        /\ ambig' = ambig + 1
+                        /\ rreply' = [rreply EXCEPT ![self] = "err_late"]
+                  /\ IF rreply'[self] \in {"ok", "err_c"}
+                        THEN /\ IF ~NSTaken(rc[self], (rg[self] + 1), rcid)
+                                   THEN /\ nsSet' = (nsSet \cup {<<rc[self], (rg[self] + 1), rcid>>})
+                                   ELSE /\ TRUE
+                                        /\ nsSet' = nsSet
+                             /\ UNCHANGED lateNS
+                        ELSE /\ IF rreply'[self] = "err_late"
+                                   THEN /\ lateNS' = (lateNS \cup {<<rc[self], (rg[self] + 1), rcid>>})
+                                   ELSE /\ TRUE
+                                        /\ UNCHANGED lateNS
+                             /\ nsSet' = nsSet
+                  /\ IF rreply'[self] # "ok" /\ ResolverProc # "none"
+                        THEN /\ pending' = [pending EXCEPT ![ResolverProc][rc[self]][(rg[self] + 1)] = IF Bug = "MemoOverwrite" THEN {rcid} ELSE pending[ResolverProc][rc[self]][(rg[self] + 1)] \cup {rcid}]
+                        ELSE /\ TRUE
+                             /\ UNCHANGED pending
+                  /\ pc' = [pc EXCEPT ![self] = "RRelease"]
+                  /\ UNCHANGED << marker, heldSet, result, toolFail, 
+                                  lateMarker, lateResult, fl, waiters, jres, 
+                                  cid, oldId, lease, rids, rcid, rold, crashes, 
+                                  cancels, evictions, fired, firedAt, lost, 
+                                  evicted, g, gg, reply, outcome, won, reused, 
+                                  rc, rg, rclaimed >>
+
+RWrite(self) == /\ pc[self] = "RWrite"
+                /\ IF ResolverProc # "none" /\ fl[ResolverProc][rc[self]] # None
+                      THEN /\ waiters' = [waiters EXCEPT ![ResolverProc][rc[self]] = waiters[ResolverProc][rc[self]] \cup {self}]
+                           /\ pc' = [pc EXCEPT ![self] = "RWait"]
+                           /\ fl' = fl
+                      ELSE /\ IF ResolverProc # "none"
+                                 THEN /\ fl' = [fl EXCEPT ![ResolverProc][rc[self]] = self]
+                                 ELSE /\ TRUE
+                                      /\ fl' = fl
+                           /\ pc' = [pc EXCEPT ![self] = "RRecord"]
+                           /\ UNCHANGED waiters
+                /\ UNCHANGED << marker, nsSet, heldSet, result, toolFail, 
+                                lateMarker, lateNS, lateResult, pending, jres, 
+                                cid, oldId, lease, rids, rcid, rold, ambig, 
+                                crashes, cancels, evictions, fired, firedAt, 
+                                lost, evicted, g, gg, reply, outcome, won, 
+                                reused, rc, rg, rreply, rclaimed >>
+
+RRecord(self) == /\ pc[self] = "RRecord"
+                 /\ \/ /\ rreply' = [rreply EXCEPT ![self] = "ok"]
+                       /\ ambig' = ambig
+                    \/ /\ ambig < MaxAmbig
+                       /\ ambig' = ambig + 1
+                       /\ rreply' = [rreply EXCEPT ![self] = "err_nc"]
+                    \/ /\ ambig < MaxAmbig
+                       /\ ambig' = ambig + 1
+                       /\ rreply' = [rreply EXCEPT ![self] = "err_c"]
+                    \/ /\ LateCommit /\ ambig < MaxAmbig
+                       /\ ambig' = ambig + 1
+                       /\ rreply' = [rreply EXCEPT ![self] = "err_late"]
+                 /\ IF rreply'[self] \in {"ok", "err_c"}
+                       THEN /\ IF result[rc[self]] = None
+                                  THEN /\ result' = [result EXCEPT ![rc[self]] = IF fired[rc[self]] > 0 THEN "res_ok" ELSE "res_err"]
+                                  ELSE /\ TRUE
+                                       /\ UNCHANGED result
+                            /\ UNCHANGED lateResult
+                       ELSE /\ IF rreply'[self] = "err_late"
+                                  THEN /\ lateResult' = (lateResult \cup {<<rc[self], (IF fired[rc[self]] > 0 THEN "res_ok" ELSE "res_err")>>})
+                                  ELSE /\ TRUE
+                                       /\ UNCHANGED lateResult
+                            /\ UNCHANGED result
+                 /\ IF ResolverProc # "none"
+                       THEN /\ fl' = [fl EXCEPT ![ResolverProc][rc[self]] = None]
+                            /\ jres' = [x \in DOMAIN jres |-> IF x \in waiters[ResolverProc][rc[self]] THEN (IF rreply'[self] = "ok" THEN "ok" ELSE "err") ELSE jres[x]]
+                            /\ waiters' = [waiters EXCEPT ![ResolverProc][rc[self]] = {}]
+                       ELSE /\ TRUE
+                            /\ UNCHANGED << fl, waiters, jres >>
+                 /\ IF rreply'[self] # "ok" /\ rclaimed[self] /\ ResolveVoidOnError
+                       THEN /\ pc' = [pc EXCEPT ![self] = "RNotStarted"]
+                       ELSE /\ pc' = [pc EXCEPT ![self] = "RRelease"]
+                 /\ UNCHANGED << marker, nsSet, heldSet, toolFail, lateMarker, 
+                                 lateNS, pending, cid, oldId, lease, rids, 
+                                 rcid, rold, crashes, cancels, evictions, 
+                                 fired, firedAt, lost, evicted, g, gg, reply, 
+                                 outcome, won, reused, rc, rg, rclaimed >>
+
+RWait(self) == /\ pc[self] = "RWait"
+               /\ jres[self] # None
+               /\ IF jres[self] # "ok" /\ rclaimed[self] /\ ResolveVoidOnError
+                     THEN /\ jres' = [jres EXCEPT ![self] = None]
+                          /\ pc' = [pc EXCEPT ![self] = "RNotStarted"]
+                     ELSE /\ jres' = [jres EXCEPT ![self] = None]
+                          /\ pc' = [pc EXCEPT ![self] = "RRelease"]
+               /\ UNCHANGED << marker, nsSet, heldSet, result, toolFail, 
+                               lateMarker, lateNS, lateResult, pending, fl, 
+                               waiters, cid, oldId, lease, rids, rcid, rold, 
+                               ambig, crashes, cancels, evictions, fired, 
+                               firedAt, lost, evicted, g, gg, reply, outcome, 
+                               won, reused, rc, rg, rreply, rclaimed >>
+
+RNotStarted(self) == /\ pc[self] = "RNotStarted"
+                     /\ \/ /\ rreply' = [rreply EXCEPT ![self] = "ok"]
+                           /\ ambig' = ambig
+                        \/ /\ ambig < MaxAmbig
+                           /\ ambig' = ambig + 1
+                           /\ rreply' = [rreply EXCEPT ![self] = "err_nc"]
+                        \/ /\ ambig < MaxAmbig
+                           /\ ambig' = ambig + 1
+                           /\ rreply' = [rreply EXCEPT ![self] = "err_c"]
+                        \/ /\ LateCommit /\ ambig < MaxAmbig
+                           /\ ambig' = ambig + 1
+                           /\ rreply' = [rreply EXCEPT ![self] = "err_late"]
+                     /\ IF rreply'[self] \in {"ok", "err_c"}
+                           THEN /\ IF ~NSTaken(rc[self], (rg[self] + 1), rcid)
+                                      THEN /\ nsSet' = (nsSet \cup {<<rc[self], (rg[self] + 1), rcid>>})
+                                      ELSE /\ TRUE
+                                           /\ nsSet' = nsSet
+                                /\ UNCHANGED lateNS
+                           ELSE /\ IF rreply'[self] = "err_late"
+                                      THEN /\ lateNS' = (lateNS \cup {<<rc[self], (rg[self] + 1), rcid>>})
+                                      ELSE /\ TRUE
+                                           /\ UNCHANGED lateNS
+                                /\ nsSet' = nsSet
+                     /\ IF rreply'[self] # "ok" /\ ResolverProc # "none"
+                           THEN /\ pending' = [pending EXCEPT ![ResolverProc][rc[self]][(rg[self] + 1)] = IF Bug = "MemoOverwrite" THEN {rcid} ELSE pending[ResolverProc][rc[self]][(rg[self] + 1)] \cup {rcid}]
+                           ELSE /\ TRUE
+                                /\ UNCHANGED pending
+                     /\ pc' = [pc EXCEPT ![self] = "RRelease"]
+                     /\ UNCHANGED << marker, heldSet, result, toolFail, 
+                                     lateMarker, lateResult, fl, waiters, jres, 
+                                     cid, oldId, lease, rids, rcid, rold, 
+                                     crashes, cancels, evictions, fired, 
+                                     firedAt, lost, evicted, g, gg, reply, 
+                                     outcome, won, reused, rc, rg, rclaimed >>
+
+RRelease(self) == /\ pc[self] = "RRelease"
+                  /\ IF lease = self
+                        THEN /\ lease' = None
+                        ELSE /\ TRUE
+                             /\ lease' = lease
+                  /\ pc' = [pc EXCEPT ![self] = "Done"]
+                  /\ UNCHANGED << marker, nsSet, heldSet, result, toolFail, 
+                                  lateMarker, lateNS, lateResult, pending, fl, 
+                                  waiters, jres, cid, oldId, rids, rcid, rold, 
+                                  ambig, crashes, cancels, evictions, fired, 
+                                  firedAt, lost, evicted, g, gg, reply, 
+                                  outcome, won, reused, rc, rg, rreply, 
+                                  rclaimed >>
+
+resolver(self) == RCheck(self) \/ RClaim(self) \/ RRetry(self)
+                     \/ RInsert(self) \/ RClaimNS(self) \/ RWrite(self)
+                     \/ RRecord(self) \/ RWait(self) \/ RNotStarted(self)
+                     \/ RRelease(self)
 
 (* Allow infinite stuttering to prevent deadlock on termination. *)
 Terminating == /\ \A self \in ProcSet: pc[self] = "Done"
@@ -1072,20 +1371,25 @@ Termination == <>(\A self \in ProcSet: pc[self] = "Done")
 \* A process dies: its drives restart from Open with empty locals, its pendingClaims and
 \* flights are gone, a lease it held lapses, and the claim ids it knew become lost.
 Crash(p) ==
-  LET ds == {d \in Drivers : ProcOf[d] = p /\ pc[d] \notin {"Start", "Done"}} IN
+  LET ds == {d \in Drivers : ProcOf[d] = p /\ pc[d] \notin {"Start", "Done"}}
+      \* A resolver running in p dies with it (one that has not started its check is not running).
+      rs == {r \in ResolverSet : ResolverProc = p /\ pc[r] \notin {"RCheck", "Done"}} IN
   /\ crashes < MaxCrash
-  /\ ds # {}
+  /\ ds \cup rs # {}
   /\ crashes' = crashes + 1
   /\ lost' = (lost \cup {cid[d] : d \in ds} \cup {oldId[d] : d \in ds}
-                   \cup UNION {pending[p][c][x] : c \in Calls, x \in Gens}) \ {0}
-  /\ pc' = [d \in DOMAIN pc |-> IF d \in ds THEN "Open" ELSE pc[d]]
+                   \cup UNION {pending[p][c][x] : c \in Calls, x \in Gens}
+                   \cup (IF rs # {} THEN {rcid, rold} ELSE {})) \ {0}
+  /\ pc' = [d \in DOMAIN pc |-> IF d \in ds THEN "Open" ELSE IF d \in rs THEN "Done" ELSE pc[d]]
   /\ cid' = [d \in Drivers |-> IF d \in ds THEN 0 ELSE cid[d]]
   /\ oldId' = [d \in Drivers |-> IF d \in ds THEN 0 ELSE oldId[d]]
-  /\ jres' = [d \in Drivers |-> IF ProcOf[d] = p THEN None ELSE jres[d]]
+  /\ jres' = [d \in DOMAIN jres |-> IF d \in ds \cup rs THEN None ELSE jres[d]]
   /\ pending' = [pending EXCEPT ![p] = [c \in Calls |-> [x \in Gens |-> {}]]]
   /\ fl' = [fl EXCEPT ![p] = [c \in Calls |-> None]]
   /\ waiters' = [waiters EXCEPT ![p] = [c \in Calls |-> {}]]
-  /\ lease' = IF lease \in ds THEN None ELSE lease
+  /\ lease' = IF lease \in ds \cup rs THEN None ELSE lease
+  /\ rcid' = IF rs # {} THEN 0 ELSE rcid
+  /\ rold' = IF rs # {} THEN 0 ELSE rold
   /\ g' = [d \in DOMAIN g |-> IF d \in ds THEN 0 ELSE g[d]]
   /\ gg' = [d \in DOMAIN gg |-> IF d \in ds THEN 0 ELSE gg[d]]
   /\ reply' = [d \in DOMAIN reply |-> IF d \in ds THEN "" ELSE reply[d]]
@@ -1093,7 +1397,8 @@ Crash(p) ==
   /\ won' = [d \in DOMAIN won |-> IF d \in ds THEN FALSE ELSE won[d]]
   /\ reused' = [d \in DOMAIN reused |-> IF d \in ds THEN FALSE ELSE reused[d]]
   /\ UNCHANGED <<marker, nsSet, heldSet, result, toolFail, lateMarker, lateNS, lateResult,
-                 ambig, cancels, fired, firedAt, rids, rc, rg, rreply>>
+                 ambig, cancels, evictions, fired, firedAt, rids, evicted, rc, rg, rreply,
+                 rclaimed>>
 
 \* Weak A3 (LateCommit): a write that returned an error commits now, if its key is still free.
 LateApply ==
@@ -1110,11 +1415,24 @@ LateApply ==
        /\ result' = IF result[w[1]] = None THEN [result EXCEPT ![w[1]] = w[2]] ELSE result
        /\ UNCHANGED <<marker, lateMarker, nsSet, lateNS>>
 
-LateVars == <<heldSet, toolFail, pending, fl, waiters, jres, cid, oldId, lease, rids, ambig,
-              crashes, cancels, fired, firedAt, lost, pc, g, gg, reply, outcome, won, reused, rc,
-              rg, rreply>>
+LateVars == <<heldSet, toolFail, pending, fl, waiters, jres, cid, oldId, lease, rids, rcid, rold,
+              ambig, crashes, cancels, evictions, fired, firedAt, lost, evicted, pc, g, gg, reply,
+              outcome, won, reused, rc, rg, rreply, rclaimed>>
 
-FullNext == Next \/ (\E p \in Procs : Crash(p)) \/ (LateApply /\ UNCHANGED LateVars)
+\* pendingClaims past maxPendingClaims drops its oldest marker keys: here, any one key's ids.
+Evict(p) ==
+  /\ evictions < MaxEvict
+  /\ \E c \in Calls, x \in Gens :
+       /\ pending[p][c][x] # {}
+       /\ evicted' = evicted \cup pending[p][c][x]
+       /\ pending' = [pending EXCEPT ![p][c][x] = {}]
+  /\ evictions' = evictions + 1
+  /\ UNCHANGED <<marker, nsSet, heldSet, result, toolFail, lateMarker, lateNS, lateResult, fl,
+                 waiters, jres, cid, oldId, lease, rids, rcid, rold, ambig, crashes, cancels,
+                 fired, firedAt, lost, pc, g, gg, reply, outcome, won, reused, rc, rg, rreply,
+                 rclaimed>>
+
+FullNext == Next \/ (\E p \in Procs : Crash(p) \/ Evict(p)) \/ (LateApply /\ UNCHANGED LateVars)
 
 \* The translation's fairness: every driver step is weakly fair; the resolver's check is not
 \* (resolution is never assumed), but once it has checked, it writes.
@@ -1160,7 +1478,7 @@ AtMostOneLive ==
 BoundNotHit ==
   \A d \in Drivers : /\ ~(pc[d] = "Claim" /\ g[d] > MaxGen)
                      /\ ~(pc[d] = "ClaimInsert" /\ ~reused[d] /\ Free = {})
-  /\ \A r \in ResolverSet : ~(pc[r] = "RClaim" /\ (rg[r] + 1 > MaxGen \/ Free = {}))
+  /\ \A r \in ResolverSet : ~(pc[r] = "RClaim" /\ rg[r] + 1 > MaxGen) /\ ~(pc[r] = "RInsert" /\ Free = {})
 
 \* A recorded result is never replaced.
 ResultStable == [][\A c \in Calls : result[c] # None => result'[c] = result[c]]_vars
@@ -1174,4 +1492,10 @@ Excused(c) == fired[c] > 0 \/ \E x \in Gens : Live(c, x) /\ marker[c][x] \in los
 
 \* Liveness: a provably unstarted effect does not halt for ever.
 Progress == \A c \in Calls : <>[](~Issued(c) \/ Recorded(c) \/ Excused(c))
+
+\* The same, also excusing a live attempt whose claim id an eviction forgot: shows that an
+\* eviction costs nothing but those halts.
+ProgressModuloEviction ==
+  \A c \in Calls : <>[](~Issued(c) \/ Recorded(c) \/ Excused(c)
+                        \/ \E x \in Gens : Live(c, x) /\ marker[c][x] \in evicted)
 =============================================================================

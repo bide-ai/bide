@@ -31,6 +31,12 @@ The hardest bugs in a durable runtime live in interleavings: two drivers, a cras
 3. **Leases and recovery:** acquire, renew, release, takeover, and a holder that stalls past its lease. Invariant: safety holds with leases failing arbitrarily, because it rests on claims.
 4. **The store contract and journal header:** prefix-closed visibility and first-writer races.
 5. **Saga rollback:** parallel siblings, sub-agents and calls that never started.
+6. **Approval and halt resolution,** an extension of model 1 and next in line: 1-of-1 and m-of-n tallies, final denials, contended and crashed halts, and resolution while a driver may be live.
+7. **Sessions:** concurrent sends, turn ordering, starting points and crashes between turns, when the session code next changes.
+8. **Flow semantics:** switch and loop replay, flow completion and per-iteration step scoping, once the fixes in #103 are merged.
+9. **The whole-tree budget:** how far concurrent sub-agents can overshoot a shared token budget (low priority).
+
+Order of work: the approval and halt-resolution extension, then the bide protocol, then the store contract, then leases and sagas with the changes that settle them, then sessions and flows, then the budget bound.
 
 Models live in the repository and run in CI. A counterexample the checker finds becomes a deterministic Go regression test.
 
