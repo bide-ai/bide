@@ -26,7 +26,7 @@ func FuzzStreamSSE(f *testing.F) {
 		"data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\" more\"}}]}\n\n",
 		"data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: {\"choices\":[],\"usage\":{\"prompt_tokens\":4,\"completion_tokens\":1}}\n\n",
 		"data: [DONE]\n", "data: {}\n\ndata: {}\n\n", "data: {\"error\":{\"message\":\"overloaded\"}}\n\n",
-		// A line longer than the scanner's initial buffer (a line over agent.MaxSSELine, 32MB, is
+		// A line longer than the scanner's initial buffer (a line over provider.MaxSSELine, 32MB, is
 		// too large for a seed; errors_test.go covers it).
 		"data: {\"choices\":[{\"delta\":{\"content\":\"" + strings.Repeat("a", 80<<10) + "\"},\"finish_reason\":\"stop\"}]}\n",
 	} {

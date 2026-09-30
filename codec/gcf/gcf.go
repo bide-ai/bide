@@ -1,4 +1,4 @@
-// Package gcf provides an agent.ToolResultCodec that encodes tool results as
+// Package gcf provides a provider.ToolResultCodec that encodes tool results as
 // GCF (Graph Compact Format) instead of JSON when they are sent to the model.
 // GCF is more token-efficient and better comprehended by frontier models than
 // JSON for structured data, so this can cut prompt tokens on tool output. It is
@@ -14,27 +14,27 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/model/provider"
 	gcfgo "github.com/blackwell-systems/gcf-go"
 )
 
 // Codec renders a tool result's JSON bytes as a GCF document.
 type Codec struct{}
 
-var _ agent.ToolResultCodec = Codec{}
+var _ provider.ToolResultCodec = Codec{}
 
 // New returns a GCF tool-result codec. Wire it into a model adapter with that
 // adapter's WithToolResultCodec option, for example:
 //
 //	openai.New(key, openai.WithToolResultCodec(gcf.New()))
-func New() agent.ToolResultCodec { return Codec{} }
+func New() provider.ToolResultCodec { return Codec{} }
 
 // EncodeToolResult encodes the canonical JSON as GCF, keeping object keys in the tool's order and
 // every number at exactly the value the tool returned. Integers are carried as int64 and other
 // numbers as float64, in GCF's canonical spelling (1e20 is written 1e+20, 1.50 as 1.5). A number
 // GCF cannot carry exactly (an integer outside int64, or a decimal such as 0.30000000000000000001
 // that no float64 equals) is an error rather than a silently different value, as is input that is
-// not exactly one valid JSON value (invalid JSON, or trailing data after the value), so the caller can fall back to JSON (agent.EncodeToolResultOr does this). Empty input
+// not exactly one valid JSON value (invalid JSON, or trailing data after the value), so the caller can fall back to JSON (provider.EncodeToolResultOr does this). Empty input
 // yields an empty string.
 func (Codec) EncodeToolResult(raw json.RawMessage) (string, error) {
 	if len(raw) == 0 {

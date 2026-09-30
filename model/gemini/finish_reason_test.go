@@ -7,23 +7,25 @@ import (
 	"github.com/bide-ai/bide/agent"
 )
 
-func reasonOf(src string) (string, error) {
-	var reason string
+// finishOf streams src and returns the Finish the adapter reports and the error Message returns.
+func finishOf(src string) (agent.Finish, error) {
+	var fin agent.Finish
 	for ev, err := range testStream(src).Events() {
 		if err != nil {
 			break
 		}
 		if f, ok := ev.(agent.Finish); ok {
-			reason = f.Reason
+			fin = f
 		}
 	}
 	_, _, err := testStream(src).Message()
-	return reason, err
+	return fin, err
 }
 
-// Gemini's finish reasons are mapped onto the neutral ones where they enter. A turn cut off at
-// the token limit is "length" even when it made a tool call, and a turn a safety or recitation
-// filter stopped is "filtered": neither is taken for a finished answer.
+// Gemini's finish reasons are mapped onto the neutral ones where they enter, and the Finish keeps
+// Gemini's own value in Raw. A turn cut off at the token limit is "length" even when it made a
+// tool call, and a turn a safety or recitation filter stopped is "filtered": neither is taken for
+// a finished answer.
 func TestStreamSSE_FinishReasonsAreMapped(t *testing.T) {
 	text := func(r string) string {
 		return "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"partial\"}]},\"finishReason\":\"" + r + "\"}]}\n\n"
@@ -32,25 +34,30 @@ func TestStreamSSE_FinishReasonsAreMapped(t *testing.T) {
 		return "data: {\"candidates\":[{\"content\":{\"parts\":[{\"functionCall\":{\"name\":\"f\",\"args\":{}}}]},\"finishReason\":\"" + r + "\"}]}\n\n"
 	}
 	for name, tc := range map[string]struct {
-		src, reason string
-		err         error
+		src    string
+		reason agent.FinishReason
+		raw    string
+		err    error
 	}{
-		"STOP":                    {text("STOP"), "stop", nil},
-		"STOP with a call":        {call("STOP"), "tool_use", nil},
-		"MAX_TOKENS":              {text("MAX_TOKENS"), "length", agent.ErrOutputTruncated},
-		"MAX_TOKENS, a call":      {call("MAX_TOKENS"), "length", agent.ErrOutputTruncated},
-		"SAFETY":                  {text("SAFETY"), "filtered", agent.ErrOutputFiltered},
-		"RECITATION":              {text("RECITATION"), "filtered", agent.ErrOutputFiltered},
-		"BLOCKLIST":               {text("BLOCKLIST"), "filtered", agent.ErrOutputFiltered},
-		"PROHIBITED_CONTENT":      {text("PROHIBITED_CONTENT"), "filtered", agent.ErrOutputFiltered},
-		"SPII":                    {text("SPII"), "filtered", agent.ErrOutputFiltered},
-		"IMAGE_SAFETY":            {text("IMAGE_SAFETY"), "filtered", agent.ErrOutputFiltered},
-		"MALFORMED_FUNCTION_CALL": {text("MALFORMED_FUNCTION_CALL"), "MALFORMED_FUNCTION_CALL", agent.ErrStreamProtocol},
-		"OTHER":                   {text("OTHER"), "OTHER", agent.ErrStreamProtocol},
+		"STOP":                    {text("STOP"), agent.FinishStop, "STOP", nil},
+		"STOP with a call":        {call("STOP"), agent.FinishToolUse, "STOP", nil},
+		"MAX_TOKENS":              {text("MAX_TOKENS"), agent.FinishLength, "MAX_TOKENS", agent.ErrOutputTruncated},
+		"MAX_TOKENS, a call":      {call("MAX_TOKENS"), agent.FinishLength, "MAX_TOKENS", agent.ErrOutputTruncated},
+		"SAFETY":                  {text("SAFETY"), agent.FinishFiltered, "SAFETY", agent.ErrOutputFiltered},
+		"RECITATION":              {text("RECITATION"), agent.FinishFiltered, "RECITATION", agent.ErrOutputFiltered},
+		"BLOCKLIST":               {text("BLOCKLIST"), agent.FinishFiltered, "BLOCKLIST", agent.ErrOutputFiltered},
+		"PROHIBITED_CONTENT":      {text("PROHIBITED_CONTENT"), agent.FinishFiltered, "PROHIBITED_CONTENT", agent.ErrOutputFiltered},
+		"SPII":                    {text("SPII"), agent.FinishFiltered, "SPII", agent.ErrOutputFiltered},
+		"IMAGE_SAFETY":            {text("IMAGE_SAFETY"), agent.FinishFiltered, "IMAGE_SAFETY", agent.ErrOutputFiltered},
+		"MALFORMED_FUNCTION_CALL": {text("MALFORMED_FUNCTION_CALL"), "MALFORMED_FUNCTION_CALL", "MALFORMED_FUNCTION_CALL", agent.ErrStreamProtocol},
+		"OTHER":                   {text("OTHER"), "OTHER", "OTHER", agent.ErrStreamProtocol},
 	} {
-		reason, err := reasonOf(tc.src)
-		if reason != tc.reason {
-			t.Errorf("%s: Finish.Reason = %q, want %q", name, reason, tc.reason)
+		f, err := finishOf(tc.src)
+		if f.Reason != tc.reason || f.Raw != tc.raw {
+			t.Errorf("%s: Finish reason %q raw %q, want %q and %q", name, f.Reason, f.Raw, tc.reason, tc.raw)
+		}
+		if f.Discarded != (agent.Usage{}) {
+			t.Errorf("%s: Finish.Discarded = %+v, want zero from a live adapter", name, f.Discarded)
 		}
 		if tc.err == nil && err != nil || tc.err != nil && !errors.Is(err, tc.err) {
 			t.Errorf("%s: err = %v, want %v", name, err, tc.err)

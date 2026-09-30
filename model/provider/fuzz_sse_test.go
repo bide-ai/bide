@@ -1,4 +1,4 @@
-package agent
+package provider
 
 import (
 	"bufio"
@@ -6,10 +6,12 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"github.com/bide-ai/bide/agent"
 )
 
 // FuzzSSEScanner: the shared SSE framing never panics, never yields a line over MaxSSELine, fails
-// only with bufio.ErrTooLong (which SSEReadError reports as ErrResponseTooLarge), and SSEPayload
+// only with bufio.ErrTooLong (which SSEReadError reports as agent.ErrResponseTooLarge), and SSEPayload
 // returns a non-empty, trimmed payload exactly for data: lines that carry one.
 func FuzzSSEScanner(f *testing.F) {
 	f.Add([]byte("event: x\ndata: {\"a\":1}\n\ndata:   \ndata:[DONE]\r\n"))
@@ -41,8 +43,8 @@ func FuzzSSEScanner(f *testing.F) {
 			if !errors.Is(err, bufio.ErrTooLong) {
 				t.Fatalf("scanner failed with %v on an in-memory body", err)
 			}
-			if re := SSEReadError("p", err); !errors.Is(re, ErrResponseTooLarge) || !errors.Is(re, ErrModel) {
-				t.Fatalf("SSEReadError(%v) = %v, want ErrResponseTooLarge", err, re)
+			if re := SSEReadError("p", err); !errors.Is(re, agent.ErrResponseTooLarge) || !errors.Is(re, agent.ErrModel) {
+				t.Fatalf("SSEReadError(%v) = %v, want agent.ErrResponseTooLarge", err, re)
 			}
 		}
 	})

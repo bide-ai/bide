@@ -24,7 +24,7 @@ func FuzzStreamSSE(f *testing.F) {
 		sse(evStart, evDelta, `{"type":"message_delta","delta":{"stop_reason":null},"usage":{"output_tokens":9}}`, `{"type":"ping"}`, evStop),
 		sse(evStart, evTextStart, `{"type":"error","error":{"type":"overloaded_error","message":"busy"}}`),
 		"data: {not json\n\n", "event: ping\n\n",
-		// A line longer than the scanner's initial buffer (a line over agent.MaxSSELine, 32MB, is
+		// A line longer than the scanner's initial buffer (a line over provider.MaxSSELine, 32MB, is
 		// too large for a seed; errors_test.go covers it).
 		sse(evStart, evTextStart, `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"`+strings.Repeat("a", 80<<10)+`"}}`, evTextStop, evDelta, evStop),
 	} {

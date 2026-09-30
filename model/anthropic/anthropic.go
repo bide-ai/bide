@@ -22,6 +22,7 @@ import (
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/model/internal/errtext"
 	"github.com/bide-ai/bide/model/internal/toolcfg"
+	"github.com/bide-ai/bide/model/provider"
 )
 
 // Model is an Anthropic Messages API adapter implementing agent.Model.
@@ -33,16 +34,19 @@ type Model struct {
 	baseURL     string
 	http        *http.Client
 	cache       bool
-	toolCodec   agent.ToolResultCodec
+	toolCodec   provider.ToolResultCodec
 }
 
-var _ agent.Model = (*Model)(nil) // port/adapter contract
+var (
+	_ agent.Model     = (*Model)(nil) // port/adapter contract
+	_ agent.Describer = (*Model)(nil)
+)
 
 type Option func(*Model)
 
 // WithMaxResponseBytes caps how many bytes of one streamed reply the adapter reads: a reply that
 // runs longer fails with agent.ErrResponseTooLarge, which middleware.Retryable does not retry.
-// The default is agent.DefaultMaxResponseBytes (32 MiB); n <= 0 keeps it. Raise it for replies
+// The default is provider.DefaultMaxResponseBytes (32 MiB); n <= 0 keeps it. Raise it for replies
 // that legitimately run longer, such as large inline images.
 func WithMaxResponseBytes(n int64) Option { return func(m *Model) { m.maxResponse = n } }
 
@@ -60,7 +64,9 @@ func WithPromptCache() Option { return func(m *Model) { m.cache = true } }
 // WithToolResultCodec encodes tool results sent to the model with c instead of
 // raw JSON (for example GCF, to cut tokens on structured output). The journal
 // keeps the JSON form; only what the model reads changes. Default is JSON.
-func WithToolResultCodec(c agent.ToolResultCodec) Option { return func(m *Model) { m.toolCodec = c } }
+func WithToolResultCodec(c provider.ToolResultCodec) Option {
+	return func(m *Model) { m.toolCodec = c }
+}
 
 // New constructs an Anthropic model adapter. apiKey is your Anthropic API key.
 func New(apiKey string, opts ...Option) *Model {
@@ -75,6 +81,12 @@ func New(apiKey string, opts ...Option) *Model {
 		o(m)
 	}
 	return m
+}
+
+// Describe reports the adapter's identity: provider "anthropic", the configured model ID, and no
+// JSON-schema response format (a request that sets one fails with agent.ErrConfig).
+func (m *Model) Describe() agent.ModelInfo {
+	return agent.ModelInfo{Provider: "anthropic", Model: m.model, ResponseFormat: false}
 }
 
 // Stream implements agent.Model.
@@ -96,10 +108,10 @@ func (m *Model) Stream(ctx context.Context, req agent.Request) (*agent.Stream, e
 		return nil, err
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, agent.ClassifyHTTPError("anthropic", resp)
+		return nil, provider.ClassifyHTTPError("anthropic", resp)
 	}
 
-	return agent.NewStreamFunc(ctx, func(send func(agent.Emit) bool) { streamSSE(agent.LimitResponse(resp.Body, m.maxResponse), send) }), nil
+	return agent.NewStreamFunc(ctx, func(send func(agent.Emit) bool) { streamSSE(provider.LimitResponse(resp.Body, m.maxResponse), send) }), nil
 }
 
 // buildRequest translates the provider-neutral request into an Anthropic Messages
@@ -166,7 +178,7 @@ func (m *Model) buildRequest(req agent.Request) ([]byte, error) {
 				}
 				blocks = append(blocks, block{"type": "tool_use", "id": v.ID, "name": v.Name, "input": input})
 			case agent.ToolResult:
-				blocks = append(blocks, block{"type": "tool_result", "tool_use_id": v.ToolUseID, "content": agent.EncodeToolResultOr(m.toolCodec, v.Result), "is_error": v.IsError})
+				blocks = append(blocks, block{"type": "tool_result", "tool_use_id": v.ToolUseID, "content": provider.EncodeToolResultOr(m.toolCodec, v.Result), "is_error": v.IsError})
 			case agent.Image:
 				// URL source when URL is set; otherwise a base64 source from the raw bytes.
 				var source map[string]any
@@ -301,9 +313,11 @@ type sseEvent struct {
 // finishReason maps an Anthropic stop_reason onto the neutral finish reasons (see agent.Finish).
 // A reason it does not know (pause_turn, which asks for the turn to be continued, or one added
 // later) is passed through unchanged, and the core refuses it rather than take the turn as done.
-func finishReason(stop string) string {
+// A message_delta that names no stop_reason is a natural stop, as the core has always read it; the
+// reason is never empty, and the Finish keeps the provider's own value in Raw.
+func finishReason(stop string) agent.FinishReason {
 	switch stop {
-	case "end_turn", "stop_sequence":
+	case "", "end_turn", "stop_sequence":
 		return agent.FinishStop
 	case "tool_use":
 		return agent.FinishToolUse
@@ -312,7 +326,7 @@ func finishReason(stop string) string {
 	case "refusal":
 		return agent.FinishFiltered
 	default:
-		return stop
+		return agent.FinishReason(stop)
 	}
 }
 
@@ -354,14 +368,14 @@ var handledBlock = map[string]bool{"text": true, "tool_use": true, "thinking": t
 func streamSSE(body io.ReadCloser, send func(agent.Emit) bool) {
 	defer body.Close()
 
-	sc := agent.NewSSEScanner(body)
+	sc := provider.NewSSEScanner(body)
 
 	var in, out, cacheRead, cacheWrite int
 	var reason string
 	var delta bool             // a message_delta has arrived: the content is complete
 	blocks := map[int]*block{} // the content blocks started so far, by index
 	for sc.Scan() {
-		data, ok := agent.SSEPayload(sc.Text())
+		data, ok := provider.SSEPayload(sc.Text())
 		if !ok {
 			continue // ignore `event:` lines and blank separators; dispatch on the JSON's type
 		}
@@ -461,16 +475,16 @@ func streamSSE(body io.ReadCloser, send func(agent.Emit) bool) {
 				send(agent.Emit{Err: fmt.Errorf("anthropic: message_stop before message_delta: %w", agent.ErrStreamProtocol)})
 				return
 			}
-			send(agent.Emit{Event: agent.Finish{Reason: finishReason(reason), Usage: agent.Usage{
+			send(agent.Emit{Event: agent.Finish{Reason: finishReason(reason), Raw: reason, Usage: agent.Usage{
 				InputTokens: in, OutputTokens: out, CacheReadTokens: cacheRead, CacheWriteTokens: cacheWrite,
 			}}})
 			return
 		case "error":
-			send(agent.Emit{Err: agent.ClassifyStreamError("anthropic", []byte(data))})
+			send(agent.Emit{Err: provider.ClassifyStreamError("anthropic", []byte(data))})
 			return
 		}
 	}
 	if err := sc.Err(); err != nil {
-		send(agent.Emit{Err: agent.SSEReadError("anthropic", err)})
+		send(agent.Emit{Err: provider.SSEReadError("anthropic", err)})
 	}
 }

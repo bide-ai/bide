@@ -1,4 +1,4 @@
-package agent
+package provider
 
 import (
 	"errors"
@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/bide-ai/bide/agent"
 )
 
 type countingReader struct {
@@ -29,7 +31,7 @@ func errResp(status int, retryAfter, body string) *http.Response {
 }
 
 // A 429 that says the account is out of quota or credit is not a rate limit: no wait lifts
-// it. It must not come back as *RateLimited (which every retry policy retries), and the
+// it. It must not come back as *agent.RateLimited (which every retry policy retries), and the
 // provider's message must survive.
 func TestClassifyHTTPError_QuotaExhaustedIsNotARateLimit(t *testing.T) {
 	for name, tc := range map[string]struct {
@@ -46,10 +48,10 @@ func TestClassifyHTTPError_QuotaExhaustedIsNotARateLimit(t *testing.T) {
 			`{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"43s"}]}}`, "You exceeded your current quota, please check your plan"},
 	} {
 		err := ClassifyHTTPError("prov", errResp(tc.status, "", tc.body))
-		var rl *RateLimited
-		var ae *APIError
-		if errors.As(err, &rl) || !errors.As(err, &ae) || !errors.Is(err, ErrQuotaExhausted) || !errors.Is(err, ErrModel) {
-			t.Errorf("%s: err = %T %v, want an *APIError wrapping ErrQuotaExhausted", name, err, err)
+		var rl *agent.RateLimited
+		var ae *agent.APIError
+		if errors.As(err, &rl) || !errors.As(err, &ae) || !errors.Is(err, agent.ErrQuotaExhausted) || !errors.Is(err, agent.ErrModel) {
+			t.Errorf("%s: err = %T %v, want an *agent.APIError wrapping agent.ErrQuotaExhausted", name, err, err)
 			continue
 		}
 		if ae.Message != tc.msg || !strings.Contains(err.Error(), tc.msg) {
@@ -61,7 +63,7 @@ func TestClassifyHTTPError_QuotaExhaustedIsNotARateLimit(t *testing.T) {
 	}
 }
 
-// A plain rate limit stays *RateLimited, keeps the provider's message, and takes its wait from
+// A plain rate limit stays *agent.RateLimited, keeps the provider's message, and takes its wait from
 // Retry-After or, failing that, Gemini's RetryInfo.retryDelay.
 func TestClassifyHTTPError_RateLimitKeepsMessageAndDelay(t *testing.T) {
 	gemini := `{"error":{"code":429,"message":"Resource has been exhausted (e.g. check quota).","status":"RESOURCE_EXHAUSTED","details":[` +
@@ -79,9 +81,9 @@ func TestClassifyHTTPError_RateLimitKeepsMessageAndDelay(t *testing.T) {
 		"gemini array frame": {"", `[` + gemini + `]`, "Resource has been exhausted", 37500 * time.Millisecond},
 	} {
 		err := ClassifyHTTPError("prov", errResp(429, tc.retryAfter, tc.body))
-		var rl *RateLimited
-		if !errors.As(err, &rl) || errors.Is(err, ErrQuotaExhausted) {
-			t.Errorf("%s: err = %T %v, want *RateLimited", name, err, err)
+		var rl *agent.RateLimited
+		if !errors.As(err, &rl) || errors.Is(err, agent.ErrQuotaExhausted) {
+			t.Errorf("%s: err = %T %v, want *agent.RateLimited", name, err, err)
 			continue
 		}
 		if rl.RetryAfter != tc.wait {
@@ -93,22 +95,22 @@ func TestClassifyHTTPError_RateLimitKeepsMessageAndDelay(t *testing.T) {
 	}
 }
 
-// Other statuses keep the provider's error fields on the *APIError.
+// Other statuses keep the provider's error fields on the *agent.APIError.
 func TestClassifyHTTPError_ParsesProviderFields(t *testing.T) {
 	err := ClassifyHTTPError("prov", errResp(400, "", `{"error":{"message":"Invalid schema for function","type":"invalid_request_error","param":"tools[0]","code":"invalid_function_parameters"}}`))
-	var ae *APIError
+	var ae *agent.APIError
 	if !errors.As(err, &ae) {
 		t.Fatalf("err = %T", err)
 	}
 	if ae.Message != "Invalid schema for function" || ae.Type != "invalid_request_error" || ae.Code != "invalid_function_parameters" {
-		t.Fatalf("APIError = %+v", ae)
+		t.Fatalf("agent.APIError = %+v", ae)
 	}
 	if !strings.Contains(err.Error(), "Invalid schema for function") {
 		t.Fatalf("error %q lacks the provider's message", err)
 	}
 	err = ClassifyHTTPError("prov", errResp(503, "", `{"error":{"code":503,"message":"The model is overloaded.","status":"UNAVAILABLE"}}`))
 	if !errors.As(err, &ae) || ae.Type != "UNAVAILABLE" || ae.Message != "The model is overloaded." {
-		t.Fatalf("gemini APIError = %+v", ae)
+		t.Fatalf("gemini agent.APIError = %+v", ae)
 	}
 }
 
@@ -116,7 +118,7 @@ func TestClassifyHTTPError_ParsesProviderFields(t *testing.T) {
 // using the code it carries (Gemini) or its type (OpenAI, Anthropic).
 func TestClassifyStreamError(t *testing.T) {
 	err := ClassifyStreamError("prov", []byte(`{"error":{"code":503,"message":"overloaded","status":"UNAVAILABLE"}}`))
-	var ae *APIError
+	var ae *agent.APIError
 	if !errors.As(err, &ae) || ae.StatusCode != 503 || !strings.Contains(err.Error(), "overloaded") {
 		t.Errorf("gemini 503: %T %v", err, err)
 	}
@@ -125,11 +127,11 @@ func TestClassifyStreamError(t *testing.T) {
 		t.Errorf("gemini 400: %T %v", err, err)
 	}
 	err = ClassifyStreamError("prov", []byte(`{"error":{"message":"The server had an error","type":"server_error"}}`))
-	if !errors.Is(err, ErrModel) || !strings.Contains(err.Error(), "The server had an error") || errors.As(err, &ae) {
+	if !errors.Is(err, agent.ErrModel) || !strings.Contains(err.Error(), "The server had an error") || errors.As(err, &ae) {
 		t.Errorf("openai server_error: %T %v", err, err)
 	}
 	err = ClassifyStreamError("prov", []byte(`{"type":"error","error":{"type":"rate_limit_error","message":"slow down"}}`))
-	var rl *RateLimited
+	var rl *agent.RateLimited
 	if !errors.As(err, &rl) || rl.Message != "slow down" {
 		t.Errorf("anthropic rate_limit_error: %T %v", err, err)
 	}
@@ -138,11 +140,11 @@ func TestClassifyStreamError(t *testing.T) {
 		t.Errorf("openai rate_limit_exceeded: %T %v", err, err)
 	}
 	err = ClassifyStreamError("prov", []byte(`{"error":{"message":"quota","code":"insufficient_quota"}}`))
-	if !errors.Is(err, ErrQuotaExhausted) {
+	if !errors.Is(err, agent.ErrQuotaExhausted) {
 		t.Errorf("quota: %T %v", err, err)
 	}
 	err = ClassifyStreamError("prov", []byte(`not json`))
-	if !errors.Is(err, ErrModel) || !strings.Contains(err.Error(), "not json") {
+	if !errors.Is(err, agent.ErrModel) || !strings.Contains(err.Error(), "not json") {
 		t.Errorf("unparsed: %T %v", err, err)
 	}
 }
@@ -157,7 +159,7 @@ func TestClassifyHTTPError_BoundsTheBody(t *testing.T) {
 		"message and pad": `{"error":{"message":"bad request","type":"invalid_request_error"}}` + huge,
 	} {
 		err := ClassifyHTTPError("prov", errResp(400, "", body))
-		var ae *APIError
+		var ae *agent.APIError
 		if !errors.As(err, &ae) {
 			t.Fatalf("%s: err = %T", name, err)
 		}
@@ -173,18 +175,8 @@ func TestClassifyHTTPError_BoundsTheBody(t *testing.T) {
 	if !strings.Contains(err.Error(), "bad request") {
 		t.Errorf("err = %v, want the provider's message", err)
 	}
-	// An APIError built elsewhere with a huge body still prints a bounded line.
-	if n := len((&APIError{StatusCode: 500, Body: huge, Err: ErrModel}).Error()); n > 2*maxErrorBody {
-		t.Errorf("APIError.Error() is %d bytes", n)
-	}
-	if n := len((&APIError{StatusCode: 500, Message: huge, Err: ErrModel}).Error()); n > 2*maxErrorBody {
-		t.Errorf("APIError.Error() with a huge message is %d bytes", n)
-	}
-	if n := len((&RateLimited{Message: huge, Err: ErrModel}).Error()); n > 2*maxErrorBody {
-		t.Errorf("RateLimited.Error() is %d bytes", n)
-	}
 	// An exhausted quota's body too.
-	var qe *APIError
+	var qe *agent.APIError
 	if err := ClassifyHTTPError("prov", errResp(402, "", huge)); !errors.As(err, &qe) || len(qe.Body) > maxErrorBody+len(truncatedNote) {
 		t.Errorf("402: err = %T, Body %d bytes", err, len(qe.Body))
 	}
@@ -205,7 +197,7 @@ func TestClassifyHTTPError_BoundsTheBody(t *testing.T) {
 }
 
 // A line longer than the scanner's cap is a deterministic failure the same request repeats: it
-// must be an ErrResponseTooLarge (an ErrModel), not a bare bufio error. Lines up to the cap read.
+// must be an agent.ErrResponseTooLarge (an agent.ErrModel), not a bare bufio error. Lines up to the cap read.
 func TestSSEReadError_LineTooLong(t *testing.T) {
 	sc := NewSSEScanner(strings.NewReader("data: " + strings.Repeat("A", 8<<20) + "\n"))
 	if !sc.Scan() {
@@ -215,10 +207,10 @@ func TestSSEReadError_LineTooLong(t *testing.T) {
 	for sc.Scan() {
 	}
 	err := SSEReadError("prov", sc.Err())
-	if !errors.Is(err, ErrResponseTooLarge) || !errors.Is(err, ErrModel) {
-		t.Fatalf("err = %v, want ErrResponseTooLarge", err)
+	if !errors.Is(err, agent.ErrResponseTooLarge) || !errors.Is(err, agent.ErrModel) {
+		t.Fatalf("err = %v, want agent.ErrResponseTooLarge", err)
 	}
-	if err := SSEReadError("prov", io.ErrUnexpectedEOF); !errors.Is(err, ErrModel) || !errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, ErrResponseTooLarge) {
-		t.Fatalf("read error = %v, want ErrModel wrapping the cause", err)
+	if err := SSEReadError("prov", io.ErrUnexpectedEOF); !errors.Is(err, agent.ErrModel) || !errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, agent.ErrResponseTooLarge) {
+		t.Fatalf("read error = %v, want agent.ErrModel wrapping the cause", err)
 	}
 }

@@ -7,45 +7,62 @@ import (
 	"github.com/bide-ai/bide/agent"
 )
 
-// reasonOf streams a text turn ending in stop_reason and returns the Finish reason the adapter
-// reports and the error Message returns.
-func reasonOf(t *testing.T, stopReason string) (string, error) {
+// finishOf streams a text turn whose message_delta carries delta and returns the Finish the
+// adapter reports and the error Message returns.
+func finishOf(t *testing.T, delta string) (agent.Finish, error) {
 	t.Helper()
 	src := sse(evStart, evTextStart, evText, evTextStop,
-		`{"type":"message_delta","delta":{"stop_reason":"`+stopReason+`"},"usage":{"output_tokens":7}}`, evStop)
-	var reason string
+		`{"type":"message_delta","delta":`+delta+`,"usage":{"output_tokens":7}}`, evStop)
+	var fin agent.Finish
 	for ev, err := range testStream(src).Events() {
 		if err != nil {
 			break
 		}
 		if f, ok := ev.(agent.Finish); ok {
-			reason = f.Reason
+			fin = f
 		}
 	}
 	_, _, err := testStream(src).Message()
-	return reason, err
+	return fin, err
+}
+
+// reasonOf is finishOf for a message_delta naming stopReason, returning the neutral reason.
+func reasonOf(t *testing.T, stopReason string) (agent.FinishReason, error) {
+	t.Helper()
+	f, err := finishOf(t, `{"stop_reason":"`+stopReason+`"}`)
+	return f.Reason, err
 }
 
 // Anthropic's stop reasons are mapped onto the neutral ones where they enter, so a cut-off or
-// refused turn is never taken for a finished answer.
+// refused turn is never taken for a finished answer, and the Finish keeps the provider's own value
+// in Raw. The reason is never empty: a message_delta naming no stop_reason is a natural stop.
 func TestStreamSSE_StopReasonsAreMapped(t *testing.T) {
-	for stop, want := range map[string]struct {
-		reason string
+	for name, want := range map[string]struct {
+		delta  string
+		reason agent.FinishReason
+		raw    string
 		err    error
 	}{
-		"end_turn":                      {"stop", nil},
-		"stop_sequence":                 {"stop", nil},
-		"max_tokens":                    {"length", agent.ErrOutputTruncated},
-		"model_context_window_exceeded": {"length", agent.ErrOutputTruncated},
-		"refusal":                       {"filtered", agent.ErrOutputFiltered},
-		"pause_turn":                    {"pause_turn", agent.ErrStreamProtocol},
+		"end_turn":                      {`{"stop_reason":"end_turn"}`, agent.FinishStop, "end_turn", nil},
+		"stop_sequence":                 {`{"stop_reason":"stop_sequence"}`, agent.FinishStop, "stop_sequence", nil},
+		"tool_use":                      {`{"stop_reason":"tool_use"}`, agent.FinishToolUse, "tool_use", agent.ErrStreamProtocol}, // no call arrived
+		"max_tokens":                    {`{"stop_reason":"max_tokens"}`, agent.FinishLength, "max_tokens", agent.ErrOutputTruncated},
+		"model_context_window_exceeded": {`{"stop_reason":"model_context_window_exceeded"}`, agent.FinishLength, "model_context_window_exceeded", agent.ErrOutputTruncated},
+		"refusal":                       {`{"stop_reason":"refusal"}`, agent.FinishFiltered, "refusal", agent.ErrOutputFiltered},
+		"pause_turn":                    {`{"stop_reason":"pause_turn"}`, "pause_turn", "pause_turn", agent.ErrStreamProtocol},
+		"empty stop_reason":             {`{"stop_reason":""}`, agent.FinishStop, "", nil},
+		"null stop_reason":              {`{"stop_reason":null}`, agent.FinishStop, "", nil},
+		"no stop_reason":                {`{}`, agent.FinishStop, "", nil},
 	} {
-		reason, err := reasonOf(t, stop)
-		if reason != want.reason {
-			t.Errorf("%s: Finish.Reason = %q, want %q", stop, reason, want.reason)
+		f, err := finishOf(t, want.delta)
+		if f.Reason != want.reason || f.Raw != want.raw {
+			t.Errorf("%s: Finish reason %q raw %q, want %q and %q", name, f.Reason, f.Raw, want.reason, want.raw)
+		}
+		if f.Discarded != (agent.Usage{}) {
+			t.Errorf("%s: Finish.Discarded = %+v, want zero from a live adapter", name, f.Discarded)
 		}
 		if want.err == nil && err != nil || want.err != nil && !errors.Is(err, want.err) {
-			t.Errorf("%s: err = %v, want %v", stop, err, want.err)
+			t.Errorf("%s: err = %v, want %v", name, err, want.err)
 		}
 	}
 }

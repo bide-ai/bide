@@ -17,6 +17,47 @@ type Model interface {
 	Stream(ctx context.Context, req Request) (*Stream, error)
 }
 
+// Describer is implemented by a Model that can say what it is. It is optional: the agent never
+// requires it, and ModelInfoOf reports false for a Model that does not implement it.
+type Describer interface {
+	Describe() ModelInfo
+}
+
+// ModelInfo identifies a Model. Provider names the API it calls ("anthropic", "openai",
+// "gemini"), Model is the provider's model ID the requests name, and ResponseFormat reports
+// whether the Model honours Request.ResponseFormat (a Model that does not fails a request that
+// sets it, rather than drop the constraint).
+type ModelInfo struct {
+	Provider       string
+	Model          string
+	ResponseFormat bool
+}
+
+// maxUnwrap bounds the Unwrap chain ModelInfoOf follows, so a wrapper that returns itself (or
+// any cycle) ends the walk instead of hanging it.
+const maxUnwrap = 64
+
+// ModelInfoOf describes m. It returns m's own Describe when m implements Describer, and
+// otherwise follows an Unwrap() Model method, as a wrapping Model (middleware, a test double)
+// offers, to the first Model in the chain that does. It reports false when no Model in the chain
+// describes itself, when the chain ends in nil, or when it is longer than 64 links.
+func ModelInfoOf(m Model) (ModelInfo, bool) {
+	for range maxUnwrap {
+		if m == nil {
+			return ModelInfo{}, false
+		}
+		if d, ok := m.(Describer); ok {
+			return d.Describe(), true
+		}
+		u, ok := m.(interface{ Unwrap() Model })
+		if !ok {
+			return ModelInfo{}, false
+		}
+		m = u.Unwrap()
+	}
+	return ModelInfo{}, false
+}
+
 // Request is a single model call.
 type Request struct {
 	Messages       []Message
@@ -133,8 +174,11 @@ type ToolCallDelta struct {
 func (ToolCallDelta) event() {}
 
 // Finish ends a model turn. Reason says why the turn ended, in the neutral vocabulary below; an
-// adapter maps its provider's reasons onto it where they enter. A Model that does not know the
-// reason leaves it empty, which counts as a natural stop.
+// adapter maps its provider's reasons onto it where they enter, and keeps the provider's own value
+// in Raw. A first-party adapter always sets Reason: a provider reason it does not know is passed
+// through unchanged (Reason is then Raw), and a turn the provider ended without naming a reason is
+// FinishStop with an empty Raw. A Model that does not know the reason may leave Reason empty,
+// which counts as a natural stop.
 //
 // The reason decides whether the turn is the model's answer. Stream.Message (and so every agent
 // run) returns ErrOutputTruncated for FinishLength and ErrOutputFiltered for FinishFiltered rather
@@ -145,17 +189,28 @@ func (ToolCallDelta) event() {}
 // The reason never decides whether tools run: the calls the turn carries do. A turn with calls
 // runs them whatever its reason says (OpenAI reports stop under a forced tool_choice), and a
 // FinishToolUse turn with no call is ErrStreamProtocol, since the calls it was for were lost.
+//
+// Usage is what the turn's own response cost. Discarded is usage billed for responses the turn
+// threw away (failed attempts a middleware retried, losing hedge targets); a live adapter leaves
+// it zero, and a Model that replays a recorded turn reports the discarded spend it recorded there.
 type Finish struct {
-	Reason string
-	Usage  Usage
+	Reason    FinishReason
+	Raw       string // the provider's own finish reason, as it sent it ("end_turn", "STOP"); empty if it sent none
+	Usage     Usage
+	Discarded Usage
 }
+
+// FinishReason is why a model turn ended, in a neutral vocabulary every adapter maps its
+// provider's reasons onto (see Finish). The set is closed: the core accepts only the constants
+// below and the empty reason.
+type FinishReason string
 
 // The neutral finish reasons (see Finish).
 const (
-	FinishStop     = "stop"     // the model ended its answer (end of turn, a stop sequence)
-	FinishToolUse  = "tool_use" // the model ended its turn to call tools
-	FinishLength   = "length"   // the output hit its token limit (or the context window) and was cut off
-	FinishFiltered = "filtered" // a safety or content filter, or a refusal, stopped the output
+	FinishStop     FinishReason = "stop"     // the model ended its answer (end of turn, a stop sequence)
+	FinishToolUse  FinishReason = "tool_use" // the model ended its turn to call tools
+	FinishLength   FinishReason = "length"   // the output hit its token limit (or the context window) and was cut off
+	FinishFiltered FinishReason = "filtered" // a safety or content filter, or a refusal, stopped the output
 )
 
 func (Finish) event() {}
@@ -309,8 +364,8 @@ type msgBuilder struct {
 	calls        map[int]*ToolUse
 	order        []int
 	usage        Usage
-	reason       string // the Finish reason
-	err          error  // the first fragment that broke the stream's framing
+	reason       FinishReason // the Finish reason
+	err          error        // the first fragment that broke the stream's framing
 }
 
 func (b *msgBuilder) add(ev Event) {
@@ -415,7 +470,31 @@ func (b *msgBuilder) finalize() (Message, error) {
 	case FinishFiltered:
 		return Message{}, ErrOutputFiltered
 	default:
-		return Message{}, fmt.Errorf("finish reason %q is not one of the neutral reasons: %w", cutName(b.reason), ErrStreamProtocol)
+		return Message{}, fmt.Errorf("finish reason %q is not one of the neutral reasons: %w", cutName(string(b.reason)), ErrStreamProtocol)
 	}
 	return Message{Role: RoleAssistant, Parts: parts}, nil
+}
+
+// A provider's error text, and a model-chosen name quoted in an error, are bounded: the body or
+// message an error carries is cut to maxErrorBody bytes, and a name to maxNameEcho, each ending in
+// truncatedNote. A broken or hostile endpoint, or one that echoes the prompt back, cannot turn one
+// error into megabytes of memory and log line.
+const (
+	maxErrorBody  = 8 << 10
+	maxNameEcho   = 256
+	truncatedNote = " ...(truncated)"
+)
+
+// truncate cuts s to maxErrorBody bytes, marking the cut.
+func truncate(s string) string { return cutTo(s, maxErrorBody) }
+
+// cutName cuts a model-chosen name to maxNameEcho bytes, marking the cut.
+func cutName(s string) string { return cutTo(s, maxNameEcho) }
+
+// cutTo cuts s to n bytes, marking the cut.
+func cutTo(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + truncatedNote
 }

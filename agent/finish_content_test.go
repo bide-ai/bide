@@ -9,7 +9,7 @@ import (
 )
 
 // callStream is a model turn that calls tool name with id and ends with the given reason.
-func callStream(id, name, reason string) *Stream {
+func callStream(id, name string, reason FinishReason) *Stream {
 	ch := make(chan Emit, 2)
 	ch <- Emit{Event: ToolCallDelta{Index: 0, ID: id, Name: name, ArgsFragment: json.RawMessage(`{}`)}}
 	ch <- Emit{Event: Finish{Reason: reason}}

@@ -33,6 +33,7 @@ import (
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/model/internal/errtext"
 	"github.com/bide-ai/bide/model/internal/toolcfg"
+	"github.com/bide-ai/bide/model/provider"
 	"github.com/bide-ai/bide/schema"
 )
 
@@ -44,16 +45,19 @@ type Model struct {
 	maxTokens   int
 	baseURL     string
 	http        *http.Client
-	toolCodec   agent.ToolResultCodec
+	toolCodec   provider.ToolResultCodec
 }
 
-var _ agent.Model = (*Model)(nil) // port/adapter contract
+var (
+	_ agent.Model     = (*Model)(nil) // port/adapter contract
+	_ agent.Describer = (*Model)(nil)
+)
 
 type Option func(*Model)
 
 // WithMaxResponseBytes caps how many bytes of one streamed reply the adapter reads: a reply that
 // runs longer fails with agent.ErrResponseTooLarge, which middleware.Retryable does not retry.
-// The default is agent.DefaultMaxResponseBytes (32 MiB); n <= 0 keeps it. Raise it for replies
+// The default is provider.DefaultMaxResponseBytes (32 MiB); n <= 0 keeps it. Raise it for replies
 // that legitimately run longer, such as large inline images.
 func WithMaxResponseBytes(n int64) Option { return func(m *Model) { m.maxResponse = n } }
 
@@ -67,7 +71,9 @@ func WithHTTPClient(c *http.Client) Option { return func(m *Model) { m.http = c 
 // keeps the JSON form; only what the model reads changes. Default is JSON.
 // Gemini normally passes a JSON tool result through as a structured response;
 // with a codec set, the encoded string is sent as {"result": <encoded>}.
-func WithToolResultCodec(c agent.ToolResultCodec) Option { return func(m *Model) { m.toolCodec = c } }
+func WithToolResultCodec(c provider.ToolResultCodec) Option {
+	return func(m *Model) { m.toolCodec = c }
+}
 
 // New constructs a Gemini model adapter. apiKey is your Google AI Studio API key. For
 // Vertex AI or a proxy, override the host with WithBaseURL (the request path
@@ -83,6 +89,12 @@ func New(apiKey string, opts ...Option) *Model {
 		o(m)
 	}
 	return m
+}
+
+// Describe reports the adapter's identity: provider "gemini", the configured model ID, and support
+// for a JSON-schema response format.
+func (m *Model) Describe() agent.ModelInfo {
+	return agent.ModelInfo{Provider: "gemini", Model: m.model, ResponseFormat: true}
 }
 
 // Stream implements agent.Model.
@@ -106,10 +118,10 @@ func (m *Model) Stream(ctx context.Context, req agent.Request) (*agent.Stream, e
 		return nil, err
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, agent.ClassifyHTTPError("gemini", resp)
+		return nil, provider.ClassifyHTTPError("gemini", resp)
 	}
 
-	return agent.NewStreamFunc(ctx, func(send func(agent.Emit) bool) { streamSSE(agent.LimitResponse(resp.Body, m.maxResponse), send) }), nil
+	return agent.NewStreamFunc(ctx, func(send func(agent.Emit) bool) { streamSSE(provider.LimitResponse(resp.Body, m.maxResponse), send) }), nil
 }
 
 // buildRequest translates the provider-neutral request into a Gemini generateContent
@@ -188,7 +200,7 @@ func (m *Model) buildRequest(req agent.Request) ([]byte, error) {
 				case m.toolCodec != nil:
 					// An explicit codec (for example GCF) renders the result to a
 					// string; Gemini requires an object, so it is wrapped.
-					response = obj{"result": agent.EncodeToolResultOr(m.toolCodec, v.Result)}
+					response = obj{"result": provider.EncodeToolResultOr(m.toolCodec, v.Result)}
 				case len(v.Result) > 0 && json.Valid(v.Result):
 					// A JSON object passes through; a bare JSON value is wrapped so response is an object.
 					if bytes.HasPrefix(bytes.TrimSpace(v.Result), []byte("{")) {
@@ -432,7 +444,7 @@ func newCallID() string {
 // safety, recitation, or blocklist filter gives is FinishFiltered. Any other reason
 // (MALFORMED_FUNCTION_CALL, OTHER, one added later) is passed through unchanged, and the core
 // refuses it rather than take the turn as done.
-func mapFinishReason(reason string, sawToolCall bool) string {
+func mapFinishReason(reason string, sawToolCall bool) agent.FinishReason {
 	switch reason {
 	case "STOP":
 		if sawToolCall {
@@ -448,7 +460,7 @@ func mapFinishReason(reason string, sawToolCall bool) string {
 		// without a reason, so this only keeps the mapping itself from ever making one an answer.
 		return "FINISH_REASON_UNSPECIFIED"
 	default:
-		return reason
+		return agent.FinishReason(reason)
 	}
 }
 
@@ -470,14 +482,14 @@ func mapFinishReason(reason string, sawToolCall bool) string {
 func streamSSE(body io.ReadCloser, send func(agent.Emit) bool) {
 	defer body.Close()
 
-	sc := agent.NewSSEScanner(body)
+	sc := provider.NewSSEScanner(body)
 
 	var in, out, cacheRead int
 	var lastReason string
 	var sawToolCall bool
 	var toolIndex int
 	for sc.Scan() {
-		data, ok := agent.SSEPayload(sc.Text())
+		data, ok := provider.SSEPayload(sc.Text())
 		if !ok {
 			continue // ignore blank separators and any non-data framing
 		}
@@ -487,7 +499,7 @@ func streamSSE(body io.ReadCloser, send func(agent.Emit) bool) {
 			return
 		}
 		if len(c.Error) > 0 && string(c.Error) != "null" {
-			send(agent.Emit{Err: agent.ClassifyStreamError("gemini", []byte(data))})
+			send(agent.Emit{Err: provider.ClassifyStreamError("gemini", []byte(data))})
 			return
 		}
 		for _, cand := range c.Candidates {
@@ -538,7 +550,7 @@ func streamSSE(body io.ReadCloser, send func(agent.Emit) bool) {
 		}
 	}
 	if err := sc.Err(); err != nil {
-		send(agent.Emit{Err: agent.SSEReadError("gemini", err)})
+		send(agent.Emit{Err: provider.SSEReadError("gemini", err)})
 		return
 	}
 	if lastReason == "" {
@@ -550,6 +562,7 @@ func streamSSE(body io.ReadCloser, send func(agent.Emit) bool) {
 	// stream's usageMetadata, mirroring how anthropic/openai signal the end of a turn.
 	send(agent.Emit{Event: agent.Finish{
 		Reason: mapFinishReason(lastReason, sawToolCall),
+		Raw:    lastReason,
 		// promptTokenCount includes the cached tokens; agent.Usage counts them once, in
 		// CacheReadTokens.
 		Usage: agent.Usage{InputTokens: in - cacheRead, OutputTokens: out, CacheReadTokens: cacheRead},

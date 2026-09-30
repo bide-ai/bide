@@ -1,10 +1,10 @@
-package agent
+package provider
 
 import "encoding/json"
 
 // ToolResultCodec renders a tool result's canonical JSON bytes into the string
 // content that is sent to the model. The journal always stores the JSON form
-// (see Record.Result), so this only changes what the model reads: an adapter
+// (see agent.Record.Result), so this only changes what the model reads: an adapter
 // can hand the model a more token-efficient or better-comprehended encoding
 // (for example GCF via github.com/bide-ai/bide/codec/gcf) without touching the
 // durable record or the audit trail. Implementations must be pure and

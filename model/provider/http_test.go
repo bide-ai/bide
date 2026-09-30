@@ -1,4 +1,4 @@
-package agent
+package provider
 
 import (
 	"errors"
@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/bide-ai/bide/agent"
 )
 
 func TestParseRetryAfter(t *testing.T) {
@@ -44,27 +46,27 @@ func TestClassifyHTTPError(t *testing.T) {
 	}
 
 	err := ClassifyHTTPError("prov", mk(http.StatusTooManyRequests, "3"))
-	var rl *RateLimited
+	var rl *agent.RateLimited
 	if !errors.As(err, &rl) {
-		t.Fatalf("429 -> %T, want *RateLimited", err)
+		t.Fatalf("429 -> %T, want *agent.RateLimited", err)
 	}
 	if rl.RetryAfter != 3*time.Second {
 		t.Errorf("RetryAfter = %v, want 3s", rl.RetryAfter)
 	}
-	if !errors.Is(err, ErrModel) {
-		t.Error("RateLimited should wrap ErrModel")
+	if !errors.Is(err, agent.ErrModel) {
+		t.Error("agent.RateLimited should wrap agent.ErrModel")
 	}
 
 	err = ClassifyHTTPError("prov", mk(http.StatusInternalServerError, ""))
-	var ae *APIError
+	var ae *agent.APIError
 	if !errors.As(err, &ae) {
-		t.Fatalf("500 -> %T, want *APIError", err)
+		t.Fatalf("500 -> %T, want *agent.APIError", err)
 	}
 	if ae.StatusCode != http.StatusInternalServerError || ae.Body != "boom" {
-		t.Errorf("APIError = %+v, want status 500 body \"boom\"", ae)
+		t.Errorf("agent.APIError = %+v, want status 500 body \"boom\"", ae)
 	}
-	if !errors.Is(err, ErrModel) {
-		t.Error("APIError should wrap ErrModel")
+	if !errors.Is(err, agent.ErrModel) {
+		t.Error("agent.APIError should wrap agent.ErrModel")
 	}
 }
 

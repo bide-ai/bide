@@ -24,6 +24,8 @@ type SSEResult struct {
 //
 //   - the reader sends at most one Finish, and nothing after it (the adapter ends the turn once;
 //     agent.Stream would otherwise report agent.ErrStreamProtocol);
+//   - every Finish it sends keeps CheckFinish's properties (a first-party adapter never leaves the
+//     reason empty);
 //   - every error it sends is its last Emit;
 //   - a failed response fails with an agent.ErrModel (or agent.ErrTruncatedToolArgs, which the
 //     message assembly reports for tool arguments that are not complete JSON).
@@ -42,8 +44,9 @@ func ReadSSE(t testing.TB, streamSSE func(body io.ReadCloser, send func(agent.Em
 		if e.Err != nil && i != len(res.Emits)-1 {
 			t.Fatalf("error %v is not the last event; body %q", e.Err, body)
 		}
-		if _, ok := e.Event.(agent.Finish); ok {
+		if f, ok := e.Event.(agent.Finish); ok {
 			finished = true
+			CheckFinish(t, f)
 		}
 	}
 	ch := make(chan agent.Emit, len(res.Emits))
@@ -69,5 +72,26 @@ func CheckSSEPrefix(t testing.TB, streamSSE func(body io.ReadCloser, send func(a
 	pre := ReadSSE(t, streamSSE, body[:cut])
 	if full.Err == nil && pre.Err == nil && !reflect.DeepEqual(full.Msg, pre.Msg) {
 		t.Fatalf("the response cut at byte %d succeeded with a different message:\nwhole: %+v\ncut:   %+v\nbody %q", cut, full.Msg, pre.Msg, body)
+	}
+}
+
+// CheckFinish checks the Finish a first-party adapter sends. Its Reason is never empty: the
+// adapter maps the provider's reason onto a neutral one (agent.FinishStop, agent.FinishToolUse,
+// agent.FinishLength, agent.FinishFiltered), and a turn the provider ended without naming a
+// reason is agent.FinishStop. A reason outside that set is the provider's own value passed
+// through, so it equals Raw. Discarded is zero: a live adapter discards nothing.
+func CheckFinish(t testing.TB, f agent.Finish) {
+	t.Helper()
+	switch f.Reason {
+	case "":
+		t.Fatalf("Finish %+v has an empty Reason; a first-party adapter always names one", f)
+	case agent.FinishStop, agent.FinishToolUse, agent.FinishLength, agent.FinishFiltered:
+	default:
+		if string(f.Reason) != f.Raw {
+			t.Fatalf("Finish %+v: reason %q is not a neutral one, so it must be the provider's own value in Raw", f, f.Reason)
+		}
+	}
+	if f.Discarded != (agent.Usage{}) {
+		t.Fatalf("Finish %+v: a live adapter reports no discarded usage", f)
 	}
 }

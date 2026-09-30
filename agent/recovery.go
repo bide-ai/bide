@@ -728,9 +728,9 @@ func emitsFor(msg Message, u Usage) []Emit {
 			idx++
 		}
 	}
-	reason := "stop"
+	reason := FinishStop
 	if idx > 0 {
-		reason = "tool_use"
+		reason = FinishToolUse
 	}
 	return append(out, Emit{Event: Finish{Reason: reason, Usage: u}})
 }

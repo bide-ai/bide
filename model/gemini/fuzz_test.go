@@ -40,7 +40,7 @@ func FuzzStreamSSE(f *testing.F) {
 		// A call with no id in both the whole body and its prefix (each read makes one up).
 		"data: {\"candidates\":[{\"content\":{\"parts\":[{\"functionCall\":{\"name\":\"f\"}}]}}]}\n\ndata: {\"candidates\":[{\"finishReason\":\"STOP\"}]}\n\n",
 		"data: {\"error\":{\"code\":503,\"message\":\"busy\"}}\n\n", "data: {}\n\n", "data: [\n\n",
-		// A line longer than the scanner's initial buffer (a line over agent.MaxSSELine, 32MB, is
+		// A line longer than the scanner's initial buffer (a line over provider.MaxSSELine, 32MB, is
 		// too large for a seed; the agent package covers it).
 		"data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"" + strings.Repeat("a", 80<<10) + "\"}]},\"finishReason\":\"STOP\"}]}\n\n",
 	} {

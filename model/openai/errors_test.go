@@ -12,6 +12,7 @@ import (
 
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/middleware"
+	"github.com/bide-ai/bide/model/provider"
 )
 
 // An exhausted quota answers 429 but no wait lifts it: retrying burns attempts for nothing.
@@ -44,7 +45,7 @@ func TestStreamSSE_MidStreamErrorIsReported(t *testing.T) {
 
 // A line over the scanner's cap fails the same way on every attempt: a non-retryable ErrModel.
 func TestStreamSSE_OverlongLineIsNotRetried(t *testing.T) {
-	_, _, err := testStream("data: " + strings.Repeat("x", agent.MaxSSELine) + "\n\n").Message()
+	_, _, err := testStream("data: " + strings.Repeat("x", provider.MaxSSELine) + "\n\n").Message()
 	if !errors.Is(err, agent.ErrResponseTooLarge) || middleware.Retryable(err) {
 		t.Fatalf("err = %v, want a non-retryable ErrResponseTooLarge", err)
 	}

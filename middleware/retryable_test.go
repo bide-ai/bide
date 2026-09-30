@@ -9,10 +9,11 @@ import (
 
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/middleware"
+	"github.com/bide-ai/bide/model/provider"
 )
 
 func TestRetryable_Classifies(t *testing.T) {
-	sc := agent.NewSSEScanner(strings.NewReader("data: " + strings.Repeat("A", agent.MaxSSELine) + "\n"))
+	sc := provider.NewSSEScanner(strings.NewReader("data: " + strings.Repeat("A", provider.MaxSSELine) + "\n"))
 	for sc.Scan() {
 	}
 	for name, tc := range map[string]struct {
@@ -26,13 +27,13 @@ func TestRetryable_Classifies(t *testing.T) {
 		"timeout":             {context.DeadlineExceeded, true},
 		"cancelled":           {context.Canceled, false},
 		"network":             {io.ErrUnexpectedEOF, true},
-		"stream cut":          {agent.SSEReadError("x", io.ErrUnexpectedEOF), true},
+		"stream cut":          {provider.SSEReadError("x", io.ErrUnexpectedEOF), true},
 		"reused tool-use id":  {fmt.Errorf("x: %w", agent.ErrToolUseIDReused), true},
 		"config":              {fmt.Errorf("openai: strict schema: %w", agent.ErrConfig), false},
 		"config under model":  {fmt.Errorf("generate: %w (%w)", fmt.Errorf("x: %w", agent.ErrConfig), agent.ErrModel), false},
 		"quota exhausted 429": {&agent.APIError{StatusCode: 429, Err: fmt.Errorf("openai: %w", agent.ErrQuotaExhausted)}, false},
 		"quota exhausted 5xx": {&agent.APIError{StatusCode: 503, Err: fmt.Errorf("x: %w", agent.ErrQuotaExhausted)}, false},
-		"line too large":      {agent.SSEReadError("x", sc.Err()), false},
+		"line too large":      {provider.SSEReadError("x", sc.Err()), false},
 		"truncated tool args": {fmt.Errorf("anthropic: %w", agent.ErrTruncatedToolArgs), false},
 		"stream protocol":     {fmt.Errorf("x: %w", agent.ErrStreamProtocol), true},
 	} {
