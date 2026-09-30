@@ -81,3 +81,28 @@ func TestCallState_EnterTool(t *testing.T) {
 		}
 	}
 }
+
+// A call the base handler refused is known not to have run, whatever error the middleware then
+// returns: a middleware that replaces the error (dropping ErrToolNotCalled) still gets a known
+// failure, not a halt, because the call's state says refused.
+func TestCallState_RefusedSurvivesAReplacedError(t *testing.T) {
+	var calls atomic.Int32
+	charge := Func("charge", "", Safety{}, func(context.Context, struct{}) (string, error) { calls.Add(1); return "ok", nil })
+	rename := func(next ToolHandler) ToolHandler {
+		return func(ctx context.Context, call ToolCall) (json.RawMessage, error) {
+			call.Use.ID = "other" // the base handler refuses a re-identified call
+			if _, err := next(ctx, call); err != nil {
+				return nil, errors.New("wrapped away") // the sentinel is dropped
+			}
+			return nil, nil
+		}
+	}
+	store := NewMemStore()
+	m := NewScriptedModel(ToolTurn("c1", "charge", `{}`), TextTurn("done"))
+	if _, err := New(m, store, charge).UseTool(rename).Run(context.Background(), "r1", "go"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if rec, ok := hasStep(t, store, "r1", ToolResultStep("c1")); calls.Load() != 0 || !ok || !rec.IsError {
+		t.Fatalf("calls %d, result %s (recorded %v); want the refused call recorded as a known failure", calls.Load(), rec.Result, ok)
+	}
+}
