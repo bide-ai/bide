@@ -204,7 +204,7 @@ func (s *Session) startTurn(ctx context.Context, input string) (turnStart, error
 		}
 		n := s.starts
 		st := turnStart{Input: input, RunID: sessionTurnRunID(s.id, n), Claim: claim}
-		b, err := json.Marshal(st)
+		b, err := marshalJournal(st)
 		if err != nil {
 			return turnStart{}, fmt.Errorf("session %s: encode turn start: %w (%w)", s.id, err, ErrConfig)
 		}
@@ -307,7 +307,7 @@ func (s *Session) runTurn(ctx context.Context, runID, key, input string) (Messag
 func (s *Session) turnSeed(ctx context.Context, runID string) ([]Message, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	b, err := json.Marshal(turnFrom{Turns: s.turns, Digest: s.chain[s.turns]})
+	b, err := marshalJournal(turnFrom{Turns: s.turns, Digest: s.chain[s.turns]})
 	if err != nil {
 		return nil, fmt.Errorf("session %s: encode turn start point: %w (%w)", s.id, err, ErrConfig)
 	}
@@ -340,7 +340,7 @@ func (s *Session) turnSeed(ctx context.Context, runID string) ([]Message, error)
 // recorded twice. Every handle for one message drives the same run ID, which makes that check
 // sufficient. The caller holds s.mu.
 func (s *Session) appendTurn(ctx context.Context, rec turnRecord) error {
-	b, err := json.Marshal(rec)
+	b, err := marshalJournal(rec)
 	if err != nil {
 		return fmt.Errorf("session %s: encode turn: %w (%w)", s.id, err, ErrConfig)
 	}

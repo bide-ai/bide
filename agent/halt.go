@@ -206,7 +206,7 @@ func resolveHalt(ctx context.Context, store Durable, op string, ref HaltRef, out
 		if cfg.reconciled {
 			return fmt.Errorf("%s: evidence given both in Outcome and by WithEvidence: %w", op, ErrConfig)
 		}
-		b, err := json.Marshal(out.Evidence)
+		b, err := marshalJournal(out.Evidence)
 		if err != nil {
 			return fmt.Errorf("agent: encode resolve-halt evidence: %w (%w)", err, ErrConfig)
 		}
@@ -444,7 +444,7 @@ func WithNow(now func() time.Time) ResolveOption {
 // Outcome.Evidence does the same; giving both is ErrConfig.
 func WithEvidence(v any) ResolveOption {
 	return func(c *resolveConfig) {
-		b, err := json.Marshal(v)
+		b, err := marshalJournal(v)
 		if err != nil {
 			c.evErr = fmt.Errorf("agent: encode resolve-halt evidence: %w (%w)", err, ErrConfig)
 			return

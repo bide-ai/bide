@@ -29,7 +29,7 @@ func Enqueue[T any](ctx context.Context, d Durable, runID, channel, key string, 
 	if runID == "" {
 		return fmt.Errorf("Enqueue: empty runID: %w", ErrConfig)
 	}
-	b, err := json.Marshal(payload)
+	b, err := marshalJournal(payload)
 	if err != nil {
 		return fmt.Errorf("agent: encode channel message %q/%q: %w (%w)", channel, key, err, ErrConfig)
 	}

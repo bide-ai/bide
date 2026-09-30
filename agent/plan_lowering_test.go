@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math/big"
 	"strings"
 	"testing"
 
@@ -313,3 +314,44 @@ func TestOneJSONRule_Escaping(t *testing.T) {
 
 // ltEscape is the JSON escape json.Marshal writes for '<', built from its bytes.
 var ltEscape = string([]byte{'\\', 'u', '0', '0', '3', 'c'})
+
+// addExponent adds a small offset to an exponent's decimal text exactly, whatever its size,
+// agreeing with math/big.
+func TestAddExponent(t *testing.T) {
+	big19 := "1" + strings.Repeat("0", 18)
+	for _, e := range []string{"0", "7", "-7", "+42", "00012", "-00", big19, "-" + big19, "9999999999999999999999", "-9999999999999999999999",
+		"1000000000000000000000", "-1000000000000000000000", "0000000000000000000000012", "-0000000000000000000000012", "+000000000000000000000000123456789012345678901", "-000000000000000000000000123456789012345678901", "+" + big19 + "5", "123456789012345678901234567890", "-123456789012345678901234567890"} {
+		for _, d := range []int64{0, 1, -1, 9, -9, 10, -10, 12345, -12345, 999999999, -999999999} {
+			want, ok := new(big.Int).SetString(strings.TrimPrefix(e, "+"), 10)
+			if !ok {
+				t.Fatalf("fixture %q", e)
+			}
+			want.Add(want, big.NewInt(d))
+			if got := addExponent(e, d); got != want.String() {
+				t.Errorf("addExponent(%s, %d) = %s, want %s", e, d, got, want)
+			}
+		}
+	}
+}
+
+// Every value the engine journals is written with the journal's one encoding: no HTML escapes.
+func TestOneJSONRule_EngineValuesUnescaped(t *testing.T) {
+	ctx := context.Background()
+	m := NewMemStore()
+	const v = "a<b & c>d"
+	if err := AnswerInterrupt(ctx, m, "r", "q", v); err != nil {
+		t.Fatal(err)
+	}
+	if err := Signal(ctx, m, "r", "s", v); err != nil {
+		t.Fatal(err)
+	}
+	if err := Enqueue(ctx, m, "r", "c", "k", v); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{interruptStep("q"), signalStep("s"), chanStep("c", "k")} {
+		rec, ok, err := m.Journal().Get(ctx, "r", key)
+		if err != nil || !ok || !strings.Contains(string(rec.Result), v) {
+			t.Errorf("%s is journaled as %s (%v, %v), want %q unescaped", key, rec.Result, ok, err, v)
+		}
+	}
+}

@@ -7,26 +7,30 @@ import (
 	"time"
 )
 
-// canonicalNumber's doc: "The exponent is computed exactly whatever its size, and the cost is
-// linear in the text." Parsing and printing the exponent through math/big is quadratic in its
-// digits: 4x the digits costs about 16x the time. Linear cost would be about 4x; 8x is the bar.
+// canonicalNumber's doc: "The exponent is computed exactly whatever its size, in time linear in the
+// text." Parsing and printing the exponent through math/big was quadratic in its digits. A timing
+// ratio at these sizes (a few milliseconds) flakes, so the assertion is deterministic: bytes
+// allocated per input byte stay constant as the exponent grows 4x (math/big's quadratic
+// conversion allocated a growing multiple).
 func TestRev103d_HugeExponentIsLinear(t *testing.T) {
-	cost := func(n int) time.Duration {
+	perByte := func(n int) float64 {
 		s := "1e" + strings.Repeat("7", n)
-		best := time.Duration(1 << 62)
-		for range 3 {
-			st := time.Now()
-			if _, err := canonicalJSON(s); err != nil {
-				t.Fatal(err)
-			}
-			best = min(best, time.Since(st))
+		var m0, m1 runtime.MemStats
+		runtime.GC()
+		runtime.ReadMemStats(&m0)
+		start := time.Now()
+		if _, err := canonicalJSON(s); err != nil {
+			t.Fatal(err)
 		}
-		return best
+		d := time.Since(start)
+		runtime.ReadMemStats(&m1)
+		t.Logf("exponent of %d digits: %v", n, d)
+		return float64(m1.TotalAlloc-m0.TotalAlloc) / float64(len(s))
 	}
-	small, large := cost(250_000), cost(1_000_000)
-	t.Logf("exponent of 250k digits: %v; of 1M digits: %v (x%.1f)", small, large, float64(large)/float64(small))
-	if large > 8*small {
-		t.Fatalf("4x the exponent digits cost x%.1f the time: not linear", float64(large)/float64(small))
+	small, large := perByte(250_000), perByte(1_000_000)
+	t.Logf("bytes allocated per input byte: 250k digits: %.1f; 1M digits: %.1f", small, large)
+	if large > 2*small {
+		t.Fatalf("allocation per input byte grows with the exponent's length (%.1f -> %.1f): not linear", small, large)
 	}
 }
 

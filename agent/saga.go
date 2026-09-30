@@ -358,6 +358,6 @@ func argsFor(recs []Record, toolUseID string) (json.RawMessage, bool) {
 }
 
 func mustJSON(s string) json.RawMessage {
-	b, _ := json.Marshal(s)
+	b, _ := marshalJournal(s)
 	return b
 }
