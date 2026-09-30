@@ -129,7 +129,12 @@ func hex4(s string, i int) (rune, bool) {
 type canonicalizer struct {
 	dec     *json.Decoder
 	scalars []byte
+	depth   int // arrays and objects open around the value being read
 }
+
+// maxCanonicalDepth bounds the nesting canonicalJSON reads, as encoding/json's own decoder does:
+// deeper text is refused rather than read by a recursion as deep as the text asks.
+const maxCanonicalDepth = 10000
 
 type canonicalNode struct {
 	kind       byte // 's' a scalar, '[' an array, '{' an object
@@ -146,6 +151,12 @@ func (c *canonicalizer) value() (canonicalNode, error) {
 	}
 	switch t := tok.(type) {
 	case json.Delim:
+		if t == '{' || t == '[' {
+			if c.depth++; c.depth > maxCanonicalDepth {
+				return canonicalNode{}, fmt.Errorf("%w: exceeded max depth %d", errNotCanonical, maxCanonicalDepth)
+			}
+			defer func() { c.depth-- }()
+		}
 		switch t {
 		case '{':
 			n := canonicalNode{kind: '{'}

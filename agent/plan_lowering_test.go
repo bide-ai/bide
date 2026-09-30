@@ -355,3 +355,23 @@ func TestOneJSONRule_EngineValuesUnescaped(t *testing.T) {
 		}
 	}
 }
+
+// canonicalJSON reads at most maxCanonicalDepth levels of nesting, with or without
+// encoding/json/v2 (whose decoder has a limit of its own; the v1 decoder's Token has none), and
+// refuses deeper text without recursing into it.
+func TestCanonicalJSON_DepthLimit(t *testing.T) {
+	for _, tc := range []struct {
+		depth int
+		ok    bool
+	}{{maxCanonicalDepth, true}, {maxCanonicalDepth + 1, false}, {1_000_000, false}} {
+		for _, s := range []string{
+			strings.Repeat(`{"a":`, tc.depth) + "1" + strings.Repeat("}", tc.depth),
+			strings.Repeat(`[`, tc.depth) + "1" + strings.Repeat("]", tc.depth),
+		} {
+			_, err := canonicalJSON(s)
+			if (err == nil) != tc.ok || err != nil && !errors.Is(err, errNotCanonical) {
+				t.Errorf("depth %d (%.1s): err = %v, want ok=%v", tc.depth, s, err, tc.ok)
+			}
+		}
+	}
+}
