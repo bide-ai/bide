@@ -309,6 +309,9 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 					}
 					taken = spent
 					addUsage(&taken, discardedSpend(resp.Usage, spent)) // a supplied response's usage beyond what was metered
+					if err := stampSalt(&r); err != nil {
+						return Record{}, err
+					}
 					built, answer = &r, resp
 					return r, nil
 				})
@@ -316,7 +319,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 			// functions run (ModelCall.OnAnswer); if another driver's record holds the turn, this
 			// drive's requests were billed all the same, and their spend is late.
 			recorded := func(held Record) {
-				if sameTurnRecord(held, *built) {
+				if ownRecord(held, *built) {
 					ts.answer(ctx, answer)
 				} else {
 					meter.add(taken)

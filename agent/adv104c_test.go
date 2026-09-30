@@ -4,6 +4,9 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
+	"sync"
+	"sync/atomic"
 	"testing"
 )
 
@@ -100,6 +103,8 @@ func TestAdv104c_KeptSpendOtherJournalSameStore(t *testing.T) {
 // this process (the process that resumes it is another one, or the run is abandoned) leaves an
 // entry, holding the drive's turn state and answer closures, for the life of the process.
 func TestAdv104c_KeptSpendIsUnbounded(t *testing.T) {
+	defer func(n int) { maxPendingSpends = n }(maxPendingSpends)
+	maxPendingSpends = 16
 	st := newFaultStore()
 	j, _ := NewJournal(st)
 	const n = 50
@@ -121,8 +126,31 @@ func TestAdv104c_KeptSpendIsUnbounded(t *testing.T) {
 		}
 	}
 	pendingSpends.Unlock()
-	if kept == n {
-		t.Fatalf("%d runs kept %d pending entries with no bound or eviction", n, kept)
+	if kept > maxPendingSpends {
+		t.Fatalf("%d runs kept %d pending entries, past the bound %d", n, kept, maxPendingSpends)
+	}
+	// The oldest runs were dropped, the newest kept.
+	pendingSpends.Lock()
+	_, newest := pendingSpends.m[pendingKey{j.id, "run-" + string(rune('a'+(n-1)%26)) + string(rune('a'+(n-1)/26))}]
+	_, oldest := pendingSpends.m[pendingKey{j.id, "run-aa"}]
+	pendingSpends.Unlock()
+	if !newest || oldest {
+		t.Fatalf("newest kept %v, oldest kept %v: want the oldest dropped first", newest, oldest)
+	}
+	// Driving a kept run takes its entry, and the count of entries held stays exact.
+	m := &scriptModel{turns: [][]Emit{textTurnWithUsage("done", billed)}}
+	if _, err := New(m, j).RunResult(context.Background(), "run-"+string(rune('a'+(n-1)%26))+string(rune('a'+(n-1)/26)), "go"); err != nil {
+		t.Fatal(err)
+	}
+	pendingSpends.Lock()
+	total := 0
+	for _, ps := range pendingSpends.m {
+		total += len(ps)
+	}
+	held := pendingSpends.n
+	pendingSpends.Unlock()
+	if held != total {
+		t.Fatalf("pendingSpends counts %d entries, holds %d", held, total)
 	}
 }
 
@@ -159,5 +187,77 @@ func TestAdv104c_InvalidUTF8TextIsTheTurnsOwnRecord(t *testing.T) {
 	}
 	if answers != 1 || res.Spend != billed {
 		t.Fatalf("answers = %d, want 1; Spend = %+v, want %+v", answers, res.Spend, billed)
+	}
+}
+
+// Two drivers of one run answer its turn with records equal in every journaled field; one records
+// it. The salt the journal holds tells them apart: the other's request is journaled as late spend,
+// so both requests count, and only the recording driver runs its answer functions.
+func TestAdv104c_IdenticalRecordsOfTwoDrivers(t *testing.T) {
+	ctx := context.Background()
+	mem := NewMemStore()
+	g := &twoGate{open: make(chan struct{})}
+	var answers atomic.Int32
+	key := new(int)
+	count := func(next ModelHandler) ModelHandler {
+		return func(ctx context.Context, call ModelCall) (ModelResponse, error) {
+			call.OnAnswer(key, func(context.Context, ModelResponse) { answers.Add(1) })
+			return next(ctx, call)
+		}
+	}
+	var wg sync.WaitGroup
+	for range 2 {
+		j, err := NewJournal(procStore{mem})
+		if err != nil {
+			t.Fatal(err)
+		}
+		m := &gatedTurn{g: g, text: "same", u: billed}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := New(m, j).Use(count).RunResult(ctx, "r", "go"); err != nil {
+				t.Error(err)
+			}
+		}()
+	}
+	wg.Wait()
+	j, _ := NewJournal(procStore{mem})
+	res, err := New(&scriptModel{}, j).RunResult(ctx, "r", "go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Spend != twice(billed) || answers.Load() != 1 {
+		t.Fatalf("Spend = %+v, want both requests' %+v; answers ran %d times, want 1", res.Spend, twice(billed), answers.Load())
+	}
+}
+
+// A store that journals no salt (it breaks the contract) is compared by the journal encoding: a
+// record read back in its canonical form is the one built, and a different one is not.
+func TestAdv104c_OwnRecordWithoutSalt(t *testing.T) {
+	msg := Message{Role: RoleAssistant, Parts: []Part{ToolUse{ID: "c1", Name: "lookup", Args: json.RawMessage(`{"q": "x"}`)}, Text{Text: "bad \xff"}}}
+	built := Record{Kind: StepModel, Message: &msg, Usage: &billed, Finish: FinishToolUse}
+	if err := stampSalt(&built); err != nil {
+		t.Fatal(err)
+	}
+	b, err := EncodeRecord(Record{Name: "@llm/0", Kind: StepModel, Message: &msg, Usage: &billed, Finish: FinishToolUse})
+	if err != nil {
+		t.Fatal(err)
+	}
+	held, err := DecodeRecord(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ownRecord(held, built) {
+		t.Fatal("the record read back in canonical form is not taken as the one built")
+	}
+	other := held
+	other.Finish = FinishStop
+	if ownRecord(other, built) {
+		t.Fatal("a different record is taken as the one built")
+	}
+	salted := held
+	salted.salt = make([]byte, SaltSize)
+	if ownRecord(salted, built) {
+		t.Fatal("a record with another salt is taken as the one built")
 	}
 }

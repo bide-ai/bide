@@ -382,23 +382,35 @@ type pendingSpend struct {
 	answer func(context.Context) // turn: the turn's answer functions (ModelCall.OnAnswer)
 }
 
-// pendingKey names a run in the journal of this process's handle on its store.
+// pendingKey names a run of a store, by the store's identity (storeIdentity, as claims and
+// in-flight steps are shared), so every Journal over the store in this process sees it.
 type pendingKey struct {
 	store any
 	runID string
 }
 
-// pendingSpends is the process's spend waiting for a run's next drive.
+// pendingSpends is the process's spend waiting for a run's next drive in it.
+//
+// It is bounded: past maxPendingSpends entries, whole runs are dropped, oldest first (a run taken
+// and kept again may be dropped by its earlier position). An entry holds a usage, a record and the
+// turn's answer functions, so the memory it holds is bounded by maxPendingSpends of them. Dropped
+// spend is lost only for a run the process drives again: a process that never drives the run again
+// never journals kept spend either.
 var pendingSpends = struct {
 	sync.Mutex
-	m map[pendingKey][]pendingSpend
+	m     map[pendingKey][]pendingSpend
+	n     int          // entries held, over every run
+	order []pendingKey // runs in the order first kept, oldest first; may hold runs already taken
 }{m: map[pendingKey][]pendingSpend{}}
 
-// spendKey is the key of runID's pending spend for a's store: its Journal, or the store itself when
-// it is a pointer. ok is false for a store with neither, whose pending spend is not kept.
+var maxPendingSpends = 4096 // a variable so tests can lower it
+
+// spendKey is the key of runID's pending spend for a's store: the identity of its Journal's
+// store, or the store itself when it is a pointer. ok is false for a store with neither, whose
+// pending spend is not kept.
 func (a *Agent) spendKey(runID string) (pendingKey, bool) {
 	if j := journalOf(a.store); j != nil {
-		return pendingKey{j, runID}, true
+		return pendingKey{j.id, runID}, true
 	}
 	if a.store != nil && reflect.ValueOf(a.store).Kind() == reflect.Pointer {
 		return pendingKey{a.store, runID}, true
@@ -412,9 +424,29 @@ func (a *Agent) keepSpend(runID string, p pendingSpend) {
 	if !ok {
 		return
 	}
-	pendingSpends.Lock()
-	defer pendingSpends.Unlock()
-	pendingSpends.m[k] = append(pendingSpends.m[k], p)
+	ps := &pendingSpends
+	ps.Lock()
+	defer ps.Unlock()
+	if _, held := ps.m[k]; !held {
+		ps.order = append(ps.order, k)
+	}
+	ps.m[k] = append(ps.m[k], p)
+	ps.n++
+	for ps.n > maxPendingSpends && len(ps.order) > 0 {
+		old := ps.order[0]
+		ps.order = ps.order[1:]
+		ps.n -= len(ps.m[old])
+		delete(ps.m, old)
+	}
+	if len(ps.order) > 2*maxPendingSpends { // drop runs already taken
+		live := ps.order[:0]
+		for _, o := range ps.order {
+			if _, ok := ps.m[o]; ok {
+				live = append(live, o)
+			}
+		}
+		ps.order = live
+	}
 }
 
 // takeSpend returns and forgets runID's pending spend.
@@ -425,9 +457,10 @@ func (a *Agent) takeSpend(runID string) []pendingSpend {
 	}
 	pendingSpends.Lock()
 	defer pendingSpends.Unlock()
-	ps := pendingSpends.m[k]
+	got := pendingSpends.m[k]
+	pendingSpends.n -= len(got)
 	delete(pendingSpends.m, k)
-	return ps
+	return got
 }
 
 // settlePending journals runID's pending spend at the start of a drive, from recs, the run's
@@ -447,7 +480,7 @@ func (a *Agent) settlePending(ctx context.Context, runID string, recs []Record) 
 		if p.turn {
 			rec, ok := recordNamed(recs, p.name)
 			switch {
-			case ok && sameTurnRecord(rec, *p.built):
+			case ok && ownRecord(rec, *p.built):
 				if p.answer != nil {
 					p.answer(ctx)
 				}
@@ -478,15 +511,4 @@ func recordNamed(recs []Record, name string) (Record, bool) {
 		}
 	}
 	return Record{}, false
-}
-
-// sameTurnRecord reports whether got, a model record read from the journal, is the record want a
-// drive built: same message, usage, finish, digests and model. Two drivers' records of one turn
-// with all of these equal are not told apart; either is taken as the drive's own.
-func sameTurnRecord(got, want Record) bool {
-	eqUsage := func(a, b *Usage) bool { return (a == nil) == (b == nil) && (a == nil || *a == *b) }
-	eqModel := func(a, b *ModelInfo) bool { return (a == nil) == (b == nil) && (a == nil || *a == *b) }
-	return got.Kind == want.Kind && reflect.DeepEqual(got.Message, want.Message) && eqUsage(got.Usage, want.Usage) &&
-		eqUsage(got.DiscardedUsage, want.DiscardedUsage) && got.Finish == want.Finish && got.RawFinish == want.RawFinish &&
-		got.PromptDigest == want.PromptDigest && got.ToolsDigest == want.ToolsDigest && eqModel(got.Model, want.Model)
 }
