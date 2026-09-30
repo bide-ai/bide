@@ -814,10 +814,10 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 						if errors.As(callErr, &subHalt) || errors.As(callErr, &subApproval) {
 							return Record{}, callErr
 						}
-						// A sub-run whose journal could not be written has no outcome yet: record
-						// nothing, so a resume re-enters the sub-run (see subRunStorageError).
-						var subStorage *subRunStorageError
-						if errors.As(callErr, &subStorage) {
+						// A sub-run that stopped short of a verdict has no outcome yet: record
+						// nothing, so a resume re-enters the sub-run (see subRunUnfinished).
+						var subUnfinished *subRunUnfinished
+						if errors.As(callErr, &subUnfinished) {
 							return Record{}, callErr
 						}
 						// An Interrupt or a durable Sleep pauses the run: record nothing and
