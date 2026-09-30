@@ -40,7 +40,10 @@ that failed for good fails again at the same point with the same usage. So the r
 replaying agent counts the same spend, and a run that `WithTokenBudget` stopped stops at the same
 point on replay. Each replayed turn ends with the finish reason and the provider's raw reason its
 record journaled (`Record.Finish`, `Record.RawFinish`); a record written before they were
-journaled gets the reason its message implies (`tool_use` or `stop`).
+journaled gets the reason its message implies (`tool_use` or `stop`). The replayed turn's record
+names the model the original record named (`Record.Model`), not the replay model. Spend the
+original journaled in a late spend record (a request that ended after its turn) is reported with
+the turn before it, so the totals match although the record layout differs.
 
 If the replay model is asked for more turns than were recorded, its `Stream` returns
 `agent.ErrNoRecordedOutput`; that is the signal that the replayed loop diverged from the

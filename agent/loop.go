@@ -91,10 +91,14 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 	// what WithTokenBudget counts.
 	var tot usageTotals
 	spendSeq := 0 // spend records ("@spend/<n>") already in the journal
+	lateSeq := 0  // late spend records ("@spend-late/<n>") already in the journal
 	for _, r := range recs {
 		tot.add(r)
 		if strings.HasPrefix(r.Name, spendStepPrefix) {
 			spendSeq++
+		}
+		if strings.HasPrefix(r.Name, lateSpendPrefix) {
+			lateSeq++
 		}
 		switch r.Kind {
 		case StepModel:
@@ -198,7 +202,31 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 
 	meter := &spendMeter{}  // usage of every model request this invocation sends
 	chain := a.modelChain() // the model call chain every turn of this invocation goes through
-	var liveTurns int       // number of live (non-replayed) model calls this run
+	// settle waits, bounded, for the model requests still in flight (a hedge loser that outlived
+	// its turn) and journals the spend no record carries yet, so a run that ends leaves every
+	// request it knows was billed in its journal. leave settles and returns err.
+	settle := func() error {
+		meter.wait(ctx, lateRequestWait)
+		spent := meter.take()
+		if spent == (Usage{}) {
+			return nil
+		}
+		rec, err := a.recordSpend(ctx, runID, lateSpendStep(lateSeq), spent)
+		if err != nil {
+			return err
+		}
+		lateSeq++
+		tot.add(rec)
+		node.add(journalTotals([]Record{rec}).spend)
+		return nil
+	}
+	var liveTurns int // number of live (non-replayed) model calls this run
+	leave := func(err error) (Message, usageTotals, int, error) {
+		if serr := settle(); serr != nil {
+			err = errors.Join(err, serr)
+		}
+		return Message{}, tot, liveTurns, err
+	}
 
 	for {
 		// If the last turn is an assistant message with tool calls still pending (a
@@ -228,13 +256,13 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 			// A cancelled run stops before asking for another turn, rather than relying on the
 			// model adapter to notice the cancellation.
 			if err := ctx.Err(); err != nil {
-				return Message{}, tot, liveTurns, err
+				return leave(err)
 			}
 			if a.maxTurns > 0 && modelSeq >= a.maxTurns {
-				return Message{}, tot, liveTurns, fmt.Errorf("run %s: %w (%d turns)", runID, ErrMaxTurns, modelSeq)
+				return leave(fmt.Errorf("run %s: %w (%d turns)", runID, ErrMaxTurns, modelSeq))
 			}
 			if err := node.exceeded(runID); err != nil {
-				return Message{}, tot, liveTurns, err
+				return leave(err)
 			}
 			fire(TurnStarted{Seq: modelSeq})
 			// A live (non-replayed) model call streams its deltas as ModelEvents through the
@@ -245,6 +273,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 				ts.sink = newTurnSink(modelSeq, fire)
 			}
 			seq := modelSeq
+			var taken Usage // the spend the turn's record carries, once the step has built it
 			rec, err := a.store.Do(ctx, runID, modelStep(modelSeq),
 				func(ctx context.Context) (Record, error) {
 					ts.usedIDs = toolUseIDs(msgs)
@@ -256,24 +285,37 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 					r := Record{Kind: StepModel, Message: &resp.Message, Usage: &resp.Usage, Finish: resp.Finish, RawFinish: resp.RawFinish}
 					r.Model, r.PromptDigest, r.ToolsDigest = resp.journal(req)
 					// The turn recorded one response; every other request it sent was billed too.
-					if d := discardedSpend(meter.take(), resp.Usage); d != (Usage{}) {
+					spent := meter.take()
+					if d := discardedSpend(spent, resp.Usage); d != (Usage{}) {
 						r.DiscardedUsage = &d
 					}
+					taken = spent
+					addUsage(&taken, discardedSpend(resp.Usage, spent)) // a supplied response's usage beyond what was metered
 					return r, nil
 				})
 			if err != nil {
 				err = fmt.Errorf("generate (run %s): %w (%w)", runID, err, ErrModel)
 				// The call failed for good, but its requests were billed: journal their spend so the
-				// budget counts it on this and every later invocation of the run.
-				if spent := meter.take(); spent != (Usage{}) {
-					srec, serr := a.recordSpend(ctx, runID, spendSeq, spent)
+				// budget counts it on this and every later invocation of the run. Requests still in
+				// flight are waited for (bounded), so their spend is in the same record. When the
+				// step built its record and only writing it failed, the spend that record carried is
+				// journaled here instead, unless the write did land after all.
+				meter.wait(ctx, lateRequestWait)
+				spent := meter.take()
+				if taken != (Usage{}) {
+					if _, landed, lerr := lookup(context.WithoutCancel(ctx), a.store, runID, modelStep(seq)); lerr != nil || !landed {
+						addUsage(&spent, taken)
+					}
+				}
+				if spent != (Usage{}) {
+					srec, serr := a.recordSpend(ctx, runID, spendStep(spendSeq), spent)
 					if serr != nil {
 						err = errors.Join(err, serr)
 					}
 					tot.add(srec)
 					node.add(journalTotals([]Record{srec}).spend)
 				}
-				return Message{}, tot, liveTurns, err
+				return leave(err)
 			}
 			tot.add(rec) // the recorded turn, which another driver of the run may have written
 			node.add(journalTotals([]Record{rec}).spend)
@@ -289,9 +331,13 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 			// Terminal: record a durable completion marker so a crash-recovery supervisor
 			// can skip this run (see IsComplete / Recover). Appended only at the terminal,
 			// so it never shifts an earlier record's index; at-most-once by name, so a
-			// replay of a finished run does not add a second one.
+			// replay of a finished run does not add a second one. Requests still in flight are
+			// waited for first, and their spend journaled, so a finished run's journal holds it.
+			if err := settle(); err != nil {
+				return Message{}, tot, liveTurns, err
+			}
 			if _, err := putRecord(ctx, a.store, runID, runCompleteStep, Record{Kind: StepValue}); err != nil {
-				return Message{}, tot, liveTurns, fmt.Errorf("mark complete (run %s): %w (%w)", runID, err, ErrStorage)
+				return leave(fmt.Errorf("mark complete (run %s): %w (%w)", runID, err, ErrStorage))
 			}
 			fire(Finished{Final: asst})
 			return asst, tot, liveTurns, nil // final answer
@@ -314,7 +360,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 			}
 			t, ok := a.tools[tu.Name]
 			if !ok {
-				return Message{}, tot, liveTurns, fmt.Errorf("model called unknown tool %q: %w", cutName(tu.Name), ErrUnknownTool)
+				return leave(fmt.Errorf("model called unknown tool %q: %w", cutName(tu.Name), ErrUnknownTool))
 			}
 			// A recorded denial is final, whatever the tool's gate is now: a human's Approve(false)
 			// or an m-of-n gate's terminal tally that did not pass. The gate may have been removed
@@ -325,7 +371,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 			if r, ok := values[ApprovalTallyStep(tu.ID)]; ok && !denied {
 				var tally ApprovalTally
 				if err := json.Unmarshal(r.Result, &tally); err != nil {
-					return Message{}, tot, liveTurns, fmt.Errorf("decode %s (run %s): %w (%w)", r.Name, runID, err, ErrStorage)
+					return leave(fmt.Errorf("decode %s (run %s): %w (%w)", r.Name, runID, err, ErrStorage))
 				}
 				denied = !tally.Passed()
 			}
@@ -335,19 +381,19 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 					// m-of-n: the decision is the tally over the journaled per-approver records.
 					tally, final, err := a.quorumTally(ctx, runID, tu, pol)
 					if err != nil {
-						return Message{}, tot, liveTurns, err
+						return leave(err)
 					}
 					if !final {
 						evTally := tally // the event gets its own copy; ApprovalPending keeps tally
 						evTally.Pending = append([]string(nil), tally.Pending...)
 						fire(ApprovalRequired{ToolUseID: tu.ID, Name: tu.Name, Args: tu.Args, Quorum: &evTally})
-						return Message{}, tot, liveTurns, &ApprovalPending{RunRef: RunRef{RunID: runID, RootRunID: rootRunID(ctx, runID)}, ToolUseID: tu.ID, ToolName: tu.Name, Args: tu.Args, Quorum: &tally}
+						return leave(&ApprovalPending{RunRef: RunRef{RunID: runID, RootRunID: rootRunID(ctx, runID)}, ToolUseID: tu.ID, ToolName: tu.Name, Args: tu.Args, Quorum: &tally})
 					}
 					approved = tally.Passed()
 				} else {
 					if !decided[tu.ID] {
 						fire(ApprovalRequired{ToolUseID: tu.ID, Name: tu.Name, Args: tu.Args})
-						return Message{}, tot, liveTurns, &ApprovalPending{RunRef: RunRef{RunID: runID, RootRunID: rootRunID(ctx, runID)}, ToolUseID: tu.ID, ToolName: tu.Name, Args: tu.Args}
+						return leave(&ApprovalPending{RunRef: RunRef{RunID: runID, RootRunID: rootRunID(ctx, runID)}, ToolUseID: tu.ID, ToolName: tu.Name, Args: tu.Args})
 					}
 					approved = approvals[tu.ID]
 				}
@@ -356,7 +402,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 			if denied { // record a denial and let the model react
 				const deniedResult = `"tool call denied by human"`
 				if _, err := putRecord(ctx, a.store, runID, ToolResultStep(tu.ID), Record{Kind: StepToolResult, ToolUseID: tu.ID, IsError: true, Result: json.RawMessage(deniedResult)}); err != nil {
-					return Message{}, tot, liveTurns, err
+					return leave(err)
 				}
 				done[tu.ID] = true
 				results[i] = &Message{Role: RoleTool, Parts: []Part{ToolResult{ToolUseID: tu.ID, Result: json.RawMessage(deniedResult), IsError: true}}}
@@ -609,15 +655,15 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 		if err := werr; err != nil {
 			var trip *sagaTrip
 			if errors.As(err, &trip) {
-				return Message{}, tot, liveTurns, trip // RunSaga catches → compensates
+				return leave(trip) // RunSaga catches → compensates
 			}
-			return Message{}, tot, liveTurns, err
+			return leave(err)
 		}
 		if wakeErr != nil {
-			return Message{}, tot, liveTurns, wakeErr
+			return leave(wakeErr)
 		}
 		if pauseErr != nil {
-			return Message{}, tot, liveTurns, pauseErr
+			return leave(pauseErr)
 		}
 
 		// Append results in deterministic uses-order. A resumed turn may already have some of its

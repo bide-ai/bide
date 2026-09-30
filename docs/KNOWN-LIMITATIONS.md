@@ -129,6 +129,12 @@ the adapter sends back only the thought signatures Gemini needs to continue a th
 but it is laid out as reasoning blocks, then the text, then the tool calls. Text that appeared
 between two reasoning blocks is moved after them, and separate text blocks are joined into one.
 
+**A model request that ignores cancellation past the run's end is not in its spend.** When a run
+ends (it completes, pauses, or fails), it waits for its model requests still in flight, such as a
+hedge loser, and journals their usage in a late spend record. The wait is bounded: two seconds, and
+not past the run's context. A request whose model ignores the cancellation it was sent for longer
+than that is billed by the provider but is not in `Result.Spend`, the journal, or the token budget.
+
 **Replay of a turn journaled before finish reasons were.** Each model record journals the turn's
 finish reason and the provider's raw reason (`Record.Finish`, `Record.RawFinish`), and a replayed
 turn ends with them. A record written before they were journaled has neither: its replayed turn ends

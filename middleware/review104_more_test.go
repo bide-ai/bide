@@ -37,4 +37,3 @@ func TestS3_GuardRejectsStreamedResponse(t *testing.T) {
 		t.Fatalf("restarts %d, want 1", n)
 	}
 }
-

@@ -42,6 +42,50 @@ type turnState struct {
 	journal  Durable         // the run's journal, for middleware that records a step (WithRetrieval); nil outside a run
 	sink     *turnSink       // the live token stream (Agent.Stream); nil when not streaming
 	usedIDs  map[string]bool // the tool-use IDs already in the run's conversation (see checkToolUseIDs)
+	finished atomic.Bool     // the chain has returned: the turn sends no new request
+
+	answerMu sync.Mutex
+	answers  map[any]func(context.Context, ModelResponse) // run once with the turn's answer (ModelCall.OnAnswer)
+	order    []any                                        // the keys of answers, in registration order
+}
+
+// onAnswer registers fn under key, unless key is registered already. It reports false once the
+// turn is over.
+func (ts *turnState) onAnswer(key any, fn func(context.Context, ModelResponse)) bool {
+	ts.answerMu.Lock()
+	defer ts.answerMu.Unlock()
+	if ts.finished.Load() {
+		return false
+	}
+	if _, ok := ts.answers[key]; ok {
+		return true
+	}
+	if ts.answers == nil {
+		ts.answers = map[any]func(context.Context, ModelResponse){}
+	}
+	ts.answers[key] = fn
+	ts.order = append(ts.order, key)
+	return true
+}
+
+// finish ends the turn: no request starts after it, and no answer function registers.
+func (ts *turnState) finish() {
+	ts.answerMu.Lock()
+	defer ts.answerMu.Unlock()
+	ts.finished.Store(true)
+}
+
+// answer runs each registered answer function once with resp, the turn's answer.
+func (ts *turnState) answer(ctx context.Context, resp ModelResponse) {
+	ts.answerMu.Lock()
+	fns := make([]func(context.Context, ModelResponse), len(ts.order))
+	for i, k := range ts.order {
+		fns[i] = ts.answers[k]
+	}
+	ts.answerMu.Unlock()
+	for _, fn := range fns {
+		fn(ctx, resp)
+	}
 }
 
 // call sends call through the chain as turn ts, and checks the response the chain returns.
@@ -49,6 +93,7 @@ func (c *modelChain) call(ctx context.Context, call ModelCall, ts *turnState) (M
 	ts.chain = c
 	call.turn = ts
 	resp, err := c.h(ctx, call)
+	ts.finish()
 	if err == nil {
 		// The response the chain returns is checked again, since a middleware can return one it did
 		// not get from the handler it wraps (a fallback, a cache), and that response is what the
@@ -60,6 +105,7 @@ func (c *modelChain) call(ctx context.Context, call ModelCall, ts *turnState) (M
 		return ModelResponse{}, err
 	}
 	ts.sink.finish(resp)
+	ts.answer(ctx, resp)
 	return resp, nil
 }
 
@@ -78,6 +124,10 @@ func clipped(h ModelHandler) ModelHandler {
 // state: one a middleware built instead of deriving it from the call it received.
 var errForeignCall = fmt.Errorf("agent: a ModelCall reached the model handler without its turn's state: a middleware passed on a ModelCall it built instead of a copy of the one it received: %w", ErrConfig)
 
+// errTurnOver is the model handler's refusal of a request of a turn that is over: its chain has
+// returned, so nothing would record the request (a middleware kept the call and sent it later).
+var errTurnOver = fmt.Errorf("agent: a ModelCall of a model turn that is over reached the model handler: its call already returned, so nothing would record the request: %w", ErrConfig)
+
 // send is the chain's model handler: it sends one request of the call's turn. It numbers the
 // request, runs the call's hooks around it, streams it to the turn's sink if it holds the sink's
 // claim, adds its usage to the turn's meter (not a hook, so no middleware can remove it), and
@@ -89,6 +139,14 @@ func (c *modelChain) send(ctx context.Context, call ModelCall) (ModelResponse, e
 	}
 	if call.Model == nil {
 		return ModelResponse{}, fmt.Errorf("agent: a ModelCall reached the model handler with a nil Model: %w", ErrConfig)
+	}
+	// The request is in flight from here until its usage is metered, so a run that ends waits for
+	// it (spendMeter.wait). Counting it before the check makes the two race-free: a request that
+	// passes the check is counted before the turn's end is observed.
+	ts.meter.begin()
+	defer ts.meter.end()
+	if ts.finished.Load() {
+		return ModelResponse{}, errTurnOver
 	}
 	call.attempt = int(ts.attempts.Add(1))
 	ran := 0 // hooks whose Before returned nil
@@ -147,6 +205,13 @@ func (ts *turnState) send(ctx context.Context, call ModelCall) (ModelResponse, U
 		return ModelResponse{Usage: u}, discarded, err
 	}
 	info, described := ModelInfoOf(call.Model)
+	if s.replayed {
+		// A replayed turn answers as the model its record names, not as the replaying Model.
+		info, described = ModelInfo{}, s.recorded != nil
+		if described {
+			info = *s.recorded
+		}
+	}
 	return ModelResponse{
 		Message:   msg,
 		Usage:     u,

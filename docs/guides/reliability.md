@@ -78,9 +78,12 @@ a.Use(middleware.Hedge(800*time.Millisecond, openaiModel))
   checks on each model response.
 - A backup is the same call with its `Model` set to the backup (`c := call; c.Model = backup`);
   nothing else changes.
-- `Hedge` does not wait for the losers: it returns as soon as one target wins. A loser whose model
-  ignores cancellation keeps running, with the middleware inside `Hedge` on its path, after the turn
-  has ended.
+- `Hedge` does not wait for the losers: it returns as soon as one target wins. The run counts a
+  loser's spend with its next turn or, when the run ends first, waits for it (at most two seconds,
+  and not past the run's context) and journals it in a late spend record (`@spend-late/<n>`). A
+  loser that has not reached the model when the turn ends is not sent. A loser whose model ignores
+  cancellation longer keeps running, with the middleware inside `Hedge` on its path, after the run
+  has ended, and is not in `Result.Spend`.
 - Streaming (`Agent.Stream`) needs no code in `Hedge`. One request of a turn streams live at a time,
   the first to start; the others run without streaming. If the streaming target wins, the caller saw
   it live. If another target wins, the caller gets `agent.TurnRestarted`, which retracts what was
@@ -116,7 +119,9 @@ fmt.Printf("spent $%.4f, usage %+v\n", s.SpendUSD, s.Spend)
 ```
 
 The meter keeps two views, read together with `Snapshot()`. `Answer` and `AnswerUSD` count the
-answers, the responses the calls returned and the run records. `Spend` and `SpendUSD` count every
+answers, the response each call returned and the run records, once per call wherever `Cost` sits:
+inside a `Hedge` a losing target's response is not an answer (`Cost` counts answers through
+`agent.ModelCall.OnAnswer`). `Spend` and `SpendUSD` count every
 request sent, wherever `Cost` sits: failed attempts a `Retry` repeated and losing `Hedge` targets
 are billed too, and under `agent.Replay` so is the discarded spend the original run recorded. The run itself
 keeps the same split: `Result.Usage` is the answers, `Result.Spend` everything, and
@@ -138,6 +143,12 @@ keep the run's accounting and streaming correct are enforced, not conventions:
   a request from `WithTokenBudget` or `Result.Spend`.
 - A response you build yourself (a cache, a fallback) is checked like a model's, and a streaming
   caller gets it replayed after a `TurnRestarted`.
+- Once the agent has the turn's answer, the turn is over: a request of it that reaches the model
+  handler later (a call a middleware kept) is refused with `agent.ErrConfig`, since nothing would
+  record it.
+- To act on the answer the turn records rather than on each response you see (you may sit inside a
+  `Hedge` or a `Retry`), register with `call.OnAnswer(key, fn)`: `fn` runs once per turn with the
+  answer, however many times your middleware is called for it.
 
 Outside an agent, `agent.CallModel(ctx, model, req, mw...)` sends one call through the same model
 handler, hooks included.

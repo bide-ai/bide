@@ -150,8 +150,13 @@ func Model(tracer oteltrace.Tracer, opts ...Option) agent.Middleware {
 			if c.rates != nil {
 				span.SetAttributes(attribute.Float64(attrCost, c.rates.Cost(u)))
 			}
-			if err == nil && resp.Finish != "" {
-				span.SetAttributes(attribute.StringSlice(attrFinishReasons, []string{string(resp.Finish)}))
+			if err == nil {
+				// An empty reason is a natural stop, which the agent journals as FinishStop.
+				fin := resp.Finish
+				if fin == "" {
+					fin = agent.FinishStop
+				}
+				span.SetAttributes(attribute.StringSlice(attrFinishReasons, []string{string(fin)}))
 			}
 			if capture && err == nil {
 				if b, e := json.Marshal(resp.Message); e == nil {

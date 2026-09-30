@@ -32,13 +32,17 @@ import (
 // agent's checks on each model response, backups included: a backup is the same call with its
 // Model set to the backup, and nothing else changed. Every request a target sends counts wherever
 // the counting middleware sits: a RateLimit takes a token per request (1 + the backups launched),
-// and Cost and the run's token budget count each target's usage as spend, the winner's as the
-// answer's. Each request is numbered apart (agent.ModelCall.Attempt).
+// and Cost and the run's token budget count each target's usage as spend. Only the turn's answer,
+// the winner's response, counts as an answer, once, even with Cost inside Hedge (see
+// agent.ModelCall.OnAnswer). Each request is numbered apart (agent.ModelCall.Attempt).
 //
 // Hedge does not wait for the losers: it returns as soon as a target wins, and a loser runs until
-// its model honors the cancellation. A model that ignores it keeps a loser, and the middleware
-// inside Hedge on its path, running after the turn, or the run, has ended. Its usage then reaches
-// Cost when it ends, and the run's budget only if it ends before the run's next model turn.
+// its model honors the cancellation. Its usage reaches Cost when it ends. The run counts it with
+// its next model turn, or, when the run ends first, waits for it (for at most two seconds, and not
+// past the run's context) and journals it in a spend record of its own. A loser that has not
+// reached the model when the turn ends is not sent. A model that ignores the cancellation for
+// longer keeps a loser, and the middleware inside Hedge on its path, running after the run has
+// ended, and its usage is not in the run's spend.
 //
 // Streaming: Hedge has no streaming code. The agent's model handler lets one request of a turn
 // at a time stream to a streaming caller (Agent.Stream), the first to start: the others run

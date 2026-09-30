@@ -234,6 +234,10 @@ type Stream struct {
 	done chan struct{} // closed when the consumer stops reading
 	stop sync.Once
 	err  error // a terminal error set by the producer before ch closes (NewStreamFunc)
+	// replayed marks a stream Replay built, and recorded is the model the replayed turn's record
+	// names (nil when it names none): the agent journals that model, not the replaying one.
+	replayed bool
+	recorded *ModelInfo
 }
 
 // NewStream wraps an event channel the caller fills and closes. It suits producers that

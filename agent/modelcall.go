@@ -60,11 +60,30 @@ func (c ModelCall) AddHook(h ModelCallHook) ModelCall {
 	return c
 }
 
-// Attempt is the number of the request a hook is observing: 1 for the first request the turn
-// sends, 2 for the next, and so on, counted across the whole turn, so the requests of every
-// Retry attempt and every Hedge target are numbered apart. It is 0 on a call that has not reached
-// the agent's model handler (as a middleware receives it).
+// Attempt is the number of the request a hook is observing. The turn numbers each request when it
+// reaches the agent's model handler, before its Before hooks run, from one counter for the whole
+// turn: 1 for the first, 2 for the next, and so on, so the requests of every Retry attempt and
+// every Hedge target are numbered apart and every hook of a request, Before and After, sees the
+// same number. A request a Before hook refused keeps its number although it was not sent, so the
+// numbers of the requests sent can have gaps. It is 0 on a call that has not reached the model
+// handler (as a middleware receives it).
 func (c ModelCall) Attempt() int { return c.attempt }
+
+// OnAnswer registers fn to run once with the call's answer: the response the whole chain returns
+// to the agent (or to CallModel), after the agent's checks, which is the response the turn
+// records. It runs after every request of the call has had its hooks, and only when the call
+// succeeds. Registrations are keyed: a key registered again for the same turn (a middleware inside
+// a Hedge or a Retry registers once per target or attempt) keeps the first registration, so fn runs
+// once per turn wherever the middleware sits; key must be comparable, and a pointer the middleware
+// allocates is the usual choice. Cost counts answers this way. It reports false when the call
+// belongs to no turn (a handler called directly, not through an agent or CallModel) or the turn is
+// over, where fn never runs.
+func (c ModelCall) OnAnswer(key any, fn func(ctx context.Context, resp ModelResponse)) bool {
+	if c.turn == nil {
+		return false
+	}
+	return c.turn.onAnswer(key, fn)
+}
 
 // ModelCallHook runs around each request the agent's model handler sends: every retried attempt
 // and every hedged target, wherever the middleware that added it (ModelCall.AddHook) sits in the
@@ -224,11 +243,51 @@ func (t *usageTotals) add(r Record) {
 }
 
 // spendMeter collects the usage of the model requests a run sends until the run takes it to
-// record. A request that ends after its turn was recorded (a hedge loser that outlived the race)
-// is taken with the next turn.
+// record, and counts the requests in flight. A request that ends after its turn was recorded (a
+// hedge loser that outlived the race) is taken with the next turn, or, at the run's end, waited
+// for (wait) and recorded on its own (a lateSpendStep record).
 type spendMeter struct {
 	mu      sync.Mutex
 	pending Usage
+	active  int           // requests in flight
+	idle    chan struct{} // closed when active falls to 0; nil while none is in flight
+}
+
+// begin counts a request in flight.
+func (m *spendMeter) begin() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.active == 0 {
+		m.idle = make(chan struct{})
+	}
+	m.active++
+}
+
+// end counts a request out of flight.
+func (m *spendMeter) end() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.active--; m.active == 0 {
+		close(m.idle)
+		m.idle = nil
+	}
+}
+
+// wait waits until no request is in flight, ctx is done, or d has passed, whichever is first.
+func (m *spendMeter) wait(ctx context.Context, d time.Duration) {
+	m.mu.Lock()
+	idle := m.idle
+	m.mu.Unlock()
+	if idle == nil {
+		return
+	}
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-idle:
+	case <-ctx.Done():
+	case <-t.C:
+	}
 }
 
 func (m *spendMeter) add(u Usage) {
@@ -262,12 +321,12 @@ func discardedSpend(spent, answer Usage) Usage {
 // "@spend/1", and so on, numbered in the order the run wrote them.
 const spendStepPrefix = "@spend/"
 
-// recordSpend journals spent, the usage of a model call that failed, as the run's n-th spend
-// record: a StepValue carrying it as DiscardedUsage. It is written even when ctx is cancelled,
-// the common way a call fails, since the requests were billed either way. It returns the record
-// the journal holds.
-func (a *Agent) recordSpend(ctx context.Context, runID string, n int, spent Usage) (Record, error) {
-	rec, err := a.store.Do(context.WithoutCancel(ctx), runID, spendStep(n), func(context.Context) (Record, error) {
+// recordSpend journals spent, billed usage no model record carries, as the step name: a
+// StepValue carrying it as DiscardedUsage (spendStep for a model call that failed, lateSpendStep
+// for requests that ended late). It is written even when ctx is cancelled, the common way a call
+// fails, since the requests were billed either way. It returns the record the journal holds.
+func (a *Agent) recordSpend(ctx context.Context, runID, name string, spent Usage) (Record, error) {
+	rec, err := a.store.Do(context.WithoutCancel(ctx), runID, name, func(context.Context) (Record, error) {
 		return Record{Kind: StepValue, DiscardedUsage: &spent}, nil
 	})
 	if err != nil {
@@ -276,6 +335,15 @@ func (a *Agent) recordSpend(ctx context.Context, runID string, n int, spent Usag
 	return rec, nil
 }
 
-// lateRequestWait bounds how long a run waits, before it completes or records a failed call's
-// spend, for model requests still in flight (a hedge loser ending after the winner was returned).
+// lateRequestWait bounds how long a run waits, when it ends (completes, pauses, fails) and before
+// it records a failed call's spend, for model requests still in flight: a hedge loser that ends
+// after the winner was returned, a request a middleware left running. A request that ignores the
+// cancellation it was sent for longer than this is not in the run's spend.
 var lateRequestWait = 2 * time.Second
+
+// lateSpendPrefix names the records that journal the spend of requests that ended after their
+// turn was recorded, at the run's end: "@spend-late/0", "@spend-late/1", and so on.
+const lateSpendPrefix = "@spend-late/"
+
+// lateSpendStep is the key of the run's n-th late spend record.
+func lateSpendStep(n int) string { return lateSpendPrefix + strconv.Itoa(n) }

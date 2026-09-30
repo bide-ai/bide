@@ -26,17 +26,31 @@ func signal(target agent.Model, done chan struct{}) agent.Middleware {
 	}
 }
 
+// holdUntil is a middleware that holds a call to target until started closes: the backup waits
+// until the primary's request has started, so both requests are sent however the goroutines are
+// scheduled (a request that reaches the model handler after its turn is over is refused).
+func holdUntil(target agent.Model, started chan struct{}) agent.Middleware {
+	return func(next agent.ModelHandler) agent.ModelHandler {
+		return func(ctx context.Context, call agent.ModelCall) (agent.ModelResponse, error) {
+			if call.Model == target {
+				<-started
+			}
+			return next(ctx, call)
+		}
+	}
+}
+
 // F1: Cost inside Hedge counts a losing target's response as an answer when the loser completes.
 // Hedge's doc: "Cost and the run's token budget count each target's usage as spend, the
 // winner's as the answer's."
 func TestF1_CostInsideHedge_AnswerCountsLoser(t *testing.T) {
-	gate := make(chan struct{})
-	primary := &gateModel{name: "p", u: billed, gate: gate}
+	gate, started := make(chan struct{}), make(chan struct{})
+	primary := &gateModel{name: "p", u: billed, gate: gate, started: started}
 	backup := &gateModel{name: "b", u: billed}
 	var meter middleware.CostMeter
 	loserDone := make(chan struct{})
 	resp, err := agent.CallModel(context.Background(), primary, agent.Request{Messages: []agent.Message{agent.UserText("q")}},
-		middleware.Hedge(0, backup), signal(primary, loserDone), middleware.Cost(&meter, middleware.Rates{InputPer1M: 1e6}))
+		middleware.Hedge(0, backup), signal(primary, loserDone), holdUntil(backup, started), middleware.Cost(&meter, middleware.Rates{InputPer1M: 1e6}))
 	if err != nil || resp.Message.Text() != "b-partial!" {
 		t.Fatalf("resp=%q err=%v", resp.Message.Text(), err)
 	}
@@ -93,12 +107,12 @@ func TestF2_ReplayLosesModelInfo(t *testing.T) {
 // or the journal. Here the loser honours the cancellation Hedge sends it, but reports its usage
 // only after the winner's response has been returned: the run must wait for it before completing.
 func TestF3_HedgeLoserSpendLostOnFinalTurn(t *testing.T) {
-	gate := make(chan struct{})
-	primary := &gateModel{name: "p", u: billed, gate: gate, honorCtx: true}
+	gate, started := make(chan struct{}), make(chan struct{})
+	primary := &gateModel{name: "p", u: billed, gate: gate, honorCtx: true, started: started}
 	backup := &gateModel{name: "b", u: billed}
 	winnerDone := make(chan struct{})
 	go func() { <-winnerDone; close(gate) }() // the loser ends once the winner has been returned
-	a := agent.New(primary, agent.NewMemStore()).Use(middleware.Hedge(0, backup), signal(backup, winnerDone))
+	a := agent.New(primary, agent.NewMemStore()).Use(middleware.Hedge(0, backup), signal(backup, winnerDone), holdUntil(backup, started))
 	res, err := a.RunResult(context.Background(), "r", "q")
 	if err != nil {
 		t.Fatal(err)

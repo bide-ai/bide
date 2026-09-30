@@ -53,6 +53,7 @@ var keyConstructors = map[string]func(string) string{
 	"planScopedStep": func(s string) string {
 		return planScopedStep(context.WithValue(context.Background(), planScopeKey{}, planScope{runID: "r", node: "node:n"}), "r", s)
 	},
+	"lateSpendStep": func(s string) string { return lateSpendStep(len(s)) },
 }
 
 // Every key the engine builds starts with a prefix a developer-chosen step name may not use.
@@ -82,7 +83,7 @@ func TestEngineKeys_AreDistinct(t *testing.T) {
 			if name == "runCompleteStep" || name == "runAbortedStep" || name == "runStartStep" || name == "runCancelledStep" || name == "headerStep" {
 				from = name // a constant
 			}
-			if name == "sessionTurnStep" || name == "sessionStartStep" || name == "modelStep" || name == "retrievalStep" || name == "spendStep" || name == "runLimitsStep" {
+			if name == "sessionTurnStep" || name == "sessionStartStep" || name == "modelStep" || name == "retrievalStep" || name == "spendStep" || name == "lateSpendStep" || name == "runLimitsStep" {
 				from = name + "(" + build(s) + ")" // takes a number: equal numbers give equal keys
 			}
 			add(build(s), from)
@@ -238,6 +239,7 @@ func TestEngineKeys_WritesUseConstructors(t *testing.T) {
 		"durableStep:markerKey": true, // returned by claimNextAttempt, which builds it with retryAttemptStep
 		"Do:name":               true, // MemStore.Do forwards its caller's name to its Journal
 		"init:name":             true, // journalhook.Do forwards audit's and plan's names
+		"recordSpend:name":      true, // its callers pass spendStep and lateSpendStep
 	}
 	var writes int
 	for file, f := range parseAgentPackage(t) {

@@ -70,20 +70,28 @@ func (m *CostMeter) addAnswer(r Rates, u agent.Usage) {
 	addTo(&m.s.Answer, u)
 }
 
-// Cost is a model middleware that records token usage and computes running cost. The answer view
-// counts each successful call's returned usage. The spend view counts every request the call
-// sends, wherever Cost sits in the chain, through a hook it adds to the call (see
-// agent.ModelCallHook): each attempt of a Retry and each target of a Hedge below it, the usage a
-// failed request reported before failing, and the discarded spend a replayed turn reports
+// Cost is a model middleware that records token usage and computes running cost, wherever it
+// sits in the chain.
+//
+// The answer view counts the usage of each call's answer, the response the agent records (see
+// agent.ModelCall.OnAnswer), exactly once per call: a Cost inside a Hedge does not count a losing
+// target's response, and a Cost inside a Retry does not count a response a middleware above it
+// rejected. The spend view counts every request the call sends, through a hook it adds to the call
+// (see agent.ModelCallHook): each attempt of a Retry and each target of a Hedge below it, the usage
+// a failed request reported before failing, and the discarded spend a replayed turn reports
 // (agent.ModelAttempt.Discarded). Outside an agent, call the model through agent.CallModel, whose
-// model handler runs the hooks too. The caller reads the totals with m.Snapshot.
+// model handler runs the hooks and reports the answer too; a Cost handler called directly counts
+// the response it returns as the answer. The caller reads the totals with m.Snapshot.
 func Cost(m *CostMeter, r Rates) agent.Middleware {
 	hook := agent.ModelCallHook{After: func(_ context.Context, _ agent.ModelCall, a agent.ModelAttempt) {
 		m.addSpent(r, a.Response.Usage)
 		m.addSpent(r, a.Discarded)
 	}}
+	key := new(int) // this Cost's registration, one per turn (see agent.ModelCall.OnAnswer)
+	answer := func(_ context.Context, resp agent.ModelResponse) { m.addAnswer(r, resp.Usage) }
 	return func(next agent.ModelHandler) agent.ModelHandler {
 		return func(ctx context.Context, call agent.ModelCall) (agent.ModelResponse, error) {
+			inTurn := call.OnAnswer(key, answer)
 			resp, err := next(ctx, call.AddHook(hook))
 			if err != nil {
 				return resp, err
@@ -93,7 +101,9 @@ func Cost(m *CostMeter, r Rates) agent.Middleware {
 				// lower the totals: reject it, and record nothing.
 				return agent.ModelResponse{}, fmt.Errorf("middleware: cost: %w", verr)
 			}
-			m.addAnswer(r, resp.Usage)
+			if !inTurn {
+				m.addAnswer(r, resp.Usage)
+			}
 			return resp, nil
 		}
 	}
