@@ -1,21 +1,31 @@
 package plan
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/internal/strictjson"
 )
 
+// ConfigVersion is the one config format version this release reads. A config states it in its
+// "version" key; Load and Validate refuse a config that omits it or states another. Version 1
+// spells every key in snake_case ("loop_max", not "loopMax").
+const ConfigVersion = 1
+
 // config is the decoded rung-2 topology: pure topology plus block references.
 // Types are not restated here; they come from the Registry at load time. It is
 // the one struct both front-ends (stdlib JSON here, an optional YAML adapter
-// elsewhere) decode into, so the loader is format-agnostic.
+// elsewhere) decode into, so the loader is format-agnostic. Every key is snake_case.
 type config struct {
+	// Version is the config format version. It is required and must be ConfigVersion.
+	Version int `json:"version"`
 	// Flow is the flow's label, used by RenderMermaid, Conform, and the Digest.
 	Flow string `json:"flow"`
 	// In and Out are optional type-name strings, documentation only. When present
@@ -102,7 +112,7 @@ type configArm struct {
 	// runs again, up to LoopMax iterations before Run declares a runaway loop. It is
 	// the config counterpart of LoopBack(max, pred, head). Omitted or 0 means an
 	// ordinary forward When arm.
-	LoopMax int `json:"loopMax,omitempty"`
+	LoopMax int `json:"loop_max,omitempty"`
 }
 
 // isSwitch reports whether this wiring element is a switch. A switch is identified
@@ -226,8 +236,124 @@ func Validate(data []byte, reg *Registry) error {
 // name given twice, data after the value, and invalid UTF-8 are errors. encoding/json would skip
 // the first, keep the last of the second, and so load a node without the gate or entry its author
 // wrote.
+//
+// The config must state "version": 1 (ConfigVersion); a missing or other version is refused, since
+// the keys a config may use depend on its version. A key written in another case whose snake_case
+// spelling is a key at that place (the pre-v1 "loopMax", or "Safety") is refused with an error
+// naming the v1 key. Every error wraps agent.ErrConfig.
 func parseConfig(data []byte, cfg *config) error {
-	return strictjson.Unmarshal(data, cfg, nil)
+	if err := strictjson.Unmarshal(data, cfg, nil); err != nil {
+		if herr := keyHint(data); herr != nil {
+			return fmt.Errorf("%w: %w", herr, agent.ErrConfig)
+		}
+		if verr := checkVersion(data); verr != nil {
+			return fmt.Errorf("%w: %w", verr, agent.ErrConfig)
+		}
+		return fmt.Errorf("%w: %w", err, agent.ErrConfig)
+	}
+	if err := checkVersion(data); err != nil {
+		return fmt.Errorf("%w: %w", err, agent.ErrConfig)
+	}
+	return nil
+}
+
+// checkVersion reports whether the top-level object in data states "version": 1, spelled as
+// exactly that JSON number. It returns nil for data that is not a JSON object, which the strict
+// decode reports instead.
+func checkVersion(data []byte) error {
+	var top map[string]json.RawMessage
+	if json.Unmarshal(data, &top) != nil || top == nil {
+		return nil
+	}
+	raw, ok := top["version"]
+	if !ok {
+		return fmt.Errorf("config has no \"version\"; state \"version\": %d", ConfigVersion)
+	}
+	v := strings.TrimSpace(string(raw))
+	if v == strconv.Itoa(ConfigVersion) {
+		return nil
+	}
+	if _, err := strconv.ParseUint(v, 10, 64); err == nil {
+		return fmt.Errorf("config states \"version\": %s, which this release does not read; it reads version %d", v, ConfigVersion)
+	}
+	return fmt.Errorf("config \"version\" is %s; want the number %d", v, ConfigVersion)
+}
+
+// keyHint finds the first object key in data (in document order of the config's fields, and
+// sorted within an object) that is not a key of the config struct at its place but whose
+// snake_case spelling is, and returns an error naming both. It returns nil when there is none,
+// or when data is not valid JSON.
+func keyHint(data []byte) error {
+	var doc any
+	if json.Unmarshal(data, &doc) != nil {
+		return nil
+	}
+	return hintWalk(doc, reflect.TypeFor[config](), "$")
+}
+
+// hintWalk is keyHint over the value v decoded into type t, at path.
+func hintWalk(v any, t reflect.Type, path string) error {
+	for t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	switch t.Kind() {
+	case reflect.Struct:
+		obj, ok := v.(map[string]any)
+		if !ok {
+			return nil
+		}
+		fields := strictjson.ExactFields(t)
+		keys := make([]string, 0, len(obj))
+		for k := range obj {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			f, ok := fields[k]
+			if !ok {
+				if s := snakeCase(k); s != k {
+					if _, ok := fields[s]; ok {
+						return fmt.Errorf("%s: %q is not a config key; version %d keys are snake_case, write %q", path, k, ConfigVersion, s)
+					}
+				}
+				continue
+			}
+			if err := hintWalk(obj[k], f.Type, path+"."+k); err != nil {
+				return err
+			}
+		}
+	case reflect.Slice:
+		arr, ok := v.([]any)
+		if !ok {
+			return nil
+		}
+		for i, e := range arr {
+			if err := hintWalk(e, t.Elem(), fmt.Sprintf("%s[%d]", path, i)); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// snakeCase spells a camelCase or PascalCase key in snake_case: "loopMax" is "loop_max" and
+// "Safety" is "safety". A run of capitals is one word ("inURL" is "in_url").
+func snakeCase(k string) string {
+	var b strings.Builder
+	rs := []rune(k)
+	for i, r := range rs {
+		if unicode.IsUpper(r) {
+			prevLower := i > 0 && (unicode.IsLower(rs[i-1]) || unicode.IsDigit(rs[i-1]))
+			nextLower := i > 0 && i+1 < len(rs) && unicode.IsUpper(rs[i-1]) && unicode.IsLower(rs[i+1])
+			if prevLower || nextLower {
+				b.WriteByte('_')
+			}
+			b.WriteRune(unicode.ToLower(r))
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
 }
 
 // assemble resolves the config against reg and builds a checked builderCore,
@@ -342,7 +468,7 @@ func assemble(cfg *config, reg *Registry) (*builderCore, error) {
 	// 3. Resolve every switch arm's predicate and every join's merge block against the
 	// registry, collecting all unknowns alongside unknown blocks in the single error. A
 	// loop-back arm's predicate is an ordinary registered predicate (a When arm with a
-	// positive loopMax), so it is resolved by the same walk.
+	// positive loop_max), so it is resolved by the same walk.
 	for i, w := range cfg.Wiring {
 		switch {
 		case w.isSwitch():
@@ -480,7 +606,7 @@ func assemble(cfg *config, reg *Registry) (*builderCore, error) {
 					return nil, fmt.Errorf("plan: load %q: wiring[%d].when[%d] routes to unknown node %q", cfg.Flow, i, j, a.To)
 				}
 				p := reg.preds[a.Pred] // resolved above
-				// A positive loopMax marks the arm as a bounded loop-back to a.To (an earlier
+				// A positive loop_max marks the arm as a bounded loop-back to a.To (an earlier
 				// loop head), mirroring LoopBack(max, pred, head); Build then validates the
 				// ancestor/exit/bound/contiguity requirements. Otherwise it is a plain When arm.
 				if a.LoopMax > 0 {

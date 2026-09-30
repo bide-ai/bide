@@ -22,7 +22,7 @@ func safetyRegistry(t *testing.T, s agent.Safety) *Registry {
 }
 
 func safetyConfig(s string) string {
-	return `{"flow":"f","nodes":[{"name":"t","block":"t","safety":"` + s + `"}],"wiring":[]}`
+	return `{"version":1,"flow":"f","nodes":[{"name":"t","block":"t","safety":"` + s + `"}],"wiring":[]}`
 }
 
 // Only Go code can say a step is safe to run twice. A config "safety" that would make a node

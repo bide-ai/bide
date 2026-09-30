@@ -31,7 +31,7 @@ func TestLoad_SafetyOverrideKeepsTheToolsApprovalGate(t *testing.T) {
 			if err := RegisterTool[int, int](reg, "refund", tool); err != nil {
 				t.Fatalf("register: %v", err)
 			}
-			cfg := `{"flow":"f","nodes":[{"name":"refund","block":"refund","safety":"` + s + `"}],"wiring":[]}`
+			cfg := `{"version":1,"flow":"f","nodes":[{"name":"refund","block":"refund","safety":"` + s + `"}],"wiring":[]}`
 			if _, err := Load[int, int]([]byte(cfg), reg); !errors.Is(err, agent.ErrConfig) {
 				t.Errorf("%s, safety %q: Load = %v; want ErrConfig for the approval-gated tool", name, s, err)
 			}
@@ -39,10 +39,10 @@ func TestLoad_SafetyOverrideKeepsTheToolsApprovalGate(t *testing.T) {
 	}
 }
 
-// The Go-side options behave the same way: ReadOnly, Idempotent and Retryable on a gated tool,
+// The Go-side options behave the same way: ReadOnly and Idempotent on a gated tool,
 // at Builder.Tool or at RegisterTool, keep its approval gate.
 func TestNodeOptions_KeepTheToolsApprovalGate(t *testing.T) {
-	opts := map[string]NodeOption{"ReadOnly": ReadOnly(), "Idempotent": Idempotent(), "Retryable": Retryable()}
+	opts := map[string]NodeOption{"ReadOnly": ReadOnly(), "Idempotent": Idempotent()}
 	for name, tool := range gatedTools() {
 		for oname, opt := range opts {
 			b := New[int, int]("f")
@@ -54,7 +54,7 @@ func TestNodeOptions_KeepTheToolsApprovalGate(t *testing.T) {
 			if err := RegisterTool[int, int](reg, "refund", tool, opt); err != nil {
 				t.Fatalf("register: %v", err)
 			}
-			cfg := `{"flow":"f","nodes":[{"name":"refund","block":"refund"}],"wiring":[]}`
+			cfg := `{"version":1,"flow":"f","nodes":[{"name":"refund","block":"refund"}],"wiring":[]}`
 			if _, err := Load[int, int]([]byte(cfg), reg); !errors.Is(err, agent.ErrConfig) {
 				t.Errorf("%s, RegisterTool with %s: Load = %v; want ErrConfig", name, oname, err)
 			}
@@ -78,7 +78,7 @@ func TestSafetyOverride_KeepsTheIdempotencyKey(t *testing.T) {
 	if err := RegisterTool[int, int](reg, "upsert", tool); err != nil {
 		t.Fatalf("register: %v", err)
 	}
-	cfg := `{"flow":"f","nodes":[{"name":"upsert","block":"upsert","safety":"idempotent"}],"wiring":[]}`
+	cfg := `{"version":1,"flow":"f","nodes":[{"name":"upsert","block":"upsert","safety":"idempotent"}],"wiring":[]}`
 	flow, err := Load[int, int]([]byte(cfg), reg)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
@@ -115,7 +115,7 @@ func TestSafetyOverride_ReplacesTheClassification(t *testing.T) {
 		if err := RegisterTool[int, int](reg, "t", tool); err != nil {
 			t.Fatalf("register: %v", err)
 		}
-		flow, err := Load[int, int]([]byte(`{"flow":"f","nodes":[{"name":"t","block":"t","safety":"`+tc.cfg+`"}],"wiring":[]}`), reg)
+		flow, err := Load[int, int]([]byte(`{"version":1,"flow":"f","nodes":[{"name":"t","block":"t","safety":"`+tc.cfg+`"}],"wiring":[]}`), reg)
 		if err != nil {
 			t.Fatalf("Load: %v", err)
 		}

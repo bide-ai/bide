@@ -131,7 +131,7 @@ func TestRegisteredBodiesReceiveRunContext(t *testing.T) {
 		if err := RegisterStep(reg, "s", func(ctx context.Context, n int) (int, error) { return n, blockUntilDone(t, ctx, started) }); err != nil {
 			t.Fatal(err)
 		}
-		flow := load(t, reg, `{"flow":"reg-step-ctx","in":"int","out":"int","entry":"s","nodes":[{"name":"s","block":"s"}],"wiring":[]}`)
+		flow := load(t, reg, `{"version":1,"flow":"reg-step-ctx","in":"int","out":"int","entry":"s","nodes":[{"name":"s","block":"s"}],"wiring":[]}`)
 		expectCancelled(t, started, run(flow))
 	})
 	t.Run("RegisterJoin2", func(t *testing.T) {
@@ -145,7 +145,7 @@ func TestRegisteredBodiesReceiveRunContext(t *testing.T) {
 		if err := RegisterJoin2(reg, "m", func(ctx context.Context, a, c int) (int, error) { return a + c, blockUntilDone(t, ctx, started) }); err != nil {
 			t.Fatal(err)
 		}
-		flow := load(t, reg, `{"flow":"reg-join2-ctx","in":"int","out":"int","entry":"s",
+		flow := load(t, reg, `{"version":1,"flow":"reg-join2-ctx","in":"int","out":"int","entry":"s",
 			"nodes":[{"name":"s","block":"s"},{"name":"x","block":"x"},{"name":"y","block":"y"}],
 			"wiring":[{"edge":["s","x"]},{"edge":["s","y"]},{"join":"j","inputs":["x","y"],"merge":"m"}]}`)
 		expectCancelled(t, started, run(flow))
@@ -161,7 +161,7 @@ func TestRegisteredBodiesReceiveRunContext(t *testing.T) {
 		if err := RegisterJoin3(reg, "m", func(ctx context.Context, a, c, d int) (int, error) { return a + c + d, blockUntilDone(t, ctx, started) }); err != nil {
 			t.Fatal(err)
 		}
-		flow := load(t, reg, `{"flow":"reg-join3-ctx","in":"int","out":"int","entry":"s",
+		flow := load(t, reg, `{"version":1,"flow":"reg-join3-ctx","in":"int","out":"int","entry":"s",
 			"nodes":[{"name":"s","block":"s"},{"name":"x","block":"x"},{"name":"y","block":"y"},{"name":"z","block":"z"}],
 			"wiring":[{"edge":["s","x"]},{"edge":["s","y"]},{"edge":["s","z"]},{"join":"j","inputs":["x","y","z"],"merge":"m"}]}`)
 		expectCancelled(t, started, run(flow))

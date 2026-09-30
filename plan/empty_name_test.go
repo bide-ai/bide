@@ -36,7 +36,7 @@ func TestBuild_RefusesAnEmptyStepName(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	cfg := `{"flow":"f","nodes":[{"name":"","block":"a"},{"name":"b","block":"b"}],"wiring":[{"edge":["b",""]}]}`
+	cfg := `{"version":1,"flow":"f","nodes":[{"name":"","block":"a"},{"name":"b","block":"b"}],"wiring":[{"edge":["b",""]}]}`
 	if f, err := Load[int, int]([]byte(cfg), reg); err == nil {
 		t.Errorf("Load: a node named \"\" loaded (entry %q)", f.core.entry)
 	}
@@ -50,7 +50,7 @@ func TestBuild_RefusesAnEmptyStepName(t *testing.T) {
 	if err := RegisterJoin2(reg, "sum", func(_ context.Context, a, c int) (int, error) { return a + c, nil }); err != nil {
 		t.Fatal(err)
 	}
-	cfg = `{"flow":"f","nodes":[{"name":"a","block":"a"},{"name":"b","block":"b"},{"name":"c","block":"c"}],` +
+	cfg = `{"version":1,"flow":"f","nodes":[{"name":"a","block":"a"},{"name":"b","block":"b"},{"name":"c","block":"c"}],` +
 		`"wiring":[{"edge":["a","b"]},{"edge":["a","c"]},{"inputs":["b","c"],"merge":"sum"}]}`
 	if _, err := Load[int, int]([]byte(cfg), reg); err == nil {
 		t.Errorf("Load: a join named \"\" loaded")

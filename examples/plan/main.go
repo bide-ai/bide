@@ -159,7 +159,7 @@ func main() {
 	if cfg.crash == "" {
 		demoDeclarative(ctx, flow)
 		// The config surface beyond the linear case: a fan-in (join) diamond and a
-		// bounded loop (loopMax back-edge), each authored as data, run, conformed, and
+		// bounded loop (loop_max back-edge), each authored as data, run, conformed, and
 		// shown to share the code-built flow's topology Digest. Like demoDeclarative, they run
 		// only on the clean path against their own in-memory stores.
 		demoDeclarativeJoin(ctx)

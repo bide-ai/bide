@@ -2,7 +2,7 @@ package main
 
 // This file extends the declarative (declarative config) demonstration to the three config
 // features beyond the linear triage flow: fan-in (a join), a bounded loop (a switch When
-// arm with a loopMax back-edge), and per-node safety. Each is authored as data that
+// arm with a loop_max back-edge), and per-node safety. Each is authored as data that
 // references registered Go blocks by name, loaded into the Go builder, run, conformed,
 // and asserted to share the code-built flow's topology Digest (config == code). See
 // ../../docs/guides/flows.md ("Declarative config").
@@ -37,6 +37,7 @@ type LoopState struct {
 // illustrate the field: a fan-in over pure producers takes no external effect, so its merge
 // block is registered ReadOnly in Go and the config keeps that (a config may only lower it). Types are not restated; they flow from the blocks.
 const diamondConfig = `{
+  "version": 1,
   "flow": "diamond",
   "in": "int",
   "out": "string",
@@ -54,12 +55,13 @@ const diamondConfig = `{
 }`
 
 // loopConfig is the canonical bounded countdown loop authored as data: seed -> refine
-// (the loop head) -> check (the loop switch). The switch's When arm carries a loopMax of
+// (the loop head) -> check (the loop switch). The switch's When arm carries a loop_max of
 // 10, a bounded back-edge that routes to refine while N>0; the Else arm exits to done. The
 // node order, the two forward edges, and the arm order/bound mirror buildCountdownLoopByHand
-// exactly, so the loaded flow's Digest equals the code-built one. loopMax bounds the
+// exactly, so the loaded flow's Digest equals the code-built one. loop_max bounds the
 // back-edge so the graph stays finite; the predicate ("again") stays registered Go.
 const loopConfig = `{
+  "version": 1,
   "flow": "countdown",
   "in": "int",
   "out": "string",
@@ -73,7 +75,7 @@ const loopConfig = `{
   "wiring": [
     {"edge": ["seed", "refine"]},
     {"edge": ["refine", "check"]},
-    {"switch": "check", "when": [{"pred": "again", "to": "refine", "loopMax": 10}], "else": "done"}
+    {"switch": "check", "when": [{"pred": "again", "to": "refine", "loop_max": 10}], "else": "done"}
   ]
 }`
 
@@ -167,7 +169,7 @@ func buildLoopRegistry() (*plan.Registry, error) {
 // buildCountdownLoopByHand builds the same bounded loop with the Go builder, so its
 // Digest can be compared against a Load of loopConfig, proving config == code for a bounded
 // loop. The node order, the two forward edges, and the LoopBack(10)/Else arm order match the
-// config's loopMax of 10.
+// config's loop_max of 10.
 func buildCountdownLoopByHand() (*plan.Flow[int, string], error) {
 	b := plan.New[int, string]("countdown")
 	seed := b.Step("seed", func(_ context.Context, n int) (LoopState, error) {
@@ -250,7 +252,7 @@ func demoDeclarativeJoin(ctx context.Context) {
 }
 
 // demoDeclarativeLoop runs the bounded-loop config demonstration on the clean demo path. It loads
-// the countdown loop from JSON (a switch whose When arm carries a loopMax back-edge to the
+// the countdown loop from JSON (a switch whose When arm carries a loop_max back-edge to the
 // loop head, referencing a registered predicate) against a registry of the same blocks,
 // prints the config-derived topology, runs it (input 3 iterates refine three times then
 // exits at N=0), conforms the run, and asserts the config-loaded flow's Digest() EQUALS the
@@ -258,7 +260,7 @@ func demoDeclarativeJoin(ctx context.Context) {
 // in-memory store and its own run id, so it never touches the sqlite journal.
 func demoDeclarativeLoop(ctx context.Context) {
 	fmt.Println()
-	fmt.Println("== Declarative config: a bounded loop (loopMax back-edge), authored as declarative config ==")
+	fmt.Println("== Declarative config: a bounded loop (loop_max back-edge), authored as declarative config ==")
 
 	reg, err := buildLoopRegistry()
 	if err != nil {

@@ -285,6 +285,7 @@ Or author that same topology as declarative config a higher layer (a visual buil
 
 ```json
 {
+  "version": 1,
   "flow": "order-triage",
   "entry": "classify",
   "nodes": [

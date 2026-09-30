@@ -11,6 +11,7 @@ import (
 // approvalNodeConfig is a one-node flow whose node carries an m-of-n approval block.
 // Tests substitute APPROVAL with the block under test.
 const approvalNodeConfig = `{
+  "version": 1,
   "flow": "refund-flow",
   "in": "int",
   "out": "int",

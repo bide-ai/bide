@@ -62,7 +62,7 @@ func FuzzLoadConfig(f *testing.F) {
 	f.Add(uint8(0), []byte(triageConfig))
 	f.Add(uint8(1), []byte(diamondConfig))
 	f.Add(uint8(2), []byte(loopConfig))
-	f.Add(uint8(2), []byte(`{"flow":"x","entry":"seed","nodes":[{"name":"seed","block":"seed"}],"wiring":[{"switch":"seed","when":[{"pred":"again","to":"seed","loopMax":1}]}]}`))
+	f.Add(uint8(2), []byte(`{"version":1,"flow":"x","entry":"seed","nodes":[{"name":"seed","block":"seed"}],"wiring":[{"switch":"seed","when":[{"pred":"again","to":"seed","loop_max":1}]}]}`))
 	// A duplicate name, a case-variant name, an unknown name, a lone surrogate escape, and trailing
 	// data: a config must load as it reads.
 	f.Add(uint8(1), []byte(strings.Replace(diamondConfig, `"flow":`, `"flow":"other","flow":`, 1)))

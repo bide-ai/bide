@@ -70,6 +70,7 @@ func TestDeclarativeValidateCatchesDrift(t *testing.T) {
 	}
 	// A config naming a block the registry does not have must fail Validate.
 	const drifted = `{
+	  "version": 1,
 	  "flow": "order-triage",
 	  "entry": "classify",
 	  "nodes": [
