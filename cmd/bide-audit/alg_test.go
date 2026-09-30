@@ -6,6 +6,7 @@ import (
 	"crypto/mldsa"
 	"crypto/rand"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -139,7 +140,7 @@ func TestCLI_MLDSAAndHybridEndToEnd(t *testing.T) {
 			if err := pkg.Seal(logSigner); err != nil {
 				t.Fatal(err)
 			}
-			// verify-approvals has no allowlist for a run certificate, so its package carries none.
+			// A package without a run certificate, which verify-approvals checks with no allowlist.
 			gatePkg, err := audit.Evidence(ctx, store, runID, logSigner, ts, audit.WithToolCall("c1"))
 			if err != nil {
 				t.Fatal(err)
@@ -195,6 +196,29 @@ func TestCLI_MLDSAAndHybridEndToEnd(t *testing.T) {
 				}
 				if code, stdout, stderr := runCLI(append(tc.args, "-pubkey", wrongScheme)...); code != 1 {
 					t.Errorf("%s under an ed25519 key: exit %d, want 1\n%s%s", tc.name, code, stdout, stderr)
+				}
+			}
+			// verify-approvals on a package that carries a run certificate: it passes only with an
+			// allowlist (-approved / -approved-file, as verify-run and verify-evidence take) that
+			// holds the run's policy. An allowlist file that cannot be read is an unusable input.
+			allowPath := filepath.Join(dir, "approved.txt")
+			if err := os.WriteFile(allowPath, []byte("# approved\n"+digest+"\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			approvals := []string{"verify-approvals", "-evidence", pkgPath, "-call", "c1", "-need", "1", "-approvers", "alice", "-approver-keys", keysPath, "-pubkey", logKey}
+			for _, tc := range []struct {
+				name  string
+				extra []string
+				want  int
+			}{
+				{"-approved", []string{"-approved", digest}, 0},
+				{"-approved-file", []string{"-approved-file", allowPath}, 0},
+				{"no allowlist", nil, 1},
+				{"an allowlist without the run's policy", []string{"-approved", strings.Repeat("0", 64)}, 1},
+				{"a missing allowlist file", []string{"-approved-file", filepath.Join(dir, "missing.txt")}, 4},
+			} {
+				if code, stdout, stderr := runCLI(append(append([]string(nil), approvals...), tc.extra...)...); code != tc.want {
+					t.Errorf("verify-approvals of a package with a run certificate, %s: exit %d, want %d\n%s%s", tc.name, code, tc.want, stdout, stderr)
 				}
 			}
 			if code, stdout, stderr := runCLI("prove", "-journal", journalPath, "-sth", file("sth.json", pkg.STH), "-tool", "c1"); code != 0 {
