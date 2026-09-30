@@ -25,7 +25,7 @@ without a sign-off fail the DCO check.
 
 ## Build and test
 
-This is a multi-module workspace. The core is one Go module at the repository root; adapters and backends are their own modules (`trace`, `mcp`, `store/sqlite`, `store/postgres`, `govern/postgreslog`, `govern/redislog`, `govern/sqlitelog`, and the self-contained `examples/mcp` and `examples/observability`). A `go.work` stitches them together for local development.
+This is a multi-module workspace. The core is one Go module at the repository root; adapters and backends are their own modules (`trace`, `mcp`, `store/sqlite`, `store/postgres`, `govern`, `govern/postgreslog`, `govern/redislog`, `govern/sqlitelog`, `codec/gcf`, the self-contained example modules `examples/approval`, `examples/plan`, `examples/mcp`, `examples/observability` and `examples/govern`, and the test-only `integration` module, which holds the core's tests that need govern). A `go.work` stitches them together for local development, and CI builds and tests every module listed in `MODULES` in `.github/workflows/ci.yml` (it fails if a module is missing from that list or from `go.work`).
 
 Build and test with the versions pinned in each `go.mod` (rather than the workspace) by setting `GOWORK=off`:
 
@@ -39,7 +39,7 @@ gofmt -l .                                 # must print nothing
 
 The homebrew/base `gofmt` predates Go 1.27 generic methods and reports false errors on this repo (for example "method must have no type parameters"); the `PATH` export above puts the go1.27 toolchain `gofmt` first, or run `go fmt ./...` instead.
 
-The two example modules that import separate modules (`examples/mcp`, `examples/observability`) build from their own directory:
+The example modules that import separate modules (`examples/approval`, `examples/plan`, `examples/mcp`, `examples/observability`, `examples/govern`) build from their own directory:
 
 ```
 cd examples/observability && GOWORK=off go run .

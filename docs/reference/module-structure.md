@@ -6,21 +6,23 @@ actually import.
 
 ## Why
 
-The core agent loop imports only `golang.org/x/sync` (plus gsm). The adapters, however, pull
+The core module requires only `golang.org/x/sync` and `golang.org/x/text`. The adapters, however, pull
 large dependency trees: modernc pure-Go SQLite alone is 34 modules. As a single module, a
 consumer who imported *only* the core still inherited the whole set in their `go.sum` /
 `go mod graph` / SCA audit surface (Go's module-graph pruning keeps them from *compiling*
 unused adapters, but they still appear to dependency scanners).
 
 Measured before the split: a core-only consumer inherited **54 external modules**; they now
-inherit **2** (gsm + x/sync). Each heavy tree lives behind its own module and is pulled in
+inherit **2** (`x/sync` and `x/text`). gsm is not among them: it belongs to the `govern` module.
+Each heavy tree lives behind its own module and is pulled in
 only when that adapter is imported.
 
 ## The modules
 
 | Module | Path | Extra deps beyond core |
 |---|---|---|
-| **core** | `github.com/bide-ai/bide` | gsm, `x/sync` |
+| **core** | `github.com/bide-ai/bide` | `x/sync`, `x/text` |
+| govern | `…/govern` | blackwell-systems/gsm |
 | mcp | `…/mcp` | modelcontextprotocol/go-sdk (+ jsonschema, segmentio, …) |
 | trace | `…/trace` | go.opentelemetry.io/otel |
 | sqlite store | `…/store/sqlite` | modernc.org/sqlite |
@@ -31,11 +33,17 @@ only when that adapter is imported.
 | gcf codec | `…/codec/gcf` | blackwell-systems/gcf-go |
 
 The core module keeps everything with no heavy deps: `agent` (loop), `schema`, `middleware`,
-`model/anthropic`, `model/openai`, `model/gemini`, `plan`, `audit`, `govern`, `eval`, `chaos`, the
+`model/anthropic`, `model/openai`, `model/gemini`, `plan`, `audit`, `eval`, `chaos`, the
 `cmd` tools, and most of `examples`. The `architecture_test.go` guard
-(core must not import an adapter) still holds, now enforced at the module boundary too.
+(core must not import an adapter) still holds, now enforced at the module boundary too, and
+`TestCoreModuleHasNoGSM` checks that the core module's graph never names gsm.
 
-Five more modules are not libraries you import; they exist so their dependencies stay out of the
+`govern` is its own module so the core does not depend on gsm. It stays v0.x until gsm is stable,
+while the core moves on its own schedule. It uses only the core's exported API (never a package
+under `internal/`), which its `TestGovernImportsNoCoreInternal` enforces. The three governed-event
+log modules (`govern/redislog`, `govern/sqlitelog`, `govern/postgreslog`) require it.
+
+Seven more modules are not libraries you import; they exist so their dependencies stay out of the
 core:
 
 | Module | Path | Why it is separate |
@@ -44,9 +52,11 @@ core:
 | plan example | `…/examples/plan` | imports `store/sqlite` |
 | mcp example | `…/examples/mcp` | imports `mcp` and the MCP go-sdk |
 | observability example | `…/examples/observability` | imports `trace` and the OpenTelemetry SDK |
+| governance examples | `…/examples/govern` | nine programs (`authority`, `compliance`, `compose`, `coordination`, `delegation`, `earned-authority`, `mesh`, `proof-carrying-run`, `quorum`) that import `govern` and gsm |
+| integration tests | `…/integration` | test-only: the core's tests that need `govern` and gsm (the many-agent convergence test, the run-certificate tests over real gsm policies, and the `bide-audit` CLI tests fed by quorum runs and convergence certificates) |
 | benchmarks | `…/benchmarks` | the cross-SDK chaos comparison: eino, langchaingo, adk-go, trpc-agent-go |
 
-The example modules are in `go.work`; `benchmarks` is not, so run it with `GOWORK=off` from its
+The example and integration modules are in `go.work`; `benchmarks` is not, so run it with `GOWORK=off` from its
 directory.
 
 ## Working in the repo
@@ -61,7 +71,8 @@ cd trace && go test ./...     # or any module
 
 Each adapter module's `go.mod` also carries a `replace github.com/bide-ai/bide => <rel>`
 so it builds standalone in CI. CI builds and tests every module in its own directory (see
-`.github/workflows/ci.yml`, `MODULES`), except `benchmarks`, which CI does not run.
+`.github/workflows/ci.yml`, `MODULES`), except `benchmarks`, which CI does not run. The Lint job
+fails if a module in the tree is missing from `MODULES` or from `go.work`.
 
 ## Interim state (pre-1.0)
 

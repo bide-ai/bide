@@ -707,7 +707,7 @@ described above, and covers the journal up to the certificate STH's size; that t
 run's final head is a fact the anchor log supplies, not the certificate. Property support for **authority-bounded** (every governed action under a grant
 descending from the root, via `VerifyDelegationChain`) and **quorum-backed** commits composes from
 the same seams and is deferred to a later version. Runnable end to end in
-`examples/proof-carrying-run`.
+`examples/govern/proof-carrying-run`.
 
 ## Signature schemes and post-quantum anchoring
 
@@ -750,7 +750,7 @@ the parent (a child of an expiring grant is never non-expiring), and it keeps ev
 parent's scope constraints, unchanged or narrowed by the `ScopeRule` you supply for that key
 (`audit.ScopeRules{"limit": audit.NumericAtMost}` for a limit). An auditor thus confirms a
 sub-agent's authority descends, unbroken and never widened, from a root principal each hop signed.
-Runnable end to end in `examples/delegation`; the [delegation guide](delegation.md) states the rules
+Runnable end to end in `examples/govern/delegation`; the [delegation guide](delegation.md) states the rules
 in full.
 
 **Attenuation by default.** `AttenuatingSubAgent` wires this into the sub-agent seam so narrowing is
@@ -780,7 +780,7 @@ capped, and evidence-gated; attenuation is immediate and ungated, because shrink
 always safe. It is deliberately a durable, sequential controller rather than a convergent machine,
 because earning is temporal and order-dependent (a promotion does not commute with a compliant
 action); the enforcement of the limit it sets stays a convergent gsm invariant on the work machine.
-Runnable in `examples/earned-authority`.
+Runnable in `examples/govern/earned-authority`.
 
 ## Next
 

@@ -56,7 +56,7 @@ if res.Agreed {
 return escalate(res) // no agreement: hand it to a person
 ```
 
-[`examples/quorum`](../../examples/quorum/main.go) is a runnable, offline version with both
+[`examples/govern/quorum`](../../examples/govern/quorum/main.go) is a runnable, offline version with both
 outcomes: agreement, where the decision commits, and a split, where it escalates.
 
 ## Reading the result
@@ -170,7 +170,7 @@ machine, report, err := r.Build() // fails with a counterexample if the policy c
 
 The policy is checked for every possible vote count, so the gate holds however the models vote.
 Commit through `govern.AttestedEventTool` to record the commit bound to the policy it ran under.
-`examples/quorum` shows the whole wiring.
+`examples/govern/quorum` shows the whole wiring.
 
 ## Verifying a decision offline
 

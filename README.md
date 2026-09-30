@@ -785,9 +785,10 @@ func RequireTag(tag string) agent.ToolMiddleware {
 ## Modules
 
 Bide is a multi-module repo: a dependency-light **core** (`github.com/bide-ai/bide`,
-the loop, schema, middleware, model adapters, the `plan` flow builder, `audit`, govern; deps are just gsm + `x/sync`) plus one
+the loop, schema, middleware, model adapters, the `plan` flow builder, `audit`; deps are just `x/sync` and `x/text`) plus one
 module per heavy adapter (`mcp`, `trace`, `store/sqlite`, `store/postgres`, `govern/redislog`,
-`govern/sqlitelog`, `govern/postgreslog`, `codec/gcf`). Import an adapter and you pull its dependency tree; import only the core
+`govern/sqlitelog`, `govern/postgreslog`, `codec/gcf`) and the `govern` module, which carries gsm and stays v0.x until gsm
+is stable. Import an adapter and you pull its dependency tree; import only the core
 and you don't. A core-only consumer's external-module surface is 2, not 54. See
 [docs/reference/module-structure.md](docs/reference/module-structure.md).
 
@@ -808,7 +809,7 @@ middleware       Retry, RateLimit, Cost, Hedge
 trace            opt-in OTel gen_ai.* spans
 store/sqlite     on-disk durable resume (single binary, no cluster)
 store/postgres   HA durable resume (any node resumes any run)
-govern           Tier-2: federated governed state + quorum for agents that must agree (gsm-backed)
+govern           Tier-2: federated governed state + quorum for agents that must agree (gsm-backed; own module)
 ```
 
 ## Federated governance: agents that agree, provably (Tier-2)
@@ -843,8 +844,8 @@ tool := govern.EventTool(gov, "pay", "mark the order paid", "pay", agent.Safety{
 // hand `tool` to the agent: concurrent agents sharing `gov` converge, durably.
 ```
 
-> Full guide, capability ladder, and the runnable demos (`examples/mesh`, `examples/compose`,
-> `examples/quorum`) in **[the governance guide](docs/guides/governance.md)**.
+> Full guide, capability ladder, and the runnable demos (`examples/govern/mesh`, `examples/govern/compose`,
+> `examples/govern/quorum`) in **[the governance guide](docs/guides/governance.md)**.
 
 <p align="center"><img src="assets/divider-line.png" width="100%" alt=""></p>
 
@@ -866,12 +867,12 @@ New here? Start with **[Getting started](docs/getting-started.md)**, use the **[
 
 **Accountability and governance**
 
-- **[Audit](docs/guides/audit.md)**: proof-carrying runs. A run ships one portable `RunCertificate`, checkable offline with `bide-audit verify-run`. Runnable: `examples/proof-carrying-run`.
-- **[Delegation](docs/guides/delegation.md)**: signed capability grants a sub-agent can only narrow (`Grant`/`SignGrant`), verified offline (`VerifyDelegationChain`), plus authority earned from a clean trail. Runnable: `examples/delegation`, `examples/authority`.
+- **[Audit](docs/guides/audit.md)**: proof-carrying runs. A run ships one portable `RunCertificate`, checkable offline with `bide-audit verify-run`. Runnable: `examples/govern/proof-carrying-run`.
+- **[Delegation](docs/guides/delegation.md)**: signed capability grants a sub-agent can only narrow (`Grant`/`SignGrant`), verified offline (`VerifyDelegationChain`), plus authority earned from a clean trail. Runnable: `examples/govern/delegation`, `examples/govern/authority`.
 - **[Security model](docs/guides/security-model.md)**: the exact scope of the cryptographic guarantees (integrity, authenticity, tamper-evidence, non-repudiation, selective disclosure) and what is out of scope (confidentiality). Read before relying on the trail.
-- **[Governance](docs/guides/governance.md)**: the Tier-2 governed-state substrate (gsm). Describe shared state as a registry, and `Build()` proves every interleaving converges or returns a counterexample. Runnable: `examples/mesh`, `examples/compose`.
+- **[Governance](docs/guides/governance.md)**: the Tier-2 governed-state substrate (gsm). Describe shared state as a registry, and `Build()` proves every interleaving converges or returns a counterexample. Runnable: `examples/govern/mesh`, `examples/govern/compose`.
 - **[Approval](docs/guides/approval.md)**: durable human sign-off before a tool runs, from 1-of-1 to signed m-of-n (`ApprovalPolicy`, `ApproveAs`), with offline proof that k named approvers approved before the action (`audit.ApprovalEvidence`, `audit.VerifyApprovals`). Runnable: `examples/approval`.
-- **[Quorum](docs/guides/quorum.md)**: governed k-of-n model agreement (`govern.Quorum`), the tally anchored in the journal and re-checkable offline (`bide-audit verify-quorum`). Runnable: `examples/quorum`.
+- **[Quorum](docs/guides/quorum.md)**: governed k-of-n model agreement (`govern.Quorum`), the tally anchored in the journal and re-checkable offline (`bide-audit verify-quorum`). Runnable: `examples/govern/quorum`.
 
 **Reference and internals**
 

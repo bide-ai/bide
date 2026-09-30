@@ -4,12 +4,15 @@ use (
 	.
 	./codec/gcf
 	./examples/approval
+	./examples/govern
 	./examples/mcp
 	./examples/observability
 	./examples/plan
+	./govern
 	./govern/postgreslog
 	./govern/redislog
 	./govern/sqlitelog
+	./integration
 	./mcp
 	./store/postgres
 	./store/sqlite

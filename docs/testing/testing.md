@@ -27,11 +27,14 @@ an idealized plan. One item is stated differently here than you may expect:
 Two module boundaries matter for running tests. The competitor benchmark adapters live in a
 **separate module** (`benchmarks/`, its own `go.mod`) so their large dependency trees never
 touch the Bide core; `benchmarks` is not in the workspace, so run its tests with `GOWORK=off`. The
-workspace (`go.work`) stitches in the adapter modules `codec/gcf`, `govern/postgreslog`,
+workspace (`go.work`) stitches in the adapter modules `codec/gcf`, `govern`, `govern/postgreslog`,
 `govern/redislog`, `govern/sqlitelog`, `mcp`, `store/postgres`, `store/sqlite`, and `trace`, plus
-the example modules `examples/approval`, `examples/mcp`, `examples/observability`, and
-`examples/plan`. `go test ./...` from the root covers the core module only; run each module's tests
-from its own directory.
+the example modules `examples/approval`, `examples/govern`, `examples/mcp`, `examples/observability`,
+and `examples/plan`, and the test-only `integration` module. `govern` is its own module so the core
+does not depend on gsm; the core's tests that need govern or gsm (the convergence test below, the
+run-certificate tests over real gsm policies, and the `bide-audit` CLI tests fed by quorum runs and
+convergence certificates) live in `integration`. `go test ./...` from the root covers the core
+module only; run each module's tests from its own directory.
 
 ## Pillar 1: fair crash-injection chaos benchmark
 
@@ -103,7 +106,7 @@ not "agents always agree" (see Pillar 3).
 **Many concurrent governed agents each apply the same event multiset in a different order; the
 test asserts every one converges to the same machine-checked normal form AND every one's
 governed action verifies offline against a signed tree head.** This is
-`e2e_convergence_test.go` (`TestE2E_ManyAgentsConvergeAndAreTraceable`), exercising scale,
+`integration/convergence/e2e_convergence_test.go` (`TestE2E_ManyAgentsConvergeAndAreTraceable`), exercising scale,
 order-independent convergence under real concurrency (including a compensating cap that fires at
 different steps for different orders), and cryptographic traceability in one test.
 
@@ -196,7 +199,10 @@ is a deployment requirement documented in the [audit guide](../guides/audit.md).
 fails if the core's runtime import graph contains any adapter package (`model/`, `store/`, `trace`,
 `middleware`, `govern`) or any heavy infrastructure (`opentelemetry`, `modernc.org/sqlite`,
 `jackc/pgx`, `temporal`, `weaviate`, `blackwell-systems/gsm`). It skips (does not fail) if
-`go list` is unavailable. This is the ports-and-adapters discipline verified mechanically: the
+`go list` is unavailable. `TestCoreModuleHasNoGSM` checks the module graph as well: read with no
+workspace, the core module's `go mod graph`, `go.mod` and `go.sum` never name gsm. In the govern
+module, `TestGovernImportsNoCoreInternal` checks that no govern package imports a package under
+the core's `internal/`, since govern is versioned apart from the core. This is the ports-and-adapters discipline verified mechanically: the
 core depends only on its ports (interfaces), never on a concrete adapter.
 
 ## Pillar 6: deterministic replay for regression and debugging
@@ -347,13 +353,13 @@ go test ./chaos -run Verify -v
 # Cross-SDK chaos comparison (separate module; keeps competitor deps off the core).
 cd benchmarks && GOWORK=off go test -run Comparison -v
 
-# E2E convergence + traceability at larger scale (gated by wall time).
-E2E_HUGE=1          go test ./agent -run TestE2E_ManyAgentsConvergeAndAreTraceable -v   # adds 100k
-E2E_HUGE=million    go test ./agent -run TestE2E_ManyAgentsConvergeAndAreTraceable -v   # adds 100k + 1,000,000
-E2E_HUGE=tenmillion go test ./agent -run TestE2E_ManyAgentsConvergeAndAreTraceable -v -timeout 0   # adds 10,000,000 (~13 min)
+# E2E convergence + traceability at larger scale (gated by wall time), from integration/.
+E2E_HUGE=1          go test ./convergence -run TestE2E_ManyAgentsConvergeAndAreTraceable -v   # adds 100k
+E2E_HUGE=million    go test ./convergence -run TestE2E_ManyAgentsConvergeAndAreTraceable -v   # adds 100k + 1,000,000
+E2E_HUGE=tenmillion go test ./convergence -run TestE2E_ManyAgentsConvergeAndAreTraceable -v -timeout 0   # adds 10,000,000 (~13 min)
 
 # Second trust root: re-certify the anchored policy with the external verified oracle.
-GSM_AST_CHECKER=/path/to/checker go test ./govern -run TestAttestedEventTool_RealPolicyDigest -v
+cd govern && GSM_AST_CHECKER=/path/to/checker go test . -run TestAttestedEventTool_RealPolicyDigest -v
 ```
 
 There is no `Makefile` in this repository; the `go test` invocations above are the interface.

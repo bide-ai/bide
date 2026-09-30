@@ -34,7 +34,7 @@ func TestPlanNoAdapterImports(t *testing.T) {
 		"bide-ai/bide/store/", // persistence adapters
 		"bide-ai/bide/trace",  // OTel adapter
 		"bide-ai/bide/middleware",
-		"bide-ai/bide/govern", // gsm-backed governor (Tier-2 edge)
+		"bide-ai/bide/govern", // gsm-backed governor (Tier-2 edge), its own module
 	}
 	for _, bad := range forbidden {
 		if strings.Contains(deps, bad) {

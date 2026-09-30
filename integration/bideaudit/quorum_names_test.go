@@ -1,4 +1,4 @@
-package main
+package bideaudit_test
 
 import (
 	"context"
@@ -36,7 +36,7 @@ func newQuorumBundles(t *testing.T, store agent.Durable, runID string) *quorumBu
 	}
 	dir := t.TempDir()
 	bin := auditBin(dir)
-	if out, err := exec.Command("go", "build", "-o", bin, ".").CombinedOutput(); err != nil {
+	if out, err := exec.Command("go", "build", "-o", bin, cliPkg).CombinedOutput(); err != nil {
 		t.Fatalf("build binary: %v\n%s", err, out)
 	}
 	return &quorumBundles{t: t, store: store, runID: runID, dir: dir, bin: bin, pubHex: hex.EncodeToString(pub), sth: audit.SignTreeHead(th, priv)}

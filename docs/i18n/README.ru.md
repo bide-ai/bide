@@ -543,7 +543,7 @@ tool := govern.EventTool(gov, "pay", "mark the order paid", "pay", agent.Safety{
 // hand `tool` to the agent: concurrent agents sharing `gov` converge, durably.
 ```
 
-> Полное руководство, лестница возможностей и запускаемые демо (`examples/mesh`, `examples/compose`, `examples/quorum`) — в **[docs/guides/governance.md](../../docs/guides/governance.md)**.
+> Полное руководство, лестница возможностей и запускаемые демо (`examples/govern/mesh`, `examples/govern/compose`, `examples/govern/quorum`) — в **[docs/guides/governance.md](../../docs/guides/governance.md)**.
 
 ## Руководства
 
@@ -563,12 +563,12 @@ tool := govern.EventTool(gov, "pay", "mark the order paid", "pay", agent.Safety{
 
 **Подотчётность и управление**
 
-- **[Аудит](../../docs/guides/audit.md)**: прогоны, несущие доказательство. Прогон отгружает один переносимый `RunCertificate`, проверяемый офлайн через `bide-audit verify-run`. Запускается в `examples/proof-carrying-run`.
-- **[Делегирование](../../docs/guides/delegation.md)**: подписанные гранты возможностей, которые суб-агент может только сузить (`Grant`/`SignGrant`), проверяемые офлайн (`VerifyDelegationChain`), плюс полномочие, заслуженное чистым следом. Запускается в `examples/delegation`, `examples/authority`.
+- **[Аудит](../../docs/guides/audit.md)**: прогоны, несущие доказательство. Прогон отгружает один переносимый `RunCertificate`, проверяемый офлайн через `bide-audit verify-run`. Запускается в `examples/govern/proof-carrying-run`.
+- **[Делегирование](../../docs/guides/delegation.md)**: подписанные гранты возможностей, которые суб-агент может только сузить (`Grant`/`SignGrant`), проверяемые офлайн (`VerifyDelegationChain`), плюс полномочие, заслуженное чистым следом. Запускается в `examples/govern/delegation`, `examples/govern/authority`.
 - **[Модель безопасности](../../docs/guides/security-model.md)**: точная область криптографических гарантий (целостность, аутентичность, обнаружение подделки, неотказуемость, избирательное раскрытие) и то, что вне области (конфиденциальность). Прочтите, прежде чем полагаться на след.
-- **[Управление](../../docs/guides/governance.md)**: подложка управляемого состояния Tier-2 (gsm). Опишите разделяемое состояние как реестр, и `Build()` доказывает, что всякое чередование сходится, либо возвращает контрпример. Запускается в `examples/mesh`, `examples/compose`.
+- **[Управление](../../docs/guides/governance.md)**: подложка управляемого состояния Tier-2 (gsm). Опишите разделяемое состояние как реестр, и `Build()` доказывает, что всякое чередование сходится, либо возвращает контрпример. Запускается в `examples/govern/mesh`, `examples/govern/compose`.
 - **[Одобрение](../../docs/guides/approval.md)**: надёжное одобрение человеком перед запуском инструмента, от 1-из-1 до подписанного m-из-n (`ApprovalPolicy`, `ApproveAs`), с офлайн-доказательством того, что k именованных одобряющих одобрили действие до его выполнения (`audit.ApprovalEvidence`, `audit.VerifyApprovals`). Запускается в `examples/approval`.
-- **[Кворум](../../docs/guides/quorum.md)**: управляемое согласие моделей k-из-n (`govern.Quorum`), с подсчётом, закреплённым в журнале и перепроверяемым офлайн (`bide-audit verify-quorum`). Запускается в `examples/quorum`.
+- **[Кворум](../../docs/guides/quorum.md)**: управляемое согласие моделей k-из-n (`govern.Quorum`), с подсчётом, закреплённым в журнале и перепроверяемым офлайн (`bide-audit verify-quorum`). Запускается в `examples/govern/quorum`.
 
 **Справочник и внутреннее устройство**
 

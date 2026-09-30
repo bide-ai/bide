@@ -1,4 +1,4 @@
-package main
+package bideaudit_test
 
 import (
 	"context"

@@ -14,7 +14,7 @@
 //     edge to place under external coordination; BuildCoordinated(plan) then builds a
 //     convergent FedMachine, which govern.NewFederated wraps as a crash-recoverable governor.
 //
-//     go run ./examples/coordination
+//     cd examples/govern && go run ./coordination
 package main
 
 import (
