@@ -1,8 +1,8 @@
 name: Models
 
-# TLA+ models of the coordination protocols (spec/tla/README.md). On a pull request and in the
-# merge queue: the PlusCal translation check, the checker self-test, and every "ci", "regress" and
-# "finding" configuration. Nightly (and on demand): the "nightly" configurations, with larger
+# TLA+ models of the coordination protocols (spec/tla/README.md). On a pull request that touches the
+# models or the code they describe, in the merge queue, and on main: the PlusCal translation check,
+# the checker self-test, and every "ci", "regress" and "finding" configuration. Nightly (and on demand): the "nightly" configurations, with larger
 # bounds and the liveness checks at the larger fault budget.
 on:
   push:
@@ -25,17 +25,45 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      # Gated per step, not per job, so the job always reports as "Models" (a required check).
+      # A pull request runs the models only when it touches them or the Go code they describe
+      # (the model-code map in spec/tla/README.md: agent/, store/, internal/journalhook/).
+      # merge_group and pushes to main always run in full, and so does any doubt: a failed diff,
+      # an unexpected event, or this step failing.
+      - id: changes
+        name: Did the models or the code they describe change?
+        shell: bash
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          run=true
+          if [ "${{ github.event_name }}" = "pull_request" ] && files=$(git diff --name-only "$BASE" "$HEAD"); then
+            echo "Changed files:"; echo "$files"
+            modelled=$(echo "$files" | grep -E '^(spec/tla/|agent/|store/|internal/journalhook/|\.github/workflows/models\.yml$)' || true)
+            if [ -n "$files" ] && [ -z "$modelled" ]; then
+              run=false
+              echo "No modelled code changed (spec/tla, agent, store, internal/journalhook, models.yml): the models are not re-checked."
+            fi
+          fi
+          echo "run=$run" | tee -a "$GITHUB_OUTPUT"
       - uses: actions/setup-java@v4
+        if: steps.changes.outputs.run != 'false'
         with:
           distribution: temurin
           java-version: '21'
       - uses: actions/cache@v4
+        if: steps.changes.outputs.run != 'false'
         with:
           path: ~/.cache/bide-tla
           key: tla-tools-${{ hashFiles('spec/tla/tools.lock') }}
       - name: Checker self-test (a stale translation and a wrong jar checksum both fail)
+        if: steps.changes.outputs.run != 'false'
         run: spec/tla/check.sh self-test
       - name: Translation check, then the ci, regress and finding configurations
+        if: steps.changes.outputs.run != 'false'
         run: spec/tla/check.sh
 
   models-nightly:

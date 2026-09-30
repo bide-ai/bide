@@ -47,6 +47,19 @@ fire would satisfy every safety property, so this vacuity check is part of every
 12), and a `liveness` configuration with a temporal property violated (exit status 13); anything
 else fails the check.
 
+## In CI
+
+The workflow `.github/workflows/models.yml` has two jobs. **Models** runs on every pull request, in
+the merge queue and on pushes to main: the self-test, the translation check, and every `ci`,
+`regress` and `finding` configuration. On a pull request, its steps run only when the pull request
+touches the models or the Go code they describe (`spec/tla/`, `agent/`, `store/`,
+`internal/journalhook/`, or `models.yml` itself); otherwise the job reports success after printing
+that no modelled code changed, so it can be a required check without costing every documentation
+change six minutes. The merge queue and main always run in full, and so does any doubt (a failed
+diff, an unexpected event). A pull request that changes the claim code outside those paths must
+widen the filter in the same pull request. **Models (nightly)** runs the `nightly` configurations
+on a schedule and on demand (`workflow_dispatch`).
+
 ## Layout
 
 ```text
