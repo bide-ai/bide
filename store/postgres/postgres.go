@@ -9,14 +9,35 @@
 // version knows. Run IDs are compared and ordered by their bytes (collation "C"), so a Lister's
 // order does not depend on the database's locale.
 //
+// # One statement per write
+//
+// Every write the store makes after Open (an insert, AcquireLease, RenewLease, ReleaseLease) is a
+// single statement sent on its own, which Postgres runs as a transaction of its own and commits
+// before it replies. No transaction spans two round trips, so a client that stops between two of
+// its round trips (a SIGSTOP, a suspended VM, a long GC pause, a partition) holds no row or
+// advisory lock while it is stopped. Another node therefore takes an expired lease one TTL after
+// the last renewal that committed, or records the run's next step, however long the stall lasts.
+// Reads are single SELECT statements too, and nothing holds a connection between two pages.
+//
+// Each statement is atomic by itself: AcquireLease is an INSERT ... ON CONFLICT DO UPDATE whose
+// WHERE grants the lease only when it is free, expired or already the holder's; RenewLease and
+// ReleaseLease are an UPDATE and a DELETE conditioned on the holder (and, for a renewal, on the
+// lease being live); and Insert computes the entry's position as MAX(seq)+1 in the INSERT itself.
+// Two inserts into one run that read the same MAX collide on the (run_id, seq) key: the second
+// waits for the first to commit, fails, and is run again, so every position follows commit order.
+//
 // # Isolation
 //
-// Every write the store makes (an insert, the lease calls, creating the schema) runs in a
-// transaction that sets its own isolation level, read committed, whatever the deployment's
-// default_transaction_isolation (set on the server, database, role or DSN) says. The journal's
-// correctness depends on it: an insert takes a per-run advisory lock and then reads the run's last
-// position, which at repeatable read or serializable would come from a snapshot taken before the
-// lock was granted. Reads are single SELECT statements, which see one snapshot at any level.
+// The statements behave the same whatever the deployment's default_transaction_isolation (set on
+// the server, database, role or DSN). At read committed, a statement that meets a row another
+// transaction changed after the statement began waits for that transaction and then acts on the
+// row's latest version. At repeatable read or serializable, Postgres fails the statement with a
+// serialization failure (40001) instead, and at serializable it may fail a read that conflicts
+// with concurrent serializable writes the same way. The store then runs the statement again, with
+// a new snapshot that sees the other transaction's commit, which is the outcome read committed
+// reaches in one attempt. A statement that fails that way has changed nothing, so running it again
+// is safe, and each retry follows another transaction's commit, so the retries end. The schema migration in Open
+// is the one transaction of several statements; it sets read committed itself (see txOptions).
 package postgres
 
 import (
@@ -33,6 +54,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/jackc/pgx/v5/pgconn"
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
@@ -65,18 +87,39 @@ var (
 
 // tables holds the table names, prefixed, and the statements built from them.
 type tables struct {
-	steps, leases, version string
-	insert                 string
-	get, load              selectSQL
+	steps, leases, version          string
+	insert, acquire, renew, release writeSQL
+	get, load                       selectSQL
 }
 
 func newTables(prefix string) (tables, error) {
 	t := tables{steps: prefix + "steps", leases: prefix + "leases", version: prefix + "schema_version"}
-	t.insert = `INSERT INTO ` + t.steps + ` (run_id, seq, name, data)
+	var err error
+	// The position is MAX(seq)+1 over the statement's snapshot. Two inserts that read the same MAX
+	// collide on UNIQUE (run_id, seq), which is not the conflict target, so the second fails with
+	// 23505 once the first commits and insert runs it again (see insert).
+	if t.insert, err = newWrite(`INSERT INTO ` + t.steps + ` (run_id, seq, name, data)
 		VALUES ($1, (SELECT COALESCE(MAX(seq), -1) + 1 FROM ` + t.steps + ` WHERE run_id = $1), $2, $3)
 		ON CONFLICT (run_id, name) DO NOTHING
-		RETURNING seq`
-	var err error
+		RETURNING seq`); err != nil {
+		return tables{}, err
+	}
+	// Granted when the run is unleased, when the live lease is already holder's, or when the lease
+	// has expired; a row another holder holds live is left alone and nothing is returned.
+	if t.acquire, err = newWrite(`INSERT INTO ` + t.leases + ` (run_id, holder, expiry)
+		VALUES ($1, $2, now() + ($3 * interval '1 second'))
+		ON CONFLICT (run_id) DO UPDATE
+			SET holder = EXCLUDED.holder, expiry = EXCLUDED.expiry
+			WHERE ` + t.leases + `.holder = EXCLUDED.holder OR ` + t.leases + `.expiry < now()`); err != nil {
+		return tables{}, err
+	}
+	if t.renew, err = newWrite(`UPDATE ` + t.leases + ` SET expiry = now() + ($3 * interval '1 second')
+		WHERE run_id = $1 AND holder = $2 AND expiry >= now()`); err != nil {
+		return tables{}, err
+	}
+	if t.release, err = newWrite(`DELETE FROM ` + t.leases + ` WHERE run_id = $1 AND holder = $2`); err != nil {
+		return tables{}, err
+	}
 	if t.get, err = newSelect(`SELECT seq, data FROM ` + t.steps + ` WHERE run_id = $1 AND name = $2`); err != nil {
 		return tables{}, err
 	}
@@ -86,10 +129,28 @@ func newTables(prefix string) (tables, error) {
 	return t, nil
 }
 
-// selectSQL is a query that starts with the keyword SELECT, the only kind the store runs on the
-// pool outside a transaction begun with txOptions (the isolation check in txoptions_test.go allows
-// a value of this type there, as it allows a constant SELECT). Only newSelect makes one.
+// selectSQL is a query that starts with the keyword SELECT. The statement check in
+// txoptions_test.go allows a value of this type on the pool, as it allows a constant SELECT. Only
+// newSelect makes one.
 type selectSQL string
+
+// writeSQL is one INSERT, UPDATE or DELETE statement, which the store sends on the pool on its
+// own, so Postgres runs it as a transaction of its own. The statement check in txoptions_test.go
+// allows a value of this type on the pool. Only newWrite makes one.
+type writeSQL string
+
+// newWrite returns q as a writeSQL, or an error if q does not start with INSERT, UPDATE or DELETE
+// or holds a semicolon (it would then be more than one statement under the simple protocol, which
+// a DSN can select).
+func newWrite(q string) (writeSQL, error) {
+	t := strings.TrimLeftFunc(q, unicode.IsSpace)
+	for _, kw := range []string{"INSERT", "UPDATE", "DELETE"} {
+		if len(t) > len(kw) && strings.EqualFold(t[:len(kw)], kw) && unicode.IsSpace(rune(t[len(kw)])) && !strings.Contains(q, ";") {
+			return writeSQL(q), nil
+		}
+	}
+	return "", fmt.Errorf("postgres: a write on the pool must be one INSERT, UPDATE or DELETE statement, got %.40q: %w", q, agent.ErrConfig)
+}
 
 // newSelect returns q as a selectSQL, or an error if q does not start with the SELECT keyword.
 func newSelect(q string) (selectSQL, error) {
@@ -100,13 +161,19 @@ func newSelect(q string) (selectSQL, error) {
 	return selectSQL(q), nil
 }
 
-// txOptions are the options of every transaction the store begins. The isolation level is set
-// explicitly so the store does not inherit the deployment's default_transaction_isolation: each
-// write takes an advisory lock and then reads rows committed while it waited for the lock, which
-// only read committed shows it (at repeatable read or serializable the transaction's snapshot is
-// taken by its first statement, the lock), and each lease upsert or update must proceed on a row
-// another transaction changed after it began, where the stricter levels fail with 40001.
+// txOptions are the options of the one transaction the store begins, the schema migration. The
+// isolation level is set explicitly so the migration does not inherit the deployment's
+// default_transaction_isolation: it takes an advisory lock and then reads the schema version,
+// which at repeatable read or serializable would come from a snapshot taken by the lock statement,
+// before another node's migration committed.
 var txOptions = &sql.TxOptions{Isolation: sql.LevelReadCommitted}
+
+// migrateIdleTimeout bounds how long the migration's transaction may sit idle between two of its
+// statements. A node stopped inside it (a SIGSTOP, a suspended VM) would otherwise hold the
+// migration lock, and every node opening the store would wait for as long as the stop lasts;
+// Postgres ends the stopped node's session instead, which rolls the migration back. A live node
+// sends its next statement within milliseconds.
+const migrateIdleTimeout = 5 * time.Second
 
 // Option configures Open and New.
 type Option interface{ apply(*config) error }
@@ -199,6 +266,10 @@ func (s *Store) migrate(ctx context.Context) error {
 		return fmt.Errorf("postgres: migrate: %w (%w)", err, agent.ErrStorage)
 	}
 	defer tx.Rollback()
+	// Set before the lock is taken, so the migration never holds it idle without the bound.
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`SET LOCAL idle_in_transaction_session_timeout = %d`, migrateIdleTimeout.Milliseconds())); err != nil {
+		return fmt.Errorf("postgres: migrate: %w (%w)", err, agent.ErrStorage)
+	}
 	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock($1)`, migrateLock); err != nil {
 		return fmt.Errorf("postgres: migrate: %w (%w)", err, agent.ErrStorage)
 	}
@@ -245,9 +316,12 @@ func (s *Store) Close() error {
 	return s.db.Close()
 }
 
-// Insert implements agent.Store. Inserts into one run are serialized by a transaction-scoped
-// advisory lock on the run, held until commit, so each takes the next position (MAX(seq)+1) and
-// positions follow commit order: a reader never sees an entry before one with a lower Seq.
+// Insert implements agent.Store. It is one INSERT statement, committed before Postgres replies,
+// that takes the next position (MAX(seq)+1) in its own snapshot. An insert computes position n+1
+// only when the entry at n is committed and visible to it, so positions follow commit order: a
+// reader never sees an entry before one with a lower Seq. Two inserts that read the same MAX
+// collide on UNIQUE (run_id, seq); the later one waits for the first to commit, fails with 23505,
+// and runs again with a snapshot that sees it.
 func (s *Store) Insert(ctx context.Context, runID, name string, data []byte) (agent.Entry, bool, error) {
 	e, ok, err := s.insert(ctx, runID, name, data)
 	if err != nil {
@@ -257,38 +331,33 @@ func (s *Store) Insert(ctx context.Context, runID, name string, data []byte) (ag
 }
 
 func (s *Store) insert(ctx context.Context, runID, name string, data []byte) (agent.Entry, bool, error) {
-	tx, err := s.db.BeginTx(ctx, txOptions) // read committed: see txOptions
-	if err != nil {
-		return agent.Entry{}, false, err
-	}
-	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, runID); err != nil {
-		return agent.Entry{}, false, err
-	}
-	var seq int64
-	err = tx.QueryRowContext(ctx, s.t.insert, runID, name, data).Scan(&seq)
-	if err == nil {
-		if err := tx.Commit(); err != nil {
+	for {
+		var seq int64
+		err := s.db.QueryRowContext(ctx, string(s.t.insert), runID, name, data).Scan(&seq)
+		switch {
+		case err == nil:
+			return agent.Entry{Seq: seq, Name: name, Data: data}, true, nil // the database copied data
+		case errors.Is(err, sql.ErrNoRows):
+			// ON CONFLICT DO NOTHING met the name's row, which it does only once that row's writer
+			// has committed (it waits for a writer still in progress), so a new snapshot sees it.
+			e, err := s.get(ctx, runID, name)
+			if err != nil {
+				return agent.Entry{}, false, fmt.Errorf("the insert conflicted, then reading the stored entry failed: %w", err)
+			}
+			return e, false, nil
+		case (retryable(err) || sqlState(err) == uniqueViolation) && ctx.Err() == nil:
+			// Nothing was written. A unique violation can only be on (run_id, seq), since a
+			// conflict on the name does nothing: another insert took the position after this
+			// one's snapshot, and has committed.
+		default:
 			return agent.Entry{}, false, err
 		}
-		return agent.Entry{Seq: seq, Name: name, Data: data}, true, nil // the database copied data
 	}
-	if !errors.Is(err, sql.ErrNoRows) {
-		return agent.Entry{}, false, err
-	}
-	// Another writer stored the name first and has committed (it held the run's lock until then):
-	// its entry is the name's.
-	e := agent.Entry{Name: name}
-	if err := tx.QueryRowContext(ctx, string(s.t.get), runID, name).Scan(&e.Seq, &e.Data); err != nil {
-		return agent.Entry{}, false, fmt.Errorf("the insert conflicted, then reading the stored entry failed: %w", err)
-	}
-	return e, false, nil
 }
 
 // Get implements agent.Store.
 func (s *Store) Get(ctx context.Context, runID, name string) (agent.Entry, bool, error) {
-	e := agent.Entry{Name: name}
-	err := s.db.QueryRowContext(ctx, string(s.t.get), runID, name).Scan(&e.Seq, &e.Data)
+	e, err := s.get(ctx, runID, name)
 	if errors.Is(err, sql.ErrNoRows) {
 		return agent.Entry{}, false, nil
 	}
@@ -298,12 +367,21 @@ func (s *Store) Get(ctx context.Context, runID, name string) (agent.Entry, bool,
 	return e, true, nil
 }
 
+// get reads runID's entry named name, or returns sql.ErrNoRows.
+func (s *Store) get(ctx context.Context, runID, name string) (agent.Entry, error) {
+	return retry(ctx, func() (agent.Entry, error) {
+		e := agent.Entry{Name: name}
+		err := s.db.QueryRowContext(ctx, string(s.t.get), runID, name).Scan(&e.Seq, &e.Data)
+		return e, err
+	})
+}
+
 // Load implements agent.Store. It reads pageSize entries per query and yields them with no
 // connection held, so the caller may write to the store inside its loop.
 func (s *Store) Load(ctx context.Context, runID string, after int64) iter.Seq2[agent.Entry, error] {
 	return func(yield func(agent.Entry, error) bool) {
 		for {
-			page, err := s.loadPage(ctx, runID, after)
+			page, err := retry(ctx, func() ([]agent.Entry, error) { return s.loadPage(ctx, runID, after) })
 			if err != nil {
 				yield(agent.Entry{}, err)
 				return
@@ -347,7 +425,7 @@ func (s *Store) Runs(ctx context.Context, f agent.RunFilter) iter.Seq2[string, e
 	return func(yield func(string, error) bool) {
 		after := f.After
 		for {
-			page, err := s.runsPage(ctx, f, after)
+			page, err := retry(ctx, func() ([]string, error) { return s.runsPage(ctx, f, after) })
 			if err != nil {
 				yield("", err)
 				return
@@ -409,14 +487,11 @@ func (s *Store) runsPage(ctx context.Context, f agent.RunFilter, after string) (
 // the lease when the run is unleased, already held by holder (renewal), or the current lease has
 // expired, and grants nothing when another holder's lease is still live. Expiry uses the database
 // clock (now()) so all nodes compare against one clock, not their own.
+//
+// It is one statement, committed before Postgres replies, so a holder that stops after it has
+// sent it holds no lock on the lease's row (see the package documentation).
 func (s *Store) AcquireLease(ctx context.Context, runID, holder string, ttl time.Duration) (bool, error) {
-	n, err := s.write(ctx, `
-		INSERT INTO `+s.t.leases+` (run_id, holder, expiry)
-		VALUES ($1, $2, now() + ($3 * interval '1 second'))
-		ON CONFLICT (run_id) DO UPDATE
-			SET holder = EXCLUDED.holder, expiry = EXCLUDED.expiry
-			WHERE `+s.t.leases+`.holder = EXCLUDED.holder OR `+s.t.leases+`.expiry < now()`,
-		runID, holder, ttl.Seconds())
+	n, err := s.write(ctx, s.t.acquire, runID, holder, ttl.Seconds())
 	if err != nil {
 		return false, fmt.Errorf("acquire lease %q: %w (%w)", runID, err, agent.ErrStorage)
 	}
@@ -424,46 +499,78 @@ func (s *Store) AcquireLease(ctx context.Context, runID, holder string, ttl time
 }
 
 // RenewLease implements agent.Leaser: extend holder's still-live lease on runID. Returns false if
-// holder no longer holds it (expired or taken over).
+// holder no longer holds it (expired or taken over). It is one statement, like AcquireLease.
 func (s *Store) RenewLease(ctx context.Context, runID, holder string, ttl time.Duration) (bool, error) {
-	n, err := s.write(ctx, `
-		UPDATE `+s.t.leases+` SET expiry = now() + ($3 * interval '1 second')
-		WHERE run_id = $1 AND holder = $2 AND expiry >= now()`,
-		runID, holder, ttl.Seconds())
+	n, err := s.write(ctx, s.t.renew, runID, holder, ttl.Seconds())
 	if err != nil {
 		return false, fmt.Errorf("renew lease %q: %w (%w)", runID, err, agent.ErrStorage)
 	}
 	return n > 0, nil
 }
 
-// ReleaseLease implements agent.Leaser: relinquish runID if held by holder (a no-op otherwise).
+// ReleaseLease implements agent.Leaser: relinquish runID if held by holder (a no-op otherwise). It
+// is one statement, like AcquireLease.
 func (s *Store) ReleaseLease(ctx context.Context, runID, holder string) error {
-	if _, err := s.write(ctx, `DELETE FROM `+s.t.leases+` WHERE run_id = $1 AND holder = $2`, runID, holder); err != nil {
+	if _, err := s.write(ctx, s.t.release, runID, holder); err != nil {
 		return fmt.Errorf("release lease %q: %w (%w)", runID, err, agent.ErrStorage)
 	}
 	return nil
 }
 
-// write runs one data-changing statement in its own transaction at read committed (txOptions) and
-// returns the number of rows it affected. Run on its own, the statement would be a transaction at
-// the deployment's default isolation, where an upsert or update that meets a row changed by a
-// transaction that committed after the statement began fails with 40001 instead of acting on the
-// row's latest version.
-func (s *Store) write(ctx context.Context, query string, args ...any) (int64, error) {
-	tx, err := s.db.BeginTx(ctx, txOptions)
-	if err != nil {
-		return 0, err
+// write sends one data-changing statement on the pool, where Postgres runs it as a transaction of
+// its own and commits it before replying, and returns the number of rows it affected. It never
+// begins a transaction: one that spanned round trips would keep the statement's row locks for as
+// long as a client stalled between them. A statement that fails with a serialization failure,
+// which a deployment whose default isolation is repeatable read or serializable reports where read
+// committed would act on the row's latest version, changed nothing and is run again.
+func (s *Store) write(ctx context.Context, query writeSQL, args ...any) (int64, error) {
+	return retry(ctx, func() (int64, error) {
+		res, err := s.db.ExecContext(ctx, string(query), args...)
+		if err != nil {
+			return 0, err
+		}
+		return res.RowsAffected()
+	})
+}
+
+// retry runs fn, which sends one statement, again for as long as it fails with an error retryable
+// accepts and ctx is live. At serializable, Postgres may fail even a lone SELECT with a
+// serialization failure when it conflicts with concurrent serializable writes, so reads retry too.
+func retry[T any](ctx context.Context, fn func() (T, error)) (T, error) {
+	for {
+		v, err := fn()
+		if err == nil || !retryable(err) || ctx.Err() != nil {
+			return v, err
+		}
 	}
-	defer tx.Rollback()
-	res, err := tx.ExecContext(ctx, query, args...)
-	if err != nil {
-		return 0, err
+}
+
+// SQLSTATE codes the store acts on.
+const (
+	serializationFailure = "40001"
+	deadlockDetected     = "40P01"
+	uniqueViolation      = "23505"
+)
+
+// retryable reports whether err is a failure after which a single statement, run as its own
+// transaction, has changed nothing and may be run again: a serialization failure, which another
+// transaction's commit caused, or a deadlock (which one-row statements do not form, but which
+// Postgres resolves by failing a statement that then changed nothing).
+func retryable(err error) bool {
+	switch sqlState(err) {
+	case serializationFailure, deadlockDetected:
+		return true
 	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return 0, err
+	return false
+}
+
+// sqlState returns the SQLSTATE of a Postgres error in err's chain, or "".
+func sqlState(err error) string {
+	var pe *pgconn.PgError
+	if errors.As(err, &pe) {
+		return pe.Code
 	}
-	return n, tx.Commit()
+	return ""
 }
 
 // Journal returns the Journal over s that its Do and History shims delegate to.

@@ -43,7 +43,10 @@ lease. That bound holds for a process that is running. A holder that stalls past
 GC pause, a suspended VM, a network partition) can wake up still driving and take a step before it
 notices. That is safe: at-most-once rests on the attempt claim written before each side effect, not
 on the lease, so the second driver stops with `*OutcomeUnknown` (cause `HaltContended`) instead
-of firing again. The cost is repeated work, such as a model call made twice.
+of firing again. The cost is repeated work, such as a model call made twice. The stall does not
+delay the takeover: on Postgres every lease call and journal insert is one statement that commits
+before the store sees its reply, so a holder stalled between two of its round trips holds no lock,
+and another node takes the run over once the last renewal that committed has expired.
 
 **Leases are not fenced.** A fencing token (a number the lease hands out that every write must
 carry, so the store rejects a write from a holder whose lease was superseded) would turn the lease

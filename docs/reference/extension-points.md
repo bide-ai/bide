@@ -161,9 +161,12 @@ dev. `store/sqlite.Open(path)` (one machine; three connection pools: a writer, r
 connection) and `store/postgres.Open(ctx, dsn)` (any number of nodes) are the persistent backends;
 each also has `New(ctx, db)` for a `*sql.DB` you opened, and `WithTablePrefix` (tables are
 `bide_steps`, `bide_leases` and `bide_schema_version` by default). All three implement `Lister` and
-`Leaser`. `store/postgres` runs every write in a transaction at read committed that it sets
-itself, so a deployment whose `default_transaction_isolation` is repeatable read or serializable
-does not change how it records steps or leases.
+`Leaser`. `store/postgres` sends every write (an insert, each lease call) as one statement that
+Postgres commits before it replies, so no transaction spans two round trips and a process stalled
+between them holds no lock another node waits on. A statement that a deployment whose
+`default_transaction_isolation` is repeatable read or serializable fails with a serialization
+failure changed nothing and is run again, so the level does not change how the store records
+steps or leases.
 
 **Transition.** The engine's functions still take the `Durable` interface (`Do` and `History`),
 which `*agent.Journal` implements; `MemStore` and the SQL stores also implement it, through a
