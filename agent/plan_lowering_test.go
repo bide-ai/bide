@@ -23,24 +23,51 @@ func TestPlanPrefixesAreReserved(t *testing.T) {
 }
 
 func TestPlanNodeStep(t *testing.T) {
-	for name, want := range map[string]bool{
-		"node:a":            true,
-		"node:iter":         true,
-		"node:iter:0:a":     true,
-		"node:iter:12:iter": true,
-		"node:":             false,
-		"node:a:b":          false,
-		"node:iter:x:a":     false,
-		"node:iter::a":      false,
-		"node:iter:1:":      false,
-		"node:iter:1:a:b":   false,
-		"switch:a":          false,
-		"a":                 false,
-		"attempt:step:a":    false,
+	// name -> is a node key, is a node key or a node's Step
+	for name, want := range map[string][2]bool{
+		"node:a":                     {true, true},
+		"node:iter":                  {true, true},
+		"node:iter:0:a":              {true, true},
+		"node:iter:12:iter":          {true, true},
+		"node:a:step:x":              {false, true},
+		"node:a:step:x:y":            {false, true},
+		"node:iter:step:x":           {false, true},
+		"node:iter:3:a:step:x":       {false, true},
+		"node:iter:3:iter:step:x:1:": {false, true},
+		"node:":                      {false, false},
+		"node:a:b":                   {false, false},
+		"node:a:step:":               {false, false},
+		"node:a:steps:x":             {false, false},
+		"node:iter:x:a":              {false, false},
+		"node:iter::a":               {false, false},
+		"node:iter:01:a":             {false, false},
+		"node:iter:00:a":             {false, false},
+		"node:iter:1:":               {false, false},
+		"node:iter:1:a:b":            {false, false},
+		"switch:a":                   {false, false},
+		"a":                          {false, false},
+		"attempt:step:a":             {false, false},
 	} {
-		if got := planNodeStep(name); got != want {
-			t.Errorf("planNodeStep(%q) = %v, want %v", name, got, want)
+		if got := planNodeKey(name); got != want[0] {
+			t.Errorf("planNodeKey(%q) = %v, want %v", name, got, want[0])
 		}
+		if got := planNodeStep(name); got != want[1] {
+			t.Errorf("planNodeStep(%q) = %v, want %v", name, got, want[1])
+		}
+	}
+}
+
+// A Step run in a node's body is recorded under the node's key, for that run only.
+func TestPlanScopedStep(t *testing.T) {
+	ctx := context.WithValue(context.Background(), planScopeKey{}, planScope{runID: "r", node: "node:iter:2:inc"})
+	if got := planScopedStep(ctx, "r", "charge"); got != "node:iter:2:inc:step:charge" {
+		t.Fatalf("scoped = %q", got)
+	}
+	if got := planScopedStep(ctx, "other", "charge"); got != "charge" {
+		t.Fatalf("another run's step = %q, want it unscoped", got)
+	}
+	if got := planScopedStep(context.Background(), "r", "charge"); got != "charge" {
+		t.Fatalf("outside a node = %q", got)
 	}
 }
 
@@ -48,7 +75,7 @@ func TestPlanNodeStep(t *testing.T) {
 func TestJournalhookStepRefusesOtherNames(t *testing.T) {
 	ran := 0
 	fn := func(context.Context) (json.RawMessage, error) { ran++; return json.RawMessage(`1`), nil }
-	for _, name := range []string{"x", "switch:x", "flow:digest", "run:start", "attempt:step:node:x", "node:a:b"} {
+	for _, name := range []string{"x", "switch:x", "flow:digest", "run:start", "attempt:step:node:x", "node:a:b", "node:a:step:x", "node:iter:01:a"} {
 		if _, err := journalhook.Step(context.Background(), NewMemStore(), "r", name, Safety{}, fn); !errors.Is(err, ErrConfig) {
 			t.Errorf("journalhook.Step(%q): err = %v, want ErrConfig", name, err)
 		}
@@ -86,10 +113,10 @@ func TestRunStartHoldsKindAndFlow(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			m := NewMemStore()
-			if err := journalhook.HoldStart(ctx, m, "r", tc.first); err != nil {
+			if _, _, err := journalhook.Begin(ctx, m, "r", tc.first); err != nil {
 				t.Fatal(err)
 			}
-			err := journalhook.HoldStart(ctx, m, "r", tc.next)
+			_, _, err := journalhook.Begin(ctx, m, "r", tc.next)
 			if tc.ok != (err == nil) || err != nil && !errors.Is(err, ErrConfig) {
 				t.Fatalf("second drive: err = %v, want ok=%v (else ErrConfig)", err, tc.ok)
 			}
@@ -113,6 +140,69 @@ func TestRunStartEncoding(t *testing.T) {
 		}
 		if string(b) != tc.want {
 			t.Errorf("RunStart %+v encodes as %s, want %s", tc.start, b, tc.want)
+		}
+	}
+}
+
+// ResolveHaltRef resolves only an operation that halted: one with a live attempt marker. A tool
+// call or Step never attempted, or whose only attempt is recorded as not started (the next drive
+// re-attempts it), is refused with ErrNoLiveAttempt, and nothing is recorded.
+func TestResolveHaltRef_RefusesAnOperationWithNoLiveAttempt(t *testing.T) {
+	ctx := context.Background()
+	m := NewMemStore()
+	claim := "0123abcd0123abcd"
+	for _, w := range []struct {
+		name string
+		rec  Record
+	}{
+		{stepAttemptStep("voided"), Record{Kind: StepAttempt, ToolUseID: "voided", AttemptedAt: 1, claim: claim}},
+		{notStartedStep(stepAttemptStep("voided"), claim), Record{Kind: StepNotStarted, ToolUseID: "voided", claim: claim}},
+	} {
+		if _, err := m.Do(ctx, "r", w.name, func(context.Context) (Record, error) { return w.rec, nil }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, op := range []OpRef{{Kind: OpTool, ID: "never"}, {Kind: OpStep, ID: "never"}, {Kind: OpStep, ID: "voided"}, {Kind: OpStep, ID: "node:a"}} {
+		err := ResolveHaltRef(ctx, m, HaltRef{RunID: "r", Op: op, Cause: HaltCrashed}, Outcome{Result: 1})
+		if !errors.Is(err, ErrNoLiveAttempt) || !errors.Is(err, ErrConfig) {
+			t.Errorf("ResolveHaltRef(%+v): err = %v, want ErrNoLiveAttempt", op, err)
+		}
+	}
+	recs, err := m.History(ctx, "r")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range recs {
+		if r.Name == "never" || r.Name == "voided" || r.Name == "node:a" || r.Name == ToolResultStep("never") {
+			t.Fatalf("a refused resolution recorded %q", r.Name)
+		}
+	}
+}
+
+// A flow's input is held by its canonical JSON: key order and a number's spelling do not tell two
+// inputs apart, and neither do integers beyond 2^53 that are one double, so an input decoded from
+// RecordedStart and encoded again resumes the run; a different value does not.
+func TestSameCanonicalJSON(t *testing.T) {
+	for _, tc := range []struct {
+		a, b string
+		same bool
+	}{
+		{`{"a":1,"b":[1,2]}`, `{"b":[1,2],"a":1}`, true},
+		{`{"a":1}`, `{"a":1.0}`, true},
+		{`{"a":1e2}`, `{"a":100}`, true},
+		{`{"a":-0}`, `{"a":0}`, true},
+		{`{"id":9007199254740993}`, `{"id":9007199254740992}`, true},
+		{` [1, "x" ] `, `[1,"x"]`, true},
+		{`"<"`, `"<"`, true},
+		{`{"a":1}`, `{"a":2}`, false},
+		{`{"a":1}`, `{"a":1,"b":null}`, false},
+		{`[1,2]`, `[2,1]`, false},
+		{`{"a":1} x`, `{"a":1}`, false},
+		{`1e999`, `1e999`, true},
+		{`1e999`, `2e999`, false},
+	} {
+		if got := sameCanonicalJSON(tc.a, tc.b); got != tc.same {
+			t.Errorf("sameCanonicalJSON(%s, %s) = %v, want %v", tc.a, tc.b, got, tc.same)
 		}
 	}
 }

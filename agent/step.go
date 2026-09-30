@@ -86,6 +86,11 @@ func hasValueStep(ctx context.Context, store Durable, runID, name string) (bool,
 // unexported fields round-trips those fields to their zero values (encoding/json skips them)
 // with no error reported. Return exported fields, a map, or a pointer whose fields are exported.
 //
+// Inside the body of a plan flow node of the same run, the step is recorded under the node's key
+// ("node:<node>:step:<name>", or "node:iter:<n>:<node>:step:<name>" in a loop body), so a loop
+// body's step runs once per iteration, and name need be unique only within the node. Its halt names
+// that key (OutcomeUnknown.Op.ID); resolve it with the halt's Ref.
+//
 // name must not start with a prefix the engine reserves for its own journal keys ("@", "run:",
 // "tool:", "attempt:", "approval:", "signal:", and the rest; see IsReservedStepName): such a
 // name is ErrConfig.
@@ -94,7 +99,7 @@ func Step[T any](ctx context.Context, d Durable, runID, name string, fn func(con
 		var zero T
 		return zero, err
 	}
-	return step(ctx, d, runID, name, fn, opts...)
+	return step(ctx, d, runID, planScopedStep(ctx, runID, name), fn, opts...)
 }
 
 // step is Step without the check on name, for the engine's own steps.

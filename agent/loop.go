@@ -65,6 +65,8 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 		if err := holdToStart(ctx, a.store, runID, recs, RunStart{Input: seed[len(seed)-1].Text(), Saga: saga}); err != nil {
 			return Message{}, usageTotals{}, 0, err
 		}
+	} else if err := checkStartKind(runID, recs, RunKindAgent); err != nil {
+		return Message{}, usageTotals{}, 0, err // a finished flow's run holds no answer of an agent's
 	}
 
 	msgs := []Message{}

@@ -4,6 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"slices"
+	"strconv"
+	"strings"
 )
 
 // runCompleteStep is the journal name of the terminal completion marker. The agent loop
@@ -32,7 +36,8 @@ const runStartStep = "run:start"
 // with the input and entry point that drive is given.
 //
 // Kind says what drives the run. A plan flow's run records RunKindFlow, its flow's name in Flow,
-// and its input as JSON text in Input; resuming it with another input, under another flow's name,
+// and its input as JSON text in Input; resuming it with another input (compared as canonical
+// JSON, so the input decoded from Input and encoded again resumes it), under another flow's name,
 // or driving it as an agent run (or an agent run as a flow) is ErrConfig. The flow's topology is
 // held by its own record, flow:digest, not here.
 type RunStart struct {
@@ -100,6 +105,56 @@ func RecordedStart(ctx context.Context, d Durable, runID string) (RunStart, bool
 	return s, true, nil
 }
 
+// beginRun is journalhook.Begin: the completion of a finished run, or else want held as the run's
+// start (see holdToStart).
+func beginRun(ctx context.Context, d Durable, runID string, want RunStart) (json.RawMessage, bool, error) {
+	b, err := marshalJournal(want)
+	if err != nil {
+		return nil, false, fmt.Errorf("encode %s (run %s): %w (%w)", runStartStep, runID, err, ErrConfig)
+	}
+	var recs []Record
+	if j := journalOf(d); j != nil {
+		rec, inserted, err := j.putNew(ctx, runID, runStartStep, Record{Kind: StepValue, Result: b})
+		if err != nil {
+			return nil, false, fmt.Errorf("record %s (run %s): %w", runStartStep, runID, err)
+		}
+		if inserted {
+			return nil, false, nil // a new run: nothing to hold it to, and no completion
+		}
+		recs = []Record{rec}
+	}
+	done, ok, err := lookup(ctx, d, runID, runCompleteStep)
+	if err != nil {
+		return nil, false, err
+	}
+	if err := holdToStart(ctx, d, runID, recs, want); err != nil {
+		return nil, false, err
+	}
+	if ok && done.Kind == StepValue {
+		return done.Result, true, nil
+	}
+	return nil, false, nil
+}
+
+// checkStartKind refuses (ErrConfig) a drive of kind want of a run whose recorded start in recs is
+// of another kind. A run with no recorded start passes.
+func checkStartKind(runID string, recs []Record, want RunKind) error {
+	for _, r := range recs {
+		if r.Kind != StepValue || r.Name != runStartStep {
+			continue
+		}
+		var got RunStart
+		if err := json.Unmarshal(r.Result, &got); err != nil {
+			return fmt.Errorf("decode %s (run %s): %w (%w)", runStartStep, runID, err, ErrStorage)
+		}
+		if got.kind() != want {
+			return fmt.Errorf("run %s was started as a run of kind %q, not %q; drive it the way it was started (see RecordedStart): %w", runID, got.kind(), want, ErrConfig)
+		}
+		return nil
+	}
+	return nil
+}
+
 // holdToStart records want as runID's start if the run has none, and otherwise checks want
 // against the recorded one: a drive that differs is ErrConfig, since the run's journal answers
 // the recorded input under the recorded entry point's rules. recs is the run's journal as the
@@ -136,7 +191,9 @@ func holdToStart(ctx context.Context, d Durable, runID string, recs []Record, wa
 		return fmt.Errorf("run %s was started as a saga; resume it with RunSaga (or StreamSaga): %w", runID, ErrConfig)
 	case !got.Saga && want.Saga:
 		return fmt.Errorf("run %s was not started as a saga; resume it with Run (or Stream): %w", runID, ErrConfig)
-	case got.Input != want.Input:
+	case got.kind() == RunKindFlow && !sameCanonicalJSON(got.Input, want.Input):
+		return fmt.Errorf("run %s was started with a different input (see RecordedStart); resume it with that input: %w", runID, ErrConfig)
+	case got.kind() != RunKindFlow && got.Input != want.Input:
 		return fmt.Errorf("run %s was started with a different input (see RecordedStart); resume it with that input: %w", runID, ErrConfig)
 	}
 	return nil
@@ -148,4 +205,94 @@ func flowName(f *FlowRef) string {
 		return "(none recorded)"
 	}
 	return fmt.Sprintf("%q", f.Name)
+}
+
+// sameCanonicalJSON reports whether a and b are the same JSON value under canonicalJSON, so a flow
+// resumed with its recorded input decoded and encoded again (RecordedStart, then Run) is held to
+// the input it started with even where the round trip changes the text: object key order, and a
+// number's spelling or a precision float64 cannot hold. Text that is not JSON compares as text.
+func sameCanonicalJSON(a, b string) bool {
+	ca, errA := canonicalJSON(a)
+	cb, errB := canonicalJSON(b)
+	if errA != nil || errB != nil {
+		return a == b
+	}
+	return ca == cb
+}
+
+// canonicalJSON re-encodes the JSON text s canonically, in the manner of RFC 8785: objects with
+// their keys sorted, no insignificant whitespace, and every number as the IEEE 754 double it
+// denotes, written in its shortest form (so 1, 1.0 and 1e0 are one value, and two integers
+// beyond 2^53 that round to one double are one value, as for any JSON reader that decodes numbers
+// as doubles). A number beyond the double range keeps its text.
+func canonicalJSON(s string) (string, error) {
+	dec := json.NewDecoder(strings.NewReader(s))
+	dec.UseNumber()
+	var v any
+	if err := dec.Decode(&v); err != nil {
+		return "", err
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		return "", fmt.Errorf("canonical JSON: trailing data after the value")
+	}
+	var b strings.Builder
+	if err := writeCanonical(&b, v); err != nil {
+		return "", err
+	}
+	return b.String(), nil
+}
+
+func writeCanonical(b *strings.Builder, v any) error {
+	switch x := v.(type) {
+	case map[string]any:
+		keys := make([]string, 0, len(x))
+		for k := range x {
+			keys = append(keys, k)
+		}
+		slices.Sort(keys)
+		b.WriteByte('{')
+		for i, k := range keys {
+			if i > 0 {
+				b.WriteByte(',')
+			}
+			kb, err := json.Marshal(k)
+			if err != nil {
+				return err
+			}
+			b.Write(kb)
+			b.WriteByte(':')
+			if err := writeCanonical(b, x[k]); err != nil {
+				return err
+			}
+		}
+		b.WriteByte('}')
+	case []any:
+		b.WriteByte('[')
+		for i, e := range x {
+			if i > 0 {
+				b.WriteByte(',')
+			}
+			if err := writeCanonical(b, e); err != nil {
+				return err
+			}
+		}
+		b.WriteByte(']')
+	case json.Number:
+		f, err := strconv.ParseFloat(string(x), 64)
+		if err != nil {
+			b.WriteString(string(x)) // beyond the double range: the text is all there is
+			return nil
+		}
+		if f == 0 {
+			f = 0 // -0 is 0
+		}
+		b.WriteString(strconv.FormatFloat(f, 'g', -1, 64))
+	default:
+		eb, err := json.Marshal(x)
+		if err != nil {
+			return err
+		}
+		b.Write(eb)
+	}
+	return nil
 }

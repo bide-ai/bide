@@ -125,7 +125,9 @@ type Outcome struct {
 // "node:<name>"} (or "node:iter:<n>:<name>" inside a loop), resolved like any Step's; the recorded
 // Result is the node's output, as JSON of the node's output type.
 //
-// It refuses (ErrConfig) a ref with no valid Cause or Op.Kind, and an operation that only the
+// It refuses (ErrNoLiveAttempt, which wraps ErrConfig) an operation with no live attempt marker:
+// one that never halted, because it was never attempted or its attempts are recorded as not
+// started. It refuses (ErrConfig) a ref with no valid Cause or Op.Kind, and an operation that only the
 // other kind of operation attempted. WithMinHaltAge(d) refuses (*HaltTooYoung) a halt younger
 // than d, measured from the live attempt's marker, so a reconciler cannot query and resolve
 // before the provider's record has settled and thereby re-fire the effect. A HaltContended halt
@@ -236,6 +238,12 @@ func resolveHalt(ctx context.Context, store Durable, op string, ref HaltRef, out
 	}
 	if attempt == nil && other != nil {
 		return fmt.Errorf("%s: %q in run %s was attempted by %s, not the operation named; resolve it as that kind: %w", op, id, ref.RunID, h.otherHint, ErrConfig)
+	}
+	if attempt == nil {
+		// Nothing halted on the operation: it was never attempted (a resolution would record an
+		// outcome for an effect that never ran, and skip it), or every attempt of it is recorded as
+		// not started (the next drive re-attempts it).
+		return fmt.Errorf("%s: %q in run %s has no live attempt marker, so nothing halted on it: %w", op, id, ref.RunID, ErrNoLiveAttempt)
 	}
 	if cfg.minHaltAge > 0 {
 		var at time.Time
@@ -363,6 +371,11 @@ func (e *HaltInFlight) Error() string {
 	return fmt.Sprintf("resolve-halt for %s %q (run %s): a driver holds the lease on run %s and may still be running it; retry once it has finished",
 		e.Op.Kind, e.Op.ID, e.RunID, e.RootRunID)
 }
+
+// ErrNoLiveAttempt is the condition of a resolution refused because the operation named has no
+// live attempt marker: it never halted (it was never attempted, or its only attempts are recorded
+// as not started and are re-attempted by the next drive). It wraps ErrConfig.
+var ErrNoLiveAttempt = fmt.Errorf("operation has no live attempt to resolve: %w", ErrConfig)
 
 // ErrAlreadyResolved is the condition of a resolution refused because the operation already has
 // a different recorded outcome (see HaltAlreadyResolved). It wraps ErrConfig.

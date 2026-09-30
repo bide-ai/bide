@@ -45,24 +45,80 @@ var reservedPrefixes = []string{
 // the engine step hook (internal/journalhook.Step).
 const planNodePrefix = "node:"
 
-// planNodeStep reports whether name is the key of a plan flow node: "node:<name>" or
-// "node:iter:<n>:<name>", where <n> is decimal digits and <name> is not empty and holds no ':'
-// (package plan refuses a node name with one). These are the reserved names a Step may run under
-// through the step hook, and the reserved step names ResolveHaltRef accepts, since a node halts as
-// a Step does.
+// planNodeKey reports whether name is the key of a plan flow node: "node:<name>" or
+// "node:iter:<n>:<name>", where <n> is a decimal number with no leading zero (the form strconv.Itoa
+// writes) and <name> is not empty and holds no ':' (package plan refuses a node name with one).
+// These are the reserved names a Step may run under through the step hook.
+func planNodeKey(name string) bool {
+	_, step, ok := parsePlanKey(name)
+	return ok && step == ""
+}
+
+// planNodeStep reports whether name is the key of a plan flow node (planNodeKey) or of a Step a
+// node's body runs (planScopedStep): the reserved step names ResolveHaltRef accepts, since each
+// halts as a Step does.
 func planNodeStep(name string) bool {
+	_, _, ok := parsePlanKey(name)
+	return ok
+}
+
+// planStepSep joins a node's key and the name of a Step its body runs (see planScopedStep).
+const planStepSep = ":step:"
+
+// parsePlanKey splits a plan key into the node key and, for a Step a node's body runs, that
+// Step's name: "node:[iter:<n>:]<node>" or "node:[iter:<n>:]<node>:step:<step>". A node name holds
+// no ':', so the node ends at the first ':' after the iteration scope, and "iter:" followed by
+// anything but a number is the node named "iter".
+func parsePlanKey(name string) (node, step string, ok bool) {
 	rest, ok := strings.CutPrefix(name, planNodePrefix)
 	if !ok {
+		return "", "", false
+	}
+	body := rest
+	if it, ok := strings.CutPrefix(rest, "iter:"); ok {
+		if digits, after, ok := strings.Cut(it, ":"); ok && isIterNumber(digits) {
+			body = after
+		}
+	}
+	n, tail, scoped := strings.Cut(body, ":")
+	if n == "" {
+		return "", "", false
+	}
+	nodeKey := name[:len(name)-len(body)] + n
+	if !scoped {
+		return nodeKey, "", true
+	}
+	step, ok = strings.CutPrefix(":"+tail, planStepSep)
+	if !ok || step == "" {
+		return "", "", false
+	}
+	return nodeKey, step, true
+}
+
+// isIterNumber reports whether s is a loop iteration as package plan writes it: decimal digits
+// with no leading zero, or "0".
+func isIterNumber(s string) bool {
+	if s == "" || len(s) > 1 && s[0] == '0' {
 		return false
 	}
-	if it, ok := strings.CutPrefix(rest, "iter:"); ok {
-		digits, node, ok := strings.Cut(it, ":")
-		if !ok || digits == "" || strings.Trim(digits, "0123456789") != "" {
-			return false
-		}
-		rest = node
+	return strings.Trim(s, "0123456789") == ""
+}
+
+// planScopeKey carries, in the context of a plan node's body, the run and key of the node.
+type planScopeKey struct{}
+
+type planScope struct{ runID, node string }
+
+// planScopedStep returns the journal key of the Step named name of runID when it runs in the body
+// of a plan flow node of that run: the node's key, ":step:", then name, so a Step a node's body
+// runs is recorded once per node and per loop iteration (a loop body's Step runs again in each
+// iteration, under that iteration's key), and never meets a Step outside the flow. Outside a node's
+// body, or for another run, name is returned unchanged.
+func planScopedStep(ctx context.Context, runID, name string) string {
+	if s, ok := ctx.Value(planScopeKey{}).(planScope); ok && s.runID == runID {
+		return s.node + planStepSep + name
 	}
-	return rest != "" && !strings.Contains(rest, ":")
+	return name
 }
 
 // IsReservedStepName reports whether name starts with a prefix the engine reserves for its own
