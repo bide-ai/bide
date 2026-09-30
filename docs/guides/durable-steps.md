@@ -262,10 +262,11 @@ another driver of the same run won the claim while this one ran (a node that too
 lapsed); `HaltCrashed` means the halting driver knew of no live claimant, which is not proof that
 none is running. So, whatever the cause:
 
-- On a store that leases runs (`MemStore`, `store/postgres`), `ResolveHaltRef` takes the root run's
+- On a store that leases runs (`MemStore`, `store/sqlite`, `store/postgres`; found through a
+  `Journal` and through store wrappers, as `agent.Capability` finds it), `ResolveHaltRef` takes the root run's
   lease while it resolves and returns `*HaltInFlight` while a driver holds it. Only drivers that
   lease the run (`Lease`, `Recover`, `RecoverLoop`) are seen; a plain `Run` holds no lease.
-- On a store that cannot (`store/sqlite`, a custom `Durable`), it requires `WithMinHaltAge`, so the
+- On a store that cannot (a custom store with no `Leaser`), it requires `WithMinHaltAge`, so the
   halt is resolved only once no driver can still be running it.
 - A `HaltContended` halt always requires `WithMinHaltAge`.
 - `WithoutLiveDriverCheck()` skips the first two, for an operator who knows no driver is running

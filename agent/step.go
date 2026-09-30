@@ -182,17 +182,23 @@ func journalStep(ctx context.Context, j *Journal, runID, name string, cfg stepCo
 		// process) by now, is the step's; otherwise the outcome is unknown. This driver only
 		// joins a call in flight and never starts one: the owner, in this process, must not find
 		// a loser's call in flight and take the loser's halt as its own outcome.
-		halt := stepHalt(runID, name, markerTime(marker.AttemptedAt), HaltCrashed)
+		//
+		// The halt's cause is what this driver saw of the owner. An owner whose call it found in
+		// flight was live after the claim: HaltContended, since that driver owns the effect and
+		// may still be running it. Otherwise nothing says the owner is live (it may have died, or
+		// be in another process, or not have called yet): HaltCrashed, which ResolveHaltRef
+		// resolves only after its own live-driver check.
+		at := markerTime(marker.AttemptedAt)
 		if b, ok, err := joinFlight(flightKey{j.id, runID, name}); ok {
 			if err != nil {
-				return Record{}, halt
+				return Record{}, stepHalt(runID, name, at, HaltContended)
 			}
 			return decodeStored(runID, name, b)
 		}
 		if rec, ok, err := j.Get(ctx, runID, name); err != nil || ok {
 			return rec, err
 		}
-		return Record{}, halt
+		return Record{}, stepHalt(runID, name, at, HaltCrashed)
 	}
 	var started atomic.Bool // fn was called: from here on its effect may have fired
 	rec, err := j.doFresh(ctx, runID, name, func(ctx context.Context) (Record, error) {

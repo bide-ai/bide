@@ -31,12 +31,14 @@ type HaltCause string
 const (
 	// HaltCrashed: the operation's attempt marker is recorded with no result, and the halting
 	// driver knows of no live claimant. That is what the halting driver saw, not proof: a
-	// driver of the same run may still be running the effect (a Step, or a drive that read the
-	// journal after the claim, cannot tell). ResolveHaltRef therefore checks for a live driver
-	// itself, whatever the cause.
+	// driver of the same run may still be running the effect (a Step that lost its claim with no
+	// call of it in flight in this process, or a drive that read the journal after the claim,
+	// cannot tell). ResolveHaltRef therefore checks for a live driver itself, whatever the cause.
 	HaltCrashed HaltCause = "crashed"
 	// HaltContended: another driver of the same run won the claim on the operation while this
-	// one was running. That driver owns the effect and may be running it now.
+	// one was running: a tool call's claim lost after this drive read no marker for it, or a
+	// Step's claim lost to a call of the step in flight in this process. That driver owns the
+	// effect and may be running it now.
 	HaltContended HaltCause = "contended"
 )
 
@@ -99,11 +101,12 @@ type Outcome struct {
 // own result) is refused with *HaltAlreadyResolved, which reports the outcome that stands.
 //
 // It refuses to resolve an effect a driver may still be running, whatever the halt's Cause:
-//   - with a store that leases runs (Leaser: MemStore, store/postgres), it takes the root run's
-//     lease for the resolution and returns *HaltInFlight while any driver holds it. Only drivers
-//     that lease the run (Lease, Recover, RecoverLoop) are seen; a plain Run holds no lease.
-//   - with a store that cannot (store/sqlite, a custom Durable), it requires WithMinHaltAge, so the
-//     halt is resolved only once no driver can still be running it.
+//   - with a store that leases runs (Leaser: MemStore, store/sqlite, store/postgres, found through a
+//     Journal and through wrappers that implement Unwrap() Store, see Capability), it takes the
+//     root run's lease for the resolution and returns *HaltInFlight while any driver holds it. Only
+//     drivers that lease the run (Lease, Recover, RecoverLoop) are seen; a plain Run holds no lease.
+//   - with a store that cannot (a custom store with no Leaser, or a Durable that exposes none), it
+//     requires WithMinHaltAge, so the halt is resolved only once no driver can still be running it.
 //
 // WithoutLiveDriverCheck skips both, for an operator who knows no driver is running.
 //
