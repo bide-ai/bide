@@ -137,6 +137,20 @@ check_tag() {
   echo "release: $tag: $dir requires released versions only and builds with GOWORK=off"
 }
 
+# changelog_has text version: the changelog text has a "## [version]" section heading.
+# It reads the text from a variable, not a pipe, and compares literally.
+changelog_has() {
+  local line
+  while IFS= read -r line; do
+    [[ $line == "## [$2]"* ]] && return 0
+  done <<<"$1"
+  return 1
+}
+
+# remote_has_tag lsremote ref: the `git ls-remote --tags` output lists ref exactly.
+# awk reads all of its input and compares the ref literally.
+remote_has_tag() { awk -v t="$2" '$2 == t {found = 1} END {exit !found}' <<<"$1"; }
+
 self_test() {
   local tmp fail=false; tmp=$(mktemp -d)
   printf 'module %s/x\n\ngo 1.27\n\nrequire %s v0.0.0\n\nreplace %s => ../\n' "$ROOT_MODULE" "$ROOT_MODULE" "$ROOT_MODULE" > "$tmp/go.mod"
@@ -150,6 +164,19 @@ self_test() {
   printf 'module %s/x\n\ngo 1.27\n\nrequire (\n\t%s v0.8.0\n\t%s/govern v0.8.0\n\texample.com/other v0.0.0\n)\n' "$ROOT_MODULE" "$ROOT_MODULE" "$ROOT_MODULE" > "$tmp/go.mod"
   check_gomod "$tmp" || { echo "self-test: released versions were refused"; fail=true; }
   rm -rf "$tmp"
+  # The preflight checks read their whole input: under pipefail, a reader that stops at its first
+  # match makes the writer fail with SIGPIPE (141), which read as "not found". The inputs are
+  # larger than a pipe buffer and match on their first line.
+  local filler changelog tags
+  filler=$(printf -- '- entry %s\n' $(seq 1 20000))
+  changelog=$(printf '# Changelog\n\n## [Unreleased]\n\n## [0.8.0] - 2026-09-30\n\n%s\n' "$filler")
+  changelog_has "$changelog" 0.8.0 || { echo "self-test: a changelog's [0.8.0] section was not found"; fail=true; }
+  changelog_has "$changelog" 0.9.0 && { echo "self-test: a changelog's missing [0.9.0] section was found"; fail=true; }
+  changelog_has "$changelog" 0.8.1 && { echo "self-test: [0.8.0] was taken for [0.8.1]"; fail=true; }
+  tags=$(printf '%040d\trefs/tags/govern/v0.8.0\n' 0; for i in $(seq 1 20000); do printf '%040d\trefs/tags/x%s/v0.1.0\n' "$i" "$i"; done)
+  remote_has_tag "$tags" refs/tags/govern/v0.8.0 || { echo "self-test: a remote tag was not found"; fail=true; }
+  remote_has_tag "$(printf '%040d\trefs/tags/govern/v0x8x0\n' 0)" refs/tags/govern/v0.8.0 && { echo "self-test: govern/v0x8x0 was taken for govern/v0.8.0"; fail=true; }
+  remote_has_tag "$tags" refs/tags/mcp/v0.8.0 && { echo "self-test: a missing remote tag was found"; fail=true; }
   $fail && return 1
   echo "self-test: ok"
 }
@@ -214,7 +241,8 @@ else
   problem "gh is not installed, so CI status for $SHA cannot be checked"
 fi
 git -C "$REPO" show "$SHA:docs/releases/$VERSION.md" >/dev/null 2>&1 || problem "docs/releases/$VERSION.md does not exist at $SHA"
-git -C "$REPO" show "$SHA:CHANGELOG.md" 2>/dev/null | grep -q "^## \[${VERSION#v}\]" || problem "CHANGELOG.md has no [${VERSION#v}] section at $SHA"
+changelog=$(git -C "$REPO" show "$SHA:CHANGELOG.md" 2>/dev/null || true)
+changelog_has "$changelog" "${VERSION#v}" || problem "CHANGELOG.md has no [${VERSION#v}] section at $SHA"
 remote_tags=$(git -C "$REPO" ls-remote --tags "$REMOTE" 2>/dev/null || true)
 ROOT_TAGGED=false
 root_remote=$(echo "$remote_tags" | awk -v t="refs/tags/$VERSION^{}" '$2 == t {print $1}')
@@ -225,7 +253,7 @@ if [ -n "$root_remote" ]; then
 fi
 ALREADY=""   # nested modules whose tag is already on the remote (a resumed --push run)
 for m in $PUBLISHED; do
-  if echo "$remote_tags" | grep -q "refs/tags/$m/$VERSION$"; then
+  if remote_has_tag "$remote_tags" "refs/tags/$m/$VERSION"; then
     if $PUSH && $ROOT_TAGGED; then ALREADY="$ALREADY $m"; note "$m/$VERSION is already on $REMOTE; resuming"
     else problem "$m/$VERSION is already on $REMOTE"; fi
   fi
