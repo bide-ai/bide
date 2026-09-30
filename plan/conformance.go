@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/bide-ai/bide/agent"
@@ -65,6 +66,11 @@ func (c *builderCore) conform(ctx context.Context, store agent.Durable, runID st
 	if len(recs) > 0 && recs[0].Kind == agent.StepHeader {
 		recs = recs[1:] // the journal header says how the journal is written, not what the flow did
 	}
+	// A claim's bookkeeping (a node's claim recorded as not started, or taken back and held) says
+	// how a claim was decided, not what the flow did.
+	recs = slices.DeleteFunc(slices.Clone(recs), func(r agent.Record) bool {
+		return r.Kind == agent.StepNotStarted || r.Kind == agent.StepClaimHeld
+	})
 
 	// Index the declared topology. byName covers every declared node; the Switch
 	// set and each Switch's declared arm targets let us validate a recorded choice.

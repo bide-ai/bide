@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 )
 
 var errLost = errors.New("connection lost")
@@ -162,4 +163,67 @@ func TestTwoDriversBothRecordNotStarted(t *testing.T) {
 	if fired != 1 {
 		t.Fatalf("fired %d, want 1", fired)
 	}
+}
+
+// A claim taken back and held (its not-started write never committed) runs the effect, and its
+// result write is lost. A new process finds the marker, which the claim-held record does not void,
+// and halts: the effect fires once. For a tool call, the claim is taken back only when its
+// marker's insert did not commit either (a committed marker halts the resume before any claim).
+func TestHeldClaimWhoseResultIsLostHalts(t *testing.T) {
+	ctx := context.Background()
+	t.Run("tool", func(t *testing.T) {
+		m := agent.NewMemStore()
+		fired := 0
+		charge := agent.Func("charge", "", agent.Safety{}, func(context.Context, struct{}) (string, error) { fired++; return "ok", nil })
+		model := func() agent.Model {
+			return agent.NewScriptedModel(agent.ToolTurn("c1", "charge", `{}`), agent.TextTurn("done"))
+		}
+		s := &faultStore{m: m,
+			commitErr:    map[string]bool{},
+			failNoCommit: map[string]bool{"attempt:tool:c1": true, "attempt:not-started:": true},
+		}
+		j1, _ := agent.NewJournal(s)
+		_, _ = agent.New(model(), j1, charge).SetMaxConcurrency(1).Run(ctx, "r", "hi")
+		s.failNoCommit["tool:c1"] = true
+		j2, _ := agent.NewJournal(s)
+		_, err2 := agent.New(model(), j2, charge).SetMaxConcurrency(1).Run(ctx, "r", "hi")
+		if fired != 1 {
+			t.Fatalf("the held claim's drive fired %d times (%v), want once", fired, err2)
+		}
+		cs := agenttest.NewCountingStore(m)
+		j3, _ := agent.NewJournal(cs)
+		_, err3 := agent.New(model(), j3, charge).SetMaxConcurrency(1).Run(ctx, "r", "hi")
+		var halt *agent.ResumeHalt
+		if fired != 1 || !errors.As(err3, &halt) {
+			t.Fatalf("a new process = %v with the effect fired %d times; want a halt and once", err3, fired)
+		}
+		// The halt comes from the drive's own read of the run: the claim-held record leaves the
+		// marker live, so no claim is even attempted.
+		if c := cs.Counts(); c.Insert != 0 {
+			t.Fatalf("the halted drive made %d Inserts (%v); want none", c.Insert, c.Names)
+		}
+	})
+	t.Run("step", func(t *testing.T) {
+		m := agent.NewMemStore()
+		fired := 0
+		body := func(context.Context) (string, error) { fired++; return "ok", nil }
+		s := &faultStore{m: m,
+			commitErr:    map[string]bool{"attempt:step:pay": true},
+			failNoCommit: map[string]bool{"attempt:not-started:": true},
+		}
+		j1, _ := agent.NewJournal(s)
+		_, _ = agent.Step(ctx, j1, "r", "pay", body)
+		s.failNoCommit["pay"] = true
+		j2, _ := agent.NewJournal(s)
+		_, err2 := agent.Step(ctx, j2, "r", "pay", body)
+		if fired != 1 {
+			t.Fatalf("the held claim's drive fired %d times (%v), want once", fired, err2)
+		}
+		j3, _ := agent.NewJournal(&faultStore{m: m})
+		_, err3 := agent.Step(ctx, j3, "r", "pay", body)
+		var halt *agent.ResumeHalt
+		if fired != 1 || !errors.As(err3, &halt) {
+			t.Fatalf("a new process = %v with the effect fired %d times; want a halt and once", err3, fired)
+		}
+	})
 }

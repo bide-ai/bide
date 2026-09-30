@@ -652,7 +652,7 @@ func newClaimID() string {
 // claim id is then remembered, and the next claim of the same key in this process takes it back,
 // recognizing a marker that did commit as its own. A remembered id is taken by one claimant only,
 // so two claimants never both win. Before a reused id's win counts, its not-started key is pinned
-// with a claim-held record (holdClaim): if a not-started record got there first, the marker is
+// with a claim-held record (holdClaim, StepClaimHeld): if a not-started record got there first, the marker is
 // voided and the claim is lost, and the next attempt is claimed instead.
 func (j *Journal) claim(ctx context.Context, runID, key string, rec Record) (bool, Record, error) {
 	if err := j.ensureHeader(ctx, runID); err != nil {
@@ -697,13 +697,13 @@ func (j *Journal) claim(ctx context.Context, runID, key string, rec Record) (boo
 }
 
 // holdClaim pins the not-started key of the marker key, claimed under rec's claim id, with a
-// claim-held record, so no not-started record can void the marker later, and reports whether it
-// holds the key: false when a not-started record is there already. The claim-held record is a
-// StepValue, which voided and liveAttempts do not read as a not-started record.
+// claim-held record (StepClaimHeld), so no not-started record can void the marker later, and
+// reports whether it holds the key: false when a not-started record is there already. voided and
+// liveAttempts void an attempt only by a StepNotStarted record, never by a claim-held one.
 func (j *Journal) holdClaim(ctx context.Context, runID, key string, rec Record) (bool, error) {
 	name := notStartedStep(key, rec.claim)
 	b, err := j.insert(context.WithoutCancel(ctx), runID, name,
-		Record{Kind: StepValue, ToolUseID: rec.ToolUseID, claim: rec.claim, Result: json.RawMessage(`"claim held"`)})
+		Record{Kind: StepClaimHeld, ToolUseID: rec.ToolUseID, claim: rec.claim})
 	if err != nil {
 		return false, fmt.Errorf("hold the claim on %s: %w", key, err)
 	}
