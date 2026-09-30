@@ -364,6 +364,26 @@ func ambiguousClaim(t *testing.T, s agent.Store) {
 	}
 	w.refuse = ""
 	redrive(t, id, w, 2)
+	// The claim taken back pinned its not-started key with a claim-held record, a kind of its own
+	// that no reader takes for a value or for a not-started record.
+	held := 0
+	for e, err := range s.Load(ctx, id, -1) {
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.HasPrefix(e.Name, "attempt:not-started:") {
+			var r struct {
+				Kind agent.StepKind `json:"kind"`
+			}
+			if err := json.Unmarshal(e.Data, &r); err != nil || r.Kind != agent.StepClaimHeld {
+				t.Fatalf("the record under %s is of kind %q (%v), want %q", e.Name, r.Kind, err, agent.StepClaimHeld)
+			}
+			held++
+		}
+	}
+	if held != 1 {
+		t.Fatalf("the run holds %d records under attempt:not-started:, want the one claim-held record", held)
+	}
 
 	// The not-started record commits and then reports an error too. The claim id is remembered,
 	// but the marker is voided: a re-drive in the same process must not run the effect under it

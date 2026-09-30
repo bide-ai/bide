@@ -24,6 +24,11 @@ const (
 	// effect, written by the driver that claimed it (see attempt.go). That attempt then no
 	// longer halts a resume, and the effect is re-attempted under a new marker.
 	StepNotStarted StepKind = "not_started"
+	// StepClaimHeld pins the not-started key of an attempt claimed with a claim id this process
+	// took back after an insert of it failed (see ClaimAttempt): with it in place, no not-started
+	// record can void the attempt while its effect may run. It is engine bookkeeping, not a value,
+	// and never voids an attempt.
+	StepClaimHeld StepKind = "claim_held"
 	// StepHeader is the journal header: the first record of every run's journal, named "@journal",
 	// whose Format names the journal format the run is written in (see JournalFormat). The
 	// journal writes it before a run's first record and checks it before reading any other.
