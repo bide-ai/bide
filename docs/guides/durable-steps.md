@@ -287,6 +287,11 @@ none is running. So, whatever the cause:
   again, and the next resolution claims the attempt after the resolution's own (with
   `WithMinHaltAge`, measured from that attempt).
 - A `HaltContended` halt always requires `WithMinHaltAge`.
+- Where `WithMinHaltAge` stands in for the live-driver check (a `HaltContended` halt, or a store with
+  no `Leaser`), the age must cover the tool's real worst-case run time, not its `ToolSpec.Timeout`
+  (`WithTimeout`): a result the tool returns after its deadline is still recorded, and a tool that
+  ignores cancellation can run past the timeout, so an age equal to the timeout can resolve a halt
+  while the call is still running. The lease check on a store that leases runs is not affected.
 - `WithoutLiveDriverCheck()` skips all of these, for an operator who knows no driver is running
   (every worker stopped).
 
