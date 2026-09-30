@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -133,6 +134,14 @@ func TestNewJournal_NilStoreIsErrConfig(t *testing.T) {
 	}
 	if _, err := NewJournal(NewMemStore(), nil); !errors.Is(err, ErrConfig) {
 		t.Errorf("NewJournal with a nil option = %v, want ErrConfig", err)
+	}
+}
+
+// Until 1.0 every pre-release writes one dev tag, never bumped per change, and 1.0 switches to
+// "bide.journal.v1", so a 1.0 binary refuses every pre-release journal.
+func TestJournalFormat_IsTheOneDevTag(t *testing.T) {
+	if JournalFormat != "bide.journal.v1-dev" || !slices.Equal(supportedFormats, []string{"bide.journal.v1-dev"}) {
+		t.Fatalf("JournalFormat = %q, supported %v; want the one pre-1.0 tag bide.journal.v1-dev", JournalFormat, supportedFormats)
 	}
 }
 

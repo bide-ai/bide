@@ -177,19 +177,25 @@ func refused(t *testing.T, s agent.Store, id, found string) {
 }
 
 // Header (c): a run whose header names a format this version does not support is refused on
-// History, Get and writes.
+// History, Get and writes: a later format, the 1.0 format (which no pre-release reads), and a
+// pre-release tag other than the one dev tag used until 1.0.
 func unsupportedFormat(t *testing.T, s agent.Store) {
 	ctx := context.Background()
-	id := runID(t)
-	if _, _, err := s.Insert(ctx, id, "@journal", rawHeader("bide.journal.v999")); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := s.Insert(ctx, id, "a", rawRecord(t, "a")); err != nil {
-		t.Fatal(err)
-	}
-	refused(t, s, id, "bide.journal.v999")
-	if f, err := journal(t, s).Format(ctx, id); err != nil || f != "bide.journal.v999" {
-		t.Fatalf("Format = %q, %v; want the unsupported format reported", f, err)
+	for _, format := range []string{"bide.journal.v999", "bide.journal.v1", "bide.journal.v1-dev.1"} {
+		if format == agent.JournalFormat {
+			t.Fatalf("this version writes %q, which must be refused", format)
+		}
+		id := runID(t)
+		if _, _, err := s.Insert(ctx, id, "@journal", rawHeader(format)); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := s.Insert(ctx, id, "a", rawRecord(t, "a")); err != nil {
+			t.Fatal(err)
+		}
+		refused(t, s, id, format)
+		if f, err := journal(t, s).Format(ctx, id); err != nil || f != format {
+			t.Fatalf("Format = %q, %v; want the unsupported format %q reported", f, err, format)
+		}
 	}
 }
 
