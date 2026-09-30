@@ -47,6 +47,7 @@ minor version (0.x.0) may include breaking API or journal-format changes; each o
 - `MemStore` honors its context, and lists runs in order ([#92]).
 - A live tool result, a claim and a completion are written with one Insert, without a read first ([#92]).
 - A `Step` that loses its claim to a call of the step in flight in this process, and finds that call failed, halts with `HaltContended` (its claimant was live); a `Step` that loses its claim with no call in flight still halts with `HaltCrashed`. `ResolveHaltRef` finds a `Leaser` through a `Journal` and through store wrappers, so its live-driver check uses the lease on `store/sqlite` as on `MemStore` and `store/postgres` ([#92]).
+- On a store with no `Leaser`, `ResolveHaltRef` (and its wrappers) claims the attempt after the live one before it records the outcome, and returns `*HaltInFlight` (whose new `Attempt` field names that attempt) if a driver holds it already, so a resolution after `WithMinHaltAge` cannot override a driver that revived a remembered claim and ran the effect ([#92]).
 - A `SagaAborted` error lists its uncompensated writes without saying each lacked a compensator: the list also holds a call whose outcome is unknown and a call whose tool is gone ([#92]).
 - The DST and reference-model crash suites inject their crashes at the storage port, under a Journal, so they cover the journal header, claims and not-started records; `agent` also carries an exhaustive fault-schedule exploration of the claim protocol, bounded by default (`BIDE_EXPLORE=1` runs the full exploration) ([#92]).
 

@@ -267,7 +267,12 @@ none is running. So, whatever the cause:
   lease while it resolves and returns `*HaltInFlight` while a driver holds it. Only drivers that
   lease the run (`Lease`, `Recover`, `RecoverLoop`) are seen; a plain `Run` holds no lease.
 - On a store that cannot (a custom store with no `Leaser`), it requires `WithMinHaltAge`, so the
-  halt is resolved only once no driver can still be running it.
+  halt is resolved only once no driver can still be running it. It then also claims the attempt
+  after the live one, under a claim of its own, before it records the outcome, and returns
+  `*HaltInFlight` if a driver holds that claim already: a process that could not record that its
+  claim never started can void the live attempt after the age check and run the effect as the next
+  attempt, and a resolution must not override it. The resolution's claim stays in the journal as an
+  attempt marker of the operation.
 - A `HaltContended` halt always requires `WithMinHaltAge`.
 - `WithoutLiveDriverCheck()` skips the first two, for an operator who knows no driver is running
   (every worker stopped).

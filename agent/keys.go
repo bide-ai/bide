@@ -206,6 +206,20 @@ func attemptBase(key string) string {
 	return key
 }
 
+// nextAttemptStep is the marker key of the attempt after the one whose marker key is key.
+func nextAttemptStep(key string) string {
+	base := attemptBase(key)
+	if key == base {
+		return retryAttemptStep(base, 1)
+	}
+	rest := strings.TrimPrefix(key, retryAttemptPrefix)
+	gen, err := strconv.Atoi(rest[:strings.IndexByte(rest, ':')])
+	if err != nil {
+		return retryAttemptStep(base, 1) // not a key retryAttemptStep builds; never reached
+	}
+	return retryAttemptStep(base, gen+1)
+}
+
 // notStartedStep is the key of the record that the attempt whose marker key is marker, claimed
 // under claim, never started its effect: "attempt:not-started:<claim>:<marker>". A claim id is hex,
 // so the claim ends at the first ':'. Keying it by the claim keeps apart the records of two drivers

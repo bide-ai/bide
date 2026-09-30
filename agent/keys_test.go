@@ -32,6 +32,7 @@ var keyConstructors = map[string]func(string) string{
 	"stepAttemptStep":      stepAttemptStep,
 	"retryAttemptStep":     func(s string) string { return retryAttemptStep(toolAttemptStep(s), 1+len(s)) },
 	"notStartedStep":       func(s string) string { return notStartedStep(toolAttemptStep(s), "0123abcd") },
+	"nextAttemptStep":      func(s string) string { return nextAttemptStep(retryAttemptStep(stepAttemptStep(s), 1+len(s))) },
 	"approvalStep":         approvalStep,
 	"approvalDecisionStep": func(s string) string { return approvalDecisionStep(s, "ops:1", true, []byte(s)) },
 	"ApprovalTallyStep":    ApprovalTallyStep,
@@ -219,6 +220,7 @@ func TestEngineKeys_WritesUseConstructors(t *testing.T) {
 		"step:name":             true, // its callers are checked here
 		"Step:name":             true, // a developer-chosen name, refused if reserved (checkStepName)
 		"resolveHalt:h.result":  true, // ToolResultStep, or a step name checkStepName allowed
+		"resolveHalt:heldKey":   true, // assigned from nextAttemptStep
 		"claimAttempt:name":     true, // its callers are checked here
 		"probe:key":             true, // its callers are checked here
 		"doShared:key":          true, // its callers are checked here
