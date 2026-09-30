@@ -46,6 +46,5 @@ model/openai WithHTTPClient
 model/openai WithMaxTokens
 model/openai WithModel
 model/openai WithStrictSchema
-plan HaltAmbiguous.Error
 trace WithModel
 trace WithSystem
