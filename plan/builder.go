@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+	"time"
 
 	"github.com/bide-ai/bide/agent"
 )
@@ -187,13 +188,14 @@ func (b *Builder[In, Out]) Step[I, O any](name string, fn func(context.Context, 
 // (options apply after the literal), for the rare case the author knows better
 // than the tool's own declaration.
 func (b *Builder[In, Out]) Tool[I, O any](name string, t agent.Tool, opts ...NodeOption) Handle[I, O] {
+	spec := agent.SpecOf(t) // read once, as the agent reads it
 	b.core.register(applyNodeOptions(&node{
 		name:     name,
 		kind:     kindTool,
 		inType:   typeOf[I](),
 		outType:  typeOf[O](),
-		safety:   agent.SpecOf(t).Safety, // auto-derived; an explicit option below overrides it
-		approval: agent.SpecOf(t).Approval,
+		safety:   spec.Safety, // auto-derived; an explicit option below overrides it
+		approval: spec.Approval,
 		run: func(ctx context.Context, in any) (any, error) {
 			typed, ok := in.(I)
 			if !ok {
@@ -203,7 +205,7 @@ func (b *Builder[In, Out]) Tool[I, O any](name string, t agent.Tool, opts ...Nod
 			if err != nil {
 				return nil, fmt.Errorf("plan: tool %q encode input: %w", name, err)
 			}
-			raw, err := t.Call(ctx, args)
+			raw, err := callTool(ctx, t, spec.Timeout, args)
 			if err != nil {
 				return nil, err
 			}
@@ -361,4 +363,31 @@ func (b *Builder[In, Out]) Model[I, O any](name, prompt string, opts ...NodeOpti
 		// the flow's bound model at run time (it is not known here at construction).
 	}, opts))
 	return Handle[I, O]{name: name, b: b.core}
+}
+
+// callTool calls a wrapped agent tool as the agent does: under its ToolSpec.Timeout when that is
+// positive. An error it returns once that deadline has passed (judged by the deadline, since a
+// context's Err lags its timer), while the flow's own context is live, has an unknown outcome
+// and wraps agent.ErrToolOutcomeUnknown. A node's error records nothing either way: a side-effect
+// node's attempt marker then halts the next drive, and a retry-safe node runs again.
+func callTool(ctx context.Context, t agent.Tool, timeout time.Duration, args json.RawMessage) (json.RawMessage, error) {
+	if timeout <= 0 {
+		return t.Call(ctx, args)
+	}
+	tctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	raw, err := t.Call(tctx, args)
+	if err != nil && pastDeadline(tctx) && !pastDeadline(ctx) {
+		return nil, fmt.Errorf("plan: tool %q returned an error after its %s timeout: %w (%w)", agent.SpecOf(t).Name, timeout, err, agent.ErrToolOutcomeUnknown)
+	}
+	return raw, err
+}
+
+// pastDeadline reports whether ctx is done or its deadline has passed.
+func pastDeadline(ctx context.Context) bool {
+	if ctx.Err() != nil {
+		return true
+	}
+	dl, ok := ctx.Deadline()
+	return ok && !time.Now().Before(dl)
 }
