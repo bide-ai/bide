@@ -52,8 +52,8 @@ type regBlock struct {
 	// agent.Tool; RegisterStep/RegisterModel take it from a NodeOption at
 	// registration. It is threaded into the built node by assemble, so a loaded flow
 	// resumes identically to a hand-built one. A config node's "safety" field may
-	// change its retry classification (ReadOnly/Idempotent) but keeps the approval
-	// gate and IdempotencyKey recorded here (see safetyFromConfig).
+	// keep or lower its retry classification, never raise it, and keeps the approval
+	// gate recorded here (see safetyFromConfig).
 	safety agent.Safety
 }
 
@@ -78,6 +78,10 @@ type regPred struct {
 // conflict, because a merge lowers to a node's merge closure rather than to a
 // block's run or a predicate's arm test.
 type regMerge struct {
+	// safety is the merge block's retry-on-resume classification, set in Go by the
+	// NodeOptions given to RegisterJoin2/RegisterJoin3 (none: a side effect, which halts on
+	// an ambiguous crash). A config join's "safety" may only lower it.
+	safety  agent.Safety
 	arity   int
 	inTypes []reflect.Type
 	outType reflect.Type
@@ -143,11 +147,12 @@ func (r *Registry) registerMerge(name string, m *regMerge) error {
 // its concrete type before calling fn, exactly like Builder.Join2. A duplicate name
 // is an error, surfaced at Load and returned here for inline checking.
 //
-// Safety is not carried on a merge block: like a hand-built Join a loaded join
-// defaults to the conservative halt-on-ambiguous-crash, and an explicit config
-// "safety" on the join node overrides it (see the join node's safety field).
-func RegisterJoin2[A, B, O any](r *Registry, name string, fn func(context.Context, A, B) (O, error)) error {
+// opts set the merge block's Safety, as for RegisterStep: with none, a loaded join is a side
+// effect and halts on an ambiguous crash, like a hand-built Join. Only Go code can mark a merge
+// retry-safe (ReadOnly, Idempotent); a config join's "safety" may only lower what opts declare.
+func RegisterJoin2[A, B, O any](r *Registry, name string, fn func(context.Context, A, B) (O, error), opts ...NodeOption) error {
 	return r.registerMerge(name, &regMerge{
+		safety:  safetyFromOptions(agent.Safety{}, opts),
 		arity:   2,
 		inTypes: []reflect.Type{reflect.TypeFor[A](), reflect.TypeFor[B]()},
 		outType: reflect.TypeFor[O](),
@@ -178,9 +183,10 @@ func RegisterJoin2[A, B, O any](r *Registry, name string, fn func(context.Contex
 // three ordered inputs and assemble builds a kindJoin node whose ordered input
 // types are A, B, C and whose erased merge closure asserts each boxed input before
 // calling fn. A duplicate name is an error, surfaced at Load and returned here for
-// inline checking.
-func RegisterJoin3[A, B, C, O any](r *Registry, name string, fn func(context.Context, A, B, C) (O, error)) error {
+// inline checking. opts set the merge block's Safety, as for RegisterJoin2.
+func RegisterJoin3[A, B, C, O any](r *Registry, name string, fn func(context.Context, A, B, C) (O, error), opts ...NodeOption) error {
 	return r.registerMerge(name, &regMerge{
+		safety:  safetyFromOptions(agent.Safety{}, opts),
 		arity:   3,
 		inTypes: []reflect.Type{reflect.TypeFor[A](), reflect.TypeFor[B](), reflect.TypeFor[C]()},
 		outType: reflect.TypeFor[O](),

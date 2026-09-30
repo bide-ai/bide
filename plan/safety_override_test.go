@@ -9,13 +9,15 @@ import (
 	"github.com/bide-ai/bide/agent"
 )
 
-// gatedTools are agent tools that declare a human approval gate, 1-of-1 and m-of-n.
+// gatedTools are agent tools that declare a human approval gate, 1-of-1 and m-of-n. They are
+// read-only, so every config safety value lowers or keeps their retry safety and the gate is
+// what refuses them.
 func gatedTools() map[string]agent.Tool {
 	fn := func(context.Context, int) (int, error) { return 0, nil }
 	return map[string]agent.Tool{
-		"requires approval": agent.Func("refund", "issue a refund", agent.Safety{RequiresApproval: true}, fn),
+		"requires approval": agent.Func("refund", "issue a refund", agent.Safety{ReadOnly: true, RequiresApproval: true}, fn),
 		"m-of-n approval": agent.Func("refund", "issue a refund",
-			agent.Safety{Approval: &agent.ApprovalPolicy{Need: 1, Approvers: []string{"ops"}}}, fn),
+			agent.Safety{ReadOnly: true, Approval: &agent.ApprovalPolicy{Need: 1, Approvers: []string{"ops"}}}, fn),
 	}
 }
 
@@ -93,11 +95,11 @@ func TestSafetyOverride_ReplacesTheClassification(t *testing.T) {
 	for _, tc := range []struct {
 		base      agent.Safety
 		opt       NodeOption
-		cfg       string
+		cfg       string // "" when the config may not set it (it would raise retry safety)
 		wantRO    bool
 		wantIdemp bool
 	}{
-		{agent.Safety{Idempotent: true}, ReadOnly(), "readonly", true, false},
+		{agent.Safety{Idempotent: true}, ReadOnly(), "", true, false},
 		{agent.Safety{ReadOnly: true}, Idempotent(), "idempotent", false, true},
 	} {
 		tool := agent.Func("t", "", tc.base, fn)
@@ -105,6 +107,9 @@ func TestSafetyOverride_ReplacesTheClassification(t *testing.T) {
 		b.Tool[int, int]("t", tool, tc.opt)
 		if s := b.core.byName["t"].safety; s.ReadOnly != tc.wantRO || s.Idempotent != tc.wantIdemp {
 			t.Errorf("base %+v, option: safety %+v; want ReadOnly=%v Idempotent=%v", tc.base, s, tc.wantRO, tc.wantIdemp)
+		}
+		if tc.cfg == "" {
+			continue
 		}
 		reg := NewRegistry()
 		if err := RegisterTool[int, int](reg, "t", tool); err != nil {

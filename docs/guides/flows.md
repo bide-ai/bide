@@ -101,8 +101,8 @@ Every node lowers to a memoized `Do` step under a two-phase attempt/result guard
   default (no classification) never double-fires, but completing after a mid-node crash then requires
   resolving the halt out of band (record the halted node's result, then continue), which is only safe
   when that node has no side effect. A node may instead declare a `Safety` (read-only, idempotent, or
-  retryable, via `ReadOnly()`/`Idempotent()`/`Retryable()` in Go, or `safety` in a declarative config) so
-  it re-runs on resume instead of halting.
+  retryable, via `ReadOnly()`/`Idempotent()`/`Retryable()` in Go) so it re-runs on resume instead of
+  halting. A declarative config's `safety` may only lower that (see "Node and join safety").
 - **A run keeps its flow.** `Run` records the flow's digest first and, on resume, refuses (`ErrConfig`)
   to continue a run that started under a different digest: its journal only means what it meant
   under that flow.
@@ -291,21 +291,30 @@ type.
 #### Node and join safety
 
 A node (or a join) may carry a `safety` classifying how `Run` treats it on the ambiguous-crash window
-(an attempt recorded, its result lost to a crash): `"readonly"`, `"idempotent"`, or `"retryable"`. A
-node with a safety re-runs its body on resume rather than halting, because a read-only or idempotent
-body is safe to repeat. The default (no `safety`) is the conservative halt. The config `safety`
-overrides the registered block's retry classification, so the classification is authorable as data.
-It changes only that classification: an approval gate or an `IdempotencyKey` the wrapped agent tool
-declares is kept (so a gated tool is still refused, see [Node approval](#node-approval)). The Go
-options `ReadOnly()`, `Idempotent()` and `Retryable()` behave the same way.
+(an attempt recorded, its result lost to a crash): `"readonly"`, `"idempotent"` (or its alias
+`"retryable"`), or `"side_effect"`. A read-only or idempotent node re-runs its body on resume rather
+than halting, because its body is safe to repeat; a side effect halts.
+
+**A config may only lower retry safety.** Whether a step is safe to run twice is a property of its Go
+code, so only Go declares it: `RegisterStep`, `RegisterTool` (from the tool's own `Safety`),
+`RegisterModel`, `RegisterJoin2` and `RegisterJoin3` take `ReadOnly()`/`Idempotent()` options. The
+levels, highest first, are read-only, idempotent (`Idempotent` or an `IdempotencyKey`), and side
+effect. A config `safety` may keep a block's level or name a lower one (mark a read-only block
+`idempotent`, or any block `side_effect` so a crash with no recorded outcome halts for confirmation),
+and a value above what Go declares (`readonly` or `idempotent` on a side effect, `readonly` on an
+idempotent block) is a load error (`ErrConfig`) naming the node. `side_effect` also drops an
+`IdempotencyKey`, since the key alone makes a node retry-safe. Any other change keeps an approval gate
+or an `IdempotencyKey` the wrapped agent tool declares (so a gated tool is still refused, see
+[Node approval](#node-approval)). The Go options `ReadOnly()`, `Idempotent()` and `Retryable()` on a
+`Builder` node are Go code and may raise a node's level; they too keep an approval gate.
 
 ```yaml
 nodes:
-  - {name: read, block: read, safety: readonly}   # re-run on resume, do not halt
+  - {name: read, block: read, safety: side_effect}   # halt on resume, even though Go declares it read-only
 ```
 
-The join wiring element takes the same optional `safety` (shown in the diamond above), since a merge
-block carries no safety of its own.
+The join wiring element takes the same optional `safety` (shown in the diamond above), which may
+lower what its merge block's `RegisterJoin2`/`RegisterJoin3` options declare.
 
 <a id="node-approval"></a>
 #### Node approval

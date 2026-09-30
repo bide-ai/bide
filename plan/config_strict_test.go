@@ -10,7 +10,7 @@ func strictRegistry(t *testing.T) *Registry {
 	t.Helper()
 	reg := NewRegistry()
 	for _, name := range []string{"a", "b"} {
-		if err := RegisterStep(reg, name, func(_ context.Context, n int) (int, error) { return n, nil }); err != nil {
+		if err := RegisterStep(reg, name, func(_ context.Context, n int) (int, error) { return n, nil }, ReadOnly()); err != nil {
 			t.Fatalf("register %s: %v", name, err)
 		}
 	}

@@ -40,16 +40,12 @@ type config struct {
 type configNode struct {
 	Name  string `json:"name"`
 	Block string `json:"block"`
-	// Safety optionally overrides the node's retry-on-resume classification: one of
-	// "readonly", "idempotent", or "retryable" ("retryable" is an alias for
-	// "idempotent"). Empty means the node keeps the registered block's Safety (the Go
-	// registration default). An explicit value here OVERRIDES that default's retry
-	// classification only: an approval gate or IdempotencyKey the block declares is kept.
-	// An unknown string is a load error naming the node. It maps to the corresponding NodeOption
-	// / agent.Safety, so a loaded node resumes identically to a hand-built one with the
-	// same option. Unlike Go registration, Safety CAN be expressed in the config JSON
-	// (this field), because it is a per-node authoring choice the config author may
-	// want to make without editing Go.
+	// Safety optionally LOWERS the node's retry-on-resume classification: one of
+	// "readonly", "idempotent", "retryable" (an alias for "idempotent"), or "side_effect".
+	// Empty means the node keeps the registered block's Safety (the Go registration). A
+	// value may keep or lower the level Go declares, never raise it: only Go code can say a
+	// step is safe to run twice, so a value above it is a load error naming the node, as is
+	// an unknown string (see safetyFromConfig). An approval gate the block declares is kept.
 	Safety string `json:"safety,omitempty"`
 	// Approval, when present, declares an m-of-n human approval gate
 	// that lowers to agent.Safety.Approval on the built node. Absent
@@ -87,11 +83,11 @@ type configWire struct {
 	// Merge is the registered merge-block name (a RegisterJoin2/RegisterJoin3) whose
 	// arity, ordered input types, and erased merge closure the join node adopts.
 	Merge string `json:"merge,omitempty"`
-	// Safety optionally sets the join node's retry-on-resume classification (one of
-	// "readonly", "idempotent", "retryable"), like configNode.Safety. A join created
-	// from wiring is not a declared node, so its Safety is set here. Empty keeps the
-	// conservative halt-on-ambiguous-crash default, matching a hand-built Join. An
-	// unknown string is a load error naming the join.
+	// Safety optionally lowers the join node's retry-on-resume classification, like
+	// configNode.Safety, from what its merge block's RegisterJoin2/RegisterJoin3 options
+	// declare (none: a side effect, which halts on an ambiguous crash, matching a
+	// hand-built Join). A join created from wiring is not a declared node, so its Safety
+	// is set here. A raise or an unknown string is a load error naming the join.
 	Safety string `json:"safety,omitempty"`
 }
 
@@ -295,9 +291,9 @@ func assemble(cfg *config, reg *Registry) (*builderCore, error) {
 		// error naming the node, collected with the rest of the drift.
 		safety := b.safety
 		if cn.Safety != "" {
-			s, ok := safetyFromConfig(b.safety, cn.Safety)
-			if !ok {
-				problems = append(problems, fmt.Sprintf("node %q has unknown safety %q; want one of \"readonly\", \"idempotent\", \"retryable\"", cn.Name, cn.Safety))
+			s, err := safetyFromConfig(b.safety, cn.Safety)
+			if err != nil {
+				problems = append(problems, fmt.Sprintf("node %q %v", cn.Name, err))
 			} else {
 				safety = s
 			}
@@ -376,7 +372,7 @@ func assemble(cfg *config, reg *Registry) (*builderCore, error) {
 	}
 
 	if len(problems) > 0 {
-		return nil, fmt.Errorf("plan: load %q: %s", cfg.Flow, strings.Join(problems, "; "))
+		return nil, fmt.Errorf("plan: load %q: %s: %w", cfg.Flow, strings.Join(problems, "; "), agent.ErrConfig)
 	}
 
 	// 5. Assemble the builderCore in config-array order via the existing register, so
@@ -448,11 +444,11 @@ func assemble(cfg *config, reg *Registry) (*builderCore, error) {
 			// erased merge closure. inType stays nil like a hand-built join (a join has
 			// several inputs wired as edges, not one Edge-consumed input). Safety defaults
 			// to the conservative halt; an explicit "safety" on the join element overrides it.
-			jsafety := agent.Safety{}
+			jsafety := m.safety
 			if w.Safety != "" {
-				s, ok := safetyFromConfig(jsafety, w.Safety)
-				if !ok {
-					return nil, fmt.Errorf("plan: load %q: wiring[%d] join %q has unknown safety %q; want one of \"readonly\", \"idempotent\", \"retryable\"", cfg.Flow, i, w.Join, w.Safety)
+				s, err := safetyFromConfig(jsafety, w.Safety)
+				if err != nil {
+					return nil, fmt.Errorf("plan: load %q: wiring[%d] join %q %v: %w", cfg.Flow, i, w.Join, err, agent.ErrConfig)
 				}
 				jsafety = s
 			}
@@ -620,23 +616,56 @@ func mergeNames(reg *Registry) []string {
 	return names
 }
 
-// safetyFromConfig applies a config safety string to base, the node's Safety before the
-// override, mirroring the ReadOnly/Idempotent/Retryable NodeOptions: "readonly" sets
-// ReadOnly, "idempotent" and its "retryable" alias set Idempotent. Only that retry
-// classification changes: an approval gate (RequiresApproval, Approval) or IdempotencyKey in
-// base is kept, so a config file cannot switch off a gate the wrapped tool declares. The bool
-// is false for an unknown string so the caller can report it as a load error naming the node.
-func safetyFromConfig(base agent.Safety, s string) (agent.Safety, bool) {
+// Retry-safety levels, lowest first. A config "safety" names one, and may only lower a node
+// to it: raising one is Go code's decision alone.
+const (
+	levelSideEffect = iota // halts on an ambiguous crash
+	levelIdempotent        // Idempotent, or an IdempotencyKey: re-runs, de-duplicated downstream
+	levelReadOnly          // re-runs, no side effect
+)
+
+// retryLevel is the retry-safety level s declares.
+func retryLevel(s agent.Safety) int {
+	switch {
+	case s.ReadOnly:
+		return levelReadOnly
+	case s.Idempotent || s.IdempotencyKey != nil:
+		return levelIdempotent
+	}
+	return levelSideEffect
+}
+
+// levelNames names the levels in config spelling, for error text.
+var levelNames = [...]string{levelSideEffect: "side_effect", levelIdempotent: "idempotent", levelReadOnly: "readonly"}
+
+// safetyFromConfig applies a config safety string to base, the Safety the node's Go
+// registration declares. "readonly" sets ReadOnly, "idempotent" and its "retryable" alias set
+// Idempotent, and "side_effect" clears ReadOnly, Idempotent and the IdempotencyKey (the key
+// alone makes a node retry-safe), so the node halts on an ambiguous crash. A config may only
+// LOWER retry safety: a value above the level base declares (readonly or idempotent on a side
+// effect, readonly on an idempotent block) is an error, because only Go code can say a step is
+// safe to run twice. An approval gate (RequiresApproval, Approval) in base is always kept, so a
+// config file cannot switch off a gate the wrapped tool declares. The error, also returned for an
+// unknown string, reads after the node's name and wraps nothing; the caller adds ErrConfig.
+func safetyFromConfig(base agent.Safety, s string) (agent.Safety, error) {
+	var level int
 	var opt NodeOption
 	switch s {
 	case "readonly":
-		opt = ReadOnly()
+		level, opt = levelReadOnly, ReadOnly()
 	case "idempotent", "retryable":
-		opt = Idempotent()
+		level, opt = levelIdempotent, Idempotent()
+	case "side_effect":
+		level, opt = levelSideEffect, func(n *node) {
+			n.safety.ReadOnly, n.safety.Idempotent, n.safety.IdempotencyKey = false, false, nil
+		}
 	default:
-		return agent.Safety{}, false
+		return agent.Safety{}, fmt.Errorf("has unknown safety %q; want one of \"readonly\", \"idempotent\", \"retryable\", \"side_effect\"", s)
 	}
-	return safetyFromOptions(base, []NodeOption{opt}), true
+	if have := retryLevel(base); level > have {
+		return agent.Safety{}, fmt.Errorf("has safety %q, above the %q its Go registration declares; a config may only lower retry safety, and only Go code can mark a step safe to run twice", s, levelNames[have])
+	}
+	return safetyFromOptions(base, []NodeOption{opt}), nil
 }
 
 // suggest returns a " (did you mean %q?)" fragment when exactly one candidate is a

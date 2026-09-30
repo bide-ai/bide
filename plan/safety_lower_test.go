@@ -85,3 +85,75 @@ func TestLoad_ConfigMayLowerRetrySafety(t *testing.T) {
 		}
 	}
 }
+
+// A merge block registered retry-safe in Go (RegisterJoin2/RegisterJoin3 take NodeOptions) is a
+// join a config may keep retry-safe or lower; with no option it is a side effect.
+func TestRegisterJoin_CarriesGoSafety(t *testing.T) {
+	merge2 := func(_ context.Context, a int, s string) (string, error) { return s, nil }
+	for name, tc := range map[string]struct {
+		opts      []NodeOption
+		cfg       string
+		wantErr   bool
+		wantRetry bool
+	}{
+		"readonly kept":        {[]NodeOption{ReadOnly()}, "readonly", false, true},
+		"readonly, no config":  {[]NodeOption{ReadOnly()}, "", false, true},
+		"readonly lowered":     {[]NodeOption{ReadOnly()}, "side_effect", false, false},
+		"idempotent raised":    {[]NodeOption{Idempotent()}, "readonly", true, false},
+		"no option, no config": {nil, "", false, false},
+	} {
+		reg := NewRegistry()
+		for _, err := range []error{
+			RegisterStep(reg, "split", func(_ context.Context, n int) (int, error) { return n, nil }),
+			RegisterStep(reg, "y", func(_ context.Context, n int) (int, error) { return n, nil }),
+			RegisterStep(reg, "z", func(_ context.Context, n int) (string, error) { return "", nil }),
+			RegisterJoin2(reg, "mergeBlock", merge2, tc.opts...),
+		} {
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+		cfg := diamondConfig
+		if tc.cfg != "" {
+			cfg = strings.Replace(cfg, `"merge": "mergeBlock"`, `"merge": "mergeBlock", "safety": "`+tc.cfg+`"`, 1)
+		}
+		flow, err := Load[int, string]([]byte(cfg), reg)
+		if tc.wantErr {
+			if !errors.Is(err, agent.ErrConfig) || !strings.Contains(err.Error(), `"merge"`) {
+				t.Errorf("%s: Load = %v; want ErrConfig naming join \"merge\"", name, err)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("%s: Load: %v", name, err)
+			continue
+		}
+		if got := nodeRetriableOnResume(flow.core.byName["merge"].safety); got != tc.wantRetry {
+			t.Errorf("%s: join retry-safe = %v, want %v", name, got, tc.wantRetry)
+		}
+	}
+	reg := NewRegistry()
+	if err := RegisterJoin3(reg, "m3", func(_ context.Context, a, b, c int) (int, error) { return a, nil }, ReadOnly()); err != nil {
+		t.Fatal(err)
+	}
+	if !reg.merges["m3"].safety.ReadOnly {
+		t.Error("RegisterJoin3 dropped its ReadOnly option")
+	}
+}
+
+// The error for an unknown value lists the new "side_effect" value, and one for a raise names
+// both levels, so an author can tell what the config may say.
+func TestLoad_SafetyErrorsNameTheLevels(t *testing.T) {
+	_, err := Load[int, int]([]byte(safetyConfig("sometimes")), safetyRegistry(t, agent.Safety{}))
+	if err == nil || !strings.Contains(err.Error(), `"side_effect"`) {
+		t.Errorf("unknown value: %v; want the accepted values including side_effect", err)
+	}
+	_, err = Load[int, int]([]byte(safetyConfig("readonly")), safetyRegistry(t, agent.Safety{Idempotent: true}))
+	if err == nil || !strings.Contains(err.Error(), `"readonly"`) || !strings.Contains(err.Error(), `"idempotent" its Go registration`) {
+		t.Errorf("raise: %v; want both levels named", err)
+	}
+	_, err = Load[int, int]([]byte(safetyConfig("idempotent")), safetyRegistry(t, agent.Safety{}))
+	if err == nil || !strings.Contains(err.Error(), `"side_effect" its Go registration`) {
+		t.Errorf("raise from a side effect: %v; want side_effect named", err)
+	}
+}

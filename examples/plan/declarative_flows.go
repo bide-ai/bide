@@ -34,8 +34,8 @@ type LoopState struct {
 // The node order (split, y, z), the two fan-out edges, then the join (which appends the
 // merge node and its y->merge, z->merge edges) mirror buildDiamondByHand exactly, so the
 // loaded flow's Digest equals the code-built one. The join carries safety "readonly" to
-// illustrate the field: a fan-in over pure producers takes no external effect, so it opts
-// out of halt-on-ambiguous-crash. Types are not restated; they flow from the blocks.
+// illustrate the field: a fan-in over pure producers takes no external effect, so its merge
+// block is registered ReadOnly in Go and the config keeps that (a config may only lower it). Types are not restated; they flow from the blocks.
 const diamondConfig = `{
   "flow": "diamond",
   "in": "int",
@@ -98,10 +98,11 @@ func buildDiamondRegistry() (*plan.Registry, error) {
 	}
 	// mergeBlock: the Join2 merge fanning y (int) and z (string) back into one string. Load
 	// checks its arity (2) against the join's declared input count and its input types
-	// against y's and z's outputs.
+	// against y's and z's outputs. It is registered ReadOnly: only Go code can mark a block
+	// safe to run twice, and the config's "safety" may only keep or lower that.
 	if err := plan.RegisterJoin2(reg, "mergeBlock", func(_ context.Context, a int, s string) (string, error) {
 		return fmt.Sprintf("%s+%d", s, a), nil
-	}); err != nil {
+	}, plan.ReadOnly()); err != nil {
 		return nil, err
 	}
 	return reg, nil
