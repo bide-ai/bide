@@ -50,3 +50,20 @@ func TestStreamSSE_FinishReasonsAreMapped(t *testing.T) {
 		}
 	}
 }
+
+// Under a forced tool_choice OpenAI can end a turn that calls a tool with finish_reason "stop":
+// the call is kept, since the content decides. "tool_calls" with no call lost the calls it was
+// for, so it is not an answer.
+func TestStreamSSE_ReasonAndCallsDisagree(t *testing.T) {
+	stopWithCall := "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"function\":{\"name\":\"f\",\"arguments\":\"{}\"}}]},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"
+	msg, _, err := testStream(stopWithCall).Message()
+	if err != nil || len(msg.Parts) != 1 {
+		t.Errorf("stop with a call: %+v, %v; want the call", msg, err)
+	} else if tu, ok := msg.Parts[0].(agent.ToolUse); !ok || tu.ID != "c1" {
+		t.Errorf("stop with a call: part %+v, want the call c1", msg.Parts[0])
+	}
+	callsWithoutCall := "data: {\"choices\":[{\"delta\":{\"content\":\"Let me check.\"},\"finish_reason\":\"tool_calls\"}]}\n\ndata: [DONE]\n\n"
+	if _, _, err := testStream(callsWithoutCall).Message(); !errors.Is(err, agent.ErrStreamProtocol) {
+		t.Errorf("tool_calls with no call: err %v, want ErrStreamProtocol", err)
+	}
+}

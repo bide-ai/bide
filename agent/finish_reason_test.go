@@ -22,7 +22,7 @@ func TestStream_FinishReasonDecidesTheTurn(t *testing.T) {
 	for reason, wantErr := range map[string]error{
 		"":           nil, // a Model that does not report a reason
 		"stop":       nil,
-		"tool_use":   nil,
+		"tool_use":   ErrStreamProtocol, // no call arrived: the calls the model ended its turn for are lost
 		"length":     ErrOutputTruncated,
 		"filtered":   ErrOutputFiltered,
 		"end_turn":   ErrStreamProtocol, // a provider's own word: adapters map it, the core does not guess
