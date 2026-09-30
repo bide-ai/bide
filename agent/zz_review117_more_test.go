@@ -119,3 +119,33 @@ func TestR117_BaseHandlerDoesNotStartACallPastItsDeadline(t *testing.T) {
 		t.Fatalf("calls %d, result %s (recorded %v); want the tool never called and the call failed as not started", calls.Load(), rec.Result, ok)
 	}
 }
+
+// R117-6 with the run's own cancellation: a side effect whose middleware was still waiting when
+// the run was cancelled never ran, so its claim is recorded as never started and a resume calls
+// the tool instead of halting.
+func TestR117_RunCancelledInMiddlewareRecordsNotStarted(t *testing.T) {
+	var calls atomic.Int32
+	charge := Func("charge", "", Safety{}, func(context.Context, struct{}) (string, error) {
+		calls.Add(1)
+		return "charged", nil
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	waiting := ToolMiddleware(func(next ToolHandler) ToolHandler {
+		return func(ctx context.Context, call ToolCall) (json.RawMessage, error) {
+			cancel() // the run is cancelled while the limiter waits
+			<-ctx.Done()
+			return nil, ctx.Err()
+		}
+	})
+	store := NewMemStore()
+	m := NewScriptedModel(ToolTurn("c1", "charge", `{}`), TextTurn("done"))
+	if _, err := New(m, store, charge).UseTool(waiting).Run(ctx, "r1", "pay"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("first drive: %v, want context.Canceled", err)
+	}
+	if _, err := New(m, store, charge).Run(context.Background(), "r1", "pay"); err != nil {
+		t.Fatalf("resume: %v, want the call attempted again", err)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("charged %d times, want 1", calls.Load())
+	}
+}

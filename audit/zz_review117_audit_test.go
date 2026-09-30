@@ -131,3 +131,35 @@ func TestR117_BindRollbackRefusesTwoGrants(t *testing.T) {
 		t.Fatalf("BindRollback = %v, want ErrProtocol", err)
 	}
 }
+
+// A journaled child grant whose parent is not the grant bound to the rollback is refused: the
+// rollback does not compensate under a chain it cannot establish.
+func TestR117_BindRollbackRefusesAForeignParent(t *testing.T) {
+	ctx := context.Background()
+	store := agent.NewMemStore()
+	_, priv, _ := ed25519.GenerateKey(rand.Reader)
+	signer := Ed25519Signer{Priv: priv}
+	parent, _ := SignGrant(Grant{ID: "p", Issuer: "corp", Subject: "desk"}, signer)
+	other, _ := SignGrant(Grant{ID: "o", Issuer: "corp", Subject: "desk", Scope: map[string]string{"x": "1"}}, signer)
+	child, _ := SignGrant(Grant{ID: "c", Issuer: "desk", Subject: "exec", ParentRef: parent.Grant.Digest()}, signer)
+	if _, err := RecordGrant(ctx, store, "sub", child); err != nil {
+		t.Fatal(err)
+	}
+	sub := agent.New(agent.NewScriptedModel(agent.TextTurn("x")), store)
+	b := AttenuatingSubAgent("exec", "", sub, AttenuationConfig{Store: store, Narrow: narrowLimitBy(1)}).(interface {
+		BindRollback(context.Context, string) (context.Context, error)
+	})
+	if _, err := b.BindRollback(WithGrant(ctx, other, signer), "sub"); !errors.Is(err, agent.ErrConfig) {
+		t.Fatalf("BindRollback under a foreign parent = %v, want ErrConfig", err)
+	}
+	bound, err := b.BindRollback(WithGrant(ctx, parent, signer), "sub")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sg, _, ok := GrantFrom(bound); !ok || sg.Grant.ID != "c" {
+		t.Fatalf("bound grant %+v (ok %v), want the child", sg.Grant, ok)
+	}
+	if id, _ := agent.IdentityFrom(bound); id.Actor != "exec" || id.OnBehalfOf != "desk" || id.AuthorityRef != child.Grant.Digest() {
+		t.Fatalf("bound identity %+v", id)
+	}
+}
