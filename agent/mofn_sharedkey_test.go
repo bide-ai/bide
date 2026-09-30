@@ -215,3 +215,82 @@ func TestMofn_SharedKeyBetweenRounds(t *testing.T) {
 		t.Fatalf("charged=%d err=%v, want 0 and ErrConfig", charged, err)
 	}
 }
+
+// ptrVerifier has pointer methods that read its fields, so a typed nil *ptrVerifier inside an
+// ApproverVerifier panics if called.
+type ptrVerifier struct{ keys []string }
+
+func (v *ptrVerifier) Verify(message, sig []byte) bool { return len(v.keys) > 0 }
+func (v *ptrVerifier) KeyIDs() []string               { return v.keys }
+
+// noPanic runs f and fails the test, rather than crashing it, if f panics.
+func noPanic(t *testing.T, what string, f func()) {
+	t.Helper()
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("%s panicked: %v", what, r)
+		}
+	}()
+	f()
+}
+
+// A resolver that returns a typed nil verifier (a nil *T in a non-nil interface) is a
+// configuration error, refused with ErrConfig everywhere it is used, never a panic.
+func TestMofn_TypedNilVerifierRefused(t *testing.T) {
+	pol := ApprovalPolicy{Need: 1, Approvers: []string{"a1", "a2"}}
+	vf := func(id string) (ApproverVerifier, bool) {
+		if id == "a1" {
+			return (*ptrVerifier)(nil), true
+		}
+		return fakeVerifiers("a2")(id)
+	}
+	noPanic(t, "ValidateKeys", func() {
+		if err := pol.ValidateKeys(vf); !errors.Is(err, ErrConfig) {
+			t.Fatalf("ValidateKeys = %v, want ErrConfig", err)
+		}
+	})
+	s := ApprovalSubject{RunID: "r", ToolUseID: "c1", ToolName: "charge", Args: []byte(`{}`)}
+	recs := []Record{{Name: "d:a1", Kind: StepApproval, ToolUseID: "c1", Approver: "a1", Approved: true, Signature: []byte("x")}}
+	noPanic(t, "TallyApprovals", func() {
+		tally, checks := TallyApprovals(recs, s, pol, vf)
+		if tally.Approved != 0 || len(checks) != 1 || checks[0].Counted {
+			t.Fatalf("tally = %+v checks = %+v, want a1's record not counted", tally, checks)
+		}
+	})
+	store := NewMemStore()
+	var charged int
+	noPanic(t, "the gate", func() {
+		_, err := mofnRun(store, "r1", true, &pol, vf, &charged)
+		if charged != 0 || !errors.Is(err, ErrConfig) {
+			t.Fatalf("charged=%d err=%v, want 0 and ErrConfig", charged, err)
+		}
+	})
+	noPanic(t, "SubmitDecision with WithDecisionCheck", func() {
+		err := SubmitDecision(context.Background(), store, Decision{RunID: "r1", ToolUseID: "c1", ApproverID: "a1", Approved: true, Signature: []byte("x")}, WithDecisionCheck(vf))
+		if !errors.Is(err, ErrConfig) {
+			t.Fatalf("SubmitDecision = %v, want ErrConfig", err)
+		}
+	})
+}
+
+// Unreachable counts only approvers who can still fill a seat: an approver excluded for a shared
+// key or no key identity can never approve, so a quorum that needs them is unreachable.
+func TestTallyApprovals_UnreachableExcludesSharedSeats(t *testing.T) {
+	s := ApprovalSubject{RunID: "r", ToolUseID: "c1", ToolName: "charge", Args: []byte(`{}`)}
+	vf := resolverOf(map[string]ApproverVerifier{
+		"a1": keyVerifier{signer: "h1", keys: []string{"k1"}},
+		"a2": keyVerifier{signer: "h1", keys: []string{"k1"}},
+		"a3": keyVerifier{signer: "h3", keys: []string{"k3"}},
+	})
+	tally, _ := TallyApprovals(nil, s, ApprovalPolicy{Need: 2, Approvers: []string{"a1", "a2", "a3"}}, vf)
+	if !tally.Unreachable() {
+		t.Fatalf("tally = %+v: two of three seats are excluded, so Need 2 is unreachable", tally)
+	}
+	if !reflect.DeepEqual(tally.Pending, []string{"a3"}) {
+		t.Fatalf("Pending = %v, want [a3]: an excluded approver is not waited on", tally.Pending)
+	}
+	// Need 1 is still reachable through a3.
+	if tally, _ := TallyApprovals(nil, s, ApprovalPolicy{Need: 1, Approvers: []string{"a1", "a2", "a3"}}, vf); tally.Unreachable() {
+		t.Fatalf("tally = %+v: a3 can still approve, so Need 1 is reachable", tally)
+	}
+}
