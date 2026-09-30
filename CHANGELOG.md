@@ -45,19 +45,19 @@ minor version (0.x.0) may include breaking API or journal-format changes; each o
 - `agent.Record.ReadOnly` (`read_only`): a tool result records whether its call ran ReadOnly ([#70]).
 - The library modules (`govern`, `store/sqlite`, `store/postgres`, `mcp`, `trace`, `codec/gcf`, `govern/sqlitelog`, `govern/redislog`, `govern/postgreslog`) are tagged `<dir>/vX.Y.Z` with each release by `scripts/release.sh`, so they install with `go get` ([#85]).
 - CI checks that every Go block in the README and `docs/` compiles against the current code, and that API listings match the packages, with `internal/tools/docsnip` ([#88]).
-- `agent.Pause`, the sealed interface every pause satisfies, with `agent.RunRef`, `IsPause` and `AsPause`. Its five kinds are `ApprovalPending`, `InterruptPending`, `SignalPending`, `TimerPending` and `OutcomeUnknown`; code outside the package cannot add one ([#P10]).
-- `agent.ResolveHaltRef(ctx, store, HaltRef, Outcome, ...)`, one resolution for tool and `Step` halts, with `OutcomeUnknown.Ref`, `HaltRef`, `OpRef`, `OpKind` (`OpTool`, `OpStep`), `HaltCause` (`HaltCrashed`, `HaltContended`) and `Outcome` (whose `Evidence` marks the resolution reconciled). The 1.0 rewrite renames it `ResolveHalt` ([#P10]).
-- Verbs named for the pause they answer: `SubmitDecision` with `Decision`, `AnswerInterrupt` and `Enqueue`; `agent.Wake` ([#P10]).
+- `agent.Pause`, the sealed interface every pause satisfies, with `agent.RunRef`, `IsPause` and `AsPause`. Its five kinds are `ApprovalPending`, `InterruptPending`, `SignalPending`, `TimerPending` and `OutcomeUnknown`; code outside the package cannot add one ([#90]).
+- `agent.ResolveHaltRef(ctx, store, HaltRef, Outcome, ...)`, one resolution for tool and `Step` halts, with `OutcomeUnknown.Ref`, `HaltRef`, `OpRef`, `OpKind` (`OpTool`, `OpStep`), `HaltCause` (`HaltCrashed`, `HaltContended`) and `Outcome` (whose `Evidence` marks the resolution reconciled). The 1.0 rewrite renames it `ResolveHalt` ([#90]).
+- Verbs named for the pause they answer: `SubmitDecision` with `Decision`, `AnswerInterrupt` and `Enqueue`; `agent.Wake` ([#90]).
 
 ### Changed
 
 - **Breaking:** journal keys for tool results, attempt markers, approvals, compensations and sub-agent runs encode the tool-use id (`tool:<id>`, sub-run `<parent>><id>`); runs journaled by v0.7.0 do not resume ([#60]).
 - **Breaking:** `ResolveHalt` resolves only tool calls; use `ResolveStepHalt` for a `Step` ([#60]).
-- **Breaking:** the pause types are renamed: `PendingApproval` to `ApprovalPending`, `Interrupted` to `InterruptPending`, `Awaiting` to `SignalPending`, `Sleeping` to `TimerPending` and `ResumeHalt` to `OutcomeUnknown`. The old names stay as deprecated aliases until the 1.0 rewrite. Each type embeds `RunRef` (`RunID`, `RootRunID`), so a composite literal names `RunRef`; `Interrupted.Key` is `InterruptPending.Name`, `ResumeHalt.ToolUseID` and `ToolName` are `OutcomeUnknown.Op.ID` and `Op.ToolName`, and the never-set `Awaiting.Prompt` is gone ([#P10]).
-- **Breaking:** `Waker.Schedule(ctx, Wake) error`. A failed schedule fails the run with an error wrapping `ErrStorage` and records nothing for the sleeping call (it used to pause with no wake registered), and `RecoverLoop` schedules it again on its next pass. `MemWaker` keys a wake by its `RunID` and `Name` and resumes its `RootRunID` ([#P10]).
-- `OutcomeUnknown.Cause` says why a run halted: `HaltContended` when another driver won the claim during this drive, otherwise `HaltCrashed`. `ResolveHaltRef` refuses a contended halt without `WithMinHaltAge`, measured from the live attempt, so a reconciler cannot resolve an effect another driver may still be running ([#P10]).
-- `ResolveHalt`, `ResolveStepHalt`, `ApproveAs`, `Resume` and the channel `Send` are deprecated wrappers of `ResolveHaltRef`, `SubmitDecision`, `AnswerInterrupt` and `Enqueue`; `ResolveHalt` and `ResolveStepHalt` take the cause as `HaltCrashed` ([#P10]).
-- The loop, `Recover`, `RecoverLoop` and `MemWaker` detect pauses with `IsPause` ([#P10]).
+- **Breaking:** the pause types are renamed: `PendingApproval` to `ApprovalPending`, `Interrupted` to `InterruptPending`, `Awaiting` to `SignalPending`, `Sleeping` to `TimerPending` and `ResumeHalt` to `OutcomeUnknown`. The old names stay as deprecated aliases until the 1.0 rewrite. Each type embeds `RunRef` (`RunID`, `RootRunID`), so a composite literal names `RunRef`; `Interrupted.Key` is `InterruptPending.Name`, `ResumeHalt.ToolUseID` and `ToolName` are `OutcomeUnknown.Op.ID` and `Op.ToolName`, and the never-set `Awaiting.Prompt` is gone ([#90]).
+- **Breaking:** `Waker.Schedule(ctx, Wake) error`. A failed schedule fails the run with an error wrapping `ErrStorage` and records nothing for the sleeping call (it used to pause with no wake registered), and `RecoverLoop` schedules it again on its next pass. `MemWaker` keys a wake by its `RunID` and `Name` and resumes its `RootRunID` ([#90]).
+- `OutcomeUnknown.Cause` says why a run halted: `HaltContended` when another driver won the claim during this drive, otherwise `HaltCrashed`. `ResolveHaltRef` refuses a contended halt without `WithMinHaltAge`, measured from the live attempt, so a reconciler cannot resolve an effect another driver may still be running ([#90]).
+- `ResolveHalt`, `ResolveStepHalt`, `ApproveAs`, `Resume` and the channel `Send` are deprecated wrappers of `ResolveHaltRef`, `SubmitDecision`, `AnswerInterrupt` and `Enqueue`; `ResolveHalt` and `ResolveStepHalt` take the cause as `HaltCrashed` ([#90]).
+- The loop, `Recover`, `RecoverLoop` and `MemWaker` detect pauses with `IsPause` ([#90]).
 - **Breaking:** step names with a reserved engine prefix are `ErrConfig`, run and session ids may not contain `>`, `plan` step names may not contain `:`, and `Recover` skips sub-runs ([#60]).
 - **Breaking:** `Finish.Reason` uses the neutral values `stop`, `tool_use`, `length` and `filtered`; a cut-off or filtered turn fails with `ErrOutputTruncated` or `ErrOutputFiltered`, and any other reason with `ErrStreamProtocol` ([#68]).
 - **Breaking:** a reply over the response cap fails with `ErrResponseTooLarge`, and a `tool_use` turn with no call fails ([#68]).
@@ -445,6 +445,8 @@ First public release.
 [#91]: https://github.com/bide-ai/bide/pull/91
 [#93]: https://github.com/bide-ai/bide/pull/93
 [#P10]: https://github.com/bide-ai/bide/pull/P10
+[#90]: https://github.com/bide-ai/bide/pull/90
+[#91]: https://github.com/bide-ai/bide/pull/91
 [78f8db6]: https://github.com/bide-ai/bide/commit/78f8db6
 [994721b]: https://github.com/bide-ai/bide/commit/994721b
 [3262cd1]: https://github.com/bide-ai/bide/commit/3262cd1
