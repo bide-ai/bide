@@ -77,6 +77,19 @@ type Record struct {
 	Salt []byte `json:"salt,omitempty"`
 }
 
+// markerTime is the time an attempt marker's AttemptedAt records, or the zero time when it records
+// none. Zero means a marker written before the field existed. A negative value is not a time the
+// engine writes (it stamps time.Now().UnixMilli()), so it is a hand-written or tampered row; read as
+// a time it would place the attempt in 1969 and make any grace period look long elapsed, so it
+// counts as no timestamp too. A marker in the future (clock skew between nodes, or a tampered row)
+// is kept: it is younger than any grace period, so WithMinHaltAge waits on it.
+func markerTime(ms int64) time.Time {
+	if ms <= 0 {
+		return time.Time{}
+	}
+	return time.UnixMilli(ms)
+}
+
 // SaltSize is the length of Record.Salt: 32 bytes (256 bits) from crypto/rand.
 const SaltSize = 32
 
@@ -258,9 +271,7 @@ func step[T any](ctx context.Context, d Durable, runID, name string, fn func(con
 			return out, err
 		}
 		claimed = won
-		if got.AttemptedAt != 0 {
-			attemptedAt = time.UnixMilli(got.AttemptedAt)
-		}
+		attemptedAt = markerTime(got.AttemptedAt)
 	}
 	rec, err := d.Do(ctx, runID, name, func(ctx context.Context) (Record, error) {
 		if claimed && cfg.safety.RetrySafe() {
@@ -273,9 +284,7 @@ func step[T any](ctx context.Context, d Durable, runID, name string, fn func(con
 			switch {
 			case err == nil:
 				claimed = false
-				if marker.AttemptedAt != 0 {
-					attemptedAt = time.UnixMilli(marker.AttemptedAt)
-				}
+				attemptedAt = markerTime(marker.AttemptedAt)
 			case !errors.Is(err, errNoAttempt):
 				return Record{}, err
 			}
@@ -420,10 +429,14 @@ func resolve(ctx context.Context, store Durable, runID string, h haltKeys, resul
 		return fmt.Errorf("%s: %q in run %s was attempted by the other kind of operation; resolve it with %s: %w", h.op, h.id, runID, h.otherOp, ErrConfig)
 	}
 	if cfg.minHaltAge > 0 {
-		if attempt == nil || attempt.AttemptedAt == 0 {
+		var at time.Time
+		if attempt != nil {
+			at = markerTime(attempt.AttemptedAt)
+		}
+		if at.IsZero() {
 			return fmt.Errorf("%s: cannot enforce min halt age for %q: no attempt marker carries a timestamp: %w", h.op, h.id, ErrConfig)
 		}
-		if age := cfg.now().Sub(time.UnixMilli(attempt.AttemptedAt)); age < cfg.minHaltAge {
+		if age := cfg.now().Sub(at); age < cfg.minHaltAge {
 			return &HaltTooYoung{RunID: runID, ToolUseID: h.id, Age: age, Min: cfg.minHaltAge}
 		}
 	}
@@ -455,8 +468,10 @@ type resolveConfig struct {
 // provider's record has had time to settle (a sent-message id can appear seconds after the
 // send): resolving too early reads "absent" and re-fires the very side effect the halt
 // exists to prevent. d <= 0 skips the check. When d > 0 but no attempt timestamp is found,
-// ResolveHalt errors rather than resolve blind. Returns *HaltTooYoung when the halt has not
-// aged enough, so the caller waits and retries later.
+// ResolveHalt errors rather than resolve blind; a marker whose AttemptedAt is zero or negative
+// carries none (a negative value is not one the engine writes). Returns *HaltTooYoung when the
+// halt has not aged enough, including a marker stamped in the future, so the caller waits and
+// retries later.
 func WithMinHaltAge(d time.Duration) ResolveOption {
 	return func(c *resolveConfig) { c.minHaltAge = d }
 }
@@ -537,7 +552,7 @@ type ResumeHalt struct {
 	ToolUseID string
 	ToolName  string
 	// AttemptedAt is when the effect was attempted (the attempt marker's timestamp), zero
-	// if unknown. A reconciler uses it to honor a grace period before resolving (see
+	// if unknown (including a marker stamped zero or negative, see markerTime). A reconciler uses it to honor a grace period before resolving (see
 	// ResolveHalt with WithMinHaltAge) so it does not query the provider before its record
 	// has settled.
 	AttemptedAt time.Time
