@@ -1175,25 +1175,10 @@ func readLeaf(b audit.ProofBundle, v any, what string) {
 	}
 }
 
-// governedPolicyDigest returns the policy digest a governed-action payload (a tool result, as
-// govern journals it) carries. The payload is open: it may hold other fields, such as the acting
-// identity, so its names are not checked against a type. It must still decode strictly as an object
-// (no duplicate names, no lone surrogate escapes), and the digest is read from the exact name
-// "policy_digest" only, never from a case variant, as a reader of the file would read it.
+// governedPolicyDigest returns the policy digest a governed-action payload carries, read by the
+// rule the used-policy set uses (see audit.GovernedPolicyDigest).
 func governedPolicyDigest(result json.RawMessage) (string, error) {
-	var fields map[string]json.RawMessage
-	if err := audit.UnmarshalStrict(result, &fields); err != nil {
-		return "", err
-	}
-	raw, ok := fields["policy_digest"]
-	if !ok {
-		return "", errors.New("no \"policy_digest\"")
-	}
-	var digest string
-	if err := audit.UnmarshalStrict(raw, &digest); err != nil {
-		return "", fmt.Errorf("policy_digest: %w", err)
-	}
-	return digest, nil
+	return audit.GovernedPolicyDigest(result)
 }
 
 func readJSON(path string, v any) {

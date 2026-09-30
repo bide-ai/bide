@@ -3,6 +3,7 @@ package audit
 import (
 	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
@@ -22,10 +23,19 @@ func TestPoliciesUsed_ReadsTheDigestAsTheCLIDoes(t *testing.T) {
 		`{"policy_digest":"A","x":{"k":1,"k":2}}`:             {},
 		`{"policy_digest":"\udc00"}`:                          {},
 		`{"policy_digest":7}`:                                 {},
+		`{"policy_digest":""}`:                                {},
 	} {
 		rec := agent.Record{Kind: agent.StepToolResult, ToolUseID: "t", Result: json.RawMessage(in)}
 		if got := PoliciesUsed([]agent.Record{rec}); !reflect.DeepEqual(got, want) {
 			t.Errorf("PoliciesUsed(%s) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// A payload with no exact "policy_digest" name says so, rather than failing as an empty value.
+func TestGovernedPolicyDigest_NamesAMissingDigest(t *testing.T) {
+	_, err := GovernedPolicyDigest(json.RawMessage(`{"Policy_Digest":"A"}`))
+	if err == nil || !strings.Contains(err.Error(), `no "policy_digest"`) {
+		t.Fatalf("err = %v, want one naming the missing \"policy_digest\"", err)
 	}
 }
