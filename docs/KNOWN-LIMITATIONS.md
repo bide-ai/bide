@@ -76,11 +76,15 @@ a warning when it discovers the schema. With the schema pinned, the search path 
 its schema, so after `ALTER SCHEMA ... RENAME` inserts fail and `Open` refuses it: drop the
 function and `Open` again, and the migration recreates it.
 
-**Crash safety is tested, not formally proven.** The crash tests fail the store at every write point,
-across hundreds of randomized multi-crash schedules, and check that no side effect fires twice and
-every rollback completes. That is strong evidence, but it is not a machine-checked proof over every
-possible interleaving. A crash is modelled as a failed durable write followed by the run unwinding,
-which matches a process dying around its writes. See [How bide is verified](testing/verification.md).
+**Crash safety is tested and model-checked within bounds, not proven for the code.** The crash
+tests fail the store at every write point, across hundreds of randomized multi-crash schedules, and
+check that no side effect fires twice and every rollback completes. The protocol designs (claims,
+the approval gate, flows, spend accounting and the bide protocol's claim rules) are TLA+ models that
+TLC checks in every interleaving within each configuration's bounds; nothing is proven beyond those
+bounds, and the models state the rules, not the Go code, whose correspondence is checked by review
+until trace validation lands. A crash is modelled as a failed durable write followed by the run
+unwinding, which matches a process dying around its writes. See [How bide is verified](testing/verification.md)
+and [the formal models](../spec/tla/README.md).
 
 **`run:complete` appears in diagrams.** A finished run records a `run:complete` step, so
 `RenderMermaid` shows it just before `done`. This is expected.

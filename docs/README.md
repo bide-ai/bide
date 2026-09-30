@@ -40,13 +40,13 @@ Accountability and governance:
 
 ## Design notes
 
-- **[Design](design/design.md)**, **[Durable signals](design/design-durable-signals.md)**, **[m-of-n approval](design/design-mofn-approval.md)**, **[Compaction](design/compaction.md)**, **[Chaos benchmark](design/chaos-benchmark.md)**, **[Formal models](design/formal-models.md)** (proposal), **[The bide protocol](design/protocol.md)** (accepted; not implemented).
+- **[Design](design/design.md)**, **[Durable signals](design/design-durable-signals.md)**, **[m-of-n approval](design/design-mofn-approval.md)**, **[Compaction](design/compaction.md)**, **[Chaos benchmark](design/chaos-benchmark.md)**, **[Formal models](design/formal-models.md)** (accepted, in progress), **[The bide protocol](design/protocol.md)** (accepted; not implemented).
 
 ## Testing and evidence
 
 - **[How bide is verified](testing/verification.md)** (evaluator): the discipline behind the guarantees: no fix without a failing test, mutation checks, crash and cancellation sweeps, forced interleavings, conformance suites, and CI.
 - **[Testing](testing/testing.md)**: what is tested and how, the chaos crash-injection benchmark, differential oracles, and the statistical `eval` boundary.
-- **[Formal models](../spec/tla/README.md)**: the TLA+ model of the claim protocol, what TLC checks on every pull request, and the bounds.
+- **[Formal models](../spec/tla/README.md)**: the TLA+ models of the claim protocol, the approval gate, flow semantics, spend accounting and the bide protocol's claim rules, what TLC checks on every pull request, and the bounds.
 
 ## Examples
 
