@@ -175,8 +175,8 @@ func (s *Session) reload(ctx context.Context) error {
 // transcript in context, and the turn is journaled. Returns the assistant's answer.
 //
 // If the turn pauses (a tool needs approval or Interrupt) or fails, Send returns that error
-// (*PendingApproval / *Interrupted / ...) and does NOT advance the transcript; resolve it
-// (Approve / Resume) and call Send again with the SAME input to resume that turn. Until then,
+// (*ApprovalPending / *InterruptPending / ...) and does NOT advance the transcript; resolve it
+// (Approve / AnswerInterrupt) and call Send again with the SAME input to resume that turn. Until then,
 // Send with a different input is ErrConfig: the open turn belongs to its message.
 func (s *Session) Send(ctx context.Context, input string) (Message, error) {
 	start, err := s.startTurn(ctx, input)

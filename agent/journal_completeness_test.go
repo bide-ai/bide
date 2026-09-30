@@ -315,7 +315,7 @@ func TestSaga_UnregisteredAttemptedCallStillHalts(t *testing.T) {
 		t.Helper()
 		var aborted *SagaAborted
 		var halt *ResumeHalt
-		if !errors.As(err, &aborted) || !errors.As(aborted.CompensateErr, &halt) || halt.ToolUseID != "c1" {
+		if !errors.As(err, &aborted) || !errors.As(aborted.CompensateErr, &halt) || halt.Op.ID != "c1" {
 			t.Fatalf("rollback: err = %v, want *SagaAborted stopped by a *ResumeHalt on c1", err)
 		}
 	}

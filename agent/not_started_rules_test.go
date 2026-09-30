@@ -201,7 +201,7 @@ func TestTool_CrashInAReattemptHalts(t *testing.T) {
 	}
 	_, err := New(&greedyModel{script: [][]Emit{textTurn("done")}}, store.MemStore, charge).Run(context.Background(), "r1", "pay")
 	var halt *ResumeHalt
-	if !errors.As(err, &halt) || halt.ToolUseID != "c1" || calls.Load() != 0 {
+	if !errors.As(err, &halt) || halt.Op.ID != "c1" || calls.Load() != 0 {
 		t.Fatalf("resume after a crash in the re-attempt = %v with %d charges, want *ResumeHalt for c1 and no charge", err, calls.Load())
 	}
 }

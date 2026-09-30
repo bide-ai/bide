@@ -569,7 +569,7 @@ func TestSubAgent_PropagatesHaltAndApproval(t *testing.T) {
 		if !errors.As(err, &halt) {
 			t.Fatalf("parent Run err = %v, want *ResumeHalt propagated from sub-agent", err)
 		}
-		if halt.RunID != subRunID || halt.ToolName != "charge" || halt.ToolUseID != "s1" {
+		if halt.RunID != subRunID || halt.Op.ToolName != "charge" || halt.Op.ID != "s1" {
 			t.Fatalf("halt = %+v, want sub-run charge/s1", halt)
 		}
 		if charged != 0 {

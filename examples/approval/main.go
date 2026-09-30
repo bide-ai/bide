@@ -154,9 +154,9 @@ func newAgent(store agent.Durable, witness string) *agent.Agent {
 // cmdRun drives the agent once. It either pauses at the gate (printing the tally) or completes.
 func cmdRun(ctx context.Context, store agent.Durable, witness string) error {
 	out, err := newAgent(store, witness).Run(ctx, runID, "Refund order 42.")
-	var pend *agent.PendingApproval
+	pend, paused := errors.AsType[*agent.ApprovalPending](err)
 	switch {
-	case errors.As(err, &pend) && pend.Quorum != nil:
+	case paused && pend.Quorum != nil:
 		q := pend.Quorum
 		fmt.Println("status: paused")
 		fmt.Printf("approved: %d of %d\n", q.Approved, q.Need)
@@ -198,7 +198,8 @@ func cmdApprove(ctx context.Context, store agent.Durable, as string, approved, f
 	if check {
 		opts = append(opts, agent.WithDecisionCheck(approverVerifiers()))
 	}
-	if err := agent.ApproveAs(ctx, store, runID, callID, as, approved, sig, opts...); err != nil {
+	d := agent.Decision{RunID: runID, ToolUseID: callID, ApproverID: as, Approved: approved, Signature: sig}
+	if err := agent.SubmitDecision(ctx, store, d, opts...); err != nil {
 		if errors.Is(err, agent.ErrInvalidApproval) || errors.Is(err, agent.ErrAlreadyDecided) {
 			fmt.Printf("refused: %v\n", err)
 			return nil

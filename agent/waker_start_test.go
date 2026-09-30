@@ -18,7 +18,7 @@ func TestMemWaker_StartReportsWhenStopped(t *testing.T) {
 		finished = true
 		return nil
 	})
-	w.Schedule("r1", "nap", time.Now().Add(-time.Second))
+	w.Schedule(context.Background(), Wake{RunID: "r1", Name: "nap", FireAt: time.Now().Add(-time.Second)})
 	ctx, cancel := context.WithCancel(context.Background())
 	stopped := w.Start(ctx, time.Millisecond, nil)
 	<-entered

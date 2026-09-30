@@ -1,7 +1,7 @@
 // channel.go adds ordered per-run message channels: the multi-message form of a signal
-// (see pause.go's single-shot Signal/Await). Send appends deduped by key; Receive returns
-// the oldest not-yet-acked message in delivery order and pauses (*Awaiting) when the channel
-// is drained; Ack marks a message consumed so Receive advances. Send, Ack, and the records
+// (see pause.go's single-shot Signal/Await). Enqueue appends deduped by key; Receive returns
+// the oldest not-yet-acked message in delivery order and pauses (*SignalPending) when the channel
+// is drained; Ack marks a message consumed so Receive advances. Enqueue, Ack, and the records
 // Receive reads all ride Durable.Do and History, so intake is at-most-once and consumption is
 // replay-safe and exactly-once by construction, with no new persistence model.
 //
@@ -20,13 +20,14 @@ import (
 	"strings"
 )
 
-// Send appends a message to an ordered per-run channel, deduped by key: a redelivery with the
-// same (runID, channel, key) is a no-op and the first payload wins (at-most-once intake over
+// Enqueue appends a message to an ordered per-run channel, deduped by key: a redelivery with
+// the same (runID, channel, key) is a no-op and the first payload wins (at-most-once intake over
 // at-least-once transport). Safe to call from any process; the store's PK / ON CONFLICT is the
-// cross-process dedup, exactly as for Signal.
-func Send[T any](ctx context.Context, d Durable, runID, channel, key string, payload T) error {
+// cross-process dedup, exactly as for Signal. After enqueueing, re-invoke a run paused on the
+// channel (*SignalPending) with the pause's RootRunID.
+func Enqueue[T any](ctx context.Context, d Durable, runID, channel, key string, payload T) error {
 	if runID == "" {
-		return fmt.Errorf("Send: empty runID: %w", ErrConfig)
+		return fmt.Errorf("Enqueue: empty runID: %w", ErrConfig)
 	}
 	b, err := json.Marshal(payload)
 	if err != nil {
@@ -38,6 +39,13 @@ func Send[T any](ctx context.Context, d Durable, runID, channel, key string, pay
 	return err
 }
 
+// Send is the former name of Enqueue.
+//
+// Deprecated: transitional; renamed by the 1.0 rewrite. Use Enqueue.
+func Send[T any](ctx context.Context, d Durable, runID, channel, key string, payload T) error {
+	return Enqueue(ctx, d, runID, channel, key, payload)
+}
+
 // Received is one message pulled from a channel.
 type Received[T any] struct {
 	Key     string
@@ -45,7 +53,7 @@ type Received[T any] struct {
 }
 
 // Receive returns the oldest not-yet-acked message on channel, in delivery order. If the
-// channel has no unacked message it returns *Awaiting and the run pauses durably. The run must
+// channel has no unacked message it returns *SignalPending and the run pauses durably. The run must
 // Ack(channel, msg.Key) after it has durably handled the message; until then Receive keeps
 // returning the SAME message, which is what makes processing replay-safe and exactly-once. Call
 // from a retry-safe tool (Safety.ReadOnly or Idempotent), like Await.
@@ -88,8 +96,8 @@ func Receive[T any](ctx context.Context, channel string) (Received[T], error) {
 		}
 		return Received[T]{Key: key, Payload: v}, nil
 	}
-	// Drained (or empty): pause durably, reusing *Awaiting like single-shot Await.
-	return zero, &Awaiting{RunID: runID, RootRunID: rootRunID(ctx, runID), Name: channel}
+	// Drained (or empty): pause durably, reusing *SignalPending like single-shot Await.
+	return zero, &SignalPending{RunRef: RunRef{RunID: runID, RootRunID: rootRunID(ctx, runID)}, Name: channel}
 }
 
 // Ack marks a message consumed so Receive advances past it. Idempotent (the first ack for a

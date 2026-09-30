@@ -16,7 +16,7 @@ import (
 // The terminal answer and any error are NOT events: they come from AgentStream.Final
 // (mirroring how the model Stream yields Events but returns the assembled Message
 // separately). A run that pauses for approval or halts on an unsafe resume emits the
-// relevant lifecycle event and then surfaces the *PendingApproval / *ResumeHalt via
+// relevant lifecycle event and then surfaces the *ApprovalPending / *OutcomeUnknown via
 // Final, exactly as Run returns it.
 type AgentEvent interface{ agentEvent() }
 
@@ -80,8 +80,8 @@ type ToolCompleted struct {
 func (ToolCompleted) agentEvent() {}
 
 // ApprovalRequired fires immediately before the run pauses for a human decision on a
-// tool that requires approval. The run then returns *PendingApproval from Final; record
-// a decision (Approve, or ApproveAs for an m-of-n gate) and re-invoke to continue.
+// tool that requires approval. The run then returns *ApprovalPending from Final; record
+// a decision (Approve, or SubmitDecision for an m-of-n gate) and re-invoke to continue.
 type ApprovalRequired struct {
 	ToolUseID string
 	Name      string
@@ -175,7 +175,7 @@ func (as *AgentStream) Events() iter.Seq[AgentEvent] {
 }
 
 // Final drains any un-consumed events and returns the run's terminal message and
-// error (including *PendingApproval / *ResumeHalt, matching Run). Safe to call after
+// error (including *ApprovalPending / *OutcomeUnknown, matching Run). Safe to call after
 // fully or partially ranging Events, or on its own.
 func (as *AgentStream) Final() (Message, error) {
 	for range as.ch { // drain remaining events so the run goroutine can finish

@@ -20,7 +20,7 @@ store, it is safe: resume replays it from the journal rather than re-running it.
 3. **Crash in the gap** (the side effect fired but its result was not journaled yet) → this is
    the dangerous window every other system re-runs into (the double-charge). Bide wrote an
    **attempt marker** before firing, so on resume it sees "this non-idempotent thing was
-   attempted, outcome unknown" and **halts** (`ResumeHalt`) instead of guessing. It does not
+   attempted, outcome unknown" and **halts** (`OutcomeUnknown`) instead of guessing. It does not
    silently re-run, and it does not silently assume success.
 
    The gap between writing the marker and calling the effect is not dangerous when the process
@@ -93,7 +93,7 @@ says happened. A drive uses the configuration it is given for:
   guarantee that: a holder stalled past its TTL (a long GC pause, a suspended VM, a partition) wakes
   still driving. The guarantee does not rely on the lease. Before a non-idempotent side effect, a
   driver writes the attempt marker as an exclusive claim, and only the driver whose claim the store
-  kept runs it; the other halts (`ResumeHalt`). This relies on the store recording a step name at
+  kept runs it; the other halts (`OutcomeUnknown`, cause `HaltContended`). This relies on the store recording a step name at
   most once across processes (the SQLite and Postgres stores use a primary key), which is the atomic
   write above. Leases are deliberately not fenced (no token that the store checks on each write):
   the side effect happens outside the store, where no token could be checked, so only a claim

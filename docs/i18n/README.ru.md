@@ -10,7 +10,7 @@
 
 Один журнал, работающий только на добавление, – и четыре гарантии, которые ни один другой агентный фреймворк не сочетает в единой библиотеке: побочные эффекты, срабатывающие **не более одного раза**; тысячи параллельных надёжных прогонов **в одном процессе, без кластера**; **криптографически проверяемый аудиторский след** (доказательства Меркла по RFC 6962, проверяемые без доверия к поставщику); и **доказуемо сходящееся** разделяемое состояние. Все четыре вы получаете из одного механизма, а не из четырёх интегрированных систем, в виде обычной библиотеки на Go. Создано для агентов, которые двигают деньги, трогают записи или действуют под аудитом.
 
-**Создано для фоновых агентов (ambient agents).** Фоновый агент работает без присмотра: он спит до тех пор, пока триггер (расписание или событие) его не разбудит, работает часами или сутками и приостанавливается, чтобы спросить человека, только когда нужно суждение, при том что за каждым шагом никто не следит. Именно тогда «не более одного раза», высокодоступное возобновление и проверяемый след перестают быть приятными дополнениями; фоновый агент, действующий без наблюдения, обязан быть безопасным при сбое, безопасным при повторном срабатывании и доказуемым постфактум. Bide поставляет для этого надёжный жизненный цикл: надёжные таймеры `Sleep`/`WaitUntil`, подключаемый `Waker` для пробуждения по времени или событию и надёжные `Interrupt`/`Resume` для типизированного участия человека в цикле (human-in-the-loop) – всё на одном журнале. Вы приносите источник триггеров и UI надзора; среда выполнения удерживает каждый прогон корректным сквозь сны, сбои и передачи между узлами.
+**Создано для фоновых агентов (ambient agents).** Фоновый агент работает без присмотра: он спит до тех пор, пока триггер (расписание или событие) его не разбудит, работает часами или сутками и приостанавливается, чтобы спросить человека, только когда нужно суждение, при том что за каждым шагом никто не следит. Именно тогда «не более одного раза», высокодоступное возобновление и проверяемый след перестают быть приятными дополнениями; фоновый агент, действующий без наблюдения, обязан быть безопасным при сбое, безопасным при повторном срабатывании и доказуемым постфактум. Bide поставляет для этого надёжный жизненный цикл: надёжные таймеры `Sleep`/`WaitUntil`, подключаемый `Waker` для пробуждения по времени или событию и надёжные `Interrupt`/`AnswerInterrupt` для типизированного участия человека в цикле (human-in-the-loop) – всё на одном журнале. Вы приносите источник триггеров и UI надзора; среда выполнения удерживает каждый прогон корректным сквозь сны, сбои и передачи между узлами.
 
 Статус: **рабочая v0**, проверена сквозным путём вживую. Требуется **Go 1.27**.
 
@@ -42,7 +42,7 @@ eino           maxFired=64   ✗
 
 На какую ступень попадает инструмент, определяется его объявленным `Safety`: пометьте его как только-для-чтения, идемпотентный или дайте ему ключ идемпотентности, и неизвестный исход повторится автоматически; не объявите ничего из этого, и прогон остановится. Безопасность повтора включается явно; пока вы её не включили, по умолчанию действует пауза, так что библиотека, весь смысл которой в том, чтобы «никогда не срабатывать дважды», по умолчанию выбирает безопасность, а не догадку.
 
-Большинство неизвестных исходов до человека не доходят: ключ идемпотентности позволяет поставщику устранить дубликат безопасного повтора, а для систем без такого ключа (почта, внутренние сервисы) реконсилятор разрешает шаг по оставленной им записи (`agent.ResolveHalt`, а для `Step` `agent.ResolveStepHalt`). Человек здесь нижняя ступень, а не вариант по умолчанию.
+Большинство неизвестных исходов до человека не доходят: ключ идемпотентности позволяет поставщику устранить дубликат безопасного повтора, а для систем без такого ключа (почта, внутренние сервисы) реконсилятор разрешает шаг по оставленной им записи (`agent.ResolveHaltRef`). Человек здесь нижняя ступень, а не вариант по умолчанию.
 
 > [!IMPORTANT]
 > **Правило, лежащее в основе:** когда действие двигает деньги, трогает запись или происходит под аудитом,
@@ -180,7 +180,7 @@ flow, err := plan.Load[Order, Receipt](configBytes, reg) // same topology, same 
 
 - **Спать до крайнего срока.** `Sleep`/`WaitUntil` приостанавливают прогон и записывают в журнал его время пробуждения, так что пауза переживает перезапуск. Повторный вызов во время пробуждения возобновляет ровно один раз.
 - **Просыпаться по времени или событию.** Подключаемый `Waker` (по умолчанию внутрипроцессный `MemWaker`) повторно вызывает наступивший прогон; источник триггера – ваш (внутрипроцессный цикл, cron, очередь, входящий webhook), так что одна и та же подложка ведёт и по расписанию, и по событию.
-- **Прерваться ради человека, надёжно.** `Interrupt[T]`/`Resume` приостанавливают прогон в любой точке, чтобы запросить типизированное решение, и возобновляют с ответом человека как записанным в журнал шагом (см. [Участие человека в цикле](#участие-человека-в-цикле-human-in-the-loop)). Одобрить/отклонить является булевым частным случаем.
+- **Прерваться ради человека, надёжно.** `Interrupt[T]`/`AnswerInterrupt` приостанавливают прогон в любой точке, чтобы запросить типизированное решение, и возобновляют с ответом человека как записанным в журнал шагом (см. [Участие человека в цикле](#участие-человека-в-цикле-human-in-the-loop)). Одобрить/отклонить является булевым частным случаем.
 
 Вы поставляете источник триггеров и поверхность надзора; среда выполнения удерживает прогон корректным сквозь каждый сон, пробуждение, прерывание, сбой и передачу. Запускается в `examples/signals` (доставить событие в ожидающий прогон), `examples/interrupt` (пауза/возобновление с участием человека) и `examples/recover` (надёжное возобновление). См. [руководство по сигналам и фоновым прогонам](../../docs/guides/signals.md).
 
@@ -193,11 +193,10 @@ charge := agent.Func("charge_card", "Charge the customer", agent.Safety{},
 	func(ctx context.Context, in ChargeArgs) (Receipt, error) { /* ... */ })
 
 // If the process crashes after the charge fires but before its result is journaled,
-// resume does NOT run it again: it returns *ResumeHalt so you confirm, not double-charge:
+// resume does NOT run it again: it returns *OutcomeUnknown so you confirm, not double-charge:
 _, err := a.Run(ctx, runID, input)
-var halt *agent.ResumeHalt
-if errors.As(err, &halt) {
-	// halt.ToolName == "charge_card": outcome unknown, a human decides, no double side effect.
+if halt, ok := errors.AsType[*agent.OutcomeUnknown](err); ok {
+	// halt.Op.ToolName == "charge_card": outcome unknown, a human decides, no double side effect.
 }
 ```
 
@@ -285,7 +284,7 @@ for ev := range stream.Events() {
 		fmt.Printf("[%s done]\n", e.Name)
 	}
 }
-answer, err := stream.Final() // terminal message + error (incl. *PendingApproval / *ResumeHalt)
+answer, err := stream.Final() // terminal message + error (incl. a Pause: *ApprovalPending, *OutcomeUnknown, ...)
 ```
 
 События: `TurnStarted`, `ModelEvent` (поток токенов), `AssistantTurn`, `ToolStarted` / `ToolCompleted`, `ApprovalRequired`, `Finished`. Пройдитесь по `Events()` ради UI, затем вызовите `Final()`, или вызовите `Final()` в одиночку, чтобы вести себя точно как `Run` (он осушит события за вас).
@@ -415,11 +414,10 @@ agent.Safety{RequiresApproval: true}  // pause for human approval before executi
 <!-- docsnip: setup ctx context.Context; a *agent.Agent; store agent.Durable; runID string; input string -->
 ```go
 _, err := a.Run(ctx, runID, input)
-var pend *agent.PendingApproval
-if errors.As(err, &pend) {
+if pend, ok := errors.AsType[*agent.ApprovalPending](err); ok {
 	// ... get a human decision ...
-	agent.Approve(ctx, store, runID, pend.ToolUseID, true)
-	out, _ := a.Run(ctx, runID, input) // resumes past the pause
+	agent.Approve(ctx, store, pend.RunID, pend.ToolUseID, true)
+	out, _ := a.Run(ctx, pend.RootRunID, input) // resumes past the pause
 }
 ```
 
@@ -431,17 +429,16 @@ tool := agent.Func("choose_plan", "pick a plan", agent.Safety{ReadOnly: true},
 	func(ctx context.Context, in Options) (Plan, error) {
 		pick, err := agent.Interrupt[Plan](ctx, "plan", in) // pauses the run; in is shown to the human
 		if err != nil {
-			return Plan{}, err // *Interrupted propagates out of Run
+			return Plan{}, err // *InterruptPending propagates out of Run
 		}
 		return pick, nil // on resume, pick is the human's typed answer
 	})
 
 _, err := a.Run(ctx, runID, input)
-var intr *agent.Interrupted
-if errors.As(err, &intr) {
+if intr, ok := errors.AsType[*agent.InterruptPending](err); ok {
 	// ... show intr.Prompt, get a typed answer ...
-	agent.Resume(ctx, store, runID, intr.Key, chosenPlan)
-	out, _ := a.Run(ctx, runID, input) // resumes; Interrupt now returns chosenPlan
+	agent.AnswerInterrupt(ctx, store, intr.RunID, intr.Name, chosenPlan)
+	out, _ := a.Run(ctx, intr.RootRunID, input) // resumes; Interrupt now returns chosenPlan
 }
 ```
 
@@ -458,7 +455,8 @@ a := agent.New(model, store, refund).WithApproverVerifiers(keysByApprover)
 
 // each approver, out of band, signs the paused call they were shown:
 sig, _ := signer.Sign(agent.ApprovalDecisionBytes(pend.Subject(), "finance", true))
-agent.ApproveAs(ctx, store, pend.RunID, pend.ToolUseID, "finance", true, sig)
+agent.SubmitDecision(ctx, store, agent.Decision{RunID: pend.RunID, ToolUseID: pend.ToolUseID,
+	ApproverID: "finance", Approved: true, Signature: sig})
 ```
 
 Затем `audit.ApprovalEvidence` и `audit.VerifyApprovals` (или `bide-audit verify-approvals`) доказывают офлайн, что k именованных одобряющих подписали именно этот вызов *до* его выполнения, по ожидаемой политике, на основе свидетельств, из которых нельзя незаметно выбросить решение. См. [руководство по одобрению](../../docs/guides/hitl-approval.md); запускается в разных процессах в `examples/approval`.
@@ -482,7 +480,7 @@ case errors.Is(err, agent.ErrStorage):      // durable-store I/O
 
 Категории: `ErrConfig`, `ErrModel`, `ErrTool`, `ErrStorage`, `ErrProtocol`, `ErrBudget`. Условия (каждое оборачивает категорию): `ErrUnknownTool`, `ErrToolArgs` (оборачивают `ErrTool`), `ErrToolReinvoked`, `ErrInvalidApproval`, `ErrAlreadyDecided` (оборачивают `ErrConfig`), `ErrNoRecordedOutput`, `ErrIncompleteResponse` (оборачивают `ErrModel`), `ErrTruncatedToolArgs` (оборачивает `ErrProtocol`), `ErrBudgetExceeded`, `ErrMaxTurns` (оборачивают `ErrBudget`). Адаптеры поставщиков также возвращают `*RateLimited` (HTTP 429, с подсказкой `RetryAfter`) и `*APIError` (прочие не-2xx, с `StatusCode`), оба оборачивают `ErrModel`. Каждая ошибка, которую возвращает набор инструментов (включая из модели, MCP, хранилища и адаптеров управления), несёт категорию, так что `errors.Is` надёжен по всей поверхности.
 
-А **сигналы потока управления** богаче, чем категория, поэтому они остаются конкретными типами, сопоставляемыми через `errors.As`: `*PendingApproval` (нужно одобрение), `*Interrupted` (ожидание ввода человека), `*Sleeping` (ожидает надёжный таймер), `*Awaiting` (ожидание внешнего сигнала), `*ResumeHalt` (небезопасно возобновлять), `*SagaAborted` (откачено) и `*HaltTooYoung` (из `ResolveHalt` или `ResolveStepHalt`, когда `WithMinHaltAge` ещё не истёк). Приостановленный или остановленный прогон не относится к категории «сбоя»; инспектируйте структуру ради `RunID` / `ToolUseID` / деталей компенсации. Отмена всплывает как обычные `context.Canceled` / `context.DeadlineExceeded`, а ведение прогона, отменённое из-за потери его аренды (`agent.Lease`), всплывает как `ErrLeaseLost`; как и отмена, эта ошибка не несёт категории.
+А **сигналы потока управления** богаче, чем категория, поэтому они остаются конкретными типами, сопоставляемыми через `errors.As`: `*ApprovalPending` (нужно одобрение), `*InterruptPending` (ожидание ввода человека), `*TimerPending` (ожидает надёжный таймер), `*SignalPending` (ожидание внешнего сигнала), `*OutcomeUnknown` (небезопасно возобновлять), `*SagaAborted` (откачено) и `*HaltTooYoung` (из `ResolveHaltRef`, когда `WithMinHaltAge` ещё не истёк). Все они реализуют запечатанный интерфейс `agent.Pause`; проверяйте его через `agent.IsPause(err)` и читайте через `agent.AsPause(err)`. Приостановленный или остановленный прогон не относится к категории «сбоя»; инспектируйте структуру ради `RunID` / `ToolUseID` / деталей компенсации. Отмена всплывает как обычные `context.Canceled` / `context.DeadlineExceeded`, а ведение прогона, отменённое из-за потери его аренды (`agent.Lease`), всплывает как `ErrLeaseLost`; как и отмена, эта ошибка не несёт категории.
 
 ## Middleware и наблюдаемость
 
@@ -574,7 +572,7 @@ tool := govern.EventTool(gov, "pay", "mark the order paid", "pay", agent.Safety{
 - **[Потоки](../../docs/guides/flows.md)**: типизированный конструктор потоков `plan`. Пишите топологию (`Step`/`Tool`/`Model`/`Switch`/`Join`/`LoopBack`), которая опускается на тот же журнал, а затем доказывайте, что прогон ей последовал (`Conform`). Запускается в `examples/plan`.
 - **[Надёжные шаги](../../docs/guides/durable-steps.md)**: компонуйте собственную надёжную работу: `Step`, сходящийся веер `Parallel`/`Task`, саги (`RunSaga`) и надёжные таймеры (`Sleep`/`WaitUntil`). Запускается в `examples/parallel`.
 - **[Устойчивость](../../docs/guides/reliability.md)**: тайм-ауты на попытку, классифицированный повтор, хеджированные вызовы модели, ограничение частоты и учёт стоимости, а также то, как они компонуются. Запускается в `examples/hedge`.
-- **[Сигналы и фоновые прогоны](../../docs/guides/signals.md)**: внешние события в прогоне: надёжные таймеры и `Waker`, участие человека в цикле (`Interrupt`/`Resume`) и надёжные сигналы (доставка хотя бы один раз, применение ровно один раз). Запускается в `examples/signals`, `examples/interrupt`.
+- **[Сигналы и фоновые прогоны](../../docs/guides/signals.md)**: внешние события в прогоне: надёжные таймеры и `Waker`, участие человека в цикле (`Interrupt`/`AnswerInterrupt`) и надёжные сигналы (доставка хотя бы один раз, применение ровно один раз). Запускается в `examples/signals`, `examples/interrupt`.
 - **[Модели](../../docs/guides/models.md)**: адаптеры Anthropic, OpenAI-совместимый и Gemini: `WithBaseURL`, сэмплирование, кэширование промпта, типизированные ошибки и мультимодальный ввод изображений.
 - **[MCP](../../docs/guides/mcp.md)**: подключите MCP-сервер как источник инструментов времени выполнения, с безопасным для побочных эффектов возобновлением; аннотации инструментов доверенного сервера могут помечать инструменты как безопасные для повторного запуска.
 - **[Наблюдаемость](../../docs/guides/observability.md)**: OTel gen_ai span'ы в одну строку (`trace.Instrument`): таксономия span'ов, вложение суб-агентов, токены в стоимость и приватное умолчание захвата содержимого. Запускается в `examples/observability`.
@@ -587,7 +585,7 @@ tool := govern.EventTool(gov, "pay", "mark the order paid", "pay", agent.Safety{
 - **[Делегирование](../../docs/guides/delegation.md)**: подписанные гранты возможностей, которые суб-агент может только сузить (`Grant`/`SignGrant`), проверяемые офлайн (`VerifyDelegationChain`), плюс полномочие, заслуженное чистым следом. Запускается в `examples/govern/delegation`, `examples/govern/authority`.
 - **[Модель безопасности](../../docs/guides/security-model.md)**: точная область криптографических гарантий (целостность, аутентичность, обнаружение подделки, неотказуемость, избирательное раскрытие) и то, что вне области (конфиденциальность). Прочтите, прежде чем полагаться на след.
 - **[Управление](../../docs/guides/governance.md)**: подложка управляемого состояния Tier-2 (gsm). Опишите разделяемое состояние как реестр, и `Build()` доказывает, что всякое чередование сходится, либо возвращает контрпример. Запускается в `examples/govern/mesh`, `examples/govern/compose`.
-- **[Одобрение](../../docs/guides/hitl-approval.md)**: надёжное одобрение человеком перед запуском инструмента, от 1-из-1 до подписанного m-из-n (`ApprovalPolicy`, `ApproveAs`), с офлайн-доказательством того, что k именованных одобряющих одобрили действие до его выполнения (`audit.ApprovalEvidence`, `audit.VerifyApprovals`). Запускается в `examples/approval`.
+- **[Одобрение](../../docs/guides/hitl-approval.md)**: надёжное одобрение человеком перед запуском инструмента, от 1-из-1 до подписанного m-из-n (`ApprovalPolicy`, `SubmitDecision`), с офлайн-доказательством того, что k именованных одобряющих одобрили действие до его выполнения (`audit.ApprovalEvidence`, `audit.VerifyApprovals`). Запускается в `examples/approval`.
 - **[Кворум](../../docs/guides/quorum.md)**: управляемое согласие моделей k-из-n (`govern.Quorum`), с подсчётом, закреплённым в журнале и перепроверяемым офлайн (`bide-audit verify-quorum`). Запускается в `examples/govern/quorum`.
 
 **Справочник и внутреннее устройство**

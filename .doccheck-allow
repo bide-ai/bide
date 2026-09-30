@@ -4,25 +4,20 @@
 # request that adds one. It must be empty from the 1.0 release on.
 agent APIError.Error
 agent APIError.Unwrap
-agent Awaiting.Error
 agent HaltTooYoung.Error
-agent Interrupted.Error
 agent MemStore.Do
 agent MemStore.History
 agent Message.MarshalJSON
 agent Message.UnmarshalJSON
 agent NewMemStore
-agent PendingApproval.Error
 agent RateLimited.Error
 agent RateLimited.Unwrap
-agent ResumeHalt.Error
 agent RoleAssistant
 agent RoleSystem
 agent RoleTool
 agent RoleUser
 agent SagaAborted.Error
 agent SagaAborted.Unwrap
-agent Sleeping.Error
 agent StepApproval
 agent StepAttempt
 agent StepModel

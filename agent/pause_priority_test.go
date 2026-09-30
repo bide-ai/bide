@@ -38,10 +38,10 @@ func TestRun_HaltReportedAheadOfAnEarlierCallsPause(t *testing.T) {
 		case <-time.After(10 * time.Second):
 			return nil, errors.New("c never ran")
 		}
-		return nil, &agent.PendingApproval{RunID: "r/a", RootRunID: "r", ToolUseID: "inner", ToolName: "gated"}
+		return nil, &agent.ApprovalPending{RunRef: agent.RunRef{RunID: "r/a", RootRunID: "r"}, ToolUseID: "inner", ToolName: "gated"}
 	}}
 	b := signalTool{"b", func() (json.RawMessage, error) {
-		return nil, &agent.ResumeHalt{RunID: "r/b", RootRunID: "r", ToolUseID: "effect", ToolName: "charge"}
+		return nil, &agent.OutcomeUnknown{RunRef: agent.RunRef{RunID: "r/b", RootRunID: "r"}, Op: agent.OpRef{Kind: agent.OpTool, ID: "effect", ToolName: "charge"}, Cause: agent.HaltCrashed}
 	}}
 	c := signalTool{"c", func() (json.RawMessage, error) {
 		close(release)
@@ -56,7 +56,7 @@ func TestRun_HaltReportedAheadOfAnEarlierCallsPause(t *testing.T) {
 	model := modelFunc(func() []agent.Emit { return turn })
 	_, err := agent.New(model, agent.NewMemStore(), a, b, c).SetMaxConcurrency(2).Run(context.Background(), "r", "go")
 	var halt *agent.ResumeHalt
-	if !errors.As(err, &halt) || halt.ToolUseID != "effect" {
+	if !errors.As(err, &halt) || halt.Op.ID != "effect" {
 		t.Fatalf("Run = %v; want the halt on effect", err)
 	}
 }

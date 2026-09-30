@@ -80,7 +80,7 @@ type ApprovalSubject struct {
 //	sig := signer.Sign(agent.ApprovalDecisionBytes(pend.Subject(), "finance", true))
 //
 // For a gate inside a sub-agent, RunID is the sub-run's id.
-func (e *PendingApproval) Subject() ApprovalSubject {
+func (e *ApprovalPending) Subject() ApprovalSubject {
 	return ApprovalSubject{RunID: e.RunID, ToolUseID: e.ToolUseID, ToolName: e.ToolName, Args: e.Args}
 }
 
@@ -157,7 +157,7 @@ type ApproverVerifier interface {
 type ApproverVerifierFor func(approverID string) (ApproverVerifier, bool)
 
 // ApprovalTally is the m-of-n gate's count for one call. At a pause it is the running tally
-// (PendingApproval.Quorum, ApprovalRequired.Quorum). At a terminal outcome the gate journals
+// (ApprovalPending.Quorum, ApprovalRequired.Quorum). At a terminal outcome the gate journals
 // it under ApprovalTallyStep, before the tool runs, as the record of what it enforced and
 // what it read.
 type ApprovalTally struct {
@@ -260,7 +260,7 @@ func TallyApprovals(recs []Record, s ApprovalSubject, p ApprovalPolicy, verifier
 	return t, checks
 }
 
-// IsApprovalDecision reports whether r is an m-of-n approver decision (written by ApproveAs)
+// IsApprovalDecision reports whether r is an m-of-n approver decision (written by SubmitDecision)
 // on toolUseID. The single-approver Approve record has no Approver and is not one.
 func IsApprovalDecision(r Record, toolUseID string) bool {
 	return r.Kind == StepApproval && r.ToolUseID == toolUseID && r.Approver != ""
@@ -301,87 +301,108 @@ func approvalDecisionStep(toolUseID, approverID string, approved bool, sig []byt
 	return approvalStep(toolUseID) + ":" + approverID + ":" + hex.EncodeToString(h.Sum(nil))
 }
 
-// ApproveOption configures ApproveAs.
+// ApproveOption configures SubmitDecision.
 type ApproveOption func(*approveOptions)
 
 type approveOptions struct {
 	verifierFor ApproverVerifierFor
 }
 
-// WithDecisionCheck makes ApproveAs check the decision before recording it, so an approver
+// WithDecisionCheck makes SubmitDecision check the decision before recording it, so an approver
 // learns at submission time that it will not count: it reads the run, finds the call, and
 // verifies the signature against that exact call with verifierFor. It returns
 // ErrInvalidApproval (no such call, unknown approver, or a signature that does not verify)
 // or ErrAlreadyDecided (the approver's earlier valid decision already counts), and records
 // nothing. The check is for feedback; the gate re-verifies every record itself, so
-// correctness never depends on it. Eligibility is the policy's, which ApproveAs does not see.
+// correctness never depends on it. Eligibility is the policy's, which SubmitDecision does not see.
 func WithDecisionCheck(verifierFor ApproverVerifierFor) ApproveOption {
 	return func(o *approveOptions) { o.verifierFor = verifierFor }
 }
 
-// ApproveAs records one named approver's signed decision on a tool call gated by an m-of-n
-// Approval policy. sig is the approver's signature over
-// ApprovalDecisionBytes(pend.Subject(), approverID, approved). After enough decisions land,
-// re-run with the same runID. (A single-approver gate uses Approve.)
+// Decision is one named approver's signed decision on a tool call gated by an m-of-n Approval
+// policy. Signature is the approver's signature over
+// ApprovalDecisionBytes(pend.Subject(), ApproverID, Approved), where pend is the run's
+// *ApprovalPending.
+type Decision struct {
+	RunID      string // the run whose journal holds the call: the pause's RunID
+	ToolUseID  string
+	ApproverID string
+	Approved   bool
+	Signature  []byte
+}
+
+// SubmitDecision records d, one approver's signed decision on an m-of-n gated call. After
+// enough decisions land, re-run the pause's RootRunID. (A single-approver gate uses Approve.)
 //
 // Each distinct decision is its own journal record; resubmitting the identical decision is a
 // no-op. The gate counts each approver's first valid decision and ignores the rest, so an
-// invalid record never blocks a valid one. Without WithDecisionCheck, ApproveAs does not
+// invalid record never blocks a valid one. Without WithDecisionCheck, SubmitDecision does not
 // verify: a decision that will not count is recorded and reported by the gate as ignored.
+func SubmitDecision(ctx context.Context, store Durable, d Decision, opts ...ApproveOption) error {
+	return submitDecision(ctx, store, "SubmitDecision", d, opts)
+}
+
+// ApproveAs records one named approver's signed decision on an m-of-n gated call.
+//
+// Deprecated: transitional; replaced by SubmitDecision, which takes the decision as a Decision.
 func ApproveAs(ctx context.Context, d Durable, runID, toolUseID, approverID string, approved bool, sig []byte, opts ...ApproveOption) error {
-	if runID == "" {
-		return fmt.Errorf("ApproveAs: empty runID: %w", ErrConfig)
+	return submitDecision(ctx, d, "ApproveAs", Decision{RunID: runID, ToolUseID: toolUseID, ApproverID: approverID, Approved: approved, Signature: sig}, opts)
+}
+
+func submitDecision(ctx context.Context, store Durable, op string, d Decision, opts []ApproveOption) error {
+	if d.RunID == "" {
+		return fmt.Errorf("%s: empty runID: %w", op, ErrConfig)
 	}
-	if toolUseID == "" {
-		return fmt.Errorf("ApproveAs: empty toolUseID: %w", ErrConfig)
+	if d.ToolUseID == "" {
+		return fmt.Errorf("%s: empty toolUseID: %w", op, ErrConfig)
 	}
-	if approverID == "" {
-		return fmt.Errorf("ApproveAs: empty approverID: %w", ErrConfig)
+	if d.ApproverID == "" {
+		return fmt.Errorf("%s: empty approverID: %w", op, ErrConfig)
 	}
-	if len(sig) == 0 {
-		return fmt.Errorf("ApproveAs: empty signature: %w", ErrConfig)
+	if len(d.Signature) == 0 {
+		return fmt.Errorf("%s: empty signature: %w", op, ErrConfig)
 	}
 	var o approveOptions
 	for _, opt := range opts {
 		opt(&o)
 	}
-	name := approvalDecisionStep(toolUseID, approverID, approved, sig)
+	name := approvalDecisionStep(d.ToolUseID, d.ApproverID, d.Approved, d.Signature)
 	if o.verifierFor != nil {
-		if err := checkDecision(ctx, d, runID, toolUseID, approverID, approved, sig, name, o.verifierFor); err != nil {
+		if err := checkDecision(ctx, store, op, d, name, o.verifierFor); err != nil {
 			return err
 		}
 	}
-	_, err := d.Do(ctx, runID, name, func(context.Context) (Record, error) {
-		return Record{Kind: StepApproval, ToolUseID: toolUseID, Approved: approved, Approver: approverID, Signature: sig}, nil
+	_, err := store.Do(ctx, d.RunID, name, func(context.Context) (Record, error) {
+		return Record{Kind: StepApproval, ToolUseID: d.ToolUseID, Approved: d.Approved, Approver: d.ApproverID, Signature: d.Signature}, nil
 	})
 	return err
 }
 
 // checkDecision is WithDecisionCheck's pre-flight: the decision verifies for the recorded
 // call, and the approver has no other valid decision on it (an identical one is fine).
-func checkDecision(ctx context.Context, d Durable, runID, toolUseID, approverID string, approved bool, sig []byte, name string, verifierFor ApproverVerifierFor) error {
-	recs, err := d.History(ctx, runID)
+func checkDecision(ctx context.Context, store Durable, op string, d Decision, name string, verifierFor ApproverVerifierFor) error {
+	recs, err := store.History(ctx, d.RunID)
 	if err != nil {
-		return fmt.Errorf("ApproveAs: load history %s: %w (%w)", runID, err, ErrStorage)
+		return fmt.Errorf("%s: load history %s: %w (%w)", op, d.RunID, err, ErrStorage)
 	}
-	_, call, ok := FindToolCall(recs, toolUseID)
+	_, call, ok := FindToolCall(recs, d.ToolUseID)
 	if !ok {
-		return fmt.Errorf("ApproveAs: no tool call %q in run %s: %w", toolUseID, runID, ErrInvalidApproval)
+		return fmt.Errorf("%s: no tool call %q in run %s: %w", op, d.ToolUseID, d.RunID, ErrInvalidApproval)
 	}
-	v, ok := verifierFor(approverID)
+	v, ok := verifierFor(d.ApproverID)
 	if !ok || v == nil {
-		return fmt.Errorf("ApproveAs: no key for approver %q: %w", approverID, ErrInvalidApproval)
+		return fmt.Errorf("%s: no key for approver %q: %w", op, d.ApproverID, ErrInvalidApproval)
 	}
-	s := ApprovalSubject{RunID: runID, ToolUseID: toolUseID, ToolName: call.Name, Args: call.Args}
-	if !v.Verify(ApprovalDecisionBytes(s, approverID, approved), sig) {
-		return fmt.Errorf("ApproveAs: approver %q: %s: %w", approverID, ReasonBadSig, ErrInvalidApproval)
+	s := ApprovalSubject{RunID: d.RunID, ToolUseID: d.ToolUseID, ToolName: call.Name, Args: call.Args}
+	if !v.Verify(ApprovalDecisionBytes(s, d.ApproverID, d.Approved), d.Signature) {
+		return fmt.Errorf("%s: approver %q: %s: %w", op, d.ApproverID, ReasonBadSig, ErrInvalidApproval)
 	}
 	for _, r := range recs {
-		if !IsApprovalDecision(r, toolUseID) || r.Approver != approverID || r.Name == name {
+		if !IsApprovalDecision(r, d.ToolUseID) || r.Approver != d.ApproverID || r.Name == name {
 			continue
 		}
-		if v.Verify(ApprovalDecisionBytes(s, approverID, r.Approved), r.Signature) {
-			return fmt.Errorf("ApproveAs: approver %q already decided on call %q: %w", approverID, toolUseID, ErrAlreadyDecided)
+		if v.Verify(ApprovalDecisionBytes(s, d.ApproverID, r.Approved), r.Signature) {
+			return fmt.Errorf("%s: approver %q already decided on call %q: %w", op, d.ApproverID, d.ToolUseID, ErrAlreadyDecided)
 		}
 	}
 	return nil

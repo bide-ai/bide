@@ -136,7 +136,15 @@ func TestOverlappingDrivers_SideEffectFiresOnce(t *testing.T) {
 		switch {
 		case err == nil:
 			oks++
-		case errors.As(err, &halt) && halt.ToolUseID == "c1":
+		case errors.As(err, &halt) && halt.Op.ID == "c1":
+			// The loser lost the claim while running: the winner may be running the charge now.
+			if halt.Cause != HaltContended || halt.Op.Kind != OpTool {
+				t.Fatalf("lost-claim halt = %+v, want an OpTool halt with Cause %q", halt, HaltContended)
+			}
+			// The winner may still be running the charge, so its halt cannot be resolved blind.
+			if rerr := ResolveHaltRef(ctx, store, halt.Ref(), Outcome{Result: "ok"}); !errors.Is(rerr, ErrConfig) {
+				t.Fatalf("ResolveHaltRef on a contended halt without WithMinHaltAge = %v, want ErrConfig", rerr)
+			}
 			halts++
 		default:
 			t.Fatalf("unexpected driver error: %v", err)

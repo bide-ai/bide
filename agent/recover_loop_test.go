@@ -225,7 +225,7 @@ func testRecoverLoopReportsOnlyGenuineFailures(t *testing.T) {
 		case "broken":
 			return boom
 		case "halted":
-			return &ResumeHalt{RunID: id}
+			return &OutcomeUnknown{RunRef: RunRef{RunID: id}}
 		case "done":
 			_, err := s.Do(ctx, id, runCompleteStep, func(context.Context) (Record, error) { return Record{Kind: StepValue}, nil })
 			return err
@@ -312,7 +312,7 @@ func testRecoverLoopEveryPassReachesEveryRun(t *testing.T) {
 			return nil
 		}
 		time.Sleep(5 * time.Millisecond)
-		return &ResumeHalt{RunID: id} // stays incomplete: re-driven every pass
+		return &OutcomeUnknown{RunRef: RunRef{RunID: id}} // stays incomplete: re-driven every pass
 	}, WithRecoverInterval(10*time.Millisecond), WithRecoverConcurrency(1))
 	defer stop()
 	select {

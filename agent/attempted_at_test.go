@@ -168,7 +168,7 @@ func TestSagaRollbackHalt_NonPositiveMarker(t *testing.T) {
 		t.Fatalf("RunSaga = %v, want *SagaAborted", err)
 	}
 	var halt *ResumeHalt
-	if !errors.As(aborted.CompensateErr, &halt) || halt.ToolUseID != "p1" {
+	if !errors.As(aborted.CompensateErr, &halt) || halt.Op.ID != "p1" {
 		t.Fatalf("CompensateErr = %v, want a ResumeHalt on p1", aborted.CompensateErr)
 	}
 	if !halt.AttemptedAt.IsZero() {

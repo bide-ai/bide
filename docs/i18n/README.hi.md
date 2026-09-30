@@ -10,7 +10,7 @@
 
 एक ही append-only जर्नल, और चार गारंटियाँ जिन्हें कोई दूसरा एजेंट फ़्रेमवर्क एक ही लाइब्रेरी में जोड़कर नहीं देता: साइड इफ़ेक्ट जो **ज़्यादा-से-ज़्यादा एक बार** चलते हैं; हज़ारों समवर्ती (concurrent) टिकाऊ रन **एक ही प्रोसेस में, बिना किसी क्लस्टर के**; एक **क्रिप्टोग्राफ़िक रूप से सत्यापनीय ऑडिट ट्रेल** (RFC 6962 Merkle प्रमाण, जिन्हें विक्रेता पर भरोसा किए बिना जाँचा जा सकता है); और **प्रमाणनीय रूप से अभिसारी (provably convergent)** साझा अवस्था। आपको ये चारों एक ही तंत्र से मिलते हैं, न कि चार एकीकृत सिस्टमों से, एक सादी Go लाइब्रेरी के रूप में। उन एजेंटों के लिए बनाया गया जो पैसा हिलाते हैं, रिकॉर्ड छूते हैं, या ऑडिट के तहत काम करते हैं।
 
-**एंबिएंट एजेंटों के लिए बनाया गया।** एक एंबिएंट एजेंट बिना निगरानी के चलता है: यह तब तक सोता है जब तक कोई ट्रिगर (एक शेड्यूल या एक घटना) इसे न जगा दे, घंटों या दिनों तक काम करता है, और केवल तभी रुककर किसी इंसान से पूछता है जब उसे निर्णय की ज़रूरत होती है, जबकि हर कदम पर कोई नहीं देख रहा होता। ठीक तभी ज़्यादा-से-ज़्यादा-एक-बार, HA पुनरारंभ (resume), और एक सत्यापनीय ट्रेल केवल अच्छे-होते-तो-अच्छा-था वाली चीज़ें नहीं रह जातीं; एक पृष्ठभूमि एजेंट जो अनदेखा रहते हुए काम करता है, उसे क्रैश होने पर सुरक्षित, दोबारा ट्रिगर होने पर सुरक्षित, और तथ्य के बाद प्रमाणनीय होना ही होगा। Bide इसके लिए टिकाऊ जीवनचक्र देता है: टिकाऊ `Sleep`/`WaitUntil` टाइमर, समय- या घटना-चालित जगाने के लिए एक प्लग-करने-योग्य `Waker`, और टाइप-किए गए human-in-the-loop के लिए टिकाऊ `Interrupt`/`Resume`, सब कुछ एक ही जर्नल पर। आप ट्रिगर स्रोत और निगरानी UI लाते हैं; रनटाइम हर रन को नींद, क्रैश और नोड-हस्तांतरण के आर-पार सही बनाए रखता है।
+**एंबिएंट एजेंटों के लिए बनाया गया।** एक एंबिएंट एजेंट बिना निगरानी के चलता है: यह तब तक सोता है जब तक कोई ट्रिगर (एक शेड्यूल या एक घटना) इसे न जगा दे, घंटों या दिनों तक काम करता है, और केवल तभी रुककर किसी इंसान से पूछता है जब उसे निर्णय की ज़रूरत होती है, जबकि हर कदम पर कोई नहीं देख रहा होता। ठीक तभी ज़्यादा-से-ज़्यादा-एक-बार, HA पुनरारंभ (resume), और एक सत्यापनीय ट्रेल केवल अच्छे-होते-तो-अच्छा-था वाली चीज़ें नहीं रह जातीं; एक पृष्ठभूमि एजेंट जो अनदेखा रहते हुए काम करता है, उसे क्रैश होने पर सुरक्षित, दोबारा ट्रिगर होने पर सुरक्षित, और तथ्य के बाद प्रमाणनीय होना ही होगा। Bide इसके लिए टिकाऊ जीवनचक्र देता है: टिकाऊ `Sleep`/`WaitUntil` टाइमर, समय- या घटना-चालित जगाने के लिए एक प्लग-करने-योग्य `Waker`, और टाइप-किए गए human-in-the-loop के लिए टिकाऊ `Interrupt`/`AnswerInterrupt`, सब कुछ एक ही जर्नल पर। आप ट्रिगर स्रोत और निगरानी UI लाते हैं; रनटाइम हर रन को नींद, क्रैश और नोड-हस्तांतरण के आर-पार सही बनाए रखता है।
 
 स्थिति: **कार्यरत v0**, एंड-टू-एंड लाइव-सत्यापित। **Go 1.27** की आवश्यकता है।
 
@@ -42,7 +42,7 @@ eino           maxFired=64   ✗
 
 कोई टूल किस स्तर पर आता है, यह उसकी घोषित `Safety` तय करती है: उसे read-only, idempotent चिह्नित करें, या उसे एक idempotency key दें, और एक अज्ञात परिणाम स्वतः पुनः-प्रयास होता है; इनमें से कुछ भी घोषित न करें और वह रुक जाता है। पुनः-प्रयास-सुरक्षा opt-in है; जब आपने opt-in नहीं किया तब विराम डिफ़ॉल्ट है, ताकि एक लाइब्रेरी जिसका पूरा उद्देश्य "कभी दो बार फ़ायर न करना" है, अनुमान लगाने के बजाय सुरक्षित पर डिफ़ॉल्ट करे।
 
-अधिकांश अज्ञात कभी किसी व्यक्ति तक नहीं पहुँचते: एक idempotency key प्रदाता को एक सुरक्षित पुनः-प्रयास का दोहराव हटाने देती है, और जिन सिस्टमों में वह नहीं होती (ईमेल, आंतरिक सेवाएँ) उनके लिए एक reconciler चरण को उस रिकॉर्ड से हल करता है जो वह छोड़ गया (`agent.ResolveHalt`, या किसी `Step` के लिए `agent.ResolveStepHalt`)। इंसान न्यूनतम आधार है, डिफ़ॉल्ट नहीं।
+अधिकांश अज्ञात कभी किसी व्यक्ति तक नहीं पहुँचते: एक idempotency key प्रदाता को एक सुरक्षित पुनः-प्रयास का दोहराव हटाने देती है, और जिन सिस्टमों में वह नहीं होती (ईमेल, आंतरिक सेवाएँ) उनके लिए एक reconciler चरण को उस रिकॉर्ड से हल करता है जो वह छोड़ गया (`agent.ResolveHaltRef`)। इंसान न्यूनतम आधार है, डिफ़ॉल्ट नहीं।
 
 > [!IMPORTANT]
 > **इसके नीचे का नियम:** जब कोई क्रिया पैसा हिलाती है, किसी रिकॉर्ड को छूती है, या ऑडिट के तहत होती है, और परिणाम
@@ -180,7 +180,7 @@ flow, err := plan.Load[Order, Receipt](configBytes, reg) // same topology, same 
 
 - **एक समय-सीमा तक सोना।** `Sleep`/`WaitUntil` एक रन को रोकते हैं और उसका जागने का समय जर्नल में लिखते हैं, ताकि विराम एक पुनरारंभ को जी ले। जागने के समय पर पुनः-आह्वान ठीक एक बार पुनरारंभ करता है।
 - **समय या घटना पर जागना।** एक प्लग-करने-योग्य `Waker` (डिफ़ॉल्ट रूप से इन-प्रोसेस `MemWaker`) एक देय रन को पुनः-आह्वान करता है; ट्रिगर स्रोत आपका है (एक इन-प्रोसेस लूप, एक cron, एक क़तार, एक इनबाउंड webhook), ताकि वही आधार शेड्यूल-किए और घटना-चालित दोनों एजेंटों को चलाए।
-- **एक इंसान के लिए, टिकाऊ रूप से अंतरायित करना।** `Interrupt[T]`/`Resume` एक रन को किसी भी बिंदु पर रोककर एक टाइप-किए गए निर्णय का अनुरोध करते हैं और इंसान के उत्तर के साथ एक जर्नल-किए चरण के रूप में पुनरारंभ करते हैं (देखें [Human-in-the-loop](#human-in-the-loop))। अनुमोदित/अस्वीकृत उस बूलियन का विशेष मामला है।
+- **एक इंसान के लिए, टिकाऊ रूप से अंतरायित करना।** `Interrupt[T]`/`AnswerInterrupt` एक रन को किसी भी बिंदु पर रोककर एक टाइप-किए गए निर्णय का अनुरोध करते हैं और इंसान के उत्तर के साथ एक जर्नल-किए चरण के रूप में पुनरारंभ करते हैं (देखें [Human-in-the-loop](#human-in-the-loop))। अनुमोदित/अस्वीकृत उस बूलियन का विशेष मामला है।
 
 आप ट्रिगर स्रोत और निगरानी सतह देते हैं; रनटाइम रन को हर नींद, जागरण, अंतरायण, क्रैश, और हस्तांतरण के आर-पार सही बनाए रखता है। `examples/signals` (एक प्रतीक्षारत रन में एक घटना पहुँचाएँ), `examples/interrupt` (human-in-the-loop विराम/पुनरारंभ), और `examples/recover` (टिकाऊ पुनरारंभ) में चलाने योग्य। देखें [सिग्नल और एंबिएंट गाइड](../../docs/guides/signals.md)।
 
@@ -193,11 +193,10 @@ charge := agent.Func("charge_card", "Charge the customer", agent.Safety{},
 	func(ctx context.Context, in ChargeArgs) (Receipt, error) { /* ... */ })
 
 // If the process crashes after the charge fires but before its result is journaled,
-// resume does NOT run it again: it returns *ResumeHalt so you confirm, not double-charge:
+// resume does NOT run it again: it returns *OutcomeUnknown so you confirm, not double-charge:
 _, err := a.Run(ctx, runID, input)
-var halt *agent.ResumeHalt
-if errors.As(err, &halt) {
-	// halt.ToolName == "charge_card": outcome unknown, a human decides, no double side effect.
+if halt, ok := errors.AsType[*agent.OutcomeUnknown](err); ok {
+	// halt.Op.ToolName == "charge_card": outcome unknown, a human decides, no double side effect.
 }
 ```
 
@@ -285,7 +284,7 @@ for ev := range stream.Events() {
 		fmt.Printf("[%s done]\n", e.Name)
 	}
 }
-answer, err := stream.Final() // terminal message + error (incl. *PendingApproval / *ResumeHalt)
+answer, err := stream.Final() // terminal message + error (incl. a Pause: *ApprovalPending, *OutcomeUnknown, ...)
 ```
 
 घटनाएँ: `TurnStarted`, `ModelEvent` (टोकन फ़ीड), `AssistantTurn`, `ToolStarted` / `ToolCompleted`, `ApprovalRequired`, `Finished`। एक UI के लिए `Events()` पर रेंज करें फिर `Final()` को कॉल करें, या अकेले `Final()` कॉल करें ताकि यह ठीक `Run` की तरह व्यवहार करे (यह आपके लिए घटनाओं को निकाल देता है)।
@@ -415,11 +414,10 @@ agent.Safety{RequiresApproval: true}  // pause for human approval before executi
 <!-- docsnip: setup ctx context.Context; a *agent.Agent; store agent.Durable; runID string; input string -->
 ```go
 _, err := a.Run(ctx, runID, input)
-var pend *agent.PendingApproval
-if errors.As(err, &pend) {
+if pend, ok := errors.AsType[*agent.ApprovalPending](err); ok {
 	// ... get a human decision ...
-	agent.Approve(ctx, store, runID, pend.ToolUseID, true)
-	out, _ := a.Run(ctx, runID, input) // resumes past the pause
+	agent.Approve(ctx, store, pend.RunID, pend.ToolUseID, true)
+	out, _ := a.Run(ctx, pend.RootRunID, input) // resumes past the pause
 }
 ```
 
@@ -431,17 +429,16 @@ tool := agent.Func("choose_plan", "pick a plan", agent.Safety{ReadOnly: true},
 	func(ctx context.Context, in Options) (Plan, error) {
 		pick, err := agent.Interrupt[Plan](ctx, "plan", in) // pauses the run; in is shown to the human
 		if err != nil {
-			return Plan{}, err // *Interrupted propagates out of Run
+			return Plan{}, err // *InterruptPending propagates out of Run
 		}
 		return pick, nil // on resume, pick is the human's typed answer
 	})
 
 _, err := a.Run(ctx, runID, input)
-var intr *agent.Interrupted
-if errors.As(err, &intr) {
+if intr, ok := errors.AsType[*agent.InterruptPending](err); ok {
 	// ... show intr.Prompt, get a typed answer ...
-	agent.Resume(ctx, store, runID, intr.Key, chosenPlan)
-	out, _ := a.Run(ctx, runID, input) // resumes; Interrupt now returns chosenPlan
+	agent.AnswerInterrupt(ctx, store, intr.RunID, intr.Name, chosenPlan)
+	out, _ := a.Run(ctx, intr.RootRunID, input) // resumes; Interrupt now returns chosenPlan
 }
 ```
 
@@ -458,7 +455,8 @@ a := agent.New(model, store, refund).WithApproverVerifiers(keysByApprover)
 
 // each approver, out of band, signs the paused call they were shown:
 sig, _ := signer.Sign(agent.ApprovalDecisionBytes(pend.Subject(), "finance", true))
-agent.ApproveAs(ctx, store, pend.RunID, pend.ToolUseID, "finance", true, sig)
+agent.SubmitDecision(ctx, store, agent.Decision{RunID: pend.RunID, ToolUseID: pend.ToolUseID,
+	ApproverID: "finance", Approved: true, Signature: sig})
 ```
 
 फिर `audit.ApprovalEvidence` और `audit.VerifyApprovals` (या `bide-audit verify-approvals`) ऑफ़लाइन सिद्ध करते हैं कि k नामित अनुमोदकों ने ठीक इसी कॉल पर उसके चलने से *पहले*, अपेक्षित नीति के तहत, हस्ताक्षर-स्वीकृति दी, ऐसे साक्ष्य से जो किसी निर्णय को बिना पकड़े छोड़ नहीं सकता। देखें [अनुमोदन गाइड](../../docs/guides/hitl-approval.md); अलग-अलग प्रोसेसों के आर-पार `examples/approval` में चलाने योग्य।
@@ -482,7 +480,7 @@ case errors.Is(err, agent.ErrStorage):      // durable-store I/O
 
 श्रेणियाँ: `ErrConfig`, `ErrModel`, `ErrTool`, `ErrStorage`, `ErrProtocol`, `ErrBudget`। स्थितियाँ (हर एक एक श्रेणी को लपेटती है): `ErrUnknownTool`, `ErrToolArgs` (`ErrTool` को लपेटती हैं), `ErrToolReinvoked`, `ErrInvalidApproval`, `ErrAlreadyDecided` (`ErrConfig` को लपेटती हैं), `ErrNoRecordedOutput`, `ErrIncompleteResponse` (`ErrModel` को लपेटती हैं), `ErrTruncatedToolArgs` (`ErrProtocol` को लपेटती है), `ErrBudgetExceeded`, `ErrMaxTurns` (`ErrBudget` को लपेटती हैं)। प्रदाता अडैप्टर `*RateLimited` (HTTP 429, एक `RetryAfter` संकेत के साथ) और `*APIError` (अन्य non-2xx, `StatusCode` के साथ) भी लौटाते हैं, दोनों `ErrModel` को लपेटते हैं। टूलकिट जो भी त्रुटि लौटाता है (मॉडल, MCP, स्टोर, और शासन अडैप्टरों से सहित) एक श्रेणी वहन करती है, इसलिए `errors.Is` पूरी सतह पर विश्वसनीय है।
 
-और **नियंत्रण-प्रवाह संकेत** एक श्रेणी से समृद्धतर हैं, इसलिए वे ठोस प्रकार बने रहते हैं जिन्हें `errors.As` मिलाता है: `*PendingApproval` (अनुमोदन आवश्यक), `*Interrupted` (इंसानी इनपुट की प्रतीक्षा), `*Sleeping` (टिकाऊ टाइमर लंबित), `*Awaiting` (एक बाहरी सिग्नल की प्रतीक्षा), `*ResumeHalt` (पुनरारंभ असुरक्षित), `*SagaAborted` (वापस लुढ़काया गया), और `*HaltTooYoung` (`ResolveHalt` या `ResolveStepHalt` से, जब `WithMinHaltAge` अभी बीता नहीं है)। एक रुका या ठहरा हुआ रन एक "विफलता" श्रेणी नहीं है; `RunID` / `ToolUseID` / क्षतिपूर्ति विवरण के लिए struct का निरीक्षण करें। रद्दीकरण सामान्य `context.Canceled` / `context.DeadlineExceeded` के रूप में उभरता है, और जो ड्राइव अपने रन की लीज़ (`agent.Lease`) खो जाने के कारण रद्द हुई, वह `ErrLeaseLost` के रूप में; रद्दीकरण की तरह, यह कोई श्रेणी वहन नहीं करती।
+और **नियंत्रण-प्रवाह संकेत** एक श्रेणी से समृद्धतर हैं, इसलिए वे ठोस प्रकार बने रहते हैं जिन्हें `errors.As` मिलाता है: `*ApprovalPending` (अनुमोदन आवश्यक), `*InterruptPending` (इंसानी इनपुट की प्रतीक्षा), `*TimerPending` (टिकाऊ टाइमर लंबित), `*SignalPending` (एक बाहरी सिग्नल की प्रतीक्षा), `*OutcomeUnknown` (पुनरारंभ असुरक्षित), `*SagaAborted` (वापस लुढ़काया गया), और `*HaltTooYoung` (`ResolveHaltRef` से, जब `WithMinHaltAge` अभी बीता नहीं है)। ये सभी सील किए गए इंटरफ़ेस `agent.Pause` को संतुष्ट करते हैं; `agent.IsPause(err)` से जाँचें और `agent.AsPause(err)` से पढ़ें। एक रुका या ठहरा हुआ रन एक "विफलता" श्रेणी नहीं है; `RunID` / `ToolUseID` / क्षतिपूर्ति विवरण के लिए struct का निरीक्षण करें। रद्दीकरण सामान्य `context.Canceled` / `context.DeadlineExceeded` के रूप में उभरता है, और जो ड्राइव अपने रन की लीज़ (`agent.Lease`) खो जाने के कारण रद्द हुई, वह `ErrLeaseLost` के रूप में; रद्दीकरण की तरह, यह कोई श्रेणी वहन नहीं करती।
 
 ## Middleware और अवलोकनीयता
 
@@ -574,7 +572,7 @@ tool := govern.EventTool(gov, "pay", "mark the order paid", "pay", agent.Safety{
 - **[फ़्लो](../../docs/guides/flows.md)**: `plan` टाइप-किया गया फ़्लो बिल्डर। टोपोलॉजी (`Step`/`Tool`/`Model`/`Switch`/`Join`/`LoopBack`) लिखें जो उसी जर्नल पर उतरती है, फिर सिद्ध करें कि एक रन ने उसका पालन किया (`Conform`)। चलाने योग्य: `examples/plan`।
 - **[टिकाऊ चरण](../../docs/guides/durable-steps.md)**: अपना खुद का टिकाऊ काम संघटित करें: `Step`, `Parallel`/`Task` फ़ैन-इन, सागा (`RunSaga`), और टिकाऊ टाइमर (`Sleep`/`WaitUntil`)। चलाने योग्य: `examples/parallel`।
 - **[विश्वसनीयता](../../docs/guides/reliability.md)**: प्रति-प्रयास टाइमआउट, वर्गीकृत पुनः-प्रयास, हेज्ड मॉडल कॉल, रेट लिमिटिंग, और लागत ट्रैकिंग, और वे कैसे संघटित होते हैं। चलाने योग्य: `examples/hedge`।
-- **[सिग्नल और एंबिएंट](../../docs/guides/signals.md)**: बाहरी घटनाएँ एक रन में: टिकाऊ टाइमर और `Waker`, human-in-the-loop (`Interrupt`/`Resume`), और टिकाऊ सिग्नल (अंदर कम-से-कम-एक-बार, लागू ठीक-एक-बार)। चलाने योग्य: `examples/signals`, `examples/interrupt`।
+- **[सिग्नल और एंबिएंट](../../docs/guides/signals.md)**: बाहरी घटनाएँ एक रन में: टिकाऊ टाइमर और `Waker`, human-in-the-loop (`Interrupt`/`AnswerInterrupt`), और टिकाऊ सिग्नल (अंदर कम-से-कम-एक-बार, लागू ठीक-एक-बार)। चलाने योग्य: `examples/signals`, `examples/interrupt`।
 - **[मॉडल](../../docs/guides/models.md)**: Anthropic, OpenAI-संगत, और Gemini अडैप्टर: `WithBaseURL`, सैंपलिंग, प्रॉम्प्ट कैशिंग, टाइप-की गई त्रुटियाँ, और बहुविध छवि इनपुट।
 - **[MCP](../../docs/guides/mcp.md)**: एक MCP सर्वर को रनटाइम टूल स्रोत के रूप में जोड़ें, साइड-इफ़ेक्ट-सुरक्षित पुनरारंभ के साथ; एक विश्वसनीय सर्वर के टूल annotation टूलों को दोबारा चलाने के लिए सुरक्षित चिह्नित कर सकते हैं।
 - **[अवलोकनीयता](../../docs/guides/observability.md)**: एक लाइन में OTel gen_ai span (`trace.Instrument`): span वर्गिकी, उप-एजेंट नेस्टिंग, टोकन-से-लागत, और सामग्री-कैप्चर गोपनीयता डिफ़ॉल्ट। चलाने योग्य: `examples/observability`।
@@ -587,7 +585,7 @@ tool := govern.EventTool(gov, "pay", "mark the order paid", "pay", agent.Safety{
 - **[प्रत्यायोजन](../../docs/guides/delegation.md)**: हस्ताक्षरित क्षमता अनुदान जिन्हें एक उप-एजेंट केवल संकीर्ण कर सकता है (`Grant`/`SignGrant`), ऑफ़लाइन सत्यापित (`VerifyDelegationChain`), साथ ही एक साफ़ ट्रेल से अर्जित प्राधिकार। चलाने योग्य: `examples/govern/delegation`, `examples/govern/authority`।
 - **[सुरक्षा मॉडल](../../docs/guides/security-model.md)**: क्रिप्टोग्राफ़िक गारंटियों का सटीक दायरा (अखंडता, प्रामाणिकता, छेड़छाड़-स्पष्टता, अ-प्रत्याख्यान, चयनात्मक प्रकटीकरण) और क्या दायरे से बाहर है (गोपनीयता)। ट्रेल पर निर्भर होने से पहले पढ़ें।
 - **[शासन](../../docs/guides/governance.md)**: Tier-2 शासित-अवस्था आधार (gsm)। साझा अवस्था को एक रजिस्ट्री के रूप में वर्णित करें, और `Build()` सिद्ध करता है कि हर अंतर्वयन अभिसरित होता है या एक प्रति-उदाहरण लौटाता है। चलाने योग्य: `examples/govern/mesh`, `examples/govern/compose`।
-- **[अनुमोदन](../../docs/guides/hitl-approval.md)**: एक टूल के चलने से पहले टिकाऊ इंसानी हस्ताक्षर-स्वीकृति, 1-of-1 से हस्ताक्षरित m-of-n तक (`ApprovalPolicy`, `ApproveAs`), इस ऑफ़लाइन प्रमाण के साथ कि k नामित अनुमोदकों ने क्रिया से पहले अनुमोदन दिया (`audit.ApprovalEvidence`, `audit.VerifyApprovals`)। चलाने योग्य: `examples/approval`।
+- **[अनुमोदन](../../docs/guides/hitl-approval.md)**: एक टूल के चलने से पहले टिकाऊ इंसानी हस्ताक्षर-स्वीकृति, 1-of-1 से हस्ताक्षरित m-of-n तक (`ApprovalPolicy`, `SubmitDecision`), इस ऑफ़लाइन प्रमाण के साथ कि k नामित अनुमोदकों ने क्रिया से पहले अनुमोदन दिया (`audit.ApprovalEvidence`, `audit.VerifyApprovals`)। चलाने योग्य: `examples/approval`।
 - **[कोरम](../../docs/guides/quorum.md)**: शासित k-of-n मॉडल सहमति (`govern.Quorum`), गणना जर्नल में एंकर और ऑफ़लाइन पुनः-जाँचने योग्य (`bide-audit verify-quorum`)। चलाने योग्य: `examples/govern/quorum`।
 
 **संदर्भ और आंतरिक**

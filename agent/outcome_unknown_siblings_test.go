@@ -63,7 +63,7 @@ func TestToolOutcomeUnknown_SiblingInFlightFinishes(t *testing.T) {
 	}
 	_, err = ag.Run(context.Background(), "r", "go")
 	var halt *agent.ResumeHalt
-	if !errors.As(err, &halt) || halt.ToolUseID != "ca" {
+	if !errors.As(err, &halt) || halt.Op.ID != "ca" {
 		t.Fatalf("resume = %v; want a halt on ca alone", err)
 	}
 }

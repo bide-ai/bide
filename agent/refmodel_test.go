@@ -418,7 +418,7 @@ func (w *rmWorld) drive(mem *agent.MemStore, model agent.Model, crashes []int, d
 		case errors.Is(err, errRMCrash), errors.Is(err, agent.ErrToolOutcomeUnknown):
 			continue // resume: a crash, or a call that lost its answer (the resume halts on it)
 		case errors.As(err, &halt):
-			if c := w.calls[halt.ToolUseID]; c == nil || !c.Lost {
+			if c := w.calls[halt.Op.ID]; c == nil || !c.Lost {
 				obs.halts++
 			}
 			w.reconcile(mem, halt, false)
@@ -446,7 +446,7 @@ func (w *rmWorld) drive(mem *agent.MemStore, model agent.Model, crashes []int, d
 			case errors.Is(ce, errRMCrash):
 				continue
 			case errors.As(ce, &halt):
-				if c := w.calls[halt.ToolUseID]; c == nil || !c.Lost {
+				if c := w.calls[halt.Op.ID]; c == nil || !c.Lost {
 					obs.halts++
 				}
 				w.reconcile(mem, halt, true)
@@ -501,7 +501,7 @@ func rmDriveOnce(ctx context.Context, root *agent.Agent, sc *rmScenario) (agent.
 // its outcome recorded (the run then continues as if it had run normally); during a rollback it
 // is recorded as not performed, so there is nothing to undo.
 func (w *rmWorld) reconcile(mem *agent.MemStore, h *agent.ResumeHalt, rollingBack bool) {
-	c := w.calls[h.ToolUseID]
+	c := w.calls[h.Op.ID]
 	if c == nil {
 		w.problem("halt on an unknown call: %v", h)
 		return
@@ -516,8 +516,8 @@ func (w *rmWorld) reconcile(mem *agent.MemStore, h *agent.ResumeHalt, rollingBac
 		}
 	}
 	w.mu.Unlock()
-	if err := agent.ResolveHalt(context.Background(), mem, h.RunID, h.ToolUseID, json.RawMessage(res.content), res.isError); err != nil {
-		w.problem("ResolveHalt(%s, %s): %v", h.RunID, h.ToolUseID, err)
+	if err := agent.ResolveHalt(context.Background(), mem, h.RunID, h.Op.ID, json.RawMessage(res.content), res.isError); err != nil {
+		w.problem("ResolveHalt(%s, %s): %v", h.RunID, h.Op.ID, err)
 	}
 }
 

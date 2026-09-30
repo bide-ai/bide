@@ -74,9 +74,9 @@ func hasValueStep(ctx context.Context, store Durable, runID, name string) (bool,
 //
 // A step runs at most once, like a tool call. By default it is treated as a side effect: an
 // attempt marker is journaled before fn runs, so if the process dies after fn's effect and
-// before its result is recorded, the resumed step returns *ResumeHalt instead of running fn
-// again. Clear it with ResolveStepHalt (the halt's ToolUseID is the step name; its ToolName is
-// empty) once the true outcome is known. A step that is safe to re-run declares it with StepSafety (ReadOnly,
+// before its result is recorded, the resumed step returns *OutcomeUnknown instead of running fn
+// again. Clear it with ResolveHaltRef (the halt's Op is OpRef{Kind: OpStep, ID: name}) once the
+// true outcome is known. A step that is safe to re-run declares it with StepSafety (ReadOnly,
 // Idempotent, or an IdempotencyKey); it then skips the marker and simply re-runs after a crash.
 //
 // If fn returns an error, nothing is recorded but the marker: a side-effecting step whose fn
@@ -142,8 +142,9 @@ func step[T any](ctx context.Context, d Durable, runID, name string, fn func(con
 			}
 		}
 		if !claimed {
-			// Attempted before, with no recorded result: the outcome is unknown.
-			return Record{}, &ResumeHalt{RunID: runID, RootRunID: runID, ToolUseID: name, AttemptedAt: attemptedAt}
+			// Attempted before, with no recorded result: the outcome is unknown. No live claimant
+			// is known (a lost claim may be to a driver that died), so the cause is HaltCrashed.
+			return Record{}, stepHalt(runID, name, attemptedAt, HaltCrashed)
 		}
 		if err := ctx.Err(); won && err != nil {
 			return Record{}, err // cancelled after the claim: fn is not called, and that is recorded below

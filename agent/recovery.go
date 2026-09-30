@@ -138,11 +138,11 @@ func completedAnswer(recs []Record) (Message, bool) {
 // pass, so run RecoverLoop to keep passing. Without Leaser, Recover drives every
 // enumerated run, which is safe under at-most-once memoization but redundant across processes.
 //
-// A pause is a SUCCESS, not a failure. A re-driven run that is still waiting returns one
-// of the durable pause signals (*PendingApproval, *Interrupted, *Sleeping, *Awaiting, *ResumeHalt);
-// Recover detects those with errors.As and does NOT record them as errors: they mean
-// "recovered, still waiting", and the run resumes later when its condition is met (a
-// human approves, an interrupt is answered, a timer fires). Only a genuine error (a model
+// A pause is a SUCCESS, not a failure. A re-driven run that is still waiting returns a Pause
+// (*ApprovalPending, *InterruptPending, *TimerPending, *SignalPending, *OutcomeUnknown);
+// Recover detects it with IsPause and does NOT record it as an error: it means "recovered,
+// still waiting", and the run resumes later when its condition is met (a human approves, an
+// interrupt is answered, a timer fires). Only a genuine error (a model
 // or storage fault, a bad tool) is joined into the returned error. A run whose lease was lost
 // mid-drive (ErrLeaseLost) is not joined either: another process holds it now and carries it on.
 //
@@ -235,7 +235,7 @@ func recoverable(ctx context.Context, store Durable, runID string) (bool, error)
 func recoverRun(ctx context.Context, store Durable, runID string, resume func(ctx context.Context, runID string) error, cfg recoverConfig) (bool, error) {
 	driven, err := Lease(ctx, store, runID, func(ctx context.Context) error { return resume(ctx, runID) },
 		WithLeaseHolder(cfg.holder), WithLeaseTTL(cfg.ttl))
-	if err != nil && (!driven || !isPause(err) && !errors.Is(err, ErrLeaseLost)) {
+	if err != nil && (!driven || !IsPause(err) && !errors.Is(err, ErrLeaseLost)) {
 		return driven, fmt.Errorf("recover run %s: %w", runID, err)
 	}
 	return driven, nil
@@ -254,6 +254,9 @@ func recoverRun(ctx context.Context, store Durable, runID string, resume func(ct
 // next pass starts when this one has started all of its drives and the interval has elapsed. Genuine failures go
 // to the WithRecoverErrors handler, and the run is retried on the next pass; pauses and lost leases
 // are not failures (see Recover).
+// A run that failed because its Waker could not schedule a wake (an error wrapping ErrStorage)
+// recorded nothing for the sleeping call, so the next pass reaches the Sleep again and schedules
+// again.
 //
 // Run it once per process, for the life of the process, with the same resume Recover takes:
 //

@@ -182,7 +182,11 @@ func TestEngineKeys_ConstructorsAreListed(t *testing.T) {
 					continue
 				}
 				for _, s := range d.Specs {
-					for _, n := range s.(*ast.ValueSpec).Names {
+					vs := s.(*ast.ValueSpec)
+					if vs.Type != nil && types.ExprString(vs.Type) != "string" {
+						continue // a typed constant of another type (OpStep is an OpKind), not a key
+					}
+					for _, n := range vs.Names {
 						if strings.HasSuffix(n.Name, "Step") {
 							found[n.Name] = true
 						}
@@ -208,15 +212,15 @@ func TestEngineKeys_ConstructorsAreListed(t *testing.T) {
 // function that only forwards a name its own callers are held to (listed in forwarders).
 func TestEngineKeys_WritesUseConstructors(t *testing.T) {
 	forwarders := map[string]bool{
-		"ClaimAttempt:name": true, // its callers are checked here
-		"step:name":         true, // its callers are checked here
-		"Step:name":         true, // a developer-chosen name, refused if reserved (checkStepName)
-		"resolve:h.result":  true, // ToolResultStep, or a step name checkStepName allowed
-		"claimAttempt:name": true, // its callers are checked here
-		"probe:key":         true, // its callers are checked here
-		"doShared:key":      true, // its callers are checked here
-		"step:markerKey":    true, // returned by claimNextAttempt, which builds it with retryAttemptStep
-		"run:markerKey":     true, // returned by claimNextAttempt, which builds it with retryAttemptStep
+		"ClaimAttempt:name":    true, // its callers are checked here
+		"step:name":            true, // its callers are checked here
+		"Step:name":            true, // a developer-chosen name, refused if reserved (checkStepName)
+		"resolveHalt:h.result": true, // ToolResultStep, or a step name checkStepName allowed
+		"claimAttempt:name":    true, // its callers are checked here
+		"probe:key":            true, // its callers are checked here
+		"doShared:key":         true, // its callers are checked here
+		"step:markerKey":       true, // returned by claimNextAttempt, which builds it with retryAttemptStep
+		"run:markerKey":        true, // returned by claimNextAttempt, which builds it with retryAttemptStep
 	}
 	var writes int
 	for file, f := range parseAgentPackage(t) {

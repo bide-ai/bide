@@ -24,7 +24,7 @@ func TestWaker_SameNamedTimersInTwoSubRunsAreDistinct(t *testing.T) {
 		root := withRunContext(WithWaker(WithClock(context.Background(), func() time.Time { return t0 }), w), store, "root")
 		for i, sub := range []string{"a", "b"} {
 			ctx := withRunContext(root, store, SubRunID("root", sub))
-			if err := wait(ctx, time.Duration(i+1)*time.Hour); !isPause(err) {
+			if err := wait(ctx, time.Duration(i+1)*time.Hour); !IsPause(err) {
 				t.Fatalf("sub-run %s: wait = %v, want a pause", sub, err)
 			}
 		}

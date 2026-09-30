@@ -15,7 +15,7 @@ import (
 // The sub-run journals under a hierarchical, deterministic ID (SubRunID(parentRunID, toolUseID)),
 // so give `sub` the SAME Durable store as the parent for a unified journal. Then a crash
 // ANYWHERE in the tree resumes the whole tree precisely: completed sub-agents are reused,
-// the in-flight one resumes from its own journal, and ResumeHalt / PendingApproval from
+// the in-flight one resumes from its own journal, and OutcomeUnknown / ApprovalPending from
 // deep in the tree propagate up (approve, re-run the root, and it resumes down the path).
 //
 // This is what the incumbents can't do: ADK/agenticenv can't recover sub-agents across a
@@ -42,7 +42,7 @@ func (t *subAgentTool) ArgsSchema() json.RawMessage { return t.argsSchema }
 // Idempotent: re-running a sub-agent call on resume RESUMES the sub-run from its journal
 // (it doesn't restart it), and a sub-run that already finished returns its recorded answer,
 // so it's safe to retry. Any unsafe write inside the sub-run
-// halts via the sub-run's own ResumeHalt, which propagates up here.
+// halts via the sub-run's own OutcomeUnknown, which propagates up here.
 func (t *subAgentTool) Safety() Safety { return Safety{Idempotent: true} }
 
 func (t *subAgentTool) Call(ctx context.Context, args json.RawMessage) (json.RawMessage, error) {
@@ -97,7 +97,7 @@ func (t *subAgentTool) Call(ctx context.Context, args json.RawMessage) (json.Raw
 			// and stops; resuming it re-enters the sub-run, which carries on from its journal.
 			return nil, &subRunUnfinished{err: out.err}
 		}
-		return nil, out.err // SagaAborted / ResumeHalt / PendingApproval / cancellation propagate up
+		return nil, out.err // SagaAborted / OutcomeUnknown / ApprovalPending / cancellation propagate up
 	}
 	return marshalJournal(firstText(out.msg)) // not HTML-escaped: the parent model reads it as written
 }

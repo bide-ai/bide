@@ -21,13 +21,14 @@ import (
 // true, nil) when the signal wins, or (zero, false, nil) when the timeout wins. Call it
 // from inside a retry-safe tool (Safety.ReadOnly or Idempotent), like Await and Sleep:
 // on resume the tool re-runs from the top until the await resolves, so everything before
-// the AwaitFor call must be safe to repeat.
+// the AwaitFor call must be safe to repeat. A Waker that fails to schedule the deadline's wake
+// fails the run as it does for Sleep.
 //
 // It is Await composed with a durable timer. The deadline is journaled once, on the first
 // encounter (at-most-once by name), as now()+d, so a resumed or crash-recovered run
 // races against the same absolute instant rather than restarting the clock. While neither
 // side has resolved, AwaitFor schedules a wake for the top-level run with the bound Waker
-// (if any) and returns *Awaiting, pausing the run durably exactly like Await. The bool
+// (if any) and returns *SignalPending, pausing the run durably exactly like Await. The bool
 // return is only meaningful when err is nil.
 //
 // The outcome is journaled too, at-most-once by name, the first time either side wins. Every
@@ -84,10 +85,11 @@ func AwaitFor[T any](ctx context.Context, name string, d time.Duration) (T, bool
 		// resolves the race. The wake is for the top-level run: re-running it re-enters any
 		// sub-agent down to this AwaitFor, while the sub-run alone cannot be driven by the root
 		// agent's resume callback (the same rule as Sleep).
-		if w := wakerFrom(ctx); w != nil {
-			w.Schedule(rootRunID(ctx, runID), wakeName(ctx, runID, awaitTimeoutStep(name)), deadline)
+		ref := RunRef{RunID: runID, RootRunID: rootRunID(ctx, runID)}
+		if err := scheduleWake(ctx, Wake{RunID: ref.RunID, RootRunID: ref.RootRunID, Name: awaitTimeoutStep(name), FireAt: deadline}); err != nil {
+			return zero, false, err // a *wakeError wrapping ErrStorage: fail, record nothing, schedule again on re-drive
 		}
-		return zero, false, &Awaiting{RunID: runID, RootRunID: rootRunID(ctx, runID), Name: name}
+		return zero, false, &SignalPending{RunRef: ref, Name: name}
 	}
 	if err != nil {
 		return zero, false, fmt.Errorf("agent: awaitfor %q: %w (%w)", name, err, ErrStorage)

@@ -74,7 +74,7 @@ formal proof over all interleavings.
 The internal form of the same discipline is the core DST: `dst_test.go`
 (`TestDST_NoDoubleFire_CrashSweep`, `TestDST_NoDoubleFire_Randomized`) crashes at the Kth
 durable write and asserts the charge fires at most once and the run ends either completed or in
-`ResumeHalt`; the sweep test even fails itself if no crash point ever exercises the halt path,
+`OutcomeUnknown`; the sweep test even fails itself if no crash point ever exercises the halt path,
 so it cannot pass vacuously. `saga_dst_test.go` applies the same crash sweep and randomized
 schedules to saga compensation.
 

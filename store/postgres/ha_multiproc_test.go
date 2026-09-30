@@ -132,7 +132,7 @@ func (w *haDriver) resume(ctx context.Context, runID string) error {
 	case errors.Is(context.Cause(ctx), agent.ErrLeaseLost):
 		w.event(runID, "", "lost")
 	case errors.As(err, &halt):
-		w.event(runID, halt.ToolUseID, "halt")
+		w.event(runID, halt.Op.ID, "halt")
 	case err != nil:
 		w.event(runID, "", "error")
 	default:

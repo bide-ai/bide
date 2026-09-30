@@ -25,7 +25,7 @@ needs judgment, with nobody watching each step. That is exactly when at-most-onc
 verifiable trail stop being nice-to-haves; a background agent that acts unobserved has to be safe to
 crash, safe to re-trigger, and provable after the fact. Bide ships the durable lifecycle for
 this: durable `Sleep`/`WaitUntil` timers, a pluggable `Waker` for time- or event-driven wakeups, and
-durable `Interrupt`/`Resume` for typed human-in-the-loop, all on the same journal. You bring the
+durable `Interrupt`/`AnswerInterrupt` for typed human-in-the-loop, all on the same journal. You bring the
 trigger source and the oversight UI; the runtime keeps every run correct across sleeps, crashes, and
 node handoffs.
 
@@ -79,7 +79,7 @@ whose whole point is "never double-fire" defaults to safe rather than to guessin
 
 Most unknowns never reach a person: an idempotency key lets the provider dedupe a safe retry, and
 for systems without one (email, internal services) a reconciler resolves the step from the record
-it left (`agent.ResolveHalt`, or `agent.ResolveStepHalt` for a `Step`). The human is the floor, not the default.
+it left (`agent.ResolveHaltRef`). The human is the floor, not the default.
 
 > [!IMPORTANT]
 > **The rule underneath it:** when an action moves money, touches a record, or happens under audit
@@ -319,8 +319,10 @@ and node handoffs between them.
   outlives a restart. Re-invoking at the wake time resumes exactly once.
 - **Wake on time or event.** A pluggable `Waker` (in-process `MemWaker` by default) re-invokes a due
   run; the trigger source is yours (an in-process loop, a cron, a queue, an inbound webhook), so the
-  same substrate drives both scheduled and event-driven agents.
-- **Interrupt for a human, durably.** `Interrupt[T]`/`Resume` pause a run at any point to request a
+  same substrate drives both scheduled and event-driven agents. A wake that cannot be scheduled
+  fails the run (wrapping `ErrStorage`) rather than leave it asleep with nothing to wake it, and
+  `RecoverLoop` retries it.
+- **Interrupt for a human, durably.** `Interrupt[T]`/`AnswerInterrupt` pause a run at any point to request a
   typed decision and resume with the human's answer as a journaled step (see
   [Human-in-the-loop](#human-in-the-loop)). Approve/deny is the boolean special case.
 
@@ -338,11 +340,10 @@ charge := agent.Func("charge_card", "Charge the customer", agent.Safety{},
 	func(ctx context.Context, in ChargeArgs) (Receipt, error) { /* ... */ })
 
 // If the process crashes after the charge fires but before its result is journaled,
-// resume does NOT run it again: it returns *ResumeHalt so you confirm, not double-charge:
+// resume does NOT run it again: it returns *OutcomeUnknown so you confirm, not double-charge:
 _, err := a.Run(ctx, runID, input)
-var halt *agent.ResumeHalt
-if errors.As(err, &halt) {
-	// halt.ToolName == "charge_card": outcome unknown, a human decides, no double side effect.
+if halt, ok := errors.AsType[*agent.OutcomeUnknown](err); ok {
+	// halt.Op.ToolName == "charge_card": outcome unknown, a human decides, no double side effect.
 }
 ```
 
@@ -447,7 +448,7 @@ for ev := range stream.Events() {
 		fmt.Printf("[%s done]\n", e.Name)
 	}
 }
-answer, err := stream.Final() // terminal message + error (incl. *PendingApproval / *ResumeHalt)
+answer, err := stream.Final() // terminal message + error (incl. a Pause: *ApprovalPending, *OutcomeUnknown, ...)
 ```
 
 Events: `TurnStarted`, `ModelEvent` (the token feed), `TurnRestarted`, `AssistantTurn`, `ToolStarted` /
@@ -650,11 +651,10 @@ human decision is a bool:
 <!-- docsnip: setup ctx context.Context; a *agent.Agent; store agent.Durable; runID string; input string -->
 ```go
 _, err := a.Run(ctx, runID, input)
-var pend *agent.PendingApproval
-if errors.As(err, &pend) {
+if pend, ok := errors.AsType[*agent.ApprovalPending](err); ok {
 	// ... get a human decision ...
-	agent.Approve(ctx, store, runID, pend.ToolUseID, true)
-	out, _ := a.Run(ctx, runID, input) // resumes past the pause
+	agent.Approve(ctx, store, pend.RunID, pend.ToolUseID, true)
+	out, _ := a.Run(ctx, pend.RootRunID, input) // resumes past the pause
 }
 ```
 
@@ -667,17 +667,16 @@ tool := agent.Func("choose_plan", "pick a plan", agent.Safety{ReadOnly: true},
 	func(ctx context.Context, in Options) (Plan, error) {
 		pick, err := agent.Interrupt[Plan](ctx, "plan", in) // pauses the run; in is shown to the human
 		if err != nil {
-			return Plan{}, err // *Interrupted propagates out of Run
+			return Plan{}, err // *InterruptPending propagates out of Run
 		}
 		return pick, nil // on resume, pick is the human's typed answer
 	})
 
 _, err := a.Run(ctx, runID, input)
-var intr *agent.Interrupted
-if errors.As(err, &intr) {
+if intr, ok := errors.AsType[*agent.InterruptPending](err); ok {
 	// ... show intr.Prompt, get a typed answer ...
-	agent.Resume(ctx, store, runID, intr.Key, chosenPlan)
-	out, _ := a.Run(ctx, runID, input) // resumes; Interrupt now returns chosenPlan
+	agent.AnswerInterrupt(ctx, store, intr.RunID, intr.Name, chosenPlan)
+	out, _ := a.Run(ctx, intr.RootRunID, input) // resumes; Interrupt now returns chosenPlan
 }
 ```
 
@@ -699,7 +698,8 @@ a := agent.New(model, store, refund).WithApproverVerifiers(keysByApprover)
 
 // each approver, out of band, signs the paused call they were shown:
 sig, _ := signer.Sign(agent.ApprovalDecisionBytes(pend.Subject(), "finance", true))
-agent.ApproveAs(ctx, store, pend.RunID, pend.ToolUseID, "finance", true, sig)
+agent.SubmitDecision(ctx, store, agent.Decision{RunID: pend.RunID, ToolUseID: pend.ToolUseID,
+	ApproverID: "finance", Approved: true, Signature: sig})
 ```
 
 `audit.ApprovalEvidence` and `audit.VerifyApprovals` (or `bide-audit verify-approvals`) then prove
@@ -738,14 +738,18 @@ Conditions (each wraps a category): `ErrUnknownTool`, `ErrToolArgs`, `ErrToolOut
 toolkit returns (including from the model, MCP, store, and governance adapters) carries a category,
 so `errors.Is` is reliable across the whole surface.
 
-The **control-flow signals** are richer than a category, so they stay concrete types matched
-with `errors.As`: `*PendingApproval` (approval needed), `*Interrupted` (waiting for human input),
-`*Sleeping` (durable timer pending), `*Awaiting` (waiting for an external signal), `*ResumeHalt`
-(unsafe to resume), `*SagaAborted` (rolled back), and `*HaltTooYoung` (from `ResolveHalt` or `ResolveStepHalt`, when
-`WithMinHaltAge` has not elapsed yet). A paused or halted run is not a "failure" category; inspect the
-struct for `RunID` / `ToolUseID` / compensation details. Cancellation surfaces as the usual
-`context.Canceled` / `context.DeadlineExceeded`, and a drive cancelled because its run lease was lost
-(`agent.Lease`) as `ErrLeaseLost`; like cancellation, it carries no category.
+The **control-flow signals** are richer than a category, so they stay concrete types. A paused or
+halted run returns an `agent.Pause`, a sealed interface with exactly five kinds: `*ApprovalPending`
+(approval needed), `*InterruptPending` (waiting for human input), `*TimerPending` (durable timer
+pending), `*SignalPending` (waiting for an external signal or channel message), and
+`*OutcomeUnknown` (unsafe to resume; its `Cause` is `HaltCrashed` or `HaltContended`). Test for one
+with `agent.IsPause(err)`, read it with `agent.AsPause(err)` (its `Paused()` names the run to answer
+and the run to re-invoke), or match a kind with `errors.As`. The others are `*SagaAborted` (rolled
+back) and `*HaltTooYoung` (from `ResolveHaltRef`, when `WithMinHaltAge` has not elapsed yet). A
+paused or halted run is not a "failure" category; inspect the struct for its run, operation, or
+compensation details. Cancellation surfaces as the usual `context.Canceled` /
+`context.DeadlineExceeded`, and a drive cancelled because its run lease was lost (`agent.Lease`) as
+`ErrLeaseLost`; like cancellation, it carries no category.
 
 ## Middleware & observability
 
@@ -879,7 +883,7 @@ New here? Start with **[Getting started](docs/getting-started.md)**, use the **[
 - **[Flows](docs/guides/flows.md)**: the `plan` typed flow builder. Author topology (`Step`/`Tool`/`Model`/`Switch`/`Join`/`LoopBack`) that lowers to the same journal, then prove a run followed it (`Conform`). Runnable: `examples/plan`.
 - **[Durable steps](docs/guides/durable-steps.md)**: compose your own durable work: `Step`, `Parallel`/`Task` fan-in, sagas (`RunSaga`), and durable timers (`Sleep`/`WaitUntil`). Runnable: `examples/parallel`.
 - **[Reliability](docs/guides/reliability.md)**: per-attempt timeouts, classified retry, hedged model calls, rate limiting, and cost tracking, and how they compose. Runnable: `examples/hedge`.
-- **[Signals and ambient](docs/guides/signals.md)**: external events into a run: durable timers and the `Waker`, human-in-the-loop (`Interrupt`/`Resume`), and durable signals (at-least-once in, exactly-once applied). Runnable: `examples/signals`, `examples/interrupt`.
+- **[Signals and ambient](docs/guides/signals.md)**: external events into a run: durable timers and the `Waker`, human-in-the-loop (`Interrupt`/`AnswerInterrupt`), and durable signals (at-least-once in, exactly-once applied). Runnable: `examples/signals`, `examples/interrupt`.
 - **[Models](docs/guides/models.md)**: the Anthropic, OpenAI-compatible, and Gemini adapters: `WithBaseURL`, sampling, prompt caching, typed errors, and multimodal image input.
 - **[MCP](docs/guides/mcp.md)**: connect an MCP server as a runtime tool source, with side-effect-safe resume; a trusted server's tool annotations can mark tools safe to re-run.
 - **[Observability](docs/guides/observability.md)**: OTel gen_ai spans in one line (`trace.Instrument`): span taxonomy, sub-agent nesting, token-to-cost, and the content-capture privacy default. Runnable: `examples/observability`.
@@ -892,7 +896,7 @@ New here? Start with **[Getting started](docs/getting-started.md)**, use the **[
 - **[Delegation](docs/guides/delegation.md)**: signed capability grants a sub-agent can only narrow (`Grant`/`SignGrant`), verified offline (`VerifyDelegationChain`), plus authority earned from a clean trail. Runnable: `examples/govern/delegation`, `examples/govern/authority`.
 - **[Security model](docs/guides/security-model.md)**: the exact scope of the cryptographic guarantees (integrity, authenticity, tamper-evidence, non-repudiation, selective disclosure) and what is out of scope (confidentiality). Read before relying on the trail.
 - **[Governance](docs/guides/governance.md)**: the Tier-2 governed-state substrate (gsm). Describe shared state as a registry, and `Build()` proves every interleaving converges or returns a counterexample. Runnable: `examples/govern/mesh`, `examples/govern/compose`.
-- **[Human approval (human-in-the-loop)](docs/guides/hitl-approval.md)**: durable human sign-off before a tool runs, from 1-of-1 to signed m-of-n (`ApprovalPolicy`, `ApproveAs`), with offline proof that k named approvers approved before the action (`audit.ApprovalEvidence`, `audit.VerifyApprovals`). Runnable: `examples/approval`.
+- **[Human approval (human-in-the-loop)](docs/guides/hitl-approval.md)**: durable human sign-off before a tool runs, from 1-of-1 to signed m-of-n (`ApprovalPolicy`, `SubmitDecision`), with offline proof that k named approvers approved before the action (`audit.ApprovalEvidence`, `audit.VerifyApprovals`). Runnable: `examples/approval`.
 - **[Quorum](docs/guides/quorum.md)**: governed k-of-n model agreement (`govern.Quorum`), the tally anchored in the journal and re-checkable offline (`bide-audit verify-quorum`). Runnable: `examples/govern/quorum`.
 
 **Reference and internals**
