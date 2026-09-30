@@ -151,6 +151,47 @@ changelog_has() {
 # awk reads all of its input and compares the ref literally.
 remote_has_tag() { awk -v t="$2" '$2 == t {found = 1} END {exit !found}' <<<"$1"; }
 
+# push_tags tag...: push the tags from $CLONE to $TARGET.
+push_tags() {
+  local refs="" t
+  for t in "$@"; do refs="$refs refs/tags/$t"; done
+  # shellcheck disable=SC2086
+  git -C "$CLONE" push --quiet "$TARGET" $refs
+  if $PUSH; then note "pushed $*"; else note "pushed to the scratch origin: $*"; fi
+}
+
+# self_test_push: push_tags pushes nine tags (more than a release stage holds) to a target that
+# refuses any push of more than three tags, and every tag arrives.
+self_test_push() {
+  local tmp ok=true t want="" got
+  tmp=$(mktemp -d)
+  git init --quiet "$tmp/src"
+  git -C "$tmp/src" -c user.name=t -c user.email=t@example.com commit --quiet --allow-empty -m init
+  for t in a b c d e f g h i; do
+    git -C "$tmp/src" -c user.name=t -c user.email=t@example.com tag -a "$t/v0.8.0" -m "$t"
+    want="$want $t/v0.8.0"
+  done
+  git init --quiet --bare "$tmp/target.git"
+  cat >"$tmp/target.git/hooks/pre-receive" <<HOOK
+#!/usr/bin/env bash
+n=\$(grep -c 'refs/tags/' || true)
+echo "\$n" >>"$tmp/pushes.log"
+[ "\$n" -le 3 ] || { echo "pre-receive: \$n tags in one push; GitHub runs no workflow for them" >&2; exit 1; }
+HOOK
+  chmod +x "$tmp/target.git/hooks/pre-receive"
+  # shellcheck disable=SC2086
+  (CLONE=$tmp/src TARGET=$tmp/target.git PUSH=false; push_tags $want >/dev/null 2>"$tmp/push.err") ||
+    { echo "self-test: pushing nine tags failed:"; sed 's/^/    /' "$tmp/push.err"; ok=false; }
+  if [ -f "$tmp/pushes.log" ] && awk '$1 > 3 {bad = 1} END {exit bad}' "$tmp/pushes.log"; then :; else
+    echo "self-test: a push carried more than three tags: $(tr '\n' ' ' <"$tmp/pushes.log" 2>/dev/null)"; ok=false
+  fi
+  got=$(git -C "$tmp/target.git" tag -l | LC_ALL=C sort | tr '\n' ' ')
+  [ "$got" = "$(echo $want | tr ' ' '\n' | LC_ALL=C sort | tr '\n' ' ')" ] ||
+    { echo "self-test: the target has tags [$got], want [$want ]"; ok=false; }
+  rm -rf "$tmp"
+  $ok
+}
+
 self_test() {
   local tmp fail=false; tmp=$(mktemp -d)
   printf 'module %s/x\n\ngo 1.27\n\nrequire %s v0.0.0\n\nreplace %s => ../\n' "$ROOT_MODULE" "$ROOT_MODULE" "$ROOT_MODULE" > "$tmp/go.mod"
@@ -177,6 +218,10 @@ self_test() {
   remote_has_tag "$tags" refs/tags/govern/v0.8.0 || { echo "self-test: a remote tag was not found"; fail=true; }
   remote_has_tag "$(printf '%040d\trefs/tags/govern/v0x8x0\n' 0)" refs/tags/govern/v0.8.0 && { echo "self-test: govern/v0x8x0 was taken for govern/v0.8.0"; fail=true; }
   remote_has_tag "$tags" refs/tags/mcp/v0.8.0 && { echo "self-test: a missing remote tag was found"; fail=true; }
+  # GitHub creates no push event, so runs no workflow, for the tags of a push that carries more
+  # than three. The scratch target's pre-receive hook refuses such a push and logs each push's
+  # size; every tag must still arrive.
+  self_test_push || fail=true
   $fail && return 1
   echo "self-test: ok"
 }
@@ -283,14 +328,6 @@ else
       go "$@"
   }
 fi
-
-push_tags() { # tag...
-  local refs="" t
-  for t in "$@"; do refs="$refs refs/tags/$t"; done
-  # shellcheck disable=SC2086
-  git -C "$CLONE" push --quiet "$TARGET" $refs
-  if $PUSH; then note "pushed $*"; else note "pushed to the scratch origin: $*"; fi
-}
 
 # wait_resolve module version: the module proxy (or, in a dry run, the scratch origin) serves it.
 wait_resolve() {
