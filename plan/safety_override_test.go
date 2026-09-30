@@ -26,7 +26,7 @@ func gatedTools() map[string]agent.Tool {
 // gate off would run the tool with no approval at all.
 func TestLoad_SafetyOverrideKeepsTheToolsApprovalGate(t *testing.T) {
 	for name, tool := range gatedTools() {
-		for _, s := range []string{"readonly", "idempotent", "retryable"} {
+		for _, s := range []string{"readonly", "idempotent"} {
 			reg := NewRegistry()
 			if err := RegisterTool[int, int](reg, "refund", tool); err != nil {
 				t.Fatalf("register: %v", err)

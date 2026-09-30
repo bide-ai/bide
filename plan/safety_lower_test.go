@@ -36,7 +36,6 @@ func TestLoad_ConfigCannotRaiseRetrySafety(t *testing.T) {
 	}{
 		"side effect to readonly":   {agent.Safety{}, "readonly"},
 		"side effect to idempotent": {agent.Safety{}, "idempotent"},
-		"side effect to retryable":  {agent.Safety{}, "retryable"},
 		"idempotent to readonly":    {agent.Safety{Idempotent: true}, "readonly"},
 		"keyed to readonly":         {agent.Safety{IdempotencyKey: key}, "readonly"},
 	} {

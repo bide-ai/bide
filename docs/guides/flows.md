@@ -293,8 +293,8 @@ type.
 #### Node and join safety
 
 A node (or a join) may carry a `safety` classifying how `Run` treats it on the ambiguous-crash window
-(an attempt recorded, its result lost to a crash): `"readonly"`, `"idempotent"` (or its alias
-`"retryable"`), or `"side_effect"`. A read-only or idempotent node re-runs its body on resume rather
+(an attempt recorded, its result lost to a crash): `"readonly"`, `"idempotent"`, or
+`"side_effect"` (one spelling per level; the pre-v1 alias `"retryable"` is refused, naming `"idempotent"`). A read-only or idempotent node re-runs its body on resume rather
 than halting, because its body is safe to repeat; a side effect halts.
 
 **A config may only lower retry safety.** Whether a step is safe to run twice is a property of its Go

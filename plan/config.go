@@ -51,7 +51,7 @@ type configNode struct {
 	Name  string `json:"name"`
 	Block string `json:"block"`
 	// Safety optionally LOWERS the node's retry-on-resume classification: one of
-	// "readonly", "idempotent", "retryable" (an alias for "idempotent"), or "side_effect".
+	// "readonly", "idempotent", or "side_effect".
 	// Empty means the node keeps the registered block's Safety (the Go registration). A
 	// value may keep or lower the level Go declares, never raise it: only Go code can say a
 	// step is safe to run twice, so a value above it is a load error naming the node, as is
@@ -765,7 +765,7 @@ func retryLevel(s agent.Safety) int {
 var levelNames = [...]string{levelSideEffect: "side_effect", levelIdempotent: "idempotent", levelReadOnly: "readonly"}
 
 // safetyFromConfig applies a config safety string to base, the Safety the node's Go
-// registration declares. "readonly" sets ReadOnly, "idempotent" and its "retryable" alias set
+// registration declares. "readonly" sets ReadOnly, "idempotent" sets
 // Idempotent, and "side_effect" clears ReadOnly, Idempotent and the IdempotencyKey (the key
 // alone makes a node retry-safe), so the node halts on an ambiguous crash. A config may only
 // LOWER retry safety: a value above the level base declares (readonly or idempotent on a side
@@ -779,14 +779,17 @@ func safetyFromConfig(base agent.Safety, s string) (agent.Safety, error) {
 	switch s {
 	case "readonly":
 		level, opt = levelReadOnly, ReadOnly()
-	case "idempotent", "retryable":
+	case "idempotent":
 		level, opt = levelIdempotent, Idempotent()
 	case "side_effect":
 		level, opt = levelSideEffect, func(n *node) {
 			n.safety.ReadOnly, n.safety.Idempotent, n.safety.IdempotencyKey = false, false, nil
 		}
+	case "retryable":
+		// The pre-v1 alias of "idempotent": each level has one spelling.
+		return agent.Safety{}, fmt.Errorf("has unknown safety %q; for the idempotent level write \"idempotent\"", s)
 	default:
-		return agent.Safety{}, fmt.Errorf("has unknown safety %q; want one of \"readonly\", \"idempotent\", \"retryable\", \"side_effect\"", s)
+		return agent.Safety{}, fmt.Errorf("has unknown safety %q; want one of \"readonly\", \"idempotent\", \"side_effect\"", s)
 	}
 	if have := retryLevel(base); level > have {
 		return agent.Safety{}, fmt.Errorf("has safety %q, above the %q its Go registration declares; a config may only lower retry safety, and only Go code can mark a step safe to run twice", s, levelNames[have])
