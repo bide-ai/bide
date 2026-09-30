@@ -79,7 +79,7 @@ func SpecOf(t Tool) ToolSpec {
 	} else {
 		s = ToolSpec{Name: t.Name(), Description: t.Description(), Input: t.ArgsSchema(), Safety: t.Safety()}
 	}
-	s.Approval = s.Approval.clone()
+	s.Approval = s.Approval.Clone()
 	return s
 }
 
@@ -99,38 +99,41 @@ type Safety struct {
 	Idempotent bool `json:"idempotent,omitempty"`
 }
 
-// ApprovalPolicy declares a human approval gate. SingleApproval's shape (Need 1, no approver set)
-// is one decision, recorded with Approve and pausing as *ApprovalPending. Any other policy is an
-// m-of-n gate: Need is k and the eligible approvers are the bounded set (n = len(Approvers)),
-// whose signed decisions SubmitDecision records; Validate checks it.
+// ApprovalPolicy declares a human approval gate. The policy SingleApproval returns is one
+// decision, recorded with Approve and pausing as *ApprovalPending; only that value is, whatever
+// its fields say, so a policy built by hand is never taken for it. Any other policy is an m-of-n
+// gate: Need is k and the eligible approvers are the bounded set (n = len(Approvers)), whose
+// signed decisions SubmitDecision records; Validate checks it, and refuses one with no approvers.
 type ApprovalPolicy struct {
 	Need      int      `json:"need"`                // decisions required to proceed (k), 1 <= Need <= len(Approvers)
 	Approvers []string `json:"approvers,omitempty"` // eligible approver ids; the bounded set (n)
+
+	// one marks the policy SingleApproval returned (and its copies): the one-decision gate. It is
+	// not journaled; the gate a run enforces is always the registered tool's.
+	one bool
 }
 
 // SingleApproval returns the one-decision gate: a call pauses as *ApprovalPending until Approve
-// records a decision for it.
-func SingleApproval() *ApprovalPolicy { return &ApprovalPolicy{Need: 1} }
+// records a decision for it. It is the only way to ask for that gate: an ApprovalPolicy literal,
+// even {Need: 1} with no approvers, is an m-of-n policy, and one with no approvers is ErrConfig.
+func SingleApproval() *ApprovalPolicy { return &ApprovalPolicy{Need: 1, one: true} }
 
-// single reports whether p is the one-decision gate (SingleApproval's shape).
-func (p *ApprovalPolicy) single() bool { return p != nil && p.Need == 1 && len(p.Approvers) == 0 }
+// single reports whether p is the one-decision gate SingleApproval returned.
+func (p *ApprovalPolicy) single() bool { return p != nil && p.one }
 
-// clone returns a copy of p that shares nothing with it, or nil for nil.
-func (p *ApprovalPolicy) clone() *ApprovalPolicy {
+// Clone returns a copy of p that shares nothing with it (a SingleApproval stays one), or nil
+// for nil.
+func (p *ApprovalPolicy) Clone() *ApprovalPolicy {
 	if p == nil {
 		return nil
 	}
-	return &ApprovalPolicy{Need: p.Need, Approvers: slices.Clone(p.Approvers)}
+	return &ApprovalPolicy{Need: p.Need, Approvers: slices.Clone(p.Approvers), one: p.one}
 }
 
-// checkApproval reports whether p is a gate the agent can enforce: the one-decision gate, or an
-// m-of-n policy that Validate accepts.
+// checkApproval reports whether p is a gate the agent can enforce (see Validate).
 func checkApproval(p *ApprovalPolicy) error {
-	switch {
-	case p == nil:
+	if p == nil {
 		return fmt.Errorf("approval policy is nil (give no approval option for an ungated tool): %w", ErrConfig)
-	case p.single():
-		return nil
 	}
 	return p.Validate()
 }
@@ -173,7 +176,7 @@ func WithApproval(p *ApprovalPolicy) ToolOption {
 		if err := checkApproval(p); err != nil {
 			return err
 		}
-		c.spec.Approval = p.clone()
+		c.spec.Approval = p.Clone()
 		return nil
 	})
 }
@@ -273,7 +276,7 @@ func (t *funcTool[In, Out]) ArgsSchema() json.RawMessage { return t.spec.Input }
 // Spec returns the tool's spec, with a copy of its approval policy.
 func (t *funcTool[In, Out]) Spec() ToolSpec {
 	s := t.spec
-	s.Approval = s.Approval.clone()
+	s.Approval = s.Approval.Clone()
 	return s
 }
 

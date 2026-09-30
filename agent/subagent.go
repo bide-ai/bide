@@ -65,7 +65,7 @@ func (t *subAgentTool) Safety() Safety              { return t.spec.Safety }
 // Spec returns the tool's spec, with a copy of its approval policy.
 func (t *subAgentTool) Spec() ToolSpec {
 	s := t.spec
-	s.Approval = s.Approval.clone()
+	s.Approval = s.Approval.Clone()
 	return s
 }
 

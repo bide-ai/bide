@@ -186,7 +186,7 @@ func (a *Agent) toolCallFor(runID string, tu ToolUse) ToolCall {
 	var s ToolSpec // the zero spec (a side effect) for a name no tool has
 	if p := a.specs[tu.Name]; p != nil {
 		s = *p
-		s.Approval = s.Approval.clone() // the middleware's copy: changing it changes nothing here
+		s.Approval = s.Approval.Clone() // the middleware's copy: changing it changes nothing here
 	}
 	return ToolCall{Use: tu, Spec: s, RunID: runID, redact: a.toolErrRedact, modelArgs: tu.Args, origName: tu.Name, origID: tu.ID}
 }

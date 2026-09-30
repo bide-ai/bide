@@ -112,6 +112,7 @@ func TestWithApproval_Refusals(t *testing.T) {
 	for name, opt := range map[string]ToolsOption{
 		"nil policy":    WithApproval("transfer", nil),
 		"need 0":        WithApproval("transfer", &agent.ApprovalPolicy{}),
+		"no approvers":  WithApproval("transfer", &agent.ApprovalPolicy{Need: 1}), // only agent.SingleApproval() is the one-decision gate
 		"need above n":  WithApproval("transfer", &agent.ApprovalPolicy{Need: 3, Approvers: []string{"a", "b"}}),
 		"duplicate":     WithApproval("transfer", &agent.ApprovalPolicy{Need: 1, Approvers: []string{"a", "a"}}),
 		"misspelt name": WithApproval("tranfser", agent.SingleApproval()),

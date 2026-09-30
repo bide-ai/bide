@@ -358,9 +358,9 @@ func TestMofn_ConfigErrors(t *testing.T) {
 		{"need-above-n", &ApprovalPolicy{Need: 4, Approvers: abc}, fakeVerifiers(abc...)},
 		{"duplicate-approver", &ApprovalPolicy{Need: 2, Approvers: []string{"alice", "alice", "bob"}}, fakeVerifiers(abc...)},
 		{"empty-approver", &ApprovalPolicy{Need: 1, Approvers: []string{"alice", ""}}, fakeVerifiers(abc...)},
-		// Need 1 with no approver set is SingleApproval, the one-decision gate; any other
-		// policy with no approvers is refused.
-		{"no-approvers", &ApprovalPolicy{Need: 2}, fakeVerifiers(abc...)},
+		// Only SingleApproval() is the one-decision gate: a literal with no approvers is refused.
+		{"no-approvers", &ApprovalPolicy{Need: 1}, fakeVerifiers(abc...)},
+		{"no-approvers-need-two", &ApprovalPolicy{Need: 2}, fakeVerifiers(abc...)},
 		{"no-approvers-need-zero", &ApprovalPolicy{}, fakeVerifiers(abc...)},
 	}
 	for _, tc := range cases {

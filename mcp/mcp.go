@@ -206,19 +206,16 @@ func WithApproval(name string, p *agent.ApprovalPolicy) ToolsOption {
 		if c.approval == nil {
 			c.approval = map[string]*agent.ApprovalPolicy{}
 		}
-		c.approval[name] = &agent.ApprovalPolicy{Need: p.Need, Approvers: slices.Clone(p.Approvers)}
+		c.approval[name] = p.Clone()
 	}
 }
 
-// checkApproval reports whether p is a gate the agent enforces: SingleApproval's shape (Need 1,
-// no approver set), or an m-of-n policy that Validate accepts. It is the check agent.WithApproval
-// applies.
+// checkApproval reports whether p is a gate the agent enforces: agent.SingleApproval(), or an
+// m-of-n policy that Validate accepts (a policy with no approvers is not one). It is the check
+// agent.WithApproval applies.
 func checkApproval(p *agent.ApprovalPolicy) error {
-	switch {
-	case p == nil:
+	if p == nil {
 		return fmt.Errorf("approval policy is nil: %w", agent.ErrConfig)
-	case p.Need == 1 && len(p.Approvers) == 0:
-		return nil
 	}
 	return p.Validate()
 }
@@ -369,7 +366,7 @@ func (t *tool) Spec() agent.ToolSpec {
 		s.Timeout = 0
 	}
 	if p, ok := t.cfg.approval[t.def.Name]; ok {
-		s.Approval = &agent.ApprovalPolicy{Need: p.Need, Approvers: slices.Clone(p.Approvers)}
+		s.Approval = p.Clone()
 	}
 	return s
 }

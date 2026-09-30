@@ -450,7 +450,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 			}
 			if denied { // record a denial and let the model react
 				const deniedResult = `"tool call denied by human"`
-				if _, err := putRecord(ctx, a.store, runID, ToolResultStep(tu.ID), Record{Kind: StepToolResult, ToolUseID: tu.ID, IsError: true, Result: json.RawMessage(deniedResult), Safety: recordedSafety(*spec), Approval: spec.Approval.clone()}); err != nil {
+				if _, err := putRecord(ctx, a.store, runID, ToolResultStep(tu.ID), Record{Kind: StepToolResult, ToolUseID: tu.ID, IsError: true, Result: json.RawMessage(deniedResult), Safety: recordedSafety(*spec), Approval: spec.Approval.Clone()}); err != nil {
 					return leave(err)
 				}
 				done[tu.ID] = true
@@ -586,7 +586,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 					// did not, and a claim for it is recorded as never started if nothing else is.
 					called.Store(reached)
 					// The safety and approval gate the call ran under, for a saga rollback and an audit.
-					r := Record{Kind: StepToolResult, ToolUseID: c.tu.ID, Safety: recordedSafety(*c.spec), Approval: c.spec.Approval.clone()}
+					r := Record{Kind: StepToolResult, ToolUseID: c.tu.ID, Safety: recordedSafety(*c.spec), Approval: c.spec.Approval.Clone()}
 					if callErr != nil && ctxDone(sctx) {
 						if !reached {
 							// Cancelled before the tool was called: nothing ran, so the claim is

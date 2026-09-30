@@ -410,9 +410,10 @@ Part types: `text`, `reasoning`, `tool_use` (`id`, `name`, `args`, `signature`),
 - `safety` is `agent.Safety{ReadOnly, Idempotent}`, plain data with exactly these two fields, as
   journaled on each tool result (`{"read_only": ..., "idempotent": ...}`).
 - `approval` is the tool's approval gate, `ToolSpec.Approval`: an `ApprovalPolicy{Need, Approvers}`,
-  kept apart from `safety`. `{"need": 1, "approvers": []}` is `SingleApproval`, the 1-of-1 gate
-  (the Go encoding omits the empty `approvers`; both spellings mean the same gate). Any other
-  policy MUST pass `ApprovalPolicy.Validate`. An absent `approval` is an ungated tool.
+  kept apart from `safety`. `{"need": 1, "approvers": []}` is the 1-of-1 gate on the wire, and
+  an SDK maps it to `agent.SingleApproval()`. The Go API never infers that gate from a policy's
+  shape: an `ApprovalPolicy` literal with no approvers is `ErrConfig`, and only
+  `SingleApproval()` asks for one decision. Any other policy MUST pass `ApprovalPolicy.Validate`. An absent `approval` is an ungated tool.
 - Naming follows redesign P12 (#117), which split the approval gate from `Safety` into
   `ToolSpec.Approval` and removed the per-tool idempotency-key function. The names here were
   updated to match; the wire semantics of this section are unchanged.

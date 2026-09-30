@@ -14,25 +14,26 @@ import (
 func TestR117_EmptyApproverListIsAnUnsignedSingleGate(t *testing.T) {
 	approvers := []string{} // e.g. strings.Fields(os.Getenv("APPROVERS")) with the variable unset
 	var calls atomic.Int32
-	wire := Func("wire", "", Safety{}, func(context.Context, struct{}) (string, error) {
-		calls.Add(1)
-		return "sent", nil
-	}, WithApproval(&ApprovalPolicy{Need: 1, Approvers: approvers}))
-	ctx := context.Background()
-	store := NewMemStore()
-	m := NewScriptedModel(ToolTurn("c1", "wire", `{}`), TextTurn("done"))
-	_, err := New(m, store, wire).Run(ctx, "r1", "pay")
-	var pa *ApprovalPending
-	if !errors.As(err, &pa) {
-		t.Fatalf("Run: %v, want *ApprovalPending", err)
+	err := panicsWith(func() {
+		Func("wire", "", Safety{}, func(context.Context, struct{}) (string, error) {
+			calls.Add(1)
+			return "sent", nil
+		}, WithApproval(&ApprovalPolicy{Need: 1, Approvers: approvers}))
+	})
+	if !errors.Is(err, ErrConfig) {
+		t.Fatalf("WithApproval(Need 1 of an empty set) = %v; want ErrConfig at construction, never the one-decision gate", err)
 	}
-	if err := Approve(ctx, store, "r1", "c1", true); err != nil { // no identity, no signature
-		t.Fatal(err)
+	// Only SingleApproval asks for the one-decision gate.
+	if err := panicsWith(func() {
+		Func("wire", "", Safety{}, func(context.Context, struct{}) (string, error) { return "", nil }, WithApproval(SingleApproval()))
+	}); err != nil {
+		t.Fatalf("WithApproval(SingleApproval()): %v", err)
 	}
-	if _, err := New(m, store, wire).Run(ctx, "r1", "pay"); err != nil {
-		t.Fatalf("resume: %v", err)
-	}
-	if calls.Load() == 1 {
-		t.Fatal("a Need-1-of-a-named-set policy with an empty set ran after one unsigned Approve; want ErrConfig at construction")
+	// A SingleApproval whose fields were changed is not the one-decision gate either.
+	p := SingleApproval()
+	p.Approvers = []string{"ops"}
+	p.Need = 2
+	if err := checkApproval(p); !errors.Is(err, ErrConfig) {
+		t.Fatalf("a changed SingleApproval: %v, want ErrConfig", err)
 	}
 }
