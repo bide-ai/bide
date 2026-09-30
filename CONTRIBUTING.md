@@ -32,7 +32,7 @@ Build and test with the versions pinned in each `go.mod` (rather than the worksp
 ```
 GOWORK=off go build ./...
 GOWORK=off go test ./...
-GOWORK=off go vet .
+GOWORK=off go vet ./...
 export PATH="$(go env GOROOT)/bin:$PATH"   # use the go1.27 toolchain gofmt
 gofmt -l .                                 # must print nothing
 ```
@@ -45,7 +45,7 @@ The example modules that import separate modules (`examples/approval`, `examples
 cd examples/observability && GOWORK=off go run .
 ```
 
-Some tests need external infrastructure and skip without it: `store/postgres` and `govern/postgreslog` look for `PG_DSN`; the external convergence oracle cross-check looks for `GSM_AST_CHECKER`. The default suite is green with none of them set.
+Some tests need external infrastructure and skip without it: `store/postgres` and `govern/postgreslog` look for `PG_DSN`; `govern/redislog` looks for `REDIS_ADDR`; the external convergence oracle cross-check looks for `GSM_AST_CHECKER`. The default suite is green with none of them set.
 
 ## Module layout
 
@@ -128,7 +128,7 @@ the module tests, and `--keep` keeps the scratch work tree for inspection.
 
 ## Before opening a change
 
-- `GOWORK=off go build ./...`, `GOWORK=off go test ./...`, and `gofmt -l .` are clean (run `gofmt` from the go1.27 toolchain via `export PATH="$(go env GOROOT)/bin:$PATH"`, or use `go fmt ./...`; the base gofmt predates Go 1.27 generic methods and reports false errors).
-- New exported symbols have doc comments.
+- `GOWORK=off go build ./...`, `GOWORK=off go test ./...`, `GOWORK=off go vet ./...`, and `gofmt -l .` are clean (run `gofmt` from the go1.27 toolchain via `export PATH="$(go env GOROOT)/bin:$PATH"`, or use `go fmt ./...`; the base gofmt predates Go 1.27 generic methods and reports false errors).
+- New exported symbols have doc comments that start with their name, and every package has a package comment; CI checks this with `go run ./internal/tools/doccheck -root . -allow .doccheck-allow` from the root, and a pull request may not add entries to `.doccheck-allow`.
 - `CHANGELOG.md` has an entry under Unreleased, or the change is not user-facing.
 - New docs are linked from the [docs index](docs/README.md) and honor the style above.

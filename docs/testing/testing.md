@@ -45,7 +45,9 @@ of 1 means the guarantee held; anything higher is a double-charge.
 - `chaos/` (`chaos.go`, `chaos_test.go`) is the exportable harness. `Verify(name, sys, seeds)`
   runs an **exhaustive** single-crash sweep at every durable write point (crash there, then
   resume to a terminal state), then `seeds` **randomized** multi-crash schedules (default 500
-  in the tests), and records `MaxFired` and `Violations`. `TestVerify_BidePasses` asserts
+  in the tests), and records `MaxFired`, `Violations` and `Missed` (runs that reached a terminal
+  state without the side effect firing: a completed run must fire exactly once, so a system that
+  never does the work cannot pass). `TestVerify_BidePasses` asserts
   the Bide reference adapter holds `maxFired=1`. `TestVerify_NaiveReferenceFails` asserts
   the naive at-least-once baseline double-fires (`maxFired>=2`); this is deliberate, and it
   proves the harness is **non-vacuous** (a correct loop passes, an incorrect one fails).
@@ -136,7 +138,9 @@ and verifies the bundle against the public key.
 
 Scale tiers:
 
-- Default: `5000`, `10000`, `20000` (`-short` collapses to a single `N=200`).
+- Default: `5000`, `10000`, `20000` (`-short` collapses to a single `N=200`; under `-race` it runs
+  `500` and `2500`, so the full scale runs in CI's macOS and Windows jobs, which run without the
+  race detector).
 - `E2E_HUGE=1` adds `100000`.
 - `E2E_HUGE=million` adds `100000` and `1000000`.
 - `E2E_HUGE=tenmillion` adds `10000000`.
@@ -211,11 +215,12 @@ is a deployment requirement documented in the [audit guide](../guides/audit.md).
 ## Pillar 5: architecture enforcement
 
 **A test enforces the stdlib-only / no-heavy-deps boundary so dependencies keep pointing inward.**
-`architecture_test.go` (`TestCoreHasNoAdapterImports`) runs `go list -deps` on the core module and
-fails if the core's runtime import graph contains any adapter package (`model/`, `store/`, `trace`,
+`agent/architecture_test.go` (`TestCoreHasNoAdapterImports`) runs `go list -deps` on the core
+`agent` package and fails if its runtime import graph contains any adapter package (`model/`, `store/`, `trace`,
 `middleware`, `govern`) or any heavy infrastructure (`opentelemetry`, `modernc.org/sqlite`,
 `jackc/pgx`, `temporal`, `weaviate`, `blackwell-systems/gsm`). It skips (does not fail) if
-`go list` is unavailable. `TestCoreModuleHasNoGSM` checks the module graph as well: read with no
+`go list` is unavailable. `plan/architecture_test.go` (`TestPlanNoAdapterImports`) holds `plan` to
+the same adapter list. `TestCoreModuleHasNoGSM` checks the module graph as well: read with no
 workspace, the core module's `go mod graph`, `go.mod` and `go.sum` never name gsm. In the govern
 module, `TestGovernImportsNoCoreInternal` checks that no govern package imports a package under
 the core's `internal/`, since govern is versioned apart from the core. This is the ports-and-adapters discipline verified mechanically: the
@@ -251,8 +256,9 @@ Beyond the pillars above, each package carries conventional unit tests:
 - `govern/` covers the in-memory and persistent governors, attestation, and the
   `redislog` / `sqlitelog` event-log backends.
 - `middleware/` covers cost tracking, reliability, retry, and tool retry/wrapping.
-- Model adapters: `model/anthropic/` and `model/openai/` cover request/response translation,
-  prompt caching, rate limiting, sampling, and (OpenAI) response formats.
+- Model adapters: `model/anthropic/`, `model/openai/` and `model/gemini/` cover request/response
+  translation, prompt caching, rate limiting, sampling, and (OpenAI) response formats; `model/provider/`
+  covers the HTTP kit they share.
 - Stores: `store/sqlite/` and `store/postgres/`. Also `schema/`, `trace/`, and `mcp/`.
 
 ## Evaluation: statistical, and distinct from the provable layer

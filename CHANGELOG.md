@@ -127,6 +127,7 @@ minor version (0.x.0) may include breaking API or journal-format changes; each o
 - `eval.AgentRunner` reports a failed journal read, and trajectory metrics fail such a run ([#74]).
 - `chaos.Verify` also requires a completed run to fire exactly once (`Report.Missed`), and `Bide().Writes()` counts the completion marker ([#53]).
 - `cmd/bench` rejects non-positive `-runs` and `-concurrency` ([#53]).
+- The example store in the extension-points reference records through `agent.JournalEntry`, so it salts every record and passes `agent/durabletest` ([#87]).
 
 ### Security
 
@@ -421,6 +422,7 @@ First public release.
 [#79]: https://github.com/bide-ai/bide/pull/79
 [#85]: https://github.com/bide-ai/bide/pull/85
 [#86]: https://github.com/bide-ai/bide/pull/86
+[#87]: https://github.com/bide-ai/bide/pull/87
 [78f8db6]: https://github.com/bide-ai/bide/commit/78f8db6
 [994721b]: https://github.com/bide-ai/bide/commit/994721b
 [3262cd1]: https://github.com/bide-ai/bide/commit/3262cd1

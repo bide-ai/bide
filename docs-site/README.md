@@ -3,8 +3,9 @@
 The [VitePress](https://vitepress.dev) site published at [bide-ai.com](https://bide-ai.com).
 
 Guides live in one place: edit the markdown under `docs/`, not here. At build
-time `sync-docs.mjs` copies `docs/` into this directory (gitignored) so VitePress
-resolves modules locally. This directory holds only the site shell (config,
+time `sync-docs.mjs` copies the site's pages from `docs/`, and the root
+`CHANGELOG.md`, into this directory (gitignored) so VitePress resolves modules
+locally. This directory holds only the site shell (config,
 theme, homepage, assets) plus the synced copy.
 
 ## Develop
@@ -19,8 +20,9 @@ npm run docs:preview  # serve the built site
 
 ## Deploy
 
-Pushing to `main` builds and deploys to GitHub Pages via
-`.github/workflows/docs.yml`. One-time setup:
+A push to `main` that changes `docs/`, `docs-site/`, `CHANGELOG.md` or the
+workflow itself builds and deploys to GitHub Pages via
+`.github/workflows/docs.yml` (it can also be run by hand). One-time setup:
 
 1. Repo **Settings -> Pages -> Build and deployment -> Source: GitHub Actions**.
 2. Set the custom domain to `bide-ai.com` (a `CNAME` file is already emitted from

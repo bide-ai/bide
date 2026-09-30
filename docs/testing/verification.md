@@ -52,7 +52,9 @@ every run.
 
 **Overlapping drivers.** Two drivers of one run, in one process or two, race for the same step.
 The exclusive attempt claim must let exactly one of them run a side effect, whatever their leases
-say.
+say. A multi-process harness on Postgres (`store/postgres/ha_multiproc_test.go`) runs worker
+processes through `agent.RecoverLoop` against one database while the test kills, stalls and
+restarts them, and the database counts how often each side effect fired.
 
 **Cross-process end to end.** `examples/approval` and `examples/plan` build real binaries, kill
 and resume them across processes, and verify the resulting evidence with the `bide-audit` CLI,
@@ -64,24 +66,27 @@ implementation, bide's or yours, can run:
 - `agent/durabletest` checks a durable store (`agent.Durable`): the record `Do` returns on the live
   path is exactly the record a replay reads back, memoized or from `History`, in the journal's
   canonical form, for content whose encoding is easy to get wrong (HTML-significant characters,
-  U+2028, NUL, invalid UTF-8, unusual number forms, key order), and a caller that modifies a
-  returned record cannot change the journal. `MemStore`, `store/sqlite`, and `store/postgres` run
-  it; see [extension points](../reference/extension-points.md#implement-your-own-store).
+  U+2028, NUL, invalid UTF-8, unusual number forms, key order); a caller that modifies a returned
+  record cannot change the journal; every record carries a fresh salt; and a record is journaled
+  even when the caller's context was cancelled while the step ran. `MemStore`, `store/sqlite`, and
+  `store/postgres` run it; see [extension points](../reference/extension-points.md#implement-your-own-store).
 - `govern/eventlogtest` checks a governed event log: dense, unique positions under concurrent
   appends from separate handles, and appends idempotent by id, so a repeated append (a retry, even
   concurrent with the original) is recorded once.
 - `model/modeltest` checks a model adapter: an abandoned stream releases its response, and a
   response that ends before the turn finishes is an error, not an answer. Its `ReadSSE` and
   `CheckSSEPrefix` hold an adapter's SSE reader to one `Finish`, sent last, and to never turning a
-  response cut short into a different complete answer.
+  response cut short into a different complete answer. `CheckFinish` checks the `Finish` carries a
+  neutral finish reason, and `ToolNames` checks the adapter's tool-name rule.
 - RFC 6962 reference vectors check the Merkle tree and proofs
   ([Pillar 4](testing.md#pillar-4-rfc-6962-conformance)).
 
 **Fuzzing.** The parsers and verifiers that read untrusted bytes have Go fuzz targets, each checking
 a property, not only the absence of panics:
 
-- `agent`: `FuzzRecordRoundTrip` and `FuzzDecodeRecord` (a journal record decodes back to what was
-  encoded, and re-encoding is a fixed point), `FuzzSSEScanner` (the shared SSE framing).
+- `agent`: `FuzzRecordRoundTrip`, `FuzzDecodeRecord` and `FuzzEncodeRecord_FixedPoint` (a journal
+  record decodes back to what was encoded, and re-encoding is a fixed point).
+- `model/provider`: `FuzzSSEScanner` (the shared SSE framing).
 - `model/anthropic`, `model/openai`, `model/gemini`: `FuzzStreamSSE` (one `Finish`, last; every
   failure an `ErrModel`; a response cut at any byte never succeeds with a different message).
 - `audit`: `FuzzUnmarshalStrict` (an accepted proof file reads exactly as it decodes, and agrees
@@ -99,7 +104,8 @@ runs the seeds only, keeps them fixed in CI. To fuzz one target:
 go test -run '^$' -fuzz=FuzzStreamSSE -fuzztime=5m ./model/openai
 ```
 
-**Race detection and stress.** Every CI test run on Linux and macOS uses `-race`. The
+**Race detection and stress.** The CI test run on Linux uses `-race`; macOS and Windows run the
+plain suite, which also runs the scale tests at full size (they run smaller under `-race`). The
 concurrency-heavy packages are also run repeatedly under `-race -count=N -cpu=1,2,8`, so
 scheduling differences get many chances to surface.
 
@@ -107,15 +113,22 @@ scheduling differences get many chances to surface.
 
 Every pull request must pass, before it can merge:
 
-- **Lint:** `gofmt` and `go vet` across every module, including the example modules.
-- **Tests on Linux, macOS, and Windows,** with `-race` where the platform supports it.
+- **Lint:** `gofmt`, `go vet` and `govulncheck` across every module, including the example
+  modules; `doccheck` (`internal/tools/doccheck`), which requires a doc comment on every exported
+  identifier and a package comment on every package; and checks that every module is built, tested and in `go.work`, and is classified
+  as published or repo-only for releases.
+- **Tests on Linux, macOS, and Windows,** with `-race` on Linux. On Linux the core, `govern` and
+  `integration` modules are also tested with `GOEXPERIMENT=nojsonv2`, so the journal encoding does
+  not depend on `encoding/json/v2`.
 - **Integration** against real Postgres 16 and Redis 7. Each suite runs twice against the same
   services, so a test that passes only on a fresh database fails, and a skipped test fails the job,
   since a skip would mean nothing was tested.
 - **DCO** sign-off on every commit.
 
-The branch must also be up to date with `main`, so every merge is tested against the code it
-lands on.
+Pull requests merge through a merge queue, which runs the required checks again on the change
+combined with `main` and any changes queued ahead of it, so every merge is tested against the code
+it lands on. A pull request that changes only documentation skips the Go lint, build and tests;
+the required checks still report, so it can merge.
 
 ## What this does not prove
 

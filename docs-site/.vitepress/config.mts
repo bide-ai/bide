@@ -41,6 +41,7 @@ export default defineConfig({
           { text: 'Concepts', link: '/CONCEPTS' },
           { text: 'The guarantee', link: '/GUARANTEE' },
           { text: 'Known limitations', link: '/KNOWN-LIMITATIONS' },
+          { text: 'Changelog', link: '/CHANGELOG' },
         ],
       },
       {
@@ -76,6 +77,7 @@ export default defineConfig({
         items: [
           { text: 'Extension points', link: '/reference/extension-points' },
           { text: 'Module structure', link: '/reference/module-structure' },
+          { text: 'How bide is verified', link: '/testing/verification' },
           { text: 'Testing', link: '/testing/testing' },
         ],
       },
@@ -83,7 +85,14 @@ export default defineConfig({
     socialLinks: [{ icon: 'github', link: 'https://github.com/bide-ai/bide' }],
     search: { provider: 'local' },
     editLink: {
-      pattern: 'https://github.com/bide-ai/bide/edit/main/docs/:path',
+      // Pages are synced from docs/, except the changelog (the repo root) and the homepage (this
+      // directory).
+      pattern: ({ filePath }) =>
+        filePath === 'CHANGELOG.md'
+          ? 'https://github.com/bide-ai/bide/edit/main/CHANGELOG.md'
+          : filePath === 'index.md'
+            ? 'https://github.com/bide-ai/bide/edit/main/docs-site/index.md'
+            : `https://github.com/bide-ai/bide/edit/main/docs/${filePath}`,
       text: 'Edit this page on GitHub',
     },
     footer: {
