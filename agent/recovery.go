@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"os"
+	"slices"
 	"sync"
 	"time"
 )
@@ -206,10 +207,42 @@ func Recover(ctx context.Context, store Durable, resume func(ctx context.Context
 	return recovered, errors.Join(errs...)
 }
 
-// recoverFilter is the runs a recovery pass enumerates: those holding no terminal marker. A run
-// that completed, a saga that aborted and finished its rollback, and a cancelled run are over. A
-// SQL store evaluates the filter in its query, so a pass reads none of the finished runs.
-var recoverFilter = RunFilter{ExcludeHolding: []string{runCompleteStep, runAbortedStep, runCancelledStep}}
+// endOfRunMarkers are the journal names of the terminal markers: a run that completed, a saga
+// that aborted and finished its rollback, and a cancelled run are over.
+var endOfRunMarkers = []string{runCompleteStep, runAbortedStep, runCancelledStep}
+
+// recoverFilter is the runs a recovery pass enumerates: those holding no terminal marker. A SQL
+// store evaluates the filter in its query, so a pass reads none of the finished runs.
+var recoverFilter = RunFilter{ExcludeHolding: endOfRunMarkers}
+
+// runEnded reports whether runID holds an entry named by a terminal marker (see endOfRunMarkers):
+// recoverFilter's test, applied to one run. Like the filter, it asks only whether the entry exists,
+// so it reads no header and decodes nothing: a run in a format this version cannot read that is
+// not over still reaches resume, which refuses it. Over a Journal it costs one point read (Store.Get)
+// per marker, stopping at the first it finds; over another Durable, one History.
+func runEnded(ctx context.Context, store Durable, runID string) (bool, error) {
+	if j := journalOf(store); j != nil {
+		for _, name := range endOfRunMarkers {
+			if _, ok, err := j.store.Get(ctx, runID, name); err != nil || ok {
+				if err != nil {
+					return false, storageErr(fmt.Sprintf("read step %q of run %s", name, runID), err)
+				}
+				return true, nil
+			}
+		}
+		return false, nil
+	}
+	recs, err := store.History(ctx, runID)
+	if err != nil {
+		return false, fmt.Errorf("load history %s: %w (%w)", runID, err, ErrStorage)
+	}
+	for _, r := range recs {
+		if slices.Contains(endOfRunMarkers, r.Name) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
 
 // recoverable reports whether a run the recovery filter admits is one a recovery pass drives: not a
 // sub-agent's run (its root's re-run resumes it) or a session's (the session resumes it).
@@ -219,9 +252,25 @@ func recoverable(runID string) bool { return !IsSubRun(runID) && !IsSessionRun(r
 // drove it and the genuine failure, if any. A run another holder currently leases is skipped;
 // competing recoverers and live primary drivers coordinate through Lease. A pause and a lost lease
 // are not failures.
+//
+// The pass listed runID before it held the lease, and another driver may have finished the run
+// since (while the pass waited for a slot, or drove the runs listed before it). So under the lease,
+// before resume, recoverRun checks the terminal markers again and leaves a run that is over
+// undriven. The check cannot miss a finish: a driver records its marker before it releases its
+// lease, and this drive holds the lease from before the check until after resume returns.
 func recoverRun(ctx context.Context, store Durable, runID string, resume func(ctx context.Context, runID string) error, cfg recoverConfig) (bool, error) {
-	driven, err := Lease(ctx, store, runID, func(ctx context.Context) error { return resume(ctx, runID) },
-		WithLeaseHolder(cfg.holder), WithLeaseTTL(cfg.ttl))
+	var ended bool
+	driven, err := Lease(ctx, store, runID, func(ctx context.Context) error {
+		over, err := runEnded(ctx, store, runID)
+		if err != nil || over {
+			ended = over
+			return err
+		}
+		return resume(ctx, runID)
+	}, WithLeaseHolder(cfg.holder), WithLeaseTTL(cfg.ttl))
+	if ended {
+		return false, nil
+	}
 	if err != nil && (!driven || !IsPause(err) && !errors.Is(err, ErrLeaseLost)) {
 		return driven, fmt.Errorf("recover run %s: %w", runID, err)
 	}

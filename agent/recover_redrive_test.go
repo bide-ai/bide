@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"testing/synctest"
@@ -118,29 +119,35 @@ func TestRecover_DoesNotResumeARunCompletedWhileItWaited(t *testing.T) {
 	})
 }
 
-// Every marker that ends a run, not only run:complete, is checked under the lease.
+// Every marker that ends a run, not only run:complete, is checked under the lease: over a Journal
+// (point reads) and over a Durable that is not one (History).
 func TestRecover_DoesNotResumeARunEndedWhileItWaited(t *testing.T) {
 	for _, name := range []string{runCompleteStep, runAbortedStep, runCancelledStep} {
-		t.Run(name, func(t *testing.T) {
-			s := NewMemStore()
-			for _, id := range []string{"a", "b"} {
-				seedRun(t, s, id)
-			}
-			var resumed []string
-			n, err := Recover(context.Background(), s, func(ctx context.Context, id string) error {
-				resumed = append(resumed, id)
-				if id == "a" {
-					endUnderLease(t, s, "b", name) // b ends while this pass drives a
+		for path, wrap := range map[string]func(*MemStore) Durable{
+			"journal": func(s *MemStore) Durable { return s },
+			"durable": func(s *MemStore) Durable { return durableWrapper{s} },
+		} {
+			t.Run(name+"/"+path, func(t *testing.T) {
+				s := NewMemStore()
+				for _, id := range []string{"a", "b"} {
+					seedRun(t, s, id)
 				}
-				return nil
-			}, WithLeaseHolder("w"))
-			if err != nil {
-				t.Fatal(err)
-			}
-			if len(resumed) != 1 || resumed[0] != "a" || n != 1 {
-				t.Errorf("Recover resumed %v (reported %d), want only a: b held %s before the pass leased it", resumed, n, name)
-			}
-		})
+				var resumed []string
+				n, err := Recover(context.Background(), wrap(s), func(ctx context.Context, id string) error {
+					resumed = append(resumed, id)
+					if id == "a" {
+						endUnderLease(t, s, "b", name) // b ends while this pass drives a
+					}
+					return nil
+				}, WithLeaseHolder("w"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(resumed) != 1 || resumed[0] != "a" || n != 1 {
+					t.Errorf("Recover resumed %v (reported %d), want only a: b held %s before the pass leased it", resumed, n, name)
+				}
+			})
+		}
 	}
 }
 
@@ -155,5 +162,38 @@ func TestRecoverFilter_HoldsEveryEndOfRunMarker(t *testing.T) {
 		if recoverFilter.ExcludeHolding[i] != n {
 			t.Fatalf("recoverFilter.ExcludeHolding = %v, want %v", recoverFilter.ExcludeHolding, want)
 		}
+	}
+}
+
+// failGet fails every Get of the entry named name.
+type failGet struct {
+	unwrapStore
+	name string
+}
+
+func (f failGet) Get(ctx context.Context, runID, name string) (Entry, bool, error) {
+	if name == f.name {
+		return Entry{}, false, errors.New("read failed")
+	}
+	return f.unwrapStore.Get(ctx, runID, name)
+}
+
+// A run whose markers the check cannot read is not driven: the failure is a storage error, and the
+// next pass retries the run.
+func TestRecover_DoesNotResumeARunItCannotCheck(t *testing.T) {
+	for _, name := range []string{runCompleteStep, runAbortedStep, runCancelledStep} {
+		t.Run(name, func(t *testing.T) {
+			s := NewMemStore()
+			seedRun(t, s, "a")
+			j, err := NewJournal(failGet{unwrapStore{s}, name})
+			if err != nil {
+				t.Fatal(err)
+			}
+			resumed := 0
+			n, err := Recover(context.Background(), j, func(context.Context, string) error { resumed++; return nil }, WithLeaseHolder("w"))
+			if !errors.Is(err, ErrStorage) || resumed != 0 {
+				t.Errorf("Recover = %d, %v, resumed %d times; want an ErrStorage error and no resume", n, err, resumed)
+			}
+		})
 	}
 }
