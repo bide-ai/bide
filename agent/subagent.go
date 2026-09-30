@@ -20,9 +20,11 @@ import (
 //
 // opts set the rest of the tool's spec: WithApproval, so the parent waits for a human before it
 // delegates, WithTitle and WithOutputSchema. SubAgent refuses WithSafety, since a sub-agent call
-// re-enters its sub-run, whose own calls carry their safety, and WithTimeout, since a deadline
-// would cut the sub-run off mid-call and record the delegation as failed while the sub-run's own
-// outcome is unknown: bound the sub-agent's tools instead. It panics, with an error wrapping
+// re-enters its sub-run, whose own calls carry their safety, and WithTimeout: a deadline would cut
+// the sub-run off mid-call and record the delegation as failed while the outcome of the sub-run's
+// own call is unknown, so the model, told the delegation failed, could delegate again and repeat a
+// side effect that may already have happened. Bound the sub-agent's tools instead; each of them
+// then follows the timeout rule (see WithTimeout) inside the sub-run's own journal. It panics, with an error wrapping
 // ErrConfig, on a refused or invalid option, as Func does.
 //
 // This is what the incumbents can't do: ADK/agenticenv can't recover sub-agents across a

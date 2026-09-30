@@ -407,10 +407,15 @@ Part types: `text`, `reasoning`, `tool_use` (`id`, `name`, `args`, `signature`),
  "approval": {"need": 2, "approvers": ["finance", "legal"]}}
 ```
 
-- `safety` is the redesign's plain-data `Safety{ReadOnly, Idempotent}` [redesign]. The protocol
-  never carries `IdempotencyKey` or `RequiresApproval`.
-- `approval` is `ApprovalPolicy{Need, Approvers}`; `{"need": 1, "approvers": []}` is the 1-of-1
-  gate. Any other policy MUST pass `ApprovalPolicy.Validate`.
+- `safety` is `agent.Safety{ReadOnly, Idempotent}`, plain data with exactly these two fields, as
+  journaled on each tool result (`{"read_only": ..., "idempotent": ...}`).
+- `approval` is the tool's approval gate, `ToolSpec.Approval`: an `ApprovalPolicy{Need, Approvers}`,
+  kept apart from `safety`. `{"need": 1, "approvers": []}` is `SingleApproval`, the 1-of-1 gate
+  (the Go encoding omits the empty `approvers`; both spellings mean the same gate). Any other
+  policy MUST pass `ApprovalPolicy.Validate`. An absent `approval` is an ungated tool.
+- Naming follows redesign P12 (#117), which split the approval gate from `Safety` into
+  `ToolSpec.Approval` and removed the per-tool idempotency-key function. The names here were
+  updated to match; the wire semantics of this section are unchanged.
 - **Effective safety** is computed by the engine per call: `read_only`, `idempotent` or
   `side_effect`. A call with a marker is `side_effect` whatever its tool says now.
 - **Fail closed:** an SDK MUST treat any `effective_safety` value other than exactly `read_only` or
