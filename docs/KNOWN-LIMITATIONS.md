@@ -139,7 +139,7 @@ than that is billed by the provider but is not in `Result.Spend`, the journal, o
 model record's write reports an error and the read that should settle it fails too, the process
 keeps the spend (and the turn's `OnAnswer` functions) and the run's next drive in the same process
 journals it, deciding from the journal so nothing is counted twice, through any Journal over the
-same store. If the process ends first, that spend is not journaled. The process keeps at most 4096
+same store and any wrapper over one (such as `audit.AuditedStore`). If the process ends first, that spend is not journaled. The process keeps at most 4096
 such entries; past that it drops the oldest runs' entries, so a run the process drives again after
 its entry was dropped does not journal that spend.
 

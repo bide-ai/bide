@@ -15,6 +15,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 )
 
@@ -112,9 +113,54 @@ func recordNotStarted(ctx context.Context, d Durable, runID, key string, marker 
 		return Record{Kind: StepNotStarted, ToolUseID: marker.ToolUseID, claim: marker.claim}, nil
 	})
 	if err != nil {
+		// Remembered as the Journal remembers it (see Journal.notStarted), so the next claim of the
+		// key in this process, or a resume that meets the attempt, writes it again.
+		if id, keyed := durableIdentity(d); keyed {
+			pendingClaims.remember(flightKey{id, runID, key}, marker.claim)
+		}
 		return fmt.Errorf("record that %s did not start: %w", key, err)
 	}
 	return nil
+}
+
+// retryNotStarted writes again the not-started record of the attempt with marker key key, whose
+// marker is marker, when this process remembers that marker's own claim id, and reports whether
+// the attempt is now recorded as not started (see Journal.retryNotStarted). Through a Durable the
+// engine drives through its Do, it writes through d.
+func retryNotStarted(ctx context.Context, d Durable, runID, key string, marker Record) bool {
+	if j := journalOf(d); j != nil {
+		return j.retryNotStarted(ctx, runID, key, marker)
+	}
+	id, keyed := durableIdentity(d)
+	if !keyed || marker.claim == "" || !pendingClaims.takeID(flightKey{id, runID, key}, marker.claim) {
+		return false
+	}
+	return recordNotStarted(ctx, d, runID, key, marker) == nil
+}
+
+// durableIdentity is the identity under which this process keys what it keeps for d's runs
+// (remembered claims, kept spend): the identity of the store beneath the Journal d writes through
+// (storeIdentity, which in-flight steps share too), following the Unwrap() Durable of a wrapper
+// such as audit.AuditedStore down to it, or else the innermost Durable itself when it is a
+// pointer. ok is false when there is neither, and nothing is kept.
+func durableIdentity(d Durable) (any, bool) {
+	for range maxUnwrap {
+		if d == nil || isNil(d) {
+			return nil, false
+		}
+		if j := journalOf(d); j != nil {
+			return j.id, true
+		}
+		u, ok := d.(interface{ Unwrap() Durable })
+		if !ok {
+			break
+		}
+		d = u.Unwrap()
+	}
+	if d != nil && !isNil(d) && reflect.ValueOf(d).Kind() == reflect.Pointer {
+		return d, true
+	}
+	return nil, false
 }
 
 // liveAttempts returns, by the first attempt's marker key (toolAttemptStep or stepAttemptStep),

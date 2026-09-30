@@ -198,3 +198,26 @@ func TestRev104d_ClaimThroughJournalIsRemembered(t *testing.T) {
 		t.Fatalf("second drive = %q, %v, effect ran %d times; want paid, nil, once", got, err, runs)
 	}
 }
+
+// D2, claims on resume: a side-effect tool's claim behind a Durable wrapper whose marker and
+// not-started writes fail is remembered; the run's next drive, through another wrapper over the
+// same Journal, records that the attempt did not start and runs the tool, rather than halting.
+func TestRev104d_ToolClaimBehindWrapperResumes(t *testing.T) {
+	ctx := context.Background()
+	st := newFaultStore()
+	j, _ := NewJournal(st)
+	var fail atomic.Bool
+	st.commitThenErrPrefix = "attempt:tool:"
+	st.failNoCommitPrefix = "attempt:not-started:"
+	var charged int
+	charge := &countingTool{name: "charge", safety: Safety{}, calls: &charged}
+	m := &scriptModel{turns: [][]Emit{toolTurn("c1", "charge", `{}`)}}
+	if _, err := New(m, &wrapDurable{Durable: j, failHist: &fail}, charge).Run(ctx, "r", "go"); err == nil {
+		t.Fatal("want the claim's write failure")
+	}
+	m2 := &scriptModel{turns: [][]Emit{textTurn("done")}}
+	out, err := New(m2, &wrapDurable{Durable: j, failHist: &fail}, charge).Run(ctx, "r", "go")
+	if err != nil || out.Text() != "done" || charged != 1 {
+		t.Fatalf("second drive = %q, %v, tool ran %d times; want done, nil, once", out.Text(), err, charged)
+	}
+}

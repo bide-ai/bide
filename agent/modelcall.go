@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -400,22 +399,17 @@ var pendingSpends = struct {
 	sync.Mutex
 	m     map[pendingKey][]pendingSpend
 	n     int          // entries held, over every run
-	order []pendingKey // runs in the order first kept, oldest first; may hold runs already taken
+	order []pendingKey // the held runs, in the order first kept, oldest first
 }{m: map[pendingKey][]pendingSpend{}}
 
 var maxPendingSpends = 4096 // a variable so tests can lower it
 
-// spendKey is the key of runID's pending spend for a's store: the identity of its Journal's
-// store, or the store itself when it is a pointer. ok is false for a store with neither, whose
-// pending spend is not kept.
+// spendKey is the key of runID's pending spend for a's store: the identity of the store beneath it
+// (durableIdentity, as remembered claims are keyed), so any Journal over the store, and any
+// wrapper over one, sees it. ok is false for a store with no identity, whose spend is not kept.
 func (a *Agent) spendKey(runID string) (pendingKey, bool) {
-	if j := journalOf(a.store); j != nil {
-		return pendingKey{j.id, runID}, true
-	}
-	if a.store != nil && reflect.ValueOf(a.store).Kind() == reflect.Pointer {
-		return pendingKey{a.store, runID}, true
-	}
-	return pendingKey{}, false
+	id, ok := durableIdentity(a.store)
+	return pendingKey{id, runID}, ok
 }
 
 // keepSpend keeps p for runID's next drive in this process.
@@ -438,15 +432,6 @@ func (a *Agent) keepSpend(runID string, p pendingSpend) {
 		ps.n -= len(ps.m[old])
 		delete(ps.m, old)
 	}
-	if len(ps.order) > 2*maxPendingSpends { // drop runs already taken
-		live := ps.order[:0]
-		for _, o := range ps.order {
-			if _, ok := ps.m[o]; ok {
-				live = append(live, o)
-			}
-		}
-		ps.order = live
-	}
 }
 
 // takeSpend returns and forgets runID's pending spend.
@@ -457,9 +442,16 @@ func (a *Agent) takeSpend(runID string) []pendingSpend {
 	}
 	pendingSpends.Lock()
 	defer pendingSpends.Unlock()
-	got := pendingSpends.m[k]
+	got, held := pendingSpends.m[k]
+	if !held {
+		return nil
+	}
 	pendingSpends.n -= len(got)
 	delete(pendingSpends.m, k)
+	// order holds each held run once, and only held runs, so it never outgrows the entries.
+	if i := slices.Index(pendingSpends.order, k); i >= 0 {
+		pendingSpends.order = slices.Delete(pendingSpends.order, i, i+1)
+	}
 	return got
 }
 

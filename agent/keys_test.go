@@ -223,6 +223,7 @@ func TestEngineKeys_ConstructorsAreListed(t *testing.T) {
 func TestEngineKeys_WritesUseConstructors(t *testing.T) {
 	forwarders := map[string]bool{
 		"ClaimAttempt:name":     true, // its callers are checked here
+		"retryNotStarted:key":   true, // a live marker's own key, read from the journal, as Journal.retryNotStarted takes it
 		"step:name":             true, // its callers are checked here
 		"Step:name":             true, // a developer-chosen name, refused if reserved (checkStepName)
 		"resolveHalt:h.result":  true, // ToolResultStep, or a step name checkStepName allowed
