@@ -1,8 +1,10 @@
 package agent
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -193,12 +195,141 @@ func marshalPart(p Part) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	if b, ok := spliceType(inner, kind); ok {
+		return b, nil
+	}
+	return tagPart(inner, kind)
+}
+
+// tagPart returns inner, the journal encoding of a part's struct, with a "type" member naming
+// kind added: the members decoded into a map, and the map encoded, which writes them sorted by
+// name.
+func tagPart(inner []byte, kind string) ([]byte, error) {
 	fields := map[string]json.RawMessage{}
 	if err := json.Unmarshal(inner, &fields); err != nil {
 		return nil, err
 	}
 	fields["type"], _ = json.Marshal(kind)
 	return marshalJournal(fields)
+}
+
+// partMember is one member of an encoded JSON object: its name, and the member's bytes from the
+// name's opening quote to the end of its value.
+type partMember struct{ name, raw []byte }
+
+// spliceType returns the bytes tagPart returns for inner and kind, without decoding inner, and
+// reports whether it could. It can when inner is what marshalJournal writes for a part's struct: a
+// compact object whose member names are distinct, need no escaping, are plain ASCII and do not
+// include "type". Its members are then written back verbatim, with "type" added, sorted by name;
+// that is what tagPart's map encoding writes, since the encoder keeps a compact value from
+// marshalJournal byte for byte (see EncodeRecord) and sorts a map's names as bytes, which for
+// ASCII names is the order it uses. Anything else reports false, and marshalPart takes tagPart.
+//
+// The caller guarantees inner is marshalJournal's output for one of the part structs (Text,
+// Reasoning, ToolUse, ToolResult, Image): valid, compact JSON. spliceType does not validate or
+// compact arbitrary input. It declines what it cannot split, but a malformed value inside an
+// otherwise well-formed member would be copied as it is, where tagPart would reject it.
+func spliceType(inner []byte, kind string) ([]byte, bool) {
+	n := len(inner)
+	if n < 2 || inner[0] != '{' || inner[n-1] != '}' {
+		return nil, false
+	}
+	var buf [8]partMember
+	members := buf[:0]
+	for i := 1; i < n-1; {
+		if inner[i] != '"' {
+			return nil, false
+		}
+		j := i + 1
+		for ; j < n-1 && inner[j] != '"'; j++ {
+			if c := inner[j]; c == '\\' || c < 0x20 || c >= 0x80 {
+				return nil, false
+			}
+		}
+		name := inner[i+1 : j]
+		if j+1 >= n-1 || inner[j+1] != ':' || string(name) == "type" {
+			return nil, false
+		}
+		for _, m := range members {
+			if string(m.name) == string(name) {
+				return nil, false
+			}
+		}
+		end, ok := compactValueEnd(inner[:n-1], j+2)
+		if !ok {
+			return nil, false
+		}
+		members = append(members, partMember{name: name, raw: inner[i:end]})
+		if end == n-1 {
+			break
+		}
+		if inner[end] != ',' || end+1 == n-1 {
+			return nil, false
+		}
+		i = end + 1
+	}
+	typ := []byte(`"type":"` + kind + `"`)
+	members = append(members, partMember{name: typ[1:5], raw: typ})
+	slices.SortFunc(members, func(a, b partMember) int { return bytes.Compare(a.name, b.name) })
+	size := 1
+	for _, m := range members {
+		size += len(m.raw) + 1
+	}
+	out := make([]byte, 0, size)
+	out = append(out, '{')
+	for k, m := range members {
+		if k > 0 {
+			out = append(out, ',')
+		}
+		out = append(out, m.raw...)
+	}
+	return append(out, '}'), true
+}
+
+// compactValueEnd returns the index just past the JSON value that starts at b[i], where b is the
+// inside of a compact object that the value is a member of (the object without its closing
+// brace): past its closing quote or bracket, or at the ',' or the end of b that ends a number or
+// literal. It reports false if no value starts at i, or a bracket in it is unmatched.
+func compactValueEnd(b []byte, i int) (int, bool) {
+	var stack [16]byte
+	open := stack[:0] // the closing bracket each open array or object expects, innermost last
+	inString := false
+	for k := i; k < len(b); k++ {
+		c := b[k]
+		if inString {
+			switch c {
+			case '\\':
+				k++
+			case '"':
+				inString = false
+				if len(open) == 0 {
+					return k + 1, true
+				}
+			}
+			continue
+		}
+		switch c {
+		case '"':
+			inString = true
+		case '{':
+			open = append(open, '}')
+		case '[':
+			open = append(open, ']')
+		case '}', ']':
+			if len(open) == 0 || open[len(open)-1] != c {
+				return 0, false
+			}
+			open = open[:len(open)-1]
+			if len(open) == 0 {
+				return k + 1, true
+			}
+		case ',':
+			if len(open) == 0 {
+				return k, k > i
+			}
+		}
+	}
+	return len(b), len(open) == 0 && !inString && len(b) > i
 }
 
 func unmarshalPart(raw []byte) (Part, error) {

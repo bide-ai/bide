@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
+	"sync/atomic"
 	"time"
 )
 
@@ -101,13 +102,20 @@ const SaltSize = 32
 // record carries a salt; the audit package refuses to commit a record without one. It errors
 // only if the system's random source fails or rec cannot be encoded.
 func JournalEntry(name string, rec Record) ([]byte, error) {
+	var back Record
+	b, _, err := journalEntry(name, rec, &back)
+	return b, err
+}
+
+// journalEntry is JournalEntry that also sets *back and reports stable as encodeRecord does.
+func journalEntry(name string, rec Record, back *Record) (b []byte, stable bool, err error) {
 	salt := make([]byte, SaltSize)
 	if _, err := rand.Read(salt); err != nil {
-		return nil, fmt.Errorf("salt step %q: %w (%w)", name, err, ErrStorage)
+		return nil, false, fmt.Errorf("salt step %q: %w (%w)", name, err, ErrStorage)
 	}
 	rec.Name = name
 	rec.Salt = salt
-	return EncodeRecord(rec)
+	return encodeRecord(rec, back)
 }
 
 // EncodeRecord returns the journal encoding of r: the bytes a store persists for it and the
@@ -136,29 +144,52 @@ func JournalEntry(name string, rec Record) ([]byte, error) {
 // (message text, a reasoning signature), invalid UTF-8 becomes U+FFFD, as encoding/json writes
 // it; since the stores hand out only the decoded form, the live and replayed conversations agree.
 func EncodeRecord(r Record) ([]byte, error) {
-	b, err := marshalJournal(r)
+	var back Record
+	b, _, err := encodeRecord(r, &back)
+	return b, err
+}
+
+// encodeRecord is EncodeRecord that also sets *back to the record its first pass decoded and
+// reports whether that is DecodeRecord of the bytes returned (stable). It is when both passes
+// wrote the same bytes: DecodeRecord depends on nothing but its input, so decoding the returned
+// bytes again would build exactly *back, and a caller that needs that record (MemStore.Do) can
+// skip the decode. When the passes differ, *back must not stand in for the bytes' decoding.
+func encodeRecord(r Record, back *Record) (b []byte, stable bool, err error) {
+	first, err := marshalJournal(r)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	// One decode and re-encode reaches the fixed point. The first pass writes invalid UTF-8 in a
-	// Go string field as the JSON escape for U+FFFD, which decodes to a valid U+FFFD that a later pass
-	// writes verbatim; every other part of the encoding is already stable.
-	back, err := DecodeRecord(b)
+	// One decode and re-encode reaches the fixed point. The first pass may write invalid UTF-8 in
+	// a Go string field as the JSON escape for U+FFFD (a GOEXPERIMENT=nojsonv2 build does), which
+	// decodes to a valid U+FFFD that a later pass writes verbatim; every other part of the
+	// encoding is already stable.
+	*back, err = DecodeRecord(first)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	return marshalJournal(back)
+	b, err = marshalJournal(*back)
+	if err != nil {
+		return nil, false, err
+	}
+	return b, bytes.Equal(first, b), nil
 }
 
 // DecodeRecord decodes a record from its journal encoding (see EncodeRecord) into an independent
 // copy that shares no memory with b.
 func DecodeRecord(b []byte) (Record, error) {
+	if h := decodeHook.Load(); h != nil {
+		(*h)(b)
+	}
 	var r Record
 	if err := json.Unmarshal(b, &r); err != nil {
 		return Record{}, fmt.Errorf("decode stored record: %w (%w)", err, ErrStorage)
 	}
 	return r, nil
 }
+
+// decodeHook, when set (by tests only), is called with the bytes of every DecodeRecord, so a test
+// can count the decodes a code path makes.
+var decodeHook atomic.Pointer[func([]byte)]
 
 // DecodeStoredRecord decodes the record a store holds for the step name of run runID (see
 // DecodeRecord) and checks that the record carries that name. Every record is journaled with the
@@ -170,7 +201,9 @@ func DecodeRecord(b []byte) (Record, error) {
 // the store's contents are wrong, whatever wrote them. Fields this version does not know still
 // decode, so a journal a newer version wrote stays readable.
 //
-// Every Durable implementation must read a record back through it, in Do and in History.
+// Every Durable implementation must read a record back through it, in Do and in History, or hand
+// back a record known to be what it returns (MemStore.Do keeps the decoding it made while
+// encoding the record it writes, when that is the stored bytes' decoding, and checks the name).
 func DecodeStoredRecord(runID, name string, b []byte) (Record, error) {
 	r, err := DecodeRecord(b)
 	if err != nil {
@@ -198,8 +231,13 @@ func marshalJournal(v any) ([]byte, error) {
 		return nil, err
 	}
 	b := bytes.TrimSuffix(buf.Bytes(), []byte("\n"))
-	b = bytes.ReplaceAll(b, []byte(lineSep), []byte(jsonEscape+"2028"))
-	return bytes.ReplaceAll(b, []byte(paraSep), []byte(jsonEscape+"2029")), nil
+	// bytes.ReplaceAll copies b even when there is nothing to replace. Both separators start with
+	// the byte 0xE2, so an encoding that holds neither, as most do, skips both copies.
+	if bytes.IndexByte(b, lineSep[0]) >= 0 {
+		b = bytes.ReplaceAll(b, []byte(lineSep), []byte(jsonEscape+"2028"))
+		b = bytes.ReplaceAll(b, []byte(paraSep), []byte(jsonEscape+"2029"))
+	}
+	return b, nil
 }
 
 const (

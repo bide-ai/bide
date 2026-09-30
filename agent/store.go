@@ -173,7 +173,9 @@ func holdToStart(ctx context.Context, d Durable, runID string, want RunStart) er
 // It keeps each record as its journal encoding (EncodeRecord) and decodes on every read, the
 // same way the SQL stores do. So a record a caller gets back is always an independent copy
 // (modifying it cannot change the journal), and Do hands back the record a replay reads, on the
-// live path too, which keeps tests on MemStore faithful to SQLite and Postgres.
+// live path too, which keeps tests on MemStore faithful to SQLite and Postgres. (Do that writes a
+// record hands back the decoding EncodeRecord's round trip already made, when that is the stored
+// bytes' decoding, rather than decode the same bytes twice.)
 type MemStore struct {
 	mu     sync.Mutex
 	sf     singleflight.Group // collapses concurrent Do on the same (runID,name) — at-most-once fn
@@ -209,6 +211,8 @@ func (m *MemStore) Do(ctx context.Context, runID, name string, fn func(context.C
 	// share the result, so a side effect can't fire twice under concurrency (parallel tools,
 	// retries). In-process only; cross-process dedup is the store's job (PK/ON CONFLICT).
 	// What they share is the stored encoding; each caller decodes its own copy of it below.
+	var decoded Record // the stored encoding's decoding, when this caller wrote it and has it (own)
+	own := false
 	v, err, _ := m.sf.Do(stepKey(runID, name), func() (any, error) {
 		m.mu.Lock()
 		rl := m.runs[runID]
@@ -227,7 +231,7 @@ func (m *MemStore) Do(ctx context.Context, runID, name string, fn func(context.C
 		if e != nil {
 			return nil, e // not recorded — will re-run on the next attempt
 		}
-		b, e := JournalEntry(name, rec)
+		b, stable, e := journalEntry(name, rec, &decoded)
 		if e != nil {
 			return nil, fmt.Errorf("marshal step %q: %w (%w)", name, e, ErrStorage)
 		}
@@ -240,12 +244,22 @@ func (m *MemStore) Do(ctx context.Context, runID, name string, fn func(context.C
 		rl.byName[name] = len(rl.order)
 		rl.order = append(rl.order, b)
 		rl.names = append(rl.names, name)
+		own = stable
 		return b, nil
 	})
 	if err != nil {
 		return Record{}, err
 	}
-	// The stored record, decoded: what History returns for this step, never the caller's own.
+	// The stored record, decoded: what History returns for this step, never the caller's own. A
+	// caller whose fn wrote it may already hold that decoding (see encodeRecord). It is this
+	// caller's alone, and reading it here without a lock is safe, because singleflight's Do runs the
+	// closure above in the calling goroutine and returns only after it has finished; the callers
+	// that shared the write never run it, so they decode their own copy. This relies on that
+	// property of golang.org/x/sync/singleflight: a Do that ran the closure on another goroutine
+	// would race on decoded and own. The name check is DecodeStoredRecord's.
+	if own && decoded.Name == name {
+		return decoded, nil
+	}
 	return DecodeStoredRecord(runID, name, v.([]byte))
 }
 
