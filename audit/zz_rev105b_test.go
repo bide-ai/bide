@@ -341,3 +341,21 @@ func Test_R105b_EvidenceRunCertNestedHeadFormat(t *testing.T) {
 		t.Fatalf("a package carrying a run certificate with a bide.audit.sth.v4 head: err = %v, want ErrFormat", err)
 	}
 }
+
+// M1 follow-up, the event stream. EventLogFromJournal and PersistJournal project each record into
+// the events it produced, so a record whose stored bytes read two ways would give an event tree of
+// one reading. They refuse it as the other projections do.
+func Test_R105b_EventProjectionRefusesRecordBytesThatReadTwoWays(t *testing.T) {
+	ctx := context.Background()
+	s, _ := p11GovernedRun(t)
+	rec := `{"name":"call:twoways","kind":"tool_result","tool_use_id":"twoways","result":"x","Kind":"value","salt":"` + r105Salt(9) + `"}`
+	if _, _, err := s.Insert(ctx, "gov", "call:twoways", []byte(rec)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := audit.EventLogFromJournal(ctx, s, "gov"); !errors.Is(err, audit.ErrMalformed) {
+		t.Errorf("EventLogFromJournal: err %v, want ErrMalformed", err)
+	}
+	if err := audit.PersistJournal(ctx, audit.NewMemEventStore(), s, "gov"); !errors.Is(err, audit.ErrMalformed) {
+		t.Errorf("PersistJournal: err %v, want ErrMalformed", err)
+	}
+}
