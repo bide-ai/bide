@@ -69,14 +69,28 @@ go work sync
 cd trace && go test ./...     # or any module
 ```
 
-Each adapter module's `go.mod` also carries a `replace github.com/bide-ai/bide => <rel>`
-so it builds standalone in CI. CI builds and tests every module in its own directory (see
+On main, each nested module's `go.mod` requires the core (and `govern`, for the log backends) at
+the placeholder `v0.0.0` and carries a `replace github.com/bide-ai/bide => <rel>`, so it builds
+standalone against the code in the tree, with or without the workspace (`GOWORK=off`). CI builds and tests every module in its own directory (see
 `.github/workflows/ci.yml`, `MODULES`), except `benchmarks`, which CI does not run. The Lint job
 fails if a module in the tree is missing from `MODULES` or from `go.work`.
 
-## Interim state (pre-1.0)
+## Releases
 
-The core is published (tagged `v0.x`, available on the Go module proxy), but the adapter modules
-still resolve the core through their `replace` directives rather than a pinned version, so a
-cross-module build does not yet depend on a specific core tag. At the **v1.0** milestone the
-`replace` directives get swapped for version pins, one coordinated event.
+The core and the library modules are released together, with one version. `scripts/release.sh`
+tags the core `vX.Y.Z` on main, then makes a commit, reachable only from the release tags, that
+sets each library module's `require` on the core (and on `govern`, for the log backends) to
+`vX.Y.Z`, drops the `replace` directives, and records a `go.sum` resolved through the module proxy.
+It tags each library module `<dir>/vX.Y.Z` at that commit, so a consumer's `go get` resolves every
+module from the proxy. Main keeps its `replace` directives, so development is unchanged.
+
+Published (tagged at every release): `govern`, `store/sqlite`, `store/postgres`, `mcp`, `trace`,
+`codec/gcf`, `govern/sqlitelog`, `govern/redislog`, `govern/postgreslog`.
+
+Repo-only (never tagged; they keep their `replace` directives): `examples/approval`,
+`examples/plan`, `examples/mcp`, `examples/observability`, `examples/govern`, `integration`,
+`benchmarks`.
+
+The procedure is in [CONTRIBUTING.md](../../CONTRIBUTING.md#releasing). The Lint job fails if a
+module is in neither list, and a pushed nested tag fails its check if the tagged `go.mod` still
+requires `v0.0.0` or replaces a bide module.

@@ -69,6 +69,63 @@ to one line that names the public identifiers affected and links the PR. Mark br
 with a leading **Breaking:** under Changed or Removed. Describe a fix by the corrected behavior,
 plainly. Internal-only changes (CI, tests, refactors with no API or behavior change) need no entry.
 
+## Releasing
+
+The core module and the library modules are released together under one version. Published
+modules, tagged `<dir>/vX.Y.Z` at every release: `govern`, `store/sqlite`, `store/postgres`, `mcp`,
+`trace`, `codec/gcf`, `govern/sqlitelog`, `govern/redislog`, `govern/postgreslog`. Repo-only
+modules, never tagged: `examples/*`, `integration`, `benchmarks`. The lists live in
+`scripts/release.sh`, and the Lint job fails if a module is in neither.
+
+On main every nested module requires the core at the placeholder `v0.0.0` through a `replace`
+directive, which a consumer cannot resolve. `scripts/release.sh` therefore tags the core on main,
+then records, in commits reachable only from the release tags, the `go.mod` and `go.sum` each
+published module needs: the core (and `govern`, for the log backends) required at the release
+version, the `replace` directives dropped, and `go.sum` resolved through the module proxy. Main
+keeps its `replace` directives, so the workspace and `GOWORK=off` builds keep using the code in the
+tree between releases.
+
+1. Open a release pull request: move the `## [Unreleased]` entries of `CHANGELOG.md` under
+   `## [X.Y.Z] - <date>` and add `docs/releases/vX.Y.Z.md`. Merge it and wait for CI on main to
+   pass for that commit.
+2. From a clean checkout of main, dry-run the release. Nothing leaves the machine: the script
+   works in a scratch clone and pushes to a scratch repository that stands in for GitHub, and the
+   go command resolves the bide modules from it.
+
+   ```
+   git switch main && git pull
+   scripts/release.sh vX.Y.Z
+   ```
+
+   It checks that HEAD is `origin/main`, that CI passed for it, that the release notes and the
+   changelog section exist, and that no tag exists yet (a dry run reports these as warnings), then
+   runs every step below and ends with `dry run complete`.
+3. Release, on the maintainer's go only:
+
+   ```
+   scripts/release.sh vX.Y.Z --push
+   ```
+
+   The script
+   1. tags the core `vX.Y.Z` at HEAD, pushes the tag and waits until `proxy.golang.org` serves it;
+   2. for the modules that need only the core (`govern`, the stores, `mcp`, `trace`, `codec/gcf`),
+      sets their `require` on the core to `vX.Y.Z`, drops the `replace`, runs `go mod tidy`
+      against the proxy, builds, vets and tests each one with `GOWORK=off`, commits (signed off),
+      tags each `<dir>/vX.Y.Z` at that commit, pushes the tags and waits for the proxy;
+   3. does the same for the governed-event logs, which also require `govern` at `vX.Y.Z`;
+   4. checks each module with `go list -m <module>@vX.Y.Z` against the proxy, and builds a scratch
+      consumer module that `go get`s every published module at `vX.Y.Z` with an empty module cache.
+4. The core tag runs the Release workflow (the `bide-audit` binaries and the GitHub Release, with
+   `docs/releases/vX.Y.Z.md` as its notes); each nested tag runs the Release modules workflow,
+   which fails if the tagged `go.mod` still requires `v0.0.0` or replaces a bide module, or does
+   not build with `GOWORK=off`. Check both, the release assets and the Homebrew formula.
+
+If a `--push` run stops partway, re-run the same command: the core tag and any nested tags already
+on the remote are reused (each is only checked against the proxy) and the rest are made. Never move
+or delete a pushed tag (the proxy and the checksum database keep the first version they saw); fix
+forward with a patch release. `--ref <commit>` dry-runs a commit other than HEAD, `--no-test` skips
+the module tests, and `--keep` keeps the scratch work tree for inspection.
+
 ## Before opening a change
 
 - `GOWORK=off go build ./...`, `GOWORK=off go test ./...`, and `gofmt -l .` are clean (run `gofmt` from the go1.27 toolchain via `export PATH="$(go env GOROOT)/bin:$PATH"`, or use `go fmt ./...`; the base gofmt predates Go 1.27 generic methods and reports false errors).

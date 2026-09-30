@@ -69,6 +69,14 @@ jobs:
           # module.
           .github/scripts/check-modules.sh --self-test
           .github/scripts/check-modules.sh .
+      - name: Every module is published or repo-only
+        run: |
+          # scripts/release.sh tags the published modules at each release and never the repo-only
+          # ones; a module in neither list, or a published module requiring a repo-only one, fails.
+          # The self-test proves the release-time go.mod check refuses a v0.0.0 requirement and a
+          # replace directive. The same check runs on every pushed nested tag (release-modules.yml).
+          scripts/release.sh --self-test
+          scripts/release.sh --check-classification
       - name: gofmt
         run: |
           # gofmt is file-based, so one pass from the root covers every module.

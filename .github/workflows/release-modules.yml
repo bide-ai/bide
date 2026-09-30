@@ -1,0 +1,29 @@
+name: Release modules
+
+# A nested module is tagged <dir>/vX.Y.Z by scripts/release.sh at a commit whose go.mod requires
+# released bide versions. This check fails when a pushed nested tag names a module that is not
+# published, or whose go.mod still requires a bide module at the v0.0.0 placeholder or replaces
+# one (a consumer could not resolve it), or that does not build and vet with GOWORK=off against
+# the versions it requires. Root tags (v*) are built and released by release.yml.
+on:
+  push:
+    tags:
+      - '*/v*'
+      - '*/*/v*'
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Nested module tag
+    runs-on: ubuntu-latest
+    env:
+      GOWORK: 'off'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27'
+      - name: The tagged module requires released versions only
+        run: scripts/release.sh --check-tag "$GITHUB_REF_NAME"
