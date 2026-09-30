@@ -214,6 +214,20 @@ func TestLowering_NodeCancelledBeforeBodyIsReattempted(t *testing.T) {
 	}
 }
 
+// errNoComplete is what noComplete returns for a run's completion.
+var errNoComplete = errors.New("the completion was lost")
+
+// noComplete is a Durable that loses every run's completion: a flow driven through it runs to the
+// end and records everything but run:complete, as a process that died at the end would.
+type noComplete struct{ *agent.MemStore }
+
+func (s noComplete) Do(ctx context.Context, runID, name string, fn func(context.Context) (agent.Record, error)) (agent.Record, error) {
+	if name == "run:complete" {
+		return agent.Record{}, errNoComplete
+	}
+	return s.MemStore.Do(ctx, runID, name, fn)
+}
+
 // names lists the names of recs, for failure messages.
 func names(recs []agent.Record) []string {
 	out := make([]string, len(recs))
@@ -351,10 +365,10 @@ func TestLowering_NoHistoryReadsPerNode(t *testing.T) {
 			if c.Load != 0 {
 				t.Fatalf("a replay of %d nodes loaded the run %d times, want 0 (%v)", n, c.Load, c.Names)
 			}
-			// A replay reads each recorded node once, and writes nothing but the start's
-			// insert-if-absent (which finds the recorded one).
-			if c.Get != n+1 || c.Inserted != 0 {
-				t.Fatalf("a replay of %d nodes made %d point reads and stored %d entries, want %d and 0 (%v)", n, c.Get, c.Inserted, n+1, c.Names)
+			// A replay of a finished run reads its completion and nothing else, and writes nothing
+			// but the start's insert-if-absent (which finds the recorded one).
+			if c.Get != 1 || c.Insert != 1 || c.Inserted != 0 {
+				t.Fatalf("a replay of %d nodes made %d point reads and %d inserts storing %d entries, want 1, 1 and 0 (%v)", n, c.Get, c.Insert, c.Inserted, c.Names)
 			}
 		})
 	}

@@ -35,8 +35,8 @@
 //	               reserve commit, then os.Exit(1) at the start of finalize (leaves
 //	               finalize attempted-but-unfinished)
 //	-resolve       on resume: if Run halts at the side-effect-free finalize step, record
-//	               finalize's result with agent.ResolveHaltRef (the documented resolution
-//	               of a halt) and re-run to completion
+//	               finalize's result with flow.ResolveHalt (the documented resolution of a
+//	               node's halt) and re-run to completion
 //	-config        build the flow by plan.Load-ing the declarative config (declarativeConfig) instead
 //	               of the code builder. The config-loaded flow uses the SAME node names and
 //	               topology as the code-built flow, so it produces the SAME journal keys and
@@ -135,7 +135,7 @@ func main() {
 	// A resumed run may halt with an unknown outcome (an attempt recorded, its result
 	// lost to a crash). A node halts as the Step named by its node key ("node:<name>").
 	// Report it, and optionally resolve a halt at the side-effect-free finalize step with
-	// agent.ResolveHaltRef, exactly as the OutcomeUnknown doc prescribes.
+	// flow.ResolveHalt, which checks the value against the node's output type.
 	if halt, ok := errors.AsType[*agent.OutcomeUnknown](runErr); ok {
 		fmt.Printf("Run halted at step %q: %v\n", halt.Op.ID, halt)
 		if cfg.resolve && halt.Op.ID == "node:finalize" {
@@ -396,12 +396,12 @@ func buildFlowFromConfig(cfg config) (*plan.Flow[Order, Receipt], error) {
 
 // resolveFinalize handles a resumed run that halted at the side-effect-free finalize
 // step: finalize took no external action, so its output is safe to record out of band.
-// agent.ResolveHaltRef records it as the node's result (the resolution the OutcomeUnknown
-// doc prescribes), then Run replays the now-complete journal to a typed output. It never
-// re-runs the reserve side effect, which already committed.
+// flow.ResolveHalt checks it is a Receipt and records it as the node's result, then Run
+// replays the now-complete journal to a typed output. It never re-runs the reserve side
+// effect, which already committed.
 func resolveFinalize(ctx context.Context, flow *plan.Flow[Order, Receipt], store *sqlite.Store, ref agent.HaltRef, order Order) (Receipt, error) {
 	receipt := Receipt{OrderID: order.ID, Outcome: "reserved", Detail: "hold-" + order.ID, Reserved: true}
-	if err := agent.ResolveHaltRef(ctx, store, ref, agent.Outcome{Result: receipt}); err != nil {
+	if err := flow.ResolveHalt(ctx, store, ref, agent.Outcome{Result: receipt}); err != nil {
 		return Receipt{}, fmt.Errorf("resolve the finalize halt: %w", err)
 	}
 	fmt.Println("Resolved the finalize halt out of band; re-running to completion.")

@@ -276,7 +276,9 @@ func fSubjects() []fSubject {
 					return fLoopState{s.N + 1}, p.fire(fmt.Sprintf("node:iter:%d:inc", s.N), d)
 				})
 				check := b.Step("check", func(_ context.Context, s fLoopState) (fLoopState, error) { return s, nil }, plan.ReadOnly())
-				done := b.Step("done", func(_ context.Context, s fLoopState) (string, error) { return fmt.Sprintf("done%d", s.N), p.fire("node:done", d) })
+				done := b.Step("done", func(_ context.Context, s fLoopState) (string, error) {
+					return fmt.Sprintf("done%d", s.N), p.fire("node:done", d)
+				})
 				b.Edge(seed, inc)
 				b.Edge(inc, check)
 				b.Switch(check, plan.LoopBack(5, func(s fLoopState) bool { return s.N < 2 }, inc).Named("again"), plan.Else(done))
@@ -462,16 +464,34 @@ func fRun(sub fSubject, sameProc [2]bool, ex *fExplorer) (viol []fViolation, h *
 	return viol, h
 }
 
+// TestZZExploreFlowLowering explores every fault schedule within the budget above for each
+// subject flow and fails on any violation of the invariants: at most one fire per effect, every
+// fire under a claim its process won, no pruned node fired, a halt only where the node's effect may
+// have fired or its not-started record was not acknowledged, the flow's output from every
+// successful drive, a final drive that completes (or halts, and is resolved), and a completed run
+// that conforms. A halt of a node that never fired, with no acknowledged not-started record
+// (I4b), is the safe outcome of a process that died between its claim and its body, not a
+// violation; it is counted.
+//
+// By default it explores every subject with every drive in a new process, and the linear subject
+// also with every drive in the process of the one before (which exercises a process's remembered
+// claims), which keeps it under a minute with -race; BIDE_EXPLORE=1 explores all four process
+// plans for every subject, and BIDE_SUBJECT=<name> restricts it to one subject.
 func TestZZExploreFlowLowering(t *testing.T) {
-	if os.Getenv("BIDE_EXPLORE") == "" {
-		t.Skip("set BIDE_EXPLORE=1")
-	}
-	plans := [][2]bool{{false, false}, {true, false}, {false, true}, {true, true}}
+	full := os.Getenv("BIDE_EXPLORE") != ""
+	allPlans := [][2]bool{{false, false}, {true, false}, {false, true}, {true, true}}
 	only := os.Getenv("BIDE_SUBJECT")
 	total := 0
 	for _, sub := range fSubjects() {
 		if only != "" && sub.name != only {
 			continue
+		}
+		plans := allPlans
+		if !full {
+			plans = [][2]bool{{false, false}}
+			if sub.name == "linear" {
+				plans = append(plans, [2]bool{true, true})
+			}
 		}
 		for _, pl := range plans {
 			ex := &fExplorer{}
@@ -499,7 +519,11 @@ func TestZZExploreFlowLowering(t *testing.T) {
 			sort.Strings(keys)
 			t.Logf("%s plan(same-proc d2=%v d3=%v): %d schedules", sub.name, pl[0], pl[1], n)
 			for _, k := range keys {
-				t.Logf("   %s: %d   e.g. %s", k, counts[k], examples[k])
+				if k == "I4b-halt-no-durable-proof" {
+					t.Logf("   %s (safe halt): %d", k, counts[k])
+					continue
+				}
+				t.Errorf("   %s: %d   e.g. %s", k, counts[k], examples[k])
 			}
 		}
 	}

@@ -38,14 +38,17 @@ type Flow[In, Out any] struct {
 // that is not retry-safe claims an attempt marker before its body runs. On
 // resume, a node whose live marker has no result may have fired its effect, so
 // Run HALTS with *agent.OutcomeUnknown (Op: OpRef{Kind: OpStep, ID: its node
-// key}) rather than re-run the body. Clear it with agent.ResolveHaltRef once the
-// true outcome is known, recording the node's output; the next Run continues
+// key}) rather than re-run the body. Clear it with ResolveHalt once the true
+// outcome is known, recording the node's output; the next Run continues
 // past the node without running its body. An attempt the driver provably never
 // started (it was cancelled, or its store failed, after the claim and before the
 // body) is recorded as not started, and the next Run re-attempts the node under
 // a numbered marker instead of halting. A node marked ReadOnly or Idempotent
 // writes no marker and re-runs after a crash. A node that is not retry-safe must
-// not pause: a body that returns a pause is ErrConfig, as for agent.Step.
+// not pause: a body that returns a pause is ErrConfig, as for agent.Step. An
+// agent.Step (or agent.Parallel task) a node's body runs for runID is recorded
+// under the node's key ("node:<node>:step:<name>", per iteration in a loop body),
+// so each loop iteration runs its own.
 //
 // A Switch is lowered as its own record: Run reads the switched node's journaled
 // output, evaluates the arm predicates ONCE, and records the chosen arm target
@@ -53,12 +56,15 @@ type Flow[In, Out any] struct {
 // re-decided, so the predicates must be pure over the switched value (see When).
 // Only the taken arm's downstream path executes.
 //
-// Run holds the run to how it started. The first drive records run:start with
-// Kind agent.RunKindFlow, the flow's name, and the JSON of in (see
-// agent.RunStart); a later drive under another flow name, with an input whose
-// JSON differs, or of a run an Agent started, is ErrConfig. It then records the
-// flow's topology digest, and a resume under a flow whose digest differs is
-// ErrConfig too.
+// Run refuses (ErrConfig) a run ID agent.Run refuses, and holds the run to how
+// it started. The first drive records run:start with Kind agent.RunKindFlow, the
+// flow's name, and the JSON of in (see agent.RunStart); a later drive under
+// another flow name, with an input that differs as canonical JSON, or of a run an
+// Agent started, is ErrConfig. It then records the flow's topology digest, and a
+// resume under a flow whose digest differs is ErrConfig too. When the terminal
+// node finishes, Run records run:complete with the flow's name and its output: a
+// later drive with the run's input returns that output, whatever the flow's
+// topology is now, and recovery skips the run.
 //
 // Journal keys Run writes, all under prefixes agent reserves, so no Step a node
 // body runs can collide with them:
@@ -74,19 +80,28 @@ type Flow[In, Out any] struct {
 //   - "switch:"+over -- a switched node's journaled arm choice (StepValue whose
 //     Result is the JSON-encoded chosen target step name);
 //     "switch:iter:<i>:"+over for a loop Switch's iteration i.
+//   - "run:complete" -- the run's completion: the flow's name and its output.
 func (f *Flow[In, Out]) Run(ctx context.Context, store agent.Durable, runID string, in In) (Out, error) {
 	var out Out
 	c := f.core
+	if err := journalhook.CheckRunID(ctx, runID); err != nil {
+		return out, fmt.Errorf("plan: run %q: %w", c.flowName, err)
+	}
 
 	// The run's start comes first: a drive of a run some other flow, input or entry point started
-	// is refused before this one records anything in it.
+	// is refused before this one records anything in it. A finished run is final: a drive with its
+	// input returns the output its completion recorded, whatever the flow's topology is now.
 	input, encErr := json.Marshal(in)
 	if encErr != nil {
 		return out, fmt.Errorf("plan: run %q: encode flow input: %w (%w)", c.flowName, encErr, agent.ErrConfig)
 	}
 	start := agent.RunStart{Kind: agent.RunKindFlow, Flow: &agent.FlowRef{Name: c.flowName}, Input: string(input)}
-	if err := journalhook.HoldStart(ctx, store, runID, start); err != nil {
+	done, finished, err := journalhook.Begin(ctx, store, runID, start)
+	if err != nil {
 		return out, fmt.Errorf("plan: run %q: %w", c.flowName, err)
+	}
+	if finished {
+		return decodeCompletion[Out](c.flowName, runID, done)
 	}
 
 	// Next Run records the frozen flow's topology digest, under the reserved step name
@@ -274,6 +289,42 @@ func (f *Flow[In, Out]) Run(ctx context.Context, store agent.Durable, runID stri
 			return out, fmt.Errorf("plan: run %q: decode terminal output: %w", c.flowName, decErr)
 		}
 	}
+	// Record the run's completion with its output, so recovery passes skip it and a later drive
+	// returns the output without walking the flow. A driver that completed it first wins.
+	final, encErr := json.Marshal(completion{Flow: c.flowName, Output: terminalOut})
+	if encErr != nil {
+		return out, fmt.Errorf("plan: run %q: encode completion: %w", c.flowName, encErr)
+	}
+	recorded, err := journalhook.Complete(ctx, store, runID, final)
+	if err != nil {
+		return out, fmt.Errorf("plan: run %q: record the completion of run %s: %w", c.flowName, runID, err)
+	}
+	return decodeCompletion[Out](c.flowName, runID, recorded)
+}
+
+// completion is the Result of a flow run's completion marker (run:complete): the flow that
+// completed it and its output. An agent run's completion records neither.
+type completion struct {
+	Flow   string          `json:"flow"`
+	Output json.RawMessage `json:"output,omitempty"`
+}
+
+// decodeCompletion decodes the output of the run a flow named flowName completed from its
+// completion marker's Result. A run another flow, or an agent, completed is ErrConfig.
+func decodeCompletion[Out any](flowName, runID string, raw json.RawMessage) (Out, error) {
+	var out Out
+	var c completion
+	if err := json.Unmarshal(raw, &c); err != nil {
+		return out, fmt.Errorf("plan: run %q: run %s was completed, but not by a flow: %w", flowName, runID, agent.ErrConfig)
+	}
+	if c.Flow != flowName {
+		return out, fmt.Errorf("plan: run %q: run %s was completed by flow %q: %w", flowName, runID, c.Flow, agent.ErrConfig)
+	}
+	if len(c.Output) > 0 {
+		if err := json.Unmarshal(c.Output, &out); err != nil {
+			return out, fmt.Errorf("plan: run %q: decode the recorded output of run %s: %w", flowName, runID, err)
+		}
+	}
 	return out, nil
 }
 
@@ -396,6 +447,11 @@ func (f *Flow[In, Out]) nodeInput(c *builderCore, node *node, in In, results map
 	// is only via Join, which is handled above); Build enforces that.
 	for _, br := range branchOf {
 		for _, a := range br.arms {
+			// A loop's back-edge feeds its head only inside the loop, where runLoop passes the
+			// head its input; on the forward walk the head takes its forward predecessor's value.
+			if a.loopBack {
+				continue
+			}
 			if a.target == node.name && live[br.over] {
 				decoded, decErr := decodeInto(results[br.over], node.inType)
 				if decErr != nil {

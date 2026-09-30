@@ -3,6 +3,7 @@ package plan
 import (
 	"context"
 	"encoding/json"
+	"strconv"
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
@@ -167,12 +168,19 @@ func TestConformHaltedRunIsObservable(t *testing.T) {
 	mem := agent.NewMemStore()
 	ctx := context.Background()
 
-	// Simulate a run halted mid-node: the attempt marker for the entry node is
-	// recorded, but its result never was.
-	if _, err := mem.Do(ctx, "halt", "attempt:step:node:entry", func(context.Context) (agent.Record, error) {
-		return agent.Record{Kind: agent.StepAttempt, ToolUseID: "node:entry"}, nil
-	}); err != nil {
-		t.Fatalf("inject attempt marker: %v", err)
+	// Simulate a run halted mid-node: the run's start and digest are recorded, and the attempt
+	// marker for the entry node, but its result never was.
+	for _, w := range []struct {
+		name string
+		rec  agent.Record
+	}{
+		{"run:start", agent.Record{Kind: agent.StepValue, Result: json.RawMessage(`{"input":"1","kind":"flow","flow":{"name":"conform-halt"}}`)}},
+		{flowDigestStep, agent.Record{Kind: agent.StepValue, Result: json.RawMessage(strconv.Quote(flow.Digest()))}},
+		{"attempt:step:node:entry", agent.Record{Kind: agent.StepAttempt, ToolUseID: "node:entry"}},
+	} {
+		if _, err := mem.Do(ctx, "halt", w.name, func(context.Context) (agent.Record, error) { return w.rec, nil }); err != nil {
+			t.Fatalf("inject %s: %v", w.name, err)
+		}
 	}
 
 	ok, diffs, err := flow.Conform(ctx, mem, "halt")

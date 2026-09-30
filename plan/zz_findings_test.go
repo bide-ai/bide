@@ -142,9 +142,10 @@ func TestF3_ResolveHaltRefOnANodeThatNeverHalted(t *testing.T) {
 	}
 }
 
-// F4: a resolution whose Result does not decode as the node's output type is accepted, and the
-// run can then never continue: the next node's input decode fails on every drive, and a
-// corrected resolution is refused as HaltAlreadyResolved.
+// F4: a resolution whose Result does not decode as the node's output type was accepted, and the
+// run could then never continue: the next node's input decode fails on every drive, and a
+// corrected resolution is refused as HaltAlreadyResolved. Flow.ResolveHalt checks the outcome
+// against the node's output type, so the wrong one is refused and the correction completes.
 func TestF4_ResolutionOfTheWrongTypeStrandsTheRun(t *testing.T) {
 	ctx := context.Background()
 	mem := agent.NewMemStore()
@@ -168,13 +169,13 @@ func TestF4_ResolutionOfTheWrongTypeStrandsTheRun(t *testing.T) {
 	if !ok {
 		t.Fatalf("want a halt: %v", err)
 	}
-	rerr := agent.ResolveHaltRef(ctx, mem, halt.Ref(), agent.Outcome{Result: "charged"})
+	rerr := flow.ResolveHalt(ctx, mem, halt.Ref(), agent.Outcome{Result: "charged"})
 	_, err1 := flow.Run(ctx, mem, "r", 1)
-	fix := agent.ResolveHaltRef(ctx, mem, halt.Ref(), agent.Outcome{Result: 2})
+	fix := flow.ResolveHalt(ctx, mem, halt.Ref(), agent.Outcome{Result: 2})
 	_, err2 := flow.Run(ctx, mem, "r", 1)
 	t.Logf("wrong-type resolve: %v; drive: %v; corrected resolve: %v; drive: %v", rerr, err1, fix, err2)
-	if rerr == nil && err2 != nil {
-		t.Fatalf("a resolution of the wrong type was accepted and strands the run (drive: %v, correction: %v)", err2, fix)
+	if rerr == nil || !errors.Is(rerr, agent.ErrConfig) || fix != nil || err2 != nil {
+		t.Fatalf("Flow.ResolveHalt: wrong-type resolution %v (want ErrConfig), correction %v, drive %v; want the correction to complete the run", rerr, fix, err2)
 	}
 }
 

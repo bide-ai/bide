@@ -21,7 +21,11 @@ import (
 
 func pgFlow(t *testing.T, fired *atomic.Int64) *plan.Flow[int, string] {
 	b := plan.New[int, string]("pg")
-	a := b.Step("a", func(_ context.Context, n int) (int, error) { fired.Add(1); time.Sleep(time.Millisecond); return n + 1, nil })
+	a := b.Step("a", func(_ context.Context, n int) (int, error) {
+		fired.Add(1)
+		time.Sleep(time.Millisecond)
+		return n + 1, nil
+	})
 	yes := b.Step("yes", func(_ context.Context, n int) (string, error) { return fmt.Sprint("yes", n), nil }, plan.ReadOnly())
 	no := b.Step("no", func(_ context.Context, n int) (string, error) { return fmt.Sprint("no", n), nil }, plan.ReadOnly())
 	b.Switch(a, plan.When(func(v int) bool { return v > 1 }, yes), plan.Else(no))

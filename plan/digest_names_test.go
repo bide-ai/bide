@@ -71,7 +71,9 @@ func TestDigest_CommitsToPredicateAndBlockNames(t *testing.T) {
 func TestRun_RefusesAFlowWithASwappedPredicate(t *testing.T) {
 	ctx := context.Background()
 	store := agent.NewMemStore()
-	if _, err := loadNames(t, "rush", "approve").Run(ctx, store, "r1", cfgOrder{ID: 1, Rush: true}); err != nil {
+	// The first drive does not complete (its completion is lost), so the run is resumed, not
+	// returned as finished.
+	if _, err := loadNames(t, "rush", "approve").Run(ctx, noComplete{store}, "r1", cfgOrder{ID: 1, Rush: true}); !errors.Is(err, errNoComplete) {
 		t.Fatalf("first run: %v", err)
 	}
 	_, err := loadNames(t, "notRush", "approve").Run(ctx, store, "r1", cfgOrder{ID: 1, Rush: true})
