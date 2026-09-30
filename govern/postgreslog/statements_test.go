@@ -272,27 +272,51 @@ func statementProblems(t *testing.T, dir string, extra ...string) []string {
 // and pg_try_advisory_xact_lock) end with the statement's transaction.
 var sessionLockCall = regexp.MustCompile(`(?i)pg_(try_)?advisory_lock`)
 
-// constantCalls are the only functions a constant query on the pool may call; nextSeqFunction
-// only in an INSERT, the append. A name after INTO names a table, and a keyword in listWords
-// takes a list; neither is a call.
+// constantCalls are the only functions a constant query on the pool may call, each qualified with
+// pg_catalog; nextSeqFunction only in Append's INSERT, once, with no SELECT. A name after INTO
+// names a table, and a keyword in listWords takes a list; neither is a call.
 var (
-	constantCalls = map[string]bool{"max": true, "coalesce": true, "to_regclass": true, "to_regprocedure": true, "unnest": true, "array_agg": true}
-	listWords     = map[string]bool{"values": true, "conflict": true, "exists": true, "in": true, "any": true, "as": true, "and": true, "or": true, "not": true, "on": true}
-	quotedSQL     = regexp.MustCompile(`'(?:[^']|'')*'|"(?:[^"]|"")*"`)
-	callSQL       = regexp.MustCompile(`([A-Za-z_][A-Za-z0-9_$.]*)\s*\(`)
+	constantCalls = map[string]bool{"pg_catalog.unnest": true, "pg_catalog.array_agg": true,
+		"pg_catalog.current_schema": true, "pg_catalog.current_schemas": true, "pg_catalog.array_position": true}
+	listWords = map[string]bool{"values": true, "conflict": true, "exists": true, "in": true, "any": true, "as": true, "and": true, "or": true, "not": true, "on": true, "coalesce": true}
+	quotedSQL = regexp.MustCompile(`'(?:[^']|'')*'|"(?:[^"]|"")*"`)
+	callSQL   = regexp.MustCompile(`([A-Za-z_][A-Za-z0-9_$.]*)\s*\(`)
+	// Spellings a scan of the text cannot follow: a Unicode escape, an escape string, a
+	// backslash, a comment, a dollar quote; and a quoted identifier used as a function or schema
+	// name. The log's own queries use none of them.
+	hiddenSQL     = regexp.MustCompile(`(?i)u&["']|(^|[^a-z0-9_$])e'|\\|--|/\*|\$([a-z_][a-z0-9_]*)?\$`)
+	quotedNameSQL = regexp.MustCompile(`"(?:[^"]|"")*"\s*[(.]`)
+	selectSQLWord = regexp.MustCompile(`(?i)(^|[^a-z0-9_$])select([^a-z0-9_$]|$)`)
 )
 
-// unknownCall returns the first function q calls that is not in constantCalls (or, in an INSERT,
-// nextSeqFunction).
+// unknownCall returns why constant query q may not run on the pool: a spelling that hides a call
+// from the scan, or a call to a function outside constantCalls (unqualified, one a deployment
+// defined, or nextSeqFunction outside a one-row INSERT or more than once).
 func unknownCall(q string) (string, bool) {
-	insert := isKeyword(q, "INSERT")
-	q = quotedSQL.ReplaceAllString(q, "''")
+	if m := hiddenSQL.FindString(q); m != "" {
+		return fmt.Sprintf("%q, which hides SQL from the check,", m), true
+	}
+	literals := quotedSQL.ReplaceAllStringFunc(q, func(lit string) string {
+		if lit[0] == '"' {
+			return lit
+		}
+		return "''"
+	})
+	if m := quotedNameSQL.FindString(literals); m != "" {
+		return fmt.Sprintf("the quoted name %s", m), true
+	}
+	q = quotedSQL.ReplaceAllString(literals, "''")
+	nextSeqOK := isKeyword(q, "INSERT") && !selectSQLWord.MatchString(q)
 	for _, m := range callSQL.FindAllStringSubmatchIndex(q, -1) {
 		name := strings.ToLower(q[m[2]:m[3]])
 		if before := strings.Fields(q[:m[2]]); len(before) > 0 && strings.EqualFold(before[len(before)-1], "INTO") {
 			continue
 		}
-		if !listWords[name] && !constantCalls[name] && !(insert && name == nextSeqFunction) {
+		switch {
+		case listWords[name] || constantCalls[name]:
+		case name == nextSeqFunction && nextSeqOK:
+			nextSeqOK = false // once
+		default:
 			return name, true
 		}
 	}

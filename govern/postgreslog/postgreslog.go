@@ -17,6 +17,16 @@
 // committed would act on the latest row, changed nothing and is run again. The schema migration is
 // the one transaction of several statements; it sets read committed itself (see txOptions).
 //
+// The log's table and function live in the first schema on the search path that holds a
+// governed_events table, or the first schema on the path when none does yet (see logSchema). The
+// log trusts every role that can create objects in the schemas on its search path, as it trusts
+// the table's owner: such a role could replace the table. Within that boundary it refuses what it
+// can check: the next_seq function must be owned by the table's owner, run with search_path =
+// pg_catalog, pg_temp and have exactly this version's body, whose names are all qualified, and
+// the log's statements call pg_catalog-qualified built-ins with their parameters cast, so an
+// overload created later on the search path cannot take a call over. A deployment should not put a
+// schema that untrusted roles can create in on the log's search path before pg_catalog.
+//
 // A retry does not always follow another transaction's commit: at serializable, Postgres may fail
 // a statement for a conflict with a transaction that has not committed yet, and many processes
 // appending to one entity may each lose their position several times. So the log spaces the
@@ -74,25 +84,74 @@ func Open(ctx context.Context, dsn string) (*Log, error) {
 // of another version may be calling it, so a new definition takes a new name.
 const nextSeqFunction = "governed_events_next_seq_v1"
 
-// nextSeqPresent reports whether a function named $1 taking one text argument exists in the schema
-// CREATE FUNCTION creates it in, reading pg_proc with the statement's snapshot.
-const nextSeqPresent = `SELECT EXISTS (SELECT 1 FROM pg_proc
-	WHERE proname = $1 AND pronamespace = current_schema()::regnamespace AND proargtypes = '25'::oidvector)`
+// The catalog queries below read pg_catalog's tables with the statement's snapshot and look names
+// up by schema, never through the session's catalog cache (to_regclass, to_regprocedure), which
+// taking an advisory lock does not refresh. Every built-in and type is qualified with pg_catalog.
 
-// nextSeqBody is the source of nextSeqFunction. It takes the entity's transaction-level advisory
-// lock, which the append that calls it holds until it commits, and then reads the entity's last
-// position. A VOLATILE function takes a new snapshot for each query it runs, so at read committed
-// the MAX is read after the lock is granted: appends to one entity queue on the lock and each
-// takes the next position in its first attempt. At repeatable read or serializable the query uses
-// the transaction's snapshot, so a queued append may collide on (entity, seq) and is run again.
-// The key is the one the log has always used for the entity's lock, so processes of earlier
-// versions queue on the same lock.
-const nextSeqBody = `
+// logSchema returns the schema the log's table and function are in: the first schema on the search
+// path that holds a governed_events table, as an unqualified governed_events resolves, or the
+// first schema on the path (where the migration creates the table) when none does. NULL when the
+// search path names no schema that exists.
+const logSchema = `SELECT COALESCE(
+	(SELECT n.nspname FROM pg_catalog.pg_class AS c JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace
+		WHERE c.relname = 'governed_events' AND c.relkind IN ('r', 'p') AND n.nspname = ANY (pg_catalog.current_schemas(false))
+		ORDER BY pg_catalog.array_position(pg_catalog.current_schemas(false), n.nspname) LIMIT 1),
+	pg_catalog.current_schema())`
+
+// nextSeqPresent reports whether a function named $1 taking one text argument exists in schema $2.
+const nextSeqPresent = `SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_proc
+	WHERE proname = $1 AND proargtypes = '25'::pg_catalog.oidvector
+		AND pronamespace = (SELECT n.oid FROM pg_catalog.pg_namespace AS n WHERE n.nspname = $2))`
+
+// nextSeqTemplate is the source of nextSeqFunction, over the governed_events table %s (qualified
+// with its schema). It takes the entity's transaction-level advisory lock, which the append that
+// calls it holds until it commits, and then reads the entity's last position. A VOLATILE function
+// takes a new snapshot for each query it runs, so at read committed the MAX is read after the lock
+// is granted: appends to one entity queue on the lock and each takes the next position in its
+// first attempt. At repeatable read or serializable the query uses the transaction's snapshot, so
+// a queued append may collide on (entity, seq) and is run again; under sustained contention on
+// one entity most appends then retry, with a backoff, and throughput falls well below read
+// committed's.
+//
+// Every name in the body is qualified, and the function runs with search_path = pg_catalog,
+// pg_temp (nextSeqConfig), so a role that can create objects in a schema on the log's search path
+// cannot take over a call with an overload that matches better (a hashtextextended(text,
+// integer), say, for an unqualified hashtextextended(e, 0)).
+//
+// The key, hashtextextended(entity, 0), is the one the log has always used for the entity's lock,
+// so processes of earlier versions queue on the same lock. store/postgres takes the same key for
+// a run, and it names no schema, so an entity named like a run, or logs in two schemas of one
+// database, share a lock: that costs throughput, not correctness, since the (entity, seq) primary
+// key keeps positions distinct whatever the lock does.
+const nextSeqTemplate = `
 BEGIN
-	PERFORM pg_advisory_xact_lock(hashtextextended(e, 0));
-	RETURN (SELECT COALESCE(MAX(seq), -1) + 1 FROM governed_events WHERE entity = e);
+	PERFORM pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(e, 0::pg_catalog.int8));
+	RETURN (SELECT COALESCE(pg_catalog.max(seq), -1) + 1 FROM %s WHERE entity = e);
 END
 `
+
+// nextSeqConfig is the setting nextSeqFunction runs with, as pg_proc.proconfig stores it.
+const nextSeqConfig = "search_path=pg_catalog, pg_temp"
+
+// quoteIdent quotes name as a SQL identifier.
+func quoteIdent(name string) string { return `"` + strings.ReplaceAll(name, `"`, `""`) + `"` }
+
+// nextSeqBody returns the source of nextSeqFunction for the governed_events table in schema.
+func nextSeqBody(schema string) string {
+	return fmt.Sprintf(nextSeqTemplate, quoteIdent(schema)+".governed_events")
+}
+
+// scanSchema scans the row of a logSchema query.
+func scanSchema(row *sql.Row) (string, error) {
+	var schema sql.NullString
+	if err := row.Scan(&schema); err != nil {
+		return "", err
+	}
+	if !schema.Valid {
+		return "", fmt.Errorf("postgreslog: no schema on the search path to create governed_events in: %w", agent.ErrConfig)
+	}
+	return schema.String, nil
+}
 
 // checkSchema checks that governed_events has each uniqueness Append depends on: (entity, seq),
 // on which a race for a position fails and is retried, and (entity, append_id), the arbiter of its
@@ -101,14 +160,20 @@ END
 // exists by name, so the columns and kind of each index, and the function's definition, are
 // checked here.
 func (l *Log) checkSchema(ctx context.Context) error {
+	schema, err := scanSchema(l.db.QueryRowContext(ctx, logSchema))
+	if err != nil {
+		return err
+	}
 	for _, cols := range [][]string{{"entity", "seq"}, {"entity", "append_id"}} {
 		var ok bool
-		if err := l.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM pg_index i
-			WHERE i.indrelid = to_regclass('governed_events') AND i.indisunique AND i.indisvalid AND i.indimmediate
+		if err := l.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_index AS i
+			WHERE i.indrelid = (SELECT c.oid FROM pg_catalog.pg_class AS c
+					WHERE c.relname = 'governed_events' AND c.relnamespace = (SELECT n.oid FROM pg_catalog.pg_namespace AS n WHERE n.nspname = $2))
+				AND i.indisunique AND i.indisvalid AND i.indimmediate
 				AND i.indpred IS NULL AND i.indexprs IS NULL AND i.indnkeyatts = i.indnatts
-				AND (SELECT array_agg(a.attname::text ORDER BY a.attname::text)
-					FROM unnest(i.indkey::int2[]) AS k JOIN pg_attribute AS a ON a.attrelid = i.indrelid AND a.attnum = k)
-					= (SELECT array_agg(c ORDER BY c) FROM unnest($1::text[]) AS c))`, cols).Scan(&ok); err != nil {
+				AND (SELECT pg_catalog.array_agg(a.attname::pg_catalog.text ORDER BY a.attname::pg_catalog.text)
+					FROM pg_catalog.unnest(i.indkey::pg_catalog.int2[]) AS k JOIN pg_catalog.pg_attribute AS a ON a.attrelid = i.indrelid AND a.attnum = k)
+					= (SELECT pg_catalog.array_agg(c ORDER BY c) FROM pg_catalog.unnest($1::pg_catalog.text[]) AS c))`, cols, schema).Scan(&ok); err != nil {
 			return fmt.Errorf("postgreslog: check the uniqueness of governed_events: %w", err)
 		}
 		if !ok {
@@ -116,16 +181,25 @@ func (l *Log) checkSchema(ctx context.Context) error {
 				strings.Join(cols, ", "), agent.ErrConfig)
 		}
 	}
-	var same bool
-	if err := l.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM pg_proc AS p JOIN pg_language AS l ON l.oid = p.prolang
-		WHERE p.oid = to_regprocedure($1) AND l.lanname = 'plpgsql' AND p.provolatile = 'v'
-			AND NOT p.prosecdef AND p.proconfig IS NULL AND NOT p.proretset
-			AND p.prorettype = 'bigint'::regtype AND p.prosrc = $2)`, nextSeqFunction+"(text)", nextSeqBody).Scan(&same); err != nil {
+	var same, sameOwner sql.NullBool
+	if err := l.db.QueryRowContext(ctx, `SELECT
+			l.lanname = 'plpgsql' AND p.provolatile = 'v' AND NOT p.prosecdef AND NOT p.proretset
+				AND p.proconfig = ARRAY[$3::pg_catalog.text] AND p.prorettype = 'pg_catalog.int8'::pg_catalog.regtype
+				AND p.prosrc = $4,
+			p.proowner = (SELECT c.relowner FROM pg_catalog.pg_class AS c WHERE c.relname = 'governed_events' AND c.relnamespace = p.pronamespace)
+		FROM pg_catalog.pg_proc AS p JOIN pg_catalog.pg_language AS l ON l.oid = p.prolang
+		WHERE p.proname = $1 AND p.proargtypes = '25'::pg_catalog.oidvector
+			AND p.pronamespace = (SELECT n.oid FROM pg_catalog.pg_namespace AS n WHERE n.nspname = $2)`,
+		nextSeqFunction, schema, nextSeqConfig, nextSeqBody(schema)).Scan(&same, &sameOwner); err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("postgreslog: check %s: %w", nextSeqFunction, err)
 	}
-	if !same {
-		return fmt.Errorf("postgreslog: function %s(text) is not the one this version creates (VOLATILE plpgsql returning bigint, not SECURITY DEFINER, with no settings of its own, whose body takes the entity's advisory lock and then reads MAX(seq)); Append depends on it and Open never replaces a function: %w",
-			nextSeqFunction, agent.ErrConfig)
+	if !same.Bool {
+		return fmt.Errorf("postgreslog: function %s.%s(text) is not the one this version creates (VOLATILE plpgsql returning bigint, not SECURITY DEFINER, with SET %s and no other setting, whose body takes the entity's advisory lock and then reads MAX(seq), every name qualified); Append depends on it and Open never replaces a function: %w",
+			quoteIdent(schema), nextSeqFunction, nextSeqConfig, agent.ErrConfig)
+	}
+	if !sameOwner.Bool {
+		return fmt.Errorf("postgreslog: function %s.%s(text) has another owner than table governed_events: its owner could replace it after Open checked it, and every append would run that role's code; drop it, or have the table's owner create it: %w",
+			quoteIdent(schema), nextSeqFunction, agent.ErrConfig)
 	}
 	return nil
 }
@@ -177,19 +251,28 @@ func (l *Log) migrate(ctx context.Context) error {
 	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`SET LOCAL idle_in_transaction_session_timeout = %d`, migrateIdleTimeout.Milliseconds())); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock($1)`, migrateLockKey); err != nil {
+	if _, err := tx.ExecContext(ctx, `SELECT pg_catalog.pg_advisory_xact_lock($1::pg_catalog.int8)`, migrateLockKey); err != nil {
 		return fmt.Errorf("postgreslog: migrate: take the migration lock: %w", err)
+	}
+	schema, err := scanSchema(tx.QueryRowContext(ctx, logSchema))
+	if err != nil {
+		return err
 	}
 	// The function first, since it takes no lock on the table; a current table needs nothing else.
 	// Under the migration lock, the check and the creation are one step across processes.
 	// The lookup reads pg_proc with the statement's snapshot, not the session's catalog cache,
 	// which taking the advisory lock does not refresh: it sees a function another process created
 	// while this one waited for the lock.
-	if err := tx.QueryRowContext(ctx, nextSeqPresent, nextSeqFunction).Scan(&haveNextSeq); err != nil {
+	if err := tx.QueryRowContext(ctx, nextSeqPresent, nextSeqFunction, schema).Scan(&haveNextSeq); err != nil {
 		return err
 	}
 	if !haveNextSeq {
-		if _, err := tx.ExecContext(ctx, `CREATE FUNCTION `+nextSeqFunction+`(e text) RETURNS bigint LANGUAGE plpgsql VOLATILE AS $bide$`+nextSeqBody+`$bide$`); err != nil {
+		body := nextSeqBody(schema)
+		if strings.Contains(body, "$bide$") {
+			return fmt.Errorf("postgreslog: schema name %q holds $bide$: %w", schema, agent.ErrConfig)
+		}
+		if _, err := tx.ExecContext(ctx, `CREATE FUNCTION `+quoteIdent(schema)+`.`+nextSeqFunction+
+			`(e pg_catalog.text) RETURNS pg_catalog.int8 LANGUAGE plpgsql VOLATILE SET search_path = pg_catalog, pg_temp AS $bide$`+body+`$bide$`); err != nil {
 			return fmt.Errorf("postgreslog: migrate: create %s: %w", nextSeqFunction, err)
 		}
 	}
@@ -216,14 +299,23 @@ func (l *Log) migrate(ctx context.Context) error {
 	return tx.Commit()
 }
 
-// schemaCurrent reports whether the governed_events table the search path resolves to exists
-// with its unique append_id index (the last thing migrate creates, over the append_id column), and
-// whether nextSeqFunction exists, reading only the catalog.
+// schemaCurrent reports whether the log's governed_events table (see logSchema) exists with its
+// unique append_id index (the last thing migrate creates, over the append_id column), and whether
+// nextSeqFunction exists beside it, reading only the catalog.
 func schemaCurrent(ctx context.Context, db *sql.DB) (current, haveNextSeq bool, err error) {
-	err = db.QueryRowContext(ctx, `
-		SELECT EXISTS (SELECT 1 FROM pg_index
-			WHERE indrelid = to_regclass('governed_events') AND indexrelid = to_regclass('governed_events_append_id')),
-			to_regprocedure('`+nextSeqFunction+`(text)') IS NOT NULL`).Scan(&current, &haveNextSeq)
+	schema, err := scanSchema(db.QueryRowContext(ctx, logSchema))
+	if err != nil {
+		return false, false, err
+	}
+	err = db.QueryRowContext(ctx, `SELECT
+			EXISTS (SELECT 1 FROM pg_catalog.pg_index AS i
+				JOIN pg_catalog.pg_class AS t ON t.oid = i.indrelid JOIN pg_catalog.pg_class AS x ON x.oid = i.indexrelid
+				WHERE t.relname = 'governed_events' AND x.relname = 'governed_events_append_id'
+					AND t.relnamespace = (SELECT n.oid FROM pg_catalog.pg_namespace AS n WHERE n.nspname = $1)),
+			EXISTS (SELECT 1 FROM pg_catalog.pg_proc
+				WHERE proname = $2 AND proargtypes = '25'::pg_catalog.oidvector
+					AND pronamespace = (SELECT n.oid FROM pg_catalog.pg_namespace AS n WHERE n.nspname = $1))`,
+		schema, nextSeqFunction).Scan(&current, &haveNextSeq)
 	return current, haveNextSeq, err
 }
 
@@ -256,7 +348,7 @@ func (l *Log) Append(ctx context.Context, entity, id, event string) (int64, erro
 	for {
 		var seq int64
 		err := l.db.QueryRowContext(ctx, `INSERT INTO governed_events (entity, seq, event, append_id)
-			VALUES ($1, `+nextSeqFunction+`($1), $2, $3)
+			VALUES ($1::pg_catalog.text, `+nextSeqFunction+`($1::pg_catalog.text), $2, $3)
 			ON CONFLICT (entity, append_id) DO NOTHING
 			RETURNING seq`, entity, event, id).Scan(&seq)
 		switch {

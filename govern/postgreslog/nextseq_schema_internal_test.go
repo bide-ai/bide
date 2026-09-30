@@ -274,3 +274,51 @@ func TestOpen_MigrateSeesNextSeqCreatedWhileWaiting(t *testing.T) {
 		t.Fatalf("migrate after another process created the function while it waited: %v", err)
 	}
 }
+
+// A log whose table is in a schema later on the search path keeps using it when an earlier schema
+// exists and is empty (a "$user" schema created after the log, say): Open finds the table the
+// search path resolves, and creates next_seq beside it, rather than a new table in the first
+// schema. Skips without PG_DSN.
+func TestOpen_KeepsTheTableTheSearchPathFinds(t *testing.T) {
+	admin, base := rvAdmin(t)
+	ctx := context.Background()
+	sfx := time.Now().UnixNano()
+	first, second := fmt.Sprintf("rv_first_%d", sfx), fmt.Sprintf("rv_second_%d", sfx)
+	if _, err := admin.ExecContext(ctx, `CREATE SCHEMA `+second); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		admin.ExecContext(context.Background(), `DROP SCHEMA IF EXISTS `+first+` CASCADE`)
+		admin.ExecContext(context.Background(), `DROP SCHEMA `+second+` CASCADE`)
+	})
+	l, err := Open(ctx, rvDSN(t, base, "", second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := l.Append(ctx, "e", "a", "ea"); err != nil {
+		t.Fatal(err)
+	}
+	l.Close()
+	if _, err := admin.ExecContext(ctx, `CREATE SCHEMA `+first); err != nil {
+		t.Fatal(err)
+	}
+	l, err = Open(ctx, rvDSN(t, base, "", first+","+second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	events, err := l.Events(ctx, "e", 0)
+	if err != nil || len(events) != 1 {
+		t.Fatalf("Events = %v, %v, want the event recorded before the empty schema was added", events, err)
+	}
+	var tables int
+	if err := admin.QueryRowContext(ctx, `SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = $1`, first).Scan(&tables); err != nil {
+		t.Fatal(err)
+	}
+	if tables != 0 {
+		t.Fatalf("Open created %d objects in the empty schema %s", tables, first)
+	}
+	if seq, err := l.Append(ctx, "e", "b", "eb"); err != nil || seq != 1 {
+		t.Fatalf("Append = %d, %v, want position 1 in the existing table", seq, err)
+	}
+}
