@@ -6,7 +6,9 @@
 // the journal (run_id, seq, name, data), where data is bytea, each entry's bytes verbatim;
 // bide_leases holds the leases; bide_schema_version the schema version. Open and New create the
 // tables if they do not exist and refuse a database whose schema version is newer than this
-// version knows. Run IDs are compared and ordered by their bytes (collation "C"), so a Lister's
+// version knows. They never alter an existing table, so they refuse one that lacks a uniqueness
+// the store's statements depend on: unique (run_id, seq) and (run_id, name) on bide_steps, and
+// run_id on bide_leases. Run IDs are compared and ordered by their bytes (collation "C"), so a Lister's
 // order does not depend on the database's locale.
 //
 // # One statement per write

@@ -166,7 +166,9 @@ Postgres commits before it replies, so no transaction spans two round trips and 
 between them holds no lock another node waits on. A statement that a deployment whose
 `default_transaction_isolation` is repeatable read or serializable fails with a serialization
 failure changed nothing and is run again, so the level does not change how the store records
-steps or leases.
+steps or leases. Retries back off and continue until the context ends, so give each call a
+deadline if it must be bounded. `Open` and `New` refuse an existing table that lacks a uniqueness
+the statements depend on, since they never alter one.
 
 **Transition.** The engine's functions still take the `Durable` interface (`Do` and `History`),
 which `*agent.Journal` implements; `MemStore` and the SQL stores also implement it, through a

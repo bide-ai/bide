@@ -122,7 +122,8 @@ should your own. Adapters:
 - `govern/postgreslog`: Postgres, for several processes on a shared database. An append is one
   statement that Postgres commits before it replies, so a process stalled mid-append holds no lock
   another process's append waits on, and it behaves the same whatever the database's default
-  isolation (a serialization failure changed nothing and is run again).
+  isolation (a serialization failure changed nothing and is run again, after a backoff, until the
+  context ends; give `Append` a deadline if it must be bounded).
 - `govern/redislog`: Redis Streams (networked, "no SQL DB required"). An entity's stream and its
   append-id hash share the Redis Cluster hash tag `{<len>:<entity>}`, so the append script, which
   touches both, runs on Redis Cluster; a key prefix must not contain `{` or `}`.
