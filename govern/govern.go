@@ -204,7 +204,10 @@ type EventLog interface {
 	// must be safe to call concurrently from many processes, which must never be assigned the
 	// same position, and concurrent appends with the same id must record one event.
 	Append(ctx context.Context, entity, id, event string) (int64, error)
-	// Events returns entity's events at positions from onward, in log order.
+	// Events returns entity's events at positions from onward, in log order: the i-th event
+	// returned is the one at position from+i. A log that cannot return them so (its positions
+	// have a gap, say, because a record was removed outside the adapter) must return an error
+	// wrapping agent.ErrProtocol rather than a shorter list.
 	Events(ctx context.Context, entity string, from int64) ([]string, error)
 }
 

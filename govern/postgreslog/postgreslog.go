@@ -162,18 +162,26 @@ func appendIn(ctx context.Context, tx *sql.Tx, entity, id, event string) (int64,
 	return seq, err
 }
 
-// Events returns an entity's events at positions from onward, in log order.
+// Events returns an entity's events at positions from onward, in log order. Positions are dense,
+// so the i-th event read is the one at position from+i; a row whose seq breaks that (a row deleted
+// or renumbered outside this adapter) is an error wrapping agent.ErrProtocol, since the caller
+// would otherwise take a later event for the one at the missing position.
 func (l *Log) Events(ctx context.Context, entity string, from int64) ([]string, error) {
-	rows, err := l.db.QueryContext(ctx, `SELECT event FROM governed_events WHERE entity = $1 AND seq >= $2 ORDER BY seq`, entity, from)
+	from = max(from, 0)
+	rows, err := l.db.QueryContext(ctx, `SELECT seq, event FROM governed_events WHERE entity = $1 AND seq >= $2 ORDER BY seq`, entity, from)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	var out []string
 	for rows.Next() {
+		var seq int64
 		var e string
-		if err := rows.Scan(&e); err != nil {
+		if err := rows.Scan(&seq, &e); err != nil {
 			return nil, err
+		}
+		if want := from + int64(len(out)); seq != want {
+			return nil, fmt.Errorf("postgreslog: entity %q has an event at position %d where position %d was expected: %w", entity, seq, want, agent.ErrProtocol)
 		}
 		out = append(out, e)
 	}

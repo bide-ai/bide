@@ -28,6 +28,10 @@ func TestEvents_RefusesAGapInPositions(t *testing.T) {
 			t.Fatalf("Append %s = %d, %v", e, pos, err)
 		}
 	}
+	// A position before the first is the first: every event, from position 0.
+	if evs, err := l.Events(ctx, "x", -1); err != nil || len(evs) != 3 || evs[0] != "e0" {
+		t.Fatalf("Events(from -1) = %q, %v; want [e0 e1 e2]", evs, err)
+	}
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		t.Fatal(err)

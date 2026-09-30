@@ -124,7 +124,8 @@ func (l *Log) Append(ctx context.Context, entity, id, event string) (int64, erro
 	return pos, nil
 }
 
-// Events returns the entity's events at positions from onward, in log order.
+// Events returns the entity's events at positions from onward, in log order. A stream whose entries
+// are not at consecutive positions is an error wrapping agent.ErrProtocol.
 func (l *Log) Events(ctx context.Context, entity string, from int64) ([]string, error) {
 	if err := l.checkNames(entity); err != nil {
 		return nil, err
@@ -138,6 +139,12 @@ func (l *Log) Events(ctx context.Context, entity string, from int64) ([]string, 
 	}
 	out := make([]string, 0, len(msgs))
 	for _, m := range msgs {
+		// Positions are dense: position p is stream ID "<p+1>-0". An entry at any other ID (one
+		// deleted with XDEL, or added outside this adapter) would pass a later event off as the one
+		// at the missing position.
+		if want := fmt.Sprintf("%d-0", from+1+int64(len(out))); m.ID != want {
+			return nil, fmt.Errorf("redislog: stream %q has entry %s where %s was expected: %w", l.key(entity), m.ID, want, agent.ErrProtocol)
+		}
 		e, ok := m.Values["event"].(string)
 		if !ok {
 			return nil, fmt.Errorf("redislog: stream %q entry %s missing string 'event' field: %w", l.key(entity), m.ID, agent.ErrProtocol)
