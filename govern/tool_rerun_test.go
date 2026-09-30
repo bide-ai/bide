@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/govern"
@@ -135,5 +136,35 @@ func TestEventTool_RerunAfterCrashAppliesOnce_InMemoryAndFederated(t *testing.T)
 	runToolTwice(t, govern.FederatedEventTool(fg, govern.FederatedEventToolConfig{Name: "publish", Description: "", Registry: "manufacturer", Event: "epub", Safety: agent.Safety{Idempotent: true}}), nil)
 	if evs, _ := log.Events(ctx, "f", 0); len(evs) != 1 {
 		t.Fatalf("one federated tool call appended %d entries: %q", len(evs), evs)
+	}
+}
+
+// EventTool and FederatedEventTool apply their config's Safety and Options to the tool's spec, so
+// a governed action can be gated on approval or bounded by a timeout like any agent tool.
+func TestEventToolConfig_SpecCarriesSafetyAndOptions(t *testing.T) {
+	ctx := context.Background()
+	m := buildCounter(t)
+	g, err := govern.NewPersistent(ctx, m, govern.NewMemEventLog(), "e", m.NewState())
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts := []agent.ToolOption{agent.WithApproval(agent.SingleApproval()), agent.WithTimeout(time.Minute), agent.WithTitle("Bump")}
+	for name, tool := range map[string]agent.Tool{
+		"plain":    govern.EventTool(g, govern.EventToolConfig{Name: "bump", Event: "inc_a", Safety: agent.Safety{Idempotent: true}, Options: opts}),
+		"attested": govern.EventTool(g, govern.EventToolConfig{Name: "bump", Event: "inc_a", PolicyDigest: "p", Safety: agent.Safety{Idempotent: true}, Options: opts}),
+	} {
+		s := agent.SpecOf(tool)
+		if s.Name != "bump" || !s.Safety.Idempotent || s.Approval == nil || s.Timeout != time.Minute || s.Title != "Bump" {
+			t.Errorf("%s: spec %+v; want the config's name, safety and options", name, s)
+		}
+	}
+	fm, _, _, _, _ := buildMfrSupFederation(t)
+	fg, err := govern.NewFederated(ctx, fm, govern.NewMemEventLog(), "f", fm.NewState())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := agent.SpecOf(govern.FederatedEventTool(fg, govern.FederatedEventToolConfig{Name: "publish", Registry: "manufacturer", Event: "epub", Safety: agent.Safety{Idempotent: true}, Options: opts}))
+	if s.Name != "publish" || !s.Safety.Idempotent || s.Approval == nil || s.Timeout != time.Minute {
+		t.Errorf("federated: spec %+v; want the config's name, safety and options", s)
 	}
 }

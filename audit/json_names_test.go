@@ -56,20 +56,21 @@ var auditArtifacts = []any{
 // notArtifacts is every other exported struct type of audit and audit/verify, with why it is never
 // written as JSON. A new exported struct type must be added to one list or the other.
 var notArtifacts = map[string]string{
-	"audit.AuditedStore":    "a store wrapper; its state is unexported",
-	"audit.MemAnchorLog":    "an in-memory log; its state is unexported",
-	"audit.MemEventStore":   "an in-memory store; its state is unexported",
-	"audit.EventLog":        "an in-memory log; its state is unexported",
-	"audit.EarnedAuthority": "a running ledger; its state is unexported",
-	"audit.KeySet":          "a key-set definition that carries a func",
-	"audit.RunCertSpec":     "the caller's input to CertifyRun",
-	"audit.Ed25519Signer":   "a signing key",
-	"audit.Ed25519Verifier": "a verifying key",
-	"audit.MLDSASigner":     "a signing key",
-	"audit.MLDSAVerifier":   "a verifying key",
-	"audit.HybridSigner":    "a pair of signing keys",
-	"audit.HybridVerifier":  "a pair of verifying keys",
-	"verify.Head":           "the standalone verifier's input to TreeHead, read from a head's JSON by the caller",
+	"audit.AuditedStore":      "a store wrapper; its state is unexported",
+	"audit.MemAnchorLog":      "an in-memory log; its state is unexported",
+	"audit.MemEventStore":     "an in-memory store; its state is unexported",
+	"audit.EventLog":          "an in-memory log; its state is unexported",
+	"audit.EarnedAuthority":   "a running ledger; its state is unexported",
+	"audit.KeySet":            "a key-set definition that carries a func",
+	"audit.RunCertSpec":       "the caller's input to CertifyRun",
+	"audit.AttenuationConfig": "the caller's input to AttenuatingSubAgent; carries a store and a func",
+	"audit.Ed25519Signer":     "a signing key",
+	"audit.Ed25519Verifier":   "a verifying key",
+	"audit.MLDSASigner":       "a signing key",
+	"audit.MLDSAVerifier":     "a verifying key",
+	"audit.HybridSigner":      "a pair of signing keys",
+	"audit.HybridVerifier":    "a pair of verifying keys",
+	"verify.Head":             "the standalone verifier's input to TreeHead, read from a head's JSON by the caller",
 }
 
 var snakeCase = regexp.MustCompile(`^[a-z][a-z0-9]*(_[a-z0-9]+)*$`)
