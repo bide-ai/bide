@@ -501,9 +501,15 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 		// the run finishes with it (below) rather than ask the model for another turn, which could
 		// answer differently or call tools under new tool-use ids. A live turn like it returns in
 		// the same iteration, so only the first iteration of a resume sees one.
+		//
+		// A turn is resumed whether none or some of its calls have a recorded result: the latest
+		// assistant turn is pending as long as any of its calls is, even though the results
+		// already recorded follow it in the conversation.
 		var asst Message
 		terminal := false // the latest turn's terminal-tool call succeeded, which ends the run
-		if n := len(msgs); n > 0 && msgs[n-1].Role == RoleAssistant && (pending(msgs[n-1], done) || len(msgs[n-1].toolUses()) == 0) {
+		if i := lastAssistant(msgs); i >= 0 && pending(msgs[i], done) {
+			asst = msgs[i]
+		} else if n := len(msgs); n > 0 && msgs[n-1].Role == RoleAssistant && len(msgs[n-1].toolUses()) == 0 {
 			asst = msgs[n-1]
 		} else if last, ok := terminalCallDone(msgs, a.terminalTool); ok {
 			asst, terminal = last, true
@@ -1113,6 +1119,16 @@ func terminalCallDone(msgs []Message, tool string) (Message, bool) {
 		return Message{}, false
 	}
 	return Message{}, false
+}
+
+// lastAssistant returns the index of the last assistant message in msgs, or -1.
+func lastAssistant(msgs []Message) int {
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role == RoleAssistant {
+			return i
+		}
+	}
+	return -1
 }
 
 func pending(m Message, done map[string]bool) bool {
