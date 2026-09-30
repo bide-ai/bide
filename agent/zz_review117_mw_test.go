@@ -24,7 +24,7 @@ func TestR117_MiddlewareTimeoutBeforeTheToolRunsHaltsAsIfItMayHaveFired(t *testi
 	}, WithTimeout(time.Millisecond))
 	waitForSlot := ToolMiddleware(func(next ToolHandler) ToolHandler {
 		return func(ctx context.Context, call ToolCall) (json.RawMessage, error) {
-			<-ctx.Done() // the limiter has no slot before the deadline
+			<-ctx.Done()                                                            // the limiter has no slot before the deadline
 			return nil, fmt.Errorf("no slot: %w (%w)", ctx.Err(), ErrToolNotCalled) // next was never called
 		}
 	})
