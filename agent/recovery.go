@@ -170,8 +170,11 @@ func completedAnswer(recs []Record) (Message, bool) {
 //	}
 //
 // Recover skips a sub-agent's run (IsSubRun): its root run drives it, and re-running the root
-// resumes it. resume should no-op any other runID it does not own; Recover re-drives every
-// other incomplete run it enumerates.
+// resumes it. It skips a session's journal and turn runs (IsSessionRun) too: a turn is seeded with
+// the transcript before its message, which only the session holds, and only the session records
+// its answer, so an unfinished turn resumes when its message is sent again (Send with the same
+// input, or the redelivered SendOnce). resume should no-op any other runID it does not own;
+// Recover re-drives every other incomplete run it enumerates.
 func Recover(ctx context.Context, store Durable, resume func(ctx context.Context, runID string) error, opts ...RecoverOption) (int, error) {
 	lister, ok := Capability[Lister](store)
 	if !ok {
@@ -208,9 +211,10 @@ func Recover(ctx context.Context, store Durable, resume func(ctx context.Context
 }
 
 // recoverable reports whether runID still needs driving: it is not a sub-agent's run (its root's
-// re-run resumes it) and has neither completed nor finished rolling back an aborted saga.
+// re-run resumes it) or a session's (the session resumes it), and has neither completed nor
+// finished rolling back an aborted saga.
 func recoverable(ctx context.Context, store Durable, runID string) (bool, error) {
-	if IsSubRun(runID) {
+	if IsSubRun(runID) || IsSessionRun(runID) {
 		return false, nil
 	}
 	complete, err := IsComplete(ctx, store, runID)

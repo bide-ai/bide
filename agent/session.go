@@ -14,13 +14,18 @@ import (
 
 // Session is a durable multi-turn conversation. Each Send is one full agent run (tools,
 // resume, side-effect safety and all), seeded with the transcript so far — so the agent
-// remembers earlier turns. The transcript is journaled turn-by-turn under the session id,
+// remembers earlier turns. The transcript is journaled turn-by-turn in the session's journal,
 // so a Session reloaded (after a restart) from the same store resumes the conversation.
 //
-// Layering: a turn runs under its own run ID ("<id>/tN" for Send, "<id>/e/<key>" for
-// SendOnce), whose durable journal handles crash resume WITHIN the turn; the session-level
-// journal under "<id>" records which message started each Send turn and each completed turn's
-// (input, answer) so the transcript can be rebuilt. Intermediate tool calls stay in the
+// Layering: a turn runs under its own run ID ("<id>>@turn/<n>" for Send, "<id>>@event/<key>" for
+// SendOnce, the key encoded), whose durable journal handles crash resume WITHIN the turn; the
+// session's journal, "<id>>@session", records which message started each Send turn and each
+// completed turn's (input, answer) so the transcript can be rebuilt. A root run ID may not
+// contain '>', so no run started with Run shares a journal with a session, and IsSessionRun tells
+// a session's run IDs apart from every other. Recover skips them: a turn is seeded with the
+// transcript before it, which only the session holds, and its answer is recorded only by the
+// session, so an unfinished turn resumes when its message is sent again (the same Send, or the
+// redelivered SendOnce). Intermediate tool calls stay in the
 // turn's journal and are NOT carried into later turns — the conversational memory is the
 // question/answer transcript, not every tool call. Each turn also journals the transcript it
 // started from (as "from/<turn run>"), so a turn resumed after a crash is seeded with exactly the
@@ -98,22 +103,19 @@ func newClaim() (string, error) {
 // Session opens (or reopens) a multi-turn conversation with the given id, rebuilding the
 // transcript from the store so a restarted process continues where it left off.
 //
-// The id must not contain '/'. The session journals under the id itself and runs its turns
-// under "<id>/t<n>" and "<id>/e/<key>" (and their sub-agents under SubRunID of the turn run and
-// the call), so an id with a '/' could name another session's turn: session "c/e" and session "c" answering key "t0"
-// would share run "c/e/t0", and one would be handed the other's reply. Those names belong to the
-// session; do not pass them to Run.
+// The id must not contain '>'. The session journals under "<id>>@session" and runs its turns
+// under "<id>>@turn/<n>" and "<id>>@event/<encoded key>" (and their sub-agents under
+// SubRunID(<turn run>, <call>)): everything up to the first '>' is the session id, so two
+// sessions never share a run, and a root run ID may not contain '>', so no root run shares one
+// with a session either.
 func (a *Agent) Session(ctx context.Context, id string) (*Session, error) {
 	if id == "" {
 		return nil, fmt.Errorf("Session: empty id: %w", ErrConfig)
 	}
-	if strings.ContainsRune(id, '/') {
-		return nil, fmt.Errorf("Session: id %q contains '/': %w", id, ErrConfig)
-	}
-	if IsSubRun(id) {
-		// The session's turns run under its id; one with the sub-run separator could name a
-		// sub-agent's run (see SubRunID).
-		return nil, fmt.Errorf("Session: id %q contains %q, which separates a sub-agent's run from its parent's: %w", id, subRunSep, ErrConfig)
+	if strings.Contains(id, subRunSep) {
+		// Everything up to the first '>' of a session's run IDs is its id; an id with one could
+		// name another session's run, or a sub-agent's (see SubRunID).
+		return nil, fmt.Errorf("Session: id %q contains %q, which the engine reserves for the run IDs of sub-agents and session turns: %w", id, subRunSep, ErrConfig)
 	}
 	s := &Session{agent: a, id: id}
 	if err := s.reload(ctx); err != nil {
@@ -125,7 +127,7 @@ func (a *Agent) Session(ctx context.Context, id string) (*Session, error) {
 // reload rebuilds the session's state from its journal. The caller holds s.mu, or has not
 // shared s yet.
 func (s *Session) reload(ctx context.Context) error {
-	recs, err := s.agent.store.History(ctx, s.id)
+	recs, err := s.agent.store.History(ctx, sessionJournalID(s.id))
 	if err != nil {
 		return fmt.Errorf("session %s: load transcript: %w (%w)", s.id, err, ErrStorage)
 	}
@@ -201,12 +203,12 @@ func (s *Session) startTurn(ctx context.Context, input string) (turnStart, error
 			return turnStart{}, err
 		}
 		n := s.starts
-		st := turnStart{Input: input, RunID: s.id + "/t" + strconv.Itoa(n), Claim: claim}
+		st := turnStart{Input: input, RunID: sessionTurnRunID(s.id, n), Claim: claim}
 		b, err := json.Marshal(st)
 		if err != nil {
 			return turnStart{}, fmt.Errorf("session %s: encode turn start: %w (%w)", s.id, err, ErrConfig)
 		}
-		got, err := s.agent.store.Do(ctx, s.id, sessionStartStep(n), func(context.Context) (Record, error) {
+		got, err := s.agent.store.Do(ctx, sessionJournalID(s.id), sessionStartStep(n), func(context.Context) (Record, error) {
 			return Record{Kind: StepValue, Result: b}, nil
 		})
 		if err != nil {
@@ -236,15 +238,13 @@ func (s *Session) startTurn(ctx context.Context, input string) (turnStart, error
 // answer without running anything, so a redelivered message never opens a second turn, even
 // if the process died after the turn was recorded and before the caller replied. A key whose
 // turn was interrupted resumes that same turn: it runs under its own journal,
-// "<session id>/e/<key>", so a different message arriving in between gets its own turn.
+// "<session id>>@event/<key>" (the key encoded, so any key is allowed), so a different message
+// arriving in between gets its own turn.
 // Reusing a key with a different input is ErrConfig, whether the key's turn has finished or is
 // still open: the turn's run records the message it answers (see RunStart).
 func (s *Session) SendOnce(ctx context.Context, key, input string) (Message, error) {
 	if key == "" {
 		return Message{}, fmt.Errorf("session %s: SendOnce: empty key: %w", s.id, ErrConfig)
-	}
-	if strings.ContainsRune(key, '/') {
-		return Message{}, fmt.Errorf("session %s: SendOnce: key %q contains '/': %w", s.id, key, ErrConfig)
 	}
 	tr, ok, err := s.keyedTurn(ctx, key)
 	if err != nil {
@@ -256,7 +256,7 @@ func (s *Session) SendOnce(ctx context.Context, key, input string) (Message, err
 		}
 		return tr.Answer, nil
 	}
-	return s.runTurn(ctx, s.id+"/e/"+key, key, input)
+	return s.runTurn(ctx, sessionEventRunID(s.id, key), key, input)
 }
 
 // keyedTurn returns the completed SendOnce turn for key, reloading the journal first if this
@@ -281,7 +281,7 @@ func (s *Session) runTurn(ctx context.Context, runID, key, input string) (Messag
 	}
 	seed = append(seed, UserText(input))
 
-	answer, _, _, err := s.agent.run(ctx, runID, seed, false, nil)
+	answer, _, _, err := s.agent.run(withSessionRun(ctx, runID), runID, seed, false, nil)
 	if err != nil {
 		return answer, err // pause/error: transcript unadvanced; retry same input to resume
 	}
@@ -312,7 +312,7 @@ func (s *Session) turnSeed(ctx context.Context, runID string) ([]Message, error)
 		return nil, fmt.Errorf("session %s: encode turn start point: %w (%w)", s.id, err, ErrConfig)
 	}
 	name := sessionFromStep(runID)
-	got, err := s.agent.store.Do(ctx, s.id, name, func(context.Context) (Record, error) {
+	got, err := s.agent.store.Do(ctx, sessionJournalID(s.id), name, func(context.Context) (Record, error) {
 		return Record{Kind: StepValue, Result: b}, nil
 	})
 	if err != nil {
@@ -345,7 +345,7 @@ func (s *Session) appendTurn(ctx context.Context, rec turnRecord) error {
 		return fmt.Errorf("session %s: encode turn: %w (%w)", s.id, err, ErrConfig)
 	}
 	for n := s.turns; ; n++ {
-		got, err := s.agent.store.Do(ctx, s.id, sessionTurnStep(n), func(context.Context) (Record, error) {
+		got, err := s.agent.store.Do(ctx, sessionJournalID(s.id), sessionTurnStep(n), func(context.Context) (Record, error) {
 			return Record{Kind: StepValue, Result: b}, nil
 		})
 		if err != nil {

@@ -59,29 +59,71 @@ func checkStepName(op, name string) error {
 	return nil
 }
 
-// subRunSep separates a sub-agent's run ID from its parent's: "<parent run>><encoded call>". An
-// encoded ID never contains it, and a top-level run ID or session ID may not (checkRunID).
+// subRunSep separates a derived run ID from the root it hangs off. A sub-agent's run is
+// "<parent run>><encoded call>" (SubRunID), and a session's journal and turn runs are
+// "<session id>>@<what>" (sessionJournalID, sessionTurnRunID, sessionEventRunID). A root run ID
+// and a session ID may not contain it (checkRunID, Session), so no ID a caller passes to Run names
+// a derived one, and an encoded call ID never starts with sessionMark, so a sub-run and a session
+// run never meet either.
 const subRunSep = ">"
+
+// sessionMark starts the segment after subRunSep in a session's run IDs. encodeID escapes '@', so
+// no encoded call ID starts with it.
+const sessionMark = "@"
 
 // SubRunID returns the run ID of the sub-agent run that the call toolUseID of run parent
 // starts: parent, '>', then toolUseID encoded (see encodeID). It is RunScope inside that call.
 func SubRunID(parent, toolUseID string) string { return parent + subRunSep + encodeID(toolUseID) }
 
-// IsSubRun reports whether runID is a sub-agent's run (SubRunID), which its root run drives.
-func IsSubRun(runID string) bool { return strings.Contains(runID, subRunSep) }
+// IsSubRun reports whether runID is a sub-agent's run (SubRunID), which its root run drives: its
+// last '>' is followed by an encoded call ID, not by a session's mark.
+func IsSubRun(runID string) bool {
+	i := strings.LastIndex(runID, subRunSep)
+	return i >= 0 && !strings.HasPrefix(runID[i+len(subRunSep):], sessionMark)
+}
 
-// checkRunID refuses a run ID that is empty or names a sub-agent's run. A sub-agent's own call
-// passes its run ID in the run scope the loop gave it, and only that ID may carry subRunSep.
+// IsSessionRun reports whether runID is a session's journal or one of its turn runs, which the
+// session drives (see Session). A sub-agent called in a turn is IsSubRun instead.
+func IsSessionRun(runID string) bool { return strings.Contains(runID, subRunSep) && !IsSubRun(runID) }
+
+// sessionJournalID is the run ID of the journal of session id: which message started each Send
+// turn and each completed turn's record.
+func sessionJournalID(id string) string { return id + subRunSep + sessionMark + "session" }
+
+// sessionTurnRunID is the run ID of the n-th Send turn of session id.
+func sessionTurnRunID(id string, n int) string {
+	return id + subRunSep + sessionMark + "turn/" + strconv.Itoa(n)
+}
+
+// sessionEventRunID is the run ID of the SendOnce turn of session id for the message key, which
+// is encoded (see encodeID) so that no key names another turn's run.
+func sessionEventRunID(id, key string) string {
+	return id + subRunSep + sessionMark + "event/" + encodeID(key)
+}
+
+// sessionRunKey carries the session run ID a Session is driving, the one such ID run accepts.
+type sessionRunKey struct{}
+
+func withSessionRun(ctx context.Context, runID string) context.Context {
+	return context.WithValue(ctx, sessionRunKey{}, runID)
+}
+
+// checkRunID refuses a run ID that is empty or contains subRunSep, which only the engine's own
+// derived run IDs carry: a sub-agent's call passes its run ID in the run scope the loop gave it,
+// and a session its turn's in the context it drives the turn with.
 func checkRunID(ctx context.Context, runID string) error {
 	if runID == "" {
 		// An empty runID would key every run to the same journal, silently cross-contaminating
 		// their memoized steps. Reject it rather than corrupt the log.
 		return fmt.Errorf("run: empty runID: %w", ErrConfig)
 	}
-	if IsSubRun(runID) && runID != RunScope(ctx) {
-		return fmt.Errorf("run: run ID %q contains %q, which separates a sub-agent's run from its parent's: %w", runID, subRunSep, ErrConfig)
+	if !strings.Contains(runID, subRunSep) || runID == RunScope(ctx) {
+		return nil
 	}
-	return nil
+	if sr, _ := ctx.Value(sessionRunKey{}).(string); sr == runID && IsSessionRun(runID) {
+		return nil
+	}
+	return fmt.Errorf("run: run ID %q contains %q, which the engine reserves for the run IDs of sub-agents and session turns: %w", runID, subRunSep, ErrConfig)
 }
 
 // maxEncodedID bounds encodeID's output. An ID whose escaped form is longer is replaced by a

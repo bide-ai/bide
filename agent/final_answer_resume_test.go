@@ -190,7 +190,7 @@ func TestFinalAnswerCrash_ResumeReplaysAnswer(t *testing.T) {
 				out, err := RunTypedNative[typedAnswer](ctx, a, "r1", "pay")
 				return out.Name, err
 			}},
-		{name: "SessionSend", runID: "s/t0", script: chargeThenAnswer, entry: func(a *Agent) (string, error) {
+		{name: "SessionSend", runID: sessionTurnRunID("s", 0), script: chargeThenAnswer, entry: func(a *Agent) (string, error) {
 			s, err := a.Session(ctx, "s")
 			if err != nil {
 				return "", err
@@ -201,7 +201,7 @@ func TestFinalAnswerCrash_ResumeReplaysAnswer(t *testing.T) {
 			}
 			return textOf(m), err
 		}},
-		{name: "SessionSendOnce", runID: "s/e/k1", script: chargeThenAnswer, entry: func(a *Agent) (string, error) {
+		{name: "SessionSendOnce", runID: sessionEventRunID("s", "k1"), script: chargeThenAnswer, entry: func(a *Agent) (string, error) {
 			s, err := a.Session(ctx, "s")
 			if err != nil {
 				return "", err

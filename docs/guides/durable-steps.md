@@ -209,10 +209,13 @@ sub-agent's answer: the parent records nothing for the call and returns the erro
 re-enters the sub-run.
 
 A sub-run's ID is `agent.SubRunID(parentRunID, toolUseID)`: the parent's run ID, `>`, and the
-tool-use ID encoded so that no ID a model sends can name another call's sub-run. A top-level run ID
-therefore may not contain `>` (`Run`, `RunSaga`, `Stream` and the rest return `ErrConfig`); `/` is
-fine (`tenant/123`). `agent.IsSubRun` tells the two apart, and `Recover` skips sub-runs, which
-their root's re-run resumes.
+tool-use ID encoded so that no ID a model sends can name another call's sub-run. A session's
+journal and turn runs are named the same way, `"<session id>>@session"`, `"<session id>>@turn/<n>"`
+and `"<session id>>@event/<encoded key>"`. A top-level run ID therefore may not contain `>` (`Run`,
+`RunSaga`, `Stream` and the rest return `ErrConfig`), so none can name a sub-run or a session's
+run; `/` is fine (`tenant/123`). `agent.IsSubRun` and `agent.IsSessionRun` tell them apart.
+`Recover` skips sub-runs, which their root's re-run resumes, and session runs, which the session
+resumes when the turn's message is sent again.
 
 ### Clearing a `ResumeHalt`: `ResolveHalt`
 
