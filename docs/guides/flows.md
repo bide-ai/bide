@@ -332,6 +332,8 @@ the value are parse errors, so a typo cannot silently drop a gate or an entry. `
   `in`/`out` documentation matches `In`/`Out`.
 - **Join typing:** a `join`'s `merge` block must be registered, and its arity and input types must
   match the join's declared `inputs`; an unknown or mis-arity merge is a load error naming the join.
+  A join is entered only by its inputs: an `edge` into it from any other node, a repeated input
+  edge, or a `switch` arm routing to it is a load error, since the merge would drop that value.
 - **Structural checks `Build` does not give:** a node cannot be both switched-over and have an
   outgoing edge, and a `wiring[]` element must set exactly one of `edge`/`switch`/`join`.
 
