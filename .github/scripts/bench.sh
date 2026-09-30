@@ -8,6 +8,11 @@
 #       output goes to OUTDIR/LABEL/SCENARIO-N.txt. A run that reports errors fails.
 #   bench.sh summary OUTDIR LABEL REPEATS
 #       Markdown table of the medians of one binary's runs.
+#
+#   Latency is reported as the mean (concurrency / throughput, by Little's law: the harness keeps
+#   a fixed number of runs in flight), p90 and p99. p50 stays in the raw output but is not
+#   reported: in this closed-loop harness it is bimodal, sitting on a scheduling cliff, so one
+#   binary's p50 moves by an order of magnitude between runs.
 #   bench.sh compare OUTDIR BASE_LABEL HEAD_LABEL REPEATS
 #       Markdown table of the medians of two binaries' runs and the change from base to head.
 #   bench.sh cpu
@@ -24,7 +29,8 @@ fanout|-runs 20000 -concurrency 5000 -latency 50ms"
 METRICS="wall|Wall-clock|ms|lower
 rps|Runs/s||higher
 recs|Journal records/s||higher
-p50|p50|ms|lower
+mean|Mean latency|ms|lower
+p90|p90|ms|lower
 p99|p99|ms|lower
 gor|Peak goroutines||lower
 heap|Heap delta|MB|lower"
@@ -54,7 +60,15 @@ values() {
     wall) grep -ho 'elapsed=[^ ]*' "${files[@]}" | cut -d= -f2 | ms ;;
     rps) grep -ho 'throughput=[0-9]*' "${files[@]}" | cut -d= -f2 ;;
     recs) grep -ho '([0-9]* journal records/s' "${files[@]}" | tr -dc '0-9\n' ;;
-    p50|p99) grep -ho "$3=[^ ]*" "${files[@]}" | cut -d= -f2 | ms ;;
+    p90|p99) grep -ho "$3=[^ ]*" "${files[@]}" | cut -d= -f2 | ms ;;
+    mean) # concurrency / throughput, in ms, one per run
+      local f c t
+      for f in "${files[@]}"; do
+        c=$(grep -o 'concurrency=[0-9]*' "$f" | head -1 | cut -d= -f2)
+        t=$(grep -o 'throughput=[0-9]*' "$f" | head -1 | cut -d= -f2)
+        [ -n "$c" ] && [ -n "$t" ] && [ "$t" -gt 0 ] || die "no concurrency or throughput in $f"
+        awk -v c="$c" -v t="$t" 'BEGIN { printf "%.6f\n", c / t * 1000 }'
+      done ;;
     gor) grep -ho 'goroutines=[0-9]*' "${files[@]}" | cut -d= -f2 ;;
     heap) grep -ho 'heap alloc delta=[0-9.]* MB' "${files[@]}" | grep -o '[0-9.]*' ;;
     *) die "unknown metric $3" ;;
@@ -65,7 +79,7 @@ values() {
 med() {
   local v; v=$(values "$1" "$2" "$3" | median) || die "no $3 values for $2 in $1"
   case $3 in
-    wall|p50|p99) awk -v v="$v" 'BEGIN { if (v >= 100) printf "%.0f", v; else if (v >= 10) printf "%.1f", v; else printf "%.2f", v }' ;;
+    wall|mean|p90|p99) awk -v v="$v" 'BEGIN { if (v >= 100) printf "%.0f", v; else if (v >= 10) printf "%.1f", v; else printf "%.2f", v }' ;;
     heap) awk -v v="$v" 'BEGIN { printf "%.1f", v }' ;;
     *) awk -v v="$v" 'BEGIN { printf "%.0f", v }' ;;
   esac
@@ -101,15 +115,19 @@ scenario_notes() {
   echo "$notes."
 }
 
+latency_note() {
+  echo "Mean latency is concurrency / throughput; p50 is in the raw output only, since this closed-loop harness's p50 is bimodal (it sits on a scheduling cliff)."
+}
+
 summary() {
   local out=$1 label=$2 n=$3 name flags
-  echo "| Scenario | Wall-clock | Runs/s | Journal records/s | p50 | p99 | Peak goroutines | Heap delta |"
-  echo "|---|---|---|---|---|---|---|---|"
+  echo "| Scenario | Wall-clock | Runs/s | Journal records/s | Mean latency | p90 | p99 | Peak goroutines | Heap delta |"
+  echo "|---|---|---|---|---|---|---|---|---|"
   while IFS='|' read -r name flags; do
-    echo "| $name | $(med "$out/$label" "$name" wall) ms | $(med "$out/$label" "$name" rps) | $(med "$out/$label" "$name" recs) | $(med "$out/$label" "$name" p50) ms | $(med "$out/$label" "$name" p99) ms | $(med "$out/$label" "$name" gor) | $(med "$out/$label" "$name" heap) MB |"
+    echo "| $name | $(med "$out/$label" "$name" wall) ms | $(med "$out/$label" "$name" rps) | $(med "$out/$label" "$name" recs) | $(med "$out/$label" "$name" mean) ms | $(med "$out/$label" "$name" p90) ms | $(med "$out/$label" "$name" p99) ms | $(med "$out/$label" "$name" gor) | $(med "$out/$label" "$name" heap) MB |"
   done <<<"$SCENARIOS"
   echo
-  echo "$n runs per scenario; each figure is the median. $(scenario_notes)"
+  echo "$n runs per scenario; each figure is the median. $(latency_note) $(scenario_notes)"
 }
 
 compare() {
@@ -123,7 +141,7 @@ compare() {
     done <<<"$METRICS"
   done <<<"$SCENARIOS"
   echo
-  echo "$n runs per scenario and binary, interleaved on one machine; each figure is the median, and the change is from $base to $head. $(scenario_notes)"
+  echo "$n runs per scenario and binary, interleaved on one machine; each figure is the median, and the change is from $base to $head. $(latency_note) $(scenario_notes)"
 }
 
 self_test() {
@@ -131,12 +149,12 @@ self_test() {
   tmp=$(mktemp -d)
   mkdir -p "$tmp/a" "$tmp/b"
   # Three runs per binary; the medians are the middle lines. Units vary as Go prints them.
-  local e t r p50 p99 g hp i
+  local e t r p50 p90 p99 g hp i
   i=0
-  for row in "900µs 1000 5000 500µs 40ms 300 10.0" "1.5s 3000 15000 2ms 60ms 310 30.0" "1.2s 2000 10000 1.5ms 50ms 305 20.0"; do
-    i=$((i + 1)); read -r e t r p50 p99 g hp <<<"$row"
-    printf 'runs=5000 concurrency=256 sim-latency=0s\nelapsed=%s throughput=%s runs/s (%s journal records/s, in-memory store; 25000 records)\nrun latency: p50=%s p90=1ms p99=%s max=90ms\npeak goroutines=%s  heap alloc delta=%s MB  total alloc=100.0 MB  numGC=3\nerrors=0\n' \
-      "$e" "$t" "$r" "$p50" "$p99" "$g" "$hp" >"$tmp/a/overhead-$i.txt"
+  for row in "900µs 1000 5000 500µs 800µs 40ms 300 10.0" "1.5s 3000 15000 2ms 3ms 60ms 310 30.0" "1.2s 2000 10000 1.5ms 2ms 50ms 305 20.0"; do
+    i=$((i + 1)); read -r e t r p50 p90 p99 g hp <<<"$row"
+    printf 'runs=5000 concurrency=256 sim-latency=0s\nelapsed=%s throughput=%s runs/s (%s journal records/s, in-memory store; 25000 records)\nrun latency: p50=%s p90=%s p99=%s max=90ms\npeak goroutines=%s  heap alloc delta=%s MB  total alloc=100.0 MB  numGC=3\nerrors=0\n' \
+      "$e" "$t" "$r" "$p50" "$p90" "$p99" "$g" "$hp" >"$tmp/a/overhead-$i.txt"
   done
   for i in 1 2 3; do sed -e 's/throughput=[0-9]*/throughput=2200/' -e 's/elapsed=[^ ]*/elapsed=1.8s/' "$tmp/a/overhead-$i.txt" >"$tmp/b/overhead-$i.txt"; done
   check() { [ "$2" = "$3" ] || { echo "self-test: $1 = $2, want $3"; fail=true; }; }
@@ -144,7 +162,9 @@ self_test() {
   check "wall of 900µs" "$(values "$tmp/a" overhead wall | head -1)" 0.9
   check "runs/s median" "$(med "$tmp/a" overhead rps)" 2000
   check "records/s median" "$(med "$tmp/a" overhead recs)" 10000
-  check "p50 median" "$(med "$tmp/a" overhead p50)" 1.50
+  check "mean median" "$(med "$tmp/a" overhead mean)" 128
+  check "mean of 256 at 1000/s" "$(values "$tmp/a" overhead mean | head -1)" 256.000000
+  check "p90 median" "$(med "$tmp/a" overhead p90)" 2.00
   check "p99 median" "$(med "$tmp/a" overhead p99)" 50.0
   check "goroutines median" "$(med "$tmp/a" overhead gor)" 305
   check "heap median" "$(med "$tmp/a" overhead heap)" 20.0

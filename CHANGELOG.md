@@ -80,6 +80,7 @@ minor version (0.x.0) may include breaking API or journal-format changes; each o
 - The bide protocol (`bide.protocol.v1`), an accepted design for SDKs in other languages, with its claim rules checked by model 2; not implemented yet ([docs/design/protocol.md](docs/design/protocol.md), [#95]).
 - The pre-1.0 API redesign proposal, [docs/design/api-v1.md](docs/design/api-v1.md) ([#64]); the roadmap adds bide underneath other agent frameworks ([#102]).
 - `scripts/release.sh` pushes at most three tags per push, `release-modules.yml` checks a module tag on manual dispatch, and `bench.yml` has an A/B mode that runs two refs interleaved in one job ([#101]).
+- `bench.yml` and `cmd/bench/README.md` report latency as the mean (concurrency / throughput), p90 and p99; the p50 stays in the raw output only, since the closed-loop harness's p50 is bimodal ([#116]).
 
 ### Changed
 
@@ -636,6 +637,7 @@ First public release.
 [#113]: https://github.com/bide-ai/bide/pull/113
 [#114]: https://github.com/bide-ai/bide/pull/114
 [#115]: https://github.com/bide-ai/bide/pull/115
+[#116]: https://github.com/bide-ai/bide/pull/116
 
 [78f8db6]: https://github.com/bide-ai/bide/commit/78f8db6
 [994721b]: https://github.com/bide-ai/bide/commit/994721b
