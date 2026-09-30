@@ -157,10 +157,9 @@ func completedAnswer(recs []Record) (Message, bool) {
 //	    return err
 //	}
 //
-// resume should no-op a runID it does not own: a sub-agent run is driven by its parent, so
-// re-driving one directly is redundant (harmless under at-most-once memoization, but the
-// parent already replays it). Recover re-drives every incomplete run it enumerates; let
-// resume decide which ones it is responsible for.
+// Recover skips a sub-agent's run (IsSubRun): its root run drives it, and re-running the root
+// resumes it. resume should no-op any other runID it does not own; Recover re-drives every
+// other incomplete run it enumerates.
 func Recover(ctx context.Context, store Durable, resume func(ctx context.Context, runID string) error, opts ...RecoverOption) (int, error) {
 	lister, ok := store.(Lister)
 	if !ok {
@@ -196,9 +195,12 @@ func Recover(ctx context.Context, store Durable, resume func(ctx context.Context
 	return recovered, errors.Join(errs...)
 }
 
-// recoverable reports whether runID still needs driving: it has neither completed nor finished
-// rolling back an aborted saga.
+// recoverable reports whether runID still needs driving: it is not a sub-agent's run (its root's
+// re-run resumes it) and has neither completed nor finished rolling back an aborted saga.
 func recoverable(ctx context.Context, store Durable, runID string) (bool, error) {
+	if IsSubRun(runID) {
+		return false, nil
+	}
 	complete, err := IsComplete(ctx, store, runID)
 	if err != nil || complete {
 		return false, err // finished before the crash: nothing to re-drive

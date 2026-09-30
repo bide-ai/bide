@@ -126,7 +126,7 @@ func TestMofn_InsideSubAgent(t *testing.T) {
 	if !errors.As(err, &pend) || pend.Quorum == nil {
 		t.Fatalf("parent Run err = %v, want an m-of-n *PendingApproval from the sub-agent", err)
 	}
-	const subRunID = "root/c1"
+	subRunID := SubRunID("root", "c1")
 	if pend.RunID != subRunID || pend.ToolUseID != "s1" || pend.ToolName != "charge" {
 		t.Fatalf("pend = %+v, want sub-run %s charge/s1", pend, subRunID)
 	}

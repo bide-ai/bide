@@ -11,7 +11,7 @@ import (
 // SubAgent wraps an agent as a Tool so a parent can delegate to it — the multi-agent
 // primitive, as a durable tree rather than a fragile handoff.
 //
-// The sub-run journals under a hierarchical, deterministic ID (parentRunID/toolUseID) —
+// The sub-run journals under a hierarchical, deterministic ID (SubRunID(parentRunID, toolUseID)),
 // so give `sub` the SAME Durable store as the parent for a unified journal. Then a crash
 // ANYWHERE in the tree resumes the whole tree precisely: completed sub-agents are reused,
 // the in-flight one resumes from its own journal, and ResumeHalt / PendingApproval from
@@ -49,7 +49,7 @@ func (t *subAgentTool) Call(ctx context.Context, args json.RawMessage) (json.Raw
 	if err := decodeArgs(args, &in); err != nil {
 		return nil, fmt.Errorf("decode args for sub-agent %q: %w (%w)", t.name, err, ErrToolArgs)
 	}
-	subRunID := RunScope(ctx) // parentRunID/toolUseID: stable and unique per call site
+	subRunID := RunScope(ctx) // SubRunID(parentRunID, toolUseID): stable and unique per call site
 	if subRunID == "" {
 		// Fallback for a SubAgent tool invoked outside the agent loop (which always sets the run
 		// scope, agent.go withRunScope). This id is NOT unique per call: two calls to a same-named

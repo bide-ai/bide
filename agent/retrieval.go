@@ -167,7 +167,7 @@ func retrieveOnce(ctx context.Context, r Retriever, query string, k, layer int) 
 		rec, err := get(ctx)
 		return rec.Docs, err
 	}
-	rec, err := Step(ctx, mr.store, mr.runID, fmt.Sprintf("@retrieval/%d", layer), get,
+	rec, err := step(ctx, mr.store, mr.runID, retrievalStep(layer), get,
 		StepSafety(Safety{ReadOnly: true}))
 	return rec.Docs, err
 }

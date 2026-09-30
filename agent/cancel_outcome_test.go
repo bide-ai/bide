@@ -29,7 +29,7 @@ func TestCancelledToolCall_IsNotRecordedAsItsOutcome(t *testing.T) {
 	go func() { <-fired; cancel() }()
 	m := &greedyModel{script: [][]Emit{toolTurn("c1", "charge", `{}`), textTurn("done")}}
 	_, err := New(m, store, charge).Run(ctx, "r1", "pay")
-	if rec, ok := hasStep(t, store, "r1", "c1"); ok {
+	if rec, ok := hasStep(t, store, "r1", ToolResultStep("c1")); ok {
 		t.Errorf("the cancelled call's outcome was journaled as %s (is_error=%v); want no result recorded, since the outcome is unknown", rec.Result, rec.IsError)
 	}
 	if complete, _ := IsComplete(context.Background(), store, "r1"); complete {
@@ -135,7 +135,7 @@ func TestCancelledRun_StopsBeforeTheNextTurn(t *testing.T) {
 	if complete, _ := IsComplete(context.Background(), store, "r1"); complete {
 		t.Errorf("the cancelled run was marked complete")
 	}
-	if rec, ok := hasStep(t, store, "r1", "c1"); !ok || rec.IsError {
+	if rec, ok := hasStep(t, store, "r1", ToolResultStep("c1")); !ok || rec.IsError {
 		t.Errorf("the completed call's result was not journaled (found=%v, rec=%+v)", ok, rec)
 	}
 }

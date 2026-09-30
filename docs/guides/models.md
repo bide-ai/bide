@@ -169,13 +169,18 @@ adapter keeps an `id` when Gemini sends one and otherwise makes up a random `cal
 which carries nothing from the tool name or the call's position.
 
 The agent checks every live model turn whatever the adapter: a tool call with no ID, an ID already
-used earlier in the conversation, one repeated within the turn, or one with a character outside
-`[A-Za-z0-9_-]` fails the turn with
+used earlier in the conversation, one repeated within the turn, or one that is not valid UTF-8 fails
+the turn with
 `agent.ErrToolUseIDReused` (wrapping `ErrProtocol` and `ErrModel`) instead of passing the call off
 as already done. The check runs below middleware, so `middleware.Retry` retries it, and the rejected
-turn is never journaled. Turns replayed from an existing journal are not re-checked. The alphabet
-is the one Anthropic requires and the other providers use; it keeps an ID from naming one of the
-run's own journal steps (`@llm/1`, `run:complete`) or another call's sub-agent run (`<run>/<ID>`).
+turn is never journaled. Turns replayed from an existing journal are not re-checked.
+
+Any other ID is safe, whatever characters it has or however long it is. The journal keys derived
+from an ID (`agent.ToolResultStep`, the call's attempt marker, approvals, compensation) and a
+sub-agent's run ID (`agent.SubRunID`) carry it encoded after a prefix of their own: bytes outside
+`[A-Za-z0-9._-]` become `%XX`, and an ID whose encoding would pass 96 bytes becomes `~` and its
+SHA-256. An ID such as `@llm/1`, `run:complete` or `a/b` therefore cannot name one of the run's own
+steps, another call's key, or another call's sub-run.
 
 ## Multimodal input (images)
 

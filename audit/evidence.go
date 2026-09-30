@@ -15,8 +15,11 @@ import (
 // EvidenceFormat is the format/version tag written into every EvidencePackage. It is
 // domain-separated and versioned so a verifier rejects a package produced by an incompatible
 // layout rather than misreading it. v2 binds tree heads to their run, seals the package, and
-// carries the earlier signed head a consistency proof starts from.
-const EvidenceFormat = "bide.audit.evidence.v2"
+// carries the earlier signed head a consistency proof starts from. v3 is v2 over journals that
+// key a tool call's records by its encoded ID (agent.ToolResultStep, agent.ApprovalTallyStep)
+// and a sub-agent's run by agent.SubRunID, so the record names a v3 package proves differ from
+// a v2 package's for the same run.
+const EvidenceFormat = "bide.audit.evidence.v3"
 
 // evidenceSealTag domain-separates the package seal from every other message the log key signs.
 const evidenceSealTag = EvidenceFormat + ".seal\x00"

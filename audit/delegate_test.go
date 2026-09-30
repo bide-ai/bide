@@ -85,7 +85,7 @@ func TestAttenuatingSubAgent_Default(t *testing.T) {
 
 	// The child grant was minted and anchored under the call's own sub-run (parent run / tool-use
 	// id), attenuated and linked to the parent.
-	child := findGrant(t, store, "p1/c1")
+	child := findGrant(t, store, agent.SubRunID("p1", "c1"))
 	if child.Grant.ParentRef != root.Digest() {
 		t.Fatalf("child parent_ref %q does not link to root %q", child.Grant.ParentRef, root.Digest())
 	}

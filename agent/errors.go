@@ -67,17 +67,18 @@ var (
 	// turn is not journaled and a fresh attempt can succeed, so a retry middleware retries it.
 	ErrStreamProtocol = fmt.Errorf("model stream broke its protocol: %w (%w)", ErrProtocol, ErrModel)
 	// ErrToolUseIDReused is a model turn whose tool call has no ID, repeats an ID from an
-	// earlier turn of the conversation, repeats one within the turn, or has an ID with a
-	// character outside [A-Za-z0-9_-]. The loop keys each call's result and journal step by
-	// its ID, so a reused ID would pass the call off as already done, and an ID with a ':'
-	// or a '/' could name one of the run's own steps or another call's sub-run. It wraps ErrModel as well as ErrProtocol: the fault is in the model's
-	// output, the turn is not journaled, and a fresh attempt can issue a valid turn, so a
-	// retry middleware treats it as retryable.
+	// earlier turn of the conversation, repeats one within the turn, or has an ID that is not
+	// valid UTF-8 (the journal cannot hold it). The loop keys each call's result and journal
+	// step by its ID, so a reused ID would pass the call off as already done. Any other ID is
+	// safe: the keys derived from it encode it (see ToolResultStep and SubRunID). It wraps
+	// ErrModel as well as ErrProtocol: the fault is in the model's output, the turn is not
+	// journaled, and a fresh attempt can issue a valid turn, so a retry middleware treats it as
+	// retryable.
+	ErrToolUseIDReused = fmt.Errorf("tool-use id missing, reused, or malformed: %w (%w)", ErrProtocol, ErrModel)
 	// ErrNegativeUsage is token usage with a negative count, reported by a model or returned by
 	// a middleware. The usage is rejected rather than lowering a run's totals and budget. It
 	// wraps ErrModel as well as ErrProtocol.
-	ErrNegativeUsage   = fmt.Errorf("negative token usage: %w (%w)", ErrProtocol, ErrModel)
-	ErrToolUseIDReused = fmt.Errorf("tool-use id missing, reused, or malformed: %w (%w)", ErrProtocol, ErrModel)
+	ErrNegativeUsage = fmt.Errorf("negative token usage: %w (%w)", ErrProtocol, ErrModel)
 	// ErrQuotaExhausted is a provider refusing a call because the account's quota or credit
 	// is used up (OpenAI insufficient_quota, Anthropic billing_error, HTTP 402, a Gemini daily
 	// quota), as opposed to a momentary rate limit. Waiting a few seconds does not lift it, so

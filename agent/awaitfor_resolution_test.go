@@ -76,8 +76,8 @@ func TestSubAgentAwaitFor_WakesTheRoot(t *testing.T) {
 	ctx := WithWaker(WithClock(context.Background(), now), w)
 	_, err := root.Run(ctx, "p", "go")
 	var aw *Awaiting
-	if !errors.As(err, &aw) || aw.RunID != "p/s1" || aw.RootRunID != "p" {
-		t.Fatalf("await = %+v (%v); want RunID p/s1 and RootRunID p", aw, err)
+	if !errors.As(err, &aw) || aw.RunID != "p>s1" || aw.RootRunID != "p" {
+		t.Fatalf("await = %+v (%v); want RunID p>s1 and RootRunID p", aw, err)
 	}
 	atomic.StoreInt64(&clk, 2000)
 	if _, err := w.Fire(ctx, now()); err != nil {
@@ -86,7 +86,7 @@ func TestSubAgentAwaitFor_WakesTheRoot(t *testing.T) {
 	if len(woken) != 1 || woken[0] != "p" || !completed {
 		t.Fatalf("woke %v (completed=%v); want the root run p woken and completed", woken, completed)
 	}
-	if rec, ok := hasStep(t, store, "p/s1", "c1"); !ok || string(rec.Result) != `"timed out"` {
+	if rec, ok := hasStep(t, store, "p>s1", ToolResultStep("c1")); !ok || string(rec.Result) != `"timed out"` {
 		t.Fatalf("sub-run recorded %s for the await, want the timeout branch", rec.Result)
 	}
 }

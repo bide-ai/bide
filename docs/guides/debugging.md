@@ -179,8 +179,9 @@ backend-specific concern (a SQL store lists with a query; the base contract stay
 A store opts in by implementing `Runs`; `Recover` type-asserts for it and returns an
 `ErrConfig`-wrapped error if the store cannot enumerate.
 
-`Recover` enumerates every run, skips the ones already finished, and calls `resume` for each
-remaining run to push it forward:
+`Recover` enumerates every run, skips the ones already finished and every sub-agent run
+(`agent.IsSubRun`; its root's re-run resumes it), and calls `resume` for each remaining run to push
+it forward:
 
 ```go
 n, err := agent.Recover(ctx, store, func(ctx context.Context, runID string) error {

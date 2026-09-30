@@ -112,7 +112,7 @@ func TestResume_HaltsOnUnsafeWrite(t *testing.T) {
 	_, _ = store.Do(ctx, "run3", "@llm/0", func(context.Context) (Record, error) {
 		return Record{Kind: StepModel, Message: &asst}, nil
 	})
-	_, _ = store.Do(ctx, "run3", "attempt:c1", func(context.Context) (Record, error) {
+	_, _ = store.Do(ctx, "run3", toolAttemptStep("c1"), func(context.Context) (Record, error) {
 		return Record{Kind: StepAttempt, ToolUseID: "c1"}, nil
 	})
 
@@ -306,7 +306,7 @@ func TestSubAgent_DurableTree(t *testing.T) {
 	}
 
 	// The sub-agent journaled under the hierarchical run ID — the tree is durable.
-	subHist, err := store.History(ctx, "root/c1")
+	subHist, err := store.History(ctx, SubRunID("root", "c1"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -551,14 +551,14 @@ func TestSubAgent_PropagatesHaltAndApproval(t *testing.T) {
 
 		// Seed the sub-run's journal so its charge is ATTEMPTED (side effect started) but has
 		// no recorded result — a crash mid-write. On resume the sub-agent must halt.
-		subRunID := "root/c1"
+		subRunID := SubRunID("root", "c1")
 		asst := Message{Role: RoleAssistant, Parts: []Part{ToolUse{ID: "s1", Name: "charge", Args: json.RawMessage(`{}`)}}}
 		if _, err := store.Do(ctx, subRunID, "@llm/0", func(context.Context) (Record, error) {
 			return Record{Kind: StepModel, Message: &asst}, nil
 		}); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := store.Do(ctx, subRunID, "attempt:s1", func(context.Context) (Record, error) {
+		if _, err := store.Do(ctx, subRunID, toolAttemptStep("s1"), func(context.Context) (Record, error) {
 			return Record{Kind: StepAttempt, ToolUseID: "s1"}, nil
 		}); err != nil {
 			t.Fatal(err)

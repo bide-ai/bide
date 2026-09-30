@@ -120,6 +120,9 @@ func (a *Agent) RunSaga(ctx context.Context, runID, input string) (Message, erro
 // runSaga is the shared body of RunSaga and StreamSaga; emit (may be nil) receives
 // lifecycle events as the loop runs.
 func (a *Agent) runSaga(ctx context.Context, runID, input string, emit func(AgentEvent)) (Message, error) {
+	if err := checkRunID(ctx, runID); err != nil {
+		return Message{}, err
+	}
 	if err := a.checkTools(); err != nil {
 		return Message{}, err // before a rollback, which looks compensators up by name
 	}
@@ -142,6 +145,9 @@ func (a *Agent) runSaga(ctx context.Context, runID, input string, emit func(Agen
 // runSagaWithTelemetry is the counterpart of runSaga that returns usage and turn count
 // for RunSagaResult. It uses the richer run return values directly.
 func (a *Agent) runSagaWithTelemetry(ctx context.Context, runID, input string, emit func(AgentEvent)) (Message, usageTotals, int, error) {
+	if err := checkRunID(ctx, runID); err != nil {
+		return Message{}, usageTotals{}, 0, err
+	}
 	if err := a.checkTools(); err != nil {
 		return Message{}, usageTotals{}, 0, err // before a rollback, which looks compensators up by name
 	}
@@ -216,7 +222,7 @@ func (a *Agent) rollbackRun(ctx context.Context, runID, root string) (compensate
 		case StepSagaFail:
 			failed[r.ToolUseID] = true
 		case StepAttempt:
-			if r.ToolUseID != "" {
+			if isToolAttempt(r) { // a Step's marker is not a call's
 				started[r.ToolUseID] = true
 				attemptedAt[r.ToolUseID] = r.AttemptedAt
 			}
@@ -236,7 +242,7 @@ func (a *Agent) rollbackRun(ctx context.Context, runID, root string) (compensate
 		// Sub-agent: recurse into its child run (using the SUB-agent's own tools), so its
 		// writes are compensated too, even if the call was cut off before it returned.
 		if sat, ok := tool.(*subAgentTool); ok {
-			cc, cu, ce := sat.sub.rollbackRun(ctx, runID+"/"+tu.ID, root)
+			cc, cu, ce := sat.sub.rollbackRun(ctx, SubRunID(runID, tu.ID), root)
 			compensated = append(compensated, cc...)
 			uncompensated = append(uncompensated, cu...)
 			if ce != nil {
@@ -267,7 +273,7 @@ func (a *Agent) rollbackRun(ctx context.Context, runID, root string) (compensate
 				continue
 			default:
 				// Retry-safe: running it again is safe, and yields the result to compensate.
-				rec, ce := a.store.Do(ctx, runID, tu.ID, func(ctx context.Context) (Record, error) {
+				rec, ce := a.store.Do(ctx, runID, ToolResultStep(tu.ID), func(ctx context.Context) (Record, error) {
 					out, e := tool.Call(ctx, tu.Args)
 					if e != nil {
 						return Record{}, e
@@ -284,7 +290,7 @@ func (a *Agent) rollbackRun(ctx context.Context, runID, root string) (compensate
 
 		if canUndo {
 			args, _ := argsFor(recs, tu.ID)
-			if _, ce := a.store.Do(ctx, runID, "@saga/compensate/"+tu.ID, func(ctx context.Context) (Record, error) {
+			if _, ce := a.store.Do(ctx, runID, sagaCompensateStep(tu.ID), func(ctx context.Context) (Record, error) {
 				if e := comp.Compensate(ctx, args, res.Result); e != nil {
 					return Record{}, e
 				}

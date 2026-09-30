@@ -23,7 +23,7 @@ func TestToolOutcomeUnknown_SideEffectIsNotRecorded(t *testing.T) {
 	if !errors.Is(err, ErrToolOutcomeUnknown) {
 		t.Fatalf("run err = %v, want ErrToolOutcomeUnknown", err)
 	}
-	if rec, ok := hasStep(t, store, "r1", "c1"); ok {
+	if rec, ok := hasStep(t, store, "r1", ToolResultStep("c1")); ok {
 		t.Fatalf("the call's unknown outcome was journaled as %s (is_error=%v)", rec.Result, rec.IsError)
 	}
 
@@ -49,7 +49,7 @@ func TestToolOutcomeUnknown_RetrySafeToolIsAFailure(t *testing.T) {
 	if _, err := New(m, store, lookup).Run(context.Background(), "r1", "balance?"); err != nil {
 		t.Fatalf("run err = %v, want the failure passed to the model", err)
 	}
-	if rec, ok := hasStep(t, store, "r1", "c1"); !ok || !rec.IsError {
+	if rec, ok := hasStep(t, store, "r1", ToolResultStep("c1")); !ok || !rec.IsError {
 		t.Fatalf("recorded %+v (found=%v), want a failed result", rec, ok)
 	}
 }

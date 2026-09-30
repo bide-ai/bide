@@ -17,7 +17,7 @@ func TestResolveHalt_MinHaltAge(t *testing.T) {
 	seed := func() *MemStore {
 		s := NewMemStore()
 		// Attempt marker stamped at base, no result: an unknown-outcome halt.
-		_, _ = s.Do(ctx, "r", "attempt:c1", func(context.Context) (Record, error) {
+		_, _ = s.Do(ctx, "r", toolAttemptStep("c1"), func(context.Context) (Record, error) {
 			return Record{Kind: StepAttempt, ToolUseID: "c1", AttemptedAt: base.UnixMilli()}, nil
 		})
 		return s
@@ -91,7 +91,7 @@ func TestResumeHalt_AttemptedAt(t *testing.T) {
 	_, _ = store.Do(ctx, "r", "@llm/0", func(context.Context) (Record, error) {
 		return Record{Kind: StepModel, Message: &asst}, nil
 	})
-	_, _ = store.Do(ctx, "r", "attempt:c1", func(context.Context) (Record, error) {
+	_, _ = store.Do(ctx, "r", toolAttemptStep("c1"), func(context.Context) (Record, error) {
 		return Record{Kind: StepAttempt, ToolUseID: "c1", AttemptedAt: at.UnixMilli()}, nil
 	})
 

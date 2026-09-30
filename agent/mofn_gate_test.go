@@ -173,8 +173,8 @@ func TestMofn_TallyStepJournaled(t *testing.T) {
 	if !ok || rec.Kind != StepValue {
 		t.Fatalf("approval-tally:c1 = %+v (found %v), want a StepValue", rec, ok)
 	}
-	// Step returns the recorded value without running fn, so the tally is read from the journal.
-	got, err := Step(context.Background(), store, "r1", "approval-tally:c1", func(context.Context) (ApprovalTally, error) {
+	// step returns the recorded value without running fn, so the tally is read from the journal.
+	got, err := step(context.Background(), store, "r1", ApprovalTallyStep("c1"), func(context.Context) (ApprovalTally, error) {
 		return ApprovalTally{}, errors.New("tally step not journaled")
 	})
 	if err != nil {
@@ -211,7 +211,7 @@ func TestMofn_AutoDenyWhenUnreachable(t *testing.T) {
 	if textOf(out) != "done" || charged != 0 {
 		t.Fatalf("out=%q charged=%d, want done/0", textOf(out), charged)
 	}
-	got, ok := hasStep(t, store, "r1", "c1")
+	got, ok := hasStep(t, store, "r1", ToolResultStep("c1"))
 	if !ok {
 		t.Fatal("no tool result recorded for the denied call")
 	}
@@ -230,7 +230,7 @@ func TestMofn_AutoDenyWhenUnreachable(t *testing.T) {
 	if _, err := New(&scriptModel{turns: [][]Emit{textTurn("done")}}, legacy, one).Run(context.Background(), "r1", "pay"); err != nil {
 		t.Fatal(err)
 	}
-	want, _ := hasStep(t, legacy, "r1", "c1")
+	want, _ := hasStep(t, legacy, "r1", ToolResultStep("c1"))
 	if got.Kind != want.Kind || !got.IsError || string(got.Result) != string(want.Result) {
 		t.Fatalf("m-of-n denied result = %+v, want the 1-of-1 denied result %+v", got, want)
 	}

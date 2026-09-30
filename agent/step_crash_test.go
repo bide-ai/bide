@@ -47,14 +47,14 @@ func TestStep_CrashAfterEffectDoesNotRepeatIt(t *testing.T) {
 }
 
 // A halted step is cleared the way a halted tool call is: ResolveHalt records the confirmed
-// outcome under the step's name, and the resumed step returns it without running fn.
-func TestStep_HaltResolvedByResolveHalt(t *testing.T) {
+// outcome under the step's name (ResolveStepHalt), and the resumed step returns it without running fn.
+func TestStep_HaltResolvedByResolveStepHalt(t *testing.T) {
 	for _, failed := range []bool{false, true} {
 		store := &crashOnce{Durable: NewMemStore(), crashName: "reserve"}
 		var reserved int
 		reserve := func(context.Context) (string, error) { reserved++; return "res-1", nil }
 		_, _ = Step(context.Background(), store, "order-42", "reserve", reserve)
-		if err := ResolveHalt(context.Background(), store, "order-42", "reserve", "res-1", failed); err != nil {
+		if err := ResolveStepHalt(context.Background(), store, "order-42", "reserve", "res-1", failed); err != nil {
 			t.Fatal(err)
 		}
 		got, err := Step(context.Background(), store, "order-42", "reserve", reserve)

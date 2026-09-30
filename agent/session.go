@@ -110,6 +110,11 @@ func (a *Agent) Session(ctx context.Context, id string) (*Session, error) {
 	if strings.ContainsRune(id, '/') {
 		return nil, fmt.Errorf("Session: id %q contains '/': %w", id, ErrConfig)
 	}
+	if IsSubRun(id) {
+		// The session's turns run under its id; one with the sub-run separator could name a
+		// sub-agent's run (see SubRunID).
+		return nil, fmt.Errorf("Session: id %q contains %q, which separates a sub-agent's run from its parent's: %w", id, subRunSep, ErrConfig)
+	}
 	s := &Session{agent: a, id: id}
 	if err := s.reload(ctx); err != nil {
 		return nil, err

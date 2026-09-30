@@ -58,7 +58,7 @@ func countDecisions(t *testing.T, store Durable, runID, toolUseID, approver stri
 // recorded value without running fn, so a missing record fails the test.
 func journaledTally(t *testing.T, store Durable, runID, toolUseID string) ApprovalTally {
 	t.Helper()
-	got, err := Step(context.Background(), store, runID, "approval-tally:"+toolUseID, func(context.Context) (ApprovalTally, error) {
+	got, err := step(context.Background(), store, runID, ApprovalTallyStep(toolUseID), func(context.Context) (ApprovalTally, error) {
 		return ApprovalTally{}, errors.New("approval tally not journaled")
 	})
 	if err != nil {
@@ -152,7 +152,7 @@ func TestMofnDST_DeterministicAcrossResume(t *testing.T) {
 	if got := countsOf(journaledTally(t, store, "r1", "c1")); !reflect.DeepEqual(got, wantTally) {
 		t.Fatalf("journaled tally = %+v, want %+v", got, wantTally)
 	}
-	result, ok := hasStep(t, store, "r1", "c1")
+	result, ok := hasStep(t, store, "r1", ToolResultStep("c1"))
 	if !ok || result.Kind != StepToolResult || result.IsError {
 		t.Fatalf("tool result c1 = %+v (found %v), want a successful StepToolResult", result, ok)
 	}
@@ -187,7 +187,7 @@ func TestMofnDST_DeterministicAcrossResume(t *testing.T) {
 		if after := mofnHistory(t, store, "r1"); !reflect.DeepEqual(after, before) {
 			t.Fatalf("%s: a redundant resume changed the journal:\nbefore=%+v\nafter =%+v", r.name, before, after)
 		}
-		for _, name := range []string{"approval-tally:c1", "c1", runCompleteStep} {
+		for _, name := range []string{"approval-tally:c1", ToolResultStep("c1"), runCompleteStep} {
 			if n := countSteps(t, store, "r1", name); n != 1 {
 				t.Fatalf("%s: %d %q records, want exactly 1", r.name, n, name)
 			}
@@ -221,7 +221,7 @@ func TestMofnDST_InterleavedDecisions(t *testing.T) {
 	if _, ok := hasStep(t, store, "r1", "approval-tally:c1"); ok {
 		t.Fatal("a pending pause journaled an approval tally; want only the terminal tally")
 	}
-	if _, ok := hasStep(t, store, "r1", "c1"); ok {
+	if _, ok := hasStep(t, store, "r1", ToolResultStep("c1")); ok {
 		t.Fatal("a pending pause recorded a tool result")
 	}
 
