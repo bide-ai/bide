@@ -509,7 +509,7 @@ func RequireTag(tag string) agent.ToolMiddleware {
 
 ## Модули
 
-Bide представляет собой репозиторий с несколькими модулями: лёгкое по зависимостям **ядро** (`github.com/bide-ai/bide`: цикл, schema, middleware, адаптеры моделей, конструктор потоков `plan`, `audit`, govern; зависимости только `x/sync` + `x/text`) плюс по одному модулю на каждый тяжёлый адаптер (`mcp`, `trace`, `store/sqlite`, `store/postgres`, `govern/redislog`, `govern/sqlitelog`, `govern/postgreslog`, `codec/gcf`). Импортируйте адаптер, и вы тянете его дерево зависимостей; импортируйте только ядро, и не тянете. У потребителя, использующего только ядро, поверхность внешних модулей равна 2, а не 54. См. [docs/reference/module-structure.md](../../docs/reference/module-structure.md).
+Bide представляет собой репозиторий с несколькими модулями: лёгкое по зависимостям **ядро** (`github.com/bide-ai/bide`: цикл, schema, middleware, адаптеры моделей, конструктор потоков `plan`, `audit`; зависимости только `x/sync` + `x/text`) плюс по одному модулю на каждый тяжёлый адаптер (`mcp`, `trace`, `store/sqlite`, `store/postgres`, `govern/redislog`, `govern/sqlitelog`, `govern/postgreslog`, `codec/gcf`). Импортируйте адаптер, и вы тянете его дерево зависимостей; импортируйте только ядро, и не тянете. У потребителя, использующего только ядро, поверхность внешних модулей равна 2, а не 54. См. [docs/reference/module-structure.md](../../docs/reference/module-structure.md).
 
 ## Архитектура
 
