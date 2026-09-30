@@ -174,7 +174,9 @@ func journalPrefix(runID string, recs []agent.Record, th TreeHead) ([]agent.Reco
 
 // SignTreeHead signs a TreeHead with an ed25519 key. Anchor the result out-of-band (this is
 // what makes the journal tamper-evident against later rewrites). Build th with NewTreeHead,
-// NewAbsenceTreeHead, or EventLog.TreeHead: a head of an unknown kind never verifies.
+// NewAbsenceTreeHead, or EventLog.TreeHead: a head of an unknown kind never verifies. Like
+// ed25519.Sign it panics if priv is not ed25519.PrivateKeySize bytes; SignTreeHeadWith with an
+// Ed25519Signer returns that as an error instead.
 func SignTreeHead(th TreeHead, priv ed25519.PrivateKey) SignedTreeHead {
 	return SignedTreeHead{TreeHead: th, Signature: ed25519.Sign(priv, th.canonical())}
 }

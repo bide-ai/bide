@@ -51,8 +51,8 @@ func (Ed25519Signer) Alg() string { return AlgEd25519 }
 
 // Sign returns the Ed25519 signature over m, or an error if the private key has the wrong length.
 func (s Ed25519Signer) Sign(m []byte) ([]byte, error) {
-	if len(s.Priv) != ed25519.PrivateKeySize {
-		return nil, fmt.Errorf("audit: ed25519 private key is %d bytes, want %d", len(s.Priv), ed25519.PrivateKeySize)
+	if err := checkPrivateKey(s.Priv); err != nil {
+		return nil, err
 	}
 	return ed25519.Sign(s.Priv, m), nil
 }
@@ -161,4 +161,13 @@ func decodeHybrid(sig []byte) (ed, mldsaSig []byte, ok bool) {
 		return nil, nil, false
 	}
 	return sig[4 : 4+n], sig[4+n:], true
+}
+
+// checkPrivateKey refuses an ed25519 private key that is not ed25519.PrivateKeySize bytes, on which
+// ed25519.Sign panics.
+func checkPrivateKey(priv ed25519.PrivateKey) error {
+	if len(priv) != ed25519.PrivateKeySize {
+		return fmt.Errorf("audit: ed25519 private key is %d bytes, want %d", len(priv), ed25519.PrivateKeySize)
+	}
+	return nil
 }

@@ -67,6 +67,10 @@ func TestSigningWithBadKey_IsAnError(t *testing.T) {
 				_, err := audit.SignAbsenceRoot(recs, audit.ToolUseKeys, th, priv, 2)
 				return err
 			},
+			"SignTreeHeadWith(Ed25519Signer)": func() error {
+				_, err := audit.SignTreeHeadWith(th, audit.Ed25519Signer{Priv: priv})
+				return err
+			},
 			"CertifyRun": func() error {
 				_, err := audit.CertifyRun(ctx, store, "r", sth, audit.RunCertSpec{}, priv, 2)
 				return err

@@ -36,8 +36,12 @@ func NewAbsenceTreeHead(records []agent.Record, set KeySet, journal TreeHead, ti
 
 // SignAbsenceRoot commits and signs a run's key set in one call: NewAbsenceTreeHead, then
 // SignTreeHead. Absence proofs verify against this separate commitment (never the journal STH).
-// Anchor the result like any STH.
+// Anchor the result like any STH. A private key that is not ed25519.PrivateKeySize bytes is an
+// error.
 func SignAbsenceRoot(records []agent.Record, set KeySet, journal TreeHead, priv ed25519.PrivateKey, timestamp int64) (SignedTreeHead, error) {
+	if err := checkPrivateKey(priv); err != nil {
+		return SignedTreeHead{}, err
+	}
 	th, err := NewAbsenceTreeHead(records, set, journal, timestamp)
 	if err != nil {
 		return SignedTreeHead{}, err

@@ -3,6 +3,7 @@ package audit
 import (
 	"context"
 	"crypto/ed25519"
+	"fmt"
 	"sync"
 	"time"
 
@@ -33,7 +34,14 @@ type AuditedStore struct {
 
 // NewAuditedStore wraps inner so each journal growth is signed with priv and published to
 // anchor. Timestamps default to time.Now().UnixNano(); override with WithClock for tests.
+//
+// It panics if priv is not ed25519.PrivateKeySize bytes. Such a key could sign nothing, and the
+// store may not fail a step once the inner store has recorded it, so the key is refused here,
+// before any step, rather than when the first step is anchored.
 func NewAuditedStore(inner agent.Durable, priv ed25519.PrivateKey, anchor Anchor) *AuditedStore {
+	if err := checkPrivateKey(priv); err != nil {
+		panic(fmt.Sprintf("audit: NewAuditedStore: %v", err))
+	}
 	return &AuditedStore{
 		inner:    inner,
 		priv:     priv,
