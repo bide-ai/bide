@@ -15,6 +15,7 @@
 # Each .cfg names its group and its expected result in comment lines:
 #   \* GROUP: ci | nightly | regress | finding | limit
 #   \* EXPECT: pass | invariant <Name> | liveness
+#   \* VACUITY: skip <reason>   (optional: a passing config in which the effect must never fire)
 # "pass" configs are also run once with the vacuity invariant EffectNotReachable, which TLC must
 # report violated: a model in which the effect never fires satisfies every safety property.
 #
@@ -149,7 +150,12 @@ run_cfg() {
       else
         tail -60 "$out"; record "$name" FAIL "exit $status, expected no error"
       fi
-      # Vacuity: the same model, with the only invariant that the effect never fires.
+      # Vacuity: the same model, with the only invariant that the effect never fires. A config
+      # whose point is that the effect never fires says so with "VACUITY: skip <reason>".
+      if [ "$(meta VACUITY "$cfg" | cut -d' ' -f1)" = skip ]; then
+        record "$name (vacuity)" ok "skipped: $(meta VACUITY "$cfg" | cut -d' ' -f2-)"
+        rm -f "$out"; return
+      fi
       tmp="$(dirname "$cfg")/.vacuity-$$.cfg"
       grep -vE '^(INVARIANTS?|PROPERTY|PROPERTIES)( |$)' "$cfg" >"$tmp"
       echo "INVARIANT EffectNotReachable" >>"$tmp"
