@@ -2,8 +2,8 @@
 
 This is the authoritative page for what the `audit` package's cryptography does and does not
 guarantee. If you are deciding whether the audit trail meets a compliance or trust requirement,
-read this first. The package is stdlib-only (`crypto/sha256`, `crypto/ed25519`, and the
-post-quantum options below), with no external dependencies.
+read this first. The package is stdlib-only (`crypto/sha256`, `crypto/ed25519`, and `crypto/mldsa`
+for the post-quantum options below), with no external dependencies.
 
 ## What IS guaranteed
 
@@ -11,18 +11,19 @@ post-quantum options below), with no external dependencies.
   the cryptographic commitment (the hash-chain `Head` or the RFC 6962 Merkle `Root`). A verifier
   who holds the committed root detects any such change.
 - **Authenticity.** A signed tree head (`SignTreeHead` / `Verify`) binds the root to a size and a
-  timestamp under a signing key. A verifier with the corresponding public key confirms the
-  commitment was produced by the key holder and was not forged.
+  timestamp under a signing key, and signs the name of its scheme with them. A verifier with the
+  corresponding public key confirms the commitment was produced by the key holder and was not
+  forged; a signature is never checked under a scheme other than the one it was made with.
 - **Domain separation between trees.** One key signs several trees per run: the journal, the
   absence key sets projected from it (tool uses, used policies), and the event stream. The signed
-  encoding (`bide.audit.sth.v4`) commits to the tree's **kind** and the **run ID**, and a key-set
+  encoding (`bide.audit.sth.v5`) commits to the scheme, the tree's **kind**, and the **run ID**, and a key-set
   head also commits to the journal tree (size and root) it was projected from. Every verifier
   requires the kind it expects: a journal proof needs a journal head of the bundle's run, an
   absence proof needs a key-set head of the set its key belongs to, and a run certificate needs a
   used-policy head of its own run projected from its own journal tree. So no head can be replayed
   as another kind of tree or for another run, and every run ID a verifier reports is authenticated.
 - **Every reported field is verified.** An `EvidencePackage` is checked field by field: its format,
-  its key, its run (against the signed head), each item's kind and label (against the proven
+  its key (the `alg` and `public_key` it names must be the verifier's), its run (against the signed head), each item's kind and label (against the proven
   record), its grant chain (against the anchored grant leaves), its run certificate (for this run
   and tree, against the auditor's allowlist), and its consistency proof (between two signed heads
   of the run). The package is sealed with the log key, so its label, the one field no proof covers,
@@ -35,8 +36,11 @@ post-quantum options below), with no external dependencies.
   to a key holder who cannot later disown it. The proof commits to the identity *claim* embedded
   in a governed leaf (see the identity boundary below).
 - **Selective disclosure.** An inclusion proof (`Prove` / `VerifyInclusion`, or a portable
-  `ProofBundle`) proves that one record is in a committed run. A `ProofBundle` discloses exactly:
-  the record (its full content, including its random 32-byte salt), its index in the journal, the
+  `ProofBundle`) proves that one record is in a committed run. The leaf is the bytes the journal
+  stores for the record, verbatim, and the proof carries them (`record_bytes`); the verifier hashes
+  those bytes and decodes them only for display and role checks, ignoring fields it does not know,
+  so a record written by a newer release still verifies. A `ProofBundle` discloses exactly:
+  the record (its full stored bytes, including its random 32-byte salt), its index in the journal, the
   run's size at the signed head, the signed head itself (kind, run ID, size, root, timestamp), and
   the O(log n) sibling hashes on its audit path. It does not disclose any other record's content,
   name, or kind, and those hashes cannot be tested against a guess: every journal record carries
@@ -48,7 +52,7 @@ post-quantum options below), with no external dependencies.
   `EventInclusion`, checked with `VerifyEventInclusion`) discloses exactly: the proven event's
   random 32-byte salt, its index in the log, the log's size, and the O(log n) sibling hashes on its
   audit path; the verifier holds the event itself, and a signed event head adds kind, run ID, size,
-  root, and timestamp. Every event leaf (`bide.audit.event-leaf.v2`) commits to its own salt, so
+  root, and timestamp. Every event leaf (`bide.audit.event-leaf.v3`) commits to its own salt, so
   the sibling hashes cannot be tested against a guessed neighbouring event, even a two-valued tool
   result. A live `EventLog` draws each salt from `crypto/rand`; the journal projection
   (`EventLogFromJournal`, `PersistJournal`) derives it one-way from the random salt of the journal
@@ -56,7 +60,7 @@ post-quantum options below), with no external dependencies.
   the event's leaf, which holds nothing the record does not.
 - **Anchor-log proofs.** Anchor-log leaves are not salted. An anchor proof's path covers
   neighbouring entries, whose sequence numbers and run IDs may be guessable, but each entry also
-  holds a signed tree head: its root commits to salted leaves and its Ed25519 signature needs the
+  holds a signed tree head: its root commits to salted leaves and its signature needs the
   signing key, so a proof holder confirms a neighbouring entry only by already holding that exact
   signed head. Do not anchor an unsigned head: it has no such entropy.
 - **Absence proofs name their neighbours.** An absence proof (`ProveAbsent`, `AbsenceBundle`)
@@ -67,8 +71,8 @@ post-quantum options below), with no external dependencies.
   bracket the key). It does not disclose those calls' records. Key-set leaves are not salted, so
   the sibling hashes on a neighbour's path can be tested against a guessed key (a policy digest
   is usually public).
-- **Canonical encodings.** Records, grants, anchor entries, and evidence seals are hashed or signed
-  over their JSON encoding, which is one-to-one only over valid UTF-8 (JSON rewrites invalid bytes
+- **Canonical encodings.** A journal record is hashed over its stored bytes, never re-encoded.
+  Grants, events, anchor entries, and evidence seals are hashed or signed over their JSON encoding, which is one-to-one only over valid UTF-8 (JSON rewrites invalid bytes
   to U+FFFD). A value with invalid UTF-8 in any string is refused, never committed, signed, or
   verified, so two different values never share a leaf or a signature. `bide-audit` reads every
   artifact with `audit.UnmarshalStrict`, which rejects duplicate keys, keys that match a field only
@@ -78,6 +82,10 @@ post-quantum options below), with no external dependencies.
   lists as required), so a `Func` tool reads exactly the values its arguments spell out: no
   dropped, case-folded, or duplicated name stands for a value the text does not show. Malformed keys (the wrong length, or none) verify nothing;
   they never panic.
+- **Verdicts are errors.** Every verifier returns an `error`, and only `nil` means verified. A failure
+  wraps exactly one of `audit.ErrNotVerified` (the artifact was read and does not hold),
+  `audit.ErrFormat` (not the format this version reads), or `audit.ErrMalformed` (cannot be read as
+  what it claims to be). Before 1.0 a verifier reads only the current format of each artifact.
 
 ## What is NOT guaranteed: confidentiality
 
@@ -189,15 +197,20 @@ the claim's truth beyond the key custody behind the run's signatures.
 Signed tree heads sign under a pluggable scheme, all in the Go 1.27 standard library, so choosing
 one adds no dependency:
 
-- `ed25519` (default): small, fast, FIPS-approved.
-- `ml-dsa-65` (FIPS 204): post-quantum.
-- `ed25519+ml-dsa-65` (hybrid): accepted only if both signatures verify.
+- `ed25519` (`Ed25519Signer`): small, fast, FIPS-approved.
+- `ml-dsa-65` (`MLDSASigner`, FIPS 204): post-quantum.
+- `ed25519+ml-dsa-65` (`HybridSigner`): accepted only if both signatures verify. Each component
+  signs a distinct label followed by the message (`bide.hybrid.ed25519.v1`,
+  `bide.hybrid.mldsa65.v1`), so the ed25519 half stripped out of a hybrid signature verifies neither
+  as a hybrid signature nor as a plain ed25519 signature over the same head.
 
 Why it matters for audit specifically: anchors are long-lived, so they face a harvest-now,
 forge-later exposure. The signature is the quantum-vulnerable part; the SHA-256 Merkle hashing is
-not affected and is unchanged. `SignTreeHeadWith` / `VerifyWith` carry the scheme end to end
-(including `ProofBundle.VerifyWith` / `AbsenceBundle.VerifyWith`), and every scheme signs the same
-kind- and run-bound encoding. One toolchain
+not affected and is unchanged. Every signing entry point takes an `audit.Signer` and every
+verifier an `audit.Verifier`, so the scheme is carried end to end (tree heads, evidence seals,
+run certificates, grants, the anchored store), and every scheme signs the same scheme-, kind- and
+run-bound encoding. An approver's m-of-n decision is journaled with the scheme it was signed under
+(`Record.ApproverAlg`), and the gate counts it only under a verifier of that scheme. One toolchain
 constraint: `crypto/mldsa` is unavailable under the FIPS 140-3 module, so FIPS mode and ML-DSA
 are mutually exclusive. A FIPS-required deployment takes ed25519; a post-quantum-focused one
 takes ML-DSA or hybrid.
@@ -208,14 +221,15 @@ Verification never requires trusting the producer or importing the producer's ru
 
 - The **`bide-audit` CLI** (`cmd/bide-audit`) is the auditor-facing front end. It imports
   only the core and `audit` packages and no store backend, so it operates on an exported journal
-  (a JSON array of `Record`) plus a signed tree head. `verify` and the other verify verbs print a
+  (an `audit.JournalExport` of each record's stored bytes) plus a signed tree head. `verify` and the other verify verbs print a
   one-line verdict and set the exit code (**0 = verified, 1 = not verified**, 2 = usage error,
   3 = no verdict, 4 = an input is unreadable or unusable; only 0 means verified), which is
-  the CI-gate contract. The `-pubkey` flag must come from the anchor operator out-of-band, never
+  the CI-gate contract. The `-pubkey` flag (`<alg>:<hex>`, or bare ed25519 hex) must come from the anchor operator out-of-band, never
   from the bundle: that is what makes it a proof you verify rather than a log you trust.
 - The **`audit/verify` package** is stdlib-only (no `agent` dependency) and checks inclusion,
-  consistency, and tree-head signatures from raw leaf bytes (`verify.JournalLeaf` builds a record's
-  from the JSON a store persists for it, salt included). A third party who will not import the
+  consistency, and tree-head signatures under all three schemes (`verify.TreeHead` with a
+  `verify.NewVerifier`) from raw leaf bytes (`verify.JournalLeaf` builds a record's from the bytes a
+  store persists for it, a proof's `record_bytes`, salt included). A third party who will not import the
   SDK at all can vendor just this package, or reimplement it from RFC 6962 and check the SDK
   against it. The two verification paths are cross-checked bit-for-bit in the tests, so the
   standalone mirror cannot drift.

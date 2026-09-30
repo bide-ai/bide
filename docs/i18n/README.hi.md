@@ -357,14 +357,14 @@ a2, _ := s.Send(ctx, "and its population?")   // sees turn 1 in context
 <!-- docsnip: setup ctx context.Context; store agent.Durable; runID string; priv ed25519.PrivateKey -->
 ```go
 head, _ := audit.Head(ctx, store, runID)     // SHA-256 chain over the journal (persisted order)
-sig := audit.Sign(head, priv)                // anchor it: sign / publish out-of-band
+sig, _ := audit.Sign(head, audit.Ed25519Signer{Priv: priv}) // anchor it: sign / publish out-of-band
 ```
 
 एक रिकॉर्ड का कोई भी संशोधन / प्रविष्टि / विलोपन / पुनः-क्रमण हेड को बदल देता है। **सुरक्षा मॉडल:** यह अखंडता बिना शर्त देता है, और छेड़छाड़-स्पष्टता *तब जब आप हेड को बैंड-से-बाहर एंकर करते हैं* (एक ही DB में एक शृंखला जिसे एक हमलावर नियंत्रित करता है, दोबारा लिखी और दोबारा हैश की जा सकती है); पैकेज दस्तावेज़ देखें। यह अनुपालना/उद्यम सीवन है: प्रमाणनीय ज़्यादा-से-ज़्यादा-एक-बार साइड इफ़ेक्ट *साथ ही* ठीक इस बात का सत्यापनीय रिकॉर्ड कि एजेंट ने क्या किया।
 
 **चयनात्मक प्रकटीकरण** के लिए, `audit.Root` / `Prove` / `VerifyInclusion` एक **RFC 6962** (Certificate Transparency) Merkle ट्री बनाते हैं, ताकि आप एक O(log n) समावेशन प्रमाण के माध्यम से सिद्ध कर सकें कि एक रिकॉर्ड एक प्रतिबद्ध रन का भाग है, *बाकी रिकॉर्ड उजागर किए बिना* (जैसे एक ऑडिटर को दिखाएँ कि एक चार्ज हुआ, कोई अन्य ग्राहक या प्रॉम्प्ट प्रकट किए बिना)। और `ProveConsistency` / `VerifyConsistency` सिद्ध करते हैं कि एक पूर्ववर्ती रूट एक बाद वाले का **append-only उपसर्ग** है: कि इतिहास में केवल जोड़ा गया, कभी दोबारा लिखा या पुनः-क्रमबद्ध नहीं किया गया (ट्रांसपेरेंसी-लॉग गारंटी)। कार्यान्वयन प्रकाशित RFC 6962 परीक्षण वेक्टरों के विरुद्ध जाँचा गया है।
 
-`SignTreeHead` CT-शैली का **हस्ताक्षरित ट्री हेड (Signed Tree Head)** उत्पन्न करता है, `{Size, Root, Timestamp}` जो Ed25519 से हस्ताक्षरित है, वह कलाकृति जिसे आप प्रकाशित करते हैं। पूरा प्रवाह: एक STH पर हस्ताक्षर करें, बाद में एक समावेशन प्रमाण के साथ एक एकल रिकॉर्ड प्रकट करें जिसे एक ऑडिटर हस्ताक्षरित रूट के विरुद्ध जाँचता है, और दो STH के बीच append-only वृद्धि सिद्ध करें। मॉडल, API, और एंड-टू-एंड अनुपालना प्रवाह के लिए [docs/guides/audit.md](../../docs/guides/audit.md) देखें।
+`SignTreeHead` CT-शैली का **हस्ताक्षरित ट्री हेड (Signed Tree Head)** उत्पन्न करता है, `{Kind, RunID, Size, Root, TimestampNanos}` जो अपनी हस्ताक्षर योजना सहित किसी भी `audit.Signer` (Ed25519, ML-DSA-65, या दोनों का हाइब्रिड) से हस्ताक्षरित है, वह कलाकृति जिसे आप प्रकाशित करते हैं। पूरा प्रवाह: एक STH पर हस्ताक्षर करें, बाद में एक समावेशन प्रमाण के साथ एक एकल रिकॉर्ड प्रकट करें जिसे एक ऑडिटर हस्ताक्षरित रूट के विरुद्ध जाँचता है, और दो STH के बीच append-only वृद्धि सिद्ध करें। मॉडल, API, और एंड-टू-एंड अनुपालना प्रवाह के लिए [docs/guides/audit.md](../../docs/guides/audit.md) देखें।
 
 ## RAG और स्मृति (अपनी लाएँ)
 
@@ -456,7 +456,7 @@ a := agent.New(model, store, refund).WithApproverVerifiers(keysByApprover)
 // each approver, out of band, signs the paused call they were shown:
 sig, _ := signer.Sign(agent.ApprovalDecisionBytes(pend.Subject(), "finance", true))
 agent.SubmitDecision(ctx, store, agent.Decision{RunID: pend.RunID, ToolUseID: pend.ToolUseID,
-	ApproverID: "finance", Approved: true, Signature: sig})
+	ApproverID: "finance", Approved: true, Alg: signer.Alg(), Signature: sig})
 ```
 
 फिर `audit.ApprovalEvidence` और `audit.VerifyApprovals` (या `bide-audit verify-approvals`) ऑफ़लाइन सिद्ध करते हैं कि k नामित अनुमोदकों ने ठीक इसी कॉल पर उसके चलने से *पहले*, अपेक्षित नीति के तहत, हस्ताक्षर-स्वीकृति दी, ऐसे साक्ष्य से जो किसी निर्णय को बिना पकड़े छोड़ नहीं सकता। हर अनुमोदक की अपनी कुंजी होनी चाहिए: जिस नीति के दो अनुमोदक एक ही कुंजी पर पहुँचते हैं, उसे `ErrConfig` के साथ अस्वीकार किया जाता है, क्योंकि उस कुंजी का धारक दोनों की ओर से हस्ताक्षर कर सकता है। देखें [अनुमोदन गाइड](../../docs/guides/hitl-approval.md); अलग-अलग प्रोसेसों के आर-पार `examples/approval` में चलाने योग्य।

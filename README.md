@@ -561,8 +561,8 @@ history with a hash chain, so a run's execution is verifiable:
 
 <!-- docsnip: setup ctx context.Context; store agent.Durable; runID string; priv ed25519.PrivateKey -->
 ```go
-head, _ := audit.Head(ctx, store, runID)     // SHA-256 chain over the journal (persisted order)
-sig := audit.Sign(head, priv)                // anchor it: sign / publish out-of-band
+head, _ := audit.Head(ctx, store, runID)                     // SHA-256 chain over the stored journal bytes
+sig, _ := audit.Sign(head, audit.Ed25519Signer{Priv: priv}) // anchor it: sign / publish out-of-band
 ```
 
 Any modify / insert / delete / reorder of a record changes the head. **Security model:** this
@@ -579,8 +579,11 @@ single charge happened, exposing no other customers or prompts). And `ProveConsi
 was only appended, never rewritten or reordered (the transparency-log guarantee). The implementation
 is checked against the published RFC 6962 test vectors.
 
-`SignTreeHead` produces the CT-style **Signed Tree Head**, `{Size, Root, Timestamp}` signed with
-Ed25519, the artifact you publish. The full flow: sign an STH, later disclose a single record with an
+`SignTreeHead` produces the CT-style **Signed Tree Head** (format `bide.audit.sth.v5`), `{Kind, RunID,
+Size, Root, TimestampNanos}` signed together with its scheme under any `audit.Signer`: Ed25519,
+ML-DSA-65 (post-quantum), or a hybrid of both. That is the artifact you publish. Leaves commit to the
+bytes the journal stores for each record, verbatim, so a proof carries those bytes (`record_bytes`) and
+a record written by a newer release with fields this one does not know still verifies. The full flow: sign an STH, later disclose a single record with an
 inclusion proof an auditor checks against the signed root, and prove append-only growth between two STHs.
 See [docs/guides/audit.md](docs/guides/audit.md) for the model, the API, and the end-to-end compliance flow.
 
@@ -699,11 +702,12 @@ a := agent.New(model, store, refund).WithApproverVerifiers(keysByApprover)
 // each approver, out of band, signs the paused call they were shown:
 sig, _ := signer.Sign(agent.ApprovalDecisionBytes(pend.Subject(), "finance", true))
 agent.SubmitDecision(ctx, store, agent.Decision{RunID: pend.RunID, ToolUseID: pend.ToolUseID,
-	ApproverID: "finance", Approved: true, Signature: sig})
+	ApproverID: "finance", Approved: true, Alg: signer.Alg(), Signature: sig})
 ```
 
 `audit.ApprovalEvidence` and `audit.VerifyApprovals` (or `bide-audit verify-approvals`) then prove
-offline that k named approvers signed off on this exact call *before* it ran, under the expected
+offline that k named approvers signed off on this exact call *before* it ran (each decision counts
+only under the signature scheme journaled with it, which must be its approver key's), under the expected
 policy, from evidence that cannot leave a decision out unnoticed. Each approver needs a key of their
 own: a policy two of whose approvers resolve to one key is refused with `ErrConfig`, since whoever
 holds that key could sign as both. See the [approval guide](docs/guides/hitl-approval.md); runnable across

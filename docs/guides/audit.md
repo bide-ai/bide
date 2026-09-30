@@ -3,7 +3,7 @@
 The durable journal records every step of a run. The `audit` package turns it into a
 **verifiable, tamper-evident, selectively-disclosable** record: the compliance/enterprise
 side of the moat: *provable at-most-once side effects* plus *a cryptographic record of exactly
-what the agent did*. Stdlib-only (`crypto/sha256`, `crypto/ed25519`), no external deps.
+what the agent did*. Stdlib-only (`crypto/sha256`, `crypto/ed25519`, `crypto/mldsa`), no external deps.
 
 ## Security model (read this first)
 
@@ -19,23 +19,42 @@ what the agent did*. Stdlib-only (`crypto/sha256`, `crypto/ed25519`), no externa
   commits to its **kind** and its **run ID**, and a key-set head also commits to the journal tree it
   was projected from. Every verifier requires the kind it expects, so a head signed for one tree
   never verifies as another, and the run ID a verifier reports is the run the signer committed to.
-- **Canonical bytes**: leaves, grants, and seals are hashed or signed over JSON, which is injective
-  only over valid UTF-8 (encoding/json rewrites invalid bytes to U+FFFD). A record, grant, or
-  anchor entry with invalid UTF-8 in any string is refused rather than committed or verified.
+- **Stored bytes, never re-encoded**: a journal leaf commits to the bytes the journal stores for the
+  record (`agent.Record.Raw`), verbatim. A proof carries those bytes (`record_bytes`, base64) and
+  the verifier hashes exactly them; it decodes them only to display the record and to check its role
+  (its kind and name), leniently, the way the journal itself reads them. So a record written by a
+  newer release, with fields this one does not know, verifies, and what a proof commits to never
+  depends on how this release encodes a record.
+- **Canonical bytes**: grants, seals, and event and anchor leaves are hashed or signed over JSON,
+  which is injective only over valid UTF-8 (encoding/json rewrites invalid bytes to U+FFFD). A
+  grant, event, or anchor entry with invalid UTF-8 in any string is refused rather than committed
+  or verified.
   `bide-audit` reads every artifact with `audit.UnmarshalStrict`, which rejects duplicate keys,
   keys that differ from a field only in case, unknown fields, invalid UTF-8, escaped lone
   surrogates, and base64 that is not the standard encoding of its bytes (line breaks, stray bits),
   and checks a message part against the fields of its type, so the file a person reads is exactly
-  the data that is verified.
+  the data that is verified. It checks the `format` of every artifact it meets first, including one
+  artifact carried inside another (a signed tree head inside a proof), so an artifact of another
+  format fails with `audit.ErrFormat`.
+- **Errors, not booleans**: every verifier returns an `error`, and only `nil` means verified. A
+  failure wraps exactly one of `audit.ErrNotVerified` (read and understood, and it does not hold),
+  `audit.ErrFormat` (not a format this version reads), or `audit.ErrMalformed` (cannot be read as
+  what it claims to be; `ErrFormat` wraps it, and it wraps `agent.ErrProtocol`). A caller's mistake,
+  such as no verifier, wraps `agent.ErrConfig`. The report verifiers (`EvidencePackage.Verify`,
+  `VerifyRun`, `VerifyApprovals`) return their report together with the error.
+- **Format policy (before 1.0)**: producers write the current format of each artifact and verifiers
+  read only the current format; an artifact an older release made is refused with `ErrFormat` and is
+  re-created from the journal. From 1.0 on, verifiers will read the current format and the one
+  before it.
 
 ## The four primitives
 
 | API | Proves | A verifier needs |
 |---|---|---|
 | `Head` + `Sign` / `VerifySignature` | the whole run is intact | the head + signature |
-| `Root` / `Prove` / `VerifyInclusion` | **one record** is in a committed run, without revealing the rest | that record + its O(log n) proof + the root |
+| `Root` / `Prove` / `VerifyInclusion` | **one record** is in a committed run, without revealing the rest | that record's stored bytes + its O(log n) proof + the root |
 | `ProveConsistency` / `VerifyConsistency` | history was **only appended**, never rewritten/reordered | two roots + the proof |
-| `TreeHead` / `SignTreeHead` / `Verify` | a **signed** commitment binding kind, run, root, size, and time | the STH + public key |
+| `TreeHead` / `SignTreeHead` / `Verify` | a **signed** commitment binding scheme, kind, run, root, size, and time | the STH + a `Verifier` for the key |
 
 `Head` is a linear SHA-256 hash chain (simple whole-run commitment). `Root` is the RFC 6962
 Merkle tree: the same commitment, but it supports per-record inclusion proofs and consistency
@@ -43,21 +62,24 @@ proofs. Use `Head` when you only ever reveal the whole run; use `Root` (+ STH) w
 disclosure or append-only proofs matter.
 
 **Encoding versions.** A journal leaf hashes as
-`SHA-256(0x00 || "bide.audit.journal-leaf.v1\x00" || agent.EncodeRecord(record))`. The journal
-encoding does not HTML-escape (unlike v0.6.0's) and includes the record's `salt`: 32 random bytes
+`SHA-256(0x00 || "bide.audit.journal-leaf.v1\x00" || stored bytes)`, where the stored bytes are the
+record as the journal holds it (`agent.Record.Raw`; `audit.JournalLeafHash` computes it). A record
+built in memory has no stored bytes and so no leaf. A record a redaction replaced with a tombstone
+keeps its place in every tree through the leaf hash the tombstone records; it can no longer be
+proven itself. The stored bytes do not HTML-escape (unlike v0.6.0's) and include the record's `salt`: 32 random bytes
 a store sets when it first journals the record (`agent.JournalEntry`), so that a proof's sibling
 hashes cannot be matched against a guessed neighbouring record. A record without a 32-byte salt
 is refused. Every other kind of leaf carries its own tag too (`bide.audit.key-leaf.v1`,
-`bide.audit.event-leaf.v2`, `bide.audit.anchor-leaf.v1`), so a leaf names its kind and version
+`bide.audit.event-leaf.v3`, `bide.audit.anchor-leaf.v1`), so a leaf names its kind and version
 and a root over leaves of one version never equals a root over another's. Event leaves are salted
-too (v2; v1 event leaves were not; see [Committing the event stream](#committing-the-event-stream-not-just-the-journal)).
+too (since v2; v1 event leaves were not) and, from v3, name their kind and fields in snake_case (see [Committing the event stream](#committing-the-event-stream-not-just-the-journal)).
 Key-set leaves are not salted: an absence proof names its neighbouring keys in plain text by
 design. Anchor-log leaves are not salted either: each entry holds a signed tree head whose root
-and Ed25519 signature a proof holder cannot compute, so an anchor proof's path confirms a
+and signature a proof holder cannot compute, so an anchor proof's path confirms a
 neighbouring entry only to someone who already holds that exact signed head. Signed tree heads sign
-the `bide.audit.sth.v4` encoding (v3 signed untagged, unsalted leaves; v0.6.0 signed
-`bide.audit.sth.v1`), which `audit/verify` checks too, and `Head` seeds its chain with
-`bide.audit.v2`. A journal written before salts existed cannot be proven: re-run or re-journal
+the `bide.audit.sth.v5` encoding, which includes the signature scheme (v4 did not; v3 signed
+untagged, unsalted leaves; v0.6.0 signed `bide.audit.sth.v1`), which `audit/verify` checks too, and
+`Head` seeds its chain with `bide.audit.v2`. A journal written before salts existed cannot be proven: re-run or re-journal
 it, and re-anchor under the new version rather than comparing with an older head.
 
 ## Continuous anchoring: `AuditedStore` + the `Anchor` port
@@ -67,12 +89,18 @@ automatic and push-based, and it's the piece that operationalizes the security m
 out-of-band" requirement. Wrap any `Durable` and every durable step is signed and published to
 a separate trust domain with no changes to the agent loop:
 
-<!-- docsnip: setup ctx context.Context; journal agent.Durable; priv ed25519.PrivateKey; model agent.Model; tools []agent.Tool; runID string; input string -->
+<!-- docsnip: setup ctx context.Context; journal agent.Durable; priv ed25519.PrivateKey; model agent.Model; tools []agent.Tool; runID string; input string; returns error -->
 ```go
-anchor := audit.NewMemAnchorLog()                          // your external transparency log
-store  := audit.NewAuditedStore(journal, priv, anchor)     // drop-in Durable
-agent.New(model, store, tools...).Run(ctx, runID, input)   // each step → a signed STH, published
+anchor := audit.NewMemAnchorLog()                                                // your external transparency log
+store, err := audit.NewAuditedStore(journal, audit.Ed25519Signer{Priv: priv}, anchor) // drop-in Durable
+if err != nil {
+	return err // a nil store or anchor, or a signer without a usable key (agent.ErrConfig)
+}
+agent.New(model, store, tools...).Run(ctx, runID, input) // each step → a signed STH, published
 ```
+
+The signer is any `audit.Signer`: `Ed25519Signer`, `MLDSASigner`, or `HybridSigner` (see
+[Signature schemes](#signature-schemes-and-post-quantum-anchoring)).
 
 On every journal growth `AuditedStore` commits the run's Merkle root, signs an STH, and calls
 `Anchor.Publish`. A memoized replay (resume) does **not** re-anchor an already anchored head.
@@ -93,7 +121,7 @@ acquiring, renewing or releasing one anchors nothing.
 transparency log you trust (a CT-style log, a notary/timestamping service, another account's
 WORM store, a public ledger). `MemAnchorLog` is the reference: an append-only log that keeps its
 **own** RFC 6962 tree over the published STHs, so a monitor can prove a given STH was anchored
-(`Prove` + `VerifyAnchorInclusion`) and that the anchor log itself only grew (`ProveConsistency`
+(`Prove` + `VerifyAnchorInclusion`; each entry carries format `bide.audit.anchor-entry.v1`) and that the anchor log itself only grew (`ProveConsistency`
 + `VerifyConsistency`). That is the full end-to-end chain: **journal record → inclusion proof →
 signed tree head → provably anchored in an independent, append-only log**.
 
@@ -106,28 +134,28 @@ final answer). This closes the seam where durability lived in the journal but th
 event feed was ephemeral: now "stream for the UI" and "commit a provable audit trail" are one
 pass.
 
-<!-- docsnip: setup priv ed25519.PrivateKey; agentStream *agent.AgentStream; render func(agent.AgentEvent); approvalIndex int; approvalEvent agent.AgentEvent -->
+<!-- docsnip: setup signer audit.Signer; agentStream *agent.AgentStream; render func(agent.AgentEvent); approvalIndex int; approvalEvent agent.AgentEvent -->
 ```go
 log := audit.NewEventLog()
 // Record drains the stream, commits every event, and forwards it live to the UI:
 msg, err := audit.Record(log, agentStream, func(e agent.AgentEvent) { render(e) })
 
-root := log.Root()                 // RFC 6962 commitment over what was observed, in order
-sig  := audit.Sign(root, priv)     // anchor it out-of-band, same caveat as the journal
+root := log.Root()                  // RFC 6962 commitment over what was observed, in order
+sig, _ := audit.Sign(root, signer) // anchor it out-of-band, same caveat as the journal
 
 // Later: prove ONE observed event (e.g. the approval) without revealing the rest.
 proof, _ := log.Prove(approvalIndex)
-ok, _ := audit.VerifyEventInclusion(root, approvalEvent, proof)
+err = audit.VerifyEventInclusion(root, approvalEvent, proof) // nil means included
 ```
 
 The event log gets the **full transparency-log surface**, reusing the journal's STH and
 consistency machinery unchanged:
 
-<!-- docsnip: setup log, laterLog *audit.EventLog; priv ed25519.PrivateKey; pub ed25519.PublicKey; runID string; event agent.AgentEvent; proof audit.EventInclusion; sth1, sth2 audit.SignedTreeHead -->
+<!-- docsnip: setup log, laterLog *audit.EventLog; signer audit.Signer; v audit.Verifier; runID string; event agent.AgentEvent; proof audit.EventInclusion; sth1, sth2 audit.SignedTreeHead -->
 ```go
-sth := audit.SignTreeHead(log.TreeHead(runID, time.Now().UnixNano()), priv) // kind "events", run, root, size, time
-sth.Verify(pub)                                                      // anchored commitment
-audit.VerifyEventInclusion(sth.Root, event, proof)                   // check proofs vs the STH root
+sth, _ := audit.SignTreeHead(log.TreeHead(runID, time.Now().UnixNano()), signer) // kind "events", run, root, size, time
+sth.Verify(v)                                                                    // anchored commitment (nil = authentic)
+audit.VerifyEventInclusion(sth.Root, event, proof)                               // check proofs vs the STH root
 
 // Between two published event STHs, prove the observed trail was only appended to:
 cproof, _ := laterLog.ProveConsistency(sth1.Size)
@@ -145,10 +173,10 @@ even shifts between a fresh run and its own replay (live-only events like token 
 For the durable audit artifact, don't store a second log: **derive it from the journal**, which
 is already the crash-safe, at-most-once substrate.
 
-<!-- docsnip: setup ctx context.Context; store agent.Durable; runID string; priv ed25519.PrivateKey; ts int64 -->
+<!-- docsnip: setup ctx context.Context; store agent.Durable; runID string; signer audit.Signer; ts int64 -->
 ```go
-log, _ := audit.EventLogFromJournal(ctx, store, runID) // projection of the DURABLE journal
-sth    := audit.SignTreeHead(log.TreeHead(runID, ts), priv) // anchor THIS: crash-durable, resume-stable
+log, _ := audit.EventLogFromJournal(ctx, store, runID)          // projection of the DURABLE journal
+sth, _ := audit.SignTreeHead(log.TreeHead(runID, ts), signer) // anchor THIS: crash-durable, resume-stable
 ```
 
 `EventLogFromJournal` projects the journal to the same semantic events `Agent.Stream` re-emits
@@ -167,15 +195,15 @@ trail often has to outlive it (keep for years, on WORM storage, in a different t
 `EventStore` is the bring-your-own port for that: append canonical event leaves to a backend
 you run, on its own retention lifecycle, and rebuild an `EventLog` from it later.
 
-<!-- docsnip: setup ctx context.Context; evStore audit.EventStore; journal agent.Durable; runID string; priv ed25519.PrivateKey; ts int64; i int -->
+<!-- docsnip: setup ctx context.Context; evStore audit.EventStore; journal agent.Durable; runID string; signer audit.Signer; ts int64; i int -->
 ```go
 // Mirror the run's durable trail into your store (idempotent: call it whenever).
 audit.PersistJournal(ctx, evStore, journal, runID)
 
 // Later, even after the journal is deleted: anchor and prove from the store alone.
 log, _ := audit.LoadEventLog(ctx, evStore, runID)
-sth    := audit.SignTreeHead(log.TreeHead(runID, ts), priv)
-proof, _ := log.Prove(i)   // + audit.VerifyEventInclusion(sth.Root, event, proof)
+sth, _ := audit.SignTreeHead(log.TreeHead(runID, ts), signer)
+proof, _ := log.Prove(i) // + audit.VerifyEventInclusion(sth.Root, event, proof)
 ```
 
 `PersistJournal` is fed from the journal projection, not the live stream, on purpose: the
@@ -186,11 +214,14 @@ idempotent on `(runID, seq)`: a different leaf at an existing position is reject
 `UNIQUE(run_id, seq)` and insert-only grants, or object storage with object-lock/WORM.
 
 Each leaf is a kind-tagged canonical encoding, so event types never collide, and `ModelEvent`
-carries the inner delta's kind. `Root`/`Head`/`Sign` behave exactly as they do over the journal,
+carries the inner delta's kind. Kinds and event fields are snake_case (`turn_started`,
+`model_event/text_delta`, `tool_completed` with `tool_use_id`, `name`, `result`, `is_error`): the
+stream event types carry snake_case JSON tags, so the leaf does not depend on Go field names. An
+event of a type the log does not name is refused. `Root`/`Head`/`Sign` behave exactly as they do over the journal,
 and the signing path is shared. (Prototype: `audit/eventsink.go`.)
 
 **Event leaves are salted, like journal leaves.** An event leaf hashes as
-`SHA-256(0x00 || "bide.audit.event-leaf.v2\x00" || {"kind":...,"event":...,"salt":...})`, where
+`SHA-256(0x00 || "bide.audit.event-leaf.v3\x00" || {"kind":...,"event":...,"salt":...})`, where
 `salt` is the event's own 32 random bytes (base64). `Prove` returns an `audit.EventInclusion`:
 the event's salt plus the shared `Inclusion` (index, size, audit path). An event proof discloses
 exactly: the event (held by the verifier), its salt, its index, the log's size, and the O(log n)
@@ -212,39 +243,45 @@ Where the salt comes from:
 
 An `EventStore` stores each leaf, salt included, verbatim, so `LoadEventLog` after a restart has
 the same root and each proof discloses the stored salt. `LoadEventLog` refuses a leaf that is not
-a salted v2 leaf. v1 event leaves were unsalted: a trail persisted under v1 cannot be loaded or
-proven; re-mirror it from the journal with `PersistJournal` into a fresh store and re-anchor.
+a salted v3 leaf. v1 event leaves were unsalted and v2 leaves spelled their kinds and fields in Go
+case: a trail persisted under either cannot be loaded or proven; re-mirror it from the journal with
+`PersistJournal` into a fresh store and re-anchor.
 
 ## Producing a proof: `ProofBundle`, the CLI, and the standalone verifier
 
 The primitives above are the machinery; a `ProofBundle` is the **portable artifact for a single
 action** you hand an auditor (for a whole run, see the evidence bundle below). It packages a single
-disclosed record, its inclusion path, and the signed tree head it is proven against, and it verifies
-offline against a public key obtained out-of-band:
+disclosed record as the bytes the journal stores for it (`RecordBytes`), its inclusion path, and the
+signed tree head it is proven against, and it verifies offline against a public key obtained
+out-of-band:
 
 <!-- docsnip: setup ctx context.Context; store agent.Durable; runID string; toolUseID string; sth audit.SignedTreeHead; pub ed25519.PublicKey -->
 ```go
 // Produce: prove one tool call happened, against an anchored STH. Semantic, not by index.
-bundle, _ := audit.ProveToolCall(ctx, store, runID, toolUseID, sth)   // or audit.ProveRecord(..., index, sth)
-blob, _  := json.Marshal(bundle)                                      // store / email / publish it
+bundle, _ := audit.ProveToolCall(ctx, store, runID, toolUseID, sth) // or audit.ProveRecord(..., index, sth)
+blob, _ := json.Marshal(bundle)                                     // store / email / publish it
 
-// Verify: offline, trusting only the out-of-band public key.
-ok, _ := bundle.Verify(pub)   // checks STH signature, kind and run binding, size binding, and inclusion
+// Verify: offline, trusting only the out-of-band public key. nil means verified.
+err := bundle.Verify(audit.Ed25519Verifier{Pub: pub}) // STH signature, kind and run binding, size binding, inclusion
+rec, _ := bundle.Record()                             // the proven record, decoded for display
 ```
 
 A record's index is its position in the run's journal, where the journal header (the record named
 `@journal`, which names the journal format) is always leaf 0; prove records by what they are
 (`ProveToolCall`, `ProveStep`) rather than by index where you can.
 
-`Verify` fails closed on a forged record, a proof not bound to the signed size, a head that is not
-a journal head of the bundle's `RunID`, or the wrong key. The public key must come from the anchor operator, not the bundle: that is what makes it
+`Verify` fails closed (an error wrapping `audit.ErrNotVerified`) on forged record bytes, a proof not
+bound to the signed size, a head that is not a journal head of the bundle's `RunID`, or the wrong key
+or scheme. `Verify` hashes `RecordBytes` as they are; `Record()` decodes them leniently (a field this
+version does not know is ignored), so a record a newer release wrote verifies and displays here. The public key must come from the anchor operator, not the bundle: that is what makes it
 **proofs you verify, not logs you trust.**
 
 For the auditor who does not write Go, the `bide-audit` CLI wraps this (`prove` over an
-exported journal + STH, `verify` over a bundle + hex key; only exit 0 means verified). And for a third
+exported journal + STH, `verify` over a bundle + key; only exit 0 means verified). And for a third
 party who will not import the SDK at all, [`audit/verify`](../../audit/verify) is a **stdlib-only**
-package (no `agent`, no gsm) that checks inclusion, consistency, and STH signatures from raw
-leaf bytes: they can vendor just that, or reimplement it from RFC 6962 and check us against it.
+package (no `agent`, no gsm) that checks inclusion, consistency, and STH signatures under all three
+schemes (`verify.TreeHead(h, sig, v)` with a `verify.NewVerifier(alg, pub)`) from raw leaf bytes
+(a proof's `record_bytes`, hashed as they are): they can vendor just that, or reimplement it from RFC 6962 and check us against it.
 The two verification paths are cross-checked bit-for-bit in the tests so the standalone mirror
 cannot drift.
 
@@ -255,30 +292,34 @@ its layout in a `"format"` field:
 
 | Artifact | `format` | Constant |
 |---|---|---|
-| `ProofBundle` | `bide.audit.proof.v2` | `audit.ProofFormat` |
-| `AbsenceBundle` | `bide.audit.absence.v2` | `audit.AbsenceFormat` |
-| `RunCertificate` | `bide.audit.runcert.v2` | `audit.RunCertificateFormat` |
-| `CurrentGrantProof` | `bide.audit.current-grant.v2` | `audit.CurrentGrantFormat` |
-| `EventInclusion` | `bide.audit.event-inclusion.v2` | `audit.EventInclusionFormat` |
-| `EvidencePackage` | `bide.audit.evidence.v4` | `audit.EvidenceFormat` |
+| `SignedTreeHead` | `bide.audit.sth.v5` | `audit.STHFormat` |
+| `ProofBundle` | `bide.audit.proof.v3` | `audit.ProofFormat` |
+| `AbsenceBundle` | `bide.audit.absence.v3` | `audit.AbsenceFormat` |
+| `RunCertificate` | `bide.audit.runcert.v3` | `audit.RunCertificateFormat` |
+| `CurrentGrantProof` | `bide.audit.current-grant.v3` | `audit.CurrentGrantFormat` |
+| `EventInclusion` | `bide.audit.event-inclusion.v3` | `audit.EventInclusionFormat` |
+| `EvidencePackage` | `bide.audit.evidence.v5` | `audit.EvidenceFormat` |
+| `AnchorEntry` | `bide.audit.anchor-entry.v1` | `audit.AnchorEntryFormat` |
+| `JournalExport` | `bide.audit.journal-export.v1` | `audit.JournalExportFormat` |
 
-A bundle looks like this (the record and signature abbreviated):
+A grant's canonical bytes (`Grant.Bytes`, signed and digested) start with `bide.audit.grant.v2`
+(`audit.GrantFormat`). A bundle looks like this (the record bytes, path, and signature abbreviated):
 
 ```json
-{"format":"bide.audit.proof.v2","run_id":"r1","record":{"name":"tool:c1","kind":"tool_result","tool_use_id":"c1",...},
+{"format":"bide.audit.proof.v3","run_id":"r1","record_bytes":"eyJuYW1lIjoidG9vbDpjMSIs...",
  "inclusion":{"index":1,"size":3,"path":["...","..."]},
- "sth":{"kind":"journal","run_id":"r1","size":3,"root":"...","timestamp":1000,"signature":"..."}}
+ "sth":{"format":"bide.audit.sth.v5","kind":"journal","run_id":"r1","size":3,"root":"...",
+        "timestamp_nanos":1000,"alg":"ed25519","signature":"..."}}
 ```
 
 The producers (`ProveRecord`, `ProveAbsentBundle`, `CertifyRun`, `ProveCurrentGrant`,
-`EventLog.Prove`, `Evidence`) set the format; every verifier requires it, and
-`audit.UnmarshalStrict` checks it before it reads anything else. An artifact without a format (one
-made before formats existed, whose inclusion and consistency proofs spelled `"Index"`, `"Size"`,
-`"Path"`, `"First"` and `"Salt"` in Go case) or with another one fails with an error wrapping
-`audit.ErrFormat` that names the format this version reads. Proofs are cheap to remake from the
-journal, so re-create an old artifact with the current producer rather than converting it. Signed
-tree heads, grants, and anchor entries did not change: their bytes are signed or hashed, and their
-names were snake_case already.
+`EventLog.Prove`, `Evidence`, `SignTreeHead`, `ExportJournal`) set the format; every verifier
+requires it, and `audit.UnmarshalStrict` checks it before it reads anything else, at the top level
+and in every artifact one carries. An artifact without a format, or with another one (a
+`bide.audit.proof.v2` bundle, a signed tree head from before v5, which carried no `format`), fails
+with an error wrapping `audit.ErrFormat` that names the format this version reads. Before 1.0 a
+verifier reads only the current format of each artifact. Proofs are cheap to remake from the
+journal, so re-create an old artifact with the current producer rather than converting it.
 
 ### The run-level evidence bundle: `EvidencePackage`
 
@@ -287,19 +328,21 @@ evidence into a single portable file: one signed tree head, an inclusion proof p
 and optionally the run certificate, the authority grant chain, and a consistency proof. It is pure
 JSON (store it, email it, publish it) and verifies offline:
 
-<!-- docsnip: setup ctx context.Context; store agent.Durable; runID string; priv ed25519.PrivateKey; pub ed25519.PublicKey; spec audit.RunCertSpec; earlierSTH audit.SignedTreeHead; allowlist []string -->
+<!-- docsnip: setup ctx context.Context; store agent.Durable; runID string; signer audit.Signer; v audit.Verifier; spec audit.RunCertSpec; earlierSTH audit.SignedTreeHead; allowlist []string -->
 ```go
-pkg, _ := audit.Evidence(ctx, store, runID, priv, time.Now().UnixNano(),
+pkg, _ := audit.Evidence(ctx, store, runID, signer, time.Now().UnixNano(),
 	audit.WithAllToolCalls(), audit.WithRunCertificate(spec), audit.WithGrants(),
 	audit.WithConsistencyFrom(earlierSTH)) // an earlier signed head of this run, e.g. from the anchor log
-report, _ := pkg.Verify(pub, audit.WithApprovedPolicies(allowlist...)) // trusting only the out-of-band key
+report, err := pkg.Verify(v, audit.WithApprovedPolicies(allowlist...)) // trusting only the out-of-band key
+// err == nil: verified; errors.Is(err, audit.ErrNotVerified): report says what failed
 ```
 
-`Verify` trusts the key you pass, never the one embedded in the package, and every field of the
+`Verify` trusts the verifier you pass, never the key embedded in the package, and every field of the
 package is verified or derived from verified data:
 
-- `Format` must be `audit.EvidenceFormat` (`bide.audit.evidence.v4`), and `PublicKeyHex` must be the
-  key you pass.
+- `Format` must be `audit.EvidenceFormat` (`bide.audit.evidence.v5`; any other is `audit.ErrFormat`),
+  and the package's `alg` and `public_key` must be the scheme and key of the verifier you pass: a
+  verifier for any other key does not verify the package, even one whose signatures would check.
 - The STH must be an authentic journal head of the package's `RunID`, so the run the report names is
   the run the log key signed.
 - Each action proof must verify against that same tree, and its `Kind`, `Label`, and `Ref` must be
@@ -309,7 +352,7 @@ package is verified or derived from verified data:
   pass with `WithApprovedPolicies`; a package that carries a certificate fails without one.
 - The consistency proof is checked from its earlier signed head (an authentic journal head of the
   same run, of the size the proof starts from) to the package STH.
-- `Label`, the one field no proof covers, is covered by the seal: `Evidence` ends with `pkg.Seal(priv)`,
+- `Label`, the one field no proof covers, is covered by the seal: `Evidence` ends with `pkg.Seal(signer)`,
   the log key's signature over the whole package, so nothing can be edited, added, or dropped after
   sealing. A caller that adds actions afterwards reseals.
 - Every signed head the package carries (its STH, each action and grant bundle's head, the run
@@ -325,7 +368,7 @@ PASS/FAIL.
 
 ### Timestamps
 
-A signed tree head's `Timestamp` is when it was signed, in Unix nanoseconds
+A signed tree head's `TimestampNanos` (`timestamp_nanos`) is when it was signed, in Unix nanoseconds
 (`time.Now().UnixNano()`, as `AuditedStore` stamps it). Verifiers hold every signed head they are
 shown to one rule (`audit.CheckTimestamp`, `audit.CheckTimestampOrder`):
 
@@ -341,8 +384,8 @@ shown to one rule (`audit.CheckTimestamp`, `audit.CheckTimestampOrder`):
 to every signed head in every file it reads. The rule does not limit how old a head may be (an audit
 reads old heads), and it does not order heads of different runs or anchor-log entries, which are
 independent. `ProofBundle.Verify`, `SignedTreeHead.Verify`, and `VerifyRun` check signatures and
-bindings only; a caller that uses them directly applies `CheckTimestamp` too. A grant's `NotAfter` is
-a separate expiry in Unix seconds, checked by `Grant.Expired` and `VerifyCurrentGrant` against the
+bindings only; a caller that uses them directly applies `CheckTimestamp` too. A head that breaks the
+rule is an error wrapping `audit.ErrNotVerified`. A grant's `NotAfterUnix` is a separate expiry in Unix seconds, checked by `Grant.Expired` and `VerifyCurrentGrant` against the
 caller's clock; an evidence package carries no per-action time to compare it with, so
 `EvidencePackage.Verify` does not check it.
 
@@ -354,11 +397,11 @@ decision record the gate read (valid or not), the gate's recorded tally, and the
 it to a package that already carries the call (built with `WithToolCall` or `WithAllToolCalls`), drop
 the trailing result entry and reseal the package:
 
-<!-- docsnip: setup ctx context.Context; store agent.Durable; runID string; toolUseID string; priv ed25519.PrivateKey; pkg audit.EvidencePackage -->
+<!-- docsnip: setup ctx context.Context; store agent.Durable; runID string; toolUseID string; signer audit.Signer; pkg audit.EvidencePackage -->
 ```go
 approvals, _ := audit.ApprovalEvidence(ctx, store, runID, toolUseID, pkg.STH)
 pkg.Actions = append(pkg.Actions, approvals[:len(approvals)-1]...) // the result is already packaged
-_ = pkg.Seal(priv)                                                 // the package changed after Evidence sealed it
+_ = pkg.Seal(signer)                                               // the package changed after Evidence sealed it
 ```
 
 `pkg.Verify` checks each item's inclusion under the tree head like any other action. Like grant
@@ -375,20 +418,23 @@ command line. `audit.ProveApproval` proves a single decision by its record name.
 
 The `bide-audit` command ([`cmd/bide-audit`](../../cmd/bide-audit)) is the auditor-facing
 front end for the whole proof surface. It is dependency-light: it imports only the core and `audit`
-packages and no store backend, so every produce verb operates on an **exported journal** (a JSON
-array of `Record`, obtained with `json.Marshal(store.History(ctx, runID))`, whose first record is
-the journal header) plus a signed tree head,
+packages and no store backend, so every produce verb operates on an **exported journal** (an
+`audit.JournalExport`, format `bide.audit.journal-export.v1`: each record's stored bytes, verbatim,
+obtained with `audit.ExportJournal(ctx, store, runID)` and written as JSON; its first record is the
+journal header) plus a signed tree head,
 and every verify verb needs only a bundle and an out-of-band public key. Build it with
 `go build ./cmd/bide-audit`.
 
 Conventions shared across verbs:
 
-- `-pubkey` accepts either a hex string directly or a path to a file whose trimmed contents are
-  hex, and must decode to a 32-byte ed25519 public key that `audit.CheckEd25519PublicKey` accepts:
+- `-pubkey` accepts a key in text form, `<alg>:<hex>` (`ed25519`, `ml-dsa-65`, or
+  `ed25519+ml-dsa-65`, as `audit.FormatPublicKey` writes it) or bare hex of a 32-byte ed25519 key,
+  or a path to a file holding either (read with `audit.ParsePublicKey`; anything else exits 4 with a
+  message). An ed25519 key, alone or in a hybrid, must be one `audit.CheckEd25519PublicKey` accepts:
   canonically encoded and in the prime-order subgroup, since a small-order key verifies forged
-  signatures (anything else exits 4 with a message). A
-  value that is itself a key in hex (64 hex digits) is always taken as the key and never opened as
-  a file, so a file of that name in the working directory cannot substitute another key. The
+  signatures (a weak key exits 4). A value that is itself a key is always taken as the key and never
+  opened as a file, so a file of that name in the working directory cannot substitute another key.
+  An artifact signed under another scheme than the key's does not verify (exit 1). The
   key must come from the anchor operator out-of-band, never from the bundle: that is what makes it a
   proof you verify rather than a log you trust.
 - Every artifact must carry the format this version reads (see [Artifact formats](#artifact-formats));
@@ -431,7 +477,7 @@ Conventions shared across verbs:
 | `verify-convergence` | `-cert-bundle`, `-policy-bundle`, `-pubkey` | `-checker` | An anchored `ConfluenceCertificate` links to the policy leaf (each bundle must be the leaf it is read as: `audit:convergence:<digest>` and `audit:policy:<digest>`, both `StepValue`); with `-checker`, the oracle's convergence verdict must AGREE with the certificate, so overstated convergence is caught; the compensation-free (CRDT) classification is cross-checked only when the oracle emits a `compensation_free=` line, and otherwise stays producer-reported (the CLI prints a note saying so). |
 | `verify-quorum` | `-name`, `-tally`, `-vote` (repeatable), `-pubkey`, `-k` | `-commit` | A governed k-of-n quorum: the tally and every vote bundle authentic, in the same signed tree and run, and recorded by the quorum named `-name`; the disclosed votes exactly the votes the tally records; the recorded tally recomputes from them (a forged tally is caught); and `votes_for >= k`; with `-commit`, a governed commit (a tool call's result) is anchored in the same tree. |
 | `verify-run` | `-cert`, `-pubkey`, and at least one of `-approved <digest>` (repeatable) / `-approved-file <file>` (both together form one allowlist) | `-checker <astchecker>` | A proof-carrying run certificate: the used-policy set is bound by a signed used-policy head to this run and to the certificate's journal tree, and is a subset of the approved allowlist (only-approved-policies), and every used policy has an anchored, digest-linked convergence certificate in the run's signed tree (policies-convergence-certified); with `-checker`, the oracle's convergence verdict on each used policy must AGREE with its certificate. |
-| `verify-approvals` | `-evidence`, `-pubkey`, `-call`, `-need`, `-approvers`, `-approver-keys` | | An m-of-n approval gate from an `EvidencePackage`: the request, every decision the gate read, its recorded tally, and the call's result all verify in one signed tree and in order; recounting the decisions with the approvers' keys (a JSON object of id to ed25519 public key hex; two of the policy's approvers on one key, or a weak key, is an unusable input) against the exact call reproduces the recorded tally; the gate enforced the expected policy; and at least k approved. Catches an omitted decision, which `verify-evidence` alone cannot. |
+| `verify-approvals` | `-evidence`, `-pubkey`, `-call`, `-need`, `-approvers`, `-approver-keys` | | An m-of-n approval gate from an `EvidencePackage`: the request, every decision the gate read, its recorded tally, and the call's result all verify in one signed tree and in order; recounting the decisions with the approvers' keys (a JSON object of id to key text, `<alg>:<hex>` or bare ed25519 hex; two of the policy's approvers on one key, or a weak key, is an unusable input) against the exact call reproduces the recorded tally; the gate enforced the expected policy; and at least k approved. Catches an omitted decision, which `verify-evidence` alone cannot. |
 | `verify-evidence` | `-evidence`, `-pubkey` | `-approved <digest>` (repeatable), `-approved-file <file>` (together, one allowlist) | A run-level `EvidencePackage`: the format, seal, and key are right, the signed tree head is an authentic journal head of the package's run, every packaged action proof verifies against it with the kind and label its record says, the grant chain is the anchored grants, the consistency proof holds between its two signed heads, and any run certificate is for this run and passes against the given allowlist (required when the package carries one). Prints one line per item and an overall PASS/FAIL. |
 
 The `-checker` flag points at the external verified oracle binary (the `astchecker` extracted from
@@ -454,11 +500,12 @@ on the producer. The CLI reads no environment variables.
 | 1 | The inputs were read and understood, and they do not verify: a bad signature or proof, a digest that does not link, a quorum or approval gate that did not hold, a policy the checker says does not converge (or disagrees with its certificate about), a signed head that breaks the timestamp rule. |
 | 2 | Usage error: a missing, unknown, or malformed flag, an argument that is not a flag, a help request, an unknown verb. Nothing was read. |
 | 3 | No verdict: the `-checker` gave none (see above), or an internal error in the CLI (an output it could not write, a bug). |
-| 4 | An input is unreadable or unusable: a missing or unreadable file, one over `-max-input-bytes`, JSON that does not read strictly, an unknown or unsupported `format`, a public key that is not one, or an artifact of the wrong type for its flag (a policy leaf given as the action, an absence bundle given to `verify`, a key of no known key set). For `prove` and `prove-absent`, inputs that cannot make the proof (no such record, a head that does not commit to the journal, a key that is present) are 4 as well. |
+| 4 | An input is unreadable or unusable: a missing or unreadable file, one over `-max-input-bytes`, JSON that does not read strictly, an unknown or unsupported `format` (an old artifact, or one carrying an old signed tree head), a public key that is not one (or of an unknown scheme), or an artifact of the wrong type for its flag (a policy leaf given as the action, an absence bundle given to `verify`, a key of no known key set). For `prove` and `prove-absent`, inputs that cannot make the proof (no such record, a head that does not commit to the journal, a key that is present) are 4 as well. |
 
 **Only 0 means verified. Treat every other status as a failure, and treat 4 as a failure, never as
 something to retry:** a tampered `format` field, or an artifact swapped for one of another type,
-yields 4, not 1.
+yields 4, not 1. The statuses follow the library's errors: an error wrapping `audit.ErrNotVerified`
+is 1, and one wrapping `audit.ErrFormat` or `audit.ErrMalformed` is 4.
 
 When a command meets several conditions, the status is the highest-ranked of them: a usage error
 is exclusive (nothing is read after it); otherwise **1 over 4 over 3**. To make that hold, a verb
@@ -481,20 +528,21 @@ hand-derived consistency vector, and rewrite-detection tests. It is not a homegr
 
 ## End-to-end compliance flow
 
-<!-- docsnip: setup ctx context.Context; store agent.Durable; runID string; priv ed25519.PrivateKey; pub ed25519.PublicKey; chargeIndex int; sth1, sth2 audit.SignedTreeHead -->
+<!-- docsnip: setup ctx context.Context; store agent.Durable; runID string; signer audit.Signer; v audit.Verifier; chargeIndex int; sth1, sth2 audit.SignedTreeHead -->
 ```go
 // 1. After a run, commit to the journal and PUBLISH a signed tree head.
-th, _  := audit.NewTreeHead(ctx, store, runID, time.Now().UnixNano())
-sth    := audit.SignTreeHead(th, priv)   // publish/anchor sth (out-of-band)
+th, _ := audit.NewTreeHead(ctx, store, runID, time.Now().UnixNano())
+sth, _ := audit.SignTreeHead(th, signer) // publish/anchor sth (out-of-band)
 
 // 2. Later, an auditor asks: "did the agent issue THIS charge?"
-//    Disclose only that one record + its inclusion proof, nothing else.
+//    Disclose only that one record's stored bytes + its inclusion proof, nothing else.
 proof, _ := audit.Prove(ctx, store, runID, chargeIndex)
-recs, _  := store.History(ctx, runID)
+recs, _ := store.History(ctx, runID)
+charge := recs[chargeIndex].Raw() // the bytes the journal stores for it
 
-// 3. The auditor verifies, from public artifacts alone:
-sth.Verify(pub)                                            // the commitment is authentic
-ok, _ := audit.VerifyInclusion(sth.Root, recs[chargeIndex], proof)  // the charge is in it
+// 3. The auditor verifies, from public artifacts alone (nil means it holds):
+_ = sth.Verify(v)                                  // the commitment is authentic
+_ = audit.VerifyInclusion(sth.Root, charge, proof) // the charge is in it
 // ...revealing no other customer, prompt, or PII.
 
 // 4. Prove the log only grew between two published STHs (no retroactive edits):
@@ -553,7 +601,7 @@ The CLI does this whole cross-link in one command:
 ```
 # both bundles authentic and in the same signed tree, the action's policy digest links to the
 # anchored policy leaf, the leaf's bytes hash to that digest, and (with -checker) the policy converges:
-bide-audit verify-governed-action -action action.json -policy-bundle policy.json -pubkey <hex> -checker ./astchecker
+bide-audit verify-governed-action -action action.json -policy-bundle policy.json -pubkey <key> -checker ./astchecker
 ```
 
 ### Anchoring the convergence proof itself
@@ -586,7 +634,7 @@ it silently. `compensationFree_step_no_repair` is in the axiom-free gate alongsi
 # both bundles authentic and in the same signed tree, the certificate certifies the anchored
 # policy's digest, the leaf's bytes hash to it, and the oracle's convergence AND compensation-free
 # verdicts agree with the certificate:
-bide-audit verify-convergence -cert-bundle cert.json -policy-bundle policy.json -pubkey <hex> -checker ./astchecker
+bide-audit verify-convergence -cert-bundle cert.json -policy-bundle policy.json -pubkey <key> -checker ./astchecker
 ```
 
 ### Binding the resulting state, and checking it by replay
@@ -617,7 +665,7 @@ commits exactly the policies that were used. An auditor:
    approved set (each approved policy having been oracle-certified convergent, as above);
 2. for any digest that is not approved, obtains an anchorable `audit.AbsenceBundle` via
    `audit.ProveAbsentBundle(records, audit.PolicyUsedKeys, audit.PolicyUsedKeyFor(digest), sth)`
-   and verifies it offline with `bundle.Verify(pub, audit.PolicyUsedKeys)`, proving no governed
+   and verifies it offline with `bundle.Verify(v, audit.PolicyUsedKeys)` (nil means verified), proving no governed
    action ran under that policy.
 
 The negative has teeth: the commitment is over the run's actual key set (the head must commit to
@@ -632,14 +680,14 @@ size the head names; that it is the run's final head comes from the anchor log.
 
 The auditor persona produces and checks these from the command line, as with inclusion. Absence
 proofs verify against a separate key-set commitment, signed in one call with
-`audit.SignAbsenceRoot(records, keySet, journalHead, priv, ts)` (it refuses records that are not the
+`audit.SignAbsenceRoot(records, keySet, journalHead, signer, ts)` (it refuses records that are not the
 journal `journalHead` commits to); keys are built with `audit.ToolUseKeyFor(id)` or
 `audit.PolicyUsedKeyFor(digest)`:
 
 ```
 # prove no tool call with this ID, or no governed action under this policy digest, ever happened:
 bide-audit prove-absent -journal run.json -sth used-policy-sth.json -key policy:<digest> -out absent.json
-bide-audit verify-absent -bundle absent.json -pubkey <hex>   # exit 0 = authentically absent
+bide-audit verify-absent -bundle absent.json -pubkey <key>   # exit 0 = authentically absent
 ```
 
 Scope, stated precisely: this proves the action ran under a policy that is anchored in the log and
@@ -690,19 +738,22 @@ Composing them yields "every governed state in the run was produced by an approv
 oracle-certified-convergent policy," so the enforced invariant held throughout the governed
 boundary.
 
-<!-- docsnip: setup ctx context.Context; store agent.Durable; runID string; priv ed25519.PrivateKey; pub ed25519.PublicKey; th audit.TreeHead; policyDigest string; allowlist []string -->
+<!-- docsnip: setup ctx context.Context; store agent.Durable; runID string; signer audit.Signer; v audit.Verifier; th audit.TreeHead; policyDigest string; allowlist []string -->
 ```go
 // Emit: recompute the used-policy set, confirm it is a subset of the allowlist, and assemble the
 // anchored policy + convergence proofs for each used policy against the run's signed tree head.
-sth  := audit.SignTreeHead(th, priv)
-cert, _ := audit.CertifyRun(ctx, store, runID, sth,
-	audit.RunCertSpec{ApprovedPolicies: []string{policyDigest}}, priv, time.Now().UnixNano())
+sth, _ := audit.SignTreeHead(th, signer)
+cert, _ := audit.CertifyRun(ctx, store, runID, sth, audit.RunCertSpec{
+	ApprovedPolicies: []string{policyDigest},
+	Signer:           signer, // must hold the key that signed sth
+	TimestampNanos:   time.Now().UnixNano(),
+})
 
 // Anchor the certificate itself so it is provable in the run (mirrors RecordPolicy / RecordConvergence):
-audit.RecordRunCertificate(ctx, store, runID, cert)   // + audit.ProveRunCertificate(..., laterSTH)
+audit.RecordRunCertificate(ctx, store, runID, cert) // + audit.ProveRunCertificate(..., laterSTH)
 
-// Verify: offline, against the auditor's allowlist, trusting only the out-of-band public key.
-res, _ := audit.VerifyRun(cert, allowlist, pub)   // res.OnlyApprovedPolicies && res.ConvergenceCertified
+// Verify: offline, against the auditor's allowlist, trusting only the out-of-band key.
+res, err := audit.VerifyRun(cert, allowlist, v) // err == nil: both properties hold; res says which failed
 ```
 
 The CLI verifies the same certificate for an auditor who does not write Go, and takes the allowlist
@@ -712,7 +763,7 @@ as its own input (the certificate carries none, so a producer cannot pass by wid
 # only-approved-policies (used set bound to the run's signed used-policy head and a subset of the allowlist)
 # and policies-convergence-certified (each used policy anchored and digest-linked); with -checker the
 # oracle's verdict on each policy must agree with its certificate:
-bide-audit verify-run -cert runcert.json -pubkey <hex> -approved <digest> -checker ./astchecker
+bide-audit verify-run -cert runcert.json -pubkey <key> -approved <digest> -checker ./astchecker
 ```
 
 Scope, stated precisely: the certificate proves properties of the **governed, committed boundary**
@@ -729,17 +780,30 @@ the same seams and is deferred to a later version. Runnable end to end in
 
 ## Signature schemes and post-quantum anchoring
 
-Signed tree heads sign under a pluggable scheme. `SignedTreeHead` carries an `Alg` field
-(`omitempty`; empty means ed25519), so ed25519 heads from `SignTreeHead` / `Verify` carry no extra
-field. `SignTreeHeadWith` / `VerifyWith` (and `ProofBundle.VerifyWith` /
-`AbsenceBundle.VerifyWith`) carry the scheme end to end. Every scheme signs the same encoding
-(`bide.audit.sth.v4`: kind, run ID, size, root, timestamp, and the source journal of a key-set
-head), so the kind and run binding hold whichever scheme signs. Three schemes
-are available, all in the Go 1.27 standard library, so this adds no dependency:
+Everything the package signs goes through an `audit.Signer`, and everything it verifies through an
+`audit.Verifier`: both name their scheme (`Alg()`, a typed `audit.Alg`) and their encoded public key
+(`PublicKey()`). `SignTreeHead(th, signer)`, `Sign`, `SignAbsenceRoot`, `Evidence` and `Seal`,
+`CertifyRun` (through `RunCertSpec.Signer`), `NewAuditedStore`, and `SignGrant` take a signer;
+`SignedTreeHead.Verify`, `ProofBundle.Verify`, `AbsenceBundle.Verify`, `EvidencePackage.Verify`,
+`VerifyRun`, `VerifyApprovals`, `VerifyCurrentGrant`, `VerifySignature`, and `SignedGrant.Verify`
+take a verifier. `audit.NewVerifier(alg, pub)` builds a verifier from an encoded key,
+`audit.VerifierOf(signer)` the one for a signer's key, and `audit.ParsePublicKey` /
+`audit.FormatPublicKey` read and write the `<alg>:<hex>` text form the CLI takes.
 
-- `ed25519` (default): small, fast, FIPS-approved.
-- `ml-dsa-65` (FIPS 204): post-quantum.
-- `ed25519+ml-dsa-65` (hybrid): accepted only if both signatures verify.
+`SignedTreeHead` always carries its `alg`, and the scheme is part of the signed bytes
+(`bide.audit.sth.v5`: scheme, kind, run ID, size, root, timestamp, and the source journal of a
+key-set head), so a head's signature is never read under another scheme, and the kind and run
+binding hold whichever scheme signs. An evidence package names its key by `{alg, public_key}`, and
+`EvidencePackage.Verify` refuses a verifier whose scheme or key is not that one. Three schemes are
+available, all in the Go 1.27 standard library, so this adds no dependency:
+
+- `ed25519` (`Ed25519Signer`): small, fast, FIPS-approved.
+- `ml-dsa-65` (`MLDSASigner`, FIPS 204): post-quantum.
+- `ed25519+ml-dsa-65` (`HybridSigner`): accepted only if both signatures verify. Each component
+  signs its own label followed by the message (`bide.hybrid.ed25519.v1` and
+  `bide.hybrid.mldsa65.v1`), after the IETF composite-signature construction, so the ed25519 half
+  stripped out of a hybrid signature verifies neither as a hybrid signature nor as a plain ed25519
+  signature over the same head.
 
 Why it matters here specifically: audit anchors are long-lived, so they face a harvest-now,
 forge-later exposure. The signature is the quantum-vulnerable part; the SHA-256 Merkle hashing is
@@ -752,8 +816,9 @@ ed25519, a post-quantum-focused buyer takes ML-DSA or hybrid.
 ## Signed authority grants and the delegation chain
 
 Identity binds who acted (see above); a **grant** binds *by what authority*, non-repudiably.
-`audit.Grant{Issuer, Subject, Scope, NotAfter, ParentRef}` is a statement by a principal authorizing
-an actor within a scope. `SignGrant` signs it with the issuer's own key (an `audit.Signer`:
+`audit.Grant{Issuer, Subject, Scope, NotAfterUnix, ParentRef}` is a statement by a principal authorizing
+an actor within a scope; its canonical bytes (`Grant.Bytes`) start with the `bide.audit.grant.v2`
+tag and are both signed and digested. `SignGrant` signs it with the issuer's own key (an `audit.Signer`:
 Ed25519, ML-DSA, or hybrid), distinct from the log's tree-head key, so the authorization is
 attributable to the principal, not the operator. `RecordGrant` / `ProveGrant` anchor and prove it as
 a leaf like a policy, and a governed action's `agent.Identity.AuthorityRef` is set to the grant's

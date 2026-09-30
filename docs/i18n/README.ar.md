@@ -508,7 +508,7 @@ a2, _ := s.Send(ctx, "and its population?")   // sees turn 1 in context
 <!-- docsnip: setup ctx context.Context; store agent.Durable; runID string; priv ed25519.PrivateKey -->
 ```go
 head, _ := audit.Head(ctx, store, runID)     // SHA-256 chain over the journal (persisted order)
-sig := audit.Sign(head, priv)                // anchor it: sign / publish out-of-band
+sig, _ := audit.Sign(head, audit.Ed25519Signer{Priv: priv}) // anchor it: sign / publish out-of-band
 ```
 
 أي تعديل / إدراج / حذف / إعادة ترتيب لسجلّ يُغيّر الرأس (head). **نموذج الأمان:** يمنح هذا سلامةً غير
@@ -523,7 +523,7 @@ O(log n)، *دون كشف السجلات الأخرى* (مثلًا: أرِ مُ�
 لاحق: أن التاريخ أُلحِق فقط، لم يُعَد كتابته أو ترتيبه (ضمان سجل الشفافية). التنفيذ مفحوص مقابل متجهات اختبار
 RFC 6962 المنشورة.
 
-يُنتج `SignTreeHead` **رأس الشجرة الموقَّع** بأسلوب CT، `{Size, Root, Timestamp}` موقَّعًا بـ Ed25519، وهو
+يُنتج `SignTreeHead` **رأس الشجرة الموقَّع** بأسلوب CT، `{Kind, RunID, Size, Root, TimestampNanos}` موقَّعًا مع اسم مخطط التوقيع بأي `audit.Signer` (Ed25519 أو ML-DSA-65 أو هجين منهما)، وهو
 الأثر الذي تنشره. التدفّق الكامل: وقّع رأس شجرة (STH)، ثم أفصِح لاحقًا عن سجلّ واحد ببرهان شمول يفحصه مُدقِّق
 مقابل الجذر الموقَّع، وأثبِت النموّ بالإلحاق فقط بين رأسَي شجرة (STHs). انظر
 [docs/guides/audit.md](../../docs/guides/audit.md) للنموذج والواجهة البرمجية وتدفّق الامتثال من طرف إلى طرف.
@@ -637,7 +637,7 @@ a := agent.New(model, store, refund).WithApproverVerifiers(keysByApprover)
 // each approver, out of band, signs the paused call they were shown:
 sig, _ := signer.Sign(agent.ApprovalDecisionBytes(pend.Subject(), "finance", true))
 agent.SubmitDecision(ctx, store, agent.Decision{RunID: pend.RunID, ToolUseID: pend.ToolUseID,
-	ApproverID: "finance", Approved: true, Signature: sig})
+	ApproverID: "finance", Approved: true, Alg: signer.Alg(), Signature: sig})
 ```
 
 ثم يُثبِت `audit.ApprovalEvidence` و`audit.VerifyApprovals` (أو `bide-audit verify-approvals`) دون اتصال أن

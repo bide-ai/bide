@@ -357,14 +357,14 @@ a2, _ := s.Send(ctx, "and its population?")   // sees turn 1 in context
 <!-- docsnip: setup ctx context.Context; store agent.Durable; runID string; priv ed25519.PrivateKey -->
 ```go
 head, _ := audit.Head(ctx, store, runID)     // SHA-256 chain over the journal (persisted order)
-sig := audit.Sign(head, priv)                // anchor it: sign / publish out-of-band
+sig, _ := audit.Sign(head, audit.Ed25519Signer{Priv: priv}) // anchor it: sign / publish out-of-band
 ```
 
 Любое изменение / вставка / удаление / переупорядочивание записи меняет верхушку. **Модель безопасности:** это даёт целостность безусловно и обнаружение подделки *когда вы закрепляете верхушку вне полосы* (цепочку в той же БД, что контролирует злоумышленник, можно переписать и перехешировать); см. документацию пакета. Это шов соответствия/предприятия: доказуемые побочные эффекты «не более одного раза» *плюс* проверяемая запись ровно того, что сделал агент.
 
 Для **избирательного раскрытия** `audit.Root` / `Prove` / `VerifyInclusion` строят дерево Меркла по **RFC 6962** (Certificate Transparency), так что вы можете доказать, что одна запись является частью зафиксированного прогона, через доказательство включения за O(log n), *не раскрывая остальные записи* (например показать аудитору, что одно списание произошло, не выставляя других клиентов или промпты). А `ProveConsistency` / `VerifyConsistency` доказывают, что более ранний корень является **только-добавляемым префиксом** более позднего: что история только дополнялась, никогда не переписывалась и не переупорядочивалась (гарантия лога прозрачности). Реализация сверена с опубликованными тестовыми векторами RFC 6962.
 
-`SignTreeHead` производит подписанную верхушку дерева (**Signed Tree Head**) в стиле CT – `{Size, Root, Timestamp}`, подписанные Ed25519, – тот артефакт, что вы публикуете. Полный поток: подписать STH, позже раскрыть одну запись с доказательством включения, которое аудитор сверяет с подписанным корнем, и доказать только-добавляемый рост между двумя STH. См. [docs/guides/audit.md](../../docs/guides/audit.md) для модели, API и сквозного потока соответствия.
+`SignTreeHead` производит подписанную верхушку дерева (**Signed Tree Head**) в стиле CT – `{Kind, RunID, Size, Root, TimestampNanos}`, подписанные вместе со схемой подписи любым `audit.Signer` (Ed25519, ML-DSA-65 или их гибрид), – тот артефакт, что вы публикуете. Полный поток: подписать STH, позже раскрыть одну запись с доказательством включения, которое аудитор сверяет с подписанным корнем, и доказать только-добавляемый рост между двумя STH. См. [docs/guides/audit.md](../../docs/guides/audit.md) для модели, API и сквозного потока соответствия.
 
 ## RAG и память (приносите свои)
 
@@ -456,7 +456,7 @@ a := agent.New(model, store, refund).WithApproverVerifiers(keysByApprover)
 // each approver, out of band, signs the paused call they were shown:
 sig, _ := signer.Sign(agent.ApprovalDecisionBytes(pend.Subject(), "finance", true))
 agent.SubmitDecision(ctx, store, agent.Decision{RunID: pend.RunID, ToolUseID: pend.ToolUseID,
-	ApproverID: "finance", Approved: true, Signature: sig})
+	ApproverID: "finance", Approved: true, Alg: signer.Alg(), Signature: sig})
 ```
 
 Затем `audit.ApprovalEvidence` и `audit.VerifyApprovals` (или `bide-audit verify-approvals`) доказывают офлайн, что k именованных одобряющих подписали именно этот вызов *до* его выполнения, по ожидаемой политике, на основе свидетельств, из которых нельзя незаметно выбросить решение. Каждому одобряющему нужен собственный ключ: политика, в которой два одобряющих сводятся к одному ключу, отклоняется с `ErrConfig`, ведь владелец этого ключа мог бы подписать за обоих. См. [руководство по одобрению](../../docs/guides/hitl-approval.md); запускается в разных процессах в `examples/approval`.
