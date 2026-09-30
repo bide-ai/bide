@@ -187,11 +187,27 @@ it forward:
 
 ```go
 n, err := agent.Recover(ctx, store, func(ctx context.Context, runID string) error {
-	_, err := a.Run(agent.WithWaker(ctx, waker), runID, inputFor(runID))
+	start, ok, err := agent.RecordedStart(ctx, store, runID) // the run's own input and entry point
+	if err != nil {
+		return err
+	}
+	if !ok {
+		start = startFor(runID) // your own record, for a run not driven under this version
+	}
+	ctx = agent.WithWaker(ctx, waker)
+	if start.Saga {
+		_, err = a.RunSaga(ctx, runID, start.Input)
+	} else {
+		_, err = a.Run(ctx, runID, start.Input)
+	}
 	return err
 })
 // n = runs re-driven; err = joined genuine failures (nil if the only "errors" were pauses)
 ```
+
+A run's first drive records its input and whether it runs as a saga (the `run:start` step), and an
+unfinished run resumes only with those: another input, or `Run` for a run started with `RunSaga` (or
+the reverse), is `ErrConfig`. `RecordedStart` reads them back.
 
 **Keep recovering for the life of the process.** `Recover` is one pass: a run whose holder died
 a moment ago still has a live lease, so the pass skips it, and nothing re-drives it until someone
@@ -276,8 +292,8 @@ the downstream). This keeps autonomous and ambient agents moving instead of stop
 human on every uncertain call.
 
 **Boundary: mechanism vs policy.** `Recover` is the mechanism (enumerate, skip finished,
-re-drive the rest). `resume` is deployment POLICY: it alone knows a run's original input and
-any `Waker` or clock to bind, and it should no-op a `runID` it does not own (a sub-agent run
+re-drive the rest). `resume` is deployment POLICY: it knows which agent drives a run and any
+`Waker` or clock to bind (the run's input and entry point are in its journal, see `RecordedStart`), and it should no-op a `runID` it does not own (a sub-agent run
 is driven by its parent; re-driving one directly is redundant, though harmless under
 at-most-once memoization). `MemStore` and `MemWaker` are in-memory references: a process exit
 loses their state, so for durability across a real crash use the SQLite or Postgres store

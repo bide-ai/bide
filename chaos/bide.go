@@ -105,7 +105,7 @@ func Bide() System { return bide{} }
 
 type bide struct{}
 
-func (bide) Writes() int { return 5 } // @llm/0, attempt:c1, c1, @llm/1, run:complete
+func (bide) Writes() int { return 6 } // run:start, @llm/0, attempt:c1, c1, @llm/1, run:complete
 
 func (bide) NewRun() Run {
 	return &bideRun{store: agent.NewMemStore(), fired: new(int)}

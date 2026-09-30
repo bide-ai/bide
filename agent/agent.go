@@ -135,6 +135,11 @@ func (a *Agent) WithToolChoice(tc ToolChoice) *Agent {
 // model turn. The message is re-seeded on each Run (including resumes), so it is always
 // present regardless of journal replay. Returns the agent for chaining:
 // New(...).WithSystemPrompt("you are a concise assistant").
+//
+// The system message is configuration, not journal: it is not recorded, and the model turns a
+// drive makes are sent the message the agent holds at that drive. A run resumed after the prompt
+// was changed sends its remaining turns the new prompt beside turns that answered the old one.
+// Its recorded turns are not affected, and neither is any decision the loop makes on resume.
 func (a *Agent) WithSystemPrompt(s string) *Agent {
 	a.systemPrompt = s
 	return a
@@ -143,6 +148,11 @@ func (a *Agent) WithSystemPrompt(s string) *Agent {
 // WithSystemPromptFunc sets a system message computed per run, so it can inject dynamic
 // context (current date, tenant, retrieved state) each turn. It takes precedence over
 // WithSystemPrompt. Returns the agent for chaining.
+//
+// fn is called once per drive of a run (each Run, Stream, or resume), not once per run, and its
+// result is not journaled (see WithSystemPrompt): a run resumed later is sent what fn returns
+// then. Context that the run's later turns must see unchanged belongs in the input, which is
+// journaled (see RunStart), or in a tool result.
 func (a *Agent) WithSystemPromptFunc(fn func(context.Context) string) *Agent {
 	a.systemPromptFn = fn
 	return a
@@ -334,6 +344,10 @@ func (a *Agent) send(ctx context.Context, m Model, req Request) (Message, Usage,
 // requires approval with no recorded decision triggers PendingApproval. A run that already
 // finished is final: Run returns its recorded answer without calling the model, whatever
 // input is passed, so retrying a completed run never repeats its side effects.
+//
+// The first drive of a run records its input, and a run that has not finished resumes only with
+// that input: another input is ErrConfig, as is resuming through RunSaga a run started through
+// Run, or the reverse (see RunStart; RecordedStart reads the recorded input back).
 func (a *Agent) Run(ctx context.Context, runID, input string) (Message, error) {
 	msg, _, _, err := a.run(ctx, runID, []Message{UserText(input)}, false, nil)
 	return msg, err
@@ -365,6 +379,14 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 	if err != nil {
 		return Message{}, usageTotals{}, 0, fmt.Errorf("load history %s: %w (%w)", runID, err, ErrStorage)
 	}
+	// The run's input (the seed's last message: the user turn it answers) and entry point are
+	// recorded on its first drive, and every later drive of an unfinished run is held to them
+	// (see RunStart). A finished run is final and returns below without consulting either.
+	if _, finished := completedAnswer(recs); !finished {
+		if err := holdToStart(ctx, a.store, runID, RunStart{Input: seed[len(seed)-1].Text(), Saga: saga}); err != nil {
+			return Message{}, usageTotals{}, 0, err
+		}
+	}
 
 	msgs := []Message{}
 	if sys := a.systemMessage(ctx); sys != "" {
@@ -376,6 +398,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 	attemptedAtMs := map[string]int64{} // tool-use ID -> attempt marker's Unix-millis timestamp
 	decided := map[string]bool{}        // tool-use IDs with a recorded approval decision
 	approvals := map[string]bool{}      // tool-use ID -> approve(true)/deny(false)
+	values := map[string]Record{}       // StepValue records by name (an m-of-n gate's terminal tally)
 	modelSeq := 0
 	// The run's token usage, rebuilt from the journal and kept up to date from each record the
 	// run writes, so it is the whole run's however many invocations the run took. Its spend is
@@ -409,6 +432,8 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 			}
 			decided[r.ToolUseID] = true
 			approvals[r.ToolUseID] = r.Approved
+		case StepValue:
+			values[r.Name] = r
 		}
 	}
 
@@ -576,7 +601,20 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 			if !ok {
 				return Message{}, tot, liveTurns, fmt.Errorf("model called unknown tool %q: %w", cutName(tu.Name), ErrUnknownTool)
 			}
-			if safety := t.Safety(); safety.RequiresApproval || safety.Approval != nil {
+			// A recorded denial is final, whatever the tool's gate is now: a human's Approve(false)
+			// or an m-of-n gate's terminal tally that did not pass. The gate may have been removed
+			// or loosened since (a redeploy), and the call must still not run. A recorded approval
+			// is not carried over the same way: a gate that is still configured decides by its
+			// current policy, so a tightened policy applies to a call not yet run.
+			denied := decided[tu.ID] && !approvals[tu.ID]
+			if r, ok := values[ApprovalTallyStep(tu.ID)]; ok && !denied {
+				var tally ApprovalTally
+				if err := json.Unmarshal(r.Result, &tally); err != nil {
+					return Message{}, tot, liveTurns, fmt.Errorf("decode %s (run %s): %w (%w)", r.Name, runID, err, ErrStorage)
+				}
+				denied = !tally.Passed()
+			}
+			if safety := t.Safety(); !denied && (safety.RequiresApproval || safety.Approval != nil) {
 				var approved bool
 				if pol := safety.Approval; pol != nil {
 					// m-of-n: the decision is the tally over the journaled per-approver records.
@@ -598,18 +636,19 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 					}
 					approved = approvals[tu.ID]
 				}
-				if !approved { // denied — record a denial and let the model react
-					const denied = `"tool call denied by human"`
-					if _, err := a.store.Do(ctx, runID, ToolResultStep(tu.ID), func(context.Context) (Record, error) {
-						return Record{Kind: StepToolResult, ToolUseID: tu.ID, IsError: true, Result: json.RawMessage(denied)}, nil
-					}); err != nil {
-						return Message{}, tot, liveTurns, err
-					}
-					done[tu.ID] = true
-					results[i] = &Message{Role: RoleTool, Parts: []Part{ToolResult{ToolUseID: tu.ID, Result: json.RawMessage(denied), IsError: true}}}
-					fire(ToolCompleted{ToolUseID: tu.ID, Name: tu.Name, Result: json.RawMessage(denied), IsError: true})
-					continue
+				denied = !approved
+			}
+			if denied { // record a denial and let the model react
+				const deniedResult = `"tool call denied by human"`
+				if _, err := a.store.Do(ctx, runID, ToolResultStep(tu.ID), func(context.Context) (Record, error) {
+					return Record{Kind: StepToolResult, ToolUseID: tu.ID, IsError: true, Result: json.RawMessage(deniedResult)}, nil
+				}); err != nil {
+					return Message{}, tot, liveTurns, err
 				}
+				done[tu.ID] = true
+				results[i] = &Message{Role: RoleTool, Parts: []Part{ToolResult{ToolUseID: tu.ID, Result: json.RawMessage(deniedResult), IsError: true}}}
+				fire(ToolCompleted{ToolUseID: tu.ID, Name: tu.Name, Result: json.RawMessage(deniedResult), IsError: true})
+				continue
 			}
 			toRun = append(toRun, call{idx: i, tu: tu, t: t})
 		}
@@ -690,7 +729,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 					// call that actually starts; one recorded as not started emits neither event.
 					fire(ToolStarted{ToolUseID: c.tu.ID, Name: c.tu.Name, Args: c.tu.Args})
 					res, callErr := toolH(sctx, c.tu)
-					r := Record{Kind: StepToolResult, ToolUseID: c.tu.ID}
+					r := Record{Kind: StepToolResult, ToolUseID: c.tu.ID, ReadOnly: c.t.Safety().ReadOnly} // the safety it ran under, for a saga rollback
 					if callErr != nil && sctx.Err() != nil {
 						// The call was cancelled (the run was cancelled, or a sibling paused or
 						// failed the group) before it could report back, so its outcome is

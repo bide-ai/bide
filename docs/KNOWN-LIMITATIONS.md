@@ -23,8 +23,9 @@ pending `Sleep` has no timer to wake it. In production, use SQLite or Postgres, 
 waker or an external scheduler that re-drives sleeping runs.
 
 **You supply the resume function.** `agent.Recover` finds incomplete runs and re-drives them, but only
-your deployment knows each run's original input and which waker and clock to bind. Pass that as the
-`resume` function. A `resume` that does not own a run (for example, a sub-agent run, which its parent
+your deployment knows which agent drives each run and which waker and clock to bind. Pass that as the
+`resume` function. The run's input and entry point are journaled at its first drive (read them with
+`agent.RecordedStart`), and a resume with a different input or entry point is `ErrConfig`. A `resume` that does not own a run (for example, a sub-agent run, which its parent
 drives) should do nothing. See [Crash recovery](guides/debugging.md#4--crash-recovery-lister-and-recover).
 
 **Takeover needs a process that keeps looking.** `agent.Recover` is one pass: a run whose holder
@@ -72,6 +73,11 @@ leave a partial side effect behind when it returns an error. Make it atomic or i
 crashed after it started but before its result was recorded, bide cannot know whether it happened, so
 `RunSaga` returns `*ResumeHalt` for a person or a reconciler to resolve with `ResolveHalt`. See
 [Sagas](guides/durable-steps.md#sagas-transactional-agents-with-reverse-order-compensation).
+
+**A cut-off retry-safe call keeps no record of its safety.** A call that was retry-safe when it
+ran writes no attempt marker. If it is cut off before its result is recorded and its tool is then
+relabelled a side effect, a resume runs it again and a saga rollback treats it as never started.
+A completed call does not have this gap: its result records whether it ran `ReadOnly`.
 
 **Rollback follows the sub-agent tree.** Compensation runs in one order, through the tree of
 sub-agents. Independent agents changing shared state concurrently need

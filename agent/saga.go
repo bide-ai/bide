@@ -225,13 +225,29 @@ func (a *Agent) rollbackRun(ctx context.Context, runID, root string) (compensate
 	}
 	for i := len(calls) - 1; i >= 0; i-- {
 		tu := calls[i]
-		tool := a.tools[tu.Name]
-		if tool == nil || failed[tu.ID] {
-			continue // unknown tool, or the step whose failure aborted the saga (not compensated)
+		if failed[tu.ID] {
+			continue // the step whose failure aborted the saga (not compensated)
 		}
 		res, done := results[tu.ID]
 		if done && res.IsError {
 			continue // a failed call made no change (saga steps must be atomic)
+		}
+		if done && res.ReadOnly {
+			continue // it ran as ReadOnly, so it changed nothing, whatever its tool is declared as now
+		}
+		tool := a.tools[tu.Name]
+		if tool == nil {
+			// The call's tool is no longer registered, so neither its safety nor its compensator
+			// is known. Decide from the journal alone: a call attempted as a side effect with no
+			// recorded outcome may have taken effect, so stop for a human as below; any other
+			// call may have taken effect too (a completed write, or a retry-safe call cut off),
+			// and nothing here can undo it, so report it rather than a clean rollback.
+			if !done && started[tu.ID] {
+				uncompensated = append(uncompensated, tu.Name)
+				return compensated, uncompensated, &ResumeHalt{RunID: runID, RootRunID: root, ToolUseID: tu.ID, ToolName: tu.Name, AttemptedAt: markerTime(attemptedAt[tu.ID])}
+			}
+			uncompensated = append(uncompensated, tu.Name)
+			continue
 		}
 
 		// Sub-agent: recurse into its child run (using the SUB-agent's own tools), so its
@@ -246,8 +262,11 @@ func (a *Agent) rollbackRun(ctx context.Context, runID, root string) (compensate
 			continue
 		}
 
+		// A completed call's result records whether it ran ReadOnly (skipped above), so it is a
+		// write here even if its tool has been relabelled ReadOnly since. A call with no result
+		// has no record of its safety, and goes by the tool's safety now.
 		safety := tool.Safety()
-		if safety.ReadOnly {
+		if !done && safety.ReadOnly {
 			continue
 		}
 		comp, canUndo := tool.(Compensator)

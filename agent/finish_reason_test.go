@@ -70,8 +70,9 @@ func TestRun_CutOffFinalTurnDoesNotComplete(t *testing.T) {
 		if done, _ := IsComplete(ctx, store, "r"); done {
 			t.Errorf("reason %q: the run was marked complete", reason)
 		}
-		if recs, _ := store.History(ctx, "r"); len(recs) != 0 {
-			t.Errorf("reason %q: journal has %d records, want none", reason, len(recs))
+		// Only the run's start record (its input, see RunStart) is journaled: nothing for the turn.
+		if recs, _ := store.History(ctx, "r"); len(recs) != 1 || recs[0].Name != runStartStep {
+			t.Errorf("reason %q: journal has %d records, want only %s", reason, len(recs), runStartStep)
 		}
 	}
 }

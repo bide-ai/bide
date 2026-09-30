@@ -45,6 +45,41 @@ one times, never twice. It is **not** "exactly-once": an unresumable crash in th
 leave it having fired once but unconfirmed, and the system stops for a human/policy decision
 rather than pretending it knows.
 
+## What a resume reads from the journal, and what it reads live
+
+A resumed run decides from its journal, never from configuration that may have changed since. What
+the journal holds, and so what a resume cannot be talked out of by a redeploy:
+
+- every model turn and tool result, each call's attempt marker, and every approval decision
+  (a recorded denial is final even if the tool's gate is removed later) and terminal m-of-n tally;
+- signals, interrupt answers, timer wake times, `AwaitFor` outcomes, channel messages and acks,
+  and `WithRetrieval` documents;
+- the run's input and whether it runs as a saga (`run:start`), and for a session turn the
+  transcript it started from; an unfinished run resumed with another input, or through the other
+  entry point, is `ErrConfig`;
+- in a saga's rollback, which calls completed, failed, or were attempted, and whether each
+  completed call ran `ReadOnly`: a completed write is rolled back even if its tool was relabelled
+  `ReadOnly` since, and a call whose tool is no longer registered is reported uncompensated (or
+  halts, if it was attempted with no result);
+- for a flow (`plan`), its topology digest, each switch's choice, and whether each node was
+  retry-safe when it was attempted.
+
+Configuration is live by design: it governs what a drive does next, not what the journal already
+says happened. A drive uses the configuration it is given for:
+
+- the system prompt (`WithSystemPrompt`, and `WithSystemPromptFunc`, which is called on every
+  drive), sampling, tool choice, response format, the model, and model middleware, for the turns
+  that drive makes;
+- the tool set offered to new turns, and each tool's `Safety` and tool middleware for a call that
+  has not run yet (a pending call to a tool no longer registered fails with `ErrUnknownTool`);
+- the approval gate for a call with no recorded denial, under the gate's current policy;
+- the `WithMaxTurns` and `WithTokenBudget` limits, compared with the turns and tokens the journal
+  records, so raising a limit lets a stopped run continue;
+- the clock, for whether a timer or an `AwaitFor` deadline is due and for `WithMinHaltAge`;
+- the identity and grant bound to the context (`WithIdentity`), which the tools a drive runs see;
+- a governor's policy (`govern`): governed state is the shared event log replayed under the
+  current machine.
+
 ## The boundary conditions (where the claim stops)
 
 - **The store must survive the crash.** Durability is inherited from the journal's backend. If
@@ -73,7 +108,11 @@ rather than pretending it knows.
   `Step` attempted as a side effect halts even if the resuming code passes a retry-safe
   `StepSafety`. The marker needs no new field for this, so markers written by earlier versions
   are read the same way: every one of them means "not retry-safe, halt", unless the driver that
-  wrote it recorded that its attempt never started.
+  wrote it recorded that its attempt never started. A completed call's result records whether it
+  ran `ReadOnly`, so a saga rollback compensates (or lists as uncompensated) a write whose tool was
+  relabelled `ReadOnly` since. The one case not covered: a call that was retry-safe when it fired
+  writes no marker, so if it is cut off with no result and its tool is relabelled a side effect
+  before the resume, the resume runs it again and a rollback treats it as never started.
 - **It is at-most-once for the side effect, not "the agent always finishes."** A crash can still
   leave a run halted and needing intervention. The promise is *safety* (no double-fire, no lost
   completed work), not *liveness* (guaranteed completion without help).

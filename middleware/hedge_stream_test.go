@@ -151,7 +151,14 @@ func TestHedge_StreamedFinishCarriesWinnerUsage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(recs) == 0 || recs[0].Kind != agent.StepModel || recs[0].Usage == nil || *recs[0].Usage != u {
+	var model *agent.Record
+	for i := range recs {
+		if recs[i].Kind == agent.StepModel {
+			model = &recs[i]
+			break
+		}
+	}
+	if model == nil || model.Usage == nil || *model.Usage != u {
 		t.Fatalf("setup: journaled model step = %+v, want usage %+v", recs, u)
 	}
 	want := agent.Finish{Reason: "stop", Usage: u}

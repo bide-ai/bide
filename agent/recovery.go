@@ -147,13 +147,26 @@ func completedAnswer(recs []Record) (Message, bool) {
 // or storage fault, a bad tool) is joined into the returned error. A run whose lease was lost
 // mid-drive (ErrLeaseLost) is not joined either: another process holds it now and carries it on.
 //
-// resume is deployment POLICY, not a mechanism the SDK can supply: it alone knows a run's
-// original input and any Waker or clock to bind onto the context (a Waker-bound resume
-// rebuilds the timer set for sleeping runs, since Sleep re-registers its wake on replay).
-// A typical resume is:
+// resume is deployment POLICY, not a mechanism the SDK can supply: it knows which agent drives
+// a run and any Waker or clock to bind onto the context (a Waker-bound resume rebuilds the timer
+// set for sleeping runs, since Sleep re-registers its wake on replay). The run's input and entry
+// point (Run or RunSaga) are in its journal (see RecordedStart), and a resume with another input
+// or entry point is ErrConfig. A typical resume is:
 //
 //	func(ctx context.Context, runID string) error {
-//	    _, err := agent.Run(agent.WithWaker(ctx, w), runID, inputFor(runID))
+//	    start, ok, err := agent.RecordedStart(ctx, store, runID)
+//	    if err != nil {
+//	        return err
+//	    }
+//	    if !ok {
+//	        start = startFor(runID) // your own record, for a run not driven under this version
+//	    }
+//	    ctx = agent.WithWaker(ctx, w)
+//	    if start.Saga {
+//	        _, err = a.RunSaga(ctx, runID, start.Input)
+//	    } else {
+//	        _, err = a.Run(ctx, runID, start.Input)
+//	    }
 //	    return err
 //	}
 //

@@ -20,7 +20,7 @@ import (
 // one starts with a prefix listed here.
 var reservedPrefixes = []string{
 	"@",               // engine-internal steps: @llm/<n>, @saga/compensate/<call>, @saga/args/<call>, @retrieval/<layer>, @spend/<n>
-	"run:",            // run:complete, run:aborted
+	"run:",            // run:complete, run:aborted, run:start
 	"tool:",           // a tool call's result: tool:<call>
 	"attempt:",        // attempt markers: attempt:tool:<call>, attempt:step:<name>, attempt:retry:<n>:..., attempt:not-started:<marker>
 	"approval:",       // approval decisions: approval:<call>[:<approver>:<digest>]
