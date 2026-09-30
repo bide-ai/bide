@@ -122,8 +122,9 @@ Each record maps to a node in run order:
 - `StepToolResult` -> `tool: <name>` (a failed tool result gets a `✗` suffix)
 - `StepApproval` -> `approved ✓` or `denied ✗`
 - `StepValue` -> `step: <name>` (a user-authored durable step)
-- `StepAttempt` records are skipped: they are the internal side-effect-safety marker, not
-  part of the visual flow.
+- `StepAttempt` and `StepNotStarted` records are skipped: they are the internal
+  side-effect-safety marker and the record that an attempt never started, not part of the visual
+  flow.
 
 The chart opens with a `start([user])` node and closes with a `done([done])` node.
 
