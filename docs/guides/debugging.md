@@ -216,9 +216,14 @@ calls `resume` for each remaining run to push it forward.
 Another driver can finish a listed run before the pass gets to it (while the pass drives the runs
 listed before it, or, in `RecoverLoop`, waits for a free slot). So once the pass holds a run's
 lease, it checks the three terminal markers again before it calls `resume`, and leaves a run that
-is over alone (it does not count it as re-driven). A driver records the marker before it releases
-its lease, so the check cannot miss a finish. It costs three point reads (`Store.Get`) for each run
-the pass drives, and none for the finished runs the filter excluded; over a `Durable` that is not a
+is over alone (it does not count it as re-driven, nor a run whose check failed). The check cannot
+miss a finish by a driver that holds the run's lease (`Lease`, `Recover`, `RecoverLoop`): such a
+driver records the marker before it releases its lease. It can miss two others: a finish by a
+driver that holds no lease (a plain `Run`), and a finish in the lost-lease window, when the pass
+stalls past its lease TTL between the check and `resume` and another driver takes the run over and
+finishes it. In both cases `resume` is handed a finished run, which `Run` or `RunSaga` replays
+without firing anything again. The check costs three point reads (`Store.Get`) for each run the
+pass drives, and none for the finished runs the filter excluded; over a `Durable` that is not a
 `Journal`, one `History` instead:
 
 <!-- docsnip: setup ctx context.Context; store agent.Durable; a *agent.Agent; waker agent.Waker; func startFor(runID string) agent.RunStart -->

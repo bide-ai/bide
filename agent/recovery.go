@@ -237,7 +237,7 @@ func runEnded(ctx context.Context, store Durable, runID string) (bool, error) {
 	}
 	recs, err := store.History(ctx, runID)
 	if err != nil {
-		return false, fmt.Errorf("load history %s: %w (%w)", runID, err, ErrStorage)
+		return false, storageErr("load history "+runID, err) // a format refusal stays one
 	}
 	for _, r := range recs {
 		if slices.Contains(endOfRunMarkers, r.Name) {
@@ -252,32 +252,34 @@ func runEnded(ctx context.Context, store Durable, runID string) (bool, error) {
 func recoverable(runID string) bool { return !IsSubRun(runID) && !IsSessionRun(runID) }
 
 // recoverRun drives runID under its lease (when the store supports one) and reports whether it
-// drove it and the genuine failure, if any. A run another holder currently leases is skipped;
-// competing recoverers and live primary drivers coordinate through Lease. A pause and a lost lease
-// are not failures.
+// called resume for it and the genuine failure, if any. A run another holder currently leases is
+// skipped; competing recoverers and live primary drivers coordinate through Lease. A pause and a
+// lost lease are not failures.
 //
 // The pass listed runID before it held the lease, and another driver may have finished the run
 // since (while the pass waited for a slot, or drove the runs listed before it). So under the lease,
 // before resume, recoverRun checks the terminal markers again and leaves a run that is over
-// undriven. The check cannot miss a finish: a driver records its marker before it releases its
-// lease, and this drive holds the lease from before the check until after resume returns.
+// undriven; a run it could not check is not driven either, and the failure is reported. The check
+// cannot miss a finish by a driver that holds the run's lease (Lease, Recover, RecoverLoop): such a
+// driver records its marker before it releases the lease, and this drive holds the lease from
+// before the check until after resume returns. It can miss a finish by a driver that holds no
+// lease (a plain Agent.Run), and one by a lease holder that stalled past its TTL: a drive that
+// stalls past the TTL between the check and resume loses the lease, and another driver may finish
+// the run in that window. Either way at-most-once still holds: resume is handed a finished run,
+// which a resume that calls Run or RunSaga replays without firing anything again.
 func recoverRun(ctx context.Context, store Durable, runID string, resume func(ctx context.Context, runID string) error, cfg recoverConfig) (bool, error) {
-	var ended bool
+	var resumed bool
 	driven, err := Lease(ctx, store, runID, func(ctx context.Context) error {
-		over, err := runEnded(ctx, store, runID)
-		if err != nil || over {
-			ended = over
+		if over, err := runEnded(ctx, store, runID); err != nil || over {
 			return err
 		}
+		resumed = true
 		return resume(ctx, runID)
 	}, WithLeaseHolder(cfg.holder), WithLeaseTTL(cfg.ttl))
-	if ended {
-		return false, nil
-	}
 	if err != nil && (!driven || !IsPause(err) && !errors.Is(err, ErrLeaseLost)) {
-		return driven, fmt.Errorf("recover run %s: %w", runID, err)
+		return resumed, fmt.Errorf("recover run %s: %w", runID, err)
 	}
-	return driven, nil
+	return resumed, nil
 }
 
 // RecoverLoop re-drives in-flight runs until ctx is done, so a run whose holder dies is taken over

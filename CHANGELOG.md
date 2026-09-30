@@ -134,7 +134,7 @@ minor version (0.x.0) may include breaking API or journal-format changes; each o
 
 ### Fixed
 
-- `Recover` and `RecoverLoop` no longer call `resume` for a run another driver finished after the pass listed it (while the pass drove the runs listed before it, or waited for a free slot). Nothing ran twice and nothing was written, but `resume` was handed a completed run. Holding the run's lease, the pass now checks the terminal markers (`run:complete`, `run:aborted`, `run:cancelled`) again before it calls `resume`, leaves a run that is over alone and does not count it as re-driven. **Budget:** a recovery pass now makes three point reads (`Store.Get`) for each run it drives, where it read no run before; the finished runs the listing excludes still cost nothing ([#114]).
+- `Recover` and `RecoverLoop` no longer call `resume` for a run another driver finished after the pass listed it (while the pass drove the runs listed before it, or waited for a free slot). Nothing ran twice and nothing was written, but `resume` was handed a completed run. Holding the run's lease, the pass now checks the terminal markers (`run:complete`, `run:aborted`, `run:cancelled`) again before it calls `resume`, leaves a run that is over alone and does not count it as re-driven (nor a run whose check failed, which is reported). The check covers every driver that holds the run's lease; a finish by a driver with no lease, or during a stall past the lease TTL between the check and `resume`, can still reach `resume`, which replays the finished run. **Budget:** a recovery pass now makes three point reads (`Store.Get`) for each run it drives, where it read no run before; the finished runs the listing excludes still cost nothing ([#114]).
 
 ## [0.8.0] - 2026-09-30
 
