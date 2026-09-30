@@ -13,12 +13,12 @@ cd benchmarks && GOWORK=off go test -run Comparison -v
 ## Result
 
 ```
-Bide        maxFired=1   PASS ✓ (at-most-once held)
-trpc-agent-go    maxFired=6   FAIL ✗ (119 double-fires, worst=6)
-adk-go           maxFired=4   FAIL ✗ (45 double-fires, worst=4)
-langchaingo      maxFired=64  FAIL ✗ (204 double-fires, worst=64)
-eino             maxFired=64  FAIL ✗ (204 double-fires, worst=64)
-naive-loop       maxFired=5   FAIL ✗ (45 double-fires, worst=5)
+Bide             sweeps=8   schedules=208   maxFired=1  PASS ✓ (at-most-once held)
+trpc-agent-go    sweeps=5   schedules=205   maxFired=6  FAIL ✗ (119 double-fires, worst=6)
+langchaingo      sweeps=4   schedules=204   maxFired=64  FAIL ✗ (204 double-fires, worst=64)
+eino             sweeps=4   schedules=204   maxFired=64  FAIL ✗ (204 double-fires, worst=64)
+adk-go           sweeps=6   schedules=206   maxFired=4  FAIL ✗ (45 double-fires, worst=4)
+naive-loop       sweeps=5   schedules=205   maxFired=5  FAIL ✗ (45 double-fires, worst=5)
 ```
 
 `maxFired` is the most times a single non-idempotent side effect ("charge") actually

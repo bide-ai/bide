@@ -144,7 +144,7 @@ func (b *Builder[In, Out]) Build() (*Flow[In, Out], error) {
 	// or a config "approval" block) would run with no approval at all. Refuse it.
 	for _, n := range c.nodes {
 		if n.safety.RequiresApproval || n.safety.Approval != nil {
-			return nil, fmt.Errorf("plan: build %q: step %q requires approval, which plan flows do not enforce yet; gate it in an agent tool instead (see docs/guides/approval.md): %w", c.flowName, n.name, agent.ErrConfig)
+			return nil, fmt.Errorf("plan: build %q: step %q requires approval, which plan flows do not enforce yet; gate it in an agent tool instead (see docs/guides/hitl-approval.md): %w", c.flowName, n.name, agent.ErrConfig)
 		}
 	}
 

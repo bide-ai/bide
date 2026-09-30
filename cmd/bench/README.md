@@ -18,21 +18,22 @@ the concurrency turned up.
 
 ## Measured
 
-Two environments, each scenario run seven times, medians reported. Every run journals to the
-in-memory `MemStore`, so the journal-records figure is an in-memory write rate, not a durable-store
-one. Each run writes five journal records in these scenarios (the tables below were measured when
-it wrote four, before the `run:start` record).
+Two environments, medians reported. Every run journals to the in-memory `MemStore`, so the
+journal-records figure is an in-memory write rate, not a durable-store one. Each run writes five
+journal records in these scenarios.
 
-**A standard GitHub Actions runner** (`ubuntu-latest`, 4 vCPU, Go 1.27), from the
-[Benchmark workflow](../../.github/workflows/bench.yml). Anyone can reproduce these: Actions,
-Benchmark, Run workflow.
+**A standard GitHub Actions runner** (`ubuntu-latest`, 4 vCPU AMD EPYC 7763, Go 1.27), each
+scenario run 21 times, from the [Benchmark workflow](../../.github/workflows/bench.yml) at v0.8.0.
+Anyone can reproduce these: Actions, Benchmark, Run workflow. Runner CPU models vary between
+jobs, so compare runs on the same model.
 
 | Scenario | Wall-clock | Runs/s | Journal records/s | p50 | p99 | Peak goroutines | Heap delta |
 |---|---|---|---|---|---|---|---|
-| Overhead: `-runs 5000 -concurrency 256` | ~209 ms | ~23,900 | ~95,700 | 0.14 ms | 62 ms | 293 | ~10 MB |
-| I/O fan-out: `-runs 20000 -concurrency 5000 -latency 50ms` | ~980 ms | ~20,400 | ~81,400 | 193 ms | 381 ms | 5,575 | ~44 MB |
+| Overhead: `-runs 5000 -concurrency 256` | ~211 ms | ~23,700 | ~118,400 | 0.98 ms | 52 ms | 304 | ~14 MB |
+| I/O fan-out: `-runs 20000 -concurrency 5000 -latency 50ms` | ~1.05 s | ~19,000 | ~95,000 | 222 ms | 419 ms | 5,805 | ~64 MB |
 
-**A 10-core Apple silicon Mac** (darwin/arm64, Go 1.27), measured with other work running (a
+**A 10-core Apple silicon Mac** (darwin/arm64, Go 1.27), measured at v0.7.0, each scenario run
+seven times, when each run wrote four journal records. It was measured with other work running (a
 virtual machine using a full core, load average about 4), so treat it as a lower bound for that
 machine.
 
@@ -43,10 +44,10 @@ machine.
 
 The fan-out rows are the point. Each run makes two model calls at 50ms each, so ~100ms of
 unavoidable wait, and 20,000 of them, 5,000 in flight at a time, finish in about half a second on
-the Mac, where the median run takes the model's own ~100ms because the runs fully overlap. On the
-4-vCPU runner the same work takes about one second: with fewer cores the framework's CPU work, not
-the model wait, sets the pace. Either way it is a few thousand goroutines and tens of MB in one
-commodity process instead of a cluster.
+the Mac (measured at v0.7.0), where the median run takes the model's own ~100ms because the runs
+fully overlap. On the 4-vCPU runner the same work takes about one second: with fewer cores the
+framework's CPU work, not the model wait, sets the pace. Either way it is a few thousand goroutines
+and tens of MB in one commodity process instead of a cluster.
 
 ## What this does NOT claim
 
