@@ -138,6 +138,25 @@ func retryNotStarted(ctx context.Context, d Durable, runID, key string, marker R
 	return recordNotStarted(ctx, d, runID, key, marker) == nil
 }
 
+// innerJournal returns the Journal d writes through, following the Unwrap() Durable of a wrapper
+// such as audit.AuditedStore down to it, or nil when there is none.
+func innerJournal(d Durable) *Journal {
+	for range maxUnwrap {
+		if d == nil || isNil(d) {
+			return nil
+		}
+		if j := journalOf(d); j != nil {
+			return j
+		}
+		u, ok := d.(interface{ Unwrap() Durable })
+		if !ok {
+			return nil
+		}
+		d = u.Unwrap()
+	}
+	return nil
+}
+
 // durableIdentity is the identity under which this process keys what it keeps for d's runs
 // (remembered claims, kept spend): the identity of the store beneath the Journal d writes through
 // (storeIdentity, which in-flight steps share too), following the Unwrap() Durable of a wrapper

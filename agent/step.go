@@ -257,6 +257,22 @@ func durableStep(ctx context.Context, d Durable, runID, name string, cfg stepCon
 		}
 		claimed, won, marker, markerKey = w, w, got, key
 		attemptedAt = markerTime(got.AttemptedAt)
+		if j := innerJournal(d); !won && j != nil {
+			// The loser rule of journalStep, for the Journal beneath the wrapper: the loser only
+			// joins a call of the step in flight and never starts one, so the owner in this process
+			// never finds the loser's read in flight and takes its halt as its own outcome
+			// (WinnerNeverHalts). A joined call that fails is a halt on a live owner.
+			if b, ok, err := joinFlight(flightKey{j.id, runID, name}); ok {
+				if err != nil {
+					return Record{}, stepHalt(runID, name, attemptedAt, HaltContended)
+				}
+				return decodeStored(runID, name, b)
+			}
+			if rec, ok, err := j.Get(ctx, runID, name); err != nil || ok {
+				return rec, err
+			}
+			return Record{}, stepHalt(runID, name, attemptedAt, HaltCrashed)
+		}
 	}
 	var started atomic.Bool // fn was called: from here on its effect may have fired
 	rec, err := d.Do(ctx, runID, name, func(ctx context.Context) (Record, error) {

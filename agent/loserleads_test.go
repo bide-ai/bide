@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"time"
 )
 
 // drvKey tags a context with the driver it belongs to, for the hooks below.
@@ -143,9 +144,9 @@ func TestLoserJoinsFailedFlight_HaltContendedThroughWrapper(t *testing.T) {
 	}()
 	<-inBody
 	go func() {
-		select { // release the winner once the loser waits on its call, or it never will
+		select { // release the winner once the loser waits on its call (or, failing that, in the end)
 		case <-joined:
-		case <-ctx.Done():
+		case <-time.After(10 * time.Second):
 		}
 		close(release)
 	}()
@@ -154,5 +155,74 @@ func TestLoserJoinsFailedFlight_HaltContendedThroughWrapper(t *testing.T) {
 	var halt *OutcomeUnknown
 	if !errors.As(err2, &halt) || halt.Cause != HaltContended {
 		t.Fatalf("the loser got %v, want a halt with cause HaltContended", err2)
+	}
+}
+
+// The same rule when the loser's read finds nothing at once: the loser halts without starting a
+// call of the step, so a winner that sends the step afterwards leads its own call. Were the loser
+// to go on and read through a call in flight (the historical LoserLeads), the winner would join it.
+func TestLoserLeads_LoserStartsNoCallAfterItsRead(t *testing.T) {
+	ctx := context.Background()
+	d1At := make(chan struct{})
+	d2InFlight := make(chan struct{}) // d2 reads the step inside a call in flight
+	d2Done := make(chan struct{})
+	joined := make(chan struct{})
+	winnerDone := make(chan struct{})
+	var once sync.Once
+	h := func(k flightKey) {
+		if k.name == "pay" {
+			once.Do(func() { close(joined) })
+		}
+	}
+	flightJoinHook.Store(&h)
+	t.Cleanup(func() { flightJoinHook.Store(nil) })
+	var mu sync.Mutex
+	reads := 0
+	st := &getHookStore{Store: NewMemStore(), get: func(ctx context.Context, name string) {
+		if name != "pay" || drvOf(ctx) != 2 {
+			return
+		}
+		mu.Lock()
+		reads++
+		n := reads
+		mu.Unlock()
+		if n == 2 { // a second read of the step by the loser: a call in flight it leads
+			close(d2InFlight)
+			select {
+			case <-joined:
+			case <-winnerDone:
+			}
+		}
+	}}
+	j, err := NewJournal(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var atOnce sync.Once
+	w := &doHookDurable{Durable: j, do: func(ctx context.Context, name string) {
+		if name == "pay" && drvOf(ctx) == 1 {
+			atOnce.Do(func() {
+				close(d1At)
+				select {
+				case <-d2InFlight:
+				case <-d2Done:
+				}
+			})
+		}
+	}}
+	var runs int
+	pay := func(context.Context) (string, error) { runs++; return "paid", nil }
+	var got1 string
+	var err1 error
+	go func() {
+		defer close(winnerDone)
+		got1, err1 = Step(context.WithValue(ctx, drvKey{}, 1), w, "r", "pay", pay)
+	}()
+	<-d1At
+	_, _ = Step(context.WithValue(ctx, drvKey{}, 2), w, "r", "pay", pay)
+	close(d2Done)
+	<-winnerDone
+	if err1 != nil || got1 != "paid" || runs != 1 {
+		t.Fatalf("the winner got %q, %v, and the step ran %d times; want paid, nil, once (WinnerNeverHalts)", got1, err1, runs)
 	}
 }

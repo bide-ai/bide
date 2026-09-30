@@ -1024,7 +1024,7 @@ func shareFlight(k flightKey, fn func() ([]byte, error)) ([]byte, error) {
 }
 
 // flightJoinHook, when set (by tests only), is called with the key of every call in flight that a
-// shareFlight caller joins, before it waits, so a test can order a schedule around a join.
+// shareFlight or joinFlight caller joins, before it waits, so a test can order a schedule around a join.
 var flightJoinHook atomic.Pointer[func(flightKey)]
 
 // joinFlight waits for the call in flight with key k, if there is one, and returns its outcome
@@ -1035,6 +1035,9 @@ func joinFlight(k flightKey) ([]byte, bool, error) {
 	flights.mu.Unlock()
 	if !ok {
 		return nil, false, nil
+	}
+	if h := flightJoinHook.Load(); h != nil {
+		(*h)(k)
 	}
 	f.done.Wait()
 	return f.val, true, f.err
