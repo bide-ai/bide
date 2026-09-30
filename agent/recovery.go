@@ -125,9 +125,12 @@ func completedAnswer(recs []Record) (Message, bool) {
 }
 
 // Recover re-drives the runs that were in flight when the process died, in one pass. It enumerates
-// every run the store holds (via Lister), skips the ones already marked complete, and
-// calls resume for each remaining run to push it forward. It returns how many runs it
-// re-drove and the joined genuine failures (nil if none).
+// the runs the store holds that are not over (via Lister, which filters out every run holding a
+// terminal marker: run:complete, run:aborted or run:cancelled), and calls resume for each to push
+// it forward. A run another driver finished after the listing is not resumed: holding the run's
+// lease, Recover checks the terminal markers again before it calls resume (over a Journal, three
+// point reads per run it drives). It returns how many runs it re-drove and the joined genuine
+// failures (nil if none).
 //
 // The store must implement Lister; a store that cannot enumerate its runs (the base
 // Durable contract does not require it) yields an ErrConfig-wrapped error.

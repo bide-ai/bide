@@ -1120,8 +1120,10 @@ Within a wave, no two PRs edit the same file. Sizes:
    | retry-safe `Step` | 1 `Get`, 1 `Insert` |
    | completion | 1 `Insert` |
    | resume of a run with n records | 1 `Load` of n entries, no point reads for markers |
-   | `Recover` pass over R runs | ceil(R/500) `Runs` pages on SQL stores, zero per-run reads; MemStore the same |
+   | `Recover` pass over R runs, D of them driven | ceil(R/500) `Runs` pages on SQL stores (MemStore the same), no `Load`, and 3 `Get` per driven run (the terminal markers, re-checked under its lease): 3D in all, none for the finished runs the filter excludes |
    | anchored insert | 1 `Load` of the new entries only, O(log n) hashes |
+
+   The `Recover` row was raised after P6a, with the maintainer's approval: a pass read no run at all until it was found to call `resume` for a run another driver finished between the listing and the lease, and the three point reads close that gap.
 
 2. **Benchstat on the CI runner.**
    - Benchmarks land in P6a: `BenchmarkRunTurns`, `BenchmarkToolCallSideEffect`, `BenchmarkStep`, `BenchmarkRecoverPass10k`, `BenchmarkAnchoredInsert`, `BenchmarkSQLiteInsert`, `BenchmarkPostgresInsert`.
