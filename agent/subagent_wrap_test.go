@@ -39,3 +39,22 @@ func TestSaga_RollbackRecursesThroughAWrappedSubAgent(t *testing.T) {
 	}
 	l.assertClean(t)
 }
+
+// A wrapped sub-agent whose own saga failed rolled itself back, and the parent's rollback walks
+// it again to report what it undid, so the tree's lists are whole, as for a plain SubAgent.
+func TestSaga_RollbackReportsAWrappedSubAgentsOwnRollback(t *testing.T) {
+	l := newLedger()
+	store := NewMemStore()
+	sub := New(&scriptModel{turns: [][]Emit{toolTurn("x1", "X", `{}`), toolTurn("x2", "boom", `{}`)}}, store, l.write("X"), failTool("boom"))
+	parent := New(&scriptModel{turns: [][]Emit{toolTurn("p1", "delegate", `{"task":"x"}`)}}, store, wrappedSub{SubAgent("delegate", "", sub)})
+
+	_, err := parent.RunSaga(context.Background(), "root", "go")
+	var ab *SagaAborted
+	if !errors.As(err, &ab) {
+		t.Fatalf("err = %v, want *SagaAborted", err)
+	}
+	if l.undoCount["X"] != 1 || len(ab.Compensated) != 1 || ab.Compensated[0] != "X" {
+		t.Fatalf("undo X = %d, compensated %v; want X undone once and reported", l.undoCount["X"], ab.Compensated)
+	}
+	l.assertClean(t)
+}

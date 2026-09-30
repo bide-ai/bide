@@ -114,7 +114,7 @@ func (a *Agent) preloadSubRuns(ctx context.Context, runID string, recs []Record,
 			continue
 		}
 		for _, tu := range r.Message.toolUses() {
-			st, ok := a.tools[tu.Name].(*subAgentTool)
+			st, ok := asSubAgent(a.tools[tu.Name])
 			if done[tu.ID] || !ok {
 				continue
 			}

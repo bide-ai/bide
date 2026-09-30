@@ -172,7 +172,7 @@ func (a *Agent) rollbackRun(ctx context.Context, runID, root string) (compensate
 	// step) and reports what it undid, so the tree's lists are whole.
 	for i := len(calls) - 1; i >= 0; i-- {
 		tu := calls[i]
-		sat, ok := a.tools[tu.Name].(*subAgentTool)
+		sat, ok := asSubAgent(a.tools[tu.Name])
 		if !ok || !failed[tu.ID] {
 			continue
 		}
@@ -212,7 +212,7 @@ func (a *Agent) rollbackRun(ctx context.Context, runID, root string) (compensate
 
 		// Sub-agent: recurse into its child run (using the SUB-agent's own tools), so its
 		// writes are compensated too, even if the call was cut off before it returned.
-		if sat, ok := tool.(*subAgentTool); ok {
+		if sat, ok := asSubAgent(tool); ok {
 			cc, cu, ce := sat.sub.rollbackRun(ctx, SubRunID(runID, tu.ID), root)
 			compensated = append(compensated, cc...)
 			uncompensated = append(uncompensated, cu...)

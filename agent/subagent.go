@@ -124,6 +124,26 @@ func (t *subAgentTool) Call(ctx context.Context, args json.RawMessage) (json.Raw
 	return marshalJournal(firstText(out.msg)) // not HTML-escaped: the parent model reads it as written
 }
 
+// asSubAgent returns the SubAgent tool t is, or wraps. A tool that wraps another (as
+// audit.AttenuatingSubAgent wraps a SubAgent) says so with an Unwrap() Tool method, which is
+// followed as errors.As follows Unwrap, so a saga rollback and the run's budget recurse into the
+// sub-run of a wrapped sub-agent as they do into a plain one's.
+func asSubAgent(t Tool) (*subAgentTool, bool) {
+	for range 64 { // a bound, so a wrapper that unwraps to itself cannot loop forever
+		if s, ok := t.(*subAgentTool); ok {
+			return s, true
+		}
+		u, ok := t.(interface{ Unwrap() Tool })
+		if !ok {
+			return nil, false
+		}
+		if t = u.Unwrap(); t == nil {
+			return nil, false
+		}
+	}
+	return nil, false
+}
+
 // subRunUnfinished is a sub-agent call whose sub-run stopped short of a verdict: its journal could
 // not be read or written, or one of its calls lost its answer (ErrToolOutcomeUnknown). The loop
 // records no result for it, as for a cancelled call, so neither is journaled as the sub-agent's
