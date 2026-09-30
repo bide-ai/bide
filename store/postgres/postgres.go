@@ -7,6 +7,15 @@
 // The journal is the bide_steps table (run_id, seq, name, data), where data is bytea: each
 // record's journal encoding (agent.EncodeRecord), byte for byte. Open creates the tables if they
 // do not exist and never alters them.
+//
+// # Isolation
+//
+// Every write the store makes (recording a step, the lease calls, creating the schema) runs in a
+// transaction that sets its own isolation level, read committed, whatever the deployment's
+// default_transaction_isolation (set on the server, database, role or DSN) says. The journal's
+// correctness depends on it: an insert takes a per-run advisory lock and then reads the run's last
+// position, which at repeatable read or serializable would come from a snapshot taken before the
+// lock was granted. Reads are single statements, which see one snapshot at any level.
 package postgres
 
 import (
@@ -59,6 +68,14 @@ func Open(ctx context.Context, dsn string) (*Store, error) {
 // effect already happened. seq is unique per run, so History has one order.
 const stepsTable = "bide_steps"
 
+// txOptions are the options of every transaction the store begins. The isolation level is set
+// explicitly so the store does not inherit the deployment's default_transaction_isolation: each
+// write takes an advisory lock and then reads rows committed while it waited for the lock, which
+// only read committed shows it (at repeatable read or serializable the transaction's snapshot is
+// taken by its first statement, the lock), and each lease upsert or update must proceed on a row
+// another transaction changed after it began, where the stricter levels fail with 40001.
+var txOptions = &sql.TxOptions{Isolation: sql.LevelReadCommitted}
+
 // migrateLock is the advisory lock key that serializes schema creation across nodes opening the
 // store at once ("bide" in ASCII).
 const migrateLock = 0x62696465
@@ -67,7 +84,7 @@ const migrateLock = 0x62696465
 // has had a bytea data column since it was introduced, and altering a table other nodes are
 // running on would take its exclusive lock and change what they write.
 func (s *Store) migrate(ctx context.Context) error {
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.db.BeginTx(ctx, txOptions)
 	if err != nil {
 		return err
 	}
@@ -150,9 +167,12 @@ func (s *Store) Do(ctx context.Context, runID, name string, fn func(context.Cont
 // insert appends one step to runID's journal and reports whether it was written (0 when the
 // step's name is already recorded). Inserts into one run are serialized by a transaction-scoped
 // advisory lock on the run, so each takes the next position: MAX(seq)+1 computed by two
-// concurrent inserts would otherwise collide.
+// concurrent inserts would otherwise collide. The transaction runs at read committed (txOptions),
+// so the INSERT's snapshot is taken after the lock is granted and sees every insert that held it
+// before; and a step another node recorded meanwhile makes ON CONFLICT DO NOTHING do nothing
+// rather than fail with a serialization error.
 func (s *Store) insert(ctx context.Context, runID, name string, data []byte) (int64, error) {
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.db.BeginTx(ctx, txOptions)
 	if err != nil {
 		return 0, err
 	}
@@ -239,7 +259,7 @@ func (s *Store) Runs(ctx context.Context) ([]string, error) {
 // expired, and grants nothing when another holder's lease is still live. Expiry uses the database
 // clock (now()) so all nodes compare against one clock, not their own.
 func (s *Store) AcquireLease(ctx context.Context, runID, holder string, ttl time.Duration) (bool, error) {
-	tag, err := s.db.ExecContext(ctx, `
+	n, err := s.write(ctx, `
 		INSERT INTO leases (run_id, holder, expiry)
 		VALUES ($1, $2, now() + ($3 * interval '1 second'))
 		ON CONFLICT (run_id) DO UPDATE
@@ -249,28 +269,48 @@ func (s *Store) AcquireLease(ctx context.Context, runID, holder string, ttl time
 	if err != nil {
 		return false, fmt.Errorf("acquire lease %q: %w (%w)", runID, err, agent.ErrStorage)
 	}
-	n, _ := tag.RowsAffected()
 	return n > 0, nil
 }
 
 // RenewLease implements agent.Leaser: extend holder's still-live lease on runID. Returns false if
 // holder no longer holds it (expired or taken over).
 func (s *Store) RenewLease(ctx context.Context, runID, holder string, ttl time.Duration) (bool, error) {
-	tag, err := s.db.ExecContext(ctx, `
+	n, err := s.write(ctx, `
 		UPDATE leases SET expiry = now() + ($3 * interval '1 second')
 		WHERE run_id = $1 AND holder = $2 AND expiry >= now()`,
 		runID, holder, ttl.Seconds())
 	if err != nil {
 		return false, fmt.Errorf("renew lease %q: %w (%w)", runID, err, agent.ErrStorage)
 	}
-	n, _ := tag.RowsAffected()
 	return n > 0, nil
 }
 
 // ReleaseLease implements agent.Leaser: relinquish runID if held by holder (a no-op otherwise).
 func (s *Store) ReleaseLease(ctx context.Context, runID, holder string) error {
-	if _, err := s.db.ExecContext(ctx, `DELETE FROM leases WHERE run_id = $1 AND holder = $2`, runID, holder); err != nil {
+	if _, err := s.write(ctx, `DELETE FROM leases WHERE run_id = $1 AND holder = $2`, runID, holder); err != nil {
 		return fmt.Errorf("release lease %q: %w (%w)", runID, err, agent.ErrStorage)
 	}
 	return nil
+}
+
+// write runs one data-changing statement in its own transaction at read committed (txOptions) and
+// returns the number of rows it affected. Run on its own, the statement would be a transaction at
+// the deployment's default isolation, where an upsert or update that meets a row changed by a
+// transaction that committed after the statement began fails with 40001 instead of acting on the
+// row's latest version.
+func (s *Store) write(ctx context.Context, query string, args ...any) (int64, error) {
+	tx, err := s.db.BeginTx(ctx, txOptions)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	res, err := tx.ExecContext(ctx, query, args...)
+	if err != nil {
+		return 0, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	return n, tx.Commit()
 }

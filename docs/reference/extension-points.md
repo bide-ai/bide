@@ -104,7 +104,10 @@ sequence, which is the run's full replayable history. The side-effect-safety lay
 local dev (it single-flights concurrent `Do` on the same `(runID, name)` so a side effect
 cannot fire twice under in-process concurrency). `store/sqlite.Open(path)` and
 `store/postgres.Open(ctx, dsn)` are persistent backends; a real store enforces at-most-once
-across processes with a primary key / `ON CONFLICT` on `(run_id, name)`.
+across processes with a primary key / `ON CONFLICT` on `(run_id, name)`. `store/postgres` runs
+every write in a transaction at read committed that it sets itself, so a deployment whose
+`default_transaction_isolation` is repeatable read or serializable does not change how it
+records steps or leases.
 
 ### Implement your own store
 

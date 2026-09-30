@@ -4,6 +4,12 @@
 // across nodes regardless of the exact order each observes. It parallels store/postgres for the
 // durable journal. It satisfies govern.EventLog structurally, so this package does not import
 // govern, keeping the coupling one-directional.
+//
+// Every transaction the log begins (an append, a schema migration) sets its own isolation level,
+// read committed, whatever the deployment's default_transaction_isolation says: an append takes a
+// per-entity advisory lock and then reads the entity's last position and recorded append ids,
+// which at repeatable read or serializable would come from a snapshot taken before the lock was
+// granted. Reads are single statements, which see one snapshot at any level.
 package postgreslog
 
 import (
@@ -41,6 +47,13 @@ func Open(ctx context.Context, dsn string) (*Log, error) {
 	return l, nil
 }
 
+// txOptions are the options of every transaction the log begins. The isolation level is set
+// explicitly so the log does not inherit the deployment's default_transaction_isolation: an append
+// takes an advisory lock and then reads rows committed while it waited for the lock, which only
+// read committed shows it (at repeatable read or serializable the transaction's snapshot is taken
+// by its first statement, the lock).
+var txOptions = &sql.TxOptions{Isolation: sql.LevelReadCommitted}
+
 // migrateLockKey is the advisory lock key that serializes schema migrations of the event log
 // across processes (any 64-bit constant private to this package).
 const migrateLockKey int64 = 0x62696465_6576_6c67 // "bide" "ev" "lg"
@@ -65,7 +78,7 @@ func (l *Log) migrate(ctx context.Context) error {
 	if err != nil || current {
 		return err
 	}
-	tx, err := l.db.BeginTx(ctx, nil)
+	tx, err := l.db.BeginTx(ctx, txOptions)
 	if err != nil {
 		return err
 	}
@@ -119,7 +132,7 @@ func (l *Log) Append(ctx context.Context, entity, id, event string) (int64, erro
 	if id == "" {
 		return 0, fmt.Errorf("postgreslog: empty append id: %w", agent.ErrConfig)
 	}
-	tx, err := l.db.BeginTx(ctx, nil)
+	tx, err := l.db.BeginTx(ctx, txOptions)
 	if err != nil {
 		return 0, err
 	}
@@ -138,7 +151,8 @@ func (l *Log) Append(ctx context.Context, entity, id, event string) (int64, erro
 // same next position, or a slow append could become visible after a fast one that followed it, and
 // a reader would see an event appear before one it had already seen. Appends to different entities
 // do not wait on each other (a hash collision only costs some serialization). The primary key
-// rejects a duplicate position and the unique index a duplicate id regardless.
+// rejects a duplicate position and the unique index a duplicate id regardless. tx must run at read
+// committed (txOptions), so each statement after the lock sees every append that held it before.
 func appendIn(ctx context.Context, tx *sql.Tx, entity, id, event string) (int64, error) {
 	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, entity); err != nil {
 		return 0, err
