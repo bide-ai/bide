@@ -794,6 +794,12 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 						if errors.As(callErr, &subHalt) || errors.As(callErr, &subApproval) {
 							return Record{}, callErr
 						}
+						// A sub-run whose journal could not be written has no outcome yet: record
+						// nothing, so a resume re-enters the sub-run (see subRunStorageError).
+						var subStorage *subRunStorageError
+						if errors.As(callErr, &subStorage) {
+							return Record{}, callErr
+						}
 						// An Interrupt or a durable Sleep pauses the run: record nothing and
 						// propagate, so the tool re-runs and resolves on resume. Requires a
 						// retry-safe tool (else its attempt marker would halt the resume instead).

@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/bide-ai/bide/schema"
@@ -88,7 +89,23 @@ func (t *subAgentTool) Call(ctx context.Context, args json.RawMessage) (json.Raw
 	// before it had would leave the sub-run's work in flight after the parent's Run returned.
 	out := <-ch
 	if out.err != nil {
+		var sa *SagaAborted
+		if !errors.As(out.err, &sa) && errors.Is(out.err, ErrStorage) {
+			// The sub-run's journal could not be read or written: the sub-agent reached no
+			// verdict, so this call has no outcome to record. The parent records nothing and
+			// stops; resuming it re-enters the sub-run, which carries on from its journal.
+			return nil, &subRunStorageError{err: out.err}
+		}
 		return nil, out.err // SagaAborted / ResumeHalt / PendingApproval / cancellation propagate up
 	}
 	return marshalJournal(firstText(out.msg)) // not HTML-escaped: the parent model reads it as written
 }
+
+// subRunStorageError is a sub-agent call that failed because its sub-run's journal could not be
+// read or written. The loop records no result for it, as for a cancelled call, so a storage fault
+// inside a sub-agent is neither journaled as the sub-agent's answer nor, in a saga, taken for the
+// step failure that aborts the transaction.
+type subRunStorageError struct{ err error }
+
+func (e *subRunStorageError) Error() string { return e.err.Error() }
+func (e *subRunStorageError) Unwrap() error { return e.err }
