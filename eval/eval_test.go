@@ -105,7 +105,7 @@ func TestTrajectoryMetrics(t *testing.T) {
 	lookup := agent.Func("lookup", "look something up", agent.Safety{ReadOnly: true},
 		func(context.Context, struct{}) (string, error) { return "ok", nil })
 	a := agent.New(toolModel{}, store, lookup)
-	run := eval.AgentRunner(a, store, "traj")
+	run := mustRunner(t, a, store, "traj")
 	cases := []eval.Case{{Name: "with_tool", Input: "go"}}
 
 	rep := mustRun(t, context.Background(), run, cases, []eval.Metric{
@@ -141,4 +141,24 @@ func mustRun(t testing.TB, ctx context.Context, run eval.RunFunc, cases []eval.C
 		t.Fatal(err)
 	}
 	return rep
+}
+
+// mustRunner is eval.AgentRunner for a non-nil agent and store.
+func mustRunner(t testing.TB, a *agent.Agent, store agent.Durable, prefix string) eval.RunFunc {
+	t.Helper()
+	run, err := eval.AgentRunner(a, store, prefix)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return run
+}
+
+// mustCompare is eval.Compare for two reports that Run returned.
+func mustCompare(t testing.TB, old, new eval.Report) eval.Comparison {
+	t.Helper()
+	cmp, err := eval.Compare(old, new)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cmp
 }

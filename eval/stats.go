@@ -22,22 +22,35 @@ import (
 // signed change in pass rate (new minus old). PValue is the raw two-sided significance of the
 // change; AdjustedP is that p-value after a Benjamini-Hochberg correction across all metrics
 // compared in the same Comparison. Significant is true when AdjustedP < 0.05. Direction reads the
-// sign of a significant change ("regression" for a drop, "improvement" for a rise) or "flat" when
-// the change is not significant.
+// sign of a significant change (DirectionRegression for a drop, DirectionImprovement for a rise) or
+// DirectionFlat when the change is not significant.
 type MetricComparison struct {
-	Metric      string  `json:"metric"`
-	OldRate     float64 `json:"old_rate"`
-	NewRate     float64 `json:"new_rate"`
-	RateDelta   float64 `json:"rate_delta"`
-	OldPasses   int     `json:"old_passes"`
-	OldRuns     int     `json:"old_runs"`
-	NewPasses   int     `json:"new_passes"`
-	NewRuns     int     `json:"new_runs"`
-	PValue      float64 `json:"p_value"`
-	AdjustedP   float64 `json:"adjusted_p"`
-	Significant bool    `json:"significant"`
-	Direction   string  `json:"direction"`
+	Metric      string          `json:"metric"`
+	OldRate     float64         `json:"old_rate"`
+	NewRate     float64         `json:"new_rate"`
+	RateDelta   float64         `json:"rate_delta"`
+	OldPasses   int             `json:"old_passes"`
+	OldRuns     int             `json:"old_runs"`
+	NewPasses   int             `json:"new_passes"`
+	NewRuns     int             `json:"new_runs"`
+	PValue      float64         `json:"p_value"`
+	AdjustedP   float64         `json:"adjusted_p"`
+	Significant bool            `json:"significant"`
+	Direction   MetricDirection `json:"direction"`
 }
+
+// MetricDirection is the reading of one metric's change between two Reports. It is a closed set:
+// DirectionRegression, DirectionImprovement and DirectionFlat.
+type MetricDirection string
+
+const (
+	// DirectionRegression is a significant drop in pass rate.
+	DirectionRegression MetricDirection = "regression"
+	// DirectionImprovement is a significant rise in pass rate.
+	DirectionImprovement MetricDirection = "improvement"
+	// DirectionFlat is a change that is not significant (or no change).
+	DirectionFlat MetricDirection = "flat"
+)
 
 // Comparison is the full set of per-metric comparisons between two Reports, over the metrics present
 // in both. It is a distribution-aware regression check, not a single pass/fail: it separates a real
@@ -51,7 +64,20 @@ type Comparison struct {
 // Fisher's exact test when any expected cell count is below 5), then applies a Benjamini-Hochberg
 // correction across all compared metrics to control the false discovery rate. A metric is flagged
 // Significant when its adjusted p-value is below 0.05, and Direction names the sign of the change.
-func Compare(old, new Report) Comparison {
+//
+// Both reports must carry Format ReportFormat, as every Report that Run returns does; otherwise
+// Compare returns an error wrapping ErrFormat and no comparison. A report of another layout (or a
+// zero Report) decoded into this type would otherwise compare as if its metrics were absent, and a
+// regression gate would pass on it.
+func Compare(old, new Report) (Comparison, error) {
+	for _, r := range []struct {
+		which  string
+		format string
+	}{{"old", old.Format}, {"new", new.Format}} {
+		if r.format != ReportFormat {
+			return Comparison{}, fmt.Errorf("%w: the %s report's format is %q, want %q", ErrFormat, r.which, r.format, ReportFormat)
+		}
+	}
 	names := make([]string, 0, len(old.Overall))
 	for n := range old.Overall {
 		if _, ok := new.Overall[n]; ok {
@@ -86,16 +112,16 @@ func Compare(old, new Report) Comparison {
 		comps[i].Significant = adj[i] < 0.05
 		switch {
 		case !comps[i].Significant:
-			comps[i].Direction = "flat"
+			comps[i].Direction = DirectionFlat
 		case comps[i].RateDelta < 0:
-			comps[i].Direction = "regression"
+			comps[i].Direction = DirectionRegression
 		case comps[i].RateDelta > 0:
-			comps[i].Direction = "improvement"
+			comps[i].Direction = DirectionImprovement
 		default:
-			comps[i].Direction = "flat"
+			comps[i].Direction = DirectionFlat
 		}
 	}
-	return Comparison{Metrics: comps}
+	return Comparison{Metrics: comps}, nil
 }
 
 // comparePValue picks the significance test by the expected-cell-count rule: if any of the four
@@ -364,7 +390,7 @@ func HashCases(cases []Case) string {
 
 // --- 5. governance-compliance metric ---
 
-// GovernanceHeld passes iff compliant(out) is true. The caller supplies compliant to inspect the
+// GovernanceHeld passes iff compliant(ctx, out) is true. The caller supplies compliant to inspect the
 // run's governed outcome (for example the final message or the trajectory's recorded decision) and
 // report whether the containment layer kept it compliant.
 //
@@ -374,9 +400,14 @@ func HashCases(cases []Case) string {
 // quantifies the value of containment: it is the fraction of runs where the model erred but the
 // governance layer still caught it, so the outcome remained compliant despite the model's mistake.
 // This metric stays lean and does not couple to the govern package; the predicate is the only seam.
-func GovernanceHeld(name string, compliant func(out RunOutput) bool) Metric {
-	return Metric{Name: name, Fn: func(_ context.Context, _ Case, out RunOutput) bool {
-		return compliant(out)
+// It receives the evaluation's context, so a predicate that reads a store or a governance log can
+// honour cancellation. A nil compliant makes Run return an error wrapping agent.ErrConfig.
+func GovernanceHeld(name string, compliant func(ctx context.Context, out RunOutput) bool) Metric {
+	if compliant == nil {
+		return misconfigured(name, "GovernanceHeld %q: nil predicate", name)
+	}
+	return Metric{Name: name, Fn: func(ctx context.Context, _ Case, out RunOutput) bool {
+		return compliant(ctx, out)
 	}}
 }
 

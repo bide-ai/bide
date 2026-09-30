@@ -73,7 +73,11 @@ func main() {
 	metrics := []eval.Metric{eval.NoError(), correct, eval.MaxSteps(1)}
 
 	// 4) Run each case 5 times (sampling the stochastic model) and print the pass-rate report.
-	rep, err := eval.Run(ctx, eval.AgentRunner(a, store, "sentiment"), cases, metrics, eval.Options{Runs: 5, Concurrency: 4})
+	run, err := eval.AgentRunner(a, store, "sentiment")
+	if err != nil {
+		panic(err)
+	}
+	rep, err := eval.Run(ctx, run, cases, metrics, eval.Options{Runs: 5, Concurrency: 4})
 	if err != nil {
 		panic(err)
 	}
