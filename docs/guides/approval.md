@@ -164,7 +164,7 @@ journal order: the model turn that requested the call (its tool and arguments), 
 record the gate read, valid or not, the gate's recorded tally, and the call's result.
 
 ```go
-th, _ := audit.NewTreeHead(ctx, store, runID, time.Now().Unix())
+th, _ := audit.NewTreeHead(ctx, store, runID, time.Now().UnixNano())
 sth := audit.SignTreeHead(th, logPriv)
 actions, _ := audit.ApprovalEvidence(ctx, store, runID, toolUseID, sth)
 ```

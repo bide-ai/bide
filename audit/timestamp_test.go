@@ -3,8 +3,11 @@ package audit
 import (
 	"context"
 	"crypto/ed25519"
+	"encoding/json"
 	"testing"
 	"time"
+
+	"github.com/bide-ai/bide/agent"
 )
 
 // A signed tree head's Timestamp is Unix nanoseconds. The rule EvidencePackage.Verify applies to
@@ -134,5 +137,146 @@ func TestEvidence_RunCertificateHeadTimestampsAreChecked(t *testing.T) {
 		if got := tsOK(t, pkg, pub); got != tc.ok {
 			t.Errorf("a run certificate whose used-policy head is signed %s: verified = %v, want %v", name, got, tc.ok)
 		}
+	}
+}
+
+// The verifier's clock and skew are the caller's to set.
+func TestEvidence_VerifyTimeAndSkewOptions(t *testing.T) {
+	signed := time.Now().Add(-time.Hour)
+	pkg, pub, _ := tsEvidence(t, signed.UnixNano())
+	check := func(what string, want bool, opts ...EvidenceVerifyOption) {
+		t.Helper()
+		rep, err := pkg.Verify(pub, append([]EvidenceVerifyOption{WithApprovedPolicies()}, opts...)...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if rep.OK != want {
+			t.Errorf("%s: verified = %v, want %v (%v)", what, rep.OK, want, rep.Problems)
+		}
+	}
+	check("default clock", true)
+	check("a clock a day before the signing", false, WithVerifyTime(signed.Add(-24*time.Hour)))
+	check("a clock just past the skew before the signing", false, WithVerifyTime(signed.Add(-DefaultClockSkew-time.Second)))
+	check("a clock just within the skew before the signing", true, WithVerifyTime(signed.Add(-DefaultClockSkew+time.Second)))
+	check("a clock at the skew exactly", true, WithVerifyTime(signed.Add(-DefaultClockSkew)))
+	check("a two-hour skew at a clock an hour before the signing", true, WithVerifyTime(signed.Add(-time.Hour)), WithClockSkew(2*time.Hour))
+	check("no skew at a clock a nanosecond before the signing", false, WithVerifyTime(signed.Add(-time.Nanosecond)), WithClockSkew(0))
+	check("no skew at the signing time", true, WithVerifyTime(signed), WithClockSkew(0))
+	check("a negative skew", false, WithClockSkew(-time.Second))
+}
+
+func TestCheckTimestamp(t *testing.T) {
+	now := time.Unix(1000, 0)
+	for _, tc := range []struct {
+		ts   int64
+		skew time.Duration
+		ok   bool
+	}{
+		{1, 0, true},
+		{0, time.Hour, false},
+		{-1, time.Hour, false},
+		{now.UnixNano(), 0, true},
+		{now.UnixNano() + 1, 0, false},
+		{now.UnixNano() + int64(time.Second), time.Second, true},
+		{now.UnixNano() + int64(time.Second) + 1, time.Second, false},
+		{1, -1, false},
+	} {
+		err := CheckTimestamp(TreeHead{Kind: TreeJournal, RunID: "r", Timestamp: tc.ts}, now, tc.skew)
+		if (err == nil) != tc.ok {
+			t.Errorf("CheckTimestamp(ts %d, skew %s) = %v, want ok %v", tc.ts, tc.skew, err, tc.ok)
+		}
+	}
+	if CheckTimestampOrder(TreeHead{Timestamp: 5}, TreeHead{Timestamp: 5}) != nil ||
+		CheckTimestampOrder(TreeHead{Timestamp: 5}, TreeHead{Timestamp: 6}) != nil ||
+		CheckTimestampOrder(TreeHead{Timestamp: 6}, TreeHead{Timestamp: 5}) == nil {
+		t.Error("CheckTimestampOrder: a later head must not be earlier than the head it extends, and may equal it")
+	}
+}
+
+// The heads of a run certificate's convergence evidence follow the rule as well.
+func TestEvidence_RunCertificateConvergenceHeadsAreChecked(t *testing.T) {
+	ctx := context.Background()
+	for _, which := range []string{"none", "policy leaf", "certificate leaf"} {
+		pub, priv := secKey(t)
+		s := secThreeCalls(t, "A")
+		if _, err := RecordPolicy(ctx, s, "A", []byte("policy"), "D"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := RecordConvergence(ctx, s, "A", []byte(`{}`), "D"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.Do(ctx, "A", "governed", func(context.Context) (agent.Record, error) {
+			return agent.Record{Kind: agent.StepToolResult, ToolUseID: "g", Result: json.RawMessage(`{"policy_digest":"D"}`)}, nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		at := time.Now().Add(-time.Hour).UnixNano()
+		pkg, err := Evidence(ctx, s, "A", priv, at, WithRunCertificate(RunCertSpec{ApprovedPolicies: []string{"D"}}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		future := time.Now().Add(time.Hour).UnixNano()
+		resign := func(b *ProofBundle) {
+			th := b.STH.TreeHead
+			th.Timestamp = future
+			b.STH = SignTreeHead(th, priv)
+		}
+		switch which {
+		case "policy leaf":
+			resign(&pkg.RunCertificate.Convergence[0].PolicyLeaf)
+		case "certificate leaf":
+			resign(&pkg.RunCertificate.Convergence[0].Certificate)
+		}
+		if err := pkg.Seal(priv); err != nil {
+			t.Fatal(err)
+		}
+		rep, err := pkg.Verify(pub, WithApprovedPolicies("D"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := which == "none"; rep.OK != want {
+			t.Errorf("run certificate with a future-signed %s head: verified = %v, want %v (%+v)", which, rep.OK, want, rep)
+		}
+	}
+}
+
+// The package's own head is checked even when every bundle it carries has a good one.
+func TestEvidence_PackageHeadIsCheckedOnItsOwn(t *testing.T) {
+	past := time.Now().Add(-time.Hour).UnixNano()
+	pkg, pub, priv := tsEvidence(t, past)
+	th := pkg.STH.TreeHead
+	th.Timestamp = time.Now().Add(time.Hour).UnixNano()
+	pkg.STH = SignTreeHead(th, priv)
+	if err := pkg.Seal(priv); err != nil {
+		t.Fatal(err)
+	}
+	if tsOK(t, pkg, pub) {
+		t.Fatal("a package whose own head is signed in the future verified")
+	}
+}
+
+// A run certificate's journal head is checked on its own too: here it carries timestamp 0 while
+// the package's head and the certificate's used-policy head are good.
+func TestEvidence_RunCertificateJournalHeadIsCheckedOnItsOwn(t *testing.T) {
+	at := time.Now().Add(-time.Hour).UnixNano()
+	pub, priv := secKey(t)
+	s := secThreeCalls(t, "A")
+	pkg, err := Evidence(context.Background(), s, "A", priv, at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	th := pkg.STH.TreeHead
+	th.Timestamp = 0
+	zero := SignTreeHead(th, priv)
+	cert, err := CertifyRun(context.Background(), s, "A", zero, RunCertSpec{}, priv, at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pkg.RunCertificate = &cert
+	if err := pkg.Seal(priv); err != nil {
+		t.Fatal(err)
+	}
+	if tsOK(t, pkg, pub) {
+		t.Fatal("a run certificate whose journal head has timestamp 0 verified")
 	}
 }

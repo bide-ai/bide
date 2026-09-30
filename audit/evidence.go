@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/bide-ai/bide/agent"
 )
@@ -413,6 +414,10 @@ type EvidenceVerifyOption func(*evidenceVerifyOptions)
 type evidenceVerifyOptions struct {
 	approved    []string
 	hasApproved bool
+	now         time.Time // WithVerifyTime
+	hasNow      bool
+	skew        time.Duration // WithClockSkew
+	hasSkew     bool
 }
 
 // WithApprovedPolicies is the auditor's approved-policy allowlist, against which a package's run
@@ -433,6 +438,8 @@ func WithApprovedPolicies(digests ...string) EvidenceVerifyOption {
 // certificate, if present, is for this run and tree and passes VerifyRun against the allowlist given
 // with WithApprovedPolicies; and (4) the consistency proof, if present, from its authentic earlier
 // head of this run to the STH. A package with none of (1) to (4) proves nothing and does not verify.
+// Every signed head the package carries is held to the timestamp rule (see CheckTimestamp): against
+// time.Now and DefaultClockSkew unless WithVerifyTime and WithClockSkew say otherwise.
 //
 // It returns a structured EvidenceReport with an overall bool and a per-item verdict. A false OK with
 // notes is a well-formed-but-invalid package; an error means a bundle could not be canonicalized (a
@@ -460,6 +467,10 @@ func (e EvidencePackage) Verify(pub ed25519.PublicKey, opts ...EvidenceVerifyOpt
 	if !rep.STHVerified {
 		problem("the signed tree head is not an authentic journal head of run %q under this key", e.RunID)
 	}
+	now, skew := vo.clock()
+	if err := CheckTimestamp(e.STH.TreeHead, now, skew); err != nil {
+		problem("%v", err)
+	}
 	allOK := len(rep.Problems) == 0
 
 	verifyBundle := func(a EvidenceAction) (EvidenceItem, error) {
@@ -475,6 +486,8 @@ func (e EvidencePackage) Verify(pub ed25519.PublicKey, opts ...EvidenceVerifyOpt
 			// A bundle that verifies against a DIFFERENT signed tree must not count as evidence
 			// for this run's committed log.
 			item.Note = "verified against a different signed tree than the package STH"
+		case CheckTimestamp(a.Bundle.STH.TreeHead, now, skew) != nil:
+			item.Note = CheckTimestamp(a.Bundle.STH.TreeHead, now, skew).Error()
 		default:
 			if why := actionMismatch(a); why != "" {
 				item.Note = why
@@ -523,6 +536,8 @@ func (e EvidencePackage) Verify(pub ed25519.PublicKey, opts ...EvidenceVerifyOpt
 			item.Note = fmt.Sprintf("the run certificate is for run %q at a different tree, not this package's", c.RunID)
 		case !vo.hasApproved:
 			item.Note = "no approved-policy allowlist was supplied to check the run certificate against (WithApprovedPolicies)"
+		case certTimeProblem(*c, now, skew) != nil:
+			item.Note = certTimeProblem(*c, now, skew).Error()
 		default:
 			res, err := VerifyRun(*c, vo.approved, pub)
 			if err != nil {
@@ -544,6 +559,10 @@ func (e EvidencePackage) Verify(pub ed25519.PublicKey, opts ...EvidenceVerifyOpt
 		switch {
 		case !c.From.Verify(pub) || c.From.Kind != TreeJournal || c.From.RunID != e.RunID:
 			item.Note = "the earlier tree head is not an authentic journal head of this run under this key"
+		case CheckTimestamp(c.From.TreeHead, now, skew) != nil:
+			item.Note = CheckTimestamp(c.From.TreeHead, now, skew).Error()
+		case CheckTimestampOrder(c.From.TreeHead, e.STH.TreeHead) != nil:
+			item.Note = CheckTimestampOrder(c.From.TreeHead, e.STH.TreeHead).Error()
 		case c.Proof.First != c.From.Size || c.Proof.Size != e.STH.Size:
 			item.Note = fmt.Sprintf("the proof is for sizes %d..%d, not the signed sizes %d..%d", c.Proof.First, c.Proof.Size, c.From.Size, e.STH.Size)
 		case !VerifyConsistency(c.From.Root, e.STH.Root, c.Proof):
@@ -564,6 +583,22 @@ func (e EvidencePackage) Verify(pub ed25519.PublicKey, opts ...EvidenceVerifyOpt
 
 	rep.OK = allOK && len(rep.Problems) == 0
 	return rep, nil
+}
+
+// certTimeProblem applies the timestamp rule to every signed head a run certificate carries: its
+// journal head, its used-policy head (which must not be earlier than the journal head it was
+// projected from), and the head of each convergence evidence bundle.
+func certTimeProblem(c RunCertificate, now time.Time, skew time.Duration) error {
+	heads := []TreeHead{c.STH.TreeHead, c.UsedPolicyAbsence.TreeHead}
+	for _, pc := range c.Convergence {
+		heads = append(heads, pc.PolicyLeaf.STH.TreeHead, pc.Certificate.STH.TreeHead)
+	}
+	for _, th := range heads {
+		if err := CheckTimestamp(th, now, skew); err != nil {
+			return err
+		}
+	}
+	return CheckTimestampOrder(c.STH.TreeHead, c.UsedPolicyAbsence.TreeHead)
 }
 
 // actionMismatch returns why a's Kind, Label, and Ref are not what its proven record says, or ""

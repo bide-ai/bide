@@ -26,8 +26,10 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"reflect"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/audit"
@@ -47,10 +49,16 @@ const defaultMaxInputBytes = 256 << 20
 // maxInputBytes is the cap in force, set by the verb's -max-input-bytes flag.
 var maxInputBytes int64 = defaultMaxInputBytes
 
-// flagSet returns a verb's flag set, with the -max-input-bytes flag every verb shares.
+// maxClockSkew is how far past this machine's clock a signed head's timestamp may be, set by the
+// verb's -max-clock-skew flag (see audit.CheckTimestamp).
+var maxClockSkew = audit.DefaultClockSkew
+
+// flagSet returns a verb's flag set, with the -max-input-bytes and -max-clock-skew flags every verb
+// shares.
 func flagSet(name string) *flag.FlagSet {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.Int64Var(&maxInputBytes, "max-input-bytes", defaultMaxInputBytes, "the largest input file, in bytes, the verb reads; a larger one is an error")
+	fs.DurationVar(&maxClockSkew, "max-clock-skew", audit.DefaultClockSkew, "how far past this machine's clock a signed head's timestamp may be")
 	return fs
 }
 
@@ -69,6 +77,10 @@ func parse(fs *flag.FlagSet, args []string) {
 	}
 	if maxInputBytes < 1 {
 		fmt.Fprintf(os.Stderr, "%s: -max-input-bytes must be at least 1, got %d\n", fs.Name(), maxInputBytes)
+		os.Exit(2)
+	}
+	if maxClockSkew < 0 {
+		fmt.Fprintf(os.Stderr, "%s: -max-clock-skew must not be negative, got %s\n", fs.Name(), maxClockSkew)
 		os.Exit(2)
 	}
 }
@@ -190,9 +202,12 @@ func usage() {
 
 Export a journal for `+"`prove`"+` with: json.Marshal(store.History(ctx, runID)). Every JSON
 input is parsed strictly: a duplicate or case-variant key, an unknown field, or invalid UTF-8 is
-an error, and a public key must be 32 bytes of hex. Every verb takes -max-input-bytes <n>: an
+an error, a bundle, certificate or package must carry the "format" this version reads (one made
+by an older release is refused with a message naming the format), and a public key must be 32
+bytes of hex. Every verb takes -max-input-bytes <n>: an
 input file larger than n bytes (default 268435456, 256 MiB) is an error, and none is read past
-the cap.
+the cap. Every signed tree head an input carries must have a positive timestamp (Unix
+nanoseconds) no later than this machine's clock plus -max-clock-skew <duration> (default 5m).
 
 Exit status: 0 = verified, 1 = failed, 2 = usage error, 3 = the -checker gave no verdict (it could
 not be started, exited with a status other than 0 or 1, was killed, or printed an unreadable
@@ -802,6 +817,11 @@ func verifyRun(args []string) {
 	var cert audit.RunCertificate
 	readJSON(*certPath, &cert)
 	pub := readPubKey(*pubkey)
+	// The used-policy head is projected from the journal head, so it cannot be the earlier one.
+	if err := audit.CheckTimestampOrder(cert.STH.TreeHead, cert.UsedPolicyAbsence.TreeHead); err != nil {
+		fmt.Println("FAIL:", err)
+		os.Exit(1)
+	}
 
 	// The auditor's own allowlist governs the only-approved-policies check; the certificate carries
 	// none, so a producer cannot pass by widening its own set.
@@ -1239,6 +1259,50 @@ func readJSON(path string, v any) {
 	if err := audit.UnmarshalStrict(b, v); err != nil {
 		fatal(fmt.Errorf("parse %s: %w", path, err))
 	}
+	// Every signed head in the input, however deeply it is carried, is held to the timestamp rule.
+	if err := checkHeadTimes(reflect.ValueOf(v), time.Now()); err != nil {
+		fatal(fmt.Errorf("%s: %w", path, err))
+	}
+}
+
+var signedHeadType = reflect.TypeFor[audit.SignedTreeHead]()
+
+// checkHeadTimes applies audit.CheckTimestamp, against now and -max-clock-skew, to every signed
+// tree head reachable from v.
+func checkHeadTimes(v reflect.Value, now time.Time) error {
+	switch v.Kind() {
+	case reflect.Pointer, reflect.Interface:
+		if !v.IsNil() {
+			return checkHeadTimes(v.Elem(), now)
+		}
+	case reflect.Struct:
+		if v.Type() == signedHeadType {
+			return audit.CheckTimestamp(v.Interface().(audit.SignedTreeHead).TreeHead, now, maxClockSkew)
+		}
+		for i := range v.NumField() {
+			if v.Type().Field(i).IsExported() {
+				if err := checkHeadTimes(v.Field(i), now); err != nil {
+					return err
+				}
+			}
+		}
+	case reflect.Slice, reflect.Array:
+		if v.Type().Elem().Kind() == reflect.Uint8 {
+			return nil // bytes and raw JSON carry no head
+		}
+		for i := range v.Len() {
+			if err := checkHeadTimes(v.Index(i), now); err != nil {
+				return err
+			}
+		}
+	case reflect.Map:
+		for it := v.MapRange(); it.Next(); {
+			if err := checkHeadTimes(it.Value(), now); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func fatal(err error) {

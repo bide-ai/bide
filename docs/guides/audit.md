@@ -278,7 +278,7 @@ and optionally the run certificate, the authority grant chain, and a consistency
 JSON (store it, email it, publish it) and verifies offline:
 
 ```go
-pkg, _ := audit.Evidence(ctx, store, runID, priv, time.Now().Unix(),
+pkg, _ := audit.Evidence(ctx, store, runID, priv, time.Now().UnixNano(),
 	audit.WithAllToolCalls(), audit.WithRunCertificate(spec), audit.WithGrants(),
 	audit.WithConsistencyFrom(earlierSTH)) // an earlier signed head of this run, e.g. from the anchor log
 report, _ := pkg.Verify(pub, audit.WithApprovedPolicies(allowlist...)) // trusting only the out-of-band key
@@ -301,6 +301,8 @@ package is verified or derived from verified data:
 - `Label`, the one field no proof covers, is covered by the seal: `Evidence` ends with `pkg.Seal(priv)`,
   the log key's signature over the whole package, so nothing can be edited, added, or dropped after
   sealing. A caller that adds actions afterwards reseals.
+- Every signed head the package carries (its STH, each action and grant bundle's head, the run
+  certificate's heads, and the consistency proof's earlier head) follows the timestamp rule below.
 - The package must prove something: one action, grant, run certificate, or consistency proof at
   least. A package with none of them does not verify, so an empty report never reads as a clean
   audit.
@@ -309,6 +311,29 @@ One check needs inputs the package deliberately does not carry: grant issuer sig
 the issuers' keys, checked with `VerifyDelegationChain` against your own PKI). For the auditor who
 does not write Go, `bide-audit verify-evidence` verifies the same file and prints a plain-English
 PASS/FAIL.
+
+### Timestamps
+
+A signed tree head's `Timestamp` is when it was signed, in Unix nanoseconds
+(`time.Now().UnixNano()`, as `AuditedStore` stamps it). Verifiers hold every signed head they are
+shown to one rule (`audit.CheckTimestamp`, `audit.CheckTimestampOrder`):
+
+- the timestamp is positive;
+- it is not later than the verifier's clock plus an allowed skew (`audit.DefaultClockSkew`, five
+  minutes; `WithClockSkew` and `bide-audit -max-clock-skew` change it, and `WithVerifyTime` checks
+  as of another moment);
+- where one head extends another it is not earlier: a consistency proof's earlier head is not
+  later than the head it proves grown, and a run certificate's used-policy head is not earlier than
+  the journal head it was projected from.
+
+`EvidencePackage.Verify` applies the rule to every head a package carries, and bide-audit applies it
+to every signed head in every file it reads. The rule does not limit how old a head may be (an audit
+reads old heads), and it does not order heads of different runs or anchor-log entries, which are
+independent. `ProofBundle.Verify`, `SignedTreeHead.Verify`, and `VerifyRun` check signatures and
+bindings only; a caller that uses them directly applies `CheckTimestamp` too. A grant's `NotAfter` is
+a separate expiry in Unix seconds, checked by `Grant.Expired` and `VerifyCurrentGrant` against the
+caller's clock; an evidence package carries no per-action time to compare it with, so
+`EvidencePackage.Verify` does not check it.
 
 ### Approval evidence: k approvers signed off before the action
 
@@ -367,6 +392,9 @@ Conventions shared across verbs:
 - Every verb takes `-max-input-bytes <n>`: an input file (bundle, journal, key file, digest list,
   policy, evidence package) larger than n bytes is an error (exit 1); no input is read further than one byte past the cap. The
   default is 256 MiB; a value below 1 is a usage error.
+- Every verb takes `-max-clock-skew <duration>` (default `5m`): every signed tree head in every file
+  it reads must follow the timestamp rule (see Timestamps above) against this machine's clock, or
+  the verb fails (exit 1). A negative skew is a usage error.
 
 | Verb | Required flags | Optional flags | Proves / checks |
 |---|---|---|---|

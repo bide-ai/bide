@@ -89,7 +89,7 @@ func TestVerifyAbsentCLI_RejectsCrossKindForgery(t *testing.T) {
 func TestCLI_ShortPublicKeyExitsOne(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "bundle.json")
-	writeJSON(t, path, audit.ProofBundle{Format: audit.ProofFormat})
+	writeJSON(t, path, audit.ProofBundle{Format: audit.ProofFormat, STH: audit.SignedTreeHead{TreeHead: audit.TreeHead{Timestamp: 1}}}) // a head the timestamp rule admits, so the key is what fails
 	bin := buildCLI(t, dir)
 	code, out := exitCode(t, bin, "verify", "-bundle", path, "-pubkey", "ab")
 	if code != 1 || bytes.Contains([]byte(out), []byte("panic")) || !bytes.Contains([]byte(out), []byte("public key")) {

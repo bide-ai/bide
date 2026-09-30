@@ -271,7 +271,9 @@ type VerifiedPolicy struct {
 //
 // A false OK with populated Reasons means a well-formed-but-invalid certificate; an error means a
 // bundle could not be canonicalized or a leaf could not be read (a malformed artifact), or the
-// certificate or one of its bundles is not of the format this version reads (ErrFormat).
+// certificate or one of its bundles is not of the format this version reads (ErrFormat). It does
+// not check the heads' timestamps; EvidencePackage.Verify and bide-audit verify-run do (see
+// CheckTimestamp).
 func VerifyRun(cert RunCertificate, approved []string, pub ed25519.PublicKey) (RunVerification, error) {
 	res := RunVerification{}
 	if err := formatOf(cert, cert.Format); err != nil {

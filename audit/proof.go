@@ -36,6 +36,7 @@ type ProofBundle struct {
 // Verify reports whether the bundle is internally consistent and authentic under pub (a key
 // obtained out-of-band, e.g. from the anchor log operator). It returns false, not an error,
 // for a well-formed-but-invalid proof; an error indicates the record could not be canonicalized.
+// It does not check the head's timestamp; apply CheckTimestamp to b.STH for that.
 func (b ProofBundle) Verify(pub ed25519.PublicKey) (bool, error) {
 	if b.STH.Alg != "" && b.STH.Alg != AlgEd25519 {
 		return false, nil
