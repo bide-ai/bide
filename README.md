@@ -533,7 +533,7 @@ a2, _ := s.Send(ctx, "and its population?")   // sees turn 1 in context
 ```
 
 The transcript is journaled turn-by-turn under the session id, so a restarted process
-`a.Session(ctx, "user-42")` rebuilds it and continues. The id must not contain `/` or `>`. Turn N runs under `"<id>/tN"` (its own
+`a.Session(ctx, "user-42")` rebuilds it and continues. The id must not contain `>`. Turn N runs under `"<id>>@turn/N"` (its own
 durable journal handles crash-resume *within* a turn); conversational memory is the question/answer
 transcript: a turn's intermediate tool calls stay in that turn and don't leak into later ones. If
 a turn pauses (approval / `Interrupt`), `Send` returns that error; resolve it and call `Send` again

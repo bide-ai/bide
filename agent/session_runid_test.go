@@ -119,3 +119,63 @@ type failingModel struct{}
 var errModelDown = errors.New("model down")
 
 func (failingModel) Stream(context.Context, Request) (*Stream, error) { return nil, errModelDown }
+
+// Every run ID a session derives is one no caller can pass to Run, and no two sessions, turns,
+// keys or sub-agents derive the same one: the session ID ends at the first '>', and the segment
+// after it is a session's mark, which no encoded call ID starts with.
+func TestSessionRunIDs_Unambiguous(t *testing.T) {
+	ctx := context.Background()
+	seen := map[string]string{}
+	add := func(id, what string) {
+		t.Helper()
+		if other, dup := seen[id]; dup {
+			t.Fatalf("%s and %s share run ID %q", what, other, id)
+		}
+		seen[id] = what
+	}
+	for _, sess := range []string{"chat", "chat/t0", "c/e", "c", "a/b", "@x", "session"} {
+		ids := []string{sessionJournalID(sess)}
+		for n := range 3 {
+			ids = append(ids, sessionTurnRunID(sess, n))
+		}
+		for _, key := range []string{"t0", "k1", "a/b", "a>b", "a%3Eb", "@turn/0", "session", "", "0"} {
+			ids = append(ids, sessionEventRunID(sess, key))
+		}
+		for _, id := range ids {
+			add(id, "session "+sess+" run")
+			if !IsSessionRun(id) || IsSubRun(id) {
+				t.Fatalf("%q: IsSessionRun %v, IsSubRun %v; want true, false", id, IsSessionRun(id), IsSubRun(id))
+			}
+			if err := checkRunID(ctx, id); !errors.Is(err, ErrConfig) {
+				t.Fatalf("checkRunID(%q) = %v outside its session, want ErrConfig", id, err)
+			}
+			if err := checkRunID(withSessionRun(ctx, id), id); err != nil {
+				t.Fatalf("checkRunID(%q) = %v in its session, want nil", id, err)
+			}
+			if err := checkRunID(withSessionRun(ctx, ids[0]+"x"), id); !errors.Is(err, ErrConfig) {
+				t.Fatalf("checkRunID(%q) = %v under another session run, want ErrConfig", id, err)
+			}
+			for _, call := range []string{"c1", "@turn/0", "@session"} {
+				sub := SubRunID(id, call)
+				add(sub, "sub-run "+call+" of "+id)
+				if !IsSubRun(sub) || IsSessionRun(sub) {
+					t.Fatalf("%q: IsSubRun %v, IsSessionRun %v; want true, false", sub, IsSubRun(sub), IsSessionRun(sub))
+				}
+			}
+		}
+		add(sess, "root run "+sess)
+		if IsSessionRun(sess) || IsSubRun(sess) {
+			t.Fatalf("root run %q reported as derived", sess)
+		}
+	}
+	// A context carrying a session run admits only session run IDs: a sub-run ID smuggled into it
+	// is still refused.
+	sub := SubRunID("r", "c1")
+	if err := checkRunID(withSessionRun(ctx, sub), sub); !errors.Is(err, ErrConfig) {
+		t.Fatalf("checkRunID(%q) = %v under withSessionRun, want ErrConfig", sub, err)
+	}
+	a := New(&replyModel{}, NewMemStore())
+	if _, err := a.Run(ctx, sessionTurnRunID("chat", 0), "hi"); !errors.Is(err, ErrConfig) {
+		t.Fatalf("Run(session turn run) = %v, want ErrConfig", err)
+	}
+}

@@ -115,11 +115,19 @@ func TestSendOnce_ConcurrentHandles(t *testing.T) {
 	}
 }
 
-// A key with '/' could name another run's journal (a sub-agent of a turn runs under
-// "<turn run>/<call>"), so it is refused.
-func TestSendOnce_RejectsSlashInKey(t *testing.T) {
-	if _, err := openSession(t, New(&replyModel{}, NewMemStore()), "c1").SendOnce(context.Background(), "a/b", "x"); !errors.Is(err, ErrConfig) {
-		t.Fatalf("err = %v, want ErrConfig", err)
+// A SendOnce turn's run ID carries its key encoded (see sessionEventRunID), so any key is
+// allowed, and keys that differ, even only in a character the encoding escapes, answer their own
+// messages. On main a key with '/' or '>' was refused, since it named another run's journal.
+func TestSendOnce_AnyKeyGetsItsOwnTurn(t *testing.T) {
+	s := openSession(t, New(&replyModel{}, NewMemStore()), "c1")
+	keys := []string{"a/b", "a>b", "a%2Fb", "a%3Eb", "a@b", "@turn/0", "session", strings.Repeat("k", 200), strings.Repeat("k", 201)}
+	for _, k := range keys {
+		if msg, err := s.SendOnce(context.Background(), k, "for "+k); err != nil || msg.Text() != "re: for "+k {
+			t.Fatalf("SendOnce(%q) = %q, %v", k, msg.Text(), err)
+		}
+	}
+	if s.Turns() != len(keys) {
+		t.Fatalf("turns = %d, want %d: two keys shared a turn", s.Turns(), len(keys))
 	}
 }
 
@@ -201,10 +209,12 @@ func TestSendOnce_SimultaneousAppends(t *testing.T) {
 	}
 }
 
-// A session's turns run under journals named from its id ("<id>/t<n>", "<id>/e/<key>"), so two
-// sessions must never derive the same name. Session "c1/e" sending its first message and
-// session "c1" answering event "t0" both named run "c1/e/t0": the second was handed the first's
-// recorded reply, to a different message in a different conversation, without a model call.
+// A session's turns run under journals named from its id, so two sessions must never derive the
+// same name. When turns ran under "<id>/t<n>" and "<id>/e/<key>", session "c1/e" sending its first
+// message and session "c1" answering event "t0" both named run "c1/e/t0": the second was handed
+// the first's recorded reply, to a different message in a different conversation, without a
+// model call. Session IDs may now contain '/', since everything up to a session run ID's first
+// '>' is its session's id.
 func TestSession_IDsCannotCollide(t *testing.T) {
 	m := &replyModel{}
 	a := New(m, NewMemStore())
@@ -321,7 +331,7 @@ func TestSession_ResumedTurnKeepsItsTranscript(t *testing.T) {
 // seeds the turn from that starting point. Here the first handle dies before journaling it,
 // "b" is answered, and a second handle runs turn "a" from the one-turn transcript.
 func TestSession_StaleHandleUsesJournaledStart(t *testing.T) {
-	a := New(contextModel{}, &crashOnce{Durable: NewMemStore(), crashName: sessionFromStep("c1/t0")})
+	a := New(contextModel{}, &crashOnce{Durable: NewMemStore(), crashName: sessionFromStep(sessionTurnRunID("c1", 0))})
 	stale := openSession(t, a, "c1")
 	if _, err := stale.Send(context.Background(), "a"); !errors.Is(err, errDied) {
 		t.Fatalf(`first Send("a"): err = %v, want the crash`, err)
@@ -342,7 +352,7 @@ func TestSession_BadJournaledStartIsProtocolError(t *testing.T) {
 	for _, from := range []turnFrom{{Turns: 0, Digest: "x"}, {Turns: -1}, {Turns: 5}, {Turns: 1, Digest: ""}} {
 		store := NewMemStore()
 		b, _ := json.Marshal(from)
-		if _, err := store.Do(context.Background(), "c1", sessionFromStep("c1/t0"), func(context.Context) (Record, error) {
+		if _, err := store.Do(context.Background(), sessionJournalID("c1"), sessionFromStep(sessionTurnRunID("c1", 0)), func(context.Context) (Record, error) {
 			return Record{Kind: StepValue, Result: b}, nil
 		}); err != nil {
 			t.Fatal(err)
@@ -390,7 +400,7 @@ func TestSession_JournaledStartCoversEveryTurn(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	recs, err := store.History(context.Background(), "c1")
+	recs, err := store.History(context.Background(), sessionJournalID("c1"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -403,7 +413,7 @@ func TestSession_JournaledStartCoversEveryTurn(t *testing.T) {
 		}
 	}
 	b, _ := json.Marshal(turnFrom{Turns: 2, Digest: chainTurn("", last)})
-	if _, err := store.Do(context.Background(), "c1", sessionFromStep("c1/t0"), func(context.Context) (Record, error) {
+	if _, err := store.Do(context.Background(), sessionJournalID("c1"), sessionFromStep(sessionTurnRunID("c1", 0)), func(context.Context) (Record, error) {
 		return Record{Kind: StepValue, Result: b}, nil
 	}); err != nil {
 		t.Fatal(err)

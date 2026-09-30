@@ -104,7 +104,10 @@ type RunStart struct {
 
 // RecordedStart returns how runID was started (see RunStart), and ok=false for a run whose
 // journal holds no such record: one never driven, or one not driven since before the record
-// existed. A recovery callback uses it to re-drive a run with its own input and entry point:
+// existed. A session's turn run (IsSessionRun) records its message, but only the session can
+// drive it (it seeds the turn with the transcript before that message), so Recover never hands
+// one to its callback. A recovery callback uses it to re-drive a run with its own input and
+// entry point:
 //
 //	start, ok, err := agent.RecordedStart(ctx, store, runID)
 //	if err != nil {

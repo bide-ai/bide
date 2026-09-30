@@ -68,8 +68,11 @@ the recorded answer without calling the model, even if the process died after th
 the reply went out. A turn interrupted by a crash or a pause resumes when the event is redelivered,
 in its own journal, so a different message arriving in between gets its own turn; the resumed turn
 still sees the conversation as it stood when the turn started, since that starting point is
-journaled. Reusing a key for different text is `ErrConfig`, as is a key containing `/` or `>` (the
-key names that journal). Several workers may hold handles on one conversation: every message is
+journaled. Reusing a key for different text is `ErrConfig`; any key is allowed, since the turn's
+journal, `"<conversation>>@event/<key>"`, carries it encoded. A conversation id may not contain
+`>`: every run a session drives is named `"<id>>@..."`, which no run ID passed to `Run` can be, so
+a run of your own never shares a session's journal. `Recover` skips them (`agent.IsSessionRun`):
+an interrupted turn resumes through the session, when the event is redelivered. Several workers may hold handles on one conversation: every message is
 recorded once, and a handle that is behind catches up from the journal before answering, so each
 new turn sees the conversation as it stands.
 

@@ -186,9 +186,10 @@ A store opts in by implementing `Runs`; `Recover` finds it with `agent.Capabilit
 looks through wrappers that implement `Unwrap() Durable` (such as `audit.AuditedStore`), and
 returns an `ErrConfig`-wrapped error if the store cannot enumerate.
 
-`Recover` enumerates every run, skips the ones already finished and every sub-agent run
-(`agent.IsSubRun`; its root's re-run resumes it), and calls `resume` for each remaining run to push
-it forward:
+`Recover` enumerates every run, skips the ones already finished, every sub-agent run
+(`agent.IsSubRun`; its root's re-run resumes it) and every session journal and turn run
+(`agent.IsSessionRun`; the session resumes a turn when its message is sent again), and calls
+`resume` for each remaining run to push it forward:
 
 ```go
 n, err := agent.Recover(ctx, store, func(ctx context.Context, runID string) error {

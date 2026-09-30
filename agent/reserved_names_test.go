@@ -58,18 +58,12 @@ func TestRun_RunIDWithSubRunSeparatorIsRefused(t *testing.T) {
 	}
 }
 
-// A session's turns run under its ID, so a session ID or SendOnce key with a '>' is refused.
-func TestSession_IDOrKeyWithSubRunSeparatorIsRefused(t *testing.T) {
+// A session's run IDs are "<id>>@...", so a session ID with a '>' is refused. (A SendOnce key is
+// encoded, so it may hold one; see TestSendOnce_AnyKeyGetsItsOwnTurn.)
+func TestSession_IDWithSubRunSeparatorIsRefused(t *testing.T) {
 	a := New(NewScriptedModel(TextTurn("done")), NewMemStore())
 	if _, err := a.Session(context.Background(), "chat>1"); !errors.Is(err, ErrConfig) || !strings.Contains(err.Error(), "chat>1") {
 		t.Fatalf("Session err = %v, want ErrConfig naming the id", err)
-	}
-	s, err := a.Session(context.Background(), "chat")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.SendOnce(context.Background(), "k>1", "hi"); !errors.Is(err, ErrConfig) || !strings.Contains(err.Error(), "k>1") {
-		t.Fatalf("SendOnce err = %v, want ErrConfig naming the key", err)
 	}
 }
 

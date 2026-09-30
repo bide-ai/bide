@@ -188,7 +188,8 @@ func TestFinishedRun_SessionTurnReentry(t *testing.T) {
 	a := New(m, store, charge)
 
 	// Turn 0's run finishes, but the session-level record of the turn was never written.
-	if _, _, _, err := a.run(ctx, "s/t0", []Message{UserText("pay")}, false, nil); err != nil || charged != 1 {
+	turn := sessionTurnRunID("s", 0)
+	if _, _, _, err := a.run(withSessionRun(ctx, turn), turn, []Message{UserText("pay")}, false, nil); err != nil || charged != 1 {
 		t.Fatalf("turn run: err=%v charged=%d", err, charged)
 	}
 	calls := m.calls
