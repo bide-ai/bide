@@ -258,9 +258,9 @@ func RegisterStep[I, O any](r *Registry, name string, fn func(context.Context, I
 // recorded in Go here, not in the config JSON.
 func RegisterTool[I, O any](r *Registry, name string, t agent.Tool, opts ...NodeOption) error {
 	return r.registerBlock(name, &regBlock{
-		kind:    kindTool,
-		inType:  reflect.TypeFor[I](),
-		outType: reflect.TypeFor[O](),
+		kind:     kindTool,
+		inType:   reflect.TypeFor[I](),
+		outType:  reflect.TypeFor[O](),
 		safety:   safetyFromOptions(agent.SpecOf(t).Safety, opts),
 		approval: agent.SpecOf(t).Approval,
 		run: func(ctx context.Context, in any) (any, error) {

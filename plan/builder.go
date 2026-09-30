@@ -188,10 +188,10 @@ func (b *Builder[In, Out]) Step[I, O any](name string, fn func(context.Context, 
 // than the tool's own declaration.
 func (b *Builder[In, Out]) Tool[I, O any](name string, t agent.Tool, opts ...NodeOption) Handle[I, O] {
 	b.core.register(applyNodeOptions(&node{
-		name:    name,
-		kind:    kindTool,
-		inType:  typeOf[I](),
-		outType: typeOf[O](),
+		name:     name,
+		kind:     kindTool,
+		inType:   typeOf[I](),
+		outType:  typeOf[O](),
 		safety:   agent.SpecOf(t).Safety, // auto-derived; an explicit option below overrides it
 		approval: agent.SpecOf(t).Approval,
 		run: func(ctx context.Context, in any) (any, error) {
