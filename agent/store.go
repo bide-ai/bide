@@ -138,11 +138,42 @@ type Durable interface {
 // restart. The base Durable interface intentionally does NOT require it: memoization
 // (Do) and replay (History) are the crash-safety core, and enumeration is a separate,
 // backend-specific concern (a SQL store lists with a query; a sharded store may not
-// enumerate cheaply at all). A store opts in by implementing Runs; Recover type-asserts
-// for it.
+// enumerate cheaply at all). A store opts in by implementing Runs; Recover finds it with
+// Capability, so a wrapper that implements Unwrap keeps its inner store's Lister.
 type Lister interface {
 	// Runs returns the IDs of every run the store holds, in no guaranteed order.
 	Runs(ctx context.Context) ([]string, error)
+}
+
+// Capability returns store's implementation of the optional capability T (Lister, Leaser, or any
+// other interface a store may implement beyond Durable), looking through wrappers.
+//
+// A store that wraps another Durable (an audit or tracing layer, say) exposes the store it wraps
+// by implementing
+//
+//	Unwrap() Durable
+//
+// Capability checks store itself first, then follows Unwrap until a store implements T, and
+// reports false once a store has no Unwrap method or Unwrap returns nil. A wrapper therefore
+// exposes exactly the capabilities of the store it wraps, with no forwarding methods to keep in
+// step with new capabilities. A wrapper that must change what a capability means (one that
+// renames runs, for example, and so must rename what Runs returns) implements that capability
+// itself, which takes precedence over the wrapped store's, as with errors.As. Lease, Recover and
+// RecoverLoop find Leaser and Lister this way; code that needs a capability of a store it did not
+// build should too, since a plain type assertion does not see through a wrapper.
+func Capability[T any](store Durable) (T, bool) {
+	for { // a nil store (or a nil Unwrap) implements nothing, so the assertions below end the walk
+		if c, ok := store.(T); ok {
+			return c, true
+		}
+		u, ok := store.(interface{ Unwrap() Durable })
+		if !ok {
+			break
+		}
+		store = u.Unwrap()
+	}
+	var zero T
+	return zero, false
 }
 
 // runCompleteStep is the journal name of the terminal completion marker. The agent loop

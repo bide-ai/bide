@@ -85,21 +85,21 @@ func buildDiamondRegistry() (*plan.Registry, error) {
 	reg := plan.NewRegistry()
 
 	// split: int -> int, the entry that fans out to y and z.
-	if err := plan.RegisterStep(reg, "split", func(n int) (int, error) { return n * 2, nil }); err != nil {
+	if err := plan.RegisterStep(reg, "split", func(_ context.Context, n int) (int, error) { return n * 2, nil }); err != nil {
 		return nil, err
 	}
 	// y: int -> int, one fan-out arm.
-	if err := plan.RegisterStep(reg, "y", func(n int) (int, error) { return n + 1, nil }); err != nil {
+	if err := plan.RegisterStep(reg, "y", func(_ context.Context, n int) (int, error) { return n + 1, nil }); err != nil {
 		return nil, err
 	}
 	// z: int -> string, the other fan-out arm.
-	if err := plan.RegisterStep(reg, "z", func(n int) (string, error) { return fmt.Sprintf("z%d", n), nil }); err != nil {
+	if err := plan.RegisterStep(reg, "z", func(_ context.Context, n int) (string, error) { return fmt.Sprintf("z%d", n), nil }); err != nil {
 		return nil, err
 	}
 	// mergeBlock: the Join2 merge fanning y (int) and z (string) back into one string. Load
 	// checks its arity (2) against the join's declared input count and its input types
 	// against y's and z's outputs.
-	if err := plan.RegisterJoin2(reg, "mergeBlock", func(a int, s string) (string, error) {
+	if err := plan.RegisterJoin2(reg, "mergeBlock", func(_ context.Context, a int, s string) (string, error) {
 		return fmt.Sprintf("%s+%d", s, a), nil
 	}); err != nil {
 		return nil, err
@@ -112,12 +112,12 @@ func buildDiamondRegistry() (*plan.Registry, error) {
 // a fan-in flow. The node order, edges, join, and ReadOnly on the join all match the config.
 func buildDiamondByHand() (*plan.Flow[int, string], error) {
 	b := plan.New[int, string]("diamond")
-	split := b.Step("split", func(n int) (int, error) { return n * 2, nil })
-	y := b.Step("y", func(n int) (int, error) { return n + 1, nil })
-	z := b.Step("z", func(n int) (string, error) { return fmt.Sprintf("z%d", n), nil })
+	split := b.Step("split", func(_ context.Context, n int) (int, error) { return n * 2, nil })
+	y := b.Step("y", func(_ context.Context, n int) (int, error) { return n + 1, nil })
+	z := b.Step("z", func(_ context.Context, n int) (string, error) { return fmt.Sprintf("z%d", n), nil })
 	b.Edge(split, y)
 	b.Edge(split, z)
-	b.Join2("merge", y, z, func(a int, s string) (string, error) {
+	b.Join2("merge", y, z, func(_ context.Context, a int, s string) (string, error) {
 		return fmt.Sprintf("%s+%d", s, a), nil
 	}, plan.ReadOnly())
 	flow, err := b.Build()
@@ -134,24 +134,24 @@ func buildLoopRegistry() (*plan.Registry, error) {
 	reg := plan.NewRegistry()
 
 	// seed: int -> LoopState, the entry that primes the countdown.
-	if err := plan.RegisterStep(reg, "seed", func(n int) (LoopState, error) {
+	if err := plan.RegisterStep(reg, "seed", func(_ context.Context, n int) (LoopState, error) {
 		return LoopState{N: n, Trace: "seed"}, nil
 	}); err != nil {
 		return nil, err
 	}
 	// refine: LoopState -> LoopState, the loop head. It decrements N and appends a marker
 	// so the terminal output shows one entry per body pass.
-	if err := plan.RegisterStep(reg, "refine", func(s LoopState) (LoopState, error) {
+	if err := plan.RegisterStep(reg, "refine", func(_ context.Context, s LoopState) (LoopState, error) {
 		return LoopState{N: s.N - 1, Trace: s.Trace + "|refine"}, nil
 	}); err != nil {
 		return nil, err
 	}
 	// check: LoopState -> LoopState, the loop switch's switched node (a pass-through).
-	if err := plan.RegisterStep(reg, "check", func(s LoopState) (LoopState, error) { return s, nil }); err != nil {
+	if err := plan.RegisterStep(reg, "check", func(_ context.Context, s LoopState) (LoopState, error) { return s, nil }); err != nil {
 		return nil, err
 	}
 	// done: LoopState -> string, the loop exit terminal.
-	if err := plan.RegisterStep(reg, "done", func(s LoopState) (string, error) {
+	if err := plan.RegisterStep(reg, "done", func(_ context.Context, s LoopState) (string, error) {
 		return fmt.Sprintf("done N=%d trace=%s", s.N, s.Trace), nil
 	}); err != nil {
 		return nil, err
@@ -169,14 +169,14 @@ func buildLoopRegistry() (*plan.Registry, error) {
 // config's loopMax of 10.
 func buildCountdownLoopByHand() (*plan.Flow[int, string], error) {
 	b := plan.New[int, string]("countdown")
-	seed := b.Step("seed", func(n int) (LoopState, error) {
+	seed := b.Step("seed", func(_ context.Context, n int) (LoopState, error) {
 		return LoopState{N: n, Trace: "seed"}, nil
 	})
-	refine := b.Step("refine", func(s LoopState) (LoopState, error) {
+	refine := b.Step("refine", func(_ context.Context, s LoopState) (LoopState, error) {
 		return LoopState{N: s.N - 1, Trace: s.Trace + "|refine"}, nil
 	})
-	check := b.Step("check", func(s LoopState) (LoopState, error) { return s, nil })
-	done := b.Step("done", func(s LoopState) (string, error) {
+	check := b.Step("check", func(_ context.Context, s LoopState) (LoopState, error) { return s, nil })
+	done := b.Step("done", func(_ context.Context, s LoopState) (string, error) {
 		return fmt.Sprintf("done N=%d trace=%s", s.N, s.Trace), nil
 	})
 	b.Edge(seed, refine)

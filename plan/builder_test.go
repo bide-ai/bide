@@ -30,10 +30,10 @@ func (t *stubTool) Call(_ context.Context, args json.RawMessage) (json.RawMessag
 func TestBuilderConstructsFlow(t *testing.T) {
 	b := New[int, string]("small")
 
-	start := b.Step("start", func(n int) (int, error) { return n + 1, nil })
+	start := b.Step("start", func(_ context.Context, n int) (int, error) { return n + 1, nil })
 	echo := b.Tool[int, int]("echo", &stubTool{})
-	yes := b.Step("yes", func(int) (string, error) { return "yes", nil })
-	no := b.Step("no", func(int) (string, error) { return "no", nil })
+	yes := b.Step("yes", func(context.Context, int) (string, error) { return "yes", nil })
+	no := b.Step("no", func(context.Context, int) (string, error) { return "no", nil })
 
 	b.Edge(start, echo)
 	b.Switch(echo,
@@ -93,7 +93,7 @@ func TestBuilderConstructsFlow(t *testing.T) {
 // closure (runNode dispatches a kindModel node to runModel) and records its prompt.
 func TestBuilderNodeKindsAndTypes(t *testing.T) {
 	b := New[int, int]("kinds")
-	b.Step("s", func(int) (bool, error) { return true, nil })
+	b.Step("s", func(context.Context, int) (bool, error) { return true, nil })
 	b.Tool[string, int]("t", &stubTool{})
 	b.Model[int, string]("m", "prompt text")
 
@@ -132,8 +132,8 @@ func TestBuilderNodeKindsAndTypes(t *testing.T) {
 // not overwrite the first node.
 func TestBuilderDuplicateNameRecordsError(t *testing.T) {
 	b := New[int, int]("dup")
-	b.Step("same", func(int) (int, error) { return 0, nil })
-	b.Step("same", func(int) (int, error) { return 1, nil })
+	b.Step("same", func(context.Context, int) (int, error) { return 0, nil })
+	b.Step("same", func(context.Context, int) (int, error) { return 1, nil })
 
 	if len(b.core.errs) != 1 {
 		t.Fatalf("errs = %d, want 1 duplicate error; errs=%v", len(b.core.errs), b.core.errs)
@@ -150,7 +150,7 @@ func TestBuilderDuplicateNameRecordsError(t *testing.T) {
 // input as I, calls fn, and boxes the result.
 func TestStepRunClosure(t *testing.T) {
 	b := New[int, int]("run")
-	b.Step("double", func(n int) (int, error) { return n * 2, nil })
+	b.Step("double", func(_ context.Context, n int) (int, error) { return n * 2, nil })
 	got, err := b.core.nodes[0].run(context.Background(), 21)
 	if err != nil {
 		t.Fatalf("run: %v", err)
@@ -201,8 +201,8 @@ func TestModelLoweringRecordsPromptNoStub(t *testing.T) {
 // not match (returns false rather than panicking).
 func TestWiringPredicateErasure(t *testing.T) {
 	b := New[int, string]("pred")
-	over := b.Step("over", func(int) (int, error) { return 0, nil })
-	target := b.Step("target", func(int) (string, error) { return "", nil })
+	over := b.Step("over", func(context.Context, int) (int, error) { return 0, nil })
+	target := b.Step("target", func(context.Context, int) (string, error) { return "", nil })
 	b.Switch(over, When(func(n int) bool { return n > 5 }, target))
 
 	pred := b.core.branches[0].arms[0].pred

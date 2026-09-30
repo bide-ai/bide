@@ -176,8 +176,9 @@ The options (`WithLeaseHolder`, `WithLeaseTTL`) apply when the store also implem
 `Lister` is an OPTIONAL capability, kept off the base `Durable` interface on purpose:
 memoization and replay are the crash-safety core, and enumeration is a separate,
 backend-specific concern (a SQL store lists with a query; the base contract stays minimal).
-A store opts in by implementing `Runs`; `Recover` type-asserts for it and returns an
-`ErrConfig`-wrapped error if the store cannot enumerate.
+A store opts in by implementing `Runs`; `Recover` finds it with `agent.Capability`, which also
+looks through wrappers that implement `Unwrap() Durable` (such as `audit.AuditedStore`), and
+returns an `ErrConfig`-wrapped error if the store cannot enumerate.
 
 `Recover` enumerates every run, skips the ones already finished and every sub-agent run
 (`agent.IsSubRun`; its root's re-run resumes it), and calls `resume` for each remaining run to push

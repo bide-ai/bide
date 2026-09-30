@@ -26,12 +26,12 @@ import (
 // of halt-on-ambiguous-crash), so a caller can vary the join's Safety.
 func buildDiamond(opts ...NodeOption) (*Flow[int, string], error) {
 	b := New[int, string]("diamond")
-	split := b.Step("split", func(n int) (int, error) { return n * 2, nil })
-	y := b.Step("y", func(n int) (int, error) { return n + 1, nil })
-	z := b.Step("z", func(n int) (string, error) { return fmt.Sprintf("z%d", n), nil })
+	split := b.Step("split", func(_ context.Context, n int) (int, error) { return n * 2, nil })
+	y := b.Step("y", func(_ context.Context, n int) (int, error) { return n + 1, nil })
+	z := b.Step("z", func(_ context.Context, n int) (string, error) { return fmt.Sprintf("z%d", n), nil })
 	b.Edge(split, y)
 	b.Edge(split, z)
-	b.Join2("merge", y, z, func(a int, s string) (string, error) {
+	b.Join2("merge", y, z, func(_ context.Context, a int, s string) (string, error) {
 		return fmt.Sprintf("%s+%d", s, a), nil
 	}, opts...)
 	return b.Build()
@@ -114,12 +114,12 @@ func TestJoinDigestStableAndShapeSensitive(t *testing.T) {
 	// Swapped join input order (z, y) instead of (y, z): a distinct shape, so a
 	// distinct digest, even though the same nodes and edges exist.
 	swap := New[int, string]("diamond")
-	sp := swap.Step("split", func(n int) (int, error) { return n * 2, nil })
-	sy := swap.Step("y", func(n int) (int, error) { return n + 1, nil })
-	sz := swap.Step("z", func(n int) (string, error) { return fmt.Sprintf("z%d", n), nil })
+	sp := swap.Step("split", func(_ context.Context, n int) (int, error) { return n * 2, nil })
+	sy := swap.Step("y", func(_ context.Context, n int) (int, error) { return n + 1, nil })
+	sz := swap.Step("z", func(_ context.Context, n int) (string, error) { return fmt.Sprintf("z%d", n), nil })
 	swap.Edge(sp, sy)
 	swap.Edge(sp, sz)
-	swap.Join2("merge", sz, sy, func(s string, i int) (string, error) { // inputs swapped
+	swap.Join2("merge", sz, sy, func(_ context.Context, s string, i int) (string, error) { // inputs swapped
 		return fmt.Sprintf("%s+%d", s, i), nil
 	})
 	swapFlow, err := swap.Build()
@@ -135,14 +135,14 @@ func TestJoinDigestStableAndShapeSensitive(t *testing.T) {
 // runs it to the merged output, proving arity-3 fan-in works end to end.
 func TestJoin3RunsSequentially(t *testing.T) {
 	b := New[int, string]("diamond3")
-	split := b.Step("split", func(n int) (int, error) { return n, nil })
-	p := b.Step("p", func(n int) (int, error) { return n + 1, nil })
-	q := b.Step("q", func(n int) (int, error) { return n + 2, nil })
-	r := b.Step("r", func(n int) (string, error) { return fmt.Sprintf("r%d", n), nil })
+	split := b.Step("split", func(_ context.Context, n int) (int, error) { return n, nil })
+	p := b.Step("p", func(_ context.Context, n int) (int, error) { return n + 1, nil })
+	q := b.Step("q", func(_ context.Context, n int) (int, error) { return n + 2, nil })
+	r := b.Step("r", func(_ context.Context, n int) (string, error) { return fmt.Sprintf("r%d", n), nil })
 	b.Edge(split, p)
 	b.Edge(split, q)
 	b.Edge(split, r)
-	b.Join3("merge", p, q, r, func(a, bb int, s string) (string, error) {
+	b.Join3("merge", p, q, r, func(_ context.Context, a, bb int, s string) (string, error) {
 		return fmt.Sprintf("%s|%d|%d", s, a, bb), nil
 	})
 	flow, err := b.Build()
@@ -166,9 +166,9 @@ func TestJoin3RunsSequentially(t *testing.T) {
 func TestJoinTypeMismatchIsBuildError(t *testing.T) {
 	b := New[int, string]("mismatch")
 	// split fans out to y (int) and z (string).
-	split := b.Step("split", func(n int) (int, error) { return n, nil })
-	_ = b.Step("y", func(n int) (int, error) { return n, nil })
-	z := b.Step("z", func(n int) (string, error) { return "z", nil })
+	split := b.Step("split", func(_ context.Context, n int) (int, error) { return n, nil })
+	_ = b.Step("y", func(_ context.Context, n int) (int, error) { return n, nil })
+	z := b.Step("z", func(_ context.Context, n int) (string, error) { return "z", nil })
 	b.Edge(split, z)
 	// Hand-append the fan-out edge and a join node whose FIRST port type (string)
 	// disagrees with input y's output type (int): a type-mismatched join input.
@@ -204,16 +204,16 @@ func TestJoinInputGatedBySwitchIsBuildError(t *testing.T) {
 	// entry -> Switch{ When -> gatedY, Else -> other }. gatedY is reachable only via
 	// the When arm. z is on the ungated spine (entry -> z), so a Join2(gatedY, z) has
 	// one input a Switch can skip while the other runs.
-	entry := b.Step("entry", func(n int) (int, error) { return n, nil })
-	gatedY := b.Step("gatedY", func(n int) (int, error) { return n, nil })
-	other := b.Step("other", func(int) (string, error) { return "other", nil })
-	z := b.Step("z", func(n int) (string, error) { return "z", nil })
+	entry := b.Step("entry", func(_ context.Context, n int) (int, error) { return n, nil })
+	gatedY := b.Step("gatedY", func(_ context.Context, n int) (int, error) { return n, nil })
+	other := b.Step("other", func(context.Context, int) (string, error) { return "other", nil })
+	z := b.Step("z", func(_ context.Context, n int) (string, error) { return "z", nil })
 	b.Edge(entry, z)
 	b.Switch(entry,
 		When(func(n int) bool { return n > 0 }, gatedY),
 		Else(other),
 	)
-	b.Join2("merge", gatedY, z, func(a int, s string) (string, error) {
+	b.Join2("merge", gatedY, z, func(_ context.Context, a int, s string) (string, error) {
 		return fmt.Sprintf("%s%d", s, a), nil
 	})
 
@@ -242,12 +242,12 @@ func TestJoinDiamondCrashSweep(t *testing.T) {
 		run := func(crashPoint int) error {
 			store := &crashFlowStore{inner: mem, crashAt: crashPoint}
 			bb := New[int, string]("diamond")
-			split := bb.Step("split", func(n int) (int, error) { splitCalls++; return n * 2, nil })
-			y := bb.Step("y", func(n int) (int, error) { yCalls++; return n + 1, nil })
-			z := bb.Step("z", func(n int) (string, error) { zCalls++; return fmt.Sprintf("z%d", n), nil })
+			split := bb.Step("split", func(_ context.Context, n int) (int, error) { splitCalls++; return n * 2, nil })
+			y := bb.Step("y", func(_ context.Context, n int) (int, error) { yCalls++; return n + 1, nil })
+			z := bb.Step("z", func(_ context.Context, n int) (string, error) { zCalls++; return fmt.Sprintf("z%d", n), nil })
 			bb.Edge(split, y)
 			bb.Edge(split, z)
-			bb.Join2("merge", y, z, func(a int, s string) (string, error) {
+			bb.Join2("merge", y, z, func(_ context.Context, a int, s string) (string, error) {
 				mergeCalls++
 				return fmt.Sprintf("%s+%d", s, a), nil
 			})

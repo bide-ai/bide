@@ -30,16 +30,16 @@ type cfgReceipt struct {
 	Status string `json:"status"`
 }
 
-func cfgClassify(o cfgOrder) (cfgAssessment, error) {
+func cfgClassify(_ context.Context, o cfgOrder) (cfgAssessment, error) {
 	return cfgAssessment{ID: o.ID, Rush: o.Rush}, nil
 }
-func cfgReserve(a cfgAssessment) (cfgReservation, error) {
+func cfgReserve(_ context.Context, a cfgAssessment) (cfgReservation, error) {
 	return cfgReservation{ID: a.ID}, nil
 }
-func cfgFinalize(r cfgReservation) (cfgReceipt, error) {
+func cfgFinalize(_ context.Context, r cfgReservation) (cfgReceipt, error) {
 	return cfgReceipt{ID: r.ID, Status: "reserved"}, nil
 }
-func cfgDecline(a cfgAssessment) (cfgReceipt, error) {
+func cfgDecline(_ context.Context, a cfgAssessment) (cfgReceipt, error) {
 	return cfgReceipt{ID: a.ID, Status: "declined"}, nil
 }
 
@@ -377,10 +377,10 @@ func diamondRegistry(t *testing.T) *Registry {
 			t.Fatalf("register: %v", err)
 		}
 	}
-	must(RegisterStep(reg, "split", func(n int) (int, error) { return n * 2, nil }))
-	must(RegisterStep(reg, "y", func(n int) (int, error) { return n + 1, nil }))
-	must(RegisterStep(reg, "z", func(n int) (string, error) { return fmt.Sprintf("z%d", n), nil }))
-	must(RegisterJoin2(reg, "mergeBlock", func(a int, s string) (string, error) {
+	must(RegisterStep(reg, "split", func(_ context.Context, n int) (int, error) { return n * 2, nil }))
+	must(RegisterStep(reg, "y", func(_ context.Context, n int) (int, error) { return n + 1, nil }))
+	must(RegisterStep(reg, "z", func(_ context.Context, n int) (string, error) { return fmt.Sprintf("z%d", n), nil }))
+	must(RegisterJoin2(reg, "mergeBlock", func(_ context.Context, a int, s string) (string, error) {
 		return fmt.Sprintf("%s+%d", s, a), nil
 	}))
 	return reg
@@ -491,14 +491,14 @@ func loopRegistry(t *testing.T) *Registry {
 			t.Fatalf("register: %v", err)
 		}
 	}
-	must(RegisterStep(reg, "seed", func(n int) (loopState, error) {
+	must(RegisterStep(reg, "seed", func(_ context.Context, n int) (loopState, error) {
 		return loopState{N: n, Trace: "seed"}, nil
 	}))
-	must(RegisterStep(reg, "refine", func(s loopState) (loopState, error) {
+	must(RegisterStep(reg, "refine", func(_ context.Context, s loopState) (loopState, error) {
 		return loopState{N: s.N - 1, Trace: s.Trace + "|refine"}, nil
 	}))
-	must(RegisterStep(reg, "check", func(s loopState) (loopState, error) { return s, nil }))
-	must(RegisterStep(reg, "done", func(s loopState) (string, error) {
+	must(RegisterStep(reg, "check", func(_ context.Context, s loopState) (loopState, error) { return s, nil }))
+	must(RegisterStep(reg, "done", func(_ context.Context, s loopState) (string, error) {
 		return fmt.Sprintf("done N=%d trace=%s", s.N, s.Trace), nil
 	}))
 	must(RegisterPredicate(reg, "again", func(s loopState) bool { return s.N > 0 }))
@@ -625,7 +625,7 @@ const safetyNodeConfig = `{
 func loadReadFlow(t *testing.T, reads *int, value int, safety string) (*Flow[int, int], error) {
 	t.Helper()
 	reg := NewRegistry()
-	if err := RegisterStep(reg, "read", func(int) (int, error) { *reads++; return value, nil }); err != nil {
+	if err := RegisterStep(reg, "read", func(context.Context, int) (int, error) { *reads++; return value, nil }); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 	cfg := safetyNodeConfig
@@ -770,7 +770,7 @@ func TestLoadSafetyDefaultHalts(t *testing.T) {
 // load error naming the node and the bad value.
 func TestLoadUnknownSafetyStringIsError(t *testing.T) {
 	reg := NewRegistry()
-	if err := RegisterStep(reg, "read", func(n int) (int, error) { return n, nil }); err != nil {
+	if err := RegisterStep(reg, "read", func(_ context.Context, n int) (int, error) { return n, nil }); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 	cfg := strings.Replace(safetyNodeConfig, `"safety": "readonly"`, `"safety": "sometimes"`, 1)

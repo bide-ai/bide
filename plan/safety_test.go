@@ -20,8 +20,8 @@ import (
 // without mutating anything, so re-running it on resume yields the SAME value. The
 // call counter proves how many times the body ran; safety of the effect is that the
 // returned value is stable across repeats.
-func readCounter(reads *int, value int) func(int) (int, error) {
-	return func(int) (int, error) {
+func readCounter(reads *int, value int) func(context.Context, int) (int, error) {
+	return func(context.Context, int) (int, error) {
 		*reads++          // observe the body ran; NOT a state mutation the flow depends on
 		return value, nil // a read: same value every time, safe to repeat
 	}

@@ -51,6 +51,9 @@ import (
 // differential check covers the events this run took, not all inputs). It covers the journal up to
 // STH.Size; that STH is the run's final head is a fact the anchor log supplies, not the certificate.
 type RunCertificate struct {
+	// Format is RunCertificateFormat.
+	Format string `json:"format"`
+
 	// RunID is the run this certificate is about. It must equal STH.RunID and
 	// UsedPolicyAbsence.RunID, both signed.
 	RunID string `json:"run_id"`
@@ -163,6 +166,7 @@ func CertifyRun(ctx context.Context, store agent.Durable, runID string, sth Sign
 	}
 
 	return RunCertificate{
+		Format:            RunCertificateFormat,
 		RunID:             runID,
 		Properties:        append([]string(nil), runCertProperties...),
 		UsedPolicies:      used,
@@ -221,28 +225,28 @@ func ProveRunCertificate(ctx context.Context, store agent.Durable, runID string,
 // results, so a caller (or the CLI) can report exactly which property held and which failed.
 type RunVerification struct {
 	// OK is the overall verdict: true only when every asserted property held.
-	OK bool
+	OK bool `json:"ok"`
 	// OnlyApprovedPolicies is true when every used policy is in the allowlist AND the disclosed
 	// used-policy set is bound to this run's journal by the signed used-policy head (completeness).
-	OnlyApprovedPolicies bool
+	OnlyApprovedPolicies bool `json:"only_approved_policies"`
 	// ConvergenceCertified is true when every used policy has an anchored policy leaf and convergence
 	// leaf, authentic and in the same signed tree, with linking digests. It does NOT include the
 	// oracle cross-check, which the caller performs separately (the CLI does, with -checker).
-	ConvergenceCertified bool
+	ConvergenceCertified bool `json:"convergence_certified"`
 	// Reasons carries human-readable detail for any property that failed (empty on full success).
-	Reasons []string
+	Reasons []string `json:"reasons,omitempty"`
 	// Policies carries, when ConvergenceCertified holds, what the verification read from each used
 	// policy's leaves, in UsedPolicies order, so a caller that cross-checks a policy (the CLI's
 	// -checker runs the external oracle on it) checks exactly the bytes that were verified.
-	Policies []VerifiedPolicy
+	Policies []VerifiedPolicy `json:"policies,omitempty"`
 }
 
 // VerifiedPolicy is one used policy as VerifyRun read it from its anchored leaves: the policy
 // bytes from the policy leaf and the serialized convergence certificate from the convergence leaf.
 type VerifiedPolicy struct {
-	Digest      string
-	Policy      string
-	Certificate json.RawMessage
+	Digest      string          `json:"digest"`
+	Policy      string          `json:"policy"`
+	Certificate json.RawMessage `json:"certificate"`
 }
 
 // VerifyRun checks a RunCertificate's claims against the disclosed proofs, the auditor's own
@@ -266,9 +270,13 @@ type VerifiedPolicy struct {
 //     claim is left to the caller (see the CLI's -checker), on the contents returned in Policies.
 //
 // A false OK with populated Reasons means a well-formed-but-invalid certificate; an error means a
-// bundle could not be canonicalized or a leaf could not be read (a malformed artifact).
+// bundle could not be canonicalized or a leaf could not be read (a malformed artifact), or the
+// certificate or one of its bundles is not of the format this version reads (ErrFormat).
 func VerifyRun(cert RunCertificate, approved []string, pub ed25519.PublicKey) (RunVerification, error) {
 	res := RunVerification{}
+	if err := formatOf(cert, cert.Format); err != nil {
+		return res, err
+	}
 	fail := func(ok *bool, format string, args ...any) {
 		*ok = false
 		res.Reasons = append(res.Reasons, fmt.Sprintf(format, args...))

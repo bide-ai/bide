@@ -11,7 +11,7 @@ import (
 type nodeKind int
 
 const (
-	kindStep   nodeKind = iota // arbitrary func(I)(O,error)
+	kindStep   nodeKind = iota // arbitrary func(context.Context, I) (O, error)
 	kindTool                   // an agent.Tool
 	kindModel                  // a model call built from a prompt
 	kindSwitch                 // a journaled branch choice

@@ -15,9 +15,9 @@ import (
 // Switch choice picked a declared arm.
 func TestConformCleanRun(t *testing.T) {
 	b := New[int, string]("conform-clean")
-	entry := b.Step("entry", func(n int) (int, error) { return n + 1, nil })
-	high := b.Step("high", func(int) (string, error) { return "high", nil })
-	low := b.Step("low", func(int) (string, error) { return "low", nil })
+	entry := b.Step("entry", func(_ context.Context, n int) (int, error) { return n + 1, nil })
+	high := b.Step("high", func(context.Context, int) (string, error) { return "high", nil })
+	low := b.Step("low", func(context.Context, int) (string, error) { return "low", nil })
 	b.Switch(entry,
 		When(func(n int) bool { return n > 0 }, high),
 		Else(low),
@@ -52,9 +52,9 @@ func TestConformCleanRun(t *testing.T) {
 // names the unexpected step. This is the negative accountability case.
 func TestConformUnexpectedStep(t *testing.T) {
 	b := New[int, string]("conform-intruder")
-	entry := b.Step("entry", func(n int) (int, error) { return n + 1, nil })
-	high := b.Step("high", func(int) (string, error) { return "high", nil })
-	low := b.Step("low", func(int) (string, error) { return "low", nil })
+	entry := b.Step("entry", func(_ context.Context, n int) (int, error) { return n + 1, nil })
+	high := b.Step("high", func(context.Context, int) (string, error) { return "high", nil })
+	low := b.Step("low", func(context.Context, int) (string, error) { return "low", nil })
 	b.Switch(entry,
 		When(func(n int) bool { return n > 0 }, high),
 		Else(low),
@@ -103,9 +103,9 @@ func TestConformUnexpectedStep(t *testing.T) {
 // the only record present is the crafted choice.
 func TestConformUnreachableArm(t *testing.T) {
 	b := New[int, string]("conform-arm")
-	entry := b.Step("entry", func(n int) (int, error) { return n + 1, nil })
-	high := b.Step("high", func(int) (string, error) { return "high", nil })
-	low := b.Step("low", func(int) (string, error) { return "low", nil })
+	entry := b.Step("entry", func(_ context.Context, n int) (int, error) { return n + 1, nil })
+	high := b.Step("high", func(context.Context, int) (string, error) { return "high", nil })
+	low := b.Step("low", func(context.Context, int) (string, error) { return "low", nil })
 	b.Switch(entry,
 		When(func(n int) bool { return n > 0 }, high),
 		Else(low),
@@ -151,9 +151,9 @@ func TestConformUnreachableArm(t *testing.T) {
 // ok on such a journal.
 func TestConformHaltedRunIsObservable(t *testing.T) {
 	b := New[int, string]("conform-halt")
-	entry := b.Step("entry", func(n int) (int, error) { return n + 1, nil })
-	high := b.Step("high", func(int) (string, error) { return "high", nil })
-	low := b.Step("low", func(int) (string, error) { return "low", nil })
+	entry := b.Step("entry", func(_ context.Context, n int) (int, error) { return n + 1, nil })
+	high := b.Step("high", func(context.Context, int) (string, error) { return "high", nil })
+	low := b.Step("low", func(context.Context, int) (string, error) { return "low", nil })
 	b.Switch(entry,
 		When(func(n int) bool { return n > 0 }, high),
 		Else(low),
