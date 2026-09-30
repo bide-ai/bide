@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
+	"sync/atomic"
 	"time"
 )
 
@@ -153,12 +154,19 @@ func EncodeRecord(r Record) ([]byte, error) {
 // DecodeRecord decodes a record from its journal encoding (see EncodeRecord) into an independent
 // copy that shares no memory with b.
 func DecodeRecord(b []byte) (Record, error) {
+	if h := decodeHook.Load(); h != nil {
+		(*h)(b)
+	}
 	var r Record
 	if err := json.Unmarshal(b, &r); err != nil {
 		return Record{}, fmt.Errorf("decode stored record: %w (%w)", err, ErrStorage)
 	}
 	return r, nil
 }
+
+// decodeHook, when set (by tests only), is called with the bytes of every DecodeRecord, so a test
+// can count the decodes a code path makes.
+var decodeHook atomic.Pointer[func([]byte)]
 
 // DecodeStoredRecord decodes the record a store holds for the step name of run runID (see
 // DecodeRecord) and checks that the record carries that name. Every record is journaled with the
