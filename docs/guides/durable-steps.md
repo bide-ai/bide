@@ -29,7 +29,10 @@ it runs **at most once**. An attempt marker is journaled before `fn` runs, so if
 after `fn`'s effect and before its result is recorded, the resumed step returns `*ResumeHalt`
 instead of running `fn` again; `ResolveStepHalt` (with the step name) records the confirmed
 outcome. The same holds when `fn` returns an error, since a failed call may still have taken
-effect. A step that is safe to re-run declares it with `StepSafety`, and then simply re-runs after
+effect. A step cancelled (or whose store fails) after its marker is written and before `fn` is
+called does not call `fn`, and records that the attempt did not start, so the next call runs `fn`
+under a new marker instead of halting; only a process that dies in that gap leaves a halt. A step
+that is safe to re-run declares it with `StepSafety`, and then simply re-runs after
 a crash or an error:
 
 ```go

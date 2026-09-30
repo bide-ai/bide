@@ -214,11 +214,13 @@ func (a *Agent) rollbackRun(ctx context.Context, runID, root string) (compensate
 			failed[r.ToolUseID] = true
 		case StepValue:
 			values[r.Name] = r.Result
-		case StepAttempt:
-			if isToolAttempt(r) { // a Step's marker is not a call's
-				started[r.ToolUseID] = true
-				attemptedAt[r.ToolUseID] = r.AttemptedAt
-			}
+		}
+	}
+	// An attempt recorded as never started changed nothing (see attempt.go).
+	for _, r := range liveAttempts(recs) {
+		if isToolAttempt(r) { // a Step's marker is not a call's
+			started[r.ToolUseID] = true
+			attemptedAt[r.ToolUseID] = r.AttemptedAt
 		}
 	}
 	for i := len(calls) - 1; i >= 0; i-- {

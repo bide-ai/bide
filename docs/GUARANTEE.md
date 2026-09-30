@@ -23,6 +23,13 @@ store, it is safe: resume replays it from the journal rather than re-running it.
    attempted, outcome unknown" and **halts** (`ResumeHalt`) instead of guessing. It does not
    silently re-run, and it does not silently assume success.
 
+   The gap between writing the marker and calling the effect is not dangerous when the process
+   survives it: a driver cancelled there (a shutdown, a lost lease, a sibling's failure) or whose
+   store fails there does not call the effect, and records that the attempt did not start. That
+   attempt then no longer halts a resume, and the effect is attempted again under a new marker,
+   claimed exclusively like the first. A process that dies in that gap records nothing, so its
+   marker halts as in case 3.
+
 The same holds when nothing crashed and a caller simply invokes the run again (a client retrying
 after a lost response, a redelivered job, a sub-agent or session turn re-entered on resume):
 
@@ -65,7 +72,8 @@ rather than pretending it knows.
   tool is declared as by then (relabelled retry-safe, or no longer registered at all), and a
   `Step` attempted as a side effect halts even if the resuming code passes a retry-safe
   `StepSafety`. The marker needs no new field for this, so markers written by earlier versions
-  are read the same way: every one of them means "not retry-safe, halt".
+  are read the same way: every one of them means "not retry-safe, halt", unless the driver that
+  wrote it recorded that its attempt never started.
 - **It is at-most-once for the side effect, not "the agent always finishes."** A crash can still
   leave a run halted and needing intervention. The promise is *safety* (no double-fire, no lost
   completed work), not *liveness* (guaranteed completion without help).

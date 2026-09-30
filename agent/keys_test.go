@@ -26,6 +26,8 @@ var keyConstructors = map[string]func(string) string{
 	"ToolResultStep":       ToolResultStep,
 	"toolAttemptStep":      toolAttemptStep,
 	"stepAttemptStep":      stepAttemptStep,
+	"retryAttemptStep":     func(s string) string { return retryAttemptStep(toolAttemptStep(s), 1+len(s)) },
+	"notStartedStep":       func(s string) string { return notStartedStep(toolAttemptStep(s)) },
 	"approvalStep":         approvalStep,
 	"approvalDecisionStep": func(s string) string { return approvalDecisionStep(s, "ops:1", true, []byte(s)) },
 	"ApprovalTallyStep":    ApprovalTallyStep,
@@ -209,6 +211,11 @@ func TestEngineKeys_WritesUseConstructors(t *testing.T) {
 		"step:name":         true, // its callers are checked here
 		"Step:name":         true, // a developer-chosen name, refused if reserved (checkStepName)
 		"resolve:h.result":  true, // ToolResultStep, or a step name checkStepName allowed
+		"claimAttempt:name": true, // its callers are checked here
+		"probe:key":         true, // its callers are checked here
+		"doShared:key":      true, // its callers are checked here
+		"step:markerKey":    true, // returned by claimNextAttempt, which builds it with retryAttemptStep
+		"run:markerKey":     true, // returned by claimNextAttempt, which builds it with retryAttemptStep
 	}
 	var writes int
 	for file, f := range parseAgentPackage(t) {
@@ -233,7 +240,7 @@ func TestEngineKeys_WritesUseConstructors(t *testing.T) {
 						name = call.Args[2]
 					}
 				case *ast.Ident:
-					if (f.Name == "ClaimAttempt" || f.Name == "step") && len(call.Args) >= 4 {
+					if attemptWriters[f.Name] && len(call.Args) >= 4 {
 						name = call.Args[3]
 					}
 				}
@@ -251,6 +258,13 @@ func TestEngineKeys_WritesUseConstructors(t *testing.T) {
 	if writes < 20 {
 		t.Fatalf("found only %d key writes; the scan is not seeing the engine's calls", writes)
 	}
+}
+
+// attemptWriters are the functions that write (or read by writing nothing) the key in their
+// fourth argument; a call to any of them is checked like a call to Do.
+var attemptWriters = map[string]bool{
+	"ClaimAttempt": true, "step": true, "claimAttempt": true, "claimNextAttempt": true, "probe": true,
+	"doShared": true, "voided": true, "liveAttempt": true, "recordNotStarted": true,
 }
 
 func keyFromConstructor(e ast.Expr, fn *ast.FuncDecl, forwarders map[string]bool) bool {

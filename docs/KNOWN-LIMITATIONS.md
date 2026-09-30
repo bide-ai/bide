@@ -158,6 +158,12 @@ a variable number of branches.
 **Some wiring is rejected.** `Build` refuses wiring the runtime cannot run as declared, and names the
 step: for example, a step fed by several producers without a join, or nested loops.
 
+**A flow node cancelled before its body starts still halts.** Tool calls and `agent.Step` record
+that an attempt never started when they are cancelled after writing its marker and before calling
+the effect, and re-attempt it on resume. A `plan` flow's non-idempotent node does not yet: a
+cancellation in that gap leaves its marker without a result, and the resume stops with
+`*HaltAmbiguous` for a person to confirm, as after a crash.
+
 **`Model` nodes expect JSON.** A `Model` node decodes the reply as JSON into its output type, so
 prompt the model for JSON. See [Flows](guides/flows.md#limits).
 

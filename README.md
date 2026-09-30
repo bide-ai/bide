@@ -445,7 +445,9 @@ answer, err := stream.Final() // terminal message + error (incl. *PendingApprova
 
 Events: `TurnStarted`, `ModelEvent` (the token feed), `TurnRestarted`, `AssistantTurn`, `ToolStarted` /
 `ToolCompleted`, `ApprovalRequired`, `Finished`. Range `Events()` for a UI then call `Final()`,
-or call `Final()` alone to behave exactly like `Run` (it drains events for you).
+or call `Final()` alone to behave exactly like `Run` (it drains events for you). `ToolStarted`
+fires immediately before a tool is called, so a call cancelled before it starts (and recorded as
+not started) emits neither `ToolStarted` nor `ToolCompleted`.
 
 Two things worth knowing, both consequences of durability:
 - **Token deltas arrive below the middleware chain** (Retry / Cost still see whole
