@@ -58,16 +58,7 @@ func (s *cSched) yield(d int, what string) {
 }
 
 func (s *cSched) point(n int) int {
-	k := len(s.ex.trace)
-	c := 0
-	if k < len(s.ex.prefix) {
-		c = s.ex.prefix[k]
-	}
-	if c >= n {
-		c = 0
-	}
-	s.ex.trace = append(s.ex.trace, hPoint{name: "sched", choice: c, n: n})
-	return c
+	return s.ex.choose("sched", 0, n)
 }
 
 // run drives the given drivers to completion under the scheduler.
@@ -194,15 +185,7 @@ func (h *cHarness) choose(d int, name string) hOutcome {
 	if h.crashes < 1 {
 		alts = append(alts, hCrashBefore, hCrashAfter)
 	}
-	k := len(h.ex.trace)
-	c := 0
-	if k < len(h.ex.prefix) {
-		c = h.ex.prefix[k]
-	}
-	if c >= len(alts) {
-		c = 0
-	}
-	h.ex.trace = append(h.ex.trace, hPoint{name: name, drive: d, choice: c, n: len(alts)})
+	c := h.ex.choose(name, d, len(alts))
 	o := alts[c]
 	switch o {
 	case hErrNC, hErrC, hCancel:

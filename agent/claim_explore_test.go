@@ -48,8 +48,26 @@ var errHCrash = errors.New("process crashed")
 
 // hExplorer drives a stateless DFS over the branch points.
 type hExplorer struct {
+	mu     sync.Mutex // guards trace during a run: the scheduler and the drivers both add points
 	prefix []int
 	trace  []hPoint // points of the current run
+}
+
+// choose records a branch point with n alternatives and returns the alternative to take: the
+// prefix's choice at this depth (0 past it, or when the prefix names one out of range).
+func (e *hExplorer) choose(name string, drive, n int) int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	k := len(e.trace)
+	c := 0
+	if k < len(e.prefix) {
+		c = e.prefix[k]
+	}
+	if c >= n {
+		c = 0
+	}
+	e.trace = append(e.trace, hPoint{name: name, drive: drive, choice: c, n: n})
+	return c
 }
 
 type hPoint struct {
@@ -104,12 +122,7 @@ func (h *hHarness) choose(name string) hOutcome {
 	if h.crash[h.drive] < 1 {
 		alts = append(alts, hCrashBefore, hCrashAfter)
 	}
-	k := len(h.ex.trace)
-	c := 0
-	if k < len(h.ex.prefix) {
-		c = h.ex.prefix[k]
-	}
-	h.ex.trace = append(h.ex.trace, hPoint{name: name, drive: h.drive, choice: c, n: len(alts)})
+	c := h.ex.choose(name, h.drive, len(alts))
 	o := alts[c]
 	switch o {
 	case hErrNC, hErrC, hCancel:
