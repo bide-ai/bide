@@ -77,10 +77,10 @@ func TestCLI_MaxInputBytesAppliesToEveryInput(t *testing.T) {
 	// A key file, read first by verify-quorum. Trailing newlines, which readPubKey trims, make it
 	// larger than the cap while the key stays valid.
 	keyFile := filepath.Join(dir, "key.hex")
-	if err := os.WriteFile(keyFile, []byte(pubHex+strings.Repeat("\n", 100)), 0o600); err != nil {
+	if err := os.WriteFile(keyFile, []byte(pubHex+strings.Repeat("\n", int(mustSize(t, bundle)))), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if code, out := exitCode(t, bin, "verify-quorum", "-max-input-bytes", "80", "-name", "q", "-tally", bundle, "-vote", bundle, "-pubkey", keyFile, "-k", "1"); code != 1 || !strings.Contains(out, "-max-input-bytes") {
+	if code, out := exitCode(t, bin, "verify-quorum", "-max-input-bytes", size(bundle), "-name", "q", "-tally", bundle, "-vote", bundle, "-pubkey", keyFile, "-k", "1"); code != 1 || !strings.Contains(out, "-max-input-bytes") {
 		t.Errorf("key file over the cap: exit %d, output:\n%s", code, out)
 	}
 	// A digest list, read by verify-evidence after the package and the key.

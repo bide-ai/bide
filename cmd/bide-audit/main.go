@@ -23,6 +23,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"sort"
@@ -38,7 +39,20 @@ import (
 // gsm, so the two roots of trust (the log and the proof) stay independent of the producer.
 const policyFormatVersion = "gsm-policy-v1"
 
-func flagSet(name string) *flag.FlagSet { return flag.NewFlagSet(name, flag.ContinueOnError) }
+// defaultMaxInputBytes caps every file a verb reads (a bundle, journal, key, digest list, policy,
+// or evidence package): 256 MiB, far above any real artifact, so a huge or endless input fails
+// fast instead of exhausting memory. -max-input-bytes raises (or lowers) it.
+const defaultMaxInputBytes = 256 << 20
+
+// maxInputBytes is the cap in force, set by the verb's -max-input-bytes flag.
+var maxInputBytes int64 = defaultMaxInputBytes
+
+// flagSet returns a verb's flag set, with the -max-input-bytes flag every verb shares.
+func flagSet(name string) *flag.FlagSet {
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
+	fs.Int64Var(&maxInputBytes, "max-input-bytes", defaultMaxInputBytes, "the largest input file, in bytes, the verb reads; a larger one is an error")
+	return fs
+}
 
 // parse parses a verb's flags and exits 2, a usage error, unless it read the whole command line.
 // Flag parsing stops at the first argument that is not a flag, so a stray argument would otherwise
@@ -53,6 +67,29 @@ func parse(fs *flag.FlagSet, args []string) {
 		fmt.Fprintf(os.Stderr, "%s: unexpected argument %q: every input is a flag, and no flag after an argument is read\n", fs.Name(), fs.Arg(0))
 		os.Exit(2)
 	}
+	if maxInputBytes < 1 {
+		fmt.Fprintf(os.Stderr, "%s: -max-input-bytes must be at least 1, got %d\n", fs.Name(), maxInputBytes)
+		os.Exit(2)
+	}
+}
+
+// readInput reads the file at path, refusing one larger than maxInputBytes. It reads through a
+// limit of one byte past the cap, so neither a huge file nor an endless stream (a pipe, a device)
+// is read further than that.
+func readInput(path string) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	b, err := io.ReadAll(io.LimitReader(f, maxInputBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(b)) > maxInputBytes {
+		return nil, fmt.Errorf("%s is larger than the %d-byte input limit (raise it with -max-input-bytes)", path, maxInputBytes)
+	}
+	return b, nil
 }
 
 func main() {
@@ -153,9 +190,9 @@ func usage() {
 
 Export a journal for `+"`prove`"+` with: json.Marshal(store.History(ctx, runID)). Every JSON
 input is parsed strictly: a duplicate or case-variant key, an unknown field, or invalid UTF-8 is
-an error, a bundle, certificate or package must carry the "format" this version reads (one made
-by an older release is refused with a message naming the format), and a public key must be 32
-bytes of hex.
+an error, and a public key must be 32 bytes of hex. Every verb takes -max-input-bytes <n>: an
+input file larger than n bytes (default 268435456, 256 MiB) is an error, and none is read past
+the cap.
 
 Exit status: 0 = verified, 1 = failed, 2 = usage error, 3 = the -checker gave no verdict (it could
 not be started, exited with a status other than 0 or 1, was killed, or printed an unreadable
@@ -257,7 +294,7 @@ func verifyGovernance(args []string) {
 	if *policyPath == "" {
 		usage()
 	}
-	policy, err := os.ReadFile(*policyPath)
+	policy, err := readInput(*policyPath)
 	if err != nil {
 		fatal(err)
 	}
@@ -993,7 +1030,7 @@ func evidenceItemLine(it audit.EvidenceItem) string {
 // readDigestLines reads a file of approved policy digests, one per line, ignoring blank lines and
 // # comments. It is the file form of the repeatable -approved flag.
 func readDigestLines(path string) []string {
-	b, err := os.ReadFile(path)
+	b, err := readInput(path)
 	if err != nil {
 		fatal(err)
 	}
@@ -1099,7 +1136,11 @@ func readPubKey(s string) []byte {
 		return key
 	}
 	raw := s
-	if b, err := os.ReadFile(s); err == nil {
+	if _, err := os.Stat(s); err == nil {
+		b, err := readInput(s)
+		if err != nil {
+			fatal(err)
+		}
 		raw = string(b)
 	}
 	raw = trimSpace(raw)
@@ -1189,7 +1230,7 @@ func governedPolicyDigest(result json.RawMessage) (string, error) {
 }
 
 func readJSON(path string, v any) {
-	b, err := os.ReadFile(path)
+	b, err := readInput(path)
 	if err != nil {
 		fatal(err)
 	}

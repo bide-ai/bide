@@ -364,6 +364,9 @@ Conventions shared across verbs:
 - A usage error is any command line the CLI does not read in full: a missing required flag, an
   unknown flag, a help request (`-h`), or an argument that is not a flag (flag parsing stops
   there, so a flag after it would go unread). None of them is a verdict, so none exits 0.
+- Every verb takes `-max-input-bytes <n>`: an input file (bundle, journal, key file, digest list,
+  policy, evidence package) larger than n bytes is an error (exit 1); no input is read further than one byte past the cap. The
+  default is 256 MiB; a value below 1 is a usage error.
 
 | Verb | Required flags | Optional flags | Proves / checks |
 |---|---|---|---|
