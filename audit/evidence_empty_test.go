@@ -23,7 +23,7 @@ func emptyEvidence(t *testing.T) (audit.EvidencePackage, ed25519.PublicKey) {
 		t.Fatal(err)
 	}
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
-	pkg, err := audit.Evidence(ctx, store, "r", priv, 1700000000)
+	pkg, err := audit.Evidence(ctx, store, "r", edS(priv), 1700000000)
 	if err != nil {
 		t.Fatalf("Evidence: %v", err)
 	}
@@ -37,8 +37,8 @@ func TestEvidence_EmptyPackageDoesNotVerify(t *testing.T) {
 	if len(pkg.Actions) != 0 || pkg.Grants != nil || pkg.RunCertificate != nil || pkg.Consistency != nil {
 		t.Fatalf("setup: package is not empty: %+v", pkg)
 	}
-	rep, err := pkg.Verify(pub)
-	if err != nil {
+	rep, err := pkg.Verify(edV(pub))
+	if err := reportErr(rep.OK, err); err != nil {
 		t.Fatalf("Verify: %v", err)
 	}
 	if rep.OK {
@@ -59,11 +59,11 @@ func TestEvidence_OneItemVerifies(t *testing.T) {
 		t.Fatal(err)
 	}
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
-	pkg, err := audit.Evidence(ctx, store, "r", priv, 1700000000)
+	pkg, err := audit.Evidence(ctx, store, "r", edS(priv), 1700000000)
 	if err != nil {
 		t.Fatalf("Evidence: %v", err)
 	}
-	rep, err := pkg.Verify(pub)
+	rep, err := pkg.Verify(edV(pub))
 	if err != nil || !rep.OK || len(rep.Items) != 1 {
 		t.Fatalf("a one-item package: OK=%v items=%d problems=%v err=%v; want OK with 1 item", rep.OK, len(rep.Items), rep.Problems, err)
 	}

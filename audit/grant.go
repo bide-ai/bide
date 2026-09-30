@@ -13,7 +13,7 @@ import (
 )
 
 // Grant is a signed statement by a principal (Issuer) authorizing an actor (Subject) to act within
-// Scope until NotAfter. It is the non-repudiable authority behind a governed action: the action's
+// Scope until NotAfterUnix. It is the non-repudiable authority behind a governed action: the action's
 // agent.Identity.AuthorityRef is a grant's Digest, and the grant is signed by the issuer's own key
 // (distinct from the log's tree-head key), so an auditor attributes the authorization to the
 // principal, not merely to the operator that runs the log.
@@ -25,47 +25,54 @@ import (
 // verifier requires a child to keep every one of its parent's, unchanged or narrowed by a ScopeRule
 // the verifier supplies (NumericAtMost is provided for limits). See CheckAttenuation.
 type Grant struct {
-	ID        string            `json:"id"`                   // unique identifier for this grant
-	Issuer    string            `json:"issuer"`               // principal that authorized the grant (resolves to the signing key)
-	Subject   string            `json:"subject"`              // actor the grant authorizes to act
-	Scope     map[string]string `json:"scope,omitempty"`      // domain-defined constraints (e.g. limits); a child keeps every one, equal or narrower
-	NotAfter  int64             `json:"not_after,omitempty"`  // unix-seconds expiry; zero never expires, and only a grant whose parent never expires may be zero
-	ParentRef string            `json:"parent_ref,omitempty"` // Digest of the grant this was attenuated from; empty for a root grant
+	ID      string            `json:"id"`              // unique identifier for this grant
+	Issuer  string            `json:"issuer"`          // principal that authorized the grant (resolves to the signing key)
+	Subject string            `json:"subject"`         // actor the grant authorizes to act
+	Scope   map[string]string `json:"scope,omitempty"` // domain-defined constraints (e.g. limits); a child keeps every one, equal or narrower
+	// NotAfterUnix is the expiry in Unix seconds; zero never expires, and only a grant whose parent
+	// never expires may be zero.
+	NotAfterUnix int64  `json:"not_after_unix,omitempty"`
+	ParentRef    string `json:"parent_ref,omitempty"` // Digest of the grant this was attenuated from; empty for a root grant
 }
 
-const grantDigestPrefix = "bide-grant-v1\n"
+// GrantFormat tags the canonical bytes of a grant (Grant.Bytes), which are both signed and
+// digested. v2 names the expiry not_after_unix and tags the signed bytes as well as the digest.
+const GrantFormat = "bide.audit.grant.v2"
 
-// Bytes is the canonical serialization that is signed and digested. json.Marshal sorts map keys and
-// emits struct fields in declaration order, so it is deterministic in-ecosystem. It is injective only
-// over valid UTF-8 (JSON rewrites invalid bytes to U+FFFD), so SignGrant refuses, and
-// SignedGrant.Verify rejects, a grant with invalid UTF-8 in any string.
+// Bytes is the canonical serialization that is signed and digested: "bide.audit.grant.v2\n"
+// followed by the grant's JSON. json.Marshal sorts map keys and emits struct fields in declaration
+// order, so it is deterministic in-ecosystem. It is injective only over valid UTF-8 (JSON rewrites
+// invalid bytes to U+FFFD), so SignGrant refuses, and SignedGrant.Verify rejects, a grant with
+// invalid UTF-8 in any string.
 func (g Grant) Bytes() []byte {
-	b, _ := json.Marshal(g)
-	return b
+	b, _ := json.Marshal(g) // a Grant always marshals: strings, a string map, and integers
+	return append([]byte(GrantFormat+"\n"), b...)
 }
 
-// Digest is a stable, domain-separated SHA-256 over the grant, used as agent.Identity.AuthorityRef
-// and as the anchoring key. It is recomputable by any verifier from the disclosed grant.
+// Digest is a stable SHA-256 over the grant's canonical bytes (Bytes), used as
+// agent.Identity.AuthorityRef and as the anchoring key. It is recomputable by any verifier from the
+// disclosed grant.
 func (g Grant) Digest() string {
-	h := sha256.New()
-	h.Write([]byte(grantDigestPrefix))
-	h.Write(g.Bytes())
-	return hex.EncodeToString(h.Sum(nil))
+	sum := sha256.Sum256(g.Bytes())
+	return hex.EncodeToString(sum[:])
 }
 
-// Expired reports whether the grant is past NotAfter at time now (unix seconds). A zero NotAfter
-// never expires. The caller supplies the clock, so verification stays deterministic.
-func (g Grant) Expired(now int64) bool { return g.NotAfter != 0 && now > g.NotAfter }
+// Expired reports whether the grant is past NotAfterUnix at nowUnix (Unix seconds). A zero
+// NotAfterUnix never expires. The caller supplies the clock, so verification stays deterministic.
+func (g Grant) Expired(nowUnix int64) bool { return g.NotAfterUnix != 0 && nowUnix > g.NotAfterUnix }
 
 // SignedGrant is a Grant plus the issuer's signature over its canonical bytes.
 type SignedGrant struct {
 	Grant Grant  `json:"grant"` // the grant whose canonical bytes are signed
-	Alg   string `json:"alg"`   // signature scheme the issuer used (see signing.go)
+	Alg   Alg    `json:"alg"`   // signature scheme the issuer used (see signing.go)
 	Sig   []byte `json:"sig"`   // issuer's signature over Grant.Bytes()
 }
 
 // SignGrant signs a grant with the issuer's key (Ed25519, ML-DSA, or hybrid, per the Signer).
 func SignGrant(g Grant, s Signer) (SignedGrant, error) {
+	if err := checkSigner(s); err != nil {
+		return SignedGrant{}, fmt.Errorf("audit: sign grant %q: %w", g.ID, err)
+	}
 	if err := checkUTF8(g); err != nil {
 		return SignedGrant{}, fmt.Errorf("audit: sign grant %q: %w", g.ID, err)
 	}
@@ -76,20 +83,25 @@ func SignGrant(g Grant, s Signer) (SignedGrant, error) {
 	return SignedGrant{Grant: g, Alg: s.Alg(), Sig: sig}, nil
 }
 
-// Verify checks the issuer's signature over the grant. The verifier is the issuer's public key,
-// resolved by the caller's PKI; this is non-repudiation of the authorization, separate from the
-// log's tree-head signature.
-func (sg SignedGrant) Verify(v Verifier) (bool, error) {
+// Verify returns nil if the issuer's signature over the grant verifies under v. The verifier is
+// the issuer's public key, resolved by the caller's PKI; this is non-repudiation of the
+// authorization, separate from the log's tree-head signature. A grant signed under another scheme
+// than v's, or whose signature does not verify, is an error wrapping ErrNotVerified; a grant with
+// invalid UTF-8 in a string, ErrMalformed.
+func (sg SignedGrant) Verify(v Verifier) error {
 	if v == nil {
-		return false, fmt.Errorf("audit: no verifier for grant %q", sg.Grant.ID)
-	}
-	if sg.Alg != v.Alg() {
-		return false, fmt.Errorf("audit: grant alg %q does not match verifier alg %q", sg.Alg, v.Alg())
+		return fmt.Errorf("audit: no verifier for grant %q: %w", sg.Grant.ID, agent.ErrConfig)
 	}
 	if err := checkUTF8(sg.Grant); err != nil {
-		return false, fmt.Errorf("audit: grant %q: %w", sg.Grant.ID, err)
+		return fmt.Errorf("audit: grant %q: %w (%w)", sg.Grant.ID, err, ErrMalformed)
 	}
-	return v.Verify(sg.Grant.Bytes(), sg.Sig), nil
+	if sg.Alg != v.Alg() {
+		return notVerified("audit: grant %q is signed under %q, not the verifier's %q", sg.Grant.ID, sg.Alg, v.Alg())
+	}
+	if !v.Verify(sg.Grant.Bytes(), sg.Sig) {
+		return notVerified("audit: grant %q signature does not verify under its issuer's key", sg.Grant.ID)
+	}
+	return nil
 }
 
 // grantLeafPrefix starts the journal name of every anchored grant leaf.
@@ -154,8 +166,8 @@ func NumericAtMost(parent, child string) bool {
 //
 //  1. child.ParentRef is parent's Digest (the hash link);
 //  2. child.Issuer is parent.Subject (only the holder of a grant can delegate it);
-//  3. child expires no later than parent: if parent.NotAfter is set, child.NotAfter is set and at
-//     most parent.NotAfter (a child of an expiring grant can never be non-expiring);
+//  3. child expires no later than parent: if parent.NotAfterUnix is set, child.NotAfterUnix is set
+//     and at most parent.NotAfterUnix (a child of an expiring grant can never be non-expiring);
 //  4. every parent scope key is in child, with the same value or, where rules has a ScopeRule for
 //     that key, a value the rule accepts as narrower.
 //
@@ -170,8 +182,8 @@ func CheckAttenuation(parent, child Grant, rules ScopeRules) error {
 	if child.Issuer != parent.Subject {
 		return fmt.Errorf("audit: grant %q is issued by %q, but only %q (the subject of %q) can delegate it", child.ID, child.Issuer, parent.Subject, parent.ID)
 	}
-	if parent.NotAfter != 0 && (child.NotAfter == 0 || child.NotAfter > parent.NotAfter) {
-		return fmt.Errorf("audit: grant %q expires at %d, after its parent %q (%d)", child.ID, child.NotAfter, parent.ID, parent.NotAfter)
+	if parent.NotAfterUnix != 0 && (child.NotAfterUnix == 0 || child.NotAfterUnix > parent.NotAfterUnix) {
+		return fmt.Errorf("audit: grant %q expires at %d, after its parent %q (%d)", child.ID, child.NotAfterUnix, parent.ID, parent.NotAfterUnix)
 	}
 	keys := make([]string, 0, len(parent.Scope))
 	for k := range parent.Scope {
@@ -194,8 +206,8 @@ func CheckAttenuation(parent, child Grant, rules ScopeRules) error {
 	return nil
 }
 
-// VerifyDelegationChain verifies a delegation chain ordered root-first (index 0) to leaf-last:
-//  1. each grant's signature under its issuer's verifier (resolved via issuerVerifier),
+// VerifyDelegationChain returns nil if chain, ordered root-first (index 0) to leaf-last, is valid:
+//  1. each grant's signature verifies under its issuer's verifier (resolved via issuerVerifier),
 //  2. the root has no ParentRef,
 //  3. every other grant is a valid delegation of the previous one (CheckAttenuation with rules):
 //     hash-linked, issued by the parent's subject, expiring no later, and keeping every scope
@@ -204,28 +216,33 @@ func CheckAttenuation(parent, child Grant, rules ScopeRules) error {
 // It establishes that the leaf's authority descends, unbroken and never widened, from the root
 // grant, with each hop signed by the principal it names. The caller still checks that the root's
 // Issuer is a principal it trusts to grant that authority (issuerVerifier resolves any issuer it
-// knows), and that the leaf is unexpired at the time of use (grant.Expired, which needs a clock).
-func VerifyDelegationChain(chain []SignedGrant, issuerVerifier func(issuer string) (Verifier, bool), rules ScopeRules) (bool, error) {
+// knows), and that the leaf is unexpired at the time of use (Grant.Expired, which needs a clock).
+// A chain that does not hold, including one with an issuer issuerVerifier does not know, is an
+// error wrapping ErrNotVerified.
+func VerifyDelegationChain(chain []SignedGrant, issuerVerifier func(issuer string) (Verifier, bool), rules ScopeRules) error {
 	if len(chain) == 0 {
-		return false, fmt.Errorf("audit: empty delegation chain")
+		return notVerified("audit: empty delegation chain")
+	}
+	if issuerVerifier == nil {
+		return fmt.Errorf("audit: no issuer verifier resolver: %w", agent.ErrConfig)
 	}
 	for i, sg := range chain {
 		v, ok := issuerVerifier(sg.Grant.Issuer)
-		if !ok {
-			return false, fmt.Errorf("audit: no verifier for issuer %q (grant %q)", sg.Grant.Issuer, sg.Grant.ID)
+		if !ok || v == nil {
+			return notVerified("audit: no verifier for issuer %q (grant %q)", sg.Grant.Issuer, sg.Grant.ID)
 		}
-		if ok2, err := sg.Verify(v); err != nil || !ok2 {
-			return false, fmt.Errorf("audit: grant %q signature invalid (err=%v)", sg.Grant.ID, err)
+		if err := sg.Verify(v); err != nil {
+			return err
 		}
 		if i == 0 {
 			if sg.Grant.ParentRef != "" {
-				return false, fmt.Errorf("audit: root grant %q carries a parent_ref", sg.Grant.ID)
+				return notVerified("audit: root grant %q carries a parent_ref", sg.Grant.ID)
 			}
 			continue
 		}
 		if err := CheckAttenuation(chain[i-1].Grant, sg.Grant, rules); err != nil {
-			return false, err
+			return fmt.Errorf("%w: %w", err, ErrNotVerified)
 		}
 	}
-	return true, nil
+	return nil
 }

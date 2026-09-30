@@ -1,8 +1,6 @@
 package audit
 
 import (
-	"crypto/ed25519"
-
 	"github.com/bide-ai/bide/agent"
 )
 
@@ -23,28 +21,30 @@ func NewAbsenceTreeHead(records []agent.Record, set KeySet, journal TreeHead, ti
 	if err != nil {
 		return TreeHead{}, err
 	}
-	keys := absenceKeys(recs, set)
+	keys, err := projectKeys(recs, set, "the "+set.Kind+" key set")
+	if err != nil {
+		return TreeHead{}, err
+	}
 	return TreeHead{
-		Kind:      set.Kind,
-		RunID:     journal.RunID,
-		Size:      len(keys),
-		Root:      merkleRoot(keyLeaves(keys)),
-		Timestamp: timestamp,
-		Journal:   &TreeRef{Size: journal.Size, Root: append([]byte(nil), journal.Root...)},
+		Kind:           set.Kind,
+		RunID:          journal.RunID,
+		Size:           len(keys),
+		Root:           merkleRoot(keyLeaves(keys)),
+		TimestampNanos: timestamp,
+		Journal:        &TreeRef{Size: journal.Size, Root: append([]byte(nil), journal.Root...)},
 	}, nil
 }
 
 // SignAbsenceRoot commits and signs a run's key set in one call: NewAbsenceTreeHead, then
-// SignTreeHead. Absence proofs verify against this separate commitment (never the journal STH).
-// Anchor the result like any STH. A private key that is not ed25519.PrivateKeySize bytes is an
-// error.
-func SignAbsenceRoot(records []agent.Record, set KeySet, journal TreeHead, priv ed25519.PrivateKey, timestamp int64) (SignedTreeHead, error) {
-	if err := checkPrivateKey(priv); err != nil {
+// SignTreeHead with s. Absence proofs verify against this separate commitment (never the journal
+// STH). Anchor the result like any STH. timestamp is Unix nanoseconds.
+func SignAbsenceRoot(records []agent.Record, set KeySet, journal TreeHead, s Signer, timestamp int64) (SignedTreeHead, error) {
+	if err := checkSigner(s); err != nil {
 		return SignedTreeHead{}, err
 	}
 	th, err := NewAbsenceTreeHead(records, set, journal, timestamp)
 	if err != nil {
 		return SignedTreeHead{}, err
 	}
-	return SignTreeHead(th, priv), nil
+	return SignTreeHead(th, s)
 }

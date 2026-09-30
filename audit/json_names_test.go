@@ -49,6 +49,7 @@ var auditArtifacts = []any{
 	audit.ConvergenceContent{},
 	audit.ApprovalVerdict{},
 	audit.IgnoredDecision{},
+	audit.JournalExport{},
 	verify.TreeRef{},
 }
 
@@ -68,6 +69,7 @@ var notArtifacts = map[string]string{
 	"audit.MLDSAVerifier":   "a verifying key",
 	"audit.HybridSigner":    "a pair of signing keys",
 	"audit.HybridVerifier":  "a pair of verifying keys",
+	"verify.Head":           "the standalone verifier's input to TreeHead, read from a head's JSON by the caller",
 }
 
 var snakeCase = regexp.MustCompile(`^[a-z][a-z0-9]*(_[a-z0-9]+)*$`)

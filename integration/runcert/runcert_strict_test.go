@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -35,7 +36,7 @@ func strictRun(t *testing.T, digest string, policyLeaf, convLeaf []byte) (audit.
 	if err != nil {
 		t.Fatal(err)
 	}
-	cert, err := audit.CertifyRun(ctx, store, runID, audit.SignTreeHead(th, priv), audit.RunCertSpec{ApprovedPolicies: []string{digest}}, priv, 2)
+	cert, err := audit.CertifyRun(ctx, store, runID, mustSign(t, th, priv), audit.RunCertSpec{ApprovedPolicies: []string{digest}, Signer: audit.Ed25519Signer{Priv: priv}, TimestampNanos: 2})
 	if err != nil {
 		t.Fatalf("CertifyRun: %v", err)
 	}
@@ -52,7 +53,7 @@ func TestVerifyRun_LeavesReadAsWritten(t *testing.T) {
 	goodConv := `{"digest":"` + digest + `","certificate":` + string(certBytes) + `}`
 
 	cert, pub := strictRun(t, digest, []byte(goodPolicy), []byte(goodConv))
-	res, err := audit.VerifyRun(cert, []string{digest}, pub)
+	res, err := audit.VerifyRun(cert, []string{digest}, audit.Ed25519Verifier{Pub: pub})
 	if err != nil || !res.OK {
 		t.Fatalf("genuine leaves: %+v, %v", res, err)
 	}
@@ -65,7 +66,7 @@ func TestVerifyRun_LeavesReadAsWritten(t *testing.T) {
 	// Leaves that verify under a certificate that does not are not handed back either.
 	bad := cert
 	bad.Properties = []string{"only-approved-policies"}
-	if res, err := audit.VerifyRun(bad, []string{digest}, pub); err != nil || res.OK || len(res.Policies) != 0 {
+	if res, err := audit.VerifyRun(bad, []string{digest}, audit.Ed25519Verifier{Pub: pub}); !errors.Is(err, audit.ErrNotVerified) || res.OK || len(res.Policies) != 0 {
 		t.Fatalf("certificate with a wrong property list: %+v, %v; want not OK and no Policies", res, err)
 	}
 
@@ -78,7 +79,7 @@ func TestVerifyRun_LeavesReadAsWritten(t *testing.T) {
 		"lone surrogate in policy": {`{"digest":"` + digest + `","policy":"\ud800"}`, goodConv},
 	} {
 		cert, pub := strictRun(t, digest, []byte(leaves[0]), []byte(leaves[1]))
-		res, err := audit.VerifyRun(cert, []string{digest}, pub)
+		res, err := audit.VerifyRun(cert, []string{digest}, audit.Ed25519Verifier{Pub: pub})
 		if err == nil && (res.OK || res.ConvergenceCertified) {
 			t.Errorf("%s: VerifyRun accepted it: %+v", name, res)
 		}

@@ -36,23 +36,23 @@ func (k *keyring) verifier(issuer string) (Verifier, bool) {
 func TestSignedGrant_VerifyAndTamper(t *testing.T) {
 	kr := newKeyring("desk-EQ-US", "impostor")
 	g := Grant{ID: "grant#a1b2", Issuer: "desk-EQ-US", Subject: "exec-agent@1.4.2",
-		Scope: map[string]string{"market": "EQ-US", "limit": "7"}, NotAfter: 1000}
+		Scope: map[string]string{"market": "EQ-US", "limit": "7"}, NotAfterUnix: 1000}
 	sg, err := SignGrant(g, kr.signer("desk-EQ-US"))
 	if err != nil {
 		t.Fatalf("SignGrant: %v", err)
 	}
 
 	v, _ := kr.verifier("desk-EQ-US")
-	if ok, err := sg.Verify(v); err != nil || !ok {
-		t.Fatalf("valid grant did not verify: ok=%v err=%v", ok, err)
+	if err := sg.Verify(v); err != nil {
+		t.Fatalf("valid grant did not verify: err=%v", err)
 	}
 	imp, _ := kr.verifier("impostor")
-	if ok, _ := sg.Verify(imp); ok {
+	if err := sg.Verify(imp); err == nil {
 		t.Fatalf("grant verified under the wrong issuer key")
 	}
 	tampered := sg
 	tampered.Grant.Scope = map[string]string{"market": "EQ-US", "limit": "9"} // widen after signing
-	if ok, _ := tampered.Verify(v); ok {
+	if err := tampered.Verify(v); err == nil {
 		t.Fatalf("tampered grant (limit 7 -> 9) still verified")
 	}
 	if !g.Expired(1001) || g.Expired(999) {
@@ -79,17 +79,17 @@ func TestGrant_AnchorAndProve(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewTreeHead: %v", err)
 	}
-	sth := SignTreeHead(th, priv)
+	sth := signTH(t, th, priv)
 
 	pb, err := ProveGrant(ctx, store, runID, g.Digest(), sth)
 	if err != nil {
 		t.Fatalf("ProveGrant: %v", err)
 	}
-	if ok, err := pb.Verify(pub); err != nil || !ok {
-		t.Fatalf("grant bundle did not verify: ok=%v err=%v", ok, err)
+	if err := pb.Verify(edV(pub)); err != nil {
+		t.Fatalf("grant bundle did not verify: err=%v", err)
 	}
 	var got SignedGrant
-	if err := json.Unmarshal(pb.Record.Result, &got); err != nil {
+	if err := json.Unmarshal(recOf(t, pb).Result, &got); err != nil {
 		t.Fatalf("decode grant leaf: %v", err)
 	}
 	if got.Grant.Digest() != g.Digest() {
@@ -118,13 +118,12 @@ func TestDelegationChain(t *testing.T) {
 	atten := ScopeRules{"limit": NumericAtMost}
 
 	// Valid: 10 -> 7 -> 3, each hop narrows.
-	ok, err := VerifyDelegationChain(chain(kr, "3"), kr.verifier, atten)
-	if err != nil || !ok {
-		t.Fatalf("valid delegation chain rejected: ok=%v err=%v", ok, err)
+	if err := VerifyDelegationChain(chain(kr, "3"), kr.verifier, atten); err != nil {
+		t.Fatalf("valid delegation chain rejected: err=%v", err)
 	}
 
 	// Widening: sub-grant asks for 8 under a parent limited to 7. Must be rejected.
-	if ok, err := VerifyDelegationChain(chain(kr, "8"), kr.verifier, atten); ok || err == nil {
+	if err := VerifyDelegationChain(chain(kr, "8"), kr.verifier, atten); err == nil {
 		t.Fatalf("widening sub-grant (7 -> 8) was accepted")
 	}
 
@@ -132,7 +131,7 @@ func TestDelegationChain(t *testing.T) {
 	broken := chain(kr, "3")
 	broken[2].Grant.ParentRef = "deadbeef"
 	broken[2], _ = SignGrant(broken[2].Grant, kr.signer("exec-agent@1.4.2")) // re-sign so it is the link, not the sig, that fails
-	if ok, err := VerifyDelegationChain(broken, kr.verifier, atten); ok || err == nil {
+	if err := VerifyDelegationChain(broken, kr.verifier, atten); err == nil {
 		t.Fatalf("chain with a broken parent link was accepted")
 	}
 }

@@ -33,7 +33,7 @@ func TestSignAbsenceRoot_OneCall(t *testing.T) {
 		t.Fatal(err)
 	}
 	// One call to commit and sign the policy-used key set.
-	sth, err := SignAbsenceRoot(recs, PolicyUsedKeys, journal, priv, 1)
+	sth, err := SignAbsenceRoot(recs, PolicyUsedKeys, journal, edS(priv), 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,12 +43,12 @@ func TestSignAbsenceRoot_OneCall(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ProveAbsentBundle: %v", err)
 	}
-	if ok, err := b.Verify(pub, PolicyUsedKeys); err != nil || !ok {
-		t.Fatalf("absence bundle did not verify: ok=%v err=%v", ok, err)
+	if err := b.Verify(edV(pub), PolicyUsedKeys); err != nil {
+		t.Fatalf("absence bundle did not verify: %v", err)
 	}
 
 	// ToolUseKeyFor mirrors PolicyUsedKeyFor: prove a tool id that never happened is absent.
-	sthTool, err := SignAbsenceRoot(recs, ToolUseKeys, journal, priv, 1)
+	sthTool, err := SignAbsenceRoot(recs, ToolUseKeys, journal, edS(priv), 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,7 +56,7 @@ func TestSignAbsenceRoot_OneCall(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ProveAbsentBundle (tool): %v", err)
 	}
-	if ok, err := bt.Verify(pub, ToolUseKeys); err != nil || !ok {
-		t.Fatalf("tool absence bundle did not verify: ok=%v err=%v", ok, err)
+	if err := bt.Verify(edV(pub), ToolUseKeys); err != nil {
+		t.Fatalf("tool absence bundle did not verify: %v", err)
 	}
 }

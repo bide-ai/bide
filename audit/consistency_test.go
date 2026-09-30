@@ -3,6 +3,7 @@ package audit
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 
@@ -26,7 +27,7 @@ func TestConsistency_RoundTripAgainstRFCRoots(t *testing.T) {
 		rootN := merkleRoot(leaves)
 		for m := 0; m <= n; m++ {
 			rootM := merkleRoot(leaves[:m])
-			proof := consistencyProof(m, leaves)
+			proof := consistencyProof(m, leafHashes(leaves))
 			if !verifyConsistency(m, n, proof, rootM, rootN) {
 				t.Fatalf("n=%d m=%d: valid consistency proof rejected", n, m)
 			}
@@ -42,7 +43,7 @@ func TestConsistency_RoundTripAgainstRFCRoots(t *testing.T) {
 func TestConsistency_HandDerived1to2(t *testing.T) {
 	d0, d1 := []byte("a"), []byte("b")
 	leaves := [][]byte{d0, d1}
-	proof := consistencyProof(1, leaves)
+	proof := consistencyProof(1, leafHashes(leaves))
 	if len(proof) != 1 || !bytes.Equal(proof[0], leafHash(d1)) {
 		t.Fatalf("proof = %x, want [leafHash(d1)]", proof)
 	}
@@ -62,7 +63,7 @@ func TestConsistency_DetectsRewrite(t *testing.T) {
 	tampered := leavesN(10)
 	tampered[1] = []byte("REWRITTEN") // change a record inside the first 4
 	rootNTampered := merkleRoot(tampered)
-	proof := consistencyProof(4, tampered) // even a proof built from the tampered tree...
+	proof := consistencyProof(4, leafHashes(tampered)) // even a proof built from the tampered tree...
 
 	if verifyConsistency(4, 10, proof, rootM, rootNTampered) {
 		t.Fatal("consistency verified despite a rewritten early record")
@@ -90,10 +91,10 @@ func TestConsistency_JournalAppendOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !VerifyConsistency(rootEarly, rootNow, proof) {
+	if VerifyConsistency(rootEarly, rootNow, proof) != nil {
 		t.Fatal("append-only growth failed the consistency check")
 	}
-	if VerifyConsistency(rootNow, rootEarly, proof) {
+	if err := VerifyConsistency(rootNow, rootEarly, proof); !errors.Is(err, ErrNotVerified) {
 		t.Fatal("consistency must be directional (earlier ⊑ later)")
 	}
 }

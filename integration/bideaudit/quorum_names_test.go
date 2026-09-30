@@ -39,7 +39,7 @@ func newQuorumBundles(t *testing.T, store agent.Durable, runID string) *quorumBu
 	if out, err := exec.Command("go", "build", "-o", bin, cliPkg).CombinedOutput(); err != nil {
 		t.Fatalf("build binary: %v\n%s", err, out)
 	}
-	return &quorumBundles{t: t, store: store, runID: runID, dir: dir, bin: bin, pubHex: hex.EncodeToString(pub), sth: audit.SignTreeHead(th, priv)}
+	return &quorumBundles{t: t, store: store, runID: runID, dir: dir, bin: bin, pubHex: hex.EncodeToString(pub), sth: must(audit.SignTreeHead(th, audit.Ed25519Signer{Priv: priv}))}
 }
 
 func (b *quorumBundles) path(step string) string {

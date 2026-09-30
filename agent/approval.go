@@ -146,11 +146,19 @@ func canonicalArgs(raw json.RawMessage) []byte {
 	return bytes.TrimSuffix(buf.Bytes(), []byte("\n"))
 }
 
-// ApproverVerifier checks an approver's signature over the decision bytes and names the signing
-// keys behind it. audit.Ed25519Verifier, audit.MLDSAVerifier and audit.HybridVerifier implement
-// it, so a deployment reuses the existing verifiers with no new cryptography and no agent->audit
-// import.
+// Alg names a signature scheme: "ed25519", "ml-dsa-65", or "ed25519+ml-dsa-65". The audit package
+// defines the schemes (audit.AlgEd25519, audit.AlgMLDSA65, audit.AlgHybrid) and their signers and
+// verifiers; the agent package only journals the name, with each approver decision, so a decision is
+// checked under the scheme it was signed with.
+type Alg string
+
+// ApproverVerifier checks an approver's signature over the decision bytes under one scheme and
+// names the signing keys behind it. audit.Ed25519Verifier, audit.MLDSAVerifier and
+// audit.HybridVerifier implement it, so a deployment reuses the existing verifiers with no new
+// cryptography and no agent->audit import.
 type ApproverVerifier interface {
+	// Alg names the verifier's scheme. A decision counts only if it was journaled under this scheme.
+	Alg() Alg
 	// Verify reports whether sig is a valid signature over message.
 	Verify(message, sig []byte) bool
 	// KeyIDs identifies the signing keys behind Verify: one entry per public key whose private
@@ -323,13 +331,15 @@ const (
 	ReasonBadSig      = "signature does not verify for this call"
 	ReasonSharedKey   = "the approver's signing key also serves another approver"
 	ReasonNoKeyID     = "the approver's verifier reports no key identity"
+	ReasonAlg         = "signed under another scheme than the approver's key"
 )
 
 // TallyApprovals is the m-of-n counting rule, shared by the gate and offline verification so
 // the two cannot drift. Over recs, in journal order, it considers every decision record on
 // s.ToolUseID (IsApprovalDecision). An approver's decision is their FIRST record that is
 // valid: the approver is in p.Approvers, verifierFor resolves their key, and the signature
-// verifies over ApprovalDecisionBytes(s, approver, approved). Records that are not valid never
+// verifies over ApprovalDecisionBytes(s, approver, approved) under the scheme the record names
+// (ApproverAlg), which must be the scheme of the approver's key. Records that are not valid never
 // occupy an approver's place, so a forged or mistaken decision cannot block the approver's
 // real one; later valid records from an approver who already decided are superseded.
 //
@@ -367,6 +377,8 @@ func TallyApprovals(recs []Record, s ApprovalSubject, p ApprovalPolicy, verifier
 			c.Reason = reason
 		case !ok:
 			c.Reason = ReasonNoKey
+		case r.ApproverAlg == "" || r.ApproverAlg != v.Alg():
+			c.Reason = ReasonAlg
 		case !v.Verify(ApprovalDecisionBytes(s, r.Approver, r.Approved), r.Signature):
 			c.Reason = ReasonBadSig
 		default:
@@ -421,17 +433,20 @@ func FindToolCall(recs []Record, toolUseID string) (idx int, call ToolUse, ok bo
 }
 
 // approvalDecisionStep is the journal name of one decision. It is distinct per decision (the
-// approved flag and signature are hashed into it), so an approver's records never collide: a
-// bad record cannot take the name a later valid one needs, and an identical resubmission maps
-// to the same name and stays a no-op. Deterministic signatures (ed25519) resubmit to the same
-// name; randomized ones (ML-DSA) add a record the counting rule supersedes.
-func approvalDecisionStep(toolUseID, approverID string, approved bool, sig []byte) string {
+// approved flag, the scheme and the signature are hashed into it), so an approver's records never
+// collide: a bad record cannot take the name a later valid one needs, and an identical
+// resubmission maps to the same name and stays a no-op. Deterministic signatures (ed25519, and
+// audit's ML-DSA signer) resubmit to the same name; randomized ones add a record the counting rule
+// supersedes.
+func approvalDecisionStep(toolUseID, approverID string, approved bool, alg Alg, sig []byte) string {
 	h := sha256.New()
 	if approved {
 		h.Write([]byte{1})
 	} else {
 		h.Write([]byte{0})
 	}
+	h.Write(binary.BigEndian.AppendUint32(nil, uint32(len(alg))))
+	h.Write([]byte(alg))
 	h.Write(sig)
 	return approvalStep(toolUseID) + ":" + approverID + ":" + hex.EncodeToString(h.Sum(nil))
 }
@@ -457,12 +472,15 @@ func WithDecisionCheck(verifierFor ApproverVerifierFor) ApproveOption {
 // Decision is one named approver's signed decision on a tool call gated by an m-of-n Approval
 // policy. Signature is the approver's signature over
 // ApprovalDecisionBytes(pend.Subject(), ApproverID, Approved), where pend is the run's
-// *ApprovalPending.
+// *ApprovalPending, under the scheme Alg names (the signer's Alg). Alg is journaled with the
+// decision as Record.ApproverAlg, and the gate counts the decision only under a verifier of that
+// scheme.
 type Decision struct {
 	RunID      string // the run whose journal holds the call: the pause's RunID
 	ToolUseID  string
 	ApproverID string
 	Approved   bool
+	Alg        Alg // the signature scheme, e.g. audit.AlgEd25519
 	Signature  []byte
 }
 
@@ -477,13 +495,6 @@ func SubmitDecision(ctx context.Context, store Durable, d Decision, opts ...Appr
 	return submitDecision(ctx, store, "SubmitDecision", d, opts)
 }
 
-// ApproveAs records one named approver's signed decision on an m-of-n gated call.
-//
-// Deprecated: transitional; replaced by SubmitDecision, which takes the decision as a Decision.
-func ApproveAs(ctx context.Context, d Durable, runID, toolUseID, approverID string, approved bool, sig []byte, opts ...ApproveOption) error {
-	return submitDecision(ctx, d, "ApproveAs", Decision{RunID: runID, ToolUseID: toolUseID, ApproverID: approverID, Approved: approved, Signature: sig}, opts)
-}
-
 func submitDecision(ctx context.Context, store Durable, op string, d Decision, opts []ApproveOption) error {
 	if d.RunID == "" {
 		return fmt.Errorf("%s: empty runID: %w", op, ErrConfig)
@@ -494,6 +505,9 @@ func submitDecision(ctx context.Context, store Durable, op string, d Decision, o
 	if d.ApproverID == "" {
 		return fmt.Errorf("%s: empty approverID: %w", op, ErrConfig)
 	}
+	if d.Alg == "" {
+		return fmt.Errorf("%s: empty signature scheme (Decision.Alg): %w", op, ErrConfig)
+	}
 	if len(d.Signature) == 0 {
 		return fmt.Errorf("%s: empty signature: %w", op, ErrConfig)
 	}
@@ -501,14 +515,14 @@ func submitDecision(ctx context.Context, store Durable, op string, d Decision, o
 	for _, opt := range opts {
 		opt(&o)
 	}
-	name := approvalDecisionStep(d.ToolUseID, d.ApproverID, d.Approved, d.Signature)
+	name := approvalDecisionStep(d.ToolUseID, d.ApproverID, d.Approved, d.Alg, d.Signature)
 	if o.verifierFor != nil {
 		if err := checkDecision(ctx, store, op, d, name, o.verifierFor); err != nil {
 			return err
 		}
 	}
 	_, err := store.Do(ctx, d.RunID, name, func(context.Context) (Record, error) {
-		return Record{Kind: StepApproval, ToolUseID: d.ToolUseID, Approved: d.Approved, Approver: d.ApproverID, Signature: d.Signature}, nil
+		return Record{Kind: StepApproval, ToolUseID: d.ToolUseID, Approved: d.Approved, Approver: d.ApproverID, ApproverAlg: d.Alg, Signature: d.Signature}, nil
 	})
 	return err
 }
@@ -531,6 +545,9 @@ func checkDecision(ctx context.Context, store Durable, op string, d Decision, na
 	if isNilVerifier(v) {
 		return fmt.Errorf("%s: the resolver returned a nil %T verifier for approver %q: %w", op, v, d.ApproverID, ErrConfig)
 	}
+	if d.Alg != v.Alg() {
+		return fmt.Errorf("%s: approver %q: decision signed under %q, key is %q: %w", op, d.ApproverID, d.Alg, v.Alg(), ErrInvalidApproval)
+	}
 	s := ApprovalSubject{RunID: d.RunID, ToolUseID: d.ToolUseID, ToolName: call.Name, Args: call.Args}
 	if !v.Verify(ApprovalDecisionBytes(s, d.ApproverID, d.Approved), d.Signature) {
 		return fmt.Errorf("%s: approver %q: %s: %w", op, d.ApproverID, ReasonBadSig, ErrInvalidApproval)
@@ -539,7 +556,7 @@ func checkDecision(ctx context.Context, store Durable, op string, d Decision, na
 		if !IsApprovalDecision(r, d.ToolUseID) || r.Approver != d.ApproverID || r.Name == name {
 			continue
 		}
-		if v.Verify(ApprovalDecisionBytes(s, d.ApproverID, r.Approved), r.Signature) {
+		if r.ApproverAlg == v.Alg() && v.Verify(ApprovalDecisionBytes(s, d.ApproverID, r.Approved), r.Signature) {
 			return fmt.Errorf("%s: approver %q already decided on call %q: %w", op, d.ApproverID, d.ToolUseID, ErrAlreadyDecided)
 		}
 	}

@@ -74,9 +74,17 @@ if pend, ok := errors.AsType[*agent.ApprovalPending](err); ok {
 	msg := agent.ApprovalDecisionBytes(pend.Subject(), "finance", true)
 	sig, _ := financeSigner.Sign(msg) // any audit.Signer: Ed25519, ML-DSA, or hybrid
 	agent.SubmitDecision(ctx, store, agent.Decision{RunID: pend.RunID, ToolUseID: pend.ToolUseID,
-		ApproverID: "finance", Approved: true, Signature: sig})
+		ApproverID: "finance", Approved: true, Alg: financeSigner.Alg(), Signature: sig})
 }
 ```
+
+`Decision.Alg` names the scheme the signature is under and is required (`SubmitDecision` refuses an
+empty one with `agent.ErrConfig`). It is journaled with the decision as `Record.ApproverAlg`, and the
+gate counts the decision only if it equals the `Alg()` of the verifier your resolver returns for
+that approver: a valid signature journaled under another scheme name, or none, is ignored with
+`agent.ReasonAlg`. One key fills one seat (see [Key identity](#key-identity)), and `bide-audit
+verify-approvals` also refuses an approver-key file that gives two ids one key, compared by key
+identity, whether or not both ids are in the policy (exit 4).
 
 Then re-run `pend.RootRunID`. The gate evaluates the recorded decisions:
 
@@ -140,7 +148,8 @@ This rule is `agent.TallyApprovals`, a pure function the gate calls at run time 
 By default `SubmitDecision` records the decision without checking it; the gate checks every record
 itself. To tell an approver immediately that their decision will not count, pass
 `agent.WithDecisionCheck(resolver)`: it verifies the signature against the recorded call and returns
-`agent.ErrInvalidApproval` (no such call, unknown approver, or a signature that does not verify) or
+`agent.ErrInvalidApproval` (no such call, unknown approver, a scheme that is not the approver key's,
+or a signature that does not verify) or
 `agent.ErrAlreadyDecided` (their earlier valid decision already counts), and records nothing.
 Eligibility is not checked there, because the policy lives on the tool.
 
@@ -169,7 +178,8 @@ An m-of-n tool inside a `SubAgent` pauses the whole tree: the parent's `Run` ret
 The gate fails with `ErrConfig` (rather than counting zero decisions) when a tool has an `Approval`
 policy but no `WithApproverVerifiers` resolver is set, or when the policy is malformed: no approvers,
 an empty or duplicate approver id, an id that is not valid UTF-8, or `Need` outside
-`1..len(Approvers)` (see `ApprovalPolicy.Validate`).
+`1..len(Approvers)` (see `ApprovalPolicy.Validate`), or when an eligible approver's verifier has an
+empty `PublicKey()` (see above).
 
 Approver ids are compared as exact bytes, but a policy may not list two ids that differ only by
 case or Unicode normalization (`alice` and `Alice`, an NFC and an NFD `café`, a fullwidth and an
@@ -240,10 +250,10 @@ never count, and are not waited on: when too few seats remain to reach `Need`, t
 journal order: the model turn that requested the call (its tool and arguments), every decision
 record the gate read, valid or not, the gate's recorded tally, and the call's result.
 
-<!-- docsnip: setup ctx context.Context; store agent.Durable; runID string; toolUseID string; logPriv ed25519.PrivateKey -->
+<!-- docsnip: setup ctx context.Context; store agent.Durable; runID string; toolUseID string; logSigner audit.Signer -->
 ```go
 th, _ := audit.NewTreeHead(ctx, store, runID, time.Now().UnixNano())
-sth := audit.SignTreeHead(th, logPriv)
+sth, _ := audit.SignTreeHead(th, logSigner)
 actions, _ := audit.ApprovalEvidence(ctx, store, runID, toolUseID, sth)
 ```
 
@@ -253,10 +263,11 @@ package already carries the call.
 An auditor checks it offline with `audit.VerifyApprovals`, holding only the evidence, the policy they
 expect, the approvers' public keys (the same resolver shape the gate uses), and the log key:
 
-<!-- docsnip: setup pkg audit.EvidencePackage; toolUseID string; policy agent.ApprovalPolicy; approverVerifiers agent.ApproverVerifierFor; logPub ed25519.PublicKey -->
+<!-- docsnip: setup pkg audit.EvidencePackage; toolUseID string; policy agent.ApprovalPolicy; approverVerifiers agent.ApproverVerifierFor; logKey audit.Verifier -->
 ```go
-v, err := audit.VerifyApprovals(pkg.Actions, toolUseID, policy, approverVerifiers, logPub)
-// v.OK: the evidence is consistent and at least Need approved.
+v, err := audit.VerifyApprovals(pkg.Actions, toolUseID, policy, approverVerifiers, logKey)
+// err == nil (and v.OK): the evidence is consistent and at least Need approved.
+// errors.Is(err, audit.ErrNotVerified): the gate did not hold, or the evidence does not.
 // v.ToolName, v.Args: the exact call that was approved.
 // v.Counted, v.DeniedBy: who. v.Ignored: every other decision, with the reason.
 // v.Problems: every inconsistency found (any problem fails the verdict).
@@ -275,9 +286,11 @@ problem when:
 - the request, decisions, tally, and result are out of order.
 
 Tampering with the request, the tally, or the result breaks their proofs, and `VerifyApprovals`
-returns an error rather than a verdict; so does a resolver under which two of the policy's approvers
-share a key. A denied gate yields consistent evidence whose verdict is not
-OK and names who denied.
+returns an error wrapping `audit.ErrNotVerified` without a recount. A denied gate yields consistent
+evidence whose verdict is not OK (again with `ErrNotVerified`) and names who denied. An invalid
+expected policy, or a resolver under which two of the policy's approvers share a key, is
+`agent.ErrConfig`; a proof or record that cannot be read is `audit.ErrFormat` or
+`audit.ErrMalformed`.
 
 That certifies exactly one claim: **these named approvers approved this exact call, and it did not
 execute until k of them had, under the expected policy, from evidence that leaves nothing out.** It
@@ -287,10 +300,11 @@ record name.
 ### From the command line
 
 For an auditor who does not write Go, `bide-audit verify-approvals` runs the same check from the files
-alone, with approver keys as a JSON object of id to ed25519 public key hex:
+alone, with approver keys as a JSON object of id to key text (`<alg>:<hex>`, as
+`audit.FormatPublicKey` writes it, or bare ed25519 hex):
 
 ```
-bide-audit verify-approvals -evidence evidence.json -pubkey <log key hex> -call refund-1 \
+bide-audit verify-approvals -evidence evidence.json -pubkey <log key> -call refund-1 \
     -need 2 -approvers ops,finance,risk -approver-keys approver-keys.json
 ```
 
@@ -298,7 +312,9 @@ It prints the approved call, each approver who counted, every ignored decision w
 every problem. It exits 0 only when the gate held: 1 when it did not, 4 when an input cannot be read
 or used (including a key file that gives two of the policy's approvers one key), and 2 on a usage error (see the audit guide's
 [exit status](audit.md#exit-status); only 0 means verified). `bide-audit verify-evidence` checks the proofs only,
-so it cannot detect an omitted decision; use `verify-approvals` for the approval claim.
+so it cannot detect an omitted decision; use `verify-approvals` for the approval claim. Every proof in the package must verify for `verify-approvals` to pass as well, so a package that carries
+a run certificate needs its allowlist: `-approved <digest>` (repeatable) or `-approved-file <file>`, as for
+`verify-evidence`.
 
 Evidence files commit to the exact recorded bytes. Keep them byte-exact: a tool that re-orders JSON
 object keys inside a recorded message breaks that record's proof.
@@ -311,7 +327,8 @@ object keys inside a recorded message breaks that record's proof.
   person one key is the identity provider's job too.
 - The approver set is bounded and fixed per policy. There are no weighted votes, role predicates
   ("at least one from risk"), delegated approval, or deadline to resolve a gate that never reaches k.
-- The tally does not record which key verified each approver. An auditor needs the keys that were
+- The tally does not record which key verified each approver (each decision does record its scheme,
+  `Record.ApproverAlg`). An auditor needs the keys that were
   valid when the gate decided; after a rotation, keep the old public keys to verify old evidence.
 - A declarative `plan` config can carry an `approval` block (see [Flows](flows.md#node-approval)),
   but the `plan` runtime does not enforce an approval gate yet, so building such a flow fails with

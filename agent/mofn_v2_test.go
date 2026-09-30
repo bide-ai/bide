@@ -20,7 +20,7 @@ func TestMofn_ForgedThenRealCounts(t *testing.T) {
 	_, _ = mofnRun(store, "r1", true, pol, vf, &charged)
 	subj := subjectOf(t, store, "r1", "c1")
 	forged := fakeSign("bob", ApprovalDecisionBytes(subj, "alice", true)) // bob signs as alice
-	if err := ApproveAs(context.Background(), store, "r1", "c1", "alice", true, forged); err != nil {
+	if err := decideAs(context.Background(), store, "r1", "c1", "alice", true, forged); err != nil {
 		t.Fatal(err)
 	}
 	_, err := mofnRun(store, "r1", false, pol, vf, &charged)
@@ -62,7 +62,7 @@ func TestMofn_SignatureBindsTheCall(t *testing.T) {
 		s := real
 		mutate(&s)
 		sig := fakeSign("alice", ApprovalDecisionBytes(s, "alice", true))
-		if err := ApproveAs(context.Background(), store, "r1", "c1", "alice", true, sig); err != nil {
+		if err := decideAs(context.Background(), store, "r1", "c1", "alice", true, sig); err != nil {
 			t.Fatal(err)
 		}
 		_, err := mofnRun(store, "r1", false, pol, vf, &charged)
@@ -77,7 +77,7 @@ func TestMofn_SignatureBindsTheCall(t *testing.T) {
 	}
 }
 
-// Records written straight into the journal, bypassing ApproveAs, can neither block an
+// Records written straight into the journal, bypassing SubmitDecision, can neither block an
 // approver nor force a denial: invalid denials do not count toward "unreachable".
 func TestMofn_JunkCannotBlockOrDeny(t *testing.T) {
 	store := NewMemStore()
@@ -188,10 +188,10 @@ func TestApproveAs_DecisionCheck(t *testing.T) {
 	}
 	records := func() int { return countDecisions(t, store, "r1", "c1", "alice") }
 
-	if err := ApproveAs(ctx, store, "r1", "c1", "alice", true, sign(subj, "alice", "alice", true), check); err != nil {
+	if err := decideAs(ctx, store, "r1", "c1", "alice", true, sign(subj, "alice", "alice", true), check); err != nil {
 		t.Fatalf("valid decision: %v", err)
 	}
-	if err := ApproveAs(ctx, store, "r1", "c1", "alice", true, sign(subj, "alice", "alice", true), check); err != nil {
+	if err := decideAs(ctx, store, "r1", "c1", "alice", true, sign(subj, "alice", "alice", true), check); err != nil {
 		t.Fatalf("identical resubmission: %v", err)
 	}
 	if n := records(); n != 1 {
@@ -215,7 +215,7 @@ func TestApproveAs_DecisionCheck(t *testing.T) {
 		{"flip after a valid decision", "c1", "alice", false, sign(subj, "alice", "alice", false), ErrAlreadyDecided},
 	}
 	for _, tc := range rejected {
-		err := ApproveAs(ctx, store, "r1", tc.call, tc.as, tc.approved, tc.sig, check)
+		err := decideAs(ctx, store, "r1", tc.call, tc.as, tc.approved, tc.sig, check)
 		if !errors.Is(err, tc.want) || !errors.Is(err, ErrConfig) {
 			t.Fatalf("%s: err = %v, want %v (an ErrConfig)", tc.name, err, tc.want)
 		}
@@ -223,7 +223,7 @@ func TestApproveAs_DecisionCheck(t *testing.T) {
 	if n := records(); n != 1 {
 		t.Fatalf("%d records by alice after rejected submissions, want 1", n)
 	}
-	if err := ApproveAs(ctx, store, "r1", "c1", "alice", true, nil); !errors.Is(err, ErrConfig) {
+	if err := decideAs(ctx, store, "r1", "c1", "alice", true, nil); !errors.Is(err, ErrConfig) {
 		t.Fatalf("empty signature: err = %v, want ErrConfig", err)
 	}
 }
@@ -246,5 +246,75 @@ func TestApprovalPolicy_Validate(t *testing.T) {
 		if (err == nil) != tc.ok || (err != nil && !errors.Is(err, ErrConfig)) {
 			t.Fatalf("%+v: Validate() = %v, want ok=%v", tc.pol, err, tc.ok)
 		}
+	}
+}
+
+// A decision counts only under the scheme it was journaled with, and that scheme must be the
+// approver key's: a valid signature journaled under another scheme name, or under none, does not
+// count, and SubmitDecision refuses a decision with no scheme and (with WithDecisionCheck) one
+// under a scheme the approver's key is not.
+func TestMofn_DecisionCountsOnlyUnderItsScheme(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemStore()
+	pol := &ApprovalPolicy{Need: 1, Approvers: abc}
+	vf := fakeVerifiers(abc...)
+	var charged int
+	_, _ = mofnRun(store, "r1", true, pol, vf, &charged)
+	subj := subjectOf(t, store, "r1", "c1")
+	sig := fakeSign("alice", ApprovalDecisionBytes(subj, "alice", true))
+
+	if err := SubmitDecision(ctx, store, Decision{RunID: "r1", ToolUseID: "c1", ApproverID: "alice", Approved: true, Signature: sig}); !errors.Is(err, ErrConfig) {
+		t.Fatalf("no scheme: err = %v, want ErrConfig", err)
+	}
+	err := SubmitDecision(ctx, store, Decision{RunID: "r1", ToolUseID: "c1", ApproverID: "alice", Approved: true, Alg: "ml-dsa-65", Signature: sig}, WithDecisionCheck(vf))
+	if !errors.Is(err, ErrInvalidApproval) {
+		t.Fatalf("another scheme under WithDecisionCheck: err = %v, want ErrInvalidApproval", err)
+	}
+	writeRaw(t, store, "r1", approvalStep("c1")+":alice:noalg", Record{Kind: StepApproval, ToolUseID: "c1", Approver: "alice", Approved: true, Signature: sig})
+	writeRaw(t, store, "r1", approvalStep("c1")+":alice:otheralg", Record{Kind: StepApproval, ToolUseID: "c1", Approver: "alice", Approved: true, ApproverAlg: "ml-dsa-65", Signature: sig})
+	_, err = mofnRun(store, "r1", false, pol, vf, &charged)
+	wantPending(t, err, counts{Need: 1, Pending: []string{"alice", "bob", "carol"}})
+	_, checks := TallyApprovals(mofnHistory(t, store, "r1"), subj, *pol, vf)
+	if len(checks) != 2 || checks[0].Reason != ReasonAlg || checks[1].Reason != ReasonAlg {
+		t.Fatalf("checks = %+v, want both decisions refused for their scheme", checks)
+	}
+
+	if err := decideAs(ctx, store, "r1", "c1", "alice", true, sig); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := mofnRun(store, "r1", false, pol, vf, &charged); err != nil || textOf(out) != "done" || charged != 1 {
+		t.Fatalf("out=%q charged=%d err=%v, want the decision under the key's scheme to count", textOf(out), charged, err)
+	}
+}
+
+// sharedKeyVerifier is one key, whatever approver id it is resolved for.
+type sharedKeyVerifier struct{}
+
+func (sharedKeyVerifier) Alg() Alg         { return fakeAlg }
+func (sharedKeyVerifier) KeyIDs() []string { return []string{"fake:one key"} }
+func (sharedKeyVerifier) Verify(message, sig []byte) bool {
+	return bytes.Equal(sig, fakeSign("shared", message))
+}
+
+// Two approver ids that resolve to one key are one signer, so a 2-of-2 policy is not met by one key
+// holder signing as both. Under the one seat-per-key rule (#109, KeyIDs) neither id counts, whoever
+// signed first (ReasonSharedKey), and the gate refuses such a policy outright (ValidateKeys).
+func TestMofn_OneKeyUnderTwoApproverIdsCountsOnce(t *testing.T) {
+	s := ApprovalSubject{RunID: "r", ToolUseID: "c", ToolName: "wire", Args: json.RawMessage(`{}`)}
+	var recs []Record
+	for _, id := range []string{"alice", "bob"} {
+		recs = append(recs, Record{Name: "approval:c:" + id, Kind: StepApproval, ToolUseID: "c", Approved: true, Approver: id,
+			ApproverAlg: fakeAlg, Signature: fakeSign("shared", ApprovalDecisionBytes(s, id, true))})
+	}
+	p := ApprovalPolicy{Need: 2, Approvers: []string{"alice", "bob"}}
+	got, checks := TallyApprovals(recs, s, p, func(string) (ApproverVerifier, bool) { return sharedKeyVerifier{}, true })
+	if got.Passed() || got.Approved != 0 {
+		t.Fatalf("tally = %+v, want no approval counted for the shared key", got)
+	}
+	if len(checks) != 2 || checks[0].Counted || checks[0].Reason != ReasonSharedKey || checks[1].Counted || checks[1].Reason != ReasonSharedKey {
+		t.Fatalf("checks = %+v, want both decisions refused for sharing one key", checks)
+	}
+	if err := p.ValidateKeys(func(string) (ApproverVerifier, bool) { return sharedKeyVerifier{}, true }); !errors.Is(err, ErrConfig) {
+		t.Fatalf("ValidateKeys = %v, want ErrConfig", err)
 	}
 }

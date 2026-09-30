@@ -139,7 +139,7 @@ func TestMofn_InsideSubAgent(t *testing.T) {
 	wrong := pend.Subject()
 	wrong.RunID = "root"
 	sig := fakeSign("alice", ApprovalDecisionBytes(wrong, "alice", true))
-	if err := ApproveAs(ctx, store, subRunID, "s1", "alice", true, sig); err != nil {
+	if err := decideAs(ctx, store, subRunID, "s1", "alice", true, sig); err != nil {
 		t.Fatal(err)
 	}
 	_, err = parent.Run(ctx, "root", "delegate")
@@ -149,7 +149,7 @@ func TestMofn_InsideSubAgent(t *testing.T) {
 
 	// alice re-signs pend.Subject() correctly: her mistaken record did not take her place.
 	sig = fakeSign("alice", ApprovalDecisionBytes(pend.Subject(), "alice", true))
-	if err := ApproveAs(ctx, store, subRunID, "s1", "alice", true, sig); err != nil {
+	if err := decideAs(ctx, store, subRunID, "s1", "alice", true, sig); err != nil {
 		t.Fatal(err)
 	}
 	approveAs(t, store, subRunID, "s1", "bob", true)

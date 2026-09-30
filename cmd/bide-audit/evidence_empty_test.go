@@ -25,7 +25,7 @@ func TestVerifyEvidenceCLI_EmptyPackageFails(t *testing.T) {
 		t.Fatal(err)
 	}
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
-	pkg, err := audit.Evidence(ctx, store, "r", priv, 1700000000)
+	pkg, err := audit.Evidence(ctx, store, "r", audit.Ed25519Signer{Priv: priv}, 1700000000)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -111,19 +111,19 @@ func TestEventLog_SaltedPerEvent(t *testing.T) {
 		t.Fatalf("event salts %x and %x, want distinct %d-byte salts", p0.Salt, p1.Salt, agent.SaltSize)
 	}
 	evs := sampleEvents()
-	if ok, err := audit.VerifyEventInclusion(a.Root(), evs[0], p0); !ok || err != nil {
-		t.Fatalf("event 0 does not verify under its proof's salt: %v, %v", ok, err)
+	if err := audit.VerifyEventInclusion(a.Root(), evs[0], p0); err != nil {
+		t.Fatalf("event 0 does not verify under its proof's salt: %v", err)
 	}
 	other := p0
 	other.Salt = p1.Salt
-	if ok, _ := audit.VerifyEventInclusion(a.Root(), evs[0], other); ok {
+	if err := audit.VerifyEventInclusion(a.Root(), evs[0], other); err == nil {
 		t.Fatal("event 0 verified under another event's salt")
 	}
 	for _, salt := range [][]byte{nil, p0.Salt[:agent.SaltSize-1]} {
 		bad := p0
 		bad.Salt = salt
-		if ok, err := audit.VerifyEventInclusion(a.Root(), evs[0], bad); ok || err == nil {
-			t.Fatalf("a proof with a %d-byte salt = %v, %v; want an error", len(salt), ok, err)
+		if err := audit.VerifyEventInclusion(a.Root(), evs[0], bad); err == nil {
+			t.Fatalf("a proof with a %d-byte salt = %v; want an error", len(salt), err)
 		}
 	}
 }
@@ -150,15 +150,11 @@ func TestEventLog_InclusionProofs(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Prove(%d): %v", i, err)
 		}
-		ok, err := audit.VerifyEventInclusion(root, e, proof)
-		if err != nil {
-			t.Fatalf("VerifyEventInclusion(%d): %v", i, err)
-		}
-		if !ok {
-			t.Fatalf("event %d (%T) failed its own inclusion proof", i, e)
+		if err := audit.VerifyEventInclusion(root, e, proof); err != nil {
+			t.Fatalf("event %d (%T) failed its own inclusion proof: %v", i, e, err)
 		}
 		// A tampered event must not verify against the genuine proof.
-		if ok, _ := audit.VerifyEventInclusion(root, agent.TurnStarted{Seq: 999}, proof); ok && i != 0 {
+		if err := audit.VerifyEventInclusion(root, agent.TurnStarted{Seq: 999}, proof); err == nil && i != 0 {
 			t.Fatalf("a forged event verified at index %d", i)
 		}
 	}
@@ -172,13 +168,13 @@ func TestEventLog_InclusionProofs(t *testing.T) {
 func TestEventLog_SignAnchor(t *testing.T) {
 	pub, priv, _ := ed25519.GenerateKey(nil)
 	root := buildLog(t, sampleEvents()).Root()
-	sig := audit.Sign(root, priv)
-	if !audit.VerifySignature(root, sig, pub) {
+	sig, _ := audit.Sign(root, edS(priv))
+	if audit.VerifySignature(root, sig, edV(pub)) != nil {
 		t.Fatal("signature over event Root did not verify")
 	}
 	tampered := append([]byte{}, root...)
 	tampered[0] ^= 0xff
-	if audit.VerifySignature(tampered, sig, pub) {
+	if audit.VerifySignature(tampered, sig, edV(pub)) == nil {
 		t.Fatal("signature verified against a tampered root")
 	}
 }
@@ -190,8 +186,8 @@ func TestEventLog_STH(t *testing.T) {
 	evs := sampleEvents()
 	log := buildLog(t, evs)
 
-	sth := audit.SignTreeHead(log.TreeHead("run", 1_700_000_000), priv)
-	if !sth.Verify(pub) {
+	sth := signTH(t, log.TreeHead("run", 1_700_000_000), priv)
+	if sth.Verify(edV(pub)) != nil {
 		t.Fatal("event-log STH did not verify")
 	}
 	if sth.Size != len(evs) {
@@ -200,25 +196,25 @@ func TestEventLog_STH(t *testing.T) {
 
 	// An inclusion proof checks against the SIGNED root — auditor trusts sth, not raw bytes.
 	proof, _ := log.Prove(2)
-	if ok, _ := audit.VerifyEventInclusion(sth.Root, evs[2], proof); !ok {
+	if err := audit.VerifyEventInclusion(sth.Root, evs[2], proof); err != nil {
 		t.Fatal("event proves against its own signed STH root but verification failed")
 	}
 
 	// Tamper each bound field: signature must break.
 	bad := sth
 	bad.Size++
-	if bad.Verify(pub) {
+	if bad.Verify(edV(pub)) == nil {
 		t.Fatal("STH verified after Size tamper")
 	}
 	bad = sth
-	bad.Timestamp++
-	if bad.Verify(pub) {
+	bad.TimestampNanos++
+	if bad.Verify(edV(pub)) == nil {
 		t.Fatal("STH verified after Timestamp tamper")
 	}
 	bad = sth
 	bad.Root = append([]byte{}, sth.Root...)
 	bad.Root[0] ^= 0xff
-	if bad.Verify(pub) {
+	if bad.Verify(edV(pub)) == nil {
 		t.Fatal("STH verified after Root tamper")
 	}
 }
@@ -240,7 +236,7 @@ func TestEventLog_Consistency(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ProveConsistency: %v", err)
 	}
-	if !audit.VerifyConsistency(rootEarly, log.Root(), proof) {
+	if audit.VerifyConsistency(rootEarly, log.Root(), proof) != nil {
 		t.Fatal("a genuinely append-only history failed the consistency proof")
 	}
 
@@ -248,12 +244,12 @@ func TestEventLog_Consistency(t *testing.T) {
 	h := toolResults(6)
 	full := projectLog(t, h)
 	proof, _ = full.ProveConsistency(m)
-	if !audit.VerifyConsistency(projectLog(t, h[:m]).Root(), full.Root(), proof) {
+	if audit.VerifyConsistency(projectLog(t, h[:m]).Root(), full.Root(), proof) != nil {
 		t.Fatal("a projected prefix failed the consistency proof")
 	}
 	tampered := append(history{}, h[:m]...)
 	tampered[1].Result = json.RawMessage(`{"n":"evil"}`)
-	if audit.VerifyConsistency(projectLog(t, tampered).Root(), full.Root(), proof) {
+	if audit.VerifyConsistency(projectLog(t, tampered).Root(), full.Root(), proof) == nil {
 		t.Fatal("consistency proof accepted a rewritten early event")
 	}
 }
@@ -283,9 +279,8 @@ func TestRecord_DrainsRealStream(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Prove(%d): %v", i, err)
 		}
-		ok, err := audit.VerifyEventInclusion(root, e, proof)
-		if err != nil || !ok {
-			t.Fatalf("event %d (%T) failed inclusion (ok=%v err=%v)", i, e, ok, err)
+		if err := audit.VerifyEventInclusion(root, e, proof); err != nil {
+			t.Fatalf("event %d (%T) failed inclusion (err=%v)", i, e, err)
 		}
 	}
 	if _, ok := seen[len(seen)-1].(agent.Finished); !ok {
@@ -319,9 +314,9 @@ func TestEventLogFromJournal(t *testing.T) {
 
 	// Composes with the STH anchor.
 	pub, priv, _ := ed25519.GenerateKey(nil)
-	sth := audit.SignTreeHead(log1.TreeHead("run", 1000), priv)
-	if !sth.Verify(pub) || sth.Size != log1.Len() {
-		t.Fatalf("durable event STH failed (verify=%v size=%d/%d)", sth.Verify(pub), sth.Size, log1.Len())
+	sth := signTH(t, log1.TreeHead("run", 1000), priv)
+	if sth.Verify(edV(pub)) != nil || sth.Size != log1.Len() {
+		t.Fatalf("durable event STH failed (verify=%v size=%d/%d)", sth.Verify(edV(pub)), sth.Size, log1.Len())
 	}
 
 	// The trail up to any earlier point (the projection of a journal prefix, as it stood before
@@ -342,7 +337,7 @@ func TestEventLogFromJournal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ProveConsistency: %v", err)
 	}
-	if !audit.VerifyConsistency(prefix.Root(), log1.Root(), proof) {
+	if audit.VerifyConsistency(prefix.Root(), log1.Root(), proof) != nil {
 		t.Fatal("durable event trail failed the append-only consistency proof")
 	}
 }

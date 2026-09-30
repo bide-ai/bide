@@ -3,9 +3,8 @@ package audit
 import (
 	"bytes"
 	"context"
-	"crypto/ed25519"
-	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -21,8 +20,10 @@ import (
 // and a sub-agent's run by agent.SubRunID, so the record names a v3 package proves differ from
 // a v2 package's for the same run. v4 is v3 with snake_case names in every proof it carries (the
 // inclusion and consistency proofs spelled "Index", "Size", "Path" and "First" before) and a
-// "format" on each ProofBundle and on the RunCertificate.
-const EvidenceFormat = "bide.audit.evidence.v4"
+// "format" on each ProofBundle and on the RunCertificate. v5 names the signing key by scheme and
+// key ({alg, public_key}) rather than by ed25519 hex, carries bide.audit.proof.v3 bundles (each
+// record as its stored bytes) and bide.audit.sth.v5 heads, and labels its actions snake_case kinds.
+const EvidenceFormat = "bide.audit.evidence.v5"
 
 // evidenceSealTag domain-separates the package seal from every other message the log key signs.
 const evidenceSealTag = EvidenceFormat + ".seal\x00"
@@ -38,13 +39,13 @@ const evidenceSealTag = EvidenceFormat + ".seal\x00"
 // record says (a tool result cannot be presented as an approval). The grant chain must be exactly
 // the grants the anchored leaves prove. The run certificate must be for this run and tree. The
 // consistency proof is checked from an earlier signed head of the same run to the STH.
-// PublicKeyHex must be the verifying key. Label, the one field no proof covers, is covered by the
+// Alg and PublicKey must be the verifying key's. Label, the one field no proof covers, is covered by the
 // seal (Signature): the log key's signature over the whole package, so nothing (Label included) can be edited, and
 // no item added or dropped, after the producer sealed it.
 //
 // It is deliberately PURE DATA: no funcs, no keys, no unexported state, so it round-trips losslessly
 // through JSON. The verifying key must be obtained out of band (the anchor / transparency log);
-// Verify takes it as an argument rather than trusting PublicKeyHex.
+// Verify takes it as an argument rather than trusting Alg and PublicKey.
 type EvidencePackage struct {
 	// Format is the domain-separated format/version tag (EvidenceFormat).
 	Format string `json:"format"`
@@ -53,10 +54,11 @@ type EvidencePackage struct {
 	// Label is an optional producer-supplied description of what this evidence establishes (e.g.
 	// "Q3 refund approvals"). No proof covers it; the seal attributes it to the log key holder.
 	Label string `json:"label,omitempty"`
-	// PublicKeyHex is the hex-encoded ed25519 public key that produced the STH and the seal, carried
-	// so a reader knows which key to obtain out of band. Verify requires it to equal the key it is
-	// given; it never trusts it as the key.
-	PublicKeyHex string `json:"public_key_hex"`
+	// Alg and PublicKey name the key that signed the STH and the seal: its scheme and its encoded
+	// public key (see NewVerifier), carried so a reader knows which key to obtain out of band.
+	// Verify requires them to equal the verifier's; it never trusts them as the key.
+	Alg       Alg    `json:"alg"`
+	PublicKey []byte `json:"public_key"`
 
 	// STH is the run's signed journal head: the commitment every action proof below is checked
 	// against. One STH is built for the whole package so all proofs share one root. Its Timestamp is
@@ -80,8 +82,8 @@ type EvidencePackage struct {
 	// this run's journal to STH. It is nil unless WithConsistencyFrom was set.
 	Consistency *EvidenceConsistency `json:"consistency,omitempty"`
 
-	// Signature is the seal: the log key's ed25519 signature over the package with Signature empty
-	// (see Seal). A package changed after sealing, including one with actions appended, fails to
+	// Signature is the seal: the log key's signature, under Alg, over the package with Signature
+	// empty (see Seal). A package changed after sealing, including one with actions appended, fails to
 	// verify until resealed.
 	Signature []byte `json:"signature"`
 }
@@ -105,7 +107,7 @@ type EvidenceAction struct {
 	Label string `json:"label"`
 	// Kind is the action category, one of "tool", "step", "grant", "call", "approval", or
 	// "approval-tally"; the proven record must be of that kind.
-	Kind string `json:"kind"`
+	Kind EvidenceKind `json:"kind"`
 	// Ref is the identifier the action was selected by: the tool-use id ("tool", "call"), the record
 	// name ("step", "approval", "approval-tally"), or the grant digest ("grant").
 	Ref string `json:"ref,omitempty"`
@@ -168,9 +170,10 @@ func WithAllToolCalls() EvidenceOption {
 }
 
 // WithRunCertificate includes the proof-carrying run certificate for the whole run, certified
-// against the given approved-policy allowlist. It fails assembly if the run used a policy outside
-// the allowlist (CertifyRun refuses). The verifier checks the certificate against its own
-// allowlist (WithApprovedPolicies), not this one.
+// against spec.ApprovedPolicies. It fails assembly if the run used a policy outside the allowlist
+// (CertifyRun refuses). Evidence signs the certificate with its own signer at its own timestamp;
+// spec.Signer and spec.TimestampNanos are ignored. The verifier checks the certificate against its
+// own allowlist (WithApprovedPolicies), not this one.
 func WithRunCertificate(spec RunCertSpec) EvidenceOption {
 	return func(o *evidenceOptions) {
 		o.runCertificate = true
@@ -193,17 +196,17 @@ func WithConsistencyFrom(earlier SignedTreeHead) EvidenceOption {
 }
 
 // Evidence assembles and seals the portable, offline-verifiable EvidencePackage for runID. It reads
-// the journal once, builds ONE signed tree head over it (signed with priv at timestamp), then, per
-// the options, gathers inclusion proofs for the material tool calls / steps and, optionally, the run
-// certificate, the anchored authority grants, and an append-only consistency proof, all bound to
-// that one STH and built for exactly the records it commits to. With no action option it proves
-// every completed tool call in the run. It finishes with Seal(priv).
+// the journal once, builds ONE signed tree head over it (signed with s at timestamp, Unix
+// nanoseconds), then, per the options, gathers inclusion proofs for the material tool calls /
+// steps and, optionally, the run certificate, the anchored authority grants, and an append-only
+// consistency proof, all bound to that one STH and built for exactly the records it commits to.
+// With no action option it proves every completed tool call in the run. It finishes with Seal(s).
 //
 // It mints no new proof types: every proof is an existing audit primitive, packaged into one
-// document a verifier re-checks offline with EvidencePackage.Verify against the out-of-band public
-// key. The public key is derived from priv and recorded as metadata (Verify requires it to match the
-// key it is given; it does not trust the embedded one).
-func Evidence(ctx context.Context, store agent.Durable, runID string, priv ed25519.PrivateKey, timestamp int64, opts ...EvidenceOption) (EvidencePackage, error) {
+// document a verifier re-checks offline with EvidencePackage.Verify against the out-of-band key.
+// The signer's scheme and public key are recorded as metadata (Verify requires them to match the
+// verifier it is given; it does not trust the embedded ones).
+func Evidence(ctx context.Context, store agent.Durable, runID string, s Signer, timestamp int64, opts ...EvidenceOption) (EvidencePackage, error) {
 	cfg := evidenceOptions{}
 	for _, opt := range opts {
 		opt(&cfg)
@@ -212,11 +215,9 @@ func Evidence(ctx context.Context, store agent.Durable, runID string, priv ed255
 	if !cfg.allToolCalls && len(cfg.toolCalls) == 0 && len(cfg.steps) == 0 {
 		cfg.allToolCalls = true
 	}
-
-	if len(priv) != ed25519.PrivateKeySize {
-		return EvidencePackage{}, fmt.Errorf("audit: evidence: ed25519 private key is %d bytes, want %d", len(priv), ed25519.PrivateKeySize)
+	if err := checkSigner(s); err != nil {
+		return EvidencePackage{}, fmt.Errorf("audit: evidence: %w", err)
 	}
-	pub := priv.Public().(ed25519.PublicKey)
 
 	// One read of the journal: the STH and every proof below are built for these records.
 	recs, err := store.History(ctx, runID)
@@ -227,14 +228,18 @@ func Evidence(ctx context.Context, store agent.Durable, runID string, priv ed255
 	if err != nil {
 		return EvidencePackage{}, err
 	}
-	sth := SignTreeHead(th, priv)
+	sth, err := SignTreeHead(th, s)
+	if err != nil {
+		return EvidencePackage{}, fmt.Errorf("audit: evidence: %w", err)
+	}
 
 	pkg := EvidencePackage{
-		Format:       EvidenceFormat,
-		RunID:        runID,
-		Label:        cfg.label,
-		PublicKeyHex: hex.EncodeToString(pub),
-		STH:          sth,
+		Format:    EvidenceFormat,
+		RunID:     runID,
+		Label:     cfg.label,
+		Alg:       s.Alg(),
+		PublicKey: s.PublicKey(),
+		STH:       sth,
 	}
 
 	// Action proofs: explicit tool calls and steps, plus (default) every completed tool call.
@@ -275,7 +280,7 @@ func Evidence(ctx context.Context, store agent.Durable, runID string, priv ed255
 
 	// Optional: authority grants, each anchored and proven included in the signed log.
 	if cfg.grants {
-		grants, err := gatherGrants(ctx, recs, store, runID, sth)
+		grants, err := gatherGrants(recs, runID, sth)
 		if err != nil {
 			return EvidencePackage{}, err
 		}
@@ -284,7 +289,9 @@ func Evidence(ctx context.Context, store agent.Durable, runID string, priv ed255
 
 	// Optional: the proof-carrying run certificate for the whole run.
 	if cfg.runCertificate {
-		cert, err := CertifyRun(ctx, store, runID, sth, cfg.runCertSpec, priv, timestamp)
+		spec := cfg.runCertSpec
+		spec.Signer, spec.TimestampNanos = s, timestamp
+		cert, err := CertifyRun(ctx, store, runID, sth, spec)
 		if err != nil {
 			return EvidencePackage{}, err
 		}
@@ -299,7 +306,7 @@ func Evidence(ctx context.Context, store agent.Durable, runID string, priv ed255
 		if err != nil {
 			return EvidencePackage{}, fmt.Errorf("audit: evidence: consistency: %w", err)
 		}
-		leaves, err := canonicalLeaves(recs)
+		leaves, err := journalLeafHashes(recs)
 		if err != nil {
 			return EvidencePackage{}, err
 		}
@@ -309,22 +316,29 @@ func Evidence(ctx context.Context, store agent.Durable, runID string, priv ed255
 		}
 	}
 
-	if err := pkg.Seal(priv); err != nil {
+	if err := pkg.Seal(s); err != nil {
 		return EvidencePackage{}, err
 	}
 	return pkg, nil
 }
 
-// Seal signs the package with priv, the log key that signed its STH, over the package's JSON
-// encoding with Signature empty under a dedicated domain tag. Evidence seals what it builds; a caller
-// that adds actions afterwards (for instance ApprovalEvidence's output) seals again. It refuses a
-// package with invalid UTF-8 in any string, which JSON would silently rewrite.
-func (e *EvidencePackage) Seal(priv ed25519.PrivateKey) error {
+// Seal signs the package with s, the log key that signed its STH, over the package's JSON encoding
+// with Signature empty under a dedicated domain tag. Evidence seals what it builds; a caller that
+// adds actions afterwards (for instance ApprovalEvidence's output) seals again. It refuses a signer
+// whose scheme and key are not the ones the package names (Alg, PublicKey), and a package with
+// invalid UTF-8 in any string, which JSON would silently rewrite.
+func (e *EvidencePackage) Seal(s Signer) error {
+	if err := checkSigner(s); err != nil {
+		return fmt.Errorf("audit: seal evidence: %w", err)
+	}
+	if s.Alg() != e.Alg || !bytes.Equal(s.PublicKey(), e.PublicKey) {
+		return fmt.Errorf("audit: seal evidence: the signer's %s key is not the key the package names: %w", s.Alg(), agent.ErrConfig)
+	}
 	msg, err := e.sealMessage()
 	if err != nil {
 		return err
 	}
-	sig, err := Ed25519Signer{Priv: priv}.Sign(msg)
+	sig, err := s.Sign(msg)
 	if err != nil {
 		return fmt.Errorf("audit: seal evidence: %w", err)
 	}
@@ -347,9 +361,9 @@ func (e EvidencePackage) sealMessage() ([]byte, error) {
 // gatherGrants enumerates the anchored grant leaves in the journal (audit:grant:<digest>), proves each
 // is included in the signed log, and decodes the signed grant so the report can name the chain. The
 // grants are returned in journal order, which is root-first for a well-formed attenuation chain.
-func gatherGrants(ctx context.Context, recs []agent.Record, store agent.Durable, runID string, sth SignedTreeHead) (*EvidenceGrants, error) {
+func gatherGrants(recs []agent.Record, runID string, sth SignedTreeHead) (*EvidenceGrants, error) {
 	out := &EvidenceGrants{}
-	for _, r := range recs[:sth.Size] {
+	for i, r := range recs[:sth.Size] {
 		if r.Kind != agent.StepValue || !strings.HasPrefix(r.Name, grantLeafPrefix) {
 			continue
 		}
@@ -358,7 +372,7 @@ func gatherGrants(ctx context.Context, recs []agent.Record, store agent.Durable,
 			return nil, fmt.Errorf("audit: evidence: decode grant leaf %q: %w", r.Name, err)
 		}
 		digest := strings.TrimPrefix(r.Name, grantLeafPrefix)
-		pb, err := ProveGrant(ctx, store, runID, digest, sth)
+		pb, err := proveIn(runID, recs, i, sth)
 		if err != nil {
 			return nil, err
 		}
@@ -401,11 +415,11 @@ type EvidenceReport struct {
 // EvidenceItem is one line of an EvidenceReport: what was checked, whether it verified, and a short
 // human note (the reason on failure, or a one-line description on success).
 type EvidenceItem struct {
-	Kind     string `json:"kind"`  // "tool", "step", "grant", "call", "approval", "approval-tally", "run-certificate", or "consistency"
-	Label    string `json:"label"` // the human label for the item
-	Ref      string `json:"ref,omitempty"`
-	Verified bool   `json:"verified"` // whether this item verified under the key
-	Note     string `json:"note"`     // plain-English detail, on success or failure
+	Kind     EvidenceKind `json:"kind"`  // the item's kind: an action kind, KindRunCertificate, or KindConsistency
+	Label    string       `json:"label"` // the human label for the item
+	Ref      string       `json:"ref,omitempty"`
+	Verified bool         `json:"verified"` // whether this item verified under the key
+	Note     string       `json:"note"`     // plain-English detail, on success or failure
 }
 
 // EvidenceVerifyOption supplies what the auditor, not the package, decides.
@@ -429,42 +443,54 @@ func WithApprovedPolicies(digests ...string) EvidenceVerifyOption {
 	}
 }
 
-// Verify re-checks every proof in the package against pub, an ed25519 public key obtained OUT OF BAND
-// (the anchor / transparency log), entirely offline. It does not trust the package's embedded key. It
-// verifies: (0) the format tag, the seal, that PublicKeyHex is pub, and that the STH is an authentic
-// journal head of RunID; (1) each action ProofBundle, confirming the action is a leaf under that
-// signed root and that its Kind, Label, and Ref are what the proven record says; (2) each anchored
-// grant bundle the same way, and that Chain is exactly the grants they prove; (3) the run
-// certificate, if present, is for this run and tree and passes VerifyRun against the allowlist given
-// with WithApprovedPolicies; and (4) the consistency proof, if present, from its authentic earlier
-// head of this run to the STH. A package with none of (1) to (4) proves nothing and does not verify.
-// Every signed head the package carries is held to the timestamp rule (see CheckTimestamp): against
-// time.Now and DefaultClockSkew unless WithVerifyTime and WithClockSkew say otherwise.
+// Verify re-checks every proof in the package against v, a verifier for the log key obtained OUT
+// OF BAND (the anchor / transparency log), entirely offline. It does not trust the package's
+// embedded key: it requires it to be v's. It verifies: (0) the format tag, that Alg and PublicKey
+// are v's scheme and key, the seal, and that the STH is an authentic journal head of RunID; (1) each
+// action ProofBundle, confirming the action is a leaf under that signed root and that its Kind,
+// Label, and Ref are what the proven record says; (2) each anchored grant bundle the same way, and
+// that Chain is exactly the grants they prove; (3) the run certificate, if present, is for this run
+// and tree and passes VerifyRun against the allowlist given with WithApprovedPolicies; and (4) the
+// consistency proof, if present, from its authentic earlier head of this run to the STH. A package
+// with none of (1) to (4) proves nothing and does not verify. Every signed head the package carries
+// is held to the timestamp rule (see CheckTimestamp): against time.Now and DefaultClockSkew unless
+// WithVerifyTime and WithClockSkew say otherwise.
 //
-// It returns a structured EvidenceReport with an overall bool and a per-item verdict. A false OK with
-// notes is a well-formed-but-invalid package; an error means a bundle could not be canonicalized (a
-// malformed artifact). Grant ISSUER signatures and the attenuation chain are NOT checked here (they
-// need the issuers' keys, which are not in the package); a caller verifies those with
-// VerifyDelegationChain and its own PKI.
-func (e EvidencePackage) Verify(pub ed25519.PublicKey, opts ...EvidenceVerifyOption) (EvidenceReport, error) {
+// It returns a structured EvidenceReport with an overall verdict and a per-item verdict. The error is
+// nil when the package verifies (OK), and wraps ErrNotVerified when it does not (the report says
+// why). Any other error means the package could not be checked: it is not of the format this version
+// reads (ErrFormat), or a proof it carries cannot be read (ErrFormat, ErrMalformed). Grant ISSUER
+// signatures and the attenuation chain are NOT checked here (they need the issuers' keys, which are
+// not in the package); a caller verifies those with VerifyDelegationChain and its own PKI.
+func (e EvidencePackage) Verify(v Verifier, opts ...EvidenceVerifyOption) (EvidenceReport, error) {
 	var vo evidenceVerifyOptions
 	for _, o := range opts {
 		o(&vo)
 	}
 	rep := EvidenceReport{RunID: e.RunID, Label: e.Label}
+	if err := checkVerifier(v); err != nil {
+		return rep, err
+	}
+	// The package and every artifact it carries, at any depth, are of the format this version
+	// reads, whether or not a check below reaches them (a run certificate for another run is never
+	// passed to VerifyRun, so the heads it carries would otherwise go unread).
+	if err := checkFormats(e); err != nil {
+		return rep, fmt.Errorf("audit: evidence package: %w", err)
+	}
 	problem := func(format string, args ...any) { rep.Problems = append(rep.Problems, fmt.Sprintf(format, args...)) }
 
-	if e.Format != EvidenceFormat {
-		problem("format %q is not %q", e.Format, EvidenceFormat)
+	if e.Alg != v.Alg() || !bytes.Equal(e.PublicKey, v.PublicKey()) {
+		problem("the package names the %s key %x, not the verifying %s key %x", e.Alg, e.PublicKey, v.Alg(), v.PublicKey())
 	}
-	if msg, err := e.sealMessage(); err != nil || !(Ed25519Verifier{Pub: pub}).Verify(msg, e.Signature) {
+	if msg, err := e.sealMessage(); err != nil || !v.Verify(msg, e.Signature) {
 		problem("the package seal does not verify under this key (the package was changed after it was sealed)")
 	}
-	if e.PublicKeyHex != hex.EncodeToString(pub) {
-		problem("the package names public key %s, not the verifying key", e.PublicKeyHex)
-	}
-	rep.STHVerified = e.STH.Verify(pub) && e.STH.Kind == TreeJournal && e.STH.RunID == e.RunID
-	if !rep.STHVerified {
+	switch err := e.STH.Verify(v); {
+	case err != nil && !errors.Is(err, ErrNotVerified):
+		return rep, fmt.Errorf("audit: evidence STH: %w", err)
+	case err == nil && e.STH.Kind == TreeJournal && e.STH.RunID == e.RunID:
+		rep.STHVerified = true
+	default:
 		problem("the signed tree head is not an authentic journal head of run %q under this key", e.RunID)
 	}
 	now, skew := vo.clock()
@@ -475,12 +501,12 @@ func (e EvidencePackage) Verify(pub ed25519.PublicKey, opts ...EvidenceVerifyOpt
 
 	verifyBundle := func(a EvidenceAction) (EvidenceItem, error) {
 		item := EvidenceItem{Kind: a.Kind, Label: a.Label, Ref: a.Ref}
-		ok, err := a.Bundle.Verify(pub)
-		if err != nil {
+		err := a.Bundle.Verify(v)
+		if err != nil && !errors.Is(err, ErrNotVerified) {
 			return item, err
 		}
 		switch {
-		case !ok:
+		case err != nil:
 			item.Note = "proof did not verify under this key"
 		case !a.Bundle.STH.SameTree(e.STH.TreeHead):
 			// A bundle that verifies against a DIFFERENT signed tree must not count as evidence
@@ -489,7 +515,11 @@ func (e EvidencePackage) Verify(pub ed25519.PublicKey, opts ...EvidenceVerifyOpt
 		case CheckTimestamp(a.Bundle.STH.TreeHead, now, skew) != nil:
 			item.Note = CheckTimestamp(a.Bundle.STH.TreeHead, now, skew).Error()
 		default:
-			if why := actionMismatch(a); why != "" {
+			why, err := actionMismatch(a)
+			if err != nil {
+				return item, err
+			}
+			if why != "" {
 				item.Note = why
 			} else {
 				item.Verified = true
@@ -521,8 +551,14 @@ func (e EvidencePackage) Verify(pub ed25519.PublicKey, opts ...EvidenceVerifyOpt
 			if item.Verified && item.Kind != KindGrant {
 				item.Verified, item.Note = false, fmt.Sprintf("an anchoring proof of kind %q, not %q", item.Kind, KindGrant)
 			}
-			if item.Verified && (i >= len(e.Grants.Chain) || !sameSignedGrant(e.Grants.Chain[i], g.Bundle.Record)) {
-				item.Verified, item.Note = false, fmt.Sprintf("chain grant %d is not the grant this leaf anchors", i)
+			if item.Verified {
+				rec, err := g.Bundle.Record()
+				if err != nil {
+					return EvidenceReport{}, err
+				}
+				if i >= len(e.Grants.Chain) || !sameSignedGrant(e.Grants.Chain[i], rec) {
+					item.Verified, item.Note = false, fmt.Sprintf("chain grant %d is not the grant this leaf anchors", i)
+				}
 			}
 			allOK = allOK && item.Verified
 			rep.Items = append(rep.Items, item)
@@ -530,7 +566,7 @@ func (e EvidencePackage) Verify(pub ed25519.PublicKey, opts ...EvidenceVerifyOpt
 	}
 
 	if c := e.RunCertificate; c != nil {
-		item := EvidenceItem{Kind: "run-certificate", Label: "run certificate", Ref: c.RunID}
+		item := EvidenceItem{Kind: KindRunCertificate, Label: "run certificate", Ref: c.RunID}
 		switch {
 		case c.RunID != e.RunID || !c.STH.SameTree(e.STH.TreeHead):
 			item.Note = fmt.Sprintf("the run certificate is for run %q at a different tree, not this package's", c.RunID)
@@ -539,12 +575,12 @@ func (e EvidencePackage) Verify(pub ed25519.PublicKey, opts ...EvidenceVerifyOpt
 		case certTimeProblem(*c, now, skew) != nil:
 			item.Note = certTimeProblem(*c, now, skew).Error()
 		default:
-			res, err := VerifyRun(*c, vo.approved, pub)
-			if err != nil {
+			res, err := VerifyRun(*c, vo.approved, v)
+			if err != nil && !errors.Is(err, ErrNotVerified) {
 				return EvidenceReport{}, err
 			}
-			item.Verified = res.OK
-			if res.OK {
+			item.Verified = err == nil
+			if item.Verified {
 				item.Note = fmt.Sprintf("%d policies used, all approved and convergence-certified in the signed log", len(c.UsedPolicies))
 			} else {
 				item.Note = "run certificate did not verify: " + strings.Join(res.Reasons, "; ")
@@ -555,9 +591,13 @@ func (e EvidencePackage) Verify(pub ed25519.PublicKey, opts ...EvidenceVerifyOpt
 	}
 
 	if c := e.Consistency; c != nil {
-		item := EvidenceItem{Kind: "consistency", Label: fmt.Sprintf("first %d records are an append-only prefix", c.Proof.First), Ref: fmt.Sprintf("%d..%d", c.Proof.First, c.Proof.Size)}
+		item := EvidenceItem{Kind: KindConsistency, Label: fmt.Sprintf("first %d records are an append-only prefix", c.Proof.First), Ref: fmt.Sprintf("%d..%d", c.Proof.First, c.Proof.Size)}
+		fromErr := c.From.Verify(v)
+		if fromErr != nil && !errors.Is(fromErr, ErrNotVerified) {
+			return EvidenceReport{}, fmt.Errorf("audit: evidence consistency: %w", fromErr)
+		}
 		switch {
-		case !c.From.Verify(pub) || c.From.Kind != TreeJournal || c.From.RunID != e.RunID:
+		case fromErr != nil || c.From.Kind != TreeJournal || c.From.RunID != e.RunID:
 			item.Note = "the earlier tree head is not an authentic journal head of this run under this key"
 		case CheckTimestamp(c.From.TreeHead, now, skew) != nil:
 			item.Note = CheckTimestamp(c.From.TreeHead, now, skew).Error()
@@ -565,7 +605,7 @@ func (e EvidencePackage) Verify(pub ed25519.PublicKey, opts ...EvidenceVerifyOpt
 			item.Note = CheckTimestampOrder(c.From.TreeHead, e.STH.TreeHead).Error()
 		case c.Proof.First != c.From.Size || c.Proof.Size != e.STH.Size:
 			item.Note = fmt.Sprintf("the proof is for sizes %d..%d, not the signed sizes %d..%d", c.Proof.First, c.Proof.Size, c.From.Size, e.STH.Size)
-		case !VerifyConsistency(c.From.Root, e.STH.Root, c.Proof):
+		case VerifyConsistency(c.From.Root, e.STH.Root, c.Proof) != nil:
 			item.Note = "the consistency proof does not verify between the two signed roots"
 		default:
 			item.Verified = true
@@ -582,6 +622,15 @@ func (e EvidencePackage) Verify(pub ed25519.PublicKey, opts ...EvidenceVerifyOpt
 	}
 
 	rep.OK = allOK && len(rep.Problems) == 0
+	if !rep.OK {
+		failed := 0
+		for _, it := range rep.Items {
+			if !it.Verified {
+				failed++
+			}
+		}
+		return rep, notVerified("audit: evidence for run %q: %d problems, %d of %d items not verified", e.RunID, len(rep.Problems), failed, len(rep.Items))
+	}
 	return rep, nil
 }
 
@@ -602,9 +651,13 @@ func certTimeProblem(c RunCertificate, now time.Time, skew time.Duration) error 
 }
 
 // actionMismatch returns why a's Kind, Label, and Ref are not what its proven record says, or ""
-// if they are. It is the rule that keeps the report's description of an item tied to the proof.
-func actionMismatch(a EvidenceAction) string {
-	r := a.Bundle.Record
+// if they are. It is the rule that keeps the report's description of an item tied to the proof. It
+// errors (ErrMalformed) only if the proven record bytes do not decode.
+func actionMismatch(a EvidenceAction) (string, error) {
+	r, err := a.Bundle.Record()
+	if err != nil {
+		return "", err
+	}
 	want := func(kindOK bool, label, ref string) string {
 		if !kindOK {
 			return fmt.Sprintf("the proven record (kind %q, name %q) is not a %q action", r.Kind, r.Name, a.Kind)
@@ -616,23 +669,23 @@ func actionMismatch(a EvidenceAction) string {
 	}
 	switch a.Kind {
 	case KindTool:
-		return want(r.Kind == agent.StepToolResult, r.ToolUseID, r.ToolUseID)
+		return want(r.Kind == agent.StepToolResult, r.ToolUseID, r.ToolUseID), nil
 	case KindStep:
-		return want(r.Kind == agent.StepValue, r.Name, r.Name)
+		return want(r.Kind == agent.StepValue, r.Name, r.Name), nil
 	case KindCall:
 		_, call, ok := agent.FindToolCall([]agent.Record{r}, a.Ref)
-		return want(ok, call.Name, a.Ref)
+		return want(ok, call.Name, a.Ref), nil
 	case KindApproval:
-		return want(r.Kind == agent.StepApproval && r.Approver != "", r.Approver, r.Name)
+		return want(r.Kind == agent.StepApproval && r.Approver != "", r.Approver, r.Name), nil
 	case KindApprovalTally:
-		return want(r.Kind == agent.StepValue && strings.HasPrefix(r.Name, agent.ApprovalTallyStep("")), "approval tally", r.Name)
+		return want(r.Kind == agent.StepValue && strings.HasPrefix(r.Name, agent.ApprovalTallyStep("")), "approval tally", r.Name), nil
 	case KindGrant:
 		var sg SignedGrant
 		isGrant := r.Kind == agent.StepValue && strings.HasPrefix(r.Name, grantLeafPrefix) && json.Unmarshal(r.Result, &sg) == nil &&
 			r.Name == grantLeafName(sg.Grant.Digest())
-		return want(isGrant, grantLabel(sg.Grant), strings.TrimPrefix(r.Name, grantLeafPrefix))
+		return want(isGrant, grantLabel(sg.Grant), strings.TrimPrefix(r.Name, grantLeafPrefix)), nil
 	default:
-		return fmt.Sprintf("unknown action kind %q", a.Kind)
+		return fmt.Sprintf("unknown action kind %q", a.Kind), nil
 	}
 }
 
@@ -651,7 +704,7 @@ func sameSignedGrant(sg SignedGrant, rec agent.Record) bool {
 }
 
 // itemSuccessNote phrases the plain-English success line for a verified item by kind.
-func itemSuccessNote(kind, label string) string {
+func itemSuccessNote(kind EvidenceKind, label string) string {
 	switch kind {
 	case KindTool:
 		return "tool call included in the signed log"

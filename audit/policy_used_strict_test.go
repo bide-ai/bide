@@ -26,8 +26,8 @@ func TestPoliciesUsed_ReadsTheDigestAsTheCLIDoes(t *testing.T) {
 		`{"policy_digest":""}`:                                {},
 	} {
 		rec := agent.Record{Kind: agent.StepToolResult, ToolUseID: "t", Result: json.RawMessage(in)}
-		if got := PoliciesUsed([]agent.Record{rec}); !reflect.DeepEqual(got, want) {
-			t.Errorf("PoliciesUsed(%s) = %q, want %q", in, got, want)
+		if got, err := PoliciesUsed([]agent.Record{rec}); err != nil || !reflect.DeepEqual(got, want) {
+			t.Errorf("PoliciesUsed(%s) = %q, %v, want %q", in, got, err, want)
 		}
 	}
 }

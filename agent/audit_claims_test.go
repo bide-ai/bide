@@ -39,20 +39,24 @@ func TestAuditReadsClaimBookkeeping(t *testing.T) {
 		t.Fatalf("fired %d, want 2", fired)
 	}
 
-	pkg, err := audit.Evidence(ctx, m, "r", priv, 1, audit.WithAllToolCalls())
+	pkg, err := audit.Evidence(ctx, m, "r", audit.Ed25519Signer{Priv: priv}, 1, audit.WithAllToolCalls())
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, a := range pkg.Actions {
-		t.Logf("action: %s %s (record %q kind %s)", a.Kind, a.Label, a.Bundle.Record.Name, a.Bundle.Record.Kind)
-		if k := a.Bundle.Record.Kind; k == agent.StepNotStarted {
-			t.Fatalf("bookkeeping record %q offered as evidence of an action", a.Bundle.Record.Name)
+		rec, err := a.Bundle.Record()
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Logf("action: %s %s (record %q kind %s)", a.Kind, a.Label, rec.Name, rec.Kind)
+		if rec.Kind == agent.StepNotStarted {
+			t.Fatalf("bookkeeping record %q offered as evidence of an action", rec.Name)
 		}
 	}
 	if len(pkg.Actions) != 2 {
 		t.Fatalf("%d actions, want the two completed calls", len(pkg.Actions))
 	}
-	rep, err := pkg.Verify(pub)
+	rep, err := pkg.Verify(audit.Ed25519Verifier{Pub: pub})
 	if err != nil || !rep.OK {
 		t.Fatalf("verify: %v %+v", err, rep)
 	}
@@ -67,7 +71,7 @@ func TestAuditReadsClaimBookkeeping(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if ok, err := audit.VerifyInclusion(root, r, p); !ok || err != nil {
+		if err := audit.VerifyInclusion(root, r.Raw(), p); err != nil {
 			t.Fatalf("leaf %d (%s) does not verify: %v", i, r.Name, err)
 		}
 	}

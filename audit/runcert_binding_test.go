@@ -13,7 +13,7 @@ import (
 
 func mustFailRun(t *testing.T, what string, cert audit.RunCertificate, approved []string, pub ed25519.PublicKey) {
 	t.Helper()
-	res, err := audit.VerifyRun(cert, approved, pub)
+	res, err := audit.VerifyRun(cert, approved, edV(pub))
 	if err == nil && res.OK {
 		t.Fatalf("%s: the certificate verifies", what)
 	}
@@ -50,17 +50,17 @@ func TestVerifyRun_UsedPolicyHeadIsBoundToRunAndJournal(t *testing.T) {
 	// Runs X and Y have byte-identical journals, so identical roots; only the run ID tells them apart.
 	recsX, thX := plainRun(t, "X", "a")
 	recsY, thY := plainRun(t, "Y", "a")
-	absX, err := audit.SignAbsenceRoot(recsX, audit.PolicyUsedKeys, thX, priv, 2)
+	absX, err := audit.SignAbsenceRoot(recsX, audit.PolicyUsedKeys, thX, edS(priv), 2)
 	if err != nil {
 		t.Fatal(err)
 	}
-	absY, err := audit.SignAbsenceRoot(recsY, audit.PolicyUsedKeys, thY, priv, 2)
+	absY, err := audit.SignAbsenceRoot(recsY, audit.PolicyUsedKeys, thY, edS(priv), 2)
 	if err != nil {
 		t.Fatal(err)
 	}
 	props := []string{"only-approved-policies", "policies-convergence-certified"}
-	genuine := audit.RunCertificate{Format: audit.RunCertificateFormat, RunID: "X", Properties: props, UsedPolicies: []string{}, UsedPolicyAbsence: absX, STH: audit.SignTreeHead(thX, priv)}
-	if res, _ := audit.VerifyRun(genuine, nil, pub); !res.OK {
+	genuine := audit.RunCertificate{Format: audit.RunCertificateFormat, RunID: "X", Properties: props, UsedPolicies: []string{}, UsedPolicyAbsence: absX, STH: signTH(t, thX, priv)}
+	if res, _ := audit.VerifyRun(genuine, nil, edV(pub)); !res.OK {
 		t.Fatalf("the genuine certificate of a run that used no policy does not verify: %+v", res)
 	}
 
@@ -69,15 +69,15 @@ func TestVerifyRun_UsedPolicyHeadIsBoundToRunAndJournal(t *testing.T) {
 	mustFailRun(t, "run Y's used-policy head for run X", c, nil, pub)
 
 	c = genuine
-	c.STH = audit.SignTreeHead(thY, priv)
+	c.STH = signTH(t, thY, priv)
 	mustFailRun(t, "run Y's journal head for run X", c, nil, pub)
 	// The used-policy set is bound to the journal head, so it is not established either.
-	if res, _ := audit.VerifyRun(c, nil, pub); res.OnlyApprovedPolicies {
+	if res, _ := audit.VerifyRun(c, nil, edV(pub)); res.OnlyApprovedPolicies {
 		t.Fatal("only-approved-policies held against another run's journal head")
 	}
 
 	// The tool-use set of a run with no tool calls is empty too, but it is not the used-policy set.
-	toolX, err := audit.SignAbsenceRoot(recsX, audit.ToolUseKeys, thX, priv, 2)
+	toolX, err := audit.SignAbsenceRoot(recsX, audit.ToolUseKeys, thX, edS(priv), 2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,7 +87,7 @@ func TestVerifyRun_UsedPolicyHeadIsBoundToRunAndJournal(t *testing.T) {
 
 	// A different history of run X of the same length: the used-policy head names its journal root.
 	recsX2, thX2 := plainRun(t, "X", "b")
-	absX2, err := audit.SignAbsenceRoot(recsX2, audit.PolicyUsedKeys, thX2, priv, 2)
+	absX2, err := audit.SignAbsenceRoot(recsX2, audit.PolicyUsedKeys, thX2, edS(priv), 2)
 	if err != nil {
 		t.Fatal(err)
 	}

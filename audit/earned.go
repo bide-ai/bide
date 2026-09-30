@@ -2,7 +2,6 @@ package audit
 
 import (
 	"context"
-	"crypto/ed25519"
 	"fmt"
 	"maps"
 	"strconv"
@@ -17,7 +16,7 @@ import (
 // root scope constraint kept, "limit" = the current rung), so the earned limit provably never exceeds
 // the root ceiling: every earned grant passes VerifyDelegationChain against the root with
 // ScopeRules{"limit": NumericAtMost}, and even a buggy or compromised controller cannot widen past
-// what the root principal authorized. Every earned grant carries the root's NotAfter, so none
+// what the root principal authorized. Every earned grant carries the root's NotAfterUnix, so none
 // outlives the authority it was carved from.
 //
 // Revocation. A demotion must take the old, higher grant out of use at once, not when it expires.
@@ -134,12 +133,12 @@ func (e *EarnedAuthority) reissue(ctx context.Context) error {
 	scope := maps.Clone(e.root.Grant.Scope)
 	scope[EarnedScopeLimit] = strconv.Itoa(e.ladder[e.tier])
 	child := Grant{
-		ID:        fmt.Sprintf("earned/%s/%d", e.subject, index),
-		Issuer:    e.root.Grant.Subject,
-		Subject:   e.subject,
-		Scope:     scope,
-		NotAfter:  e.root.Grant.NotAfter,
-		ParentRef: e.root.Grant.Digest(),
+		ID:           fmt.Sprintf("earned/%s/%d", e.subject, index),
+		Issuer:       e.root.Grant.Subject,
+		Subject:      e.subject,
+		Scope:        scope,
+		NotAfterUnix: e.root.Grant.NotAfterUnix,
+		ParentRef:    e.root.Grant.Digest(),
 	}
 	sg, err := SignGrant(child, e.signer)
 	if err != nil {
@@ -196,7 +195,7 @@ func ProveCurrentGrant(ctx context.Context, ledger agent.Durable, ledgerRunID st
 	if err != nil {
 		return CurrentGrantProof{}, err
 	}
-	leaves, err := canonicalLeaves(recs)
+	leaves, err := journalLeafHashes(recs)
 	if err != nil {
 		return CurrentGrantProof{}, err
 	}
@@ -207,15 +206,15 @@ func ProveCurrentGrant(ctx context.Context, ledger agent.Durable, ledgerRunID st
 	}, nil
 }
 
-// VerifyCurrentGrant checks that sg is the current earned grant of the ledger run ledgerRunID,
-// under logPub (the log key, out of band). It requires that:
+// VerifyCurrentGrant returns nil if sg is the current earned grant of the ledger run
+// ledgerRunID, under logV (the log key, out of band). It requires that:
 //
 //   - the proof is about ledgerRunID. A grant recorded in any other run signed by the same log key
 //     (an agent run that records the grant it acts under, say) proves nothing about the ledger;
 //   - the proof verifies, its record is the anchored leaf of exactly sg, and that leaf is the LAST
 //     leaf of the signed ledger head (index Size-1). A grant superseded by a later promotion or
 //     demotion fails, because a later ledger head's last leaf is the newer grant;
-//   - when lastSeen is not nil, lastSeen is an authentic head of ledgerRunID under logPub and the
+//   - when lastSeen is not nil, lastSeen is an authentic head of ledgerRunID under logV and the
 //     presented head is an append-only extension of it (checked with the proof's consistency
 //     proof), so a head older than one the verifier already saw cannot be presented as current.
 //
@@ -228,33 +227,40 @@ func ProveCurrentGrant(ctx context.Context, ledger agent.Durable, ledgerRunID st
 // beyond what the verifier has seen comes from the anchor log, not from the proof.
 //
 // It does not check sg's chain to the root or its expiry; do that with
-// VerifyDelegationChain(..., EarnedRules) and Grant.Expired.
-func VerifyCurrentGrant(sg SignedGrant, ledgerRunID string, p CurrentGrantProof, lastSeen *SignedTreeHead, logPub ed25519.PublicKey) (bool, error) {
+// VerifyDelegationChain(..., EarnedRules) and Grant.Expired. A proof that does not hold is an
+// error wrapping ErrNotVerified; one of another format, ErrFormat.
+func VerifyCurrentGrant(sg SignedGrant, ledgerRunID string, p CurrentGrantProof, lastSeen *SignedTreeHead, logV Verifier) error {
 	if err := formatOf(p, p.Format); err != nil {
-		return false, err
+		return err
 	}
 	if p.Leaf.RunID != ledgerRunID {
-		return false, fmt.Errorf("audit: the proof is over run %q, not ledger %q", p.Leaf.RunID, ledgerRunID)
+		return notVerified("audit: the proof is over run %q, not ledger %q", p.Leaf.RunID, ledgerRunID)
 	}
-	ok, err := p.Leaf.Verify(logPub)
-	if err != nil || !ok {
-		return false, err
+	if err := p.Leaf.Verify(logV); err != nil {
+		return err
 	}
-	if p.Leaf.Record.Kind != agent.StepValue || !sameSignedGrant(sg, p.Leaf.Record) {
-		return false, fmt.Errorf("audit: the ledger's last leaf is not grant %q", sg.Grant.ID)
+	rec, err := p.Leaf.Record()
+	if err != nil {
+		return err
+	}
+	if rec.Kind != agent.StepValue || !sameSignedGrant(sg, rec) {
+		return notVerified("audit: the ledger's last leaf is not grant %q", sg.Grant.ID)
 	}
 	if p.Leaf.Inclusion.Index != p.Leaf.STH.Size-1 {
-		return false, fmt.Errorf("audit: grant %q is leaf %d of a ledger of %d: superseded", sg.Grant.ID, p.Leaf.Inclusion.Index, p.Leaf.STH.Size)
+		return notVerified("audit: grant %q is leaf %d of a ledger of %d: superseded", sg.Grant.ID, p.Leaf.Inclusion.Index, p.Leaf.STH.Size)
 	}
 	if lastSeen == nil {
-		return true, nil
+		return nil
 	}
-	if !lastSeen.Verify(logPub) || lastSeen.Kind != TreeJournal || lastSeen.RunID != ledgerRunID {
-		return false, fmt.Errorf("audit: the last-seen head is not an authentic head of ledger %q", ledgerRunID)
+	if err := lastSeen.Verify(logV); err != nil {
+		return fmt.Errorf("audit: the last-seen head of ledger %q: %w", ledgerRunID, err)
+	}
+	if lastSeen.Kind != TreeJournal || lastSeen.RunID != ledgerRunID {
+		return notVerified("audit: the last-seen head is not a head of ledger %q", ledgerRunID)
 	}
 	// First must be the last-seen size: a proof from size 0 is empty and passes for any head.
-	if p.Consistency.First != lastSeen.Size || !VerifyConsistency(lastSeen.Root, p.Leaf.STH.Root, p.Consistency) {
-		return false, fmt.Errorf("audit: the ledger head of size %d does not extend the last-seen head of size %d", p.Leaf.STH.Size, lastSeen.Size)
+	if p.Consistency.First != lastSeen.Size || VerifyConsistency(lastSeen.Root, p.Leaf.STH.Root, p.Consistency) != nil {
+		return notVerified("audit: the ledger head of size %d does not extend the last-seen head of size %d", p.Leaf.STH.Size, lastSeen.Size)
 	}
-	return true, nil
+	return nil
 }

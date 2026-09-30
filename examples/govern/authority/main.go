@@ -97,18 +97,24 @@ func main() {
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
 	runID := "run/desk-EQ-US"
 	th, _ := audit.NewTreeHead(ctx, store, runID, 1)
-	sth := audit.SignTreeHead(th, priv)
+	sth, err := audit.SignTreeHead(th, audit.Ed25519Signer{Priv: priv})
+	if err != nil {
+		panic(err)
+	}
 	pb, err := audit.ProveToolCall(ctx, store, runID, "buy/last", sth)
 	if err != nil {
 		panic(err)
 	}
-	ok, err := pb.Verify(pub)
+	if err := pb.Verify(audit.Ed25519Verifier{Pub: pub}); err != nil {
+		panic(err)
+	}
+	fmt.Printf("offline proof for desk-EQ-US action verified: %v\n", true)
+	fmt.Println("the proof commits to the identity, the authority grant, the policy, and the state:")
+	rec, err := pb.Record()
 	if err != nil {
 		panic(err)
 	}
-	fmt.Printf("offline proof for desk-EQ-US action verified: %v\n", ok)
-	fmt.Println("the proof commits to the identity, the authority grant, the policy, and the state:")
-	fmt.Printf("  %s\n", string(pb.Record.Result))
+	fmt.Printf("  %s\n", string(rec.Result))
 
 	fmt.Println("\nOne proven policy governed two desks to their own delegated limits, and every")
 	fmt.Println("action is provable to who acted, for whom, under what authority. Authority is state.")

@@ -145,7 +145,9 @@ func (u Usage) TotalTokens() int { return u.TotalInputTokens() + u.OutputTokens 
 // binary) onto these.
 type Event interface{ event() }
 
-type TextDelta struct{ Text string }
+type TextDelta struct {
+	Text string `json:"text"`
+}
 
 func (TextDelta) event() {}
 
@@ -153,9 +155,9 @@ func (TextDelta) event() {}
 // belongs to, so the next ReasoningDelta starts a new Reasoning part. Redacted carries a whole
 // encrypted block (Anthropic redacted_thinking), which becomes a Reasoning part of its own.
 type ReasoningDelta struct {
-	Text      string
-	Signature string // opaque provider token to echo back on later turns (Anthropic thinking)
-	Redacted  string // encrypted reasoning to echo back unchanged (Anthropic redacted_thinking)
+	Text      string `json:"text"`
+	Signature string `json:"signature"` // opaque provider token to echo back on later turns (Anthropic thinking)
+	Redacted  string `json:"redacted"`  // encrypted reasoning to echo back unchanged (Anthropic redacted_thinking)
 }
 
 func (ReasoningDelta) event() {}
@@ -164,11 +166,11 @@ func (ReasoningDelta) event() {}
 // are concatenated and gated by json.Valid before use (the UTF-8/partial-JSON safety
 // the research flagged as universally missing).
 type ToolCallDelta struct {
-	Index        int
-	ID           string
-	Name         string
-	ArgsFragment json.RawMessage
-	Signature    string // opaque provider token for this call, kept on ToolUse.Signature (Gemini thoughtSignature)
+	Index        int             `json:"index"`
+	ID           string          `json:"id"`
+	Name         string          `json:"name"`
+	ArgsFragment json.RawMessage `json:"args_fragment"`
+	Signature    string          `json:"signature"` // opaque provider token for this call, kept on ToolUse.Signature (Gemini thoughtSignature)
 }
 
 func (ToolCallDelta) event() {}
@@ -194,10 +196,10 @@ func (ToolCallDelta) event() {}
 // threw away (failed attempts a middleware retried, losing hedge targets); a live adapter leaves
 // it zero, and a Model that replays a recorded turn reports the discarded spend it recorded there.
 type Finish struct {
-	Reason    FinishReason
-	Raw       string // the provider's own finish reason, as it sent it ("end_turn", "STOP"); empty if it sent none
-	Usage     Usage
-	Discarded Usage
+	Reason    FinishReason `json:"reason"`
+	Raw       string       `json:"raw"` // the provider's own finish reason, as it sent it ("end_turn", "STOP"); empty if it sent none
+	Usage     Usage        `json:"usage"`
+	Discarded Usage        `json:"discarded"`
 }
 
 // FinishReason is why a model turn ended, in a neutral vocabulary every adapter maps its

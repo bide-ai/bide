@@ -97,9 +97,8 @@ func TestAttenuatingSubAgent_Default(t *testing.T) {
 	}
 
 	// The chain verifies: each hop signed, linked, and strictly narrowing.
-	ok, err := VerifyDelegationChain([]SignedGrant{rootSG, child}, opVerifier, ScopeRules{"limit": NumericAtMost})
-	if err != nil || !ok {
-		t.Fatalf("delegation chain did not verify: ok=%v err=%v", ok, err)
+	if err := VerifyDelegationChain([]SignedGrant{rootSG, child}, opVerifier, ScopeRules{"limit": NumericAtMost}); err != nil {
+		t.Fatalf("delegation chain did not verify: %v", err)
 	}
 }
 

@@ -31,19 +31,20 @@ import (
 // exactly the fields of the part its "type" names.
 //
 // An artifact with a format (ProofBundle, AbsenceBundle, RunCertificate, CurrentGrantProof,
-// EventInclusion, EvidencePackage) is checked for its "format" first: one that has none, or not the
-// one this version reads, is refused with an error wrapping ErrFormat, before any rule above can
-// report a field its own format names differently.
+// EventInclusion, EvidencePackage, SignedTreeHead, AnchorEntry, JournalExport) is checked for its "format" first,
+// at the top level and wherever one artifact carries another: one that has none, or not the one this
+// version reads, is refused with an error wrapping ErrFormat, before any rule above can report a
+// field its own format names differently. Every other error wraps ErrMalformed.
 //
 // It uses only the standard encoding/json: the input is checked token by token against the target
 // type before it is decoded, so the rules above hold without depending on encoding/json/v2.
 func UnmarshalStrict(data []byte, v any) error {
 	if !utf8.Valid(data) {
-		return errors.New("audit: strict json: invalid UTF-8")
+		return fmt.Errorf("audit: strict json: invalid UTF-8: %w", ErrMalformed)
 	}
 	rv := reflect.ValueOf(v)
 	if rv.Kind() != reflect.Pointer || rv.IsNil() {
-		return fmt.Errorf("audit: strict json: decode target must be a non-nil pointer, got %T", v)
+		return fmt.Errorf("audit: strict json: decode target must be a non-nil pointer, got %T: %w", v, agent.ErrConfig)
 	}
 	if f, ok := reflect.Zero(rv.Type().Elem()).Interface().(formatted); ok {
 		if err := checkDataFormat(data, f); err != nil {
@@ -51,11 +52,64 @@ func UnmarshalStrict(data []byte, v any) error {
 		}
 	}
 	if err := strictjson.Check(data, rv.Type().Elem(), strictOptions); err != nil {
-		return fmt.Errorf("audit: strict json: %w", err)
+		return malformed(err)
 	}
 	d := json.NewDecoder(bytes.NewReader(data))
 	d.DisallowUnknownFields()
-	return d.Decode(v)
+	if err := d.Decode(v); err != nil {
+		return malformed(err)
+	}
+	return nil
+}
+
+// malformed wraps a strict-decoding error in ErrMalformed, unless it already is one (ErrFormat).
+func malformed(err error) error {
+	if errors.Is(err, ErrMalformed) {
+		return fmt.Errorf("audit: strict json: %w", err)
+	}
+	return fmt.Errorf("audit: strict json: %w (%w)", err, ErrMalformed)
+}
+
+// formattedWire maps each formatted artifact type to a copy of it without methods, the type its
+// JSON is checked against once its format has been checked (see checkFormatted).
+var formattedWire = map[reflect.Type]reflect.Type{
+	reflect.TypeFor[ProofBundle]():       reflect.TypeFor[proofBundleWire](),
+	reflect.TypeFor[AbsenceBundle]():     reflect.TypeFor[absenceBundleWire](),
+	reflect.TypeFor[RunCertificate]():    reflect.TypeFor[runCertificateWire](),
+	reflect.TypeFor[CurrentGrantProof](): reflect.TypeFor[currentGrantProofWire](),
+	reflect.TypeFor[EventInclusion]():    reflect.TypeFor[eventInclusionWire](),
+	reflect.TypeFor[EvidencePackage]():   reflect.TypeFor[evidencePackageWire](),
+	reflect.TypeFor[SignedTreeHead]():    reflect.TypeFor[signedTreeHeadWire](),
+	reflect.TypeFor[AnchorEntry]():       reflect.TypeFor[anchorEntryWire](),
+	reflect.TypeFor[JournalExport]():     reflect.TypeFor[journalExportWire](),
+}
+
+type (
+	proofBundleWire       ProofBundle
+	absenceBundleWire     AbsenceBundle
+	runCertificateWire    RunCertificate
+	currentGrantProofWire CurrentGrantProof
+	eventInclusionWire    EventInclusion
+	evidencePackageWire   EvidencePackage
+	signedTreeHeadWire    SignedTreeHead
+	anchorEntryWire       AnchorEntry
+	journalExportWire     JournalExport
+)
+
+// checkFormatted returns the strict check of a formatted artifact of type t, wherever it sits in
+// the input: its "format" first (ErrFormat), then the rest of it against its fields.
+func checkFormatted(t reflect.Type) func([]byte, string) error {
+	f := reflect.Zero(t).Interface().(formatted)
+	wire := formattedWire[t]
+	return func(raw []byte, path string) error {
+		if string(raw) == "null" {
+			return nil
+		}
+		if err := checkDataFormat(raw, f); err != nil {
+			return fmt.Errorf("%s: %w", path, err)
+		}
+		return strictjson.CheckValue(raw, wire, path, strictOptions)
+	}
 }
 
 // strictOptions check an agent.Message against its wire shape, and each part against the wire
@@ -86,7 +140,28 @@ var recordShape = func() reflect.Type {
 }()
 
 func init() {
-	strictOptions.Hooks = map[reflect.Type]func([]byte, string) error{reflect.TypeFor[partShape](): checkPart}
+	strictOptions.Hooks = map[reflect.Type]func([]byte, string) error{reflect.TypeFor[partShape](): checkPartWith(strictOptions)}
+	for t := range formattedWire {
+		strictOptions.Hooks[t] = checkFormatted(t)
+	}
+	recordBytesOptions.Hooks = map[reflect.Type]func([]byte, string) error{reflect.TypeFor[partShape](): checkPartWith(recordBytesOptions)}
+}
+
+// recordBytesOptions check a proven record's stored bytes (checkRecordBytes): the strict rules of
+// UnmarshalStrict, except that a name the record type does not have is tolerated, as a record a
+// later release wrote carries one.
+var recordBytesOptions = &strictjson.Options{Shapes: strictOptions.Shapes, AllowUnknown: true}
+
+// checkRecordBytes checks a record's stored bytes before they are read for display or a role
+// check, so that what they say to this package is what they say to any JSON reader: valid UTF-8,
+// no duplicate name at any depth, no name that is a case variant of a record field (which
+// encoding/json would read into that field), and no escaped lone surrogate. A name no record field
+// has is tolerated: the leaf is the bytes, and a later release may add fields.
+func checkRecordBytes(b []byte) error {
+	if !utf8.Valid(b) {
+		return errors.New("invalid UTF-8")
+	}
+	return strictjson.Check(b, recordShape, recordBytesOptions)
 }
 
 // messageShape is the wire form of agent.Message (see its MarshalJSON), which UnmarshalStrict
@@ -126,7 +201,11 @@ var partShapes = map[string]reflect.Type{
 
 // checkPart checks one message part (raw, already checked for duplicate names) against the wire
 // form of the part its "type" names.
-func checkPart(raw []byte, path string) error {
+func checkPartWith(opts *strictjson.Options) func([]byte, string) error {
+	return func(raw []byte, path string) error { return checkPart(raw, path, opts) }
+}
+
+func checkPart(raw []byte, path string, opts *strictjson.Options) error {
 	var probe map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &probe); err != nil {
 		return fmt.Errorf("%s: a message part must be an object: %w", path, err)
@@ -139,7 +218,7 @@ func checkPart(raw []byte, path string) error {
 	if !ok {
 		return fmt.Errorf("%s: unknown message part type %q", path, kind)
 	}
-	return strictjson.CheckValue(raw, shape, path, strictOptions)
+	return strictjson.CheckValue(raw, shape, path, opts)
 }
 
 // Every leaf, grant, and seal in this package is hashed or signed over a JSON encoding. JSON

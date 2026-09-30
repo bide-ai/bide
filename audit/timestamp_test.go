@@ -20,7 +20,7 @@ func tsEvidence(t *testing.T, ts int64, opts ...EvidenceOption) (EvidencePackage
 	t.Helper()
 	pub, priv := secKey(t)
 	s := secThreeCalls(t, "A")
-	pkg, err := Evidence(context.Background(), s, "A", priv, ts, opts...)
+	pkg, err := Evidence(context.Background(), s, "A", edS(priv), ts, opts...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -29,8 +29,8 @@ func tsEvidence(t *testing.T, ts int64, opts ...EvidenceOption) (EvidencePackage
 
 func tsOK(t *testing.T, pkg EvidencePackage, pub ed25519.PublicKey) bool {
 	t.Helper()
-	rep, err := pkg.Verify(pub, WithApprovedPolicies())
-	if err != nil {
+	rep, err := pkg.Verify(edV(pub), WithApprovedPolicies())
+	if err := reportErr(rep.OK, err); err != nil {
 		t.Fatalf("Verify: %v", err)
 	}
 	return rep.OK
@@ -67,9 +67,9 @@ func TestEvidence_ActionHeadTimestampIsChecked(t *testing.T) {
 	past := time.Now().Add(-time.Hour).UnixNano()
 	pkg, pub, priv := tsEvidence(t, past)
 	th := pkg.Actions[0].Bundle.STH.TreeHead
-	th.Timestamp = time.Now().Add(time.Hour).UnixNano()
-	pkg.Actions[0].Bundle.STH = SignTreeHead(th, priv)
-	if err := pkg.Seal(priv); err != nil {
+	th.TimestampNanos = time.Now().Add(time.Hour).UnixNano()
+	pkg.Actions[0].Bundle.STH = signTH(t, th, priv)
+	if err := pkg.Seal(edS(priv)); err != nil {
 		t.Fatal(err)
 	}
 	if tsOK(t, pkg, pub) {
@@ -97,7 +97,7 @@ func TestEvidence_ConsistencyHeadsAreInOrder(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		pkg, err := Evidence(context.Background(), s, "A", priv, at.UnixNano(), WithConsistencyFrom(SignTreeHead(early, priv)))
+		pkg, err := Evidence(context.Background(), s, "A", edS(priv), at.UnixNano(), WithConsistencyFrom(signTH(t, early, priv)))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -122,16 +122,21 @@ func TestEvidence_RunCertificateHeadTimestampsAreChecked(t *testing.T) {
 	} {
 		pub, priv := secKey(t)
 		s := secThreeCalls(t, "A")
-		pkg, err := Evidence(context.Background(), s, "A", priv, at.UnixNano())
+		pkg, err := Evidence(context.Background(), s, "A", edS(priv), at.UnixNano())
 		if err != nil {
 			t.Fatal(err)
 		}
-		cert, err := CertifyRun(context.Background(), s, "A", pkg.STH, RunCertSpec{}, priv, tc.used)
+		cert, err := CertifyRun(context.Background(), s, "A", pkg.STH, RunCertSpec{Signer: edS(priv), TimestampNanos: at.UnixNano()})
 		if err != nil {
 			t.Fatal(err)
 		}
+		// CertifyRun refuses an earlier used-policy head, so re-sign it at tc.used by hand: the
+		// verifier must refuse one that some other producer made.
+		used := cert.UsedPolicyAbsence.TreeHead
+		used.TimestampNanos = tc.used
+		cert.UsedPolicyAbsence = signTH(t, used, priv)
 		pkg.RunCertificate = &cert
-		if err := pkg.Seal(priv); err != nil {
+		if err := pkg.Seal(edS(priv)); err != nil {
 			t.Fatal(err)
 		}
 		if got := tsOK(t, pkg, pub); got != tc.ok {
@@ -146,8 +151,8 @@ func TestEvidence_VerifyTimeAndSkewOptions(t *testing.T) {
 	pkg, pub, _ := tsEvidence(t, signed.UnixNano())
 	check := func(what string, want bool, opts ...EvidenceVerifyOption) {
 		t.Helper()
-		rep, err := pkg.Verify(pub, append([]EvidenceVerifyOption{WithApprovedPolicies()}, opts...)...)
-		if err != nil {
+		rep, err := pkg.Verify(edV(pub), append([]EvidenceVerifyOption{WithApprovedPolicies()}, opts...)...)
+		if err := reportErr(rep.OK, err); err != nil {
 			t.Fatal(err)
 		}
 		if rep.OK != want {
@@ -181,14 +186,14 @@ func TestCheckTimestamp(t *testing.T) {
 		{now.UnixNano() + int64(time.Second) + 1, time.Second, false},
 		{1, -1, false},
 	} {
-		err := CheckTimestamp(TreeHead{Kind: TreeJournal, RunID: "r", Timestamp: tc.ts}, now, tc.skew)
+		err := CheckTimestamp(TreeHead{Kind: TreeJournal, RunID: "r", TimestampNanos: tc.ts}, now, tc.skew)
 		if (err == nil) != tc.ok {
 			t.Errorf("CheckTimestamp(ts %d, skew %s) = %v, want ok %v", tc.ts, tc.skew, err, tc.ok)
 		}
 	}
-	if CheckTimestampOrder(TreeHead{Timestamp: 5}, TreeHead{Timestamp: 5}) != nil ||
-		CheckTimestampOrder(TreeHead{Timestamp: 5}, TreeHead{Timestamp: 6}) != nil ||
-		CheckTimestampOrder(TreeHead{Timestamp: 6}, TreeHead{Timestamp: 5}) == nil {
+	if CheckTimestampOrder(TreeHead{TimestampNanos: 5}, TreeHead{TimestampNanos: 5}) != nil ||
+		CheckTimestampOrder(TreeHead{TimestampNanos: 5}, TreeHead{TimestampNanos: 6}) != nil ||
+		CheckTimestampOrder(TreeHead{TimestampNanos: 6}, TreeHead{TimestampNanos: 5}) == nil {
 		t.Error("CheckTimestampOrder: a later head must not be earlier than the head it extends, and may equal it")
 	}
 }
@@ -211,15 +216,15 @@ func TestEvidence_RunCertificateConvergenceHeadsAreChecked(t *testing.T) {
 			t.Fatal(err)
 		}
 		at := time.Now().Add(-time.Hour).UnixNano()
-		pkg, err := Evidence(ctx, s, "A", priv, at, WithRunCertificate(RunCertSpec{ApprovedPolicies: []string{"D"}}))
+		pkg, err := Evidence(ctx, s, "A", edS(priv), at, WithRunCertificate(RunCertSpec{ApprovedPolicies: []string{"D"}}))
 		if err != nil {
 			t.Fatal(err)
 		}
 		future := time.Now().Add(time.Hour).UnixNano()
 		resign := func(b *ProofBundle) {
 			th := b.STH.TreeHead
-			th.Timestamp = future
-			b.STH = SignTreeHead(th, priv)
+			th.TimestampNanos = future
+			b.STH = signTH(t, th, priv)
 		}
 		switch which {
 		case "policy leaf":
@@ -227,11 +232,11 @@ func TestEvidence_RunCertificateConvergenceHeadsAreChecked(t *testing.T) {
 		case "certificate leaf":
 			resign(&pkg.RunCertificate.Convergence[0].Certificate)
 		}
-		if err := pkg.Seal(priv); err != nil {
+		if err := pkg.Seal(edS(priv)); err != nil {
 			t.Fatal(err)
 		}
-		rep, err := pkg.Verify(pub, WithApprovedPolicies("D"))
-		if err != nil {
+		rep, err := pkg.Verify(edV(pub), WithApprovedPolicies("D"))
+		if err := reportErr(rep.OK, err); err != nil {
 			t.Fatal(err)
 		}
 		if want := which == "none"; rep.OK != want {
@@ -245,9 +250,9 @@ func TestEvidence_PackageHeadIsCheckedOnItsOwn(t *testing.T) {
 	past := time.Now().Add(-time.Hour).UnixNano()
 	pkg, pub, priv := tsEvidence(t, past)
 	th := pkg.STH.TreeHead
-	th.Timestamp = time.Now().Add(time.Hour).UnixNano()
-	pkg.STH = SignTreeHead(th, priv)
-	if err := pkg.Seal(priv); err != nil {
+	th.TimestampNanos = time.Now().Add(time.Hour).UnixNano()
+	pkg.STH = signTH(t, th, priv)
+	if err := pkg.Seal(edS(priv)); err != nil {
 		t.Fatal(err)
 	}
 	if tsOK(t, pkg, pub) {
@@ -261,19 +266,19 @@ func TestEvidence_RunCertificateJournalHeadIsCheckedOnItsOwn(t *testing.T) {
 	at := time.Now().Add(-time.Hour).UnixNano()
 	pub, priv := secKey(t)
 	s := secThreeCalls(t, "A")
-	pkg, err := Evidence(context.Background(), s, "A", priv, at)
+	pkg, err := Evidence(context.Background(), s, "A", edS(priv), at)
 	if err != nil {
 		t.Fatal(err)
 	}
 	th := pkg.STH.TreeHead
-	th.Timestamp = 0
-	zero := SignTreeHead(th, priv)
-	cert, err := CertifyRun(context.Background(), s, "A", zero, RunCertSpec{}, priv, at)
+	th.TimestampNanos = 0
+	zero := signTH(t, th, priv)
+	cert, err := CertifyRun(context.Background(), s, "A", zero, RunCertSpec{Signer: edS(priv), TimestampNanos: at})
 	if err != nil {
 		t.Fatal(err)
 	}
 	pkg.RunCertificate = &cert
-	if err := pkg.Seal(priv); err != nil {
+	if err := pkg.Seal(edS(priv)); err != nil {
 		t.Fatal(err)
 	}
 	if tsOK(t, pkg, pub) {

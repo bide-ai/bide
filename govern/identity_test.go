@@ -106,22 +106,35 @@ func TestProof_CommitsToIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewTreeHead: %v", err)
 	}
-	sth := audit.SignTreeHead(th, priv)
+	sth, err := audit.SignTreeHead(th, audit.Ed25519Signer{Priv: priv})
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	pb, err := audit.ProveToolCall(ctx, store, runID, "call1", sth)
 	if err != nil {
 		t.Fatalf("ProveToolCall: %v", err)
 	}
-	if ok, err := pb.Verify(pub); err != nil || !ok {
-		t.Fatalf("bundle did not verify: ok=%v err=%v", ok, err)
+	if err := pb.Verify(audit.Ed25519Verifier{Pub: pub}); err != nil {
+		t.Fatalf("bundle did not verify: %v", err)
 	}
 
 	// The proven leaf commits to the identity claim.
 	var payload map[string]any
-	if err := json.Unmarshal(pb.Record.Result, &payload); err != nil {
+	if err := json.Unmarshal(provenRecord(t, pb).Result, &payload); err != nil {
 		t.Fatalf("proven payload: %v", err)
 	}
 	if payload["actor"] != id.Actor || payload["on_behalf_of"] != id.OnBehalfOf {
 		t.Fatalf("proof does not commit to identity: %+v", payload)
 	}
+}
+
+// provenRecord decodes the record a bundle proves.
+func provenRecord(t *testing.T, pb audit.ProofBundle) agent.Record {
+	t.Helper()
+	r, err := pb.Record()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return r
 }

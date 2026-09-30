@@ -1,6 +1,7 @@
 package audit_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -61,7 +62,7 @@ func earlyHead(t *testing.T, store agent.Durable, runID string, n int, priv ed25
 	if err != nil {
 		t.Fatal(err)
 	}
-	return audit.SignTreeHead(th, priv)
+	return signTH(t, th, priv)
 }
 
 // TestEvidence_VerifyReportsEachAction: Evidence packages the run's proofs, Verify passes under the
@@ -70,7 +71,7 @@ func TestEvidence_VerifyReportsEachAction(t *testing.T) {
 	ctx := context.Background()
 	store, runID, pub, priv := buildEvidenceRun(t)
 
-	pkg, err := audit.Evidence(ctx, store, runID, priv, 1700000000,
+	pkg, err := audit.Evidence(ctx, store, runID, edS(priv), 1700000000,
 		audit.WithLabel("charge run"),
 		audit.WithAllToolCalls(),
 		audit.WithGrants(),
@@ -89,12 +90,12 @@ func TestEvidence_VerifyReportsEachAction(t *testing.T) {
 	if pkg.Grants == nil || len(pkg.Grants.Chain) != 1 {
 		t.Fatalf("grants = %+v, want one grant in the chain", pkg.Grants)
 	}
-	if pkg.PublicKeyHex == "" {
-		t.Fatal("public key hex not recorded")
+	if pkg.Alg != audit.AlgEd25519 || !bytes.Equal(pkg.PublicKey, pub) {
+		t.Fatalf("package names key %s %x, want the signer's ed25519 key", pkg.Alg, pkg.PublicKey)
 	}
 
-	report, err := pkg.Verify(pub)
-	if err != nil {
+	report, err := pkg.Verify(edV(pub))
+	if err := reportErr(report.OK, err); err != nil {
 		t.Fatalf("Verify: %v", err)
 	}
 	if !report.OK {
@@ -133,7 +134,7 @@ func TestEvidence_VerifyReportsEachAction(t *testing.T) {
 
 	// Wrong key: the whole package fails.
 	otherPub, _, _ := ed25519.GenerateKey(rand.Reader)
-	if wrong, _ := pkg.Verify(otherPub); wrong.OK {
+	if wrong, _ := pkg.Verify(edV(otherPub)); wrong.OK {
 		t.Fatal("package verified under the wrong key")
 	}
 }
@@ -143,14 +144,14 @@ func TestEvidence_DefaultsToAllToolCalls(t *testing.T) {
 	ctx := context.Background()
 	store, runID, pub, priv := buildEvidenceRun(t)
 
-	pkg, err := audit.Evidence(ctx, store, runID, priv, 1700000000)
+	pkg, err := audit.Evidence(ctx, store, runID, edS(priv), 1700000000)
 	if err != nil {
 		t.Fatalf("Evidence: %v", err)
 	}
 	if len(pkg.Actions) != 2 {
 		t.Fatalf("default packaged %d actions, want 2 (all tool calls)", len(pkg.Actions))
 	}
-	report, err := pkg.Verify(pub)
+	report, err := pkg.Verify(edV(pub))
 	if err != nil || !report.OK {
 		t.Fatalf("default package did not verify (ok=%v err=%v)", report.OK, err)
 	}
@@ -162,16 +163,16 @@ func TestEvidence_TamperFailsVerify(t *testing.T) {
 	ctx := context.Background()
 	store, runID, pub, priv := buildEvidenceRun(t)
 
-	pkg, err := audit.Evidence(ctx, store, runID, priv, 1700000000, audit.WithAllToolCalls())
+	pkg, err := audit.Evidence(ctx, store, runID, edS(priv), 1700000000, audit.WithAllToolCalls())
 	if err != nil {
 		t.Fatalf("Evidence: %v", err)
 	}
 
 	// Tamper: alter the disclosed result of the first action's record.
-	pkg.Actions[0].Bundle.Record.Result = json.RawMessage(`{"charged":false}`)
+	editRec(t, &pkg.Actions[0].Bundle, func(r *agent.Record) { r.Result = json.RawMessage(`{"charged":false}`) })
 
-	report, err := pkg.Verify(pub)
-	if err != nil {
+	report, err := pkg.Verify(edV(pub))
+	if err := reportErr(report.OK, err); err != nil {
 		t.Fatalf("Verify: %v", err)
 	}
 	if report.OK {
@@ -187,7 +188,7 @@ func TestEvidence_JSONRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	store, runID, _, priv := buildEvidenceRun(t)
 
-	pkg, err := audit.Evidence(ctx, store, runID, priv, 1700000000,
+	pkg, err := audit.Evidence(ctx, store, runID, edS(priv), 1700000000,
 		audit.WithAllToolCalls(),
 		audit.WithGrants(),
 		audit.WithConsistencyFrom(earlyHead(t, store, runID, 2, priv)),

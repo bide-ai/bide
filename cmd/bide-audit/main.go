@@ -8,18 +8,17 @@
 //	bide-audit prove -journal run.json -sth sth.json -tool call_abc -out proof.json
 //
 //	# Verify it offline, trusting only an out-of-band public key:
-//	bide-audit verify -bundle proof.json -pubkey 1a2b...   # only exit 0 means verified
+//	bide-audit verify -bundle proof.json -pubkey ed25519:1a2b...   # only exit 0 means verified
 //
 // Exit status: 0 verified, 1 not verified, 2 usage error, 3 no verdict, 4 input unreadable or
 // unusable (see exitFor). Only 0 means verified.
 //
-// Export the journal with: json.Marshal(store.History(ctx, runID)).
+// Export the journal with audit.ExportJournal(ctx, store, runID), marshaled to JSON.
 package main
 
 import (
 	"bytes"
 	"context"
-	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -36,6 +35,9 @@ import (
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/audit"
 )
+
+// pubkeyHelp is the help text of every -pubkey flag.
+const pubkeyHelp = "public key as <scheme>:<hex> (ed25519, ml-dsa-65, ed25519+ml-dsa-65) or bare ed25519 hex, or a path to a file containing it"
 
 // policyFormatVersion is the published domain-separation tag for the combinator policy
 // serialization (gsm's PolicyFormatVersion). It is hardcoded here on purpose: the verifier
@@ -126,12 +128,14 @@ const usageText = `bide-audit: produce and verify audit proof bundles
          the package carries one) and consistency proof if present
 
   verify-approvals -evidence <file> -pubkey <hex|file> -call <tool-use-id> -need <k>
-                   -approvers <id,id,...> -approver-keys <file>
+                   -approvers <id,id,...> -approver-keys <file> [-approved <digest>...] [-approved-file <file>]
          verify an m-of-n human approval gate from an evidence package: the request, every
          decision the gate read, its recorded tally, and the call's result all verify under the
          log key in one signed tree; recounting the decisions with each approver's key (a JSON
-         object of approver id to ed25519 public key hex) against the exact call reproduces the
-         recorded tally; the gate enforced the expected policy; and at least k approved
+         object of approver id to public key text, <scheme>:<hex>) against the exact call reproduces the
+         recorded tally; the gate enforced the expected policy; and at least k approved. Every
+         proof in the package must verify too, so a package carrying a run certificate needs the
+         allowlist it is checked against (-approved / -approved-file, as for verify-evidence)
 
   prove-absent -journal <file> -sth <file> -key (tool:<id>|policy:<digest>) [-out <file>]
          prove a thing did NOT happen (no such tool call / no action under that policy)
@@ -140,11 +144,14 @@ const usageText = `bide-audit: produce and verify audit proof bundles
   verify-absent -bundle <file> -pubkey <hex|file>
          verify an absence proof offline against a head of the key's own key set
 
-Export a journal for ` + "`prove`" + ` with: json.Marshal(store.History(ctx, runID)). Every JSON
-input is parsed strictly: a duplicate or case-variant key, an unknown field, or invalid UTF-8 is
-an error, a bundle, certificate or package must carry the "format" this version reads (one made
-by an older release is refused with a message naming the format; -version lists them), and a
-public key must be 32 bytes of hex. Every verb takes -max-input-bytes <n>: an input file larger
+Export a journal for ` + "`prove`" + ` and ` + "`prove-absent`" + ` with audit.ExportJournal(ctx, store, runID),
+marshaled to JSON (format bide.audit.journal-export.v1: each record's stored bytes, verbatim). Every
+JSON input is parsed strictly: a duplicate or case-variant key, an unknown field, or invalid UTF-8 is
+an error; a bundle, certificate, package, journal export or signed tree head (at any depth) must
+carry the "format" this version reads (one made by an older release is refused with a message
+naming the format; -version lists them); and a public key is <scheme>:<hex>, where the scheme is
+ed25519, ml-dsa-65 or ed25519+ml-dsa-65, or bare 64-digit ed25519 hex. The key's scheme must be the
+scheme the artifact is signed under. Every verb takes -max-input-bytes <n>: an input file larger
 than n bytes (default 268435456, 256 MiB) is an error, and none is read past the cap. Every signed
 tree head an input carries must have a positive timestamp (Unix nanoseconds) no later than this
 machine's clock plus -max-clock-skew <duration> (default 5m). Every verb takes -json: it prints one
@@ -176,7 +183,7 @@ func (staticStore) Do(context.Context, string, string, func(context.Context) (ag
 
 func (c *cli) prove(args []string) {
 	fs := c.flagSet("prove")
-	journal := fs.String("journal", "", "path to the exported journal JSON ([]Record)")
+	journal := fs.String("journal", "", "path to the journal export JSON (audit.ExportJournal)")
 	sthPath := fs.String("sth", "", "path to the signed tree head JSON")
 	tool := fs.String("tool", "", "prove the tool call with this ToolUseID")
 	index := fs.Int("index", -1, "prove the record at this journal index")
@@ -187,8 +194,8 @@ func (c *cli) prove(args []string) {
 		c.usageError("")
 	}
 
-	var recs []agent.Record
-	c.note(c.readJSON(*journal, &recs))
+	recs, err := c.readJournal(*journal)
+	c.note(err)
 	var sth audit.SignedTreeHead
 	c.note(c.readJSON(*sthPath, &sth))
 	if !c.clean() {
@@ -196,10 +203,7 @@ func (c *cli) prove(args []string) {
 	}
 
 	store := staticStore{recs: recs}
-	var (
-		bundle audit.ProofBundle
-		err    error
-	)
+	var bundle audit.ProofBundle
 	if *tool != "" {
 		bundle, err = audit.ProveToolCall(context.Background(), store, sth.RunID, *tool, sth)
 	} else {
@@ -212,6 +216,20 @@ func (c *cli) prove(args []string) {
 		return
 	}
 	c.emit(bundle, *out)
+}
+
+// readJournal reads a journal export (audit.ExportJournal) strictly and returns its records, each
+// keeping its stored bytes. An export that does not read, or is of another format, is unusable.
+func (c *cli) readJournal(path string) ([]agent.Record, error) {
+	var x audit.JournalExport
+	if err := c.readJSON(path, &x); err != nil {
+		return nil, err
+	}
+	recs, err := x.Journal()
+	if err != nil {
+		return nil, unusable(fmt.Errorf("%s: %w", path, err))
+	}
+	return recs, nil
 }
 
 // emit writes a produced artifact to path, or to stdout (into the report under -json).
@@ -238,7 +256,7 @@ func (c *cli) emit(v any, path string) {
 func (c *cli) verify(args []string) {
 	fs := c.flagSet("verify")
 	bundlePath := fs.String("bundle", "", "path to the ProofBundle JSON")
-	pubkey := fs.String("pubkey", "", "ed25519 public key as hex, or a path to a file containing it")
+	pubkey := fs.String("pubkey", "", pubkeyHelp)
 	c.parse(fs, args)
 
 	if *bundlePath == "" || *pubkey == "" {
@@ -253,29 +271,36 @@ func (c *cli) verify(args []string) {
 		return
 	}
 
-	ok, err := bundle.Verify(pub)
-	if err != nil {
-		c.note(unusable(err))
+	if !c.note(c.verdict(bundle.Verify(pub), "proof did not verify under this key")) {
 		return
-	}
-	if !ok {
-		c.fail("proof did not verify under this key")
 	}
 	c.printf("OK: run %q record verified in a signed tree of size %d\n", bundle.RunID, bundle.STH.Size)
 }
 
-// verifyBundle checks b is authentic under pub. A bundle that does not verify is a FAIL verdict
-// (it unwinds the verb); one that cannot be checked (an unsupported format, a record that cannot
-// be canonicalized) is an unusable input, returned.
-func (c *cli) verifyBundle(b audit.ProofBundle, pub []byte, what string) error {
-	ok, err := b.Verify(pub)
-	if err != nil {
-		return unusable(fmt.Errorf("%s bundle: %w", what, err))
+// verifyBundle checks b is authentic under v. A bundle that does not verify is a FAIL verdict
+// (it unwinds the verb); one that cannot be checked (an unsupported format, record bytes that do
+// not decode) is an unusable input, returned.
+func (c *cli) verifyBundle(b audit.ProofBundle, v audit.Verifier, what string) error {
+	err := b.Verify(v)
+	if err != nil && !errors.Is(err, audit.ErrNotVerified) {
+		err = fmt.Errorf("%s bundle: %w", what, err)
 	}
-	if !ok {
-		c.fail("%s bundle did not verify under this key", what)
+	return c.verdict(err, what+" bundle did not verify under this key")
+}
+
+// verdict maps an audit verifier's error: nil is nil; one wrapping audit.ErrNotVerified prints
+// "FAIL: <failMsg>" and unwinds the verb with a not-verified verdict; any other (a format this
+// version does not read, a malformed artifact) is an unusable input, returned.
+func (c *cli) verdict(err error, failMsg string) error {
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, audit.ErrNotVerified):
+		c.fail("%s", failMsg)
+		return nil // unreachable: fail unwinds
+	default:
+		return unusable(err)
 	}
-	return nil
 }
 
 // verifyGovernance closes the loop between the two roots of trust for a governed policy: it
@@ -365,7 +390,7 @@ func (c *cli) verifyGovernedAction(args []string) {
 	fs := c.flagSet("verify-governed-action")
 	actionPath := fs.String("action", "", "path to the action ProofBundle JSON (from prove -tool)")
 	policyPath := fs.String("policy-bundle", "", "path to the policy-leaf ProofBundle JSON (from ProvePolicy)")
-	pubkey := fs.String("pubkey", "", "ed25519 public key as hex, or a path to a file containing it")
+	pubkey := fs.String("pubkey", "", pubkeyHelp)
 	checker := fs.String("checker", "", "path to the external verified oracle (astchecker); if set, it certifies the policy converges")
 	c.parse(fs, args)
 
@@ -394,7 +419,7 @@ func (c *cli) verifyGovernedAction(args []string) {
 		okAction = c.note(requireToolResult(action, "action"))
 	}
 	if okAction {
-		actionDigest, err = governedPolicyDigest(action.Record.Result)
+		actionDigest, err = governedPolicyDigest(recordOf(action).Result)
 		okAction = c.note(err)
 	}
 	var pc audit.PolicyContent
@@ -442,7 +467,7 @@ func (c *cli) verifyConvergence(args []string) {
 	fs := c.flagSet("verify-convergence")
 	certPath := fs.String("cert-bundle", "", "path to the convergence-leaf ProofBundle JSON (from ProveConvergence)")
 	policyPath := fs.String("policy-bundle", "", "path to the policy-leaf ProofBundle JSON (from ProvePolicy)")
-	pubkey := fs.String("pubkey", "", "ed25519 public key as hex, or a path to a file containing it")
+	pubkey := fs.String("pubkey", "", pubkeyHelp)
 	checker := fs.String("checker", "", "path to the external verified oracle (astchecker); if set, its verdict must agree with the certificate")
 	c.parse(fs, args)
 
@@ -648,7 +673,7 @@ func (c *cli) verifyQuorum(args []string) {
 	var votePaths stringList
 	fs.Var(&votePaths, "vote", "path to one vote ProofBundle JSON (a quorum/<name>/vote/<voter> step); repeat once per voter")
 	commitPath := fs.String("commit", "", "path to the commit action ProofBundle JSON (optional)")
-	pubkey := fs.String("pubkey", "", "ed25519 public key as hex, or a path to a file containing it")
+	pubkey := fs.String("pubkey", "", pubkeyHelp)
 	k := fs.Int("k", 0, "the quorum threshold to assert: votes_for must be >= k")
 	c.parse(fs, args)
 
@@ -686,8 +711,8 @@ func (c *cli) verifyQuorum(args []string) {
 	// the vote step of the voter it records.
 	var rec quorumTally
 	if okTally {
-		if want := "quorum/" + *name + "/tally"; tally.Record.Name != want {
-			c.fail("the tally bundle is step %q, not %q: it is not the tally of quorum %q", tally.Record.Name, want, *name)
+		if want := "quorum/" + *name + "/tally"; recordOf(tally).Name != want {
+			c.fail("the tally bundle is step %q, not %q: it is not the tally of quorum %q", recordOf(tally).Name, want, *name)
 		}
 		c.note(readLeaf(tally, &rec, "tally bundle is not a quorum tally"))
 	}
@@ -701,8 +726,8 @@ func (c *cli) verifyQuorum(args []string) {
 		if !c.note(readLeaf(votes[i], &v, fmt.Sprintf("vote bundle %d is not a vote leaf", i))) {
 			continue
 		}
-		if want := "quorum/" + *name + "/vote/" + v.Voter; votes[i].Record.Name != want {
-			c.fail("vote bundle %d is step %q, not %q: it is not %q's vote in quorum %q", i, votes[i].Record.Name, want, v.Voter, *name)
+		if want := "quorum/" + *name + "/vote/" + v.Voter; recordOf(votes[i]).Name != want {
+			c.fail("vote bundle %d is step %q, not %q: it is not %q's vote in quorum %q", i, recordOf(votes[i]).Name, want, v.Voter, *name)
 		}
 		disclosed[v.Voter] = v.Decision
 		counts[v.Decision]++
@@ -720,7 +745,7 @@ func (c *cli) verifyQuorum(args []string) {
 		if !c.note(requireToolResult(commit, "commit")) {
 			return
 		}
-		commitDigest, err := governedPolicyDigest(commit.Record.Result)
+		commitDigest, err := governedPolicyDigest(recordOf(commit).Result)
 		if !c.note(err) {
 			return
 		}
@@ -804,7 +829,7 @@ func (c *cli) checkTally(rec quorumTally, disclosed map[string]string, counts ma
 func (c *cli) verifyRun(args []string) {
 	fs := c.flagSet("verify-run")
 	certPath := fs.String("cert", "", "path to the RunCertificate JSON (from audit.CertifyRun)")
-	pubkey := fs.String("pubkey", "", "ed25519 public key as hex, or a path to a file containing it")
+	pubkey := fs.String("pubkey", "", pubkeyHelp)
 	var approved stringList
 	fs.Var(&approved, "approved", "an approved policy digest; repeat once per allowed policy")
 	approvedFile := fs.String("approved-file", "", "path to a file of approved policy digests, one per line")
@@ -845,14 +870,14 @@ func (c *cli) verifyRun(args []string) {
 	}
 
 	res, err := audit.VerifyRun(cert, allow, pub)
-	if err != nil {
+	if err != nil && !errors.Is(err, audit.ErrNotVerified) {
 		c.note(unusable(err))
 		return
 	}
 	for _, r := range res.Reasons {
 		c.printf("  - %s\n", r)
 	}
-	if !res.OK {
+	if err != nil || !res.OK {
 		c.fail("run %q certificate did not verify (only-approved-policies=%v, policies-convergence-certified=%v)",
 			cert.RunID, res.OnlyApprovedPolicies, res.ConvergenceCertified)
 	}
@@ -909,7 +934,7 @@ func (c *cli) verifyRun(args []string) {
 func (c *cli) verifyEvidence(args []string) {
 	fs := c.flagSet("verify-evidence")
 	evidencePath := fs.String("evidence", "", "path to the EvidencePackage JSON (from audit.Evidence)")
-	pubkey := fs.String("pubkey", "", "ed25519 public key as hex, or a path to a file containing it")
+	pubkey := fs.String("pubkey", "", pubkeyHelp)
 	var approved stringList
 	fs.Var(&approved, "approved", "an approved policy digest for the run certificate; repeat once per allowed policy")
 	approvedFile := fs.String("approved-file", "", "path to a file of approved policy digests, one per line")
@@ -923,28 +948,12 @@ func (c *cli) verifyEvidence(args []string) {
 	okPkg := c.note(c.readJSON(*evidencePath, &pkg))
 	pub, err := readPubKey(*pubkey)
 	okKey := c.note(err)
-	var opts []audit.EvidenceVerifyOption
-	if len(approved) > 0 || *approvedFile != "" {
-		allow := append([]string(nil), approved...)
-		okAllow := true
-		if *approvedFile != "" {
-			lines, err := readDigestLines(*approvedFile)
-			okAllow = c.note(err)
-			allow = append(allow, lines...)
-		}
-		// With the allowlist unusable, every check that does not read it still runs: the run
-		// certificate is checked against its own used-policy set, so any failure the package
-		// reports is one no allowlist could cure. The verb still does not verify.
-		if !okAllow && okPkg && pkg.RunCertificate != nil {
-			allow = pkg.RunCertificate.UsedPolicies
-		}
-		opts = append(opts, audit.WithApprovedPolicies(allow...))
-	}
+	opts := c.allowlist(approved, *approvedFile, okPkg, pkg)
 	if !okPkg || !okKey {
 		return
 	}
 	rep, err := pkg.Verify(pub, opts...)
-	if err != nil {
+	if err != nil && !errors.Is(err, audit.ErrNotVerified) {
 		c.note(unusable(err))
 		return
 	}
@@ -970,7 +979,7 @@ func (c *cli) verifyEvidence(args []string) {
 		c.printf("%s  %s\n", status, evidenceItemLine(it))
 	}
 
-	if !rep.OK {
+	if err != nil || !rep.OK {
 		c.fail("evidence package did not verify under this key")
 	}
 	if !c.clean() {
@@ -985,11 +994,14 @@ func (c *cli) verifyEvidence(args []string) {
 func (c *cli) verifyApprovals(args []string) {
 	fs := c.flagSet("verify-approvals")
 	evidencePath := fs.String("evidence", "", "path to the EvidencePackage JSON carrying the approval evidence")
-	pubkey := fs.String("pubkey", "", "the log's ed25519 public key as hex, or a path to a file containing it")
+	pubkey := fs.String("pubkey", "", "the log's "+pubkeyHelp)
 	call := fs.String("call", "", "the gated call's tool-use id")
 	need := fs.Int("need", 0, "approvals the policy requires (k)")
 	approvers := fs.String("approvers", "", "the policy's eligible approver ids, comma-separated, in policy order")
-	keysPath := fs.String("approver-keys", "", `JSON object of approver id to ed25519 public key hex, e.g. {"ops":"ab12..."}`)
+	keysPath := fs.String("approver-keys", "", `JSON object of approver id to public key text (<scheme>:<hex>, or bare ed25519 hex), e.g. {"ops":"ed25519:ab12..."}`)
+	var approved stringList
+	fs.Var(&approved, "approved", "an approved policy digest for the package's run certificate; repeat once per allowed policy")
+	approvedFile := fs.String("approved-file", "", "path to a file of approved policy digests, one per line")
 	c.parse(fs, args)
 
 	if *evidencePath == "" || *pubkey == "" || *call == "" || *need == 0 || *approvers == "" || *keysPath == "" {
@@ -1004,29 +1016,49 @@ func (c *cli) verifyApprovals(args []string) {
 	var pkg audit.EvidencePackage
 	okPkg := c.note(c.readJSON(*evidencePath, &pkg))
 	logPub, err := readPubKey(*pubkey)
-	c.note(err)
+	okLog := c.note(err)
+	opts := c.allowlist(approved, *approvedFile, okPkg, pkg)
 	var keyHex map[string]string
 	okKeys := c.note(c.readJSON(*keysPath, &keyHex))
-	keys := make(map[string][]byte, len(keyHex))
-	for id, h := range keyHex {
-		k, err := hex.DecodeString(strings.TrimSpace(h))
-		switch {
-		case err != nil:
-			okKeys = c.note(unusable(fmt.Errorf("approver %q key must be hex: %w", id, err)))
-		case len(k) != ed25519.PublicKeySize:
-			okKeys = c.note(unusable(fmt.Errorf("approver %q key is %d bytes, want a %d-byte ed25519 public key", id, len(k), ed25519.PublicKeySize)))
-		case audit.CheckEd25519PublicKey(k) != nil:
-			okKeys = c.note(unusable(fmt.Errorf("approver %q key: %w", id, audit.CheckEd25519PublicKey(k))))
-		default:
-			keys[id] = k
+	keys := make(map[string]audit.Verifier, len(keyHex))
+	byKey := make(map[string]string, len(keyHex)) // key identity (audit.KeyID) -> the approver id holding it
+	ids := make([]string, 0, len(keyHex))
+	for id := range keyHex {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids) // report a shared key the same way every run
+	for _, id := range ids {
+		k, err := audit.ParsePublicKey(keyHex[id])
+		if err != nil {
+			okKeys = c.note(unusable(fmt.Errorf("approver %q key: %w", id, err)))
+			continue
 		}
+		// One key under two approver ids would let its holder fill two seats: the key file is
+		// unusable as an approver registry, whether or not both ids are in this policy (the
+		// policy's own check is agent.ApprovalPolicy.ValidateKeys, below). Keys are compared by
+		// the gate's key identities (KeyIDs), so a hybrid key sharing a component with another
+		// entry is one key too.
+		shared := ""
+		for _, ref := range k.KeyIDs() {
+			if other, dup := byKey[ref]; dup && shared == "" {
+				shared = other
+			}
+		}
+		if shared != "" {
+			okKeys = c.note(unusable(fmt.Errorf("approvers %q and %q share a signing key", shared, id)))
+			continue
+		}
+		for _, ref := range k.KeyIDs() {
+			byKey[ref] = id
+		}
+		keys[id] = k
 	}
 	verifierFor := func(id string) (agent.ApproverVerifier, bool) {
 		k, ok := keys[id]
 		if !ok {
 			return nil, false
 		}
-		return audit.Ed25519Verifier{Pub: k}, true
+		return k, true
 	}
 	// Two eligible approvers on one key are one person in two seats: the key file is unusable.
 	if okKeys {
@@ -1034,19 +1066,28 @@ func (c *cli) verifyApprovals(args []string) {
 			okKeys = c.note(unusable(fmt.Errorf("-approver-keys: %w", err)))
 		}
 	}
-	if !okPkg || !okKeys || !c.clean() {
+	if !okPkg || !okKeys || !okLog || !c.clean() {
 		return
 	}
 
 	// A package whose proofs cannot be checked is an unusable input, but the approval check still
 	// runs: a gate that did not hold is a verdict, which outranks it.
-	rep, err := pkg.Verify(logPub)
-	if err != nil {
+	rep, err := pkg.Verify(logPub, opts...)
+	if err != nil && !errors.Is(err, audit.ErrNotVerified) {
 		err = unusable(err)
+	} else {
+		err = nil // a package that does not verify is reported below, after the approval check
 	}
 	okRep := c.note(err)
 	v, err := audit.VerifyApprovals(pkg.Actions, *call, policy, verifierFor, logPub)
-	if err != nil {
+	switch {
+	case err == nil:
+	case !errors.Is(err, audit.ErrNotVerified):
+		c.note(unusable(err))
+		return
+	case !v.OK && len(v.Problems) == 0 && v.ToolName == "":
+		// The evidence could not be evaluated (no request, tally or result, or its proof does not
+		// verify): a verdict on its own line.
 		c.failLine(fmt.Sprintf("FAIL  %v", err))
 	}
 	var callArgs bytes.Buffer
@@ -1109,6 +1150,29 @@ func evidenceItemLine(it audit.EvidenceItem) string {
 	return fmt.Sprintf("%s: %s", subject, it.Note)
 }
 
+// allowlist returns the evidence verify options for the auditor's approved-policy allowlist, the
+// -approved digests and the lines of the -approved-file, or none when neither was given (a package
+// that carries a run certificate then does not verify). With the allowlist file unusable, which is
+// recorded, every check that does not read it still runs: the run certificate is checked against
+// its own used-policy set, so any failure the package reports is one no allowlist could cure. The
+// verb still does not verify.
+func (c *cli) allowlist(approved []string, approvedFile string, okPkg bool, pkg audit.EvidencePackage) []audit.EvidenceVerifyOption {
+	if len(approved) == 0 && approvedFile == "" {
+		return nil
+	}
+	allow := append([]string(nil), approved...)
+	okAllow := true
+	if approvedFile != "" {
+		lines, err := readDigestLines(approvedFile)
+		okAllow = c.note(err)
+		allow = append(allow, lines...)
+	}
+	if !okAllow && okPkg && pkg.RunCertificate != nil {
+		allow = pkg.RunCertificate.UsedPolicies
+	}
+	return []audit.EvidenceVerifyOption{audit.WithApprovedPolicies(allow...)}
+}
+
 // readDigestLines reads a file of approved policy digests, one per line, ignoring blank lines and
 // # comments. It is the file form of the repeatable -approved flag.
 func readDigestLines(path string) ([]string, error) {
@@ -1143,7 +1207,7 @@ func absenceSelector(key string) (audit.KeySet, string, error) {
 
 func (c *cli) proveAbsent(args []string) {
 	fs := c.flagSet("prove-absent")
-	journal := fs.String("journal", "", "path to the exported journal JSON ([]Record)")
+	journal := fs.String("journal", "", "path to the journal export JSON (audit.ExportJournal)")
 	sthPath := fs.String("sth", "", "path to the signed absence tree head JSON (see audit.SignAbsenceRoot)")
 	key := fs.String("key", "", "what to prove absent: tool:<id> or policy:<digest>")
 	out := fs.String("out", "", "write the absence bundle here (default: stdout)")
@@ -1156,8 +1220,8 @@ func (c *cli) proveAbsent(args []string) {
 	if err != nil {
 		c.usageError("prove-absent: -key: " + err.Error())
 	}
-	var recs []agent.Record
-	c.note(c.readJSON(*journal, &recs))
+	recs, err := c.readJournal(*journal)
+	c.note(err)
 	var sth audit.SignedTreeHead
 	c.note(c.readJSON(*sthPath, &sth))
 	if !c.clean() {
@@ -1175,7 +1239,7 @@ func (c *cli) proveAbsent(args []string) {
 func (c *cli) verifyAbsent(args []string) {
 	fs := c.flagSet("verify-absent")
 	bundlePath := fs.String("bundle", "", "path to the AbsenceBundle JSON")
-	pubkey := fs.String("pubkey", "", "ed25519 public key as hex, or a path to a file containing it")
+	pubkey := fs.String("pubkey", "", pubkeyHelp)
 	c.parse(fs, args)
 
 	if *bundlePath == "" || *pubkey == "" {
@@ -1198,40 +1262,28 @@ func (c *cli) verifyAbsent(args []string) {
 	if !c.clean() {
 		return
 	}
-	ok, err := bundle.Verify(pub, set)
-	if err != nil {
-		c.note(unusable(err))
+	if !c.note(c.verdict(bundle.Verify(pub, set), "absence proof did not verify under this key")) {
 		return
-	}
-	if !ok {
-		c.fail("absence proof did not verify under this key")
 	}
 	c.printf("OK: %q is absent from run %q's first %d records (its signed %s key set of size %d)\n",
 		bundle.Absence.Key, bundle.RunID, bundle.STH.Journal.Size, set.Kind, bundle.Absence.Size)
 }
 
-// readPubKey reads the verifier's trust root from a -pubkey value: an ed25519 public key in hex,
-// or the path of a file holding one. A value that is a public key in hex is that key and is never
-// opened as a file: a file of that name (planted in an evidence directory, say) could hold another
-// key, and the CLI would then verify under it. The key must come from out-of-band; that is the
-// whole point of the trust model. A value that is neither is an unusable input: it may be the
-// path of a file that is missing.
-func readPubKey(s string) ([]byte, error) {
-	key, err := readPubKeyBytes(s)
-	if err != nil {
-		return nil, err
-	}
-	// A small-order key verifies forged signatures, so it is refused as unusable, not verified.
-	if err := audit.CheckEd25519PublicKey(key); err != nil {
+// readPubKey reads the verifier's trust root from a -pubkey value: a public key in the text form
+// audit.FormatPublicKey writes ("<scheme>:<hex>"), bare ed25519 hex, or the path of a file holding
+// either. A value that is a public key is that key and is never opened as a file: a file of that
+// name (planted in an evidence directory, say) could hold another key, and the CLI would then
+// verify under it. The key must come from out-of-band; that is the whole point of the trust model.
+// A value that is neither is an unusable input: it may be the path of a file that is missing. A
+// weak Ed25519 key (audit.ErrWeakKey: a small-order key verifies forged signatures) is a key, so
+// it is refused as unusable and never opened as a file either.
+func readPubKey(s string) (audit.Verifier, error) {
+	v, err := audit.ParsePublicKey(s)
+	switch {
+	case err == nil:
+		return v, nil
+	case errors.Is(err, audit.ErrWeakKey):
 		return nil, unusable(fmt.Errorf("public key: %w", err))
-	}
-	return key, nil
-}
-
-// readPubKeyBytes reads a 32-byte public key as hex, or from a file of hex.
-func readPubKeyBytes(s string) ([]byte, error) {
-	if key, err := hex.DecodeString(trimSpace(s)); err == nil && len(key) == ed25519.PublicKeySize {
-		return key, nil
 	}
 	raw := s
 	if _, err := os.Stat(s); err == nil {
@@ -1241,15 +1293,11 @@ func readPubKeyBytes(s string) ([]byte, error) {
 		}
 		raw = string(b)
 	}
-	raw = trimSpace(raw)
-	key, err := hex.DecodeString(raw)
+	v, err = audit.ParsePublicKey(raw)
 	if err != nil {
-		return nil, unusable(fmt.Errorf("public key must be hex (or a file of hex): %w", err))
+		return nil, unusable(fmt.Errorf("public key: %w", err))
 	}
-	if len(key) != ed25519.PublicKeySize {
-		return nil, unusable(fmt.Errorf("public key is %d bytes, want a %d-byte ed25519 public key", len(key), ed25519.PublicKeySize))
-	}
-	return key, nil
+	return v, nil
 }
 
 func trimSpace(s string) string {
@@ -1294,13 +1342,21 @@ type quorumTally struct {
 	Votes    []quorumVote `json:"votes"`
 }
 
+// recordOf decodes a bundle's proven record (leniently, for role checks and display). It is called
+// only on a bundle that verified, which requires its record bytes to decode; bytes that did not would
+// read as the zero record, which no role accepts.
+func recordOf(b audit.ProofBundle) agent.Record {
+	r, _ := b.Record()
+	return r
+}
+
 // requireLeaf returns an unusable-input error unless b proves the StepValue record named name: the
 // leaf the audit package writes for the role the bundle is read in. A record proves only what it
 // is, so a record of any other name or kind (a tool result whose output has the leaf's shape, say)
 // is an artifact of the wrong type for its flag.
 func requireLeaf(b audit.ProofBundle, name, role string) error {
-	if b.Record.Kind != agent.StepValue || b.Record.Name != name {
-		return unusable(fmt.Errorf("the %s bundle proves record %q of kind %q, not the %s leaf %q", role, b.Record.Name, b.Record.Kind, role, name))
+	if recordOf(b).Kind != agent.StepValue || recordOf(b).Name != name {
+		return unusable(fmt.Errorf("the %s bundle proves record %q of kind %q, not the %s leaf %q", role, recordOf(b).Name, recordOf(b).Kind, role, name))
 	}
 	return nil
 }
@@ -1309,8 +1365,8 @@ func requireLeaf(b audit.ProofBundle, name, role string) error {
 // governed action (or commit) is the result a governed tool journaled, not any record whose
 // payload has that shape.
 func requireToolResult(b audit.ProofBundle, role string) error {
-	if b.Record.Kind != agent.StepToolResult {
-		return unusable(fmt.Errorf("the %s bundle proves record %q of kind %q, not a tool call's result", role, b.Record.Name, b.Record.Kind))
+	if recordOf(b).Kind != agent.StepToolResult {
+		return unusable(fmt.Errorf("the %s bundle proves record %q of kind %q, not a tool call's result", role, recordOf(b).Name, recordOf(b).Kind))
 	}
 	return nil
 }
@@ -1319,7 +1375,7 @@ func requireToolResult(b audit.ProofBundle, role string) error {
 // file: the leaf is committed as written, so it must read as written. A leaf that does not is not
 // the leaf its flag names: an unusable input. what names the failure.
 func readLeaf(b audit.ProofBundle, v any, what string) error {
-	if err := audit.UnmarshalStrict(b.Record.Result, v); err != nil {
+	if err := audit.UnmarshalStrict(recordOf(b).Result, v); err != nil {
 		return unusable(fmt.Errorf("%s: %w", what, err))
 	}
 	return nil

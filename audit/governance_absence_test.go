@@ -43,7 +43,10 @@ func TestGovernanceAbsence_NoActionUnderDisallowedPolicy(t *testing.T) {
 	}
 
 	// The set of policies exercised is exactly the approved one.
-	used := PoliciesUsed(recs)
+	used, err := PoliciesUsed(recs)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(used) != 1 || used[0] != approved {
 		t.Fatalf("expected policies used = [%s], got %v", approved, used)
 	}
@@ -57,7 +60,7 @@ func TestGovernanceAbsence_NoActionUnderDisallowedPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sth, err := SignAbsenceRoot(recs, PolicyUsedKeys, journal, priv, 1)
+	sth, err := SignAbsenceRoot(recs, PolicyUsedKeys, journal, edS(priv), 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,8 +70,8 @@ func TestGovernanceAbsence_NoActionUnderDisallowedPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ProveAbsentBundle: %v", err)
 	}
-	if ok, err := bundle.Verify(pub, PolicyUsedKeys); err != nil || !ok {
-		t.Fatalf("absence bundle did not verify: ok=%v err=%v", ok, err)
+	if err := bundle.Verify(edV(pub), PolicyUsedKeys); err != nil {
+		t.Fatalf("absence bundle did not verify: err=%v", err)
 	}
 
 	// The negative has teeth: you cannot prove absence of a policy that WAS used.

@@ -23,15 +23,15 @@ func formatFixtures(t *testing.T) map[string]formatted {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ab, err := ProveAbsentBundle(recs, ToolUseKeys, "tooluse:zz", SignTreeHead(head, fuzzPriv))
+	ab, err := ProveAbsentBundle(recs, ToolUseKeys, "tooluse:zz", signTH(t, head, fuzzPriv))
 	if err != nil {
 		t.Fatal(err)
 	}
-	ev, err := Evidence(ctx, store, "run", fuzzPriv, 1000, WithAllToolCalls(), WithConsistencyFrom(sth))
+	ev, err := Evidence(ctx, store, "run", edS(fuzzPriv), 1000, WithAllToolCalls(), WithConsistencyFrom(sth))
 	if err != nil {
 		t.Fatal(err)
 	}
-	rc, err := CertifyRun(ctx, store, "run", sth, RunCertSpec{}, fuzzPriv, 1000)
+	rc, err := CertifyRun(ctx, store, "run", sth, RunCertSpec{Signer: edS(fuzzPriv), TimestampNanos: 1000})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,9 +47,18 @@ func formatFixtures(t *testing.T) map[string]formatted {
 	if err != nil {
 		t.Fatal(err)
 	}
+	je, err := ExportJournal(ctx, store, "run")
+	if err != nil {
+		t.Fatal(err)
+	}
+	anchors := NewMemAnchorLog()
+	if err := anchors.Publish(ctx, "run", sth); err != nil {
+		t.Fatal(err)
+	}
 	return map[string]formatted{
 		"ProofBundle": pb, "AbsenceBundle": ab, "EvidencePackage": ev,
 		"RunCertificate": rc, "CurrentGrantProof": cg, "EventInclusion": ei,
+		"SignedTreeHead": sth, "JournalExport": je, "AnchorEntry": anchors.Entries()[0],
 	}
 }
 
@@ -153,41 +162,55 @@ func TestVerifyRejectsOtherFormats(t *testing.T) {
 	ctx := context.Background()
 
 	pb := fx["ProofBundle"].(ProofBundle)
-	if ok, err := pb.Verify(fuzzPub); !ok || err != nil {
-		t.Fatalf("genuine ProofBundle: %v, %v", ok, err)
+	if err := pb.Verify(edV(fuzzPub)); err != nil {
+		t.Fatalf("genuine ProofBundle: %v", err)
 	}
 	pb.Format = ""
-	if ok, err := pb.Verify(fuzzPub); ok || !errors.Is(err, ErrFormat) {
-		t.Errorf("ProofBundle without a format: %v, %v; want false, ErrFormat", ok, err)
+	if err := pb.Verify(edV(fuzzPub)); !errors.Is(err, ErrFormat) {
+		t.Errorf("ProofBundle without a format: %v; want ErrFormat", err)
+	}
+	pb = fx["ProofBundle"].(ProofBundle)
+	pb.STH.Format = ""
+	if err := pb.Verify(edV(fuzzPub)); !errors.Is(err, ErrFormat) {
+		t.Errorf("ProofBundle whose head has no format: %v; want ErrFormat", err)
 	}
 
 	ab := fx["AbsenceBundle"].(AbsenceBundle)
-	if ok, err := ab.Verify(fuzzPub, ToolUseKeys); !ok || err != nil {
-		t.Fatalf("genuine AbsenceBundle: %v, %v", ok, err)
+	if err := ab.Verify(edV(fuzzPub), ToolUseKeys); err != nil {
+		t.Fatalf("genuine AbsenceBundle: %v", err)
 	}
 	ab.Format = "bide.audit.absence.v1"
-	if ok, err := ab.Verify(fuzzPub, ToolUseKeys); ok || !errors.Is(err, ErrFormat) {
-		t.Errorf("AbsenceBundle of another format: %v, %v; want false, ErrFormat", ok, err)
+	if err := ab.Verify(edV(fuzzPub), ToolUseKeys); !errors.Is(err, ErrFormat) {
+		t.Errorf("AbsenceBundle of another format: %v; want ErrFormat", err)
 	}
 
 	rc := fx["RunCertificate"].(RunCertificate)
-	if res, err := VerifyRun(rc, nil, fuzzPub); !res.OK || err != nil {
+	if res, err := VerifyRun(rc, nil, edV(fuzzPub)); !res.OK || err != nil {
 		t.Fatalf("genuine RunCertificate: %+v, %v", res, err)
 	}
 	rc.Format = ""
-	if res, err := VerifyRun(rc, nil, fuzzPub); res.OK || !errors.Is(err, ErrFormat) {
+	if res, err := VerifyRun(rc, nil, edV(fuzzPub)); res.OK || !errors.Is(err, ErrFormat) {
 		t.Errorf("RunCertificate without a format: %+v, %v; want not OK, ErrFormat", res, err)
 	}
 
 	cg := fx["CurrentGrantProof"].(CurrentGrantProof)
 	cg.Format = ""
-	if ok, err := VerifyCurrentGrant(SignedGrant{}, "run", cg, nil, fuzzPub); ok || !errors.Is(err, ErrFormat) {
-		t.Errorf("CurrentGrantProof without a format: %v, %v; want false, ErrFormat", ok, err)
+	if err := VerifyCurrentGrant(SignedGrant{}, "run", cg, nil, edV(fuzzPub)); !errors.Is(err, ErrFormat) {
+		t.Errorf("CurrentGrantProof without a format: %v; want ErrFormat", err)
 	}
 	cg = fx["CurrentGrantProof"].(CurrentGrantProof)
 	cg.Leaf.Format = ""
-	if ok, err := VerifyCurrentGrant(SignedGrant{}, "run", cg, nil, fuzzPub); ok || !errors.Is(err, ErrFormat) {
-		t.Errorf("CurrentGrantProof whose leaf has no format: %v, %v; want false, ErrFormat", ok, err)
+	if err := VerifyCurrentGrant(SignedGrant{}, "run", cg, nil, edV(fuzzPub)); !errors.Is(err, ErrFormat) {
+		t.Errorf("CurrentGrantProof whose leaf has no format: %v; want ErrFormat", err)
+	}
+
+	sth := fx["SignedTreeHead"].(SignedTreeHead)
+	if err := sth.Verify(edV(fuzzPub)); err != nil {
+		t.Fatalf("genuine SignedTreeHead: %v", err)
+	}
+	sth.Format = "bide.audit.sth.v4"
+	if err := sth.Verify(edV(fuzzPub)); !errors.Is(err, ErrFormat) {
+		t.Errorf("SignedTreeHead of another format: %v; want ErrFormat", err)
 	}
 
 	store, _, _ := fuzzRun(t)
@@ -203,12 +226,12 @@ func TestVerifyRejectsOtherFormats(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ok, err := VerifyEventInclusion(log.Root(), events[0], ei); !ok || err != nil {
-		t.Fatalf("genuine EventInclusion: %v, %v", ok, err)
+	if err := VerifyEventInclusion(log.Root(), events[0], ei); err != nil {
+		t.Fatalf("genuine EventInclusion: %v", err)
 	}
 	ei.Format = ""
-	if ok, err := VerifyEventInclusion(log.Root(), events[0], ei); ok || !errors.Is(err, ErrFormat) {
-		t.Errorf("EventInclusion without a format: %v, %v; want false, ErrFormat", ok, err)
+	if err := VerifyEventInclusion(log.Root(), events[0], ei); !errors.Is(err, ErrFormat) {
+		t.Errorf("EventInclusion without a format: %v; want ErrFormat", err)
 	}
 }
 
@@ -216,12 +239,16 @@ func TestVerifyRejectsOtherFormats(t *testing.T) {
 // name here, never reuse one a verifier in the field already reads as something else.
 func TestFormatNames(t *testing.T) {
 	for got, want := range map[string]string{
-		ProofFormat:          "bide.audit.proof.v2",
-		AbsenceFormat:        "bide.audit.absence.v2",
-		RunCertificateFormat: "bide.audit.runcert.v2",
-		CurrentGrantFormat:   "bide.audit.current-grant.v2",
-		EventInclusionFormat: "bide.audit.event-inclusion.v2",
-		EvidenceFormat:       "bide.audit.evidence.v4",
+		ProofFormat:          "bide.audit.proof.v3",
+		AbsenceFormat:        "bide.audit.absence.v3",
+		RunCertificateFormat: "bide.audit.runcert.v3",
+		CurrentGrantFormat:   "bide.audit.current-grant.v3",
+		EventInclusionFormat: "bide.audit.event-inclusion.v3",
+		EvidenceFormat:       "bide.audit.evidence.v5",
+		STHFormat:            "bide.audit.sth.v5",
+		AnchorEntryFormat:    "bide.audit.anchor-entry.v1",
+		JournalExportFormat:  "bide.audit.journal-export.v1",
+		GrantFormat:          "bide.audit.grant.v2",
 	} {
 		if got != want {
 			t.Errorf("format %q, want %q", got, want)

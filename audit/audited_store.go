@@ -2,7 +2,6 @@ package audit
 
 import (
 	"context"
-	"crypto/ed25519"
 	"fmt"
 	"sync"
 	"time"
@@ -13,8 +12,8 @@ import (
 // AuditedStore wraps a Durable so every durable step is continuously anchored: whenever a
 // run's journal grows, it commits an RFC 6962 Merkle root over the run, signs a Signed Tree
 // Head, and publishes it to an Anchor (an external transparency log). The caller writes the
-// agent loop exactly as before — audit.NewAuditedStore(store, priv, anchor) is a drop-in
-// Durable — and gets a stream of signed, out-of-band commitments for free.
+// agent loop exactly as before (audit.NewAuditedStore(store, signer, anchor) is a drop-in
+// Durable) and gets a stream of signed, out-of-band commitments for free.
 //
 // Anchoring is a SIDE CHANNEL: a publish failure NEVER fails the durable step. Failing Do
 // because an STH could not be published would be dangerous — the underlying write already
@@ -22,7 +21,7 @@ import (
 // the optional OnError hook instead; the journal remains the source of truth.
 type AuditedStore struct {
 	inner  agent.Durable
-	priv   ed25519.PrivateKey
+	signer Signer
 	anchor Anchor
 	now    func() int64
 	onErr  func(runID string, err error)
@@ -32,24 +31,29 @@ type AuditedStore struct {
 	runLocks map[string]*sync.Mutex // serializes anchoring within a run (see anchorIfGrown)
 }
 
-// NewAuditedStore wraps inner so each journal growth is signed with priv and published to
-// anchor. Timestamps default to time.Now().UnixNano(); override with WithClock for tests.
+// NewAuditedStore wraps inner so each journal growth is signed by signer (ed25519, ML-DSA-65, or
+// hybrid) and published to anchor. Timestamps default to time.Now().UnixNano(); override with
+// WithClock for tests.
 //
-// It panics if priv is not ed25519.PrivateKeySize bytes. Such a key could sign nothing, and the
-// store may not fail a step once the inner store has recorded it, so the key is refused here,
-// before any step, rather than when the first step is anchored.
-func NewAuditedStore(inner agent.Durable, priv ed25519.PrivateKey, anchor Anchor) *AuditedStore {
-	if err := checkPrivateKey(priv); err != nil {
-		panic(fmt.Sprintf("audit: NewAuditedStore: %v", err))
+// It refuses a nil store or anchor, and a signer without a usable key, with an error wrapping
+// agent.ErrConfig. Such a signer could sign nothing, and the store may not fail a step once the
+// inner store has recorded it, so the signer is refused here, before any step, rather than when the
+// first step is anchored.
+func NewAuditedStore(inner agent.Durable, signer Signer, anchor Anchor) (*AuditedStore, error) {
+	if inner == nil || anchor == nil {
+		return nil, fmt.Errorf("audit: NewAuditedStore: a nil store or anchor: %w", agent.ErrConfig)
+	}
+	if err := checkSigner(signer); err != nil {
+		return nil, fmt.Errorf("audit: NewAuditedStore: %w", err)
 	}
 	return &AuditedStore{
 		inner:    inner,
-		priv:     priv,
+		signer:   signer,
 		anchor:   anchor,
 		now:      func() int64 { return time.Now().UnixNano() },
 		lastSize: map[string]int{},
 		runLocks: map[string]*sync.Mutex{},
-	}
+	}, nil
 }
 
 // WithClock sets a deterministic timestamp source (for tests). Returns the store for chaining.
@@ -118,7 +122,11 @@ func (a *AuditedStore) anchorIfGrown(ctx context.Context, runID string) error {
 	if err != nil {
 		return err
 	}
-	if err := a.anchor.Publish(ctx, runID, SignTreeHead(th, a.priv)); err != nil {
+	sth, err := SignTreeHead(th, a.signer)
+	if err != nil {
+		return err
+	}
+	if err := a.anchor.Publish(ctx, runID, sth); err != nil {
 		return err
 	}
 	a.mu.Lock()

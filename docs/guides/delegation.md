@@ -10,7 +10,7 @@ scope from an agent's track record.
 ## Grants: the unit of authority
 
 A `Grant` is a statement by a principal (`Issuer`) authorizing an actor (`Subject`) to act
-within a `Scope` until `NotAfter`. It is the non-repudiable authority behind a governed action:
+within a `Scope` until `NotAfterUnix` (Unix seconds). It is the non-repudiable authority behind a governed action:
 the action's `agent.Identity.AuthorityRef` is a grant's `Digest`.
 
 <!-- docsnip: setup signer audit.Signer -->
@@ -26,11 +26,12 @@ sg, err := audit.SignGrant(g, signer) // signer: Ed25519, ML-DSA, or hybrid
 
 `SignGrant` signs the grant with the issuer's own key (an `audit.Signer`), which is deliberately
 distinct from the log's tree-head key, so the authorization is attributable to the principal, not
-to the operator that runs the log. `Digest` is a stable, domain-separated SHA-256 over the grant,
-recomputable by any verifier from the disclosed grant, and is what `Identity.AuthorityRef` points
-at. `Grant.Expired(now)` reports expiry against a caller-supplied clock (a zero `NotAfter` never
-expires), so verification stays deterministic. The digest and signature cover the grant's JSON
-encoding, which is one-to-one only over valid UTF-8, so `SignGrant` refuses, and
+to the operator that runs the log. `Grant.Bytes` is the grant's canonical form, the
+`bide.audit.grant.v2` tag followed by its JSON, and both the signature and `Digest` (a SHA-256 over
+those bytes, recomputable by any verifier from the disclosed grant, and what `Identity.AuthorityRef`
+points at) cover it. `Grant.Expired(nowUnix)` reports expiry against a caller-supplied clock (a zero
+`NotAfterUnix` never expires), so verification stays deterministic. The digest and signature cover
+the grant's JSON encoding, which is one-to-one only over valid UTF-8, so `SignGrant` refuses, and
 `SignedGrant.Verify` rejects, a grant with invalid UTF-8 in any string.
 
 `RecordGrant` anchors a signed grant as a dedicated journal leaf keyed by its digest (idempotent
@@ -49,7 +50,8 @@ the chain back to the root stays provable.
 
 <!-- docsnip: setup chain []audit.SignedGrant; issuerVerifier func(issuer string) (audit.Verifier, bool) -->
 ```go
-ok, err := audit.VerifyDelegationChain(chain, issuerVerifier, audit.ScopeRules{"limit": audit.NumericAtMost})
+err := audit.VerifyDelegationChain(chain, issuerVerifier, audit.ScopeRules{"limit": audit.NumericAtMost})
+// err == nil: the chain holds; errors.Is(err, audit.ErrNotVerified): a hop does not
 ```
 
 It checks each grant's signature under its issuer's verifier (resolved via the `issuerVerifier`
@@ -60,7 +62,7 @@ rules)` is that per-hop rule, and a child must satisfy all four parts:
 1. **Linked**: `child.ParentRef` is `parent.Digest()`.
 2. **Issued by the holder**: `child.Issuer` is `parent.Subject`. Only the principal a grant was
    given to can delegate it; anyone else holding a signing key cannot mint a child of it.
-3. **Expires no later**: if the parent has a `NotAfter`, the child has one too, at or before the
+3. **Expires no later**: if the parent has a `NotAfterUnix`, the child has one too, at or before the
    parent's. A child of an expiring grant can never be non-expiring. A child of a non-expiring
    parent may set any expiry, or none.
 4. **Keeps every constraint**: scope entries are constraints, each one restricting what the grant
@@ -103,8 +105,8 @@ On each call, if a signed grant is bound to the context, the tool mints a narrow
 in the sub-run so the chain is anchored, rebinds the sub-run's identity to the child (`Actor` =
 this sub-agent, `OnBehalfOf` = the parent's `Subject`, `AuthorityRef` = the child's digest), and
 propagates the child grant so a deeper delegation narrows again. Your `AttenuateFunc` sets the
-narrower `Scope` (and may set `Subject` and an earlier `NotAfter`); the wrapper fills in
-`ParentRef`, and `Issuer` (the parent's `Subject`), `Subject` (the sub-agent's name), and `NotAfter`
+narrower `Scope` (and may set `Subject` and an earlier `NotAfterUnix`); the wrapper fills in
+`ParentRef`, and `Issuer` (the parent's `Subject`), `Subject` (the sub-agent's name), and `NotAfterUnix`
 (the parent's) if you left them empty. It then checks the child with `CheckAttenuation` under the
 rules you pass, and refuses the delegation, signing nothing, if the child is not a valid
 delegation: a widening `AttenuateFunc` is caught when it runs, not later by a verifier.
@@ -138,7 +140,7 @@ grant := ea.Grant()                    // the current signed earned grant
 ```
 
 Each change re-issues a signed grant that is a **child of the root** (`ParentRef` to the root,
-every root scope constraint kept, `limit` = the current rung, and the root's `NotAfter`), so the
+every root scope constraint kept, `limit` = the current rung, and the root's `NotAfterUnix`), so the
 earned limit provably never exceeds the root ceiling and no earned grant outlives the root:
 `NewEarnedAuthority` rejects a ladder whose top rung exceeds the root's numeric `limit` scope, and
 every earned grant passes `VerifyDelegationChain` against the root under `audit.EarnedRules`
@@ -152,12 +154,12 @@ earlier grant is superseded, whether the change was a promotion or a demotion. (
 names its ledger position, so re-reaching a rung issues a new grant rather than reviving an old
 one.) A verifier checks a grant against the latest signed head of the ledger run:
 
-<!-- docsnip: setup ctx context.Context; ledger agent.Durable; latestLedgerSTH audit.SignedTreeHead; lastSeen *audit.SignedTreeHead; grant audit.SignedGrant; logPub ed25519.PublicKey -->
+<!-- docsnip: setup ctx context.Context; ledger agent.Durable; latestLedgerSTH audit.SignedTreeHead; lastSeen *audit.SignedTreeHead; grant audit.SignedGrant; logKey audit.Verifier -->
 ```go
 // lastSeen is the newest ledger head this verifier has verified before; on first contact pass
 // size 0 and a nil lastSeen.
 proof, _ := audit.ProveCurrentGrant(ctx, ledger, "ledger/agent-1", latestLedgerSTH, lastSeen.Size)
-ok, err := audit.VerifyCurrentGrant(grant, "ledger/agent-1", proof, lastSeen, logPub)
+err := audit.VerifyCurrentGrant(grant, "ledger/agent-1", proof, lastSeen, logKey) // nil: current
 ```
 
 `VerifyCurrentGrant` requires the proof to be about the named ledger run (a grant that is the last

@@ -44,17 +44,19 @@ var (
 // is written in precedence order: a usage error is exclusive (a verb that reports one reads nothing
 // else), and otherwise a not-verified verdict outranks an unusable input, which outranks no
 // verdict. errors.Is searches every branch of a joined error, so a verb that met several
-// conditions reports the highest-ranked of them. An error of no known class is an internal error:
-// no verdict, never 0.
+// conditions reports the highest-ranked of them. The audit package's sentinels map as the CLI's own
+// classes do: audit.ErrNotVerified is a not-verified verdict, and audit.ErrMalformed (which
+// audit.ErrFormat wraps) an unusable input. An error of no known class is an internal error: no
+// verdict, never 0.
 func exitFor(err error) int {
 	switch {
 	case err == nil:
 		return exitVerified
 	case errors.Is(err, errUsage):
 		return exitUsage
-	case errors.Is(err, errNotVerified):
+	case errors.Is(err, errNotVerified), errors.Is(err, audit.ErrNotVerified):
 		return exitNotVerified
-	case errors.Is(err, errUnusable), errors.Is(err, audit.ErrFormat),
+	case errors.Is(err, errUnusable), errors.Is(err, audit.ErrMalformed), errors.Is(err, audit.ErrFormat),
 		errors.Is(err, fs.ErrNotExist), errors.Is(err, fs.ErrPermission):
 		return exitUnusable
 	default:
@@ -108,7 +110,7 @@ func (c *cli) note(err error) bool {
 		return true
 	}
 	c.errs = append(c.errs, err)
-	if errors.Is(err, errNotVerified) {
+	if errors.Is(err, errNotVerified) || errors.Is(err, audit.ErrNotVerified) {
 		panic(abort{})
 	}
 	return false
@@ -345,6 +347,8 @@ var readFormats = []artifactFormat{
 	{"absence bundle", audit.AbsenceFormat, "verify-absent"},
 	{"run certificate", audit.RunCertificateFormat, "verify-run"},
 	{"evidence package", audit.EvidenceFormat, "verify-evidence, verify-approvals"},
+	{"signed tree head", audit.STHFormat, "prove, prove-absent, and every head inside an artifact"},
+	{"journal export", audit.JournalExportFormat, "prove, prove-absent"},
 }
 
 func printVersion(w io.Writer, asJSON bool) {

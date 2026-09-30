@@ -33,7 +33,7 @@ func TestVerifyCLI_RefusesAnOldFormatBundle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	bundle, err := audit.ProveRecord(ctx, store, "r", 1, audit.SignTreeHead(th, priv)) // leaf 0 is the journal header
+	bundle, err := audit.ProveRecord(ctx, store, "r", 1, signHead(t, th, audit.Ed25519Signer{Priv: priv})) // leaf 0 is the journal header
 	if err != nil {
 		t.Fatal(err)
 	}

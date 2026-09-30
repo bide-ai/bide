@@ -54,7 +54,7 @@ func TestVerifyAbsentCLI_RejectsCrossKindForgery(t *testing.T) {
 	}
 	recs, _ := store.History(ctx, "r")
 	th, _ := audit.NewTreeHead(ctx, store, "r", 1)
-	toolSTH, err := audit.SignAbsenceRoot(recs, audit.ToolUseKeys, th, priv, 1)
+	toolSTH, err := audit.SignAbsenceRoot(recs, audit.ToolUseKeys, th, audit.Ed25519Signer{Priv: priv}, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +70,7 @@ func TestVerifyAbsentCLI_RejectsCrossKindForgery(t *testing.T) {
 
 	// A genuine proof from prove-absent against the same head verifies.
 	journalPath, sthPath, goodPath := filepath.Join(dir, "journal.json"), filepath.Join(dir, "sth.json"), filepath.Join(dir, "good.json")
-	writeJSON(t, journalPath, recs)
+	writeJSON(t, journalPath, exportJournal(t, store, "r"))
 	writeJSON(t, sthPath, toolSTH)
 	if code, out := exitCode(t, bin, "prove-absent", "-journal", journalPath, "-sth", sthPath, "-key", "tool:refund", "-out", goodPath); code != 0 {
 		t.Fatalf("prove-absent: exit %d\n%s", code, out)
@@ -88,7 +88,7 @@ func TestVerifyAbsentCLI_RejectsCrossKindForgery(t *testing.T) {
 func TestCLI_ShortPublicKeyExitsFour(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "bundle.json")
-	writeJSON(t, path, audit.ProofBundle{Format: audit.ProofFormat, STH: audit.SignedTreeHead{TreeHead: audit.TreeHead{Timestamp: 1}}}) // a head the timestamp rule admits, so the key is what fails
+	writeJSON(t, path, audit.ProofBundle{Format: audit.ProofFormat, STH: audit.SignedTreeHead{TreeHead: audit.TreeHead{TimestampNanos: 1}}}) // a head the timestamp rule admits, so the key is what fails
 	bin := buildCLI(t, dir)
 	code, out := exitCode(t, bin, "verify", "-bundle", path, "-pubkey", "ab")
 	if code != 4 || bytes.Contains([]byte(out), []byte("panic")) || !bytes.Contains([]byte(out), []byte("public key")) {
@@ -104,7 +104,7 @@ func TestCLI_ShortPublicKeyExitsFour(t *testing.T) {
 		t.Fatal(err)
 	}
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
-	pkg, err := audit.Evidence(ctx, store, "run1", priv, 1)
+	pkg, err := audit.Evidence(ctx, store, "run1", audit.Ed25519Signer{Priv: priv}, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +131,7 @@ func TestCLI_RejectsDuplicateKeys(t *testing.T) {
 	}
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
 	th, _ := audit.NewTreeHead(ctx, store, "run1", 1)
-	b, err := audit.ProveToolCall(ctx, store, "run1", "pay", audit.SignTreeHead(th, priv))
+	b, err := audit.ProveToolCall(ctx, store, "run1", "pay", signHead(t, th, audit.Ed25519Signer{Priv: priv}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -146,11 +146,13 @@ func TestCLI_RejectsDuplicateKeys(t *testing.T) {
 		t.Fatalf("verify rejected the untouched bundle: exit %d\n%s", code, out)
 	}
 	for name, edit := range map[string][2]string{
-		// A reader scanning the record sees the first value; encoding/json keeps the last.
-		"a case-variant duplicate key": {`"record":{`, `"record":{"Name":"refund-1000000",`},
-		"an exact duplicate key":       {`"record":{`, `"record":{"name":"refund-1000000",`},
-		"an unknown field":             {`"record":{`, `"record":{"approved_by":"cfo",`},
-		"invalid UTF-8":                {`"name":"pay"`, "\"name\":\"pay\",\"approver\":\"\xff\""},
+		// A reader scanning the bundle sees the first value; encoding/json keeps the last. The record
+		// itself is carried as its stored bytes (base64), which are hashed, so the edits go to the
+		// fields around it.
+		"a case-variant duplicate key": {`"run_id":`, `"RUN_ID":"refund-1000000","run_id":`},
+		"an exact duplicate key":       {`"run_id":`, `"run_id":"refund-1000000","run_id":`},
+		"an unknown field":             {`"record_bytes":`, `"approved_by":"cfo","record_bytes":`},
+		"invalid UTF-8":                {`"run_id":"run1"`, "\"run_id\":\"run1\xff\""},
 	} {
 		edited := bytes.Replace(raw, []byte(edit[0]), []byte(edit[1]), 1)
 		if bytes.Equal(edited, raw) {

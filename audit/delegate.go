@@ -35,9 +35,9 @@ func GrantFrom(ctx context.Context) (SignedGrant, Signer, bool) {
 }
 
 // AttenuateFunc derives a child grant from the parent grant and the delegating sub-agent's name.
-// It sets the narrower Scope (and may set Subject and an earlier NotAfter); AttenuatingSubAgent
+// It sets the narrower Scope (and may set Subject and an earlier NotAfterUnix); AttenuatingSubAgent
 // fills in ParentRef and, if empty, Issuer (the parent's Subject), Subject (the sub-agent name), and
-// NotAfter (the parent's), then checks the result with CheckAttenuation before signing it, so a
+// NotAfterUnix (the parent's), then checks the result with CheckAttenuation before signing it, so a
 // widening func is refused at delegation time rather than caught later by VerifyDelegationChain.
 type AttenuateFunc func(parent Grant, subAgent string) Grant
 
@@ -92,8 +92,8 @@ func (t *attenuatingSubAgent) Call(ctx context.Context, args json.RawMessage) (j
 	if child.Subject == "" {
 		child.Subject = t.name
 	}
-	if child.NotAfter == 0 {
-		child.NotAfter = parentSG.Grant.NotAfter // a child never outlives its parent
+	if child.NotAfterUnix == 0 {
+		child.NotAfterUnix = parentSG.Grant.NotAfterUnix // a child never outlives its parent
 	}
 	if err := CheckAttenuation(parentSG.Grant, child, t.rules); err != nil {
 		return nil, fmt.Errorf("audit: attenuating delegation to %q: %w", t.name, err)

@@ -5,7 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/json"
-	"fmt"
+	"errors"
 	"strings"
 	"testing"
 
@@ -24,14 +24,19 @@ func catch(fn func()) (p any) {
 }
 
 // AuditedStore promises that anchoring never fails a durable step once the step is recorded. A
-// signing key of the wrong length must therefore be refused when the store is built, not panic in
-// Do after the inner store has already recorded the step.
+// signing key of the wrong length must therefore be refused when the store is built, with an
+// ErrConfig error (not a panic), before any step is recorded.
 func TestAuditedStore_BadKeyIsRefusedBeforeAnyStep(t *testing.T) {
 	for name, priv := range badKeys {
 		ctx := context.Background()
 		inner := agent.NewMemStore()
 		var store *audit.AuditedStore
-		if catch(func() { store = audit.NewAuditedStore(inner, priv, audit.NewMemAnchorLog()) }) != nil {
+		var err error
+		if p := catch(func() { store, err = audit.NewAuditedStore(inner, edS(priv), audit.NewMemAnchorLog()) }); p != nil {
+			t.Errorf("%s key: NewAuditedStore panicked: %v", name, p)
+			continue
+		}
+		if errors.Is(err, agent.ErrConfig) && store == nil {
 			continue // refused at construction: nothing was written
 		}
 		p := catch(func() {
@@ -40,7 +45,7 @@ func TestAuditedStore_BadKeyIsRefusedBeforeAnyStep(t *testing.T) {
 			})
 		})
 		recs, _ := inner.History(ctx, "r")
-		t.Errorf("%s key: NewAuditedStore accepted it; Do then panicked (%v) with %d records already written", name, p, len(recs))
+		t.Errorf("%s key: NewAuditedStore accepted it (err %v); Do then panicked (%v) with %d records already written", name, err, p, len(recs))
 	}
 }
 
@@ -60,19 +65,19 @@ func TestSigningWithBadKey_IsAnError(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, good, _ := ed25519.GenerateKey(rand.Reader)
-	sth := audit.SignTreeHead(th, good)
+	sth := signTH(t, th, good)
 	for name, priv := range badKeys {
 		calls := map[string]func() error{
 			"SignAbsenceRoot": func() error {
-				_, err := audit.SignAbsenceRoot(recs, audit.ToolUseKeys, th, priv, 2)
+				_, err := audit.SignAbsenceRoot(recs, audit.ToolUseKeys, th, edS(priv), 2)
 				return err
 			},
-			"SignTreeHeadWith(Ed25519Signer)": func() error {
-				_, err := audit.SignTreeHeadWith(th, audit.Ed25519Signer{Priv: priv})
+			"SignTreeHead(Ed25519Signer)": func() error {
+				_, err := audit.SignTreeHead(th, audit.Ed25519Signer{Priv: priv})
 				return err
 			},
 			"CertifyRun": func() error {
-				_, err := audit.CertifyRun(ctx, store, "r", sth, audit.RunCertSpec{}, priv, 2)
+				_, err := audit.CertifyRun(ctx, store, "r", sth, audit.RunCertSpec{Signer: edS(priv), TimestampNanos: 2})
 				return err
 			},
 		}
@@ -82,8 +87,8 @@ func TestSigningWithBadKey_IsAnError(t *testing.T) {
 				t.Errorf("%s with %s key panicked: %v", fn, name, p)
 			} else if err == nil {
 				t.Errorf("%s with %s key: no error", fn, name)
-			} else if want := fmt.Sprintf("%d bytes", len(priv)); !strings.Contains(err.Error(), want) {
-				t.Errorf("%s with %s key: error %q does not give the key's length (%s)", fn, name, err, want)
+			} else if !errors.Is(err, agent.ErrConfig) || !strings.Contains(err.Error(), "ed25519") {
+				t.Errorf("%s with %s key: error %q is not an ErrConfig naming the ed25519 signer", fn, name, err)
 			}
 		}
 	}

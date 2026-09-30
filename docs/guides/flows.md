@@ -207,13 +207,13 @@ Two pieces make it work:
 The flow, end to end:
 
 1. `flow.Run(ctx, store, runID, in)` executes the flow. It journals `flow:digest` before any node.
-2. `audit.NewTreeHead(ctx, store, runID, ts)` then `audit.SignTreeHead(th, priv)` commit to the run's
+2. `audit.NewTreeHead(ctx, store, runID, ts)` then `audit.SignTreeHead(th, signer)` (any `audit.Signer`) commit to the run's
    journal with a signed tree head (STH). Anchor the STH and its key in a separate trust domain; that
    is what makes it tamper-evident (see the `audit` package security model).
 3. `audit.ProveRecord(ctx, store, runID, i, sth)` builds an RFC 6962 inclusion proof for the
    `flow:digest` record (index `i`), bundled with the STH.
 4. An auditor holding only the bundle and the signer's public key (obtained out of band) checks
-   `bundle.Verify(pub)` (the STH signature is authentic and the record is included under the signed
+   `bundle.Verify(v)` with a verifier for that key, which returns nil only if it holds (the STH signature is authentic and the record is included under the signed
    root), checks the STH's timestamp with `audit.CheckTimestamp`, and that the proven digest equals the declared flow's `flow.Digest()`. Together: **the run
    committed to this signed diagram.**
 

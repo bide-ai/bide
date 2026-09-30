@@ -36,9 +36,10 @@ type Anchor interface {
 // them only that the head they hold was anchored there. A head published without a signature has
 // no such entropy; do not anchor one.
 type AnchorEntry struct {
-	Seq   int            `json:"seq"`    // the entry's position in the anchor log
-	RunID string         `json:"run_id"` // the run whose commitment was published
-	STH   SignedTreeHead `json:"sth"`    // the published signed tree head
+	Format string         `json:"format"` // AnchorEntryFormat
+	Seq    int            `json:"seq"`    // the entry's position in the anchor log
+	RunID  string         `json:"run_id"` // the run whose commitment was published
+	STH    SignedTreeHead `json:"sth"`    // the published signed tree head
 }
 
 // MemAnchorLog is a reference external transparency log: an append-only, independently
@@ -66,7 +67,7 @@ func (l *MemAnchorLog) Publish(_ context.Context, runID string, sth SignedTreeHe
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.entries = append(l.entries, AnchorEntry{Seq: len(l.entries), RunID: runID, STH: sth})
+	l.entries = append(l.entries, AnchorEntry{Format: AnchorEntryFormat, Seq: len(l.entries), RunID: runID, STH: sth})
 	return nil
 }
 
@@ -135,26 +136,34 @@ func (l *MemAnchorLog) ProveConsistency(first int) (Consistency, error) {
 	if err != nil {
 		return Consistency{}, err
 	}
-	return Consistency{First: first, Size: len(l.entries), Path: consistencyProof(first, leaves)}, nil
+	return Consistency{First: first, Size: len(l.entries), Path: consistencyProof(first, leafHashes(leaves))}, nil
 }
 
-// VerifyAnchorInclusion reports whether entry is the leaf at proof.Index in an anchor log of
-// proof.Size entries committed by root, from the entry and proof alone. The entry must state what
-// the proof proves: its Seq is proof.Index, and its RunID is the run its signed head names (the
-// only entries MemAnchorLog.Publish writes). An entry that misstates either is an error, since
-// the anchor log is another party's and a monitor reads both fields.
-func VerifyAnchorInclusion(root []byte, entry AnchorEntry, proof Inclusion) (bool, error) {
+// VerifyAnchorInclusion returns nil if entry is the leaf at proof.Index in an anchor log of
+// proof.Size entries committed by root, from the entry and proof alone. The entry must be of
+// AnchorEntryFormat, carrying a head of STHFormat (ErrFormat), and state what the proof proves: its Seq is proof.Index, and its
+// RunID is the run its signed head names (the only entries MemAnchorLog.Publish writes). An entry
+// that misstates either, or is not the leaf, is an error wrapping ErrNotVerified, since the anchor
+// log is another party's and a monitor reads both fields. It does not verify the entry's signed
+// head; do that with entry.STH.Verify.
+func VerifyAnchorInclusion(root []byte, entry AnchorEntry, proof Inclusion) error {
+	if err := checkFormats(entry); err != nil {
+		return fmt.Errorf("audit: anchor entry %d: %w", entry.Seq, err)
+	}
 	if entry.Seq != proof.Index {
-		return false, fmt.Errorf("audit: anchor entry says it is at %d, but the proof is for index %d", entry.Seq, proof.Index)
+		return notVerified("audit: anchor entry says it is at %d, but the proof is for index %d", entry.Seq, proof.Index)
 	}
 	if entry.RunID != entry.STH.RunID {
-		return false, fmt.Errorf("audit: anchor entry is for run %q, but its tree head is for run %q", entry.RunID, entry.STH.RunID)
+		return notVerified("audit: anchor entry is for run %q, but its tree head is for run %q", entry.RunID, entry.STH.RunID)
 	}
 	leaf, err := canonicalAnchorEntry(entry)
 	if err != nil {
-		return false, err
+		return fmt.Errorf("%w (%w)", err, ErrMalformed)
 	}
-	return verifyPath(root, leaf, proof.Index, proof.Size, proof.Path), nil
+	if !verifyPath(root, leaf, proof.Index, proof.Size, proof.Path) {
+		return notVerified("audit: the anchor entry is not leaf %d of the %d-entry log under this root", proof.Index, proof.Size)
+	}
+	return nil
 }
 
 func canonicalAnchorEntry(e AnchorEntry) ([]byte, error) {

@@ -75,7 +75,13 @@ func demoKey(name string) ed25519.PrivateKey {
 	return ed25519.NewKeyFromSeed(seed[:])
 }
 
-func logKey() ed25519.PrivateKey { return demoKey("log operator") }
+// logKey is the log operator's signer: it signs the tree head and seals the evidence package.
+func logKey() audit.Signer { return audit.Ed25519Signer{Priv: demoKey("log operator")} }
+
+// logVerifier is the verifier for the log key, as an auditor holds it (out of band).
+func logVerifier() audit.Verifier {
+	return audit.Ed25519Verifier{Pub: demoKey("log operator").Public().(ed25519.PublicKey)}
+}
 
 // approverVerifiers resolves an approver id to the public key that verifies their
 // signature. The gate uses it at run time and the auditor uses the same shape offline.
@@ -198,7 +204,7 @@ func cmdApprove(ctx context.Context, store agent.Durable, as string, approved, f
 	if check {
 		opts = append(opts, agent.WithDecisionCheck(approverVerifiers()))
 	}
-	d := agent.Decision{RunID: runID, ToolUseID: callID, ApproverID: as, Approved: approved, Signature: sig}
+	d := agent.Decision{RunID: runID, ToolUseID: callID, ApproverID: as, Approved: approved, Alg: audit.AlgEd25519, Signature: sig}
 	if err := agent.SubmitDecision(ctx, store, d, opts...); err != nil {
 		if errors.Is(err, agent.ErrInvalidApproval) || errors.Is(err, agent.ErrAlreadyDecided) {
 			fmt.Printf("refused: %v\n", err)
@@ -255,7 +261,7 @@ func cmdEvidence(ctx context.Context, store agent.Durable, outPath, keysPath str
 		return err
 	}
 	fmt.Printf("wrote: %s (approver public keys)\n", keysPath)
-	fmt.Printf("log public key: %s\n", hex.EncodeToString(logKey().Public().(ed25519.PublicKey)))
+	fmt.Printf("log public key: %s\n", hex.EncodeToString(logKey().PublicKey()))
 	return nil
 }
 
@@ -271,14 +277,15 @@ func cmdVerify(inPath string) error {
 	if err := json.Unmarshal(b, &pkg); err != nil {
 		return err
 	}
-	logPub := logKey().Public().(ed25519.PublicKey)
-	rep, err := pkg.Verify(logPub)
-	if err != nil {
+	// A verifier's error wrapping audit.ErrNotVerified is a verdict (the report says why); any
+	// other error means the evidence could not be checked at all.
+	rep, err := pkg.Verify(logVerifier())
+	if err != nil && !errors.Is(err, audit.ErrNotVerified) {
 		return err
 	}
 	fmt.Printf("proofs: %s\n", passFail(rep.OK))
-	v, err := audit.VerifyApprovals(pkg.Actions, callID, policy, approverVerifiers(), logPub)
-	if err != nil {
+	v, err := audit.VerifyApprovals(pkg.Actions, callID, policy, approverVerifiers(), logVerifier())
+	if err != nil && !errors.Is(err, audit.ErrNotVerified) {
 		return err
 	}
 	var args bytes.Buffer

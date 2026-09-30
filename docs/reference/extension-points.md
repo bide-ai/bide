@@ -296,8 +296,9 @@ function and derives `ArgsSchema` from `In` at construction, so changing `In` is
 compile-time change. `Safety` declares retry behavior on resume (`ReadOnly`, `Idempotent`,
 `IdempotencyKey`, `RequiresApproval`) and maps directly onto MCP annotations (see
 the [MCP guide](../guides/mcp.md)). Its optional `Approval` field upgrades the approval gate to a signed
-m-of-n policy; approver signatures are checked through the `ApproverVerifier` hook, which the
-`audit` package's Ed25519, ML-DSA, and hybrid verifiers implement. Its `KeyIDs` method names the keys
+m-of-n policy; approver signatures are checked through the `ApproverVerifier` hook (`Alg()`, `Verify` and `KeyIDs`), which the
+`audit` package's Ed25519, ML-DSA, and hybrid verifiers implement; a decision counts only under the scheme
+journaled with it (`Decision.Alg`, recorded as `Record.ApproverAlg`), which must be its approver key's. Its `KeyIDs` method names the keys
 behind a verifier, derived from the public key's bytes, and the gate refuses a policy two of whose
 approvers share one (see [approval](../guides/hitl-approval.md#key-identity)).
 

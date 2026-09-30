@@ -39,7 +39,7 @@ evaluation, and integration seams.
 | `delegation` | A non-repudiable delegation chain across sub-agents, each hop signed and never widened (offline). | `cd examples/govern && go run ./delegation` |
 | `earned-authority` | Authority earned from a provable track record: widens on a clean streak, resets on an anomaly (offline). | `cd examples/govern && go run ./earned-authority` |
 | `compliance` | A KYC-shaped flow: parallel provable checks, a governed decision, an offline proof against a signed tree head (offline). | `cd examples/govern && go run ./compliance` |
-| `proof-carrying-run` | A run that ships one offline-checkable certificate of behavioral-property compliance (offline). | `cd examples/govern && go run ./proof-carrying-run` |
+| `proof-carrying-run` | A run that ships one offline-checkable certificate of behavioral-property compliance, signed under a hybrid ed25519 + ML-DSA-65 log key (offline). | `cd examples/govern && go run ./proof-carrying-run` |
 | `quorum` | A governed model quorum: k-of-n agreement admits the commit, with the whole vote in the audit trail (offline). | `cd examples/govern && go run ./quorum` |
 | `compose` | Compositional construction: verify a subsystem once, embed it as a black box into larger systems (offline). | `cd examples/govern && go run ./compose` |
 | `mesh` | A coordination-free safety mesh where governed state constrains agents cyclically (offline). | `cd examples/govern && go run ./mesh` |

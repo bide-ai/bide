@@ -38,6 +38,9 @@ type exitFixture struct {
 	evidence, evidenceTampered, evidenceCert         string
 	keys, sharedKeys, weakKeys, notJSON, missing     string
 	identityPub                                      string // the identity point: small order, accepts forged signatures
+	sthNoFormat, sthV4, bundleNestedV4, proofV2      string // artifacts in older layouts
+	evidenceV4, journalWrongFormat, journalV0        string
+	keyUnknownScheme, keyPrefixed                    string
 	agree, nonConvergent, broken                     string
 	brokenFirst, brokenSecond                        string // no verdict on one policy, a disagreement on the other
 	fakePolicy                                       string // a tool result shaped like the policy leaf
@@ -102,20 +105,27 @@ func newExitFixture(t *testing.T) *exitFixture {
 	}
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
 	other, _, _ := ed25519.GenerateKey(rand.Reader)
+	signer := audit.Ed25519Signer{Priv: priv}
 	f.pub, f.otherPub = hex.EncodeToString(pub), hex.EncodeToString(other)
+	f.keyPrefixed, f.keyUnknownScheme = keyText(signer), "rsa-4096:"+hex.EncodeToString(pub)
 	head := func(ts int64) audit.SignedTreeHead {
 		th, err := audit.NewTreeHead(ctx, store, runID, ts)
 		if err != nil {
 			t.Fatal(err)
 		}
-		return audit.SignTreeHead(th, priv)
+		return signHead(t, th, signer)
 	}
 	sth, future := head(1), head(time.Now().Add(time.Hour).UnixNano())
 	recs, err := store.History(ctx, runID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	f.journal, f.sth, f.sthFuture = file("journal.json", recs), file("sth.json", sth), file("sth-future.json", future)
+	export := exportJournal(t, store, runID)
+	f.journal, f.sth, f.sthFuture = file("journal.json", export), file("sth.json", sth), file("sth-future.json", future)
+	f.sthNoFormat = rewriteJSON(t, filepath.Join(dir, "sth-no-format.json"), sth, `"format":"`+audit.STHFormat+`",`, "")
+	f.sthV4 = rewriteJSON(t, filepath.Join(dir, "sth-v4.json"), sth, audit.STHFormat, "bide.audit.sth.v4")
+	f.journalWrongFormat = rewriteJSON(t, filepath.Join(dir, "journal-wrong-format.json"), export, audit.JournalExportFormat, "bide.audit.journal-export.v0")
+	f.journalV0 = file("journal-records.json", recs) // the layout before exports: a JSON array of records
 
 	// prove(bundle, err)(name) writes the bundle and a copy with its head's signature broken.
 	prove := func(b audit.ProofBundle, err error) func(string) (string, string) {
@@ -130,6 +140,9 @@ func newExitFixture(t *testing.T) *exitFixture {
 		}
 	}
 	f.bundle, f.bundleTampered = prove(audit.ProveToolCall(ctx, store, runID, "c1", sth))("bundle")
+	c1 := must(audit.ProveToolCall(ctx, store, runID, "c1", sth))
+	f.bundleNestedV4 = rewriteJSON(t, filepath.Join(dir, "bundle-nested-sth-v4.json"), c1, audit.STHFormat, "bide.audit.sth.v4")
+	f.proofV2 = rewriteJSON(t, filepath.Join(dir, "bundle-proof-v2.json"), c1, audit.ProofFormat, "bide.audit.proof.v2")
 	f.bundleFuture, _ = prove(audit.ProveToolCall(ctx, store, runID, "c1", future))("bundle-future")
 	f.action, f.actionTampered = prove(audit.ProveToolCall(ctx, store, runID, "act", sth))("action")
 	f.policyBundle, f.policyTampered = prove(audit.ProvePolicy(ctx, store, runID, digest, sth))("policy")
@@ -139,7 +152,7 @@ func newExitFixture(t *testing.T) *exitFixture {
 	f.fakePolicy, _ = prove(audit.ProveToolCall(ctx, store, runID, "fake-policy", sth))("fake-policy")
 	f.tally, _ = prove(audit.ProveStep(ctx, store, runID, "quorum/q/tally", sth))("tally")
 
-	absSTH, err := audit.SignAbsenceRoot(recs, audit.ToolUseKeys, sth.TreeHead, priv, 1)
+	absSTH, err := audit.SignAbsenceRoot(recs, audit.ToolUseKeys, sth.TreeHead, signer, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -154,7 +167,7 @@ func newExitFixture(t *testing.T) *exitFixture {
 	ab.Absence.Key = "future-set:refund"
 	f.absUnknownKey = file("absent-unknown-key.json", ab)
 
-	rc, err := audit.CertifyRun(ctx, store, runID, sth, audit.RunCertSpec{ApprovedPolicies: []string{digest, digest2}}, priv, 2)
+	rc, err := audit.CertifyRun(ctx, store, runID, sth, audit.RunCertSpec{ApprovedPolicies: []string{digest, digest2}, Signer: signer, TimestampNanos: 2})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -162,14 +175,15 @@ func newExitFixture(t *testing.T) *exitFixture {
 	rc.STH.Signature = flipSig(rc.STH.Signature)
 	f.runCertTampered = file("runcert-tampered.json", rc)
 
-	pkg, err := audit.Evidence(ctx, store, runID, priv, 1)
+	pkg, err := audit.Evidence(ctx, store, runID, signer, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
 	f.evidence = file("evidence.json", pkg)
+	f.evidenceV4 = rewriteJSON(t, filepath.Join(dir, "evidence-v4.json"), pkg, audit.EvidenceFormat, "bide.audit.evidence.v4")
 	pkg.Signature = flipSig(pkg.Signature)
 	f.evidenceTampered = file("evidence-tampered.json", pkg)
-	pkg, err = audit.Evidence(ctx, store, runID, priv, 1, audit.WithAllToolCalls(), audit.WithRunCertificate(audit.RunCertSpec{ApprovedPolicies: []string{digest, digest2}}))
+	pkg, err = audit.Evidence(ctx, store, runID, signer, 1, audit.WithAllToolCalls(), audit.WithRunCertificate(audit.RunCertSpec{ApprovedPolicies: []string{digest, digest2}}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -254,6 +268,10 @@ func exitCases(f *exitFixture) []exitCase {
 		{name: "prove: no such tool call", args: []string{"prove", "-journal", f.journal, "-sth", f.sth, "-tool", "nope"}, want: 4},
 		{name: "prove: a head signed in the future", args: []string{"prove", "-journal", f.journal, "-sth", f.sthFuture, "-tool", "c1"}, want: 1},
 		{name: "prove: future head beside a missing journal", args: []string{"prove", "-journal", f.missing, "-sth", f.sthFuture, "-tool", "c1"}, want: 1},
+		{name: "prove: an STH with no format (v4 layout)", args: []string{"prove", "-journal", f.journal, "-sth", f.sthNoFormat, "-tool", "c1"}, want: 4},
+		{name: "prove: an STH of format bide.audit.sth.v4", args: []string{"prove", "-journal", f.journal, "-sth", f.sthV4, "-tool", "c1"}, want: 4},
+		{name: "prove: a journal export of another format", args: []string{"prove", "-journal", f.journalWrongFormat, "-sth", f.sth, "-tool", "c1"}, want: 4},
+		{name: "prove: a bare record array (the layout before exports)", args: []string{"prove", "-journal", f.journalV0, "-sth", f.sth, "-tool", "c1"}, want: 4},
 
 		// verify
 		{name: "verify: genuine", args: []string{"verify", "-bundle", f.bundle, "-pubkey", f.pub}, want: 0},
@@ -269,6 +287,10 @@ func exitCases(f *exitFixture) []exitCase {
 		{name: "verify: -max-input-bytes below the bundle", args: []string{"verify", "-max-input-bytes", "10", "-bundle", f.bundle, "-pubkey", f.pub}, want: 4},
 		{name: "verify: public key neither hex nor a file", args: []string{"verify", "-bundle", f.bundle, "-pubkey", f.missing}, want: 4},
 		{name: "verify: future head beside a missing key file", args: []string{"verify", "-bundle", f.bundleFuture, "-pubkey", f.missing}, want: 1},
+		{name: "verify: genuine, key as <scheme>:<hex>", args: []string{"verify", "-bundle", f.bundle, "-pubkey", f.keyPrefixed}, want: 0},
+		{name: "verify: a key of an unknown scheme", args: []string{"verify", "-bundle", f.bundle, "-pubkey", f.keyUnknownScheme}, want: 4},
+		{name: "verify: a bundle whose head is bide.audit.sth.v4", args: []string{"verify", "-bundle", f.bundleNestedV4, "-pubkey", f.pub}, want: 4},
+		{name: "verify: a bide.audit.proof.v2 bundle", args: []string{"verify", "-bundle", f.proofV2, "-pubkey", f.pub}, want: 4},
 
 		// verify-governance
 		{name: "verify-governance: genuine", args: []string{"verify-governance", "-policy", f.policyFile, "-digest", f.digest}, want: 0},
@@ -345,9 +367,12 @@ func exitCases(f *exitFixture) []exitCase {
 		{name: "verify-evidence: run certificate beside a missing allowlist file", args: []string{"verify-evidence", "-evidence", f.evidenceCert, "-pubkey", f.pub, "-approved-file", f.missing}, want: 4},
 		{name: "verify-evidence: tampered beside a missing allowlist file", args: []string{"verify-evidence", "-evidence", f.evidenceTampered, "-pubkey", f.pub, "-approved-file", f.missing}, want: 1},
 		{name: "verify-evidence: no -pubkey", args: []string{"verify-evidence", "-evidence", f.evidence}, want: 2},
+		{name: "verify-evidence: a bide.audit.evidence.v4 package", args: []string{"verify-evidence", "-evidence", f.evidenceV4, "-pubkey", f.pub}, want: 4},
+		{name: "verify-evidence: another key", args: []string{"verify-evidence", "-evidence", f.evidence, "-pubkey", f.otherPub}, want: 1},
 
 		// verify-approvals
 		{name: "verify-approvals: no gate for the call", args: approvals(f.evidence, f.keys), want: 1},
+		{name: "verify-approvals: the key file gives two ids one key, one outside the policy", args: approvals(f.evidence, f.sharedKeys), want: 4},
 		{name: "verify-approvals: no -need", args: []string{"verify-approvals", "-evidence", f.evidence, "-pubkey", f.pub, "-call", "c1", "-approvers", "a", "-approver-keys", f.keys}, want: 2},
 		{name: "verify-approvals: an approver listed twice", args: []string{"verify-approvals", "-evidence", f.missing, "-pubkey", f.pub, "-call", "c1", "-need", "1", "-approvers", "a,a", "-approver-keys", f.missing}, want: 2},
 		{name: "verify-approvals: missing package", args: approvals(f.missing, f.keys), want: 4},
@@ -359,6 +384,7 @@ func exitCases(f *exitFixture) []exitCase {
 		{name: "prove-absent: genuine", args: []string{"prove-absent", "-journal", f.journal, "-sth", f.absSTH, "-key", "tool:refund"}, want: 0},
 		{name: "prove-absent: bad -key", args: []string{"prove-absent", "-journal", f.journal, "-sth", f.absSTH, "-key", "refund"}, want: 2},
 		{name: "prove-absent: missing journal", args: []string{"prove-absent", "-journal", f.missing, "-sth", f.absSTH, "-key", "tool:refund"}, want: 4},
+		{name: "prove-absent: a journal export of another format", args: []string{"prove-absent", "-journal", f.journalWrongFormat, "-sth", f.absSTH, "-key", "tool:refund"}, want: 4},
 		{name: "prove-absent: a present key", args: []string{"prove-absent", "-journal", f.journal, "-sth", f.absSTH, "-key", "tool:c1"}, want: 4},
 		{name: "prove-absent: a policy key against a tool-use head", args: []string{"prove-absent", "-journal", f.journal, "-sth", f.absSTH, "-key", "policy:x"}, want: 4},
 
@@ -476,6 +502,11 @@ func TestExitForPrecedence(t *testing.T) {
 		"unclassified + unreadable":   {errors.Join(errors.New("boom"), unreadable), 4},
 		"format + checker":            {errors.Join(noVerdict, unusable(fmt.Errorf("f: %w", audit.ErrFormat))), 4},
 		"not verified wrapping a 404": {&cliError{class: errNotVerified, err: fmt.Errorf("x: %w", fs.ErrNotExist)}, 1},
+		"bare audit.ErrNotVerified":   {fmt.Errorf("x: %w", audit.ErrNotVerified), 1},
+		"bare audit.ErrMalformed":     {fmt.Errorf("x: %w", audit.ErrMalformed), 4},
+		"malformed + audit verdict":   {errors.Join(unusable(fmt.Errorf("m: %w", audit.ErrMalformed)), fmt.Errorf("v: %w", audit.ErrNotVerified)), 1},
+		"audit verdict + usage":       {errors.Join(fmt.Errorf("v: %w", audit.ErrNotVerified), usage), 2},
+		"checker + audit malformed":   {errors.Join(noVerdict, fmt.Errorf("m: %w", audit.ErrMalformed)), 4},
 	} {
 		if got := exitFor(tc.err); got != tc.want {
 			t.Errorf("%s: exitFor = %d, want %d", name, got, tc.want)
@@ -523,7 +554,7 @@ func TestJSONReport(t *testing.T) {
 		t.Fatalf("prove -json: exit %d, err %v, report %+v", code, err, rep)
 	}
 	var bundle audit.ProofBundle
-	if err := audit.UnmarshalStrict(rep.Artifact, &bundle); err != nil || bundle.Record.ToolUseID != "c1" {
+	if err := audit.UnmarshalStrict(rep.Artifact, &bundle); err != nil || recordOf(bundle).ToolUseID != "c1" {
 		t.Fatalf("prove -json: the artifact is not the bundle (%v): %s", err, rep.Artifact)
 	}
 	code, stdout, _ = runCLI("-json", "verify", "-bundle", f.missing, "-pubkey", f.pub)
@@ -538,7 +569,7 @@ func TestVersion(t *testing.T) {
 	if code != 0 || !strings.HasPrefix(stdout, "bide-audit ") {
 		t.Fatalf("-version: exit %d:\n%s", code, stdout)
 	}
-	formats := []string{audit.ProofFormat, audit.AbsenceFormat, audit.RunCertificateFormat, audit.EvidenceFormat}
+	formats := []string{audit.ProofFormat, audit.AbsenceFormat, audit.RunCertificateFormat, audit.EvidenceFormat, audit.STHFormat, audit.JournalExportFormat}
 	for _, f := range formats {
 		if !strings.Contains(stdout, f) {
 			t.Errorf("-version does not name format %s:\n%s", f, stdout)
@@ -566,7 +597,7 @@ func TestVersion(t *testing.T) {
 func TestVerifyBundleErrorIsUnusable(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	c := &cli{stdout: &stdout, stderr: &stderr, out: &stdout}
-	err := c.verifyBundle(audit.ProofBundle{Format: "bide.audit.proof.v0"}, make([]byte, ed25519.PublicKeySize), "action")
+	err := c.verifyBundle(audit.ProofBundle{Format: "bide.audit.proof.v0"}, audit.Ed25519Verifier{Pub: make([]byte, ed25519.PublicKeySize)}, "action")
 	if got := exitFor(err); got != exitUnusable || !errors.Is(err, audit.ErrFormat) {
 		t.Fatalf("verifyBundle of an unreadable bundle: %v, exit %d; want %d wrapping audit.ErrFormat", err, got, exitUnusable)
 	}

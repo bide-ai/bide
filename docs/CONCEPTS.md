@@ -41,7 +41,7 @@ The vocabulary, defined once. Terms are grouped by the layer they belong to. See
 
 - **Merkle tree / STH**: the audit spine. Records hash into a tree; a signed tree head (STH) commits to the whole log. Inclusion and consistency proofs are checkable offline.
 - **Anchoring**: publishing an STH to an independent log, which upgrades integrity to tamper-evidence against the operator.
-- **ProofBundle**: a portable proof that a specific record is included under a signed tree head.
+- **ProofBundle**: a portable proof that a specific record is included under a signed tree head. It carries the record as the bytes the journal stores for it (`record_bytes`), which the verifier hashes without re-encoding.
 - **Absence proof**: a checkable proof that no record with a given key exists in the log (`ProveAbsent` / `VerifyAbsence`), so "this never happened" is provable, not just unlogged. Completes the trio with inclusion and consistency proofs.
 - **EvidencePackage**: a whole run's evidence in one portable file: a signed tree head plus an inclusion proof per material action, and optionally the run certificate, grant chain, and consistency proof. Built with `audit.Evidence` and checkable offline with `bide-audit verify-evidence`.
 - **RunCertificate**: a proof-carrying attestation of behavioral-property compliance over a whole run, checkable offline.

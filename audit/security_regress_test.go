@@ -1,13 +1,14 @@
 package audit
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/audit/verify"
@@ -45,6 +46,16 @@ func secHead(t *testing.T, s agent.Durable, runID string) ([]agent.Record, TreeH
 	return recs, th
 }
 
+// used is PoliciesUsed, failing t on an error.
+func used(t *testing.T, recs []agent.Record) []string {
+	t.Helper()
+	u, err := PoliciesUsed(recs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return u
+}
+
 func secKey(t *testing.T) (ed25519.PublicKey, ed25519.PrivateKey) {
 	t.Helper()
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
@@ -59,15 +70,15 @@ func TestAbsence_ToolUseTreeCannotProvePolicyAbsent(t *testing.T) {
 	pub, priv := secKey(t)
 	s := secJournal(t, "r", []agent.Record{{Kind: agent.StepToolResult, ToolUseID: "charge", Result: json.RawMessage(`{"policy_digest":"EVIL"}`)}})
 	recs, th := secHead(t, s, "r")
-	toolSTH, err := SignAbsenceRoot(recs, ToolUseKeys, th, priv, 1)
+	toolSTH, err := SignAbsenceRoot(recs, ToolUseKeys, th, edS(priv), 1)
 	if err != nil {
 		t.Fatal(err)
 	}
 	forged := AbsenceBundle{Format: AbsenceFormat, RunID: "r", STH: toolSTH, Absence: Absence{Key: PolicyUsedKeyFor("EVIL"), Size: 1,
 		Right: &Neighbor{Key: "tooluse:charge", Proof: Inclusion{Index: 0, Size: 1}}}}
 	for _, set := range []KeySet{PolicyUsedKeys, ToolUseKeys} {
-		if ok, _ := forged.Verify(pub, set); ok {
-			t.Fatalf("a tool-use absence STH proves policy EVIL absent (as %s), but the run used it (%v)", set.Kind, PoliciesUsed(recs))
+		if err := forged.Verify(edV(pub), set); err == nil {
+			t.Fatalf("a tool-use absence STH proves policy EVIL absent (as %s), but the run used it (%v)", set.Kind, used(t, recs))
 		}
 	}
 	// A genuine tool-use absence proof against the same head verifies.
@@ -75,7 +86,7 @@ func TestAbsence_ToolUseTreeCannotProvePolicyAbsent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ok, _ := good.Verify(pub, ToolUseKeys); !ok {
+	if err := good.Verify(edV(pub), ToolUseKeys); err != nil {
 		t.Fatal("a genuine tool-use absence proof failed to verify")
 	}
 }
@@ -85,20 +96,20 @@ func TestAbsence_JournalTreeCannotProveAbsence(t *testing.T) {
 	pub, priv := secKey(t)
 	s := secJournal(t, "r", []agent.Record{{Kind: agent.StepToolResult, ToolUseID: "charge", Result: json.RawMessage(`"ok"`)}})
 	recs, th := secHead(t, s, "r")
-	sth := SignTreeHead(th, priv)
+	sth := signTH(t, th, priv)
 	leaf0, _ := json.Marshal(recs[0])
 	forged := AbsenceBundle{Format: AbsenceFormat, RunID: "r", STH: sth, Absence: Absence{Key: "tooluse:charge", Size: 1,
 		Right: &Neighbor{Key: string(leaf0), Proof: Inclusion{Index: 0, Size: 1}}}}
-	if ok, _ := forged.Verify(pub, ToolUseKeys); ok {
+	if err := forged.Verify(edV(pub), ToolUseKeys); err == nil {
 		t.Fatal("the journal STH proves the executed tool call 'charge' absent")
 	}
 	// Nor can an absence head stand in for a journal head in a ProofBundle.
-	abs, err := SignAbsenceRoot(recs, ToolUseKeys, th, priv, 1)
+	abs, err := SignAbsenceRoot(recs, ToolUseKeys, th, edS(priv), 1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	pb := ProofBundle{Format: ProofFormat, RunID: "r", Record: agent.Record{}, Inclusion: Inclusion{Index: 0, Size: 1}, STH: abs}
-	if ok, _ := pb.Verify(pub); ok {
+	pb := ProofBundle{Format: ProofFormat, RunID: "r", RecordBytes: recs[0].Raw(), Inclusion: Inclusion{Index: 0, Size: 1}, STH: abs}
+	if err := pb.Verify(edV(pub)); err == nil {
 		t.Fatal("an absence head verified as a journal head")
 	}
 }
@@ -109,22 +120,22 @@ func TestVerifyRun_RejectsSubstitutedAbsenceSTH(t *testing.T) {
 	pub, priv := secKey(t)
 	s := secJournal(t, "X", []agent.Record{{Kind: agent.StepToolResult, ToolUseID: "c", Result: json.RawMessage(`{"policy_digest":"EVIL"}`)}})
 	recs, th := secHead(t, s, "X")
-	sth := SignTreeHead(th, priv)
+	sth := signTH(t, th, priv)
 
 	// A signed empty used-policy set from another run with no governed actions.
 	other := secJournal(t, "Y", []agent.Record{{Kind: agent.StepValue, Name: "x", Result: json.RawMessage(`1`)}})
 	orecs, oth := secHead(t, other, "Y")
-	emptyY, err := SignAbsenceRoot(orecs, PolicyUsedKeys, oth, priv, 2)
+	emptyY, err := SignAbsenceRoot(orecs, PolicyUsedKeys, oth, edS(priv), 2)
 	if err != nil {
 		t.Fatal(err)
 	}
 	// Relabelled as run X (signature breaks), and a genuine empty set of run X's empty prefix.
-	emptyPrefix, err := SignAbsenceRoot(recs[:0], PolicyUsedKeys, TreeHead{Kind: TreeJournal, RunID: "X", Size: 0, Root: merkleRoot(nil)}, priv, 2)
+	emptyPrefix, err := SignAbsenceRoot(recs[:0], PolicyUsedKeys, TreeHead{Kind: TreeJournal, RunID: "X", Size: 0, Root: merkleRoot(nil)}, edS(priv), 2)
 	if err != nil {
 		t.Fatal(err)
 	}
 	// Run X's own tool-use set is empty of policies too, but it is the wrong key set.
-	toolX, err := SignAbsenceRoot(recs, ToolUseKeys, th, priv, 2)
+	toolX, err := SignAbsenceRoot(recs, ToolUseKeys, th, edS(priv), 2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,8 +148,8 @@ func TestVerifyRun_RejectsSubstitutedAbsenceSTH(t *testing.T) {
 		"run X's tool-use set":              toolX,
 	} {
 		cert := RunCertificate{Format: RunCertificateFormat, RunID: "X", Properties: runCertProperties, UsedPolicies: []string{}, UsedPolicyAbsence: abs, STH: sth}
-		if res, _ := VerifyRun(cert, []string{"GOOD"}, pub); res.OK || res.OnlyApprovedPolicies {
-			t.Errorf("%s: run X used %v but its certificate verifies only-approved-policies", name, PoliciesUsed(recs))
+		if res, _ := VerifyRun(cert, []string{"GOOD"}, edV(pub)); res.OK || res.OnlyApprovedPolicies {
+			t.Errorf("%s: run X used %v but its certificate verifies only-approved-policies", name, used(t, recs))
 		}
 	}
 }
@@ -162,12 +173,12 @@ func secEvidence(t *testing.T, opts ...EvidenceOption) (EvidencePackage, ed25519
 	if err != nil {
 		t.Fatal(err)
 	}
-	opts = append([]EvidenceOption{WithConsistencyFrom(SignTreeHead(early, priv))}, opts...)
-	pkg, err := Evidence(context.Background(), s, "A", priv, 1, opts...)
+	opts = append([]EvidenceOption{WithConsistencyFrom(signTH(t, early, priv))}, opts...)
+	pkg, err := Evidence(context.Background(), s, "A", edS(priv), 1, opts...)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rep, err := pkg.Verify(pub, WithApprovedPolicies()); err != nil || !rep.OK {
+	if rep, err := pkg.Verify(edV(pub), WithApprovedPolicies()); err != nil || !rep.OK {
 		t.Fatalf("the untouched package does not verify: %+v %v", rep, err)
 	}
 	return pkg, pub, priv
@@ -177,14 +188,14 @@ func secEvidence(t *testing.T, opts ...EvidenceOption) (EvidencePackage, ed25519
 // resealed with the log key itself: the seal attributes a package, it does not vouch for its proofs.
 func secReject(t *testing.T, what string, pkg EvidencePackage, pub ed25519.PublicKey, priv ed25519.PrivateKey) {
 	t.Helper()
-	if rep, _ := pkg.Verify(pub, WithApprovedPolicies()); rep.OK {
+	if rep, _ := pkg.Verify(edV(pub), WithApprovedPolicies()); rep.OK {
 		t.Fatalf("%s: the package verifies", what)
 	}
 	if priv != nil {
-		if err := pkg.Seal(priv); err != nil {
+		if err := pkg.Seal(edS(priv)); err != nil {
 			t.Fatal(err)
 		}
-		if rep, _ := pkg.Verify(pub, WithApprovedPolicies()); rep.OK {
+		if rep, _ := pkg.Verify(edV(pub), WithApprovedPolicies()); rep.OK {
 			t.Fatalf("%s: the resealed package verifies", what)
 		}
 	}
@@ -204,7 +215,7 @@ func TestEvidence_ConsistencyProofIsChecked(t *testing.T) {
 	// An earlier head of another run cannot anchor the proof.
 	pkg, pub, priv = secEvidence(t)
 	pkg.Consistency.From.RunID = "B"
-	pkg.Consistency.From = SignTreeHead(pkg.Consistency.From.TreeHead, priv)
+	pkg.Consistency.From = signTH(t, pkg.Consistency.From.TreeHead, priv)
 	secReject(t, "earlier head of another run", pkg, pub, priv)
 }
 
@@ -238,7 +249,7 @@ func TestEvidence_RunIDIsAuthenticated(t *testing.T) {
 	pkg, pub, _ = secEvidence(t)
 	b := pkg.Actions[0].Bundle
 	b.RunID = "B"
-	if ok, _ := b.Verify(pub); ok {
+	if err := b.Verify(edV(pub)); err == nil {
 		t.Fatal("a ProofBundle from run A verifies with RunID B")
 	}
 	// Two runs with byte-identical journals have the same root; their heads are still distinct.
@@ -257,8 +268,12 @@ func TestEvidence_FormatKeyAndSealAreChecked(t *testing.T) {
 
 	pkg, pub, priv = secEvidence(t)
 	other, _ := secKey(t)
-	pkg.PublicKeyHex = hex.EncodeToString(other)
-	secReject(t, "foreign public key", pkg, pub, priv)
+	pkg.PublicKey = other
+	secReject(t, "foreign public key", pkg, pub, nil)
+	// The log key will not seal a package that names another key.
+	if err := pkg.Seal(edS(priv)); err == nil {
+		t.Fatal("Seal sealed a package naming a foreign public key")
+	}
 
 	pkg, pub, _ = secEvidence(t, WithLabel("Q3 refunds"))
 	pkg.Label = "Q3 refunds, all approved by the CFO"
@@ -276,7 +291,7 @@ func TestEvidence_RunCertificateIsBoundToPackage(t *testing.T) {
 	pkg, pub, priv := secEvidence(t)
 	other := secJournal(t, "B", []agent.Record{{Kind: agent.StepValue, Name: "x", Result: json.RawMessage(`1`)}})
 	oth, _ := NewTreeHead(ctx, other, "B", 1)
-	cert, err := CertifyRun(ctx, other, "B", SignTreeHead(oth, priv), RunCertSpec{}, priv, 1)
+	cert, err := CertifyRun(ctx, other, "B", signTH(t, oth, priv), RunCertSpec{Signer: edS(priv), TimestampNanos: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -285,10 +300,10 @@ func TestEvidence_RunCertificateIsBoundToPackage(t *testing.T) {
 
 	// Its own certificate verifies only with an allowlist supplied.
 	pkg, pub, priv = secEvidence(t, WithRunCertificate(RunCertSpec{}))
-	if rep, _ := pkg.Verify(pub); rep.OK {
+	if rep, _ := pkg.Verify(edV(pub)); rep.OK {
 		t.Fatal("a run certificate verified with no allowlist supplied")
 	}
-	if rep, _ := pkg.Verify(pub, WithApprovedPolicies()); !rep.OK {
+	if rep, _ := pkg.Verify(edV(pub), WithApprovedPolicies()); !rep.OK {
 		t.Fatalf("a run that used no policy failed against an empty allowlist: %+v", rep)
 	}
 	_ = priv
@@ -305,11 +320,11 @@ func TestEvidence_GrantChainMatchesAnchoredLeaves(t *testing.T) {
 		t.Fatal(err)
 	}
 	build := func() EvidencePackage {
-		pkg, err := Evidence(ctx, s, "A", priv, 1, WithGrants())
+		pkg, err := Evidence(ctx, s, "A", edS(priv), 1, WithGrants())
 		if err != nil {
 			t.Fatal(err)
 		}
-		if rep, _ := pkg.Verify(pub); !rep.OK {
+		if rep, _ := pkg.Verify(edV(pub)); !rep.OK {
 			t.Fatalf("untouched grant package does not verify: %+v", rep)
 		}
 		return pkg
@@ -352,15 +367,15 @@ func TestEvidence_ConsistencyProofIsForItsClaimedSize(t *testing.T) {
 	inner := secThreeCalls(t, "A")
 	recs, _ := inner.History(ctx, "A")
 	early, _ := journalHead("A", recs[:2], 1)
-	pkg, err := Evidence(ctx, &growingStore{Durable: inner}, "A", priv, 1, WithToolCall("a"), WithConsistencyFrom(SignTreeHead(early, priv)))
+	pkg, err := Evidence(ctx, &growingStore{Durable: inner}, "A", edS(priv), 1, WithToolCall("a"), WithConsistencyFrom(signTH(t, early, priv)))
 	if err != nil {
 		t.Fatal(err)
 	}
 	c := pkg.Consistency
-	if c.Proof.Size != pkg.STH.Size || !VerifyConsistency(early.Root, pkg.STH.Root, c.Proof) {
+	if c.Proof.Size != pkg.STH.Size || VerifyConsistency(early.Root, pkg.STH.Root, c.Proof) != nil {
 		t.Fatalf("the package's consistency proof (first %d, size %d) does not prove the prefix against its STH", c.Proof.First, c.Proof.Size)
 	}
-	if rep, _ := pkg.Verify(pub); !rep.OK {
+	if rep, _ := pkg.Verify(edV(pub)); !rep.OK {
 		t.Fatalf("package assembled while the journal grew does not verify: %+v", rep)
 	}
 }
@@ -376,10 +391,10 @@ func TestDelegation_ChainRules(t *testing.T) {
 	}
 	iv := func(id string) (Verifier, bool) { v, ok := keys[id]; return v, ok }
 	rules := ScopeRules{"limit": NumericAtMost}
-	root, _ := SignGrant(Grant{ID: "root", Issuer: "alice", Subject: "bob", NotAfter: 1000,
+	root, _ := SignGrant(Grant{ID: "root", Issuer: "alice", Subject: "bob", NotAfterUnix: 1000,
 		Scope: map[string]string{"limit": "100", "tool": "refund"}}, Ed25519Signer{Priv: alicePriv})
 	good := func() Grant {
-		return Grant{ID: "c", Issuer: "bob", Subject: "carol", ParentRef: root.Grant.Digest(), NotAfter: 900,
+		return Grant{ID: "c", Issuer: "bob", Subject: "carol", ParentRef: root.Grant.Digest(), NotAfterUnix: 900,
 			Scope: map[string]string{"limit": "50", "tool": "refund"}}
 	}
 	sign := func(g Grant, priv ed25519.PrivateKey) SignedGrant {
@@ -389,12 +404,12 @@ func TestDelegation_ChainRules(t *testing.T) {
 		}
 		return sg
 	}
-	if ok, err := VerifyDelegationChain([]SignedGrant{root, sign(good(), alicePriv)}, iv, rules); !ok {
+	if err := VerifyDelegationChain([]SignedGrant{root, sign(good(), alicePriv)}, iv, rules); err != nil {
 		t.Fatalf("a valid child was rejected: %v", err)
 	}
 	extra := good()
 	extra.Scope["region"] = "EU" // an added constraint narrows
-	if ok, err := VerifyDelegationChain([]SignedGrant{root, sign(extra, alicePriv)}, iv, rules); !ok {
+	if err := VerifyDelegationChain([]SignedGrant{root, sign(extra, alicePriv)}, iv, rules); err != nil {
 		t.Fatalf("a child adding a constraint was rejected: %v", err)
 	}
 	for _, tc := range []struct {
@@ -403,8 +418,8 @@ func TestDelegation_ChainRules(t *testing.T) {
 		signer ed25519.PrivateKey
 	}{
 		{"issuer is not the parent's subject", func(g *Grant) { g.Issuer = "mallory" }, malPriv},
-		{"child never expires under an expiring parent", func(g *Grant) { g.NotAfter = 0 }, alicePriv},
-		{"child outlives its parent", func(g *Grant) { g.NotAfter = 2000 }, alicePriv},
+		{"child never expires under an expiring parent", func(g *Grant) { g.NotAfterUnix = 0 }, alicePriv},
+		{"child outlives its parent", func(g *Grant) { g.NotAfterUnix = 2000 }, alicePriv},
 		{"child drops the tool constraint", func(g *Grant) { delete(g.Scope, "tool") }, alicePriv},
 		{"child changes the tool constraint", func(g *Grant) { g.Scope["tool"] = "charge" }, alicePriv},
 		{"child raises the limit", func(g *Grant) { g.Scope["limit"] = "101" }, alicePriv},
@@ -413,7 +428,7 @@ func TestDelegation_ChainRules(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			g := good()
 			tc.mutate(&g)
-			if ok, _ := VerifyDelegationChain([]SignedGrant{root, sign(g, tc.signer)}, iv, rules); ok {
+			if err := VerifyDelegationChain([]SignedGrant{root, sign(g, tc.signer)}, iv, rules); err == nil {
 				t.Fatalf("chain verifies although the %s", tc.name)
 			}
 		})
@@ -421,7 +436,7 @@ func TestDelegation_ChainRules(t *testing.T) {
 	// A child of a never-expiring parent may itself never expire.
 	forever, _ := SignGrant(Grant{ID: "root2", Issuer: "alice", Subject: "bob", Scope: map[string]string{"limit": "1"}}, Ed25519Signer{Priv: alicePriv})
 	child := Grant{ID: "c2", Issuer: "bob", Subject: "carol", ParentRef: forever.Grant.Digest(), Scope: map[string]string{"limit": "1"}}
-	if ok, err := VerifyDelegationChain([]SignedGrant{forever, sign(child, alicePriv)}, iv, rules); !ok {
+	if err := VerifyDelegationChain([]SignedGrant{forever, sign(child, alicePriv)}, iv, rules); err != nil {
 		t.Fatalf("a non-expiring child of a non-expiring parent was rejected: %v", err)
 	}
 }
@@ -432,7 +447,7 @@ func TestEarnedAuthority_DemotionRevokesOldGrant(t *testing.T) {
 	pub, priv := secKey(t)
 	logPub, logPriv := secKey(t)
 	iv := func(string) (Verifier, bool) { return Ed25519Verifier{Pub: pub}, true }
-	root, _ := SignGrant(Grant{ID: "root", Issuer: "corp", Subject: "ops", NotAfter: 1000,
+	root, _ := SignGrant(Grant{ID: "root", Issuer: "corp", Subject: "ops", NotAfterUnix: 1000,
 		Scope: map[string]string{"limit": "100"}}, Ed25519Signer{Priv: priv})
 	ledger := agent.NewMemStore()
 	ea, err := NewEarnedAuthority(ctx, []int{10, 100}, 1, root, Ed25519Signer{Priv: priv}, "agent", ledger, "ledger")
@@ -444,7 +459,7 @@ func TestEarnedAuthority_DemotionRevokesOldGrant(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		pb, err := ProveCurrentGrant(ctx, ledger, "ledger", SignTreeHead(th, logPriv), 0)
+		pb, err := ProveCurrentGrant(ctx, ledger, "ledger", signTH(t, th, logPriv), 0)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -455,20 +470,20 @@ func TestEarnedAuthority_DemotionRevokesOldGrant(t *testing.T) {
 		t.Fatal(err)
 	}
 	high := ea.Grant()
-	if ok, err := VerifyCurrentGrant(high, "ledger", current(), nil, logPub); !ok {
+	if err := VerifyCurrentGrant(high, "ledger", current(), nil, edV(logPub)); err != nil {
 		t.Fatalf("the promoted grant is not current: %v", err)
 	}
-	if ok, _ := VerifyCurrentGrant(low, "ledger", current(), nil, logPub); ok {
+	if err := VerifyCurrentGrant(low, "ledger", current(), nil, edV(logPub)); err == nil {
 		t.Fatal("the baseline grant is still current after promotion")
 	}
 	if _, err := ea.FlagAnomaly(ctx); err != nil {
 		t.Fatal(err)
 	}
 	demoted := ea.Grant()
-	if ok, err := VerifyCurrentGrant(demoted, "ledger", current(), nil, logPub); !ok {
+	if err := VerifyCurrentGrant(demoted, "ledger", current(), nil, edV(logPub)); err != nil {
 		t.Fatalf("the demoted grant is not current: %v", err)
 	}
-	if ok, _ := VerifyCurrentGrant(high, "ledger", current(), nil, logPub); ok {
+	if err := VerifyCurrentGrant(high, "ledger", current(), nil, edV(logPub)); err == nil {
 		t.Fatalf("after demotion to limit %d, the limit %s grant is still current", ea.Limit(), high.Grant.Scope["limit"])
 	}
 	// The demoted grant is a new issue, not the old baseline one, so the old baseline stays superseded.
@@ -477,18 +492,18 @@ func TestEarnedAuthority_DemotionRevokesOldGrant(t *testing.T) {
 	}
 	// Every earned grant also expires with its root.
 	for _, g := range []SignedGrant{low, high, demoted} {
-		ok, _ := VerifyDelegationChain([]SignedGrant{root, g}, iv, EarnedRules)
-		if !ok || g.Grant.NotAfter != 1000 || !g.Grant.Expired(5000) {
-			t.Fatalf("earned grant %s: chain ok=%v not_after=%d", g.Grant.ID, ok, g.Grant.NotAfter)
+		err := VerifyDelegationChain([]SignedGrant{root, g}, iv, EarnedRules)
+		if err != nil || g.Grant.NotAfterUnix != 1000 || !g.Grant.Expired(5000) {
+			t.Fatalf("earned grant %s: chain err=%v not_after_unix=%d", g.Grant.ID, err, g.Grant.NotAfterUnix)
 		}
 	}
 	// A proof from another ledger head or signed by another key does not count.
 	pb := current()
 	pb.Leaf.Inclusion.Index = 0
-	if ok, _ := VerifyCurrentGrant(demoted, "ledger", pb, nil, logPub); ok {
+	if err := VerifyCurrentGrant(demoted, "ledger", pb, nil, edV(logPub)); err == nil {
 		t.Fatal("a tampered current-grant proof verified")
 	}
-	if ok, _ := VerifyCurrentGrant(demoted, "ledger", current(), nil, pub); ok {
+	if err := VerifyCurrentGrant(demoted, "ledger", current(), nil, edV(pub)); err == nil {
 		t.Fatal("a current-grant proof verified under the wrong log key")
 	}
 }
@@ -516,7 +531,7 @@ func TestVerifyPath_NegativeIndexAgreesWithStandalone(t *testing.T) {
 			}
 			for m := 0; m <= n; m++ {
 				early := merkleRoot(leaves[:m])
-				path := consistencyProof(m, leaves[:n])
+				path := consistencyProof(m, leafHashes(leaves[:n]))
 				for first := -3; first <= n+1; first++ {
 					lib := verifyConsistency(first, size, path, early, root)
 					std := verify.Consistency(first, size, path, early, root)
@@ -527,29 +542,30 @@ func TestVerifyPath_NegativeIndexAgreesWithStandalone(t *testing.T) {
 			}
 		}
 	}
-	if ok, _ := VerifyAbsence(merkleRoot(nil), Absence{Key: "k", Size: -1}); ok {
+	if err := VerifyAbsence(merkleRoot(nil), Absence{Key: "k", Size: -1}); err == nil {
 		t.Fatal("an absence proof against a negative size verified")
 	}
 }
 
-// Wrong-length keys must return false, not panic.
+// Wrong-length keys must fail to verify, not panic.
 func TestWrongLengthKeys_DoNotPanic(t *testing.T) {
 	for name, f := range map[string]func() bool{
-		"SignedTreeHead.Verify(nil)": func() bool { return SignedTreeHead{}.Verify(nil) },
+		"SignedTreeHead.Verify(nil)": func() bool { return SignedTreeHead{}.Verify(nil) == nil },
 		"Ed25519Verifier short key":  func() bool { return Ed25519Verifier{Pub: []byte{0xab}}.Verify([]byte("m"), nil) },
-		"VerifySignature short key":  func() bool { return VerifySignature([]byte("h"), nil, []byte{1}) },
-		"MLDSAVerifier nil key":      func() bool { return MLDSAVerifier{}.Verify([]byte("m"), nil) },
-		"SignedTreeHead.VerifyWith(nil)": func() bool {
-			return SignedTreeHead{TreeHead: TreeHead{Kind: TreeJournal}}.VerifyWith(nil)
+		"VerifySignature short key": func() bool {
+			return VerifySignature([]byte("h"), nil, Ed25519Verifier{Pub: []byte{1}}) == nil
+		},
+		"MLDSAVerifier nil key": func() bool { return MLDSAVerifier{}.Verify([]byte("m"), nil) },
+		"SignedTreeHead.Verify short key": func() bool {
+			return SignedTreeHead{Format: STHFormat, TreeHead: TreeHead{Kind: TreeJournal}, Alg: AlgEd25519}.Verify(Ed25519Verifier{Pub: []byte{1}}) == nil
 		},
 		"SignedGrant.Verify short key": func() bool {
-			ok, _ := SignedGrant{Alg: AlgEd25519}.Verify(Ed25519Verifier{Pub: []byte{1, 2}})
-			return ok
+			return SignedGrant{Alg: AlgEd25519}.Verify(Ed25519Verifier{Pub: []byte{1, 2}}) == nil
 		},
 		"SignedGrant.Verify nil": func() bool {
-			ok, _ := SignedGrant{Alg: AlgEd25519}.Verify(nil)
-			return ok
+			return SignedGrant{Alg: AlgEd25519}.Verify(nil) == nil
 		},
+		"HybridVerifier zero": func() bool { return HybridVerifier{}.Verify([]byte("m"), []byte{0, 0, 0, 0}) },
 		"Ed25519Signer short key": func() bool {
 			_, err := Ed25519Signer{Priv: []byte{1}}.Sign([]byte("m"))
 			return err == nil
@@ -568,31 +584,30 @@ func TestWrongLengthKeys_DoNotPanic(t *testing.T) {
 	}
 }
 
-// Two records that differ only in invalid UTF-8 must not share a leaf.
+// A journal leaf is the record's stored bytes, so two records share a leaf only if the journal
+// stores the same bytes for them. A Go string with invalid UTF-8 is stored as U+FFFD (the journal
+// encoding), so the leaf commits to what the journal holds and what every reader reads; raw JSON
+// keeps its bytes, so records that differ only in invalid bytes there have different leaves.
 func TestLeaf_InvalidUTF8DoesNotCollide(t *testing.T) {
 	salt := make([]byte, agent.SaltSize)
-	a := withSalt(agent.Record{Kind: agent.StepValue, Name: "pay\xff", Result: json.RawMessage(`1`)}, salt)
-	b := withSalt(agent.Record{Kind: agent.StepValue, Name: "pay\xfe", Result: json.RawMessage(`1`)}, salt)
-	la, errA := canonicalLeaves([]agent.Record{a})
-	lb, errB := canonicalLeaves([]agent.Record{b})
-	if errA == nil && errB == nil && string(la[0]) == string(lb[0]) {
-		t.Fatalf("records with names %q and %q commit to the same leaf %s", a.Name, b.Name, la[0])
+	a := stored(withSalt(agent.Record{Kind: agent.StepValue, Name: "pay\xff", Result: json.RawMessage(`1`)}, salt))
+	la, err := canonicalRecord(a)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if errA == nil || !strings.Contains(errA.Error(), "UTF-8") {
-		t.Fatalf("a record with invalid UTF-8 was committed: %v", errA)
+	if !bytes.Equal(la, tagged(journalLeafTag, a.Raw())) || !utf8.Valid(a.Raw()) {
+		t.Fatalf("leaf %q is not the tag and the valid stored bytes %q", la, a.Raw())
 	}
-	// Deeper strings count too: a model turn's text.
-	m := withSalt(agent.Record{Kind: agent.StepModel, Name: "turn", Message: &agent.Message{Role: agent.RoleAssistant, Parts: []agent.Part{agent.Text{Text: "ok\xff"}}}}, salt)
-	if _, err := canonicalLeaves([]agent.Record{m}); err == nil {
-		t.Fatal("a model turn with invalid UTF-8 text was committed")
+	// Raw JSON is committed byte for byte.
+	r1 := stored(withSalt(agent.Record{Kind: agent.StepValue, Name: "raw", Result: json.RawMessage("\"\xff\"")}, salt))
+	r2 := stored(withSalt(agent.Record{Kind: agent.StepValue, Name: "raw", Result: json.RawMessage("\"\xfe\"")}, salt))
+	l1, err1 := canonicalRecord(r1)
+	l2, err2 := canonicalRecord(r2)
+	if err1 != nil || err2 != nil {
+		t.Fatalf("raw JSON bytes were refused: %v, %v", err1, err2)
 	}
-	if ok, err := VerifyInclusion(nil, a, Inclusion{Size: 1}); ok || err == nil {
-		t.Fatal("VerifyInclusion accepted a record with invalid UTF-8")
-	}
-	// Raw JSON is committed byte for byte, so it needs no check.
-	r := withSalt(agent.Record{Kind: agent.StepValue, Name: "raw", Result: json.RawMessage("\"\xff\"")}, salt)
-	if _, err := canonicalLeaves([]agent.Record{r}); err != nil {
-		t.Fatalf("raw JSON bytes were refused: %v", err)
+	if bytes.Equal(l1, l2) {
+		t.Fatal("records whose raw JSON differs only in invalid bytes share a leaf")
 	}
 	// Anchor log entries are leaves too.
 	if _, err := canonicalAnchorEntry(AnchorEntry{RunID: "r\xff"}); err == nil {
@@ -614,7 +629,7 @@ func TestGrant_InvalidUTF8DoesNotCollide(t *testing.T) {
 	}
 	other := signed
 	other.Grant.Scope = map[string]string{"tool": "refund\xfe"}
-	if ok, _ := other.Verify(v); ok {
+	if err := other.Verify(v); err == nil {
 		t.Fatal("the signature over tool=refund\\uFFFD verifies for tool=refund\\xfe")
 	}
 	// Scope keys, too.
@@ -651,11 +666,11 @@ func secGrantsIn(t *testing.T, store agent.Durable, runID string) []SignedGrant 
 func TestAttenuatingSubAgent_RefusesWidening(t *testing.T) {
 	_, priv := secKey(t)
 	signer := Ed25519Signer{Priv: priv}
-	rootSG, _ := SignGrant(Grant{ID: "g0", Issuer: "corp", Subject: "desk", NotAfter: 1000, Scope: map[string]string{"limit": "7", "tool": "refund"}}, signer)
+	rootSG, _ := SignGrant(Grant{ID: "g0", Issuer: "corp", Subject: "desk", NotAfterUnix: 1000, Scope: map[string]string{"limit": "7", "tool": "refund"}}, signer)
 	for name, child := range map[string]Grant{
 		"a wider limit":      {ID: "wide", Scope: map[string]string{"limit": "7000", "tool": "refund"}},
 		"a dropped tool":     {ID: "drop", Scope: map[string]string{"limit": "3"}},
-		"a later expiry":     {ID: "late", NotAfter: 2000, Scope: map[string]string{"limit": "3", "tool": "refund"}},
+		"a later expiry":     {ID: "late", NotAfterUnix: 2000, Scope: map[string]string{"limit": "3", "tool": "refund"}},
 		"a different issuer": {ID: "iss", Issuer: "mallory", Scope: map[string]string{"limit": "3", "tool": "refund"}},
 	} {
 		store := agent.NewMemStore()
@@ -672,14 +687,14 @@ func TestAttenuatingSubAgent_InheritsNotAfter(t *testing.T) {
 	store := agent.NewMemStore()
 	_, priv := secKey(t)
 	signer := Ed25519Signer{Priv: priv}
-	rootSG, _ := SignGrant(Grant{ID: "g0", Issuer: "corp", Subject: "desk", NotAfter: 1000, Scope: map[string]string{"limit": "7"}}, signer)
+	rootSG, _ := SignGrant(Grant{ID: "g0", Issuer: "corp", Subject: "desk", NotAfterUnix: 1000, Scope: map[string]string{"limit": "7"}}, signer)
 	tool := AttenuatingSubAgent("exec", "x", agent.New(answerModel{"done"}, store), store,
 		narrowTo(Grant{ID: "narrow", Scope: map[string]string{"limit": "3"}}), ScopeRules{"limit": NumericAtMost})
 	if err := secDelegate(t, store, tool, WithGrant(context.Background(), rootSG, signer), "p1"); err != nil {
 		t.Fatal(err)
 	}
 	grants := secGrantsIn(t, store, agent.SubRunID("p1", "c1"))
-	if len(grants) != 1 || grants[0].Grant.NotAfter != 1000 {
+	if len(grants) != 1 || grants[0].Grant.NotAfterUnix != 1000 {
 		t.Fatalf("child grants %+v, want one with the parent's not_after 1000", grants)
 	}
 }
@@ -730,7 +745,7 @@ func TestCheckAttenuation_EmptyConstraintIsKept(t *testing.T) {
 func TestEvidence_SealRefusesInvalidUTF8(t *testing.T) {
 	pkg, _, priv := secEvidence(t)
 	pkg.Label = "refunds\xff"
-	if err := pkg.Seal(priv); err == nil {
+	if err := pkg.Seal(edS(priv)); err == nil {
 		t.Fatal("a package with an invalid UTF-8 label was sealed")
 	}
 }
@@ -766,7 +781,7 @@ func TestAbsenceHead_JournalReferenceIsSigned(t *testing.T) {
 	pub, priv := secKey(t)
 	s := secThreeCalls(t, "A")
 	recs, th := secHead(t, s, "A")
-	abs, err := SignAbsenceRoot(recs, ToolUseKeys, th, priv, 1)
+	abs, err := SignAbsenceRoot(recs, ToolUseKeys, th, edS(priv), 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -776,7 +791,7 @@ func TestAbsenceHead_JournalReferenceIsSigned(t *testing.T) {
 	} {
 		bad := abs
 		bad.Journal = &ref
-		if bad.Verify(pub) {
+		if bad.Verify(edV(pub)) == nil {
 			t.Fatalf("a key-set head verified with its journal %s changed", name)
 		}
 	}
@@ -787,7 +802,7 @@ func TestAbsenceBundle_EveryBindingIsChecked(t *testing.T) {
 	pub, priv := secKey(t)
 	s := secThreeCalls(t, "A")
 	recs, th := secHead(t, s, "A")
-	toolSTH, err := SignAbsenceRoot(recs, ToolUseKeys, th, priv, 1)
+	toolSTH, err := SignAbsenceRoot(recs, ToolUseKeys, th, edS(priv), 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -795,19 +810,19 @@ func TestAbsenceBundle_EveryBindingIsChecked(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ok, _ := good.Verify(pub, ToolUseKeys); !ok {
+	if err := good.Verify(edV(pub), ToolUseKeys); err != nil {
 		t.Fatal("the genuine bundle does not verify")
 	}
 	relabelled := good
 	relabelled.RunID = "B"
-	if ok, _ := relabelled.Verify(pub, ToolUseKeys); ok {
+	if err := relabelled.Verify(edV(pub), ToolUseKeys); err == nil {
 		t.Fatal("run A's absence bundle verified as run B's")
 	}
 	// A key set with no prefix would accept any key, e.g. a policy key in the tool-use tree.
 	forged := AbsenceBundle{Format: AbsenceFormat, RunID: "A", STH: toolSTH, Absence: Absence{Key: PolicyUsedKeyFor("EVIL"), Size: 3,
 		Right: good.Absence.Left}}
-	if ok, err := forged.Verify(pub, KeySet{Kind: TreeToolUse, Key: ToolUseKey}); ok || err == nil {
-		t.Fatalf("a bundle verified against a key set with no prefix (ok=%v err=%v)", ok, err)
+	if err := forged.Verify(edV(pub), KeySet{Kind: TreeToolUse, Key: ToolUseKey}); err == nil {
+		t.Fatal("a bundle verified against a key set with no prefix")
 	}
 	if _, err := ProveAbsent(recs, ToolUseKeys, PolicyUsedKeyFor("x")); err == nil {
 		t.Fatal("ProveAbsent proved a policy key absent from the tool-use set")
@@ -816,7 +831,7 @@ func TestAbsenceBundle_EveryBindingIsChecked(t *testing.T) {
 	// kind tells them apart.
 	vals := secJournal(t, "V", []agent.Record{{Kind: agent.StepValue, Name: "v", Result: json.RawMessage(`1`)}})
 	vrecs, vth := secHead(t, vals, "V")
-	emptyTool, err := SignAbsenceRoot(vrecs, ToolUseKeys, vth, priv, 1)
+	emptyTool, err := SignAbsenceRoot(vrecs, ToolUseKeys, vth, edS(priv), 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -834,7 +849,7 @@ func TestAbsenceBundle_EveryBindingIsChecked(t *testing.T) {
 		t.Fatal("ProveAbsentBundle used records of another journal with the same key set")
 	}
 	// An empty key set has one root; a proof against any other root is not an absence proof.
-	if ok, _ := VerifyAbsence([]byte("not the empty root"), Absence{Key: "tooluse:x"}); ok {
+	if err := VerifyAbsence([]byte("not the empty root"), Absence{Key: "tooluse:x"}); err == nil {
 		t.Fatal("an empty-set absence proof verified against a non-empty root")
 	}
 }
@@ -845,20 +860,20 @@ func TestProofBundle_RequiresAJournalHead(t *testing.T) {
 	s := secJournal(t, "A", []agent.Record{{Kind: agent.StepValue, Name: "v", Result: json.RawMessage(`1`)}})
 	recs, th := secHead(t, s, "A")
 	// A caller-defined key set whose key is the record's own JSON: its tree equals the journal tree.
-	raw := KeySet{Kind: "absence/raw", Prefix: "{", Key: func(r agent.Record) (string, bool) {
+	raw := KeySet{Kind: "absence/raw", Prefix: "{", Key: func(r agent.Record) []string {
 		b, _ := json.Marshal(r)
-		return string(b), true
+		return []string{string(b)}
 	}}
-	abs, err := SignAbsenceRoot(recs, raw, th, priv, 1)
+	abs, err := SignAbsenceRoot(recs, raw, th, edS(priv), 1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	pb, err := ProveRecord(context.Background(), s, "A", 0, SignTreeHead(th, priv))
+	pb, err := ProveRecord(context.Background(), s, "A", 0, signTH(t, th, priv))
 	if err != nil {
 		t.Fatal(err)
 	}
 	pb.STH = abs
-	if ok, _ := pb.Verify(pub); ok {
+	if err := pb.Verify(edV(pub)); err == nil {
 		t.Fatal("a record proof verified against a key-set head")
 	}
 }
@@ -871,7 +886,7 @@ func TestEvidence_EveryBindingIsChecked(t *testing.T) {
 	// The package run ID alone relabelled and resealed by the log key (no consistency proof, whose
 	// earlier head would also name run A).
 	pub, priv := secKey(t)
-	pkg, err := Evidence(ctx, secThreeCalls(t, "A"), "A", priv, 1)
+	pkg, err := Evidence(ctx, secThreeCalls(t, "A"), "A", edS(priv), 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -883,7 +898,7 @@ func TestEvidence_EveryBindingIsChecked(t *testing.T) {
 	s := secThreeCalls(t, "A")
 	recs, _ := s.History(ctx, "A")
 	early, _ := journalHead("A", recs[:1], 1)
-	pb, err := ProveRecord(ctx, s, "A", 0, SignTreeHead(early, priv))
+	pb, err := ProveRecord(ctx, s, "A", 0, signTH(t, early, priv))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -898,7 +913,7 @@ func TestEvidence_EveryBindingIsChecked(t *testing.T) {
 	// A proof whose sizes are not the two signed sizes, from an empty earlier head.
 	pkg, pub, priv = secEvidence(t)
 	empty, _ := journalHead("A", nil, 0)
-	pkg.Consistency = &EvidenceConsistency{From: SignTreeHead(empty, priv), Proof: Consistency{First: 0, Size: 99}}
+	pkg.Consistency = &EvidenceConsistency{From: signTH(t, empty, priv), Proof: Consistency{First: 0, Size: 99}}
 	secReject(t, "a consistency proof for size 99 against a head of size 3", pkg, pub, priv)
 
 	// An anchoring proof relabelled as a step (its label and ref match a step of that record).
@@ -908,12 +923,12 @@ func TestEvidence_EveryBindingIsChecked(t *testing.T) {
 	if _, err := RecordGrant(ctx, gs, "G", g); err != nil {
 		t.Fatal(err)
 	}
-	gpkg, err := Evidence(ctx, gs, "G", priv, 1, WithGrants())
+	gpkg, err := Evidence(ctx, gs, "G", edS(priv), 1, WithGrants())
 	if err != nil {
 		t.Fatal(err)
 	}
 	a := &gpkg.Grants.Anchored[0]
-	a.Kind, a.Label, a.Ref = KindStep, a.Bundle.Record.Name, a.Bundle.Record.Name
+	a.Kind, a.Label, a.Ref = KindStep, recOf(t, a.Bundle).Name, recOf(t, a.Bundle).Name
 	secReject(t, "a grant anchoring proof relabelled as a step", gpkg, pub, priv)
 }
 
@@ -922,7 +937,7 @@ func TestMemAnchorLog_RejectsAHeadOfAnotherRun(t *testing.T) {
 	_, priv := secKey(t)
 	s := secThreeCalls(t, "A")
 	_, th := secHead(t, s, "A")
-	if err := NewMemAnchorLog().Publish(context.Background(), "B", SignTreeHead(th, priv)); err == nil {
+	if err := NewMemAnchorLog().Publish(context.Background(), "B", signTH(t, th, priv)); err == nil {
 		t.Fatal("the anchor log recorded run A's head as run B's")
 	}
 }
@@ -943,11 +958,11 @@ func TestEarnedAuthority_OldLeafIsNotCurrent(t *testing.T) {
 		t.Fatal(err)
 	}
 	th, _ := NewTreeHead(ctx, ledger, "ledger", 1)
-	old, err := ProveRecord(ctx, ledger, "ledger", 0, SignTreeHead(th, logPriv))
+	old, err := ProveRecord(ctx, ledger, "ledger", 0, signTH(t, th, logPriv))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ok, _ := VerifyCurrentGrant(first, "ledger", CurrentGrantProof{Format: CurrentGrantFormat, Leaf: old}, nil, logPub); ok {
+	if err := VerifyCurrentGrant(first, "ledger", CurrentGrantProof{Format: CurrentGrantFormat, Leaf: old}, nil, edV(logPub)); err == nil {
 		t.Fatal("a superseded grant verified as current from a proof of its (non-last) ledger leaf")
 	}
 }

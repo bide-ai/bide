@@ -200,13 +200,17 @@ func runScale(t *testing.T, ctx context.Context, m *gsm.Machine, base []string, 
 				atomic.AddInt64(&auditErrs, 1)
 				return
 			}
-			sth := audit.SignTreeHead(th, priv)
+			sth, err := audit.SignTreeHead(th, audit.Ed25519Signer{Priv: priv})
+			if err != nil {
+				atomic.AddInt64(&auditErrs, 1)
+				return
+			}
 			bundle, err := audit.ProveToolCall(ctx, store, runID, "call-0", sth)
 			if err != nil {
 				atomic.AddInt64(&auditErrs, 1)
 				return
 			}
-			if ok, err := bundle.Verify(pub); err != nil || !ok {
+			if err := bundle.Verify(audit.Ed25519Verifier{Pub: pub}); err != nil {
 				atomic.AddInt64(&auditErrs, 1)
 			}
 		}(i)

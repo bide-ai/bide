@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"slices"
 	"testing"
 
@@ -37,8 +38,8 @@ func TestVerifyApprovals_DetectsOmission(t *testing.T) {
 	acts := without(evidenceFor(t, g), func(a audit.EvidenceAction) bool {
 		return a.Kind == audit.KindApproval && a.Label == "mallory"
 	})
-	v, err := audit.VerifyApprovals(acts, "c1", g.policy, g.resolver(), g.logPub)
-	if err != nil {
+	v, err := audit.VerifyApprovals(acts, "c1", g.policy, g.resolver(), edV(g.logPub))
+	if err := reportErr(v.OK, err); err != nil {
 		t.Fatal(err)
 	}
 	if v.OK || !hasProblem(v, "omits") {
@@ -59,10 +60,10 @@ func TestVerifyApprovals_DetectsHiddenDenial(t *testing.T) {
 		t.Fatal(err)
 	}
 	acts := without(evidenceFor(t, g), func(a audit.EvidenceAction) bool {
-		return a.Kind == audit.KindApproval && a.Label == "carol" && !a.Bundle.Record.Approved
+		return a.Kind == audit.KindApproval && a.Label == "carol" && !recOf(t, a.Bundle).Approved
 	})
-	v, err := audit.VerifyApprovals(acts, "c1", g.policy, g.resolver(), g.logPub)
-	if err != nil {
+	v, err := audit.VerifyApprovals(acts, "c1", g.policy, g.resolver(), edV(g.logPub))
+	if err := reportErr(v.OK, err); err != nil {
 		t.Fatal(err)
 	}
 	if v.OK || !hasProblem(v, "omits") || !hasProblem(v, "disagrees") {
@@ -79,8 +80,8 @@ func TestVerifyApprovals_DetectsPolicyMismatch(t *testing.T) {
 		"weaker need":     {Need: 1, Approvers: g.policy.Approvers},
 		"other approvers": {Need: 2, Approvers: []string{"alice", "bob", "dave"}},
 	} {
-		v, err := audit.VerifyApprovals(acts, "c1", expect, g.resolver(), g.logPub)
-		if err != nil {
+		v, err := audit.VerifyApprovals(acts, "c1", expect, g.resolver(), edV(g.logPub))
+		if err := reportErr(v.OK, err); err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
 		if v.OK || !hasProblem(v, "enforced") {
@@ -93,8 +94,8 @@ func TestVerifyApprovals_DetectsPolicyMismatch(t *testing.T) {
 func TestVerifyApprovals_DetectsRecountMismatch(t *testing.T) {
 	g := passedGate(t)
 	delete(g.pubs, "bob") // the auditor has no key for bob
-	v, err := audit.VerifyApprovals(evidenceFor(t, g), "c1", g.policy, g.resolver(), g.logPub)
-	if err != nil {
+	v, err := audit.VerifyApprovals(evidenceFor(t, g), "c1", g.policy, g.resolver(), edV(g.logPub))
+	if err := reportErr(v.OK, err); err != nil {
 		t.Fatal(err)
 	}
 	if v.OK || !hasProblem(v, "disagrees") || ignoredReason(v, "bob") != agent.ReasonNoKey {
@@ -119,8 +120,8 @@ func TestVerifyApprovals_LateDecisionIgnored(t *testing.T) {
 		t.Fatal(err)
 	}
 	acts = append(acts, audit.EvidenceAction{Label: "carol", Kind: audit.KindApproval, Ref: late.Name, Bundle: pb})
-	v, err := audit.VerifyApprovals(acts, "c1", g.policy, g.resolver(), g.logPub)
-	if err != nil {
+	v, err := audit.VerifyApprovals(acts, "c1", g.policy, g.resolver(), edV(g.logPub))
+	if err := reportErr(v.OK, err); err != nil {
 		t.Fatal(err)
 	}
 	if !v.OK || !slices.Equal(v.Counted, []string{"alice", "bob"}) {
@@ -147,8 +148,8 @@ func TestVerifyApprovals_DeniedGate(t *testing.T) {
 	if g.charged != 0 {
 		t.Fatalf("denied gate charged %d times", g.charged)
 	}
-	v, err := audit.VerifyApprovals(evidenceFor(t, g), "c1", g.policy, g.resolver(), g.logPub)
-	if err != nil {
+	v, err := audit.VerifyApprovals(evidenceFor(t, g), "c1", g.policy, g.resolver(), edV(g.logPub))
+	if err := reportErr(v.OK, err); err != nil {
 		t.Fatal(err)
 	}
 	if v.OK || len(v.Problems) != 0 || !slices.Equal(v.DeniedBy, []string{"alice", "bob"}) {
@@ -164,18 +165,18 @@ func TestVerifyApprovals_Tampering(t *testing.T) {
 	acts := evidenceFor(t, g)
 	for i := range acts {
 		if acts[i].Kind == audit.KindApproval && acts[i].Label == "alice" {
-			acts[i].Bundle.Record.Approved = false
+			editRec(t, &acts[i].Bundle, func(r *agent.Record) { r.Approved = false })
 		}
 	}
-	v, err := audit.VerifyApprovals(acts, "c1", g.policy, g.resolver(), g.logPub)
-	if err != nil {
-		t.Fatal(err)
+	v, err := audit.VerifyApprovals(acts, "c1", g.policy, g.resolver(), edV(g.logPub))
+	if !errors.Is(err, audit.ErrNotVerified) {
+		t.Fatalf("tampered decision: err = %v, want ErrNotVerified", err)
 	}
 	if v.OK || !hasProblem(v, "omits, or cannot prove") {
 		t.Fatalf("tampered decision: verdict = %+v, want a proof problem", v)
 	}
 
-	for _, kind := range []string{audit.KindCall, audit.KindApprovalTally, audit.KindTool} {
+	for _, kind := range []audit.EvidenceKind{audit.KindCall, audit.KindApprovalTally, audit.KindTool} {
 		acts := evidenceFor(t, g)
 		for i := range acts {
 			if acts[i].Kind == kind {
@@ -183,15 +184,17 @@ func TestVerifyApprovals_Tampering(t *testing.T) {
 				case audit.KindCall:
 					// Edit a copy: the record's Message is a pointer, so editing it in place
 					// could reach data other evidence shares.
-					m := *acts[i].Bundle.Record.Message
-					m.Parts = []agent.Part{agent.ToolUse{ID: "c1", Name: "charge", Args: json.RawMessage(`{"amount":999}`)}}
-					acts[i].Bundle.Record.Message = &m
+					editRec(t, &acts[i].Bundle, func(r *agent.Record) {
+						m := *r.Message
+						m.Parts = []agent.Part{agent.ToolUse{ID: "c1", Name: "charge", Args: json.RawMessage(`{"amount":999}`)}}
+						r.Message = &m
+					})
 				default:
-					acts[i].Bundle.Record.Result = json.RawMessage(`"edited"`)
+					editRec(t, &acts[i].Bundle, func(r *agent.Record) { r.Result = json.RawMessage(`"edited"`) })
 				}
 			}
 		}
-		if _, err := audit.VerifyApprovals(acts, "c1", g.policy, g.resolver(), g.logPub); err == nil {
+		if _, err := audit.VerifyApprovals(acts, "c1", g.policy, g.resolver(), edV(g.logPub)); err == nil {
 			t.Fatalf("tampered %s: VerifyApprovals returned a verdict, want an error", kind)
 		}
 	}
@@ -206,7 +209,7 @@ func TestVerifyApprovals_Tampering(t *testing.T) {
 			mixed[i] = other[i]
 		}
 	}
-	if _, err := audit.VerifyApprovals(mixed, "c1", g.policy, g.resolver(), g.logPub); err == nil {
+	if _, err := audit.VerifyApprovals(mixed, "c1", g.policy, g.resolver(), edV(g.logPub)); err == nil {
 		t.Fatal("tally under a different tree head: VerifyApprovals returned a verdict, want an error")
 	}
 }
@@ -218,27 +221,27 @@ func TestVerifyApprovals_Errors(t *testing.T) {
 	wrongLog, _, _ := ed25519.GenerateKey(rand.Reader)
 	cases := map[string]func() error{
 		"wrong log key": func() error {
-			_, err := audit.VerifyApprovals(acts, "c1", g.policy, g.resolver(), wrongLog)
+			_, err := audit.VerifyApprovals(acts, "c1", g.policy, g.resolver(), edV(wrongLog))
 			return err
 		},
 		"unknown call": func() error {
-			_, err := audit.VerifyApprovals(acts, "nope", g.policy, g.resolver(), g.logPub)
+			_, err := audit.VerifyApprovals(acts, "nope", g.policy, g.resolver(), edV(g.logPub))
 			return err
 		},
 		"no request": func() error {
-			_, err := audit.VerifyApprovals(without(acts, func(a audit.EvidenceAction) bool { return a.Kind == audit.KindCall }), "c1", g.policy, g.resolver(), g.logPub)
+			_, err := audit.VerifyApprovals(without(acts, func(a audit.EvidenceAction) bool { return a.Kind == audit.KindCall }), "c1", g.policy, g.resolver(), edV(g.logPub))
 			return err
 		},
 		"no tally": func() error {
-			_, err := audit.VerifyApprovals(without(acts, func(a audit.EvidenceAction) bool { return a.Kind == audit.KindApprovalTally }), "c1", g.policy, g.resolver(), g.logPub)
+			_, err := audit.VerifyApprovals(without(acts, func(a audit.EvidenceAction) bool { return a.Kind == audit.KindApprovalTally }), "c1", g.policy, g.resolver(), edV(g.logPub))
 			return err
 		},
 		"invalid policy": func() error {
-			_, err := audit.VerifyApprovals(acts, "c1", agent.ApprovalPolicy{Need: 4, Approvers: g.policy.Approvers}, g.resolver(), g.logPub)
+			_, err := audit.VerifyApprovals(acts, "c1", agent.ApprovalPolicy{Need: 4, Approvers: g.policy.Approvers}, g.resolver(), edV(g.logPub))
 			return err
 		},
 		"nil resolver": func() error {
-			_, err := audit.VerifyApprovals(acts, "c1", g.policy, nil, g.logPub)
+			_, err := audit.VerifyApprovals(acts, "c1", g.policy, nil, edV(g.logPub))
 			return err
 		},
 	}

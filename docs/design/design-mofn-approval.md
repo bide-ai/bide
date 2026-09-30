@@ -201,7 +201,7 @@ The gate predicate becomes `RequiresApproval || Approval != nil`.
 
 ### Recording a decision (`agent/approval.go`)
 
-<!-- docsnip: api agent -->
+<!-- docsnip: skip the v0.4.0 API as designed; ApproveAs is now SubmitDecision with a Decision that names its Alg -->
 ```go
 // ApproveAs records one named approver's signed decision on a tool call gated by an m-of-n
 // Approval policy. sig is the approver's signature over

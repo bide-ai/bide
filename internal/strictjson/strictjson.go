@@ -46,13 +46,20 @@ type Options struct {
 	// Hooks maps a type to a check of its own: the value is consumed (checked for duplicate
 	// names only) and its raw text, with the path to it, is handed to the hook.
 	Hooks map[reflect.Type]func(raw []byte, path string) error
+	// AllowUnknown lets an object decoded into a struct carry names the struct does not have, as a
+	// document written by a later version does. Such a name must not be a case variant of a name
+	// the struct has ("Kind" beside a "kind" field), which encoding/json would read into that
+	// field; its value is checked like any value decoded into Go: no duplicate names at any depth
+	// and no escaped lone surrogate.
+	AllowUnknown bool
 }
 
 // ErrTrailingData reports data after the one JSON value.
 var ErrTrailingData = errors.New("trailing data after the value")
 
 // Unmarshal checks data against v's type (see Check) and decodes it into v with encoding/json,
-// which then rejects any name the check let through that is not a field. Invalid UTF-8 anywhere
+// which then rejects any name the check let through that is not a field (unless
+// Options.AllowUnknown, when it ignores such names). Invalid UTF-8 anywhere
 // in data is an error.
 func Unmarshal(data []byte, v any, opts *Options) error {
 	if !utf8.Valid(data) {
@@ -66,7 +73,9 @@ func Unmarshal(data []byte, v any, opts *Options) error {
 		return err
 	}
 	d := json.NewDecoder(bytes.NewReader(data))
-	d.DisallowUnknownFields()
+	if opts == nil || !opts.AllowUnknown {
+		d.DisallowUnknownFields()
+	}
 	return d.Decode(v)
 }
 
@@ -223,10 +232,18 @@ func (s *decoder) value(t reflect.Type, path string, verbatim bool) error {
 			switch {
 			case fields != nil:
 				f, ok := fields[key]
-				if !ok {
+				switch {
+				case ok:
+					next, nullOK = f.Type, f.NullOK
+				case !s.opts.AllowUnknown:
 					return fmt.Errorf("%s: %q is not a field of %s (names must match exactly)", path, key, t)
+				default:
+					for name := range fields {
+						if strings.EqualFold(name, key) {
+							return fmt.Errorf("%s: %q is a case variant of field %q of %s (names must match exactly)", path, key, name, t)
+						}
+					}
 				}
-				next, nullOK = f.Type, f.NullOK
 			case mapElem != nil:
 				next = mapElem
 			}

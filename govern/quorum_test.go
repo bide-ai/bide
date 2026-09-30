@@ -155,7 +155,10 @@ func TestQuorumProvenance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sth := audit.SignTreeHead(th, priv)
+	sth, err := audit.SignTreeHead(th, audit.Ed25519Signer{Priv: priv})
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	// Each named vote and the tally are provable on their own, without disclosing the others.
 	for _, name := range []string{govern.QuorumVoteStep("q", "gpt"), govern.QuorumVoteStep("q", "claude"), govern.QuorumVoteStep("q", "gemini"), govern.QuorumTallyStep("q")} {
@@ -163,12 +166,8 @@ func TestQuorumProvenance(t *testing.T) {
 		if err != nil {
 			t.Fatalf("prove %q: %v", name, err)
 		}
-		ok, err := pb.Verify(pub)
-		if err != nil {
+		if err := pb.Verify(audit.Ed25519Verifier{Pub: pub}); err != nil {
 			t.Fatalf("verify %q: %v", name, err)
-		}
-		if !ok {
-			t.Fatalf("inclusion proof for %q did not verify", name)
 		}
 	}
 }

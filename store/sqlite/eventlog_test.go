@@ -48,7 +48,7 @@ func TestSQLite_EventLogSurvivesRestart(t *testing.T) {
 	if after.Len() != 3 || !bytes.Equal(after.Root(), before.Root()) {
 		t.Fatalf("the event log's root changed across a restart (%d events)", after.Len())
 	}
-	if ok, err := audit.VerifyEventInclusion(after.Root(), evs[1], proof); !ok || err != nil {
-		t.Fatalf("a proof from before the restart does not verify after it: %v, %v", ok, err)
+	if err := audit.VerifyEventInclusion(after.Root(), evs[1], proof); err != nil {
+		t.Fatalf("a proof from before the restart does not verify after it: %v", err)
 	}
 }

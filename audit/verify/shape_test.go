@@ -8,14 +8,17 @@ import (
 	"github.com/bide-ai/bide/audit/verify"
 )
 
-// SignTreeHead signs a head of any shape, but audit refuses one whose shape no commitment can
-// have: a journal or event head naming a source journal, an absence head without one, or a kind
-// it does not know. The standalone verifier must reach the same verdict on every signed head, so
-// a third party checking with it is not told a head verifies that the SDK rejects.
+// audit refuses a head whose shape no commitment can have: a journal or event head naming a source
+// journal, an absence head without one, or a kind it does not know (SignTreeHead will not sign one,
+// and SignedTreeHead.Verify rejects one whatever its signature). The standalone verifier must reach
+// the same verdict on every signed head, so a third party checking with it is not told a head
+// verifies that the SDK rejects. The ill-shaped heads are signed here over the documented encoding.
 func TestVerify_TreeHeadShapeMatchesAudit(t *testing.T) {
 	pub, priv, _ := ed25519.GenerateKey(nil)
 	root := make([]byte, 32)
 	ref := &audit.TreeRef{Size: 3, Root: root}
+	av := audit.Ed25519Verifier{Pub: pub}
+	sv, _ := verify.NewVerifier("ed25519", pub)
 	for name, th := range map[string]audit.TreeHead{
 		"journal head":                   {Kind: audit.TreeJournal, RunID: "r", Size: 3, Root: root},
 		"event head":                     {Kind: audit.TreeEvents, RunID: "r", Size: 3, Root: root},
@@ -29,13 +32,13 @@ func TestVerify_TreeHeadShapeMatchesAudit(t *testing.T) {
 		"absence head, negative journal": {Kind: audit.TreeToolUse, RunID: "r", Size: 1, Root: root, Journal: &audit.TreeRef{Size: -1, Root: root}},
 		"empty kind":                     {Kind: "", RunID: "r", Size: 3, Root: root},
 	} {
-		sth := audit.SignTreeHead(th, priv)
-		var jref *verify.TreeRef
-		if th.Journal != nil {
-			jref = &verify.TreeRef{Size: th.Journal.Size, Root: th.Journal.Root}
+		sth := audit.SignedTreeHead{Format: audit.STHFormat, TreeHead: th, Alg: audit.AlgEd25519, Signature: ed25519.Sign(priv, canonicalV5("ed25519", th))}
+		_, signErr := audit.SignTreeHead(th, audit.Ed25519Signer{Priv: priv})
+		want := sth.Verify(av) == nil
+		if (signErr == nil) != want {
+			t.Errorf("%s: SignTreeHead err = %v, but Verify of the signed head = %v", name, signErr, want)
 		}
-		want := sth.Verify(pub)
-		if got := verify.TreeHead(th.Kind, th.RunID, th.Size, th.Root, th.Timestamp, jref, sth.Signature, pub); got != want {
+		if got := verify.TreeHead(head(sth), sth.Signature, sv); got != want {
 			t.Errorf("%s: verify.TreeHead = %v, audit SignedTreeHead.Verify = %v", name, got, want)
 		}
 	}

@@ -52,3 +52,12 @@ func stripRawValue(v reflect.Value) {
 		}
 	}
 }
+
+// stored returns r as a journal would hand it back: its Raw set to its journal encoding.
+func stored(r agent.Record) agent.Record {
+	b, err := agent.EncodeRecord(r)
+	if err != nil {
+		panic(err)
+	}
+	return journalhook.WithRaw(r, b).(agent.Record)
+}

@@ -1,7 +1,8 @@
 // Package audit turns an agent's durable journal into a verifiable, tamper-evident
 // record. The journal already captures every step of a run (model turns, tool calls and
 // results, approvals, saga outcomes); this package commits to that history with a hash
-// chain and lets you sign/verify the commitment. Stdlib-only (crypto/sha256, ed25519).
+// chain and Merkle trees and lets you sign/verify the commitment under ed25519, ML-DSA-65,
+// or a hybrid of both. Stdlib-only.
 //
 // Security model — read this before relying on it for compliance:
 //
@@ -18,7 +19,6 @@ package audit
 
 import (
 	"context"
-	"crypto/ed25519"
 	"crypto/sha256"
 	"fmt"
 
@@ -26,16 +26,19 @@ import (
 )
 
 // domain separates this hash use from any other, seeding the chain. It names the version of the
-// record encoding the chain covers: v2 chains over the journal encoding (agent.EncodeRecord),
-// which does not HTML-escape, so a head over the v1 encoding (where <, >, and & were escaped) is
-// told apart from a head over the same journal in v2 rather than read as a fork.
+// record encoding the chain covers: v2 chains over the bytes the journal stores for each record,
+// which do not HTML-escape, so a head over the v1 encoding (where <, >, and & were escaped) is told
+// apart from a head over the same journal in v2 rather than read as a fork.
 var domain = sha256.Sum256([]byte("bide.audit.v2"))
 
+// headSigTag domain-separates a signature over a linear head from every other message a key signs.
+const headSigTag = "bide.audit.head.v1\x00"
+
 // Head returns the hash-chain commitment to runID's journal: head_0 = H(domain), and
-// head_i = H(head_{i-1} || canonical(record_i)) over the records in persisted order, where
-// canonical is agent.EncodeRecord: the bytes the store persisted for the record. Two
-// runs produce the same head iff their journals are byte-identical in the same order, so
-// the head is a deterministic fingerprint of the entire execution history.
+// head_i = H(head_{i-1} || stored(record_i)) over the records in persisted order, where stored is
+// the bytes the journal stores for the record (agent.Record.Raw), verbatim. Two runs produce the
+// same head iff their journals are byte-identical in the same order, so the head is a
+// deterministic fingerprint of the entire execution history.
 func Head(ctx context.Context, store agent.Durable, runID string) ([]byte, error) {
 	recs, err := store.History(ctx, runID)
 	if err != nil {
@@ -43,9 +46,9 @@ func Head(ctx context.Context, store agent.Durable, runID string) ([]byte, error
 	}
 	head := domain[:]
 	for i, r := range recs {
-		b, err := agent.EncodeRecord(r)
-		if err != nil {
-			return nil, fmt.Errorf("audit: canonicalize record %d: %w", i, err)
+		b := r.Raw()
+		if b == nil {
+			return nil, fmt.Errorf("audit: record %d (%q) has no stored bytes", i, r.Name)
 		}
 		sum := sha256.Sum256(append(append([]byte{}, head...), b...))
 		head = sum[:]
@@ -53,16 +56,23 @@ func Head(ctx context.Context, store agent.Durable, runID string) ([]byte, error
 	return head, nil
 }
 
-// Sign returns an Ed25519 signature over a head commitment — anchor this (store it in a
-// separate trust domain) to make the journal tamper-evident against later rewrites. Like
-// ed25519.Sign it panics if priv is not ed25519.PrivateKeySize bytes.
-func Sign(head []byte, priv ed25519.PrivateKey) []byte {
-	return ed25519.Sign(priv, head)
+// Sign returns s's signature over a head commitment ("bide.audit.head.v1\x00" || head). Anchor it
+// (store it in a separate trust domain) to make the journal tamper-evident against later rewrites.
+func Sign(head []byte, s Signer) ([]byte, error) {
+	if err := checkSigner(s); err != nil {
+		return nil, err
+	}
+	return s.Sign(append([]byte(headSigTag), head...))
 }
 
-// VerifySignature reports whether sig is a valid signature of head under pub. A weak public key
-// (see CheckEd25519PublicKey) is reported as not verifying rather than panicking or accepting a
-// forged signature.
-func VerifySignature(head, sig []byte, pub ed25519.PublicKey) bool {
-	return CheckEd25519PublicKey(pub) == nil && ed25519.Verify(pub, head, sig)
+// VerifySignature returns nil if sig is a valid signature of head (see Sign) under v, and an error
+// wrapping ErrNotVerified otherwise.
+func VerifySignature(head, sig []byte, v Verifier) error {
+	if err := checkVerifier(v); err != nil {
+		return err
+	}
+	if !v.Verify(append([]byte(headSigTag), head...), sig) {
+		return notVerified("audit: the head signature does not verify under this %s key", v.Alg())
+	}
+	return nil
 }

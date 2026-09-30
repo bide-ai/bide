@@ -2,93 +2,111 @@ package audit
 
 import (
 	"context"
-	"crypto/ed25519"
 	"fmt"
 
 	"github.com/bide-ai/bide/agent"
 )
 
 // A ProofBundle is a single, portable, self-describing artifact that proves ONE action
-// happened inside a signed, committed run. It discloses the record (with its salt), its index,
-// the run's size and signed head, and the sibling hashes on its path, and no other record: each
-// record's leaf commits to its own random salt, so the sibling hashes cannot be tested against a
-// guessed neighbour (see merkle.go). It is what "produce a proof" returns: hand it (plus the
-// signer's public key, obtained out-of-band) to an auditor and they verify it offline. This turns
-// the audit package's separate pieces (a record, its inclusion path, a signed tree head) into one
-// thing you can marshal to JSON, store, email, or publish.
+// happened inside a signed, committed run. It discloses the record (with its salt) as the bytes
+// the journal stores for it, its index, the run's size and signed head, and the sibling hashes on
+// its path, and no other record: each record's leaf commits to its own random salt, so the sibling
+// hashes cannot be tested against a guessed neighbour (see merkle.go). It is what "produce a proof"
+// returns: hand it (plus the signer's public key, obtained out-of-band) to an auditor and they
+// verify it offline.
+//
+// The record is carried as RecordBytes, the stored bytes verbatim, and the verifier hashes exactly
+// those bytes: it never re-encodes a decoded record. So a record a later release wrote, with
+// fields this release does not know, verifies here, and what a proof commits to cannot depend on
+// how this release encodes a record. Record decodes the bytes, leniently (unknown fields are
+// ignored), for display and for the checks that read what the record is (its kind, its name).
 //
 // The trust model, stated precisely: the public key must come from OUT OF BAND (the anchor /
 // transparency log), NOT from the bundle. Given a trusted key, Verify checks (1) the STH's
-// signature, so the {Kind, RunID, Size, Root, Timestamp} commitment is authentic; (2) that the
-// STH commits to a journal and to the bundle's RunID, so the run a verifier reports is the run
-// the signer committed to; (3) that the inclusion proof is against that same signed size; and
-// (4) that the disclosed record is the leaf at its index under the signed root. "Proofs you verify, not logs you trust": nothing here asks the
-// verifier to trust the producer, its database, or its logs. For full tamper-evidence the
-// auditor also confirms the STH itself appears in the anchor log (MemAnchorLog.Prove).
+// signature, so the {Kind, RunID, Size, Root, TimestampNanos} commitment is authentic; (2) that
+// the STH commits to a journal and to the bundle's RunID, so the run a verifier reports is the run
+// the signer committed to; (3) that the inclusion proof is against that same signed size; and (4)
+// that the record bytes are the leaf at their index under the signed root. "Proofs you verify, not
+// logs you trust": nothing here asks the verifier to trust the producer, its database, or its
+// logs. For full tamper-evidence the auditor also confirms the STH itself appears in the anchor
+// log (MemAnchorLog.Prove).
 type ProofBundle struct {
-	Format    string         `json:"format"`    // ProofFormat
-	RunID     string         `json:"run_id"`    // the run whose journal the record and STH belong to; must equal STH.RunID
-	Record    agent.Record   `json:"record"`    // the single disclosed action
-	Inclusion Inclusion      `json:"inclusion"` // its RFC 6962 audit path
-	STH       SignedTreeHead `json:"sth"`       // the signed commitment it is proven against
+	Format      string         `json:"format"`       // ProofFormat
+	RunID       string         `json:"run_id"`       // the run whose journal the record and STH belong to; must equal STH.RunID
+	RecordBytes []byte         `json:"record_bytes"` // the single disclosed action: the bytes the journal stores for it
+	Inclusion   Inclusion      `json:"inclusion"`    // its RFC 6962 audit path
+	STH         SignedTreeHead `json:"sth"`          // the signed commitment it is proven against
 }
 
-// Verify reports whether the bundle is internally consistent and authentic under pub (a key
-// obtained out-of-band, e.g. from the anchor log operator). It returns false, not an error,
-// for a well-formed-but-invalid proof; an error indicates the record could not be canonicalized.
+// Record decodes the proven record from RecordBytes, for display and role checks. The decoding is
+// lenient, as the journal's own: a field this version does not know is ignored. It errors (wrapping
+// ErrMalformed) only if the bytes do not decode as a journal record.
+func (b ProofBundle) Record() (agent.Record, error) { return decodeRecordBytes(b.RecordBytes) }
+
+// Verify returns nil if the bundle is internally consistent and authentic under v (a key obtained
+// out-of-band, e.g. from the anchor log operator): the STH verifies under v, it is a journal head of
+// RunID, the inclusion proof is for the signed size, and RecordBytes are the leaf at their index
+// under the signed root. It then requires RecordBytes to decode as a record (ErrMalformed if not).
+// A bundle that does not hold is an error wrapping ErrNotVerified; one of another format, ErrFormat.
 // It does not check the head's timestamp; apply CheckTimestamp to b.STH for that.
-func (b ProofBundle) Verify(pub ed25519.PublicKey) (bool, error) {
-	if b.STH.Alg != "" && b.STH.Alg != AlgEd25519 {
-		return false, nil
-	}
-	return b.VerifyWith(Ed25519Verifier{Pub: pub})
-}
-
-// VerifyWith is the scheme-agnostic form of Verify: it authenticates the STH under any Verifier
-// (ed25519, ML-DSA, or hybrid), then binds and checks the inclusion proof.
-func (b ProofBundle) VerifyWith(v Verifier) (bool, error) {
+func (b ProofBundle) Verify(v Verifier) error {
 	if err := formatOf(b, b.Format); err != nil {
-		return false, err
+		return err
 	}
-	if !b.STH.VerifyWith(v) {
-		return false, nil // the signed commitment is not authentic under this key
+	if err := b.STH.Verify(v); err != nil {
+		return err
 	}
 	if b.STH.Kind != TreeJournal || b.STH.RunID != b.RunID {
-		return false, nil // not a head of this run's journal
+		return notVerified("audit: the proof's head is a %q head of run %q, not the journal of run %q", b.STH.Kind, b.STH.RunID, b.RunID)
 	}
 	if b.Inclusion.Size != b.STH.Size {
-		return false, nil // the proof is not bound to the tree the STH signed
+		return notVerified("audit: the inclusion proof is for a tree of %d records, not the signed %d", b.Inclusion.Size, b.STH.Size)
 	}
-	return VerifyInclusion(b.STH.Root, b.Record, b.Inclusion)
+	if err := VerifyInclusion(b.STH.Root, b.RecordBytes, b.Inclusion); err != nil {
+		return err
+	}
+	_, err := b.Record()
+	return err
 }
 
 // ProveRecord builds a bundle proving the record at index is in the tree that sth commits to.
 // The inclusion proof is built against the first sth.Size records of runID's journal (the tree
 // the STH signed), so the bundle binds to an anchored STH rather than a freshly minted one.
-// It fails if index is outside that tree, or if sth.Root does not match runID's journal at
-// that size (wrong STH, or the history diverged from what was signed).
+// It fails if index is outside that tree, if the record is redacted, or if sth.Root does not
+// match runID's journal at that size (wrong STH, or the history diverged from what was signed).
 func ProveRecord(ctx context.Context, store agent.Durable, runID string, index int, sth SignedTreeHead) (ProofBundle, error) {
 	recs, err := store.History(ctx, runID)
 	if err != nil {
 		return ProofBundle{}, fmt.Errorf("audit: load journal %s: %w", runID, err)
 	}
-	recs, err = journalPrefix(runID, recs, sth.TreeHead)
+	return proveIn(runID, recs, index, sth)
+}
+
+// proveIn is ProveRecord over recs, runID's journal as read.
+func proveIn(runID string, recs []agent.Record, index int, sth SignedTreeHead) (ProofBundle, error) {
+	recs, err := journalPrefix(runID, recs, sth.TreeHead)
 	if err != nil {
 		return ProofBundle{}, err
 	}
 	if index < 0 || index >= sth.Size {
 		return ProofBundle{}, fmt.Errorf("audit: record %d is not in the tree the STH commits to (size %d)", index, sth.Size)
 	}
-	leaves, err := canonicalLeaves(recs)
+	if _, err := canonicalRecord(recs[index]); err != nil {
+		return ProofBundle{}, fmt.Errorf("audit: record %d: %w", index, err)
+	}
+	if _, err := decodeRecordBytes(recs[index].Raw()); err != nil {
+		return ProofBundle{}, fmt.Errorf("audit: record %d: %w", index, err)
+	}
+	leaves, err := journalLeafHashes(recs)
 	if err != nil {
 		return ProofBundle{}, err
 	}
 	return ProofBundle{
-		Format:    ProofFormat,
-		RunID:     runID,
-		Record:    recs[index],
-		Inclusion: Inclusion{Index: index, Size: sth.Size, Path: auditPath(index, leaves)},
-		STH:       sth,
+		Format:      ProofFormat,
+		RunID:       runID,
+		RecordBytes: recs[index].Raw(),
+		Inclusion:   Inclusion{Index: index, Size: sth.Size, Path: hashPath(index, leaves)},
+		STH:         sth,
 	}, nil
 }
 

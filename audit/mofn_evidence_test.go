@@ -118,8 +118,9 @@ func (g *gate) decide(t *testing.T, id string, approved, tamper bool) {
 	if tamper {
 		sig[0] ^= 0xff
 	}
-	if err := agent.ApproveAs(context.Background(), g.store, gateRun, "c1", id, approved, sig); err != nil {
-		t.Fatalf("ApproveAs %s: %v", id, err)
+	d := agent.Decision{RunID: gateRun, ToolUseID: "c1", ApproverID: id, Approved: approved, Alg: audit.AlgEd25519, Signature: sig}
+	if err := agent.SubmitDecision(context.Background(), g.store, d); err != nil {
+		t.Fatalf("SubmitDecision %s: %v", id, err)
 	}
 }
 
@@ -130,7 +131,7 @@ func (g *gate) sth(t *testing.T, ts int64) audit.SignedTreeHead {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return audit.SignTreeHead(th, g.logPriv)
+	return signTH(t, th, g.logPriv)
 }
 
 func wantPaused(t *testing.T, err error, approved int) {
@@ -187,11 +188,11 @@ func TestMofnEvidence_KofNVerifiesOffline(t *testing.T) {
 		t.Fatalf("ApprovalEvidence: %v", err)
 	}
 
-	var kinds []string
+	var kinds []audit.EvidenceKind
 	for i, a := range acts {
 		kinds = append(kinds, a.Kind)
-		if ok, err := a.Bundle.Verify(g.logPub); err != nil || !ok {
-			t.Fatalf("evidence %d (%s %s) failed to verify (ok=%v err=%v)", i, a.Kind, a.Label, ok, err)
+		if err := a.Bundle.Verify(edV(g.logPub)); err != nil {
+			t.Fatalf("evidence %d (%s %s) failed to verify (err=%v)", i, a.Kind, a.Label, err)
 		}
 		if !reflect.DeepEqual(a.Bundle.STH, sth) {
 			t.Fatalf("evidence %d (%s) not under the one STH", i, a.Kind)
@@ -200,13 +201,13 @@ func TestMofnEvidence_KofNVerifiesOffline(t *testing.T) {
 			t.Fatalf("evidence %d (%s) is not after evidence %d in the journal", i, a.Kind, i-1)
 		}
 	}
-	want := []string{audit.KindCall, audit.KindApproval, audit.KindApproval, audit.KindApproval, audit.KindApproval, audit.KindApprovalTally, audit.KindTool}
+	want := []audit.EvidenceKind{audit.KindCall, audit.KindApproval, audit.KindApproval, audit.KindApproval, audit.KindApproval, audit.KindApprovalTally, audit.KindTool}
 	if !slices.Equal(kinds, want) {
 		t.Fatalf("evidence kinds = %v, want %v", kinds, want)
 	}
 
-	v, err := audit.VerifyApprovals(acts, "c1", g.policy, g.resolver(), g.logPub)
-	if err != nil {
+	v, err := audit.VerifyApprovals(acts, "c1", g.policy, g.resolver(), edV(g.logPub))
+	if err := reportErr(v.OK, err); err != nil {
 		t.Fatalf("VerifyApprovals: %v", err)
 	}
 	if !v.OK || len(v.Problems) != 0 || !slices.Equal(v.Counted, []string{"alice", "bob"}) {
@@ -236,7 +237,7 @@ func TestMofnEvidence_KofNVerifiesOffline(t *testing.T) {
 func TestMofnEvidence_InPackage(t *testing.T) {
 	ctx := context.Background()
 	g := passedGate(t)
-	pkg, err := audit.Evidence(ctx, g.store, gateRun, g.logPriv, 1700000000, audit.WithToolCall("c1"))
+	pkg, err := audit.Evidence(ctx, g.store, gateRun, edS(g.logPriv), 1700000000, audit.WithToolCall("c1"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -245,10 +246,10 @@ func TestMofnEvidence_InPackage(t *testing.T) {
 		t.Fatal(err)
 	}
 	pkg.Actions = append(pkg.Actions, acts[:len(acts)-1]...) // the result is already packaged
-	if rep, _ := pkg.Verify(g.logPub); rep.OK {
+	if rep, _ := pkg.Verify(edV(g.logPub)); rep.OK {
 		t.Fatal("a package with actions appended after sealing verified")
 	}
-	if err := pkg.Seal(g.logPriv); err != nil {
+	if err := pkg.Seal(edS(g.logPriv)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -260,18 +261,18 @@ func TestMofnEvidence_InPackage(t *testing.T) {
 	if err := json.Unmarshal(raw, &got); err != nil {
 		t.Fatal(err)
 	}
-	rep, err := got.Verify(g.logPub)
+	rep, err := got.Verify(edV(g.logPub))
 	if err != nil || !rep.OK {
 		t.Fatalf("package Verify: ok=%v err=%v items=%+v", rep.OK, err, rep.Items)
 	}
-	counts := map[string]int{}
+	counts := map[audit.EvidenceKind]int{}
 	for _, it := range rep.Items {
 		counts[it.Kind]++
 	}
 	if counts[audit.KindTool] != 1 || counts[audit.KindCall] != 1 || counts[audit.KindApproval] != 4 || counts[audit.KindApprovalTally] != 1 {
 		t.Fatalf("report kinds = %v", counts)
 	}
-	v, err := audit.VerifyApprovals(got.Actions, "c1", g.policy, g.resolver(), g.logPub)
+	v, err := audit.VerifyApprovals(got.Actions, "c1", g.policy, g.resolver(), edV(g.logPub))
 	if err != nil || !v.OK || !slices.Equal(v.Counted, []string{"alice", "bob"}) {
 		t.Fatalf("verdict = %+v, err = %v, want alice and bob counted", v, err)
 	}
@@ -291,7 +292,7 @@ func TestMofnEvidence_SharedKeyRefused(t *testing.T) {
 		}
 		return g.resolver()(id)
 	}
-	if _, err := audit.VerifyApprovals(acts, "c1", g.policy, shared, g.logPub); !errors.Is(err, agent.ErrConfig) {
+	if _, err := audit.VerifyApprovals(acts, "c1", g.policy, shared, audit.Ed25519Verifier{Pub: g.logPub}); !errors.Is(err, agent.ErrConfig) {
 		t.Fatalf("VerifyApprovals with alice and bob on one key = %v, want ErrConfig", err)
 	}
 }
