@@ -107,8 +107,9 @@ images. Audio and video input are not supported, and models produce text, reason
 not images.
 
 **Structured output varies by provider.** `RunTypedNative[T]` uses the provider's JSON-schema mode,
-which the OpenAI-compatible and Gemini adapters support and the Anthropic adapter does not. With
-Anthropic, use `RunTyped`, which works with every provider.
+which the OpenAI-compatible and Gemini adapters support and the Anthropic adapter does not (it
+returns `ErrConfig` rather than run unconstrained). With Anthropic, use `RunTyped`, which works
+with every provider.
 
 **Gemini schemas are a subset.** Gemini accepts only part of JSON Schema. A tool or typed output that
 uses a map, an `interface{}` or `json.RawMessage` field, or a recursive type fails with `ErrConfig`

@@ -2,18 +2,14 @@ package audit
 
 import (
 	"bytes"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"reflect"
-	"strconv"
-	"strings"
-	"unicode/utf16"
 	"unicode/utf8"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/internal/strictjson"
 )
 
 // UnmarshalStrict decodes a JSON proof artifact (a bundle, certificate, evidence package, or tree
@@ -44,23 +40,23 @@ func UnmarshalStrict(data []byte, v any) error {
 	if rv.Kind() != reflect.Pointer || rv.IsNil() {
 		return fmt.Errorf("audit: strict json: decode target must be a non-nil pointer, got %T", v)
 	}
-	s := newStrictDecoder(data)
-	if err := s.value(rv.Type().Elem(), "$", false); err != nil {
+	if err := strictjson.Check(data, rv.Type().Elem(), strictOptions); err != nil {
 		return fmt.Errorf("audit: strict json: %w", err)
-	}
-	if _, err := s.dec.Token(); err != io.EOF {
-		return errors.New("audit: strict json: trailing data after the value")
 	}
 	d := json.NewDecoder(bytes.NewReader(data))
 	d.DisallowUnknownFields()
 	return d.Decode(v)
 }
 
-var (
-	unmarshalerType = reflect.TypeFor[json.Unmarshaler]()
-	messageType     = reflect.TypeFor[agent.Message]()
-	partShapeType   = reflect.TypeFor[partShape]()
-)
+// strictOptions check an agent.Message against its wire shape, and each part against the wire
+// form of the part its "type" names. A struct's names are strictjson.ExactFields: none required.
+var strictOptions = &strictjson.Options{
+	Shapes: map[reflect.Type]reflect.Type{reflect.TypeFor[agent.Message](): reflect.TypeFor[messageShape]()},
+}
+
+func init() {
+	strictOptions.Hooks = map[reflect.Type]func([]byte, string) error{reflect.TypeFor[partShape](): checkPart}
+}
 
 // messageShape is the wire form of agent.Message (see its MarshalJSON), which UnmarshalStrict
 // checks a message against in place of its loosely matching UnmarshalJSON.
@@ -97,140 +93,9 @@ var partShapes = map[string]reflect.Type{
 	}](),
 }
 
-// strictDecoder walks the tokens of data, which it keeps so it can read each token's raw spelling.
-type strictDecoder struct {
-	dec  *json.Decoder
-	data []byte
-}
-
-func newStrictDecoder(data []byte) *strictDecoder {
-	dec := json.NewDecoder(bytes.NewReader(data))
-	dec.UseNumber()
-	return &strictDecoder{dec: dec, data: data}
-}
-
-// token reads the next token and returns it with its raw spelling in the input.
-func (s *strictDecoder) token() (json.Token, []byte, error) {
-	start := s.dec.InputOffset()
-	tok, err := s.dec.Token()
-	if err != nil {
-		return nil, nil, err
-	}
-	return tok, trimSeparators(s.data[start:s.dec.InputOffset()]), nil
-}
-
-// trimSeparators drops the whitespace, name separator, and value separator that precede a token.
-func trimSeparators(raw []byte) []byte {
-	return bytes.TrimLeft(raw, " \t\r\n:,")
-}
-
-// value consumes one JSON value, checking it against t: an object decoded into a struct may use
-// only that struct's exact JSON field names, each at most once; every other object (a map, raw
-// JSON, a type with its own UnmarshalJSON, an interface) is checked for duplicate names only, at
-// any depth. Strings decoded into Go must have one spelling (see UnmarshalStrict) unless verbatim
-// is set: the value is raw JSON, kept as written.
-func (s *strictDecoder) value(t reflect.Type, path string, verbatim bool) error {
-	for t != nil && t.Kind() == reflect.Pointer {
-		t = t.Elem()
-	}
-	if t == messageType {
-		t = reflect.TypeFor[messageShape]()
-	}
-	if t == partShapeType {
-		return s.part(path)
-	}
-	verbatim = verbatim || t == rawMessageType
-	tok, raw, err := s.token()
-	if err != nil {
-		return fmt.Errorf("%s: %w", path, err)
-	}
-	delim, isDelim := tok.(json.Delim)
-	if !isDelim {
-		str, isString := tok.(string)
-		if !isString || verbatim {
-			return nil // another scalar: encoding/json checks its type when decoding
-		}
-		if err := oneSpelling(raw); err != nil {
-			return fmt.Errorf("%s: %w", path, err)
-		}
-		if t != nil && t.Kind() == reflect.Slice && t.Elem().Kind() == reflect.Uint8 {
-			if b, err := base64.StdEncoding.DecodeString(str); err == nil && base64.StdEncoding.EncodeToString(b) != str {
-				return fmt.Errorf("%s: base64 %q is not the standard encoding of its bytes", path, str)
-			}
-		}
-		return nil
-	}
-	custom := t == nil || t.Kind() == reflect.Interface ||
-		reflect.PointerTo(t).Implements(unmarshalerType) || t.Implements(unmarshalerType)
-	switch delim {
-	case '[':
-		var elem reflect.Type
-		if !custom && (t.Kind() == reflect.Slice || t.Kind() == reflect.Array) {
-			elem = t.Elem()
-		}
-		for i := 0; s.dec.More(); i++ {
-			if err := s.value(elem, fmt.Sprintf("%s[%d]", path, i), verbatim); err != nil {
-				return err
-			}
-		}
-		_, err := s.dec.Token() // ]
-		return err
-	case '{':
-		var fields map[string]reflect.Type
-		var mapElem reflect.Type
-		if !custom {
-			switch t.Kind() {
-			case reflect.Struct:
-				fields = jsonFields(t)
-			case reflect.Map:
-				mapElem = t.Elem()
-			}
-		}
-		seen := map[string]bool{}
-		for s.dec.More() {
-			kt, raw, err := s.token()
-			if err != nil {
-				return fmt.Errorf("%s: %w", path, err)
-			}
-			key := kt.(string)
-			if seen[key] {
-				return fmt.Errorf("%s: duplicate name %q", path, key)
-			}
-			seen[key] = true
-			if !verbatim {
-				if err := oneSpelling(raw); err != nil {
-					return fmt.Errorf("%s: name %w", path, err)
-				}
-			}
-			var next reflect.Type
-			switch {
-			case fields != nil:
-				ft, ok := fields[key]
-				if !ok {
-					return fmt.Errorf("%s: %q is not a field of %s (names must match exactly)", path, key, t)
-				}
-				next = ft
-			case mapElem != nil:
-				next = mapElem
-			}
-			if err := s.value(next, path+"."+key, verbatim); err != nil {
-				return err
-			}
-		}
-		_, err := s.dec.Token() // }
-		return err
-	}
-	return nil
-}
-
-// part consumes one message part, then checks it against the wire form of the part its "type"
-// names.
-func (s *strictDecoder) part(path string) error {
-	start := s.dec.InputOffset()
-	if err := s.value(nil, path, true); err != nil {
-		return err
-	}
-	raw := trimSeparators(s.data[start:s.dec.InputOffset()])
+// checkPart checks one message part (raw, already checked for duplicate names) against the wire
+// form of the part its "type" names.
+func checkPart(raw []byte, path string) error {
 	var probe map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &probe); err != nil {
 		return fmt.Errorf("%s: a message part must be an object: %w", path, err)
@@ -243,123 +108,7 @@ func (s *strictDecoder) part(path string) error {
 	if !ok {
 		return fmt.Errorf("%s: unknown message part type %q", path, kind)
 	}
-	return newStrictDecoder(raw).value(shape, path, false)
-}
-
-// oneSpelling rejects a string literal (raw, with its quotes) that escapes a lone surrogate:
-// encoding/json decodes every such escape to U+FFFD, so the literal would share its decoded value
-// with other spellings. A surrogate pair, escaped high then low, is one character and allowed.
-func oneSpelling(raw []byte) error {
-	for i := 0; i < len(raw); i++ {
-		if raw[i] != '\\' {
-			continue
-		}
-		i++
-		if i >= len(raw) || raw[i] != 'u' {
-			continue // a two-character escape
-		}
-		r := escapedUnit(raw, i-1)
-		i += 4
-		switch {
-		case utf16.IsSurrogate(r) && r < 0xdc00: // high: a low surrogate must follow
-			if low := escapedUnit(raw, i+1); low >= 0xdc00 && low <= 0xdfff {
-				i += 6
-				continue
-			}
-			return fmt.Errorf("escapes a lone surrogate (%U) in %s", r, raw)
-		case utf16.IsSurrogate(r):
-			return fmt.Errorf("escapes a lone surrogate (%U) in %s", r, raw)
-		}
-	}
-	return nil
-}
-
-// escapedUnit returns the UTF-16 code unit escaped as \uXXXX at raw[at:], or -1.
-func escapedUnit(raw []byte, at int) rune {
-	if at+6 > len(raw) || raw[at] != '\\' || raw[at+1] != 'u' {
-		return -1
-	}
-	u, err := strconv.ParseUint(string(raw[at+2:at+6]), 16, 16)
-	if err != nil {
-		return -1
-	}
-	return rune(u)
-}
-
-// jsonFields returns the exact JSON names encoding/json decodes into struct type t, with each
-// field's type, by encoding/json's own rules: exported fields by tag name or Go name (a "-" tag is
-// skipped), and the fields of an untagged embedded struct promoted into t. When several fields
-// claim one name, the shallowest wins, and at equal depth a tagged field wins over an untagged one.
-// A name still claimed by several fields is one encoding/json ignores; it is kept here, and the
-// decode that follows (DisallowUnknownFields) rejects it.
-func jsonFields(t reflect.Type) map[string]reflect.Type {
-	type cand struct {
-		t      reflect.Type
-		depth  int
-		tagged bool
-	}
-	cands := map[string][]cand{}
-	var walk func(t reflect.Type, depth int, visited map[reflect.Type]bool)
-	walk = func(t reflect.Type, depth int, visited map[reflect.Type]bool) {
-		if visited[t] {
-			return
-		}
-		visited[t] = true
-		defer delete(visited, t)
-		for i := range t.NumField() {
-			f := t.Field(i)
-			tag := f.Tag.Get("json")
-			if tag == "-" {
-				continue
-			}
-			name, _, _ := strings.Cut(tag, ",")
-			if f.Anonymous && name == "" {
-				et := f.Type
-				if et.Kind() == reflect.Pointer {
-					et = et.Elem()
-				}
-				if et.Kind() == reflect.Struct {
-					walk(et, depth+1, visited)
-					continue
-				}
-			}
-			if !f.IsExported() {
-				continue
-			}
-			tagged := name != ""
-			if !tagged {
-				name = f.Name
-			}
-			cands[name] = append(cands[name], cand{f.Type, depth, tagged})
-		}
-	}
-	walk(t, 0, map[reflect.Type]bool{})
-	out := map[string]reflect.Type{}
-	for name, cs := range cands {
-		minDepth := cs[0].depth
-		for _, c := range cs {
-			minDepth = min(minDepth, c.depth)
-		}
-		var top []cand
-		for _, c := range cs {
-			if c.depth == minDepth {
-				top = append(top, c)
-			}
-		}
-		if len(top) > 1 {
-			var tagged []cand
-			for _, c := range top {
-				if c.tagged {
-					tagged = append(tagged, c)
-				}
-			}
-			top = tagged
-		}
-		if len(top) > 0 {
-			out[name] = top[0].t
-		}
-	}
-	return out
+	return strictjson.CheckValue(raw, shape, path, strictOptions)
 }
 
 // Every leaf, grant, and seal in this package is hashed or signed over a JSON encoding. JSON

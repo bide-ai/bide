@@ -136,6 +136,12 @@ completes. This split is the precise contract, proven adversarially in `saga_dst
 - The **forward** non-idempotent effect is **at-most-once** (halt on unknown outcome).
 - **Compensators** are **at-least-once**: memoized so they run once if they complete, but a crash
   mid-compensation re-runs them. This is why a `Compensate` must be idempotent.
+- **A `CompensatedFunc` undo sees the arguments the forward call decoded.** It decodes the call's
+  recorded arguments with the same strict decoder the forward call used. A call journaled before
+  tool arguments decoded strictly may hold arguments only `encoding/json` accepts (a case variant,
+  an unknown name); that call decoded them with `encoding/json`, so compensation does too. The
+  recorded arguments are the model's: a tool middleware that rewrites a compensable call's
+  arguments changes what the forward call receives but not what undo receives.
 
 ### The boundaries (read these before relying on it)
 

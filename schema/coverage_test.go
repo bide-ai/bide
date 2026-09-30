@@ -2,6 +2,7 @@ package schema
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 )
@@ -80,10 +81,15 @@ type email struct{ user, host string }
 
 func (e email) MarshalText() ([]byte, error) { return []byte(e.user + "@" + e.host), nil }
 
-// A TextMarshaler always marshals to a JSON string, regardless of its fields.
-func TestFor_TextMarshalerIsString(t *testing.T) {
+func (e *email) UnmarshalText(b []byte) error {
+	e.user, e.host, _ = strings.Cut(string(b), "@")
+	return nil
+}
+
+// A TextUnmarshaler always decodes from a JSON string, regardless of its fields.
+func TestFor_TextUnmarshalerIsString(t *testing.T) {
 	if s := schemaOf[email](t); s["type"] != "string" {
-		t.Errorf("TextMarshaler type = %v, want string", s["type"])
+		t.Errorf("TextUnmarshaler type = %v, want string", s["type"])
 	}
 }
 
@@ -91,14 +97,16 @@ type customJSON struct{ Ignored int }
 
 func (customJSON) MarshalJSON() ([]byte, error) { return []byte(`{"whatever":1}`), nil }
 
-// A json.Marshaler with a shape we can't reflect is left unconstrained (not its fields).
-func TestFor_JSONMarshalerIsUnconstrained(t *testing.T) {
+func (*customJSON) UnmarshalJSON([]byte) error { return nil }
+
+// A json.Unmarshaler with a shape we can't reflect is left unconstrained (not its fields).
+func TestFor_JSONUnmarshalerIsUnconstrained(t *testing.T) {
 	s := schemaOf[customJSON](t)
 	if _, hasType := s["type"]; hasType {
-		t.Errorf("custom json.Marshaler should be {}, got %v", s)
+		t.Errorf("custom json.Unmarshaler should be {}, got %v", s)
 	}
 	if _, hasProps := s["properties"]; hasProps {
-		t.Error("custom json.Marshaler must not expose reflected fields")
+		t.Error("custom json.Unmarshaler must not expose reflected fields")
 	}
 }
 

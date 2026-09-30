@@ -50,6 +50,14 @@ declared the same way). A schema the subset cannot express (a map, an `interface
 `json.RawMessage` field, a recursive type, `$ref`, `oneOf`, ...) fails the request with an
 `ErrConfig` error wrapping `schema.ErrGeminiUnsupported` that names the tool and the location.
 
+Whatever the adapter, a `Func` tool decodes the arguments the model sends strictly, against the
+same fields its schema describes: a missing required field (or `null` for one whose schema does
+not admit null), an unknown or case-variant name, a
+duplicate name, trailing data, invalid UTF-8, or an escaped lone surrogate is an `ErrToolArgs`
+tool error the model reads and corrects. This matters most where the provider does not enforce the
+schema (Anthropic, and OpenAI without strict mode). `RunTyped`'s `final_answer` and the JSON that
+`RunTypedNative` decodes are read the same way.
+
 `WithBaseURL` is how one adapter reaches many providers. For OpenAI-compatible endpoints, set the
 base URL and the model, e.g. `openai.New("", openai.WithBaseURL("http://localhost:11434/v1"),
 openai.WithModel("llama3"))` for Ollama; the OpenAI adapter only sets the auth header when the API

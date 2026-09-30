@@ -75,7 +75,7 @@ func TestModelVisibleJSON_NotHTMLEscaped(t *testing.T) {
 	})
 
 	t.Run("sub-agent answer", func(t *testing.T) {
-		m := &lastToolResultModel{script: script()}
+		m := &lastToolResultModel{script: NewScriptedModel(ToolTurn("c1", "t", `{"task":"go"}`), TextTurn("done"))}
 		child := New(NewScriptedModel(TextTurn("<ok> & done")), NewMemStore())
 		if _, err := New(m, NewMemStore(), SubAgent("t", "", child)).Run(ctx, "r", "go"); err != nil {
 			t.Fatal(err)

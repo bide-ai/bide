@@ -22,7 +22,9 @@ func twoCharges() *agent.ScriptedModel {
 // taking the payment. The charge must be attempted once: a retry would charge the card again.
 func TestToolRetry_DoesNotRetryANonIdempotentTool(t *testing.T) {
 	var charged int
-	charge := agent.Func("charge", "charge the card", agent.Safety{}, func(context.Context, struct{ Cents int }) (string, error) {
+	charge := agent.Func("charge", "charge the card", agent.Safety{}, func(context.Context, struct {
+		Cents int `json:"cents"`
+	}) (string, error) {
 		charged++ // the payment went through
 		return "", errors.New("gateway timeout")
 	})
@@ -51,7 +53,9 @@ func TestToolRetry_DoesNotRetryANonIdempotentTool(t *testing.T) {
 // second from the first: that skips a charge the model asked for and reports it as done.
 func TestToolCache_DoesNotCacheANonReadOnlyTool(t *testing.T) {
 	var charged int
-	charge := agent.Func("charge", "charge the card", agent.Safety{}, func(context.Context, struct{ Cents int }) (string, error) {
+	charge := agent.Func("charge", "charge the card", agent.Safety{}, func(context.Context, struct {
+		Cents int `json:"cents"`
+	}) (string, error) {
 		charged++
 		return "ok", nil
 	})

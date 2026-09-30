@@ -16,18 +16,19 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"math"
 	"reflect"
 	"slices"
-	"strings"
 	"time"
-	"unicode"
+
+	"github.com/bide-ai/bide/internal/jsonfields"
 )
 
 var (
-	timeType       = reflect.TypeOf(time.Time{})
-	rawMessageType = reflect.TypeOf(json.RawMessage{})
-	textMarshaler  = reflect.TypeOf((*encoding.TextMarshaler)(nil)).Elem()
-	jsonMarshaler  = reflect.TypeOf((*json.Marshaler)(nil)).Elem()
+	timeType        = reflect.TypeOf(time.Time{})
+	rawMessageType  = reflect.TypeOf(json.RawMessage{})
+	textUnmarshaler = reflect.TypeFor[encoding.TextUnmarshaler]()
+	jsonUnmarshaler = reflect.TypeFor[json.Unmarshaler]()
 )
 
 // ErrUnsupportedType reports a Go type For cannot describe: a document valid under any schema
@@ -52,17 +53,24 @@ func implements(t, iface reflect.Type) bool {
 // promoted into the parent unless the tag names them, and Go's dominance rules for fields that
 // embedding supplies more than once, where a tie removes the name altogether). A ",string" field
 // is a JSON string holding the value. []byte is a base64 string but a byte array is an array of
-// numbers; a Go array has exactly its length in items. time.Time is a date-time string;
-// json.RawMessage and interface{} are unconstrained. A type with a custom marshaler is not
-// reflected field by field (reflection cannot see the custom shape): encoding.TextMarshaler is a
-// string, any other json.Marshaler is unconstrained. A recursive reference is cut off as an
-// unconstrained object.
+// numbers; a Go array has exactly its length in items. An integer is bounded by its Go kind
+// (minimum 0 for an unsigned kind, and both bounds for a kind of 32 bits or fewer), and the keys
+// of a map with integer keys are decimal integers (propertyNames). time.Time is a date-time
+// string; json.RawMessage and interface{} are unconstrained. A type that decodes itself is not
+// reflected field by field (reflection cannot see the custom shape), and its DECODING methods
+// decide, as they do for encoding/json: a json.Unmarshaler is unconstrained, and otherwise an
+// encoding.TextUnmarshaler is a string. (A type that only marshals itself is decoded field by
+// field, so it is reflected like any other.) A recursive reference is cut off as an unconstrained
+// object or array.
 //
 // It returns an error wrapping ErrUnsupportedType for a type encoding/json cannot decode as any
 // schema would describe it: a field reached through an embedded pointer to an unexported struct
-// type, which encoding/json cannot allocate, or a json tag name encoding/json does not accept
-// (one with a quote, a backslash, or another reserved character), which encoding/json reads
-// differently depending on how it is built.
+// type, which encoding/json cannot allocate; a json tag name encoding/json does not accept (one
+// with a quote, a backslash, or another reserved character), which encoding/json reads
+// differently depending on how it is built; a kind encoding/json decodes no value but null into
+// (a channel, a function, a complex number, an unsafe.Pointer, an interface with methods, or a
+// map whose key type is not a string, an integer, or an encoding.TextUnmarshaler); and a pointer
+// type that points to itself.
 func For[T any]() (json.RawMessage, error) {
 	s, err := reflectSchema(reflect.TypeFor[T](), map[reflect.Type]bool{})
 	if err != nil {
@@ -72,30 +80,56 @@ func For[T any]() (json.RawMessage, error) {
 }
 
 func reflectSchema(t reflect.Type, seen map[reflect.Type]bool) (map[string]any, error) {
-	for t.Kind() == reflect.Pointer {
-		t = t.Elem()
+	for ptrs := map[reflect.Type]bool{}; t.Kind() == reflect.Pointer; t = t.Elem() {
+		if ptrs[t] { // a pointer type that points to itself: encoding/json recurses forever on it
+			return nil, fmt.Errorf("%w: %s is a pointer type that points to itself", ErrUnsupportedType, t)
+		}
+		ptrs[t] = true
 	}
-	// Types with custom JSON marshaling can't be inferred from their fields. Handle the
-	// common ones precisely, then fall back: TextMarshaler always emits a JSON string;
-	// any other json.Marshaler emits a shape we can't see, so leave it unconstrained.
+	// Types that decode themselves can't be inferred from their fields. encoding/json prefers
+	// UnmarshalJSON, whose accepted shape we can't see, so leave it unconstrained; otherwise
+	// UnmarshalText reads a JSON string. (time.Time and json.RawMessage are the common
+	// json.Unmarshalers, handled precisely.)
 	switch {
 	case t == timeType:
 		return map[string]any{"type": "string", "format": "date-time"}, nil
 	case t == rawMessageType:
 		return map[string]any{}, nil // json.RawMessage is arbitrary JSON
-	case implements(t, textMarshaler):
-		return map[string]any{"type": "string"}, nil
-	case implements(t, jsonMarshaler):
+	case implements(t, jsonUnmarshaler):
 		return map[string]any{}, nil
+	case implements(t, textUnmarshaler):
+		return map[string]any{"type": "string"}, nil
+	}
+	// A named slice, array, or map can refer to itself (type Tree map[string]Tree): cut the
+	// recursion off, as for a struct below, with the kind's permissive schema.
+	switch t.Kind() {
+	case reflect.Slice, reflect.Array, reflect.Map:
+		if seen[t] {
+			if t.Kind() == reflect.Map {
+				return map[string]any{"type": "object"}, nil
+			}
+			return map[string]any{"type": "array"}, nil
+		}
+		seen[t] = true
+		defer delete(seen, t)
 	}
 	switch t.Kind() {
 	case reflect.String:
 		return map[string]any{"type": "string"}, nil
 	case reflect.Bool:
 		return map[string]any{"type": "boolean"}, nil
-	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
-		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-		return map[string]any{"type": "integer"}, nil
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		s := map[string]any{"type": "integer"}
+		if t.Bits() <= 32 { // wider bounds are not exact in the float64 that readers parse into
+			s["minimum"], s["maximum"] = -int64(1)<<(t.Bits()-1), int64(1)<<(t.Bits()-1)-1
+		}
+		return s, nil
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		s := map[string]any{"type": "integer", "minimum": 0}
+		if t.Bits() <= 32 {
+			s["maximum"] = uint64(math.MaxUint64) >> (64 - t.Bits())
+		}
+		return s, nil
 	case reflect.Float32, reflect.Float64:
 		return map[string]any{"type": "number"}, nil
 	case reflect.Slice:
@@ -116,11 +150,33 @@ func reflectSchema(t reflect.Type, seen map[reflect.Type]bool) (map[string]any, 
 		}
 		return map[string]any{"type": "array", "items": items, "minItems": t.Len(), "maxItems": t.Len()}, nil
 	case reflect.Map:
+		// encoding/json reads a key with the key type's UnmarshalText if it has one, else by its
+		// kind: a string as is, an integer in decimal (strconv.ParseInt or ParseUint). It reads no
+		// other key type, so such a map decodes only when empty.
+		var keys string
+		switch kt := t.Key(); {
+		case reflect.PointerTo(kt).Implements(textUnmarshaler), kt.Kind() == reflect.String:
+		case kt.Kind() >= reflect.Int && kt.Kind() <= reflect.Int64:
+			keys = `^[+-]?[0-9]+$`
+		case kt.Kind() >= reflect.Uint && kt.Kind() <= reflect.Uintptr:
+			keys = `^[0-9]+$`
+		default:
+			return nil, fmt.Errorf("%w: %s has the key type %s, which encoding/json cannot read a key into", ErrUnsupportedType, t, kt)
+		}
 		values, err := reflectSchema(t.Elem(), seen)
 		if err != nil {
 			return nil, err
 		}
-		return map[string]any{"type": "object", "additionalProperties": values}, nil
+		s := map[string]any{"type": "object", "additionalProperties": values}
+		if keys != "" {
+			s["propertyNames"] = map[string]any{"pattern": keys}
+		}
+		return s, nil
+	case reflect.Interface:
+		if t.NumMethod() > 0 { // encoding/json stores a decoded value only in an empty interface
+			return nil, fmt.Errorf("%w: %s is an interface with methods, which encoding/json cannot decode a value into", ErrUnsupportedType, t)
+		}
+		return map[string]any{}, nil // any value
 	case reflect.Struct:
 		if seen[t] { // recursion guard — emit a permissive object rather than loop forever
 			return map[string]any{"type": "object"}, nil
@@ -130,29 +186,35 @@ func reflectSchema(t reflect.Type, seen map[reflect.Type]bool) (map[string]any, 
 
 		props := map[string]any{}
 		var required []string
-		fields, err := jsonFields(t)
+		fields, err := jsonfields.Of(t)
 		if err != nil {
+			var tn *jsonfields.TagNameError
+			if errors.As(err, &tn) {
+				// encoding/json v1 falls back to the Go name here and its v2 implementation
+				// reads the name differently, so the field has no one JSON name.
+				return nil, fmt.Errorf("%w: %s: field %s has the json tag name %q, which encoding/json does not accept as a name", ErrUnsupportedType, tn.Struct, tn.Field, tn.Name)
+			}
 			return nil, err
 		}
 		for _, f := range fields {
-			if f.viaUnexportedPtr != "" {
-				return nil, fmt.Errorf("%w: %s: field %q is reached through the embedded pointer to the unexported struct type %s, which encoding/json cannot allocate when decoding", ErrUnsupportedType, t, f.name, f.viaUnexportedPtr)
+			if f.ViaUnexportedPtr != "" {
+				return nil, fmt.Errorf("%w: %s: field %q is reached through the embedded pointer to the unexported struct type %s, which encoding/json cannot allocate when decoding", ErrUnsupportedType, t, f.Name, f.ViaUnexportedPtr)
 			}
 			var fs map[string]any
-			if f.quoted {
-				fs = quotedSchema(f.typ)
+			if f.Quoted {
+				fs = quotedSchema(f.Type)
 			} else {
 				var err error
-				if fs, err = reflectSchema(f.field.Type, seen); err != nil {
-					return nil, err
+				if fs, err = reflectSchema(f.Field.Type, seen); err != nil {
+					return nil, fmt.Errorf("%s field %s: %w", t, f.Field.Name, err)
 				}
 			}
-			if d := f.field.Tag.Get("desc"); d != "" {
+			if d := f.Field.Tag.Get("desc"); d != "" {
 				fs["description"] = d
 			}
-			props[f.name] = fs
-			if !f.optional && f.field.Type.Kind() != reflect.Pointer {
-				required = append(required, f.name)
+			props[f.Name] = fs
+			if f.Required() {
+				required = append(required, f.Name)
 			}
 		}
 		out := map[string]any{"type": "object", "properties": props}
@@ -161,8 +223,8 @@ func reflectSchema(t reflect.Type, seen map[reflect.Type]bool) (map[string]any, 
 			out["required"] = required
 		}
 		return out, nil
-	default: // interface{}, chan, func, etc. → unconstrained
-		return map[string]any{}, nil
+	default: // chan, func, complex, unsafe.Pointer: encoding/json decodes no value but null into them
+		return nil, fmt.Errorf("%w: %s is a kind encoding/json cannot decode a value into", ErrUnsupportedType, t)
 	}
 }
 
@@ -183,170 +245,6 @@ func quotedSchema(t reflect.Type) map[string]any {
 	}
 }
 
-// jsonField is one field encoding/json reads from a JSON object into a struct.
-type jsonField struct {
-	name     string
-	tagged   bool  // the name came from a json tag
-	index    []int // the field's index path from the outer struct
-	field    reflect.StructField
-	typ      reflect.Type // the field's type, with an unnamed pointer followed
-	optional bool         // ",omitempty" or ",omitzero"
-	quoted   bool         // ",string" on a string, number, or boolean field
-	// viaUnexportedPtr names the unexported struct type of an embedded pointer on the field's
-	// path, if any: encoding/json cannot allocate it, so decoding the field fails.
-	viaUnexportedPtr string
-}
-
-// jsonFields returns the fields encoding/json reads for struct type t, in index order. It is a
-// port of encoding/json's typeFields: a breadth-first walk over embedded structs, then Go's
-// dominance rules (the shallowest name wins, a json tag breaks a tie at one depth, and any other
-// tie removes the name). A json tag name encoding/json does not accept is an error wrapping
-// ErrUnsupportedType, since encoding/json's two implementations read such a name differently.
-func jsonFields(t reflect.Type) ([]jsonField, error) {
-	type level struct {
-		typ              reflect.Type
-		index            []int
-		viaUnexportedPtr string
-	}
-	var current []level
-	next := []level{{typ: t}}
-	var count, nextCount map[reflect.Type]int
-	visited := map[reflect.Type]bool{}
-	var fields []jsonField
-
-	for len(next) > 0 {
-		current, next = next, current[:0]
-		count, nextCount = nextCount, map[reflect.Type]int{}
-		for _, f := range current {
-			if visited[f.typ] {
-				continue
-			}
-			visited[f.typ] = true
-			for i := 0; i < f.typ.NumField(); i++ {
-				sf := f.typ.Field(i)
-				if sf.Anonymous {
-					et := sf.Type
-					if et.Kind() == reflect.Pointer {
-						et = et.Elem()
-					}
-					if !sf.IsExported() && et.Kind() != reflect.Struct {
-						continue // an embedded unexported non-struct type has no fields to promote
-					}
-				} else if !sf.IsExported() {
-					continue
-				}
-				tag := sf.Tag.Get("json")
-				if tag == "-" {
-					continue
-				}
-				name, opts, _ := strings.Cut(tag, ",")
-				if name != "" && !validTagName(name) {
-					// encoding/json v1 falls back to the Go name here and its v2 implementation
-					// reads the name differently, so the field has no one JSON name.
-					return nil, fmt.Errorf("%w: %s: field %s has the json tag name %q, which encoding/json does not accept as a name", ErrUnsupportedType, f.typ, sf.Name, name)
-				}
-				index := append(slices.Clip(f.index), i)
-				ft := sf.Type
-				if ft.Name() == "" && ft.Kind() == reflect.Pointer {
-					ft = ft.Elem()
-				}
-				quoted := false
-				if hasOption(opts, "string") {
-					switch ft.Kind() {
-					case reflect.Bool,
-						reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
-						reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr,
-						reflect.Float32, reflect.Float64,
-						reflect.String:
-						quoted = true
-					}
-				}
-				if name != "" || !sf.Anonymous || ft.Kind() != reflect.Struct {
-					field := jsonField{
-						name: cmp.Or(name, sf.Name), tagged: name != "", index: index, field: sf, typ: ft,
-						optional: hasOption(opts, "omitempty") || hasOption(opts, "omitzero"),
-						quoted:   quoted, viaUnexportedPtr: f.viaUnexportedPtr,
-					}
-					fields = append(fields, field)
-					if count[f.typ] > 1 {
-						// The embedding struct is reached more than once at this depth: record a
-						// second copy so the dominance pass sees the tie and removes the name.
-						fields = append(fields, field)
-					}
-					continue
-				}
-				// An embedded struct whose tag names nothing: promote its fields next round.
-				nextCount[ft]++
-				if nextCount[ft] == 1 {
-					via := f.viaUnexportedPtr
-					if via == "" && sf.Type.Kind() == reflect.Pointer && !sf.IsExported() {
-						via = ft.String()
-					}
-					next = append(next, level{typ: ft, index: index, viaUnexportedPtr: via})
-				}
-			}
-		}
-	}
-
-	slices.SortFunc(fields, func(a, b jsonField) int {
-		if c := strings.Compare(a.name, b.name); c != 0 {
-			return c
-		}
-		if c := cmp.Compare(len(a.index), len(b.index)); c != 0 {
-			return c
-		}
-		if a.tagged != b.tagged {
-			if a.tagged {
-				return -1
-			}
-			return +1
-		}
-		return slices.Compare(a.index, b.index)
-	})
-	out := fields[:0]
-	for i := 0; i < len(fields); {
-		j := i + 1
-		for j < len(fields) && fields[j].name == fields[i].name {
-			j++
-		}
-		// The first field of a name dominates, unless the second ties it on depth and tagging.
-		if j-i == 1 || len(fields[i].index) != len(fields[i+1].index) || fields[i].tagged != fields[i+1].tagged {
-			out = append(out, fields[i])
-		}
-		i = j
-	}
-	slices.SortFunc(out, func(a, b jsonField) int { return slices.Compare(a.index, b.index) })
-	return out, nil
-}
-
-// validTagName reports whether encoding/json accepts s as a field name in a json tag.
-func validTagName(s string) bool {
-	if s == "" {
-		return false
-	}
-	for _, c := range s {
-		switch {
-		case strings.ContainsRune("!#$%&()*+-./:;<=>?@[]^_{|}~ ", c):
-			// Backslash and quote are reserved; other punctuation is allowed.
-		case !unicode.IsLetter(c) && !unicode.IsDigit(c):
-			return false
-		}
-	}
-	return true
-}
-
-// hasOption reports whether a json tag's comma-separated options include opt.
-func hasOption(opts, opt string) bool {
-	for opts != "" {
-		var o string
-		o, opts, _ = strings.Cut(opts, ",")
-		if o == opt {
-			return true
-		}
-	}
-	return false
-}
-
 // OpenAIStrict transforms a neutral schema into OpenAI structured-output "strict" form, which
 // closes every object (additionalProperties:false) and lists every property in required. It
 // changes no set of accepted answers beyond that:
@@ -362,7 +260,8 @@ func hasOption(opts, opt string) bool {
 //     so every answer would arrive empty.
 //   - An untyped schema ({}, which For gives any and json.RawMessage, or the schema true) admits
 //     every value, which strict mode cannot express; it is an error wrapping ErrStrictUnsupported
-//     too.
+//     too. So is an array with no items schema (a recursive slice, which For cuts off that way),
+//     whose items are untyped.
 //
 // Operates on the inline schema.
 func OpenAIStrict(neutral json.RawMessage) (json.RawMessage, error) {
@@ -429,6 +328,11 @@ func strictify(v any, path string) error {
 		s["additionalProperties"] = false
 		s["required"] = keys
 	}
+	if hasType(s, "array") {
+		if _, ok := s["items"]; !ok {
+			return fmt.Errorf("%w: %s is an array with no items schema, so it admits any items (For cuts off a recursive slice this way)", ErrStrictUnsupported, where)
+		}
+	}
 	if err := strictify(s["items"], at("items")); err != nil {
 		return err
 	}
@@ -455,12 +359,15 @@ func unconstrained(s map[string]any) bool {
 }
 
 // isObject reports whether schema s describes an object (type "object", alone or in a list).
-func isObject(s map[string]any) bool {
+func isObject(s map[string]any) bool { return hasType(s, "object") }
+
+// hasType reports whether schema s names the type name, alone or in a list.
+func hasType(s map[string]any, name string) bool {
 	switch t := s["type"].(type) {
 	case string:
-		return t == "object"
+		return t == name
 	case []any:
-		return slices.Contains(t, any("object"))
+		return slices.Contains(t, any(name))
 	}
 	return false
 }

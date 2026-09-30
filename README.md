@@ -402,6 +402,16 @@ func main() {
 
 Run the live smoke example: `OPENROUTER_API_KEY=sk-... go run ./examples/smoke`
 
+A `Func` tool decodes its arguments **strictly**, so the tool reads exactly what the model sent.
+A call that is missing a required field (one the schema lists as required: not a pointer, and no
+`omitempty` or `omitzero` in its json tag) or sends it as `null` (unless its schema admits any
+value, as for `any` or `json.RawMessage`), uses a name that is not a field (an unknown name, or a
+case variant such as `"CITY"` for `city`), repeats a name, has data after the object, or holds
+invalid UTF-8 or an escaped lone surrogate is an `ErrToolArgs` error. That error goes back to the
+model as the call's result, so the model can correct the call. `encoding/json` would fill in zero
+values, match names case-insensitively, drop unknown names, and keep the last duplicate. Give each
+argument field the json tag the model sees in the schema.
+
 `Run` returns just the final message. For a run summary (token usage, summed across turns,
 including cache; model-turn count; wall-clock duration) use `RunResult` (and `RunSagaResult`):
 
@@ -463,15 +473,19 @@ w, err := agent.RunTyped[Weather](ctx, a, runID, "weather in SF?")
 // w.City == "SF", w.TempF == 68
 ```
 
-It's a package function, not a method (Go methods can't add type parameters). The value is
-decoded from the *journaled* tool call, so it's **resume-safe**: a crash mid-run recovers the
-typed answer from the log on resume. The first `final_answer` call the tool accepts ends the run.
+It's a package function, not a method (Go methods can't add type parameters). The answer is the
+arguments `final_answer` accepted, decoded strictly like any `Func` tool's (a loose call goes back
+to the model to correct), as the tool received them after any tool middleware. The tool journals
+them as its result, so the answer is **resume-safe**: a crash mid-run recovers the typed answer
+from the log on resume. The first `final_answer` call the tool accepts ends the run.
 Only if the model never makes one (it replies in plain JSON text instead) does `RunTyped` parse
-that text. `T` is meant to be a struct.
+the text of the run's final turn. `T` must be a JSON object (a struct, a pointer to one, or a map),
+since providers take tool arguments only as an object; any other `T` is `ErrConfig`.
 
 On OpenAI-compatible providers with strict structured outputs, `RunTypedNative[T]` uses the
 provider's native JSON-schema response format instead of the tool (schema enforced provider-side,
-no tool round-trip); Anthropic ignores it, so use `RunTyped` there for provider-agnostic output.
+no tool round-trip); the Anthropic adapter does not support it and returns `ErrConfig`, so use
+`RunTyped` there for provider-agnostic output.
 
 ## Sampling
 
