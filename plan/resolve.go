@@ -15,8 +15,9 @@ import (
 // ResolveHalt clears a halt of a node of this flow, as agent.ResolveHaltRef does, once it has
 // checked the resolution against the flow: ref must name a node of this flow (the halt's Ref: a
 // node key, a loop iteration's key for a node in a loop body, or the key of a Step a node's body
-// ran), and a successful outcome's Result must decode as the node's output type, so the next Run
-// can feed it downstream. A resolution agent.ResolveHaltRef records is final, so one the flow
+// ran), the run must be a run of this flow (its recorded start names this flow, and its recorded
+// topology digest is this flow's), and a successful outcome's Result must decode as the node's
+// output type, so the next Run can feed it downstream. A resolution agent.ResolveHaltRef records is final, so one the flow
 // cannot read would leave the run unable to continue; ResolveHalt refuses it (ErrConfig) instead
 // and records nothing. A Step a node's body ran returns a type the flow does not declare, so its
 // Result is not checked.
@@ -40,6 +41,9 @@ func (f *Flow[In, Out]) ResolveHalt(ctx context.Context, store agent.Durable, re
 	}
 	if (iter >= 0) != inLoop {
 		return fmt.Errorf("plan: flow %q: resolve %q: node %q is in a loop body iff its key names an iteration: %w", c.flowName, ref.Op.ID, name, agent.ErrConfig)
+	}
+	if err := c.checkRunOfFlow(ctx, store, ref.RunID); err != nil {
+		return err
 	}
 	rest, _ := splitIter(strings.TrimPrefix(ref.Op.ID, "node:"))
 	if nodeOwn := !strings.Contains(rest, ":"); nodeOwn && !out.IsError {
@@ -75,6 +79,37 @@ func decodeStrict(raw []byte, into reflect.Type) error {
 	}
 	if dec.More() {
 		return fmt.Errorf("trailing data after the value")
+	}
+	return nil
+}
+
+// checkRunOfFlow refuses (ErrConfig) a run that is not a run of c: one whose recorded start is not
+// a flow run of c's name, or whose recorded topology digest is not c's. A resolution recorded
+// through another flow, even one with a node of the same name, would record a value of that
+// flow's node type, which the run's own flow may not be able to read.
+func (c *builderCore) checkRunOfFlow(ctx context.Context, store agent.Durable, runID string) error {
+	recs, err := store.History(ctx, runID)
+	if err != nil {
+		return fmt.Errorf("plan: flow %q: read run %s: %w", c.flowName, runID, err)
+	}
+	var start *agent.RunStart
+	digest := ""
+	for _, r := range recs {
+		switch r.Name {
+		case runStartStep:
+			var st agent.RunStart
+			if json.Unmarshal(r.Result, &st) == nil {
+				start = &st
+			}
+		case flowDigestStep:
+			_ = json.Unmarshal(r.Result, &digest)
+		}
+	}
+	if start == nil || start.Kind != agent.RunKindFlow || start.Flow == nil || start.Flow.Name != c.flowName {
+		return fmt.Errorf("plan: flow %q: run %s is not a run of this flow (see agent.RecordedStart): %w", c.flowName, runID, agent.ErrConfig)
+	}
+	if digest != c.digest() {
+		return fmt.Errorf("plan: flow %q: run %s was recorded under topology digest %q, not this flow's %s: %w", c.flowName, runID, digest, c.digest(), agent.ErrConfig)
 	}
 	return nil
 }

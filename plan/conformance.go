@@ -1,6 +1,7 @@
 package plan
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -117,6 +118,7 @@ func (c *builderCore) conform(ctx context.Context, store agent.Durable, runID st
 
 	var diffs []string
 	var haveStart, haveDigest, haveProgress bool
+	var completed *completion
 	// reached reports the divergence, if any, of a record of node n (at loop iteration iter,
 	// -1 outside an iteration) against the replayed routing.
 	reached := func(name, n string, iter int) {
@@ -165,7 +167,9 @@ func (c *builderCore) conform(ctx context.Context, store agent.Durable, runID st
 			var done completion
 			if json.Unmarshal(r.Result, &done) != nil || done.Flow != c.flowName {
 				diffs = append(diffs, r.Name+" (not completed by this flow)")
+				continue
 			}
+			completed = &done
 
 		case strings.HasPrefix(r.Name, "switch:"):
 			// A journaled Switch choice: "switch:<over>" for a linear Switch, and
@@ -227,8 +231,61 @@ func (c *builderCore) conform(ctx context.Context, store agent.Durable, runID st
 	if haveProgress && !haveDigest {
 		diffs = append(diffs, flowDigestStep+" (missing: the run records nodes but not its topology)")
 	}
+	if completed != nil {
+		// A completion is the output of the terminal Run reached last: the last terminal node,
+		// in topological order, that the routing reaches and whose result is recorded. It must
+		// exist, and the completion must record its output.
+		byName := make(map[string]json.RawMessage, len(recs))
+		for _, r := range recs {
+			if r.Kind == agent.StepValue {
+				byName[r.Name] = r.Result
+			}
+		}
+		if term, ok := c.lastTerminal(live, byName); !ok {
+			diffs = append(diffs, runCompleteStep+" (no terminal node the run reached is recorded)")
+		} else if !sameJSON(term, completed.Output) {
+			diffs = append(diffs, runCompleteStep+" (its output is not the terminal node's)")
+		}
+	}
 
 	return len(diffs) == 0, diffs, nil
+}
+
+// lastTerminal returns the recorded result of the last terminal node, in topological order, that
+// the routing reached (live) and whose result results holds by key: the node whose output Run
+// records as the flow's. A terminal node has no outgoing edge and no Switch over it.
+func (c *builderCore) lastTerminal(live map[string]bool, results map[string]json.RawMessage) (json.RawMessage, bool) {
+	order, err := c.topoOrder()
+	if err != nil {
+		return nil, false
+	}
+	hasOut := make(map[string]bool, len(c.edges)+len(c.branches))
+	for _, e := range c.edges {
+		hasOut[e.from] = true
+	}
+	for _, br := range c.branches {
+		hasOut[br.over] = true
+	}
+	var out json.RawMessage
+	found := false
+	for _, n := range order {
+		if !live[n] || hasOut[n] {
+			continue
+		}
+		if r, ok := results[nodeKey(n)]; ok {
+			out, found = r, true
+		}
+	}
+	return out, found
+}
+
+// sameJSON reports whether a and b are the same JSON text, ignoring insignificant whitespace.
+func sameJSON(a, b json.RawMessage) bool {
+	var ca, cb bytes.Buffer
+	if json.Compact(&ca, a) != nil || json.Compact(&cb, b) != nil {
+		return bytes.Equal(a, b)
+	}
+	return bytes.Equal(ca.Bytes(), cb.Bytes())
 }
 
 // replayRouting walks c's topology as Run does, from the recorded Switch choices, and returns

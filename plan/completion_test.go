@@ -339,3 +339,144 @@ func TestNestedStep_HaltResolvesUnderTheNodeKey(t *testing.T) {
 		t.Fatalf("the ReadOnly node's body ran %d times, want 3 (once per drive)", bodies)
 	}
 }
+
+// Flow.ResolveHalt resolves only a halt of a run of this flow: the run's recorded start must name
+// this flow, and its recorded digest must be this flow's.
+func TestFlowResolveHalt_RefusesARunOfAnotherFlow(t *testing.T) {
+	ctx := context.Background()
+	halted := func(t *testing.T) (*agent.MemStore, *agent.OutcomeUnknown) {
+		t.Helper()
+		mem := agent.NewMemStore()
+		var fired int
+		flow := effectFlow(t, &fired)
+		_, _ = flow.Run(ctx, mem, "r", 5)
+		_, err := flow.Run(ctx, mem, "r", 5)
+		halt, ok := errors.AsType[*agent.OutcomeUnknown](err)
+		if !ok {
+			t.Fatalf("want a halt: %v", err)
+		}
+		return mem, halt
+	}
+	// The same name and node types, another topology: a different digest.
+	var fired int
+	b := New[int, string]("charge-flow")
+	charge := b.Step("charge", func(_ context.Context, n int) (int, error) { fired++; return n, nil })
+	done := b.Step("done", func(_ context.Context, n int) (string, error) { return "", nil })
+	extra := b.Step("extra", func(_ context.Context, s string) (string, error) { return s, nil })
+	b.Edge(charge, done)
+	b.Edge(done, extra)
+	changed, err := b.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	mem, halt := halted(t)
+	if err := changed.ResolveHalt(ctx, mem, halt.Ref(), agent.Outcome{Result: 7}); !errors.Is(err, agent.ErrConfig) || !strings.Contains(err.Error(), "digest") {
+		t.Fatalf("a changed flow of the same name: %v, want ErrConfig naming the digest", err)
+	}
+	// A journal whose start names another flow, under this flow's digest.
+	forged := agent.NewMemStore()
+	for _, w := range []struct {
+		name string
+		rec  agent.Record
+	}{
+		{"run:start", agent.Record{Kind: agent.StepValue, Result: json.RawMessage(`{"input":"5","kind":"flow","flow":{"name":"other"}}`)}},
+		{flowDigestStep, agent.Record{Kind: agent.StepValue, Result: json.RawMessage(strconv.Quote(effectFlow(t, &fired).Digest()))}},
+		{"attempt:step:node:charge", agent.Record{Kind: agent.StepAttempt, ToolUseID: "node:charge", AttemptedAt: 1}},
+	} {
+		if _, err := forged.Do(ctx, "r", w.name, func(context.Context) (agent.Record, error) { return w.rec, nil }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := effectFlow(t, &fired).ResolveHalt(ctx, forged, halt.Ref(), agent.Outcome{Result: 7}); !errors.Is(err, agent.ErrConfig) || !strings.Contains(err.Error(), "not a run of this flow") {
+		t.Fatalf("a run whose start names another flow: %v, want ErrConfig", err)
+	}
+	// A run with no recorded start.
+	var f2 int
+	flow := effectFlow(t, &f2)
+	bare := agent.NewMemStore()
+	ref := halt.Ref()
+	if err := flow.ResolveHalt(ctx, bare, ref, agent.Outcome{Result: 7}); !errors.Is(err, agent.ErrConfig) || !strings.Contains(err.Error(), "not a run of this flow") {
+		t.Fatalf("a run with no start: %v, want ErrConfig", err)
+	}
+	// The run's own flow resolves it.
+	if err := flow.ResolveHalt(ctx, mem, halt.Ref(), agent.Outcome{Result: 7}); err != nil {
+		t.Fatalf("the run's own flow: %v", err)
+	}
+}
+
+// A completion must be the output of the terminal node the run reached: one whose output differs
+// is a divergence, and so is one with no reached terminal recorded.
+func TestConform_CompletionIsTheTerminalOutput(t *testing.T) {
+	ctx := context.Background()
+	// A completion recorded while the run halted on its first node: no terminal is recorded.
+	{
+		mem := agent.NewMemStore()
+		var fired int
+		flow := effectFlow(t, &fired)
+		_, _ = flow.Run(ctx, mem, "r", 5)
+		if _, err := flow.Run(ctx, mem, "r", 5); err == nil {
+			t.Fatal("want a halt")
+		}
+		if _, err := mem.Do(ctx, "r", "run:complete", func(context.Context) (agent.Record, error) {
+			return agent.Record{Kind: agent.StepValue, Result: json.RawMessage(`{"flow":"charge-flow","output":"charged 5"}`)}, nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if ok, diffs, _ := flow.Conform(ctx, mem, "r"); ok || len(diffs) != 1 || diffs[0] != "run:complete (no terminal node the run reached is recorded)" {
+			t.Fatalf("Conform = %v, %q; want the missing terminal reported", ok, diffs)
+		}
+	}
+	for _, tc := range []struct {
+		output, diff string
+	}{
+		{`"charged 6"`, "run:complete (its output is not the terminal node's)"},
+		{`"charged 5"`, ""},
+	} {
+		mem := agent.NewMemStore()
+		var fired int
+		flow := effectFlow(t, &fired, Idempotent())
+		// Run to the end but lose the completion, then record one by hand.
+		_, _ = flow.Run(ctx, noComplete{mem}, "r", 5)
+		if _, err := flow.Run(ctx, noComplete{mem}, "r", 5); !errors.Is(err, errNoComplete) {
+			t.Fatalf("drive: %v", err)
+		}
+		if _, err := mem.Do(ctx, "r", "run:complete", func(context.Context) (agent.Record, error) {
+			return agent.Record{Kind: agent.StepValue, Result: json.RawMessage(`{"flow":"charge-flow","output":` + tc.output + `}`)}, nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		ok, diffs, err := flow.Conform(ctx, mem, "r")
+		if tc.diff == "" {
+			if err != nil || !ok {
+				t.Fatalf("Conform of the right completion = %v, %q, %v", ok, diffs, err)
+			}
+			continue
+		}
+		if err != nil || ok || len(diffs) != 1 || diffs[0] != tc.diff {
+			t.Fatalf("Conform = %v, %q, %v; want %q", ok, diffs, err, tc.diff)
+		}
+	}
+}
+
+// Inputs are compared exactly: a uint64 near its maximum, or an int64 beyond 2^53, differs from
+// its neighbour, while the same value resumes the run.
+func TestRunStart_ExactIntegerInputs(t *testing.T) {
+	ctx := context.Background()
+	b := New[uint64, uint64]("u64")
+	b.Step("echo", func(_ context.Context, n uint64) (uint64, error) { return n, nil }, ReadOnly())
+	flow, err := b.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	const top = ^uint64(0)
+	mem := agent.NewMemStore()
+	if out, err := flow.Run(ctx, mem, "r", top); err != nil || out != top {
+		t.Fatalf("first drive: %d, %v", out, err)
+	}
+	if out, err := flow.Run(ctx, mem, "r", top); err != nil || out != top {
+		t.Fatalf("the same input: %d, %v", out, err)
+	}
+	if _, err := flow.Run(ctx, mem, "r", top-1); !errors.Is(err, agent.ErrConfig) {
+		t.Fatalf("the input %d of a run started with %d: %v, want ErrConfig", top-1, top, err)
+	}
+}

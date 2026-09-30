@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -108,13 +109,24 @@ func TestF2_RecordedStartInputDoesNotRoundTrip(t *testing.T) {
 			if err != nil || !ok || start.Kind != agent.RunKindFlow {
 				t.Fatalf("RecordedStart: %+v %v %v", start, ok, err)
 			}
+			// Decoded without loss (UseNumber), the recorded input resumes the run.
+			dec := json.NewDecoder(strings.NewReader(start.Input))
+			dec.UseNumber()
 			var in any
-			if err := json.Unmarshal([]byte(start.Input), &in); err != nil {
+			if err := dec.Decode(&in); err != nil {
 				t.Fatal(err)
 			}
 			_, err = flow.Run(ctx, mem, "r", in)
 			if errors.Is(err, agent.ErrConfig) {
 				t.Fatalf("resume with the recorded input (%s) decoded: %v; want the run's halt, not ErrConfig", start.Input, err)
+			}
+			// Decoded into a float64, it is another number, and another input.
+			var lossy any
+			if err := json.Unmarshal([]byte(start.Input), &lossy); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := flow.Run(ctx, mem, "r", lossy); !errors.Is(err, agent.ErrConfig) {
+				t.Fatalf("resume with the input rounded to a double: %v, want ErrConfig", err)
 			}
 		})
 	}

@@ -65,8 +65,10 @@ func TestRev103b_F4_ResolveHaltThroughAnotherFlow(t *testing.T) {
 }
 
 // F7: a node's body may run agent.Step with any name agent.Step accepts outside a flow, "" among
-// them. Inside a node it is recorded as "node:<node>:step:", which neither ResolveHaltRef nor
-// Flow.ResolveHalt nor Conform accepts: a completed run of the declared graph does not conform.
+// them. Inside a node it was recorded as "node:<node>:step:", which neither ResolveHaltRef nor
+// Flow.ResolveHalt nor Conform accepts: a completed run of the declared graph did not conform.
+// agent.Step now refuses an empty name everywhere (ErrConfig), so the drive fails before the
+// Step's body runs and records no such key, and the journal conforms.
 func TestRev103b_F7_EmptyStepNameInsideNodeDoesNotConform(t *testing.T) {
 	ctx := context.Background()
 	mem := agent.NewMemStore()
@@ -78,15 +80,16 @@ func TestRev103b_F7_EmptyStepNameInsideNodeDoesNotConform(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out, err := flow.Run(ctx, mem, "r", 1); err != nil || out != 2 {
-		t.Fatalf("drive: %d, %v", out, err)
+	if _, err := flow.Run(ctx, mem, "r", 1); !errors.Is(err, agent.ErrConfig) {
+		t.Fatalf("drive: %v, want the empty Step name refused with ErrConfig", err)
 	}
 	if ok, diffs, err := flow.Conform(ctx, mem, "r"); err != nil || !ok {
 		t.Fatalf("a completed run of the declared graph: Conform = %v, %q, %v", ok, diffs, err)
 	}
 }
 
-// F7: the same empty-named Step halting inside a node leaves a halt nothing can resolve.
+// F7: the same empty-named Step halting inside a node left a halt nothing could resolve; it is now
+// refused before its body runs, so it never halts and its effect never fires.
 func TestRev103b_F7_EmptyStepNameHaltIsUnresolvable(t *testing.T) {
 	ctx := context.Background()
 	mem := agent.NewMemStore()
@@ -105,14 +108,13 @@ func TestRev103b_F7_EmptyStepNameHaltIsUnresolvable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, _ = flow.Run(ctx, mem, "r", 1)
-	_, err = flow.Run(ctx, mem, "r", 1)
-	halt, ok := errors.AsType[*agent.OutcomeUnknown](err)
-	if !ok {
-		t.Fatalf("want a halt: %v", err)
+	for range 2 {
+		if _, err := flow.Run(ctx, mem, "r", 1); !errors.Is(err, agent.ErrConfig) {
+			t.Fatalf("drive: %v, want the empty Step name refused with ErrConfig", err)
+		}
 	}
-	if err := flow.ResolveHalt(ctx, mem, halt.Ref(), agent.Outcome{Result: 42}); err != nil {
-		t.Fatalf("the halt on %q cannot be resolved: %v", halt.Op.ID, err)
+	if charges != 0 {
+		t.Fatalf("the empty-named Step's body ran %d times, want 0", charges)
 	}
 }
 
