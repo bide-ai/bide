@@ -10,7 +10,7 @@ import (
 // table, independently of the function's SET search_path: each defends against an overload on the
 // search path by itself, and each is held here on its own.
 func TestNextSeqBodyQualifiesEveryName(t *testing.T) {
-	tb, err := newTables("app_")
+	tb, err := newTables("app_", "My\"Schema")
 	if err != nil {
 		t.Fatal(err)
 	}
