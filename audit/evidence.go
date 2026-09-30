@@ -432,7 +432,7 @@ func WithApprovedPolicies(digests ...string) EvidenceVerifyOption {
 // grant bundle the same way, and that Chain is exactly the grants they prove; (3) the run
 // certificate, if present, is for this run and tree and passes VerifyRun against the allowlist given
 // with WithApprovedPolicies; and (4) the consistency proof, if present, from its authentic earlier
-// head of this run to the STH.
+// head of this run to the STH. A package with none of (1) to (4) proves nothing and does not verify.
 //
 // It returns a structured EvidenceReport with an overall bool and a per-item verdict. A false OK with
 // notes is a well-formed-but-invalid package; an error means a bundle could not be canonicalized (a
@@ -554,6 +554,12 @@ func (e EvidencePackage) Verify(pub ed25519.PublicKey, opts ...EvidenceVerifyOpt
 		}
 		allOK = allOK && item.Verified
 		rep.Items = append(rep.Items, item)
+	}
+
+	// A package that proves nothing is not evidence of anything. Every item above is a proof, so no
+	// items means no proof was offered, and an empty report must not read as a clean audit.
+	if len(rep.Items) == 0 {
+		problem("the package proves nothing: it has no action, grant, run certificate, or consistency proof")
 	}
 
 	rep.OK = allOK && len(rep.Problems) == 0

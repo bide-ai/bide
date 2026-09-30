@@ -301,6 +301,9 @@ package is verified or derived from verified data:
 - `Label`, the one field no proof covers, is covered by the seal: `Evidence` ends with `pkg.Seal(priv)`,
   the log key's signature over the whole package, so nothing can be edited, added, or dropped after
   sealing. A caller that adds actions afterwards reseals.
+- The package must prove something: one action, grant, run certificate, or consistency proof at
+  least. A package with none of them does not verify, so an empty report never reads as a clean
+  audit.
 
 One check needs inputs the package deliberately does not carry: grant issuer signatures (they need
 the issuers' keys, checked with `VerifyDelegationChain` against your own PKI). For the auditor who

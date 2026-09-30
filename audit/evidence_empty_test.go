@@ -48,3 +48,23 @@ func TestEvidence_EmptyPackageDoesNotVerify(t *testing.T) {
 		t.Fatalf("an empty package failed with no problem named: %+v", rep)
 	}
 }
+
+// One proven item is enough: a package proving a single tool call verifies.
+func TestEvidence_OneItemVerifies(t *testing.T) {
+	ctx := context.Background()
+	store := agent.NewMemStore()
+	if _, err := store.Do(ctx, "r", "charge", func(context.Context) (agent.Record, error) {
+		return agent.Record{Kind: agent.StepToolResult, ToolUseID: "c1", Result: json.RawMessage(`{"ok":true}`)}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	pkg, err := audit.Evidence(ctx, store, "r", priv, 1700000000)
+	if err != nil {
+		t.Fatalf("Evidence: %v", err)
+	}
+	rep, err := pkg.Verify(pub)
+	if err != nil || !rep.OK || len(rep.Items) != 1 {
+		t.Fatalf("a one-item package: OK=%v items=%d problems=%v err=%v; want OK with 1 item", rep.OK, len(rep.Items), rep.Problems, err)
+	}
+}
