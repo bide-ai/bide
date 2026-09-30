@@ -588,11 +588,10 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 					// The safety and approval gate the call ran under, for a saga rollback and an audit.
 					r := Record{Kind: StepToolResult, ToolUseID: c.tu.ID, Safety: recordedSafety(*c.spec), Approval: c.spec.Approval.Clone()}
 					if callErr != nil && ctxDone(sctx) {
-						if !reached {
-							// Cancelled before the tool was called: nothing ran, so the claim is
-							// recorded as never started (below) and a resume calls the tool.
-							return Record{}, fmt.Errorf("tool %q was not started: %w", c.tu.Name, callErr)
-						}
+						// (A call cancelled before it reached the tool records nothing here either,
+						// and called is false for it, so its claim is recorded as never started
+						// below and a resume calls the tool.)
+						//
 						// The call was cancelled (the run was cancelled, or a sibling paused or
 						// failed the group) before it could report back, so its outcome is
 						// unknown, not failed: a request may already have reached a provider.

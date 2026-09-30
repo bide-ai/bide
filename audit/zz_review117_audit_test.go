@@ -163,3 +163,38 @@ func TestR117_BindRollbackRefusesAForeignParent(t *testing.T) {
 		t.Fatalf("bound identity %+v", id)
 	}
 }
+
+// The parent's rollback also resumes a sub-run's own rollback (the sub-agent's saga failed, and its
+// rollback stopped at a failing compensator): that resumed compensation runs under the child grant
+// too, not the parent's.
+func TestR117_ResumedSubRollbackRunsUnderTheChildGrant(t *testing.T) {
+	ctx := context.Background()
+	store := agent.NewMemStore()
+	var undos int
+	var lastLimit string
+	charge := agent.CompensatedFunc("charge", "", agent.Safety{},
+		func(context.Context, struct{}) (string, error) { return "ok", nil },
+		func(ctx context.Context, _ struct{}, _ string) error {
+			undos++
+			sg, _, _ := GrantFrom(ctx)
+			lastLimit = sg.Grant.Scope["limit"]
+			if undos == 1 {
+				return errors.New("refund service unavailable") // the sub-run's own rollback stops here
+			}
+			return nil
+		})
+	boom := agent.Func("boom", "", agent.Safety{}, func(context.Context, struct{}) (string, error) { return "", errors.New("sold out") })
+	sub := agent.New(agent.NewScriptedModel(agent.ToolTurn("s1", "charge", `{}`), agent.ToolTurn("s2", "boom", `{}`)), store, charge, boom)
+	exec := AttenuatingSubAgent("exec", "", sub, AttenuationConfig{Store: store, Narrow: narrowLimitBy(3), Rules: ScopeRules{"limit": NumericAtMost}})
+	parent := agent.New(agent.NewScriptedModel(agent.ToolTurn("c1", "exec", `{"task":"pay"}`)), store, exec)
+	_, priv, _ := ed25519.GenerateKey(rand.Reader)
+	signer := Ed25519Signer{Priv: priv}
+	rootSG, err := SignGrant(Grant{ID: "g0", Issuer: "corp", Subject: "desk", Scope: map[string]string{"limit": "7"}}, signer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = parent.RunSaga(WithGrant(ctx, rootSG, signer), "trip", "go")
+	if undos != 2 || lastLimit != "4" {
+		t.Fatalf("compensations %d, the resumed one under limit %q; want 2, the second under the child grant's 4", undos, lastLimit)
+	}
+}
