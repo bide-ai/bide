@@ -8,9 +8,9 @@ API key from the environment; set `OPENROUTER_API_KEY` before running them. Exam
 marked "offline" need no key and no network.
 
 Most examples are packages of the root module: run them from the repository root with
-`go run ./examples/<name>`. Four are their own modules because they import an adapter module with
-its own dependencies (`approval`, `plan`, `mcp`, `observability`); `cd` into the directory and run
-`go run .` (the `go.work` at the root resolves the local modules; with `GOWORK=off` each module's
+`go run ./examples/<name>`. Five are their own modules because they import an adapter module with
+its own dependencies (`approval`, `plan`, `mcp`, `observability`, and the `govern` examples); `cd` into the directory and run
+`go run .`, or `go run ./<name>` for a `govern` example (the `go.work` at the root resolves the local modules; with `GOWORK=off` each module's
 `replace` directives do the same).
 
 ## Authoring basics

@@ -42,7 +42,7 @@ eino           maxFired=64   ✗
 
 कोई टूल किस स्तर पर आता है, यह उसकी घोषित `Safety` तय करती है: उसे read-only, idempotent चिह्नित करें, या उसे एक idempotency key दें, और एक अज्ञात परिणाम स्वतः पुनः-प्रयास होता है; इनमें से कुछ भी घोषित न करें और वह रुक जाता है। पुनः-प्रयास-सुरक्षा opt-in है; जब आपने opt-in नहीं किया तब विराम डिफ़ॉल्ट है, ताकि एक लाइब्रेरी जिसका पूरा उद्देश्य "कभी दो बार फ़ायर न करना" है, अनुमान लगाने के बजाय सुरक्षित पर डिफ़ॉल्ट करे।
 
-अधिकांश अज्ञात कभी किसी व्यक्ति तक नहीं पहुँचते: एक idempotency key प्रदाता को एक सुरक्षित पुनः-प्रयास का दोहराव हटाने देती है, और जिन सिस्टमों में वह नहीं होती (ईमेल, आंतरिक सेवाएँ) उनके लिए एक reconciler चरण को उस रिकॉर्ड से हल करता है जो वह छोड़ गया (`agent.ResolveHalt`)। इंसान न्यूनतम आधार है, डिफ़ॉल्ट नहीं।
+अधिकांश अज्ञात कभी किसी व्यक्ति तक नहीं पहुँचते: एक idempotency key प्रदाता को एक सुरक्षित पुनः-प्रयास का दोहराव हटाने देती है, और जिन सिस्टमों में वह नहीं होती (ईमेल, आंतरिक सेवाएँ) उनके लिए एक reconciler चरण को उस रिकॉर्ड से हल करता है जो वह छोड़ गया (`agent.ResolveHalt`, या किसी `Step` के लिए `agent.ResolveStepHalt`)। इंसान न्यूनतम आधार है, डिफ़ॉल्ट नहीं।
 
 > [!IMPORTANT]
 > **इसके नीचे का नियम:** जब कोई क्रिया पैसा हिलाती है, किसी रिकॉर्ड को छूती है, या ऑडिट के तहत होती है, और परिणाम
@@ -63,7 +63,7 @@ Temporal के पास गारंटियाँ हैं पर चलन
 
 वह जर्नल जो पुनरारंभ को सुरक्षित बनाता है *ही* ऑडिट रिकॉर्ड है, और यह उसी **क्रिप्टोग्राफ़ी से प्रतिबद्ध (committed) है जो Certificate Transparency इस्तेमाल करती है** ([RFC 6962](https://datatracker.ietf.org/doc/html/rfc6962), प्रकाशित संदर्भ वेक्टरों के विरुद्ध जाँचा गया)। एक विनियमित खरीदार के लिए जो अंतर मायने रखता है: यह **सत्यापनीय है, न कि केवल लॉग किया हुआ**। एक तीसरा पक्ष एक प्रमाण की जाँच करता है *आप पर, आपके डेटाबेस पर, या आपके लॉग पर भरोसा किए बिना*:
 
-- **समावेशन प्रमाण (inclusion proof)**: सिद्ध करें कि एक विशिष्ट क्रिया घटी (यह चार्ज, यह अनुमोदन) O(log n) में, और कुछ भी उजागर किए बिना। एक ऑडिटर के लिए चयनात्मक प्रकटीकरण।
+- **समावेशन प्रमाण (inclusion proof)**: सिद्ध करें कि एक विशिष्ट क्रिया घटी (यह चार्ज, यह अनुमोदन) O(log n) में, कोई अन्य रिकॉर्ड उजागर किए बिना (केवल उसकी स्थिति और रन का आकार)। एक ऑडिटर के लिए चयनात्मक प्रकटीकरण।
 - **संगति प्रमाण (consistency proof)**: सिद्ध करें कि इतिहास में केवल जोड़ा गया, कभी दोबारा लिखा या पुनः-क्रमबद्ध नहीं किया गया।
 - **हस्ताक्षरित ट्री हेड (signed tree head) + सतत एंकरिंग**: `AuditedStore` प्रति चरण एक प्रतिबद्धता पर हस्ताक्षर करता है और उसे बैंड-से-बाहर एक बाहरी ट्रांसपेरेंसी लॉग में प्रकाशित करता है; छेड़छाड़ केवल संदिग्ध नहीं, बल्कि प्रमाणनीय बन जाती है।
 - **किसने कार्य किया, किस प्राधिकार के तहत**: वही पत्ती कार्य करने वाली पहचान से प्रतिबद्ध हो सकती है (कर्ता, किसकी ओर से, किस हस्ताक्षरित अनुदान के तहत) और प्रत्यायोजित प्राधिकार को एक शासित अपरिवर्तनीय (invariant) के रूप में प्रवर्तित कर सकती है, ताकि एक प्रमाण केवल यह न दिखाए कि क्या हुआ बल्कि यह भी कि उसके लिए कौन अधिकृत था। अपना खुद का IdP लाएँ; यह अधिकृत क्रिया को प्रमाणनीय बनाता है, यह प्रमाणीकरण (authentication) की जगह नहीं लेता।
@@ -139,7 +139,7 @@ finalize := b.Step("finalize", func(ctx context.Context, r Reservation) (Receipt
 decline  := b.Step("decline",  func(ctx context.Context, a Assessment) (Receipt, error) { ... })
 
 b.Switch(classify,
-    plan.When(func(a Assessment) bool { return a.Rush }, reserve),
+    plan.When(func(a Assessment) bool { return a.Rush }, reserve).Named("rush"),
     plan.Else(decline),
 )
 b.Edge(reserve, finalize)
@@ -254,11 +254,11 @@ func main() {
 
 लाइव स्मोक उदाहरण चलाएँ: `OPENROUTER_API_KEY=sk-... go run ./examples/smoke`
 
-`Run` केवल अंतिम संदेश लौटाता है। एक रन सारांश (टोकन उपयोग, समस्त ट्रन में जोड़ा गया, कैश सहित; मॉडल-ट्रन गिनती; वॉल-क्लॉक अवधि) के लिए `RunResult` (और `RunSagaResult`) इस्तेमाल करें:
+`Run` केवल अंतिम संदेश लौटाता है। एक रन सारांश (पूरे रन का टोकन उपयोग, कैश और सब-एजेंटों सहित; मॉडल-ट्रन गिनती; वॉल-क्लॉक अवधि) के लिए `RunResult` (और `RunSagaResult`) इस्तेमाल करें:
 
 ```go
 res, err := a.RunResult(ctx, runID, input)
-// res.Message, res.Usage, res.Turns, res.Duration, res.RunID
+// res.Message, res.Usage, res.Spend, res.Turns, res.Duration, res.RunID
 ```
 
 ## स्ट्रीमिंग
@@ -304,9 +304,9 @@ w, err := agent.RunTyped[Weather](ctx, a, runID, "weather in SF?")
 // w.City == "SF", w.TempF == 68
 ```
 
-यह एक पैकेज फ़ंक्शन है, मेथड नहीं (Go मेथड टाइप पैरामीटर नहीं जोड़ सकते)। मान *जर्नल-किए गए* टूल कॉल से डीकोड होता है, इसलिए यह **पुनरारंभ-सुरक्षित** है: एक रन के बीच का क्रैश पुनरारंभ पर लॉग से टाइप-किया गया उत्तर वापस पा लेता है। पहली `final_answer` कॉल जिसे टूल स्वीकार करता है, रन को समाप्त कर देती है। केवल यदि मॉडल ऐसी कोई कॉल कभी नहीं करता (वह इसके बजाय सादे JSON टेक्स्ट में उत्तर देता है), तभी `RunTyped` उस टेक्स्ट को पार्स करता है। `T` का एक struct होना अभिप्रेत है।
+यह एक पैकेज फ़ंक्शन है, मेथड नहीं (Go मेथड टाइप पैरामीटर नहीं जोड़ सकते)। मान *जर्नल-किए गए* टूल कॉल से डीकोड होता है, इसलिए यह **पुनरारंभ-सुरक्षित** है: एक रन के बीच का क्रैश पुनरारंभ पर लॉग से टाइप-किया गया उत्तर वापस पा लेता है। पहली `final_answer` कॉल जिसे टूल स्वीकार करता है, रन को समाप्त कर देती है। केवल यदि मॉडल ऐसी कोई कॉल कभी नहीं करता (वह इसके बजाय सादे JSON टेक्स्ट में उत्तर देता है), तभी `RunTyped` रन के अंतिम ट्रन के टेक्स्ट को पार्स करता है। `T` को एक JSON ऑब्जेक्ट होना चाहिए (एक struct, उसका पॉइंटर, या एक map), क्योंकि प्रदाता टूल आर्ग्युमेंट केवल ऑब्जेक्ट के रूप में लेते हैं; कोई भी अन्य `T` `ErrConfig` है।
 
-सख्त संरचित आउटपुट वाले OpenAI-संगत प्रदाताओं पर, `RunTypedNative[T]` टूल के बजाय प्रदाता के नेटिव JSON-स्कीमा प्रतिक्रिया प्रारूप का उपयोग करता है (स्कीमा प्रदाता-पक्ष पर प्रवर्तित, कोई टूल राउंड-ट्रिप नहीं); Anthropic इसे अनदेखा करता है, इसलिए वहाँ प्रदाता-अज्ञेय आउटपुट के लिए `RunTyped` इस्तेमाल करें।
+सख्त संरचित आउटपुट वाले OpenAI-संगत प्रदाताओं पर, `RunTypedNative[T]` टूल के बजाय प्रदाता के नेटिव JSON-स्कीमा प्रतिक्रिया प्रारूप का उपयोग करता है (स्कीमा प्रदाता-पक्ष पर प्रवर्तित, कोई टूल राउंड-ट्रिप नहीं); Anthropic अडैप्टर इसका समर्थन नहीं करता और `ErrConfig` लौटाता है, इसलिए वहाँ प्रदाता-अज्ञेय आउटपुट के लिए `RunTyped` इस्तेमाल करें।
 
 ## सैंपलिंग
 
@@ -465,7 +465,7 @@ case errors.Is(err, agent.ErrStorage):      // durable-store I/O
 
 श्रेणियाँ: `ErrConfig`, `ErrModel`, `ErrTool`, `ErrStorage`, `ErrProtocol`, `ErrBudget`। स्थितियाँ (हर एक एक श्रेणी को लपेटती है): `ErrUnknownTool`, `ErrToolArgs` (`ErrTool` को लपेटती हैं), `ErrToolReinvoked`, `ErrInvalidApproval`, `ErrAlreadyDecided` (`ErrConfig` को लपेटती हैं), `ErrNoRecordedOutput`, `ErrIncompleteResponse` (`ErrModel` को लपेटती हैं), `ErrTruncatedToolArgs` (`ErrProtocol` को लपेटती है), `ErrBudgetExceeded`, `ErrMaxTurns` (`ErrBudget` को लपेटती हैं)। प्रदाता अडैप्टर `*RateLimited` (HTTP 429, एक `RetryAfter` संकेत के साथ) और `*APIError` (अन्य non-2xx, `StatusCode` के साथ) भी लौटाते हैं, दोनों `ErrModel` को लपेटते हैं। टूलकिट जो भी त्रुटि लौटाता है (मॉडल, MCP, स्टोर, और शासन अडैप्टरों से सहित) एक श्रेणी वहन करती है, इसलिए `errors.Is` पूरी सतह पर विश्वसनीय है।
 
-और **नियंत्रण-प्रवाह संकेत** एक श्रेणी से समृद्धतर हैं, इसलिए वे ठोस प्रकार बने रहते हैं जिन्हें `errors.As` मिलाता है: `*PendingApproval` (अनुमोदन आवश्यक), `*Interrupted` (इंसानी इनपुट की प्रतीक्षा), `*Sleeping` (टिकाऊ टाइमर लंबित), `*Awaiting` (एक बाहरी सिग्नल की प्रतीक्षा), `*ResumeHalt` (पुनरारंभ असुरक्षित), `*SagaAborted` (वापस लुढ़काया गया), और `*HaltTooYoung` (`ResolveHalt` से, जब `WithMinHaltAge` अभी बीता नहीं है)। एक रुका या ठहरा हुआ रन एक "विफलता" श्रेणी नहीं है; `RunID` / `ToolUseID` / क्षतिपूर्ति विवरण के लिए struct का निरीक्षण करें। रद्दीकरण सामान्य `context.Canceled` / `context.DeadlineExceeded` के रूप में उभरता है।
+और **नियंत्रण-प्रवाह संकेत** एक श्रेणी से समृद्धतर हैं, इसलिए वे ठोस प्रकार बने रहते हैं जिन्हें `errors.As` मिलाता है: `*PendingApproval` (अनुमोदन आवश्यक), `*Interrupted` (इंसानी इनपुट की प्रतीक्षा), `*Sleeping` (टिकाऊ टाइमर लंबित), `*Awaiting` (एक बाहरी सिग्नल की प्रतीक्षा), `*ResumeHalt` (पुनरारंभ असुरक्षित), `*SagaAborted` (वापस लुढ़काया गया), और `*HaltTooYoung` (`ResolveHalt` या `ResolveStepHalt` से, जब `WithMinHaltAge` अभी बीता नहीं है)। एक रुका या ठहरा हुआ रन एक "विफलता" श्रेणी नहीं है; `RunID` / `ToolUseID` / क्षतिपूर्ति विवरण के लिए struct का निरीक्षण करें। रद्दीकरण सामान्य `context.Canceled` / `context.DeadlineExceeded` के रूप में उभरता है, और जो ड्राइव अपने रन की लीज़ (`agent.Lease`) खो जाने के कारण रद्द हुई, वह `ErrLeaseLost` के रूप में; रद्दीकरण की तरह, यह कोई श्रेणी वहन नहीं करती।
 
 ## Middleware और अवलोकनीयता
 
@@ -509,7 +509,7 @@ func RequireTag(tag string) agent.ToolMiddleware {
 
 ## मॉड्यूल
 
-Bide एक बहु-मॉड्यूल रेपो है: एक निर्भरता-हल्का **कोर** (`github.com/bide-ai/bide`, यानी लूप, schema, middleware, मॉडल अडैप्टर, `plan` फ़्लो बिल्डर, `audit`; निर्भरताएँ केवल `x/sync` + `x/text` हैं) साथ ही प्रति भारी अडैप्टर एक मॉड्यूल (`mcp`, `trace`, `store/sqlite`, `store/postgres`, `govern/redislog`, `govern/sqlitelog`, `govern/postgreslog`, `codec/gcf`)। एक अडैप्टर import करें और आप उसका निर्भरता वृक्ष खींच लेते हैं; केवल कोर import करें और आप नहीं खींचते। एक केवल-कोर उपभोक्ता की बाह्य-मॉड्यूल सतह 2 है, 54 नहीं। देखें [docs/reference/module-structure.md](../../docs/reference/module-structure.md)।
+Bide एक बहु-मॉड्यूल रेपो है: एक निर्भरता-हल्का **कोर** (`github.com/bide-ai/bide`, यानी लूप, schema, middleware, मॉडल अडैप्टर, `plan` फ़्लो बिल्डर, `audit`; निर्भरताएँ केवल `x/sync` + `x/text` हैं) साथ ही प्रति भारी अडैप्टर एक मॉड्यूल (`mcp`, `trace`, `store/sqlite`, `store/postgres`, `govern/redislog`, `govern/sqlitelog`, `govern/postgreslog`, `codec/gcf`), और `govern` मॉड्यूल, जो gsm को वहन करता है और gsm के स्थिर होने तक v0.x पर रहता है। एक अडैप्टर import करें और आप उसका निर्भरता वृक्ष खींच लेते हैं; केवल कोर import करें और आप नहीं खींचते। एक केवल-कोर उपभोक्ता की बाह्य-मॉड्यूल सतह 2 है, 54 नहीं। देखें [docs/reference/module-structure.md](../../docs/reference/module-structure.md)।
 
 ## आर्किटेक्चर
 
@@ -526,7 +526,7 @@ middleware       Retry, RateLimit, Cost, Hedge
 trace            opt-in OTel gen_ai.* spans
 store/sqlite     on-disk durable resume (single binary, no cluster)
 store/postgres   HA durable resume (any node resumes any run)
-govern           Tier-2: federated governed state + quorum for agents that must agree (gsm-backed)
+govern           Tier-2: federated governed state + quorum for agents that must agree (gsm-backed; own module)
 ```
 
 ## संघीय शासन: एजेंट जो सहमत होते हैं, प्रमाणनीय रूप से (Tier-2)

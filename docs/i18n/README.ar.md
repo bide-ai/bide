@@ -70,7 +70,7 @@ eino           maxFired=64   ✗
 
 معظم النتائج المجهولة لا تبلغ إنسانًا أبدًا: مفتاح عدم التكرار يتيح للمورّد إزالة تكرار إعادة محاولة آمنة،
 وللأنظمة التي لا تملكه (البريد، الخدمات الداخلية) يحسم مُسوٍّ الخطوةَ من السجل الذي تركته
-(`agent.ResolveHalt`). الإنسان هو الحدّ الأدنى، لا الافتراض.
+(`agent.ResolveHalt`، أو `agent.ResolveStepHalt` لخطوة `Step`). الإنسان هو الحدّ الأدنى، لا الافتراض.
 
 > [!IMPORTANT]
 > **القاعدة تحت ذلك:** حين يُحرّك فعلٌ أموالًا، أو يمسّ سجلًّا، أو يقع تحت التدقيق، وتكون النتيجة مجهولة
@@ -117,7 +117,7 @@ Transparency** ([RFC 6962](https://datatracker.ietf.org/doc/html/rfc6962)، مف
 *دون الوثوق بك أو بقاعدة بياناتك أو بسجلاتك*:
 
 - **برهان الشمول (Inclusion proof)**: إثبات وقوع فعل محدّد بعينه (هذه الشحنة، هذه الموافقة) بتعقيد
-  O(log n)، دون كشف أي شيء آخر. إفصاح انتقائي لمُدقِّق.
+  O(log n)، دون كشف أي سجلّ آخر (سوى موضعه وحجم التشغيلة). إفصاح انتقائي لمُدقِّق.
 - **برهان الاتّساق (Consistency proof)**: إثبات أن التاريخ لم يُلحَق به إلا إلحاقًا، ولم يُعَد كتابته أو
   ترتيبه قط.
 - **رأس شجرة موقَّع + تثبيت مستمر**: يُوقّع `AuditedStore` التزامًا لكل خطوة وينشره خارج النطاق إلى سجل
@@ -247,7 +247,7 @@ finalize := b.Step("finalize", func(ctx context.Context, r Reservation) (Receipt
 decline  := b.Step("decline",  func(ctx context.Context, a Assessment) (Receipt, error) { ... })
 
 b.Switch(classify,
-    plan.When(func(a Assessment) bool { return a.Rush }, reserve),
+    plan.When(func(a Assessment) bool { return a.Rush }, reserve).Named("rush"),
     plan.Else(decline),
 )
 b.Edge(reserve, finalize)
@@ -374,12 +374,12 @@ func main() {
 
 شغّل مثال الاختبار الحيّ: `OPENROUTER_API_KEY=sk-... go run ./examples/smoke`
 
-تُرجِع `Run` الرسالة النهائية فقط. للحصول على ملخّص تشغيلة (استهلاك الرموز، مجموعًا عبر الأدوار، شاملًا
-التخزين المؤقت؛ وعدد أدوار النموذج؛ ومدّة الزمن الجداري) استخدم `RunResult` (و`RunSagaResult`):
+تُرجِع `Run` الرسالة النهائية فقط. للحصول على ملخّص تشغيلة (استهلاك الرموز للتشغيلة كلها، شاملًا
+التخزين المؤقت والوكلاء الفرعيين؛ وعدد أدوار النموذج؛ ومدّة الزمن الجداري) استخدم `RunResult` (و`RunSagaResult`):
 
 ```go
 res, err := a.RunResult(ctx, runID, input)
-// res.Message, res.Usage, res.Turns, res.Duration, res.RunID
+// res.Message, res.Usage, res.Spend, res.Turns, res.Duration, res.RunID
 ```
 
 ## البثّ (Streaming)
@@ -438,11 +438,12 @@ w, err := agent.RunTyped[Weather](ctx, a, runID, "weather in SF?")
 إنها دالة حزمة، لا تابع (توابع Go لا تستطيع إضافة معاملات نوع). القيمة تُفكَّك من نداء الأداة *المُسجَّل*،
 فهي **آمنة عند الاستئناف**: انهيار في منتصف التشغيلة يستعيد الجواب المُصنَّف من السجل عند الاستئناف. وأول
 نداء `final_answer` تقبله الأداة يُنهي التشغيلة. وفقط إن لم يُجرِ النموذج نداءً كهذا قط (فردّ بنصّ JSON عادي
-بدلًا منه) تُحلّل `RunTyped` ذلك النصّ. يُقصَد بـ `T` أن يكون بنية (struct).
+بدلًا منه) تُحلّل `RunTyped` نصّ الدور الأخير في التشغيلة. يجب أن يكون `T` كائن JSON (بنية struct، أو مؤشّرًا
+إليها، أو map)، لأن المورّدين لا يقبلون وسائط الأدوات إلا ككائن؛ وأي `T` آخر يُعطي `ErrConfig`.
 
 على المورّدين المتوافقين مع OpenAI ذوي المخرجات المُبنيَنة الصارمة، تستخدم `RunTypedNative[T]` صيغة استجابة
-مخطط JSON الأصلية للمورّد بدل الأداة (المخطط مفروض من جهة المورّد، بلا رحلة أداة ذهابًا وإيابًا)؛ وAnthropic
-تتجاهلها، فاستخدم `RunTyped` هناك لخرج محايد للمورّد.
+مخطط JSON الأصلية للمورّد بدل الأداة (المخطط مفروض من جهة المورّد، بلا رحلة أداة ذهابًا وإيابًا)؛ ومُحوّل Anthropic
+لا يدعمها ويُرجِع `ErrConfig`، فاستخدم `RunTyped` هناك لخرج محايد للمورّد.
 
 ## المعاينة (Sampling)
 
@@ -660,9 +661,10 @@ case errors.Is(err, agent.ErrStorage):      // durable-store I/O
 **إشارات التحكّم في التدفّق** أغنى من صنف، فتبقى أنواعًا ملموسة تُطابَق بـ `errors.As`: `*PendingApproval`
 (الموافقة مطلوبة)، `*Interrupted` (بانتظار مُدخَل بشري)، `*Sleeping` (مؤقّت مُعمَّر مُعلَّق)، `*Awaiting`
 (بانتظار إشارة خارجية)، `*ResumeHalt` (غير آمن للاستئناف)، `*SagaAborted` (تراجَع)، و`*HaltTooYoung` (من
-`ResolveHalt`، حين لم تنقضِ مدّة `WithMinHaltAge` بعد). التشغيلة المتوقّفة أو
+`ResolveHalt` أو `ResolveStepHalt`، حين لم تنقضِ مدّة `WithMinHaltAge` بعد). التشغيلة المتوقّفة أو
 المُتوقِّفة ليست صنف «إخفاق»؛ افحص البنية للحصول على `RunID` / `ToolUseID` / تفاصيل التعويض. ويظهر الإلغاء
-كـ `context.Canceled` / `context.DeadlineExceeded` المعتادَين.
+كـ `context.Canceled` / `context.DeadlineExceeded` المعتادَين، وتظهر القيادة التي أُلغيت لأن حجز تشغيلتها
+(`agent.Lease`) قد فُقِد كـ `ErrLeaseLost`؛ ومثل الإلغاء، لا يحمل صنفًا.
 
 ## Middleware والملاحظة (Observability)
 
@@ -720,7 +722,8 @@ func RequireTag(tag string) agent.ToolMiddleware {
 Bide مستودع متعدّد الوحدات: **نواة** خفيفة التبعيات (`github.com/bide-ai/bide`، الحلقة، schema،
 middleware، مُحوّلات النموذج، باني تدفّق `plan`، `audit`؛ تبعياتها مجرّد `x/sync` + `x/text`) مع وحدة
 واحدة لكل مُحوّل ثقيل (`mcp`، `trace`، `store/sqlite`، `store/postgres`، `govern/redislog`،
-`govern/sqlitelog`، `govern/postgreslog`، `codec/gcf`). استورد مُحوّلًا فتسحب شجرة تبعياته؛ واستورد النواة فقط فلا
+`govern/sqlitelog`، `govern/postgreslog`، `codec/gcf`)، ووحدة `govern` التي تحمل gsm
+وتبقى على v0.x حتى يستقرّ gsm. استورد مُحوّلًا فتسحب شجرة تبعياته؛ واستورد النواة فقط فلا
 تسحبها. سطح الوحدات الخارجية لمُستهلِك النواة-فقط هو 2، لا 54. انظر
 [docs/reference/module-structure.md](../../docs/reference/module-structure.md).
 
@@ -741,7 +744,7 @@ middleware       Retry, RateLimit, Cost, Hedge
 trace            opt-in OTel gen_ai.* spans
 store/sqlite     on-disk durable resume (single binary, no cluster)
 store/postgres   HA durable resume (any node resumes any run)
-govern           Tier-2: federated governed state + quorum for agents that must agree (gsm-backed)
+govern           Tier-2: federated governed state + quorum for agents that must agree (gsm-backed; own module)
 ```
 
 ## الحوكمة الاتحادية: وكلاء يتّفقون، بإثبات (Tier-2)

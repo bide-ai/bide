@@ -99,8 +99,8 @@ func newClaim() (string, error) {
 // transcript from the store so a restarted process continues where it left off.
 //
 // The id must not contain '/'. The session journals under the id itself and runs its turns
-// under "<id>/t<n>" and "<id>/e/<key>" (and their sub-agents under "<turn run>/<call>"), so an id
-// with a '/' could name another session's turn: session "c/e" and session "c" answering key "t0"
+// under "<id>/t<n>" and "<id>/e/<key>" (and their sub-agents under SubRunID of the turn run and
+// the call), so an id with a '/' could name another session's turn: session "c/e" and session "c" answering key "t0"
 // would share run "c/e/t0", and one would be handed the other's reply. Those names belong to the
 // session; do not pass them to Run.
 func (a *Agent) Session(ctx context.Context, id string) (*Session, error) {

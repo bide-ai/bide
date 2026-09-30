@@ -7,7 +7,8 @@ wraps each one so the agent core can call it like any native tool. It is built o
 official SDK, `github.com/modelcontextprotocol/go-sdk`.
 
 The package is deliberately thin: two entry points (`Connect` and `Tools`), a handful of options
-(`TrustAnnotations`, `WithElicitation`, `DeclineElicitation`, `WithToolListChanged`,
+(`TrustAnnotations`, `WithSafety`, `WithCallTimeout`, `WithMaxResultBytes`,
+`WithMaxDescriptionBytes`, `WithElicitation`, `DeclineElicitation`, `WithToolListChanged`,
 `WithClientInfo`), and an internal adapter. It does
 not embed a server, spawn processes, or manage transports for you; you bring a
 `mcp.Transport` (stdio, in-memory, streamable HTTP, ...) and the package turns a connected
@@ -88,7 +89,7 @@ resume even if the server now labels the tool read-only.
 `ReadOnly` wins if both hints are set: a read-only tool has no side effect to double-fire.
 An absent `Annotations` block is treated as the destructive default per the MCP spec, which
 is the conservative choice for resume. Whether to trust the annotations is the policy decision for a whole server; `WithSafety`
-(below) decides for one tool.
+(above) decides for one tool.
 
 ## Limits
 
@@ -185,7 +186,7 @@ type ElicitFunc func(context.Context, *mcp.ElicitRequest) (*mcp.ElicitResult, er
 func DeclineElicitation(context.Context, *mcp.ElicitRequest) (*mcp.ElicitResult, error)
 ```
 
-`Connect` and `Tools` wrap failures with `agent.ErrTool` so they classify alongside the framework's other
+`Connect` and `Tools` wrap connection and listing failures with `agent.ErrTool` so they classify alongside the framework's other
 tool errors. The wrapped tool's `Call` returns the server's result content as raw JSON (or its
 `structuredContent`, when the server sends that alone); if
 the server flags the result `IsError`, the content is surfaced as a Go error (wrapped with

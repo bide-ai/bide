@@ -42,7 +42,7 @@ eino           maxFired=64   ✗
 
 一个工具落在哪一层，取决于它声明的 `Safety`：把它标记为只读、幂等，或给它一个幂等键，未知结果就会自动重试；这些都不声明，它就会停机。可重试安全是需要主动选择的；在你没有主动选择时，暂停就是默认行为，因此一个以"绝不重复触发"为全部意义的库，默认偏向安全而非靠猜。
 
-大多数未知结果根本不会交到人手里：幂等键让提供商对一次安全的重试去重，而对于没有幂等键的系统（邮件、内部服务），一个对账器会根据该步骤留下的记录来解决它（`agent.ResolveHalt`）。人类是兜底，而不是默认。
+大多数未知结果根本不会交到人手里：幂等键让提供商对一次安全的重试去重，而对于没有幂等键的系统（邮件、内部服务），一个对账器会根据该步骤留下的记录来解决它（`agent.ResolveHalt`，对于 `Step` 则用 `agent.ResolveStepHalt`）。人类是兜底，而不是默认。
 
 > [!IMPORTANT]
 > **其下的规则：** 当一个动作经手资金、触及记录或在审计之下发生，而其结果真正无法得知时，停下来就是正确的结果。一次人类或对账器能解除的暂停，胜过一次无人能收回的重复扣款。
@@ -61,7 +61,7 @@ Temporal 拥有这些保证，但需要一个服务器加一支 worker 机群才
 
 那条让恢复变得安全的日志*就是*审计记录，并且它以**与证书透明度（Certificate Transparency）所用相同的密码学**加以承诺（[RFC 6962](https://datatracker.ietf.org/doc/html/rfc6962)，已对照发布的参考向量核验）。对受监管买家而言真正重要的区别：这是**可验证的，而非仅仅被记录下来的**。第三方核验一个证明，*无需信任你、你的数据库或你的日志*：
 
-- **包含性证明（inclusion proof）**：以 O(log n) 证明某一具体动作发生过（这笔扣款、这次批准），且不泄露其他任何信息。为审计员提供选择性披露。
+- **包含性证明（inclusion proof）**：以 O(log n) 证明某一具体动作发生过（这笔扣款、这次批准），且不泄露任何其他记录（只泄露它的位置和该运行的大小）。为审计员提供选择性披露。
 - **一致性证明（consistency proof）**：证明历史只被追加，从未被重写或重排。
 - **签名的树头（signed tree head）＋ 持续锚定**：`AuditedStore` 为每一步签署一份承诺并将其带外发布到一个外部透明度日志；篡改由此变得可证明，而不只是被怀疑。
 - **谁在行动，依据什么授权**：同一片叶子可以承诺到行动者身份（谁行动、代表谁、依据哪一份签名授权），并将委派授权作为一项受治理的不变量来强制执行，从而一个证明不仅显示发生了什么，还显示谁为此被授权。自带你自己的 IdP；这让被授权的动作变得可证明，它并不替代身份认证。
@@ -137,7 +137,7 @@ finalize := b.Step("finalize", func(ctx context.Context, r Reservation) (Receipt
 decline  := b.Step("decline",  func(ctx context.Context, a Assessment) (Receipt, error) { ... })
 
 b.Switch(classify,
-    plan.When(func(a Assessment) bool { return a.Rush }, reserve),
+    plan.When(func(a Assessment) bool { return a.Rush }, reserve).Named("rush"),
     plan.Else(decline),
 )
 b.Edge(reserve, finalize)
@@ -252,11 +252,11 @@ func main() {
 
 运行实地冒烟示例：`OPENROUTER_API_KEY=sk-... go run ./examples/smoke`
 
-`Run` 只返回最终消息。要获取一份运行摘要（token 用量，跨各轮累加、含缓存；模型轮次计数；墙钟时长），请用 `RunResult`（以及 `RunSagaResult`）：
+`Run` 只返回最终消息。要获取一份运行摘要（整次运行的 token 用量，含缓存与子智能体；模型轮次计数；墙钟时长），请用 `RunResult`（以及 `RunSagaResult`）：
 
 ```go
 res, err := a.RunResult(ctx, runID, input)
-// res.Message, res.Usage, res.Turns, res.Duration, res.RunID
+// res.Message, res.Usage, res.Spend, res.Turns, res.Duration, res.RunID
 ```
 
 ## 流式（Streaming）
@@ -302,9 +302,9 @@ w, err := agent.RunTyped[Weather](ctx, a, runID, "weather in SF?")
 // w.City == "SF", w.TempF == 68
 ```
 
-它是一个包函数，而非一个方法（Go 的方法不能添加类型参数）。该值是从*记入日志的*工具调用中解码出来的，所以它是**恢复安全的**：一次运行中途的崩溃会在恢复时从日志中把类型化的答案找回来。该工具接受的第一次 `final_answer` 调用即结束本次运行。只有当模型从未发出这样的调用（而是以纯 JSON 文本回复）时，`RunTyped` 才会解析那段文本。`T` 意在是一个结构体。
+它是一个包函数，而非一个方法（Go 的方法不能添加类型参数）。该值是从*记入日志的*工具调用中解码出来的，所以它是**恢复安全的**：一次运行中途的崩溃会在恢复时从日志中把类型化的答案找回来。该工具接受的第一次 `final_answer` 调用即结束本次运行。只有当模型从未发出这样的调用（而是以纯 JSON 文本回复）时，`RunTyped` 才会解析该运行最后一轮的文本。`T` 必须是一个 JSON 对象（结构体、指向结构体的指针或 map），因为提供商只接受对象形式的工具参数；其他任何 `T` 都是 `ErrConfig`。
 
-在支持严格结构化输出的 OpenAI 兼容提供商上，`RunTypedNative[T]` 使用提供商原生的 JSON-schema 响应格式而非工具（schema 在提供商侧强制执行，无需工具往返）；Anthropic 会忽略它，所以在那里请用 `RunTyped` 以获得与提供商无关的输出。
+在支持严格结构化输出的 OpenAI 兼容提供商上，`RunTypedNative[T]` 使用提供商原生的 JSON-schema 响应格式而非工具（schema 在提供商侧强制执行，无需工具往返）；Anthropic 适配器不支持它并返回 `ErrConfig`，所以在那里请用 `RunTyped` 以获得与提供商无关的输出。
 
 ## 采样（Sampling）
 
@@ -463,7 +463,7 @@ case errors.Is(err, agent.ErrStorage):      // durable-store I/O
 
 类别：`ErrConfig`、`ErrModel`、`ErrTool`、`ErrStorage`、`ErrProtocol`、`ErrBudget`。条件（每一个都包裹一个类别）：`ErrUnknownTool`、`ErrToolArgs`（包裹 `ErrTool`）；`ErrToolReinvoked`、`ErrInvalidApproval`、`ErrAlreadyDecided`（包裹 `ErrConfig`）；`ErrNoRecordedOutput`、`ErrIncompleteResponse`（包裹 `ErrModel`）；`ErrTruncatedToolArgs`（包裹 `ErrProtocol`）；`ErrBudgetExceeded`、`ErrMaxTurns`（包裹 `ErrBudget`）。提供商适配器还会返回 `*RateLimited`（HTTP 429，附带一个 `RetryAfter` 提示）和 `*APIError`（其他非 2xx，附带 `StatusCode`），两者都包裹 `ErrModel`。该工具包返回的每一个错误（包括来自模型、MCP、存储和治理适配器的）都带有一个类别，所以 `errors.Is` 在整个表面上都是可靠的。
 
-而**控制流信号**比一个类别更丰富，所以它们保持为具体类型，由 `errors.As` 匹配：`*PendingApproval`（需要批准）、`*Interrupted`（等待人类输入）、`*Sleeping`（持久化定时器待触发）、`*Awaiting`（等待一个外部信号）、`*ResumeHalt`（恢复不安全）、`*SagaAborted`（已回滚），以及 `*HaltTooYoung`（来自 `ResolveHalt`，当 `WithMinHaltAge` 尚未到期时）。一个暂停或停机的运行不是一个"失败"类别；检视那个结构体以获取 `RunID` / `ToolUseID` / 补偿细节。取消以通常的 `context.Canceled` / `context.DeadlineExceeded` 浮现。
+而**控制流信号**比一个类别更丰富，所以它们保持为具体类型，由 `errors.As` 匹配：`*PendingApproval`（需要批准）、`*Interrupted`（等待人类输入）、`*Sleeping`（持久化定时器待触发）、`*Awaiting`（等待一个外部信号）、`*ResumeHalt`（恢复不安全）、`*SagaAborted`（已回滚），以及 `*HaltTooYoung`（来自 `ResolveHalt` 或 `ResolveStepHalt`，当 `WithMinHaltAge` 尚未到期时）。一个暂停或停机的运行不是一个"失败"类别；检视那个结构体以获取 `RunID` / `ToolUseID` / 补偿细节。取消以通常的 `context.Canceled` / `context.DeadlineExceeded` 浮现，而一次因其运行租约（`agent.Lease`）丢失而被取消的驱动则以 `ErrLeaseLost` 浮现；与取消一样，它不带任何类别。
 
 ## 中间件与可观测性
 
@@ -507,7 +507,7 @@ func RequireTag(tag string) agent.ToolMiddleware {
 
 ## 模块
 
-Bide 是一个多模块仓库：一个依赖精简的**核心**（`github.com/bide-ai/bide`，即循环、schema、中间件、模型适配器、`plan` 流程构建器、`audit`；依赖仅有 `x/sync` + `x/text`），外加每个重型适配器一个模块（`mcp`、`trace`、`store/sqlite`、`store/postgres`、`govern/redislog`、`govern/sqlitelog`、`govern/postgreslog`、`codec/gcf`）。导入一个适配器，你就拉进它的依赖树；只导入核心，你就不会。一个仅用核心的消费者，其外部模块表面是 2，而不是 54。见 [docs/reference/module-structure.md](../../docs/reference/module-structure.md)。
+Bide 是一个多模块仓库：一个依赖精简的**核心**（`github.com/bide-ai/bide`，即循环、schema、中间件、模型适配器、`plan` 流程构建器、`audit`；依赖仅有 `x/sync` + `x/text`），外加每个重型适配器一个模块（`mcp`、`trace`、`store/sqlite`、`store/postgres`、`govern/redislog`、`govern/sqlitelog`、`govern/postgreslog`、`codec/gcf`），以及承载 gsm 的 `govern` 模块（在 gsm 稳定之前保持 v0.x）。导入一个适配器，你就拉进它的依赖树；只导入核心，你就不会。一个仅用核心的消费者，其外部模块表面是 2，而不是 54。见 [docs/reference/module-structure.md](../../docs/reference/module-structure.md)。
 
 ## 架构
 
@@ -524,7 +524,7 @@ middleware       Retry, RateLimit, Cost, Hedge
 trace            opt-in OTel gen_ai.* spans
 store/sqlite     on-disk durable resume (single binary, no cluster)
 store/postgres   HA durable resume (any node resumes any run)
-govern           Tier-2: federated governed state + quorum for agents that must agree (gsm-backed)
+govern           Tier-2: federated governed state + quorum for agents that must agree (gsm-backed; own module)
 ```
 
 ## 联邦化治理：可证明地达成一致的智能体（Tier-2）

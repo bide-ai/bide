@@ -54,8 +54,8 @@ with a prefix the engine reserves for them (`@`, `run:`, `tool:`, `attempt:`, `a
 `chanack:`, `turn/`, `start/`, `from/`, `audit:`; see `agent.IsReservedStepName`) is `ErrConfig`,
 for `Step` and for a `Parallel` task alike.
 
-`Step` is the idempotency guard the [Messaging](messaging.md) webhook pattern uses to make a
-redelivered inbound event replay instead of re-fire.
+The same memoized journal is the idempotency guard the [Messaging](messaging.md) webhook pattern
+uses (through `Run` and `SendOnce`) to make a redelivered inbound event replay instead of re-fire.
 
 ## `Parallel[T]` / `Task[T]`: durable fan-in
 

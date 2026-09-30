@@ -7,7 +7,7 @@
 
 ## Install
 
-The core module is published: `go get github.com/bide-ai/bide@latest` gives you the `agent` package and everything else in the core (the model adapters, `plan`, `audit`, `govern`). The adapter modules (`store/sqlite`, `store/postgres`, `mcp`, `trace`, `codec/gcf`, and the `govern/*log` backends) are not tagged separately yet: to use one, clone the repository and point at it with a local `replace` directive or `go.work` (this repo already ships a `go.work`; see [Building the repository](#building-the-repository)).
+The core module is published: `go get github.com/bide-ai/bide@latest` gives you the `agent` package and everything else in the core (the model adapters, `plan`, `audit`). The adapter modules (`store/sqlite`, `store/postgres`, `mcp`, `trace`, `codec/gcf`, `govern`, and the `govern/*log` backends) are published from v0.8.0 on, tagged with the same version as the core, so you add the ones you use the same way, for example `go get github.com/bide-ai/bide/store/sqlite@latest`. To build against unreleased code instead, clone the repository and use its `go.work` (see [Building the repository](#building-the-repository)).
 
 ## Your first agent
 
@@ -72,7 +72,7 @@ See [examples/README.md](../examples/README.md) for the full list.
 
 ## Building the repository
 
-This is a multi-module workspace (`go.work`): the core is one module and adapters such as `trace`, `mcp`, `store/*`, and the `govern/*log` backends are their own modules. To build or test everything with the module versions pinned in each `go.mod` rather than the workspace, set `GOWORK=off`:
+This is a multi-module workspace (`go.work`): the core is one module and adapters such as `trace`, `mcp`, `store/*`, `govern`, and the `govern/*log` backends are their own modules. To build or test everything with the module versions pinned in each `go.mod` rather than the workspace, set `GOWORK=off`:
 
 ```
 GOWORK=off go build ./...
