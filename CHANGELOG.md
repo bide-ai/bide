@@ -92,8 +92,8 @@ minor version (0.x.0) may include breaking API or journal-format changes; each o
 
 ### Fixed
 
-- A timer (`Sleep`, `WaitUntil`, `AwaitFor`) inside a sub-agent registers its wake under a name qualified by the sub-run, so two sub-agents of one root waiting on timers of the same name no longer share one wake that the later replaced, which left the first sleeping past its wake time ([#PR]).
-- `examples/signals`: the Await scene's resumed run no longer fails with a reused tool-use id; the example's scripted model now decides from the conversation ([#PR]).
+- A timer (`Sleep`, `WaitUntil`, `AwaitFor`) inside a sub-agent registers its wake under a name qualified by the sub-run, so two sub-agents of one root waiting on timers of the same name no longer share one wake that the later replaced, which left the first sleeping past its wake time ([#91]).
+- `examples/signals`: the Await scene's resumed run no longer fails with a reused tool-use id; the example's scripted model now decides from the conversation ([#91]).
 - Resuming a run that crashed after its final answer returns the recorded answer without another model call ([#59]).
 - `Replay` keeps redacted reasoning, empty thinking blocks and Gemini thought signatures ([#51]).
 - `Replay` carries each turn's recorded usage, and a finish reason derived from the turn, so a replayed run stops at the same token budget ([#52]).
@@ -427,6 +427,7 @@ First public release.
 [#86]: https://github.com/bide-ai/bide/pull/86
 [#87]: https://github.com/bide-ai/bide/pull/87
 [#88]: https://github.com/bide-ai/bide/pull/88
+[#91]: https://github.com/bide-ai/bide/pull/91
 [78f8db6]: https://github.com/bide-ai/bide/commit/78f8db6
 [994721b]: https://github.com/bide-ai/bide/commit/994721b
 [3262cd1]: https://github.com/bide-ai/bide/commit/3262cd1
