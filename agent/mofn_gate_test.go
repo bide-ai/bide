@@ -16,6 +16,9 @@ func (v fakeVerifier) Verify(message, sig []byte) bool {
 	return bytes.Equal(sig, fakeSign(v.id, message))
 }
 
+// KeyIDs reports the approver's fake key: each approver has its own.
+func (v fakeVerifier) KeyIDs() []string { return []string{"fake:" + v.id} }
+
 func fakeSign(approverID string, message []byte) []byte {
 	return append([]byte(approverID+"|"), message...)
 }

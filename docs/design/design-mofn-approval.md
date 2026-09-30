@@ -7,8 +7,15 @@ guide is [docs/guides/hitl-approval.md](../guides/hitl-approval.md).
 Where the implementation refined this design:
 
 - **Verifier resolution.** `agent` cannot import `audit` (audit imports agent), so the gate verifies
-  through a local `ApproverVerifier` interface that the audit verifiers satisfy structurally, resolved
+  through a local `ApproverVerifier` interface that the audit verifiers implement, resolved
   by id with `Agent.WithApproverVerifiers` (a chaining setter, matching the Agent's other options).
+- **One seat per key (F5).** Distinct approver ids are not distinct people if their verifiers
+  resolve to one key: the TLA+ approvals model found one key holder meeting a 2-of-2 quorum alone
+  (`spec/tla`, finding F5). `ApproverVerifier` gained `KeyIDs() []string`, identities derived from
+  the public key's bytes (a list, so a rotation window and each hybrid component are covered), and
+  the gate refuses a policy two of whose approvers share one with `ErrConfig`, on every evaluation
+  (a terminal tally already journaled is reused, not recounted).
+  `TallyApprovals` also never counts a shared seat, whatever resolver it is given.
 - **Tally timing.** `approval-tally:<toolUseID>` is journaled only at a terminal outcome (proceed or
   deny), before the tool runs, never on a pause, because `Durable.Do` is at-most-once by name:
   journaling a pending tally would freeze it. A resume reads the terminal record instead of recounting.

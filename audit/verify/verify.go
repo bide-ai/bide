@@ -1,8 +1,8 @@
 // Package verify is a dependency-light, standalone verifier for Bide audit proofs. It
 // depends on nothing but the Go standard library (crypto/sha256, crypto/ed25519,
-// encoding/binary, bytes, math/bits, strings), deliberately NOT the agent core or gsm, so a third
-// party (an auditor, a regulator) can verify a proof without importing the SDK, or reimplement
-// this file from RFC 6962 and check us against it. That is what "verifiable without trusting
+// encoding/binary, bytes, container/list, math/big, math/bits, strings, sync), deliberately NOT
+// the agent core or gsm, so a third party (an auditor, a regulator) can verify a proof without
+// importing the SDK, or reimplement this file from RFC 6962 and check us against it. That is what "verifiable without trusting
 // the vendor" means in practice.
 //
 // It operates on canonical LEAF BYTES, not typed records, precisely so it needs no domain
@@ -161,11 +161,14 @@ type TreeRef struct {
 // length-prefixed, byte-identical to audit.TreeHead.canonical(), so an STH signed by the SDK
 // verifies here and vice versa. The caller checks that kind and runID are the tree it expects.
 //
+// A weak pub (not canonically encoded, small order, or outside the prime-order subgroup) verifies
+// nothing: crypto/ed25519 alone accepts forged signatures under a small-order key.
+//
 // Like audit, it refuses a head whose shape no commitment has, whatever its signature: a
 // "journal" or "events" head that names a source journal, an "absence/<set>" head that names none,
 // and a head of any other kind.
 func TreeHead(kind, runID string, size int, root []byte, timestamp int64, journal *TreeRef, sig, pub []byte) bool {
-	if len(pub) != ed25519.PublicKeySize || size < 0 || !wellFormed(kind, journal) {
+	if !usableKey(pub) || size < 0 || !wellFormed(kind, journal) {
 		return false
 	}
 	field := func(b, f []byte) []byte {

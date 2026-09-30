@@ -141,6 +141,13 @@ type IgnoredDecision struct {
 	Reason   string `json:"reason"`
 }
 
+// The audit verifiers are approver verifiers: they report key identities (KeyIDs).
+var (
+	_ agent.ApproverVerifier = Ed25519Verifier{}
+	_ agent.ApproverVerifier = MLDSAVerifier{}
+	_ agent.ApproverVerifier = HybridVerifier{}
+)
+
 // VerifyApprovals checks offline that the m-of-n gate on toolUseID held, trusting only its
 // inputs: actions (ApprovalEvidence's output, alone or inside an EvidencePackage), the policy
 // the auditor expects, verifierFor (each approver's key, the same resolver shape the gate uses
@@ -155,7 +162,9 @@ type IgnoredDecision struct {
 // verify and is listed in Ignored.
 //
 // It returns an error, not a verdict, when the evidence cannot be evaluated: an invalid
-// policy, a missing request, tally, or result, or one of those whose proof does not verify.
+// policy, a policy two of whose approvers resolve to one signing key under verifierFor (see
+// agent.ApprovalPolicy.ValidateKeys), a missing request, tally, or result, or one of those whose
+// proof does not verify.
 // It certifies that the gate held as recorded, not that the approvers' judgment was right.
 func VerifyApprovals(actions []EvidenceAction, toolUseID string, policy agent.ApprovalPolicy, verifierFor agent.ApproverVerifierFor, logPub ed25519.PublicKey) (ApprovalVerdict, error) {
 	v := ApprovalVerdict{Need: policy.Need}
@@ -164,6 +173,9 @@ func VerifyApprovals(actions []EvidenceAction, toolUseID string, policy agent.Ap
 	}
 	if verifierFor == nil {
 		return v, fmt.Errorf("audit: no approver verifier resolver")
+	}
+	if err := policy.ValidateKeys(verifierFor); err != nil {
+		return v, fmt.Errorf("audit: expected policy under the approver keys: %w", err)
 	}
 
 	find := func(match func(EvidenceAction) bool, what string) (*EvidenceAction, error) {

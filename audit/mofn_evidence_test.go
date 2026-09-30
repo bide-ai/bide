@@ -276,3 +276,22 @@ func TestMofnEvidence_InPackage(t *testing.T) {
 		t.Fatalf("verdict = %+v, err = %v, want alice and bob counted", v, err)
 	}
 }
+
+// Offline verification refuses a resolver under which two eligible approvers share a key: the
+// holder of that key is one person in two seats, so the count would certify one approval as two.
+func TestMofnEvidence_SharedKeyRefused(t *testing.T) {
+	g := passedGate(t)
+	acts, err := audit.ApprovalEvidence(context.Background(), g.store, gateRun, "c1", g.sth(t, 1700000000))
+	if err != nil {
+		t.Fatalf("ApprovalEvidence: %v", err)
+	}
+	shared := func(id string) (agent.ApproverVerifier, bool) {
+		if id == "bob" {
+			id = "alice"
+		}
+		return g.resolver()(id)
+	}
+	if _, err := audit.VerifyApprovals(acts, "c1", g.policy, shared, g.logPub); !errors.Is(err, agent.ErrConfig) {
+		t.Fatalf("VerifyApprovals with alice and bob on one key = %v, want ErrConfig", err)
+	}
+}

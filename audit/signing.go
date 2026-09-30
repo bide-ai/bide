@@ -3,8 +3,11 @@ package audit
 import (
 	"crypto/ed25519"
 	"crypto/mldsa"
+	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"fmt"
+	"strings"
 )
 
 // Signature-scheme agility for signed tree heads. The audit trail signs an STH's canonical
@@ -65,10 +68,23 @@ type Ed25519Verifier struct {
 // Alg reports the signature scheme (AlgEd25519).
 func (Ed25519Verifier) Alg() string { return AlgEd25519 }
 
-// Verify reports whether sig is a valid Ed25519 signature over m. A public key of the wrong length
-// verifies nothing (it never panics).
+// Verify reports whether sig is a valid Ed25519 signature over m. A weak public key (see
+// CheckEd25519PublicKey: the wrong length, not canonically encoded, or not in the prime-order
+// subgroup) verifies nothing, since a small-order key accepts forged signatures; it never panics.
 func (v Ed25519Verifier) Verify(m, sig []byte) bool {
-	return len(v.Pub) == ed25519.PublicKeySize && ed25519.Verify(v.Pub, m, sig)
+	return CheckEd25519PublicKey(v.Pub) == nil && ed25519.Verify(v.Pub, m, sig)
+}
+
+// KeyIDs identifies the public key, for agent.ApproverVerifier: one entry, KeyID(AlgEd25519,
+// Pub). A weak public key (see CheckEd25519PublicKey) verifies nothing and reports no entry, so an
+// approval gate refuses it as a configuration error rather than seating it. This also keeps one
+// secret to one identity: a mixed-order key A + T, which A's secret can sign for, and a
+// non-canonical spelling of A are both refused.
+func (v Ed25519Verifier) KeyIDs() []string {
+	if CheckEd25519PublicKey(v.Pub) != nil {
+		return nil
+	}
+	return []string{KeyID(AlgEd25519, v.Pub)}
 }
 
 // ---- ML-DSA-65 (FIPS 204) ----
@@ -98,6 +114,17 @@ func (MLDSAVerifier) Alg() string { return AlgMLDSA65 }
 // Verify reports whether sig is a valid ML-DSA-65 signature over m.
 func (v MLDSAVerifier) Verify(m, sig []byte) bool {
 	return mldsa.Verify(v.Pub, m, sig, &mldsa.Options{Context: mldsaContext}) == nil
+}
+
+// KeyIDs identifies the public key, for agent.ApproverVerifier: one entry, KeyID(alg,
+// Pub.Bytes()), where alg names the key's parameter set ("ml-dsa-44", AlgMLDSA65 or "ml-dsa-87"):
+// Verify accepts a key of any FIPS 204 parameter set, so the label says which one it is. A nil key
+// reports no entry.
+func (v MLDSAVerifier) KeyIDs() []string {
+	if v.Pub == nil {
+		return nil
+	}
+	return []string{KeyID(strings.ToLower(v.Pub.Parameters().String()), v.Pub.Bytes())}
 }
 
 // ---- hybrid ed25519 + ML-DSA-65 ----
@@ -141,6 +168,27 @@ func (v HybridVerifier) Verify(m, sig []byte) bool {
 		return false
 	}
 	return v.Ed.Verify(m, e) && v.ML.Verify(m, d)
+}
+
+// KeyIDs identifies both component keys, for agent.ApproverVerifier: the Ed25519 entry, then the
+// ML-DSA-65 entry. They are listed separately, not as one identity of the pair, because a hybrid
+// signature is meant to hold while either scheme holds: if one scheme breaks, the other
+// component's key alone signs, so two approvers sharing either component are one seat. If either
+// component reports no entry the hybrid reports none, since it can verify nothing.
+func (v HybridVerifier) KeyIDs() []string {
+	e, m := v.Ed.KeyIDs(), v.ML.KeyIDs()
+	if len(e) == 0 || len(m) == 0 {
+		return nil
+	}
+	return append(e, m...)
+}
+
+// KeyID is the key identity the audit verifiers report from KeyIDs: alg, a colon, and the
+// lowercase hex SHA-256 of the public key's encoding (for Ed25519 the 32-byte key, for ML-DSA its
+// FIPS 204 encoding). It depends only on the key, so every verifier over one key reports it.
+func KeyID(alg string, pub []byte) string {
+	h := sha256.Sum256(pub)
+	return alg + ":" + hex.EncodeToString(h[:])
 }
 
 // encodeHybrid packs two signatures as len(ed) || ed || mldsa, so the split is unambiguous.

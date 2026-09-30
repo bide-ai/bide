@@ -364,8 +364,9 @@ _ = pkg.Seal(priv)                                                 // the packag
 `pkg.Verify` checks each item's inclusion under the tree head like any other action. Like grant
 issuer signatures, the approval claim needs inputs the package does not carry (the approvers' public
 keys and the expected policy), so `audit.VerifyApprovals` checks it from the package and those keys:
-it recounts the decisions with the gate's own rule against the proven call, and reports a problem if
-the evidence omits a decision the gate read, if the recount disagrees with the recorded tally, or if
+it refuses keys that put two of the policy's approvers on one key, recounts the decisions with the
+gate's own rule against the proven call, and reports a problem if the evidence omits a decision the
+gate read, if the recount disagrees with the recorded tally, or if
 the gate enforced a different policy. `bide-audit verify-approvals` runs the same check from the
 command line. `audit.ProveApproval` proves a single decision by its record name. See the
 [approval guide](hitl-approval.md#proving-the-gate-held) and `examples/approval`.
@@ -383,7 +384,9 @@ and every verify verb needs only a bundle and an out-of-band public key. Build i
 Conventions shared across verbs:
 
 - `-pubkey` accepts either a hex string directly or a path to a file whose trimmed contents are
-  hex, and must decode to a 32-byte ed25519 public key (anything else exits 4 with a message). A
+  hex, and must decode to a 32-byte ed25519 public key that `audit.CheckEd25519PublicKey` accepts:
+  canonically encoded and in the prime-order subgroup, since a small-order key verifies forged
+  signatures (anything else exits 4 with a message). A
   value that is itself a key in hex (64 hex digits) is always taken as the key and never opened as
   a file, so a file of that name in the working directory cannot substitute another key. The
   key must come from the anchor operator out-of-band, never from the bundle: that is what makes it a
@@ -428,7 +431,7 @@ Conventions shared across verbs:
 | `verify-convergence` | `-cert-bundle`, `-policy-bundle`, `-pubkey` | `-checker` | An anchored `ConfluenceCertificate` links to the policy leaf (each bundle must be the leaf it is read as: `audit:convergence:<digest>` and `audit:policy:<digest>`, both `StepValue`); with `-checker`, the oracle's convergence verdict must AGREE with the certificate, so overstated convergence is caught; the compensation-free (CRDT) classification is cross-checked only when the oracle emits a `compensation_free=` line, and otherwise stays producer-reported (the CLI prints a note saying so). |
 | `verify-quorum` | `-name`, `-tally`, `-vote` (repeatable), `-pubkey`, `-k` | `-commit` | A governed k-of-n quorum: the tally and every vote bundle authentic, in the same signed tree and run, and recorded by the quorum named `-name`; the disclosed votes exactly the votes the tally records; the recorded tally recomputes from them (a forged tally is caught); and `votes_for >= k`; with `-commit`, a governed commit (a tool call's result) is anchored in the same tree. |
 | `verify-run` | `-cert`, `-pubkey`, and at least one of `-approved <digest>` (repeatable) / `-approved-file <file>` (both together form one allowlist) | `-checker <astchecker>` | A proof-carrying run certificate: the used-policy set is bound by a signed used-policy head to this run and to the certificate's journal tree, and is a subset of the approved allowlist (only-approved-policies), and every used policy has an anchored, digest-linked convergence certificate in the run's signed tree (policies-convergence-certified); with `-checker`, the oracle's convergence verdict on each used policy must AGREE with its certificate. |
-| `verify-approvals` | `-evidence`, `-pubkey`, `-call`, `-need`, `-approvers`, `-approver-keys` | | An m-of-n approval gate from an `EvidencePackage`: the request, every decision the gate read, its recorded tally, and the call's result all verify in one signed tree and in order; recounting the decisions with the approvers' keys (a JSON object of id to ed25519 public key hex) against the exact call reproduces the recorded tally; the gate enforced the expected policy; and at least k approved. Catches an omitted decision, which `verify-evidence` alone cannot. |
+| `verify-approvals` | `-evidence`, `-pubkey`, `-call`, `-need`, `-approvers`, `-approver-keys` | | An m-of-n approval gate from an `EvidencePackage`: the request, every decision the gate read, its recorded tally, and the call's result all verify in one signed tree and in order; recounting the decisions with the approvers' keys (a JSON object of id to ed25519 public key hex; two of the policy's approvers on one key, or a weak key, is an unusable input) against the exact call reproduces the recorded tally; the gate enforced the expected policy; and at least k approved. Catches an omitted decision, which `verify-evidence` alone cannot. |
 | `verify-evidence` | `-evidence`, `-pubkey` | `-approved <digest>` (repeatable), `-approved-file <file>` (together, one allowlist) | A run-level `EvidencePackage`: the format, seal, and key are right, the signed tree head is an authentic journal head of the package's run, every packaged action proof verifies against it with the kind and label its record says, the grant chain is the anchored grants, the consistency proof holds between its two signed heads, and any run certificate is for this run and passes against the given allowlist (required when the package carries one). Prints one line per item and an overall PASS/FAIL. |
 
 The `-checker` flag points at the external verified oracle binary (the `astchecker` extracted from

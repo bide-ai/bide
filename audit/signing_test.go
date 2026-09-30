@@ -4,6 +4,9 @@ import (
 	"crypto/ed25519"
 	"crypto/mldsa"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
+	"slices"
 	"testing"
 )
 
@@ -78,5 +81,50 @@ func TestSigning_BackwardCompatible(t *testing.T) {
 	}
 	if !sth.VerifyWith(Ed25519Verifier{edPub}) {
 		t.Fatalf("empty-Alg STH should verify as ed25519 via VerifyWith")
+	}
+}
+
+// KeyIDs identify a key by its bytes: two verifiers over one key agree, distinct keys differ,
+// a hybrid lists both components, and a key that verifies nothing reports no identity.
+func TestVerifierKeyIDs(t *testing.T) {
+	edPub, _, _ := ed25519.GenerateKey(rand.Reader)
+	edPub2, _, _ := ed25519.GenerateKey(rand.Reader)
+	mlPriv, err := mldsa.GenerateKey(mldsa.MLDSA65())
+	if err != nil {
+		t.Fatal(err)
+	}
+	mlPub := mlPriv.PublicKey()
+	sum := sha256.Sum256(edPub)
+	if got, want := (Ed25519Verifier{edPub}).KeyIDs(), []string{"ed25519:" + hex.EncodeToString(sum[:])}; !slices.Equal(got, want) {
+		t.Fatalf("Ed25519Verifier.KeyIDs = %v, want %v", got, want)
+	}
+	if a, b := (Ed25519Verifier{edPub}).KeyIDs(), (Ed25519Verifier{slices.Clone(edPub)}).KeyIDs(); !slices.Equal(a, b) {
+		t.Fatalf("one key, two verifiers: %v != %v", a, b)
+	}
+	if a, b := (Ed25519Verifier{edPub}).KeyIDs(), (Ed25519Verifier{edPub2}).KeyIDs(); slices.Equal(a, b) {
+		t.Fatalf("distinct keys share an identity: %v", a)
+	}
+	parsed, err := mldsa.NewPublicKey(mldsa.MLDSA65(), mlPub.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ml := MLDSAVerifier{mlPub}.KeyIDs()
+	if !slices.Equal(ml, MLDSAVerifier{parsed}.KeyIDs()) || len(ml) != 1 || ml[0] != KeyID(AlgMLDSA65, mlPub.Bytes()) {
+		t.Fatalf("MLDSAVerifier.KeyIDs = %v, want one identity from the key's encoding", ml)
+	}
+	hy := HybridVerifier{Ed25519Verifier{edPub}, MLDSAVerifier{mlPub}}.KeyIDs()
+	if want := append((Ed25519Verifier{edPub}).KeyIDs(), ml...); !slices.Equal(hy, want) {
+		t.Fatalf("HybridVerifier.KeyIDs = %v, want both components %v", hy, want)
+	}
+	for name, v := range map[string]interface{ KeyIDs() []string }{
+		"short ed25519":       Ed25519Verifier{edPub[:31]},
+		"nil ed25519":         Ed25519Verifier{},
+		"nil ml-dsa":          MLDSAVerifier{},
+		"hybrid, bad ed25519": HybridVerifier{Ed25519Verifier{}, MLDSAVerifier{mlPub}},
+		"hybrid, nil ml-dsa":  HybridVerifier{Ed25519Verifier{edPub}, MLDSAVerifier{}},
+	} {
+		if got := v.KeyIDs(); got != nil {
+			t.Fatalf("%s: KeyIDs = %v, want none", name, got)
+		}
 	}
 }

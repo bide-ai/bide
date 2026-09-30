@@ -457,7 +457,7 @@ agent.SubmitDecision(ctx, store, agent.Decision{RunID: pend.RunID, ToolUseID: pe
 	ApproverID: "finance", Approved: true, Signature: sig})
 ```
 
-然后，`audit.ApprovalEvidence` 与 `audit.VerifyApprovals`（或 `bide-audit verify-approvals`）离线证明：k 位具名批准人在这次确切的调用运行*之前*、依照预期的策略签核了它，所依据的证据不可能在不被察觉的情况下漏掉任何一份决定。见[批准指南](../../docs/guides/hitl-approval.md)；可跨独立进程在 `examples/approval` 中运行。
+然后，`audit.ApprovalEvidence` 与 `audit.VerifyApprovals`（或 `bide-audit verify-approvals`）离线证明：k 位具名批准人在这次确切的调用运行*之前*、依照预期的策略签核了它，所依据的证据不可能在不被察觉的情况下漏掉任何一份决定。每位批准人都需要自己的密钥：若策略中有两位批准人解析到同一个密钥，该策略会以 `ErrConfig` 被拒绝，因为持有该密钥的人可以替两人签名。见[批准指南](../../docs/guides/hitl-approval.md)；可跨独立进程在 `examples/approval` 中运行。
 
 ## 错误
 

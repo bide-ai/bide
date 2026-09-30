@@ -459,7 +459,7 @@ agent.SubmitDecision(ctx, store, agent.Decision{RunID: pend.RunID, ToolUseID: pe
 	ApproverID: "finance", Approved: true, Signature: sig})
 ```
 
-Затем `audit.ApprovalEvidence` и `audit.VerifyApprovals` (или `bide-audit verify-approvals`) доказывают офлайн, что k именованных одобряющих подписали именно этот вызов *до* его выполнения, по ожидаемой политике, на основе свидетельств, из которых нельзя незаметно выбросить решение. См. [руководство по одобрению](../../docs/guides/hitl-approval.md); запускается в разных процессах в `examples/approval`.
+Затем `audit.ApprovalEvidence` и `audit.VerifyApprovals` (или `bide-audit verify-approvals`) доказывают офлайн, что k именованных одобряющих подписали именно этот вызов *до* его выполнения, по ожидаемой политике, на основе свидетельств, из которых нельзя незаметно выбросить решение. Каждому одобряющему нужен собственный ключ: политика, в которой два одобряющих сводятся к одному ключу, отклоняется с `ErrConfig`, ведь владелец этого ключа мог бы подписать за обоих. См. [руководство по одобрению](../../docs/guides/hitl-approval.md); запускается в разных процессах в `examples/approval`.
 
 ## Ошибки
 

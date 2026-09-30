@@ -32,6 +32,7 @@ minor version (0.x.0) may include breaking API or journal-format changes; each o
 - Journals in one process over one store share in-flight steps. A claim whose insert failed (it may have committed) records that its attempt did not start, keyed by its claim (`attempt:not-started:<claim>:<marker>`), so a re-drive in any process re-attempts the effect instead of halting over one that never ran. If that record cannot be written either (or is written and reported failed), the process remembers the claim, and the next claim of the marker in the process, or a resume that meets it, writes the record again; every claim takes a fresh id, so an effect never runs under a marker that is, or can become, recorded as not started. `plan`'s conformance check ignores not-started records ([#92]).
 - `agent/storetest.CheckWrapper` checks, given at least two contexts that differ in what the wrapper reads from a context, that a store wrapper's mapping of run IDs and names does not depend on the context (A1), and its use of `Unwrap` ([#92]).
 - Benchmarks `BenchmarkRunTurns`, `BenchmarkToolCallSideEffect`, `BenchmarkStep`, `BenchmarkRecoverPass10k`, `BenchmarkAnchoredInsert`, `BenchmarkSQLiteInsert` and `BenchmarkPostgresInsert` ([#92]).
+- `agent.ApprovalPolicy.ValidateKeys`, `agent.ApprovalTally.Excluded`, `agent.ReasonSharedKey`, `agent.ReasonNoKeyID`, `audit.KeyID`, `audit.CheckEd25519PublicKey` and `audit.ErrWeakKey`; `KeyIDs` on `audit.Ed25519Verifier`, `MLDSAVerifier` and `HybridVerifier` ([#109]).
 
 ### Changed
 
@@ -54,6 +55,13 @@ minor version (0.x.0) may include breaking API or journal-format changes; each o
 - `ResolveHaltRef` (and its wrappers) claims the attempt after the live one before it records the outcome, on a store that leases runs as on one that does not, and returns `*HaltInFlight` (whose new `Attempt` field names that attempt) if a driver holds it already, so a resolution cannot override a driver that revived a remembered claim and ran the effect: after `WithMinHaltAge`, or under the lease, which a plain `Run` does not hold. If recording the outcome then fails, the resolution's claim stays live, and the operation halts until it is resolved again ([#92]).
 - A `SagaAborted` error lists its uncompensated writes without saying each lacked a compensator: the list also holds a call whose outcome is unknown and a call whose tool is gone ([#92]).
 - The DST and reference-model crash suites inject their crashes at the storage port, under a Journal, so they cover the journal header, claims and not-started records; `agent` also carries an exhaustive fault-schedule exploration of the claim protocol, bounded by default (`BIDE_EXPLORE=1` runs the full exploration) ([#92]).
+- **Breaking:** `agent.ApproverVerifier` has a second method, `KeyIDs() []string`: the identities of the signing keys behind `Verify`, derived from the public key's bytes (one per key; a hybrid reports each component). A custom verifier must implement it. An approver whose verifier reports no key identity, including an `audit.Ed25519Verifier` over a wrong-length key, used to count as unable to sign and is now `ErrConfig` at the gate ([#109]).
+
+### Security
+
+- An m-of-n approval gate counts one seat per signing key. Two approvers whose verifiers resolve to one key let that key's holder meet the quorum alone; the gate now refuses such a policy with `ErrConfig` on every evaluation, `TallyApprovals` never counts either approver, `audit.VerifyApprovals` returns an error, and `bide-audit verify-approvals` exits 4. Found by the TLA+ approvals model (finding F5) ([#109]).
+  **Upgrading:** the check covers tallies this version counts. A terminal tally already in a journal is reused, not recounted, so a passed tally recorded by an earlier version stands even if two of its approvers shared a key, and its tool runs when the run resumes. Journals are not promised to resume across pre-releases; before upgrading, finish the runs paused on an m-of-n gate, or audit each one that holds a recorded tally (`audit.VerifyApprovals` under the new rules refuses a shared key) and resolve it by hand if two approvers shared a key.
+- Weak Ed25519 public keys are refused. `crypto/ed25519` accepts keys that are not canonically encoded, small order, or mixed order: under a small-order key (such as any of the identity point's four accepted encodings) anyone can forge a signature for any message, and a mixed-order key `A + T` is a second public key for `A`'s secret, which gave one secret two approval seats. `audit.Ed25519Verifier` (and so `HybridVerifier`), `audit.VerifySignature` and `audit/verify.TreeHead` now verify nothing under such a key, `Ed25519Verifier.KeyIDs` reports no identity for it (so the approval gate refuses it with `ErrConfig`), and `bide-audit` refuses it as `-pubkey` or in `-approver-keys` (exit 4). The check costs 1 to 4 ms of CPU per new key; results are cached (a 1,024-key LRU, single-flight), so an application that resolves Ed25519 keys from untrusted input should bound or rate-limit those lookups. Found in the adversarial review of [#109].
 
 ## [0.8.0] - 2026-09-30
 
@@ -487,6 +495,7 @@ First public release.
 [#100]: https://github.com/bide-ai/bide/pull/100
 [#106]: https://github.com/bide-ai/bide/pull/106
 [#108]: https://github.com/bide-ai/bide/pull/108
+[#109]: https://github.com/bide-ai/bide/pull/109
 [#110]: https://github.com/bide-ai/bide/pull/110
 [#111]: https://github.com/bide-ai/bide/pull/111
 [#112]: https://github.com/bide-ai/bide/pull/112
