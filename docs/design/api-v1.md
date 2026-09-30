@@ -129,6 +129,7 @@ Status: accepted, in progress. The maintainer approved this plan as the work to 
 ### 1.2 Option mechanics
 Options are interfaces with unexported methods. `apply` returns an error, so a bad value fails at construction.
 
+<!-- docsnip: skip design proposal: this API is not implemented yet -->
 ```go
 type Option interface{ applyAgent(*agentConfig) error }
 type RunOption interface{ applyRun(*runConfig) error }
@@ -170,6 +171,7 @@ type ResolveOption interface{ applyResolve(*resolveConfig) error }
 ## 2. Item 1: Run API
 
 ### New API
+<!-- docsnip: skip design proposal: this API is not implemented yet -->
 ```go
 func (a *Agent) Run(ctx context.Context, runID string, input Message, opts ...RunOption) (*Result, error)
 func (a *Agent) Resume(ctx context.Context, runID string, opts ...RunOption) (*Result, error)
@@ -204,6 +206,7 @@ func (s *Session) SendOnce(ctx context.Context, key string, input Message, opts 
 ```
 
 ### The run header: #70's `run:start`, extended (no second header)
+<!-- docsnip: skip design proposal: this API is not implemented yet -->
 ```go
 type RunStart struct {
 	Input     Message                    `json:"input"`               // #70 (string becomes Message)
@@ -248,6 +251,7 @@ The rule resolves critique B1 and #70's decisions 2 to 4, using #70's table.
 8. **Deployment-only values, never journaled:** clock, waker, lease holder.
 
 ### Recovery dispatch (critique B6, B8)
+<!-- docsnip: skip design proposal: this API is not implemented yet -->
 ```go
 type Resumer func(ctx context.Context, runID string, start RunStart) error
 var ErrNotResumable = errors.New("run not resumable by this resumer") // no category, like ErrLeaseLost
@@ -312,6 +316,7 @@ Pauses are not journaled, so a paused run reports `Started`. This is documented.
 
 Unchanged from v1 except where noted.
 
+<!-- docsnip: skip design proposal: this API is not implemented yet -->
 ```go
 func New(model Model, j *Journal, opts ...Option) (*Agent, error)
 func (a *Agent) With(opts ...Option) (*Agent, error)
@@ -366,6 +371,7 @@ func (a *Agent) Journal() *Journal
 ## 4. Item 3: Journal format versioning
 
 ### New API
+<!-- docsnip: skip design proposal: this API is not implemented yet -->
 ```go
 const JournalFormat = "bide.journal.v1-dev.1" // becomes "bide.journal.v1" at the 1.0 tag
 var ErrJournalVersion = fmt.Errorf("unsupported journal format: %w", ErrProtocol)
@@ -421,6 +427,7 @@ The format cannot live in `run:start`, because many journals have no engine head
 ## 5. Item 4: Durable redesign
 
 ### The port
+<!-- docsnip: skip design proposal: this API is not implemented yet -->
 ```go
 type Store interface {
 	// Insert stores data under (runID, name) if absent; returns the stored entry and whether
@@ -473,6 +480,7 @@ The critique's replacement for v1's dense A2 is adopted.
 This admits commit-ordered stores (FoundationDB versionstamps, Spanner commit timestamps) as well as counter-based ones.
 
 ### The journal the agent owns
+<!-- docsnip: skip design proposal: this API is not implemented yet -->
 ```go
 type Journal struct{ /* unexported */ }
 func NewJournal(s Store, opts ...JournalOption) (*Journal, error)
@@ -574,6 +582,7 @@ The tombstone format is reserved now.
 
 ## 6. Item 5: Model call signature
 
+<!-- docsnip: skip design proposal: this API is not implemented yet -->
 ```go
 type ModelHandler func(ctx context.Context, call ModelCall) (ModelResponse, error)
 type Middleware func(next ModelHandler) ModelHandler
@@ -675,6 +684,7 @@ func CallModel(ctx context.Context, m Model, req Request, mw ...Middleware) (Mod
 
 ## 7. Item 6: Pause contract, halts, plan
 
+<!-- docsnip: skip design proposal: this API is not implemented yet -->
 ```go
 type Pause interface {
 	error
@@ -759,6 +769,7 @@ func ResolveHalt(ctx context.Context, j *Journal, ref HaltRef, out Outcome, opts
 
 ## 8. Item 7: Tool interface
 
+<!-- docsnip: skip design proposal: this API is not implemented yet -->
 ```go
 type Tool interface {
 	Spec() ToolSpec
