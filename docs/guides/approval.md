@@ -215,7 +215,9 @@ bide-audit verify-approvals -evidence evidence.json -pubkey <log key hex> -call 
 ```
 
 It prints the approved call, each approver who counted, every ignored decision with its reason, and
-every problem, and exits 1 unless the gate held. `bide-audit verify-evidence` checks the proofs only,
+every problem. It exits 0 only when the gate held: 1 when it did not, 4 when an input cannot be read
+or used, and 2 on a usage error (see the audit guide's
+[exit status](audit.md#exit-status); only 0 means verified). `bide-audit verify-evidence` checks the proofs only,
 so it cannot detect an omitted decision; use `verify-approvals` for the approval claim.
 
 Evidence files commit to the exact recorded bytes. Keep them byte-exact: a tool that re-orders JSON

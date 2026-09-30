@@ -11,8 +11,10 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"slices"
 	"strings"
 	"testing"
@@ -560,5 +562,61 @@ func TestVerifyBundleErrorIsUnusable(t *testing.T) {
 	err := c.verifyBundle(audit.ProofBundle{Format: "bide.audit.proof.v0"}, make([]byte, ed25519.PublicKeySize), "action")
 	if got := exitFor(err); got != exitUnusable || !errors.Is(err, audit.ErrFormat) {
 		t.Fatalf("verifyBundle of an unreadable bundle: %v, exit %d; want %d wrapping audit.ErrFormat", err, got, exitUnusable)
+	}
+}
+
+// The version comes from the linker stamp when a release build sets one, and otherwise falls back
+// to the module version in the build information, then to "devel".
+func TestVersionFrom(t *testing.T) {
+	info := func(v string) *debug.BuildInfo {
+		return &debug.BuildInfo{Main: debug.Module{Path: "github.com/bide-ai/bide", Version: v}}
+	}
+	for name, tc := range map[string]struct {
+		stamped string
+		bi      *debug.BuildInfo
+		ok      bool
+		want    string
+	}{
+		"stamp wins over build info": {"v0.7.0", info("v0.6.0"), true, "v0.7.0"},
+		"build info when unstamped":  {"", info("v0.6.0"), true, "v0.6.0"},
+		"pseudo-version":             {"", info("v0.6.1-0.20260929120000-abcdef123456+dirty"), true, "v0.6.1-0.20260929120000-abcdef123456+dirty"},
+		"devel build":                {"", info("(devel)"), true, "devel"},
+		"empty module version":       {"", info(""), true, "devel"},
+		"no build info":              {"", nil, false, "devel"},
+	} {
+		if got := versionFrom(tc.stamped, tc.bi, tc.ok); got != tc.want {
+			t.Errorf("%s: versionFrom = %q, want %q", name, got, tc.want)
+		}
+	}
+}
+
+// A binary built the way .goreleaser.yaml builds it reports the stamped version, and one built
+// without the stamp still reports a version. It also holds the release config to the stamp, and
+// the stamp to the variable's name: renaming main.version makes -X a no-op, which this catches.
+func TestVersionStamp(t *testing.T) {
+	cfg, err := os.ReadFile("../../.goreleaser.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(cfg), "-X main.version={{ .Tag }}") {
+		t.Fatalf(".goreleaser.yaml does not stamp main.version:\n%s", cfg)
+	}
+	dir := t.TempDir()
+	for _, tc := range []struct{ ldflags, want string }{
+		{"-X main.version=v9.8.7", "bide-audit v9.8.7 "},
+		{"", "bide-audit "},
+	} {
+		bin := auditBin(dir)
+		args := []string{"build", "-o", bin}
+		if tc.ldflags != "" {
+			args = append(args, "-ldflags", tc.ldflags)
+		}
+		if out, err := exec.Command("go", append(args, ".")...).CombinedOutput(); err != nil {
+			t.Fatalf("build %q: %v\n%s", tc.ldflags, err, out)
+		}
+		out, err := exec.Command(bin, "-version").Output()
+		if err != nil || !strings.HasPrefix(string(out), tc.want) || strings.HasPrefix(string(out), "bide-audit  ") {
+			t.Errorf("ldflags %q: -version printed %q (err %v), want prefix %q and a version", tc.ldflags, out, err, tc.want)
+		}
 	}
 }

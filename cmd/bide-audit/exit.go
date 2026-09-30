@@ -309,16 +309,23 @@ func (c *cli) writeReport(code int, errs []string) {
 	fmt.Fprintln(c.stdout, string(b))
 }
 
-// version is the release version. A release build may set it with
-// -ldflags "-X main.version=v1.2.3"; otherwise it is read from the build's module information,
+// version is the release version. A release build sets it with -ldflags "-X main.version=v1.2.3"
+// (.goreleaser.yaml does, from the tag); otherwise it is read from the build's module information,
 // which the go command stamps from the VCS tag.
 var version = ""
 
 func toolVersion() string {
-	if version != "" {
-		return version
+	bi, ok := debug.ReadBuildInfo()
+	return versionFrom(version, bi, ok)
+}
+
+// versionFrom picks the version to report: the linker-set stamp if any, else the main module's
+// version from the build information, else "devel" (a build outside a tagged module, or go run).
+func versionFrom(stamped string, bi *debug.BuildInfo, ok bool) string {
+	if stamped != "" {
+		return stamped
 	}
-	if bi, ok := debug.ReadBuildInfo(); ok && bi.Main.Version != "" && bi.Main.Version != "(devel)" {
+	if ok && bi != nil && bi.Main.Version != "" && bi.Main.Version != "(devel)" {
 		return bi.Main.Version
 	}
 	return "devel"
