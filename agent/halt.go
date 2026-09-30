@@ -104,19 +104,22 @@ type Outcome struct {
 //   - with a store that leases runs (Leaser: MemStore, store/sqlite, store/postgres, found through a
 //     Journal and through wrappers that implement Unwrap() Store, see Capability), it takes the
 //     root run's lease for the resolution and returns *HaltInFlight while any driver holds it. Only
-//     drivers that lease the run (Lease, Recover, RecoverLoop) are seen; a plain Run holds no lease.
+//     drivers that lease the run (Lease, Recover, RecoverLoop) are seen; a plain Run holds no lease,
+//     which the claim below covers.
 //   - with a store that cannot (a custom store with no Leaser, or a Durable that exposes none), it
 //     requires WithMinHaltAge, so the halt is resolved only once no driver can still be running it.
-//     It then also claims the attempt after the live one, under a claim of its own, before it
-//     records the outcome, and returns *HaltInFlight if a driver holds that claim already: a
-//     process that could not record that its claim never started may void the live attempt
-//     after the age check and claim the next, and its effect must not be overridden. The
-//     resolution's claim is journaled as an attempt marker of the operation. If recording the
-//     outcome then fails, the claim stays live (the outcome may have been recorded all the same),
-//     so the operation halts until it is resolved again; that resolution claims the attempt after
-//     this one, once it is WithMinHaltAge old.
 //
-// WithoutLiveDriverCheck skips both, for an operator who knows no driver is running.
+// On either path, it then claims the attempt after the live one, under a claim of its own, before
+// it records the outcome, and returns *HaltInFlight if a driver holds that claim already: a process
+// that could not record that its claim never started may void the live attempt after the check
+// and claim the next (a plain Run, which holds no lease, included), and its effect must not be
+// overridden. The resolution's claim is journaled as an attempt marker of the operation. If
+// recording the outcome then fails, the claim stays live (the outcome may have been recorded all
+// the same), so the operation halts until it is resolved again; that resolution finds the
+// resolution's attempt live and claims the one after it (with WithMinHaltAge, once that attempt
+// is old enough).
+//
+// WithoutLiveDriverCheck skips all of these, for an operator who knows no driver is running.
 //
 // It refuses (ErrConfig) a ref with no valid Cause or Op.Kind, and an operation that only the
 // other kind of operation attempted. WithMinHaltAge(d) refuses (*HaltTooYoung) a halt younger
@@ -206,7 +209,7 @@ func resolveHalt(ctx context.Context, store Durable, op string, ref HaltRef, out
 	if ref.Cause == HaltContended && cfg.minHaltAge <= 0 {
 		return fmt.Errorf("%s: %q in run %s halted because another driver holds its claim and may be running it; pass WithMinHaltAge to resolve it only once that driver cannot still be running: %w", op, id, ref.RunID, ErrConfig)
 	}
-	release, leased, err := checkNoLiveDriver(ctx, store, op, ref, cfg)
+	release, _, err := checkNoLiveDriver(ctx, store, op, ref, cfg)
 	if err != nil {
 		return err
 	}
@@ -245,15 +248,15 @@ func resolveHalt(ctx context.Context, store Durable, op string, ref HaltRef, out
 	if err != nil {
 		return fmt.Errorf("agent: encode resolve-halt result for %q: %w (%w)", id, err, ErrConfig)
 	}
-	// Without a lease, the age of the live attempt is all that says no driver is running it, and a
-	// driver can still run the effect after the check: a process that remembers the live attempt's
-	// claim (its not-started record could not be written) writes that record, voiding the attempt,
-	// and claims the next one. So the resolution claims the next attempt itself, under a claim of
-	// its own: a driver that holds it already may be running the effect (*HaltInFlight), and once
-	// the resolution holds it, no driver can claim past the live attempt before the result below
-	// is recorded.
+	// Neither the lease nor the age of the live attempt stops every driver from running the effect
+	// after the check: a process that remembers the live attempt's claim (its not-started record
+	// could not be written) writes that record, voiding the attempt, and claims the next one, and
+	// it may be a plain Run that holds no lease. So the resolution claims the next attempt itself,
+	// under a claim of its own: a driver that holds it already may be running the effect
+	// (*HaltInFlight), and once the resolution holds it, no driver can claim past the live attempt
+	// before the result below is recorded.
 	var heldKey string
-	if !leased && !cfg.noLiveCheck && cfg.minHaltAge > 0 {
+	if !cfg.noLiveCheck && attempt != nil {
 		heldKey = nextAttemptStep(attempt.Name)
 		won, _, err := ClaimAttempt(ctx, store, ref.RunID, heldKey, Record{Kind: StepAttempt, ToolUseID: id, AttemptedAt: cfg.now().UnixMilli()})
 		if err != nil {
@@ -333,7 +336,7 @@ func checkNoLiveDriver(ctx context.Context, store Durable, op string, ref HaltRe
 
 // HaltInFlight is returned by ResolveHaltRef when a driver may be running the operation's effect
 // right now, and its own result must win over a resolution: a driver holds the lease on the halted
-// run's root, or (on the WithMinHaltAge path, see ResolveHaltRef) a driver holds the claim on the
+// run's root, or (see ResolveHaltRef) a driver holds the claim on the
 // attempt after the live one, having found the live one recorded as never started. Retry once the
 // driver has finished (its lease released or expired, or its result recorded); a retry reads the
 // run again.

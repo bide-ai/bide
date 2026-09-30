@@ -45,3 +45,37 @@ func TestResolveHaltRef_FindsTheLeaserThroughAJournal(t *testing.T) {
 		t.Fatalf("with an old enough attempt = %v", err)
 	}
 }
+
+// A resolution claims the attempt after the live one, on the lease path as on the min-age path,
+// and journals that claim as an attempt marker of the operation; WithoutLiveDriverCheck skips it
+// with the other checks.
+func TestResolveHaltRef_ClaimsTheNextAttemptUnlessOptedOut(t *testing.T) {
+	ctx := context.Background()
+	for name, tc := range map[string]struct {
+		opts  []ResolveOption
+		store func() Durable
+		claim bool
+	}{
+		"lease":   {nil, func() Durable { return NewMemStore() }, true},
+		"min age": {[]ResolveOption{WithMinHaltAge(time.Second)}, func() Durable { return newJournal(plainStore{NewMemStore()}) }, true},
+		"opt-out": {[]ResolveOption{WithoutLiveDriverCheck()}, func() Durable { return NewMemStore() }, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			d := tc.store()
+			if won, _, err := ClaimAttempt(ctx, d, "r1", toolAttemptStep("c1"), Record{Kind: StepAttempt, ToolUseID: "c1", AttemptedAt: 1}); err != nil || !won {
+				t.Fatal(won, err)
+			}
+			ref := HaltRef{RunID: "r1", Op: OpRef{Kind: OpTool, ID: "c1"}, Cause: HaltCrashed}
+			if err := ResolveHaltRef(ctx, d, ref, Outcome{Result: "charged"}, tc.opts...); err != nil {
+				t.Fatal(err)
+			}
+			rec, ok, err := lookup(ctx, d, "r1", retryAttemptStep(toolAttemptStep("c1"), 1))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if ok != tc.claim || ok && (rec.Kind != StepAttempt || !isToolAttempt(rec)) {
+				t.Fatalf("the resolution's claim of the next attempt: present %v (%+v), want %v", ok, rec, tc.claim)
+			}
+		})
+	}
+}
