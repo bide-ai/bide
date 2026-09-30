@@ -8,6 +8,16 @@ which found two bugs in revision 2's text, fixed here (10.4 step 0, and 10.9). R
 the adversarial review of revision 1 and the maintainer's decisions on it; section 22 records the
 disposition of every finding.
 
+**Revisions after acceptance:**
+
+- **P12 (#117): tool spec names and the 1-of-1 wire marker.** Section 5.3 names `safety` and
+  `approval` as the redesign's `agent.Safety` and `ToolSpec.Approval`, with no idempotency-key
+  function and no `RequiresApproval`. The 1-of-1 gate has an explicit wire form,
+  `{"single": true}`, matching the Go API, where only `agent.SingleApproval()` asks for one
+  decision; the shape `{"need": 1, "approvers": []}` is refused as a configuration error, as a Go
+  `ApprovalPolicy` with no approvers is. Sections 5.3, 9.1 and Appendix A changed; no claim rule
+  did (section 18).
+
 ## 0. Scope
 
 The bide protocol lets programs written in other languages (a Python SDK first, TypeScript next)
@@ -407,16 +417,27 @@ Part types: `text`, `reasoning`, `tool_use` (`id`, `name`, `args`, `signature`),
  "approval": {"need": 2, "approvers": ["finance", "legal"]}}
 ```
 
+```json
+{"safety": {"read_only": false, "idempotent": false},
+ "approval": {"single": true}}
+```
+
 - `safety` is `agent.Safety{ReadOnly, Idempotent}`, plain data with exactly these two fields, as
   journaled on each tool result (`{"read_only": ..., "idempotent": ...}`).
-- `approval` is the tool's approval gate, `ToolSpec.Approval`: an `ApprovalPolicy{Need, Approvers}`,
-  kept apart from `safety`. `{"need": 1, "approvers": []}` is the 1-of-1 gate on the wire, and
-  an SDK maps it to `agent.SingleApproval()`. The Go API never infers that gate from a policy's
-  shape: an `ApprovalPolicy` literal with no approvers is `ErrConfig`, and only
-  `SingleApproval()` asks for one decision. Any other policy MUST pass `ApprovalPolicy.Validate`. An absent `approval` is an ungated tool.
-- Naming follows redesign P12 (#117), which split the approval gate from `Safety` into
-  `ToolSpec.Approval` and removed the per-tool idempotency-key function. The names here were
-  updated to match; the wire semantics of this section are unchanged.
+- `approval` is the tool's approval gate, `ToolSpec.Approval`, kept apart from `safety`, in one of
+  two forms:
+  - `{"single": true}` is the 1-of-1 gate (one decision, recorded with `Approve`), and an SDK maps
+    it to `agent.SingleApproval()`. It carries no `need` and no `approvers`.
+  - `{"need": k, "approvers": [...]}` is an m-of-n `ApprovalPolicy`, which MUST pass
+    `ApprovalPolicy.Validate`: at least one approver, and `1 <= need <= len(approvers)`.
+
+  The gate is never inferred from a shape, as in the Go API: `{"need": 1, "approvers": []}`, any
+  other policy with no approvers, and `single` together with `need` or `approvers` are refused
+  with `invalid_argument`/`config`, as a Go `ApprovalPolicy` with no approvers is `ErrConfig`. An
+  absent `approval` is an ungated tool.
+- These names and the `single` marker follow redesign P12 (#117), which split the approval gate
+  from `Safety` into `ToolSpec.Approval`, removed the per-tool idempotency-key function, and made
+  `SingleApproval()` a distinct value (see Revisions after acceptance, at the top).
 - **Effective safety** is computed by the engine per call: `read_only`, `idempotent` or
   `side_effect`. A call with a marker is `side_effect` whatever its tool says now.
 - **Fail closed:** an SDK MUST treat any `effective_safety` value other than exactly `read_only` or
@@ -860,7 +881,7 @@ All methods here require the `admin` role (4.4).
     "input_schema_json": "{\"type\":\"object\",\"properties\":{\"customer\":{\"type\":\"string\"},\"amount_cents\":{\"type\":\"integer\"}},\"required\":[\"customer\",\"amount_cents\"]}",
     "output_schema_json": "{\"type\":\"object\"}",
     "safety": {"read_only": false, "idempotent": false},
-    "approval": {"need": 1, "approvers": []},
+    "approval": {"single": true},
     "timeout": "20s",
     "max_attempts": 5,
     "lost_worker_floor": "900s"
@@ -1929,6 +1950,12 @@ fix. It found a second, P2: a retry-safe call whose deliveries were only lost re
 `DELIVERY_EXHAUSTED`, though a lost delivery (or a duplicate of a refused one) may have run its
 handler; 10.9 now records it only for `read_only` tools and halts an `idempotent` one.
 
+The P12-driven revision (the `single` approval marker, and the names in 5.3) changes how a tool's
+gate is written on the wire, not a claim, attempt-marker, halt or journal rule, so neither model
+needs a change for it: the protocol model does not model approval, the claims model decides a gate
+before the call is claimed, and a malformed policy is refused when the tool set is written (9.1),
+before any call exists.
+
 ---
 
 ## 19. Engine work required (summary)
@@ -2081,6 +2108,7 @@ message Safety {
 message ApprovalPolicy {
   int32 need = 1;
   repeated string approvers = 2;
+  bool single = 3; // the 1-of-1 gate (5.3): set alone; need 1 with no approvers is refused
 }
 
 message ToolSpec {
