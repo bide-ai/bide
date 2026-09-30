@@ -198,7 +198,7 @@ configurations run without it, and so do the configurations with drivers in diff
 
 On every pull request and in the merge queue (`ci`, `regress`, `finding`). States are distinct
 states; times are TLC's own, measured on a development machine (Apple M1 Pro, 8 workers). The
-whole pull-request set, vacuity runs and JVM starts included, takes under 10 minutes on the CI runner
+whole pull-request set, vacuity runs and JVM starts included, takes about 6.5 minutes on the CI runner
 (GitHub `ubuntu-latest`, 4 cores).
 
 | Config | Path | Drivers, processes | Faults (error replies, crashes, cancels) | Attempts | Property | States | Time |
