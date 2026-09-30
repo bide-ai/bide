@@ -53,9 +53,9 @@ func BlockName(name string) NodeOption {
 }
 
 // ReadOnly marks a node as read-only: it has no external side effect, so it is
-// always safe to re-run from the top on resume. On an ambiguous mid-node crash
-// (an attempt marker with no result) Run RE-RUNS the body rather than halting.
-// Use it for a node that only reads.
+// always safe to re-run from the top on resume. Its Step writes no attempt marker,
+// and after an ambiguous mid-node crash (the body ran, its result was lost) Run
+// RE-RUNS the body rather than halting. Use it for a node that only reads.
 //
 // It sets only the retry classification: an approval gate or IdempotencyKey the node already
 // carries (a wrapped agent tool's) is kept, so the option cannot switch a gate off.
@@ -71,17 +71,6 @@ func ReadOnly() NodeOption {
 // IdempotencyKey the node already carries.
 func Idempotent() NodeOption {
 	return func(n *node) { n.safety.ReadOnly, n.safety.Idempotent = false, true }
-}
-
-// nodeRetriableOnResume reports whether a node may be safely re-run when a resume
-// finds an attempt marker but no result. It mirrors EXACTLY how the core loop
-// classifies a retry-safe step (agent.Safety.retriableOnResume, which is
-// ReadOnly || Idempotent || IdempotencyKey != nil): a retry-safe node re-runs its
-// body from the top; anything else HALTS for out-of-band confirmation. The
-// classification lives here because the core's method is unexported; the fields it
-// reads are the exported agent.Safety fields, so the two stay in lockstep.
-func nodeRetriableOnResume(s agent.Safety) bool {
-	return s.ReadOnly || s.Idempotent || s.IdempotencyKey != nil
 }
 
 // applyNodeOptions applies opts to n in order (a later option wins), then returns
@@ -129,9 +118,9 @@ func (c *builderCore) register(n *node) {
 	c.nodes = append(c.nodes, n)
 }
 
-// checkStepName refuses a step name with a ':'. A node's name is its journal key, and Run
-// derives every other key it writes with ':' ("attempt:<key>", "iter:<n>:<node>",
-// "switch:<node>", "flow:digest"), so such a name could name another step's record.
+// checkStepName refuses a step name with a ':'. Run derives every key it writes from node
+// names with ':' ("node:<node>", "node:iter:<n>:<node>", "switch:<node>", "flow:digest"), so
+// such a name could name another node's record.
 func checkStepName(name string) error {
 	if strings.ContainsRune(name, ':') {
 		return fmt.Errorf("step name %q contains ':', which Run reserves for the journal keys it derives", name)
@@ -143,11 +132,13 @@ func checkStepName(name string) error {
 // must be unique across the flow; a duplicate is recorded as a deferred error
 // surfaced at Build. Step infers I and O from fn.
 //
-// The func body is the escape hatch: arbitrary Go. Run drives every Step under an
-// at-most-once guard (an attempt marker written before the body, the result after),
-// so a crash whose outcome was never recorded HALTS the run (*HaltAmbiguous) rather
-// than re-firing the body. A non-idempotent side effect is therefore safe by default,
-// with no per-step opt-in. See docs/guides/flows.md.
+// The func body is the escape hatch: arbitrary Go. Run runs every node as an agent.Step
+// under its node key "node:<name>" (an attempt claim written before the body, the result
+// after), so a crash whose outcome was never recorded HALTS the run (*agent.OutcomeUnknown,
+// cleared with agent.ResolveHaltRef) rather than re-firing the body. A non-idempotent side
+// effect is therefore safe by default, with no per-step opt-in. A Step that is not
+// retry-safe must not pause (its body's pause is ErrConfig, as for agent.Step). See
+// docs/guides/flows.md.
 //
 // Pass plan.ReadOnly() or plan.Idempotent() to opt
 // a node OUT of that halt: a retry-safe node RE-RUNS its body from the top on an

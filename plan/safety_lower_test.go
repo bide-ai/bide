@@ -79,7 +79,7 @@ func TestLoad_ConfigMayLowerRetrySafety(t *testing.T) {
 			continue
 		}
 		s := flow.core.byName["t"].safety
-		if nodeRetriableOnResume(s) != tc.wantRetry || s.ReadOnly != tc.wantRO {
+		if s.RetrySafe() != tc.wantRetry || s.ReadOnly != tc.wantRO {
 			t.Errorf("%s: safety %+v; want retry-safe=%v ReadOnly=%v", name, s, tc.wantRetry, tc.wantRO)
 		}
 	}
@@ -127,7 +127,7 @@ func TestRegisterJoin_CarriesGoSafety(t *testing.T) {
 			t.Errorf("%s: Load: %v", name, err)
 			continue
 		}
-		if got := nodeRetriableOnResume(flow.core.byName["merge"].safety); got != tc.wantRetry {
+		if got := flow.core.byName["merge"].safety.RetrySafe(); got != tc.wantRetry {
 			t.Errorf("%s: join retry-safe = %v, want %v", name, got, tc.wantRetry)
 		}
 	}

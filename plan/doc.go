@@ -33,7 +33,7 @@
 // same Switch are the exit; Build requires one so the loop can terminate. The
 // back-edge is excluded from the forward (acyclic) graph, so Kahn still linearizes it
 // and every other check is unchanged; Flow.Run re-enters the head per iteration under
-// ITERATION-SCOPED journal keys (iter:<n>:<node>), so at-most-once, halt-on-ambiguity,
+// ITERATION-SCOPED journal keys (node:iter:<n>:<node>), so at-most-once, halt-on-ambiguity,
 // and resume hold per iteration exactly as for a linear flow, and a run that would
 // exceed the bound errors rather than spinning forever. The loop is still driven by a
 // plain sequential Go for-loop: no goroutine, channel, or scheduler. The type frontier

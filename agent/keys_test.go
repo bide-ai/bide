@@ -50,6 +50,9 @@ var keyConstructors = map[string]func(string) string{
 	"sessionFromStep":      sessionFromStep,
 	"retrievalStep":        func(s string) string { return retrievalStep(len(s)) },
 	"spendStep":            func(s string) string { return spendStep(len(s)) },
+	"planScopedStep": func(s string) string {
+		return planScopedStep(context.WithValue(context.Background(), planScopeKey{}, planScope{runID: "r", node: "node:n"}), "r", s)
+	},
 }
 
 // Every key the engine builds starts with a prefix a developer-chosen step name may not use.

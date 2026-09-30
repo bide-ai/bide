@@ -26,6 +26,55 @@ func init() {
 			return rec, nil
 		})
 	}
+	journalhook.Step = func(ctx context.Context, j any, runID, name string, safety any, fn func(context.Context) (json.RawMessage, error)) (json.RawMessage, error) {
+		d, ok := j.(Durable)
+		if !ok {
+			return nil, fmt.Errorf("journalhook.Step: %T is not a journal: %w", j, ErrConfig)
+		}
+		if !planNodeKey(name) {
+			return nil, fmt.Errorf("journalhook.Step: %q is not a plan node key: %w", name, ErrConfig)
+		}
+		s, ok := safety.(Safety)
+		if !ok {
+			return nil, fmt.Errorf("journalhook.Step: safety is %T, not an agent.Safety: %w", safety, ErrConfig)
+		}
+		// The body's own Steps are scoped to the node (see planScopedStep).
+		body := func(ctx context.Context) (json.RawMessage, error) {
+			return fn(context.WithValue(ctx, planScopeKey{}, planScope{runID: runID, node: name}))
+		}
+		return step(ctx, d, runID, name, body, StepSafety(s))
+	}
+	journalhook.CheckRunID = checkRunID
+	journalhook.Marshal = marshalJournal
+	journalhook.SameJSON = sameJSON
+	journalhook.Begin = func(ctx context.Context, j any, runID string, start any) (json.RawMessage, bool, error) {
+		d, ok := j.(Durable)
+		if !ok {
+			return nil, false, fmt.Errorf("journalhook.Begin: %T is not a journal: %w", j, ErrConfig)
+		}
+		want, ok := start.(RunStart)
+		if !ok {
+			return nil, false, fmt.Errorf("journalhook.Begin: start is %T, not an agent.RunStart: %w", start, ErrConfig)
+		}
+		if err := checkDurable(d); err != nil {
+			return nil, false, err
+		}
+		return beginRun(ctx, d, runID, want)
+	}
+	journalhook.Complete = func(ctx context.Context, j any, runID string, result json.RawMessage) (json.RawMessage, error) {
+		d, ok := j.(Durable)
+		if !ok {
+			return nil, fmt.Errorf("journalhook.Complete: %T is not a journal: %w", j, ErrConfig)
+		}
+		if err := checkDurable(d); err != nil {
+			return nil, err
+		}
+		r, err := putRecord(ctx, d, runID, runCompleteStep, Record{Kind: StepValue, Result: result})
+		if err != nil {
+			return nil, err
+		}
+		return r.Result, nil
+	}
 	journalhook.WithSalt = func(rec any, salt []byte) any {
 		r := rec.(Record)
 		r.salt = append([]byte(nil), salt...)

@@ -111,9 +111,10 @@ func TestDigestChangesOnBoundaryType(t *testing.T) {
 	}
 }
 
-// TestRunJournalsDigest asserts Run records the topology digest FIRST, under the
-// reserved flow:digest name, and that the journaled digest equals the flow's Digest().
-// This is the record the audit layer commits to.
+// TestRunJournalsDigest asserts Run records the topology digest right after the run's
+// start and before any node, under the reserved flow:digest name, and that the
+// journaled digest equals the flow's Digest(). This is the record the audit layer
+// commits to.
 func TestRunJournalsDigest(t *testing.T) {
 	flow := buildTriage(t, "triage")
 	mem := agent.NewMemStore()
@@ -128,11 +129,11 @@ func TestRunJournalsDigest(t *testing.T) {
 	if len(recs) > 0 && recs[0].Kind == agent.StepHeader {
 		recs = recs[1:] // the journal header comes first in every journal
 	}
-	if len(recs) == 0 || recs[0].Name != flowDigestStep {
-		t.Fatalf("first journal record after the header is not %q: %+v", flowDigestStep, recs)
+	if len(recs) < 2 || recs[0].Name != runStartStep || recs[1].Name != flowDigestStep {
+		t.Fatalf("the journal records after the header are not %q then %q: %+v", runStartStep, flowDigestStep, recs)
 	}
 	var got string
-	if err := json.Unmarshal(recs[0].Result, &got); err != nil {
+	if err := json.Unmarshal(recs[1].Result, &got); err != nil {
 		t.Fatalf("decode journaled digest: %v", err)
 	}
 	if got != flow.Digest() {

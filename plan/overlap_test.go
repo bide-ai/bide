@@ -85,7 +85,7 @@ func (r *rendezvous) arrive() {
 }
 
 // Two drivers of the same flow run overlap and reach a non-idempotent node's attempt marker at
-// the same moment. Exactly one may run its body; the other must halt with HaltAmbiguous.
+// the same moment. Exactly one may run its body; the other must halt with OutcomeUnknown.
 func TestOverlappingDrivers_FlowNodeFiresOnce(t *testing.T) {
 	var fired atomic.Int32
 	b := New[int, string]("charge-flow")
@@ -122,11 +122,11 @@ func TestOverlappingDrivers_FlowNodeFiresOnce(t *testing.T) {
 	}
 	var halts, oks int
 	for _, err := range errs {
-		var halt *HaltAmbiguous
+		var halt *agent.OutcomeUnknown
 		switch {
 		case err == nil:
 			oks++
-		case errors.As(err, &halt) && halt.Step == "charge":
+		case errors.As(err, &halt) && halt.Op.ID == "node:charge":
 			halts++
 		default:
 			t.Fatalf("unexpected driver error: %v", err)

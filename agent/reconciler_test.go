@@ -58,6 +58,13 @@ func TestResolveHalt_MinHaltAge(t *testing.T) {
 func TestResolveHalt_Evidence(t *testing.T) {
 	ctx := context.Background()
 	s := NewMemStore()
+	for _, id := range []string{"c1", "c2"} { // both calls halted: their markers are recorded
+		if _, err := s.Do(ctx, "r", toolAttemptStep(id), func(context.Context) (Record, error) {
+			return Record{Kind: StepAttempt, ToolUseID: id, AttemptedAt: 1}, nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	ev := map[string]string{"message_id": "msg_123", "source": "provider log"}
 	if err := ResolveHalt(ctx, s, "r", "c1", "sent", false, WithEvidence(ev)); err != nil {

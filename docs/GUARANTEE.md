@@ -61,8 +61,11 @@ the journal holds, and so what a resume cannot be talked out of by a redeploy:
   completed call ran `ReadOnly`: a completed write is rolled back even if its tool was relabelled
   `ReadOnly` since, and a call whose tool is no longer registered is reported uncompensated (or
   halts, if it was attempted with no result);
-- for a flow (`plan`), its topology digest, each switch's choice, and whether each node was
-  retry-safe when it was attempted.
+- for a flow (`plan`), its flow name and input (`run:start`, kind `flow`), its topology digest,
+  each switch's choice, and each node's attempt marker (a node runs as an `agent.Step`, so a node
+  attempted as a side effect halts on resume even if it is relabelled retry-safe since); a flow run
+  resumed with another input or flow, or driven by an `Agent`, is `ErrConfig`; a finished flow run
+  records `run:complete` with its output, which a later drive returns.
 
 Configuration is live by design: it governs what a drive does next, not what the journal already
 says happened. A drive uses the configuration it is given for:

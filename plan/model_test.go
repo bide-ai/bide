@@ -163,7 +163,7 @@ func buildModelFlow(fake agent.Model) (*Flow[int, review], error) {
 // TestModel_DefaultHaltsOnAmbiguousCrash proves a Model node keeps the conservative
 // halt-on-ambiguous-crash default (Safety default preserved): a model call is
 // non-idempotent, so on a crash that persists the attempt marker but loses the result
-// Run returns *HaltAmbiguous and does NOT re-call the model. This mirrors the DST
+// Run returns *agent.OutcomeUnknown and does NOT re-call the model. This mirrors the DST
 // crash-sweep in flow_dst_test.go (crashFlowStore, errCrash, per-write sweep).
 func TestModel_DefaultHaltsOnAmbiguousCrash(t *testing.T) {
 	var mem agent.Durable
@@ -191,9 +191,9 @@ func TestModel_DefaultHaltsOnAmbiguousCrash(t *testing.T) {
 		var haveAttempt, haveResult bool
 		for _, r := range recs {
 			switch r.Name {
-			case "attempt:assess":
+			case "attempt:step:node:assess":
 				haveAttempt = true
-			case "assess":
+			case "node:assess":
 				haveResult = true
 			}
 		}
@@ -217,12 +217,12 @@ func TestModel_DefaultHaltsOnAmbiguousCrash(t *testing.T) {
 		t.Fatalf("Build: %v", err)
 	}
 	_, err = flow.Run(context.Background(), mem, "model-crash", 0)
-	var halt *HaltAmbiguous
+	var halt *agent.OutcomeUnknown
 	if !errors.As(err, &halt) {
-		t.Fatalf("default Model node did not halt: err = %v; want *HaltAmbiguous", err)
+		t.Fatalf("default Model node did not halt: err = %v; want *agent.OutcomeUnknown", err)
 	}
-	if halt.Step != "assess" {
-		t.Fatalf("halt named %q, want %q", halt.Step, "assess")
+	if halt.Op.ID != "node:assess" || halt.Op.Kind != agent.OpStep {
+		t.Fatalf("halt named %v, want step %q", halt.Op, "node:assess")
 	}
 	if calls != haltCalls {
 		t.Fatalf("Model node re-called the model on resume (calls %d -> %d); a non-idempotent model call must halt", haltCalls, calls)

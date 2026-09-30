@@ -36,10 +36,94 @@ var reservedPrefixes = []string{
 	"start/",          // a session's started turns
 	"from/",           // a session turn's starting transcript
 	"audit:",          // the audit package's leaves
+	"node:",           // a plan flow's nodes, run as Steps: node:<name>, node:iter:<n>:<name> (see planNodeStep)
+	"switch:",         // a plan flow's branch choices: switch:<over>, switch:iter:<n>:<over>
+	"flow:",           // a plan flow's topology digest: flow:digest
+}
+
+// planNodePrefix starts the key of every plan flow node, which package plan runs as a Step through
+// the engine step hook (internal/journalhook.Step).
+const planNodePrefix = "node:"
+
+// planNodeKey reports whether name is the key of a plan flow node: "node:<name>" or
+// "node:iter:<n>:<name>", where <n> is a decimal number with no leading zero (the form strconv.Itoa
+// writes) and <name> is not empty and holds no ':' (package plan refuses a node name with one).
+// These are the reserved names a Step may run under through the step hook.
+func planNodeKey(name string) bool {
+	_, step, ok := parsePlanKey(name)
+	return ok && step == ""
+}
+
+// planNodeStep reports whether name is the key of a plan flow node (planNodeKey) or of a Step a
+// node's body runs (planScopedStep): the reserved step names ResolveHaltRef accepts, since each
+// halts as a Step does.
+func planNodeStep(name string) bool {
+	_, _, ok := parsePlanKey(name)
+	return ok
+}
+
+// planStepSep joins a node's key and the name of a Step its body runs (see planScopedStep).
+const planStepSep = ":step:"
+
+// parsePlanKey splits a plan key into the node key and, for a Step a node's body runs, that
+// Step's name: "node:[iter:<n>:]<node>" or "node:[iter:<n>:]<node>:step:<step>". A node name holds
+// no ':', so the node ends at the first ':' after the iteration scope, and "iter:" followed by
+// anything but a number is the node named "iter".
+func parsePlanKey(name string) (node, step string, ok bool) {
+	rest, ok := strings.CutPrefix(name, planNodePrefix)
+	if !ok {
+		return "", "", false
+	}
+	body := rest
+	if it, ok := strings.CutPrefix(rest, "iter:"); ok {
+		if digits, after, ok := strings.Cut(it, ":"); ok && isIterNumber(digits) {
+			body = after
+		}
+	}
+	n, tail, scoped := strings.Cut(body, ":")
+	if n == "" {
+		return "", "", false
+	}
+	nodeKey := name[:len(name)-len(body)] + n
+	if !scoped {
+		return nodeKey, "", true
+	}
+	step, ok = strings.CutPrefix(":"+tail, planStepSep)
+	if !ok || step == "" {
+		return "", "", false
+	}
+	return nodeKey, step, true
+}
+
+// isIterNumber reports whether s is a loop iteration as package plan writes it: decimal digits
+// with no leading zero, or "0".
+func isIterNumber(s string) bool {
+	if s == "" || len(s) > 1 && s[0] == '0' {
+		return false
+	}
+	return strings.Trim(s, "0123456789") == ""
+}
+
+// planScopeKey carries, in the context of a plan node's body, the run and key of the node.
+type planScopeKey struct{}
+
+type planScope struct{ runID, node string }
+
+// planScopedStep returns the journal key of the Step named name of runID when it runs in the body
+// of a plan flow node of that run: the node's key, ":step:", then name, so a Step a node's body
+// runs is recorded once per node and per loop iteration (a loop body's Step runs again in each
+// iteration, under that iteration's key), and never meets a Step outside the flow. Outside a node's
+// body, or for another run, name is returned unchanged.
+func planScopedStep(ctx context.Context, runID, name string) string {
+	if s, ok := ctx.Value(planScopeKey{}).(planScope); ok && s.runID == runID {
+		return s.node + planStepSep + name
+	}
+	return name
 }
 
 // IsReservedStepName reports whether name starts with a prefix the engine reserves for its own
-// journal keys. Step, Parallel and ResolveStepHalt refuse such a name.
+// journal keys. Step and Parallel refuse such a name, and so do ResolveHaltRef and ResolveStepHalt
+// for a step, except a plan flow node's key ("node:<name>"), which halts as a Step does.
 func IsReservedStepName(name string) bool {
 	for _, p := range reservedPrefixes {
 		if strings.HasPrefix(name, p) {
@@ -49,8 +133,11 @@ func IsReservedStepName(name string) bool {
 	return false
 }
 
-// checkStepName refuses a developer-chosen step name the engine reserves.
+// checkStepName refuses an empty developer-chosen step name, and one the engine reserves.
 func checkStepName(op, name string) error {
+	if name == "" {
+		return fmt.Errorf("%s: empty step name: %w", op, ErrConfig)
+	}
 	for _, p := range reservedPrefixes {
 		if strings.HasPrefix(name, p) {
 			return fmt.Errorf("%s: step name %q starts with %q, which the engine reserves for its own journal keys: %w", op, name, p, ErrConfig)

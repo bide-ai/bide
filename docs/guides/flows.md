@@ -58,8 +58,10 @@ production). `runID` is the durable identity: re-running the same `runID` resume
     inferred from the func. The body receives the ctx the step runs under, derived from the one passed
     to `Run`: it carries the caller's cancellation, deadline and values, so a long body should stop when
     `ctx` is done (return `ctx.Err()` or `context.Cause(ctx)`). A body that returns an error records no
-    result, so on resume a default step halts on its attempt marker (`*HaltAmbiguous`) and a
-    `ReadOnly`/`Idempotent` step runs again.
+    result, so on resume a default step halts on its attempt marker (`*agent.OutcomeUnknown`) and a
+    `ReadOnly`/`Idempotent` step runs again. A default step must not pause: a body that returns a pause
+    (an `Interrupt`, a pending approval) is `ErrConfig`, as for `agent.Step`; put the pause in a
+    `ReadOnly` step of its own.
     `Join2`/`Join3` merge bodies take the same leading `ctx`. `When` predicates and `Switch` routing
     take no ctx: they must be pure functions of the value, since resume replays the recorded arm.
   - `Tool[I, O](name, agent.Tool)` runs a tool; give `I`/`O` explicitly (they say how to JSON-encode
@@ -69,9 +71,10 @@ production). `runID` is the durable identity: re-running the same `runID` resume
     typed input `I`, calls the bound model, and decodes the structured response into `O` (so `O` must
     be JSON-shaped and the prompt should ask for matching JSON). Build errors if a `Model` node has no
     bound model, naming it.
-  - The string `name` is the node's **durable journal key**: it must be non-empty, unique, and contain
-    no `:` (Build enforces all three; Run derives its other keys, such as `attempt:<name>`, with `:`),
-    and stable across code edits, because resume finds a step by this name. It is not just a label.
+  - The string `name` names the node's **durable journal key**, `node:<name>`: it must be non-empty,
+    unique, and contain no `:` (Build enforces all three; Run derives its keys, such as `node:<name>`
+    and `switch:<name>`, with `:`), and stable across code edits, because resume finds a node by this
+    name. It is not just a label.
 - **Wiring** takes handles, so a miswired connection does not compile:
   - `Edge[M](from, to)` connects a producer to a consumer, unifying the connecting type `M`.
   - `Switch[M](over, When(pred, to)..., Else(to))` routes on a node's output to exactly one arm.
@@ -89,30 +92,84 @@ production). `runID` is the durable identity: re-running the same `runID` resume
 
 ## What you get, and the semantics to know
 
-Every node lowers to a memoized `Do` step under a two-phase attempt/result guard, so:
+Every node runs as an [`agent.Step`](durable-steps.md) under its node key, so it has exactly a Step's
+guarantees:
 
-- **At-most-once with halt, automatic.** Before a node's body runs, `Run` journals an `attempt:<name>`
-  marker; after it succeeds, it journals the result `<name>`. On resume: a recorded result replays
-  (the body does not re-run); an attempt with no result means the outcome is unknown, so **`Run` halts
-  with a `*plan.HaltAmbiguous` rather than re-firing the body.** A `Switch` choice is journaled as its
-  own step `switch:<over>` and replayed, so a resumed run takes the branch it originally took;
+- **At-most-once with halt, automatic.** Before a default node's body runs, its Step claims the attempt
+  marker `attempt:step:node:<name>`; after the body succeeds, it journals the result `node:<name>`. On
+  resume: a recorded result replays (the body does not re-run, and the node costs one point read); an
+  attempt with no result means the outcome is unknown, so **`Run` halts with an
+  `*agent.OutcomeUnknown` rather than re-firing the body.** A `Switch` choice is journaled as its own
+  record `switch:<over>` and replayed, so a resumed run takes the branch it originally took;
   predicates must therefore be pure functions of the node's output.
+- **A halt is a Step halt.** Its `Op` is `agent.OpRef{Kind: agent.OpStep, ID: "node:<name>"}` (or
+  `"node:iter:<n>:<name>"` inside a loop), and it is a pause (`agent.IsPause`), so `RecoverLoop`
+  treats it as waiting, not failed. Once you know the node's true outcome, record it with
+  `flow.ResolveHalt(ctx, store, halt.Ref(), agent.Outcome{Result: output})`, where `output` is the
+  node's output value; the next `Run` continues past the node without running its body, feeding
+  `output` downstream. `flow.ResolveHalt` is `agent.ResolveHaltRef` after three checks against the
+  flow: the halt names a node of this flow, the run is a run of this flow (its recorded start names
+  the flow and its recorded digest is the flow's), and `output` decodes as the node's output type (a
+  resolution is final, so one the flow could not read would leave the run unable to continue). Like
+  `agent.ResolveHaltRef`, it resolves only a node that halted: one with a live attempt marker
+  (`agent.ErrNoLiveAttempt` otherwise).
+- **A node that provably never started is re-attempted.** A driver cancelled (or whose store failed)
+  after claiming a node's marker and before calling its body records that the attempt did not start,
+  and the next `Run` re-attempts the node under a numbered marker (`attempt:retry:<n>:step:node:<name>`)
+  instead of halting. A process that dies in that gap records nothing, so its resume halts, which is
+  safe.
 - **Halt is per node, and conservative by default.** Because the attempt marker is written before the
   body, *any* crash inside a node halts on resume unless the node is classified safe to repeat. The
   default (no classification) never double-fires, but completing after a mid-node crash then requires
-  resolving the halt out of band (record the halted node's result, then continue), which is only safe
-  when that node has no side effect. A node may instead declare a `Safety` (read-only or idempotent,
-  via `ReadOnly()`/`Idempotent()` in Go) so it re-runs on resume instead of halting. A declarative config's `safety` may only lower that (see "Node and join safety"). The
-  attempt marker records whether the node was retry-safe when it was attempted, and a node re-runs
-  only if it was then and is now: `Safety` is not part of the digest, so a node relabelled between a
-  crash and its resume (in either direction, in Go or by a config lowering it) halts. A marker written
-  before markers recorded this halts too.
-- **A run keeps its flow.** `Run` records the flow's digest first and, on resume, refuses (`ErrConfig`)
-  to continue a run that started under a different digest: its journal only means what it meant
-  under that flow.
+  resolving the halt. A node may instead declare a `Safety` (read-only or idempotent, via
+  `ReadOnly()`/`Idempotent()` in Go) so it writes no marker and re-runs on resume instead of halting.
+  A declarative config's `safety` may only lower that (see "Node and join safety"). `Safety` is not
+  part of the digest, so a node may be relabelled between a crash and its resume: the marker is the
+  attempt's recorded safety, so a node attempted as a side effect halts even if it is retry-safe now,
+  and a node attempted as retry-safe (no marker) runs again under a claim if it is a side effect now.
+- **A run keeps its flow and its input.** `Run` checks the run ID as `agent.Run` does (an empty ID, or
+  one in the form reserved for sub-agents and session turns, is `ErrConfig`), then records the run's
+  start (`run:start`, see `agent.RunStart`): kind `agent.RunKindFlow`, the flow's name, and the JSON
+  of the input. A later drive with a different input, under another flow's name, or of a run an
+  `Agent` started is `ErrConfig` and records nothing (and an `Agent` refuses a flow's run the same
+  way). Inputs are compared as canonical JSON (keys sorted, each number as the exact decimal value
+  it denotes, so `1`, `1.0` and `1e0` match and `2^53` and `2^53+1` do not), so the recovery path of
+  decoding `RecordedStart`'s `Input` without loss (into the flow's input type, or with
+  `json.Decoder.UseNumber`) and passing it to `Run` resumes the run even where that round trip
+  changes the JSON text. Decoding it into a `float64` can change a number, and then the input. The
+  comparison is blind to whitespace, key order, a number's spelling (whatever the size of its
+  exponent) and a string's escaping, and nothing else: an input whose JSON has a repeated object key,
+  an escaped lone surrogate (`"\ud800"`) or invalid UTF-8, on which two different texts would read
+  as one value, is refused with `ErrConfig` before anything is recorded. Like RFC 8785, the comparison
+  reads numbers as values: `-0` is `0`, and `1.0` is `1`. A resumed drive whose input differs from
+  the recorded one only that way is the same input, and its nodes see the input the run recorded
+  (their recorded outputs are replayed); a flow whose input type is `json.RawMessage`, or that
+  relies on the sign of zero, should not resume with such a respelling. The comparison takes time
+  linear in the input's length, whatever its nesting or the size of its exponents. `Run` then records the
+  flow's digest and, on resume, refuses (`ErrConfig`) to continue a run that started under a
+  different digest: its journal only means what it meant under that flow.
+- **A finished run is final.** When the terminal node finishes, `Run` records `run:complete` with the
+  flow's name and its output, so `Recover` and `RecoverLoop` skip the run and `agent.IsComplete`
+  reports it. A later drive with the run's input returns the recorded output with one point read,
+  whatever the flow's topology is now.
+- **Steps inside a node are scoped to it.** An `agent.Step` (or `agent.Parallel` task) a node's body
+  runs for the same run ID is recorded under the node's key, `node:<name>:step:<step>` (and
+  `node:iter:<n>:<name>:step:<step>` in a loop body), so each loop iteration runs its own Steps
+  instead of replaying the first iteration's, and a Step name need be unique only within its node (and must not be empty: an empty name is `ErrConfig`, for every `agent.Step`). A
+  halt of such a Step names that key; resolve it with the halt's `Ref()`. Other pauses a body takes
+  (`Interrupt`, `Await`, `Sleep`) are not scoped: give them names unique per iteration.
+- **Reserved keys.** `node:`, `switch:` and `flow:` are reserved prefixes, like `run:` and `attempt:`,
+  so an `agent.Step` a node's body runs cannot name one of the flow's records.
 - **Conformance.** Because the flow is authored and the actual path is derived from the journal, a run
   can be proven to have followed the declared topology, at node-visitation granularity plus the
-  journaled branch choice. The blind spot: conformance sees *that* a node ran, not what its Go body did
+  journaled branch choice. `Conform` replays the run's routing from its recorded choices: a record of
+  a node on an arm its `Switch` did not take, of a loop iteration the run did not reach, or of a node
+  inside or outside a loop under the wrong kind of key is a divergence, and so is a journal that
+  records nodes without `run:start` and `flow:digest`. A completed run must record every node,
+  choice and loop iteration its routing reaches (`Run` records them all before its completion), and
+  its `run:complete` must carry the recorded output of the last terminal node it reached. Values are
+  compared under the one rule above, so an output recorded with or without HTML escapes (`\u003c` or
+  `<`) is the same output. The blind spot: conformance sees *that* a node ran, not what its Go body did
   inside, so a node whose interior must be checked should be split into smaller nodes.
 
 ## Cryptographic conformance
@@ -142,14 +199,14 @@ Two pieces make it work:
     predicate names and so cannot show the run started under this flow; `Conform` reports such a run
     as a divergence. `flow.DigestV1()` still computes the v1 digest, to check a proof of a record an
     earlier version journaled.
-- **A journaled record the audit layer covers.** The first thing `Run` records is the digest, as a
-  durable step under the reserved name `flow:digest` (memoized on resume). Because it lives in the
+- **A journaled record the audit layer covers.** After the run's start and before any node, `Run`
+  records the digest, as a durable step under the reserved name `flow:digest` (memoized on resume). Because it lives in the
   journal, the [`audit`](../../audit) package's Merkle tree and signed tree head commit to it like any
   other record.
 
 The flow, end to end:
 
-1. `flow.Run(ctx, store, runID, in)` executes the flow. Its first journal record is `flow:digest`.
+1. `flow.Run(ctx, store, runID, in)` executes the flow. It journals `flow:digest` before any node.
 2. `audit.NewTreeHead(ctx, store, runID, ts)` then `audit.SignTreeHead(th, priv)` commit to the run's
    journal with a signed tree head (STH). Anchor the STH and its key in a separate trust domain; that
    is what makes it tamper-evident (see the `audit` package security model).
@@ -160,8 +217,9 @@ The flow, end to end:
    root), checks the STH's timestamp with `audit.CheckTimestamp`, and that the proven digest equals the declared flow's `flow.Digest()`. Together: **the run
    committed to this signed diagram.**
 
-`Conform` closes the loop on the *path*: it recognizes `flow:digest` as an internal record (never a
-divergence) and verifies the journaled digest **equals** the current flow's `Digest()`. A mismatch is
+`Conform` closes the loop on the *path*: it recognizes `run:start` (which must name this flow),
+`flow:digest`, a node's attempt markers and the not-started records of its claims as internal records
+(never a divergence) and verifies the journaled digest **equals** the current flow's `Digest()`. A mismatch is
 reported as a divergence, "ran against a different topology": the run executed under a different
 declared graph than the flow now describes. So `Conform` covers node-visitation and branch choices,
 and the digest + inclusion proof cover *which topology* the run committed to, verifiable offline.
@@ -301,7 +359,7 @@ type.
 #### Node and join safety
 
 A node (or a join) may carry a `safety` classifying how `Run` treats it on the ambiguous-crash window
-(an attempt recorded, its result lost to a crash): `"readonly"`, `"idempotent"`, or
+(its body ran, its result was lost to a crash): `"readonly"`, `"idempotent"`, or
 `"side_effect"` (one spelling per level; the pre-v1 alias `"retryable"` is refused, naming `"idempotent"`). A read-only or idempotent node re-runs its body on resume rather
 than halting, because its body is safe to repeat; a side effect halts.
 

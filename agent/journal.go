@@ -450,6 +450,24 @@ func (j *Journal) put(ctx context.Context, runID, name string, rec Record) (Reco
 	return decodeStored(runID, name, b)
 }
 
+// putNew is put that also reports whether this call stored rec (rather than finding a record
+// another writer stored first).
+func (j *Journal) putNew(ctx context.Context, runID, name string, rec Record) (Record, bool, error) {
+	if err := j.ensureHeader(ctx, runID); err != nil {
+		return Record{}, false, err
+	}
+	data, err := JournalEntry(name, rec)
+	if err != nil {
+		return Record{}, false, fmt.Errorf("encode step %q: %w (%w)", name, err, ErrStorage)
+	}
+	e, inserted, err := j.store.Insert(ctx, runID, name, data)
+	if err != nil {
+		return Record{}, false, storageErr(fmt.Sprintf("record step %q of run %s", name, runID), err)
+	}
+	got, err := decodeStored(runID, name, e.Data)
+	return got, inserted, err
+}
+
 // insert records rec under name with a fresh salt and returns the bytes the store holds for the
 // name: rec's, or those of the record another writer stored first.
 func (j *Journal) insert(ctx context.Context, runID, name string, rec Record) ([]byte, error) {

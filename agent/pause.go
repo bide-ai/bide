@@ -136,7 +136,7 @@ func AnswerInterrupt[T any](ctx context.Context, d Durable, runID, name string, 
 	if runID == "" {
 		return fmt.Errorf("AnswerInterrupt: empty runID: %w", ErrConfig)
 	}
-	b, err := json.Marshal(value)
+	b, err := marshalJournal(value)
 	if err != nil {
 		return fmt.Errorf("agent: encode interrupt answer for %q: %w (%w)", name, err, ErrConfig)
 	}
@@ -228,7 +228,7 @@ func waitUntil(ctx context.Context, name string, fireAtFrom func(now time.Time) 
 
 	// Journal the wake time once (at-most-once by name), so it is stable across resume and restart.
 	rec, err := d.Do(ctx, runID, timerStep(name), func(context.Context) (Record, error) {
-		b, err := json.Marshal(fireAtFrom(now()))
+		b, err := marshalJournal(fireAtFrom(now()))
 		if err != nil {
 			return Record{}, fmt.Errorf("agent: encode wake time for %q: %w (%w)", name, err, ErrConfig)
 		}
@@ -510,7 +510,7 @@ func Signal[T any](ctx context.Context, d Durable, runID, name string, payload T
 	if runID == "" {
 		return fmt.Errorf("Signal: empty runID: %w", ErrConfig)
 	}
-	b, err := json.Marshal(payload)
+	b, err := marshalJournal(payload)
 	if err != nil {
 		return fmt.Errorf("agent: encode signal %q: %w (%w)", name, err, ErrConfig)
 	}

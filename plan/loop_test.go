@@ -170,7 +170,7 @@ func TestLoopBuildRejectsNonAncestorHead(t *testing.T) {
 }
 
 // TestLoopConforms asserts a looped run conforms: every iteration-scoped journal key
-// (iter:<n>:<node>, attempt:iter:<n>:<node>, switch:iter:<n>:<over>) maps back to a
+// (node:iter:<n>:<node>, attempt:step:node:iter:<n>:<node>, switch:iter:<n>:<over>) maps back to a
 // declared node, so there are no divergences.
 func TestLoopConforms(t *testing.T) {
 	flow, err := buildCountdownLoop(10, nil)
@@ -193,7 +193,7 @@ func TestLoopConforms(t *testing.T) {
 
 // TestLoopConformFlagsUndeclaredStep asserts conformance still catches an undeclared
 // step in a looped run: an iteration-scoped record for a node the flow never declared
-// is a divergence (the iter:<n>: prefix is stripped, and the remainder does not name a
+// is a divergence (the node:iter:<n>: prefix is stripped, and the remainder does not name a
 // declared node).
 func TestLoopConformFlagsUndeclaredStep(t *testing.T) {
 	flow, err := buildCountdownLoop(10, nil)
@@ -206,7 +206,7 @@ func TestLoopConformFlagsUndeclaredStep(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 	// Inject an iteration-scoped record for a node that was never declared.
-	if _, err := mem.Do(ctx, "loop-diverge", "iter:0:ghost", func(context.Context) (agent.Record, error) {
+	if _, err := mem.Do(ctx, "loop-diverge", "node:iter:0:ghost", func(context.Context) (agent.Record, error) {
 		return agent.Record{Kind: agent.StepValue, Result: []byte("null")}, nil
 	}); err != nil {
 		t.Fatalf("inject: %v", err)
@@ -315,7 +315,7 @@ func crashCountdownLoop(refineCalls *int) (*Flow[int, string], error) {
 // crash and resume, resuming into the correct iteration. refine runs once per
 // iteration (input 3 -> three iterations), so across a clean completion it fires
 // exactly three times; a crash mid-loop must not double-fire any iteration's refine.
-// Each run ends completed (the terminal output) or halted (*HaltAmbiguous naming a
+// Each run ends completed (the terminal output) or halted (*agent.OutcomeUnknown naming a
 // declared step, possibly an iteration-scoped key). It reuses the crashFlowStore DST
 // harness from flow_dst_test.go.
 func TestLoopCrashSweepAtMostOncePerIteration(t *testing.T) {
@@ -350,7 +350,7 @@ func TestLoopCrashSweepAtMostOncePerIteration(t *testing.T) {
 			t.Fatalf("crashAt=%d: refine fired %d times, want at most 3 (one per iteration; DOUBLE FIRE)", crashAt, refineCalls)
 		}
 
-		var halt *HaltAmbiguous
+		var halt *agent.OutcomeUnknown
 		switch {
 		case err == nil:
 			if refineCalls != 3 {
@@ -358,8 +358,8 @@ func TestLoopCrashSweepAtMostOncePerIteration(t *testing.T) {
 			}
 		case errors.As(err, &halt):
 			haltSeen = true
-			if halt.Step == "" {
-				t.Fatalf("crashAt=%d: halt named no step", crashAt)
+			if n, ok := nodeOfKey(halt.Op.ID); !ok || n == "" || halt.Op.Kind != agent.OpStep {
+				t.Fatalf("crashAt=%d: halt names %+v, want a node's Step", crashAt, halt.Op)
 			}
 		default:
 			t.Fatalf("crashAt=%d: unexpected terminal error: %v", crashAt, err)

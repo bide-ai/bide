@@ -46,7 +46,7 @@ func AwaitFor[T any](ctx context.Context, name string, d time.Duration) (T, bool
 	// encounter, so it is stable across resume and restart (same pattern as waitUntil).
 	now := clockFrom(ctx)
 	rec, err := dur.Do(ctx, runID, awaitTimeoutStep(name), func(context.Context) (Record, error) {
-		b, err := json.Marshal(now().Add(d))
+		b, err := marshalJournal(now().Add(d))
 		if err != nil {
 			return Record{}, fmt.Errorf("agent: encode deadline for %q: %w (%w)", name, err, ErrConfig)
 		}
@@ -121,7 +121,7 @@ type awaitResolution struct {
 var errAwaitPending = errors.New("agent: awaitfor pending")
 
 func resolutionRecord(name string, res awaitResolution) (Record, error) {
-	b, err := json.Marshal(res)
+	b, err := marshalJournal(res)
 	if err != nil {
 		return Record{}, fmt.Errorf("agent: encode awaitfor outcome %q: %w (%w)", name, err, ErrConfig)
 	}

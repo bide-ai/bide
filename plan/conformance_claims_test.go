@@ -24,7 +24,7 @@ func TestConformIgnoresNotStartedRecords(t *testing.T) {
 		t.Fatal(err)
 	}
 	for name, kind := range map[string]agent.StepKind{
-		"attempt:not-started:0123abcd:attempt:entry": agent.StepNotStarted,
+		"attempt:not-started:0123abcd:attempt:step:node:entry": agent.StepNotStarted,
 	} {
 		rec := journalhook.WithClaim(agent.Record{Kind: kind}, name[len("attempt:not-started:"):len("attempt:not-started:")+8]).(agent.Record)
 		if _, err := mem.Do(ctx, "r", name, func(context.Context) (agent.Record, error) { return rec, nil }); err != nil {

@@ -10,6 +10,7 @@ import (
 	"text/template"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/internal/journalhook"
 )
 
 // Flow[In, Out] is a built, frozen flow: the reified topology validated by
@@ -26,55 +27,89 @@ type Flow[In, Out any] struct {
 // terminal step produces is decoded into Out and returned.
 //
 // Run is STRICTLY SEQUENTIAL and adds no executor: it walks the declared
-// topology one node at a time and drives each node as a named durable step
-// through store.Do, exactly as plain Go control flow over agent.Step would (see
-// docs/guides/flows.md). It therefore inherits the
-// substrate's guarantees unchanged: a completed step returns its recorded value
-// without re-running (at-most-once by name), and a resumed run replays recorded
-// steps rather than re-executing them.
+// topology one node at a time and runs each node as an agent.Step, exactly as
+// plain Go control flow over agent.Step would (see docs/guides/flows.md). It
+// therefore inherits the Step's guarantees unchanged: a completed node returns
+// its recorded value without re-running (at-most-once by name), and a resumed
+// run replays recorded nodes rather than re-executing them.
 //
-// Halt-on-ambiguity is AUTOMATIC and applies to every node, with no per-step
-// opt-in (see runNode). Each node runs under the substrate's two-phase
-// attempt/result protocol: Run records an attempt marker before invoking the
-// node body, then records the result. On resume, a node whose attempt marker is
-// present but whose result is missing crashed mid-effect with an unknown outcome,
-// so Run HALTS (returns *HaltAmbiguous) rather than re-running the body. This is
-// the plan surface inheriting the crown-jewel property of the substrate: a
-// non-idempotent side effect fires at most once across a crash, for free, without
-// the step author declaring any Safety.
+// Every node is a Step, lowered through the engine's step hook under its node
+// key, so it runs under the Step's attempt claim with no per-node opt-in: a node
+// that is not retry-safe claims an attempt marker before its body runs. On
+// resume, a node whose live marker has no result may have fired its effect, so
+// Run HALTS with *agent.OutcomeUnknown (Op: OpRef{Kind: OpStep, ID: its node
+// key}) rather than re-run the body. Clear it with ResolveHalt once the true
+// outcome is known, recording the node's output; the next Run continues
+// past the node without running its body. An attempt the driver provably never
+// started (it was cancelled, or its store failed, after the claim and before the
+// body) is recorded as not started, and the next Run re-attempts the node under
+// a numbered marker instead of halting. A node marked ReadOnly or Idempotent
+// writes no marker and re-runs after a crash. A node that is not retry-safe must
+// not pause: a body that returns a pause is ErrConfig, as for agent.Step. An
+// agent.Step (or agent.Parallel task) a node's body runs for runID is recorded
+// under the node's key ("node:<node>:step:<name>", per iteration in a loop body),
+// so each loop iteration runs its own.
 //
-// A Switch is lowered the same way: Run reads the switched node's journaled
+// A Switch is lowered as its own record: Run reads the switched node's journaled
 // output, evaluates the arm predicates ONCE, and records the chosen arm target
-// as its own durable step named "switch:"+over. On resume the recorded choice is
-// replayed rather than re-decided, so the predicates must be pure over the
-// switched value (see When). Only the taken arm's downstream path executes.
+// under "switch:"+over. On resume the recorded choice is replayed rather than
+// re-decided, so the predicates must be pure over the switched value (see When).
+// Only the taken arm's downstream path executes.
 //
-// Journal-record name scheme Run writes:
+// Run refuses (ErrConfig) a run ID agent.Run refuses, and holds the run to how
+// it started. The first drive records run:start with Kind agent.RunKindFlow, the
+// flow's name, and the JSON of in (see agent.RunStart); a later drive under
+// another flow name, with an input that differs as canonical JSON, or of a run an
+// Agent started, is ErrConfig. It then records the flow's topology digest, and a
+// resume under a flow whose digest differs is ErrConfig too. When the terminal
+// node finishes, Run records run:complete with the flow's name and its output: a
+// later drive with the run's input returns that output, whatever the flow's
+// topology is now, and recovery skips the run.
+//
+// Journal keys Run writes, all under prefixes agent reserves, so no Step a node
+// body runs can collide with them:
+//   - "run:start"   -- the run's start (see agent.RunStart), recorded first.
 //   - "flow:digest" -- the frozen topology digest (StepValue whose Result is the
-//     JSON-encoded hex digest), recorded FIRST, before any node runs, and memoized on
-//     resume. It is an internal record of the run, not a declared node; conformance
-//     recognises it and verifies it equals the current flow's Digest() (see Conform).
-//
-// then, per node named N:
-//   - "attempt:"+N  -- the attempt marker, recorded before N runs (StepValue whose Result is
-//     {"retry_safe":<bool>}: whether N was retry-safe when it was attempted, which is what a
-//     resume decides by, together with N's Safety now);
-//   - N             -- N's result (StepValue whose Result is the JSON-encoded output);
-//   - "switch:"+over -- for a switched node, the journaled arm choice (StepValue whose
-//     Result is the JSON-encoded chosen target step name).
-//
-// The attempt marker "attempt:"+N is an internal step of node N, not a distinct
-// declared node; conformance treats it as belonging to N.
+//     JSON-encoded hex digest), memoized on resume. Conform verifies it equals the
+//     current flow's Digest().
+//   - "node:"+N     -- node N's result (StepValue whose Result is the JSON-encoded
+//     output); "node:iter:<i>:"+N for iteration i of a bounded loop's body.
+//   - the Step's claim bookkeeping for a node that is not retry-safe:
+//     "attempt:step:node:"+N (StepAttempt), numbered re-attempts
+//     "attempt:retry:<g>:step:node:"+N, and not-started records.
+//   - "switch:"+over -- a switched node's journaled arm choice (StepValue whose
+//     Result is the JSON-encoded chosen target step name);
+//     "switch:iter:<i>:"+over for a loop Switch's iteration i.
+//   - "run:complete" -- the run's completion: the flow's name and its output.
 func (f *Flow[In, Out]) Run(ctx context.Context, store agent.Durable, runID string, in In) (Out, error) {
 	var out Out
 	c := f.core
+	if err := journalhook.CheckRunID(ctx, runID); err != nil {
+		return out, fmt.Errorf("plan: run %q: %w", c.flowName, err)
+	}
 
-	// The FIRST thing Run records is the frozen flow's topology digest, under the
-	// reserved step name flow:digest, so the audit layer's Merkle tree and signed
-	// tree head cover it (see Digest). store.Do memoizes it by name, so a resumed run
-	// replays the recorded digest rather than recomputing and re-recording it. This is
-	// what makes it offline-verifiable that the run followed THIS declared topology.
-	want, encErr := json.Marshal(c.digest())
+	// The run's start comes first: a drive of a run some other flow, input or entry point started
+	// is refused before this one records anything in it. A finished run is final: a drive with its
+	// input returns the output its completion recorded, whatever the flow's topology is now.
+	input, encErr := journalhook.Marshal(in)
+	if encErr != nil {
+		return out, fmt.Errorf("plan: run %q: encode flow input: %w (%w)", c.flowName, encErr, agent.ErrConfig)
+	}
+	start := agent.RunStart{Kind: agent.RunKindFlow, Flow: &agent.FlowRef{Name: c.flowName}, Input: string(input)}
+	done, finished, err := journalhook.Begin(ctx, store, runID, start)
+	if err != nil {
+		return out, fmt.Errorf("plan: run %q: %w", c.flowName, err)
+	}
+	if finished {
+		return decodeCompletion[Out](c.flowName, runID, done)
+	}
+
+	// Next Run records the frozen flow's topology digest, under the reserved step name
+	// flow:digest, so the audit layer's Merkle tree and signed tree head cover it (see Digest).
+	// store.Do memoizes it by name, so a resumed run replays the recorded digest rather than
+	// recomputing and re-recording it. This is what makes it offline-verifiable that the run
+	// followed THIS declared topology.
+	want, encErr := journalhook.Marshal(c.digest())
 	if encErr != nil {
 		return out, fmt.Errorf("plan: run %q: encode topology digest: %w", c.flowName, encErr)
 	}
@@ -202,24 +237,24 @@ func (f *Flow[In, Out]) Run(ctx context.Context, store agent.Durable, runID stri
 			return out, inErr
 		}
 
-		// Drive the node as a durable step under the automatic attempt/result guard
-		// (see runNode): a recorded result replays without re-running; an attempt with
-		// no result halts rather than re-firing a possibly-completed effect; a fresh
-		// node records an attempt, runs, then records its result. This holds for a Join
+		// Run the node as an agent.Step under its node key (see runNode): a recorded
+		// result replays without re-running; an attempt with no result halts rather than
+		// re-firing a possibly-completed effect; a fresh node claims an attempt, runs,
+		// then records its result. This holds for a Join
 		// exactly as for any node: it is a plain sequential step, so a non-idempotent
 		// merge halts on the ambiguous crash unless marked retry-safe.
-		rec, runErr := runNode(ctx, store, runID, c.model, node, input)
+		result, runErr := runNode(ctx, store, runID, c.model, node, nodeKey(name), input)
 		if runErr != nil {
 			return out, runErr
 		}
-		results[name] = rec.Result
+		results[name] = result
 
 		// Route onward, marking live successors. A switched node routes ONLY through
 		// its chosen arm (its edge successors, if any, are not followed), mirroring the
 		// old walk's precedence; the choice is journaled so a resume replays it. Every
 		// other node makes all its edge targets live (fan-out).
 		if br, switched := branchOf[name]; switched {
-			target, chooseErr := f.chooseArm(ctx, store, runID, br, node.outType, rec.Result)
+			target, chooseErr := f.chooseArm(ctx, store, runID, br, node.outType, result)
 			if chooseErr != nil {
 				return out, chooseErr
 			}
@@ -237,7 +272,7 @@ func (f *Flow[In, Out]) Run(ctx context.Context, store agent.Durable, runID stri
 		if len(succ) == 0 {
 			// Terminal: no outgoing edge and not switched. Record its output as a
 			// candidate flow output.
-			terminalOut = rec.Result
+			terminalOut = result
 			haveTerminal = true
 			continue
 		}
@@ -254,6 +289,42 @@ func (f *Flow[In, Out]) Run(ctx context.Context, store agent.Durable, runID stri
 			return out, fmt.Errorf("plan: run %q: decode terminal output: %w", c.flowName, decErr)
 		}
 	}
+	// Record the run's completion with its output, so recovery passes skip it and a later drive
+	// returns the output without walking the flow. A driver that completed it first wins.
+	final, encErr := journalhook.Marshal(completion{Flow: c.flowName, Output: terminalOut})
+	if encErr != nil {
+		return out, fmt.Errorf("plan: run %q: encode completion: %w", c.flowName, encErr)
+	}
+	recorded, err := journalhook.Complete(ctx, store, runID, final)
+	if err != nil {
+		return out, fmt.Errorf("plan: run %q: record the completion of run %s: %w", c.flowName, runID, err)
+	}
+	return decodeCompletion[Out](c.flowName, runID, recorded)
+}
+
+// completion is the Result of a flow run's completion marker (run:complete): the flow that
+// completed it and its output. An agent run's completion records neither.
+type completion struct {
+	Flow   string          `json:"flow"`
+	Output json.RawMessage `json:"output,omitempty"`
+}
+
+// decodeCompletion decodes the output of the run a flow named flowName completed from its
+// completion marker's Result. A run another flow, or an agent, completed is ErrConfig.
+func decodeCompletion[Out any](flowName, runID string, raw json.RawMessage) (Out, error) {
+	var out Out
+	var c completion
+	if err := json.Unmarshal(raw, &c); err != nil {
+		return out, fmt.Errorf("plan: run %q: run %s was completed, but not by a flow: %w", flowName, runID, agent.ErrConfig)
+	}
+	if c.Flow != flowName {
+		return out, fmt.Errorf("plan: run %q: run %s was completed by flow %q: %w", flowName, runID, c.Flow, agent.ErrConfig)
+	}
+	if len(c.Output) > 0 {
+		if err := json.Unmarshal(c.Output, &out); err != nil {
+			return out, fmt.Errorf("plan: run %q: decode the recorded output of run %s: %w", flowName, runID, err)
+		}
+	}
 	return out, nil
 }
 
@@ -261,10 +332,10 @@ func (f *Flow[In, Out]) Run(ctx context.Context, store agent.Durable, runID stri
 // returns the exit arm's target and the switched value routed to it. It is a plain
 // sequential Go for-loop bounded by lp.max: NO goroutine, channel, or scheduler. Each
 // iteration runs the body nodes in forward order under ITERATION-SCOPED journal keys
-// (iter:<n>:<node>, and switch:iter:<n>:<over> for the loop Switch), so the two-phase
-// attempt/result guard, at-most-once, HaltAmbiguous, and resume all hold per
-// iteration exactly as for a linear flow: a completed iteration replays from the
-// journal (each runNodeKeyed falls into the memoized case), and the first incomplete
+// (node:iter:<n>:<node>, and switch:iter:<n>:<over> for the loop Switch), so the
+// Step's attempt claim, at-most-once, halt, and resume all hold per iteration
+// exactly as for a linear flow: a completed iteration replays from the journal
+// (each node's Step returns its recorded value), and the first incomplete
 // iteration resumes mid-body.
 //
 // The head's input is headInput on iteration 0 (its forward predecessor's value) and
@@ -307,13 +378,13 @@ func (f *Flow[In, Out]) runLoop(ctx context.Context, store agent.Durable, runID 
 				input = resolved
 			}
 
-			rec, runErr := runNodeKeyed(ctx, store, runID, c.model, node, iterKey(iter, name), input)
+			result, runErr := runNode(ctx, store, runID, c.model, node, iterNodeKey(iter, name), input)
 			if runErr != nil {
 				return "", nil, runErr
 			}
-			results[name] = rec.Result
+			results[name] = result
 			if name == lp.over {
-				switchOut = rec.Result
+				switchOut = result
 			}
 		}
 
@@ -376,6 +447,11 @@ func (f *Flow[In, Out]) nodeInput(c *builderCore, node *node, in In, results map
 	// is only via Join, which is handled above); Build enforces that.
 	for _, br := range branchOf {
 		for _, a := range br.arms {
+			// A loop's back-edge feeds its head only inside the loop, where runLoop passes the
+			// head its input; on the forward walk the head takes its forward predecessor's value.
+			if a.loopBack {
+				continue
+			}
 			if a.target == node.name && live[br.over] {
 				decoded, decErr := decodeInto(results[br.over], node.inType)
 				if decErr != nil {
@@ -399,58 +475,18 @@ func (f *Flow[In, Out]) nodeInput(c *builderCore, node *node, in In, results map
 	return nil, fmt.Errorf("plan: run %q: node %q has no journaled predecessor input", c.flowName, node.name)
 }
 
-// HaltAmbiguous is returned by Run when a resumed node has a recorded attempt
-// marker but no recorded result: the node's effect may have fired before the
-// crash, so its outcome is unknown. Run stops rather than re-run the body and
-// risk a double side effect, mirroring the core runtime's ResumeHalt. Step names
-// the node that halted. Resolve it out of band (confirm whether the effect landed
-// and record the result, or discard the run); Run does not decide that.
-type HaltAmbiguous struct {
-	RunID string
-	Step  string
-}
+// nodeKey returns the journal key of node name: "node:<name>". agent reserves the
+// "node:" prefix, so no Step a node body runs can name it, and a node name holds no
+// ':' (see checkStepName), so no two keys meet.
+func nodeKey(name string) string { return "node:" + name }
 
-func (e *HaltAmbiguous) Error() string {
-	return fmt.Sprintf("plan: run %s halted at step %q: an attempt was recorded but no result, so the outcome is unknown and re-running could double-fire; confirm before continuing", e.RunID, e.Step)
-}
-
-// attemptMarker is the journal name of a node's attempt marker: the "about to run
-// this node's effect" record written before the node body runs. It is an internal
-// step of the node named name, not a separate declared node.
-func attemptMarker(name string) string { return "attempt:" + name }
-
-// attemptRecord is the Result of a node's attempt marker: whether the node was retry-safe
-// (nodeRetriableOnResume) when it was attempted.
-type attemptRecord struct {
-	RetrySafe bool `json:"retry_safe"`
-}
-
-// attemptSafety returns the attempt marker Result for a node with safety s.
-func attemptSafety(s agent.Safety) json.RawMessage {
-	b, _ := json.Marshal(attemptRecord{RetrySafe: nodeRetriableOnResume(s)}) // a struct of one bool always encodes
-	return b
-}
-
-// retrySafeAttempt reports whether a node whose attempt marker is marker and whose Safety is
-// now s may re-run its body: only if it was retry-safe when it was attempted and is retry-safe
-// now. A marker written before markers recorded safety (an empty Result) or one that does not
-// decode counts as not retry-safe, so such a resume halts rather than guess.
-func retrySafeAttempt(marker agent.Record, s agent.Safety) bool {
-	var at attemptRecord
-	if err := json.Unmarshal(marker.Result, &at); err != nil {
-		return false
-	}
-	return at.RetrySafe && nodeRetriableOnResume(s)
-}
-
-// iterKey returns the ITERATION-SCOPED journal key for a node executed on iteration
-// iter of a bounded loop body: "iter:<n>:<node>". Run journals every loop-body node
-// under this key, so the two-phase attempt/result guard, at-most-once,
-// HaltAmbiguous, and resume all hold per iteration. attemptMarker prefixes it to
-// form "attempt:iter:<n>:<node>". conform strips the "iter:<n>:" prefix to map the
-// key back to its declared node. iteration 0 is the first pass through the head.
-func iterKey(iter int, node string) string {
-	return "iter:" + strconv.Itoa(iter) + ":" + node
+// iterNodeKey returns the ITERATION-SCOPED journal key for a node executed on
+// iteration iter of a bounded loop body: "node:iter:<n>:<node>". Run journals every
+// loop-body node under this key, so the Step's claim, at-most-once, halt and resume
+// all hold per iteration. nodeOfKey maps it back to its declared node. Iteration 0
+// is the first pass through the head.
+func iterNodeKey(iter int, node string) string {
+	return "node:iter:" + strconv.Itoa(iter) + ":" + node
 }
 
 // iterSwitchKey returns the iteration-scoped journal key for a loop Switch's choice
@@ -460,92 +496,24 @@ func iterSwitchKey(iter int, over string) string {
 	return "switch:iter:" + strconv.Itoa(iter) + ":" + over
 }
 
-// runNode drives one node as a durable step under the automatic two-phase
-// attempt/result guard, so at-most-once and halt-on-ambiguity are inherited by
-// every node with no per-step opt-in. It uses only the existing substrate
-// primitives (store.History and store.Do); it adds no new Durable, no goroutine,
-// no scheduler.
-//
-// Three cases, checked against the journal:
-//  1. the node's result record already exists  -> return it (memoized; body not re-run);
-//  2. an attempt marker exists but the result does not -> the node crashed mid-effect
-//     with an unknown outcome. If the node is retry-safe (nodeRetriableOnResume: its
-//     Safety is ReadOnly or Idempotent, or carries an IdempotencyKey, mirroring the
-//     core loop's classification), RE-RUN the body and record the result. Otherwise
-//     HALT (*HaltAmbiguous), because re-running a non-idempotent effect could double-fire;
-//  3. fresh -> record the attempt marker, invoke node.run, then record the result.
-//
-// The happy path (no crash) is: attempt, run, result. Because store.Do memoizes
-// each record by name, a clean resume falls into case 1 for every completed node.
-// Only case 2 consults node.safety; the happy path and the completed-result replay
-// path (case 1) are unchanged, so a node's Safety opt-in changes resume behavior
-// only, never a clean run.
-func runNode(ctx context.Context, store agent.Durable, runID string, model agent.Model, node *node, input any) (agent.Record, error) {
-	return runNodeKeyed(ctx, store, runID, model, node, node.name, input)
-}
-
-// runNodeKeyed is runNode with an explicit journal key, so a node inside a bounded
-// loop body can be journaled under an ITERATION-SCOPED key (iter:<n>:<node>) while
-// still dispatching the same node body. The key names both the result record and,
-// via attemptMarker, the attempt marker, so the two-phase guard, at-most-once,
-// HaltAmbiguous, and resume all hold per iteration exactly as they do per node for a
-// linear flow. For a non-loop node the key is just node.name and the behavior is
-// identical to before. It adds no new primitive: still only store.History/store.Do.
-func runNodeKeyed(ctx context.Context, store agent.Durable, runID string, model agent.Model, node *node, key string, input any) (agent.Record, error) {
-	// Read the journal once to classify this node (case 1/2/3). History is the same
-	// primitive the core loop uses for its resume gate.
-	recs, err := store.History(ctx, runID)
-	if err != nil {
-		return agent.Record{}, fmt.Errorf("plan: run %s: load history for step %q: %w", runID, key, err)
-	}
-	var haveResult, haveAttempt bool
-	var resultRec, markerRec agent.Record
-	marker := attemptMarker(key)
-	for _, r := range recs {
-		switch r.Name {
-		case key:
-			haveResult = true
-			resultRec = r
-		case marker:
-			haveAttempt = true
-			markerRec = r
-		}
-	}
-	if haveResult {
-		return resultRec, nil // case 1: memoized result, do not re-run the body
-	}
-	if haveAttempt {
-		// case 2: the effect was attempted but its result was lost to a crash. A node that
-		// was retry-safe when it was attempted (its marker records that) and is retry-safe
-		// now may safely re-run its body from the top, so fall through to record the result
-		// below (the attempt marker is already persisted, so it is not re-recorded). Any
-		// other node HALTS rather than risk a double side effect: Safety is not part of the
-		// flow digest, so the node may have been relabelled since it was attempted.
-		if !retrySafeAttempt(markerRec, node.safety) {
-			return agent.Record{}, &HaltAmbiguous{RunID: runID, Step: key}
-		}
-	} else {
-		// case 3 (fresh): record the attempt marker BEFORE running the body, so a crash
-		// between the effect and its result leaves the marker persisted and the result
-		// missing, which case 2 detects on resume. A retry-safe node in case 2 skips this
-		// because its marker already exists. The marker is an exclusive claim
-		// (agent.ClaimAttempt): if another driver of this run claimed the step first, it owns
-		// the body, and a step not retry-safe by the winner's marker halts here rather than
-		// run it a second time. The marker records whether the node was retry-safe (see
-		// attemptSafety), so a resume decides by what the node was when it was attempted.
-		won, got, err := agent.ClaimAttempt(ctx, store, runID, marker, agent.Record{Kind: agent.StepValue, Result: attemptSafety(node.safety)})
-		if err != nil {
-			return agent.Record{}, fmt.Errorf("plan: run %s: record attempt for step %q: %w", runID, key, err)
-		}
-		if !won && !retrySafeAttempt(got, node.safety) {
-			return agent.Record{}, &HaltAmbiguous{RunID: runID, Step: key}
-		}
-	}
-
-	// Run the body and record its result. store.Do memoizes by name, so a resume
-	// after a clean result falls into case 1 above. For a retry-safe node resuming
-	// from case 2, this re-runs the body and records the result the crash lost.
-	return store.Do(ctx, runID, key, func(ctx context.Context) (agent.Record, error) {
+// runNode runs one node as an agent.Step named key (nodeKey, or iterNodeKey inside a
+// loop body) through the engine's step hook, with the node's Safety, and returns the
+// JSON output the journal holds for it. It adds no primitive of its own: the Step
+// decides everything a node's durability needs.
+//   - a recorded result returns without running the body (one point read, no
+//     History);
+//   - a node that is not retry-safe claims an attempt marker before the body, so a
+//     crash between the effect and its result halts the next drive
+//     (*agent.OutcomeUnknown) instead of re-running it, and a claim the driver never
+//     started (cancelled, or a failed store, before the body) is recorded as not
+//     started, so the next drive re-attempts it;
+//   - a retry-safe node (ReadOnly, Idempotent, or keyed) writes no marker and re-runs
+//     after a crash, unless an earlier attempt of it claimed a marker as a side effect,
+//     in which case it halts as that attempt would have;
+//   - a body that returns a pause from a node that is not retry-safe is ErrConfig (the
+//     Step pause guard).
+func runNode(ctx context.Context, store agent.Durable, runID string, model agent.Model, node *node, key string, input any) (json.RawMessage, error) {
+	return journalhook.Step(ctx, store, runID, key, node.safety, func(ctx context.Context) (json.RawMessage, error) {
 		var result any
 		var runErr error
 		switch node.kind {
@@ -571,13 +539,13 @@ func runNodeKeyed(ctx context.Context, store agent.Durable, runID string, model 
 			result, runErr = node.run(ctx, input)
 		}
 		if runErr != nil {
-			return agent.Record{}, runErr
+			return nil, runErr
 		}
-		encoded, encErr := json.Marshal(result)
+		encoded, encErr := journalhook.Marshal(result)
 		if encErr != nil {
-			return agent.Record{}, fmt.Errorf("plan: step %q encode result: %w", node.name, encErr)
+			return nil, fmt.Errorf("plan: step %q encode result: %w", node.name, encErr)
 		}
-		return agent.Record{Kind: agent.StepValue, Result: encoded}, nil
+		return encoded, nil
 	})
 }
 
@@ -671,7 +639,7 @@ func (f *Flow[In, Out]) chooseArmKeyed(ctx context.Context, store agent.Durable,
 				}
 			}
 		}
-		encoded, encErr := json.Marshal(target)
+		encoded, encErr := journalhook.Marshal(target)
 		if encErr != nil {
 			return agent.Record{}, fmt.Errorf("plan: switch over %q encode choice: %w", br.over, encErr)
 		}

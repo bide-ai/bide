@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -121,7 +120,13 @@ type Outcome struct {
 //
 // WithoutLiveDriverCheck skips all of these, for an operator who knows no driver is running.
 //
-// It refuses (ErrConfig) a ref with no valid Cause or Op.Kind, and an operation that only the
+// A plan flow's node runs as a Step under its node key, so its halt is OpRef{Kind: OpStep, ID:
+// "node:<name>"} (or "node:iter:<n>:<name>" inside a loop), resolved like any Step's; the recorded
+// Result is the node's output, as JSON of the node's output type.
+//
+// It refuses (ErrNoLiveAttempt, which wraps ErrConfig) an operation with no live attempt marker:
+// one that never halted, because it was never attempted or its attempts are recorded as not
+// started. It refuses (ErrConfig) a ref with no valid Cause or Op.Kind, and an operation that only the
 // other kind of operation attempted. WithMinHaltAge(d) refuses (*HaltTooYoung) a halt younger
 // than d, measured from the live attempt's marker, so a reconciler cannot query and resolve
 // before the provider's record has settled and thereby re-fire the effect. A HaltContended halt
@@ -181,7 +186,8 @@ func resolveHalt(ctx context.Context, store Durable, op string, ref HaltRef, out
 		h = haltKeys{id: id, attempt: toolAttemptStep(id), other: stepAttemptStep(id), otherHint: "a Step (OpStep)",
 			result: ToolResultStep(id), kind: StepToolResult}
 	case OpStep:
-		if err := checkStepName(op, id); err != nil {
+		// A plan flow's node halts as the Step named by its node key, which is reserved.
+		if err := checkStepName(op, id); err != nil && !planNodeStep(id) {
 			return err
 		}
 		h = haltKeys{id: id, attempt: stepAttemptStep(id), other: toolAttemptStep(id), otherHint: "a tool call (OpTool)",
@@ -200,7 +206,7 @@ func resolveHalt(ctx context.Context, store Durable, op string, ref HaltRef, out
 		if cfg.reconciled {
 			return fmt.Errorf("%s: evidence given both in Outcome and by WithEvidence: %w", op, ErrConfig)
 		}
-		b, err := json.Marshal(out.Evidence)
+		b, err := marshalJournal(out.Evidence)
 		if err != nil {
 			return fmt.Errorf("agent: encode resolve-halt evidence: %w (%w)", err, ErrConfig)
 		}
@@ -231,6 +237,12 @@ func resolveHalt(ctx context.Context, store Durable, op string, ref HaltRef, out
 	}
 	if attempt == nil && other != nil {
 		return fmt.Errorf("%s: %q in run %s was attempted by %s, not the operation named; resolve it as that kind: %w", op, id, ref.RunID, h.otherHint, ErrConfig)
+	}
+	if attempt == nil {
+		// Nothing halted on the operation: it was never attempted (a resolution would record an
+		// outcome for an effect that never ran, and skip it), or every attempt of it is recorded as
+		// not started (the next drive re-attempts it).
+		return fmt.Errorf("%s: %q in run %s has no live attempt marker, so nothing halted on it: %w", op, id, ref.RunID, ErrNoLiveAttempt)
 	}
 	if cfg.minHaltAge > 0 {
 		var at time.Time
@@ -286,15 +298,6 @@ func resolveHalt(ctx context.Context, store Durable, op string, ref HaltRef, out
 		return &HaltAlreadyResolved{RunID: ref.RunID, Op: ref.Op, Result: got.Result, IsError: got.IsError}
 	}
 	return nil
-}
-
-// sameJSON reports whether a and b are the same JSON text, ignoring insignificant whitespace.
-func sameJSON(a, b json.RawMessage) bool {
-	var ca, cb bytes.Buffer
-	if json.Compact(&ca, a) != nil || json.Compact(&cb, b) != nil {
-		return bytes.Equal(a, b)
-	}
-	return bytes.Equal(ca.Bytes(), cb.Bytes())
 }
 
 // resolveLeaseTTL is how long ResolveHaltRef holds the run's lease while it resolves: long enough
@@ -358,6 +361,11 @@ func (e *HaltInFlight) Error() string {
 	return fmt.Sprintf("resolve-halt for %s %q (run %s): a driver holds the lease on run %s and may still be running it; retry once it has finished",
 		e.Op.Kind, e.Op.ID, e.RunID, e.RootRunID)
 }
+
+// ErrNoLiveAttempt is the condition of a resolution refused because the operation named has no
+// live attempt marker: it never halted (it was never attempted, or its only attempts are recorded
+// as not started and are re-attempted by the next drive). It wraps ErrConfig.
+var ErrNoLiveAttempt = fmt.Errorf("operation has no live attempt to resolve: %w", ErrConfig)
 
 // ErrAlreadyResolved is the condition of a resolution refused because the operation already has
 // a different recorded outcome (see HaltAlreadyResolved). It wraps ErrConfig.
@@ -436,7 +444,7 @@ func WithNow(now func() time.Time) ResolveOption {
 // Outcome.Evidence does the same; giving both is ErrConfig.
 func WithEvidence(v any) ResolveOption {
 	return func(c *resolveConfig) {
-		b, err := json.Marshal(v)
+		b, err := marshalJournal(v)
 		if err != nil {
 			c.evErr = fmt.Errorf("agent: encode resolve-halt evidence: %w (%w)", err, ErrConfig)
 			return
