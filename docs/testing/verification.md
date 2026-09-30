@@ -35,7 +35,10 @@ anything changes. Findings that cannot be reproduced are recorded as suspicions,
 before its record commits, which is the window at-most-once exists for. The deterministic
 simulation tests (`agent/dst_test.go`, `agent/saga_dst_test.go`, `agent/mofn_dst_test.go`) sweep
 the crash point across every write of a run and check that each resume either matches the clean
-run or halts; a side effect never runs twice. The [chaos benchmark](testing.md#pillar-1-fair-crash-injection-chaos-benchmark)
+run or halts; a side effect never runs twice. The reference-model tests (`agent/refmodel_test.go`)
+go further: random scenarios of parallel calls, sub-agents, approvals, failures and sagas, under
+random crash schedules, must settle at exactly the outcome, side effects, compensations and
+model-visible conversation that an independent crash-free interpreter of the same scenario computes. The [chaos benchmark](testing.md#pillar-1-fair-crash-injection-chaos-benchmark)
 applies the same injection to bide and to other SDKs.
 
 **Cancellation sweeps.** A context that reports itself cancelled after a chosen number of checks
