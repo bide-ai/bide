@@ -345,6 +345,7 @@ func mergedUserContent(run []agent.Message) any {
 type chunk struct {
 	Error   json.RawMessage `json:"error"` // a failure reported partway through the stream
 	Choices []struct {
+		Index int `json:"index"` // which completion; the adapter requests one, index 0
 		Delta struct {
 			Content          string `json:"content"`
 			ReasoningContent string `json:"reasoning_content"` // DeepSeek/Ollama reasoning
@@ -425,6 +426,11 @@ func streamSSE(body io.ReadCloser, send func(agent.Emit) bool) {
 			return
 		}
 		for _, choice := range c.Choices {
+			if choice.Index != 0 {
+				// The request asks for one completion. Another is not part of this answer.
+				send(agent.Emit{Err: fmt.Errorf("openai: a chunk for choice %d; the request asked for one completion: %w", choice.Index, agent.ErrStreamProtocol)})
+				return
+			}
 			d := choice.Delta
 			if reason != "" && (d.ReasoningContent != "" || d.Content != "" || len(d.ToolCalls) > 0) {
 				send(agent.Emit{Err: fmt.Errorf("openai: content after finish_reason %s: %w", errtext.Quote(reason), agent.ErrStreamProtocol)})
