@@ -20,6 +20,7 @@ minor version (0.x.0) may include breaking API or journal-format changes; each o
 - The claim model covers the approval gate (1-of-1 `Approve` and m-of-n `SubmitDecision` tallies) together with halt resolution ([#108]).
 - A TLA+ model of flow semantics (switch and loop replay, per-iteration keys, `run:complete`, `Flow.ResolveHalt`), checked in CI ([#110]).
 - A TLA+ model of spend accounting (`@llm`, `@spend`, `@spend-late`, hedged losers, two drivers), checked in CI ([#111]).
+- A TLA+ model of the bide protocol's claim rules for remote tool calls (claim at assignment, begin records, abandons), checked in CI ([#112]).
 - `agent.Store`, the storage port (`Insert`, `Get`, `Load` of an `Entry` with an opaque, commit-ordered `Seq`), with its requirements A1 to A8 documented on the type, and `agent.Journal` over it (`NewJournal`, `Get`, `History`, `Records`, `Format`): the journal owns memoization, the record encoding and salt, the journal format header, attempt claims, not-started records and recording an outcome after the caller's context is cancelled ([#92]).
 - The journal format header: every run's journal starts with an `@journal` record (`agent.StepHeader`) naming `agent.JournalFormat` (`bide.journal.v1-dev`, the one tag every pre-release writes until 1.0, which switches to `bide.journal.v1` and refuses every pre-release journal); a run in another format, or with no header, is refused with `*agent.JournalVersionError` (wrapping `agent.ErrJournalVersion`) before anything is read or written ([#92]).
 - `agent.RunFilter` (`After`, `Prefix`, `ExcludeHolding`), which SQL stores evaluate in their query ([#92]).
@@ -488,6 +489,7 @@ First public release.
 [#108]: https://github.com/bide-ai/bide/pull/108
 [#110]: https://github.com/bide-ai/bide/pull/110
 [#111]: https://github.com/bide-ai/bide/pull/111
+[#112]: https://github.com/bide-ai/bide/pull/112
 [78f8db6]: https://github.com/bide-ai/bide/commit/78f8db6
 [994721b]: https://github.com/bide-ai/bide/commit/994721b
 [3262cd1]: https://github.com/bide-ai/bide/commit/3262cd1

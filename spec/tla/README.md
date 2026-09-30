@@ -464,6 +464,98 @@ two seats under two spellings of one id; `TallySound`, 14 states).
   of whose approvers resolve to one key. The maintainer approved it: `ApproverVerifier` gets a key
   identity (branch `fix/approver-key-identity`); the finding moves to `regress/` when it lands.
 
+## Model 2: the bide protocol's claim rules
+
+`protocol/Protocol.tla` checks the claim rules of a remote side-effect tool call under the bide
+protocol (`docs/design/protocol.md`, #95, revision 2, section 18). It is a model of its own rather
+than an addition inside model 1, so model 1's cost is unchanged; it restates the claim rules the
+protocol needs (a fresh-id marker, first writer wins, numbered attempts, a not-started record voids
+an attempt, ambiguous inserts).
+
+- **Claim at assignment (I1).** The drive claims the call's next attempt when it assigns a
+  delivery to a polling worker: a remote marker naming the delivery and the worker. An errored
+  claim records its own not-started record.
+- **Transport.** A task may be lost, delivered late, or duplicated to a second worker presenting
+  the same delivery id.
+- **Begin (I2).** A worker runs its handler only after `BeginTask` answered begun: the engine's RPC
+  handler (beside the drive, not on its scheduler slot) checks the dispatch table and the claim
+  id, inserts `attempt:begin:<marker>` naming the delivery and the worker's nonce, and answers
+  from the stored record. A lost answer is retried with the same nonce.
+- **Abandon (I3).** The drive abandons a delivery that lapsed or that its engine instance does not
+  know: it inserts an abandon under the begin key, and writes the not-started record only when the
+  stored begin record is an abandon (also when a crashed instance left the abandon without it).
+  After `MaxAttempts` voided attempts it records `DELIVERY_EXHAUSTED`.
+- **Outcomes.** Only the begun delivery completes; `unknown` is journaled; `not_started` from a
+  delivery that has not begun abandons it and is rejected from one that has.
+- **Engine and worker crashes.** An engine crash empties the dispatch table and cuts off the RPC
+  in progress (the worker retries); a worker crash forgets its task (no SDK-side durability, I6).
+- **Retry-safe calls (10.9).** No marker and no begin (pull): the drive dispatches a delivery,
+  and again under the same once-key scope after a lapse, an unknown report or a refusal, up to
+  `max_deliveries`; any delivery may complete. When the window closes with no outcome, a
+  `read_only` call records `DELIVERY_EXHAUSTED` unless an unknown report is journaled, and an
+  `idempotent` call halts (P2's rule). An idempotent tool's downstream deduplicates by once key, so
+  one scope applies its effect once.
+- **Resolution.** The halt's cause comes from the journal: an unknown report is `crashed`; a begun
+  attempt with no report is `worker_lost`, resolvable only after the lost-worker floor, encoded as
+  its assumption (the worker holding the begun delivery is done with it).
+
+| Property | Kind | Statement |
+|---|---|---|
+| `AtMostOnce` | invariant | the effect fires at most once |
+| `NotStartedExclusive` | invariant | no not-started record for a claim whose effect fired, with a voider other than the holder (the abandon) |
+| `BeginExclusive` | invariant | at most one worker ever runs under one marker |
+| `BeginIdempotent` | invariant | a live worker whose nonce the stored begin record holds is never answered false |
+| `NoRunAfterAbandon` | invariant | no worker runs under a marker whose begin key holds an abandon |
+| `NoLiveOverride` | invariant | a resolution never lands while a begun worker's handler runs |
+| `ExhaustedTruthful` | invariant | `DELIVERY_EXHAUSTED` is recorded only when no effect ran (for a retry-safe call, no downstream effect) |
+| `DownstreamOnce` | invariant | a retry-safe call's deliveries share one once-key scope, so its downstream effect applies once |
+| `ResultStable` | action | the recorded outcome is never replaced |
+
+| Config | Group | What | States | Time |
+|---|---|---|---|---|
+| `remote` | ci | two workers, two attempts, three deliveries; a lost and a duplicated task, an ambiguous insert | 1,667,049 | 8 s |
+| `remote-restart` | ci | the same with an engine crash (a new instance, an empty dispatch table), no duplicate | 480,039 | 3 s |
+| `remote-resolve` | ci | a worker crash and an operator resolving halts | 2,899,879 | 12 s |
+| `remote-safe` | ci | a retry-safe call: three deliveries, a lost and a duplicated task, an ambiguous insert | 1,689,461 | 9 s |
+| `deep-remote-safe` | nightly | a retry-safe call with an engine crash and a worker crash | 3,294,639 | 26 s |
+| `deep-remote-safe-read-only` | nightly | a `read_only` retry-safe call (it may record `DELIVERY_EXHAUSTED`) | 3,555,285 | 1 min |
+| `deep-remote-two` | nightly | every fault at the pull-request bounds together | 12,112,395 | 55 s |
+| `deep-remote` | nightly | three attempts, four deliveries; a lost task, an ambiguous insert, an engine crash | 15,126,088 | 1 min |
+| `deep-remote-a2` | nightly | two ambiguous replies and an engine crash | 1,473,772 | 7 s |
+
+Section 18's `ci-remote` bounds (four attempts and two ambiguous replies with every other fault)
+do not fit: three attempts with two ambiguous replies passed 215 million states without
+converging.
+
+Section 18's required failures, each a regression configuration: `inserted-flag-won` and
+`inserted-flag-won-fire` (`BeginExclusive`, `AtMostOnce`), `delivery-id-only` and
+`delivery-id-only-fire` (`BeginExclusive`, `AtMostOnce`), `not-started-from-begun`
+(`AtMostOnce`), `byte-equal-won` (`BeginIdempotent`), `abandon-without-key`
+(`NotStartedExclusive`), `caller-cause` (`NoLiveOverride`), all in `protocol/regress/`, with
+`new-scope-per-delivery` (the maintainer decision behind 10.9: a new scope per re-dispatch lets a
+deduplicating downstream apply the effect twice; `DownstreamOnce`).
+
+Finding P1 (`protocol/regress/begin-check-before-read`, fixed in #95's text as 10.4 step 0):
+revision 2's `BeginTask` checked the dispatch table before it read the stored begin record. A
+worker whose begin landed and whose answer was lost retried with its nonce after the delivery's
+lease lapsed or the engine restarted, was refused (`unknown_delivery`), and never ran: the call
+halted `worker_lost` for an effect that never started (`BeginIdempotent`). The fix: a begin the
+stored record already holds for this delivery and nonce is answered true before the dispatch-table
+checks, which then apply only to a first begin.
+
+Finding P2 (`protocol/regress/lost-is-exhausted`, fixed in #95's text, 10.9 and 6.3): revision 2
+recorded `DELIVERY_EXHAUSTED` for a retry-safe call whose deliveries were only lost. A lost
+delivery may have run its handler (its lease lapsed while the worker ran, or the worker died or its
+report was lost after the downstream effect), and a refusal proves nothing either, since a
+duplicate of the refused delivery may run. The error told the model the effect did not happen, its
+next call ran under a new once-key scope, and a deduplicating downstream applied the effect twice
+(`ExhaustedTruthful`, 10 states). The maintainer's rule: `DELIVERY_EXHAUSTED` only for `read_only`
+tools (`limits/read-only-exhausted` shows it is recorded), and an `idempotent` call halts.
+
+Not modelled yet: the call deadline as a clock (the window is `max_deliveries` here), push
+delivery's signature and endpoint rules, and approvals over the protocol (model 1b checks the
+gate).
+
 ## Model 7: flow semantics
 
 `flows/Flows.tla` checks a lowered plan flow (P5b, #103): every node runs as an `agent.Step`
