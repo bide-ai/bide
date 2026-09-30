@@ -1,0 +1,39 @@
+package postgreslog
+
+// Fixture for TestStatementCheckCatchesBypasses: each line marked BYPASS holds a transaction or a
+// lock across round trips, or sends a statement the check cannot vouch for, and the statement
+// check must report it. The file is type-checked with the package's own files; it is never built.
+
+import (
+	"context"
+	"database/sql"
+
+	"github.com/jackc/pgx/v5"
+)
+
+func (l *Log) bypassMethodExpr(ctx context.Context) (*sql.Tx, error) {
+	return (*sql.DB).BeginTx(l.db, ctx, txOptions) // BYPASS: BeginTx through a method expression
+}
+
+func (l *Log) bypassSemicolon(ctx context.Context) error {
+	_, err := l.db.ExecContext(ctx, "SELECT 1; BEGIN") // BYPASS: two statements behind a SELECT
+	return err
+}
+
+func (l *Log) bypassSessionLock(ctx context.Context) error {
+	_, err := l.db.ExecContext(ctx, "SELECT pg_advisory_lock(42)") // BYPASS: a session-level advisory lock
+	return err
+}
+
+func (l *Log) bypassSessionLockShared(ctx context.Context) error {
+	_, err := l.db.ExecContext(ctx, "SELECT pg_advisory_lock_shared(42)") // BYPASS: a shared session-level advisory lock
+	return err
+}
+
+func bypassPgx(ctx context.Context, dsn string) (pgx.Tx, error) {
+	c, err := pgx.Connect(ctx, dsn) // BYPASS: a pgx connection outside database/sql
+	if err != nil {
+		return nil, err
+	}
+	return c.Begin(ctx) // BYPASS: a transaction on a pgx connection
+}

@@ -51,6 +51,47 @@ func TestStatementsOnThePool(t *testing.T) {
 	}
 }
 
+// The check reports every hole in testdata/bypass.go.txt, a file of ways to hold a transaction or
+// a lock across round trips, type-checked with the package's files: each line marked BYPASS must
+// be reported, and no other line of the file.
+func TestStatementCheckCatchesBypasses(t *testing.T) {
+	const fixture = "testdata/bypass.go.txt"
+	src, err := os.ReadFile(fixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reported := map[int][]string{}
+	for _, p := range statementProblems(t, ".", fixture) {
+		file, rest, _ := strings.Cut(p, ":")
+		if filepath.Base(file) != filepath.Base(fixture) {
+			t.Errorf("a problem outside the fixture: %s", p)
+			continue
+		}
+		line, _, _ := strings.Cut(rest, ":")
+		var n int
+		fmt.Sscan(line, &n)
+		reported[n] = append(reported[n], p)
+	}
+	marked := 0
+	for i, line := range strings.Split(string(src), "\n") {
+		n := i + 1
+		_, what, ok := strings.Cut(line, "// BYPASS: ")
+		if !ok {
+			for _, p := range reported[n] {
+				t.Errorf("reported an unmarked line: %s", p)
+			}
+			continue
+		}
+		marked++
+		if len(reported[n]) == 0 {
+			t.Errorf("%s:%d not reported: %s", fixture, n, what)
+		}
+	}
+	if marked == 0 {
+		t.Fatal("the fixture marks no line")
+	}
+}
+
 // poolMethods are the methods of *sql.DB and *sql.Conn the statement check governs, with the
 // index of the query argument, or -1 for a method refused outright.
 var poolMethods = map[string]int{
@@ -63,7 +104,7 @@ var poolMethods = map[string]int{
 
 // statementProblems type-checks the non-test Go files in dir and returns every violation of the
 // rules TestStatementsOnThePool states, each with its position.
-func statementProblems(t *testing.T, dir string) []string {
+func statementProblems(t *testing.T, dir string, extra ...string) []string {
 	t.Helper()
 	if _, err := exec.LookPath("go"); err != nil {
 		t.Skipf("go unavailable: %v", err)
@@ -87,7 +128,7 @@ func statementProblems(t *testing.T, dir string) []string {
 		t.Fatal(err)
 	}
 	var files []*ast.File
-	for _, name := range names {
+	for _, name := range append(names, extra...) {
 		if strings.HasSuffix(name, "_test.go") {
 			continue
 		}

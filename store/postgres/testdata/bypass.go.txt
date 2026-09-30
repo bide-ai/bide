@@ -1,0 +1,81 @@
+package postgres
+
+// Fixture for TestStatementCheckCatchesBypasses: each line marked BYPASS holds a transaction or a
+// lock across round trips, or sends a statement the check cannot vouch for, and the statement
+// check must report it. The file is type-checked with the package's own files; it is never built.
+
+import (
+	"context"
+	"database/sql"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+)
+
+const typedWrite writeSQL = "BEGIN" // BYPASS: a writeSQL constant, made without newWrite
+
+func (s *Store) bypassMethodExpr(ctx context.Context) (*sql.Tx, error) {
+	return (*sql.DB).BeginTx(s.db, ctx, txOptions) // BYPASS: BeginTx through a method expression
+}
+
+func (s *Store) bypassMethodExprExec(ctx context.Context) error {
+	_, err := (*sql.DB).ExecContext(s.db, ctx, "BEGIN") // BYPASS: Exec through a method expression
+	return err
+}
+
+func (s *Store) bypassWriteSQL(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, string(writeSQL("BEGIN"))) // BYPASS: a conversion to writeSQL outside newWrite
+	return err
+}
+
+func (s *Store) bypassSelectSQL(ctx context.Context, q string) error {
+	_, err := s.db.ExecContext(ctx, string(selectSQL(q))) // BYPASS: a conversion to selectSQL outside newSelect
+	return err
+}
+
+func (s *Store) bypassTypedConst(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, string(typedWrite))
+	return err
+}
+
+func bypassReturnedConst() writeSQL {
+	return "BEGIN" // BYPASS: an untyped constant that becomes a writeSQL
+}
+
+func (s *Store) bypassSemicolon(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, "SELECT 1; BEGIN") // BYPASS: two statements behind a SELECT
+	return err
+}
+
+func (s *Store) bypassSessionLock(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, "SELECT pg_advisory_lock(42)") // BYPASS: a session-level advisory lock
+	return err
+}
+
+func (s *Store) bypassSessionLockShared(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, "SELECT pg_advisory_lock_shared(42)") // BYPASS: a shared session-level advisory lock
+	return err
+}
+
+func (s *Store) bypassTrySessionLock(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, "SELECT pg_try_advisory_lock(42)") // BYPASS: a session-level advisory lock, tried
+	return err
+}
+
+func bypassPgx(ctx context.Context, dsn string) (pgx.Tx, error) {
+	c, err := pgx.Connect(ctx, dsn) // BYPASS: a pgx connection outside database/sql
+	if err != nil {
+		return nil, err
+	}
+	return c.Begin(ctx) // BYPASS: a transaction on a pgx connection
+}
+
+func bypassPgconn(ctx context.Context, dsn string) error {
+	c, err := pgconn.Connect(ctx, dsn) // BYPASS: a pgconn connection outside database/sql
+	if err != nil {
+		return err
+	}
+	return c.Exec(ctx, "BEGIN").Close() // BYPASS: a statement on a pgconn connection
+}
+
+var connect = pgx.Connect // BYPASS: a pgx function used as a value
