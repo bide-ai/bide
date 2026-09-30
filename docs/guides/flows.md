@@ -107,8 +107,9 @@ guarantees:
   treats it as waiting, not failed. Once you know the node's true outcome, record it with
   `flow.ResolveHalt(ctx, store, halt.Ref(), agent.Outcome{Result: output})`, where `output` is the
   node's output value; the next `Run` continues past the node without running its body, feeding
-  `output` downstream. `flow.ResolveHalt` is `agent.ResolveHaltRef` after two checks against the
-  flow: the halt names a node of this flow, and `output` decodes as the node's output type (a
+  `output` downstream. `flow.ResolveHalt` is `agent.ResolveHaltRef` after three checks against the
+  flow: the halt names a node of this flow, the run is a run of this flow (its recorded start names
+  the flow and its recorded digest is the flow's), and `output` decodes as the node's output type (a
   resolution is final, so one the flow could not read would leave the run unable to continue). Like
   `agent.ResolveHaltRef`, it resolves only a node that halted: one with a live attempt marker
   (`agent.ErrNoLiveAttempt` otherwise).
@@ -131,10 +132,11 @@ guarantees:
   start (`run:start`, see `agent.RunStart`): kind `agent.RunKindFlow`, the flow's name, and the JSON
   of the input. A later drive with a different input, under another flow's name, or of a run an
   `Agent` started is `ErrConfig` and records nothing (and an `Agent` refuses a flow's run the same
-  way). Inputs are compared as canonical JSON (keys sorted, numbers as the doubles they denote), so
-  the recovery path of decoding `RecordedStart`'s `Input` and passing it to `Run` resumes the run even
-  where that round trip changes the JSON text; two inputs that differ only beyond a double's precision
-  count as one. `Run` then records the flow's digest and, on resume, refuses (`ErrConfig`) to continue
+  way). Inputs are compared as canonical JSON (keys sorted, each number as the exact decimal value
+  it denotes, so `1`, `1.0` and `1e0` match and `2^53` and `2^53+1` do not), so the recovery path of
+  decoding `RecordedStart`'s `Input` without loss (into the flow's input type, or with
+  `json.Decoder.UseNumber`) and passing it to `Run` resumes the run even where that round trip
+  changes the JSON text. Decoding it into a `float64` can change a number, and then the input. `Run` then records the flow's digest and, on resume, refuses (`ErrConfig`) to continue
   a run that started under a different digest: its journal only means what it meant under that flow.
 - **A finished run is final.** When the terminal node finishes, `Run` records `run:complete` with the
   flow's name and its output, so `Recover` and `RecoverLoop` skip the run and `agent.IsComplete`
@@ -143,7 +145,7 @@ guarantees:
 - **Steps inside a node are scoped to it.** An `agent.Step` (or `agent.Parallel` task) a node's body
   runs for the same run ID is recorded under the node's key, `node:<name>:step:<step>` (and
   `node:iter:<n>:<name>:step:<step>` in a loop body), so each loop iteration runs its own Steps
-  instead of replaying the first iteration's, and a Step name need be unique only within its node. A
+  instead of replaying the first iteration's, and a Step name need be unique only within its node (and must not be empty: an empty name is `ErrConfig`, for every `agent.Step`). A
   halt of such a Step names that key; resolve it with the halt's `Ref()`. Other pauses a body takes
   (`Interrupt`, `Await`, `Sleep`) are not scoped: give them names unique per iteration.
 - **Reserved keys.** `node:`, `switch:` and `flow:` are reserved prefixes, like `run:` and `attempt:`,
@@ -153,7 +155,8 @@ guarantees:
   journaled branch choice. `Conform` replays the run's routing from its recorded choices: a record of
   a node on an arm its `Switch` did not take, of a loop iteration the run did not reach, or of a node
   inside or outside a loop under the wrong kind of key is a divergence, and so is a journal that
-  records nodes without `run:start` and `flow:digest`. The blind spot: conformance sees *that* a node ran, not what its Go body did
+  records nodes without `run:start` and `flow:digest`, and a `run:complete` whose output is not the
+  recorded output of the terminal node the run reached. The blind spot: conformance sees *that* a node ran, not what its Go body did
   inside, so a node whose interior must be checked should be split into smaller nodes.
 
 ## Cryptographic conformance

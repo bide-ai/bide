@@ -62,7 +62,7 @@ with a prefix the engine reserves for them (`@`, `run:`, `tool:`, `attempt:`, `a
 `approval-tally:`, `signal:`, `await-timeout:`, `await-resolved:`, `timer:`, `interrupt:`, `chan:`,
 `chanack:`, `turn/`, `start/`, `from/`, `audit:`, and a `plan` flow's `node:`, `switch:`, `flow:`;
 see `agent.IsReservedStepName`) is `ErrConfig`,
-for `Step` and for a `Parallel` task alike. Inside the body of a `plan` flow's node, a `Step` for
+for `Step` and for a `Parallel` task alike, and so is an empty name. Inside the body of a `plan` flow's node, a `Step` for
 the flow's run is recorded under the node's key (`node:<node>:step:<name>`, per loop iteration in a
 loop body), so its name need be unique only within the node; see [Flows](flows.md).
 
