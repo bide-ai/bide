@@ -45,10 +45,10 @@ func isolatedDSN(t *testing.T, dsn, level string) string {
 }
 
 // Concurrent steps of one run are all recorded when the deployment's default isolation is above
-// read committed. Each insert takes the run's advisory lock and then computes the next position as
-// MAX(seq)+1; at repeatable read or serializable the snapshot would be taken by the lock statement,
-// before the lock is granted, so the insert would miss rows committed while it waited and collide
-// on (run_id, seq). A lost tool-result write halts the run later. Skips without PG_DSN.
+// read committed. Each insert computes the next position as MAX(seq)+1 in its own snapshot, so
+// concurrent inserts collide on (run_id, seq) (23505), or at repeatable read or serializable fail
+// with a serialization error (40001), and the store must run the insert again rather than report
+// the collision. A lost tool-result write halts the run later. Skips without PG_DSN.
 func TestPostgres_ConcurrentStepsUnderStricterDefaultIsolation(t *testing.T) {
 	base := os.Getenv("PG_DSN")
 	if base == "" {
@@ -100,9 +100,9 @@ func TestPostgres_ConcurrentStepsUnderStricterDefaultIsolation(t *testing.T) {
 
 // Two nodes racing to record the same step converge on one record, without an error, at a
 // stricter default isolation. The loser's insert meets the winner's row, committed while it waited
-// for the run's lock; at repeatable read or serializable that row is outside the loser's snapshot,
-// and ON CONFLICT DO NOTHING then fails with a serialization error (40001) instead of doing
-// nothing. Skips without PG_DSN.
+// for the winner; at repeatable read or serializable that row is outside the loser's snapshot, and
+// ON CONFLICT DO NOTHING then fails with a serialization error (40001) instead of doing nothing,
+// which the store must answer by running the insert again. Skips without PG_DSN.
 func TestPostgres_RacingNodesUnderStricterDefaultIsolation(t *testing.T) {
 	base := os.Getenv("PG_DSN")
 	if base == "" {
@@ -191,8 +191,8 @@ func TestPostgres_ConcurrentOpensUnderStricterDefaultIsolation(t *testing.T) {
 // Lease calls racing on one run never fail at a stricter default isolation. A single-statement
 // upsert or update that meets a row another transaction changed after its snapshot proceeds on the
 // latest row at read committed, but fails with a serialization error (40001) at repeatable read or
-// serializable, which a recoverer would read as a storage failure rather than a lost race. Skips
-// without PG_DSN.
+// serializable; the store must run it again rather than report it, which a recoverer would read
+// as a storage failure rather than a lost race. Skips without PG_DSN.
 func TestPostgres_ConcurrentLeasesUnderStricterDefaultIsolation(t *testing.T) {
 	base := os.Getenv("PG_DSN")
 	if base == "" {
@@ -250,35 +250,35 @@ func TestPostgres_ConcurrentLeasesUnderStricterDefaultIsolation(t *testing.T) {
 	}
 }
 
-// waitForAdvisoryWaiter polls pg_locks until a session other than admin's waits for the advisory
-// lock keyed by hashtextextended(key, 0), so a test can order a commit after a blocked statement.
-func waitForAdvisoryWaiter(t *testing.T, admin *sql.DB, key string) {
+// waitForWaiterOn polls pg_blocking_pids until a session waits on a lock held by the session pid,
+// so a test can order a commit after a blocked statement.
+func waitForWaiterOn(t *testing.T, admin *sql.DB, pid int64) {
 	t.Helper()
+	tick := time.NewTicker(5 * time.Millisecond)
+	defer tick.Stop()
 	deadline := time.Now().Add(10 * time.Second)
 	for {
-		var waiting int
-		if err := admin.QueryRowContext(context.Background(), `
-			SELECT count(*) FROM pg_locks
-			WHERE locktype = 'advisory' AND NOT granted AND objsubid = 1
-				AND ((classid::bigint << 32) | objid::bigint) = hashtextextended($1, 0)`, key).Scan(&waiting); err != nil {
+		var waiting bool
+		if err := admin.QueryRowContext(context.Background(), `SELECT EXISTS (SELECT 1 FROM pg_stat_activity
+			WHERE $1::int = ANY(pg_blocking_pids(pid)))`, pid).Scan(&waiting); err != nil {
 			t.Fatal(err)
 		}
-		if waiting > 0 {
+		if waiting {
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("no session waited for the advisory lock of %q", key)
+			t.Fatalf("no session waited on session %d", pid)
 		}
-		time.Sleep(5 * time.Millisecond)
+		<-tick.C
 	}
 }
 
-// The loser's path, made deterministic: a winner transaction takes the run's advisory lock and
-// records seq 0; the store's insert then blocks on the lock; the winner commits; and only then does
-// the insert proceed. At a stricter default isolation the insert's snapshot would be taken by its
-// blocked lock statement, before the winner committed. Recording the same step must then report
-// that another node recorded it (0 rows, no error) rather than fail with 40001, and recording
-// another step must take seq 1 rather than collide on seq 0 (23505). Skips without PG_DSN.
+// The loser's path, made deterministic: a winner transaction records seq 0 and stays open; the
+// store's insert, whose snapshot does not see that row, computes seq 0 too and blocks on the
+// winner's row; the winner commits; and only then does the insert proceed. Recording the same step
+// must then report that another node recorded it (0 rows, no error) rather than fail with 40001,
+// and recording another step must take seq 1 rather than fail on seq 0 (23505): the store runs the
+// insert again with a snapshot that sees the winner's row. Skips without PG_DSN.
 func TestPostgres_BlockedInsertSeesTheWinnersCommit(t *testing.T) {
 	base := os.Getenv("PG_DSN")
 	if base == "" {
@@ -290,7 +290,7 @@ func TestPostgres_BlockedInsertSeesTheWinnersCommit(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer admin.Close()
-	for _, level := range stricterLevels {
+	for _, level := range append([]string{"read committed"}, stricterLevels...) {
 		for _, tc := range []struct {
 			name    string
 			step    string
@@ -312,7 +312,8 @@ func TestPostgres_BlockedInsertSeesTheWinnersCommit(t *testing.T) {
 					t.Fatal(err)
 				}
 				defer winner.Rollback()
-				if _, err := winner.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, runID); err != nil {
+				var winnerPID int64
+				if err := winner.QueryRowContext(ctx, `SELECT pg_backend_pid()`).Scan(&winnerPID); err != nil {
 					t.Fatal(err)
 				}
 				if _, err := winner.ExecContext(ctx, `INSERT INTO bide_steps (run_id, seq, name, data) VALUES ($1, 0, 'step', '\x00')`, runID); err != nil {
@@ -331,7 +332,7 @@ func TestPostgres_BlockedInsertSeesTheWinnersCommit(t *testing.T) {
 					}
 					done <- result{n, err}
 				}()
-				waitForAdvisoryWaiter(t, admin, runID)
+				waitForWaiterOn(t, admin, winnerPID)
 				if err := winner.Commit(); err != nil {
 					t.Fatal(err)
 				}

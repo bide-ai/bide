@@ -4,19 +4,76 @@
 //
 // The tables are named with a prefix, "bide_" by default (see WithTablePrefix): bide_steps holds
 // the journal (run_id, seq, name, data), where data is bytea, each entry's bytes verbatim;
-// bide_leases holds the leases; bide_schema_version the schema version. Open and New create the
-// tables if they do not exist and refuse a database whose schema version is newer than this
-// version knows. Run IDs are compared and ordered by their bytes (collation "C"), so a Lister's
-// order does not depend on the database's locale.
+// bide_leases holds the leases; bide_schema_version the schema version; and the function
+// bide_next_seq_v1 gives an insert its position. Open and New create the tables and the function
+// if they do not exist and refuse a database whose schema version is newer than this version
+// knows. They never alter an existing table or replace a function, so they refuse a table that
+// lacks a uniqueness the store's statements depend on (unique (run_id, seq) and (run_id, name) on
+// bide_steps, and run_id on bide_leases) and a next_seq function with another definition. Run IDs
+// are compared and ordered by their bytes (collation "C"), so a Lister's order does not depend on
+// the database's locale.
+//
+// # One statement per write
+//
+// Every write the store makes after Open (an insert, AcquireLease, RenewLease, ReleaseLease) is a
+// single statement sent on its own, which Postgres runs as a transaction of its own and commits
+// before it replies. No transaction spans two round trips, so a client that stops between two of
+// its round trips (a SIGSTOP, a suspended VM, a long GC pause, a partition) holds no row or
+// advisory lock while it is stopped. Another node therefore takes an expired lease one TTL after
+// the last renewal that committed, or records the run's next step, however long the stall lasts.
+// Reads are single SELECT statements too, and nothing holds a connection between two pages.
+//
+// Each statement is atomic by itself: AcquireLease is an INSERT ... ON CONFLICT DO UPDATE whose
+// WHERE grants the lease only when it is free, expired or already the holder's; RenewLease and
+// ReleaseLease are an UPDATE and a DELETE conditioned on the holder (and, for a renewal, on the
+// lease being live); and Insert is an INSERT whose position comes from next_seq.
+//
+// # Inserts into one run
+//
+// next_seq takes the run's transaction-level advisory lock and then reads MAX(seq)+1. The lock is
+// held by the insert's own transaction, the one statement, and released when it commits, so a
+// stalled client holds it no longer than any statement's row locks. Inserts into one run queue on
+// it; the function is VOLATILE, so its read takes a snapshot after the lock is granted and, at read
+// committed, sees every insert that held the lock before. Each insert therefore takes its position
+// in its first attempt, and positions follow commit order. Should two inserts still read the same
+// MAX (at repeatable read or serializable, where the function reads the transaction's snapshot,
+// or beside a writer that does not take the lock), they collide on the (run_id, seq) key: the
+// second waits for the first to commit, fails, and is run again. The lock's key is the one earlier
+// versions took in a statement of their own, so nodes of both versions queue on the same lock
+// during a rolling upgrade.
 //
 // # Isolation
 //
-// Every write the store makes (an insert, the lease calls, creating the schema) runs in a
-// transaction that sets its own isolation level, read committed, whatever the deployment's
-// default_transaction_isolation (set on the server, database, role or DSN) says. The journal's
-// correctness depends on it: an insert takes a per-run advisory lock and then reads the run's last
-// position, which at repeatable read or serializable would come from a snapshot taken before the
-// lock was granted. Reads are single SELECT statements, which see one snapshot at any level.
+// The statements behave the same whatever the deployment's default_transaction_isolation (set on
+// the server, database, role or DSN). At read committed, a statement that meets a row another
+// transaction changed after the statement began waits for that transaction and then acts on the
+// row's latest version. At repeatable read or serializable, Postgres fails the statement with a
+// serialization failure (40001) instead, and at serializable it may fail a read that conflicts
+// with concurrent serializable writes the same way. A statement that fails that way has changed
+// nothing, so the store runs it again, with a new snapshot; once the conflicting transaction has
+// committed, that is the outcome read committed reaches in one attempt. The schema migration in
+// Open is the one transaction of several statements; it sets read committed itself (see
+// txOptions).
+//
+// # Retries and deadlines
+//
+// A statement is run again after a serialization failure or a deadlock, and an insert also after
+// losing its position to another insert. A retry does not always follow another transaction's
+// commit: at serializable, Postgres may fail a statement for a conflict with a transaction that
+// has not committed yet, and that transaction may itself abort. Under heavy contention on one run
+// (many writers inserting into it at once) an insert may lose its position several times. So the
+// store spaces the attempts with a capped, jittered exponential backoff (from 1ms up to 100ms, a
+// random fraction of it each time, so contending writers do not retry in lockstep), and keeps
+// retrying until the statement succeeds, fails for another reason, or ctx is done: a bound on the
+// attempts would turn contention into errors. A caller that needs a bound on the time a call may
+// take sets a deadline on ctx; when ctx ends, the call returns an error that wraps both ctx's error
+// and the last attempt's.
+//
+// The migration also sets idle_in_transaction_session_timeout for its own transaction, so a node
+// stopped inside it cannot hold the migration lock. The store sets no session-wide timeout: no
+// other statement it sends is ever inside a transaction, so the setting would guard nothing of
+// the store's, and on a pool passed to New it would change the caller's own transactions. A
+// deployment that wants the bound for its own code sets it on the role or the database.
 package postgres
 
 import (
@@ -25,6 +82,7 @@ import (
 	"errors"
 	"fmt"
 	"iter"
+	"math/rand/v2"
 	"regexp"
 	"strings"
 	"sync"
@@ -33,6 +91,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/jackc/pgx/v5/pgconn"
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
@@ -65,18 +124,65 @@ var (
 
 // tables holds the table names, prefixed, and the statements built from them.
 type tables struct {
-	steps, leases, version string
-	insert                 string
-	get, load              selectSQL
+	steps, leases, version          string
+	nextSeq, nextSeqBody            string // the next_seq function's name and source
+	insert, acquire, renew, release writeSQL
+	get, load                       selectSQL
 }
 
+// nextSeqVersion names the next_seq function's definition. The migration creates the function
+// when it is missing and never replaces one, since nodes of another version may be calling it; a
+// change to the definition takes a new version, so a new function beside the old one.
+const nextSeqVersion = "v1"
+
+// nextSeqTemplate is the body of the next_seq function, over the steps table %s. It takes the run's
+// transaction-level advisory lock, which the insert that calls it holds until it commits, and then
+// reads the run's last position. A VOLATILE function takes a new snapshot for each query it runs,
+// so at read committed the MAX is read after the lock is granted and sees every insert into the
+// run that held the lock before: inserts into one run queue on the lock and each takes the next
+// position in its first attempt. At repeatable read or serializable the query uses the
+// transaction's snapshot, taken before the lock was granted, so a queued insert may collide on
+// (run_id, seq) and is run again, as without the function. The key is the one the store has
+// always used for the run's lock, so nodes of earlier versions queue on the same lock.
+const nextSeqTemplate = `
+BEGIN
+	PERFORM pg_advisory_xact_lock(hashtextextended(r, 0));
+	RETURN (SELECT COALESCE(MAX(seq), -1) + 1 FROM %s WHERE run_id = r);
+END
+`
+
 func newTables(prefix string) (tables, error) {
-	t := tables{steps: prefix + "steps", leases: prefix + "leases", version: prefix + "schema_version"}
-	t.insert = `INSERT INTO ` + t.steps + ` (run_id, seq, name, data)
-		VALUES ($1, (SELECT COALESCE(MAX(seq), -1) + 1 FROM ` + t.steps + ` WHERE run_id = $1), $2, $3)
-		ON CONFLICT (run_id, name) DO NOTHING
-		RETURNING seq`
+	t := tables{steps: prefix + "steps", leases: prefix + "leases", version: prefix + "schema_version",
+		nextSeq: prefix + "next_seq_" + nextSeqVersion}
+	t.nextSeqBody = fmt.Sprintf(nextSeqTemplate, t.steps)
 	var err error
+	// The position comes from next_seq, which queues the insert on the run's lock (see
+	// nextSeqTemplate). Should two inserts still read the same MAX (at repeatable read or
+	// serializable, or beside a writer that does not take the lock), they collide on UNIQUE
+	// (run_id, seq), which is not the conflict target, so the second fails with 23505 once the
+	// first commits and insert runs it again (see insert).
+	if t.insert, err = newWrite(`INSERT INTO ` + t.steps + ` (run_id, seq, name, data)
+		VALUES ($1, ` + t.nextSeq + `($1), $2, $3)
+		ON CONFLICT (run_id, name) DO NOTHING
+		RETURNING seq`); err != nil {
+		return tables{}, err
+	}
+	// Granted when the run is unleased, when the live lease is already holder's, or when the lease
+	// has expired; a row another holder holds live is left alone and nothing is returned.
+	if t.acquire, err = newWrite(`INSERT INTO ` + t.leases + ` (run_id, holder, expiry)
+		VALUES ($1, $2, now() + ($3 * interval '1 second'))
+		ON CONFLICT (run_id) DO UPDATE
+			SET holder = EXCLUDED.holder, expiry = EXCLUDED.expiry
+			WHERE ` + t.leases + `.holder = EXCLUDED.holder OR ` + t.leases + `.expiry < now()`); err != nil {
+		return tables{}, err
+	}
+	if t.renew, err = newWrite(`UPDATE ` + t.leases + ` SET expiry = now() + ($3 * interval '1 second')
+		WHERE run_id = $1 AND holder = $2 AND expiry >= now()`); err != nil {
+		return tables{}, err
+	}
+	if t.release, err = newWrite(`DELETE FROM ` + t.leases + ` WHERE run_id = $1 AND holder = $2`); err != nil {
+		return tables{}, err
+	}
 	if t.get, err = newSelect(`SELECT seq, data FROM ` + t.steps + ` WHERE run_id = $1 AND name = $2`); err != nil {
 		return tables{}, err
 	}
@@ -86,27 +192,103 @@ func newTables(prefix string) (tables, error) {
 	return t, nil
 }
 
-// selectSQL is a query that starts with the keyword SELECT, the only kind the store runs on the
-// pool outside a transaction begun with txOptions (the isolation check in txoptions_test.go allows
-// a value of this type there, as it allows a constant SELECT). Only newSelect makes one.
+// selectSQL is a query that starts with the keyword SELECT. The statement check in
+// txoptions_test.go allows a value of this type on the pool, as it allows a constant SELECT. Only
+// newSelect makes one.
 type selectSQL string
 
-// newSelect returns q as a selectSQL, or an error if q does not start with the SELECT keyword.
+// writeSQL is one INSERT, UPDATE or DELETE statement, which the store sends on the pool on its
+// own, so Postgres runs it as a transaction of its own. The statement check in txoptions_test.go
+// allows a value of this type on the pool. Only newWrite makes one.
+type writeSQL string
+
+// newWrite returns q as a writeSQL, or an error unless q is one statement the pool may run on its
+// own (see oneStatement) that starts with INSERT, UPDATE or DELETE and calls no function but the
+// known ones and the next_seq function (see knownCalls).
+func newWrite(q string) (writeSQL, error) {
+	for _, kw := range []string{"INSERT", "UPDATE", "DELETE"} {
+		if startsWith(q, kw) && oneStatement(q) && knownCalls(q, true) {
+			return writeSQL(q), nil
+		}
+	}
+	return "", fmt.Errorf("postgres: a write on the pool must be one INSERT, UPDATE or DELETE statement, got %.40q: %w", q, agent.ErrConfig)
+}
+
+// newSelect returns q as a selectSQL, or an error unless q is one statement the pool may run on
+// its own (see oneStatement) that starts with SELECT and calls no function but the known ones
+// (see knownCalls).
 func newSelect(q string) (selectSQL, error) {
-	t := strings.TrimLeftFunc(q, unicode.IsSpace)
-	if len(t) <= len("SELECT") || !strings.EqualFold(t[:len("SELECT")], "SELECT") || !unicode.IsSpace(rune(t[len("SELECT")])) {
-		return "", fmt.Errorf("postgres: a read on the pool must be a SELECT, got %.40q: %w", q, agent.ErrConfig)
+	if !startsWith(q, "SELECT") || !oneStatement(q) || !knownCalls(q, false) {
+		return "", fmt.Errorf("postgres: a read on the pool must be one SELECT statement, got %.40q: %w", q, agent.ErrConfig)
 	}
 	return selectSQL(q), nil
 }
 
-// txOptions are the options of every transaction the store begins. The isolation level is set
-// explicitly so the store does not inherit the deployment's default_transaction_isolation: each
-// write takes an advisory lock and then reads rows committed while it waited for the lock, which
-// only read committed shows it (at repeatable read or serializable the transaction's snapshot is
-// taken by its first statement, the lock), and each lease upsert or update must proceed on a row
-// another transaction changed after it began, where the stricter levels fail with 40001.
+// sessionLock matches the session-level advisory lock functions (pg_advisory_lock,
+// pg_advisory_lock_shared, pg_try_advisory_lock and pg_try_advisory_lock_shared), whose lock
+// outlives the statement's transaction and so would be held across round trips.
+var sessionLock = regexp.MustCompile(`(?i)pg_(try_)?advisory_lock`)
+
+// oneStatement reports whether q can only be one statement that holds nothing after it ends: it
+// holds no semicolon (under the simple protocol, which a DSN can select, a semicolon separates
+// statements, one of which could be BEGIN) and names no session-level advisory lock.
+func oneStatement(q string) bool {
+	return !strings.Contains(q, ";") && !sessionLock.MatchString(q)
+}
+
+// sqlQuoted matches a string literal or a quoted identifier, whose contents are not SQL.
+var sqlQuoted = regexp.MustCompile(`'(?:[^']|'')*'|"(?:[^"]|"")*"`)
+
+// sqlCall matches a name followed by an opening parenthesis: a function call, or a keyword or a
+// table name that takes a parenthesized list.
+var sqlCall = regexp.MustCompile(`([A-Za-z_][A-Za-z0-9_$.]*)\s*\(`)
+
+// sqlListWords are the keywords the store's statements follow with a parenthesized list, and
+// sqlFunctions the built-in functions they call. A statement calling anything else, a function a
+// deployment defined among them, could hold a lock or open a connection the store cannot see.
+var (
+	sqlListWords = map[string]bool{"values": true, "conflict": true, "exists": true, "in": true, "any": true, "as": true, "and": true, "or": true, "not": true, "on": true}
+	sqlFunctions = map[string]bool{"now": true, "max": true, "coalesce": true, "starts_with": true}
+	nextSeqCall  = regexp.MustCompile(`^[a-z_][a-z0-9_]*next_seq_` + nextSeqVersion + `$`)
+)
+
+// knownCalls reports whether every call in q is to a function the store knows: a built-in in
+// sqlFunctions or, in a write, the next_seq function. A name after INTO names the table whose
+// column list follows, and a keyword in sqlListWords a list; neither is a call.
+func knownCalls(q string, write bool) bool {
+	q = sqlQuoted.ReplaceAllString(q, "''")
+	for _, m := range sqlCall.FindAllStringSubmatchIndex(q, -1) {
+		name := strings.ToLower(q[m[2]:m[3]])
+		if before := strings.Fields(q[:m[2]]); len(before) > 0 && strings.EqualFold(before[len(before)-1], "INTO") {
+			continue
+		}
+		if sqlListWords[name] || sqlFunctions[name] || write && nextSeqCall.MatchString(name) {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+// startsWith reports whether q starts with the keyword kw, after leading white space.
+func startsWith(q, kw string) bool {
+	t := strings.TrimLeftFunc(q, unicode.IsSpace)
+	return len(t) > len(kw) && strings.EqualFold(t[:len(kw)], kw) && unicode.IsSpace(rune(t[len(kw)]))
+}
+
+// txOptions are the options of the one transaction the store begins, the schema migration. The
+// isolation level is set explicitly so the migration does not inherit the deployment's
+// default_transaction_isolation: it takes an advisory lock and then reads the schema version,
+// which at repeatable read or serializable would come from a snapshot taken by the lock statement,
+// before another node's migration committed.
 var txOptions = &sql.TxOptions{Isolation: sql.LevelReadCommitted}
+
+// migrateIdleTimeout bounds how long the migration's transaction may sit idle between two of its
+// statements. A node stopped inside it (a SIGSTOP, a suspended VM) would otherwise hold the
+// migration lock, and every node opening the store would wait for as long as the stop lasts;
+// Postgres ends the stopped node's session instead, which rolls the migration back. A live node
+// sends its next statement within milliseconds.
+const migrateIdleTimeout = 5 * time.Second
 
 // Option configures Open and New.
 type Option interface{ apply(*config) error }
@@ -183,6 +365,9 @@ func New(ctx context.Context, db *sql.DB, opts ...Option) (*Store, error) {
 	if err := s.migrate(ctx); err != nil {
 		return nil, err
 	}
+	if err := s.checkSchema(ctx); err != nil {
+		return nil, err
+	}
 	return s, nil
 }
 
@@ -192,13 +377,19 @@ const migrateLock = 0x62696465
 
 // migrate creates the tables if they do not exist and checks the schema version. It never alters
 // an existing table: altering a table other nodes are running on would take its exclusive lock and
-// change what they write.
+// change what they write. So Open then checks that an existing table has each uniqueness the
+// store's single statements depend on, and the next_seq function its definition (see
+// checkSchema), and refuses one that does not.
 func (s *Store) migrate(ctx context.Context) error {
 	tx, err := s.db.BeginTx(ctx, txOptions)
 	if err != nil {
 		return fmt.Errorf("postgres: migrate: %w (%w)", err, agent.ErrStorage)
 	}
 	defer tx.Rollback()
+	// Set before the lock is taken, so the migration never holds it idle without the bound.
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`SET LOCAL idle_in_transaction_session_timeout = %d`, migrateIdleTimeout.Milliseconds())); err != nil {
+		return fmt.Errorf("postgres: migrate: %w (%w)", err, agent.ErrStorage)
+	}
 	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock($1)`, migrateLock); err != nil {
 		return fmt.Errorf("postgres: migrate: %w (%w)", err, agent.ErrStorage)
 	}
@@ -224,6 +415,20 @@ func (s *Store) migrate(ctx context.Context) error {
 		s.t.steps, s.t.leases, s.t.version, schemaVersion)); err != nil {
 		return fmt.Errorf("postgres: create tables: %w (%w)", err, agent.ErrStorage)
 	}
+	// The next_seq function, created if missing and never replaced (see nextSeqVersion). The
+	// migration lock makes the check and the creation one step across nodes.
+	// The lookup reads pg_proc with the statement's snapshot, not the session's catalog cache,
+	// which taking the advisory lock does not refresh: it sees a function another node created
+	// while this one waited for the lock.
+	var haveNextSeq bool
+	if err := tx.QueryRowContext(ctx, nextSeqPresent, s.t.nextSeq).Scan(&haveNextSeq); err != nil {
+		return fmt.Errorf("postgres: look up %s: %w (%w)", s.t.nextSeq, err, agent.ErrStorage)
+	}
+	if !haveNextSeq {
+		if _, err := tx.ExecContext(ctx, `CREATE FUNCTION `+s.t.nextSeq+`(r text) RETURNS bigint LANGUAGE plpgsql VOLATILE AS $bide$`+s.t.nextSeqBody+`$bide$`); err != nil {
+			return fmt.Errorf("postgres: create %s: %w (%w)", s.t.nextSeq, err, agent.ErrStorage)
+		}
+	}
 	var v int
 	if err := tx.QueryRowContext(ctx, `SELECT version FROM `+s.t.version+` WHERE id = 1`).Scan(&v); err != nil {
 		return fmt.Errorf("postgres: read schema version: %w (%w)", err, agent.ErrStorage)
@@ -237,6 +442,65 @@ func (s *Store) migrate(ctx context.Context) error {
 	return nil
 }
 
+// checkSchema checks, after the migration committed, that the tables have each uniqueness the
+// store's statements depend on and that next_seq is the function this version creates; the
+// migration never alters a table or replaces a function, so it cannot repair either. It runs in
+// transactions of its own on the pool, which read the catalog as of their start, so it sees what
+// another node's migration created while this one waited for the migration lock.
+func (s *Store) checkSchema(ctx context.Context) error {
+	for _, u := range []struct {
+		table string
+		cols  []string
+	}{
+		{s.t.steps, []string{"run_id", "seq"}},
+		{s.t.steps, []string{"run_id", "name"}},
+		{s.t.leases, []string{"run_id"}},
+	} {
+		var ok bool
+		if err := s.db.QueryRowContext(ctx, requiredUnique, u.table, u.cols).Scan(&ok); err != nil {
+			return fmt.Errorf("postgres: check the uniqueness of %s: %w (%w)", u.table, err, agent.ErrStorage)
+		}
+		if !ok {
+			return fmt.Errorf("postgres: table %s has no unique index on exactly (%s) that is checked at once and covers every row; the store depends on it (it turns a race for a position into a retry, or arbitrates ON CONFLICT) and never alters an existing table: %w",
+				u.table, strings.Join(u.cols, ", "), agent.ErrConfig)
+		}
+	}
+	var sameNextSeq bool
+	if err := s.db.QueryRowContext(ctx, expectedFunction, s.t.nextSeq+"(text)", s.t.nextSeqBody).Scan(&sameNextSeq); err != nil {
+		return fmt.Errorf("postgres: check %s: %w (%w)", s.t.nextSeq, err, agent.ErrStorage)
+	}
+	if !sameNextSeq {
+		return fmt.Errorf("postgres: function %s(text) is not the one this version creates (VOLATILE plpgsql returning bigint, not SECURITY DEFINER, with no settings of its own, whose body takes the run's advisory lock and then reads MAX(seq)); the store's inserts depend on it and the migration never replaces a function: %w",
+			s.t.nextSeq, agent.ErrConfig)
+	}
+	return nil
+}
+
+// requiredUnique reports whether the table $1 (resolved by the search path, as the store's
+// statements resolve it) has a valid unique index whose key is exactly the column set $2, with no
+// included columns, no expressions and no predicate, checked when each statement runs rather than
+// deferred to commit. The store's inserts and lease upsert rely on each such index: a race for a
+// position fails on it and is retried, and ON CONFLICT needs it as its arbiter.
+const requiredUnique = `SELECT EXISTS (SELECT 1 FROM pg_index i
+	WHERE i.indrelid = to_regclass($1) AND i.indisunique AND i.indisvalid AND i.indimmediate
+		AND i.indpred IS NULL AND i.indexprs IS NULL AND i.indnkeyatts = i.indnatts
+		AND (SELECT array_agg(a.attname::text ORDER BY a.attname::text)
+			FROM unnest(i.indkey::int2[]) AS k JOIN pg_attribute AS a ON a.attrelid = i.indrelid AND a.attnum = k)
+			= (SELECT array_agg(c ORDER BY c) FROM unnest($2::text[]) AS c))`
+
+// nextSeqPresent reports whether a function named $1 taking one text argument exists in the schema
+// CREATE FUNCTION creates it in, reading pg_proc with the statement's snapshot.
+const nextSeqPresent = `SELECT EXISTS (SELECT 1 FROM pg_proc
+	WHERE proname = $1 AND pronamespace = current_schema()::regnamespace AND proargtypes = '25'::oidvector)`
+
+// expectedFunction reports whether the function $1 (a regprocedure signature, resolved by the
+// search path as the insert resolves it) is a VOLATILE plpgsql function returning one bigint, not
+// SECURITY DEFINER and with no settings of its own (a SET search_path, say), whose source is $2.
+const expectedFunction = `SELECT EXISTS (SELECT 1 FROM pg_proc AS p JOIN pg_language AS l ON l.oid = p.prolang
+	WHERE p.oid = to_regprocedure($1) AND l.lanname = 'plpgsql' AND p.provolatile = 'v'
+		AND NOT p.prosecdef AND p.proconfig IS NULL AND NOT p.proretset
+		AND p.prorettype = 'bigint'::regtype AND p.prosrc = $2)`
+
 // Close closes the connection pool Open opened. A Store made with New leaves its db open.
 func (s *Store) Close() error {
 	if !s.own {
@@ -245,9 +509,12 @@ func (s *Store) Close() error {
 	return s.db.Close()
 }
 
-// Insert implements agent.Store. Inserts into one run are serialized by a transaction-scoped
-// advisory lock on the run, held until commit, so each takes the next position (MAX(seq)+1) and
-// positions follow commit order: a reader never sees an entry before one with a lower Seq.
+// Insert implements agent.Store. It is one INSERT statement, committed before Postgres replies,
+// that takes the next position (MAX(seq)+1) in its own snapshot. An insert computes position n+1
+// only when the entry at n is committed and visible to it, so positions follow commit order: a
+// reader never sees an entry before one with a lower Seq. Two inserts that read the same MAX
+// collide on UNIQUE (run_id, seq); the later one waits for the first to commit, fails with 23505,
+// and runs again with a snapshot that sees it.
 func (s *Store) Insert(ctx context.Context, runID, name string, data []byte) (agent.Entry, bool, error) {
 	e, ok, err := s.insert(ctx, runID, name, data)
 	if err != nil {
@@ -257,38 +524,37 @@ func (s *Store) Insert(ctx context.Context, runID, name string, data []byte) (ag
 }
 
 func (s *Store) insert(ctx context.Context, runID, name string, data []byte) (agent.Entry, bool, error) {
-	tx, err := s.db.BeginTx(ctx, txOptions) // read committed: see txOptions
-	if err != nil {
-		return agent.Entry{}, false, err
-	}
-	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, runID); err != nil {
-		return agent.Entry{}, false, err
-	}
-	var seq int64
-	err = tx.QueryRowContext(ctx, s.t.insert, runID, name, data).Scan(&seq)
-	if err == nil {
-		if err := tx.Commit(); err != nil {
+	var b backoff
+	for {
+		var seq int64
+		err := s.db.QueryRowContext(ctx, string(s.t.insert), runID, name, data).Scan(&seq)
+		switch {
+		case err == nil:
+			return agent.Entry{Seq: seq, Name: name, Data: data}, true, nil // the database copied data
+		case errors.Is(err, sql.ErrNoRows):
+			// ON CONFLICT DO NOTHING met the name's row, which it does only once that row's writer
+			// has committed (it waits for a writer still in progress), so a new snapshot sees it.
+			e, err := s.get(ctx, runID, name)
+			if err != nil {
+				return agent.Entry{}, false, fmt.Errorf("the insert conflicted, then reading the stored entry failed: %w", err)
+			}
+			return e, false, nil
+		case retryable(err) || sqlState(err) == uniqueViolation:
+			// Nothing was written. A unique violation can only be on (run_id, seq), since a
+			// conflict on the name does nothing: another insert took the position after this
+			// one's snapshot, and has committed.
+			if werr := b.wait(ctx); werr != nil {
+				return agent.Entry{}, false, fmt.Errorf("%w (the last attempt failed: %w)", werr, err)
+			}
+		default:
 			return agent.Entry{}, false, err
 		}
-		return agent.Entry{Seq: seq, Name: name, Data: data}, true, nil // the database copied data
 	}
-	if !errors.Is(err, sql.ErrNoRows) {
-		return agent.Entry{}, false, err
-	}
-	// Another writer stored the name first and has committed (it held the run's lock until then):
-	// its entry is the name's.
-	e := agent.Entry{Name: name}
-	if err := tx.QueryRowContext(ctx, string(s.t.get), runID, name).Scan(&e.Seq, &e.Data); err != nil {
-		return agent.Entry{}, false, fmt.Errorf("the insert conflicted, then reading the stored entry failed: %w", err)
-	}
-	return e, false, nil
 }
 
 // Get implements agent.Store.
 func (s *Store) Get(ctx context.Context, runID, name string) (agent.Entry, bool, error) {
-	e := agent.Entry{Name: name}
-	err := s.db.QueryRowContext(ctx, string(s.t.get), runID, name).Scan(&e.Seq, &e.Data)
+	e, err := s.get(ctx, runID, name)
 	if errors.Is(err, sql.ErrNoRows) {
 		return agent.Entry{}, false, nil
 	}
@@ -298,12 +564,21 @@ func (s *Store) Get(ctx context.Context, runID, name string) (agent.Entry, bool,
 	return e, true, nil
 }
 
+// get reads runID's entry named name, or returns sql.ErrNoRows.
+func (s *Store) get(ctx context.Context, runID, name string) (agent.Entry, error) {
+	return retry(ctx, func() (agent.Entry, error) {
+		e := agent.Entry{Name: name}
+		err := s.db.QueryRowContext(ctx, string(s.t.get), runID, name).Scan(&e.Seq, &e.Data)
+		return e, err
+	})
+}
+
 // Load implements agent.Store. It reads pageSize entries per query and yields them with no
 // connection held, so the caller may write to the store inside its loop.
 func (s *Store) Load(ctx context.Context, runID string, after int64) iter.Seq2[agent.Entry, error] {
 	return func(yield func(agent.Entry, error) bool) {
 		for {
-			page, err := s.loadPage(ctx, runID, after)
+			page, err := retry(ctx, func() ([]agent.Entry, error) { return s.loadPage(ctx, runID, after) })
 			if err != nil {
 				yield(agent.Entry{}, err)
 				return
@@ -347,7 +622,7 @@ func (s *Store) Runs(ctx context.Context, f agent.RunFilter) iter.Seq2[string, e
 	return func(yield func(string, error) bool) {
 		after := f.After
 		for {
-			page, err := s.runsPage(ctx, f, after)
+			page, err := retry(ctx, func() ([]string, error) { return s.runsPage(ctx, f, after) })
 			if err != nil {
 				yield("", err)
 				return
@@ -409,14 +684,11 @@ func (s *Store) runsPage(ctx context.Context, f agent.RunFilter, after string) (
 // the lease when the run is unleased, already held by holder (renewal), or the current lease has
 // expired, and grants nothing when another holder's lease is still live. Expiry uses the database
 // clock (now()) so all nodes compare against one clock, not their own.
+//
+// It is one statement, committed before Postgres replies, so a holder that stops after it has
+// sent it holds no lock on the lease's row (see the package documentation).
 func (s *Store) AcquireLease(ctx context.Context, runID, holder string, ttl time.Duration) (bool, error) {
-	n, err := s.write(ctx, `
-		INSERT INTO `+s.t.leases+` (run_id, holder, expiry)
-		VALUES ($1, $2, now() + ($3 * interval '1 second'))
-		ON CONFLICT (run_id) DO UPDATE
-			SET holder = EXCLUDED.holder, expiry = EXCLUDED.expiry
-			WHERE `+s.t.leases+`.holder = EXCLUDED.holder OR `+s.t.leases+`.expiry < now()`,
-		runID, holder, ttl.Seconds())
+	n, err := s.write(ctx, s.t.acquire, runID, holder, ttl.Seconds())
 	if err != nil {
 		return false, fmt.Errorf("acquire lease %q: %w (%w)", runID, err, agent.ErrStorage)
 	}
@@ -424,46 +696,124 @@ func (s *Store) AcquireLease(ctx context.Context, runID, holder string, ttl time
 }
 
 // RenewLease implements agent.Leaser: extend holder's still-live lease on runID. Returns false if
-// holder no longer holds it (expired or taken over).
+// holder no longer holds it (expired or taken over). It is one statement, like AcquireLease.
 func (s *Store) RenewLease(ctx context.Context, runID, holder string, ttl time.Duration) (bool, error) {
-	n, err := s.write(ctx, `
-		UPDATE `+s.t.leases+` SET expiry = now() + ($3 * interval '1 second')
-		WHERE run_id = $1 AND holder = $2 AND expiry >= now()`,
-		runID, holder, ttl.Seconds())
+	n, err := s.write(ctx, s.t.renew, runID, holder, ttl.Seconds())
 	if err != nil {
 		return false, fmt.Errorf("renew lease %q: %w (%w)", runID, err, agent.ErrStorage)
 	}
 	return n > 0, nil
 }
 
-// ReleaseLease implements agent.Leaser: relinquish runID if held by holder (a no-op otherwise).
+// ReleaseLease implements agent.Leaser: relinquish runID if held by holder (a no-op otherwise). It
+// is one statement, like AcquireLease.
 func (s *Store) ReleaseLease(ctx context.Context, runID, holder string) error {
-	if _, err := s.write(ctx, `DELETE FROM `+s.t.leases+` WHERE run_id = $1 AND holder = $2`, runID, holder); err != nil {
+	if _, err := s.write(ctx, s.t.release, runID, holder); err != nil {
 		return fmt.Errorf("release lease %q: %w (%w)", runID, err, agent.ErrStorage)
 	}
 	return nil
 }
 
-// write runs one data-changing statement in its own transaction at read committed (txOptions) and
-// returns the number of rows it affected. Run on its own, the statement would be a transaction at
-// the deployment's default isolation, where an upsert or update that meets a row changed by a
-// transaction that committed after the statement began fails with 40001 instead of acting on the
-// row's latest version.
-func (s *Store) write(ctx context.Context, query string, args ...any) (int64, error) {
-	tx, err := s.db.BeginTx(ctx, txOptions)
-	if err != nil {
-		return 0, err
+// write sends one data-changing statement on the pool, where Postgres runs it as a transaction of
+// its own and commits it before replying, and returns the number of rows it affected. It never
+// begins a transaction: one that spanned round trips would keep the statement's row locks for as
+// long as a client stalled between them. A statement that fails with a serialization failure,
+// which a deployment whose default isolation is repeatable read or serializable reports where read
+// committed would act on the row's latest version, changed nothing and is run again.
+func (s *Store) write(ctx context.Context, query writeSQL, args ...any) (int64, error) {
+	return retry(ctx, func() (int64, error) {
+		res, err := s.db.ExecContext(ctx, string(query), args...)
+		if err != nil {
+			return 0, err
+		}
+		return res.RowsAffected()
+	})
+}
+
+// retry runs fn, which sends one statement, again after a backoff for as long as it fails with an
+// error retryable accepts, until ctx is done (see the package documentation). At serializable,
+// Postgres may fail even a lone SELECT with a serialization failure when it conflicts with
+// concurrent serializable writes, so reads retry too.
+func retry[T any](ctx context.Context, fn func() (T, error)) (T, error) {
+	var b backoff
+	for {
+		v, err := fn()
+		if err == nil || !retryable(err) {
+			return v, err
+		}
+		if werr := b.wait(ctx); werr != nil {
+			return v, fmt.Errorf("%w (the last attempt failed: %w)", werr, err)
+		}
 	}
-	defer tx.Rollback()
-	res, err := tx.ExecContext(ctx, query, args...)
-	if err != nil {
-		return 0, err
+}
+
+// The backoff between attempts of one statement: before attempt n+1 it waits a random duration
+// in [0, min(backoffCap, backoffBase<<(n-1))), so the first retry waits under 1ms and the wait
+// doubles up to the cap.
+const (
+	backoffBase = time.Millisecond
+	backoffCap  = 100 * time.Millisecond
+)
+
+// backoff counts the failed attempts of one statement and spaces the next.
+type backoff struct{ failed int }
+
+// ceiling returns the upper bound of the wait after the failed-th failure.
+func (b *backoff) ceiling() time.Duration {
+	if b.failed > 20 { // well past the cap; a larger shift could overflow
+		return backoffCap
 	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return 0, err
+	return min(backoffCap, backoffBase<<(b.failed-1))
+}
+
+// jitter draws the wait below a ceiling: a uniformly random duration in [0, ceiling), so writers
+// contending on one run spread their retries. A test replaces it to make the wait predictable.
+var jitter = func(ceiling time.Duration) time.Duration { return rand.N(ceiling) }
+
+// wait records a failed attempt and waits before the next one, or returns ctx's error as soon as
+// ctx is done.
+func (b *backoff) wait(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
 	}
-	return n, tx.Commit()
+	b.failed++
+	t := time.NewTimer(jitter(b.ceiling()))
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
+}
+
+// SQLSTATE codes the store acts on.
+const (
+	serializationFailure = "40001"
+	deadlockDetected     = "40P01"
+	uniqueViolation      = "23505"
+)
+
+// retryable reports whether err is a failure after which a single statement, run as its own
+// transaction, has changed nothing and may be run again: a serialization failure, which a
+// conflict with another transaction caused (one that has committed, or at serializable one that
+// may not have yet), or a deadlock (which one-row statements do not form, but which Postgres
+// resolves by failing a statement that then changed nothing).
+func retryable(err error) bool {
+	switch sqlState(err) {
+	case serializationFailure, deadlockDetected:
+		return true
+	}
+	return false
+}
+
+// sqlState returns the SQLSTATE of a Postgres error in err's chain, or "".
+func sqlState(err error) string {
+	var pe *pgconn.PgError
+	if errors.As(err, &pe) {
+		return pe.Code
+	}
+	return ""
 }
 
 // Journal returns the Journal over s that its Do and History shims delegate to.

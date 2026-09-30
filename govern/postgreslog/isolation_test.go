@@ -45,10 +45,10 @@ func isolatedDSN(t *testing.T, dsn, level string) string {
 
 // Concurrent appends to one entity, from two processes and with every id sent twice, all succeed
 // when the deployment's default isolation is above read committed, and leave dense positions with
-// one per id. Each append takes the entity's advisory lock, then looks up its id and computes the
-// next position as MAX(seq)+1; at repeatable read or serializable the snapshot would be taken by the
-// lock statement, before the lock is granted, so the append would miss rows committed while it
-// waited: a new id would collide on (entity, seq) and a repeated id on the append_id index.
+// one per id. Each append computes the next position as MAX(seq)+1 in its own snapshot, so
+// concurrent appends collide on (entity, seq) (23505), and at repeatable read or serializable a
+// repeated id fails on the append_id index with a serialization error (40001); the log must run
+// the append again rather than report either.
 func TestAppend_ConcurrentUnderStricterDefaultIsolation(t *testing.T) {
 	base := os.Getenv("PG_DSN")
 	if base == "" {
@@ -146,35 +146,35 @@ func TestOpen_ConcurrentOpensUnderStricterDefaultIsolation(t *testing.T) {
 	}
 }
 
-// waitForAdvisoryWaiter polls pg_locks until a session waits for the advisory lock keyed by
-// hashtextextended(key, 0), so a test can order a commit after a blocked statement.
-func waitForAdvisoryWaiter(t *testing.T, admin *sql.DB, key string) {
+// waitForWaiterOn polls pg_blocking_pids until a session waits on a lock held by the session pid,
+// so a test can order a commit after a blocked statement.
+func waitForWaiterOn(t *testing.T, admin *sql.DB, pid int64) {
 	t.Helper()
+	tick := time.NewTicker(5 * time.Millisecond)
+	defer tick.Stop()
 	deadline := time.Now().Add(10 * time.Second)
 	for {
-		var waiting int
-		if err := admin.QueryRowContext(context.Background(), `
-			SELECT count(*) FROM pg_locks
-			WHERE locktype = 'advisory' AND NOT granted AND objsubid = 1
-				AND ((classid::bigint << 32) | objid::bigint) = hashtextextended($1, 0)`, key).Scan(&waiting); err != nil {
+		var waiting bool
+		if err := admin.QueryRowContext(context.Background(), `SELECT EXISTS (SELECT 1 FROM pg_stat_activity
+			WHERE $1::int = ANY(pg_blocking_pids(pid)))`, pid).Scan(&waiting); err != nil {
 			t.Fatal(err)
 		}
-		if waiting > 0 {
+		if waiting {
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("no session waited for the advisory lock of %q", key)
+			t.Fatalf("no session waited on session %d", pid)
 		}
-		time.Sleep(5 * time.Millisecond)
+		<-tick.C
 	}
 }
 
-// An append blocked behind another, made deterministic: a winner transaction takes the entity's
-// advisory lock and records id "a" at position 0; Append then blocks on the lock; the winner
-// commits; and only then does Append proceed. At a stricter default isolation its snapshot would
-// be taken by its blocked lock statement, before the winner committed. Appending "a" again must
-// return the recorded position 0 rather than collide on the append id, and appending "b" must take
-// position 1 rather than collide on position 0. Skips without PG_DSN.
+// An append blocked behind another, made deterministic: a winner transaction records id "a" at
+// position 0 and stays open; Append, whose snapshot does not see that row, blocks on it; the
+// winner commits; and only then does Append proceed. Appending "a" again must return the recorded
+// position 0 rather than fail on the append id (40001 at a stricter level), and appending "b" must
+// take position 1 rather than fail on position 0 (23505): the log runs the append again with a
+// snapshot that sees the winner's row. Skips without PG_DSN.
 func TestAppend_BlockedAppendSeesTheWinnersCommit(t *testing.T) {
 	base := os.Getenv("PG_DSN")
 	if base == "" {
@@ -186,7 +186,7 @@ func TestAppend_BlockedAppendSeesTheWinnersCommit(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer admin.Close()
-	for _, level := range stricterLevels {
+	for _, level := range append([]string{"read committed"}, stricterLevels...) {
 		for _, tc := range []struct {
 			name, id, event string
 			want            int64
@@ -206,7 +206,8 @@ func TestAppend_BlockedAppendSeesTheWinnersCommit(t *testing.T) {
 					t.Fatal(err)
 				}
 				defer winner.Rollback()
-				if _, err := winner.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, entity); err != nil {
+				var winnerPID int64
+				if err := winner.QueryRowContext(ctx, `SELECT pg_backend_pid()`).Scan(&winnerPID); err != nil {
 					t.Fatal(err)
 				}
 				if _, err := winner.ExecContext(ctx, `INSERT INTO governed_events (entity, seq, event, append_id) VALUES ($1, 0, 'ea', 'a')`, entity); err != nil {
@@ -221,7 +222,7 @@ func TestAppend_BlockedAppendSeesTheWinnersCommit(t *testing.T) {
 					seq, err := l.Append(ctx, entity, tc.id, tc.event)
 					done <- result{seq, err}
 				}()
-				waitForAdvisoryWaiter(t, admin, entity)
+				waitForWaiterOn(t, admin, winnerPID)
 				if err := winner.Commit(); err != nil {
 					t.Fatal(err)
 				}

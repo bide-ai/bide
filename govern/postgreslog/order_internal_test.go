@@ -12,8 +12,10 @@ import (
 // An append-only log must never show a reader an event that later has another event appear
 // before it: a reader that remembers how many events it has applied, and applies only the ones
 // after that on its next read, would otherwise skip the late one and apply another twice. Here a
-// slow append (its transaction still open) and a fast one overlap on the same entity, as two
-// nodes appending to one shared log can.
+// slow append (a transaction that has inserted position 0 and not committed, as an append's
+// statement has while it runs) and a fast one overlap on the same entity, as two nodes appending
+// to one shared log can. The fast append computes position 0 too, waits for the slow one, and
+// must then take position 1, never becoming visible before it.
 func TestAppend_VisibleOrderIsAppendOnly(t *testing.T) {
 	dsn := os.Getenv("PG_DSN")
 	if dsn == "" {
@@ -28,16 +30,24 @@ func TestAppend_VisibleOrderIsAppendOnly(t *testing.T) {
 	entity := fmt.Sprintf("pg-order-%s-%d", t.Name(), time.Now().UnixNano())
 
 	// The slow append has inserted its event but not committed yet.
-	slow, err := l.db.BeginTx(ctx, nil)
+	slow, err := l.db.BeginTx(ctx, txOptions)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := appendIn(ctx, slow, entity, "slow", "slow"); err != nil {
+	defer slow.Rollback()
+	if _, err := slow.ExecContext(ctx, `INSERT INTO governed_events (entity, seq, event, append_id) VALUES ($1, 0, 'slow', 'slow')`, entity); err != nil {
+		t.Fatal(err)
+	}
+	var slowPID int64
+	if err := slow.QueryRowContext(ctx, `SELECT pg_backend_pid()`).Scan(&slowPID); err != nil {
 		t.Fatal(err)
 	}
 	fast := make(chan error, 1)
 	go func() { _, err := l.Append(ctx, entity, "fast", "fast"); fast <- err }()
-	time.Sleep(150 * time.Millisecond) // let the fast append commit, or block
+	// Let the fast append commit, or block on the slow one.
+	if blocked := waitDoneOrBlocked(t, l.db, uint32(slowPID), fast); !blocked {
+		fast <- nil // it finished; hand its outcome to the check below
+	}
 
 	first, err := l.Events(ctx, entity, 0)
 	if err != nil {
