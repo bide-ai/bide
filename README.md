@@ -7,7 +7,7 @@
 <p align="center">
   <strong>Build durable AI agents in Go. Side effects that fire at most once.</strong>
   <br>
-  <img src="assets/quote-rule-left.png" width="72" alt="">&nbsp;&nbsp;<em>A pause you can clear beats a double-fire you can't undo.</em>&nbsp;&nbsp;<img src="assets/quote-rule-right.png" width="72" alt="">
+  <img src="assets/quote-rule-left.png" width="72" alt="">&nbsp;&nbsp;<em>A pause you can clear beats a double-fire you can't.</em>&nbsp;&nbsp;<img src="assets/quote-rule-right.png" width="72" alt="">
 </p>
 
 One append-only journal, four guarantees no other agent framework pairs in a single library:
