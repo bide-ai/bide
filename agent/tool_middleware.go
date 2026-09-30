@@ -3,12 +3,15 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"sync/atomic"
 )
 
 // ToolCall is one tool call as tool middleware sees it: the ToolUse the model sent (ID, Name,
 // Args), the Spec of the tool it names, and the run it belongs to. A middleware reads Spec to
 // tell a side effect from a read before it retries, caches, or skips a call, and may pass next
-// a copy with different Use.Args. Spec is the zero ToolSpec (a side effect) for a call that
+// a copy with different Use.Args. It passes next the ToolCall it was given (or a copy): a call
+// whose Use.Name or Use.ID a middleware changed, or a ToolCall it built itself, fails with
+// ErrConfig and the tool is not called. Spec is the zero ToolSpec (a side effect) for a call that
 // names no registered tool.
 //
 // Spec informs middleware only. The agent decides from its own copy of the registered tool's
@@ -22,6 +25,11 @@ type ToolCall struct {
 	redact func(tool string, err error) string
 	// modelArgs are the arguments as the model sent them, before any middleware changed Use.Args.
 	modelArgs json.RawMessage
+	// origName and origID are the call as the model made it: the base handler refuses a call a
+	// middleware renamed or re-identified.
+	origName, origID string
+	// reached is set by the base handler immediately before it calls the tool.
+	reached *atomic.Bool
 }
 
 // ErrorText returns the text the agent journals, and sends to the model, for this call failing

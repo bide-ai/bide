@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/bide-ai/bide/internal/strictjson"
@@ -116,18 +117,40 @@ func toolResultMessage(r Record) Message {
 }
 
 // callTool runs call under ctx, bounded by timeout when it is positive (a tool's
-// ToolSpec.Timeout). late reports an error returned after that deadline had passed. The caller
-// checks ctx first: an error after ctx itself was done is the run's cancellation, not a late
-// error. A result is returned as the call returned it, whenever it came.
-func callTool(ctx context.Context, timeout time.Duration, call func(context.Context) (json.RawMessage, error)) (res json.RawMessage, late bool, err error) {
+// ToolSpec.Timeout). call reports whether the base handler reached the tool's Call. late reports
+// an error returned, by a call that reached the tool, once that deadline had passed. The caller
+// checks ctx first (ctxDone): an error after ctx itself was done is the run's cancellation, not a
+// late error. A call that never reached the tool is never late: its tool did not run. A result is
+// returned as the call returned it, whenever it came.
+func callTool(ctx context.Context, timeout time.Duration, call func(context.Context) (json.RawMessage, bool, error)) (res json.RawMessage, reached, late bool, err error) {
 	if timeout <= 0 {
-		res, err = call(ctx)
-		return res, false, err
+		res, reached, err = call(ctx)
+		return res, reached, false, err
 	}
 	tctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	res, err = call(tctx)
-	return res, err != nil && tctx.Err() != nil, err
+	res, reached, err = call(tctx)
+	return res, reached, err != nil && reached && ctxDone(tctx), err
+}
+
+// ctxDone reports whether ctx is done or its deadline has passed. A context's Err is set by a
+// timer that may not have run yet when a call that watched ctx.Deadline() itself returns, so the
+// deadline is read too: an error returned at or after the deadline is judged by the deadline.
+func ctxDone(ctx context.Context) bool {
+	if ctx.Err() != nil {
+		return true
+	}
+	dl, ok := ctx.Deadline()
+	return ok && !time.Now().Before(dl)
+}
+
+// doneCause is why a ctx that ctxDone reports done is done: its cause, or DeadlineExceeded when
+// the deadline has passed and its timer has not run yet.
+func doneCause(ctx context.Context) error {
+	if c := context.Cause(ctx); c != nil {
+		return c
+	}
+	return context.DeadlineExceeded
 }
 
 // recordedSafety is the Safety a call's result records: the one it ran under.
@@ -165,13 +188,14 @@ func (a *Agent) toolCallFor(runID string, tu ToolUse) ToolCall {
 		s = *p
 		s.Approval = s.Approval.clone() // the middleware's copy: changing it changes nothing here
 	}
-	return ToolCall{Use: tu, Spec: s, RunID: runID, redact: a.toolErrRedact, modelArgs: tu.Args}
+	return ToolCall{Use: tu, Spec: s, RunID: runID, redact: a.toolErrRedact, modelArgs: tu.Args, origName: tu.Name, origID: tu.ID}
 }
 
 // toolHandler builds the wrapped tool-execution chain once per run: a base handler that
 // dispatches by name to the registered tool, wrapped by the middleware in order. It returns the
-// chain's entry point for a call of run runID.
-func (a *Agent) toolHandler(runID string) func(context.Context, ToolUse) (json.RawMessage, error) {
+// chain's entry point for a call of run runID, which also reports whether the base handler reached
+// the tool's Call.
+func (a *Agent) toolHandler(runID string) func(context.Context, ToolUse) (json.RawMessage, bool, error) {
 	// ran holds the tool-use IDs of tools that are not retry-safe and have been invoked in this
 	// run. It lives here, in the base handler, rather than in the context, so no middleware can
 	// get around it: such a tool runs at most once per tool call, however often a middleware
@@ -179,6 +203,15 @@ func (a *Agent) toolHandler(runID string) func(context.Context, ToolUse) (json.R
 	var ran sync.Map
 	h := ToolHandler(func(ctx context.Context, call ToolCall) (json.RawMessage, error) {
 		tu := call.Use
+		// The call dispatches as the model made it: a middleware may rewrite the arguments, but a
+		// call renamed to another tool, or under another call's ID, would run a tool the model did
+		// not call, or claim and record under the wrong call. A ToolCall the middleware built
+		// itself, rather than a copy of the one it was passed, carries no original to check, and
+		// is refused the same way.
+		if call.origID == "" || tu.ID != call.origID || tu.Name != call.origName {
+			return nil, fmt.Errorf("tool middleware changed call %s (tool %q) to call %s (tool %q); middleware may change a call's arguments, not its tool or ID: %w",
+				call.origID, cutName(call.origName), cutName(tu.ID), cutName(tu.Name), ErrConfig)
+		}
 		t, ok := a.tools[tu.Name]
 		if !ok {
 			return nil, fmt.Errorf("call to unknown tool %q: %w", cutName(tu.Name), ErrUnknownTool)
@@ -192,13 +225,25 @@ func (a *Agent) toolHandler(runID string) func(context.Context, ToolUse) (json.R
 		if err := journalAcceptedArgs(ctx, t, call); err != nil {
 			return nil, err
 		}
+		// A deadline that passed in the middleware (a rate limiter's wait) leaves the tool uncalled:
+		// the call fails as a known timeout rather than start an effect already out of time.
+		if ctxDone(ctx) {
+			return nil, fmt.Errorf("tool %q (call %s) was not started: its context was done before the call: %w", tu.Name, tu.ID, doneCause(ctx))
+		}
+		if call.reached != nil {
+			call.reached.Store(true) // from here the tool may have acted: see callTool
+		}
 		return t.Call(ctx, tu.Args)
 	})
 	for i := len(a.toolMW) - 1; i >= 0; i-- {
 		h = a.toolMW[i](h)
 	}
-	return func(ctx context.Context, tu ToolUse) (json.RawMessage, error) {
-		return h(ctx, a.toolCallFor(runID, tu))
+	return func(ctx context.Context, tu ToolUse) (json.RawMessage, bool, error) {
+		call := a.toolCallFor(runID, tu)
+		var reached atomic.Bool
+		call.reached = &reached
+		res, err := h(ctx, call)
+		return res, reached.Load(), err
 	}
 }
 

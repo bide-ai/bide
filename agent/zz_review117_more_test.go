@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"runtime"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -90,5 +91,31 @@ func TestR117_NewRefusesUnsafeWrappers(t *testing.T) {
 		if !errors.Is(err, ErrConfig) || calls.Load() != 0 {
 			t.Errorf("%s: Run = %v after %d model calls; want ErrConfig before any", name, err, calls.Load())
 		}
+	}
+}
+
+// R117-6, the other half: a middleware that waits out the deadline and then calls next does not
+// start the tool: the base handler refuses a call whose context is already done, and the call
+// fails as a known timeout, recorded, with no halt on resume.
+func TestR117_BaseHandlerDoesNotStartACallPastItsDeadline(t *testing.T) {
+	var calls atomic.Int32
+	charge := Func("charge", "", Safety{}, func(context.Context, struct{}) (string, error) {
+		calls.Add(1)
+		return "charged", nil
+	}, WithTimeout(time.Millisecond))
+	slow := ToolMiddleware(func(next ToolHandler) ToolHandler {
+		return func(ctx context.Context, call ToolCall) (json.RawMessage, error) {
+			<-ctx.Done()
+			return next(ctx, call)
+		}
+	})
+	store := NewMemStore()
+	m := NewScriptedModel(ToolTurn("c1", "charge", `{}`), TextTurn("done"))
+	if _, err := New(m, store, charge).UseTool(slow).Run(context.Background(), "r1", "pay"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	rec, ok := hasStep(t, store, "r1", ToolResultStep("c1"))
+	if calls.Load() != 0 || !ok || !rec.IsError || !strings.Contains(string(rec.Result), "not started") {
+		t.Fatalf("calls %d, result %s (recorded %v); want the tool never called and the call failed as not started", calls.Load(), rec.Result, ok)
 	}
 }

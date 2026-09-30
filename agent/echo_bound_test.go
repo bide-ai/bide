@@ -60,7 +60,7 @@ func TestUnknownTool_ErrorIsBounded(t *testing.T) {
 // call's result, so it is bounded too.
 func TestToolHandler_UnknownToolErrorIsBounded(t *testing.T) {
 	a := New(NewScriptedModel(TextTurn("x")), NewMemStore())
-	_, err := a.toolHandler("r")(context.Background(), ToolUse{ID: "c1", Name: strings.Repeat("y", 1<<20)})
+	_, _, err := a.toolHandler("r")(context.Background(), ToolUse{ID: "c1", Name: strings.Repeat("y", 1<<20)})
 	if !errors.Is(err, ErrUnknownTool) {
 		t.Fatalf("err = %v, want ErrUnknownTool", err)
 	}

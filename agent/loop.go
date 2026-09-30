@@ -572,19 +572,27 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 				// re-fire it). The attempt marker above stays on gctx: if we are cancelled before it
 				// commits, the tool has not started, so there is nothing to record.
 				rec, err := recordFresh(context.WithoutCancel(gctx), a.store, runID, ToolResultStep(c.tu.ID), func(context.Context) (Record, error) {
-					if err := sctx.Err(); claimed && err != nil {
+					if claimed && ctxDone(sctx) {
 						// Cancelled after the claim and before the call: the tool is not called,
 						// and that is recorded below, so a resume calls it instead of halting.
-						return Record{}, fmt.Errorf("tool %q was not started: %w", c.tu.Name, err)
+						return Record{}, fmt.Errorf("tool %q was not started: %w", c.tu.Name, doneCause(sctx))
 					}
-					called.Store(true)
 					// Emitted here, past the pre-call check, so a consumer sees ToolStarted only for a
 					// call that actually starts; one recorded as not started emits neither event.
 					fire(ToolStarted{ToolUseID: c.tu.ID, Name: c.tu.Name, Args: c.tu.Args})
-					res, late, callErr := callTool(sctx, c.spec.Timeout, func(ctx context.Context) (json.RawMessage, error) { return toolH(ctx, c.tu) })
+					res, reached, late, callErr := callTool(sctx, c.spec.Timeout, func(ctx context.Context) (json.RawMessage, bool, error) { return toolH(ctx, c.tu) })
+					// Only a call whose base handler reached the tool's Call may have taken effect; one
+					// that a middleware ended first (a denial, a cache hit, a wait that ran out of time)
+					// did not, and a claim for it is recorded as never started if nothing else is.
+					called.Store(reached)
 					// The safety and approval gate the call ran under, for a saga rollback and an audit.
 					r := Record{Kind: StepToolResult, ToolUseID: c.tu.ID, Safety: recordedSafety(*c.spec), Approval: c.spec.Approval.clone()}
-					if callErr != nil && sctx.Err() != nil {
+					if callErr != nil && ctxDone(sctx) {
+						if !reached {
+							// Cancelled before the tool was called: nothing ran, so the claim is
+							// recorded as never started (below) and a resume calls the tool.
+							return Record{}, fmt.Errorf("tool %q was not started: %w", c.tu.Name, callErr)
+						}
 						// The call was cancelled (the run was cancelled, or a sibling paused or
 						// failed the group) before it could report back, so its outcome is
 						// unknown, not failed: a request may already have reached a provider.
