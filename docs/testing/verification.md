@@ -111,7 +111,7 @@ scheduling differences get many chances to surface.
 
 ## Continuous integration
 
-Every pull request runs these checks, and all but Integration are required before it can merge:
+Every pull request must pass, before it can merge:
 
 - **Lint:** `gofmt`, `go vet` and `govulncheck` across every module, including the example
   modules; `doccheck` (`internal/tools/doccheck`), which requires a doc comment on every exported
@@ -122,8 +122,7 @@ Every pull request runs these checks, and all but Integration are required befor
   not depend on `encoding/json/v2`.
 - **Integration** against real Postgres 16 and Redis 7. Each suite runs twice against the same
   services, so a test that passes only on a fresh database fails, and a skipped test fails the job,
-  since a skip would mean nothing was tested. It is not a required check, so a failure here does
-  not by itself stop a merge.
+  since a skip would mean nothing was tested.
 - **DCO** sign-off on every commit.
 
 Pull requests merge through a merge queue, which runs the required checks again on the change
