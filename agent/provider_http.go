@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -18,12 +19,20 @@ import (
 // being copied per provider.
 
 // ParseRetryAfter parses an HTTP Retry-After header value. It accepts either an integer number of
-// seconds or an HTTP-date, and returns 0 if the value is absent, unparseable, or already in the past.
+// seconds or an HTTP-date, and returns 0 if the value is absent, unparseable, negative, or already
+// in the past. A number of seconds too large for a time.Duration saturates at the longest one
+// rather than overflowing.
 func ParseRetryAfter(s string) time.Duration {
 	if s == "" {
 		return 0
 	}
-	if secs, err := strconv.Atoi(s); err == nil {
+	if secs, err := strconv.ParseInt(s, 10, 64); err == nil || errors.Is(err, strconv.ErrRange) {
+		switch {
+		case secs <= 0:
+			return 0
+		case secs > math.MaxInt64/int64(time.Second):
+			return time.Duration(math.MaxInt64)
+		}
 		return time.Duration(secs) * time.Second
 	}
 	if t, err := http.ParseTime(s); err == nil {
