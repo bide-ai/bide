@@ -236,6 +236,10 @@ func TestOpen_MigrateSeesNextSeqCreatedWhileWaiting(t *testing.T) {
 	if err := db.QueryRowContext(ctx, `SELECT to_regprocedure($1) IS NULL`, nextSeqFunction+"(text)").Scan(&missing); err != nil || !missing {
 		t.Fatalf("warm-up: missing=%v err=%v", missing, err)
 	}
+	l, err := newLog(ctx, db) // records the schema, before the other process creates the function
+	if err != nil {
+		t.Fatal(err)
+	}
 	other, err := admin.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
 		t.Fatal(err)
@@ -249,7 +253,6 @@ func TestOpen_MigrateSeesNextSeqCreatedWhileWaiting(t *testing.T) {
 	}
 	done := make(chan error, 1)
 	go func() {
-		l := &Log{db: db}
 		err := l.migrate(ctx)
 		if err == nil {
 			err = l.checkSchema(ctx)

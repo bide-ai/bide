@@ -53,7 +53,84 @@ import (
 
 // Log is a Postgres-backed append-only event log per entity.
 type Log struct {
-	db *sql.DB
+	db     *sql.DB
+	schema string // the schema governed_events and next_seq are in, recorded at Open (see logSchema)
+	// The statements, each naming the schema, so nothing the log sends resolves through the search
+	// path after Open: a schema that appears earlier on the path later (a role's "$user" schema,
+	// created by any role with CREATE on the database) cannot take over the table or next_seq.
+	append, byID, since logSQL
+}
+
+// logSQL is one statement that passed the statement check (see sqlcheck.go), naming the log's
+// schema. The static check in statements_test.go allows a value of this type on the pool. Only
+// newLogSQL makes one.
+type logSQL string
+
+// newLogSQL returns q as a logSQL, or an error unless q starts with SELECT or INSERT and passes the
+// statement check. nextSeq, when not nil, is the schema-qualified next_seq function, which q may
+// call once if it is an INSERT into the log's governed_events (into, the table's qualified name)
+// with no SELECT.
+func newLogSQL(q string, nextSeq, into []sqlTok) (logSQL, error) {
+	toks, err := sqlTokens(q)
+	if err != nil || len(toks) == 0 || !isTok(toks, 0, 'i', "select") && !isTok(toks, 0, 'i', "insert") {
+		return "", fmt.Errorf("postgreslog: a statement on the pool must be one SELECT or INSERT, got %.40q: %w", q, agent.ErrConfig)
+	}
+	if nextSeq != nil {
+		if !isTok(toks, 1, 'i', "into") || len(toks) < 2+len(into)*2-1 {
+			return "", fmt.Errorf("postgreslog: next_seq outside an INSERT into governed_events, in %.40q: %w", q, agent.ErrConfig)
+		}
+		if name, _ := sqlName(toks, 2); !sameName(name, into) {
+			return "", fmt.Errorf("postgreslog: next_seq outside an INSERT into governed_events, in %.40q: %w", q, agent.ErrConfig)
+		}
+	}
+	if err := checkSQL(q, nextSeq); err != nil {
+		return "", fmt.Errorf("postgreslog: a statement on the pool holds %v, in %.40q: %w", err, q, agent.ErrConfig)
+	}
+	return logSQL(q), nil
+}
+
+// newLog returns a Log over db in the schema logSchema finds, with its statements.
+func newLog(ctx context.Context, db *sql.DB) (*Log, error) {
+	var first, current sql.NullString
+	var isTable sql.NullBool
+	if err := retry(ctx, func() error {
+		return db.QueryRowContext(ctx, logSchema).Scan(&first, &isTable, &current)
+	}); err != nil {
+		return nil, fmt.Errorf("postgreslog: find the schema of governed_events: %w", err)
+	}
+	schema := current.String
+	switch {
+	case first.Valid && !isTable.Bool:
+		return nil, fmt.Errorf("postgreslog: %s.governed_events, the first relation of that name on the search path, is not a table: %w",
+			quoteIdent(first.String), agent.ErrConfig)
+	case first.Valid:
+		schema = first.String
+	case !current.Valid:
+		return nil, fmt.Errorf("postgreslog: no schema on the search path to create governed_events in: %w", agent.ErrConfig)
+	}
+	table := quoteIdent(schema) + ".governed_events"
+	into, err := parseName(table)
+	if err != nil {
+		return nil, fmt.Errorf("postgreslog: schema %q: %w (%w)", schema, err, agent.ErrConfig)
+	}
+	nextSeq, err := parseName(quoteIdent(schema) + "." + nextSeqFunction)
+	if err != nil {
+		return nil, fmt.Errorf("postgreslog: schema %q: %w (%w)", schema, err, agent.ErrConfig)
+	}
+	l := &Log{db: db, schema: schema}
+	if l.append, err = newLogSQL(`INSERT INTO `+table+` (entity, seq, event, append_id)
+			VALUES ($1::pg_catalog.text, `+quoteIdent(schema)+`.`+nextSeqFunction+`($1::pg_catalog.text), $2, $3)
+			ON CONFLICT (entity, append_id) DO NOTHING
+			RETURNING seq`, nextSeq, into); err != nil {
+		return nil, err
+	}
+	if l.byID, err = newLogSQL(`SELECT seq, event FROM `+table+` WHERE entity = $1 AND append_id = $2`, nil, nil); err != nil {
+		return nil, err
+	}
+	if l.since, err = newLogSQL(`SELECT seq, event FROM `+table+` WHERE entity = $1 AND seq >= $2 ORDER BY seq`, nil, nil); err != nil {
+		return nil, err
+	}
+	return l, nil
 }
 
 // Open connects to Postgres via a pgx DSN (e.g. "postgres://user:pass@host:5432/db") and ensures
@@ -67,7 +144,11 @@ func Open(ctx context.Context, dsn string) (*Log, error) {
 		db.Close()
 		return nil, err
 	}
-	l := &Log{db: db}
+	l, err := newLog(ctx, db)
+	if err != nil {
+		db.Close()
+		return nil, err
+	}
 	if err := l.migrate(ctx); err != nil {
 		db.Close()
 		return nil, err
@@ -88,15 +169,20 @@ const nextSeqFunction = "governed_events_next_seq_v1"
 // up by schema, never through the session's catalog cache (to_regclass, to_regprocedure), which
 // taking an advisory lock does not refresh. Every built-in and type is qualified with pg_catalog.
 
-// logSchema returns the schema the log's table and function are in: the first schema on the search
-// path that holds a governed_events table, as an unqualified governed_events resolves, or the
-// first schema on the path (where the migration creates the table) when none does. NULL when the
-// search path names no schema that exists.
-const logSchema = `SELECT COALESCE(
+// logSchema returns, for the relation name governed_events: the schema of the first relation of
+// that name on the search path, as an unqualified governed_events resolves (NULL when there is
+// none); whether that relation is an ordinary or partitioned table; and current_schema(), where
+// the migration creates the table when there is none. newLog records the schema, and refuses a
+// first relation that is not a table (a view, a foreign table, a sequence): appends would go
+// through it while Open checked another table.
+const logSchema = `SELECT
 	(SELECT n.nspname FROM pg_catalog.pg_class AS c JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace
-		WHERE c.relname = 'governed_events' AND c.relkind IN ('r', 'p') AND n.nspname = ANY (pg_catalog.current_schemas(false))
+		WHERE c.relname = 'governed_events' AND n.nspname = ANY (pg_catalog.current_schemas(false))
 		ORDER BY pg_catalog.array_position(pg_catalog.current_schemas(false), n.nspname) LIMIT 1),
-	pg_catalog.current_schema())`
+	(SELECT c.relkind IN ('r', 'p') FROM pg_catalog.pg_class AS c JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace
+		WHERE c.relname = 'governed_events' AND n.nspname = ANY (pg_catalog.current_schemas(false))
+		ORDER BY pg_catalog.array_position(pg_catalog.current_schemas(false), n.nspname) LIMIT 1),
+	pg_catalog.current_schema()`
 
 // nextSeqPresent reports whether a function named $1 taking one text argument exists in schema $2.
 const nextSeqPresent = `SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_proc
@@ -141,18 +227,6 @@ func nextSeqBody(schema string) string {
 	return fmt.Sprintf(nextSeqTemplate, quoteIdent(schema)+".governed_events")
 }
 
-// scanSchema scans the row of a logSchema query.
-func scanSchema(row *sql.Row) (string, error) {
-	var schema sql.NullString
-	if err := row.Scan(&schema); err != nil {
-		return "", err
-	}
-	if !schema.Valid {
-		return "", fmt.Errorf("postgreslog: no schema on the search path to create governed_events in: %w", agent.ErrConfig)
-	}
-	return schema.String, nil
-}
-
 // checkSchema checks that governed_events has each uniqueness Append depends on: (entity, seq),
 // on which a race for a position fails and is retried, and (entity, append_id), the arbiter of its
 // ON CONFLICT; and that nextSeqFunction is the function this version creates. The migration never
@@ -160,10 +234,7 @@ func scanSchema(row *sql.Row) (string, error) {
 // exists by name, so the columns and kind of each index, and the function's definition, are
 // checked here.
 func (l *Log) checkSchema(ctx context.Context) error {
-	schema, err := scanSchema(l.db.QueryRowContext(ctx, logSchema))
-	if err != nil {
-		return err
-	}
+	schema := l.schema
 	for _, cols := range [][]string{{"entity", "seq"}, {"entity", "append_id"}} {
 		var ok bool
 		if err := l.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_index AS i
@@ -238,7 +309,8 @@ const migrateIdleTimeout = 5 * time.Second
 // an advisory lock, so processes opening the log at once migrate it one at a time, and with a lock
 // timeout (migrateLockTimeout), so it cannot wedge the table.
 func (l *Log) migrate(ctx context.Context) error {
-	current, haveNextSeq, err := schemaCurrent(ctx, l.db)
+	schema := l.schema
+	current, haveNextSeq, err := schemaCurrent(ctx, l.db, schema)
 	if err != nil || current && haveNextSeq {
 		return err
 	}
@@ -247,14 +319,6 @@ func (l *Log) migrate(ctx context.Context) error {
 		return err
 	}
 	defer tx.Rollback()
-	// The log's schema, read before the lock: the next_seq lookup must be the first statement after
-	// it, so no statement between could refresh the session's catalog cache and hide a stale
-	// lookup from the tests. A table created while this process waits is created in the schema
-	// logSchema falls back to, the first on the search path, so the answer does not change.
-	schema, err := scanSchema(tx.QueryRowContext(ctx, logSchema))
-	if err != nil {
-		return err
-	}
 	// Set before the lock is taken, so the migration never holds it idle without the bound.
 	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`SET LOCAL idle_in_transaction_session_timeout = %d`, migrateIdleTimeout.Milliseconds())); err != nil {
 		return err
@@ -263,6 +327,8 @@ func (l *Log) migrate(ctx context.Context) error {
 		return fmt.Errorf("postgreslog: migrate: take the migration lock: %w", err)
 	}
 	// The function first, since it takes no lock on the table; a current table needs nothing else.
+	// The lookup is the first statement after the lock, so no statement between could refresh the
+	// session's catalog cache and hide a stale lookup from the tests.
 	// Under the migration lock, the check and the creation are one step across processes.
 	// The lookup reads pg_proc with the statement's snapshot, not the session's catalog cache,
 	// which taking the advisory lock does not refresh: it sees a function another process created
@@ -288,29 +354,26 @@ func (l *Log) migrate(ctx context.Context) error {
 	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`SET LOCAL lock_timeout = %d`, migrateLockTimeout.Milliseconds())); err != nil {
 		return err
 	}
+	table := quoteIdent(schema) + ".governed_events"
 	if _, err := tx.ExecContext(ctx, `
-		CREATE TABLE IF NOT EXISTS governed_events (
-			entity    text   NOT NULL,
-			seq       bigint NOT NULL,
-			event     text   NOT NULL,
-			append_id text,
+		CREATE TABLE IF NOT EXISTS `+table+` (
+			entity    pg_catalog.text NOT NULL,
+			seq       pg_catalog.int8 NOT NULL,
+			event     pg_catalog.text NOT NULL,
+			append_id pg_catalog.text,
 			PRIMARY KEY (entity, seq)
 		);
-		ALTER TABLE governed_events ADD COLUMN IF NOT EXISTS append_id text;
-		CREATE UNIQUE INDEX IF NOT EXISTS governed_events_append_id ON governed_events (entity, append_id);`); err != nil {
+		ALTER TABLE `+table+` ADD COLUMN IF NOT EXISTS append_id pg_catalog.text;
+		CREATE UNIQUE INDEX IF NOT EXISTS governed_events_append_id ON `+table+` (entity, append_id);`); err != nil {
 		return fmt.Errorf("postgreslog: migrate governed_events (another session may hold the table; retry Open): %w", err)
 	}
 	return tx.Commit()
 }
 
-// schemaCurrent reports whether the log's governed_events table (see logSchema) exists with its
-// unique append_id index (the last thing migrate creates, over the append_id column), and whether
-// nextSeqFunction exists beside it, reading only the catalog.
-func schemaCurrent(ctx context.Context, db *sql.DB) (current, haveNextSeq bool, err error) {
-	schema, err := scanSchema(db.QueryRowContext(ctx, logSchema))
-	if err != nil {
-		return false, false, err
-	}
+// schemaCurrent reports whether governed_events in schema exists with its unique append_id index
+// (the last thing migrate creates, over the append_id column), and whether nextSeqFunction exists
+// beside it, reading only the catalog.
+func schemaCurrent(ctx context.Context, db *sql.DB, schema string) (current, haveNextSeq bool, err error) {
 	err = db.QueryRowContext(ctx, `SELECT
 			EXISTS (SELECT 1 FROM pg_catalog.pg_index AS i
 				JOIN pg_catalog.pg_class AS t ON t.oid = i.indrelid JOIN pg_catalog.pg_class AS x ON x.oid = i.indexrelid
@@ -351,10 +414,7 @@ func (l *Log) Append(ctx context.Context, entity, id, event string) (int64, erro
 	var b backoff
 	for {
 		var seq int64
-		err := l.db.QueryRowContext(ctx, `INSERT INTO governed_events (entity, seq, event, append_id)
-			VALUES ($1::pg_catalog.text, `+nextSeqFunction+`($1::pg_catalog.text), $2, $3)
-			ON CONFLICT (entity, append_id) DO NOTHING
-			RETURNING seq`, entity, event, id).Scan(&seq)
+		err := l.db.QueryRowContext(ctx, string(l.append), entity, event, id).Scan(&seq)
 		switch {
 		case err == nil:
 			return seq, nil
@@ -362,7 +422,7 @@ func (l *Log) Append(ctx context.Context, entity, id, event string) (int64, erro
 			// The id is recorded, by an append that has committed, so a new snapshot sees it.
 			var recorded string
 			if err := retry(ctx, func() error {
-				return l.db.QueryRowContext(ctx, `SELECT seq, event FROM governed_events WHERE entity = $1 AND append_id = $2`, entity, id).Scan(&seq, &recorded)
+				return l.db.QueryRowContext(ctx, string(l.byID), entity, id).Scan(&seq, &recorded)
 			}); err != nil {
 				return 0, err
 			}
@@ -484,7 +544,7 @@ func (l *Log) Events(ctx context.Context, entity string, from int64) ([]string, 
 }
 
 func (l *Log) events(ctx context.Context, entity string, from int64) ([]string, error) {
-	rows, err := l.db.QueryContext(ctx, `SELECT seq, event FROM governed_events WHERE entity = $1 AND seq >= $2 ORDER BY seq`, entity, from)
+	rows, err := l.db.QueryContext(ctx, string(l.since), entity, from)
 	if err != nil {
 		return nil, err
 	}

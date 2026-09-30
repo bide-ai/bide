@@ -34,7 +34,10 @@ func TestAppend_QueuesOnTheEntityLock(t *testing.T) {
 	st := newStaller(dsn)
 	db := sql.OpenDB(st)
 	defer db.Close()
-	l := &Log{db: db}
+	l, err := newLog(ctx, db)
+	if err != nil {
+		t.Fatal(err)
+	}
 	entity := fmt.Sprintf("pg-entitylock-%s-%d", t.Name(), time.Now().UnixNano())
 	other, err := admin.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
