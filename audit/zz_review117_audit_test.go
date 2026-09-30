@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
@@ -149,8 +150,8 @@ func TestR117_BindRollbackRefusesAForeignParent(t *testing.T) {
 	b := AttenuatingSubAgent("exec", "", sub, AttenuationConfig{Store: store, Narrow: narrowLimitBy(1)}).(interface {
 		BindRollback(context.Context, string) (context.Context, error)
 	})
-	if _, err := b.BindRollback(WithGrant(ctx, other, signer), "sub"); !errors.Is(err, agent.ErrConfig) {
-		t.Fatalf("BindRollback under a foreign parent = %v, want ErrConfig", err)
+	if _, err := b.BindRollback(WithGrant(ctx, other, signer), "sub"); !errors.Is(err, ErrNotVerified) {
+		t.Fatalf("BindRollback under a foreign parent = %v, want ErrNotVerified", err)
 	}
 	bound, err := b.BindRollback(WithGrant(ctx, parent, signer), "sub")
 	if err != nil {
@@ -196,5 +197,116 @@ func TestR117_ResumedSubRollbackRunsUnderTheChildGrant(t *testing.T) {
 	_, _ = parent.RunSaga(WithGrant(ctx, rootSG, signer), "trip", "go")
 	if undos != 2 || lastLimit != "4" {
 		t.Fatalf("compensations %d, the resumed one under limit %q; want 2, the second under the child grant's 4", undos, lastLimit)
+	}
+}
+
+// bindOf returns the rollback-binding hook of an AttenuatingSubAgent over store.
+func bindOf(t *testing.T, store agent.Durable) interface {
+	BindRollback(context.Context, string) (context.Context, error)
+} {
+	t.Helper()
+	sub := agent.New(agent.NewScriptedModel(agent.TextTurn("x")), store)
+	return AttenuatingSubAgent("exec", "", sub, AttenuationConfig{Store: store, Narrow: narrowLimitBy(1), Rules: ScopeRules{"limit": NumericAtMost}}).(interface {
+		BindRollback(context.Context, string) (context.Context, error)
+	})
+}
+
+// A journaled grant is used only once verified against the bound grant and signer: with none bound
+// the rollback stops (ErrConfig); a grant signed by another key, or one that widens its parent, is
+// refused (ErrNotVerified); a sub-run with records but no journaled authority is refused.
+func TestR117_BindRollbackVerifiesTheJournaledGrant(t *testing.T) {
+	ctx := context.Background()
+	_, priv, _ := ed25519.GenerateKey(rand.Reader)
+	_, other, _ := ed25519.GenerateKey(rand.Reader)
+	signer, forger := Ed25519Signer{Priv: priv}, Ed25519Signer{Priv: other}
+	parent, _ := SignGrant(Grant{ID: "p", Issuer: "corp", Subject: "desk", Scope: map[string]string{"limit": "7"}}, signer)
+	child := Grant{ID: "c", Issuer: "desk", Subject: "exec", ParentRef: parent.Grant.Digest(), Scope: map[string]string{"limit": "4"}}
+	wide := child
+	wide.Scope = map[string]string{"limit": "9"}
+	for name, tc := range map[string]struct {
+		grant  Grant
+		by     Signer
+		bound  bool
+		reason error
+	}{
+		"no grant bound":   {child, signer, false, agent.ErrConfig},
+		"forged signature": {child, forger, true, ErrNotVerified},
+		"widening grant":   {wide, signer, true, ErrNotVerified},
+	} {
+		store := agent.NewMemStore()
+		sg, err := SignGrant(tc.grant, tc.by)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := RecordGrant(ctx, store, "sub", sg); err != nil {
+			t.Fatal(err)
+		}
+		bctx := ctx
+		if tc.bound {
+			bctx = WithGrant(ctx, parent, signer)
+		}
+		if _, err := bindOf(t, store).BindRollback(bctx, "sub"); !errors.Is(err, tc.reason) {
+			t.Errorf("%s: BindRollback = %v, want %v", name, err, tc.reason)
+		}
+	}
+	store := agent.NewMemStore()
+	if _, err := store.Do(ctx, "sub", "some-step", func(context.Context) (agent.Record, error) {
+		return agent.Record{Kind: agent.StepValue, Result: []byte(`1`)}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := bindOf(t, store).BindRollback(WithGrant(ctx, parent, signer), "sub"); !errors.Is(err, agent.ErrProtocol) {
+		t.Errorf("no journaled authority: BindRollback = %v, want ErrProtocol", err)
+	}
+}
+
+// A delegation resumed under different authority than it began with is refused: one that began
+// with no grant cannot continue under one, and one that began under a grant needs it bound.
+func TestR117_ResumedDelegationKeepsItsAuthority(t *testing.T) {
+	_, priv, _ := ed25519.GenerateKey(rand.Reader)
+	signer := Ed25519Signer{Priv: priv}
+	rootSG, err := SignGrant(Grant{ID: "g0", Issuer: "corp", Subject: "desk", Scope: map[string]string{"limit": "7"}}, signer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	withGrant := func(ctx context.Context) context.Context { return WithGrant(ctx, rootSG, signer) }
+	plain := func(ctx context.Context) context.Context { return ctx }
+	for name, drives := range map[string][2]func(context.Context) context.Context{
+		"began without a grant, resumed with one": {plain, withGrant},
+		"began under a grant, resumed without":    {withGrant, plain},
+	} {
+		ctx := context.Background()
+		store := agent.NewMemStore()
+		confirm := agent.Func("confirm", "", agent.Safety{ReadOnly: true},
+			func(context.Context, struct{}) (string, error) { return "ok", nil }, agent.WithApproval(agent.SingleApproval()))
+		sub := agent.New(agent.NewScriptedModel(agent.ToolTurn("s1", "confirm", `{}`), agent.TextTurn("done")), store, confirm)
+		exec := AttenuatingSubAgent("exec", "", sub, AttenuationConfig{Store: store, Narrow: narrowLimitBy(3), Rules: ScopeRules{"limit": NumericAtMost}})
+		parent := agent.New(agent.NewScriptedModel(agent.ToolTurn("c1", "exec", `{"task":"x"}`), agent.TextTurn("done")), store, exec)
+		_, err := parent.Run(drives[0](ctx), "r", "go")
+		var pend *agent.ApprovalPending
+		if !errors.As(err, &pend) {
+			t.Fatalf("%s: first drive %v, want the sub-run's pause", name, err)
+		}
+		if err := agent.Approve(ctx, store, pend.RunID, pend.ToolUseID, true); err != nil {
+			t.Fatal(err)
+		}
+		// The refusal is the delegation call's failure, which the model reads; the sub-run does
+		// not continue under the other authority.
+		if _, err := parent.Run(drives[1](ctx), "r", "go"); err != nil {
+			t.Fatalf("%s: resume = %v", name, err)
+		}
+		recs, err := store.History(ctx, "r")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var res *agent.Record
+		for i := range recs {
+			if recs[i].Kind == agent.StepToolResult && recs[i].ToolUseID == "c1" {
+				res = &recs[i]
+			}
+		}
+		if res == nil || !res.IsError || !strings.Contains(string(res.Result), "grant") {
+			t.Errorf("%s: delegation result %+v, want the refusal recorded as its failure", name, res)
+		}
 	}
 }

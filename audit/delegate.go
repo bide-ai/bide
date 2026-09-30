@@ -117,38 +117,85 @@ func (t *attenuatingSubAgent) Spec() agent.ToolSpec { return agent.SpecOf(t.Tool
 // a saga rollback recurses into its sub-run, and the tree's token budget counts it.
 func (t *attenuatingSubAgent) Unwrap() agent.Tool { return t.Tool }
 
-// BindRollback returns the context a saga rollback compensates the sub-run subRunID under: the
-// authority the delegation ran under, read from the sub-run's journal, never the parent's. With
-// the child grant the delegation journaled, the identity and grant are rebound as Call bound them
-// (Actor this sub-agent, OnBehalfOf the grant's issuer, AuthorityRef its digest). With none, the
-// delegation ran with no grant (it inherited the caller's identity), so none is bound. More than
-// one grant, or one whose parent is not the grant bound to ctx, is an error: the rollback stops
-// rather than compensate under authority it cannot establish.
-func (t *attenuatingSubAgent) BindRollback(ctx context.Context, subRunID string) (context.Context, error) {
+// ungrantedLeafName names the leaf a delegation journals in its sub-run when it runs without a
+// grant, so a rollback can tell a delegation that ran without one from a sub-run it cannot read.
+const ungrantedLeafName = "audit:delegation:ungranted"
+
+// journaledAuthority reads what the sub-run subRunID journaled about the authority its delegation
+// ran under: its one grant (nil if none), whether it recorded running without one, and whether the
+// sub-run has any records at all. More than one grant leaf is an error.
+func (t *attenuatingSubAgent) journaledAuthority(ctx context.Context, subRunID string) (grant *SignedGrant, ungranted, any bool, err error) {
 	recs, err := t.store.History(ctx, subRunID)
 	if err != nil {
-		return nil, fmt.Errorf("audit: read the grant of delegation %q (sub-run %s): %w", t.name, subRunID, err)
+		return nil, false, false, fmt.Errorf("audit: read the authority of delegation %q (sub-run %s): %w", t.name, subRunID, err)
 	}
-	var child *SignedGrant
 	for _, r := range recs {
-		if !strings.HasPrefix(r.Name, grantLeafPrefix) {
-			continue
+		switch {
+		case r.Name == ungrantedLeafName:
+			ungranted = true
+		case strings.HasPrefix(r.Name, grantLeafPrefix):
+			if grant != nil {
+				return nil, false, true, fmt.Errorf("audit: delegation %q (sub-run %s) journaled more than one grant; the rollback cannot tell which it ran under: %w", t.name, subRunID, agent.ErrProtocol)
+			}
+			var sg SignedGrant
+			if err := json.Unmarshal(r.Result, &sg); err != nil {
+				return nil, false, true, fmt.Errorf("audit: decode the grant of delegation %q (sub-run %s): %w (%w)", t.name, subRunID, err, agent.ErrProtocol)
+			}
+			grant = &sg
 		}
-		if child != nil {
-			return nil, fmt.Errorf("audit: delegation %q (sub-run %s) journaled more than one grant; the rollback cannot tell which it ran under: %w", t.name, subRunID, agent.ErrProtocol)
-		}
-		var sg SignedGrant
-		if err := json.Unmarshal(r.Result, &sg); err != nil {
-			return nil, fmt.Errorf("audit: decode the grant of delegation %q (sub-run %s): %w (%w)", t.name, subRunID, err, agent.ErrProtocol)
-		}
-		child = &sg
 	}
-	if child == nil {
+	if grant != nil && ungranted {
+		return nil, false, true, fmt.Errorf("audit: delegation %q (sub-run %s) journaled both a grant and running without one: %w", t.name, subRunID, agent.ErrProtocol)
+	}
+	return grant, ungranted, len(recs) > 0, nil
+}
+
+// checkChild verifies a journaled child grant against the grant and signer bound to ctx: its
+// signature under the signer's key, and that it is a valid attenuation of the bound parent
+// (CheckAttenuation under the delegation's rules).
+func (t *attenuatingSubAgent) checkChild(child SignedGrant, parent SignedGrant, signer Signer) error {
+	v, err := NewVerifier(signer.Alg(), signer.PublicKey())
+	if err != nil {
+		return fmt.Errorf("audit: delegation %q: the bound signer gives no verifier: %w", t.name, err)
+	}
+	if err := child.Verify(v); err != nil {
+		return fmt.Errorf("audit: delegation %q: its journaled grant does not verify under the bound signer's key: %w", t.name, err)
+	}
+	if err := CheckAttenuation(parent.Grant, child.Grant, t.rules); err != nil {
+		return fmt.Errorf("audit: delegation %q: its journaled grant is not an attenuation of the bound grant: %w (%w)", t.name, err, ErrNotVerified)
+	}
+	return nil
+}
+
+// BindRollback returns the context a saga rollback compensates the sub-run subRunID under: the
+// authority the delegation ran under, read from the sub-run's journal, never the parent's.
+//   - A journaled grant is used only once it is verified: its signature under the key of the
+//     signer bound to ctx, and that it attenuates the grant bound to ctx. The identity and grant
+//     are then rebound as Call bound them (Actor this sub-agent, OnBehalfOf the grant's issuer,
+//     AuthorityRef its digest). With no grant and signer bound, it cannot be verified, and the
+//     rollback stops (ErrConfig): bind them (WithGrant) to the rollback's context.
+//   - A delegation that journaled running without a grant is compensated with no grant bound, even
+//     if one is bound to ctx. A sub-run with no records has nothing to compensate, and is bound
+//     the same way.
+//   - Anything else (records but no journaled authority, two grants) stops the rollback rather
+//     than guess.
+func (t *attenuatingSubAgent) BindRollback(ctx context.Context, subRunID string) (context.Context, error) {
+	child, ungranted, any, err := t.journaledAuthority(ctx, subRunID)
+	if err != nil {
+		return nil, err
+	}
+	switch {
+	case child == nil && (ungranted || !any):
 		return withoutGrant(ctx), nil
+	case child == nil:
+		return nil, fmt.Errorf("audit: delegation %q (sub-run %s) journaled no authority, so the rollback cannot establish what it ran under: %w", t.name, subRunID, agent.ErrProtocol)
 	}
 	parentSG, signer, ok := GrantFrom(ctx)
-	if ok && child.Grant.ParentRef != parentSG.Grant.Digest() {
-		return nil, fmt.Errorf("audit: delegation %q (sub-run %s) ran under a grant whose parent is not the grant bound to the rollback: %w", t.name, subRunID, agent.ErrConfig)
+	if !ok || signer == nil {
+		return nil, fmt.Errorf("audit: delegation %q (sub-run %s) ran under a grant, and the rollback has no grant and signer bound to verify it against (see WithGrant): %w", t.name, subRunID, agent.ErrConfig)
+	}
+	if err := t.checkChild(*child, parentSG, signer); err != nil {
+		return nil, err
 	}
 	ctx = agent.WithIdentity(ctx, agent.Identity{
 		Actor:        t.name,
@@ -159,39 +206,74 @@ func (t *attenuatingSubAgent) BindRollback(ctx context.Context, subRunID string)
 }
 
 func (t *attenuatingSubAgent) Call(ctx context.Context, args json.RawMessage) (json.RawMessage, error) {
-	parentSG, signer, ok := GrantFrom(ctx)
-	if !ok {
-		return t.Tool.Call(ctx, args) // no grant to attenuate from: plain delegation, inherit identity
-	}
-
-	child := t.narrow(parentSG.Grant, t.name)
-	child.ParentRef = parentSG.Grant.Digest()
-	if child.Issuer == "" {
-		child.Issuer = parentSG.Grant.Subject // the parent is the issuer of its child grant
-	}
-	if child.Subject == "" {
-		child.Subject = t.name
-	}
-	if child.NotAfterUnix == 0 {
-		child.NotAfterUnix = parentSG.Grant.NotAfterUnix // a child never outlives its parent
-	}
-	if err := CheckAttenuation(parentSG.Grant, child, t.rules); err != nil {
-		return nil, fmt.Errorf("audit: attenuating delegation to %q: %w", t.name, err)
-	}
-
 	// The sub-run ID must be unique to this call, or delegations from different parent runs would
 	// share one journal (and memoize to each other's results). Only the agent loop's run scope is.
 	subRunID := agent.RunScope(ctx)
-	if subRunID == "" {
-		return nil, fmt.Errorf("audit: attenuating delegation to %q needs a run scope: call it from an agent run", t.name)
+	parentSG, signer, ok := GrantFrom(ctx)
+	if !ok {
+		// No grant to attenuate from: plain delegation, inheriting the caller's identity. Inside a
+		// run it is journaled, so a rollback compensates the sub-run with no grant bound.
+		if subRunID != "" {
+			existing, _, _, err := t.journaledAuthority(ctx, subRunID)
+			if err != nil {
+				return nil, err
+			}
+			if existing != nil {
+				return nil, fmt.Errorf("audit: delegation %q (sub-run %s) began under a grant; resume it with the grant and signer bound (WithGrant): %w", t.name, subRunID, agent.ErrConfig)
+			}
+			if _, err := t.store.Do(ctx, subRunID, ungrantedLeafName, func(context.Context) (agent.Record, error) {
+				return agent.Record{Kind: agent.StepValue, Result: json.RawMessage(`{"ungranted":true}`)}, nil
+			}); err != nil {
+				return nil, fmt.Errorf("audit: record that delegation %q ran without a grant: %w", t.name, err)
+			}
+		}
+		return t.Tool.Call(ctx, args)
 	}
-	childSG, err := SignGrant(child, signer)
-	if err != nil {
-		return nil, fmt.Errorf("audit: attenuating delegation to %q: %w", t.name, err)
+	// A delegation re-entered on resume (its sub-run paused, or was cut off) runs under the grant it
+	// journaled the first time, so the sub-run holds one grant whatever Narrow returns now.
+	var existing *SignedGrant
+	if subRunID != "" {
+		var ungranted bool
+		var err error
+		if existing, ungranted, _, err = t.journaledAuthority(ctx, subRunID); err != nil {
+			return nil, err
+		}
+		if ungranted {
+			return nil, fmt.Errorf("audit: delegation %q (sub-run %s) began without a grant; it cannot continue under one: %w", t.name, subRunID, agent.ErrConfig)
+		}
 	}
-	// Anchor the child grant in the sub-run's journal so the delegation is provable in the tree.
-	if _, err := RecordGrant(ctx, t.store, subRunID, childSG); err != nil {
-		return nil, fmt.Errorf("audit: record child grant for %q: %w", t.name, err)
+	var childSG SignedGrant
+	if existing != nil {
+		if err := t.checkChild(*existing, parentSG, signer); err != nil {
+			return nil, err
+		}
+		childSG = *existing
+	} else {
+		child := t.narrow(parentSG.Grant, t.name)
+		child.ParentRef = parentSG.Grant.Digest()
+		if child.Issuer == "" {
+			child.Issuer = parentSG.Grant.Subject // the parent is the issuer of its child grant
+		}
+		if child.Subject == "" {
+			child.Subject = t.name
+		}
+		if child.NotAfterUnix == 0 {
+			child.NotAfterUnix = parentSG.Grant.NotAfterUnix // a child never outlives its parent
+		}
+		if err := CheckAttenuation(parentSG.Grant, child, t.rules); err != nil {
+			return nil, fmt.Errorf("audit: attenuating delegation to %q: %w", t.name, err)
+		}
+		if subRunID == "" {
+			return nil, fmt.Errorf("audit: attenuating delegation to %q needs a run scope: call it from an agent run", t.name)
+		}
+		var err error
+		if childSG, err = SignGrant(child, signer); err != nil {
+			return nil, fmt.Errorf("audit: attenuating delegation to %q: %w", t.name, err)
+		}
+		// Anchor the child grant in the sub-run's journal so the delegation is provable in the tree.
+		if _, err := RecordGrant(ctx, t.store, subRunID, childSG); err != nil {
+			return nil, fmt.Errorf("audit: record child grant for %q: %w", t.name, err)
+		}
 	}
 
 	// Rebind the sub-run: it acts as this sub-agent, on behalf of the parent, under the child grant.
@@ -199,7 +281,7 @@ func (t *attenuatingSubAgent) Call(ctx context.Context, args json.RawMessage) (j
 	ctx = agent.WithIdentity(ctx, agent.Identity{
 		Actor:        t.name,
 		OnBehalfOf:   parentSG.Grant.Subject,
-		AuthorityRef: child.Digest(),
+		AuthorityRef: childSG.Grant.Digest(),
 	})
 	ctx = WithGrant(ctx, childSG, signer)
 

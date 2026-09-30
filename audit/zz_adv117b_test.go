@@ -58,6 +58,9 @@ func TestAdv117b_ResumedDelegationWithFreshGrantIDsCannotRollBack(t *testing.T) 
 		t.Fatalf("resume: %v, want *SagaAborted", err)
 	}
 	t.Logf("grants minted %d; SagaAborted: compensated %v, uncompensated %v, compensateErr %v", minted, aborted.Compensated, aborted.Uncompensated, aborted.CompensateErr)
+	if minted != 1 {
+		t.Fatalf("Narrow minted %d grants; want 1, reused when the delegation resumed", minted)
+	}
 	if undos != 1 || aborted.CompensateErr != nil {
 		t.Fatalf("the delegation's charge was compensated %d times; rollback err %v", undos, aborted.CompensateErr)
 	}
