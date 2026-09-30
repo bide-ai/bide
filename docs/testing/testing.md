@@ -255,17 +255,33 @@ For rigor it does more than a bare pass-count:
   message: `CalledTool`, `ToolOrder`, `MaxSteps` evaluate which tools ran, in what order, and whether
   the agent looped. This is the agent-specific part, and it uses data (the journal) that only this
   SDK has. If `AgentRunner` cannot read a run's journal back, the output's `TraceErr` carries the
-  failure and the trajectory metrics fail that run rather than score an empty trajectory (zero
-  steps would be within any `MaxSteps` limit).
+  failure and the trajectory metrics leave that run unscored rather than score an empty trajectory
+  (zero steps would be within any `MaxSteps` limit).
+- **Unscored is not failed.** A metric's `Fn` returns `(bool, error)`; an error means the metric could
+  not score the run (an LLM judge whose provider is down, a trajectory that could not be read), so
+  the run is unscored for that metric. Each `MetricStat` reports `Passes`, `Scored` and `Unscored`
+  per case, per tag and overall, and the rate and its Wilson interval use scored runs only, so a
+  judge outage does not read as the agent failing. `Judge` treats only a failed judge call as
+  unscored: any reply other than `PASS` is a fail, so an output that steers the judge cannot drop
+  itself out of the pass rate.
 - **Latency percentiles** (p50/p95) per report. Runs go through `AgentRunner`, so each evaluation run
   is itself durable and auditable.
-- **Significance-tested regression comparison.** `Compare(old, new)` pairs each metric across two
-  reports and tests whether a rate moved by more than sampling noise: it picks Fisher's exact test
-  or a two-proportion z-test by the minimum-expected-cell-count rule, applies Benjamini-Hochberg
+- **Significance-tested regression comparison.** `Compare(old, new, opts...)` pairs each metric across
+  two reports and tests whether a rate moved by more than sampling noise: it picks Fisher's exact
+  test or a two-proportion z-test by the minimum-expected-cell-count rule, applies Benjamini-Hochberg
   correction across the metric family, and labels each result with a typed `MetricDirection`
-  (`DirectionRegression`, `DirectionImprovement`, `DirectionFlat`). A CI gate can fail the build on
-  a significant regression rather than on a raw rate dip. Every `Report` carries
-  `format: "bide.eval.report.v1"` (`eval.ReportFormat`), and `Compare` returns an error wrapping
+  (`DirectionRegression`, `DirectionImprovement`, `DirectionFlat`, `DirectionInconclusive`). A
+  metric is inconclusive, with no test run and no place in the correction family, when it is
+  missing from one report, has no scored runs in one, or has unscored runs above the tolerance in
+  either (`WithUnscoredTolerance(frac)`; the default 0 makes any unscored run inconclusive). Every
+  metric is inconclusive when the two reports ran different case sets (their
+  `Provenance.CaseSetHash` differs or is missing), since a moved rate may only mean the cases
+  changed; `WithCaseSetMismatchAllowed()` instead compares over the cases both ran, matched by each
+  `CaseReport.Hash`, and notes that scope on every compared metric.
+  `Comparison.Gate()` is the CI gate: it returns nil only when some metric was compared and every
+  metric is flat or improved, and otherwise an error wrapping `ErrRegression` or `ErrInconclusive`,
+  so an unmeasured metric never passes. Every `Report` carries
+  `format: "bide.eval.report.v2"` (`eval.ReportFormat`), and `Compare` returns an error wrapping
   `eval.ErrFormat` (itself wrapping `agent.ErrProtocol`) for a report with any other format, so a
   report of another layout, or a zero `Report`, never compares as if it had no metrics and lets a
   gate pass.
@@ -276,12 +292,13 @@ For rigor it does more than a bare pass-count:
   it, rather than reading significance into an underpowered sample.
 - **Reproducibility provenance.** Each `Report` carries a `Provenance{ModelID, Temperature, Seed,
   Timestamp, CaseSetHash}`; `Run` always fills `CaseSetHash` from `HashCases` (a length-prefixed
-  sha256 over the case set) so a comparison across two reports can confirm they ran the same cases
-  before trusting the delta.
+  sha256 over the case set), and each `CaseReport` carries its own case's hash; `Compare` checks
+  both before trusting a delta.
 - **Stratified breakdown.** `Case.Tags` plus `Report.ByTag` report pass rates per slice (region,
   difficulty, product line), so an aggregate that hides a failing subgroup is visible.
 - **Governance-held metric.** `GovernanceHeld(name, compliant)` scores whether the governed
-  invariant held on each run (`compliant` receives the evaluation's context and the run's output), which is what makes the two-number report legible: model-correct X%
+  invariant held on each run (`compliant` receives the evaluation's context and the run's output,
+  and an error from it leaves the run unscored), which is what makes the two-number report legible: model-correct X%
   (statistical) alongside governance-held 100% (deterministic). It keeps the boundary below explicit
   inside the report itself.
 

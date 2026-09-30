@@ -30,8 +30,8 @@ func (j *unreadableJournal) History(ctx context.Context, runID string) ([]agent.
 }
 
 // A run whose journal cannot be read has no known trajectory. Its trajectory metrics must not pass
-// on the empty trajectory (zero steps is within any step limit), and the output must carry the read
-// failure rather than look like a clean run. The run itself succeeded, so Err stays nil and
+// on the empty trajectory (zero steps is within any step limit) nor fail it: the run is unscored for
+// them, and the output carries the read failure rather than look like a clean run. The run itself succeeded, so Err stays nil and
 // NoError still passes: the failure is the trajectory's, in TraceErr.
 func TestAgentRunner_UnreadableJournalFailsTrajectoryMetrics(t *testing.T) {
 	store := &unreadableJournal{Durable: agent.NewMemStore()}
@@ -52,26 +52,26 @@ func TestAgentRunner_UnreadableJournalFailsTrajectoryMetrics(t *testing.T) {
 		eval.ToolOrder(),
 		eval.CalledTool("lookup"),
 	}, eval.Options{Runs: 2})
-	if s := rep.Overall["no_error"]; s.Passes != s.Runs {
-		t.Errorf("no_error passed %d of %d runs, want all: each run succeeded", s.Passes, s.Runs)
+	if s := rep.Overall["no_error"]; s.Passes != 2 || s.Scored != 2 || s.Unscored != 0 {
+		t.Errorf("no_error = %+v, want 2 of 2 scored runs passed: each run succeeded", s)
 	}
 	for _, name := range []string{"max_steps:5", "tool_order:", "called:lookup"} {
-		if s := rep.Overall[name]; s.Passes != 0 {
-			t.Errorf("%s passed %d of %d runs whose trajectory was never read", name, s.Passes, s.Runs)
+		if s := rep.Overall[name]; s.Passes != 0 || s.Scored != 0 || s.Unscored != 2 {
+			t.Errorf("%s = %+v, want both runs unscored: their trajectory was never read", name, s)
 		}
 	}
 }
 
-// A trajectory metric fails any output whose TraceErr is set, even when a RunFunc also filled in a
-// Trace that would otherwise pass it.
-func TestTrajectoryMetrics_FailOnTraceErr(t *testing.T) {
+// A trajectory metric leaves unscored any output whose TraceErr is set, even when a RunFunc also
+// filled in a Trace that would otherwise pass it.
+func TestTrajectoryMetrics_UnscoredOnTraceErr(t *testing.T) {
 	trace := eval.Trajectory{Steps: 1, ToolCalls: []string{"lookup"}}
 	for _, m := range []eval.Metric{eval.CalledTool("lookup"), eval.MaxSteps(1), eval.ToolOrder("lookup")} {
-		if !m.Fn(context.Background(), eval.Case{}, eval.RunOutput{Trace: trace}) {
-			t.Fatalf("%s fails a trajectory it should pass", m.Name)
+		if pass, err := m.Fn(context.Background(), eval.Case{}, eval.RunOutput{Trace: trace}); !pass || err != nil {
+			t.Fatalf("%s = (%v, %v) on a trajectory it should pass", m.Name, pass, err)
 		}
-		if m.Fn(context.Background(), eval.Case{}, eval.RunOutput{Trace: trace, TraceErr: errReadFailed}) {
-			t.Errorf("%s passed a run whose trajectory was not read", m.Name)
+		if _, err := m.Fn(context.Background(), eval.Case{}, eval.RunOutput{Trace: trace, TraceErr: errReadFailed}); !errors.Is(err, errReadFailed) {
+			t.Errorf("%s scored a run whose trajectory was not read (err %v)", m.Name, err)
 		}
 	}
 }

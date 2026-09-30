@@ -30,7 +30,7 @@ func TestRun_StatisticalPassRate(t *testing.T) {
 	}
 	ap := rep.Overall["contains:APPROVED"]
 	if ap.Passes != 2 || ap.Rate != 0.5 {
-		t.Fatalf("contains:APPROVED = %d/%d rate %v, want 2/4 rate 0.5", ap.Passes, ap.Runs, ap.Rate)
+		t.Fatalf("contains:APPROVED = %d/%d rate %v, want 2/4 rate 0.5", ap.Passes, ap.Scored, ap.Rate)
 	}
 	if !(ap.CILow < 0.25 && ap.CIHigh > 0.75) {
 		t.Fatalf("expected a wide 95%% CI for 2/4, got [%.2f,%.2f]", ap.CILow, ap.CIHigh)
@@ -44,8 +44,8 @@ func TestRun_StatisticalPassRate(t *testing.T) {
 // report under the other's name and drop the rest. Run refuses the metric set instead.
 func TestRun_DuplicateMetricNameIsAnError(t *testing.T) {
 	run := func(_ context.Context, _ string) eval.RunOutput { return eval.RunOutput{Final: agent.UserText("ok")} }
-	always := eval.Custom("ok", func(context.Context, eval.Case, eval.RunOutput) bool { return true })
-	never := eval.Custom("ok", func(context.Context, eval.Case, eval.RunOutput) bool { return false })
+	always := eval.Custom("ok", func(context.Context, eval.Case, eval.RunOutput) (bool, error) { return true, nil })
+	never := eval.Custom("ok", func(context.Context, eval.Case, eval.RunOutput) (bool, error) { return false, nil })
 	rep, err := eval.Run(context.Background(), run, []eval.Case{{Name: "c", Input: "x"}},
 		[]eval.Metric{always, never}, eval.Options{Runs: 2})
 	if err == nil {

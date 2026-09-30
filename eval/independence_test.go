@@ -23,8 +23,8 @@ func (m *echoModel) Stream(_ context.Context, req agent.Request) (*agent.Stream,
 }
 
 // answersItsInput passes when a run's answer is to that run's own case.
-var answersItsInput = eval.Metric{Name: "answers-its-input", Fn: func(_ context.Context, c eval.Case, out eval.RunOutput) bool {
-	return out.Err == nil && out.Final.Text() == "echo: "+c.Input
+var answersItsInput = eval.Metric{Name: "answers-its-input", Fn: func(_ context.Context, c eval.Case, out eval.RunOutput) (bool, error) {
+	return out.Err == nil && out.Final.Text() == "echo: "+c.Input, nil
 }}
 
 // A second evaluation against the same durable store, as with a SQLite store kept between eval
@@ -42,7 +42,7 @@ func TestAgentRunner_EvalsAreIndependentOverOneStore(t *testing.T) {
 	if n := second.calls.Load(); n != 6 {
 		t.Errorf("the second eval called the model %d times, want 6 (it replayed the first eval's recorded answers)", n)
 	}
-	if s := rep.Overall["answers-its-input"]; s.Passes != s.Runs {
-		t.Errorf("%d of %d runs were scored against another case's answer:\n%s", s.Runs-s.Passes, s.Runs, strings.TrimSpace(rep.String()))
+	if s := rep.Overall["answers-its-input"]; s.Passes != s.Scored || s.Unscored != 0 {
+		t.Errorf("%d of %d runs were scored against another case's answer:\n%s", s.Scored-s.Passes, s.Scored, strings.TrimSpace(rep.String()))
 	}
 }

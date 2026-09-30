@@ -181,7 +181,7 @@ func TestWilson_ExactAtAllFailAndAllPass(t *testing.T) {
 func TestWilson_NoRunsIsTheWholeRange(t *testing.T) {
 	run := func(_ context.Context, _ string) eval.RunOutput { return eval.RunOutput{} }
 	rep := mustRun(t, context.Background(), run, nil, []eval.Metric{eval.NoError()}, eval.Options{Runs: 3})
-	if s := rep.Overall["no_error"]; s.Runs != 0 || s.CILow != 0 || s.CIHigh != 1 {
+	if s := rep.Overall["no_error"]; s.Scored != 0 || s.Unscored != 0 || s.CILow != 0 || s.CIHigh != 1 {
 		t.Fatalf("0 runs: %+v, want runs 0 and ci [0, 1]", s)
 	}
 }
@@ -381,8 +381,8 @@ func TestGovernanceHeld(t *testing.T) {
 	}
 	cases := []eval.Case{{Name: "c", Input: "x"}}
 	rawJudgment := eval.Contains("CORRECT")
-	governance := eval.GovernanceHeld("governance_held", func(_ context.Context, out eval.RunOutput) bool {
-		return contains(out.Final.Text(), "compliant")
+	governance := eval.GovernanceHeld("governance_held", func(_ context.Context, out eval.RunOutput) (bool, error) {
+		return contains(out.Final.Text(), "compliant"), nil
 	})
 	rep := mustRun(t, context.Background(), run, cases, []eval.Metric{rawJudgment, governance}, eval.Options{Runs: 4})
 
