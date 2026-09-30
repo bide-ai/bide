@@ -25,7 +25,10 @@ minor version (0.x.0) may include breaking API or journal-format changes; each o
 - `agent.Capability[T]` finds an optional store capability through wrappers; `audit.AuditedStore` implements `Unwrap` ([#66]).
 - `agent.ResolveStepHalt`, `agent.IsReservedStepName`, `agent.SubRunID` and `agent.ToolResultStep` ([#60]).
 - `agent.FinishStop`, `FinishToolUse`, `FinishLength`, `FinishFiltered`, `ErrOutputTruncated` and `ErrOutputFiltered` ([#68]).
-- `agent.DefaultMaxResponseBytes` (32 MiB), `agent.LimitResponse` and `WithMaxResponseBytes` on each model adapter ([#68]).
+- `provider.DefaultMaxResponseBytes` (32 MiB), `provider.LimitResponse` and `WithMaxResponseBytes` on each model adapter ([#68], [#76]).
+- `agent.Describer`, `agent.ModelInfo` and `agent.ModelInfoOf`, implemented by the Anthropic, OpenAI and Gemini adapters ([#76]).
+- `Finish.Raw` carries the provider's own finish reason, and `Finish.Discarded` the usage of discarded responses ([#76]).
+- `modeltest.CheckFinish` ([#76]).
 - `agent.DecodeStoredRecord` for `Durable` implementations to read rows back ([#68]).
 - `audit.CheckTimestamp`, `CheckTimestampOrder`, `DefaultClockSkew`, `WithVerifyTime`, `WithClockSkew`, and `bide-audit -max-clock-skew` and `-max-input-bytes` ([#68]).
 - `audit.PolicyLeafName`, `ConvergenceLeafName`, `GovernedPolicyDigest` and `audit.ErrFormat` ([#66], [#68]).
@@ -59,6 +62,8 @@ minor version (0.x.0) may include breaking API or journal-format changes; each o
 - **Breaking:** `Session` ids containing `/` are `ErrConfig` ([#56]).
 - **Breaking:** `eval.RequiredRuns` returns `(int, error)`, and `eval.Run` returns an error for duplicate metric names ([#53]).
 - **Breaking:** `eval.Matches` takes a `*regexp.Regexp`, `eval.AgentRunner` returns `(RunFunc, error)`, `eval.Compare` returns `(Comparison, error)`, and `GovernanceHeld` predicates take a context ([#74]).
+- **Breaking:** the provider HTTP kit moves from `agent` to the new package `model/provider` (`ClassifyHTTPError`, `ClassifyStreamError`, `NewSSEScanner`, `ParseRetryAfter`, `ToolResultCodec`, `JSONToolResultCodec`, `EncodeToolResultOr` and others); `WithToolResultCodec` takes a `provider.ToolResultCodec` ([#76]).
+- **Breaking:** `Finish.Reason` is the typed `agent.FinishReason` ([#76]).
 - `WithTokenBudget` counts discarded and failed requests; `RateLimit` and `Cost` count every request sent; `Hedge` runs each backup through the inner middleware chain; `Retryable` no longer retries `ErrTruncatedToolArgs` ([#55]).
 - A resume halts on any attempt marker without a result, whatever the tool's current safety; a tool no longer registered halts instead of failing with `ErrUnknownTool` ([#57]).
 - `mcp.Tools` returns `ErrProtocol` for malformed or duplicate tool names, non-object schemas and oversized descriptions; an agent with two tools of the same name returns `ErrConfig` ([#57]).
@@ -399,6 +404,7 @@ First public release.
 [#73]: https://github.com/bide-ai/bide/pull/73
 [#74]: https://github.com/bide-ai/bide/pull/74
 [#75]: https://github.com/bide-ai/bide/pull/75
+[#76]: https://github.com/bide-ai/bide/pull/76
 [78f8db6]: https://github.com/bide-ai/bide/commit/78f8db6
 [994721b]: https://github.com/bide-ai/bide/commit/994721b
 [3262cd1]: https://github.com/bide-ai/bide/commit/3262cd1
