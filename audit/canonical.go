@@ -61,8 +61,29 @@ func UnmarshalStrict(data []byte, v any) error {
 // strictOptions check an agent.Message against its wire shape, and each part against the wire
 // form of the part its "type" names. A struct's names are strictjson.ExactFields: none required.
 var strictOptions = &strictjson.Options{
-	Shapes: map[reflect.Type]reflect.Type{reflect.TypeFor[agent.Message](): reflect.TypeFor[messageShape]()},
+	Shapes: map[reflect.Type]reflect.Type{
+		reflect.TypeFor[agent.Message](): reflect.TypeFor[messageShape](),
+		reflect.TypeFor[agent.Record]():  recordShape,
+	},
 }
+
+// recordShape is the wire form of agent.Record (see its MarshalJSON), which UnmarshalStrict checks
+// a record against in place of its UnmarshalJSON: the record's journaled fields, then "claim" and
+// "salt". It is built from the type, so it names every field a record journals.
+var recordShape = func() reflect.Type {
+	rt := reflect.TypeFor[agent.Record]()
+	var fields []reflect.StructField
+	for i := range rt.NumField() {
+		f := rt.Field(i)
+		if f.IsExported() && f.Tag.Get("json") != "-" {
+			fields = append(fields, reflect.StructField{Name: f.Name, Type: f.Type, Tag: f.Tag})
+		}
+	}
+	fields = append(fields,
+		reflect.StructField{Name: "Claim", Type: reflect.TypeFor[string](), Tag: `json:"claim,omitempty"`},
+		reflect.StructField{Name: "Salt", Type: reflect.TypeFor[[]byte](), Tag: `json:"salt,omitempty"`})
+	return reflect.StructOf(fields)
+}()
 
 func init() {
 	strictOptions.Hooks = map[reflect.Type]func([]byte, string) error{reflect.TypeFor[partShape](): checkPart}

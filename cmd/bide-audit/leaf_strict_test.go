@@ -53,7 +53,7 @@ func leafFiles(t *testing.T, dir string, recs ...agent.Record) ([]string, string
 	}
 	paths := make([]string, len(recs))
 	for i := range recs {
-		b, err := audit.ProveRecord(ctx, store, "run1", i, sth)
+		b, err := audit.ProveRecord(ctx, store, "run1", i+1, sth) // leaf 0 is the journal header
 		if err != nil {
 			t.Fatal(err)
 		}

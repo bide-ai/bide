@@ -424,7 +424,7 @@ func TestVerbs_WrappersWriteTheSameRecords(t *testing.T) {
 		ra, rb := project(a), project(b)
 		ja, _ := json.Marshal(ra)
 		jb, _ := json.Marshal(rb)
-		if len(ra) != 1 || string(ja) != string(jb) {
+		if len(ra) != 2 || string(ja) != string(jb) { // the @journal header, then the verb's record
 			t.Errorf("%s: records differ:\n new %s\n old %s", name, ja, jb)
 		}
 	}

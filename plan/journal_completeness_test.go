@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/internal/journalhook"
 )
 
 // chargeFlow is a one-node flow whose node counts its runs and fails the first one after its
@@ -129,7 +130,7 @@ func TestClaimLost_DecidesByWinnersMarker(t *testing.T) {
 		rec  agent.Record
 	}{
 		{flowDigestStep, agent.Record{Kind: agent.StepValue, Result: json.RawMessage(strconv.Quote(flow.Digest()))}},
-		{attemptMarker("charge"), agent.Record{Kind: agent.StepValue, Claim: "other-driver", Result: json.RawMessage(`{"retry_safe":false}`)}},
+		{attemptMarker("charge"), journalhook.WithClaim(agent.Record{Kind: agent.StepValue, Result: json.RawMessage(`{"retry_safe":false}`)}, "other-driver").(agent.Record)},
 	} {
 		if _, err := mem.Do(ctx, "r", w.name, func(context.Context) (agent.Record, error) { return w.rec, nil }); err != nil {
 			t.Fatal(err)

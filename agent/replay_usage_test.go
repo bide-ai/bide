@@ -124,10 +124,10 @@ func journalsEqual(t *testing.T, a, b Durable, runID string) {
 	}
 	// Salt is fresh random bytes per record (event-leaf.v2), so it never matches across runs.
 	for i := range ra {
-		ra[i].Salt = nil
+		ra[i].salt, ra[i].raw = nil, nil
 	}
 	for i := range rb {
-		rb[i].Salt = nil
+		rb[i].salt, rb[i].raw = nil, nil
 	}
 	if !reflect.DeepEqual(ra, rb) {
 		t.Fatalf("replayed journal differs:\n orig   %s\n replay %s", dumpRecords(ra), dumpRecords(rb))

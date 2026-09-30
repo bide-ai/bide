@@ -46,17 +46,17 @@ func TestMemStoreDo_DecodesAWriteOnce(t *testing.T) {
 		t.Fatalf("recording one step decoded it %d times, want once", n)
 	}
 	hist, err := s.History(ctx, run)
-	if err != nil || len(hist) != 1 {
+	if err != nil || len(hist) != 2 { // the journal header, then the step
 		t.Fatalf("History = %v, %v", hist, err)
 	}
-	if !reflect.DeepEqual(got, hist[0]) {
-		t.Fatalf("Do returned\n%#v\nHistory reads\n%#v", got, hist[0])
+	if !reflect.DeepEqual(got, hist[1]) {
+		t.Fatalf("Do returned\n%#v\nHistory reads\n%#v", got, hist[1])
 	}
 	// The caller's copy is its own: changing it changes neither the journal nor the step's input.
 	got.Message.Parts[0] = Text{Text: "changed"}
 	got.Result[1] = 'X'
 	again, _ := s.History(ctx, run)
-	if !reflect.DeepEqual(again[0], hist[0]) {
+	if !reflect.DeepEqual(again[1], hist[1]) {
 		t.Fatal("changing the record Do returned changed the journal")
 	}
 	if msg.Parts[0] != (Text{Text: "hi <b>"}) {
@@ -98,8 +98,8 @@ func TestMemStoreDo_UnstableEncodingDecodesStoredBytes(t *testing.T) {
 		t.Fatalf("recording the step decoded it %d times, want %d (passes agree: %v)", n, want, want == 1)
 	}
 	hist, _ := s.History(ctx, run)
-	if !reflect.DeepEqual(got, hist[0]) || got.Approver != "bad"+replacementChar+"utf8" {
-		t.Fatalf("Do returned %#v, History reads %#v", got, hist[0])
+	if !reflect.DeepEqual(got, hist[1]) || got.Approver != "bad"+replacementChar+"utf8" {
+		t.Fatalf("Do returned %#v, History reads %#v", got, hist[1])
 	}
 }
 

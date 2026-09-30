@@ -268,7 +268,7 @@ func TestMofnDST_CrashSweepAfterQuorum(t *testing.T) {
 		approveAs(t, mem, "r1", "c1", "ops", true)
 		approveAs(t, mem, "r1", "c1", "finance", true)
 
-		err = resume(&crashStore{inner: mem, crashAt: crashAt}, &charged)
+		err = resume(crashJournal(mem, crashAt), &charged)
 		crashed := errors.Is(err, errCrash)
 		for errors.Is(err, errCrash) {
 			err = resume(mem, &charged)

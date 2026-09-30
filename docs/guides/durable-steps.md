@@ -46,6 +46,13 @@ res, err := agent.Step(ctx, store, runID, "reserve", // at most once; halts on a
     func(ctx context.Context) (Reservation, error) { return inventory.Reserve(ctx, sku) })
 ```
 
+**A side-effect step must not pause.** If `fn` of a step that is not retry-safe returns a pause
+(`Interrupt`, `Sleep`, `Await`, a pending approval, a halt from a sub-agent it drives), `Step`
+returns an `ErrConfig` error, not the pause, and the step's marker stays, so its next attempt halts:
+`fn` may have done something before it paused, and running it again could repeat that. Put the
+pause in a retry-safe step of its own, before or after the side effect. This is the same rule a
+tool follows.
+
 `Step` is a package function, not a method, because Go methods cannot add type parameters. The
 result is journaled as a `StepValue` record, so it shows up in `RenderMermaid` as `step: <name>`
 and is independently provable via `audit.ProveStep` (see [Audit](audit.md)). `name` must be
@@ -255,13 +262,23 @@ another driver of the same run won the claim while this one ran (a node that too
 lapsed); `HaltCrashed` means the halting driver knew of no live claimant, which is not proof that
 none is running. So, whatever the cause:
 
-- On a store that leases runs (`MemStore`, `store/postgres`), `ResolveHaltRef` takes the root run's
+- On a store that leases runs (`MemStore`, `store/sqlite`, `store/postgres`; found through a
+  `Journal` and through store wrappers, as `agent.Capability` finds it), `ResolveHaltRef` takes the root run's
   lease while it resolves and returns `*HaltInFlight` while a driver holds it. Only drivers that
   lease the run (`Lease`, `Recover`, `RecoverLoop`) are seen; a plain `Run` holds no lease.
-- On a store that cannot (`store/sqlite`, a custom `Durable`), it requires `WithMinHaltAge`, so the
+- On a store that cannot (a custom store with no `Leaser`), it requires `WithMinHaltAge`, so the
   halt is resolved only once no driver can still be running it.
+- On either kind of store, it then claims the attempt after the live one, under a claim of its
+  own, before it records the outcome, and returns `*HaltInFlight` if a driver holds that claim
+  already: a process that could not record that its claim never started can void the live attempt
+  after the check and run the effect as the next attempt (a plain `Run`, which the lease does not
+  see, included), and a resolution must not override it. The resolution's claim stays in the
+  journal as an attempt marker of the operation. If recording the outcome fails, that claim stays
+  live (the outcome may have been recorded all the same): the operation halts until it is resolved
+  again, and the next resolution claims the attempt after the resolution's own (with
+  `WithMinHaltAge`, measured from that attempt).
 - A `HaltContended` halt always requires `WithMinHaltAge`.
-- `WithoutLiveDriverCheck()` skips the first two, for an operator who knows no driver is running
+- `WithoutLiveDriverCheck()` skips all of these, for an operator who knows no driver is running
   (every worker stopped).
 
 An operation that already has a different outcome (an earlier resolution, or the result the live

@@ -35,6 +35,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"iter"
 	"maps"
 	"os"
 	"slices"
@@ -50,12 +51,14 @@ import (
 // errRMCrash is the injected storage failure. Like a real store's, it wraps ErrStorage.
 var errRMCrash = fmt.Errorf("injected storage failure: %w", agent.ErrStorage)
 
-// rmCrashStore fails the crashAt-th persist: the step's work (and any side effect in it) has run,
-// but its record is not written. With dead set the process is taken to have died there: every
-// later persist fails too, and no new step starts. Otherwise the failure is transient and the
-// process carries on.
+// rmCrashStore fails the crashAt-th Insert that would store a new entry: the entry is not stored
+// (a step's work, and any side effect in it, may have run by then). It works at the storage port,
+// under a Journal (a new one per drive attempt: a new process), so a failure can land between any
+// two store round trips the engine makes, the journal header, claims and not-started records
+// included. With dead set the process is taken to have died there: every later call fails too, so
+// nothing more is read or written. Otherwise the failure is transient and the process carries on.
 type rmCrashStore struct {
-	inner   agent.Durable
+	inner   agent.Store
 	crashAt int
 	dead    bool
 
@@ -70,31 +73,47 @@ func (c *rmCrashStore) down() bool {
 	return c.dead && c.crashed
 }
 
-func (c *rmCrashStore) Do(ctx context.Context, runID, name string, fn func(context.Context) (agent.Record, error)) (agent.Record, error) {
+func (c *rmCrashStore) Insert(ctx context.Context, runID, name string, data []byte) (agent.Entry, bool, error) {
 	if c.down() {
-		return agent.Record{}, errRMCrash
+		return agent.Entry{}, false, errRMCrash
 	}
-	return c.inner.Do(ctx, runID, name, func(ctx context.Context) (agent.Record, error) {
-		rec, err := fn(ctx)
-		if err != nil {
-			return rec, err
-		}
-		c.mu.Lock()
-		c.writes++
-		fail := c.writes == c.crashAt || (c.dead && c.crashed)
-		if c.writes == c.crashAt {
-			c.crashed = true
-		}
-		c.mu.Unlock()
-		if fail {
-			return agent.Record{}, errRMCrash
-		}
-		return rec, nil
-	})
+	if e, ok, err := c.inner.Get(ctx, runID, name); err != nil || ok {
+		return e, false, err // stores nothing: not a write
+	}
+	c.mu.Lock()
+	c.writes++
+	fail := c.writes == c.crashAt
+	if fail {
+		c.crashed = true
+	}
+	c.mu.Unlock()
+	if fail {
+		return agent.Entry{}, false, errRMCrash
+	}
+	return c.inner.Insert(ctx, runID, name, data)
 }
 
-func (c *rmCrashStore) History(ctx context.Context, runID string) ([]agent.Record, error) {
-	return c.inner.History(ctx, runID)
+func (c *rmCrashStore) Get(ctx context.Context, runID, name string) (agent.Entry, bool, error) {
+	if c.down() {
+		return agent.Entry{}, false, errRMCrash
+	}
+	return c.inner.Get(ctx, runID, name)
+}
+
+func (c *rmCrashStore) Load(ctx context.Context, runID string, after int64) iter.Seq2[agent.Entry, error] {
+	if c.down() {
+		return func(yield func(agent.Entry, error) bool) { yield(agent.Entry{}, errRMCrash) }
+	}
+	return c.inner.Load(ctx, runID, after)
+}
+
+// rmJournal returns a Journal (a new process) over st.
+func rmJournal(st *rmCrashStore) *agent.Journal {
+	j, err := agent.NewJournal(st)
+	if err != nil {
+		panic(err)
+	}
+	return j
 }
 
 // rmWorld is the outside world of one scenario: the providers the tools act on, and what the
@@ -400,7 +419,7 @@ func (w *rmWorld) drive(mem *agent.MemStore, model agent.Model, crashes []int, d
 			crashAt = crashes[i]
 		}
 		st := &rmCrashStore{inner: mem, crashAt: crashAt, dead: dead}
-		root := w.agents(st, model)
+		root := w.agents(rmJournal(st), model)
 		out, err := rmDriveOnce(ctx, root, w.sc)
 		if st.crashed {
 			obs.crashed = true

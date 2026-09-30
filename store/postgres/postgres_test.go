@@ -67,7 +67,7 @@ func TestPostgres_DoMemoizesAndHistory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(h) != 1 || h[0].Name != "step" {
+	if len(h) != 2 || h[0].Kind != agent.StepHeader || h[1].Name != "step" { // the journal header, then the step
 		t.Fatalf("history = %+v", h)
 	}
 }
@@ -85,12 +85,13 @@ func TestPostgres_ListerRuns(t *testing.T) {
 	if _, err := store.Do(ctx, r2, "s", mk); err != nil {
 		t.Fatal(err)
 	}
-	runs, err := store.Runs(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
+	var runs []string
 	set := map[string]bool{}
-	for _, r := range runs {
+	for r, err := range store.Runs(ctx, agent.RunFilter{}) {
+		if err != nil {
+			t.Fatal(err)
+		}
+		runs = append(runs, r)
 		set[r] = true
 	}
 	if !set[r1] || !set[r2] {

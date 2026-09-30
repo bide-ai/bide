@@ -20,9 +20,12 @@ func (e *sagaTrip) Error() string { return fmt.Sprintf("saga step %q failed: %v"
 
 // SagaAborted is returned by RunSaga when a step failed and the transaction was rolled
 // back. Compensated lists tools whose side effects were undone (reverse of execution,
-// including sub-agent trees). Uncompensated lists completed WRITES that had no compensator
-// — dangling side effects needing manual cleanup. CompensateErr is non-nil if a
-// compensator itself failed: rollback stopped, so writes before it remain uncompensated.
+// including sub-agent trees). Uncompensated lists the writes the rollback did not undo: a
+// completed write with no compensator, a call whose outcome is unknown (the rollback halted on it,
+// with a *ResumeHalt in CompensateErr, whether or not it has a compensator), or a call whose tool
+// is no longer registered. They are side effects that may need manual cleanup. CompensateErr is
+// non-nil if the rollback stopped (a compensator failed, or an outcome is unknown), so writes
+// before it remain uncompensated.
 type SagaAborted struct {
 	RunID         string
 	Cause         error
@@ -34,7 +37,7 @@ type SagaAborted struct {
 func (e *SagaAborted) Error() string {
 	msg := fmt.Sprintf("saga %s aborted (%v); compensated %v", e.RunID, e.Cause, e.Compensated)
 	if len(e.Uncompensated) > 0 {
-		msg += fmt.Sprintf("; UNCOMPENSATED writes (no compensator) %v", e.Uncompensated)
+		msg += fmt.Sprintf("; UNCOMPENSATED writes %v", e.Uncompensated)
 	}
 	if e.CompensateErr != nil {
 		msg += fmt.Sprintf("; rollback INCOMPLETE: %v", e.CompensateErr)

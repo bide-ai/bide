@@ -26,9 +26,9 @@ import (
 // guarantee mutual exclusion against a holder that stalls past its TTL, which is why the claim, not
 // the lease, is what keeps side effects at-most-once.
 //
-// The base Durable contract does not require leasing, and MemStore's implementation is in-process
-// (for tests and as the reference); the cross-process payoff is a shared backend (store/postgres)
-// implementing this with an atomic upsert over a leases table.
+// The Store port does not require leasing. MemStore's implementation is in-process (for tests and
+// as the reference), SQLite's coordinates the processes sharing one database file, and Postgres's
+// the nodes sharing one database, each with an atomic upsert over a leases table.
 type Leaser interface {
 	// AcquireLease claims runID for holder until now+ttl. It returns true if granted (the run is
 	// unleased or the live lease is already holder's, which renews it), false if another holder
@@ -59,6 +59,7 @@ func (m *MemStore) heldByOther(runID, holder string, now time.Time) bool {
 func (m *MemStore) AcquireLease(_ context.Context, runID, holder string, ttl time.Duration) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.init()
 	now := m.now()
 	if m.heldByOther(runID, holder, now) {
 		return false, nil
@@ -71,6 +72,7 @@ func (m *MemStore) AcquireLease(_ context.Context, runID, holder string, ttl tim
 func (m *MemStore) RenewLease(_ context.Context, runID, holder string, ttl time.Duration) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.init()
 	now := m.now()
 	cur, ok := m.leases[runID]
 	if !ok || cur.holder != holder || !now.Before(cur.expiry) {
@@ -114,7 +116,7 @@ func Lease(ctx context.Context, store Durable, runID string, drive func(context.
 	if err != nil {
 		return false, err
 	}
-	leaser, ok := Capability[Leaser](store)
+	leaser, ok := capabilityOf[Leaser](store)
 	if !ok {
 		return true, drive(ctx) // no leasing available: drive unconditionally
 	}

@@ -6,13 +6,48 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
-	"github.com/bide-ai/bide/agent/durabletest"
+	"github.com/bide-ai/bide/agent/storetest"
 )
 
 // The crash-injecting wrapper, when it does not crash, hands back its inner store's record
 // unchanged, so live and replay agree through it as they do on the store itself.
 func TestCrashStore_Fidelity(t *testing.T) {
-	durabletest.Run(t, func(*testing.T) agent.Durable { return &crashStore{inner: agent.NewMemStore()} })
+	storetest.RunDurable(t, func(*testing.T) agent.Durable { return &crashStore{inner: agent.NewMemStore()} })
+}
+
+// The storage-port crash wrapper, when it does not crash, is a store like any other.
+func TestCrashingStore_MeetsTheStoreRequirements(t *testing.T) {
+	m := agent.NewMemStore()
+	cs := &crashingStore{inner: m}
+	storetest.Run(t, func(*testing.T) agent.Store { return cs })
+}
+
+// After its crash the storage-port wrapper is dead: the crashed entry is not stored, and every
+// later call fails without reaching the store.
+func TestCrashingStore_StaysDeadAfterTheCrash(t *testing.T) {
+	ctx := context.Background()
+	inner := agent.NewMemStore()
+	cs := &crashingStore{inner: inner, crashAt: 2}
+	if _, _, err := cs.Insert(ctx, "r", "a", []byte("1")); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := cs.Insert(ctx, "r", "a", []byte("1")); err != nil {
+		t.Fatalf("an Insert that stores nothing is not a write, but it failed: %v", err)
+	}
+	if _, _, err := cs.Insert(ctx, "r", "b", []byte("2")); !errors.Is(err, errCrash) {
+		t.Fatalf("write 2: err = %v, want the injected crash", err)
+	}
+	if _, ok, _ := inner.Get(ctx, "r", "b"); ok {
+		t.Fatal("the crashed write was stored")
+	}
+	if _, _, err := cs.Get(ctx, "r", "a"); !errors.Is(err, errCrash) {
+		t.Fatalf("a read after the crash returned %v, want the crash", err)
+	}
+	for _, err := range cs.Load(ctx, "r", -1) {
+		if !errors.Is(err, errCrash) {
+			t.Fatalf("a Load after the crash yielded %v, want the crash", err)
+		}
+	}
 }
 
 // A crash is the process dying: after the injected crash, the wrapper runs nothing and persists
@@ -41,8 +76,9 @@ func TestCrashStore_StaysDeadAfterTheCrash(t *testing.T) {
 	if second {
 		t.Fatal("a step after the crash ran its side effect")
 	}
-	if recs, _ := inner.History(ctx, "r"); len(recs) != 0 {
-		t.Fatalf("%d records persisted after the crash, want 0", len(recs))
+	// The journal header is written before any step runs; no step's record is.
+	if recs, _ := inner.History(ctx, "r"); len(recs) > 1 || len(recs) == 1 && recs[0].Kind != agent.StepHeader {
+		t.Fatalf("%d records persisted after the crash, want none but the journal header", len(recs))
 	}
 }
 

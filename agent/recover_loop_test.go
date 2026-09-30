@@ -3,7 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
-	"slices"
+	"iter"
 	"sync"
 	"testing"
 	"testing/synctest"
@@ -128,11 +128,11 @@ func (c *countingStore) AcquireLease(ctx context.Context, runID, holder string, 
 	return c.MemStore.AcquireLease(ctx, runID, holder, ttl)
 }
 
-func (c *countingStore) Runs(ctx context.Context) ([]string, error) {
+func (c *countingStore) Runs(ctx context.Context, f RunFilter) iter.Seq2[string, error] {
 	c.mu.Lock()
 	c.lists++
 	c.mu.Unlock()
-	return c.MemStore.Runs(ctx)
+	return c.MemStore.Runs(ctx, f)
 }
 
 func (c *countingStore) acquires(runID string) int {
@@ -300,9 +300,9 @@ func TestRecoverLoop_EveryPassReachesEveryRun(t *testing.T) {
 }
 
 func testRecoverLoopEveryPassReachesEveryRun(t *testing.T) {
-	s := sortedStore{NewMemStore()}
+	s := NewMemStore() // lists its runs in order, as the SQL stores do
 	for _, id := range []string{"a1", "a2", "a3", "a4", "z"} {
-		seedRun(t, s.MemStore, id)
+		seedRun(t, s, id)
 	}
 	zDriven := make(chan struct{})
 	var once sync.Once
@@ -320,13 +320,4 @@ func testRecoverLoopEveryPassReachesEveryRun(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("run z was never driven: the halted runs listed before it took the only slot on every pass")
 	}
-}
-
-// sortedStore is a MemStore that lists its runs in order, as the SQL stores do.
-type sortedStore struct{ *MemStore }
-
-func (s sortedStore) Runs(ctx context.Context) ([]string, error) {
-	ids, err := s.MemStore.Runs(ctx)
-	slices.Sort(ids)
-	return ids, err
 }

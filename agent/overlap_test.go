@@ -171,11 +171,11 @@ func TestClaimAttempt_SingleDriverWins(t *testing.T) {
 	ctx := context.Background()
 	store := NewMemStore()
 	won, got, err := ClaimAttempt(ctx, store, "r1", "attempt:c1", Record{Kind: StepAttempt, ToolUseID: "c1"})
-	if err != nil || !won || got.Claim == "" {
-		t.Fatalf("first claim: won=%v claim=%q err=%v, want won with a claim id", won, got.Claim, err)
+	if err != nil || !won || got.claim == "" {
+		t.Fatalf("first claim: won=%v claim=%q err=%v, want won with a claim id", won, got.claim, err)
 	}
 	again, got2, err := ClaimAttempt(ctx, store, "r1", "attempt:c1", Record{Kind: StepAttempt, ToolUseID: "c1"})
-	if err != nil || again || got2.Claim != got.Claim {
-		t.Fatalf("second claim: won=%v claim=%q err=%v, want lost to the first claim %q", again, got2.Claim, err, got.Claim)
+	if err != nil || again || got2.claim != got.claim {
+		t.Fatalf("second claim: won=%v claim=%q err=%v, want lost to the first claim %q", again, got2.claim, err, got.claim)
 	}
 }

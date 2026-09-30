@@ -44,6 +44,9 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 	if err := a.checkTools(); err != nil {
 		return Message{}, usageTotals{}, 0, err
 	}
+	if err := checkDurable(a.store); err != nil {
+		return Message{}, usageTotals{}, 0, err
+	}
 	fire := func(e AgentEvent) {
 		if emit != nil {
 			emit(e)
@@ -51,15 +54,15 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 	}
 	toolH := a.toolHandler() // tool-middleware chain, built once for this run
 
-	recs, err := a.store.History(ctx, runID)
+	recs, err := openRun(ctx, a.store, runID)
 	if err != nil {
-		return Message{}, usageTotals{}, 0, fmt.Errorf("load history %s: %w (%w)", runID, err, ErrStorage)
+		return Message{}, usageTotals{}, 0, err
 	}
 	// The run's input (the seed's last message: the user turn it answers) and entry point are
 	// recorded on its first drive, and every later drive of an unfinished run is held to them
 	// (see RunStart). A finished run is final and returns below without consulting either.
 	if _, finished := completedAnswer(recs); !finished {
-		if err := holdToStart(ctx, a.store, runID, RunStart{Input: seed[len(seed)-1].Text(), Saga: saga}); err != nil {
+		if err := holdToStart(ctx, a.store, runID, recs, RunStart{Input: seed[len(seed)-1].Text(), Saga: saga}); err != nil {
 			return Message{}, usageTotals{}, 0, err
 		}
 	}
@@ -129,6 +132,10 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 	// A call's attempt markers count unless recorded as never started (see attempt.go).
 	for _, r := range liveAttempts(recs) {
 		if isToolAttempt(r) { // a Step's marker is not a call's
+			// An attempt this process claimed and could not record as not started: record it now.
+			if j := journalOf(a.store); j != nil && !done[r.ToolUseID] && j.retryNotStarted(ctx, runID, r.Name, r) {
+				continue
+			}
 			attempted[r.ToolUseID] = true
 			attemptedAtMs[r.ToolUseID] = r.AttemptedAt
 		}
@@ -277,9 +284,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 			// can skip this run (see IsComplete / Recover). Appended only at the terminal,
 			// so it never shifts an earlier record's index; at-most-once by name, so a
 			// replay of a finished run does not add a second one.
-			if _, err := a.store.Do(ctx, runID, runCompleteStep, func(context.Context) (Record, error) {
-				return Record{Kind: StepValue}, nil
-			}); err != nil {
+			if _, err := putRecord(ctx, a.store, runID, runCompleteStep, Record{Kind: StepValue}); err != nil {
 				return Message{}, tot, liveTurns, fmt.Errorf("mark complete (run %s): %w (%w)", runID, err, ErrStorage)
 			}
 			fire(Finished{Final: asst})
@@ -344,9 +349,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 			}
 			if denied { // record a denial and let the model react
 				const deniedResult = `"tool call denied by human"`
-				if _, err := a.store.Do(ctx, runID, ToolResultStep(tu.ID), func(context.Context) (Record, error) {
-					return Record{Kind: StepToolResult, ToolUseID: tu.ID, IsError: true, Result: json.RawMessage(deniedResult)}, nil
-				}); err != nil {
+				if _, err := putRecord(ctx, a.store, runID, ToolResultStep(tu.ID), Record{Kind: StepToolResult, ToolUseID: tu.ID, IsError: true, Result: json.RawMessage(deniedResult)}); err != nil {
 					return Message{}, tot, liveTurns, err
 				}
 				done[tu.ID] = true
@@ -467,7 +470,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 				// side effect is left with no recorded outcome and resume would halt on it (or, worse,
 				// re-fire it). The attempt marker above stays on gctx: if we are cancelled before it
 				// commits, the tool has not started, so there is nothing to record.
-				rec, err := a.store.Do(context.WithoutCancel(gctx), runID, ToolResultStep(c.tu.ID), func(context.Context) (Record, error) {
+				rec, err := recordFresh(context.WithoutCancel(gctx), a.store, runID, ToolResultStep(c.tu.ID), func(context.Context) (Record, error) {
 					if err := sctx.Err(); claimed && err != nil {
 						// Cancelled after the claim and before the call: the tool is not called,
 						// and that is recorded below, so a resume calls it instead of halting.
@@ -516,6 +519,13 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 						// nothing, so a resume re-enters the sub-run (see subRunUnfinished).
 						var subUnfinished *subRunUnfinished
 						if errors.As(callErr, &subUnfinished) {
+							return Record{}, callErr
+						}
+						// A Step inside the call refused to pause (see Step): record nothing, so
+						// the step's marker halts the call's next attempt. It is checked ahead of the
+						// pauses below: it wraps no pause, and a pause joined with it must not turn it
+						// into a retry-safe pause that re-runs the call.
+						if _, stepPause := errors.AsType[*stepPauseError](callErr); stepPause {
 							return Record{}, callErr
 						}
 						// Any other pause (an Interrupt, a durable Sleep, an Await) pauses the run:
@@ -574,6 +584,9 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 					}
 					if sctx.Err() != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
 						return err // a cancellation, not a tool fault: surface it as one
+					}
+					if stepPause := (*stepPauseError)(nil); errors.As(err, &stepPause) {
+						return err // a misconfigured Step (ErrConfig), not a tool fault
 					}
 					return fmt.Errorf("tool %q: %w (%w)", c.tu.Name, err, ErrTool)
 				}

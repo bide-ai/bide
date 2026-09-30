@@ -746,12 +746,12 @@ middleware، مُحوّلات النموذج، باني تدفّق `plan`، `aud
 
 ## البنية (Architecture)
 
-سُداسية بالبناء (Hexagonal): تعرّف النواة المنافذ (`Model`، `Durable`، `Tool`، `Middleware`)؛ وتُوصَل
+سُداسية بالبناء (Hexagonal): تعرّف النواة المنافذ (`Model`، `Store`، `Tool`، `Middleware`)؛ وتُوصَل
 المُحوّلات عند الحواف. التبعيات تشير إلى الداخل؛ والنواة لا تستورد أي مُحوّل ولا أي بنية تحتية، محروسة بـ
 `architecture_test.go`.
 
 ```
-agent (root)     durable loop · Message/Part · Tool/Safety · Durable · middleware types · RenderMermaid
+agent (root)     durable loop · Journal/Store · Message/Part · Tool/Safety · middleware types · RenderMermaid
 plan             optional typed flow builder + declarative config; lowers to the loop (Topology · Conform)
 model/anthropic  native Claude (thinking + signatures)
 model/openai     any OpenAI-compatible endpoint
@@ -851,7 +851,7 @@ gsm، ProofBundle). ويُذكَر ضمان المعمورية الدقيق في
 
 **المرجع والبنية الداخلية**
 
-- **[نقاط التوسعة](../../docs/reference/extension-points.md)**: المنافذ والمُحوّلات (`Model`، `Durable`،
+- **[نقاط التوسعة](../../docs/reference/extension-points.md)**: المنافذ والمُحوّلات (`Model`، `Store`،
   `Tool`، `Compensator`، `Retriever`، `Anchor`، `EventStore`)، مع جولة «نفّذ مخزنك الخاص».
 - **[كيف يُتحقَّق من bide](../../docs/testing/verification.md)**: لا إصلاح بلا اختبار فاشل، وفحوص الطفرات،
   ومسوح الانهيار والإلغاء، والتشابكات المفروضة، وأجنحة المطابقة، وما يفرضه الـ CI.

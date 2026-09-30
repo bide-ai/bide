@@ -12,7 +12,7 @@ reference adapters that ship with it.
 | Port | Package | What it abstracts | Reference adapter(s) |
 |---|---|---|---|
 | `Model` | root | the provider (LLM) primitive | `model/anthropic`, `model/openai`, `model/gemini` |
-| `Durable` | root | the crash-safe journal substrate | `MemStore`, `store/sqlite`, `store/postgres` |
+| `Store` | root | the crash-safe journal substrate, under `Journal` | `MemStore`, `store/sqlite`, `store/postgres` |
 | `Tool` | root | an action the agent can take | `Func`, `CompensatedFunc`, `mcp` tools |
 | `Compensator` | root | how a tool undoes its side effect (sagas) | `CompensatedFunc` |
 | `Retriever` | root | bring-your-own RAG | your store; wired via `RetrievalTool` / `WithRetrieval` |
@@ -76,64 +76,94 @@ adapter can use too.
 `New(apiKey, opts...)` returning a `*Model` that satisfies the port, with options like
 `WithModel`, `WithMaxTokens`, and `WithPromptCache` (Anthropic).
 
-## `Durable`: the crash-safe substrate
+## `Store`: the crash-safe substrate
 
 <!-- docsnip: api agent -->
 ```go
-type Durable interface {
-	// Do returns the recorded Record for (runID, name) without running fn if present;
-	// otherwise runs fn, records the returned Record (with Name set and a fresh Salt: persist
-	// the bytes JournalEntry returns), and returns it. A recorded Record is read back with
-	// DecodeStoredRecord, which refuses a row whose record names another step.
-	// If fn errors, nothing is recorded; the step re-runs on the next attempt. Once fn has
-	// returned a record, Do records it even if ctx was cancelled meanwhile.
-	Do(ctx context.Context, runID, name string, fn func(context.Context) (Record, error)) (Record, error)
-	// History returns all recorded steps for a run, in order, each read back with
-	// DecodeStoredRecord under the name it is stored under.
-	History(ctx context.Context, runID string) ([]Record, error)
+type Store interface {
+	// Insert stores data under (runID, name) if no entry has that name, and returns the stored
+	// entry (the caller's, or the one already there) and whether this call stored it.
+	Insert(ctx context.Context, runID, name string, data []byte) (Entry, bool, error)
+	// Get returns runID's entry named name, if there is one.
+	Get(ctx context.Context, runID, name string) (Entry, bool, error)
+	// Load yields runID's entries whose Seq is greater than after (-1 for all of them), in
+	// ascending Seq.
+	Load(ctx context.Context, runID string, after int64) iter.Seq2[Entry, error]
+}
+
+type Entry struct {
+	Seq  int64 // opaque; strictly increasing in commit order within the run
+	Name string
+	Data []byte
 }
 ```
 
-`Durable` is named-step memoization: `Do` runs a step **at most once** per `(runID, name)`.
-A recorded step returns its `Record` without re-running `fn`; if `fn` errors, nothing is
-recorded, so the step re-runs on the next attempt. `History` returns the ordered `Record`
-sequence, which is the run's full replayable history. The side-effect-safety layer (`Safety`
-/ `OutcomeUnknown`) sits *above* this and is substrate-agnostic.
+A `Store` is a dumb, append-only set of named entries per run. It stores bytes and knows nothing
+of what they mean. Everything with meaning lives in the `agent.Journal` above it
+(`agent.NewJournal(store)`): the record encoding and its salt, named-step memoization, the journal
+format header, the attempt claims that keep side effects at most once, and recording a step's
+outcome after its caller's context is cancelled. So a new backend implements three methods and
+gets every engine guarantee without reimplementing any of them.
 
-**Reference adapters.** `agent.NewMemStore()` is the in-memory implementation for tests and
-local dev (it single-flights concurrent `Do` on the same `(runID, name)` so a side effect
-cannot fire twice under in-process concurrency). `store/sqlite.Open(path)` and
-`store/postgres.Open(ctx, dsn)` are persistent backends; a real store enforces at-most-once
-across processes with a primary key / `ON CONFLICT` on `(run_id, name)`. `store/postgres` runs
-every write in a transaction at read committed that it sets itself, so a deployment whose
-`default_transaction_isolation` is repeatable read or serializable does not change how it
-records steps or leases.
+**Requirements.** The Journal relies on these, and `agent/storetest` checks each one:
+
+- **A1, unique names, linearizable insert.** At most one entry per `(runID, name)`. Concurrent
+  Inserts of one name, from any number of processes, have exactly one winner, and every caller and
+  every later reader sees the winner's bytes. Which entry `(runID, name)` names does not depend on
+  the context: a tenant carried in the context and mixed into the keys breaks the journal, which
+  remembers runs by run ID; put the tenant in the run ID instead (`RunFilter.Prefix`).
+- **A2, commit-ordered, prefix-closed visibility.** `Seq` is strictly increasing in commit order
+  within a run, and every read returns a prefix of the run's final order: no entry ever becomes
+  visible with a lower `Seq` than one already visible. Gaps are allowed; nothing reads `Seq` as a
+  count.
+- **A3, durable before return.** Insert reports `inserted` only after the commit. On an error the
+  entry is either absent or complete, and the same bytes may be inserted again.
+- **A4, read-your-writes, monotone visibility.** Once visible, an entry stays visible with the same
+  bytes and position.
+- **A5, byte fidelity.** Data comes back exactly as inserted.
+- **A6, immutable.** No update or delete; only a redaction may replace an entry's bytes with a
+  tombstone, in a run that is over.
+- **A7, context.** Every method honors `ctx`.
+- **A8, iterator hygiene.** Breaking out of `Load` releases everything it holds, and a store holds
+  no connection, transaction or lock across a `yield`, so a caller may write inside its loop.
+
+**Optional capabilities.** A store may also implement `Lister` (`Runs(ctx, RunFilter)`, which a
+recovery supervisor needs; a SQL store evaluates the filter in its query) and `Leaser` (run leases
+that coordinate drivers). `agent.Capability[T](store)` finds them, looking through wrappers that
+implement `Unwrap() Store`. Only a wrapper that passes run IDs and names through unchanged may
+implement `Unwrap`; one that rewrites keys (a tenant prefix, say) implements each capability
+itself. `storetest.CheckWrapper(t, wrap, ctxA, ctxB)` checks this, and that the wrapper's keys do
+not depend on the context; give it at least two contexts that differ in the values your wrapper
+reads from a context. A wrapper whose `Do` and `History` come from `MemStore` or a SQL store (it
+embeds one, directly or through another wrapper, or embeds an `agent.Durable`) while its `Insert`,
+`Get` or `Load` comes from elsewhere would have every write bypass those methods: the engine
+refuses it with `ErrConfig`, so use it through `agent.NewJournal(wrapper)`.
+
+**Reference adapters.** `agent.NewMemStore()` is the in-memory implementation for tests and local
+dev. `store/sqlite.Open(path)` (one machine; three connection pools: a writer, readers, and a lease
+connection) and `store/postgres.Open(ctx, dsn)` (any number of nodes) are the persistent backends;
+each also has `New(ctx, db)` for a `*sql.DB` you opened, and `WithTablePrefix` (tables are
+`bide_steps`, `bide_leases` and `bide_schema_version` by default). All three implement `Lister` and
+`Leaser`. `store/postgres` runs every write in a transaction at read committed that it sets
+itself, so a deployment whose `default_transaction_isolation` is repeatable read or serializable
+does not change how it records steps or leases.
+
+**Transition.** The engine's functions still take the `Durable` interface (`Do` and `History`),
+which `*agent.Journal` implements; `MemStore` and the SQL stores also implement it, through a
+Journal over themselves, so existing code keeps working. `Durable` and those store methods are
+removed by the 1.0 rewrite.
 
 ### Implement your own store
 
-A `Durable` must satisfy three invariants:
-
-- **At most once.** `Do` records the result of `fn` under `(runID, name)` and never runs `fn` a
-  second time once a result is recorded.
-- **Live equals replay.** The `Record` that `Do` returns on the live path must be exactly the
-  record a later `History` or memoized `Do` reads back. Store the bytes `agent.JournalEntry`
-  returns (the record in its journal encoding, `agent.EncodeRecord`, with its name and a fresh
-  random salt set; the `audit` package refuses to commit a record without a salt) and hand out
-  only their decoded form (`agent.DecodeStoredRecord`), never the caller's own `Record`. A store that returned the caller's record live but a decoded copy on
-  replay would let a resumed run rebuild a different conversation than the one it was having.
-- **A row is the step it is stored under.** Read every record back with
-  `agent.DecodeStoredRecord(runID, name, b)`, passing the name the row is stored under. It refuses
-  (`ErrStorage`) a row whose record names another step, such as a row edited or copied in the
-  database, which the engine would otherwise read as that other step. Unknown fields still decode.
-
-Here is a small in-memory implementation that meets all three (the same shape as `MemStore`, minus
-its single-flight of concurrent callers on one step):
+Here is a small in-memory implementation (the same shape as `MemStore`):
 
 ```go
 package mystore
 
 import (
+	"bytes"
 	"context"
+	"iter"
 	"sync"
 
 	"github.com/bide-ai/bide/agent"
@@ -141,88 +171,110 @@ import (
 
 type Store struct {
 	mu   sync.Mutex
-	runs map[string]map[string][]byte // runID -> name -> encoded record
-	ord  map[string][]string          // runID -> names in insertion order
+	runs map[string][]agent.Entry // runID -> entries in Seq order
 }
 
-func New() *Store {
-	return &Store{runs: map[string]map[string][]byte{}, ord: map[string][]string{}}
-}
+func New() *Store { return &Store{runs: map[string][]agent.Entry{}} }
 
-var _ agent.Durable = (*Store)(nil) // port/adapter contract
+var _ agent.Store = (*Store)(nil) // port/adapter contract
 
-func (s *Store) Do(ctx context.Context, runID, name string,
-	fn func(context.Context) (agent.Record, error)) (agent.Record, error) {
-
-	s.mu.Lock()
-	if b, ok := s.runs[runID][name]; ok {
-		s.mu.Unlock()
-		return agent.DecodeStoredRecord(runID, name, b) // memoized: do NOT re-run fn
+func (s *Store) Insert(ctx context.Context, runID, name string, data []byte) (agent.Entry, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return agent.Entry{}, false, err
 	}
-	s.mu.Unlock()
-
-	rec, err := fn(ctx) // run without holding the lock (fn may do model/tool I/O)
-	if err != nil {
-		return agent.Record{}, err // not recorded: re-runs on the next attempt
-	}
-	b, err := agent.JournalEntry(name, rec) // the journal form a replay reads, name and salt set
-	if err != nil {
-		return agent.Record{}, err
-	}
-
-	s.mu.Lock()
-	byName := s.runs[runID]
-	if byName == nil {
-		byName = map[string][]byte{}
-		s.runs[runID] = byName
-	}
-	if existing, ok := byName[name]; ok { // a concurrent write landed first
-		b = existing
-	} else {
-		byName[name] = b
-		s.ord[runID] = append(s.ord[runID], name)
-	}
-	s.mu.Unlock()
-	return agent.DecodeStoredRecord(runID, name, b) // the stored form, never the caller's rec
-}
-
-func (s *Store) History(ctx context.Context, runID string) ([]agent.Record, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	names := s.ord[runID]
-	out := make([]agent.Record, 0, len(names))
-	for _, n := range names {
-		rec, err := agent.DecodeStoredRecord(runID, n, s.runs[runID][n])
-		if err != nil {
-			return nil, err
+	for _, e := range s.runs[runID] {
+		if e.Name == name { // A1: the first insert of a name wins
+			e.Data = bytes.Clone(e.Data)
+			return e, false, nil
 		}
-		out = append(out, rec)
 	}
-	return out, nil
+	e := agent.Entry{Seq: int64(len(s.runs[runID])), Name: name, Data: bytes.Clone(data)}
+	s.runs[runID] = append(s.runs[runID], e)
+	e.Data = bytes.Clone(e.Data)
+	return e, true, nil
+}
+
+func (s *Store) Get(ctx context.Context, runID, name string) (agent.Entry, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return agent.Entry{}, false, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, e := range s.runs[runID] {
+		if e.Name == name {
+			e.Data = bytes.Clone(e.Data)
+			return e, true, nil
+		}
+	}
+	return agent.Entry{}, false, nil
+}
+
+func (s *Store) Load(ctx context.Context, runID string, after int64) iter.Seq2[agent.Entry, error] {
+	return func(yield func(agent.Entry, error) bool) {
+		if err := ctx.Err(); err != nil {
+			yield(agent.Entry{}, err)
+			return
+		}
+		s.mu.Lock()
+		snap := s.runs[runID] // entries are only appended, so the snapshot stays valid
+		s.mu.Unlock()         // A8: no lock held across a yield
+		for _, e := range snap {
+			if e.Seq > after {
+				e.Data = bytes.Clone(e.Data)
+				if !yield(e, nil) {
+					return
+				}
+			}
+		}
+	}
 }
 ```
 
-For a cross-process backend, replace the maps with your database and let a unique constraint
-on `(run_id, name)` enforce the at-most-once write: on a conflicting insert, read back and
-return the already-stored record instead of the one `fn` just produced. Persist the
-`agent.JournalEntry` bytes and decode them on every read.
+Use it through a Journal, which goes wherever a store goes (`agent.New(model, j)`,
+`agent.Step(ctx, j, ...)`, `agent.Recover(ctx, j, ...)`):
 
-**Check it with the conformance suite.** `agent/durabletest` holds every store to the
-live-equals-replay property: it feeds `Do` records whose encoding is easy to get wrong
-(HTML-significant characters, U+2028, NUL, invalid UTF-8, unusual number forms, key order) and
-requires the live, memoized, and `History` records to be identical and in canonical form. It also
-requires a fresh salt on every record, a record journaled even when the caller's context was
-cancelled while `fn` ran, and nothing recorded for a step whose `fn` fails. Run it from a test in
-your store's package:
-
-<!-- docsnip: setup mystore struct{ New func() agent.Durable } -->
+<!-- docsnip: setup mystore struct{ New func() agent.Store }; returns error -->
 ```go
-func TestMyStore_Durable(t *testing.T) {
-	durabletest.Run(t, func(t *testing.T) agent.Durable { return mystore.New() })
+j, err := agent.NewJournal(mystore.New())
+if err != nil {
+	return err
 }
+_ = j
 ```
 
-`MemStore`, `store/sqlite`, and `store/postgres` all run it.
+For a SQL backend, let a primary key on `(run_id, name)` enforce A1 (`INSERT ... ON CONFLICT DO
+NOTHING`, then read back the stored row), assign `seq` in the insert under a per-run lock so it
+follows commit order (A2), read `Load` in pages with no connection held between them (A8), and
+store `data` as bytes, never as JSON or text (A5).
+
+**Check it with the conformance suite.** `agent/storetest` checks every requirement above
+(including 64 goroutines racing one name through three handles), the journal format header, and
+the record-fidelity cases (records whose encoding is easy to get wrong: HTML-significant
+characters, U+2028, NUL, invalid UTF-8, unusual number forms, key order). `open` may be called
+several times; every handle it returns must reach the same data:
+
+```go
+package mystore_test
+
+import (
+	"testing"
+
+	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/storetest"
+)
+
+func TestMyStore(t *testing.T) {
+	s := New()
+	storetest.Run(t, func(*testing.T) agent.Store { return s })
+}
+
+func New() agent.Store { return agent.NewMemStore() } // your store here
+```
+
+`MemStore`, `store/sqlite`, and `store/postgres` all run it. (`agent/durabletest` is its former
+name, kept for the transition.)
 
 ## `Tool`: an action the agent can take
 

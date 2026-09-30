@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"iter"
 	"math/rand/v2"
 	"sync"
 	"testing"
@@ -20,35 +21,64 @@ import (
 // driver resumes by re-running the same runID against the same store. The invariant:
 // charge() executes at most once, and the run always ends completed or in *ResumeHalt.
 
-// crashStore fails to persist the crashAt-th write (0 = never), simulating a process
-// crash at that point: the record is not recorded and the run unwinds. On resume a fresh
-// crashStore with crashAt=0 lets the run finish.
+// crashStore fails the crashAt-th Insert that would store a new entry (0 = never), simulating a
+// process crash at that point: the entry is not stored, and the process is dead from then on, so
+// every later call fails too and the run unwinds. It works at the storage port, under a Journal
+// (see crashJournal), so a crash can land between any two store round trips the engine makes: the
+// journal header, a claim, a not-started record, a result. On resume a fresh journal over the
+// same store (a new process) lets the run finish.
 type crashStore struct {
-	inner   Durable
+	inner   Store
 	mu      sync.Mutex
 	writes  int
 	crashAt int
+	crashed bool
 }
 
-func (c *crashStore) Do(ctx context.Context, runID, name string, fn func(context.Context) (Record, error)) (Record, error) {
-	return c.inner.Do(ctx, runID, name, func(ctx context.Context) (Record, error) {
-		rec, err := fn(ctx) // the real work (incl. any side effect) runs here
-		if err != nil {
-			return rec, err
-		}
-		c.mu.Lock()
-		c.writes++
-		w := c.writes
-		c.mu.Unlock()
-		if c.crashAt > 0 && w == c.crashAt {
-			return Record{}, errCrash // crash: record is NOT persisted
-		}
-		return rec, nil
-	})
+func (c *crashStore) dead() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.crashed
 }
 
-func (c *crashStore) History(ctx context.Context, runID string) ([]Record, error) {
-	return c.inner.History(ctx, runID)
+func (c *crashStore) Insert(ctx context.Context, runID, name string, data []byte) (Entry, bool, error) {
+	if c.dead() {
+		return Entry{}, false, errCrash
+	}
+	if e, ok, err := c.inner.Get(ctx, runID, name); err != nil || ok {
+		return e, false, err // stores nothing: not a write
+	}
+	c.mu.Lock()
+	c.writes++
+	crash := c.crashAt > 0 && c.writes == c.crashAt
+	if crash {
+		c.crashed = true
+	}
+	c.mu.Unlock()
+	if crash {
+		return Entry{}, false, errCrash // crash: the entry is NOT stored
+	}
+	return c.inner.Insert(ctx, runID, name, data)
+}
+
+func (c *crashStore) Get(ctx context.Context, runID, name string) (Entry, bool, error) {
+	if c.dead() {
+		return Entry{}, false, errCrash
+	}
+	return c.inner.Get(ctx, runID, name)
+}
+
+func (c *crashStore) Load(ctx context.Context, runID string, after int64) iter.Seq2[Entry, error] {
+	if c.dead() {
+		return func(yield func(Entry, error) bool) { yield(Entry{}, errCrash) }
+	}
+	return c.inner.Load(ctx, runID, after)
+}
+
+// crashJournal returns a Journal, a new process, over mem's store behind a crashStore that crashes
+// at its crashAt-th write.
+func crashJournal(mem Durable, crashAt int) Durable {
+	return newJournal(&crashStore{inner: mem.(Store), crashAt: crashAt})
 }
 
 // dstModel: call charge until there's a tool result in the conversation, then answer.
@@ -95,7 +125,7 @@ func (t chargeTool) Call(context.Context, json.RawMessage) (json.RawMessage, err
 }
 
 func runOnce(mem Durable, tool chargeTool, afterAnswer *int, crashAt int) error {
-	a := New(dstModel{afterAnswer: afterAnswer}, &crashStore{inner: mem, crashAt: crashAt}, tool).SetMaxConcurrency(1)
+	a := New(dstModel{afterAnswer: afterAnswer}, crashJournal(mem, crashAt), tool).SetMaxConcurrency(1)
 	out, err := a.Run(context.Background(), "dst", "charge me")
 	if err == nil && textOf(out) != "done" {
 		return fmt.Errorf("completed run answered %q, want done", textOf(out))

@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"iter"
 	"testing"
 	"time"
 )
@@ -39,7 +40,7 @@ type countingLister struct {
 	listed bool
 }
 
-func (l *countingLister) Runs(ctx context.Context) ([]string, error) {
+func (l *countingLister) Runs(ctx context.Context, f RunFilter) iter.Seq2[string, error] {
 	l.listed = true
-	return l.MemStore.Runs(ctx)
+	return l.MemStore.Runs(ctx, f)
 }

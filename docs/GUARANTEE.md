@@ -99,6 +99,16 @@ says happened. A drive uses the configuration it is given for:
   the side effect happens outside the store, where no token could be checked, so only a claim
   written before the effect can stop a second one; see
   [known limitations](KNOWN-LIMITATIONS.md#durability-and-recovery).
+- **The journal must be in a format this version reads.** Every run's journal starts with a header
+  naming its journal format (`agent.JournalFormat`), written before the run's first record. A
+  version refuses, before reading or writing anything, a run whose header names a format it does
+  not support, or whose journal has no header first (one written before the header existed), with
+  `*agent.JournalVersionError`. So an older binary never adds records to a run a newer one
+  started, and no journal is read under rules it was not written for. Before 1.0 every release
+  writes the one dev tag `bide.journal.v1-dev`, which is not bumped when the keys or the record
+  shape change between pre-releases, so resuming a run across pre-releases is not guaranteed
+  (see [known limitations](KNOWN-LIMITATIONS.md#stores)). 1.0 writes `bide.journal.v1` and refuses
+  every pre-release journal.
 - **The tool must declare its safety accurately.** `ReadOnly` re-runs freely, `Idempotent`
   retries, and only an unmarked non-idempotent write gets the attempt-marker/halt treatment.
   Mislabel a card-charge as idempotent and you have opted out of the protection.

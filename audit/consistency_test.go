@@ -81,12 +81,12 @@ func TestConsistency_JournalAppendOnly(t *testing.T) {
 	}
 	add("s0", "a")
 	add("s1", "b")
-	rootEarly, _ := Root(ctx, store, "run") // commitment at size 2
+	rootEarly, _ := Root(ctx, store, "run") // commitment at size 3: the journal header, s0, s1
 	add("s2", "c")
 	add("s3", "d")
-	rootNow, _ := Root(ctx, store, "run") // size 4
+	rootNow, _ := Root(ctx, store, "run") // size 5
 
-	proof, err := ProveConsistency(ctx, store, "run", 2)
+	proof, err := ProveConsistency(ctx, store, "run", 3)
 	if err != nil {
 		t.Fatal(err)
 	}

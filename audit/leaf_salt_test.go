@@ -41,8 +41,10 @@ func TestNeighbourLeafNotGuessable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(b.Inclusion.Path) != 1 {
-		t.Fatalf("audit path has %d hashes, want 1", len(b.Inclusion.Path))
+	// Leaves: the journal header, toolu_A, toolu_B. toolu_A's path is the header's leaf, then
+	// toolu_B's.
+	if len(b.Inclusion.Path) != 2 {
+		t.Fatalf("audit path has %d hashes, want 2", len(b.Inclusion.Path))
 	}
 	// The auditor holds only b and guesses the neighbour: its name and ID follow from the proven
 	// record, its result is one of two values. Every way the auditor can hash a guess, with what
@@ -60,8 +62,10 @@ func TestNeighbourLeafNotGuessable(t *testing.T) {
 		sum := sha256.Sum256(append([]byte{0}, enc...))
 		tries = append(tries, sum[:])
 		for _, h := range tries {
-			if bytes.Equal(h, b.Inclusion.Path[0]) {
-				t.Errorf("the undisclosed neighbour %s was confirmed from the bundle's audit path", guess)
+			for _, p := range b.Inclusion.Path {
+				if bytes.Equal(h, p) {
+					t.Errorf("the undisclosed neighbour %s was confirmed from the bundle's audit path", guess)
+				}
 			}
 		}
 	}
@@ -69,13 +73,13 @@ func TestNeighbourLeafNotGuessable(t *testing.T) {
 	// The bundle discloses its own record's salt, which its leaf needs, and verifies; the same
 	// record under any other salt does not.
 	pub := priv.Public().(ed25519.PublicKey)
-	if len(b.Record.Salt) != agent.SaltSize {
-		t.Fatalf("the bundle's record carries a %d-byte salt, want %d", len(b.Record.Salt), agent.SaltSize)
+	if len(b.Record.Salt()) != agent.SaltSize {
+		t.Fatalf("the bundle's record carries a %d-byte salt, want %d", len(b.Record.Salt()), agent.SaltSize)
 	}
 	if ok, err := b.Verify(pub); !ok || err != nil {
 		t.Fatalf("bundle does not verify: %v, %v", ok, err)
 	}
-	b.Record.Salt = bytes.Repeat([]byte{9}, agent.SaltSize)
+	b.Record = withSalt(b.Record, bytes.Repeat([]byte{9}, agent.SaltSize))
 	if ok, _ := b.Verify(pub); ok {
 		t.Fatal("a bundle verified with its record's salt changed")
 	}
@@ -95,7 +99,7 @@ func (recordsStore) Do(context.Context, string, string, func(context.Context) (a
 func TestUnsaltedRecordRefused(t *testing.T) {
 	ctx := context.Background()
 	for _, salt := range [][]byte{nil, make([]byte, agent.SaltSize-1), make([]byte, agent.SaltSize+1)} {
-		st := recordsStore{{Name: "s", Kind: agent.StepValue, Result: json.RawMessage(`1`), Salt: salt}}
+		st := recordsStore{withSalt(agent.Record{Name: "s", Kind: agent.StepValue, Result: json.RawMessage(`1`)}, salt)}
 		if _, err := Root(ctx, st, "r"); err == nil || !strings.Contains(err.Error(), "salt") {
 			t.Errorf("Root over a record with a %d-byte salt = %v, want a salt error", len(salt), err)
 		}
@@ -130,17 +134,18 @@ func TestLeafFormats(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	recs, _ := st.History(ctx, "r")
+	all, _ := st.History(ctx, "r")
+	recs := all[1:] // after the journal header
 	enc, _ := agent.EncodeRecord(recs[0])
-	want := fmt.Sprintf(`{"name":"s","kind":"value","result":"v","salt":"%s"}`, base64.StdEncoding.EncodeToString(recs[0].Salt))
+	want := fmt.Sprintf(`{"name":"s","kind":"value","result":"v","salt":"%s"}`, base64.StdEncoding.EncodeToString(recs[0].Salt()))
 	if string(enc) != want {
 		t.Fatalf("journal encoding = %s, want %s", enc, want)
 	}
-	if root, _ := Root(ctx, st, "r"); !bytes.Equal(root, h("bide.audit.journal-leaf.v1\x00", string(enc))) {
+	if root, _ := Root(ctx, recordsStore(recs), "r"); !bytes.Equal(root, h("bide.audit.journal-leaf.v1\x00", string(enc))) {
 		t.Error("a journal leaf does not hash as SHA-256(0x00 || \"bide.audit.journal-leaf.v1\\x00\" || EncodeRecord(record))")
 	}
 
-	keyRecs := recordsStore{{Name: "c", Kind: agent.StepToolResult, ToolUseID: "c", Salt: recs[0].Salt}}
+	keyRecs := recordsStore{withSalt(agent.Record{Name: "c", Kind: agent.StepToolResult, ToolUseID: "c"}, recs[0].Salt())}
 	if root := AbsenceRoot(keyRecs, ToolUseKeys); !bytes.Equal(root, h("bide.audit.key-leaf.v1\x00", "tooluse:c")) {
 		t.Error("a key leaf does not hash as SHA-256(0x00 || \"bide.audit.key-leaf.v1\\x00\" || key)")
 	}
@@ -157,14 +162,14 @@ func TestLeafFormats(t *testing.T) {
 
 	// A projected event's salt is SHA-256("bide.audit.event-salt.v1\x00" || its record's salt), the
 	// salt of the record it projects, not of a record before it that projects no event.
-	toolRec := agent.Record{Name: "c", Kind: agent.StepToolResult, ToolUseID: "c", Result: json.RawMessage(`1`), Salt: recs[0].Salt}
-	valueRec := agent.Record{Name: "v", Kind: agent.StepValue, Result: json.RawMessage(`2`), Salt: bytes.Repeat([]byte{5}, agent.SaltSize)}
+	toolRec := withSalt(agent.Record{Name: "c", Kind: agent.StepToolResult, ToolUseID: "c", Result: json.RawMessage(`1`)}, recs[0].Salt())
+	valueRec := withSalt(agent.Record{Name: "v", Kind: agent.StepValue, Result: json.RawMessage(`2`)}, bytes.Repeat([]byte{5}, agent.SaltSize))
 	projected, err := EventLogFromJournal(ctx, recordsStore{valueRec, toolRec}, "r")
 	if err != nil {
 		t.Fatal(err)
 	}
 	pp, _ := projected.Prove(0)
-	if !bytes.Equal(pp.Salt, h2("bide.audit.event-salt.v1\x00", string(recs[0].Salt))) {
+	if !bytes.Equal(pp.Salt, h2("bide.audit.event-salt.v1\x00", string(recs[0].Salt()))) {
 		t.Error("a projected event's salt is not SHA-256(\"bide.audit.event-salt.v1\\x00\" || record salt)")
 	}
 

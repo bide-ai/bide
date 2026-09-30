@@ -28,7 +28,7 @@ func TestDo_WaitsOutABusyWriter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := tx.Exec(`INSERT INTO steps (run_id, seq, name, data) VALUES ('other', 0, 'x', '{}')`); err != nil {
+	if _, err := tx.Exec(`INSERT INTO bide_steps (run_id, seq, name, data) VALUES ('other', 0, 'x', '{}')`); err != nil {
 		t.Fatal(err)
 	}
 	go func() { time.Sleep(6 * time.Second); tx.Commit() }()

@@ -167,8 +167,9 @@ func TestRefModel_HaltHoldsNoSiblingOutsideASaga(t *testing.T) {
 	sc := &rmScenario{MaxConc: 1, Root: rmScr("S0", 0, rmTurn(rmC("c1", rmSub, rmRuns(sub)), rmC("c5", rmFX)))}
 	w := newRMWorld(sc, rmReference(sc), false)
 	mem := agent.NewMemStore()
-	// run:start, @llm/0, S1 run:start, S1 @llm/0, attempt:c3, c3 <- fails: c3 fired, its result is lost.
-	if _, err := w.agents(&rmCrashStore{inner: mem, crashAt: 6}, &rmModel{w: w}).Run(context.Background(), rmRunID, "S0"); !errors.Is(err, errRMCrash) {
+	// @journal, run:start, @llm/0, S1 @journal, S1 run:start, S1 @llm/0, attempt:tool:c3,
+	// tool:c3 <- fails: c3 fired, its result is lost.
+	if _, err := w.agents(rmJournal(&rmCrashStore{inner: mem, crashAt: 8}), &rmModel{w: w}).Run(context.Background(), rmRunID, "S0"); !errors.Is(err, errRMCrash) {
 		t.Fatalf("first drive: %v, want the injected failure", err)
 	}
 	_, err := w.agents(mem, &rmModel{w: w}).Run(context.Background(), rmRunID, "S0")

@@ -91,8 +91,8 @@ func TestPostgres_ConcurrentStepsUnderStricterDefaultIsolation(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(hist) != steps {
-				t.Fatalf("History has %d records, want %d", len(hist), steps)
+			if len(hist) != steps+1 { // the journal header, then the steps
+				t.Fatalf("History has %d records, want the header and %d", len(hist), steps)
 			}
 		})
 	}
@@ -324,7 +324,11 @@ func TestPostgres_BlockedInsertSeesTheWinnersCommit(t *testing.T) {
 				}
 				done := make(chan result, 1)
 				go func() {
-					n, err := s.insert(ctx, runID, tc.step, []byte("loser"))
+					_, inserted, err := s.insert(ctx, runID, tc.step, []byte("loser"))
+					n := int64(0)
+					if inserted {
+						n = 1
+					}
 					done <- result{n, err}
 				}()
 				waitForAdvisoryWaiter(t, admin, runID)

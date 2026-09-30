@@ -145,8 +145,8 @@ func verifyPath(root, leaf []byte, index, size int, path [][]byte) bool {
 // A record with invalid UTF-8 in a string field is refused too (see checkUTF8): encoding replaces
 // those bytes, so its leaf would collide with another record's.
 func canonicalRecord(r agent.Record) ([]byte, error) {
-	if len(r.Salt) != agent.SaltSize {
-		return nil, fmt.Errorf("record %q has a %d-byte salt, want %d (a store sets it when it journals the record; see agent.JournalEntry)", r.Name, len(r.Salt), agent.SaltSize)
+	if len(r.Salt()) != agent.SaltSize {
+		return nil, fmt.Errorf("record %q has a %d-byte salt, want %d (a store sets it when it journals the record; see agent.JournalEntry)", r.Name, len(r.Salt()), agent.SaltSize)
 	}
 	if err := checkUTF8(r); err != nil {
 		return nil, err

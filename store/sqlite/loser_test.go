@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/internal/journalhook"
 )
 
 // flipCtx reports itself cancelled after lim Done calls, so a sweep over lim lands the
@@ -58,11 +59,11 @@ func TestDo_LoserIsNeverToldItWon(t *testing.T) {
 			}
 			ctx.n.Store(0)
 			ctx.lim.Store(lim)
-			return agent.Record{Kind: agent.StepAttempt, Claim: "B"}, nil
+			return journalhook.WithClaim(agent.Record{Kind: agent.StepAttempt}, "B").(agent.Record), nil
 		})
-		if err == nil && got.Claim == "B" {
-			h, _ := a.History(context.Background(), "r")
-			t.Errorf("cancel after %d checks: the losing driver was told it won; the journal holds claim %q", lim, h[0].Claim)
+		if err == nil && got.ClaimID() == "B" {
+			rec, _, _ := a.Journal().Get(context.Background(), "r", "attempt:x")
+			t.Errorf("cancel after %d checks: the losing driver was told it won; the journal holds claim %q", lim, rec.ClaimID())
 		}
 		b.Close()
 		a.Close()

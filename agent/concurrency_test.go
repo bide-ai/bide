@@ -35,8 +35,8 @@ func TestMemStore_SingleFlight(t *testing.T) {
 		t.Fatalf("fn ran %d times under 64 concurrent same-key Do, want 1 (single-flight)", n)
 	}
 	h, _ := store.History(context.Background(), "run")
-	if len(h) != 1 {
-		t.Fatalf("history len %d, want 1", len(h))
+	if len(h) != 2 { // the journal header, then the step
+		t.Fatalf("history len %d, want the header and 1", len(h))
 	}
 }
 
@@ -111,7 +111,7 @@ func TestMemStore_ConcurrentDistinctKeys(t *testing.T) {
 	wg.Wait()
 
 	h, _ := store.History(context.Background(), "run")
-	if len(h) != 100 {
-		t.Fatalf("history len %d, want 100 distinct steps", len(h))
+	if len(h) != 101 { // the journal header, then the steps
+		t.Fatalf("history len %d, want the header and 100 distinct steps", len(h))
 	}
 }

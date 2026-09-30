@@ -218,7 +218,7 @@ func TestLoadEventLog_RefusesUnsaltedLeaves(t *testing.T) {
 func TestEventLogFromJournal_RefusesUnsaltedRecords(t *testing.T) {
 	ctx := context.Background()
 	h := toolResults(2)
-	h[1].Salt = nil
+	h[1] = withSalt(h[1], nil)
 	if _, err := audit.EventLogFromJournal(ctx, h, "run"); err == nil {
 		t.Error("EventLogFromJournal projected an unsalted record")
 	}

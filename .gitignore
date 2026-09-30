@@ -41,3 +41,7 @@ examples/approval/approver-keys.json
 !/internal/strictjson/
 !/internal/mermaid/
 !/internal/tools/
+!/internal/journalhook/
+
+# a journal file written by v0.7.0, the fixture of store/sqlite's legacy-file test
+!/store/sqlite/testdata/v070.db

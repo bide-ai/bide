@@ -128,9 +128,9 @@ Each record maps to a node in run order:
 - `StepApproval` -> `approved ✓` or `denied ✗`
 - `StepValue` -> `step: <name>` (a user-authored durable step, or the run's `run:start` and
   `run:complete` records)
-- `StepAttempt` and `StepNotStarted` records are skipped: they are the internal
-  side-effect-safety marker and the record that an attempt never started, not part of the visual
-  flow.
+- `StepHeader`, `StepAttempt` and `StepNotStarted` records are skipped: they are the journal
+  header, the internal side-effect-safety marker and the record that an attempt never started, not
+  part of the visual flow.
 
 The chart opens with a `start([user])` node and closes with a `done([done])` node.
 
@@ -165,8 +165,8 @@ flowchart TD
 
 Replay (section 1) re-drives one run you already have the ID for. After a real crash the
 harder question is which runs were in flight at all: the durable store holds them, but the
-base `Durable` port is `Do` + `History(runID)` only, with no way to enumerate. Recovery adds
-that missing piece and a supervisor that uses it.
+base `Store` port is `Insert`, `Get` and `Load(runID)` only, with no way to enumerate. Recovery
+adds that missing piece and a supervisor that uses it.
 
 The durable store is the source of truth. A run's full state lives in its journal, so
 recovery is enumerate-then-re-drive, nothing more:
@@ -174,7 +174,14 @@ recovery is enumerate-then-re-drive, nothing more:
 <!-- docsnip: api agent -->
 ```go
 type Lister interface {
-	Runs(ctx context.Context) ([]string, error)
+	// Runs yields the IDs of the runs f admits, in ascending byte order.
+	Runs(ctx context.Context, f RunFilter) iter.Seq2[string, error]
+}
+
+type RunFilter struct {
+	After          string   // cursor: only run IDs after this one
+	Prefix         string   // a tenant or namespace, by run-ID prefix
+	ExcludeHolding []string // drop runs holding an entry with any of these names
 }
 
 func IsComplete(ctx context.Context, store Durable, runID string) (bool, error)
@@ -186,17 +193,20 @@ The options (`WithLeaseHolder`, `WithLeaseTTL`) apply when the store also implem
 `Recover` then drives each run under a per-run lease and skips runs another holder leases (see
 [known limitations](../KNOWN-LIMITATIONS.md) for what the lease does and does not guarantee).
 
-`Lister` is an OPTIONAL capability, kept off the base `Durable` interface on purpose:
-memoization and replay are the crash-safety core, and enumeration is a separate,
-backend-specific concern (a SQL store lists with a query; the base contract stays minimal).
-A store opts in by implementing `Runs`; `Recover` finds it with `agent.Capability`, which also
-looks through wrappers that implement `Unwrap() Durable` (such as `audit.AuditedStore`), and
-returns an `ErrConfig`-wrapped error if the store cannot enumerate.
+`Lister` is an OPTIONAL capability, kept off the base `Store` interface on purpose: memoization
+and replay are the crash-safety core, and enumeration is a separate, backend-specific concern (a
+SQL store lists with a query; the base contract stays minimal). `MemStore`, `store/sqlite` and
+`store/postgres` implement it. A store opts in by implementing `Runs`; `Recover` finds it with
+`agent.Capability`, which also looks through wrappers that implement `Unwrap() Store` (and, for the
+transition, `Unwrap() Durable`, such as `audit.AuditedStore`), and returns an `ErrConfig`-wrapped
+error if the store cannot enumerate.
 
-`Recover` enumerates every run, skips the ones already finished, every sub-agent run
-(`agent.IsSubRun`; its root's re-run resumes it) and every session journal and turn run
-(`agent.IsSessionRun`; the session resumes a turn when its message is sent again), and calls
-`resume` for each remaining run to push it forward:
+`Recover` asks the store for the runs that are not over: its filter excludes every run holding a
+terminal marker (`run:complete`, `run:aborted`, `run:cancelled`), which a SQL store evaluates in
+its query, a page of 500 run IDs at a time, so a pass reads none of the finished runs. It skips
+every sub-agent run (`agent.IsSubRun`; its root's re-run resumes it) and every session journal and
+turn run (`agent.IsSessionRun`; the session resumes a turn when its message is sent again), and
+calls `resume` for each remaining run to push it forward:
 
 <!-- docsnip: setup ctx context.Context; store agent.Durable; a *agent.Agent; waker agent.Waker; func startFor(runID string) agent.RunStart -->
 ```go
@@ -246,8 +256,8 @@ are not failures. On shutdown it waits for the drives it started to return.
 
 **The completion marker lets it skip finished runs.** When a run returns its final answer,
 the loop records one terminal `StepValue` named `run:complete` (it renders as
-`step: run:complete` in the Mermaid graph above). `IsComplete` checks for it, and `Recover`
-skips any run that has it. The marker is appended only at the terminal and is at-most-once by
+`step: run:complete` in the Mermaid graph above). `IsComplete` checks for it, and `Recover`'s
+filter excludes any run that has it. The marker is appended only at the terminal and is at-most-once by
 name, so a replayed run never adds a second one and no earlier record's index shifts. A run
 that crashed after journaling its final answer but before the marker is not skipped; re-driving
 it writes the marker from the recorded answer without calling the model.
@@ -275,9 +285,12 @@ lease per run before driving it and skips a run another holder currently leases,
 recoverers do not both re-drive one run (redundant, and a hazard when the store's `Do` is not
 cross-process atomic). A crash lets the lease expire (default 30s, `WithLeaseTTL`) and another
 process's `RecoverLoop` takes over; that expiry-and-takeover is the high-availability property. `MemStore`
-implements `Leaser` in-process (the reference and for tests); the cross-process backend is a shared
-store (`store/postgres`) implementing it with an atomic upsert over a leases table. Without
-`Leaser`, `Recover` drives every enumerated run, safe under at-most-once memoization, just redundant.
+implements `Leaser` in-process (the reference and for tests); `store/sqlite` implements it for the
+processes sharing one database file, on a connection of its own with a short busy timeout, so a
+writer holding the file's lock does not delay a renewal past its cutoff; `store/postgres`
+implements it for any number of nodes. Each uses an atomic upsert over a leases table, with expiry
+computed from the database's clock. Without `Leaser` (a custom store), `Recover` drives every
+enumerated run, safe under at-most-once claims, just redundant.
 A live primary driver wraps `Agent.Run` in `agent.Lease(ctx, store, runID, drive, ...)`, which holds
 the same lease, so a recoverer never grabs a run a worker is actively driving; recovery and primary
 driving coordinate through one mechanism (`Recover` itself drives each run via `Lease`).

@@ -120,8 +120,8 @@ func TestSQLite_DoMemoizesAndHistory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(h) != 1 || h[0].Name != "step" {
-		t.Fatalf("history = %+v, want one step named 'step'", h)
+	if len(h) != 2 || h[0].Kind != agent.StepHeader || h[1].Name != "step" {
+		t.Fatalf("history = %+v, want the journal header and one step named 'step'", h)
 	}
 }
 

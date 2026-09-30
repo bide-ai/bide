@@ -232,6 +232,10 @@ blob, _  := json.Marshal(bundle)                                      // store /
 ok, _ := bundle.Verify(pub)   // checks STH signature, kind and run binding, size binding, and inclusion
 ```
 
+A record's index is its position in the run's journal, where the journal header (the record named
+`@journal`, which names the journal format) is always leaf 0; prove records by what they are
+(`ProveToolCall`, `ProveStep`) rather than by index where you can.
+
 `Verify` fails closed on a forged record, a proof not bound to the signed size, a head that is not
 a journal head of the bundle's `RunID`, or the wrong key. The public key must come from the anchor operator, not the bundle: that is what makes it
 **proofs you verify, not logs you trust.**
@@ -371,7 +375,8 @@ command line. `audit.ProveApproval` proves a single decision by its record name.
 The `bide-audit` command ([`cmd/bide-audit`](../../cmd/bide-audit)) is the auditor-facing
 front end for the whole proof surface. It is dependency-light: it imports only the core and `audit`
 packages and no store backend, so every produce verb operates on an **exported journal** (a JSON
-array of `Record`, obtained with `json.Marshal(store.History(ctx, runID))`) plus a signed tree head,
+array of `Record`, obtained with `json.Marshal(store.History(ctx, runID))`, whose first record is
+the journal header) plus a signed tree head,
 and every verify verb needs only a bundle and an out-of-band public key. Build it with
 `go build ./cmd/bide-audit`.
 

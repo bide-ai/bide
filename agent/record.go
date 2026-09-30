@@ -24,6 +24,10 @@ const (
 	// effect, written by the driver that claimed it (see attempt.go). That attempt then no
 	// longer halts a resume, and the effect is re-attempted under a new marker.
 	StepNotStarted StepKind = "not_started"
+	// StepHeader is the journal header: the first record of every run's journal, named "@journal",
+	// whose Format names the journal format the run is written in (see JournalFormat). The
+	// journal writes it before a run's first record and checks it before reading any other.
+	StepHeader StepKind = "header"
 )
 
 // Record is one durably-recorded, named event. The ordered sequence of Records for a
@@ -66,18 +70,92 @@ type Record struct {
 	// a message id, a log line). It is carried on the reconciled result and signed with it,
 	// so the verdict and its basis live in the journal beside the outcome.
 	Evidence json.RawMessage `json:"evidence,omitempty"`
-	// Claim is the random id of the driver that wrote an attempt marker (see ClaimAttempt).
-	// A driver runs the side effect only if the marker it gets back carries its own claim, so
-	// two drivers of the same run can never both run it, whatever their leases say.
+	// Format is the journal format a StepHeader record names (see JournalFormat). Empty on every
+	// other kind.
+	Format string `json:"format,omitempty"`
+	// Redacted marks a record whose stored bytes a redaction replaced with a tombstone, the
+	// reserved form {"redacted":{"leaf_hash":"<hex>","at_ms":<ms>}}: the hex audit leaf hash of
+	// the bytes it replaced and the Unix-millis time of the redaction. Only Name is meaningful on
+	// such a record, and Raw returns the tombstone. It is never journaled: the tombstone is what the
+	// store holds. A run holding a redacted record is over and cannot be driven again.
+	Redacted bool `json:"-"`
+
+	// claim is the random id of the driver that wrote an attempt marker (see ClaimAttempt and
+	// ClaimID). A driver runs the side effect only if the marker it gets back carries its own
+	// claim, so two drivers of the same run can never both run it, whatever their leases say.
+	claim string
+	// salt is SaltSize random bytes the journal sets when it first records the record (see Salt
+	// and JournalEntry).
+	salt []byte
+	// raw is the bytes the record was decoded from (see Raw).
+	raw []byte
+}
+
+// ClaimID returns the random id of the driver that wrote this attempt marker or not-started record
+// (see ClaimAttempt), or "" for any other record. The journal sets it when it records the marker,
+// and it is read back verbatim.
+func (r Record) ClaimID() string { return r.claim }
+
+// Salt returns the record's salt: SaltSize random bytes the journal sets when it first records the
+// record (see JournalEntry), replacing any salt the step returned. It is persisted with the record
+// and read back verbatim, so it is stable across replay and across stores. It has no meaning to
+// the run; the audit trail needs it. An audit leaf commits to the record's journal encoding, salt
+// included, and an inclusion proof for one record carries its neighbours' leaf hashes, so without
+// the salt anyone holding a proof could confirm a guessed neighbour (an approval, a small tool
+// result) by hashing it. The salt is disclosed only with its own record. The returned slice is a
+// copy, nil for a record built in memory.
+func (r Record) Salt() []byte { return bytes.Clone(r.salt) }
+
+// Raw returns the bytes the store holds for the record, verbatim, for a record read back from a
+// journal (Journal.Get, Journal.History, Journal.Records, or a Durable's Do and History). It is
+// nil for a record built in memory. The returned slice is a copy.
+func (r Record) Raw() []byte { return bytes.Clone(r.raw) }
+
+// recordFields is Record without its methods, so the JSON codec's default struct encoding applies
+// to it (see recordWire).
+type recordFields Record
+
+// recordWire is a record's journal encoding: its exported fields, then its claim and salt. Those
+// two are unexported so no caller can change them, and are written last, where they have always
+// been.
+type recordWire struct {
+	*recordFields
 	Claim string `json:"claim,omitempty"`
-	// Salt is SaltSize random bytes a store sets when it first journals the record (see
-	// JournalEntry), replacing any salt the step returned. It is persisted with the record and
-	// read back verbatim, so it is stable across replay and across stores. It has no meaning to
-	// the run; the audit trail needs it. An audit leaf commits to the record's journal encoding,
-	// salt included, and an inclusion proof for one record carries its neighbours' leaf hashes, so
-	// without the salt anyone holding a proof could confirm a guessed neighbour (an approval, a
-	// small tool result) by hashing it. The salt is disclosed only with its own record.
-	Salt []byte `json:"salt,omitempty"`
+	Salt  []byte `json:"salt,omitempty"`
+}
+
+// MarshalJSON returns the record's JSON encoding, claim and salt included, without HTML escaping
+// (see EncodeRecord for the canonical form a store persists).
+func (r Record) MarshalJSON() ([]byte, error) { return marshalRecord(r) }
+
+// UnmarshalJSON decodes a record from its JSON encoding, claim and salt included.
+func (r *Record) UnmarshalJSON(b []byte) error {
+	back, err := unmarshalRecord(b)
+	if err != nil {
+		return err
+	}
+	*r = back
+	return nil
+}
+
+// marshalRecord is the journal encoding of r, written through its wire form so that no Marshaler
+// method runs inside another.
+func marshalRecord(r Record) ([]byte, error) {
+	return marshalJournal(recordWire{recordFields: (*recordFields)(&r), Claim: r.claim, Salt: r.salt})
+}
+
+// unmarshalRecord decodes a record from its journal encoding. Its raw bytes are not set.
+func unmarshalRecord(b []byte) (Record, error) {
+	if h := decodeHook.Load(); h != nil {
+		(*h)(b)
+	}
+	var f recordFields
+	w := recordWire{recordFields: &f}
+	if err := json.Unmarshal(b, &w); err != nil {
+		return Record{}, err
+	}
+	f.claim, f.salt, f.raw = w.Claim, w.Salt, nil
+	return Record(f), nil
 }
 
 // markerTime is the time an attempt marker's AttemptedAt records, or the zero time when it records
@@ -102,20 +180,13 @@ const SaltSize = 32
 // record carries a salt; the audit package refuses to commit a record without one. It errors
 // only if the system's random source fails or rec cannot be encoded.
 func JournalEntry(name string, rec Record) ([]byte, error) {
-	var back Record
-	b, _, err := journalEntry(name, rec, &back)
-	return b, err
-}
-
-// journalEntry is JournalEntry that also sets *back and reports stable as encodeRecord does.
-func journalEntry(name string, rec Record, back *Record) (b []byte, stable bool, err error) {
 	salt := make([]byte, SaltSize)
 	if _, err := rand.Read(salt); err != nil {
-		return nil, false, fmt.Errorf("salt step %q: %w (%w)", name, err, ErrStorage)
+		return nil, fmt.Errorf("salt step %q: %w (%w)", name, err, ErrStorage)
 	}
 	rec.Name = name
-	rec.Salt = salt
-	return encodeRecord(rec, back)
+	rec.salt = salt
+	return EncodeRecord(rec)
 }
 
 // EncodeRecord returns the journal encoding of r: the bytes a store persists for it and the
@@ -144,52 +215,37 @@ func journalEntry(name string, rec Record, back *Record) (b []byte, stable bool,
 // (message text, a reasoning signature), invalid UTF-8 becomes U+FFFD, as encoding/json writes
 // it; since the stores hand out only the decoded form, the live and replayed conversations agree.
 func EncodeRecord(r Record) ([]byte, error) {
-	var back Record
-	b, _, err := encodeRecord(r, &back)
-	return b, err
-}
-
-// encodeRecord is EncodeRecord that also sets *back to the record its first pass decoded and
-// reports whether that is DecodeRecord of the bytes returned (stable). It is when both passes
-// wrote the same bytes: DecodeRecord depends on nothing but its input, so decoding the returned
-// bytes again would build exactly *back, and a caller that needs that record (MemStore.Do) can
-// skip the decode. When the passes differ, *back must not stand in for the bytes' decoding.
-func encodeRecord(r Record, back *Record) (b []byte, stable bool, err error) {
-	first, err := marshalJournal(r)
+	b, err := marshalRecord(r)
 	if err != nil {
-		return nil, false, err
+		return nil, err
 	}
-	// One decode and re-encode reaches the fixed point. The first pass may write invalid UTF-8 in
-	// a Go string field as the JSON escape for U+FFFD (a GOEXPERIMENT=nojsonv2 build does), which
-	// decodes to a valid U+FFFD that a later pass writes verbatim; every other part of the
-	// encoding is already stable.
-	*back, err = DecodeRecord(first)
+	// One decode and re-encode reaches the fixed point. The first pass writes invalid UTF-8 in a
+	// Go string field as U+FFFD: as its JSON escape when built with GOEXPERIMENT=nojsonv2, which
+	// decodes to a valid U+FFFD that a later pass writes verbatim. Every other part of the encoding
+	// is already stable, so an encoding with no such escape is the fixed point.
+	if !bytes.Contains(b, []byte(jsonEscape+"fffd")) {
+		return b, nil
+	}
+	back, err := unmarshalRecord(b)
 	if err != nil {
-		return nil, false, err
+		return nil, fmt.Errorf("decode stored record: %w (%w)", err, ErrStorage)
 	}
-	b, err = marshalJournal(*back)
-	if err != nil {
-		return nil, false, err
-	}
-	return b, bytes.Equal(first, b), nil
+	return marshalRecord(back)
 }
 
 // DecodeRecord decodes a record from its journal encoding (see EncodeRecord) into an independent
-// copy that shares no memory with b.
-func DecodeRecord(b []byte) (Record, error) {
-	if h := decodeHook.Load(); h != nil {
-		(*h)(b)
-	}
-	var r Record
-	if err := json.Unmarshal(b, &r); err != nil {
+// copy that shares no memory with b. The record's Raw is a copy of b.
+func DecodeRecord(b []byte) (Record, error) { return decodeRecord(bytes.Clone(b)) }
+
+// decodeRecord is DecodeRecord for bytes the record may keep as its Raw: bytes nothing modifies.
+func decodeRecord(b []byte) (Record, error) {
+	r, err := unmarshalRecord(b)
+	if err != nil {
 		return Record{}, fmt.Errorf("decode stored record: %w (%w)", err, ErrStorage)
 	}
+	r.raw = b
 	return r, nil
 }
-
-// decodeHook, when set (by tests only), is called with the bytes of every DecodeRecord, so a test
-// can count the decodes a code path makes.
-var decodeHook atomic.Pointer[func([]byte)]
 
 // DecodeStoredRecord decodes the record a store holds for the step name of run runID (see
 // DecodeRecord) and checks that the record carries that name. Every record is journaled with the
@@ -201,11 +257,20 @@ var decodeHook atomic.Pointer[func([]byte)]
 // the store's contents are wrong, whatever wrote them. Fields this version does not know still
 // decode, so a journal a newer version wrote stays readable.
 //
-// Every Durable implementation must read a record back through it, in Do and in History, or hand
-// back a record known to be what it returns (MemStore.Do keeps the decoding it made while
-// encoding the record it writes, when that is the stored bytes' decoding, and checks the name).
+// A redaction tombstone (see Record.Redacted) decodes as a record that carries only its name.
+//
+// Every Durable implementation must read a record back through it, in Do and in History.
 func DecodeStoredRecord(runID, name string, b []byte) (Record, error) {
-	r, err := DecodeRecord(b)
+	return decodeStored(runID, name, bytes.Clone(b))
+}
+
+// decodeStored is DecodeStoredRecord for bytes the record may keep as its Raw: bytes nothing
+// modifies, such as an entry a store handed the journal.
+func decodeStored(runID, name string, b []byte) (Record, error) {
+	if isTombstone(b) {
+		return Record{Name: name, Redacted: true, raw: b}, nil
+	}
+	r, err := decodeRecord(b)
 	if err != nil {
 		return Record{}, fmt.Errorf("run %s, step %q: %w", runID, name, err)
 	}
@@ -231,10 +296,10 @@ func marshalJournal(v any) ([]byte, error) {
 		return nil, err
 	}
 	b := bytes.TrimSuffix(buf.Bytes(), []byte("\n"))
-	// bytes.ReplaceAll copies b even when there is nothing to replace. Both separators start with
-	// the byte 0xE2, so an encoding that holds neither, as most do, skips both copies.
-	if bytes.IndexByte(b, lineSep[0]) >= 0 {
+	if bytes.Contains(b, []byte(lineSep)) {
 		b = bytes.ReplaceAll(b, []byte(lineSep), []byte(jsonEscape+"2028"))
+	}
+	if bytes.Contains(b, []byte(paraSep)) {
 		b = bytes.ReplaceAll(b, []byte(paraSep), []byte(jsonEscape+"2029"))
 	}
 	return b, nil
@@ -245,3 +310,31 @@ const (
 	paraSep    = "\xe2\x80\xa9" // U+2029 PARAGRAPH SEPARATOR, UTF-8 encoded
 	jsonEscape = "\x5cu"        // a backslash and u: the prefix of a JSON \uXXXX escape
 )
+
+// decodeHook, when set (by tests only), is called with the bytes of every record decoded from its
+// journal encoding, so a test can count the decodes a code path makes.
+var decodeHook atomic.Pointer[func([]byte)]
+
+// tombstone is the reserved form of a redaction tombstone (see Record.Redacted).
+type tombstone struct {
+	Redacted *struct {
+		LeafHash string `json:"leaf_hash"`
+		AtMs     int64  `json:"at_ms"`
+	} `json:"redacted"`
+}
+
+// isTombstone reports whether b is a redaction tombstone: a JSON object whose only member is
+// "redacted", holding a leaf hash. A record's encoding always starts with its "name" member, so
+// no record is ever read as a tombstone.
+func isTombstone(b []byte) bool {
+	if !bytes.HasPrefix(b, []byte(`{"redacted":`)) {
+		return false
+	}
+	var t tombstone
+	dec := json.NewDecoder(bytes.NewReader(b))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&t); err != nil || dec.More() {
+		return false
+	}
+	return t.Redacted != nil && t.Redacted.LeafHash != ""
+}

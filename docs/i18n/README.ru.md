@@ -530,10 +530,10 @@ Bide представляет собой репозиторий с нескол�
 
 ## Архитектура
 
-Гексагональная по построению: ядро определяет порты (`Model`, `Durable`, `Tool`, `Middleware`); адаптеры подключаются по краям. Зависимости указывают внутрь; ядро не импортирует ни одного адаптера и никакой инфраструктуры, что охраняется `architecture_test.go`.
+Гексагональная по построению: ядро определяет порты (`Model`, `Store`, `Tool`, `Middleware`); адаптеры подключаются по краям. Зависимости указывают внутрь; ядро не импортирует ни одного адаптера и никакой инфраструктуры, что охраняется `architecture_test.go`.
 
 ```
-agent (root)     durable loop · Message/Part · Tool/Safety · Durable · middleware types · RenderMermaid
+agent (root)     durable loop · Journal/Store · Message/Part · Tool/Safety · middleware types · RenderMermaid
 plan             optional typed flow builder + declarative config; lowers to the loop (Topology · Conform)
 model/anthropic  native Claude (thinking + signatures)
 model/openai     any OpenAI-compatible endpoint
@@ -590,7 +590,7 @@ tool := govern.EventTool(gov, "pay", "mark the order paid", "pay", agent.Safety{
 
 **Справочник и внутреннее устройство**
 
-- **[Точки расширения](../../docs/reference/extension-points.md)**: порты и адаптеры (`Model`, `Durable`, `Tool`, `Compensator`, `Retriever`, `Anchor`, `EventStore`), с разбором реализации собственного хранилища.
+- **[Точки расширения](../../docs/reference/extension-points.md)**: порты и адаптеры (`Model`, `Store`, `Tool`, `Compensator`, `Retriever`, `Anchor`, `EventStore`), с разбором реализации собственного хранилища.
 - **[Как проверяется bide](../../docs/testing/verification.md)**: никаких исправлений без падающего теста, мутационные проверки, прогоны сбоев и отмен, принудительные чередования, наборы тестов соответствия и то, что обеспечивает CI.
 - **[Тестирование и свидетельства](../../docs/testing/testing.md)**: что тестируется и как, бенчмарк хаотической инъекции сбоев, дифференциальные оракулы, соответствие RFC 6962 и граница между доказуемым и статистическим в пакете `eval`.
 - **[Уплотнение журнала](../../docs/design/compaction.md)** (проектная заметка): уплотнение неограниченного журнала без поломки доказательств включения и согласованности хребта аудита.

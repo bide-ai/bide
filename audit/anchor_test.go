@@ -87,9 +87,10 @@ func TestAuditedStore_AnchorsEachStep(t *testing.T) {
 
 	recs, _ := jStore.History(ctx, "run")
 	entries := anchorLog.Entries()
-	// One anchored STH per journal growth (each step grows the journal by one).
-	if len(entries) != len(recs) || len(entries) == 0 {
-		t.Fatalf("anchored %d entries, want %d (one per step)", len(entries), len(recs))
+	// One anchored STH per journal growth: each step grows the journal by one, and the first
+	// also writes the journal header.
+	if len(entries) != len(recs)-1 || len(entries) == 0 {
+		t.Fatalf("anchored %d entries, want %d (one per step)", len(entries), len(recs)-1)
 	}
 	// Sizes are monotonically increasing.
 	for i := 1; i < len(entries); i++ {
@@ -161,8 +162,9 @@ func TestAuditedStore_NoReanchorOnResume(t *testing.T) {
 		t.Fatal("expected the injected crash to fail the run")
 	}
 	crashRecs, _ := jStore.History(ctx, "run")
-	if anchorLog.Len() != len(crashRecs) {
-		t.Fatalf("post-crash anchored %d, want one per record (%d)", anchorLog.Len(), len(crashRecs))
+	// One per record, the journal header aside: it lands with the first step.
+	if anchorLog.Len() != len(crashRecs)-1 {
+		t.Fatalf("post-crash anchored %d, want one per record (%d)", anchorLog.Len(), len(crashRecs)-1)
 	}
 
 	// Resume: replayed steps must NOT re-anchor; only the final turn adds one.
@@ -170,7 +172,7 @@ func TestAuditedStore_NoReanchorOnResume(t *testing.T) {
 		t.Fatalf("resume: %v", err)
 	}
 	finalRecs, _ := jStore.History(ctx, "run")
-	if anchorLog.Len() != len(finalRecs) {
+	if anchorLog.Len() != len(finalRecs)-1 {
 		t.Fatalf("anchors=%d != records=%d — replayed steps were re-anchored", anchorLog.Len(), len(finalRecs))
 	}
 	if len(finalRecs) <= len(crashRecs) {

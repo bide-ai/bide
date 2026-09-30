@@ -204,6 +204,7 @@ func TestEvidence_JSONRoundTrip(t *testing.T) {
 	if err := json.Unmarshal(b, &round); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
+	stripRaw(&pkg) // the records' stored bytes are not part of the package's JSON
 	if !reflect.DeepEqual(pkg, round) {
 		t.Fatalf("round trip lost data:\n got: %+v\nwant: %+v", round, pkg)
 	}

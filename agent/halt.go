@@ -31,12 +31,14 @@ type HaltCause string
 const (
 	// HaltCrashed: the operation's attempt marker is recorded with no result, and the halting
 	// driver knows of no live claimant. That is what the halting driver saw, not proof: a
-	// driver of the same run may still be running the effect (a Step, or a drive that read the
-	// journal after the claim, cannot tell). ResolveHaltRef therefore checks for a live driver
-	// itself, whatever the cause.
+	// driver of the same run may still be running the effect (a Step that lost its claim with no
+	// call of it in flight in this process, or a drive that read the journal after the claim,
+	// cannot tell). ResolveHaltRef therefore checks for a live driver itself, whatever the cause.
 	HaltCrashed HaltCause = "crashed"
 	// HaltContended: another driver of the same run won the claim on the operation while this
-	// one was running. That driver owns the effect and may be running it now.
+	// one was running: a tool call's claim lost after this drive read no marker for it, or a
+	// Step's claim lost to a call of the step in flight in this process. That driver owns the
+	// effect and may be running it now.
 	HaltContended HaltCause = "contended"
 )
 
@@ -99,13 +101,25 @@ type Outcome struct {
 // own result) is refused with *HaltAlreadyResolved, which reports the outcome that stands.
 //
 // It refuses to resolve an effect a driver may still be running, whatever the halt's Cause:
-//   - with a store that leases runs (Leaser: MemStore, store/postgres), it takes the root run's
-//     lease for the resolution and returns *HaltInFlight while any driver holds it. Only drivers
-//     that lease the run (Lease, Recover, RecoverLoop) are seen; a plain Run holds no lease.
-//   - with a store that cannot (store/sqlite, a custom Durable), it requires WithMinHaltAge, so the
-//     halt is resolved only once no driver can still be running it.
+//   - with a store that leases runs (Leaser: MemStore, store/sqlite, store/postgres, found through a
+//     Journal and through wrappers that implement Unwrap() Store, see Capability), it takes the
+//     root run's lease for the resolution and returns *HaltInFlight while any driver holds it. Only
+//     drivers that lease the run (Lease, Recover, RecoverLoop) are seen; a plain Run holds no lease,
+//     which the claim below covers.
+//   - with a store that cannot (a custom store with no Leaser, or a Durable that exposes none), it
+//     requires WithMinHaltAge, so the halt is resolved only once no driver can still be running it.
 //
-// WithoutLiveDriverCheck skips both, for an operator who knows no driver is running.
+// On either path, it then claims the attempt after the live one, under a claim of its own, before
+// it records the outcome, and returns *HaltInFlight if a driver holds that claim already: a process
+// that could not record that its claim never started may void the live attempt after the check
+// and claim the next (a plain Run, which holds no lease, included), and its effect must not be
+// overridden. The resolution's claim is journaled as an attempt marker of the operation. If
+// recording the outcome then fails, the claim stays live (the outcome may have been recorded all
+// the same), so the operation halts until it is resolved again; that resolution finds the
+// resolution's attempt live and claims the one after it (with WithMinHaltAge, once that attempt
+// is old enough).
+//
+// WithoutLiveDriverCheck skips all of these, for an operator who knows no driver is running.
 //
 // It refuses (ErrConfig) a ref with no valid Cause or Op.Kind, and an operation that only the
 // other kind of operation attempted. WithMinHaltAge(d) refuses (*HaltTooYoung) a halt younger
@@ -195,7 +209,7 @@ func resolveHalt(ctx context.Context, store Durable, op string, ref HaltRef, out
 	if ref.Cause == HaltContended && cfg.minHaltAge <= 0 {
 		return fmt.Errorf("%s: %q in run %s halted because another driver holds its claim and may be running it; pass WithMinHaltAge to resolve it only once that driver cannot still be running: %w", op, id, ref.RunID, ErrConfig)
 	}
-	release, err := checkNoLiveDriver(ctx, store, op, ref, cfg)
+	release, _, err := checkNoLiveDriver(ctx, store, op, ref, cfg)
 	if err != nil {
 		return err
 	}
@@ -234,12 +248,36 @@ func resolveHalt(ctx context.Context, store Durable, op string, ref HaltRef, out
 	if err != nil {
 		return fmt.Errorf("agent: encode resolve-halt result for %q: %w (%w)", id, err, ErrConfig)
 	}
+	// Neither the lease nor the age of the live attempt stops every driver from running the effect
+	// after the check: a process that remembers the live attempt's claim (its not-started record
+	// could not be written) writes that record, voiding the attempt, and claims the next one, and
+	// it may be a plain Run that holds no lease. So the resolution claims the next attempt itself,
+	// under a claim of its own: a driver that holds it already may be running the effect
+	// (*HaltInFlight), and once the resolution holds it, no driver can claim past the live attempt
+	// before the result below is recorded.
+	var heldKey string
+	if !cfg.noLiveCheck && attempt != nil {
+		heldKey = nextAttemptStep(attempt.Name)
+		won, _, err := ClaimAttempt(ctx, store, ref.RunID, heldKey, Record{Kind: StepAttempt, ToolUseID: id, AttemptedAt: cfg.now().UnixMilli()})
+		if err != nil {
+			return fmt.Errorf("%s: claim %s: %w", op, heldKey, err)
+		}
+		if !won {
+			root, _, _ := strings.Cut(ref.RunID, subRunSep)
+			return &HaltInFlight{RunID: ref.RunID, RootRunID: root, Op: ref.Op, Attempt: heldKey}
+		}
+	}
 	rec := Record{Kind: h.kind, Result: b, IsError: out.IsError, Reconciled: cfg.reconciled, Evidence: cfg.evidence}
 	if h.kind == StepToolResult {
 		rec.ToolUseID = id
 	}
 	got, err := store.Do(ctx, ref.RunID, h.result, func(context.Context) (Record, error) { return rec, nil })
 	if err != nil {
+		// The verdict may have committed all the same, so the resolution's attempt stays live: a
+		// driver that lost it to this resolution must not find it voided and run the effect under
+		// the next attempt beside a recorded verdict. The operation then halts until the verdict
+		// is read back or the halt is resolved again; a second resolution finds this attempt live
+		// and claims the one after it.
 		return err
 	}
 	if got.Kind != rec.Kind || got.IsError != rec.IsError || !sameJSON(got.Result, rec.Result) {
@@ -268,45 +306,55 @@ const resolveLeaseTTL = 30 * time.Second
 // fails (*HaltInFlight) while any driver holds it, and keeps it until release is called, so no
 // leased driver takes the run meanwhile. A store without Leaser cannot say whether a driver is
 // live, so the resolution needs WithMinHaltAge. WithoutLiveDriverCheck skips both.
-func checkNoLiveDriver(ctx context.Context, store Durable, op string, ref HaltRef, cfg resolveConfig) (func(), error) {
+func checkNoLiveDriver(ctx context.Context, store Durable, op string, ref HaltRef, cfg resolveConfig) (func(), bool, error) {
 	noop := func() {}
 	if cfg.noLiveCheck {
-		return noop, nil
+		return noop, false, nil
 	}
 	root, _, _ := strings.Cut(ref.RunID, subRunSep)
-	l, ok := Capability[Leaser](store)
+	l, ok := capabilityOf[Leaser](store)
 	if !ok {
 		if cfg.minHaltAge <= 0 {
-			return nil, fmt.Errorf("%s: the store cannot say whether a driver of run %s is still running %q (it does not implement Leaser); pass WithMinHaltAge so the halt is resolved only once no driver can still be running it, or WithoutLiveDriverCheck to take that risk: %w", op, root, ref.Op.ID, ErrConfig)
+			return nil, false, fmt.Errorf("%s: the store cannot say whether a driver of run %s is still running %q (it does not implement Leaser); pass WithMinHaltAge so the halt is resolved only once no driver can still be running it, or WithoutLiveDriverCheck to take that risk: %w", op, root, ref.Op.ID, ErrConfig)
 		}
-		return noop, nil
+		return noop, false, nil
 	}
 	var b [8]byte
 	if _, err := rand.Read(b[:]); err != nil {
-		return nil, fmt.Errorf("%s: lease holder id: %w (%w)", op, err, ErrStorage)
+		return nil, false, fmt.Errorf("%s: lease holder id: %w (%w)", op, err, ErrStorage)
 	}
 	holder := "resolve-halt:" + hex.EncodeToString(b[:])
 	won, err := l.AcquireLease(ctx, root, holder, resolveLeaseTTL)
 	if err != nil {
-		return nil, fmt.Errorf("%s: lease run %s: %w (%w)", op, root, err, ErrStorage)
+		return nil, false, fmt.Errorf("%s: lease run %s: %w (%w)", op, root, err, ErrStorage)
 	}
 	if !won {
-		return nil, &HaltInFlight{RunID: ref.RunID, RootRunID: root, Op: ref.Op}
+		return nil, false, &HaltInFlight{RunID: ref.RunID, RootRunID: root, Op: ref.Op}
 	}
-	return func() { _ = l.ReleaseLease(context.WithoutCancel(ctx), root, holder) }, nil
+	return func() { _ = l.ReleaseLease(context.WithoutCancel(ctx), root, holder) }, true, nil
 }
 
-// HaltInFlight is returned by ResolveHaltRef when a driver holds the lease on the halted run's
-// root: it may be running the operation's effect right now, and its own result must win over a
-// resolution. Retry once the driver has finished (its lease released or expired).
+// HaltInFlight is returned by ResolveHaltRef when a driver may be running the operation's effect
+// right now, and its own result must win over a resolution: a driver holds the lease on the halted
+// run's root, or (see ResolveHaltRef) a driver holds the claim on the
+// attempt after the live one, having found the live one recorded as never started. Retry once the
+// driver has finished (its lease released or expired, or its result recorded); a retry reads the
+// run again.
 type HaltInFlight struct {
 	RunID     string // the run whose journal holds the operation
-	RootRunID string // the run whose lease is held
+	RootRunID string // the run whose lease is held (the halted run's root)
 	Op        OpRef
+	// Attempt is the attempt marker key a driver holds, when that is why the resolution was
+	// refused; empty when the lease is held.
+	Attempt string
 }
 
-// Error names the operation and the leased run.
+// Error names the operation and what a driver holds.
 func (e *HaltInFlight) Error() string {
+	if e.Attempt != "" {
+		return fmt.Sprintf("resolve-halt for %s %q (run %s): a driver holds the claim on the next attempt (%s) and may be running it; retry once it has finished",
+			e.Op.Kind, e.Op.ID, e.RunID, e.Attempt)
+	}
 	return fmt.Sprintf("resolve-halt for %s %q (run %s): a driver holds the lease on run %s and may still be running it; retry once it has finished",
 		e.Op.Kind, e.Op.ID, e.RunID, e.RootRunID)
 }

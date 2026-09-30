@@ -5,11 +5,8 @@
 agent APIError.Error
 agent APIError.Unwrap
 agent HaltTooYoung.Error
-agent MemStore.Do
-agent MemStore.History
 agent Message.MarshalJSON
 agent Message.UnmarshalJSON
-agent NewMemStore
 agent RateLimited.Error
 agent RateLimited.Unwrap
 agent RoleAssistant
@@ -50,6 +47,5 @@ model/openai WithMaxTokens
 model/openai WithModel
 model/openai WithStrictSchema
 plan HaltAmbiguous.Error
-store/postgres Store.Close
 trace WithModel
 trace WithSystem

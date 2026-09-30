@@ -35,7 +35,7 @@ Accountability and governance:
 
 ## Reference
 
-- **[Extension points](reference/extension-points.md)**: the ports and adapters (`Model`, `Durable`, `Tool`, ...) and an "implement your own store" walkthrough.
+- **[Extension points](reference/extension-points.md)**: the ports and adapters (`Model`, `Store`, `Tool`, ...) and an "implement your own store" walkthrough.
 - **[Module structure](reference/module-structure.md)**: the multi-module repo layout.
 
 ## Design notes

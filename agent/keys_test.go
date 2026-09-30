@@ -23,12 +23,16 @@ var keyConstructors = map[string]func(string) string{
 	"runCompleteStep":      func(string) string { return runCompleteStep },
 	"runAbortedStep":       func(string) string { return runAbortedStep },
 	"runStartStep":         func(string) string { return runStartStep },
+	"runCancelledStep":     func(string) string { return runCancelledStep },
+	"runLimitsStep":        func(s string) string { return runLimitsStep(len(s)) },
+	"headerStep":           func(string) string { return headerStep },
 	"modelStep":            func(s string) string { return modelStep(len(s)) },
 	"ToolResultStep":       ToolResultStep,
 	"toolAttemptStep":      toolAttemptStep,
 	"stepAttemptStep":      stepAttemptStep,
 	"retryAttemptStep":     func(s string) string { return retryAttemptStep(toolAttemptStep(s), 1+len(s)) },
-	"notStartedStep":       func(s string) string { return notStartedStep(toolAttemptStep(s)) },
+	"notStartedStep":       func(s string) string { return notStartedStep(toolAttemptStep(s), "0123abcd") },
+	"nextAttemptStep":      func(s string) string { return nextAttemptStep(retryAttemptStep(stepAttemptStep(s), 1+len(s))) },
 	"approvalStep":         approvalStep,
 	"approvalDecisionStep": func(s string) string { return approvalDecisionStep(s, "ops:1", true, []byte(s)) },
 	"ApprovalTallyStep":    ApprovalTallyStep,
@@ -72,10 +76,10 @@ func TestEngineKeys_AreDistinct(t *testing.T) {
 	for name, build := range keyConstructors {
 		for _, s := range adversarialToolUseIDs() {
 			from := name + "(" + s + ")"
-			if name == "runCompleteStep" || name == "runAbortedStep" || name == "runStartStep" {
+			if name == "runCompleteStep" || name == "runAbortedStep" || name == "runStartStep" || name == "runCancelledStep" || name == "headerStep" {
 				from = name // a constant
 			}
-			if name == "sessionTurnStep" || name == "sessionStartStep" || name == "modelStep" || name == "retrievalStep" || name == "spendStep" {
+			if name == "sessionTurnStep" || name == "sessionStartStep" || name == "modelStep" || name == "retrievalStep" || name == "spendStep" || name == "runLimitsStep" {
 				from = name + "(" + build(s) + ")" // takes a number: equal numbers give equal keys
 			}
 			add(build(s), from)
@@ -212,15 +216,25 @@ func TestEngineKeys_ConstructorsAreListed(t *testing.T) {
 // function that only forwards a name its own callers are held to (listed in forwarders).
 func TestEngineKeys_WritesUseConstructors(t *testing.T) {
 	forwarders := map[string]bool{
-		"ClaimAttempt:name":    true, // its callers are checked here
-		"step:name":            true, // its callers are checked here
-		"Step:name":            true, // a developer-chosen name, refused if reserved (checkStepName)
-		"resolveHalt:h.result": true, // ToolResultStep, or a step name checkStepName allowed
-		"claimAttempt:name":    true, // its callers are checked here
-		"probe:key":            true, // its callers are checked here
-		"doShared:key":         true, // its callers are checked here
-		"step:markerKey":       true, // returned by claimNextAttempt, which builds it with retryAttemptStep
-		"run:markerKey":        true, // returned by claimNextAttempt, which builds it with retryAttemptStep
+		"ClaimAttempt:name":     true, // its callers are checked here
+		"step:name":             true, // its callers are checked here
+		"Step:name":             true, // a developer-chosen name, refused if reserved (checkStepName)
+		"resolveHalt:h.result":  true, // ToolResultStep, or a step name checkStepName allowed
+		"resolveHalt:heldKey":   true, // assigned from nextAttemptStep
+		"claimAttempt:name":     true, // its callers are checked here
+		"probe:key":             true, // its callers are checked here
+		"doShared:key":          true, // its callers are checked here
+		"step:markerKey":        true, // returned by claimNextAttempt, which builds it with retryAttemptStep
+		"run:markerKey":         true, // returned by claimNextAttempt, which builds it with retryAttemptStep
+		"putRecord:name":        true, // its callers are checked here
+		"recordFresh:name":      true, // its callers are checked here
+		"lookup:name":           true, // its callers are checked here
+		"hasValueStep:name":     true, // its callers pass run:aborted
+		"journalStep:name":      true, // step's name, forwarded
+		"durableStep:name":      true, // step's name, forwarded
+		"durableStep:markerKey": true, // returned by claimNextAttempt, which builds it with retryAttemptStep
+		"Do:name":               true, // MemStore.Do forwards its caller's name to its Journal
+		"init:name":             true, // journalhook.Do forwards audit's and plan's names
 	}
 	var writes int
 	for file, f := range parseAgentPackage(t) {
@@ -270,6 +284,7 @@ func TestEngineKeys_WritesUseConstructors(t *testing.T) {
 var attemptWriters = map[string]bool{
 	"ClaimAttempt": true, "step": true, "claimAttempt": true, "claimNextAttempt": true, "probe": true,
 	"doShared": true, "voided": true, "liveAttempt": true, "recordNotStarted": true,
+	"putRecord": true, "recordFresh": true, "lookup": true,
 }
 
 func keyFromConstructor(e ast.Expr, fn *ast.FuncDecl, forwarders map[string]bool) bool {

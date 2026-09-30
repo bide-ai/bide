@@ -34,7 +34,8 @@ the life of the process, and a dead holder's run is taken over within about one 
 the lease TTL by default) of its lease expiring.
 
 **Leases prevent duplicate work, not duplicate side effects.** With a store that supports leases
-(`MemStore` in one process, Postgres across processes), each run is normally driven by one holder at
+(`MemStore` in one process, SQLite across the processes sharing one file, Postgres across nodes),
+each run is normally driven by one holder at
 a time, and another node takes over if the holder dies. The holder renews its lease from half the
 TTL on, retries a failed renewal, and cancels its drive with `agent.ErrLeaseLost` if no renewal has
 succeeded by three quarters of the TTL, a quarter of the TTL before any other node could take the
@@ -52,7 +53,7 @@ the journal would not stop a stalled holder's effect; only the attempt claim, wr
 effect, can stop a second one. The journal writes that a stalled holder can still make are safe
 without it: every step is recorded at most once by name, so its write either is the step's one
 record or loses to the one already there. And fencing would make every journal write depend on the
-lease, so a store without leases (SQLite) could not offer the guarantee at all.
+lease, so a store without leases (a custom one) could not offer the guarantee at all.
 
 **Crash safety is tested, not formally proven.** The crash tests fail the store at every write point,
 across hundreds of randomized multi-crash schedules, and check that no side effect fires twice and
@@ -188,6 +189,20 @@ be public.
 
 ## Stores
 
+**Upgrading from v0.8.0 or earlier is not a rolling deploy.** Their journals have no journal
+format header, so this version refuses them (a SQLite file that holds any, at `Open`; a Postgres
+run, when it is first read), and those versions cannot read the journals this version writes. The
+versions also keep their leases in different tables, so they do not exclude each other. Finish or
+resolve the older runs with the older version, stop every node of it, then start this version.
+
+**Before 1.0, a run is not promised to resume across releases.** Every pre-release writes the
+same journal format tag, `bide.journal.v1-dev`, and the tag is not bumped when the keys or the
+record shape change between pre-releases, so a later pre-release does not refuse an earlier one's
+journal even where it reads it differently. Finish or resolve runs before upgrading between
+pre-releases. At 1.0 the tag becomes `bide.journal.v1`, and 1.0 refuses every pre-release journal.
+
 **SQLite is for one machine.** SQLite allows one writer at a time; a writer waits up to 30 seconds
-for the lock before failing. It does not support leases, so it cannot coordinate several processes
-driving the same runs. Use Postgres for more than one node.
+for the lock before failing. Its leases coordinate the processes that share one database file on
+one machine, not nodes: the file must be on a local disk, since SQLite's locking does not work over
+NFS. Use Postgres for more than one node. A forward jump of the system clock expires SQLite leases
+early (their expiry is computed from the clock), which the attempt claims keep safe.

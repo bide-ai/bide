@@ -13,7 +13,7 @@ import (
 // that carries another claim, or is not a StepNotStarted record, does not void the marker.
 func TestNotStarted_OnlyTheClaimantVoidsAnAttempt(t *testing.T) {
 	for name, forged := range map[string]Record{
-		"another claim": {Kind: StepNotStarted, ToolUseID: "reserve", Claim: "someone-else"},
+		"another claim": {Kind: StepNotStarted, ToolUseID: "reserve", claim: "someone-else"},
 		"another kind":  {Kind: StepValue, ToolUseID: "reserve"},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -26,9 +26,9 @@ func TestNotStarted_OnlyTheClaimantVoidsAnAttempt(t *testing.T) {
 			}
 			rec := forged
 			if name == "another kind" {
-				rec.Claim = marker.Claim
+				rec.claim = marker.claim
 			}
-			if _, err := store.Do(ctx, "r1", notStartedStep(key), func(context.Context) (Record, error) { return rec, nil }); err != nil {
+			if _, err := store.Do(ctx, "r1", notStartedStep(key, marker.claim), func(context.Context) (Record, error) { return rec, nil }); err != nil {
 				t.Fatal(err)
 			}
 			var entered, ran atomic.Int32

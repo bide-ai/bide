@@ -152,8 +152,11 @@ func (e *EarnedAuthority) reissue(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("audit: reissue earned grant: load ledger %s: %w", e.ledgerR, err)
 	}
-	if len(after) != index+1 || after[index].Name != grantLeafName(child.Digest()) {
-		return fmt.Errorf("audit: reissue earned grant: ledger %s did not record it as leaf %d (another writer?)", e.ledgerR, index)
+	// The grant is the ledger's last leaf, with nothing new before it but the journal header a
+	// new ledger starts with.
+	last := len(after) - 1
+	if last < index || after[last].Name != grantLeafName(child.Digest()) || last > index && (index != 0 || last != 1 || after[0].Kind != agent.StepHeader) {
+		return fmt.Errorf("audit: reissue earned grant: ledger %s did not record it as its next leaf (another writer?)", e.ledgerR)
 	}
 	e.current = sg
 	return nil
