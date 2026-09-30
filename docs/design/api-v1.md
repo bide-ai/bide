@@ -373,7 +373,7 @@ func (a *Agent) Journal() *Journal
 ### New API
 <!-- docsnip: skip design proposal: this API is not implemented yet -->
 ```go
-const JournalFormat = "bide.journal.v1-dev.1" // becomes "bide.journal.v1" at the 1.0 tag
+const JournalFormat = "bide.journal.v1-dev" // becomes "bide.journal.v1" at the 1.0 tag
 var ErrJournalVersion = fmt.Errorf("unsupported journal format: %w", ErrProtocol)
 type JournalVersionError struct{ RunID, Found string; Supported []string }
 const StepHeader StepKind = "header"
@@ -387,7 +387,7 @@ func (j *Journal) Format(ctx context.Context, runID string) (string, error)
 The format cannot live in `run:start`, because many journals have no engine header.
 
 ### Dev tag (critique Q1 and B4)
-- Before 1.0, every change to the key scheme or the record shape bumps the dev tag: `v1-dev.1`, `v1-dev.2`, and so on.
+- Before 1.0 there is one dev tag, `bide.journal.v1-dev`, and it is never bumped per change (maintainer decision): a change to the key scheme or the record shape between pre-releases does not change it, so pre-release journals are not promised to resume across releases.
 - A 1.0 binary accepts only `bide.journal.v1`, so no journal from a pre-release binary is read under final rules.
 - v1's "edit v1 in place" is withdrawn. It defeated the header.
 

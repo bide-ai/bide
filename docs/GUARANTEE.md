@@ -104,9 +104,11 @@ says happened. A drive uses the configuration it is given for:
   version refuses, before reading or writing anything, a run whose header names a format it does
   not support, or whose journal has no header first (one written before the header existed), with
   `*agent.JournalVersionError`. So an older binary never adds records to a run a newer one
-  started, and no journal is read under rules it was not written for. Before 1.0 the format
-  carries a dev tag that changes with every change to the keys or the record shape, so a journal
-  from an earlier pre-release is refused rather than resumed.
+  started, and no journal is read under rules it was not written for. Before 1.0 every release
+  writes the one dev tag `bide.journal.v1-dev`, which is not bumped when the keys or the record
+  shape change between pre-releases, so resuming a run across pre-releases is not guaranteed
+  (see [known limitations](KNOWN-LIMITATIONS.md#stores)). 1.0 writes `bide.journal.v1` and refuses
+  every pre-release journal.
 - **The tool must declare its safety accurately.** `ReadOnly` re-runs freely, `Idempotent`
   retries, and only an unmarked non-idempotent write gets the attempt-marker/halt treatment.
   Mislabel a card-charge as idempotent and you have opted out of the protection.

@@ -27,10 +27,11 @@ import (
 )
 
 // JournalFormat is the journal format this version writes: the format every run's header names
-// (see StepHeader). Before 1.0 it carries a dev tag, bumped by every change to the key scheme or
-// the record shape, so a journal written by a pre-release binary is never read under rules it was
-// not written for. It becomes "bide.journal.v1" at the 1.0 tag.
-const JournalFormat = "bide.journal.v1-dev.1"
+// (see StepHeader). Before 1.0 it is one dev tag, "bide.journal.v1-dev", the same in every
+// pre-release and never bumped per change: a pre-release journal is not promised to be readable
+// by a later pre-release. It becomes "bide.journal.v1" at the 1.0 tag, so a 1.0 binary refuses
+// every pre-release journal and none is read under rules it was not written for.
+const JournalFormat = "bide.journal.v1-dev"
 
 // supportedFormats are the journal formats this version reads and writes. A run's format is pinned
 // by its first write, and a Journal refuses a run in any other format (see JournalVersionError).

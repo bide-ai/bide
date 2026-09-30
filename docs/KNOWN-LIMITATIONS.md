@@ -195,6 +195,12 @@ run, when it is first read), and those versions cannot read the journals this ve
 versions also keep their leases in different tables, so they do not exclude each other. Finish or
 resolve the older runs with the older version, stop every node of it, then start this version.
 
+**Before 1.0, a run is not promised to resume across releases.** Every pre-release writes the
+same journal format tag, `bide.journal.v1-dev`, and the tag is not bumped when the keys or the
+record shape change between pre-releases, so a later pre-release does not refuse an earlier one's
+journal even where it reads it differently. Finish or resolve runs before upgrading between
+pre-releases. At 1.0 the tag becomes `bide.journal.v1`, and 1.0 refuses every pre-release journal.
+
 **SQLite is for one machine.** SQLite allows one writer at a time; a writer waits up to 30 seconds
 for the lock before failing. Its leases coordinate the processes that share one database file on
 one machine, not nodes: the file must be on a local disk, since SQLite's locking does not work over
