@@ -1068,9 +1068,16 @@ delivery it holds and reused on every retry of that `BeginTask`.
 
 Engine side, for a `side_effect` task [engine work]:
 
+0. Authenticate (4.3), then read the begin key. If it holds a begin (not an abandon) whose
+   `delivery_id` and `begin_nonce` equal the request's, answer `begun: true` and stop. This is a
+   worker retrying a begin that landed and whose answer it lost; the delivery's lease may have
+   lapsed, the run may have been cancelled, or the engine may have restarted since, and none of
+   that may refuse it: the attempt is begun, no abandon can win the key, and refusing would halt
+   the call `worker_lost` for an effect that never started (the model's finding P1, section 18).
 1. Authorize (4.4, 10.8). Refuse if the run is cancelled, if the delivery is not in the dispatch
    table as assigned and unlapsed (`unknown_delivery`: after a restart every unbegun delivery is
    unknown, and the re-drive abandons it), or if `claim_id` differs from the stored marker's claim.
+   These refusals apply only to a first begin (step 0 found none for this delivery and nonce).
 2. `Insert(run_id, "attempt:begin:" + attempt.key, {kind: "begin", delivery_id, begin_nonce,
    principal, attempted_at_ms})` outside any shared flight.
 3. Read the stored record (the insert's returned entry, or a `Get` if the insert errored). Answer
@@ -1881,10 +1888,29 @@ Bug configurations that MUST fail:
 | `Bug = "AbandonWithoutKey"` | not-started written on lease lapse without winning the begin key | `NotStartedExclusive` |
 | `Bug = "CallerCause"` | the resolver's cause taken from the request | `NoLiveOverride` |
 
-Acceptance gate: every addition above is in model 1, the `ci-*` configurations plus a `ci-remote`
-configuration (2 workers, 2 engine instances by crash, 1 call, 4 attempts, 2 ambiguous replies)
-pass within the CI budget, and every `Bug` configuration fails with a counterexample. The results
-go into formal-models.md's measurement table.
+Acceptance gate: every addition above is modelled, the configurations pass within the CI budget,
+and every `Bug` configuration fails with a counterexample. The results go into
+`spec/tla/README.md`.
+
+Status (maintainer decision: a model of its own, `spec/tla/protocol/Protocol.tla`, model 2, not an
+addition inside model 1). The bounds that fit, with the lost-worker floor as an assumption:
+
+| Configuration | Workers, engine instances | Attempts, deliveries | Faults | Where |
+|---|---|---|---|---|
+| `remote` | 2, 1 | 2, 3 | 1 lost and 1 duplicated task, 1 ambiguous insert | every pull request |
+| `remote-restart` | 2, 2 (one crash) | 2, 3 | 1 lost task, 1 ambiguous insert | every pull request |
+| `remote-resolve` | 2, 2 | 2, 3 | 1 lost task, 1 ambiguous insert, 1 worker crash, a resolver | every pull request |
+| `deep-remote-two` | 2, 2 | 2, 3 | every fault above together | nightly |
+| `deep-remote` | 2, 2 | 3, 4 | 1 lost task, 1 ambiguous insert | nightly |
+| `deep-remote-a2` | 2, 2 | 2, 3 | 2 ambiguous inserts, 1 lost task | nightly |
+
+The `ci-remote` bounds first proposed here (4 attempts and 2 ambiguous replies with every other
+fault) do not fit: 3 attempts with 2 ambiguous replies passed 215 million states without
+converging. Every `Bug` configuration above fails as required. The model found one bug in revision
+2's text, P1: `BeginTask` checked the dispatch table before reading the stored begin record, so a
+worker whose begin landed and whose answer was lost was refused on its retry once the lease lapsed
+or the engine restarted, and never ran (`BeginIdempotent`); step 0 of 10.4 is the model-checked
+fix.
 
 ---
 
