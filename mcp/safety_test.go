@@ -62,6 +62,8 @@ func (v testVerifier) Verify(message, sig []byte) bool {
 	return bytes.Equal(sig, append([]byte(v+"|"), message...))
 }
 
+func (v testVerifier) KeyIDs() []string { return []string{"test:" + string(v)} }
+
 // An m-of-n gate on an MCP tool holds the call until k of the named approvers approve.
 func TestWithSafety_QuorumApproval(t *testing.T) {
 	srv, calls := transferServer(t, nil)

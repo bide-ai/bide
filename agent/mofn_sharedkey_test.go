@@ -1,9 +1,13 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
+	"reflect"
 	"testing"
 )
 
@@ -13,6 +17,12 @@ type edVerifier struct{ pub ed25519.PublicKey }
 
 func (v edVerifier) Verify(message, sig []byte) bool {
 	return len(v.pub) == ed25519.PublicKeySize && ed25519.Verify(v.pub, message, sig)
+}
+
+// KeyIDs derives the identity from the public key bytes, as audit.Ed25519Verifier does.
+func (v edVerifier) KeyIDs() []string {
+	h := sha256.Sum256(v.pub)
+	return []string{"ed25519:" + hex.EncodeToString(h[:])}
 }
 
 // sharedKey is a deterministic ed25519 key pair: the key one person holds.
@@ -54,5 +64,154 @@ func TestMofn_SharedKeyIsOneSeat(t *testing.T) {
 	}
 	if !errors.Is(err, ErrConfig) {
 		t.Fatalf("err = %v, want ErrConfig for a policy whose approvers share a key", err)
+	}
+}
+
+// keyVerifier is a fake verifier with explicit key identities: it accepts fakeSign signatures
+// by signer, and reports keys as its KeyIDs.
+type keyVerifier struct {
+	signer string
+	keys   []string
+}
+
+func (v keyVerifier) Verify(message, sig []byte) bool {
+	return bytes.Equal(sig, fakeSign(v.signer, message))
+}
+
+func (v keyVerifier) KeyIDs() []string { return v.keys }
+
+func resolverOf(m map[string]ApproverVerifier) ApproverVerifierFor {
+	return func(id string) (ApproverVerifier, bool) {
+		v, ok := m[id]
+		return v, ok
+	}
+}
+
+func TestApprovalPolicy_ValidateKeys(t *testing.T) {
+	pol := ApprovalPolicy{Need: 2, Approvers: []string{"a1", "a2", "a3"}}
+	own := func(id string) ApproverVerifier { return keyVerifier{signer: id, keys: []string{"k:" + id}} }
+	cases := []struct {
+		name string
+		vf   ApproverVerifierFor
+		ok   bool
+	}{
+		{"distinct keys", resolverOf(map[string]ApproverVerifier{"a1": own("a1"), "a2": own("a2"), "a3": own("a3")}), true},
+		{"an unknown approver fills no seat and is not refused", resolverOf(map[string]ApproverVerifier{"a1": own("a1"), "a2": own("a2")}), true},
+		{"a verifier listing its own key twice", resolverOf(map[string]ApproverVerifier{"a1": keyVerifier{keys: []string{"k1", "k1"}}, "a2": own("a2")}), true},
+		{"nil resolver", nil, false},
+		{"two approvers, one key", resolverOf(map[string]ApproverVerifier{"a1": own("a1"), "a2": keyVerifier{keys: []string{"k:a1"}}, "a3": own("a3")}), false},
+		// A rotation window: a2 accepts its new key or a1's key.
+		{"key sets that overlap", resolverOf(map[string]ApproverVerifier{"a1": own("a1"), "a2": keyVerifier{keys: []string{"k:a2", "k:a1"}}}), false},
+		// A hybrid whose Ed25519 component is a1's key and whose ML-DSA component is its own.
+		{"one shared component", resolverOf(map[string]ApproverVerifier{"a1": keyVerifier{keys: []string{"e1", "m1"}}, "a2": keyVerifier{keys: []string{"e1", "m2"}}}), false},
+		{"no key identity", resolverOf(map[string]ApproverVerifier{"a1": keyVerifier{}, "a2": own("a2")}), false},
+		{"an empty key identity", resolverOf(map[string]ApproverVerifier{"a1": keyVerifier{keys: []string{"k:a1", ""}}, "a2": own("a2")}), false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			err := pol.ValidateKeys(c.vf)
+			if c.ok && err != nil {
+				t.Fatalf("ValidateKeys = %v, want nil", err)
+			}
+			if !c.ok && !errors.Is(err, ErrConfig) {
+				t.Fatalf("ValidateKeys = %v, want ErrConfig", err)
+			}
+		})
+	}
+	if err := (ApprovalPolicy{Need: 3, Approvers: []string{"a1"}}).ValidateKeys(fakeVerifiers("a1")); !errors.Is(err, ErrConfig) {
+		t.Fatalf("ValidateKeys on an invalid policy = %v, want Validate's ErrConfig", err)
+	}
+}
+
+// The counting rule holds one seat per key whatever resolver it is given: both approvers
+// sharing a key are excluded, in either signing order, and the others still count.
+func TestTallyApprovals_SharedKeyNeverCounts(t *testing.T) {
+	s := ApprovalSubject{RunID: "r", ToolUseID: "c1", ToolName: "charge", Args: []byte(`{}`)}
+	vf := resolverOf(map[string]ApproverVerifier{
+		"a1": keyVerifier{signer: "h1", keys: []string{"k1"}},
+		"a2": keyVerifier{signer: "h1", keys: []string{"k1"}},
+		"a3": keyVerifier{signer: "h3", keys: []string{"k3"}},
+		"a4": keyVerifier{signer: "h4"},
+	})
+	rec := func(approver, signer string) Record {
+		return Record{Name: "d:" + approver, Kind: StepApproval, ToolUseID: "c1", Approver: approver, Approved: true,
+			Signature: fakeSign(signer, ApprovalDecisionBytes(s, approver, true))}
+	}
+	pol := ApprovalPolicy{Need: 2, Approvers: []string{"a1", "a2", "a3", "a4"}}
+	for _, order := range [][]string{{"a1", "a2", "a3", "a4"}, {"a2", "a1", "a3", "a4"}} {
+		signer := map[string]string{"a1": "h1", "a2": "h1", "a3": "h3", "a4": "h4"}
+		var recs []Record
+		for _, a := range order {
+			recs = append(recs, rec(a, signer[a]))
+		}
+		tally, checks := TallyApprovals(recs, s, pol, vf)
+		if tally.Approved != 1 || tally.Passed() || !reflect.DeepEqual(tally.ApprovedBy, []string{"a3"}) {
+			t.Fatalf("order %v: tally = %+v, want only a3 counted", order, tally)
+		}
+		want := map[string]string{"a1": ReasonSharedKey, "a2": ReasonSharedKey, "a3": "", "a4": ReasonNoKeyID}
+		for _, c := range checks {
+			if c.Reason != want[c.Approver] {
+				t.Fatalf("order %v: %s reason %q, want %q", order, c.Approver, c.Reason, want[c.Approver])
+			}
+		}
+	}
+}
+
+// A resolver that answers the gate's check with distinct keys and the count with one shared
+// key does not get one person through: the count excludes the shared seats itself.
+func TestMofn_SharedKeyAfterCheckNeverCounts(t *testing.T) {
+	store := NewMemStore()
+	pol := &ApprovalPolicy{Need: 2, Approvers: []string{"a1", "a2"}}
+	calls := map[string]int{}
+	vf := func(id string) (ApproverVerifier, bool) {
+		calls[id]++
+		if calls[id]%2 == 1 { // the gate's check, once per approver per evaluation
+			return keyVerifier{signer: id, keys: []string{"k:" + id}}, true
+		}
+		return keyVerifier{signer: "h1", keys: []string{"k:h1"}}, true // the count
+	}
+	var charged int
+	_, _ = mofnRun(store, "r1", true, pol, vf, &charged)
+	for _, a := range pol.Approvers {
+		sig := fakeSign("h1", ApprovalDecisionBytes(subjectOf(t, store, "r1", "c1"), a, true))
+		if err := SubmitDecision(context.Background(), store, Decision{RunID: "r1", ToolUseID: "c1", ApproverID: a, Approved: true, Signature: sig}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, err := mofnRun(store, "r1", false, pol, vf, &charged)
+	if charged != 0 {
+		t.Fatalf("charge ran %d times on one person's approval, want 0", charged)
+	}
+	var pend *PendingApproval
+	if !errors.As(err, &pend) {
+		t.Fatalf("err = %v, want the gate to stay paused", err)
+	}
+}
+
+// The check runs on every evaluation: a resolver that moves a second approver onto the first
+// one's key between tally rounds is refused on the next round.
+func TestMofn_SharedKeyBetweenRounds(t *testing.T) {
+	store := NewMemStore()
+	pol := &ApprovalPolicy{Need: 2, Approvers: []string{"a1", "a2", "a3"}}
+	var charged int
+	_, err := mofnRun(store, "r1", true, pol, fakeVerifiers("a1", "a2", "a3"), &charged)
+	var pend *PendingApproval
+	if !errors.As(err, &pend) {
+		t.Fatalf("first round err = %v, want a pause", err)
+	}
+	approveAs(t, store, "r1", "c1", "a1", true)
+	shared := func(id string) (ApproverVerifier, bool) {
+		if id == "a2" {
+			return keyVerifier{signer: "a1", keys: []string{"fake:a1"}}, true
+		}
+		return fakeVerifiers("a1", "a3")(id)
+	}
+	sig := fakeSign("a1", ApprovalDecisionBytes(subjectOf(t, store, "r1", "c1"), "a2", true))
+	if err := SubmitDecision(context.Background(), store, Decision{RunID: "r1", ToolUseID: "c1", ApproverID: "a2", Approved: true, Signature: sig}); err != nil {
+		t.Fatal(err)
+	}
+	_, err = mofnRun(store, "r1", false, pol, shared, &charged)
+	if charged != 0 || !errors.Is(err, ErrConfig) {
+		t.Fatalf("charged=%d err=%v, want 0 and ErrConfig", charged, err)
 	}
 }

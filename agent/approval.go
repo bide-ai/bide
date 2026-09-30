@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"unicode/utf8"
 
 	"golang.org/x/text/cases"
@@ -144,17 +145,103 @@ func canonicalArgs(raw json.RawMessage) []byte {
 	return bytes.TrimSuffix(buf.Bytes(), []byte("\n"))
 }
 
-// ApproverVerifier checks an approver's signature over the decision bytes. Any audit.Verifier
-// satisfies it structurally, so a deployment reuses the existing ed25519/ML-DSA/hybrid
-// verifiers with no new cryptography and no agent->audit import.
+// ApproverVerifier checks an approver's signature over the decision bytes and names the signing
+// keys behind it. audit.Ed25519Verifier, audit.MLDSAVerifier and audit.HybridVerifier implement
+// it, so a deployment reuses the existing verifiers with no new cryptography and no agent->audit
+// import.
 type ApproverVerifier interface {
+	// Verify reports whether sig is a valid signature over message.
 	Verify(message, sig []byte) bool
+	// KeyIDs identifies the signing keys behind Verify: one entry per public key whose private
+	// key takes part in producing a signature Verify accepts. A single-key verifier reports one
+	// entry; a verifier that accepts a signature by any of several keys (a rotation window)
+	// reports one per key; a verifier that requires several signatures (audit.HybridVerifier)
+	// reports one per component key.
+	//
+	// An entry identifies a key, not an approver: it is derived from the public key's bytes,
+	// never from a configured name, so two verifiers over one key report the same entry however
+	// they were built. The audit verifiers report the scheme and the hex SHA-256 of the public
+	// key's encoding ("ed25519:3b6a27bc..."). Entries are compared as exact strings.
+	//
+	// The gate counts one seat per key: it refuses a policy two of whose approvers report a
+	// common entry, or whose approver's verifier reports no entry or an empty one, with
+	// ErrConfig (see ApprovalPolicy.ValidateKeys). Otherwise the holder of a shared key could
+	// sign as each approver that key serves and meet a quorum alone.
+	KeyIDs() []string
 }
 
 // ApproverVerifierFor resolves the verifier for an approver id (the caller's PKI, mirroring
 // audit's issuer lookup). It reports ok=false for an unknown approver; the counting rule
 // treats that approver's decisions as unverifiable.
 type ApproverVerifierFor func(approverID string) (ApproverVerifier, bool)
+
+// ValidateKeys reports whether the policy is well formed (Validate) and holds one seat per
+// signing key under verifierFor: it resolves every approver once and refuses, with ErrConfig, a
+// nil verifierFor, an approver whose verifier reports no key identity (an empty KeyIDs, or an
+// empty entry), and two approvers whose verifiers report a common key identity. An approver the
+// resolver does not know is not refused: its decisions cannot verify, so it fills no seat.
+//
+// The gate runs this check on every evaluation, before it reads a recorded tally, so a resolver
+// that changes between runs is checked again; TallyApprovals also never counts an approver whose
+// key is shared, whatever resolver it is given. A caller that builds policies and resolvers
+// ahead of a run can call ValidateKeys to refuse a bad pairing before any call pauses.
+func (p ApprovalPolicy) ValidateKeys(verifierFor ApproverVerifierFor) error {
+	if err := p.Validate(); err != nil {
+		return err
+	}
+	if verifierFor == nil {
+		return fmt.Errorf("approval policy has no approver verifier resolver: %w", ErrConfig)
+	}
+	_, _, err := approverSeats(p, verifierFor)
+	return err
+}
+
+// approverSeats resolves every approver in p.Approvers once, in policy order. It returns the
+// verifier to check each resolved approver's decisions with (an approver the resolver does not
+// know, or resolves to nil, is absent), the approvers that fill no seat with the reason, and the
+// first such problem as an ErrConfig error. An approver fills no seat when its verifier reports
+// no key identity, or when it reports a key identity another approver's verifier also reports;
+// every approver sharing that key is excluded, not only the later ones, so the outcome does not
+// depend on policy order or on who signed first.
+func approverSeats(p ApprovalPolicy, verifierFor ApproverVerifierFor) (map[string]ApproverVerifier, map[string]string, error) {
+	vs := make(map[string]ApproverVerifier, len(p.Approvers))
+	bad := make(map[string]string)
+	owner := make(map[string]string) // key identity -> the first approver reporting it
+	var first error
+	for _, id := range p.Approvers {
+		if _, done := vs[id]; done || verifierFor == nil {
+			continue
+		}
+		v, ok := verifierFor(id)
+		if !ok || v == nil {
+			continue
+		}
+		vs[id] = v
+		keys := v.KeyIDs()
+		if len(keys) == 0 || slices.Contains(keys, "") {
+			bad[id] = ReasonNoKeyID
+			if first == nil {
+				first = fmt.Errorf("approval policy approver %q: its verifier reports no key identity: %w", id, ErrConfig)
+			}
+			continue
+		}
+		for _, k := range keys {
+			o, seen := owner[k]
+			if !seen {
+				owner[k] = id
+				continue
+			}
+			if o == id {
+				continue
+			}
+			bad[o], bad[id] = ReasonSharedKey, ReasonSharedKey
+			if first == nil {
+				first = fmt.Errorf("approval policy approvers %q and %q resolve to one signing key (%s), so one person would fill two seats: %w", o, id, k, ErrConfig)
+			}
+		}
+	}
+	return vs, bad, first
+}
 
 // ApprovalTally is the m-of-n gate's count for one call. At a pause it is the running tally
 // (ApprovalPending.Quorum, ApprovalRequired.Quorum). At a terminal outcome the gate journals
@@ -196,6 +283,8 @@ const (
 	ReasonSuperseded  = "superseded by the approver's earlier valid decision"
 	ReasonNoKey       = "no key for this approver"
 	ReasonBadSig      = "signature does not verify for this call"
+	ReasonSharedKey   = "the approver's signing key also serves another approver"
+	ReasonNoKeyID     = "the approver's verifier reports no key identity"
 )
 
 // TallyApprovals is the m-of-n counting rule, shared by the gate and offline verification so
@@ -206,14 +295,21 @@ const (
 // occupy an approver's place, so a forged or mistaken decision cannot block the approver's
 // real one; later valid records from an approver who already decided are superseded.
 //
+// A seat is a key, not an id. verifierFor is called once per approver, in policy order, and
+// every record is checked with that one resolution. An approver whose verifier reports a key
+// identity (ApproverVerifier.KeyIDs) that another approver's verifier also reports, or that
+// reports none, never counts (ReasonSharedKey, ReasonNoKeyID), whichever of them signed first.
+//
 // It returns the tally and a classification of every record it considered. It does not
-// validate p (see ApprovalPolicy.Validate); a nil verifierFor counts nothing.
+// validate p (see ApprovalPolicy.ValidateKeys, which the gate runs first and which refuses a
+// policy this rule would count short); a nil verifierFor counts nothing.
 func TallyApprovals(recs []Record, s ApprovalSubject, p ApprovalPolicy, verifierFor ApproverVerifierFor) (ApprovalTally, []DecisionCheck) {
 	t := ApprovalTally{Need: p.Need, Approvers: append([]string(nil), p.Approvers...)}
 	eligible := make(map[string]bool, len(p.Approvers))
 	for _, id := range p.Approvers {
 		eligible[id] = true
 	}
+	vs, bad, _ := approverSeats(p, verifierFor)
 	decided := make(map[string]bool, len(p.Approvers))
 	var checks []DecisionCheck
 	for _, r := range recs {
@@ -222,32 +318,28 @@ func TallyApprovals(recs []Record, s ApprovalSubject, p ApprovalPolicy, verifier
 		}
 		t.Records = append(t.Records, r.Name)
 		c := DecisionCheck{Step: r.Name, Approver: r.Approver, Approved: r.Approved}
+		v, ok := vs[r.Approver]
+		reason, excluded := bad[r.Approver]
 		switch {
 		case !eligible[r.Approver]:
 			c.Reason = ReasonNotEligible
 		case decided[r.Approver]:
 			c.Reason = ReasonSuperseded
+		case excluded:
+			c.Reason = reason
+		case !ok:
+			c.Reason = ReasonNoKey
+		case !v.Verify(ApprovalDecisionBytes(s, r.Approver, r.Approved), r.Signature):
+			c.Reason = ReasonBadSig
 		default:
-			var v ApproverVerifier
-			ok := false
-			if verifierFor != nil {
-				v, ok = verifierFor(r.Approver)
-			}
-			switch {
-			case !ok || v == nil:
-				c.Reason = ReasonNoKey
-			case !v.Verify(ApprovalDecisionBytes(s, r.Approver, r.Approved), r.Signature):
-				c.Reason = ReasonBadSig
-			default:
-				c.Counted = true
-				decided[r.Approver] = true
-				if r.Approved {
-					t.Approved++
-					t.ApprovedBy = append(t.ApprovedBy, r.Approver)
-				} else {
-					t.Denied++
-					t.DeniedBy = append(t.DeniedBy, r.Approver)
-				}
+			c.Counted = true
+			decided[r.Approver] = true
+			if r.Approved {
+				t.Approved++
+				t.ApprovedBy = append(t.ApprovedBy, r.Approver)
+			} else {
+				t.Denied++
+				t.DeniedBy = append(t.DeniedBy, r.Approver)
 			}
 		}
 		checks = append(checks, c)

@@ -1019,15 +1019,21 @@ func (c *cli) verifyApprovals(args []string) {
 			keys[id] = k
 		}
 	}
-	if !okPkg || !okKeys || !c.clean() {
-		return
-	}
 	verifierFor := func(id string) (agent.ApproverVerifier, bool) {
 		k, ok := keys[id]
 		if !ok {
 			return nil, false
 		}
 		return audit.Ed25519Verifier{Pub: k}, true
+	}
+	// Two eligible approvers on one key are one person in two seats: the key file is unusable.
+	if okKeys {
+		if err := policy.ValidateKeys(verifierFor); err != nil {
+			okKeys = c.note(unusable(fmt.Errorf("-approver-keys: %w", err)))
+		}
+	}
+	if !okPkg || !okKeys || !c.clean() {
+		return
 	}
 
 	// A package whose proofs cannot be checked is an unusable input, but the approval check still
