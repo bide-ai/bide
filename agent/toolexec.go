@@ -192,34 +192,50 @@ func (a *Agent) toolCallFor(runID string, tu ToolUse) ToolCall {
 }
 
 // A call's state records, by compare-and-swap only, whether its tool was called. It starts open.
-// The base handler moves it to reached immediately before it calls the tool, or to refused when it
-// refuses the call (the call was renamed, names no tool, was already made, or its context was done).
-// When the middleware chain returns, the loop moves an open call to closed: the base handler was
-// never entered, and if it is entered later (a middleware that left next running in a goroutine)
-// it finds the call closed and refuses it. A call is known not to have reached its tool only when
-// the state says refused, or says closed and the chain's error wraps ErrToolNotCalled.
+//
+//	open    -> reached        the base handler, immediately before the tool is called
+//	open    -> refused        the base handler refuses the call (renamed, no such tool, context done)
+//	refused -> reached        a later invocation of next, while the chain is still running, calls it
+//	open    -> closed         the chain returned without the base handler reaching the tool
+//	refused -> refusedClosed  the chain returned after the base handler refused the call
+//
+// reached, closed and refusedClosed are terminal: no transition leaves them, so an invocation of
+// next that comes after the chain returned (a middleware that left it running) finds the call
+// closed and is refused. A call is known not to have reached its tool only when its final state is
+// refusedClosed, or closed with a chain error that wraps ErrToolNotCalled.
 const (
 	callOpen int32 = iota
 	callReached
 	callRefused
 	callClosed
+	callRefusedClosed
 )
 
-// enterTool moves st to reached, from open or refused (a retry of a refused call), and reports
-// false, leaving st as it is, if the chain has closed the call. A call already reached stays so.
+// enterTool moves st to reached, from open or refused (a retry of a refused call while the chain
+// runs), and reports false, leaving st as it is, once the chain has closed the call. A call already
+// reached stays so.
 func enterTool(st *atomic.Int32) bool {
 	for {
 		switch s := st.Load(); s {
 		case callReached:
 			return true
-		case callClosed:
-			return false
-		default:
+		case callOpen, callRefused:
 			if st.CompareAndSwap(s, callReached) {
 				return true
 			}
+		default: // callClosed, callRefusedClosed: terminal
+			return false
 		}
 	}
+}
+
+// closeCall moves st to its closed state when the chain returns (open to closed, refused to
+// refusedClosed; reached stays) and returns the final state.
+func closeCall(st *atomic.Int32) int32 {
+	if !st.CompareAndSwap(callOpen, callClosed) {
+		st.CompareAndSwap(callRefused, callRefusedClosed)
+	}
+	return st.Load()
 }
 
 // toolHandler builds the wrapped tool-execution chain once per run: a base handler that
@@ -255,25 +271,30 @@ func (a *Agent) toolHandler(runID string) func(context.Context, ToolUse) (json.R
 		if !ok {
 			return refuse(fmt.Errorf("call to unknown tool %q: %w", cutName(tu.Name), ErrUnknownTool))
 		}
-		// The registered spec decides, never call.Spec, which a middleware may have changed.
-		if !a.specs[tu.Name].Safety.RetrySafe() {
-			if _, again := ran.LoadOrStore(tu.ID, true); again {
-				// Not a refusal of the call: the earlier invocation reached the tool.
-				return nil, fmt.Errorf("tool %q (call %s) already ran and is not retry-safe: %w", tu.Name, tu.ID, ErrToolReinvoked)
-			}
-		}
-		if err := journalAcceptedArgs(ctx, t, call); err != nil {
-			return refuse(err)
-		}
 		// A deadline that passed in the middleware (a rate limiter's wait) leaves the tool uncalled:
 		// the call fails as a known timeout rather than start an effect already out of time.
 		if ctxDone(ctx) {
 			return refuse(fmt.Errorf("tool %q (call %s) was not started: its context was done before the call: %w", tu.Name, tu.ID, doneCause(ctx)))
 		}
+		// From here the call is reached: the chain can no longer close it, so nothing after this
+		// (the accepted arguments' record, the tool) runs for a call the loop has already decided.
 		if call.state != nil && !enterTool(call.state) {
 			// The chain already returned (a middleware left next running): the loop has decided
 			// the call's outcome without this invocation, so it must not reach the tool.
 			return nil, fmt.Errorf("tool %q (call %s) was not started: the tool middleware chain had already returned: %w", tu.Name, tu.ID, ErrToolNotCalled)
+		}
+		// The registered spec decides, never call.Spec, which a middleware may have changed. The
+		// call is marked as run only here, immediately before the tool, so no refusal above marks
+		// a tool that never ran.
+		if !a.specs[tu.Name].Safety.RetrySafe() {
+			if _, again := ran.LoadOrStore(tu.ID, true); again {
+				// The earlier invocation reached the tool.
+				return nil, fmt.Errorf("tool %q (call %s) already ran and is not retry-safe: %w", tu.Name, tu.ID, ErrToolReinvoked)
+			}
+		}
+		// A failure here leaves the call reached, so a side effect halts: the safe reading.
+		if err := journalAcceptedArgs(ctx, t, call); err != nil {
+			return nil, err
 		}
 		return t.Call(ctx, tu.Args)
 	})
@@ -285,8 +306,7 @@ func (a *Agent) toolHandler(runID string) func(context.Context, ToolUse) (json.R
 		var st atomic.Int32 // callOpen
 		call.state = &st
 		res, err := h(ctx, call)
-		st.CompareAndSwap(callOpen, callClosed)
-		return res, st.Load(), err
+		return res, closeCall(&st), err
 	}
 }
 

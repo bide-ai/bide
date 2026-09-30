@@ -587,7 +587,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 					// chain that returned without entering the base handler and without that error
 					// may have reached the tool some other way (a middleware that called it itself),
 					// so a side effect's outcome is then unknown and the run halts for it.
-					notCalled := state == callRefused || state == callClosed && callErr != nil && errors.Is(callErr, ErrToolNotCalled)
+					notCalled := state == callRefusedClosed || state == callClosed && callErr != nil && errors.Is(callErr, ErrToolNotCalled)
 					called.Store(!notCalled)
 					if state == callClosed && callErr != nil && !notCalled && !c.spec.Safety.retriableOnResume() {
 						callErr = fmt.Errorf("tool %q: the tool middleware returned an error without calling next, and not ErrToolNotCalled, so the tool may have run: %w (%w)", c.tu.Name, callErr, ErrToolOutcomeUnknown)

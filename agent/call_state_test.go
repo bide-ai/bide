@@ -73,6 +73,7 @@ func TestCallState_EnterTool(t *testing.T) {
 		{callRefused, true, callReached},
 		{callReached, true, callReached},
 		{callClosed, false, callClosed},
+		{callRefusedClosed, false, callRefusedClosed},
 	} {
 		var st atomic.Int32
 		st.Store(tc.from)
@@ -127,5 +128,84 @@ func TestCallState_RefusedOnCancelRecordsNotStarted(t *testing.T) {
 	}
 	if _, err := New(m, store, charge).Run(context.Background(), "r1", "go"); err != nil || calls.Load() != 1 {
 		t.Fatalf("resume: %v after %d calls; want the call attempted again, once", err, calls.Load())
+	}
+}
+
+// closeCall closes an open call and a refused one, and leaves a reached call reached; every closed
+// state is terminal: neither enterTool nor another closeCall leaves it.
+func TestCallState_CloseCall(t *testing.T) {
+	for _, tc := range []struct{ from, to int32 }{
+		{callOpen, callClosed},
+		{callRefused, callRefusedClosed},
+		{callReached, callReached},
+		{callClosed, callClosed},
+		{callRefusedClosed, callRefusedClosed},
+	} {
+		var st atomic.Int32
+		st.Store(tc.from)
+		if got := closeCall(&st); got != tc.to {
+			t.Errorf("from %d: closeCall = %d, want %d", tc.from, got, tc.to)
+		}
+		if tc.to != callReached && enterTool(&st) {
+			t.Errorf("from %d: a closed call was entered", tc.from)
+		}
+	}
+}
+
+// A call is marked as run only immediately before its tool: an invocation of next that the base
+// handler refused (its context already done) does not make a later invocation "already ran".
+func TestCallState_RefusalDoesNotMarkTheCallRun(t *testing.T) {
+	var calls atomic.Int32
+	charge := Func("charge", "", Safety{}, func(context.Context, struct{}) (string, error) { calls.Add(1); return "ok", nil })
+	tryExpiredFirst := func(next ToolHandler) ToolHandler {
+		return func(ctx context.Context, call ToolCall) (json.RawMessage, error) {
+			done, cancel := context.WithCancel(ctx)
+			cancel()
+			if _, err := next(done, call); !errors.Is(err, ErrToolNotCalled) { // refused: not started
+				return nil, fmt.Errorf("first invocation: %v", err)
+			}
+			return next(ctx, call) // a second, live invocation runs the tool
+		}
+	}
+	store := NewMemStore()
+	m := NewScriptedModel(ToolTurn("c1", "charge", `{}`), TextTurn("done"))
+	if _, err := New(m, store, charge).UseTool(tryExpiredFirst).Run(context.Background(), "r1", "go"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if rec, _ := hasStep(t, store, "r1", ToolResultStep("c1")); calls.Load() != 1 || rec.IsError {
+		t.Fatalf("calls %d, result %s; want the live invocation to run the tool once", calls.Load(), rec.Result)
+	}
+}
+
+// An invocation of next leaked past the end of the chain writes nothing: not the saga's record of
+// the arguments the tool accepted, and not the tool's effect.
+func TestCallState_LeakedNextWritesNoAcceptedArgs(t *testing.T) {
+	var calls atomic.Int32
+	hold := CompensatedFunc("hold", "", Safety{}, func(context.Context, chargeArgs) (string, error) { calls.Add(1); return "held", nil },
+		func(context.Context, chargeArgs, string) error { return nil })
+	release := make(chan struct{})
+	leaked := make(chan error, 1)
+	leak := func(next ToolHandler) ToolHandler {
+		return func(ctx context.Context, call ToolCall) (json.RawMessage, error) {
+			go func() {
+				<-release
+				call.Use.Args = json.RawMessage(`{"amount":999}`) // rewritten: would be journaled
+				_, err := next(context.WithoutCancel(ctx), call)
+				leaked <- err
+			}()
+			return nil, fmt.Errorf("deferred (%w)", ErrToolNotCalled)
+		}
+	}
+	store := NewMemStore()
+	m := NewScriptedModel(ToolTurn("c1", "hold", `{"amount":5}`), TextTurn("done"))
+	if _, err := New(m, store, hold).UseTool(leak).RunSaga(context.Background(), "s1", "go"); err == nil {
+		t.Fatal("RunSaga: want the saga to abort on the deferred call")
+	}
+	close(release)
+	if err := <-leaked; !errors.Is(err, ErrToolNotCalled) {
+		t.Fatalf("leaked next = %v, want a refusal", err)
+	}
+	if _, ok := hasStep(t, store, "s1", sagaArgsStep("c1")); ok || calls.Load() != 0 {
+		t.Fatalf("the leaked next journaled the accepted arguments (%v) or ran the tool (%d times)", ok, calls.Load())
 	}
 }
