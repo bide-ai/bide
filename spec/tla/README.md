@@ -111,13 +111,14 @@ The model states the rules of P6a (#92) after its third review:
 4. The tool resume gate, before it halts on a live marker, retries the not-started record of that
    marker's claim if the process remembers it; if the retry succeeds, the call claims its next
    attempt instead of halting.
-5. A Step that loses the claim joins the process's in-flight call of the step, or reads the
-   result, or halts; it never starts a flight of its own. A claim winner joins a flight already in
+5. A Step that loses the claim joins the process's in-flight call of the step (a failed call is a
+   `HaltContended` halt), or reads the result, or halts (`HaltCrashed`); it never starts a flight
+   of its own. A claim winner joins a flight already in
    the process and, if it fails, records its own attempt as not started.
 6. A tool that loses the claim halts (`HaltContended`).
 7. Halt resolution refuses while a live driver may be running: under a store that leases runs, it
-   holds the root run's lease while it resolves, and only leased drivers are seen; otherwise it
-   needs `WithMinHaltAge`.
+   holds the root run's lease while it resolves (MemStore, `store/postgres`, and `store/sqlite` as
+   of #92), and only leased drivers are seen; otherwise it needs `WithMinHaltAge`.
 
 ### Model-code map
 
@@ -197,42 +198,43 @@ configurations run without it, and so do the configurations with drivers in diff
 
 On every pull request and in the merge queue (`ci`, `regress`, `finding`). States are distinct
 states; times are TLC's own, measured on a development machine (Apple M1 Pro, 8 workers). The
-whole pull-request set, vacuity runs and JVM starts included, takes CITOTAL on the CI runner
+whole pull-request set, vacuity runs and JVM starts included, takes under 10 minutes on the CI runner
 (GitHub `ubuntu-latest`, 4 cores).
 
 | Config | Path | Drivers, processes | Faults (error replies, crashes, cancels) | Attempts | Property | States | Time |
 |---|---|---|---|---|---|---|---|
-| `step-same` | Step | 2 in 1 | 2, 1, 1 | 0..3 | safety | 2,234,519 | 10 s |
-| `step-cross` | Step | 2 in 2 | 2, 1, 1 | 0..3 | safety | 2,004,380 | 12 s |
-| `tool-same` | tool | 2 in 1 | 2, 1, 1 | 0..3 | safety | 1,417,253 | 7 s |
-| `tool-cross` | tool | 2 in 2 | 2, 1, 1 | 0..3 | safety | 2,760,599 | 14 s |
-| `late-step-same` | Step, weak A3 | 2 in 1 | 2, 1, 1 | 0..3 | safety | 6,490,247 | 32 s |
-| `late-tool-cross` | tool, weak A3 | 2 in 2 | 2, 1, 1 | 0..3 | safety | 5,522,592 | 30 s |
+| `step-same` | Step | 2 in 1 | 2, 1, 1 | 0..3 | safety | 2,282,585 | 12 s |
+| `step-cross` | Step | 2 in 2 | 2, 1, 1 | 0..3 | safety | 2,004,380 | 11 s |
+| `tool-same` | tool | 2 in 1 | 2, 1, 1 | 0..3 | safety | 1,417,253 | 8 s |
+| `tool-cross` | tool | 2 in 2 | 2, 1, 1 | 0..3 | safety | 2,760,599 | 17 s |
+| `late-step-same` | Step, weak A3 | 2 in 1 | 2, 1, 1 | 0..3 | safety | 6,639,013 | 38 s |
 | `resolve-lease` | tool, resolver (lease) | 2 leased in 2 | 2, 1, 1 | 0..3 | safety | 80,919 | 1 s |
-| `resolve-minage-claim` | tool, resolver (min age, the F2 fix) | 2 in 2 | 2, 1, 1 | 0..4 | safety | 5,886,132 | 32 s |
+| `resolve-minage-claim` | tool, resolver (min age, the F2 fix) | 2 in 2 | 2, 1, 0 | 0..4 | safety | 320,662 | 3 s |
 | `intent` | two Steps that pause, the caller, resolver (lease) | 2 leased in 1 | 1, 1, 0 | 0..2 | safety, per intent | 1,370 | <1 s |
 | `intent-minage-claim` | two tool calls, the caller, resolver (min age, the F2 fix) | 2 in 2 | 2, 0, 0 | 0..3 | safety, per intent | 662 | <1 s |
-| `live-step-same` | Step | 2 in 1 | 1, 1, 1 | 0..2 | `Progress` | 286,942 | 8 s |
-| `live-tool-same` | tool | 2 in 1 | 1, 1, 1 | 0..2 | `Progress` | 128,325 | 3 s |
+| `live-step-same` | Step | 2 in 1 | 1, 1, 1 | 0..2 | `Progress` | 291,262 | 9 s |
+| `live-tool-same` | tool | 2 in 1 | 1, 1, 1 | 0..2 | `Progress` | 128,325 | 4 s |
 | `live-tool-cross` | tool | 2 in 2 | 1, 1, 1 | 0..2 | `Progress` | 144,243 | 5 s |
 
 Nightly (and on demand, `workflow_dispatch`):
 
 | Config | Path | Drivers, processes | Faults | Attempts | Property | States | Time |
 |---|---|---|---|---|---|---|---|
-| `live-step-same-a2` | Step | 2 in 1 | 2, 1, 1 | 0..3 | `Progress` | N1 | NT1 |
-| `live-tool-same-a2` | tool | 2 in 1 | 2, 1, 1 | 0..3 | `Progress` | N2 | NT2 |
-| `live-tool-cross-a2` | tool | 2 in 2 | 2, 1, 1 | 0..3 | `Progress` | N3 | NT3 |
-| `live-memo-a3` | Step | 2 in 1 | 3, 0, 1 | 0..4 | `Progress` | N4 | NT4 |
-| `deep-faults` | Step | 2 in 1 | 3, 1, 1 | 0..4 | safety | N5 | NT5 |
-| `deep-drivers` | Step | 3 in 2 (2 + 1) | DDF | DDG | safety | N6 | NT6 |
-| `deep-late-tool-same` | tool, weak A3 | 2 in 1 | 2, 1, 1 | 0..3 | safety | N7 | NT7 |
-| `deep-late-step-cross` | Step, weak A3 | 2 in 2 | 2, 1, 1 | 0..3 | safety | N8 | NT8 |
-| `deep-resolve-lease-same` | Step, resolver (lease) | 2 leased in 1 | 2, 1, 1 | 0..3 | safety | N9 | NT9 |
+| `live-step-same-a2` | Step | 2 in 1 | 2, 1, 1 | 0..3 | `Progress` | 4,541,292 | 2 min |
+| `live-tool-same-a2` | tool | 2 in 1 | 2, 1, 1 | 0..3 | `Progress` | 2,817,680 | 1 min |
+| `live-tool-cross-a2` | tool | 2 in 2 | 2, 1, 1 | 0..3 | `Progress` | 2,760,599 | 1 min |
+| `live-memo-a3` | Step | 2 in 1 | 3, 0, 1 | 0..4 | `Progress` | 1,772,048 | 49 s |
+| `deep-faults` | Step | 2 in 1 | 3, 1, 1 | 0..4 | safety | 31,402,708 | 2 min |
+| `deep-drivers` | Step | 3 in 2 (2 + 1) | 1, 1, 1 | 0..2 | safety | 25,004,792 | 2 min 51 s |
+| `deep-late-tool-same` | tool, weak A3 | 2 in 1 | 2, 1, 1 | 0..3 | safety | 3,040,107 | 17 s |
+| `deep-late-step-cross` | Step, weak A3 | 2 in 2 | 2, 1, 1 | 0..3 | safety | 5,649,510 | 43 s |
+| `deep-late-tool-cross` | tool, weak A3 | 2 in 2 | 2, 1, 1 | 0..3 | safety | 5,522,592 | 31 s |
+| `deep-resolve-lease-same` | Step, resolver (lease) | 2 leased in 1 | 2, 1, 1 | 0..3 | safety | 79,460 | 1 s |
 
-The liveness checks run on every pull request with one error reply; with two they run nightly,
-since liveness checking cannot use symmetry and costs several times a safety check of the same
-states.
+The nightly set takes 14 minutes on the development machine. The liveness checks run on every pull
+request with one error reply; with two they run nightly, since liveness checking cannot use symmetry
+and costs several times a safety check of the same states. `deep-late-tool-cross` is nightly only
+to keep the pull-request job short; `late-step-same` covers weak A3 on every pull request.
 
 ### Regression configurations
 
@@ -242,17 +244,17 @@ property weakened.
 
 | Config | The historical rule | Expected | Trace |
 |---|---|---|---|
-| `regress/reuse-nohold` | #92 second review: a remembered claim id is reused for the claim and runs (`Bug = "ReuseNoHold"`) | `NotStartedExclusive` | 14 states |
+| `regress/reuse-nohold` | #92 second review: a remembered claim id is reused for the claim and runs (`Bug = "ReuseNoHold"`) | `NotStartedExclusive` | 15 states |
 | `regress/reuse-nohold-fire` | the same, checked for the double fire itself | `AtMostOnce` | 24 states |
 | `regress/held-pin` | #92 third review, finding 1: the claim-held pin absorbs the reused claim's not-started record after a cancellation (`"HeldPin"`) | `Progress` | 22 states |
 | `regress/gate-no-retry` | #92 third review, finding 2: the tool gate halts on a claim its process remembers (`"GateNoRetry"`) | `Progress` | 10 states |
 | `regress/no-memo-after-call` | #92 third review, finding 3: a failed not-started write after a cancelled call is not remembered (`"NoMemoAfterCall"`) | `Progress` | 18 states |
-| `regress/memo-overwrite` | finding F1 below: `pendingClaims` holds one id per marker key (`"MemoOverwrite"`) | `Progress` | 34 states |
+| `regress/memo-overwrite` | finding F1 below: `pendingClaims` holds one id per marker key (`"MemoOverwrite"`) | `Progress` | 37 states |
 | `regress/loser-leads` | #92 first review, finding 3: the Step loser starts the flight and the winner takes its halt (`"LoserLeads"`) | `WinnerNeverHalts` | 21 states |
 | `regress/pause-as-failure` | #92 first review, fix 1: a Step's pause guard recorded as its tool's failure (`"PauseAsFailure"`) | `AtMostOncePerIntent` | 16 states |
-| `regress/resolve-no-check` | #90 F2: resolution with no live-driver check (`WithoutLiveDriverCheck`) | `NoLiveOverride` | 13 states |
+| `regress/resolve-no-check` | #90 F2: resolution with no live-driver check (`WithoutLiveDriverCheck`) | `NoLiveOverride` | 11 states |
 | `regress/resolve-no-check-intent` | the same through the caller: "not charged", a new call, a second fire | `AtMostOncePerIntent` | 17 states |
-| `regress/resolve-unleased-driver` | #90's documented limit: the lease check does not see a driver that holds no lease | `NoLiveOverride` | 16 states |
+| `regress/resolve-unleased-driver` | #90's documented limit: the lease check does not see a driver that holds no lease | `NoLiveOverride` | 15 states |
 
 ### Findings
 
@@ -283,7 +285,7 @@ deterministic Go test before its fix (M2 of the plan).
 
 ### What the bounds do not cover
 
-Two drivers (three in `deep-drivers`, nightly), one crash, one cancellation, up to two error
+Two drivers (three in `deep-drivers`, nightly, with one error reply), one crash, one cancellation, up to two error
 replies per run on pull requests and three nightly; one call except in the intent configurations.
 Calls interact only through the fault budgets and the id pool, so two independent calls add no
 behavior the one-call configurations miss. A bug that needs more than these is outside the check.

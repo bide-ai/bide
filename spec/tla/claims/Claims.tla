@@ -292,7 +292,8 @@ Join:
     goto LoserLead;
   end if;
 LoserRead:
-  if result[CallOf[self]] # None then outcome := "done"; else outcome := "halt_contended"; end if;
+  \* No call in flight and no result: the halt names no live claimant (HaltCrashed).
+  if result[CallOf[self]] # None then outcome := "done"; else outcome := "halt_crashed"; end if;
   goto Finish;
 LoserLead:
   \* Historical (Bug = "LoserLeads"): the loser's read ran as a flight others could join.
@@ -300,6 +301,7 @@ LoserLead:
   if result[CallOf[self]] # None then outcome := "done"; else outcome := "halt_contended"; end if;
   goto Finish;
 LoserWait:
+  \* A joined call that fails is a halt on a live claimant (HaltContended).
   await jres[self] # None;
   if jres[self] = "ok" then outcome := "done"; else outcome := "halt_contended"; end if;
   jres[self] := None;
@@ -764,7 +766,7 @@ Join(self) == /\ pc[self] = "Join"
 LoserRead(self) == /\ pc[self] = "LoserRead"
                    /\ IF result[CallOf[self]] # None
                          THEN /\ outcome' = [outcome EXCEPT ![self] = "done"]
-                         ELSE /\ outcome' = [outcome EXCEPT ![self] = "halt_contended"]
+                         ELSE /\ outcome' = [outcome EXCEPT ![self] = "halt_crashed"]
                    /\ pc' = [pc EXCEPT ![self] = "Finish"]
                    /\ UNCHANGED << marker, nsSet, heldSet, result, toolFail, 
                                    lateMarker, lateNS, lateResult, pending, fl, 

@@ -21,10 +21,8 @@ AllTool   == [c \in Calls |-> "tool"]
 NoNext    == [c \in Calls |-> None]
 C1ThenC2  == (c1 :> c2) @@ (c2 :> None)
 
-\* Symmetry: drivers of one process on one call are interchangeable; so are two single-driver
-\* processes on one call, permuted together with their drivers.
+\* Symmetry: drivers of one process on one call are interchangeable (DriverSym), and so are the
+\* two drivers of p1 in ThreeProc (PairSym).
 DriverSym == Permutations(Drivers)
 PairSym   == Permutations({d1, d2})
-CrossSym  == {[x \in Drivers \cup Procs |-> x],
-              (d1 :> d2) @@ (d2 :> d1) @@ (p1 :> p2) @@ (p2 :> p1)}
 =============================================================================

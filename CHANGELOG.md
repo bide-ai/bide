@@ -15,6 +15,7 @@ minor version (0.x.0) may include breaking API or journal-format changes; each o
 - `agent.ResolveHaltRef(ctx, store, HaltRef, Outcome, ...)`, one resolution for tool and `Step` halts, with `OutcomeUnknown.Ref`, `HaltRef`, `OpRef`, `OpKind` (`OpTool`, `OpStep`), `HaltCause` (`HaltCrashed`, `HaltContended`) and `Outcome` (whose `Evidence` marks the resolution reconciled). The 1.0 rewrite renames it `ResolveHalt` ([#90]).
 - Verbs named for the pause they answer: `SubmitDecision` with `Decision`, `AnswerInterrupt` and `Enqueue`; `agent.Wake` ([#90]).
 - `agent.HaltInFlight`, `agent.HaltAlreadyResolved`, `agent.ErrAlreadyResolved` (wraps `ErrConfig`) and `agent.WithoutLiveDriverCheck` ([#90]).
+- A TLA+ model of the claim protocol (attempt claims, not-started records, numbered retries, remembered claims, the resume gate, the Step flight and halt resolution), checked with TLC in CI by the new Models workflow; see [spec/tla](spec/tla/README.md) ([#100]).
 
 ### Changed
 
@@ -452,6 +453,7 @@ First public release.
 [#90]: https://github.com/bide-ai/bide/pull/90
 [#91]: https://github.com/bide-ai/bide/pull/91
 [#93]: https://github.com/bide-ai/bide/pull/93
+[#100]: https://github.com/bide-ai/bide/pull/100
 [78f8db6]: https://github.com/bide-ai/bide/commit/78f8db6
 [994721b]: https://github.com/bide-ai/bide/commit/994721b
 [3262cd1]: https://github.com/bide-ai/bide/commit/3262cd1
