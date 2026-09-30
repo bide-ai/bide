@@ -1,10 +1,12 @@
-package agent
+package provider
 
 import (
 	"errors"
 	"math"
 	"testing"
 	"time"
+
+	"github.com/bide-ai/bide/agent"
 )
 
 // A Retry-After header is provider input. A negative number of seconds is not a wait (the
@@ -32,9 +34,9 @@ func TestClassifyHTTPError_NegativeRetryAfterKeepsBodyDelay(t *testing.T) {
 	gemini := `{"error":{"code":429,"message":"slow down","status":"RESOURCE_EXHAUSTED","details":[` +
 		`{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"30s"}]}}`
 	err := ClassifyHTTPError("prov", errResp(429, "-5", gemini))
-	var rl *RateLimited
+	var rl *agent.RateLimited
 	if !errors.As(err, &rl) {
-		t.Fatalf("err = %T %v, want *RateLimited", err, err)
+		t.Fatalf("err = %T %v, want *agent.RateLimited", err, err)
 	}
 	if rl.RetryAfter != 30*time.Second {
 		t.Fatalf("RetryAfter = %v, want the body's 30s", rl.RetryAfter)

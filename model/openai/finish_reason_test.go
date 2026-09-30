@@ -7,22 +7,25 @@ import (
 	"github.com/bide-ai/bide/agent"
 )
 
-func reasonOf(src string) (string, error) {
-	var reason string
+// finishOf streams src and returns the Finish the adapter reports and the error Message returns.
+func finishOf(src string) (agent.Finish, error) {
+	var fin agent.Finish
 	for ev, err := range testStream(src).Events() {
 		if err != nil {
 			break
 		}
 		if f, ok := ev.(agent.Finish); ok {
-			reason = f.Reason
+			fin = f
 		}
 	}
 	_, _, err := testStream(src).Message()
-	return reason, err
+	return fin, err
 }
 
 // OpenAI's finish reasons are mapped onto the neutral ones where they enter, so a turn cut off
-// at the token limit or by the content filter is never taken for a finished answer.
+// at the token limit or by the content filter is never taken for a finished answer, and the
+// Finish keeps OpenAI's own value in Raw. The reason is never empty: a stream that ends with
+// [DONE] and no finish_reason (some compatible servers omit it) is a natural stop.
 func TestStreamSSE_FinishReasonsAreMapped(t *testing.T) {
 	text := func(r string) string {
 		return "data: {\"choices\":[{\"delta\":{\"content\":\"The total is\"},\"finish_reason\":\"" + r + "\"}]}\n\ndata: [DONE]\n\n"
@@ -31,19 +34,26 @@ func TestStreamSSE_FinishReasonsAreMapped(t *testing.T) {
 		return "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"function\":{\"name\":\"f\",\"arguments\":\"{}\"}}]},\"finish_reason\":\"" + r + "\"}]}\n\ndata: [DONE]\n\n"
 	}
 	for name, tc := range map[string]struct {
-		src, reason string
-		err         error
+		src    string
+		reason agent.FinishReason
+		raw    string
+		err    error
 	}{
-		"stop":           {text("stop"), "stop", nil},
-		"tool_calls":     {call("tool_calls"), "tool_use", nil},
-		"function_call":  {call("function_call"), "tool_use", nil},
-		"length":         {text("length"), "length", agent.ErrOutputTruncated},
-		"content_filter": {text("content_filter"), "filtered", agent.ErrOutputFiltered},
-		"unknown":        {text("something_new"), "something_new", agent.ErrStreamProtocol},
+		"stop":               {text("stop"), agent.FinishStop, "stop", nil},
+		"tool_calls":         {call("tool_calls"), agent.FinishToolUse, "tool_calls", nil},
+		"function_call":      {call("function_call"), agent.FinishToolUse, "function_call", nil},
+		"length":             {text("length"), agent.FinishLength, "length", agent.ErrOutputTruncated},
+		"content_filter":     {text("content_filter"), agent.FinishFiltered, "content_filter", agent.ErrOutputFiltered},
+		"unknown":            {text("something_new"), "something_new", "something_new", agent.ErrStreamProtocol},
+		"no finish_reason":   {"data: {\"choices\":[{\"delta\":{\"content\":\"The total is\"}}]}\n\ndata: [DONE]\n\n", agent.FinishStop, "", nil},
+		"null finish_reason": {"data: {\"choices\":[{\"delta\":{\"content\":\"The total is\"},\"finish_reason\":null}]}\n\ndata: [DONE]\n\n", agent.FinishStop, "", nil},
 	} {
-		reason, err := reasonOf(tc.src)
-		if reason != tc.reason {
-			t.Errorf("%s: Finish.Reason = %q, want %q", name, reason, tc.reason)
+		f, err := finishOf(tc.src)
+		if f.Reason != tc.reason || f.Raw != tc.raw {
+			t.Errorf("%s: Finish reason %q raw %q, want %q and %q", name, f.Reason, f.Raw, tc.reason, tc.raw)
+		}
+		if f.Discarded != (agent.Usage{}) {
+			t.Errorf("%s: Finish.Discarded = %+v, want zero from a live adapter", name, f.Discarded)
 		}
 		if tc.err == nil && err != nil || tc.err != nil && !errors.Is(err, tc.err) {
 			t.Errorf("%s: err = %v, want %v", name, err, tc.err)

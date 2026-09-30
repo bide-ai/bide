@@ -1,4 +1,12 @@
-package agent
+// Package provider is the kit a model adapter is built from: HTTP error classification, SSE
+// framing, a cap on a streamed reply, Retry-After parsing, and the tool-result codec. The
+// first-party adapters (model/anthropic, model/openai, model/gemini) use it, and a third-party
+// adapter can too.
+//
+// The agent core never imports this package. It holds adapter plumbing, not the contract a Model
+// meets: that contract (agent.Model, agent.Stream, agent.NewStreamFunc, agent.Emit and the
+// events, agent.APIError, agent.RateLimited and the error sentinels) stays in package agent.
+package provider
 
 import (
 	"bufio"
@@ -12,11 +20,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
-)
 
-// This file holds the HTTP/SSE plumbing every model adapter (anthropic, gemini, openai) shares, so
-// the retry-after parsing, error classification, and stream framing live in one place rather than
-// being copied per provider.
+	"github.com/bide-ai/bide/agent"
+)
 
 // ParseRetryAfter parses an HTTP Retry-After header value. It accepts either an integer number of
 // seconds or an HTTP-date, and returns 0 if the value is absent, unparseable, negative, or already
@@ -57,13 +63,6 @@ const (
 // truncate cuts s to maxErrorBody bytes, marking the cut.
 func truncate(s string) string { return cutTo(s, maxErrorBody) }
 
-// maxNameEcho bounds a model-chosen name (a tool name, a finish reason) quoted in an error. A
-// working model sends a few bytes; a longer one is cut so it cannot fill the error.
-const maxNameEcho = 256
-
-// cutName cuts a model-chosen name to maxNameEcho bytes, marking the cut.
-func cutName(s string) string { return cutTo(s, maxNameEcho) }
-
 // cutTo cuts s to n bytes, marking the cut.
 func cutTo(s string, n int) string {
 	if len(s) <= n {
@@ -79,11 +78,11 @@ func cutTo(s string, n int) string {
 //
 //   - The account's quota or credit is used up (HTTP 402; an error type or code of
 //     insufficient_quota, billing_hard_limit_reached, billing_not_active, or billing_error; a
-//     Gemini quota violation whose quotaId is per day): an *APIError wrapping ErrQuotaExhausted,
+//     Gemini quota violation whose quotaId is per day): an *agent.APIError wrapping agent.ErrQuotaExhausted,
 //     whatever the status, since no wait lifts it.
-//   - HTTP 429 otherwise: a *RateLimited whose RetryAfter is the Retry-After header or, without
+//   - HTTP 429 otherwise: a *agent.RateLimited whose RetryAfter is the Retry-After header or, without
 //     one, Gemini's RetryInfo.retryDelay.
-//   - Anything else: an *APIError with the status code.
+//   - Anything else: an *agent.APIError with the status code.
 //
 // It reads and closes resp.Body, so call it only on a response the adapter is abandoning (not one
 // it will go on to stream). provider names the adapter for the wrapped message.
@@ -97,14 +96,14 @@ func ClassifyHTTPError(provider string, resp *http.Response) error {
 // ClassifyStreamError turns an error object a provider sends inside a 200 stream (an OpenAI or
 // Gemini data line holding {"error":{...}}, an Anthropic "error" event) into an SDK error. With
 // a numeric code (Gemini sends the HTTP status) it is classified as ClassifyHTTPError would a
-// response with that status. Without one, an exhausted quota is an *APIError wrapping
-// ErrQuotaExhausted, a rate limit (type or code rate_limit_error or rate_limit_exceeded) is a
-// *RateLimited, and anything else (overloaded, server_error) is an ErrModel carrying the
+// response with that status. Without one, an exhausted quota is an *agent.APIError wrapping
+// agent.ErrQuotaExhausted, a rate limit (type or code rate_limit_error or rate_limit_exceeded) is a
+// *agent.RateLimited, and anything else (overloaded, server_error) is an agent.ErrModel carrying the
 // provider's message, which middleware.Retryable retries.
 func ClassifyStreamError(provider string, data []byte) error {
 	pe, ok := parseProviderError(data)
 	if !ok {
-		return fmt.Errorf("%s stream error: %s (%w)", provider, truncate(string(data)), ErrModel)
+		return fmt.Errorf("%s stream error: %s (%w)", provider, truncate(string(data)), agent.ErrModel)
 	}
 	if pe.status != 0 {
 		return classifyProviderError(provider, pe.status, 0, pe, string(data))
@@ -115,7 +114,7 @@ func ClassifyStreamError(provider string, data []byte) error {
 	if pe.Type == "rate_limit_error" || pe.Code == "rate_limit_exceeded" {
 		return classifyProviderError(provider, http.StatusTooManyRequests, 0, pe, string(data))
 	}
-	return fmt.Errorf("%s stream error: %s (%w)", provider, pe.describe(truncate(string(data))), ErrModel)
+	return fmt.Errorf("%s stream error: %s (%w)", provider, pe.describe(truncate(string(data))), agent.ErrModel)
 }
 
 // providerError is the error object OpenAI, Anthropic, and Gemini put in a failed response body
@@ -211,18 +210,18 @@ func (pe providerError) describe(body string) string {
 // (0 for a mid-stream error that carries none). retryAfter is the Retry-After header's hint.
 func classifyProviderError(provider string, status int, retryAfter time.Duration, pe providerError, body string) error {
 	if pe.quotaExhausted(status) {
-		return &APIError{StatusCode: status, Body: truncate(body), Message: pe.Message, Type: pe.Type, Code: pe.Code,
-			Err: fmt.Errorf("%s: %w", provider, ErrQuotaExhausted)}
+		return &agent.APIError{StatusCode: status, Body: truncate(body), Message: pe.Message, Type: pe.Type, Code: pe.Code,
+			Err: fmt.Errorf("%s: %w", provider, agent.ErrQuotaExhausted)}
 	}
 	if status == http.StatusTooManyRequests {
-		return &RateLimited{
+		return &agent.RateLimited{
 			RetryAfter: cmp.Or(retryAfter, pe.delay),
 			Message:    pe.Message,
-			Err:        fmt.Errorf("%s: rate limited (%w)", provider, ErrModel),
+			Err:        fmt.Errorf("%s: rate limited (%w)", provider, agent.ErrModel),
 		}
 	}
-	return &APIError{StatusCode: status, Body: truncate(body), Message: pe.Message, Type: pe.Type, Code: pe.Code,
-		Err: fmt.Errorf("%s (%w)", provider, ErrModel)}
+	return &agent.APIError{StatusCode: status, Body: truncate(body), Message: pe.Message, Type: pe.Type, Code: pe.Code,
+		Err: fmt.Errorf("%s (%w)", provider, agent.ErrModel)}
 }
 
 // MaxSSELine is the longest SSE line NewSSEScanner reads. It is sized for the largest single
@@ -254,7 +253,7 @@ const DefaultMaxResponseBytes = 32 << 20
 
 // LimitResponse returns body limited to max bytes (DefaultMaxResponseBytes when max <= 0): once
 // the reply has more, a read returns the bytes up to the limit and an error wrapping
-// ErrResponseTooLarge, which SSEReadError passes on. Closing the result closes body. Every adapter
+// agent.ErrResponseTooLarge, which SSEReadError passes on. Closing the result closes body. Every adapter
 // wraps its streamed reply with it, so the cap is enforced in one place.
 func LimitResponse(body io.ReadCloser, max int64) io.ReadCloser {
 	if max <= 0 {
@@ -284,7 +283,7 @@ func (l *limitedBody) Read(p []byte) (int, error) {
 	n, err := l.body.Read(p)
 	if int64(n) > l.left {
 		n, l.left = int(l.left), 0
-		l.err = fmt.Errorf("the reply exceeded %d bytes: %w", l.max, ErrResponseTooLarge)
+		l.err = fmt.Errorf("the reply exceeded %d bytes: %w", l.max, agent.ErrResponseTooLarge)
 		return n, l.err
 	}
 	l.left -= int64(n)
@@ -294,17 +293,17 @@ func (l *limitedBody) Read(p []byte) (int, error) {
 func (l *limitedBody) Close() error { return l.body.Close() }
 
 // SSEReadError wraps a failed read of a model's SSE stream (the Err of a NewSSEScanner scanner) as
-// an ErrModel. A line over MaxSSELine, or a reply over its LimitResponse cap, is
-// ErrResponseTooLarge, which the same request would hit again, so middleware.Retryable does not
+// an agent.ErrModel. A line over MaxSSELine, or a reply over its LimitResponse cap, is
+// agent.ErrResponseTooLarge, which the same request would hit again, so middleware.Retryable does not
 // retry it; any other read failure (a connection cut partway through) is retried.
 func SSEReadError(provider string, err error) error {
-	if errors.Is(err, ErrResponseTooLarge) {
+	if errors.Is(err, agent.ErrResponseTooLarge) {
 		return fmt.Errorf("%s: %w", provider, err)
 	}
 	if errors.Is(err, bufio.ErrTooLong) {
-		return fmt.Errorf("%s: %w: a line exceeded %d bytes (%w)", provider, ErrResponseTooLarge, MaxSSELine, err)
+		return fmt.Errorf("%s: %w: a line exceeded %d bytes (%w)", provider, agent.ErrResponseTooLarge, MaxSSELine, err)
 	}
-	return fmt.Errorf("%s stream read: %w (%w)", provider, err, ErrModel)
+	return fmt.Errorf("%s stream read: %w (%w)", provider, err, agent.ErrModel)
 }
 
 // SSEPayload extracts the data payload from one raw SSE line. It reports ok=false for a line that is

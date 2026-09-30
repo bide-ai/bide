@@ -68,7 +68,7 @@ data: [DONE]
 			}
 		}
 	}
-	want := agent.Finish{Reason: "stop", Usage: agent.Usage{InputTokens: 3, OutputTokens: 3, CacheReadTokens: 2}}
+	want := agent.Finish{Reason: "stop", Raw: "stop", Usage: agent.Usage{InputTokens: 3, OutputTokens: 3, CacheReadTokens: 2}}
 	if len(finishes) != 1 || finishes[0] != want {
 		t.Fatalf("finishes = %+v, want exactly [%+v]", finishes, want)
 	}
@@ -139,7 +139,7 @@ data: [DONE]
 
 `
 	evs, err := events(src)
-	if err != nil || len(evs) != 2 || evs[1] != (agent.Finish{Reason: "stop", Usage: agent.Usage{InputTokens: 4, OutputTokens: 1}}) {
+	if err != nil || len(evs) != 2 || evs[1] != (agent.Finish{Reason: "stop", Raw: "stop", Usage: agent.Usage{InputTokens: 4, OutputTokens: 1}}) {
 		t.Fatalf("got %+v, %v", evs, err)
 	}
 }

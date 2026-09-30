@@ -1,4 +1,4 @@
-package agent
+package provider
 
 import (
 	"bytes"
@@ -6,6 +6,8 @@ import (
 	"io"
 	"strings"
 	"testing"
+
+	"github.com/bide-ai/bide/agent"
 )
 
 type closeRecorder struct {
@@ -15,7 +17,7 @@ type closeRecorder struct {
 
 func (c *closeRecorder) Close() error { c.closed = true; return nil }
 
-// A reply of exactly the cap is read whole; one byte more fails with ErrResponseTooLarge after
+// A reply of exactly the cap is read whole; one byte more fails with agent.ErrResponseTooLarge after
 // exactly the cap has been read.
 func TestLimitResponse_CapIsExact(t *testing.T) {
 	for _, n := range []int{0, 1, 99, 100} {
@@ -26,8 +28,8 @@ func TestLimitResponse_CapIsExact(t *testing.T) {
 	}
 	for _, n := range []int{101, 5000} {
 		b, err := io.ReadAll(LimitResponse(&closeRecorder{Reader: bytes.NewReader(make([]byte, n))}, 100))
-		if !errors.Is(err, ErrResponseTooLarge) || len(b) != 100 {
-			t.Errorf("%d-byte reply under a 100-byte cap: read %d, err %v; want 100 and ErrResponseTooLarge", n, len(b), err)
+		if !errors.Is(err, agent.ErrResponseTooLarge) || len(b) != 100 {
+			t.Errorf("%d-byte reply under a 100-byte cap: read %d, err %v; want 100 and agent.ErrResponseTooLarge", n, len(b), err)
 		}
 	}
 }
@@ -36,12 +38,12 @@ func TestLimitResponse_CapIsExact(t *testing.T) {
 func TestLimitResponse_StaysFailed(t *testing.T) {
 	r := LimitResponse(&closeRecorder{Reader: bytes.NewReader(make([]byte, 50))}, 10)
 	buf := make([]byte, 64)
-	if n, err := r.Read(buf); n != 10 || !errors.Is(err, ErrResponseTooLarge) {
-		t.Fatalf("first read: %d, %v; want 10 and ErrResponseTooLarge", n, err)
+	if n, err := r.Read(buf); n != 10 || !errors.Is(err, agent.ErrResponseTooLarge) {
+		t.Fatalf("first read: %d, %v; want 10 and agent.ErrResponseTooLarge", n, err)
 	}
 	for range 3 {
-		if n, err := r.Read(buf); n != 0 || !errors.Is(err, ErrResponseTooLarge) {
-			t.Fatalf("later read: %d, %v; want 0 and ErrResponseTooLarge", n, err)
+		if n, err := r.Read(buf); n != 0 || !errors.Is(err, agent.ErrResponseTooLarge) {
+			t.Fatalf("later read: %d, %v; want 0 and agent.ErrResponseTooLarge", n, err)
 		}
 	}
 }
@@ -54,8 +56,8 @@ func TestLimitResponse_NonPositiveIsTheDefault(t *testing.T) {
 			t.Errorf("max %d: a reply of exactly the default cap read %d, err %v", max, len(b), err)
 		}
 		_, err = io.ReadAll(LimitResponse(&closeRecorder{Reader: bytes.NewReader(make([]byte, DefaultMaxResponseBytes+1))}, max))
-		if !errors.Is(err, ErrResponseTooLarge) {
-			t.Errorf("max %d: a reply one byte over the default cap: err %v, want ErrResponseTooLarge", max, err)
+		if !errors.Is(err, agent.ErrResponseTooLarge) {
+			t.Errorf("max %d: a reply one byte over the default cap: err %v, want agent.ErrResponseTooLarge", max, err)
 		}
 	}
 }
@@ -79,8 +81,8 @@ func TestNewSSEScanner_CutLineIsNotReturned(t *testing.T) {
 		t.Errorf("lines = %q, want only the lines before the cut", lines)
 	}
 	err := SSEReadError("prov", sc.Err())
-	if !errors.Is(err, ErrResponseTooLarge) || !strings.HasPrefix(err.Error(), "prov: the reply exceeded 20 bytes") {
-		t.Fatalf("err = %v, want the provider's ErrResponseTooLarge", err)
+	if !errors.Is(err, agent.ErrResponseTooLarge) || !strings.HasPrefix(err.Error(), "prov: the reply exceeded 20 bytes") {
+		t.Fatalf("err = %v, want the provider's agent.ErrResponseTooLarge", err)
 	}
 	// Without the cap the same body scans whole.
 	sc = NewSSEScanner(strings.NewReader(body))

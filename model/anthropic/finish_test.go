@@ -83,7 +83,7 @@ func TestStreamSSE_OneFinishAtMessageStop(t *testing.T) {
 		}
 		evs = append(evs, ev)
 	}
-	want := agent.Finish{Reason: agent.FinishStop, Usage: agent.Usage{InputTokens: 10, OutputTokens: 7}}
+	want := agent.Finish{Reason: agent.FinishStop, Raw: "end_turn", Usage: agent.Usage{InputTokens: 10, OutputTokens: 7}}
 	if len(evs) != 2 || evs[0] != (agent.TextDelta{Text: "Refund approved."}) || evs[1] != want {
 		t.Fatalf("events = %+v, want the text then %+v", evs, want)
 	}

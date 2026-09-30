@@ -7,7 +7,7 @@ import (
 )
 
 // finishStream is a model turn of text ending with the given finish reason.
-func finishStream(text, reason string) *Stream {
+func finishStream(text string, reason FinishReason) *Stream {
 	ch := make(chan Emit, 2)
 	ch <- Emit{Event: TextDelta{Text: text}}
 	ch <- Emit{Event: Finish{Reason: reason}}
@@ -19,7 +19,7 @@ func finishStream(text, reason string) *Stream {
 // token limit or stopped by a filter is not, so it is an error rather than a message: recorded as
 // a final answer, it would end the run with half an answer, for good.
 func TestStream_FinishReasonDecidesTheTurn(t *testing.T) {
-	for reason, wantErr := range map[string]error{
+	for reason, wantErr := range map[FinishReason]error{
 		"":           nil, // a Model that does not report a reason
 		"stop":       nil,
 		"tool_use":   ErrStreamProtocol, // no call arrived: the calls the model ended its turn for are lost
@@ -51,7 +51,7 @@ func TestStream_TruncatedArgsWinOverTheReason(t *testing.T) {
 }
 
 // reasonModel answers every call with text and the given finish reason.
-type reasonModel struct{ reason string }
+type reasonModel struct{ reason FinishReason }
 
 func (m reasonModel) Stream(context.Context, Request) (*Stream, error) {
 	return finishStream("The total is", m.reason), nil
@@ -61,7 +61,7 @@ func (m reasonModel) Stream(context.Context, Request) (*Stream, error) {
 // run is not marked complete, and a later run asks the model again.
 func TestRun_CutOffFinalTurnDoesNotComplete(t *testing.T) {
 	ctx := context.Background()
-	for _, reason := range []string{"length", "filtered"} {
+	for _, reason := range []FinishReason{FinishLength, FinishFiltered} {
 		store := NewMemStore()
 		msg, err := New(reasonModel{reason}, store).Run(ctx, "r", "sum it")
 		if err == nil {

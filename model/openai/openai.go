@@ -24,6 +24,7 @@ import (
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/model/internal/errtext"
 	"github.com/bide-ai/bide/model/internal/toolcfg"
+	"github.com/bide-ai/bide/model/provider"
 	"github.com/bide-ai/bide/schema"
 )
 
@@ -38,16 +39,19 @@ type Model struct {
 	// WithMaxCompletionTokens); set, it is forced on or off.
 	completionTokens *bool
 	http             *http.Client
-	toolCodec        agent.ToolResultCodec
+	toolCodec        provider.ToolResultCodec
 }
 
-var _ agent.Model = (*Model)(nil) // port/adapter contract
+var (
+	_ agent.Model     = (*Model)(nil) // port/adapter contract
+	_ agent.Describer = (*Model)(nil)
+)
 
 type Option func(*Model)
 
 // WithMaxResponseBytes caps how many bytes of one streamed reply the adapter reads: a reply that
 // runs longer fails with agent.ErrResponseTooLarge, which middleware.Retryable does not retry.
-// The default is agent.DefaultMaxResponseBytes (32 MiB); n <= 0 keeps it. Raise it for replies
+// The default is provider.DefaultMaxResponseBytes (32 MiB); n <= 0 keeps it. Raise it for replies
 // that legitimately run longer, such as large inline images.
 func WithMaxResponseBytes(n int64) Option { return func(m *Model) { m.maxResponse = n } }
 
@@ -72,7 +76,9 @@ func WithMaxCompletionTokens(use bool) Option {
 // WithToolResultCodec encodes tool results sent to the model with c instead of
 // raw JSON (for example GCF, to cut tokens on structured output). The journal
 // keeps the JSON form; only what the model reads changes. Default is JSON.
-func WithToolResultCodec(c agent.ToolResultCodec) Option { return func(m *Model) { m.toolCodec = c } }
+func WithToolResultCodec(c provider.ToolResultCodec) Option {
+	return func(m *Model) { m.toolCodec = c }
+}
 
 // New constructs an OpenAI-compatible adapter. For non-OpenAI endpoints set WithBaseURL
 // (e.g. "http://localhost:11434/v1" for Ollama) and WithModel.
@@ -87,6 +93,13 @@ func New(apiKey string, opts ...Option) *Model {
 		o(m)
 	}
 	return m
+}
+
+// Describe reports the adapter's identity: provider "openai" (the Chat Completions API, also when
+// WithBaseURL points it at a compatible server), the configured model ID, and support for a
+// JSON-schema response format.
+func (m *Model) Describe() agent.ModelInfo {
+	return agent.ModelInfo{Provider: "openai", Model: m.model, ResponseFormat: true}
 }
 
 func (m *Model) Stream(ctx context.Context, req agent.Request) (*agent.Stream, error) {
@@ -108,10 +121,10 @@ func (m *Model) Stream(ctx context.Context, req agent.Request) (*agent.Stream, e
 		return nil, err
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, agent.ClassifyHTTPError("openai", resp)
+		return nil, provider.ClassifyHTTPError("openai", resp)
 	}
 
-	return agent.NewStreamFunc(ctx, func(send func(agent.Emit) bool) { streamSSE(agent.LimitResponse(resp.Body, m.maxResponse), send) }), nil
+	return agent.NewStreamFunc(ctx, func(send func(agent.Emit) bool) { streamSSE(provider.LimitResponse(resp.Body, m.maxResponse), send) }), nil
 }
 
 func (m *Model) buildRequest(req agent.Request) ([]byte, error) {
@@ -155,7 +168,7 @@ func (m *Model) buildRequest(req agent.Request) ([]byte, error) {
 			// each tool result becomes its own tool message
 			for _, p := range msg.Parts {
 				if tr, ok := p.(agent.ToolResult); ok {
-					msgs = append(msgs, obj{"role": "tool", "tool_call_id": tr.ToolUseID, "content": agent.EncodeToolResultOr(m.toolCodec, tr.Result)})
+					msgs = append(msgs, obj{"role": "tool", "tool_call_id": tr.ToolUseID, "content": provider.EncodeToolResultOr(m.toolCodec, tr.Result)})
 				}
 			}
 		case agent.RoleAssistant:
@@ -378,10 +391,12 @@ type chunk struct {
 
 // finishReason maps an OpenAI finish_reason onto the neutral finish reasons (see agent.Finish).
 // A reason it does not know is passed through unchanged, and the core refuses it rather than take
-// the turn as done. A stream that ends with [DONE] and no finish_reason reports none ("").
-func finishReason(r string) string {
+// the turn as done. A stream that ends with [DONE] and no finish_reason (some OpenAI-compatible
+// servers omit it) is a natural stop, as the core has always read it; the reason is never empty,
+// and the Finish keeps the provider's own value, empty then, in Raw.
+func finishReason(r string) agent.FinishReason {
 	switch r {
-	case "stop":
+	case "", "stop":
 		return agent.FinishStop
 	case "tool_calls", "function_call":
 		return agent.FinishToolUse
@@ -390,7 +405,7 @@ func finishReason(r string) string {
 	case "content_filter":
 		return agent.FinishFiltered
 	default:
-		return r
+		return agent.FinishReason(r)
 	}
 }
 
@@ -409,13 +424,13 @@ func finishReason(r string) string {
 func streamSSE(body io.ReadCloser, send func(agent.Emit) bool) {
 	defer body.Close()
 
-	sc := agent.NewSSEScanner(body)
+	sc := provider.NewSSEScanner(body)
 
 	var reason string // the turn's finish_reason, once one has arrived
 	var usage agent.Usage
 	var done bool
 	for sc.Scan() {
-		data, ok := agent.SSEPayload(sc.Text())
+		data, ok := provider.SSEPayload(sc.Text())
 		if !ok {
 			continue
 		}
@@ -429,7 +444,7 @@ func streamSSE(body io.ReadCloser, send func(agent.Emit) bool) {
 			return
 		}
 		if len(c.Error) > 0 && string(c.Error) != "null" {
-			send(agent.Emit{Err: agent.ClassifyStreamError("openai", []byte(data))})
+			send(agent.Emit{Err: provider.ClassifyStreamError("openai", []byte(data))})
 			return
 		}
 		for _, choice := range c.Choices {
@@ -480,10 +495,10 @@ func streamSSE(body io.ReadCloser, send func(agent.Emit) bool) {
 		}
 	}
 	if err := sc.Err(); err != nil {
-		send(agent.Emit{Err: agent.SSEReadError("openai", err)})
+		send(agent.Emit{Err: provider.SSEReadError("openai", err)})
 		return
 	}
 	if done || reason != "" {
-		send(agent.Emit{Event: agent.Finish{Reason: finishReason(reason), Usage: usage}})
+		send(agent.Emit{Event: agent.Finish{Reason: finishReason(reason), Raw: reason, Usage: usage}})
 	}
 }

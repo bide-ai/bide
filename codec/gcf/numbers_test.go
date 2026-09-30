@@ -111,7 +111,7 @@ func TestEncodeToolResult_NumbersExact(t *testing.T) {
 }
 
 // A number GCF cannot carry exactly (an integer outside int64, a decimal float64 cannot hold)
-// is an error, so agent.EncodeToolResultOr falls back to the JSON, which carries it as written.
+// is an error, so provider.EncodeToolResultOr falls back to the JSON, which carries it as written.
 func TestEncodeToolResult_InexactNumberFallsBack(t *testing.T) {
 	for _, in := range []string{
 		`{"big":123456789012345678901234567890}`,
