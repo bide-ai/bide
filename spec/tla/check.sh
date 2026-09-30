@@ -223,10 +223,19 @@ run_parallel() {
   tmp=$(mktemp -d)
   for f in "$@"; do i=$((i + 1)); printf '%s\n' "$f" >"$tmp/$(printf '%04d' $i).path"; done
   export BIDE_TLA_CACHE="$cache"
+  # Each child gets one TLC worker and a bounded heap, so TLC_JOBS JVMs fit the machine. A child
+  # that fails exits nonzero, which xargs reports; its summary says why, and a child with no
+  # summary (killed, or a script error) counts as a failure of its config.
   ls "$tmp"/*.path | xargs -P "$TLC_JOBS" -I{} bash -c \
-    'TLC_WORKERS=1 TLC_JOBS=1 GITHUB_STEP_SUMMARY= "$0" run "$(cat "$1")" >"$1.log" 2>&1' "$here/check.sh" {}
+    'TLC_WORKERS=1 TLC_JOBS=1 GITHUB_STEP_SUMMARY= TLC_JAVA_OPTS="${TLC_JAVA_OPTS:--Xmx1g}" "$0" run "$(cat "$1")" >"$1.log" 2>&1' \
+    "$here/check.sh" {} || true
   for f in "$tmp"/*.path; do
-    sed -n '1,/^Summary:$/p' "$f.log" | grep -v '^Summary:$' | grep -v '^$'
+    sed -n '1,/^Summary:$/p' "$f.log" | grep -v '^Summary:$' | grep -v '^$' || true
+    if ! grep -q '^Summary:$' "$f.log"; then
+      tail -20 "$f.log"
+      record "$(cat "$f")" FAIL "the check did not finish"
+      continue
+    fi
     while IFS= read -r line; do
       case "$line" in ''|check.sh:*) continue ;; esac
       summary+=("$line")
