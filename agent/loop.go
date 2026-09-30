@@ -11,6 +11,8 @@ import (
 	"unicode/utf8"
 
 	"golang.org/x/sync/errgroup"
+
+	"github.com/bide-ai/bide/internal/toolhook"
 )
 
 // Run drives the agent to completion for runID, resuming from the journal if steps
@@ -608,6 +610,12 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 						// repeat.
 						return Record{}, callErr
 					}
+					if _, unrecorded := errors.AsType[*toolhook.Unrecorded](callErr); unrecorded {
+						// A tool wrapper of this module refused the call without effect, and asked that
+						// nothing be recorded (see toolhook.Unrecorded): the run stops, and a re-drive
+						// calls it again.
+						return Record{}, callErr
+					}
 					if late {
 						// The call's own deadline passed before it returned an error: the tool may
 						// have been cut off after its effect took place, so the outcome is unknown,
@@ -711,6 +719,9 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 					}
 					if stepPause := (*stepPauseError)(nil); errors.As(err, &stepPause) {
 						return err // a misconfigured Step (ErrConfig), not a tool fault
+					}
+					if _, unrecorded := errors.AsType[*toolhook.Unrecorded](err); unrecorded {
+						return err // its own category (ErrConfig, say), not a tool fault
 					}
 					return fmt.Errorf("tool %q: %w (%w)", c.tu.Name, err, ErrTool)
 				}

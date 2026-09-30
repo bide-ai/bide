@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/bide-ai/bide/agent"
@@ -687,14 +688,15 @@ func TestAttenuatingSubAgent_InheritsNotAfter(t *testing.T) {
 	store := agent.NewMemStore()
 	_, priv := secKey(t)
 	signer := Ed25519Signer{Priv: priv}
-	rootSG, _ := SignGrant(Grant{ID: "g0", Issuer: "corp", Subject: "desk", NotAfterUnix: 1000, Scope: map[string]string{"limit": "7"}}, signer)
+	notAfter := time.Now().Add(time.Hour).Unix() // unexpired: an expired grant cannot be delegated
+	rootSG, _ := SignGrant(Grant{ID: "g0", Issuer: "corp", Subject: "desk", NotAfterUnix: notAfter, Scope: map[string]string{"limit": "7"}}, signer)
 	tool := AttenuatingSubAgent("exec", "x", agent.New(answerModel{"done"}, store), AttenuationConfig{Store: store, Narrow: narrowTo(Grant{ID: "narrow", Scope: map[string]string{"limit": "3"}}), Rules: ScopeRules{"limit": NumericAtMost}})
 	if err := secDelegate(t, store, tool, WithGrant(context.Background(), rootSG, signer), "p1"); err != nil {
 		t.Fatal(err)
 	}
 	grants := secGrantsIn(t, store, agent.SubRunID("p1", "c1"))
-	if len(grants) != 1 || grants[0].Grant.NotAfterUnix != 1000 {
-		t.Fatalf("child grants %+v, want one with the parent's not_after 1000", grants)
+	if len(grants) != 1 || grants[0].Grant.NotAfterUnix != notAfter {
+		t.Fatalf("child grants %+v, want one with the parent's not_after %d", grants, notAfter)
 	}
 }
 

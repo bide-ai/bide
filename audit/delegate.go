@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/internal/toolhook"
 )
 
 // grantCtxKey carries the acting principal's signed grant plus the signer used to mint attenuated
@@ -117,6 +119,10 @@ func (t *attenuatingSubAgent) Spec() agent.ToolSpec { return agent.SpecOf(t.Tool
 // a saga rollback recurses into its sub-run, and the tree's token budget counts it.
 func (t *attenuatingSubAgent) Unwrap() agent.Tool { return t.Tool }
 
+// unrecorded marks err as a refusal the agent records nothing for (see toolhook.Unrecorded): the
+// run stops with it, and a re-drive under the right authority continues the delegation.
+func unrecorded(err error) error { return &toolhook.Unrecorded{Err: err} }
+
 // ungrantedLeafName names the leaf a delegation journals in its sub-run when it runs without a
 // grant, so a rollback can tell a delegation that ran without one from a sub-run it cannot read.
 const ungrantedLeafName = "audit:delegation:ungranted"
@@ -219,7 +225,7 @@ func (t *attenuatingSubAgent) Call(ctx context.Context, args json.RawMessage) (j
 				return nil, err
 			}
 			if existing != nil {
-				return nil, fmt.Errorf("audit: delegation %q (sub-run %s) began under a grant; resume it with the grant and signer bound (WithGrant): %w", t.name, subRunID, agent.ErrConfig)
+				return nil, unrecorded(fmt.Errorf("audit: delegation %q (sub-run %s) began under a grant; resume it with the grant and signer bound (WithGrant): %w", t.name, subRunID, agent.ErrConfig))
 			}
 			if _, err := t.store.Do(ctx, subRunID, ungrantedLeafName, func(context.Context) (agent.Record, error) {
 				return agent.Record{Kind: agent.StepValue, Result: json.RawMessage(`{"ungranted":true}`)}, nil
@@ -239,16 +245,28 @@ func (t *attenuatingSubAgent) Call(ctx context.Context, args json.RawMessage) (j
 			return nil, err
 		}
 		if ungranted {
-			return nil, fmt.Errorf("audit: delegation %q (sub-run %s) began without a grant; it cannot continue under one: %w", t.name, subRunID, agent.ErrConfig)
+			return nil, unrecorded(fmt.Errorf("audit: delegation %q (sub-run %s) began without a grant; resume it with none bound: %w", t.name, subRunID, agent.ErrConfig))
 		}
 	}
+	now := time.Now().Unix()
 	var childSG SignedGrant
 	if existing != nil {
+		if existing.Grant.Subject != t.name {
+			return nil, unrecorded(fmt.Errorf("audit: delegation %q (sub-run %s) journaled a grant for subject %q: %w", t.name, subRunID, existing.Grant.Subject, agent.ErrProtocol))
+		}
 		if err := t.checkChild(*existing, parentSG, signer); err != nil {
-			return nil, err
+			// Resumed under another grant or signer than the delegation began with: bind those and
+			// drive again.
+			return nil, unrecorded(fmt.Errorf("%w (%w)", err, agent.ErrConfig))
+		}
+		if existing.Grant.Expired(now) {
+			return nil, unrecorded(fmt.Errorf("audit: delegation %q (sub-run %s) cannot continue: its grant expired at %d: %w", t.name, subRunID, existing.Grant.NotAfterUnix, agent.ErrConfig))
 		}
 		childSG = *existing
 	} else {
+		if parentSG.Grant.Expired(now) {
+			return nil, unrecorded(fmt.Errorf("audit: attenuating delegation to %q: the bound grant expired at %d: %w", t.name, parentSG.Grant.NotAfterUnix, agent.ErrConfig))
+		}
 		child := t.narrow(parentSG.Grant, t.name)
 		child.ParentRef = parentSG.Grant.Digest()
 		if child.Issuer == "" {
@@ -257,11 +275,17 @@ func (t *attenuatingSubAgent) Call(ctx context.Context, args json.RawMessage) (j
 		if child.Subject == "" {
 			child.Subject = t.name
 		}
+		if child.Subject != t.name {
+			return nil, fmt.Errorf("audit: attenuating delegation to %q: the child grant's subject is %q; it must be the sub-agent's name: %w", t.name, child.Subject, agent.ErrConfig)
+		}
 		if child.NotAfterUnix == 0 {
 			child.NotAfterUnix = parentSG.Grant.NotAfterUnix // a child never outlives its parent
 		}
 		if err := CheckAttenuation(parentSG.Grant, child, t.rules); err != nil {
 			return nil, fmt.Errorf("audit: attenuating delegation to %q: %w", t.name, err)
+		}
+		if child.Expired(now) {
+			return nil, unrecorded(fmt.Errorf("audit: attenuating delegation to %q: the child grant expires at %d, already past: %w", t.name, child.NotAfterUnix, agent.ErrConfig))
 		}
 		if subRunID == "" {
 			return nil, fmt.Errorf("audit: attenuating delegation to %q needs a run scope: call it from an agent run", t.name)

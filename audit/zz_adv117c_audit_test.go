@@ -7,6 +7,7 @@ import (
 	"errors"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/bide-ai/bide/agent"
 )
@@ -32,7 +33,7 @@ func TestAdv117c_RefusedResumeLeavesSubRunChargeUnaccounted(t *testing.T) {
 
 			_, priv, _ := ed25519.GenerateKey(rand.Reader)
 			signer := Ed25519Signer{Priv: priv}
-			root, _ := SignGrant(Grant{ID: "g0", Issuer: "corp", Subject: "desk", Scope: map[string]string{"limit": "7"}, NotAfterUnix: 1000}, signer)
+			root, _ := SignGrant(Grant{ID: "g0", Issuer: "corp", Subject: "desk", Scope: map[string]string{"limit": "7"}, NotAfterUnix: time.Now().Add(time.Hour).Unix()}, signer)
 			_, err := parent.RunSaga(WithGrant(ctx, root, signer), "trip", "go")
 			var pend *agent.ApprovalPending
 			if !errors.As(err, &pend) || charged.Load() != 1 {
@@ -43,7 +44,7 @@ func TestAdv117c_RefusedResumeLeavesSubRunChargeUnaccounted(t *testing.T) {
 			}
 			rctx := ctx
 			if name == "renewed root grant" {
-				renewed, _ := SignGrant(Grant{ID: "g0", Issuer: "corp", Subject: "desk", Scope: map[string]string{"limit": "7"}, NotAfterUnix: 2000}, signer)
+				renewed, _ := SignGrant(Grant{ID: "g0", Issuer: "corp", Subject: "desk", Scope: map[string]string{"limit": "7"}, NotAfterUnix: time.Now().Add(2 * time.Hour).Unix()}, signer)
 				rctx = WithGrant(ctx, renewed, signer)
 			}
 			// Resumed under other authority: the delegation refuses with ErrConfig and records
@@ -102,5 +103,51 @@ func TestAdv117c_PreChangeUngrantedJournalCannotRollBack(t *testing.T) {
 	var ab *agent.SagaAborted
 	if !errors.As(err, &ab) || !errors.Is(ab.CompensateErr, agent.ErrProtocol) || undone.Load() != 0 {
 		t.Fatalf("a pre-change ungranted delegation: %v (undone %d); want the documented refusal (ErrProtocol), nothing undone", err, undone.Load())
+	}
+}
+
+// A delegation cannot run past its grant's NotAfter: minting from an expired bound grant, or
+// continuing under an expired journaled one, is ErrConfig, unrecorded (nothing is journaled for the
+// call); a journaled grant for another subject is refused (ErrProtocol), unrecorded too.
+func TestAdv117c_ExpiredOrForeignGrantIsRefusedUnrecorded(t *testing.T) {
+	_, priv, _ := ed25519.GenerateKey(rand.Reader)
+	signer := Ed25519Signer{Priv: priv}
+	past, future := time.Now().Add(-time.Hour).Unix(), time.Now().Add(time.Hour).Unix()
+	live, _ := SignGrant(Grant{ID: "g0", Issuer: "corp", Subject: "desk", Scope: map[string]string{"limit": "7"}, NotAfterUnix: future}, signer)
+	expired, _ := SignGrant(Grant{ID: "g0", Issuer: "corp", Subject: "desk", Scope: map[string]string{"limit": "7"}, NotAfterUnix: past}, signer)
+	for name, tc := range map[string]struct {
+		root    SignedGrant
+		journal *Grant // a child grant already in the sub-run
+		want    error
+	}{
+		"expired bound grant":     {root: expired, want: agent.ErrConfig},
+		"expired journaled grant": {root: live, journal: &Grant{ID: "c", Issuer: "desk", Subject: "exec", Scope: map[string]string{"limit": "4"}, NotAfterUnix: past}, want: agent.ErrConfig},
+		"foreign subject":         {root: live, journal: &Grant{ID: "c", Issuer: "desk", Subject: "other", Scope: map[string]string{"limit": "4"}, NotAfterUnix: future}, want: agent.ErrProtocol},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			store := agent.NewMemStore()
+			if tc.journal != nil {
+				g := *tc.journal
+				g.ParentRef = tc.root.Grant.Digest()
+				sg, _ := SignGrant(g, signer)
+				if _, err := RecordGrant(ctx, store, agent.SubRunID("r", "c1"), sg); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var ran atomic.Int32
+			sub := agent.New(agent.NewScriptedModel(agent.TextTurn("done")), store, agent.Func("noop", "", agent.Safety{}, func(context.Context, struct{}) (string, error) { ran.Add(1); return "", nil }))
+			exec := AttenuatingSubAgent("exec", "", sub, AttenuationConfig{Store: store, Narrow: narrowLimitBy(3), Rules: ScopeRules{"limit": NumericAtMost}})
+			parent := agent.New(agent.NewScriptedModel(agent.ToolTurn("c1", "exec", `{"task":"x"}`), agent.TextTurn("done")), store, exec)
+			if _, err := parent.Run(WithGrant(ctx, tc.root, signer), "r", "go"); !errors.Is(err, tc.want) {
+				t.Fatalf("Run = %v, want %v", err, tc.want)
+			}
+			recs, _ := store.History(ctx, "r")
+			for _, r := range recs {
+				if r.Kind == agent.StepToolResult && r.ToolUseID == "c1" {
+					t.Fatalf("the refusal was recorded: %s", r.Result)
+				}
+			}
+		})
 	}
 }

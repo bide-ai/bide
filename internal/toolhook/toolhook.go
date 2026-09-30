@@ -18,3 +18,15 @@ type RollbackBinder interface {
 // agent.checkWrapper): a Compensator on its Unwrap chain, or a timeout over a sub-agent. The agent
 // package sets it in init; plan calls it so a flow refuses what an agent refuses.
 var CheckTool func(t any) error
+
+// Unrecorded is an error a tool wrapper of this module returns for a call that must leave nothing
+// in the journal: not a result, not a saga failure. The run stops with Err, and a re-drive calls
+// the tool again. AttenuatingSubAgent uses it when a delegation is resumed under authority other
+// than it began with, or its grant has expired: the operator can bind the right grant and drive
+// again, and the delegation continues rather than being failed for good. It is only for a tool
+// whose call is safe to make again (the agent refuses nothing else for it; a side effect with an
+// attempt marker halts on the re-drive, as any call that recorded nothing does).
+type Unrecorded struct{ Err error }
+
+func (e *Unrecorded) Error() string { return e.Err.Error() }
+func (e *Unrecorded) Unwrap() error { return e.Err }
