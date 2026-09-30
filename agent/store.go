@@ -456,7 +456,7 @@ func resolve(ctx context.Context, store Durable, runID string, h haltKeys, resul
 		attempt = &r
 	}
 	for i := range recs {
-		if recs[i].Kind == StepAttempt && attemptBase(recs[i].Name) == h.other {
+		if recs[i].Name == h.other { // a re-attempt exists only after a first attempt
 			other = &recs[i]
 		}
 	}
