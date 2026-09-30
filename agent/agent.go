@@ -393,6 +393,11 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 		msgs = append(msgs, SystemText(sys))
 	}
 	msgs = append(msgs, seed...)
+
+	// The recorded assistant turns and tool results, from which the conversation is rebuilt below.
+	var turns []Message
+	results := map[string]Record{} // tool-use ID -> its recorded result
+
 	done := map[string]bool{}           // tool-use IDs with a recorded result
 	attempted := map[string]bool{}      // tool-use IDs we recorded an attempt marker for (started a side effect)
 	attemptedAtMs := map[string]int64{} // tool-use ID -> attempt marker's Unix-millis timestamp
@@ -414,16 +419,11 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 		case StepModel:
 			modelSeq++
 			if r.Message != nil {
-				msgs = append(msgs, *r.Message)
-				fire(AssistantTurn{Message: *r.Message, Replayed: true})
+				turns = append(turns, *r.Message)
 			}
 		case StepToolResult:
 			done[r.ToolUseID] = true
-			msgs = append(msgs, Message{Role: RoleTool, Parts: []Part{
-				ToolResult{ToolUseID: r.ToolUseID, Result: r.Result, IsError: r.IsError},
-			}})
-			name, _ := toolNameFor(recs, r.ToolUseID)
-			fire(ToolCompleted{ToolUseID: r.ToolUseID, Name: name, Result: r.Result, IsError: r.IsError})
+			results[r.ToolUseID] = r // one record per call: it is journaled under the call's ID
 		case StepSagaFail:
 			done[r.ToolUseID] = true // the failing step is durably resolved (no ResumeHalt)
 		case StepApproval:
@@ -455,6 +455,28 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 		if isToolAttempt(r) { // a Step's marker is not a call's
 			attempted[r.ToolUseID] = true
 			attemptedAtMs[r.ToolUseID] = r.AttemptedAt
+		}
+	}
+
+	// Rebuild the conversation as the live loop builds it: each assistant turn followed by the
+	// results of its calls in the order the model made them. The journal holds a turn's results
+	// in the order they were recorded, which is not that order when the calls ran concurrently or
+	// a denial was recorded before they ran, and a resumed run must show the model the
+	// conversation it would have read had nothing stopped the run. A result is placed once, after
+	// the first turn that made its call (a journal written before tool-use IDs were checked may
+	// reuse one); a recorded result no call of this run's turns made is not part of it.
+	placed := map[string]bool{}
+	for _, m := range turns {
+		msgs = append(msgs, m)
+		fire(AssistantTurn{Message: m, Replayed: true})
+		for _, tu := range m.toolUses() {
+			r, ok := results[tu.ID]
+			if !ok || placed[tu.ID] {
+				continue
+			}
+			placed[tu.ID] = true
+			msgs = append(msgs, toolResultMessage(r))
+			fire(ToolCompleted{ToolUseID: r.ToolUseID, Name: tu.Name, Result: r.Result, IsError: r.IsError})
 		}
 	}
 
@@ -846,11 +868,29 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 			return Message{}, tot, liveTurns, pauseErr
 		}
 
-		// Append results in deterministic uses-order.
+		// Append results in deterministic uses-order. A resumed turn may already have some of its
+		// results in msgs (replayed from the journal, after the turn); they are taken out and put
+		// back in their places among the ones that just ran.
+		k := len(msgs)
+		for k > 0 && msgs[k-1].Role == RoleTool {
+			k--
+		}
+		prior := map[string]Message{}
+		for _, m := range msgs[k:] {
+			for _, p := range m.Parts {
+				if tr, ok := p.(ToolResult); ok {
+					prior[tr.ToolUseID] = m
+				}
+			}
+		}
+		msgs = msgs[:k]
 		for i, tu := range uses {
-			if results[i] != nil {
+			switch m, ok := prior[tu.ID]; {
+			case results[i] != nil:
 				done[tu.ID] = true
 				msgs = append(msgs, *results[i])
+			case ok:
+				msgs = append(msgs, m)
 			}
 		}
 	}
@@ -1119,6 +1159,11 @@ func terminalCallDone(msgs []Message, tool string) (Message, bool) {
 		return Message{}, false
 	}
 	return Message{}, false
+}
+
+// toolResultMessage is the conversation message for a recorded tool result.
+func toolResultMessage(r Record) Message {
+	return Message{Role: RoleTool, Parts: []Part{ToolResult{ToolUseID: r.ToolUseID, Result: r.Result, IsError: r.IsError}}}
 }
 
 // lastAssistant returns the index of the last assistant message in msgs, or -1.
