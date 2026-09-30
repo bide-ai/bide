@@ -45,7 +45,10 @@ import (
 // cannot tell which handle they reach, and nothing may assign to txOptions or through it. Beyond
 // the pool (see checkExpr): no function of a pgx package may be used outside migrate, no constant
 // or conversion of the type writeSQL or selectSQL may appear outside newWrite and newSelect, a
-// constant query holds no semicolon, and no constant names a session-level advisory lock.
+// constant query holds no semicolon and calls no function outside constantCalls, and no constant
+// names a session-level advisory lock. newSelect and newWrite hold the statements they vouch for
+// to the same calls at run time, and newWrite alone admits the next_seq function (see
+// TestNewSelect and TestNewWrite).
 // TestStatementCheckCatchesBypasses holds the check to a fixture of ways around it.
 func TestStatementsOnThePool(t *testing.T) {
 	if txOptions == nil || txOptions.Isolation != sql.LevelReadCommitted || txOptions.ReadOnly {
@@ -259,6 +262,8 @@ func statementProblems(t *testing.T, dir string, extra ...string) []string {
 							report(call.Args[idx], "%s on %s with a query that is not a constant string", n.Sel.Name, recv)
 						} else if q := constant.StringVal(tv.Value); strings.Contains(q, ";") {
 							report(call.Args[idx], "%s on %s runs more than one statement", n.Sel.Name, recv)
+						} else if name, ok := unknownCall(q); ok {
+							report(call.Args[idx], "%s on %s calls %s, a function the check does not know", n.Sel.Name, recv, name)
 						} else if !isSelect(q) {
 							report(call.Args[idx], "%s on %s runs a statement other than SELECT outside a transaction begun with txOptions", n.Sel.Name, recv)
 						} else {
@@ -280,6 +285,31 @@ func statementProblems(t *testing.T, dir string, extra ...string) []string {
 // statement and so is held across round trips. The transaction-level forms (pg_advisory_xact_lock
 // and pg_try_advisory_xact_lock) end with the statement's transaction.
 var sessionLockCall = regexp.MustCompile(`(?i)pg_(try_)?advisory_lock`)
+
+// constantCalls are the only functions a constant query on the pool may call (the next_seq
+// function is not among them: only the insert, a writeSQL, calls it). A name after INTO names a
+// table, and a keyword in listWords takes a list; neither is a call.
+var (
+	constantCalls = map[string]bool{"now": true, "max": true, "coalesce": true, "starts_with": true}
+	listWords     = map[string]bool{"values": true, "conflict": true, "exists": true, "in": true, "any": true, "as": true, "and": true, "or": true, "not": true, "on": true}
+	quotedSQL     = regexp.MustCompile(`'(?:[^']|'')*'|"(?:[^"]|"")*"`)
+	callSQL       = regexp.MustCompile(`([A-Za-z_][A-Za-z0-9_$.]*)\s*\(`)
+)
+
+// unknownCall returns the first function q calls that is not in constantCalls.
+func unknownCall(q string) (string, bool) {
+	q = quotedSQL.ReplaceAllString(q, "''")
+	for _, m := range callSQL.FindAllStringSubmatchIndex(q, -1) {
+		name := strings.ToLower(q[m[2]:m[3]])
+		if before := strings.Fields(q[:m[2]]); len(before) > 0 && strings.EqualFold(before[len(before)-1], "INTO") {
+			continue
+		}
+		if !listWords[name] && !constantCalls[name] {
+			return name, true
+		}
+	}
+	return "", false
+}
 
 // pgxPackage reports whether path is one of the pgx packages, whose connections and transactions
 // the database/sql rules do not see.

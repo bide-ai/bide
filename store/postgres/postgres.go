@@ -111,18 +111,44 @@ var (
 // tables holds the table names, prefixed, and the statements built from them.
 type tables struct {
 	steps, leases, version          string
+	nextSeq, nextSeqBody            string // the next_seq function's name and source
 	insert, acquire, renew, release writeSQL
 	get, load                       selectSQL
 }
 
+// nextSeqVersion names the next_seq function's definition. The migration creates the function
+// when it is missing and never replaces one, since nodes of another version may be calling it; a
+// change to the definition takes a new version, so a new function beside the old one.
+const nextSeqVersion = "v1"
+
+// nextSeqTemplate is the body of the next_seq function, over the steps table %s. It takes the run's
+// transaction-level advisory lock, which the insert that calls it holds until it commits, and then
+// reads the run's last position. A VOLATILE function takes a new snapshot for each query it runs,
+// so at read committed the MAX is read after the lock is granted and sees every insert into the
+// run that held the lock before: inserts into one run queue on the lock and each takes the next
+// position in its first attempt. At repeatable read or serializable the query uses the
+// transaction's snapshot, taken before the lock was granted, so a queued insert may collide on
+// (run_id, seq) and is run again, as without the function. The key is the one the store has
+// always used for the run's lock, so nodes of earlier versions queue on the same lock.
+const nextSeqTemplate = `
+BEGIN
+	PERFORM pg_advisory_xact_lock(hashtextextended(r, 0));
+	RETURN (SELECT COALESCE(MAX(seq), -1) + 1 FROM %s WHERE run_id = r);
+END
+`
+
 func newTables(prefix string) (tables, error) {
-	t := tables{steps: prefix + "steps", leases: prefix + "leases", version: prefix + "schema_version"}
+	t := tables{steps: prefix + "steps", leases: prefix + "leases", version: prefix + "schema_version",
+		nextSeq: prefix + "next_seq_" + nextSeqVersion}
+	t.nextSeqBody = fmt.Sprintf(nextSeqTemplate, t.steps)
 	var err error
-	// The position is MAX(seq)+1 over the statement's snapshot. Two inserts that read the same MAX
-	// collide on UNIQUE (run_id, seq), which is not the conflict target, so the second fails with
-	// 23505 once the first commits and insert runs it again (see insert).
+	// The position comes from next_seq, which queues the insert on the run's lock (see
+	// nextSeqTemplate). Should two inserts still read the same MAX (at repeatable read or
+	// serializable, or beside a writer that does not take the lock), they collide on UNIQUE
+	// (run_id, seq), which is not the conflict target, so the second fails with 23505 once the
+	// first commits and insert runs it again (see insert).
 	if t.insert, err = newWrite(`INSERT INTO ` + t.steps + ` (run_id, seq, name, data)
-		VALUES ($1, (SELECT COALESCE(MAX(seq), -1) + 1 FROM ` + t.steps + ` WHERE run_id = $1), $2, $3)
+		VALUES ($1, ` + t.nextSeq + `($1), $2, $3)
 		ON CONFLICT (run_id, name) DO NOTHING
 		RETURNING seq`); err != nil {
 		return tables{}, err
@@ -163,10 +189,11 @@ type selectSQL string
 type writeSQL string
 
 // newWrite returns q as a writeSQL, or an error unless q is one statement the pool may run on its
-// own (see oneStatement) that starts with INSERT, UPDATE or DELETE.
+// own (see oneStatement) that starts with INSERT, UPDATE or DELETE and calls no function but the
+// known ones and the next_seq function (see knownCalls).
 func newWrite(q string) (writeSQL, error) {
 	for _, kw := range []string{"INSERT", "UPDATE", "DELETE"} {
-		if startsWith(q, kw) && oneStatement(q) {
+		if startsWith(q, kw) && oneStatement(q) && knownCalls(q, true) {
 			return writeSQL(q), nil
 		}
 	}
@@ -174,9 +201,10 @@ func newWrite(q string) (writeSQL, error) {
 }
 
 // newSelect returns q as a selectSQL, or an error unless q is one statement the pool may run on
-// its own (see oneStatement) that starts with SELECT.
+// its own (see oneStatement) that starts with SELECT and calls no function but the known ones
+// (see knownCalls).
 func newSelect(q string) (selectSQL, error) {
-	if !startsWith(q, "SELECT") || !oneStatement(q) {
+	if !startsWith(q, "SELECT") || !oneStatement(q) || !knownCalls(q, false) {
 		return "", fmt.Errorf("postgres: a read on the pool must be one SELECT statement, got %.40q: %w", q, agent.ErrConfig)
 	}
 	return selectSQL(q), nil
@@ -192,6 +220,40 @@ var sessionLock = regexp.MustCompile(`(?i)pg_(try_)?advisory_lock`)
 // statements, one of which could be BEGIN) and names no session-level advisory lock.
 func oneStatement(q string) bool {
 	return !strings.Contains(q, ";") && !sessionLock.MatchString(q)
+}
+
+// sqlQuoted matches a string literal or a quoted identifier, whose contents are not SQL.
+var sqlQuoted = regexp.MustCompile(`'(?:[^']|'')*'|"(?:[^"]|"")*"`)
+
+// sqlCall matches a name followed by an opening parenthesis: a function call, or a keyword or a
+// table name that takes a parenthesized list.
+var sqlCall = regexp.MustCompile(`([A-Za-z_][A-Za-z0-9_$.]*)\s*\(`)
+
+// sqlListWords are the keywords the store's statements follow with a parenthesized list, and
+// sqlFunctions the built-in functions they call. A statement calling anything else, a function a
+// deployment defined among them, could hold a lock or open a connection the store cannot see.
+var (
+	sqlListWords = map[string]bool{"values": true, "conflict": true, "exists": true, "in": true, "any": true, "as": true, "and": true, "or": true, "not": true, "on": true}
+	sqlFunctions = map[string]bool{"now": true, "max": true, "coalesce": true, "starts_with": true}
+	nextSeqCall  = regexp.MustCompile(`^[a-z_][a-z0-9_]*next_seq_` + nextSeqVersion + `$`)
+)
+
+// knownCalls reports whether every call in q is to a function the store knows: a built-in in
+// sqlFunctions or, in a write, the next_seq function. A name after INTO names the table whose
+// column list follows, and a keyword in sqlListWords a list; neither is a call.
+func knownCalls(q string, write bool) bool {
+	q = sqlQuoted.ReplaceAllString(q, "''")
+	for _, m := range sqlCall.FindAllStringSubmatchIndex(q, -1) {
+		name := strings.ToLower(q[m[2]:m[3]])
+		if before := strings.Fields(q[:m[2]]); len(before) > 0 && strings.EqualFold(before[len(before)-1], "INTO") {
+			continue
+		}
+		if sqlListWords[name] || sqlFunctions[name] || write && nextSeqCall.MatchString(name) {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 // startsWith reports whether q starts with the keyword kw, after leading white space.
@@ -335,6 +397,17 @@ func (s *Store) migrate(ctx context.Context) error {
 		s.t.steps, s.t.leases, s.t.version, schemaVersion)); err != nil {
 		return fmt.Errorf("postgres: create tables: %w (%w)", err, agent.ErrStorage)
 	}
+	// The next_seq function, created if missing and never replaced (see nextSeqVersion). The
+	// migration lock makes the check and the creation one step across nodes.
+	var haveNextSeq bool
+	if err := tx.QueryRowContext(ctx, `SELECT to_regprocedure($1) IS NOT NULL`, s.t.nextSeq+"(text)").Scan(&haveNextSeq); err != nil {
+		return fmt.Errorf("postgres: look up %s: %w (%w)", s.t.nextSeq, err, agent.ErrStorage)
+	}
+	if !haveNextSeq {
+		if _, err := tx.ExecContext(ctx, `CREATE FUNCTION `+s.t.nextSeq+`(r text) RETURNS bigint LANGUAGE plpgsql VOLATILE AS $bide$`+s.t.nextSeqBody+`$bide$`); err != nil {
+			return fmt.Errorf("postgres: create %s: %w (%w)", s.t.nextSeq, err, agent.ErrStorage)
+		}
+	}
 	var v int
 	if err := tx.QueryRowContext(ctx, `SELECT version FROM `+s.t.version+` WHERE id = 1`).Scan(&v); err != nil {
 		return fmt.Errorf("postgres: read schema version: %w (%w)", err, agent.ErrStorage)
@@ -359,6 +432,14 @@ func (s *Store) migrate(ctx context.Context) error {
 				u.table, strings.Join(u.cols, ", "), agent.ErrConfig)
 		}
 	}
+	var sameNextSeq bool
+	if err := tx.QueryRowContext(ctx, expectedFunction, s.t.nextSeq+"(text)", s.t.nextSeqBody).Scan(&sameNextSeq); err != nil {
+		return fmt.Errorf("postgres: check %s: %w (%w)", s.t.nextSeq, err, agent.ErrStorage)
+	}
+	if !sameNextSeq {
+		return fmt.Errorf("postgres: function %s(text) is not the one this version creates (VOLATILE plpgsql returning bigint, not SECURITY DEFINER, with no settings of its own, whose body takes the run's advisory lock and then reads MAX(seq)); the store's inserts depend on it and the migration never replaces a function: %w",
+			s.t.nextSeq, agent.ErrConfig)
+	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("postgres: migrate: %w (%w)", err, agent.ErrStorage)
 	}
@@ -376,6 +457,14 @@ const requiredUnique = `SELECT EXISTS (SELECT 1 FROM pg_index i
 		AND (SELECT array_agg(a.attname::text ORDER BY a.attname::text)
 			FROM unnest(i.indkey::int2[]) AS k JOIN pg_attribute AS a ON a.attrelid = i.indrelid AND a.attnum = k)
 			= (SELECT array_agg(c ORDER BY c) FROM unnest($2::text[]) AS c))`
+
+// expectedFunction reports whether the function $1 (a regprocedure signature, resolved by the
+// search path as the insert resolves it) is a VOLATILE plpgsql function returning one bigint, not
+// SECURITY DEFINER and with no settings of its own (a SET search_path, say), whose source is $2.
+const expectedFunction = `SELECT EXISTS (SELECT 1 FROM pg_proc AS p JOIN pg_language AS l ON l.oid = p.prolang
+	WHERE p.oid = to_regprocedure($1) AND l.lanname = 'plpgsql' AND p.provolatile = 'v'
+		AND NOT p.prosecdef AND p.proconfig IS NULL AND NOT p.proretset
+		AND p.prorettype = 'bigint'::regtype AND p.prosrc = $2)`
 
 // Close closes the connection pool Open opened. A Store made with New leaves its db open.
 func (s *Store) Close() error {
