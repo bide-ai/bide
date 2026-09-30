@@ -5,7 +5,6 @@ import (
 	"errors"
 	"sync/atomic"
 	"testing"
-	"time"
 )
 
 // sagaTurns plays a fixed script: each turn is a list of tool calls (id, name, args), or, when
@@ -37,15 +36,17 @@ func (m *sagaTurns) Stream(context.Context, Request) (*Stream, error) {
 // a ResumeHalt for the charge, which lists it as uncompensated.
 func TestSaga_RollbackHaltsOnAnUnknownOutcome(t *testing.T) {
 	var charged, refunded atomic.Int32
+	paying := make(chan struct{})
 	pay := CompensatedFunc("pay", "charge the card", Safety{},
 		func(ctx context.Context, _ struct{}) (string, error) {
 			charged.Add(1) // the payment went through
-			<-ctx.Done()   // cancelled while waiting for the response
+			close(paying)
+			<-ctx.Done() // cancelled while waiting for the response
 			return "", ctx.Err()
 		},
 		func(context.Context, struct{}, string) error { refunded.Add(1); return nil })
 	book := Func("book", "book the flight", Safety{}, func(context.Context, struct{}) (string, error) {
-		time.Sleep(20 * time.Millisecond)
+		<-paying // fail once the charge is in flight
 		return "", errors.New("no seats")
 	})
 	m := &sagaTurns{turns: [][][3]string{{{"p1", "pay", `{}`}, {"b1", "book", `{}`}}}}
@@ -182,9 +183,14 @@ func TestSaga_IdempotentWriteWithoutCompensatorIsReported(t *testing.T) {
 // Resolving the halted charge lets the rollback finish: ResolveHalt records that the charge
 // went through, and the next RunSaga refunds it.
 func TestSaga_ResolvedUnknownOutcomeIsCompensated(t *testing.T) {
+	paying := make(chan struct{})
 	var refunded atomic.Int32
 	pay := CompensatedFunc("pay", "charge the card", Safety{},
-		func(ctx context.Context, _ struct{}) (string, error) { <-ctx.Done(); return "", ctx.Err() },
+		func(ctx context.Context, _ struct{}) (string, error) {
+			close(paying)
+			<-ctx.Done()
+			return "", ctx.Err()
+		},
 		func(_ context.Context, _ struct{}, receipt string) error {
 			if receipt != "rcpt-9" {
 				t.Errorf("refunded receipt %q, want the resolved rcpt-9", receipt)
@@ -193,7 +199,7 @@ func TestSaga_ResolvedUnknownOutcomeIsCompensated(t *testing.T) {
 			return nil
 		})
 	book := Func("book", "book the flight", Safety{}, func(context.Context, struct{}) (string, error) {
-		time.Sleep(20 * time.Millisecond)
+		<-paying // fail once the charge is in flight
 		return "", errors.New("no seats")
 	})
 	store := NewMemStore()
@@ -213,9 +219,11 @@ func TestSaga_ResolvedUnknownOutcomeIsCompensated(t *testing.T) {
 // A retry-safe write cut off by the abort is run again to learn its result, then undone.
 func TestSaga_CutOffRetrySafeWriteIsUndone(t *testing.T) {
 	var held, released atomic.Int32
+	holding := make(chan struct{})
 	reserve := CompensatedFunc("reserve", "hold the seat", Safety{Idempotent: true},
 		func(ctx context.Context, _ struct{}) (string, error) {
 			if held.Add(1) == 1 {
+				close(holding)
 				<-ctx.Done() // the first call is cut off by the abort
 				return "", ctx.Err()
 			}
@@ -228,7 +236,7 @@ func TestSaga_CutOffRetrySafeWriteIsUndone(t *testing.T) {
 			return nil
 		})
 	book := Func("book", "book the flight", Safety{}, func(context.Context, struct{}) (string, error) {
-		time.Sleep(20 * time.Millisecond)
+		<-holding // fail once the hold is in flight
 		return "", errors.New("no seats")
 	})
 	m := &sagaTurns{turns: [][][3]string{{{"r1", "reserve", `{}`}, {"b1", "book", `{}`}}}}

@@ -710,6 +710,12 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 						err = nil
 					}
 				}()
+				// A call whose turn was cut short before its turn to run came (a saga sibling
+				// failed, a sibling's record could not be written, the run was cancelled) never
+				// starts: nothing is claimed or run, so it has no outcome to reconcile.
+				if err := gctx.Err(); err != nil {
+					return err
+				}
 				sctx := withRunScope(gctx, SubRunID(runID, c.tu.ID)) // hierarchical sub-run ID
 				sctx = withRunContext(sctx, a.store, runID)          // lets the tool call Interrupt
 				started := &callUsage{}                              // usage of the runs this call starts
