@@ -169,6 +169,66 @@ func TestR90_SecondConflictingResolutionIsSilent(t *testing.T) {
 	if !errors.Is(err, ErrConfig) {
 		t.Errorf("second, conflicting resolution = %v; want an error wrapping ErrConfig (the journal says %s)", err, rec.Result)
 	}
+	ar, ok := errors.AsType[*HaltAlreadyResolved](err)
+	if !ok || !errors.Is(err, ErrAlreadyResolved) || string(ar.Result) != `"charged"` || ar.IsError || ar.Op != ref.Op {
+		t.Errorf("second, conflicting resolution = %#v; want *HaltAlreadyResolved carrying the recorded \"charged\"", err)
+	}
+}
+
+// With a store that leases runs, a resolution is refused while any driver holds the root run's
+// lease (a sub-run's halt checks its root), holds the lease itself while it writes, and gives it
+// back after.
+func TestResolveHaltRef_RefusesWhileTheRunIsLeased(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemStore()
+	sub := SubRunID("r1", "c9")
+	if won, _, err := ClaimAttempt(ctx, store, sub, toolAttemptStep("c1"), Record{Kind: StepAttempt, ToolUseID: "c1", AttemptedAt: 1}); err != nil || !won {
+		t.Fatal(won, err)
+	}
+	if ok, err := store.AcquireLease(ctx, "r1", "worker-1", time.Minute); err != nil || !ok {
+		t.Fatal(ok, err)
+	}
+	ref := HaltRef{RunID: sub, Op: OpRef{Kind: OpTool, ID: "c1"}, Cause: HaltCrashed}
+	err := ResolveHaltRef(ctx, store, ref, Outcome{Result: "charged"})
+	if inFlight, ok := errors.AsType[*HaltInFlight](err); !ok || inFlight.RootRunID != "r1" {
+		t.Fatalf("resolving under a live lease = %v; want *HaltInFlight on r1", err)
+	}
+	if _, ok := hasStep(t, store, sub, ToolResultStep("c1")); ok {
+		t.Fatal("a refused resolution recorded a result")
+	}
+	if err := store.ReleaseLease(ctx, "r1", "worker-1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := ResolveHaltRef(ctx, store, ref, Outcome{Result: "charged"}); err != nil {
+		t.Fatalf("resolving once the lease is released = %v", err)
+	}
+	if ok, err := store.AcquireLease(ctx, "r1", "worker-2", time.Minute); err != nil || !ok {
+		t.Fatalf("after the resolution the run's lease is still held (%v, %v); it must be given back", ok, err)
+	}
+}
+
+// A store that cannot lease runs needs WithMinHaltAge, or the explicit WithoutLiveDriverCheck.
+func TestResolveHaltRef_WithoutALeaserNeedsAnAgeOrAnOptOut(t *testing.T) {
+	ctx := context.Background()
+	store := newXprocStore()
+	if won, _, err := ClaimAttempt(ctx, store, "r1", toolAttemptStep("c1"), Record{Kind: StepAttempt, ToolUseID: "c1", AttemptedAt: 1}); err != nil || !won {
+		t.Fatal(won, err)
+	}
+	ref := HaltRef{RunID: "r1", Op: OpRef{Kind: OpTool, ID: "c1"}, Cause: HaltCrashed}
+	if err := ResolveHaltRef(ctx, store, ref, Outcome{Result: "x"}); !errors.Is(err, ErrConfig) {
+		t.Fatalf("no Leaser, no minimum age = %v; want ErrConfig", err)
+	}
+	if err := ResolveHalt(ctx, store, "r1", "c1", "x", false); !errors.Is(err, ErrConfig) {
+		t.Fatalf("the ResolveHalt wrapper, no Leaser, no minimum age = %v; want ErrConfig (the same rule)", err)
+	}
+	if err := ResolveHaltRef(ctx, store, ref, Outcome{Result: "x"}, WithMinHaltAge(time.Second)); err != nil {
+		t.Fatalf("with an old enough attempt = %v", err)
+	}
+	store2 := newXprocStore()
+	_, _, _ = ClaimAttempt(ctx, store2, "r1", toolAttemptStep("c1"), Record{Kind: StepAttempt, ToolUseID: "c1", AttemptedAt: time.Now().UnixMilli()})
+	if err := ResolveHaltRef(ctx, store2, ref, Outcome{Result: "x"}, WithoutLiveDriverCheck()); err != nil {
+		t.Fatalf("with the explicit opt-out = %v", err)
+	}
 }
 
 // F5. The resolve wrappers write what ResolveHaltRef writes (expected to pass).
@@ -224,4 +284,19 @@ func jsonEq(a, b any) bool {
 	x, _ := json.Marshal(a)
 	y, _ := json.Marshal(b)
 	return string(x) == string(y)
+}
+
+// A wake failure beside an ordinary pause in the same turn fails the run: the run is not merely
+// waiting, since the failed wake was never registered and must be scheduled again.
+func TestWaker_FailureBesideAPauseFailsTheRun(t *testing.T) {
+	ask := Func("ask", "", Safety{ReadOnly: true}, func(ctx context.Context, _ struct{}) (string, error) {
+		_, err := Interrupt[string](ctx, "q", nil)
+		return "", err
+	})
+	turn := multiToolTurn([2]string{"c1", "ask"}, [2]string{"c2", "nap"})
+	ctx := WithWaker(context.Background(), &failingWaker{fail: 1})
+	_, err := New(&greedyModel{script: [][]Emit{turn, textTurn("done")}}, NewMemStore(), ask, napTool()).Run(ctx, "r1", "go")
+	if !errors.Is(err, ErrStorage) || IsPause(err) {
+		t.Fatalf("run = %v; want the wake failure (ErrStorage), not the pause", err)
+	}
 }

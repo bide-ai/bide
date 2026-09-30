@@ -373,6 +373,10 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 			pauseIdx  = -1
 			pauseErr  error
 			pauseHalt bool // pauseErr is a *OutcomeUnknown
+			// wakeErr is the first call's failure to schedule a wake (a *wakeError, ErrStorage). It
+			// is held like a pause, so it does not cut off siblings in flight, and it is returned
+			// ahead of any pause once they have finished: the run failed, it is not waiting.
+			wakeErr error
 			// carried[i] is the usage the record of uses[i] carries: that of the runs it started.
 			// The runs counted their spend in the tree as it happened, so it goes into tot only.
 			carried = make([]usageTotals, len(uses))
@@ -385,6 +389,17 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 		for _, c := range toRun {
 			g.Go(func() (err error) {
 				defer func() {
+					// A failed wake schedule records nothing and fails the run, but it is no reason
+					// to cancel a sibling mid-effect, which would leave its outcome unknown.
+					if we := (*wakeError)(nil); err != nil && errors.As(err, &we) {
+						pauseMu.Lock()
+						if wakeErr == nil {
+							wakeErr = err
+						}
+						pauseMu.Unlock()
+						err = nil
+						return
+					}
 					// A call that lost its answer (ErrToolOutcomeUnknown, nothing recorded) is held
 					// like a halt, which is what its resume meets: it does not cut off siblings in
 					// flight, which would leave their outcomes unknown too.
@@ -489,11 +504,14 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 						// It is not gated on retry-safety: the pause lives in the sub-run's
 						// journal, and re-driving this tool re-enters that sub-run rather than
 						// re-firing a side effect here (see subagent.go).
-						p, paused := AsPause(callErr)
-						switch p.(type) {
-						case *OutcomeUnknown, *ApprovalPending:
+						// Either kind anywhere in the chain counts (a joined error may hold another
+						// pause ahead of it).
+						_, subHalt := errors.AsType[*OutcomeUnknown](callErr)
+						_, subApproval := errors.AsType[*ApprovalPending](callErr)
+						if subHalt || subApproval {
 							return Record{}, callErr
 						}
+						paused := IsPause(callErr)
 						// A sub-run that stopped short of a verdict has no outcome yet: record
 						// nothing, so a resume re-enters the sub-run (see subRunUnfinished).
 						var subUnfinished *subRunUnfinished
@@ -575,6 +593,9 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 				return Message{}, tot, liveTurns, trip // RunSaga catches → compensates
 			}
 			return Message{}, tot, liveTurns, err
+		}
+		if wakeErr != nil {
+			return Message{}, tot, liveTurns, wakeErr
 		}
 		if pauseErr != nil {
 			return Message{}, tot, liveTurns, pauseErr

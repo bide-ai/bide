@@ -250,14 +250,27 @@ have returned, and `IsError: true` if the verified outcome was a failure the mod
 operation wins), so a retry or a racing driver records it at most once. A tool call's result and a
 step's are separate journal records, so it refuses an operation that only the other kind attempted.
 
-The `Cause` matters. `HaltCrashed` means the marker was already there with no live claimant known.
-`HaltContended` means another driver of the same run won the claim while this one ran (a node that
-took over after a lease lapsed): that driver may be running the effect right now, so
-`ResolveHaltRef` refuses to resolve it without `WithMinHaltAge`, and resolves it only once the live
-attempt is older than that. A `HaltRef` built by hand must state its cause.
+`ResolveHaltRef` will not resolve an effect a driver may still be running. `HaltContended` means
+another driver of the same run won the claim while this one ran (a node that took over after a lease
+lapsed); `HaltCrashed` means the halting driver knew of no live claimant, which is not proof that
+none is running. So, whatever the cause:
+
+- On a store that leases runs (`MemStore`, `store/postgres`), `ResolveHaltRef` takes the root run's
+  lease while it resolves and returns `*HaltInFlight` while a driver holds it. Only drivers that
+  lease the run (`Lease`, `Recover`, `RecoverLoop`) are seen; a plain `Run` holds no lease.
+- On a store that cannot (`store/sqlite`, a custom `Durable`), it requires `WithMinHaltAge`, so the
+  halt is resolved only once no driver can still be running it.
+- A `HaltContended` halt always requires `WithMinHaltAge`.
+- `WithoutLiveDriverCheck()` skips the first two, for an operator who knows no driver is running
+  (every worker stopped).
+
+An operation that already has a different outcome (an earlier resolution, or the result the live
+driver recorded) is refused with `*HaltAlreadyResolved` (`ErrAlreadyResolved`, which wraps
+`ErrConfig`), which reports the outcome that stands; the same outcome again returns nil. A
+`HaltRef` built by hand must state its cause.
 
 `ResolveHalt(ctx, store, runID, toolUseID, result, isError, opts...)` and `ResolveStepHalt` remain
-as transitional wrappers that take the cause as `HaltCrashed`.
+as transitional wrappers that take the cause as `HaltCrashed`, with the same checks.
 
 ### Resolving without a human: reconcilers
 
