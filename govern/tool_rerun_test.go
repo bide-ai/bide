@@ -73,7 +73,7 @@ func TestEventTool_RerunAfterCrashAppendsOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	res := runToolTwice(t, govern.EventTool(g, "bump", "", "inc_a", agent.Safety{Idempotent: true}), nil)
+	res := runToolTwice(t, govern.EventTool(g, govern.EventToolConfig{Name: "bump", Description: "", Event: "inc_a", Safety: agent.Safety{Idempotent: true}}), nil)
 	evs, _ := log.Events(ctx, "e", 0)
 	if len(evs) != 1 {
 		t.Fatalf("one tool call appended %d events: %q", len(evs), evs)
@@ -85,7 +85,7 @@ func TestEventTool_RerunAfterCrashAppendsOnce(t *testing.T) {
 
 // When another process appends between the crash and the re-run, the re-run still reports the
 // original append: its position, and the state an auditor gets by replaying the log through it.
-func TestAttestedEventTool_RerunReportsTheOriginalAppend(t *testing.T) {
+func TestEventToolAttested_RerunReportsTheOriginalAppend(t *testing.T) {
 	ctx := context.Background()
 	m := buildCounter(t)
 	log := govern.NewMemEventLog()
@@ -97,7 +97,7 @@ func TestAttestedEventTool_RerunReportsTheOriginalAppend(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	tool := govern.AttestedEventTool(g, "bump", "", "inc_a", "policy", agent.Safety{Idempotent: true})
+	tool := govern.EventTool(g, govern.EventToolConfig{Name: "bump", Description: "", Event: "inc_a", PolicyDigest: "policy", Safety: agent.Safety{Idempotent: true}})
 	res := runToolTwice(t, tool, func() {
 		if _, err := other.Apply(ctx, "inc_a"); err != nil {
 			t.Fatal(err)
@@ -121,7 +121,7 @@ func TestEventTool_RerunAfterCrashAppliesOnce_InMemoryAndFederated(t *testing.T)
 	ctx := context.Background()
 	m := buildCounter(t)
 	g := govern.New(m, m.NewState())
-	runToolTwice(t, govern.EventTool(g, "bump", "", "inc_a", agent.Safety{Idempotent: true}), nil)
+	runToolTwice(t, govern.EventTool(g, govern.EventToolConfig{Name: "bump", Description: "", Event: "inc_a", Safety: agent.Safety{Idempotent: true}}), nil)
 	if a, err := g.Apply(ctx, "inc_a"); err != nil || a.Position != 1 {
 		t.Fatalf("next Apply after one re-run tool call = %+v, %v; want position 1", a, err)
 	}
@@ -132,7 +132,7 @@ func TestEventTool_RerunAfterCrashAppliesOnce_InMemoryAndFederated(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	runToolTwice(t, govern.FederatedEventTool(fg, "publish", "", "manufacturer", "epub", agent.Safety{Idempotent: true}), nil)
+	runToolTwice(t, govern.FederatedEventTool(fg, govern.FederatedEventToolConfig{Name: "publish", Description: "", Registry: "manufacturer", Event: "epub", Safety: agent.Safety{Idempotent: true}}), nil)
 	if evs, _ := log.Events(ctx, "f", 0); len(evs) != 1 {
 		t.Fatalf("one federated tool call appended %d entries: %q", len(evs), evs)
 	}

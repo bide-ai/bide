@@ -11,7 +11,7 @@ import (
 )
 
 // governedAction records a completed tool call whose result carries a policy digest, as
-// govern.AttestedEventTool does in production.
+// an attested govern.EventTool does in production.
 func governedAction(t *testing.T, ctx context.Context, store agent.Durable, runID, id, digest string) {
 	t.Helper()
 	res, _ := json.Marshal(map[string]any{"event": "e", "applied": true, "policy_digest": digest})

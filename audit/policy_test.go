@@ -28,7 +28,7 @@ func TestPolicyLeaf_AnchorsAndCrossLinks(t *testing.T) {
 		t.Fatalf("RecordPolicy: %v", err)
 	}
 
-	// Record a governed action whose result embeds the policy digest (as AttestedEventTool does).
+	// Record a governed action whose result embeds the policy digest (as an attested EventTool does).
 	actionResult, _ := json.Marshal(map[string]any{"event": "inc_a", "applied": true, "policy_digest": digest})
 	if _, err := store.Do(ctx, runID, "call1", func(context.Context) (agent.Record, error) {
 		return agent.Record{Kind: agent.StepToolResult, ToolUseID: "call1", Result: actionResult}, nil

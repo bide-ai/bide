@@ -58,14 +58,38 @@ type AttenuateFunc func(parent Grant, subAgent string) Grant
 // It is a composition of the grant machinery into the sub-agent seam, not a new agent type: the
 // wrapped `sub` still runs its own full agent loop and reasons autonomously within the narrower
 // authority.
-func AttenuatingSubAgent(name, description string, sub *agent.Agent, store agent.Durable, narrow AttenuateFunc, rules ScopeRules) agent.Tool {
-	return &attenuatingSubAgent{
-		Tool:   agent.SubAgent(name, description, sub),
-		name:   name,
-		store:  store,
-		narrow: narrow,
-		rules:  rules,
+//
+// cfg says where the child grants are recorded and how authority narrows; opts are passed to
+// agent.SubAgent, so agent.WithApproval makes the parent wait for a human before it delegates.
+// AttenuatingSubAgent panics, with an error wrapping agent.ErrConfig, on a nil cfg.Store or
+// cfg.Narrow, and on an option agent.SubAgent refuses.
+func AttenuatingSubAgent(name, description string, sub *agent.Agent, cfg AttenuationConfig, opts ...agent.ToolOption) agent.Tool {
+	switch {
+	case cfg.Store == nil:
+		panic(fmt.Errorf("audit: AttenuatingSubAgent %q: AttenuationConfig.Store is nil: %w", name, agent.ErrConfig))
+	case cfg.Narrow == nil:
+		panic(fmt.Errorf("audit: AttenuatingSubAgent %q: AttenuationConfig.Narrow is nil: %w", name, agent.ErrConfig))
 	}
+	return &attenuatingSubAgent{
+		Tool:   agent.SubAgent(name, description, sub, opts...),
+		name:   name,
+		store:  cfg.Store,
+		narrow: cfg.Narrow,
+		rules:  cfg.Rules,
+	}
+}
+
+// AttenuationConfig configures AttenuatingSubAgent.
+type AttenuationConfig struct {
+	// Store is the Durable store the sub-runs journal to, where each child grant is recorded as
+	// a durable leaf of its sub-run. Give it the store the parent and the sub-agent use, for a
+	// unified, provable journal.
+	Store agent.Durable
+	// Narrow derives each child grant from the parent's (see AttenuateFunc).
+	Narrow AttenuateFunc
+	// Rules says how each scope key may narrow; CheckAttenuation enforces it before a child
+	// grant is signed.
+	Rules ScopeRules
 }
 
 // attenuatingSubAgent embeds the plain SubAgent tool (for Name/Description/ArgsSchema/Safety and the
@@ -77,6 +101,13 @@ type attenuatingSubAgent struct {
 	narrow AttenuateFunc
 	rules  ScopeRules
 }
+
+// Spec returns the spec of the SubAgent tool it wraps.
+func (t *attenuatingSubAgent) Spec() agent.ToolSpec { return agent.SpecOf(t.Tool) }
+
+// Unwrap returns the SubAgent tool it wraps, so the agent recognises the call as a delegation:
+// a saga rollback recurses into its sub-run, and the tree's token budget counts it.
+func (t *attenuatingSubAgent) Unwrap() agent.Tool { return t.Tool }
 
 func (t *attenuatingSubAgent) Call(ctx context.Context, args json.RawMessage) (json.RawMessage, error) {
 	parentSG, signer, ok := GrantFrom(ctx)

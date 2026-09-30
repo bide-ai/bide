@@ -172,10 +172,10 @@ func runScale(t *testing.T, ctx context.Context, m *gsm.Machine, base []string, 
 
 			gov := govern.New(m, m.NewState()) // this agent's own governed state
 			tools := []agent.Tool{
-				govern.AttestedEventTool(gov, "inc_a", "a += 1 (capped)", "inc_a", digest, agent.Safety{}),
-				govern.AttestedEventTool(gov, "add2_a", "a += 2 (capped)", "add2_a", digest, agent.Safety{}),
-				govern.AttestedEventTool(gov, "inc_b", "b += 1 (capped)", "inc_b", digest, agent.Safety{}),
-				govern.AttestedEventTool(gov, "raise_flag", "raise flag", "raise_flag", digest, agent.Safety{}),
+				govern.EventTool(gov, govern.EventToolConfig{Name: "inc_a", Description: "a += 1 (capped)", Event: "inc_a", PolicyDigest: digest}),
+				govern.EventTool(gov, govern.EventToolConfig{Name: "add2_a", Description: "a += 2 (capped)", Event: "add2_a", PolicyDigest: digest}),
+				govern.EventTool(gov, govern.EventToolConfig{Name: "inc_b", Description: "b += 1 (capped)", Event: "inc_b", PolicyDigest: digest}),
+				govern.EventTool(gov, govern.EventToolConfig{Name: "raise_flag", Description: "raise flag", Event: "raise_flag", PolicyDigest: digest}),
 			}
 			// Each agent gets its own store, dropped when this goroutine returns (the journal
 			// would go to a durable store in production). Memory stays bounded by the in-flight

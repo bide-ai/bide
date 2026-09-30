@@ -195,7 +195,7 @@ func TestVerifyRunCLI(t *testing.T) {
 		t.Fatalf("RecordConvergence: %v", err)
 	}
 	// A governed-action leaf: a completed tool call whose result embeds the policy digest, as
-	// govern.AttestedEventTool journals.
+	// an attested govern.EventTool journals.
 	if _, err := store.Do(ctx, runID, "action", func(context.Context) (agent.Record, error) {
 		return agent.Record{
 			Kind:      agent.StepToolResult,

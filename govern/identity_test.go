@@ -31,12 +31,12 @@ func buildCreditGov(t *testing.T) (govern.Applier, string) {
 	return govern.New(m, m.NewState()), digest
 }
 
-// TestAttestedEventTool_StampsIdentity confirms that when the deployment binds an identity to the
+// TestEventToolAttested_StampsIdentity confirms that when the deployment binds an identity to the
 // run (agent.WithIdentity), a governed action's leaf carries who acted, on whose behalf, and under
 // what authority, alongside the policy and state digests.
-func TestAttestedEventTool_StampsIdentity(t *testing.T) {
+func TestEventToolAttested_StampsIdentity(t *testing.T) {
 	gov, digest := buildCreditGov(t)
-	tool := govern.AttestedEventTool(gov, "credit", "credit $1", "credit", digest, agent.Safety{})
+	tool := govern.EventTool(gov, govern.EventToolConfig{Name: "credit", Description: "credit $1", Event: "credit", PolicyDigest: digest})
 
 	id := agent.Identity{Actor: "exec-agent@1.4.2", OnBehalfOf: "desk-EQ-US", AuthorityRef: "grant#a1b2"}
 	ctx := agent.WithIdentity(context.Background(), id)
@@ -57,11 +57,11 @@ func TestAttestedEventTool_StampsIdentity(t *testing.T) {
 	}
 }
 
-// TestAttestedEventTool_NoIdentity confirms backward compatibility: with no identity bound to the
+// TestEventToolAttested_NoIdentity confirms backward compatibility: with no identity bound to the
 // run, the leaf omits the identity fields entirely (rather than emitting empty ones).
-func TestAttestedEventTool_NoIdentity(t *testing.T) {
+func TestEventToolAttested_NoIdentity(t *testing.T) {
 	gov, digest := buildCreditGov(t)
-	tool := govern.AttestedEventTool(gov, "credit", "credit $1", "credit", digest, agent.Safety{})
+	tool := govern.EventTool(gov, govern.EventToolConfig{Name: "credit", Description: "credit $1", Event: "credit", PolicyDigest: digest})
 
 	raw, err := tool.Call(context.Background(), []byte(`{}`))
 	if err != nil {
@@ -84,7 +84,7 @@ func TestAttestedEventTool_NoIdentity(t *testing.T) {
 func TestProof_CommitsToIdentity(t *testing.T) {
 	ctx := context.Background()
 	gov, digest := buildCreditGov(t)
-	tool := govern.AttestedEventTool(gov, "credit", "credit $1", "credit", digest, agent.Safety{})
+	tool := govern.EventTool(gov, govern.EventToolConfig{Name: "credit", Description: "credit $1", Event: "credit", PolicyDigest: digest})
 
 	id := agent.Identity{Actor: "exec-agent@1.4.2", OnBehalfOf: "desk-EQ-US", AuthorityRef: "grant#a1b2"}
 	raw, err := tool.Call(agent.WithIdentity(ctx, id), []byte(`{}`))

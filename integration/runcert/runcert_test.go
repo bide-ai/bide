@@ -46,7 +46,7 @@ func buildKYC(t *testing.T, name string, extra bool) (digest string, policyBytes
 
 // anchorGovernedRun anchors a policy + its convergence certificate and records one governed action
 // leaf under that policy (a StepToolResult whose result carries policy_digest, as
-// govern.AttestedEventTool journals), so PolicyUsedKey picks it up as an exercised policy.
+// an attested govern.EventTool journals), so PolicyUsedKey picks it up as an exercised policy.
 func anchorGovernedRun(t *testing.T, ctx context.Context, store agent.Durable, runID, digest string, policyBytes, certBytes []byte) {
 	t.Helper()
 	if _, err := audit.RecordPolicy(ctx, store, runID, policyBytes, digest); err != nil {

@@ -674,7 +674,7 @@ func TestAttenuatingSubAgent_RefusesWidening(t *testing.T) {
 		"a different issuer": {ID: "iss", Issuer: "mallory", Scope: map[string]string{"limit": "3", "tool": "refund"}},
 	} {
 		store := agent.NewMemStore()
-		tool := AttenuatingSubAgent("exec", "x", agent.New(answerModel{"done"}, store), store, narrowTo(child), ScopeRules{"limit": NumericAtMost})
+		tool := AttenuatingSubAgent("exec", "x", agent.New(answerModel{"done"}, store), AttenuationConfig{Store: store, Narrow: narrowTo(child), Rules: ScopeRules{"limit": NumericAtMost}})
 		_, err := tool.Call(WithGrant(context.Background(), rootSG, signer), []byte(`{"task":"go"}`))
 		if err == nil || !strings.Contains(err.Error(), "grant") {
 			t.Fatalf("the tool delegated a child grant with %s (err %v)", name, err)
@@ -688,8 +688,7 @@ func TestAttenuatingSubAgent_InheritsNotAfter(t *testing.T) {
 	_, priv := secKey(t)
 	signer := Ed25519Signer{Priv: priv}
 	rootSG, _ := SignGrant(Grant{ID: "g0", Issuer: "corp", Subject: "desk", NotAfterUnix: 1000, Scope: map[string]string{"limit": "7"}}, signer)
-	tool := AttenuatingSubAgent("exec", "x", agent.New(answerModel{"done"}, store), store,
-		narrowTo(Grant{ID: "narrow", Scope: map[string]string{"limit": "3"}}), ScopeRules{"limit": NumericAtMost})
+	tool := AttenuatingSubAgent("exec", "x", agent.New(answerModel{"done"}, store), AttenuationConfig{Store: store, Narrow: narrowTo(Grant{ID: "narrow", Scope: map[string]string{"limit": "3"}}), Rules: ScopeRules{"limit": NumericAtMost}})
 	if err := secDelegate(t, store, tool, WithGrant(context.Background(), rootSG, signer), "p1"); err != nil {
 		t.Fatal(err)
 	}
@@ -704,8 +703,7 @@ func TestAttenuatingSubAgent_DoesNotShareSubRunAcrossParents(t *testing.T) {
 	store := agent.NewMemStore()
 	_, priv := secKey(t)
 	signer := Ed25519Signer{Priv: priv}
-	tool := AttenuatingSubAgent("exec", "x", agent.New(answerModel{"done"}, store), store,
-		narrowTo(Grant{ID: "narrow", Scope: map[string]string{"limit": "3"}}), ScopeRules{"limit": NumericAtMost})
+	tool := AttenuatingSubAgent("exec", "x", agent.New(answerModel{"done"}, store), AttenuationConfig{Store: store, Narrow: narrowTo(Grant{ID: "narrow", Scope: map[string]string{"limit": "3"}}), Rules: ScopeRules{"limit": NumericAtMost}})
 	for _, desk := range []string{"desk-a", "desk-b"} {
 		sg, _ := SignGrant(Grant{ID: desk, Issuer: "corp", Subject: desk, Scope: map[string]string{"limit": "7"}}, signer)
 		ctx := WithGrant(context.Background(), sg, signer)

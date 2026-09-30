@@ -209,23 +209,43 @@ func decodeFedEvent(enc string) (registry, event string, err error) {
 	return parts[0], parts[1], nil
 }
 
+// FederatedEventToolConfig configures FederatedEventTool.
+type FederatedEventToolConfig struct {
+	// Name is the tool's name, as the model calls it.
+	Name string
+	// Description tells the model what the governed action does.
+	Description string
+	// Registry is the federation component the event is applied to.
+	Registry string
+	// Event is the governed event the tool applies when called.
+	Event string
+	// Safety is the tool's retry classification (see agent.Safety). The zero value is a side
+	// effect.
+	Safety agent.Safety
+	// Options are further tool options (agent.WithApproval, agent.WithTimeout, agent.WithTitle,
+	// agent.WithOutputSchema), applied after Safety.
+	Options []agent.ToolOption
+}
+
 // FederatedEventTool gives an agent a GOVERNED federated action: when the agent's LLM calls
-// it, `event` is applied to component `registry` of the shared federation. Multiple agents
+// it, cfg.Event is applied to component cfg.Registry of the shared federation. Multiple agents
 // (each owning a different registry) converge regardless of interleaving, with cross-registry
-// conflicts resolved by the authority argument — no locking. This is the federated twin of
+// conflicts resolved by the authority argument, with no locking. This is the federated twin of
 // EventTool: the point where an agent tool call becomes a verified event on shared,
 // cross-organizational governed state.
 //
 // Inside a run, the event is applied with ApplyOnce keyed by the tool call, as for EventTool.
-func FederatedEventTool(gov FederatedApplier, name, description, registry, event string, safety agent.Safety) agent.Tool {
-	return agent.Func(name, description, safety,
+// FederatedEventTool panics, as agent.Func does, on an invalid option.
+func FederatedEventTool(gov FederatedApplier, cfg FederatedEventToolConfig) agent.Tool {
+	registry, event := cfg.Registry, cfg.Event
+	return agent.Func(cfg.Name, cfg.Description, cfg.Safety,
 		func(ctx context.Context, _ struct{}) (map[string]any, error) {
 			a, err := applyFedForCall(ctx, gov, registry, event)
 			if err != nil {
 				return nil, err
 			}
 			return map[string]any{"registry": registry, "event": event, "applied": true, "position": a.Position}, nil
-		})
+		}, cfg.Options...)
 }
 
 func applyFedForCall(ctx context.Context, gov FederatedApplier, registry, event string) (FedApplied, error) {

@@ -63,7 +63,7 @@ func main() {
 		// The deployment seeds the delegated limit from the (verified) grant, and binds the acting
 		// identity to the run. The agent never sets its own limit.
 		gov := govern.New(m, m.NewState().SetInt(limit, d.limit))
-		buy := govern.AttestedEventTool(gov, "buy", "buy $1M", "buy", policyDigest, agent.Safety{})
+		buy := govern.EventTool(gov, govern.EventToolConfig{Name: "buy", Description: "buy $1M", Event: "buy", PolicyDigest: policyDigest})
 		id := agent.Identity{Actor: d.actor, OnBehalfOf: d.principal, AuthorityRef: d.grant}
 		runCtx := agent.WithIdentity(ctx, id)
 

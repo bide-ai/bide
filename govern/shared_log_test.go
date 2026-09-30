@@ -5,14 +5,13 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/bide-ai/bide/agent"
 	gsm "github.com/blackwell-systems/gsm"
 )
 
 // Two PersistentGovernors sharing one EventLog stand in for two processes sharing a durable log
 // (Postgres, SQLite, Redis), the high-availability setup the log adapters exist for. Each governed
 // action commits a state_digest, and an auditor checks those digests by replaying the shared log
-// in order (the verifier side of TestAttestedEventTool_StateDigestsReplay). Every committed digest
+// in order (the verifier side of TestEventToolAttested_StateDigestsReplay). Every committed digest
 // must match that replay at the position the action recorded, and after Sync every governor's state
 // must be the shared state.
 func TestPersistentGovernor_SharedLogStaysConsistent(t *testing.T) {
@@ -45,7 +44,7 @@ func TestPersistentGovernor_SharedLogStaysConsistent(t *testing.T) {
 	}
 	act := func(gov Applier) commit {
 		t.Helper()
-		res, err := AttestedEventTool(gov, "inc_a", "increment", "inc_a", "policy", agent.Safety{}).Call(ctx, json.RawMessage(`{}`))
+		res, err := EventTool(gov, EventToolConfig{Name: "inc_a", Description: "increment", Event: "inc_a", PolicyDigest: "policy"}).Call(ctx, json.RawMessage(`{}`))
 		if err != nil {
 			t.Fatal(err)
 		}

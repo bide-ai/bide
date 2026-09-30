@@ -73,7 +73,7 @@ func TestAttenuatingSubAgent_Default(t *testing.T) {
 
 	// The desk delegates to an execution sub-agent, narrowing the limit by 3 automatically.
 	sub := agent.New(answerModel{"done"}, store)
-	tool := AttenuatingSubAgent("exec", "execute within delegated authority", sub, store, narrowLimitBy(3), ScopeRules{"limit": NumericAtMost})
+	tool := AttenuatingSubAgent("exec", "execute within delegated authority", sub, AttenuationConfig{Store: store, Narrow: narrowLimitBy(3), Rules: ScopeRules{"limit": NumericAtMost}})
 	parent := agent.New(agent.NewScriptedModel(agent.ToolTurn("c1", "exec", `{"task":"do the thing"}`), agent.TextTurn("ok")), store, tool)
 
 	ctx = agent.WithIdentity(ctx, agent.Identity{Actor: "desk-agent", OnBehalfOf: "desk", AuthorityRef: root.Digest()})
@@ -107,7 +107,7 @@ func TestAttenuatingSubAgent_Default(t *testing.T) {
 func TestAttenuatingSubAgent_NoGrant(t *testing.T) {
 	store := agent.NewMemStore()
 	sub := agent.New(answerModel{"done"}, store)
-	tool := AttenuatingSubAgent("exec", "execute", sub, store, narrowLimitBy(3), ScopeRules{"limit": NumericAtMost})
+	tool := AttenuatingSubAgent("exec", "execute", sub, AttenuationConfig{Store: store, Narrow: narrowLimitBy(3), Rules: ScopeRules{"limit": NumericAtMost}})
 
 	if _, err := tool.Call(context.Background(), []byte(`{"task":"go"}`)); err != nil {
 		t.Fatalf("plain delegation should work without a grant: %v", err)
