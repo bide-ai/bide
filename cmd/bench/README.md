@@ -19,8 +19,9 @@ the concurrency turned up.
 ## Measured
 
 Two environments, medians reported. Every run journals to the in-memory `MemStore`, so the
-journal-records figure is an in-memory write rate, not a durable-store one. Each run writes five
-journal records in these scenarios.
+journal-records figure is an in-memory write rate, not a durable-store one. Each run writes six
+journal records in these scenarios, the `@journal` header among them (five at v0.8.0, when the
+runner table below was measured).
 
 **A standard GitHub Actions runner** (`ubuntu-latest`, 4 vCPU AMD EPYC 7763, Go 1.27), each
 scenario run 21 times, from a single-ref run of the [Benchmark workflow](../../.github/workflows/bench.yml)
