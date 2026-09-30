@@ -193,7 +193,10 @@ run_group() {
     found=1
     run_cfg "$cfg"
   done
-  [ $found = 1 ] || die "no configs in group $1"
+  if [ $found = 0 ]; then
+    # finding and limit may be empty (no open finding); ci and regress never are.
+    case "$1" in finding|limit) echo "no configs in group $1" ;; *) die "no configs in group $1" ;; esac
+  fi
 }
 
 self_test() {

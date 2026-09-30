@@ -469,7 +469,7 @@ resolver writes between the winner's claim and its call). It also shows that the
 is safe only when every driver that can run the call holds the lease: with one unleased driver,
 `NoLiveOverride` fails at depth 12; with both leased, the configuration passes (0.4 M states). That
 matches the limitation #90 documents ("a plain Run holds no lease"). It stays as a regression config
-that is expected to fail, `regress/resolve-unleased-driver.cfg`, so the limitation cannot change
+that is expected to fail, `limits/resolve-unleased-driver.cfg`, so the limitation cannot change
 silently.
 
 ## 6. Keeping the model and the code in sync

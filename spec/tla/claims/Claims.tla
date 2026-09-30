@@ -48,7 +48,8 @@ CONSTANTS
   HasResolver,   \* whether an operator resolves halts (ResolveHaltRef)
   LiveCheck,     \* "lease" | "minAge" | "none" (WithoutLiveDriverCheck)
   LeasedDrivers, \* drivers that hold the run's lease while they drive
-  ResolveClaim,  \* TRUE: the resolver first claims the attempt after the live one (F2's fix)
+  ResolveClaim,  \* TRUE: the resolver first claims the attempt after the live one (F2's and F4's
+                 \* fix; #92 at 2c8d2db claims on the lease and the min-age paths)
   ResolverProc,  \* the process the resolver runs in (sharing its pendingClaims and flights), or "none"
   PlainRunIdleAtCheck, \* TRUE: under the lease check, assume no unleased driver holds the live
                        \* claim when the resolution checks (isolates finding F4 from #90's known limit)
@@ -409,7 +410,8 @@ RCheck:-
     if LiveCheck = "lease" then lease := self; end if;
     rc := c; rg := x;
   end with;
-  if ~ResolveClaim then goto RWrite; end if;
+  \* WithoutLiveDriverCheck skips the claim as well as the check.
+  if ~ResolveClaim \/ LiveCheck = "none" then goto RWrite; end if;
 RClaim:
   \* F2's fix: ClaimAttempt on the attempt after the live one (on the lease path too: F4's fix). Through a Journal in a driver's
   \* process, the claim first retries the ids that process remembers for that key.
@@ -1092,7 +1094,7 @@ RCheck(self) == /\ pc[self] = "RCheck"
                                   /\ lease' = lease
                        /\ rc' = [rc EXCEPT ![self] = c]
                        /\ rg' = [rg EXCEPT ![self] = x]
-                /\ IF ~ResolveClaim
+                /\ IF ~ResolveClaim \/ LiveCheck = "none"
                       THEN /\ pc' = [pc EXCEPT ![self] = "RWrite"]
                       ELSE /\ pc' = [pc EXCEPT ![self] = "RClaim"]
                 /\ UNCHANGED << marker, nsSet, heldSet, result, toolFail, 
@@ -1497,6 +1499,11 @@ EffectNotReachable == \A c \in Calls : fired[c] = 0
 \* A call that is left without an outcome for ever has a live attempt that may have fired: the
 \* effect was called, or a crash erased the only knowledge that its claim never called it.
 Excused(c) == fired[c] > 0 \/ \E x \in Gens : Live(c, x) /\ marker[c][x] \in lost
+
+\* Probe, expected violated where reachable: a resolution claims past an attempt that was voided
+\* after its check (a process retried a remembered claim's not-started record in between).
+ResolveOnlyLiveAttempt ==
+  \A r \in ResolverSet : pc[r] = "RInsert" => ~Voided(rc[r], rg[r])
 
 \* Liveness: a provably unstarted effect does not halt for ever.
 Progress == \A c \in Calls : <>[](~Issued(c) \/ Recorded(c) \/ Excused(c))

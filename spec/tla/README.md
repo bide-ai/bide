@@ -74,7 +74,8 @@ spec/tla/
                      the configurations select with <-
     *.cfg            the configurations (group ci or nightly)
     regress/         historical rules, each of which must still produce its counterexample
-    findings/        open findings, which fail until they are fixed
+    findings/        open findings, which fail until they are fixed (none open at present)
+    limits/          accepted behavior, stated as an expected violation
 ```
 
 ## Model 1: claims and attempts
@@ -144,8 +145,8 @@ The model states the rules of P6a (#92) after its third review:
    holds the root run's lease while it resolves (MemStore, `store/postgres`, and `store/sqlite` as
    of #92), and only leased drivers are seen; otherwise it needs `WithMinHaltAge`, and then (F2's
    fix) it first claims the attempt after the live one with `ClaimAttempt`, refusing if a driver
-   holds it; if its result write errors, that attempt stays live (F3's fix). The model also checks
-   that claim on the lease path (`resolve-lease-claim`), which finding F4 needs.
+   holds it; if its result write errors, that attempt stays live (F3's fix). It claims on the
+   lease path too (F4's fix); `WithoutLiveDriverCheck` skips both the check and the claim.
 
 ### Model-code map
 
@@ -297,23 +298,44 @@ property weakened.
 | `regress/pause-as-failure` | #92 first review, fix 1: a Step's pause guard recorded as its tool's failure (`"PauseAsFailure"`) | `AtMostOncePerIntent` | 16 states |
 | `regress/resolve-no-check` | #90 F2: resolution with no live-driver check (`WithoutLiveDriverCheck`) | `NoLiveOverride` | 11 states |
 | `regress/resolve-no-check-intent` | the same through the caller: "not charged", a new call, a second fire | `AtMostOncePerIntent` | 17 states |
-| `regress/resolve-unleased-driver` | #90's documented limit: the lease check does not see a driver that holds no lease | `NoLiveOverride` | 15 states |
 
 ### Accepted limits
 
-Configurations in `limits/` state a halt the design accepts, as an expected `Progress` violation,
-so the limit cannot change silently: `limits/flow-progress` (a plan flow node whose claim errored
-after its marker committed halts for ever, since flows have no numbered re-attempts until P5b
-lowers them onto `claimNext`; 1 error reply, 9 states) and `limits/evict-progress` (an eviction
-forgets the only record that a live attempt never started; 2 error replies, a cancellation and an
-eviction, 17 states). `live-evict-step-same` shows the eviction costs nothing else, and
-`evict-tool-same` and `deep-evict-step-same` that it never costs safety.
+Configurations in `limits/` state behavior the design accepts, as an expected violation, so it
+cannot change silently:
+
+- `limits/flow-progress`: a plan flow node whose claim errored after its marker committed halts
+  for ever, since flows have no numbered re-attempts until P5b lowers them onto `claimNext`
+  (`Progress`; 1 error reply, 9 states).
+- `limits/evict-progress`: an eviction forgets the only record that a live attempt never started
+  (`Progress`; 2 error replies, a cancellation and an eviction). `live-evict-step-same` shows the
+  eviction costs nothing else, and `evict-tool-same` and `deep-evict-step-same` that it never
+  costs safety.
+- `limits/resolve-unleased-driver`: #90's documented limit. The lease check sees only drivers
+  that hold the run's lease; a plain `Run` holds none, and a resolution overrides it
+  (`NoLiveOverride`).
+- `limits/lease-plain-run-claims-first`: the same limit through the caller, with the claim of the
+  next attempt in place (suspicion (a) of the #103 re-review). A plain `Run` that holds the live
+  attempt when the leased resolution reads the history, whether it claimed that attempt directly
+  or after voiding the one before it through a remembered claim, is overridden, and a "not
+  charged" verdict makes the caller's new call fire again (`AtMostOncePerIntent`, 19 states).
+  `PlainRunIdleAtCheck` excludes exactly this case (a plain run holding the live attempt at the
+  check) and nothing else, and with it `resolve-lease-claim` passes, so the suspicion is this
+  limit, not a separate double fire.
+- `limits/resolve-over-voided-attempt`: reachable and harmless (suspicion (b) of the #103
+  re-review). Between the resolution's history read and its claim, a process retries a remembered
+  claim's not-started record and voids the live attempt; the resolution still claims the next
+  attempt and records its verdict for an effect that never ran (the probe
+  `ResolveOnlyLiveAttempt` is violated, 14 states). The verdict the model's operator gives is
+  true ("not charged"), no effect fires, and every safety property holds in the same model
+  (`resolve-minage-claim-a3`, `resolve-lease-claim`): the driver that voided the attempt loses
+  the next one to the resolution and reads its verdict.
 
 ### Findings
 
 Found by this model in the rules #92 adopted; each is a counterexample, and each needs a
-deterministic Go test before its fix (M2 of the plan). F1 to F3 are fixed in #92 at `42f7419`,
-and their counterexamples are regression configurations now.
+deterministic Go test before its fix (M2 of the plan). F1 to F3 are fixed in #92 at `42f7419`
+and F4 at `2c8d2db`, and their counterexamples are regression configurations now.
 
 - **F1: `pendingClaims` holds one id per marker key.** `claimMemo.remember` replaces the id stored
   for a key. Two claims of one marker key in one process can each fail a not-started write: a
@@ -346,16 +368,16 @@ and their counterexamples are regression configurations now.
   errored write, the resolution's attempt stays live, and the call halts until it is resolved
   again. `resolve-minage-claim-a3` checks it with three error replies, and
   `deep-resolve-in-proc-a4` with four and the resolver in the drivers' process.
-- **F4 (open): on the lease path, a plain `Run` revives a leased driver's remembered claim.** The
+- **F4: on the lease path, a plain `Run` revives a leased driver's remembered claim.** The
   lease check sees only leased drivers (#90's documented limit), and the resolution does not claim
   the next attempt on that path. Even when no unleased driver holds the live claim at the check
   (`PlainRunIdleAtCheck`), a plain `Run` in the process of the leased driver whose claim errored
   takes that remembered claim, voids the live attempt, and claims the next one while the
-  resolution records its verdict (`findings/lease-revival`: two error replies, no crash, 22
-  states). Fix the model checks: claim the next attempt on the lease path too
+  resolution records its verdict (`regress/lease-revival`: two error replies, no crash, 22
+  states). The fix, adopted by #92 at `2c8d2db`: claim the next attempt on the lease path too
   (`resolve-lease-claim`, three error replies; `deep-resolve-lease-claim` nightly, with a crash
   and a cancellation). A plain `Run` that holds the live claim at the check stays #90's limit
-  (`regress/resolve-unleased-driver`).
+  (`limits/resolve-unleased-driver`).
 
 The `findings/` configs flip to `pass` when the code is fixed.
 
