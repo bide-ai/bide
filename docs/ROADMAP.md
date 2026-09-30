@@ -27,7 +27,7 @@ Changes that touch claims, the journal, leases, sagas or proofs are reviewed adv
 The hardest bugs in a durable runtime live in interleavings: two drivers, a crash between two writes, a write that committed although its caller saw an error. bide already tests these with crash sweeps, a reference model and multi-process harnesses. The next step is to check the protocol designs themselves, exhaustively within bounds, with TLA+ (written in PlusCal) and the TLC model checker:
 
 1. **Claims and attempts:** claims, not-started records, numbered retries, the resume gate, and halt resolution while a driver may still be live. Invariant: every side effect fires at most once.
-2. **The bide protocol,** before any SDK is built on it (see below).
+2. **The bide protocol,** before any SDK is built on it (see below): done, [spec/tla/protocol](../spec/tla/README.md#model-2-the-bide-protocols-claim-rules), including retry-safe re-dispatch.
 3. **Leases and recovery:** acquire, renew, release, takeover, and a holder that stalls past its lease. Invariant: safety holds with leases failing arbitrarily, because it rests on claims.
 4. **The store contract and journal header:** prefix-closed visibility and first-writer races.
 5. **Saga rollback:** parallel siblings, sub-agents and calls that never started.
@@ -53,11 +53,11 @@ bide is a durability and accountability layer, not only a framework of its own. 
 
 ### The bide protocol
 
-A versioned wire protocol ([design proposal](https://github.com/bide-ai/bide/pull/95)) that lets code in other languages use bide without reimplementing its guarantees. The Go engine stays the only writer of the journal, claims and proofs; other languages run tools and answer pauses. It supports long-lived workers and serverless functions, and comes with a conformance suite that every SDK must pass.
+A versioned wire protocol ([design](design/protocol.md), accepted; not implemented) that lets code in other languages use bide without reimplementing its guarantees. The Go engine stays the only writer of the journal, claims and proofs; other languages run tools and answer pauses. It supports long-lived workers and serverless functions, and comes with a conformance suite that every SDK must pass. Its claim rules are checked by a formal model (model 2). Implementation follows the engine hardening of the pre-1.0 redesign.
 
 ### Python and TypeScript SDKs
 
-Thin SDKs over the bide protocol, so agents written in Python and TypeScript get the same guarantees the Go engine enforces, plus a pip-installable `bide-audit` so Python teams can verify bide proofs directly.
+Thin SDKs over the bide protocol, so agents written in Python and TypeScript get the same guarantees the Go engine enforces, plus a pip-installable `bide-audit` so Python teams can verify bide proofs directly. They follow the engine hardening and the protocol's implementation.
 
 ### Adapters for Python and TypeScript agent frameworks
 

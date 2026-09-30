@@ -1,10 +1,12 @@
 # Design: the bide protocol (`bide.protocol.v1`)
 
-Status: **proposal, revision 2, under review.** Nothing here is implemented. The engine is unchanged
-until this document is approved. Implementation starts only after two gates: the engine hardening
-of the pre-1.0 API redesign (#64, "the redesign" below) has landed, and the protocol's claim rules
-have passed the formal model (section 18). Revision 2 applies the adversarial review of revision 1
-and the maintainer's decisions on it; section 22 records the disposition of every finding.
+Status: **Accepted (design; not implemented).** The maintainer accepted revision 2 as the design;
+nothing here is implemented, and the engine is unchanged. Implementation, and the SDKs built on it,
+follow the engine hardening of the pre-1.0 API redesign (#64, "the redesign" below). The protocol's
+claim rules have passed the formal model (section 18, [spec/tla/protocol](../../spec/tla/README.md#model-2-the-bide-protocols-claim-rules)),
+which found two bugs in revision 2's text, fixed here (10.4 step 0, and 10.9). Revision 2 applies
+the adversarial review of revision 1 and the maintainer's decisions on it; section 22 records the
+disposition of every finding.
 
 ## 0. Scope
 
@@ -1898,7 +1900,8 @@ Acceptance gate: every addition above is modelled, the configurations pass withi
 and every `Bug` configuration fails with a counterexample. The results go into
 `spec/tla/README.md`.
 
-Status (maintainer decision: a model of its own, `spec/tla/protocol/Protocol.tla`, model 2, not an
+Status (maintainer decision: a model of its own, [`spec/tla/protocol/Protocol.tla`](../../spec/tla/protocol/Protocol.tla),
+model 2, described in [spec/tla/README.md](../../spec/tla/README.md#model-2-the-bide-protocols-claim-rules), not an
 addition inside model 1). The bounds that fit, with the lost-worker floor as an assumption:
 
 | Configuration | Workers, engine instances | Attempts, deliveries | Faults | Where |
