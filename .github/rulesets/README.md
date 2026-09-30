@@ -1,20 +1,22 @@
-# Branch protection (deferred)
+# Branch protection (ruleset not applied)
 
 `strict-protection.json` is the `main`-branch ruleset copied verbatim from
 `blackwell-systems/gcf` (block deletion, block non-fast-forward, require linear
-history; admin role bypasses). It is **not applied yet**: this repo is private on
-a free plan, and GitHub blocks rulesets / branch protection on private repos.
+history; admin role bypasses). It is **not applied**: the repository has no
+rulesets. `main` is protected by classic branch protection instead, which
+requires the Lint, Test (ubuntu-latest, macos-latest, windows-latest) and dco
+checks, blocks force pushes and deletion, and merges through a merge queue
+(squash).
 
-Apply it the moment the repo becomes public **or** the account upgrades to
-GitHub Pro:
+To apply the ruleset:
 
 ```sh
-gh api --method POST repos/blackwell-systems/Bide/rulesets \
+gh api --method POST repos/bide-ai/bide/rulesets \
   --input .github/rulesets/strict-protection.json
 ```
 
 Verify:
 
 ```sh
-gh api repos/blackwell-systems/Bide/rulesets
+gh api repos/bide-ai/bide/rulesets
 ```

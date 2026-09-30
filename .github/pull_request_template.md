@@ -13,6 +13,6 @@
 ## Checklist
 
 - [ ] Commits are signed off (`git commit -s`, see DCO)
-- [ ] `GOWORK=off go vet ./...`, `GOWORK=off go test ./...` and toolchain `gofmt -l .` are clean
+- [ ] `GOWORK=off go vet ./...` and `GOWORK=off go test ./...` in every module touched, toolchain `gofmt -l .`, and `go run ./internal/tools/doccheck -root . -allow .doccheck-allow` are clean
 - [ ] CHANGELOG.md updated under Unreleased (or not user-facing)
 - [ ] Docs updated for any user-visible change

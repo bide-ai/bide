@@ -20,7 +20,8 @@ the concurrency turned up.
 
 Two environments, each scenario run seven times, medians reported. Every run journals to the
 in-memory `MemStore`, so the journal-records figure is an in-memory write rate, not a durable-store
-one. Each run writes four journal records in these scenarios.
+one. Each run writes five journal records in these scenarios (the tables below were measured when
+it wrote four, before the `run:start` record).
 
 **A standard GitHub Actions runner** (`ubuntu-latest`, 4 vCPU, Go 1.27), from the
 [Benchmark workflow](../../.github/workflows/bench.yml). Anyone can reproduce these: Actions,

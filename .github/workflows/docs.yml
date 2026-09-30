@@ -11,6 +11,7 @@ on:
     paths:
       - 'docs/**'
       - 'docs-site/**'
+      - 'CHANGELOG.md'
       - '.github/workflows/docs.yml'
   workflow_dispatch:
 

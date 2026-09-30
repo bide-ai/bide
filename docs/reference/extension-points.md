@@ -59,9 +59,16 @@ only, never on usage alone, and fails with `agent.ErrStreamProtocol` on content 
 sends after that signal. A `Finish` whose usage has a negative count fails the call with
 `agent.ErrNegativeUsage` rather than lowering the run's totals; so does negative usage a
 middleware returns.
+The `Finish` names why the turn ended in the neutral `agent.FinishReason` vocabulary
+(`FinishStop`, `FinishToolUse`, `FinishLength`, `FinishFiltered`), with the provider's own value in
+`Raw`; a turn cut off at its token limit or stopped by a filter fails the call with
+`agent.ErrOutputTruncated` or `agent.ErrOutputFiltered`.
 `agent.NewStream` wraps a channel the caller fills itself, which suits a response buffered up
 front. `model/modeltest.Run` checks an HTTP adapter against this
-contract, including the truncation case.
+contract, including the truncation case, and `modeltest.CheckFinish` checks the `Finish` it sends.
+The HTTP kit the first-party adapters share (error classification, SSE framing, the response cap,
+`Retry-After` parsing, the tool-result codec) is the `model/provider` package, which a third-party
+adapter can use too.
 
 **Reference adapters.** `model/anthropic`, `model/openai`, and `model/gemini` each provide
 `New(apiKey, opts...)` returning a `*Model` that satisfies the port, with options like
@@ -72,10 +79,14 @@ contract, including the truncation case.
 ```go
 type Durable interface {
 	// Do returns the recorded Record for (runID, name) without running fn if present;
-	// otherwise runs fn, records the returned Record (with Name set), and returns it.
-	// If fn errors, nothing is recorded; the step re-runs on the next attempt.
+	// otherwise runs fn, records the returned Record (with Name set and a fresh Salt: persist
+	// the bytes JournalEntry returns), and returns it. A recorded Record is read back with
+	// DecodeStoredRecord, which refuses a row whose record names another step.
+	// If fn errors, nothing is recorded; the step re-runs on the next attempt. Once fn has
+	// returned a record, Do records it even if ctx was cancelled meanwhile.
 	Do(ctx context.Context, runID, name string, fn func(context.Context) (Record, error)) (Record, error)
-	// History returns all recorded steps for a run, in order.
+	// History returns all recorded steps for a run, in order, each read back with
+	// DecodeStoredRecord under the name it is stored under.
 	History(ctx context.Context, runID string) ([]Record, error)
 }
 ```
@@ -94,21 +105,22 @@ across processes with a primary key / `ON CONFLICT` on `(run_id, name)`.
 
 ### Implement your own store
 
-A `Durable` must satisfy two invariants:
+A `Durable` must satisfy three invariants:
 
 - **At most once.** `Do` records the result of `fn` under `(runID, name)` and never runs `fn` a
   second time once a result is recorded.
 - **Live equals replay.** The `Record` that `Do` returns on the live path must be exactly the
-  record a later `History` or memoized `Do` reads back. Store the journal encoding
-  (`agent.EncodeRecord`) and hand out only its decoded form (`agent.DecodeStoredRecord`), never
-  the caller's own `Record`. A store that returned the caller's record live but a decoded copy on
+  record a later `History` or memoized `Do` reads back. Store the bytes `agent.JournalEntry`
+  returns (the record in its journal encoding, `agent.EncodeRecord`, with its name and a fresh
+  random salt set; the `audit` package refuses to commit a record without a salt) and hand out
+  only their decoded form (`agent.DecodeStoredRecord`), never the caller's own `Record`. A store that returned the caller's record live but a decoded copy on
   replay would let a resumed run rebuild a different conversation than the one it was having.
 - **A row is the step it is stored under.** Read every record back with
   `agent.DecodeStoredRecord(runID, name, b)`, passing the name the row is stored under. It refuses
   (`ErrStorage`) a row whose record names another step, such as a row edited or copied in the
   database, which the engine would otherwise read as that other step. Unknown fields still decode.
 
-Here is a small in-memory implementation that meets both (the same shape as `MemStore`, minus
+Here is a small in-memory implementation that meets all three (the same shape as `MemStore`, minus
 its single-flight of concurrent callers on one step):
 
 ```go
@@ -147,8 +159,7 @@ func (s *Store) Do(ctx context.Context, runID, name string,
 	if err != nil {
 		return agent.Record{}, err // not recorded: re-runs on the next attempt
 	}
-	rec.Name = name
-	b, err := agent.EncodeRecord(rec) // the journal form a replay reads
+	b, err := agent.JournalEntry(name, rec) // the journal form a replay reads, name and salt set
 	if err != nil {
 		return agent.Record{}, err
 	}
@@ -188,13 +199,15 @@ func (s *Store) History(ctx context.Context, runID string) ([]agent.Record, erro
 For a cross-process backend, replace the maps with your database and let a unique constraint
 on `(run_id, name)` enforce the at-most-once write: on a conflicting insert, read back and
 return the already-stored record instead of the one `fn` just produced. Persist the
-`agent.EncodeRecord` bytes and decode them on every read.
+`agent.JournalEntry` bytes and decode them on every read.
 
 **Check it with the conformance suite.** `agent/durabletest` holds every store to the
 live-equals-replay property: it feeds `Do` records whose encoding is easy to get wrong
 (HTML-significant characters, U+2028, NUL, invalid UTF-8, unusual number forms, key order) and
-requires the live, memoized, and `History` records to be identical and in canonical form. Run
-it from a test in your store's package:
+requires the live, memoized, and `History` records to be identical and in canonical form. It also
+requires a fresh salt on every record, a record journaled even when the caller's context was
+cancelled while `fn` ran, and nothing recorded for a step whose `fn` fails. Run it from a test in
+your store's package:
 
 ```go
 func TestMyStore_Durable(t *testing.T) {
@@ -231,8 +244,9 @@ m-of-n policy; approver signatures are checked through the `ApproverVerifier` ho
 
 ```go
 type Compensator interface {
-	// Compensate undoes a completed call. args are the tool's original arguments; result
-	// is what Call returned. Must be idempotent: on a crash mid-rollback it may re-run.
+	// Compensate undoes a completed call. args are the arguments the tool accepted (after tool
+	// middleware; see CompensatedFunc); result is what Call returned. Must be idempotent: on a
+	// crash mid-rollback it may re-run.
 	Compensate(ctx context.Context, args, result json.RawMessage) error
 }
 ```
@@ -255,9 +269,10 @@ The bring-your-own-RAG port: given a query, return the top-k relevant `Doc` valu
 store (pgvector, Pinecone, a file index, anything). Bide ships no vector store and no
 embedder; you implement `Retrieve` against infrastructure you already run and wire it in with
 `agent.RetrievalTool(r, k)` (agentic: the model searches on demand) or
-`agent.WithRetrieval(r, k)` (classic: top-k auto-injected as context on each user turn). Both
-journal what was retrieved, so a resumed run sees the same documents, and both call `Retrieve`
-concurrently, so it must be safe for concurrent use. See [RAG and memory](../guides/rag-memory.md).
+`agent.WithRetrieval(r, k)` (classic: the top-k for the run's user message, sent on every model
+call of the run as a user message just before that message). Both journal what was retrieved, so a
+resumed run sees the same documents, and both call `Retrieve` concurrently, so it must be safe for
+concurrent use. See [RAG and memory](../guides/rag-memory.md).
 
 ## `Anchor`: out-of-band anchoring (`audit`)
 

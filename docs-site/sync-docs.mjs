@@ -1,4 +1,4 @@
-// Copy the single-source docs from ../docs into this self-contained VitePress
+// Copy the single-source docs from ../docs (and ../CHANGELOG.md) into this self-contained VitePress
 // project at build time. The content is gitignored here (it lives in /docs);
 // this keeps node module resolution inside docs-site while authoring stays in
 // one place. Runs before docs:dev and docs:build.
@@ -22,3 +22,7 @@ for (const item of items) {
     console.log(`synced ${item}`)
   }
 }
+
+// The changelog lives at the repository root, not under docs/.
+cpSync(new URL('../CHANGELOG.md', import.meta.url), new URL('./CHANGELOG.md', import.meta.url))
+console.log('synced CHANGELOG.md')
