@@ -172,9 +172,16 @@ Tool execution has its own wrappers (attached with `agent.UseTool`):
 
 Tool middleware receives an `agent.ToolCall`: the model's `ToolUse`, the registered tool's `Spec`,
 and the `RunID`. It reads the call's `Spec.Safety` before it retries, caches or skips a call. A
-tool's `Timeout` (`agent.WithTimeout`) bounds the whole chain, middleware included; a call the
-middleware ends before the tool runs (even at the deadline) is a known failure, and the agent does
-not start a tool whose deadline passed in the middleware. The agent decides from its own copy of
+tool's `Timeout` (`agent.WithTimeout`) bounds the whole chain, middleware included, and the agent
+does not start a tool whose deadline passed in the middleware.
+
+A middleware reaches the tool only through `next`: never by calling the tool itself, and never by
+leaving `next` running after it returns (the agent refuses an invocation of `next` that comes after
+the chain returned). A middleware that ends a call without calling `next` (a denial, a limiter that
+gives up) returns an error wrapping `agent.ErrToolNotCalled`, and only then; `ToolRateLimit` and
+`ToolRetry` do. The agent needs positive proof that a side effect was not called: such a call is
+recorded as a known failure, but a chain that returns an error without calling `next`, and without
+`ErrToolNotCalled`, leaves a side effect's outcome unknown, and the run halts for it. The agent decides from its own copy of
 the spec, so a middleware that changes `call.Spec` changes nothing it enforces. A middleware passes
 `next` the `ToolCall` it was given, or a copy with other `Use.Args`: one that changes `Use.Name` or
 `Use.ID`, or builds its own `ToolCall`, gets `ErrConfig` and the tool is not called. The agent also enforces

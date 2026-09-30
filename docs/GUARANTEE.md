@@ -37,9 +37,13 @@ store, it is safe: resume replays it from the journal rather than re-running it.
    retry-safe tool records that error instead (in a saga, `SagaAborted.UnknownOutcome` names
    it). "After its deadline" is judged by the deadline itself, not only by the context's error,
    whose timer can lag; the run's own deadline is judged the same way. Only a call whose tool
-   was actually called is judged so: a call a tool middleware ended first (a rate limiter that
-   ran out of time) never ran the tool, and fails as a known error, or, if the run itself was
-   cancelled, records its claim as never started.
+   was actually called is judged so. "Not called" needs positive proof: the base handler refused
+   the call, or the middleware chain returned without entering it and said so with
+   `ErrToolNotCalled`. Such a call fails as a known error, or, if the run itself was cancelled,
+   records its claim as never started. A chain that returned an error without entering the base
+   handler, and without `ErrToolNotCalled`, may have reached the tool some other way, so a side
+   effect's outcome is unknown and a resume halts; the base handler refuses any invocation that
+   comes after the chain returned.
 
 The same holds when nothing crashed and a caller simply invokes the run again (a client retrying
 after a lost response, a redelivered job, a sub-agent or session turn re-entered on resume):

@@ -117,7 +117,17 @@ The child grant is recorded in the sub-run the agent loop gives this call (`agen
 toolUseID)`, unique per call), so each delegation's grant sits in its own journal. Called outside an agent run,
 where there is no such scope, the tool refuses rather than fall back to a sub-run ID that every
 parent run would share. With no grant on the context it is a plain sub-agent that inherits the
-identity, so it is safe to use either way. The wrapped sub-agent still runs its own full agent loop and reasons
+identity, so it is safe to use either way; inside a run it journals that it ran without a grant
+(`audit:delegation:ungranted`).
+
+A delegation re-entered on resume (its sub-run paused, or was cut off) runs under the grant it
+journaled the first time, verified against the bound parent and signer, so the sub-run holds one
+grant whatever your `AttenuateFunc` returns now. A delegation resumed under other authority than
+it began with (with no grant after a grant, or the reverse) is refused. In a saga, a rollback into
+the sub-run compensates under that journaled grant and identity, never the parent's: it verifies
+the grant (its signature under the bound signer's key, and that it attenuates the bound parent)
+before it binds it, so resume a saga whose delegations ran under a grant with the grant and signer
+bound (`WithGrant`); without them the rollback stops with `ErrConfig`. The wrapped sub-agent still runs its own full agent loop and reasons
 autonomously; only its authority shrinks. The result is that capabilities monotonically decrease
 down a delegation tree by construction, and the whole chain stays provable via
 `VerifyDelegationChain`.
