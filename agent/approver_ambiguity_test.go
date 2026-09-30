@@ -20,6 +20,9 @@ func TestApprovalPolicy_RefusesIDsThatDifferOnlyByCaseOrNormalization(t *testing
 		"final sigma (fold)":   {"σοφος", "σοφοσ"},
 		"case and NFD":         {"Café", "café"},
 		"third id is the echo": {"carol", "CAROL"},
+		// Canonically equivalent only once the iota subscript is ordered after the acute accent,
+		// which case folding alone does not do: the ids are decomposed before folding.
+		"ypogegrammeni order": {"\u1f84", "\u1f80\u0301"},
 	} {
 		approvers := []string{pair[0], "dave", pair[1]}
 		err := ApprovalPolicy{Need: 1, Approvers: approvers}.Validate()
@@ -53,5 +56,13 @@ func TestApprovalPolicy_DistinctIDsPass(t *testing.T) {
 		if err := (ApprovalPolicy{Need: 1, Approvers: approvers}).Validate(); err != nil {
 			t.Errorf("Validate(%q) = %v, want nil", approvers, err)
 		}
+	}
+}
+
+// An id listed twice is reported as a repeat, not as two spellings of one approver.
+func TestApprovalPolicy_ExactRepeatIsReportedAsTwice(t *testing.T) {
+	err := ApprovalPolicy{Need: 1, Approvers: []string{"alice", "alice"}}.Validate()
+	if !errors.Is(err, ErrConfig) || !strings.Contains(err.Error(), "twice") {
+		t.Fatalf("Validate = %v, want ErrConfig saying the id is listed twice", err)
 	}
 }
