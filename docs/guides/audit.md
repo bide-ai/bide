@@ -364,7 +364,7 @@ it recounts the decisions with the gate's own rule against the proven call, and 
 the evidence omits a decision the gate read, if the recount disagrees with the recorded tally, or if
 the gate enforced a different policy. `bide-audit verify-approvals` runs the same check from the
 command line. `audit.ProveApproval` proves a single decision by its record name. See the
-[approval guide](approval.md#proving-the-gate-held) and `examples/approval`.
+[approval guide](hitl-approval.md#proving-the-gate-held) and `examples/approval`.
 
 ## CLI reference: `bide-audit`
 

@@ -97,7 +97,7 @@ And because it is a Go library, one process keeps a very large number of these d
 flight at once. Agent work is I/O-bound (waiting on model and tool calls), which goroutines absorb
 without a cluster. The [`cmd/bench`](cmd/bench/README.md) harness measures it: 20,000 runs, 5,000 in
 flight at a time, each blocking ~100ms on the model, finish in **about half a second (~470ms) of
-wall-clock on a 10-core Apple silicon Mac, and about one second on a standard 4-vCPU CI runner**,
+wall-clock on a 10-core Apple silicon Mac (measured at v0.7.0), and about one second on a standard 4-vCPU CI runner**,
 on a few thousand goroutines and tens of MB (`go run ./cmd/bench -runs 20000 -concurrency 5000
 -latency 50ms`; reproducible with the [Benchmark workflow](.github/workflows/bench.yml)). The win is throughput and operational simplicity, not lower latency than the model
 (the provider owns per-call latency); at high fan-out the durable store's write throughput is the
@@ -704,7 +704,7 @@ agent.ApproveAs(ctx, store, pend.RunID, pend.ToolUseID, "finance", true, sig)
 
 `audit.ApprovalEvidence` and `audit.VerifyApprovals` (or `bide-audit verify-approvals`) then prove
 offline that k named approvers signed off on this exact call *before* it ran, under the expected
-policy, from evidence that cannot leave a decision out unnoticed. See the [approval guide](docs/guides/approval.md); runnable across
+policy, from evidence that cannot leave a decision out unnoticed. See the [approval guide](docs/guides/hitl-approval.md); runnable across
 separate processes in `examples/approval`.
 
 ## Errors
@@ -892,7 +892,7 @@ New here? Start with **[Getting started](docs/getting-started.md)**, use the **[
 - **[Delegation](docs/guides/delegation.md)**: signed capability grants a sub-agent can only narrow (`Grant`/`SignGrant`), verified offline (`VerifyDelegationChain`), plus authority earned from a clean trail. Runnable: `examples/govern/delegation`, `examples/govern/authority`.
 - **[Security model](docs/guides/security-model.md)**: the exact scope of the cryptographic guarantees (integrity, authenticity, tamper-evidence, non-repudiation, selective disclosure) and what is out of scope (confidentiality). Read before relying on the trail.
 - **[Governance](docs/guides/governance.md)**: the Tier-2 governed-state substrate (gsm). Describe shared state as a registry, and `Build()` proves every interleaving converges or returns a counterexample. Runnable: `examples/govern/mesh`, `examples/govern/compose`.
-- **[Approval](docs/guides/approval.md)**: durable human sign-off before a tool runs, from 1-of-1 to signed m-of-n (`ApprovalPolicy`, `ApproveAs`), with offline proof that k named approvers approved before the action (`audit.ApprovalEvidence`, `audit.VerifyApprovals`). Runnable: `examples/approval`.
+- **[Human approval (human-in-the-loop)](docs/guides/hitl-approval.md)**: durable human sign-off before a tool runs, from 1-of-1 to signed m-of-n (`ApprovalPolicy`, `ApproveAs`), with offline proof that k named approvers approved before the action (`audit.ApprovalEvidence`, `audit.VerifyApprovals`). Runnable: `examples/approval`.
 - **[Quorum](docs/guides/quorum.md)**: governed k-of-n model agreement (`govern.Quorum`), the tally anchored in the journal and re-checkable offline (`bide-audit verify-quorum`). Runnable: `examples/govern/quorum`.
 
 **Reference and internals**

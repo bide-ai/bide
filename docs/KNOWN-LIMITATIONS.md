@@ -147,7 +147,7 @@ the agent. There is no per-`Run` override yet; use a separate agent for differen
 no weighted votes, role rules (such as "at least one from risk"), delegated approval, or deadline for
 a gate that never reaches k. bide checks signatures against the keys you provide; linking a key to a
 person is your identity provider's job. Keep old public keys after a rotation so old evidence still
-verifies. See [Approval](guides/approval.md#scope).
+verifies. See [Human approval](guides/hitl-approval.md#scope).
 
 **Flows cannot hold an approval gate yet.** A `plan` flow with an approval node fails to build with
 `ErrConfig` rather than running the node unapproved. Put the gate on an agent tool instead.

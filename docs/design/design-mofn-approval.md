@@ -2,7 +2,7 @@
 
 Status: shipped (not yet released). Composes existing seams (durable approval + the quorum tally
 semantics) into a k-of-n human gate. No new persistence model and no new executor. The user-facing
-guide is [docs/guides/approval.md](../guides/approval.md).
+guide is [docs/guides/hitl-approval.md](../guides/hitl-approval.md).
 
 Where the implementation refined this design:
 

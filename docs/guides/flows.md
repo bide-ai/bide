@@ -344,7 +344,7 @@ nodes:
 duplicate approver id, naming the node. The `plan` runtime does not enforce an approval gate yet, so a
 well-formed block is refused too (`ErrConfig`, naming the node), as is a `Tool` node wrapping an agent
 tool that requires approval: a gate that loaded but never stopped anything would let the node run
-unapproved. Until the runtime enforces it, put the gate on an agent tool (see [approval](approval.md)).
+unapproved. Until the runtime enforces it, put the gate on an agent tool (see [approval](hitl-approval.md)).
 
 ### Load-time validation
 

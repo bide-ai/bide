@@ -246,7 +246,7 @@ compile-time change. `Safety` declares retry behavior on resume (`ReadOnly`, `Id
 the [MCP guide](../guides/mcp.md)). Its optional `Approval` field upgrades the approval gate to a signed
 m-of-n policy; approver signatures are checked through the `ApproverVerifier` hook, which the
 `audit` package's Ed25519, ML-DSA, and hybrid verifiers satisfy (see
-[approval](../guides/approval.md)).
+[approval](../guides/hitl-approval.md)).
 
 ## `Compensator`: how a tool undoes its side effect
 

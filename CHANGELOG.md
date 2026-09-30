@@ -9,6 +9,8 @@ minor version (0.x.0) may include breaking API or journal-format changes; each o
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-09-30
+
 ### Added
 
 - `agent.RecoverLoop` with `WithRecoverInterval`, `WithRecoverConcurrency` and `WithRecoverErrors`: runs recovery passes until its context ends, so a dead holder's runs are taken over without another call ([#58]).
@@ -85,6 +87,7 @@ minor version (0.x.0) may include breaking API or journal-format changes; each o
 - `bide-audit` exits 2 for stray arguments, unknown flags, `-h`, or both `-tool` and `-index`, and 3 when a `-checker` gives no verdict ([#54]).
 - `middleware.LogErrorText` logs the journaled, redacted error text ([#54]).
 - `docs/KNOWN-LIMITATIONS.md` is rewritten for users, grouped by area with impact and workaround ([#49]).
+- The approval guide is now [Human approval (human-in-the-loop)](docs/guides/hitl-approval.md) (`docs/guides/hitl-approval.md`); the old `docs/guides/approval.md` and its site URL point to it.
 
 ### Removed
 
@@ -354,7 +357,8 @@ First public release.
 - `bide-audit` standalone verifier, prebuilt for Linux, macOS and Windows on amd64 and arm64.
 - `eval` statistical evaluation harness, `chaos` crash-injection harness, and `cmd/bench`.
 
-[Unreleased]: https://github.com/bide-ai/bide/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/bide-ai/bide/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/bide-ai/bide/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/bide-ai/bide/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/bide-ai/bide/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/bide-ai/bide/compare/v0.4.0...v0.5.0
