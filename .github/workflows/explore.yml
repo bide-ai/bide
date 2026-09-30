@@ -1,0 +1,105 @@
+name: Explore
+
+# The fault-schedule explorations of the claim protocol (agent) and of flow lowering (plan) at their
+# full bound. Every pull request already runs them at the default bound, under -race on Linux, in
+# the Test job of ci.yml; BIDE_EXPLORE=1 widens them (three faulted drives, every process plan, two
+# preemptions and more faults in the concurrent explorers), which takes minutes, so it runs nightly
+# and on demand only. This workflow is not a required check and does not run on pull requests.
+#
+# A test with a BIDE_EXPLORE mode must have "Explore" in its name: the job runs -run Explore over
+# the core module, and fails if a file outside the core module reads BIDE_EXPLORE (the job would
+# not reach it) or if fewer tests passed than the core module declares with Explore in their name.
+#
+# There is no -race job: the explorers have two bounds, the default one (already run under -race
+# on every pull request) and the full one, which under -race would take several times the plain
+# run's time.
+on:
+  schedule:
+    - cron: '43 4 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  explore-full:
+    name: Explore (full bound)
+    runs-on: ubuntu-latest
+    # go test -timeout is 5 minutes shorter, so a hung exploration fails with Go's goroutine dump
+    # and the artifacts are still uploaded, instead of the job being killed.
+    timeout-minutes: 90
+    env:
+      GOWORK: 'off'
+      BIDE_EXPLORE: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Output directory
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/explore"
+          echo "SIGS_DIR=$RUNNER_TEMP/explore" >> "$GITHUB_ENV"
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27'
+      - name: Every BIDE_EXPLORE test is in the core module
+        shell: bash
+        run: |
+          core=$(go list -m)
+          bad=0
+          for f in $(grep -rlE 'BIDE_EXPLORE|exploreFull\(' --include='*_test.go' .); do
+            m=$(cd "$(dirname "$f")" && go list -m)
+            echo "$f: $m"
+            if [ "$m" != "$core" ]; then
+              echo "::error file=$f::reads BIDE_EXPLORE but is in module $m, which this job does not test"
+              bad=1
+            fi
+          done
+          exit $bad
+      - name: Full-bound explorations (no -race)
+        shell: bash
+        run: |
+          export BIDE_EXPLORE_SIGS="$SIGS_DIR/sigs.tsv"
+          set -o pipefail
+          start=$(date +%s)
+          go test -count=1 -timeout 85m -v -run Explore ./... 2>&1 | tee "$SIGS_DIR/test.log"
+          echo "Elapsed: $(( $(date +%s) - start ))s" | tee -a "$SIGS_DIR/test.log"
+      - name: Every Explore test ran and passed
+        shell: bash
+        run: |
+          want=$(go test -list Explore ./... | grep -c '^Test' || true)
+          got=$(grep -cE '^--- PASS: Test[A-Za-z0-9_]*Explore' "$SIGS_DIR/test.log" || true)
+          echo "Explore tests declared: $want, passed: $got"
+          [ "$want" -gt 0 ] && [ "$got" -eq "$want" ]
+      - name: Summary and compressed signatures
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          {
+            echo "## Full-bound exploration"
+            echo
+            echo '```'
+            grep -E 'TOTAL|schedules explored|^(--- |ok |FAIL|Elapsed)' "$SIGS_DIR/test.log" || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ -s "$SIGS_DIR/sigs.tsv" ]; then
+            {
+              echo
+              echo "Schedule signatures per test (sha256 of the sorted lines, for comparing runs):"
+              echo
+              echo '```'
+              cut -f1 "$SIGS_DIR/sigs.tsv" | cut -d/ -f1 | sort | uniq -c
+              echo "sha256 $(sort "$SIGS_DIR/sigs.tsv" | sha256sum | cut -d' ' -f1)"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            gzip -9 "$SIGS_DIR/sigs.tsv"
+          fi
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: explore-sigs-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/explore/sigs.tsv.gz
+            ${{ runner.temp }}/explore/test.log
+          retention-days: 90
+          compression-level: 1
+          if-no-files-found: warn

@@ -47,7 +47,7 @@ jobs:
             echo "Changed files:"; echo "$files"
             # Paths no Go build or test reads (the TLA+ models have their own workflow, models.yml).
             # Everything else is code.
-            other=$(echo "$files" | grep -vE '^(docs/|docs-site/|assets/|spec/tla/|\.github/ISSUE_TEMPLATE/)|\.md$|^(LICENSE|NOTICE|DCO)$|^\.github/workflows/(docs|bench|models)\.yml$' || true)
+            other=$(echo "$files" | grep -vE '^(docs/|docs-site/|assets/|spec/tla/|\.github/ISSUE_TEMPLATE/)|\.md$|^(LICENSE|NOTICE|DCO)$|^\.github/workflows/(docs|bench|models|explore)\.yml$' || true)
             [ -n "$files" ] && [ -z "$other" ] && code=false
           fi
           echo "code=$code" | tee -a "$GITHUB_OUTPUT"

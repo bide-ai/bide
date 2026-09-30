@@ -37,6 +37,7 @@ minor version (0.x.0) may include breaking API or journal-format changes; each o
 - `plan.Flow.ResolveHalt`: `agent.ResolveHaltRef` for a node of the flow, which first checks that the halt names a node of this flow, that the run is a run of this flow (its recorded start names the flow and its recorded topology digest is the flow's), and that a successful outcome decodes as the node's output type, since a resolution is final and one the flow could not read would leave the run unable to continue ([#103]).
 - `agent.ErrNoLiveAttempt` (wraps `ErrConfig`) ([#103]).
 - `plan`'s fault-schedule exploration of flow lowering (crashes, store errors that did or did not commit, and cancellations at every write, across processes) as a permanent test, bounded by default (`BIDE_EXPLORE=1` explores every process plan) ([#103]).
+- Tooling: a nightly Explore workflow (`.github/workflows/explore.yml`, also on demand) runs the claim and flow-lowering fault-schedule explorations at their full bound (`BIDE_EXPLORE=1`) and keeps the schedule signatures (`BIDE_EXPLORE_SIGS`) as an artifact; it is not a required check ([#119]).
 - `agent.ApprovalPolicy.ValidateKeys`, `agent.ApprovalTally.Excluded`, `agent.ReasonSharedKey`, `agent.ReasonNoKeyID`, `audit.KeyID`, `audit.CheckEd25519PublicKey` and `audit.ErrWeakKey`; `KeyIDs` on `audit.Ed25519Verifier`, `MLDSAVerifier` and `HybridVerifier` ([#109]).
 - `audit.Signer` and `audit.Verifier` name their scheme with a typed `audit.Alg` (an alias of the new `agent.Alg`) and expose `PublicKey()`, and a `Verifier` reports its `KeyIDs()`, so every `audit.Verifier` is an `agent.ApproverVerifier`; `audit.NewVerifier` and `ParsePublicKey` (and `verify.NewVerifier`) refuse a weak Ed25519 key (`audit.ErrWeakKey`); `audit.NewVerifier(alg, pub)`, `audit.VerifierOf(signer)`, and the `<alg>:<hex>` key text form (`audit.FormatPublicKey`, `audit.ParsePublicKey`). The standalone `audit/verify` package gains `verify.Head`, `verify.Verifier` and `verify.NewVerifier`, and checks tree heads under ed25519, ML-DSA-65 and the hybrid ([#105]).
 - `audit.ErrNotVerified` and `audit.ErrMalformed` (wraps `agent.ErrProtocol`; `audit.ErrFormat` now wraps it), the sentinels every verifier's error wraps ([#105]).
@@ -582,6 +583,7 @@ First public release.
 [#114]: https://github.com/bide-ai/bide/pull/114
 [#118]: https://github.com/bide-ai/bide/pull/118
 [#113]: https://github.com/bide-ai/bide/pull/113
+[#119]: https://github.com/bide-ai/bide/pull/119
 [78f8db6]: https://github.com/bide-ai/bide/commit/78f8db6
 [994721b]: https://github.com/bide-ai/bide/commit/994721b
 [3262cd1]: https://github.com/bide-ai/bide/commit/3262cd1
