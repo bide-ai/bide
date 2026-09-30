@@ -129,7 +129,9 @@ under that deadline too (a plan flow, which calls the tool directly, still gets 
 There is no default: without it a call waits as long as the run's context allows. A result that
 arrives after the deadline is recorded. A call that fails after it may still be running on the
 server, so its outcome is unknown (`agent.ErrToolOutcomeUnknown`, see below), and a side effect
-records nothing and halts on resume rather than run again.
+records nothing and halts on resume rather than run again. That includes an error the server
+reports once the deadline has passed (a late JSON-RPC error): the agent cannot tell a late known
+failure from a late answer to a call that took effect, so it takes the safe side and halts.
 
 **Unknown outcomes are the safe side.** Only two failures are known not to have run the tool:
 a JSON-RPC error from the server, and a call on a session already closed. Every other transport

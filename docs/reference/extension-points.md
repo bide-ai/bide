@@ -356,7 +356,10 @@ result the tool returns after the deadline is recorded, and an error it returns 
 has an unknown outcome: a side effect records nothing and halts on resume, a retry-safe tool
 records the error. A tool that wraps another (as `audit.AttenuatingSubAgent` wraps a `SubAgent`)
 says so with an `Unwrap() Tool` method, which the agent follows to find a wrapped sub-agent for
-saga rollback and budget accounting.
+saga rollback and budget accounting. The contract: a wrapper adds no side effect of its own (it may
+change the context the wrapped tool runs in), is not a `Compensator`, and does not give a wrapped
+sub-agent a timeout; `New` refuses the last two with `ErrConfig`. A rollback through a wrapper runs
+the wrapped sub-agent's compensations, never the wrapper's.
 
 ## `Compensator`: how a tool undoes its side effect
 

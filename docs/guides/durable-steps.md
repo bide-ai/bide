@@ -195,6 +195,14 @@ These are stated in full in [KNOWN-LIMITATIONS.md](../KNOWN-LIMITATIONS.md); in 
   So is any call whose tool is no longer registered when the rollback runs (its compensator and
   safety are unknown), and one of those with an attempt marker and no result stops the rollback
   with a `*OutcomeUnknown`.
+- **A failed step with an unknown outcome is reported, not undone.** A retry-safe step that fails
+  with `ErrToolOutcomeUnknown`, or returns an error after its `WithTimeout` deadline, may have
+  committed before it was cut off. Its failure record carries `outcome_unknown`, and the rollback
+  lists it in `SagaAborted.UnknownOutcome` (through sub-agent trees) without running its
+  compensator on a result it never returned. Check each one against its downstream system.
+- **A delegation is undone under its own authority.** A rollback into an
+  `audit.AttenuatingSubAgent`'s sub-run rebinds the child grant and identity the sub-run journaled,
+  so a compensation never runs under authority the delegation did not grant.
 - **A saga resumes as a saga.** A run's first drive records whether it runs as a saga, and resuming
   an unfinished saga through `Run` (or a run through `RunSaga`) is `ErrConfig`.
 - **A reconciled failure aborts.** A crash between a step's failure and its record leaves the step

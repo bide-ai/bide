@@ -172,9 +172,12 @@ Tool execution has its own wrappers (attached with `agent.UseTool`):
 
 Tool middleware receives an `agent.ToolCall`: the model's `ToolUse`, the registered tool's `Spec`,
 and the `RunID`. It reads the call's `Spec.Safety` before it retries, caches or skips a call. A
-tool's `Timeout` (`agent.WithTimeout`) bounds the whole chain, middleware included. The agent decides
-from its own copy of the spec, so a middleware that changes `call.Spec` changes nothing it
-enforces. The agent also enforces
+tool's `Timeout` (`agent.WithTimeout`) bounds the whole chain, middleware included; a call the
+middleware ends before the tool runs (even at the deadline) is a known failure, and the agent does
+not start a tool whose deadline passed in the middleware. The agent decides from its own copy of
+the spec, so a middleware that changes `call.Spec` changes nothing it enforces. A middleware passes
+`next` the `ToolCall` it was given, or a copy with other `Use.Args`: one that changes `Use.Name` or
+`Use.ID`, or builds its own `ToolCall`, gets `ErrConfig` and the tool is not called. The agent also enforces
 at-most-once below every middleware: a tool that is not retry-safe runs at most once per tool
 call, and a middleware that calls it again gets `agent.ErrToolReinvoked` without the tool
 running.

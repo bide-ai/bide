@@ -34,7 +34,12 @@ store, it is safe: resume replays it from the journal rather than re-running it.
    recorded even after its deadline, since the outcome is known. A side effect that returns an
    error after its deadline may have been cut off after its effect took place, so nothing is
    recorded, the drive fails with `ErrToolOutcomeUnknown`, and a resume halts as in case 3. A
-   retry-safe tool records that error instead.
+   retry-safe tool records that error instead (in a saga, `SagaAborted.UnknownOutcome` names
+   it). "After its deadline" is judged by the deadline itself, not only by the context's error,
+   whose timer can lag; the run's own deadline is judged the same way. Only a call whose tool
+   was actually called is judged so: a call a tool middleware ended first (a rate limiter that
+   ran out of time) never ran the tool, and fails as a known error, or, if the run itself was
+   cancelled, records its claim as never started.
 
 The same holds when nothing crashed and a caller simply invokes the run again (a client retrying
 after a lost response, a redelivered job, a sub-agent or session turn re-entered on resume):

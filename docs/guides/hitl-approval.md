@@ -179,7 +179,9 @@ An m-of-n tool inside a `SubAgent` pauses the whole tree: the parent's `Run` ret
 ### Configuration errors
 
 The gate fails with `ErrConfig` (rather than counting zero decisions) when a tool has an `Approval`
-policy but no `WithApproverVerifiers` resolver is set, or when the policy is malformed: no approvers,
+policy but no `WithApproverVerifiers` resolver is set, or when the policy is malformed: no approvers
+(only `agent.SingleApproval()` asks for the one-decision gate; a policy literal such as
+`{Need: 1}` with an empty approver list is refused, never taken for it),
 an empty or duplicate approver id, an id that is not valid UTF-8, or `Need` outside
 `1..len(Approvers)` (see `ApprovalPolicy.Validate`), or when an eligible approver's verifier has an
 empty `PublicKey()` (see above).
