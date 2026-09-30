@@ -552,7 +552,7 @@ journal and the in-memory dispatch table:
 | no marker (retry-safe, or side effect not yet assigned) | dispatch exists | pending |
 | no marker | none (restart, or first drive) | create dispatch; pending |
 | retry-safe, unknown report journaled, call deadline not passed | any | re-dispatch under the same once-key scope (10.9); pending |
-| retry-safe, deliveries exhausted or call deadline passed | any | record `is_error` with condition `DELIVERY_EXHAUSTED` if no delivery ever reported `unknown`; otherwise halt with cause `crashed` (10.9) |
+| retry-safe, deliveries exhausted or call deadline passed | any | `read_only`: record `is_error` with condition `DELIVERY_EXHAUSTED` if no delivery ever reported `unknown`, otherwise halt with cause `crashed`. `idempotent`: halt, with cause `crashed` if an unknown report is journaled and `worker_lost` otherwise; never `DELIVERY_EXHAUSTED` (10.9) |
 | remote marker, no begin record, its delivery live (lease not lapsed) | yes | pending (never abandon a delivery that looks live; the begin key still decides) |
 | remote marker, no begin record, delivery lapsed or unknown to this process | none, or lapsed | abandon: insert the begin key as `abandoned`; read the stored record. Stored abandon: insert `attempt:not-started:<claim>:<marker>` [#92] and create a new dispatch, unless `max_attempts` is reached, then record `is_error` with `DELIVERY_EXHAUSTED`. Stored begin: continue with the next row |
 | remote marker, begin names delivery `d`, no result, `d` live or within the lost-worker floor | any | pending (`activity: awaiting_worker`) |
@@ -1196,8 +1196,14 @@ worker of another queue, or a caller who read a `delivery_id` from a log, cannot
   `call_deadline` (first dispatch plus `ToolSpec.retry_window`, default ten times `timeout`) or
   `max_deliveries`. Recording an error instead would invite the model to call the tool again under a
   new call ID, whose new once scope defeats downstream deduplication. When the window closes, a call
-  with a journaled unknown report halts (cause `crashed`, anchored on its last unknown report) and a
-  call whose deliveries were only lost records `DELIVERY_EXHAUSTED`.
+  with a journaled unknown report halts (cause `crashed`, anchored on its last unknown report). A
+  `read_only` call whose deliveries were only lost records `DELIVERY_EXHAUSTED`; an `idempotent`
+  call halts (cause `worker_lost`) instead (maintainer decision on the model's finding P2): a lost
+  delivery may have run its handler (its lease lapsed while the worker ran, or the worker died or
+  its report was lost after the downstream effect), and a refusal proves nothing either, since a
+  duplicate of the refused delivery may run. An error would tell the model the effect did not
+  happen, and its next call, under a new once-key scope, would apply the downstream effect again. A
+  `read_only` tool has no downstream effect, so its error is truthful.
 - **This changes in-process semantics too** [engine work]: today an in-process idempotent tool that
   returns `ErrToolOutcomeUnknown` is recorded as an error the model sees (`agent/errors.go`). Under
   this decision the engine re-runs it under the same once scope until its retry window closes, then
@@ -1910,7 +1916,9 @@ converging. Every `Bug` configuration above fails as required. The model found o
 2's text, P1: `BeginTask` checked the dispatch table before reading the stored begin record, so a
 worker whose begin landed and whose answer was lost was refused on its retry once the lease lapsed
 or the engine restarted, and never ran (`BeginIdempotent`); step 0 of 10.4 is the model-checked
-fix.
+fix. It found a second, P2: a retry-safe call whose deliveries were only lost recorded
+`DELIVERY_EXHAUSTED`, though a lost delivery (or a duplicate of a refused one) may have run its
+handler; 10.9 now records it only for `read_only` tools and halts an `idempotent` one.
 
 ---
 
