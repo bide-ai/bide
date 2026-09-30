@@ -119,7 +119,7 @@ func buildDiamondByHand() (*plan.Flow[int, string], error) {
 	b.Edge(split, z)
 	b.Join2("merge", y, z, func(_ context.Context, a int, s string) (string, error) {
 		return fmt.Sprintf("%s+%d", s, a), nil
-	}, plan.ReadOnly())
+	}, plan.ReadOnly(), plan.BlockName("mergeBlock")) // the config's merge block, so the digests match
 	flow, err := b.Build()
 	if err != nil {
 		return nil, fmt.Errorf("build diamond by hand: %w", err)
@@ -182,7 +182,7 @@ func buildCountdownLoopByHand() (*plan.Flow[int, string], error) {
 	b.Edge(seed, refine)
 	b.Edge(refine, check)
 	b.Switch(check,
-		plan.LoopBack(10, func(s LoopState) bool { return s.N > 0 }, refine),
+		plan.LoopBack(10, func(s LoopState) bool { return s.N > 0 }, refine).Named("again"),
 		plan.Else(done),
 	)
 	flow, err := b.Build()

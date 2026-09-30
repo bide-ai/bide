@@ -304,7 +304,7 @@ func buildFlow(cfg config) (*plan.Flow[Order, Receipt], error) {
 
 	// Route on the assessment: a rush order reserves, everything else declines.
 	b.Switch(classify,
-		plan.When(func(a Assessment) bool { return a.Rush }, reserve),
+		plan.When(func(a Assessment) bool { return a.Rush }, reserve).Named("rush"), // the config's predicate name, so the digests match
 		plan.Else(decline),
 	)
 	// The reserve arm continues to finalize; the decline arm is already terminal.

@@ -121,10 +121,23 @@ auditor who never trusts your process, your database, or your logs. The property
 Two pieces make it work:
 
 - **A topology digest.** `flow.Digest()` returns a deterministic SHA-256 (hex) of the *frozen* spec:
-  the flow name, each node's name + kind + input type + output type, every edge, and each `Switch`
-  with its ordered arms. It is computed by walking the insertion-ordered spec (never a map), so it is
-  stable across builds and processes and changes whenever the topology changes (a renamed or retyped
-  node, an added or reordered edge, a changed arm). It commits to topology, not to node bodies.
+  the flow name, each node's name, block, kind, input type and output type (types with their full
+  package path, so `a/model.Req` and `b/model.Req` differ), every edge, and each `Switch` with its
+  ordered arms and their predicate names. It is computed by walking the insertion-ordered spec (never
+  a map), so it is stable across builds and processes and changes whenever the flow changes (a
+  renamed or retyped node, a node pointed at another block, an added or reordered edge, a changed
+  arm or predicate). It commits to topology and to the names of the blocks and predicates it wires,
+  not to the Go inside them.
+  - A config node's block is the registered block it names (a join's is its merge block), and an
+    arm's predicate is the registered predicate it names. In Go, a node's block is its own name unless
+    `plan.BlockName("...")` gives another, and an arm's predicate has a name only when
+    `When(...).Named("...")` (or `LoopBack(...).Named`) gives one. A Go flow that should share a
+    config flow's digest gives the config's names.
+  - This is digest v2 (`bide.plan.topology.v2`). `Run` refuses to resume a run whose `flow:digest`
+    was recorded under v1, with an `ErrConfig` naming v1, because v1 does not commit to block or
+    predicate names and so cannot show the run started under this flow; `Conform` reports such a run
+    as a divergence. `flow.DigestV1()` still computes the v1 digest, to check a proof of a record an
+    earlier version journaled.
 - **A journaled record the audit layer covers.** The first thing `Run` records is the digest, as a
   durable step under the reserved name `flow:digest` (memoized on resume). Because it lives in the
   journal, the [`audit`](../../audit) package's Merkle tree and signed tree head commit to it like any
@@ -351,7 +364,8 @@ topology, a signed tree head over the run proves offline that the run followed *
 same way cryptographic conformance proves it followed the diagram. This is the headline: a
 config-loaded flow is **cryptographically conformable to its config**. `examples/plan` demonstrates it
 by asserting the config-loaded flow's `Digest()` **equals** the code-built flow's `Digest()`: the
-config and the Go describe the same topology. The same holds for a config-built fan-in or bounded
+config and the Go describe the same topology (the Go names its predicate with `.Named("rush")` and
+the join's merge block with `plan.BlockName("mergeBlock")`, the names the config uses). The same holds for a config-built fan-in or bounded
 loop: `examples/plan` loads a `join` diamond and a `loopMax` loop, runs and conforms each, and asserts
 each config-loaded flow's `Digest()` equals its code-built counterpart, so a config-built join or loop
 is cryptographically conformable to its config just like the linear case.

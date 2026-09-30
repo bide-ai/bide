@@ -22,7 +22,13 @@ const (
 // captured at construction so Build can validate whole-graph coherence and
 // RenderMermaid can label each node.
 type node struct {
-	name    string
+	name string
+	// block names the behaviour the node runs: the registered block (or merge block) a
+	// config node or join references, or, for a node built in Go, the name given with
+	// BlockName, defaulting to the node's own name (register fills it in). Digest commits
+	// to it, so a config that points a node at another block with the same types
+	// describes a different flow.
+	block   string
 	kind    nodeKind
 	inType  reflect.Type
 	outType reflect.Type
@@ -87,8 +93,13 @@ type edge struct{ from, to string }
 // validates the target is an ancestor (a real cycle) and that the Switch also has
 // a non-loop-back exit arm.
 type arm struct {
-	isElse   bool
-	pred     func(v any) bool
+	isElse bool
+	pred   func(v any) bool
+	// predName names the predicate: the registered predicate a config arm references, or
+	// the name given with Arm.Named in Go ("" when none was given, and for Else). Digest
+	// commits to it, so a config that swaps one predicate for another describes a
+	// different flow.
+	predName string
 	target   string
 	loopBack bool // true iff this arm is a bounded back-edge to an earlier loop head
 	loopMax  int  // for a loop-back arm, the max iterations before Run errors (> 0); 0 otherwise

@@ -7,3 +7,7 @@ package model
 type Req struct {
 	ID int `json:"id"`
 }
+
+// Anon is an unnamed struct type with an unexported field. The field's identity includes this
+// package's path, so a/model.Anon and b/model.Anon are distinct types that print alike.
+type Anon = struct{ id int }

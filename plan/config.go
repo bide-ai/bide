@@ -327,6 +327,7 @@ func assemble(cfg *config, reg *Registry) (*builderCore, error) {
 		}
 		resolvedNodes = append(resolvedNodes, &node{
 			name:    cn.Name,
+			block:   cn.Block,
 			kind:    b.kind,
 			inType:  b.inType,
 			outType: b.outType,
@@ -457,6 +458,7 @@ func assemble(cfg *config, reg *Registry) (*builderCore, error) {
 			}
 			core.register(&node{
 				name:        w.Join,
+				block:       w.Merge,
 				kind:        kindJoin,
 				joinInputs:  append([]string(nil), w.Inputs...),
 				joinInTypes: append([]reflect.Type(nil), m.inTypes...),
@@ -486,9 +488,9 @@ func assemble(cfg *config, reg *Registry) (*builderCore, error) {
 				// loop head), mirroring LoopBack(max, pred, head); Build then validates the
 				// ancestor/exit/bound/contiguity requirements. Otherwise it is a plain When arm.
 				if a.LoopMax > 0 {
-					arms = append(arms, arm{pred: p.pred, target: a.To, loopBack: true, loopMax: a.LoopMax})
+					arms = append(arms, arm{pred: p.pred, predName: a.Pred, target: a.To, loopBack: true, loopMax: a.LoopMax})
 				} else {
-					arms = append(arms, arm{pred: p.pred, target: a.To})
+					arms = append(arms, arm{pred: p.pred, predName: a.Pred, target: a.To})
 				}
 			}
 			if w.Else != "" {

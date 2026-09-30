@@ -44,9 +44,20 @@ func (b *Builder[In, Out]) Edge[M any](from Producer[M], to Consumer[M]) {
 type Arm[M any] struct {
 	isElse   bool
 	pred     func(M) bool
+	predName string
 	target   string
 	loopBack bool
 	loopMax  int
+}
+
+// Named names the arm's predicate, as RegisterPredicate names one for a config, and returns
+// the arm. Digest commits to the name, so a flow built in Go that names its predicates the
+// way a config does has the config's digest, and swapping two named predicates changes it.
+// A Go predicate is a func with no stable name of its own, so an unnamed arm commits to
+// none: the Go code, not the digest, is then what says which predicate runs.
+func (a Arm[M]) Named(name string) Arm[M] {
+	a.predName = name
+	return a
 }
 
 // When routes to `to` when pred(over.Out) is true. pred must be pure over the
@@ -100,7 +111,7 @@ func LoopBack[M any](max int, pred func(M) bool, head Consumer[M]) Arm[M] {
 func (b *Builder[In, Out]) Switch[M any](over Producer[M], arms ...Arm[M]) {
 	erased := make([]arm, len(arms))
 	for i, a := range arms {
-		erased[i] = arm{isElse: a.isElse, target: a.target, loopBack: a.loopBack, loopMax: a.loopMax}
+		erased[i] = arm{isElse: a.isElse, predName: a.predName, target: a.target, loopBack: a.loopBack, loopMax: a.loopMax}
 		if a.pred != nil {
 			pred := a.pred
 			// Type-erase the typed predicate. The switched value arrives as any at

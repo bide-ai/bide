@@ -89,7 +89,7 @@ func buildTriageByHand(t *testing.T) *Flow[cfgOrder, cfgReceipt] {
 	finalize := b.Step("finalize", cfgFinalize)
 	decline := b.Step("decline", cfgDecline)
 	b.Switch(classify,
-		When(func(a cfgAssessment) bool { return a.Rush }, reserve),
+		When(func(a cfgAssessment) bool { return a.Rush }, reserve).Named("rush"),
 		Else(decline),
 	)
 	b.Edge(reserve, finalize)
@@ -418,7 +418,7 @@ func TestLoadJoinConfigRunsConformsAndMatchesHandBuilt(t *testing.T) {
 	}
 
 	// Digest equals the hand-built diamond of the same shape.
-	hand, err := buildDiamond()
+	hand, err := buildDiamond(BlockName("mergeBlock"))
 	if err != nil {
 		t.Fatalf("hand build: %v", err)
 	}

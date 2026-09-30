@@ -86,7 +86,10 @@ func (f *Flow[In, Out]) Run(ctx context.Context, store agent.Durable, runID stri
 	// choices, loop iterations) only means what it meant under that flow. Resuming it with a
 	// changed flow would reuse stale results under a different graph, so refuse.
 	var got string
-	if err := json.Unmarshal(rec.Result, &got); err != nil || got != c.digest() {
+	if err := json.Unmarshal(rec.Result, &got); err == nil && got != c.digest() && got == c.digestV1() {
+		return out, fmt.Errorf("plan: run %q: run %s was started under topology digest v1 (%s), which does not commit to block or predicate names, so it cannot show the run started under this flow; this version resumes only runs recorded under v2: %w", c.flowName, runID, got, agent.ErrConfig)
+	}
+	if err != nil || got != c.digest() {
 		return out, fmt.Errorf("plan: run %q: run %s was started under flow digest %s, not this flow's %s; resume it with the flow it started with: %w", c.flowName, runID, rec.Result, c.digest(), agent.ErrConfig)
 	}
 
