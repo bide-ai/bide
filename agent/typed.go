@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 
 	"github.com/bide-ai/bide/internal/strictjson"
 	"github.com/bide-ai/bide/schema"
@@ -201,15 +202,16 @@ func (a *Agent) clone() *Agent {
 	}
 	c.mw = append([]Middleware(nil), a.mw...)
 	c.toolMW = append([]ToolMiddleware(nil), a.toolMW...)
-	c.indexTools()
+	c.specs = maps.Clone(a.specs) // specList is shared: it is only ever copied (requestTools)
 	return &c
 }
 
 // cloneWith returns a clone with one extra tool and appended model middleware.
 func (a *Agent) cloneWith(extra Tool, mw ...Middleware) *Agent {
 	c := a.clone()
-	c.tools[SpecOf(extra).Name] = extra
-	c.indexTools()
+	s := SpecOf(extra)
+	c.tools[s.Name], c.specs[s.Name] = extra, s
+	c.sortSpecs()
 	c.mw = append(c.mw, mw...)
 	return c
 }

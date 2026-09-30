@@ -155,16 +155,17 @@ func New(model Model, store Durable, tools ...Tool) *Agent {
 		panic("agent: New requires a non-nil Durable store")
 	}
 	m := make(map[string]Tool, len(tools))
+	specs := make(map[string]ToolSpec, len(tools))
 	dup := ""
 	for _, t := range tools {
-		name := SpecOf(t).Name // a tool with a Spec method is called by its spec's name
-		if _, taken := m[name]; taken && dup == "" {
-			dup = name
+		s := SpecOf(t) // read once: every decision about the tool's calls reads this copy
+		if _, taken := m[s.Name]; taken && dup == "" {
+			dup = s.Name
 		}
-		m[name] = t
+		m[s.Name], specs[s.Name] = t, s // a tool with a Spec method is called by its spec's name
 	}
-	a := &Agent{model: model, tools: m, dupTool: dup, store: store}
-	a.indexTools()
+	a := &Agent{model: model, tools: m, specs: specs, dupTool: dup, store: store}
+	a.sortSpecs()
 	return a
 }
 

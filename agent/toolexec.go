@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"sync"
@@ -136,18 +137,12 @@ func recordedSafety(spec ToolSpec) *Safety {
 	return &s
 }
 
-// indexTools snapshots the spec of every tool in a.tools (see SpecOf): specs by name, and
-// specList sorted by name, which each model request is sent. The agent decides every call from
-// this snapshot, so a tool whose Spec or Safety method would answer differently later cannot
-// change a decision the agent has made or will make for the run's calls.
-func (a *Agent) indexTools() {
-	a.specs = make(map[string]ToolSpec, len(a.tools))
-	a.specList = make([]ToolSpec, 0, len(a.tools))
-	for name, t := range a.tools {
-		s := SpecOf(t)
-		a.specs[name] = s
-		a.specList = append(a.specList, s)
-	}
+// sortSpecs sets specList to a.specs sorted by name, the list each model request is sent. The
+// specs are the snapshot New (or cloneWith) took of each tool's spec when it was registered (see
+// SpecOf): the agent decides every call from it, so a tool whose Spec or Safety method would
+// answer differently later cannot change a decision the agent makes for the run's calls.
+func (a *Agent) sortSpecs() {
+	a.specList = slices.Collect(maps.Values(a.specs))
 	slices.SortFunc(a.specList, func(x, y ToolSpec) int { return strings.Compare(x.Name, y.Name) })
 }
 
