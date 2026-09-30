@@ -744,7 +744,8 @@ The **control-flow signals** are richer than a category, so they stay concrete t
 halted run returns an `agent.Pause`, a sealed interface with exactly five kinds: `*ApprovalPending`
 (approval needed), `*InterruptPending` (waiting for human input), `*TimerPending` (durable timer
 pending), `*SignalPending` (waiting for an external signal or channel message), and
-`*OutcomeUnknown` (unsafe to resume; its `Cause` is `HaltCrashed` or `HaltContended`). Test for one
+`*OutcomeUnknown` (unsafe to resume; its `Cause` is `HaltCrashed` or `HaltContended`; a `plan` flow's
+node runs as a `Step` and halts as one, named by its node key `node:<name>`). Test for one
 with `agent.IsPause(err)`, read it with `agent.AsPause(err)` (its `Paused()` names the run to answer
 and the run to re-invoke), or match a kind with `errors.As`. The others are `*SagaAborted` (rolled
 back) and `*HaltTooYoung` (from `ResolveHaltRef`, when `WithMinHaltAge` has not elapsed yet). A
