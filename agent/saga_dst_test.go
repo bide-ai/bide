@@ -53,7 +53,7 @@ func (sagaModel) Stream(_ context.Context, req Request) (*Stream, error) {
 }
 
 func runSagaOnce(mem Durable, tools []Tool, crashAt int) error {
-	a := New(sagaModel{}, &crashStore{inner: mem, crashAt: crashAt}, tools...).SetMaxConcurrency(1)
+	a := New(sagaModel{}, crashJournal(mem, crashAt), tools...).SetMaxConcurrency(1)
 	_, err := a.RunSaga(context.Background(), "dst", "go")
 	return err
 }

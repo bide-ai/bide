@@ -49,7 +49,7 @@ func (awaitThenChargeModel) Stream(_ context.Context, req Request) (*Stream, err
 func runAwaitCharge(mem Durable, awaitCalls, chargeCount *int, crashAt int) error {
 	awaitT := &awaitTool{name: "await", safety: Safety{ReadOnly: true}, sig: "go", calls: awaitCalls}
 	chargeT := chargeTool{count: chargeCount}
-	a := New(awaitThenChargeModel{}, &crashStore{inner: mem, crashAt: crashAt}, awaitT, chargeT).SetMaxConcurrency(1)
+	a := New(awaitThenChargeModel{}, crashJournal(mem, crashAt), awaitT, chargeT).SetMaxConcurrency(1)
 	_, err := a.Run(context.Background(), "dst-sig", "start")
 	return err
 }
