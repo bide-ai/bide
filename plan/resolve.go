@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/internal/journalhook"
 )
 
 // ResolveHalt clears a halt of a node of this flow, as agent.ResolveHaltRef does, once it has
@@ -47,7 +48,7 @@ func (f *Flow[In, Out]) ResolveHalt(ctx context.Context, store agent.Durable, re
 	}
 	rest, _ := splitIter(strings.TrimPrefix(ref.Op.ID, "node:"))
 	if nodeOwn := !strings.Contains(rest, ":"); nodeOwn && !out.IsError {
-		b, err := json.Marshal(out.Result)
+		b, err := journalhook.Marshal(out.Result) // as agent.ResolveHaltRef will record it
 		if err != nil {
 			return fmt.Errorf("plan: flow %q: resolve %q: encode the outcome: %w (%w)", c.flowName, ref.Op.ID, err, agent.ErrConfig)
 		}

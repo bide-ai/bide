@@ -91,7 +91,7 @@ func (f *Flow[In, Out]) Run(ctx context.Context, store agent.Durable, runID stri
 	// The run's start comes first: a drive of a run some other flow, input or entry point started
 	// is refused before this one records anything in it. A finished run is final: a drive with its
 	// input returns the output its completion recorded, whatever the flow's topology is now.
-	input, encErr := json.Marshal(in)
+	input, encErr := journalhook.Marshal(in)
 	if encErr != nil {
 		return out, fmt.Errorf("plan: run %q: encode flow input: %w (%w)", c.flowName, encErr, agent.ErrConfig)
 	}
@@ -109,7 +109,7 @@ func (f *Flow[In, Out]) Run(ctx context.Context, store agent.Durable, runID stri
 	// store.Do memoizes it by name, so a resumed run replays the recorded digest rather than
 	// recomputing and re-recording it. This is what makes it offline-verifiable that the run
 	// followed THIS declared topology.
-	want, encErr := json.Marshal(c.digest())
+	want, encErr := journalhook.Marshal(c.digest())
 	if encErr != nil {
 		return out, fmt.Errorf("plan: run %q: encode topology digest: %w", c.flowName, encErr)
 	}
@@ -291,7 +291,7 @@ func (f *Flow[In, Out]) Run(ctx context.Context, store agent.Durable, runID stri
 	}
 	// Record the run's completion with its output, so recovery passes skip it and a later drive
 	// returns the output without walking the flow. A driver that completed it first wins.
-	final, encErr := json.Marshal(completion{Flow: c.flowName, Output: terminalOut})
+	final, encErr := journalhook.Marshal(completion{Flow: c.flowName, Output: terminalOut})
 	if encErr != nil {
 		return out, fmt.Errorf("plan: run %q: encode completion: %w", c.flowName, encErr)
 	}
@@ -541,7 +541,7 @@ func runNode(ctx context.Context, store agent.Durable, runID string, model agent
 		if runErr != nil {
 			return nil, runErr
 		}
-		encoded, encErr := json.Marshal(result)
+		encoded, encErr := journalhook.Marshal(result)
 		if encErr != nil {
 			return nil, fmt.Errorf("plan: step %q encode result: %w", node.name, encErr)
 		}
@@ -639,7 +639,7 @@ func (f *Flow[In, Out]) chooseArmKeyed(ctx context.Context, store agent.Durable,
 				}
 			}
 		}
-		encoded, encErr := json.Marshal(target)
+		encoded, encErr := journalhook.Marshal(target)
 		if encErr != nil {
 			return agent.Record{}, fmt.Errorf("plan: switch over %q encode choice: %w", br.over, encErr)
 		}

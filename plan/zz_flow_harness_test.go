@@ -20,6 +20,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/plan"
@@ -418,13 +419,45 @@ func fRun(sub fSubject, sameProc [2]bool, ex *fExplorer, leased bool) (viol []fV
 			add("I7-unexpected-halt-key", "halt on %s", halt.Op.ID)
 			break
 		}
-		var ropts []agent.ResolveOption
 		if !leased {
-			ropts = append(ropts, agent.WithoutLiveDriverCheck())
-		}
-		if rerr := agent.ResolveHaltRef(context.Background(), h.mem, halt.Ref(), agent.Outcome{Result: val}, ropts...); rerr != nil {
-			add("I7-resolve-failed", "ResolveHaltRef(%s): %v", halt.Op.ID, rerr)
-			break
+			if rerr := agent.ResolveHaltRef(context.Background(), h.mem, halt.Ref(), agent.Outcome{Result: val}, agent.WithoutLiveDriverCheck()); rerr != nil {
+				add("I7-resolve-failed", "ResolveHaltRef(%s): %v", halt.Op.ID, rerr)
+				break
+			}
+		} else {
+			// Leased: resolve through the flow (Flow.ResolveHalt, with the live-driver check), first
+			// while a driver holds the run's lease, which must refuse with *HaltInFlight and record
+			// nothing, then once that driver has released it.
+			flow, err := sub.build(&fProc{h: h}, 99)
+			if err != nil {
+				add("I7-build", "%v", err)
+				break
+			}
+			l, ok := agent.Capability[agent.Leaser](h.mem)
+			if !ok {
+				add("I7-no-leaser", "MemStore has no Leaser")
+				break
+			}
+			ctx := context.Background()
+			if won, err := l.AcquireLease(ctx, halt.RootRunID, "live-driver", time.Minute); err != nil || !won {
+				add("I7-lease", "a live driver could not lease %s: %v %v", halt.RootRunID, won, err)
+				break
+			}
+			rerr := flow.ResolveHalt(ctx, h.mem, halt.Ref(), agent.Outcome{Result: val})
+			if _, inFlight := errors.AsType[*agent.HaltInFlight](rerr); !inFlight {
+				add("I9-resolved-under-a-live-driver", "Flow.ResolveHalt(%s) while a driver holds the lease: %v", halt.Op.ID, rerr)
+			}
+			if _, recorded, _ := h.mem.Get(ctx, runID, halt.Op.ID); recorded {
+				add("I9-resolved-under-a-live-driver", "Flow.ResolveHalt(%s) recorded an outcome while a driver holds the lease", halt.Op.ID)
+			}
+			if err := l.ReleaseLease(ctx, halt.RootRunID, "live-driver"); err != nil {
+				add("I7-lease", "release: %v", err)
+				break
+			}
+			if rerr := flow.ResolveHalt(ctx, h.mem, halt.Ref(), agent.Outcome{Result: val}); rerr != nil {
+				add("I7-resolve-failed", "Flow.ResolveHalt(%s): %v", halt.Op.ID, rerr)
+				break
+			}
 		}
 		resolved++
 		fResolvedTotal++
@@ -483,9 +516,11 @@ func fRun(sub fSubject, sameProc [2]bool, ex *fExplorer, leased bool) (viol []fV
 // plans for every subject, and BIDE_SUBJECT=<name> restricts it to one subject.
 func TestZZExploreFlowLowering(t *testing.T) { exploreFlowLowering(t, false) }
 
-// TestZZExploreFlowLoweringLeased is TestZZExploreFlowLowering with each halt resolved under the
-// live-driver check (no WithoutLiveDriverCheck): the resolution takes the run's lease on the
-// MemStore and claims the attempt after the live one, so it exercises the resolver's claim.
+// TestZZExploreFlowLoweringLeased is TestZZExploreFlowLowering with each halt resolved through
+// Flow.ResolveHalt under the live-driver check (no WithoutLiveDriverCheck): first while another
+// driver holds the run's lease, which must refuse with *HaltInFlight and record nothing, then once
+// it is released, when the resolution takes the run's lease on the MemStore and claims the attempt
+// after the live one, so it exercises the resolver's claim and Flow.ResolveHalt's checks.
 func TestZZExploreFlowLoweringLeased(t *testing.T) { exploreFlowLowering(t, true) }
 
 func exploreFlowLowering(t *testing.T, leased bool) {

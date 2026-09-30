@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -408,7 +409,8 @@ func TestFlowResolveHalt_RefusesARunOfAnotherFlow(t *testing.T) {
 // is a divergence, and so is one with no reached terminal recorded.
 func TestConform_CompletionIsTheTerminalOutput(t *testing.T) {
 	ctx := context.Background()
-	// A completion recorded while the run halted on its first node: no terminal is recorded.
+	// A completion recorded while the run halted on its first node: the reached nodes, the terminal
+	// among them, are not recorded.
 	{
 		mem := agent.NewMemStore()
 		var fired int
@@ -422,8 +424,9 @@ func TestConform_CompletionIsTheTerminalOutput(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		if ok, diffs, _ := flow.Conform(ctx, mem, "r"); ok || len(diffs) != 1 || diffs[0] != "run:complete (no terminal node the run reached is recorded)" {
-			t.Fatalf("Conform = %v, %q; want the missing terminal reported", ok, diffs)
+		want := []string{"node:charge (missing: the run completed without it)", "node:done (missing: the run completed without it)"}
+		if ok, diffs, _ := flow.Conform(ctx, mem, "r"); ok || !slices.Equal(diffs, want) {
+			t.Fatalf("Conform = %v, %q; want the reached nodes reported missing: %q", ok, diffs, want)
 		}
 	}
 	for _, tc := range []struct {
@@ -478,5 +481,146 @@ func TestRunStart_ExactIntegerInputs(t *testing.T) {
 	}
 	if _, err := flow.Run(ctx, mem, "r", top-1); !errors.Is(err, agent.ErrConfig) {
 		t.Fatalf("the input %d of a run started with %d: %v, want ErrConfig", top-1, top, err)
+	}
+}
+
+// A completed loop run records every iteration it ran: a missing iteration's node or choice is a
+// divergence.
+func TestConform_CompletionRequiresEveryIteration(t *testing.T) {
+	ctx := context.Background()
+	flow, err := buildCountdownLoop(10, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := agent.NewMemStore()
+	if _, err := flow.Run(ctx, src, "r", 3); err != nil {
+		t.Fatal(err)
+	}
+	recs, err := src.History(ctx, "r")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, drop := range []string{"node:iter:1:refine", "switch:iter:0:check", "node:seed", "node:done"} {
+		forged := agent.NewMemStore()
+		for _, r := range recs {
+			if r.Name == drop || r.Kind == agent.StepHeader {
+				continue
+			}
+			if _, err := forged.Do(ctx, "r", r.Name, func(context.Context) (agent.Record, error) { return r, nil }); err != nil {
+				t.Fatal(err)
+			}
+		}
+		ok, diffs, err := flow.Conform(ctx, forged, "r")
+		if err != nil || ok || !slices.Contains(diffs, drop+" (missing: the run completed without it)") {
+			t.Fatalf("a completed run without %s: Conform = %v, %q, %v", drop, ok, diffs, err)
+		}
+	}
+}
+
+// A flow input with no canonical JSON is refused before anything is recorded.
+func TestRun_InputWithARepeatedKeyIsRefused(t *testing.T) {
+	ctx := context.Background()
+	b := New[json.RawMessage, int]("raw")
+	b.Step("n", func(_ context.Context, in json.RawMessage) (int, error) { return len(in), nil }, ReadOnly())
+	flow, err := b.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	mem := agent.NewMemStore()
+	if _, err := flow.Run(ctx, mem, "r", json.RawMessage(`{"a":1,"a":2}`)); !errors.Is(err, agent.ErrConfig) {
+		t.Fatalf("Run with a repeated key: %v, want ErrConfig", err)
+	}
+	if recs, _ := mem.History(ctx, "r"); len(recs) != 0 {
+		t.Fatalf("the refused drive recorded %d records", len(recs))
+	}
+}
+
+// A completed run records every choice its routing reached, and its completion is the last reached
+// terminal's output, written as the journal writes values (no HTML escapes).
+func TestConform_CompletionChoicesAndTerminals(t *testing.T) {
+	ctx := context.Background()
+	var count int
+	sw, err := buildCounterFlow(&count)
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := agent.NewMemStore()
+	if _, err := sw.Run(ctx, src, "r", 0); err != nil {
+		t.Fatal(err)
+	}
+	recs, _ := src.History(ctx, "r")
+	forged := agent.NewMemStore()
+	for _, r := range recs {
+		if r.Name == "switch:entry" || r.Kind == agent.StepHeader {
+			continue
+		}
+		if _, err := forged.Do(ctx, "r", r.Name, func(context.Context) (agent.Record, error) { return r, nil }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if ok, diffs, _ := sw.Conform(ctx, forged, "r"); ok || !slices.Contains(diffs, "switch:entry (missing: the run completed without it)") {
+		t.Fatalf("a completed run without its choice: Conform = %v, %q", ok, diffs)
+	}
+
+	// A fan-out to two terminals: the run completes with the later one's output, and conforms.
+	b := New[int, string]("fan")
+	a := b.Step("a", func(_ context.Context, n int) (int, error) { return n, nil }, ReadOnly())
+	x := b.Step("x", func(_ context.Context, n int) (string, error) { return "x<", nil }, ReadOnly())
+	y := b.Step("y", func(_ context.Context, n int) (string, error) { return "y&", nil }, ReadOnly())
+	b.Edge(a, x)
+	b.Edge(a, y)
+	fan, err := b.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	mem := agent.NewMemStore()
+	out, err := fan.Run(ctx, mem, "r", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, diffs, err := fan.Conform(ctx, mem, "r"); err != nil || !ok {
+		t.Fatalf("Conform of a fan-out run = %v, %q, %v", ok, diffs, err)
+	}
+	recs, _ = mem.History(ctx, "r")
+	for _, r := range recs {
+		if r.Name == "run:complete" && string(r.Result) != `{"flow":"fan","output":"`+out+`"}` {
+			t.Fatalf("the completion is recorded as %s, want the output %q unescaped", r.Result, out)
+		}
+	}
+}
+
+// Conform compares a completion with the terminal's output as JSON values: a terminal output some
+// writer recorded with HTML escapes is the completion's unescaped output.
+func TestConform_CompletionComparedAsJSONValues(t *testing.T) {
+	ctx := context.Background()
+	b := New[int, string]("html")
+	b.Step("t", func(_ context.Context, n int) (string, error) { return "a<b", nil }, ReadOnly())
+	flow, err := b.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := agent.NewMemStore()
+	if _, err := flow.Run(ctx, src, "r", 1); err != nil {
+		t.Fatal(err)
+	}
+	esc := string([]byte{'\\', 'u', '0', '0', '3', 'c'})
+	recs, _ := src.History(ctx, "r")
+	forged := agent.NewMemStore()
+	for _, r := range recs {
+		if r.Kind == agent.StepHeader {
+			continue
+		}
+		if r.Name == "node:t" {
+			r.Result = json.RawMessage(`"a` + esc + `b"`)
+		}
+		if _, err := forged.Do(ctx, "r", r.Name, func(context.Context) (agent.Record, error) { return r, nil }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got, _ := forged.History(ctx, "r"); !strings.Contains(string(got[len(got)-2].Result)+string(got[len(got)-1].Result), esc) {
+		t.Fatal("the fixture did not keep the escape")
+	}
+	if ok, diffs, err := flow.Conform(ctx, forged, "r"); err != nil || !ok {
+		t.Fatalf("Conform = %v, %q, %v; want the escaped and unescaped outputs to be one value", ok, diffs, err)
 	}
 }
