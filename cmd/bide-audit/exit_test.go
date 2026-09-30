@@ -627,3 +627,13 @@ func TestVersionStamp(t *testing.T) {
 		}
 	}
 }
+
+// A weak approver key is refused when the key file is read, naming the approver and the reason,
+// before the policy's key check would refuse it for reporting no key identity.
+func TestVerifyApprovals_WeakApproverKeyNamed(t *testing.T) {
+	f := newExitFixture(t)
+	code, stdout, stderr := runCLI("verify-approvals", "-evidence", f.evidence, "-pubkey", f.pub, "-call", "c1", "-need", "1", "-approvers", "a", "-approver-keys", f.weakKeys)
+	if out := stdout + stderr; code != 4 || !strings.Contains(out, `approver "a" key: audit: weak ed25519 public key`) {
+		t.Fatalf("exit %d, want 4 naming approver a's weak key\n%s", code, out)
+	}
+}
