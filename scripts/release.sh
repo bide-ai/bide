@@ -18,7 +18,8 @@
 #      go.mod that requires them at vX.Y.Z with their replace directives dropped, and a go.sum
 #      resolved through the proxy (`go mod tidy`). The module is built, vetted and tested with
 #      GOWORK=off against those published versions, one signed-off commit records the stage, each
-#      module is tagged <dir>/vX.Y.Z at it, the tags are pushed, and the script waits for the proxy.
+#      module is tagged <dir>/vX.Y.Z at it, the tags are pushed at most three per push (GitHub
+#      runs no workflow for the tags of a larger push), and the script waits for the proxy.
 #      The first stage holds the modules that need only the root; the governed-event logs, which
 #      also need govern, come in the second.
 #   3. Every published module is resolved with `go list -m <module>@vX.Y.Z`, and a scratch consumer
@@ -151,27 +152,39 @@ changelog_has() {
 # awk reads all of its input and compares the ref literally.
 remote_has_tag() { awk -v t="$2" '$2 == t {found = 1} END {exit !found}' <<<"$1"; }
 
-# push_tags tag...: push the tags from $CLONE to $TARGET.
+# GitHub creates no push event, and so runs no workflow (Release modules, Release), for the tags
+# of a push that carries more than three tags.
+MAX_TAGS_PER_PUSH=3
+
+# push_tags tag...: push the tags from $CLONE to $TARGET, at most MAX_TAGS_PER_PUSH per push, so
+# each tag runs its workflows. A failed push stops the release; re-running it reuses the tags that
+# reached the remote.
 push_tags() {
-  local refs="" t
-  for t in "$@"; do refs="$refs refs/tags/$t"; done
-  # shellcheck disable=SC2086
-  git -C "$CLONE" push --quiet "$TARGET" $refs
-  if $PUSH; then note "pushed $*"; else note "pushed to the scratch origin: $*"; fi
+  local batch=()
+  while [ $# -gt 0 ]; do
+    batch+=("$1"); shift
+    if [ ${#batch[@]} -eq "$MAX_TAGS_PER_PUSH" ] || [ $# -eq 0 ]; then
+      git -C "$CLONE" push --quiet "$TARGET" "${batch[@]/#/refs/tags/}" || die "pushing ${batch[*]} failed; re-run to resume"
+      if $PUSH; then note "pushed ${batch[*]}"; else note "pushed to the scratch origin: ${batch[*]}"; fi
+      batch=()
+    fi
+  done
 }
 
-# self_test_push: push_tags pushes nine tags (more than a release stage holds) to a target that
-# refuses any push of more than three tags, and every tag arrives.
+# self_test_push: push_tags pushes ten tags (more than a release stage holds, and not a multiple of
+# three) to a target that refuses any push of more than three tags, and every tag arrives.
 self_test_push() {
-  local tmp ok=true t want="" got
+  local tmp ok=true t want="" got g
   tmp=$(mktemp -d)
+  g=(-c user.name=t -c user.email=t@example.com -c commit.gpgsign=false -c tag.gpgsign=false)
   git init --quiet "$tmp/src"
-  git -C "$tmp/src" -c user.name=t -c user.email=t@example.com commit --quiet --allow-empty -m init
-  for t in a b c d e f g h i; do
-    git -C "$tmp/src" -c user.name=t -c user.email=t@example.com tag -a "$t/v0.8.0" -m "$t"
+  git -C "$tmp/src" "${g[@]}" commit --quiet --allow-empty -m init
+  for t in a b c d e f g h i j; do
+    git -C "$tmp/src" "${g[@]}" tag -a "$t/v0.8.0" -m "$t"
     want="$want $t/v0.8.0"
   done
   git init --quiet --bare "$tmp/target.git"
+  git -C "$tmp/target.git" config core.hooksPath hooks
   cat >"$tmp/target.git/hooks/pre-receive" <<HOOK
 #!/usr/bin/env bash
 n=\$(grep -c 'refs/tags/' || true)
@@ -181,7 +194,7 @@ HOOK
   chmod +x "$tmp/target.git/hooks/pre-receive"
   # shellcheck disable=SC2086
   (CLONE=$tmp/src TARGET=$tmp/target.git PUSH=false; push_tags $want >/dev/null 2>"$tmp/push.err") ||
-    { echo "self-test: pushing nine tags failed:"; sed 's/^/    /' "$tmp/push.err"; ok=false; }
+    { echo "self-test: pushing ten tags failed:"; sed 's/^/    /' "$tmp/push.err"; ok=false; }
   if [ -f "$tmp/pushes.log" ] && awk '$1 > 3 {bad = 1} END {exit bad}' "$tmp/pushes.log"; then :; else
     echo "self-test: a push carried more than three tags: $(tr '\n' ' ' <"$tmp/pushes.log" 2>/dev/null)"; ok=false
   fi
