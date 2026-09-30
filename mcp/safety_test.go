@@ -26,11 +26,11 @@ func transferServer(t *testing.T, annotations map[string]any) (*rawServer, *atom
 	}}, &n
 }
 
-// An MCP tool gated by WithSafety pauses for approval before the server sees the call, and
+// An MCP tool gated by WithApproval pauses for approval before the server sees the call, and
 // resumes past the approval like a local tool, making the call exactly once.
-func TestWithSafety_ApprovalPausesAndResumes(t *testing.T) {
+func TestWithApproval_PausesAndResumes(t *testing.T) {
 	srv, calls := transferServer(t, nil)
-	tools, err := Tools(context.Background(), connectRaw(t, srv), WithSafety("transfer", agent.Safety{RequiresApproval: true}))
+	tools, err := Tools(context.Background(), connectRaw(t, srv), WithApproval("transfer", agent.SingleApproval()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,10 +69,10 @@ func (v testVerifier) Verify(message, sig []byte) bool {
 func (v testVerifier) KeyIDs() []string { return []string{"test:" + string(v)} }
 
 // An m-of-n gate on an MCP tool holds the call until k of the named approvers approve.
-func TestWithSafety_QuorumApproval(t *testing.T) {
+func TestWithApproval_Quorum(t *testing.T) {
 	srv, calls := transferServer(t, nil)
 	pol := &agent.ApprovalPolicy{Need: 2, Approvers: []string{"alice", "bob", "carol"}}
-	tools, err := Tools(context.Background(), connectRaw(t, srv), WithSafety("transfer", agent.Safety{Approval: pol}))
+	tools, err := Tools(context.Background(), connectRaw(t, srv), WithApproval("transfer", pol))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,16 +123,15 @@ func TestWithSafety_OverridesAnnotations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s := tools[0].Safety(); s.ReadOnly || s.Idempotent || s.RequiresApproval {
+	if s := tools[0].Safety(); s != (agent.Safety{}) {
 		t.Fatalf("Safety() = %+v, want the zero Safety set by WithSafety", s)
 	}
-	key := func(json.RawMessage) string { return "k" }
 	srv, _ = transferServer(t, nil)
-	tools, err = Tools(context.Background(), connectRaw(t, srv), WithSafety("transfer", agent.Safety{Idempotent: true, IdempotencyKey: key}))
+	tools, err = Tools(context.Background(), connectRaw(t, srv), WithSafety("transfer", agent.Safety{Idempotent: true}))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s := tools[0].Safety(); !s.Idempotent || s.IdempotencyKey == nil {
+	if s := agent.SpecOf(tools[0]).Safety; s != (agent.Safety{Idempotent: true}) {
 		t.Fatalf("Safety() = %+v, want the Safety set by WithSafety", s)
 	}
 }
@@ -141,7 +140,7 @@ func TestWithSafety_OverridesAnnotations(t *testing.T) {
 // ungated (a typo in an approval gate), so Tools refuses it.
 func TestWithSafety_UnknownToolIsAConfigError(t *testing.T) {
 	srv, _ := transferServer(t, nil)
-	_, err := Tools(context.Background(), connectRaw(t, srv), WithSafety("tranfser", agent.Safety{RequiresApproval: true}))
+	_, err := Tools(context.Background(), connectRaw(t, srv), WithSafety("tranfser", agent.Safety{ReadOnly: true}))
 	if !errors.Is(err, agent.ErrConfig) {
 		t.Fatalf("err = %v, want ErrConfig naming the unlisted tool", err)
 	}

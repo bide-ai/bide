@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/bide-ai/bide/agent"
 )
 
 // echoArgs is the input schema of the in-memory server's one tool.
@@ -60,7 +62,7 @@ func TestTools(t *testing.T) {
 	if tool.Name() != "echo" {
 		t.Errorf("Name() = %q, want %q", tool.Name(), "echo")
 	}
-	if s := tool.Safety(); !s.ReadOnly || s.Idempotent || s.RequiresApproval {
+	if s := tool.Safety(); s != (agent.Safety{ReadOnly: true}) {
 		t.Errorf("Safety() = %+v, want {ReadOnly:true}", s)
 	}
 	if len(tool.ArgsSchema()) == 0 {
