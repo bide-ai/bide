@@ -42,6 +42,7 @@ minor version (0.x.0) may include breaking API or journal-format changes; each o
 - `agent.RunStart` and `agent.RecordedStart`: a run's input and entry point are journaled at its first drive and can be read back, for example by a `Recover` callback ([#70]).
 - `agent.Record.ReadOnly` (`read_only`): a tool result records whether its call ran ReadOnly ([#70]).
 - The library modules (`govern`, `store/sqlite`, `store/postgres`, `mcp`, `trace`, `codec/gcf`, `govern/sqlitelog`, `govern/redislog`, `govern/postgreslog`) are tagged `<dir>/vX.Y.Z` with each release by `scripts/release.sh`, so they install with `go get` ([#85]).
+- CI checks that every Go block in the README and `docs/` compiles against the current code, and that API listings match the packages, with `internal/tools/docsnip` ([#88]).
 
 ### Changed
 
@@ -423,6 +424,7 @@ First public release.
 [#85]: https://github.com/bide-ai/bide/pull/85
 [#86]: https://github.com/bide-ai/bide/pull/86
 [#87]: https://github.com/bide-ai/bide/pull/87
+[#88]: https://github.com/bide-ai/bide/pull/88
 [78f8db6]: https://github.com/bide-ai/bide/commit/78f8db6
 [994721b]: https://github.com/bide-ai/bide/commit/994721b
 [3262cd1]: https://github.com/bide-ai/bide/commit/3262cd1
