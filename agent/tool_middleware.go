@@ -30,6 +30,8 @@ type ToolCall struct {
 	origName, origID string
 	// state is whether the call reached its tool (see callOpen), changed by compare-and-swap only.
 	state *atomic.Int32
+	// began is whether any invocation began the tool's Call (see beganNone), by compare-and-swap.
+	began *atomic.Int32
 }
 
 // ErrorText returns the text the agent journals, and sends to the model, for this call failing

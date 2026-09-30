@@ -483,6 +483,10 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 			// is held like a pause, so it does not cut off siblings in flight, and it is returned
 			// ahead of any pause once they have finished: the run failed, it is not waiting.
 			wakeErr error
+			// unrecErr is the first call's unrecorded refusal (toolhook.Unrecorded). It is held like
+			// a pause, so it does not cut off siblings in flight, whose side effects would then have
+			// unknown outcomes on the re-drive the refusal asks for; it is returned once they finish.
+			unrecErr error
 			// carried[i] is the usage the record of uses[i] carries: that of the runs it started.
 			// The runs counted their spend in the tree as it happened, so it goes into tot only.
 			carried = make([]usageTotals, len(uses))
@@ -495,6 +499,15 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 		for _, c := range toRun {
 			g.Go(func() (err error) {
 				defer func() {
+					if _, u := errors.AsType[*toolhook.Unrecorded](err); err != nil && u {
+						pauseMu.Lock()
+						if unrecErr == nil {
+							unrecErr = err
+						}
+						pauseMu.Unlock()
+						err = nil
+						return
+					}
 					// A failed wake schedule records nothing and fails the run, but it is no reason
 					// to cancel a sibling mid-effect, which would leave its outcome unknown.
 					if we := (*wakeError)(nil); err != nil && errors.As(err, &we) {
@@ -744,6 +757,14 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 		}
 		if wakeErr != nil {
 			return leave(wakeErr)
+		}
+		if unrecErr != nil {
+			// A sibling's pause or halt is reported beside the refusal, never hidden by it: the
+			// caller has both to act on before the re-drive.
+			if pauseErr != nil {
+				return leave(errors.Join(unrecErr, pauseErr))
+			}
+			return leave(unrecErr)
 		}
 		if pauseErr != nil {
 			return leave(pauseErr)

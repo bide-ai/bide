@@ -229,6 +229,25 @@ func enterTool(st *atomic.Int32) bool {
 	}
 }
 
+// A call's began word records whether any invocation of the base handler began the tool's Call:
+// beganNone, then either beganYes (set by the base handler, by compare-and-swap, immediately before
+// it calls the tool) or beganSealed (set by the loop when the chain returns, by compare-and-swap,
+// if no invocation had begun). Both are terminal. So a reached call whose began word the loop seals
+// never called its tool, and never will: an invocation that reaches the tool's Call afterwards finds
+// the word sealed and refuses. This covers a reached call whose handler returned before the tool (a
+// saga-arguments write the saga's cancellation cut off).
+const (
+	beganNone int32 = iota
+	beganYes
+	beganSealed
+)
+
+// beginCall moves b to beganYes, or reports false if the loop has sealed it. A call already begun
+// (a retry-safe tool a middleware calls again) stays begun.
+func beginCall(b *atomic.Int32) bool {
+	return b.CompareAndSwap(beganNone, beganYes) || b.Load() == beganYes
+}
+
 // closeCall moves st to its closed state when the chain returns (open to closed, refused to
 // refusedClosed; reached stays) and returns the final state.
 func closeCall(st *atomic.Int32) int32 {
@@ -292,9 +311,13 @@ func (a *Agent) toolHandler(runID string) func(context.Context, ToolUse) (json.R
 				return nil, fmt.Errorf("tool %q (call %s) already ran and is not retry-safe: %w", tu.Name, tu.ID, ErrToolReinvoked)
 			}
 		}
-		// A failure here leaves the call reached, so a side effect halts: the safe reading.
+		// A failure here returns before the tool's Call began: the loop seals the call's began word
+		// and counts the call as not called (see beganNone).
 		if err := journalAcceptedArgs(ctx, t, call); err != nil {
 			return nil, err
+		}
+		if call.began != nil && !beginCall(call.began) {
+			return nil, fmt.Errorf("tool %q (call %s) was not started: the tool middleware chain had already returned: %w", tu.Name, tu.ID, ErrToolNotCalled)
 		}
 		return t.Call(ctx, tu.Args)
 	})
@@ -303,10 +326,15 @@ func (a *Agent) toolHandler(runID string) func(context.Context, ToolUse) (json.R
 	}
 	return func(ctx context.Context, tu ToolUse) (json.RawMessage, int32, error) {
 		call := a.toolCallFor(runID, tu)
-		var st atomic.Int32 // callOpen
-		call.state = &st
+		var st, began atomic.Int32 // callOpen, beganNone
+		call.state, call.began = &st, &began
 		res, err := h(ctx, call)
-		return res, closeCall(&st), err
+		state := closeCall(&st)
+		if state == callReached && began.CompareAndSwap(beganNone, beganSealed) {
+			// Reached, but no invocation began the tool's Call, and now none can: not called.
+			state = callRefusedClosed
+		}
+		return res, state, err
 	}
 }
 

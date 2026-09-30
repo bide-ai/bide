@@ -128,14 +128,20 @@ func (t *subAgentTool) Call(ctx context.Context, args json.RawMessage) (json.Raw
 }
 
 // checkWrapper refuses a tool that wraps another (it has an Unwrap() Tool method) in a way the
-// agent cannot honor. A wrapper that is also a Compensator would never be asked to compensate: a
-// rollback that finds a sub-agent through it recurses into the sub-run, and one that does not
-// takes it for the tool it wraps. A wrapper over a sub-agent with a Timeout would cut the sub-run
-// off mid-call, which SubAgent itself refuses (see SubAgent). Both are ErrConfig.
+// agent cannot honor, with ErrConfig. A wrapper over a sub-agent may not give it a Timeout (it
+// would cut the sub-run off mid-call) or another Safety (the sub-run's own calls carry theirs),
+// which SubAgent itself refuses. No wrapper on the Unwrap chain may be a Compensator: it would
+// never be asked to compensate, since a rollback that finds a sub-agent through it recurses into
+// the sub-run, and one that does not takes it for the tool it wraps.
 func checkWrapper(t Tool, s ToolSpec) error {
-	if _, sub := asSubAgent(t); sub && s.Timeout > 0 {
+	if sub, ok := asSubAgent(t); ok {
 		if _, wraps := t.(interface{ Unwrap() Tool }); wraps {
-			return fmt.Errorf("agent: tool %q wraps a sub-agent and has a Timeout, which a sub-agent refuses (see SubAgent): %w", s.Name, ErrConfig)
+			switch {
+			case s.Timeout > 0:
+				return fmt.Errorf("agent: tool %q wraps a sub-agent and has a Timeout, which a sub-agent refuses (see SubAgent): %w", s.Name, ErrConfig)
+			case s.Safety != sub.spec.Safety:
+				return fmt.Errorf("agent: tool %q wraps a sub-agent and declares Safety %+v, which a sub-agent refuses (its sub-run's calls carry their own; see SubAgent): %w", s.Name, s.Safety, ErrConfig)
+			}
 		}
 	}
 	// Every wrapper on the Unwrap chain, not only the outermost, is held to the contract.
