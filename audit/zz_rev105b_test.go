@@ -171,11 +171,12 @@ func Test_R105b_StartedRetrySafeCallIsNotProvablyAbsent(t *testing.T) {
 }
 
 // H1/H2 follow-up. The producers now refuse a redacted journal, and the reply to the finding rests
-// on the auditor: "a dishonest key holder can sign any key set anyway (the absence trust model is
-// that an auditor holding the journal recomputes it)". The audit guide's auditor recomputes with
-// audit.PoliciesUsed (and AbsenceRoot for a key-set head). Over the redacted journal both silently
-// omit the governed action the journal tree still commits, so a head or certificate a key holder
-// signs by hand over the omitted set passes the auditor's recomputation.
+// on the auditor: a key holder acting in bad faith can sign any key set anyway, and the absence
+// trust model is that an auditor holding the journal recomputes it. The audit guide's auditor
+// recomputes with audit.PoliciesUsed (and AbsenceRoot for a key-set head). Over the redacted
+// journal both silently omitted the governed action the journal tree still commits, so a head or
+// certificate a key holder signed by hand over the omitted set passed the auditor's recomputation.
+// Both now report the redaction (ErrRedacted).
 func Test_R105b_AuditorRecomputeOverRedactedJournalOmitsAPolicy(t *testing.T) {
 	ctx := context.Background()
 	s, _ := p11GovernedRun(t)
