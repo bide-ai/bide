@@ -104,12 +104,13 @@ jobs:
       - name: Build & test (all modules)
         if: needs.changes.outputs.code != 'false'
         shell: bash
-        # The race detector needs a C toolchain (absent on the Windows runner), so run
-        # it on Linux/macOS and a plain test on Windows. Postgres/Redis integration tests
-        # self-skip unless PG_DSN / REDIS_ADDR are set, so no service containers here.
+        # The race detector runs on Linux, where it finds the same races it would on macOS;
+        # macOS and Windows run the plain suite, which also runs the scale tests at full size
+        # (they run smaller under -race). Postgres/Redis integration tests self-skip unless
+        # PG_DSN / REDIS_ADDR are set, so no service containers here.
         run: |
-          race="-race"
-          [ "${{ runner.os }}" = "Windows" ] && race=""
+          race=""
+          [ "${{ runner.os }}" = "Linux" ] && race="-race"
           for m in $MODULES; do
             echo "== $m =="
             ( cd "$m" && go build ./... && go test $race -count=1 ./... )
