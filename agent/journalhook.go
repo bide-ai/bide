@@ -45,6 +45,8 @@ func init() {
 		return step(ctx, d, runID, name, body, StepSafety(s))
 	}
 	journalhook.CheckRunID = checkRunID
+	journalhook.Marshal = marshalJournal
+	journalhook.SameJSON = sameJSON
 	journalhook.Begin = func(ctx context.Context, j any, runID string, start any) (json.RawMessage, bool, error) {
 		d, ok := j.(Durable)
 		if !ok {

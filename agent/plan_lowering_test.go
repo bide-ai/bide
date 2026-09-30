@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/bide-ai/bide/internal/journalhook"
@@ -248,3 +249,67 @@ func TestEmptyStepNameIsRefused(t *testing.T) {
 		t.Fatalf("refused steps recorded %d records (err %v)", len(recs), err)
 	}
 }
+
+// A flow input with no canonical JSON (a repeated key, a lone surrogate, invalid UTF-8) could not be
+// told apart from another input, so a flow's run refuses it, on the first drive as on a later one,
+// and records nothing.
+func TestFlowInputWithoutCanonicalJSONIsRefused(t *testing.T) {
+	ctx := context.Background()
+	for _, in := range []string{`{"a":1,"a":2}`, `"\ud800"`, `"\udc00x"`, `["\ud800A"]`, "\"\xff\""} {
+		m := NewMemStore()
+		start := RunStart{Kind: RunKindFlow, Flow: &FlowRef{Name: "f"}, Input: in}
+		if _, _, err := journalhook.Begin(ctx, m, "r", start); !errors.Is(err, ErrConfig) {
+			t.Errorf("Begin with input %q: %v, want ErrConfig", in, err)
+		}
+		if recs, _ := m.History(ctx, "r"); len(recs) != 0 {
+			t.Errorf("Begin with input %q recorded %d records", in, len(recs))
+		}
+	}
+	// A valid surrogate pair is a character, and compares with the character itself.
+	m := NewMemStore()
+	if _, _, err := journalhook.Begin(ctx, m, "r", RunStart{Kind: RunKindFlow, Flow: &FlowRef{Name: "f"}, Input: `"😀"`}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := journalhook.Begin(ctx, m, "r", RunStart{Kind: RunKindFlow, Flow: &FlowRef{Name: "f"}, Input: "\"\U0001F600\""}); err != nil {
+		t.Fatalf("the same character, unescaped: %v", err)
+	}
+}
+
+// Values are compared under one rule: a Step's value is journaled without HTML escapes, and a
+// resolution of an outcome another writer recorded with them is the same outcome.
+func TestOneJSONRule_Escaping(t *testing.T) {
+	ctx := context.Background()
+	m := NewMemStore()
+	if _, err := Step(ctx, m, "r", "s", func(context.Context) (string, error) { return "a<b & c>d", nil }, StepSafety(Safety{ReadOnly: true})); err != nil {
+		t.Fatal(err)
+	}
+	rec, ok, err := m.Journal().Get(ctx, "r", "s")
+	if err != nil || !ok || string(rec.Result) != `"a<b & c>d"` {
+		t.Fatalf("the Step's value is journaled as %s (%v, %v), want it unescaped", rec.Result, ok, err)
+	}
+	// A driver recorded the outcome escaped; the resolution of the same outcome is not a conflict.
+	for _, w := range []struct {
+		name string
+		rec  Record
+	}{
+		{stepAttemptStep("t"), Record{Kind: StepAttempt, ToolUseID: "t", AttemptedAt: 1}},
+		{"t", Record{Kind: StepValue, Result: json.RawMessage(`"a` + ltEscape + `b"`)}},
+	} {
+		if _, err := m.Do(ctx, "r", w.name, func(context.Context) (Record, error) { return w.rec, nil }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got, _, _ := m.Journal().Get(ctx, "r", "t"); !strings.Contains(string(got.Result), ltEscape) {
+		t.Fatalf("the escaped outcome is stored as %s, want the escape kept", got.Result)
+	}
+	ref := HaltRef{RunID: "r", Op: OpRef{Kind: OpStep, ID: "t"}, Cause: HaltCrashed}
+	if err := ResolveHaltRef(ctx, m, ref, Outcome{Result: "a<b"}); err != nil {
+		t.Fatalf("resolving the recorded outcome again: %v, want nil", err)
+	}
+	if err := ResolveHaltRef(ctx, m, ref, Outcome{Result: "a>b"}); !errors.Is(err, ErrAlreadyResolved) {
+		t.Fatalf("resolving another outcome: %v, want ErrAlreadyResolved", err)
+	}
+}
+
+// ltEscape is the JSON escape json.Marshal writes for '<', built from its bytes.
+var ltEscape = string([]byte{'\\', 'u', '0', '0', '3', 'c'})

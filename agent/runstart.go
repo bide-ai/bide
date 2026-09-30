@@ -4,10 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
-	"slices"
-	"strconv"
-	"strings"
 )
 
 // runCompleteStep is the journal name of the terminal completion marker. The agent loop
@@ -108,6 +104,13 @@ func RecordedStart(ctx context.Context, d Durable, runID string) (RunStart, bool
 // beginRun is journalhook.Begin: the completion of a finished run, or else want held as the run's
 // start (see holdToStart).
 func beginRun(ctx context.Context, d Durable, runID string, want RunStart) (json.RawMessage, bool, error) {
+	if want.kind() == RunKindFlow {
+		// A flow's input is held by its canonical JSON (see equalJSON); one that has none (a
+		// repeated key, a lone surrogate) could not be told apart from another, so it is refused.
+		if _, err := canonicalJSON(want.Input); err != nil {
+			return nil, false, fmt.Errorf("run %s: the flow input: %w (%w)", runID, err, ErrConfig)
+		}
+	}
 	b, err := marshalJournal(want)
 	if err != nil {
 		return nil, false, fmt.Errorf("encode %s (run %s): %w (%w)", runStartStep, runID, err, ErrConfig)
@@ -191,8 +194,14 @@ func holdToStart(ctx context.Context, d Durable, runID string, recs []Record, wa
 		return fmt.Errorf("run %s was started as a saga; resume it with RunSaga (or StreamSaga): %w", runID, ErrConfig)
 	case !got.Saga && want.Saga:
 		return fmt.Errorf("run %s was not started as a saga; resume it with Run (or Stream): %w", runID, ErrConfig)
-	case got.kind() == RunKindFlow && !sameCanonicalJSON(got.Input, want.Input):
-		return fmt.Errorf("run %s was started with a different input (see RecordedStart); resume it with that input: %w", runID, ErrConfig)
+	case got.kind() == RunKindFlow:
+		same, err := equalJSON([]byte(got.Input), []byte(want.Input))
+		if err != nil {
+			return fmt.Errorf("run %s: compare its input with the recorded one: %w (%w)", runID, err, ErrConfig)
+		}
+		if !same {
+			return fmt.Errorf("run %s was started with a different input (see RecordedStart); resume it with that input: %w", runID, ErrConfig)
+		}
 	case got.kind() != RunKindFlow && got.Input != want.Input:
 		return fmt.Errorf("run %s was started with a different input (see RecordedStart); resume it with that input: %w", runID, ErrConfig)
 	}
@@ -205,120 +214,4 @@ func flowName(f *FlowRef) string {
 		return "(none recorded)"
 	}
 	return fmt.Sprintf("%q", f.Name)
-}
-
-// sameCanonicalJSON reports whether a and b are the same JSON value under canonicalJSON, so a flow
-// resumed with its recorded input decoded and encoded again (RecordedStart, then Run) is held to
-// the input it started with even where the round trip changes the text: object key order, and a
-// number's spelling or a precision float64 cannot hold. Text that is not JSON compares as text.
-func sameCanonicalJSON(a, b string) bool {
-	ca, errA := canonicalJSON(a)
-	cb, errB := canonicalJSON(b)
-	if errA != nil || errB != nil {
-		return a == b
-	}
-	return ca == cb
-}
-
-// canonicalJSON re-encodes the JSON text s canonically: objects with their keys sorted, no
-// insignificant whitespace, and every number as the exact decimal value it denotes (see
-// canonicalNumber), so 1, 1.0 and 1e0 are one value while 2^53 and 2^53+1 are two: no number is
-// rounded through a float.
-func canonicalJSON(s string) (string, error) {
-	dec := json.NewDecoder(strings.NewReader(s))
-	dec.UseNumber()
-	var v any
-	if err := dec.Decode(&v); err != nil {
-		return "", err
-	}
-	if _, err := dec.Token(); err != io.EOF {
-		return "", fmt.Errorf("canonical JSON: trailing data after the value")
-	}
-	var b strings.Builder
-	if err := writeCanonical(&b, v); err != nil {
-		return "", err
-	}
-	return b.String(), nil
-}
-
-// canonicalNumber writes the JSON number text t (valid JSON number grammar) as its exact decimal
-// value: "0" for zero, and otherwise an optional "-", the significant digits with no leading or
-// trailing zero, "e", and the exponent that makes them the value. Two number texts denote the
-// same decimal value if and only if their canonical forms are equal. A number whose exponent does
-// not fit an int64 keeps its text.
-func canonicalNumber(t string) string {
-	neg := strings.HasPrefix(t, "-")
-	mant, expText, hasExp := strings.Cut(strings.TrimPrefix(t, "-"), "e")
-	if !hasExp {
-		mant, expText, hasExp = strings.Cut(mant, "E")
-	}
-	var exp int64
-	if hasExp {
-		e, err := strconv.ParseInt(expText, 10, 64) // ParseInt takes a leading "+"
-		if err != nil || e > 1<<62 || e < -(1<<62) {
-			return t
-		}
-		exp = e
-	}
-	intPart, frac, _ := strings.Cut(mant, ".")
-	digits := intPart + frac
-	exp -= int64(len(frac))
-	digits = strings.TrimLeft(digits, "0")
-	if digits == "" {
-		return "0" // every zero, -0 and 0e5 among them
-	}
-	trimmed := strings.TrimRight(digits, "0")
-	exp += int64(len(digits) - len(trimmed))
-	sign := ""
-	if neg {
-		sign = "-"
-	}
-	return sign + trimmed + "e" + strconv.FormatInt(exp, 10)
-}
-
-func writeCanonical(b *strings.Builder, v any) error {
-	switch x := v.(type) {
-	case map[string]any:
-		keys := make([]string, 0, len(x))
-		for k := range x {
-			keys = append(keys, k)
-		}
-		slices.Sort(keys)
-		b.WriteByte('{')
-		for i, k := range keys {
-			if i > 0 {
-				b.WriteByte(',')
-			}
-			kb, err := json.Marshal(k)
-			if err != nil {
-				return err
-			}
-			b.Write(kb)
-			b.WriteByte(':')
-			if err := writeCanonical(b, x[k]); err != nil {
-				return err
-			}
-		}
-		b.WriteByte('}')
-	case []any:
-		b.WriteByte('[')
-		for i, e := range x {
-			if i > 0 {
-				b.WriteByte(',')
-			}
-			if err := writeCanonical(b, e); err != nil {
-				return err
-			}
-		}
-		b.WriteByte(']')
-	case json.Number:
-		b.WriteString(canonicalNumber(string(x)))
-	default:
-		eb, err := json.Marshal(x)
-		if err != nil {
-			return err
-		}
-		b.Write(eb)
-	}
-	return nil
 }

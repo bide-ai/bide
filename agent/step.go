@@ -124,7 +124,7 @@ func step[T any](ctx context.Context, d Durable, runID, name string, fn func(con
 			}
 			return Record{}, err
 		}
-		b, err := json.Marshal(v)
+		b, err := marshalJournal(v) // the journal's one encoding: no HTML escapes
 		if err != nil {
 			return Record{}, err
 		}

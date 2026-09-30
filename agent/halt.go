@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -299,15 +298,6 @@ func resolveHalt(ctx context.Context, store Durable, op string, ref HaltRef, out
 		return &HaltAlreadyResolved{RunID: ref.RunID, Op: ref.Op, Result: got.Result, IsError: got.IsError}
 	}
 	return nil
-}
-
-// sameJSON reports whether a and b are the same JSON text, ignoring insignificant whitespace.
-func sameJSON(a, b json.RawMessage) bool {
-	var ca, cb bytes.Buffer
-	if json.Compact(&ca, a) != nil || json.Compact(&cb, b) != nil {
-		return bytes.Equal(a, b)
-	}
-	return bytes.Equal(ca.Bytes(), cb.Bytes())
 }
 
 // resolveLeaseTTL is how long ResolveHaltRef holds the run's lease while it resolves: long enough

@@ -41,6 +41,15 @@ var CheckRunID func(ctx context.Context, runID string) error
 // the journal holds (another driver's, if it recorded one first).
 var Complete func(ctx context.Context, j any, runID string, result json.RawMessage) (json.RawMessage, error)
 
+// Marshal encodes v as the journal encodes values: JSON with no HTML escapes (agent's
+// marshalJournal). Package plan encodes every value it records with it.
+var Marshal func(v any) ([]byte, error)
+
+// SameJSON reports whether a and b are the same JSON value under the engine's one comparison rule
+// (agent's canonical JSON: blind to whitespace, key order, number spelling and string escaping); a
+// text that rule refuses (a repeated key, a lone surrogate, invalid UTF-8) equals only itself.
+var SameJSON func(a, b []byte) bool
+
 // WithSalt returns rec, an agent.Record, with its salt replaced by salt: a record no journal
 // writes, for tests of code that must refuse one.
 var WithSalt func(rec any, salt []byte) any
