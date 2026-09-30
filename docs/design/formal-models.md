@@ -76,7 +76,7 @@ the design exhaustively, for three reasons:
 | 5 | **Saga rollback:** parallel siblings, sub-agents, calls that never started, compensation by recorded safety, `Cancel` on a saga. | Deferred. | P12 (rollback by recorded safety, `compensate.go`) and P14 (`Cancel` on a saga) are merged. |
 | 1b | **Approval and halt resolution,** an extension of model 1: 1-of-1 `Approve` and m-of-n signed decisions with their recorded tally (approver sets, duplicate approvers or keys, a decision arriving while a resume runs), a denial that stays final when the gate later changes, approval bound to the exact call, contended and crashed halts, and resolution while a driver may be live in all three live-driver modes. Invariants: no action runs without a recorded sufficient approval; a denial is never overridden; resolution never overrides a live driver; at most one fire. | Started: `spec/tla/claims` (model 1b in `spec/tla/README.md`). | None: the rules are those of #90 and #92. |
 | 6 | **Sessions:** concurrent `Send` and `SendOnce`, turn ordering, `from/` starting points, crashes between turns. | Candidate. | The next change to the session code. |
-| 7 | **Flow semantics:** switch and loop replay, `run:complete` for flows, per-iteration step scoping. | Candidate. | #103 (which fixes these) is merged. |
+| 7 | **Flow semantics:** switch and loop replay, `run:complete` for flows, per-iteration step scoping. | Started: `spec/tla/flows` (see `spec/tla/README.md`). | #103 (which fixes these) is merged. |
 | 8 | **The whole-tree budget:** the bound on how far concurrent sub-agents can overshoot a shared token budget. | Candidate, low priority. | None. |
 
 Models 2 to 5 wait because modelling a design that is still moving costs the model twice. Each

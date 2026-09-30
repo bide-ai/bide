@@ -21,7 +21,8 @@
 #
 # Needs Java 11 or later (JAVA_HOME or java on PATH), curl, and sha256sum or shasum.
 # Environment: BIDE_TLA_CACHE (tool cache; default ~/.cache/bide-tla), TLC_WORKERS (default auto),
-# TLC_JAVA_OPTS (extra JVM options).
+# TLC_JOBS (default 1: how many regress, finding and limit configs run at a time), TLC_JAVA_OPTS
+# (extra JVM options).
 set -euo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -103,13 +104,16 @@ translate() {
 
 meta() { sed -n "s/^\\\\\\* $1: *//p" "$2" | head -1; }
 
+# mc_of DIR: the model's MC module in DIR (the one *MC.tla file), or nothing.
+mc_of() { (cd "$1" && ls ./*MC.tla 2>/dev/null | head -1 | sed 's|^\./||'); }
+
 # tlc CFG OUT: run TLC on CFG (a copy may live elsewhere) against the MC module beside the
 # original config's directory; print TLC's exit status.
 tlc() {
   local cfg=$1 out=$2 dir=$3 meta_dir status=0
   meta_dir=$(mktemp -d)
   (cd "$dir" && "$java" -XX:+UseParallelGC ${TLC_JAVA_OPTS:-} -cp "$jar" tlc2.TLC \
-      -workers "$workers" -metadir "$meta_dir" -config "$cfg" ClaimsMC.tla) >"$out" 2>&1 || status=$?
+      -workers "$workers" -metadir "$meta_dir" -config "$cfg" "$(mc_of "$dir")") >"$out" 2>&1 || status=$?
   rm -rf "$meta_dir"
   echo "$status"
 }
@@ -136,7 +140,7 @@ run_cfg() {
   cfg=$(cd "$(dirname "$cfg")" && pwd)/$(basename "$cfg")
   name=${cfg#"$here"/}
   dir=$(dirname "$cfg")
-  [ -f "$dir/ClaimsMC.tla" ] || dir=$(dirname "$dir") # regress/, findings/, limits/: the MC module above
+  [ -n "$(mc_of "$dir")" ] || dir=$(dirname "$dir") # regress/, findings/, limits/: the MC module above
   expect=$(meta EXPECT "$cfg")
   kind=${expect%% *}
   want=${expect#* }
@@ -192,17 +196,55 @@ run_cfg() {
 }
 
 run_group() {
-  local cfg found=0
+  local cfg cfgs=()
   for cfg in "$here"/*/*.cfg "$here"/*/regress/*.cfg "$here"/*/findings/*.cfg "$here"/*/limits/*.cfg; do
     [ -f "$cfg" ] || continue
     [ "$(meta GROUP "$cfg")" = "$1" ] || continue
-    found=1
-    run_cfg "$cfg"
+    cfgs+=("$cfg")
   done
-  if [ $found = 0 ]; then
+  if [ ${#cfgs[@]} = 0 ]; then
     # finding and limit may be empty (no open finding); ci and regress never are.
     case "$1" in finding|limit) echo "no configs in group $1" ;; *) die "no configs in group $1" ;; esac
+    return
   fi
+  # The regress, finding and limit configs are small: with TLC_JOBS > 1 they run that many at a
+  # time, one TLC worker each, so JVM starts overlap instead of adding up.
+  if [ "${TLC_JOBS:-1}" -gt 1 ] && case "$1" in regress|finding|limit) true ;; *) false ;; esac; then
+    run_parallel "${cfgs[@]}"
+  else
+    for cfg in "${cfgs[@]}"; do run_cfg "$cfg"; done
+  fi
+}
+
+# run_parallel CFG...: run each config in a child check.sh, TLC_JOBS at a time, and collect their
+# summaries and failures.
+run_parallel() {
+  local tmp i=0 f line
+  tmp=$(mktemp -d)
+  for f in "$@"; do i=$((i + 1)); printf '%s\n' "$f" >"$tmp/$(printf '%04d' $i).path"; done
+  export BIDE_TLA_CACHE="$cache"
+  # Each child gets one TLC worker, a bounded heap, and its own java.io.tmpdir (TLC's parser
+  # writes the standard modules there, and concurrent JVMs sharing one directory race on them), so
+  # TLC_JOBS JVMs fit the machine. A child that fails exits nonzero, which xargs reports; its
+  # summary says why, and a child with no summary (killed, or a script error) counts as a failure
+  # of its config.
+  ls "$tmp"/*.path | xargs -P "$TLC_JOBS" -I{} bash -c \
+    'mkdir -p "$1.jtmp"; TLC_WORKERS=1 TLC_JOBS=1 GITHUB_STEP_SUMMARY= TLC_JAVA_OPTS="${TLC_JAVA_OPTS:--Xmx1g} -Djava.io.tmpdir=$1.jtmp" "$0" run "$(cat "$1")" >"$1.log" 2>&1' \
+    "$here/check.sh" {} || true
+  for f in "$tmp"/*.path; do
+    sed -n '1,/^Summary:$/p' "$f.log" | grep -v '^Summary:$' | grep -v '^$' || true
+    if ! grep -q '^Summary:$' "$f.log"; then
+      tail -20 "$f.log"
+      record "$(cat "$f")" FAIL "the check did not finish"
+      continue
+    fi
+    while IFS= read -r line; do
+      case "$line" in ''|check.sh:*) continue ;; esac
+      summary+=("$line")
+      case "$line" in *" FAIL "*) failures=$((failures + 1)) ;; esac
+    done < <(sed -n '/^Summary:$/,$p' "$f.log" | tail -n +2)
+  done
+  rm -rf "$tmp"
 }
 
 self_test() {

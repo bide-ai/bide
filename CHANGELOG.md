@@ -18,6 +18,7 @@ minor version (0.x.0) may include breaking API or journal-format changes; each o
 - A TLA+ model of the claim protocol (attempt claims, not-started records, numbered retries, remembered claims, the resume gate, the Step flight and halt resolution), checked with TLC in CI by the new Models workflow; see [spec/tla](spec/tla/README.md) ([#100]).
 - The claim model also covers `ClaimAttempt` on a single key (plan flows), the `pendingClaims` eviction, and a halt resolution running in a driver's process ([#106]).
 - The claim model covers the approval gate (1-of-1 `Approve` and m-of-n `SubmitDecision` tallies) together with halt resolution ([#108]).
+- A TLA+ model of flow semantics (switch and loop replay, per-iteration keys, `run:complete`, `Flow.ResolveHalt`), checked in CI ([#110]).
 - `agent.Store`, the storage port (`Insert`, `Get`, `Load` of an `Entry` with an opaque, commit-ordered `Seq`), with its requirements A1 to A8 documented on the type, and `agent.Journal` over it (`NewJournal`, `Get`, `History`, `Records`, `Format`): the journal owns memoization, the record encoding and salt, the journal format header, attempt claims, not-started records and recording an outcome after the caller's context is cancelled ([#92]).
 - The journal format header: every run's journal starts with an `@journal` record (`agent.StepHeader`) naming `agent.JournalFormat` (`bide.journal.v1-dev`, the one tag every pre-release writes until 1.0, which switches to `bide.journal.v1` and refuses every pre-release journal); a run in another format, or with no header, is refused with `*agent.JournalVersionError` (wrapping `agent.ErrJournalVersion`) before anything is read or written ([#92]).
 - `agent.RunFilter` (`After`, `Prefix`, `ExcludeHolding`), which SQL stores evaluate in their query ([#92]).
@@ -484,6 +485,7 @@ First public release.
 [#100]: https://github.com/bide-ai/bide/pull/100
 [#106]: https://github.com/bide-ai/bide/pull/106
 [#108]: https://github.com/bide-ai/bide/pull/108
+[#110]: https://github.com/bide-ai/bide/pull/110
 [78f8db6]: https://github.com/bide-ai/bide/commit/78f8db6
 [994721b]: https://github.com/bide-ai/bide/commit/994721b
 [3262cd1]: https://github.com/bide-ai/bide/commit/3262cd1
