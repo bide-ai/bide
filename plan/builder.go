@@ -126,7 +126,7 @@ func checkStepName(name string) error {
 	return nil
 }
 
-// Step registers an arbitrary func(I)(O,error) as a durable step named name. name
+// Step registers an arbitrary func(ctx, I) (O, error) as a durable step named name. name
 // must be unique across the flow; a duplicate is recorded as a deferred error
 // surfaced at Build. Step infers I and O from fn.
 //
@@ -146,7 +146,7 @@ func checkStepName(name string) error {
 // annotated. Mark such steps plan.ReadOnly() (or plan.Idempotent()) so they re-run on
 // resume instead of stalling the flow; reserve the default halt for steps whose body
 // must not repeat.
-func (b *Builder[In, Out]) Step[I, O any](name string, fn func(I) (O, error), opts ...NodeOption) Handle[I, O] {
+func (b *Builder[In, Out]) Step[I, O any](name string, fn func(context.Context, I) (O, error), opts ...NodeOption) Handle[I, O] {
 	b.core.register(applyNodeOptions(&node{
 		name:    name,
 		kind:    kindStep,
@@ -155,12 +155,12 @@ func (b *Builder[In, Out]) Step[I, O any](name string, fn func(I) (O, error), op
 		// Decode the type-erased input as I, call fn, box the O result back as any.
 		// A wrong dynamic type is a construction-vs-wiring bug and surfaces here as
 		// an error rather than a panic.
-		run: func(_ context.Context, in any) (any, error) {
+		run: func(ctx context.Context, in any) (any, error) {
 			typed, ok := in.(I)
 			if !ok {
 				return nil, fmt.Errorf("plan: step %q got input of type %T, want %s", name, in, typeOf[I]())
 			}
-			out, err := fn(typed)
+			out, err := fn(ctx, typed)
 			if err != nil {
 				return nil, err
 			}
@@ -221,7 +221,7 @@ func (b *Builder[In, Out]) Tool[I, O any](name string, t agent.Tool, opts ...Nod
 //
 // The input types are unified at the call site through the generic parameters,
 // exactly as Edge unifies M: a is a Producer[A] and b a Producer[B], so the
-// merge fn func(A, B) (O, error) receives the two producers' outputs in order and
+// merge fn func(context.Context, A, B) (O, error) receives the two producers' outputs in order and
 // a mismatch does not compile. Join2 wires one input edge per producer (a -> name,
 // b -> name) and records the ordered input source names and their reflect types, so
 // Build can re-check the port types by reflect identity and Run can decode each
@@ -240,7 +240,7 @@ func (b *Builder[In, Out]) Tool[I, O any](name string, t agent.Tool, opts ...Nod
 // attempt/result guard as every other node; the fan-in is a topological barrier,
 // not concurrency. Pass plan.ReadOnly()/plan.Idempotent() (or plan.Retryable()) to
 // opt the join into re-run on an ambiguous crash instead of halting.
-func (b *Builder[In, Out]) Join2[A, B, O any](name string, a Producer[A], bb Producer[B], fn func(A, B) (O, error), opts ...NodeOption) Handle[O, O] {
+func (b *Builder[In, Out]) Join2[A, B, O any](name string, a Producer[A], bb Producer[B], fn func(context.Context, A, B) (O, error), opts ...NodeOption) Handle[O, O] {
 	aName, bName := endpointName(a), endpointName(bb)
 	b.core.register(applyNodeOptions(&node{
 		name:        name,
@@ -248,7 +248,7 @@ func (b *Builder[In, Out]) Join2[A, B, O any](name string, a Producer[A], bb Pro
 		outType:     typeOf[O](),
 		joinInputs:  []string{aName, bName},
 		joinInTypes: []reflect.Type{typeOf[A](), typeOf[B]()},
-		merge: func(_ context.Context, inputs []any) (any, error) {
+		merge: func(ctx context.Context, inputs []any) (any, error) {
 			if len(inputs) != 2 {
 				return nil, fmt.Errorf("plan: join %q expected 2 inputs, got %d", name, len(inputs))
 			}
@@ -260,7 +260,7 @@ func (b *Builder[In, Out]) Join2[A, B, O any](name string, a Producer[A], bb Pro
 			if !ok {
 				return nil, fmt.Errorf("plan: join %q input 1 got type %T, want %s", name, inputs[1], typeOf[B]())
 			}
-			out, err := fn(av, bv)
+			out, err := fn(ctx, av, bv)
 			if err != nil {
 				return nil, err
 			}
@@ -272,11 +272,11 @@ func (b *Builder[In, Out]) Join2[A, B, O any](name string, a Producer[A], bb Pro
 }
 
 // Join3 is Join2 for arity three: it consumes three upstream producers a, b, c and
-// merges them with fn func(A, B, C) (O, error). Everything else matches Join2: the
+// merges them with fn func(context.Context, A, B, C) (O, error). Everything else matches Join2: the
 // input types unify at the call site, it wires one input edge per producer in order,
 // records the ordered input source names and their reflect types for Build to
 // re-check, defaults to halt-on-ambiguous-crash, and returns a Handle producing O.
-func (b *Builder[In, Out]) Join3[A, B, C, O any](name string, a Producer[A], bb Producer[B], cc Producer[C], fn func(A, B, C) (O, error), opts ...NodeOption) Handle[O, O] {
+func (b *Builder[In, Out]) Join3[A, B, C, O any](name string, a Producer[A], bb Producer[B], cc Producer[C], fn func(context.Context, A, B, C) (O, error), opts ...NodeOption) Handle[O, O] {
 	aName, bName, cName := endpointName(a), endpointName(bb), endpointName(cc)
 	b.core.register(applyNodeOptions(&node{
 		name:        name,
@@ -284,7 +284,7 @@ func (b *Builder[In, Out]) Join3[A, B, C, O any](name string, a Producer[A], bb 
 		outType:     typeOf[O](),
 		joinInputs:  []string{aName, bName, cName},
 		joinInTypes: []reflect.Type{typeOf[A](), typeOf[B](), typeOf[C]()},
-		merge: func(_ context.Context, inputs []any) (any, error) {
+		merge: func(ctx context.Context, inputs []any) (any, error) {
 			if len(inputs) != 3 {
 				return nil, fmt.Errorf("plan: join %q expected 3 inputs, got %d", name, len(inputs))
 			}
@@ -300,7 +300,7 @@ func (b *Builder[In, Out]) Join3[A, B, C, O any](name string, a Producer[A], bb 
 			if !ok {
 				return nil, fmt.Errorf("plan: join %q input 2 got type %T, want %s", name, inputs[2], typeOf[C]())
 			}
-			out, err := fn(av, bv, cv)
+			out, err := fn(ctx, av, bv, cv)
 			if err != nil {
 				return nil, err
 			}

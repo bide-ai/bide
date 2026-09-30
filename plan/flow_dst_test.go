@@ -60,8 +60,8 @@ func (c *crashFlowStore) History(ctx context.Context, runID string) ([]agent.Rec
 // of its own; the at-most-once guarantee comes entirely from Flow.Run's automatic
 // attempt/result guard. If the guard were absent, a crash between the increment
 // and its recorded result would re-fire the increment on resume.
-func bumpCounter(count *int) func(int) (int, error) {
-	return func(int) (int, error) {
+func bumpCounter(count *int) func(context.Context, int) (int, error) {
+	return func(context.Context, int) (int, error) {
 		*count++ // the real-world side effect, fired inside a plain step body
 		return *count, nil
 	}
@@ -74,8 +74,8 @@ func bumpCounter(count *int) func(int) (int, error) {
 func buildCounterFlow(count *int) (*Flow[int, string], error) {
 	b := New[int, string]("charge-flow")
 	entry := b.Step("entry", bumpCounter(count))
-	hi := b.Step("high", func(int) (string, error) { return "high", nil })
-	lo := b.Step("low", func(int) (string, error) { return "low", nil })
+	hi := b.Step("high", func(context.Context, int) (string, error) { return "high", nil })
+	lo := b.Step("low", func(context.Context, int) (string, error) { return "low", nil })
 	b.Switch(entry,
 		When(func(n int) bool { return n >= 1 }, hi),
 		Else(lo),

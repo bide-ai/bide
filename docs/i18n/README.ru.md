@@ -133,10 +133,10 @@ if assess.Rush {
 
 ```go
 b := plan.New[Order, Receipt]("order-triage")
-classify := b.Step("classify", func(o Order) (Assessment, error) { ... })
-reserve  := b.Step("reserve",  func(a Assessment) (Reservation, error) { ... }) // non-idempotent
-finalize := b.Step("finalize", func(r Reservation) (Receipt, error) { ... })
-decline  := b.Step("decline",  func(a Assessment) (Receipt, error) { ... })
+classify := b.Step("classify", func(ctx context.Context, o Order) (Assessment, error) { ... })
+reserve  := b.Step("reserve",  func(ctx context.Context, a Assessment) (Reservation, error) { ... }) // non-idempotent
+finalize := b.Step("finalize", func(ctx context.Context, r Reservation) (Receipt, error) { ... })
+decline  := b.Step("decline",  func(ctx context.Context, a Assessment) (Receipt, error) { ... })
 
 b.Switch(classify,
     plan.When(func(a Assessment) bool { return a.Rush }, reserve),

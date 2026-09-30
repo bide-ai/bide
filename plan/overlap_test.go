@@ -89,7 +89,7 @@ func (r *rendezvous) arrive() {
 func TestOverlappingDrivers_FlowNodeFiresOnce(t *testing.T) {
 	var fired atomic.Int32
 	b := New[int, string]("charge-flow")
-	charge := b.Step("charge", func(n int) (int, error) {
+	charge := b.Step("charge", func(_ context.Context, n int) (int, error) {
 		fired.Add(1)
 		deadline := time.Now().Add(300 * time.Millisecond)
 		for fired.Load() < 2 && time.Now().Before(deadline) {
@@ -97,7 +97,7 @@ func TestOverlappingDrivers_FlowNodeFiresOnce(t *testing.T) {
 		}
 		return n, nil
 	})
-	done := b.Step("done", func(int) (string, error) { return "done", nil })
+	done := b.Step("done", func(context.Context, int) (string, error) { return "done", nil })
 	b.Edge(charge, done)
 	flow, err := b.Build()
 	if err != nil {

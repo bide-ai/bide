@@ -268,14 +268,14 @@ func buildFlow(cfg config) (*plan.Flow[Order, Receipt], error) {
 
 	// classify is the entry step: it consumes the flow input Order and produces the
 	// Assessment the Switch routes on. It has no external side effect.
-	classify := b.Step("classify", func(o Order) (Assessment, error) {
+	classify := b.Step("classify", func(_ context.Context, o Order) (Assessment, error) {
 		return Assessment{OrderID: o.ID, Amount: o.Amount, Rush: o.Amount > 100}, nil
 	})
 
 	// reserve is the non-idempotent step: it takes an inventory hold, modelled as one
 	// appended witness line, then produces a Reservation. The crash flag injects a
 	// failure here so the e2e can observe at-most-once across a process boundary.
-	reserve := b.Step("reserve", func(a Assessment) (Reservation, error) {
+	reserve := b.Step("reserve", func(_ context.Context, a Assessment) (Reservation, error) {
 		appendWitness(cfg.witness, "reserved "+a.OrderID)
 		if cfg.crash == "during-reserve" {
 			// The effect above already fired. Exit BEFORE returning, so Run records no
@@ -288,7 +288,7 @@ func buildFlow(cfg config) (*plan.Flow[Order, Receipt], error) {
 
 	// finalize is the rush-arm terminal: it turns the Reservation into the flow output.
 	// It is side-effect-free, so a halt here is safe to resolve out of band.
-	finalize := b.Step("finalize", func(r Reservation) (Receipt, error) {
+	finalize := b.Step("finalize", func(_ context.Context, r Reservation) (Receipt, error) {
 		if cfg.crash == "before-finalize" {
 			// reserve has already committed its result by now; crash at the start of
 			// finalize leaves finalize attempted-but-unfinished for the resume to handle.
@@ -298,7 +298,7 @@ func buildFlow(cfg config) (*plan.Flow[Order, Receipt], error) {
 	})
 
 	// decline is the Else-arm terminal: a small order is declined with no side effect.
-	decline := b.Step("decline", func(a Assessment) (Receipt, error) {
+	decline := b.Step("decline", func(_ context.Context, a Assessment) (Receipt, error) {
 		return Receipt{OrderID: a.OrderID, Outcome: "declined", Detail: "below rush threshold"}, nil
 	})
 
@@ -343,7 +343,7 @@ func buildFlowFromConfig(cfg config) (*plan.Flow[Order, Receipt], error) {
 
 	// classify: Order -> Assessment, the entry step the Switch routes on. Side-effect-free,
 	// identical to the code-built classify body.
-	if err := plan.RegisterStep(reg, "classify", func(o Order) (Assessment, error) {
+	if err := plan.RegisterStep(reg, "classify", func(_ context.Context, o Order) (Assessment, error) {
 		return Assessment{OrderID: o.ID, Amount: o.Amount, Rush: o.Amount > 100}, nil
 	}); err != nil {
 		return nil, fmt.Errorf("register classify: %w", err)
@@ -352,7 +352,7 @@ func buildFlowFromConfig(cfg config) (*plan.Flow[Order, Receipt], error) {
 	// reserve: Assessment -> Reservation, the one non-idempotent step. It appends the witness
 	// line then, under -crash during-reserve, exits BEFORE returning so Run records no result,
 	// exactly as buildFlow's reserve does. This is the effect the e2e proves fires at most once.
-	if err := plan.RegisterStep(reg, "reserve", func(a Assessment) (Reservation, error) {
+	if err := plan.RegisterStep(reg, "reserve", func(_ context.Context, a Assessment) (Reservation, error) {
 		appendWitness(cfg.witness, "reserved "+a.OrderID)
 		if cfg.crash == "during-reserve" {
 			os.Exit(1)
@@ -365,7 +365,7 @@ func buildFlowFromConfig(cfg config) (*plan.Flow[Order, Receipt], error) {
 	// finalize: Reservation -> Receipt, the side-effect-free rush-arm terminal. Under -crash
 	// before-finalize it exits at the start (after reserve has committed), leaving finalize
 	// attempted-but-unfinished for the resume, exactly as buildFlow's finalize does.
-	if err := plan.RegisterStep(reg, "finalize", func(r Reservation) (Receipt, error) {
+	if err := plan.RegisterStep(reg, "finalize", func(_ context.Context, r Reservation) (Receipt, error) {
 		if cfg.crash == "before-finalize" {
 			os.Exit(1)
 		}
@@ -375,7 +375,7 @@ func buildFlowFromConfig(cfg config) (*plan.Flow[Order, Receipt], error) {
 	}
 
 	// decline: Assessment -> Receipt, the Else-arm terminal, side-effect-free.
-	if err := plan.RegisterStep(reg, "decline", func(a Assessment) (Receipt, error) {
+	if err := plan.RegisterStep(reg, "decline", func(_ context.Context, a Assessment) (Receipt, error) {
 		return Receipt{OrderID: a.OrderID, Outcome: "declined", Detail: "below rush threshold"}, nil
 	}); err != nil {
 		return nil, fmt.Errorf("register decline: %w", err)

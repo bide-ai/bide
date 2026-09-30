@@ -56,7 +56,7 @@ func buildDeclarativeRegistry() (*plan.Registry, error) {
 
 	// classify: Order -> Assessment, the entry step the Switch routes on. Identical to the
 	// code-built classify body.
-	if err := plan.RegisterStep(reg, "classify", func(o Order) (Assessment, error) {
+	if err := plan.RegisterStep(reg, "classify", func(_ context.Context, o Order) (Assessment, error) {
 		return Assessment{OrderID: o.ID, Amount: o.Amount, Rush: o.Amount > 100}, nil
 	}); err != nil {
 		return nil, err
@@ -65,21 +65,21 @@ func buildDeclarativeRegistry() (*plan.Registry, error) {
 	// reserve: Assessment -> Reservation, the rush-arm step. In the code-built flow this is
 	// the one non-idempotent effect; the declarative demo uses the clean variant with no witness
 	// append or crash injection, since it only needs to run to completion.
-	if err := plan.RegisterStep(reg, "reserve", func(a Assessment) (Reservation, error) {
+	if err := plan.RegisterStep(reg, "reserve", func(_ context.Context, a Assessment) (Reservation, error) {
 		return Reservation{OrderID: a.OrderID, Ref: "hold-" + a.OrderID}, nil
 	}); err != nil {
 		return nil, err
 	}
 
 	// finalize: Reservation -> Receipt, the rush-arm terminal.
-	if err := plan.RegisterStep(reg, "finalize", func(r Reservation) (Receipt, error) {
+	if err := plan.RegisterStep(reg, "finalize", func(_ context.Context, r Reservation) (Receipt, error) {
 		return Receipt{OrderID: r.OrderID, Outcome: "reserved", Detail: r.Ref, Reserved: true}, nil
 	}); err != nil {
 		return nil, err
 	}
 
 	// decline: Assessment -> Receipt, the Else-arm terminal.
-	if err := plan.RegisterStep(reg, "decline", func(a Assessment) (Receipt, error) {
+	if err := plan.RegisterStep(reg, "decline", func(_ context.Context, a Assessment) (Receipt, error) {
 		return Receipt{OrderID: a.OrderID, Outcome: "declined", Detail: "below rush threshold"}, nil
 	}); err != nil {
 		return nil, err

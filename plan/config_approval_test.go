@@ -24,7 +24,7 @@ const approvalNodeConfig = `{
 func approvalRegistry(t *testing.T) *Registry {
 	t.Helper()
 	reg := NewRegistry()
-	if err := RegisterStep(reg, "refund", func(n int) (int, error) { return n, nil }); err != nil {
+	if err := RegisterStep(reg, "refund", func(_ context.Context, n int) (int, error) { return n, nil }); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 	return reg

@@ -14,9 +14,9 @@ import (
 func buildTriage(t *testing.T, name string) *Flow[int, string] {
 	t.Helper()
 	b := New[int, string](name)
-	entry := b.Step("entry", func(n int) (int, error) { return n + 1, nil })
-	high := b.Step("high", func(int) (string, error) { return "high", nil })
-	low := b.Step("low", func(int) (string, error) { return "low", nil })
+	entry := b.Step("entry", func(_ context.Context, n int) (int, error) { return n + 1, nil })
+	high := b.Step("high", func(context.Context, int) (string, error) { return "high", nil })
+	low := b.Step("low", func(context.Context, int) (string, error) { return "low", nil })
 	b.Switch(entry,
 		When(func(n int) bool { return n > 0 }, high),
 		Else(low),
@@ -59,9 +59,9 @@ func TestDigestChangesOnTopologyChange(t *testing.T) {
 		// A renamed node.
 		"renamed node": func() *Flow[int, string] {
 			b := New[int, string]("triage")
-			entry := b.Step("entry", func(n int) (int, error) { return n + 1, nil })
-			high := b.Step("HIGH", func(int) (string, error) { return "high", nil }) // renamed
-			low := b.Step("low", func(int) (string, error) { return "low", nil })
+			entry := b.Step("entry", func(_ context.Context, n int) (int, error) { return n + 1, nil })
+			high := b.Step("HIGH", func(context.Context, int) (string, error) { return "high", nil }) // renamed
+			low := b.Step("low", func(context.Context, int) (string, error) { return "low", nil })
 			b.Switch(entry, When(func(n int) bool { return n > 0 }, high), Else(low))
 			f, err := b.Build()
 			if err != nil {
@@ -72,9 +72,9 @@ func TestDigestChangesOnTopologyChange(t *testing.T) {
 		// Reordered Switch arms (When and Else swapped in declared order).
 		"reordered arms": func() *Flow[int, string] {
 			b := New[int, string]("triage")
-			entry := b.Step("entry", func(n int) (int, error) { return n + 1, nil })
-			high := b.Step("high", func(int) (string, error) { return "high", nil })
-			low := b.Step("low", func(int) (string, error) { return "low", nil })
+			entry := b.Step("entry", func(_ context.Context, n int) (int, error) { return n + 1, nil })
+			high := b.Step("high", func(context.Context, int) (string, error) { return "high", nil })
+			low := b.Step("low", func(context.Context, int) (string, error) { return "low", nil })
 			b.Switch(entry, Else(low), When(func(n int) bool { return n > 0 }, high)) // swapped
 			f, err := b.Build()
 			if err != nil {
@@ -98,9 +98,9 @@ func TestDigestChangesOnBoundaryType(t *testing.T) {
 	base := buildTriage(t, "triage").Digest()
 
 	b := New[int, int]("triage") // Out is int, not string
-	entry := b.Step("entry", func(n int) (int, error) { return n + 1, nil })
-	high := b.Step("high", func(int) (int, error) { return 1, nil })
-	low := b.Step("low", func(int) (int, error) { return 0, nil })
+	entry := b.Step("entry", func(_ context.Context, n int) (int, error) { return n + 1, nil })
+	high := b.Step("high", func(context.Context, int) (int, error) { return 1, nil })
+	low := b.Step("low", func(context.Context, int) (int, error) { return 0, nil })
 	b.Switch(entry, When(func(n int) bool { return n > 0 }, high), Else(low))
 	other, err := b.Build()
 	if err != nil {

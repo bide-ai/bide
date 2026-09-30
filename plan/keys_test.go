@@ -17,8 +17,8 @@ import (
 func TestBuild_NodeNamedAsAnotherNodesAttemptMarkerIsRejected(t *testing.T) {
 	var ran int
 	b := New[int, int]("keys")
-	x := b.Step("x", func(n int) (int, error) { return n + 1, nil })
-	y := b.Step("attempt:x", func(n int) (int, error) { ran++; return n * 10, nil })
+	x := b.Step("x", func(_ context.Context, n int) (int, error) { return n + 1, nil })
+	y := b.Step("attempt:x", func(_ context.Context, n int) (int, error) { ran++; return n * 10, nil })
 	b.Edge(x, y)
 	flow, err := b.Build()
 	if err == nil {
@@ -34,8 +34,8 @@ func TestBuild_NodeNamedAsAnotherNodesAttemptMarkerIsRejected(t *testing.T) {
 func TestBuild_NodeNameWithColonIsRejected(t *testing.T) {
 	for _, name := range []string{"flow:digest", "switch:x", "iter:0:x", "attempt:x", ":"} {
 		b := New[int, int]("keys")
-		x := b.Step("x", func(n int) (int, error) { return n, nil })
-		y := b.Step(name, func(n int) (int, error) { return n, nil })
+		x := b.Step("x", func(_ context.Context, n int) (int, error) { return n, nil })
+		y := b.Step(name, func(_ context.Context, n int) (int, error) { return n, nil })
 		b.Edge(x, y)
 		want := fmt.Sprintf("step name %q contains ':'", name)
 		if _, err := b.Build(); err == nil || !strings.Contains(err.Error(), want) {

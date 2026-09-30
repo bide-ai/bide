@@ -13,7 +13,7 @@ import (
 // then ran wrong (an arm that was not chosen ran, an edge was never taken, an input depended on
 // map order, a nested loop crashed). The error names the offending step.
 func TestBuild_RejectsShapesRunCannotExecute(t *testing.T) {
-	id := func(n int) (int, error) { return n, nil }
+	id := func(_ context.Context, n int) (int, error) { return n, nil }
 	never := func(int) bool { return false }
 	cases := map[string]struct {
 		build func() error
@@ -89,16 +89,16 @@ func TestBuild_RejectsShapesRunCannotExecute(t *testing.T) {
 func TestRun_RefusesToResumeUnderAChangedFlow(t *testing.T) {
 	mem := agent.NewMemStore()
 	b1 := New[int, int]("d")
-	x1 := b1.Step("x", func(n int) (int, error) { return n, nil }, ReadOnly())
-	p1 := b1.Step("p", func(int) (int, error) { return 0, errors.New("stopped") })
+	x1 := b1.Step("x", func(_ context.Context, n int) (int, error) { return n, nil }, ReadOnly())
+	p1 := b1.Step("p", func(context.Context, int) (int, error) { return 0, errors.New("stopped") })
 	b1.Edge(x1, p1)
 	f1, _ := b1.Build()
 	_, _ = f1.Run(context.Background(), mem, "r", 1)
 
 	b2 := New[int, int]("d")
-	x2 := b2.Step("x", func(n int) (int, error) { return n, nil }, ReadOnly())
-	extra := b2.Step("extra", func(n int) (int, error) { return n * 100, nil })
-	p2 := b2.Step("p", func(n int) (int, error) { return n, nil }, ReadOnly())
+	x2 := b2.Step("x", func(_ context.Context, n int) (int, error) { return n, nil }, ReadOnly())
+	extra := b2.Step("extra", func(_ context.Context, n int) (int, error) { return n * 100, nil })
+	p2 := b2.Step("p", func(_ context.Context, n int) (int, error) { return n, nil }, ReadOnly())
 	b2.Edge(x2, extra)
 	b2.Edge(extra, p2)
 	f2, _ := b2.Build()

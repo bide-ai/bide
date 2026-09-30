@@ -35,17 +35,17 @@ type loopState struct {
 // applied to the refine (head) node so a test can vary its Safety for the crash sweep.
 func buildCountdownLoop(max int, bump *int, opts ...NodeOption) (*Flow[int, string], error) {
 	b := New[int, string]("countdown")
-	seed := b.Step("seed", func(n int) (loopState, error) {
+	seed := b.Step("seed", func(_ context.Context, n int) (loopState, error) {
 		return loopState{N: n, Trace: "seed"}, nil
 	})
-	refine := b.Step("refine", func(s loopState) (loopState, error) {
+	refine := b.Step("refine", func(_ context.Context, s loopState) (loopState, error) {
 		if bump != nil {
 			*bump++
 		}
 		return loopState{N: s.N - 1, Trace: s.Trace + "|refine"}, nil
 	}, opts...)
-	check := b.Step("check", func(s loopState) (loopState, error) { return s, nil })
-	done := b.Step("done", func(s loopState) (string, error) {
+	check := b.Step("check", func(_ context.Context, s loopState) (loopState, error) { return s, nil })
+	done := b.Step("done", func(_ context.Context, s loopState) (string, error) {
 		return fmt.Sprintf("done N=%d trace=%s", s.N, s.Trace), nil
 	})
 	b.Edge(seed, refine)
@@ -110,8 +110,8 @@ func TestLoopRespectsMaxAndErrors(t *testing.T) {
 // offending Switch.
 func TestLoopBuildRequiresExitArm(t *testing.T) {
 	b := New[int, string]("no-exit")
-	seed := b.Step("seed", func(n int) (loopState, error) { return loopState{N: n}, nil })
-	refine := b.Step("refine", func(s loopState) (loopState, error) { return s, nil })
+	seed := b.Step("seed", func(_ context.Context, n int) (loopState, error) { return loopState{N: n}, nil })
+	refine := b.Step("refine", func(_ context.Context, s loopState) (loopState, error) { return s, nil })
 	b.Edge(seed, refine)
 	b.Switch(refine, LoopBack(5, func(s loopState) bool { return true }, refine))
 	_, err := b.Build()
@@ -127,9 +127,9 @@ func TestLoopBuildRequiresExitArm(t *testing.T) {
 // Build: a zero or negative bound cannot terminate cleanly.
 func TestLoopBuildRequiresPositiveBound(t *testing.T) {
 	b := New[int, string]("bad-bound")
-	seed := b.Step("seed", func(n int) (loopState, error) { return loopState{N: n}, nil })
-	refine := b.Step("refine", func(s loopState) (loopState, error) { return s, nil })
-	done := b.Step("done", func(s loopState) (string, error) { return "done", nil })
+	seed := b.Step("seed", func(_ context.Context, n int) (loopState, error) { return loopState{N: n}, nil })
+	refine := b.Step("refine", func(_ context.Context, s loopState) (loopState, error) { return s, nil })
+	done := b.Step("done", func(_ context.Context, s loopState) (string, error) { return "done", nil })
 	b.Edge(seed, refine)
 	b.Switch(refine,
 		LoopBack(0, func(s loopState) bool { return s.N > 0 }, refine),
@@ -149,10 +149,10 @@ func TestLoopBuildRequiresPositiveBound(t *testing.T) {
 // "head" is a node the Switch does not reach in the forward graph.
 func TestLoopBuildRejectsNonAncestorHead(t *testing.T) {
 	b := New[int, string]("not-a-loop")
-	seed := b.Step("seed", func(n int) (loopState, error) { return loopState{N: n}, nil })
-	refine := b.Step("refine", func(s loopState) (loopState, error) { return s, nil })
-	sidecar := b.Step("sidecar", func(s loopState) (loopState, error) { return s, nil })
-	done := b.Step("done", func(s loopState) (string, error) { return "done", nil })
+	seed := b.Step("seed", func(_ context.Context, n int) (loopState, error) { return loopState{N: n}, nil })
+	refine := b.Step("refine", func(_ context.Context, s loopState) (loopState, error) { return s, nil })
+	sidecar := b.Step("sidecar", func(_ context.Context, s loopState) (loopState, error) { return s, nil })
+	done := b.Step("done", func(_ context.Context, s loopState) (string, error) { return "done", nil })
 	b.Edge(seed, refine)
 	// sidecar is reachable only as the Else target; it is not an ancestor of refine.
 	b.Switch(refine,
@@ -248,11 +248,11 @@ func TestLoopDigestStableAndShapeSensitive(t *testing.T) {
 
 	// Same flow but the arm is a forward Switch (no loop): distinct shape, distinct digest.
 	acyclic := New[int, string]("countdown")
-	s := acyclic.Step("seed", func(n int) (loopState, error) { return loopState{N: n}, nil })
-	r := acyclic.Step("refine", func(st loopState) (loopState, error) { return st, nil })
-	ch := acyclic.Step("check", func(st loopState) (loopState, error) { return st, nil })
-	again := acyclic.Step("again", func(st loopState) (string, error) { return "again", nil })
-	dn := acyclic.Step("done", func(st loopState) (string, error) { return "done", nil })
+	s := acyclic.Step("seed", func(_ context.Context, n int) (loopState, error) { return loopState{N: n}, nil })
+	r := acyclic.Step("refine", func(_ context.Context, st loopState) (loopState, error) { return st, nil })
+	ch := acyclic.Step("check", func(_ context.Context, st loopState) (loopState, error) { return st, nil })
+	again := acyclic.Step("again", func(_ context.Context, st loopState) (string, error) { return "again", nil })
+	dn := acyclic.Step("done", func(_ context.Context, st loopState) (string, error) { return "done", nil })
 	acyclic.Edge(s, r)
 	acyclic.Edge(r, ch)
 	acyclic.Switch(ch,

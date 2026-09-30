@@ -26,7 +26,7 @@ import (
 
 f := plan.New[Order, Receipt]("triage")                  // input and output pinned here
 
-classify := f.Step("classify", classifyOrder)            // Order -> Assessment (types inferred from the func)
+classify := f.Step("classify", classifyOrder)            // func(context.Context, Order) (Assessment, error)
 reserve  := f.Step("reserve", reserveInventory)          // Assessment -> Reservation (a non-idempotent effect)
 finalize := f.Step("finalize", finalizeReceipt)          // Reservation -> Receipt
 decline  := f.Step("decline", declineReceipt)            // Assessment -> Receipt
@@ -53,7 +53,14 @@ production). `runID` is the durable identity: re-running the same `runID` resume
 - **`New[In, Out](name)`** pins the flow's input and output types at construction, so the boundary is
   checked there rather than by an afterthought.
 - **Nodes** are builder methods that return a typed `Handle`:
-  - `Step[I, O](name, func(I) (O, error))` wraps arbitrary Go. `I` and `O` are inferred from the func.
+  - `Step[I, O](name, func(context.Context, I) (O, error))` wraps arbitrary Go. `I` and `O` are
+    inferred from the func. The body receives the ctx the step runs under, derived from the one passed
+    to `Run`: it carries the caller's cancellation, deadline and values, so a long body should stop when
+    `ctx` is done (return `ctx.Err()` or `context.Cause(ctx)`). A body that returns an error records no
+    result, so on resume a default step halts on its attempt marker (`*HaltAmbiguous`) and a
+    `ReadOnly`/`Idempotent` step runs again.
+    `Join2`/`Join3` merge bodies take the same leading `ctx`. `When` predicates and `Switch` routing
+    take no ctx: they must be pure functions of the value, since resume replays the recorded arm.
   - `Tool[I, O](name, agent.Tool)` runs a tool; give `I`/`O` explicitly (they say how to JSON-encode
     the input and decode the result).
   - `Model[I, O](name, prompt)` is a model turn: bind a model with `Builder.WithModel(m)` (or, in a
@@ -171,7 +178,8 @@ plan.RegisterPredicate(reg, "rush", func(a Assessment) bool { return a.Rush })
 
 - **`NewRegistry()`** returns a fresh, explicit, per-`Load` registry. There is no global mutable
   default, and a duplicate registration is an error, never a silent overwrite.
-- **`RegisterStep[I, O]`** infers `I`/`O` from the func. **`RegisterTool[I, O]`** and
+- **`RegisterStep[I, O]`** infers `I`/`O` from a `func(context.Context, I) (O, error)`, the same shape
+  `Step` takes; `RegisterJoin2`/`RegisterJoin3` take the merge shapes of `Join2`/`Join3`. **`RegisterTool[I, O]`** and
   **`RegisterModel[I, O]`** take them explicitly (an `agent.Tool` and a prompt carry no I/O types). A
   `Model` node needs a bound model, supplied to the loaded flow via `Load(..., WithLoadedModel(m))`.
   **`RegisterPredicate[M]`** captures the switched type `M`; **`RegisterJoin2`/`RegisterJoin3`** register
@@ -230,14 +238,14 @@ wiring:
   - edge: [split, z]
   - join: merge
     inputs: [y, z]
-    merge: mergeBlock              # RegisterJoin2(reg, "mergeBlock", func(int, string) (string, error))
+    merge: mergeBlock              # RegisterJoin2(reg, "mergeBlock", func(context.Context, int, string) (string, error))
     safety: readonly               # optional; see "Node and join safety" below
 ```
 
 The `merge` block:
 
 ```go
-plan.RegisterJoin2(reg, "mergeBlock", func(a int, s string) (string, error) {
+plan.RegisterJoin2(reg, "mergeBlock", func(_ context.Context, a int, s string) (string, error) {
     return fmt.Sprintf("%s+%d", s, a), nil
 })
 ```

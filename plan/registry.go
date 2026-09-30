@@ -134,7 +134,7 @@ func (r *Registry) registerMerge(name string, m *regMerge) error {
 	return nil
 }
 
-// RegisterJoin2 registers a fixed-arity fan-in merge func(A, B) (O, error) as a
+// RegisterJoin2 registers a fixed-arity fan-in merge func(ctx, A, B) (O, error) as a
 // merge block named name, inferring A, B, and O from fn (the config never restates
 // types; they flow from the registered merge). It is the config counterpart of
 // Builder.Join2: a "join" wiring element references the merge block by name, names
@@ -146,12 +146,12 @@ func (r *Registry) registerMerge(name string, m *regMerge) error {
 // Safety is not carried on a merge block: like a hand-built Join a loaded join
 // defaults to the conservative halt-on-ambiguous-crash, and an explicit config
 // "safety" on the join node overrides it (see the join node's safety field).
-func RegisterJoin2[A, B, O any](r *Registry, name string, fn func(A, B) (O, error)) error {
+func RegisterJoin2[A, B, O any](r *Registry, name string, fn func(context.Context, A, B) (O, error)) error {
 	return r.registerMerge(name, &regMerge{
 		arity:   2,
 		inTypes: []reflect.Type{reflect.TypeFor[A](), reflect.TypeFor[B]()},
 		outType: reflect.TypeFor[O](),
-		merge: func(_ context.Context, inputs []any) (any, error) {
+		merge: func(ctx context.Context, inputs []any) (any, error) {
 			if len(inputs) != 2 {
 				return nil, fmt.Errorf("plan: join %q expected 2 inputs, got %d", name, len(inputs))
 			}
@@ -163,7 +163,7 @@ func RegisterJoin2[A, B, O any](r *Registry, name string, fn func(A, B) (O, erro
 			if !ok {
 				return nil, fmt.Errorf("plan: join %q input 1 got type %T, want %s", name, inputs[1], reflect.TypeFor[B]())
 			}
-			out, err := fn(av, bv)
+			out, err := fn(ctx, av, bv)
 			if err != nil {
 				return nil, err
 			}
@@ -173,18 +173,18 @@ func RegisterJoin2[A, B, O any](r *Registry, name string, fn func(A, B) (O, erro
 }
 
 // RegisterJoin3 is RegisterJoin2 for arity three: it registers a fan-in merge
-// func(A, B, C) (O, error) as a merge block named name, inferring A, B, C, and O
+// func(ctx, A, B, C) (O, error) as a merge block named name, inferring A, B, C, and O
 // from fn. It is the config counterpart of Builder.Join3: a "join" element names
 // three ordered inputs and assemble builds a kindJoin node whose ordered input
 // types are A, B, C and whose erased merge closure asserts each boxed input before
 // calling fn. A duplicate name is an error, surfaced at Load and returned here for
 // inline checking.
-func RegisterJoin3[A, B, C, O any](r *Registry, name string, fn func(A, B, C) (O, error)) error {
+func RegisterJoin3[A, B, C, O any](r *Registry, name string, fn func(context.Context, A, B, C) (O, error)) error {
 	return r.registerMerge(name, &regMerge{
 		arity:   3,
 		inTypes: []reflect.Type{reflect.TypeFor[A](), reflect.TypeFor[B](), reflect.TypeFor[C]()},
 		outType: reflect.TypeFor[O](),
-		merge: func(_ context.Context, inputs []any) (any, error) {
+		merge: func(ctx context.Context, inputs []any) (any, error) {
 			if len(inputs) != 3 {
 				return nil, fmt.Errorf("plan: join %q expected 3 inputs, got %d", name, len(inputs))
 			}
@@ -200,7 +200,7 @@ func RegisterJoin3[A, B, C, O any](r *Registry, name string, fn func(A, B, C) (O
 			if !ok {
 				return nil, fmt.Errorf("plan: join %q input 2 got type %T, want %s", name, inputs[2], reflect.TypeFor[C]())
 			}
-			out, err := fn(av, bv, cv)
+			out, err := fn(ctx, av, bv, cv)
 			if err != nil {
 				return nil, err
 			}
@@ -209,7 +209,7 @@ func RegisterJoin3[A, B, C, O any](r *Registry, name string, fn func(A, B, C) (O
 	})
 }
 
-// RegisterStep registers an arbitrary func(I)(O,error) as a Step block named name,
+// RegisterStep registers an arbitrary func(ctx, I) (O, error) as a Step block named name,
 // inferring I and O from fn (the config never restates types; they flow from the
 // registered block). The installed run closure mirrors Builder.Step: it asserts
 // the erased input is I, calls fn, and boxes the O result back as any. A duplicate
@@ -218,18 +218,18 @@ func RegisterJoin3[A, B, C, O any](r *Registry, name string, fn func(A, B, C) (O
 // Pass plan.ReadOnly()/plan.Idempotent() to record the block's retry-on-resume
 // Safety in Go (the config JSON carries no Safety); a loaded node then resumes
 // identically to one built with Builder.Step and the same option.
-func RegisterStep[I, O any](r *Registry, name string, fn func(I) (O, error), opts ...NodeOption) error {
+func RegisterStep[I, O any](r *Registry, name string, fn func(context.Context, I) (O, error), opts ...NodeOption) error {
 	return r.registerBlock(name, &regBlock{
 		kind:    kindStep,
 		inType:  reflect.TypeFor[I](),
 		outType: reflect.TypeFor[O](),
 		safety:  safetyFromOptions(agent.Safety{}, opts),
-		run: func(_ context.Context, in any) (any, error) {
+		run: func(ctx context.Context, in any) (any, error) {
 			typed, ok := in.(I)
 			if !ok {
 				return nil, fmt.Errorf("plan: step %q got input of type %T, want %s", name, in, reflect.TypeFor[I]())
 			}
-			out, err := fn(typed)
+			out, err := fn(ctx, typed)
 			if err != nil {
 				return nil, err
 			}
