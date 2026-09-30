@@ -166,6 +166,14 @@ a variable number of branches.
 **Some wiring is rejected.** `Build` refuses wiring the runtime cannot run as declared, and names the
 step: for example, a step fed by several producers without a join, or nested loops.
 
+**Only Steps inside a flow node are scoped to it.** An `agent.Step` or `Parallel` task a node's body
+runs is recorded per node and per loop iteration; an `Interrupt`, `Await` or `Sleep` it takes is not,
+so give a pause inside a loop body a name unique per iteration. See [Flows](guides/flows.md).
+
+**Flow inputs are compared as doubles.** A resumed flow's input is compared with the recorded one as
+canonical JSON, whose numbers are doubles, so two inputs that differ only in an integer beyond 2^53
+count as the same input.
+
 **`Model` nodes expect JSON.** A `Model` node decodes the reply as JSON into its output type, so
 prompt the model for JSON. See [Flows](guides/flows.md#limits).
 

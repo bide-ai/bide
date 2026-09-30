@@ -62,7 +62,9 @@ with a prefix the engine reserves for them (`@`, `run:`, `tool:`, `attempt:`, `a
 `approval-tally:`, `signal:`, `await-timeout:`, `await-resolved:`, `timer:`, `interrupt:`, `chan:`,
 `chanack:`, `turn/`, `start/`, `from/`, `audit:`, and a `plan` flow's `node:`, `switch:`, `flow:`;
 see `agent.IsReservedStepName`) is `ErrConfig`,
-for `Step` and for a `Parallel` task alike.
+for `Step` and for a `Parallel` task alike. Inside the body of a `plan` flow's node, a `Step` for
+the flow's run is recorded under the node's key (`node:<node>:step:<name>`, per loop iteration in a
+loop body), so its name need be unique only within the node; see [Flows](flows.md).
 
 The same memoized journal is the idempotency guard the [Messaging](messaging.md) webhook pattern
 uses (through `Run` and `SendOnce`) to make a redelivered inbound event replay instead of re-fire.
@@ -257,6 +259,11 @@ have returned, and `IsError: true` if the verified outcome was a failure the mod
 (in a saga, a failed step, which rolls the saga back). It is idempotent (the first result for an
 operation wins), so a retry or a racing driver records it at most once. A tool call's result and a
 step's are separate journal records, so it refuses an operation that only the other kind attempted.
+It resolves only an operation that halted, one with a live attempt marker: an operation never
+attempted, or whose attempts are recorded as not started (the next drive re-attempts it), is refused
+with `agent.ErrNoLiveAttempt`, so a resolution cannot pre-record an effect that never ran. A `plan`
+flow's node halts as a `Step` under its node key; resolve it with `Flow.ResolveHalt`, which also
+checks the value against the node's output type.
 
 `ResolveHaltRef` will not resolve an effect a driver may still be running. `HaltContended` means
 another driver of the same run won the claim while this one ran (a node that took over after a lease

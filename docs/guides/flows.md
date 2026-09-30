@@ -105,9 +105,13 @@ guarantees:
 - **A halt is a Step halt.** Its `Op` is `agent.OpRef{Kind: agent.OpStep, ID: "node:<name>"}` (or
   `"node:iter:<n>:<name>"` inside a loop), and it is a pause (`agent.IsPause`), so `RecoverLoop`
   treats it as waiting, not failed. Once you know the node's true outcome, record it with
-  `agent.ResolveHaltRef(ctx, store, halt.Ref(), agent.Outcome{Result: output})`, where `output` is the
+  `flow.ResolveHalt(ctx, store, halt.Ref(), agent.Outcome{Result: output})`, where `output` is the
   node's output value; the next `Run` continues past the node without running its body, feeding
-  `output` downstream.
+  `output` downstream. `flow.ResolveHalt` is `agent.ResolveHaltRef` after two checks against the
+  flow: the halt names a node of this flow, and `output` decodes as the node's output type (a
+  resolution is final, so one the flow could not read would leave the run unable to continue). Like
+  `agent.ResolveHaltRef`, it resolves only a node that halted: one with a live attempt marker
+  (`agent.ErrNoLiveAttempt` otherwise).
 - **A node that provably never started is re-attempted.** A driver cancelled (or whose store failed)
   after claiming a node's marker and before calling its body records that the attempt did not start,
   and the next `Run` re-attempts the node under a numbered marker (`attempt:retry:<n>:step:node:<name>`)
@@ -122,17 +126,34 @@ guarantees:
   part of the digest, so a node may be relabelled between a crash and its resume: the marker is the
   attempt's recorded safety, so a node attempted as a side effect halts even if it is retry-safe now,
   and a node attempted as retry-safe (no marker) runs again under a claim if it is a side effect now.
-- **A run keeps its flow and its input.** `Run` first records the run's start (`run:start`, see
-  `agent.RunStart`): kind `agent.RunKindFlow`, the flow's name, and the JSON of the input. A later
-  drive with an input whose JSON differs, under another flow's name, or of a run an `Agent` started is
-  `ErrConfig` and records nothing (and an `Agent` refuses a flow's run the same way). `Run` then
-  records the flow's digest and, on resume, refuses (`ErrConfig`) to continue a run that started under
-  a different digest: its journal only means what it meant under that flow.
+- **A run keeps its flow and its input.** `Run` checks the run ID as `agent.Run` does (an empty ID, or
+  one in the form reserved for sub-agents and session turns, is `ErrConfig`), then records the run's
+  start (`run:start`, see `agent.RunStart`): kind `agent.RunKindFlow`, the flow's name, and the JSON
+  of the input. A later drive with a different input, under another flow's name, or of a run an
+  `Agent` started is `ErrConfig` and records nothing (and an `Agent` refuses a flow's run the same
+  way). Inputs are compared as canonical JSON (keys sorted, numbers as the doubles they denote), so
+  the recovery path of decoding `RecordedStart`'s `Input` and passing it to `Run` resumes the run even
+  where that round trip changes the JSON text; two inputs that differ only beyond a double's precision
+  count as one. `Run` then records the flow's digest and, on resume, refuses (`ErrConfig`) to continue
+  a run that started under a different digest: its journal only means what it meant under that flow.
+- **A finished run is final.** When the terminal node finishes, `Run` records `run:complete` with the
+  flow's name and its output, so `Recover` and `RecoverLoop` skip the run and `agent.IsComplete`
+  reports it. A later drive with the run's input returns the recorded output with one point read,
+  whatever the flow's topology is now.
+- **Steps inside a node are scoped to it.** An `agent.Step` (or `agent.Parallel` task) a node's body
+  runs for the same run ID is recorded under the node's key, `node:<name>:step:<step>` (and
+  `node:iter:<n>:<name>:step:<step>` in a loop body), so each loop iteration runs its own Steps
+  instead of replaying the first iteration's, and a Step name need be unique only within its node. A
+  halt of such a Step names that key; resolve it with the halt's `Ref()`. Other pauses a body takes
+  (`Interrupt`, `Await`, `Sleep`) are not scoped: give them names unique per iteration.
 - **Reserved keys.** `node:`, `switch:` and `flow:` are reserved prefixes, like `run:` and `attempt:`,
   so an `agent.Step` a node's body runs cannot name one of the flow's records.
 - **Conformance.** Because the flow is authored and the actual path is derived from the journal, a run
   can be proven to have followed the declared topology, at node-visitation granularity plus the
-  journaled branch choice. The blind spot: conformance sees *that* a node ran, not what its Go body did
+  journaled branch choice. `Conform` replays the run's routing from its recorded choices: a record of
+  a node on an arm its `Switch` did not take, of a loop iteration the run did not reach, or of a node
+  inside or outside a loop under the wrong kind of key is a divergence, and so is a journal that
+  records nodes without `run:start` and `flow:digest`. The blind spot: conformance sees *that* a node ran, not what its Go body did
   inside, so a node whose interior must be checked should be split into smaller nodes.
 
 ## Cryptographic conformance
