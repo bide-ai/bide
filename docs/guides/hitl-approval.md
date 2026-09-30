@@ -309,7 +309,9 @@ It prints the approved call, each approver who counted, every ignored decision w
 every problem. It exits 0 only when the gate held: 1 when it did not, 4 when an input cannot be read
 or used (including a key file that gives two of the policy's approvers one key), and 2 on a usage error (see the audit guide's
 [exit status](audit.md#exit-status); only 0 means verified). `bide-audit verify-evidence` checks the proofs only,
-so it cannot detect an omitted decision; use `verify-approvals` for the approval claim.
+so it cannot detect an omitted decision; use `verify-approvals` for the approval claim. Every proof in the package must verify for `verify-approvals` to pass as well, so a package that carries
+a run certificate needs its allowlist: `-approved <digest>` (repeatable) or `-approved-file <file>`, as for
+`verify-evidence`.
 
 Evidence files commit to the exact recorded bytes. Keep them byte-exact: a tool that re-orders JSON
 object keys inside a recorded message breaks that record's proof.

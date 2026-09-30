@@ -128,12 +128,14 @@ const usageText = `bide-audit: produce and verify audit proof bundles
          the package carries one) and consistency proof if present
 
   verify-approvals -evidence <file> -pubkey <hex|file> -call <tool-use-id> -need <k>
-                   -approvers <id,id,...> -approver-keys <file>
+                   -approvers <id,id,...> -approver-keys <file> [-approved <digest>...] [-approved-file <file>]
          verify an m-of-n human approval gate from an evidence package: the request, every
          decision the gate read, its recorded tally, and the call's result all verify under the
          log key in one signed tree; recounting the decisions with each approver's key (a JSON
          object of approver id to public key text, <scheme>:<hex>) against the exact call reproduces the
-         recorded tally; the gate enforced the expected policy; and at least k approved
+         recorded tally; the gate enforced the expected policy; and at least k approved. Every
+         proof in the package must verify too, so a package carrying a run certificate needs the
+         allowlist it is checked against (-approved / -approved-file, as for verify-evidence)
 
   prove-absent -journal <file> -sth <file> -key (tool:<id>|policy:<digest>) [-out <file>]
          prove a thing did NOT happen (no such tool call / no action under that policy)
@@ -946,23 +948,7 @@ func (c *cli) verifyEvidence(args []string) {
 	okPkg := c.note(c.readJSON(*evidencePath, &pkg))
 	pub, err := readPubKey(*pubkey)
 	okKey := c.note(err)
-	var opts []audit.EvidenceVerifyOption
-	if len(approved) > 0 || *approvedFile != "" {
-		allow := append([]string(nil), approved...)
-		okAllow := true
-		if *approvedFile != "" {
-			lines, err := readDigestLines(*approvedFile)
-			okAllow = c.note(err)
-			allow = append(allow, lines...)
-		}
-		// With the allowlist unusable, every check that does not read it still runs: the run
-		// certificate is checked against its own used-policy set, so any failure the package
-		// reports is one no allowlist could cure. The verb still does not verify.
-		if !okAllow && okPkg && pkg.RunCertificate != nil {
-			allow = pkg.RunCertificate.UsedPolicies
-		}
-		opts = append(opts, audit.WithApprovedPolicies(allow...))
-	}
+	opts := c.allowlist(approved, *approvedFile, okPkg, pkg)
 	if !okPkg || !okKey {
 		return
 	}
@@ -1013,6 +999,9 @@ func (c *cli) verifyApprovals(args []string) {
 	need := fs.Int("need", 0, "approvals the policy requires (k)")
 	approvers := fs.String("approvers", "", "the policy's eligible approver ids, comma-separated, in policy order")
 	keysPath := fs.String("approver-keys", "", `JSON object of approver id to public key text (<scheme>:<hex>, or bare ed25519 hex), e.g. {"ops":"ed25519:ab12..."}`)
+	var approved stringList
+	fs.Var(&approved, "approved", "an approved policy digest for the package's run certificate; repeat once per allowed policy")
+	approvedFile := fs.String("approved-file", "", "path to a file of approved policy digests, one per line")
 	c.parse(fs, args)
 
 	if *evidencePath == "" || *pubkey == "" || *call == "" || *need == 0 || *approvers == "" || *keysPath == "" {
@@ -1027,7 +1016,8 @@ func (c *cli) verifyApprovals(args []string) {
 	var pkg audit.EvidencePackage
 	okPkg := c.note(c.readJSON(*evidencePath, &pkg))
 	logPub, err := readPubKey(*pubkey)
-	c.note(err)
+	okLog := c.note(err)
+	opts := c.allowlist(approved, *approvedFile, okPkg, pkg)
 	var keyHex map[string]string
 	okKeys := c.note(c.readJSON(*keysPath, &keyHex))
 	keys := make(map[string]audit.Verifier, len(keyHex))
@@ -1052,13 +1042,13 @@ func (c *cli) verifyApprovals(args []string) {
 			okKeys = c.note(unusable(fmt.Errorf("-approver-keys: %w", err)))
 		}
 	}
-	if !okPkg || !okKeys || !c.clean() {
+	if !okPkg || !okKeys || !okLog || !c.clean() {
 		return
 	}
 
 	// A package whose proofs cannot be checked is an unusable input, but the approval check still
 	// runs: a gate that did not hold is a verdict, which outranks it.
-	rep, err := pkg.Verify(logPub)
+	rep, err := pkg.Verify(logPub, opts...)
 	if err != nil && !errors.Is(err, audit.ErrNotVerified) {
 		err = unusable(err)
 	} else {
@@ -1134,6 +1124,29 @@ func evidenceItemLine(it audit.EvidenceItem) string {
 		subject = it.Label
 	}
 	return fmt.Sprintf("%s: %s", subject, it.Note)
+}
+
+// allowlist returns the evidence verify options for the auditor's approved-policy allowlist, the
+// -approved digests and the lines of the -approved-file, or none when neither was given (a package
+// that carries a run certificate then does not verify). With the allowlist file unusable, which is
+// recorded, every check that does not read it still runs: the run certificate is checked against
+// its own used-policy set, so any failure the package reports is one no allowlist could cure. The
+// verb still does not verify.
+func (c *cli) allowlist(approved []string, approvedFile string, okPkg bool, pkg audit.EvidencePackage) []audit.EvidenceVerifyOption {
+	if len(approved) == 0 && approvedFile == "" {
+		return nil
+	}
+	allow := append([]string(nil), approved...)
+	okAllow := true
+	if approvedFile != "" {
+		lines, err := readDigestLines(approvedFile)
+		okAllow = c.note(err)
+		allow = append(allow, lines...)
+	}
+	if !okAllow && okPkg && pkg.RunCertificate != nil {
+		allow = pkg.RunCertificate.UsedPolicies
+	}
+	return []audit.EvidenceVerifyOption{audit.WithApprovedPolicies(allow...)}
 }
 
 // readDigestLines reads a file of approved policy digests, one per line, ignoring blank lines and
