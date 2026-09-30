@@ -74,9 +74,16 @@ the design exhaustively, for three reasons:
 | 3 | **Leases and recovery:** acquire, renew, release, takeover, a holder that stalls past its TTL, `Recover`/`RecoverLoop` dispatch, and the lease that `checkNoLiveDriver` takes. Invariant: at-most-once holds with leases failing arbitrarily. | Deferred. | P13 (the `LeaseControl` option) and P14 (recovery dispatch, not-started runs skipped) are merged. |
 | 4 | **The store contract and journal header:** A1 to A8 as an abstract store with concurrent readers, prefix-closed visibility (A2), first-writer races, the `@journal` header rules, refusal of other formats, redaction. | Deferred. | The first change to A1 to A8 or to the header rules after #92 merges, the runs-table follow-up, or P16 setting the final `JournalFormat`, whichever comes first. |
 | 5 | **Saga rollback:** parallel siblings, sub-agents, calls that never started, compensation by recorded safety, `Cancel` on a saga. | Deferred. | P12 (rollback by recorded safety, `compensate.go`) and P14 (`Cancel` on a saga) are merged. |
+| 1b | **Approval and halt resolution,** an extension of model 1: 1-of-1 `Approve` and m-of-n signed decisions with their recorded tally (approver sets, duplicate approvers or keys, a decision arriving while a resume runs), a denial that stays final when the gate later changes, approval bound to the exact call, contended and crashed halts, and resolution while a driver may be live in all three live-driver modes. Invariants: no action runs without a recorded sufficient approval; a denial is never overridden; resolution never overrides a live driver; at most one fire. | Next, high priority. | None: the rules are those of #90 and #92. |
+| 6 | **Sessions:** concurrent `Send` and `SendOnce`, turn ordering, `from/` starting points, crashes between turns. | Candidate. | The next change to the session code. |
+| 7 | **Flow semantics:** switch and loop replay, `run:complete` for flows, per-iteration step scoping. | Candidate. | #103 (which fixes these) is merged. |
+| 8 | **The whole-tree budget:** the bound on how far concurrent sub-agents can overshoot a shared token budget. | Candidate, low priority. | None. |
 
 Models 2 to 5 wait because modelling a design that is still moving costs the model twice. Each
-trigger is the merge that fixes the rules that model would check. Plan flows (`plan/flow.go`) keep
+trigger is the merge that fixes the rules that model would check. The order of work: the approval
+and halt-resolution extension of model 1 first, then model 2 (it gates the acceptance of #95),
+then model 4, then models 3 and 5 with the waves that fix their rules, then sessions and flow
+semantics, and the budget bound last. Plan flows (`plan/flow.go`) keep
 their own markers until P5b lowers them onto claims; after P5b, a flow node becomes one more
 driver path in model 1 rather than a model of its own.
 

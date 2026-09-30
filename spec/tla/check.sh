@@ -2,9 +2,9 @@
 # check.sh: fetch the pinned TLA+ tools, check that each committed PlusCal translation is up to
 # date, and run TLC over the model configurations. See spec/tla/README.md.
 #
-#   spec/tla/check.sh                 translation check, then every "ci", "regress" and
-#                                     "finding" config (what CI runs on a pull request)
-#   spec/tla/check.sh ci|nightly|regress|finding
+#   spec/tla/check.sh                 translation check, then every "ci", "regress", "finding"
+#                                     and "limit" config (what CI runs on a pull request)
+#   spec/tla/check.sh ci|nightly|regress|finding|limit
 #                                     the configs of one group
 #   spec/tla/check.sh run FILE.cfg... the named configs, whatever their group
 #   spec/tla/check.sh translation     fail if a committed translation is stale
@@ -13,7 +13,7 @@
 #   spec/tla/check.sh self-test       prove the translation and checksum checks can fail
 #
 # Each .cfg names its group and its expected result in comment lines:
-#   \* GROUP: ci | nightly | regress | finding
+#   \* GROUP: ci | nightly | regress | finding | limit
 #   \* EXPECT: pass | invariant <Name> | liveness
 # "pass" configs are also run once with the vacuity invariant EffectNotReachable, which TLC must
 # report violated: a model in which the effect never fires satisfies every safety property.
@@ -135,7 +135,7 @@ run_cfg() {
   cfg=$(cd "$(dirname "$cfg")" && pwd)/$(basename "$cfg")
   name=${cfg#"$here"/}
   dir=$(dirname "$cfg")
-  [ -f "$dir/ClaimsMC.tla" ] || dir=$(dirname "$dir") # regress/, findings/: the MC module above
+  [ -f "$dir/ClaimsMC.tla" ] || dir=$(dirname "$dir") # regress/, findings/, limits/: the MC module above
   expect=$(meta EXPECT "$cfg")
   kind=${expect%% *}
   want=${expect#* }
@@ -187,7 +187,7 @@ run_cfg() {
 
 run_group() {
   local cfg found=0
-  for cfg in "$here"/*/*.cfg "$here"/*/regress/*.cfg "$here"/*/findings/*.cfg; do
+  for cfg in "$here"/*/*.cfg "$here"/*/regress/*.cfg "$here"/*/findings/*.cfg "$here"/*/limits/*.cfg; do
     [ -f "$cfg" ] || continue
     [ "$(meta GROUP "$cfg")" = "$1" ] || continue
     found=1
@@ -236,8 +236,8 @@ case "$cmd" in
   translation) translation ;;
   translate) translate ;;
   self-test) self_test ;;
-  ci|nightly|regress|finding) run_group "$cmd"; finish ;;
+  ci|nightly|regress|finding|limit) run_group "$cmd"; finish ;;
   run) [ $# -gt 0 ] || die "run: name at least one .cfg"; for c in "$@"; do run_cfg "$c"; done; finish ;;
-  all) translation; run_group ci; run_group regress; run_group finding; finish ;;
+  all) translation; run_group ci; run_group regress; run_group finding; run_group limit; finish ;;
   *) die "unknown command $cmd (see the header of $0)" ;;
 esac

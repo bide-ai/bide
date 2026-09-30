@@ -36,7 +36,7 @@ translation differs, so a PlusCal edit cannot merge without its translation.
 Each configuration declares its group and its expected result in two comment lines:
 
 ```text
-\* GROUP: ci | nightly | regress | finding
+\* GROUP: ci | nightly | regress | finding | limit
 \* EXPECT: pass | invariant <Name> | liveness
 ```
 
@@ -101,10 +101,20 @@ failed reads (a failed read fails the drive and changes nothing, so it is a re-d
 internals (a leased driver holds the run's lease for its whole drive, and a crash releases it);
 wall-clock time (`WithMinHaltAge` is an assumption, below); a lease that expires under a live
 holder (two leased drivers exclude each other here; a holder that stalls past its TTL is model 3); the transitional `Durable` path
-(`durableStep`, `claimAttempt`), which the DST and reference-model suites drive; retry-safe Steps
-and tools, which write no marker; an operator in the same process as a driver (the resolver never
-shares a flight with a driver); the `maxPendingClaims` eviction (it loses knowledge like a crash
-does, which the liveness property excuses only for a crash).
+(`durableStep`, `claimAttempt`); retry-safe Steps and tools, which write no marker.
+
+Also modelled, each in its own configurations:
+
+- **One marker key (`Kind = "flow"`).** `ClaimAttempt` on a single key, as a plan flow node that is
+  not retry-safe uses it (`plan/flow.go`): the drive halts on any marker of the step, voided or
+  not; the claim retries remembered ids and takes a fresh id as `claimNext` does, but a lost claim
+  halts, and a body error records nothing.
+- **The `maxPendingClaims` eviction (`MaxEvict`).** At any step, a process may forget every id it
+  remembers for one marker key.
+- **An operator in a driver's process (`ResolverProc`).** The resolution's `ClaimAttempt` shares
+  that process's `pendingClaims`, and its `store.Do` on the result key shares the process's
+  in-flight calls (`shareFlight`): a driver's winning call can join the resolution's write and the
+  resolution can join a driver's call. The process's crash kills the resolution.
 
 Claim ids are allocated as the smallest id nothing in the state refers to, so re-drives do not grow
 the state space; the protocol compares ids only for equality, which makes this sound.
@@ -118,9 +128,10 @@ The model states the rules of P6a (#92) after its third review:
 2. If the marker's Insert errors, the claim records a not-started record under its own id. Any
    failed not-started write (`Journal.notStarted`, wherever it is called from) leaves the id
    remembered in the process, in `pendingClaims`, which holds a set of ids per marker key.
-3. A remembered id is never used to run. The next claim of that marker key in the process first
-   retries each remembered id's not-started record (voiding its marker if that committed), then
-   claims with a fresh id; a voided marker moves the claim to the next numbered attempt.
+3. A remembered id is never used to run. The next claim of that marker key in the process takes
+   back every remembered id and writes each one's not-started record again (voiding its marker if
+   that committed; a failed write remembers the id again), then claims with a fresh id; a voided
+   marker moves the claim to the next numbered attempt.
 4. The tool resume gate, before it halts on a live marker, retries the not-started record of that
    marker's claim if the process remembers it; if the retry succeeds, the call claims its next
    attempt instead of halting.
@@ -131,7 +142,10 @@ The model states the rules of P6a (#92) after its third review:
 6. A tool that loses the claim halts (`HaltContended`).
 7. Halt resolution refuses while a live driver may be running: under a store that leases runs, it
    holds the root run's lease while it resolves (MemStore, `store/postgres`, and `store/sqlite` as
-   of #92), and only leased drivers are seen; otherwise it needs `WithMinHaltAge`.
+   of #92), and only leased drivers are seen; otherwise it needs `WithMinHaltAge`, and then (F2's
+   fix) it first claims the attempt after the live one with `ClaimAttempt`, refusing if a driver
+   holds it; if its result write errors, that attempt stays live (F3's fix). The model also checks
+   that claim on the lease path (`resolve-lease-claim`), which finding F4 needs.
 
 ### Model-code map
 
@@ -144,7 +158,7 @@ those of #92 (P6a); where #92 has not yet adopted a rule, the step names the rul
 | `Open` | the drive's one `Load` (`Journal.open` in `Agent.run`; `journalStep`'s `j.Get`); on the tool path, `liveAttempts` and the resume gate's loop in `Agent.run` |
 | `GateTake`, `GateWrite` | the resume gate's retry of a remembered claim (rule 4): `pendingClaims` membership of the live marker's id, then `Journal.notStarted` |
 | `Claim` | one iteration of `Journal.claimNext`: `pendingClaims.take` in `Journal.claim` |
-| `ClaimRetry` | `Journal.claim` retrying a remembered id's not-started record (rule 3) |
+| `ClaimRetry` | `Journal.claim`: `pendingClaims.takeAll`, then `Journal.notStarted` for each taken id (rule 3) |
 | `ClaimInsert` | `newClaimID`, `Journal.insert` of the marker (`Store.Insert`), and the `got.claim == id` check |
 | `ClaimNS` | `Journal.claim`'s error path: `Journal.notStarted`, which remembers the id on failure |
 | `Hold` | historical only (`Bug = "HeldPin"`): `Journal.holdClaim` and `StepClaimHeld` |
@@ -157,9 +171,12 @@ those of #92 (P6a); where #92 has not yet adopted a rule, the step names the rul
 | `NotStarted` | `recordNotStarted` / `Journal.notStarted` after `!started` or `!called` |
 | `Finish` | the drive's end; any outcome but the call's result is driven again (`Recover`, `RecoverLoop`, a re-run) |
 | `RCheck` | `resolveHalt`: `checkNoLiveDriver` (the lease), the `WithMinHaltAge` check, `liveAttempts` |
-| `RClaim` | not in the code: the proposed fix of finding F2 below (`ResolveClaim = TRUE`) |
-| `RWrite` | `resolveHalt`'s write of the result (`store.Do` on the result key) |
-| `Crash(p)` | a process dies: its drives restart, its `pendingClaims` and flights are gone, its lease lapses |
+| `RClaim`, `RRetry`, `RInsert`, `RClaimNS` | F2's fix, `resolveHalt`'s `ClaimAttempt` on `nextAttemptStep` of the live attempt (`ResolveClaim = TRUE`): `Journal.claim`'s retry of remembered ids, its fresh-id Insert, and its error path |
+| `RWrite`, `RRecord`, `RWait` | `resolveHalt`'s `store.Do` on the result key: `Journal.Do` through `shareFlight` when the resolver runs in a driver's process |
+| `RNotStarted` | `resolveHalt`'s `recordNotStarted` of its own attempt after an errored write (`ResolveVoidOnError = TRUE`, #92 at `06408db`; finding F3) |
+| `RRelease` | the lease's release |
+| `Crash(p)` | a process dies: its drives restart, its `pendingClaims` and flights are gone, its lease lapses, a resolution running in it stops |
+| `Evict(p)` | `claimMemo.remember` dropping the oldest marker keys past `maxPendingClaims` |
 | `LateApply` | weak A3 only: a write that returned an error commits now |
 
 `WithMinHaltAge` cannot be checked in an untimed model. `LiveCheck = "minAge"` encodes it as the
@@ -182,6 +199,7 @@ not-started record at any later time; finding F2 is about exactly that.
 | `BoundNotHit` | invariant | no driver is ever blocked by the attempt bound or the id pool |
 | `ResultStable` | action | a recorded result is never replaced |
 | `Progress` | liveness | a provably unstarted effect does not halt for ever |
+| `ProgressModuloEviction` | liveness | `Progress`, also excusing a live attempt whose remembered claim an eviction forgot |
 | `EffectNotReachable` | vacuity | must be violated in every passing configuration |
 
 `Progress` says that each issued call eventually has a recorded outcome for ever, unless the effect
@@ -209,7 +227,7 @@ configurations run without it, and so do the configurations with drivers in diff
 
 ### Configurations
 
-On every pull request and in the merge queue (`ci`, `regress`, `finding`). States are distinct
+On every pull request and in the merge queue (`ci`, `regress`, `finding`, `limit`). States are distinct
 states; times are TLC's own, measured on a development machine (Apple M1 Pro, 8 workers). The
 whole pull-request set, vacuity runs and JVM starts included, takes about 6.5 minutes on the CI runner
 (GitHub `ubuntu-latest`, 4 cores).
@@ -228,6 +246,13 @@ whole pull-request set, vacuity runs and JVM starts included, takes about 6.5 mi
 | `live-step-same` | Step | 2 in 1 | 1, 1, 1 | 0..2 | `Progress` | 291,262 | 9 s |
 | `live-tool-same` | tool | 2 in 1 | 1, 1, 1 | 0..2 | `Progress` | 128,325 | 4 s |
 | `live-tool-cross` | tool | 2 in 2 | 1, 1, 1 | 0..2 | `Progress` | 144,243 | 5 s |
+| `resolve-minage-claim-a3` | tool, resolver (min age, F2 and F3 fixed) | 2 in 2 | 3, 0, 0 | 0..4 | safety | 702,817 | 6 s |
+| `resolve-lease-claim` | tool, resolver (lease, F4's fix), a leased driver and a plain Run | 2 in 1 | 3, 0, 0 | 0..4 | safety | 331,475 | 6 s |
+| `resolve-in-proc-tool` | tool, resolver in the drivers' process (min age, fixes) | 2 in 1 | 2, 1, 0 | 0..4 | safety | 285,231 | 4 s |
+| `flow-same` | one marker key (plan flow) | 2 in 1 | 2, 1, 1 | 0 | safety | 6,588 | <1 s |
+| `flow-cross` | one marker key (plan flow) | 2 in 2 | 2, 1, 1 | 0 | safety | 14,357 | 1 s |
+| `evict-tool-same` | tool, 1 eviction | 2 in 1 | 2, 1, 1 | 0..3 | safety | 1,553,944 | 15 s |
+| `live-evict-step-same` | Step, 1 eviction | 2 in 1 | 1, 1, 1 | 0..2 | `ProgressModuloEviction` | 304,754 | 10 s |
 
 Nightly (and on demand, `workflow_dispatch`):
 
@@ -243,8 +268,13 @@ Nightly (and on demand, `workflow_dispatch`):
 | `deep-late-step-cross` | Step, weak A3 | 2 in 2 | 2, 1, 1 | 0..3 | safety | 5,649,510 | 43 s |
 | `deep-late-tool-cross` | tool, weak A3 | 2 in 2 | 2, 1, 1 | 0..3 | safety | 5,522,592 | 31 s |
 | `deep-resolve-lease-same` | Step, resolver (lease) | 2 leased in 1 | 2, 1, 1 | 0..3 | safety | 79,460 | 1 s |
+| `deep-evict-step-same` | Step, 1 eviction | 2 in 1 | 2, 1, 1 | 0..3 | safety | 2,602,491 | 31 s |
+| `deep-resolve-in-proc-step` | Step, resolver in the drivers' process | 2 in 1 | 2, 1, 0 | 0..4 | safety | 5,715,586 | 41 s |
+| `deep-resolve-in-proc-cross` | Step, resolver in d1's process | 2 in 2 | 2, 1, 0 | 0..4 | safety | 2,067,129 | 17 s |
+| `deep-resolve-in-proc-a4` | Step, resolver in the drivers' process | 2 in 1 | 4, 0, 0 | 0..5 | safety | 15,988,971 | 2 min |
+| `deep-resolve-lease-claim` | tool, resolver (lease, F4's fix), a leased driver and a plain Run | 2 in 1 | 2, 1, 1 | 0..4 | safety | 3,663,147 | 1 min |
 
-The nightly set takes 14 minutes on the development machine. The liveness checks run on every pull
+The nightly set takes about 20 minutes on the development machine. The liveness checks run on every pull
 request with one error reply; with two they run nightly, since liveness checking cannot use symmetry
 and costs several times a safety check of the same states. `deep-late-tool-cross` is nightly only
 to keep the pull-request job short; `late-step-same` covers weak A3 on every pull request.
@@ -269,10 +299,21 @@ property weakened.
 | `regress/resolve-no-check-intent` | the same through the caller: "not charged", a new call, a second fire | `AtMostOncePerIntent` | 17 states |
 | `regress/resolve-unleased-driver` | #90's documented limit: the lease check does not see a driver that holds no lease | `NoLiveOverride` | 15 states |
 
+### Accepted limits
+
+Configurations in `limits/` state a halt the design accepts, as an expected `Progress` violation,
+so the limit cannot change silently: `limits/flow-progress` (a plan flow node whose claim errored
+after its marker committed halts for ever, since flows have no numbered re-attempts until P5b
+lowers them onto `claimNext`; 1 error reply, 9 states) and `limits/evict-progress` (an eviction
+forgets the only record that a live attempt never started; 2 error replies, a cancellation and an
+eviction, 17 states). `live-evict-step-same` shows the eviction costs nothing else, and
+`evict-tool-same` and `deep-evict-step-same` that it never costs safety.
+
 ### Findings
 
-Found by this model in the rules #92 is adopting; each is a counterexample, and each needs a
-deterministic Go test before its fix (M2 of the plan).
+Found by this model in the rules #92 adopted; each is a counterexample, and each needs a
+deterministic Go test before its fix (M2 of the plan). F1 to F3 are fixed in #92 at `42f7419`,
+and their counterexamples are regression configurations now.
 
 - **F1: `pendingClaims` holds one id per marker key.** `claimMemo.remember` replaces the id stored
   for a key. Two claims of one marker key in one process can each fail a not-started write: a
@@ -288,17 +329,40 @@ deterministic Go test before its fix (M2 of the plan).
   3 and 4): the retry voids the attempt, the process claims the next one and calls the effect, and
   a resolution checked just before writes its verdict first. The live driver's result is then
   lost, and if the verdict was "not charged", the caller asks again and the effect fires twice
-  (`findings/minage-revoid`, `findings/minage-intent`: two error replies, no crash). The lease
+  (`regress/minage-revoid`, `regress/minage-intent`: two error replies, no crash). The lease
   check is not affected, since leased drivers cannot drive while the resolver holds the lease. A
   fix the model checks (`ResolveClaim`, configs `resolve-minage-claim` and `intent-minage-claim`):
   before it writes, the resolver claims the attempt after the live one under its own id; a driver
   that voids the live attempt later loses that claim and reads the resolution, and if a driver
-  already holds it, the resolution refuses. The `findings/` configs flip to `pass` when the code
-  is fixed.
+  already holds it, the resolution refuses. #92 adopted this fix at `06408db`.
+- **F3: the F2 fix voids its own attempt after an errored write.** `resolveHalt` records its
+  claimed attempt as not started when `store.Do` on the result key returns an error, but the
+  write may have committed. A driver in its claim loop (it voided the live attempt through a
+  remembered claim, and lost the next one to the resolution) then sees that attempt voided,
+  claims the one after, and calls the effect under the recorded resolution; with a "not charged"
+  verdict the caller asks again and the effect fires twice (`regress/resolve-void-on-error`,
+  `regress/resolve-void-on-error-intent`: three error replies, no crash, 28- and 33-state
+  traces). The model's fix (`ResolveVoidOnError = FALSE`, every other resolver config): after an
+  errored write, the resolution's attempt stays live, and the call halts until it is resolved
+  again. `resolve-minage-claim-a3` checks it with three error replies, and
+  `deep-resolve-in-proc-a4` with four and the resolver in the drivers' process.
+- **F4 (open): on the lease path, a plain `Run` revives a leased driver's remembered claim.** The
+  lease check sees only leased drivers (#90's documented limit), and the resolution does not claim
+  the next attempt on that path. Even when no unleased driver holds the live claim at the check
+  (`PlainRunIdleAtCheck`), a plain `Run` in the process of the leased driver whose claim errored
+  takes that remembered claim, voids the live attempt, and claims the next one while the
+  resolution records its verdict (`findings/lease-revival`: two error replies, no crash, 22
+  states). Fix the model checks: claim the next attempt on the lease path too
+  (`resolve-lease-claim`, three error replies; `deep-resolve-lease-claim` nightly, with a crash
+  and a cancellation). A plain `Run` that holds the live claim at the check stays #90's limit
+  (`regress/resolve-unleased-driver`).
+
+The `findings/` configs flip to `pass` when the code is fixed.
 
 ### What the bounds do not cover
 
-Two drivers (three in `deep-drivers`, nightly, with one error reply), one crash, one cancellation, up to two error
-replies per run on pull requests and three nightly; one call except in the intent configurations.
+Two drivers (three in `deep-drivers`, nightly, with one error reply), one crash, one
+cancellation, up to two error replies per run on pull requests (three in the F3 configs) and
+four nightly; one call except in the intent configurations.
 Calls interact only through the fault budgets and the id pool, so two independent calls add no
 behavior the one-call configurations miss. A bug that needs more than these is outside the check.

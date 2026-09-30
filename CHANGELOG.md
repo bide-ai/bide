@@ -16,6 +16,7 @@ minor version (0.x.0) may include breaking API or journal-format changes; each o
 - Verbs named for the pause they answer: `SubmitDecision` with `Decision`, `AnswerInterrupt` and `Enqueue`; `agent.Wake` ([#90]).
 - `agent.HaltInFlight`, `agent.HaltAlreadyResolved`, `agent.ErrAlreadyResolved` (wraps `ErrConfig`) and `agent.WithoutLiveDriverCheck` ([#90]).
 - A TLA+ model of the claim protocol (attempt claims, not-started records, numbered retries, remembered claims, the resume gate, the Step flight and halt resolution), checked with TLC in CI by the new Models workflow; see [spec/tla](spec/tla/README.md) ([#100]).
+- The claim model also covers `ClaimAttempt` on a single key (plan flows), the `pendingClaims` eviction, and a halt resolution running in a driver's process ([#106]).
 
 ### Changed
 
@@ -454,6 +455,7 @@ First public release.
 [#91]: https://github.com/bide-ai/bide/pull/91
 [#93]: https://github.com/bide-ai/bide/pull/93
 [#100]: https://github.com/bide-ai/bide/pull/100
+[#106]: https://github.com/bide-ai/bide/pull/106
 [78f8db6]: https://github.com/bide-ai/bide/commit/78f8db6
 [994721b]: https://github.com/bide-ai/bide/commit/994721b
 [3262cd1]: https://github.com/bide-ai/bide/commit/3262cd1

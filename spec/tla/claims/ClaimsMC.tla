@@ -18,6 +18,7 @@ TwoCalls  == (d1 :> c1) @@ (d2 :> c2)
 
 AllStep   == [c \in Calls |-> "step"]
 AllTool   == [c \in Calls |-> "tool"]
+AllFlow   == [c \in Calls |-> "flow"]
 NoNext    == [c \in Calls |-> None]
 C1ThenC2  == (c1 :> c2) @@ (c2 :> None)
 
