@@ -286,3 +286,35 @@ func TestMofn_DecisionCountsOnlyUnderItsScheme(t *testing.T) {
 		t.Fatalf("out=%q charged=%d err=%v, want the decision under the key's scheme to count", textOf(out), charged, err)
 	}
 }
+
+// sharedKeyVerifier is one key, whatever approver id it is resolved for.
+type sharedKeyVerifier struct{}
+
+func (sharedKeyVerifier) Alg() Alg         { return fakeAlg }
+func (sharedKeyVerifier) KeyIDs() []string { return []string{"fake:one key"} }
+func (sharedKeyVerifier) Verify(message, sig []byte) bool {
+	return bytes.Equal(sig, fakeSign("shared", message))
+}
+
+// Two approver ids that resolve to one key are one signer, so a 2-of-2 policy is not met by one key
+// holder signing as both. Under the one seat-per-key rule (#109, KeyIDs) neither id counts, whoever
+// signed first (ReasonSharedKey), and the gate refuses such a policy outright (ValidateKeys).
+func TestMofn_OneKeyUnderTwoApproverIdsCountsOnce(t *testing.T) {
+	s := ApprovalSubject{RunID: "r", ToolUseID: "c", ToolName: "wire", Args: json.RawMessage(`{}`)}
+	var recs []Record
+	for _, id := range []string{"alice", "bob"} {
+		recs = append(recs, Record{Name: "approval:c:" + id, Kind: StepApproval, ToolUseID: "c", Approved: true, Approver: id,
+			ApproverAlg: fakeAlg, Signature: fakeSign("shared", ApprovalDecisionBytes(s, id, true))})
+	}
+	p := ApprovalPolicy{Need: 2, Approvers: []string{"alice", "bob"}}
+	got, checks := TallyApprovals(recs, s, p, func(string) (ApproverVerifier, bool) { return sharedKeyVerifier{}, true })
+	if got.Passed() || got.Approved != 0 {
+		t.Fatalf("tally = %+v, want no approval counted for the shared key", got)
+	}
+	if len(checks) != 2 || checks[0].Counted || checks[0].Reason != ReasonSharedKey || checks[1].Counted || checks[1].Reason != ReasonSharedKey {
+		t.Fatalf("checks = %+v, want both decisions refused for sharing one key", checks)
+	}
+	if err := p.ValidateKeys(func(string) (ApproverVerifier, bool) { return sharedKeyVerifier{}, true }); !errors.Is(err, ErrConfig) {
+		t.Fatalf("ValidateKeys = %v, want ErrConfig", err)
+	}
+}
