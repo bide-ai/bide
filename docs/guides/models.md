@@ -97,7 +97,7 @@ vocabulary, and the core decides from it whether the turn is the model's answer:
 | Neutral reason | Anthropic `stop_reason` | OpenAI `finish_reason` | Gemini `finishReason` | Result |
 |---|---|---|---|---|
 | `agent.FinishStop` (`stop`) | `end_turn`, `stop_sequence` | `stop` | `STOP` | the message |
-| `agent.FinishToolUse` (`tool_use`) | `tool_use` | `tool_calls`, `function_call` | `STOP` with a call | the message |
+| `agent.FinishToolUse` (`tool_use`) | `tool_use` | `tool_calls`, `function_call` | `STOP` with a call | the message; `agent.ErrStreamProtocol` if it carries no call |
 | `agent.FinishLength` (`length`) | `max_tokens`, `model_context_window_exceeded` | `length` | `MAX_TOKENS` (with or without a call) | `agent.ErrOutputTruncated` |
 | `agent.FinishFiltered` (`filtered`) | `refusal` | `content_filter` | `SAFETY`, `RECITATION`, `BLOCKLIST`, `PROHIBITED_CONTENT`, `SPII`, `IMAGE_SAFETY` | `agent.ErrOutputFiltered` |
 
@@ -105,7 +105,13 @@ A reason an adapter does not map (Anthropic `pause_turn`, Gemini `MALFORMED_FUNC
 `OTHER`, one a provider adds later) reaches the core unchanged and fails the turn with
 `agent.ErrStreamProtocol`: the core does not guess what it means. An empty reason (a `Model` that
 does not report one, or an OpenAI-compatible server that sends `[DONE]` with no `finish_reason`)
-counts as a stop.
+counts as a stop. A Gemini stream with no `finishReason` stopped partway and is
+`agent.ErrIncompleteResponse`.
+
+The reason never decides whether tools run; the calls the turn carries do. A turn that calls a tool
+runs it whatever its reason says (OpenAI reports `stop` for a call made under a forced
+`tool_choice`), and a `tool_use` turn that carries no call is `agent.ErrStreamProtocol`, since the
+calls it was for were lost.
 
 A turn that is cut off or filtered is not journaled, so a run never records half an answer as its
 final one. All three errors wrap `agent.ErrModel`, so `middleware.Retryable` retries them; a

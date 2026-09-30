@@ -443,6 +443,10 @@ func mapFinishReason(reason string, sawToolCall bool) string {
 		return agent.FinishLength
 	case "SAFETY", "RECITATION", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII", "IMAGE_SAFETY":
 		return agent.FinishFiltered
+	case "":
+		// No reason is not a natural stop: the core would take "" as one. streamSSE sends no Finish
+		// without a reason, so this only keeps the mapping itself from ever making one an answer.
+		return "FINISH_REASON_UNSPECIFIED"
 	default:
 		return reason
 	}

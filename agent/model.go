@@ -141,6 +141,10 @@ func (ToolCallDelta) event() {}
 // than a message, since what arrived is only part of what the model would have said, and a run
 // that recorded it would end with that part as its final answer. Any other reason is
 // ErrStreamProtocol: the core does not guess what a provider's own word means.
+//
+// The reason never decides whether tools run: the calls the turn carries do. A turn with calls
+// runs them whatever its reason says (OpenAI reports stop under a forced tool_choice), and a
+// FinishToolUse turn with no call is ErrStreamProtocol, since the calls it was for were lost.
 type Finish struct {
 	Reason string
 	Usage  Usage
@@ -398,7 +402,14 @@ func (b *msgBuilder) finalize() (Message, error) {
 		parts = append(parts, *tu)
 	}
 	switch b.reason {
-	case "", FinishStop, FinishToolUse:
+	case "", FinishStop:
+	case FinishToolUse:
+		// Whether tools run is decided by the calls the turn carries, never by the reason (a turn
+		// that calls a tool may report stop). A turn that says it stopped to call tools and
+		// carries none lost those calls, so it is not an answer.
+		if len(b.order) == 0 {
+			return Message{}, fmt.Errorf("finish reason %q with no tool call: %w", FinishToolUse, ErrStreamProtocol)
+		}
 	case FinishLength:
 		return Message{}, ErrOutputTruncated
 	case FinishFiltered:
