@@ -48,6 +48,11 @@ minor version (0.x.0) may include breaking API or journal-format changes; each o
 - Model records journal `Record.Finish`, `Record.RawFinish`, `Record.Model` (the `ModelInfo` of the model that answered) and per-turn `Record.PromptDigest` and `Record.ToolsDigest` (`agent.PromptDigest`, `agent.ToolsDigest`: SHA-256 of the system prompt and of the tool set the turn was sent, after middleware). `ModelInfo` has JSON tags ([#PRNUM]).
 - `middleware.CostMeter.Snapshot()` returns a `CostSnapshot` (`Answer`, `Spend`, `AnswerUSD`, `SpendUSD`) read under one lock ([#PRNUM]).
 - `trace.Model` records `gen_ai.response.finish_reasons` ([#PRNUM]).
+- `agent.ModelCall` (`Request`, `Model`, `RunID`, `Turn`), `ModelCall.AddHook` and `ModelCall.Attempt`, `agent.ModelResponse` (`Message`, `Usage`, `Finish`, `RawFinish`) and `agent.ModelAttempt` (what a hook's `After` sees, including `Discarded`, the discarded spend a replayed turn reports) ([#104]).
+- `agent.CallModel(ctx, model, req, mw...)` sends one model call outside an agent through the same model handler an agent uses: hooks, clipped request slices and the response checks ([#104]).
+- Model records journal `Record.Finish`, `Record.RawFinish`, `Record.Model` (the `ModelInfo` of the model that answered) and per-turn `Record.PromptDigest` and `Record.ToolsDigest` (`agent.PromptDigest`, `agent.ToolsDigest`: SHA-256 of the system prompt and of the tool set the turn was sent, after middleware). `ModelInfo` has JSON tags ([#104]).
+- `middleware.CostMeter.Snapshot()` returns a `CostSnapshot` (`Answer`, `Spend`, `AnswerUSD`, `SpendUSD`) read under one lock ([#104]).
+- `trace.Model` records `gen_ai.response.finish_reasons` ([#104]).
 
 ### Changed
 
@@ -109,12 +114,18 @@ minor version (0.x.0) may include breaking API or journal-format changes; each o
 - **Breaking:** an empty finish reason from a custom `Model`, or in a response a middleware built, is recorded as `FinishStop`; a response a middleware built with `FinishLength`, `FinishFiltered`, an unknown reason, or `FinishToolUse` without a call is the error the model's own would be. The loop still decides whether to run tools from the message's calls, never from the reason ([#PRNUM]).
 - `agent.Replay` ends each turn with the finish reason and raw reason its record journaled, and reports the turn's discarded spend in `Finish.Discarded`, where it used to reach the run through the context; `middleware.Cost` on a replaying agent counts it too ([#PRNUM]).
 - `middleware.Hedge` is `c := call; c.Model = backup` and has no streaming code; `Retry` loops `next(ctx, call)`; `RateLimit` and `Cost` add hooks, and count requests outside an agent only through `agent.CallModel`; `trace.Model` names the provider and model from `agent.ModelInfoOf(call.Model)`; `WithRetrieval` journals through the call's run, not the context ([#PRNUM]).
+- **Breaking:** `agent.ModelHandler` is `func(ctx, ModelCall) (ModelResponse, error)`, and `Middleware` wraps it. A middleware passes on the call it received or a copy with fields changed; the model handler refuses a `ModelCall` built from scratch with `ErrConfig`, since it would drop the hooks outer middleware added. `Request.Messages` and `Request.Tools` arrive clipped at every handler, so an append in one hedged branch never writes into another's backing array ([#104]).
+- **Breaking:** hooks are added with `ModelCall.AddHook` (append-only) and have the signatures `Before(ctx, ModelCall) error` and `After(ctx, ModelCall, ModelAttempt)`; a hook whose `Before` returned nil gets exactly one `After`, also when a later hook's `Before` refuses the request. The run's spend meter is not a hook, so no middleware can hide a request from `WithTokenBudget` or `Result.Spend`. Requests are numbered per turn across every retried attempt and hedged target (`ModelCall.Attempt`) ([#104]).
+- **Breaking:** the stream sink is claimed by one request per turn at a time. A failed claimer releases it and the next claimer emits `TurnRestarted`; when the turn's response is not the one that streamed (a hedge target that was not the claimer, a fallback, a cache), the agent emits `TurnRestarted` and replays the response; nothing a request sends after its turn returned reaches the caller. With `Hedge`, the first target to start streams live, where before a hedged turn was delivered only once the winner was chosen ([#104]).
+- **Breaking:** an empty finish reason from a custom `Model`, or in a response a middleware built, is recorded as `FinishStop`; a response a middleware built with `FinishLength`, `FinishFiltered`, an unknown reason, or `FinishToolUse` without a call is the error the model's own would be. The loop still decides whether to run tools from the message's calls, never from the reason ([#104]).
+- `agent.Replay` ends each turn with the finish reason and raw reason its record journaled, and reports the turn's discarded spend in `Finish.Discarded`, where it used to reach the run through the context; `middleware.Cost` on a replaying agent counts it too ([#104]).
+- `middleware.Hedge` is `c := call; c.Model = backup` and has no streaming code; `Retry` loops `next(ctx, call)`; `RateLimit` and `Cost` add hooks, and count requests outside an agent only through `agent.CallModel`; `trace.Model` names the provider and model from `agent.ModelInfoOf(call.Model)`; `WithRetrieval` journals through the call's run, not the context ([#104]).
 
 ### Removed
 
-- **Breaking:** `agent.DetachModelSink`, `agent.EmitMessage`, `agent.WithModel(ctx, m)` and `agent.WithModelCallHook(ctx, h)`: the model call path carries no engine data in the context. Use `ModelCall.Model` to retarget a call and `ModelCall.AddHook` to add a hook ([#PRNUM]).
-- **Breaking:** `middleware.CostMeter.Total`, `Usage`, `Spent` and `SpentTotal`; use `Snapshot` ([#PRNUM]).
-- **Breaking:** `trace.WithSystem` and `trace.WithModel`; the chat span reads the provider and model from the call's `Model` (`agent.Describer`) ([#PRNUM]).
+- **Breaking:** `agent.DetachModelSink`, `agent.EmitMessage`, `agent.WithModel(ctx, m)` and `agent.WithModelCallHook(ctx, h)`: the model call path carries no engine data in the context. Use `ModelCall.Model` to retarget a call and `ModelCall.AddHook` to add a hook ([#104]).
+- **Breaking:** `middleware.CostMeter.Total`, `Usage`, `Spent` and `SpentTotal`; use `Snapshot` ([#104]).
+- **Breaking:** `trace.WithSystem` and `trace.WithModel`; the chat span reads the provider and model from the call's `Model` (`agent.Describer`) ([#104]).
 
 ## [0.8.0] - 2026-09-30
 
@@ -555,6 +566,7 @@ First public release.
 [#103]: https://github.com/bide-ai/bide/pull/103
 [#112]: https://github.com/bide-ai/bide/pull/112
 [#115]: https://github.com/bide-ai/bide/pull/115
+[#104]: https://github.com/bide-ai/bide/pull/104
 [78f8db6]: https://github.com/bide-ai/bide/commit/78f8db6
 [994721b]: https://github.com/bide-ai/bide/commit/994721b
 [3262cd1]: https://github.com/bide-ai/bide/commit/3262cd1
