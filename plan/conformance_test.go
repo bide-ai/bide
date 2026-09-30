@@ -145,7 +145,7 @@ func TestConformUnreachableArm(t *testing.T) {
 }
 
 // TestConformHaltedRunIsObservable asserts a partial journal (an attempt marker
-// present without its result, as a *HaltAmbiguous run leaves behind) is NOT a
+// present without its result, as a *agent.OutcomeUnknown run leaves behind) is NOT a
 // divergence: the attempt maps to its declared node, and a missing result is an
 // in-flight state, not an unexpected step. Conform must not panic and must report
 // ok on such a journal.
@@ -169,8 +169,8 @@ func TestConformHaltedRunIsObservable(t *testing.T) {
 
 	// Simulate a run halted mid-node: the attempt marker for the entry node is
 	// recorded, but its result never was.
-	if _, err := mem.Do(ctx, "halt", attemptMarker("entry"), func(context.Context) (agent.Record, error) {
-		return agent.Record{Kind: agent.StepValue}, nil
+	if _, err := mem.Do(ctx, "halt", "attempt:step:node:entry", func(context.Context) (agent.Record, error) {
+		return agent.Record{Kind: agent.StepAttempt, ToolUseID: "node:entry"}, nil
 	}); err != nil {
 		t.Fatalf("inject attempt marker: %v", err)
 	}

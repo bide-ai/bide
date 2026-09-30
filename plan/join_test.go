@@ -64,7 +64,7 @@ func TestJoinDiamondRunsSequentially(t *testing.T) {
 	for _, r := range recs {
 		names[r.Name] = true
 	}
-	for _, want := range []string{"split", "y", "z", "merge", "attempt:split", "attempt:y", "attempt:z", "attempt:merge"} {
+	for _, want := range []string{"node:split", "node:y", "node:z", "node:merge", "attempt:step:node:split", "attempt:step:node:y", "attempt:step:node:z", "attempt:step:node:merge"} {
 		if !names[want] {
 			t.Errorf("journal missing expected record %q", want)
 		}
@@ -229,7 +229,7 @@ func TestJoinInputGatedBySwitchIsBuildError(t *testing.T) {
 // TestJoinDiamondCrashSweep sweeps a crash at every write point of the diamond and
 // asserts at-most-once semantics reach the join: each node (including the join's
 // merge) fires at most once across crash and resume, and each run ends either
-// completed (the merged output) or halted (*HaltAmbiguous naming a declared node).
+// completed (the merged output) or halted (*agent.OutcomeUnknown naming a declared node).
 // The join defaults non-idempotent, so a crash on its result write HALTS rather than
 // re-running the merge. It reuses the crashFlowStore DST harness from
 // flow_dst_test.go.
@@ -273,13 +273,13 @@ func TestJoinDiamondCrashSweep(t *testing.T) {
 				crashAt, splitCalls, yCalls, zCalls, mergeCalls)
 		}
 
-		var halt *HaltAmbiguous
+		var halt *agent.OutcomeUnknown
 		switch {
 		case err == nil:
 			// completed cleanly
 		case errors.As(err, &halt):
-			if halt.Step == "" {
-				t.Fatalf("crashAt=%d: halt named no step", crashAt)
+			if n, ok := nodeOfKey(halt.Op.ID); !ok || n == "" || halt.Op.Kind != agent.OpStep {
+				t.Fatalf("crashAt=%d: halt names %+v, want a node's Step", crashAt, halt.Op)
 			}
 		default:
 			t.Fatalf("crashAt=%d: unexpected terminal error: %v", crashAt, err)

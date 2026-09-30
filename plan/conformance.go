@@ -38,23 +38,31 @@ func (f *Flow[In, Out]) Conform(ctx context.Context, store agent.Durable, runID 
 //
 // The record-name scheme Run writes (see Flow.Run) is:
 //
-//   - "flow:digest"    -- the frozen topology digest Run records first (StepValue whose
+//   - "run:start"      -- how the run started (see agent.RunStart). It must record a
+//     flow run of this flow's name; any other start is a divergence.
+//   - "flow:digest"    -- the frozen topology digest Run records (StepValue whose
 //     Result is the JSON-encoded hex digest). It is an INTERNAL record of the run, not a
 //     declared node, so it is never an unexpected step; conform verifies it EQUALS the
 //     current flow's Digest() and reports a mismatch as a divergence ("ran against a
 //     different topology").
-//   - "<N>"            -- node N's result (StepValue whose Result is N's JSON output).
-//   - "attempt:<N>"    -- an attempt marker written BEFORE node N's body runs
-//     (StepValue whose Result records whether N was retry-safe when attempted, or is
-//     empty in a journal written before it did). It is an INTERNAL step of node N, not a distinct
-//     declared node, so it maps to N and is never a divergence on its own.
+//   - "node:<N>"       -- node N's result (StepValue whose Result is N's JSON output),
+//     or "node:iter:<i>:<N>" for iteration i of a loop body.
+//   - the Step's attempt markers of a node that is not retry-safe:
+//     "attempt:step:node:<N>" and its numbered re-attempts
+//     "attempt:retry:<g>:step:node:<N>" (StepAttempt). A marker is an INTERNAL
+//     record of node N, not a distinct declared node, so it maps to N and is never a
+//     divergence on its own.
 //   - "switch:<over>"  -- a switched node's journaled arm choice (StepValue whose
 //     Result is the JSON-encoded chosen target step name). It maps to the Switch
 //     declared over "<over>"; the recorded chosen target must be a declared arm of
 //     that Switch, else an unreachable/undeclared arm was taken (a divergence).
 //
-// A HALTED run (Run returned *HaltAmbiguous) leaves "attempt:<N>" present with the
-// "<N>" result missing for the halted node. That is a legitimate observable
+// The journal header and a claim's bookkeeping (a claim recorded as not started) say
+// how the journal is written and how a claim was decided, not what the flow did, so
+// conform ignores them.
+//
+// A HALTED run (Run returned *agent.OutcomeUnknown) leaves a node's attempt marker
+// present with its "node:<N>" result missing. That is a legitimate observable
 // in-flight state, not a divergence: conform reports what is observable and does
 // not require every attempted node to have completed. conform never panics on a
 // partial, halted, or empty journal.
@@ -63,12 +71,9 @@ func (c *builderCore) conform(ctx context.Context, store agent.Durable, runID st
 	if err != nil {
 		return false, nil, fmt.Errorf("plan: conform run %q: load history: %w", runID, err)
 	}
-	if len(recs) > 0 && recs[0].Kind == agent.StepHeader {
-		recs = recs[1:] // the journal header says how the journal is written, not what the flow did
-	}
-	// A claim's bookkeeping (a node's claim recorded as not started) says how a claim was decided,
-	// not what the flow did.
-	recs = slices.DeleteFunc(slices.Clone(recs), func(r agent.Record) bool { return r.Kind == agent.StepNotStarted })
+	recs = slices.DeleteFunc(slices.Clone(recs), func(r agent.Record) bool {
+		return r.Kind == agent.StepHeader || r.Kind == agent.StepNotStarted
+	})
 
 	// Index the declared topology. byName covers every declared node; the Switch
 	// set and each Switch's declared arm targets let us validate a recorded choice.
@@ -132,22 +137,36 @@ func (c *builderCore) conform(ctx context.Context, store agent.Durable, runID st
 				diffs = append(diffs, r.Name+" -> "+chosen+" (unreachable arm taken)")
 			}
 
+		case r.Name == runStartStep:
+			// How the run started: it must be a flow run of this flow.
+			var st agent.RunStart
+			if json.Unmarshal(r.Result, &st) != nil {
+				diffs = append(diffs, r.Name+" (unreadable run start)")
+				continue
+			}
+			if st.Kind != agent.RunKindFlow || st.Flow == nil || st.Flow.Name != c.flowName {
+				diffs = append(diffs, r.Name+" (not a run of this flow)")
+			}
+
 		case strings.HasPrefix(r.Name, "attempt:"):
-			// An internal attempt marker of a node, possibly iteration-scoped for a bounded
-			// loop: "attempt:<N>" or "attempt:iter:<n>:<N>". Strip the "iter:<n>:" prefix to
-			// recover the declared node it guards; only an attempt for an UNDECLARED node is
-			// a divergence. A present attempt whose result is missing is a halted/in-flight
-			// node, not a divergence, so we do not require the "<N>" result to also be present.
-			guarded := stripIterPrefix(strings.TrimPrefix(r.Name, "attempt:"))
-			if c.byName[guarded] == nil {
+			// A node's attempt marker, the Step's claim before the node's body ran, possibly
+			// iteration-scoped for a bounded loop and possibly a numbered re-attempt. Only a
+			// marker of a node key for a DECLARED node is internal; any other is a divergence.
+			// A present marker whose result is missing is a halted/in-flight node, not a
+			// divergence, so we do not require the node's result to also be present.
+			key, ok := attemptedStep(r.Name)
+			if !ok || r.Kind != agent.StepAttempt {
+				diffs = append(diffs, r.Name+" (unexpected step)")
+				continue
+			}
+			if n, isNode := nodeOfKey(key); !isNode || c.byName[n] == nil {
 				diffs = append(diffs, r.Name+" (attempt for undeclared step)")
 			}
 
 		default:
-			// A node result record, possibly iteration-scoped for a bounded loop:
-			// "<N>" for a linear node, "iter:<n>:<N>" for one iteration of a loop-body
-			// node. Strip the "iter:<n>:" prefix to map it back to its declared node.
-			if c.byName[stripIterPrefix(r.Name)] == nil {
+			// A node result record: "node:<N>" for a linear node, "node:iter:<i>:<N>" for
+			// one iteration of a loop-body node. Map it back to its declared node.
+			if n, isNode := nodeOfKey(r.Name); !isNode || c.byName[n] == nil {
 				diffs = append(diffs, r.Name+" (unexpected step)")
 			}
 		}
@@ -156,24 +175,65 @@ func (c *builderCore) conform(ctx context.Context, store agent.Durable, runID st
 	return len(diffs) == 0, diffs, nil
 }
 
+// runStartStep is the key of the record of how a run started (see agent.RunStart).
+const runStartStep = "run:start"
+
+// nodeOfKey maps a node key Run writes ("node:<N>", or "node:iter:<i>:<N>" for a
+// loop-body iteration, see nodeKey and iterNodeKey) back to its node name N. ok is
+// false for any other key.
+func nodeOfKey(key string) (string, bool) {
+	rest, ok := strings.CutPrefix(key, "node:")
+	if !ok {
+		return "", false
+	}
+	return stripIterPrefix(rest), true
+}
+
+// attemptedStep returns the step key an attempt marker guards: name without
+// "attempt:step:" for a first attempt, or without "attempt:retry:<g>:step:" for a
+// numbered re-attempt (see agent.Step). ok is false for any other key, a tool
+// call's marker among them.
+func attemptedStep(name string) (string, bool) {
+	if key, ok := strings.CutPrefix(name, "attempt:step:"); ok {
+		return key, true
+	}
+	rest, ok := strings.CutPrefix(name, "attempt:retry:")
+	if !ok {
+		return "", false
+	}
+	digits, tail, ok := strings.Cut(rest, ":")
+	if !ok || !isDigits(digits) {
+		return "", false
+	}
+	return strings.CutPrefix(tail, "step:")
+}
+
+// isDigits reports whether s is one or more decimal digits.
+func isDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 // stripIterPrefix removes a leading iteration scope "iter:<n>:" (where <n> is one or
-// more decimal digits) from a journal key, so a bounded-loop node's iteration-scoped
-// record maps back to its declared node. A key without a well-formed iteration prefix
-// is returned unchanged, so a malformed or non-loop name is still matched (or flagged)
-// against the declared topology as before. It mirrors iterKey/attemptMarker in flow.go.
+// more decimal digits) from a key, so a bounded-loop node's iteration-scoped record
+// maps back to its declared node. A key without a well-formed iteration prefix is
+// returned unchanged, so a malformed or non-loop name is still matched (or flagged)
+// against the declared topology as before.
 func stripIterPrefix(name string) string {
 	rest, ok := strings.CutPrefix(name, "iter:")
 	if !ok {
 		return name
 	}
 	digits, node, ok := strings.Cut(rest, ":")
-	if !ok || digits == "" {
+	if !ok || !isDigits(digits) {
 		return name // not "iter:<n>:<node>"; leave unchanged
-	}
-	for _, r := range digits {
-		if r < '0' || r > '9' {
-			return name // the segment after "iter:" is not a number; not an iteration key
-		}
 	}
 	return node
 }

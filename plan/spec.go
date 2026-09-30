@@ -40,8 +40,8 @@ type node struct {
 	// for a core tool. The zero value (no ReadOnly/Idempotent, no IdempotencyKey)
 	// is the conservative default: on an ambiguous mid-node crash the node HALTS
 	// rather than re-run, preserving the surface's at-most-once-by-default. A node
-	// marked retry-safe (see safety.retriableOnResume via nodeRetriableOnResume)
-	// instead re-runs its body from the top on resume (see runNode). It is a
+	// marked retry-safe (agent.Safety.RetrySafe) instead re-runs its body from the
+	// top on resume (see runNode). It is a
 	// runtime resume property, not part of the wired topology, so it deliberately
 	// does NOT participate in Digest (a flow's identity is its shape).
 	safety agent.Safety

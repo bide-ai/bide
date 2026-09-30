@@ -649,8 +649,8 @@ func safetySuffix(safety string) string {
 }
 
 // TestLoadSafetyConfigRerunsOnAmbiguousCrash proves a loaded node Go declares read-only,
-// with config "safety": "readonly", RE-RUNS its body on the ambiguous-crash window (attempt
-// marker persisted, result lost) and COMPLETES, where the SAME node lowered to
+// with config "safety": "readonly", RE-RUNS its body on the ambiguous-crash window (body
+// run, result lost) and COMPLETES, where the SAME node lowered to
 // "side_effect" halts (TestLoadSafetyDefaultHalts). It reuses the crashFlowStore DST harness from flow_dst_test.go.
 func TestLoadSafetyConfigRerunsOnAmbiguousCrash(t *testing.T) {
 	// Find the crash landing on the read node's result write, with the readonly config.
@@ -672,16 +672,15 @@ func TestLoadSafetyConfigRerunsOnAmbiguousCrash(t *testing.T) {
 		if hErr != nil {
 			t.Fatalf("History: %v", hErr)
 		}
-		var haveAttempt, haveResult bool
+		// A retry-safe node writes no attempt marker: the window is its body run with no
+		// result recorded.
+		haveResult := false
 		for _, r := range recs {
-			switch r.Name {
-			case "attempt:read":
-				haveAttempt = true
-			case "read":
+			if r.Name == "node:read" {
 				haveResult = true
 			}
 		}
-		if haveAttempt && !haveResult && reads >= 1 {
+		if !haveResult && reads >= 1 {
 			mem = m
 			readsAtCrash = reads
 			break
@@ -692,16 +691,16 @@ func TestLoadSafetyConfigRerunsOnAmbiguousCrash(t *testing.T) {
 	}
 
 	// Resume with no further crash. The config safety "readonly" opts the node into
-	// re-run, so the flow completes rather than returning *HaltAmbiguous.
+	// re-run, so the flow completes rather than returning *agent.OutcomeUnknown.
 	reads := readsAtCrash
 	flow, err := loadReadFlow(t, &reads, 42, "readonly")
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
 	out, err := flow.Run(context.Background(), mem, "cfg-safety", 0)
-	var halt *HaltAmbiguous
+	var halt *agent.OutcomeUnknown
 	if errors.As(err, &halt) {
-		t.Fatalf("config-safety readonly node halted at %q; want re-run and completion", halt.Step)
+		t.Fatalf("config-safety readonly node halted at %q; want re-run and completion", halt.Op.ID)
 	}
 	if err != nil {
 		t.Fatalf("resume Run: %v", err)
@@ -736,9 +735,9 @@ func TestLoadSafetyDefaultHalts(t *testing.T) {
 		var haveAttempt, haveResult bool
 		for _, r := range recs {
 			switch r.Name {
-			case "attempt:read":
+			case "attempt:step:node:read":
 				haveAttempt = true
-			case "read":
+			case "node:read":
 				haveResult = true
 			}
 		}
@@ -758,12 +757,12 @@ func TestLoadSafetyDefaultHalts(t *testing.T) {
 		t.Fatalf("Load: %v", err)
 	}
 	_, err = flow.Run(context.Background(), mem, "cfg-default", 0)
-	var halt *HaltAmbiguous
+	var halt *agent.OutcomeUnknown
 	if !errors.As(err, &halt) {
-		t.Fatalf("default node did not halt: err = %v; want *HaltAmbiguous", err)
+		t.Fatalf("default node did not halt: err = %v; want *agent.OutcomeUnknown", err)
 	}
-	if halt.Step != "read" {
-		t.Fatalf("halt named %q, want %q", halt.Step, "read")
+	if halt.Op.ID != "node:read" || halt.Op.Kind != agent.OpStep {
+		t.Fatalf("halt named %v, want step %q", halt.Op, "node:read")
 	}
 	if reads != readsAtCrash {
 		t.Fatalf("default node re-ran its body on resume (reads %d -> %d); it must halt", readsAtCrash, reads)

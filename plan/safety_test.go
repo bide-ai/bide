@@ -10,9 +10,9 @@ import (
 )
 
 // Safety opt-in on the plan surface: a node marked ReadOnly/Idempotent RE-RUNS its
-// body on an ambiguous mid-node crash (an attempt marker with no result) instead of
+// body on an ambiguous mid-node crash (its body ran, its result was lost) instead of
 // halting, while an unmarked non-idempotent node keeps the conservative
-// *HaltAmbiguous. A Tool node auto-derives its Safety from the wrapped
+// *agent.OutcomeUnknown. A Tool node auto-derives its Safety from the wrapped
 // agent.Tool.Safety(). These tests reuse the crashFlowStore DST harness from
 // flow_dst_test.go (errCrash, crashFlowStore, runFlowOnce style) for crash injection.
 
@@ -46,7 +46,7 @@ func buildUnmarkedReadFlow(reads *int, value int) (*Flow[int, int], error) {
 
 // findEntryResultCrash sweeps crash points to find the one that lands on the entry
 // node's RESULT write: the body ran (reads incremented) but its result record was
-// lost, leaving the attempt marker persisted and the result missing. That is the
+// lost (a node that is not retry-safe also leaves its attempt marker persisted). That is the
 // exact ambiguous-crash window this feature changes. It returns the shared journal
 // primed to that state and the reads count at the crash.
 func findEntryResultCrash(t *testing.T, build func(reads *int) (*Flow[int, int], error)) (agent.Durable, int) {
@@ -63,22 +63,14 @@ func findEntryResultCrash(t *testing.T, build func(reads *int) (*Flow[int, int],
 		if !errors.Is(err, errCrash) {
 			continue
 		}
-		// The crash persisted the attempt marker but not the result iff, on resume with
-		// no further crash, the journal has attempt:read but no read result yet.
+		// The crash landed in the window iff the body ran but the journal holds no
+		// node:read result. A node that is not retry-safe also holds its attempt marker
+		// then (its claim precedes the body); a retry-safe node writes none.
 		recs, hErr := mem.History(context.Background(), "safety")
 		if hErr != nil {
 			t.Fatalf("History: %v", hErr)
 		}
-		var haveAttempt, haveResult bool
-		for _, r := range recs {
-			switch r.Name {
-			case "attempt:read":
-				haveAttempt = true
-			case "read":
-				haveResult = true
-			}
-		}
-		if haveAttempt && !haveResult && reads >= 1 {
+		if !hasRecord(recs, "node:read") && reads >= 1 {
 			return mem, reads
 		}
 	}
@@ -87,7 +79,7 @@ func findEntryResultCrash(t *testing.T, build func(reads *int) (*Flow[int, int],
 }
 
 // TestSafety_ReadOnly_RerunsAndCompletes proves a ReadOnly node re-runs its body on
-// the ambiguous-crash window and the flow COMPLETES (no HaltAmbiguous), and that the
+// the ambiguous-crash window and the flow COMPLETES (no OutcomeUnknown), and that the
 // re-run is safe: the read returns the same value both times, so the completed
 // output is correct.
 func TestSafety_ReadOnly_RerunsAndCompletes(t *testing.T) {
@@ -96,16 +88,16 @@ func TestSafety_ReadOnly_RerunsAndCompletes(t *testing.T) {
 	})
 
 	// Resume with no further crash. The node is ReadOnly, so runNode re-runs the body
-	// rather than returning *HaltAmbiguous.
+	// rather than returning *agent.OutcomeUnknown.
 	reads := readsAtCrash
 	flow, err := buildReadFlow(&reads, 42, ReadOnly())
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
 	out, err := flow.Run(context.Background(), mem, "safety", 0)
-	var halt *HaltAmbiguous
+	var halt *agent.OutcomeUnknown
 	if errors.As(err, &halt) {
-		t.Fatalf("ReadOnly node halted at %q; want re-run and completion", halt.Step)
+		t.Fatalf("ReadOnly node halted at %q; want re-run and completion", halt.Op.ID)
 	}
 	if err != nil {
 		t.Fatalf("resume Run: %v", err)
@@ -130,9 +122,9 @@ func TestSafety_Idempotent_RerunsAndCompletes(t *testing.T) {
 		t.Fatalf("Build: %v", err)
 	}
 	out, err := flow.Run(context.Background(), mem, "safety", 0)
-	var halt *HaltAmbiguous
+	var halt *agent.OutcomeUnknown
 	if errors.As(err, &halt) {
-		t.Fatalf("Idempotent node halted at %q; want re-run and completion", halt.Step)
+		t.Fatalf("Idempotent node halted at %q; want re-run and completion", halt.Op.ID)
 	}
 	if err != nil {
 		t.Fatalf("resume Run: %v", err)
@@ -143,7 +135,7 @@ func TestSafety_Idempotent_RerunsAndCompletes(t *testing.T) {
 }
 
 // TestSafety_Default_StillHalts is the regression guard: an unmarked (non-idempotent)
-// node hitting the SAME ambiguous-crash window still returns *HaltAmbiguous and does
+// node hitting the SAME ambiguous-crash window still returns *agent.OutcomeUnknown and does
 // NOT re-run the body, preserving the surface's safe-by-default behavior.
 func TestSafety_Default_StillHalts(t *testing.T) {
 	mem, readsAtCrash := findEntryResultCrash(t, func(reads *int) (*Flow[int, int], error) {
@@ -155,12 +147,12 @@ func TestSafety_Default_StillHalts(t *testing.T) {
 		t.Fatalf("Build: %v", err)
 	}
 	_, err = flow.Run(context.Background(), mem, "safety", 0)
-	var halt *HaltAmbiguous
+	var halt *agent.OutcomeUnknown
 	if !errors.As(err, &halt) {
-		t.Fatalf("unmarked node did not halt: err = %v; want *HaltAmbiguous", err)
+		t.Fatalf("unmarked node did not halt: err = %v; want *agent.OutcomeUnknown", err)
 	}
-	if halt.Step != "read" {
-		t.Fatalf("halt named %q, want %q", halt.Step, "read")
+	if halt.Op.ID != "node:read" || halt.Op.Kind != agent.OpStep {
+		t.Fatalf("halt named %v, want step %q", halt.Op, "node:read")
 	}
 	if reads != readsAtCrash {
 		t.Fatalf("unmarked node re-ran its body on resume (reads %d -> %d); it must halt without re-running", readsAtCrash, reads)
@@ -195,7 +187,7 @@ func buildToolFlow(t agent.Tool) (*Flow[int, int], error) {
 
 // findToolResultCrash is findEntryResultCrash for the Tool flow: it sweeps for the
 // crash landing on the "call" node's result write.
-func findToolResultCrash(t *testing.T, tool agent.Tool) agent.Durable {
+func findToolResultCrash(t *testing.T, tool safetyTool) agent.Durable {
 	t.Helper()
 	for crashAt := 1; crashAt <= 32; crashAt++ {
 		mem := agent.NewMemStore()
@@ -212,16 +204,7 @@ func findToolResultCrash(t *testing.T, tool agent.Tool) agent.Durable {
 		if hErr != nil {
 			t.Fatalf("History: %v", hErr)
 		}
-		var haveAttempt, haveResult bool
-		for _, r := range recs {
-			switch r.Name {
-			case "attempt:call":
-				haveAttempt = true
-			case "call":
-				haveResult = true
-			}
-		}
-		if haveAttempt && !haveResult {
+		if !hasRecord(recs, "node:call") && *tool.calls >= 1 {
 			return mem
 		}
 	}
@@ -242,9 +225,9 @@ func TestSafety_Tool_AutoDerivesReadOnly(t *testing.T) {
 		t.Fatalf("Build: %v", err)
 	}
 	out, err := flow.Run(context.Background(), mem, "tool", 0)
-	var halt *HaltAmbiguous
+	var halt *agent.OutcomeUnknown
 	if errors.As(err, &halt) {
-		t.Fatalf("ReadOnly tool halted at %q; want auto-derived re-run and completion", halt.Step)
+		t.Fatalf("ReadOnly tool halted at %q; want auto-derived re-run and completion", halt.Op.ID)
 	}
 	if err != nil {
 		t.Fatalf("resume Run: %v", err)
@@ -271,12 +254,12 @@ func TestSafety_Tool_AutoDerivesNonIdempotentHalts(t *testing.T) {
 		t.Fatalf("Build: %v", err)
 	}
 	_, err = flow.Run(context.Background(), mem, "tool", 0)
-	var halt *HaltAmbiguous
+	var halt *agent.OutcomeUnknown
 	if !errors.As(err, &halt) {
-		t.Fatalf("non-idempotent tool did not halt: err = %v; want *HaltAmbiguous", err)
+		t.Fatalf("non-idempotent tool did not halt: err = %v; want *agent.OutcomeUnknown", err)
 	}
-	if halt.Step != "call" {
-		t.Fatalf("halt named %q, want %q", halt.Step, "call")
+	if halt.Op.ID != "node:call" || halt.Op.Kind != agent.OpStep {
+		t.Fatalf("halt named %v, want step %q", halt.Op, "node:call")
 	}
 	if calls != callsAtCrash {
 		t.Fatalf("non-idempotent tool re-ran on resume (calls %d -> %d); it must halt", callsAtCrash, calls)
@@ -306,16 +289,7 @@ func TestSafety_ExplicitOptionOverridesToolSafety(t *testing.T) {
 			continue
 		}
 		recs, _ := m.History(context.Background(), "override")
-		var haveAttempt, haveResult bool
-		for _, r := range recs {
-			switch r.Name {
-			case "attempt:call":
-				haveAttempt = true
-			case "call":
-				haveResult = true
-			}
-		}
-		if haveAttempt && !haveResult {
+		if !hasRecord(recs, "node:call") && calls >= 1 {
 			mem = m
 			break
 		}
@@ -331,9 +305,9 @@ func TestSafety_ExplicitOptionOverridesToolSafety(t *testing.T) {
 		t.Fatalf("Build: %v", err)
 	}
 	out, err := flow.Run(context.Background(), mem, "override", 0)
-	var halt *HaltAmbiguous
+	var halt *agent.OutcomeUnknown
 	if errors.As(err, &halt) {
-		t.Fatalf("explicit ReadOnly override halted at %q; want re-run and completion", halt.Step)
+		t.Fatalf("explicit ReadOnly override halted at %q; want re-run and completion", halt.Op.ID)
 	}
 	if err != nil {
 		t.Fatalf("resume Run: %v", err)
@@ -360,4 +334,14 @@ func TestSafety_NotInDigest(t *testing.T) {
 	if plain.Digest() != safe.Digest() {
 		t.Fatalf("Safety changed the Digest: plain %s != readonly %s; Safety must not be part of topology identity", plain.Digest(), safe.Digest())
 	}
+}
+
+// hasRecord reports whether recs holds a record named name.
+func hasRecord(recs []agent.Record, name string) bool {
+	for _, r := range recs {
+		if r.Name == name {
+			return true
+		}
+	}
+	return false
 }

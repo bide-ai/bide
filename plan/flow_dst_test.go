@@ -10,13 +10,12 @@ import (
 )
 
 // Deterministic Simulation Testing of the substrate invariant as it reaches the
-// plan surface: Flow.Run drives every node under the AUTOMATIC two-phase
-// attempt/result guard, so a NON-IDEMPOTENT side effect written as a plain step
-// body fires AT MOST ONCE across a crash and resume, with NO per-step opt-in. The
-// step here is a bare increment; the guard lives in Run, not in the step. This
-// mirrors the core dst_test crash-sweep, proving plan inherits at-most-once and
-// halt-on-ambiguity by lowering to store.Do/History rather than by adding an
-// executor.
+// plan surface: Flow.Run runs every node as an agent.Step, so a NON-IDEMPOTENT side
+// effect written as a plain step body fires AT MOST ONCE across a crash and resume,
+// with NO per-step opt-in. The step here is a bare increment; the guard is the Step's
+// attempt claim, not the step body's. This mirrors the core dst_test crash-sweep,
+// proving plan inherits at-most-once and halt-on-ambiguity by lowering onto Step
+// rather than by adding an executor.
 
 // errCrash is the DST sentinel a crashFlowStore returns instead of persisting the
 // crash-point write, simulating a process crash between a step's side effect and
@@ -101,7 +100,7 @@ func runFlowOnce(mem agent.Durable, count *int, crashAt int) error {
 // lowered flow. The plain non-idempotent increment must fire AT MOST ONCE across
 // crash+resume purely because Run guards it, and the run must end completed (the
 // effect fired once and the flow produced Out) or HALTED (the crash landed between
-// the effect and its result, so Run returns *HaltAmbiguous rather than re-firing).
+// the effect and its result, so Run returns *agent.OutcomeUnknown rather than re-firing).
 // At least one crash point must land on the effect's own result write so the halt
 // path is exercised and the sweep is not vacuous.
 func TestDST_Flow_NoDoubleFire_CrashSweep(t *testing.T) {
@@ -123,7 +122,7 @@ func TestDST_Flow_NoDoubleFire_CrashSweep(t *testing.T) {
 		if count > 1 {
 			t.Fatalf("crashAt=%d: guarded effect fired %d times, want at most once (DOUBLE FIRE)", crashAt, count)
 		}
-		var halt *HaltAmbiguous
+		var halt *agent.OutcomeUnknown
 		switch {
 		case err == nil:
 			// Completed: the effect fired exactly once and the flow produced Out.
@@ -135,10 +134,10 @@ func TestDST_Flow_NoDoubleFire_CrashSweep(t *testing.T) {
 			// The effect fired at most once (asserted above); the run halted rather
 			// than double-firing. The guard is automatic for EVERY node, so the halt
 			// can name any node whose result write was lost to the crash; it must name
-			// some declared step.
+			// some declared node, as a Step.
 			haltSeen = true
-			if halt.Step == "" {
-				t.Fatalf("crashAt=%d: halt named no step", crashAt)
+			if n, ok := nodeOfKey(halt.Op.ID); !ok || n == "" || halt.Op.Kind != agent.OpStep || halt.RootRunID != "dst" {
+				t.Fatalf("crashAt=%d: halt names %+v in run %q, want a node's Step in run dst", crashAt, halt.Op, halt.RootRunID)
 			}
 		default:
 			t.Fatalf("crashAt=%d: unexpected terminal error: %v", crashAt, err)
@@ -193,10 +192,10 @@ func TestDST_Flow_ResumeReusesJournaledSteps(t *testing.T) {
 }
 
 // TestDST_Flow_JournalRecordScheme asserts the exact journal-record name scheme
-// Run writes: an attempt marker "attempt:<name>" and a result "<name>" per node,
-// and a Switch choice "switch:<over>". Only the taken arm runs. Agent E's
-// conformance relies on this scheme (attempt markers are internal steps of the
-// node with the same name, not divergences).
+// Run writes: the run's start, the topology digest, a Step attempt marker
+// "attempt:step:node:<name>" and a result "node:<name>" per node, and a Switch choice
+// "switch:<over>". Only the taken arm runs. Conformance relies on this scheme
+// (attempt markers are internal records of their node, not divergences).
 func TestDST_Flow_JournalRecordScheme(t *testing.T) {
 	var count int
 	mem := agent.NewMemStore()
@@ -218,7 +217,7 @@ func TestDST_Flow_JournalRecordScheme(t *testing.T) {
 	}
 
 	// Attempt marker + result for each executed node.
-	for _, want := range []string{"attempt:entry", "entry", "attempt:high", "high"} {
+	for _, want := range []string{"run:start", "flow:digest", "attempt:step:node:entry", "node:entry", "attempt:step:node:high", "node:high"} {
 		if !names[want] {
 			t.Errorf("journal missing expected record %q", want)
 		}
@@ -228,7 +227,7 @@ func TestDST_Flow_JournalRecordScheme(t *testing.T) {
 		t.Errorf("journal missing Switch choice record %q", "switch:entry")
 	}
 	// The untaken arm "low" must not have run (neither its attempt nor its result).
-	if names["low"] || names["attempt:low"] {
+	if names["node:low"] || names["attempt:step:node:low"] {
 		t.Errorf("untaken arm %q was executed: only the taken arm should run", "low")
 	}
 }
@@ -245,7 +244,7 @@ func TestDST_Flow_HaltThenResolveCompletes(t *testing.T) {
 	// the count.
 	var count int
 	var mem agent.Durable
-	var halt *HaltAmbiguous
+	var halt *agent.OutcomeUnknown
 	for crashAt := 1; crashAt <= 32; crashAt++ {
 		count = 0
 		mem = agent.NewMemStore()
@@ -254,25 +253,23 @@ func TestDST_Flow_HaltThenResolveCompletes(t *testing.T) {
 			continue
 		}
 		err = runFlowOnce(mem, &count, 0) // resume with no further crash
-		if errors.As(err, &halt) && halt.Step == "entry" {
+		if errors.As(err, &halt) && halt.Op.ID == "node:entry" {
 			break
 		}
 		halt = nil
 	}
 	if halt == nil {
-		t.Fatal("no crash point produced a HaltAmbiguous on the entry step to resolve")
+		t.Fatal("no crash point produced a OutcomeUnknown on the entry step to resolve")
 	}
 	if count != 1 {
 		t.Fatalf("at halt the effect fired %d times, want exactly 1", count)
 	}
 
-	// Resolve out of band: record the missing result for the halted step, as an
-	// operator confirming the effect landed would. Then a fresh Run completes by
-	// replay without re-firing the increment (count stays 1).
-	if _, err := mem.Do(context.Background(), "dst", "entry", func(context.Context) (agent.Record, error) {
-		return agent.Record{Kind: agent.StepValue, Result: []byte("1")}, nil
-	}); err != nil {
-		t.Fatalf("record resolved result: %v", err)
+	// Resolve out of band with ResolveHaltRef, as an operator confirming the effect
+	// landed would: it records the node's output. Then a fresh Run completes by replay
+	// without re-firing the increment (count stays 1).
+	if err := agent.ResolveHaltRef(context.Background(), mem, halt.Ref(), agent.Outcome{Result: 1}); err != nil {
+		t.Fatalf("ResolveHaltRef: %v", err)
 	}
 
 	flow, err := buildCounterFlow(&count)

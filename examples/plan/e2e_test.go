@@ -131,7 +131,7 @@ func TestE2E_ResumeAfterKillCompletesOnce(t *testing.T) {
 // TestE2E_HaltOnAmbiguityAcrossProcesses is scenario (b): phase 1 fires the reserve side
 // effect then crashes BEFORE reserve's result is journaled (-crash during-reserve),
 // leaving an attempt marker with no result. Phase 2 is a fresh process on the same
-// journal that resumes and must HALT at reserve (*plan.HaltAmbiguous) rather than re-fire
+// journal that resumes and must HALT at reserve (*agent.OutcomeUnknown) rather than re-fire
 // the effect. The reserve side effect must have fired exactly once, from phase 1 only.
 func TestE2E_HaltOnAmbiguityAcrossProcesses(t *testing.T) {
 	bin := buildExample(t)
@@ -156,8 +156,8 @@ func TestE2E_HaltOnAmbiguityAcrossProcesses(t *testing.T) {
 	if code2 != 0 {
 		t.Fatalf("phase 2 reported the halt through a clean exit; got exit %d\n%s", code2, out2)
 	}
-	if !strings.Contains(out2, `Run halted at step "reserve"`) {
-		t.Fatalf("phase 2 was expected to halt at reserve (HaltAmbiguous), output was:\n%s", out2)
+	if !strings.Contains(out2, `Run halted at step "node:reserve"`) {
+		t.Fatalf("phase 2 was expected to halt at reserve (*agent.OutcomeUnknown), output was:\n%s", out2)
 	}
 	if n := witnessLines(t, witness); n != 1 {
 		t.Fatalf("across both processes: reserve fired %d times, want exactly 1 (no double-fire on resume)\n--- phase1 ---\n%s\n--- phase2 ---\n%s", n, out1, out2)

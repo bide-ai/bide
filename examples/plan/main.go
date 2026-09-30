@@ -7,15 +7,16 @@
 //   - flow.Conform(...) and prints whether the journaled run followed the declared graph;
 //   - proves CRYPTOGRAPHIC conformance: commits to the run's journal with a signed
 //     audit tree head, obtains an RFC 6962 inclusion proof for the flow:digest record
-//     Run journaled first, and checks the proven digest equals flow.Digest() (see
+//     Run journaled before any node, and checks the proven digest equals flow.Digest() (see
 //     proveTopologyConformance). This is the offline-verifiable "the run followed the
 //     signed diagram" story.
 //
 // The point it demonstrates is the substrate guarantee the plan surface inherits for
 // free: a non-idempotent side effect (reserving inventory, modelled as one appended
-// witness line) fires AT MOST ONCE across a crash. Run drives every node under an
-// attempt/result guard, so a node whose attempt was recorded but whose result was lost
-// to a crash HALTS the resumed run (*plan.HaltAmbiguous) rather than re-firing the body.
+// witness line) fires AT MOST ONCE across a crash. Run drives every node as an agent.Step,
+// whose attempt claim guards its body, so a node whose attempt was recorded but whose
+// result was lost to a crash HALTS the resumed run (*agent.OutcomeUnknown) rather than
+// re-firing the body.
 //
 // With no flags it is a clean demo end to end (no API key, no network):
 //
@@ -34,8 +35,8 @@
 //	               reserve commit, then os.Exit(1) at the start of finalize (leaves
 //	               finalize attempted-but-unfinished)
 //	-resolve       on resume: if Run halts at the side-effect-free finalize step, record
-//	               finalize's result out of band (the documented HaltAmbiguous resolution)
-//	               and re-run to completion
+//	               finalize's result with agent.ResolveHaltRef (the documented resolution
+//	               of a halt) and re-run to completion
 //	-config        build the flow by plan.Load-ing the declarative config (declarativeConfig) instead
 //	               of the code builder. The config-loaded flow uses the SAME node names and
 //	               topology as the code-built flow, so it produces the SAME journal keys and
@@ -132,13 +133,13 @@ func main() {
 	out, runErr := flow.Run(ctx, store, cfg.runID, order)
 
 	// A resumed run may halt with an unknown outcome (an attempt recorded, its result
-	// lost to a crash). Report it, and optionally resolve a halt at the side-effect-free
-	// finalize step out of band, exactly as the HaltAmbiguous doc prescribes.
-	var halt *plan.HaltAmbiguous
-	if errors.As(runErr, &halt) {
-		fmt.Printf("Run halted at step %q: %v\n", halt.Step, halt)
-		if cfg.resolve && halt.Step == "finalize" {
-			out, runErr = resolveFinalize(ctx, flow, store, cfg.runID, order)
+	// lost to a crash). A node halts as the Step named by its node key ("node:<name>").
+	// Report it, and optionally resolve a halt at the side-effect-free finalize step with
+	// agent.ResolveHaltRef, exactly as the OutcomeUnknown doc prescribes.
+	if halt, ok := errors.AsType[*agent.OutcomeUnknown](runErr); ok {
+		fmt.Printf("Run halted at step %q: %v\n", halt.Op.ID, halt)
+		if cfg.resolve && halt.Op.ID == "node:finalize" {
+			out, runErr = resolveFinalize(ctx, flow, store, halt.Ref(), order)
 		} else {
 			reportConform(ctx, flow, store, cfg.runID)
 			return
@@ -172,7 +173,7 @@ func main() {
 //
 //  1. the DECLARED topology, hashed to flow.Digest();
 //  2. the audit layer's signed tree head (STH) over this run's journal, which commits
-//     to the whole history, including the flow:digest record Run wrote first;
+//     to the whole history, including the flow:digest record Run wrote before any node;
 //  3. an RFC 6962 inclusion proof that the flow:digest record is in the tree the STH
 //     signed, plus a Conform pass over the same run.
 //
@@ -199,9 +200,9 @@ func proveTopologyConformance(ctx context.Context, flow *plan.Flow[Order, Receip
 	}
 	sth := audit.SignTreeHead(th, priv)
 
-	// Locate the flow:digest record's index in the journal (Run writes it first, so it
-	// is index 1, after the journal header, but resolve it by name to stay robust), then prove its inclusion
-	// under the signed tree head.
+	// Locate the flow:digest record's index in the journal (Run writes it after the
+	// journal header and the run's start, so it is index 2, but resolve it by name to stay
+	// robust), then prove its inclusion under the signed tree head.
 	idx, err := digestRecordIndex(ctx, store, runID)
 	if err != nil {
 		fatal(err)
@@ -394,23 +395,17 @@ func buildFlowFromConfig(cfg config) (*plan.Flow[Order, Receipt], error) {
 }
 
 // resolveFinalize handles a resumed run that halted at the side-effect-free finalize
-// step: finalize took no external action, so its result is safe to record out of band
-// (the resolution the HaltAmbiguous doc prescribes). It records finalize's result under
-// the step's own journal name, then re-runs so Run replays the now-complete journal to a
-// typed output. It never re-runs the reserve side effect, which already committed.
-func resolveFinalize(ctx context.Context, flow *plan.Flow[Order, Receipt], store *sqlite.Store, runID string, order Order) (Receipt, error) {
+// step: finalize took no external action, so its output is safe to record out of band.
+// agent.ResolveHaltRef records it as the node's result (the resolution the OutcomeUnknown
+// doc prescribes), then Run replays the now-complete journal to a typed output. It never
+// re-runs the reserve side effect, which already committed.
+func resolveFinalize(ctx context.Context, flow *plan.Flow[Order, Receipt], store *sqlite.Store, ref agent.HaltRef, order Order) (Receipt, error) {
 	receipt := Receipt{OrderID: order.ID, Outcome: "reserved", Detail: "hold-" + order.ID, Reserved: true}
-	encoded, err := json.Marshal(receipt)
-	if err != nil {
-		return Receipt{}, fmt.Errorf("encode resolved finalize result: %w", err)
-	}
-	if _, err := store.Do(ctx, runID, "finalize", func(context.Context) (agent.Record, error) {
-		return agent.Record{Kind: agent.StepValue, Result: encoded}, nil
-	}); err != nil {
-		return Receipt{}, fmt.Errorf("record resolved finalize result: %w", err)
+	if err := agent.ResolveHaltRef(ctx, store, ref, agent.Outcome{Result: receipt}); err != nil {
+		return Receipt{}, fmt.Errorf("resolve the finalize halt: %w", err)
 	}
 	fmt.Println("Resolved the finalize halt out of band; re-running to completion.")
-	return flow.Run(ctx, store, runID, order)
+	return flow.Run(ctx, store, ref.RunID, order)
 }
 
 // reportConform prints whether the journaled run for runID followed the declared graph.

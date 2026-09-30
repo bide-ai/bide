@@ -88,7 +88,7 @@ func Else[M any](to Consumer[M]) Arm[M] {
 // only shape LoopBack expresses, by construction.
 //
 // max must be > 0. Run journals each iteration's node executions under
-// iteration-scoped keys (iter:<n>:<node>), so at-most-once, halt-on-ambiguity, and
+// iteration-scoped keys (node:iter:<n>:<node>), so at-most-once, halt-on-ambiguity, and
 // resume all hold PER ITERATION exactly as for a linear flow; if the loop would
 // re-enter the head more than max times without taking the exit arm, Run returns a
 // runaway-loop error rather than looping forever. Like When, pred must be pure over
