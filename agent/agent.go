@@ -42,9 +42,9 @@ func addUsage(dst *Usage, src Usage) {
 type Agent struct {
 	model        Model
 	tools        map[string]Tool
-	specs        map[string]ToolSpec // each tool's spec, read once when it was registered (indexTools)
-	specList     []ToolSpec          // specs sorted by name, as model requests are sent them
-	dupTool      string              // a tool name New was given more than once; every run fails with ErrConfig
+	specs        map[string]*ToolSpec // each tool's spec, read once when it was registered; never changed
+	specList     []ToolSpec           // specs sorted by name, as model requests are sent them
+	dupTool      string               // a tool name New was given more than once; every run fails with ErrConfig
 	store        Durable
 	mw           []Middleware
 	toolMW       []ToolMiddleware
@@ -155,14 +155,14 @@ func New(model Model, store Durable, tools ...Tool) *Agent {
 		panic("agent: New requires a non-nil Durable store")
 	}
 	m := make(map[string]Tool, len(tools))
-	specs := make(map[string]ToolSpec, len(tools))
+	specs := make(map[string]*ToolSpec, len(tools))
 	dup := ""
 	for _, t := range tools {
 		s := SpecOf(t) // read once: every decision about the tool's calls reads this copy
 		if _, taken := m[s.Name]; taken && dup == "" {
 			dup = s.Name
 		}
-		m[s.Name], specs[s.Name] = t, s // a tool with a Spec method is called by its spec's name
+		m[s.Name], specs[s.Name] = t, &s // a tool with a Spec method is called by its spec's name
 	}
 	a := &Agent{model: model, tools: m, specs: specs, dupTool: dup, store: store}
 	a.sortSpecs()

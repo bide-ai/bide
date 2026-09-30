@@ -210,7 +210,7 @@ func (a *Agent) clone() *Agent {
 func (a *Agent) cloneWith(extra Tool, mw ...Middleware) *Agent {
 	c := a.clone()
 	s := SpecOf(extra)
-	c.tools[s.Name], c.specs[s.Name] = extra, s
+	c.tools[s.Name], c.specs[s.Name] = extra, &s
 	c.sortSpecs()
 	c.mw = append(c.mw, mw...)
 	return c

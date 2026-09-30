@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"maps"
 	"slices"
 	"strings"
 	"sync"
@@ -142,7 +141,10 @@ func recordedSafety(spec ToolSpec) *Safety {
 // SpecOf): the agent decides every call from it, so a tool whose Spec or Safety method would
 // answer differently later cannot change a decision the agent makes for the run's calls.
 func (a *Agent) sortSpecs() {
-	a.specList = slices.Collect(maps.Values(a.specs))
+	a.specList = make([]ToolSpec, 0, len(a.specs))
+	for _, s := range a.specs {
+		a.specList = append(a.specList, *s)
+	}
 	slices.SortFunc(a.specList, func(x, y ToolSpec) int { return strings.Compare(x.Name, y.Name) })
 }
 
@@ -158,8 +160,11 @@ func (a *Agent) requestTools() []ToolSpec {
 // toolCallFor is the ToolCall the middleware chain receives for tu in run runID: tu, the
 // registered tool's spec (the zero spec for an unknown name), and the agent's redactor.
 func (a *Agent) toolCallFor(runID string, tu ToolUse) ToolCall {
-	s := a.specs[tu.Name]
-	s.Approval = s.Approval.clone() // the middleware's copy: changing it changes nothing here
+	var s ToolSpec // the zero spec (a side effect) for a name no tool has
+	if p := a.specs[tu.Name]; p != nil {
+		s = *p
+		s.Approval = s.Approval.clone() // the middleware's copy: changing it changes nothing here
+	}
 	return ToolCall{Use: tu, Spec: s, RunID: runID, redact: a.toolErrRedact, modelArgs: tu.Args}
 }
 

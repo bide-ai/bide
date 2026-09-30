@@ -252,7 +252,7 @@ func (a *Agent) rollbackRun(ctx context.Context, runID, root string) (compensate
 					if e != nil {
 						return Record{}, e
 					}
-					return Record{Kind: StepToolResult, ToolUseID: tu.ID, Result: out, Safety: recordedSafety(spec), Approval: spec.Approval.clone()}, nil
+					return Record{Kind: StepToolResult, ToolUseID: tu.ID, Result: out, Safety: recordedSafety(*spec), Approval: spec.Approval.clone()}, nil
 				})
 				if ce != nil {
 					uncompensated = append(uncompensated, tu.Name)

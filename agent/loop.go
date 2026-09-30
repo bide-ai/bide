@@ -399,7 +399,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 		type call struct {
 			idx  int
 			tu   ToolUse
-			spec ToolSpec // the tool's registered spec: every decision about the call reads it
+			spec *ToolSpec // the tool's registered spec (shared, never changed): every decision about the call reads it
 		}
 		var toRun []call
 		results := make([]*Message, len(uses))
@@ -450,7 +450,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 			}
 			if denied { // record a denial and let the model react
 				const deniedResult = `"tool call denied by human"`
-				if _, err := putRecord(ctx, a.store, runID, ToolResultStep(tu.ID), Record{Kind: StepToolResult, ToolUseID: tu.ID, IsError: true, Result: json.RawMessage(deniedResult), Safety: recordedSafety(spec), Approval: spec.Approval.clone()}); err != nil {
+				if _, err := putRecord(ctx, a.store, runID, ToolResultStep(tu.ID), Record{Kind: StepToolResult, ToolUseID: tu.ID, IsError: true, Result: json.RawMessage(deniedResult), Safety: recordedSafety(*spec), Approval: spec.Approval.clone()}); err != nil {
 					return leave(err)
 				}
 				done[tu.ID] = true
@@ -583,7 +583,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 					fire(ToolStarted{ToolUseID: c.tu.ID, Name: c.tu.Name, Args: c.tu.Args})
 					res, late, callErr := callTool(sctx, c.spec.Timeout, func(ctx context.Context) (json.RawMessage, error) { return toolH(ctx, c.tu) })
 					// The safety and approval gate the call ran under, for a saga rollback and an audit.
-					r := Record{Kind: StepToolResult, ToolUseID: c.tu.ID, Safety: recordedSafety(c.spec), Approval: c.spec.Approval.clone()}
+					r := Record{Kind: StepToolResult, ToolUseID: c.tu.ID, Safety: recordedSafety(*c.spec), Approval: c.spec.Approval.clone()}
 					if callErr != nil && sctx.Err() != nil {
 						// The call was cancelled (the run was cancelled, or a sibling paused or
 						// failed the group) before it could report back, so its outcome is
