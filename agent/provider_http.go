@@ -55,11 +55,21 @@ const (
 )
 
 // truncate cuts s to maxErrorBody bytes, marking the cut.
-func truncate(s string) string {
-	if len(s) <= maxErrorBody {
+func truncate(s string) string { return cutTo(s, maxErrorBody) }
+
+// maxNameEcho bounds a model-chosen name (a tool name, a finish reason) quoted in an error. A
+// working model sends a few bytes; a longer one is cut so it cannot fill the error.
+const maxNameEcho = 256
+
+// cutName cuts a model-chosen name to maxNameEcho bytes, marking the cut.
+func cutName(s string) string { return cutTo(s, maxNameEcho) }
+
+// cutTo cuts s to n bytes, marking the cut.
+func cutTo(s string, n int) string {
+	if len(s) <= n {
 		return s
 	}
-	return s[:maxErrorBody] + truncatedNote
+	return s[:n] + truncatedNote
 }
 
 // ClassifyHTTPError turns a non-2xx model response into the appropriate SDK error. It reads at

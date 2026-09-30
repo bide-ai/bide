@@ -575,7 +575,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 			}
 			t, ok := a.tools[tu.Name]
 			if !ok {
-				return Message{}, tot, liveTurns, fmt.Errorf("model called unknown tool %q: %w", tu.Name, ErrUnknownTool)
+				return Message{}, tot, liveTurns, fmt.Errorf("model called unknown tool %q: %w", cutName(tu.Name), ErrUnknownTool)
 			}
 			if safety := t.Safety(); safety.RequiresApproval || safety.Approval != nil {
 				var approved bool

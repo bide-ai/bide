@@ -22,6 +22,7 @@ import (
 	"strings"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/model/internal/errtext"
 	"github.com/bide-ai/bide/model/internal/toolcfg"
 	"github.com/bide-ai/bide/schema"
 )
@@ -408,7 +409,7 @@ func streamSSE(body io.ReadCloser, send func(agent.Emit) bool) {
 		for _, choice := range c.Choices {
 			d := choice.Delta
 			if reason != "" && (d.ReasoningContent != "" || d.Content != "" || len(d.ToolCalls) > 0) {
-				send(agent.Emit{Err: fmt.Errorf("openai: content after finish_reason %q: %w", reason, agent.ErrStreamProtocol)})
+				send(agent.Emit{Err: fmt.Errorf("openai: content after finish_reason %s: %w", errtext.Quote(reason), agent.ErrStreamProtocol)})
 				return
 			}
 			if rc := d.ReasoningContent; rc != "" {
@@ -431,7 +432,7 @@ func streamSSE(body io.ReadCloser, send func(agent.Emit) bool) {
 			}
 			if fr := choice.FinishReason; fr != nil && *fr != "" {
 				if reason != "" && *fr != reason {
-					send(agent.Emit{Err: fmt.Errorf("openai: finish_reason %q after %q: %w", *fr, reason, agent.ErrStreamProtocol)})
+					send(agent.Emit{Err: fmt.Errorf("openai: finish_reason %s after %s: %w", errtext.Quote(*fr), errtext.Quote(reason), agent.ErrStreamProtocol)})
 					return
 				}
 				reason = *fr

@@ -52,7 +52,7 @@ func (a *Agent) toolHandler() ToolHandler {
 	h := ToolHandler(func(ctx context.Context, tu ToolUse) (json.RawMessage, error) {
 		t, ok := a.tools[tu.Name]
 		if !ok {
-			return nil, fmt.Errorf("call to unknown tool %q: %w", tu.Name, ErrUnknownTool)
+			return nil, fmt.Errorf("call to unknown tool %q: %w", cutName(tu.Name), ErrUnknownTool)
 		}
 		if !t.Safety().RetrySafe() {
 			if _, again := ran.LoadOrStore(tu.ID, true); again {

@@ -361,7 +361,7 @@ func (b *msgBuilder) finalize() (Message, error) {
 	for _, i := range b.order {
 		tu := b.calls[i]
 		if len(tu.Args) > 0 && !json.Valid(tu.Args) {
-			return Message{}, fmt.Errorf("tool call %q: %w: %s", tu.Name, ErrTruncatedToolArgs, tu.Args)
+			return Message{}, fmt.Errorf("tool call %q: %w: %d bytes: %s", cutName(tu.Name), ErrTruncatedToolArgs, len(tu.Args), truncate(string(tu.Args)))
 		}
 		parts = append(parts, *tu)
 	}

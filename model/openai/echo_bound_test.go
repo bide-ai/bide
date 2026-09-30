@@ -15,6 +15,8 @@ func TestStreamSSE_FinishReasonErrorsAreBounded(t *testing.T) {
 	for name, src := range map[string]string{
 		"content after": "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"" + huge + "\"}]}\n\n" +
 			"data: {\"choices\":[{\"delta\":{\"content\":\"more\"}}]}\n\n",
+		"huge reason, then another": "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"" + huge + "\"}]}\n\n" +
+			"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
 		"reason after": "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n" +
 			"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"" + huge + "\"}]}\n\n",
 	} {

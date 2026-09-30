@@ -31,6 +31,7 @@ import (
 	"strings"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/model/internal/errtext"
 	"github.com/bide-ai/bide/model/internal/toolcfg"
 	"github.com/bide-ai/bide/schema"
 )
@@ -478,7 +479,7 @@ func streamSSE(body io.ReadCloser, send func(agent.Emit) bool) {
 		for _, cand := range c.Candidates {
 			for _, part := range cand.Content.Parts {
 				if lastReason != "" && (part.Text != "" || part.FunctionCall != nil) {
-					send(agent.Emit{Err: fmt.Errorf("gemini: content after finishReason %q: %w", lastReason, agent.ErrStreamProtocol)})
+					send(agent.Emit{Err: fmt.Errorf("gemini: content after finishReason %s: %w", errtext.Quote(lastReason), agent.ErrStreamProtocol)})
 					return
 				}
 				if part.Text != "" {
@@ -510,7 +511,7 @@ func streamSSE(body io.ReadCloser, send func(agent.Emit) bool) {
 			}
 			if cand.FinishReason != "" {
 				if lastReason != "" && cand.FinishReason != lastReason {
-					send(agent.Emit{Err: fmt.Errorf("gemini: finishReason %q after %q: %w", cand.FinishReason, lastReason, agent.ErrStreamProtocol)})
+					send(agent.Emit{Err: fmt.Errorf("gemini: finishReason %s after %s: %w", errtext.Quote(cand.FinishReason), errtext.Quote(lastReason), agent.ErrStreamProtocol)})
 					return
 				}
 				lastReason = cand.FinishReason
