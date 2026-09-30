@@ -4,12 +4,14 @@
 //
 // The tables are named with a prefix, "bide_" by default (see WithTablePrefix): bide_steps holds
 // the journal (run_id, seq, name, data), where data is bytea, each entry's bytes verbatim;
-// bide_leases holds the leases; bide_schema_version the schema version. Open and New create the
-// tables if they do not exist and refuse a database whose schema version is newer than this
-// version knows. They never alter an existing table, so they refuse one that lacks a uniqueness
-// the store's statements depend on: unique (run_id, seq) and (run_id, name) on bide_steps, and
-// run_id on bide_leases. Run IDs are compared and ordered by their bytes (collation "C"), so a Lister's
-// order does not depend on the database's locale.
+// bide_leases holds the leases; bide_schema_version the schema version; and the function
+// bide_next_seq_v1 gives an insert its position. Open and New create the tables and the function
+// if they do not exist and refuse a database whose schema version is newer than this version
+// knows. They never alter an existing table or replace a function, so they refuse a table that
+// lacks a uniqueness the store's statements depend on (unique (run_id, seq) and (run_id, name) on
+// bide_steps, and run_id on bide_leases) and a next_seq function with another definition. Run IDs
+// are compared and ordered by their bytes (collation "C"), so a Lister's order does not depend on
+// the database's locale.
 //
 // # One statement per write
 //
@@ -24,9 +26,21 @@
 // Each statement is atomic by itself: AcquireLease is an INSERT ... ON CONFLICT DO UPDATE whose
 // WHERE grants the lease only when it is free, expired or already the holder's; RenewLease and
 // ReleaseLease are an UPDATE and a DELETE conditioned on the holder (and, for a renewal, on the
-// lease being live); and Insert computes the entry's position as MAX(seq)+1 in the INSERT itself.
-// Two inserts into one run that read the same MAX collide on the (run_id, seq) key: the second
-// waits for the first to commit, fails, and is run again, so every position follows commit order.
+// lease being live); and Insert is an INSERT whose position comes from next_seq.
+//
+// # Inserts into one run
+//
+// next_seq takes the run's transaction-level advisory lock and then reads MAX(seq)+1. The lock is
+// held by the insert's own transaction, the one statement, and released when it commits, so a
+// stalled client holds it no longer than any statement's row locks. Inserts into one run queue on
+// it; the function is VOLATILE, so its read takes a snapshot after the lock is granted and, at read
+// committed, sees every insert that held the lock before. Each insert therefore takes its position
+// in its first attempt, and positions follow commit order. Should two inserts still read the same
+// MAX (at repeatable read or serializable, where the function reads the transaction's snapshot,
+// or beside a writer that does not take the lock), they collide on the (run_id, seq) key: the
+// second waits for the first to commit, fails, and is run again. The lock's key is the one earlier
+// versions took in a statement of their own, so nodes of both versions queue on the same lock
+// during a rolling upgrade.
 //
 // # Isolation
 //

@@ -6,7 +6,10 @@
 // govern, keeping the coupling one-directional.
 //
 // An append is one INSERT statement sent on its own, which Postgres runs as a transaction of its
-// own and commits before it replies; no transaction spans two round trips, so a process that stops
+// own and commits before it replies. Its position comes from the function
+// governed_events_next_seq_v1, which takes the entity's transaction-level advisory lock and then
+// reads MAX(seq)+1, so appends to one entity queue on the lock instead of racing for a position
+// (see Append). No transaction spans two round trips, so a process that stops
 // between two of its round trips (a SIGSTOP, a suspended VM, a long GC pause, a partition) holds no
 // lock another process's append waits on. Reads are single SELECT statements. Each statement
 // behaves the same whatever the deployment's default_transaction_isolation: one that fails with a
