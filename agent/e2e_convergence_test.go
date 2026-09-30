@@ -54,9 +54,13 @@ func shuffled(s []string, n int) []string {
 // same machine-checked normal form and (b) produce a governed action that verifies offline against
 // a signed tree head. It exercises scale, convergence (order-independence under real concurrency,
 // including a compensating cap), and cryptographic traceability in one test, at 5k/10k/20k agents.
-// Use -short for a single small scale.
+// Under -race it runs at 500 and 2.5k agents: the detector checks every shared access at that
+// size, and the full scale runs in the jobs built without it. Use -short for a single small scale.
 func TestE2E_ManyAgentsConvergeAndAreTraceable(t *testing.T) {
 	scales := []int{5000, 10000, 20000}
+	if raceEnabled {
+		scales = []int{500, 2500}
+	}
 	if testing.Short() {
 		scales = []int{200}
 	}
