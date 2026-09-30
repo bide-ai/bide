@@ -28,7 +28,7 @@ func runRecovering(a *Agent, runID string) (out Message, err error) {
 func adversarialToolUseIDs() []string {
 	return []string{
 		"x", "tool:x", "attempt:tool:x", "attempt:step:x", "approval:x", "approval-tally:x",
-		"@saga/compensate/x", "run:complete", "run:aborted", "@llm/0", "@llm/1", "@llm/2",
+		"@saga/compensate/x", "@saga/args/x", "run:complete", "run:aborted", "@llm/0", "@llm/1", "@llm/2",
 		"a:b", "a%3Ab", "a/b", "a>b", "a%3Eb", "a.b", "user@host", "with space", "日本語",
 		"tab\there", "nul\x00byte", "~x",
 		strings.Repeat("k", 5000), strings.Repeat(":", 2000), strings.Repeat("é", 1000),

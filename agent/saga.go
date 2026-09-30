@@ -22,7 +22,8 @@ import (
 // returning an error, because the failing step itself is not compensated (there's no
 // recorded result to drive Compensate). Make forward steps all-or-nothing, or idempotent.
 type Compensator interface {
-	// Compensate undoes a completed call. args are the tool's original arguments; result
+	// Compensate undoes a completed call. args are the arguments the tool accepted (after tool
+	// middleware; see CompensatedFunc); result
 	// is what Call returned. Must be idempotent — on a crash mid-rollback it may re-run.
 	Compensate(ctx context.Context, args, result json.RawMessage) error
 }
@@ -34,8 +35,13 @@ type Compensator interface {
 // the forward call of that time decoded them with encoding/json, so compensation does too, and
 // undoes the value that call acted on. Arguments neither decodes are ErrProtocol.
 //
-// The recorded arguments are the model's. A tool middleware that rewrites a compensable call's
-// arguments changes what do receives but not what undo receives.
+// The arguments are the ones the tool accepted. When a tool middleware changes a compensable
+// call's arguments in a saga, the arguments the tool receives are journaled before it runs
+// (under a key of their own), and compensation undoes those; otherwise the model's arguments
+// are the ones the tool received. A journal written before accepted arguments were journaled
+// has no such record, so compensation there falls back to the model's arguments. A middleware
+// that rewrites a retry-safe compensable call's arguments must rewrite them the same way every
+// time: the first record is kept when the call runs again.
 func CompensatedFunc[In, Out any](
 	name, description string,
 	safety Safety,
@@ -208,6 +214,7 @@ func (a *Agent) rollbackRun(ctx context.Context, runID, root string) (compensate
 	}
 	var calls []ToolUse
 	results := map[string]Record{}
+	values := map[string]json.RawMessage{} // StepValue records by key: the accepted arguments (sagaArgsStep)
 	failed := map[string]bool{}
 	attemptedAt := map[string]int64{}
 	started := map[string]bool{}
@@ -221,6 +228,8 @@ func (a *Agent) rollbackRun(ctx context.Context, runID, root string) (compensate
 			results[r.ToolUseID] = r
 		case StepSagaFail:
 			failed[r.ToolUseID] = true
+		case StepValue:
+			values[r.Name] = r.Result
 		case StepAttempt:
 			if isToolAttempt(r) { // a Step's marker is not a call's
 				started[r.ToolUseID] = true
@@ -272,9 +281,12 @@ func (a *Agent) rollbackRun(ctx context.Context, runID, root string) (compensate
 				uncompensated = append(uncompensated, tu.Name) // may have run; nothing can undo it
 				continue
 			default:
-				// Retry-safe: running it again is safe, and yields the result to compensate.
+				// Retry-safe: running it again is safe, and yields the result to compensate. It runs
+				// through the tool middleware, like the live call it repeats, and in this run's
+				// saga context, so the arguments it accepts are journaled as the live call's were.
+				toolH := a.toolHandler()
 				rec, ce := a.store.Do(ctx, runID, ToolResultStep(tu.ID), func(ctx context.Context) (Record, error) {
-					out, e := tool.Call(ctx, tu.Args)
+					out, e := toolH(withRunContext(withSaga(ctx), a.store, runID), tu)
 					if e != nil {
 						return Record{}, e
 					}
@@ -285,11 +297,27 @@ func (a *Agent) rollbackRun(ctx context.Context, runID, root string) (compensate
 					return compensated, uncompensated, fmt.Errorf("saga rollback: learn the outcome of %q (call %s): %w", tu.Name, tu.ID, ce)
 				}
 				res = rec
+				// The re-run may have journaled the arguments it accepted: read them back.
+				again, he := a.store.History(ctx, runID)
+				if he != nil {
+					uncompensated = append(uncompensated, tu.Name)
+					return compensated, uncompensated, he
+				}
+				for _, r := range again {
+					if r.Kind == StepValue && r.Name == sagaArgsStep(tu.ID) {
+						values[r.Name] = r.Result
+					}
+				}
 			}
 		}
 
 		if canUndo {
-			args, _ := argsFor(recs, tu.ID)
+			// The arguments the tool accepted, as journaled when a middleware changed them;
+			// otherwise (or in a journal written before they were journaled) the model's.
+			args, ok := values[sagaArgsStep(tu.ID)]
+			if !ok {
+				args, _ = argsFor(recs, tu.ID)
+			}
 			if _, ce := a.store.Do(ctx, runID, sagaCompensateStep(tu.ID), func(ctx context.Context) (Record, error) {
 				if e := comp.Compensate(ctx, args, res.Result); e != nil {
 					return Record{}, e

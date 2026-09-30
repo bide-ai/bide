@@ -143,9 +143,15 @@ completes. This split is the precise contract, proven adversarially in `saga_dst
 - **A `CompensatedFunc` undo sees the arguments the forward call decoded.** It decodes the call's
   recorded arguments with the same strict decoder the forward call used. A call journaled before
   tool arguments decoded strictly may hold arguments only `encoding/json` accepts (a case variant,
-  an unknown name); that call decoded them with `encoding/json`, so compensation does too. The
-  recorded arguments are the model's: a tool middleware that rewrites a compensable call's
-  arguments changes what the forward call receives but not what undo receives.
+  an unknown name); that call decoded them with `encoding/json`, so compensation does too.
+- **Undo sees the arguments the tool accepted, after tool middleware.** When a middleware changes
+  a compensable call's arguments in a saga, the arguments the tool receives are journaled before
+  it runs, and compensation undoes those (a charge rewritten from 5 to 500 is refunded 500, even
+  when its outcome was resolved with `ResolveHalt`). A rollback that re-runs a retry-safe call to
+  learn its result runs it through the same middleware. Unchanged arguments journal nothing. A
+  journal written before this has no such record, and compensation there uses the model's
+  arguments. A middleware must rewrite a retry-safe compensable call's arguments the same way
+  every time, since the first record is kept.
 
 ### The boundaries (read these before relying on it)
 

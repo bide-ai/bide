@@ -69,7 +69,7 @@ func TestSaga_AcceptedArgumentsAreJournaledOnlyWhenRewritten(t *testing.T) {
 	}
 	recs, _ := store.History(context.Background(), "r")
 	for _, r := range recs {
-		if r.Name == "@saga/args/c1" {
+		if r.Name == sagaArgsStep("c1") {
 			t.Fatalf("a call whose arguments no middleware changed journaled them: %+v", r)
 		}
 	}
@@ -86,7 +86,7 @@ func TestSaga_AcceptedArgumentsAreJournaledOnlyWhenRewritten(t *testing.T) {
 	}
 	recs, _ = store.History(context.Background(), "r")
 	for _, r := range recs {
-		if r.Name == "@saga/args/c1" {
+		if r.Name == sagaArgsStep("c1") {
 			t.Fatalf("a Run journaled a call's arguments: %+v", r)
 		}
 	}
@@ -173,5 +173,119 @@ func TestSaga_RollbackRerunGoesThroughToolMiddleware(t *testing.T) {
 	}
 	if len(charges) != 2 || charges[0] != 500 || charges[1] != 500 || len(refunded) != 1 || refunded[0] != 500 {
 		t.Fatalf("charges %v, refunds %v; want the re-run to charge 500 like the live call, and a refund of 500", charges, refunded)
+	}
+}
+
+// Only a compensable call journals its accepted arguments: a rewritten call to a tool with no
+// compensator has nothing to undo them with.
+func TestSaga_NonCompensableCallJournalsNoArguments(t *testing.T) {
+	charge := Func("charge", "charge the card", Safety{}, func(context.Context, chargeArgs) (string, error) { return "ok", nil })
+	fail := Func("book", "book the flight", Safety{}, func(context.Context, struct{}) (string, error) {
+		return "", errors.New("no seats")
+	})
+	store := NewMemStore()
+	m := NewScriptedModel(ToolTurn("c1", "charge", `{"amount":5}`), ToolTurn("b1", "book", `{}`), TextTurn("done"))
+	_, _ = New(m, store, charge, fail).UseTool(scaleCharge).RunSaga(context.Background(), "r", "trip")
+	recs, _ := store.History(context.Background(), "r")
+	for _, r := range recs {
+		if r.Name == sagaArgsStep("c1") {
+			t.Fatalf("a call with no compensator journaled its arguments: %+v", r)
+		}
+	}
+}
+
+// failArgsStore fails the write of the accepted-arguments record.
+type failArgsStore struct{ *MemStore }
+
+func (s failArgsStore) Do(ctx context.Context, runID, name string, fn func(context.Context) (Record, error)) (Record, error) {
+	if name == sagaArgsStep("c1") {
+		return Record{}, errors.New("disk full")
+	}
+	return s.MemStore.Do(ctx, runID, name, fn)
+}
+
+// A compensable call whose accepted arguments cannot be journaled does not run: compensation
+// could not undo what it would do.
+func TestSaga_UnjournaledArgumentsStopTheCall(t *testing.T) {
+	charged, _, err := rewrittenChargeSaga(t, failArgsStore{NewMemStore()}, Safety{}, scaleCharge)
+	if charged != 0 || !errors.Is(err, ErrStorage) {
+		t.Fatalf("charged %d, RunSaga = %v; want no charge and ErrStorage", charged, err)
+	}
+}
+
+// A retry-safe compensable call cut off inside a middleware, before the tool ran, journaled no
+// arguments; the rollback's re-run, through the middleware and in the saga, journals them, so the
+// refund undoes the 500 the re-run charged.
+func TestSaga_RollbackRerunJournalsTheAcceptedArguments(t *testing.T) {
+	var charges, refunds atomic.Int32
+	charge := CompensatedFunc("charge", "charge the card", Safety{Idempotent: true},
+		func(_ context.Context, in chargeArgs) (string, error) {
+			charges.Store(int32(in.Amount))
+			return "ok", nil
+		},
+		func(_ context.Context, in chargeArgs, _ string) error { refunds.Store(int32(in.Amount)); return nil })
+	book := Func("book", "book the flight", Safety{}, func(context.Context, struct{}) (string, error) {
+		return "", errors.New("no seats")
+	})
+	var live atomic.Bool
+	stall := func(next ToolHandler) ToolHandler { // the live call stalls in the middleware, before the tool
+		return func(ctx context.Context, tu ToolUse) (json.RawMessage, error) {
+			if tu.Name == "charge" && live.CompareAndSwap(false, true) {
+				<-ctx.Done()
+				return nil, ctx.Err()
+			}
+			return next(ctx, tu)
+		}
+	}
+	m := &sagaTurns{turns: [][][3]string{{{"c1", "charge", `{"amount":5}`}, {"b1", "book", `{}`}}}}
+	_, err := New(m, NewMemStore(), charge, book).UseTool(stall, scaleCharge).RunSaga(context.Background(), "r", "trip")
+	var aborted *SagaAborted
+	if !errors.As(err, &aborted) || aborted.CompensateErr != nil {
+		t.Fatalf("RunSaga = %v, want a clean *SagaAborted", err)
+	}
+	if charges.Load() != 500 || refunds.Load() != 500 {
+		t.Fatalf("charged %d, refunded %d; want the refund to undo the 500 the re-run charged", charges.Load(), refunds.Load())
+	}
+}
+
+// failArgsReadStore fails any History that holds the accepted-arguments record: the read the
+// rollback makes after a re-run journaled it.
+type failArgsReadStore struct{ *MemStore }
+
+func (s failArgsReadStore) History(ctx context.Context, runID string) ([]Record, error) {
+	recs, err := s.MemStore.History(ctx, runID)
+	for _, r := range recs {
+		if r.Name == sagaArgsStep("c1") {
+			return nil, errors.New("read failed")
+		}
+	}
+	return recs, err
+}
+
+// When the rollback cannot read back the arguments its re-run accepted, it stops with that error
+// rather than compensate with the model's arguments.
+func TestSaga_RollbackRerunStopsWhenItCannotReadTheArguments(t *testing.T) {
+	var refunds atomic.Int32
+	charge := CompensatedFunc("charge", "charge the card", Safety{Idempotent: true},
+		func(context.Context, chargeArgs) (string, error) { return "ok", nil },
+		func(_ context.Context, in chargeArgs, _ string) error { refunds.Store(int32(in.Amount)); return nil })
+	book := Func("book", "book the flight", Safety{}, func(context.Context, struct{}) (string, error) {
+		return "", errors.New("no seats")
+	})
+	var live atomic.Bool
+	stall := func(next ToolHandler) ToolHandler {
+		return func(ctx context.Context, tu ToolUse) (json.RawMessage, error) {
+			if tu.Name == "charge" && live.CompareAndSwap(false, true) {
+				<-ctx.Done()
+				return nil, ctx.Err()
+			}
+			return next(ctx, tu)
+		}
+	}
+	m := &sagaTurns{turns: [][][3]string{{{"c1", "charge", `{"amount":5}`}, {"b1", "book", `{}`}}}}
+	_, err := New(m, failArgsReadStore{NewMemStore()}, charge, book).UseTool(stall, scaleCharge).RunSaga(context.Background(), "r", "trip")
+	var aborted *SagaAborted
+	if !errors.As(err, &aborted) || aborted.CompensateErr == nil || refunds.Load() != 0 {
+		t.Fatalf("RunSaga = %v, refunded %d; want the rollback stopped with the read error and no refund", err, refunds.Load())
 	}
 }

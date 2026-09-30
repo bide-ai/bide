@@ -19,7 +19,7 @@ import (
 // or a session's. The functions and constants named *Step build those keys; a test asserts each
 // one starts with a prefix listed here.
 var reservedPrefixes = []string{
-	"@",               // engine-internal steps: @llm/<n>, @saga/compensate/<call>, @retrieval/<layer>, @spend/<n>
+	"@",               // engine-internal steps: @llm/<n>, @saga/compensate/<call>, @saga/args/<call>, @retrieval/<layer>, @spend/<n>
 	"run:",            // run:complete, run:aborted
 	"tool:",           // a tool call's result: tool:<call>
 	"attempt:",        // attempt markers: attempt:tool:<call>, attempt:step:<name>
@@ -142,6 +142,11 @@ func approvalStep(toolUseID string) string { return "approval:" + encodeID(toolU
 
 // sagaCompensateStep is the key of the compensation of the call toolUseID.
 func sagaCompensateStep(toolUseID string) string { return "@saga/compensate/" + encodeID(toolUseID) }
+
+// sagaArgsStep is the key of the arguments the compensable call toolUseID accepted in a saga, as
+// the tool received them after tool middleware. It is journaled only when a middleware changed
+// the model's arguments (see toolHandler); compensation reads it (see rollbackRun).
+func sagaArgsStep(toolUseID string) string { return "@saga/args/" + encodeID(toolUseID) }
 
 // awaitTimeoutStep is the key of AwaitFor's deadline for name.
 func awaitTimeoutStep(name string) string { return "await-timeout:" + name }
