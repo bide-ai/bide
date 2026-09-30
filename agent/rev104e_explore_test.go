@@ -125,8 +125,10 @@ func TestRev104e_ExploreClaimProtocolThroughWrapper(t *testing.T) {
 
 func eCSubjects(mode int) []cSubject {
 	pick := func(ctx context.Context, j *agent.Journal) agent.Durable {
-		// mode 0: always the wrapper; 1: driver 0 through the Journal, the others through the wrapper.
-		if mode == 1 && cDrv(ctx) == 0 {
+		// mode 0: always the wrapper; 1: driver 1 through the Journal, the others through the
+		// wrapper; 2: driver 2 through the Journal. (Drivers are numbered from 1: mode 1 compared
+		// with driver 0 before, so it repeated mode 0.)
+		if mode > 0 && cDrv(ctx) == mode {
 			return j
 		}
 		return &eWrap{inner: j}
@@ -171,7 +173,7 @@ func TestRev104e_ExploreConcurrentThroughWrapper(t *testing.T) {
 			maxPre = 2
 		}
 		total := 0
-		for mode := range 2 {
+		for mode := range 3 {
 			for _, sub := range eCSubjects(mode) {
 				for topo := 0; topo < 2; topo++ {
 					for p2 := 0; p2 < 2; p2++ {
