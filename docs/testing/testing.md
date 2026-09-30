@@ -76,6 +76,22 @@ durable write and asserts the charge fires at most once and the run ends either 
 so it cannot pass vacuously. `saga_dst_test.go` applies the same crash sweep and randomized
 schedules to saga compensation.
 
+`refmodel_test.go` generalizes it into model-based differential testing. A generator builds random
+scenarios: turns of parallel tool calls (read-only, retry-safe, and non-retry-safe tools, calls
+that fail, approval-gated calls with a scripted decision, compensable calls, sub-agents two levels
+deep), run plain or as a saga, with a schedule of injected storage failures (a transient failed
+write, or a process that dies at the write). A reference model in `refmodel_ref_test.go`, a plain
+interpreter of the same scenario with no journal, no concurrency, and no crashes, written from the
+documented semantics and calling nothing in `agent`, computes the outcome a correct runtime settles
+at. The harness drives the real runtime to quiescence as an operator would (resume after a crash,
+decide approvals, reconcile halts with the call's true outcome) and requires the settled outcome,
+every side effect and compensation, the conversation each model call is shown, `IsComplete`, a
+re-drive of the settled run, and a replay of its journal (`agent.Replay`) to agree with the
+reference. `TestRefModel_CrashSweep` also crashes a set of scenarios at every write of every drive
+attempt in turn. A failing scenario is shrunk to a minimal one. `BIDE_REFMODEL_N` and
+`BIDE_REFMODEL_SEED` run more seeds; each minimal scenario it has found is pinned in
+`refmodel_cases_test.go`.
+
 ## Pillar 2: differential testing against a verified oracle
 
 **gsm proves at build time that every interleaving of agent events converges to the same valid

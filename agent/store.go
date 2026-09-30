@@ -470,6 +470,8 @@ func Approve(ctx context.Context, d Durable, runID, toolUseID string, approved b
 // would have returned, and isError if the verified outcome was a failure the model should
 // react to. A halted Step (its ResumeHalt has no ToolName) is cleared with ResolveStepHalt:
 // ResolveHalt refuses an ID that only a Step has attempted.
+// In a saga (RunSaga), a failure recorded this way is a failed step: the next RunSaga rolls the
+// saga back, as it would have had the failure been recorded before the crash.
 //
 // It is idempotent: the first result for a (runID, toolUseID) wins, so calling it twice or
 // racing a concurrent driver injects the record at most once. runID and toolUseID come

@@ -152,10 +152,14 @@ func TestSaga_RollbackRerunGoesThroughToolMiddleware(t *testing.T) {
 	var charges, refunded []int
 	var mu sync.Mutex
 	record := func(list *[]int, v int) { mu.Lock(); *list = append(*list, v); mu.Unlock() }
+	// book fails only once the live charge has started: a call the failure reaches before it
+	// starts never starts, and would leave the rollback's re-run the first call.
+	chargeStarted := make(chan struct{})
 	charge := CompensatedFunc("charge", "charge the card", Safety{Idempotent: true},
 		func(ctx context.Context, in chargeArgs) (string, error) {
 			record(&charges, in.Amount)
 			if calls.Add(1) == 1 {
+				close(chargeStarted)
 				<-ctx.Done() // the live call is cut off waiting for its response
 				return "", ctx.Err()
 			}
@@ -163,6 +167,7 @@ func TestSaga_RollbackRerunGoesThroughToolMiddleware(t *testing.T) {
 		},
 		func(_ context.Context, in chargeArgs, _ string) error { record(&refunded, in.Amount); return nil })
 	book := Func("book", "book the flight", Safety{}, func(context.Context, struct{}) (string, error) {
+		<-chargeStarted
 		return "", errors.New("no seats")
 	})
 	m := &sagaTurns{turns: [][][3]string{{{"c1", "charge", `{"amount":5}`}, {"b1", "book", `{}`}}}}
@@ -224,13 +229,18 @@ func TestSaga_RollbackRerunJournalsTheAcceptedArguments(t *testing.T) {
 			return "ok", nil
 		},
 		func(_ context.Context, in chargeArgs, _ string) error { refunds.Store(int32(in.Amount)); return nil })
+	// book fails only once the live charge has started: a call the failure reaches before it
+	// starts never starts, and would leave the rollback's re-run the one that stalls.
+	chargeStarted := make(chan struct{})
 	book := Func("book", "book the flight", Safety{}, func(context.Context, struct{}) (string, error) {
+		<-chargeStarted
 		return "", errors.New("no seats")
 	})
 	var live atomic.Bool
 	stall := func(next ToolHandler) ToolHandler { // the live call stalls in the middleware, before the tool
 		return func(ctx context.Context, tu ToolUse) (json.RawMessage, error) {
 			if tu.Name == "charge" && live.CompareAndSwap(false, true) {
+				close(chargeStarted)
 				<-ctx.Done()
 				return nil, ctx.Err()
 			}
@@ -269,13 +279,16 @@ func TestSaga_RollbackRerunStopsWhenItCannotReadTheArguments(t *testing.T) {
 	charge := CompensatedFunc("charge", "charge the card", Safety{Idempotent: true},
 		func(context.Context, chargeArgs) (string, error) { return "ok", nil },
 		func(_ context.Context, in chargeArgs, _ string) error { refunds.Store(int32(in.Amount)); return nil })
+	chargeStarted := make(chan struct{}) // book fails once the live charge has started
 	book := Func("book", "book the flight", Safety{}, func(context.Context, struct{}) (string, error) {
+		<-chargeStarted
 		return "", errors.New("no seats")
 	})
 	var live atomic.Bool
 	stall := func(next ToolHandler) ToolHandler {
 		return func(ctx context.Context, tu ToolUse) (json.RawMessage, error) {
 			if tu.Name == "charge" && live.CompareAndSwap(false, true) {
+				close(chargeStarted)
 				<-ctx.Done()
 				return nil, ctx.Err()
 			}

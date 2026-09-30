@@ -167,16 +167,27 @@ These are stated in full in [KNOWN-LIMITATIONS.md](../KNOWN-LIMITATIONS.md); in 
   after its attempt marker but before any result, `RunSaga` returns `*ResumeHalt`: a human decides,
   because you cannot safely roll back a step that may have committed.
 - **Rollback covers calls the abort cut off.** Rollback walks every tool call the model made, not
-  only those that returned. A side effect that started but has no recorded outcome (a sibling the
-  failure cancelled mid-call) stops the rollback with a `*ResumeHalt` in
-  `SagaAborted.CompensateErr`; resolve it with `ResolveHalt` and call `RunSaga` again to finish the
-  rollback. A retry-safe call with a compensator is run again to learn its result, then undone. A
-  sub-agent call is rolled back into whether or not it returned. A completed write with no
-  compensator, idempotent or not, is listed in `SagaAborted.Uncompensated`. So is any call whose
-  tool is no longer registered when the rollback runs (its compensator and safety are unknown), and
-  one of those with an attempt marker and no result stops the rollback with a `*ResumeHalt`.
+  only those that returned. A call of the failing turn that had not started when the step failed
+  never starts. A side effect that started but has no recorded outcome (a sibling the failure
+  cancelled mid-call) stops the rollback with a `*ResumeHalt` in `SagaAborted.CompensateErr`;
+  resolve it with `ResolveHalt` and call `RunSaga` again to finish the rollback. A retry-safe call
+  with a compensator is run again to learn its result, then undone. A sub-agent call is rolled back
+  into whether or not it returned; a sub-agent whose own saga failed rolled itself back first, and
+  if that rollback stopped (a crash, an unknown outcome, a failing compensator) the parent's stops
+  there too and resumes it on the next `RunSaga`, so `SagaAborted` covers the whole tree. A
+  completed write with no compensator, idempotent or not, is listed in `SagaAborted.Uncompensated`.
+  So is any call whose tool is no longer registered when the rollback runs (its compensator and
+  safety are unknown), and one of those with an attempt marker and no result stops the rollback
+  with a `*ResumeHalt`.
 - **A saga resumes as a saga.** A run's first drive records whether it runs as a saga, and resuming
   an unfinished saga through `Run` (or a run through `RunSaga`) is `ErrConfig`.
+- **A reconciled failure aborts.** A crash between a step's failure and its record leaves the step
+  with an unknown outcome. Resolving it with `ResolveHalt(..., isError=true)` records a failed
+  step, and the next `RunSaga` rolls back as it would have had the failure been recorded. (A
+  human's denial of a gated call is not a failure: the model reacts to it, as outside a saga.)
+- **A step of unknown outcome holds its turn.** While a sub-agent step halts on an unknown
+  outcome, no later call of the same turn starts: the step may prove to have failed, and the saga
+  must not run a step a run that never crashed would not have reached.
 - **Compensation is hierarchical, not concurrent.** Rollback recurses through a sub-agent *tree*
   (one causal order). Truly concurrent agents mutating shared state out of order need the provable
   convergence of the governance tier ([Governance](governance.md)), not a saga.
@@ -189,7 +200,13 @@ resumes the whole tree precisely (completed sub-agents reused, the in-flight one
 (match it with `errors.As`); resolve it against the **sub-run's** ID and tool-use ID carried on the
 signal (`RunID`, `ToolUseID`), then re-run the run named by `RootRunID`, the top-level run, with
 the root agent to resume down the path. The same holds for `Interrupted`, `Awaiting`, and
-`Sleeping` from a sub-agent; a `Sleep` in a sub-agent schedules its wake for the root run.
+`Sleeping` from a sub-agent; a `Sleep` in a sub-agent schedules its wake for the root run. When
+several calls of one turn pause, the run returns a `ResumeHalt` ahead of any other pause (the run
+cannot go on until it is resolved, whatever else is answered), and otherwise the first call's
+pause. A call that loses its answer (`ErrToolOutcomeUnknown`) is held the same way as a halt: its
+siblings in flight finish. A storage failure inside a sub-agent, or a lost answer in it, is not the
+sub-agent's answer: the parent records nothing for the call and returns the error, and resuming
+re-enters the sub-run.
 
 A sub-run's ID is `agent.SubRunID(parentRunID, toolUseID)`: the parent's run ID, `>`, and the
 tool-use ID encoded so that no ID a model sends can name another call's sub-run. A top-level run ID
@@ -215,7 +232,7 @@ if errors.As(err, &halt) {
 ```
 
 Pass the result value an actual call would have returned, and `isError=true` if the verified outcome
-was a failure the model should react to. It is idempotent (first result for a `(runID, toolUseID)`
+was a failure the model should react to (in a saga, a failed step, which rolls the saga back). It is idempotent (first result for a `(runID, toolUseID)`
 wins), so a retry or a racing driver injects it at most once.
 
 A halted `Step` (its `ResumeHalt` has an empty `ToolName`; `ToolUseID` is the step name) is cleared

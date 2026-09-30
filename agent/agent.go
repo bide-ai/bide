@@ -393,6 +393,11 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 		msgs = append(msgs, SystemText(sys))
 	}
 	msgs = append(msgs, seed...)
+
+	// The recorded assistant turns and tool results, from which the conversation is rebuilt below.
+	var turns []Message
+	results := map[string]Record{} // tool-use ID -> its recorded result
+
 	done := map[string]bool{}           // tool-use IDs with a recorded result
 	attempted := map[string]bool{}      // tool-use IDs we recorded an attempt marker for (started a side effect)
 	attemptedAtMs := map[string]int64{} // tool-use ID -> attempt marker's Unix-millis timestamp
@@ -414,16 +419,11 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 		case StepModel:
 			modelSeq++
 			if r.Message != nil {
-				msgs = append(msgs, *r.Message)
-				fire(AssistantTurn{Message: *r.Message, Replayed: true})
+				turns = append(turns, *r.Message)
 			}
 		case StepToolResult:
 			done[r.ToolUseID] = true
-			msgs = append(msgs, Message{Role: RoleTool, Parts: []Part{
-				ToolResult{ToolUseID: r.ToolUseID, Result: r.Result, IsError: r.IsError},
-			}})
-			name, _ := toolNameFor(recs, r.ToolUseID)
-			fire(ToolCompleted{ToolUseID: r.ToolUseID, Name: name, Result: r.Result, IsError: r.IsError})
+			results[r.ToolUseID] = r // one record per call: it is journaled under the call's ID
 		case StepSagaFail:
 			done[r.ToolUseID] = true // the failing step is durably resolved (no ResumeHalt)
 		case StepApproval:
@@ -455,6 +455,28 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 		if isToolAttempt(r) { // a Step's marker is not a call's
 			attempted[r.ToolUseID] = true
 			attemptedAtMs[r.ToolUseID] = r.AttemptedAt
+		}
+	}
+
+	// Rebuild the conversation as the live loop builds it: each assistant turn followed by the
+	// results of its calls in the order the model made them. The journal holds a turn's results
+	// in the order they were recorded, which is not that order when the calls ran concurrently or
+	// a denial was recorded before they ran, and a resumed run must show the model the
+	// conversation it would have read had nothing stopped the run. A result is placed once, after
+	// the first turn that made its call (a journal written before tool-use IDs were checked may
+	// reuse one); a recorded result no call of this run's turns made is not part of it.
+	placed := map[string]bool{}
+	for _, m := range turns {
+		msgs = append(msgs, m)
+		fire(AssistantTurn{Message: m, Replayed: true})
+		for _, tu := range m.toolUses() {
+			r, ok := results[tu.ID]
+			if !ok || placed[tu.ID] {
+				continue
+			}
+			placed[tu.ID] = true
+			msgs = append(msgs, toolResultMessage(r))
+			fire(ToolCompleted{ToolUseID: r.ToolUseID, Name: tu.Name, Result: r.Result, IsError: r.IsError})
 		}
 	}
 
@@ -501,9 +523,15 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 		// the run finishes with it (below) rather than ask the model for another turn, which could
 		// answer differently or call tools under new tool-use ids. A live turn like it returns in
 		// the same iteration, so only the first iteration of a resume sees one.
+		//
+		// A turn is resumed whether none or some of its calls have a recorded result: the latest
+		// assistant turn is pending as long as any of its calls is, even though the results
+		// already recorded follow it in the conversation.
 		var asst Message
 		terminal := false // the latest turn's terminal-tool call succeeded, which ends the run
-		if n := len(msgs); n > 0 && msgs[n-1].Role == RoleAssistant && (pending(msgs[n-1], done) || len(msgs[n-1].toolUses()) == 0) {
+		if i := lastAssistant(msgs); i >= 0 && pending(msgs[i], done) {
+			asst = msgs[i]
+		} else if n := len(msgs); n > 0 && msgs[n-1].Role == RoleAssistant && len(msgs[n-1].toolUses()) == 0 {
 			asst = msgs[n-1]
 		} else if last, ok := terminalCallDone(msgs, a.terminalTool); ok {
 			asst, terminal = last, true
@@ -654,34 +682,64 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 		}
 
 		// Execute the ready tools CONCURRENTLY (Go's strength; single-flight-safe). First
-		// failure in saga mode cancels siblings via the errgroup context. A pause or halt
-		// (Interrupt, Sleep, Await, approval, ResumeHalt) does not: it is held until every
-		// sibling has finished and recorded its outcome, since a routine pause must not cut
-		// off a side effect in flight and leave it with an unknown outcome.
+		// failure in saga mode cancels siblings via the errgroup context, and a sibling that
+		// has not started by then never does. A pause or halt (Interrupt, Sleep, Await,
+		// approval, ResumeHalt) does not: it is held until every sibling has finished and
+		// recorded its outcome, since a routine pause must not cut off a side effect in flight
+		// and leave it with an unknown outcome. (In a saga, a halt keeps siblings that have not
+		// started from starting; see halted.)
 		g, gctx := errgroup.WithContext(ctx)
 		if a.maxConc > 0 {
 			g.SetLimit(a.maxConc)
 		}
 		var (
-			pauseMu  sync.Mutex
-			pauseIdx = -1
-			pauseErr error
+			pauseMu   sync.Mutex
+			pauseIdx  = -1
+			pauseErr  error
+			pauseHalt bool // pauseErr is a *ResumeHalt
 			// carried[i] is the usage the record of uses[i] carries: that of the runs it started.
 			// The runs counted their spend in the tree as it happened, so it goes into tot only.
 			carried = make([]usageTotals, len(uses))
+			// halted is set, in a saga, once a call halts on an unknown outcome (a sub-agent's
+			// step that a crash cut off). That step may yet prove to have failed and abort the
+			// saga, so no further step starts until its outcome is known: the saga must not run
+			// a step a run that never crashed would not have reached.
+			halted atomic.Bool
 		)
 		for _, c := range toRun {
 			g.Go(func() (err error) {
 				defer func() {
-					if err != nil && isPause(err) {
+					// A call that lost its answer (ErrToolOutcomeUnknown, nothing recorded) is held
+					// like a halt, which is what its resume meets: it does not cut off siblings in
+					// flight, which would leave their outcomes unknown too.
+					lost := err != nil && errors.Is(err, ErrToolOutcomeUnknown)
+					if err != nil && (isPause(err) || lost) {
+						var halt *ResumeHalt
+						isHalt := errors.As(err, &halt) || lost
 						pauseMu.Lock()
-						if pauseIdx < 0 || c.idx < pauseIdx { // report the first call's pause
-							pauseIdx, pauseErr = c.idx, err
+						// Report a halt ahead of any other pause, then the first call's. A halt is a
+						// side effect whose outcome nobody knows, and the run stays stuck on it
+						// whatever else is answered; reported behind an approval, it would surface
+						// only once that was decided, and never if it is not.
+						if pauseIdx < 0 || isHalt && !pauseHalt || isHalt == pauseHalt && c.idx < pauseIdx {
+							pauseIdx, pauseErr, pauseHalt = c.idx, err, isHalt
 						}
 						pauseMu.Unlock()
+						if saga && isHalt {
+							halted.Store(true)
+						}
 						err = nil
 					}
 				}()
+				// A call whose turn was cut short before its turn to run came (a saga sibling
+				// failed, a sibling's record could not be written, the run was cancelled) never
+				// starts: nothing is claimed or run, so it has no outcome to reconcile.
+				if err := gctx.Err(); err != nil {
+					return err
+				}
+				if halted.Load() {
+					return nil // not started: it runs when the resumed turn does
+				}
 				sctx := withRunScope(gctx, SubRunID(runID, c.tu.ID)) // hierarchical sub-run ID
 				sctx = withRunContext(sctx, a.store, runID)          // lets the tool call Interrupt
 				started := &callUsage{}                              // usage of the runs this call starts
@@ -760,6 +818,12 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 						if errors.As(callErr, &subHalt) || errors.As(callErr, &subApproval) {
 							return Record{}, callErr
 						}
+						// A sub-run that stopped short of a verdict has no outcome yet: record
+						// nothing, so a resume re-enters the sub-run (see subRunUnfinished).
+						var subUnfinished *subRunUnfinished
+						if errors.As(callErr, &subUnfinished) {
+							return Record{}, callErr
+						}
 						// An Interrupt or a durable Sleep pauses the run: record nothing and
 						// propagate, so the tool re-runs and resolves on resume. Requires a
 						// retry-safe tool (else its attempt marker would halt the resume instead).
@@ -798,7 +862,12 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 				if err == nil {
 					carried[c.idx] = journalTotals([]Record{rec})
 				}
-				if saga && toolCallErr != nil {
+				// The saga aborts on a failure it has recorded. If the failure record could not be
+				// written, the abort is not durable, and a rollback now would read a journal in
+				// which the failed step looks unfinished (so possibly run, to be undone or reported
+				// as dangling): stop with the storage error instead, and let the resumed run meet
+				// the failure again (a retry-safe step re-runs; any other halts for its outcome).
+				if saga && toolCallErr != nil && err == nil {
 					fire(ToolCompleted{ToolUseID: c.tu.ID, Name: c.tu.Name, Result: rec.Result, IsError: true})
 					var journaled string
 					_ = json.Unmarshal(rec.Result, &journaled)
@@ -840,11 +909,29 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 			return Message{}, tot, liveTurns, pauseErr
 		}
 
-		// Append results in deterministic uses-order.
+		// Append results in deterministic uses-order. A resumed turn may already have some of its
+		// results in msgs (replayed from the journal, after the turn); they are taken out and put
+		// back in their places among the ones that just ran.
+		k := len(msgs)
+		for k > 0 && msgs[k-1].Role == RoleTool {
+			k--
+		}
+		prior := map[string]Message{}
+		for _, m := range msgs[k:] {
+			for _, p := range m.Parts {
+				if tr, ok := p.(ToolResult); ok {
+					prior[tr.ToolUseID] = m
+				}
+			}
+		}
+		msgs = msgs[:k]
 		for i, tu := range uses {
-			if results[i] != nil {
+			switch m, ok := prior[tu.ID]; {
+			case results[i] != nil:
 				done[tu.ID] = true
 				msgs = append(msgs, *results[i])
+			case ok:
+				msgs = append(msgs, m)
 			}
 		}
 	}
@@ -1113,6 +1200,21 @@ func terminalCallDone(msgs []Message, tool string) (Message, bool) {
 		return Message{}, false
 	}
 	return Message{}, false
+}
+
+// toolResultMessage is the conversation message for a recorded tool result.
+func toolResultMessage(r Record) Message {
+	return Message{Role: RoleTool, Parts: []Part{ToolResult{ToolUseID: r.ToolUseID, Result: r.Result, IsError: r.IsError}}}
+}
+
+// lastAssistant returns the index of the last assistant message in msgs, or -1.
+func lastAssistant(msgs []Message) int {
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role == RoleAssistant {
+			return i
+		}
+	}
+	return -1
 }
 
 func pending(m Message, done map[string]bool) bool {

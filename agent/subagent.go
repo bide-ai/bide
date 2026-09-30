@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/bide-ai/bide/schema"
@@ -88,7 +89,24 @@ func (t *subAgentTool) Call(ctx context.Context, args json.RawMessage) (json.Raw
 	// before it had would leave the sub-run's work in flight after the parent's Run returned.
 	out := <-ch
 	if out.err != nil {
+		var sa *SagaAborted
+		if !errors.As(out.err, &sa) && (errors.Is(out.err, ErrStorage) || errors.Is(out.err, ErrToolOutcomeUnknown)) {
+			// The sub-run stopped short of a verdict: its journal could not be read or written,
+			// or one of its calls lost its answer (it records nothing, and its resume halts for
+			// the outcome). This call has no outcome to record either. The parent records nothing
+			// and stops; resuming it re-enters the sub-run, which carries on from its journal.
+			return nil, &subRunUnfinished{err: out.err}
+		}
 		return nil, out.err // SagaAborted / ResumeHalt / PendingApproval / cancellation propagate up
 	}
 	return marshalJournal(firstText(out.msg)) // not HTML-escaped: the parent model reads it as written
 }
+
+// subRunUnfinished is a sub-agent call whose sub-run stopped short of a verdict: its journal could
+// not be read or written, or one of its calls lost its answer (ErrToolOutcomeUnknown). The loop
+// records no result for it, as for a cancelled call, so neither is journaled as the sub-agent's
+// answer nor, in a saga, taken for the step failure that aborts the transaction.
+type subRunUnfinished struct{ err error }
+
+func (e *subRunUnfinished) Error() string { return e.err.Error() }
+func (e *subRunUnfinished) Unwrap() error { return e.err }
