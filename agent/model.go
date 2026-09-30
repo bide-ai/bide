@@ -28,9 +28,9 @@ type Describer interface {
 // whether the Model honours Request.ResponseFormat (a Model that does not fails a request that
 // sets it, rather than drop the constraint).
 type ModelInfo struct {
-	Provider       string
-	Model          string
-	ResponseFormat bool
+	Provider       string `json:"provider,omitempty"`
+	Model          string `json:"model,omitempty"`
+	ResponseFormat bool   `json:"response_format,omitempty"`
 }
 
 // maxUnwrap bounds the Unwrap chain ModelInfoOf follows, so a wrapper that returns itself (or
@@ -200,6 +200,19 @@ type Finish struct {
 	Raw       string       `json:"raw"` // the provider's own finish reason, as it sent it ("end_turn", "STOP"); empty if it sent none
 	Usage     Usage        `json:"usage"`
 	Discarded Usage        `json:"discarded"`
+
+	// replay marks a Finish that Replay sent for a recorded turn: the agent journals the model the
+	// record names, not the replaying Model. It is carried by the event itself, so a Model that
+	// wraps the replay model and forwards its events keeps it.
+	replay *replayMark
+}
+
+// replayMark is what a replayed turn's Finish carries: the model its record names (nil for none),
+// and for a model call that failed for good, the id of the spend record that journaled it, so the
+// replayed run journals it under the same key.
+type replayMark struct {
+	model   *ModelInfo
+	spendID string
 }
 
 // FinishReason is why a model turn ended, in a neutral vocabulary every adapter maps its

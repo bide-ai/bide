@@ -211,9 +211,9 @@ func (a *Agent) cloneWith(extra Tool, mw ...Middleware) *Agent {
 func injectSystem(s string) Middleware {
 	sys := SystemText(s)
 	return func(next ModelHandler) ModelHandler {
-		return func(ctx context.Context, req Request) (Message, Usage, error) {
-			req.Messages = append([]Message{sys}, req.Messages...)
-			return next(ctx, req)
+		return func(ctx context.Context, call ModelCall) (ModelResponse, error) {
+			call.Request.Messages = append([]Message{sys}, call.Request.Messages...)
+			return next(ctx, call)
 		}
 	}
 }

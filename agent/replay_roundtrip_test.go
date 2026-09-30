@@ -125,7 +125,7 @@ func TestEmitsFor_RoundTripsThroughBuilder(t *testing.T) {
 	}
 	fails := 0
 	for _, want := range msgs {
-		got := buildFrom(t, emitsFor(want, Usage{}))
+		got := buildFrom(t, emitsFor(want, Finish{}))
 		if !reflect.DeepEqual(got, want) {
 			fails++
 			if fails <= 5 {
@@ -160,7 +160,7 @@ func TestEmitsFor_NamedLayouts(t *testing.T) {
 	for name, parts := range cases {
 		t.Run(name, func(t *testing.T) {
 			want := Message{Role: RoleAssistant, Parts: parts}
-			if got := buildFrom(t, emitsFor(want, Usage{})); !reflect.DeepEqual(got, want) {
+			if got := buildFrom(t, emitsFor(want, Finish{})); !reflect.DeepEqual(got, want) {
 				t.Fatalf("round trip changed the message:\n want %#v\n  got %#v", want.Parts, got.Parts)
 			}
 		})
@@ -184,7 +184,7 @@ func TestEmitsFor_UnsignedBlockMergesByDesign(t *testing.T) {
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
-			got := buildFrom(t, emitsFor(Message{Role: RoleAssistant, Parts: c.in}, Usage{}))
+			got := buildFrom(t, emitsFor(Message{Role: RoleAssistant, Parts: c.in}, Finish{}))
 			if want := (Message{Role: RoleAssistant, Parts: c.want}); !reflect.DeepEqual(got, want) {
 				t.Fatalf("got %#v, want %#v", got.Parts, want.Parts)
 			}

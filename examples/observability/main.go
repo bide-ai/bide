@@ -32,6 +32,12 @@ import (
 // non-zero), then answers in text on the next turn.
 type scriptModel struct{ turn int }
 
+// Describe names the model on the chat span (gen_ai.system and gen_ai.request.model), as the
+// first-party adapters' Describe does.
+func (*scriptModel) Describe() agent.ModelInfo {
+	return agent.ModelInfo{Provider: "inline", Model: "inline-demo"}
+}
+
 func (m *scriptModel) Stream(_ context.Context, _ agent.Request) (*agent.Stream, error) {
 	ch := make(chan agent.Emit, 4)
 	if m.turn == 0 {
@@ -89,7 +95,6 @@ func main() {
 	a := trace.Instrument(
 		agent.New(&scriptModel{}, agent.NewMemStore(), weather),
 		tracer,
-		trace.WithModel("inline-demo"),
 		trace.WithRates(rates),
 	)
 

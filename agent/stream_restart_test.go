@@ -3,8 +3,10 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
+	"time"
 )
 
 // renderTurns ranges a stream the way a UI does: it appends each text delta and clears the
@@ -29,12 +31,12 @@ func renderTurns(t *testing.T, as *AgentStream) (string, []TurnRestarted) {
 
 // retryOnceMW calls next again when the first call fails, as middleware.Retry does.
 func retryOnceMW(next ModelHandler) ModelHandler {
-	return func(ctx context.Context, req Request) (Message, Usage, error) {
-		msg, u, err := next(ctx, req)
+	return func(ctx context.Context, call ModelCall) (ModelResponse, error) {
+		resp, err := next(ctx, call)
 		if err != nil {
-			return next(ctx, req)
+			return next(ctx, call)
 		}
-		return msg, u, err
+		return resp, err
 	}
 }
 
@@ -61,20 +63,18 @@ func TestStream_RetriedTurnMarksDiscardedDeltas(t *testing.T) {
 }
 
 // The same holds when a middleware replaces a failed live attempt with a response from
-// elsewhere, delivered through DetachModelSink and EmitMessage.
+// elsewhere: the agent replays the response, after a restart, with no sink code in the
+// middleware.
 func TestStream_FallbackResponseMarksDiscardedDeltas(t *testing.T) {
 	m := &scriptModel{turns: [][]Emit{
 		{{Event: TextDelta{Text: "partial "}}, {Err: errors.New("connection reset")}},
 	}}
 	fallback := func(next ModelHandler) ModelHandler {
-		return func(ctx context.Context, req Request) (Message, Usage, error) {
-			if msg, u, err := next(ctx, req); err == nil {
-				return msg, u, nil
+		return func(ctx context.Context, call ModelCall) (ModelResponse, error) {
+			if resp, err := next(ctx, call); err == nil {
+				return resp, nil
 			}
-			_, sink := DetachModelSink(ctx)
-			msg := Message{Role: RoleAssistant, Parts: []Part{Text{Text: "fallback"}}}
-			EmitMessage(sink, msg, Usage{})
-			return msg, Usage{}, nil
+			return ModelResponse{Message: Message{Role: RoleAssistant, Parts: []Part{Text{Text: "fallback"}}}}, nil
 		}
 	}
 	as := New(m, NewMemStore()).Use(fallback).Stream(context.Background(), "r", "go")
@@ -93,12 +93,12 @@ func TestStream_FallbackResponseMarksDiscardedDeltas(t *testing.T) {
 
 // retryTwiceMW calls next up to three times in all while it fails.
 func retryTwiceMW(next ModelHandler) ModelHandler {
-	return func(ctx context.Context, req Request) (Message, Usage, error) {
-		msg, u, err := next(ctx, req)
+	return func(ctx context.Context, call ModelCall) (ModelResponse, error) {
+		resp, err := next(ctx, call)
 		for i := 0; i < 2 && err != nil; i++ {
-			msg, u, err = next(ctx, req)
+			resp, err = next(ctx, call)
 		}
-		return msg, u, err
+		return resp, err
 	}
 }
 
@@ -125,5 +125,68 @@ func TestStream_RestartOnlyAfterStreamedDeltas(t *testing.T) {
 	}
 	if rendered != final.Text() {
 		t.Fatalf("the consumer rendered %q but the run recorded %q", rendered, final.Text())
+	}
+}
+
+// liveRetryModel fails its first request after streaming "partial", then streams "a", waits
+// until the caller has rendered it, and finishes with "b".
+type liveRetryModel struct {
+	n       int
+	sawA    chan struct{}
+	timeout time.Duration
+}
+
+func (m *liveRetryModel) Stream(ctx context.Context, _ Request) (*Stream, error) {
+	if m.n++; m.n == 1 {
+		return NewStream(chanOf(Emit{Event: TextDelta{Text: "partial"}}, Emit{Err: errors.New("reset")})), nil
+	}
+	return NewStreamFunc(ctx, func(send func(Emit) bool) {
+		if !send(Emit{Event: TextDelta{Text: "a"}}) {
+			return
+		}
+		select {
+		case <-m.sawA:
+		case <-time.After(m.timeout):
+			send(Emit{Err: errors.New("the caller did not see the retried attempt's delta live")})
+			return
+		}
+		send(Emit{Event: TextDelta{Text: "b"}})
+		send(Emit{Event: Finish{Reason: FinishStop}})
+	}), nil
+}
+
+func chanOf(es ...Emit) <-chan Emit {
+	ch := make(chan Emit, len(es))
+	for _, e := range es {
+		ch <- e
+	}
+	close(ch)
+	return ch
+}
+
+// A failed attempt releases the stream: the attempt a retry makes next streams live, not replayed
+// once it is over.
+func TestStream_RetryStreamsLive(t *testing.T) {
+	m := &liveRetryModel{sawA: make(chan struct{}), timeout: 5 * time.Second}
+	as := New(m, NewMemStore()).Use(retryOnceMW).Stream(context.Background(), "r", "go")
+	var got []string
+	for ev := range as.Events() {
+		switch e := ev.(type) {
+		case ModelEvent:
+			if d, ok := e.Event.(TextDelta); ok {
+				got = append(got, d.Text)
+				if d.Text == "a" {
+					close(m.sawA)
+				}
+			}
+		case TurnRestarted:
+			got = append(got, "restart")
+		}
+	}
+	if _, err := as.Final(); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"partial", "restart", "a", "b"}; fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("stream = %q, want %q", got, want)
 	}
 }

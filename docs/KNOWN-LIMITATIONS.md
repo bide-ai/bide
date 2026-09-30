@@ -129,12 +129,31 @@ the adapter sends back only the thought signatures Gemini needs to continue a th
 but it is laid out as reasoning blocks, then the text, then the tool calls. Text that appeared
 between two reasoning blocks is moved after them, and separate text blocks are joined into one.
 
-**Replay does not know the provider's finish reason.** The journal records each turn's message and
-token usage, so a replayed run reports the same usage and stops on the same token budget. The finish
-reason is not recorded: a replayed turn ends with `tool_use` when it has tool calls and `stop`
-otherwise. Only turns that ended with one of those two reasons are journaled (a turn cut off at its
-token limit or stopped by a filter is an error; see the finish reasons in docs/guides/models.md), so
-no journaled turn's outcome changes on replay.
+**A model request that ignores cancellation past the run's end is not in its spend.** When a run
+ends (it completes, pauses, or fails), it waits for its model requests still in flight, such as a
+hedge loser, and journals their usage in a late spend record. The wait is bounded: two seconds, and
+not past the run's context. A request whose model ignores the cancellation it was sent for longer
+than that is billed by the provider but is not in `Result.Spend`, the journal, or the token budget.
+
+**Spend a drive could not journal waits in its process.** When a spend record's write fails, or a
+model record's write reports an error and the read that should settle it fails too, the process
+keeps the spend (and the turn's `OnAnswer` functions) and the run's next drive in the same process
+journals it, deciding from the journal so nothing is counted twice, through any Journal over the
+same store and any wrapper over one (such as `audit.AuditedStore`). If the process ends first, that spend is not journaled. The process keeps at most 4096
+such entries; past that it drops the oldest runs' entries, so a run the process drives again after
+its entry was dropped does not journal that spend.
+
+**Replay's recorded model travels on the replayed Finish.** A Model that wraps the replay model
+and forwards its events keeps it; one that builds its own `Finish` events does not, and the
+replayed turn then journals what `agent.ModelInfoOf` reports for the wrapper.
+
+**Replay of a turn journaled before finish reasons were.** Each model record journals the turn's
+finish reason and the provider's raw reason (`Record.Finish`, `Record.RawFinish`), and a replayed
+turn ends with them. A record written before they were journaled has neither: its replayed turn ends
+with `tool_use` when it has tool calls and `stop` otherwise, and no raw reason. Only turns that ended
+with one of those two reasons are journaled (a turn cut off at its token limit or stopped by a filter
+is an error; see the finish reasons in docs/guides/models.md), so no journaled turn's outcome changes
+on replay.
 
 **MCP tools are untyped.** Tools discovered from an MCP server at runtime use raw JSON arguments,
 because Go cannot create a struct type from a schema at runtime.

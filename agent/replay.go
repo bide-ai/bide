@@ -23,8 +23,13 @@ import (
 //   - evals over real traffic: the journal IS a golden dataset.
 //
 // Because the journal captures every model output across the whole (possibly nested)
-// tree, the replay is exact. Spend is replayed too: a turn reports the usage the original turn
-// discarded (failed attempts, losing hedge targets) along with its own, and a model call that
+// tree, the replay is exact. Each turn ends with the Finish its record holds: the reason and the
+// provider's raw reason the original turn journaled (a record written before they were journaled
+// gets the reason its message implies, "tool_use" when it calls tools, else "stop"), and the
+// replayed turn's record names the model its original record named (Record.Model), not the
+// replaying Model. Spend is replayed too: a turn reports the usage the original turn discarded
+// (failed attempts, losing hedge targets, and requests journaled in a late spend record after
+// it) in its Finish's Discarded, beside its own Usage, and a model call that
 // failed for good in the original fails again at the same point, reporting the same usage, so
 // the replayed run's Result.Spend, journal and WithTokenBudget stops match the original's. A
 // middleware in the replaying agent that retries such a failure moves on to the next recorded
@@ -36,19 +41,42 @@ func Replay(ctx context.Context, source Durable, runID string) (Model, error) {
 		return nil, err
 	}
 	var turns []recordedTurn
+	// carry is late spend journaled before any turn it could go with (a late record another
+	// driver of the run wrote ahead of the first model record): the next turn reports it.
+	var carry Usage
+	add := func(t recordedTurn) {
+		if t.failed {
+			addUsage(&t.usage, carry)
+		} else {
+			addUsage(&t.discarded, carry)
+		}
+		carry = Usage{}
+		turns = append(turns, t)
+	}
 	for _, r := range recs {
 		switch {
 		case r.Kind == StepModel && r.Message != nil:
-			t := recordedTurn{msg: *r.Message}
+			t := recordedTurn{msg: *r.Message, reason: r.Finish, raw: r.RawFinish, model: r.Model}
 			if r.Usage != nil {
 				t.usage = *r.Usage
 			}
 			if r.DiscardedUsage != nil {
 				t.discarded = *r.DiscardedUsage
 			}
-			turns = append(turns, t)
+			add(t)
 		case strings.HasPrefix(r.Name, spendStepPrefix) && r.DiscardedUsage != nil:
-			turns = append(turns, recordedTurn{usage: *r.DiscardedUsage, failed: true})
+			add(recordedTurn{usage: *r.DiscardedUsage, failed: true, spendID: strings.TrimPrefix(r.Name, spendStepPrefix)})
+		case strings.HasPrefix(r.Name, lateSpendPrefix) && r.DiscardedUsage != nil:
+			// Requests that ended after their turn was recorded: the turn before reports their spend,
+			// so the replayed run's spend matches (in that turn's record rather than a record of its
+			// own); before any turn, the next one does.
+			if len(turns) == 0 {
+				addUsage(&carry, *r.DiscardedUsage)
+			} else if last := &turns[len(turns)-1]; last.failed {
+				addUsage(&last.usage, *r.DiscardedUsage)
+			} else {
+				addUsage(&last.discarded, *r.DiscardedUsage)
+			}
 		}
 	}
 	return &replayModel{turns: turns}, nil
@@ -59,6 +87,10 @@ func Replay(ctx context.Context, source Durable, runID string) (Model, error) {
 // usage its requests reported.
 type recordedTurn struct {
 	msg              Message
+	reason           FinishReason
+	raw              string
+	model            *ModelInfo
+	spendID          string // a failed call's spend record id
 	usage, discarded Usage
 	failed           bool
 }
@@ -71,7 +103,7 @@ type replayModel struct {
 	i     int
 }
 
-func (m *replayModel) Stream(ctx context.Context, _ Request) (*Stream, error) {
+func (m *replayModel) Stream(context.Context, Request) (*Stream, error) {
 	if m.i >= len(m.turns) {
 		return nil, fmt.Errorf("replay: %w", ErrNoRecordedOutput)
 	}
@@ -81,20 +113,14 @@ func (m *replayModel) Stream(ctx context.Context, _ Request) (*Stream, error) {
 	if t.failed {
 		// The usage, then the failure: the stream reports what the original call spent.
 		ch := make(chan Emit, 2)
-		ch <- Emit{Event: Finish{Reason: "stop", Usage: t.usage}}
+		ch <- Emit{Event: Finish{Reason: FinishStop, Usage: t.usage, replay: &replayMark{spendID: t.spendID}}}
 		ch <- Emit{Err: errReplayedFailure}
 		close(ch)
 		return NewStream(ch), nil
 	}
-	if t.discarded != (Usage{}) {
-		// The original turn's other requests were billed too: report them to the run as spend.
-		for _, h := range modelHooks(ctx) {
-			if h.After != nil {
-				h.After(t.discarded)
-			}
-		}
-	}
-	evs := emitsFor(t.msg, t.usage)
+	// The original turn's other requests were billed too: Discarded reports them to the run as
+	// spend.
+	evs := emitsFor(t.msg, Finish{Reason: t.reason, Raw: t.raw, Usage: t.usage, Discarded: t.discarded, replay: &replayMark{model: t.model}})
 	ch := make(chan Emit, len(evs))
 	for _, e := range evs {
 		ch <- e
@@ -103,17 +129,15 @@ func (m *replayModel) Stream(ctx context.Context, _ Request) (*Stream, error) {
 	return NewStream(ch), nil
 }
 
-// emitsFor converts an assistant Message and the call's usage back into the stream events
+// emitsFor converts an assistant Message and the Finish that ended it back into the stream events
 // that would have produced them (the inverse of msgBuilder). Every message msgBuilder produces round-trips.
 // A message it cannot produce may not: an unsigned thinking block stays open until a
 // redacted block or the end of the stream, so one followed by text or another thinking
 // block merges with it.
 //
-// The Finish carries u and a reason derived from the message: "tool_use" when it has tool
-// calls, else "stop". The provider's own reason (such as a length cutoff) is not journaled:
-// a ModelHandler returns only the message and usage, and middleware may answer with a
-// message no stream produced.
-func emitsFor(msg Message, u Usage) []Emit {
+// The stream ends with fin. An empty fin.Reason (a record written before the reason was journaled)
+// becomes the reason the message implies: "tool_use" when it has tool calls, else "stop".
+func emitsFor(msg Message, fin Finish) []Emit {
 	var out []Emit
 	idx := 0
 	for _, p := range msg.Parts {
@@ -137,9 +161,11 @@ func emitsFor(msg Message, u Usage) []Emit {
 			idx++
 		}
 	}
-	reason := FinishStop
-	if idx > 0 {
-		reason = FinishToolUse
+	if fin.Reason == "" {
+		fin.Reason = FinishStop
+		if idx > 0 {
+			fin.Reason = FinishToolUse
+		}
 	}
-	return append(out, Emit{Event: Finish{Reason: reason, Usage: u}})
+	return append(out, Emit{Event: fin})
 }

@@ -33,12 +33,17 @@ replay is exact. Use it for:
   `testing/synctest`), assert behavior did not drift.
 - **Evals over real traffic**: the journal *is* a golden dataset.
 
-Each replayed turn also reports the token usage recorded with it, including the usage its
-turn discarded (failed attempts, losing hedge targets), and a model call that failed for good
-fails again at the same point with the same usage. So the replayed run's `RunResult` usage and
-spend and its journal match the original, and a run that `WithTokenBudget` stopped stops at the
-same point on replay. The turn's `Finish` reason is derived from the message
-(`tool_use` or `stop`); the provider's own reason is not journaled.
+Each replayed turn also reports the token usage recorded with it, and the usage its turn
+discarded (failed attempts, losing hedge targets) in its `Finish.Discarded`, and a model call
+that failed for good fails again at the same point with the same usage. So the replayed run's
+`RunResult` usage and spend and its journal match the original, a `middleware.Cost` on the
+replaying agent counts the same spend, and a run that `WithTokenBudget` stopped stops at the same
+point on replay. Each replayed turn ends with the finish reason and the provider's raw reason its
+record journaled (`Record.Finish`, `Record.RawFinish`); a record written before they were
+journaled gets the reason its message implies (`tool_use` or `stop`). The replayed turn's record
+names the model the original record named (`Record.Model`), not the replay model. Spend the
+original journaled in a late spend record (a request that ended after its turn) is reported with
+the turn before it, so the totals match although the record layout differs.
 
 If the replay model is asked for more turns than were recorded, its `Stream` returns
 `agent.ErrNoRecordedOutput`; that is the signal that the replayed loop diverged from the

@@ -27,14 +27,6 @@ func addUsage(dst *Usage, src Usage) {
 	dst.CacheWriteTokens += src.CacheWriteTokens
 }
 
-// ModelHandler generates one assistant turn. Middleware wraps it.
-type ModelHandler func(context.Context, Request) (Message, Usage, error)
-
-// Middleware wraps a ModelHandler — the net/http-style func(Handler) Handler chain, at
-// the SEMANTIC layer (it sees messages, tool calls, token usage — not bytes). Batteries
-// live in the middleware/ package (Retry, RateLimit, Cost, ...).
-type Middleware func(ModelHandler) ModelHandler
-
 // Agent binds a model, a tool set, a durable store, and a middleware chain.
 //
 // The WithX/Use/SetX builder methods MUTATE the receiver in place and return it for chaining; they

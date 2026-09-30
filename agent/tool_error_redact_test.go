@@ -27,12 +27,12 @@ type seen struct {
 }
 
 func (s *seen) middleware(next agent.ModelHandler) agent.ModelHandler {
-	return func(ctx context.Context, req agent.Request) (agent.Message, agent.Usage, error) {
-		b, _ := json.Marshal(req.Messages)
+	return func(ctx context.Context, call agent.ModelCall) (agent.ModelResponse, error) {
+		b, _ := json.Marshal(call.Request.Messages)
 		s.mu.Lock()
 		s.texts = append(s.texts, string(b))
 		s.mu.Unlock()
-		return next(ctx, req)
+		return next(ctx, call)
 	}
 }
 

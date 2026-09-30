@@ -26,7 +26,10 @@ type Result struct {
 	// Spend is every token the run's model requests used: Usage plus the usage of requests whose
 	// responses were discarded (failed attempts a middleware retried, losing hedge targets) and of
 	// model calls that failed. It is what the provider bills, and what WithTokenBudget counts.
-	// Like Usage it is the whole run's, from the journal (see Record.DiscardedUsage).
+	// Like Usage it is the whole run's, from the journal (see Record.DiscardedUsage). A request
+	// still in flight when an invocation ends (a hedge loser, a request a middleware left
+	// running) is waited for, for at most two seconds and not past the run's context, and counted;
+	// one that runs longer than that is not in Spend.
 	Spend Usage
 
 	// Turns is the number of live model turns this invocation executed. Turns replayed from

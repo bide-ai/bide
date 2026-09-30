@@ -72,7 +72,10 @@ says happened. A drive uses the configuration it is given for:
 
 - the system prompt (`WithSystemPrompt`, and `WithSystemPromptFunc`, which is called on every
   drive), sampling, tool choice, response format, the model, and model middleware, for the turns
-  that drive makes;
+  that drive makes. Each model turn journals what it was given: digests of the system prompt and
+  the tool set it was sent (`Record.PromptDigest`, `Record.ToolsDigest`), the model that answered
+  (`Record.Model`), and its finish reason, so an audit can tell which configuration produced each
+  answer;
 - the tool set offered to new turns, and each tool's `Safety` and tool middleware for a call that
   has not run yet (a pending call to a tool no longer registered fails with `ErrUnknownTool`);
 - the approval gate for a call with no recorded denial, under the gate's current policy;

@@ -141,8 +141,8 @@ func TestRunResult_SpendOfBrokenStream(t *testing.T) {
 // spent; the turn's discarded spend is then zero, never negative.
 func TestRunResult_SpendOfSuppliedResponse(t *testing.T) {
 	cache := func(ModelHandler) ModelHandler {
-		return func(context.Context, Request) (Message, Usage, error) {
-			return Message{Role: RoleAssistant, Parts: []Part{Text{Text: "cached"}}}, billed, nil
+		return func(context.Context, ModelCall) (ModelResponse, error) {
+			return ModelResponse{Message: Message{Role: RoleAssistant, Parts: []Part{Text{Text: "cached"}}}, Usage: billed}, nil
 		}
 	}
 	store := NewMemStore()
@@ -199,13 +199,13 @@ func TestTokenBudget_JournalsSpendOfCancelledCall(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	cancelling := func(next ModelHandler) ModelHandler {
-		return func(ctx context.Context, req Request) (Message, Usage, error) {
-			msg, u, err := next(ctx, req) // billed, then the caller gives up
+		return func(ctx context.Context, call ModelCall) (ModelResponse, error) {
+			resp, err := next(ctx, call) // billed, then the caller gives up
 			cancel()
 			if err == nil {
 				err = context.Canceled
 			}
-			return msg, u, err
+			return resp, err
 		}
 	}
 	store := cancelAwareStore{NewMemStore()}

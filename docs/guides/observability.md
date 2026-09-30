@@ -27,7 +27,7 @@ Three span kinds, matching the GenAI convention's `gen_ai.operation.name`:
 | Span | `gen_ai.operation.name` | Source | Covers |
 |---|---|---|---|
 | `invoke_agent <name>` | `invoke_agent` | `trace.Invoke` (call site) | the whole run |
-| `chat` / `chat <model>` | `chat` | `trace.Model` middleware | one model call, with token usage |
+| `chat` / `chat <model>` | `chat` | `trace.Model` middleware | one model call, with token usage and finish reason |
 | `execute_tool <tool>` | `execute_tool` | `trace.Tool` middleware | one tool call |
 
 The top-level `invoke_agent` span lives at the call site rather than on the agent, because it
@@ -64,8 +64,12 @@ one table drives both. `gen_ai.usage.cost` is a custom extension (it is not part
 semantic convention), namespaced clearly. The standard `gen_ai.usage.input_tokens` and
 `gen_ai.usage.output_tokens` are always recorded on the chat span regardless of `WithRates`.
 
-`WithSystem` and `WithModel` label the chat span with the provider and model name; they also
-apply to the chat span only.
+The chat span names the provider (`gen_ai.system`) and model (`gen_ai.request.model`) the call is
+sent to, as `agent.ModelInfoOf(call.Model)` reports them; the first-party adapters describe
+themselves, and a custom `Model` can too by implementing `agent.Describer`. A model that does not
+describe itself gives a span named `chat` with neither attribute. The span also records the
+response's neutral finish reason as `gen_ai.response.finish_reasons`. `trace.Model` placed outside
+a `Hedge` names the primary: backups are retargeted below it.
 
 ## Content capture is off by default
 
@@ -109,8 +113,8 @@ apply to the log line too.
 The package hardcodes the stable `gen_ai.*` attribute keys rather than importing the semconv
 module (which churns every release), so instrumentation output does not shift under a toolchain
 bump. The emitted keys include `gen_ai.system`, `gen_ai.operation.name`,
-`gen_ai.request.model`, `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`,
-`gen_ai.tool.name`, and `gen_ai.tool.call.id`.
+`gen_ai.request.model`, `gen_ai.response.finish_reasons`, `gen_ai.usage.input_tokens`,
+`gen_ai.usage.output_tokens`, `gen_ai.tool.name`, and `gen_ai.tool.call.id`.
 
 ## See also
 

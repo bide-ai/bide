@@ -14,11 +14,11 @@ import (
 func TestRetry_Exhausts(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		var calls int
-		base := agent.ModelHandler(func(context.Context, agent.Request) (agent.Message, agent.Usage, error) {
+		base := agent.ModelHandler(func(context.Context, agent.ModelCall) (agent.ModelResponse, error) {
 			calls++
-			return agent.Message{}, agent.Usage{}, errors.New("always")
+			return agent.ModelResponse{}, errors.New("always")
 		})
-		if _, _, err := Retry(2)(base)(context.Background(), agent.Request{}); err == nil {
+		if _, err := Retry(2)(base)(context.Background(), agent.ModelCall{}); err == nil {
 			t.Fatal("want error after exhausting retries")
 		}
 		if calls != 3 { // initial + 2 retries

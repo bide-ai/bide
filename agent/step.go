@@ -30,11 +30,29 @@ func ClaimAttempt(ctx context.Context, d Durable, runID, name string, rec Record
 	if j := journalOf(d); j != nil {
 		return j.claim(ctx, runID, name, rec)
 	}
+	// A Durable the engine drives through its Do (a wrapper such as audit.AuditedStore) claims as
+	// the Journal does, through d, so the wrapper sees every write: remembered claims of the name
+	// are recorded as not started first, and a claim whose marker write fails records that it did
+	// not start, or is remembered, under the identity of the store beneath d (durableIdentity).
+	if id, keyed := durableIdentity(d); keyed {
+		for _, old := range pendingClaims.takeAll(flightKey{id, runID, name}) {
+			m := rec
+			m.claim = old
+			_ = recordNotStarted(ctx, d, runID, name, m) // on failure it remembers old again
+		}
+	}
 	claim := newClaimID()
 	rec.claim = claim
 	got, err = d.Do(ctx, runID, name, func(context.Context) (Record, error) { return rec, nil })
+	if errors.Is(err, errNoRecord) {
+		return false, Record{}, err // a probe's shared call answered: no marker was written (see claimAttempt)
+	}
 	if err != nil {
-		return false, Record{}, err
+		// The marker may have committed all the same; this driver never called the effect.
+		if nerr := recordNotStarted(ctx, d, runID, name, rec); nerr != nil {
+			return false, Record{}, fmt.Errorf("claim %s: %w (%w)", name, err, nerr)
+		}
+		return false, Record{}, fmt.Errorf("claim %s: %w", name, err)
 	}
 	return got.claim == claim, got, nil
 }
@@ -239,6 +257,22 @@ func durableStep(ctx context.Context, d Durable, runID, name string, cfg stepCon
 		}
 		claimed, won, marker, markerKey = w, w, got, key
 		attemptedAt = markerTime(got.AttemptedAt)
+		if j := innerJournal(d); !won && j != nil {
+			// The loser rule of journalStep, for the Journal beneath the wrapper: the loser only
+			// joins a call of the step in flight and never starts one, so the owner in this process
+			// never finds the loser's read in flight and takes its halt as its own outcome
+			// (WinnerNeverHalts). A joined call that fails is a halt on a live owner.
+			if b, ok, err := joinFlight(flightKey{j.id, runID, name}); ok {
+				if err != nil {
+					return Record{}, stepHalt(runID, name, attemptedAt, HaltContended)
+				}
+				return decodeStored(runID, name, b)
+			}
+			if rec, ok, err := j.Get(ctx, runID, name); err != nil || ok {
+				return rec, err
+			}
+			return Record{}, stepHalt(runID, name, attemptedAt, HaltCrashed)
+		}
 	}
 	var started atomic.Bool // fn was called: from here on its effect may have fired
 	rec, err := d.Do(ctx, runID, name, func(ctx context.Context) (Record, error) {

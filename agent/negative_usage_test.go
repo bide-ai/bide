@@ -36,9 +36,10 @@ func TestRun_NegativeUsageIsRejected(t *testing.T) {
 func TestRun_NegativeUsageFromMiddlewareIsRejected(t *testing.T) {
 	m := &scriptModel{turns: [][]Emit{textTurnWithUsage("done", billed)}}
 	neg := func(next ModelHandler) ModelHandler {
-		return func(ctx context.Context, req Request) (Message, Usage, error) {
-			msg, _, err := next(ctx, req)
-			return msg, Usage{OutputTokens: -7}, err
+		return func(ctx context.Context, call ModelCall) (ModelResponse, error) {
+			resp, err := next(ctx, call)
+			resp.Usage = Usage{OutputTokens: -7}
+			return resp, err
 		}
 	}
 	_, err := New(m, NewMemStore()).Use(neg).Run(context.Background(), "r", "go")

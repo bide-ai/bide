@@ -24,6 +24,7 @@ import (
 	"runtime"
 	"slices"
 	"sync"
+	"sync/atomic"
 )
 
 // JournalFormat is the journal format this version writes: the format every run's header names
@@ -63,7 +64,9 @@ const headerStep = "@journal"
 //   - A4, read-your-writes and monotone visibility: once visible, an entry stays visible with the
 //     same bytes and position (the one exception is a redaction, which keeps the position).
 //   - A5, byte fidelity: Data comes back exactly as inserted, and the caller may keep or modify
-//     the slices it passes and receives.
+//     the slices it passes and receives. That includes every record's salt: the engine tells its
+//     own model record from another driver's by the salt it drew (see JournalEntry), so a store
+//     that rewrites or drops salt bytes makes it take its own record for another's.
 //   - A6, immutable: the port has no update or delete. Only a redaction may replace an entry's
 //     Data, with a tombstone (see Record.Redacted), and only in a run that is over.
 //   - A7, context: every method honors ctx. Recording a step's outcome after ctx is cancelled is
@@ -149,7 +152,9 @@ func (f RunFilter) Admits(runID string, holds func(name string) bool) bool {
 // exposes exactly the capabilities of the store it wraps, with no forwarding methods to keep in
 // step with new capabilities. A wrapper that must change what a capability means implements that
 // capability itself, which takes precedence over the wrapped store's, as with errors.As. Only a
-// wrapper that passes run IDs and names through unchanged may implement Unwrap (see Store).
+// wrapper that passes run IDs and names through unchanged may implement Unwrap (see Store). The
+// same holds for a Durable wrapper's Unwrap() Durable (see Durable), which the engine follows to
+// the store beneath for its capabilities and for what the process keeps per run.
 func Capability[T any](store Store) (T, bool) {
 	for store != nil {
 		if c, ok := store.(T); ok {
@@ -197,6 +202,25 @@ func capabilityOf[T any](d Durable) (T, bool) {
 // over themselves.
 //
 // Deprecated: transitional; renamed by the 1.0 rewrite. Use *Journal.
+//
+// A Durable that is not a Journal must keep the Journal's guarantees, which the engine's
+// accounting relies on as much as its at-most-once does: it records a step's result at most once
+// under one name (a second record under the name is never written, and Do returns the one the
+// journal holds); it calls fn at most once per record it writes, never again for a name already
+// recorded; and it keeps each record's bytes, the salt among them, exactly as JournalEntry built
+// them (a salt a step's record carries from the engine is the one the journal must hold).
+//
+// A Durable that wraps another (such as audit.AuditedStore) may implement
+//
+//	Unwrap() Durable
+//
+// so the engine reaches the store beneath it: its capabilities (Lister, Leaser, as Capability
+// finds them), and the identity under which the process keeps what it keeps per run (claims it
+// could not record as not started, spend it could not journal), which every Journal and wrapper
+// over that store then shares. It may do so only if it passes run IDs and step names through
+// unchanged, as for Unwrap() Store. A wrapper that rewrites keys (a tenant prefix, say) must not
+// implement Unwrap: its runs would be kept under the run IDs it was given, and two tenants' runs
+// of one name would share them. storetest.CheckDurableWrapper checks this.
 type Durable interface {
 	// Do returns the recorded Record for (runID, name) without running fn if present; otherwise
 	// runs fn, records the returned Record (with Name set and a fresh salt), and returns the
@@ -988,6 +1012,9 @@ func shareFlight(k flightKey, fn func() ([]byte, error)) ([]byte, error) {
 	flights.mu.Lock()
 	if f, ok := flights.m[k]; ok {
 		flights.mu.Unlock()
+		if h := flightJoinHook.Load(); h != nil {
+			(*h)(k)
+		}
 		f.done.Wait()
 		return f.val, f.err
 	}
@@ -1010,6 +1037,10 @@ func shareFlight(k flightKey, fn func() ([]byte, error)) ([]byte, error) {
 	return f.val, f.err
 }
 
+// flightJoinHook, when set (by tests only), is called with the key of every call in flight that a
+// shareFlight or joinFlight caller joins, before it waits, so a test can order a schedule around a join.
+var flightJoinHook atomic.Pointer[func(flightKey)]
+
 // joinFlight waits for the call in flight with key k, if there is one, and returns its outcome
 // and true; it returns false at once when no call is in flight. It never starts a call.
 func joinFlight(k flightKey) ([]byte, bool, error) {
@@ -1018,6 +1049,9 @@ func joinFlight(k flightKey) ([]byte, bool, error) {
 	flights.mu.Unlock()
 	if !ok {
 		return nil, false, nil
+	}
+	if h := flightJoinHook.Load(); h != nil {
+		(*h)(k)
 	}
 	f.done.Wait()
 	return f.val, true, f.err

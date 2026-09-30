@@ -42,17 +42,33 @@ type Record struct {
 	Usage *Usage `json:"usage,omitempty"`
 	// DiscardedUsage is billed usage no recorded response carries. On a StepModel record, the
 	// turn's other model requests: failed attempts a middleware retried, losing hedge targets. On
-	// a StepValue record named "@spend/<n>", a model call that failed for good. On a
+	// a StepValue record named "@spend/<id>", a model call that failed for good; on one named
+	// "@spend-late/<id>", requests that ended after their turn was recorded, or whose turn another
+	// driver recorded. On a
 	// StepToolResult or StepSagaFail record, the rest of the Spend of the runs the tool call
 	// started. Nil when there was none. WithTokenBudget counts it.
-	DiscardedUsage *Usage          `json:"discarded_usage,omitempty"`
-	ToolUseID      string          `json:"tool_use_id,omitempty"`  // StepToolResult
-	Result         json.RawMessage `json:"result,omitempty"`       // StepToolResult / StepValue
-	IsError        bool            `json:"is_error,omitempty"`     // StepToolResult
-	Approved       bool            `json:"approved,omitempty"`     // StepApproval
-	Approver       string          `json:"approver,omitempty"`     // StepApproval written by SubmitDecision
-	ApproverAlg    Alg             `json:"approver_alg,omitempty"` // StepApproval written by SubmitDecision: the scheme Signature is under
-	Signature      []byte          `json:"signature,omitempty"`    // StepApproval written by SubmitDecision
+	DiscardedUsage *Usage `json:"discarded_usage,omitempty"`
+	// Finish is why the model turn ended, and RawFinish the provider's own reason as it sent it
+	// (see Finish). StepModel only; empty on a record written before they were journaled.
+	Finish    FinishReason `json:"finish,omitempty"`
+	RawFinish string       `json:"raw_finish,omitempty"`
+	// Model identifies the model that answered the turn (see ModelInfoOf), for audit and for a
+	// run whose turns a middleware sent to different providers. StepModel only; nil when the
+	// model does not describe itself or no request produced the response (a middleware built it).
+	Model *ModelInfo `json:"model,omitempty"`
+	// PromptDigest and ToolsDigest are digests of the system prompt and the tool set the turn was
+	// sent (see the functions of the same names), so an auditor can tell which instructions and
+	// which tools each answer was given, although agent-level defaults stay live across a
+	// redeploy. StepModel only; empty when the turn was sent no system prompt, or no tools.
+	PromptDigest string          `json:"prompt_digest,omitempty"`
+	ToolsDigest  string          `json:"tools_digest,omitempty"`
+	ToolUseID    string          `json:"tool_use_id,omitempty"`  // StepToolResult
+	Result       json.RawMessage `json:"result,omitempty"`       // StepToolResult / StepValue
+	IsError      bool            `json:"is_error,omitempty"`     // StepToolResult
+	Approved     bool            `json:"approved,omitempty"`     // StepApproval
+	Approver     string          `json:"approver,omitempty"`     // StepApproval written by SubmitDecision
+	ApproverAlg  Alg             `json:"approver_alg,omitempty"` // StepApproval written by SubmitDecision: the scheme Signature is under
+	Signature    []byte          `json:"signature,omitempty"`    // StepApproval written by SubmitDecision
 	// AttemptedAt is the Unix-millis wall-clock time an attempt marker (StepAttempt) was
 	// written, i.e. just before a non-retriable side effect fired. It is set once and read
 	// back verbatim on replay, so it stays deterministic. Zero (and omitted) on every
@@ -90,6 +106,10 @@ type Record struct {
 	salt []byte
 	// raw is the bytes the record was decoded from (see Raw).
 	raw []byte
+	// stamped marks a salt the engine drew for a record it is about to record (stampSalt), which
+	// JournalEntry keeps instead of drawing another, so the engine can tell its own record from
+	// another writer's by the salt the journal holds.
+	stamped bool
 }
 
 // ClaimID returns the random id of the driver that wrote this attempt marker or not-started record
@@ -98,7 +118,8 @@ type Record struct {
 func (r Record) ClaimID() string { return r.claim }
 
 // Salt returns the record's salt: SaltSize random bytes the journal sets when it first records the
-// record (see JournalEntry), replacing any salt the step returned. It is persisted with the record
+// record (see JournalEntry), replacing any salt the step returned (the engine draws the salt of its
+// own model records itself, just as randomly, to tell its record from another writer's). It is persisted with the record
 // and read back verbatim, so it is stable across replay and across stores. It has no meaning to
 // the run; the audit trail needs it. An audit leaf commits to the record's journal encoding, salt
 // included, and an inclusion proof for one record carries its neighbours' leaf hashes, so without
@@ -176,18 +197,64 @@ func markerTime(ms int64) time.Time {
 const SaltSize = 32
 
 // JournalEntry returns the bytes a store persists when it records rec as the step named name:
-// rec with Name set to name and a fresh random Salt (see Record.Salt), in its journal encoding
+// rec with Name set to name and a fresh random Salt (see Record.Salt; a salt the engine drew for
+// the record is kept), in its journal encoding
 // (EncodeRecord). Every Durable implementation must record a new step through it, so every
 // record carries a salt; the audit package refuses to commit a record without one. It errors
 // only if the system's random source fails or rec cannot be encoded.
 func JournalEntry(name string, rec Record) ([]byte, error) {
-	salt := make([]byte, SaltSize)
-	if _, err := rand.Read(salt); err != nil {
-		return nil, fmt.Errorf("salt step %q: %w (%w)", name, err, ErrStorage)
+	if !rec.stamped || len(rec.salt) != SaltSize {
+		salt, err := newSalt()
+		if err != nil {
+			return nil, fmt.Errorf("salt step %q: %w (%w)", name, err, ErrStorage)
+		}
+		rec.salt = salt
 	}
 	rec.Name = name
-	rec.salt = salt
 	return EncodeRecord(rec)
+}
+
+// newSalt returns SaltSize random bytes from crypto/rand.
+func newSalt() ([]byte, error) {
+	salt := make([]byte, SaltSize)
+	if _, err := rand.Read(salt); err != nil {
+		return nil, err
+	}
+	return salt, nil
+}
+
+// stampSalt gives r, a record the engine is about to record, a fresh salt that JournalEntry keeps,
+// so the engine can tell its own record by it (ownRecord). The salt is as random as the one
+// JournalEntry would draw.
+func stampSalt(r *Record) error {
+	salt, err := newSalt()
+	if err != nil {
+		return fmt.Errorf("salt: %w (%w)", err, ErrStorage)
+	}
+	r.salt, r.stamped = salt, true
+	return nil
+}
+
+// ownRecord reports whether held, a record read from the journal, is built, a record the engine
+// stamped (stampSalt) and tried to record: the journal holds the salt it was given. A store that
+// breaks the contract and journals no salt is compared by the journal encoding instead, both
+// records put through EncodeRecord with no salt, so its canonical form (compact JSON, U+FFFD for invalid
+// UTF-8) does not make the engine's own record look like another writer's.
+func ownRecord(held, built Record) bool {
+	if s := held.Salt(); s != nil {
+		return bytes.Equal(s, built.salt)
+	}
+	enc := func(r Record) []byte {
+		r.salt, r.stamped, r.raw, r.claim = nil, false, nil, ""
+		b, err := EncodeRecord(r) // the fixed point a store holds (see EncodeRecord)
+		if err != nil {
+			return nil
+		}
+		return b
+	}
+	built.Name = held.Name
+	a, b := enc(held), enc(built)
+	return a != nil && bytes.Equal(a, b)
 }
 
 // EncodeRecord returns the journal encoding of r: the bytes a store persists for it and the

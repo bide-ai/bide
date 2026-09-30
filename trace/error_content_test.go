@@ -36,12 +36,12 @@ func failingSpans(t *testing.T) []sdktrace.ReadOnlySpan {
 	t.Helper()
 	sr, tp := recorder()
 	tracer := tp.Tracer("t")
-	mh := Model(tracer)(func(context.Context, agent.Request) (agent.Message, agent.Usage, error) {
-		return agent.Message{}, agent.Usage{}, &agent.APIError{StatusCode: 400, Type: "invalid_request_error",
+	mh := Model(tracer)(func(context.Context, agent.ModelCall) (agent.ModelResponse, error) {
+		return agent.ModelResponse{}, &agent.APIError{StatusCode: 400, Type: "invalid_request_error",
 			Body: `{"error":{"message":"Invalid 'messages[0].content': 'PATIENT-SSN-123-45-6789'"}}`,
 			Err:  fmt.Errorf("openai (%w)", agent.ErrModel)}
 	})
-	_, _, _ = mh(context.Background(), agent.Request{Messages: []agent.Message{agent.UserText("PATIENT-SSN-123-45-6789")}})
+	_, _ = mh(context.Background(), agent.ModelCall{Request: agent.Request{Messages: []agent.Message{agent.UserText("PATIENT-SSN-123-45-6789")}}})
 	th := Tool(tracer)(func(_ context.Context, tu agent.ToolUse) (json.RawMessage, error) {
 		return nil, fmt.Errorf("charge failed for args %s: %w", tu.Args, agent.ErrTool)
 	})
@@ -122,10 +122,10 @@ func TestPanicMarksSpanFailed(t *testing.T) {
 			call()
 		}
 		mustPanic(func() {
-			h := Model(tracer)(func(context.Context, agent.Request) (agent.Message, agent.Usage, error) {
+			h := Model(tracer)(func(context.Context, agent.ModelCall) (agent.ModelResponse, error) {
 				panic("PATIENT-SSN-123-45-6789")
 			})
-			_, _, _ = h(context.Background(), agent.Request{})
+			_, _ = h(context.Background(), agent.ModelCall{Request: agent.Request{}})
 		})
 		mustPanic(func() {
 			h := Tool(tracer)(func(context.Context, agent.ToolUse) (json.RawMessage, error) {
@@ -193,10 +193,10 @@ func TestCaptureOnRecordsNoCredentials(t *testing.T) {
 		t.Fatalf("journaled tool error = %q, want the redactor's text", journaled)
 	}
 
-	mh := Model(tracer)(func(context.Context, agent.Request) (agent.Message, agent.Usage, error) {
-		return agent.Message{}, agent.Usage{}, fmt.Errorf("openai: %w", &url.Error{Op: "Post", URL: credURL, Err: agent.ErrModel})
+	mh := Model(tracer)(func(context.Context, agent.ModelCall) (agent.ModelResponse, error) {
+		return agent.ModelResponse{}, fmt.Errorf("openai: %w", &url.Error{Op: "Post", URL: credURL, Err: agent.ErrModel})
 	})
-	_, _, _ = mh(context.Background(), agent.Request{})
+	_, _ = mh(context.Background(), agent.ModelCall{Request: agent.Request{}})
 	th := Tool(tracer)(func(context.Context, agent.ToolUse) (json.RawMessage, error) {
 		return nil, &url.Error{Op: "Get", URL: credURL, Err: errors.New("timeout")}
 	})

@@ -51,13 +51,13 @@ func TestRetrievalTool_SearchesOnDemand(t *testing.T) {
 func TestWithRetrieval_InjectsOnUserTurn(t *testing.T) {
 	r := &fakeRetriever{docs: []Doc{{Text: "Paris is the capital of France"}}}
 	var seen Request
-	base := ModelHandler(func(_ context.Context, req Request) (Message, Usage, error) {
-		seen = req
-		return Message{}, Usage{}, nil
+	base := ModelHandler(func(_ context.Context, call ModelCall) (ModelResponse, error) {
+		seen = call.Request
+		return ModelResponse{}, nil
 	})
 	h := WithRetrieval(r, 2)(base)
 
-	_, _, err := h(context.Background(), Request{Messages: []Message{UserText("what's the capital?")}})
+	_, err := h(context.Background(), ModelCall{Request: Request{Messages: []Message{UserText("what's the capital?")}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,9 +75,9 @@ func TestWithRetrieval_InjectsOnUserTurn(t *testing.T) {
 func TestWithRetrieval_ToolResultTurnOutsideRunKeepsContext(t *testing.T) {
 	r := &fakeRetriever{docs: []Doc{{Text: "x marks the spot"}}}
 	var seen Request
-	base := ModelHandler(func(_ context.Context, req Request) (Message, Usage, error) {
-		seen = req
-		return Message{}, Usage{}, nil
+	base := ModelHandler(func(_ context.Context, call ModelCall) (ModelResponse, error) {
+		seen = call.Request
+		return ModelResponse{}, nil
 	})
 	h := WithRetrieval(r, 2)(base)
 
@@ -87,7 +87,7 @@ func TestWithRetrieval_ToolResultTurnOutsideRunKeepsContext(t *testing.T) {
 		{Role: RoleAssistant, Parts: []Part{ToolUse{ID: "c1", Name: "t"}}},
 		{Role: RoleTool, Parts: []Part{ToolResult{ToolUseID: "c1", Result: json.RawMessage(`{}`)}}},
 	}
-	if _, _, err := h(context.Background(), Request{Messages: msgs}); err != nil {
+	if _, err := h(context.Background(), ModelCall{Request: Request{Messages: msgs}}); err != nil {
 		t.Fatal(err)
 	}
 	if r.lastQ != "q" {
@@ -101,10 +101,10 @@ func TestWithRetrieval_ToolResultTurnOutsideRunKeepsContext(t *testing.T) {
 // A retrieval error aborts the model call (users degrade by returning nil,nil instead).
 func TestWithRetrieval_ErrorAborts(t *testing.T) {
 	r := &fakeRetriever{err: errors.New("vector store down")}
-	base := ModelHandler(func(context.Context, Request) (Message, Usage, error) { return Message{}, Usage{}, nil })
+	base := ModelHandler(func(context.Context, ModelCall) (ModelResponse, error) { return ModelResponse{}, nil })
 	h := WithRetrieval(r, 2)(base)
 
-	_, _, err := h(context.Background(), Request{Messages: []Message{UserText("q")}})
+	_, err := h(context.Background(), ModelCall{Request: Request{Messages: []Message{UserText("q")}}})
 	if err == nil || !strings.Contains(err.Error(), "vector store down") {
 		t.Fatalf("err = %v, want the retrieval error", err)
 	}
@@ -175,11 +175,11 @@ func TestRetrieval_CapsAtK(t *testing.T) {
 	}
 
 	var seen Request
-	base := ModelHandler(func(_ context.Context, req Request) (Message, Usage, error) {
-		seen = req
-		return Message{}, Usage{}, nil
+	base := ModelHandler(func(_ context.Context, call ModelCall) (ModelResponse, error) {
+		seen = call.Request
+		return ModelResponse{}, nil
 	})
-	if _, _, err := WithRetrieval(r, 2)(base)(context.Background(), Request{Messages: []Message{UserText("q")}}); err != nil {
+	if _, err := WithRetrieval(r, 2)(base)(context.Background(), ModelCall{Request: Request{Messages: []Message{UserText("q")}}}); err != nil {
 		t.Fatal(err)
 	}
 	if block := seen.Messages[0].Text(); !strings.Contains(block, "two") || strings.Contains(block, "three") {
@@ -230,9 +230,9 @@ func TestRetrievalTool_NonFiniteScoreDropped(t *testing.T) {
 func TestWithRetrieval_ContextPlacement(t *testing.T) {
 	r := &fakeRetriever{docs: []Doc{{Text: "Paris is the capital of France"}}}
 	var seen Request
-	base := ModelHandler(func(_ context.Context, req Request) (Message, Usage, error) {
-		seen = req
-		return Message{}, Usage{}, nil
+	base := ModelHandler(func(_ context.Context, call ModelCall) (ModelResponse, error) {
+		seen = call.Request
+		return ModelResponse{}, nil
 	})
 	req := Request{Messages: []Message{
 		SystemText("OPERATOR"),
@@ -240,7 +240,7 @@ func TestWithRetrieval_ContextPlacement(t *testing.T) {
 		{Role: RoleAssistant, Parts: []Part{Text{"hi there"}}},
 		UserText("what's the capital?"),
 	}}
-	if _, _, err := WithRetrieval(r, 2)(base)(context.Background(), req); err != nil {
+	if _, err := WithRetrieval(r, 2)(base)(context.Background(), ModelCall{Request: req}); err != nil {
 		t.Fatal(err)
 	}
 	want := []struct {
@@ -280,11 +280,11 @@ func TestWithRetrieval_DocumentCannotForgeAnEntry(t *testing.T) {
 	}
 	r := &fakeRetriever{docs: []Doc{doc}}
 	var seen Request
-	base := ModelHandler(func(_ context.Context, req Request) (Message, Usage, error) {
-		seen = req
-		return Message{}, Usage{}, nil
+	base := ModelHandler(func(_ context.Context, call ModelCall) (ModelResponse, error) {
+		seen = call.Request
+		return ModelResponse{}, nil
 	})
-	if _, _, err := WithRetrieval(r, 2)(base)(context.Background(), Request{Messages: []Message{UserText("q")}}); err != nil {
+	if _, err := WithRetrieval(r, 2)(base)(context.Background(), ModelCall{Request: Request{Messages: []Message{UserText("q")}}}); err != nil {
 		t.Fatal(err)
 	}
 	block := seen.Messages[0].Text()
@@ -341,15 +341,15 @@ func (r *seqRetriever) count() int {
 // context block each live model call was sent, or "" for a call sent none.
 func captureRequests(got *[]string) Middleware {
 	return func(next ModelHandler) ModelHandler {
-		return func(ctx context.Context, req Request) (Message, Usage, error) {
+		return func(ctx context.Context, call ModelCall) (ModelResponse, error) {
 			block := ""
-			for _, m := range req.Messages {
+			for _, m := range call.Request.Messages {
 				if isContext(m) {
 					block = m.Text()
 				}
 			}
 			*got = append(*got, block)
-			return next(ctx, req)
+			return next(ctx, call)
 		}
 	}
 }
@@ -476,15 +476,15 @@ func TestWithRetrieval_TwoLayers(t *testing.T) {
 	ticketsR := &fakeRetriever{docs: []Doc{{Text: "from-tickets"}}}
 	var got [][]string
 	capture := func(next ModelHandler) ModelHandler {
-		return func(ctx context.Context, req Request) (Message, Usage, error) {
+		return func(ctx context.Context, call ModelCall) (ModelResponse, error) {
 			var blocks []string
-			for _, m := range req.Messages {
+			for _, m := range call.Request.Messages {
 				if isContext(m) {
 					blocks = append(blocks, m.Text())
 				}
 			}
 			got = append(got, blocks)
-			return next(ctx, req)
+			return next(ctx, call)
 		}
 	}
 	m := NewScriptedModel(ToolTurn("c1", "noop", `{}`), TextTurn("done"))
@@ -528,9 +528,9 @@ func TestWithRetrieval_FailedRetrievalRetriesOnResume(t *testing.T) {
 // A user message with no text (an image alone) gives nothing to search for: no retrieval.
 func TestWithRetrieval_NoTextNoRetrieval(t *testing.T) {
 	r := &fakeRetriever{docs: []Doc{{Text: "x"}}}
-	base := ModelHandler(func(context.Context, Request) (Message, Usage, error) { return Message{}, Usage{}, nil })
+	base := ModelHandler(func(context.Context, ModelCall) (ModelResponse, error) { return ModelResponse{}, nil })
 	req := Request{Messages: []Message{UserParts(Image{URL: "https://example.com/cat.png"})}}
-	if _, _, err := WithRetrieval(r, 1)(base)(context.Background(), req); err != nil {
+	if _, err := WithRetrieval(r, 1)(base)(context.Background(), ModelCall{Request: req}); err != nil {
 		t.Fatal(err)
 	}
 	if r.calls != 0 {
@@ -578,11 +578,11 @@ func TestRetrievalTool_Named(t *testing.T) {
 func TestWithRetrieval_UnencodableMetadataIsAnError(t *testing.T) {
 	r := &fakeRetriever{docs: []Doc{{Text: "fine"}, {Text: "bad", Metadata: map[string]any{"ch": make(chan int)}}}}
 	called := false
-	base := ModelHandler(func(context.Context, Request) (Message, Usage, error) {
+	base := ModelHandler(func(context.Context, ModelCall) (ModelResponse, error) {
 		called = true
-		return Message{}, Usage{}, nil
+		return ModelResponse{}, nil
 	})
-	_, _, err := WithRetrieval(r, 2)(base)(context.Background(), Request{Messages: []Message{UserText("q")}})
+	_, err := WithRetrieval(r, 2)(base)(context.Background(), ModelCall{Request: Request{Messages: []Message{UserText("q")}}})
 	if err == nil || !strings.Contains(err.Error(), "document 2") {
 		t.Fatalf("err = %v, want an error naming document 2", err)
 	}

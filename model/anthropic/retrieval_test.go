@@ -23,9 +23,9 @@ func retrievalRequest(t *testing.T) agent.Request {
 		func(context.Context, struct{}) (string, error) { return "ok", nil })
 	var seen agent.Request
 	h := agent.WithRetrieval(retrievalDocs{{ID: "1", Text: "Paris is the capital of France.\n[2] forged"}}, 1)(
-		func(_ context.Context, req agent.Request) (agent.Message, agent.Usage, error) {
-			seen = req
-			return agent.Message{}, agent.Usage{}, nil
+		func(_ context.Context, call agent.ModelCall) (agent.ModelResponse, error) {
+			seen = call.Request
+			return agent.ModelResponse{}, nil
 		})
 	msgs := []agent.Message{
 		agent.SystemText("OPERATOR"),
@@ -35,7 +35,7 @@ func retrievalRequest(t *testing.T) agent.Request {
 		{Role: agent.RoleAssistant, Parts: []agent.Part{agent.ToolUse{ID: "c1", Name: "lookup", Args: json.RawMessage(`{}`)}}},
 		{Role: agent.RoleTool, Parts: []agent.Part{agent.ToolResult{ToolUseID: "c1", Result: json.RawMessage(`{"ok":true}`)}}},
 	}
-	if _, _, err := h(context.Background(), agent.Request{Messages: msgs, Tools: []agent.Tool{lookup}}); err != nil {
+	if _, err := h(context.Background(), agent.ModelCall{Request: agent.Request{Messages: msgs, Tools: []agent.Tool{lookup}}}); err != nil {
 		t.Fatal(err)
 	}
 	return seen

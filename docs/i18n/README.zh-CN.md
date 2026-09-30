@@ -495,10 +495,10 @@ a := agent.New(model, store, tools...).
 	).
 	UseTool(middleware.ToolLog(log.Printf), middleware.ToolCache(), middleware.ToolRetry(3))
 
-// opt-in OTel gen_ai.* spans; the core has no OTel dependency:
-a.Use(trace.Model(tracer, trace.WithSystem("openai"), trace.WithModel("gpt-4o-mini")))
+// opt-in OTel gen_ai.* spans (provider and model from agent.ModelInfoOf); the core has no OTel dependency:
+a.Use(trace.Model(tracer))
 a.UseTool(trace.Tool(tracer)) // execute_tool span per call; nests across the sub-agent boundary
-// ... after the run: cost.Total() (USD), cost.Usage()
+// ... after the run: cost.Snapshot() (answer and spend, in tokens and USD)
 ```
 
 `Retry` 做带抖动的指数退避，并在一个提供商 429 上尊重 `Retry-After`（适配器返回一个类型化的 `*agent.RateLimited`）；`Cost` 把来自 token 用量（含缓存读/写）的 USD 累加进一个你在运行后读取的 `CostMeter`。
