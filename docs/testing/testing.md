@@ -224,7 +224,7 @@ core depends only on its ports (interfaces), never on a concrete adapter.
 ## Pillar 6: deterministic replay for regression and debugging
 
 **Because every run journals a complete, ordered history, a recorded run can be replayed exactly
-as a test.** `agent.Replay` (`recovery.go`) returns a `Model` that re-emits the recorded model
+as a test.** `agent.Replay` (`replay.go`) returns a `Model` that re-emits the recorded model
 outputs for a run in order, so an agent built on it re-executes the past run against a fresh store
 with no live LLM. `agent.ReplayEvents` reconstructs the durable semantic events from the journal.
 
