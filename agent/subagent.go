@@ -126,10 +126,33 @@ func (t *subAgentTool) Call(ctx context.Context, args json.RawMessage) (json.Raw
 	return marshalJournal(firstText(out.msg)) // not HTML-escaped: the parent model reads it as written
 }
 
+// checkWrapper refuses a tool that wraps another (it has an Unwrap() Tool method) in a way the
+// agent cannot honor. A wrapper that is also a Compensator would never be asked to compensate: a
+// rollback that finds a sub-agent through it recurses into the sub-run, and one that does not
+// takes it for the tool it wraps. A wrapper over a sub-agent with a Timeout would cut the sub-run
+// off mid-call, which SubAgent itself refuses (see SubAgent). Both are ErrConfig.
+func checkWrapper(t Tool, s ToolSpec) error {
+	if _, wraps := t.(interface{ Unwrap() Tool }); !wraps {
+		return nil
+	}
+	if _, comp := t.(Compensator); comp {
+		return fmt.Errorf("agent: tool %q wraps another tool (Unwrap) and is a Compensator; a wrapper must not have side effects or a compensation of its own: %w", s.Name, ErrConfig)
+	}
+	if _, sub := asSubAgent(t); sub && s.Timeout > 0 {
+		return fmt.Errorf("agent: tool %q wraps a sub-agent and has a Timeout, which a sub-agent refuses (see SubAgent): %w", s.Name, ErrConfig)
+	}
+	return nil
+}
+
 // asSubAgent returns the SubAgent tool t is, or wraps. A tool that wraps another (as
 // audit.AttenuatingSubAgent wraps a SubAgent) says so with an Unwrap() Tool method, which is
 // followed as errors.As follows Unwrap, so a saga rollback and the run's budget recurse into the
 // sub-run of a wrapped sub-agent as they do into a plain one's.
+//
+// The contract of Unwrap: a wrapper adds no side effect of its own (it may change the context the
+// wrapped tool runs in, as AttenuatingSubAgent binds a narrower grant), is not a Compensator, and
+// does not give a wrapped sub-agent a Timeout; New refuses the last two (checkWrapper). A rollback
+// through a wrapper runs the wrapped sub-agent's compensations, never the wrapper's.
 func asSubAgent(t Tool) (*subAgentTool, bool) {
 	for range 64 { // a bound, so a wrapper that unwraps to itself cannot loop forever
 		if s, ok := t.(*subAgentTool); ok {
