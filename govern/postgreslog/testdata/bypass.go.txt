@@ -85,3 +85,8 @@ func (l *Log) bypassUnqualifiedBuiltin(ctx context.Context) error {
 	_, err := l.db.ExecContext(ctx, "SELECT max(seq) FROM governed_events") // BYPASS: a built-in called without pg_catalog, which an overload can take over
 	return err
 }
+
+func (l *Log) bypassUnicodeUescape(ctx context.Context) error {
+	_, err := l.db.ExecContext(ctx, `SELECT U&"pg_advisory_!006Cock" UESCAPE '!'(42)`) // BYPASS: a Unicode escape with no backslash
+	return err
+}

@@ -259,7 +259,7 @@ type writeSQL string
 // knownCalls).
 func newWrite(q string) (writeSQL, error) {
 	for _, kw := range []string{"INSERT", "UPDATE", "DELETE"} {
-		if startsWith(q, kw) && oneStatement(q) && knownCalls(q, kw == "INSERT") {
+		if startsWith(q, kw) && oneStatement(q) && knownCalls(q) {
 			return writeSQL(q), nil
 		}
 	}
@@ -270,7 +270,7 @@ func newWrite(q string) (writeSQL, error) {
 // its own (see oneStatement) that starts with SELECT and calls no function but the known ones
 // (see knownCalls).
 func newSelect(q string) (selectSQL, error) {
-	if !startsWith(q, "SELECT") || !oneStatement(q) || !knownCalls(q, false) {
+	if !startsWith(q, "SELECT") || !oneStatement(q) || !knownCalls(q) {
 		return "", fmt.Errorf("postgres: a read on the pool must be one SELECT statement, got %.40q: %w", q, agent.ErrConfig)
 	}
 	return selectSQL(q), nil
@@ -322,10 +322,10 @@ var (
 
 // knownCalls reports whether q hides nothing from a scan of its text (sqlHidden, sqlQuotedName)
 // and every call in it is to a function the store knows: a built-in in sqlFunctions or, in an
-// INSERT into a steps table when nextSeq is set, that table's own next_seq function, called once,
-// in an INSERT with no SELECT. A name after INTO names the table whose column list follows, and a
-// keyword in sqlListWords takes a list; neither is a call.
-func knownCalls(q string, nextSeq bool) bool {
+// INSERT into a steps table, that table's own next_seq function, called once, in an INSERT with no
+// SELECT. A name after INTO names the table whose column list follows, and a keyword in
+// sqlListWords takes a list; neither is a call.
+func knownCalls(q string) bool {
 	if sqlHidden.MatchString(q) {
 		return false
 	}
@@ -341,7 +341,7 @@ func knownCalls(q string, nextSeq bool) bool {
 	}
 	stripped = sqlQuoted.ReplaceAllString(stripped, "''")
 	own := ""
-	if m := sqlInsertSteps.FindStringSubmatch(stripped); nextSeq && m != nil && !sqlSelect.MatchString(stripped) {
+	if m := sqlInsertSteps.FindStringSubmatch(stripped); m != nil && !sqlSelect.MatchString(stripped) {
 		own = m[1] + "next_seq_" + nextSeqVersion
 	}
 	seen := 0
@@ -477,13 +477,6 @@ func (s *Store) migrate(ctx context.Context) error {
 		return fmt.Errorf("postgres: migrate: %w (%w)", err, agent.ErrStorage)
 	}
 	defer tx.Rollback()
-	// Set before the lock is taken, so the migration never holds it idle without the bound.
-	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`SET LOCAL idle_in_transaction_session_timeout = %d`, migrateIdleTimeout.Milliseconds())); err != nil {
-		return fmt.Errorf("postgres: migrate: %w (%w)", err, agent.ErrStorage)
-	}
-	if _, err := tx.ExecContext(ctx, `SELECT pg_catalog.pg_advisory_xact_lock($1::pg_catalog.int8)`, migrateLock); err != nil {
-		return fmt.Errorf("postgres: migrate: %w (%w)", err, agent.ErrStorage)
-	}
 	// The schema the tables and next_seq are created in: the first schema on the search path.
 	var schema sql.NullString
 	if err := tx.QueryRowContext(ctx, `SELECT pg_catalog.current_schema()`).Scan(&schema); err != nil {
@@ -493,8 +486,16 @@ func (s *Store) migrate(ctx context.Context) error {
 		return fmt.Errorf("postgres: no schema on the search path to create the tables in: %w", agent.ErrConfig)
 	}
 	s.schema = schema.String
-	// The next_seq function, created if missing and never replaced (see nextSeqVersion); first,
-	// before any statement that might refresh this session's catalog cache. The migration lock makes
+	// Set before the lock is taken, so the migration never holds it idle without the bound.
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`SET LOCAL idle_in_transaction_session_timeout = %d`, migrateIdleTimeout.Milliseconds())); err != nil {
+		return fmt.Errorf("postgres: migrate: %w (%w)", err, agent.ErrStorage)
+	}
+	if _, err := tx.ExecContext(ctx, `SELECT pg_catalog.pg_advisory_xact_lock($1::pg_catalog.int8)`, migrateLock); err != nil {
+		return fmt.Errorf("postgres: migrate: %w (%w)", err, agent.ErrStorage)
+	}
+	// The next_seq function, created if missing and never replaced (see nextSeqVersion); the first
+	// statement after the lock, so no statement between could refresh the session's catalog cache
+	// and hide a stale lookup from the tests. The migration lock makes
 	// the check and the creation one step across nodes. The lookup reads pg_proc with the
 	// statement's snapshot, not the session's catalog cache, which taking the advisory lock does not
 	// refresh: it sees a function another node created while this one waited for the lock.

@@ -25,6 +25,7 @@ func TestNewSelect(t *testing.T) {
 		`SELECT $$'$$, set_config('application_name', 'x', false), '$$'`,
 		`SELECT $q$x$q$`,
 		"SELECT u&'\\0041'",
+		`SELECT U&"pg_advisory_!006Cock" UESCAPE '!'(42)`, // a Unicode escape with no backslash
 	} {
 		if _, err := newSelect(q); !errors.Is(err, agent.ErrConfig) {
 			t.Errorf("newSelect(%q) = %v, want ErrConfig", q, err)

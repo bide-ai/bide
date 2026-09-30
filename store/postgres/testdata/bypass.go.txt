@@ -116,3 +116,8 @@ func (s *Store) bypassUnqualifiedBuiltin(ctx context.Context) error {
 	_, err := s.db.ExecContext(ctx, "SELECT now()") // BYPASS: a built-in called without pg_catalog, which an overload can take over
 	return err
 }
+
+func (s *Store) bypassUnicodeUescape(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, `SELECT U&"pg_advisory_!006Cock" UESCAPE '!'(42)`) // BYPASS: a Unicode escape with no backslash
+	return err
+}

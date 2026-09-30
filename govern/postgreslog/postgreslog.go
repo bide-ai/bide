@@ -247,16 +247,20 @@ func (l *Log) migrate(ctx context.Context) error {
 		return err
 	}
 	defer tx.Rollback()
+	// The log's schema, read before the lock: the next_seq lookup must be the first statement after
+	// it, so no statement between could refresh the session's catalog cache and hide a stale
+	// lookup from the tests. A table created while this process waits is created in the schema
+	// logSchema falls back to, the first on the search path, so the answer does not change.
+	schema, err := scanSchema(tx.QueryRowContext(ctx, logSchema))
+	if err != nil {
+		return err
+	}
 	// Set before the lock is taken, so the migration never holds it idle without the bound.
 	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`SET LOCAL idle_in_transaction_session_timeout = %d`, migrateIdleTimeout.Milliseconds())); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `SELECT pg_catalog.pg_advisory_xact_lock($1::pg_catalog.int8)`, migrateLockKey); err != nil {
 		return fmt.Errorf("postgreslog: migrate: take the migration lock: %w", err)
-	}
-	schema, err := scanSchema(tx.QueryRowContext(ctx, logSchema))
-	if err != nil {
-		return err
 	}
 	// The function first, since it takes no lock on the table; a current table needs nothing else.
 	// Under the migration lock, the check and the creation are one step across processes.
