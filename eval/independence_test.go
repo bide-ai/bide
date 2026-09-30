@@ -35,10 +35,10 @@ func TestAgentRunner_EvalsAreIndependentOverOneStore(t *testing.T) {
 	opts := eval.Options{Runs: 3, Concurrency: 1}
 
 	first := &echoModel{}
-	mustRun(t, context.Background(), eval.AgentRunner(agent.New(first, store), store, "sentiment"), cases, []eval.Metric{answersItsInput}, opts)
+	mustRun(t, context.Background(), mustRunner(t, agent.New(first, store), store, "sentiment"), cases, []eval.Metric{answersItsInput}, opts)
 
 	second := &echoModel{}
-	rep := mustRun(t, context.Background(), eval.AgentRunner(agent.New(second, store), store, "sentiment"), cases, []eval.Metric{answersItsInput}, opts)
+	rep := mustRun(t, context.Background(), mustRunner(t, agent.New(second, store), store, "sentiment"), cases, []eval.Metric{answersItsInput}, opts)
 	if n := second.calls.Load(); n != 6 {
 		t.Errorf("the second eval called the model %d times, want 6 (it replayed the first eval's recorded answers)", n)
 	}

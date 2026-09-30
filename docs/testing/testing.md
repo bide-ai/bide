@@ -241,6 +241,12 @@ labeled cases multiple times, scores each run with rule-based or LLM-judge metri
 pass-rate distribution (`eval.Report`), not a single verdict. Use `Runs > 1`, pin the model version,
 and set temperature 0 for the most reproducible baseline (still not perfectly deterministic).
 
+Misconfiguration is an error, never a panic: `eval.Run` returns an error wrapping `agent.ErrConfig`
+before executing anything when the `RunFunc` is nil or a metric is unusable (a nil `*regexp.Regexp`
+passed to `Matches`, a nil predicate or judge model, a nil `Fn`, an empty or repeated name).
+`Matches` takes a compiled `*regexp.Regexp`, so a bad pattern is the caller's `regexp.Compile`
+error, and `AgentRunner` returns `(RunFunc, error)`, refusing a nil agent or store.
+
 For rigor it does more than a bare pass-count:
 
 - **Confidence intervals.** Every rate carries a 95% Wilson score interval, so a lucky 4/5 reads as
@@ -248,14 +254,21 @@ For rigor it does more than a bare pass-count:
 - **Trajectory metrics.** It scores the agent's behavior from the durable journal, not only the final
   message: `CalledTool`, `ToolOrder`, `MaxSteps` evaluate which tools ran, in what order, and whether
   the agent looped. This is the agent-specific part, and it uses data (the journal) that only this
-  SDK has.
+  SDK has. If `AgentRunner` cannot read a run's journal back, the output's `TraceErr` carries the
+  failure and the trajectory metrics fail that run rather than score an empty trajectory (zero
+  steps would be within any `MaxSteps` limit).
 - **Latency percentiles** (p50/p95) per report. Runs go through `AgentRunner`, so each evaluation run
   is itself durable and auditable.
 - **Significance-tested regression comparison.** `Compare(old, new)` pairs each metric across two
   reports and tests whether a rate moved by more than sampling noise: it picks Fisher's exact test
   or a two-proportion z-test by the minimum-expected-cell-count rule, applies Benjamini-Hochberg
-  correction across the metric family, and labels each result regression / improvement / flat. A CI
-  gate can fail the build on a significant regression rather than on a raw rate dip.
+  correction across the metric family, and labels each result with a typed `MetricDirection`
+  (`DirectionRegression`, `DirectionImprovement`, `DirectionFlat`). A CI gate can fail the build on
+  a significant regression rather than on a raw rate dip. Every `Report` carries
+  `format: "bide.eval.report.v1"` (`eval.ReportFormat`), and `Compare` returns an error wrapping
+  `eval.ErrFormat` (itself wrapping `agent.ErrProtocol`) for a report with any other format, so a
+  report of another layout, or a zero `Report`, never compares as if it had no metrics and lets a
+  gate pass.
 - **Pre-registered sample sizing.** `RequiredRuns(baselineRate, minDetectableDrop, alpha, power)`
   returns the runs-per-arm needed to detect a given regression, using the pooled-variance normal
   approximation (probit via Beasley-Springer/Moro), or an error for arguments outside their domain
@@ -268,7 +281,7 @@ For rigor it does more than a bare pass-count:
 - **Stratified breakdown.** `Case.Tags` plus `Report.ByTag` report pass rates per slice (region,
   difficulty, product line), so an aggregate that hides a failing subgroup is visible.
 - **Governance-held metric.** `GovernanceHeld(name, compliant)` scores whether the governed
-  invariant held on each run, which is what makes the two-number report legible: model-correct X%
+  invariant held on each run (`compliant` receives the evaluation's context and the run's output), which is what makes the two-number report legible: model-correct X%
   (statistical) alongside governance-held 100% (deterministic). It keeps the boundary below explicit
   inside the report itself.
 

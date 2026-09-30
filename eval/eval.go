@@ -69,21 +69,38 @@ func TrajectoryFrom(records []agent.Record) Trajectory {
 
 // RunOutput is the result of executing one case: the final message, any error, the runID, and the
 // trajectory (populated by AgentRunner; empty for a bare RunFunc).
+//
+// TraceErr is set when the trajectory could not be read (AgentRunner sets it when the run's journal
+// read fails). The run itself may have succeeded, so Err stays the run's own error; the trajectory
+// metrics (CalledTool, MaxSteps, ToolOrder) fail a run whose TraceErr is set rather than score an
+// empty trajectory, and a custom metric that reads Trace should do the same.
 type RunOutput struct {
-	Final agent.Message
-	Err   error
-	RunID string
-	Trace Trajectory
+	Final    agent.Message
+	Err      error
+	RunID    string
+	Trace    Trajectory
+	TraceErr error
 }
 
 // RunFunc executes one case input and returns its output. Wrap an agent with AgentRunner, or supply
 // any function (useful for tests and non-agent baselines).
 type RunFunc func(ctx context.Context, input string) RunOutput
 
-// Metric scores a single run of a case as pass (true) or fail (false).
+// Metric scores a single run of a case as pass (true) or fail (false). Name keys the metric in a
+// Report, so it must be non-empty and distinct among the metrics of one Run, and Fn must be non-nil;
+// Run returns an error wrapping agent.ErrConfig otherwise.
 type Metric struct {
 	Name string
 	Fn   func(ctx context.Context, c Case, out RunOutput) bool
+
+	// err is a configuration error found by the constructor, reported by Run before it executes
+	// anything, so a bad argument is an error there instead of a panic here.
+	err error
+}
+
+// misconfigured is a metric that Run refuses with err, which wraps agent.ErrConfig.
+func misconfigured(name, format string, args ...any) Metric {
+	return Metric{Name: name, err: fmt.Errorf("eval: "+format+": %w", append(args, agent.ErrConfig)...)}
 }
 
 // --- outcome metrics (score the final message) ---
@@ -100,16 +117,24 @@ func Contains(substr string) Metric {
 	}}
 }
 
-// Matches passes iff the final message text matches the pattern.
-func Matches(pattern string) Metric {
-	re := regexp.MustCompile(pattern)
-	return Metric{Name: "matches:" + pattern, Fn: func(_ context.Context, _ Case, out RunOutput) bool {
+// Matches passes iff the run did not error and the final message text matches re. Its name is
+// "matches:" followed by re's source text. The caller compiles re, so a bad pattern is the caller's
+// regexp.Compile error; a nil re makes Run return an error wrapping agent.ErrConfig.
+func Matches(re *regexp.Regexp) Metric {
+	if re == nil {
+		return misconfigured("matches:", "Matches: nil regexp")
+	}
+	return Metric{Name: "matches:" + re.String(), Fn: func(_ context.Context, _ Case, out RunOutput) bool {
 		return out.Err == nil && re.MatchString(out.Final.Text())
 	}}
 }
 
-// Custom builds a metric from a name and a predicate; the predicate may inspect out.Trace.
+// Custom builds a metric from a name and a predicate; the predicate may inspect out.Trace. A nil fn
+// makes Run return an error wrapping agent.ErrConfig.
 func Custom(name string, fn func(ctx context.Context, c Case, out RunOutput) bool) Metric {
+	if fn == nil {
+		return misconfigured(name, "Custom %q: nil predicate", name)
+	}
 	return Metric{Name: name, Fn: fn}
 }
 
@@ -122,7 +147,12 @@ func Custom(name string, fn func(ctx context.Context, c Case, out RunOutput) boo
 // The rubric and the grading instructions are the judge's system message. The case input and the
 // output graded, which the operator does not control, are the user message: one JSON object, so
 // no line break or text in them can pass for the rubric, the instructions, or the end of the data.
+//
+// A nil m makes Run return an error wrapping agent.ErrConfig.
 func Judge(name string, m agent.Model, rubric string) Metric {
+	if m == nil {
+		return misconfigured(name, "Judge %q: nil model", name)
+	}
 	return Metric{Name: name, Fn: func(ctx context.Context, c Case, out RunOutput) bool {
 		if out.Err != nil {
 			return false
@@ -150,9 +180,13 @@ type judged struct {
 
 // --- trajectory metrics (score the agent's behavior, from the journal) ---
 
-// CalledTool passes iff the run called a tool with this name at least once.
+// CalledTool passes iff the run called a tool with this name at least once. It fails a run whose
+// trajectory could not be read (RunOutput.TraceErr).
 func CalledTool(name string) Metric {
 	return Metric{Name: "called:" + name, Fn: func(_ context.Context, _ Case, out RunOutput) bool {
+		if out.TraceErr != nil {
+			return false
+		}
 		for _, t := range out.Trace.ToolCalls {
 			if t == name {
 				return true
@@ -162,17 +196,23 @@ func CalledTool(name string) Metric {
 	}}
 }
 
-// MaxSteps passes iff the run took at most n model turns (a guard against looping/thrashing).
+// MaxSteps passes iff the run took at most n model turns (a guard against looping/thrashing). It
+// fails a run whose trajectory could not be read (RunOutput.TraceErr), since an unread trajectory
+// has zero steps and would be within any limit.
 func MaxSteps(n int) Metric {
 	return Metric{Name: fmt.Sprintf("max_steps:%d", n), Fn: func(_ context.Context, _ Case, out RunOutput) bool {
-		return out.Trace.Steps <= n
+		return out.TraceErr == nil && out.Trace.Steps <= n
 	}}
 }
 
 // ToolOrder passes iff the named tools were each called, in the given relative order (as a
-// subsequence of the actual call order).
+// subsequence of the actual call order). It fails a run whose trajectory could not be read
+// (RunOutput.TraceErr).
 func ToolOrder(names ...string) Metric {
 	return Metric{Name: "tool_order:" + strings.Join(names, ">"), Fn: func(_ context.Context, _ Case, out RunOutput) bool {
+		if out.TraceErr != nil {
+			return false
+		}
 		i := 0
 		for _, t := range out.Trace.ToolCalls {
 			if i < len(names) && t == names[i] {
@@ -246,12 +286,22 @@ type CaseReport struct {
 	Metrics map[string]MetricStat `json:"metrics"`
 }
 
+// ReportFormat is the format tag Run stamps on every Report (Report.Format). It names the JSON
+// layout of a Report; Compare refuses a Report carrying any other tag with ErrFormat, so a report
+// written by a different layout is never read as if its fields meant the same thing.
+const ReportFormat = "bide.eval.report.v1"
+
+// ErrFormat is a Report whose Format is not ReportFormat: one from another layout, or a zero Report
+// that no Run produced. It wraps agent.ErrProtocol.
+var ErrFormat = fmt.Errorf("eval: unsupported report format: %w", agent.ErrProtocol)
+
 // Report is the statistical result of an evaluation: per-case and aggregate pass rates with
 // confidence intervals, plus latency percentiles. JSON-marshalable. A distribution, not a verdict.
 // ByTag stratifies the aggregate by case tag: tag -> metric -> stat, over the runs of every case
 // carrying that tag. Provenance records the conditions under which the run happened (with a hash of
-// the case set) for reproducibility and audit.
+// the case set) for reproducibility and audit. Format is ReportFormat.
 type Report struct {
+	Format      string                           `json:"format"`
 	RunsPerCase int                              `json:"runs_per_case"`
 	TotalRuns   int                              `json:"total_runs"`
 	Cases       []CaseReport                     `json:"cases"`
@@ -271,13 +321,24 @@ type Report struct {
 // returns ctx's error with an empty Report: executions cut short by the cancellation would score as
 // failures, and the ones that did finish are not a representative sample.
 //
-// A Report keys metrics by name, so every metric must have a distinct Name; Run returns an error
-// before executing anything if two share one.
+// Run returns an error wrapping agent.ErrConfig, before executing anything, when run is nil or a
+// metric is misconfigured: a constructor reported a bad argument (Matches(nil), for example), its
+// Fn is nil, its Name is empty, or two metrics share a Name (a Report keys metrics by name).
 func Run(ctx context.Context, run RunFunc, cases []Case, metrics []Metric, opts Options) (Report, error) {
+	if run == nil {
+		return Report{}, fmt.Errorf("eval: nil RunFunc: %w", agent.ErrConfig)
+	}
 	names := make(map[string]bool, len(metrics))
-	for _, m := range metrics {
-		if names[m.Name] {
-			return Report{}, fmt.Errorf("eval: two metrics are named %q; a report keys metrics by name", m.Name)
+	for i, m := range metrics {
+		switch {
+		case m.err != nil:
+			return Report{}, m.err
+		case m.Fn == nil:
+			return Report{}, fmt.Errorf("eval: metric %d (%q) has a nil Fn: %w", i, m.Name, agent.ErrConfig)
+		case m.Name == "":
+			return Report{}, fmt.Errorf("eval: metric %d has an empty name; a report keys metrics by name: %w", i, agent.ErrConfig)
+		case names[m.Name]:
+			return Report{}, fmt.Errorf("eval: two metrics are named %q; a report keys metrics by name: %w", m.Name, agent.ErrConfig)
 		}
 		names[m.Name] = true
 	}
@@ -327,7 +388,7 @@ launch:
 		return Report{}, fmt.Errorf("eval: cancelled before all %d runs finished: %w", total, err)
 	}
 
-	rep := Report{RunsPerCase: runs, TotalRuns: total, Overall: map[string]MetricStat{}, Provenance: opts.Provenance}
+	rep := Report{Format: ReportFormat, RunsPerCase: runs, TotalRuns: total, Overall: map[string]MetricStat{}, Provenance: opts.Provenance}
 	rep.Provenance.CaseSetHash = HashCases(cases)
 	totals := make([]int64, len(metrics))
 	// Per-tag accumulators: tag -> metric index -> (passes, runs).
@@ -389,20 +450,31 @@ func pctIndex(n, p int) int {
 // AgentRunner, and a counter: an eval never reuses an earlier eval's runs, which would replay their
 // recorded answers instead of sampling the model, even over a store kept between evals. It reads
 // the run's journal from store (the same Durable the Agent was built with) to populate the
-// Trajectory for trajectory metrics.
-func AgentRunner(a *agent.Agent, store agent.Durable, runIDPrefix string) RunFunc {
+// Trajectory for trajectory metrics; if that read fails, the output's TraceErr carries the failure
+// and the trajectory metrics fail the run. A nil a or store is an error wrapping agent.ErrConfig.
+func AgentRunner(a *agent.Agent, store agent.Durable, runIDPrefix string) (RunFunc, error) {
+	if a == nil {
+		return nil, fmt.Errorf("eval: AgentRunner: nil agent: %w", agent.ErrConfig)
+	}
+	if store == nil {
+		return nil, fmt.Errorf("eval: AgentRunner: nil store: %w", agent.ErrConfig)
+	}
 	var n int64
 	var b [6]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		panic(fmt.Sprintf("eval: AgentRunner: read random nonce: %v", err))
-	}
+	rand.Read(b[:]) // since Go 1.24 it never returns an error and always fills b
 	nonce := hex.EncodeToString(b[:])
 	return func(ctx context.Context, input string) RunOutput {
 		id := fmt.Sprintf("%s-%s-%d", runIDPrefix, nonce, atomic.AddInt64(&n, 1))
 		msg, err := a.Run(ctx, id, input)
-		recs, _ := store.History(ctx, id)
-		return RunOutput{Final: msg, Err: err, RunID: id, Trace: TrajectoryFrom(recs)}
-	}
+		out := RunOutput{Final: msg, Err: err, RunID: id}
+		recs, herr := store.History(ctx, id)
+		if herr != nil {
+			out.TraceErr = fmt.Errorf("eval: read the journal of run %q: %w", id, herr)
+			return out
+		}
+		out.Trace = TrajectoryFrom(recs)
+		return out
+	}, nil
 }
 
 // String renders the report as a readable table with confidence intervals and latency. Metric names

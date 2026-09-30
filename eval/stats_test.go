@@ -33,12 +33,12 @@ func reportFor(passes, runs int) eval.Report {
 func TestCompare_ClearRegression(t *testing.T) {
 	old := reportFor(95, 100)
 	new := reportFor(70, 100)
-	cmp := eval.Compare(old, new)
+	cmp := mustCompare(t, old, new)
 	if len(cmp.Metrics) != 1 {
 		t.Fatalf("want 1 metric compared, got %d", len(cmp.Metrics))
 	}
 	m := cmp.Metrics[0]
-	if !m.Significant || m.Direction != "regression" {
+	if !m.Significant || m.Direction != eval.DirectionRegression {
 		t.Fatalf("95/100 -> 70/100 should be a significant regression, got significant=%v dir=%q p=%.4g adj=%.4g",
 			m.Significant, m.Direction, m.PValue, m.AdjustedP)
 	}
@@ -55,9 +55,9 @@ func TestCompare_ClearRegression(t *testing.T) {
 func TestCompare_TinyChangeNotSignificant(t *testing.T) {
 	old := reportFor(48, 100)
 	new := reportFor(52, 100)
-	cmp := eval.Compare(old, new)
+	cmp := mustCompare(t, old, new)
 	m := cmp.Metrics[0]
-	if m.Significant || m.Direction != "flat" {
+	if m.Significant || m.Direction != eval.DirectionFlat {
 		t.Fatalf("48/100 -> 52/100 should be flat/insignificant, got significant=%v dir=%q p=%.4g",
 			m.Significant, m.Direction, m.PValue)
 	}
@@ -100,7 +100,7 @@ func TestFishersExact_SmallReference(t *testing.T) {
 func TestCompare_SmallSampleUsesFisher(t *testing.T) {
 	old := reportFor(5, 6)
 	new := reportFor(1, 6)
-	cmp := eval.Compare(old, new)
+	cmp := mustCompare(t, old, new)
 	fisher := eval.FishersExactForTest(5, 1, 1, 5)
 	if math.Abs(cmp.Metrics[0].PValue-fisher) > 1e-9 {
 		t.Fatalf("small-sample compare should use Fisher (%.6f), got %.6f", fisher, cmp.Metrics[0].PValue)
@@ -381,7 +381,7 @@ func TestGovernanceHeld(t *testing.T) {
 	}
 	cases := []eval.Case{{Name: "c", Input: "x"}}
 	rawJudgment := eval.Contains("CORRECT")
-	governance := eval.GovernanceHeld("governance_held", func(out eval.RunOutput) bool {
+	governance := eval.GovernanceHeld("governance_held", func(_ context.Context, out eval.RunOutput) bool {
 		return contains(out.Final.Text(), "compliant")
 	})
 	rep := mustRun(t, context.Background(), run, cases, []eval.Metric{rawJudgment, governance}, eval.Options{Runs: 4})
