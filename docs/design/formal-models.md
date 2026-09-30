@@ -1,6 +1,6 @@
 # Formal models of the coordination protocols (design proposal and plan)
 
-Status: draft proposal. Nothing here is implemented. It expands the
+Status: accepted, in progress. Model 1 (the claim protocol) is being built, and PR #92 merges only once it passes. It expands the
 [roadmap item](../ROADMAP.md#formal-models-of-the-coordination-protocols) into a plan.
 
 Grounded in: draft PR [#92](https://github.com/bide-ai/bide/pull/92) (P6a, head `9ace7c6`: `Store`,
