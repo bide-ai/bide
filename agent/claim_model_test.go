@@ -25,11 +25,12 @@ var errModelFault = errors.New("injected store fault")
 // "" (none), "nc" (fails, not committed) or "c" (commits, then fails). before runs ahead of each
 // Insert, after runs once an Insert that did not fail has committed.
 type modelProc struct {
-	mem    *agent.MemStore
-	mu     sync.Mutex
-	fault  func(name string) string
-	before func(name string)
-	after  func(name string)
+	mem       *agent.MemStore
+	mu        sync.Mutex
+	fault     func(name string) string
+	before    func(name string)
+	after     func(name string)
+	beforeGet func(name string)
 }
 
 func (p *modelProc) hooks() (func(string) string, func(string), func(string)) {
@@ -64,6 +65,12 @@ func (p *modelProc) Insert(ctx context.Context, runID, name string, data []byte)
 }
 
 func (p *modelProc) Get(ctx context.Context, runID, name string) (agent.Entry, bool, error) {
+	p.mu.Lock()
+	f := p.beforeGet
+	p.mu.Unlock()
+	if f != nil {
+		f(name)
+	}
 	return p.mem.Get(ctx, runID, name)
 }
 
@@ -239,5 +246,96 @@ func TestResolveHaltRef_MinAgeDoesNotOverrideARevivedClaim(t *testing.T) {
 	}
 	if got.err != nil || got.v != "charged" || fired.Load() != 1 {
 		t.Errorf("d2 = %q, %v, the effect fired %d time(s); want charged, once", got.v, got.err, fired.Load())
+	}
+}
+
+// Model trace findings/resolve-void-on-error (F3, double fire, 3 error replies, no crash). A
+// min-age resolution claims the attempt after the live one and then writes its verdict; the write
+// errors but commits. If the resolution then records its own attempt as never started, a driver
+// that lost that attempt to it and is checking whether it was voided finds it voided, claims the
+// next attempt and runs the effect, though the journal now says "not charged". An errored verdict
+// write leaves the resolution's attempt live: the driver then reads the verdict, or halts until
+// the halt is resolved again.
+func TestResolveHaltRef_AnErroredVerdictLeavesItsAttemptLive(t *testing.T) {
+	ctx := context.Background()
+	mem := agent.NewMemStore()
+	pa := &modelProc{mem: mem}
+	pr := &modelProc{mem: mem}
+	ja, err := agent.NewJournal(pa)
+	if err != nil {
+		t.Fatal(err)
+	}
+	jr, err := agent.NewJournal(pr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pa.fault = func(name string) string {
+		if strings.HasPrefix(name, "attempt:not-started:") {
+			return "nc" // d1 cannot record that its attempt did not start: A remembers its claim
+		}
+		return ""
+	}
+	ctx1, cancel1 := context.WithCancel(ctx)
+	defer cancel1()
+	pa.after = func(name string) {
+		if name == "attempt:step:charge" {
+			cancel1()
+		}
+	}
+	var fired atomic.Int32
+	fn := func(context.Context) (string, error) { fired.Add(1); return "charged", nil }
+	if _, err := agent.Step(ctx1, ja, "r", "charge", fn); err == nil {
+		t.Fatal("d1 (cancelled after its claim) succeeded")
+	}
+	pa.mu.Lock()
+	pa.fault, pa.after = nil, nil
+	pa.mu.Unlock()
+
+	// d2 in A revives d1's claim (voiding attempt 0), loses attempt 1 to the resolution, and stops
+	// as it reads whether attempt 1 was voided; the resolution's verdict write then commits and
+	// errors, and d2 goes on.
+	checking, resume := make(chan struct{}), make(chan struct{})
+	var onceGet sync.Once
+	pa.beforeGet = func(name string) {
+		if strings.HasPrefix(name, "attempt:not-started:") && strings.HasSuffix(name, ":attempt:retry:1:step:charge") {
+			onceGet.Do(func() { close(checking); <-resume })
+		}
+	}
+	type res struct {
+		v   string
+		err error
+	}
+	d2 := make(chan res, 1)
+	var once sync.Once
+	pr.before = func(name string) {
+		if name != "charge" {
+			return
+		}
+		once.Do(func() {
+			go func() { v, err := agent.Step(ctx, ja, "r", "charge", fn); d2 <- res{v, err} }()
+			<-checking
+		})
+	}
+	pr.fault = func(name string) string {
+		if name == "charge" {
+			return "c" // the verdict commits, and the write reports an error
+		}
+		return ""
+	}
+	ref := agent.HaltRef{RunID: "r", Op: agent.OpRef{Kind: agent.OpStep, ID: "charge"}, Cause: agent.HaltCrashed}
+	rerr := agent.ResolveHaltRef(ctx, jr, ref, agent.Outcome{Result: "not charged", IsError: true},
+		agent.WithMinHaltAge(time.Second), agent.WithNow(func() time.Time { return time.Now().Add(time.Hour) }))
+	if rerr == nil {
+		t.Fatal("the resolution reported success though its verdict write failed")
+	}
+	close(resume)
+	got := <-d2
+	rec, ok, err := ja.Get(ctx, "r", "charge")
+	if err != nil || !ok {
+		t.Fatalf("the step's record = %v, %v", ok, err)
+	}
+	if fired.Load() != 0 {
+		t.Fatalf("the effect fired %d time(s) after a verdict (%s, IsError=%v) was recorded (d2 = %q, %v)",
+			fired.Load(), rec.Result, rec.IsError, got.v, got.err)
 	}
 }
