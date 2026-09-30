@@ -61,6 +61,46 @@ Each example is its own `main.go` with a package-doc header that states what it 
 - State claims plainly and scope them precisely. Match the surrounding code's comment density and idiom.
 - Keep the guarantee language exact: at-most-once, tamper-evident, offline-verifiable, provably convergent. Do not overstate (for example, the cryptographic guarantees cover integrity and authenticity, not confidentiality; see [docs/guides/security-model.md](docs/guides/security-model.md)).
 
+## Go code in the docs
+
+Every ` ```go ` block in `README.md` and under `docs/` (the translations included) must compile
+against the current code. The Lint job checks it on every pull request, documentation-only ones
+included; run the same check locally from the repository root:
+
+```
+go run ./internal/tools/docsnip        # -v lists every block and how it was compiled
+```
+
+A block that starts with a `package` clause must compile as written. Any other block is compiled
+as top-level declarations, as statements inside a function, or as declarations followed by
+statements; a package it uses without importing (`agent`, `audit`, `fmt`, ...) is imported
+automatically when the name is unambiguous, and unused variables are allowed. The elisions
+`{ ... }` (a function body), `T{...}` (a composite literal) and a line holding only `...` compile.
+An HTML comment directly above a block annotates it; it does not show when the markdown is
+rendered:
+
+```
+<!-- docsnip: setup ctx context.Context; a *agent.Agent; runID, input string -->
+<!-- docsnip: setup type Order struct{}; func classify(Order) (bool, error); returns error -->
+<!-- docsnip: api agent -->
+<!-- docsnip: skip pseudo-code: the loop, not the API -->
+```
+
+- **setup** declares the identifiers a block uses but does not declare. Items are separated by
+  semicolons or newlines: `name[, name] Type` (a variable), a `type`, `func`, `var` or `const`
+  declaration, `import "path"` (for a package whose name is ambiguous or not in the workspace, such
+  as `gsm` or the OpenTelemetry API), and `returns T` for a statement block that returns.
+- **api** marks a listing of a package's declarations (functions and methods without bodies,
+  types, vars, consts). Each must match the package: signatures identical, interfaces identical, a
+  struct's listed fields present with identical types. Names in the block resolve to the package's.
+- **skip** is for pseudo-code only, with the reason. A skip on a block that compiles is reported,
+  so delete the skip when the block becomes real code.
+
+When a change breaks a block, fix the block and the text around it in the same pull request. The
+README and its translations share their blocks, so annotate every copy identically. Release notes
+and design records describe the API of their time: when a change breaks one of their blocks, skip
+it with the version it describes instead of rewriting history.
+
 ## Changelog
 
 Every user-facing change adds an entry to [CHANGELOG.md](CHANGELOG.md) under `## [Unreleased]`, in
@@ -130,5 +170,6 @@ the module tests, and `--keep` keeps the scratch work tree for inspection.
 
 - `GOWORK=off go build ./...`, `GOWORK=off go test ./...`, `GOWORK=off go vet ./...`, and `gofmt -l .` are clean (run `gofmt` from the go1.27 toolchain via `export PATH="$(go env GOROOT)/bin:$PATH"`, or use `go fmt ./...`; the base gofmt predates Go 1.27 generic methods and reports false errors).
 - New exported symbols have doc comments that start with their name, and every package has a package comment; CI checks this with `go run ./internal/tools/doccheck -root . -allow .doccheck-allow` from the root, and a pull request may not add entries to `.doccheck-allow`.
+- `go run ./internal/tools/docsnip` is clean: the Go blocks of the docs compile (see [Go code in the docs](#go-code-in-the-docs)).
 - `CHANGELOG.md` has an entry under Unreleased, or the change is not user-facing.
 - New docs are linked from the [docs index](docs/README.md) and honor the style above.
