@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+
+	"github.com/bide-ai/bide/internal/mermaid"
 )
 
 // renderMermaid returns a Mermaid flowchart of the DECLARED topology carried by
@@ -36,9 +38,9 @@ func (c *builderCore) renderMermaid() string {
 		id := ids[n.name]
 		label := n.name + " : " + inLabel(n) + " -> " + typeName(n.outType)
 		if n.kind == kindSwitch {
-			b.WriteString(fmt.Sprintf("  %s{%q}\n", id, label))
+			b.WriteString(fmt.Sprintf("  %s{%s}\n", id, mermaid.Label(label)))
 		} else {
-			b.WriteString(fmt.Sprintf("  %s[%q]\n", id, label))
+			b.WriteString(fmt.Sprintf("  %s[%s]\n", id, mermaid.Label(label)))
 		}
 	}
 

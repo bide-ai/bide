@@ -29,6 +29,7 @@ func TestRenderMermaid_NodeNamesCannotAddStatements(t *testing.T) {
 		`x"] --> fake[ok] %%`,
 		"x\"]\n  fake --> n0\n  n9[\"",
 		`x #quot; y`,
+		`x #34; y`,
 		`x <b>bold</b> & y`,
 		`x\" y`,
 	} {

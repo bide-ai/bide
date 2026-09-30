@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"strings"
+
+	"github.com/bide-ai/bide/internal/mermaid"
 )
 
 // RenderMermaid returns a Mermaid flowchart of a run's journaled steps — the "graph as
@@ -49,7 +51,7 @@ func RenderMermaid(ctx context.Context, d Durable, runID string) (string, error)
 			continue
 		}
 		id := fmt.Sprintf("n%d", i)
-		b.WriteString(fmt.Sprintf("  %s[%q]\n", id, label))
+		b.WriteString(fmt.Sprintf("  %s[%s]\n", id, mermaid.Label(label)))
 		b.WriteString(fmt.Sprintf("  %s --> %s\n", prev, id))
 		prev = id
 		i++
