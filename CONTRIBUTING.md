@@ -151,14 +151,26 @@ tree between releases.
    2. for the modules that need only the core (`govern`, the stores, `mcp`, `trace`, `codec/gcf`),
       sets their `require` on the core to `vX.Y.Z`, drops the `replace`, runs `go mod tidy`
       against the proxy, builds, vets and tests each one with `GOWORK=off`, commits (signed off),
-      tags each `<dir>/vX.Y.Z` at that commit, pushes the tags and waits for the proxy;
+      tags each `<dir>/vX.Y.Z` at that commit, pushes the tags at most three per push and waits
+      for the proxy;
    3. does the same for the governed-event logs, which also require `govern` at `vX.Y.Z`;
    4. checks each module with `go list -m <module>@vX.Y.Z` against the proxy, and builds a scratch
       consumer module that `go get`s every published module at `vX.Y.Z` with an empty module cache.
 4. The core tag runs the Release workflow (the `bide-audit` binaries and the GitHub Release, with
    `docs/releases/vX.Y.Z.md` as its notes); each nested tag runs the Release modules workflow,
    which fails if the tagged `go.mod` still requires `v0.0.0` or replaces a bide module, or does
-   not build with `GOWORK=off`. Check both, the release assets and the Homebrew formula.
+   not build with `GOWORK=off`. Check both, the release assets and the Homebrew formula: every
+   nested tag has its own Release modules run.
+
+   GitHub creates no push event, so runs no workflow, for the tags of a push that carries more
+   than three tags. The script therefore never pushes more than three at once (its `--self-test`,
+   run in CI, fails otherwise). If a nested tag has no Release modules run (it was pushed some
+   other way, or the run was lost), run the check by hand for that tag; the workflow checks out
+   the tag and runs the same check:
+
+   ```
+   gh workflow run release-modules.yml -R bide-ai/bide --ref main -f tag=govern/vX.Y.Z
+   ```
 
 If a `--push` run stops partway, re-run the same command: the core tag and any nested tags already
 on the remote are reused (each is only checked against the proxy) and the rest are made. Never move

@@ -1,15 +1,27 @@
 name: Release modules
+run-name: Release modules ${{ inputs.tag || github.ref_name }}
 
 # A nested module is tagged <dir>/vX.Y.Z by scripts/release.sh at a commit whose go.mod requires
 # released bide versions. This check fails when a pushed nested tag names a module that is not
 # published, or whose go.mod still requires a bide module at the v0.0.0 placeholder or replaces
 # one (a consumer could not resolve it), or that does not build and vet with GOWORK=off against
 # the versions it requires. Root tags (v*) are built and released by release.yml.
+#
+# GitHub runs no workflow for the tags of a push that carries more than three, which is why
+# release.sh pushes at most three at a time. To check a tag that is already on GitHub (one that
+# was pushed without its check, or again later), run this workflow by hand with the tag:
+#
+#   gh workflow run release-modules.yml -R bide-ai/bide --ref main -f tag=govern/v0.8.0
 on:
   push:
     tags:
       - '*/v*'
       - '*/*/v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Nested tag to check, such as govern/v0.8.0
+        required: true
 
 permissions:
   contents: read
@@ -20,10 +32,13 @@ jobs:
     runs-on: ubuntu-latest
     env:
       GOWORK: 'off'
+      TAG: ${{ inputs.tag || github.ref_name }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ inputs.tag || github.ref_name }}
       - uses: actions/setup-go@v5
         with:
           go-version: '1.27'
       - name: The tagged module requires released versions only
-        run: scripts/release.sh --check-tag "$GITHUB_REF_NAME"
+        run: scripts/release.sh --check-tag "$TAG"
