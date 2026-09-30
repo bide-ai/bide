@@ -157,3 +157,22 @@ func TestLoad_SafetyErrorsNameTheLevels(t *testing.T) {
 		t.Errorf("raise from a side effect: %v; want side_effect named", err)
 	}
 }
+
+// Each retry-safety level has one config spelling. The pre-v1 "retryable" alias of "idempotent" is
+// refused, on a node and on a join, even where "idempotent" would load, with an error naming
+// "idempotent".
+func TestLoad_RetryableSpellingIsRefused(t *testing.T) {
+	const want = `unknown safety "retryable"; for the idempotent level write "idempotent"`
+	if _, err := Load[int, int]([]byte(safetyConfig("idempotent")), safetyRegistry(t, agent.Safety{ReadOnly: true})); err != nil {
+		t.Fatalf("idempotent on a readonly tool: Load = %v; want it to load", err)
+	}
+	_, err := Load[int, int]([]byte(safetyConfig("retryable")), safetyRegistry(t, agent.Safety{ReadOnly: true}))
+	if !errors.Is(err, agent.ErrConfig) || !strings.Contains(err.Error(), `"t"`) || !strings.Contains(err.Error(), want) {
+		t.Errorf("node: Load = %v; want an ErrConfig naming node \"t\" and containing %q", err, want)
+	}
+	reg := diamondRegistry(t)
+	cfg := strings.Replace(diamondConfig, `"merge": "mergeBlock"`, `"merge": "mergeBlock", "safety": "retryable"`, 1)
+	if _, err := Load[int, string]([]byte(cfg), reg); !errors.Is(err, agent.ErrConfig) || !strings.Contains(err.Error(), want) {
+		t.Errorf("join: Load = %v; want an ErrConfig containing %q", err, want)
+	}
+}
