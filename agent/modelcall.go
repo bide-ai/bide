@@ -62,11 +62,23 @@ func modelHooks(ctx context.Context) []ModelCallHook {
 	return hooks
 }
 
-// usageTotals is what a run's live model turns used: answer is the usage of the responses the
-// run recorded, spend every request's, including requests whose responses were discarded (failed
+// usageTotals is what a run's model calls used: answer is the usage of the responses the run
+// recorded, spend every request's, including requests whose responses were discarded (failed
 // attempts, losing hedge targets) and model calls that failed.
 type usageTotals struct {
 	answer, spend Usage
+}
+
+// add counts the usage journaled in r: a model turn's response and discarded spend, or a failed
+// model call's spend.
+func (t *usageTotals) add(r Record) {
+	if r.Kind == StepModel && r.Usage != nil {
+		addUsage(&t.answer, *r.Usage)
+		addUsage(&t.spend, *r.Usage)
+	}
+	if r.DiscardedUsage != nil {
+		addUsage(&t.spend, *r.DiscardedUsage)
+	}
 }
 
 // spendMeter collects the usage of the model requests a run sends until the run takes it to
@@ -110,13 +122,14 @@ const spendStepPrefix = "@spend/"
 
 // recordSpend journals spent, the usage of a model call that failed, as the run's n-th spend
 // record: a StepValue carrying it as DiscardedUsage. It is written even when ctx is cancelled,
-// the common way a call fails, since the requests were billed either way.
-func (a *Agent) recordSpend(ctx context.Context, runID string, n int, spent Usage) error {
-	_, err := a.store.Do(context.WithoutCancel(ctx), runID, spendStep(n), func(context.Context) (Record, error) {
+// the common way a call fails, since the requests were billed either way. It returns the record
+// the journal holds.
+func (a *Agent) recordSpend(ctx context.Context, runID string, n int, spent Usage) (Record, error) {
+	rec, err := a.store.Do(context.WithoutCancel(ctx), runID, spendStep(n), func(context.Context) (Record, error) {
 		return Record{Kind: StepValue, DiscardedUsage: &spent}, nil
 	})
 	if err != nil {
-		return fmt.Errorf("record spend (run %s): %w (%w)", runID, err, ErrStorage)
+		return Record{}, fmt.Errorf("record spend (run %s): %w (%w)", runID, err, ErrStorage)
 	}
-	return nil
+	return rec, nil
 }

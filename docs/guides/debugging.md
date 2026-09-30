@@ -293,9 +293,9 @@ are unchanged and remain the path for callers that only need the final message; 
 ```go
 type Result struct {
 	Message  Message       // the final assistant answer, identical to what Run returns
-	Usage    Usage         // usage of the model responses the run recorded
-	Spend    Usage         // Usage plus the usage of discarded requests (retried attempts, hedge losers)
-	Turns    int           // number of LIVE model turns (replayed turns are not counted)
+	Usage    Usage         // usage of the model responses the whole run recorded
+	Spend    Usage         // Usage plus discarded requests (retried attempts, hedge losers) and failed calls
+	Turns    int           // number of LIVE model turns in this invocation (replayed turns are not counted)
 	Duration time.Duration // wall-clock elapsed time for the run
 	RunID    string        // echoes the run identifier passed in
 }
@@ -310,5 +310,7 @@ log.Printf("run %s: %d turns, %d in / %d out tokens, %s\n",
 	res.RunID, res.Turns, res.Usage.InputTokens, res.Usage.OutputTokens, res.Duration)
 ```
 
-`Turns` counts only live model turns: turns replayed from the durable journal are not
-counted, because their usage was already accounted for in the original run.
+`Usage` and `Spend` are the whole run's, read from the journal: a run resumed after a crash
+reports the model calls made before the crash too, and re-entering a finished run reports the
+same totals again. `Turns` describes this invocation only: it counts live model turns, not turns
+replayed from the durable journal.
