@@ -281,7 +281,10 @@ A node (or a join) may carry a `safety` classifying how `Run` treats it on the a
 (an attempt recorded, its result lost to a crash): `"readonly"`, `"idempotent"`, or `"retryable"`. A
 node with a safety re-runs its body on resume rather than halting, because a read-only or idempotent
 body is safe to repeat. The default (no `safety`) is the conservative halt. The config `safety`
-overrides the registered block's default, so the classification is authorable as data:
+overrides the registered block's retry classification, so the classification is authorable as data.
+It changes only that classification: an approval gate or an `IdempotencyKey` the wrapped agent tool
+declares is kept (so a gated tool is still refused, see [Node approval](#node-approval)). The Go
+options `ReadOnly()`, `Idempotent()` and `Retryable()` behave the same way.
 
 ```yaml
 nodes:

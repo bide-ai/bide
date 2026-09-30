@@ -51,9 +51,9 @@ type regBlock struct {
 	// Builder-side node.safety. RegisterTool auto-derives it from the wrapped
 	// agent.Tool; RegisterStep/RegisterModel take it from a NodeOption at
 	// registration. It is threaded into the built node by assemble, so a loaded flow
-	// resumes identically to a hand-built one. Safety is a Go-side registration
-	// property: it is NOT carried in the config JSON (see doc.go / the Safety note),
-	// because it is a runtime resume property, not part of the wired topology.
+	// resumes identically to a hand-built one. A config node's "safety" field may
+	// change its retry classification (ReadOnly/Idempotent) but keeps the approval
+	// gate and IdempotencyKey recorded here (see safetyFromConfig).
 	safety agent.Safety
 }
 

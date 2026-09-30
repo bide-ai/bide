@@ -43,8 +43,9 @@ type configNode struct {
 	// Safety optionally overrides the node's retry-on-resume classification: one of
 	// "readonly", "idempotent", or "retryable" ("retryable" is an alias for
 	// "idempotent"). Empty means the node keeps the registered block's Safety (the Go
-	// registration default). An explicit value here OVERRIDES that default; an unknown
-	// string is a load error naming the node. It maps to the corresponding NodeOption
+	// registration default). An explicit value here OVERRIDES that default's retry
+	// classification only: an approval gate or IdempotencyKey the block declares is kept.
+	// An unknown string is a load error naming the node. It maps to the corresponding NodeOption
 	// / agent.Safety, so a loaded node resumes identically to a hand-built one with the
 	// same option. Unlike Go registration, Safety CAN be expressed in the config JSON
 	// (this field), because it is a per-node authoring choice the config author may
@@ -285,7 +286,7 @@ func assemble(cfg *config, reg *Registry) (*builderCore, error) {
 		// error naming the node, collected with the rest of the drift.
 		safety := b.safety
 		if cn.Safety != "" {
-			s, ok := safetyFromConfig(cn.Safety)
+			s, ok := safetyFromConfig(b.safety, cn.Safety)
 			if !ok {
 				problems = append(problems, fmt.Sprintf("node %q has unknown safety %q; want one of \"readonly\", \"idempotent\", \"retryable\"", cn.Name, cn.Safety))
 			} else {
@@ -439,7 +440,7 @@ func assemble(cfg *config, reg *Registry) (*builderCore, error) {
 			// to the conservative halt; an explicit "safety" on the join element overrides it.
 			jsafety := agent.Safety{}
 			if w.Safety != "" {
-				s, ok := safetyFromConfig(w.Safety)
+				s, ok := safetyFromConfig(jsafety, w.Safety)
 				if !ok {
 					return nil, fmt.Errorf("plan: load %q: wiring[%d] join %q has unknown safety %q; want one of \"readonly\", \"idempotent\", \"retryable\"", cfg.Flow, i, w.Join, w.Safety)
 				}
@@ -608,21 +609,23 @@ func mergeNames(reg *Registry) []string {
 	return names
 }
 
-// safetyFromConfig maps a config safety string to the agent.Safety it denotes,
-// mirroring the ReadOnly/Idempotent/Retryable NodeOptions: "readonly" ->
-// {ReadOnly:true}, "idempotent" and its "retryable" alias -> {Idempotent:true}. The
-// bool is false for an unknown string so the caller can report it as a load error
-// naming the node. It is the config counterpart of the Go-side ReadOnly()/Idempotent()
-// options, so a loaded node resumes identically to a hand-built one with the same option.
-func safetyFromConfig(s string) (agent.Safety, bool) {
+// safetyFromConfig applies a config safety string to base, the node's Safety before the
+// override, mirroring the ReadOnly/Idempotent/Retryable NodeOptions: "readonly" sets
+// ReadOnly, "idempotent" and its "retryable" alias set Idempotent. Only that retry
+// classification changes: an approval gate (RequiresApproval, Approval) or IdempotencyKey in
+// base is kept, so a config file cannot switch off a gate the wrapped tool declares. The bool
+// is false for an unknown string so the caller can report it as a load error naming the node.
+func safetyFromConfig(base agent.Safety, s string) (agent.Safety, bool) {
+	var opt NodeOption
 	switch s {
 	case "readonly":
-		return agent.Safety{ReadOnly: true}, true
+		opt = ReadOnly()
 	case "idempotent", "retryable":
-		return agent.Safety{Idempotent: true}, true
+		opt = Idempotent()
 	default:
 		return agent.Safety{}, false
 	}
+	return safetyFromOptions(base, []NodeOption{opt}), true
 }
 
 // suggest returns a " (did you mean %q?)" fragment when exactly one candidate is a

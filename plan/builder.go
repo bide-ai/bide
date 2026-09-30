@@ -47,16 +47,21 @@ type NodeOption func(*node)
 // always safe to re-run from the top on resume. On an ambiguous mid-node crash
 // (an attempt marker with no result) Run RE-RUNS the body rather than halting.
 // Use it for a node that only reads.
+//
+// It sets only the retry classification: an approval gate or IdempotencyKey the node already
+// carries (a wrapped agent tool's) is kept, so the option cannot switch a gate off.
 func ReadOnly() NodeOption {
-	return func(n *node) { n.safety = agent.Safety{ReadOnly: true} }
+	return func(n *node) { n.safety.ReadOnly, n.safety.Idempotent = true, false }
 }
 
 // Idempotent marks a node as idempotent: it mutates state but a repeat with the
 // same input is a no-op downstream, so it is safe to retry. On an ambiguous
 // mid-node crash Run RE-RUNS the body rather than halting. Use it for a node whose
 // effect de-duplicates downstream (for example an upsert keyed by a stable id).
+// Like ReadOnly, it sets only the retry classification and keeps any approval gate or
+// IdempotencyKey the node already carries.
 func Idempotent() NodeOption {
-	return func(n *node) { n.safety = agent.Safety{Idempotent: true} }
+	return func(n *node) { n.safety.ReadOnly, n.safety.Idempotent = false, true }
 }
 
 // Retryable is an alias for Idempotent, reading more naturally at some call sites

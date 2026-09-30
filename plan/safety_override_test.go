@@ -85,3 +85,37 @@ func TestSafetyOverride_KeepsTheIdempotencyKey(t *testing.T) {
 		t.Errorf("config safety idempotent: safety %+v; want Idempotent with the IdempotencyKey kept", n.safety)
 	}
 }
+
+// An override replaces the classification it names: ReadOnly clears Idempotent and Idempotent
+// clears ReadOnly, so the later option wins, as the options document.
+func TestSafetyOverride_ReplacesTheClassification(t *testing.T) {
+	fn := func(context.Context, int) (int, error) { return 0, nil }
+	for _, tc := range []struct {
+		base      agent.Safety
+		opt       NodeOption
+		cfg       string
+		wantRO    bool
+		wantIdemp bool
+	}{
+		{agent.Safety{Idempotent: true}, ReadOnly(), "readonly", true, false},
+		{agent.Safety{ReadOnly: true}, Idempotent(), "idempotent", false, true},
+	} {
+		tool := agent.Func("t", "", tc.base, fn)
+		b := New[int, int]("f")
+		b.Tool[int, int]("t", tool, tc.opt)
+		if s := b.core.byName["t"].safety; s.ReadOnly != tc.wantRO || s.Idempotent != tc.wantIdemp {
+			t.Errorf("base %+v, option: safety %+v; want ReadOnly=%v Idempotent=%v", tc.base, s, tc.wantRO, tc.wantIdemp)
+		}
+		reg := NewRegistry()
+		if err := RegisterTool[int, int](reg, "t", tool); err != nil {
+			t.Fatalf("register: %v", err)
+		}
+		flow, err := Load[int, int]([]byte(`{"flow":"f","nodes":[{"name":"t","block":"t","safety":"`+tc.cfg+`"}],"wiring":[]}`), reg)
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if s := flow.core.byName["t"].safety; s.ReadOnly != tc.wantRO || s.Idempotent != tc.wantIdemp {
+			t.Errorf("base %+v, config %q: safety %+v; want ReadOnly=%v Idempotent=%v", tc.base, tc.cfg, s, tc.wantRO, tc.wantIdemp)
+		}
+	}
+}
