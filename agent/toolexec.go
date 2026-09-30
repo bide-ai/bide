@@ -117,9 +117,9 @@ func toolResultMessage(r Record) Message {
 }
 
 // callTool runs call under ctx, bounded by timeout when it is positive (a tool's
-// ToolSpec.Timeout). late reports an error returned after that deadline had passed while ctx
-// itself was still live: the tool's own deadline, not the run's, cut the call short. A result is
-// returned as the call returned it, whenever it came.
+// ToolSpec.Timeout). late reports an error returned after that deadline had passed. The caller
+// checks ctx first: an error after ctx itself was done is the run's cancellation, not a late
+// error. A result is returned as the call returned it, whenever it came.
 func callTool(ctx context.Context, timeout time.Duration, call func(context.Context) (json.RawMessage, error)) (res json.RawMessage, late bool, err error) {
 	if timeout <= 0 {
 		res, err = call(ctx)
@@ -128,7 +128,7 @@ func callTool(ctx context.Context, timeout time.Duration, call func(context.Cont
 	tctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	res, err = call(tctx)
-	return res, err != nil && tctx.Err() != nil && ctx.Err() == nil, err
+	return res, err != nil && tctx.Err() != nil, err
 }
 
 // recordedSafety is the Safety a call's result records: the one it ran under.

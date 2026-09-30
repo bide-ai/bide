@@ -360,3 +360,53 @@ func TestRequestTools_SortedAndOwnedPerRequest(t *testing.T) {
 		t.Fatalf("requests were sent tools %q; want [a b] each time", seen)
 	}
 }
+
+// A denied call's record carries the gate that denied it, and a saga step's failure record the
+// safety and gate the step ran under, as a completed call's result does.
+func TestDenialAndSagaFailure_RecordSafetyAndApproval(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemStore()
+	fn := func(context.Context, struct{}) (string, error) { return "ok", nil }
+	charge := Func("charge", "", Safety{}, fn, WithApproval(SingleApproval()))
+	m := NewScriptedModel(ToolTurn("c1", "charge", `{}`), TextTurn("done"))
+	a := New(m, store, charge)
+	if _, err := a.Run(ctx, "r1", "pay"); !IsPause(err) {
+		t.Fatalf("first drive: %v, want the approval pause", err)
+	}
+	if err := Approve(ctx, store, "r1", "c1", false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Run(ctx, "r1", "pay"); err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	if rec, ok := hasStep(t, store, "r1", ToolResultStep("c1")); !ok || !rec.IsError || !strings.Contains(string(rec.Raw()), `"safety":{},"approval":{"need":1}`) {
+		t.Fatalf("denial journaled %s, want the safety and the gate", rec.Raw())
+	}
+
+	book := Func("book", "", Safety{Idempotent: true}, func(context.Context, struct{}) (string, error) {
+		return "", errors.New("no rooms left")
+	}, WithApproval(&ApprovalPolicy{Need: 1, Approvers: []string{"ops"}}))
+	sm := NewScriptedModel(ToolTurn("b1", "book", `{}`), TextTurn("done"))
+	sa := New(sm, store, book).WithApproverVerifiers(fakeVerifiers("ops"))
+	if _, err := sa.RunSaga(ctx, "s1", "trip"); !IsPause(err) {
+		t.Fatalf("saga first drive: %v, want the quorum pause", err)
+	}
+	approveAs(t, store, "s1", "b1", "ops", true)
+	var aborted *SagaAborted
+	if _, err := sa.RunSaga(ctx, "s1", "trip"); !errors.As(err, &aborted) {
+		t.Fatalf("saga resume: %v, want *SagaAborted", err)
+	}
+	recs, err := store.History(ctx, "s1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range recs {
+		if r.Kind == StepSagaFail {
+			if !strings.Contains(string(r.Raw()), `"safety":{"idempotent":true},"approval":{"need":1,"approvers":["ops"]}`) {
+				t.Fatalf("saga failure journaled %s, want the safety and the gate", r.Raw())
+			}
+			return
+		}
+	}
+	t.Fatal("no saga failure record")
+}
