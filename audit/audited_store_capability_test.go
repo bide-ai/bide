@@ -19,7 +19,7 @@ func newAudited(t *testing.T, inner agent.Durable) *audit.AuditedStore {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return audit.NewAuditedStore(inner, priv, audit.NewMemAnchorLog())
+	return mustAuditedStore(t, inner, priv, audit.NewMemAnchorLog())
 }
 
 // Wrapping a leasing store in AuditedStore keeps its lease: a run another holder leases on the

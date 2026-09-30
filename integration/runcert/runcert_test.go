@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"errors"
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
@@ -82,9 +83,9 @@ func TestCertifyAndVerifyRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewTreeHead: %v", err)
 	}
-	sth := audit.SignTreeHead(th, priv)
+	sth := mustSign(t, th, priv)
 
-	cert, err := audit.CertifyRun(ctx, store, runID, sth, audit.RunCertSpec{ApprovedPolicies: []string{digest}}, priv, 2)
+	cert, err := audit.CertifyRun(ctx, store, runID, sth, audit.RunCertSpec{ApprovedPolicies: []string{digest}, Signer: audit.Ed25519Signer{Priv: priv}, TimestampNanos: 2})
 	if err != nil {
 		t.Fatalf("CertifyRun: %v", err)
 	}
@@ -92,7 +93,7 @@ func TestCertifyAndVerifyRun(t *testing.T) {
 		t.Fatalf("used policies = %v, want [%s]", cert.UsedPolicies, digest)
 	}
 
-	res, err := audit.VerifyRun(cert, []string{digest}, pub)
+	res, err := audit.VerifyRun(cert, []string{digest}, audit.Ed25519Verifier{Pub: pub})
 	if err != nil {
 		t.Fatalf("VerifyRun: %v", err)
 	}
@@ -108,13 +109,13 @@ func TestCertifyAndVerifyRun(t *testing.T) {
 		t.Fatalf("RecordRunCertificate: %v", err)
 	}
 	th2, _ := audit.NewTreeHead(ctx, store, runID, 3)
-	sth2 := audit.SignTreeHead(th2, priv)
+	sth2 := mustSign(t, th2, priv)
 	pb, err := audit.ProveRunCertificate(ctx, store, runID, sth2)
 	if err != nil {
 		t.Fatalf("ProveRunCertificate: %v", err)
 	}
-	if ok, err := pb.Verify(pub); err != nil || !ok {
-		t.Fatalf("run certificate leaf should prove in the later tree (ok=%v err=%v)", ok, err)
+	if err := pb.Verify(audit.Ed25519Verifier{Pub: pub}); err != nil {
+		t.Fatalf("run certificate leaf should prove in the later tree: %v", err)
 	}
 }
 
@@ -131,10 +132,10 @@ func TestCertifyRunRejectsDisallowedPolicy(t *testing.T) {
 
 	_, priv, _ := ed25519.GenerateKey(rand.Reader)
 	th, _ := audit.NewTreeHead(ctx, store, runID, 1)
-	sth := audit.SignTreeHead(th, priv)
+	sth := mustSign(t, th, priv)
 
 	// CertifyRun refuses when the used policy is not approved.
-	if _, err := audit.CertifyRun(ctx, store, runID, sth, audit.RunCertSpec{ApprovedPolicies: []string{"some-other-digest"}}, priv, 2); err == nil {
+	if _, err := audit.CertifyRun(ctx, store, runID, sth, audit.RunCertSpec{ApprovedPolicies: []string{"some-other-digest"}, Signer: audit.Ed25519Signer{Priv: priv}, TimestampNanos: 2}); err == nil {
 		t.Fatalf("CertifyRun must refuse a run that used a disallowed policy")
 	}
 
@@ -142,15 +143,15 @@ func TestCertifyRunRejectsDisallowedPolicy(t *testing.T) {
 	// VerifyRun on only-approved-policies.
 	pub, priv2, _ := ed25519.GenerateKey(rand.Reader)
 	th2, _ := audit.NewTreeHead(ctx, store, runID, 1)
-	sth2 := audit.SignTreeHead(th2, priv2)
-	cert, err := audit.CertifyRun(ctx, store, runID, sth2, audit.RunCertSpec{ApprovedPolicies: []string{digest}}, priv2, 2)
+	sth2 := mustSign(t, th2, priv2)
+	cert, err := audit.CertifyRun(ctx, store, runID, sth2, audit.RunCertSpec{ApprovedPolicies: []string{digest}, Signer: audit.Ed25519Signer{Priv: priv2}, TimestampNanos: 2})
 	if err != nil {
 		t.Fatalf("CertifyRun (approved): %v", err)
 	}
 	// The verifier's allowlist excludes the used one.
-	res, err := audit.VerifyRun(cert, []string{"only-this-other-policy"}, pub)
-	if err != nil {
-		t.Fatalf("VerifyRun: %v", err)
+	res, err := audit.VerifyRun(cert, []string{"only-this-other-policy"}, audit.Ed25519Verifier{Pub: pub})
+	if !errors.Is(err, audit.ErrNotVerified) {
+		t.Fatalf("VerifyRun: %v, want ErrNotVerified", err)
 	}
 	if res.OK || res.OnlyApprovedPolicies {
 		t.Fatalf("certificate must fail only-approved-policies when the used policy is not allowed, got %+v", res)
@@ -172,9 +173,9 @@ func TestVerifyRunDetectsHiddenPolicy(t *testing.T) {
 
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
 	th, _ := audit.NewTreeHead(ctx, store, runID, 1)
-	sth := audit.SignTreeHead(th, priv)
+	sth := mustSign(t, th, priv)
 
-	cert, err := audit.CertifyRun(ctx, store, runID, sth, audit.RunCertSpec{ApprovedPolicies: []string{dA, dB}}, priv, 2)
+	cert, err := audit.CertifyRun(ctx, store, runID, sth, audit.RunCertSpec{ApprovedPolicies: []string{dA, dB}, Signer: audit.Ed25519Signer{Priv: priv}, TimestampNanos: 2})
 	if err != nil {
 		t.Fatalf("CertifyRun: %v", err)
 	}
@@ -185,9 +186,9 @@ func TestVerifyRunDetectsHiddenPolicy(t *testing.T) {
 	// Tamper: drop one used policy from the disclosed set (leaving the signed absence STH intact).
 	tampered := cert
 	tampered.UsedPolicies = []string{cert.UsedPolicies[0]}
-	res, err := audit.VerifyRun(tampered, []string{dA, dB}, pub)
-	if err != nil {
-		t.Fatalf("VerifyRun: %v", err)
+	res, err := audit.VerifyRun(tampered, []string{dA, dB}, audit.Ed25519Verifier{Pub: pub})
+	if !errors.Is(err, audit.ErrNotVerified) {
+		t.Fatalf("VerifyRun: %v, want ErrNotVerified", err)
 	}
 	if res.OnlyApprovedPolicies {
 		t.Fatalf("dropping a used policy must break the absence-root binding, but only-approved-policies held")

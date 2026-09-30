@@ -46,12 +46,13 @@ type Record struct {
 	// StepToolResult or StepSagaFail record, the rest of the Spend of the runs the tool call
 	// started. Nil when there was none. WithTokenBudget counts it.
 	DiscardedUsage *Usage          `json:"discarded_usage,omitempty"`
-	ToolUseID      string          `json:"tool_use_id,omitempty"` // StepToolResult
-	Result         json.RawMessage `json:"result,omitempty"`      // StepToolResult / StepValue
-	IsError        bool            `json:"is_error,omitempty"`    // StepToolResult
-	Approved       bool            `json:"approved,omitempty"`    // StepApproval
-	Approver       string          `json:"approver,omitempty"`    // StepApproval written by ApproveAs
-	Signature      []byte          `json:"signature,omitempty"`   // StepApproval written by ApproveAs
+	ToolUseID      string          `json:"tool_use_id,omitempty"`  // StepToolResult
+	Result         json.RawMessage `json:"result,omitempty"`       // StepToolResult / StepValue
+	IsError        bool            `json:"is_error,omitempty"`     // StepToolResult
+	Approved       bool            `json:"approved,omitempty"`     // StepApproval
+	Approver       string          `json:"approver,omitempty"`     // StepApproval written by SubmitDecision
+	ApproverAlg    Alg             `json:"approver_alg,omitempty"` // StepApproval written by SubmitDecision: the scheme Signature is under
+	Signature      []byte          `json:"signature,omitempty"`    // StepApproval written by SubmitDecision
 	// AttemptedAt is the Unix-millis wall-clock time an attempt marker (StepAttempt) was
 	// written, i.e. just before a non-retriable side effect fired. It is set once and read
 	// back verbatim on replay, so it stays deterministic. Zero (and omitted) on every

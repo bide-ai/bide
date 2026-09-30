@@ -119,7 +119,7 @@ func FuzzConsistencyProof(f *testing.F) {
 		m := int(m8) % (n + 1)
 		leaves := fuzzLeaves(n, salt)
 		r1, r2 := merkleRoot(leaves[:m]), merkleRoot(leaves)
-		path := consistencyProof(m, leaves)
+		path := consistencyProof(m, leafHashes(leaves))
 		if !verifyConsistency(m, n, path, r1, r2) || !verify.Consistency(m, n, path, r1, r2) {
 			t.Fatalf("genuine consistency proof rejected (m=%d n=%d)", m, n)
 		}
@@ -209,8 +209,7 @@ func FuzzArtifactVerify(f *testing.F) {
 			if UnmarshalStrict(data, &b) != nil {
 				return
 			}
-			ok, _ = b.Verify(fuzzPub)
-			normAlg(&b.STH)
+			ok = b.Verify(edV(fuzzPub)) == nil
 			decoded = b
 		case 1:
 			var b AbsenceBundle
@@ -221,7 +220,7 @@ func FuzzArtifactVerify(f *testing.F) {
 			if !known {
 				return
 			}
-			ok, _ = b.Verify(fuzzPub, set)
+			ok = b.Verify(edV(fuzzPub), set) == nil
 			if ok {
 				// The proof shows every key outside the committed set {tooluse:c1} in its gap absent,
 				// so any such key is a genuine claim; a committed key never is.
@@ -230,24 +229,21 @@ func FuzzArtifactVerify(f *testing.F) {
 				}
 				b.Absence.Key = "tooluse:zz"
 			}
-			normAlg(&b.STH)
 			decoded = b
 		case 2:
 			var e EvidencePackage
 			if UnmarshalStrict(data, &e) != nil {
 				return
 			}
-			rep, err := e.Verify(fuzzPub)
+			rep, err := e.Verify(edV(fuzzPub))
 			ok = err == nil && rep.OK
-			normAlg(&e.STH)
 			decoded = e
 		case 3:
 			var s SignedTreeHead
 			if UnmarshalStrict(data, &s) != nil {
 				return
 			}
-			ok = s.Verify(fuzzPub)
-			normAlg(&s)
+			ok = s.Verify(edV(fuzzPub)) == nil
 			decoded = s
 		}
 		if !ok {
@@ -258,12 +254,4 @@ func FuzzArtifactVerify(f *testing.F) {
 			t.Fatalf("a non-genuine artifact verified (type %d):\ninput:   %q\ndecoded: %s\ngenuine: %s", i, data, got, genuine[i])
 		}
 	})
-}
-
-// normAlg maps the explicit ed25519 algorithm name to the empty default, which the verifier treats
-// identically.
-func normAlg(s *SignedTreeHead) {
-	if s.Alg == AlgEd25519 {
-		s.Alg = ""
-	}
 }

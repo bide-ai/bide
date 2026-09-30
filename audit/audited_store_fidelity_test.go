@@ -18,6 +18,6 @@ func TestAuditedStore_Fidelity(t *testing.T) {
 		t.Fatal(err)
 	}
 	durabletest.Run(t, func(*testing.T) agent.Durable {
-		return audit.NewAuditedStore(agent.NewMemStore(), priv, audit.NewMemAnchorLog())
+		return mustAuditedStore(t, agent.NewMemStore(), priv, audit.NewMemAnchorLog())
 	})
 }

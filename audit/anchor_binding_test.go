@@ -2,6 +2,7 @@ package audit
 
 import (
 	"crypto/ed25519"
+	"errors"
 	"testing"
 )
 
@@ -12,11 +13,11 @@ import (
 func TestVerifyAnchorInclusion_BindsSeqAndRun(t *testing.T) {
 	_, priv, _ := ed25519.GenerateKey(nil)
 	head := func(run string) SignedTreeHead {
-		return SignTreeHead(TreeHead{Kind: TreeJournal, RunID: run, Size: 1, Root: make([]byte, 32)}, priv)
+		return signTH(t, TreeHead{Kind: TreeJournal, RunID: run, Size: 1, Root: make([]byte, 32)}, priv)
 	}
 	for name, entries := range map[string][]AnchorEntry{
-		"seq of another position": {{Seq: 0, RunID: "a", STH: head("a")}, {Seq: 5, RunID: "b", STH: head("b")}},
-		"run not the head's run":  {{Seq: 0, RunID: "a", STH: head("a")}, {Seq: 1, RunID: "b", STH: head("a")}},
+		"seq of another position": {{Format: AnchorEntryFormat, Seq: 0, RunID: "a", STH: head("a")}, {Format: AnchorEntryFormat, Seq: 5, RunID: "b", STH: head("b")}},
+		"run not the head's run":  {{Format: AnchorEntryFormat, Seq: 0, RunID: "a", STH: head("a")}, {Format: AnchorEntryFormat, Seq: 1, RunID: "b", STH: head("a")}},
 	} {
 		leaves := make([][]byte, len(entries))
 		for i, e := range entries {
@@ -29,13 +30,16 @@ func TestVerifyAnchorInclusion_BindsSeqAndRun(t *testing.T) {
 		root := merkleRoot(leaves)
 		for i := range entries {
 			p := Inclusion{Index: i, Size: len(leaves), Path: auditPath(i, leaves)}
-			ok, err := VerifyAnchorInclusion(root, entries[i], p)
+			err := VerifyAnchorInclusion(root, entries[i], p)
 			bad := entries[i].Seq != i || entries[i].RunID != entries[i].STH.RunID
-			if bad && ok {
+			if bad && err == nil {
 				t.Errorf("%s: entry %d (seq %d, run %q, head run %q) verified at index %d", name, i, entries[i].Seq, entries[i].RunID, entries[i].STH.RunID, i)
 			}
-			if !bad && (!ok || err != nil) {
-				t.Errorf("%s: well-formed entry %d did not verify: %v, %v", name, i, ok, err)
+			if bad && err != nil && !errors.Is(err, ErrNotVerified) {
+				t.Errorf("%s: entry %d: err = %v, want ErrNotVerified", name, i, err)
+			}
+			if !bad && err != nil {
+				t.Errorf("%s: well-formed entry %d did not verify: %v", name, i, err)
 			}
 		}
 	}

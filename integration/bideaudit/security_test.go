@@ -59,7 +59,7 @@ func TestVerifyQuorumCLI_RejectsVoteFromAnotherRun(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		sth := audit.SignTreeHead(th, priv)
+		sth := must(audit.SignTreeHead(th, audit.Ed25519Signer{Priv: priv}))
 		for _, name := range []string{"quorum/refund/tally", "quorum/refund/vote/model-A", "quorum/refund/vote/model-B"} {
 			pb, err := audit.ProveStep(ctx, store, runID, name, sth)
 			if err != nil {

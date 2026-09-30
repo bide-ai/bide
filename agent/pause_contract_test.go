@@ -391,12 +391,6 @@ func TestVerbs_WrappersWriteTheSameRecords(t *testing.T) {
 			func(d Durable) error { return Enqueue(ctx, d, "r1", "jobs", "k1", "body") },
 			func(d Durable) error { return Send(ctx, d, "r1", "jobs", "k1", "body") },
 		},
-		"SubmitDecision/ApproveAs": {
-			func(d Durable) error {
-				return SubmitDecision(ctx, d, Decision{RunID: "r1", ToolUseID: "c1", ApproverID: "alice", Approved: true, Signature: []byte("sig")})
-			},
-			func(d Durable) error { return ApproveAs(ctx, d, "r1", "c1", "alice", true, []byte("sig")) },
-		},
 	} {
 		a, b := NewMemStore(), NewMemStore()
 		if err := v.newer(a); err != nil {

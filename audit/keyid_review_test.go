@@ -19,24 +19,34 @@ func resolverOf(m map[string]agent.ApproverVerifier) agent.ApproverVerifierFor {
 	return func(id string) (agent.ApproverVerifier, bool) { v, ok := m[id]; return v, ok }
 }
 
-// MLDSAVerifier verifies any ML-DSA parameter set its key has, so its key identity is labelled
-// with that parameter set, not always ml-dsa-65.
+// An ML-DSA key identity names the parameter set it is for. MLDSAVerifier verifies ML-DSA-65 only
+// (the scheme AlgMLDSA65 names), so a key of another parameter set verifies nothing and reports no
+// identity, which an approval gate refuses, and an ML-DSA-65 key reports one identity labelled
+// "ml-dsa-65". (#109 labelled each parameter set because its verifier accepted all three; under
+// P11's scheme agility a verifier checks only its own scheme.)
 func TestMLDSAKeyIDLabelsParameterSet(t *testing.T) {
 	for _, c := range []struct {
 		params mldsa.Parameters
 		label  string
-	}{{mldsa.MLDSA44(), "ml-dsa-44"}, {mldsa.MLDSA65(), audit.AlgMLDSA65}, {mldsa.MLDSA87(), "ml-dsa-87"}} {
+		usable bool
+	}{{mldsa.MLDSA44(), "ml-dsa-44", false}, {mldsa.MLDSA65(), string(audit.AlgMLDSA65), true}, {mldsa.MLDSA87(), "ml-dsa-87", false}} {
 		sk, err := mldsa.NewPrivateKey(c.params, make([]byte, 32))
 		if err != nil {
 			t.Fatal(err)
 		}
 		v := audit.MLDSAVerifier{Pub: sk.PublicKey()}
+		ids := v.KeyIDs()
+		if !c.usable {
+			if ids != nil {
+				t.Fatalf("an %s key, which the verifier does not verify under, reports %v, want none", c.label, ids)
+			}
+			continue
+		}
 		msg := []byte("m")
 		sig, err := audit.MLDSASigner{Priv: sk}.Sign(msg)
 		if err != nil || !v.Verify(msg, sig) {
 			t.Fatalf("%s: setup: signature does not verify (%v)", c.label, err)
 		}
-		ids := v.KeyIDs()
 		if len(ids) != 1 || !strings.HasPrefix(ids[0], c.label+":") || ids[0] != audit.KeyID(c.label, sk.PublicKey().Bytes()) {
 			t.Fatalf("an %s key reports %v, want one identity labelled %q", c.label, ids, c.label)
 		}

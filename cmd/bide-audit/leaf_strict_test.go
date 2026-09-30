@@ -46,7 +46,7 @@ func leafFiles(t *testing.T, dir string, recs ...agent.Record) ([]string, string
 	if err != nil {
 		t.Fatal(err)
 	}
-	sth := audit.SignTreeHead(th, priv)
+	sth := signHead(t, th, audit.Ed25519Signer{Priv: priv})
 	sub, err := os.MkdirTemp(dir, "leaves")
 	if err != nil {
 		t.Fatal(err)
@@ -212,7 +212,7 @@ func TestVerifyRun_CheckerReadsCertificateAsWritten(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		rc, err := audit.CertifyRun(ctx, store, "run1", audit.SignTreeHead(th, priv), audit.RunCertSpec{ApprovedPolicies: []string{digest}}, priv, 2)
+		rc, err := audit.CertifyRun(ctx, store, "run1", signHead(t, th, audit.Ed25519Signer{Priv: priv}), audit.RunCertSpec{ApprovedPolicies: []string{digest}, Signer: audit.Ed25519Signer{Priv: priv}, TimestampNanos: 2})
 		if err != nil {
 			t.Fatal(err)
 		}

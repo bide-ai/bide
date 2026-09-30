@@ -25,11 +25,11 @@ func certRun(t *testing.T, runID string) (agent.Durable, audit.RunCertificate, [
 		t.Fatal(err)
 	}
 	approved := []string{dA, dB}
-	cert, err := audit.CertifyRun(ctx, store, runID, audit.SignTreeHead(th, priv), audit.RunCertSpec{ApprovedPolicies: approved}, priv, 2)
+	cert, err := audit.CertifyRun(ctx, store, runID, mustSign(t, th, priv), audit.RunCertSpec{ApprovedPolicies: approved, Signer: audit.Ed25519Signer{Priv: priv}, TimestampNanos: 2})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res, err := audit.VerifyRun(cert, approved, pub); err != nil || !res.OK {
+	if res, err := audit.VerifyRun(cert, approved, audit.Ed25519Verifier{Pub: pub}); err != nil || !res.OK {
 		t.Fatalf("the genuine certificate does not verify: %+v %v", res, err)
 	}
 	return store, cert, approved, pub, priv
@@ -37,7 +37,7 @@ func certRun(t *testing.T, runID string) (agent.Durable, audit.RunCertificate, [
 
 func mustFailRun(t *testing.T, what string, cert audit.RunCertificate, approved []string, pub ed25519.PublicKey) {
 	t.Helper()
-	res, err := audit.VerifyRun(cert, approved, pub)
+	res, err := audit.VerifyRun(cert, approved, audit.Ed25519Verifier{Pub: pub})
 	if err == nil && res.OK {
 		t.Fatalf("%s: the certificate verifies", what)
 	}
@@ -97,11 +97,11 @@ func TestCertifyRun_CoversTheSignedPrefix(t *testing.T) {
 	// After the head was signed, the run used a policy that is not approved.
 	dC, pbC, cbC := buildKYC(t, "kyc-C", false)
 	anchorGovernedRun(t, ctx, store, "run-p", dC+"x", pbC, cbC)
-	again, err := audit.CertifyRun(ctx, store, "run-p", cert.STH, audit.RunCertSpec{ApprovedPolicies: approved}, priv, 3)
+	again, err := audit.CertifyRun(ctx, store, "run-p", cert.STH, audit.RunCertSpec{ApprovedPolicies: approved, Signer: audit.Ed25519Signer{Priv: priv}, TimestampNanos: 3})
 	if err != nil {
 		t.Fatalf("certifying the signed prefix failed: %v", err)
 	}
-	if res, _ := audit.VerifyRun(again, approved, pub); !res.OK || len(again.UsedPolicies) != 2 {
+	if res, _ := audit.VerifyRun(again, approved, audit.Ed25519Verifier{Pub: pub}); !res.OK || len(again.UsedPolicies) != 2 {
 		t.Fatalf("the prefix certificate: used %v, %+v", again.UsedPolicies, res)
 	}
 }

@@ -33,7 +33,7 @@ func main() {
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
 	signer := audit.Ed25519Signer{Priv: priv}
 	verifier := func(string) (audit.Verifier, bool) { return audit.Ed25519Verifier{Pub: pub}, true }
-	rootSG, err := audit.SignGrant(audit.Grant{ID: "root", Issuer: "corp", Subject: "desk", NotAfter: 1900000000, Scope: map[string]string{"limit": "10"}}, signer)
+	rootSG, err := audit.SignGrant(audit.Grant{ID: "root", Issuer: "corp", Subject: "desk", NotAfterUnix: 1900000000, Scope: map[string]string{"limit": "10"}}, signer)
 	if err != nil {
 		panic(err)
 	}
@@ -60,7 +60,10 @@ func main() {
 		if err != nil {
 			panic(err)
 		}
-		head := audit.SignTreeHead(th, logPriv)
+		head, err := audit.SignTreeHead(th, audit.Ed25519Signer{Priv: logPriv})
+		if err != nil {
+			panic(err)
+		}
 		seenSize := 0
 		if lastSeen != nil {
 			seenSize = lastSeen.Size
@@ -69,14 +72,14 @@ func main() {
 		if err != nil {
 			panic(err)
 		}
-		ok, _ := audit.VerifyCurrentGrant(sg, ledgerRun, proof, lastSeen, logPub)
+		ok := audit.VerifyCurrentGrant(sg, ledgerRun, proof, lastSeen, audit.Ed25519Verifier{Pub: logPub}) == nil
 		if ok {
 			lastSeen = &head
 		}
 		return ok
 	}
 	verify := func() string {
-		ok, _ := audit.VerifyDelegationChain([]audit.SignedGrant{rootSG, ctrl.Grant()}, verifier, audit.EarnedRules)
+		ok := audit.VerifyDelegationChain([]audit.SignedGrant{rootSG, ctrl.Grant()}, verifier, audit.EarnedRules) == nil
 		return fmt.Sprintf("earned grant limit %d verifies within the root ceiling(10): %v, current in the ledger: %v", ctrl.Limit(), ok, isCurrent(ctrl.Grant()))
 	}
 	show := func(label string) {

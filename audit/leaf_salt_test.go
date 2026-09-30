@@ -37,7 +37,7 @@ func TestNeighbourLeafNotGuessable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := ProveToolCall(ctx, st, "run", "toolu_A", SignTreeHead(th, priv))
+	b, err := ProveToolCall(ctx, st, "run", "toolu_A", signTH(t, th, priv))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,10 +55,7 @@ func TestNeighbourLeafNotGuessable(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		tries := [][]byte{leafHash(enc)}
-		if leaf, err := canonicalRecord(cand); err == nil {
-			tries = append(tries, leafHash(leaf))
-		}
+		tries := [][]byte{leafHash(enc), JournalLeafHash(enc)}
 		sum := sha256.Sum256(append([]byte{0}, enc...))
 		tries = append(tries, sum[:])
 		for _, h := range tries {
@@ -73,14 +70,20 @@ func TestNeighbourLeafNotGuessable(t *testing.T) {
 	// The bundle discloses its own record's salt, which its leaf needs, and verifies; the same
 	// record under any other salt does not.
 	pub := priv.Public().(ed25519.PublicKey)
-	if len(b.Record.Salt()) != agent.SaltSize {
-		t.Fatalf("the bundle's record carries a %d-byte salt, want %d", len(b.Record.Salt()), agent.SaltSize)
+	rec, err := b.Record()
+	if err != nil {
+		t.Fatal(err)
 	}
-	if ok, err := b.Verify(pub); !ok || err != nil {
-		t.Fatalf("bundle does not verify: %v, %v", ok, err)
+	if len(rec.Salt()) != agent.SaltSize {
+		t.Fatalf("the bundle's record carries a %d-byte salt, want %d", len(rec.Salt()), agent.SaltSize)
 	}
-	b.Record = withSalt(b.Record, bytes.Repeat([]byte{9}, agent.SaltSize))
-	if ok, _ := b.Verify(pub); ok {
+	if err := b.Verify(edV(pub)); err != nil {
+		t.Fatalf("bundle does not verify: %v", err)
+	}
+	if b.RecordBytes, err = agent.EncodeRecord(withSalt(rec, bytes.Repeat([]byte{9}, agent.SaltSize))); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Verify(edV(pub)); !errors.Is(err, ErrNotVerified) {
 		t.Fatal("a bundle verified with its record's salt changed")
 	}
 }
@@ -99,7 +102,7 @@ func (recordsStore) Do(context.Context, string, string, func(context.Context) (a
 func TestUnsaltedRecordRefused(t *testing.T) {
 	ctx := context.Background()
 	for _, salt := range [][]byte{nil, make([]byte, agent.SaltSize-1), make([]byte, agent.SaltSize+1)} {
-		st := recordsStore{withSalt(agent.Record{Name: "s", Kind: agent.StepValue, Result: json.RawMessage(`1`)}, salt)}
+		st := recordsStore{stored(withSalt(agent.Record{Name: "s", Kind: agent.StepValue, Result: json.RawMessage(`1`)}, salt))}
 		if _, err := Root(ctx, st, "r"); err == nil || !strings.Contains(err.Error(), "salt") {
 			t.Errorf("Root over a record with a %d-byte salt = %v, want a salt error", len(salt), err)
 		}
@@ -108,9 +111,6 @@ func TestUnsaltedRecordRefused(t *testing.T) {
 		}
 		if _, err := Prove(ctx, st, "r", 0); err == nil {
 			t.Errorf("Prove proved a record with a %d-byte salt", len(salt))
-		}
-		if ok, err := VerifyInclusion(nil, st[0], Inclusion{Size: 1}); ok || err == nil {
-			t.Errorf("VerifyInclusion accepted a record with a %d-byte salt", len(salt))
 		}
 	}
 }
@@ -141,8 +141,11 @@ func TestLeafFormats(t *testing.T) {
 	if string(enc) != want {
 		t.Fatalf("journal encoding = %s, want %s", enc, want)
 	}
-	if root, _ := Root(ctx, recordsStore(recs), "r"); !bytes.Equal(root, h("bide.audit.journal-leaf.v1\x00", string(enc))) {
-		t.Error("a journal leaf does not hash as SHA-256(0x00 || \"bide.audit.journal-leaf.v1\\x00\" || EncodeRecord(record))")
+	if !bytes.Equal(recs[0].Raw(), enc) {
+		t.Fatalf("stored bytes = %s, want the journal encoding %s", recs[0].Raw(), enc)
+	}
+	if root, _ := Root(ctx, recordsStore(recs), "r"); !bytes.Equal(root, h("bide.audit.journal-leaf.v1\x00", string(recs[0].Raw()))) {
+		t.Error("a journal leaf does not hash as SHA-256(0x00 || \"bide.audit.journal-leaf.v1\\x00\" || the record's stored bytes)")
 	}
 
 	keyRecs := recordsStore{withSalt(agent.Record{Name: "c", Kind: agent.StepToolResult, ToolUseID: "c"}, recs[0].Salt())}
@@ -155,9 +158,9 @@ func TestLeafFormats(t *testing.T) {
 		t.Fatal(err)
 	}
 	evProof, _ := log.Prove(0)
-	evJSON := fmt.Sprintf(`{"kind":"TurnStarted","event":{"Seq":1},"salt":"%s"}`, base64.StdEncoding.EncodeToString(evProof.Salt))
-	if len(evProof.Salt) != agent.SaltSize || !bytes.Equal(log.Root(), h("bide.audit.event-leaf.v2\x00", evJSON)) {
-		t.Error("an event leaf does not hash as SHA-256(0x00 || \"bide.audit.event-leaf.v2\\x00\" || event JSON with its salt)")
+	evJSON := fmt.Sprintf(`{"kind":"turn_started","event":{"seq":1},"salt":"%s"}`, base64.StdEncoding.EncodeToString(evProof.Salt))
+	if len(evProof.Salt) != agent.SaltSize || !bytes.Equal(log.Root(), h("bide.audit.event-leaf.v3\x00", evJSON)) {
+		t.Error("an event leaf does not hash as SHA-256(0x00 || \"bide.audit.event-leaf.v3\\x00\" || event JSON with its salt)")
 	}
 
 	// A projected event's salt is SHA-256("bide.audit.event-salt.v1\x00" || its record's salt), the
@@ -241,7 +244,7 @@ func TestNeighbourEventNotGuessable(t *testing.T) {
 			body, _ := json.Marshal(struct {
 				Kind  string          `json:"kind"`
 				Event json.RawMessage `json:"event"`
-			}{"ToolCompleted", inner})
+			}{"tool_completed", inner})
 			tries := [][]byte{leafHash(body), leafHash(append([]byte("bide.audit.event-leaf.v1\x00"), body...)), leafHash(tagged(eventLeafTag, body))}
 			if leaf, err := canonicalEvent(cand, proof.Salt); err == nil { // the one salt the proof discloses
 				tries = append(tries, leafHash(leaf))

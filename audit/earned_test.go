@@ -27,18 +27,17 @@ func TestEarnedAuthority_Ladder(t *testing.T) {
 	verifier := func(string) (Verifier, bool) { return Ed25519Verifier{Pub: pub}, true }
 
 	ctx := context.Background()
-	root := mustSign(t, Grant{ID: "root", Issuer: "corp", Subject: "desk", NotAfter: 5000, Scope: map[string]string{"limit": "10", "desk": "EQ-US"}}, signer)
+	root := mustSign(t, Grant{ID: "root", Issuer: "corp", Subject: "desk", NotAfterUnix: 5000, Scope: map[string]string{"limit": "10", "desk": "EQ-US"}}, signer)
 
 	assertWithinCeiling := func(ea *EarnedAuthority) {
 		t.Helper()
 		if ea.Grant().Grant.ParentRef != root.Grant.Digest() {
 			t.Fatalf("earned grant is not a child of root")
 		}
-		ok, err := VerifyDelegationChain([]SignedGrant{root, ea.Grant()}, verifier, EarnedRules)
-		if err != nil || !ok {
-			t.Fatalf("earned grant at limit %d did not verify within the ceiling: ok=%v err=%v", ea.Limit(), ok, err)
+		if err := VerifyDelegationChain([]SignedGrant{root, ea.Grant()}, verifier, EarnedRules); err != nil {
+			t.Fatalf("earned grant at limit %d did not verify within the ceiling: %v", ea.Limit(), err)
 		}
-		if g := ea.Grant().Grant; g.NotAfter != root.Grant.NotAfter || g.Scope["desk"] != "EQ-US" {
+		if g := ea.Grant().Grant; g.NotAfterUnix != root.Grant.NotAfterUnix || g.Scope["desk"] != "EQ-US" {
 			t.Fatalf("earned grant does not carry the root's expiry and constraints: %+v", g)
 		}
 	}
@@ -149,7 +148,7 @@ func (f earnedFixture) sign(t *testing.T, run string) SignedTreeHead {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return SignTreeHead(th, f.logPriv)
+	return signTH(t, th, f.logPriv)
 }
 
 // A superseded grant that is the last leaf of some OTHER run signed by the same log key is not
@@ -161,14 +160,14 @@ func TestEarnedAuthority_ProofOverOtherRunIsNotCurrent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ok, err := VerifyCurrentGrant(f.high, "ledger", pb, nil, f.logPub); ok {
+	if err := VerifyCurrentGrant(f.high, "ledger", pb, nil, edV(f.logPub)); err == nil {
 		t.Fatalf("superseded grant accepted as current via a proof over run %q (err=%v)", pb.Leaf.RunID, err)
 	}
 	cur, err := ProveCurrentGrant(ctx, f.store, "ledger", f.head3, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ok, err := VerifyCurrentGrant(f.demoted, "ledger", cur, nil, f.logPub); !ok {
+	if err := VerifyCurrentGrant(f.demoted, "ledger", cur, nil, edV(f.logPub)); err != nil {
 		t.Fatalf("the current grant did not verify against the ledger: %v", err)
 	}
 }
@@ -183,7 +182,7 @@ func TestEarnedAuthority_StaleHeadIsNotCurrent(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Without a last-seen head the stale proof shows only that high was current then.
-	if ok, err := VerifyCurrentGrant(f.high, "ledger", stale, nil, f.logPub); !ok {
+	if err := VerifyCurrentGrant(f.high, "ledger", stale, nil, edV(f.logPub)); err != nil {
 		t.Fatalf("the grant current at head 2 did not verify there: %v", err)
 	}
 	for _, bad := range []int{f.head3.Size, -1} {
@@ -199,7 +198,7 @@ func TestEarnedAuthority_StaleHeadIsNotCurrent(t *testing.T) {
 	} {
 		p := stale
 		p.Consistency = c
-		if ok, _ := VerifyCurrentGrant(f.high, "ledger", p, &f.head3, f.logPub); ok {
+		if err := VerifyCurrentGrant(f.high, "ledger", p, &f.head3, edV(f.logPub)); err == nil {
 			t.Fatalf("a head older than the last-seen head verified as current (consistency %+v)", c)
 		}
 	}
@@ -208,18 +207,18 @@ func TestEarnedAuthority_StaleHeadIsNotCurrent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ok, err := VerifyCurrentGrant(f.demoted, "ledger", cur, &f.head2, f.logPub); !ok {
+	if err := VerifyCurrentGrant(f.demoted, "ledger", cur, &f.head2, edV(f.logPub)); err != nil {
 		t.Fatalf("a head extending the last-seen head did not verify: %v", err)
 	}
-	if ok, err := VerifyCurrentGrant(f.demoted, "ledger", cur, &f.head3, f.logPub); ok || err == nil {
+	if err := VerifyCurrentGrant(f.demoted, "ledger", cur, &f.head3, edV(f.logPub)); err == nil {
 		t.Fatal("a consistency proof from the wrong last-seen size verified")
 	}
 	// The last-seen head must itself be an authentic journal head of the ledger run.
 	_, otherPriv, _ := ed25519.GenerateKey(rand.Reader)
-	forged := SignTreeHead(f.head2.TreeHead, otherPriv)
+	forged := signTH(t, f.head2.TreeHead, otherPriv)
 	events := f.head2.TreeHead
 	events.Kind = TreeEvents
-	eventsHead := SignTreeHead(events, f.logPriv)
+	eventsHead := signTH(t, events, f.logPriv)
 	// A run holding the same records as the ledger has the same roots under another run id.
 	recs, _ := f.store.History(ctx, "ledger")
 	for _, r := range recs[:f.head2.Size] {
@@ -229,7 +228,7 @@ func TestEarnedAuthority_StaleHeadIsNotCurrent(t *testing.T) {
 	}
 	copyHead := f.sign(t, "copy")
 	for name, seen := range map[string]SignedTreeHead{"wrong key": forged, "events kind": eventsHead, "other run": copyHead} {
-		if ok, _ := VerifyCurrentGrant(f.demoted, "ledger", cur, &seen, f.logPub); ok {
+		if err := VerifyCurrentGrant(f.demoted, "ledger", cur, &seen, edV(f.logPub)); err == nil {
 			t.Fatalf("last-seen head (%s) accepted", name)
 		}
 	}

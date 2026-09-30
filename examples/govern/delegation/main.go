@@ -54,8 +54,7 @@ func main() {
 	s2, _ := audit.SignGrant(g2, signer("exec-agent@1.4.2"))
 	grantChain := []audit.SignedGrant{s0, s1, s2}
 
-	ok, err := audit.VerifyDelegationChain(grantChain, verifier, audit.ScopeRules{"limit": audit.NumericAtMost})
-	if err != nil || !ok {
+	if err := audit.VerifyDelegationChain(grantChain, verifier, audit.ScopeRules{"limit": audit.NumericAtMost}); err != nil {
 		panic(fmt.Sprintf("delegation chain invalid: %v", err))
 	}
 	fmt.Println("delegation chain verified (each hop signed by its issuer, linked, never widened):")
@@ -109,15 +108,21 @@ func main() {
 
 	logPub, logPriv, _ := ed25519.GenerateKey(rand.Reader) // the log operator's key, distinct from any issuer
 	th, _ := audit.NewTreeHead(ctx, store, runID, 1)
-	sth := audit.SignTreeHead(th, logPriv)
+	sth, err := audit.SignTreeHead(th, audit.Ed25519Signer{Priv: logPriv})
+	if err != nil {
+		panic(err)
+	}
+	logKey := audit.Ed25519Verifier{Pub: logPub}
 
 	actionPB, _ := audit.ProveToolCall(ctx, store, runID, "buy/last", sth)
 	grantPB, _ := audit.ProveGrant(ctx, store, runID, g2.Digest(), sth)
-	aOK, _ := actionPB.Verify(logPub)
-	gOK, _ := grantPB.Verify(logPub)
+	aOK := actionPB.Verify(logKey) == nil
+	gOK := grantPB.Verify(logKey) == nil
 
 	var leaf map[string]any
-	_ = json.Unmarshal(actionPB.Record.Result, &leaf)
+	if rec, err := actionPB.Record(); err == nil {
+		_ = json.Unmarshal(rec.Result, &leaf)
+	}
 	linksToGrant := leaf["authority_ref"] == g2.Digest()
 
 	fmt.Printf("\noffline proofs (verify with the log key alone):\n")

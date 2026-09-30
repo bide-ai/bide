@@ -76,14 +76,17 @@ func TestParallel_DurableAuditableFanIn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewTreeHead: %v", err)
 	}
-	sth := audit.SignTreeHead(th, priv)
+	sth, err := audit.SignTreeHead(th, audit.Ed25519Signer{Priv: priv})
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, name := range []string{"sanctions_check", "credit_check", "fraud_check"} {
 		bundle, err := audit.ProveStep(ctx, store, runID, name, sth)
 		if err != nil {
 			t.Fatalf("ProveStep %s: %v", name, err)
 		}
-		if ok, err := bundle.Verify(pub); err != nil || !ok {
-			t.Fatalf("stage %s proof did not verify: ok=%v err=%v", name, ok, err)
+		if err := bundle.Verify(audit.Ed25519Verifier{Pub: pub}); err != nil {
+			t.Fatalf("stage %s proof did not verify: %v", name, err)
 		}
 	}
 }
@@ -122,7 +125,7 @@ func TestParallel_PartialFailure(t *testing.T) {
 		t.Fatalf("expected the failed check to re-run on resume, attempts=%d", creditAttempts)
 	}
 	// The succeeded stage is provable; the failed one is not (it produced no record).
-	if _, err := audit.ProveStep(ctx, store, runID, "credit_check", audit.SignTreeHead(mustTH(t, ctx, store, runID), mustKey(t))); err == nil {
+	if _, err := audit.ProveStep(ctx, store, runID, "credit_check", mustSTH(t, mustTH(t, ctx, store, runID), mustKey(t))); err == nil {
 		t.Fatalf("a failed (unrecorded) step should not be provable")
 	}
 }
@@ -134,6 +137,15 @@ func mustTH(t *testing.T, ctx context.Context, store agent.Durable, runID string
 		t.Fatalf("NewTreeHead: %v", err)
 	}
 	return th
+}
+
+func mustSTH(t *testing.T, th audit.TreeHead, priv ed25519.PrivateKey) audit.SignedTreeHead {
+	t.Helper()
+	sth, err := audit.SignTreeHead(th, audit.Ed25519Signer{Priv: priv})
+	if err != nil {
+		t.Fatalf("SignTreeHead: %v", err)
+	}
+	return sth
 }
 
 func mustKey(t *testing.T) ed25519.PrivateKey {

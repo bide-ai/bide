@@ -3,6 +3,7 @@ package audit_test
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/bide-ai/bide/audit"
 )
@@ -14,8 +15,8 @@ import (
 func TestApprovalEvidence_VerifiesInsideAnEvidencePackage(t *testing.T) {
 	g := passedGate(t)
 	ctx := context.Background()
-	const ts = 1700000000
-	pkg, err := audit.Evidence(ctx, g.store, gateRun, g.logPriv, ts)
+	ts := time.Now().Add(-time.Hour).UnixNano()
+	pkg, err := audit.Evidence(ctx, g.store, gateRun, edS(g.logPriv), ts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -24,14 +25,11 @@ func TestApprovalEvidence_VerifiesInsideAnEvidencePackage(t *testing.T) {
 		t.Fatal(err)
 	}
 	pkg.Actions = acts // the approval evidence alone, request to result
-	if err := pkg.Seal(g.logPriv); err != nil {
+	if err := pkg.Seal(edS(g.logPriv)); err != nil {
 		t.Fatal(err)
 	}
-	rep, err := pkg.Verify(g.logPub)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !rep.OK {
+	rep, err := pkg.Verify(edV(g.logPub))
+	if err != nil || !rep.OK {
 		t.Fatalf("a package of ApprovalEvidence's output does not verify: %+v", rep.Items)
 	}
 }

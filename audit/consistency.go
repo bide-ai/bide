@@ -14,28 +14,28 @@ import (
 // appended, never rewritten or reordered. This is the transparency-log guarantee. A
 // third party with just (rootM, rootN, proof) can check it without either full journal.
 
-// subProof is RFC 6962 SUBPROOF(m, leaves, b).
-func subProof(m int, leaves [][]byte, b bool) [][]byte {
-	n := len(leaves)
+// subProof is RFC 6962 SUBPROOF(m, D, b) over the leaf hashes of D.
+func subProof(m int, hashes [][]byte, b bool) [][]byte {
+	n := len(hashes)
 	if m == n {
 		if b {
 			return nil
 		}
-		return [][]byte{merkleRoot(leaves)} // MTH(D[0:m])
+		return [][]byte{hashRoot(hashes)} // MTH(D[0:m])
 	}
 	k := split(n)
 	if m <= k {
-		return append(subProof(m, leaves[:k], b), merkleRoot(leaves[k:]))
+		return append(subProof(m, hashes[:k], b), hashRoot(hashes[k:]))
 	}
-	return append(subProof(m-k, leaves[k:], false), merkleRoot(leaves[:k]))
+	return append(subProof(m-k, hashes[k:], false), hashRoot(hashes[:k]))
 }
 
-// consistencyProof is RFC 6962 PROOF(m, leaves) = SUBPROOF(m, leaves, true).
-func consistencyProof(m int, leaves [][]byte) [][]byte {
-	if m <= 0 || m >= len(leaves) {
+// consistencyProof is RFC 6962 PROOF(m, D) = SUBPROOF(m, D, true), over the leaf hashes of D.
+func consistencyProof(m int, hashes [][]byte) [][]byte {
+	if m <= 0 || m >= len(hashes) {
 		return nil // m==0 or m==n → empty proof (handled by verify)
 	}
-	return subProof(m, leaves, true)
+	return subProof(m, hashes, true)
 }
 
 // --- verification (canonical RFC 6962 / CT reference algorithm) ---
@@ -124,16 +124,20 @@ func ProveConsistency(ctx context.Context, store agent.Durable, runID string, fi
 	if first < 0 || first > len(recs) {
 		return Consistency{}, fmt.Errorf("audit: first %d out of range [0,%d]", first, len(recs))
 	}
-	leaves, err := canonicalLeaves(recs)
+	leaves, err := journalLeafHashes(recs)
 	if err != nil {
 		return Consistency{}, err
 	}
 	return Consistency{First: first, Size: len(recs), Path: consistencyProof(first, leaves)}, nil
 }
 
-// VerifyConsistency reports whether firstRoot (an earlier Root over First records) is an
-// append-only prefix of laterRoot (a Root over Size records), given the proof — checked
-// from the two roots + proof alone. A rewrite or reorder of any early record fails.
-func VerifyConsistency(firstRoot, laterRoot []byte, proof Consistency) bool {
-	return verifyConsistency(proof.First, proof.Size, proof.Path, firstRoot, laterRoot)
+// VerifyConsistency returns nil if firstRoot (an earlier Root over First records) is an
+// append-only prefix of laterRoot (a Root over Size records), given the proof, checked from the
+// two roots and the proof alone. A rewrite or reorder of any early record fails with an error
+// wrapping ErrNotVerified.
+func VerifyConsistency(firstRoot, laterRoot []byte, proof Consistency) error {
+	if !verifyConsistency(proof.First, proof.Size, proof.Path, firstRoot, laterRoot) {
+		return notVerified("audit: the tree of size %d is not an append-only extension of the tree of size %d under these roots", proof.Size, proof.First)
+	}
+	return nil
 }

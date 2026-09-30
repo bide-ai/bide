@@ -212,10 +212,12 @@ func TestEd25519IdentityKeysRefused(t *testing.T) {
 		if v.Verify(msg, forged) || v.KeyIDs() != nil {
 			t.Fatalf("identity encoding %d: Verify(forged)=%v KeyIDs=%v, want false and none", i, v.Verify(msg, forged), v.KeyIDs())
 		}
-		if audit.VerifySignature(msg, forged, k) {
+		if audit.VerifySignature(msg, forged, v) == nil {
 			t.Fatalf("identity encoding %d: audit.VerifySignature accepts a forged signature", i)
 		}
-		if verify.TreeHead("journal", "r", 1, make([]byte, 32), 1, nil, forged, k) {
+		if vv, err := verify.NewVerifier("ed25519", k); err == nil {
+			t.Fatalf("identity encoding %d: verify.NewVerifier accepts the key", i)
+		} else if verify.TreeHead(verify.Head{Alg: "ed25519", Kind: "journal", RunID: "r", Size: 1, Root: make([]byte, 32), TimestampNanos: 1}, forged, vv) {
 			t.Fatalf("identity encoding %d: verify.TreeHead accepts a forged signature", i)
 		}
 		hy := audit.HybridVerifier{Ed: v}

@@ -3,10 +3,11 @@ package audit
 import (
 	"bytes"
 	"context"
-	"crypto/ed25519"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
+	"strings"
 
 	"github.com/bide-ai/bide/agent"
 )
@@ -98,15 +99,22 @@ type PolicyConvergence struct {
 	Certificate ProofBundle `json:"certificate"` // proof the convergence-certificate leaf is anchored in the same tree
 }
 
-// RunCertSpec carries the caller's assertion inputs to CertifyRun. v1 needs only the approved
-// allowlist; it is a struct so future properties (authority roots, quorum thresholds) can be added
-// without changing the signature.
+// RunCertSpec carries the caller's inputs to CertifyRun: what the run was allowed, and how to sign
+// the certificate's used-policy head. It is a struct so future properties (authority roots, quorum
+// thresholds) can be added without changing the signature.
 type RunCertSpec struct {
 	// ApprovedPolicies is the allowlist of policy digests the run was permitted to exercise. Every
 	// policy the run actually used must be a member, or CertifyRun fails: a certificate cannot be
 	// issued for a run that exercised a disallowed policy. It is not written into the certificate:
 	// the verifier supplies its own allowlist.
 	ApprovedPolicies []string
+	// Signer signs the used-policy head. It must hold the key that signed the run's journal head
+	// (the log's tree-head key), so a verifier checks both heads under one out-of-band key;
+	// CertifyRun refuses another. Evidence sets it to its own signer.
+	Signer Signer
+	// TimestampNanos stamps the used-policy head, in Unix nanoseconds. It must not be earlier than
+	// the journal head's. Evidence sets it to its own timestamp.
+	TimestampNanos int64
 }
 
 // runCertProperties is the fixed v1 property list a certificate asserts.
@@ -116,15 +124,26 @@ var runCertProperties = []string{"only-approved-policies", "policies-convergence
 // journal head sth. It confirms sth is a journal head of runID that matches the journal, recomputes
 // the used-policy set from exactly the sth.Size records sth commits to (PoliciesUsed), confirms every
 // used policy is in spec.ApprovedPolicies (refusing to certify a run that used a disallowed policy),
-// signs the used-policy key-set head bound to sth's tree with priv, and for each used policy
-// assembles the anchored policy-leaf and convergence-leaf proof bundles against sth. It fails if a
-// used policy has no anchored policy leaf or no anchored convergence leaf, so the certificate can
-// only be issued for a run whose governed policies are fully anchored and certified.
+// signs the used-policy key-set head bound to sth's tree with spec.Signer at spec.TimestampNanos,
+// and for each used policy assembles the anchored policy-leaf and convergence-leaf proof bundles
+// against sth. It fails if a used policy has no anchored policy leaf or no anchored convergence
+// leaf, so the certificate can only be issued for a run whose governed policies are fully anchored
+// and certified.
 //
-// priv is the same signing key that produced sth (the log's tree-head key): the used-policy head is
+// spec.Signer must hold the key that signed sth (the log's tree-head key): the used-policy head is
 // a second commitment over the SAME run, signed the same way, so a verifier checks both under one
-// out-of-band public key. timestamp stamps the used-policy head.
-func CertifyRun(ctx context.Context, store agent.Durable, runID string, sth SignedTreeHead, spec RunCertSpec, priv ed25519.PrivateKey, timestamp int64) (RunCertificate, error) {
+// out-of-band key. A signer of another key or scheme is refused, and so is a used-policy timestamp
+// earlier than sth's.
+func CertifyRun(ctx context.Context, store agent.Durable, runID string, sth SignedTreeHead, spec RunCertSpec) (RunCertificate, error) {
+	if err := checkSigner(spec.Signer); err != nil {
+		return RunCertificate{}, fmt.Errorf("audit: certify run %s: %w", runID, err)
+	}
+	if v, err := VerifierOf(spec.Signer); err != nil || sth.Verify(v) != nil {
+		return RunCertificate{}, fmt.Errorf("audit: certify run %s: the signer's %s key did not sign the run's journal head: %w", runID, spec.Signer.Alg(), agent.ErrConfig)
+	}
+	if spec.TimestampNanos < sth.TimestampNanos {
+		return RunCertificate{}, fmt.Errorf("audit: certify run %s: used-policy timestamp %d is earlier than the journal head's %d: %w", runID, spec.TimestampNanos, sth.TimestampNanos, agent.ErrConfig)
+	}
 	all, err := store.History(ctx, runID)
 	if err != nil {
 		return RunCertificate{}, fmt.Errorf("audit: load journal %s: %w", runID, err)
@@ -147,7 +166,7 @@ func CertifyRun(ctx context.Context, store agent.Durable, runID string, sth Sign
 
 	// The used-policy set is the key set of the absence commitment. Sign that commitment, bound to
 	// sth's journal tree, so the disclosed UsedPolicies can be bound to what the run committed.
-	absSTH, err := SignAbsenceRoot(recs, PolicyUsedKeys, sth.TreeHead, priv, timestamp)
+	absSTH, err := SignAbsenceRoot(recs, PolicyUsedKeys, sth.TreeHead, spec.Signer, spec.TimestampNanos)
 	if err != nil {
 		return RunCertificate{}, fmt.Errorf("audit: certify run %s: %w", runID, err)
 	}
@@ -250,12 +269,12 @@ type VerifiedPolicy struct {
 }
 
 // VerifyRun checks a RunCertificate's claims against the disclosed proofs, the auditor's own
-// approved allowlist, and the out-of-band public key pub, entirely offline. It does NOT trust the
+// approved allowlist, and the out-of-band verifier v, entirely offline. It does NOT trust the
 // certificate; it re-derives each property from the bundles it carries:
 //
 //  0. the certificate itself: Properties is exactly the v1 list, and STH is an authentic journal
 //     head of RunID.
-//  1. only-approved-policies (completeness-bearing): the used-policy head is authentic under pub, is
+//  1. only-approved-policies (completeness-bearing): the used-policy head is authentic under v, is
 //     a TreePolicyUsed head of RunID whose source journal is exactly STH's tree, and its Root equals
 //     the RFC 6962 root recomputed from the disclosed UsedPolicies (in the sorted, distinct order the
 //     tree commits; any other order, a duplicate, or a missing or extra digest changes the root), so
@@ -264,18 +283,21 @@ type VerifiedPolicy struct {
 //     without changing the root, and a head for another run or journal cannot be swapped in.
 //  2. policies-convergence-certified: for every used policy there is exactly one Convergence entry,
 //     in UsedPolicies order and none for an unused digest, whose policy-leaf and convergence-leaf
-//     bundles both verify under pub, are in the same tree as the run STH, and whose leaves link by
+//     bundles both verify under v, are in the same tree as the run STH, and whose leaves link by
 //     digest. The leaves are read with UnmarshalStrict, so a leaf that reads differently to a person
 //     than to encoding/json does not verify. The oracle cross-check of the certificate's convergence
 //     claim is left to the caller (see the CLI's -checker), on the contents returned in Policies.
 //
-// A false OK with populated Reasons means a well-formed-but-invalid certificate; an error means a
-// bundle could not be canonicalized or a leaf could not be read (a malformed artifact), or the
-// certificate or one of its bundles is not of the format this version reads (ErrFormat). It does
-// not check the heads' timestamps; EvidencePackage.Verify and bide-audit verify-run do (see
-// CheckTimestamp).
-func VerifyRun(cert RunCertificate, approved []string, pub ed25519.PublicKey) (RunVerification, error) {
+// It returns the per-property result with a nil error when OK, and with an error wrapping
+// ErrNotVerified when a property failed (Reasons says which). Any other error means the certificate
+// could not be checked: it, or a bundle it carries, is not of the format this version reads
+// (ErrFormat), or a bundle's record or a leaf could not be read (ErrMalformed). It does not check
+// the heads' timestamps; EvidencePackage.Verify and bide-audit verify-run do (see CheckTimestamp).
+func VerifyRun(cert RunCertificate, approved []string, v Verifier) (RunVerification, error) {
 	res := RunVerification{}
+	if err := checkVerifier(v); err != nil {
+		return res, err
+	}
 	if err := formatOf(cert, cert.Format); err != nil {
 		return res, err
 	}
@@ -289,7 +311,10 @@ func VerifyRun(cert RunCertificate, approved []string, pub ed25519.PublicKey) (R
 	if !slices.Equal(cert.Properties, runCertProperties) {
 		fail(&runSTH, "properties %q are not the v1 set %q", cert.Properties, runCertProperties)
 	}
-	if !cert.STH.Verify(pub) {
+	if err := cert.STH.Verify(v); err != nil {
+		if !errors.Is(err, ErrNotVerified) {
+			return RunVerification{}, err
+		}
 		fail(&runSTH, "run STH is not authentic under this key")
 	}
 	if cert.STH.Kind != TreeJournal || cert.STH.RunID != cert.RunID {
@@ -299,7 +324,10 @@ func VerifyRun(cert RunCertificate, approved []string, pub ed25519.PublicKey) (R
 	// Property 1: only-approved-policies (completeness-bearing).
 	onlyApproved := runSTH
 	abs := cert.UsedPolicyAbsence
-	if !abs.Verify(pub) {
+	if err := abs.Verify(v); err != nil {
+		if !errors.Is(err, ErrNotVerified) {
+			return RunVerification{}, err
+		}
 		fail(&onlyApproved, "used-policy head is not authentic under this key")
 	}
 	if abs.Kind != TreePolicyUsed || abs.RunID != cert.RunID {
@@ -333,7 +361,7 @@ func VerifyRun(cert RunCertificate, approved []string, pub ed25519.PublicKey) (R
 			fail(&certified, "no convergence evidence for used policy %q", d)
 			continue
 		}
-		vp, ok, reason, err := verifyPolicyConvergence(cert.Convergence[i], cert.STH, pub)
+		vp, ok, reason, err := verifyPolicyConvergence(cert.Convergence[i], cert.STH, v)
 		if err != nil {
 			return RunVerification{}, err
 		}
@@ -348,44 +376,53 @@ func VerifyRun(cert RunCertificate, approved []string, pub ed25519.PublicKey) (R
 	}
 
 	res.OK = res.OnlyApprovedPolicies && res.ConvergenceCertified
+	if !res.OK {
+		return res, notVerified("audit: run %q certificate: %s", cert.RunID, strings.Join(res.Reasons, "; "))
+	}
 	return res, nil
 }
 
-// verifyPolicyConvergence checks one policy's anchored evidence against the run STH and pub: both
+// verifyPolicyConvergence checks one policy's anchored evidence against the run STH and v: both
 // bundles authentic, both in the same tree as the run STH, and the leaves link to the used digest.
 // The oracle cross-check is intentionally not done here (it needs an external binary); the CLI adds
 // it. The leaves are read with UnmarshalStrict, so what is verified is what the leaf shows a reader.
 // Returns (what was read, ok, reason-if-not-ok, error-if-malformed).
-func verifyPolicyConvergence(pc PolicyConvergence, runSTH SignedTreeHead, pub ed25519.PublicKey) (VerifiedPolicy, bool, string, error) {
-	okP, err := pc.PolicyLeaf.Verify(pub)
-	if err != nil {
-		return VerifiedPolicy{}, false, "", err
-	}
-	if !okP {
+func verifyPolicyConvergence(pc PolicyConvergence, runSTH SignedTreeHead, v Verifier) (VerifiedPolicy, bool, string, error) {
+	if err := pc.PolicyLeaf.Verify(v); err != nil {
+		if !errors.Is(err, ErrNotVerified) {
+			return VerifiedPolicy{}, false, "", err
+		}
 		return VerifiedPolicy{}, false, "policy-leaf bundle did not verify under this key", nil
 	}
-	okC, err := pc.Certificate.Verify(pub)
-	if err != nil {
-		return VerifiedPolicy{}, false, "", err
-	}
-	if !okC {
+	if err := pc.Certificate.Verify(v); err != nil {
+		if !errors.Is(err, ErrNotVerified) {
+			return VerifiedPolicy{}, false, "", err
+		}
 		return VerifiedPolicy{}, false, "convergence-leaf bundle did not verify under this key", nil
 	}
 	if !pc.PolicyLeaf.STH.SameTree(runSTH.TreeHead) || !pc.Certificate.STH.SameTree(runSTH.TreeHead) {
 		return VerifiedPolicy{}, false, "policy or convergence leaf is not in the same signed tree as the run STH", nil
 	}
-	if pl := pc.PolicyLeaf.Record; pl.Kind != agent.StepValue || pl.Name != policyLeafName(pc.Digest) {
+	pl, err := pc.PolicyLeaf.Record()
+	if err != nil {
+		return VerifiedPolicy{}, false, "", err
+	}
+	cl, err := pc.Certificate.Record()
+	if err != nil {
+		return VerifiedPolicy{}, false, "", err
+	}
+	if pl.Kind != agent.StepValue || pl.Name != policyLeafName(pc.Digest) {
 		return VerifiedPolicy{}, false, fmt.Sprintf("policy bundle proves record %q, not the policy leaf for %q", pl.Name, pc.Digest), nil
 	}
-	if cl := pc.Certificate.Record; cl.Kind != agent.StepValue || cl.Name != convergenceLeafName(pc.Digest) {
+	if cl.Kind != agent.StepValue || cl.Name != convergenceLeafName(pc.Digest) {
 		return VerifiedPolicy{}, false, fmt.Sprintf("convergence bundle proves record %q, not the convergence leaf for %q", cl.Name, pc.Digest), nil
 	}
 	var polC PolicyContent
-	if err := UnmarshalStrict(pc.PolicyLeaf.Record.Result, &polC); err != nil {
+	if err := UnmarshalStrict(pl.Result, &polC); err != nil {
 		return VerifiedPolicy{}, false, "", fmt.Errorf("audit: policy leaf is not a policy content leaf: %w", err)
 	}
 	var convC ConvergenceContent
-	if err := UnmarshalStrict(pc.Certificate.Record.Result, &convC); err != nil {
+	if err := UnmarshalStrict(cl.Result, &convC); err != nil {
 		return VerifiedPolicy{}, false, "", fmt.Errorf("audit: convergence leaf is not a convergence content leaf: %w", err)
 	}
 	if polC.Digest != pc.Digest {

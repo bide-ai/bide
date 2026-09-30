@@ -15,8 +15,8 @@ import (
 // what each STH commits to, only that entries differ and are append-only).
 func mkSTH(t *testing.T, priv ed25519.PrivateKey, size int) audit.SignedTreeHead {
 	t.Helper()
-	th := audit.TreeHead{Kind: audit.TreeJournal, RunID: "run", Size: size, Root: bytes.Repeat([]byte{byte(size)}, 32), Timestamp: int64(size)}
-	return audit.SignTreeHead(th, priv)
+	th := audit.TreeHead{Kind: audit.TreeJournal, RunID: "run", Size: size, Root: bytes.Repeat([]byte{byte(size)}, 32), TimestampNanos: int64(size)}
+	return signTH(t, th, priv)
 }
 
 // TestMemAnchorLog_InclusionAndConsistency: the transparency log is deterministic, proves any
@@ -47,14 +47,14 @@ func TestMemAnchorLog_InclusionAndConsistency(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Prove(%d): %v", e.Seq, err)
 		}
-		if ok, _ := audit.VerifyAnchorInclusion(rootFull, e, proof); !ok {
+		if err := audit.VerifyAnchorInclusion(rootFull, e, proof); err != nil {
 			t.Fatalf("entry %d failed its own inclusion proof", e.Seq)
 		}
 	}
 	proof0, _ := log.Prove(0)
 	forged := entries[0]
 	forged.RunID = "evil"
-	if ok, _ := audit.VerifyAnchorInclusion(rootFull, forged, proof0); ok {
+	if err := audit.VerifyAnchorInclusion(rootFull, forged, proof0); err == nil {
 		t.Fatal("a forged anchor entry verified")
 	}
 
@@ -63,7 +63,7 @@ func TestMemAnchorLog_InclusionAndConsistency(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ProveConsistency: %v", err)
 	}
-	if !audit.VerifyConsistency(rootEarly, rootFull, cproof) {
+	if audit.VerifyConsistency(rootEarly, rootFull, cproof) != nil {
 		t.Fatal("anchor log failed its own append-only consistency proof")
 	}
 }
@@ -78,7 +78,7 @@ func TestAuditedStore_AnchorsEachStep(t *testing.T) {
 	anchorLog := audit.NewMemAnchorLog()
 
 	var ts int64
-	store := audit.NewAuditedStore(jStore, priv, anchorLog).WithClock(func() int64 { ts++; return ts })
+	store := mustAuditedStore(t, jStore, priv, anchorLog).WithClock(func() int64 { ts++; return ts })
 	tool := agent.Func("lookup", "", agent.Safety{ReadOnly: true},
 		func(_ context.Context, _ struct{}) (string, error) { return "ok", nil })
 	if _, err := agent.New(&twoTurnModel{}, store, tool).Run(ctx, "run", "hi"); err != nil {
@@ -101,8 +101,8 @@ func TestAuditedStore_AnchorsEachStep(t *testing.T) {
 
 	// The final STH signs the complete journal and verifies.
 	last := entries[len(entries)-1]
-	if last.STH.Size != len(recs) || !last.STH.Verify(pub) {
-		t.Fatalf("final STH bad (size=%d/%d verify=%v)", last.STH.Size, len(recs), last.STH.Verify(pub))
+	if last.STH.Size != len(recs) || last.STH.Verify(edV(pub)) != nil {
+		t.Fatalf("final STH bad (size=%d/%d verify=%v)", last.STH.Size, len(recs), last.STH.Verify(edV(pub)))
 	}
 	jRoot, _ := audit.Root(ctx, jStore, "run")
 	if !bytes.Equal(last.STH.Root, jRoot) {
@@ -112,7 +112,7 @@ func TestAuditedStore_AnchorsEachStep(t *testing.T) {
 	// End-to-end chain: the final commitment is provably anchored in the transparency log.
 	anchorRoot, _ := anchorLog.Root()
 	incl, _ := anchorLog.Prove(last.Seq)
-	if ok, _ := audit.VerifyAnchorInclusion(anchorRoot, last, incl); !ok {
+	if err := audit.VerifyAnchorInclusion(anchorRoot, last, incl); err != nil {
 		t.Fatal("final STH not provably anchored in the transparency log")
 	}
 }
@@ -153,7 +153,7 @@ func TestAuditedStore_NoReanchorOnResume(t *testing.T) {
 	_, priv, _ := ed25519.GenerateKey(nil)
 	anchorLog := audit.NewMemAnchorLog()
 	var ts int64
-	store := audit.NewAuditedStore(jStore, priv, anchorLog).WithClock(func() int64 { ts++; return ts })
+	store := mustAuditedStore(t, jStore, priv, anchorLog).WithClock(func() int64 { ts++; return ts })
 	tool := agent.Func("lookup", "", agent.Safety{ReadOnly: true},
 		func(_ context.Context, _ struct{}) (string, error) { return "ok", nil })
 
@@ -195,7 +195,7 @@ func TestAuditedStore_PublishErrorDoesNotFailStep(t *testing.T) {
 	jStore := agent.NewMemStore()
 	_, priv, _ := ed25519.GenerateKey(nil)
 	var pubCalls, errCalls int
-	store := audit.NewAuditedStore(jStore, priv, errAnchor{&pubCalls}).
+	store := mustAuditedStore(t, jStore, priv, errAnchor{&pubCalls}).
 		OnError(func(string, error) { errCalls++ })
 	tool := agent.Func("lookup", "", agent.Safety{ReadOnly: true},
 		func(_ context.Context, _ struct{}) (string, error) { return "ok", nil })

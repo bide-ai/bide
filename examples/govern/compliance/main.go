@@ -124,7 +124,10 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	sth := audit.SignTreeHead(th, priv)
+	sth, err := audit.SignTreeHead(th, audit.Ed25519Signer{Priv: priv})
+	if err != nil {
+		panic(err)
+	}
 
 	fmt.Println("\noffline proofs (verify with the public key alone):")
 	for _, name := range []string{"sanctions_check", "pep_check", "adverse_media_check", "decision"} {
@@ -132,11 +135,10 @@ func main() {
 		if err != nil {
 			panic(err)
 		}
-		ok, err := b.Verify(pub)
-		if err != nil {
+		if err := b.Verify(audit.Ed25519Verifier{Pub: pub}); err != nil {
 			panic(err)
 		}
-		fmt.Printf("  %-20s inclusion proof verified: %v\n", name, ok)
+		fmt.Printf("  %-20s inclusion proof verified: %v\n", name, true)
 	}
 	// The convergence certificate is provable from the same signed tree: a verifier confirms the
 	// anchored policy was certified convergent, in the same committed tree as the actions.
@@ -144,11 +146,10 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	ok, err := cb.Verify(pub)
-	if err != nil {
+	if err := cb.Verify(audit.Ed25519Verifier{Pub: pub}); err != nil {
 		panic(err)
 	}
-	fmt.Printf("  %-20s inclusion proof verified: %v\n", "convergence_cert", ok)
+	fmt.Printf("  %-20s inclusion proof verified: %v\n", "convergence_cert", true)
 
 	fmt.Println("\nEvery check ran durably (recorded once, replayed on resume), the decision was governed by a")
 	fmt.Println("machine-checked-convergent policy, and every stage is provable to a third party.")

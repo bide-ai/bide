@@ -3,9 +3,11 @@ package audit
 import (
 	"fmt"
 	"time"
+
+	"github.com/bide-ai/bide/agent"
 )
 
-// The timestamp rule. A signed tree head's Timestamp is when the head was signed, in Unix
+// The timestamp rule. A signed tree head's TimestampNanos is when the head was signed, in Unix
 // nanoseconds (time.Now().UnixNano(), as AuditedStore stamps it). A verifier holds every signed
 // head it is shown to three checks:
 //
@@ -18,35 +20,37 @@ import (
 //
 // The rule orders heads and bounds them by the verifier's clock. It does not say how old a head
 // may be (an audit reads old heads), and it does not apply across runs or anchor-log entries,
-// whose heads are independent. A grant's NotAfter is a separate, seconds-based expiry, checked by
+// whose heads are independent. A grant's NotAfterUnix is a separate, seconds-based expiry, checked by
 // Grant.Expired and VerifyCurrentGrant against the caller's clock; an evidence package does not
 // check it, because it carries no time for each action to compare against.
 
-// DefaultClockSkew is how far past the verifier's clock a signed head's Timestamp may be before it
+// DefaultClockSkew is how far past the verifier's clock a signed head's TimestampNanos may be before it
 // is refused: five minutes, for clocks that are not exactly in step.
 const DefaultClockSkew = 5 * time.Minute
 
-// CheckTimestamp applies the timestamp rule to one signed head: its Timestamp must be positive
-// and not later than now plus skew. A negative skew is an error.
+// CheckTimestamp applies the timestamp rule to one signed head: its TimestampNanos must be positive
+// and not later than now plus skew. A head that breaks the rule is an error wrapping
+// ErrNotVerified; a negative skew is an error wrapping agent.ErrConfig.
 func CheckTimestamp(th TreeHead, now time.Time, skew time.Duration) error {
 	if skew < 0 {
-		return fmt.Errorf("audit: clock skew %s is negative", skew)
+		return fmt.Errorf("audit: clock skew %s is negative: %w", skew, agent.ErrConfig)
 	}
-	if th.Timestamp <= 0 {
-		return fmt.Errorf("audit: the %s head of run %q has timestamp %d; a signed head's timestamp is positive Unix nanoseconds", th.Kind, th.RunID, th.Timestamp)
+	if th.TimestampNanos <= 0 {
+		return notVerified("audit: the %s head of run %q has timestamp %d; a signed head's timestamp is positive Unix nanoseconds", th.Kind, th.RunID, th.TimestampNanos)
 	}
-	if limit := now.Add(skew); th.Timestamp > limit.UnixNano() {
-		return fmt.Errorf("audit: the %s head of run %q was signed at %s, after the verifier's clock (%s) plus the allowed skew %s",
-			th.Kind, th.RunID, time.Unix(0, th.Timestamp).UTC().Format(time.RFC3339Nano), now.UTC().Format(time.RFC3339Nano), skew)
+	if limit := now.Add(skew); th.TimestampNanos > limit.UnixNano() {
+		return notVerified("audit: the %s head of run %q was signed at %s, after the verifier's clock (%s) plus the allowed skew %s",
+			th.Kind, th.RunID, time.Unix(0, th.TimestampNanos).UTC().Format(time.RFC3339Nano), now.UTC().Format(time.RFC3339Nano), skew)
 	}
 	return nil
 }
 
-// CheckTimestampOrder checks that later, a head that extends earlier, was not signed before it.
+// CheckTimestampOrder checks that later, a head that extends earlier, was not signed before it. A
+// pair out of order is an error wrapping ErrNotVerified.
 func CheckTimestampOrder(earlier, later TreeHead) error {
-	if later.Timestamp < earlier.Timestamp {
-		return fmt.Errorf("audit: the %s head of run %q (timestamp %d) is earlier than the %s head it extends (timestamp %d)",
-			later.Kind, later.RunID, later.Timestamp, earlier.Kind, earlier.Timestamp)
+	if later.TimestampNanos < earlier.TimestampNanos {
+		return notVerified("audit: the %s head of run %q (timestamp %d) is earlier than the %s head it extends (timestamp %d)",
+			later.Kind, later.RunID, later.TimestampNanos, earlier.Kind, earlier.TimestampNanos)
 	}
 	return nil
 }

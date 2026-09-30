@@ -198,7 +198,10 @@ func proveTopologyConformance(ctx context.Context, flow *plan.Flow[Order, Receip
 	if err != nil {
 		fatal(fmt.Errorf("build tree head over run %q: %w", runID, err))
 	}
-	sth := audit.SignTreeHead(th, priv)
+	sth, err := audit.SignTreeHead(th, audit.Ed25519Signer{Priv: priv})
+	if err != nil {
+		fatal(fmt.Errorf("sign tree head: %w", err))
+	}
 
 	// Locate the flow:digest record's index in the journal (Run writes it after the
 	// journal header and the run's start, so it is index 2, but resolve it by name to stay
@@ -215,15 +218,18 @@ func proveTopologyConformance(ctx context.Context, flow *plan.Flow[Order, Receip
 	// Verify OFFLINE: (1) the bundle is authentic under the signer's public key and the
 	// flow:digest record is included under the signed root; (2) the proven digest equals
 	// the declared topology's Digest(). Together these prove the run followed THIS diagram.
-	ok, err := bundle.Verify(pub)
-	if err != nil {
-		fatal(fmt.Errorf("verify proof bundle: %w", err))
-	}
-	if !ok {
+	if err := bundle.Verify(audit.Ed25519Verifier{Pub: pub}); err != nil {
+		if !errors.Is(err, audit.ErrNotVerified) {
+			fatal(fmt.Errorf("verify proof bundle: %w", err))
+		}
 		fmt.Println("Cryptographic conformance: FAILED (the inclusion proof did not verify under the signing key).")
 		return
 	}
-	proven, err := decodeJournaledDigest(bundle.Record.Result)
+	rec, err := bundle.Record()
+	if err != nil {
+		fatal(fmt.Errorf("decode proven record: %w", err))
+	}
+	proven, err := decodeJournaledDigest(rec.Result)
 	if err != nil {
 		fatal(fmt.Errorf("decode proven digest: %w", err))
 	}

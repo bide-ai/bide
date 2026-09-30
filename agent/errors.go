@@ -101,7 +101,7 @@ var (
 	ErrResponseTooLarge = fmt.Errorf("model response line too large: %w", ErrModel)
 	ErrBudgetExceeded   = fmt.Errorf("budget exceeded: %w", ErrBudget)
 	ErrMaxTurns         = fmt.Errorf("max turns exceeded: %w", ErrBudget)
-	// ErrInvalidApproval is an approver decision rejected at submission by ApproveAs's
+	// ErrInvalidApproval is an approver decision rejected at submission by SubmitDecision's
 	// WithDecisionCheck: no such tool call, an unknown approver, or a signature that does not
 	// verify for this exact call.
 	ErrInvalidApproval = fmt.Errorf("invalid approval: %w", ErrConfig)

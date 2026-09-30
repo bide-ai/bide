@@ -233,7 +233,10 @@ func proveRun(ctx context.Context, store agent.Durable, runID string, steps []st
 	if err != nil {
 		panic(err)
 	}
-	sth := audit.SignTreeHead(th, priv)
+	sth, err := audit.SignTreeHead(th, audit.Ed25519Signer{Priv: priv})
+	if err != nil {
+		panic(err)
+	}
 
 	fmt.Println("offline proofs (verify with the public key alone):")
 	for _, name := range steps {
@@ -241,21 +244,19 @@ func proveRun(ctx context.Context, store agent.Durable, runID string, steps []st
 		if err != nil {
 			panic(err)
 		}
-		ok, err := b.Verify(pub)
-		if err != nil {
+		if err := b.Verify(audit.Ed25519Verifier{Pub: pub}); err != nil {
 			panic(err)
 		}
-		fmt.Printf("  %-30s inclusion proof verified: %v\n", name, ok)
+		fmt.Printf("  %-30s inclusion proof verified: %v\n", name, true)
 	}
 	if toolUseID != "" {
 		pb, err := audit.ProveToolCall(ctx, store, runID, toolUseID, sth)
 		if err != nil {
 			panic(err)
 		}
-		ok, err := pb.Verify(pub)
-		if err != nil {
+		if err := pb.Verify(audit.Ed25519Verifier{Pub: pub}); err != nil {
 			panic(err)
 		}
-		fmt.Printf("  %-30s inclusion proof verified: %v\n", toolUseID, ok)
+		fmt.Printf("  %-30s inclusion proof verified: %v\n", toolUseID, true)
 	}
 }

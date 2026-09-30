@@ -44,7 +44,7 @@ func TestAuditedStore_AnchoredHeadsNeverShrink(t *testing.T) {
 	_, priv, _ := ed25519.GenerateKey(nil)
 	// The first step's head covers the journal header and the step: size 2.
 	anchor := &slowAnchor{inner: audit.NewMemAnchorLog(), hold: 2, inFlight: make(chan struct{}), release: make(chan struct{})}
-	store := audit.NewAuditedStore(agent.NewMemStore(), priv, anchor)
+	store := mustAuditedStore(t, agent.NewMemStore(), priv, anchor)
 	step := func(name string) {
 		if _, err := store.Do(ctx, "r1", name, func(context.Context) (agent.Record, error) {
 			return agent.Record{Kind: agent.StepValue}, nil
@@ -102,7 +102,7 @@ func TestAuditedStore_RetriesAFailedPublish(t *testing.T) {
 	_, priv, _ := ed25519.GenerateKey(nil)
 	anchor := &flakyAnchor{inner: audit.NewMemAnchorLog()}
 	var failures int
-	store := audit.NewAuditedStore(agent.NewMemStore(), priv, anchor).OnError(func(string, error) { failures++ })
+	store := mustAuditedStore(t, agent.NewMemStore(), priv, anchor).OnError(func(string, error) { failures++ })
 	step := func() {
 		if _, err := store.Do(ctx, "r1", "a", func(context.Context) (agent.Record, error) {
 			return agent.Record{Kind: agent.StepValue}, nil

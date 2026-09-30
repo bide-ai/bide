@@ -8,6 +8,7 @@ package main
 // the only observable that spans processes.
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"os/exec"
@@ -179,12 +180,19 @@ func TestApprovalAcrossProcesses(t *testing.T) {
 	// Tampering with a disclosed decision breaks verification in both verifiers, even when the log
 	// key holder reseals the package.
 	tampered := filepath.Join(dir, "tampered.json")
+	flipped := false
 	editEvidence(t, evidence, tampered, true, func(act *audit.EvidenceAction) bool {
-		if act.Kind == audit.KindApproval && act.Bundle.Record.Approver == "ops" {
-			act.Bundle.Record.Approved = false
+		// The proof carries the record's stored bytes: flip ops's approval in them.
+		if rec, err := act.Bundle.Record(); err == nil && act.Kind == audit.KindApproval && rec.Approver == "ops" {
+			edited := bytes.Replace(act.Bundle.RecordBytes, []byte(`"approved":true,`), nil, 1)
+			flipped = flipped || !bytes.Equal(edited, act.Bundle.RecordBytes)
+			act.Bundle.RecordBytes = edited
 		}
 		return true
 	})
+	if !flipped {
+		t.Fatal("found no approval by ops to tamper with")
+	}
 	if out, code := run(t, app, "verify", "-in", tampered); code == 0 {
 		t.Fatalf("verify accepted tampered evidence:\n%s", out)
 	}

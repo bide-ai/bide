@@ -25,7 +25,7 @@ func buildRun(t *testing.T) (agent.Durable, string, ed25519.PublicKey, audit.Sig
 	if err != nil {
 		t.Fatalf("NewTreeHead: %v", err)
 	}
-	return store, "run", pub, audit.SignTreeHead(th, priv)
+	return store, "run", pub, signTH(t, th, priv)
 }
 
 // TestProofBundle_RoundTrip: a bundle proving a record verifies under the right key, and is
@@ -38,28 +38,27 @@ func TestProofBundle_RoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ProveRecord: %v", err)
 	}
-	ok, err := bundle.Verify(pub)
-	if err != nil || !ok {
-		t.Fatalf("valid bundle failed to verify (ok=%v err=%v)", ok, err)
+	if err := bundle.Verify(edV(pub)); err != nil {
+		t.Fatalf("valid bundle failed to verify (err=%v)", err)
 	}
 
 	// Wrong key: reject.
 	otherPub, _, _ := ed25519.GenerateKey(nil)
-	if ok, _ := bundle.Verify(otherPub); ok {
+	if err := bundle.Verify(edV(otherPub)); err == nil {
 		t.Fatal("bundle verified under the wrong public key")
 	}
 
 	// Tampered record: reject (inclusion no longer holds).
 	forged := bundle
-	forged.Record = agent.Record{Kind: agent.StepModel}
-	if ok, _ := forged.Verify(pub); ok {
+	editRec(t, &forged, func(r *agent.Record) { *r = agent.Record{Name: r.Name, Kind: agent.StepModel} })
+	if err := forged.Verify(edV(pub)); err == nil {
 		t.Fatal("bundle verified with a forged record")
 	}
 
 	// Tampered STH size (proof no longer bound to the signed tree): reject.
 	badSize := bundle
 	badSize.Inclusion.Size = badSize.STH.Size + 1
-	if ok, _ := badSize.Verify(pub); ok {
+	if err := badSize.Verify(edV(pub)); err == nil {
 		t.Fatal("bundle verified with a proof not bound to the signed size")
 	}
 }
@@ -82,8 +81,8 @@ func TestProofBundle_JSONRoundTrip(t *testing.T) {
 	if err := json.Unmarshal(blob, &back); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if ok, err := back.Verify(pub); err != nil || !ok {
-		t.Fatalf("round-tripped bundle failed to verify (ok=%v err=%v)", ok, err)
+	if err := back.Verify(edV(pub)); err != nil {
+		t.Fatalf("round-tripped bundle failed to verify (err=%v)", err)
 	}
 }
 
@@ -96,11 +95,11 @@ func TestProveToolCall_Semantic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ProveToolCall: %v", err)
 	}
-	if bundle.Record.Kind != agent.StepToolResult || bundle.Record.ToolUseID != "c1" {
-		t.Fatalf("resolved the wrong record: %+v", bundle.Record)
+	if recOf(t, bundle).Kind != agent.StepToolResult || recOf(t, bundle).ToolUseID != "c1" {
+		t.Fatalf("resolved the wrong record: %+v", recOf(t, bundle))
 	}
-	if ok, err := bundle.Verify(pub); err != nil || !ok {
-		t.Fatalf("tool-call proof failed to verify (ok=%v err=%v)", ok, err)
+	if err := bundle.Verify(edV(pub)); err != nil {
+		t.Fatalf("tool-call proof failed to verify (err=%v)", err)
 	}
 
 	// An unknown tool-use ID is an error, not a bad proof.
@@ -125,7 +124,7 @@ func TestProveRecord_RejectsSTHFromDifferentRun(t *testing.T) {
 	}
 	_, priv, _ := ed25519.GenerateKey(nil)
 	otherTH, _ := audit.NewTreeHead(ctx, otherStore, "other", 1000)
-	otherSTH := audit.SignTreeHead(otherTH, priv)
+	otherSTH := signTH(t, otherTH, priv)
 
 	if _, err := audit.ProveRecord(ctx, store, runID, 0, otherSTH); err == nil {
 		t.Fatal("ProveRecord accepted an STH whose root does not match this run")

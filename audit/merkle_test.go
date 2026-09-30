@@ -93,12 +93,11 @@ func TestMerkle_JournalSelectiveDisclosure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ok, err := VerifyInclusion(root, recs[1], proof)
-	if err != nil || !ok {
-		t.Fatalf("inclusion of record 1 failed: ok=%v err=%v", ok, err)
+	if err := VerifyInclusion(root, recs[1].Raw(), proof); err != nil {
+		t.Fatalf("inclusion of record 1 failed: err=%v", err)
 	}
 	// The same proof must NOT verify a different record (can't swap what happened).
-	if ok, _ := VerifyInclusion(root, recs[3], proof); ok {
+	if err := VerifyInclusion(root, recs[3].Raw(), proof); err == nil {
 		t.Fatal("proof for record 1 verified a different record")
 	}
 	// Out-of-range prove is an error, not a panic.

@@ -7,9 +7,11 @@ package main
 // tampered, which is the property that makes the check meaningful.
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -41,7 +43,10 @@ func TestCryptographicConformance(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewTreeHead: %v", err)
 	}
-	sth := audit.SignTreeHead(th, priv)
+	sth, err := audit.SignTreeHead(th, audit.Ed25519Signer{Priv: priv})
+	if err != nil {
+		t.Fatalf("SignTreeHead: %v", err)
+	}
 
 	recs, err := store.History(ctx, runID)
 	if err != nil {
@@ -65,12 +70,16 @@ func TestCryptographicConformance(t *testing.T) {
 
 	// The proof verifies under the signer's key, and the proven digest equals the
 	// declared topology's Digest(): the run committed to THIS diagram.
-	ok, err := bundle.Verify(pub)
-	if err != nil || !ok {
-		t.Fatalf("bundle.Verify: ok=%v err=%v", ok, err)
+	v := audit.Ed25519Verifier{Pub: pub}
+	if err := bundle.Verify(v); err != nil {
+		t.Fatalf("bundle.Verify: %v", err)
+	}
+	rec, err := bundle.Record()
+	if err != nil {
+		t.Fatal(err)
 	}
 	var proven string
-	if err := json.Unmarshal(bundle.Record.Result, &proven); err != nil {
+	if err := json.Unmarshal(rec.Result, &proven); err != nil {
 		t.Fatalf("decode proven digest: %v", err)
 	}
 	if proven != flow.Digest() {
@@ -80,8 +89,11 @@ func TestCryptographicConformance(t *testing.T) {
 	// Tamper the disclosed record: the inclusion proof must no longer verify, so a
 	// forged topology digest cannot be passed off as committed under the signed root.
 	forged := bundle
-	forged.Record.Result = json.RawMessage(`"deadbeef"`)
-	if ok, _ := forged.Verify(pub); ok {
-		t.Fatal("a tampered flow:digest record still verified under the signed root")
+	forged.RecordBytes = bytes.Replace(bundle.RecordBytes, []byte(`"result":"`+flow.Digest()+`"`), []byte(`"result":"deadbeef"`), 1)
+	if bytes.Equal(forged.RecordBytes, bundle.RecordBytes) {
+		t.Fatal("found no digest to tamper with in the record bytes")
+	}
+	if err := forged.Verify(v); !errors.Is(err, audit.ErrNotVerified) {
+		t.Fatalf("a tampered flow:digest record: err = %v, want ErrNotVerified", err)
 	}
 }

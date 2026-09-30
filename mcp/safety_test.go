@@ -58,6 +58,8 @@ func TestWithSafety_ApprovalPausesAndResumes(t *testing.T) {
 
 type testVerifier string
 
+func (testVerifier) Alg() agent.Alg { return "test" }
+
 func (v testVerifier) Verify(message, sig []byte) bool {
 	return bytes.Equal(sig, append([]byte(v+"|"), message...))
 }
@@ -88,7 +90,7 @@ func TestWithSafety_QuorumApproval(t *testing.T) {
 		if approver != "" {
 			sig := []byte(approver + "|")
 			sig = append(sig, agent.ApprovalDecisionBytes(pend.Subject(), approver, true)...)
-			if err := agent.ApproveAs(context.Background(), store, "r1", "c1", approver, true, sig); err != nil {
+			if err := agent.SubmitDecision(context.Background(), store, agent.Decision{RunID: "r1", ToolUseID: "c1", ApproverID: approver, Approved: true, Alg: "test", Signature: sig}); err != nil {
 				t.Fatal(err)
 			}
 		}

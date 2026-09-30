@@ -59,7 +59,7 @@ func checkerVerbs(t *testing.T, dir string) map[string][]string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sth := audit.SignTreeHead(th, priv)
+	sth := must(audit.SignTreeHead(th, audit.Ed25519Signer{Priv: priv}))
 	policyBundle, err := audit.ProvePolicy(ctx, store, runID, digest, sth)
 	if err != nil {
 		t.Fatal(err)
@@ -72,7 +72,7 @@ func checkerVerbs(t *testing.T, dir string) map[string][]string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	runCert, err := audit.CertifyRun(ctx, store, runID, sth, audit.RunCertSpec{ApprovedPolicies: []string{digest}}, priv, 2)
+	runCert, err := audit.CertifyRun(ctx, store, runID, sth, audit.RunCertSpec{ApprovedPolicies: []string{digest}, Signer: audit.Ed25519Signer{Priv: priv}, TimestampNanos: 2})
 	if err != nil {
 		t.Fatal(err)
 	}

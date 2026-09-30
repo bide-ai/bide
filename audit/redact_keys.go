@@ -45,7 +45,7 @@ func (HybridSigner) String() string { return "audit.HybridSigner{Ed:[redacted], 
 func (s HybridSigner) Format(f fmt.State, _ rune) { io.WriteString(f, s.String()) }
 
 // String returns a description of the store that does not include its signing key.
-func (*AuditedStore) String() string { return "audit.AuditedStore{priv:[redacted]}" }
+func (*AuditedStore) String() string { return "audit.AuditedStore{signer:[redacted]}" }
 
 // Format writes String for every verb, so no fmt verb prints the signing key.
 func (a *AuditedStore) Format(f fmt.State, _ rune) { io.WriteString(f, a.String()) }

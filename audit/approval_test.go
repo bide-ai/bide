@@ -30,15 +30,15 @@ func TestProveApproval(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ProveApproval: %v", err)
 	}
-	if ok, err := pb.Verify(g.logPub); err != nil || !ok || pb.Inclusion.Size != sth.Size {
-		t.Fatalf("bundle: ok=%v err=%v size=%d, want it to verify under the STH", ok, err, pb.Inclusion.Size)
+	if err := pb.Verify(edV(g.logPub)); err != nil || pb.Inclusion.Size != sth.Size {
+		t.Fatalf("bundle: err=%v size=%d, want it to verify under the STH", err, pb.Inclusion.Size)
 	}
-	r := pb.Record
+	r := recOf(t, pb)
 	if !ed25519.Verify(g.pubs["alice"], agent.ApprovalDecisionBytes(g.subject(t), r.Approver, r.Approved), r.Signature) {
 		t.Fatal("disclosed signature does not verify under alice's key")
 	}
 	other, _, _ := ed25519.GenerateKey(rand.Reader)
-	if ok, _ := pb.Verify(other); ok {
+	if err := pb.Verify(edV(other)); err == nil {
 		t.Fatal("bundle verified under the wrong log key")
 	}
 	if _, err := audit.ProveApproval(ctx, g.store, gateRun, "approval:c1:nobody:00", sth); err == nil {

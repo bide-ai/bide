@@ -22,7 +22,9 @@ type AgentEvent interface{ agentEvent() }
 
 // TurnStarted marks the beginning of a fresh model turn (Seq is the model-call
 // sequence number within the run). Not emitted for turns replayed from the journal.
-type TurnStarted struct{ Seq int }
+type TurnStarted struct {
+	Seq int `json:"seq"`
+}
 
 func (TurnStarted) agentEvent() {}
 
@@ -32,7 +34,9 @@ func (TurnStarted) agentEvent() {}
 // and produces no deltas (an AssistantTurn with Replayed=true is emitted instead). When the
 // turn's model call starts over (see TurnRestarted), the deltas before it are not part of the
 // recorded turn.
-type ModelEvent struct{ Event Event }
+type ModelEvent struct {
+	Event Event `json:"event"`
+}
 
 func (ModelEvent) agentEvent() {}
 
@@ -42,7 +46,9 @@ func (ModelEvent) agentEvent() {}
 // since TurnStarted{Seq} (or the previous TurnRestarted) belong to the discarded attempt and
 // are not part of the recorded turn, so a consumer rendering the turn should clear them. Not
 // emitted when the discarded attempt streamed nothing.
-type TurnRestarted struct{ Seq int }
+type TurnRestarted struct {
+	Seq int `json:"seq"`
+}
 
 func (TurnRestarted) agentEvent() {}
 
@@ -50,8 +56,8 @@ func (TurnRestarted) agentEvent() {}
 // when it was reconstructed from the journal on resume rather than produced by a live
 // model call (in which case no ModelEvent deltas preceded it).
 type AssistantTurn struct {
-	Message  Message
-	Replayed bool
+	Message  Message `json:"message"`
+	Replayed bool    `json:"replayed"`
 }
 
 func (AssistantTurn) agentEvent() {}
@@ -61,9 +67,9 @@ func (AssistantTurn) agentEvent() {}
 // is called. A call that does not start (cancelled after its attempt marker and before the call,
 // and recorded as not started) emits neither ToolStarted nor ToolCompleted.
 type ToolStarted struct {
-	ToolUseID string
-	Name      string
-	Args      json.RawMessage
+	ToolUseID string          `json:"tool_use_id"`
+	Name      string          `json:"name"`
+	Args      json.RawMessage `json:"args"`
 }
 
 func (ToolStarted) agentEvent() {}
@@ -71,10 +77,10 @@ func (ToolStarted) agentEvent() {}
 // ToolCompleted carries a tool call's result. Emitted for live executions, for a
 // human-denied call, and for each result reconstructed from the journal on resume.
 type ToolCompleted struct {
-	ToolUseID string
-	Name      string
-	Result    json.RawMessage
-	IsError   bool
+	ToolUseID string          `json:"tool_use_id"`
+	Name      string          `json:"name"`
+	Result    json.RawMessage `json:"result"`
+	IsError   bool            `json:"is_error"`
 }
 
 func (ToolCompleted) agentEvent() {}
@@ -83,20 +89,22 @@ func (ToolCompleted) agentEvent() {}
 // tool that requires approval. The run then returns *ApprovalPending from Final; record
 // a decision (Approve, or SubmitDecision for an m-of-n gate) and re-invoke to continue.
 type ApprovalRequired struct {
-	ToolUseID string
-	Name      string
-	Args      json.RawMessage
+	ToolUseID string          `json:"tool_use_id"`
+	Name      string          `json:"name"`
+	Args      json.RawMessage `json:"args"`
 	// Quorum is the running tally when the tool has an m-of-n Safety.Approval policy, so a
 	// streaming UI can show progress ("1 of 2 approved") without waiting for Final. Nil for
 	// a 1-of-1 gate.
-	Quorum *ApprovalTally
+	Quorum *ApprovalTally `json:"quorum,omitempty"`
 }
 
 func (ApprovalRequired) agentEvent() {}
 
 // Finished carries the terminal assistant answer — the same Message that Run returns
 // and that Final reports. The event stream closes after this.
-type Finished struct{ Final Message }
+type Finished struct {
+	Final Message `json:"final"`
+}
 
 func (Finished) agentEvent() {}
 

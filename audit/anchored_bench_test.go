@@ -15,7 +15,7 @@ import (
 func BenchmarkAnchoredInsert(b *testing.B) {
 	ctx := context.Background()
 	_, priv, _ := ed25519.GenerateKey(nil)
-	s := audit.NewAuditedStore(agent.NewMemStore(), priv, audit.NewMemAnchorLog())
+	s := mustAuditedStore(b, agent.NewMemStore(), priv, audit.NewMemAnchorLog())
 	fn := func(context.Context) (agent.Record, error) {
 		return agent.Record{Kind: agent.StepValue, Result: []byte(`1`)}, nil
 	}

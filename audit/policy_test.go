@@ -45,18 +45,18 @@ func TestPolicyLeaf_AnchorsAndCrossLinks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewTreeHead: %v", err)
 	}
-	sth := SignTreeHead(th, priv)
+	sth := signTH(t, th, priv)
 
 	// Prove the policy leaf.
 	pb, err := ProvePolicy(ctx, store, runID, digest, sth)
 	if err != nil {
 		t.Fatalf("ProvePolicy: %v", err)
 	}
-	if ok, err := pb.Verify(pub); err != nil || !ok {
-		t.Fatalf("policy bundle did not verify: ok=%v err=%v", ok, err)
+	if err := pb.Verify(edV(pub)); err != nil {
+		t.Fatalf("policy bundle did not verify: err=%v", err)
 	}
 	var pc PolicyContent
-	if err := json.Unmarshal(pb.Record.Result, &pc); err != nil {
+	if err := json.Unmarshal(recOf(t, pb).Result, &pc); err != nil {
 		t.Fatalf("policy content: %v", err)
 	}
 	if pc.Digest != digest || pc.Policy != string(policy) {
@@ -68,8 +68,8 @@ func TestPolicyLeaf_AnchorsAndCrossLinks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ProveToolCall: %v", err)
 	}
-	if ok, err := ab.Verify(pub); err != nil || !ok {
-		t.Fatalf("action bundle did not verify: ok=%v err=%v", ok, err)
+	if err := ab.Verify(edV(pub)); err != nil {
+		t.Fatalf("action bundle did not verify: err=%v", err)
 	}
 
 	// Cross-link: same committed tree, and the action's embedded digest matches the anchored
@@ -78,7 +78,7 @@ func TestPolicyLeaf_AnchorsAndCrossLinks(t *testing.T) {
 		t.Fatalf("bundles are not against the same tree")
 	}
 	var actionPayload map[string]any
-	if err := json.Unmarshal(ab.Record.Result, &actionPayload); err != nil {
+	if err := json.Unmarshal(recOf(t, ab).Result, &actionPayload); err != nil {
 		t.Fatalf("action payload: %v", err)
 	}
 	if actionPayload["policy_digest"] != pc.Digest {

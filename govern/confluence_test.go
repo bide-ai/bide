@@ -114,19 +114,22 @@ func TestConvergenceCertificate_AnchorsAndProves(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewTreeHead: %v", err)
 	}
-	sth := audit.SignTreeHead(th, priv)
+	sth, err := audit.SignTreeHead(th, audit.Ed25519Signer{Priv: priv})
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	pb, err := audit.ProveConvergence(ctx, store, runID, digest, sth)
 	if err != nil {
 		t.Fatalf("ProveConvergence: %v", err)
 	}
-	if ok, err := pb.Verify(pub); err != nil || !ok {
-		t.Fatalf("convergence bundle did not verify: ok=%v err=%v", ok, err)
+	if err := pb.Verify(audit.Ed25519Verifier{Pub: pub}); err != nil {
+		t.Fatalf("convergence bundle did not verify: %v", err)
 	}
 
 	// The anchored certificate says what it should: convergent, and for this policy digest.
 	var content audit.ConvergenceContent
-	if err := json.Unmarshal(pb.Record.Result, &content); err != nil {
+	if err := json.Unmarshal(provenRecord(t, pb).Result, &content); err != nil {
 		t.Fatalf("convergence content: %v", err)
 	}
 	if content.Digest != digest {

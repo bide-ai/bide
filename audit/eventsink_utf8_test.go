@@ -32,8 +32,8 @@ func TestEventLog_InvalidUTF8IsRefused(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ok, err := audit.VerifyEventInclusion(log.Root(), agent.ToolStarted{ToolUseID: "c", Name: "\xfe"}, p)
-	if ok || err == nil {
-		t.Fatalf("VerifyEventInclusion of a different event (invalid UTF-8 for U+FFFD) = %v, %v; want false and an error", ok, err)
+	err = audit.VerifyEventInclusion(log.Root(), agent.ToolStarted{ToolUseID: "c", Name: "\xfe"}, p)
+	if err == nil {
+		t.Fatalf("VerifyEventInclusion of a different event (invalid UTF-8 for U+FFFD) = %v; want an error", err)
 	}
 }

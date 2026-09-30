@@ -28,8 +28,8 @@ func TestAbsence_ProveAndVerify(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ProveAbsent: %v", err)
 	}
-	if ok, err := audit.VerifyAbsence(root, proof); err != nil || !ok {
-		t.Fatalf("valid absence proof failed (ok=%v err=%v)", ok, err)
+	if err := audit.VerifyAbsence(root, proof); err != nil {
+		t.Fatalf("valid absence proof failed (err=%v)", err)
 	}
 
 	// A present key cannot be proven absent.
@@ -48,7 +48,7 @@ func TestAbsence_Boundaries(t *testing.T) {
 	if before.Left != nil || before.Right == nil {
 		t.Fatalf("before-first should have only a right neighbor: %+v", before)
 	}
-	if ok, _ := audit.VerifyAbsence(root, before); !ok {
+	if err := audit.VerifyAbsence(root, before); err != nil {
 		t.Fatal("before-first absence failed to verify")
 	}
 
@@ -56,14 +56,14 @@ func TestAbsence_Boundaries(t *testing.T) {
 	if after.Right != nil || after.Left == nil {
 		t.Fatalf("after-last should have only a left neighbor: %+v", after)
 	}
-	if ok, _ := audit.VerifyAbsence(root, after); !ok {
+	if err := audit.VerifyAbsence(root, after); err != nil {
 		t.Fatal("after-last absence failed to verify")
 	}
 
 	// Empty key set: anything is absent.
 	emptyRoot := audit.AbsenceRoot(nil, audit.ToolUseKeys)
 	empty, _ := audit.ProveAbsent(nil, audit.ToolUseKeys, "tooluse:x")
-	if ok, _ := audit.VerifyAbsence(emptyRoot, empty); !ok {
+	if err := audit.VerifyAbsence(emptyRoot, empty); err != nil {
 		t.Fatal("empty-set absence failed to verify")
 	}
 }
@@ -86,7 +86,7 @@ func TestAbsence_AdjacencyIsEnforced(t *testing.T) {
 		Right: fProofSrc.Left, // tooluse:f at index 2 (d < f)
 	}
 	// Both neighbors are genuinely included and bracket d, but indices 0 and 2 are NOT adjacent.
-	if ok, _ := audit.VerifyAbsence(root, forged); ok {
+	if err := audit.VerifyAbsence(root, forged); err == nil {
 		t.Fatal("verifier accepted a non-adjacent bracket around a PRESENT key (adjacency check missing)")
 	}
 }
@@ -108,7 +108,7 @@ func TestAbsence_Bundle(t *testing.T) {
 		t.Fatal(err)
 	}
 	pub, priv, _ := ed25519.GenerateKey(nil)
-	sth, err := audit.SignAbsenceRoot(recs, audit.ToolUseKeys, journal, priv, 1000)
+	sth, err := audit.SignAbsenceRoot(recs, audit.ToolUseKeys, journal, edS(priv), 1000)
 	if err != nil {
 		t.Fatalf("SignAbsenceRoot: %v", err)
 	}
@@ -117,13 +117,13 @@ func TestAbsence_Bundle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ProveAbsentBundle: %v", err)
 	}
-	if ok, err := bundle.Verify(pub, audit.ToolUseKeys); err != nil || !ok {
-		t.Fatalf("absence bundle failed to verify (ok=%v err=%v)", ok, err)
+	if err := bundle.Verify(edV(pub), audit.ToolUseKeys); err != nil {
+		t.Fatalf("absence bundle failed to verify (err=%v)", err)
 	}
-	if ok, _ := bundle.Verify(mustOtherKey(t), audit.ToolUseKeys); ok {
+	if err := bundle.Verify(edV(mustOtherKey(t)), audit.ToolUseKeys); err == nil {
 		t.Fatal("absence bundle verified under the wrong key")
 	}
-	if ok, _ := bundle.Verify(pub, audit.PolicyUsedKeys); ok {
+	if err := bundle.Verify(edV(pub), audit.PolicyUsedKeys); err == nil {
 		t.Fatal("a tool-use absence bundle verified as a used-policy absence")
 	}
 
@@ -135,7 +135,7 @@ func TestAbsence_Bundle(t *testing.T) {
 	}
 	otherRecs, _ := other.History(ctx, "run")
 	otherJournal, _ := audit.NewTreeHead(ctx, other, "run", 1000)
-	otherSTH, err := audit.SignAbsenceRoot(otherRecs, audit.ToolUseKeys, otherJournal, priv, 1000)
+	otherSTH, err := audit.SignAbsenceRoot(otherRecs, audit.ToolUseKeys, otherJournal, edS(priv), 1000)
 	if err != nil {
 		t.Fatal(err)
 	}

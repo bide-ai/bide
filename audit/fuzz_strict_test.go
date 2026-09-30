@@ -33,12 +33,12 @@ func strictSeeds(tb testing.TB) [][]byte {
 	if err != nil {
 		tb.Fatal(err)
 	}
-	ash := SignTreeHead(head, fuzzPriv)
+	ash := signTH(tb, head, fuzzPriv)
 	ab, err := ProveAbsentBundle(recs, ToolUseKeys, "tooluse:zz", ash)
 	if err != nil {
 		tb.Fatal(err)
 	}
-	ev, err := Evidence(ctx, store, "run", fuzzPriv, 1000, WithAllToolCalls(), WithLabel("l"))
+	ev, err := Evidence(ctx, store, "run", edS(fuzzPriv), 1000, WithAllToolCalls(), WithLabel("l"))
 	if err != nil {
 		tb.Fatal(err)
 	}
@@ -68,12 +68,13 @@ func FuzzUnmarshalStrict(f *testing.F) {
 	f.Add(byte(0), []byte(`{"run_id":"r","RUN_ID":"x"}`))
 	f.Add(byte(3), []byte(`{"kind":"journal","size":1,"size":2}`))
 	// The earlier findings, as edits of the genuine proof bundle (0) and tree head (3): case-variant
-	// and unknown names inside a message part, a lone surrogate escape, and non-canonical base64.
+	// and unknown names, a lone surrogate escape, and non-canonical base64. (A proof bundle carries
+	// its record as opaque bytes, so there is no message part to edit inside it.)
 	seeds := strictSeeds(f)
 	for _, e := range [][3]string{
-		{"0", `"text":"refund $10",`, `"text":"refund $1","Text":"refund $10",`},
-		{"0", `"text":"refund $10",`, `"text":"refund $10","approved_by":"cfo",`},
-		{"0", `"text":"refund $10",`, `"text":"refund $10\ud800",`},
+		{"0", `"run_id":"run",`, `"run_id":"run","RUN_ID":"other",`},
+		{"0", `"run_id":"run",`, `"run_id":"run","approved_by":"cfo",`},
+		{"0", `"run_id":"run",`, `"run_id":"run\ud800",`},
 		{"3", `"run_id":"run"`, `"run_id":"run\ud800"`},
 		{"3", `"signature":"`, `"signature":"\n`},
 	} {
@@ -85,7 +86,7 @@ func FuzzUnmarshalStrict(f *testing.F) {
 		f.Add(byte(i), forged)
 	}
 	// A root of one byte, 0xd3, is "0w==" in standard base64; "0x==" decodes to the same byte.
-	th := SignTreeHead(TreeHead{Kind: TreeJournal, RunID: "run", Root: []byte{0xd3}, Timestamp: 1}, fuzzPriv)
+	th := signTH(f, TreeHead{Kind: TreeJournal, RunID: "run", Root: []byte{0xd3}, TimestampNanos: 1}, fuzzPriv)
 	thb, _ := json.Marshal(th)
 	f.Add(byte(3), bytes.Replace(thb, []byte(`"root":"0w=="`), []byte(`"root":"0x=="`), 1))
 	f.Fuzz(func(t *testing.T, sel byte, data []byte) {

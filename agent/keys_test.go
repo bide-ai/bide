@@ -34,7 +34,7 @@ var keyConstructors = map[string]func(string) string{
 	"notStartedStep":       func(s string) string { return notStartedStep(toolAttemptStep(s), "0123abcd") },
 	"nextAttemptStep":      func(s string) string { return nextAttemptStep(retryAttemptStep(stepAttemptStep(s), 1+len(s))) },
 	"approvalStep":         approvalStep,
-	"approvalDecisionStep": func(s string) string { return approvalDecisionStep(s, "ops:1", true, []byte(s)) },
+	"approvalDecisionStep": func(s string) string { return approvalDecisionStep(s, "ops:1", true, "ed25519", []byte(s)) },
 	"ApprovalTallyStep":    ApprovalTallyStep,
 	"sagaCompensateStep":   sagaCompensateStep,
 	"sagaArgsStep":         sagaArgsStep,
@@ -133,7 +133,7 @@ func TestToolUseIDKeys_AreBoundedAndPrintable(t *testing.T) {
 		for _, id := range adversarialToolUseIDs() {
 			k := keyConstructors[name](id)
 			if name == "approvalDecisionStep" {
-				k = approvalDecisionStep(id, "ops", true, nil)
+				k = approvalDecisionStep(id, "ops", true, "ed25519", nil)
 			}
 			if len(k) > 256 || strings.IndexFunc(k, func(r rune) bool { return r < 0x21 || r > 0x7e }) >= 0 {
 				t.Fatalf("%s(%.30q) = %.60q (%d bytes), not short printable ASCII", name, id, k, len(k))

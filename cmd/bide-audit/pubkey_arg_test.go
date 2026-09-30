@@ -36,7 +36,7 @@ func TestCLI_HexPublicKeyIsNotAFileName(t *testing.T) {
 	auditorPub, _, _ := ed25519.GenerateKey(rand.Reader)
 	producerPub, producerPriv, _ := ed25519.GenerateKey(rand.Reader)
 	th, _ := audit.NewTreeHead(ctx, store, "run1", 1)
-	b, err := audit.ProveToolCall(ctx, store, "run1", "pay", audit.SignTreeHead(th, producerPriv))
+	b, err := audit.ProveToolCall(ctx, store, "run1", "pay", signHead(t, th, audit.Ed25519Signer{Priv: producerPriv}))
 	if err != nil {
 		t.Fatal(err)
 	}

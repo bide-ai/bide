@@ -2,7 +2,6 @@ package audit
 
 import (
 	"bytes"
-	"crypto/ed25519"
 	"fmt"
 	"sort"
 	"strings"
@@ -70,7 +69,7 @@ func KeySetForKey(key string) (KeySet, bool) {
 
 func (s KeySet) check() error {
 	if !isAbsenceKind(s.Kind) || s.Prefix == "" || s.Key == nil {
-		return fmt.Errorf("audit: key set needs a kind starting with %q, a key prefix, and a key func (got kind %q, prefix %q)", absenceKindPrefix, s.Kind, s.Prefix)
+		return fmt.Errorf("audit: key set needs a kind starting with %q, a key prefix, and a key func (got kind %q, prefix %q): %w", absenceKindPrefix, s.Kind, s.Prefix, agent.ErrConfig)
 	}
 	return nil
 }
@@ -171,41 +170,49 @@ func ProveAbsent(records []agent.Record, set KeySet, key string) (Absence, error
 	return proof, nil
 }
 
-// VerifyAbsence reports whether proof shows Key is absent from the key set committed by root:
+// VerifyAbsence returns nil if proof shows Key is absent from the key set committed by root:
 // each named neighbor is included at its index, they bracket Key in sort order, and they are
 // ADJACENT (or Key sits before the first / after the last / the set is empty). Adjacency is the
 // load-bearing check: without it, bracketing alone does not preclude Key being present between
 // two non-consecutive neighbors. It checks the proof against a bare root; AbsenceBundle.Verify
-// is the form that also authenticates the root and its key set.
-func VerifyAbsence(root []byte, proof Absence) (bool, error) {
+// is the form that also authenticates the root and its key set. A proof that does not hold is an
+// error wrapping ErrNotVerified.
+func VerifyAbsence(root []byte, proof Absence) error {
+	if !absent(root, proof) {
+		return notVerified("audit: the proof does not show %q absent from the %d-key set under this root", proof.Key, proof.Size)
+	}
+	return nil
+}
+
+func absent(root []byte, proof Absence) bool {
 	if proof.Size == 0 { // empty key set: everything is absent
-		return proof.Left == nil && proof.Right == nil && bytes.Equal(root, merkleRoot(nil)), nil
+		return proof.Left == nil && proof.Right == nil && bytes.Equal(root, merkleRoot(nil))
 	}
 	if proof.Left != nil {
 		if proof.Left.Proof.Size != proof.Size || proof.Left.Key >= proof.Key {
-			return false, nil
+			return false
 		}
 		if !verifyPath(root, keyLeaf(proof.Left.Key), proof.Left.Proof.Index, proof.Size, proof.Left.Proof.Path) {
-			return false, nil
+			return false
 		}
 	}
 	if proof.Right != nil {
 		if proof.Right.Proof.Size != proof.Size || proof.Key >= proof.Right.Key {
-			return false, nil
+			return false
 		}
 		if !verifyPath(root, keyLeaf(proof.Right.Key), proof.Right.Proof.Index, proof.Size, proof.Right.Proof.Path) {
-			return false, nil
+			return false
 		}
 	}
 	switch {
 	case proof.Left != nil && proof.Right != nil:
-		return proof.Left.Proof.Index+1 == proof.Right.Proof.Index, nil // consecutive: no room between
+		return proof.Left.Proof.Index+1 == proof.Right.Proof.Index // consecutive: no room between
 	case proof.Left == nil && proof.Right != nil:
-		return proof.Right.Proof.Index == 0, nil // Key sorts before all: right is the first key
+		return proof.Right.Proof.Index == 0 // Key sorts before all: right is the first key
 	case proof.Right == nil && proof.Left != nil:
-		return proof.Left.Proof.Index == proof.Size-1, nil // Key sorts after all: left is the last key
+		return proof.Left.Proof.Index == proof.Size-1 // Key sorts after all: left is the last key
 	default:
-		return false, nil // both nil but non-empty set: malformed
+		return false // both nil but non-empty set: malformed
 	}
 }
 
@@ -219,38 +226,31 @@ type AbsenceBundle struct {
 	STH     SignedTreeHead `json:"sth"`     // the signed commitment to the key set the proof is proven against
 }
 
-// Verify reports whether the bundle authentically proves Absence.Key absent from the key set
-// set of run RunID, under pub (obtained out of band). It checks the STH signature, that the STH
-// is a head of set's kind for RunID (with its source journal named), that the key carries the
-// set's prefix, that the proof is bound to the signed size, and non-membership under the signed
-// root. The absence holds for the journal prefix STH.Journal names; confirm from the anchor log
-// that it is the run's latest head before reading it as "never happened in the run."
-func (b AbsenceBundle) Verify(pub ed25519.PublicKey, set KeySet) (bool, error) {
-	if b.STH.Alg != "" && b.STH.Alg != AlgEd25519 {
-		return false, nil
-	}
-	return b.VerifyWith(Ed25519Verifier{Pub: pub}, set)
-}
-
-// VerifyWith is the scheme-agnostic form of Verify.
-func (b AbsenceBundle) VerifyWith(v Verifier, set KeySet) (bool, error) {
+// Verify returns nil if the bundle authentically proves Absence.Key absent from the key set set
+// of run RunID, under v (obtained out of band). It checks the STH signature, that the STH is a head
+// of set's kind for RunID (with its source journal named), that the key carries the set's prefix,
+// that the proof is bound to the signed size, and non-membership under the signed root. The
+// absence holds for the journal prefix STH.Journal names; confirm from the anchor log that it is
+// the run's latest head before reading it as "never happened in the run." A bundle that does not
+// hold is an error wrapping ErrNotVerified; one of another format, ErrFormat.
+func (b AbsenceBundle) Verify(v Verifier, set KeySet) error {
 	if err := set.check(); err != nil {
-		return false, err
+		return err
 	}
 	if err := formatOf(b, b.Format); err != nil {
-		return false, err
+		return err
 	}
-	if !b.STH.VerifyWith(v) {
-		return false, nil
+	if err := b.STH.Verify(v); err != nil {
+		return err
 	}
 	if b.STH.Kind != set.Kind || b.STH.RunID != b.RunID || b.STH.Journal == nil {
-		return false, nil // a head of another tree, or another run
+		return notVerified("audit: the absence proof's head is a %q head of run %q, not the %s key set of run %q", b.STH.Kind, b.STH.RunID, set.Kind, b.RunID)
 	}
 	if !strings.HasPrefix(b.Absence.Key, set.Prefix) {
-		return false, nil // the key is not one this set could contain
+		return notVerified("audit: key %q is not one the %s key set could contain", b.Absence.Key, set.Kind)
 	}
 	if b.Absence.Size != b.STH.Size {
-		return false, nil
+		return notVerified("audit: the absence proof is for a set of %d keys, not the signed %d", b.Absence.Size, b.STH.Size)
 	}
 	return VerifyAbsence(b.STH.Root, b.Absence)
 }

@@ -7,11 +7,12 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"slices"
+	"errors"
 	"testing"
 )
 
 func testTreeHead() TreeHead {
-	return TreeHead{Kind: TreeJournal, RunID: "run", Size: 3, Root: []byte("0123456789abcdef0123456789abcdef"), Timestamp: 42}
+	return TreeHead{Kind: TreeJournal, RunID: "run", Size: 3, Root: []byte("0123456789abcdef0123456789abcdef"), TimestampNanos: 42}
 }
 
 // TestSigningSchemes exercises ed25519, ML-DSA-65, and hybrid over a tree head: each signer's
@@ -30,7 +31,7 @@ func TestSigningSchemes(t *testing.T) {
 
 	cases := []struct {
 		name   string
-		alg    string
+		alg    Alg
 		signer Signer
 		verify Verifier
 	}{
@@ -43,44 +44,49 @@ func TestSigningSchemes(t *testing.T) {
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			sth, err := SignTreeHeadWith(testTreeHead(), c.signer)
+			sth, err := SignTreeHead(testTreeHead(), c.signer)
 			if err != nil {
 				t.Fatalf("sign: %v", err)
 			}
 			if sth.Alg != c.alg {
 				t.Fatalf("alg = %q, want %q", sth.Alg, c.alg)
 			}
-			if !sth.VerifyWith(c.verify) {
+			if sth.Verify(c.verify) != nil {
 				t.Fatalf("%s STH did not verify under its own verifier", c.name)
 			}
 			// A tampered tree head must not verify.
 			bad := sth
-			bad.Timestamp = 43
-			if bad.VerifyWith(c.verify) {
+			bad.TimestampNanos = 43
+			if !errors.Is(bad.Verify(c.verify), ErrNotVerified) {
 				t.Fatalf("%s: tampered STH verified", c.name)
 			}
 			// A different scheme's verifier must be rejected on algorithm mismatch.
 			other := Ed25519Verifier{edPub}
-			if c.alg != AlgEd25519 && sth.VerifyWith(other) {
+			if c.alg != AlgEd25519 && !errors.Is(sth.Verify(other), ErrNotVerified) {
 				t.Fatalf("%s STH verified under an ed25519 verifier", c.name)
 			}
 		})
 	}
 }
 
-// TestSigning_BackwardCompatible confirms the ed25519-only SignTreeHead / Verify path is
-// unchanged: it leaves Alg empty, and an empty-Alg STH still verifies via VerifyWith(ed25519).
-func TestSigning_BackwardCompatible(t *testing.T) {
+// TestSigning_AlgIsExplicit confirms SignTreeHead always names the scheme and the format (there
+// is no empty-Alg default any more), and that a head whose Alg is cleared or relabelled does not
+// verify: the scheme is part of the signed bytes.
+func TestSigning_AlgIsExplicit(t *testing.T) {
 	edPub, edPriv, _ := ed25519.GenerateKey(rand.Reader)
-	sth := SignTreeHead(testTreeHead(), edPriv)
-	if sth.Alg != "" {
-		t.Fatalf("legacy SignTreeHead should leave Alg empty, got %q", sth.Alg)
+	sth := signTH(t, testTreeHead(), edPriv)
+	if sth.Alg != AlgEd25519 || sth.Format != STHFormat {
+		t.Fatalf("SignTreeHead set Alg %q and Format %q, want %q and %q", sth.Alg, sth.Format, AlgEd25519, STHFormat)
 	}
-	if !sth.Verify(edPub) {
-		t.Fatalf("legacy Verify failed")
+	if err := sth.Verify(edV(edPub)); err != nil {
+		t.Fatalf("Verify failed: %v", err)
 	}
-	if !sth.VerifyWith(Ed25519Verifier{edPub}) {
-		t.Fatalf("empty-Alg STH should verify as ed25519 via VerifyWith")
+	for _, alg := range []Alg{"", AlgMLDSA65} {
+		bad := sth
+		bad.Alg = alg
+		if err := bad.Verify(edV(edPub)); !errors.Is(err, ErrNotVerified) {
+			t.Fatalf("a head relabelled to Alg %q: err = %v, want ErrNotVerified", alg, err)
+		}
 	}
 }
 
@@ -109,7 +115,7 @@ func TestVerifierKeyIDs(t *testing.T) {
 		t.Fatal(err)
 	}
 	ml := MLDSAVerifier{mlPub}.KeyIDs()
-	if !slices.Equal(ml, MLDSAVerifier{parsed}.KeyIDs()) || len(ml) != 1 || ml[0] != KeyID(AlgMLDSA65, mlPub.Bytes()) {
+	if !slices.Equal(ml, MLDSAVerifier{parsed}.KeyIDs()) || len(ml) != 1 || ml[0] != KeyID(string(AlgMLDSA65), mlPub.Bytes()) {
 		t.Fatalf("MLDSAVerifier.KeyIDs = %v, want one identity from the key's encoding", ml)
 	}
 	hy := HybridVerifier{Ed25519Verifier{edPub}, MLDSAVerifier{mlPub}}.KeyIDs()

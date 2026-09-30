@@ -12,6 +12,16 @@ import (
 // test can forge a bad signature or sign as someone else without real cryptography.
 type fakeVerifier struct{ id string }
 
+// fakeAlg is the scheme fakeVerifier checks and approveAs journals.
+const fakeAlg Alg = "fake"
+
+func (fakeVerifier) Alg() Alg { return fakeAlg }
+
+// decideAs records a decision signed under fakeAlg.
+func decideAs(ctx context.Context, store Durable, runID, toolUseID, approverID string, approved bool, sig []byte, opts ...ApproveOption) error {
+	return SubmitDecision(ctx, store, Decision{RunID: runID, ToolUseID: toolUseID, ApproverID: approverID, Approved: approved, Alg: fakeAlg, Signature: sig}, opts...)
+}
+
 func (v fakeVerifier) Verify(message, sig []byte) bool {
 	return bytes.Equal(sig, fakeSign(v.id, message))
 }
@@ -55,12 +65,12 @@ func subjectOf(t *testing.T, store Durable, runID, toolUseID string) ApprovalSub
 func approveAs(t *testing.T, store Durable, runID, toolUseID, approverID string, approved bool) {
 	t.Helper()
 	sig := fakeSign(approverID, ApprovalDecisionBytes(subjectOf(t, store, runID, toolUseID), approverID, approved))
-	if err := ApproveAs(context.Background(), store, runID, toolUseID, approverID, approved, sig); err != nil {
-		t.Fatalf("ApproveAs(%s): %v", approverID, err)
+	if err := decideAs(context.Background(), store, runID, toolUseID, approverID, approved, sig); err != nil {
+		t.Fatalf("decideAs(%s): %v", approverID, err)
 	}
 }
 
-// writeRaw appends a decision record directly, bypassing ApproveAs, the way someone with
+// writeRaw appends a decision record directly, bypassing SubmitDecision, the way someone with
 // write access to the journal could.
 func writeRaw(t *testing.T, store Durable, runID, name string, rec Record) {
 	t.Helper()
@@ -265,7 +275,7 @@ func TestMofn_BadSignatureIgnored(t *testing.T) {
 	_, _ = mofnRun(store, "r1", true, pol, vf, &charged)
 	// bob signs alice's decision: the signature is well formed but not alice's.
 	forged := fakeSign("bob", ApprovalDecisionBytes(subjectOf(t, store, "r1", "c1"), "alice", true))
-	if err := ApproveAs(context.Background(), store, "r1", "c1", "alice", true, forged); err != nil {
+	if err := decideAs(context.Background(), store, "r1", "c1", "alice", true, forged); err != nil {
 		t.Fatal(err)
 	}
 	_, err := mofnRun(store, "r1", false, pol, vf, &charged)

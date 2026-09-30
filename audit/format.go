@@ -4,34 +4,70 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+
+	"github.com/bide-ai/bide/agent"
 )
 
-// The format tags a top-level proof artifact carries in its "format" field. Each names the
-// artifact's JSON layout, so a verifier refuses a layout it does not read with ErrFormat instead of
-// misreading it or failing on an unknown field. The artifacts introduced in v2 of their layout
-// were untagged before it (v1), and v1 spelled the inclusion and consistency proof fields in Go
-// case ("Index", "Size", "Path", "First", "Salt"); every name is snake_case from v2 on.
+// The format tags an artifact carries in its "format" field. Each names the artifact's JSON layout
+// and what its proofs commit to, so a verifier refuses a layout it does not read with ErrFormat
+// instead of misreading it or failing on a field it does not know.
+//
+// Before 1.0 a verifier reads only the current format of each artifact; an artifact an older
+// release made is refused with ErrFormat, and is re-created from the journal with this release's
+// producer. From 1.0 on, a verifier reads the current format and the one before it.
 const (
-	// ProofFormat is the format of a ProofBundle.
-	ProofFormat = "bide.audit.proof.v2"
-	// AbsenceFormat is the format of an AbsenceBundle.
-	AbsenceFormat = "bide.audit.absence.v2"
-	// RunCertificateFormat is the format of a RunCertificate.
-	RunCertificateFormat = "bide.audit.runcert.v2"
-	// CurrentGrantFormat is the format of a CurrentGrantProof.
-	CurrentGrantFormat = "bide.audit.current-grant.v2"
-	// EventInclusionFormat is the format of an EventInclusion.
-	EventInclusionFormat = "bide.audit.event-inclusion.v2"
+	// ProofFormat is the format of a ProofBundle. v3 carries the record as the bytes the journal
+	// stores (record_bytes) rather than a decoded record.
+	ProofFormat = "bide.audit.proof.v3"
+	// AbsenceFormat is the format of an AbsenceBundle. v3 carries a bide.audit.sth.v5 head.
+	AbsenceFormat = "bide.audit.absence.v3"
+	// RunCertificateFormat is the format of a RunCertificate. v3 carries bide.audit.sth.v5 heads
+	// and bide.audit.proof.v3 bundles.
+	RunCertificateFormat = "bide.audit.runcert.v3"
+	// CurrentGrantFormat is the format of a CurrentGrantProof. v3 carries a bide.audit.proof.v3
+	// leaf and bide.audit.grant.v2 grants.
+	CurrentGrantFormat = "bide.audit.current-grant.v3"
+	// EventInclusionFormat is the format of an EventInclusion. v3 proves a
+	// bide.audit.event-leaf.v3 leaf, whose event JSON is snake_case.
+	EventInclusionFormat = "bide.audit.event-inclusion.v3"
+	// STHFormat is the format of a SignedTreeHead, and the tag of the bytes it signs. v5 signs
+	// the scheme (Alg) with the head.
+	STHFormat = "bide.audit.sth.v5"
+	// AnchorEntryFormat is the format of an AnchorEntry.
+	AnchorEntryFormat = "bide.audit.anchor-entry.v1"
 )
 
-// ErrFormat reports an artifact whose "format" is missing or is not the one this version of the
-// package reads: an artifact produced by an older (or newer) release. Re-create the artifact with
-// this release's producer (ProveRecord, Evidence, CertifyRun, ...) from the journal.
-var ErrFormat = errors.New("audit: unsupported artifact format")
+// The errors a verifier returns. A verifier returns nil when the artifact verifies. Otherwise its
+// error wraps exactly one of:
+//
+//   - ErrNotVerified: the artifact was read and understood, and it does not hold (a signature that
+//     does not verify, a proof against another root, a record of the wrong kind for its role);
+//   - ErrFormat: the artifact, or one it carries, is not of the format this version reads;
+//   - ErrMalformed: the artifact cannot be read as what it claims to be (JSON that does not read
+//     strictly, record bytes that do not decode, a key that is not of its scheme's form).
+//
+// ErrFormat wraps ErrMalformed, and ErrMalformed wraps agent.ErrProtocol. A caller's mistake (no
+// verifier, an invalid expected policy) wraps agent.ErrConfig instead. Only nil means verified.
+var (
+	// ErrMalformed reports an artifact that cannot be read as what it claims to be.
+	ErrMalformed = fmt.Errorf("audit: malformed artifact: %w", agent.ErrProtocol)
+	// ErrFormat reports an artifact whose "format" is missing or is not the one this version of
+	// the package reads: an artifact produced by an older (or newer) release. Re-create the
+	// artifact with this release's producer (ProveRecord, Evidence, CertifyRun, ...) from the
+	// journal.
+	ErrFormat = fmt.Errorf("audit: unsupported artifact format: %w", ErrMalformed)
+	// ErrNotVerified reports an artifact that was read and understood and does not hold.
+	ErrNotVerified = errors.New("audit: not verified")
+)
 
-// formatted is a top-level artifact with a "format" field. UnmarshalStrict checks the field before
-// anything else, so an artifact of another format fails with ErrFormat, not with a decode error
-// about a field the other format names differently.
+// notVerified returns an error wrapping ErrNotVerified with the reason.
+func notVerified(format string, args ...any) error {
+	return fmt.Errorf("%s: %w", fmt.Sprintf(format, args...), ErrNotVerified)
+}
+
+// formatted is an artifact with a "format" field. UnmarshalStrict checks the field before the
+// rest of the artifact, wherever the artifact sits in the input, so an artifact of another format
+// fails with ErrFormat, not with a decode error about a field the other format names differently.
 type formatted interface {
 	// artifactFormat returns the artifact's name, for errors, and the format this package reads.
 	artifactFormat() (name, format string)
@@ -49,6 +85,8 @@ func (EventInclusion) artifactFormat() (string, string) {
 	return "event inclusion proof", EventInclusionFormat
 }
 func (EvidencePackage) artifactFormat() (string, string) { return "evidence package", EvidenceFormat }
+func (SignedTreeHead) artifactFormat() (string, string)  { return "signed tree head", STHFormat }
+func (AnchorEntry) artifactFormat() (string, string)     { return "anchor entry", AnchorEntryFormat }
 
 // checkFormat returns an ErrFormat error unless got is want.
 func checkFormat(name, got, want string) error {

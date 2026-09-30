@@ -31,7 +31,7 @@ func tsBundle(t *testing.T, dir, name string, ts int64) (string, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	pb, err := audit.ProveRecord(ctx, store, "r", 0, audit.SignTreeHead(th, priv))
+	pb, err := audit.ProveRecord(ctx, store, "r", 0, signHead(t, th, audit.Ed25519Signer{Priv: priv}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +98,7 @@ func TestVerifyRunCLI_UsedPolicyHeadIsNotEarlier(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sth := audit.SignTreeHead(th, priv)
+	sth := signHead(t, th, audit.Ed25519Signer{Priv: priv})
 	for name, tc := range map[string]struct {
 		used int64
 		code int
@@ -106,10 +106,15 @@ func TestVerifyRunCLI_UsedPolicyHeadIsNotEarlier(t *testing.T) {
 		"same time": {at.UnixNano(), 0},
 		"earlier":   {at.Add(-time.Minute).UnixNano(), 1},
 	} {
-		cert, err := audit.CertifyRun(ctx, store, "r", sth, audit.RunCertSpec{}, priv, tc.used)
+		// CertifyRun refuses an earlier used-policy head, so the producer here re-signs it by hand.
+		signer := audit.Ed25519Signer{Priv: priv}
+		cert, err := audit.CertifyRun(ctx, store, "r", sth, audit.RunCertSpec{Signer: signer, TimestampNanos: at.UnixNano()})
 		if err != nil {
 			t.Fatal(err)
 		}
+		used := cert.UsedPolicyAbsence.TreeHead
+		used.TimestampNanos = tc.used
+		cert.UsedPolicyAbsence = signHead(t, used, signer)
 		path := filepath.Join(dir, "cert.json")
 		writeJSON(t, path, cert)
 		if code, out := exitCode(t, bin, "verify-run", "-cert", path, "-pubkey", hex.EncodeToString(pub), "-approved", "none"); code != tc.code {
@@ -121,8 +126,8 @@ func TestVerifyRunCLI_UsedPolicyHeadIsNotEarlier(t *testing.T) {
 // checkHeadTimes finds a signed head wherever an input carries it.
 func TestCheckHeadTimes_FindsEveryHead(t *testing.T) {
 	now := time.Now()
-	bad := audit.SignedTreeHead{TreeHead: audit.TreeHead{Timestamp: 0}}
-	good := audit.SignedTreeHead{TreeHead: audit.TreeHead{Timestamp: 1}}
+	bad := audit.SignedTreeHead{TreeHead: audit.TreeHead{TimestampNanos: 0}}
+	good := audit.SignedTreeHead{TreeHead: audit.TreeHead{TimestampNanos: 1}}
 	type inner struct{ H audit.SignedTreeHead }
 	type hidden struct{ h audit.SignedTreeHead }
 	for name, tc := range map[string]struct {

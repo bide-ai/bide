@@ -10,7 +10,10 @@
 //
 //  1. anchors a convergent policy and its convergence certificate, runs governed actions under it;
 //  2. emits a RunCertificate asserting only-approved-policies and policies-convergence-certified;
-//  3. verifies the certificate offline against the public key alone (PASS);
+//  3. verifies the certificate offline against the public key alone (PASS). The log key is a
+//     hybrid ed25519 + ML-DSA-65 key (audit.HybridSigner): the same code signs under any
+//     audit.Signer, and the verifier is whatever audit.Verifier matches the key the auditor holds;
+//     the ed25519 half of the hybrid key alone does not verify the certificate;
 //  4. shows the FAIL path: with the SAME certificate but a narrower approved allowlist (as if a
 //     disallowed policy had been used), only-approved-policies fails and the completeness commitment
 //     has teeth: dropping the used policy from the disclosed set breaks the signed absence root too.
@@ -23,8 +26,11 @@ package main
 import (
 	"context"
 	"crypto/ed25519"
+	"crypto/mldsa"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 
 	"github.com/bide-ai/bide/agent"
@@ -87,15 +93,27 @@ func main() {
 	// recomputes the used-policy set from the committed leaves, confirms it is a subset of the
 	// approved allowlist, signs the used-policy absence commitment, and assembles the anchored
 	// policy + convergence proofs for each used policy.
-	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	//
+	// The log key is a hybrid of ed25519 and post-quantum ML-DSA-65: a signature holds only if both
+	// halves verify, so the certificate stays sound as long as either scheme is unbroken. Any
+	// audit.Signer works here (audit.Ed25519Signer on its own, audit.MLDSASigner, or this hybrid).
+	_, edPriv, _ := ed25519.GenerateKey(rand.Reader)
+	mlPriv, err := mldsa.GenerateKey(mldsa.MLDSA65())
+	if err != nil {
+		panic(err)
+	}
+	signer := audit.HybridSigner{Ed: audit.Ed25519Signer{Priv: edPriv}, ML: audit.MLDSASigner{Priv: mlPriv}}
 	th, err := audit.NewTreeHead(ctx, store, runID, 1)
 	if err != nil {
 		panic(err)
 	}
-	sth := audit.SignTreeHead(th, priv)
+	sth, err := audit.SignTreeHead(th, signer)
+	if err != nil {
+		panic(err)
+	}
 
 	approvedAllowlist := []string{policyDigest}
-	runCert, err := audit.CertifyRun(ctx, store, runID, sth, audit.RunCertSpec{ApprovedPolicies: approvedAllowlist}, priv, 2)
+	runCert, err := audit.CertifyRun(ctx, store, runID, sth, audit.RunCertSpec{ApprovedPolicies: approvedAllowlist, Signer: signer, TimestampNanos: 2})
 	if err != nil {
 		panic(err)
 	}
@@ -110,8 +128,13 @@ func main() {
 	if _, err := audit.RecordRunCertificate(ctx, store, runID, runCert); err != nil {
 		panic(err)
 	}
-	fmt.Printf("verifying offline with the public key alone (%s):\n", short(hex.EncodeToString(pub)))
-	res, err := audit.VerifyRun(runCert, approvedAllowlist, pub)
+	// The auditor holds the log's public key out of band; here it is derived from the signer.
+	logKey, err := audit.VerifierOf(signer)
+	if err != nil {
+		panic(err)
+	}
+	fmt.Printf("verifying offline with the %s public key alone (%d bytes, sha256 %s):\n", logKey.Alg(), len(logKey.PublicKey()), short(fingerprint(logKey.PublicKey())))
+	res, err := audit.VerifyRun(runCert, approvedAllowlist, logKey)
 	if err != nil {
 		panic(err)
 	}
@@ -122,13 +145,23 @@ func main() {
 		panic("expected a correctly-produced certificate to verify")
 	}
 
+	// The ed25519 half of the hybrid key is not the log key: a certificate signed under the hybrid
+	// scheme does not verify under ed25519 alone.
+	edOnly := audit.Ed25519Verifier{Pub: edPriv.Public().(ed25519.PublicKey)}
+	if _, err := audit.VerifyRun(runCert, approvedAllowlist, edOnly); !errors.Is(err, audit.ErrNotVerified) {
+		panic(fmt.Sprintf("expected the ed25519 half alone not to verify the certificate, got %v", err))
+	}
+	fmt.Println("  the ed25519 half of the key alone does NOT verify it (the signed scheme is ed25519+ml-dsa-65)")
+	fmt.Println()
+
 	// FAIL path: a stricter auditor whose allowlist does NOT include the policy this run used. The
 	// certificate's used set is still bound to the signed absence root (completeness), so it cannot be
 	// quietly narrowed; only-approved-policies fails because a used policy is outside the allowlist.
 	fmt.Println("now a stricter auditor whose allowlist EXCLUDES the policy this run used:")
-	failRes, err := audit.VerifyRun(runCert, []string{"a-different-approved-policy-digest"}, pub)
-	if err != nil {
-		panic(err)
+	// A certificate that does not hold is an error wrapping audit.ErrNotVerified, with the verdict.
+	failRes, err := audit.VerifyRun(runCert, []string{"a-different-approved-policy-digest"}, logKey)
+	if !errors.Is(err, audit.ErrNotVerified) {
+		panic(fmt.Sprintf("expected ErrNotVerified, got %v", err))
 	}
 	fmt.Printf("  only-approved-policies:          %v\n", failRes.OnlyApprovedPolicies)
 	for _, reason := range failRes.Reasons {
@@ -144,9 +177,9 @@ func main() {
 	fmt.Println("and a producer who tries to HIDE the used policy by dropping it from the disclosed set:")
 	hidden := runCert
 	hidden.UsedPolicies = nil
-	hiddenRes, err := audit.VerifyRun(hidden, approvedAllowlist, pub)
-	if err != nil {
-		panic(err)
+	hiddenRes, err := audit.VerifyRun(hidden, approvedAllowlist, logKey)
+	if !errors.Is(err, audit.ErrNotVerified) {
+		panic(fmt.Sprintf("expected ErrNotVerified, got %v", err))
 	}
 	fmt.Printf("  only-approved-policies:          %v (the signed used-policy root no longer matches)\n", hiddenRes.OnlyApprovedPolicies)
 	fmt.Printf("  => PASS: %v (a used policy cannot be hidden)\n\n", hiddenRes.OK)
@@ -171,6 +204,12 @@ func callGoverned(ctx context.Context, store agent.Durable, runID, toolUseID str
 		panic(err)
 	}
 	fmt.Printf("  %-12s applied\n", toolUseID)
+}
+
+// fingerprint is the hex SHA-256 of a public key, a short name for it.
+func fingerprint(pub []byte) string {
+	sum := sha256.Sum256(pub)
+	return hex.EncodeToString(sum[:])
 }
 
 func short(s string) string {

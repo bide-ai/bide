@@ -28,7 +28,10 @@ func TestSignersDoNotDiscloseKeys(t *testing.T) {
 	ed := Ed25519Signer{Priv: edPriv}
 	ml := MLDSASigner{Priv: mlPriv}
 	hy := HybridSigner{Ed: ed, ML: ml}
-	st := NewAuditedStore(agent.NewMemStore(), edPriv, nil)
+	st, err := NewAuditedStore(agent.NewMemStore(), ed, NewMemAnchorLog())
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	secrets := [][]byte{edPriv, edPriv.Seed(), mlPriv.Bytes()}
 	leaks := func(s string) bool {
@@ -56,7 +59,7 @@ func TestSignersDoNotDiscloseKeys(t *testing.T) {
 		{"*Ed25519Signer", &ed, "audit.Ed25519Signer{Priv:[redacted]}"},
 		{"MLDSASigner", ml, "audit.MLDSASigner{Priv:[redacted]}"},
 		{"HybridSigner", hy, "audit.HybridSigner{Ed:[redacted], ML:[redacted]}"},
-		{"*AuditedStore", st, "audit.AuditedStore{priv:[redacted]}"},
+		{"*AuditedStore", st, "audit.AuditedStore{signer:[redacted]}"},
 	} {
 		for _, verb := range []string{"%v", "%+v", "%#v", "%s", "%x", "%q"} {
 			got := fmt.Sprintf(verb, c.v)

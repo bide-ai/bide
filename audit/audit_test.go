@@ -6,6 +6,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"testing"
 
@@ -64,7 +65,7 @@ func TestHead_DeterministicAndTamperEvident(t *testing.T) {
 
 	// The head commits to each record's salt: the same content under another salt diverges.
 	resalted := append(fixedHistory(nil), recs...)
-	resalted[1] = withSalt(resalted[1], bytes.Repeat([]byte{1}, agent.SaltSize))
+	resalted[1] = stored(withSalt(resalted[1], bytes.Repeat([]byte{1}, agent.SaltSize)))
 	if bytes.Equal(head(t, s1, "r"), head(t, resalted, "r")) {
 		t.Fatal("a record's salt must be part of the head")
 	}
@@ -119,15 +120,75 @@ func TestSign_Roundtrip(t *testing.T) {
 	record(t, store, "r", "a", "b")
 	h := head(t, store, "r")
 
-	sig := audit.Sign(h, priv)
-	if !audit.VerifySignature(h, sig, pub) {
+	sig, _ := audit.Sign(h, edS(priv))
+	if audit.VerifySignature(h, sig, edV(pub)) != nil {
 		t.Fatal("valid signature must verify")
 	}
-	if audit.VerifySignature([]byte("not the head, padded to length.."), sig, pub) {
+	if audit.VerifySignature([]byte("not the head, padded to length.."), sig, edV(pub)) == nil {
 		t.Fatal("signature must not verify against a different head")
 	}
 	otherPub, _, _ := ed25519.GenerateKey(rand.Reader)
-	if audit.VerifySignature(h, sig, otherPub) {
+	if audit.VerifySignature(h, sig, edV(otherPub)) == nil {
 		t.Fatal("signature must not verify under a different key")
+	}
+}
+
+// edS and edV wrap raw ed25519 keys as an audit Signer and Verifier.
+func edS(priv ed25519.PrivateKey) audit.Signer { return audit.Ed25519Signer{Priv: priv} }
+func edV(pub ed25519.PublicKey) audit.Verifier { return audit.Ed25519Verifier{Pub: pub} }
+
+// signTH signs th with priv under ed25519, failing the test on error.
+func signTH(tb testing.TB, th audit.TreeHead, priv ed25519.PrivateKey) audit.SignedTreeHead {
+	tb.Helper()
+	sth, err := audit.SignTreeHead(th, edS(priv))
+	if err != nil {
+		tb.Fatal(err)
+	}
+	return sth
+}
+
+// mustAuditedStore wraps inner in an AuditedStore signing with priv, failing the test on error.
+func mustAuditedStore(tb testing.TB, inner agent.Durable, priv ed25519.PrivateKey, anchor audit.Anchor) *audit.AuditedStore {
+	tb.Helper()
+	s, err := audit.NewAuditedStore(inner, edS(priv), anchor)
+	if err != nil {
+		tb.Fatal(err)
+	}
+	return s
+}
+
+// recOf decodes the record a bundle proves, failing the test if it does not decode.
+func recOf(tb testing.TB, b audit.ProofBundle) agent.Record {
+	tb.Helper()
+	r, err := b.Record()
+	if err != nil {
+		tb.Fatal(err)
+	}
+	return r
+}
+
+// editRec decodes the record b proves, applies edit to it, and puts its journal encoding back
+// in b: a tampered bundle.
+func editRec(tb testing.TB, b *audit.ProofBundle, edit func(*agent.Record)) {
+	tb.Helper()
+	r := recOf(tb, *b)
+	edit(&r)
+	enc, err := agent.EncodeRecord(r)
+	if err != nil {
+		tb.Fatal(err)
+	}
+	b.RecordBytes = enc
+}
+
+// reportErr checks a report verifier's error against its verdict: nil when ok, ErrNotVerified when
+// not. It returns a description of any other combination, or nil.
+func reportErr(ok bool, err error) error {
+	switch {
+	case ok && err == nil, !ok && errors.Is(err, audit.ErrNotVerified):
+		return nil
+	case ok:
+		return fmt.Errorf("verdict OK with error %w", err)
+	default:
+		return fmt.Errorf("verdict not OK with error %v, want ErrNotVerified", err)
 	}
 }

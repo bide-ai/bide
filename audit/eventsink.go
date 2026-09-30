@@ -108,12 +108,12 @@ func (l *EventLog) Prove(index int) (EventInclusion, error) {
 
 // TreeHead returns a commitment to runID's events added so far at the given timestamp, the
 // EventLog analogue of NewTreeHead over the journal. Its Kind is TreeEvents, so a signed event
-// head never verifies as a journal head. Sign it with SignTreeHead and verify with
-// SignedTreeHead.Verify; the signature binds kind, run, root, size, and timestamp, so an event
+// head never verifies as a journal head. timestamp is Unix nanoseconds. Sign it with SignTreeHead
+// and verify with SignedTreeHead.Verify; the signature binds kind, run, root, size, and timestamp, so an event
 // trail gets the same anchored guarantee a journal STH gives. Inclusion proofs (Prove /
 // VerifyEventInclusion) check against the resulting Root; Size counts events.
 func (l *EventLog) TreeHead(runID string, timestamp int64) TreeHead {
-	return TreeHead{Kind: TreeEvents, RunID: runID, Size: len(l.leaves), Root: merkleRoot(l.leaves), Timestamp: timestamp}
+	return TreeHead{Kind: TreeEvents, RunID: runID, Size: len(l.leaves), Root: merkleRoot(l.leaves), TimestampNanos: timestamp}
 }
 
 // ProveConsistency proves the first `first` events are an append-only PREFIX of the current
@@ -125,23 +125,27 @@ func (l *EventLog) ProveConsistency(first int) (Consistency, error) {
 	if first < 0 || first > len(l.leaves) {
 		return Consistency{}, fmt.Errorf("audit: first %d out of range [0,%d]", first, len(l.leaves))
 	}
-	return Consistency{First: first, Size: len(l.leaves), Path: consistencyProof(first, l.leaves)}, nil
+	return Consistency{First: first, Size: len(l.leaves), Path: consistencyProof(first, leafHashes(l.leaves))}, nil
 }
 
-// VerifyEventInclusion reports whether event, under the salt proof discloses, is the leaf at
-// proof.Index in a log of proof.Size events committed by root: from the event and proof alone,
-// no other events needed. The event must canonicalize identically to when it was added. It
-// errors if the event cannot be canonicalized, proof.Salt is not agent.SaltSize bytes, or
-// proof.Format is not EventInclusionFormat (ErrFormat).
-func VerifyEventInclusion(root []byte, event agent.AgentEvent, proof EventInclusion) (bool, error) {
+// VerifyEventInclusion returns nil if event, under the salt proof discloses, is the leaf at
+// proof.Index in a log of proof.Size events committed by root: from the event and proof alone, no
+// other events needed. The event must canonicalize identically to when it was added. A proof that
+// does not hold is an error wrapping ErrNotVerified; one whose format is not EventInclusionFormat,
+// ErrFormat; an event that cannot be canonicalized or a salt that is not agent.SaltSize bytes,
+// ErrMalformed.
+func VerifyEventInclusion(root []byte, event agent.AgentEvent, proof EventInclusion) error {
 	if err := formatOf(proof, proof.Format); err != nil {
-		return false, err
+		return err
 	}
 	leaf, err := canonicalEvent(event, proof.Salt)
 	if err != nil {
-		return false, err
+		return fmt.Errorf("%w (%w)", err, ErrMalformed)
 	}
-	return verifyPath(root, leaf, proof.Index, proof.Size, proof.Path), nil
+	if !verifyPath(root, leaf, proof.Index, proof.Size, proof.Path) {
+		return notVerified("audit: the event is not leaf %d of the %d-event log under this root", proof.Index, proof.Size)
+	}
+	return nil
 }
 
 // EventLogFromJournal builds an EventLog from runID's DURABLE journal by projecting it to the
@@ -225,8 +229,8 @@ func Record(log *EventLog, stream *agent.AgentStream, onEvent func(agent.AgentEv
 	return msg, addErr
 }
 
-// eventLeaf is the canonical wire form of one event: a kind tag, the event's JSON, and the
-// event's random salt (base64). The kind makes the leaf self-describing so two different event
+// eventLeaf is the canonical wire form of one event: a kind tag, the event's JSON (every event
+// type has snake_case field names), and the event's random salt (base64). The kind makes the leaf self-describing so two different event
 // types can never collide by having the same field shape (e.g. an empty struct); the salt makes
 // the leaf's hash unguessable from the event's content (see EventInclusion).
 type eventLeaf struct {
@@ -236,7 +240,7 @@ type eventLeaf struct {
 }
 
 // canonicalEvent returns the leaf bytes of e under salt:
-// "bide.audit.event-leaf.v2\x00" || {"kind":...,"event":...,"salt":...}. It refuses a salt that
+// "bide.audit.event-leaf.v3\x00" || {"kind":...,"event":...,"salt":...}. It refuses a salt that
 // is not agent.SaltSize bytes: the leaf would be guessable from the event's content. It refuses an
 // event holding a string that is not valid UTF-8 (see checkUTF8): the encoding would rewrite it,
 // so two different events would share one leaf and a proof of one would verify the other.
@@ -247,11 +251,15 @@ func canonicalEvent(e agent.AgentEvent, salt []byte) ([]byte, error) {
 	if err := checkUTF8(e); err != nil {
 		return nil, fmt.Errorf("audit: canonicalize event: %w", err)
 	}
+	kind, err := eventKind(e)
+	if err != nil {
+		return nil, err
+	}
 	inner, err := json.Marshal(e)
 	if err != nil {
 		return nil, fmt.Errorf("audit: canonicalize event: %w", err)
 	}
-	b, err := json.Marshal(eventLeaf{Kind: eventKind(e), Event: inner, Salt: salt})
+	b, err := json.Marshal(eventLeaf{Kind: kind, Event: inner, Salt: salt})
 	if err != nil {
 		return nil, fmt.Errorf("audit: canonicalize event: %w", err)
 	}
@@ -259,7 +267,7 @@ func canonicalEvent(e agent.AgentEvent, salt []byte) ([]byte, error) {
 }
 
 // eventLeafSalt returns the salt a stored event leaf commits to. It refuses a leaf of another
-// kind or version (an unsalted bide.audit.event-leaf.v1 leaf among them) and one whose salt is
+// kind or version (an unsalted bide.audit.event-leaf.v1 leaf, or a Go-case v2 one, among them) and one whose salt is
 // not agent.SaltSize bytes.
 func eventLeafSalt(leaf []byte) ([]byte, error) {
 	body, ok := bytes.CutPrefix(leaf, []byte(eventLeafTag))
@@ -285,41 +293,47 @@ func newEventSalt() ([]byte, error) {
 	return salt, nil
 }
 
-// eventKind is a stable, human-readable discriminator for an AgentEvent. ModelEvent carries
-// the inner model event's kind too, so token/reasoning/tool-call deltas stay distinct even
-// when their JSON coincides.
-func eventKind(e agent.AgentEvent) string {
+// eventKind is a stable, snake_case discriminator for an AgentEvent. A model_event carries the
+// inner model event's kind too, so token/reasoning/tool-call deltas stay distinct even when their
+// JSON coincides. An event of a type it does not name is refused: its leaf would not say what it is.
+func eventKind(e agent.AgentEvent) (string, error) {
 	switch ev := e.(type) {
 	case agent.TurnStarted:
-		return "TurnStarted"
+		return "turn_started", nil
+	case agent.TurnRestarted:
+		return "turn_restarted", nil
 	case agent.ModelEvent:
-		return "ModelEvent/" + modelEventKind(ev.Event)
+		k, err := modelEventKind(ev.Event)
+		if err != nil {
+			return "", err
+		}
+		return "model_event/" + k, nil
 	case agent.AssistantTurn:
-		return "AssistantTurn"
+		return "assistant_turn", nil
 	case agent.ToolStarted:
-		return "ToolStarted"
+		return "tool_started", nil
 	case agent.ToolCompleted:
-		return "ToolCompleted"
+		return "tool_completed", nil
 	case agent.ApprovalRequired:
-		return "ApprovalRequired"
+		return "approval_required", nil
 	case agent.Finished:
-		return "Finished"
+		return "finished", nil
 	default:
-		return fmt.Sprintf("%T", e)
+		return "", fmt.Errorf("audit: canonicalize event: unknown event type %T", e)
 	}
 }
 
-func modelEventKind(e agent.Event) string {
+func modelEventKind(e agent.Event) (string, error) {
 	switch e.(type) {
 	case agent.TextDelta:
-		return "TextDelta"
+		return "text_delta", nil
 	case agent.ReasoningDelta:
-		return "ReasoningDelta"
+		return "reasoning_delta", nil
 	case agent.ToolCallDelta:
-		return "ToolCallDelta"
+		return "tool_call_delta", nil
 	case agent.Finish:
-		return "Finish"
+		return "finish", nil
 	default:
-		return fmt.Sprintf("%T", e)
+		return "", fmt.Errorf("audit: canonicalize event: unknown model event type %T", e)
 	}
 }

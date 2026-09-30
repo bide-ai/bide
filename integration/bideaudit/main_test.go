@@ -72,7 +72,7 @@ func TestVerifyConvergenceCLI(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewTreeHead: %v", err)
 	}
-	sth := audit.SignTreeHead(th, priv)
+	sth := must(audit.SignTreeHead(th, audit.Ed25519Signer{Priv: priv}))
 
 	policyBundle, err := audit.ProvePolicy(ctx, store, runID, digest, sth)
 	if err != nil {
@@ -211,9 +211,9 @@ func TestVerifyRunCLI(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewTreeHead: %v", err)
 	}
-	sth := audit.SignTreeHead(th, priv)
+	sth := must(audit.SignTreeHead(th, audit.Ed25519Signer{Priv: priv}))
 
-	cert, err := audit.CertifyRun(ctx, store, runID, sth, audit.RunCertSpec{ApprovedPolicies: []string{digest}}, priv, 2)
+	cert, err := audit.CertifyRun(ctx, store, runID, sth, audit.RunCertSpec{ApprovedPolicies: []string{digest}, Signer: audit.Ed25519Signer{Priv: priv}, TimestampNanos: 2})
 	if err != nil {
 		t.Fatalf("CertifyRun: %v", err)
 	}
@@ -282,7 +282,7 @@ func TestVerifyQuorumCLI(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewTreeHead: %v", err)
 	}
-	sth := audit.SignTreeHead(th, priv)
+	sth := must(audit.SignTreeHead(th, audit.Ed25519Signer{Priv: priv}))
 
 	// Produce and write the bundles a verifier would receive.
 	bundlePath := func(name, file string) string {
@@ -350,7 +350,7 @@ func TestVerifyQuorumCLI_TieIsNotAgreement(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sth := audit.SignTreeHead(th, priv)
+	sth := must(audit.SignTreeHead(th, audit.Ed25519Signer{Priv: priv}))
 	args := []string{"verify-quorum", "-name", "q", "-pubkey", hex.EncodeToString(pub), "-k", "2"}
 	for _, name := range []string{govern.QuorumTallyStep("q"), govern.QuorumVoteStep("q", "model-A"), govern.QuorumVoteStep("q", "model-B"), govern.QuorumVoteStep("q", "model-C"), govern.QuorumVoteStep("q", "model-D")} {
 		pb, err := audit.ProveStep(ctx, store, runID, name, sth)
@@ -372,4 +372,12 @@ func TestVerifyQuorumCLI_TieIsNotAgreement(t *testing.T) {
 	if out, err := exec.Command(bin, args...).CombinedOutput(); err == nil {
 		t.Fatalf("a 2-2 split verified as a quorum:\n%s", out)
 	}
+}
+
+// must returns v, panicking on err: for producers the tests call with known-good inputs.
+func must[T any](v T, err error) T {
+	if err != nil {
+		panic(err)
+	}
+	return v
 }

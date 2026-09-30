@@ -81,12 +81,12 @@ func TestPersistJournal_RoundTripsAndIsIdempotent(t *testing.T) {
 
 	// The trail stands on its own: anchor and prove from the EventStore alone (journal gone).
 	pub, priv, _ := ed25519.GenerateKey(nil)
-	sth := audit.SignTreeHead(fromStore.TreeHead("run", 1000), priv)
+	sth := signTH(t, fromStore.TreeHead("run", 1000), priv)
 	proof, _ := fromStore.Prove(0)
 	evs, _ := agent.ReplayEvents(ctx, jStore, "run") // the disclosed event (held by the verifier)
-	ok, _ := audit.VerifyEventInclusion(sth.Root, evs[0], proof)
-	if !sth.Verify(pub) || !ok {
-		t.Fatalf("store-only anchor/proof failed (sth=%v incl=%v)", sth.Verify(pub), ok)
+	incl := audit.VerifyEventInclusion(sth.Root, evs[0], proof)
+	if sth.Verify(edV(pub)) != nil || incl != nil {
+		t.Fatalf("store-only anchor/proof failed (sth=%v incl=%v)", sth.Verify(edV(pub)), incl)
 	}
 }
 
@@ -128,7 +128,7 @@ func TestPersistJournal_IncrementalConsistency(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ProveConsistency: %v", err)
 	}
-	if !audit.VerifyConsistency(earlyRoot, full.Root(), proof) {
+	if audit.VerifyConsistency(earlyRoot, full.Root(), proof) != nil {
 		t.Fatal("store-backed trail failed the append-only consistency proof")
 	}
 }
@@ -174,8 +174,8 @@ func TestEventStore_PersistsSalts(t *testing.T) {
 		t.Fatalf("reloaded salts %x, %x; want distinct %d-byte salts", p0.Salt, p1.Salt, agent.SaltSize)
 	}
 	for i, p := range []audit.EventInclusion{p0, p1} {
-		if ok, err := audit.VerifyEventInclusion(a.Root(), evs[i], p); !ok || err != nil {
-			t.Fatalf("event %d does not verify from the reloaded trail: %v, %v", i, ok, err)
+		if err := audit.VerifyEventInclusion(a.Root(), evs[i], p); err != nil {
+			t.Fatalf("event %d does not verify from the reloaded trail: %v", i, err)
 		}
 	}
 
