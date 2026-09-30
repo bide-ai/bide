@@ -3,6 +3,7 @@ package middleware
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"sync"
 	"time"
 
@@ -33,7 +34,7 @@ func ToolRetry(n int, opts ...RetryOption) agent.ToolMiddleware {
 	return func(next agent.ToolHandler) agent.ToolHandler {
 		return func(ctx context.Context, call agent.ToolCall) (json.RawMessage, error) {
 			if err := checkRetryCount("ToolRetry", n); err != nil {
-				return nil, err
+				return nil, fmt.Errorf("%w (%w)", err, agent.ErrToolNotCalled) // next is never called
 			}
 			if !call.Spec.Safety.RetrySafe() {
 				return next(ctx, call)
@@ -44,6 +45,9 @@ func ToolRetry(n int, opts ...RetryOption) agent.ToolMiddleware {
 			)
 			for attempt := 0; attempt <= n; attempt++ {
 				if ctx.Err() != nil {
+					if attempt == 0 { // next was never called
+						return nil, fmt.Errorf("%w (%w)", ctx.Err(), agent.ErrToolNotCalled)
+					}
 					return nil, ctx.Err()
 				}
 				err = cfg.run(ctx, func(actx context.Context) error {

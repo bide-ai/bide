@@ -200,3 +200,16 @@ func (e *JournalVersionError) Error() string {
 
 // Unwrap returns ErrJournalVersion.
 func (e *JournalVersionError) Unwrap() error { return ErrJournalVersion }
+
+// ErrToolNotCalled marks a tool call that is known never to have reached its tool, so its side
+// effect cannot have happened. It is a condition with no category: it is wrapped beside the
+// error that says why (a context error, a policy denial, ErrConfig).
+//
+// A tool middleware that ends a call without calling next (a rate limiter that gives up, a policy
+// that denies) returns an error wrapping it, so the agent records the call as a known failure. It
+// must never be returned for a call that did call next: next may have reached the tool. A
+// middleware reaches the tool only through next, never by calling the tool itself. The agent
+// knows whether next reached the tool, and trusts it over this error; but for a call whose chain
+// returned without entering next at all, an error that does not wrap ErrToolNotCalled leaves a
+// side effect's outcome unknown, and the run halts for it rather than risk running it twice.
+var ErrToolNotCalled = errors.New("tool not called")

@@ -28,8 +28,8 @@ type ToolCall struct {
 	// origName and origID are the call as the model made it: the base handler refuses a call a
 	// middleware renamed or re-identified.
 	origName, origID string
-	// reached is set by the base handler immediately before it calls the tool.
-	reached *atomic.Bool
+	// state is whether the call reached its tool (see callOpen), changed by compare-and-swap only.
+	state *atomic.Int32
 }
 
 // ErrorText returns the text the agent journals, and sends to the model, for this call failing
@@ -58,6 +58,14 @@ type ToolHandler func(ctx context.Context, call ToolCall) (json.RawMessage, erro
 // the call's Spec.Safety first: repeating or skipping a side effect is not its call to make. The
 // agent enforces the first half itself: a tool that is not RetrySafe runs at most once per tool
 // call, and a second call to next for it returns ErrToolReinvoked without running the tool.
+//
+// A middleware reaches the tool only through next: never by calling the tool itself, and never by
+// leaving next running after it returns (the agent refuses an invocation of next that comes after
+// the chain returned). When it ends a call without calling next (a denial, a rate limiter that
+// gives up), it returns an error wrapping ErrToolNotCalled, and it returns that error only then.
+// The agent needs positive proof that a side effect was not called: a chain that returns an error
+// without calling next, and without ErrToolNotCalled, leaves the side effect's outcome unknown,
+// and the run halts for it rather than risk running it twice.
 //
 // The chain runs INSIDE the durable, memoized step, so a short-circuit result or a
 // transformed result is what gets journaled: resume replays it and never re-runs the

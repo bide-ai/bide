@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -24,7 +25,7 @@ func TestR117_MiddlewareTimeoutBeforeTheToolRunsHaltsAsIfItMayHaveFired(t *testi
 	waitForSlot := ToolMiddleware(func(next ToolHandler) ToolHandler {
 		return func(ctx context.Context, call ToolCall) (json.RawMessage, error) {
 			<-ctx.Done() // the limiter has no slot before the deadline
-			return nil, ctx.Err()
+			return nil, fmt.Errorf("no slot: %w (%w)", ctx.Err(), ErrToolNotCalled) // next was never called
 		}
 	})
 	store := NewMemStore()

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
 )
@@ -18,13 +19,12 @@ import (
 // whenever next has not yet reached the base handler when the middleware gives up.
 func TestAdv117b_AbandoningMiddlewareDoubleFiresASideEffect(t *testing.T) {
 	var charges atomic.Int32
-	fired := make(chan struct{}, 4)
 	charge := Func("charge", "", Safety{}, func(context.Context, struct{}) (string, error) {
 		charges.Add(1)
-		fired <- struct{}{}
 		return "charged", nil
 	})
 	gate := make(chan struct{})
+	var late sync.WaitGroup // the abandoned request
 	ctx, cancel := context.WithCancel(context.Background())
 	abandon := ToolMiddleware(func(next ToolHandler) ToolHandler {
 		return func(ctx context.Context, call ToolCall) (json.RawMessage, error) {
@@ -33,7 +33,9 @@ func TestAdv117b_AbandoningMiddlewareDoubleFiresASideEffect(t *testing.T) {
 				err error
 			}
 			done := make(chan out, 1)
+			late.Add(1)
 			go func() {
+				defer late.Done()
 				<-gate
 				r, e := next(context.WithoutCancel(ctx), call) // finish the request even if the caller leaves
 				done <- out{r, e}
@@ -53,14 +55,17 @@ func TestAdv117b_AbandoningMiddlewareDoubleFiresASideEffect(t *testing.T) {
 		t.Fatalf("first drive: %v, want context.Canceled", err)
 	}
 	close(gate) // the queued request goes out after the drive returned
-	<-fired
+	late.Wait()
+	// The chain had returned, so the call was closed: the late request is refused and never reaches
+	// the tool. The chain's error did not say ErrToolNotCalled, so the side effect's outcome is
+	// unknown to the loop, and the resume halts for it rather than fire it.
 	_, err := New(m, store, charge).Run(context.Background(), "r1", "pay")
 	var halt *OutcomeUnknown
 	if charges.Load() > 1 {
 		t.Fatalf("the side effect fired %d times (resume err %v); the claim was recorded as not started although the chain went on to call the tool", charges.Load(), err)
 	}
-	if !errors.As(err, &halt) {
-		t.Logf("resume err %v", err)
+	if charges.Load() != 0 || !errors.As(err, &halt) {
+		t.Fatalf("charges %d, resume err %v; want the late request refused and the resume halted", charges.Load(), err)
 	}
 }
 
@@ -91,6 +96,10 @@ func TestAdv117b_MiddlewareCallingTheToolDirectlyDoubleFires(t *testing.T) {
 	_, err := New(m, store, charge).Run(context.Background(), "r1", "pay")
 	if charges.Load() > 1 {
 		t.Fatalf("the side effect fired %d times (resume err %v)", charges.Load(), err)
+	}
+	var halt *OutcomeUnknown
+	if !errors.As(err, &halt) {
+		t.Fatalf("resume err %v, want *OutcomeUnknown: the call may have reached the tool", err)
 	}
 }
 

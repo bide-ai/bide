@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"runtime"
 	"strings"
 	"sync/atomic"
@@ -134,7 +135,7 @@ func TestR117_RunCancelledInMiddlewareRecordsNotStarted(t *testing.T) {
 		return func(ctx context.Context, call ToolCall) (json.RawMessage, error) {
 			cancel() // the run is cancelled while the limiter waits
 			<-ctx.Done()
-			return nil, ctx.Err()
+			return nil, fmt.Errorf("no slot: %w (%w)", ctx.Err(), ErrToolNotCalled)
 		}
 	})
 	store := NewMemStore()

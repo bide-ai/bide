@@ -580,15 +580,22 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 					// Emitted here, past the pre-call check, so a consumer sees ToolStarted only for a
 					// call that actually starts; one recorded as not started emits neither event.
 					fire(ToolStarted{ToolUseID: c.tu.ID, Name: c.tu.Name, Args: c.tu.Args})
-					res, reached, late, callErr := callTool(sctx, c.spec.Timeout, func(ctx context.Context) (json.RawMessage, bool, error) { return toolH(ctx, c.tu) })
-					// Only a call whose base handler reached the tool's Call may have taken effect; one
-					// that a middleware ended first (a denial, a cache hit, a wait that ran out of time)
-					// did not, and a claim for it is recorded as never started if nothing else is.
-					called.Store(reached)
+					res, state, late, callErr := callTool(sctx, c.spec.Timeout, func(ctx context.Context) (json.RawMessage, int32, error) { return toolH(ctx, c.tu) })
+					// "Not called" needs positive proof: the base handler refused the call, or the
+					// chain returned without entering it and says so with ErrToolNotCalled. Only then
+					// is a claim recorded as never started (below) or a failure recorded as known. A
+					// chain that returned without entering the base handler and without that error
+					// may have reached the tool some other way (a middleware that called it itself),
+					// so a side effect's outcome is then unknown and the run halts for it.
+					notCalled := state == callRefused || state == callClosed && callErr != nil && errors.Is(callErr, ErrToolNotCalled)
+					called.Store(!notCalled)
+					if state == callClosed && callErr != nil && !notCalled && !c.spec.Safety.retriableOnResume() {
+						callErr = fmt.Errorf("tool %q: the tool middleware returned an error without calling next, and not ErrToolNotCalled, so the tool may have run: %w (%w)", c.tu.Name, callErr, ErrToolOutcomeUnknown)
+					}
 					// The safety and approval gate the call ran under, for a saga rollback and an audit.
 					r := Record{Kind: StepToolResult, ToolUseID: c.tu.ID, Safety: recordedSafety(*c.spec), Approval: c.spec.Approval.Clone()}
 					if callErr != nil && ctxDone(sctx) {
-						// (A call cancelled before it reached the tool records nothing here either,
+						// (A call known not to have reached the tool records nothing here either,
 						// and called is false for it, so its claim is recorded as never started
 						// below and a resume calls the tool.)
 						//

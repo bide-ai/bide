@@ -117,20 +117,20 @@ func toolResultMessage(r Record) Message {
 }
 
 // callTool runs call under ctx, bounded by timeout when it is positive (a tool's
-// ToolSpec.Timeout). call reports whether the base handler reached the tool's Call. late reports
-// an error returned, by a call that reached the tool, once that deadline had passed. The caller
-// checks ctx first (ctxDone): an error after ctx itself was done is the run's cancellation, not a
-// late error. A call that never reached the tool is never late: its tool did not run. A result is
-// returned as the call returned it, whenever it came.
-func callTool(ctx context.Context, timeout time.Duration, call func(context.Context) (json.RawMessage, bool, error)) (res json.RawMessage, reached, late bool, err error) {
+// ToolSpec.Timeout). call reports the call's final state (see callOpen). late reports an error
+// returned, by a call that reached the tool, once that deadline had passed. The caller checks ctx
+// first (ctxDone): an error after ctx itself was done is the run's cancellation, not a late error.
+// A call that never reached the tool is never late: its tool did not run. A result is returned as
+// the call returned it, whenever it came.
+func callTool(ctx context.Context, timeout time.Duration, call func(context.Context) (json.RawMessage, int32, error)) (res json.RawMessage, state int32, late bool, err error) {
 	if timeout <= 0 {
-		res, reached, err = call(ctx)
-		return res, reached, false, err
+		res, state, err = call(ctx)
+		return res, state, false, err
 	}
 	tctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	res, reached, err = call(tctx)
-	return res, reached, err != nil && reached && ctxDone(tctx), err
+	res, state, err = call(tctx)
+	return res, state, err != nil && state == callReached && ctxDone(tctx), err
 }
 
 // ctxDone reports whether ctx is done or its deadline has passed. A context's Err is set by a
@@ -191,11 +191,42 @@ func (a *Agent) toolCallFor(runID string, tu ToolUse) ToolCall {
 	return ToolCall{Use: tu, Spec: s, RunID: runID, redact: a.toolErrRedact, modelArgs: tu.Args, origName: tu.Name, origID: tu.ID}
 }
 
+// A call's state records, by compare-and-swap only, whether its tool was called. It starts open.
+// The base handler moves it to reached immediately before it calls the tool, or to refused when it
+// refuses the call (the call was renamed, names no tool, was already made, or its context was done).
+// When the middleware chain returns, the loop moves an open call to closed: the base handler was
+// never entered, and if it is entered later (a middleware that left next running in a goroutine)
+// it finds the call closed and refuses it. A call is known not to have reached its tool only when
+// the state says refused, or says closed and the chain's error wraps ErrToolNotCalled.
+const (
+	callOpen int32 = iota
+	callReached
+	callRefused
+	callClosed
+)
+
+// enterTool moves st to reached, from open or refused (a retry of a refused call), and reports
+// false, leaving st as it is, if the chain has closed the call. A call already reached stays so.
+func enterTool(st *atomic.Int32) bool {
+	for {
+		switch s := st.Load(); s {
+		case callReached:
+			return true
+		case callClosed:
+			return false
+		default:
+			if st.CompareAndSwap(s, callReached) {
+				return true
+			}
+		}
+	}
+}
+
 // toolHandler builds the wrapped tool-execution chain once per run: a base handler that
 // dispatches by name to the registered tool, wrapped by the middleware in order. It returns the
-// chain's entry point for a call of run runID, which also reports whether the base handler reached
-// the tool's Call.
-func (a *Agent) toolHandler(runID string) func(context.Context, ToolUse) (json.RawMessage, bool, error) {
+// chain's entry point for a call of run runID, which also reports the call's final state (see
+// callOpen): reached, refused, or closed.
+func (a *Agent) toolHandler(runID string) func(context.Context, ToolUse) (json.RawMessage, int32, error) {
 	// ran holds the tool-use IDs of tools that are not retry-safe and have been invoked in this
 	// run. It lives here, in the base handler, rather than in the context, so no middleware can
 	// get around it: such a tool runs at most once per tool call, however often a middleware
@@ -203,47 +234,59 @@ func (a *Agent) toolHandler(runID string) func(context.Context, ToolUse) (json.R
 	var ran sync.Map
 	h := ToolHandler(func(ctx context.Context, call ToolCall) (json.RawMessage, error) {
 		tu := call.Use
+		// refuse ends the call without calling the tool: the state says so, and the error wraps
+		// ErrToolNotCalled for a ToolCall that carries no state (one a middleware built itself).
+		refuse := func(err error) (json.RawMessage, error) {
+			if call.state != nil {
+				call.state.CompareAndSwap(callOpen, callRefused)
+			}
+			return nil, fmt.Errorf("%w (%w)", err, ErrToolNotCalled)
+		}
 		// The call dispatches as the model made it: a middleware may rewrite the arguments, but a
 		// call renamed to another tool, or under another call's ID, would run a tool the model did
 		// not call, or claim and record under the wrong call. A ToolCall the middleware built
 		// itself, rather than a copy of the one it was passed, carries no original to check, and
 		// is refused the same way.
 		if call.origID == "" || tu.ID != call.origID || tu.Name != call.origName {
-			return nil, fmt.Errorf("tool middleware changed call %s (tool %q) to call %s (tool %q); middleware may change a call's arguments, not its tool or ID: %w",
-				call.origID, cutName(call.origName), cutName(tu.ID), cutName(tu.Name), ErrConfig)
+			return refuse(fmt.Errorf("tool middleware changed call %s (tool %q) to call %s (tool %q); middleware may change a call's arguments, not its tool or ID: %w",
+				call.origID, cutName(call.origName), cutName(tu.ID), cutName(tu.Name), ErrConfig))
 		}
 		t, ok := a.tools[tu.Name]
 		if !ok {
-			return nil, fmt.Errorf("call to unknown tool %q: %w", cutName(tu.Name), ErrUnknownTool)
+			return refuse(fmt.Errorf("call to unknown tool %q: %w", cutName(tu.Name), ErrUnknownTool))
 		}
 		// The registered spec decides, never call.Spec, which a middleware may have changed.
 		if !a.specs[tu.Name].Safety.RetrySafe() {
 			if _, again := ran.LoadOrStore(tu.ID, true); again {
+				// Not a refusal of the call: the earlier invocation reached the tool.
 				return nil, fmt.Errorf("tool %q (call %s) already ran and is not retry-safe: %w", tu.Name, tu.ID, ErrToolReinvoked)
 			}
 		}
 		if err := journalAcceptedArgs(ctx, t, call); err != nil {
-			return nil, err
+			return refuse(err)
 		}
 		// A deadline that passed in the middleware (a rate limiter's wait) leaves the tool uncalled:
 		// the call fails as a known timeout rather than start an effect already out of time.
 		if ctxDone(ctx) {
-			return nil, fmt.Errorf("tool %q (call %s) was not started: its context was done before the call: %w", tu.Name, tu.ID, doneCause(ctx))
+			return refuse(fmt.Errorf("tool %q (call %s) was not started: its context was done before the call: %w", tu.Name, tu.ID, doneCause(ctx)))
 		}
-		if call.reached != nil {
-			call.reached.Store(true) // from here the tool may have acted: see callTool
+		if call.state != nil && !enterTool(call.state) {
+			// The chain already returned (a middleware left next running): the loop has decided
+			// the call's outcome without this invocation, so it must not reach the tool.
+			return nil, fmt.Errorf("tool %q (call %s) was not started: the tool middleware chain had already returned: %w", tu.Name, tu.ID, ErrToolNotCalled)
 		}
 		return t.Call(ctx, tu.Args)
 	})
 	for i := len(a.toolMW) - 1; i >= 0; i-- {
 		h = a.toolMW[i](h)
 	}
-	return func(ctx context.Context, tu ToolUse) (json.RawMessage, bool, error) {
+	return func(ctx context.Context, tu ToolUse) (json.RawMessage, int32, error) {
 		call := a.toolCallFor(runID, tu)
-		var reached atomic.Bool
-		call.reached = &reached
+		var st atomic.Int32 // callOpen
+		call.state = &st
 		res, err := h(ctx, call)
-		return res, reached.Load(), err
+		st.CompareAndSwap(callOpen, callClosed)
+		return res, st.Load(), err
 	}
 }
 
