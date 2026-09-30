@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/bide-ai/bide/agent"
 )
@@ -15,6 +16,7 @@ type grantCtxKey struct{}
 type grantCarrier struct {
 	sg     SignedGrant
 	signer Signer
+	absent bool // withoutGrant: a grant bound further out does not apply here
 }
 
 // WithGrant binds the acting principal's signed grant and its signer to ctx. AttenuatingSubAgent
@@ -28,10 +30,16 @@ func WithGrant(ctx context.Context, sg SignedGrant, signer Signer) context.Conte
 // GrantFrom returns the acting signed grant and signer bound to ctx, and whether one was set.
 func GrantFrom(ctx context.Context) (SignedGrant, Signer, bool) {
 	c, ok := ctx.Value(grantCtxKey{}).(grantCarrier)
-	if !ok {
+	if !ok || c.absent {
 		return SignedGrant{}, nil, false
 	}
 	return c.sg, c.signer, true
+}
+
+// withoutGrant returns ctx with no grant bound, whatever an outer context bound: for work a
+// delegation ran without one.
+func withoutGrant(ctx context.Context) context.Context {
+	return context.WithValue(ctx, grantCtxKey{}, grantCarrier{absent: true})
 }
 
 // AttenuateFunc derives a child grant from the parent grant and the delegating sub-agent's name.
@@ -108,6 +116,47 @@ func (t *attenuatingSubAgent) Spec() agent.ToolSpec { return agent.SpecOf(t.Tool
 // Unwrap returns the SubAgent tool it wraps, so the agent recognises the call as a delegation:
 // a saga rollback recurses into its sub-run, and the tree's token budget counts it.
 func (t *attenuatingSubAgent) Unwrap() agent.Tool { return t.Tool }
+
+// BindRollback returns the context a saga rollback compensates the sub-run subRunID under: the
+// authority the delegation ran under, read from the sub-run's journal, never the parent's. With
+// the child grant the delegation journaled, the identity and grant are rebound as Call bound them
+// (Actor this sub-agent, OnBehalfOf the grant's issuer, AuthorityRef its digest). With none, the
+// delegation ran with no grant (it inherited the caller's identity), so none is bound. More than
+// one grant, or one whose parent is not the grant bound to ctx, is an error: the rollback stops
+// rather than compensate under authority it cannot establish.
+func (t *attenuatingSubAgent) BindRollback(ctx context.Context, subRunID string) (context.Context, error) {
+	recs, err := t.store.History(ctx, subRunID)
+	if err != nil {
+		return nil, fmt.Errorf("audit: read the grant of delegation %q (sub-run %s): %w", t.name, subRunID, err)
+	}
+	var child *SignedGrant
+	for _, r := range recs {
+		if !strings.HasPrefix(r.Name, grantLeafPrefix) {
+			continue
+		}
+		if child != nil {
+			return nil, fmt.Errorf("audit: delegation %q (sub-run %s) journaled more than one grant; the rollback cannot tell which it ran under: %w", t.name, subRunID, agent.ErrProtocol)
+		}
+		var sg SignedGrant
+		if err := json.Unmarshal(r.Result, &sg); err != nil {
+			return nil, fmt.Errorf("audit: decode the grant of delegation %q (sub-run %s): %w (%w)", t.name, subRunID, err, agent.ErrProtocol)
+		}
+		child = &sg
+	}
+	if child == nil {
+		return withoutGrant(ctx), nil
+	}
+	parentSG, signer, ok := GrantFrom(ctx)
+	if ok && child.Grant.ParentRef != parentSG.Grant.Digest() {
+		return nil, fmt.Errorf("audit: delegation %q (sub-run %s) ran under a grant whose parent is not the grant bound to the rollback: %w", t.name, subRunID, agent.ErrConfig)
+	}
+	ctx = agent.WithIdentity(ctx, agent.Identity{
+		Actor:        t.name,
+		OnBehalfOf:   child.Grant.Issuer, // the parent's subject: CheckAttenuation required it
+		AuthorityRef: child.Grant.Digest(),
+	})
+	return WithGrant(ctx, *child, signer), nil
+}
 
 func (t *attenuatingSubAgent) Call(ctx context.Context, args json.RawMessage) (json.RawMessage, error) {
 	parentSG, signer, ok := GrantFrom(ctx)

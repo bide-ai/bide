@@ -61,3 +61,70 @@ func TestR117_AttenuatedSubRunIsCompensatedUnderTheParentsAuthority(t *testing.T
 		t.Fatalf("the sub-run's write ran as %q under limit %q, but was compensated as %q under limit %q", fwdActor, fwdLimit, undoActor, undoLimit)
 	}
 }
+
+// A delegation that ran with no grant is compensated with none, even when the rollback runs under
+// a grant bound later (a resume that binds one): the compensation never gets authority the
+// delegation did not have.
+func TestR117_UngrantedDelegationIsCompensatedWithoutAGrant(t *testing.T) {
+	ctx := context.Background()
+	store := agent.NewMemStore()
+	var undoHadGrant, fwdHadGrant bool
+	charge := agent.CompensatedFunc("charge", "", agent.Safety{},
+		func(ctx context.Context, _ struct{}) (string, error) { _, _, fwdHadGrant = GrantFrom(ctx); return "ok", nil },
+		func(ctx context.Context, _ struct{}, _ string) error { _, _, undoHadGrant = GrantFrom(ctx); return nil })
+	sub := agent.New(agent.NewScriptedModel(agent.ToolTurn("s1", "charge", `{}`), agent.TextTurn("done")), store, charge)
+	exec := AttenuatingSubAgent("exec", "", sub, AttenuationConfig{Store: store, Narrow: narrowLimitBy(3), Rules: ScopeRules{"limit": NumericAtMost}})
+	var gated int32
+	gate := agent.Func("gate", "", agent.Safety{ReadOnly: true}, func(context.Context, struct{}) (string, error) { gated++; return "ok", nil }, agent.WithApproval(agent.SingleApproval()))
+	boom := agent.Func("boom", "", agent.Safety{}, func(context.Context, struct{}) (string, error) { return "", errors.New("sold out") })
+	m := agent.NewScriptedModel(agent.ToolTurn("c1", "exec", `{"task":"pay"}`), agent.ToolTurn("c2", "gate", `{}`), agent.ToolTurn("c3", "boom", `{}`), agent.TextTurn("x"))
+	parent := agent.New(m, store, exec, gate, boom)
+	if _, err := parent.RunSaga(ctx, "trip", "go"); !agent.IsPause(err) {
+		t.Fatalf("first drive: %v, want the approval pause", err)
+	}
+	if err := agent.Approve(ctx, store, "trip", "c2", true); err != nil {
+		t.Fatal(err)
+	}
+	_, priv, _ := ed25519.GenerateKey(rand.Reader)
+	signer := Ed25519Signer{Priv: priv}
+	rootSG, err := SignGrant(Grant{ID: "g0", Issuer: "corp", Subject: "desk", Scope: map[string]string{"limit": "7"}}, signer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var aborted *agent.SagaAborted
+	if _, err := parent.RunSaga(WithGrant(ctx, rootSG, signer), "trip", "go"); !errors.As(err, &aborted) || len(aborted.Compensated) != 1 {
+		t.Fatalf("resume: %v, want *SagaAborted compensating the charge", err)
+	}
+	if fwdHadGrant || undoHadGrant {
+		t.Fatalf("forward ran with a grant %v, compensation with a grant %v; want neither", fwdHadGrant, undoHadGrant)
+	}
+}
+
+// A sub-run with more than one grant leaf is refused: the rollback cannot tell which grant the
+// delegation ran under, so it does not guess.
+func TestR117_BindRollbackRefusesTwoGrants(t *testing.T) {
+	ctx := context.Background()
+	store := agent.NewMemStore()
+	_, priv, _ := ed25519.GenerateKey(rand.Reader)
+	signer := Ed25519Signer{Priv: priv}
+	for _, id := range []string{"a", "b"} {
+		sg, err := SignGrant(Grant{ID: id, Issuer: "desk", Subject: "exec"}, signer)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := RecordGrant(ctx, store, "sub", sg); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sub := agent.New(agent.NewScriptedModel(agent.TextTurn("x")), store)
+	tool := AttenuatingSubAgent("exec", "", sub, AttenuationConfig{Store: store, Narrow: narrowLimitBy(1)})
+	b, ok := tool.(interface {
+		BindRollback(context.Context, string) (context.Context, error)
+	})
+	if !ok {
+		t.Fatal("AttenuatingSubAgent does not bind rollbacks")
+	}
+	if _, err := b.BindRollback(ctx, "sub"); !errors.Is(err, agent.ErrProtocol) {
+		t.Fatalf("BindRollback = %v, want ErrProtocol", err)
+	}
+}
