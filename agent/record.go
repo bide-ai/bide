@@ -45,14 +45,28 @@ type Record struct {
 	// a StepValue record named "@spend/<n>", a model call that failed for good. On a
 	// StepToolResult or StepSagaFail record, the rest of the Spend of the runs the tool call
 	// started. Nil when there was none. WithTokenBudget counts it.
-	DiscardedUsage *Usage          `json:"discarded_usage,omitempty"`
-	ToolUseID      string          `json:"tool_use_id,omitempty"`  // StepToolResult
-	Result         json.RawMessage `json:"result,omitempty"`       // StepToolResult / StepValue
-	IsError        bool            `json:"is_error,omitempty"`     // StepToolResult
-	Approved       bool            `json:"approved,omitempty"`     // StepApproval
-	Approver       string          `json:"approver,omitempty"`     // StepApproval written by SubmitDecision
-	ApproverAlg    Alg             `json:"approver_alg,omitempty"` // StepApproval written by SubmitDecision: the scheme Signature is under
-	Signature      []byte          `json:"signature,omitempty"`    // StepApproval written by SubmitDecision
+	DiscardedUsage *Usage `json:"discarded_usage,omitempty"`
+	// Finish is why the model turn ended, and RawFinish the provider's own reason as it sent it
+	// (see Finish). StepModel only; empty on a record written before they were journaled.
+	Finish    FinishReason `json:"finish,omitempty"`
+	RawFinish string       `json:"raw_finish,omitempty"`
+	// Model identifies the model that answered the turn (see ModelInfoOf), for audit and for a
+	// run whose turns a middleware sent to different providers. StepModel only; nil when the
+	// model does not describe itself or no request produced the response (a middleware built it).
+	Model *ModelInfo `json:"model,omitempty"`
+	// PromptDigest and ToolsDigest are digests of the system prompt and the tool set the turn was
+	// sent (see the functions of the same names), so an auditor can tell which instructions and
+	// which tools each answer was given, although agent-level defaults stay live across a
+	// redeploy. StepModel only; empty when the turn was sent no system prompt, or no tools.
+	PromptDigest string          `json:"prompt_digest,omitempty"`
+	ToolsDigest  string          `json:"tools_digest,omitempty"`
+	ToolUseID    string          `json:"tool_use_id,omitempty"`  // StepToolResult
+	Result       json.RawMessage `json:"result,omitempty"`       // StepToolResult / StepValue
+	IsError      bool            `json:"is_error,omitempty"`     // StepToolResult
+	Approved     bool            `json:"approved,omitempty"`     // StepApproval
+	Approver     string          `json:"approver,omitempty"`     // StepApproval written by SubmitDecision
+	ApproverAlg  Alg             `json:"approver_alg,omitempty"` // StepApproval written by SubmitDecision: the scheme Signature is under
+	Signature    []byte          `json:"signature,omitempty"`    // StepApproval written by SubmitDecision
 	// AttemptedAt is the Unix-millis wall-clock time an attempt marker (StepAttempt) was
 	// written, i.e. just before a non-retriable side effect fired. It is set once and read
 	// back verbatim on replay, so it stays deterministic. Zero (and omitted) on every

@@ -29,12 +29,12 @@ func renderTurns(t *testing.T, as *AgentStream) (string, []TurnRestarted) {
 
 // retryOnceMW calls next again when the first call fails, as middleware.Retry does.
 func retryOnceMW(next ModelHandler) ModelHandler {
-	return func(ctx context.Context, req Request) (Message, Usage, error) {
-		msg, u, err := next(ctx, req)
+	return func(ctx context.Context, call ModelCall) (ModelResponse, error) {
+		resp, err := next(ctx, call)
 		if err != nil {
-			return next(ctx, req)
+			return next(ctx, call)
 		}
-		return msg, u, err
+		return resp, err
 	}
 }
 
@@ -61,20 +61,18 @@ func TestStream_RetriedTurnMarksDiscardedDeltas(t *testing.T) {
 }
 
 // The same holds when a middleware replaces a failed live attempt with a response from
-// elsewhere, delivered through DetachModelSink and EmitMessage.
+// elsewhere: the agent replays the response, after a restart, with no sink code in the
+// middleware.
 func TestStream_FallbackResponseMarksDiscardedDeltas(t *testing.T) {
 	m := &scriptModel{turns: [][]Emit{
 		{{Event: TextDelta{Text: "partial "}}, {Err: errors.New("connection reset")}},
 	}}
 	fallback := func(next ModelHandler) ModelHandler {
-		return func(ctx context.Context, req Request) (Message, Usage, error) {
-			if msg, u, err := next(ctx, req); err == nil {
-				return msg, u, nil
+		return func(ctx context.Context, call ModelCall) (ModelResponse, error) {
+			if resp, err := next(ctx, call); err == nil {
+				return resp, nil
 			}
-			_, sink := DetachModelSink(ctx)
-			msg := Message{Role: RoleAssistant, Parts: []Part{Text{Text: "fallback"}}}
-			EmitMessage(sink, msg, Usage{})
-			return msg, Usage{}, nil
+			return ModelResponse{Message: Message{Role: RoleAssistant, Parts: []Part{Text{Text: "fallback"}}}}, nil
 		}
 	}
 	as := New(m, NewMemStore()).Use(fallback).Stream(context.Background(), "r", "go")
@@ -93,12 +91,12 @@ func TestStream_FallbackResponseMarksDiscardedDeltas(t *testing.T) {
 
 // retryTwiceMW calls next up to three times in all while it fails.
 func retryTwiceMW(next ModelHandler) ModelHandler {
-	return func(ctx context.Context, req Request) (Message, Usage, error) {
-		msg, u, err := next(ctx, req)
+	return func(ctx context.Context, call ModelCall) (ModelResponse, error) {
+		resp, err := next(ctx, call)
 		for i := 0; i < 2 && err != nil; i++ {
-			msg, u, err = next(ctx, req)
+			resp, err = next(ctx, call)
 		}
-		return msg, u, err
+		return resp, err
 	}
 }
 

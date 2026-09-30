@@ -23,12 +23,12 @@ func (slowDeltas) Stream(context.Context, Request) (*Stream, error) {
 }
 
 // leakyFanOut is a badly behaved middleware: it starts a second call to the model in a goroutine
-// it never waits for, then returns its own answer at once. The leftover call still holds the
-// run's token sink, so it streams deltas after the run has ended.
+// it never waits for, then returns its own answer at once. The leftover call claims the run's
+// token sink and would stream deltas after the run has ended.
 func leakyFanOut(next ModelHandler) ModelHandler {
-	return func(ctx context.Context, req Request) (Message, Usage, error) {
-		go func() { _, _, _ = next(ctx, req) }()
-		return Message{Role: RoleAssistant, Parts: []Part{Text{Text: "answer"}}}, Usage{}, nil
+	return func(ctx context.Context, call ModelCall) (ModelResponse, error) {
+		go func() { _, _ = next(ctx, call) }()
+		return ModelResponse{Message: Message{Role: RoleAssistant, Parts: []Part{Text{Text: "answer"}}}}, nil
 	}
 }
 

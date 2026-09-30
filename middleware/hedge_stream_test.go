@@ -30,6 +30,23 @@ func (lateStreamer) Stream(context.Context, agent.Request) (*agent.Stream, error
 	return agent.NewStream(ch), nil
 }
 
+// render ranges a stream as a UI does: it appends each text delta and clears the text on
+// agent.TurnRestarted, which retracts what the turn streamed so far.
+func render(as *agent.AgentStream) string {
+	var b strings.Builder
+	for ev := range as.Events() {
+		switch e := ev.(type) {
+		case agent.ModelEvent:
+			if d, ok := e.Event.(agent.TextDelta); ok {
+				b.WriteString(d.Text)
+			}
+		case agent.TurnRestarted:
+			b.Reset()
+		}
+	}
+	return b.String()
+}
+
 // A hedged, streamed run must show the caller exactly the response it records, and a losing
 // target must never deliver events after the race: here the primary loses to a faster backup,
 // then keeps producing deltas after the run has finished and its event stream has closed.
@@ -38,14 +55,7 @@ func TestHedge_StreamShowsOnlyTheWinner(t *testing.T) {
 	a := agent.New(lateStreamer{}, agent.NewMemStore()).Use(middleware.Hedge(0, backup))
 
 	as := a.Stream(context.Background(), "r1", "hi")
-	var streamed strings.Builder
-	for ev := range as.Events() {
-		if me, ok := ev.(agent.ModelEvent); ok {
-			if d, ok := me.Event.(agent.TextDelta); ok {
-				streamed.WriteString(d.Text)
-			}
-		}
-	}
+	streamed := render(as)
 	final, err := as.Final()
 	if err != nil {
 		t.Fatalf("Final: %v", err)
@@ -64,8 +74,8 @@ func TestHedge_StreamShowsOnlyTheWinner(t *testing.T) {
 	if recorded.String() != "backup" {
 		t.Fatalf("recorded answer = %q, want the backup's %q (it answered first)", recorded.String(), "backup")
 	}
-	if streamed.String() != recorded.String() {
-		t.Fatalf("the caller was streamed %q but the run recorded %q", streamed.String(), recorded.String())
+	if streamed != recorded.String() {
+		t.Fatalf("the caller was streamed %q but the run recorded %q", streamed, recorded.String())
 	}
 }
 
@@ -94,14 +104,7 @@ func TestHedge_StreamMatchesRecordedAnswer(t *testing.T) {
 	a := agent.New(earlyStreamer{}, agent.NewMemStore()).Use(middleware.Hedge(0, backup))
 
 	as := a.Stream(context.Background(), "r1", "hi")
-	var streamed strings.Builder
-	for ev := range as.Events() {
-		if me, ok := ev.(agent.ModelEvent); ok {
-			if d, ok := me.Event.(agent.TextDelta); ok {
-				streamed.WriteString(d.Text)
-			}
-		}
-	}
+	streamed := render(as)
 	final, err := as.Final()
 	if err != nil {
 		t.Fatalf("Final: %v", err)
@@ -112,8 +115,8 @@ func TestHedge_StreamMatchesRecordedAnswer(t *testing.T) {
 			recorded.WriteString(tx.Text)
 		}
 	}
-	if streamed.String() != recorded.String() {
-		t.Fatalf("the caller was streamed %q but the run recorded %q", streamed.String(), recorded.String())
+	if streamed != recorded.String() {
+		t.Fatalf("the caller was streamed %q but the run recorded %q", streamed, recorded.String())
 	}
 }
 

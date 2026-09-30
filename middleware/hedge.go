@@ -29,20 +29,23 @@ import (
 // a pass-through, so it is safe to wire unconditionally and add backups later.
 //
 // Every target goes through the middleware installed inside Hedge (after it in Use) and the
-// agent's checks on each model response, backups included. Every request a target sends counts
-// wherever the counting middleware sits: a RateLimit takes a token per request (1 + the backups
-// launched), and Cost and the run's token budget count each target's usage as spend, the
-// winner's as the answer's.
+// agent's checks on each model response, backups included: a backup is the same call with its
+// Model set to the backup, and nothing else changed. Every request a target sends counts wherever
+// the counting middleware sits: a RateLimit takes a token per request (1 + the backups launched),
+// and Cost and the run's token budget count each target's usage as spend, the winner's as the
+// answer's. Each request is numbered apart (agent.ModelCall.Attempt).
 //
 // Hedge does not wait for the losers: it returns as soon as a target wins, and a loser runs until
 // its model honors the cancellation. A model that ignores it keeps a loser, and the middleware
 // inside Hedge on its path, running after the turn, or the run, has ended. Its usage then reaches
 // Cost when it ends, and the run's budget only if it ends before the run's next model turn.
 //
-// Streaming: with backups, a streaming caller (Agent.Stream) receives the winning response's
-// events once the winner is chosen, not token by token. The targets race without access to the
-// caller's stream, so a target that loses can never show the caller text the run does not
-// record, or send anything after the run has ended. With no backups, streaming is live as usual.
+// Streaming: Hedge has no streaming code. The agent's model handler lets one request of a turn
+// at a time stream to a streaming caller (Agent.Stream), the first to start: the others run
+// without streaming. If that request's response wins, the caller has seen it live. If another
+// target wins, the caller gets agent.TurnRestarted, which retracts what the first one streamed,
+// and then the winner's response. Either way nothing reaches the caller after the turn is over,
+// so a loser can never show the caller text the run does not record.
 //
 // Hedge only races the model generation. It does not duplicate tool calls or any other side
 // effect: those run in the agent loop, above this middleware, under the at-most-once journal and
@@ -55,50 +58,33 @@ import (
 //	    Use(middleware.Hedge(800*time.Millisecond, openaiModel))
 func Hedge(delay time.Duration, backups ...agent.Model) agent.Middleware {
 	return func(next agent.ModelHandler) agent.ModelHandler {
-		// One handler per target. Every target goes through `next`, the rest of the chain: the
-		// primary as is, each backup with agent.WithModel directing the agent's model handler to
-		// it, so the middleware inside Hedge and the agent's checks on each response apply to
-		// every target alike. Outside an agent, where nothing below routes by model, a backup is
-		// called directly.
-		handlers := make([]agent.ModelHandler, 0, 1+len(backups))
-		handlers = append(handlers, next)
-		for _, b := range backups {
-			b := b
-			handlers = append(handlers, func(ctx context.Context, req agent.Request) (agent.Message, agent.Usage, error) {
-				if tctx, ok := agent.WithModel(ctx, b); ok {
-					return next(tctx, req)
-				}
-				s, err := b.Stream(ctx, req)
-				if err != nil {
-					return agent.Message{}, agent.Usage{}, err
-				}
-				return s.Message()
-			})
+		if len(backups) == 0 {
+			return next // no backups: a plain pass-through
 		}
-
-		return func(ctx context.Context, req agent.Request) (agent.Message, agent.Usage, error) {
-			if len(handlers) == 1 { // no backups: plain pass-through, streaming live
-				return next(ctx, req)
+		return func(ctx context.Context, call agent.ModelCall) (agent.ModelResponse, error) {
+			// One call per target: the primary as it came, each backup the same call sent to it.
+			targets := make([]agent.ModelCall, 1+len(backups))
+			targets[0] = call
+			for i, b := range backups {
+				c := call
+				c.Model = b
+				targets[i+1] = c
 			}
 
-			// The targets race without the caller's token sink: only the winner's response is
-			// delivered to it, once chosen (see the Streaming note above).
-			ctx, sink := agent.DetachModelSink(ctx)
 			hctx, cancel := context.WithCancel(ctx)
 			defer cancel() // returning cancels every loser still in flight
 
 			type result struct {
-				msg agent.Message
-				u   agent.Usage
-				err error
+				resp agent.ModelResponse
+				err  error
 			}
 			// Buffered so a losing goroutine finishing after we return never blocks on send.
-			results := make(chan result, len(handlers))
+			results := make(chan result, len(targets))
 			launched := 0
 			launch := func(i int) {
 				go func() {
-					m, u, e := handlers[i](hctx, req)
-					results <- result{m, u, e}
+					r, e := next(hctx, targets[i])
+					results <- result{r, e}
 				}()
 			}
 
@@ -106,7 +92,7 @@ func Hedge(delay time.Duration, backups ...agent.Model) agent.Middleware {
 			launched = 1
 
 			launchRemaining := func() {
-				for launched < len(handlers) {
+				for launched < len(targets) {
 					launch(launched)
 					launched++
 				}
@@ -125,23 +111,22 @@ func Hedge(delay time.Duration, backups ...agent.Model) agent.Middleware {
 			for {
 				select {
 				case <-ctx.Done():
-					return agent.Message{}, agent.Usage{}, ctx.Err()
+					return agent.ModelResponse{}, ctx.Err()
 				case <-timerC:
 					launchRemaining()
 					timerC = nil
 				case r := <-results:
 					if r.err == nil {
-						agent.EmitMessage(sink, r.msg, r.u) // the caller sees exactly what the run records
-						return r.msg, r.u, nil              // first success wins; defer cancel() kills the rest
+						return r.resp, nil // first success wins; defer cancel() kills the rest
 					}
 					errs = append(errs, r.err)
 					// A target failed: bring the backups forward now instead of waiting out delay.
-					if launched < len(handlers) {
+					if launched < len(targets) {
 						launchRemaining()
 						timerC = nil
 					}
-					if len(errs) == launched && launched == len(handlers) {
-						return agent.Message{}, agent.Usage{}, errors.Join(errs...) // all targets failed
+					if len(errs) == launched && launched == len(targets) {
+						return agent.ModelResponse{}, errors.Join(errs...) // all targets failed
 					}
 				}
 			}

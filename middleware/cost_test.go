@@ -30,26 +30,26 @@ func TestCost_AccumulatesCorrectly(t *testing.T) {
 	wantTotal := 10.935
 
 	var meter CostMeter
-	base := agent.ModelHandler(func(context.Context, agent.Request) (agent.Message, agent.Usage, error) {
-		return agent.Message{}, u, nil
+	base := agent.ModelHandler(func(context.Context, agent.ModelCall) (agent.ModelResponse, error) {
+		return agent.ModelResponse{Usage: u}, nil
 	})
 	h := Cost(&meter, rates)(base)
 
 	ctx := context.Background()
-	if _, _, err := h(ctx, agent.Request{}); err != nil {
+	if _, err := h(ctx, agent.ModelCall{}); err != nil {
 		t.Fatal(err)
 	}
 	// Second call — total doubles.
-	if _, _, err := h(ctx, agent.Request{}); err != nil {
+	if _, err := h(ctx, agent.ModelCall{}); err != nil {
 		t.Fatal(err)
 	}
 
-	gotTotal := meter.Total()
+	gotTotal := meter.Snapshot().AnswerUSD
 	if math.Abs(gotTotal-wantTotal*2) > 1e-9 {
 		t.Errorf("Total() = %v, want %v", gotTotal, wantTotal*2)
 	}
 
-	gotUsage := meter.Usage()
+	gotUsage := meter.Snapshot().Answer
 	if gotUsage.InputTokens != u.InputTokens*2 {
 		t.Errorf("Usage().InputTokens = %d, want %d", gotUsage.InputTokens, u.InputTokens*2)
 	}
@@ -66,14 +66,14 @@ func TestCost_AccumulatesCorrectly(t *testing.T) {
 
 func TestCost_SkipsOnError(t *testing.T) {
 	var meter CostMeter
-	base := agent.ModelHandler(func(context.Context, agent.Request) (agent.Message, agent.Usage, error) {
-		return agent.Message{}, agent.Usage{InputTokens: 999}, context.Canceled
+	base := agent.ModelHandler(func(context.Context, agent.ModelCall) (agent.ModelResponse, error) {
+		return agent.ModelResponse{Usage: agent.Usage{InputTokens: 999}}, context.Canceled
 	})
 	h := Cost(&meter, Rates{InputPer1M: 1.0})(base)
-	if _, _, err := h(context.Background(), agent.Request{}); err == nil {
+	if _, err := h(context.Background(), agent.ModelCall{}); err == nil {
 		t.Fatal("expected error")
 	}
-	if meter.Total() != 0 {
-		t.Errorf("Total() = %v, want 0 (no cost on error)", meter.Total())
+	if meter.Snapshot().AnswerUSD != 0 {
+		t.Errorf("Total() = %v, want 0 (no cost on error)", meter.Snapshot().AnswerUSD)
 	}
 }

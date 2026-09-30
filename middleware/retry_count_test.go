@@ -14,20 +14,20 @@ import (
 func TestRetry_NegativeCountIsAConfigError(t *testing.T) {
 	for _, n := range []int{-1, -5} {
 		calls := 0
-		h := Retry(n)(func(context.Context, agent.Request) (agent.Message, agent.Usage, error) {
+		h := Retry(n)(func(context.Context, agent.ModelCall) (agent.ModelResponse, error) {
 			calls++
-			return agent.Message{Role: agent.RoleAssistant}, agent.Usage{}, nil
+			return agent.ModelResponse{Message: agent.Message{Role: agent.RoleAssistant}}, nil
 		})
-		if _, _, err := h(context.Background(), agent.Request{}); !errors.Is(err, agent.ErrConfig) || calls != 0 {
+		if _, err := h(context.Background(), agent.ModelCall{}); !errors.Is(err, agent.ErrConfig) || calls != 0 {
 			t.Errorf("Retry(%d): err %v, model called %d times; want ErrConfig and no call", n, err, calls)
 		}
 	}
 	calls := 0
-	h := Retry(0)(func(context.Context, agent.Request) (agent.Message, agent.Usage, error) {
+	h := Retry(0)(func(context.Context, agent.ModelCall) (agent.ModelResponse, error) {
 		calls++
-		return agent.Message{}, agent.Usage{}, nil
+		return agent.ModelResponse{}, nil
 	})
-	if _, _, err := h(context.Background(), agent.Request{}); err != nil || calls != 1 {
+	if _, err := h(context.Background(), agent.ModelCall{}); err != nil || calls != 1 {
 		t.Errorf("Retry(0): err %v, %d calls; want one call", err, calls)
 	}
 }

@@ -69,12 +69,12 @@ func TestRun_ToolUseIDReusedIsRetriedByMiddleware(t *testing.T) {
 		textTurn("done"),
 	}}
 	retryOnce := func(next ModelHandler) ModelHandler {
-		return func(ctx context.Context, req Request) (Message, Usage, error) {
-			msg, u, err := next(ctx, req)
+		return func(ctx context.Context, call ModelCall) (ModelResponse, error) {
+			resp, err := next(ctx, call)
 			if errors.Is(err, ErrModel) {
-				return next(ctx, req)
+				return next(ctx, call)
 			}
-			return msg, u, err
+			return resp, err
 		}
 	}
 	store := NewMemStore()
@@ -153,12 +153,12 @@ func TestRun_ToolUseIDReusedBySubstitutedResponseIsAnError(t *testing.T) {
 	m := &scriptModel{turns: [][]Emit{toolTurn("c1", "lookup", `{}`), textTurn("done")}}
 	turn := 0
 	substitute := func(next ModelHandler) ModelHandler {
-		return func(ctx context.Context, req Request) (Message, Usage, error) {
+		return func(ctx context.Context, call ModelCall) (ModelResponse, error) {
 			turn++
 			if turn == 2 { // answer the second turn from elsewhere, reusing the first turn's ID
-				return Message{Role: RoleAssistant, Parts: []Part{ToolUse{ID: "c1", Name: "lookup", Args: json.RawMessage(`{}`)}}}, Usage{}, nil
+				return ModelResponse{Message: Message{Role: RoleAssistant, Parts: []Part{ToolUse{ID: "c1", Name: "lookup", Args: json.RawMessage(`{}`)}}}}, nil
 			}
-			return next(ctx, req)
+			return next(ctx, call)
 		}
 	}
 	_, err := New(m, NewMemStore(), tool).Use(substitute).WithMaxTurns(4).Run(context.Background(), "r", "go")

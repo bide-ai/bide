@@ -17,9 +17,9 @@ func TestHedge_InnerMiddlewareWrapsEveryTarget(t *testing.T) {
 	backup := &stubModel{text: "backup", delay: time.Millisecond}
 	var calls atomic.Int32
 	count := func(next agent.ModelHandler) agent.ModelHandler {
-		return func(ctx context.Context, req agent.Request) (agent.Message, agent.Usage, error) {
+		return func(ctx context.Context, call agent.ModelCall) (agent.ModelResponse, error) {
 			calls.Add(1)
-			return next(ctx, req)
+			return next(ctx, call)
 		}
 	}
 	a := agent.New(primary, agent.NewMemStore()).Use(middleware.Hedge(0, backup), count)
@@ -40,9 +40,7 @@ func exhausted(t *testing.T, r *middleware.RateLimiter) bool {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
 	defer cancel()
-	_, _, err := middleware.RateLimit(r)(func(context.Context, agent.Request) (agent.Message, agent.Usage, error) {
-		return agent.Message{}, agent.Usage{}, nil
-	})(ctx, agent.Request{})
+	_, err := agent.CallModel(ctx, &stubModel{text: "x"}, agent.Request{}, middleware.RateLimit(r))
 	return errors.Is(err, context.DeadlineExceeded)
 }
 

@@ -236,23 +236,29 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 				return Message{}, tot, liveTurns, err
 			}
 			fire(TurnStarted{Seq: modelSeq})
-			// Install the token sink so a live (non-replayed) model call forwards its
-			// deltas as ModelEvents. On memoized replay store.Do skips the fn, so no
-			// sink fires — an AssistantTurn{Replayed:true} was emitted during resume.
-			genCtx := ctx
+			// A live (non-replayed) model call streams its deltas as ModelEvents through the
+			// turn's sink. On memoized replay store.Do skips the fn, so no sink fires: an
+			// AssistantTurn{Replayed:true} was emitted during resume.
+			ts := &turnState{meter: meter, journal: a.store}
 			if emit != nil {
-				genCtx = withModelSink(ctx, turnSink(modelSeq, fire))
+				ts.sink = newTurnSink(modelSeq, fire)
 			}
-			genCtx = withModelRun(genCtx, a.store, runID) // model middleware can journal a step of this run (WithRetrieval)
-			rec, err := a.store.Do(genCtx, runID, modelStep(modelSeq),
+			call := ModelCall{
+				Request: Request{Messages: msgs, Tools: a.toolList(), Sampling: a.sampling, ResponseFormat: a.responseFormat, ToolChoice: a.toolChoice},
+				Model:   a.model,
+				RunID:   runID,
+				Turn:    modelSeq,
+			}
+			rec, err := a.store.Do(ctx, runID, modelStep(modelSeq),
 				func(ctx context.Context) (Record, error) {
-					m, u, e := a.generate(ctx, Request{Messages: msgs, Tools: a.toolList(), Sampling: a.sampling, ResponseFormat: a.responseFormat, ToolChoice: a.toolChoice}, toolUseIDs(msgs), meter)
+					resp, e := a.generate(ctx, call, toolUseIDs(msgs), ts)
 					if e != nil {
 						return Record{}, e
 					}
-					r := Record{Kind: StepModel, Message: &m, Usage: &u}
+					r := Record{Kind: StepModel, Message: &resp.Message, Usage: &resp.Usage, Finish: resp.Finish, RawFinish: resp.RawFinish}
+					r.Model, r.PromptDigest, r.ToolsDigest = resp.journal(call.Request)
 					// The turn recorded one response; every other request it sent was billed too.
-					if d := discardedSpend(meter.take(), u); d != (Usage{}) {
+					if d := discardedSpend(meter.take(), resp.Usage); d != (Usage{}) {
 						r.DiscardedUsage = &d
 					}
 					return r, nil

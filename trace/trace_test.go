@@ -33,11 +33,11 @@ func TestModel_EmitsGenAIChatSpan(t *testing.T) {
 	sr, tp := recorder()
 	tracer := tp.Tracer("test")
 
-	base := agent.ModelHandler(func(context.Context, agent.Request) (agent.Message, agent.Usage, error) {
-		return agent.Message{}, agent.Usage{InputTokens: 5, OutputTokens: 7}, nil
+	base := agent.ModelHandler(func(context.Context, agent.ModelCall) (agent.ModelResponse, error) {
+		return agent.ModelResponse{Usage: agent.Usage{InputTokens: 5, OutputTokens: 7}, Finish: agent.FinishToolUse}, nil
 	})
-	h := Model(tracer, WithModel("claude-sonnet-4-6"), WithSystem("anthropic"))(base)
-	if _, _, err := h(context.Background(), agent.Request{}); err != nil {
+	h := Model(tracer)(base)
+	if _, err := h(context.Background(), agent.ModelCall{Model: describedModel{}}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -49,8 +49,11 @@ func TestModel_EmitsGenAIChatSpan(t *testing.T) {
 	if a["gen_ai.operation.name"].AsString() != "chat" {
 		t.Errorf("operation = %v", a["gen_ai.operation.name"])
 	}
-	if a["gen_ai.system"].AsString() != "anthropic" {
-		t.Errorf("system = %v", a["gen_ai.system"])
+	if a["gen_ai.system"].AsString() != "anthropic" || a["gen_ai.request.model"].AsString() != "claude-sonnet-4-6" {
+		t.Errorf("system = %v, model = %v; want the ones the call's Model describes", a["gen_ai.system"], a["gen_ai.request.model"])
+	}
+	if fr := a["gen_ai.response.finish_reasons"].AsStringSlice(); len(fr) != 1 || fr[0] != "tool_use" {
+		t.Errorf("finish reasons = %v, want [tool_use]", fr)
 	}
 	if a["gen_ai.usage.input_tokens"].AsInt64() != 5 || a["gen_ai.usage.output_tokens"].AsInt64() != 7 {
 		t.Errorf("usage attrs wrong: %v / %v", a["gen_ai.usage.input_tokens"], a["gen_ai.usage.output_tokens"])
@@ -130,12 +133,12 @@ func TestModel_CapturesContentWhenEnabled(t *testing.T) {
 	sr, tp := recorder()
 	tracer := tp.Tracer("test")
 
-	base := agent.ModelHandler(func(context.Context, agent.Request) (agent.Message, agent.Usage, error) {
-		return agent.Message{}, agent.Usage{}, nil
+	base := agent.ModelHandler(func(context.Context, agent.ModelCall) (agent.ModelResponse, error) {
+		return agent.ModelResponse{}, nil
 	})
 	h := Model(tracer)(base) // captureContent() read here, so the env must be set first
 	req := agent.Request{Messages: []agent.Message{agent.UserText("hello")}}
-	if _, _, err := h(context.Background(), req); err != nil {
+	if _, err := h(context.Background(), agent.ModelCall{Request: req}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -153,12 +156,12 @@ func TestModel_NoContentByDefault(t *testing.T) {
 	sr, tp := recorder()
 	tracer := tp.Tracer("test")
 
-	base := agent.ModelHandler(func(context.Context, agent.Request) (agent.Message, agent.Usage, error) {
-		return agent.Message{}, agent.Usage{}, nil
+	base := agent.ModelHandler(func(context.Context, agent.ModelCall) (agent.ModelResponse, error) {
+		return agent.ModelResponse{}, nil
 	})
 	h := Model(tracer)(base)
 	req := agent.Request{Messages: []agent.Message{agent.UserText("secret")}}
-	if _, _, err := h(context.Background(), req); err != nil {
+	if _, err := h(context.Background(), agent.ModelCall{Request: req}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -176,11 +179,11 @@ func TestModel_RecordsCostWithRates(t *testing.T) {
 	sr, tp := recorder()
 	tracer := tp.Tracer("test")
 
-	base := agent.ModelHandler(func(context.Context, agent.Request) (agent.Message, agent.Usage, error) {
-		return agent.Message{}, agent.Usage{InputTokens: 1_000_000, OutputTokens: 2_000_000}, nil
+	base := agent.ModelHandler(func(context.Context, agent.ModelCall) (agent.ModelResponse, error) {
+		return agent.ModelResponse{Usage: agent.Usage{InputTokens: 1_000_000, OutputTokens: 2_000_000}}, nil
 	})
 	h := Model(tracer, WithRates(middleware.Rates{InputPer1M: 3, OutputPer1M: 15}))(base)
-	if _, _, err := h(context.Background(), agent.Request{}); err != nil {
+	if _, err := h(context.Background(), agent.ModelCall{Request: agent.Request{}}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -281,13 +284,36 @@ func TestInstrument_WiresChatAndToolSpans(t *testing.T) {
 // served from the cache still processed every input token.
 func TestModel_InputTokensIncludeCachedInput(t *testing.T) {
 	sr, tp := recorder()
-	base := agent.ModelHandler(func(context.Context, agent.Request) (agent.Message, agent.Usage, error) {
-		return agent.Message{}, agent.Usage{InputTokens: 150, CacheReadTokens: 800, CacheWriteTokens: 50, OutputTokens: 7}, nil
+	base := agent.ModelHandler(func(context.Context, agent.ModelCall) (agent.ModelResponse, error) {
+		return agent.ModelResponse{Usage: agent.Usage{InputTokens: 150, CacheReadTokens: 800, CacheWriteTokens: 50, OutputTokens: 7}}, nil
 	})
-	if _, _, err := Model(tp.Tracer("test"))(base)(context.Background(), agent.Request{}); err != nil {
+	if _, err := Model(tp.Tracer("test"))(base)(context.Background(), agent.ModelCall{Request: agent.Request{}}); err != nil {
 		t.Fatal(err)
 	}
 	if got := spanAttrs(sr.Ended()[0])["gen_ai.usage.input_tokens"].AsInt64(); got != 1000 {
 		t.Errorf("gen_ai.usage.input_tokens = %d, want 1000 (150 uncached + 800 cache reads + 50 cache writes)", got)
+	}
+}
+
+// describedModel is a Model that describes itself, as the first-party adapters do.
+type describedModel struct{ agent.Model }
+
+func (describedModel) Describe() agent.ModelInfo {
+	return agent.ModelInfo{Provider: "anthropic", Model: "claude-sonnet-4-6"}
+}
+
+// A Model that does not describe itself gives an unnamed chat span with no provider or model.
+func TestModel_UndescribedModel(t *testing.T) {
+	sr, tp := recorder()
+	base := agent.ModelHandler(func(context.Context, agent.ModelCall) (agent.ModelResponse, error) {
+		return agent.ModelResponse{}, nil
+	})
+	if _, err := Model(tp.Tracer("test"))(base)(context.Background(), agent.ModelCall{Model: instrModel{}}); err != nil {
+		t.Fatal(err)
+	}
+	s := sr.Ended()[0]
+	a := spanAttrs(s)
+	if _, ok := a["gen_ai.system"]; ok || s.Name() != "chat" {
+		t.Errorf("span %q with attributes %v, want a span named chat with no gen_ai.system", s.Name(), a)
 	}
 }

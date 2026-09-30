@@ -122,10 +122,14 @@ func (cfg retryConfig) run(ctx context.Context, fn func(context.Context) error) 
 // n must be at least 0 (0 calls the model once). With n < 0 every call fails with an error
 // wrapping agent.ErrConfig without calling the model (see checkRetryCount).
 //
+// Each attempt passes the call on unchanged, so every attempt's requests run the hooks middleware
+// outside Retry added (a RateLimit token, Cost's spend) and are numbered by the turn's shared
+// counter (agent.ModelCall.Attempt).
+//
 // Streaming: a streaming caller (Agent.Stream) sees each attempt's deltas live. When an attempt
 // that streamed deltas fails and Retry calls the model again, the stream emits
 // agent.TurnRestarted before the next attempt's deltas, so the caller can discard the failed
-// attempt's partial text.
+// attempt's partial text. Retry has no code for this: the agent's model handler does it.
 func Retry(n int, opts ...RetryOption) agent.Middleware {
 	cfg := retryConfig{base: defaultBackoffBase, max: defaultBackoffMax}
 	for _, o := range opts {
@@ -133,32 +137,31 @@ func Retry(n int, opts ...RetryOption) agent.Middleware {
 	}
 
 	return func(next agent.ModelHandler) agent.ModelHandler {
-		return func(ctx context.Context, req agent.Request) (agent.Message, agent.Usage, error) {
+		return func(ctx context.Context, call agent.ModelCall) (agent.ModelResponse, error) {
 			if err := checkRetryCount("Retry", n); err != nil {
-				return agent.Message{}, agent.Usage{}, err
+				return agent.ModelResponse{}, err
 			}
 			var (
-				msg agent.Message
-				u   agent.Usage
-				err error
+				resp agent.ModelResponse
+				err  error
 			)
 			for attempt := 0; attempt <= n; attempt++ {
 				if ctx.Err() != nil {
-					return msg, u, ctx.Err()
+					return resp, ctx.Err()
 				}
 				err = cfg.run(ctx, func(actx context.Context) error {
-					msg, u, err = next(actx, req)
+					resp, err = next(actx, call)
 					return err
 				})
 				if err == nil {
-					return msg, u, nil
+					return resp, nil
 				}
 				// Fail fast on a terminal error or on parent cancellation.
 				if cfg.retryIf != nil && !cfg.retryIf(err) {
-					return msg, u, err
+					return resp, err
 				}
 				if ctx.Err() != nil {
-					return msg, u, ctx.Err()
+					return resp, ctx.Err()
 				}
 				if attempt == n {
 					break
@@ -170,11 +173,11 @@ func Retry(n int, opts ...RetryOption) agent.Middleware {
 					select {
 					case <-time.After(d):
 					case <-ctx.Done():
-						return msg, u, ctx.Err()
+						return resp, ctx.Err()
 					}
 				}
 			}
-			return msg, u, err
+			return resp, err
 		}
 	}
 }

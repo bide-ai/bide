@@ -28,9 +28,9 @@ type Describer interface {
 // whether the Model honours Request.ResponseFormat (a Model that does not fails a request that
 // sets it, rather than drop the constraint).
 type ModelInfo struct {
-	Provider       string
-	Model          string
-	ResponseFormat bool
+	Provider       string `json:"provider,omitempty"`
+	Model          string `json:"model,omitempty"`
+	ResponseFormat bool   `json:"response_format,omitempty"`
 }
 
 // maxUnwrap bounds the Unwrap chain ModelInfoOf follows, so a wrapper that returns itself (or

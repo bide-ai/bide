@@ -71,14 +71,14 @@ func TestRetry_SpendCountsEveryAttempt(t *testing.T) {
 	if n := m.calls.Load(); n != 2 {
 		t.Fatalf("the model was called %d times, want 2", n)
 	}
-	if meter.Usage() != billed {
-		t.Fatalf("meter Usage = %+v, want the answer's %+v", meter.Usage(), billed)
+	if meter.Snapshot().Answer != billed {
+		t.Fatalf("meter Usage = %+v, want the answer's %+v", meter.Snapshot().Answer, billed)
 	}
-	if meter.Spent() != twice(billed) {
-		t.Fatalf("meter Spent = %+v, want both attempts' %+v", meter.Spent(), twice(billed))
+	if meter.Snapshot().Spend != twice(billed) {
+		t.Fatalf("meter Spent = %+v, want both attempts' %+v", meter.Snapshot().Spend, twice(billed))
 	}
-	if meter.SpentTotal() != 200 || meter.Total() != 100 {
-		t.Fatalf("meter SpentTotal = %v, Total = %v; want 200 and 100", meter.SpentTotal(), meter.Total())
+	if meter.Snapshot().SpendUSD != 200 || meter.Snapshot().AnswerUSD != 100 {
+		t.Fatalf("meter SpentTotal = %v, Total = %v; want 200 and 100", meter.Snapshot().SpendUSD, meter.Snapshot().AnswerUSD)
 	}
 }
 
@@ -97,8 +97,8 @@ func TestHedge_SpendCountsFailedTargets(t *testing.T) {
 	if res.Usage != billed || res.Spend != twice(billed) {
 		t.Fatalf("Usage = %+v, Spend = %+v; want %+v and %+v", res.Usage, res.Spend, billed, twice(billed))
 	}
-	if meter.Usage() != billed || meter.Spent() != twice(billed) {
-		t.Fatalf("meter Usage = %+v, Spent = %+v; want %+v and %+v", meter.Usage(), meter.Spent(), billed, twice(billed))
+	if meter.Snapshot().Answer != billed || meter.Snapshot().Spend != twice(billed) {
+		t.Fatalf("meter Usage = %+v, Spent = %+v; want %+v and %+v", meter.Snapshot().Answer, meter.Snapshot().Spend, billed, twice(billed))
 	}
 }
 
@@ -114,8 +114,8 @@ func TestRetry_SpendWhenCancelledMidAttempt(t *testing.T) {
 	if _, err := a.Run(ctx, "r", "q"); !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v, want context.Canceled", err)
 	}
-	if meter.Spent() != billed || meter.Usage() != (agent.Usage{}) {
-		t.Fatalf("meter Spent = %+v, Usage = %+v; want %+v and none", meter.Spent(), meter.Usage(), billed)
+	if meter.Snapshot().Spend != billed || meter.Snapshot().Answer != (agent.Usage{}) {
+		t.Fatalf("meter Spent = %+v, Usage = %+v; want %+v and none", meter.Snapshot().Spend, meter.Snapshot().Answer, billed)
 	}
 	// The cancelled call's spend is journaled all the same, for the run's budget.
 	recs, _ := store.History(context.Background(), "r")
@@ -130,22 +130,18 @@ func TestRetry_SpendWhenCancelledMidAttempt(t *testing.T) {
 	}
 }
 
-// Outside an agent, Cost counts what each call returns as spent, failed or not.
+// Outside an agent, through agent.CallModel, Cost counts every request as spent, failed or not.
 func TestCost_SpendOutsideAnAgent(t *testing.T) {
 	var meter middleware.CostMeter
-	fail := true
-	h := middleware.Cost(&meter, perInput)(func(context.Context, agent.Request) (agent.Message, agent.Usage, error) {
-		if fail {
-			fail = false
-			return agent.Message{}, billed, errors.New("cut off")
-		}
-		return agent.Message{}, billed, nil
-	})
-	_, _, _ = h(context.Background(), agent.Request{})
-	if _, _, err := h(context.Background(), agent.Request{}); err != nil {
+	m := &billedModel{u: billed, bad: 1}
+	cost := middleware.Cost(&meter, perInput)
+	if _, err := agent.CallModel(context.Background(), m, agent.Request{}, cost); err == nil {
+		t.Fatal("the cut-off call succeeded")
+	}
+	if _, err := agent.CallModel(context.Background(), m, agent.Request{}, cost); err != nil {
 		t.Fatal(err)
 	}
-	if meter.Spent() != twice(billed) || meter.Usage() != billed {
-		t.Fatalf("meter Spent = %+v, Usage = %+v; want %+v and %+v", meter.Spent(), meter.Usage(), twice(billed), billed)
+	if meter.Snapshot().Spend != twice(billed) || meter.Snapshot().Answer != billed {
+		t.Fatalf("meter Spent = %+v, Usage = %+v; want %+v and %+v", meter.Snapshot().Spend, meter.Snapshot().Answer, twice(billed), billed)
 	}
 }

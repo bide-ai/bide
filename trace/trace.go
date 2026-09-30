@@ -35,6 +35,7 @@ const (
 	attrSystem         = "gen_ai.system"
 	attrOperation      = "gen_ai.operation.name"
 	attrRequestModel   = "gen_ai.request.model"
+	attrFinishReasons  = "gen_ai.response.finish_reasons"
 	attrInputTokens    = "gen_ai.usage.input_tokens"
 	attrOutputTokens   = "gen_ai.usage.output_tokens"
 	attrToolName       = "gen_ai.tool.name"
@@ -47,15 +48,11 @@ const (
 )
 
 type config struct {
-	system, model string
-	rates         *middleware.Rates
+	rates *middleware.Rates
 }
 
-// Option labels the model span with provider/model (Request doesn't carry them yet).
+// Option configures the chat span.
 type Option func(*config)
-
-func WithSystem(s string) Option { return func(c *config) { c.system = s } }
-func WithModel(m string) Option  { return func(c *config) { c.model = m } }
 
 // WithRates records USD cost on the chat span (attribute gen_ai.usage.cost), computed from
 // token usage at these rates. Reuses middleware.Rates so a caller pricing runs with a
@@ -110,8 +107,11 @@ func end(span oteltrace.Span) {
 	span.End()
 }
 
-// Model returns middleware that wraps each model call in a gen_ai "chat" span with
-// token usage and status. Attach via agent.Agent.Use.
+// Model returns middleware that wraps each model call in a gen_ai "chat" span with token usage,
+// the finish reason and status. The span names the provider (gen_ai.system) and model
+// (gen_ai.request.model) the call is sent to, as agent.ModelInfoOf reports them for call.Model;
+// a Model that does not describe itself leaves both out, and the span is named "chat". Attach via
+// agent.Agent.Use; placed outside a Hedge, the span names the primary.
 func Model(tracer oteltrace.Tracer, opts ...Option) agent.Middleware {
 	var c config
 	for _, o := range opts {
@@ -119,28 +119,30 @@ func Model(tracer oteltrace.Tracer, opts ...Option) agent.Middleware {
 	}
 	capture := captureContent()
 	return func(next agent.ModelHandler) agent.ModelHandler {
-		return func(ctx context.Context, req agent.Request) (agent.Message, agent.Usage, error) {
+		return func(ctx context.Context, call agent.ModelCall) (agent.ModelResponse, error) {
+			info, described := agent.ModelInfoOf(call.Model)
 			name := "chat"
-			if c.model != "" {
-				name = "chat " + c.model
+			if described && info.Model != "" {
+				name = "chat " + info.Model
 			}
 			ctx, span := tracer.Start(ctx, name, oteltrace.WithAttributes(
 				attribute.String(attrOperation, "chat"),
 			))
 			defer end(span)
-			if c.system != "" {
-				span.SetAttributes(attribute.String(attrSystem, c.system))
+			if described && info.Provider != "" {
+				span.SetAttributes(attribute.String(attrSystem, info.Provider))
 			}
-			if c.model != "" {
-				span.SetAttributes(attribute.String(attrRequestModel, c.model))
+			if described && info.Model != "" {
+				span.SetAttributes(attribute.String(attrRequestModel, info.Model))
 			}
 			if capture {
-				if b, e := json.Marshal(req.Messages); e == nil {
+				if b, e := json.Marshal(call.Request.Messages); e == nil {
 					span.SetAttributes(attribute.String(attrInputMessages, string(b)))
 				}
 			}
 
-			msg, u, err := next(ctx, req)
+			resp, err := next(ctx, call)
+			u := resp.Usage
 			span.SetAttributes(
 				attribute.Int(attrInputTokens, u.TotalInputTokens()), // semconv: includes cached input
 				attribute.Int(attrOutputTokens, u.OutputTokens),
@@ -148,13 +150,16 @@ func Model(tracer oteltrace.Tracer, opts ...Option) agent.Middleware {
 			if c.rates != nil {
 				span.SetAttributes(attribute.Float64(attrCost, c.rates.Cost(u)))
 			}
+			if err == nil && resp.Finish != "" {
+				span.SetAttributes(attribute.StringSlice(attrFinishReasons, []string{string(resp.Finish)}))
+			}
 			if capture && err == nil {
-				if b, e := json.Marshal(msg); e == nil {
+				if b, e := json.Marshal(resp.Message); e == nil {
 					span.SetAttributes(attribute.String(attrOutputMessages, string(b)))
 				}
 			}
 			recordError(span, err, capture, errorText(err))
-			return msg, u, err
+			return resp, err
 		}
 	}
 }
@@ -192,8 +197,8 @@ func Tool(tracer oteltrace.Tracer) agent.ToolMiddleware {
 // Instrument wires the gen_ai span taxonomy onto an agent in one call: the "chat" span (via Model)
 // and the "execute_tool" span (via Tool), using tracer. It is the low-friction way to enable
 // observability without hand-wiring each middleware, while the core agent package keeps no
-// OpenTelemetry dependency (importing this package is the single opt-in). Options (WithSystem,
-// WithModel, WithRates) apply to the chat span. For the top-level "invoke_agent" span, wrap the
+// OpenTelemetry dependency (importing this package is the single opt-in). Options (WithRates)
+// apply to the chat span. For the top-level "invoke_agent" span, wrap the
 // run with Invoke, which lives at the call site rather than on the agent.
 //
 //	a := trace.Instrument(agent.New(model, store, tools...), tracer, trace.WithRates(rates))

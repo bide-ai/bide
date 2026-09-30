@@ -41,13 +41,10 @@ func (m *stubModel) Stream(ctx context.Context, _ agent.Request) (*agent.Stream,
 	return agent.NewStream(ch), nil
 }
 
-func asHandler(m agent.Model) agent.ModelHandler {
-	return func(ctx context.Context, req agent.Request) (agent.Message, agent.Usage, error) {
-		s, err := m.Stream(ctx, req)
-		if err != nil {
-			return agent.Message{}, agent.Usage{}, err
-		}
-		return s.Message()
+// callWith returns a function that sends an empty request to m through mw, outside an agent.
+func callWith(m agent.Model, mw ...agent.Middleware) func(context.Context) (agent.ModelResponse, error) {
+	return func(ctx context.Context) (agent.ModelResponse, error) {
+		return agent.CallModel(ctx, m, agent.Request{}, mw...)
 	}
 }
 
@@ -69,8 +66,9 @@ func TestHedge_FirstSuccessWins(t *testing.T) {
 	primary := &stubModel{text: "primary", delay: 300 * time.Millisecond}
 	backup := &stubModel{text: "backup", delay: 10 * time.Millisecond}
 
-	h := middleware.Hedge(20*time.Millisecond, backup)(asHandler(primary))
-	msg, _, err := h(context.Background(), agent.Request{})
+	h := callWith(primary, middleware.Hedge(20*time.Millisecond, backup))
+	resp, err := h(context.Background())
+	msg := resp.Message
 	if err != nil {
 		t.Fatalf("Hedge: %v", err)
 	}
@@ -87,8 +85,9 @@ func TestHedge_DelayHonored(t *testing.T) {
 	primary := &stubModel{text: "primary", delay: 10 * time.Millisecond}
 	backup := &stubModel{text: "backup", delay: 10 * time.Millisecond}
 
-	h := middleware.Hedge(200*time.Millisecond, backup)(asHandler(primary))
-	msg, _, err := h(context.Background(), agent.Request{})
+	h := callWith(primary, middleware.Hedge(200*time.Millisecond, backup))
+	resp, err := h(context.Background())
+	msg := resp.Message
 	if err != nil {
 		t.Fatalf("Hedge: %v", err)
 	}
@@ -107,8 +106,9 @@ func TestHedge_FastFailover(t *testing.T) {
 	backup := &stubModel{text: "backup", delay: 10 * time.Millisecond}
 
 	start := time.Now()
-	h := middleware.Hedge(2*time.Second, backup)(asHandler(primary)) // long delay, must be short-circuited
-	msg, _, err := h(context.Background(), agent.Request{})
+	h := callWith(primary, middleware.Hedge(2*time.Second, backup)) // long delay, must be short-circuited
+	resp, err := h(context.Background())
+	msg := resp.Message
 	elapsed := time.Since(start)
 	if err != nil {
 		t.Fatalf("Hedge: %v", err)
@@ -127,8 +127,8 @@ func TestHedge_AllFail(t *testing.T) {
 	primary := &stubModel{delay: 2 * time.Millisecond, err: e1}
 	backup := &stubModel{delay: 2 * time.Millisecond, err: e2}
 
-	h := middleware.Hedge(0, backup)(asHandler(primary))
-	_, _, err := h(context.Background(), agent.Request{})
+	h := callWith(primary, middleware.Hedge(0, backup))
+	_, err := h(context.Background())
 	if err == nil {
 		t.Fatal("expected an error when all targets fail")
 	}
@@ -140,8 +140,9 @@ func TestHedge_AllFail(t *testing.T) {
 // TestHedge_NoBackups confirms Hedge is a pass-through with no backups (safe to wire always).
 func TestHedge_NoBackups(t *testing.T) {
 	primary := &stubModel{text: "solo", delay: 1 * time.Millisecond}
-	h := middleware.Hedge(50 * time.Millisecond)(asHandler(primary))
-	msg, _, err := h(context.Background(), agent.Request{})
+	h := callWith(primary, middleware.Hedge(50*time.Millisecond))
+	resp, err := h(context.Background())
+	msg := resp.Message
 	if err != nil || msg.Text() != "solo" {
 		t.Fatalf("pass-through failed: msg=%q err=%v", msg.Text(), err)
 	}

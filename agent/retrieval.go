@@ -98,48 +98,29 @@ func RetrievalDescription(description string) RetrievalOption {
 func WithRetrieval(r Retriever, k int) Middleware {
 	checkK("WithRetrieval", k)
 	return func(next ModelHandler) ModelHandler {
-		return func(ctx context.Context, req Request) (Message, Usage, error) {
+		return func(ctx context.Context, call ModelCall) (ModelResponse, error) {
 			// Number the WithRetrieval layers on this call path, outermost first, so two of
 			// them on one agent journal their documents under different step names.
-			layer, _ := ctx.Value(retrievalLayerKey{}).(int)
-			ctx = context.WithValue(ctx, retrievalLayerKey{}, layer+1)
-			at, q, ok := lastUserQuery(req.Messages)
+			layer := call.layer
+			call.layer++
+			at, q, ok := lastUserQuery(call.Request.Messages)
 			if !ok {
-				return next(ctx, req)
+				return next(ctx, call)
 			}
-			docs, err := retrieveOnce(ctx, r, q, k, layer)
+			docs, err := retrieveOnce(ctx, call, r, q, k, layer)
 			if err != nil {
-				return Message{}, Usage{}, fmt.Errorf("retrieval: %w", err)
+				return ModelResponse{}, fmt.Errorf("retrieval: %w", err)
 			}
 			block, err := formatDocs(docs)
 			if err != nil {
-				return Message{}, Usage{}, fmt.Errorf("retrieval: %w", err)
+				return ModelResponse{}, fmt.Errorf("retrieval: %w", err)
 			}
 			if block != "" {
-				req.Messages = insertAt(req.Messages, at, UserText(block))
+				call.Request.Messages = insertAt(call.Request.Messages, at, UserText(block))
 			}
-			return next(ctx, req)
+			return next(ctx, call)
 		}
 	}
-}
-
-// retrievalLayerKey holds, on a model call's context, how many WithRetrieval layers the call
-// has passed through.
-type retrievalLayerKey struct{}
-
-// modelRunKey holds the modelRun of the agent run a model call belongs to.
-type modelRunKey struct{}
-
-// modelRun identifies the journal of the agent run a model call belongs to. The agent loop
-// sets it on every model call's context (withModelRun), so model middleware can record a
-// step of that run.
-type modelRun struct {
-	store Durable
-	runID string
-}
-
-func withModelRun(ctx context.Context, store Durable, runID string) context.Context {
-	return context.WithValue(ctx, modelRunKey{}, modelRun{store: store, runID: runID})
 }
 
 // retrieval is the journaled record of one WithRetrieval step: the query and the documents
@@ -154,7 +135,7 @@ type retrieval struct {
 // call returns the recorded documents. A run has one user message (the last one it was
 // seeded with; the loop adds only assistant and tool turns), so one step per layer holds the
 // retrieval for the whole run.
-func retrieveOnce(ctx context.Context, r Retriever, query string, k, layer int) ([]Doc, error) {
+func retrieveOnce(ctx context.Context, call ModelCall, r Retriever, query string, k, layer int) ([]Doc, error) {
 	get := func(ctx context.Context) (retrieval, error) {
 		docs, err := r.Retrieve(ctx, query, k)
 		if err != nil {
@@ -162,12 +143,11 @@ func retrieveOnce(ctx context.Context, r Retriever, query string, k, layer int) 
 		}
 		return retrieval{Query: query, Docs: topK(docs, k)}, nil
 	}
-	mr, ok := ctx.Value(modelRunKey{}).(modelRun)
-	if !ok {
+	if call.turn == nil || call.turn.journal == nil {
 		rec, err := get(ctx)
 		return rec.Docs, err
 	}
-	rec, err := step(ctx, mr.store, mr.runID, retrievalStep(layer), get,
+	rec, err := step(ctx, call.turn.journal, call.RunID, retrievalStep(layer), get,
 		StepSafety(Safety{ReadOnly: true}))
 	return rec.Docs, err
 }

@@ -2,7 +2,6 @@ package middleware
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sync"
 
@@ -26,43 +25,28 @@ func (r Rates) Cost(u agent.Usage) float64 {
 }
 
 // CostMeter accumulates token usage and computed cost across model calls, in two views: the
-// answers (Usage, Total), the responses the calls returned, which a run records; and the spend
-// (Spent, SpentTotal), every request the calls sent, including failed attempts a Retry repeated
-// and losing Hedge targets, which the provider bills too. It is safe for concurrent use.
+// answers, the responses the calls returned, which a run records; and the spend, every request the
+// calls sent, including failed attempts a Retry repeated and losing Hedge targets, which the
+// provider bills too. Read both with Snapshot. It is safe for concurrent use.
 type CostMeter struct {
-	mu         sync.Mutex
-	total      float64
-	usage      agent.Usage
-	spentTotal float64
-	spent      agent.Usage
+	mu sync.Mutex
+	s  CostSnapshot
 }
 
-// Total returns the accumulated USD cost of the answers so far.
-func (m *CostMeter) Total() float64 {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.total
+// CostSnapshot is a CostMeter's totals at one moment. Answer and AnswerUSD are the usage and USD
+// cost of the responses the calls returned; Spend and SpendUSD those of every request the calls
+// sent.
+type CostSnapshot struct {
+	Answer, Spend       agent.Usage
+	AnswerUSD, SpendUSD float64
 }
 
-// Usage returns the accumulated token usage of the answers so far.
-func (m *CostMeter) Usage() agent.Usage {
+// Snapshot returns the meter's totals, read together under one lock, so the answer and spend
+// views are always of the same moment.
+func (m *CostMeter) Snapshot() CostSnapshot {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.usage
-}
-
-// Spent returns the accumulated token usage of every model request sent so far.
-func (m *CostMeter) Spent() agent.Usage {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.spent
-}
-
-// SpentTotal returns the accumulated USD cost of every model request sent so far.
-func (m *CostMeter) SpentTotal() float64 {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.spentTotal
+	return m.s
 }
 
 func addTo(dst *agent.Usage, u agent.Usage) {
@@ -75,35 +59,42 @@ func addTo(dst *agent.Usage, u agent.Usage) {
 func (m *CostMeter) addSpent(r Rates, u agent.Usage) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.spentTotal += r.Cost(u)
-	addTo(&m.spent, u)
+	m.s.SpendUSD += r.Cost(u)
+	addTo(&m.s.Spend, u)
+}
+
+func (m *CostMeter) addAnswer(r Rates, u agent.Usage) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.s.AnswerUSD += r.Cost(u)
+	addTo(&m.s.Answer, u)
 }
 
 // Cost is a model middleware that records token usage and computes running cost. The answer view
 // counts each successful call's returned usage. The spend view counts every request the call
-// sends, wherever Cost sits in the chain: under an agent, each attempt of a Retry and each target
-// of a Hedge below it (see agent.ModelCallHook); for a handler called outside an agent, the
-// usage the call returns, successful or not. The caller reads accumulated values via m.
+// sends, wherever Cost sits in the chain, through a hook it adds to the call (see
+// agent.ModelCallHook): each attempt of a Retry and each target of a Hedge below it, the usage a
+// failed request reported before failing, and the discarded spend a replayed turn reports
+// (agent.ModelAttempt.Discarded). Outside an agent, call the model through agent.CallModel, whose
+// model handler runs the hooks too. The caller reads the totals with m.Snapshot.
 func Cost(m *CostMeter, r Rates) agent.Middleware {
+	hook := agent.ModelCallHook{After: func(_ context.Context, _ agent.ModelCall, a agent.ModelAttempt) {
+		m.addSpent(r, a.Response.Usage)
+		m.addSpent(r, a.Discarded)
+	}}
 	return func(next agent.ModelHandler) agent.ModelHandler {
-		return func(ctx context.Context, req agent.Request) (agent.Message, agent.Usage, error) {
-			hctx, hooked := agent.WithModelCallHook(ctx, agent.ModelCallHook{After: func(u agent.Usage) { m.addSpent(r, u) }})
-			msg, u, err := next(hctx, req)
-			if verr := u.Validate(); verr != nil {
-				// A negative count would lower the totals: reject it, and record nothing.
-				return agent.Message{}, agent.Usage{}, errors.Join(err, fmt.Errorf("middleware: cost: %w", verr))
-			}
-			if !hooked {
-				m.addSpent(r, u)
-			}
+		return func(ctx context.Context, call agent.ModelCall) (agent.ModelResponse, error) {
+			resp, err := next(ctx, call.AddHook(hook))
 			if err != nil {
-				return msg, u, err
+				return resp, err
 			}
-			m.mu.Lock()
-			m.total += r.Cost(u)
-			addTo(&m.usage, u)
-			m.mu.Unlock()
-			return msg, u, nil
+			if verr := resp.Usage.Validate(); verr != nil {
+				// A negative count (from a middleware inside Cost that built the response) would
+				// lower the totals: reject it, and record nothing.
+				return agent.ModelResponse{}, fmt.Errorf("middleware: cost: %w", verr)
+			}
+			m.addAnswer(r, resp.Usage)
+			return resp, nil
 		}
 	}
 }

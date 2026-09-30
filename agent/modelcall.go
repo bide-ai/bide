@@ -2,64 +2,203 @@ package agent
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"hash"
+	"slices"
+	"strconv"
 	"sync"
 )
 
-// ModelCallHook runs around each request the agent's model handler sends to a model: every
-// retried attempt and every hedged target, wherever the middleware that installed it sits in the
+// ModelHandler answers one model call: it returns the response the turn records. Middleware wraps
+// it; the innermost handler, which the agent (or CallModel) supplies, sends each request to
+// call.Model. On error the response carries at most the usage the failed request reported.
+type ModelHandler func(ctx context.Context, call ModelCall) (ModelResponse, error)
+
+// Middleware wraps a ModelHandler: the net/http-style func(Handler) Handler chain, at the
+// semantic layer (it sees messages, tool calls and token usage, not bytes). Batteries live in the
+// middleware package (Retry, Hedge, RateLimit, Cost). A middleware passes on the call it received,
+// or a copy of it with fields changed (c := call; c.Model = backup): the call carries the agent's
+// per-turn state in unexported fields, and the agent's model handler refuses a ModelCall that was
+// built from scratch rather than derived from the one the middleware received (ErrConfig).
+type Middleware func(next ModelHandler) ModelHandler
+
+// ModelCall is one model call as it passes through the middleware chain. It is a value: a
+// middleware changes a copy and passes that on, so what one middleware changes is seen only by
+// the handlers it calls, never by its caller or by a sibling (a Hedge's other targets).
+//
+// Request.Messages and Request.Tools arrive at every handler slices.Clip'ped, so a handler that
+// appends to them gets a new backing array and never writes into a slice another handler holds.
+// The elements are shared: replace an element through a copy of the slice rather than assign into
+// it.
+type ModelCall struct {
+	// Request is what the call asks of the model.
+	Request Request
+	// Model is where the agent's model handler sends the call's requests. A middleware may
+	// retarget a copy of the call (Hedge sends its backups this way).
+	Model Model
+	// RunID is the run the call belongs to, and Turn the model turn's sequence number within it
+	// (0 for the first). Both are zero for a call made through CallModel.
+	RunID string
+	Turn  int
+
+	turn    *turnState      // the per-turn state the agent's model handler uses and checks
+	hooks   []ModelCallHook // added through AddHook, outermost first
+	attempt int             // the request's number, set on the call a hook receives
+	layer   int             // how many WithRetrieval layers the call has passed through
+}
+
+// AddHook returns a copy of c with h appended to its hooks, which the agent's model handler runs
+// around every request it sends for the returned call and every call derived from it. Hooks are
+// append-only: a middleware can add one, never remove or reorder those added outside it, and the
+// agent's own spend accounting is not a hook at all, so no middleware can hide a request from the
+// run's budget or Result.Spend.
+func (c ModelCall) AddHook(h ModelCallHook) ModelCall {
+	c.hooks = append(slices.Clip(c.hooks), h)
+	return c
+}
+
+// Attempt is the number of the request a hook is observing: 1 for the first request the turn
+// sends, 2 for the next, and so on, counted across the whole turn, so the requests of every
+// Retry attempt and every Hedge target are numbered apart. It is 0 on a call that has not reached
+// the agent's model handler (as a middleware receives it).
+func (c ModelCall) Attempt() int { return c.attempt }
+
+// ModelCallHook runs around each request the agent's model handler sends: every retried attempt
+// and every hedged target, wherever the middleware that added it (ModelCall.AddHook) sits in the
 // chain. Middleware whose effect belongs to requests actually sent, rather than to calls through
 // it, uses one: RateLimit waits for a token in Before, Cost counts spend in After.
+//
+// The hooks of a call run in the order they were added, so a middleware nearer the outside of the
+// chain runs its Before first. Each Before runs once per request; a hook whose Before returned nil
+// gets exactly one After for that request.
 type ModelCallHook struct {
-	// Before runs before the request is sent, with the request's context. An error fails the
-	// call without sending it.
-	Before func(ctx context.Context) error
-	// After runs once a sent request has ended, successfully or not, with the usage it reported:
-	// for a failed request, the part reported before it failed.
-	After func(u Usage)
+	// Before runs before the request is sent, with the request's context and the call as it
+	// reached the model handler (Attempt set). An error fails the request without sending it:
+	// the hooks after it do not run, and the hooks before it get their After with that error.
+	Before func(ctx context.Context, call ModelCall) error
+	// After runs once the request has ended, successfully or not.
+	After func(ctx context.Context, call ModelCall, a ModelAttempt)
 }
 
-// WithModelCallHook returns ctx with h added to the hooks run around each model request made
-// under it. Hooks run in the order they were added, so a middleware nearer the outside of the
-// chain runs its Before first. ok is false, and ctx is returned unchanged, when ctx is not the
-// context of an agent model call (a handler called directly, outside Agent), where nothing runs
-// hooks: the middleware must then apply its effect itself.
-func WithModelCallHook(ctx context.Context, h ModelCallHook) (_ context.Context, ok bool) {
-	hooks, ok := ctx.Value(modelHooksKey).([]ModelCallHook)
-	if !ok {
-		return ctx, false
+// ModelAttempt is how one request ended, as an After hook sees it.
+type ModelAttempt struct {
+	// Response is what the request returned. When Err is set, only its Usage is meaningful: the
+	// usage the request reported before it failed, which the provider may still bill.
+	Response ModelResponse
+	// Discarded is usage the request's model reported as billed for responses it threw away (see
+	// Finish.Discarded): zero from a live adapter, the recorded discarded spend from Replay.
+	Discarded Usage
+	// Err is the request's error, or the agent's rejection of its response (a reused tool-use
+	// id), or the error of a Before hook that kept it from being sent.
+	Err error
+}
+
+// ModelResponse is the answer to a model call: the assistant message, the usage of the request
+// that produced it, and why the turn ended. Finish is never empty in a response the agent
+// records: an empty reason, which a Model may send when it does not know one, counts as
+// FinishStop (see Finish). The loop decides whether to run tools from the message's tool calls,
+// never from Finish (an OpenAI forced tool_choice reports stop alongside tool calls).
+type ModelResponse struct {
+	Message   Message
+	Usage     Usage
+	Finish    FinishReason
+	RawFinish string // the provider's own finish reason, as it sent it; empty if it sent none
+
+	origin *responseOrigin // the request that produced the response; nil for one a middleware built
+}
+
+// responseOrigin identifies the request that produced a response: its number within the turn,
+// what it asked and where it went, for the journal.
+type responseOrigin struct {
+	attempt   int
+	req       Request
+	info      ModelInfo
+	described bool
+}
+
+// CallModel sends one model call outside an agent, through mw (first = outermost) and the same
+// model handler an agent uses: hooks run around every request, Messages and Tools arrive clipped,
+// and the response is checked as an agent checks it (usage, finish reason, tool-use ids). There is
+// no journal, no stream and no run, so RunID and Turn are zero. It returns ErrConfig when m is nil.
+func CallModel(ctx context.Context, m Model, req Request, mw ...Middleware) (ModelResponse, error) {
+	if m == nil {
+		return ModelResponse{}, fmt.Errorf("agent: CallModel with a nil Model: %w", ErrConfig)
 	}
-	return context.WithValue(ctx, modelHooksKey, append(hooks[:len(hooks):len(hooks)], h)), true
+	return callChain(ctx, mw, ModelCall{Request: req, Model: m}, &turnState{meter: &spendMeter{}}, nil)
 }
 
-// WithModel returns ctx under which the agent's model handler sends requests to m instead of
-// the agent's model, so a middleware can send a call to another model through the rest of the
-// chain (Hedge sends its backups this way). ok is false, and ctx is returned unchanged, when ctx
-// is not the context of an agent model call.
-func WithModel(ctx context.Context, m Model) (_ context.Context, ok bool) {
-	if _, ok := ctx.Value(modelHooksKey).([]ModelCallHook); !ok {
-		return ctx, false
+// journal returns what a model record journals about resp beside its message and usage: the model
+// that answered, when it describes itself, and digests of the system prompt and the tool set that
+// turn was sent (see Record.PromptDigest). For a response no request produced (a middleware built
+// it), there is no model, and the digests are of sent, the request the agent passed to the chain.
+func (resp ModelResponse) journal(sent Request) (model *ModelInfo, prompt, tools string) {
+	req := sent
+	if o := resp.origin; o != nil {
+		req = o.req
+		if o.described {
+			info := o.info
+			model = &info
+		}
 	}
-	return context.WithValue(ctx, modelOverrideKey, m), true
+	return model, PromptDigest(req.Messages), ToolsDigest(req.Tools)
 }
 
-// inModelCall marks ctx as an agent model call's context. Its first hook adds every request's
-// usage to meter.
-func inModelCall(ctx context.Context, meter *spendMeter) context.Context {
-	return context.WithValue(ctx, modelHooksKey, []ModelCallHook{{After: meter.add}})
-}
-
-// modelFor returns the model a request under ctx goes to: the one set by WithModel, else def.
-func modelFor(ctx context.Context, def Model) Model {
-	if m, ok := ctx.Value(modelOverrideKey).(Model); ok && m != nil {
-		return m
+// PromptDigest is the hex SHA-256 digest a model record journals of the system prompt a turn was
+// sent: the text of every system message in msgs, in order, each length-prefixed under a domain
+// tag, so no two different prompts share a digest. It is "" when msgs holds no system message.
+func PromptDigest(msgs []Message) string {
+	var h hash.Hash
+	for _, m := range msgs {
+		if m.Role != RoleSystem {
+			continue
+		}
+		if h == nil {
+			h = sha256.New()
+			h.Write([]byte("bide.prompt.v1\n"))
+		}
+		writeField(h, m.Text())
 	}
-	return def
+	if h == nil {
+		return ""
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
 
-func modelHooks(ctx context.Context) []ModelCallHook {
-	hooks, _ := ctx.Value(modelHooksKey).([]ModelCallHook)
-	return hooks
+// ToolsDigest is the hex SHA-256 digest a model record journals of the tool set a turn was sent:
+// each tool's name, description and argument schema, length-prefixed under a domain tag, in the
+// order of their names, so the digest does not depend on the order the tools were listed in. It
+// is "" for no tools.
+func ToolsDigest(tools []Tool) string {
+	if len(tools) == 0 {
+		return ""
+	}
+	sorted := slices.Clone(tools)
+	slices.SortStableFunc(sorted, func(a, b Tool) int {
+		switch an, bn := a.Name(), b.Name(); {
+		case an < bn:
+			return -1
+		case an > bn:
+			return 1
+		}
+		return 0
+	})
+	h := sha256.New()
+	h.Write([]byte("bide.tools.v1\n"))
+	for _, t := range sorted {
+		writeField(h, t.Name())
+		writeField(h, t.Description())
+		writeField(h, string(t.ArgsSchema()))
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// writeField writes s to h as its decimal length, a colon, and s itself.
+func writeField(h hash.Hash, s string) {
+	h.Write([]byte(strconv.Itoa(len(s))))
+	h.Write([]byte{':'})
+	h.Write([]byte(s))
 }
 
 // usageTotals is what a run's model calls used: answer is the usage of the responses the run
