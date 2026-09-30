@@ -39,6 +39,8 @@ minor version (0.x.0) may include breaking API or journal-format changes; each o
 - `bide-audit -json` and `-version` ([#79]).
 - `eval.Compare` options `WithUnscoredTolerance` and `WithCaseSetMismatchAllowed`, `Comparison.Gate`, `ErrRegression`, `ErrInconclusive` and `DirectionInconclusive` ([#78]).
 - CI enforces doc comments on every exported identifier with `internal/tools/doccheck` ([#73]).
+- `agent.RunStart` and `agent.RecordedStart`: a run's input and entry point are journaled at its first drive and can be read back, for example by a `Recover` callback ([#70]).
+- `agent.Record.ReadOnly` (`read_only`): a tool result records whether its call ran ReadOnly ([#70]).
 
 ### Changed
 
@@ -68,6 +70,10 @@ minor version (0.x.0) may include breaking API or journal-format changes; each o
 - **Breaking:** `Finish.Reason` is the typed `agent.FinishReason` ([#76]).
 - **Breaking:** `eval` `Metric.Fn` returns `(bool, error)`; a metric that cannot score a run leaves it unscored, `MetricStat` reports `Scored` and `Unscored`, and reports are `bide.eval.report.v2` ([#78]).
 - **Breaking:** `bide-audit` exit statuses follow one scheme: 0 verified, 1 not verified, 2 usage, 3 no verdict, 4 input unreadable or unusable ([#79]).
+- **Breaking:** every run journals `run:start` (its input and whether it is a saga); resuming an unfinished run with another input, or through `Run` for a saga (or `RunSaga` for a run), is `ErrConfig`, and so is `SendOnce` with a different input on a key whose turn is still open ([#70]).
+- **Breaking:** `plan` attempt markers record whether the node was retry-safe; a node re-runs on resume only if it was retry-safe when attempted and is now, and a marker written before this halts ([#70]).
+- **Breaking:** a recorded approval denial is final even if the tool's gate is later removed, loosened or made m-of-n ([#70]).
+- **Breaking:** saga rollback treats a completed call as a write unless its result records that it ran ReadOnly, and reports calls whose tool is no longer registered as uncompensated (or halts on one attempted with no result) ([#70]).
 - `WithTokenBudget` counts discarded and failed requests; `RateLimit` and `Cost` count every request sent; `Hedge` runs each backup through the inner middleware chain; `Retryable` no longer retries `ErrTruncatedToolArgs` ([#55]).
 - A resume halts on any attempt marker without a result, whatever the tool's current safety; a tool no longer registered halts instead of failing with `ErrUnknownTool` ([#57]).
 - `mcp.Tools` returns `ErrProtocol` for malformed or duplicate tool names, non-object schemas and oversized descriptions; an agent with two tools of the same name returns `ErrConfig` ([#57]).
@@ -405,6 +411,7 @@ First public release.
 [#67]: https://github.com/bide-ai/bide/pull/67
 [#68]: https://github.com/bide-ai/bide/pull/68
 [#69]: https://github.com/bide-ai/bide/pull/69
+[#70]: https://github.com/bide-ai/bide/pull/70
 [#73]: https://github.com/bide-ai/bide/pull/73
 [#74]: https://github.com/bide-ai/bide/pull/74
 [#75]: https://github.com/bide-ai/bide/pull/75
