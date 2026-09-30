@@ -124,11 +124,18 @@ A delegation re-entered on resume (its sub-run paused, or was cut off) runs unde
 journaled the first time, verified against the bound parent and signer, so the sub-run holds one
 grant whatever your `AttenuateFunc` returns now. A delegation resumed under other authority than
 it began with (with no grant after a grant, the reverse, or another parent grant or signer) is
-refused with `ErrConfig` and records nothing: the run stops, and driving it again with the right
-grant bound continues the delegation. A delegation cannot run past its grant's `NotAfterUnix`:
-minting from an expired grant, or continuing under an expired journaled one, is refused the same
-way. A child grant's `Subject` is always the sub-agent's name; an `AttenuateFunc` that sets another
-is refused.
+refused with `ErrConfig` and records nothing: the run stops (siblings in flight finish first,
+and a sibling's pause is reported beside the refusal), and driving it again with the right grant
+bound continues the delegation. Minting from a bound grant that has expired is refused the same
+way: bind a live one and drive again.
+
+A delegation cannot run past its grant's `NotAfterUnix`. Every tool call in its sub-run is refused
+once the child grant has expired (a recorded failure; the tool is never called), and a delegation
+resumed after its journaled grant expired fails for good, recorded, since no grant can renew a
+journaled one: in a saga it rolls back (the rollback's compensations do not check expiry). A child
+that your `AttenuateFunc` gives an expiry already past fails the same way. A child grant's
+`Subject` is always the sub-agent's name; an `AttenuateFunc` that sets another is refused, and so
+is a journaled grant for another subject.
 
 **Upgrading from a journal written before this release.** A delegation that ran without a grant
 now journals that (`audit:delegation:ungranted`), and a rollback into a sub-run with records but
