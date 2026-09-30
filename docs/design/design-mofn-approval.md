@@ -170,6 +170,7 @@ design; where the implementation refined it, the notes at the top and the v2 sec
 `Safety` gains one optional field. `nil` keeps today's exact 1-of-1 behavior, so the change is
 backward-compatible.
 
+<!-- docsnip: api agent -->
 ```go
 type Safety struct {
     // ... existing fields ...
@@ -193,6 +194,7 @@ The gate predicate becomes `RequiresApproval || Approval != nil`.
 
 ### Recording a decision (`agent/approval.go`)
 
+<!-- docsnip: api agent -->
 ```go
 // ApproveAs records one named approver's signed decision on a tool call gated by an m-of-n
 // Approval policy. sig is the approver's signature over
@@ -212,6 +214,7 @@ existing `Approved bool`.
 `PendingApproval` gains an optional tally so an oversight surface can render progress
 ("1 of 2 in, waiting on risk"):
 
+<!-- docsnip: api agent -->
 ```go
 type PendingApproval struct {
     RunID     string

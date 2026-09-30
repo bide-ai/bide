@@ -13,6 +13,7 @@ A `Grant` is a statement by a principal (`Issuer`) authorizing an actor (`Subjec
 within a `Scope` until `NotAfter`. It is the non-repudiable authority behind a governed action:
 the action's `agent.Identity.AuthorityRef` is a grant's `Digest`.
 
+<!-- docsnip: setup signer audit.Signer -->
 ```go
 g := audit.Grant{
     ID:      "root",
@@ -46,6 +47,7 @@ the chain back to the root stays provable.
 
 `VerifyDelegationChain` verifies a chain ordered root-first (index 0) to leaf-last:
 
+<!-- docsnip: setup chain []audit.SignedGrant; issuerVerifier func(issuer string) (audit.Verifier, bool) -->
 ```go
 ok, err := audit.VerifyDelegationChain(chain, issuerVerifier, audit.ScopeRules{"limit": audit.NumericAtMost})
 ```
@@ -82,6 +84,7 @@ is minted.
 something the caller has to remember. Bind the acting grant and signer once at the root with
 `WithGrant`; then each delegation through the tool narrows automatically.
 
+<!-- docsnip: setup ctx context.Context; store agent.Durable; rootSG audit.SignedGrant; signer audit.Signer; subAgent *agent.Agent -->
 ```go
 ctx = audit.WithGrant(ctx, rootSG, signer)
 
@@ -121,6 +124,7 @@ down a delegation tree by construction, and the whole chain stays provable via
 record. Authority starts at the ladder's baseline rung, is promoted one rung after a clean streak
 (capped at the top rung), and resets to baseline the instant an anomaly is flagged.
 
+<!-- docsnip: setup ctx context.Context; rootSG audit.SignedGrant; signer audit.Signer; ledger agent.Durable -->
 ```go
 ea, err := audit.NewEarnedAuthority(ctx,
     []int{100, 500, 1000}, // ladder: rung 0 is baseline; top must not exceed the root ceiling
@@ -148,6 +152,7 @@ earlier grant is superseded, whether the change was a promotion or a demotion. (
 names its ledger position, so re-reaching a rung issues a new grant rather than reviving an old
 one.) A verifier checks a grant against the latest signed head of the ledger run:
 
+<!-- docsnip: setup ctx context.Context; ledger agent.Durable; latestLedgerSTH audit.SignedTreeHead; lastSeen *audit.SignedTreeHead; grant audit.SignedGrant; logPub ed25519.PublicKey -->
 ```go
 // lastSeen is the newest ledger head this verifier has verified before; on first contact pass
 // size 0 and a nil lastSeen.

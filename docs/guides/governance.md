@@ -35,6 +35,7 @@ terminates (WFC) and event order doesn't matter after repair (CC). If it can't p
 **refuses to build** and hands you a counterexample. A built machine is an immutable set of
 O(1) lookup tables; no compensation logic runs at runtime.
 
+<!-- docsnip: setup import "github.com/blackwell-systems/gsm" -->
 ```go
 r := gsm.NewRegistry("order")
 status := r.Enum("status", "pending", "paid", "shipped")
@@ -77,6 +78,7 @@ routes, the pre-trade-check posture rather than post-trade remediation.
 
 A **governor** applies agents' events to the shared state. Two flavors:
 
+<!-- docsnip: setup ctx context.Context; import "github.com/blackwell-systems/gsm"; m *gsm.Machine; log govern.EventLog -->
 ```go
 gov := govern.New(m, m.NewState())                        // in-memory, thread-safe
 pg, _ := govern.NewPersistent(ctx, m, log, "order-42", m.NewState()) // event-sourced
@@ -131,6 +133,7 @@ durable log.
 `FederatedEventTool` (and `EventTool` for a single governor) turns an agent's **tool call**
 into a governed event. This is how an LLM agent participates:
 
+<!-- docsnip: setup gov *govern.Governor -->
 ```go
 tool := govern.EventTool(gov, "pay", "mark the order paid", "pay", agent.Safety{})
 // give `tool` to the agent; when the LLM calls it, "pay" is applied to shared state,
@@ -145,6 +148,7 @@ A governed action can commit to **who acted**, not just what happened. The deplo
 `agent.Identity{Actor, OnBehalfOf, AuthorityRef}` to the run (from its own auth layer, never from
 the model), and `AttestedEventTool` stamps it into the same leaf as the policy and state digests:
 
+<!-- docsnip: setup ctx context.Context; a *agent.Agent; runID string; input string -->
 ```go
 id := agent.Identity{Actor: "exec-agent@1.4.2", OnBehalfOf: "desk-EQ-US", AuthorityRef: "grant#a1b2"}
 a.Run(agent.WithIdentity(ctx, id), runID, input) // propagates to governed tools and sub-agents
@@ -158,6 +162,7 @@ attribution is only as strong as the key custody behind the run's signatures (se
 state the invariants read, so the rule is scoped per principal. Model the limit as a variable and
 require `exposure <= limit`:
 
+<!-- docsnip: setup import "github.com/blackwell-systems/gsm"; r *gsm.Registry; m *gsm.Machine; granted int -->
 ```go
 exposure := r.Int("exposure", 0, 10)
 limit    := r.Int("limit", 0, 10)              // seeded at run start from the verified grant
@@ -190,6 +195,7 @@ a `FederatedGovernor`. The capability ladder:
   conflict resolution: the source wins, deterministically.
 - **Multi-source (DAG)**: a target with several sources declares a **`Resolver`** that
   merges them (priority / AND-OR / most-restrictive):
+  <!-- docsnip: skip the Map arguments are elided; the example shows the Resolve call -->
   ```go
   fed.Morphism(hr, door).Shared(access).Map(...).Add().
       Morphism(security, door).Shared(access).Map(...).Add().
@@ -215,6 +221,7 @@ multi-source without a resolver, morphisms that don't preserve validity.
 You don't have to *design* the `Repair` yourself. Declare the invariants (validity) and the
 events, and let gsm **generate** a convergent compensation, or tell you none exists:
 
+<!-- docsnip: setup import "github.com/blackwell-systems/gsm"; r *gsm.Registry; initial gsm.State -->
 ```go
 syn, _ := r.Synthesize()      // Repair omitted on the invariants
 if !syn.Convergent {
@@ -247,6 +254,7 @@ resulting machine is then handed to `govern`. Two capabilities are worth reachin
   when neither path works: build failed and no convergent compensation exists (the error carries
   the impossibility witness). It ties verification and repair generation together, so a caller can
   say "build this, and if my repair does not converge, give me one that does."
+  <!-- docsnip: setup import "github.com/blackwell-systems/gsm"; r *gsm.Registry; initial gsm.State -->
   ```go
   m, syn, err := r.BuildOrSynthesize()
   if err != nil { /* your rules cannot converge, even with a synthesized repair */ }
@@ -260,6 +268,7 @@ resulting machine is then handed to `govern`. Two capabilities are worth reachin
   those edges are externally coordinated (their targets become external inputs). The plan is a
   correct, polynomial coordination of size at most the number of independent cycles (the exact
   minimum is NP-hard); an empty plan is exactly `Build`.
+  <!-- docsnip: setup import "github.com/blackwell-systems/gsm"; fed *gsm.Federation -->
   ```go
   plan := fed.CoordinationPlan()           // where to coordinate; nil if already acyclic
   fm, _, err := fed.BuildCoordinated(plan) // build given that coordination

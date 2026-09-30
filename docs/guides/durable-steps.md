@@ -15,6 +15,7 @@ Three primitives cover the common shapes, all built on the `Durable` port
 
 ## `Step[T]`: one named durable operation
 
+<!-- docsnip: api agent -->
 ```go
 func Step[T any](ctx context.Context, d Durable, runID, name string,
     fn func(context.Context) (T, error), opts ...StepOption) (T, error)
@@ -35,6 +36,7 @@ under a new marker instead of halting; only a process that dies in that gap leav
 that is safe to re-run declares it with `StepSafety`, and then simply re-runs after
 a crash or an error:
 
+<!-- docsnip: setup ctx context.Context; store agent.Durable; runID string; type Invoice struct{}; type Reservation struct{}; id, sku string; billing interface{ Lookup(context.Context, string) (Invoice, error) }; inventory interface{ Reserve(context.Context, string) (Reservation, error) } -->
 ```go
 inv, err := agent.Step(ctx, store, runID, "fetch-invoice",
     func(ctx context.Context) (Invoice, error) { return billing.Lookup(ctx, id) },
@@ -59,6 +61,7 @@ uses (through `Run` and `SendOnce`) to make a redelivered inbound event replay i
 
 ## `Parallel[T]` / `Task[T]`: durable fan-in
 
+<!-- docsnip: api agent -->
 ```go
 type Task[T any] struct {
     Name   string
@@ -84,6 +87,7 @@ each result committed to the journal and provable on its own, then aggregate.
   memoized on resume; a failed `ReadOnly` task re-runs, and a failed side effect halts.
 - `maxConcurrency` caps in-flight tasks; `<= 0` means one goroutine per task.
 
+<!-- docsnip: setup ctx context.Context; store agent.Durable; runID string; type CheckResult struct{}; runSanctions, runPEP, runAdverseMedia func(context.Context) (CheckResult, error) -->
 ```go
 checks := []agent.Task[CheckResult]{
     {Name: "sanctions_check",     Fn: runSanctions,    Safety: agent.Safety{ReadOnly: true}},
@@ -110,6 +114,7 @@ then failed on the hotel, so cleanly refund and cancel." A tool declares how to 
 the `Compensator` port ([extension points](../reference/extension-points.md)); `CompensatedFunc` builds a
 typed tool that carries both the forward action and its undo:
 
+<!-- docsnip: setup type BookArgs struct{}; type Booking struct{ PNR string }; airline interface{ Book(context.Context, BookArgs) (Booking, error); Cancel(context.Context, string) error } -->
 ```go
 book := agent.CompensatedFunc("book_flight", "book a flight", agent.Safety{},
     func(ctx context.Context, in BookArgs) (Booking, error) { return airline.Book(ctx, in) },
@@ -120,6 +125,7 @@ Run the agent with `RunSaga` instead of `Run`. If a step fails after earlier com
 succeeded, `RunSaga` rolls those writes back **in reverse order** (recursing through sub-agent
 trees) and returns `*SagaAborted`:
 
+<!-- docsnip: setup ctx context.Context; a *agent.Agent; runID string; input string -->
 ```go
 _, err := a.RunSaga(ctx, runID, input)
 var aborted *agent.SagaAborted
@@ -225,6 +231,7 @@ verified it out of band, `ResolveHalt` is the sanctioned escape. It injects the 
 under the halted tool-use ID (the same journal key the loop uses), so a re-run proceeds past the
 halt instead of halting again:
 
+<!-- docsnip: setup ctx context.Context; a *agent.Agent; store agent.Durable; input string; err error; msg agent.Message -->
 ```go
 var halt *agent.ResumeHalt
 if errors.As(err, &halt) {
@@ -262,6 +269,7 @@ decide, and call `ResolveHalt` itself. Two options make that safe:
   hole in the very thing the trail exists to protect. With it, a later reader tells a reconciled
   step from a clean one and re-checks the evidence.
 
+<!-- docsnip: setup ctx context.Context; store agent.Durable; err error; func providerSays(*agent.ResumeHalt) (bool, json.RawMessage) -->
 ```go
 var halt *agent.ResumeHalt
 if errors.As(err, &halt) {
@@ -301,6 +309,7 @@ re-invokes it is a **`Waker`**, the time-driven sibling of the inbound event tri
 and the trigger is pluggable. Bind one with `agent.WithWaker(ctx, w)` and `Sleep` registers its wake
 automatically. `MemWaker` is the reference in-process implementation:
 
+<!-- docsnip: setup ctx context.Context; a *agent.Agent; store *sqlite.Store; savedInput string -->
 ```go
 ctx, cancel := context.WithCancel(ctx)
 var w *agent.MemWaker

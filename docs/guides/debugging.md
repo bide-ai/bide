@@ -14,6 +14,7 @@ journal and project it.
 
 ## 1 · Deterministic replay: `agent.Replay`
 
+<!-- docsnip: api agent -->
 ```go
 func Replay(ctx context.Context, source Durable, runID string) (Model, error)
 ```
@@ -43,6 +44,7 @@ If the replay model is asked for more turns than were recorded, its `Stream` ret
 `agent.ErrNoRecordedOutput`; that is the signal that the replayed loop diverged from the
 original (it wanted a turn the recording never produced).
 
+<!-- docsnip: setup ctx context.Context; prod agent.Durable; runID string; tools []agent.Tool; originalInput string -->
 ```go
 // `prod` is the store that captured the original run; runID identifies it.
 replayModel, err := agent.Replay(ctx, prod, runID)
@@ -68,6 +70,7 @@ is pinned to the recording, so any drift you see comes from your tool or loop ch
 
 ## 2 · Reconstruct durable semantic events: `agent.ReplayEvents`
 
+<!-- docsnip: api agent -->
 ```go
 func ReplayEvents(ctx context.Context, store Durable, runID string) ([]AgentEvent, error)
 ```
@@ -91,6 +94,7 @@ after a crash, which is what makes it a resume-stable audit artifact. The `audit
 builds its event trail on exactly this projection (`audit.PersistJournal`,
 `audit.EventLogFromJournal`).
 
+<!-- docsnip: setup ctx context.Context; store agent.Durable; runID string -->
 ```go
 events, err := agent.ReplayEvents(ctx, store, runID)
 if err != nil {
@@ -108,6 +112,7 @@ for _, e := range events {
 
 ## 3 · Export a run as a Mermaid diagram: `agent.RenderMermaid`
 
+<!-- docsnip: api agent -->
 ```go
 func RenderMermaid(ctx context.Context, d Durable, runID string) (string, error)
 ```
@@ -129,6 +134,7 @@ Each record maps to a node in run order:
 
 The chart opens with a `start([user])` node and closes with a `done([done])` node.
 
+<!-- docsnip: setup ctx context.Context; store agent.Durable; runID string -->
 ```go
 diagram, err := agent.RenderMermaid(ctx, store, runID)
 if err != nil {
@@ -165,6 +171,7 @@ that missing piece and a supervisor that uses it.
 The durable store is the source of truth. A run's full state lives in its journal, so
 recovery is enumerate-then-re-drive, nothing more:
 
+<!-- docsnip: api agent -->
 ```go
 type Lister interface {
 	Runs(ctx context.Context) ([]string, error)
@@ -191,6 +198,7 @@ returns an `ErrConfig`-wrapped error if the store cannot enumerate.
 (`agent.IsSessionRun`; the session resumes a turn when its message is sent again), and calls
 `resume` for each remaining run to push it forward:
 
+<!-- docsnip: setup ctx context.Context; store agent.Durable; a *agent.Agent; waker agent.Waker; func startFor(runID string) agent.RunStart -->
 ```go
 n, err := agent.Recover(ctx, store, func(ctx context.Context, runID string) error {
 	start, ok, err := agent.RecordedStart(ctx, store, runID) // the run's own input and entry point
@@ -221,6 +229,7 @@ calls `Recover` again. `RecoverLoop` is that someone. Start it once per worker; 
 `WithRecoverInterval` (half the lease TTL by default) until its context ends, so a dead holder's
 run is taken over within about one interval of its lease expiring:
 
+<!-- docsnip: setup ctx context.Context; store agent.Durable; resume func(ctx context.Context, runID string) error -->
 ```go
 go func() {
 	err := agent.RecoverLoop(ctx, store, resume,
@@ -313,6 +322,7 @@ a `*Result` envelope carrying telemetry accumulated over the whole run. `Run` an
 are unchanged and remain the path for callers that only need the final message; the
 `*Result` variants are additive counterparts for callers that want observability data.
 
+<!-- docsnip: api agent -->
 ```go
 type Result struct {
 	Message  Message       // the final assistant answer, identical to what Run returns
@@ -324,6 +334,7 @@ type Result struct {
 }
 ```
 
+<!-- docsnip: setup ctx context.Context; a *agent.Agent -->
 ```go
 res, err := a.RunResult(ctx, "run-42", "summarize the ledger")
 if err != nil {

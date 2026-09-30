@@ -134,6 +134,7 @@ value↔stream bridging + fan-in merge. See must-build below.
 ## Go-idiomatic design principles
 
 **1. The agent loop IS a `select`, not a hidden while-loop.**
+<!-- docsnip: setup ctx context.Context; modelEvents chan agent.Event; toolResults chan any; approval chan bool -->
 ```go
 for {
     select {
@@ -201,6 +202,7 @@ early-adopter crowd (enterprises pin old Go and aren't our first users).
 
 ## Typed tools: the ergonomic target
 
+<!-- docsnip: skip the original design sketch of a typed tool; the shipped API is agent.Func (see the README) -->
 ```go
 type WeatherArgs struct {
     City  string `json:"city"  desc:"city name"`

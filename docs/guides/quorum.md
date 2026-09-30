@@ -25,6 +25,7 @@ Give each voter a name and a `Decide` function that asks one model and returns a
 `govern.Quorum` runs the voters in parallel, tallies their answers, and tells you whether at least
 `k` of them agreed. You also give the quorum itself a name, so one run can hold several quorums.
 
+<!-- docsnip: setup ctx context.Context; store agent.Durable; claudeAgent, gptAgent, geminiAgent *agent.Agent; ticket string; func apply(string) error; func escalate(govern.QuorumResult) error; returns error -->
 ```go
 // Each model answers with one label from a fixed set.
 type verdict struct {
@@ -148,6 +149,7 @@ For decisions that must provably never commit without agreement, express the rul
 state (see [Governance](governance.md)). The tally is fed in as a fact, and a checked policy
 refuses the commit unless the count reaches `k`:
 
+<!-- docsnip: setup import "github.com/blackwell-systems/gsm"; n, k int -->
 ```go
 r := gsm.NewRegistry("model-quorum")
 decision := r.Enum("decision", "approve", "deny", "escalate")
@@ -177,6 +179,7 @@ Commit through `govern.AttestedEventTool` to record the commit bound to the poli
 Anyone holding the published proofs can check the decision without access to your systems. Export
 a proof for the tally and for every vote with `audit.ProveStep`, signed under the run's tree head:
 
+<!-- docsnip: setup ctx context.Context; store agent.Durable; sth audit.SignedTreeHead -->
 ```go
 tally, err := audit.ProveStep(ctx, store, "refund-1234", govern.QuorumTallyStep("refund"), sth)
 vote, err := audit.ProveStep(ctx, store, "refund-1234", govern.QuorumVoteStep("refund", "claude"), sth)

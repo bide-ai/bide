@@ -280,6 +280,7 @@ and proofs are unaffected.
 
 Wire it in with any adapter's `WithToolResultCodec`:
 
+<!-- docsnip: setup apiKey string -->
 ```go
 import (
 	"github.com/bide-ai/bide/model/openai"

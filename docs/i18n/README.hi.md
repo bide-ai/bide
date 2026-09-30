@@ -111,6 +111,7 @@ Temporal के पास गारंटियाँ हैं पर चलन
 
 वही ऑर्डर-ट्राइएज फ़्लो, तीन तरीक़ों से। सादा Go डिफ़ॉल्ट है: सामान्य नियंत्रण-प्रवाह लिखें, और उन चरणों को नाम दें जिन्हें जर्नल को क्रैश-सुरक्षित बनाना है।
 
+<!-- docsnip: setup ctx context.Context; store agent.Durable; order Order; type Order struct{}; type Receipt struct{}; type Assessment struct{ Rush bool }; type Reservation struct{}; func classify(Order) (Assessment, error); func reserve(Assessment) (Reservation, error); func finalize(Reservation) (Receipt, error); func decline(Assessment) (Receipt, error) -->
 ```go
 // classify, then branch: rush orders reserve-then-finalize, the rest decline.
 assess, _ := agent.Step(ctx, store, "order-42", "classify",
@@ -131,6 +132,7 @@ if assess.Rush {
 
 जब आप उसी फ़्लो को एक प्रथम-श्रेणी, निरीक्षणीय कलाकृति के रूप में चाहते हैं, तो `plan` बिल्डर टाइप-किए गए नोडों को एक `Flow` में जोड़ता है जो उसी रनटाइम पर उतरता है:
 
+<!-- docsnip: setup type Order struct{}; type Receipt struct{}; type Assessment struct{ Rush bool }; type Reservation struct{} -->
 ```go
 b := plan.New[Order, Receipt]("order-triage")
 classify := b.Step("classify", func(ctx context.Context, o Order) (Assessment, error) { ... })
@@ -165,6 +167,7 @@ flow, err := b.Build() // inherits at-most-once and the audit trail
 }
 ```
 
+<!-- docsnip: setup type Order struct{}; type Receipt struct{}; configBytes []byte; reg *plan.Registry -->
 ```go
 flow, err := plan.Load[Order, Receipt](configBytes, reg) // same topology, same Digest()
 ```
@@ -183,6 +186,7 @@ flow, err := plan.Load[Order, Receipt](configBytes, reg) // same topology, same 
 
 ## गारंटी 1, कोड में: यह दो बार चार्ज नहीं करेगा
 
+<!-- docsnip: setup ctx context.Context; a *agent.Agent; runID string; input string; type ChargeArgs struct{}; type Receipt struct{} -->
 ```go
 // A tool that moves money is a write: not ReadOnly, not Idempotent.
 charge := agent.Func("charge_card", "Charge the customer", agent.Safety{},
@@ -256,6 +260,7 @@ func main() {
 
 `Run` केवल अंतिम संदेश लौटाता है। एक रन सारांश (पूरे रन का टोकन उपयोग, कैश और सब-एजेंटों सहित; मॉडल-ट्रन गिनती; वॉल-क्लॉक अवधि) के लिए `RunResult` (और `RunSagaResult`) इस्तेमाल करें:
 
+<!-- docsnip: setup ctx context.Context; a *agent.Agent; runID string; input string -->
 ```go
 res, err := a.RunResult(ctx, runID, input)
 // res.Message, res.Usage, res.Spend, res.Turns, res.Duration, res.RunID
@@ -265,6 +270,7 @@ res, err := a.RunResult(ctx, runID, input)
 
 `Run` ब्लॉक करता है और अंतिम उत्तर लौटाता है। एजेंट को काम करते देखने के लिए (टोकन डेल्टा, ट्रन सीमाएँ, टूल शुरू/समाप्त), `Stream` इस्तेमाल करें। यह **वही लूप** चलाता है (`Run` अक्षरशः `Stream(...).Final()` है), इसलिए टिकाऊपन, पुनरारंभ, और साइड-इफ़ेक्ट सुरक्षा समरूप हैं:
 
+<!-- docsnip: setup ctx context.Context; a *agent.Agent; runID string; input string -->
 ```go
 stream := a.Stream(ctx, runID, input)
 for ev := range stream.Events() {
@@ -294,6 +300,7 @@ answer, err := stream.Final() // terminal message + error (incl. *PendingApprova
 
 `RunTyped[T]` एक मुक्त-रूप संदेश के बजाय एक टाइप-किया गया `T` लौटाता है। यह एक कृत्रिम `final_answer` टूल इंजेक्ट करता है जिसका JSON स्कीमा `T` से व्युत्पन्न है (`schema` पैकेज के माध्यम से) और मॉडल को उसका काम पूरा होने पर इसे एक बार कॉल करने की ओर संचालित करता है, ताकि एक टूल-उपयोगी एजेंट वास्तविक काम कर सके और *फिर* टाइप-किया हुआ उत्तर दे। प्रदाता-अज्ञेय (नेटिव टूल कॉलिंग पर निर्मित, किसी प्रदाता के JSON मोड पर नहीं)।
 
+<!-- docsnip: setup ctx context.Context; a *agent.Agent; runID string -->
 ```go
 type Weather struct {
 	City  string `json:"city"`
@@ -312,6 +319,7 @@ w, err := agent.RunTyped[Weather](ctx, a, runID, "weather in SF?")
 
 जनन नियंत्रण प्रदाता-निरपेक्ष हैं और एक बार सेट होते हैं; हर अडैप्टर उन्हें अपने वायर प्रारूप पर मैप करता है (और जो वह नहीं कर सकता उसे गिरा देता है, जैसे Anthropic के पास `seed` नहीं है):
 
+<!-- docsnip: setup model agent.Model; store agent.Durable; tools []agent.Tool -->
 ```go
 a := agent.New(model, store, tools...).
 	WithSampling(agent.Temperature(0), agent.MaxTokens(500), agent.TopP(0.9), agent.Seed(42))
@@ -323,6 +331,7 @@ a := agent.New(model, store, tools...).
 
 एक एजेंट लूप हर ट्रन एक बड़ा स्थिर उपसर्ग (सिस्टम प्रॉम्प्ट + टूल स्कीमा) दोबारा भेजता है। Anthropic प्रॉम्प्ट कैशिंग उन दोहरावों को कैश-रीड दर पर बिल करता है:
 
+<!-- docsnip: setup key string -->
 ```go
 model := anthropic.New(key, anthropic.WithPromptCache())
 ```
@@ -333,6 +342,7 @@ model := anthropic.New(key, anthropic.WithPromptCache())
 
 `Run` एक ट्रन है। एक `Session` एक टिकाऊ बहु-ट्रन बातचीत है: हर `Send` एक पूर्ण एजेंट रन है (टूल, पुनरारंभ, साइड-इफ़ेक्ट सुरक्षा) जो अब तक के ट्रांसक्रिप्ट से बीजित है, ताकि एजेंट पिछले ट्रन याद रखे।
 
+<!-- docsnip: setup ctx context.Context; a *agent.Agent -->
 ```go
 s, _ := a.Session(ctx, "user-42")   // reopens + rebuilds the transcript from the store
 a1, _ := s.Send(ctx, "what's the capital of France?")
@@ -345,6 +355,7 @@ a2, _ := s.Send(ctx, "and its population?")   // sees turn 1 in context
 
 टिकाऊ जर्नल पहले से एक रन के हर चरण को रिकॉर्ड करता है। `audit` पैकेज उस इतिहास से एक हैश शृंखला के साथ प्रतिबद्ध होता है, ताकि एक रन का निष्पादन सत्यापनीय हो:
 
+<!-- docsnip: setup ctx context.Context; store agent.Durable; runID string; priv ed25519.PrivateKey -->
 ```go
 head, _ := audit.Head(ctx, store, runID)     // SHA-256 chain over the journal (persisted order)
 sig := audit.Sign(head, priv)                // anchor it: sign / publish out-of-band
@@ -360,6 +371,7 @@ sig := audit.Sign(head, priv)                // anchor it: sign / publish out-of
 
 Bide **कोई वेक्टर स्टोर, एम्बेडर, या स्मृति बैकएंड नहीं** देता: यह आपको *सीवन* देता है और आप वह स्टोर प्लग करते हैं जिसे आप पहले से चलाते हैं। अपने अवसंरचना के विरुद्ध एक इंटरफ़ेस लागू करें:
 
+<!-- docsnip: api agent -->
 ```go
 type Retriever interface {
 	Retrieve(ctx context.Context, query string, k int) ([]agent.Doc, error)
@@ -368,6 +380,7 @@ type Retriever interface {
 
 फिर इसे दो में से एक तरीक़े से जोड़ें:
 
+<!-- docsnip: setup model agent.Model; store agent.Durable; myStore agent.Retriever -->
 ```go
 // Agentic RAG: the model searches on demand:
 a := agent.New(model, store, agent.RetrievalTool(myStore, 5))
@@ -399,6 +412,7 @@ agent.Safety{RequiresApproval: true}  // pause for human approval before executi
 
 तीन स्वाद। **अनुमोदन/अस्वीकृति**: `RequiresApproval` से चिह्नित एक टूल चलने से *पहले* रुकता है; इंसान का निर्णय एक bool है:
 
+<!-- docsnip: setup ctx context.Context; a *agent.Agent; store agent.Durable; runID string; input string -->
 ```go
 _, err := a.Run(ctx, runID, input)
 var pend *agent.PendingApproval
@@ -411,6 +425,7 @@ if errors.As(err, &pend) {
 
 **अंतरायण/पुनरारंभ**: एक टूल *एक मनमाने बिंदु पर* रुकता है और एक *टाइप-किए गए* मान के साथ पुनरारंभ होता है (bool का सामान्यीकरण)। एक पुनः-प्रयास-सुरक्षित टूल के भीतर `agent.Interrupt[T]` कॉल करें:
 
+<!-- docsnip: setup ctx context.Context; a *agent.Agent; store agent.Durable; runID string; input string; type Options struct{}; type Plan struct{}; chosenPlan Plan -->
 ```go
 tool := agent.Func("choose_plan", "pick a plan", agent.Safety{ReadOnly: true},
 	func(ctx context.Context, in Options) (Plan, error) {
@@ -434,6 +449,7 @@ if errors.As(err, &intr) {
 
 **m-of-n अनुमोदन**: जब एक हस्ताक्षर-स्वीकृति पर्याप्त नहीं, तो n अनुमोदकों के एक नामित समूह से k हस्ताक्षरित निर्णय आवश्यक करें। हर अनुमोदक ठीक उसी कॉल (टूल और तर्कों) पर हस्ताक्षर करता है; गेट k अनुमोदनों पर आगे बढ़ता है, k अप्राप्य होते ही अस्वीकार करता है, और अन्यथा चालू गणना के साथ रुकता है। एक जाली या ग़लत निर्णय अनदेखा किया जाता है, उसके अनुमोदक को बाहर किए बिना:
 
+<!-- docsnip: setup ctx context.Context; model agent.Model; store agent.Durable; pend *agent.PendingApproval; type RefundArgs struct{}; doRefund func(context.Context, RefundArgs) (string, error); keysByApprover agent.ApproverVerifierFor; signer audit.Signer -->
 ```go
 refund := agent.Func("refund", "refund the order",
 	agent.Safety{Approval: &agent.ApprovalPolicy{Need: 2, Approvers: []string{"ops", "finance", "risk"}}},
@@ -451,6 +467,7 @@ agent.ApproveAs(ctx, store, pend.RunID, pend.ToolUseID, "finance", true, sig)
 
 विफलताएँ प्रहरी त्रुटियों (sentinel errors) से वर्गीकृत होती हैं जिन्हें `errors.Is` मिलाता है, स्टैंडर्ड-लाइब्रेरी मुहावरा, कोई कस्टम त्रुटि फ़्रेमवर्क नहीं। दो स्तर: एक **श्रेणी (category)** (मोटा वर्ग) और एक **स्थिति (condition)** (एक विशिष्ट कारण) जो अपनी श्रेणी को लपेटती है, ताकि एक मिलान जिस भी स्तर पर आपको ज़रूरत हो वहाँ काम करे:
 
+<!-- docsnip: setup ctx context.Context; a *agent.Agent; runID string; input string; func backOffAndRetry(); func fixToolWiring(); func alertOps() -->
 ```go
 _, err := a.Run(ctx, runID, input)
 switch {
@@ -471,6 +488,7 @@ case errors.Is(err, agent.ErrStorage):      // durable-store I/O
 
 दो स्वतंत्र `func(Handler) Handler` शृंखलाएँ उन दो सीमाओं पर जो मायने रखती हैं: मॉडल कॉल (`Use`) और हर टूल कॉल (`UseTool`)। पहले जोड़ा = सबसे बाहरी। दोनों *उत्परिवर्तनकारी और लघु-परिपथी* हैं: जो अंदर जाता है उसे दोबारा लिखें, जो बाहर आता है उसे रूपांतरित करें, या `next` को कॉल किए बिना लौटें।
 
+<!-- docsnip: setup model agent.Model; store agent.Durable; tools []agent.Tool; import oteltrace "go.opentelemetry.io/otel/trace"; tracer oteltrace.Tracer -->
 ```go
 var cost middleware.CostMeter
 a := agent.New(model, store, tools...).
@@ -493,6 +511,7 @@ a.UseTool(trace.Tool(tracer)) // execute_tool span per call; nests across the su
 
 टूल middleware टिकाऊ चरण के *भीतर* चलती है, इसलिए एक लघु-परिपथ (एक `ToolCache` हिट) या एक नीति अस्वीकृति किसी भी टूल परिणाम की तरह जर्नल होती है; पुनरारंभ इसे फिर से चलाता है और कभी middleware या टूल को दोबारा नहीं चलाता। `ToolRetry` और `ToolCache` केवल उन टूलों पर काम करते हैं जिनकी `Safety` इसकी अनुमति देती है (क्रमशः पुनः-प्रयास-सुरक्षित, और `ReadOnly`), और middleware चाहे जो करे, एजेंट एक ऐसे टूल को जो पुनः-प्रयास-सुरक्षित नहीं है, प्रति कॉल ज़्यादा-से-ज़्यादा एक बार चलाता है। `agent.ToolMiddleware` हस्ताक्षर के साथ अपनी लिखें:
 
+<!-- docsnip: setup func authorized(context.Context, string) bool -->
 ```go
 // Deny a tool by policy: the tool never executes; the model sees the error and reacts.
 func RequireTag(tag string) agent.ToolMiddleware {
@@ -537,6 +556,7 @@ govern           Tier-2: federated governed state + quorum for agents that must 
 
 **एक निर्णय पर सहमति (कोरम)।** k-of-n नामित मतदाता (हर एक एक मॉडल, प्रदाता, या प्रधान) एक सामान्यीकृत निर्णय डालते हैं; हर मत एक जर्नल-किया गया, ज़्यादा-से-ज़्यादा-एक-बार वाला चरण है जो रिकॉर्ड करता है कि किसने कैसे मत दिया, और k-of-n द्वार मत-गणना पर एक gsm अपरिवर्तनीय है, ताकि "k सहमत हुए" हर संभव गणना पर मशीन-जाँचा जाए। `bide-audit verify-quorum` सार्वजनिक कलाकृतियों से गणना और हर मत को पुनः-जाँचता है, उत्पादक पर भरोसा किए बिना बहुलता नियम को पुनरुत्पादित करता है। दावा सटीक है: एक कोरम सिद्ध करता है *कि k मतदाता सहमत हुए* और एकल-मॉडल जोखिम कम करता है; यह प्रमाणित नहीं करता कि निर्णय सही है (सहसंबंधित त्रुटियाँ स्वतंत्रता नहीं हैं), और केवल सामान्यीकृत निर्णयों को ही कोरम-किया जा सकता है, मुक्त-रूप गद्य को नहीं।
 
+<!-- docsnip: setup ctx context.Context; machine *gsm.Machine; import "github.com/blackwell-systems/gsm"; log govern.EventLog -->
 ```go
 gov, _ := govern.NewPersistent(ctx, machine, log, "order-42", machine.NewState())
 tool := govern.EventTool(gov, "pay", "mark the order paid", "pay", agent.Safety{})

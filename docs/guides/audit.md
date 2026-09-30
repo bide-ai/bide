@@ -67,6 +67,7 @@ automatic and push-based, and it's the piece that operationalizes the security m
 out-of-band" requirement. Wrap any `Durable` and every durable step is signed and published to
 a separate trust domain with no changes to the agent loop:
 
+<!-- docsnip: setup ctx context.Context; journal agent.Durable; priv ed25519.PrivateKey; model agent.Model; tools []agent.Tool; runID string; input string -->
 ```go
 anchor := audit.NewMemAnchorLog()                          // your external transparency log
 store  := audit.NewAuditedStore(journal, priv, anchor)     // drop-in Durable
@@ -105,6 +106,7 @@ final answer). This closes the seam where durability lived in the journal but th
 event feed was ephemeral: now "stream for the UI" and "commit a provable audit trail" are one
 pass.
 
+<!-- docsnip: setup priv ed25519.PrivateKey; agentStream *agent.AgentStream; render func(agent.AgentEvent); approvalIndex int; approvalEvent agent.AgentEvent -->
 ```go
 log := audit.NewEventLog()
 // Record drains the stream, commits every event, and forwards it live to the UI:
@@ -121,6 +123,7 @@ ok, _ := audit.VerifyEventInclusion(root, approvalEvent, proof)
 The event log gets the **full transparency-log surface**, reusing the journal's STH and
 consistency machinery unchanged:
 
+<!-- docsnip: setup log, laterLog *audit.EventLog; priv ed25519.PrivateKey; pub ed25519.PublicKey; runID string; event agent.AgentEvent; proof audit.EventInclusion; sth1, sth2 audit.SignedTreeHead -->
 ```go
 sth := audit.SignTreeHead(log.TreeHead(runID, time.Now().UnixNano()), priv) // kind "events", run, root, size, time
 sth.Verify(pub)                                                      // anchored commitment
@@ -142,6 +145,7 @@ even shifts between a fresh run and its own replay (live-only events like token 
 For the durable audit artifact, don't store a second log: **derive it from the journal**, which
 is already the crash-safe, at-most-once substrate.
 
+<!-- docsnip: setup ctx context.Context; store agent.Durable; runID string; priv ed25519.PrivateKey; ts int64 -->
 ```go
 log, _ := audit.EventLogFromJournal(ctx, store, runID) // projection of the DURABLE journal
 sth    := audit.SignTreeHead(log.TreeHead(runID, ts), priv) // anchor THIS: crash-durable, resume-stable
@@ -163,6 +167,7 @@ trail often has to outlive it (keep for years, on WORM storage, in a different t
 `EventStore` is the bring-your-own port for that: append canonical event leaves to a backend
 you run, on its own retention lifecycle, and rebuild an `EventLog` from it later.
 
+<!-- docsnip: setup ctx context.Context; evStore audit.EventStore; journal agent.Durable; runID string; priv ed25519.PrivateKey; ts int64; i int -->
 ```go
 // Mirror the run's durable trail into your store (idempotent: call it whenever).
 audit.PersistJournal(ctx, evStore, journal, runID)
@@ -217,6 +222,7 @@ action** you hand an auditor (for a whole run, see the evidence bundle below). I
 disclosed record, its inclusion path, and the signed tree head it is proven against, and it verifies
 offline against a public key obtained out-of-band:
 
+<!-- docsnip: setup ctx context.Context; store agent.Durable; runID string; toolUseID string; sth audit.SignedTreeHead; pub ed25519.PublicKey -->
 ```go
 // Produce: prove one tool call happened, against an anchored STH. Semantic, not by index.
 bundle, _ := audit.ProveToolCall(ctx, store, runID, toolUseID, sth)   // or audit.ProveRecord(..., index, sth)
@@ -277,6 +283,7 @@ evidence into a single portable file: one signed tree head, an inclusion proof p
 and optionally the run certificate, the authority grant chain, and a consistency proof. It is pure
 JSON (store it, email it, publish it) and verifies offline:
 
+<!-- docsnip: setup ctx context.Context; store agent.Durable; runID string; priv ed25519.PrivateKey; pub ed25519.PublicKey; spec audit.RunCertSpec; earlierSTH audit.SignedTreeHead; allowlist []string -->
 ```go
 pkg, _ := audit.Evidence(ctx, store, runID, priv, time.Now().UnixNano(),
 	audit.WithAllToolCalls(), audit.WithRunCertificate(spec), audit.WithGrants(),
@@ -343,6 +350,7 @@ decision record the gate read (valid or not), the gate's recorded tally, and the
 it to a package that already carries the call (built with `WithToolCall` or `WithAllToolCalls`), drop
 the trailing result entry and reseal the package:
 
+<!-- docsnip: setup ctx context.Context; store agent.Durable; runID string; toolUseID string; priv ed25519.PrivateKey; pkg audit.EvidencePackage -->
 ```go
 approvals, _ := audit.ApprovalEvidence(ctx, store, runID, toolUseID, pkg.STH)
 pkg.Actions = append(pkg.Actions, approvals[:len(approvals)-1]...) // the result is already packaged
@@ -465,6 +473,7 @@ hand-derived consistency vector, and rewrite-detection tests. It is not a homegr
 
 ## End-to-end compliance flow
 
+<!-- docsnip: setup ctx context.Context; store agent.Durable; runID string; priv ed25519.PrivateKey; pub ed25519.PublicKey; chargeIndex int; sth1, sth2 audit.SignedTreeHead -->
 ```go
 // 1. After a run, commit to the journal and PUBLISH a signed tree head.
 th, _  := audit.NewTreeHead(ctx, store, runID, time.Now().UnixNano())
@@ -673,6 +682,7 @@ Composing them yields "every governed state in the run was produced by an approv
 oracle-certified-convergent policy," so the enforced invariant held throughout the governed
 boundary.
 
+<!-- docsnip: setup ctx context.Context; store agent.Durable; runID string; priv ed25519.PrivateKey; pub ed25519.PublicKey; th audit.TreeHead; policyDigest string; allowlist []string -->
 ```go
 // Emit: recompute the used-policy set, confirm it is a subset of the allowlist, and assemble the
 // anchored policy + convergence proofs for each used policy against the run's signed tree head.
