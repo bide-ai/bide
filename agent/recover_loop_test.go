@@ -6,8 +6,12 @@ import (
 	"slices"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 )
+
+// Every RecoverLoop test runs in a synctest bubble, so pass intervals, lease expiries and drive
+// durations run on the bubble's clock and do not depend on how busy the machine is.
 
 // runLoop runs RecoverLoop in the background and returns a function that stops it and reports
 // what it returned.
@@ -31,6 +35,10 @@ func runLoop(t *testing.T, s Durable, resume func(context.Context, string) error
 // A run whose holder died is taken over by the loop once the dead holder's lease expires, with no
 // further call from the caller, and not before.
 func TestRecoverLoop_TakesOverAfterTheHolderDies(t *testing.T) {
+	synctest.Test(t, testRecoverLoopTakesOverAfterTheHolderDies)
+}
+
+func testRecoverLoopTakesOverAfterTheHolderDies(t *testing.T) {
 	ctx := context.Background()
 	s := NewMemStore()
 	seedRun(t, s, "r")
@@ -63,6 +71,10 @@ func TestRecoverLoop_TakesOverAfterTheHolderDies(t *testing.T) {
 // One long drive does not hold up the rest: while run a is still being driven, the loop takes
 // over run b once b's dead holder's lease expires.
 func TestRecoverLoop_LongDriveDoesNotBlockOthers(t *testing.T) {
+	synctest.Test(t, testRecoverLoopLongDriveDoesNotBlockOthers)
+}
+
+func testRecoverLoopLongDriveDoesNotBlockOthers(t *testing.T) {
 	ctx := context.Background()
 	s := &countingStore{MemStore: NewMemStore()}
 	seedRun(t, s.MemStore, "a")
@@ -131,20 +143,28 @@ func (c *countingStore) acquires(runID string) int {
 
 // Without WithRecoverInterval, a pass starts every half lease TTL.
 func TestRecoverLoop_DefaultIntervalIsHalfTheTTL(t *testing.T) {
+	synctest.Test(t, testRecoverLoopDefaultIntervalIsHalfTheTTL)
+}
+
+func testRecoverLoopDefaultIntervalIsHalfTheTTL(t *testing.T) {
 	s := &countingStore{MemStore: NewMemStore()}
 	stop := runLoop(t, s, func(context.Context, string) error { return nil }, WithLeaseTTL(100*time.Millisecond))
 	time.Sleep(525 * time.Millisecond)
 	_ = stop()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.lists < 8 || s.lists > 13 {
-		t.Fatalf("%d passes in 525ms with a 100ms TTL, want about 11 (one every 50ms)", s.lists)
+	if s.lists != 11 {
+		t.Fatalf("%d passes in 525ms with a 100ms TTL, want 11 (one every 50ms, from 0ms to 500ms)", s.lists)
 	}
 }
 
 // When its context ends, the loop cancels the drives it started, waits for them to return, and
 // returns the context's error.
 func TestRecoverLoop_WaitsForItsDrivesOnShutdown(t *testing.T) {
+	synctest.Test(t, testRecoverLoopWaitsForItsDrivesOnShutdown)
+}
+
+func testRecoverLoopWaitsForItsDrivesOnShutdown(t *testing.T) {
 	s := NewMemStore()
 	seedRun(t, s, "r")
 	started := make(chan struct{})
@@ -181,6 +201,10 @@ func TestRecoverLoop_WaitsForItsDrivesOnShutdown(t *testing.T) {
 // Genuine failures reach the error handler; pauses (a ResumeHalt), lost leases and runs held by
 // another holder do not, and a run that completes is not driven again.
 func TestRecoverLoop_ReportsOnlyGenuineFailures(t *testing.T) {
+	synctest.Test(t, testRecoverLoopReportsOnlyGenuineFailures)
+}
+
+func testRecoverLoopReportsOnlyGenuineFailures(t *testing.T) {
 	ctx := context.Background()
 	s := NewMemStore()
 	for _, id := range []string{"broken", "halted", "done", "held"} {
@@ -240,6 +264,10 @@ func TestRecoverLoop_ReportsOnlyGenuineFailures(t *testing.T) {
 
 // Misconfiguration is reported at once instead of looping.
 func TestRecoverLoop_RejectsBadConfig(t *testing.T) {
+	synctest.Test(t, testRecoverLoopRejectsBadConfig)
+}
+
+func testRecoverLoopRejectsBadConfig(t *testing.T) {
 	ctx := context.Background()
 	resume := func(context.Context, string) error { return nil }
 	for name, tc := range map[string]struct {
@@ -268,6 +296,10 @@ func TestRecoverLoop_RejectsBadConfig(t *testing.T) {
 // Runs that stay incomplete on every pass (halted ones, say) do not starve the runs listed after
 // them when every drive slot is taken: each pass reaches every run.
 func TestRecoverLoop_EveryPassReachesEveryRun(t *testing.T) {
+	synctest.Test(t, testRecoverLoopEveryPassReachesEveryRun)
+}
+
+func testRecoverLoopEveryPassReachesEveryRun(t *testing.T) {
 	s := sortedStore{NewMemStore()}
 	for _, id := range []string{"a1", "a2", "a3", "a4", "z"} {
 		seedRun(t, s.MemStore, id)

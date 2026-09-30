@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -31,29 +32,35 @@ func waitForCancel(cause *error) func(context.Context) error {
 // A drive whose lease is lost, whether taken by another process or not renewable before the
 // cutoff, is cancelled with ErrLeaseLost as the cause, and Lease returns the drive's error wrapped
 // with it, so a caller can tell a lost lease from a shutdown or a genuine failure.
+//
+// It runs on a synctest clock: with a real one, a renewer that wakes late on a busy machine (or a
+// coarse Windows timer) reaches the cutoff without having tried the store at all.
 func TestLease_LostLeaseEndsWithErrLeaseLost(t *testing.T) {
 	for _, tc := range []struct {
-		name string
-		s    Durable
+		name  string
+		store func() Durable
 	}{
-		{"taken", notHeldLeaser{NewMemStore()}},
-		{"not renewable in time", &failingRenewLeaser{MemStore: NewMemStore(), failures: -1}},
+		{"taken", func() Durable { return notHeldLeaser{NewMemStore()} }},
+		{"not renewable in time", func() Durable { return &failingRenewLeaser{MemStore: NewMemStore(), failures: -1} }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			var cause error
-			driven, err := Lease(context.Background(), tc.s, "r", waitForCancel(&cause), WithLeaseTTL(40*time.Millisecond))
-			if !driven {
-				t.Fatal("the drive did not run")
-			}
-			if !errors.Is(cause, ErrLeaseLost) {
-				t.Fatalf("the drive's context was cancelled with cause %v, want ErrLeaseLost", cause)
-			}
-			if !errors.Is(err, ErrLeaseLost) || !errors.Is(err, context.Canceled) {
-				t.Fatalf("Lease returned %v, want the drive's error (context.Canceled) wrapped with ErrLeaseLost", err)
-			}
-			if _, failing := tc.s.(*failingRenewLeaser); failing && !errors.Is(cause, errStoreDown) {
-				t.Fatalf("the cause %v does not carry the store error that kept the lease from being renewed", cause)
-			}
+			synctest.Test(t, func(t *testing.T) {
+				s := tc.store()
+				var cause error
+				driven, err := Lease(context.Background(), s, "r", waitForCancel(&cause), WithLeaseTTL(40*time.Millisecond))
+				if !driven {
+					t.Fatal("the drive did not run")
+				}
+				if !errors.Is(cause, ErrLeaseLost) {
+					t.Fatalf("the drive's context was cancelled with cause %v, want ErrLeaseLost", cause)
+				}
+				if !errors.Is(err, ErrLeaseLost) || !errors.Is(err, context.Canceled) {
+					t.Fatalf("Lease returned %v, want the drive's error (context.Canceled) wrapped with ErrLeaseLost", err)
+				}
+				if _, failing := s.(*failingRenewLeaser); failing && !errors.Is(cause, errStoreDown) {
+					t.Fatalf("the cause %v does not carry the store error that kept the lease from being renewed", cause)
+				}
+			})
 		})
 	}
 }
@@ -61,6 +68,10 @@ func TestLease_LostLeaseEndsWithErrLeaseLost(t *testing.T) {
 // A drive cancelled by its caller (a shutdown) did not lose its lease, and a drive that finished
 // despite losing its lease succeeded: neither reports ErrLeaseLost.
 func TestLease_ErrLeaseLostOnlyForALostLease(t *testing.T) {
+	synctest.Test(t, testErrLeaseLostOnlyForALostLease)
+}
+
+func testErrLeaseLostOnlyForALostLease(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	var cause error
 	go func() { time.Sleep(10 * time.Millisecond); cancel() }()
@@ -79,6 +90,10 @@ func TestLease_ErrLeaseLostOnlyForALostLease(t *testing.T) {
 // Recover counts a run whose lease was lost mid-drive as recovered, not failed: another process
 // holds it now and carries it on.
 func TestRecover_LostLeaseIsNotAFailure(t *testing.T) {
+	synctest.Test(t, testRecoverLostLeaseIsNotAFailure)
+}
+
+func testRecoverLostLeaseIsNotAFailure(t *testing.T) {
 	s := notHeldLeaser{NewMemStore()}
 	seedRun(t, s.MemStore, "r")
 	var cause error
