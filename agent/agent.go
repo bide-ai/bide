@@ -682,10 +682,12 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 		}
 
 		// Execute the ready tools CONCURRENTLY (Go's strength; single-flight-safe). First
-		// failure in saga mode cancels siblings via the errgroup context. A pause or halt
-		// (Interrupt, Sleep, Await, approval, ResumeHalt) does not: it is held until every
-		// sibling has finished and recorded its outcome, since a routine pause must not cut
-		// off a side effect in flight and leave it with an unknown outcome.
+		// failure in saga mode cancels siblings via the errgroup context, and a sibling that
+		// has not started by then never does. A pause or halt (Interrupt, Sleep, Await,
+		// approval, ResumeHalt) does not: it is held until every sibling has finished and
+		// recorded its outcome, since a routine pause must not cut off a side effect in flight
+		// and leave it with an unknown outcome. (In a saga, a halt keeps siblings that have not
+		// started from starting; see halted.)
 		g, gctx := errgroup.WithContext(ctx)
 		if a.maxConc > 0 {
 			g.SetLimit(a.maxConc)
@@ -697,6 +699,11 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 			// carried[i] is the usage the record of uses[i] carries: that of the runs it started.
 			// The runs counted their spend in the tree as it happened, so it goes into tot only.
 			carried = make([]usageTotals, len(uses))
+			// halted is set, in a saga, once a call halts on an unknown outcome (a sub-agent's
+			// step that a crash cut off). That step may yet prove to have failed and abort the
+			// saga, so no further step starts until its outcome is known: the saga must not run
+			// a step a run that never crashed would not have reached.
+			halted atomic.Bool
 		)
 		for _, c := range toRun {
 			g.Go(func() (err error) {
@@ -707,6 +714,10 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 							pauseIdx, pauseErr = c.idx, err
 						}
 						pauseMu.Unlock()
+						var halt *ResumeHalt
+						if saga && errors.As(err, &halt) {
+							halted.Store(true)
+						}
 						err = nil
 					}
 				}()
@@ -715,6 +726,9 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 				// starts: nothing is claimed or run, so it has no outcome to reconcile.
 				if err := gctx.Err(); err != nil {
 					return err
+				}
+				if halted.Load() {
+					return nil // not started: it runs when the resumed turn does
 				}
 				sctx := withRunScope(gctx, SubRunID(runID, c.tu.ID)) // hierarchical sub-run ID
 				sctx = withRunContext(sctx, a.store, runID)          // lets the tool call Interrupt
