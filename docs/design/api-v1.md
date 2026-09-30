@@ -1,70 +1,169 @@
-# Pre-1.0 API redesign (proposal)
+# Pre-1.0 API redesign (proposal, v2)
 
-Status: proposal, under review. Nothing here is implemented yet.
+Status: proposal, under review. Nothing here is implemented yet. v2 folds in an independent adversarial critique.
 
+## 0. Baseline, what is already done, and how v2 changes v1
 
-## 0. Baseline and assumptions
+### 0.1 Baseline
+- **Merged:** main at b64a688, which includes #55, #57 and #60.
+- **Merge before the redesign starts (Wave 0), in this order:** #66, #67, #70, #65, #68, #69.
+- **Invariants that must hold at every PR boundary:**
+  - side effects happen at most once, through attempt claims;
+  - resume after a crash is safe;
+  - replay is exact;
+  - proofs verify offline;
+  - no core package imports an adapter.
 
-- **Baseline** is main at 2ff6bf6 (#55 is merged), plus #57 and #60 merged, plus three separate fixes:
-  - **F1:** `agent.Capability[T any](store Durable) (T, bool)`, found through `Unwrap() Durable`. It is uncommitted in `wt-apibugs`. `AuditedStore` implements `Unwrap`.
-  - **F2:** plan step bodies take `context.Context`.
-  - **F3:** snake_case JSON tags on the audit artifacts (`Inclusion`, `Consistency`, `EventInclusion`, and the rest).
-- **Not redesigned here:** those three. The design below builds on them. F1 is retargeted from `Durable` to the new `Store` port in item 4, with the same semantics. F3's tag names are taken as given.
-- **Other in-flight branches** land before this plan starts (Wave 0): `audit/ib-audit`, `audit/ib-plan`, `audit/ib-model`, `audit/ib-govern`, `audit/journal-completeness`.
-  - `ib-model` carries failing tests "a turn cut off at its token limit or stopped by a filter is not an answer". Item 5 gives that fix a normalized reason to key on.
-- **Journal compatibility:** #60 already breaks v0.7 journals. Every pre-v1 journal is refused (item 3).
-- **Invariants at every PR boundary:** at-most-once side effects via attempt claims, crash-safe resume, exact replay, and offline-verifiable proofs. Core packages (`agent`, `schema`, `middleware`, `audit`, `plan`, `eval`) import no adapter.
-- **Size scale:**
+### 0.2 Already done by in-flight PRs (not redesigned here)
 
-  | Size | Lines changed |
-  |---|---|
-  | S | under 300 |
-  | M | 300 to 1000 |
-  | L | 1000 to 2500 |
-  | XL | over 2500, mostly mechanical call-site rewrites |
+**#66**
+- Adds `agent.Capability[T](Durable)`, which follows `Unwrap() Durable` the way `errors.As` follows `Unwrap`. A wrapper's own capability takes precedence over the one it wraps.
+- `AuditedStore` implements `Unwrap`.
+- Plan step bodies take `ctx`. Predicates stay ctx-free by design.
+- Every audit artifact field is snake_case.
+- `format` fields are added:
+  - `bide.audit.proof.v2`
+  - `bide.audit.absence.v2`
+  - `bide.audit.runcert.v2`
+  - `bide.audit.current-grant.v2`
+  - `bide.audit.event-inclusion.v2`
+  - `EvidenceFormat` becomes `bide.audit.evidence.v4`
+- Adds `audit.ErrFormat`.
+- Still open after #66: STHs carry no `format`, and event leaves still commit to Go-case event JSON.
+
+**#67**
+- Saga compensation now uses the arguments the tool actually accepted. They are journaled under `@saga/args/<enc id>`, only when a middleware changed them.
+- The rollback re-run goes through tool middleware.
+- This was v1's "follow-up B". It is done.
+
+**#70**
+- Every run records `run:start` = `{"input", "saga"}`.
+- Resuming with a different input, or through the other entry point, is `ErrConfig`.
+- Exports `agent.RunStart` and `agent.RecordedStart`.
+- A recorded denial is final.
+- Rollback now reports or halts on calls whose tool is no longer registered.
+- Plan attempt markers record `{"retry_safe": bool}`.
+- Adds a 60-row "decision points" table and a "live by design" list in docs/GUARANTEE.md.
+- Leaves four open decisions:
+  - (1) rollback reads live `Safety`;
+  - (2) identity and grant are live per drive;
+  - (3) the system prompt is not journaled;
+  - (4) RunTyped mode is not in `run:start`.
+- All four are resolved below.
+
+**#65**
+- A claimed effect that provably never started is recorded as `StepNotStarted` under `attempt:not-started:<marker>`.
+- It is re-attempted under `attempt:retry:<n>:<base>`.
+- This was v1's "follow-up A". It is done for tools and Steps. Plan flows still use their own markers; lowering (item 6) brings them under #65.
+
+**#68**
+- `Finish.Reason` has neutral values: `stop`, `tool_use`, `length`, `filtered`.
+- `ErrOutputTruncated` and `ErrOutputFiltered` are added. Any other reason is `ErrStreamProtocol`.
+- Per-adapter mapping tables, including Gemini `SAFETY`, `RECITATION`, `BLOCKLIST`, `PROHIBITED_CONTENT`, `SPII` and `IMAGE_SAFETY`, and Anthropic `pause_turn` and `model_context_window_exceeded`. This covers most of critique B14.
+- In-process keys are length-prefixed.
+- Plan config is decoded strictly.
+- `NewAuditedStore` now panics on a bad key length. Section 9.3 turns this into an error.
+
+**#69**
+- `Result.Usage` and `Result.Spend` cover the whole run, including sub-agents.
+- One token budget covers the whole agent tree.
+- This was v1's "follow-up C", and it answers v1's Q5.
+
+### 0.3 Verification of the critique's code claims
+
+| Claim | Verified | Evidence |
+|---|---|---|
+| Leaves are over re-encoded records (B2) | yes | `canonicalRecord` hashes `agent.EncodeRecord(r)` of a decoded record (audit/merkle.go). `DecodeRecord` is plain `json.Unmarshal` and drops unknown fields. |
+| A pause inside a side-effect Step halts (B3) | yes | `step()` claims `attempt:step:<name>`. When fn returns `*Interrupted`, `Do` records nothing and the marker stays. The next `ClaimAttempt` loses, so the step returns `ResumeHalt`. #65 covers only "cancelled before the call". |
+| Proof indices are `History` positions, and Seq is never read (A1) | yes | `Prove` and `journalPrefix` index into `History` order. |
+| `flow:digest` already refuses a changed topology (B7) | yes | plan/flow.go:79-91. `flow:`, `switch:` and `iter:` are not in `reservedPrefixes`. |
+| govern needs only `Step` (A4) | yes | `govern.Quorum` calls only `agent.Step`. Raw `Do` is used by audit only (`policy.go`, `grant.go`, `confluence.go`, `runcert.go`) and by plan (`flow:digest`, `switch:`). |
+| Nine root-module examples import govern (B16) | yes | authority, compliance, compose, coordination, delegation, earned-authority, mesh, proof-carrying-run, quorum. |
+| A result returned after cancellation is kept (B10) | yes | Discarded only when `callErr != nil && sctx.Err() != nil`. |
+| `Alg` is outside the STH signed bytes, and hybrid signs the same message twice (B15) | yes | `SignTreeHeadWith` signs `th.canonical()`. `HybridSigner.Sign` signs `m` with both schemes and packs `len||ed||mldsa`. |
+| `IdempotencyKey` is never called by the SDK (C, Safety as data) | yes | It is only tested for nil in `retriableOnResume` and in plan's copy. |
+
+### 0.4 Main changes from v1
+
+- **Run settings are journaled.** They extend #70's `run:start`, and there is still one run header.
+- **Proofs commit to raw stored bytes.**
+- **Step pause guard.**
+- **Journal format:** pinned per run, plus a dev tag before 1.0.
+- **Store ordering:** A2 relaxed to commit order with prefix-closed visibility.
+- **SQLite and MemStore are Leasers.**
+- **Stream sink:** exclusively claimed per request.
+- **Hooks:** private.
+- **`Journal.Do` is unexported,** behind an internal hook.
+- **Sequencing:** transitional shims, then one consolidated scripted rewrite at the end.
+- **Recovery dispatch** keys on the run kind.
+- **Cancellation marker,** a redaction tombstone format, and a `Lister` filter.
+- **Performance gates.**
 
 ---
 
-## 1. Cross-cutting conventions (these apply to every item)
+## 1. Cross-cutting conventions
 
 ### 1.1 Naming rule
-1. **`WithX`** names a functional option, and nothing else. Some settings apply at several scopes (an agent default, one run, one tool, one step, one lease). The option for such a setting is one function whose result satisfies every scope's option interface, so `WithMaxTurns(5)` works in `New`, `Run` and `(*Agent).With`. `WithoutX` is the negated form (`WithoutLease()`).
-   - The same `With` name may appear in several packages, because it is package-qualified: `anthropic.WithModel(id)` and `plan.WithModel(m)` are both fine.
-   - An unqualified `agent.WithModel(ctx, m)` that is not an option is not allowed.
-2. **Context helpers:** `XFrom(ctx) (X, bool)` reads a value and `ContextWithX(ctx, x) context.Context` writes one. Context carries only request-scoped data that has to cross the `Tool.Call(ctx, args)` boundary into tool code: run info, identity, the audit grant, and the once-key counter.
-   - The agent's own machinery never travels in context: waker, clock, stream sink, hooks, model override, tool safety, and the error redactor.
-3. **Constructors:** a constructor that can fail returns `(T, error)`. `MustX` is the panicking twin, offered only where a constructor is routinely called at package init (`MustFunc`, `MustCompensatedFunc`).
-4. **Verbs** that deliver an answer to a paused run use the pause's noun (`AnswerInterrupt`, `Signal`, `Enqueue`, `Approve`, `ResolveHalt`). Every pause point is named by `name`, never by `key` or `channel` for the same role.
-5. **Closed sets are typed strings with constants:** `FinishReason`, `ToolChoiceMode`, `Alg`, `OpKind`, `EvidenceKind`, `TopologyNodeKind`, `MetricDirection`.
-6. **No stutter:** `RunEvent` rather than `AgentEvent`, and `RunStream` rather than `AgentStream`.
+1. **`WithX` is a functional option and nothing else.** `WithoutX` is its negation. A setting that applies at several scopes is one function whose result satisfies each scope's option interface. The same `With` name may appear in different packages, because it is package-qualified.
+2. **Context helpers.** `XFrom(ctx)` reads and `ContextWithX(ctx, v)` writes. Context carries only request-scoped data that must reach tool code through `Tool.Call(ctx, args)`:
+   - `RunInfo`
+   - the once-key counter
+   - the audit grant's live signer
+
+   The engine's own machinery never travels in context: waker, clock, sink, hooks, model override, tool safety, redactor.
+3. **Constructors.** One that can fail returns `(T, error)`. `MustX` is the panicking twin, offered only for tool constructors that people call at init.
+4. **Verbs** that answer a pause use the pause's noun: `Approve`, `SubmitDecision`, `AnswerInterrupt`, `Signal`, `Enqueue`, `Ack`, `ResolveHalt`, `Cancel`. Pause points are named by `name`.
+5. **Closed sets are typed strings:**
+   - `FinishReason` (the values from #68)
+   - `ToolChoiceMode`
+   - `Alg`
+   - `OpKind`
+   - `HaltCause`
+   - `RunKind`
+   - `EvidenceKind`
+   - `TopologyNodeKind`
+   - `MetricDirection`
+6. **No stutter:** `RunEvent`, `RunStream`.
+7. **Transitional names** exist only between the semantic PRs and the final rewrite (section 10.2). Each one is marked `// Deprecated: transitional; renamed by the 1.0 rewrite`.
 
 ### 1.2 Option mechanics
-Options are interfaces with unexported methods, so one option value can satisfy several scopes and so bad values fail at construction:
+Options are interfaces with unexported methods. `apply` returns an error, so a bad value fails at construction.
 
 ```go
-type Option interface{ applyAgent(*agentConfig) error }       // New, (*Agent).With
-type RunOption interface{ applyRun(*runConfig) error }        // Run, Stream, Resume, Session.Send, RunTyped
-type ToolOption interface{ applyTool(*ToolSpec) error }       // Func, CompensatedFunc, SubAgent, RetrievalTool
-type StepOption interface{ applyStep(*stepConfig) error }     // Step, Parallel tasks
+type Option interface{ applyAgent(*agentConfig) error }
+type RunOption interface{ applyRun(*runConfig) error }
+type ToolOption interface{ applyTool(*toolConfig) error }
+type StepOption interface{ applyStep(*stepConfig) error }
 type ParallelOption interface{ applyParallel(*parallelConfig) error }
 type LeaseOption interface{ applyLease(*leaseConfig) error }
 type RecoverOption interface{ applyRecover(*recoverConfig) error }
 type RecoverLoopOption interface{ applyRecoverLoop(*recoverLoopConfig) error }
 type ResolveOption interface{ applyResolve(*resolveConfig) error }
-
-// AgentRunOption is an option valid both as an agent default and for one run.
-type AgentRunOption interface{ Option; RunOption }
 ```
 
-An option that is invalid for a scope does not compile there. For example, `WithRecoverInterval` passed to `Recover` is a compile error, which fixes review 6.1's "silently ignored" options.
+**The closed list of combination types.** Each constructor returns its narrowest type, so an option passed where it does not apply is a compile error.
 
-### 1.3 Error rule
-- Every error wraps exactly one category, as the `agent` doc already promises. `audit` gains `ErrMalformed` (wraps `agent.ErrProtocol`), `ErrNotVerified` (a condition, no category, like `ErrLeaseLost`), and `ErrUnsupportedFormat` (wraps `ErrMalformed`).
-- Verifiers converge on one shape (section 9.2).
-- Library code does not panic on caller input (section 9.3).
+| Combination | Scopes | Constructors |
+|---|---|---|
+| `AgentRunOption` | Option, RunOption | `WithMaxTurns`, `WithTokenBudget`, `WithSystemPrompt`, `WithSampling`, `WithToolChoice`, `WithWaker`, `WithIdentity` |
+| `ConcurrencyOption` | Option, RunOption, ParallelOption | `WithMaxConcurrency` |
+| `ClockOption` | Option, RunOption, ResolveOption | `WithClock` |
+| `SafetyOption` | ToolOption, StepOption | `WithSafety` |
+| `LeaseControl` | LeaseOption, RecoverOption, RecoverLoopOption | `WithLeaseHolder`, `WithLeaseTTL`, `WithoutLease` |
 
-### 1.4 Documentation rule
-Covered in section 9.5.
+**Evolution.** A constructor's return type may widen to a larger combination in a minor release. This is additive, and documented as such.
+
+**Precedence.** For any setting, the order is: a per-run value, then the last agent-level value, then the default. `WithSystemPrompt` (text) and `WithSystemPromptFunc` (agent-only) fill one slot, and the later one wins. A per-run text prompt beats an agent-level function.
+
+**Building options conditionally.** Build a `[]agent.Option` or a `[]agent.RunOption`. An `AgentRunOption` value fits in either slice.
+
+### 1.3 Errors
+- Every error wraps exactly one category.
+- `audit` uses #66's `ErrFormat`, plus:
+  - `ErrMalformed`, which wraps `agent.ErrProtocol`;
+  - `ErrNotVerified`, a condition with no category.
+- Verifiers return `error`. `nil` means verified. `ErrNotVerified` means the artifact was read and understood but does not hold. Report verifiers return `(Report, error)` with the same sentinels.
+- Library code never panics on caller input (section 9.3).
 
 ---
 
@@ -72,204 +171,195 @@ Covered in section 9.5.
 
 ### New API
 ```go
-// Run drives runID to completion, a pause, or an error. Result is non-nil whenever the run
-// passed argument validation, including when err is a Pause or a failure.
 func (a *Agent) Run(ctx context.Context, runID string, input Message, opts ...RunOption) (*Result, error)
-
-// Resume continues a started run from its journal, using the input and mode journaled in its
-// run header. It is what Recover, RecoverLoop and MemWaker call.
 func (a *Agent) Resume(ctx context.Context, runID string, opts ...RunOption) (*Result, error)
-
-// Stream is Run with live events. Run is Stream(...).Result().
 func (a *Agent) Stream(ctx context.Context, runID string, input Message, opts ...RunOption) *RunStream
 
 type RunStream struct{ /* unexported */ }
 func (s *RunStream) Events() iter.Seq[RunEvent]
-func (s *RunStream) Result() (*Result, error) // drains events; replaces Final
+func (s *RunStream) Result() (*Result, error)
 
+// Result is non-nil whenever runID passed validation, including on a Pause, failure,
+// abort or cancellation. Usage and Spend are the whole run's, sub-agents included (#69).
 type Result struct {
-	RunID    string
-	Message  Message         // the final answer; zero unless err == nil
-	Output   json.RawMessage // typed runs: the accepted structured answer, as journaled
-	Usage    Usage           // whole run (replayed + live): recorded responses
-	Spend    Usage           // whole run: every request billed, discarded ones included
-	Live     Invocation      // this invocation only
-}
-type Invocation struct {
-	Usage, Spend Usage
-	Turns        int
-	Duration     time.Duration
+	RunID   string
+	Message Message         // the final answer; zero unless err == nil
+	Output  json.RawMessage // typed runs: the accepted answer as journaled
+	Usage   Usage           // whole run and subtree: recorded responses (#69)
+	Spend   Usage           // whole run and subtree: every request billed (#69)
+	Turns   int             // live turns this invocation (#69)
+	Duration time.Duration  // this invocation
 }
 
-// Typed runs (see open question Q7 for method vs function).
 func RunTyped[T any](ctx context.Context, a *Agent, runID string, input Message, opts ...RunOption) (T, *Result, error)
 func WithOutputMode(m OutputMode) RunOption // OutputTool (default) | OutputNative
-type OutputMode string
-const ( OutputTool OutputMode = "tool"; OutputNative OutputMode = "native" )
 
-// ValidateRunID reports whether id may name a top-level run or session.
 func ValidateRunID(id string) error
+func Cancel(ctx context.Context, j *Journal, runID, reason string) error   // D1
+func Status(ctx context.Context, j *Journal, runID string) (RunStatus, error) // D8
 
-// Session
 func (a *Agent) Session(ctx context.Context, id string) (*Session, error)
 func (s *Session) Send(ctx context.Context, input Message, opts ...RunOption) (*Result, error)
 func (s *Session) SendOnce(ctx context.Context, key string, input Message, opts ...RunOption) (*Result, error)
 ```
 
-**Per-run options** (each is also an agent default, so each returns `AgentRunOption`):
-- `WithMaxTurns(n int)`
-- `WithTokenBudget(n int)`
-- `WithSystemPrompt(s string)`
-- `WithSystemPromptFunc(fn func(context.Context, RunInfo) (string, error))`
-- `WithSampling(opts ...SamplingOption)`
-- `WithToolChoice(ToolChoice)`
-- `WithMaxConcurrency(n int)` (also a `ParallelOption`)
-- `WithWaker(Waker)`
-- `WithClock(now func() time.Time)` (also a `ResolveOption`)
+### The run header: #70's `run:start`, extended (no second header)
+```go
+type RunStart struct {
+	Input     Message                    `json:"input"`               // #70 (string becomes Message)
+	Saga      bool                       `json:"saga,omitempty"`      // #70
+	Kind      RunKind                    `json:"kind"`                // agent | session_turn | flow
+	Session   *SessionRef                `json:"session,omitempty"`   // session id, turn
+	Flow      *FlowRef                   `json:"flow,omitempty"`      // flow name (digest stays in flow:digest)
+	Typed     *TypedStart                `json:"typed,omitempty"`     // mode, schema digest, full schema
+	Settings  RunSettings                `json:"settings,omitempty"`  // per-run values the caller chose
+	Principal *Principal                 `json:"principal,omitempty"` // OnBehalfOf, AuthorityRef
+	Tools     []string                   `json:"tools,omitempty"`     // per-run tool filter (D3)
+	Ext       map[string]json.RawMessage `json:"ext,omitempty"`       // sibling packages (audit grant digest)
+}
+type RunSettings struct {
+	MaxTurns, TokenBudget *int
+	SystemPrompt          *string
+	Sampling              *Sampling
+	ToolChoice            *ToolChoice
+}
+func RecordedStart(ctx context.Context, j *Journal, runID string) (RunStart, bool, error) // #70, retyped
+```
 
-**Run-only options:**
-- `WithIdentity(Identity)`
-- `WithSaga()`
-- `WithOutputMode(OutputMode)` (RunTyped only; `Run` returns `ErrConfig` if it is present)
+### Journaling rule
+The rule resolves critique B1 and #70's decisions 2 to 4, using #70's table.
 
-**Run header record.** The agent writes `@run` once per run, through insert-if-absent, before its first model turn. It holds `RunHeader{Input Message; Saga bool; Kind RunKind; Session string; Typed *TypedHeader}` as a `StepValue`.
-- On every later invocation the journaled header is authoritative.
-- A non-zero input that differs from the journaled one (compared by canonical encoding) is `ErrConfig`, the same rule `Session.Send` already applies.
-- A saga flag that differs is `ErrConfig`.
-- `Resume` uses the journaled input, mode and session reference. It returns `ErrConfig` for a typed run ("resume it with RunTyped[T]"), because strict decoding needs `T`.
+1. **Per-run values are part of the run.** A value the caller passes as a `RunOption` is journaled in `run:start` at the first drive. On every later drive the journaled value is authoritative, and a drive that passes nothing uses it.
+2. **Limits.** A later drive may pass a different `WithMaxTurns` or `WithTokenBudget` to raise or lower a limit. That writes an auditable amendment, `run:limits:<n>`, and takes effect. Operators need to continue a run that hit its budget, and the change is never silent.
+3. **Everything else must match.** A later drive that passes a different value for any other setting is `ErrConfig`: system prompt, sampling, tool choice, tool filter, output mode, saga, typed schema, or principal.
+4. **Agent-level defaults stay live by design,** as #70 documents: options given to `New`, including `WithSystemPromptFunc`, sampling and tool choice defaults.
+   - For audit, every model record journals digests of what that turn was sent: `PromptDigest` (the system prompt text) and `ToolsDigest` (the canonical `ToolSpec` set).
+   - This closes #70 decision 3 for audit without freezing a deployment's defaults into running runs.
+5. **Identity (#70 decision 2).**
+   - `OnBehalfOf` and `AuthorityRef` are journaled in `Principal` and restored on resume. A different value is `ErrConfig`.
+   - `Actor` stays live: after an upgrade, the new deployment is the actor.
+   - `IdentityFrom(ctx)` in a tool returns the live `Actor` plus the journaled principal.
+6. **Audit grant.**
+   - `audit.WithGrant(sg, signer)` becomes a `RunOption`, built through the internal run-extension hook (section 5).
+   - The grant is already a journaled leaf. `run:start.Ext["audit.grant"]` holds its digest.
+   - The signer is a key, so it is live, supplied by the resuming deployment.
+   - A resume that needs to attenuate but has no signer is `ErrConfig`.
+7. **RunTyped (#70 decision 4).** `Typed` holds the mode, `T`'s schema digest and the full schema. Resuming a typed run through `Run`, or with a different `T`, is `ErrConfig` before any model call.
+8. **Deployment-only values, never journaled:** clock, waker, lease holder.
 
-**Sessions.** A turn is a run. `turnRecord.Input` becomes a `Message`, and the turn's `@run` header names the session and turn so `Resume` can rebuild the seed from the session journal.
+### Recovery dispatch (critique B6, B8)
+```go
+type Resumer func(ctx context.Context, runID string, start RunStart) error
+var ErrNotResumable = errors.New("run not resumable by this resumer") // no category, like ErrLeaseLost
+var ErrNotStarted  = fmt.Errorf("run has no run:start record: %w", ErrConfig)
 
-**Saga.** Saga is folded into the `WithSaga()` option and journaled in the header, not a separate type.
-- Reason: a saga is a property of the run's journal. Resuming a saga run without saga mode today silently skips rollback, because the `StepSagaFail` record is treated as done.
-- Sub-agents inherit saga mode from `RunInfo` as they do now.
+func ResumeAgent(a *Agent, opts ...RunOption) Resumer              // kinds agent, session_turn (untyped)
+func ResumeTyped[T any](a *Agent, opts ...RunOption) Resumer       // typed runs whose schema digest is T's
+func ResumeAny(rs ...Resumer) Resumer                              // first that does not return ErrNotResumable
+// plan: func ResumeFlows(flows ...plan.Resumable) agent.Resumer
+```
 
-**RunTyped:**
-- `OutputTool` keeps the `final_answer` tool.
-- `OutputNative` requires `model.(Describer).Describe().ResponseFormat` (item 5) and fails with `ErrConfig` before any call otherwise.
-- The header records the schema digest and the mode, so a later `RunTyped` with a different `T` is `ErrConfig` rather than a silently different contract.
+`Recover` and `RecoverLoop` read `run:start` for each candidate:
+- A run with none (a `Signal` sent to a mistyped ID, for example) is skipped. It is reported once per process through `WithRecoverErrors` as `ErrNotStarted`.
+- A run no resumer claims is reported once as `ErrNotResumable`.
+- Neither is re-reported on every pass.
+
+**Typed runs are resumable by registering a typed resumer.** I disagree with the critique's "validate against the journaled schema and complete without T". bide has no JSON Schema validator; strict acceptance is decoding into `T`. A run completed under a weaker check is final, so a wrong answer could not be corrected later. The journaled full schema serves audit and a clear error.
+
+### Saga
+- `WithSaga()` is a `RunOption`, journaled as #70's `saga` flag.
+- `Cancel` on a saga run rolls it back, because cancelling a saga is an abort.
+
+### Cancellation (D1)
+- `Cancel` writes `run:cancelled` `{reason}` under the reserved `run:` prefix.
+- A driver checks for it with `Get` when a drive starts and at every turn boundary, and never starts a new claim after seeing it. Calls already in flight finish and record their results.
+- `Run` on a cancelled run returns a `Result` and `ErrRunCancelled`. It has no category, because it is a terminal status and not a fault.
+- `Recover` excludes cancelled runs through the `Lister` filter.
+
+### Status (D8)
+`RunStatus{State RunState; Terminal string; Records int}` with states:
+- `NotStarted`
+- `Started`
+- `Completed`
+- `Aborted`
+- `Cancelled`
+
+Pauses are not journaled, so a paused run reports `Started`. This is documented.
 
 ### Replaces
-`Run(ctx, id, string) (Message, error)`, `RunResult`, `RunSaga`, `RunSagaResult`, `Stream(string)`, `StreamSaga`, `AgentStream.Final`, `RunTypedNative`, `Session.Send/SendOnce(string)`, the ctx decorators `WithWaker`, `WithClock` and `WithIdentity`, the "zero Result on error" behavior, `AgentEvent` and `AgentStream`.
+`Run(string) (Message, error)`, `RunResult`, `RunSaga`, `RunSagaResult`, `Stream(string)`, `StreamSaga`, `AgentStream.Final`, `RunTypedNative`, `Session.Send/SendOnce(string)`, the context decorators `WithWaker/WithClock/WithIdentity`, and `AgentEvent`/`AgentStream`.
 
 ### Migration
-- About 172 `.Run*` sites (36 non-test), 19 Stream sites, 48 typed sites and 8 Session sites move to the new signatures. This is done by a rewrite script shipped with the PR, so a rebase means rerunning it rather than hand-merging:
-
-  | Old | New |
-  |---|---|
-  | `msg, err := a.Run(ctx, id, "x")` | `res, err := a.Run(ctx, id, agent.UserText("x"))`, then `res.Message` |
-  | `RunSaga` | `Run(..., agent.WithSaga())` |
-- In-repo callers that change by hand:
-  - `SubAgent` calls `sub.Run(ctx, info.SubRun(), UserText(task))`.
-  - `audit.AttenuatingSubAgent`, likewise.
-  - `eval.AgentRunner`.
-  - `audit.Record`, renamed `audit.RecordStream(log, *agent.RunStream, onEvent)` returning `(*agent.Result, error)`.
-  - The doc examples in `recovery.go`, `pause.go` and `identity.go`, rewritten as `Example` tests.
-  - The `RecoverLoop` and `MemWaker` closures in examples become `agent.ResumeFunc(a)` (item 6).
+- Semantic PR P14 adds the new API under transitional names:
+  - `RunMessage`, `StreamMessage`, `ResumeRun`
+  - `Session.SendMessage`, `Session.SendMessageOnce`
+  - `RunTypedMessage`
+- The old methods are kept as wrappers.
+- The final rewrite (P15) renames the new API and deletes the old one, covering about 172 Run, 19 Stream, 48 typed and 8 session sites.
 
 ### Rationale
-- One entry point with variadic run options can grow without breaking method values.
-- `Message` input unlocks images.
-- A Result on error fixes #55's hidden spend.
-- The run header makes resume independent of what the caller remembers (exact replay requires the same seed) and lets recovery resume runs without an `inputFor(runID)` side table.
+- Per-run choices survive a crash, so a tenant's budget cannot be bypassed by recovery.
+- Recovery needs no side table of inputs.
+- A mismatch is always loud.
 
 ### Risks
-- **Input comparison:** the input on resume is compared by canonical encoding, so a caller that rebuilds an equivalent message with different part order gets `ErrConfig`.
-  - Mitigation: a zero `Message`, or `Resume`, means "use the journal".
-- **Header content:** the `@run` record puts the input into the journal. It is salted and disclosed only by choice, but retention policies now cover it (open question Q16).
-- **Typed runs:** they cannot be resumed generically. This is documented, and the resumer returns a clear `ErrConfig`.
+- The header grows with the tool filter and schema. The size is bounded by what the caller passes.
+- Journaled input, including images, raises retention questions. The redaction model in item 4 covers them.
 
 ---
 
 ## 3. Item 2: Agent construction
 
-### New API
+Unchanged from v1 except where noted.
+
 ```go
 func New(model Model, j *Journal, opts ...Option) (*Agent, error)
-func (a *Agent) With(opts ...Option) (*Agent, error) // a new agent; a is unchanged
+func (a *Agent) With(opts ...Option) (*Agent, error)
 func (a *Agent) Journal() *Journal
 ```
 
 **Agent-only options:**
-- `WithTools(tools ...Tool)`
-- `WithMiddleware(mw ...Middleware)`
-- `WithToolMiddleware(mw ...ToolMiddleware)`
+- `WithTools(...Tool)`
+- `WithMiddleware(...Middleware)`
+- `WithToolMiddleware(...ToolMiddleware)`
 - `WithApproverVerifiers(ApproverVerifierFor)`
-- `WithToolErrorRedactor(func(tool string, err error) string)`
-- `WithRetrieval(r Retriever, k int)` (see below)
-- `WithOptions(opts ...Option) Option`, which bundles options for packages like `trace`.
+- `WithToolErrorRedactor(fn)`
+- `WithRetrieval(r Retriever, k int)`, which the loop runs as an engine step. That removes two context keys, and retrieved documents stay journaled as #62 does.
+- `WithSystemPromptFunc(fn func(context.Context, RunInfo) (string, error))`
+- `WithOptions(...Option)`
 
-**Dual-scope options** are the `AgentRunOption`s listed in section 2.
+**Validation in `New` and `With`.** Each failure is `ErrConfig`:
+- a nil model, journal or tool;
+- duplicate `Spec().Name`;
+- the reserved name `final_answer`. No adapter rewrites names (`toolcfg.Check` refuses bad ones), so collisions after normalization cannot happen.
+- a non-object input schema;
+- an invalid `ApprovalPolicy`, or an approval policy with no `WithApproverVerifiers`;
+- `k < 1`;
+- negative limits.
 
-**Validation in `New` and `With`.** Each failure is `ErrConfig` naming the culprit:
-- a nil model, nil journal, or nil tool;
-- two tools with the same `Spec().Name`;
-- a tool named `final_answer` (reserved, Q11);
-- a tool whose `Spec().Input` is not a JSON object schema;
-- an `ApprovalPolicy` that fails `Validate`, or any tool with `Safety.Approval != nil` and no `WithApproverVerifiers`;
-- `WithRetrieval` with `k < 1`;
-- negative limits;
-- an option applied twice where "twice" is ambiguous (two `WithSystemPrompt`: last wins, documented; two `WithTools`: appended).
+**Immutability.**
+- Unexported fields only.
+- `With` deep-copies the agent.
+- `Spec()` is read once and snapshotted.
 
-**Immutability.** The Agent has only unexported fields and is never mutated after `New`.
-- `With` deep-copies the tool map and middleware slices.
-- `Spec()` of every tool is read once at `New` and snapshotted.
-- A dynamic MCP tool list is picked up by calling `With(WithTools(...))`, not by mutating the agent.
+**Tracing.** `trace.Instrument(tracer, opts...) agent.Option`. `trace.WithModel` and `trace.WithSystem` are removed; the model name comes from `ModelInfoOf` (item 5).
 
-**Retrieval** becomes an agent option instead of a middleware constructor.
-- The loop runs each retrieval layer as a journaled engine step (`@retrieval/<layer>`).
-- This removes `withModelRun` and `retrievalLayerKey` from ctx, and `WithRetrieval` becomes a true option under the naming rule.
+**Naming sweep:**
+- context `WithIdentity/WithWaker/WithClock` become run options;
+- `WithToolSafety/ToolSafety(ctx)` become `ToolCall.Spec`;
+- `WithModel(ctx)`, `WithModelCallHook(ctx)`, `DetachModelSink` and `EmitMessage` are removed (item 5);
+- `WithNow` becomes `WithClock`;
+- the option types are split: `LeaseOption`, `RecoverOption`, `RecoverLoopOption`;
+- `RunScope` and `InSaga` become `RunInfoFrom(ctx) (RunInfo, bool)`;
+- plan's builder `WithModel` and `WithLoadedModel` become one `plan.WithModel` option.
 
-**Tracing:**
-- `trace.Instrument(tracer, opts ...trace.Option) agent.Option` returns `agent.WithOptions(agent.WithMiddleware(trace.Model(...)), agent.WithToolMiddleware(trace.Tool(...)))`.
-- `trace.WithModel` and `trace.WithSystem` are removed. The span reads the model identity from `ModelCall.Model` through `Describer` (item 5).
+**`RunInfo`** gains `(RunInfo) SubRunFor(name string) string` for programmatic sub-runs (D5). The scheme is `<parent>>step:<enc name>`, next to `SubRunID`'s `<parent>><enc tool id>`. `>` and `step:` never appear in an encoded tool ID, so the two cannot collide.
 
-### Replaces
-`New(model, store, tools...) *Agent` (panicking), `(*Agent).WithMaxTurns`, `WithTokenBudget`, `WithSystemPrompt`, `WithSystemPromptFunc`, `WithSampling`, `WithToolChoice`, `WithApproverVerifiers`, `WithToolErrorRedactor`, `SetMaxConcurrency`, `Use`, `UseTool`, the unexported `clone` and `cloneWith`, and PR #57's `dupTool` field with its run-time `checkTools`.
+**Migration.**
+- P13 lands the options and `Build(model, j, opts...) (*Agent, error)` as the transitional name. The old `New` and the builder methods become wrappers over `Build`.
+- P15 renames `Build` to `New` at about 367 sites and deletes the wrappers.
 
-### Naming sweep in `agent` (the rule applied)
-
-| Old | New |
-|---|---|
-| ctx `WithIdentity`, `WithWaker`, `WithClock` | run options of the same names |
-| `WithToolSafety`, `ToolSafety(ctx)` | removed: `ToolCall.Spec.Safety` (item 7) |
-| `WithModel(ctx, m)` (#55) | removed: `ModelCall.Model` (item 5) |
-| `WithModelCallHook(ctx, h)` | removed: `ModelCall.Hooks` (item 5) |
-| `DetachModelSink`, `EmitMessage` | removed: `ModelCall.Sink` (item 5) |
-| `WithRetrieval(r, k) Middleware` | `WithRetrieval(r, k) Option` |
-| `WithNow` (ResolveOption) | `WithClock` (one clock shape everywhere) |
-| `RecoverOption` covering lease and loop | `LeaseOption`, `RecoverOption`, `RecoverLoopOption` |
-| `RunScope`, `InSaga` | `RunInfoFrom(ctx) (RunInfo, bool)` |
-| `audit.(*AuditedStore).WithClock(func() int64)` | option `audit.WithClock(func() time.Time)` on its constructor |
-| `plan.(*Builder).WithModel`, `plan.WithLoadedModel` | one `plan.WithModel(m)` option accepted by `plan.New` and `plan.Load` |
-
-`RunInfo` is defined as:
-
-```go
-type RunInfo struct {
-	RunID, RootRunID, ToolUseID string
-	Saga                        bool
-	Identity                    Identity
-}
-func RunInfoFrom(ctx context.Context) (RunInfo, bool)
-func (RunInfo) SubRun() string // the child run ID for this call; replaces SubRunID/RunScope
-```
-
-### Migration
-- About 367 `New(` sites (36 non-test) are rewritten by script:
-  - `agent.New(m, s, t1, t2)` becomes `a, err := agent.New(m, j, agent.WithTools(t1, t2))`.
-  - Builder chains become options.
-  - Tests use `agenttest.MustNew(t, m, j, opts...)`, a helper that calls `t.Fatal`.
-- About 56 builder-method calls (18 non-test).
-- `trace.Instrument` callers.
-- The session, typed and saga internals that called `clone`.
-
-### Rationale
-Construction errors surface at construction, and the documented aliasing hazard disappears. An agent is safe to share because nothing can mutate it.
-
-### Risks
-- `New` returning an error adds boilerplate at 36 non-test sites. `agenttest.MustNew` covers tests.
-- The `Spec` snapshot changes semantics for a tool whose `Spec()` changes over time. That is deliberate: #57 already made a call keep the safety it fired under.
+**Risks.** As in v1: construction errors add boilerplate; `agenttest.MustNew` covers tests.
 
 ---
 
@@ -277,863 +367,843 @@ Construction errors surface at construction, and the documented aliasing hazard 
 
 ### New API
 ```go
-const JournalFormat = "bide.journal.v1"
-
+const JournalFormat = "bide.journal.v1-dev.1" // becomes "bide.journal.v1" at the 1.0 tag
 var ErrJournalVersion = fmt.Errorf("unsupported journal format: %w", ErrProtocol)
-
-type JournalVersionError struct {
-	RunID     string
-	Found     string   // "" for an unversioned (pre-v1) journal
-	Supported []string
-}
-func (e *JournalVersionError) Error() string
-func (e *JournalVersionError) Unwrap() error { return ErrJournalVersion }
-
+type JournalVersionError struct{ RunID, Found string; Supported []string }
 const StepHeader StepKind = "header"
-
-// Format returns the journal format of runID ("" for a run with no entries).
 func (j *Journal) Format(ctx context.Context, runID string) (string, error)
 ```
 
-**The version record:**
-- Key `@journal`. The `@` prefix is already reserved by #60.
-- `Kind: StepHeader`, `Result: {"format":"bide.journal.v1"}`.
-- It must be entry 0 of every journal the `Journal` type writes, which covers agent runs, sessions, flows, `Step`-only runs, govern quorum runs and audit ledger runs.
-- The agent's `@run` header (item 1) is a separate, later record. `@journal` is owned by the journal layer and says nothing about what the run is.
+### Two records, two owners (justified)
+- **`@journal {"format"}`** is written by the journal layer as the first entry of every journal. That includes Step-only runs, audit ledgers and govern quorum runs, which have no `run:start`. It must be readable before any key is interpreted.
+- **`run:start`** is written by the engine and describes what the run is.
 
-### How it is written (the `Journal` type, item 4)
-1. **First write.** Before the first write to a run in this `Journal` value, the journal calls `Store.Insert(runID, "@journal", headerBytes)`.
-2. **Known runs.** A bounded per-`Journal` cache (LRU, 4096 run IDs) records runs whose header is known good, so later writes skip the extra round trip.
-3. **Checks on the stored header:**
-   - `Seq != 0` means the header landed after existing entries. The journal was unversioned, so the write returns `*JournalVersionError{Found: ""}`. The stray header is harmless, because the run is refused either way.
-   - A `format` not in `Supported` returns `*JournalVersionError{Found: f}`.
-4. **Ordering across writers.** Every writer confirms the header before inserting its own entry, and `Store` guarantees that seq order follows completion order (item 4, requirement A2). So the header precedes every other entry even with concurrent first writers.
+The format cannot live in `run:start`, because many journals have no engine header.
 
-### How it is read
-- **`History`/`Records`** check entry 0 as they stream. An empty run is fine; anything else without a valid header is refused.
-- **`Get`** checks the header with a point lookup (cached) before returning a record. A found record with no header is `*JournalVersionError`.
-- **Replay:** `Replay(ctx, j, runID)` reads through `History`, so an old journal cannot be replayed into a fresh run.
-- **Audit:**
-  - The header is a salted record like any other, so it is leaf 0 of every journal Merkle tree. Every STH therefore commits to the journal format, and the leaf tag stays `bide.audit.journal-leaf.v1` (the leaf encoding is unchanged).
-  - `EvidencePackage` v4 carries `journal_format` and the inclusion proof of leaf 0, so an offline verifier knows which key scheme names such as `tool:<enc id>` follow before it interprets them.
-  - bide-audit refuses an unknown journal format with exit code 4 (section 9.4).
+### Dev tag (critique Q1 and B4)
+- Before 1.0, every change to the key scheme or the record shape bumps the dev tag: `v1-dev.1`, `v1-dev.2`, and so on.
+- A 1.0 binary accepts only `bide.journal.v1`, so no journal from a pre-release binary is read under final rules.
+- v1's "edit v1 in place" is withdrawn. It defeated the header.
 
-### Support policy (documented in docs/GUARANTEE.md)
-- 1.x binaries read every 1.x journal format and write the newest.
-- A new format adds a reader path keyed on `Format` and never reinterprets an old key.
-- Pre-1.0: `v1` stays the only format until the 1.0 tag. Later pre-1.0 changes edit v1 in place and do not bump it (Q1).
+### The format is pinned per run
+- The first write fixes a run's format, and every later drive writes records of that format.
+- A binary refuses to write to a run whose format it cannot write, and refuses to read one it cannot read. Both return `*JournalVersionError`.
+- **Rolling-deploy guarantee:** an older binary always refuses a newer format, loudly and before any write.
+- The compatibility window for 1.x (how many older formats each binary can write) is a decision for the maintainer (section 12, D1).
 
-### How durabletest checks it (the package is renamed storetest, item 4)
-`storetest.Run` drives the store under test through `agent.NewJournal` as well as directly. It asserts:
-- **(a)** The first `Journal.Do` on a fresh run leaves `@journal` at seq 0 with the current format.
-- **(b)** Concurrent first writes from two `Journal` values over two handles on the same backend leave exactly one header, still at seq 0.
-- **(c)** A header whose format is `bide.journal.v999`, inserted raw, makes `History`, `Get` and `Do` return `*JournalVersionError{Found: "bide.journal.v999"}`.
-- **(d)** A run whose raw entries lack a header is refused with `Found: ""`.
+### How the header is written
+1. Before its first write to a run, a `Journal` calls `Insert(runID, "@journal", header)`.
+2. It then requires the header to be the **first entry in `Load` order**. This replaces v1's `Seq == 0` test, because A2 is relaxed (item 4).
+3. A header that is not first means the journal was unversioned: `*JournalVersionError{Found: ""}`.
+4. A known-good cache records runs already checked. It is keyed by run and bounded (65,536 entries).
+5. A `Recover` pass does no per-run header reads. The `Lister` filter pushes "exclude finished" down to the store, so the cache does not thrash.
 
-### Replaces and migration
-Nothing is replaced; this is new. Tests that assert exact `History` lengths or indices shift by one. That is about 40 test sites, and the index-based audit proof tests use `Prove(..., index+1)`. Fixtures holding recorded journals, if any, are regenerated.
+### How it is read (critique B5)
+- **`Get` reads the record first, then the header.** If the header lookup ran first and a concurrent first writer then landed both entries, the record would be wrongly flagged as headerless.
+- **`History` and `Records`** check the first entry as they stream.
+- **Deleted runs.** Run IDs must never be reused after deletion (documented). A `Journal` with a stale cache that writes into a deleted run produces entries with no header, which every reader refuses loudly.
 
-### Rationale and risks
-- **Rationale:** the check lives in the one layer every journal passes through, so no engine path can skip it.
-- **Risk:** an extra round trip on the first write per run per process, which is negligible.
-- **Risk:** proof indices shift by one. The audit tests catch this.
+### Audit and storetest
+- **Audit.** The header is leaf 0 of every tree. `EvidencePackage` carries `journal_format` and the leaf-0 proof (item 8).
+- **storetest checks:**
+  - (a) the header is the first entry;
+  - (b) concurrent first writers through two handles leave exactly one header, and it is first;
+  - (c) a raw `v999` header is refused on `History`, `Get` and writes;
+  - (d) a headerless journal is refused;
+  - (e) a read that races a concurrent first write never reports a headerless record.
+
+### Risks
+- Indices in tests shift by one. The script updates them.
+- Pinning the format per run means one dev-tag bump strands pre-release journals. There are no users, so this is accepted.
 
 ---
 
-## 5. Item 4: Durable redesign (storage port versus journal semantics)
+## 5. Item 4: Durable redesign
 
-### New API: the port stores implement
+### The port
 ```go
-// Store is the byte-level journal port. Implementations are dumb: they never decode an entry.
 type Store interface {
-	// Insert adds data under (runID, name) if no entry has that name, and returns the stored
-	// entry (this call's, or the one that was already there) and whether this call stored it.
-	Insert(ctx context.Context, runID, name string, data []byte) (stored Entry, inserted bool, err error)
-	// Get returns runID's entry named name.
-	Get(ctx context.Context, runID, name string) (e Entry, found bool, err error)
-	// Load yields runID's entries with Seq >= from, in ascending Seq.
-	Load(ctx context.Context, runID string, from int) iter.Seq2[Entry, error]
+	// Insert stores data under (runID, name) if absent; returns the stored entry and whether
+	// this call stored it.
+	Insert(ctx context.Context, runID, name string, data []byte) (Entry, bool, error)
+	Get(ctx context.Context, runID, name string) (Entry, bool, error)
+	// Load yields runID's entries with Seq > after (after = -1 for all), in ascending Seq.
+	Load(ctx context.Context, runID string, after int64) iter.Seq2[Entry, error]
 }
-
 type Entry struct {
-	Seq  int
+	Seq  int64 // opaque; strictly increasing in commit order
 	Name string
 	Data []byte
 }
 
-// Optional capabilities, found with Capability through wrappers (F1, retargeted).
 type Lister interface {
-	// Runs yields run IDs in ascending byte order, starting after `after` ("" for the first).
-	Runs(ctx context.Context, after string) iter.Seq2[string, error]
+	Runs(ctx context.Context, f RunFilter) iter.Seq2[string, error]
 }
-type Leaser interface { /* AcquireLease, RenewLease, ReleaseLease: unchanged */ }
+type RunFilter struct {
+	After  string   // cursor: run IDs are yielded in ascending byte order after this one
+	Prefix string   // tenant or namespace (D4)
+	// ExcludeHolding drops runs holding an entry with any of these names; a store pushes it
+	// down (NOT EXISTS). Recover passes run:complete, run:aborted, run:cancelled.
+	ExcludeHolding []string
+}
+type Leaser interface{ /* unchanged */ }
+type Redactor interface { // D2: the only permitted mutation
+	Redact(ctx context.Context, runID, name string, tombstone []byte) error
+}
 
-func Capability[T any](s Store) (T, bool) // follows Unwrap() Store; checks s itself first
+func Capability[T any](s Store) (T, bool) // #66's function, retargeted to Store; Unwrap() Store
 ```
 
-### Exact atomicity requirements on `Store` (documented on the type and enforced by storetest)
-- **A1, unique names, linearizable insert.** For each `(runID, name)` at most one entry ever exists. Concurrent `Insert` calls, from any number of processes sharing the backend, have exactly one winner. Every caller, and every later `Get` or `Load`, observes the winner's bytes.
-- **A2, dense, real-time-ordered sequence.** Each run's entries have `Seq` values 0, 1, 2 and so on, with no gaps. If `Insert` A returned before `Insert` B was called, A's `Seq` is lower than B's. A losing insert consumes no `Seq`.
-- **A3, durable before return.** `Insert` returns `inserted == true` only after the entry is committed. On any error, the entry is either absent or fully present with its final `Seq`; it is never partial. The caller may retry `Insert` with the same bytes, and a retry that finds its own earlier commit returns `inserted == false` with its own bytes.
-- **A4, read-your-writes, monotone visibility.** After `Insert` returns, for either result, `Get` and `Load` from any process see the entry. Once visible, an entry stays visible, unchanged and at the same `Seq`.
-- **A5, byte fidelity.** `Data` round-trips exactly (NUL, invalid UTF-8, any length the backend supports). The store never canonicalizes.
-- **A6, immutability.** The interface has no update or delete. Retention would be a future optional capability (`Deleter`) at run granularity.
-- **A7, context.** `Insert` honors `ctx`. Keeping a record after the caller's cancellation is the journal's job (it passes `context.WithoutCancel`), not the store's.
-- **A8, iterator hygiene.** Breaking out of `Load` or `Runs` releases every resource (rows, transaction, connection) before the yield returns false. This matters for SQLite's single connection.
+### Store requirements
+The critique's replacement for v1's dense A2 is adopted.
 
-### New API: the semantics the agent package owns
+- **A1: unique names, linearizable insert.** At most one entry per `(runID, name)`. Concurrent inserts from any number of processes have exactly one winner, and every caller and later reader sees the winner's bytes.
+- **A2: commit-ordered, prefix-closed visibility.** `Seq` is an opaque `int64`, strictly increasing in commit order within a run. Every read of a run returns a prefix of the run's final order: no entry ever becomes visible with a lower `Seq` than an entry already visible.
+  - Consequences: gaps are allowed, but a reader never sees 0 to 5 and 7 while 6 is still in flight.
+  - Indices are computed at read time, as positions in `Load` order. Nothing reads `Seq` as a count.
+- **A3: durable before return.** `inserted == true` only after commit. On an error, the entry is either absent or complete. The same bytes may be retried.
+- **A4: read-your-writes, monotone visibility.** Once visible, an entry stays visible with the same bytes and position. The one exception is A6's redaction, which keeps the position.
+- **A5: byte fidelity.**
+- **A6: immutable except for redaction.** No update or delete in the port. `Redactor` may replace an entry's `Data` with a tombstone, only for a run that is terminal (complete, aborted or cancelled).
+- **A7: honor ctx.** Detached recording is the journal's job.
+- **A8: iterator hygiene.** Breaking out of an iterator releases every resource. A store must not hold a connection, transaction or lock across a `yield`, so nested writes inside a `Load` loop cannot deadlock (critique B17).
+
+**Why A2 is enough for audit.** Inclusion proofs need a fixed position within the first `Size` entries. Consistency proofs and STH anchoring need prefix-closed visibility. Density added only O(1) named-record indexing, and the prover loads the tree anyway. An `Indexer` capability is therefore not added.
+
+This admits commit-ordered stores (FoundationDB versionstamps, Spanner commit timestamps) as well as counter-based ones.
+
+### The journal the agent owns
 ```go
-type Journal struct{ /* store, singleflight, header cache */ }
-
-func NewJournal(s Store, opts ...JournalOption) (*Journal, error) // ErrConfig on nil
+type Journal struct{ /* unexported */ }
+func NewJournal(s Store, opts ...JournalOption) (*Journal, error)
 func (j *Journal) Store() Store
-
-// Do returns runID's record named name, running fn and recording its record only if absent.
-// fn runs at most once per (runID, name) within the process (singleflight); once fn has
-// returned a record, it is recorded even if ctx was cancelled. Refuses engine-reserved names
-// (every #60 prefix except "audit:", which package audit owns).
-func (j *Journal) Do(ctx context.Context, runID, name string, fn func(context.Context) (Record, error)) (Record, error)
 func (j *Journal) Get(ctx context.Context, runID, name string) (Record, bool, error)
 func (j *Journal) History(ctx context.Context, runID string) ([]Record, error)
-func (j *Journal) Records(ctx context.Context, runID string, from int) iter.Seq2[Record, error]
+func (j *Journal) Records(ctx context.Context, runID string) iter.Seq2[Record, error]
+func (r Record) Raw() []byte      // the stored bytes, verbatim (B2)
+func (r Record) Salt() []byte     // read-only
+func (r Record) ClaimID() string  // read-only
 ```
 
-The `Journal` owns:
-- memoization and in-process single-flight;
-- naming and salting (`JournalEntry` becomes unexported);
-- canonical encoding (`EncodeRecord` and `DecodeRecord` stay exported for audit and verifiers);
-- detached recording;
-- the header (item 3);
-- the claim protocol. `ClaimAttempt` becomes the unexported `(*Journal).claim`, because plan lowers to `Step` (item 6) and needs no public claim.
+**No exported `Do`** (critique A4, accepted).
+- Only the engine writes raw records.
+- Two same-module packages need raw writes:
+  - audit writes its `audit:` leaves;
+  - plan writes `flow:digest`, `switch:*` and its node steps.
+- They get them through `internal/journalhook`:
+  - `agent` assigns function variables there in `init()`;
+  - the functions use only `any`, `string` and `json.RawMessage`, so there is no import cycle.
+- govern is a separate module. It uses only `agent.Step`, so it never imports root `internal`, which avoids the skew the critique warns about.
 
-**`Record` (review 7.4).**
-- `Salt` and `Claim` become unexported fields with read accessors `Salt() []byte` and `ClaimID() string`, kept in the JSON encoding through `MarshalJSON`/`UnmarshalJSON`. A user-built `Record` cannot carry a salt or claim, and a decoded one keeps both.
-- `AttemptedAt` becomes `AttemptedAtMillis`, with JSON key `attempted_at_ms` (review 9.6).
-- New additive fields: `Finish FinishReason` on model records (item 5) and `ApproverAlg` (section 9.2).
+**Run extensions for sibling packages.** `internal/runext` lets audit build a `RunOption` whose journaled part goes into `RunStart.Ext`. It uses the same mechanism as `journalhook`.
 
-### How at-most-once is preserved (the argument the PR must state and test)
-1. **Claim.** `claim(runID, marker, rec)` draws 16 random bytes as a claim id and inserts `rec` (named, salted, claim set) with `Insert`. The driver has won if and only if the decoded stored entry carries its own claim id. This also covers a retried `Insert` whose first attempt committed (A3). By A1, exactly one driver's marker exists, and every driver sees the same winner.
-2. **Effect.** A side effect runs only after a `claim` returns "won". By A3, the marker is durable before the effect starts.
-3. **Crash between effect and result.** The resume reads the marker with `Get` and finds no result, so it halts with `OutcomeUnknown`, and the effect is not re-run. A4 guarantees another process sees the marker.
-4. **Result recording.** `Journal.Do` inserts the result under `context.WithoutCancel`. An insert that races another driver loses by A1, and both return the one stored record, so the conversation stays single-valued (exact replay).
-5. **The retry-safe probe.** #57's "probe with a failing `Do`" becomes `j.Get(runID, stepAttemptStep(name))`: a pure read, with no chance of a store recording a probe.
-6. **Plan.** Plan nodes lower to `Step` (item 6), so plan inherits steps 1 to 5 exactly and does no journal reads of its own (no O(n²) `History` per node).
+**Other journal responsibilities:**
+- **Singleflight is shared across `Journal` values** (critique B9).
+  - The dedup is a package-level singleflight keyed by (store identity, run ID, name), using the store's interface value when it is comparable (true of every in-repo store, which are pointers).
+  - An entry exists only while a call is in flight, so nothing leaks.
+  - Two `NewJournal` calls over one store in one process share in-process dedup, as today.
+- **Ambiguous claim commits** (critique B11). When a claim's `Insert` errors, the journal remembers the claim ID in memory (bounded, per store identity). An in-process re-drive reuses it and so recognizes its own committed marker, instead of halting a human over an effect that never ran. Claims that won are never remembered.
+- **Salts, naming, encoding (`marshalJournal`), the header, claims, #65's not-started records and detached recording** all live here.
+- **`Record.MarshalJSON`** must use `marshalJournal` (no HTML escaping). A golden test pins the bytes.
 
-The only properties relied on are A1 to A4. Leases remain an efficiency and liveness mechanism, as documented today.
+### At-most-once, restated over A1 to A4
+1. A claim inserts a marker with a fresh claim ID. The driver has won if and only if the stored marker carries that ID (A1, and A3 covers retried inserts).
+2. The effect fires only after the claim is won, and the claim is durable first (A3).
+3. After a crash, the resume finds the marker without a result through `Get` (A4) and halts, unless the claimant recorded not-started (#65).
+4. Recording the result is detached and single-winner (A1).
+5. The retry-safe probe is a pure `Get`.
+6. Plan lowers to Step (item 6), so it inherits all of the above.
 
 ### Capabilities and wrappers
-- F1's `Capability` is retargeted to `Store`, with `Unwrap() Store`.
-- Journal writes are the base interface and so can never be reached around a wrapper. A wrapper that audits or traces writes always sees them; only optional capabilities (`Leaser`, `Lister`) are discovered through `Unwrap`.
-- `Lease` without a `Leaser` becomes `ErrConfig` unless `WithoutLease()` is passed (review 2.3's "never a silent fallback", Q12).
+The critique's key-rewriting-wrapper concern (C) is handled by contract.
 
-### Migration
+- **`Unwrap` is only for key-preserving wrappers.** The `Store` docs require that a wrapper implement `Unwrap` only if it passes run IDs and names through unchanged. A wrapper that rewrites keys (for example, a tenant prefix) must not implement `Unwrap`, and must implement each capability itself.
+- **storetest provides `CheckWrapper(t, wrap)`,** which fails if a wrapper that rewrites keys exposes an inner capability.
+- **Why not a declared capability list.** I disagree with the critique's `Capabilities() []reflect.Type`. A key-rewriting wrapper that implements `Unwrap` is already wrong for every capability, and a reflected type list is hard to use and easy to leave stale.
+- **Tenants** use the documented run-ID prefix convention plus `RunFilter.Prefix` (D4), so a tenant store needs no custom `Lister`.
 
-**`MemStore`**
-- It implements `Store`, `Lister` and `Leaser` with a mutex, and is linearizable.
-- `agent.NewMemStore()` still exists. `agenttest.NewJournal(t)` returns a MemStore-backed journal.
+### Leasing (coordinator point 2, critique A2)
+- **MemStore and SQLite implement `Leaser`**, so `Lease`, `Recover` and `RecoverLoop` return `ErrConfig` (unless `WithoutLease()` is passed) only for custom stores. `Recover` and `Lease` follow one rule.
+- **SQLite's leaser:**
+  - uses its own connection (a lease pool of one);
+  - uses single-statement upserts;
+  - computes expiry in SQL with `unixepoch('subsec')`;
+  - uses a short busy timeout, `min(ttl/8, 2s)`, so a lease statement never blocks past the renewal cutoff at 3/4 of the TTL.
+- **SQLite `Open` opens three pools:**
+  - writer: one connection, all `Insert`s;
+  - reader: N connections, `Get`/`Load`/`Runs`;
+  - lease: one connection.
+- **`sqlite.New(ctx, db)`** documents that it needs WAL and at least two connections.
+- **Documented limits:** NFS is unsupported. A forward jump of the wall clock expires leases early, which claims keep safe.
 
-**store/sqlite**
-- `Open(ctx, path, opts...)`, and `New(ctx, db *sql.DB, opts...)` (review 5.3).
-- Table `bide_steps(run_id, seq, name, data)` with PK `(run_id, name)` and UNIQUE `(run_id, seq)`.
-- `bide_schema_version`, which is checked at Open (review 8.3), and `WithTablePrefix`.
-- `Insert` is `INSERT OR IGNORE` with the seq subquery in one statement (SQLite serializes writers), then a `Get` when no row was inserted.
-- Singleflight moves out of the store into `Journal`.
+### Redaction (D2)
+The tombstone format is reserved now.
 
-**store/postgres**
-- The same shape: `Open(ctx, dsn, opts...)` and `New(ctx, db *sql.DB, opts...)`.
-- `leases` becomes `bide_leases`, plus `bide_schema_version`.
-- `Insert` is the existing advisory-lock transaction with `ON CONFLICT DO NOTHING`, returning the entry.
-- `Runs` uses a keyset cursor (`WHERE run_id > $1 ORDER BY run_id LIMIT 500`).
+- **Tombstone shape:** `{"redacted":{"leaf_hash":"<hex>","at_ms":<ms>}}`.
+- **Proofs.** The prover uses the tombstone's leaf hash instead of hashing the entry. Proofs of every other record still verify. The redacted record decodes as `Record{Redacted: true}`.
+- **Resume.** A run with a redacted record is terminal and cannot be resumed.
+- **Scope.** Whether 1.0 ships the capability in the three stores is a decision for the maintainer (section 12, D2).
 
-**audit.AuditedStore**
-- It becomes `audit.NewAnchoredStore(inner agent.Store, s Signer, anchor Anchor, opts ...AnchoredOption) (*AnchoredStore, error)` and implements `Store` and `Unwrap() agent.Store`.
-- It anchors after an `Insert` that inserted, by reading the run's entries with `Load`. Leaves commit to the stored bytes, which are exactly the canonical record encoding, so anchoring needs no decoding.
+### Migration with shims (coordinator point 5)
+- **P6a (semantic):**
+  - adds `Store` and `Journal`;
+  - moves every semantic duty into `Journal`;
+  - gives MemStore, sqlite and postgres deprecated `Do` and `History` methods that delegate to an internal `Journal` over themselves. `*Journal` also satisfies `Durable`.
+- **Engine code** that needs `Get` calls the unexported `journalOf(d Durable)`:
+  - it returns the `*Journal` a shim exposes;
+  - for a raw custom `Durable` (tests only), it falls back to a `History` scan.
+- **About 640 call sites compile unchanged.** P15 deletes `Durable` and the shims.
+- **Stores also gain:**
+  - `Open(ctx, ...)`, `New(ctx, *sql.DB)`;
+  - `bide_` table names, a `bide_schema_version` row, `WithTablePrefix`;
+  - paged `Load`: keyset on `seq`, 256 rows per page, no connection held across a yield.
+- **`audit.NewAnchoredStore(inner agent.Store, s Signer, anchor, opts...) (*AnchoredStore, error)`** replaces `AuditedStore`.
+  - It hashes stored bytes incrementally, using a Merkle frontier keyed by position.
+  - It does one `Load(after = last seq)` per insert. This is O(log n) per insert, down from O(n²) per run today.
 
-**Test stores**
-- The 17 `Do` implementations, 5 of them non-test (MemStore, sqlite, postgres, AuditedStore, chaos), become `Store` wrappers.
-- Crash-injection stores wrap `Insert`: "crash after insert" returns an error after the inner commit.
-- `chaos/bide.go`'s `crashStore` likewise.
-
-**Callers.** About 171 `Durable` references (102 non-test) become `*Journal`:
-- `Step`, `Parallel`, `Approve`, `SubmitDecision`, `Signal`, `Enqueue`, `Ack`, `AnswerInterrupt`, `ResolveHalt`, `IsComplete`, `Lease`, `Recover`, `RecoverLoop`, `Replay`, `ReplayEvents`, `RenderMermaid`;
-- audit `Prove*`, `Evidence`, `NewTreeHead`, `CertifyRun`, `Record*`;
-- govern `Quorum`, plan `Flow.Run`, eval.
-
-**Internal readers** switch to point lookups:
-- `IsComplete` and `recoverable` use two `Get` calls.
-- `quorumTally`'s tally record, `resolve`, `Interrupt`, `Await` and `waitUntil` use `Get`.
-- `History` stays only where the whole journal is needed: loop resume, rollback and proofs.
-
-**Unexported (from #60, review 11):** `ToolResultStep`, `SubRunID`, `IsSubRun`, `ApprovalTallyStep`, `JournalEntry`, `ClaimAttempt`, `SaltSize` (audit uses `len(r.Salt())`). `IsReservedStepName` stays exported.
-
-### Rationale
-- The five semantic duties the review lists (memoize, salt, detach, decode, atomic claim) now have one implementation and one test suite.
-- Stores shrink to about 100 lines each, and new needs become additive capabilities.
+### Online schema migration (D6)
+- Formats coexist in one table, because each run's header names its format.
+- Migrations are additive (new columns or tables) and keep A1 to A8 while they run.
+- A binary refuses to open a schema version newer than it knows.
 
 ### Risks
-- **Mechanical blast radius.** This is the largest mechanical change, so it lands first, while few PRs are open.
-- **Seq density.** A third-party store that cannot give dense sequences (some distributed KVs) cannot satisfy A2. That is documented as a hard requirement, because Merkle indices depend on it.
-- **Visibility gap.** In-process singleflight moves from store to journal. Two `Journal` values over one store in one process no longer share it. That is safe (claims decide), but a retry-safe `fn` could run twice in-process. This is documented.
+- **Shim period.** Two code paths exist during the shim period; P15 ends it.
+- **Singleflight keyed by comparable store identity.** A non-comparable custom store falls back to per-`Journal` dedup. This is documented, and claims keep it safe.
 
 ---
 
 ## 6. Item 5: Model call signature
 
-### New API
 ```go
 type ModelHandler func(ctx context.Context, call ModelCall) (ModelResponse, error)
 type Middleware func(next ModelHandler) ModelHandler
 
-// ModelCall is one model call as middleware sees it. It is a value: a middleware changes its
-// own copy and passes it down, so concurrent sub-calls (Hedge) never alias.
 type ModelCall struct {
-	Request Request
-	Model   Model           // where the base handler sends each request; middleware may retarget
-	RunID   string          // "" outside an agent
-	Turn    int             // the model turn's sequence number within the run
-	Attempt int             // incremented by the base handler for each request it sends
-	Sink    *Sink           // live stream sink; nil when nothing streams
-	Hooks   []ModelCallHook // run by the base handler around every request it sends
+	Request Request // Messages and Tools arrive slices.Clip'ped: appends never share a backing array
+	Model   Model   // where the base handler sends requests; middleware may retarget
+	RunID   string
+	Turn    int
+	/* unexported: sink, hooks, meter, attempt counter */
 }
-
-type ModelResponse struct {
-	Message Message
-	Usage   Usage        // on error: what the failed request reported before failing
-	Finish  FinishReason // normalized
-	RawFinish string     // the provider's own value, for logs
-}
+func (c ModelCall) AddHook(h ModelCallHook) ModelCall // returns a copy with h appended
+func (c ModelCall) Attempt() int                      // set for the request a hook observes
 
 type ModelCallHook struct {
 	Before func(ctx context.Context, call ModelCall) error
 	After  func(ctx context.Context, call ModelCall, a ModelAttempt)
 }
 type ModelAttempt struct {
-	Response ModelResponse // Usage is what the request was billed
+	Response ModelResponse
 	Err      error
 }
+type ModelResponse struct {
+	Message   Message
+	Usage     Usage
+	Finish    FinishReason
+	RawFinish string
+	/* unexported: which request produced it */
+}
 
-// Sink forwards a live call's events. Methods are nil-safe.
-type Sink struct{ /* unexported */ }
-func (s *Sink) Emit(ev Event)
-func (s *Sink) Restart()                  // marks a new attempt: the consumer sees TurnRestarted
-func (s *Sink) EmitResponse(r ModelResponse) // replays r as events (replaces EmitMessage)
-
-type FinishReason string
+type FinishReason string // #68's values, typed
 const (
-	FinishStop          FinishReason = "stop"
-	FinishToolUse       FinishReason = "tool_use"
-	FinishMaxTokens     FinishReason = "max_tokens"
-	FinishContentFilter FinishReason = "content_filter"
-	FinishOther         FinishReason = "other"
+	FinishStop     FinishReason = "stop"
+	FinishToolUse  FinishReason = "tool_use"
+	FinishLength   FinishReason = "length"
+	FinishFiltered FinishReason = "filtered"
 )
 type Finish struct {
 	Reason    FinishReason
 	Raw       string
 	Usage     Usage
-	Discarded Usage // billed usage of requests the model itself made and discarded (Replay; zero for adapters)
+	Discarded Usage
 }
 
-// Describer is an optional Model capability (review 2.7).
 type Describer interface{ Describe() ModelInfo }
 type ModelInfo struct {
 	Provider, Model string
 	ResponseFormat  bool
 }
-
-// CallModel runs one call through mw and the base handler outside an agent (plan model
-// nodes, tests), with the same hooks, checks, and Finish handling the agent uses.
+func ModelInfoOf(m Model) (ModelInfo, bool) // follows Unwrap() Model
 func CallModel(ctx context.Context, m Model, req Request, mw ...Middleware) (ModelResponse, error)
 ```
 
-**The base handler**, built by `Agent` or `CallModel`:
-1. For each request it sends, it runs `Hooks[i].Before` in order, increments `Attempt`, and calls `Sink.Restart()`.
-2. It sends to `call.Model`, streaming into `Sink` when the sink is non-nil.
-3. It drains into a `ModelResponse` with the normalized `Finish`.
-4. It runs `Hooks[i].After`. A non-zero `Finish.Discarded` is reported to `After` as a separate billed attempt, which is how `Replay` replays discarded spend without ctx.
+**A default-safe sink** (coordinator point 3, critique A3).
+- The sink is claimed exclusively per request. When the base handler starts a request, it tries to claim the sink. If another request holds it, this request runs without streaming. A failed claimer releases the claim, and the next claimer triggers `TurnRestarted`.
+- At the top of the chain, the agent checks whether the response it got came from the request that streamed. If not (a hedge winner that was not the claimer, or a cached or middleware-built response), the agent emits a restart and replays the response.
+- `DetachModelSink` and `EmitMessage` are removed. Hedge contains no sink code, and correctness does not depend on middleware remembering anything.
 
-**The agent's own spend meter** is the first hook, as today. The agent, not middleware, computes `Record.DiscardedUsage` and `Result.Spend`. Middleware never does spend arithmetic.
+**Private hooks** (critique B13).
+- The agent's spend meter sits outside the hook list.
+- Middleware can only add hooks, through `AddHook`, never remove or reorder them. No middleware can break budgets or `Result.Spend`.
 
-**Journal.** `Record.Finish` is recorded on model records, so `Replay` reproduces the provider's reason exactly, instead of deriving `stop`/`tool_use` from the message.
+**Attempt** (critique A3).
+- A counter shared per turn numbers each request the base handler sends.
+- Hooks see the true attempt number, including across parallel Hedge branches.
 
-**Adapters** normalize:
-- **Anthropic:** `end_turn` and `stop_sequence` map to stop; `tool_use` to tool_use; `max_tokens` to max_tokens; `refusal` to content_filter.
-- **OpenAI:** `stop`, `tool_calls` (and `function_call`), `length`, `content_filter`.
-- **Gemini:** the existing `mapFinishReason`, retargeted.
-- **ScriptedModel:** emits the constants.
-- A new modeltest check asserts every adapter's mapping table.
+**Finish** (critique B14; #68 did the mapping).
+- v2 adds the type, `Raw`, and `Finish.Discarded`, which lets `Replay` report the discarded spend it recorded without using context.
+- An empty `Reason` stays accepted from custom models. That is #68's choice, and the `Finish` event itself marks the end of the turn; a missing `Finish` is already `ErrIncompleteResponse`.
+- modeltest asserts that first-party adapters never emit an empty reason.
+- **Invariant:** the loop decides whether to run tools from message content, never from `Finish`. An OpenAI forced `tool_choice` can report `stop` alongside tool calls.
 
-**Loop policy.** The `ib-model` follow-up sets it: a live turn ending in `FinishMaxTokens` or `FinishContentFilter` with no tool calls is not an answer. With the normalized reason it becomes a one-line check in the loop.
+**Journaled on each model record.** These are additive, and safe under raw-byte leaves (item 8):
+- `Finish` and `RawFinish`;
+- `Model` (`ModelInfo`), for audit and cross-provider fallback;
+- `PromptDigest` and `ToolsDigest` (item 1).
 
-### Replaces
-`ModelHandler func(ctx, Request) (Message, Usage, error)`, `ModelCallHook{Before(ctx); After(Usage)}`, `WithModelCallHook(ctx) (ctx, ok)`, `WithModel(ctx, m) (ctx, ok)`, `DetachModelSink`, `EmitMessage`, the ctx keys `modelSinkKey`, `modelHooksKey` and `modelOverrideKey`, the untyped `Finish.Reason string`, `trace.WithModel` and `trace.WithSystem`.
+**How middleware adapts:**
+- **Retry:** loops `next(ctx, call)`.
+- **Hedge:** `c := call; c.Model = backup`, and nothing else.
+- **Cost:** `call.AddHook(After...)`. `CostMeter.Snapshot() CostSnapshot{Answer, Spend Usage; AnswerUSD, SpendUSD float64}`.
+- **RateLimit:** `call.AddHook(Before: wait)`.
+- **trace.Model:** reads `ModelInfoOf(call.Model)` and `resp.Finish`.
 
-### How middleware adapts
-- **Retry:** loops `next(ctx, call)`. It has no ctx tricks. The base handler's `Restart` produces `TurnRestarted`.
-- **Hedge:**
+**Replaces:**
+- the old `ModelHandler`;
+- `WithModel(ctx)`, `WithModelCallHook(ctx)`;
+- `DetachModelSink`, `EmitMessage`;
+- the public `Hooks` field from v1;
+- `trace.WithModel`, `trace.WithSystem`.
 
-  ```go
-  sink := call.Sink; call.Sink = nil
-  // Backup i: c := call; c.Model = backups[i]; go next(hctx, c)
-  // On the first success: sink.EmitResponse(r); return r, nil
-  ```
+**Migration.** P9 edits the 48 `ModelHandler` references directly. That is not a mass rewrite, so there is no shim.
 
-  This removes the `ok == false` fallback that called `b.Stream` directly. Every target now goes through the same chain, so hooks and checks always run.
-- **Cost:** appends `ModelCallHook{After: ...}` to `call.Hooks` (with `slices.Clip`) and counts the answer from its own return.
-  - `CostMeter` accessors collapse to `Snapshot() CostSnapshot{Answer, Spend Usage; AnswerUSD, SpendUSD float64}` (review 7.6).
-- **RateLimit:** appends `ModelCallHook{Before: func(ctx, _) error { return r.wait(ctx) }}`, so every request, retries and hedges included, takes a token.
-- **Response checks:** `checkToolUseIDs` and `Usage.Validate` stay in the base handler and after the chain, as #55 placed them.
-- **trace.Model:** reads `call.Model.(agent.Describer)` for `gen_ai.system` and the model name, and `resp.Finish` for `gen_ai.response.finish_reasons`.
-- **RunTyped's `injectSystem`:** becomes the agent's system prompt composition (an internal run setting), not a middleware.
-
-### Migration
-- The 48 `ModelHandler` references (15 non-test): every middleware in `middleware/` and `trace/`, typed.go, retrieval.go (now an option, item 2), and the tests' custom middleware.
-- The three adapters and modeltest for `Finish`.
-
-### Rationale
-- Every datum that was smuggled through ctx is now a field.
-- Hooks always run, because the base handler is always the agent's or `CallModel`'s.
-- The `WithModel` clash disappears: `agent.WithModel` no longer exists, and adapter and plan `WithModel` are ordinary options.
-
-### Risks
-- Value-copying `ModelCall` copies the `Request` header per middleware, but not the message slices. That is cheap.
-- A middleware that forgets to clear `Sink` while fanning out streams losers' tokens. Hedge is the only in-repo fan-out, and a test covers it. `Sink` doc comments state the rule.
+**Risks.**
+- A middleware that builds its own response always gets a replay. That is intended.
+- Exclusive claiming serializes streaming to one request per turn, which is also intended.
 
 ---
 
-## 7. Item 6: Pause contract, halts, and plan
+## 7. Item 6: Pause contract, halts, plan
 
-### New API
 ```go
-// Pause is a durable stop that is not a failure: the run is waiting on something outside it.
-// The set is sealed; new pause types may be added in minor releases.
 type Pause interface {
 	error
 	Paused() RunRef
 	pause()
 }
 type RunRef struct{ RunID, RootRunID string }
-
 func IsPause(err error) bool
 func AsPause(err error) (Pause, bool)
 
+// pause() is declared on each concrete type, never on RunRef (critique B12); a test outside
+// the package asserts that a struct embedding RunRef does not satisfy Pause.
 type ApprovalPending  struct{ RunRef; ToolUseID, ToolName string; Args json.RawMessage; Quorum *ApprovalTally }
 type InterruptPending struct{ RunRef; Name string; Prompt any }
-type SignalPending    struct{ RunRef; Name string }            // Await, AwaitFor, Receive
+type SignalPending    struct{ RunRef; Name string }
 type TimerPending     struct{ RunRef; Name string; FireAt time.Time }
-type OutcomeUnknown   struct{ RunRef; Op OpRef; AttemptedAt time.Time }
+type OutcomeUnknown   struct{ RunRef; Op OpRef; AttemptedAt time.Time; Cause HaltCause }
 
+type HaltCause string
+const (
+	HaltCrashed   HaltCause = "crashed"   // marker, no result, no live claimant known
+	HaltContended HaltCause = "contended" // another driver won the claim; it may be running the effect
+)
 type OpKind string
 const ( OpTool OpKind = "tool"; OpStep OpKind = "step" )
-type OpRef struct {
-	Kind     OpKind
-	ID       string // tool-use ID, or step name
-	ToolName string // OpTool only
-}
-
-// Halt resolution: one function, kind carried by the reference.
-type HaltRef struct {
-	RunID string
-	Op    OpRef
-}
+type OpRef struct{ Kind OpKind; ID, ToolName string }
+type HaltRef struct{ RunID string; Op OpRef }
 func (e *OutcomeUnknown) Ref() HaltRef
 type Outcome struct {
 	Result   any
 	IsError  bool
-	Evidence any // non-nil: recorded as reconciled, with this evidence
+	Evidence any
 }
 func ResolveHalt(ctx context.Context, j *Journal, ref HaltRef, out Outcome, opts ...ResolveOption) error
-// ResolveOption: WithMinHaltAge(d), WithClock(now). HaltTooYoung is unchanged.
-
-// Verbs (review 6.2)
-func Approve(ctx context.Context, j *Journal, runID, toolUseID string, approved bool) error
-func SubmitDecision(ctx context.Context, j *Journal, d Decision, opts ...DecisionOption) error
-type Decision struct {
-	RunID, ToolUseID, ApproverID string
-	Approved                     bool
-	Alg                          Alg
-	Signature                    []byte
-}
-func AnswerInterrupt[T any](ctx context.Context, j *Journal, runID, name string, v T) error
-func Signal[T any](ctx context.Context, j *Journal, runID, name string, payload T) error
-func Enqueue[T any](ctx context.Context, j *Journal, runID, name, key string, payload T) error
-func Ack(ctx context.Context, j *Journal, runID, name, key string) error
-
-// Waker (item 9 folded here, since it owns pause.go)
-type Waker interface{ Schedule(ctx context.Context, w Wake) error }
-type Wake struct {
-	RunID, RootRunID, Name string
-	FireAt                 time.Time
-}
-func ResumeFunc(a *Agent, opts ...RunOption) func(ctx context.Context, runID string) error
 ```
 
-**Recovery.**
-- `Recover(ctx, j, resume, opts ...RecoverOption)` and `RecoverLoop(ctx, j, resume, opts ...RecoverLoopOption)` treat `IsPause(err)` as success.
-- `MemWaker.Fire` also uses `IsPause`, so user code no longer needs the five `errors.As` checks. Adding a pause type later cannot break a user's classification.
+**`ResolveHalt`.**
+- It refuses to resolve a halt whose `Cause` is `HaltContended` and whose marker is younger than `WithMinHaltAge`. A reconciler cannot resolve an effect that another driver may still be running.
+- `WithMinHaltAge` measures from the live attempt, as in #65.
 
-**Waker failure.** `Sleep` and `WaitUntil` journal the fire time first. If `Schedule` then fails:
-- They return an error that wraps `ErrStorage` and the unexported `errWakeNotScheduled` marker.
-- The tool loop treats that marker like a pause for recording purposes: it records nothing and propagates. The run fails with a genuine error, not a pause, so `RecoverLoop` reports it and retries.
-- The retry re-enters the retry-safe tool, finds the journaled timer, and calls `Schedule` again. A failed schedule can no longer leave a run asleep forever.
+**Verbs:**
+- `Approve`
+- `SubmitDecision(ctx, j, Decision{RunID, ToolUseID, ApproverID, Approved, Alg, Signature})`
+- `AnswerInterrupt[T]`
+- `Signal[T]`
+- `Enqueue[T]`
+- `Ack`
 
-**Plan lowering.**
-- `runNodeKeyed` becomes `agent.Step(ctx, j, runID, key, body, StepSafety(nodeSafety))`, where `key` is `<node>` or `iter:<n>:<node>`.
-- A node's attempt marker becomes `attempt:step:<key>` instead of `attempt:<key>`.
-- `HaltAmbiguous` is deleted. A flow halt is `*OutcomeUnknown{Op: OpRef{Kind: OpStep, ID: key}}`, cleared by `ResolveHalt(ctx, j, halt.Ref(), out)`.
-- `RecoverLoop` treats it as a pause.
-- `plan/conformance.go` reads the new marker key.
-- F2 (ctx for step bodies) is a prerequisite: `Step` passes its ctx, `NextOnceKey` scope included, into the body.
-- The `@run` header for flows records the flow's topology digest, so resuming a run with a changed flow is `ErrConfig` (Q18, recommended).
+**Waker.** `Schedule(ctx, Wake) error`, with `Wake{RunID, RootRunID, Name, FireAt}`.
+- If scheduling fails, the run fails with an error wrapping `ErrStorage` and records nothing.
+- `RecoverLoop` reports it and retries, and the retry-safe path schedules again.
 
-### Replaces
-`PendingApproval`, `Interrupted`, `Awaiting`, `Sleeping`, `ResumeHalt`, `plan.HaltAmbiguous`, the unexported `isPause` and its callers' ad-hoc lists, `ResolveStepHalt` (#60), `ResolveHalt(..., toolUseID, result any, isError bool)`, `WithEvidence`, `WithNow`, `Resume[T]`, `ApproveAs` (seven positional parameters), agent's channel `Send`, and `Waker.Schedule(runID, name, fireAt)`.
+**Step pause guard** (critique B3). A `Step` without `StepSafety` retry-safe that returns a `Pause` from its body is `ErrConfig`.
+- This is the same rule tools already follow.
+- The marker stays, so the step halts, which is the safe reading, because the body may have done something before it paused.
+- The error tells the developer to put the pause in its own retry-safe step.
 
-### Migration
-- About 224 references to the pause type names (104 non-test).
-- The `errors.As` sites in toolexec, subagent, session, recovery and MemWaker collapse to `IsPause` or `AsPause`.
-- Examples: interrupt, approval, signals, recover, webhook, quorum.
-- plan/flow.go and conformance.go.
-- govern, which uses `ResolveHalt`.
-- The `ResolveStepHalt` call sites from #60.
+**The "released, not fired" state is #65's `StepNotStarted`,** applied to flows through lowering.
 
-### Rationale
-A sealed exported interface is the extension point users need. One resolution function whose kind is carried by the reference removes #60's two-function split. It also makes plan halts resolvable, which they are not today.
+**Why not release on pause.** I disagree with the critique's "release the marker when the body paused". That would require the body to have done nothing unrepeatable before the pause, which cannot be enforced, and a charge placed before an `Interrupt` would fire again. Declaring the step retry-safe is the enforceable form of the same contract.
 
-### Risks
-- **Plan journals change keys.** This is covered by the v1 policy (no old journals are read).
-- **`OpRef` value comparison** in user switch statements: document that the fields are the identity.
+**Plan lowering** (critique B7; this supersedes #70's plan marker change).
+- Each node runs through the engine step hook as `agent.Step` semantics, under reserved plan prefixes:
+  - node keys `node:<name>` and `node:iter:<n>:<name>`;
+  - branch choices `switch:*`;
+  - topology `flow:digest`.
+- `node:`, `switch:` and `flow:` are added to `reservedPrefixes` in P5b, so user `Step` names inside a flow body can never collide with them.
+- Node markers become Step markers. After #57 and #65, a Step marker is itself the recorded safety, so #70's `{"retry_safe": bool}` is no longer needed. #65's not-started records now cover flow nodes.
+- `HaltAmbiguous` is deleted. Flow halts are `*OutcomeUnknown{Op: OpRef{Kind: OpStep}}`, and `ResolveHalt` clears them.
+- Flows write `run:start{Kind: flow, Flow: {Name}, Input}`. Resuming with a different `in` is `ErrConfig`. v1's Q18 is withdrawn, because `flow:digest` already guards the topology.
+
+**Migration (P10).**
+- The new types land beside the old ones as aliases, `type PendingApproval = ApprovalPending`, and the old verbs become wrappers.
+- `ResolveHalt` with the new signature lands as the transitional `ResolveHaltRef`.
+- P15 renames and deletes the old names (about 224 references).
+
+**Risks.**
+- Plan journals change keys. Covered by the dev-tag bump.
+- The Step guard turns today's probed halt into a loud `ErrConfig`. That is the intended outcome.
 
 ---
 
 ## 8. Item 7: Tool interface
 
-### New API
 ```go
 type Tool interface {
 	Spec() ToolSpec
 	Call(ctx context.Context, args json.RawMessage) (json.RawMessage, error)
 }
-
 type ToolSpec struct {
-	Name        string
-	Title       string          // optional human label (MCP title)
-	Description string
-	Input       json.RawMessage // provider-neutral JSON Schema; type "object"
-	Output      json.RawMessage // optional result schema (MCP outputSchema)
-	Safety      Safety
-	Timeout     time.Duration   // 0: none; enforced by the agent (below)
+	Name, Title, Description string
+	Input, Output            json.RawMessage
+	Safety                   Safety          // plain data now
+	Approval                 *ApprovalPolicy // split from Safety (critique C)
+	Timeout                  time.Duration
 }
-
-// Compensator stays the optional-interface pattern.
-type Compensator interface {
-	Compensate(ctx context.Context, args, result json.RawMessage) error
+type Safety struct{ ReadOnly, Idempotent bool } // comparable, serializable
+type ApprovalPolicy struct {
+	Need      int
+	Approvers []string
 }
+func SingleApproval() *ApprovalPolicy // Need 1, no approver set: today's RequiresApproval
 
-// Constructors
 func Func[In, Out any](name, description string, fn func(context.Context, In) (Out, error), opts ...ToolOption) (Tool, error)
-func MustFunc[In, Out any](name, description string, fn func(context.Context, In) (Out, error), opts ...ToolOption) Tool
-func CompensatedFunc[In, Out any](name, description string, do func(context.Context, In) (Out, error), undo func(context.Context, In, Out) error, opts ...ToolOption) (Tool, error)
-func MustCompensatedFunc[In, Out any](...) Tool
+func MustFunc[In, Out any](...) Tool
+func CompensatedFunc[In, Out any](name, description string, do ..., undo ..., opts ...ToolOption) (Tool, error)
 func SubAgent(name, description string, sub *Agent, opts ...ToolOption) (Tool, error)
 func RetrievalTool(name, description string, r Retriever, k int, opts ...ToolOption) (Tool, error)
+// ToolOptions: WithSafety (SafetyOption), WithApproval(*ApprovalPolicy), WithTimeout, WithTitle, WithOutputSchema
 
-// ToolOptions: WithSafety(Safety) (also a StepOption), WithTimeout(d), WithTitle(s), WithOutputSchema(raw)
-
-// Tool middleware
 type ToolCall struct {
-	Use   ToolUse  // middleware may rewrite Use.Args; the base handler journals the args it passes
-	Spec  ToolSpec // the registered tool's spec
+	Use   ToolUse
+	Spec  ToolSpec
 	RunID string
-	/* unexported: redactor */
 }
-func (c ToolCall) ErrorText(err error) string // what the agent journals for err
+func (c ToolCall) ErrorText(err error) string
 type ToolHandler func(ctx context.Context, call ToolCall) (json.RawMessage, error)
-type ToolMiddleware func(next ToolHandler) ToolHandler
-
-// Request carries specs, not tools.
-type Request struct {
-	Messages       []Message
-	Tools          []ToolSpec
-	Sampling       Sampling
-	ResponseFormat *ResponseFormat
-	ToolChoice     *ToolChoice // ToolChoice.Mode is ToolChoiceMode
-}
+type Request struct{ Messages []Message; Tools []ToolSpec; /* ... */ }
 ```
 
-**`Timeout` is enforced by the agent.** The tool runs under `context.WithTimeout(sctx, Spec.Timeout)`. A call that returns after the deadline has passed takes the existing "cancelled before it reported back" path: nothing is recorded, a non-retry-safe tool's marker makes the resume halt, and a retry-safe tool re-runs. This is the same outcome-unknown semantics #57 gives MCP.
+**`IdempotencyKey` is removed.**
+- The SDK never calls it. It only counted as retry-safe when non-nil, so declaring `Idempotent` expresses the same thing.
+- Tools derive their own downstream keys, or use `NextOnceKey`.
+- `Safety` becomes plain data, so it can be journaled.
 
-**The at-most-once guard** (`ErrToolReinvoked`) keys on the snapshotted `Spec.Safety`, never on the middleware-visible copy.
+**The call's safety is recorded** (#70 decision 1). Tool-result and saga-fail records carry the `Safety` and `Approval` the call ran under. Rollback reads the recorded safety, so a write whose tool was later relabelled `ReadOnly` is no longer skipped.
+- #57's remaining gap stays as #57 decided: a call that was retry-safe when it fired, then relabelled a side effect, has no marker. Closing it would cost a marker write on every call, and the maintainer declined that.
 
-### Mapping of existing tools
+**`SubAgent`:**
+- accepts `WithApproval`, so the parent can require approval before delegating;
+- refuses `WithSafety`, because the sub-run's own markers carry safety.
 
-| Implementation | `Spec` |
-|---|---|
-| `Func` | `Input` from `schema.For[In]`, which errors instead of panicking; `Safety` from `WithSafety` (default: side effect); `Output` from `schema.For[Out]` when it succeeds (best effort, not an error) |
-| `CompensatedFunc` | as `Func`, plus `Compensator` |
-| `SubAgent` | `Input` is the `{task}` schema; `Safety{Idempotent: true}` is fixed, because re-running resumes the sub-run. `WithSafety` is refused with `ErrConfig`, since the sub-run's own markers carry safety. `Timeout` allowed |
-| `RetrievalTool` | `Safety{ReadOnly: true}`; `k < 1` or an empty name is `ErrConfig` (formerly panics) |
-| RunTyped `answerTool` | `Name: final_answer`, `ReadOnly`, `Input` is T's schema |
-| MCP (`mcp.Tools`) | `Name`; `Title` (MCP title); `Description`; `Input` (inputSchema); `Output` (outputSchema); `Safety` (`WithSafety` override, else trusted annotations, else side effect); `Timeout` from `WithCallTimeout`. The adapter no longer applies the timeout itself. `MaxResultBytes` and `MaxDescriptionBytes` stay MCP-local `ToolsOption`s, because they guard the protocol, not the loop |
-| govern `EventTool`, `AttestedEventTool`, `FederatedEventTool` | `govern.EventTool(gov, EventToolConfig{Name, Description, Event, PolicyDigest, Registry string; Safety agent.Safety})`, which removes the adjacent-string hazard (review 7.1) |
-| audit `AttenuatingSubAgent` | `AttenuatingSubAgent(name, description string, sub *agent.Agent, cfg AttenuationConfig) (agent.Tool, error)`, where `cfg` holds the narrow func and rules (review 7.1) |
-| chaos and modeltest tools | `Spec()` literals |
+**`Timeout`** (critique B10). The call runs under `context.WithTimeout`.
+- A call that returns a result is recorded, even if the deadline has passed. A known outcome is never discarded.
+- A call that returns an error after its context is done takes the unknown-outcome path (#57).
+- `Timeout` bounds only tools that honor ctx. The loop still waits for the goroutine. This is documented.
 
-**Middleware:**
-- `middleware.ToolRetry` and `ToolCache` read `call.Spec.Safety`.
-- `ErrorSummary` and `trace.Tool` use `call.ErrorText(err)`.
+**Tool mapping (MCP, govern, audit, chaos).** As in v1:
+- `mcp.Tools` fills `Title`, `Output` and `Timeout`;
+- `govern.EventTool(gov, EventToolConfig{...})`;
+- `audit.AttenuatingSubAgent(name, desc, sub, AttenuationConfig)`.
 
-**Pending follow-up hook (saga arguments).** The base tool handler already knows the args it actually passes, `call.Use.Args` after middleware. The saga follow-up records those on the result record, so compensation can use the accepted arguments.
+#67's accepted-argument record stays with the base tool handler.
 
-### Replaces
-`Tool{Name, Description, ArgsSchema, Safety, Call}`, `ToolHandler func(ctx, ToolUse)`, `ToolSafety(ctx)`, `WithToolSafety`, `ToolErrorText(ctx, ...)`, the panicking `Func`, `Request.Tools []Tool`, and `ToolChoice.Mode string`.
-
-### Migration
-- About 120 `Func`/`CompensatedFunc` sites (19 non-test), rewritten by script: `Func(n, d, s, fn)` becomes `MustFunc(n, d, fn, agent.WithSafety(s))` in tests and the `(Tool, error)` form in examples and library code.
-- 26 `Name() string` implementers (11 non-test).
-- 32 `ToolHandler` sites (11 non-test).
-- Adapters read `req.Tools[i].Name` etc. in place of methods.
-
-### Rationale
-Struct fields are additive, so new static properties such as title, output schema and timeouts no longer break implementers.
-
-### Risks
-Snapshotting `Spec()` at `New` means a tool that computes its spec lazily must be deterministic. This is documented.
+**Migration.**
+- P12 makes the internals spec-based, with `specOf(t)` accepting both method sets.
+- P15 changes the interface: `Func` at about 120 sites and 26 implementers.
 
 ---
 
 ## 9. Items 8 and 9
 
-### 9.1 Proof artifacts (item 8)
+### 9.1 Proof artifacts
 
-**Every top-level artifact carries `format`,** checked before anything else. An unknown format returns `ErrUnsupportedFormat`, and bide-audit exits 4.
+What remains after #66:
 
-| Artifact | Format | Change |
-|---|---|---|
-| `SignedTreeHead` | `bide.audit.sth.v4` | JSON `format` mirrors the signed domain tag; `Alg` typed; `Timestamp` becomes `TimestampNanos` (`timestamp_ns`, review 9.6). The canonical signed bytes are unchanged |
-| `ProofBundle` | `bide.audit.proof.v1` | new field |
-| `AbsenceBundle` | `bide.audit.absence-proof.v1` | new field |
-| `RunCertificate` | `bide.audit.run-cert.v1` | new field |
-| `CurrentGrantProof` | `bide.audit.current-grant-proof.v1` | new field |
-| `SignedGrant` | `bide.audit.grant.v1` | `Grant.NotAfter` becomes `NotAfterUnix` (`not_after_unix`) |
-| `AnchorEntry` | `bide.audit.anchor-entry.v1` | new field |
-| `EvidencePackage` | `bide.audit.evidence.v4` | `public_key_hex` replaced by `{"alg", "public_key"}`; adds `journal_format` and the leaf-0 header proof |
-| plan config JSON | `"version": 1` | snake_case keys (`loop_max`, `in_types`, `loop_back`); review 9.4 |
-| eval `Report` | `bide.eval.report.v1` | new field (NICE, cheap) |
+**Raw-byte leaves** (critique B2).
+- Leaves are `tag || stored bytes`, taken from `Record.Raw()`, never re-encoded.
+- `ProofBundle`, `EvidencePackage` and `CurrentGrantProof.Leaf` carry `record_bytes` (base64) verbatim.
+- The verifier hashes `record_bytes`. It decodes them only for display and role checks, leniently: unknown fields are ignored for display and never for hashing.
+- A 1.0 verifier therefore verifies records written by 1.1 with new fields.
+- New formats: `bide.audit.proof.v3`, `bide.audit.current-grant.v3`, `bide.audit.evidence.v5`.
 
-`Inclusion`, `Consistency` and `EventInclusion` are nested only, so they get no format. F3 gives them snake_case.
+**STH v5** (critique B15).
+- Canonical bytes include `alg`, so the signed domain is `bide.audit.sth.v5`, and `SignedTreeHead` gets `format: "bide.audit.sth.v5"`.
+- Hybrid signatures separate their components by domain: each component signs `label || M'`, with distinct labels `bide.hybrid.ed25519.v1` and `bide.hybrid.mldsa65.v1`, following the IETF composite-signature construction.
+- A stripped ed25519 half then verifies neither as hybrid nor as plain ed25519 over the STH.
 
-**Compatibility policy (docs/GUARANTEE.md):** producers emit the current format, verifiers accept the current and the previous format within a major, and one casing (snake_case) applies everywhere.
+**Signature agility** (unchanged from v1):
+- `Signer` and `Verifier` gain `PublicKey()`, and `Alg` becomes a typed string.
+- Every ed25519-only entry point takes `Signer` or `Verifier`.
+- Evidence carries `{alg, public_key}`, and `Verify(v Verifier)` requires the key to match.
+- `ApproverAlg` is journaled with each decision.
 
-**Signature agility:**
-```go
-type Alg string // in package agent (audit aliases it: type Alg = agent.Alg)
-const ( AlgEd25519 Alg = "ed25519"; AlgMLDSA65 Alg = "ml-dsa-65"; AlgHybrid Alg = "ed25519+ml-dsa-65" )
+**Other formats.**
+- Grant: `NotAfterUnix` in `bide.audit.grant.v2`.
+- Event leaves: `bide.audit.event-leaf.v3`, with snake_case tags on `RunEvent` types (#66's open item).
+- Anchor entry: `bide.audit.anchor-entry.v1`.
 
-type Signer interface {
-	Alg() Alg
-	PublicKey() []byte
-	Sign(msg []byte) ([]byte, error)
-}
-type Verifier interface {
-	Alg() Alg
-	PublicKey() []byte
-	Verify(msg, sig []byte) bool
-}
-func NewEd25519Signer(priv ed25519.PrivateKey) (Signer, error)
-func NewEd25519Verifier(pub ed25519.PublicKey) (Verifier, error)
-```
-`agent.ApproverVerifier` gains `Alg()` and matches `audit.Verifier` structurally. `Record.ApproverAlg` (`approver_alg`) journals the approver's scheme, so a verifier can tell schemes apart after key rotation.
-
-Every ed25519-only entry point takes `Signer` or `Verifier` instead:
-- `SignTreeHead(th, Signer) (SignedTreeHead, error)` replaces both `SignTreeHead(th, priv)` and `SignTreeHeadWith`. `Sign` and `VerifySignature` are removed.
-- `NewAnchoredStore(inner, Signer, anchor)`.
-- `Evidence(ctx, j, runID, s Signer, opts...)`.
-- `(*EvidencePackage).Seal(Signer)`.
-- `(*EvidencePackage).Verify(v Verifier, opts...)`. It requires `v.PublicKey()` to equal the embedded key and never trusts the embedded key on its own.
-- `CertifyRun(ctx, j, runID, sth, spec RunCertSpec{ApprovedPolicies []string; Signer Signer; TimestampNanos int64})`, which drops the two trailing positional parameters (review 7.1).
-- `VerifyRun(cert, approved, v Verifier)`.
-- `SignAbsenceRoot(..., s Signer)`.
-- `VerifyCurrentGrant(..., logVerifier Verifier)`.
-- `VerifyApprovals(..., logVerifier Verifier)`.
-- `verify.TreeHead(sth, v Verifier)`.
-
-**Migration:** about 75 ed25519 sites (43 non-test), the proof-carrying-run, compliance and authority examples, and cmd/bide-audit key loading (`-alg`, with a default of ed25519 for PEM or hex input).
-
-**Risk:** the evidence v4 cutover. Verifiers accept v3 during the pre-1.0 window only if Q1 says so. Recommendation: accept v3 through one release, then drop it.
+**Policy.**
+- Producers emit the current format.
+- Before 1.0, verifiers accept only the current format. Evidence v3 and v4 are dropped at once, as critique Q19 suggests; this is consistent with "no users".
+- From 1.0 on, verifiers accept the current format and the one before it.
 
 ### 9.2 Remaining MUST items
 
-**Waker `Schedule(ctx, Wake) error`.** In section 7.
+**govern into its own module** (critique B16 accepted).
+- govern becomes `github.com/bide-ai/bide/govern` (v0).
+- The nine root-module examples that import govern move into `examples/govern/<name>`, a module that requires root and govern.
+- The govern-dependent tests move to `integration/`.
+- The root module drops gsm.
 
-**govern and gsm (review 8.1).**
-- Move `govern` into its own module, `github.com/bide-ai/bide/govern`. It stays v0 while gsm is v0.
-- The root go.mod drops gsm.
-- The root-module tests that import govern move into a new test-only module, `integration/` (`github.com/bide-ai/bide/integration`), which requires root, govern and the stores:
-  - agent/e2e_convergence_test.go
-  - audit/runcert_test.go
-  - cmd/bide-audit's quorum_names, main, leaf_strict, security and checker tests where they use govern
-- The architecture tests drop the govern allow-entry.
-- go.work adds `./govern` and `./integration`.
-- No Go API change. Wrapping gsm's `Machine`, `State` and `Report` would mean re-exposing gsm's whole definition surface under new names, with no stability gain.
-
-**`With*` naming.** In section 1.1 and section 3.
-
-**Exit codes for bide-audit (review 9.5):**
+**bide-audit exit codes:**
 
 | Code | Meaning |
 |---|---|
-| 0 | every requested check verified |
-| 1 | input read and understood; at least one check did not verify (tampered, mismatch, policy violated) |
-| 2 | usage: bad flags or arguments; nothing was read |
-| 3 | no verdict: an external checker failed or timed out, or an internal error |
-| 4 | input unreadable or unusable: missing file, permission, invalid JSON, unknown or unsupported `format`, wrong artifact type for the role |
+| 0 | verified |
+| 1 | read and understood, not verified |
+| 2 | usage error |
+| 3 | no verdict (checker failure or internal error) |
+| 4 | input unreadable or unusable, including an unknown `format` |
 
-- **Precedence** when checks disagree: 2 is exclusive; otherwise 1 wins over 4, 4 over 3, and 3 over 0. A script must never read "tampered" as a lesser error.
-- **Classification** is by `errors.Is` against `audit.ErrNotVerified` (1), `audit.ErrMalformed`, `ErrUnsupportedFormat` and `fs` errors (4), and the checker's error (3), through one `exitFor(err)` function. The 60 `os.Exit(1)` sites become `return err` to a single `main` that maps the error.
-- **Also added:** `-version` (tool version plus supported formats) and `-json`, which emits `EvidenceReport` or `RunVerification`.
+- Precedence: 2 is exclusive, then 1, then 4, then 3.
+- Documented rule: **only 0 means verified.** Scripts must treat 4 as a failure, never as retryable, because a tampered `format` yields 4.
+- Also adds `-version` and `-json`.
 
 ### 9.3 Library panics that become errors
+- `agent.New`
+- `Func` and `CompensatedFunc`
+- `RetrievalTool` and `WithRetrieval`
+- `SubAgent`
+- `audit.NewAuditedStore`'s nil and key-length panic (added by #68), which becomes `NewAnchoredStore(...) (..., error)`
+- `eval.Matches(*regexp.Regexp)`
+- the dead `crypto/rand` branches: since Go 1.24, `crypto/rand.Read` never returns an error
 
-| Function | Today | New |
+Kept, and documented:
+- the plan wiring-invariant panic;
+- `trace`'s re-panic of a user panic.
+
+### 9.4 SHOULD, C and D items
+
+| Item | Resolution | PR |
 |---|---|---|
-| `agent.New` | nil model or store; nil tool deref | `(*Agent, error)` |
-| `agent.Func`, `CompensatedFunc` | `schema.For` fails | `(Tool, error)` plus `Must*` |
-| `agent.RetrievalTool` | `k < 1`, empty name | `(Tool, error)` |
-| `agent.WithRetrieval` | `k < 1` | the Option's apply error, returned by `New` |
-| `agent.SubAgent` | ignores the `schema.For` error; nil sub derefs at call time | `(Tool, error)` |
-| `audit.NewAuditedStore` | nil inner or key accepted, fails later | `NewAnchoredStore(...) (*AnchoredStore, error)` |
-| `eval.Matches(pattern)` | `regexp.MustCompile` | `Matches(re *regexp.Regexp) Metric`; `eval.Run` returns `ErrConfig` for a nil re |
-| `eval.AgentRunner` | panics on crypto/rand | branch deleted: since Go 1.24, `crypto/rand.Read` never returns an error. The same dead branches in `JournalEntry`, `claim` and `newClaim` are removed |
-| `plan` wiring endpoint | a non-Handle endpoint, unreachable by construction | kept as an internal-invariant panic, documented |
-| `trace.end` | re-raises a user panic | kept (correct) |
+| 2.6 Lister | `RunFilter` with pushdown | P6a |
+| 2.7 identity | `Describer`, `ModelInfoOf` through `Unwrap`, journaled per turn | P7, P9 |
+| 2.8 Alg | typed; journaled per decision | P6a (field), P10 |
+| 3.2 audit errors | sentinels; `error`-shaped verifiers | P11 |
+| 5.3 Open(ctx) | stores and govern logs | P6a, P2 |
+| 5.4 GovernanceHeld ctx | | P4 |
+| 6.2 verbs | item 6 | P10 |
+| 6.3 renames | `RunEvent`/`RunStream`, `audit.RecordStream`, drop `plan.Retryable` alias, **mcp becomes `mcptools`** (critique Q9: in the rewrite, not optional) | P15, P5 |
+| 6.4 typed strings | list in section 1.1 | P7, P5, P4, P11 |
+| 7.1 long parameter lists | `Decision`, `Outcome`, `RunCertSpec`, `AttenuationConfig`, `EventToolConfig`, `ParallelOption` | P10 to P12 |
+| 7.2 provider kit | moves to `model/provider` | P7 |
+| 7.3 exported internals | unexport engine plumbing; keep `TallyApprovals`, `ProjectEvents`, `FindToolCall`, `IsApprovalDecision` and `DecisionCheck` as the verification API; changing their verdict rule is a format bump (critique Q10) | P6a, P16 |
+| 7.4 Record | unexported salt and claim; `Raw()` | P6a |
+| 7.5 test doubles | `agent/agenttest` | P15 |
+| 7.6 cost | `Snapshot`; `ModelAttempt` | P9 |
+| 8.3 store schema | prefix, version | P6a |
+| 9.4 plan config | version and snake_case (strict reading done by #68) | P5 |
+| 9.6 units | `AttemptedAtMillis`, `TimestampNanos`, `NotAfterUnix`; the clock option reaches attempt timestamps (D7). Salts and claim IDs stay random by design | P6a, P11 |
+| C: split approval from safety | adopted | P12 |
+| C: model identity and what the model was shown | adopted | P9 |
+| C: `OutcomeUnknown.Cause` | adopted | P10 |
+| D1 cancel | adopted (reserve `run:cancelled`) | P14 (key in P6a) |
+| D2 redaction | tombstone format reserved | P6a; the capability depends on maintainer decision D2 |
+| D3 per-run tool filter | `WithToolFilter(names...)` `RunOption`, journaled | P14 |
+| D4 multi-tenancy | run-ID prefix convention plus `RunFilter.Prefix` | P6a |
+| D5 programmatic sub-runs | `SubRunFor` | P13 |
+| D6 schema migration | statement in item 4 | P6a docs |
+| D8 status | `Status` | P14 |
 
-### 9.4 SHOULD items and where each lands
-
-| Review | Fix | PR |
-|---|---|---|
-| 2.6 Lister | cursor iterator; `IsComplete` via `Get` | P6 |
-| 2.7 identity | `Describer` / `ModelInfo` | P7 |
-| 2.8 Alg | typed `Alg`; `approver_alg` recorded | P10, P11 |
-| 3.2 audit errors | `ErrMalformed`, `ErrNotVerified`, `ErrUnsupportedFormat`; every boolean verifier becomes `func(...) error` (nil verified; `ErrNotVerified` otherwise); report verifiers become `(Report, error)` with the same sentinels | P11 |
-| 4 panics | table above | P4, P6, P12, P13 |
-| 5.3 Open(ctx) | sqlite/postgres `Open(ctx, ...)`, `New(ctx, *sql.DB)`; govern logs likewise | P6, P2 |
-| 5.4 GovernanceHeld ctx | adds ctx | P4 |
-| 6.2 verbs | section 7 | P10 |
-| 6.3 NICE items taken because they are cheap now | `RunEvent`/`RunStream`; `audit.Record` renamed `RecordStream`; `plan.Retryable` alias dropped | P14, P9, P5 |
-| 6.4 typed strings | `FinishReason`, `ToolChoiceMode`, `Alg`, `EvidenceKind`, `TopologyNodeKind`, `MetricDirection` | P7, P11, P5, P4 |
-| 7.1 long lists | `Decision`, `Outcome`, `RunCertSpec`, `AttenuationConfig`, `EventToolConfig`; `Parallel(..., opts ...ParallelOption)`; `Func` options; `SendOnce` input is a Message | P10, P11, P12, P13 |
-| 7.2 provider kit | `ClassifyHTTPError`, `ClassifyStreamError`, `NewSSEScanner`, `SSEPayload`, `SSEReadError`, `MaxSSELine`, `ParseRetryAfter`, `EncodeToolResultOr` and `JSONToolResultCodec` move to public `model/provider`. `agent` keeps `APIError`, `RateLimited`, the sentinels, `Stream`, `NewStream`, `NewStreamFunc`, `Emit` and the events | P7 |
-| 7.3 exported internals | unexport `ClaimAttempt`, `JournalEntry`, `ToolResultStep`, `SubRunID`, `IsSubRun`, `ApprovalTallyStep`, `SaltSize`, and the `Reason*` constants (become a typed `DecisionReason`). Keep `TallyApprovals`, `ProjectEvents`, `FindToolCall`, `IsApprovalDecision`, `DecisionCheck` as the documented offline-verification API (Q10) | P6, P16 |
-| 7.4 Record | unexported salt and claim with accessors | P6 |
-| 7.5 test doubles | `ScriptedModel` and friends move to `agent/agenttest` | P16 |
-| 7.6 cost | `CostMeter.Snapshot`; hook `After(ctx, call, ModelAttempt)` | P9 |
-| 8.3 store schema | `bide_` prefix, schema version row, `WithTablePrefix` | P6, P2 (govern logs) |
-| 9.4 plan config | version and snake_case | P5 |
-| 9.6 units | `AttemptedAtMillis`, `TimestampNanos`, `NotAfterUnix`; one `func() time.Time` clock | P6, P11 |
-| 10.1 to 10.5 docs | section 9.5 | P8, P16 |
-| 11 #60 key constructors | unexported; `ValidateRunID` exported | P6, P14 |
-
-### 9.5 Missing doc comments policy
-- **Coverage.** Every exported identifier has a doc comment that starts with its name: types, functions, methods (including `Error`, `Unwrap`, `MarshalJSON`, `UnmarshalJSON`, `String`), consts, vars, option constructors, and struct fields whose meaning is not self-evident from name and type. Every package has a package comment.
-- **Content.** A comment documents the contract: what the identifier guarantees, its units, and when it errors. It contains no competitor names, no PR or agent references ("Agent C"), and no mention of internal file names.
-- **Examples.** Code that shows a call is an `Example` test (compiled and run), not a comment block. Doc blocks may show short fragments only when every identifier in them exists.
-- **Stability notes.** Rendering output (`RenderMermaid`, `plan.Flow.RenderMermaid`) is documented as unstable text. `RunEvent` documents that new event types may be added, so consumers keep a `default` case.
-- **Enforcement.** An in-repo analyzer, `internal/tools/doccheck` (go/analysis, about 150 lines, no new dependency), runs in CI over every module.
-  - It lands in P8 with an allowlist of today's gaps.
-  - Each later PR must not add allowlist entries.
-  - P16 empties the allowlist.
+### 9.5 Documentation policy
+Unchanged from v1:
+- a doc comment on every exported identifier, starting with its name;
+- `Example` tests in place of call snippets in comments;
+- no competitor or PR references in godoc;
+- `internal/tools/doccheck` in CI (P8), with an allowlist that must stay empty from P16 on.
 
 ---
 
 ## 10. Implementation plan
 
-Ownership rule: within a wave, no two PRs edit the same file. Mechanical call-site rewrites ship with the script that produced them (in the PR description, or in `internal/tools/migrate`), so a rebase reruns the script instead of hand-merging.
+### 10.1 Waves
+Within a wave, no two PRs edit the same file. Sizes:
+- S: under 300 lines changed
+- M: 300 to 1000
+- L: 1000 to 2500
+- XL: over 2500, mostly mechanical
 
-### Wave 0: prerequisites (in flight; merge first, in this order)
-1. #57, then #60, which rebases on #57 (both edit agent/store.go and saga.go).
-2. F1 (Capability/Unwrap), F2 (plan step ctx), F3 (audit snake_case). These are independent of each other.
-3. `ib-model`, `ib-plan`, `ib-audit`, `ib-govern`, `journal-completeness`.
+**Wave 0 (in flight, merge first):** #66, #67, #70, #65, #68, #69.
 
-### Wave 1: split and independent packages (all parallel)
+**Wave 1 (parallel)**
 
-**P1. agent file split (S). Pure moves, no code changes.**
+| PR | Scope | Files | Size | Tests must prove |
+|---|---|---|---|---|
+| P1 | agent file split, pure moves | agent.go into agent/loop/toolexec/generate/runctx.go; saga.go into saga/compensate.go; recovery.go into recovery/lease/replay.go, with `isPause` moved to pause.go; store.go into record/step/halt.go | S | `go test` unchanged; `go doc -all ./agent` identical |
+| P2 | govern module, examples/govern, integration module | go.mod, go.work, govern/**, examples/{nine}, integration/**, the two architecture tests, CI | M | root builds with `GOWORK=off` and without gsm; moved tests pass |
+| P3 | bide-audit exit codes, `-version`, `-json` | cmd/bide-audit/main.go and its tests | M | exit table including precedence |
+| P4 | eval | eval/* | S | `Matches(nil)` returns `ErrConfig`; GovernanceHeld ctx; report format |
+| P5 | plan config v1 | plan/config.go, plan/topology.go, plan/builder.go (the alias) | S | version required; snake_case keys |
+| P7 | adapters: typed `FinishReason`, `Finish.Raw`, `Discarded`, provider kit, `Describer` | agent/model.go, agent/provider_http.go (deleted), model/provider/**, model/{anthropic,openai,gemini}/**, model/modeltest/** | M-L | mapping tables; no empty reason from first-party adapters; core does not import `model/provider` |
+| P8 | doccheck plus allowlist | internal/tools/doccheck/**, CI | S | analyzer golden tests |
+
+**Wave 2 (parallel)**
+
+**P6a: Store/Journal semantics, header, shims (L, about 2200 lines).**
 - **Files:**
-  - agent.go splits into agent.go (type and construction), loop.go (`run`), toolexec.go (the tool-execution block and `toolHandler`), generate.go (`generate`/`send`/`turnSink`) and runctx.go (ctx keys and accessors).
-  - saga.go splits into saga.go (`runSaga`/`rollback`) and compensate.go (`Compensator`, `CompensatedFunc`, `decodeRecordedArgs`).
-  - recovery.go splits into recovery.go, lease.go and replay.go.
-  - store.go splits into record.go, step.go and halt.go (`ResolveHalt`, `Approve`).
-- **Tests prove:** `go test ./...` is unchanged and `go doc -all ./agent` output is byte-identical.
+  - agent: journal.go (new), memstore.go (new), record.go (all new `Record` fields for the whole redesign: `Raw`, `Salt()`, `ClaimID()`, `AttemptedAtMillis`, `Finish`, `RawFinish`, `Model`, `PromptDigest`, `ToolsDigest`, `ApproverAlg`, `Safety`/`Approval` on results, `Redacted`), step.go (probe via `Get`, B3 pause guard), keys.go (`@journal`, `run:cancelled`, `run:limits:`), errors.go, lease.go, recovery.go (Capability over Store, `RunFilter`, skip not-started)
+  - internal/journalhook/**, internal/runext/**
+  - agent/storetest/** (durabletest kept as a thin deprecated wrapper), agent/agenttest/**
+  - store/sqlite/** (Leaser, three pools, paged Load), store/postgres/**
+  - audit/audited_store.go (anchored store, incremental), chaos/bide.go
+- **Tests must prove:**
+  - storetest over MemStore, sqlite and postgres:
+    - A1 with 64 goroutines times 3 handles;
+    - A2 prefix-closure: readers polling during concurrent inserts never observe a gap below a visible entry;
+    - A5;
+    - A8, both break-early and a write nested inside `Load`;
+    - header checks (a) to (e);
+    - singleflight shared across two Journals;
+    - ambiguous-claim reuse;
+    - `CheckWrapper`.
+  - All DST, crash and chaos suites pass through the shims.
+  - Step pause guard.
+  - SQLite lease survives a 5s writer hold without lease loss.
+  - Golden bytes for `Record.MarshalJSON`.
 
-**P2. govern module and integration module (M).**
-- **Files:** go.mod, go.sum, go.work, govern/go.mod (new), govern/*.go, the govern/*log go.mod requires, the new integration/ module (moved tests), agent/architecture_test.go, plan/architecture_test.go, and the CI workflow.
-- **Tests prove:** the root module builds with `GOWORK=off` and without gsm in `go mod graph`; every moved test still runs.
+**P10: pause contract, Waker, halt unify, verbs, as aliases and wrappers (L).**
+- **Files:** agent/pause.go, awaitfor.go, channel.go, approval.go, halt.go, toolexec.go (`IsPause` sites), session.go (docs), and the examples interrupt, approval, signals, recover, webhook.
+- **Tests must prove:**
+  - the seal, including the embedding test;
+  - `ResolveHaltRef` for tools and steps;
+  - a contended halt is not resolved while young;
+  - Waker failure is retried;
+  - `MemWaker` uses `IsPause`.
 
-**P3. bide-audit exit codes, `-version`, `-json` (M).**
-- **Files:** cmd/bide-audit/main.go and its tests (not the govern-dependent tests, which P2 moves).
-- **Tests prove:** a table of (input, expected code) covering each code and the precedence cases (tampered plus unreadable gives 1; checker failure plus unreadable gives 4).
+**Wave 3 (parallel)**
 
-**P4. eval (S).**
-- **Files:** eval/eval.go, eval/stats.go, and tests.
-- **Tests prove:** `Matches(nil)` gives `ErrConfig` from `Run`; the `GovernanceHeld` ctx is passed; the report `format` is present.
+**P9: ModelCall (L).**
+- **Files:** agent/generate.go, modelcall.go, replay.go, middleware/{retry,hedge,cost,ratelimit,middleware}.go, trace/trace.go, agent/typed.go (`injectSystem`), agent/retrieval.go.
+- **Tests must prove:**
+  - hooks run exactly once per request under Retry, Hedge and Retry(Hedge);
+  - a middleware cannot remove the meter;
+  - only the winner's tokens reach the stream, with no sink code in Hedge;
+  - the Hedge race detector test passes with a middleware that appends to `Messages`;
+  - `Attempt` is unique across branches;
+  - `Replay` reproduces `Finish` and `Spend`;
+  - per-turn digests are journaled;
+  - no `context.WithValue` in generate.go or modelcall.go (AST test).
 
-**P5. plan config v1 (S to M).**
-- **Files:** plan/config.go, plan/topology.go (`TopologyNodeKind`), plan/builder.go (drop the `Retryable` alias), and tests.
-- **Tests prove:** a v1 config round-trips; a missing or unknown version is refused; the camelCase keys are refused.
+**P5b: plan lowering (M).**
+- **Files:** plan/flow.go, plan/conformance.go, plan/builder.go (docs), agent/keys.go (plan prefixes; not touched by any other wave-3 PR).
+- **Tests must prove:**
+  - `ResolveHaltRef` clears a node halt;
+  - a node cancelled before its body is re-attempted (#65 through lowering);
+  - a different flow input is `ErrConfig`;
+  - zero `History` calls per node (counting store);
+  - conformance passes with the new keys.
 
-### Wave 2: foundations (parallel)
+**P11: proof artifacts (L).**
+- **Files:** audit/* except audited_store.go and delegate.go, audit/verify/**, cmd/bide-audit/**, examples/govern/proof-carrying-run.
+- **Tests must prove:**
+  - a record with an unknown future field verifies under `record_bytes`;
+  - a stripped hybrid half fails;
+  - an STH v4 artifact gets `ErrFormat`;
+  - ML-DSA end to end;
+  - the exit table covers format cases.
 
-**P6. Store/Journal split and journal version header (XL: about 1800 lines of semantics plus the mechanical rewrite of about 470 `NewMemStore` and 170 `Durable` sites).**
-- **Files:**
-  - agent: journal.go (new), memstore.go (new), record.go, step.go, halt.go (signature), keys.go (`@journal`, unexports), errors.go (`ErrJournalVersion`, `JournalVersionError`), recovery.go, lease.go (Capability over Store, `WithoutLease`, `LeaseOption`/`RecoverOption`/`RecoverLoopOption` split), replay.go (read through the journal).
-  - agent/durabletest becomes agent/storetest; new agent/agenttest (`NewJournal`).
-  - store/sqlite/*, store/postgres/*, audit/audited_store.go (becomes the anchored store), chaos/bide.go.
-  - The mechanical `Durable` to `*Journal` change in agent/*.go, audit/*.go, plan/*.go, eval, cmd, examples and benchmarks.
-- **Tests prove:**
-  - `storetest.Run` passes for MemStore, sqlite and postgres: A1 with 64 goroutines times 3 handles; A2 density and real-time order; A5 bytes; A8 break-early followed by an `Insert` on SQLite.
-  - The header checks (a) to (d) from item 3.
-  - Every existing DST and crash test (dst_test, step_crash_test, overlap_test, mofn_dst_test, the plan flow_dst and overlap tests) passes unchanged in intent.
-  - `StepAttemptSafety` uses `Get` and records nothing.
-  - An `AnchoredStore` over a leasing store keeps the lease, which reuses F1's tests.
-  - `Lease` without a `Leaser` is `ErrConfig` and passes with `WithoutLease`.
-  - Plan does zero `History` calls per node, checked with a counting store.
+**Wave 4**
 
-**P7. Adapters: FinishReason, provider kit, Describer, typed ToolChoiceMode (M to L).**
-- **Files:** agent/model.go, agent/provider_http.go (deleted), model/provider/* (new), model/anthropic|openai|gemini/*, model/modeltest/*, model/internal/toolcfg.
-- **Tests prove:** a per-adapter reason mapping table (modeltest `FinishReasons`); `Describe()` values; the moved helpers' tests pass in their new package; no core package imports model/provider (architecture test).
+**P12: tool internals (L).**
+- **Files:** agent/tool.go, tool_middleware.go, toolexec.go, subagent.go, retrieval.go (tool part), typed.go (`answerTool`), compensate.go, model.go (`Request.Tools`), model/* (spec reads), mcp/**, middleware/tool.go, error_summary.go, trace/trace.go (Tool half), audit/delegate.go, govern (its module).
+- **Tests must prove:**
+  - a result returned after the deadline is recorded;
+  - a late error halts a side-effect tool;
+  - rollback uses the recorded safety;
+  - `SubAgent` with `WithApproval` pauses;
+  - the MCP mapping.
 
-**P8. doccheck analyzer with allowlist (S).**
-- **Files:** internal/tools/doccheck/*, CI workflow, .doccheck-allow.
-- **Tests prove:** analyzer unit tests with golden packages.
+**Wave 5**
 
-### Wave 3: model call and pause (parallel)
+**P13: construction under `Build` (M-L).**
+- **Files:** agent/agent.go, options.go (new), runctx.go (`RunInfo`, `SubRunFor`), identity.go, trace/trace.go (`Instrument`), typed.go (clone), retrieval.go (option).
+- **Tests must prove:**
+  - every validation error;
+  - `With` isolation under `-race`;
+  - precedence rules;
+  - combination types reject the wrong scope at compile time (a vet-style test using go/types).
 
-**P9. ModelCall/ModelResponse (L).**
-- **Files:** agent/generate.go, agent/modelcall.go, agent/replay.go (`Finish.Discarded`), agent/record.go (`Record.Finish`), agent/retrieval.go (middleware part retargeted), agent/typed.go (`injectSystem` removal), middleware/{retry,hedge,cost,ratelimit,middleware}.go, trace/trace.go (the Model half), and tests.
-- **Tests prove:**
-  - Hooks run exactly once per sent request under Retry, under Hedge (every target), and in a nested Retry(Hedge); the spend meter equals the sum of billed usage.
-  - The Hedge winner's tokens alone reach `RunStream`, with `TurnRestarted` semantics unchanged (reuse #55's tests).
-  - `Replay` reproduces `Result.Spend` and `Finish` exactly.
-  - `CallModel` runs hooks outside an agent.
-  - No `context.WithValue` remains in generate.go or modelcall.go (AST test).
+**Wave 6**
 
-**P10. Pause contract, Waker, halt unification, verbs, plan lowering (L).**
-- **Files:** agent/pause.go, awaitfor.go, channel.go, approval.go (`ApprovalPending`, `SubmitDecision`, `Alg`), halt.go, recovery.go (`IsPause` use), toolexec.go (`errors.As` sites become `IsPause`), session.go (error docs only), plan/flow.go, plan/conformance.go, plan/builder.go (docs), and the examples interrupt, approval, signals, recover, webhook.
-- **Tests prove:**
-  - The pause set is sealed (a compile-time test that an outside type cannot satisfy `Pause`).
-  - `RecoverLoop` does not re-drive a halted flow as a failure.
-  - `ResolveHalt` clears a flow node's halt and the flow resumes, running the body zero more times.
-  - A step name that only the other kind attempted is refused, keeping #60's guarantee.
-  - A failed `Waker.Schedule` fails the run, and a later pass reschedules it.
-  - The plan conformance suite passes with the new marker keys.
+**P14: Run API under transitional names (L).**
+- **Files:** agent/loop.go, result.go, saga.go, stream_agent.go (becomes stream.go), typed.go, session.go, subagent.go (call), recovery.go (dispatch), audit/eventsink.go, eval/eval.go.
+- **Tests must prove:**
+  - a Result on every error kind;
+  - B1: a budget and prompt passed per run survive `RecoverLoop`;
+  - a limit amendment is journaled;
+  - other mismatches are `ErrConfig`;
+  - principal restored and `Actor` live;
+  - typed runs resumed by `ResumeTyped`;
+  - a not-started run is skipped and reported once;
+  - `Cancel` on a live run and on a saga (rollback);
+  - `Status`;
+  - image input.
 
-### Wave 4: tools and proofs (parallel)
+**Wave 7**
 
-**P11. Proof artifacts (L).**
-- **Files:** audit/* (not delegate.go or audited_store.go), audit/verify/*, cmd/bide-audit/main.go, examples proof-carrying-run, compliance, authority, earned-authority.
-- **Tests prove:**
-  - Every artifact round-trips with `format`; the previous format is accepted and an unknown one gives `ErrUnsupportedFormat`.
-  - An ML-DSA and a hybrid signer work end to end through Evidence, CertifyRun, anchored store and CLI.
-  - Evidence refuses a verifier whose key differs from the embedded one.
-  - The CLI exit table is extended with format cases (4).
+**P15: the consolidated mechanical rewrite and shim removal (XL).**
+- **Files:** every call site in every module, plus deletion of the shims and transitional names.
+- **Script:** `internal/tools/migrate` (go/ast, committed), which does all of the following:
+  - `Durable` becomes `*Journal`, and store construction becomes `NewJournal(...)`;
+  - `Build` becomes `New`, and builder chains become options;
+  - `RunMessage` becomes `Run`, the old `Run` and `RunSaga` calls become `Run(..., UserText(x))`/`WithSaga()`, and results are rewritten;
+  - `Func` sites use options and `Must*`, and implementers' method sets become `Spec()`;
+  - pause and verb aliases are resolved, and `ResolveHaltRef` becomes `ResolveHalt`;
+  - `RunEvent`/`RunStream`;
+  - `mcp` becomes `mcptools`;
+  - `ScriptedModel` moves to `agenttest`.
+- A rebase reruns the script.
+- **Tests must prove:** `go vet` and `go test ./...` pass in every module; no deprecated identifier remains (grep gate); `go doc` shows no transitional name.
 
-**P12. Tool interface (L plus mechanical: about 120 Func sites).**
-- **Files:** agent/tool.go, tool_middleware.go, toolexec.go, subagent.go, retrieval.go (tool part), typed.go (`answerTool`), compensate.go, model/{anthropic,openai,gemini} (spec reads), mcp/*, middleware/tool.go, middleware/error_summary.go, trace/trace.go (the Tool half), audit/delegate.go, govern (in its module), chaos, modeltest, examples.
-- **Tests prove:**
-  - `Spec.Timeout` expiry halts a side-effecting tool on resume and re-runs a retry-safe one.
-  - The at-most-once guard uses the snapshot, not a middleware-rewritten spec.
-  - The MCP mapping table, including `Output`.
-  - `Func` with an undescribable `In` returns `ErrConfig`.
-  - `SubAgent` with `WithSafety` gives `ErrConfig`.
+**Wave 8**
 
-### Wave 5: construction, plus follow-up A (parallel)
+**P16: docs and cleanup (M).**
+- **Files:** doccheck allowlist emptied, `Example` tests, stale and competitor text moved out of godoc, docs/GUARANTEE.md (format policy, journaling rule, only-0-verified), migration guide, CHANGELOG, and the journal format tag set to its final value only at the release commit.
+- **Tests must prove:** doccheck is clean.
 
-**P13. Agent construction and options (XL mechanical: about 367 New sites).**
-- **Files:** agent/agent.go, options.go (new), runctx.go (`RunInfo`), identity.go, retrieval.go (the `WithRetrieval` Option), typed.go (clone removal), trace/trace.go (`Instrument`), eval (AgentRunner construction), and every `New(` site.
-- **Tests prove:**
-  - Each validation error from item 2 is returned by `New`.
-  - `With` does not affect the original (concurrent `With` plus `Run` under `-race`).
-  - An option passed at both scopes resolves as run over agent over default.
-  - No exported mutating method remains on `Agent` (`go doc` check).
+**Critical path:** P1, then P6a, then P9, P5b and P11 (in parallel), then P12, then P13, then P14, then P15, then P16. That is eight sequential steps. P2 to P5, P7 and P8 ride wave 1.
 
-**Follow-up A: "record not started" attempt semantics (M).**
-- **Files:** agent/toolexec.go and agent/record.go (the new `StepAttempt` outcome field or kind).
-- **Why now:** it needs P12's toolexec to be settled, and it must land before the v1 freeze.
-- **Tests prove:** a call cancelled after its marker and before `Call` began resumes without a halt; a call that began still halts.
+### 10.2 Transitional names (removed by P15)
 
-### Wave 6: run API, plus follow-up B (parallel)
+| Transitional | Final |
+|---|---|
+| `Build` | `New` |
+| `RunMessage`, `StreamMessage`, `ResumeRun`, `RunTypedMessage`, `Session.SendMessage`, `Session.SendMessageOnce` | `Run`, `Stream`, `Resume`, `RunTyped`, `Session.Send`, `Session.SendOnce` |
+| `ResolveHaltRef` | `ResolveHalt` |
+| aliases `PendingApproval`, `Interrupted`, `Awaiting`, `Sleeping`, `ResumeHalt` | deleted |
+| wrappers `Resume[T]`, `ApproveAs`, channel `Send`, `ResolveStepHalt` | deleted |
+| `Durable` interface and store `Do`/`History` shims | deleted |
+| old `Tool` method set (accepted through `specOf`) | `Spec()` only |
 
-**P14. Run API (XL mechanical: about 172 Run, 19 Stream, 48 typed and 8 session sites).**
-- **Files:** agent/loop.go, result.go, saga.go (`runSaga` fold), stream_agent.go (becomes stream.go with `RunStream`/`RunEvent`), typed.go, session.go, subagent.go (call site), recovery.go (`ResumeFunc`), audit/eventsink.go (`RecordStream`), eval/eval.go (AgentRunner), and every Run site and example.
-- **Tests prove:**
-  - `Result` is non-nil with correct `Usage`/`Spend` on failure, on each pause type, and on a saga abort.
-  - A resume with a different input or saga mode is `ErrConfig`; `Resume` with the journaled input completes a crashed run, a session turn, and a saga rollback.
-  - A typed run with a changed `T` is `ErrConfig`.
-  - `Run == Stream().Result()` over the scripted suite.
-  - An image input reaches the adapter request.
+### 10.3 Performance gates
+1. **Counting-store round-trip test.** `agenttest.CountingStore` counts `Insert`, `Get`, `Load` calls and entries read. The test lands in P6a and is kept green by every later PR, which may only lower the budget. It asserts these exact per-operation budgets (deterministic, no timing):
 
-**Follow-up B: saga compensation with accepted arguments (M).**
-- **Files:** agent/compensate.go and agent/toolexec.go (journal `call.Use.Args` as passed). P14 must not edit toolexec.go; the saga flag keeps its existing parameter.
-- **Tests prove:** a middleware that rewrites args makes compensation receive the rewritten args, and an old record (no accepted args) falls back to the model's.
+   | Operation | Budget |
+   |---|---|
+   | first drive of a new run | 1 `Load`, `Insert @journal`, `Insert run:start` |
+   | each live model turn | 1 `Insert`, plus 1 `Get` (`run:cancelled` check) |
+   | side-effect tool call | 2 `Insert` (claim, result); +1 only under #67's condition |
+   | retry-safe tool call | 1 `Insert` |
+   | retry-safe `Step` | 1 `Get`, 1 `Insert` |
+   | completion | 1 `Insert` |
+   | resume of a run with n records | 1 `Load` of n entries, no point reads for markers |
+   | `Recover` pass over R runs | ceil(R/500) `Runs` pages on SQL stores, zero per-run reads; MemStore the same |
+   | anchored insert | 1 `Load` of the new entries only, O(log n) hashes |
 
-### Wave 7: budget and cleanup (parallel)
+2. **Benchstat on the CI runner.**
+   - Benchmarks land in P6a: `BenchmarkRunTurns`, `BenchmarkToolCallSideEffect`, `BenchmarkStep`, `BenchmarkRecoverPass10k`, `BenchmarkAnchoredInsert`, `BenchmarkSQLiteInsert`, `BenchmarkPostgresInsert`.
+   - The existing bench workflow (#45/#47, standard runner) runs base against head with `-count=10`.
+   - P6a, P9, P12, P14 and P15 must show no benchstat regression over 5% in time or allocs at p < 0.05, and must paste the table into the PR.
+   - `BenchmarkAnchoredInsert` must show the O(n) to O(log n) improvement.
 
-**Follow-up C: whole-tree budget (M).**
-- **Files:** agent/loop.go, subagent.go, result.go.
-- **Why last among the follow-ups:** it defines how sub-run spend enters the parent's `Result.Usage`/`Spend` and budget, so it needs P14's Result.
-- **Tests prove:** the budget stops a parent whose sub-agents spent it; totals are identical across crash and resume (the `budget-tree` branch's test).
-
-**P16. Cleanup (L, mostly mechanical).**
-- **Files:** `ScriptedModel` moves to agent/agenttest (16 test users), the review 7.3 unexports, doc sweep (allowlist emptied), `Example` tests replacing doc-comment calls, competitor claims moved to docs/, the stale references from review 10.3, `TurnRestarted`/`RunEvent` open-set docs, the optional mcp package rename (Q9), CHANGELOG and docs/guides/migrating-to-1.0.md.
-- **Tests prove:** doccheck is clean with an empty allowlist; `go vet`; every example module builds.
-
-### Critical path and parallelism
-- **Critical path:** P1, then P6, then P9 and P10, then P12, then P13, then P14, then follow-up C: seven sequential steps.
-- **Off the critical path:**
-  - P2 to P5 run in wave 1.
-  - P7 and P8 run beside P6.
-  - P11 runs beside P12.
-  - Follow-ups A and B ride waves 5 and 6.
-- **Invariant check at every boundary:** each PR runs the full DST, crash and chaos suites and `storetest` (with postgres against a live server, as #57 and #60 did).
+### 10.4 Order relative to the follow-ups
+- Follow-ups A, B and C are done by #65, #67 and #69.
+- Their remaining edges are folded into the plan:
+  - #65 reaches flows through P5b;
+  - #67's record stays with the base tool handler in P12;
+  - #69's totals are the Result semantics in P14.
 
 ---
 
-## 11. Open questions (recommendation first)
+## 11. Disposition of the critique
 
-1. **Journal version bumps before 1.0.** Recommend keeping `bide.journal.v1` until the 1.0 tag and editing it in place (no users). After 1.0, any key or record change bumps it.
-2. **Pre-v1 journals.** Recommend refusing them (`Found: ""`) with no migration tool. #60 already breaks v0.7.
-3. **Names `Store` (port) and `Journal` (semantics)** instead of keeping `Durable`. Recommend `Store`/`Journal`: the name then says which side of the line a type is on.
-4. **Export `Journal.Do`?** Recommend yes, for engine packages (audit, govern), refusing engine-reserved prefixes other than `audit:`. The alternative is hidden cross-package hooks, which cost more than they protect.
-5. **`Result.Usage` meaning.** Recommend whole-run (journal-derived and resume-stable) as the primary field, with per-invocation numbers under `Result.Live`. This matches what budgets count and the `budget-tree` test's expectation.
-6. **Journaled input is authoritative on resume, and `Agent.Resume` exists.** Recommend yes. It removes the `inputFor(runID)` burden from every recovery deployment and closes an exact-replay gap.
-7. **`RunTyped` as a Go 1.27 generic method or a package function.** Recommend the package function, for consistency with `Step[T]`, `Signal[T]` and `AnswerInterrupt[T]`, and to keep a brand-new language feature out of the core's frozen surface until tooling settles. Revisit for 2.0.
-8. **govern: move or wrap.** Recommend move (own module, v0) plus an `integration/` test module.
-9. **Rename package `mcp`** (it shadows the SDK). Recommend renaming the directory and package to `mcptools` in P16, since breaking changes are free now.
-10. **Scope of review 7.3.** Recommend unexporting engine plumbing and keeping `TallyApprovals`, `ProjectEvents`, `FindToolCall`, `IsApprovalDecision` and `DecisionCheck` as the documented offline-verification API. Third-party verifiers need exactly these, and moving `Message`/`Record` into a lower package to hide them costs a large alias churn.
-11. **Reserve the tool name `final_answer` at `New`.** Recommend yes. It is simpler than detecting the conflict per `RunTyped` call.
-12. **`Lease` with no `Leaser`.** Recommend `ErrConfig` by default, with `WithoutLease()` to opt out, as review 2.3 asked. F1 keeps the silent fallback, so this is a behavior change P6 makes.
-13. **bide-audit exit precedence.** Recommend: 2 is exclusive, then 1 over 4 over 3 over 0.
-14. **`ToolSpec.Timeout` enforced by the agent as an unknown outcome.** Recommend yes. It is one semantics for MCP and local tools.
-15. **Retrieval as an agent option rather than a middleware.** Recommend the option. It removes two ctx keys, and the layer order becomes explicit.
-16. **The `@run` header stores the full input,** images included. Recommend yes, because `Resume` needs it. Document it for retention, and consider a future `Deleter` capability for GDPR erasure at run granularity.
-17. **Rename `AgentEvent`/`AgentStream` (NICE).** Recommend doing it in P14, since every consumer changes there anyway.
-18. **The flow `@run` header with the topology digest** (refuse resuming a changed flow). Recommend yes, in P10. Its absence is a silent-divergence hazard of the same class as the saga-mode one.
-19. **Evidence v3 acceptance window.** Recommend that verifiers accept v3 for one pre-1.0 release, then drop it.
+| Item | Verdict | Where / why |
+|---|---|---|
+| A1 relax A2 | Agree; adopted the stronger prefix-closed form | item 4 |
+| A2 SQLite Leaser | Agree, with all the pitfalls | item 4 |
+| A3 sink, clip, attempt | Agree | item 5 |
+| A4 unexport Do | Agree; govern needs only Step, audit and plan use the hook | item 4 |
+| A5 shims, one rewrite | Agree | section 10 |
+| B1 | Agree; limits change through an auditable amendment rather than `ErrConfig` | item 1 |
+| B2 | Agree | item 8 |
+| B3 | Partly: guard adopted; release on pause rejected (unenforceable); release on not-started is #65 | item 6 |
+| B4 | Agree; the window is decision D1 | item 3 |
+| B5 | Agree; deletion handled by a no-reuse rule plus loud refusal | item 3 |
+| B6 | Agree | item 1 |
+| B7 | Agree | item 6 |
+| B8 | Partly: typed resumers instead of schema-only completion | item 1 |
+| B9 | Agree (global singleflight keyed by store identity) | item 4 |
+| B10 | Agree | item 7 |
+| B11 | Agree | item 4 |
+| B12 | Agree | item 6 |
+| B13 | Agree | item 5 |
+| B14 | Mostly done by #68; typed plus the content-decides invariant added | item 5 |
+| B15 | Agree | item 8 |
+| B16 | Agree | 9.2 |
+| B17 | Agree | item 4 |
+| C approval split | Agree; `IdempotencyKey` dropped as a func that is never called | item 7 |
+| C capability declaration | Disagree; contract plus `CheckWrapper` | item 4 |
+| C option combinations | Agree; closed list | 1.2 |
+| C `OutcomeUnknown.Cause`, `Lister` filter, model identity, shown-context digests | Agree | items 4 to 6 |
+| D1 to D8 | Agree | 9.4 |
+| E: Q1 | Agree | item 3 |
+| E: Q4 | Agree | item 4 |
+| E: Q12 | Agree | item 4 |
+| E: Q18 | Moot; flow input journaled instead | item 6 |
+| E: Q19 | Agree | item 8 |
+| E: Q9 | Agree (rename in P15) | 9.4 |
+| E: Q13 | Agree (documented) | 9.2 |
+
+v1 questions now resolved, and not asked again:
+- **Q2** refuse pre-v1 journals;
+- **Q3** `Store`/`Journal` names;
+- **Q5** by #69;
+- **Q6** journaled input;
+- **Q7** `RunTyped` stays a function;
+- **Q8** move govern;
+- **Q10** keep the verification API;
+- **Q11** reserve `final_answer`;
+- **Q14** `Timeout` semantics;
+- **Q15** retrieval as an option;
+- **Q17** renames.
 
 ---
 
-### Critical Files for Implementation
-- /Users/dayna/code/go-agents/agent/store.go (becomes journal.go, memstore.go, record.go, step.go and halt.go; `Store`/`Journal`, header, claims)
-- /Users/dayna/code/go-agents/agent/agent.go (becomes agent.go, loop.go, toolexec.go, generate.go and runctx.go; construction, run loop, tool execution, model call)
-- /Users/dayna/code/go-agents/agent/modelcall.go (`ModelCall`/`ModelResponse`, hooks, removal of ctx override)
-- /Users/dayna/code/go-agents/agent/recovery.go (`IsPause`, `Capability` over `Store`, `Lister` cursor, `Lease` options, `Replay`)
-- /Users/dayna/code/go-agents/plan/flow.go (lowering to `agent.Step`, removal of `HaltAmbiguous`)
+## 12. Decisions for the maintainer
 
-Other load-bearing paths:
-- /Users/dayna/code/go-agents/agent/durabletest/durabletest.go (becomes agent/storetest)
-- /Users/dayna/code/go-agents/audit/audited_store.go
-- /Users/dayna/code/go-agents/store/sqlite/sqlite.go
-- /Users/dayna/code/go-agents/store/postgres/postgres.go
-- /Users/dayna/code/go-agents/cmd/bide-audit/main.go
-- /Users/dayna/code/go-agents/middleware/hedge.go
-- /Users/dayna/code/go-agents/agent/session.go
-- the F1 work in progress at /private/tmp/claude-501/-Users-dayna-code/a20c4422-caf8-4114-92dd-7b8fad7f7ecf/scratchpad/wt-apibugs/agent/store.go
+**D1. Journal format compatibility across 1.x.** A run's format is pinned (item 3). The choice is how a 1.x binary treats runs of an older 1.x format.
+- Options:
+  - (a) keep reader and writer paths for the previous format;
+  - (b) read only, and require draining runs before upgrading;
+  - (c) keep every 1.x format forever.
+- Runs can pause for weeks awaiting approval, so draining is often not possible.
+- **Recommendation:** (a), with a window of N-1. Each format change carries its predecessor's writer for one minor release, and the release notes say to finish or resolve runs that are two formats old before upgrading twice.
+
+**D2. How much redaction ships in 1.0.** The tombstone format and `Record.Redacted` are reserved either way, which is the part that would break later.
+- Options:
+  - (a) implement `Redactor` in MemStore, SQLite and Postgres, plus `agent.Redact(ctx, j, runID, name)`, before 1.0;
+  - (b) reserve only, and ship it in 1.x.
+- (a) is about 500 lines and makes GDPR erasure of journaled inputs and retrieved documents possible on day one.
+- **Recommendation:** (a). Inputs, images and retrieved documents are now journaled by design (item 1), so erasure is part of the promise.
+
+**D3. Release shape for govern.** Core would be 1.0 while `govern` stays a v0 module until gsm reaches v1. The alternative is holding the 1.0 tag until gsm is stable.
+- **Recommendation:** ship core 1.0 with govern at v0.x, stated in the README. Governance users then accept v0 churn explicitly, and the core promise does not wait on another project's schedule.
+
+**Critical files for implementation**
+- /Users/dayna/code/go-agents/agent/store.go (becomes journal.go, memstore.go, record.go, step.go and halt.go)
+- /Users/dayna/code/go-agents/agent/agent.go (becomes loop.go, toolexec.go, generate.go and runctx.go)
+- /Users/dayna/code/go-agents/agent/modelcall.go
+- /Users/dayna/code/go-agents/audit/merkle.go (raw-byte leaves) and /Users/dayna/code/go-agents/audit/sth.go (STH v5)
+- /Users/dayna/code/go-agents/plan/flow.go
