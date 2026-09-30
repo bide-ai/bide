@@ -58,6 +58,12 @@ a := agent.New(model, store, refund).
 	})
 ```
 
+Each approver needs a key of their own. A seat is a key, not an id: if two approvers' verifiers
+resolve to one key, whoever holds it can sign as both, so the gate refuses that policy with
+`ErrConfig` (see [Configuration errors](#configuration-errors)). The gate tells keys apart with
+`ApproverVerifier.KeyIDs`, which the `audit` verifiers derive from the public key's bytes; a
+verifier of your own must implement it the same way (see [Key identity](#key-identity)).
+
 When the run pauses, each approver signs the paused call's subject with their own key and records
 the decision:
 
@@ -108,7 +114,8 @@ The full layout is documented on `ApprovalDecisionBytes`, so a non-Go verifier c
 
 Each distinct decision is its own journal record. Over those records, in journal order, an
 approver's decision is their **first valid** one: the approver is in the policy's `Approvers`, the
-resolver returns their key, and the signature verifies for this call. So:
+resolver returns their key, no other approver's verifier reports that key, and the signature verifies
+for this call. So:
 
 - **A bad record never locks an approver out.** A forged signature, a signature with the wrong key,
   or a record written straight into the journal is ignored, and the approver's real decision still
@@ -117,6 +124,11 @@ resolver returns their key, and the signature verifies for this call. So:
   same rule as 1-of-1. Resubmitting the identical decision is a no-op.
 - **Only valid denials can deny.** Invalid records never count toward "k is unreachable", so they
   cannot force a denial either.
+- **One key is one seat.** An approver whose verifier shares a key identity with another approver's,
+  or reports none, never counts (`agent.ReasonSharedKey`, `agent.ReasonNoKeyID`), and neither does the
+  other approver on that key, whichever signed first. The gate refuses such a policy before it
+  counts; the counting rule excludes those seats as well, so a resolver that answers differently
+  between the check and the count still cannot seat one person twice.
 - A `SubmitDecision` decision never satisfies a 1-of-1 gate, and `Approve` never counts toward an m-of-n
   one.
 
@@ -165,6 +177,36 @@ ASCII spelling). They are compared under NFKC case folding, and such a policy is
 ambiguous with `ErrConfig` naming both ids: a reader of the policy, or a key lookup that folds
 case, would take them for one approver, who could then fill two seats.
 
+Distinct ids are not enough: the gate also refuses, with `ErrConfig` naming both approvers and the
+key, a policy two of whose approvers' verifiers report a common key identity, and a policy with an
+approver whose verifier reports no key identity (an empty `KeyIDs`, or an empty entry in it). The
+holder of a shared key could otherwise sign as each approver it serves and meet the quorum alone.
+An approver the resolver does not know is not refused: their decisions cannot verify, so they fill
+no seat. The gate runs this check on every evaluation, before it reads a recorded tally, so a
+resolver changed between one resume and the next is checked again.
+`ApprovalPolicy.ValidateKeys(resolver)` runs the same check (with `Validate`), so a deployment can
+refuse a bad pairing of policy and keys at startup, before any call pauses.
+
+### Key identity
+
+`ApproverVerifier` has two methods: `Verify`, and `KeyIDs() []string`, the identities of the keys
+behind `Verify`. An identity names a key, not an approver: derive it from the public key's bytes,
+never from a configured name, so that two verifiers built over one key report the same identity. The
+`audit` verifiers report the scheme and the hex SHA-256 of the public key's encoding
+(`audit.KeyID`, for example `ed25519:3b6a27bc...`):
+
+- `audit.Ed25519Verifier` and `audit.MLDSAVerifier` report one identity. A key that verifies nothing
+  (an Ed25519 key of the wrong length, a nil ML-DSA key) reports none, so the gate refuses it rather
+  than seating it.
+- `audit.HybridVerifier` reports both component keys. A hybrid signature is meant to hold while either
+  scheme holds, so if one scheme breaks, the other component's key alone signs: two approvers sharing
+  either component are one seat.
+- A verifier of your own that accepts a signature by any of several keys (a rotation window) reports
+  every one of them, so that two approvers whose key sets overlap are refused.
+
+Two identities are the same key only when the strings are equal. The gate cannot tell that one person
+holds two different keys; see [Scope](#scope).
+
 ## Proving the gate held
 
 `audit.ApprovalEvidence` builds the complete evidence for a gated call under one signed tree head, in
@@ -206,7 +248,8 @@ problem when:
 - the request, decisions, tally, and result are out of order.
 
 Tampering with the request, the tally, or the result breaks their proofs, and `VerifyApprovals`
-returns an error rather than a verdict. A denied gate yields consistent evidence whose verdict is not
+returns an error rather than a verdict; so does a resolver under which two of the policy's approvers
+share a key. A denied gate yields consistent evidence whose verdict is not
 OK and names who denied.
 
 That certifies exactly one claim: **these named approvers approved this exact call, and it did not
@@ -226,7 +269,7 @@ bide-audit verify-approvals -evidence evidence.json -pubkey <log key hex> -call 
 
 It prints the approved call, each approver who counted, every ignored decision with its reason, and
 every problem. It exits 0 only when the gate held: 1 when it did not, 4 when an input cannot be read
-or used, and 2 on a usage error (see the audit guide's
+or used (including a key file that gives two of the policy's approvers one key), and 2 on a usage error (see the audit guide's
 [exit status](audit.md#exit-status); only 0 means verified). `bide-audit verify-evidence` checks the proofs only,
 so it cannot detect an omitted decision; use `verify-approvals` for the approval claim.
 
@@ -236,7 +279,9 @@ object keys inside a recorded message breaks that record's proof.
 ## Scope
 
 - The core does not authenticate who holds a key. Binding an approver id to a person is your identity
-  provider's job; the core verifies signatures against whatever keys your resolver returns.
+  provider's job; the core verifies signatures against whatever keys your resolver returns. It refuses
+  two approvers on one key, but it cannot see that one person holds two different keys: issuing each
+  person one key is the identity provider's job too.
 - The approver set is bounded and fixed per policy. There are no weighted votes, role predicates
   ("at least one from risk"), delegated approval, or deadline to resolve a gate that never reaches k.
 - The tally does not record which key verified each approver. An auditor needs the keys that were

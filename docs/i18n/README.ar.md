@@ -642,7 +642,8 @@ agent.SubmitDecision(ctx, store, agent.Decision{RunID: pend.RunID, ToolUseID: pe
 
 ثم يُثبِت `audit.ApprovalEvidence` و`audit.VerifyApprovals` (أو `bide-audit verify-approvals`) دون اتصال أن
 k مُوافِقين مُسمَّين وقّعوا على هذا النداء بعينه *قبل* تنفيذه، تحت السياسة المتوقَّعة، من أدلّة لا يمكن أن تُسقِط
-قرارًا دون أن يُلاحَظ. انظر [دليل الموافقة](../../docs/guides/hitl-approval.md)؛ قابل للتشغيل عبر عمليات منفصلة في
+قرارًا دون أن يُلاحَظ. ويحتاج كل مُوافِق إلى مفتاح خاص به: تُرفَض بـ`ErrConfig` السياسةُ التي يؤول فيها
+مُوافِقان إلى مفتاح واحد، لأن حامل ذلك المفتاح يستطيع التوقيع عنهما معًا. انظر [دليل الموافقة](../../docs/guides/hitl-approval.md)؛ قابل للتشغيل عبر عمليات منفصلة في
 `examples/approval`.
 
 ## الأخطاء

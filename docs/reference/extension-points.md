@@ -297,8 +297,9 @@ compile-time change. `Safety` declares retry behavior on resume (`ReadOnly`, `Id
 `IdempotencyKey`, `RequiresApproval`) and maps directly onto MCP annotations (see
 the [MCP guide](../guides/mcp.md)). Its optional `Approval` field upgrades the approval gate to a signed
 m-of-n policy; approver signatures are checked through the `ApproverVerifier` hook, which the
-`audit` package's Ed25519, ML-DSA, and hybrid verifiers satisfy (see
-[approval](../guides/hitl-approval.md)).
+`audit` package's Ed25519, ML-DSA, and hybrid verifiers implement. Its `KeyIDs` method names the keys
+behind a verifier, derived from the public key's bytes, and the gate refuses a policy two of whose
+approvers share one (see [approval](../guides/hitl-approval.md#key-identity)).
 
 ## `Compensator`: how a tool undoes its side effect
 

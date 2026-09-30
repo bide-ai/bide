@@ -704,7 +704,9 @@ agent.SubmitDecision(ctx, store, agent.Decision{RunID: pend.RunID, ToolUseID: pe
 
 `audit.ApprovalEvidence` and `audit.VerifyApprovals` (or `bide-audit verify-approvals`) then prove
 offline that k named approvers signed off on this exact call *before* it ran, under the expected
-policy, from evidence that cannot leave a decision out unnoticed. See the [approval guide](docs/guides/hitl-approval.md); runnable across
+policy, from evidence that cannot leave a decision out unnoticed. Each approver needs a key of their
+own: a policy two of whose approvers resolve to one key is refused with `ErrConfig`, since whoever
+holds that key could sign as both. See the [approval guide](docs/guides/hitl-approval.md); runnable across
 separate processes in `examples/approval`.
 
 ## Errors

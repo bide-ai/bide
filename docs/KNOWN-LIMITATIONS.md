@@ -147,7 +147,8 @@ the agent. There is no per-`Run` override yet; use a separate agent for differen
 **Approvers are a fixed, named set.** An m-of-n approval gate names its approvers up front. There are
 no weighted votes, role rules (such as "at least one from risk"), delegated approval, or deadline for
 a gate that never reaches k. bide checks signatures against the keys you provide; linking a key to a
-person is your identity provider's job. Keep old public keys after a rotation so old evidence still
+person is your identity provider's job. It refuses two approvers whose verifiers resolve to one key,
+but it cannot see that one person holds two different keys. Keep old public keys after a rotation so old evidence still
 verifies. See [Human approval](guides/hitl-approval.md#scope).
 
 **Flows cannot hold an approval gate yet.** A `plan` flow with an approval node fails to build with

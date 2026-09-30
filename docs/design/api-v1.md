@@ -338,7 +338,7 @@ func (a *Agent) Journal() *Journal
 - duplicate `Spec().Name`;
 - the reserved name `final_answer`. No adapter rewrites names (`toolcfg.Check` refuses bad ones), so collisions after normalization cannot happen.
 - a non-object input schema;
-- an invalid `ApprovalPolicy`, or an approval policy with no `WithApproverVerifiers`;
+- an invalid `ApprovalPolicy`, or an approval policy with no `WithApproverVerifiers`, or one two of whose approvers resolve to one signing key (`ApprovalPolicy.ValidateKeys`; the gate also re-checks it on every evaluation, since the resolver is a function);
 - `k < 1`;
 - negative limits.
 
