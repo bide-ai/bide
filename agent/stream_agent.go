@@ -56,8 +56,10 @@ type AssistantTurn struct {
 
 func (AssistantTurn) agentEvent() {}
 
-// ToolStarted fires when a tool call begins executing (after any approval gate and,
-// for non-idempotent tools, after the durable attempt marker is written).
+// ToolStarted fires when a tool call begins executing: after any approval gate and, for
+// non-idempotent tools, after the durable attempt marker is written, immediately before the tool
+// is called. A call that does not start (cancelled after its attempt marker and before the call,
+// and recorded as not started) emits neither ToolStarted nor ToolCompleted.
 type ToolStarted struct {
 	ToolUseID string
 	Name      string

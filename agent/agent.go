@@ -672,7 +672,6 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 						return &ResumeHalt{RunID: runID, RootRunID: rootRunID(ctx, runID), ToolUseID: c.tu.ID, ToolName: c.tu.Name, AttemptedAt: markerTime(got.AttemptedAt)}
 					}
 				}
-				fire(ToolStarted{ToolUseID: c.tu.ID, Name: c.tu.Name, Args: c.tu.Args})
 				var toolCallErr error
 				// Journal the tool's OUTCOME under a non-cancellable context: the tool itself still
 				// runs under sctx (a saga sibling's failure cancels it, as intended), but once it has
@@ -687,6 +686,9 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 						return Record{}, fmt.Errorf("tool %q was not started: %w", c.tu.Name, err)
 					}
 					called.Store(true)
+					// Emitted here, past the pre-call check, so a consumer sees ToolStarted only for a
+					// call that actually starts; one recorded as not started emits neither event.
+					fire(ToolStarted{ToolUseID: c.tu.ID, Name: c.tu.Name, Args: c.tu.Args})
 					res, callErr := toolH(sctx, c.tu)
 					r := Record{Kind: StepToolResult, ToolUseID: c.tu.ID}
 					if callErr != nil && sctx.Err() != nil {
