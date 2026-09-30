@@ -24,6 +24,7 @@ import (
 	"runtime"
 	"slices"
 	"sync"
+	"sync/atomic"
 )
 
 // JournalFormat is the journal format this version writes: the format every run's header names
@@ -997,6 +998,9 @@ func shareFlight(k flightKey, fn func() ([]byte, error)) ([]byte, error) {
 	flights.mu.Lock()
 	if f, ok := flights.m[k]; ok {
 		flights.mu.Unlock()
+		if h := flightJoinHook.Load(); h != nil {
+			(*h)(k)
+		}
 		f.done.Wait()
 		return f.val, f.err
 	}
@@ -1018,6 +1022,10 @@ func shareFlight(k flightKey, fn func() ([]byte, error)) ([]byte, error) {
 	returned = true
 	return f.val, f.err
 }
+
+// flightJoinHook, when set (by tests only), is called with the key of every call in flight that a
+// shareFlight caller joins, before it waits, so a test can order a schedule around a join.
+var flightJoinHook atomic.Pointer[func(flightKey)]
 
 // joinFlight waits for the call in flight with key k, if there is one, and returns its outcome
 // and true; it returns false at once when no call is in flight. It never starts a call.
