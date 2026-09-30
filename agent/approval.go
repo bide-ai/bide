@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"slices"
 	"unicode/utf8"
 
@@ -196,11 +197,24 @@ func (p ApprovalPolicy) ValidateKeys(verifierFor ApproverVerifierFor) error {
 	return err
 }
 
+// isNilVerifier reports whether v holds a typed nil (a nil pointer, map, slice, func, channel or
+// interface inside a non-nil ApproverVerifier). Calling its methods would likely panic, and it
+// names no key, so the gate refuses it rather than calling it.
+func isNilVerifier(v ApproverVerifier) bool {
+	rv := reflect.ValueOf(v)
+	switch rv.Kind() {
+	case reflect.Pointer, reflect.Map, reflect.Slice, reflect.Func, reflect.Chan, reflect.Interface:
+		return rv.IsNil()
+	}
+	return false
+}
+
 // approverSeats resolves every approver in p.Approvers once, in policy order. It returns the
 // verifier to check each resolved approver's decisions with (an approver the resolver does not
-// know, or resolves to nil, is absent), the approvers that fill no seat with the reason, and the
-// first such problem as an ErrConfig error. An approver fills no seat when its verifier reports
-// no key identity, or when it reports a key identity another approver's verifier also reports;
+// know, or resolves to an untyped nil, is absent), the approvers that fill no seat with the
+// reason, and the first such problem as an ErrConfig error. An approver fills no seat when the
+// resolver returns a typed nil verifier, when its verifier reports no key identity, or when it
+// reports a key identity another approver's verifier also reports;
 // every approver sharing that key is excluded, not only the later ones, so the outcome does not
 // depend on policy order or on who signed first.
 func approverSeats(p ApprovalPolicy, verifierFor ApproverVerifierFor) (map[string]ApproverVerifier, map[string]string, error) {
@@ -214,6 +228,13 @@ func approverSeats(p ApprovalPolicy, verifierFor ApproverVerifierFor) (map[strin
 		}
 		v, ok := verifierFor(id)
 		if !ok || v == nil {
+			continue
+		}
+		if isNilVerifier(v) {
+			bad[id] = ReasonNoKeyID
+			if first == nil {
+				first = fmt.Errorf("approval policy approver %q: the resolver returned a nil %T verifier: %w", id, v, ErrConfig)
+			}
 			continue
 		}
 		vs[id] = v
@@ -254,7 +275,12 @@ type ApprovalTally struct {
 	Denied     int      `json:"denied"`                // approvers whose counted decision is a denial
 	ApprovedBy []string `json:"approved_by,omitempty"` // those approvers, in journal order
 	DeniedBy   []string `json:"denied_by,omitempty"`   // those approvers, in journal order
-	Pending    []string `json:"pending,omitempty"`     // eligible approvers with no valid decision yet, in policy order
+	Pending    []string `json:"pending,omitempty"`     // eligible approvers with no valid decision yet who can still make one, in policy order
+	// Excluded names the eligible approvers who fill no seat, in policy order: their verifier
+	// shares a key identity with another approver's, reports none, or is a typed nil
+	// (ReasonSharedKey, ReasonNoKeyID). They never count, so Unreachable leaves them out. The gate
+	// refuses such a policy before counting, so a tally it journals has none.
+	Excluded []string `json:"excluded,omitempty"`
 	// Records names every decision record on this call the gate read, valid or not, in
 	// journal order. Evidence must disclose all of them, so an omitted decision is detectable.
 	Records []string `json:"records,omitempty"`
@@ -264,9 +290,11 @@ type ApprovalTally struct {
 func (t ApprovalTally) Passed() bool { return t.Approved >= t.Need }
 
 // Unreachable reports whether Need can no longer be reached: fewer approvers remain who have
-// not denied than approvals are required. Only valid denials count toward this, so an invalid
-// record cannot force a denial.
-func (t ApprovalTally) Unreachable() bool { return len(t.Approvers)-t.Denied < t.Need }
+// not denied, and are not Excluded, than approvals are required. Only valid denials count toward
+// this, so an invalid record cannot force a denial.
+func (t ApprovalTally) Unreachable() bool {
+	return len(t.Approvers)-len(t.Excluded)-t.Denied < t.Need
+}
 
 // DecisionCheck is how the counting rule classified one decision record.
 type DecisionCheck struct {
@@ -345,7 +373,12 @@ func TallyApprovals(recs []Record, s ApprovalSubject, p ApprovalPolicy, verifier
 		checks = append(checks, c)
 	}
 	for _, id := range p.Approvers {
-		if !decided[id] {
+		switch _, excluded := bad[id]; {
+		case excluded:
+			if !slices.Contains(t.Excluded, id) {
+				t.Excluded = append(t.Excluded, id)
+			}
+		case !decided[id]:
 			t.Pending = append(t.Pending, id)
 		}
 	}
@@ -484,6 +517,9 @@ func checkDecision(ctx context.Context, store Durable, op string, d Decision, na
 	v, ok := verifierFor(d.ApproverID)
 	if !ok || v == nil {
 		return fmt.Errorf("%s: no key for approver %q: %w", op, d.ApproverID, ErrInvalidApproval)
+	}
+	if isNilVerifier(v) {
+		return fmt.Errorf("%s: the resolver returned a nil %T verifier for approver %q: %w", op, v, d.ApproverID, ErrConfig)
 	}
 	s := ApprovalSubject{RunID: d.RunID, ToolUseID: d.ToolUseID, ToolName: call.Name, Args: call.Args}
 	if !v.Verify(ApprovalDecisionBytes(s, d.ApproverID, d.Approved), d.Signature) {

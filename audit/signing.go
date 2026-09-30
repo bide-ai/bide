@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
+	"strings"
 )
 
 // Signature-scheme agility for signed tree heads. The audit trail signs an STH's canonical
@@ -112,13 +113,15 @@ func (v MLDSAVerifier) Verify(m, sig []byte) bool {
 	return mldsa.Verify(v.Pub, m, sig, &mldsa.Options{Context: mldsaContext}) == nil
 }
 
-// KeyIDs identifies the public key, for agent.ApproverVerifier: one entry, KeyID(AlgMLDSA65,
-// Pub.Bytes()). A nil key reports no entry.
+// KeyIDs identifies the public key, for agent.ApproverVerifier: one entry, KeyID(alg,
+// Pub.Bytes()), where alg names the key's parameter set ("ml-dsa-44", AlgMLDSA65 or "ml-dsa-87"):
+// Verify accepts a key of any FIPS 204 parameter set, so the label says which one it is. A nil key
+// reports no entry.
 func (v MLDSAVerifier) KeyIDs() []string {
 	if v.Pub == nil {
 		return nil
 	}
-	return []string{KeyID(AlgMLDSA65, v.Pub.Bytes())}
+	return []string{KeyID(strings.ToLower(v.Pub.Parameters().String()), v.Pub.Bytes())}
 }
 
 // ---- hybrid ed25519 + ML-DSA-65 ----
@@ -178,8 +181,8 @@ func (v HybridVerifier) KeyIDs() []string {
 }
 
 // KeyID is the key identity the audit verifiers report from KeyIDs: alg, a colon, and the
-// lowercase hex SHA-256 of the public key's encoding (for Ed25519 the 32-byte key, for ML-DSA-65
-// its FIPS 204 encoding). It depends only on the key, so every verifier over one key reports it.
+// lowercase hex SHA-256 of the public key's encoding (for Ed25519 the 32-byte key, for ML-DSA its
+// FIPS 204 encoding). It depends only on the key, so every verifier over one key reports it.
 func KeyID(alg string, pub []byte) string {
 	h := sha256.Sum256(pub)
 	return alg + ":" + hex.EncodeToString(h[:])

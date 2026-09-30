@@ -158,7 +158,9 @@ func TestTallyApprovals_SharedKeyNeverCounts(t *testing.T) {
 }
 
 // A resolver that answers the gate's check with distinct keys and the count with one shared
-// key does not get one person through: the count excludes the shared seats itself.
+// key does not get one person through: the count excludes the shared seats itself, and with both
+// seats of a 2-of-2 excluded the quorum is unreachable, so the gate denies (fails closed) and
+// journals a tally naming them as Excluded.
 func TestMofn_SharedKeyAfterCheckNeverCounts(t *testing.T) {
 	store := NewMemStore()
 	pol := &ApprovalPolicy{Need: 2, Approvers: []string{"a1", "a2"}}
@@ -182,9 +184,14 @@ func TestMofn_SharedKeyAfterCheckNeverCounts(t *testing.T) {
 	if charged != 0 {
 		t.Fatalf("charge ran %d times on one person's approval, want 0", charged)
 	}
-	var pend *PendingApproval
-	if !errors.As(err, &pend) {
-		t.Fatalf("err = %v, want the gate to stay paused", err)
+	if err != nil {
+		t.Fatalf("err = %v, want the gate to deny and the run to finish", err)
+	}
+	got, err := step(context.Background(), store, "r1", ApprovalTallyStep("c1"), func(context.Context) (ApprovalTally, error) {
+		return ApprovalTally{}, errors.New("no tally journaled")
+	})
+	if err != nil || got.Passed() || !reflect.DeepEqual(got.Excluded, []string{"a1", "a2"}) {
+		t.Fatalf("journaled tally = %+v (err %v), want a denial with a1 and a2 excluded", got, err)
 	}
 }
 
@@ -221,7 +228,7 @@ func TestMofn_SharedKeyBetweenRounds(t *testing.T) {
 type ptrVerifier struct{ keys []string }
 
 func (v *ptrVerifier) Verify(message, sig []byte) bool { return len(v.keys) > 0 }
-func (v *ptrVerifier) KeyIDs() []string               { return v.keys }
+func (v *ptrVerifier) KeyIDs() []string                { return v.keys }
 
 // noPanic runs f and fails the test, rather than crashing it, if f panics.
 func noPanic(t *testing.T, what string, f func()) {
@@ -286,8 +293,8 @@ func TestTallyApprovals_UnreachableExcludesSharedSeats(t *testing.T) {
 	if !tally.Unreachable() {
 		t.Fatalf("tally = %+v: two of three seats are excluded, so Need 2 is unreachable", tally)
 	}
-	if !reflect.DeepEqual(tally.Pending, []string{"a3"}) {
-		t.Fatalf("Pending = %v, want [a3]: an excluded approver is not waited on", tally.Pending)
+	if !reflect.DeepEqual(tally.Pending, []string{"a3"}) || !reflect.DeepEqual(tally.Excluded, []string{"a1", "a2"}) {
+		t.Fatalf("Pending = %v Excluded = %v, want [a3] and [a1 a2]: an excluded approver is not waited on", tally.Pending, tally.Excluded)
 	}
 	// Need 1 is still reachable through a3.
 	if tally, _ := TallyApprovals(nil, s, ApprovalPolicy{Need: 1, Approvers: []string{"a1", "a2", "a3"}}, vf); tally.Unreachable() {
