@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/internal/toolhook"
 )
 
 // New constructs a flow builder whose input is In and output is Out, both pinned
@@ -189,6 +190,9 @@ func (b *Builder[In, Out]) Step[I, O any](name string, fn func(context.Context, 
 // than the tool's own declaration.
 func (b *Builder[In, Out]) Tool[I, O any](name string, t agent.Tool, opts ...NodeOption) Handle[I, O] {
 	spec := agent.SpecOf(t) // read once, as the agent reads it
+	if err := checkTool(t); err != nil {
+		b.core.errs = append(b.core.errs, fmt.Errorf("plan: tool step %q: %w", name, err)) // surfaced at Build
+	}
 	b.core.register(applyNodeOptions(&node{
 		name:     name,
 		kind:     kindTool,
@@ -381,6 +385,15 @@ func callTool(ctx context.Context, t agent.Tool, timeout time.Duration, args jso
 		return nil, fmt.Errorf("plan: tool %q returned an error after its %s timeout: %w (%w)", agent.SpecOf(t).Name, timeout, err, agent.ErrToolOutcomeUnknown)
 	}
 	return raw, err
+}
+
+// checkTool refuses a tool agent.New would refuse for how it wraps another: a Compensator on its
+// Unwrap chain, or a timeout over a sub-agent (the agent's own check, shared through toolhook).
+func checkTool(t agent.Tool) error {
+	if toolhook.CheckTool == nil { // set by the agent package's init, which plan imports
+		return nil
+	}
+	return toolhook.CheckTool(t)
 }
 
 // pastDeadline reports whether ctx is done or its deadline has passed.

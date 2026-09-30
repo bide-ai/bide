@@ -133,16 +133,36 @@ func (t *subAgentTool) Call(ctx context.Context, args json.RawMessage) (json.Raw
 // takes it for the tool it wraps. A wrapper over a sub-agent with a Timeout would cut the sub-run
 // off mid-call, which SubAgent itself refuses (see SubAgent). Both are ErrConfig.
 func checkWrapper(t Tool, s ToolSpec) error {
-	if _, wraps := t.(interface{ Unwrap() Tool }); !wraps {
-		return nil
-	}
-	if _, comp := t.(Compensator); comp {
-		return fmt.Errorf("agent: tool %q wraps another tool (Unwrap) and is a Compensator; a wrapper must not have side effects or a compensation of its own: %w", s.Name, ErrConfig)
-	}
 	if _, sub := asSubAgent(t); sub && s.Timeout > 0 {
-		return fmt.Errorf("agent: tool %q wraps a sub-agent and has a Timeout, which a sub-agent refuses (see SubAgent): %w", s.Name, ErrConfig)
+		if _, wraps := t.(interface{ Unwrap() Tool }); wraps {
+			return fmt.Errorf("agent: tool %q wraps a sub-agent and has a Timeout, which a sub-agent refuses (see SubAgent): %w", s.Name, ErrConfig)
+		}
 	}
-	return nil
+	// Every wrapper on the Unwrap chain, not only the outermost, is held to the contract.
+	for range 64 { // the same bound as asSubAgent
+		u, wraps := t.(interface{ Unwrap() Tool })
+		if !wraps {
+			return nil
+		}
+		if _, comp := t.(Compensator); comp {
+			return fmt.Errorf("agent: tool %q wraps another tool (Unwrap), and a wrapper on its Unwrap chain (%T) is a Compensator; a wrapper must not have side effects or a compensation of its own: %w", s.Name, t, ErrConfig)
+		}
+		if t = u.Unwrap(); t == nil {
+			return nil
+		}
+	}
+	return fmt.Errorf("agent: tool %q unwraps more than 64 times (a cycle?): %w", s.Name, ErrConfig)
+}
+
+// init shares checkWrapper with plan (see toolhook.CheckTool), so a flow refuses what New refuses.
+func init() {
+	toolhook.CheckTool = func(t any) error {
+		tool, ok := t.(Tool)
+		if !ok {
+			return fmt.Errorf("agent: %T is not a Tool: %w", t, ErrConfig)
+		}
+		return checkWrapper(tool, SpecOf(tool))
+	}
 }
 
 // asSubAgent returns the SubAgent tool t is, or wraps. A tool that wraps another (as

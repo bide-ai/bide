@@ -29,3 +29,12 @@ func TestAdv117b_PlanAcceptsATimedWrapperOverASubAgent(t *testing.T) {
 		t.Fatalf("Build = %v; want ErrConfig, as agent.New gives for the same tool", err)
 	}
 }
+
+// RegisterTool refuses the same wrapper, and a Compensator nested in an Unwrap chain.
+func TestAdv117b_RegisterToolRefusesUnsafeWrappers(t *testing.T) {
+	sub := agent.New(agent.NewScriptedModel(agent.TextTurn("x")), agent.NewMemStore())
+	reg := NewRegistry()
+	if err := RegisterTool[string, string](reg, "delegate", timedSubWrap{agent.SubAgent("delegate", "", sub)}); !errors.Is(err, agent.ErrConfig) {
+		t.Fatalf("RegisterTool = %v, want ErrConfig", err)
+	}
+}

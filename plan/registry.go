@@ -258,6 +258,9 @@ func RegisterStep[I, O any](r *Registry, name string, fn func(context.Context, I
 // recorded in Go here, not in the config JSON.
 func RegisterTool[I, O any](r *Registry, name string, t agent.Tool, opts ...NodeOption) error {
 	spec := agent.SpecOf(t) // read once, as the agent reads it
+	if err := checkTool(t); err != nil {
+		return fmt.Errorf("plan: RegisterTool %q: %w", name, err)
+	}
 	return r.registerBlock(name, &regBlock{
 		kind:     kindTool,
 		inType:   reflect.TypeFor[I](),

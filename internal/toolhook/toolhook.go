@@ -13,3 +13,8 @@ import "context"
 type RollbackBinder interface {
 	BindRollback(ctx context.Context, subRunID string) (context.Context, error)
 }
+
+// CheckTool refuses a tool the agent's New would refuse for how it wraps another (see
+// agent.checkWrapper): a Compensator on its Unwrap chain, or a timeout over a sub-agent. The agent
+// package sets it in init; plan calls it so a flow refuses what an agent refuses.
+var CheckTool func(t any) error
