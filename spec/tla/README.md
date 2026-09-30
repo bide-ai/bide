@@ -381,7 +381,94 @@ and F4 at `2c8d2db`, and their counterexamples are regression configurations now
 
 The `findings/` configs flip to `pass` when the code is fixed.
 
-### What the bounds do not cover
+## Model 1b: the approval gate
+
+An extension of model 1 in the same spec: before a tool call claims its attempt, the loop's
+pre-pass applies the call's approval gate, and the claim protocol, crashes, faults and halt
+resolution all run around it.
+
+### What is modelled
+
+- **1-of-1 (`Approve`).** `approval:<id>` holds the first decision recorded (`Approve1`, either
+  verdict, at any time).
+- **m-of-n (`SubmitDecision`).** Each decision is its own record, in journal order: the approver
+  id it names, the person who signed, the verdict, whether the signature verifies (the signer
+  holds that approver's key: `KeyOf`, `Holder`), and whether it was signed over this exact call
+  or another call or other arguments (`Subjects`). People sign as the approvers whose keys they
+  hold; an actor holding no key (`hx`) forges. An identical resubmission adds nothing.
+- **The counting rule (`TallyApprovals`).** An approver's decision is their first record that
+  verifies over this call; the tally passes with `need` approvals and is final once passed or
+  unreachable. `quorumTally` reads the history afresh, uses a recorded tally if there is one,
+  pauses on a count that is not final, and otherwise records the tally (first writer wins) and
+  goes by the record the journal holds.
+- **Deployments.** Each process has its own deployment of the tool's gate (`policy[p][c]`), which
+  a redeploy may remove, loosen, tighten or change between that process's drives, while another
+  process may still run the old one. `ApprovalPolicy.Validate`'s fold check (`FoldSame`) refuses
+  a policy that lists one approver under two spellings.
+- **A recorded denial is final.** The pre-pass denies a call whose Load read an `Approve(false)`
+  or a failing recorded tally, whatever the gate is now (#70), and records the denial as the
+  call's result.
+
+| Label | Go |
+|---|---|
+| `ApGate` | `Agent.run`'s pre-pass: `decided`/`approvals` and `values` from the Load, then `t.Safety()` |
+| `QTally` | `Agent.quorumTally`: `ApprovalPolicy.Validate`, `History`, a recorded `ApprovalTallyStep`, `TallyApprovals` |
+| `QRecord` | `quorumTally`'s `step` recording the tally (retry-safe, first writer wins) |
+| `Deny` | the pre-pass's `putRecord` of the denied result |
+| `Approve1` | `Approve` |
+| `Submit` | `SubmitDecision` (without `WithDecisionCheck`: the gate never depends on it) |
+| `Redeploy` | a new deployment of a process's tools |
+
+### Properties
+
+| Property | Kind | Statement |
+|---|---|---|
+| `NoUnapprovedFire` | invariant | an effect fires under a gate only with a recorded sufficient approval (an `Approve(true)` or a passing recorded tally) |
+| `DenialFinal` | invariant | a drive whose Load read a recorded denial never fires the effect, whatever the gate is now |
+| `TallySound` | invariant | a passing recorded tally rests on `need` valid approvals, signed over this exact call, by distinct people |
+| `DenialSound` | invariant | a failing recorded tally rests on enough valid denials: an invalid record cannot force a denial |
+| `NoStuckPause` | invariant | the gate never pauses for approvals that are already in (no lockout) |
+
+`AtMostOnce`, `NoLiveOverride` and the rest of model 1's properties are checked in the same runs.
+A denial recorded after a drive's Load, on a process whose deployment has no gate, does not stop
+that drive: the gate is gone, and no approval semantics applies to it; `DenialFinal` holds for
+every drive that read the denial.
+
+### Configurations
+
+| Config | Group | What | States | Time |
+|---|---|---|---|---|
+| `ap-one-cross` | ci | 1-of-1, two drivers in two processes with their own deployments; a redeploy removes the gate or makes it m-of-n; two `Approve` calls; 1 error reply, 1 crash | 172,801 | 4 s |
+| `ap-m-cross` | ci | m-of-n (2 of 3), two drivers in two processes recording the tally concurrently; two decisions from the approvers or the adversary; a redeploy tightens or loosens one process's policy; 1 error reply | 415,936 | 8 s |
+| `ap-m-bound` | ci | m-of-n with decisions signed over another call; one driver, three decisions | 2,790 | <1 s |
+| `ap-one-resolve` | ci | 1-of-1 with an operator resolving halts (lease check, claim of the next attempt); 1 error reply, 1 crash | 3,857 | <1 s |
+| `ap-one-resolve-minage` | ci | 1-of-1 with an operator resolving halts under `WithMinHaltAge` and the claim of the next attempt; 2 error replies | 48,356 | 2 s |
+| `ap-fold-check` | ci | the #68 fix: a policy listing one approver twice is refused | 222 | <1 s |
+| `ap-shared-key-check` | ci | F5's fix: a policy whose approvers share a key is refused | 606 | <1 s |
+| `deep-ap-m-same` | nightly | m-of-n, two drivers in one process, three decisions, a redeploy; 1 error reply | 5,252,508 | 6 min |
+
+Regressions: `regress/ap-denial-not-final` (#70: a recorded denial honoured only while the tool
+had a gate; `DenialFinal`, 12 states), `regress/ap-unbound-subject` (approval v2: a signature over
+another call counted; `TallySound`, 14 states), `regress/ap-slot-per-approver` (approval v2: one
+record per approver, so a forged record took the approver's place and the gate waited for
+approvals already in; `NoStuckPause`, 8 states), `regress/ap-fold-dup` (#68: one person filled
+two seats under two spellings of one id; `TallySound`, 14 states).
+
+### Findings
+
+- **F5 (open): two approvers whose verifiers resolve to one key are two seats for one person.**
+  `ApprovalPolicy.Validate` refuses one approver under two spellings, but nothing compares keys:
+  if `verifierFor` resolves a1 and a2 to the same key, its holder signs both decisions, and the
+  tally passes with one person's approval (`findings/ap-shared-key`, `TallySound`, 10 states).
+  Fix, which the model checks (`ap-shared-key-check`, `KeyCheck`): the gate refuses a policy two
+  of whose approvers resolve to one key. The maintainer approved it: `ApproverVerifier` gets a key
+  identity (branch `fix/approver-key-identity`); the finding moves to `regress/` when it lands.
+
+## What the bounds do not cover
+
+Model 1b adds: three approvers and a policy of 2 of 3 (tightened to 3 or loosened to 1 by a
+redeploy), up to three decisions and two `Approve` calls, one call. A bug that needs more
+decisions than that, or two gated calls whose approvals interact, is outside the check.
 
 Two drivers (three in `deep-drivers`, nightly, with one error reply), one crash, one
 cancellation, up to two error replies per run on pull requests (three in the F3 configs) and
