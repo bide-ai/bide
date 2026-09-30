@@ -5,6 +5,8 @@ on:
     branches: [ main ]
   pull_request:
     branches: [ main ]
+  # The merge queue tests each batch on a temporary branch; the required checks must run there.
+  merge_group:
 
 permissions:
   contents: read

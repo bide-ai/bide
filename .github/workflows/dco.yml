@@ -8,6 +8,8 @@ name: DCO
 on:
   pull_request:
     types: [opened, synchronize, reopened]
+  # The merge queue runs the required checks again on its batch branch.
+  merge_group:
 
 permissions:
   contents: read
@@ -21,8 +23,9 @@ jobs:
           fetch-depth: 0
       - name: Check Signed-off-by on every commit
         run: |
-          base='${{ github.event.pull_request.base.sha }}'
-          head='${{ github.event.pull_request.head.sha }}'
+          # In the merge queue the range is the batch: the queue's base and its merge commit.
+          base='${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}'
+          head='${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}'
           missing=0
           for c in $(git rev-list "$base..$head"); do
             if ! git show -s --format=%B "$c" | grep -qiE '^Signed-off-by: .+ <.+@.+>'; then
