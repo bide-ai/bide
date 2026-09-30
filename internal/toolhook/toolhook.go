@@ -33,3 +33,9 @@ func (e *Unrecorded) Error() string { return e.Err.Error() }
 
 // Unwrap returns Err, so errors.Is sees its category.
 func (e *Unrecorded) Unwrap() error { return e.Err }
+
+// CallGuard, when set, is asked before every tool call reaches its tool, with the call's context:
+// an error refuses the call, recorded as a known failure, and the tool is never called. The audit
+// package sets it (in init) to refuse a call made under a bound grant that has expired, so a
+// delegation cannot act past its grant's NotAfterUnix, however long its sub-run runs.
+var CallGuard func(ctx context.Context) error

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/bide-ai/bide/internal/strictjson"
+	"github.com/bide-ai/bide/internal/toolhook"
 )
 
 // quorumTally evaluates the m-of-n gate for tu. It re-reads the run's journal (the
@@ -294,6 +295,13 @@ func (a *Agent) toolHandler(runID string) func(context.Context, ToolUse) (json.R
 		// the call fails as a known timeout rather than start an effect already out of time.
 		if ctxDone(ctx) {
 			return refuse(fmt.Errorf("tool %q (call %s) was not started: its context was done before the call: %w", tu.Name, tu.ID, doneCause(ctx)))
+		}
+		// A guard of this module (audit: the bound grant has not expired) refuses a call its tool
+		// must not run; the refusal is a known failure, recorded.
+		if guard := toolhook.CallGuard; guard != nil {
+			if err := guard(ctx); err != nil {
+				return refuse(err)
+			}
 		}
 		// From here the call is reached: the chain can no longer close it, so nothing after this
 		// (the accepted arguments' record, the tool) runs for a call the loop has already decided.

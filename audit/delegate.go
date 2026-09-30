@@ -19,6 +19,9 @@ type grantCarrier struct {
 	sg     SignedGrant
 	signer Signer
 	absent bool // withoutGrant: a grant bound further out does not apply here
+	// delegated marks a child grant an AttenuatingSubAgent bound for its sub-run: every tool call
+	// under it is refused once it has expired (see init).
+	delegated bool
 }
 
 // WithGrant binds the acting principal's signed grant and its signer to ctx. AttenuatingSubAgent
@@ -118,6 +121,19 @@ func (t *attenuatingSubAgent) Spec() agent.ToolSpec { return agent.SpecOf(t.Tool
 // Unwrap returns the SubAgent tool it wraps, so the agent recognises the call as a delegation:
 // a saga rollback recurses into its sub-run, and the tree's token budget counts it.
 func (t *attenuatingSubAgent) Unwrap() agent.Tool { return t.Tool }
+
+func init() {
+	// Every tool call in a delegation's sub-run is refused once the delegation's grant has expired
+	// (see toolhook.CallGuard), so the sub-run cannot act past its grant's NotAfterUnix. A grant
+	// bound by the caller (WithGrant) is checked when a delegation mints from it instead.
+	toolhook.CallGuard = func(ctx context.Context) error {
+		c, ok := ctx.Value(grantCtxKey{}).(grantCarrier)
+		if ok && c.delegated && !c.absent && c.sg.Grant.Expired(time.Now().Unix()) {
+			return fmt.Errorf("audit: delegation %q cannot act: its grant %q expired at %d: %w", c.sg.Grant.Subject, c.sg.Grant.ID, c.sg.Grant.NotAfterUnix, agent.ErrConfig)
+		}
+		return nil
+	}
+}
 
 // unrecorded marks err as a refusal the agent records nothing for (see toolhook.Unrecorded): the
 // run stops with it, and a re-drive under the right authority continues the delegation.
@@ -252,7 +268,7 @@ func (t *attenuatingSubAgent) Call(ctx context.Context, args json.RawMessage) (j
 	var childSG SignedGrant
 	if existing != nil {
 		if existing.Grant.Subject != t.name {
-			return nil, unrecorded(fmt.Errorf("audit: delegation %q (sub-run %s) journaled a grant for subject %q: %w", t.name, subRunID, existing.Grant.Subject, agent.ErrProtocol))
+			return nil, fmt.Errorf("audit: delegation %q (sub-run %s) journaled a grant for subject %q: %w", t.name, subRunID, existing.Grant.Subject, agent.ErrProtocol)
 		}
 		if err := t.checkChild(*existing, parentSG, signer); err != nil {
 			// Resumed under another grant or signer than the delegation began with: bind those and
@@ -260,10 +276,16 @@ func (t *attenuatingSubAgent) Call(ctx context.Context, args json.RawMessage) (j
 			return nil, unrecorded(fmt.Errorf("%w (%w)", err, agent.ErrConfig))
 		}
 		if existing.Grant.Expired(now) {
-			return nil, unrecorded(fmt.Errorf("audit: delegation %q (sub-run %s) cannot continue: its grant expired at %d: %w", t.name, subRunID, existing.Grant.NotAfterUnix, agent.ErrConfig))
+			// Permanent: no grant can renew a journaled one, so the delegation fails, recorded, and
+			// a saga rolls back (BindRollback does not check expiry).
+			return nil, fmt.Errorf("audit: delegation %q (sub-run %s) cannot continue: its grant expired at %d: %w", t.name, subRunID, existing.Grant.NotAfterUnix, agent.ErrConfig)
 		}
 		childSG = *existing
 	} else {
+		if parentSG.Grant.Expired(now) {
+			// The bound grant expired: bind a live one and drive again.
+			return nil, unrecorded(fmt.Errorf("audit: attenuating delegation to %q: the bound grant expired at %d: %w", t.name, parentSG.Grant.NotAfterUnix, agent.ErrConfig))
+		}
 		child := t.narrow(parentSG.Grant, t.name)
 		child.ParentRef = parentSG.Grant.Digest()
 		if child.Issuer == "" {
@@ -281,10 +303,8 @@ func (t *attenuatingSubAgent) Call(ctx context.Context, args json.RawMessage) (j
 		if err := CheckAttenuation(parentSG.Grant, child, t.rules); err != nil {
 			return nil, fmt.Errorf("audit: attenuating delegation to %q: %w", t.name, err)
 		}
-		// CheckAttenuation holds the child to its parent's expiry, so this refuses an expired bound
-		// grant too.
-		if child.Expired(now) {
-			return nil, unrecorded(fmt.Errorf("audit: attenuating delegation to %q: its grant expires at %d, already past: %w", t.name, child.NotAfterUnix, agent.ErrConfig))
+		if child.Expired(now) { // the AttenuateFunc's choice, under a live parent: a failure
+			return nil, fmt.Errorf("audit: attenuating delegation to %q: its child grant expires at %d, already past: %w", t.name, child.NotAfterUnix, agent.ErrConfig)
 		}
 		if subRunID == "" {
 			return nil, fmt.Errorf("audit: attenuating delegation to %q needs a run scope: call it from an agent run", t.name)
@@ -306,7 +326,7 @@ func (t *attenuatingSubAgent) Call(ctx context.Context, args json.RawMessage) (j
 		OnBehalfOf:   parentSG.Grant.Subject,
 		AuthorityRef: childSG.Grant.Digest(),
 	})
-	ctx = WithGrant(ctx, childSG, signer)
+	ctx = context.WithValue(ctx, grantCtxKey{}, grantCarrier{sg: childSG, signer: signer, delegated: true})
 
 	return t.Tool.Call(ctx, args)
 }

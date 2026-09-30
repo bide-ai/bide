@@ -106,9 +106,10 @@ func TestAdv117c_PreChangeUngrantedJournalCannotRollBack(t *testing.T) {
 	}
 }
 
-// A delegation cannot run past its grant's NotAfter: minting from an expired bound grant, or
-// continuing under an expired journaled one, is ErrConfig, unrecorded (nothing is journaled for the
-// call); a journaled grant for another subject is refused (ErrProtocol), unrecorded too.
+// A delegation's authority is checked on entry. Minting from an expired bound grant is a
+// wrong-authority refusal: ErrConfig, unrecorded, so a re-drive under a live grant continues. An
+// expired journaled grant, or one for another subject, is permanent: the delegation's failure is
+// recorded (in a saga, it rolls back).
 func TestAdv117c_ExpiredOrForeignGrantIsRefusedUnrecorded(t *testing.T) {
 	_, priv, _ := ed25519.GenerateKey(rand.Reader)
 	signer := Ed25519Signer{Priv: priv}
@@ -116,13 +117,14 @@ func TestAdv117c_ExpiredOrForeignGrantIsRefusedUnrecorded(t *testing.T) {
 	live, _ := SignGrant(Grant{ID: "g0", Issuer: "corp", Subject: "desk", Scope: map[string]string{"limit": "7"}, NotAfterUnix: future}, signer)
 	expired, _ := SignGrant(Grant{ID: "g0", Issuer: "corp", Subject: "desk", Scope: map[string]string{"limit": "7"}, NotAfterUnix: past}, signer)
 	for name, tc := range map[string]struct {
-		root    SignedGrant
-		journal *Grant // a child grant already in the sub-run
-		want    error
+		root     SignedGrant
+		journal  *Grant // a child grant already in the sub-run
+		want     error  // the run's error when unrecorded
+		recorded bool   // the refusal is recorded as the delegation's failure
 	}{
 		"expired bound grant":     {root: expired, want: agent.ErrConfig},
-		"expired journaled grant": {root: live, journal: &Grant{ID: "c", Issuer: "desk", Subject: "exec", Scope: map[string]string{"limit": "4"}, NotAfterUnix: past}, want: agent.ErrConfig},
-		"foreign subject":         {root: live, journal: &Grant{ID: "c", Issuer: "desk", Subject: "other", Scope: map[string]string{"limit": "4"}, NotAfterUnix: future}, want: agent.ErrProtocol},
+		"expired journaled grant": {root: live, journal: &Grant{ID: "c", Issuer: "desk", Subject: "exec", Scope: map[string]string{"limit": "4"}, NotAfterUnix: past}, recorded: true},
+		"foreign subject":         {root: live, journal: &Grant{ID: "c", Issuer: "desk", Subject: "other", Scope: map[string]string{"limit": "4"}, NotAfterUnix: future}, recorded: true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			ctx := context.Background()
@@ -139,14 +141,22 @@ func TestAdv117c_ExpiredOrForeignGrantIsRefusedUnrecorded(t *testing.T) {
 			sub := agent.New(agent.NewScriptedModel(agent.TextTurn("done")), store, agent.Func("noop", "", agent.Safety{}, func(context.Context, struct{}) (string, error) { ran.Add(1); return "", nil }))
 			exec := AttenuatingSubAgent("exec", "", sub, AttenuationConfig{Store: store, Narrow: narrowLimitBy(3), Rules: ScopeRules{"limit": NumericAtMost}})
 			parent := agent.New(agent.NewScriptedModel(agent.ToolTurn("c1", "exec", `{"task":"x"}`), agent.TextTurn("done")), store, exec)
-			if _, err := parent.Run(WithGrant(ctx, tc.root, signer), "r", "go"); !errors.Is(err, tc.want) {
-				t.Fatalf("Run = %v, want %v", err, tc.want)
-			}
+			_, err := parent.Run(WithGrant(ctx, tc.root, signer), "r", "go")
+			var result *agent.Record
 			recs, _ := store.History(ctx, "r")
-			for _, r := range recs {
-				if r.Kind == agent.StepToolResult && r.ToolUseID == "c1" {
-					t.Fatalf("the refusal was recorded: %s", r.Result)
+			for i := range recs {
+				if recs[i].Kind == agent.StepToolResult && recs[i].ToolUseID == "c1" {
+					result = &recs[i]
 				}
+			}
+			if tc.recorded {
+				if err != nil || result == nil || !result.IsError {
+					t.Fatalf("Run = %v, result %+v; want the refusal recorded as the delegation's failure", err, result)
+				}
+				return
+			}
+			if !errors.Is(err, tc.want) || result != nil {
+				t.Fatalf("Run = %v, result %+v; want %v, unrecorded", err, result, tc.want)
 			}
 		})
 	}
@@ -173,10 +183,10 @@ func TestAdv117c_MintRefusesExpiredOrForeignChild(t *testing.T) {
 		parent := agent.New(agent.NewScriptedModel(agent.ToolTurn("c1", "exec", `{"task":"x"}`), agent.TextTurn("done")), store, exec)
 		_, err := parent.Run(WithGrant(ctx, root, signer), "r", "go")
 		recs, _ := store.History(ctx, agent.SubRunID("r", "c1"))
-		if len(recs) != 0 || (name == "expired child" && !errors.Is(err, agent.ErrConfig)) {
+		if len(recs) != 0 {
 			t.Errorf("%s: Run = %v with %d sub-run records; want the delegation refused before anything is journaled", name, err, len(recs))
 		}
-		if name == "foreign subject" {
+		{
 			res, _ := store.History(ctx, "r")
 			found := false
 			for _, r := range res {
