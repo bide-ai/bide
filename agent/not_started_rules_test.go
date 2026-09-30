@@ -205,3 +205,42 @@ func TestTool_CrashInAReattemptHalts(t *testing.T) {
 		t.Fatalf("resume after a crash in the re-attempt = %v with %d charges, want *ResumeHalt for c1 and no charge", err, calls.Load())
 	}
 }
+
+// A call recorded as not started emits neither ToolStarted nor ToolCompleted: a stream consumer
+// sees ToolStarted only for a call that actually starts, and each is paired with its
+// ToolCompleted once the call is re-attempted.
+func TestStream_NotStartedCallEmitsNoToolStarted(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	store := &markerHookStore{MemStore: NewMemStore(), cancel: cancel}
+	charge := Func("charge", "charge the card", Safety{}, func(context.Context, struct{}) (string, error) {
+		return "charged", nil
+	})
+	m := &greedyModel{script: [][]Emit{toolTurn("c1", "charge", `{}`), textTurn("done")}}
+	evs, _, err := collect(New(m, store, charge).Stream(ctx, "r1", "pay"))
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled stream err = %v, want context.Canceled", err)
+	}
+	for _, e := range evs {
+		switch e.(type) {
+		case ToolStarted, ToolCompleted:
+			t.Fatalf("a call that never started emitted %T (events %v)", e, kinds(evs))
+		}
+	}
+
+	evs, _, err = collect(New(&greedyModel{script: [][]Emit{textTurn("done")}}, store.MemStore, charge).Stream(context.Background(), "r1", "pay"))
+	if err != nil {
+		t.Fatalf("resumed stream err = %v", err)
+	}
+	var started, completed int
+	for _, e := range evs {
+		switch e.(type) {
+		case ToolStarted:
+			started++
+		case ToolCompleted:
+			completed++
+		}
+	}
+	if started != 1 || completed != 1 {
+		t.Fatalf("the re-attempt emitted %d ToolStarted and %d ToolCompleted, want one of each (events %v)", started, completed, kinds(evs))
+	}
+}
