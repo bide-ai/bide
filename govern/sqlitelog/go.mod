@@ -4,6 +4,7 @@ go 1.27.0
 
 require (
 	github.com/bide-ai/bide v0.0.0
+	github.com/bide-ai/bide/govern v0.0.0
 	github.com/blackwell-systems/gsm v0.11.0
 	modernc.org/sqlite v1.59.0
 )
@@ -23,3 +24,5 @@ require (
 )
 
 replace github.com/bide-ai/bide => ../../
+
+replace github.com/bide-ai/bide/govern => ../

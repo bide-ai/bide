@@ -718,7 +718,7 @@ func RequireTag(tag string) agent.ToolMiddleware {
 ## الوحدات (Modules)
 
 Bide مستودع متعدّد الوحدات: **نواة** خفيفة التبعيات (`github.com/bide-ai/bide`، الحلقة، schema،
-middleware، مُحوّلات النموذج، باني تدفّق `plan`، `audit`، govern؛ تبعياتها مجرّد gsm + `x/sync`) مع وحدة
+middleware، مُحوّلات النموذج، باني تدفّق `plan`، `audit`؛ تبعياتها مجرّد `x/sync` + `x/text`) مع وحدة
 واحدة لكل مُحوّل ثقيل (`mcp`، `trace`، `store/sqlite`، `store/postgres`، `govern/redislog`،
 `govern/sqlitelog`، `govern/postgreslog`، `codec/gcf`). استورد مُحوّلًا فتسحب شجرة تبعياته؛ واستورد النواة فقط فلا
 تسحبها. سطح الوحدات الخارجية لمُستهلِك النواة-فقط هو 2، لا 54. انظر
@@ -772,8 +772,8 @@ tool := govern.EventTool(gov, "pay", "mark the order paid", "pay", agent.Safety{
 // hand `tool` to the agent: concurrent agents sharing `gov` converge, durably.
 ```
 
-> الدليل الكامل، وسُلَّم القدرات، والعروض القابلة للتشغيل (`examples/mesh`، `examples/compose`،
-> `examples/quorum`) في **[docs/guides/governance.md](../../docs/guides/governance.md)**.
+> الدليل الكامل، وسُلَّم القدرات، والعروض القابلة للتشغيل (`examples/govern/mesh`، `examples/govern/compose`،
+> `examples/govern/quorum`) في **[docs/guides/governance.md](../../docs/guides/governance.md)**.
 
 ## الأدلّة (Guides)
 
@@ -812,21 +812,21 @@ gsm، ProofBundle). ويُذكَر ضمان المعمورية الدقيق في
 **المساءلة والحوكمة**
 
 - **[التدقيق](../../docs/guides/audit.md)**: تشغيلات حاملة للبرهان. تشحن تشغيلة `RunCertificate` واحدة قابلة
-  للنقل، تُفحَص دون اتصال بـ `bide-audit verify-run`. قابل للتشغيل: `examples/proof-carrying-run`.
+  للنقل، تُفحَص دون اتصال بـ `bide-audit verify-run`. قابل للتشغيل: `examples/govern/proof-carrying-run`.
 - **[التفويض](../../docs/guides/delegation.md)**: مِنَح قدرات موقَّعة لا يستطيع الوكيل الفرعي إلا تضييقها
   (`Grant`/`SignGrant`)، مُتحقَّق منها دون اتصال (`VerifyDelegationChain`)، مع سُلطة مكتسَبة من أثر نظيف. قابل
-  للتشغيل: `examples/delegation`، `examples/authority`.
+  للتشغيل: `examples/govern/delegation`، `examples/govern/authority`.
 - **[نموذج الأمان](../../docs/guides/security-model.md)**: النطاق الدقيق للضمانات التشفيرية (السلامة،
   والأصالة، وإظهار العبث، وعدم الإنكار، والإفصاح الانتقائي) وما هو خارج النطاق (السرّية). اقرأه قبل الاعتماد
   على الأثر.
 - **[الحوكمة](../../docs/guides/governance.md)**: ركيزة الحالة المحكومة من Tier-2 (gsm). صِف الحالة المشتركة
-  كسجلّ، ويُثبِت `Build()` أن كل تشابك يتقارب أو يُعيد مثالًا مضادًّا. قابل للتشغيل: `examples/mesh`،
-  `examples/compose`.
+  كسجلّ، ويُثبِت `Build()` أن كل تشابك يتقارب أو يُعيد مثالًا مضادًّا. قابل للتشغيل: `examples/govern/mesh`،
+  `examples/govern/compose`.
 - **[الموافقة](../../docs/guides/approval.md)**: توقيع بشري مُعمَّر قبل تشغيل أداة، من 1-من-1 إلى m-من-n
   الموقَّعة (`ApprovalPolicy`، `ApproveAs`)، مع برهان دون اتصال على أن k مُوافِقين مُسمَّين وافقوا قبل الفعل
   (`audit.ApprovalEvidence`، `audit.VerifyApprovals`). قابل للتشغيل: `examples/approval`.
 - **[النِّصاب](../../docs/guides/quorum.md)**: اتّفاق نماذج محكوم k-من-n (`govern.Quorum`)، مع تثبيت التعداد
-  في السجل وقابليته لإعادة الفحص دون اتصال (`bide-audit verify-quorum`). قابل للتشغيل: `examples/quorum`.
+  في السجل وقابليته لإعادة الفحص دون اتصال (`bide-audit verify-quorum`). قابل للتشغيل: `examples/govern/quorum`.
 
 **المرجع والبنية الداخلية**
 

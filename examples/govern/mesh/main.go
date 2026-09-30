@@ -8,7 +8,7 @@
 // The rule is mutual (cyclic), so it needs monotone-cycle convergence. Actions go through
 // govern.FederatedEventTool, the same tool boundary a real LLM agent would call.
 //
-// Run: go run ./examples/mesh
+// Run (from examples/govern, its own module): go run ./mesh
 package main
 
 import (

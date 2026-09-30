@@ -36,7 +36,7 @@ type Vote struct {
 //
 // Agreed is the statistical signal, not a proof. The provable object is the gate a caller builds
 // from VotesFor: seed votes_for into a gsm invariant that admits the commit only when
-// votes_for >= k (see examples/quorum), and the k-of-n requirement is then machine-checked over
+// votes_for >= k (see examples/govern/quorum), and the k-of-n requirement is then machine-checked over
 // every possible count. Whether the agreed Decision is correct is not certified here: correlated
 // model errors mean agreement is not statistical independence, so a quorum lowers single-model
 // risk without certifying the answer.
@@ -53,7 +53,7 @@ type QuorumResult struct {
 // not a new agent type: the fan-out is agent.Parallel (each vote is a journaled Step, so it is
 // at-most-once and replayable), each vote and the final tally are recorded as durable Step values
 // (provable one by one via audit.ProveStep), and the k-of-n gate itself is left to the caller to
-// express as a gsm invariant over VotesFor (see examples/quorum). Keeping the model call inside
+// express as a gsm invariant over VotesFor (see examples/govern/quorum). Keeping the model call inside
 // each Voter.Decide keeps this helper model-agnostic and the votes normalized.
 //
 // Naming: name identifies this quorum within the run, so one run can hold several quorums, even

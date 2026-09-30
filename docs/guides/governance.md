@@ -170,14 +170,14 @@ gov := govern.New(m, m.NewState().SetInt(limit, granted)) // the agent never set
 
 Because `limit` is a state variable, `Build` verifies the invariant exhaustively over every
 `(exposure, limit)` pair: **one machine-checked policy covers every principal's limit at once**, and
-each run is governed to the limit its grant seeded. See `examples/authority`.
+each run is governed to the limit its grant seeded. See `examples/govern/authority`.
 
 The same pattern (an external fact seeded into governed state, gated by an invariant) is how a
 **k-of-n model quorum** would be built: fan out a decision to N models, tally the votes, seed the
 count into state, and gate the commit on `votes_for >= k`, so a high-stakes action requires
 agreement or escalates. It is a composition of existing seams, not a new agent type, and it is
 implemented: `govern.Quorum` (k-of-n model agreement over `agent.Parallel`) plus the
-`bide-audit verify-quorum` verb and `examples/quorum`. See [Quorum](quorum.md).
+`bide-audit verify-quorum` verb and `examples/govern/quorum`. See [Quorum](quorum.md).
 
 ## Federation: constraints across agents
 
@@ -203,9 +203,9 @@ a `FederatedGovernor`. The capability ladder:
 - **Monotone mesh (cycles)**: peers that constrain **each other** (mutual, cyclic). Enable
   with `Federation.AllowMonotoneCycles()`; gsm requires the repair to be monotone and
   converges by fixed-point iteration. This is the only regime that expresses mutual
-  constraints (see `examples/mesh`).
+  constraints (see `examples/govern/mesh`).
 - **Compositional `Embed`**: verify a subsystem once, reuse it as a unit inside a larger
-  federation. See `examples/compose`.
+  federation. See `examples/govern/compose`.
 
 `Build()` rejects anything it can't prove convergent: cycles without monotonicity,
 multi-source without a resolver, morphisms that don't preserve validity.
@@ -266,16 +266,19 @@ resulting machine is then handed to `govern`. Two capabilities are worth reachin
   // hand the *gsm.FedMachine to govern.NewFederated(ctx, fm, log, entity, initial)
   ```
   This is the minimal-coordination route: coordinate only the obstructing cycles, run the rest
-  coordination-free. See `examples/coordination`.
+  coordination-free. See `examples/govern/coordination`.
 
 ## Runnable demos
 
+The demos are one module, `examples/govern`, so they build without adding gsm to the core:
+
 ```
-go run ./examples/mesh       # cyclic mutual-constraint safety mesh (conflict -> converge, crash recovery)
-go run ./examples/compose    # a verified subsystem Embed-ed and reused across two systems
-go run ./examples/authority  # authority-as-governed-state: per-principal limits, one proof, identity in the leaf
-go run ./examples/compliance # KYC pipeline: parallel checks -> governed decision -> offline proofs
-go run ./examples/quorum     # governed model quorum: k-of-n agreement gates the commit, else escalate
+cd examples/govern
+go run ./mesh       # cyclic mutual-constraint safety mesh (conflict -> converge, crash recovery)
+go run ./compose    # a verified subsystem Embed-ed and reused across two systems
+go run ./authority  # authority-as-governed-state: per-principal limits, one proof, identity in the leaf
+go run ./compliance # KYC pipeline: parallel checks -> governed decision -> offline proofs
+go run ./quorum     # governed model quorum: k-of-n agreement gates the commit, else escalate
 ```
 
 ## Limits

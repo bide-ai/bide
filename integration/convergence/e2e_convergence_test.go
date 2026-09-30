@@ -1,4 +1,4 @@
-package agent_test
+package convergence_test
 
 import (
 	"context"

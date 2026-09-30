@@ -97,7 +97,7 @@ This is deliberately a thin primitive over the journal, not a graph engine. Dyna
 routing stays in plain Go and sub-agents; `Parallel` covers the **static** fan-out/fan-in that a
 governed workflow's "parallel checks, then decide" stage is made of. The full worked flow (parallel
 durable checks, then a governed decision, then an offline proof) is
-[`examples/compliance`](../../examples/compliance/main.go).
+[`examples/govern/compliance`](../../examples/govern/compliance/main.go).
 
 > Related but distinct: the agent loop already runs a *single turn's* tool calls concurrently
 > (bounded by `SetMaxConcurrency`). `Parallel` is for fan-out you author yourself outside a model

@@ -13,9 +13,12 @@ permissions:
 
 # Multi-module repo: the core module plus one module per heavy adapter. Each is
 # built/tested in its own directory (its go.mod resolves the core via a replace
-# directive; a root go.work also ties them together for local dev).
+# directive; a root go.work also ties them together for local dev). The Lint job
+# fails if a module in the tree is missing from this list or from go.work;
+# benchmarks is the one module left out of both (bench.yml runs it on demand).
 env:
-  MODULES: ". mcp trace store/sqlite store/postgres govern/redislog govern/sqlitelog govern/postgreslog codec/gcf examples/approval examples/plan examples/mcp examples/observability"
+  MODULES: ". mcp trace store/sqlite store/postgres govern govern/redislog govern/sqlitelog govern/postgreslog codec/gcf examples/approval examples/plan examples/mcp examples/observability examples/govern integration"
+  UNLISTED_MODULES: "benchmarks"
 
 jobs:
   # Decides whether a pull request touches anything the Go jobs test. A PR that changes only
@@ -57,6 +60,15 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.27'
+      - name: Every module is built, tested and in go.work
+        run: |
+          # A module missing from MODULES would never be built or tested here, so its tests could
+          # not fail. Every go.mod in the tree must be listed, in MODULES and in go.work, unless it
+          # is named in UNLISTED_MODULES; a go.mod under testdata/ or vendor/ is ignored, as the go
+          # tool ignores it. The self-test proves the check ignores those and still catches a new
+          # module.
+          .github/scripts/check-modules.sh --self-test
+          .github/scripts/check-modules.sh .
       - name: gofmt
         run: |
           # gofmt is file-based, so one pass from the root covers every module.
@@ -138,13 +150,18 @@ jobs:
             echo "== $m =="
             ( cd "$m" && go build ./... && go test $race -count=1 ./... )
           done
-      - name: Test without encoding/json/v2 (core module)
+      - name: Test without encoding/json/v2 (core, govern and integration modules)
         if: runner.os == 'Linux' && needs.changes.outputs.code != 'false'
         shell: bash
         # encoding/json/v2 is a Go experiment in Go 1.27, on by default. bide does not depend on it,
         # and the journal encoding must be identical with and without it, so the core module is
-        # also tested with the experiment off.
-        run: GOEXPERIMENT=nojsonv2 go test -count=1 ./...
+        # also tested with the experiment off, as are govern and the core's tests that moved to
+        # the integration module.
+        run: |
+          for m in . govern integration; do
+            echo "== $m =="
+            ( cd "$m" && GOEXPERIMENT=nojsonv2 go test -count=1 ./... )
+          done
 
   integration:
     name: Integration (Postgres, Redis)

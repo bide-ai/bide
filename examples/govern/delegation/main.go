@@ -62,7 +62,7 @@ func main() {
 	fmt.Println("  corp-treasury($10M) -> desk-EQ-US($7M) -> exec-subagent($3M)")
 
 	// The sub-agent runs governed to the limit ITS grant delegated. Same policy pattern as
-	// examples/authority; the limit is seeded from the attenuated grant, not chosen by the agent.
+	// examples/govern/authority; the limit is seeded from the attenuated grant, not chosen by the agent.
 	r := gsm.NewRegistry("execution-desk")
 	exposure := r.Int("exposure", 0, 10)
 	limit := r.Int("limit", 0, 10)

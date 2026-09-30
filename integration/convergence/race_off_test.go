@@ -1,5 +1,5 @@
 //go:build !race
 
-package agent_test
+package convergence_test
 
 const raceEnabled = false

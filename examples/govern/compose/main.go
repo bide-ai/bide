@@ -4,7 +4,7 @@
 // customer-facing storefront and an ops dashboard. Each connects the subsystem to its own
 // boundary registry. The point: verify a subsystem once, reuse it in many systems.
 //
-// Run: go run ./examples/compose
+// Run (from examples/govern, its own module): go run ./compose
 package main
 
 import (

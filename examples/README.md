@@ -35,14 +35,14 @@ evaluation, and integration seams.
 
 | Example | What it shows | Run |
 |---------|---------------|-----|
-| `authority` | Authority-as-governed-state: a principal's delegated limit is a state variable, seeded from identity (offline). | `go run ./examples/authority` |
-| `delegation` | A non-repudiable delegation chain across sub-agents, each hop signed and never widened (offline). | `go run ./examples/delegation` |
-| `earned-authority` | Authority earned from a provable track record: widens on a clean streak, resets on an anomaly (offline). | `go run ./examples/earned-authority` |
-| `compliance` | A KYC-shaped flow: parallel provable checks, a governed decision, an offline proof against a signed tree head (offline). | `go run ./examples/compliance` |
-| `proof-carrying-run` | A run that ships one offline-checkable certificate of behavioral-property compliance (offline). | `go run ./examples/proof-carrying-run` |
-| `quorum` | A governed model quorum: k-of-n agreement admits the commit, with the whole vote in the audit trail (offline). | `go run ./examples/quorum` |
-| `compose` | Compositional construction: verify a subsystem once, embed it as a black box into larger systems (offline). | `go run ./examples/compose` |
-| `mesh` | A coordination-free safety mesh where governed state constrains agents cyclically (offline). | `go run ./examples/mesh` |
+| `authority` | Authority-as-governed-state: a principal's delegated limit is a state variable, seeded from identity (offline). | `cd examples/govern && go run ./authority` |
+| `delegation` | A non-repudiable delegation chain across sub-agents, each hop signed and never widened (offline). | `cd examples/govern && go run ./delegation` |
+| `earned-authority` | Authority earned from a provable track record: widens on a clean streak, resets on an anomaly (offline). | `cd examples/govern && go run ./earned-authority` |
+| `compliance` | A KYC-shaped flow: parallel provable checks, a governed decision, an offline proof against a signed tree head (offline). | `cd examples/govern && go run ./compliance` |
+| `proof-carrying-run` | A run that ships one offline-checkable certificate of behavioral-property compliance (offline). | `cd examples/govern && go run ./proof-carrying-run` |
+| `quorum` | A governed model quorum: k-of-n agreement admits the commit, with the whole vote in the audit trail (offline). | `cd examples/govern && go run ./quorum` |
+| `compose` | Compositional construction: verify a subsystem once, embed it as a black box into larger systems (offline). | `cd examples/govern && go run ./compose` |
+| `mesh` | A coordination-free safety mesh where governed state constrains agents cyclically (offline). | `cd examples/govern && go run ./mesh` |
 | `chaosbench` | The crash-injection benchmark: an exhaustive crash-point sweep proving a side effect never double-fires (offline). | `go run ./examples/chaosbench` |
 | `plan` | The `plan` flow builder driving an order-triage flow on a SQLite journal: the declared diagram, a typed result, `Conform`, and an offline proof that the run followed the signed flow digest (offline). Its own module. | `cd examples/plan && go run .` |
 | `recover` | Crash recovery: a supervisor resumes an interrupted run from its journal without re-firing side effects. | `go run ./examples/recover` |
@@ -53,5 +53,5 @@ evaluation, and integration seams.
 | `eval` | The statistical evaluation harness: labeled cases, metrics, repeated runs, a pass-rate report (offline). | `go run ./examples/eval` |
 | `observability` | OpenTelemetry GenAI spans in one call (`trace.Instrument`), exported to stdout, with token usage and cost on the chat span (offline). Its own module. | `cd examples/observability && go run .` |
 | `mcp` | Wiring runtime MCP tools into an agent from an in-memory MCP server, with trusted annotations marking a tool retry-safe (offline). Its own module. | `cd examples/mcp && go run .` |
-| `coordination` | Multi-agent coordination through shared durable state. | `go run ./examples/coordination` |
+| `coordination` | Multi-agent coordination through shared durable state. | `cd examples/govern && go run ./coordination` |
 | `webhook` | Driving an agent from an inbound messenger webhook, with idempotent redelivery handling. | `go run ./examples/webhook` |

@@ -116,7 +116,7 @@ each:
 - **Quorum (tally + gate).** `govern.Quorum` groups normalized decisions, computes a
   deterministic plurality, and reports `VotesFor >= k`; each vote and the tally are provable
   via `audit.ProveStep`, and the k-of-n gate is expressible as a gsm invariant over the count
-  (see `examples/quorum`). This is the tally/gate math we keep.
+  (see `examples/govern/quorum`). This is the tally/gate math we keep.
 
 **The crux: `govern.Quorum()` itself does not fit, and reusing it would be a bug.** `Quorum`
 fans voters out *synchronously* with `agent.Parallel`: each `Voter.Decide(ctx)` is a function
@@ -252,7 +252,7 @@ only eligible approvers with a valid signature, dedupes by approver (first decis
 The count is journaled as its own durable step (`"approval-tally:"+toolUseID`) so the tally is
 provable as a single record, not only reconstructable from the individual decisions. The gate
 itself (`approved >= Need`) is expressible as a gsm invariant over the count, mirroring the
-`examples/quorum` pattern, which makes "k approved before the action" machine-checked over every
+`examples/govern/quorum` pattern, which makes "k approved before the action" machine-checked over every
 possible count rather than asserted.
 
 ## Provable artifact

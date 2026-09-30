@@ -509,7 +509,7 @@ func RequireTag(tag string) agent.ToolMiddleware {
 
 ## मॉड्यूल
 
-Bide एक बहु-मॉड्यूल रेपो है: एक निर्भरता-हल्का **कोर** (`github.com/bide-ai/bide`, यानी लूप, schema, middleware, मॉडल अडैप्टर, `plan` फ़्लो बिल्डर, `audit`, govern; निर्भरताएँ केवल gsm + `x/sync` हैं) साथ ही प्रति भारी अडैप्टर एक मॉड्यूल (`mcp`, `trace`, `store/sqlite`, `store/postgres`, `govern/redislog`, `govern/sqlitelog`, `govern/postgreslog`, `codec/gcf`)। एक अडैप्टर import करें और आप उसका निर्भरता वृक्ष खींच लेते हैं; केवल कोर import करें और आप नहीं खींचते। एक केवल-कोर उपभोक्ता की बाह्य-मॉड्यूल सतह 2 है, 54 नहीं। देखें [docs/reference/module-structure.md](../../docs/reference/module-structure.md)।
+Bide एक बहु-मॉड्यूल रेपो है: एक निर्भरता-हल्का **कोर** (`github.com/bide-ai/bide`, यानी लूप, schema, middleware, मॉडल अडैप्टर, `plan` फ़्लो बिल्डर, `audit`; निर्भरताएँ केवल `x/sync` + `x/text` हैं) साथ ही प्रति भारी अडैप्टर एक मॉड्यूल (`mcp`, `trace`, `store/sqlite`, `store/postgres`, `govern/redislog`, `govern/sqlitelog`, `govern/postgreslog`, `codec/gcf`)। एक अडैप्टर import करें और आप उसका निर्भरता वृक्ष खींच लेते हैं; केवल कोर import करें और आप नहीं खींचते। एक केवल-कोर उपभोक्ता की बाह्य-मॉड्यूल सतह 2 है, 54 नहीं। देखें [docs/reference/module-structure.md](../../docs/reference/module-structure.md)।
 
 ## आर्किटेक्चर
 
@@ -543,7 +543,7 @@ tool := govern.EventTool(gov, "pay", "mark the order paid", "pay", agent.Safety{
 // hand `tool` to the agent: concurrent agents sharing `gov` converge, durably.
 ```
 
-> पूरी गाइड, क्षमता सीढ़ी, और चलाने योग्य डेमो (`examples/mesh`, `examples/compose`, `examples/quorum`) **[docs/guides/governance.md](../../docs/guides/governance.md)** में।
+> पूरी गाइड, क्षमता सीढ़ी, और चलाने योग्य डेमो (`examples/govern/mesh`, `examples/govern/compose`, `examples/govern/quorum`) **[docs/guides/governance.md](../../docs/guides/governance.md)** में।
 
 ## गाइड
 
@@ -563,12 +563,12 @@ tool := govern.EventTool(gov, "pay", "mark the order paid", "pay", agent.Safety{
 
 **जवाबदेही और शासन**
 
-- **[ऑडिट](../../docs/guides/audit.md)**: प्रमाण-वाहक रन। एक रन एक पोर्टेबल `RunCertificate` भेजता है, जिसे `bide-audit verify-run` से ऑफ़लाइन जाँचा जा सकता है। चलाने योग्य: `examples/proof-carrying-run`।
-- **[प्रत्यायोजन](../../docs/guides/delegation.md)**: हस्ताक्षरित क्षमता अनुदान जिन्हें एक उप-एजेंट केवल संकीर्ण कर सकता है (`Grant`/`SignGrant`), ऑफ़लाइन सत्यापित (`VerifyDelegationChain`), साथ ही एक साफ़ ट्रेल से अर्जित प्राधिकार। चलाने योग्य: `examples/delegation`, `examples/authority`।
+- **[ऑडिट](../../docs/guides/audit.md)**: प्रमाण-वाहक रन। एक रन एक पोर्टेबल `RunCertificate` भेजता है, जिसे `bide-audit verify-run` से ऑफ़लाइन जाँचा जा सकता है। चलाने योग्य: `examples/govern/proof-carrying-run`।
+- **[प्रत्यायोजन](../../docs/guides/delegation.md)**: हस्ताक्षरित क्षमता अनुदान जिन्हें एक उप-एजेंट केवल संकीर्ण कर सकता है (`Grant`/`SignGrant`), ऑफ़लाइन सत्यापित (`VerifyDelegationChain`), साथ ही एक साफ़ ट्रेल से अर्जित प्राधिकार। चलाने योग्य: `examples/govern/delegation`, `examples/govern/authority`।
 - **[सुरक्षा मॉडल](../../docs/guides/security-model.md)**: क्रिप्टोग्राफ़िक गारंटियों का सटीक दायरा (अखंडता, प्रामाणिकता, छेड़छाड़-स्पष्टता, अ-प्रत्याख्यान, चयनात्मक प्रकटीकरण) और क्या दायरे से बाहर है (गोपनीयता)। ट्रेल पर निर्भर होने से पहले पढ़ें।
-- **[शासन](../../docs/guides/governance.md)**: Tier-2 शासित-अवस्था आधार (gsm)। साझा अवस्था को एक रजिस्ट्री के रूप में वर्णित करें, और `Build()` सिद्ध करता है कि हर अंतर्वयन अभिसरित होता है या एक प्रति-उदाहरण लौटाता है। चलाने योग्य: `examples/mesh`, `examples/compose`।
+- **[शासन](../../docs/guides/governance.md)**: Tier-2 शासित-अवस्था आधार (gsm)। साझा अवस्था को एक रजिस्ट्री के रूप में वर्णित करें, और `Build()` सिद्ध करता है कि हर अंतर्वयन अभिसरित होता है या एक प्रति-उदाहरण लौटाता है। चलाने योग्य: `examples/govern/mesh`, `examples/govern/compose`।
 - **[अनुमोदन](../../docs/guides/approval.md)**: एक टूल के चलने से पहले टिकाऊ इंसानी हस्ताक्षर-स्वीकृति, 1-of-1 से हस्ताक्षरित m-of-n तक (`ApprovalPolicy`, `ApproveAs`), इस ऑफ़लाइन प्रमाण के साथ कि k नामित अनुमोदकों ने क्रिया से पहले अनुमोदन दिया (`audit.ApprovalEvidence`, `audit.VerifyApprovals`)। चलाने योग्य: `examples/approval`।
-- **[कोरम](../../docs/guides/quorum.md)**: शासित k-of-n मॉडल सहमति (`govern.Quorum`), गणना जर्नल में एंकर और ऑफ़लाइन पुनः-जाँचने योग्य (`bide-audit verify-quorum`)। चलाने योग्य: `examples/quorum`।
+- **[कोरम](../../docs/guides/quorum.md)**: शासित k-of-n मॉडल सहमति (`govern.Quorum`), गणना जर्नल में एंकर और ऑफ़लाइन पुनः-जाँचने योग्य (`bide-audit verify-quorum`)। चलाने योग्य: `examples/govern/quorum`।
 
 **संदर्भ और आंतरिक**
 

@@ -9,8 +9,8 @@
 // gsm's finite-domain state, business rules are Invariants, and compensations are Repairs.
 // gsm proves at build time that every interleaving reaches the same normal form.
 //
-// It lives OUTSIDE the core (which imports no gsm) — an edge integration, so the lean
-// hexagonal core is untouched.
+// It lives OUTSIDE the core, in its own module (github.com/bide-ai/bide/govern), so the core
+// module never depends on gsm: an edge integration, and the lean hexagonal core is untouched.
 package govern
 
 import (

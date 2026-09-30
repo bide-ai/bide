@@ -16,7 +16,6 @@ import (
 
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/audit"
-	"github.com/bide-ai/bide/govern"
 )
 
 // The leaves these tests commit are written by hand, as a producer that controls its own journal
@@ -81,11 +80,13 @@ func edit(t *testing.T, s, old, new string) string {
 	return strings.Replace(s, old, new, 1)
 }
 
-// testCert is a genuine serialized convergence certificate for digest.
+// testCert is a genuine serialized convergence certificate for digest. It is encoded through the
+// CLI's mirror of govern.ConfluenceCertificate, which TestWireMirrorsMatchGovern holds to govern's
+// encoding field for field.
 func testCert(t *testing.T, digest string) string {
 	t.Helper()
-	b, err := govern.ConfluenceCertificate{Machine: "kyc", PolicyDigest: digest, Converges: true, WFC: true, CC: true,
-		MaxRepairLen: 1, PairsTotal: 1, PairsBrute: 1, States: 4}.Marshal()
+	b, err := json.Marshal(confluenceCert{Machine: "kyc", PolicyDigest: digest, Converges: true, WFC: true, CC: true,
+		MaxRepairLen: 1, PairsTotal: 1, PairsBrute: 1, States: 4})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -260,27 +261,48 @@ func TestGovernedPolicyDigest(t *testing.T) {
 }
 
 // The CLI mirrors govern's wire types so it imports neither gsm nor govern. Each mirror must read
-// every field govern writes, and nothing else: a fully populated value strict-decodes into the
-// mirror and re-encodes to the same JSON.
+// every field govern writes, and nothing else. govern is a separate module, so the check is split at
+// the golden files in testdata/govern-wire: the integration module
+// (integration/bideaudit/wire_test.go) proves they are govern's encoding of the same values and
+// that each govern type has one field per key, and this test proves that a fully populated value
+// strict-decodes into the mirror and re-encodes to the same JSON, that the mirror has one field per
+// key, and that the zero mirror encodes as govern's zero value does (no field the mirror omits).
 func TestWireMirrorsMatchGovern(t *testing.T) {
-	for name, pair := range map[string][2]any{
-		"certificate": {govern.ConfluenceCertificate{Machine: "m", PolicyDigest: "d", Converges: true, WFC: true, CC: true,
-			MaxRepairLen: 1, PairsTotal: 2, PairsDisjoint: 3, PairsBrute: 4, States: 5, CompensationFree: true}, new(confluenceCert)},
-		"tally": {govern.QuorumResult{Decision: "x", VotesFor: 1, Total: 2, Agreed: true,
-			Votes: []govern.Vote{{Voter: "a", Decision: "x"}}}, new(quorumTally)},
-		"vote": {govern.Vote{Voter: "a", Decision: "x"}, new(quorumVote)},
+	for name, mirror := range map[string]func() any{
+		"certificate": func() any { return new(confluenceCert) },
+		"tally":       func() any { return new(quorumTally) },
+		"vote":        func() any { return new(quorumVote) },
 	} {
-		want, _ := json.Marshal(pair[0])
-		if err := audit.UnmarshalStrict(want, pair[1]); err != nil {
+		want := readGolden(t, name+".json")
+		m := mirror()
+		if err := audit.UnmarshalStrict(want, m); err != nil {
 			t.Errorf("%s: the mirror does not read govern's encoding: %v", name, err)
 			continue
 		}
-		got, _ := json.Marshal(pair[1])
+		got, _ := json.Marshal(m)
 		if string(got) != string(want) {
 			t.Errorf("%s: the mirror reads %s as %s", name, want, got)
 		}
-		if n := reflect.TypeOf(pair[1]).Elem().NumField(); n != reflect.TypeOf(pair[0]).NumField() {
-			t.Errorf("%s: the mirror has %d fields, govern's type %d", name, n, reflect.TypeOf(pair[0]).NumField())
+		var keys map[string]json.RawMessage
+		if err := json.Unmarshal(want, &keys); err != nil {
+			t.Fatalf("%s: golden: %v", name, err)
+		}
+		if n := reflect.TypeOf(m).Elem().NumField(); n != len(keys) {
+			t.Errorf("%s: the mirror has %d fields, govern's encoding %d", name, n, len(keys))
+		}
+		zero, _ := json.Marshal(mirror())
+		if want := readGolden(t, name+"-zero.json"); string(zero) != string(want) {
+			t.Errorf("%s: the zero mirror encodes as %s, govern's zero value as %s", name, zero, want)
 		}
 	}
+}
+
+// readGolden reads a file of govern's wire encoding from testdata/govern-wire.
+func readGolden(t *testing.T, name string) []byte {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join("testdata", "govern-wire", name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
 }

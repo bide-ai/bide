@@ -37,7 +37,7 @@ import (
 // order-dependent, so it belongs to the durable/saga tier, not the order-independent governance
 // tier (a promote event and a record event do not commute, so no convergent machine expresses it).
 // The ENFORCEMENT of the current limit stays a convergent gsm invariant on the work machine (see
-// examples/earned-authority); the controller only decides the limit and re-issues the grant.
+// examples/govern/earned-authority); the controller only decides the limit and re-issues the grant.
 //
 // The asymmetry is the safety property: promotion is slow, capped, and evidence-gated; attenuation
 // is immediate and needs no gate, because shrinking authority is always safe.

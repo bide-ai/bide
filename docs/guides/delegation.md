@@ -181,5 +181,5 @@ enforcement of the limit it sets stays a convergent governance invariant on the 
   `ScopeRules`, `NumericAtMost`, `VerifyDelegationChain`.
 - `audit/delegate.go`: `WithGrant`, `AttenuatingSubAgent`, `AttenuateFunc`.
 - `audit/earned.go`: `EarnedAuthority`, `EarnedRules`, `ProveCurrentGrant`, `VerifyCurrentGrant`.
-- `examples/delegation`, `examples/authority`, `examples/earned-authority`: runnable end to end.
+- `examples/govern/delegation`, `examples/govern/authority`, `examples/govern/earned-authority`: runnable end to end.
 - `docs/guides/security-model.md`: how grant signatures fit the overall trust model.
