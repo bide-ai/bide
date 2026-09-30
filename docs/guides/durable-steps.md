@@ -203,8 +203,10 @@ the root agent to resume down the path. The same holds for `Interrupted`, `Await
 `Sleeping` from a sub-agent; a `Sleep` in a sub-agent schedules its wake for the root run. When
 several calls of one turn pause, the run returns a `ResumeHalt` ahead of any other pause (the run
 cannot go on until it is resolved, whatever else is answered), and otherwise the first call's
-pause. A storage failure inside a sub-agent is not its answer: the parent records nothing for the
-call and returns the error, and resuming re-enters the sub-run.
+pause. A call that loses its answer (`ErrToolOutcomeUnknown`) is held the same way as a halt: its
+siblings in flight finish. A storage failure inside a sub-agent, or a lost answer in it, is not the
+sub-agent's answer: the parent records nothing for the call and returns the error, and resuming
+re-enters the sub-run.
 
 A sub-run's ID is `agent.SubRunID(parentRunID, toolUseID)`: the parent's run ID, `>`, and the
 tool-use ID encoded so that no ID a model sends can name another call's sub-run. A top-level run ID
