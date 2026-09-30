@@ -59,18 +59,45 @@ func Open(ctx context.Context, dsn string) (*Log, error) {
 		db.Close()
 		return nil, err
 	}
-	if err := l.checkUnique(ctx); err != nil {
+	if err := l.checkSchema(ctx); err != nil {
 		db.Close()
 		return nil, err
 	}
 	return l, nil
 }
 
-// checkUnique checks that governed_events has each uniqueness Append depends on: (entity, seq),
+// nextSeqFunction is the function Append calls for its position. Its name carries the version of
+// its definition: the migration creates it when missing and never replaces it, since processes
+// of another version may be calling it, so a new definition takes a new name.
+const nextSeqFunction = "governed_events_next_seq_v1"
+
+// nextSeqPresent reports whether a function named $1 taking one text argument exists in the schema
+// CREATE FUNCTION creates it in, reading pg_proc with the statement's snapshot.
+const nextSeqPresent = `SELECT EXISTS (SELECT 1 FROM pg_proc
+	WHERE proname = $1 AND pronamespace = current_schema()::regnamespace AND proargtypes = '25'::oidvector)`
+
+// nextSeqBody is the source of nextSeqFunction. It takes the entity's transaction-level advisory
+// lock, which the append that calls it holds until it commits, and then reads the entity's last
+// position. A VOLATILE function takes a new snapshot for each query it runs, so at read committed
+// the MAX is read after the lock is granted: appends to one entity queue on the lock and each
+// takes the next position in its first attempt. At repeatable read or serializable the query uses
+// the transaction's snapshot, so a queued append may collide on (entity, seq) and is run again.
+// The key is the one the log has always used for the entity's lock, so processes of earlier
+// versions queue on the same lock.
+const nextSeqBody = `
+BEGIN
+	PERFORM pg_advisory_xact_lock(hashtextextended(e, 0));
+	RETURN (SELECT COALESCE(MAX(seq), -1) + 1 FROM governed_events WHERE entity = e);
+END
+`
+
+// checkSchema checks that governed_events has each uniqueness Append depends on: (entity, seq),
 // on which a race for a position fails and is retried, and (entity, append_id), the arbiter of its
-// ON CONFLICT. The migration never alters an existing table, and it skips a table whose append_id
-// index exists by name, so the columns and kind of each index are checked here.
-func (l *Log) checkUnique(ctx context.Context) error {
+// ON CONFLICT; and that nextSeqFunction is the function this version creates. The migration never
+// alters an existing table or replaces a function, and it skips a table whose append_id index
+// exists by name, so the columns and kind of each index, and the function's definition, are
+// checked here.
+func (l *Log) checkSchema(ctx context.Context) error {
 	for _, cols := range [][]string{{"entity", "seq"}, {"entity", "append_id"}} {
 		var ok bool
 		if err := l.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM pg_index i
@@ -85,6 +112,17 @@ func (l *Log) checkUnique(ctx context.Context) error {
 			return fmt.Errorf("postgreslog: governed_events has no unique index on exactly (%s) that is checked at once and covers every row; Append depends on it and Open never alters an existing index: %w",
 				strings.Join(cols, ", "), agent.ErrConfig)
 		}
+	}
+	var same bool
+	if err := l.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM pg_proc AS p JOIN pg_language AS l ON l.oid = p.prolang
+		WHERE p.oid = to_regprocedure($1) AND l.lanname = 'plpgsql' AND p.provolatile = 'v'
+			AND NOT p.prosecdef AND p.proconfig IS NULL AND NOT p.proretset
+			AND p.prorettype = 'bigint'::regtype AND p.prosrc = $2)`, nextSeqFunction+"(text)", nextSeqBody).Scan(&same); err != nil {
+		return fmt.Errorf("postgreslog: check %s: %w", nextSeqFunction, err)
+	}
+	if !same {
+		return fmt.Errorf("postgreslog: function %s(text) is not the one this version creates (VOLATILE plpgsql returning bigint, not SECURITY DEFINER, with no settings of its own, whose body takes the entity's advisory lock and then reads MAX(seq)); Append depends on it and Open never replaces a function: %w",
+			nextSeqFunction, agent.ErrConfig)
 	}
 	return nil
 }
@@ -123,8 +161,8 @@ const migrateIdleTimeout = 5 * time.Second
 // an advisory lock, so processes opening the log at once migrate it one at a time, and with a lock
 // timeout (migrateLockTimeout), so it cannot wedge the table.
 func (l *Log) migrate(ctx context.Context) error {
-	current, err := schemaCurrent(ctx, l.db)
-	if err != nil || current {
+	current, haveNextSeq, err := schemaCurrent(ctx, l.db)
+	if err != nil || current && haveNextSeq {
 		return err
 	}
 	tx, err := l.db.BeginTx(ctx, txOptions)
@@ -138,6 +176,22 @@ func (l *Log) migrate(ctx context.Context) error {
 	}
 	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock($1)`, migrateLockKey); err != nil {
 		return fmt.Errorf("postgreslog: migrate: take the migration lock: %w", err)
+	}
+	// The function first, since it takes no lock on the table; a current table needs nothing else.
+	// Under the migration lock, the check and the creation are one step across processes.
+	// The lookup reads pg_proc with the statement's snapshot, not the session's catalog cache,
+	// which taking the advisory lock does not refresh: it sees a function another process created
+	// while this one waited for the lock.
+	if err := tx.QueryRowContext(ctx, nextSeqPresent, nextSeqFunction).Scan(&haveNextSeq); err != nil {
+		return err
+	}
+	if !haveNextSeq {
+		if _, err := tx.ExecContext(ctx, `CREATE FUNCTION `+nextSeqFunction+`(e text) RETURNS bigint LANGUAGE plpgsql VOLATILE AS $bide$`+nextSeqBody+`$bide$`); err != nil {
+			return fmt.Errorf("postgreslog: migrate: create %s: %w", nextSeqFunction, err)
+		}
+	}
+	if current {
+		return tx.Commit()
 	}
 	// The lock timeout is set after the advisory lock, so a process waiting for another's
 	// migration waits for it to finish rather than give up.
@@ -160,14 +214,14 @@ func (l *Log) migrate(ctx context.Context) error {
 }
 
 // schemaCurrent reports whether the governed_events table the search path resolves to exists
-// with its unique append_id index (the last thing migrate creates, over the append_id column),
-// reading only the catalog.
-func schemaCurrent(ctx context.Context, db *sql.DB) (bool, error) {
-	var current bool
-	err := db.QueryRowContext(ctx, `
+// with its unique append_id index (the last thing migrate creates, over the append_id column), and
+// whether nextSeqFunction exists, reading only the catalog.
+func schemaCurrent(ctx context.Context, db *sql.DB) (current, haveNextSeq bool, err error) {
+	err = db.QueryRowContext(ctx, `
 		SELECT EXISTS (SELECT 1 FROM pg_index
-			WHERE indrelid = to_regclass('governed_events') AND indexrelid = to_regclass('governed_events_append_id'))`).Scan(&current)
-	return current, err
+			WHERE indrelid = to_regclass('governed_events') AND indexrelid = to_regclass('governed_events_append_id')),
+			to_regprocedure('`+nextSeqFunction+`(text)') IS NOT NULL`).Scan(&current, &haveNextSeq)
+	return current, haveNextSeq, err
 }
 
 // Close releases the underlying database connection pool.
@@ -179,12 +233,14 @@ func (l *Log) Close() error { return l.db.Close() }
 // entity already holds id, nothing is inserted and the recorded position is returned.
 //
 // The append is one INSERT, committed before Postgres replies, that takes the next position
-// (MAX(seq)+1) in its own snapshot. An append computes position n+1 only when the event at n is
-// committed and visible to it, so no reader sees an event before one at a lower position. Two
-// appends that read the same MAX collide on the primary key (entity, seq): the later one waits for
-// the first to commit, fails with 23505, and runs again with a snapshot that sees it. An append
-// whose id is already recorded meets the (entity, append_id) index and does nothing, once the
-// recording append has committed.
+// (MAX(seq)+1) from nextSeqFunction, which first takes the entity's lock and so queues appends to
+// one entity. An append computes position n+1 only when the event at n is committed and visible
+// to it, so no reader sees an event before one at a lower position. Should two appends still read
+// the same MAX (at repeatable read or serializable, or beside a writer that does not take the
+// lock), they collide on the primary key (entity, seq): the later one waits for the first to
+// commit, fails with 23505, and runs again with a snapshot that sees it. An append whose id is
+// already recorded meets the (entity, append_id) index and does nothing, once the recording
+// append has committed.
 //
 // An append whose commit reply is lost is not retried here: database/sql retries a statement only
 // on driver.ErrBadConn, which the driver reports only when nothing was sent on the connection. A
@@ -197,7 +253,7 @@ func (l *Log) Append(ctx context.Context, entity, id, event string) (int64, erro
 	for {
 		var seq int64
 		err := l.db.QueryRowContext(ctx, `INSERT INTO governed_events (entity, seq, event, append_id)
-			SELECT $1, COALESCE(MAX(seq) + 1, 0), $2, $3 FROM governed_events WHERE entity = $1
+			VALUES ($1, `+nextSeqFunction+`($1), $2, $3)
 			ON CONFLICT (entity, append_id) DO NOTHING
 			RETURNING seq`, entity, event, id).Scan(&seq)
 		switch {

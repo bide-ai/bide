@@ -38,8 +38,9 @@ import (
 //
 // The same methods called through an interface or a method expression are refused, since the check
 // cannot tell which handle they reach, and nothing may assign to txOptions or through it. Beyond
-// the pool (see checkExpr): no function of a pgx package may be used outside migrate, and no
-// constant names a session-level advisory lock. TestStatementCheckCatchesBypasses holds the check
+// the pool (see checkExpr): no function of a pgx package may be used outside migrate, no constant
+// names a session-level advisory lock, and a constant query calls no function outside
+// constantCalls, but for the append's call of nextSeqFunction. TestStatementCheckCatchesBypasses holds the check
 // to a fixture of ways around it.
 func TestStatementsOnThePool(t *testing.T) {
 	if txOptions == nil || txOptions.Isolation != sql.LevelReadCommitted || txOptions.ReadOnly {
@@ -245,6 +246,8 @@ func statementProblems(t *testing.T, dir string, extra ...string) []string {
 							report(call.Args[idx], "%s on %s with a query that is not a constant string", n.Sel.Name, recv)
 						} else if q := constant.StringVal(tv.Value); strings.Contains(q, ";") {
 							report(call.Args[idx], "%s on %s runs more than one statement", n.Sel.Name, recv)
+						} else if name, ok := unknownCall(q); ok {
+							report(call.Args[idx], "%s on %s calls %s, a function the check does not know", n.Sel.Name, recv, name)
 						} else if isKeyword(q, "SELECT") {
 							reads++
 						} else if isKeyword(q, "INSERT") {
@@ -268,6 +271,33 @@ func statementProblems(t *testing.T, dir string, extra ...string) []string {
 // statement and so is held across round trips. The transaction-level forms (pg_advisory_xact_lock
 // and pg_try_advisory_xact_lock) end with the statement's transaction.
 var sessionLockCall = regexp.MustCompile(`(?i)pg_(try_)?advisory_lock`)
+
+// constantCalls are the only functions a constant query on the pool may call; nextSeqFunction
+// only in an INSERT, the append. A name after INTO names a table, and a keyword in listWords
+// takes a list; neither is a call.
+var (
+	constantCalls = map[string]bool{"max": true, "coalesce": true, "to_regclass": true, "to_regprocedure": true, "unnest": true, "array_agg": true}
+	listWords     = map[string]bool{"values": true, "conflict": true, "exists": true, "in": true, "any": true, "as": true, "and": true, "or": true, "not": true, "on": true}
+	quotedSQL     = regexp.MustCompile(`'(?:[^']|'')*'|"(?:[^"]|"")*"`)
+	callSQL       = regexp.MustCompile(`([A-Za-z_][A-Za-z0-9_$.]*)\s*\(`)
+)
+
+// unknownCall returns the first function q calls that is not in constantCalls (or, in an INSERT,
+// nextSeqFunction).
+func unknownCall(q string) (string, bool) {
+	insert := isKeyword(q, "INSERT")
+	q = quotedSQL.ReplaceAllString(q, "''")
+	for _, m := range callSQL.FindAllStringSubmatchIndex(q, -1) {
+		name := strings.ToLower(q[m[2]:m[3]])
+		if before := strings.Fields(q[:m[2]]); len(before) > 0 && strings.EqualFold(before[len(before)-1], "INTO") {
+			continue
+		}
+		if !listWords[name] && !constantCalls[name] && !(insert && name == nextSeqFunction) {
+			return name, true
+		}
+	}
+	return "", false
+}
 
 // pgxPackage reports whether path is one of the pgx packages, whose connections and transactions
 // the database/sql rules do not see.
