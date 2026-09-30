@@ -224,10 +224,28 @@ func (a *Agent) rollbackRun(ctx context.Context, runID, root string) (compensate
 			attemptedAt[r.ToolUseID] = r.AttemptedAt
 		}
 	}
+	// A sub-agent whose own saga failed aborted this one, and rolled itself back before this
+	// rollback began. Its rollback may have stopped part-way (a crash, an unknown outcome, a
+	// failing compensator), and only this walk resumes it, so it is walked first, as it ran first.
+	// A finished one walks again without undoing anything twice (each compensation is a memoized
+	// step) and reports what it undid, so the tree's lists are whole.
+	for i := len(calls) - 1; i >= 0; i-- {
+		tu := calls[i]
+		sat, ok := a.tools[tu.Name].(*subAgentTool)
+		if !ok || !failed[tu.ID] {
+			continue
+		}
+		cc, cu, ce := sat.sub.rollbackRun(ctx, SubRunID(runID, tu.ID), root)
+		compensated = append(compensated, cc...)
+		uncompensated = append(uncompensated, cu...)
+		if ce != nil {
+			return compensated, uncompensated, ce
+		}
+	}
 	for i := len(calls) - 1; i >= 0; i-- {
 		tu := calls[i]
 		if failed[tu.ID] {
-			continue // the step whose failure aborted the saga (not compensated)
+			continue // the step whose failure aborted the saga: walked above if a sub-agent; otherwise it made no change
 		}
 		res, done := results[tu.ID]
 		if done && res.IsError {
