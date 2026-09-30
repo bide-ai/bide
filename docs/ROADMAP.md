@@ -34,6 +34,8 @@ The hardest bugs in a durable runtime live in interleavings: two drivers, a cras
 
 Models live in the repository and run in CI. A counterexample the checker finds becomes a deterministic Go regression test.
 
+The design and plan: [formal models of the coordination protocols](design/formal-models.md) (proposal).
+
 ## Later: bide beyond Go
 
 ### The bide protocol

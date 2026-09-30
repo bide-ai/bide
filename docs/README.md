@@ -40,7 +40,7 @@ Accountability and governance:
 
 ## Design notes
 
-- **[Design](design/design.md)**, **[Durable signals](design/design-durable-signals.md)**, **[m-of-n approval](design/design-mofn-approval.md)**, **[Compaction](design/compaction.md)**, **[Chaos benchmark](design/chaos-benchmark.md)**.
+- **[Design](design/design.md)**, **[Durable signals](design/design-durable-signals.md)**, **[m-of-n approval](design/design-mofn-approval.md)**, **[Compaction](design/compaction.md)**, **[Chaos benchmark](design/chaos-benchmark.md)**, **[Formal models](design/formal-models.md)** (proposal).
 
 ## Testing and evidence
 
