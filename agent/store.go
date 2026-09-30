@@ -64,6 +64,11 @@ type Record struct {
 	// rather than one the tool produced by running. It lets a later reader (and bide-audit)
 	// tell a reconciled outcome from a clean one at a glance.
 	Reconciled bool `json:"reconciled,omitempty"`
+	// ReadOnly marks a StepToolResult for a call whose tool was declared ReadOnly when the call
+	// ran. A saga rollback skips such a call (it changed nothing) and treats any other completed
+	// call as a write, whatever the tool is declared as by the time the rollback runs. A result
+	// that ResolveHalt injected is never ReadOnly: only a call that was not retry-safe halts.
+	ReadOnly bool `json:"read_only,omitempty"`
 	// Evidence is what a reconciler read to decide the outcome (a queried provider record,
 	// a message id, a log line). It is carried on the reconciled result and signed with it,
 	// so the verdict and its basis live in the journal beside the outcome.

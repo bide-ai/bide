@@ -232,6 +232,9 @@ func (a *Agent) rollbackRun(ctx context.Context, runID, root string) (compensate
 		if done && res.IsError {
 			continue // a failed call made no change (saga steps must be atomic)
 		}
+		if done && res.ReadOnly {
+			continue // it ran as ReadOnly, so it changed nothing, whatever its tool is declared as now
+		}
 		tool := a.tools[tu.Name]
 		if tool == nil {
 			// The call's tool is no longer registered, so neither its safety nor its compensator
@@ -259,8 +262,11 @@ func (a *Agent) rollbackRun(ctx context.Context, runID, root string) (compensate
 			continue
 		}
 
+		// A completed call's result records whether it ran ReadOnly (skipped above), so it is a
+		// write here even if its tool has been relabelled ReadOnly since. A call with no result
+		// has no record of its safety, and goes by the tool's safety now.
 		safety := tool.Safety()
-		if safety.ReadOnly {
+		if !done && safety.ReadOnly {
 			continue
 		}
 		comp, canUndo := tool.(Compensator)

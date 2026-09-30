@@ -74,6 +74,11 @@ crashed after it started but before its result was recorded, bide cannot know wh
 `RunSaga` returns `*ResumeHalt` for a person or a reconciler to resolve with `ResolveHalt`. See
 [Sagas](guides/durable-steps.md#sagas-transactional-agents-with-reverse-order-compensation).
 
+**A cut-off retry-safe call keeps no record of its safety.** A call that was retry-safe when it
+ran writes no attempt marker. If it is cut off before its result is recorded and its tool is then
+relabelled a side effect, a resume runs it again and a saga rollback treats it as never started.
+A completed call does not have this gap: its result records whether it ran `ReadOnly`.
+
 **Rollback follows the sub-agent tree.** Compensation runs in one order, through the tree of
 sub-agents. Independent agents changing shared state concurrently need
 [governed state](guides/governance.md), not a saga.

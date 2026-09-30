@@ -729,7 +729,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 					// call that actually starts; one recorded as not started emits neither event.
 					fire(ToolStarted{ToolUseID: c.tu.ID, Name: c.tu.Name, Args: c.tu.Args})
 					res, callErr := toolH(sctx, c.tu)
-					r := Record{Kind: StepToolResult, ToolUseID: c.tu.ID}
+					r := Record{Kind: StepToolResult, ToolUseID: c.tu.ID, ReadOnly: c.t.Safety().ReadOnly} // the safety it ran under, for a saga rollback
 					if callErr != nil && sctx.Err() != nil {
 						// The call was cancelled (the run was cancelled, or a sibling paused or
 						// failed the group) before it could report back, so its outcome is

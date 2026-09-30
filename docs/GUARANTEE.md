@@ -57,8 +57,10 @@ the journal holds, and so what a resume cannot be talked out of by a redeploy:
 - the run's input and whether it runs as a saga (`run:start`), and for a session turn the
   transcript it started from; an unfinished run resumed with another input, or through the other
   entry point, is `ErrConfig`;
-- in a saga's rollback, which calls completed, failed, or were attempted: a call whose tool is no
-  longer registered is reported uncompensated (or halts, if it was attempted with no result);
+- in a saga's rollback, which calls completed, failed, or were attempted, and whether each
+  completed call ran `ReadOnly`: a completed write is rolled back even if its tool was relabelled
+  `ReadOnly` since, and a call whose tool is no longer registered is reported uncompensated (or
+  halts, if it was attempted with no result);
 - for a flow (`plan`), its topology digest, each switch's choice, and whether each node was
   retry-safe when it was attempted.
 
@@ -106,7 +108,11 @@ says happened. A drive uses the configuration it is given for:
   `Step` attempted as a side effect halts even if the resuming code passes a retry-safe
   `StepSafety`. The marker needs no new field for this, so markers written by earlier versions
   are read the same way: every one of them means "not retry-safe, halt", unless the driver that
-  wrote it recorded that its attempt never started.
+  wrote it recorded that its attempt never started. A completed call's result records whether it
+  ran `ReadOnly`, so a saga rollback compensates (or lists as uncompensated) a write whose tool was
+  relabelled `ReadOnly` since. The one case not covered: a call that was retry-safe when it fired
+  writes no marker, so if it is cut off with no result and its tool is relabelled a side effect
+  before the resume, the resume runs it again and a rollback treats it as never started.
 - **It is at-most-once for the side effect, not "the agent always finishes."** A crash can still
   leave a run halted and needing intervention. The promise is *safety* (no double-fire, no lost
   completed work), not *liveness* (guaranteed completion without help).

@@ -409,3 +409,30 @@ func TestSaga_ReadOnlyCallStaysSkipped(t *testing.T) {
 		t.Fatalf("an unregistered read-only call is listed uncompensated: %q", got.Uncompensated)
 	}
 }
+
+// A call with no result has no record of the safety it ran under, so rollback goes by its tool's
+// safety now: a ReadOnly call cut off by the abort changed nothing and is skipped. (A retry-safe
+// call cut off and since relabelled a side effect is the case this cannot catch: see
+// KNOWN-LIMITATIONS.)
+func TestSaga_CutOffReadOnlyCallIsSkipped(t *testing.T) {
+	entered := make(chan struct{})
+	lookup := Func("lookup", "", Safety{ReadOnly: true}, func(ctx context.Context, _ struct{}) (string, error) {
+		close(entered)
+		<-ctx.Done()
+		return "", ctx.Err()
+	})
+	book := Func("book", "", Safety{}, func(context.Context, struct{}) (string, error) {
+		<-entered // fail once the read is in flight, so the abort cuts it off
+		return "", errors.New("no rooms left")
+	})
+	turn := []Emit{
+		{Event: ToolCallDelta{Index: 0, ID: "c1", Name: "lookup", ArgsFragment: json.RawMessage(`{}`)}},
+		{Event: ToolCallDelta{Index: 1, ID: "c2", Name: "book", ArgsFragment: json.RawMessage(`{}`)}},
+		{Event: Finish{Reason: "tool_use"}},
+	}
+	_, err := New(&scriptModel{turns: [][]Emit{turn}}, NewMemStore(), lookup, book).RunSaga(context.Background(), "r", "trip")
+	var aborted *SagaAborted
+	if !errors.As(err, &aborted) || aborted.CompensateErr != nil || len(aborted.Uncompensated) != 0 {
+		t.Fatalf("rollback: err = %v; want a clean rollback with the cut-off read skipped", err)
+	}
+}
