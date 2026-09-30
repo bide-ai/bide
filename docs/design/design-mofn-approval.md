@@ -211,14 +211,13 @@ existing `Approved bool`.
 
 ### The pause carries the tally (`agent/store.go`, `agent/approval.go`)
 
-`PendingApproval` gains an optional tally so an oversight surface can render progress
+`PendingApproval` (now `ApprovalPending`, one of the kinds of the sealed `agent.Pause`) gains an optional tally so an oversight surface can render progress
 ("1 of 2 in, waiting on risk"):
 
 <!-- docsnip: api agent -->
 ```go
-type PendingApproval struct {
-    RunID     string
-    RootRunID string // the run to re-invoke to continue (differs from RunID inside a sub-agent)
+type ApprovalPending struct {
+    RunRef           // RunID, and RootRunID: the run to re-invoke (differs from RunID inside a sub-agent)
     ToolUseID string
     ToolName  string
     Args      json.RawMessage

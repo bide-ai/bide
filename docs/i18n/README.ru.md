@@ -446,7 +446,7 @@ if intr, ok := errors.AsType[*agent.InterruptPending](err); ok {
 
 **Одобрение m-из-n**: когда одной подписи недостаточно, требуйте k подписанных решений от именованного набора из n одобряющих. Каждый одобряющий подписывает конкретный вызов (инструмент и аргументы); шлюз пропускает при k одобрениях, отклоняет, как только k становится недостижимым, а иначе приостанавливается с текущим подсчётом. Подделанное или ошибочное решение игнорируется, не блокируя его одобряющего:
 
-<!-- docsnip: setup ctx context.Context; model agent.Model; store agent.Durable; pend *agent.PendingApproval; type RefundArgs struct{}; doRefund func(context.Context, RefundArgs) (string, error); keysByApprover agent.ApproverVerifierFor; signer audit.Signer -->
+<!-- docsnip: setup ctx context.Context; model agent.Model; store agent.Durable; pend *agent.ApprovalPending; type RefundArgs struct{}; doRefund func(context.Context, RefundArgs) (string, error); keysByApprover agent.ApproverVerifierFor; signer audit.Signer -->
 ```go
 refund := agent.Func("refund", "refund the order",
 	agent.Safety{Approval: &agent.ApprovalPolicy{Need: 2, Approvers: []string{"ops", "finance", "risk"}}},

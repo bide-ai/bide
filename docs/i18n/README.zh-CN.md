@@ -444,7 +444,7 @@ if intr, ok := errors.AsType[*agent.InterruptPending](err); ok {
 
 **m-of-n 批准**：当一次签核不够时，要求来自一个具名的 n 位批准人集合中的 k 份签名决定。每位批准人签署的是确切的那次调用（工具及其参数）；该门在达到 k 份批准时放行，一旦 k 不再可达就拒绝，否则带着当前计票暂停。一份伪造或出错的决定会被忽略，而不会把它的批准人锁在门外：
 
-<!-- docsnip: setup ctx context.Context; model agent.Model; store agent.Durable; pend *agent.PendingApproval; type RefundArgs struct{}; doRefund func(context.Context, RefundArgs) (string, error); keysByApprover agent.ApproverVerifierFor; signer audit.Signer -->
+<!-- docsnip: setup ctx context.Context; model agent.Model; store agent.Durable; pend *agent.ApprovalPending; type RefundArgs struct{}; doRefund func(context.Context, RefundArgs) (string, error); keysByApprover agent.ApproverVerifierFor; signer audit.Signer -->
 ```go
 refund := agent.Func("refund", "refund the order",
 	agent.Safety{Approval: &agent.ApprovalPolicy{Need: 2, Approvers: []string{"ops", "finance", "risk"}}},

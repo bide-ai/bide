@@ -79,21 +79,20 @@ func Signal[T any](ctx context.Context, d Durable, runID, name string, payload T
 func Send[T any](ctx context.Context, d Durable, runID, channel, key string, payload T) error
 ```
 
-### Pause error (parallels `*Interrupted` / `*Sleeping`)
+### Pause error (parallels `*InterruptPending` / `*TimerPending`)
+
+First shipped as `Awaiting`; now `SignalPending` (`Awaiting` is a transitional alias), one of the five kinds of the sealed `agent.Pause`.
 
 <!-- docsnip: api agent -->
 ```go
-type Awaiting struct {
-	RunID string
-	// RootRunID is the run to re-invoke to continue: the top-level run. It differs from RunID
-	// when the await is inside a sub-agent, whose journal is RunID. Deliver the signal against
-	// RunID, then run RootRunID with the root agent.
-	RootRunID string
-	Name      string
-	Prompt    any // optional caller payload: what the run is waiting for
+type SignalPending struct {
+	// RunRef names the run: deliver the signal against RunID (a sub-agent's journal when the
+	// await is inside one), then run RootRunID, the top-level run, with the root agent.
+	RunRef
+	Name string
 }
 
-func (e *Awaiting) Error() string // "run <id> awaiting signal <name>"
+func (e *SignalPending) Error() string // "run <id> awaiting signal <name>"
 ```
 
 ## Journal semantics

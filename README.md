@@ -689,7 +689,7 @@ of n approvers. Each approver signs the exact call (tool and arguments); the gat
 approvals, denies once k is unreachable, and otherwise pauses with the running tally. A forged or
 mistaken decision is ignored without locking its approver out:
 
-<!-- docsnip: setup ctx context.Context; model agent.Model; store agent.Durable; pend *agent.PendingApproval; type RefundArgs struct{}; doRefund func(context.Context, RefundArgs) (string, error); keysByApprover agent.ApproverVerifierFor; signer audit.Signer -->
+<!-- docsnip: setup ctx context.Context; model agent.Model; store agent.Durable; pend *agent.ApprovalPending; type RefundArgs struct{}; doRefund func(context.Context, RefundArgs) (string, error); keysByApprover agent.ApproverVerifierFor; signer audit.Signer -->
 ```go
 refund := agent.Func("refund", "refund the order",
 	agent.Safety{Approval: &agent.ApprovalPolicy{Need: 2, Approvers: []string{"ops", "finance", "risk"}}},

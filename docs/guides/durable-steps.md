@@ -279,7 +279,7 @@ decide, and call `ResolveHaltRef` itself. Two options make that safe:
   hole in the very thing the trail exists to protect. With it, a later reader tells a reconciled
   step from a clean one and re-checks the evidence.
 
-<!-- docsnip: setup ctx context.Context; store agent.Durable; err error; func providerSays(*agent.ResumeHalt) (bool, json.RawMessage) -->
+<!-- docsnip: setup ctx context.Context; store agent.Durable; err error; func providerSays(*agent.OutcomeUnknown) (bool, json.RawMessage) -->
 ```go
 if halt, ok := errors.AsType[*agent.OutcomeUnknown](err); ok {
     sent, record := providerSays(halt) // query the system of record

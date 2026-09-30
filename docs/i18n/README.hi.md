@@ -446,7 +446,7 @@ if intr, ok := errors.AsType[*agent.InterruptPending](err); ok {
 
 **m-of-n अनुमोदन**: जब एक हस्ताक्षर-स्वीकृति पर्याप्त नहीं, तो n अनुमोदकों के एक नामित समूह से k हस्ताक्षरित निर्णय आवश्यक करें। हर अनुमोदक ठीक उसी कॉल (टूल और तर्कों) पर हस्ताक्षर करता है; गेट k अनुमोदनों पर आगे बढ़ता है, k अप्राप्य होते ही अस्वीकार करता है, और अन्यथा चालू गणना के साथ रुकता है। एक जाली या ग़लत निर्णय अनदेखा किया जाता है, उसके अनुमोदक को बाहर किए बिना:
 
-<!-- docsnip: setup ctx context.Context; model agent.Model; store agent.Durable; pend *agent.PendingApproval; type RefundArgs struct{}; doRefund func(context.Context, RefundArgs) (string, error); keysByApprover agent.ApproverVerifierFor; signer audit.Signer -->
+<!-- docsnip: setup ctx context.Context; model agent.Model; store agent.Durable; pend *agent.ApprovalPending; type RefundArgs struct{}; doRefund func(context.Context, RefundArgs) (string, error); keysByApprover agent.ApproverVerifierFor; signer audit.Signer -->
 ```go
 refund := agent.Func("refund", "refund the order",
 	agent.Safety{Approval: &agent.ApprovalPolicy{Need: 2, Approvers: []string{"ops", "finance", "risk"}}},

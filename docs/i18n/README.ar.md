@@ -627,7 +627,7 @@ if intr, ok := errors.AsType[*agent.InterruptPending](err); ok {
 مُوافِق النداءَ بعينه (الأداة ووسائطها)؛ وتمضي البوّابة عند k موافقات، وترفض متى صار بلوغ k مستحيلًا، وإلا
 تتوقف مع الحصيلة الجارية. ويُتجاهَل القرار المُزوَّر أو الخاطئ دون أن يُقفَل مُوافِقه خارجًا:
 
-<!-- docsnip: setup ctx context.Context; model agent.Model; store agent.Durable; pend *agent.PendingApproval; type RefundArgs struct{}; doRefund func(context.Context, RefundArgs) (string, error); keysByApprover agent.ApproverVerifierFor; signer audit.Signer -->
+<!-- docsnip: setup ctx context.Context; model agent.Model; store agent.Durable; pend *agent.ApprovalPending; type RefundArgs struct{}; doRefund func(context.Context, RefundArgs) (string, error); keysByApprover agent.ApproverVerifierFor; signer audit.Signer -->
 ```go
 refund := agent.Func("refund", "refund the order",
 	agent.Safety{Approval: &agent.ApprovalPolicy{Need: 2, Approvers: []string{"ops", "finance", "risk"}}},
