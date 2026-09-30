@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -58,6 +59,9 @@ func (a *Agent) toolHandler() ToolHandler {
 				return nil, fmt.Errorf("tool %q (call %s) already ran and is not retry-safe: %w", tu.Name, tu.ID, ErrToolReinvoked)
 			}
 		}
+		if err := journalAcceptedArgs(ctx, t, tu); err != nil {
+			return nil, err
+		}
 		return t.Call(ctx, tu.Args)
 	})
 	for i := len(a.toolMW) - 1; i >= 0; i-- {
@@ -67,6 +71,7 @@ func (a *Agent) toolHandler() ToolHandler {
 		if t, ok := a.tools[tu.Name]; ok {
 			ctx = WithToolSafety(ctx, t.Safety())
 		}
+		ctx = context.WithValue(ctx, modelArgsKey{}, tu.Args)
 		if a.toolErrRedact != nil {
 			ctx = context.WithValue(ctx, toolErrRedactKey{}, a.toolErrRedact)
 		}
@@ -91,4 +96,30 @@ func ToolSafety(ctx context.Context) (s Safety, ok bool) {
 // tool's Safety, never this value.
 func WithToolSafety(ctx context.Context, s Safety) context.Context {
 	return context.WithValue(ctx, toolSafetyKey{}, s)
+}
+
+// modelArgsKey carries a call's arguments as the model sent them, before tool middleware.
+type modelArgsKey struct{}
+
+// journalAcceptedArgs records, before the side effect fires, the arguments a compensable call in
+// a saga is about to run with, when a tool middleware changed them from the model's (see
+// sagaArgsStep): compensation then undoes what the tool did, even when the call's outcome is
+// later resolved by ResolveHalt. It is a memoized step, so a retry-safe call that runs again
+// keeps the first record; a middleware that rewrites arguments must rewrite them the same way
+// every time. Unchanged arguments, or a call outside a saga, journal nothing, so compensation
+// reads the model's arguments, as for a journal written before this record existed.
+func journalAcceptedArgs(ctx context.Context, t Tool, tu ToolUse) error {
+	if _, ok := t.(Compensator); !ok || !InSaga(ctx) {
+		return nil
+	}
+	if model, _ := ctx.Value(modelArgsKey{}).(json.RawMessage); bytes.Equal(model, tu.Args) {
+		return nil
+	}
+	store, runID, _ := runContext(ctx) // the loop and the rollback both set it
+	if _, err := store.Do(ctx, runID, sagaArgsStep(tu.ID), func(context.Context) (Record, error) {
+		return Record{Kind: StepValue, Result: tu.Args}, nil
+	}); err != nil {
+		return fmt.Errorf("journal the arguments tool %q (call %s) accepted: %w (%w)", tu.Name, tu.ID, err, ErrStorage)
+	}
+	return nil
 }
