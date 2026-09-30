@@ -168,9 +168,11 @@ between them holds no lock another node waits on. A statement that a deployment 
 failure changed nothing and is run again, so the level does not change how the store records
 steps or leases. Retries back off and continue until the context ends, so give each call a
 deadline if it must be bounded. Inserts into one run queue on the run's advisory lock, which the
-function `bide_next_seq_v1` takes inside the insert's statement. `Open` and `New` create the
-function and refuse an existing table that lacks a uniqueness the statements depend on, or a
-function with another definition, since they never alter either.
+function `bide_next_seq_v1` takes inside the insert's statement; it qualifies every name and runs
+with `SET search_path = pg_catalog, pg_temp`. `Open` and `New` create the function and refuse an
+existing table that lacks a uniqueness the statements depend on, or a function with another
+definition or owner, since they never alter either. The store trusts roles that can create
+objects in the schemas on its search path, as it trusts the tables' owner.
 
 **Transition.** The engine's functions still take the `Durable` interface (`Do` and `History`),
 which `*agent.Journal` implements; `MemStore` and the SQL stores also implement it, through a
