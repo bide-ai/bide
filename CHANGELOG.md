@@ -70,7 +70,7 @@ minor version (0.x.0) may include breaking API or journal-format changes; each o
 - **Breaking:** `Finish.Reason` is the typed `agent.FinishReason` ([#76]).
 - **Breaking:** `eval` `Metric.Fn` returns `(bool, error)`; a metric that cannot score a run leaves it unscored, `MetricStat` reports `Scored` and `Unscored`, and reports are `bide.eval.report.v2` ([#78]).
 - **Breaking:** `bide-audit` exit statuses follow one scheme: 0 verified, 1 not verified, 2 usage, 3 no verdict, 4 input unreadable or unusable ([#79]).
-- **Breaking:** a session's journal and turn runs move to `"<id>>@session"`, `"<id>>@turn/<n>"` and `"<id>>@event/<encoded key>"` (from `"<id>"`, `"<id>/t<n>"` and `"<id>/e/<key>"`), so no run ID passed to `Run` can name one: `Run("chat/t0")` and session `"chat"`'s first turn shared a journal, and whichever finished first handed the other its answer. A session journaled before this change opens empty. Session ids may contain `/` (#56 had refused it) and any `SendOnce` key is allowed; `agent.IsSessionRun` reports a session's run IDs, and `Recover` skips them, since the session resumes a turn when its message is sent again ([#PR]).
+- **Breaking:** a session's journal and turn runs move to `"<id>>@session"`, `"<id>>@turn/<n>"` and `"<id>>@event/<encoded key>"` (from `"<id>"`, `"<id>/t<n>"` and `"<id>/e/<key>"`), so no run ID passed to `Run` can name one: `Run("chat/t0")` and session `"chat"`'s first turn shared a journal, and whichever finished first handed the other its answer. A session journaled before this change opens empty. Session ids may contain `/` (#56 had refused it) and any `SendOnce` key is allowed; `agent.IsSessionRun` reports a session's run IDs, and `Recover` skips them, since the session resumes a turn when its message is sent again ([#86]).
 - **Breaking:** every run journals `run:start` (its input and whether it is a saga); resuming an unfinished run with another input, or through `Run` for a saga (or `RunSaga` for a run), is `ErrConfig`, and so is `SendOnce` with a different input on a key whose turn is still open ([#70]).
 - **Breaking:** `plan` attempt markers record whether the node was retry-safe; a node re-runs on resume only if it was retry-safe when attempted and is now, and a marker written before this halts ([#70]).
 - **Breaking:** a recorded approval denial is final even if the tool's gate is later removed, loosened or made m-of-n ([#70]).
@@ -420,6 +420,7 @@ First public release.
 [#78]: https://github.com/bide-ai/bide/pull/78
 [#79]: https://github.com/bide-ai/bide/pull/79
 [#85]: https://github.com/bide-ai/bide/pull/85
+[#86]: https://github.com/bide-ai/bide/pull/86
 [78f8db6]: https://github.com/bide-ai/bide/commit/78f8db6
 [994721b]: https://github.com/bide-ai/bide/commit/994721b
 [3262cd1]: https://github.com/bide-ai/bide/commit/3262cd1
