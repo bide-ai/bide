@@ -83,6 +83,11 @@ step retries the unanchored head. When two processes anchor the same run (around
 a smaller head can reach the anchor after a larger one; both are valid, so monitors compare a run's
 heads by size, not by arrival.
 
+`AuditedStore` implements `Unwrap() Durable`, so it keeps every optional capability of the store
+it wraps and adds none: `agent.Lease`, `agent.Recover` and `agent.RecoverLoop` find the inner
+store's `Leaser` and `Lister` through it (see `agent.Capability`). Leases are not journaled, so
+acquiring, renewing or releasing one anchors nothing.
+
 **`Anchor` is a bring-your-own port**: implement `Publish(ctx, runID, sth)` against the
 transparency log you trust (a CT-style log, a notary/timestamping service, another account's
 WORM store, a public ledger). `MemAnchorLog` is the reference: an append-only log that keeps its

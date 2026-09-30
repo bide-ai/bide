@@ -75,3 +75,37 @@ func TestAuditedStore_AddsNoCapabilities(t *testing.T) {
 		t.Fatalf("Lease over a non-Leaser = (%v, %v), want (true, nil)", driven, err)
 	}
 }
+
+// RecoverLoop, too, enumerates through the wrapper and drives the inner store's runs.
+func TestAuditedStore_RecoverLoopListsInnerRuns(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	store := newAudited(t, agent.NewMemStore())
+	if _, err := store.Do(ctx, "r1", "s", func(context.Context) (agent.Record, error) {
+		return agent.Record{Kind: agent.StepValue}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	resumed := make(chan string, 16)
+	done := make(chan error, 1)
+	go func() {
+		done <- agent.RecoverLoop(ctx, store, func(_ context.Context, runID string) error {
+			resumed <- runID
+			return nil
+		}, agent.WithRecoverInterval(10*time.Millisecond))
+	}()
+	select {
+	case id := <-resumed:
+		if id != "r1" {
+			t.Fatalf("RecoverLoop resumed %q, want r1", id)
+		}
+	case err := <-done:
+		t.Fatalf("RecoverLoop through AuditedStore returned %v before resuming r1", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("RecoverLoop through AuditedStore never resumed r1")
+	}
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("RecoverLoop returned %v after cancel, want context.Canceled", err)
+	}
+}

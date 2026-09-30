@@ -66,6 +66,11 @@ func (a *AuditedStore) Do(ctx context.Context, runID, name string, fn func(conte
 	return rec, nil
 }
 
+// Unwrap returns the wrapped store, so agent.Capability finds its optional capabilities
+// (agent.Leaser, agent.Lister) through the wrapper: an AuditedStore has exactly the capabilities of
+// the store it wraps. Leasing and listing touch no journal, so they bypass anchoring.
+func (a *AuditedStore) Unwrap() agent.Durable { return a.inner }
+
 // History delegates unchanged.
 func (a *AuditedStore) History(ctx context.Context, runID string) ([]agent.Record, error) {
 	return a.inner.History(ctx, runID)

@@ -161,9 +161,9 @@ func completedAnswer(recs []Record) (Message, bool) {
 // resumes it. resume should no-op any other runID it does not own; Recover re-drives every
 // other incomplete run it enumerates.
 func Recover(ctx context.Context, store Durable, resume func(ctx context.Context, runID string) error, opts ...RecoverOption) (int, error) {
-	lister, ok := store.(Lister)
+	lister, ok := Capability[Lister](store)
 	if !ok {
-		return 0, fmt.Errorf("Recover needs a store that implements Lister to enumerate runs: %w", ErrConfig)
+		return 0, fmt.Errorf("Recover needs a store that implements Lister (itself or through Unwrap) to enumerate runs: %w", ErrConfig)
 	}
 	cfg, err := leaseConfig(opts)
 	if err != nil {
@@ -252,9 +252,9 @@ func recoverRun(ctx context.Context, store Durable, runID string, resume func(ct
 // concurrency) is returned at once. Otherwise RecoverLoop returns ctx's error when ctx is done,
 // after the drives it started (whose contexts derive from ctx) have returned.
 func RecoverLoop(ctx context.Context, store Durable, resume func(ctx context.Context, runID string) error, opts ...RecoverOption) error {
-	lister, ok := store.(Lister)
+	lister, ok := Capability[Lister](store)
 	if !ok {
-		return fmt.Errorf("RecoverLoop needs a store that implements Lister to enumerate runs: %w", ErrConfig)
+		return fmt.Errorf("RecoverLoop needs a store that implements Lister (itself or through Unwrap) to enumerate runs: %w", ErrConfig)
 	}
 	cfg, err := leaseConfig(opts)
 	if err != nil {
@@ -350,8 +350,9 @@ func RecoverLoop(ctx context.Context, store Durable, resume func(ctx context.Con
 // Lease runs drive under an exclusive, auto-renewed lease on runID, so a primary driver and a
 // recoverer (or two workers) do not drive the same run at once. If the store implements Leaser and
 // another holder currently leases the run, drive is NOT called and Lease returns (false, nil). If
-// the store does not implement Leaser, drive runs unconditionally. The bool reports whether drive
-// ran; the error is the acquisition error (when false) or drive's own error (when true).
+// neither the store nor a store it wraps implements Leaser (see Capability), drive runs
+// unconditionally. The bool reports whether drive ran; the error is the acquisition error (when
+// false) or drive's own error (when true).
 //
 // If the lease is lost while drive runs (see driveWithRenew for the renewal schedule), drive's
 // context is cancelled with ErrLeaseLost as its cause (context.Cause), and a drive that then
@@ -370,7 +371,7 @@ func Lease(ctx context.Context, store Durable, runID string, drive func(context.
 	if err != nil {
 		return false, err
 	}
-	leaser, ok := store.(Leaser)
+	leaser, ok := Capability[Leaser](store)
 	if !ok {
 		return true, drive(ctx) // no leasing available: drive unconditionally
 	}
