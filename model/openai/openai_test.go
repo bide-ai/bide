@@ -80,7 +80,7 @@ func TestBuildRequest_MessagesAndStrictSchema(t *testing.T) {
 				agent.ToolResult{ToolUseID: "call_1", Result: json.RawMessage(`{"temp":68}`)},
 			}},
 		},
-		Tools: []agent.Tool{tool},
+		Tools: []agent.ToolSpec{agent.SpecOf(tool)},
 	})
 	if err != nil {
 		t.Fatal(err)

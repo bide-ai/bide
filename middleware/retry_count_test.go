@@ -36,22 +36,22 @@ func TestToolRetry_NegativeCountIsAConfigError(t *testing.T) {
 	for _, safety := range []agent.Safety{{ReadOnly: true}, {}} {
 		for _, n := range []int{-1, -5} {
 			calls := 0
-			h := ToolRetry(n)(func(context.Context, agent.ToolUse) (json.RawMessage, error) {
+			h := ToolRetry(n)(func(context.Context, agent.ToolCall) (json.RawMessage, error) {
 				calls++
 				return json.RawMessage(`"ok"`), nil
 			})
-			ctx := agent.WithToolSafety(context.Background(), safety)
-			if _, err := h(ctx, agent.ToolUse{ID: "c", Name: "t"}); !errors.Is(err, agent.ErrConfig) || calls != 0 {
+			call := agent.ToolCall{Use: agent.ToolUse{ID: "c", Name: "t"}, Spec: agent.ToolSpec{Name: "t", Safety: safety}}
+			if _, err := h(context.Background(), call); !errors.Is(err, agent.ErrConfig) || calls != 0 {
 				t.Errorf("ToolRetry(%d), safety %+v: err %v, tool called %d times; want ErrConfig and no call", n, safety, err, calls)
 			}
 		}
 	}
 	calls := 0
-	h := ToolRetry(0)(func(context.Context, agent.ToolUse) (json.RawMessage, error) {
+	h := ToolRetry(0)(func(context.Context, agent.ToolCall) (json.RawMessage, error) {
 		calls++
 		return json.RawMessage(`"ok"`), nil
 	})
-	if _, err := h(agent.WithToolSafety(context.Background(), agent.Safety{ReadOnly: true}), agent.ToolUse{}); err != nil || calls != 1 {
+	if _, err := h(context.Background(), agent.ToolCall{Spec: agent.ToolSpec{Safety: agent.Safety{ReadOnly: true}}}); err != nil || calls != 1 {
 		t.Errorf("ToolRetry(0): err %v, %d calls; want one call", err, calls)
 	}
 }

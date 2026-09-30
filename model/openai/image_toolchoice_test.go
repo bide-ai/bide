@@ -90,7 +90,7 @@ func TestBuildRequest_ToolChoice(t *testing.T) {
 			m := New("k")
 			body, err := m.buildRequest(agent.Request{
 				Messages:   []agent.Message{agent.UserText("hi")},
-				Tools:      []agent.Tool{simpleTool()},
+				Tools:      []agent.ToolSpec{agent.SpecOf(simpleTool())},
 				ToolChoice: &agent.ToolChoice{Mode: c.mode, Name: c.name},
 			})
 			if err != nil {

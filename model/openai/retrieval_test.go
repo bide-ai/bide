@@ -35,7 +35,7 @@ func retrievalRequest(t *testing.T) agent.Request {
 		{Role: agent.RoleAssistant, Parts: []agent.Part{agent.ToolUse{ID: "c1", Name: "lookup", Args: json.RawMessage(`{}`)}}},
 		{Role: agent.RoleTool, Parts: []agent.Part{agent.ToolResult{ToolUseID: "c1", Result: json.RawMessage(`{"ok":true}`)}}},
 	}
-	if _, err := h(context.Background(), agent.ModelCall{Request: agent.Request{Messages: msgs, Tools: []agent.Tool{lookup}}}); err != nil {
+	if _, err := h(context.Background(), agent.ModelCall{Request: agent.Request{Messages: msgs, Tools: []agent.ToolSpec{agent.SpecOf(lookup)}}}); err != nil {
 		t.Fatal(err)
 	}
 	return seen

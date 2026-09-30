@@ -21,7 +21,7 @@ func logFailedCharge(t *testing.T, opts ...ToolLogOption) string {
 	})
 	var sb strings.Builder
 	h := ToolLog(func(format string, args ...any) { fmt.Fprintf(&sb, format, args...) }, opts...)(base)
-	if _, err := h(context.Background(), agent.ToolUse{ID: "c1", Name: "charge", Args: json.RawMessage(`{"card":"4111111111111111"}`)}); err == nil {
+	if _, err := h(context.Background(), agent.ToolCall{Use: agent.ToolUse{ID: "c1", Name: "charge", Args: json.RawMessage(`{"card":"4111111111111111"}`)}}); err == nil {
 		t.Fatal("want error")
 	}
 	return sb.String()

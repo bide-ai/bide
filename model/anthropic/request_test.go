@@ -30,7 +30,7 @@ func TestBuildRequest_ToolChoiceNoneKeepsTools(t *testing.T) {
 			{Role: agent.RoleAssistant, Parts: []agent.Part{agent.ToolUse{ID: "t1", Name: "get_weather", Args: json.RawMessage(`{}`)}}},
 			{Role: agent.RoleTool, Parts: []agent.Part{agent.ToolResult{ToolUseID: "t1", Result: json.RawMessage(`1`)}}},
 		},
-		Tools:      []agent.Tool{simpleTool()},
+		Tools:      []agent.ToolSpec{agent.SpecOf(simpleTool())},
 		ToolChoice: &agent.ToolChoice{Mode: "none"},
 	})
 	if tc, _ := got["tool_choice"].(map[string]any); tc["type"] != "none" {

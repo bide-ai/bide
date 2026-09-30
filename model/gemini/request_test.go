@@ -171,7 +171,7 @@ func TestBuildRequest_FileDataMimeType(t *testing.T) {
 // A tool with no arguments declares no parameters: Gemini rejects an OBJECT with empty
 // properties.
 func TestBuildRequest_NoArgToolOmitsParameters(t *testing.T) {
-	body, err := New("k").buildRequest(agent.Request{Tools: []agent.Tool{simpleTool()}})
+	body, err := New("k").buildRequest(agent.Request{Tools: []agent.ToolSpec{agent.SpecOf(simpleTool())}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -201,7 +201,7 @@ func TestBuildRequest_InexpressibleToolSchemaIsAConfigError(t *testing.T) {
 			return 0, nil
 		}),
 	} {
-		_, err := New("k").buildRequest(agent.Request{Tools: []agent.Tool{tool}})
+		_, err := New("k").buildRequest(agent.Request{Tools: []agent.ToolSpec{agent.SpecOf(tool)}})
 		if !errors.Is(err, agent.ErrConfig) || !strings.Contains(fmtErr(err), tool.Name()) {
 			t.Errorf("%s: err = %v, want ErrConfig naming the tool", name, err)
 		}
@@ -215,7 +215,7 @@ func TestBuildRequest_ToolSchemaIsTranslated(t *testing.T) {
 	}) (int, error) {
 		return 0, nil
 	})
-	req := agent.Request{Tools: []agent.Tool{tool}, ResponseFormat: &agent.ResponseFormat{Name: "r",
+	req := agent.Request{Tools: []agent.ToolSpec{agent.SpecOf(tool)}, ResponseFormat: &agent.ResponseFormat{Name: "r",
 		Schema: json.RawMessage(`{"type":"object","properties":{"s":{"type":["string","null"]}},"additionalProperties":false}`)}}
 	body, err := New("k").buildRequest(req)
 	if err != nil {
