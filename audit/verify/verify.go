@@ -1,6 +1,6 @@
 // Package verify is a dependency-light, standalone verifier for Bide audit proofs. It
 // depends on nothing but the Go standard library (crypto/sha256, crypto/ed25519,
-// encoding/binary, bytes, math/bits), deliberately NOT the agent core or gsm, so a third
+// encoding/binary, bytes, math/bits, strings), deliberately NOT the agent core or gsm, so a third
 // party (an auditor, a regulator) can verify a proof without importing the SDK, or reimplement
 // this file from RFC 6962 and check us against it. That is what "verifiable without trusting
 // the vendor" means in practice.
@@ -22,6 +22,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"math/bits"
+	"strings"
 )
 
 // JournalLeaf returns the leaf bytes of a journal record from its journal encoding (the JSON a
@@ -159,8 +160,12 @@ type TreeRef struct {
 // absence key-set head and nil otherwise. The canonical encoding is domain-separated and
 // length-prefixed, byte-identical to audit.TreeHead.canonical(), so an STH signed by the SDK
 // verifies here and vice versa. The caller checks that kind and runID are the tree it expects.
+//
+// Like audit, it refuses a head whose shape no commitment has, whatever its signature: a
+// "journal" or "events" head that names a source journal, an "absence/<set>" head that names none,
+// and a head of any other kind.
 func TreeHead(kind, runID string, size int, root []byte, timestamp int64, journal *TreeRef, sig, pub []byte) bool {
-	if len(pub) != ed25519.PublicKeySize || size < 0 || (journal != nil && journal.Size < 0) {
+	if len(pub) != ed25519.PublicKeySize || size < 0 || !wellFormed(kind, journal) {
 		return false
 	}
 	field := func(b, f []byte) []byte {
@@ -181,4 +186,17 @@ func TreeHead(kind, runID string, size int, root []byte, timestamp int64, journa
 		b = field(b, journal.Root)
 	}
 	return ed25519.Verify(pub, b, sig)
+}
+
+// wellFormed mirrors audit's TreeHead.wellFormed: the kinds a signed head can have, and whether
+// each names a source journal.
+func wellFormed(kind string, journal *TreeRef) bool {
+	switch {
+	case kind == "journal" || kind == "events":
+		return journal == nil
+	case strings.HasPrefix(kind, "absence/") && len(kind) > len("absence/"):
+		return journal != nil && journal.Size >= 0
+	default:
+		return false
+	}
 }
