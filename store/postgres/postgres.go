@@ -38,6 +38,12 @@
 // reaches in one attempt. A statement that fails that way has changed nothing, so running it again
 // is safe, and each retry follows another transaction's commit, so the retries end. The schema migration in Open
 // is the one transaction of several statements; it sets read committed itself (see txOptions).
+//
+// The migration also sets idle_in_transaction_session_timeout for its own transaction, so a node
+// stopped inside it cannot hold the migration lock. The store sets no session-wide timeout: no
+// other statement it sends is ever inside a transaction, so the setting would guard nothing of
+// the store's, and on a pool passed to New it would change the caller's own transactions. A
+// deployment that wants the bound for its own code sets it on the role or the database.
 package postgres
 
 import (
