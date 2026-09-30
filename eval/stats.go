@@ -5,11 +5,14 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/bide-ai/bide/agent"
 )
 
 // This file adds statistical-rigor features on top of the core harness: regression comparison with
@@ -19,28 +22,37 @@ import (
 // --- 1. regression comparison ---
 
 // MetricComparison is one metric's before/after comparison between two Reports. RateDelta is the
-// signed change in pass rate (new minus old). PValue is the raw two-sided significance of the
-// change; AdjustedP is that p-value after a Benjamini-Hochberg correction across all metrics
-// compared in the same Comparison. Significant is true when AdjustedP < 0.05. Direction reads the
-// sign of a significant change (DirectionRegression for a drop, DirectionImprovement for a rise) or
-// DirectionFlat when the change is not significant.
+// signed change in pass rate (new minus old), each rate over that report's scored runs. PValue is
+// the raw two-sided significance of the change; AdjustedP is that p-value after a
+// Benjamini-Hochberg correction across the metrics compared in the same Comparison. Significant is
+// true when AdjustedP < 0.05. Direction reads the sign of a significant change
+// (DirectionRegression for a drop, DirectionImprovement for a rise) or DirectionFlat when the change
+// is not significant.
+//
+// A metric Compare could not compare is DirectionInconclusive, with Note saying why: it is missing
+// from one report, one report has no scored run of it, or its unscored share in either report is
+// above the tolerance (WithUnscoredTolerance). No test is run for it: Significant is false,
+// RateDelta is 0, PValue and AdjustedP are 1, and it is left out of the Benjamini-Hochberg family.
 type MetricComparison struct {
 	Metric      string          `json:"metric"`
 	OldRate     float64         `json:"old_rate"`
 	NewRate     float64         `json:"new_rate"`
 	RateDelta   float64         `json:"rate_delta"`
 	OldPasses   int             `json:"old_passes"`
-	OldRuns     int             `json:"old_runs"`
+	OldScored   int             `json:"old_scored"`
+	OldUnscored int             `json:"old_unscored"`
 	NewPasses   int             `json:"new_passes"`
-	NewRuns     int             `json:"new_runs"`
+	NewScored   int             `json:"new_scored"`
+	NewUnscored int             `json:"new_unscored"`
 	PValue      float64         `json:"p_value"`
 	AdjustedP   float64         `json:"adjusted_p"`
 	Significant bool            `json:"significant"`
 	Direction   MetricDirection `json:"direction"`
+	Note        string          `json:"note,omitempty"`
 }
 
 // MetricDirection is the reading of one metric's change between two Reports. It is a closed set:
-// DirectionRegression, DirectionImprovement and DirectionFlat.
+// DirectionRegression, DirectionImprovement, DirectionFlat and DirectionInconclusive.
 type MetricDirection string
 
 const (
@@ -50,26 +62,99 @@ const (
 	DirectionImprovement MetricDirection = "improvement"
 	// DirectionFlat is a change that is not significant (or no change).
 	DirectionFlat MetricDirection = "flat"
+	// DirectionInconclusive is a metric that was not compared (MetricComparison.Note says why). It
+	// is never a pass: Gate reports it.
+	DirectionInconclusive MetricDirection = "inconclusive"
 )
 
 // Comparison is the full set of per-metric comparisons between two Reports, over the metrics present
-// in both. It is a distribution-aware regression check, not a single pass/fail: it separates a real
-// shift from sampling noise using a significance test and a multiple-comparison correction.
+// in either. It is a distribution-aware regression check, not a single pass/fail: it separates a real
+// shift from sampling noise using a significance test and a multiple-comparison correction. Gate
+// reduces it to the pass/fail a CI gate needs.
 type Comparison struct {
 	Metrics []MetricComparison `json:"metrics"`
 }
 
-// Compare pairs each metric present in BOTH reports' Overall stats and tests whether its pass rate
-// changed. For each metric it computes a two-sided p-value (a two-proportion z-test in general, or
-// Fisher's exact test when any expected cell count is below 5), then applies a Benjamini-Hochberg
-// correction across all compared metrics to control the false discovery rate. A metric is flagged
-// Significant when its adjusted p-value is below 0.05, and Direction names the sign of the change.
+// ErrRegression is Gate's verdict when a metric regressed significantly. It is a verdict, not a
+// fault, so it wraps no agent error category.
+var ErrRegression = errors.New("eval: significant regression")
+
+// ErrInconclusive is Gate's verdict when a metric could not be compared, or nothing was. It is a
+// verdict, not a fault, so it wraps no agent error category.
+var ErrInconclusive = errors.New("eval: inconclusive comparison")
+
+// Gate is the comparison as a CI gate: nil only when at least one metric was compared and every
+// metric is DirectionFlat or DirectionImprovement. Otherwise it returns an error naming each
+// offending metric, wrapping ErrRegression for a significant regression and ErrInconclusive for a
+// metric that was not compared (or for an empty comparison), so an unmeasured metric never passes.
+func (c Comparison) Gate() error {
+	if len(c.Metrics) == 0 {
+		return fmt.Errorf("%w: no metrics to compare", ErrInconclusive)
+	}
+	var errs []error
+	for _, m := range c.Metrics {
+		switch m.Direction {
+		case DirectionFlat, DirectionImprovement:
+		case DirectionRegression:
+			errs = append(errs, fmt.Errorf("%w: %s %.0f%% -> %.0f%% (adj p=%.4g)", ErrRegression, m.Metric, m.OldRate*100, m.NewRate*100, m.AdjustedP))
+		case DirectionInconclusive:
+			errs = append(errs, fmt.Errorf("%w: %s: %s", ErrInconclusive, m.Metric, m.Note))
+		default:
+			errs = append(errs, fmt.Errorf("%w: %s: unknown direction %q", ErrInconclusive, m.Metric, m.Direction))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// CompareOption configures Compare.
+type CompareOption interface{ applyCompare(*compareConfig) error }
+
+type compareConfig struct {
+	unscoredTolerance float64
+}
+
+type unscoredTolerance float64
+
+func (t unscoredTolerance) applyCompare(c *compareConfig) error {
+	if !(t >= 0 && t <= 1) {
+		return fmt.Errorf("eval: WithUnscoredTolerance(%g): want a fraction in [0, 1]: %w", float64(t), agent.ErrConfig)
+	}
+	c.unscoredTolerance = float64(t)
+	return nil
+}
+
+// WithUnscoredTolerance sets the largest share of a metric's runs, in each report, that may be
+// unscored for Compare to still compare it: frac is Unscored/(Scored+Unscored) and must be in
+// [0, 1]. The default is 0: any unscored run makes the metric inconclusive. A metric with no scored
+// run in either report is inconclusive whatever the tolerance.
+//
+// Raising it trades rigor for availability. The pass rate is over scored runs, so it is unbiased
+// only if the runs left unscored are like the rest; a grader that fails more on some outputs than
+// others breaks that.
+func WithUnscoredTolerance(frac float64) CompareOption { return unscoredTolerance(frac) }
+
+// Compare pairs each metric in either report's Overall stats and tests whether its pass rate
+// changed. For each metric both reports scored (within the unscored tolerance) it computes a
+// two-sided p-value over the scored runs (a two-proportion z-test in general, or Fisher's exact test
+// when any expected cell count is below 5), then applies a Benjamini-Hochberg correction across
+// those metrics to control the false discovery rate. A metric is flagged Significant when its
+// adjusted p-value is below 0.05, and Direction names the sign of the change. Every other metric,
+// including one present in only one report, is DirectionInconclusive.
 //
 // Both reports must carry Format ReportFormat, as every Report that Run returns does; otherwise
 // Compare returns an error wrapping ErrFormat and no comparison. A report of another layout (or a
-// zero Report) decoded into this type would otherwise compare as if its metrics were absent, and a
-// regression gate would pass on it.
-func Compare(old, new Report) (Comparison, error) {
+// zero Report) decoded into this type would otherwise compare as if its metrics were absent. A bad
+// option is an error wrapping agent.ErrConfig.
+func Compare(old, new Report, opts ...CompareOption) (Comparison, error) {
+	var cfg compareConfig
+	for _, o := range opts {
+		if o == nil {
+			return Comparison{}, fmt.Errorf("eval: Compare: nil option: %w", agent.ErrConfig)
+		}
+		if err := o.applyCompare(&cfg); err != nil {
+			return Comparison{}, err
+		}
+	}
 	for _, r := range []struct {
 		which  string
 		format string
@@ -78,38 +163,58 @@ func Compare(old, new Report) (Comparison, error) {
 			return Comparison{}, fmt.Errorf("%w: the %s report's format is %q, want %q", ErrFormat, r.which, r.format, ReportFormat)
 		}
 	}
-	names := make([]string, 0, len(old.Overall))
-	for n := range old.Overall {
-		if _, ok := new.Overall[n]; ok {
-			names = append(names, n)
+	seen := make(map[string]bool, len(old.Overall)+len(new.Overall))
+	names := make([]string, 0, len(old.Overall)+len(new.Overall))
+	for _, overall := range []map[string]MetricStat{old.Overall, new.Overall} {
+		for n := range overall {
+			if !seen[n] {
+				seen[n] = true
+				names = append(names, n)
+			}
 		}
 	}
 	sort.Strings(names)
 
 	comps := make([]MetricComparison, 0, len(names))
-	raw := make([]float64, 0, len(names))
+	var tested []int // indexes into comps of the metrics tested, in order
+	var raw []float64
 	for _, n := range names {
-		o := old.Overall[n]
-		w := new.Overall[n]
-		p := comparePValue(o.Passes, o.Runs, w.Passes, w.Runs)
-		comps = append(comps, MetricComparison{
+		o, inOld := old.Overall[n]
+		w, inNew := new.Overall[n]
+		c := MetricComparison{
 			Metric:    n,
 			OldRate:   o.Rate,
 			NewRate:   w.Rate,
-			RateDelta: w.Rate - o.Rate,
-			OldPasses: o.Passes,
-			OldRuns:   o.Runs,
-			NewPasses: w.Passes,
-			NewRuns:   w.Runs,
-			PValue:    p,
-		})
-		raw = append(raw, p)
+			OldPasses: o.Passes, OldScored: o.Scored, OldUnscored: o.Unscored,
+			NewPasses: w.Passes, NewScored: w.Scored, NewUnscored: w.Unscored,
+			PValue:    1,
+			AdjustedP: 1,
+			Direction: DirectionInconclusive,
+		}
+		switch {
+		case !inOld:
+			c.Note = "missing from the old report"
+		case !inNew:
+			c.Note = "missing from the new report"
+		case o.Scored == 0 || w.Scored == 0:
+			c.Note = fmt.Sprintf("no scored runs (old %d, new %d)", o.Scored, w.Scored)
+		case unscoredShare(o) > cfg.unscoredTolerance || unscoredShare(w) > cfg.unscoredTolerance:
+			c.Note = fmt.Sprintf("unscored runs above tolerance %g (old %d of %d, new %d of %d)",
+				cfg.unscoredTolerance, o.Unscored, o.Scored+o.Unscored, w.Unscored, w.Scored+w.Unscored)
+		default:
+			c.RateDelta = w.Rate - o.Rate
+			c.PValue = comparePValue(o.Passes, o.Scored, w.Passes, w.Scored)
+			c.Direction = ""
+			tested = append(tested, len(comps))
+			raw = append(raw, c.PValue)
+		}
+		comps = append(comps, c)
 	}
 
 	adj := bhAdjust(raw)
-	for i := range comps {
-		comps[i].AdjustedP = adj[i]
-		comps[i].Significant = adj[i] < 0.05
+	for k, i := range tested {
+		comps[i].AdjustedP = adj[k]
+		comps[i].Significant = adj[k] < 0.05
 		switch {
 		case !comps[i].Significant:
 			comps[i].Direction = DirectionFlat
@@ -122,6 +227,15 @@ func Compare(old, new Report) (Comparison, error) {
 		}
 	}
 	return Comparison{Metrics: comps}, nil
+}
+
+// unscoredShare is the fraction of s's runs that were unscored.
+func unscoredShare(s MetricStat) float64 {
+	total := s.Scored + s.Unscored
+	if total == 0 {
+		return 0
+	}
+	return float64(s.Unscored) / float64(total)
 }
 
 // comparePValue picks the significance test by the expected-cell-count rule: if any of the four
@@ -390,7 +504,8 @@ func HashCases(cases []Case) string {
 
 // --- 5. governance-compliance metric ---
 
-// GovernanceHeld passes iff compliant(ctx, out) is true. The caller supplies compliant to inspect the
+// GovernanceHeld passes iff compliant(ctx, out) returns true, and leaves the run unscored when it
+// returns an error (the governance log it reads could not be read, for example). The caller supplies compliant to inspect the
 // run's governed outcome (for example the final message or the trajectory's recorded decision) and
 // report whether the containment layer kept it compliant.
 //
@@ -402,21 +517,25 @@ func HashCases(cases []Case) string {
 // This metric stays lean and does not couple to the govern package; the predicate is the only seam.
 // It receives the evaluation's context, so a predicate that reads a store or a governance log can
 // honour cancellation. A nil compliant makes Run return an error wrapping agent.ErrConfig.
-func GovernanceHeld(name string, compliant func(ctx context.Context, out RunOutput) bool) Metric {
+func GovernanceHeld(name string, compliant func(ctx context.Context, out RunOutput) (bool, error)) Metric {
 	if compliant == nil {
 		return misconfigured(name, "GovernanceHeld %q: nil predicate", name)
 	}
-	return Metric{Name: name, Fn: func(ctx context.Context, _ Case, out RunOutput) bool {
+	return Metric{Name: name, Fn: func(ctx context.Context, _ Case, out RunOutput) (bool, error) {
 		return compliant(ctx, out)
 	}}
 }
 
 // String renders a comparison as a readable table: rate delta, raw and adjusted p-values, and the
-// significance direction per metric. Metrics keep the ascending order Compare produced.
+// significance direction per metric, or why a metric is inconclusive. Metrics keep the ascending order Compare produced.
 func (c Comparison) String() string {
 	var b strings.Builder
 	b.WriteString("compare: old -> new (BH-adjusted, significant at adj p<0.05)\n")
 	for _, m := range c.Metrics {
+		if m.Direction == DirectionInconclusive {
+			fmt.Fprintf(&b, "  ? %-22s inconclusive: %s\n", m.Metric, m.Note)
+			continue
+		}
 		flag := " "
 		if m.Significant {
 			flag = "*"

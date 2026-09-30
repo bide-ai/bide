@@ -65,9 +65,11 @@ func main() {
 	}
 
 	// 3) Metrics: a rule-based label check, plus that the run did not error.
-	correct := eval.Custom("correct_label", func(_ context.Context, c eval.Case, out eval.RunOutput) bool {
+	// A metric returns an error only when it cannot score a run (a judge that is down, say); such a
+	// run is counted as unscored, not failed.
+	correct := eval.Custom("correct_label", func(_ context.Context, c eval.Case, out eval.RunOutput) (bool, error) {
 		want, _ := c.Want.(string)
-		return strings.Contains(strings.ToLower(out.Final.Text()), want)
+		return strings.Contains(strings.ToLower(out.Final.Text()), want), nil
 	})
 	// MaxSteps reads the trajectory from the journal: a classifier should answer in one turn.
 	metrics := []eval.Metric{eval.NoError(), correct, eval.MaxSteps(1)}

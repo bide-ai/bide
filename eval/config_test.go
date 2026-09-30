@@ -75,11 +75,11 @@ func TestMatches(t *testing.T) {
 		"order #x approved":   false,
 		"order #12 approved!": false,
 	} {
-		if got := m.Fn(ctx, eval.Case{}, eval.RunOutput{Final: agent.UserText(text)}); got != want {
+		if got, err := m.Fn(ctx, eval.Case{}, eval.RunOutput{Final: agent.UserText(text)}); got != want || err != nil {
 			t.Errorf("Matches(%q) = %v, want %v", text, got, want)
 		}
 	}
-	if m.Fn(ctx, eval.Case{}, eval.RunOutput{Final: agent.UserText("order #1 held"), Err: errors.New("boom")}) {
+	if pass, err := m.Fn(ctx, eval.Case{}, eval.RunOutput{Final: agent.UserText("order #1 held"), Err: errors.New("boom")}); pass || err != nil {
 		t.Error("Matches passed a run that errored")
 	}
 }
@@ -90,12 +90,12 @@ type ctxKey struct{}
 func TestGovernanceHeld_ReceivesContext(t *testing.T) {
 	ctx := context.WithValue(context.Background(), ctxKey{}, "eval-ctx")
 	var seen atomic.Int32
-	held := eval.GovernanceHeld("held", func(ctx context.Context, _ eval.RunOutput) bool {
+	held := eval.GovernanceHeld("held", func(ctx context.Context, _ eval.RunOutput) (bool, error) {
 		if ctx.Value(ctxKey{}) == "eval-ctx" {
 			seen.Add(1)
-			return true
+			return true, nil
 		}
-		return false
+		return false, nil
 	})
 	rep := mustRun(t, ctx, answer("ok"), []eval.Case{{Name: "c", Input: "x"}}, []eval.Metric{held}, eval.Options{Runs: 3})
 	if seen.Load() != 3 || rep.Overall["held"].Passes != 3 {
@@ -118,7 +118,7 @@ func TestAgentRunner_NilArgumentsAreErrConfig(t *testing.T) {
 
 // Every Report that Run returns carries the format tag, and it is the first field of its JSON.
 func TestReport_Format(t *testing.T) {
-	if eval.ReportFormat != "bide.eval.report.v1" {
+	if eval.ReportFormat != "bide.eval.report.v2" {
 		t.Fatalf("ReportFormat = %q", eval.ReportFormat)
 	}
 	rep := mustRun(t, context.Background(), answer("ok"), []eval.Case{{Name: "c", Input: "x"}}, []eval.Metric{eval.NoError()}, eval.Options{})
@@ -129,7 +129,7 @@ func TestReport_Format(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(string(data), `{"format":"bide.eval.report.v1",`) {
+	if !strings.HasPrefix(string(data), `{"format":"bide.eval.report.v2",`) {
 		t.Fatalf("report JSON does not lead with its format: %s", data)
 	}
 	var back eval.Report
@@ -145,13 +145,20 @@ func TestReport_Format(t *testing.T) {
 // layout decoded into this type), instead of comparing it as if it had no metrics.
 func TestCompare_RefusesUnknownFormat(t *testing.T) {
 	good := reportFor(9, 10)
-	var decoded eval.Report
-	if err := json.Unmarshal([]byte(`{"format":"bide.eval.report.v2","overall_stats":{}}`), &decoded); err != nil {
+	// A v1 report: its stats count runs, not scored runs, so read as v2 its rates and counts
+	// would not mean what Compare takes them to.
+	var v1 eval.Report
+	if err := json.Unmarshal([]byte(`{"format":"bide.eval.report.v1","overall":{"contains:PASS":{"passes":9,"runs":10,"rate":0.9}}}`), &v1); err != nil {
+		t.Fatal(err)
+	}
+	var v3 eval.Report
+	if err := json.Unmarshal([]byte(`{"format":"bide.eval.report.v3","overall_stats":{}}`), &v3); err != nil {
 		t.Fatal(err)
 	}
 	for name, bad := range map[string]eval.Report{
 		"zero":  {},
-		"v2":    decoded,
+		"v1":    v1,
+		"v3":    v3,
 		"blank": {Format: "", Overall: good.Overall},
 	} {
 		for _, pair := range [][2]eval.Report{{bad, good}, {good, bad}} {
