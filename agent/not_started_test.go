@@ -10,7 +10,7 @@ import (
 
 var errCrashed = errors.New("the process died")
 
-// markerHookStore is a MemStore that acts as soon as an attempt marker has been recorded: it
+// markerHookStore is a MemStore that acts as soon as it has recorded a new attempt marker: it
 // cancels the driver's context, as a shutdown or a lost lease landing at that moment would, and
 // when crash is set it also fails every later write, as a process that died right there would.
 type markerHookStore struct {
@@ -24,8 +24,12 @@ func (s *markerHookStore) Do(ctx context.Context, runID, name string, fn func(co
 	if s.dead.Load() {
 		return Record{}, errCrashed
 	}
-	rec, err := s.MemStore.Do(ctx, runID, name, fn)
-	if err == nil && rec.Kind == StepAttempt {
+	wrote := false
+	rec, err := s.MemStore.Do(ctx, runID, name, func(ctx context.Context) (Record, error) {
+		wrote = true
+		return fn(ctx)
+	})
+	if err == nil && wrote && rec.Kind == StepAttempt { // a marker this call wrote, not one it read
 		s.cancel()
 		if s.crash {
 			s.dead.Store(true)
