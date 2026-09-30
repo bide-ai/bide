@@ -337,7 +337,7 @@ func fDrive(sub fSubject, p *fProc, runID string, drive int, ctx context.Context
 	return flow.Run(ctx, j, runID, sub.in)
 }
 
-func fRun(sub fSubject, sameProc [2]bool, ex *fExplorer) (viol []fViolation, h *fHarness) {
+func fRun(sub fSubject, sameProc [2]bool, ex *fExplorer, leased bool) (viol []fViolation, h *fHarness) {
 	h = &fHarness{mem: agent.NewMemStore(), ex: ex, crash: map[int]int{}, acked: map[string]bool{}}
 	fRunMu.Lock()
 	fRunSeq++
@@ -418,7 +418,11 @@ func fRun(sub fSubject, sameProc [2]bool, ex *fExplorer) (viol []fViolation, h *
 			add("I7-unexpected-halt-key", "halt on %s", halt.Op.ID)
 			break
 		}
-		if rerr := agent.ResolveHaltRef(context.Background(), h.mem, halt.Ref(), agent.Outcome{Result: val}, agent.WithoutLiveDriverCheck()); rerr != nil {
+		var ropts []agent.ResolveOption
+		if !leased {
+			ropts = append(ropts, agent.WithoutLiveDriverCheck())
+		}
+		if rerr := agent.ResolveHaltRef(context.Background(), h.mem, halt.Ref(), agent.Outcome{Result: val}, ropts...); rerr != nil {
 			add("I7-resolve-failed", "ResolveHaltRef(%s): %v", halt.Op.ID, rerr)
 			break
 		}
@@ -477,7 +481,14 @@ func fRun(sub fSubject, sameProc [2]bool, ex *fExplorer) (viol []fViolation, h *
 // also with every drive in the process of the one before (which exercises a process's remembered
 // claims), which keeps it under a minute with -race; BIDE_EXPLORE=1 explores all four process
 // plans for every subject, and BIDE_SUBJECT=<name> restricts it to one subject.
-func TestZZExploreFlowLowering(t *testing.T) {
+func TestZZExploreFlowLowering(t *testing.T) { exploreFlowLowering(t, false) }
+
+// TestZZExploreFlowLoweringLeased is TestZZExploreFlowLowering with each halt resolved under the
+// live-driver check (no WithoutLiveDriverCheck): the resolution takes the run's lease on the
+// MemStore and claims the attempt after the live one, so it exercises the resolver's claim.
+func TestZZExploreFlowLoweringLeased(t *testing.T) { exploreFlowLowering(t, true) }
+
+func exploreFlowLowering(t *testing.T, leased bool) {
 	full := os.Getenv("BIDE_EXPLORE") != ""
 	allPlans := [][2]bool{{false, false}, {true, false}, {false, true}, {true, true}}
 	only := os.Getenv("BIDE_SUBJECT")
@@ -499,7 +510,7 @@ func TestZZExploreFlowLowering(t *testing.T) {
 			counts := map[string]int{}
 			examples := map[string]string{}
 			for {
-				viol, h := fRun(sub, pl, ex)
+				viol, h := fRun(sub, pl, ex, leased)
 				n++
 				for _, v := range viol {
 					counts[v.kind]++
