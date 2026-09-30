@@ -202,11 +202,11 @@ func (c config) tables() tables {
 	return t
 }
 
-// legacyTable is the journal table of v0.7.0 and earlier, whose journals this version does not
+// legacyTable is the journal table of v0.8.0 and earlier, whose journals this version does not
 // read (they have no journal format header).
 const legacyTable = "steps"
 
-// migrate refuses a file that holds v0.7.0 journals, creates the tables if they do not exist, and
+// migrate refuses a file that holds journals of v0.8.0 or earlier, creates the tables if they do not exist, and
 // checks the schema version.
 func (s *Store) migrate(ctx context.Context) error {
 	if err := s.refuseLegacy(ctx); err != nil {
@@ -244,7 +244,7 @@ func (s *Store) migrate(ctx context.Context) error {
 	return nil
 }
 
-// refuseLegacy refuses a file whose v0.7.0 journal table holds rows. Opened as empty, such a file
+// refuseLegacy refuses a file whose v0.8.0-or-earlier journal table holds rows. Opened as empty, such a file
 // would lose its runs: a finished run re-invoked would run again from the start, and fire its side
 // effects a second time. An empty legacy table holds nothing to lose.
 func (s *Store) refuseLegacy(ctx context.Context) error {
@@ -252,19 +252,19 @@ func (s *Store) refuseLegacy(ctx context.Context) error {
 	var cols int
 	err := s.w.QueryRowContext(ctx, `SELECT count(*) FROM pragma_table_info(?) WHERE name IN ('run_id', 'seq', 'name', 'data')`, legacyTable).Scan(&cols)
 	if err != nil {
-		return fmt.Errorf("sqlite: look for a v0.7.0 journal table: %w (%w)", err, agent.ErrStorage)
+		return fmt.Errorf("sqlite: look for a v0.8.0-or-earlier journal table: %w (%w)", err, agent.ErrStorage)
 	}
 	if cols != 4 {
 		return nil
 	}
 	var rows int
 	if err := s.w.QueryRowContext(ctx, `SELECT count(*) FROM (SELECT 1 FROM `+legacyTable+` LIMIT 1)`).Scan(&rows); err != nil {
-		return fmt.Errorf("sqlite: read the v0.7.0 journal table: %w (%w)", err, agent.ErrStorage)
+		return fmt.Errorf("sqlite: read the v0.8.0-or-earlier journal table: %w (%w)", err, agent.ErrStorage)
 	}
 	if rows == 0 {
 		return nil
 	}
-	return fmt.Errorf("sqlite: the file holds journals written by bide v0.7.0 or earlier (table %q), which have no journal format header and which this version does not read; finish their runs with that version, or drop the table, before opening the file with this one: %w", legacyTable, agent.ErrJournalVersion)
+	return fmt.Errorf("sqlite: the file holds journals written by bide v0.8.0 or earlier (table %q), which have no journal format header and which this version does not read; finish their runs with that version, or drop the table, before opening the file with this one: %w", legacyTable, agent.ErrJournalVersion)
 }
 
 // Close closes the connection pools Open opened. A Store made with New leaves its db open.

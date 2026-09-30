@@ -189,11 +189,11 @@ be public.
 
 ## Stores
 
-**Upgrading from v0.7.0 is not a rolling deploy.** v0.7.0 journals have no journal format header,
-so this version refuses them (a SQLite file that holds any, at `Open`; a Postgres run, when it is
-first read), and v0.7.0 cannot read the journals this version writes. The two versions also keep
-their leases in different tables, so they do not exclude each other. Finish or resolve v0.7.0 runs
-with v0.7.0, stop every v0.7.0 node, then start this version.
+**Upgrading from v0.8.0 or earlier is not a rolling deploy.** Their journals have no journal
+format header, so this version refuses them (a SQLite file that holds any, at `Open`; a Postgres
+run, when it is first read), and those versions cannot read the journals this version writes. The
+versions also keep their leases in different tables, so they do not exclude each other. Finish or
+resolve the older runs with the older version, stop every node of it, then start this version.
 
 **SQLite is for one machine.** SQLite allows one writer at a time; a writer waits up to 30 seconds
 for the lock before failing. Its leases coordinate the processes that share one database file on
