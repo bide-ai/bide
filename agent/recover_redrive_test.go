@@ -194,6 +194,35 @@ func TestRecover_DoesNotResumeARunItCannotCheck(t *testing.T) {
 			if !errors.Is(err, ErrStorage) || resumed != 0 {
 				t.Errorf("Recover = %d, %v, resumed %d times; want an ErrStorage error and no resume", n, err, resumed)
 			}
+			if n != 0 {
+				t.Errorf("Recover = %d re-driven, want 0: resume was never called", n)
+			}
+		})
+	}
+}
+
+// A run in a journal format this version cannot read is refused with *JournalVersionError, not
+// reported as a storage failure, whether the check reads it through a Journal or a Durable.
+func TestRecover_ForeignFormatIsNotAStorageError(t *testing.T) {
+	for path, wrap := range map[string]func(*MemStore) Durable{
+		"journal": func(s *MemStore) Durable { return s },
+		"durable": func(s *MemStore) Durable { return durableWrapper{s} },
+	} {
+		t.Run(path, func(t *testing.T) {
+			s := NewMemStore()
+			hdr := []byte(`{"name":"@journal","kind":"header","format":"bide.journal.v999","salt":"AAAAAAAAAAAAAAAAAAAAAA=="}`)
+			if _, _, err := s.Insert(context.Background(), "a", headerStep, hdr); err != nil {
+				t.Fatal(err)
+			}
+			d := wrap(s)
+			_, err := Recover(context.Background(), d, func(ctx context.Context, id string) error {
+				_, err := New(NewScriptedModel(TextTurn("x")), d).Run(ctx, id, "go")
+				return err
+			}, WithLeaseHolder("w"))
+			var jv *JournalVersionError
+			if !errors.As(err, &jv) || errors.Is(err, ErrStorage) {
+				t.Errorf("Recover = %v; want a *JournalVersionError that is not ErrStorage", err)
+			}
 		})
 	}
 }
