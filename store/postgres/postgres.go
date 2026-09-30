@@ -634,11 +634,15 @@ type backoff struct{ failed int }
 
 // ceiling returns the upper bound of the wait after the failed-th failure.
 func (b *backoff) ceiling() time.Duration {
-	if b.failed >= 8 { // backoffBase<<7 already exceeds the cap
+	if b.failed > 20 { // well past the cap; a larger shift could overflow
 		return backoffCap
 	}
 	return min(backoffCap, backoffBase<<(b.failed-1))
 }
+
+// jitter draws the wait below a ceiling: a uniformly random duration in [0, ceiling), so writers
+// contending on one run spread their retries. A test replaces it to make the wait predictable.
+var jitter = func(ceiling time.Duration) time.Duration { return rand.N(ceiling) }
 
 // wait records a failed attempt and waits before the next one, or returns ctx's error as soon as
 // ctx is done.
@@ -647,7 +651,7 @@ func (b *backoff) wait(ctx context.Context) error {
 		return err
 	}
 	b.failed++
-	t := time.NewTimer(rand.N(b.ceiling()))
+	t := time.NewTimer(jitter(b.ceiling()))
 	defer t.Stop()
 	select {
 	case <-ctx.Done():

@@ -12,7 +12,8 @@ import (
 // The backoff's ceiling starts at backoffBase, doubles with each failure and stops at backoffCap.
 func TestBackoffCeiling(t *testing.T) {
 	want := []time.Duration{time.Millisecond, 2 * time.Millisecond, 4 * time.Millisecond, 8 * time.Millisecond,
-		16 * time.Millisecond, 32 * time.Millisecond, 64 * time.Millisecond, 100 * time.Millisecond, 100 * time.Millisecond}
+		16 * time.Millisecond, 32 * time.Millisecond, 64 * time.Millisecond, 100 * time.Millisecond, 100 * time.Millisecond,
+		100 * time.Millisecond, 100 * time.Millisecond}
 	var b backoff
 	for i, w := range want {
 		b.failed = i + 1
@@ -20,27 +21,49 @@ func TestBackoffCeiling(t *testing.T) {
 			t.Errorf("ceiling after %d failures = %v, want %v", i+1, got, w)
 		}
 	}
-	b.failed = 1 << 20
+	b.failed = 64 // a shift this large would overflow without the guard
 	if got := b.ceiling(); got != backoffCap {
 		t.Errorf("ceiling after many failures = %v, want the cap %v", got, backoffCap)
 	}
 }
 
-// wait returns ctx's error at once when ctx is done, and while it waits.
+// wait returns ctx's error at once when ctx is done, and as soon as ctx ends while it waits,
+// rather than when the wait would have ended.
 func TestBackoffWaitStopsWithTheContext(t *testing.T) {
+	defer func(j func(time.Duration) time.Duration) { jitter = j }(jitter)
+	waiting := make(chan struct{}, 2)
+	jitter = func(time.Duration) time.Duration { // a wait only ctx can end
+		waiting <- struct{}{}
+		return time.Hour
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	var b backoff
 	if err := b.wait(ctx); !errors.Is(err, context.Canceled) {
 		t.Fatalf("wait on a done context = %v, want context.Canceled", err)
 	}
-	b.failed = 100 // the cap
 	ctx, cancel = context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- b.wait(ctx) }()
+	<-waiting // past the check of ctx on entry
 	cancel()
-	if err := <-done; err != nil && !errors.Is(err, context.Canceled) {
-		t.Fatalf("wait cancelled while waiting = %v", err)
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("wait cancelled while waiting = %v, want context.Canceled", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("wait did not return when its context was cancelled")
+	}
+}
+
+// jitter draws a wait below its ceiling.
+func TestJitterStaysBelowTheCeiling(t *testing.T) {
+	for range 1000 {
+		if d := jitter(backoffBase); d < 0 || d >= backoffBase {
+			t.Fatalf("jitter(%v) = %v, want a duration in [0, %v)", backoffBase, d, backoffBase)
+		}
 	}
 }
 
