@@ -131,7 +131,9 @@ func TestStress_HooksOncePerRequestEveryOrder(t *testing.T) {
 			time.Sleep(time.Millisecond)
 		}
 		hc.mu.Lock()
-		for k := 1; k <= len(hc.before); k++ {
+		// Numbers can have gaps: a request an outer hook's Before refused (a hedge loser's RateLimit
+		// wait sees its cancelled context) keeps its number, and the hooks after it never see it.
+		for k := range hc.before {
 			if hc.before[k] != 1 || hc.after[k] != 1 {
 				t.Errorf("perm %v: attempt %d before=%d after=%d (sent %d) %v %v", p, k, hc.before[k], hc.after[k], sent, hc.before, hc.after)
 			}
