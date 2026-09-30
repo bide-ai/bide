@@ -241,7 +241,7 @@ func NewMemWaker(resume func(ctx context.Context, runID string) error) *MemWaker
 func (w *MemWaker) Schedule(runID, name string, fireAt time.Time) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	w.timers[runID+"\x00"+name] = scheduled{runID: runID, fireAt: fireAt}
+	w.timers[stepKey(runID, name)] = scheduled{runID: runID, fireAt: fireAt}
 }
 
 // Fire resumes every run that has a timer due at or before now, each run once even if several of its

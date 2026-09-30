@@ -56,12 +56,14 @@ func overlappingDo(t *testing.T, d Durable, run1, name1, run2, name2 string) (fi
 // store's in-process deduplication key must tell ("a\x00b", "c") from ("a", "b\x00c"): keyed
 // alike, a concurrent Do of the second would share the first's fn and get its record back.
 func TestMemStore_DistinctStepsWithNULDoNotShareADo(t *testing.T) {
-	first, second, ran := overlappingDo(t, NewMemStore(), "a\x00b", "c", "a", "b\x00c")
-	if string(first.Result) != `"first"` {
-		t.Errorf("first step's record = %s, want \"first\"", first.Result)
-	}
-	if !ran || string(second.Result) != `"second"` || second.Name != "b\x00c" {
-		t.Errorf("second step ran=%v, record %q %s; want its own fn run and record \"second\"", ran, second.Name, second.Result)
+	for _, c := range [][4]string{{"a\x00b", "c", "a", "b\x00c"}, {"ab", "c", "a", "bc"}} {
+		first, second, ran := overlappingDo(t, NewMemStore(), c[0], c[1], c[2], c[3])
+		if string(first.Result) != `"first"` {
+			t.Errorf("%q: first step's record = %s, want \"first\"", c, first.Result)
+		}
+		if !ran || string(second.Result) != `"second"` || second.Name != c[3] {
+			t.Errorf("%q: second step ran=%v, record %q %s; want its own fn run and record \"second\"", c, ran, second.Name, second.Result)
+		}
 	}
 }
 
@@ -77,10 +79,12 @@ func TestMemWaker_DistinctTimersWithNULAreKeptApart(t *testing.T) {
 	at := time.Unix(100, 0)
 	w.Schedule("a\x00b", "c", at)
 	w.Schedule("a", "b\x00c", at)
-	if n, err := w.Fire(context.Background(), at); err != nil || n != 2 {
+	w.Schedule("xy", "z", at)
+	w.Schedule("x", "yz", at)
+	if n, err := w.Fire(context.Background(), at); err != nil || n != 4 {
 		t.Fatalf("Fire = %d, %v; want both runs resumed", n, err)
 	}
-	if !woke["a\x00b"] || !woke["a"] {
-		t.Fatalf("woke %v; want both %q and %q", woke, "a\x00b", "a")
+	if !woke["a\x00b"] || !woke["a"] || !woke["xy"] || !woke["x"] {
+		t.Fatalf("woke %v; want all four runs", woke)
 	}
 }

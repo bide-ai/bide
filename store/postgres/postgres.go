@@ -13,6 +13,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/bide-ai/bide/agent"
@@ -103,7 +104,7 @@ func (s *Store) Do(ctx context.Context, runID, name string, fn func(context.Cont
 	// INSERT ... ON CONFLICT DO NOTHING additionally dedupes across nodes (HA). The callers
 	// share the stored bytes, and each decodes its own copy below, so the record Do returns is
 	// the one History returns for this step, on the live path too.
-	v, err, _ := s.sf.Do(runID+"\x00"+name, func() (any, error) {
+	v, err, _ := s.sf.Do(stepKey(runID, name), func() (any, error) {
 		if data, ok, e := s.load(ctx, runID, name); e != nil {
 			return nil, e
 		} else if ok {
@@ -170,6 +171,12 @@ func (s *Store) insert(ctx context.Context, runID, name string, data []byte) (in
 	n, _ := res.RowsAffected()
 	return n, tx.Commit()
 }
+
+// stepKey is the in-process deduplication key of step name of runID: the run ID's length in
+// bytes, ':', the run ID, then the name. The length makes the split exact whatever bytes the two
+// hold, so two different steps never share a key (joining them with a separator would not:
+// ("a\x00b", "c") and ("a", "b\x00c") both join to "a\x00b\x00c").
+func stepKey(runID, name string) string { return strconv.Itoa(len(runID)) + ":" + runID + name }
 
 // History implements agent.Durable.
 func (s *Store) History(ctx context.Context, runID string) ([]agent.Record, error) {

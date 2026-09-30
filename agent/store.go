@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"sync"
 	"time"
 
@@ -667,7 +668,7 @@ func (m *MemStore) Do(ctx context.Context, runID, name string, fn func(context.C
 	// share the result, so a side effect can't fire twice under concurrency (parallel tools,
 	// retries). In-process only; cross-process dedup is the store's job (PK/ON CONFLICT).
 	// What they share is the stored encoding; each caller decodes its own copy of it below.
-	v, err, _ := m.sf.Do(runID+"\x00"+name, func() (any, error) {
+	v, err, _ := m.sf.Do(stepKey(runID, name), func() (any, error) {
 		m.mu.Lock()
 		rl := m.runs[runID]
 		if rl == nil {
@@ -705,6 +706,12 @@ func (m *MemStore) Do(ctx context.Context, runID, name string, fn func(context.C
 	// The stored record, decoded: what History returns for this step, never the caller's own.
 	return DecodeRecord(v.([]byte))
 }
+
+// stepKey is the in-process deduplication key of step name of runID: the run ID's length in
+// bytes, ':', the run ID, then the name. The length makes the split exact whatever bytes the two
+// hold, so two different steps never share a key (joining them with a separator would not:
+// ("a\x00b", "c") and ("a", "b\x00c") both join to "a\x00b\x00c").
+func stepKey(runID, name string) string { return strconv.Itoa(len(runID)) + ":" + runID + name }
 
 // Runs returns the IDs of every run the store holds, satisfying Lister so a
 // crash-recovery supervisor can enumerate in-flight runs (see Recover).
