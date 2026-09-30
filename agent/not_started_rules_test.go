@@ -244,3 +244,45 @@ func TestStream_NotStartedCallEmitsNoToolStarted(t *testing.T) {
 		t.Fatalf("the re-attempt emitted %d ToolStarted and %d ToolCompleted, want one of each (events %v)", started, completed, kinds(evs))
 	}
 }
+
+// A saga call cancelled before it started records no accepted arguments (it accepted none); its
+// re-attempt goes through tool middleware like any call, journals the arguments it accepted, and
+// the rollback undoes those.
+func TestSaga_NotStartedReattemptCompensatesTheAcceptedArguments(t *testing.T) {
+	var charged, refunded atomic.Int32
+	charge := CompensatedFunc("charge", "charge the card", Safety{},
+		func(_ context.Context, in chargeArgs) (string, error) {
+			charged.Add(int32(in.Amount))
+			return "ok", nil
+		},
+		func(_ context.Context, in chargeArgs, _ string) error { refunded.Add(int32(in.Amount)); return nil })
+	fail := Func("book", "book the flight", Safety{}, func(context.Context, struct{}) (string, error) {
+		return "", errors.New("no seats")
+	})
+	model := func() Model {
+		return NewScriptedModel(ToolTurn("c1", "charge", `{"amount":5}`), ToolTurn("b1", "book", `{}`), TextTurn("done"))
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	store := &markerHookStore{MemStore: NewMemStore(), cancel: cancel}
+	if _, err := New(model(), store, charge, fail).UseTool(scaleCharge).RunSaga(ctx, "r", "trip"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled saga err = %v, want context.Canceled", err)
+	}
+	if charged.Load() != 0 {
+		t.Fatalf("charged %d before the call started, want 0", charged.Load())
+	}
+	recs, _ := store.History(context.Background(), "r")
+	for _, r := range recs {
+		if r.Name == sagaArgsStep("c1") {
+			t.Fatalf("a call that never started journaled accepted arguments: %+v", r)
+		}
+	}
+
+	_, err := New(model(), store.MemStore, charge, fail).UseTool(scaleCharge).RunSaga(context.Background(), "r", "trip")
+	var aborted *SagaAborted
+	if !errors.As(err, &aborted) || aborted.CompensateErr != nil {
+		t.Fatalf("resumed saga = %v, want a clean *SagaAborted", err)
+	}
+	if charged.Load() != 500 || refunded.Load() != 500 {
+		t.Fatalf("charged %d, refunded %d; want the re-attempt's 500 charged and refunded", charged.Load(), refunded.Load())
+	}
+}
