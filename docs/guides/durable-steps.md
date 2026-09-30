@@ -272,7 +272,9 @@ none is running. So, whatever the cause:
   `*HaltInFlight` if a driver holds that claim already: a process that could not record that its
   claim never started can void the live attempt after the age check and run the effect as the next
   attempt, and a resolution must not override it. The resolution's claim stays in the journal as an
-  attempt marker of the operation.
+  attempt marker of the operation. If recording the outcome fails, that claim stays live (the
+  outcome may have been recorded all the same): the operation halts until it is resolved again,
+  and the next resolution measures `WithMinHaltAge` from the resolution's own attempt.
 - A `HaltContended` halt always requires `WithMinHaltAge`.
 - `WithoutLiveDriverCheck()` skips the first two, for an operator who knows no driver is running
   (every worker stopped).

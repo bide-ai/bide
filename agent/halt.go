@@ -111,7 +111,10 @@ type Outcome struct {
 //     records the outcome, and returns *HaltInFlight if a driver holds that claim already: a
 //     process that could not record that its claim never started may void the live attempt
 //     after the age check and claim the next, and its effect must not be overridden. The
-//     resolution's claim is journaled as an attempt marker of the operation.
+//     resolution's claim is journaled as an attempt marker of the operation. If recording the
+//     outcome then fails, the claim stays live (the outcome may have been recorded all the same),
+//     so the operation halts until it is resolved again; that resolution claims the attempt after
+//     this one, once it is WithMinHaltAge old.
 //
 // WithoutLiveDriverCheck skips both, for an operator who knows no driver is running.
 //
@@ -249,11 +252,10 @@ func resolveHalt(ctx context.Context, store Durable, op string, ref HaltRef, out
 	// its own: a driver that holds it already may be running the effect (*HaltInFlight), and once
 	// the resolution holds it, no driver can claim past the live attempt before the result below
 	// is recorded.
-	var held Record
 	var heldKey string
 	if !leased && !cfg.noLiveCheck && cfg.minHaltAge > 0 {
 		heldKey = nextAttemptStep(attempt.Name)
-		won, got, err := ClaimAttempt(ctx, store, ref.RunID, heldKey, Record{Kind: StepAttempt, ToolUseID: id, AttemptedAt: cfg.now().UnixMilli()})
+		won, _, err := ClaimAttempt(ctx, store, ref.RunID, heldKey, Record{Kind: StepAttempt, ToolUseID: id, AttemptedAt: cfg.now().UnixMilli()})
 		if err != nil {
 			return fmt.Errorf("%s: claim %s: %w", op, heldKey, err)
 		}
@@ -261,7 +263,6 @@ func resolveHalt(ctx context.Context, store Durable, op string, ref HaltRef, out
 			root, _, _ := strings.Cut(ref.RunID, subRunSep)
 			return &HaltInFlight{RunID: ref.RunID, RootRunID: root, Op: ref.Op, Attempt: heldKey}
 		}
-		held = got
 	}
 	rec := Record{Kind: h.kind, Result: b, IsError: out.IsError, Reconciled: cfg.reconciled, Evidence: cfg.evidence}
 	if h.kind == StepToolResult {
@@ -269,13 +270,11 @@ func resolveHalt(ctx context.Context, store Durable, op string, ref HaltRef, out
 	}
 	got, err := store.Do(ctx, ref.RunID, h.result, func(context.Context) (Record, error) { return rec, nil })
 	if err != nil {
-		if heldKey != "" {
-			// Nothing was resolved: record that the resolution's attempt never started, so it
-			// does not stand as a live attempt with no result.
-			if nerr := recordNotStarted(ctx, store, ref.RunID, heldKey, held); nerr != nil {
-				return fmt.Errorf("%w (%w)", err, nerr)
-			}
-		}
+		// The verdict may have committed all the same, so the resolution's attempt stays live: a
+		// driver that lost it to this resolution must not find it voided and run the effect under
+		// the next attempt beside a recorded verdict. The operation then halts until the verdict
+		// is read back or the halt is resolved again; a second resolution finds this attempt live
+		// and claims the one after it.
 		return err
 	}
 	if got.Kind != rec.Kind || got.IsError != rec.IsError || !sameJSON(got.Result, rec.Result) {
