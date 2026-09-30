@@ -58,7 +58,9 @@ that no modelled code changed, so it can be a required check without costing eve
 change six minutes. The merge queue and main always run in full, and so does any doubt (a failed
 diff, an unexpected event). A pull request that changes the claim code outside those paths must
 widen the filter in the same pull request. **Models (nightly)** runs the `nightly` configurations
-on a schedule and on demand (`workflow_dispatch`).
+on a schedule and on demand (`workflow_dispatch`). The Go counterpart, the full-bound fault-schedule
+explorations of the claim protocol and of flow lowering (`BIDE_EXPLORE=1`), runs nightly in
+`.github/workflows/explore.yml`; see [verification](../../docs/testing/verification.md).
 
 ## Layout
 

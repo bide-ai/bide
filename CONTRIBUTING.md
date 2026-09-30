@@ -47,6 +47,8 @@ cd examples/observability && GOWORK=off go run .
 
 Some tests need external infrastructure and skip without it: `store/postgres` and `govern/postgreslog` look for `PG_DSN`; `govern/redislog` looks for `REDIS_ADDR`; the external convergence oracle cross-check looks for `GSM_AST_CHECKER`. The default suite is green with none of them set.
 
+The fault-schedule explorations (the tests with `Explore` in their name, in `agent` and `plan`) run at a bound that fits CI by default. `BIDE_EXPLORE=1` runs the full bound (`BIDE_EXPLORE=1 GOWORK=off go test -count=1 -timeout 85m -run Explore ./agent ./plan`, about nine minutes on a development machine, without `-race`), and `BIDE_EXPLORE_SIGS=<file>` appends one line per explored concurrent schedule to that file. The Explore workflow (`.github/workflows/explore.yml`) runs the full bound nightly and on demand; it is not a required check. A new test with a `BIDE_EXPLORE` mode goes in the core module and has `Explore` in its name, or the nightly job does not run it (the job fails on a `BIDE_EXPLORE` test outside the core module).
+
 ## Module layout
 
 See [docs/reference/module-structure.md](docs/reference/module-structure.md). The rule the architecture test enforces: the core imports no adapter and no infrastructure. A user who does not import `trace` gets no OpenTelemetry in their binary; the same holds for every adapter.

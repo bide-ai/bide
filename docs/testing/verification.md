@@ -156,6 +156,20 @@ combined with `main` and any changes queued ahead of it, so every merge is teste
 it lands on. A pull request that changes only documentation (or only the models under `spec/tla/`)
 skips the Go lint, build and tests; the required checks still report, so it can merge.
 
+Two jobs run nightly and on demand (`workflow_dispatch`), not on pull requests, and are not
+required checks:
+
+- **Models (nightly)** checks the `nightly` TLA+ configurations, with larger bounds
+  (`.github/workflows/models.yml`).
+- **Explore (full bound)** runs the fault-schedule explorations of the claim protocol (`agent`) and
+  of flow lowering (`plan`) with `BIDE_EXPLORE=1` (`.github/workflows/explore.yml`). Every pull
+  request runs them at a smaller default bound, under `-race` on Linux; the full bound explores
+  three faulted drives, every process plan, and two preemptions with more faults in the concurrent
+  explorers, which takes minutes, so it runs without `-race`. The job uploads the test log and the
+  schedule signatures (`BIDE_EXPLORE_SIGS`, one line per explored schedule) as an artifact, and
+  its summary gives the schedule count per test and a digest of the signatures, so coverage can be
+  compared between runs.
+
 ## What this does not prove
 
 - **Mutation checks are per fix, not exhaustive.** Each fix is checked by hand against its own
@@ -183,6 +197,7 @@ go test -race ./...                                   # core module
 (cd store/postgres && PG_DSN='postgres://user:pass@localhost:5432/db?sslmode=disable' \
   go test -race -count=2 ./...)                       # integration, against your Postgres
 go test -race -count=20 -cpu=1,2,8 ./agent ./plan     # stress
+BIDE_EXPLORE=1 go test -count=1 -timeout 85m -run Explore ./agent ./plan   # full-bound explorations
 go test -run '^$' -fuzz=FuzzUnmarshalStrict -fuzztime=5m ./audit   # fuzz one target
 ```
 
