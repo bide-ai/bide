@@ -8,6 +8,7 @@ The map. Read in roughly this order; each entry notes who it is for.
 - **[Concepts](CONCEPTS.md)** (everyone): the vocabulary in one place (journal, at-most-once, lease, Waker, gsm, ProofBundle, and the rest).
 - **[Guarantee](GUARANTEE.md)** (evaluator): the precise durability guarantee, stated exactly.
 - **[Known limitations](KNOWN-LIMITATIONS.md)** (evaluator): the bounds and edges of the guarantees. Read alongside the guarantee.
+- **[Changelog](../CHANGELOG.md)** (everyone): every release's changes, breaking changes marked; highlights per release in [releases/](releases/).
 
 ## Guides (how to build on it)
 
