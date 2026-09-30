@@ -231,7 +231,7 @@ a journal head of the bundle's `RunID`, or the wrong key. The public key must co
 **proofs you verify, not logs you trust.**
 
 For the auditor who does not write Go, the `bide-audit` CLI wraps this (`prove` over an
-exported journal + STH, `verify` over a bundle + hex key; `verify` exits 0/1). And for a third
+exported journal + STH, `verify` over a bundle + hex key; only exit 0 means verified). And for a third
 party who will not import the SDK at all, [`audit/verify`](../../audit/verify) is a **stdlib-only**
 package (no `agent`, no gsm) that checks inclusion, consistency, and STH signatures from raw
 leaf bytes: they can vendor just that, or reimplement it from RFC 6962 and check us against it.
@@ -370,31 +370,39 @@ and every verify verb needs only a bundle and an out-of-band public key. Build i
 Conventions shared across verbs:
 
 - `-pubkey` accepts either a hex string directly or a path to a file whose trimmed contents are
-  hex, and must decode to a 32-byte ed25519 public key (anything else exits 1 with a message). A
+  hex, and must decode to a 32-byte ed25519 public key (anything else exits 4 with a message). A
   value that is itself a key in hex (64 hex digits) is always taken as the key and never opened as
   a file, so a file of that name in the working directory cannot substitute another key. The
   key must come from the anchor operator out-of-band, never from the bundle: that is what makes it a
   proof you verify rather than a log you trust.
 - Every artifact must carry the format this version reads (see [Artifact formats](#artifact-formats));
-  one made by an older release exits 1 with a message naming the format.
+  one made by an older release exits 4 with a message naming the format (`bide-audit -version` lists
+  the formats this version reads).
 - Every JSON input is read strictly (`audit.UnmarshalStrict`): a duplicate key, a key that matches a
   field only case-insensitively, an unknown field, invalid UTF-8, an escaped lone surrogate, or
-  base64 that is not the standard encoding of its bytes exits 1, so a file cannot show a reader one
+  base64 that is not the standard encoding of its bytes exits 4, so a file cannot show a reader one
   value while the verifier checks another.
 - Produce verbs (`prove`, `prove-absent`) write the bundle to `-out`, or to stdout if `-out` is
   omitted; the "wrote &lt;file&gt;" line goes to stderr so stdout stays clean for piping.
-- Verify verbs print a one-line `OK: ...` / `FAIL: ...` verdict and set the exit code: **0 =
-  authentic / all checks passed, 1 = failed** (a usage error exits 2, and a `-checker` that gives no
-  verdict exits 3). This is the CI-gate contract: only 0 means verified.
+- Verify verbs print a one-line `OK: ...` / `FAIL: ...` verdict and set the exit status (see
+  [Exit status](#exit-status) below). **Only 0 means verified.** This is the CI-gate contract.
 - A usage error is any command line the CLI does not read in full: a missing required flag, an
   unknown flag, a help request (`-h`), or an argument that is not a flag (flag parsing stops
   there, so a flag after it would go unread). None of them is a verdict, so none exits 0.
 - Every verb takes `-max-input-bytes <n>`: an input file (bundle, journal, key file, digest list,
-  policy, evidence package) larger than n bytes is an error (exit 1); no input is read further than one byte past the cap. The
+  policy, evidence package) larger than n bytes is an error (exit 4); no input is read further than one byte past the cap. The
   default is 256 MiB; a value below 1 is a usage error.
 - Every verb takes `-max-clock-skew <duration>` (default `5m`): every signed tree head in every file
   it reads must follow the timestamp rule (see Timestamps above) against this machine's clock, or
   the verb fails (exit 1). A negative skew is a usage error.
+- Every verb takes `-json`, before or after the verb (`bide-audit -json verify ...` or
+  `bide-audit verify ... -json`): stdout is then one JSON object instead of the text report, with
+  `tool`, `version`, `verb`, `exit_code`, `result` (`verified`, `produced`, `not_verified`,
+  `usage_error`, `no_verdict` or `unusable_input`), `verified` (true only when `exit_code` is 0 and
+  the verb is a verify verb), `output` (the text report's lines), `errors`, and, for a produce verb
+  without `-out`, `artifact` (the bundle). Error messages still go to stderr as well.
+- `bide-audit -version` prints the version and every artifact format this version reads, and which
+  verbs read it; `bide-audit -version -json` prints the same as JSON.
 
 | Verb | Required flags | Optional flags | Proves / checks |
 |---|---|---|---|
@@ -421,6 +429,31 @@ so a broken checker is never reported as a policy that does not converge, nor as
 certificate. The digest is recomputed here from a hardcoded
 `gsm-policy-v1` domain-separation tag rather than taken from gsm, so neither root of trust depends
 on the producer. The CLI reads no environment variables.
+
+### Exit status
+
+| Status | Meaning |
+|---|---|
+| 0 | Verified. For `prove` and `prove-absent`: the artifact was written. |
+| 1 | The inputs were read and understood, and they do not verify: a bad signature or proof, a digest that does not link, a quorum or approval gate that did not hold, a policy the checker says does not converge (or disagrees with its certificate about), a signed head that breaks the timestamp rule. |
+| 2 | Usage error: a missing, unknown, or malformed flag, an argument that is not a flag, a help request, an unknown verb. Nothing was read. |
+| 3 | No verdict: the `-checker` gave none (see above), or an internal error in the CLI (an output it could not write, a bug). |
+| 4 | An input is unreadable or unusable: a missing or unreadable file, one over `-max-input-bytes`, JSON that does not read strictly, an unknown or unsupported `format`, a public key that is not one, or an artifact of the wrong type for its flag (a policy leaf given as the action, an absence bundle given to `verify`, a key of no known key set). For `prove` and `prove-absent`, inputs that cannot make the proof (no such record, a head that does not commit to the journal, a key that is present) are 4 as well. |
+
+**Only 0 means verified. Treat every other status as a failure, and treat 4 as a failure, never as
+something to retry:** a tampered `format` field, or an artifact swapped for one of another type,
+yields 4, not 1.
+
+When a command meets several conditions, the status is the highest-ranked of them: a usage error
+is exclusive (nothing is read after it); otherwise **1 over 4 over 3**. To make that hold, a verb
+reads every input it was given and runs every check that does not depend on an unusable one: a
+tampered action bundle beside an unreadable policy bundle exits 1, a checker that gives no verdict
+beside an unreadable action bundle exits 4, and a policy the checker says does not converge exits 1
+even when the action bundle beside it cannot be read. With an unreadable `-approved-file`,
+`verify-run` and `verify-evidence` still run every check that does not read the allowlist (the
+certificate is checked against its own used-policy set) and exit 1 if one fails, otherwise 4. A
+quorum bundle recorded by another quorum is a verdict (1): it is the right type of artifact, and it
+does not prove the claim.
 
 ## RFC 6962 conformance
 

@@ -85,15 +85,15 @@ func TestVerifyAbsentCLI_RejectsCrossKindForgery(t *testing.T) {
 	}
 }
 
-// A malformed public key must exit 1 with a message, not panic.
-func TestCLI_ShortPublicKeyExitsOne(t *testing.T) {
+// A malformed public key is an unusable input: exit 4 with a message, not a panic.
+func TestCLI_ShortPublicKeyExitsFour(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "bundle.json")
 	writeJSON(t, path, audit.ProofBundle{Format: audit.ProofFormat, STH: audit.SignedTreeHead{TreeHead: audit.TreeHead{Timestamp: 1}}}) // a head the timestamp rule admits, so the key is what fails
 	bin := buildCLI(t, dir)
 	code, out := exitCode(t, bin, "verify", "-bundle", path, "-pubkey", "ab")
-	if code != 1 || bytes.Contains([]byte(out), []byte("panic")) || !bytes.Contains([]byte(out), []byte("public key")) {
-		t.Fatalf("verify -pubkey ab: exit %d, want 1 with a message\n%s", code, out)
+	if code != 4 || bytes.Contains([]byte(out), []byte("panic")) || !bytes.Contains([]byte(out), []byte("public key")) {
+		t.Fatalf("verify -pubkey ab: exit %d, want 4 with a message\n%s", code, out)
 	}
 
 	// An approver key of the wrong length is refused the same way.
@@ -114,8 +114,8 @@ func TestCLI_ShortPublicKeyExitsOne(t *testing.T) {
 	keysPath := filepath.Join(dir, "keys.json")
 	writeJSON(t, keysPath, map[string]string{"alice": "abcd"})
 	code, out = exitCode(t, bin, "verify-approvals", "-evidence", evidence, "-pubkey", hex.EncodeToString(pub), "-call", "c1", "-need", "1", "-approvers", "alice", "-approver-keys", keysPath)
-	if code != 1 || bytes.Contains([]byte(out), []byte("panic")) || !bytes.Contains([]byte(out), []byte(`approver "alice" key`)) {
-		t.Fatalf("verify-approvals with a 2-byte approver key: exit %d, want 1 with a message\n%s", code, out)
+	if code != 4 || bytes.Contains([]byte(out), []byte("panic")) || !bytes.Contains([]byte(out), []byte(`approver "alice" key`)) {
+		t.Fatalf("verify-approvals with a 2-byte approver key: exit %d, want 4 with a message\n%s", code, out)
 	}
 }
 

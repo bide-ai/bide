@@ -60,8 +60,8 @@ func TestVerifyCLI_RefusesAnOldFormatBundle(t *testing.T) {
 				t.Fatalf("verify rejected the current bundle: exit %d\n%s", code, out)
 			}
 		case "old":
-			if code != 1 || !strings.Contains(out, "has no format") || !strings.Contains(out, audit.ProofFormat) || strings.Contains(out, "unknown field") {
-				t.Fatalf("verify of an old-format bundle: exit %d, want 1 naming format %s\n%s", code, audit.ProofFormat, out)
+			if code != 4 || !strings.Contains(out, "has no format") || !strings.Contains(out, audit.ProofFormat) || strings.Contains(out, "unknown field") {
+				t.Fatalf("verify of an old-format bundle: exit %d, want 4 (unusable input) naming format %s\n%s", code, audit.ProofFormat, out)
 			}
 		}
 	}

@@ -55,8 +55,8 @@ func TestCLI_InputOverTheDefaultCapIsRefused(t *testing.T) {
 	f.Close()
 	bin := buildCLI(t, dir)
 	code, out := exitCode(t, bin, "verify", "-bundle", big, "-pubkey", pubHex)
-	if code != 1 || !strings.Contains(out, "-max-input-bytes") {
-		t.Fatalf("a 256 MiB + 1 byte bundle: exit %d, output:\n%s\nwant exit 1 naming -max-input-bytes", code, out)
+	if code != 4 || !strings.Contains(out, "-max-input-bytes") {
+		t.Fatalf("a 256 MiB + 1 byte bundle: exit %d, output:\n%s\nwant exit 4 (unusable input) naming -max-input-bytes", code, out)
 	}
 }
 
@@ -68,7 +68,7 @@ func TestCLI_MaxInputBytesAppliesToEveryInput(t *testing.T) {
 	bin := buildCLI(t, dir)
 	size := func(p string) string { return itoa(mustSize(t, p)) }
 	// The bundle itself.
-	if code, out := exitCode(t, bin, "verify", "-max-input-bytes", itoa(mustSize(t, bundle)-1), "-bundle", bundle, "-pubkey", pubHex); code != 1 || !strings.Contains(out, "-max-input-bytes") {
+	if code, out := exitCode(t, bin, "verify", "-max-input-bytes", itoa(mustSize(t, bundle)-1), "-bundle", bundle, "-pubkey", pubHex); code != 4 || !strings.Contains(out, "-max-input-bytes") {
 		t.Errorf("bundle over the cap: exit %d, output:\n%s", code, out)
 	}
 	if code, out := exitCode(t, bin, "verify", "-max-input-bytes", size(bundle), "-bundle", bundle, "-pubkey", pubHex); code != 0 {
@@ -80,7 +80,7 @@ func TestCLI_MaxInputBytesAppliesToEveryInput(t *testing.T) {
 	if err := os.WriteFile(keyFile, []byte(pubHex+strings.Repeat("\n", int(mustSize(t, bundle)))), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if code, out := exitCode(t, bin, "verify-quorum", "-max-input-bytes", size(bundle), "-name", "q", "-tally", bundle, "-vote", bundle, "-pubkey", keyFile, "-k", "1"); code != 1 || !strings.Contains(out, "-max-input-bytes") {
+	if code, out := exitCode(t, bin, "verify-quorum", "-max-input-bytes", size(bundle), "-name", "q", "-tally", bundle, "-vote", bundle, "-pubkey", keyFile, "-k", "1"); code != 4 || !strings.Contains(out, "-max-input-bytes") {
 		t.Errorf("key file over the cap: exit %d, output:\n%s", code, out)
 	}
 	// A digest list, read by verify-evidence after the package and the key.
@@ -103,11 +103,11 @@ func TestCLI_MaxInputBytesAppliesToEveryInput(t *testing.T) {
 		t.Fatal(err)
 	}
 	evCap := size(evidence)
-	if code, out := exitCode(t, bin, "verify-evidence", "-max-input-bytes", evCap, "-evidence", evidence, "-pubkey", hex.EncodeToString(pub), "-approved-file", digests); code != 1 || !strings.Contains(out, "-max-input-bytes") {
+	if code, out := exitCode(t, bin, "verify-evidence", "-max-input-bytes", evCap, "-evidence", evidence, "-pubkey", hex.EncodeToString(pub), "-approved-file", digests); code != 4 || !strings.Contains(out, "-max-input-bytes") {
 		t.Errorf("digest list over the cap: exit %d, output:\n%s", code, out)
 	}
 	// A policy file.
-	if code, out := exitCode(t, bin, "verify-governance", "-max-input-bytes", "20", "-policy", digests); code != 1 || !strings.Contains(out, "-max-input-bytes") {
+	if code, out := exitCode(t, bin, "verify-governance", "-max-input-bytes", "20", "-policy", digests); code != 4 || !strings.Contains(out, "-max-input-bytes") {
 		t.Errorf("policy file over the cap: exit %d, output:\n%s", code, out)
 	}
 	// A cap below 1 is a usage error.
