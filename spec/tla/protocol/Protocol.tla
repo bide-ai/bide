@@ -33,6 +33,7 @@ CONSTANTS
   MaxWorkerCrash,\* budget of worker crashes
   HasResolver,   \* whether an operator resolves halts
   Kind,          \* "side_effect" (claim, begin, abandon) or "retry_safe" (re-dispatch, 10.9)
+  SafeKind,      \* a retry-safe tool's safety: "read_only" (no downstream effect) or "idempotent"
   Bug            \* "none" or a rule section 18 requires to fail, see regress/
 
 None == "none"
@@ -44,7 +45,7 @@ ResolverSet == IF HasResolver THEN {"resolver"} ELSE {}
 ASSUME Bug \in {"none", "InsertedFlagWon", "DeliveryIdOnly", "NotStartedFromBegun", "ByteEqualWon",
                 "AbandonWithoutKey", "CallerCause", "CheckBeforeRead", "LostIsExhausted",
                 "NewScopePerDelivery"}
-ASSUME Kind \in {"side_effect", "retry_safe"}
+ASSUME Kind \in {"side_effect", "retry_safe"} /\ SafeKind \in {"read_only", "idempotent"}
 
 (* --algorithm protocol
 variables
@@ -124,13 +125,13 @@ EIdle:
     goto EIdle;
   or
     \* Retry-safe: the retry window closes (deliveries exhausted) with no outcome. A journaled
-    \* unknown report halts (crashed). Revision 2 records DELIVERY_EXHAUSTED when the deliveries
-    \* were only lost (LostIsExhausted); but a lost delivery, or a duplicate of one whose holder
-    \* refused it, may have run its handler, and nothing journaled says otherwise, so the model's
-    \* rule halts (finding P2).
+    \* unknown report halts (crashed). A read_only call whose deliveries were only lost records
+    \* DELIVERY_EXHAUSTED; an idempotent one halts (worker_lost): a lost delivery, or a duplicate
+    \* of one whose holder refused it, may have run its handler (finding P2; historically
+    \* LostIsExhausted, DELIVERY_EXHAUSTED for both).
     await Kind = "retry_safe" /\ result = None /\ ~halted /\ nextD >= MaxDeliveries;
     await \A x \in DIds : table[x] # "assigned";
-    if unknownN > 0 \/ Bug # "LostIsExhausted" then
+    if unknownN > 0 \/ (SafeKind = "idempotent" /\ Bug # "LostIsExhausted") then
       halted := TRUE; goto EIdle;
     else
       goto EExhausted;
@@ -358,7 +359,9 @@ WSafe:
     reports := reports \cup {[w |-> self, d |-> wd, g |-> 0, kind |-> "not_started"]};
     goto WReported;
   or
-    applied := applied \cup {IF Bug = "NewScopePerDelivery" THEN wd ELSE 0};
+    if SafeKind = "idempotent" then
+      applied := applied \cup {IF Bug = "NewScopePerDelivery" THEN wd ELSE 0};
+    end if;
     liveRun := liveRun \cup {self};
     goto WReport;
   end either;
@@ -493,7 +496,7 @@ EIdle == /\ pc["engine"] = "EIdle"
                /\ UNCHANGED <<halted, eg, ed, ecid>>
             \/ /\ Kind = "retry_safe" /\ result = None /\ ~halted /\ nextD >= MaxDeliveries
                /\ \A x \in DIds : table[x] # "assigned"
-               /\ IF unknownN > 0 \/ Bug # "LostIsExhausted"
+               /\ IF unknownN > 0 \/ (SafeKind = "idempotent" /\ Bug # "LostIsExhausted")
                      THEN /\ halted' = TRUE
                           /\ pc' = [pc EXCEPT !["engine"] = "EIdle"]
                      ELSE /\ pc' = [pc EXCEPT !["engine"] = "EExhausted"]
@@ -927,7 +930,10 @@ WSafe(self) == /\ pc[self] = "WSafe"
                /\ \/ /\ reports' = (reports \cup {[w |-> self, d |-> wd[self], g |-> 0, kind |-> "not_started"]})
                      /\ pc' = [pc EXCEPT ![self] = "WReported"]
                      /\ UNCHANGED <<liveRun, applied>>
-                  \/ /\ applied' = (applied \cup {IF Bug = "NewScopePerDelivery" THEN wd[self] ELSE 0})
+                  \/ /\ IF SafeKind = "idempotent"
+                           THEN /\ applied' = (applied \cup {IF Bug = "NewScopePerDelivery" THEN wd[self] ELSE 0})
+                           ELSE /\ TRUE
+                                /\ UNCHANGED applied
                      /\ liveRun' = (liveRun \cup {self})
                      /\ pc' = [pc EXCEPT ![self] = "WReport"]
                      /\ UNCHANGED reports
@@ -1125,6 +1131,9 @@ ExhaustedTruthful == result = "exhausted" => fired = 0 /\ applied = {}
 \* A retry-safe call's re-dispatches share one once-key scope, so its downstream effect applies
 \* once.
 DownstreamOnce == Cardinality(applied) <= 1
+
+\* Probe, violated where DELIVERY_EXHAUSTED is reachable (a read_only retry-safe call).
+ExhaustedNotReachable == result # "exhausted"
 
 \* Vacuity, expected violated: the effect fires and its completion is recorded.
 EffectNotReachable == ~((fired > 0 \/ applied # {}) /\ result = "ok")

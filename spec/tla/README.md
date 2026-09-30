@@ -491,8 +491,10 @@ an attempt, ambiguous inserts).
   in progress (the worker retries); a worker crash forgets its task (no SDK-side durability, I6).
 - **Retry-safe calls (10.9).** No marker and no begin (pull): the drive dispatches a delivery,
   and again under the same once-key scope after a lapse, an unknown report or a refusal, up to
-  `max_deliveries`; any delivery may complete; a closed window with no outcome halts. A downstream
-  deduplicates by once key, so one scope applies its effect once.
+  `max_deliveries`; any delivery may complete. When the window closes with no outcome, a
+  `read_only` call records `DELIVERY_EXHAUSTED` unless an unknown report is journaled, and an
+  `idempotent` call halts (P2's rule). An idempotent tool's downstream deduplicates by once key, so
+  one scope applies its effect once.
 - **Resolution.** The halt's cause comes from the journal: an unknown report is `crashed`; a begun
   attempt with no report is `worker_lost`, resolvable only after the lost-worker floor, encoded as
   its assumption (the worker holding the begun delivery is done with it).
@@ -516,6 +518,7 @@ an attempt, ambiguous inserts).
 | `remote-resolve` | ci | a worker crash and an operator resolving halts | 2,899,879 | 12 s |
 | `remote-safe` | ci | a retry-safe call: three deliveries, a lost and a duplicated task, an ambiguous insert | 1,689,461 | 9 s |
 | `deep-remote-safe` | nightly | a retry-safe call with an engine crash and a worker crash | 3,294,639 | 26 s |
+| `deep-remote-safe-read-only` | nightly | a `read_only` retry-safe call (it may record `DELIVERY_EXHAUSTED`) | 3,555,285 | 1 min |
 | `deep-remote-two` | nightly | every fault at the pull-request bounds together | 12,112,395 | 55 s |
 | `deep-remote` | nightly | three attempts, four deliveries; a lost task, an ambiguous insert, an engine crash | 15,126,088 | 1 min |
 | `deep-remote-a2` | nightly | two ambiguous replies and an engine crash | 1,473,772 | 7 s |
@@ -540,15 +543,14 @@ halted `worker_lost` for an effect that never started (`BeginIdempotent`). The f
 stored record already holds for this delivery and nonce is answered true before the dispatch-table
 checks, which then apply only to a first begin.
 
-Finding P2 (open, `protocol/findings/lost-is-exhausted`): revision 2 records `DELIVERY_EXHAUSTED`
-for a retry-safe call whose deliveries were only lost. A lost delivery may have run its handler (its
-lease lapsed while the worker ran, or the worker died or its report was lost after the downstream
-effect), and a refusal proves nothing either, since a duplicate of the refused delivery may run.
-The error tells the model the effect did not happen, its next call runs under a new once-key
-scope, and a deduplicating downstream applies the effect twice (`ExhaustedTruthful`, 9 states).
-The model's rule: a retry-safe call whose window closes with no outcome halts. Alternatives for the
-maintainer: `DELIVERY_EXHAUSTED` only for `read_only` tools, or journaled begin records for
-retry-safe deliveries so that "never began" is provable.
+Finding P2 (`protocol/regress/lost-is-exhausted`, fixed in #95's text, 10.9 and 6.3): revision 2
+recorded `DELIVERY_EXHAUSTED` for a retry-safe call whose deliveries were only lost. A lost
+delivery may have run its handler (its lease lapsed while the worker ran, or the worker died or its
+report was lost after the downstream effect), and a refusal proves nothing either, since a
+duplicate of the refused delivery may run. The error told the model the effect did not happen, its
+next call ran under a new once-key scope, and a deduplicating downstream applied the effect twice
+(`ExhaustedTruthful`, 10 states). The maintainer's rule: `DELIVERY_EXHAUSTED` only for `read_only`
+tools (`limits/read-only-exhausted` shows it is recorded), and an `idempotent` call halts.
 
 Not modelled yet: the call deadline as a clock (the window is `max_deliveries` here), push
 delivery's signature and endpoint rules, and approvals over the protocol (model 1b checks the
