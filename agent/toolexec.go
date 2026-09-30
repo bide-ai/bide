@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"sync"
+
+	"github.com/bide-ai/bide/internal/strictjson"
 )
 
 // quorumTally evaluates the m-of-n gate for tu. It re-reads the run's journal (the
@@ -40,8 +42,11 @@ func (a *Agent) quorumTally(ctx context.Context, runID string, tu ToolUse, pol *
 	name := ApprovalTallyStep(tu.ID)
 	for _, r := range recs {
 		if r.Name == name && r.Kind == StepValue {
+			// Read strictly, as audit.VerifyApprovals reads it (no duplicate or case-variant name,
+			// no unknown field): a tally that read one way here and another to the audit would let
+			// the gate run a tool the audit says was not approved.
 			var t ApprovalTally
-			if err := json.Unmarshal(r.Result, &t); err != nil {
+			if err := strictjson.Unmarshal(r.Result, &t, nil); err != nil {
 				return ApprovalTally{}, false, fmt.Errorf("decode %s (run %s): %w (%w)", name, runID, err, ErrStorage)
 			}
 			return t, true, nil
