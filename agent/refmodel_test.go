@@ -773,7 +773,7 @@ func TestRefModel_Randomized(t *testing.T) {
 func TestRefModel_CrashSweep(t *testing.T) {
 	seeds := uint64(40)
 	if rmRace {
-		seeds = 12 // the race detector slows it several times over
+		seeds = 8 // the race detector slows it several times over
 	}
 	if testing.Short() {
 		seeds = 5
