@@ -31,6 +31,7 @@ minor version (0.x.0) may include breaking API or journal-format changes; each o
 - Journals in one process over one store share in-flight steps. A claim whose insert failed (it may have committed) records that its attempt did not start, keyed by its claim (`attempt:not-started:<claim>:<marker>`), so a re-drive in any process re-attempts the effect instead of halting over one that never ran. If that record cannot be written either (or is written and reported failed), the process remembers the claim, and the next claim of the marker in the process, or a resume that meets it, writes the record again; every claim takes a fresh id, so an effect never runs under a marker that is, or can become, recorded as not started. `plan`'s conformance check ignores not-started records ([#92]).
 - `agent/storetest.CheckWrapper` checks, given at least two contexts that differ in what the wrapper reads from a context, that a store wrapper's mapping of run IDs and names does not depend on the context (A1), and its use of `Unwrap` ([#92]).
 - Benchmarks `BenchmarkRunTurns`, `BenchmarkToolCallSideEffect`, `BenchmarkStep`, `BenchmarkRecoverPass10k`, `BenchmarkAnchoredInsert`, `BenchmarkSQLiteInsert` and `BenchmarkPostgresInsert` ([#92]).
+- `agent.ApprovalPolicy.ValidateKeys`, `agent.ReasonSharedKey`, `agent.ReasonNoKeyID` and `audit.KeyID`; `KeyIDs` on `audit.Ed25519Verifier`, `MLDSAVerifier` and `HybridVerifier` ([#109]).
 
 ### Changed
 
@@ -53,6 +54,11 @@ minor version (0.x.0) may include breaking API or journal-format changes; each o
 - `ResolveHaltRef` (and its wrappers) claims the attempt after the live one before it records the outcome, on a store that leases runs as on one that does not, and returns `*HaltInFlight` (whose new `Attempt` field names that attempt) if a driver holds it already, so a resolution cannot override a driver that revived a remembered claim and ran the effect: after `WithMinHaltAge`, or under the lease, which a plain `Run` does not hold. If recording the outcome then fails, the resolution's claim stays live, and the operation halts until it is resolved again ([#92]).
 - A `SagaAborted` error lists its uncompensated writes without saying each lacked a compensator: the list also holds a call whose outcome is unknown and a call whose tool is gone ([#92]).
 - The DST and reference-model crash suites inject their crashes at the storage port, under a Journal, so they cover the journal header, claims and not-started records; `agent` also carries an exhaustive fault-schedule exploration of the claim protocol, bounded by default (`BIDE_EXPLORE=1` runs the full exploration) ([#92]).
+- **Breaking:** `agent.ApproverVerifier` has a second method, `KeyIDs() []string`: the identities of the signing keys behind `Verify`, derived from the public key's bytes (one per key; a hybrid reports each component). A custom verifier must implement it. An approver whose verifier reports no key identity, including an `audit.Ed25519Verifier` over a wrong-length key, used to count as unable to sign and is now `ErrConfig` at the gate ([#109]).
+
+### Security
+
+- An m-of-n approval gate counts one seat per signing key. Two approvers whose verifiers resolve to one key let that key's holder meet the quorum alone; the gate now refuses such a policy with `ErrConfig` on every evaluation, `TallyApprovals` never counts either approver, `audit.VerifyApprovals` returns an error, and `bide-audit verify-approvals` exits 4. Found by the TLA+ approvals model (finding F5) ([#109]).
 
 ## [0.8.0] - 2026-09-30
 
@@ -488,6 +494,7 @@ First public release.
 [#108]: https://github.com/bide-ai/bide/pull/108
 [#110]: https://github.com/bide-ai/bide/pull/110
 [#111]: https://github.com/bide-ai/bide/pull/111
+[#109]: https://github.com/bide-ai/bide/pull/109
 [78f8db6]: https://github.com/bide-ai/bide/commit/78f8db6
 [994721b]: https://github.com/bide-ai/bide/commit/994721b
 [3262cd1]: https://github.com/bide-ai/bide/commit/3262cd1
