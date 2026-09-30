@@ -100,9 +100,13 @@ A `Durable` must satisfy two invariants:
   second time once a result is recorded.
 - **Live equals replay.** The `Record` that `Do` returns on the live path must be exactly the
   record a later `History` or memoized `Do` reads back. Store the journal encoding
-  (`agent.EncodeRecord`) and hand out only its decoded form (`agent.DecodeRecord`), never the
-  caller's own `Record`. A store that returned the caller's record live but a decoded copy on
+  (`agent.EncodeRecord`) and hand out only its decoded form (`agent.DecodeStoredRecord`), never
+  the caller's own `Record`. A store that returned the caller's record live but a decoded copy on
   replay would let a resumed run rebuild a different conversation than the one it was having.
+- **A row is the step it is stored under.** Read every record back with
+  `agent.DecodeStoredRecord(runID, name, b)`, passing the name the row is stored under. It refuses
+  (`ErrStorage`) a row whose record names another step, such as a row edited or copied in the
+  database, which the engine would otherwise read as that other step. Unknown fields still decode.
 
 Here is a small in-memory implementation that meets both (the same shape as `MemStore`, minus
 its single-flight of concurrent callers on one step):
@@ -135,7 +139,7 @@ func (s *Store) Do(ctx context.Context, runID, name string,
 	s.mu.Lock()
 	if b, ok := s.runs[runID][name]; ok {
 		s.mu.Unlock()
-		return agent.DecodeRecord(b) // memoized: do NOT re-run fn
+		return agent.DecodeStoredRecord(runID, name, b) // memoized: do NOT re-run fn
 	}
 	s.mu.Unlock()
 
@@ -162,7 +166,7 @@ func (s *Store) Do(ctx context.Context, runID, name string,
 		s.ord[runID] = append(s.ord[runID], name)
 	}
 	s.mu.Unlock()
-	return agent.DecodeRecord(b) // the stored form, never the caller's rec
+	return agent.DecodeStoredRecord(runID, name, b) // the stored form, never the caller's rec
 }
 
 func (s *Store) History(ctx context.Context, runID string) ([]agent.Record, error) {
@@ -171,7 +175,7 @@ func (s *Store) History(ctx context.Context, runID string) ([]agent.Record, erro
 	names := s.ord[runID]
 	out := make([]agent.Record, 0, len(names))
 	for _, n := range names {
-		rec, err := agent.DecodeRecord(s.runs[runID][n])
+		rec, err := agent.DecodeStoredRecord(runID, n, s.runs[runID][n])
 		if err != nil {
 			return nil, err
 		}

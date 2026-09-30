@@ -89,7 +89,7 @@ func buildTriageByHand(t *testing.T) *Flow[cfgOrder, cfgReceipt] {
 	finalize := b.Step("finalize", cfgFinalize)
 	decline := b.Step("decline", cfgDecline)
 	b.Switch(classify,
-		When(func(a cfgAssessment) bool { return a.Rush }, reserve),
+		When(func(a cfgAssessment) bool { return a.Rush }, reserve).Named("rush"),
 		Else(decline),
 	)
 	b.Edge(reserve, finalize)
@@ -418,7 +418,7 @@ func TestLoadJoinConfigRunsConformsAndMatchesHandBuilt(t *testing.T) {
 	}
 
 	// Digest equals the hand-built diamond of the same shape.
-	hand, err := buildDiamond()
+	hand, err := buildDiamond(BlockName("mergeBlock"))
 	if err != nil {
 		t.Fatalf("hand build: %v", err)
 	}
@@ -601,13 +601,13 @@ func TestLoadLoopNonAncestorHeadIsBuildError(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Safety in config: an explicit "safety" on a node overrides the registered block's
-// default, so a node that would halt on the ambiguous-crash window re-runs instead.
+// Safety in config: an explicit "safety" on a node may lower the registered block's
+// retry safety, so a node Go declares read-only halts on the ambiguous-crash window
+// instead of re-running. It may never raise it (see safety_lower_test.go).
 // ---------------------------------------------------------------------------
 
 // safetyNodeConfig is a one-node flow whose entry "read" carries safety "readonly".
-// The read block itself registers with no Safety (the default halt), so the config
-// "safety" is what opts it into re-run on the ambiguous crash.
+// The read block registers as ReadOnly in Go, so the config value keeps it re-runnable.
 const safetyNodeConfig = `{
   "flow": "read-flow",
   "in": "int",
@@ -619,13 +619,12 @@ const safetyNodeConfig = `{
   "wiring": []
 }`
 
-// loadReadFlow loads the one-node read flow, registering the read block with the given
-// reads counter and value and NO Go-side Safety, so the config "safety" is the only
-// source of the node's retry-on-resume classification.
+// loadReadFlow loads the one-node read flow, registering the read block as ReadOnly in Go
+// with the given reads counter and value; safety is the config value ("" for none).
 func loadReadFlow(t *testing.T, reads *int, value int, safety string) (*Flow[int, int], error) {
 	t.Helper()
 	reg := NewRegistry()
-	if err := RegisterStep(reg, "read", func(context.Context, int) (int, error) { *reads++; return value, nil }); err != nil {
+	if err := RegisterStep(reg, "read", func(context.Context, int) (int, error) { *reads++; return value, nil }, ReadOnly()); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 	cfg := safetyNodeConfig
@@ -644,10 +643,10 @@ func safetySuffix(safety string) string {
 	return fmt.Sprintf(`, "safety": %q`, safety)
 }
 
-// TestLoadSafetyConfigRerunsOnAmbiguousCrash proves an explicit config "safety":
-// "readonly" makes a loaded node RE-RUN its body on the ambiguous-crash window (attempt
-// marker persisted, result lost) and COMPLETE, where the SAME node without the config
-// safety would halt. It reuses the crashFlowStore DST harness from flow_dst_test.go.
+// TestLoadSafetyConfigRerunsOnAmbiguousCrash proves a loaded node Go declares read-only,
+// with config "safety": "readonly", RE-RUNS its body on the ambiguous-crash window (attempt
+// marker persisted, result lost) and COMPLETES, where the SAME node lowered to
+// "side_effect" halts (TestLoadSafetyDefaultHalts). It reuses the crashFlowStore DST harness from flow_dst_test.go.
 func TestLoadSafetyConfigRerunsOnAmbiguousCrash(t *testing.T) {
 	// Find the crash landing on the read node's result write, with the readonly config.
 	var mem agent.Durable
@@ -711,8 +710,8 @@ func TestLoadSafetyConfigRerunsOnAmbiguousCrash(t *testing.T) {
 }
 
 // TestLoadSafetyDefaultHalts is the regression guard: the SAME one-node flow loaded
-// with NO config safety keeps the conservative default and HALTS on the ambiguous
-// crash, proving the config safety is what changed the behavior above.
+// with config "safety": "side_effect" is lowered to the conservative halt and HALTS on
+// the ambiguous crash, proving the config safety is what changed the behavior.
 func TestLoadSafetyDefaultHalts(t *testing.T) {
 	var mem agent.Durable
 	var readsAtCrash int
@@ -720,7 +719,7 @@ func TestLoadSafetyDefaultHalts(t *testing.T) {
 		reads := 0
 		m := agent.NewMemStore()
 		store := &crashFlowStore{inner: m, crashAt: crashAt}
-		flow, err := loadReadFlow(t, &reads, 42, "")
+		flow, err := loadReadFlow(t, &reads, 42, "side_effect")
 		if err != nil {
 			t.Fatalf("Load: %v", err)
 		}
@@ -749,7 +748,7 @@ func TestLoadSafetyDefaultHalts(t *testing.T) {
 	}
 
 	reads := readsAtCrash
-	flow, err := loadReadFlow(t, &reads, 42, "")
+	flow, err := loadReadFlow(t, &reads, 42, "side_effect")
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}

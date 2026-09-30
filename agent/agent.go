@@ -458,11 +458,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 		if !ok {
 			continue
 		}
-		var attemptedAt time.Time
-		if ms := attemptedAtMs[id]; ms != 0 {
-			attemptedAt = time.UnixMilli(ms)
-		}
-		return Message{}, tot, 0, &ResumeHalt{RunID: runID, RootRunID: rootRunID(ctx, runID), ToolUseID: id, ToolName: name, AttemptedAt: attemptedAt}
+		return Message{}, tot, 0, &ResumeHalt{RunID: runID, RootRunID: rootRunID(ctx, runID), ToolUseID: id, ToolName: name, AttemptedAt: markerTime(attemptedAtMs[id])}
 	}
 
 	meter := &spendMeter{} // usage of every model request this invocation sends
@@ -575,7 +571,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 			}
 			t, ok := a.tools[tu.Name]
 			if !ok {
-				return Message{}, tot, liveTurns, fmt.Errorf("model called unknown tool %q: %w", tu.Name, ErrUnknownTool)
+				return Message{}, tot, liveTurns, fmt.Errorf("model called unknown tool %q: %w", cutName(tu.Name), ErrUnknownTool)
 			}
 			if safety := t.Safety(); safety.RequiresApproval || safety.Approval != nil {
 				var approved bool
@@ -662,11 +658,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 						return err
 					}
 					if !won {
-						var at time.Time
-						if got.AttemptedAt != 0 {
-							at = time.UnixMilli(got.AttemptedAt)
-						}
-						return &ResumeHalt{RunID: runID, RootRunID: rootRunID(ctx, runID), ToolUseID: c.tu.ID, ToolName: c.tu.Name, AttemptedAt: at}
+						return &ResumeHalt{RunID: runID, RootRunID: rootRunID(ctx, runID), ToolUseID: c.tu.ID, ToolName: c.tu.Name, AttemptedAt: markerTime(got.AttemptedAt)}
 					}
 				}
 				fire(ToolStarted{ToolUseID: c.tu.ID, Name: c.tu.Name, Args: c.tu.Args})

@@ -132,10 +132,31 @@ type ToolCallDelta struct {
 
 func (ToolCallDelta) event() {}
 
+// Finish ends a model turn. Reason says why the turn ended, in the neutral vocabulary below; an
+// adapter maps its provider's reasons onto it where they enter. A Model that does not know the
+// reason leaves it empty, which counts as a natural stop.
+//
+// The reason decides whether the turn is the model's answer. Stream.Message (and so every agent
+// run) returns ErrOutputTruncated for FinishLength and ErrOutputFiltered for FinishFiltered rather
+// than a message, since what arrived is only part of what the model would have said, and a run
+// that recorded it would end with that part as its final answer. Any other reason is
+// ErrStreamProtocol: the core does not guess what a provider's own word means.
+//
+// The reason never decides whether tools run: the calls the turn carries do. A turn with calls
+// runs them whatever its reason says (OpenAI reports stop under a forced tool_choice), and a
+// FinishToolUse turn with no call is ErrStreamProtocol, since the calls it was for were lost.
 type Finish struct {
 	Reason string
 	Usage  Usage
 }
+
+// The neutral finish reasons (see Finish).
+const (
+	FinishStop     = "stop"     // the model ended its answer (end of turn, a stop sequence)
+	FinishToolUse  = "tool_use" // the model ended its turn to call tools
+	FinishLength   = "length"   // the output hit its token limit (or the context window) and was cut off
+	FinishFiltered = "filtered" // a safety or content filter, or a refusal, stopped the output
+)
 
 func (Finish) event() {}
 
@@ -288,6 +309,8 @@ type msgBuilder struct {
 	calls        map[int]*ToolUse
 	order        []int
 	usage        Usage
+	reason       string // the Finish reason
+	err          error  // the first fragment that broke the stream's framing
 }
 
 func (b *msgBuilder) add(ev Event) {
@@ -315,6 +338,15 @@ func (b *msgBuilder) add(ev Event) {
 			b.calls[e.Index] = tu
 			b.order = append(b.order, e.Index)
 		}
+		// A call's ID and name are set once. A fragment naming a different one is another call
+		// arriving under this index (a block started twice, or a server that omits the index),
+		// which merging would drop or run with this call's arguments; finalize reports it.
+		if e.ID != "" && tu.ID != "" && e.ID != tu.ID || e.Name != "" && tu.Name != "" && e.Name != tu.Name {
+			if b.err == nil {
+				b.err = fmt.Errorf("tool call %d: a fragment names call %q (%q) after call %q (%q): %w",
+					e.Index, cutName(e.ID), cutName(e.Name), cutName(tu.ID), cutName(tu.Name), ErrStreamProtocol)
+			}
+		}
 		if e.ID != "" {
 			tu.ID = e.ID
 		}
@@ -327,6 +359,7 @@ func (b *msgBuilder) add(ev Event) {
 		tu.Args = append(tu.Args, e.ArgsFragment...) // fragments concatenated; validated in finalize()
 	case Finish:
 		b.usage = e.Usage
+		b.reason = e.Reason
 	}
 }
 
@@ -350,6 +383,9 @@ func (b *msgBuilder) closeThinking(signature ...string) {
 // yields invalid JSON — surface it rather than hand malformed args to a tool.
 // (v1 json.Valid today; swaps to jsontext when we adopt json/v2 at the model layer.)
 func (b *msgBuilder) finalize() (Message, error) {
+	if b.err != nil {
+		return Message{}, b.err
+	}
 	var parts []Part
 	b.closeThinking()
 	for _, r := range b.reasoning {
@@ -361,9 +397,25 @@ func (b *msgBuilder) finalize() (Message, error) {
 	for _, i := range b.order {
 		tu := b.calls[i]
 		if len(tu.Args) > 0 && !json.Valid(tu.Args) {
-			return Message{}, fmt.Errorf("tool call %q: %w: %s", tu.Name, ErrTruncatedToolArgs, tu.Args)
+			return Message{}, fmt.Errorf("tool call %q: %w: %d bytes: %s", cutName(tu.Name), ErrTruncatedToolArgs, len(tu.Args), truncate(string(tu.Args)))
 		}
 		parts = append(parts, *tu)
+	}
+	switch b.reason {
+	case "", FinishStop:
+	case FinishToolUse:
+		// Whether tools run is decided by the calls the turn carries, never by the reason (a turn
+		// that calls a tool may report stop). A turn that says it stopped to call tools and
+		// carries none lost those calls, so it is not an answer.
+		if len(b.order) == 0 {
+			return Message{}, fmt.Errorf("finish reason %q with no tool call: %w", FinishToolUse, ErrStreamProtocol)
+		}
+	case FinishLength:
+		return Message{}, ErrOutputTruncated
+	case FinishFiltered:
+		return Message{}, ErrOutputFiltered
+	default:
+		return Message{}, fmt.Errorf("finish reason %q is not one of the neutral reasons: %w", cutName(b.reason), ErrStreamProtocol)
 	}
 	return Message{Role: RoleAssistant, Parts: parts}, nil
 }

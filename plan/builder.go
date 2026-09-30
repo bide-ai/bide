@@ -43,20 +43,34 @@ type Builder[In, Out any] struct {
 // auto-derived from the wrapped agent.Tool.
 type NodeOption func(*node)
 
+// BlockName names the behaviour a node built in Go runs, the way a config node names its
+// registered block. Digest commits to it; without it a node's block is its own name. Give a
+// node the block name its config counterpart references (for a join, the merge block) so the
+// Go flow and the config flow have one digest. A Registry ignores it: a registered block's
+// name is the one it was registered under.
+func BlockName(name string) NodeOption {
+	return func(n *node) { n.block = name }
+}
+
 // ReadOnly marks a node as read-only: it has no external side effect, so it is
 // always safe to re-run from the top on resume. On an ambiguous mid-node crash
 // (an attempt marker with no result) Run RE-RUNS the body rather than halting.
 // Use it for a node that only reads.
+//
+// It sets only the retry classification: an approval gate or IdempotencyKey the node already
+// carries (a wrapped agent tool's) is kept, so the option cannot switch a gate off.
 func ReadOnly() NodeOption {
-	return func(n *node) { n.safety = agent.Safety{ReadOnly: true} }
+	return func(n *node) { n.safety.ReadOnly, n.safety.Idempotent = true, false }
 }
 
 // Idempotent marks a node as idempotent: it mutates state but a repeat with the
 // same input is a no-op downstream, so it is safe to retry. On an ambiguous
 // mid-node crash Run RE-RUNS the body rather than halting. Use it for a node whose
 // effect de-duplicates downstream (for example an upsert keyed by a stable id).
+// Like ReadOnly, it sets only the retry classification and keeps any approval gate or
+// IdempotencyKey the node already carries.
 func Idempotent() NodeOption {
-	return func(n *node) { n.safety = agent.Safety{Idempotent: true} }
+	return func(n *node) { n.safety.ReadOnly, n.safety.Idempotent = false, true }
 }
 
 // Retryable is an alias for Idempotent, reading more naturally at some call sites
@@ -111,6 +125,9 @@ func (c *builderCore) register(n *node) {
 	}
 	if c.entry == "" {
 		c.entry = n.name
+	}
+	if n.block == "" {
+		n.block = n.name // a node built in Go with no BlockName is its own block
 	}
 	c.byName[n.name] = n
 	c.nodes = append(c.nodes, n)

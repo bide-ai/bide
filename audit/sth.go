@@ -61,7 +61,7 @@ type TreeHead struct {
 	RunID     string `json:"run_id"`    // the run the tree is about
 	Size      int    `json:"size"`      // number of leaves committed
 	Root      []byte `json:"root"`      // RFC 6962 Merkle root over those leaves
-	Timestamp int64  `json:"timestamp"` // caller-supplied (e.g. time.Now().UnixNano())
+	Timestamp int64  `json:"timestamp"` // when the head was signed, Unix nanoseconds (time.Now().UnixNano()); see CheckTimestamp
 	// Journal is set on an absence key-set tree: the journal tree (of the same run) whose
 	// records the key set was projected from. It is nil on a journal or event tree.
 	Journal *TreeRef `json:"journal,omitempty"`
@@ -174,7 +174,9 @@ func journalPrefix(runID string, recs []agent.Record, th TreeHead) ([]agent.Reco
 
 // SignTreeHead signs a TreeHead with an ed25519 key. Anchor the result out-of-band (this is
 // what makes the journal tamper-evident against later rewrites). Build th with NewTreeHead,
-// NewAbsenceTreeHead, or EventLog.TreeHead: a head of an unknown kind never verifies.
+// NewAbsenceTreeHead, or EventLog.TreeHead: a head of an unknown kind never verifies. Like
+// ed25519.Sign it panics if priv is not ed25519.PrivateKeySize bytes; SignTreeHeadWith with an
+// Ed25519Signer returns that as an error instead.
 func SignTreeHead(th TreeHead, priv ed25519.PrivateKey) SignedTreeHead {
 	return SignedTreeHead{TreeHead: th, Signature: ed25519.Sign(priv, th.canonical())}
 }
@@ -183,7 +185,8 @@ func SignTreeHead(th TreeHead, priv ed25519.PrivateKey) SignedTreeHead {
 // invalidates it. This is the ed25519 fast path; it accepts an STH with Alg empty or
 // "ed25519" and rejects any other scheme (use VerifyWith for those). It checks authenticity
 // only: a caller that needs a particular tree also checks Kind and RunID (the bundle
-// verifiers in this package do).
+// verifiers in this package do), and a caller that relies on when the head was signed applies
+// CheckTimestamp (EvidencePackage.Verify and bide-audit do).
 func (sth SignedTreeHead) Verify(pub ed25519.PublicKey) bool {
 	if sth.Alg != "" && sth.Alg != AlgEd25519 {
 		return false

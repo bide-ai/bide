@@ -22,16 +22,18 @@ import (
 	"strings"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/model/internal/errtext"
 	"github.com/bide-ai/bide/model/internal/toolcfg"
 	"github.com/bide-ai/bide/schema"
 )
 
 type Model struct {
-	apiKey    string
-	model     string
-	baseURL   string
-	maxTokens int
-	strict    bool
+	maxResponse int64 // the streamed reply cap; see WithMaxResponseBytes
+	apiKey      string
+	model       string
+	baseURL     string
+	maxTokens   int
+	strict      bool
 	// completionTokens picks the token-limit field: nil decides by endpoint and model (see
 	// WithMaxCompletionTokens); set, it is forced on or off.
 	completionTokens *bool
@@ -42,6 +44,12 @@ type Model struct {
 var _ agent.Model = (*Model)(nil) // port/adapter contract
 
 type Option func(*Model)
+
+// WithMaxResponseBytes caps how many bytes of one streamed reply the adapter reads: a reply that
+// runs longer fails with agent.ErrResponseTooLarge, which middleware.Retryable does not retry.
+// The default is agent.DefaultMaxResponseBytes (32 MiB); n <= 0 keeps it. Raise it for replies
+// that legitimately run longer, such as large inline images.
+func WithMaxResponseBytes(n int64) Option { return func(m *Model) { m.maxResponse = n } }
 
 func WithModel(id string) Option           { return func(m *Model) { m.model = id } }
 func WithMaxTokens(n int) Option           { return func(m *Model) { m.maxTokens = n } }
@@ -103,7 +111,7 @@ func (m *Model) Stream(ctx context.Context, req agent.Request) (*agent.Stream, e
 		return nil, agent.ClassifyHTTPError("openai", resp)
 	}
 
-	return agent.NewStreamFunc(ctx, func(send func(agent.Emit) bool) { streamSSE(resp.Body, send) }), nil
+	return agent.NewStreamFunc(ctx, func(send func(agent.Emit) bool) { streamSSE(agent.LimitResponse(resp.Body, m.maxResponse), send) }), nil
 }
 
 func (m *Model) buildRequest(req agent.Request) ([]byte, error) {
@@ -344,6 +352,7 @@ func mergedUserContent(run []agent.Message) any {
 type chunk struct {
 	Error   json.RawMessage `json:"error"` // a failure reported partway through the stream
 	Choices []struct {
+		Index int `json:"index"` // which completion; the adapter requests one, index 0
 		Delta struct {
 			Content          string `json:"content"`
 			ReasoningContent string `json:"reasoning_content"` // DeepSeek/Ollama reasoning
@@ -365,6 +374,24 @@ type chunk struct {
 			CachedTokens int `json:"cached_tokens"`
 		} `json:"prompt_tokens_details"`
 	} `json:"usage"`
+}
+
+// finishReason maps an OpenAI finish_reason onto the neutral finish reasons (see agent.Finish).
+// A reason it does not know is passed through unchanged, and the core refuses it rather than take
+// the turn as done. A stream that ends with [DONE] and no finish_reason reports none ("").
+func finishReason(r string) string {
+	switch r {
+	case "stop":
+		return agent.FinishStop
+	case "tool_calls", "function_call":
+		return agent.FinishToolUse
+	case "length":
+		return agent.FinishLength
+	case "content_filter":
+		return agent.FinishFiltered
+	default:
+		return r
+	}
 }
 
 // streamSSE reads OpenAI's SSE stream and pushes normalized agent events.
@@ -406,9 +433,14 @@ func streamSSE(body io.ReadCloser, send func(agent.Emit) bool) {
 			return
 		}
 		for _, choice := range c.Choices {
+			if choice.Index != 0 {
+				// The request asks for one completion. Another is not part of this answer.
+				send(agent.Emit{Err: fmt.Errorf("openai: a chunk for choice %d; the request asked for one completion: %w", choice.Index, agent.ErrStreamProtocol)})
+				return
+			}
 			d := choice.Delta
 			if reason != "" && (d.ReasoningContent != "" || d.Content != "" || len(d.ToolCalls) > 0) {
-				send(agent.Emit{Err: fmt.Errorf("openai: content after finish_reason %q: %w", reason, agent.ErrStreamProtocol)})
+				send(agent.Emit{Err: fmt.Errorf("openai: content after finish_reason %s: %w", errtext.Quote(reason), agent.ErrStreamProtocol)})
 				return
 			}
 			if rc := d.ReasoningContent; rc != "" {
@@ -431,7 +463,7 @@ func streamSSE(body io.ReadCloser, send func(agent.Emit) bool) {
 			}
 			if fr := choice.FinishReason; fr != nil && *fr != "" {
 				if reason != "" && *fr != reason {
-					send(agent.Emit{Err: fmt.Errorf("openai: finish_reason %q after %q: %w", *fr, reason, agent.ErrStreamProtocol)})
+					send(agent.Emit{Err: fmt.Errorf("openai: finish_reason %s after %s: %w", errtext.Quote(*fr), errtext.Quote(reason), agent.ErrStreamProtocol)})
 					return
 				}
 				reason = *fr
@@ -452,6 +484,6 @@ func streamSSE(body io.ReadCloser, send func(agent.Emit) bool) {
 		return
 	}
 	if done || reason != "" {
-		send(agent.Emit{Event: agent.Finish{Reason: reason, Usage: usage}})
+		send(agent.Emit{Event: agent.Finish{Reason: finishReason(reason), Usage: usage}})
 	}
 }

@@ -51,7 +51,7 @@ func buildCountdownLoop(max int, bump *int, opts ...NodeOption) (*Flow[int, stri
 	b.Edge(seed, refine)
 	b.Edge(refine, check)
 	b.Switch(check,
-		LoopBack(max, func(s loopState) bool { return s.N > 0 }, refine),
+		LoopBack(max, func(s loopState) bool { return s.N > 0 }, refine).Named("again"),
 		Else(done),
 	)
 	return b.Build()

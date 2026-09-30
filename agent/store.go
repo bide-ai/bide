@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"sync"
 	"time"
 
@@ -76,6 +77,19 @@ type Record struct {
 	Salt []byte `json:"salt,omitempty"`
 }
 
+// markerTime is the time an attempt marker's AttemptedAt records, or the zero time when it records
+// none. Zero means a marker written before the field existed. A negative value is not a time the
+// engine writes (it stamps time.Now().UnixMilli()), so it is a hand-written or tampered row; read as
+// a time it would place the attempt in 1969 and make any grace period look long elapsed, so it
+// counts as no timestamp too. A marker in the future (clock skew between nodes, or a tampered row)
+// is kept: it is younger than any grace period, so WithMinHaltAge waits on it.
+func markerTime(ms int64) time.Time {
+	if ms <= 0 {
+		return time.Time{}
+	}
+	return time.UnixMilli(ms)
+}
+
 // SaltSize is the length of Record.Salt: 32 bytes (256 bits) from crypto/rand.
 const SaltSize = 32
 
@@ -127,12 +141,14 @@ func ClaimAttempt(ctx context.Context, d Durable, runID, name string, rec Record
 type Durable interface {
 	// Do returns the recorded Record for (runID, name) without running fn if present;
 	// otherwise runs fn, records the returned Record (with Name set and a fresh Salt: persist
-	// the bytes JournalEntry returns), and returns it.
+	// the bytes JournalEntry returns), and returns it. A recorded Record is read back with
+	// DecodeStoredRecord, which refuses a row whose record names another step.
 	// If fn errors, nothing is recorded — the step re-runs on the next attempt. Once fn has
 	// returned a record, Do records it even if ctx was cancelled meanwhile: fn may have fired a
 	// side effect, and its outcome must not be lost (see durabletest).
 	Do(ctx context.Context, runID, name string, fn func(context.Context) (Record, error)) (Record, error)
-	// History returns all recorded steps for a run, in order.
+	// History returns all recorded steps for a run, in order, each read back with
+	// DecodeStoredRecord under the name it is stored under.
 	History(ctx context.Context, runID string) ([]Record, error)
 }
 
@@ -257,9 +273,7 @@ func step[T any](ctx context.Context, d Durable, runID, name string, fn func(con
 			return out, err
 		}
 		claimed = won
-		if got.AttemptedAt != 0 {
-			attemptedAt = time.UnixMilli(got.AttemptedAt)
-		}
+		attemptedAt = markerTime(got.AttemptedAt)
 	}
 	rec, err := d.Do(ctx, runID, name, func(ctx context.Context) (Record, error) {
 		if claimed && cfg.safety.RetrySafe() {
@@ -272,9 +286,7 @@ func step[T any](ctx context.Context, d Durable, runID, name string, fn func(con
 			switch {
 			case err == nil:
 				claimed = false
-				if marker.AttemptedAt != 0 {
-					attemptedAt = time.UnixMilli(marker.AttemptedAt)
-				}
+				attemptedAt = markerTime(marker.AttemptedAt)
 			case !errors.Is(err, errNoAttempt):
 				return Record{}, err
 			}
@@ -419,10 +431,14 @@ func resolve(ctx context.Context, store Durable, runID string, h haltKeys, resul
 		return fmt.Errorf("%s: %q in run %s was attempted by the other kind of operation; resolve it with %s: %w", h.op, h.id, runID, h.otherOp, ErrConfig)
 	}
 	if cfg.minHaltAge > 0 {
-		if attempt == nil || attempt.AttemptedAt == 0 {
+		var at time.Time
+		if attempt != nil {
+			at = markerTime(attempt.AttemptedAt)
+		}
+		if at.IsZero() {
 			return fmt.Errorf("%s: cannot enforce min halt age for %q: no attempt marker carries a timestamp: %w", h.op, h.id, ErrConfig)
 		}
-		if age := cfg.now().Sub(time.UnixMilli(attempt.AttemptedAt)); age < cfg.minHaltAge {
+		if age := cfg.now().Sub(at); age < cfg.minHaltAge {
 			return &HaltTooYoung{RunID: runID, ToolUseID: h.id, Age: age, Min: cfg.minHaltAge}
 		}
 	}
@@ -454,8 +470,10 @@ type resolveConfig struct {
 // provider's record has had time to settle (a sent-message id can appear seconds after the
 // send): resolving too early reads "absent" and re-fires the very side effect the halt
 // exists to prevent. d <= 0 skips the check. When d > 0 but no attempt timestamp is found,
-// ResolveHalt errors rather than resolve blind. Returns *HaltTooYoung when the halt has not
-// aged enough, so the caller waits and retries later.
+// ResolveHalt errors rather than resolve blind; a marker whose AttemptedAt is zero or negative
+// carries none (a negative value is not one the engine writes). Returns *HaltTooYoung when the
+// halt has not aged enough, including a marker stamped in the future, so the caller waits and
+// retries later.
 func WithMinHaltAge(d time.Duration) ResolveOption {
 	return func(c *resolveConfig) { c.minHaltAge = d }
 }
@@ -536,7 +554,7 @@ type ResumeHalt struct {
 	ToolUseID string
 	ToolName  string
 	// AttemptedAt is when the effect was attempted (the attempt marker's timestamp), zero
-	// if unknown. A reconciler uses it to honor a grace period before resolving (see
+	// if unknown (including a marker stamped zero or negative, see markerTime). A reconciler uses it to honor a grace period before resolving (see
 	// ResolveHalt with WithMinHaltAge) so it does not query the provider before its record
 	// has settled.
 	AttemptedAt time.Time
@@ -600,6 +618,28 @@ func DecodeRecord(b []byte) (Record, error) {
 	return r, nil
 }
 
+// DecodeStoredRecord decodes the record a store holds for the step name of run runID (see
+// DecodeRecord) and checks that the record carries that name. Every record is journaled with the
+// name it is stored under (JournalEntry), and the engine finds records by the name inside them
+// (IsComplete, the approval tally, a signal, an attempt marker), so a row whose record names
+// another step (a row edited or copied in the backing store) would be read as that step: a row
+// under "x" holding a record named run:complete would mark an unfinished run complete. Such a row
+// is ErrStorage, naming the run and the key, like any other stored record that does not decode:
+// the store's contents are wrong, whatever wrote them. Fields this version does not know still
+// decode, so a journal a newer version wrote stays readable.
+//
+// Every Durable implementation must read a record back through it, in Do and in History.
+func DecodeStoredRecord(runID, name string, b []byte) (Record, error) {
+	r, err := DecodeRecord(b)
+	if err != nil {
+		return Record{}, fmt.Errorf("run %s, step %q: %w", runID, name, err)
+	}
+	if r.Name != name {
+		return Record{}, fmt.Errorf("run %s: the row stored as step %q holds a record named %q: %w", runID, name, r.Name, ErrStorage)
+	}
+	return r, nil
+}
+
 // marshalJournal is json.Marshal without HTML escaping and without the newline an Encoder
 // appends.
 //
@@ -643,6 +683,7 @@ type MemStore struct {
 
 type runLog struct {
 	order  [][]byte // each record's journal encoding, in append order
+	names  []string // the step name each encoding in order is stored under
 	byName map[string]int
 }
 
@@ -667,7 +708,7 @@ func (m *MemStore) Do(ctx context.Context, runID, name string, fn func(context.C
 	// share the result, so a side effect can't fire twice under concurrency (parallel tools,
 	// retries). In-process only; cross-process dedup is the store's job (PK/ON CONFLICT).
 	// What they share is the stored encoding; each caller decodes its own copy of it below.
-	v, err, _ := m.sf.Do(runID+"\x00"+name, func() (any, error) {
+	v, err, _ := m.sf.Do(stepKey(runID, name), func() (any, error) {
 		m.mu.Lock()
 		rl := m.runs[runID]
 		if rl == nil {
@@ -697,14 +738,21 @@ func (m *MemStore) Do(ctx context.Context, runID, name string, fn func(context.C
 		}
 		rl.byName[name] = len(rl.order)
 		rl.order = append(rl.order, b)
+		rl.names = append(rl.names, name)
 		return b, nil
 	})
 	if err != nil {
 		return Record{}, err
 	}
 	// The stored record, decoded: what History returns for this step, never the caller's own.
-	return DecodeRecord(v.([]byte))
+	return DecodeStoredRecord(runID, name, v.([]byte))
 }
+
+// stepKey is the in-process deduplication key of step name of runID: the run ID's length in
+// bytes, ':', the run ID, then the name. The length makes the split exact whatever bytes the two
+// hold, so two different steps never share a key (joining them with a separator would not:
+// ("a\x00b", "c") and ("a", "b\x00c") both join to "a\x00b\x00c").
+func stepKey(runID, name string) string { return strconv.Itoa(len(runID)) + ":" + runID + name }
 
 // Runs returns the IDs of every run the store holds, satisfying Lister so a
 // crash-recovery supervisor can enumerate in-flight runs (see Recover).
@@ -727,7 +775,7 @@ func (m *MemStore) History(_ context.Context, runID string) ([]Record, error) {
 	}
 	out := make([]Record, len(rl.order))
 	for i, b := range rl.order {
-		r, err := DecodeRecord(b)
+		r, err := DecodeStoredRecord(runID, rl.names[i], b)
 		if err != nil {
 			return nil, err
 		}

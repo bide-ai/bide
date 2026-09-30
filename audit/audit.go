@@ -54,7 +54,8 @@ func Head(ctx context.Context, store agent.Durable, runID string) ([]byte, error
 }
 
 // Sign returns an Ed25519 signature over a head commitment — anchor this (store it in a
-// separate trust domain) to make the journal tamper-evident against later rewrites.
+// separate trust domain) to make the journal tamper-evident against later rewrites. Like
+// ed25519.Sign it panics if priv is not ed25519.PrivateKeySize bytes.
 func Sign(head []byte, priv ed25519.PrivateKey) []byte {
 	return ed25519.Sign(priv, head)
 }

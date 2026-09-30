@@ -226,7 +226,9 @@ decide, and call `ResolveHalt` itself. Two options make that safe:
   marker (`ResumeHalt.AttemptedAt`) to now. A provider's record can lag the send by seconds, so a
   reconciler that queries too early reads "absent" and re-fires the exact effect the halt prevents.
   A minimum age keeps "unknown" unknown until the record has had time to appear; too soon returns
-  `*HaltTooYoung`, so the reconciler waits and retries.
+  `*HaltTooYoung`, so the reconciler waits and retries. A marker with no usable timestamp (none, or
+  a zero or negative one, which the engine never writes) is `ErrConfig`: the age cannot be known,
+  so the halt is not resolved blind. A marker stamped in the future counts as too young.
 - **`WithEvidence(v)`** records the resolution as reconciled and stores what was read to decide,
   signed alongside the outcome (`Record.Reconciled` / `Record.Evidence`). The journal is the audit
   record, so a reconciled outcome that did not say it was reconciled, and on what basis, would be a

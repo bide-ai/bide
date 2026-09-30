@@ -31,23 +31,31 @@ import (
 	"strings"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/model/internal/errtext"
 	"github.com/bide-ai/bide/model/internal/toolcfg"
 	"github.com/bide-ai/bide/schema"
 )
 
 // Model is a Google Gemini generateContent API adapter implementing agent.Model.
 type Model struct {
-	apiKey    string
-	model     string
-	maxTokens int
-	baseURL   string
-	http      *http.Client
-	toolCodec agent.ToolResultCodec
+	maxResponse int64 // the streamed reply cap; see WithMaxResponseBytes
+	apiKey      string
+	model       string
+	maxTokens   int
+	baseURL     string
+	http        *http.Client
+	toolCodec   agent.ToolResultCodec
 }
 
 var _ agent.Model = (*Model)(nil) // port/adapter contract
 
 type Option func(*Model)
+
+// WithMaxResponseBytes caps how many bytes of one streamed reply the adapter reads: a reply that
+// runs longer fails with agent.ErrResponseTooLarge, which middleware.Retryable does not retry.
+// The default is agent.DefaultMaxResponseBytes (32 MiB); n <= 0 keeps it. Raise it for replies
+// that legitimately run longer, such as large inline images.
+func WithMaxResponseBytes(n int64) Option { return func(m *Model) { m.maxResponse = n } }
 
 func WithModel(id string) Option           { return func(m *Model) { m.model = id } }
 func WithMaxTokens(n int) Option           { return func(m *Model) { m.maxTokens = n } }
@@ -101,7 +109,7 @@ func (m *Model) Stream(ctx context.Context, req agent.Request) (*agent.Stream, e
 		return nil, agent.ClassifyHTTPError("gemini", resp)
 	}
 
-	return agent.NewStreamFunc(ctx, func(send func(agent.Emit) bool) { streamSSE(resp.Body, send) }), nil
+	return agent.NewStreamFunc(ctx, func(send func(agent.Emit) bool) { streamSSE(agent.LimitResponse(resp.Body, m.maxResponse), send) }), nil
 }
 
 // buildRequest translates the provider-neutral request into a Gemini generateContent
@@ -418,22 +426,29 @@ func newCallID() string {
 	return "call_" + hex.EncodeToString(b[:])
 }
 
-// mapFinishReason maps Gemini's finishReason onto the neutral reason strings the other
-// adapters emit (Anthropic "end_turn"/"tool_use"; OpenAI "stop"/"tool_calls"). The agent
-// core's finalize() does not branch on the string, so this is for the caller's benefit.
+// mapFinishReason maps Gemini's finishReason onto the neutral finish reasons (see agent.Finish).
+// A natural stop is tool_use when the turn made a tool call. A turn cut off at the token limit is
+// FinishLength even when it made one: the model may have meant to say or call more. A reason a
+// safety, recitation, or blocklist filter gives is FinishFiltered. Any other reason
+// (MALFORMED_FUNCTION_CALL, OTHER, one added later) is passed through unchanged, and the core
+// refuses it rather than take the turn as done.
 func mapFinishReason(reason string, sawToolCall bool) string {
-	if sawToolCall {
-		return "tool_use"
-	}
 	switch reason {
 	case "STOP":
-		return "stop"
+		if sawToolCall {
+			return agent.FinishToolUse
+		}
+		return agent.FinishStop
 	case "MAX_TOKENS":
-		return "length"
+		return agent.FinishLength
+	case "SAFETY", "RECITATION", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII", "IMAGE_SAFETY":
+		return agent.FinishFiltered
 	case "":
-		return "stop"
+		// No reason is not a natural stop: the core would take "" as one. streamSSE sends no Finish
+		// without a reason, so this only keeps the mapping itself from ever making one an answer.
+		return "FINISH_REASON_UNSPECIFIED"
 	default:
-		return strings.ToLower(reason)
+		return reason
 	}
 }
 
@@ -478,7 +493,7 @@ func streamSSE(body io.ReadCloser, send func(agent.Emit) bool) {
 		for _, cand := range c.Candidates {
 			for _, part := range cand.Content.Parts {
 				if lastReason != "" && (part.Text != "" || part.FunctionCall != nil) {
-					send(agent.Emit{Err: fmt.Errorf("gemini: content after finishReason %q: %w", lastReason, agent.ErrStreamProtocol)})
+					send(agent.Emit{Err: fmt.Errorf("gemini: content after finishReason %s: %w", errtext.Quote(lastReason), agent.ErrStreamProtocol)})
 					return
 				}
 				if part.Text != "" {
@@ -510,7 +525,7 @@ func streamSSE(body io.ReadCloser, send func(agent.Emit) bool) {
 			}
 			if cand.FinishReason != "" {
 				if lastReason != "" && cand.FinishReason != lastReason {
-					send(agent.Emit{Err: fmt.Errorf("gemini: finishReason %q after %q: %w", cand.FinishReason, lastReason, agent.ErrStreamProtocol)})
+					send(agent.Emit{Err: fmt.Errorf("gemini: finishReason %s after %s: %w", errtext.Quote(cand.FinishReason), errtext.Quote(lastReason), agent.ErrStreamProtocol)})
 					return
 				}
 				lastReason = cand.FinishReason

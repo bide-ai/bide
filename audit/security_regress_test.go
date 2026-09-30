@@ -158,7 +158,7 @@ func secEvidence(t *testing.T, opts ...EvidenceOption) (EvidencePackage, ed25519
 	pub, priv := secKey(t)
 	s := secThreeCalls(t, "A")
 	recs, _ := s.History(context.Background(), "A")
-	early, err := journalHead("A", recs[:1], 0)
+	early, err := journalHead("A", recs[:1], 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -351,7 +351,7 @@ func TestEvidence_ConsistencyProofIsForItsClaimedSize(t *testing.T) {
 	pub, priv := secKey(t)
 	inner := secThreeCalls(t, "A")
 	recs, _ := inner.History(ctx, "A")
-	early, _ := journalHead("A", recs[:2], 0)
+	early, _ := journalHead("A", recs[:2], 1)
 	pkg, err := Evidence(ctx, &growingStore{Durable: inner}, "A", priv, 1, WithToolCall("a"), WithConsistencyFrom(SignTreeHead(early, priv)))
 	if err != nil {
 		t.Fatal(err)

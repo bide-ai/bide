@@ -27,7 +27,8 @@ so each retried attempt and each hedged target takes a token and counts as spend
 ### Timeouts and retries: `Retry`
 
 `Retry(n, opts...)` retries the model call up to `n` extra times, sleeping with full-jitter
-exponential backoff between attempts and honoring context cancellation.
+exponential backoff between attempts and honoring context cancellation. `n` must be 0 or more: with
+a negative `n`, `Retry` and `ToolRetry` fail every call with `agent.ErrConfig` and call nothing.
 
 - `WithBackoff(base, max)` sets the initial and capped sleep (defaults 200ms / 10s). If the error is
   `*agent.RateLimited`, its `Retry-After` hint overrides the computed backoff.

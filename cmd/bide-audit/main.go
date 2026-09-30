@@ -23,10 +23,13 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
+	"reflect"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/audit"
@@ -38,7 +41,26 @@ import (
 // gsm, so the two roots of trust (the log and the proof) stay independent of the producer.
 const policyFormatVersion = "gsm-policy-v1"
 
-func flagSet(name string) *flag.FlagSet { return flag.NewFlagSet(name, flag.ContinueOnError) }
+// defaultMaxInputBytes caps every file a verb reads (a bundle, journal, key, digest list, policy,
+// or evidence package): 256 MiB, far above any real artifact, so a huge or endless input fails
+// fast instead of exhausting memory. -max-input-bytes raises (or lowers) it.
+const defaultMaxInputBytes = 256 << 20
+
+// maxInputBytes is the cap in force, set by the verb's -max-input-bytes flag.
+var maxInputBytes int64 = defaultMaxInputBytes
+
+// maxClockSkew is how far past this machine's clock a signed head's timestamp may be, set by the
+// verb's -max-clock-skew flag (see audit.CheckTimestamp).
+var maxClockSkew = audit.DefaultClockSkew
+
+// flagSet returns a verb's flag set, with the -max-input-bytes and -max-clock-skew flags every verb
+// shares.
+func flagSet(name string) *flag.FlagSet {
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
+	fs.Int64Var(&maxInputBytes, "max-input-bytes", defaultMaxInputBytes, "the largest input file, in bytes, the verb reads; a larger one is an error")
+	fs.DurationVar(&maxClockSkew, "max-clock-skew", audit.DefaultClockSkew, "how far past this machine's clock a signed head's timestamp may be")
+	return fs
+}
 
 // parse parses a verb's flags and exits 2, a usage error, unless it read the whole command line.
 // Flag parsing stops at the first argument that is not a flag, so a stray argument would otherwise
@@ -53,6 +75,33 @@ func parse(fs *flag.FlagSet, args []string) {
 		fmt.Fprintf(os.Stderr, "%s: unexpected argument %q: every input is a flag, and no flag after an argument is read\n", fs.Name(), fs.Arg(0))
 		os.Exit(2)
 	}
+	if maxInputBytes < 1 {
+		fmt.Fprintf(os.Stderr, "%s: -max-input-bytes must be at least 1, got %d\n", fs.Name(), maxInputBytes)
+		os.Exit(2)
+	}
+	if maxClockSkew < 0 {
+		fmt.Fprintf(os.Stderr, "%s: -max-clock-skew must not be negative, got %s\n", fs.Name(), maxClockSkew)
+		os.Exit(2)
+	}
+}
+
+// readInput reads the file at path, refusing one larger than maxInputBytes. It reads through a
+// limit of one byte past the cap, so neither a huge file nor an endless stream (a pipe, a device)
+// is read further than that.
+func readInput(path string) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	b, err := io.ReadAll(io.LimitReader(f, maxInputBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(b)) > maxInputBytes {
+		return nil, fmt.Errorf("%s is larger than the %d-byte input limit (raise it with -max-input-bytes)", path, maxInputBytes)
+	}
+	return b, nil
 }
 
 func main() {
@@ -155,7 +204,10 @@ Export a journal for `+"`prove`"+` with: json.Marshal(store.History(ctx, runID))
 input is parsed strictly: a duplicate or case-variant key, an unknown field, or invalid UTF-8 is
 an error, a bundle, certificate or package must carry the "format" this version reads (one made
 by an older release is refused with a message naming the format), and a public key must be 32
-bytes of hex.
+bytes of hex. Every verb takes -max-input-bytes <n>: an
+input file larger than n bytes (default 268435456, 256 MiB) is an error, and none is read past
+the cap. Every signed tree head an input carries must have a positive timestamp (Unix
+nanoseconds) no later than this machine's clock plus -max-clock-skew <duration> (default 5m).
 
 Exit status: 0 = verified, 1 = failed, 2 = usage error, 3 = the -checker gave no verdict (it could
 not be started, exited with a status other than 0 or 1, was killed, or printed an unreadable
@@ -257,7 +309,7 @@ func verifyGovernance(args []string) {
 	if *policyPath == "" {
 		usage()
 	}
-	policy, err := os.ReadFile(*policyPath)
+	policy, err := readInput(*policyPath)
 	if err != nil {
 		fatal(err)
 	}
@@ -290,7 +342,9 @@ func verifyGovernance(args []string) {
 // verifyGovernedAction verifies a governed action against its anchored policy from public
 // artifacts alone: two ProofBundles (the action and the policy leaf) plus an out-of-band public
 // key. It confirms (1) both bundles are authentic under the key, (2) they are in the SAME signed
-// tree, (3) the action's embedded policy digest matches the anchored policy leaf's digest,
+// tree, (3) the action bundle proves a tool call's result, the policy bundle proves the policy leaf
+// (audit.PolicyLeafName) for the digest it carries, and the action's embedded policy digest
+// matches that digest,
 // (4) the leaf's bytes actually hash to that digest (so the leaf cannot lie about which policy it
 // is), and (5) with -checker, that the external verified oracle certifies the policy converges.
 // Steps 1 to 4 are the cryptographic root; step 5 is the independent mathematical root.
@@ -331,12 +385,14 @@ func verifyGovernedAction(args []string) {
 	}
 
 	// (3) the action's embedded policy digest matches the anchored policy leaf's digest.
+	requireToolResult(action, "action")
 	actionDigest, err := governedPolicyDigest(action.Record.Result)
 	if err != nil {
 		fatal(fmt.Errorf("action result is not a governed-action payload: %w", err))
 	}
 	var pc audit.PolicyContent
 	readLeaf(policy, &pc, "policy bundle is not a policy leaf")
+	requireLeaf(policy, audit.PolicyLeafName(pc.Digest), "policy")
 	if actionDigest == "" || actionDigest != pc.Digest {
 		fmt.Printf("FAIL: action policy digest %q does not link to the anchored policy leaf %q\n", actionDigest, pc.Digest)
 		os.Exit(1)
@@ -416,6 +472,8 @@ func verifyConvergence(args []string) {
 	readLeaf(certBundle, &cc, "certificate bundle is not a convergence leaf")
 	var pc audit.PolicyContent
 	readLeaf(policy, &pc, "policy bundle is not a policy leaf")
+	requireLeaf(certBundle, audit.ConvergenceLeafName(cc.Digest), "certificate")
+	requireLeaf(policy, audit.PolicyLeafName(pc.Digest), "policy")
 	if cc.Digest == "" || cc.Digest != pc.Digest {
 		fmt.Printf("FAIL: certificate digest %q does not link to the anchored policy leaf %q\n", cc.Digest, pc.Digest)
 		os.Exit(1)
@@ -716,6 +774,7 @@ func verifyQuorum(args []string) {
 			fmt.Println("FAIL: the commit is not in the same signed tree and run as the quorum")
 			os.Exit(1)
 		}
+		requireToolResult(commit, "commit")
 		commitDigest, err := governedPolicyDigest(commit.Record.Result)
 		if err != nil || commitDigest == "" {
 			fmt.Println("FAIL: commit bundle is not a governed-action leaf")
@@ -758,6 +817,11 @@ func verifyRun(args []string) {
 	var cert audit.RunCertificate
 	readJSON(*certPath, &cert)
 	pub := readPubKey(*pubkey)
+	// The used-policy head is projected from the journal head, so it cannot be the earlier one.
+	if err := audit.CheckTimestampOrder(cert.STH.TreeHead, cert.UsedPolicyAbsence.TreeHead); err != nil {
+		fmt.Println("FAIL:", err)
+		os.Exit(1)
+	}
 
 	// The auditor's own allowlist governs the only-approved-policies check; the certificate carries
 	// none, so a producer cannot pass by widening its own set.
@@ -986,7 +1050,7 @@ func evidenceItemLine(it audit.EvidenceItem) string {
 // readDigestLines reads a file of approved policy digests, one per line, ignoring blank lines and
 // # comments. It is the file form of the repeatable -approved flag.
 func readDigestLines(path string) []string {
-	b, err := os.ReadFile(path)
+	b, err := readInput(path)
 	if err != nil {
 		fatal(err)
 	}
@@ -1083,9 +1147,20 @@ func verifyAbsent(args []string) {
 
 // readPubKey accepts a hex string directly, or a path to a file whose (trimmed) contents are
 // hex. The key must come from out-of-band; that is the whole point of the trust model.
+// readPubKey reads the verifier's trust root from a -pubkey value: an ed25519 public key in hex,
+// or the path of a file holding one. A value that is a public key in hex is that key and is never
+// opened as a file: a file of that name (planted in an evidence directory, say) could hold another
+// key, and the CLI would then verify under it.
 func readPubKey(s string) []byte {
+	if key, err := hex.DecodeString(trimSpace(s)); err == nil && len(key) == ed25519.PublicKeySize {
+		return key
+	}
 	raw := s
-	if b, err := os.ReadFile(s); err == nil {
+	if _, err := os.Stat(s); err == nil {
+		b, err := readInput(s)
+		if err != nil {
+			fatal(err)
+		}
 		raw = string(b)
 	}
 	raw = trimSpace(raw)
@@ -1143,35 +1218,39 @@ type quorumTally struct {
 
 // readLeaf decodes a proven record's Result into v with audit.UnmarshalStrict, as readJSON does a
 // file: the leaf is committed as written, so it must read as written. what names the failure.
+// requireLeaf exits 1 unless b proves the StepValue record named name: the leaf the audit package
+// writes for the role the bundle is read in. A record proves only what it is, so a record of any
+// other name or kind (a tool result whose output has the leaf's shape, say) is not that leaf.
+func requireLeaf(b audit.ProofBundle, name, role string) {
+	if b.Record.Kind != agent.StepValue || b.Record.Name != name {
+		fmt.Printf("FAIL: the %s bundle proves record %q of kind %q, not the %s leaf %q\n", role, b.Record.Name, b.Record.Kind, role, name)
+		os.Exit(1)
+	}
+}
+
+// requireToolResult exits 1 unless b proves a tool call's result: a governed action (or commit) is
+// the result a governed tool journaled, not any record whose payload has that shape.
+func requireToolResult(b audit.ProofBundle, role string) {
+	if b.Record.Kind != agent.StepToolResult {
+		fmt.Printf("FAIL: the %s bundle proves record %q of kind %q, not a tool call's result\n", role, b.Record.Name, b.Record.Kind)
+		os.Exit(1)
+	}
+}
+
 func readLeaf(b audit.ProofBundle, v any, what string) {
 	if err := audit.UnmarshalStrict(b.Record.Result, v); err != nil {
 		fatal(fmt.Errorf("%s: %w", what, err))
 	}
 }
 
-// governedPolicyDigest returns the policy digest a governed-action payload (a tool result, as
-// govern journals it) carries. The payload is open: it may hold other fields, such as the acting
-// identity, so its names are not checked against a type. It must still decode strictly as an object
-// (no duplicate names, no lone surrogate escapes), and the digest is read from the exact name
-// "policy_digest" only, never from a case variant, as a reader of the file would read it.
+// governedPolicyDigest returns the policy digest a governed-action payload carries, read by the
+// rule the used-policy set uses (see audit.GovernedPolicyDigest).
 func governedPolicyDigest(result json.RawMessage) (string, error) {
-	var fields map[string]json.RawMessage
-	if err := audit.UnmarshalStrict(result, &fields); err != nil {
-		return "", err
-	}
-	raw, ok := fields["policy_digest"]
-	if !ok {
-		return "", errors.New("no \"policy_digest\"")
-	}
-	var digest string
-	if err := audit.UnmarshalStrict(raw, &digest); err != nil {
-		return "", fmt.Errorf("policy_digest: %w", err)
-	}
-	return digest, nil
+	return audit.GovernedPolicyDigest(result)
 }
 
 func readJSON(path string, v any) {
-	b, err := os.ReadFile(path)
+	b, err := readInput(path)
 	if err != nil {
 		fatal(err)
 	}
@@ -1180,6 +1259,50 @@ func readJSON(path string, v any) {
 	if err := audit.UnmarshalStrict(b, v); err != nil {
 		fatal(fmt.Errorf("parse %s: %w", path, err))
 	}
+	// Every signed head in the input, however deeply it is carried, is held to the timestamp rule.
+	if err := checkHeadTimes(reflect.ValueOf(v), time.Now()); err != nil {
+		fatal(fmt.Errorf("%s: %w", path, err))
+	}
+}
+
+var signedHeadType = reflect.TypeFor[audit.SignedTreeHead]()
+
+// checkHeadTimes applies audit.CheckTimestamp, against now and -max-clock-skew, to every signed
+// tree head reachable from v.
+func checkHeadTimes(v reflect.Value, now time.Time) error {
+	switch v.Kind() {
+	case reflect.Pointer, reflect.Interface:
+		if !v.IsNil() {
+			return checkHeadTimes(v.Elem(), now)
+		}
+	case reflect.Struct:
+		if v.Type() == signedHeadType {
+			return audit.CheckTimestamp(v.Interface().(audit.SignedTreeHead).TreeHead, now, maxClockSkew)
+		}
+		for i := range v.NumField() {
+			if v.Type().Field(i).IsExported() {
+				if err := checkHeadTimes(v.Field(i), now); err != nil {
+					return err
+				}
+			}
+		}
+	case reflect.Slice, reflect.Array:
+		if v.Type().Elem().Kind() == reflect.Uint8 {
+			return nil // bytes and raw JSON carry no head
+		}
+		for i := range v.Len() {
+			if err := checkHeadTimes(v.Index(i), now); err != nil {
+				return err
+			}
+		}
+	case reflect.Map:
+		for it := v.MapRange(); it.Next(); {
+			if err := checkHeadTimes(it.Value(), now); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func fatal(err error) {

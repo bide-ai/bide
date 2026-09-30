@@ -221,7 +221,7 @@ func cmdApprove(ctx context.Context, store agent.Durable, as string, approved, f
 // its tally, and the refund, all under one signed tree head) and the approvers' public keys an
 // auditor would hold, as a JSON object of approver id to ed25519 key hex.
 func cmdEvidence(ctx context.Context, store agent.Durable, outPath, keysPath string) error {
-	pkg, err := audit.Evidence(ctx, store, runID, logKey(), time.Now().Unix(), audit.WithToolCall(callID))
+	pkg, err := audit.Evidence(ctx, store, runID, logKey(), time.Now().UnixNano(), audit.WithToolCall(callID))
 	if err != nil {
 		return err
 	}

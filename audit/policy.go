@@ -3,6 +3,7 @@ package audit
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -21,6 +22,12 @@ type PolicyContent struct {
 // policyLeafName is the reserved journal name for a policy leaf, keyed by digest so a run that
 // changes policy over its lifetime records each epoch as its own leaf.
 func policyLeafName(digest string) string { return "audit:policy:" + digest }
+
+// PolicyLeafName is the journal name of the policy leaf RecordPolicy writes for digest. A
+// verifier handed a bundle as a policy leaf checks that its record is a StepValue of this name:
+// any other record, such as a tool result whose output has a policy leaf's shape, anchors no
+// policy.
+func PolicyLeafName(digest string) string { return policyLeafName(digest) }
 
 // RecordPolicy commits the serialized policy as a dedicated journal leaf (idempotent per
 // (runID, digest)), so the policy is covered by the same STH and inclusion proofs as the actions
@@ -81,13 +88,35 @@ func PolicyUsedKey(r agent.Record) (string, bool) {
 	if r.Kind != agent.StepToolResult || len(r.Result) == 0 {
 		return "", false
 	}
-	var payload struct {
-		PolicyDigest string `json:"policy_digest"`
-	}
-	if err := json.Unmarshal(r.Result, &payload); err != nil || payload.PolicyDigest == "" {
+	digest, err := GovernedPolicyDigest(r.Result)
+	if err != nil || digest == "" {
 		return "", false
 	}
-	return policyUsedKeyPrefix + payload.PolicyDigest, true
+	return policyUsedKeyPrefix + digest, true
+}
+
+// GovernedPolicyDigest returns the policy digest a governed-action payload (a tool result, as
+// govern.AttestedEventTool journals it) carries. It is the one reading PolicyUsedKey and bide-audit
+// share, so an action cannot be said to run under one policy by the used-policy set and under
+// another by the CLI. The payload is open (it may hold other fields, such as the acting identity),
+// so its names are not checked against a type, but it must decode strictly as an object (see
+// UnmarshalStrict: no duplicate names, valid UTF-8, no lone surrogate escapes), and the digest is
+// read from the exact name "policy_digest" only, never from a case variant, as a reader of the
+// file would read it. A payload without that name, or whose value is not a string, is an error.
+func GovernedPolicyDigest(result json.RawMessage) (string, error) {
+	var fields map[string]json.RawMessage
+	if err := UnmarshalStrict(result, &fields); err != nil {
+		return "", err
+	}
+	raw, ok := fields["policy_digest"]
+	if !ok {
+		return "", errors.New(`audit: no "policy_digest"`)
+	}
+	var digest string
+	if err := UnmarshalStrict(raw, &digest); err != nil {
+		return "", fmt.Errorf("audit: policy_digest: %w", err)
+	}
+	return digest, nil
 }
 
 // PolicyUsedKeyFor is the absence key for a specific policy digest: pass it to ProveAbsent /

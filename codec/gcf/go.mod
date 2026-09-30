@@ -7,6 +7,9 @@ require (
 	github.com/blackwell-systems/gcf-go v1.7.1
 )
 
-require golang.org/x/sync v0.23.0 // indirect
+require (
+	golang.org/x/sync v0.23.0 // indirect
+	golang.org/x/text v0.42.0 // indirect
+)
 
 replace github.com/bide-ai/bide => ../../

@@ -16,6 +16,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strconv"
 
 	"github.com/bide-ai/bide/agent"
 	"golang.org/x/sync/singleflight"
@@ -75,7 +76,7 @@ func (s *Store) Do(ctx context.Context, runID, name string, fn func(context.Cont
 	// INSERT OR IGNORE + PK(run_id,name) additionally dedupes across processes. The callers
 	// share the stored bytes, and each decodes its own copy below, so the record Do returns is
 	// the one History returns for this step, on the live path too.
-	v, err, _ := s.sf.Do(runID+"\x00"+name, func() (any, error) {
+	v, err, _ := s.sf.Do(stepKey(runID, name), func() (any, error) {
 		if data, ok, e := s.load(ctx, runID, name); e != nil {
 			return nil, e
 		} else if ok {
@@ -118,12 +119,18 @@ func (s *Store) Do(ctx context.Context, runID, name string, fn func(context.Cont
 	if err != nil {
 		return agent.Record{}, err
 	}
-	return agent.DecodeRecord(v.([]byte))
+	return agent.DecodeStoredRecord(runID, name, v.([]byte))
 }
+
+// stepKey is the in-process deduplication key of step name of runID: the run ID's length in
+// bytes, ':', the run ID, then the name. The length makes the split exact whatever bytes the two
+// hold, so two different steps never share a key (joining them with a separator would not:
+// ("a\x00b", "c") and ("a", "b\x00c") both join to "a\x00b\x00c").
+func stepKey(runID, name string) string { return strconv.Itoa(len(runID)) + ":" + runID + name }
 
 // History implements agent.Durable: all recorded steps for a run, in order.
 func (s *Store) History(ctx context.Context, runID string) ([]agent.Record, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT data FROM steps WHERE run_id = ? ORDER BY seq`, runID)
+	rows, err := s.db.QueryContext(ctx, `SELECT name, data FROM steps WHERE run_id = ? ORDER BY seq`, runID)
 	if err != nil {
 		return nil, fmt.Errorf("query history %q: %w (%w)", runID, err, agent.ErrStorage)
 	}
@@ -131,11 +138,12 @@ func (s *Store) History(ctx context.Context, runID string) ([]agent.Record, erro
 
 	var out []agent.Record
 	for rows.Next() {
+		var name string
 		var data []byte
-		if err := rows.Scan(&data); err != nil {
+		if err := rows.Scan(&name, &data); err != nil {
 			return nil, fmt.Errorf("scan step: %w (%w)", err, agent.ErrStorage)
 		}
-		rec, err := agent.DecodeRecord(data)
+		rec, err := agent.DecodeStoredRecord(runID, name, data)
 		if err != nil {
 			return nil, err
 		}

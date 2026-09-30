@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/bide-ai/bide/agent"
+	"slices"
 	"sort"
 )
 
@@ -29,6 +30,14 @@ func (b *Builder[In, Out]) Build() (*Flow[In, Out], error) {
 	// 1. Drain construction errors (duplicate names, recorded by register).
 	if len(c.errs) > 0 {
 		return nil, fmt.Errorf("plan: build %q: %w", c.flowName, errors.Join(c.errs...))
+	}
+
+	// Every node needs a name: it is the node's journal key, and register makes the first
+	// NAMED node the entry, so an empty name would also move the entry to a later node.
+	for _, n := range c.nodes {
+		if n.name == "" {
+			return nil, fmt.Errorf("plan: build %q: a step or join has an empty name: %w", c.flowName, agent.ErrConfig)
+		}
 	}
 
 	// A flow needs an entry step: the first constructed node. An empty flow cannot
@@ -642,7 +651,8 @@ func (c *builderCore) seal() *builderCore {
 //   - inside a loop body: a Switch other than the loop's own (Run sweeps the body in order and
 //     evaluates only the loop Switch, so an inner Switch's arms would all run), which also rules
 //     out a nested loop; and an Edge that leaves the body or enters it anywhere but the head
-//     (Run drives only the body region each iteration).
+//     (Run drives only the body region each iteration);
+//   - a Join entered other than by exactly one Edge from each declared input (see checkJoinRoutes).
 func (c *builderCore) checkShapes() error {
 	switched := make(map[string]bool, len(c.branches))
 	for _, br := range c.branches {
@@ -665,6 +675,13 @@ func (c *builderCore) checkShapes() error {
 		for _, a := range br.arms {
 			if !a.loopBack {
 				addSource(a.target, br.over)
+			}
+		}
+	}
+	for _, n := range c.nodes {
+		if n.kind == kindJoin {
+			if err := c.checkJoinRoutes(n); err != nil {
+				return err
 			}
 		}
 	}
@@ -695,6 +712,31 @@ func (c *builderCore) checkShapes() error {
 			}
 			if !inBody[e.from] && inBody[e.to] && e.to != lp.head {
 				return fmt.Errorf("plan: build %q: Edge %q -> %q enters the loop over %q past its head %q", c.flowName, e.from, e.to, lp.over, lp.head)
+			}
+		}
+	}
+	return nil
+}
+
+// checkJoinRoutes requires that the only routes into join n are its input edges: one Edge from
+// each declared input, in the inputs' order (Join2, Join3 and a config join add them so). The merge reads exactly those
+// inputs, so any other route (an Edge from another step, a repeated input Edge, or a Switch arm)
+// would carry a value the join drops, and whose type nothing checks, since a join has no single
+// input type.
+func (c *builderCore) checkJoinRoutes(n *node) error {
+	var in []string
+	for _, e := range c.edges {
+		if e.to == n.name {
+			in = append(in, e.from)
+		}
+	}
+	if !slices.Equal(in, n.joinInputs) {
+		return fmt.Errorf("plan: build %q: join %q is fed by edges from %v but its inputs are %v; a join is entered only by one edge from each input", c.flowName, n.name, in, n.joinInputs)
+	}
+	for _, br := range c.branches {
+		for _, a := range br.arms {
+			if a.target == n.name {
+				return fmt.Errorf("plan: build %q: a Switch arm over %q routes to join %q; a join is entered only by its input edges", c.flowName, br.over, n.name)
 			}
 		}
 	}

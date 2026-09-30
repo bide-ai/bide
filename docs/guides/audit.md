@@ -278,7 +278,7 @@ and optionally the run certificate, the authority grant chain, and a consistency
 JSON (store it, email it, publish it) and verifies offline:
 
 ```go
-pkg, _ := audit.Evidence(ctx, store, runID, priv, time.Now().Unix(),
+pkg, _ := audit.Evidence(ctx, store, runID, priv, time.Now().UnixNano(),
 	audit.WithAllToolCalls(), audit.WithRunCertificate(spec), audit.WithGrants(),
 	audit.WithConsistencyFrom(earlierSTH)) // an earlier signed head of this run, e.g. from the anchor log
 report, _ := pkg.Verify(pub, audit.WithApprovedPolicies(allowlist...)) // trusting only the out-of-band key
@@ -301,11 +301,39 @@ package is verified or derived from verified data:
 - `Label`, the one field no proof covers, is covered by the seal: `Evidence` ends with `pkg.Seal(priv)`,
   the log key's signature over the whole package, so nothing can be edited, added, or dropped after
   sealing. A caller that adds actions afterwards reseals.
+- Every signed head the package carries (its STH, each action and grant bundle's head, the run
+  certificate's heads, and the consistency proof's earlier head) follows the timestamp rule below.
+- The package must prove something: one action, grant, run certificate, or consistency proof at
+  least. A package with none of them does not verify, so an empty report never reads as a clean
+  audit.
 
 One check needs inputs the package deliberately does not carry: grant issuer signatures (they need
 the issuers' keys, checked with `VerifyDelegationChain` against your own PKI). For the auditor who
 does not write Go, `bide-audit verify-evidence` verifies the same file and prints a plain-English
 PASS/FAIL.
+
+### Timestamps
+
+A signed tree head's `Timestamp` is when it was signed, in Unix nanoseconds
+(`time.Now().UnixNano()`, as `AuditedStore` stamps it). Verifiers hold every signed head they are
+shown to one rule (`audit.CheckTimestamp`, `audit.CheckTimestampOrder`):
+
+- the timestamp is positive;
+- it is not later than the verifier's clock plus an allowed skew (`audit.DefaultClockSkew`, five
+  minutes; `WithClockSkew` and `bide-audit -max-clock-skew` change it, and `WithVerifyTime` checks
+  as of another moment);
+- where one head extends another it is not earlier: a consistency proof's earlier head is not
+  later than the head it proves grown, and a run certificate's used-policy head is not earlier than
+  the journal head it was projected from.
+
+`EvidencePackage.Verify` applies the rule to every head a package carries, and bide-audit applies it
+to every signed head in every file it reads. The rule does not limit how old a head may be (an audit
+reads old heads), and it does not order heads of different runs or anchor-log entries, which are
+independent. `ProofBundle.Verify`, `SignedTreeHead.Verify`, and `VerifyRun` check signatures and
+bindings only; a caller that uses them directly applies `CheckTimestamp` too. A grant's `NotAfter` is
+a separate expiry in Unix seconds, checked by `Grant.Expired` and `VerifyCurrentGrant` against the
+caller's clock; an evidence package carries no per-action time to compare it with, so
+`EvidencePackage.Verify` does not check it.
 
 ### Approval evidence: k approvers signed off before the action
 
@@ -342,7 +370,9 @@ and every verify verb needs only a bundle and an out-of-band public key. Build i
 Conventions shared across verbs:
 
 - `-pubkey` accepts either a hex string directly or a path to a file whose trimmed contents are
-  hex, and must decode to a 32-byte ed25519 public key (anything else exits 1 with a message). The
+  hex, and must decode to a 32-byte ed25519 public key (anything else exits 1 with a message). A
+  value that is itself a key in hex (64 hex digits) is always taken as the key and never opened as
+  a file, so a file of that name in the working directory cannot substitute another key. The
   key must come from the anchor operator out-of-band, never from the bundle: that is what makes it a
   proof you verify rather than a log you trust.
 - Every artifact must carry the format this version reads (see [Artifact formats](#artifact-formats));
@@ -359,6 +389,12 @@ Conventions shared across verbs:
 - A usage error is any command line the CLI does not read in full: a missing required flag, an
   unknown flag, a help request (`-h`), or an argument that is not a flag (flag parsing stops
   there, so a flag after it would go unread). None of them is a verdict, so none exits 0.
+- Every verb takes `-max-input-bytes <n>`: an input file (bundle, journal, key file, digest list,
+  policy, evidence package) larger than n bytes is an error (exit 1); no input is read further than one byte past the cap. The
+  default is 256 MiB; a value below 1 is a usage error.
+- Every verb takes `-max-clock-skew <duration>` (default `5m`): every signed tree head in every file
+  it reads must follow the timestamp rule (see Timestamps above) against this machine's clock, or
+  the verb fails (exit 1). A negative skew is a usage error.
 
 | Verb | Required flags | Optional flags | Proves / checks |
 |---|---|---|---|
@@ -367,9 +403,9 @@ Conventions shared across verbs:
 | `prove-absent` | `-journal`, `-sth`, `-key` (`tool:<id>` or `policy:<digest>`) | `-out` | Build an `AbsenceBundle` proving a tool call / governed policy never appears, against a signed key-set head **of the matching kind** (`audit.SignAbsenceRoot` with `ToolUseKeys` or `PolicyUsedKeys`) whose source journal is the exported journal. |
 | `verify-absent` | `-bundle`, `-pubkey` | | An `AbsenceBundle` is authentic: its head is a signed key-set head of the kind the key belongs to (`tooluse:` keys need a tool-use head, `policy_used:` keys a used-policy head) for the bundle's run, and the key is absent from it. Reports the journal size the absence covers. |
 | `verify-governance` | `-policy` | `-digest <hex>`, `-checker <astchecker>` | Recompute the policy digest from the published bytes (independent of gsm); with `-digest`, assert it matches; with `-checker`, run the external verified oracle to certify the policy converges. |
-| `verify-governed-action` | `-action`, `-policy-bundle`, `-pubkey` | `-checker` | End to end: both bundles authentic and in the same signed tree, the action's embedded policy digest links to the anchored policy leaf, the leaf's bytes hash to that digest, and (with `-checker`) the policy converges. |
-| `verify-convergence` | `-cert-bundle`, `-policy-bundle`, `-pubkey` | `-checker` | An anchored `ConfluenceCertificate` links to the policy leaf; with `-checker`, the oracle's convergence verdict must AGREE with the certificate, so overstated convergence is caught; the compensation-free (CRDT) classification is cross-checked only when the oracle emits a `compensation_free=` line, and otherwise stays producer-reported (the CLI prints a note saying so). |
-| `verify-quorum` | `-name`, `-tally`, `-vote` (repeatable), `-pubkey`, `-k` | `-commit` | A governed k-of-n quorum: the tally and every vote bundle authentic, in the same signed tree and run, and recorded by the quorum named `-name`; the disclosed votes exactly the votes the tally records; the recorded tally recomputes from them (a forged tally is caught); and `votes_for >= k`; with `-commit`, a governed commit is anchored in the same tree. |
+| `verify-governed-action` | `-action`, `-policy-bundle`, `-pubkey` | `-checker` | End to end: both bundles authentic and in the same signed tree, the action bundle a tool call's result and the policy bundle the policy leaf (`audit:policy:<digest>`, a `StepValue`) for the digest it carries, the action's embedded policy digest links to the anchored policy leaf, the leaf's bytes hash to that digest, and (with `-checker`) the policy converges. |
+| `verify-convergence` | `-cert-bundle`, `-policy-bundle`, `-pubkey` | `-checker` | An anchored `ConfluenceCertificate` links to the policy leaf (each bundle must be the leaf it is read as: `audit:convergence:<digest>` and `audit:policy:<digest>`, both `StepValue`); with `-checker`, the oracle's convergence verdict must AGREE with the certificate, so overstated convergence is caught; the compensation-free (CRDT) classification is cross-checked only when the oracle emits a `compensation_free=` line, and otherwise stays producer-reported (the CLI prints a note saying so). |
+| `verify-quorum` | `-name`, `-tally`, `-vote` (repeatable), `-pubkey`, `-k` | `-commit` | A governed k-of-n quorum: the tally and every vote bundle authentic, in the same signed tree and run, and recorded by the quorum named `-name`; the disclosed votes exactly the votes the tally records; the recorded tally recomputes from them (a forged tally is caught); and `votes_for >= k`; with `-commit`, a governed commit (a tool call's result) is anchored in the same tree. |
 | `verify-run` | `-cert`, `-pubkey`, and at least one of `-approved <digest>` (repeatable) / `-approved-file <file>` (both together form one allowlist) | `-checker <astchecker>` | A proof-carrying run certificate: the used-policy set is bound by a signed used-policy head to this run and to the certificate's journal tree, and is a subset of the approved allowlist (only-approved-policies), and every used policy has an anchored, digest-linked convergence certificate in the run's signed tree (policies-convergence-certified); with `-checker`, the oracle's convergence verdict on each used policy must AGREE with its certificate. |
 | `verify-approvals` | `-evidence`, `-pubkey`, `-call`, `-need`, `-approvers`, `-approver-keys` | | An m-of-n approval gate from an `EvidencePackage`: the request, every decision the gate read, its recorded tally, and the call's result all verify in one signed tree and in order; recounting the decisions with the approvers' keys (a JSON object of id to ed25519 public key hex) against the exact call reproduces the recorded tally; the gate enforced the expected policy; and at least k approved. Catches an omitted decision, which `verify-evidence` alone cannot. |
 | `verify-evidence` | `-evidence`, `-pubkey` | `-approved <digest>` (repeatable), `-approved-file <file>` (together, one allowlist) | A run-level `EvidencePackage`: the format, seal, and key are right, the signed tree head is an authentic journal head of the package's run, every packaged action proof verifies against it with the kind and label its record says, the grant chain is the anchored grants, the consistency proof holds between its two signed heads, and any run certificate is for this run and passes against the given allowlist (required when the package carries one). Prints one line per item and an overall PASS/FAIL. |

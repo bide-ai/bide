@@ -91,7 +91,11 @@ func (c *builderCore) conform(ctx context.Context, store agent.Durable, runID st
 				diffs = append(diffs, r.Name+" (unreadable topology digest)")
 				continue
 			}
-			if got != want {
+			switch {
+			case got == want:
+			case got == c.digestV1():
+				diffs = append(diffs, r.Name+" (recorded under topology digest v1, which cannot show the run followed this flow)")
+			default:
 				diffs = append(diffs, r.Name+" (ran against a different topology)")
 			}
 

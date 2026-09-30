@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"time"
 )
 
 // Compensator is an optional interface a Tool implements to declare how to UNDO its side
@@ -254,12 +253,8 @@ func (a *Agent) rollbackRun(ctx context.Context, runID, root string) (compensate
 			switch {
 			case started[tu.ID]:
 				// Started, no recorded outcome: it may have taken effect. Stop for a human.
-				var at time.Time
-				if ms := attemptedAt[tu.ID]; ms != 0 {
-					at = time.UnixMilli(ms)
-				}
 				uncompensated = append(uncompensated, tu.Name)
-				return compensated, uncompensated, &ResumeHalt{RunID: runID, RootRunID: root, ToolUseID: tu.ID, ToolName: tu.Name, AttemptedAt: at}
+				return compensated, uncompensated, &ResumeHalt{RunID: runID, RootRunID: root, ToolUseID: tu.ID, ToolName: tu.Name, AttemptedAt: markerTime(attemptedAt[tu.ID])}
 			case !safety.RetrySafe():
 				continue // no attempt marker: it never started
 			case !canUndo:

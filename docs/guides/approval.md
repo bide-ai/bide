@@ -148,8 +148,14 @@ An m-of-n tool inside a `SubAgent` pauses the whole tree: the parent's `Run` ret
 
 The gate fails with `ErrConfig` (rather than counting zero decisions) when a tool has an `Approval`
 policy but no `WithApproverVerifiers` resolver is set, or when the policy is malformed: no approvers,
-an empty or duplicate approver id, or `Need` outside `1..len(Approvers)` (see
-`ApprovalPolicy.Validate`).
+an empty or duplicate approver id, an id that is not valid UTF-8, or `Need` outside
+`1..len(Approvers)` (see `ApprovalPolicy.Validate`).
+
+Approver ids are compared as exact bytes, but a policy may not list two ids that differ only by
+case or Unicode normalization (`alice` and `Alice`, an NFC and an NFD `café`, a fullwidth and an
+ASCII spelling). They are compared under NFKC case folding, and such a policy is refused as
+ambiguous with `ErrConfig` naming both ids: a reader of the policy, or a key lookup that folds
+case, would take them for one approver, who could then fill two seats.
 
 ## Proving the gate held
 
@@ -158,7 +164,7 @@ journal order: the model turn that requested the call (its tool and arguments), 
 record the gate read, valid or not, the gate's recorded tally, and the call's result.
 
 ```go
-th, _ := audit.NewTreeHead(ctx, store, runID, time.Now().Unix())
+th, _ := audit.NewTreeHead(ctx, store, runID, time.Now().UnixNano())
 sth := audit.SignTreeHead(th, logPriv)
 actions, _ := audit.ApprovalEvidence(ctx, store, runID, toolUseID, sth)
 ```

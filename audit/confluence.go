@@ -28,6 +28,11 @@ type ConvergenceContent struct {
 // run whose policy changes over its lifetime records each epoch's certificate as its own leaf.
 func convergenceLeafName(digest string) string { return "audit:convergence:" + digest }
 
+// ConvergenceLeafName is the journal name of the convergence leaf RecordConvergence writes for
+// digest. A verifier handed a bundle as a convergence leaf checks that its record is a StepValue
+// of this name.
+func ConvergenceLeafName(digest string) string { return convergenceLeafName(digest) }
+
 // RecordConvergence commits the serialized convergence certificate as a dedicated journal leaf
 // (idempotent per (runID, digest)), so it is covered by the same STH and inclusion proofs as the
 // policy leaf with the same digest and the actions taken under it. Pass the certificate bytes from

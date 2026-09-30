@@ -72,7 +72,13 @@ type QuorumResult struct {
 // VotesFor >= k with no tie for the most votes: a tie is never agreement. A voter that errors is not recorded, so on a later resume it re-runs while the
 // voters that already voted are memoized; the joined error is returned and the tally reflects
 // only the votes that succeeded (Total is the count of successful votes). k <= 0 is treated as
-// no gate (Agreed is true whenever at least one voter voted and the top count is not tied).
+// no gate (Agreed is true whenever at least one voter voted and the top count is not tied). A k
+// above the number of voters could never be met and is an agent.ErrConfig error.
+//
+// Records read back: each recorded vote must name the voter whose step holds it, and a recorded
+// tally must equal the tally of the recorded votes. A journal that breaks either (a corrupted or
+// edited record) is an agent.ErrProtocol error with no tally, so a vote is never counted as
+// another voter's and a tally the votes do not give is never returned.
 //
 // The boundary, stated plainly: this returns a tally. The tally makes the k-of-n gate provable
 // once a caller wires VotesFor into an invariant; the agreement itself is statistical and never a
@@ -92,6 +98,9 @@ func Quorum(ctx context.Context, store agent.Durable, runID, name string, k int,
 		}
 		seen[v.Name] = true
 		cfg.Voters[i] = v.Name
+	}
+	if k > len(voters) {
+		return QuorumResult{}, fmt.Errorf("govern: quorum %q needs k=%d votes but has %d voters, so it could never agree: %w", name, k, len(voters), agent.ErrConfig)
 	}
 
 	// Record this quorum's k and voters before any vote, and hold every later call under the same
@@ -125,6 +134,9 @@ func Quorum(ctx context.Context, store agent.Durable, runID, name string, k int,
 
 	// Fan out durably: each vote is a Step (recorded once, replayable, independently provable).
 	votes, err := agent.Parallel(ctx, store, runID, 0, tasks...)
+	if verr := checkVoters(name, votes, cfg.Voters, err == nil); verr != nil {
+		return QuorumResult{}, verr
+	}
 	if err != nil {
 		// Some voter failed. Tally only the votes that were recorded (Voter set), so the caller
 		// sees the partial tally alongside the error; the failed voters re-run on resume.
@@ -135,13 +147,38 @@ func Quorum(ctx context.Context, store agent.Durable, runID, name string, k int,
 
 	// Record the tally as its own durable step so the tally itself is provable, not just the
 	// individual votes, and so a resumed run returns the same tally without recomputing it.
+	want := tally(votes, k)
 	result, err := agent.Step(ctx, store, runID, QuorumTallyStep(name), func(context.Context) (QuorumResult, error) {
-		return tally(votes, k), nil
+		return want, nil
 	}, agent.StepSafety(agent.Safety{ReadOnly: true}))
 	if err != nil {
 		return QuorumResult{}, err
 	}
+	// The tally is derived from the votes: a recorded one that the recorded votes do not give (a
+	// corrupted or edited journal) is not this quorum's result.
+	if !sameTally(result, want) {
+		return QuorumResult{}, fmt.Errorf("govern: quorum %q in run %q has a recorded tally %+v that its votes do not give (%+v): %w", name, runID, result, want, agent.ErrProtocol)
+	}
 	return result, nil
+}
+
+// checkVoters refuses votes read back from the journal that do not belong to the voter whose step
+// holds them: votes[i] is voters[i]'s vote. A record naming another voter (a corrupted or edited
+// journal) would be tallied as that voter's, so one voter would count twice. With all set, every
+// voter must have voted; otherwise a voter that failed left a zero Vote, which is skipped.
+func checkVoters(name string, votes []Vote, voters []string, all bool) error {
+	for i, v := range votes {
+		if v.Voter == voters[i] || (!all && v == Vote{}) {
+			continue
+		}
+		return fmt.Errorf("govern: quorum %q has a vote recorded for voter %q that names voter %q: %w", name, voters[i], v.Voter, agent.ErrProtocol)
+	}
+	return nil
+}
+
+// sameTally reports whether two tallies are equal, votes included.
+func sameTally(a, b QuorumResult) bool {
+	return a.Decision == b.Decision && a.VotesFor == b.VotesFor && a.Total == b.Total && a.Agreed == b.Agreed && slices.Equal(a.Votes, b.Votes)
 }
 
 // quorumConfig is what a quorum records before it votes: its threshold and its voters, in order.

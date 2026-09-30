@@ -105,6 +105,9 @@ func (fg *FederatedGovernor) ApplyOnce(ctx context.Context, id, registry, event 
 	if err != nil {
 		return FedApplied{State: fg.state, Position: -1}, fmt.Errorf("govern: append log: %w (%w)", err, agent.ErrStorage)
 	}
+	if err := checkPosition(fg.entity, pos); err != nil {
+		return FedApplied{State: fg.state, Position: -1}, err
+	}
 	if pos < fg.next {
 		// The log already held this id, and this governor has folded past it: rebuild the state
 		// as of its position rather than report the current one.

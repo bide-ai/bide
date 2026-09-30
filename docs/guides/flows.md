@@ -68,9 +68,9 @@ production). `runID` is the durable identity: re-running the same `runID` resume
     typed input `I`, calls the bound model, and decodes the structured response into `O` (so `O` must
     be JSON-shaped and the prompt should ask for matching JSON). Build errors if a `Model` node has no
     bound model, naming it.
-  - The string `name` is the node's **durable journal key**: it must be unique and contain no `:`
-    (Build enforces both; Run derives its other keys, such as `attempt:<name>`, with `:`), and stable
-    across code edits, because resume finds a step by this name. It is not just a label.
+  - The string `name` is the node's **durable journal key**: it must be non-empty, unique, and contain
+    no `:` (Build enforces all three; Run derives its other keys, such as `attempt:<name>`, with `:`),
+    and stable across code edits, because resume finds a step by this name. It is not just a label.
 - **Wiring** takes handles, so a miswired connection does not compile:
   - `Edge[M](from, to)` connects a producer to a consumer, unifying the connecting type `M`.
   - `Switch[M](over, When(pred, to)..., Else(to))` routes on a node's output to exactly one arm.
@@ -101,8 +101,8 @@ Every node lowers to a memoized `Do` step under a two-phase attempt/result guard
   default (no classification) never double-fires, but completing after a mid-node crash then requires
   resolving the halt out of band (record the halted node's result, then continue), which is only safe
   when that node has no side effect. A node may instead declare a `Safety` (read-only, idempotent, or
-  retryable, via `ReadOnly()`/`Idempotent()`/`Retryable()` in Go, or `safety` in a declarative config) so
-  it re-runs on resume instead of halting.
+  retryable, via `ReadOnly()`/`Idempotent()`/`Retryable()` in Go) so it re-runs on resume instead of
+  halting. A declarative config's `safety` may only lower that (see "Node and join safety").
 - **A run keeps its flow.** `Run` records the flow's digest first and, on resume, refuses (`ErrConfig`)
   to continue a run that started under a different digest: its journal only means what it meant
   under that flow.
@@ -121,10 +121,23 @@ auditor who never trusts your process, your database, or your logs. The property
 Two pieces make it work:
 
 - **A topology digest.** `flow.Digest()` returns a deterministic SHA-256 (hex) of the *frozen* spec:
-  the flow name, each node's name + kind + input type + output type, every edge, and each `Switch`
-  with its ordered arms. It is computed by walking the insertion-ordered spec (never a map), so it is
-  stable across builds and processes and changes whenever the topology changes (a renamed or retyped
-  node, an added or reordered edge, a changed arm). It commits to topology, not to node bodies.
+  the flow name, each node's name, block, kind, input type and output type (types with their full
+  package path, so `a/model.Req` and `b/model.Req` differ), every edge, and each `Switch` with its
+  ordered arms and their predicate names. It is computed by walking the insertion-ordered spec (never
+  a map), so it is stable across builds and processes and changes whenever the flow changes (a
+  renamed or retyped node, a node pointed at another block, an added or reordered edge, a changed
+  arm or predicate). It commits to topology and to the names of the blocks and predicates it wires,
+  not to the Go inside them.
+  - A config node's block is the registered block it names (a join's is its merge block), and an
+    arm's predicate is the registered predicate it names. In Go, a node's block is its own name unless
+    `plan.BlockName("...")` gives another, and an arm's predicate has a name only when
+    `When(...).Named("...")` (or `LoopBack(...).Named`) gives one. A Go flow that should share a
+    config flow's digest gives the config's names.
+  - This is digest v2 (`bide.plan.topology.v2`). `Run` refuses to resume a run whose `flow:digest`
+    was recorded under v1, with an `ErrConfig` naming v1, because v1 does not commit to block or
+    predicate names and so cannot show the run started under this flow; `Conform` reports such a run
+    as a divergence. `flow.DigestV1()` still computes the v1 digest, to check a proof of a record an
+    earlier version journaled.
 - **A journaled record the audit layer covers.** The first thing `Run` records is the digest, as a
   durable step under the reserved name `flow:digest` (memoized on resume). Because it lives in the
   journal, the [`audit`](../../audit) package's Merkle tree and signed tree head commit to it like any
@@ -278,18 +291,30 @@ type.
 #### Node and join safety
 
 A node (or a join) may carry a `safety` classifying how `Run` treats it on the ambiguous-crash window
-(an attempt recorded, its result lost to a crash): `"readonly"`, `"idempotent"`, or `"retryable"`. A
-node with a safety re-runs its body on resume rather than halting, because a read-only or idempotent
-body is safe to repeat. The default (no `safety`) is the conservative halt. The config `safety`
-overrides the registered block's default, so the classification is authorable as data:
+(an attempt recorded, its result lost to a crash): `"readonly"`, `"idempotent"` (or its alias
+`"retryable"`), or `"side_effect"`. A read-only or idempotent node re-runs its body on resume rather
+than halting, because its body is safe to repeat; a side effect halts.
+
+**A config may only lower retry safety.** Whether a step is safe to run twice is a property of its Go
+code, so only Go declares it: `RegisterStep`, `RegisterTool` (from the tool's own `Safety`),
+`RegisterModel`, `RegisterJoin2` and `RegisterJoin3` take `ReadOnly()`/`Idempotent()` options. The
+levels, highest first, are read-only, idempotent (`Idempotent` or an `IdempotencyKey`), and side
+effect. A config `safety` may keep a block's level or name a lower one (mark a read-only block
+`idempotent`, or any block `side_effect` so a crash with no recorded outcome halts for confirmation),
+and a value above what Go declares (`readonly` or `idempotent` on a side effect, `readonly` on an
+idempotent block) is a load error (`ErrConfig`) naming the node. `side_effect` also drops an
+`IdempotencyKey`, since the key alone makes a node retry-safe. Any other change keeps an approval gate
+or an `IdempotencyKey` the wrapped agent tool declares (so a gated tool is still refused, see
+[Node approval](#node-approval)). The Go options `ReadOnly()`, `Idempotent()` and `Retryable()` on a
+`Builder` node are Go code and may raise a node's level; they too keep an approval gate.
 
 ```yaml
 nodes:
-  - {name: read, block: read, safety: readonly}   # re-run on resume, do not halt
+  - {name: read, block: read, safety: side_effect}   # halt on resume, even though Go declares it read-only
 ```
 
-The join wiring element takes the same optional `safety` (shown in the diamond above), since a merge
-block carries no safety of its own.
+The join wiring element takes the same optional `safety` (shown in the diamond above), which may
+lower what its merge block's `RegisterJoin2`/`RegisterJoin3` options declare.
 
 <a id="node-approval"></a>
 #### Node approval
@@ -315,7 +340,10 @@ unapproved. Until the runtime enforces it, put the gate on an agent tool (see [a
 
 Moving topology from Go to data trades compile-time type checking for load-time validation: a
 miswired config does not fail at `go build`, it fails at `Load`, with a worded error that names the
-offending nodes and types. `Load` runs, by `reflect.Type` identity:
+offending nodes and types. The JSON is read as written: a name that is not a config field (a
+misspelling such as `aproval`, or a case variant such as `Safety`), a name given twice, and data after
+the value are parse errors, so a typo cannot silently drop a gate or an entry. `Load` then runs, by
+`reflect.Type` identity:
 
 - **Predicate typing:** every switch arm's registered predicate `M` equals the switched node's output
   type. This is a strict improvement over the Go builder, which only checks a predicate at its
@@ -326,6 +354,8 @@ offending nodes and types. `Load` runs, by `reflect.Type` identity:
   `in`/`out` documentation matches `In`/`Out`.
 - **Join typing:** a `join`'s `merge` block must be registered, and its arity and input types must
   match the join's declared `inputs`; an unknown or mis-arity merge is a load error naming the join.
+  A join is entered only by its inputs: an `edge` into it from any other node, a repeated input
+  edge, or a `switch` arm routing to it is a load error, since the merge would drop that value.
 - **Structural checks `Build` does not give:** a node cannot be both switched-over and have an
   outgoing edge, and a `wiring[]` element must set exactly one of `edge`/`switch`/`join`.
 
@@ -343,7 +373,8 @@ topology, a signed tree head over the run proves offline that the run followed *
 same way cryptographic conformance proves it followed the diagram. This is the headline: a
 config-loaded flow is **cryptographically conformable to its config**. `examples/plan` demonstrates it
 by asserting the config-loaded flow's `Digest()` **equals** the code-built flow's `Digest()`: the
-config and the Go describe the same topology. The same holds for a config-built fan-in or bounded
+config and the Go describe the same topology (the Go names its predicate with `.Named("rush")` and
+the join's merge block with `plan.BlockName("mergeBlock")`, the names the config uses). The same holds for a config-built fan-in or bounded
 loop: `examples/plan` loads a `join` diamond and a `loopMax` loop, runs and conforms each, and asserts
 each config-loaded flow's `Digest()` equals its code-built counterpart, so a config-built join or loop
 is cryptographically conformable to its config just like the linear case.

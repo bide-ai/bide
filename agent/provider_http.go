@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -18,12 +19,20 @@ import (
 // being copied per provider.
 
 // ParseRetryAfter parses an HTTP Retry-After header value. It accepts either an integer number of
-// seconds or an HTTP-date, and returns 0 if the value is absent, unparseable, or already in the past.
+// seconds or an HTTP-date, and returns 0 if the value is absent, unparseable, negative, or already
+// in the past. A number of seconds too large for a time.Duration saturates at the longest one
+// rather than overflowing.
 func ParseRetryAfter(s string) time.Duration {
 	if s == "" {
 		return 0
 	}
-	if secs, err := strconv.Atoi(s); err == nil {
+	if secs, err := strconv.ParseInt(s, 10, 64); err == nil || errors.Is(err, strconv.ErrRange) {
+		switch {
+		case secs <= 0:
+			return 0
+		case secs > math.MaxInt64/int64(time.Second):
+			return time.Duration(math.MaxInt64)
+		}
 		return time.Duration(secs) * time.Second
 	}
 	if t, err := http.ParseTime(s); err == nil {
@@ -46,11 +55,21 @@ const (
 )
 
 // truncate cuts s to maxErrorBody bytes, marking the cut.
-func truncate(s string) string {
-	if len(s) <= maxErrorBody {
+func truncate(s string) string { return cutTo(s, maxErrorBody) }
+
+// maxNameEcho bounds a model-chosen name (a tool name, a finish reason) quoted in an error. A
+// working model sends a few bytes; a longer one is cut so it cannot fill the error.
+const maxNameEcho = 256
+
+// cutName cuts a model-chosen name to maxNameEcho bytes, marking the cut.
+func cutName(s string) string { return cutTo(s, maxNameEcho) }
+
+// cutTo cuts s to n bytes, marking the cut.
+func cutTo(s string, n int) string {
+	if len(s) <= n {
 		return s
 	}
-	return s[:maxErrorBody] + truncatedNote
+	return s[:n] + truncatedNote
 }
 
 // ClassifyHTTPError turns a non-2xx model response into the appropriate SDK error. It reads at
@@ -215,18 +234,73 @@ const MaxSSELine = 32 << 20
 // to MaxSSELine. A single SSE line can carry a large tool-call arguments blob or inline image, and the
 // 64KB default would fail the stream on it (the openai-go #368 lesson). The buffer grows only as a
 // line needs it. Every adapter reads its event stream through this so the cap is fixed in exactly one
-// place; pass the scanner's Err to SSEReadError.
+// place; pass the scanner's Err to SSEReadError. Over a body from LimitResponse, a reply that
+// exceeds its cap ends the scan with that error before the cut-off last line is returned, so an
+// adapter never decodes a line the cap truncated.
 func NewSSEScanner(body io.Reader) *bufio.Scanner {
 	sc := bufio.NewScanner(body)
 	sc.Buffer(make([]byte, 0, 64*1024), MaxSSELine)
+	if lb, ok := body.(*limitedBody); ok {
+		sc.Split(lb.split)
+	}
 	return sc
 }
 
+// DefaultMaxResponseBytes is the most bytes of one streamed model reply an adapter reads unless it
+// is configured otherwise (each adapter's WithMaxResponseBytes). MaxSSELine caps one line; this
+// caps the whole reply, so a reply of many small lines cannot grow without limit either. A line is
+// part of the reply, so a cap below MaxSSELine also bounds every line.
+const DefaultMaxResponseBytes = 32 << 20
+
+// LimitResponse returns body limited to max bytes (DefaultMaxResponseBytes when max <= 0): once
+// the reply has more, a read returns the bytes up to the limit and an error wrapping
+// ErrResponseTooLarge, which SSEReadError passes on. Closing the result closes body. Every adapter
+// wraps its streamed reply with it, so the cap is enforced in one place.
+func LimitResponse(body io.ReadCloser, max int64) io.ReadCloser {
+	if max <= 0 {
+		max = DefaultMaxResponseBytes
+	}
+	return &limitedBody{body: body, max: max, left: max}
+}
+
+// limitedBody is LimitResponse's reader.
+type limitedBody struct {
+	body      io.ReadCloser
+	max, left int64
+	err       error // set once the reply has run past max
+}
+
+// split is bufio.ScanLines, except that once the reply has run past its cap it does not return
+// the partial last line the cap cut off: the lines read in full are returned, and then the scan ends
+// with the cap's error, which the reader reported.
+func (l *limitedBody) split(data []byte, atEOF bool) (int, []byte, error) {
+	return bufio.ScanLines(data, atEOF && l.err == nil)
+}
+
+func (l *limitedBody) Read(p []byte) (int, error) {
+	if int64(len(p)) > l.left+1 {
+		p = p[:l.left+1] // one byte past the limit is enough to tell a longer reply
+	}
+	n, err := l.body.Read(p)
+	if int64(n) > l.left {
+		n, l.left = int(l.left), 0
+		l.err = fmt.Errorf("the reply exceeded %d bytes: %w", l.max, ErrResponseTooLarge)
+		return n, l.err
+	}
+	l.left -= int64(n)
+	return n, err
+}
+
+func (l *limitedBody) Close() error { return l.body.Close() }
+
 // SSEReadError wraps a failed read of a model's SSE stream (the Err of a NewSSEScanner scanner) as
-// an ErrModel. A line over MaxSSELine is ErrResponseTooLarge, which the same request would hit
-// again, so middleware.Retryable does not retry it; any other read failure (a connection cut
-// partway through) is retried.
+// an ErrModel. A line over MaxSSELine, or a reply over its LimitResponse cap, is
+// ErrResponseTooLarge, which the same request would hit again, so middleware.Retryable does not
+// retry it; any other read failure (a connection cut partway through) is retried.
 func SSEReadError(provider string, err error) error {
+	if errors.Is(err, ErrResponseTooLarge) {
+		return fmt.Errorf("%s: %w", provider, err)
+	}
 	if errors.Is(err, bufio.ErrTooLong) {
 		return fmt.Errorf("%s: %w: a line exceeded %d bytes (%w)", provider, ErrResponseTooLarge, MaxSSELine, err)
 	}
