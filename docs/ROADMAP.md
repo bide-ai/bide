@@ -14,7 +14,7 @@ This page describes intent, not promises of dates. Shipped work is recorded in t
 
 ### A stable API
 
-The pre-1.0 API redesign ([design proposal](design/api-v1.md)) settles the shape bide will keep at 1.0:
+The pre-1.0 API redesign ([design proposal](https://github.com/bide-ai/bide/pull/64)) settles the shape bide will keep at 1.0:
 
 - A storage port (`Store`) separated from the journal semantics bide owns (`Journal`), with the store contract stated as numbered requirements and a conformance suite every store must pass.
 - One run entry point with per-run options that survive recovery, a sealed pause contract, a tool specification type, and versioned journal and proof formats.
@@ -38,7 +38,7 @@ Models live in the repository and run in CI. A counterexample the checker finds 
 
 ### The bide protocol
 
-A versioned wire protocol ([design proposal](design/protocol.md)) that lets code in other languages use bide without reimplementing its guarantees. The Go engine stays the only writer of the journal, claims and proofs; other languages run tools and answer pauses. It supports long-lived workers and serverless functions, and comes with a conformance suite that every SDK must pass.
+A versioned wire protocol ([design proposal](https://github.com/bide-ai/bide/pull/95)) that lets code in other languages use bide without reimplementing its guarantees. The Go engine stays the only writer of the journal, claims and proofs; other languages run tools and answer pauses. It supports long-lived workers and serverless functions, and comes with a conformance suite that every SDK must pass.
 
 ### Python and TypeScript SDKs
 
