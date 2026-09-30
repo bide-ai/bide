@@ -709,9 +709,13 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 		for _, c := range toRun {
 			g.Go(func() (err error) {
 				defer func() {
-					if err != nil && isPause(err) {
+					// A call that lost its answer (ErrToolOutcomeUnknown, nothing recorded) is held
+					// like a halt, which is what its resume meets: it does not cut off siblings in
+					// flight, which would leave their outcomes unknown too.
+					lost := err != nil && errors.Is(err, ErrToolOutcomeUnknown)
+					if err != nil && (isPause(err) || lost) {
 						var halt *ResumeHalt
-						isHalt := errors.As(err, &halt)
+						isHalt := errors.As(err, &halt) || lost
 						pauseMu.Lock()
 						// Report a halt ahead of any other pause, then the first call's. A halt is a
 						// side effect whose outcome nobody knows, and the run stays stuck on it
