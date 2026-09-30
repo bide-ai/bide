@@ -5,11 +5,11 @@ a crash, and the run pauses durably until it lands. There are two forms:
 
 - **1-of-1:** one human approves or denies (`Safety{RequiresApproval: true}` + `agent.Approve`).
 - **m-of-n:** k distinct, named approvers out of a bounded set of n must sign off
-  (`Safety{Approval: &agent.ApprovalPolicy{...}}` + `agent.ApproveAs`). Each decision is signed over
+  (`Safety{Approval: &agent.ApprovalPolicy{...}}` + `agent.SubmitDecision`). Each decision is signed over
   the exact call (tool and arguments), and the fact that k approved it before it ran is provable
   offline, from evidence that cannot leave a decision out unnoticed.
 
-For a typed value rather than a yes/no, use `Interrupt`/`Resume` instead (see the
+For a typed value rather than a yes/no, use `Interrupt`/`AnswerInterrupt` instead (see the
 [README](../../README.md#human-in-the-loop)).
 
 ## 1-of-1
@@ -19,11 +19,10 @@ For a typed value rather than a yes/no, use `Interrupt`/`Resume` instead (see th
 refund := agent.Func("refund", "refund the order", agent.Safety{RequiresApproval: true}, doRefund)
 
 _, err := a.Run(ctx, runID, input)
-var pend *agent.PendingApproval
-if errors.As(err, &pend) {
+if pend, ok := errors.AsType[*agent.ApprovalPending](err); ok {
 	// ... get a human decision ...
-	agent.Approve(ctx, store, runID, pend.ToolUseID, true)
-	out, _ := a.Run(ctx, runID, input) // resumes past the pause
+	agent.Approve(ctx, store, pend.RunID, pend.ToolUseID, true)
+	out, _ := a.Run(ctx, pend.RootRunID, input) // resumes past the pause
 }
 ```
 
@@ -64,24 +63,24 @@ the decision:
 
 <!-- docsnip: setup ctx context.Context; store agent.Durable; err error; financeSigner audit.Signer -->
 ```go
-var pend *agent.PendingApproval
-if errors.As(err, &pend) {
+if pend, ok := errors.AsType[*agent.ApprovalPending](err); ok {
 	// Show the approver pend.ToolName and pend.Args: that is exactly what they sign.
 	msg := agent.ApprovalDecisionBytes(pend.Subject(), "finance", true)
 	sig, _ := financeSigner.Sign(msg) // any audit.Signer: Ed25519, ML-DSA, or hybrid
-	agent.ApproveAs(ctx, store, pend.RunID, pend.ToolUseID, "finance", true, sig)
+	agent.SubmitDecision(ctx, store, agent.Decision{RunID: pend.RunID, ToolUseID: pend.ToolUseID,
+		ApproverID: "finance", Approved: true, Signature: sig})
 }
 ```
 
-Then re-run with the same `runID`. The gate evaluates the recorded decisions:
+Then re-run `pend.RootRunID`. The gate evaluates the recorded decisions:
 
 | Outcome | When | What happens |
 |---|---|---|
 | **Proceed** | approvals >= `Need` | the tool runs |
 | **Deny** | fewer approvers remain who have not validly denied than `Need` | the tool is skipped and the model gets the same `tool call denied by human` result as a 1-of-1 denial |
-| **Pause** | otherwise | `Run` returns `*PendingApproval` with `Quorum` set to the running tally |
+| **Pause** | otherwise | `Run` returns `*ApprovalPending` with `Quorum` set to the running tally |
 
-<!-- docsnip: setup err error; pend *agent.PendingApproval -->
+<!-- docsnip: setup err error; pend *agent.ApprovalPending -->
 ```go
 if errors.As(err, &pend) && pend.Quorum != nil {
 	q := pend.Quorum // Need, Approved, ApprovedBy, Denied, DeniedBy, Pending (who has not validly decided)
@@ -118,7 +117,7 @@ resolver returns their key, and the signature verifies for this call. So:
   same rule as 1-of-1. Resubmitting the identical decision is a no-op.
 - **Only valid denials can deny.** Invalid records never count toward "k is unreachable", so they
   cannot force a denial either.
-- An `ApproveAs` decision never satisfies a 1-of-1 gate, and `Approve` never counts toward an m-of-n
+- A `SubmitDecision` decision never satisfies a 1-of-1 gate, and `Approve` never counts toward an m-of-n
   one.
 
 This rule is `agent.TallyApprovals`, a pure function the gate calls at run time and
@@ -126,7 +125,7 @@ This rule is `agent.TallyApprovals`, a pure function the gate calls at run time 
 
 ### Feedback at submission
 
-By default `ApproveAs` records the decision without checking it; the gate checks every record
+By default `SubmitDecision` records the decision without checking it; the gate checks every record
 itself. To tell an approver immediately that their decision will not count, pass
 `agent.WithDecisionCheck(resolver)`: it verifies the signature against the recorded call and returns
 `agent.ErrInvalidApproval` (no such call, unknown approver, or a signature that does not verify) or
@@ -146,7 +145,7 @@ more decisions.
 ### Inside a sub-agent
 
 An m-of-n tool inside a `SubAgent` pauses the whole tree: the parent's `Run` returns the sub-run's
-`*PendingApproval`. Two details follow from where the gate runs:
+`*ApprovalPending`. Two details follow from where the gate runs:
 
 - set `WithApproverVerifiers` on the **sub**-agent, since that is the agent whose tool is gated;
 - approvers sign `pend.Subject()` and record against `pend.RunID`, the sub-run's id
