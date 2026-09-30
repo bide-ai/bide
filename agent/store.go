@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -214,6 +215,23 @@ func Step[T any](ctx context.Context, d Durable, runID, name string, fn func(con
 		}
 	}
 	rec, err := d.Do(ctx, runID, name, func(ctx context.Context) (Record, error) {
+		if claimed && cfg.safety.RetrySafe() {
+			// A retry-safe step writes no marker, but an earlier attempt of it may have, if it
+			// was declared a side effect then. The marker is the attempt's recorded safety, so
+			// the step halts as it would have, rather than run a side effect a second time.
+			marker, err := d.Do(ctx, runID, "attempt:step:"+name, func(context.Context) (Record, error) {
+				return Record{}, errNoAttempt
+			})
+			switch {
+			case err == nil:
+				claimed = false
+				if marker.AttemptedAt != 0 {
+					attemptedAt = time.UnixMilli(marker.AttemptedAt)
+				}
+			case !errors.Is(err, errNoAttempt):
+				return Record{}, err
+			}
+		}
 		if !claimed {
 			// Attempted before, with no recorded result: the outcome is unknown.
 			return Record{}, &ResumeHalt{RunID: runID, RootRunID: runID, ToolUseID: name, AttemptedAt: attemptedAt}
@@ -240,6 +258,10 @@ func Step[T any](ctx context.Context, d Durable, runID, name string, fn func(con
 	err = json.Unmarshal(rec.Result, &out)
 	return out, err
 }
+
+// errNoAttempt is the error a probe for a step's attempt marker returns from Do when there is
+// none, so that Do records nothing.
+var errNoAttempt = errors.New("agent: no attempt marker")
 
 // StepOption configures Step.
 type StepOption func(*stepConfig)

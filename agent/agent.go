@@ -57,6 +57,7 @@ type Middleware func(ModelHandler) ModelHandler
 type Agent struct {
 	model        Model
 	tools        map[string]Tool
+	dupTool      string // a tool name New was given more than once; every run fails with ErrConfig
 	store        Durable
 	mw           []Middleware
 	toolMW       []ToolMiddleware
@@ -148,6 +149,7 @@ func (a *Agent) WithSystemPromptFunc(fn func(context.Context) string) *Agent {
 // New constructs an Agent. It panics if model or store is nil: both are load-bearing on every run
 // (the model drives turns, the store journals them for at-most-once resume), so a nil is a
 // construction-time programmer error, not a runtime condition to thread through every call.
+// Tool names must be unique: if two tools share a name, every run fails with ErrConfig.
 func New(model Model, store Durable, tools ...Tool) *Agent {
 	if model == nil {
 		panic("agent: New requires a non-nil Model")
@@ -156,10 +158,26 @@ func New(model Model, store Durable, tools ...Tool) *Agent {
 		panic("agent: New requires a non-nil Durable store")
 	}
 	m := make(map[string]Tool, len(tools))
+	dup := ""
 	for _, t := range tools {
+		if _, taken := m[t.Name()]; taken && dup == "" {
+			dup = t.Name()
+		}
 		m[t.Name()] = t
 	}
-	return &Agent{model: model, tools: m, store: store}
+	return &Agent{model: model, tools: m, dupTool: dup, store: store}
+}
+
+// checkTools reports a tool name New was given twice. The model calls a tool by name, so one of
+// the two could never be called, and which one a call reaches would depend on the order the host
+// listed them in: a host that adds tools from a runtime source such as an MCP server after its
+// own would send the model's call, arguments and all, to the server. It is an error rather than
+// a panic because a tool list read from a server at run time is data, not code.
+func (a *Agent) checkTools() error {
+	if a.dupTool != "" {
+		return fmt.Errorf("agent: two tools are named %q: %w", a.dupTool, ErrConfig)
+	}
+	return nil
 }
 
 // Use appends middleware wrapping the model call (first added = outermost). Returns the
@@ -324,6 +342,9 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 		// their memoized steps. Reject it rather than corrupt the log.
 		return Message{}, usageTotals{}, 0, fmt.Errorf("run: empty runID: %w", ErrConfig)
 	}
+	if err := a.checkTools(); err != nil {
+		return Message{}, usageTotals{}, 0, err
+	}
 	fire := func(e AgentEvent) {
 		if emit != nil {
 			emit(e)
@@ -399,10 +420,16 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 		return final, usageTotals{}, 0, nil
 	}
 
-	// Resume safety gate: a non-retriable tool that we ATTEMPTED (recorded a start marker
-	// for) but has no recorded result crashed mid-side-effect → unknown outcome → halt.
-	// A tool that was never attempted never ran its side effect, so it's safe to run now
-	// (not a halt); one awaiting approval re-surfaces as PendingApproval in the loop.
+	// Resume safety gate: a tool call that we ATTEMPTED (recorded a start marker for) but has
+	// no recorded result crashed mid-side-effect → unknown outcome → halt. A tool that was never
+	// attempted never ran its side effect, so it's safe to run now (not a halt); one awaiting
+	// approval re-surfaces as PendingApproval in the loop.
+	//
+	// The marker is the call's recorded safety: one is written only for a call that was not
+	// retry-safe when it fired, in this version and every earlier one. So the halt goes by the
+	// marker, not by the tool's safety now: a tool relabelled retry-safe since (a trusted MCP
+	// server's new annotations, a code change), or no longer registered at all, still halts,
+	// rather than run a side effect a second time.
 	for id := range attempted {
 		if done[id] {
 			continue
@@ -411,13 +438,11 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 		if !ok {
 			continue
 		}
-		if t, ok := a.tools[name]; ok && !t.Safety().retriableOnResume() {
-			var attemptedAt time.Time
-			if ms := attemptedAtMs[id]; ms != 0 {
-				attemptedAt = time.UnixMilli(ms)
-			}
-			return Message{}, usageTotals{}, 0, &ResumeHalt{RunID: runID, RootRunID: rootRunID(ctx, runID), ToolUseID: id, ToolName: name, AttemptedAt: attemptedAt}
+		var attemptedAt time.Time
+		if ms := attemptedAtMs[id]; ms != 0 {
+			attemptedAt = time.UnixMilli(ms)
 		}
+		return Message{}, usageTotals{}, 0, &ResumeHalt{RunID: runID, RootRunID: rootRunID(ctx, runID), ToolUseID: id, ToolName: name, AttemptedAt: attemptedAt}
 	}
 
 	var totalUsage usageTotals // accumulated token usage across live model turns
@@ -645,6 +670,13 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 						// one has its attempt marker and no result, so resume halts for
 						// confirmation instead of the journal claiming a failure a retry would
 						// repeat.
+						return Record{}, callErr
+					}
+					if callErr != nil && errors.Is(callErr, ErrToolOutcomeUnknown) && !c.t.Safety().retriableOnResume() {
+						// The tool cannot tell whether its side effect took place (its connection
+						// dropped after the request went out). Recording a failure would tell the
+						// model it did not, and invite it to ask again. Record nothing: the attempt
+						// marker stays without a result, so a resume halts for confirmation.
 						return Record{}, callErr
 					}
 					if callErr != nil {

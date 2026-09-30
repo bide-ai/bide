@@ -707,7 +707,7 @@ case errors.Is(err, agent.ErrStorage):      // durable-store I/O
 ```
 
 Categories: `ErrConfig`, `ErrModel`, `ErrTool`, `ErrStorage`, `ErrProtocol`, `ErrBudget`.
-Conditions (each wraps a category): `ErrUnknownTool`, `ErrToolArgs` (wrap `ErrTool`),
+Conditions (each wraps a category): `ErrUnknownTool`, `ErrToolArgs`, `ErrToolOutcomeUnknown` (wrap `ErrTool`),
 `ErrToolReinvoked`, `ErrInvalidApproval`, `ErrAlreadyDecided` (wrap `ErrConfig`),
 `ErrNoRecordedOutput`, `ErrIncompleteResponse` (wrap `ErrModel`), `ErrTruncatedToolArgs` (wraps
 `ErrProtocol`), `ErrStreamProtocol` and `ErrNegativeUsage` (wrap `ErrProtocol` and `ErrModel`), `ErrBudgetExceeded`,

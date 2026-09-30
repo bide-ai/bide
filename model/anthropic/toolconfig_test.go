@@ -26,3 +26,13 @@ func TestStream_RefusesBadToolConfig(t *testing.T) {
 		return New("k", WithBaseURL(url), WithHTTPClient(c))
 	})
 }
+
+// Names an MCP server may list but the provider does not accept (^[a-zA-Z0-9_-]{1,64}$): a dot,
+// a colon, or 65 to 128 characters. Each is refused, naming the tool, before a request is sent.
+func TestStream_RefusesMCPNamesTheProviderRejects(t *testing.T) {
+	modeltest.ToolNames(t, func(url string, c *http.Client) agent.Model {
+		return New("k", WithBaseURL(url), WithHTTPClient(c))
+	},
+		[]string{"admin.tools.list", "ns:tool", strings.Repeat("a", 65), strings.Repeat("a", 128), "a\nb"},
+		[]string{"get_user", "DATA-export-v2", strings.Repeat("a", 64)})
+}

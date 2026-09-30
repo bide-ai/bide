@@ -24,6 +24,18 @@ session into agent tools.
   connect time, each wrapped tool follows the untyped `json.RawMessage` path rather than a Go
   struct: `ArgsSchema()` returns the server's `InputSchema` as raw JSON for the `schema`
   package to dialectize per provider.
+- **Refuse a malformed tool list.** The server's tool list is untrusted input. `Tools` fails
+  with an error wrapping `agent.ErrProtocol` if a tool's name is outside the MCP grammar (1 to
+  128 of `A-Z a-z 0-9 _ - .`), so no control character, space, or Unicode lookalike reaches your
+  logs, journal, or approval prompts; if two tools share a name; or if a tool's input schema is
+  not a JSON Schema object of type `"object"`. The MCP grammar is wider than the providers':
+  Anthropic and OpenAI accept `^[a-zA-Z0-9_-]{1,64}$` (no dots or colons, at most 64
+  characters), and Gemini accepts `^[a-zA-Z_][a-zA-Z0-9_.:-]{0,63}$`. A name the model adapter's
+  provider cannot take fails the run with `agent.ErrConfig` naming the tool, before any request
+  is sent. A server tool named like one of your own tools
+  (or like a tool from another server) does not replace it: `agent.New` records the clash and
+  every run of that agent fails with `agent.ErrConfig`, so the model's call never reaches the
+  wrong tool.
 - **Give each tool an `agent.Safety`.** Every MCP-sourced tool gets side-effect-safe
   durable resume. By default each is treated as a side effect; for a server you trust, its
   annotations decide.
@@ -50,10 +62,69 @@ tools, err := mcp.Tools(ctx, session, mcp.TrustAnnotations())
 | `idempotentHint == true` | `Safety{Idempotent: true}` | safe to retry |
 | destructive or **unannotated** | `Safety{}` (the zero value) | halts the run on an unknown-outcome resume rather than risk firing a side effect twice |
 
+### Per-tool safety and approval gates
+
+`WithSafety(name, safety)` sets one tool's `agent.Safety` from the host side, in place of the
+default and of the server's annotations (trusted or not). It is how an MCP tool gets a human
+approval gate, 1-of-1 or m-of-n, and pauses and resumes exactly like a local tool:
+
+```go
+tools, err := mcp.Tools(ctx, session,
+	mcp.WithSafety("transfer", agent.Safety{RequiresApproval: true}),
+	mcp.WithSafety("wire", agent.Safety{Approval: &agent.ApprovalPolicy{Need: 2, Approvers: []string{"alice", "bob", "carol"}}}),
+	mcp.WithSafety("search", agent.Safety{ReadOnly: true}), // retry-safe on your word, not the server's
+)
+```
+
+The run returns `*agent.PendingApproval` before the server sees the call; record the decision
+with `agent.Approve` (or `agent.ApproveAs` for a quorum) and run it again. `Tools` fails with
+`agent.ErrConfig` if the server does not list a tool you named, so a misspelt gate never leaves
+the real tool ungated.
+
+A trusted server that changes a tool's annotations cannot make a call already in flight
+retry-safe after the fact: a call that fired as a side effect and lost its result halts the
+resume even if the server now labels the tool read-only.
+
 `ReadOnly` wins if both hints are set: a read-only tool has no side effect to double-fire.
 An absent `Annotations` block is treated as the destructive default per the MCP spec, which
-is the conservative choice for resume. Whether to trust the annotations at all is the only
-policy decision; the wrapped tool carries no other configuration.
+is the conservative choice for resume. Whether to trust the annotations is the policy decision for a whole server; `WithSafety`
+(below) decides for one tool.
+
+## Limits
+
+A server's answers are untrusted input, and each one costs every later turn: a tool
+description is sent to the model with every request, and a result is journaled and sent back
+on every later turn of the run. `Tools` sets two caps by default. Each one refuses what is
+over it with an error; neither one truncates.
+
+| Limit | Default | Over the limit | Option |
+|---|---|---|---|
+| Tool result | `DefaultMaxResultBytes`, 1 MiB of JSON | `Call` fails with `ErrResultTooLarge` (wraps `agent.ErrTool`) | `WithMaxResultBytes(n)` |
+| Tool description | `DefaultMaxDescriptionBytes`, 8 KiB | `Tools` fails with `agent.ErrProtocol` | `WithMaxDescriptionBytes(n)` |
+
+- **1 MiB for a result.** 1 MiB of text is about 250,000 tokens, more than most models' whole
+  context window, so a larger result cannot be used as it is, and the journal would hold it for
+  the life of the run. The tool did run, so an oversized result is a definite failure whose
+  error says so ("tool ran, but its result is N bytes"); the model is not told the call did not
+  happen. An `isError` result is held to the same limit.
+- **8 KiB for a description.** A description written for a model to read is a few sentences to
+  a page. 8 KiB (about 2,000 tokens) leaves room for a detailed one, while a server cannot add
+  megabytes to every request or hide long instructions aimed at the model in it.
+
+Pass `n <= 0` to remove either limit.
+
+**Per-call timeout.** `WithCallTimeout(d)` bounds each call by `d`, on top of the run's context.
+There is no default: without it a call waits as long as the run's context allows. A call that
+times out may still be running on the server, so it fails with `agent.ErrToolOutcomeUnknown`
+(see below), and a side effect halts on resume rather than run again.
+
+**Unknown outcomes are the safe side.** Only two failures are known not to have run the tool:
+a JSON-RPC error from the server, and a call on a session already closed. Every other transport
+failure counts as an unknown outcome. That includes a streamable HTTP server that cannot be
+dialled at all: the SDK does not report a refused connection distinctly from one that dropped
+mid-request, so a side effect whose server is down halts the run for confirmation instead of
+failing outright. Confirm with `agent.ResolveHalt` once you know the call did not reach the
+server.
 
 ## Optional client capabilities
 
@@ -95,6 +166,15 @@ func Tools(ctx context.Context, session *mcp.ClientSession, opts ...ToolsOption)
 // TrustAnnotations maps a trusted server's annotations onto agent.Safety.
 func TrustAnnotations() ToolsOption
 
+// WithSafety sets one tool's agent.Safety (approval gates included), overriding annotations.
+func WithSafety(name string, s agent.Safety) ToolsOption
+
+// Limits (see Limits): a per-call timeout (no default) and caps on results and descriptions.
+func WithCallTimeout(d time.Duration) ToolsOption
+func WithMaxResultBytes(n int) ToolsOption         // default DefaultMaxResultBytes (1 MiB)
+func WithMaxDescriptionBytes(n int) ToolsOption    // default DefaultMaxDescriptionBytes (8 KiB)
+var ErrResultTooLarge error                        // wraps agent.ErrTool
+
 // Options for Connect.
 func WithElicitation(f ElicitFunc) Option
 func WithToolListChanged(f func(context.Context)) Option
@@ -106,9 +186,19 @@ func DeclineElicitation(context.Context, *mcp.ElicitRequest) (*mcp.ElicitResult,
 ```
 
 `Connect` and `Tools` wrap failures with `agent.ErrTool` so they classify alongside the framework's other
-tool errors. The wrapped tool's `Call` returns the server's result content as raw JSON; if
+tool errors. The wrapped tool's `Call` returns the server's result content as raw JSON (or its
+`structuredContent`, when the server sends that alone); if
 the server flags the result `IsError`, the content is surfaced as a Go error (wrapped with
 `agent.ErrTool`) so the agent core sees a failure and can self-correct.
+
+A call whose answer never arrives, because the connection dropped or the deadline passed after
+the request was sent, may still have run on the server. `Call` then fails with
+`agent.ErrToolOutcomeUnknown` rather than an ordinary failure. For a side effect the agent
+records no result: the run stops with that error and a resume halts (`ResumeHalt`) instead of
+telling the model the call failed, which would invite it to run the side effect again. A
+retry-safe tool's lost call is an ordinary failure the model sees. A JSON-RPC error from the
+server, or a call on a session that is already closed, is an ordinary failure too: the server
+answered, or the request was never sent.
 
 > The returned tools call back through the session, so **keep the session open for their
 > lifetime.** Close it (and any server-side session) when the agent is done.

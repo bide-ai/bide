@@ -47,3 +47,14 @@ func TestStream_RefusesBadToolConfig(t *testing.T) {
 		return New("k", WithBaseURL(url), WithHTTPClient(c))
 	})
 }
+
+// Names an MCP server may list but Gemini does not accept (^[a-zA-Z_][a-zA-Z0-9_.:-]{0,63}$): a
+// leading digit, dash or dot, or 65 to 128 characters. Each is refused, naming the tool, before a
+// request is sent; dotted names Gemini does accept reach it.
+func TestStream_RefusesMCPNamesTheProviderRejects(t *testing.T) {
+	modeltest.ToolNames(t, func(url string, c *http.Client) agent.Model {
+		return New("k", WithBaseURL(url), WithHTTPClient(c))
+	},
+		[]string{"1tool", "-tool", ".tool", strings.Repeat("a", 65), strings.Repeat("a", 128), "a\nb"},
+		[]string{"admin.tools.list", "ns:tool", "_x", strings.Repeat("a", 64)})
+}
