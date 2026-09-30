@@ -1207,3 +1207,11 @@ v1 questions now resolved, and not asked again:
 - /Users/dayna/code/go-agents/agent/modelcall.go
 - /Users/dayna/code/go-agents/audit/merkle.go (raw-byte leaves) and /Users/dayna/code/go-agents/audit/sth.go (STH v5)
 - /Users/dayna/code/go-agents/plan/flow.go
+## 13. Decision: generic methods (maintainer, 2026-09-30)
+
+Use Go 1.27 generic methods wherever a generic function has a natural receiver of a concrete type:
+- `plan.RegisterStep`, `RegisterJoin2`, `RegisterJoin3`, `RegisterTool`, `RegisterModel`, `RegisterPredicate` become methods on `*plan.Registry` (`r.RegisterStep[I, O](name, fn, opts...)`).
+- `RunTyped[T]` becomes `(*Agent).RunTyped[T](ctx, runID, input, opts...)` (this supersedes Q7's "package function").
+- The journal verbs become methods on `*Journal`: `j.Step[T]`, `j.Parallel[T]`, `j.Signal[T]`, `j.Enqueue[T]`, `j.AnswerInterrupt[T]`. `*Journal` is a concrete struct, so the rule that generic methods cannot satisfy interfaces costs nothing here; storage is mocked at the `Store` interface.
+Functions with no receiver stay functions: `Interrupt`, `Await`, `AwaitFor`, `Receive` (they read the run from ctx), `Func`, `CompensatedFunc`, `schema.For`, `plan.New`, `Load`, `When`, `Else`, `LoopBack`, `Capability`.
+Implemented in P15's scripted rewrite (P14 lands `RunTyped` under its transitional name). Tooling note: homebrew gofmt and polywave-tools do not parse generic methods; CI and agents use the Go toolchain's gofmt.
