@@ -339,3 +339,88 @@ func TestResolveHaltRef_AnErroredVerdictLeavesItsAttemptLive(t *testing.T) {
 			fired.Load(), rec.Result, rec.IsError, got.v, got.err)
 	}
 }
+
+// leasingProc is a modelProc that exposes the shared MemStore's Leaser through Unwrap, so a
+// resolution through it takes the lease path.
+type leasingProc struct{ *modelProc }
+
+func (l leasingProc) Unwrap() agent.Store { return l.mem }
+
+// Model trace findings/lease-revival (F4, double fire, no crash). d1 claims a Step's first
+// attempt: its marker Insert commits and errors, and its not-started record fails, so process A
+// remembers the claim. A resolution takes the run's lease (no driver holds it) and records "not
+// charged". Meanwhile d2, a plain Step in A that holds no lease, takes the remembered claim, voids
+// the first attempt and claims the second. The lease does not see d2, so the resolution must claim
+// the attempt after the live one itself, as on the min-age path: d2 then loses it and reads the
+// verdict instead of running the effect beside it.
+func TestResolveHaltRef_LeasePathDoesNotOverrideARevivedClaim(t *testing.T) {
+	ctx := context.Background()
+	mem := agent.NewMemStore()
+	pa := &modelProc{mem: mem}
+	pr := &modelProc{mem: mem}
+	ja, err := agent.NewJournal(pa)
+	if err != nil {
+		t.Fatal(err)
+	}
+	jr, err := agent.NewJournal(leasingProc{pr})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pa.fault = func(name string) string {
+		switch {
+		case name == "attempt:step:charge":
+			return "c" // d1's marker commits, and the Insert reports an error
+		case strings.HasPrefix(name, "attempt:not-started:"):
+			return "nc" // and its not-started record fails: A remembers the claim
+		}
+		return ""
+	}
+	var fired atomic.Int32
+	fn := func(context.Context) (string, error) { fired.Add(1); return "charged", nil }
+	if _, err := agent.Step(ctx, ja, "r", "charge", fn); err == nil {
+		t.Fatal("d1 (its marker Insert failed) succeeded")
+	}
+	pa.mu.Lock()
+	pa.fault = nil
+	pa.mu.Unlock()
+
+	// Before the resolution writes its verdict, d2 revives d1's claim, voids attempt 0, and stops
+	// just before its Insert of attempt 1; it goes on once the verdict is written.
+	atRetry, resume := make(chan struct{}), make(chan struct{})
+	var onceA sync.Once
+	pa.before = func(name string) {
+		if name == "attempt:retry:1:step:charge" {
+			onceA.Do(func() { close(atRetry); <-resume })
+		}
+	}
+	type res struct {
+		v   string
+		err error
+	}
+	d2 := make(chan res, 1)
+	var onceR sync.Once
+	pr.before = func(name string) {
+		if name != "charge" {
+			return
+		}
+		onceR.Do(func() {
+			go func() { v, err := agent.Step(ctx, ja, "r", "charge", fn); d2 <- res{v, err} }()
+			<-atRetry
+		})
+	}
+	ref := agent.HaltRef{RunID: "r", Op: agent.OpRef{Kind: agent.OpStep, ID: "charge"}, Cause: agent.HaltCrashed}
+	rerr := agent.ResolveHaltRef(ctx, jr, ref, agent.Outcome{Result: "not charged", IsError: true})
+	close(resume)
+	got := <-d2
+	rec, ok, err := ja.Get(ctx, "r", "charge")
+	if err != nil || !ok {
+		t.Fatalf("the step's record = %v, %v (resolve = %v)", ok, err, rerr)
+	}
+	if fired.Load() != 0 {
+		t.Fatalf("the effect fired %d time(s) beside the verdict %s (IsError=%v); d2 = %q, %v; resolve = %v",
+			fired.Load(), rec.Result, rec.IsError, got.v, got.err, rerr)
+	}
+	if rerr != nil {
+		t.Errorf("the resolution = %v; want nil (it held the lease and the next attempt)", rerr)
+	}
+}
