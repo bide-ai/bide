@@ -5,7 +5,6 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"errors"
-	"strings"
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
@@ -260,8 +259,9 @@ func TestR117_BindRollbackVerifiesTheJournaledGrant(t *testing.T) {
 	}
 }
 
-// A delegation resumed under different authority than it began with is refused: one that began
-// with no grant cannot continue under one, and one that began under a grant needs it bound.
+// A delegation resumed under different authority than it began with is refused with ErrConfig,
+// unrecorded: nothing is journaled for the call, so a re-drive under the authority it began with
+// continues it.
 func TestR117_ResumedDelegationKeepsItsAuthority(t *testing.T) {
 	_, priv, _ := ed25519.GenerateKey(rand.Reader)
 	signer := Ed25519Signer{Priv: priv}
@@ -290,23 +290,20 @@ func TestR117_ResumedDelegationKeepsItsAuthority(t *testing.T) {
 		if err := agent.Approve(ctx, store, pend.RunID, pend.ToolUseID, true); err != nil {
 			t.Fatal(err)
 		}
-		// The refusal is the delegation call's failure, which the model reads; the sub-run does
-		// not continue under the other authority.
-		if _, err := parent.Run(drives[1](ctx), "r", "go"); err != nil {
-			t.Fatalf("%s: resume = %v", name, err)
+		if _, err := parent.Run(drives[1](ctx), "r", "go"); !errors.Is(err, agent.ErrConfig) {
+			t.Fatalf("%s: resume = %v, want ErrConfig", name, err)
 		}
 		recs, err := store.History(ctx, "r")
 		if err != nil {
 			t.Fatal(err)
 		}
-		var res *agent.Record
-		for i := range recs {
-			if recs[i].Kind == agent.StepToolResult && recs[i].ToolUseID == "c1" {
-				res = &recs[i]
+		for _, r := range recs {
+			if r.Kind == agent.StepToolResult && r.ToolUseID == "c1" {
+				t.Fatalf("%s: the refusal was recorded as the delegation's result %s", name, r.Result)
 			}
 		}
-		if res == nil || !res.IsError || !strings.Contains(string(res.Result), "grant") {
-			t.Errorf("%s: delegation result %+v, want the refusal recorded as its failure", name, res)
+		if _, err := parent.Run(drives[0](ctx), "r", "go"); err != nil {
+			t.Fatalf("%s: re-drive under the authority it began with: %v", name, err)
 		}
 	}
 }
