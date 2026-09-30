@@ -94,8 +94,10 @@ type Safety struct {
 	// ReadOnly: no external side effects, so always safe to re-run.
 	ReadOnly bool `json:"read_only,omitempty"`
 	// Idempotent: mutates state but is safe to retry, because a repeat is a no-op downstream.
-	// The tool keeps that promise itself: it derives its own downstream idempotency key from
-	// its arguments, or uses NextOnceKey.
+	// The tool keeps that promise itself. NextOnceKey dedupes the same call running again (a
+	// resume, a middleware retry); it does not dedupe the model calling the tool again, which
+	// is a new call with new keys. A tool whose repeats the model may make (after a recorded
+	// error or timeout) derives a business key from its arguments for the downstream to dedupe.
 	Idempotent bool `json:"idempotent,omitempty"`
 }
 
@@ -185,9 +187,12 @@ func WithApproval(p *ApprovalPolicy) ToolOption {
 // deadline, on top of the run's. It bounds only a tool that honors its context; the agent still
 // waits for the call to return. A call that returns a result is recorded even if the deadline has
 // passed, since a known outcome is never discarded. A call that returns an error after the
-// deadline has an unknown outcome, as if it had failed with ErrToolOutcomeUnknown: a side effect
-// records nothing, and a resume halts for its outcome, while a retry-safe tool records the error
-// for the model. d must be positive (ErrConfig otherwise).
+// deadline (judged by the deadline itself) has an unknown outcome, as if it had failed with
+// ErrToolOutcomeUnknown: a side effect records nothing, and a resume halts for its outcome, while
+// a retry-safe tool records the error for the model, which may call it again as a new call (see
+// NextOnceKey), and in a saga is reported in SagaAborted.UnknownOutcome. Only a call that reached
+// the tool is judged so: one a tool middleware ended first, even at the deadline, never ran the
+// tool and fails as a known error. d must be positive (ErrConfig otherwise).
 func WithTimeout(d time.Duration) ToolOption {
 	return toolOption(func(c *toolConfig) error {
 		if d <= 0 {

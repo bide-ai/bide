@@ -35,6 +35,12 @@ func stepOnceScope(ctx context.Context, runID, name string) context.Context {
 // runs, so an operation keeps its key when the call runs again after a crash, and two operations
 // of one call never share one.
 //
+// The keys are scoped to one tool call: they dedupe the call running again (a resume after a crash,
+// a retry-safe call a middleware retries), not the model calling the tool again. A retry the model
+// makes, after a recorded error or a timeout, is a new call with a new tool-use ID, and gets new
+// keys. Dedup across the model's retries needs a business key the tool derives from its arguments
+// (an order id, a client request id the model passes), which the downstream dedupes on.
+//
 // The numbering is stable only if the call asks for its keys in the same order each time it runs.
 // Work a call does concurrently must therefore run in steps (Step, or Parallel's tasks): each step
 // numbers its own operations, under a key that names the step, so concurrent steps keep their
