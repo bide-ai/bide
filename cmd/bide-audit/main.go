@@ -1090,7 +1090,14 @@ func verifyAbsent(args []string) {
 
 // readPubKey accepts a hex string directly, or a path to a file whose (trimmed) contents are
 // hex. The key must come from out-of-band; that is the whole point of the trust model.
+// readPubKey reads the verifier's trust root from a -pubkey value: an ed25519 public key in hex,
+// or the path of a file holding one. A value that is a public key in hex is that key and is never
+// opened as a file: a file of that name (planted in an evidence directory, say) could hold another
+// key, and the CLI would then verify under it.
 func readPubKey(s string) []byte {
+	if key, err := hex.DecodeString(trimSpace(s)); err == nil && len(key) == ed25519.PublicKeySize {
+		return key
+	}
 	raw := s
 	if b, err := os.ReadFile(s); err == nil {
 		raw = string(b)

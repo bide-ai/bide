@@ -342,7 +342,9 @@ and every verify verb needs only a bundle and an out-of-band public key. Build i
 Conventions shared across verbs:
 
 - `-pubkey` accepts either a hex string directly or a path to a file whose trimmed contents are
-  hex, and must decode to a 32-byte ed25519 public key (anything else exits 1 with a message). The
+  hex, and must decode to a 32-byte ed25519 public key (anything else exits 1 with a message). A
+  value that is itself a key in hex (64 hex digits) is always taken as the key and never opened as
+  a file, so a file of that name in the working directory cannot substitute another key. The
   key must come from the anchor operator out-of-band, never from the bundle: that is what makes it a
   proof you verify rather than a log you trust.
 - Every artifact must carry the format this version reads (see [Artifact formats](#artifact-formats));
