@@ -70,7 +70,10 @@ func TestR117_UngrantedDelegationIsCompensatedWithoutAGrant(t *testing.T) {
 	store := agent.NewMemStore()
 	var undoHadGrant, fwdHadGrant bool
 	charge := agent.CompensatedFunc("charge", "", agent.Safety{},
-		func(ctx context.Context, _ struct{}) (string, error) { _, _, fwdHadGrant = GrantFrom(ctx); return "ok", nil },
+		func(ctx context.Context, _ struct{}) (string, error) {
+			_, _, fwdHadGrant = GrantFrom(ctx)
+			return "ok", nil
+		},
 		func(ctx context.Context, _ struct{}, _ string) error { _, _, undoHadGrant = GrantFrom(ctx); return nil })
 	sub := agent.New(agent.NewScriptedModel(agent.ToolTurn("s1", "charge", `{}`), agent.TextTurn("done")), store, charge)
 	exec := AttenuatingSubAgent("exec", "", sub, AttenuationConfig{Store: store, Narrow: narrowLimitBy(3), Rules: ScopeRules{"limit": NumericAtMost}})
