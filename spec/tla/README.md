@@ -128,9 +128,10 @@ The model states the rules of P6a (#92) after its third review:
 2. If the marker's Insert errors, the claim records a not-started record under its own id. Any
    failed not-started write (`Journal.notStarted`, wherever it is called from) leaves the id
    remembered in the process, in `pendingClaims`, which holds a set of ids per marker key.
-3. A remembered id is never used to run. The next claim of that marker key in the process first
-   retries each remembered id's not-started record (voiding its marker if that committed), then
-   claims with a fresh id; a voided marker moves the claim to the next numbered attempt.
+3. A remembered id is never used to run. The next claim of that marker key in the process takes
+   back every remembered id and writes each one's not-started record again (voiding its marker if
+   that committed; a failed write remembers the id again), then claims with a fresh id; a voided
+   marker moves the claim to the next numbered attempt.
 4. The tool resume gate, before it halts on a live marker, retries the not-started record of that
    marker's claim if the process remembers it; if the retry succeeds, the call claims its next
    attempt instead of halting.
@@ -143,7 +144,8 @@ The model states the rules of P6a (#92) after its third review:
    holds the root run's lease while it resolves (MemStore, `store/postgres`, and `store/sqlite` as
    of #92), and only leased drivers are seen; otherwise it needs `WithMinHaltAge`, and then (F2's
    fix) it first claims the attempt after the live one with `ClaimAttempt`, refusing if a driver
-   holds it; if its result write errors, that attempt stays live (F3's fix).
+   holds it; if its result write errors, that attempt stays live (F3's fix). The model also checks
+   that claim on the lease path (`resolve-lease-claim`), which finding F4 needs.
 
 ### Model-code map
 
@@ -156,7 +158,7 @@ those of #92 (P6a); where #92 has not yet adopted a rule, the step names the rul
 | `Open` | the drive's one `Load` (`Journal.open` in `Agent.run`; `journalStep`'s `j.Get`); on the tool path, `liveAttempts` and the resume gate's loop in `Agent.run` |
 | `GateTake`, `GateWrite` | the resume gate's retry of a remembered claim (rule 4): `pendingClaims` membership of the live marker's id, then `Journal.notStarted` |
 | `Claim` | one iteration of `Journal.claimNext`: `pendingClaims.take` in `Journal.claim` |
-| `ClaimRetry` | `Journal.claim` retrying a remembered id's not-started record (rule 3) |
+| `ClaimRetry` | `Journal.claim`: `pendingClaims.takeAll`, then `Journal.notStarted` for each taken id (rule 3) |
 | `ClaimInsert` | `newClaimID`, `Journal.insert` of the marker (`Store.Insert`), and the `got.claim == id` check |
 | `ClaimNS` | `Journal.claim`'s error path: `Journal.notStarted`, which remembers the id on failure |
 | `Hold` | historical only (`Bug = "HeldPin"`): `Journal.holdClaim` and `StepClaimHeld` |
@@ -245,6 +247,7 @@ whole pull-request set, vacuity runs and JVM starts included, takes about 6.5 mi
 | `live-tool-same` | tool | 2 in 1 | 1, 1, 1 | 0..2 | `Progress` | 128,325 | 4 s |
 | `live-tool-cross` | tool | 2 in 2 | 1, 1, 1 | 0..2 | `Progress` | 144,243 | 5 s |
 | `resolve-minage-claim-a3` | tool, resolver (min age, F2 and F3 fixed) | 2 in 2 | 3, 0, 0 | 0..4 | safety | 702,817 | 6 s |
+| `resolve-lease-claim` | tool, resolver (lease, F4's fix), a leased driver and a plain Run | 2 in 1 | 3, 0, 0 | 0..4 | safety | 331,475 | 6 s |
 | `resolve-in-proc-tool` | tool, resolver in the drivers' process (min age, fixes) | 2 in 1 | 2, 1, 0 | 0..4 | safety | 285,231 | 4 s |
 | `flow-same` | one marker key (plan flow) | 2 in 1 | 2, 1, 1 | 0 | safety | 6,588 | <1 s |
 | `flow-cross` | one marker key (plan flow) | 2 in 2 | 2, 1, 1 | 0 | safety | 14,357 | 1 s |
@@ -269,6 +272,7 @@ Nightly (and on demand, `workflow_dispatch`):
 | `deep-resolve-in-proc-step` | Step, resolver in the drivers' process | 2 in 1 | 2, 1, 0 | 0..4 | safety | 5,715,586 | 41 s |
 | `deep-resolve-in-proc-cross` | Step, resolver in d1's process | 2 in 2 | 2, 1, 0 | 0..4 | safety | 2,067,129 | 17 s |
 | `deep-resolve-in-proc-a4` | Step, resolver in the drivers' process | 2 in 1 | 4, 0, 0 | 0..5 | safety | 15,988,971 | 2 min |
+| `deep-resolve-lease-claim` | tool, resolver (lease, F4's fix), a leased driver and a plain Run | 2 in 1 | 2, 1, 1 | 0..4 | safety | 3,663,147 | 1 min |
 
 The nightly set takes about 20 minutes on the development machine. The liveness checks run on every pull
 request with one error reply; with two they run nightly, since liveness checking cannot use symmetry
@@ -307,8 +311,9 @@ eviction, 17 states). `live-evict-step-same` shows the eviction costs nothing el
 
 ### Findings
 
-Found by this model in the rules #92 is adopting; each is a counterexample, and each needs a
-deterministic Go test before its fix (M2 of the plan).
+Found by this model in the rules #92 adopted; each is a counterexample, and each needs a
+deterministic Go test before its fix (M2 of the plan). F1 to F3 are fixed in #92 at `42f7419`,
+and their counterexamples are regression configurations now.
 
 - **F1: `pendingClaims` holds one id per marker key.** `claimMemo.remember` replaces the id stored
   for a key. Two claims of one marker key in one process can each fail a not-started write: a
@@ -324,7 +329,7 @@ deterministic Go test before its fix (M2 of the plan).
   3 and 4): the retry voids the attempt, the process claims the next one and calls the effect, and
   a resolution checked just before writes its verdict first. The live driver's result is then
   lost, and if the verdict was "not charged", the caller asks again and the effect fires twice
-  (`findings/minage-revoid`, `findings/minage-intent`: two error replies, no crash). The lease
+  (`regress/minage-revoid`, `regress/minage-intent`: two error replies, no crash). The lease
   check is not affected, since leased drivers cannot drive while the resolver holds the lease. A
   fix the model checks (`ResolveClaim`, configs `resolve-minage-claim` and `intent-minage-claim`):
   before it writes, the resolver claims the attempt after the live one under its own id; a driver
@@ -335,12 +340,22 @@ deterministic Go test before its fix (M2 of the plan).
   write may have committed. A driver in its claim loop (it voided the live attempt through a
   remembered claim, and lost the next one to the resolution) then sees that attempt voided,
   claims the one after, and calls the effect under the recorded resolution; with a "not charged"
-  verdict the caller asks again and the effect fires twice (`findings/resolve-void-on-error`,
-  `findings/resolve-void-on-error-intent`: three error replies, no crash, 28- and 33-state
+  verdict the caller asks again and the effect fires twice (`regress/resolve-void-on-error`,
+  `regress/resolve-void-on-error-intent`: three error replies, no crash, 28- and 33-state
   traces). The model's fix (`ResolveVoidOnError = FALSE`, every other resolver config): after an
   errored write, the resolution's attempt stays live, and the call halts until it is resolved
   again. `resolve-minage-claim-a3` checks it with three error replies, and
   `deep-resolve-in-proc-a4` with four and the resolver in the drivers' process.
+- **F4 (open): on the lease path, a plain `Run` revives a leased driver's remembered claim.** The
+  lease check sees only leased drivers (#90's documented limit), and the resolution does not claim
+  the next attempt on that path. Even when no unleased driver holds the live claim at the check
+  (`PlainRunIdleAtCheck`), a plain `Run` in the process of the leased driver whose claim errored
+  takes that remembered claim, voids the live attempt, and claims the next one while the
+  resolution records its verdict (`findings/lease-revival`: two error replies, no crash, 22
+  states). Fix the model checks: claim the next attempt on the lease path too
+  (`resolve-lease-claim`, three error replies; `deep-resolve-lease-claim` nightly, with a crash
+  and a cancellation). A plain `Run` that holds the live claim at the check stays #90's limit
+  (`regress/resolve-unleased-driver`).
 
 The `findings/` configs flip to `pass` when the code is fixed.
 
