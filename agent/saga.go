@@ -192,7 +192,7 @@ func (a *Agent) rollbackRun(ctx context.Context, runID, root string) (compensate
 		if done && res.IsError {
 			continue // a failed call made no change (saga steps must be atomic)
 		}
-		if done && res.ReadOnly {
+		if done && res.Safety != nil && res.Safety.ReadOnly {
 			continue // it ran as ReadOnly, so it changed nothing, whatever its tool is declared as now
 		}
 		tool := a.tools[tu.Name]
@@ -222,10 +222,10 @@ func (a *Agent) rollbackRun(ctx context.Context, runID, root string) (compensate
 			continue
 		}
 
-		// A completed call's result records whether it ran ReadOnly (skipped above), so it is a
-		// write here even if its tool has been relabelled ReadOnly since. A call with no result
-		// has no record of its safety, and goes by the tool's safety now.
-		safety := tool.Safety()
+		// A completed call's result records the safety it ran under (a ReadOnly one is skipped
+		// above), so it is a write here even if its tool has been relabelled ReadOnly since. A
+		// call with no result has no record of its safety, and goes by the tool's safety now.
+		safety := a.specs[tu.Name].Safety
 		if !done && safety.ReadOnly {
 			continue
 		}
@@ -245,13 +245,14 @@ func (a *Agent) rollbackRun(ctx context.Context, runID, root string) (compensate
 				// Retry-safe: running it again is safe, and yields the result to compensate. It runs
 				// through the tool middleware, like the live call it repeats, and in this run's
 				// saga context, so the arguments it accepts are journaled as the live call's were.
-				toolH := a.toolHandler()
+				toolH := a.toolHandler(runID)
+				spec := a.specs[tu.Name]
 				rec, ce := a.store.Do(ctx, runID, ToolResultStep(tu.ID), func(ctx context.Context) (Record, error) {
-					out, e := toolH(withRunContext(withSaga(ctx), a.store, runID), tu)
+					out, _, e := callTool(withRunContext(withSaga(ctx), a.store, runID), spec.Timeout, func(ctx context.Context) (json.RawMessage, error) { return toolH(ctx, tu) })
 					if e != nil {
 						return Record{}, e
 					}
-					return Record{Kind: StepToolResult, ToolUseID: tu.ID, Result: out}, nil
+					return Record{Kind: StepToolResult, ToolUseID: tu.ID, Result: out, Safety: recordedSafety(spec), Approval: spec.Approval.clone()}, nil
 				})
 				if ce != nil {
 					uncompensated = append(uncompensated, tu.Name)

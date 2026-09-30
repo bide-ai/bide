@@ -15,7 +15,7 @@ func streamMofn(t *testing.T, store Durable, runID string, first bool, pol *Appr
 	if first {
 		turns = [][]Emit{toolTurn("c1", "charge", `{}`), textTurn("done")}
 	}
-	charge := &countingTool{name: "charge", safety: Safety{Approval: pol}, calls: charged}
+	charge := &countingTool{name: "charge", approval: pol, calls: charged}
 	as := New(&scriptModel{turns: turns}, store, charge).WithApproverVerifiers(vf).Stream(context.Background(), runID, "pay")
 	var reqs []ApprovalRequired
 	for ev := range as.Events() {
@@ -81,7 +81,7 @@ func TestMofn_StreamEmitsTally(t *testing.T) {
 // A 1-of-1 gate's ApprovalRequired carries no tally.
 func TestMofn_StreamOneOfOneHasNoTally(t *testing.T) {
 	var charged int
-	charge := &countingTool{name: "charge", safety: Safety{RequiresApproval: true}, calls: &charged}
+	charge := &countingTool{name: "charge", approval: SingleApproval(), calls: &charged}
 	as := New(&scriptModel{turns: [][]Emit{toolTurn("c1", "charge", `{}`), textTurn("done")}}, NewMemStore(), charge).
 		Stream(context.Background(), "s1", "pay")
 	var seen bool
@@ -112,7 +112,7 @@ func TestMofn_InsideSubAgent(t *testing.T) {
 	pol := &ApprovalPolicy{Need: 2, Approvers: abc}
 	vf := fakeVerifiers(abc...)
 	var charged int
-	charge := &countingTool{name: "charge", safety: Safety{Approval: pol}, calls: &charged}
+	charge := &countingTool{name: "charge", approval: pol, calls: &charged}
 	// The gate runs in the sub-agent, so the sub-agent carries the verifier resolver.
 	sub := New(&scriptModel{turns: [][]Emit{toolTurn("s1", "charge", `{}`), textTurn("sub-done")}}, store, charge).
 		WithApproverVerifiers(vf)

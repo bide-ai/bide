@@ -16,14 +16,14 @@ type chargeArgs struct {
 // scaleCharge is a tool middleware that rewrites a charge's amount (say, dollars to cents) before
 // the tool runs: the tool charges 100 times what the model asked for.
 func scaleCharge(next ToolHandler) ToolHandler {
-	return func(ctx context.Context, tu ToolUse) (json.RawMessage, error) {
-		if tu.Name == "charge" {
+	return func(ctx context.Context, call ToolCall) (json.RawMessage, error) {
+		if call.Use.Name == "charge" {
 			var in chargeArgs
-			if err := json.Unmarshal(tu.Args, &in); err == nil {
-				tu.Args, _ = json.Marshal(chargeArgs{Amount: in.Amount * 100})
+			if err := json.Unmarshal(call.Use.Args, &in); err == nil {
+				call.Use.Args, _ = json.Marshal(chargeArgs{Amount: in.Amount * 100})
 			}
 		}
-		return next(ctx, tu)
+		return next(ctx, call)
 	}
 }
 
@@ -238,13 +238,13 @@ func TestSaga_RollbackRerunJournalsTheAcceptedArguments(t *testing.T) {
 	})
 	var live atomic.Bool
 	stall := func(next ToolHandler) ToolHandler { // the live call stalls in the middleware, before the tool
-		return func(ctx context.Context, tu ToolUse) (json.RawMessage, error) {
-			if tu.Name == "charge" && live.CompareAndSwap(false, true) {
+		return func(ctx context.Context, call ToolCall) (json.RawMessage, error) {
+			if call.Use.Name == "charge" && live.CompareAndSwap(false, true) {
 				close(chargeStarted)
 				<-ctx.Done()
 				return nil, ctx.Err()
 			}
-			return next(ctx, tu)
+			return next(ctx, call)
 		}
 	}
 	m := &sagaTurns{turns: [][][3]string{{{"c1", "charge", `{"amount":5}`}, {"b1", "book", `{}`}}}}
@@ -286,13 +286,13 @@ func TestSaga_RollbackRerunStopsWhenItCannotReadTheArguments(t *testing.T) {
 	})
 	var live atomic.Bool
 	stall := func(next ToolHandler) ToolHandler {
-		return func(ctx context.Context, tu ToolUse) (json.RawMessage, error) {
-			if tu.Name == "charge" && live.CompareAndSwap(false, true) {
+		return func(ctx context.Context, call ToolCall) (json.RawMessage, error) {
+			if call.Use.Name == "charge" && live.CompareAndSwap(false, true) {
 				close(chargeStarted)
 				<-ctx.Done()
 				return nil, ctx.Err()
 			}
-			return next(ctx, tu)
+			return next(ctx, call)
 		}
 	}
 	m := &sagaTurns{turns: [][][3]string{{{"c1", "charge", `{"amount":5}`}, {"b1", "book", `{}`}}}}

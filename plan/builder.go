@@ -57,8 +57,8 @@ func BlockName(name string) NodeOption {
 // and after an ambiguous mid-node crash (the body ran, its result was lost) Run
 // RE-RUNS the body rather than halting. Use it for a node that only reads.
 //
-// It sets only the retry classification: an approval gate or IdempotencyKey the node already
-// carries (a wrapped agent tool's) is kept, so the option cannot switch a gate off.
+// It sets only the retry classification: an approval gate the node already carries (a wrapped
+// agent tool's) is kept, so the option cannot switch a gate off.
 func ReadOnly() NodeOption {
 	return func(n *node) { n.safety.ReadOnly, n.safety.Idempotent = true, false }
 }
@@ -67,8 +67,8 @@ func ReadOnly() NodeOption {
 // same input is a no-op downstream, so it is safe to retry. On an ambiguous
 // mid-node crash Run RE-RUNS the body rather than halting. Use it for a node whose
 // effect de-duplicates downstream (for example an upsert keyed by a stable id).
-// Like ReadOnly, it sets only the retry classification and keeps any approval gate or
-// IdempotencyKey the node already carries.
+// Like ReadOnly, it sets only the retry classification and keeps any approval gate the node
+// already carries.
 func Idempotent() NodeOption {
 	return func(n *node) { n.safety.ReadOnly, n.safety.Idempotent = false, true }
 }
@@ -179,9 +179,9 @@ func (b *Builder[In, Out]) Step[I, O any](name string, fn func(context.Context, 
 // Tool infers I and O: the I input is JSON-encoded into the tool's args and the
 // tool's JSON result is decoded into O.
 //
-// Safety AUTO-DERIVES from the wrapped agent.Tool: Tool records t.Safety() on the
-// node, so a tool the core classifies as retry-safe (ReadOnly, Idempotent, or
-// carrying an IdempotencyKey) RE-RUNS on an ambiguous mid-node crash while a
+// Safety AUTO-DERIVES from the wrapped agent.Tool: Tool records its spec's Safety
+// (agent.SpecOf) on the node, so a tool the core classifies as retry-safe (ReadOnly
+// or Idempotent) RE-RUNS on an ambiguous mid-node crash while a
 // non-idempotent tool HALTS, matching the core loop's own resume decision. An
 // explicit plan.ReadOnly()/plan.Idempotent() option OVERRIDES the derived Safety
 // (options apply after the literal), for the rare case the author knows better
@@ -192,7 +192,8 @@ func (b *Builder[In, Out]) Tool[I, O any](name string, t agent.Tool, opts ...Nod
 		kind:    kindTool,
 		inType:  typeOf[I](),
 		outType: typeOf[O](),
-		safety:  t.Safety(), // auto-derived; an explicit option below overrides it
+		safety:   agent.SpecOf(t).Safety, // auto-derived; an explicit option below overrides it
+		approval: agent.SpecOf(t).Approval,
 		run: func(ctx context.Context, in any) (any, error) {
 			typed, ok := in.(I)
 			if !ok {

@@ -18,11 +18,32 @@ import (
 // the in-flight one resumes from its own journal, and OutcomeUnknown / ApprovalPending from
 // deep in the tree propagate up (approve, re-run the root, and it resumes down the path).
 //
+// opts set the rest of the tool's spec: WithApproval, so the parent waits for a human before it
+// delegates, WithTitle and WithOutputSchema. SubAgent refuses WithSafety, since a sub-agent call
+// re-enters its sub-run, whose own calls carry their safety, and WithTimeout, since a deadline
+// would cut the sub-run off mid-call and record the delegation as failed while the sub-run's own
+// outcome is unknown: bound the sub-agent's tools instead. It panics, with an error wrapping
+// ErrConfig, on a refused or invalid option, as Func does.
+//
 // This is what the incumbents can't do: ADK/agenticenv can't recover sub-agents across a
 // restart, and Eino doesn't unify nested state into the parent checkpoint.
-func SubAgent(name, description string, sub *Agent) Tool {
+func SubAgent(name, description string, sub *Agent, opts ...ToolOption) Tool {
 	s, _ := schema.For[subAgentArgs]()
-	return &subAgentTool{name: name, description: description, sub: sub, argsSchema: s}
+	// Idempotent: re-running a sub-agent call on resume RESUMES the sub-run from its journal
+	// (it doesn't restart it), and a sub-run that already finished returns its recorded answer,
+	// so it's safe to retry. Any unsafe write inside the sub-run halts via the sub-run's own
+	// OutcomeUnknown, which propagates up here.
+	c := toolConfig{spec: ToolSpec{Name: name, Description: description, Input: s, Safety: Safety{Idempotent: true}}}
+	if err := applyToolOptions(&c, opts); err != nil {
+		panic(err)
+	}
+	switch {
+	case c.safetySet:
+		panic(fmt.Errorf("agent: SubAgent %q: WithSafety does not apply to a sub-agent, whose sub-run's calls carry their own safety: %w", name, ErrConfig))
+	case c.timeoutSet:
+		panic(fmt.Errorf("agent: SubAgent %q: WithTimeout does not apply to a sub-agent, whose sub-run it would cut off mid-call; give its tools timeouts: %w", name, ErrConfig))
+	}
+	return &subAgentTool{spec: c.spec, sub: sub}
 }
 
 type subAgentArgs struct {
@@ -30,25 +51,26 @@ type subAgentArgs struct {
 }
 
 type subAgentTool struct {
-	name, description string
-	sub               *Agent
-	argsSchema        json.RawMessage
+	spec ToolSpec
+	sub  *Agent
 }
 
-func (t *subAgentTool) Name() string                { return t.name }
-func (t *subAgentTool) Description() string         { return t.description }
-func (t *subAgentTool) ArgsSchema() json.RawMessage { return t.argsSchema }
+func (t *subAgentTool) Name() string                { return t.spec.Name }
+func (t *subAgentTool) Description() string         { return t.spec.Description }
+func (t *subAgentTool) ArgsSchema() json.RawMessage { return t.spec.Input }
+func (t *subAgentTool) Safety() Safety              { return t.spec.Safety }
 
-// Idempotent: re-running a sub-agent call on resume RESUMES the sub-run from its journal
-// (it doesn't restart it), and a sub-run that already finished returns its recorded answer,
-// so it's safe to retry. Any unsafe write inside the sub-run
-// halts via the sub-run's own OutcomeUnknown, which propagates up here.
-func (t *subAgentTool) Safety() Safety { return Safety{Idempotent: true} }
+// Spec returns the tool's spec, with a copy of its approval policy.
+func (t *subAgentTool) Spec() ToolSpec {
+	s := t.spec
+	s.Approval = s.Approval.clone()
+	return s
+}
 
 func (t *subAgentTool) Call(ctx context.Context, args json.RawMessage) (json.RawMessage, error) {
 	var in subAgentArgs
 	if err := decodeArgs(args, &in); err != nil {
-		return nil, fmt.Errorf("decode args for sub-agent %q: %w (%w)", t.name, err, ErrToolArgs)
+		return nil, fmt.Errorf("decode args for sub-agent %q: %w (%w)", t.spec.Name, err, ErrToolArgs)
 	}
 	subRunID := RunScope(ctx) // SubRunID(parentRunID, toolUseID): stable and unique per call site
 	if subRunID == "" {
@@ -56,7 +78,7 @@ func (t *subAgentTool) Call(ctx context.Context, args json.RawMessage) (json.Raw
 		// scope, agent.go withRunScope). This id is NOT unique per call: two calls to a same-named
 		// sub-agent would share one journal and the second would memoize to the first's result. Drive
 		// sub-agents through Agent.Run/RunSaga (the normal path) so each call gets a distinct scope.
-		subRunID = "sub/" + t.name
+		subRunID = "sub/" + t.spec.Name
 	}
 	// Run the sub-agent on its OWN goroutine (fresh, small stack) rather than recursing on
 	// the parent's stack — so a deep agent tree is N shallow stacks, not one that balloons
@@ -71,7 +93,7 @@ func (t *subAgentTool) Call(ctx context.Context, args json.RawMessage) (json.Raw
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
-				ch <- result{err: fmt.Errorf("sub-agent %q panicked: %v (%w)", t.name, r, ErrTool)}
+				ch <- result{err: fmt.Errorf("sub-agent %q panicked: %v (%w)", t.spec.Name, r, ErrTool)}
 			}
 		}()
 		var m Message

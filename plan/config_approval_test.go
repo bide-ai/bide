@@ -44,7 +44,7 @@ func TestLoadApprovalIsRefusedUntilEnforced(t *testing.T) {
 
 // A Tool node wrapping an agent tool that requires approval would run it with no approval.
 func TestBuildRefusesAnApprovalGatedTool(t *testing.T) {
-	gated := agent.Func("refund", "issue a refund", agent.Safety{RequiresApproval: true}, func(context.Context, int) (int, error) { return 0, nil })
+	gated := agent.Func("refund", "issue a refund", agent.Safety{}, func(context.Context, int) (int, error) { return 0, nil }, agent.WithApproval(agent.SingleApproval()))
 	b := New[int, int]("refunds")
 	b.Tool[int, int]("refund", gated)
 	if _, err := b.Build(); !errors.Is(err, agent.ErrConfig) {
@@ -53,7 +53,7 @@ func TestBuildRefusesAnApprovalGatedTool(t *testing.T) {
 }
 
 // TestLoadApprovalAbsentKeepsNil asserts a node without an approval block keeps a nil
-// Safety.Approval (the existing 1-of-1 or none behavior).
+// approval gate (the existing 1-of-1 or none behavior).
 func TestLoadApprovalAbsentKeepsNil(t *testing.T) {
 	cfg := strings.Replace(approvalNodeConfig, `, "approval": APPROVAL`, "", 1)
 	flow, err := Load[int, int]([]byte(cfg), approvalRegistry(t))
@@ -61,8 +61,8 @@ func TestLoadApprovalAbsentKeepsNil(t *testing.T) {
 		t.Fatalf("Load: %v", err)
 	}
 	for _, n := range flow.core.nodes {
-		if n.safety.Approval != nil {
-			t.Errorf("node %q has Approval %+v, want nil", n.name, n.safety.Approval)
+		if n.approval != nil {
+			t.Errorf("node %q has Approval %+v, want nil", n.name, n.approval)
 		}
 	}
 }

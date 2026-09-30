@@ -51,7 +51,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 			emit(e)
 		}
 	}
-	toolH := a.toolHandler() // tool-middleware chain, built once for this run
+	toolH := a.toolHandler(runID) // tool-middleware chain, built once for this run
 
 	recs, err := openRun(ctx, a.store, runID)
 	if err != nil {
@@ -295,7 +295,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 			rec, err := a.store.Do(ctx, runID, modelStep(modelSeq),
 				func(ctx context.Context) (Record, error) {
 					ts.usedIDs = toolUseIDs(msgs)
-					req := Request{Messages: msgs, Tools: a.toolList(), Sampling: a.sampling, ResponseFormat: a.responseFormat, ToolChoice: a.toolChoice}
+					req := Request{Messages: msgs, Tools: a.requestTools(), Sampling: a.sampling, ResponseFormat: a.responseFormat, ToolChoice: a.toolChoice}
 					resp, e := chain.call(ctx, ModelCall{Request: req, Model: a.model, RunID: runID, Turn: seq}, ts)
 					if e != nil {
 						return Record{}, e
@@ -397,9 +397,9 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 		// conversation is assembled in deterministic uses-order regardless of which tool
 		// finishes first.
 		type call struct {
-			idx int
-			tu  ToolUse
-			t   Tool
+			idx  int
+			tu   ToolUse
+			spec ToolSpec // the tool's registered spec: every decision about the call reads it
 		}
 		var toRun []call
 		results := make([]*Message, len(uses))
@@ -407,10 +407,10 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 			if done[tu.ID] {
 				continue // already recorded (resumed turn) — its result is already in msgs
 			}
-			t, ok := a.tools[tu.Name]
-			if !ok {
+			if _, ok := a.tools[tu.Name]; !ok {
 				return leave(fmt.Errorf("model called unknown tool %q: %w", cutName(tu.Name), ErrUnknownTool))
 			}
+			spec := a.specs[tu.Name]
 			// A recorded denial is final, whatever the tool's gate is now: a human's Approve(false)
 			// or an m-of-n gate's terminal tally that did not pass. The gate may have been removed
 			// or loosened since (a redeploy), and the call must still not run. A recorded approval
@@ -424,9 +424,9 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 				}
 				denied = !tally.Passed()
 			}
-			if safety := t.Safety(); !denied && (safety.RequiresApproval || safety.Approval != nil) {
+			if pol := spec.Approval; !denied && pol != nil {
 				var approved bool
-				if pol := safety.Approval; pol != nil {
+				if !pol.single() {
 					// m-of-n: the decision is the tally over the journaled per-approver records.
 					tally, final, err := a.quorumTally(ctx, runID, tu, pol)
 					if err != nil {
@@ -450,7 +450,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 			}
 			if denied { // record a denial and let the model react
 				const deniedResult = `"tool call denied by human"`
-				if _, err := putRecord(ctx, a.store, runID, ToolResultStep(tu.ID), Record{Kind: StepToolResult, ToolUseID: tu.ID, IsError: true, Result: json.RawMessage(deniedResult)}); err != nil {
+				if _, err := putRecord(ctx, a.store, runID, ToolResultStep(tu.ID), Record{Kind: StepToolResult, ToolUseID: tu.ID, IsError: true, Result: json.RawMessage(deniedResult), Safety: recordedSafety(spec), Approval: spec.Approval.clone()}); err != nil {
 					return leave(err)
 				}
 				done[tu.ID] = true
@@ -458,7 +458,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 				fire(ToolCompleted{ToolUseID: tu.ID, Name: tu.Name, Result: json.RawMessage(deniedResult), IsError: true})
 				continue
 			}
-			toRun = append(toRun, call{idx: i, tu: tu, t: t})
+			toRun = append(toRun, call{idx: i, tu: tu, spec: spec})
 		}
 
 		// Execute the ready tools CONCURRENTLY (Go's strength; single-flight-safe). First
@@ -553,7 +553,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 					markerKey string
 					called    atomic.Bool // the tool was called: its effect may have fired
 				)
-				if !c.t.Safety().retriableOnResume() {
+				if !c.spec.Safety.retriableOnResume() {
 					won, got, key, err := claimNextAttempt(gctx, a.store, runID, toolAttemptStep(c.tu.ID),
 						Record{Kind: StepAttempt, ToolUseID: c.tu.ID, AttemptedAt: time.Now().UnixMilli()})
 					if err != nil {
@@ -581,8 +581,9 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 					// Emitted here, past the pre-call check, so a consumer sees ToolStarted only for a
 					// call that actually starts; one recorded as not started emits neither event.
 					fire(ToolStarted{ToolUseID: c.tu.ID, Name: c.tu.Name, Args: c.tu.Args})
-					res, callErr := toolH(sctx, c.tu)
-					r := Record{Kind: StepToolResult, ToolUseID: c.tu.ID, ReadOnly: c.t.Safety().ReadOnly} // the safety it ran under, for a saga rollback
+					res, late, callErr := callTool(sctx, c.spec.Timeout, func(ctx context.Context) (json.RawMessage, error) { return toolH(ctx, c.tu) })
+					// The safety and approval gate the call ran under, for a saga rollback and an audit.
+					r := Record{Kind: StepToolResult, ToolUseID: c.tu.ID, Safety: recordedSafety(c.spec), Approval: c.spec.Approval.clone()}
 					if callErr != nil && sctx.Err() != nil {
 						// The call was cancelled (the run was cancelled, or a sibling paused or
 						// failed the group) before it could report back, so its outcome is
@@ -593,7 +594,14 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 						// repeat.
 						return Record{}, callErr
 					}
-					if callErr != nil && errors.Is(callErr, ErrToolOutcomeUnknown) && !c.t.Safety().retriableOnResume() {
+					if late {
+						// The call's own deadline passed before it returned an error: the tool may
+						// have been cut off after its effect took place, so the outcome is unknown,
+						// just as for a tool that says so (below). The error keeps its chain, so a
+						// pause or a sub-run's halt inside it is still seen for what it is.
+						callErr = fmt.Errorf("tool %q returned an error after its %s timeout: %w (%w)", c.tu.Name, c.spec.Timeout, callErr, ErrToolOutcomeUnknown)
+					}
+					if callErr != nil && errors.Is(callErr, ErrToolOutcomeUnknown) && !c.spec.Safety.retriableOnResume() {
 						// The tool cannot tell whether its side effect took place (its connection
 						// dropped after the request went out). Recording a failure would tell the
 						// model it did not, and invite it to ask again. Record nothing: the attempt
@@ -636,14 +644,14 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 						// attempt marker would halt the resume instead).
 						var wakeFail *wakeError
 						if paused || errors.As(callErr, &wakeFail) {
-							if !c.t.Safety().retriableOnResume() {
+							if !c.spec.Safety.retriableOnResume() {
 								return Record{}, fmt.Errorf("agent: tool %q paused (Interrupt, Sleep, or Await) but is not retry-safe (mark it ReadOnly or Idempotent): %w", c.tu.Name, ErrConfig)
 							}
 							return Record{}, callErr
 						}
 						if saga {
 							toolCallErr = callErr
-							f := Record{Kind: StepSagaFail, ToolUseID: c.tu.ID, Result: mustJSON(toolErrorText(a.toolErrRedact, c.tu.Name, callErr))}
+							f := Record{Kind: StepSagaFail, ToolUseID: c.tu.ID, Result: mustJSON(toolErrorText(a.toolErrRedact, c.tu.Name, callErr)), Safety: r.Safety, Approval: r.Approval}
 							started.carry(&f)
 							return f, nil
 						}

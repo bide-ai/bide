@@ -140,7 +140,7 @@ type refundArgs struct {
 // line appended per real refund, so a test can count side effects across processes.
 func newAgent(store agent.Durable, witness string) *agent.Agent {
 	refund := agent.Func("refund", "refund an order",
-		agent.Safety{Approval: &policy},
+		agent.Safety{},
 		func(_ context.Context, in refundArgs) (string, error) {
 			if witness != "" {
 				f, err := os.OpenFile(witness, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
@@ -153,7 +153,7 @@ func newAgent(store agent.Durable, witness string) *agent.Agent {
 				}
 			}
 			return fmt.Sprintf("$%d to order %d", in.Amount, in.Order), nil
-		})
+		}, agent.WithApproval(&policy))
 	return agent.New(refundModel{}, store, refund).WithApproverVerifiers(approverVerifiers())
 }
 

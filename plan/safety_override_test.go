@@ -2,7 +2,6 @@ package plan
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"testing"
 
@@ -15,9 +14,9 @@ import (
 func gatedTools() map[string]agent.Tool {
 	fn := func(context.Context, int) (int, error) { return 0, nil }
 	return map[string]agent.Tool{
-		"requires approval": agent.Func("refund", "issue a refund", agent.Safety{ReadOnly: true, RequiresApproval: true}, fn),
+		"requires approval": agent.Func("refund", "issue a refund", agent.Safety{ReadOnly: true}, fn, agent.WithApproval(agent.SingleApproval())),
 		"m-of-n approval": agent.Func("refund", "issue a refund",
-			agent.Safety{ReadOnly: true, Approval: &agent.ApprovalPolicy{Need: 1, Approvers: []string{"ops"}}}, fn),
+			agent.Safety{ReadOnly: true}, fn, agent.WithApproval(&agent.ApprovalPolicy{Need: 1, Approvers: []string{"ops"}})),
 	}
 }
 
@@ -59,32 +58,6 @@ func TestNodeOptions_KeepTheToolsApprovalGate(t *testing.T) {
 				t.Errorf("%s, RegisterTool with %s: Load = %v; want ErrConfig", name, oname, err)
 			}
 		}
-	}
-}
-
-// An override keeps the tool's IdempotencyKey too: only the ReadOnly/Idempotent classification
-// changes.
-func TestSafetyOverride_KeepsTheIdempotencyKey(t *testing.T) {
-	key := func(json.RawMessage) string { return "k" }
-	tool := agent.Func("upsert", "", agent.Safety{IdempotencyKey: key}, func(context.Context, int) (int, error) { return 0, nil })
-
-	b := New[int, int]("f")
-	b.Tool[int, int]("upsert", tool, ReadOnly())
-	if n := b.core.byName["upsert"]; n.safety.IdempotencyKey == nil || !n.safety.ReadOnly || n.safety.Idempotent {
-		t.Errorf("Builder.Tool with ReadOnly: safety %+v; want ReadOnly with the IdempotencyKey kept", n.safety)
-	}
-
-	reg := NewRegistry()
-	if err := RegisterTool[int, int](reg, "upsert", tool); err != nil {
-		t.Fatalf("register: %v", err)
-	}
-	cfg := `{"version":1,"flow":"f","nodes":[{"name":"upsert","block":"upsert","safety":"idempotent"}],"wiring":[]}`
-	flow, err := Load[int, int]([]byte(cfg), reg)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if n := flow.core.byName["upsert"]; n.safety.IdempotencyKey == nil || n.safety.ReadOnly || !n.safety.Idempotent {
-		t.Errorf("config safety idempotent: safety %+v; want Idempotent with the IdempotencyKey kept", n.safety)
 	}
 }
 

@@ -30,7 +30,7 @@ func userTexts(msgs []Message) []string {
 func TestResume_DifferentInputIsRefused(t *testing.T) {
 	ctx := context.Background()
 	var n int
-	gate := &countingTool{name: "refund", safety: Safety{RequiresApproval: true}, calls: &n}
+	gate := &countingTool{name: "refund", approval: SingleApproval(), calls: &n}
 	var got Request
 	m := &captureModel{inner: NewScriptedModel(ToolTurn("c1", "refund", `{}`), TextTurn("refunded")), got: &got}
 	store := NewMemStore()
@@ -72,7 +72,7 @@ func TestResume_DifferentInputIsRefused(t *testing.T) {
 func TestSession_SendOnceOpenTurnDifferentInputIsRefused(t *testing.T) {
 	ctx := context.Background()
 	var n int
-	gate := &countingTool{name: "refund", safety: Safety{RequiresApproval: true}, calls: &n}
+	gate := &countingTool{name: "refund", approval: SingleApproval(), calls: &n}
 	store := NewMemStore()
 	a := New(NewScriptedModel(ToolTurn("c1", "refund", `{}`), TextTurn("refunded")), store, gate)
 	s, err := a.Session(ctx, "s")
@@ -111,7 +111,7 @@ func TestResume_SagaRunThroughRunIsRefused(t *testing.T) {
 	charge := CompensatedFunc("charge", "", Safety{},
 		func(context.Context, struct{}) (string, error) { return "ch_1", nil },
 		func(context.Context, struct{}, string) error { undone++; return nil })
-	gate := &countingTool{name: "gate", safety: Safety{ReadOnly: true, RequiresApproval: true}, calls: &gated}
+	gate := &countingTool{name: "gate", safety: Safety{ReadOnly: true}, approval: SingleApproval(), calls: &gated}
 	book := Func("book", "", Safety{}, func(context.Context, struct{}) (string, error) {
 		return "", errors.New("no rooms left")
 	})
@@ -145,7 +145,7 @@ func TestResume_SagaRunThroughRunIsRefused(t *testing.T) {
 func TestResume_RunThroughRunSagaIsRefused(t *testing.T) {
 	ctx := context.Background()
 	var gated int
-	gate := &countingTool{name: "gate", safety: Safety{ReadOnly: true, RequiresApproval: true}, calls: &gated}
+	gate := &countingTool{name: "gate", safety: Safety{ReadOnly: true}, approval: SingleApproval(), calls: &gated}
 	store := NewMemStore()
 	a := New(NewScriptedModel(ToolTurn("c1", "gate", `{}`), TextTurn("done")), store, gate)
 	var pa *PendingApproval
@@ -170,7 +170,7 @@ func TestResume_RecordedDenialHoldsAfterGateRemoved(t *testing.T) {
 	var n int
 	store := NewMemStore()
 	m := NewScriptedModel(ToolTurn("c1", "wire", `{"usd":5000}`), TextTurn("ok"))
-	gated := &countingTool{name: "wire", safety: Safety{RequiresApproval: true}, calls: &n}
+	gated := &countingTool{name: "wire", approval: SingleApproval(), calls: &n}
 	var pa *PendingApproval
 	if _, err := New(m, store, gated).Run(ctx, "r", "pay"); !errors.As(err, &pa) {
 		t.Fatalf("first drive: err = %v, want *PendingApproval", err)
@@ -199,7 +199,7 @@ func TestResume_RecordedTallyDenialHoldsAfterGateRemoved(t *testing.T) {
 	var n int
 	store := &failOnceStore{MemStore: NewMemStore(), name: ToolResultStep("c1")} // the call's result: its denial
 	m := NewScriptedModel(ToolTurn("c1", "wire", `{}`), TextTurn("ok"))
-	gated := &countingTool{name: "wire", safety: Safety{Approval: &ApprovalPolicy{Need: 2, Approvers: []string{"a", "b"}}}, calls: &n}
+	gated := &countingTool{name: "wire", approval: &ApprovalPolicy{Need: 2, Approvers: []string{"a", "b"}}, calls: &n}
 	a := New(m, store, gated).WithApproverVerifiers(fakeVerifiers("a", "b"))
 	var pa *PendingApproval
 	if _, err := a.Run(ctx, "r", "pay"); !errors.As(err, &pa) {
@@ -230,13 +230,13 @@ func TestResume_RecordedDenialHoldsAfterGateTightened(t *testing.T) {
 	store := NewMemStore()
 	m := NewScriptedModel(ToolTurn("c1", "wire", `{}`), TextTurn("ok"))
 	var pa *PendingApproval
-	if _, err := New(m, store, &countingTool{name: "wire", safety: Safety{RequiresApproval: true}, calls: &n}).Run(ctx, "r", "pay"); !errors.As(err, &pa) {
+	if _, err := New(m, store, &countingTool{name: "wire", approval: SingleApproval(), calls: &n}).Run(ctx, "r", "pay"); !errors.As(err, &pa) {
 		t.Fatalf("first drive: err = %v, want *PendingApproval", err)
 	}
 	if err := Approve(ctx, store, "r", "c1", false); err != nil {
 		t.Fatal(err)
 	}
-	quorum := &countingTool{name: "wire", safety: Safety{Approval: &ApprovalPolicy{Need: 2, Approvers: []string{"a", "b"}}}, calls: &n}
+	quorum := &countingTool{name: "wire", approval: &ApprovalPolicy{Need: 2, Approvers: []string{"a", "b"}}, calls: &n}
 	if _, err := New(m, store, quorum).WithApproverVerifiers(fakeVerifiers("a", "b")).Run(ctx, "r", "pay"); err != nil {
 		t.Fatalf("resume: %v", err)
 	}
@@ -262,7 +262,7 @@ func TestSaga_UnregisteredWriteIsReportedUncompensated(t *testing.T) {
 	ctx := context.Background()
 	var reserved, gated int
 	reserve := &countingTool{name: "reserve", safety: Safety{}, calls: &reserved}
-	gate := &countingTool{name: "gate", safety: Safety{ReadOnly: true, RequiresApproval: true}, calls: &gated}
+	gate := &countingTool{name: "gate", safety: Safety{ReadOnly: true}, approval: SingleApproval(), calls: &gated}
 	book := Func("book", "", Safety{}, func(context.Context, struct{}) (string, error) {
 		return "", errors.New("no rooms left")
 	})
@@ -355,7 +355,7 @@ func relabelSaga(t *testing.T, first Tool, then ...Tool) *SagaAborted {
 	t.Helper()
 	ctx := context.Background()
 	var gated int
-	gate := &countingTool{name: "gate", safety: Safety{ReadOnly: true, RequiresApproval: true}, calls: &gated}
+	gate := &countingTool{name: "gate", safety: Safety{ReadOnly: true}, approval: SingleApproval(), calls: &gated}
 	book := Func("book", "", Safety{}, func(context.Context, struct{}) (string, error) {
 		return "", errors.New("no rooms left")
 	})

@@ -29,7 +29,7 @@ func TestRunTypedNative_ResponseFormatAndDecode(t *testing.T) {
 		t.Fatalf("ResponseFormat = %+v, want set with a schema", got.ResponseFormat)
 	}
 	for _, tl := range got.Tools {
-		if tl.Name() == finalAnswerTool {
+		if tl.Name == finalAnswerTool {
 			t.Fatal("native mode must not inject the final_answer tool")
 		}
 	}

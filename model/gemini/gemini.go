@@ -277,10 +277,10 @@ func (m *Model) buildRequest(req agent.Request) ([]byte, error) {
 	// Tools: one functionDeclarations array holding every declared tool.
 	var decls []obj
 	for _, t := range req.Tools {
-		decl := obj{"name": t.Name(), "description": t.Description()}
-		params, err := toolParameters(t.ArgsSchema())
+		decl := obj{"name": t.Name, "description": t.Description}
+		params, err := toolParameters(t.Input)
 		if err != nil {
-			return nil, fmt.Errorf("gemini: tool %q: %w (%w)", t.Name(), err, agent.ErrConfig)
+			return nil, fmt.Errorf("gemini: tool %q: %w (%w)", t.Name, err, agent.ErrConfig)
 		}
 		if params != nil {
 			decl["parameters"] = params

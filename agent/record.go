@@ -78,11 +78,14 @@ type Record struct {
 	// rather than one the tool produced by running. It lets a later reader (and bide-audit)
 	// tell a reconciled outcome from a clean one at a glance.
 	Reconciled bool `json:"reconciled,omitempty"`
-	// ReadOnly marks a StepToolResult for a call whose tool was declared ReadOnly when the call
-	// ran. A saga rollback skips such a call (it changed nothing) and treats any other completed
-	// call as a write, whatever the tool is declared as by the time the rollback runs. A result
-	// that ResolveHalt injected is never ReadOnly: only a call that was not retry-safe halts.
-	ReadOnly bool `json:"read_only,omitempty"`
+	// Safety is the Safety of the tool a StepToolResult or StepSagaFail record's call ran under
+	// (or, for a denied call, would have run under), and Approval its approval gate, nil for an
+	// ungated tool. A saga rollback reads Safety: it skips a call that ran ReadOnly (it changed
+	// nothing) and treats any other completed call as a write, whatever the tool is declared as
+	// by the time the rollback runs. Safety is nil on a result that ResolveHalt injected, which
+	// is a write (only a call that was not retry-safe halts), and on every other kind.
+	Safety   *Safety         `json:"safety,omitempty"`
+	Approval *ApprovalPolicy `json:"approval,omitempty"`
 	// Evidence is what a reconciler read to decide the outcome (a queried provider record,
 	// a message id, a log line). It is carried on the reconciled result and signed with it,
 	// so the verdict and its basis live in the journal beside the outcome.

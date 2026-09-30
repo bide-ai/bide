@@ -55,6 +55,9 @@ type regBlock struct {
 	// keep or lower its retry classification, never raise it, and keeps the approval
 	// gate recorded here (see safetyFromConfig).
 	safety agent.Safety
+	// approval is the approval gate of a wrapped agent tool (its ToolSpec.Approval),
+	// carried onto the loaded node so Build refuses it, as for a hand-built node.
+	approval *agent.ApprovalPolicy
 }
 
 // regPred is a registered Switch predicate. mType is the switched value's type M
@@ -250,7 +253,7 @@ func RegisterStep[I, O any](r *Registry, name string, fn func(context.Context, I
 // into O, exactly like Builder.Tool. A duplicate name is an error, surfaced at
 // Load and returned here for inline checking.
 //
-// Safety AUTO-DERIVES from t.Safety(), mirroring Builder.Tool; an explicit
+// Safety AUTO-DERIVES from the tool's spec (agent.SpecOf), mirroring Builder.Tool; an explicit
 // plan.ReadOnly()/plan.Idempotent() option overrides the derived Safety. Safety is
 // recorded in Go here, not in the config JSON.
 func RegisterTool[I, O any](r *Registry, name string, t agent.Tool, opts ...NodeOption) error {
@@ -258,7 +261,8 @@ func RegisterTool[I, O any](r *Registry, name string, t agent.Tool, opts ...Node
 		kind:    kindTool,
 		inType:  reflect.TypeFor[I](),
 		outType: reflect.TypeFor[O](),
-		safety:  safetyFromOptions(t.Safety(), opts),
+		safety:   safetyFromOptions(agent.SpecOf(t).Safety, opts),
+		approval: agent.SpecOf(t).Approval,
 		run: func(ctx context.Context, in any) (any, error) {
 			typed, ok := in.(I)
 			if !ok {

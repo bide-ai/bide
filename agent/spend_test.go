@@ -81,7 +81,7 @@ func TestTokenBudget_DiscardedSpendSurvivesResume(t *testing.T) {
 	ctx := context.Background()
 	store := NewMemStore()
 	var calls int
-	gated := &countingTool{name: "lookup", safety: Safety{ReadOnly: true, RequiresApproval: true}, calls: &calls}
+	gated := &countingTool{name: "lookup", safety: Safety{ReadOnly: true}, approval: SingleApproval(), calls: &calls}
 	m := &scriptModel{turns: [][]Emit{truncatedTurn(billed), toolTurnWithUsage("c1", "lookup", `{}`, billed)}}
 	_, err := New(m, store, gated).Use(retryOnceMW).Run(ctx, "r", "go")
 	var pa *PendingApproval

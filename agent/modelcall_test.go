@@ -264,7 +264,7 @@ func TestModelRecord_JournalsPerTurnDigests(t *testing.T) {
 	if len(recs) != 2 {
 		t.Fatalf("%d model records, want 2", len(recs))
 	}
-	tools := ToolsDigest([]Tool{tool})
+	tools := ToolsDigest([]ToolSpec{SpecOf(tool)})
 	want := []struct {
 		prompt       string
 		finish       FinishReason
@@ -297,10 +297,10 @@ func TestModelRecord_JournalsPerTurnDigests(t *testing.T) {
 func TestDigests(t *testing.T) {
 	a := Func("a", "first", Safety{ReadOnly: true}, func(context.Context, struct{}) (string, error) { return "", nil })
 	b := Func("b", "second", Safety{ReadOnly: true}, func(context.Context, struct{}) (string, error) { return "", nil })
-	if ToolsDigest([]Tool{a, b}) != ToolsDigest([]Tool{b, a}) {
+	if ToolsDigest([]ToolSpec{SpecOf(a), SpecOf(b)}) != ToolsDigest([]ToolSpec{SpecOf(b), SpecOf(a)}) {
 		t.Error("ToolsDigest depends on the order of the tools")
 	}
-	if ToolsDigest([]Tool{a}) == ToolsDigest([]Tool{a, b}) || ToolsDigest(nil) != "" {
+	if ToolsDigest([]ToolSpec{SpecOf(a)}) == ToolsDigest([]ToolSpec{SpecOf(a), SpecOf(b)}) || ToolsDigest(nil) != "" {
 		t.Error("ToolsDigest does not tell tool sets apart")
 	}
 	if PromptDigest([]Message{UserText("q")}) != "" {

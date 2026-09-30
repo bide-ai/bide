@@ -209,12 +209,12 @@ func (m *Model) buildRequest(req agent.Request) ([]byte, error) {
 	var tools []map[string]any
 	for _, t := range req.Tools {
 		var input any = map[string]any{"type": "object"}
-		if s := t.ArgsSchema(); len(s) > 0 {
+		if s := t.Input; len(s) > 0 {
 			input = json.RawMessage(s)
 		}
 		tools = append(tools, map[string]any{
-			"name":         t.Name(),
-			"description":  t.Description(),
+			"name":         t.Name,
+			"description":  t.Description,
 			"input_schema": input,
 		})
 	}

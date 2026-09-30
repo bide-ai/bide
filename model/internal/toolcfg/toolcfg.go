@@ -27,7 +27,7 @@ var (
 func Check(provider string, name *regexp.Regexp, req agent.Request) (send bool, err error) {
 	seen := map[string]bool{}
 	for _, t := range req.Tools {
-		n := t.Name()
+		n := t.Name
 		if !name.MatchString(n) {
 			return false, fmt.Errorf("%s: tool name %q does not match %s: %w", provider, n, name, agent.ErrConfig)
 		}

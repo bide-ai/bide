@@ -197,17 +197,17 @@ func (m *Model) buildRequest(req agent.Request) ([]byte, error) {
 
 	var tools []obj
 	for _, t := range req.Tools {
-		params := t.ArgsSchema()
+		params := t.Input
 		if len(params) == 0 {
 			params = json.RawMessage(`{"type":"object"}`)
 		}
-		fn := obj{"name": t.Name(), "description": t.Description(), "parameters": json.RawMessage(params)}
+		fn := obj{"name": t.Name, "description": t.Description, "parameters": json.RawMessage(params)}
 		if m.strict {
 			// A schema strict mode cannot express fails the request: sending it non-strict would
 			// quietly drop the strict mode the caller asked for.
 			s, err := schema.OpenAIStrict(params)
 			if err != nil {
-				return nil, fmt.Errorf("openai: tool %q: strict schema: %w (%w)", t.Name(), err, agent.ErrConfig)
+				return nil, fmt.Errorf("openai: tool %q: strict schema: %w (%w)", t.Name, err, agent.ErrConfig)
 			}
 			fn["parameters"] = json.RawMessage(s)
 			fn["strict"] = true

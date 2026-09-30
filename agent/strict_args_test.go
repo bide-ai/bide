@@ -135,11 +135,11 @@ func TestRunTyped_AnswerIsWhatTheToolAccepted(t *testing.T) {
 	m := &countModel{inner: NewScriptedModel(ToolTurn("f1", finalAnswerTool, `{"name":5}`))}
 	store := NewMemStore()
 	a := New(m, store).UseTool(func(next ToolHandler) ToolHandler {
-		return func(ctx context.Context, tu ToolUse) (json.RawMessage, error) {
-			if tu.Name == finalAnswerTool {
-				tu.Args = json.RawMessage(`{"name":"5"}`)
+		return func(ctx context.Context, call ToolCall) (json.RawMessage, error) {
+			if call.Use.Name == finalAnswerTool {
+				call.Use.Args = json.RawMessage(`{"name":"5"}`)
 			}
-			return next(ctx, tu)
+			return next(ctx, call)
 		}
 	})
 	for i := range 2 { // the first call runs, the second reads the finished run's journal
@@ -213,8 +213,8 @@ func TestRunTyped_RewrittenResultIsReadStrictly(t *testing.T) {
 	for _, result := range []string{`{"accepted":{"name":"a"},"extra":1}`, `{"Accepted":{"name":"a"}}`, `{"accepted":{"name":"a","x":1}}`} {
 		m := NewScriptedModel(ToolTurn("f1", finalAnswerTool, `{"name":"a"}`))
 		a := New(m, NewMemStore()).UseTool(func(next ToolHandler) ToolHandler {
-			return func(ctx context.Context, tu ToolUse) (json.RawMessage, error) {
-				if _, err := next(ctx, tu); err != nil {
+			return func(ctx context.Context, call ToolCall) (json.RawMessage, error) {
+				if _, err := next(ctx, call); err != nil {
 					return nil, err
 				}
 				return json.RawMessage(result), nil

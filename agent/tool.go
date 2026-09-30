@@ -5,20 +5,28 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
+	"time"
 
 	"github.com/bide-ai/bide/internal/strictjson"
 	"github.com/bide-ai/bide/schema"
 )
 
-// Tool is an action the agent can take. The interface is untyped (json.RawMessage)
-// so heterogeneous tools share one type — including runtime MCP tools whose schema
-// is only known at runtime and can't be a Go struct. Native tools get compile-time
-// typing via Func (below); that's the primary ergonomic.
+// Tool is an action the agent can take. The interface is untyped (json.RawMessage) so
+// heterogeneous tools share one type, including runtime MCP tools whose schema is only known at
+// runtime and can't be a Go struct. Native tools get compile-time typing via Func (below); that's
+// the primary ergonomic.
+//
+// A tool describes itself with a ToolSpec. A tool that also has a Spec() ToolSpec method is
+// described by it, and the agent reads nothing else (see SpecOf); every tool this module builds
+// has one. A tool with only this method set is described by Name, Description, ArgsSchema and
+// Safety, and has no approval gate, timeout, title or output schema: give it a Spec method for
+// those.
 type Tool interface {
 	Name() string
 	Description() string
 	// ArgsSchema is the provider-NEUTRAL argument schema. The schema/ package emits
-	// per-provider dialects (OpenAI-strict / Gemini / Anthropic) from it — so this is
+	// per-provider dialects (OpenAI-strict / Gemini / Anthropic) from it, so this is
 	// never a single frozen blob handed straight to a provider.
 	ArgsSchema() json.RawMessage
 	// Safety declares how the tool may be retried on resume.
@@ -26,55 +34,197 @@ type Tool interface {
 	Call(ctx context.Context, args json.RawMessage) (json.RawMessage, error)
 }
 
-// Safety declares how a tool may be retried when a run resumes after a crash and the
-// call's outcome is unknown (it was invoked, but no result was journaled). Replaces a
-// coarse Read/Write flag. For a trusted MCP server, its tool annotations
-// (readOnlyHint / idempotentHint) map onto it (see mcp.TrustAnnotations).
-type Safety struct {
-	// ReadOnly: no external side effects — always safe to re-run.
-	ReadOnly bool
-	// Idempotent: mutates state but is safe to retry, because a repeat with the same
-	// key is a no-op downstream. Set IdempotencyKey to make that concrete.
-	Idempotent bool
-	// IdempotencyKey derives a stable key from the args so a retried call can be
-	// de-duplicated. Empty result => not derivable.
-	IdempotencyKey func(args json.RawMessage) string
-	// RequiresApproval pauses the run for a durable human decision (HITL) before the
-	// tool executes, surfaced as *ApprovalPending; resume after agent.Approve.
-	RequiresApproval bool
-	// Approval, when non-nil, upgrades the approval gate from one
-	// decision to an m-of-n human gate over a bounded, named set of
-	// approvers. nil = the existing 1-of-1 RequiresApproval behavior.
+// ToolSpec is everything the agent knows about a tool: what the model is shown (Name,
+// Description, Input), how a call may be retried (Safety), whether it waits for a human first
+// (Approval), and how long a call may take (Timeout). The agent reads a tool's spec once, when the
+// tool is registered, and decides every call from that copy.
+type ToolSpec struct {
+	// Name is the name the model calls the tool by. It must be unique among an agent's tools.
+	Name string
+	// Title is a human-readable display name (an MCP tool's title). Models are not shown it.
+	Title string
+	// Description tells the model what the tool does and when to call it.
+	Description string
+	// Input is the provider-neutral JSON Schema of the arguments, an object schema. The schema/
+	// package emits each provider's dialect from it.
+	Input json.RawMessage
+	// Output is the JSON Schema of the result, when the tool declares one (an MCP tool's
+	// outputSchema). Models are not shown it; it documents the result for hosts and auditors.
+	Output json.RawMessage
+	// Safety declares how a call may be retried (see Safety). It is journaled with each result.
+	Safety Safety
+	// Approval, when non-nil, pauses each call for human approval before the tool runs: one
+	// decision (SingleApproval) or an m-of-n gate over named approvers. It is journaled with
+	// each result.
 	Approval *ApprovalPolicy
+	// Timeout, when positive, bounds each call: the call runs under a context with this
+	// deadline. A result the tool returns is recorded even if the deadline has passed; an error
+	// it returns after the deadline has an unknown outcome (see WithTimeout).
+	Timeout time.Duration
 }
 
-// ApprovalPolicy declares a k-of-n human gate. Need is k; the eligible
-// approvers are the bounded set (n = len(Approvers)). A tool with a
-// non-nil Approval requires approval whether or not RequiresApproval is
-// also set.
+// specTool is a tool that describes itself with a ToolSpec.
+type specTool interface{ Spec() ToolSpec }
+
+// SpecOf returns t's ToolSpec: t.Spec() if t has that method, and otherwise the spec its Name,
+// Description, ArgsSchema and Safety methods describe (no approval gate, timeout, title or output
+// schema). The Approval policy is a copy, so changing it does not change the tool.
+//
+// Deprecated: transitional; renamed by the 1.0 rewrite, where Tool has a Spec method and t.Spec()
+// replaces SpecOf(t).
+func SpecOf(t Tool) ToolSpec {
+	var s ToolSpec
+	if st, ok := t.(specTool); ok {
+		s = st.Spec()
+	} else {
+		s = ToolSpec{Name: t.Name(), Description: t.Description(), Input: t.ArgsSchema(), Safety: t.Safety()}
+	}
+	s.Approval = s.Approval.clone()
+	return s
+}
+
+// Safety declares how a tool call may be retried: when a run resumes after a crash and the call's
+// outcome is unknown (it was invoked, but no result was journaled), and when a tool middleware
+// retries or caches it. It is plain data: comparable, and journaled with each call's result. The
+// zero value is a side effect, which runs at most once per call and halts a resume whose outcome
+// is unknown. For a trusted MCP server, its tool annotations (readOnlyHint / idempotentHint) map
+// onto it (see mcp.TrustAnnotations). Whether a call waits for a human is not Safety but
+// ToolSpec.Approval (see WithApproval).
+type Safety struct {
+	// ReadOnly: no external side effects, so always safe to re-run.
+	ReadOnly bool `json:"read_only,omitempty"`
+	// Idempotent: mutates state but is safe to retry, because a repeat is a no-op downstream.
+	// The tool keeps that promise itself: it derives its own downstream idempotency key from
+	// its arguments, or uses NextOnceKey.
+	Idempotent bool `json:"idempotent,omitempty"`
+}
+
+// ApprovalPolicy declares a human approval gate. SingleApproval's shape (Need 1, no approver set)
+// is one decision, recorded with Approve and pausing as *ApprovalPending. Any other policy is an
+// m-of-n gate: Need is k and the eligible approvers are the bounded set (n = len(Approvers)),
+// whose signed decisions SubmitDecision records; Validate checks it.
 type ApprovalPolicy struct {
-	Need      int      // decisions required to proceed (k), 1 <= Need <= len(Approvers)
-	Approvers []string // eligible approver ids; the bounded set (n)
+	Need      int      `json:"need"`                // decisions required to proceed (k), 1 <= Need <= len(Approvers)
+	Approvers []string `json:"approvers,omitempty"` // eligible approver ids; the bounded set (n)
+}
+
+// SingleApproval returns the one-decision gate: a call pauses as *ApprovalPending until Approve
+// records a decision for it.
+func SingleApproval() *ApprovalPolicy { return &ApprovalPolicy{Need: 1} }
+
+// single reports whether p is the one-decision gate (SingleApproval's shape).
+func (p *ApprovalPolicy) single() bool { return p != nil && p.Need == 1 && len(p.Approvers) == 0 }
+
+// clone returns a copy of p that shares nothing with it, or nil for nil.
+func (p *ApprovalPolicy) clone() *ApprovalPolicy {
+	if p == nil {
+		return nil
+	}
+	return &ApprovalPolicy{Need: p.Need, Approvers: slices.Clone(p.Approvers)}
+}
+
+// checkApproval reports whether p is a gate the agent can enforce: the one-decision gate, or an
+// m-of-n policy that Validate accepts.
+func checkApproval(p *ApprovalPolicy) error {
+	switch {
+	case p == nil:
+		return fmt.Errorf("approval policy is nil (give no approval option for an ungated tool): %w", ErrConfig)
+	case p.single():
+		return nil
+	}
+	return p.Validate()
 }
 
 // retriableOnResume reports whether an unknown-outcome call may be safely re-run.
 // Anything else halts the run for confirmation rather than risk a double side effect.
-//
-// A declared IdempotencyKey counts as retry-safe: the tool asserts that a retried call
-// with the same args de-duplicates downstream, so on an unknown outcome the run may
-// safely retry it instead of firing *OutcomeUnknown. The contract is the tool's to keep: it
-// must send that key to the downstream. The SDK derives the same key from the same args
-// on retry, but does not itself call the downstream, so the de-duplication happens only if
-// the tool forwards the key. This turns halt-for-a-human stops into automatic retries for
-// autonomous and ambient agents whose tools carry idempotency keys.
-func (s Safety) retriableOnResume() bool {
-	return s.ReadOnly || s.Idempotent || s.IdempotencyKey != nil
-}
+func (s Safety) retriableOnResume() bool { return s.ReadOnly || s.Idempotent }
 
 // RetrySafe reports whether a call to the tool may run more than once for one tool call: it
-// is ReadOnly, Idempotent, or carries an IdempotencyKey. It is the test the agent applies on
-// resume, and the one tool middleware applies before retrying a call (see ToolSafety).
+// is ReadOnly or Idempotent. It is the test the agent applies on resume, and the one tool
+// middleware applies before retrying a call (see ToolCall).
 func (s Safety) RetrySafe() bool { return s.retriableOnResume() }
+
+// ToolOption configures a tool built by Func, CompensatedFunc or SubAgent.
+type ToolOption interface{ applyTool(*toolConfig) error }
+
+// toolConfig is what the options of one tool constructor set.
+type toolConfig struct {
+	spec ToolSpec
+	// set records which options were given, for a constructor that refuses one.
+	safetySet, timeoutSet, outputSet bool
+}
+
+type toolOption func(*toolConfig) error
+
+func (f toolOption) applyTool(c *toolConfig) error { return f(c) }
+
+// WithSafety sets the tool's Safety. For Func and CompensatedFunc it replaces the Safety argument
+// (which the 1.0 rewrite removes in its favour). SubAgent refuses it: a sub-agent call re-enters
+// its sub-run, whose own calls carry their safety.
+func WithSafety(s Safety) ToolOption {
+	return toolOption(func(c *toolConfig) error { c.spec.Safety, c.safetySet = s, true; return nil })
+}
+
+// WithApproval gates every call to the tool on human approval before it runs: p is
+// SingleApproval() for one decision (Approve), or an m-of-n policy (SubmitDecision, and the
+// agent's WithApproverVerifiers). A nil or invalid policy is ErrConfig. The policy is copied.
+func WithApproval(p *ApprovalPolicy) ToolOption {
+	return toolOption(func(c *toolConfig) error {
+		if err := checkApproval(p); err != nil {
+			return err
+		}
+		c.spec.Approval = p.clone()
+		return nil
+	})
+}
+
+// WithTimeout bounds each call to the tool by d: the call runs under a context with that
+// deadline, on top of the run's. It bounds only a tool that honors its context; the agent still
+// waits for the call to return. A call that returns a result is recorded even if the deadline has
+// passed, since a known outcome is never discarded. A call that returns an error after the
+// deadline has an unknown outcome, as if it had failed with ErrToolOutcomeUnknown: a side effect
+// records nothing, and a resume halts for its outcome, while a retry-safe tool records the error
+// for the model. d must be positive (ErrConfig otherwise).
+func WithTimeout(d time.Duration) ToolOption {
+	return toolOption(func(c *toolConfig) error {
+		if d <= 0 {
+			return fmt.Errorf("tool timeout %s is not positive: %w", d, ErrConfig)
+		}
+		c.spec.Timeout, c.timeoutSet = d, true
+		return nil
+	})
+}
+
+// WithTitle sets the tool's human-readable display name (ToolSpec.Title).
+func WithTitle(title string) ToolOption {
+	return toolOption(func(c *toolConfig) error { c.spec.Title = title; return nil })
+}
+
+// WithOutputSchema declares the JSON Schema of the tool's result (ToolSpec.Output). It must be a
+// JSON object (ErrConfig otherwise). The schema is copied.
+func WithOutputSchema(schema json.RawMessage) ToolOption {
+	return toolOption(func(c *toolConfig) error {
+		var obj map[string]json.RawMessage
+		if err := json.Unmarshal(schema, &obj); err != nil || obj == nil {
+			return fmt.Errorf("tool output schema is not a JSON object: %w", ErrConfig)
+		}
+		c.spec.Output, c.outputSet = bytes.Clone(schema), true
+		return nil
+	})
+}
+
+// applyToolOptions applies opts to c in order, and returns the first error, naming the tool.
+func applyToolOptions(c *toolConfig, opts []ToolOption) error {
+	for _, o := range opts {
+		if o == nil {
+			return fmt.Errorf("agent: tool %q: nil option: %w", c.spec.Name, ErrConfig)
+		}
+		if err := o.applyTool(c); err != nil {
+			return fmt.Errorf("agent: tool %q: %w", c.spec.Name, err)
+		}
+	}
+	return nil
+}
 
 // Func wraps a typed Go function into a Tool. In is decoded from the args strictly, so the
 // tool reads exactly what the model sent: a missing required field (one schema.For lists as
@@ -85,35 +235,52 @@ func (s Safety) RetrySafe() bool { return s.retriableOnResume() }
 // handler won't compile. The Tool interface itself stays untyped so a map of mixed tools (and
 // runtime MCP tools) works.
 //
+// opts set the rest of the tool's spec: WithApproval, WithTimeout, WithTitle, WithOutputSchema,
+// and WithSafety, which replaces the safety argument.
+//
 // Func panics, as New does for a missing model, if schema.For cannot describe In: such a type
 // (a field reached through an embedded pointer to an unexported struct) could never be decoded
-// from a call's arguments, so the tool would fail every call.
-func Func[In, Out any](name, description string, safety Safety, fn func(context.Context, In) (Out, error)) Tool {
+// from a call's arguments, so the tool would fail every call. It panics, with an error wrapping
+// ErrConfig, on an invalid option too.
+func Func[In, Out any](name, description string, safety Safety, fn func(context.Context, In) (Out, error), opts ...ToolOption) Tool {
+	return newFuncTool(name, description, safety, fn, opts)
+}
+
+func newFuncTool[In, Out any](name, description string, safety Safety, fn func(context.Context, In) (Out, error), opts []ToolOption) *funcTool[In, Out] {
 	// Derive the provider-neutral argument schema from In once, at construction. Adapters
 	// dialectize it (schema.OpenAIStrict etc.) at request time.
 	argsSchema, err := schema.For[In]()
 	if err != nil {
 		panic(fmt.Errorf("agent: Func %q: argument type: %w", name, err))
 	}
-	return &funcTool[In, Out]{name: name, description: description, safety: safety, fn: fn, argsSchema: argsSchema}
+	c := toolConfig{spec: ToolSpec{Name: name, Description: description, Input: argsSchema, Safety: safety}}
+	if err := applyToolOptions(&c, opts); err != nil {
+		panic(err)
+	}
+	return &funcTool[In, Out]{spec: c.spec, fn: fn}
 }
 
 type funcTool[In, Out any] struct {
-	name, description string
-	safety            Safety
-	argsSchema        json.RawMessage
-	fn                func(context.Context, In) (Out, error)
+	spec ToolSpec
+	fn   func(context.Context, In) (Out, error)
 }
 
-func (t *funcTool[In, Out]) Name() string                { return t.name }
-func (t *funcTool[In, Out]) Description() string         { return t.description }
-func (t *funcTool[In, Out]) Safety() Safety              { return t.safety }
-func (t *funcTool[In, Out]) ArgsSchema() json.RawMessage { return t.argsSchema }
+func (t *funcTool[In, Out]) Name() string                { return t.spec.Name }
+func (t *funcTool[In, Out]) Description() string         { return t.spec.Description }
+func (t *funcTool[In, Out]) Safety() Safety              { return t.spec.Safety }
+func (t *funcTool[In, Out]) ArgsSchema() json.RawMessage { return t.spec.Input }
+
+// Spec returns the tool's spec, with a copy of its approval policy.
+func (t *funcTool[In, Out]) Spec() ToolSpec {
+	s := t.spec
+	s.Approval = s.Approval.clone()
+	return s
+}
 
 func (t *funcTool[In, Out]) Call(ctx context.Context, args json.RawMessage) (json.RawMessage, error) {
 	var in In
 	if err := decodeArgs(args, &in); err != nil {
-		return nil, fmt.Errorf("decode args for tool %q: %w (%w)", t.name, err, ErrToolArgs)
+		return nil, fmt.Errorf("decode args for tool %q: %w (%w)", t.spec.Name, err, ErrToolArgs)
 	}
 	out, err := t.fn(ctx, in)
 	if err != nil {

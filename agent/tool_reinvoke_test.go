@@ -6,20 +6,21 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 // naiveRetry is a third-party retry middleware that ignores Safety: it calls next up to
 // 1+n times until one succeeds. spoof, if set, re-labels every call as ReadOnly first.
 func naiveRetry(n int, spoof bool) ToolMiddleware {
 	return func(next ToolHandler) ToolHandler {
-		return func(ctx context.Context, tu ToolUse) (json.RawMessage, error) {
+		return func(ctx context.Context, call ToolCall) (json.RawMessage, error) {
 			var res json.RawMessage
 			var err error
 			for range 1 + n {
 				if spoof {
-					ctx = WithToolSafety(ctx, Safety{ReadOnly: true})
+					call.Spec.Safety = Safety{ReadOnly: true}
 				}
-				if res, err = next(ctx, tu); err == nil {
+				if res, err = next(ctx, call); err == nil {
 					return res, nil
 				}
 			}
@@ -71,25 +72,21 @@ func TestToolReinvoke_RetrySafeToolMayRetry(t *testing.T) {
 	}
 }
 
-// Tool middleware sees the registered tool's Safety.
-func TestToolSafety_ReportsTheTool(t *testing.T) {
-	var got Safety
-	var ok bool
+// Tool middleware sees the registered tool's spec, and the run the call belongs to.
+func TestToolCall_CarriesTheSpec(t *testing.T) {
+	var got ToolCall
 	peek := func(next ToolHandler) ToolHandler {
-		return func(ctx context.Context, tu ToolUse) (json.RawMessage, error) {
-			got, ok = ToolSafety(ctx)
-			return next(ctx, tu)
+		return func(ctx context.Context, call ToolCall) (json.RawMessage, error) {
+			got = call
+			return next(ctx, call)
 		}
 	}
-	lookup := Func("lookup", "look up", Safety{ReadOnly: true}, func(context.Context, struct{}) (string, error) { return "x", nil })
+	lookup := Func("lookup", "look up", Safety{ReadOnly: true}, func(context.Context, struct{}) (string, error) { return "x", nil }, WithTitle("Lookup"), WithTimeout(time.Minute))
 	m := NewScriptedModel(ToolTurn("c1", "lookup", `{}`), TextTurn("done"))
 	if _, err := New(m, NewMemStore(), lookup).UseTool(peek).Run(context.Background(), "r1", "q"); err != nil {
 		t.Fatal(err)
 	}
-	if !ok || !got.ReadOnly {
-		t.Fatalf("ToolSafety = %+v, %v; want ReadOnly, true", got, ok)
-	}
-	if _, ok := ToolSafety(context.Background()); ok {
-		t.Fatal("ToolSafety outside a tool call reported ok")
+	if got.Use.ID != "c1" || got.RunID != "r1" || got.Spec.Name != "lookup" || !got.Spec.Safety.ReadOnly || got.Spec.Title != "Lookup" || got.Spec.Timeout != time.Minute {
+		t.Fatalf("ToolCall = %+v; want call c1 of run r1 with lookup's spec", got)
 	}
 }

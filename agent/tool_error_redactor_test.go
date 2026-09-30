@@ -92,10 +92,10 @@ func TestToolErrorTextInMiddleware(t *testing.T) {
 			return strings.ReplaceAll(err.Error(), "ACCT-NUMBER-SECRET", "ACCT")
 		}).
 		UseTool(func(next ToolHandler) ToolHandler {
-			return func(ctx context.Context, tu ToolUse) (json.RawMessage, error) {
-				res, err := next(ctx, tu)
+			return func(ctx context.Context, call ToolCall) (json.RawMessage, error) {
+				res, err := next(ctx, call)
 				if err != nil {
-					seen = ToolErrorText(ctx, tu.Name, err)
+					seen = call.ErrorText(err)
 				}
 				return res, err
 			}
@@ -113,8 +113,8 @@ func TestToolErrorTextInMiddleware(t *testing.T) {
 	if want := "account ACCT: https://h.test/x?key=REDACTED"; seen != want || journaled != want {
 		t.Errorf("middleware saw %q and the journal holds %q, want both %q", seen, journaled, want)
 	}
-	if got := ToolErrorText(context.Background(), "lookup", errors.New("at https://h.test/x?key=SK-SECRET")); got != "at https://h.test/x?key=REDACTED" {
-		t.Errorf("ToolErrorText outside a tool call = %q", got)
+	if got := (ToolCall{Use: ToolUse{Name: "lookup"}}).ErrorText(errors.New("at https://h.test/x?key=SK-SECRET")); got != "at https://h.test/x?key=REDACTED" {
+		t.Errorf("ErrorText of a ToolCall the agent did not build = %q", got)
 	}
 	if got := RedactURLs("https://u:p@h.test/x?key=SK-SECRET"); got != "https://REDACTED@h.test/x?key=REDACTED" {
 		t.Errorf("RedactURLs = %q", got)

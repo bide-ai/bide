@@ -38,9 +38,14 @@ func errTurn(err error) []Emit { return []Emit{{Err: err}} }
 
 // countingTool records how many times it actually executed.
 type countingTool struct {
-	name   string
-	safety Safety
-	calls  *int
+	name     string
+	safety   Safety
+	approval *ApprovalPolicy
+	calls    *int
+}
+
+func (t *countingTool) Spec() ToolSpec {
+	return ToolSpec{Name: t.name, Safety: t.safety, Approval: t.approval}
 }
 
 func (t *countingTool) Name() string                { return t.name }
@@ -208,7 +213,7 @@ func TestHITL_PausesForApprovalThenResumes(t *testing.T) {
 	store := NewMemStore()
 	ctx := context.Background()
 	var charged int
-	charge := &countingTool{name: "charge", safety: Safety{RequiresApproval: true}, calls: &charged}
+	charge := &countingTool{name: "charge", approval: SingleApproval(), calls: &charged}
 
 	m := &scriptModel{turns: [][]Emit{toolTurn("c1", "charge", `{}`), textTurn("done")}}
 	_, err := New(m, store, charge).Run(ctx, "r1", "pay")
@@ -598,7 +603,7 @@ func TestSubAgent_PropagatesHaltAndApproval(t *testing.T) {
 	t.Run("pending-approval", func(t *testing.T) {
 		store := NewMemStore()
 		var charged int
-		approve := &countingTool{name: "charge", safety: Safety{RequiresApproval: true}, calls: &charged}
+		approve := &countingTool{name: "charge", approval: SingleApproval(), calls: &charged}
 		sub := New(&scriptModel{turns: [][]Emit{
 			toolTurn("s1", "charge", `{}`),
 			textTurn("sub-done"),

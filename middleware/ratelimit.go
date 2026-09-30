@@ -91,11 +91,11 @@ func RateLimit(r *RateLimiter) agent.Middleware {
 // ToolRateLimit throttles tool calls through the shared limiter.
 func ToolRateLimit(r *RateLimiter) agent.ToolMiddleware {
 	return func(next agent.ToolHandler) agent.ToolHandler {
-		return func(ctx context.Context, tu agent.ToolUse) (json.RawMessage, error) {
+		return func(ctx context.Context, call agent.ToolCall) (json.RawMessage, error) {
 			if err := r.wait(ctx); err != nil {
 				return nil, err
 			}
-			return next(ctx, tu)
+			return next(ctx, call)
 		}
 	}
 }

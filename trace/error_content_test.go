@@ -42,8 +42,8 @@ func failingSpans(t *testing.T) []sdktrace.ReadOnlySpan {
 			Err:  fmt.Errorf("openai (%w)", agent.ErrModel)}
 	})
 	_, _ = mh(context.Background(), agent.ModelCall{Request: agent.Request{Messages: []agent.Message{agent.UserText("PATIENT-SSN-123-45-6789")}}})
-	th := Tool(tracer)(func(_ context.Context, tu agent.ToolUse) (json.RawMessage, error) {
-		return nil, fmt.Errorf("charge failed for args %s: %w", tu.Args, agent.ErrTool)
+	th := Tool(tracer)(func(_ context.Context, call agent.ToolCall) (json.RawMessage, error) {
+		return nil, fmt.Errorf("charge failed for args %s: %w", call.Use.Args, agent.ErrTool)
 	})
 	_, _ = th(context.Background(), agent.ToolUse{ID: "t1", Name: "charge", Args: json.RawMessage(`{"card":"4111111111111111"}`)})
 	_, end := Invoke(context.Background(), tracer, "a")

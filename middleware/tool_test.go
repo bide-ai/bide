@@ -13,9 +13,9 @@ import (
 
 func TestToolCache_ShortCircuitsRepeat(t *testing.T) {
 	var calls int
-	base := agent.ToolHandler(func(_ context.Context, tu agent.ToolUse) (json.RawMessage, error) {
+	base := agent.ToolHandler(func(_ context.Context, call agent.ToolCall) (json.RawMessage, error) {
 		calls++
-		return json.RawMessage(`{"n":` + string(tu.Args) + `}`), nil
+		return json.RawMessage(`{"n":` + string(call.Use.Args) + `}`), nil
 	})
 	h := ToolCache()(base)
 	ctx := agent.WithToolSafety(context.Background(), agent.Safety{ReadOnly: true}) // ToolCache caches only ReadOnly tools

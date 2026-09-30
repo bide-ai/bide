@@ -54,7 +54,7 @@ func Test_R105b_KeylessApproverIsRefused(t *testing.T) {
 
 	// The gate refuses the policy before any decision is read, and the tool never runs.
 	ran := 0
-	wire := agent.Func("wire", "", agent.Safety{Approval: &p}, func(context.Context, struct{}) (string, error) { ran++; return "sent", nil })
+	wire := agent.Func("wire", "", agent.Safety{}, func(context.Context, struct{}) (string, error) { ran++; return "sent", nil }, agent.WithApproval(&p))
 	_, err := agent.New(agent.NewScriptedModel(agent.ToolTurn("c", "wire", `{}`), agent.TextTurn("done")), agent.NewMemStore(), wire).
 		WithApproverVerifiers(resolve).Run(context.Background(), "r", "hi")
 	if !errors.Is(err, agent.ErrConfig) || ran != 0 {
@@ -80,7 +80,7 @@ func Test_R105c_GateReadsTheRecordedTallyStrictly(t *testing.T) {
 	ctx := context.Background()
 	p := agent.ApprovalPolicy{Need: 2, Approvers: []string{"alice", "bob"}}
 	ran := 0
-	wire := agent.Func("wire", "", agent.Safety{Approval: &p}, func(context.Context, struct{}) (string, error) { ran++; return "sent", nil })
+	wire := agent.Func("wire", "", agent.Safety{}, func(context.Context, struct{}) (string, error) { ran++; return "sent", nil }, agent.WithApproval(&p))
 	resolve := func(id string) (agent.ApproverVerifier, bool) { return keyedVerifier{id + "-key"}, true }
 	s := agent.NewMemStore()
 	newAgent := func() *agent.Agent {

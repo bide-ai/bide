@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"net/url"
@@ -42,24 +41,11 @@ func toolErrorText(redact func(tool string, err error) string, tool string, err 
 	return redactURLs(text)
 }
 
-// ToolErrorText returns the text an agent journals, and sends to the model, for a call to the
-// tool named tool that failed with err: the text chosen by the agent's WithToolErrorRedactor, if
-// ctx is a tool call's context (as a ToolMiddleware receives it) from an agent with one set, and
-// otherwise err's own text, in either case with every URL in it redacted. A tool middleware that
-// records a failed call's error text (a trace span, a log line) uses it to record no more than the
-// journal holds.
-func ToolErrorText(ctx context.Context, tool string, err error) string {
-	redact, _ := ctx.Value(toolErrRedactKey{}).(func(tool string, err error) string)
-	return toolErrorText(redact, tool, err)
-}
-
 // RedactURLs returns s with every URL in it redacted: its userinfo, each query parameter's value,
 // and its fragment become REDACTED, and its scheme, host, path, and query parameter names are
-// kept. It is the redaction the agent applies to a failed tool call's text; use ToolErrorText for
-// a tool error, and this for other error text that can quote a URL.
+// kept. It is the redaction the agent applies to a failed tool call's text; use ToolCall.ErrorText
+// for a tool error, and this for other error text that can quote a URL.
 func RedactURLs(s string) string { return redactURLs(s) }
-
-type toolErrRedactKey struct{}
 
 // redactURLs returns s with every URL in it redacted (see redactURL). Punctuation that ends a
 // sentence or closes a parenthesis just after a URL is kept out of it.

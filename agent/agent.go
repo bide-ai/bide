@@ -42,7 +42,9 @@ func addUsage(dst *Usage, src Usage) {
 type Agent struct {
 	model        Model
 	tools        map[string]Tool
-	dupTool      string // a tool name New was given more than once; every run fails with ErrConfig
+	specs        map[string]ToolSpec // each tool's spec, read once when it was registered (indexTools)
+	specList     []ToolSpec          // specs sorted by name, as model requests are sent them
+	dupTool      string              // a tool name New was given more than once; every run fails with ErrConfig
 	store        Durable
 	mw           []Middleware
 	toolMW       []ToolMiddleware
@@ -58,7 +60,7 @@ type Agent struct {
 	toolChoice     *ToolChoice     // tool-choice control applied to every model call (see WithToolChoice)
 	terminalTool   string          // a successful call to this tool ends the run (RunTyped's final_answer)
 	// approverVerifiers resolves an approver id to the verifier for its decision
-	// signature; required by any tool with a non-nil Safety.Approval (see WithApproverVerifiers).
+	// signature; required by any tool with an m-of-n ToolSpec.Approval (see WithApproverVerifiers).
 	approverVerifiers ApproverVerifierFor
 	// toolErrRedact, if set, chooses the text journaled and sent to the model for a failed tool
 	// call (see WithToolErrorRedactor).
@@ -155,12 +157,15 @@ func New(model Model, store Durable, tools ...Tool) *Agent {
 	m := make(map[string]Tool, len(tools))
 	dup := ""
 	for _, t := range tools {
-		if _, taken := m[t.Name()]; taken && dup == "" {
-			dup = t.Name()
+		name := SpecOf(t).Name // a tool with a Spec method is called by its spec's name
+		if _, taken := m[name]; taken && dup == "" {
+			dup = name
 		}
-		m[t.Name()] = t
+		m[name] = t
 	}
-	return &Agent{model: model, tools: m, dupTool: dup, store: store}
+	a := &Agent{model: model, tools: m, dupTool: dup, store: store}
+	a.indexTools()
+	return a
 }
 
 // checkTools reports a tool name New was given twice. The model calls a tool by name, so one of
@@ -227,8 +232,8 @@ func (a *Agent) SetMaxConcurrency(n int) *Agent {
 }
 
 // WithApproverVerifiers configures how the m-of-n approval gate resolves an approver id to
-// the verifier for its signature. Required whenever any tool carries a non-nil
-// Safety.Approval: a gated call with no resolver configured fails with ErrConfig rather than
+// the verifier for its signature. Required whenever any tool carries an m-of-n
+// ToolSpec.Approval (see WithApproval): a gated call with no resolver configured fails with ErrConfig rather than
 // silently counting zero decisions. Returns the agent for chaining.
 func (a *Agent) WithApproverVerifiers(fn ApproverVerifierFor) *Agent {
 	a.approverVerifiers = fn
@@ -251,12 +256,4 @@ func (a *Agent) WithApproverVerifiers(fn ApproverVerifierFor) *Agent {
 func (a *Agent) WithToolErrorRedactor(fn func(tool string, err error) string) *Agent {
 	a.toolErrRedact = fn
 	return a
-}
-
-func (a *Agent) toolList() []Tool {
-	out := make([]Tool, 0, len(a.tools))
-	for _, t := range a.tools {
-		out = append(out, t)
-	}
-	return out
 }

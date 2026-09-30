@@ -171,10 +171,10 @@ func runDisagree(ctx context.Context, m *gsm.Machine, votesFor, committed gsm.Va
 	// tool RequiresApproval, so calling it through the agent loop pauses the run durably rather
 	// than acting. Here we show the pause directly: no recorded approval yet, so the run halts.
 	escalate := agent.Func("escalate", "route the ungoverned decision to a human",
-		agent.Safety{RequiresApproval: true},
+		agent.Safety{},
 		func(context.Context, struct{}) (map[string]any, error) {
 			return map[string]any{"escalated": true}, nil
-		})
+		}, agent.WithApproval(agent.SingleApproval()))
 	esc := runWithApprovalGate(ctx, store, runID, escalate)
 	fmt.Printf("escalate path: %s\n", esc)
 

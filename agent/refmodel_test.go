@@ -185,8 +185,16 @@ type rmTool struct {
 func (t *rmTool) Name() string                { return rmToolName(t.kind, t.comp, t.gated) }
 func (t *rmTool) Description() string         { return "" }
 func (t *rmTool) ArgsSchema() json.RawMessage { return nil }
+func (t *rmTool) Spec() agent.ToolSpec {
+	s := agent.ToolSpec{Name: t.Name(), Safety: t.Safety()}
+	if t.gated {
+		s.Approval = agent.SingleApproval()
+	}
+	return s
+}
+
 func (t *rmTool) Safety() agent.Safety {
-	s := agent.Safety{RequiresApproval: t.gated}
+	var s agent.Safety
 	switch t.kind {
 	case rmRO:
 		s.ReadOnly = true

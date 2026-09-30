@@ -141,7 +141,7 @@ type ModelResponse struct {
 type responseOrigin struct {
 	attempt   int
 	msgs      []Message
-	tools     []Tool
+	tools     []ToolSpec
 	info      ModelInfo
 	described bool
 }
@@ -203,20 +203,20 @@ func PromptDigest(msgs []Message) string {
 // each tool's name, description and argument schema, length-prefixed under a domain tag, in the
 // order of their names, so the digest does not depend on the order the tools were listed in. It
 // is "" for no tools.
-func ToolsDigest(tools []Tool) string {
+func ToolsDigest(tools []ToolSpec) string {
 	if len(tools) == 0 {
 		return ""
 	}
-	byName := func(a, b Tool) int { return strings.Compare(a.Name(), b.Name()) }
+	byName := func(a, b ToolSpec) int { return strings.Compare(a.Name, b.Name) }
 	if !slices.IsSortedFunc(tools, byName) {
 		tools = slices.Clone(tools)
 		slices.SortStableFunc(tools, byName)
 	}
 	b := append(make([]byte, 0, 512), "bide.tools.v1\n"...)
 	for _, t := range tools {
-		b = appendField(b, t.Name())
-		b = appendField(b, t.Description())
-		b = appendField(b, t.ArgsSchema())
+		b = appendField(b, t.Name)
+		b = appendField(b, t.Description)
+		b = appendField(b, t.Input)
 	}
 	return hexDigest(b)
 }
