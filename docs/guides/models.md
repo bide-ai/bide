@@ -159,9 +159,12 @@ error carries the provider's own message.
   object, an Anthropic `error` event) ends the turn with an error carrying the provider's message:
   classified by its status when it has one (Gemini), as `ErrQuotaExhausted` or `*RateLimited` when
   its type or code says so, and otherwise as a plain `ErrModel` that `Retryable` retries.
-- **A stream line over `agent.MaxSSELine` (32MB)** fails with `agent.ErrResponseTooLarge`, which
-  the same request would hit again, so it is not retried. Any other failed stream read wraps
-  `ErrModel`.
+- **A stream line over `agent.MaxSSELine` (32 MiB), or a whole reply over the adapter's response
+  cap**, fails with `agent.ErrResponseTooLarge`, which the same request would hit again, so it is
+  not retried. The response cap is `agent.DefaultMaxResponseBytes` (32 MiB) unless the adapter is
+  built with `WithMaxResponseBytes(n)`; it counts every byte of the streamed reply, so a reply of
+  many small events cannot grow without limit, and a line is part of the reply, so a cap below
+  32 MiB bounds every line too. Any other failed stream read wraps `ErrModel`.
 - All of these wrap `agent.ErrModel`, so `errors.Is(err, agent.ErrModel)` holds either way (see the
   errors section of the README).
 

@@ -93,7 +93,8 @@ var (
 	// quota), as opposed to a momentary rate limit. Waiting a few seconds does not lift it, so
 	// middleware.Retryable does not retry it. It arrives as an *APIError.
 	ErrQuotaExhausted = fmt.Errorf("provider quota or credit exhausted: %w", ErrModel)
-	// ErrResponseTooLarge is a streamed response with a line longer than MaxSSELine. The same
+	// ErrResponseTooLarge is a streamed response with a line longer than MaxSSELine, or longer in
+	// all than its adapter's cap (DefaultMaxResponseBytes unless set; see LimitResponse). The same
 	// request would produce it again, so middleware.Retryable does not retry it.
 	ErrResponseTooLarge = fmt.Errorf("model response line too large: %w", ErrModel)
 	ErrBudgetExceeded   = fmt.Errorf("budget exceeded: %w", ErrBudget)

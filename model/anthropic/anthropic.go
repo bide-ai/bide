@@ -26,18 +26,25 @@ import (
 
 // Model is an Anthropic Messages API adapter implementing agent.Model.
 type Model struct {
-	apiKey    string
-	model     string
-	maxTokens int
-	baseURL   string
-	http      *http.Client
-	cache     bool
-	toolCodec agent.ToolResultCodec
+	maxResponse int64 // the streamed reply cap; see WithMaxResponseBytes
+	apiKey      string
+	model       string
+	maxTokens   int
+	baseURL     string
+	http        *http.Client
+	cache       bool
+	toolCodec   agent.ToolResultCodec
 }
 
 var _ agent.Model = (*Model)(nil) // port/adapter contract
 
 type Option func(*Model)
+
+// WithMaxResponseBytes caps how many bytes of one streamed reply the adapter reads: a reply that
+// runs longer fails with agent.ErrResponseTooLarge, which middleware.Retryable does not retry.
+// The default is agent.DefaultMaxResponseBytes (32 MiB); n <= 0 keeps it. Raise it for replies
+// that legitimately run longer, such as large inline images.
+func WithMaxResponseBytes(n int64) Option { return func(m *Model) { m.maxResponse = n } }
 
 func WithModel(id string) Option           { return func(m *Model) { m.model = id } }
 func WithMaxTokens(n int) Option           { return func(m *Model) { m.maxTokens = n } }
@@ -92,7 +99,7 @@ func (m *Model) Stream(ctx context.Context, req agent.Request) (*agent.Stream, e
 		return nil, agent.ClassifyHTTPError("anthropic", resp)
 	}
 
-	return agent.NewStreamFunc(ctx, func(send func(agent.Emit) bool) { streamSSE(resp.Body, send) }), nil
+	return agent.NewStreamFunc(ctx, func(send func(agent.Emit) bool) { streamSSE(agent.LimitResponse(resp.Body, m.maxResponse), send) }), nil
 }
 
 // buildRequest translates the provider-neutral request into an Anthropic Messages

@@ -47,3 +47,17 @@ func TestStream_ReplyOverTheDefaultCapIsTooLarge(t *testing.T) {
 		t.Fatalf("got %d bytes of text, err %v; want ErrResponseTooLarge", len(msg.Text()), err)
 	}
 }
+
+// WithMaxResponseBytes sets the cap; zero keeps the default.
+func TestStream_WithMaxResponseBytes(t *testing.T) {
+	srv := capServer(t, capBody(10_000))
+	for max, want := range map[int64]error{4096: agent.ErrResponseTooLarge, 0: nil, 1 << 20: nil} {
+		s, err := New("k", WithBaseURL(srv.URL), WithMaxResponseBytes(max)).Stream(context.Background(), agent.Request{Messages: []agent.Message{agent.UserText("hi")}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := s.Message(); want == nil && err != nil || want != nil && !errors.Is(err, want) {
+			t.Errorf("max %d: err %v, want %v", max, err, want)
+		}
+	}
+}
