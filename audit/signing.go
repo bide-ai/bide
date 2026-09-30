@@ -157,10 +157,17 @@ func decodeHybrid(sig []byte) (ed, mldsaSig []byte, ok bool) {
 		return nil, nil, false
 	}
 	n := binary.BigEndian.Uint32(sig[:4])
-	if int(n) > len(sig)-4 {
+	if !hybridLenFits(n, len(sig)-4) {
 		return nil, nil, false
 	}
 	return sig[4 : 4+n], sig[4+n:], true
+}
+
+// hybridLenFits reports whether a hybrid signature's Ed25519 length prefix n fits in the rest
+// bytes that follow it. It is generic over the integer type so a test can check it at the width
+// int has on a 32-bit platform.
+func hybridLenFits[I ~int | ~int32 | ~int64](n uint32, rest I) bool {
+	return I(n) <= rest
 }
 
 // checkPrivateKey refuses an ed25519 private key that is not ed25519.PrivateKeySize bytes, on which
