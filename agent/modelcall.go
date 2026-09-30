@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 // ModelHandler answers one model call: it returns the response the turn records. Middleware wraps
@@ -274,3 +275,7 @@ func (a *Agent) recordSpend(ctx context.Context, runID string, n int, spent Usag
 	}
 	return rec, nil
 }
+
+// lateRequestWait bounds how long a run waits, before it completes or records a failed call's
+// spend, for model requests still in flight (a hedge loser ending after the winner was returned).
+var lateRequestWait = 2 * time.Second
