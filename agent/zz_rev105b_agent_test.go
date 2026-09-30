@@ -3,6 +3,7 @@ package agent_test
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"testing"
@@ -58,5 +59,44 @@ func Test_R105b_KeylessApproverIsRefused(t *testing.T) {
 		WithApproverVerifiers(resolve).Run(context.Background(), "r", "hi")
 	if !errors.Is(err, agent.ErrConfig) || ran != 0 {
 		t.Fatalf("a gate whose approvers resolve to verifiers with no key identity: err %v, tool ran %d times; want ErrConfig and no run", err, ran)
+	}
+}
+
+// keyedVerifier is an ApproverVerifier with a key of its own, verifying signatures made with it.
+type keyedVerifier struct{ key string }
+
+func (keyedVerifier) Alg() agent.Alg     { return "svc" }
+func (v keyedVerifier) KeyIDs() []string { return []string{"svc:" + v.key} }
+func (v keyedVerifier) Verify(m, sig []byte) bool {
+	return bytes.Equal(sig, append([]byte(v.key+"|"), m...))
+}
+
+// Round-3 review of #105. The gate reuses a journaled tally once it exists, and read it with
+// json.Unmarshal while audit.VerifyApprovals reads it strictly (UnmarshalStrict). A stored tally
+// with "approved":0 and then a case variant "Approved":2 read as a passed 2-of-2 gate to the gate,
+// which ran the tool, while the audit refused the same record as malformed. The gate must read it
+// as the audit does: refuse it, and never run the tool.
+func Test_R105c_GateReadsTheRecordedTallyStrictly(t *testing.T) {
+	ctx := context.Background()
+	p := agent.ApprovalPolicy{Need: 2, Approvers: []string{"alice", "bob"}}
+	ran := 0
+	wire := agent.Func("wire", "", agent.Safety{Approval: &p}, func(context.Context, struct{}) (string, error) { ran++; return "sent", nil })
+	resolve := func(id string) (agent.ApproverVerifier, bool) { return keyedVerifier{id + "-key"}, true }
+	s := agent.NewMemStore()
+	newAgent := func() *agent.Agent {
+		return agent.New(agent.NewScriptedModel(agent.ToolTurn("c1", "wire", `{}`), agent.TextTurn("done")), s, wire).WithApproverVerifiers(resolve)
+	}
+	var pend *agent.PendingApproval
+	if _, err := newAgent().Run(ctx, "r", "hi"); !errors.As(err, &pend) {
+		t.Fatalf("setup: first run err %v, want a pending approval", err)
+	}
+	salt := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{7}, agent.SaltSize))
+	tally := `{"name":"` + agent.ApprovalTallyStep("c1") + `","kind":"value","result":{"need":2,"approvers":["alice","bob"],"approved":0,"denied":0,"Approved":2},"salt":"` + salt + `"}`
+	if _, _, err := s.Insert(ctx, "r", agent.ApprovalTallyStep("c1"), []byte(tally)); err != nil {
+		t.Fatal(err)
+	}
+	_, err := newAgent().Run(ctx, "r", "hi")
+	if err == nil || ran != 0 {
+		t.Fatalf("a recorded tally that reads approved 0 to an exact-name reader and 2 to encoding/json: run err %v, tool ran %d times; want an error and no run", err, ran)
 	}
 }
