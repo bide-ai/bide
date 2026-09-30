@@ -306,6 +306,7 @@ type msgBuilder struct {
 	order        []int
 	usage        Usage
 	reason       string // the Finish reason
+	err          error  // the first fragment that broke the stream's framing
 }
 
 func (b *msgBuilder) add(ev Event) {
@@ -332,6 +333,15 @@ func (b *msgBuilder) add(ev Event) {
 			tu = &ToolUse{}
 			b.calls[e.Index] = tu
 			b.order = append(b.order, e.Index)
+		}
+		// A call's ID and name are set once. A fragment naming a different one is another call
+		// arriving under this index (a block started twice, or a server that omits the index),
+		// which merging would drop or run with this call's arguments; finalize reports it.
+		if e.ID != "" && tu.ID != "" && e.ID != tu.ID || e.Name != "" && tu.Name != "" && e.Name != tu.Name {
+			if b.err == nil {
+				b.err = fmt.Errorf("tool call %d: a fragment names call %q (%q) after call %q (%q): %w",
+					e.Index, cutName(e.ID), cutName(e.Name), cutName(tu.ID), cutName(tu.Name), ErrStreamProtocol)
+			}
 		}
 		if e.ID != "" {
 			tu.ID = e.ID
@@ -369,6 +379,9 @@ func (b *msgBuilder) closeThinking(signature ...string) {
 // yields invalid JSON — surface it rather than hand malformed args to a tool.
 // (v1 json.Valid today; swaps to jsontext when we adopt json/v2 at the model layer.)
 func (b *msgBuilder) finalize() (Message, error) {
+	if b.err != nil {
+		return Message{}, b.err
+	}
 	var parts []Part
 	b.closeThinking()
 	for _, r := range b.reasoning {

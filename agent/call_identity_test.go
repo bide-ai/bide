@@ -2,6 +2,7 @@ package agent
 
 import (
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -46,5 +47,16 @@ func TestStream_ToolCallFragmentsContinueTheCall(t *testing.T) {
 	}
 	if uses := msg.toolUses(); len(uses) != 1 || uses[0].ID != "a" || string(uses[0].Args) != `{"amount":5}` {
 		t.Fatalf("calls = %+v", uses)
+	}
+}
+
+// The error names the first fragment that broke the framing.
+func TestStream_ToolCallIdentityErrorNamesTheFirst(t *testing.T) {
+	_, _, err := deltas(
+		ToolCallDelta{Index: 0, ID: "a", Name: "refund"},
+		ToolCallDelta{Index: 0, ID: "first-intruder"},
+		ToolCallDelta{Index: 0, ID: "second-intruder"}).Message()
+	if !errors.Is(err, ErrStreamProtocol) || !strings.Contains(err.Error(), "first-intruder") {
+		t.Fatalf("err = %v, want ErrStreamProtocol naming the first intruder", err)
 	}
 }

@@ -34,6 +34,12 @@ func TestStreamSSE_DeltasMustMatchTheirBlock(t *testing.T) {
 			`{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_2","name":"charge"}}`},
 		"delta after its block stopped":  {evStart, evTextStart, evText, evTextStop, evText},
 		"stop for a block never started": {evStart, `{"type":"content_block_stop","index":3}`},
+		"text block started twice":       {evStart, evTextStart, evText, evTextStart},
+		"block stopped twice":            {evStart, evTextStart, evText, evTextStop, evTextStop},
+		"start without a content block":  {evStart, `{"type":"content_block_start","index":0}`},
+		"text delta on a redacted block": {evStart,
+			`{"type":"content_block_start","index":0,"content_block":{"type":"redacted_thinking","data":"x"}}`,
+			`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}`},
 	} {
 		src := sse(append(events, evDelta, evStop)...)
 		msg, _, err := testStream(src).Message()
@@ -82,5 +88,17 @@ func TestStreamSSE_WellFormedBlocksAssemble(t *testing.T) {
 	}
 	if len(msg.Parts) != 2 {
 		t.Fatalf("parts = %+v", msg.Parts)
+	}
+}
+
+// A delta type the adapter does not know (Anthropic adds them: citations_delta, say) is skipped,
+// even on a block the adapter reads.
+func TestStreamSSE_UnknownDeltaTypeIsSkipped(t *testing.T) {
+	src := sse(evStart, evTextStart,
+		`{"type":"content_block_delta","index":0,"delta":{"type":"citations_delta","citation":{}}}`,
+		evText, evTextStop, evDelta, evStop)
+	msg, _, err := testStream(src).Message()
+	if err != nil || msg.Text() != "Refund approved." {
+		t.Fatalf("got %q, %v", msg.Text(), err)
 	}
 }

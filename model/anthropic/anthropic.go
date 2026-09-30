@@ -20,6 +20,7 @@ import (
 	"strings"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/model/internal/errtext"
 	"github.com/bide-ai/bide/model/internal/toolcfg"
 )
 
@@ -308,6 +309,24 @@ func finishReason(stop string) string {
 	}
 }
 
+// block is one content block of the streamed message: its type, and whether it has stopped.
+type block struct {
+	kind    string
+	stopped bool
+}
+
+// deltaBlock is the block type each delta type this adapter reads belongs to.
+var deltaBlock = map[string]string{
+	"text_delta":       "text",
+	"input_json_delta": "tool_use",
+	"thinking_delta":   "thinking",
+	"signature_delta":  "thinking",
+}
+
+// handledBlock is the block types this adapter reads. A delta for a block of any other type (a
+// server tool's call or result, say) is skipped, never read as a text, tool call, or thinking part.
+var handledBlock = map[string]bool{"text": true, "tool_use": true, "thinking": true, "redacted_thinking": true}
+
 // streamSSE reads Anthropic's SSE stream and pushes normalized agent events. It closes
 // the body. Package-internal so it's unit-testable without a network round-trip.
 //
@@ -319,6 +338,12 @@ func finishReason(stop string) string {
 // after message_stop is read. A message_stop with no message_delta before it is
 // agent.ErrStreamProtocol; a stream that ends before message_stop sends no Finish, so the
 // consumer sees agent.ErrIncompleteResponse.
+//
+// Each delta must belong to an open content block of its kind: a content_block_start opens block
+// index once, a content_block_stop closes it, and a text_delta, input_json_delta, thinking_delta or
+// signature_delta for a block that is not open, or for a block of another type, is
+// agent.ErrStreamProtocol. Deltas for a block type this adapter does not read (a server tool's) are
+// skipped, and so are delta types it does not know.
 func streamSSE(body io.ReadCloser, send func(agent.Emit) bool) {
 	defer body.Close()
 
@@ -326,7 +351,8 @@ func streamSSE(body io.ReadCloser, send func(agent.Emit) bool) {
 
 	var in, out, cacheRead, cacheWrite int
 	var reason string
-	var delta bool // a message_delta has arrived: the content is complete
+	var delta bool             // a message_delta has arrived: the content is complete
+	blocks := map[int]*block{} // the content blocks started so far, by index
 	for sc.Scan() {
 		data, ok := agent.SSEPayload(sc.Text())
 		if !ok {
@@ -352,13 +378,22 @@ func streamSSE(body io.ReadCloser, send func(agent.Emit) bool) {
 				cacheWrite = ev.Message.Usage.CacheCreationInputTokens
 			}
 		case "content_block_start":
-			switch cb := ev.ContentBlock; {
-			case cb == nil:
-			case cb.Type == "tool_use":
+			cb := ev.ContentBlock
+			if cb == nil {
+				send(agent.Emit{Err: fmt.Errorf("anthropic: content_block_start %d without a content_block: %w", ev.Index, agent.ErrStreamProtocol)})
+				return
+			}
+			if _, started := blocks[ev.Index]; started {
+				send(agent.Emit{Err: fmt.Errorf("anthropic: content block %d started twice: %w", ev.Index, agent.ErrStreamProtocol)})
+				return
+			}
+			blocks[ev.Index] = &block{kind: cb.Type}
+			switch cb.Type {
+			case "tool_use":
 				if !send(agent.Emit{Event: agent.ToolCallDelta{Index: ev.Index, ID: cb.ID, Name: cb.Name}}) {
 					return
 				}
-			case cb.Type == "redacted_thinking":
+			case "redacted_thinking":
 				// The whole block arrives here, with no deltas; it goes back unchanged.
 				if !send(agent.Emit{Event: agent.ReasoningDelta{Redacted: cb.Data}}) {
 					return
@@ -367,6 +402,19 @@ func streamSSE(body io.ReadCloser, send func(agent.Emit) bool) {
 		case "content_block_delta":
 			if ev.Delta == nil {
 				continue
+			}
+			blk, ok := blocks[ev.Index]
+			if !ok || blk.stopped {
+				send(agent.Emit{Err: fmt.Errorf("anthropic: %s for content block %d, which is not open: %w", errtext.Quote(ev.Delta.Type), ev.Index, agent.ErrStreamProtocol)})
+				return
+			}
+			want, known := deltaBlock[ev.Delta.Type]
+			if !known || !handledBlock[blk.kind] {
+				continue // a delta type added later, or a block this adapter does not read (a server tool's)
+			}
+			if blk.kind != want {
+				send(agent.Emit{Err: fmt.Errorf("anthropic: %s for content block %d, a %s block: %w", ev.Delta.Type, ev.Index, errtext.Quote(blk.kind), agent.ErrStreamProtocol)})
+				return
 			}
 			switch ev.Delta.Type {
 			case "text_delta":
@@ -386,6 +434,13 @@ func streamSSE(body io.ReadCloser, send func(agent.Emit) bool) {
 					return
 				}
 			}
+		case "content_block_stop":
+			blk, ok := blocks[ev.Index]
+			if !ok || blk.stopped {
+				send(agent.Emit{Err: fmt.Errorf("anthropic: content_block_stop for content block %d, which is not open: %w", ev.Index, agent.ErrStreamProtocol)})
+				return
+			}
+			blk.stopped = true
 		case "message_delta":
 			delta = true
 			if ev.Usage != nil {
