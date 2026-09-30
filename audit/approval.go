@@ -48,8 +48,9 @@ func ProveApproval(ctx context.Context, store agent.Durable, runID, step string,
 // ApprovalEvidence builds the complete evidence for an m-of-n gated call under one STH, in
 // this order: the model turn that requested the call (Kind "call"), every decision record the
 // gate read (Kind "approval", from the journaled tally's Records, in journal order), the
-// gate's terminal tally (Kind "approval-tally"), and the call's result (Kind "tool"). The
-// result appends to EvidencePackage.Actions; drop the trailing "tool" entry if the package
+// gate's terminal tally (Kind "approval-tally"), and the call's result (Kind "tool", labelled
+// by its tool-use id as every tool action is). The result appends to EvidencePackage.Actions,
+// where each entry verifies as a package action; drop the trailing "tool" entry if the package
 // already carries the call.
 //
 // It discloses everything the gate read, valid or not, so VerifyApprovals can recount from the
@@ -108,7 +109,7 @@ func ApprovalEvidence(ctx context.Context, store agent.Durable, runID, toolUseID
 	}
 	out = append(out,
 		EvidenceAction{Label: "approval tally", Kind: KindApprovalTally, Ref: tallyName, Bundle: tallyPB},
-		EvidenceAction{Label: call.Name, Kind: KindTool, Ref: toolUseID, Bundle: action})
+		EvidenceAction{Label: toolUseID, Kind: KindTool, Ref: toolUseID, Bundle: action})
 	return out, nil
 }
 

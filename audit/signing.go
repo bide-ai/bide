@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -98,8 +99,11 @@ type MLDSASigner struct {
 // Alg reports the signature scheme (AlgMLDSA65).
 func (MLDSASigner) Alg() string { return AlgMLDSA65 }
 
-// Sign returns the deterministic ML-DSA-65 signature over m.
+// Sign returns the deterministic ML-DSA-65 signature over m, or an error if there is no key.
 func (s MLDSASigner) Sign(m []byte) ([]byte, error) {
+	if s.Priv == nil {
+		return nil, errors.New("audit: no ml-dsa-65 private key")
+	}
 	return s.Priv.SignDeterministic(m, &mldsa.Options{Context: mldsaContext})
 }
 
