@@ -159,7 +159,9 @@ func VerifyEventInclusion(root []byte, event agent.AgentEvent, proof EventInclus
 //
 // Each projected event comes from one journal record, and its salt is derived from that
 // record's random salt (journalEventSalt), so the projection needs no state beyond the journal.
-// It errors if a source record has no agent.SaltSize salt.
+// It errors if a source record has no agent.SaltSize salt, and refuses a journal it cannot
+// project: one holding a redacted record (ErrRedacted) or a record whose stored bytes read two
+// ways to JSON readers (ErrMalformed).
 func EventLogFromJournal(ctx context.Context, store agent.Durable, runID string) (*EventLog, error) {
 	evs, salts, err := projectJournal(ctx, store, runID)
 	if err != nil {
@@ -197,8 +199,9 @@ func projectJournal(ctx context.Context, store agent.Durable, runID string) ([]a
 	}
 	// A redacted record's events cannot be projected (its content is gone) nor given a place of
 	// their own (its tombstone keeps only the journal leaf hash), so the event tree of a redacted
-	// journal would silently differ from the one taken before: refuse it.
-	if err := refuseRedacted(recs, "the event stream of run "+runID); err != nil {
+	// journal would silently differ from the one taken before: refuse it. A record whose stored
+	// bytes read two ways would project one reading of them: refuse it too (projectable).
+	if err := projectable(recs, "the event stream of run "+runID); err != nil {
 		return nil, nil, err
 	}
 	evs, sources := agent.ProjectEvents(recs)

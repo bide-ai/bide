@@ -48,7 +48,13 @@ type EventStore interface {
 //
 // Each leaf commits to its event's salt, derived from the salt of the journal record the event
 // projects (see EventLogFromJournal), so a re-run computes the same leaf bytes and a stored leaf
-// carries the salt its proof discloses. It errors if a source record has no agent.SaltSize salt.
+// carries the salt its proof discloses. It errors if a source record has no agent.SaltSize salt,
+// and refuses a journal it cannot project (ErrRedacted, ErrMalformed; see EventLogFromJournal).
+//
+// The event store is a copy: redacting a journal record later does not reach it. Leaves persisted
+// before the redaction keep the redacted record's content (a tool's arguments or result, a model
+// turn's text), so a deployment that redacts must delete or redact the run's event trail in
+// evStore as well.
 func PersistJournal(ctx context.Context, evStore EventStore, jStore agent.Durable, runID string) error {
 	evs, salts, err := projectJournal(ctx, jStore, runID)
 	if err != nil {

@@ -73,7 +73,11 @@ said is gone, so nothing is projected from a journal holding one: the absence ke
 (`NewAbsenceTreeHead`, `SignAbsenceRoot`, `ProveAbsent`, `ProveAbsentBundle`), the run certificate's
 used-policy set (`CertifyRun`), and the event stream (`EventLogFromJournal`, `PersistJournal`) refuse
 it with `audit.ErrRedacted`, rather than omit the record and, say, prove absent a call the journal
-tree commits. The stored bytes do not HTML-escape (unlike v0.6.0's) and include the record's `salt`: 32 random bytes
+tree commits. They refuse a record whose stored bytes read two ways to JSON readers too
+(`audit.ErrMalformed`, the rule a proof's record bytes follow), so nothing is projected from one
+reading of a record while a reader of the journal sees another. A redaction reaches only the
+journal: event leaves `PersistJournal` wrote before it keep the redacted record's content, so a
+deployment that redacts deletes or redacts the run's event trail in its `EventStore` too. The stored bytes do not HTML-escape (unlike v0.6.0's) and include the record's `salt`: 32 random bytes
 a store sets when it first journals the record (`agent.JournalEntry`), so that a proof's sibling
 hashes cannot be matched against a guessed neighbouring record. A record without a 32-byte salt
 is refused. Every other kind of leaf carries its own tag too (`bide.audit.key-leaf.v1`,
