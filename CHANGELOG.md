@@ -583,6 +583,7 @@ First public release.
 [#114]: https://github.com/bide-ai/bide/pull/114
 [#118]: https://github.com/bide-ai/bide/pull/118
 [#113]: https://github.com/bide-ai/bide/pull/113
+[#119]: https://github.com/bide-ai/bide/pull/119
 [78f8db6]: https://github.com/bide-ai/bide/commit/78f8db6
 [994721b]: https://github.com/bide-ai/bide/commit/994721b
 [3262cd1]: https://github.com/bide-ai/bide/commit/3262cd1
