@@ -140,7 +140,12 @@ guarantees:
   comparison is blind to whitespace, key order, a number's spelling (whatever the size of its
   exponent) and a string's escaping, and nothing else: an input whose JSON has a repeated object key,
   an escaped lone surrogate (`"\ud800"`) or invalid UTF-8, on which two different texts would read
-  as one value, is refused with `ErrConfig` before anything is recorded. `Run` then records the
+  as one value, is refused with `ErrConfig` before anything is recorded. Like RFC 8785, the comparison
+  reads numbers as values: `-0` is `0`, and `1.0` is `1`. A resumed drive whose input differs from
+  the recorded one only that way is the same input, and its nodes see the input the run recorded
+  (their recorded outputs are replayed); a flow whose input type is `json.RawMessage`, or that
+  relies on the sign of zero, should not resume with such a respelling. The comparison takes time
+  linear in the input's length, whatever its nesting or the size of its exponents. `Run` then records the
   flow's digest and, on resume, refuses (`ErrConfig`) to continue a run that started under a
   different digest: its journal only means what it meant under that flow.
 - **A finished run is final.** When the terminal node finishes, `Run` records `run:complete` with the
