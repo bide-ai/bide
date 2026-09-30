@@ -9,6 +9,7 @@ The map. Read in roughly this order; each entry notes who it is for.
 - **[Guarantee](GUARANTEE.md)** (evaluator): the precise durability guarantee, stated exactly.
 - **[Known limitations](KNOWN-LIMITATIONS.md)** (evaluator): the bounds and edges of the guarantees. Read alongside the guarantee.
 - **[Changelog](../CHANGELOG.md)** (everyone): every release's changes, breaking changes marked; highlights per release in [releases/](releases/).
+- **[Roadmap](ROADMAP.md)** (everyone): where bide is going next, in order.
 
 ## Guides (how to build on it)
 
