@@ -115,8 +115,14 @@ func (m *Model) buildRequest(req agent.Request) ([]byte, error) {
 	}
 	type obj = map[string]any
 	var msgs []obj
+	// userRun holds the user messages merged into the last entry of msgs while that entry is a
+	// user turn; see the RoleUser case.
+	var userRun []agent.Message
 
 	for _, msg := range req.Messages {
+		if msg.Role != agent.RoleUser {
+			userRun = nil
+		}
 		switch msg.Role {
 		case agent.RoleSystem:
 			// Several text parts are separate paragraphs of the prompt, not one run-on line.
@@ -128,6 +134,14 @@ func (m *Model) buildRequest(req agent.Request) ([]byte, error) {
 			}
 			msgs = append(msgs, obj{"role": "system", "content": strings.Join(texts, "\n\n")})
 		case agent.RoleUser:
+			// Consecutive user messages (a retrieved-context message ahead of the question, say)
+			// merge into one user turn, in order: some OpenAI-compatible servers (vLLM with a
+			// Mistral or Llama chat template) reject two user messages in a row.
+			userRun = append(userRun, msg)
+			if len(userRun) > 1 {
+				msgs[len(msgs)-1]["content"] = mergedUserContent(userRun)
+				continue
+			}
 			msgs = append(msgs, obj{"role": "user", "content": userContent(msg)})
 		case agent.RoleTool:
 			// each tool result becomes its own tool message
@@ -307,6 +321,24 @@ func userContent(m agent.Message) any {
 		}
 	}
 	return parts
+}
+
+// mergedUserContent renders consecutive user messages as the content of one user turn. With
+// no image among them it is their texts joined by a blank line; otherwise it is the parts form
+// (see userContent) of all their parts in order, each message's text its own part.
+func mergedUserContent(run []agent.Message) any {
+	var all agent.Message
+	for _, m := range run {
+		all.Parts = append(all.Parts, m.Parts...)
+	}
+	if parts, ok := userContent(all).([]map[string]any); ok {
+		return parts
+	}
+	texts := make([]string, len(run))
+	for i, m := range run {
+		texts[i] = textOf(m)
+	}
+	return strings.Join(texts, "\n\n")
 }
 
 type chunk struct {

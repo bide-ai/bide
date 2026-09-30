@@ -417,6 +417,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 			if emit != nil {
 				genCtx = withModelSink(ctx, func(ev Event) { fire(ModelEvent{Event: ev}) })
 			}
+			genCtx = withModelRun(genCtx, a.store, runID) // model middleware can journal a step of this run (WithRetrieval)
 			var turnUsage Usage
 			rec, err := a.store.Do(genCtx, runID, fmt.Sprintf("@llm/%d", modelSeq),
 				func(ctx context.Context) (Record, error) {
