@@ -108,6 +108,7 @@ type rmWorld struct {
 
 	mu       sync.Mutex
 	fired    map[string]int   // effects that took effect, by call
+	lost     map[string]bool  // Lost calls whose answer has been lost once
 	outcome  map[string]rmRes // a call's true outcome, from its first execution
 	comps    []string         // compensations that took effect, in order
 	runIDs   map[string]string
@@ -117,7 +118,7 @@ type rmWorld struct {
 func newRMWorld(sc *rmScenario, ref *rmRef, conv bool) *rmWorld {
 	calls, scripts := sc.index()
 	return &rmWorld{sc: sc, ref: ref, calls: calls, scripts: scripts, conv: conv,
-		fired: map[string]int{}, outcome: map[string]rmRes{}, runIDs: map[string]string{}}
+		fired: map[string]int{}, lost: map[string]bool{}, outcome: map[string]rmRes{}, runIDs: map[string]string{}}
 }
 
 func (w *rmWorld) problem(format string, args ...any) {
@@ -186,7 +187,12 @@ func (t *rmTool) Call(ctx context.Context, args json.RawMessage) (json.RawMessag
 	}
 	t.w.mu.Lock()
 	res, ok := t.w.perform(c)
+	lose := c.Lost && !t.w.lost[c.ID]
+	t.w.lost[c.ID] = true
 	t.w.mu.Unlock()
+	if lose {
+		return nil, fmt.Errorf("%s: connection lost after the request: %w", c.ID, agent.ErrToolOutcomeUnknown)
+	}
 	if !ok {
 		return nil, errors.New(rmFailText(c.ID))
 	}
@@ -378,7 +384,7 @@ type rmObserved struct {
 	out        rmOutcome
 	attempts   int
 	crashed    bool // an injected failure fired
-	halts      int
+	halts      int  // halts on calls that did not lose their answer (only a crash explains them)
 	unsettled  bool
 	lastErrMsg string
 }
@@ -409,10 +415,12 @@ func (w *rmWorld) drive(mem *agent.MemStore, model agent.Model, crashes []int, d
 		case err == nil:
 			obs.out = rmOutcome{Kind: rmCompleted, Final: out.Text()}
 			return obs
-		case errors.Is(err, errRMCrash):
-			continue
+		case errors.Is(err, errRMCrash), errors.Is(err, agent.ErrToolOutcomeUnknown):
+			continue // resume: a crash, or a call that lost its answer (the resume halts on it)
 		case errors.As(err, &halt):
-			obs.halts++
+			if c := w.calls[halt.ToolUseID]; c == nil || !c.Lost {
+				obs.halts++
+			}
 			w.reconcile(mem, halt, false)
 		case errors.As(err, &pa):
 			c := w.calls[pa.ToolUseID]
@@ -438,7 +446,9 @@ func (w *rmWorld) drive(mem *agent.MemStore, model agent.Model, crashes []int, d
 			case errors.Is(ce, errRMCrash):
 				continue
 			case errors.As(ce, &halt):
-				obs.halts++
+				if c := w.calls[halt.ToolUseID]; c == nil || !c.Lost {
+					obs.halts++
+				}
 				w.reconcile(mem, halt, true)
 			default:
 				// A rollback stopped by a failing step. Re-drive a few times: one that stays
@@ -691,11 +701,14 @@ func rmMutations(sc *rmScenario) []func() {
 				if c.CompFail {
 					ms = append(ms, func() { c.CompFail = false })
 				}
+				if c.Lost {
+					ms = append(ms, func() { c.Lost = false })
+				}
 				if c.Comp && !c.CompFail {
 					ms = append(ms, func() { c.Comp = false })
 				}
 				if c.Kind != rmRO {
-					ms = append(ms, func() { c.Kind, c.Comp, c.CompFail = rmRO, false, false })
+					ms = append(ms, func() { c.Kind, c.Comp, c.CompFail, c.Lost = rmRO, false, false, false })
 				}
 			}
 		}

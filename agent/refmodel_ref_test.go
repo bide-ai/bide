@@ -65,9 +65,13 @@ type rmCall struct {
 	Comp     bool // the tool has a compensator (saga rollback can undo it)
 	Gated    bool // the tool requires a human decision before it runs
 	Decision rmDecision
-	Fail     bool      // the tool returns an error (and, being atomic, makes no change)
-	CompFail bool      // the compensator returns an error
-	Sub      *rmScript // Kind == rmSub: the script the sub-agent runs
+	Fail     bool // the tool returns an error (and, being atomic, makes no change)
+	CompFail bool // the compensator returns an error
+	// Lost: a non-retry-safe call whose first execution takes effect and then loses its answer
+	// (agent.ErrToolOutcomeUnknown, a connection dropped after the request went out). The run
+	// halts on it, and the operator records the true outcome, so it settles as a success.
+	Lost bool
+	Sub  *rmScript // Kind == rmSub: the script the sub-agent runs
 }
 
 // tool is the name of the tool this call invokes. Sub-agent tools are named by the depth of the
@@ -198,6 +202,9 @@ func (c *rmCall) describe(depth int) string {
 	if c.CompFail {
 		s += "[compfail]"
 	}
+	if c.Lost {
+		s += "[lost]"
+	}
 	return s
 }
 
@@ -279,6 +286,7 @@ func (g *rmGen) call(depth int) *rmCall {
 		return c
 	}
 	c.Fail = g.rng.IntN(6) == 0
+	c.Lost = c.Kind == rmFX && !c.Fail && g.rng.IntN(8) == 0
 	c.Gated = g.rng.IntN(5) == 0
 	if c.Gated {
 		switch r := g.rng.IntN(10); {

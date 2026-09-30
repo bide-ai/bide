@@ -180,3 +180,15 @@ func TestRefModel_HaltHoldsNoSiblingOutsideASaga(t *testing.T) {
 		t.Fatalf("c5 fired %d times by the drive that halted on c3, want 1", w.fired["c5"])
 	}
 }
+
+// A call inside a sub-agent loses its answer (agent.ErrToolOutcomeUnknown: the request went out,
+// the connection dropped). The sub-run records nothing for it and stops; its resume halts for the
+// outcome. That is no verdict of the sub-agent's: the parent used to journal the error as the
+// sub-agent call's failed result, so the model was told the sub-agent failed (and in a saga the
+// transaction aborted), and the halt the operator must resolve never surfaced.
+func TestRefModel_SubAgentLostAnswerIsNotItsAnswer(t *testing.T) {
+	for _, saga := range []bool{false, true} {
+		sub := rmScr("S1", 1, rmTurn(rmC("c2", rmFX, func(c *rmCall) { c.Lost = true })))
+		rmRequire(t, &rmScenario{Saga: saga, Root: rmScr("S0", 0, rmTurn(rmC("c1", rmSub, rmRuns(sub))))})
+	}
+}
