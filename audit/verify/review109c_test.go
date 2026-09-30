@@ -275,3 +275,19 @@ func goodKey(t *testing.T) []byte {
 	}
 	return k
 }
+
+// A key that does not decode is refused without taking a slot of the cache; a good key takes one.
+func TestUsableKeyDoesNotCacheJunk(t *testing.T) {
+	junk := make([]byte, 32) // y = p: not a canonical encoding
+	junk[0], junk[31] = 0xed, 0x7f
+	for i := 1; i < 31; i++ {
+		junk[i] = 0xff
+	}
+	if usableKey(junk) || usableKeys.contains(string(junk)) {
+		t.Fatal("a key that does not decode was accepted or cached")
+	}
+	pub := goodKey(t)
+	if !usableKey(pub) || !usableKeys.contains(string(pub)) {
+		t.Fatal("a good key was refused or not cached")
+	}
+}
