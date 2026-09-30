@@ -12,7 +12,9 @@ import (
 // RateLimiter is a token-bucket limiter shared across calls: it allows one token every
 // `interval` with a burst up to `burst`. It is dependency-free (no background goroutine): tokens
 // accrue lazily from elapsed time. Safe for concurrent use. Share one limiter across model and
-// tool middleware to cap a whole agent, or use separate limiters per surface.
+// tool middleware to cap a whole agent, or use separate limiters per surface. Waiters are not
+// served in arrival order: a call arriving as a token frees can take it ahead of one already
+// waiting.
 type RateLimiter struct {
 	mu       sync.Mutex
 	interval time.Duration
@@ -23,6 +25,7 @@ type RateLimiter struct {
 
 // NewRateLimiter allows one call every `interval` (so rate = 1/interval), bursting up to `burst`
 // calls. A burst < 1 is treated as 1. Starts full so the first `burst` calls proceed immediately.
+// An interval <= 0 sets no limit: every call proceeds at once.
 func NewRateLimiter(interval time.Duration, burst int) *RateLimiter {
 	if burst < 1 {
 		burst = 1
@@ -30,19 +33,24 @@ func NewRateLimiter(interval time.Duration, burst int) *RateLimiter {
 	return &RateLimiter{interval: interval, burst: float64(burst), tokens: float64(burst)}
 }
 
-// wait blocks until a token is available or ctx is done, then consumes one token.
+// wait blocks until a token is available or ctx is done, then consumes one token. A call whose
+// ctx has ended takes no token, since it will not make the call the token is for.
 func (r *RateLimiter) wait(ctx context.Context) error {
+	if r.interval <= 0 {
+		return ctx.Err() // no limit; a zero interval would otherwise never refill the bucket
+	}
 	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		r.mu.Lock()
 		now := time.Now()
 		if r.last.IsZero() {
 			r.last = now
 		}
-		if r.interval > 0 {
-			r.tokens += float64(now.Sub(r.last)) / float64(r.interval)
-			if r.tokens > r.burst {
-				r.tokens = r.burst
-			}
+		r.tokens += float64(now.Sub(r.last)) / float64(r.interval)
+		if r.tokens > r.burst {
+			r.tokens = r.burst
 		}
 		r.last = now
 		if r.tokens >= 1 {
@@ -63,12 +71,19 @@ func (r *RateLimiter) wait(ctx context.Context) error {
 	}
 }
 
-// RateLimit throttles model calls through the shared limiter, blocking (respecting context
+// RateLimit throttles model requests through the shared limiter, blocking (respecting context
 // cancellation) until a token is available. Proactive throttling complements Retry's reactive
 // Retry-After backoff: it keeps you under the provider's ceiling instead of bouncing off it.
+//
+// Under an agent it takes a token for every request the call sends, wherever it sits in the
+// chain: each attempt of a Retry below it and each target a Hedge below it launches waits for its
+// own token (see agent.ModelCallHook). A handler called outside an agent takes one token per call.
 func RateLimit(r *RateLimiter) agent.Middleware {
 	return func(next agent.ModelHandler) agent.ModelHandler {
 		return func(ctx context.Context, req agent.Request) (agent.Message, agent.Usage, error) {
+			if hctx, ok := agent.WithModelCallHook(ctx, agent.ModelCallHook{Before: r.wait}); ok {
+				return next(hctx, req)
+			}
 			if err := r.wait(ctx); err != nil {
 				return agent.Message{}, agent.Usage{}, err
 			}

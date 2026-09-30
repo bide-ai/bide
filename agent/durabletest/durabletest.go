@@ -84,6 +84,11 @@ func Cases() []Case {
 			Record: agent.Record{Kind: agent.StepToolResult, ToolUseID: "c1", Result: json.RawMessage(`"ok"`), Reconciled: true, Evidence: json.RawMessage(`{ "log" : "<id=7> & done" }`)}},
 		{Name: "model message",
 			Record: agent.Record{Kind: agent.StepModel, Message: &msg, Usage: &agent.Usage{InputTokens: 3, OutputTokens: 4}}},
+		{Name: "model message with discarded usage",
+			Record: agent.Record{Kind: agent.StepModel, Message: &msg, Usage: &agent.Usage{InputTokens: 3, OutputTokens: 4},
+				DiscardedUsage: &agent.Usage{InputTokens: 5, CacheReadTokens: 6}}},
+		{Name: "failed model call spend",
+			Record: agent.Record{Kind: agent.StepValue, DiscardedUsage: &agent.Usage{InputTokens: 7, OutputTokens: 8}}},
 	}
 }
 
@@ -149,7 +154,7 @@ func fidelity(t *testing.T, d agent.Durable, c Case) {
 	if !reflect.DeepEqual(back, replay) {
 		t.Fatalf("the replayed record is not a fixed point of the journal encoding\nreplay: %s\nagain:  %s", show(replay), show(back))
 	}
-	want, err := agent.EncodeRecord(agent.Record{Name: "step", Kind: c.Record.Kind, Message: c.Record.Message, Usage: c.Record.Usage,
+	want, err := agent.EncodeRecord(agent.Record{Name: "step", Kind: c.Record.Kind, Message: c.Record.Message, Usage: c.Record.Usage, DiscardedUsage: c.Record.DiscardedUsage,
 		ToolUseID: c.Record.ToolUseID, Result: c.Record.Result, IsError: c.Record.IsError, Reconciled: c.Record.Reconciled, Evidence: c.Record.Evidence,
 		Salt: replay.Salt})
 	if err != nil {

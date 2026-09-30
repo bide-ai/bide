@@ -64,6 +64,10 @@ var (
 	// already done. It wraps ErrModel as well as ErrProtocol: the fault is in the model's
 	// output, the turn is not journaled, and a fresh attempt can issue a valid turn, so a
 	// retry middleware treats it as retryable.
+	// ErrNegativeUsage is token usage with a negative count, reported by a model or returned by
+	// a middleware. The usage is rejected rather than lowering a run's totals and budget. It
+	// wraps ErrModel as well as ErrProtocol.
+	ErrNegativeUsage   = fmt.Errorf("negative token usage: %w (%w)", ErrProtocol, ErrModel)
 	ErrToolUseIDReused = fmt.Errorf("tool-use id missing or reused: %w (%w)", ErrProtocol, ErrModel)
 	// ErrQuotaExhausted is a provider refusing a call because the account's quota or credit
 	// is used up (OpenAI insufficient_quota, Anthropic billing_error, HTTP 402, a Gemini daily

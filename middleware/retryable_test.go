@@ -33,6 +33,8 @@ func TestRetryable_Classifies(t *testing.T) {
 		"quota exhausted 429": {&agent.APIError{StatusCode: 429, Err: fmt.Errorf("openai: %w", agent.ErrQuotaExhausted)}, false},
 		"quota exhausted 5xx": {&agent.APIError{StatusCode: 503, Err: fmt.Errorf("x: %w", agent.ErrQuotaExhausted)}, false},
 		"line too large":      {agent.SSEReadError("x", sc.Err()), false},
+		"truncated tool args": {fmt.Errorf("anthropic: %w", agent.ErrTruncatedToolArgs), false},
+		"stream protocol":     {fmt.Errorf("x: %w", agent.ErrStreamProtocol), true},
 	} {
 		if got := middleware.Retryable(tc.err); got != tc.want {
 			t.Errorf("%s: Retryable(%v) = %v, want %v", name, tc.err, got, tc.want)

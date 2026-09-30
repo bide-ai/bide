@@ -56,7 +56,9 @@ call, which retry middleware can repeat, instead of being journaled as the model
 The `Finish` is the turn's last event: an event after it reads as `agent.ErrStreamProtocol`
 (an `ErrModel` and an `ErrProtocol`). An adapter sends it on the provider's end-of-turn signal
 only, never on usage alone, and fails with `agent.ErrStreamProtocol` on content the provider
-sends after that signal.
+sends after that signal. A `Finish` whose usage has a negative count fails the call with
+`agent.ErrNegativeUsage` rather than lowering the run's totals; so does negative usage a
+middleware returns.
 `agent.NewStream` wraps a channel the caller fills itself, which suits a response buffered up
 front. `model/modeltest.Run` checks an HTTP adapter against this
 contract, including the truncation case.

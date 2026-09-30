@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -183,9 +184,13 @@ func (a *Agent) WithMaxTurns(n int) *Agent {
 // after it returns, so the call that crosses max completes; the next one is refused. max <= 0
 // means unbounded (the default). Returns the agent for chaining.
 //
-// The budget is per run and durable: each model call's usage is journaled with its turn, and
-// the count is rebuilt from the journal, so a resumed run, on any process, is held to what it
-// has already used. Like WithMaxTurns it applies per run (per Session.Send turn), and a
+// The budget counts every model request the run sent, not only the responses it recorded: a
+// failed attempt a middleware retried, a losing hedge target, and a model call that failed for
+// good all count (see Result.Spend). It is durable: each turn's usage and discarded spend are
+// journaled with it, a failed call's spend is journaled as its own record, and the count is
+// rebuilt from the journal, so a resumed run, on any process, is held to what it has already
+// used. A request still running when the run returns (a hedge loser whose model ignores
+// cancellation) is not counted. Like WithMaxTurns it applies per run (per Session.Send turn), and a
 // sub-agent's run has its own budget.
 func (a *Agent) WithTokenBudget(max int) *Agent {
 	a.tokenBudget = max
@@ -228,28 +233,31 @@ func (a *Agent) WithToolErrorRedactor(fn func(tool string, err error) string) *A
 }
 
 // generate runs one model call through the middleware chain. usedIDs holds the tool-use IDs
-// already in the run's conversation; the innermost handler rejects a turn that reuses one (see
-// checkToolUseIDs). It is checked there, below middleware, so a retry middleware sees the fault,
-// and the check still holds when a middleware trims the history it sends.
-func (a *Agent) generate(ctx context.Context, req Request, usedIDs map[string]bool) (Message, Usage, error) {
+// already in the run's conversation; a turn that reuses one is rejected (see checkToolUseIDs).
+// The innermost handler checks each model response, below middleware, so a retry middleware
+// sees the fault, and the check still holds when a middleware trims the history it sends. The
+// response the chain returns is checked again, since a middleware can return one it did not get
+// from the handler it wraps (a fallback, a cache), and that response is what the run records.
+//
+// The innermost handler sends every request of the call: it goes to the model WithModel set, if
+// any, and runs the ModelCallHooks middleware installed around it. meter receives every
+// request's usage, so the run can record what the call spent beyond the response it returns.
+func (a *Agent) generate(ctx context.Context, req Request, usedIDs map[string]bool, meter *spendMeter) (Message, Usage, error) {
+	ctx = inModelCall(ctx, meter)
 	h := ModelHandler(func(ctx context.Context, req Request) (Message, Usage, error) {
-		// When a token sink is installed (Agent.Stream), stream the model call and
-		// forward deltas as they arrive while still assembling the message for the
-		// journal; otherwise take the plain blocking drain. Middleware wraps this
-		// either way and sees the assembled message + usage — streaming stays below it.
-		var (
-			msg Message
-			u   Usage
-			err error
-		)
-		if sink := modelSink(ctx); sink != nil {
-			s, serr := a.model.Stream(ctx, req)
-			if serr != nil {
-				return Message{}, Usage{}, serr
+		hooks := modelHooks(ctx)
+		for _, hk := range hooks {
+			if hk.Before != nil {
+				if err := hk.Before(ctx); err != nil {
+					return Message{}, Usage{}, err
+				}
 			}
-			msg, u, err = s.drain(sink)
-		} else {
-			msg, u, err = Generate(ctx, a.model, req)
+		}
+		msg, u, err := a.send(ctx, modelFor(ctx, a.model), req)
+		for _, hk := range hooks {
+			if hk.After != nil {
+				hk.After(u)
+			}
 		}
 		if err != nil {
 			return msg, u, err
@@ -262,7 +270,34 @@ func (a *Agent) generate(ctx context.Context, req Request, usedIDs map[string]bo
 	for i := len(a.mw) - 1; i >= 0; i-- {
 		h = a.mw[i](h)
 	}
-	return h(ctx, req)
+	msg, u, err := h(ctx, req)
+	if err != nil {
+		return msg, u, err
+	}
+	if err := u.Validate(); err != nil {
+		return Message{}, Usage{}, err
+	}
+	if err := checkToolUseIDs(msg, usedIDs); err != nil {
+		return Message{}, u, err
+	}
+	return msg, u, nil
+}
+
+// send makes one model request. When a token sink is installed (Agent.Stream), it streams the
+// call and forwards deltas as they arrive while still assembling the message for the journal;
+// otherwise it takes the plain blocking drain. Middleware wraps this either way and sees the
+// assembled message and usage: streaming stays below it.
+func (a *Agent) send(ctx context.Context, m Model, req Request) (Message, Usage, error) {
+	sink := modelSink(ctx)
+	if sink == nil {
+		return Generate(ctx, m, req)
+	}
+	sink(attemptStart{}) // a new attempt: any deltas an earlier one streamed are discarded
+	s, err := m.Stream(ctx, req)
+	if err != nil {
+		return Message{}, Usage{}, err
+	}
+	return s.drain(sink)
 }
 
 // Run drives the agent to completion for runID, resuming from the journal if steps
@@ -283,11 +318,11 @@ func (a *Agent) Run(ctx context.Context, runID, input string) (Message, error) {
 // the seed. Durability, resume, and side-effect safety are identical regardless of emit.
 // It returns the final message, accumulated token usage across all model turns, the
 // number of live model turns (replayed journal turns are not counted), and any error.
-func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool, emit func(AgentEvent)) (Message, Usage, int, error) {
+func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool, emit func(AgentEvent)) (Message, usageTotals, int, error) {
 	if runID == "" {
 		// An empty runID would key every run to the same journal, silently cross-contaminating
 		// their memoized steps. Reject it rather than corrupt the log.
-		return Message{}, Usage{}, 0, fmt.Errorf("run: empty runID: %w", ErrConfig)
+		return Message{}, usageTotals{}, 0, fmt.Errorf("run: empty runID: %w", ErrConfig)
 	}
 	fire := func(e AgentEvent) {
 		if emit != nil {
@@ -298,7 +333,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 
 	recs, err := a.store.History(ctx, runID)
 	if err != nil {
-		return Message{}, Usage{}, 0, fmt.Errorf("load history %s: %w (%w)", runID, err, ErrStorage)
+		return Message{}, usageTotals{}, 0, fmt.Errorf("load history %s: %w (%w)", runID, err, ErrStorage)
 	}
 
 	msgs := []Message{}
@@ -313,7 +348,16 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 	approvals := map[string]bool{}      // tool-use ID -> approve(true)/deny(false)
 	modelSeq := 0
 	var runUsage Usage // token usage across all of this run's model calls, replayed and live
+	spendSeq := 0      // spend records ("@spend/<n>") already in the journal
 	for _, r := range recs {
+		// Discarded spend: on a model step, its turn's other requests; on a spend record, a
+		// failed model call's requests (see recordSpend).
+		if r.DiscardedUsage != nil {
+			addUsage(&runUsage, *r.DiscardedUsage)
+		}
+		if strings.HasPrefix(r.Name, spendStepPrefix) {
+			spendSeq++
+		}
 		switch r.Kind {
 		case StepModel:
 			modelSeq++
@@ -352,7 +396,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 	// (keyed by tool-use id) would not recognize as repeats. The input is not consulted.
 	if final, ok := completedAnswer(recs); ok {
 		fire(Finished{Final: final})
-		return final, Usage{}, 0, nil
+		return final, usageTotals{}, 0, nil
 	}
 
 	// Resume safety gate: a non-retriable tool that we ATTEMPTED (recorded a start marker
@@ -372,12 +416,13 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 			if ms := attemptedAtMs[id]; ms != 0 {
 				attemptedAt = time.UnixMilli(ms)
 			}
-			return Message{}, Usage{}, 0, &ResumeHalt{RunID: runID, RootRunID: rootRunID(ctx, runID), ToolUseID: id, ToolName: name, AttemptedAt: attemptedAt}
+			return Message{}, usageTotals{}, 0, &ResumeHalt{RunID: runID, RootRunID: rootRunID(ctx, runID), ToolUseID: id, ToolName: name, AttemptedAt: attemptedAt}
 		}
 	}
 
-	var totalUsage Usage // accumulated token usage across live model turns
-	var liveTurns int    // number of live (non-replayed) model calls this run
+	var totalUsage usageTotals // accumulated token usage across live model turns
+	meter := &spendMeter{}     // usage of every model request this invocation sends
+	var liveTurns int          // number of live (non-replayed) model calls this run
 
 	for {
 		// If the last turn is an assistant message with tool calls still pending (a
@@ -415,25 +460,43 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 			// sink fires — an AssistantTurn{Replayed:true} was emitted during resume.
 			genCtx := ctx
 			if emit != nil {
-				genCtx = withModelSink(ctx, func(ev Event) { fire(ModelEvent{Event: ev}) })
+				genCtx = withModelSink(ctx, turnSink(modelSeq, fire))
 			}
 			genCtx = withModelRun(genCtx, a.store, runID) // model middleware can journal a step of this run (WithRetrieval)
 			var turnUsage Usage
 			rec, err := a.store.Do(genCtx, runID, fmt.Sprintf("@llm/%d", modelSeq),
 				func(ctx context.Context) (Record, error) {
-					m, u, e := a.generate(ctx, Request{Messages: msgs, Tools: a.toolList(), Sampling: a.sampling, ResponseFormat: a.responseFormat, ToolChoice: a.toolChoice}, toolUseIDs(msgs))
+					m, u, e := a.generate(ctx, Request{Messages: msgs, Tools: a.toolList(), Sampling: a.sampling, ResponseFormat: a.responseFormat, ToolChoice: a.toolChoice}, toolUseIDs(msgs), meter)
 					if e != nil {
 						return Record{}, e
 					}
 					turnUsage = u
-					return Record{Kind: StepModel, Message: &m, Usage: &u}, nil
+					r := Record{Kind: StepModel, Message: &m, Usage: &u}
+					// The turn recorded one response; every other request it sent was billed too.
+					if d := discardedSpend(meter.take(), u); d != (Usage{}) {
+						r.DiscardedUsage = &d
+					}
+					return r, nil
 				})
 			if err != nil {
-				return Message{}, totalUsage, liveTurns, fmt.Errorf("generate (run %s): %w (%w)", runID, err, ErrModel)
+				err = fmt.Errorf("generate (run %s): %w (%w)", runID, err, ErrModel)
+				// The call failed for good, but its requests were billed: journal their spend so the
+				// budget counts it on this and every later invocation of the run.
+				if spent := meter.take(); spent != (Usage{}) {
+					if serr := a.recordSpend(ctx, runID, spendSeq, spent); serr != nil {
+						err = errors.Join(err, serr)
+					}
+				}
+				return Message{}, totalUsage, liveTurns, err
 			}
-			addUsage(&totalUsage, turnUsage)
+			addUsage(&totalUsage.answer, turnUsage)
+			addUsage(&totalUsage.spend, turnUsage)
 			if rec.Usage != nil {
 				addUsage(&runUsage, *rec.Usage)
+			}
+			if rec.DiscardedUsage != nil {
+				addUsage(&runUsage, *rec.DiscardedUsage)
+				addUsage(&totalUsage.spend, *rec.DiscardedUsage)
 			}
 			liveTurns++
 			asst = *rec.Message
@@ -757,11 +820,13 @@ func (a *Agent) toolList() []Tool {
 type ctxKey int
 
 const (
-	runScopeKey   ctxKey = 0
-	sagaKey       ctxKey = 1
-	modelSinkKey  ctxKey = 2
-	runContextKey ctxKey = 3
-	onceScopeKey  ctxKey = 4
+	runScopeKey      ctxKey = 0
+	sagaKey          ctxKey = 1
+	modelSinkKey     ctxKey = 2
+	runContextKey    ctxKey = 3
+	onceScopeKey     ctxKey = 4
+	modelHooksKey    ctxKey = 5 // []ModelCallHook; present only in an agent model call's context
+	modelOverrideKey ctxKey = 6 // Model set by WithModel
 )
 
 // runCtx carries the store + runID into a tool's context so Interrupt can journal and
@@ -794,6 +859,37 @@ func withModelSink(ctx context.Context, sink func(Event)) context.Context {
 	return context.WithValue(ctx, modelSinkKey, sink)
 }
 
+// attemptStart is sent to a run's model sink when a model attempt starts delivering a
+// response: the model handler starting a call, or EmitMessage. The sink does not forward it; it
+// marks where the previous attempt, if any, ended.
+type attemptStart struct{}
+
+func (attemptStart) event() {}
+
+// turnSink returns the model sink for turn seq. It forwards each model Event as a ModelEvent.
+// On an attemptStart that follows an attempt which streamed deltas, it emits TurnRestarted,
+// since those deltas are not part of the response the turn records: a middleware such as Retry
+// is calling the model again, or delivering a response from elsewhere.
+func turnSink(seq int, fire func(AgentEvent)) func(Event) {
+	var (
+		mu       sync.Mutex
+		streamed bool // the current attempt has forwarded a delta
+	)
+	return func(ev Event) {
+		mu.Lock()
+		defer mu.Unlock()
+		if _, ok := ev.(attemptStart); ok {
+			if streamed {
+				streamed = false
+				fire(TurnRestarted{Seq: seq})
+			}
+			return
+		}
+		streamed = true
+		fire(ModelEvent{Event: ev})
+	}
+}
+
 // modelSink returns the live token sink installed by Agent.Stream, or nil for a
 // blocking Run. The base model handler forwards each stream Event to it.
 func modelSink(ctx context.Context) func(Event) {
@@ -818,6 +914,7 @@ func EmitMessage(sink func(Event), m Message, u Usage) {
 	if sink == nil {
 		return
 	}
+	sink(attemptStart{}) // m replaces whatever an earlier attempt streamed
 	for _, e := range emitsFor(m, u) {
 		sink(e.Event)
 	}

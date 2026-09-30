@@ -30,16 +30,21 @@ const (
 // run is its full, replayable history; resume rebuilds state by replaying them. Name
 // is the stable identity used for memoization (see Durable.Do).
 type Record struct {
-	Name      string          `json:"name"`
-	Kind      StepKind        `json:"kind"`
-	Message   *Message        `json:"message,omitempty"`     // StepModel
-	Usage     *Usage          `json:"usage,omitempty"`       // StepModel: the call's token usage
-	ToolUseID string          `json:"tool_use_id,omitempty"` // StepToolResult
-	Result    json.RawMessage `json:"result,omitempty"`      // StepToolResult / StepValue
-	IsError   bool            `json:"is_error,omitempty"`    // StepToolResult
-	Approved  bool            `json:"approved,omitempty"`    // StepApproval
-	Approver  string          `json:"approver,omitempty"`    // StepApproval written by ApproveAs
-	Signature []byte          `json:"signature,omitempty"`   // StepApproval written by ApproveAs
+	Name    string   `json:"name"`
+	Kind    StepKind `json:"kind"`
+	Message *Message `json:"message,omitempty"` // StepModel
+	Usage   *Usage   `json:"usage,omitempty"`   // StepModel: the call's token usage
+	// DiscardedUsage is billed usage no recorded response carries. On a StepModel record, the
+	// turn's other model requests: failed attempts a middleware retried, losing hedge targets. On
+	// a StepValue record named "@spend/<n>", a model call that failed for good. Nil when there
+	// was none. WithTokenBudget counts it.
+	DiscardedUsage *Usage          `json:"discarded_usage,omitempty"`
+	ToolUseID      string          `json:"tool_use_id,omitempty"` // StepToolResult
+	Result         json.RawMessage `json:"result,omitempty"`      // StepToolResult / StepValue
+	IsError        bool            `json:"is_error,omitempty"`    // StepToolResult
+	Approved       bool            `json:"approved,omitempty"`    // StepApproval
+	Approver       string          `json:"approver,omitempty"`    // StepApproval written by ApproveAs
+	Signature      []byte          `json:"signature,omitempty"`   // StepApproval written by ApproveAs
 	// AttemptedAt is the Unix-millis wall-clock time an attempt marker (StepAttempt) was
 	// written, i.e. just before a non-retriable side effect fired. It is set once and read
 	// back verbatim on replay, so it stays deterministic. Zero (and omitted) on every

@@ -12,9 +12,9 @@ import (
 // successful response, cancelling the rest. It cuts tail latency (a slow primary no longer
 // blocks the turn, you take whichever target answers first) and adds provider-outage failover
 // (a down or throttled primary does not stall the run). It is safe here in a way it is not in a
-// bare service: the agent loop journals only the winning response, at most once, and the losing
-// calls are cancelled before they can touch state, so the durable record stays exactly-once and
-// replays deterministically regardless of which target won the race.
+// bare service: the agent loop journals only the winning response, at most once, so the durable
+// record stays exactly-once and replays deterministically regardless of which target won the
+// race.
 //
 // Scheduling:
 //   - The primary (the wrapped model, i.e. the one passed to agent.New) fires immediately.
@@ -27,6 +27,17 @@ import (
 // The first target to return a nil-error result wins; every other in-flight call is cancelled via
 // a derived context. If every target fails, Hedge returns the joined error. With no backups it is
 // a pass-through, so it is safe to wire unconditionally and add backups later.
+//
+// Every target goes through the middleware installed inside Hedge (after it in Use) and the
+// agent's checks on each model response, backups included. Every request a target sends counts
+// wherever the counting middleware sits: a RateLimit takes a token per request (1 + the backups
+// launched), and Cost and the run's token budget count each target's usage as spend, the
+// winner's as the answer's.
+//
+// Hedge does not wait for the losers: it returns as soon as a target wins, and a loser runs until
+// its model honors the cancellation. A model that ignores it keeps a loser, and the middleware
+// inside Hedge on its path, running after the turn, or the run, has ended. Its usage then reaches
+// Cost when it ends, and the run's budget only if it ends before the run's next model turn.
 //
 // Streaming: with backups, a streaming caller (Agent.Stream) receives the winning response's
 // events once the winner is chosen, not token by token. The targets race without access to the
@@ -44,13 +55,19 @@ import (
 //	    Use(middleware.Hedge(800*time.Millisecond, openaiModel))
 func Hedge(delay time.Duration, backups ...agent.Model) agent.Middleware {
 	return func(next agent.ModelHandler) agent.ModelHandler {
-		// One handler per target: the primary is `next`; each backup adapts its streaming
-		// Model into the same assembled-message handler shape.
+		// One handler per target. Every target goes through `next`, the rest of the chain: the
+		// primary as is, each backup with agent.WithModel directing the agent's model handler to
+		// it, so the middleware inside Hedge and the agent's checks on each response apply to
+		// every target alike. Outside an agent, where nothing below routes by model, a backup is
+		// called directly.
 		handlers := make([]agent.ModelHandler, 0, 1+len(backups))
 		handlers = append(handlers, next)
 		for _, b := range backups {
 			b := b
 			handlers = append(handlers, func(ctx context.Context, req agent.Request) (agent.Message, agent.Usage, error) {
+				if tctx, ok := agent.WithModel(ctx, b); ok {
+					return next(tctx, req)
+				}
 				s, err := b.Stream(ctx, req)
 				if err != nil {
 					return agent.Message{}, agent.Usage{}, err

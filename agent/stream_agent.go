@@ -29,10 +29,22 @@ func (TurnStarted) agentEvent() {}
 // ModelEvent forwards one live model stream Event (TextDelta, ReasoningDelta,
 // ToolCallDelta, Finish) from the current turn — the token-by-token feed. Emitted
 // only for a FRESH model call; on durable replay the turn is reused from the journal
-// and produces no deltas (an AssistantTurn with Replayed=true is emitted instead).
+// and produces no deltas (an AssistantTurn with Replayed=true is emitted instead). When the
+// turn's model call starts over (see TurnRestarted), the deltas before it are not part of the
+// recorded turn.
 type ModelEvent struct{ Event Event }
 
 func (ModelEvent) agentEvent() {}
+
+// TurnRestarted fires when the model call for turn Seq starts over after an attempt that had
+// already streamed ModelEvent deltas: a middleware such as Retry called the model again after
+// that attempt failed, or delivered a different response in its place. The deltas received
+// since TurnStarted{Seq} (or the previous TurnRestarted) belong to the discarded attempt and
+// are not part of the recorded turn, so a consumer rendering the turn should clear them. Not
+// emitted when the discarded attempt streamed nothing.
+type TurnRestarted struct{ Seq int }
+
+func (TurnRestarted) agentEvent() {}
 
 // AssistantTurn is the fully-assembled assistant message for a turn. Replayed is true
 // when it was reconstructed from the journal on resume rather than produced by a live
@@ -95,8 +107,9 @@ func (Finished) agentEvent() {}
 // It reconstructs from the journal alone, without re-running the model or tools. Only
 // journaled facts are reproduced: assembled assistant turns (StepModel) and completed tool
 // calls with their results (StepToolResult). Live-loop-only signals — token-level ModelEvent
-// deltas, TurnStarted, ToolStarted, and the terminal Finished — are not journaled and so are
-// not part of the durable projection; the durable content is the turns and tool results.
+// deltas, TurnStarted, TurnRestarted, ToolStarted, and the terminal Finished — are not
+// journaled and so are not part of the durable projection; the durable content is the turns and
+// tool results.
 func ReplayEvents(ctx context.Context, store Durable, runID string) ([]AgentEvent, error) {
 	recs, err := store.History(ctx, runID)
 	if err != nil {

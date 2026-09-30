@@ -143,3 +143,29 @@ func TestRunTyped_ReusedFinalAnswerIDIsReported(t *testing.T) {
 		t.Fatalf("err = %v, want ErrToolUseIDReused", err)
 	}
 }
+
+// The check must also cover a response that a middleware returns without getting it from the
+// model handler below it (a hedge backup, a fallback model, a cache): the journal records what
+// the chain returns, so a reused ID from there skips the call just the same.
+func TestRun_ToolUseIDReusedBySubstitutedResponseIsAnError(t *testing.T) {
+	var calls int
+	tool := &countingTool{name: "lookup", safety: Safety{ReadOnly: true}, calls: &calls}
+	m := &scriptModel{turns: [][]Emit{toolTurn("c1", "lookup", `{}`), textTurn("done")}}
+	turn := 0
+	substitute := func(next ModelHandler) ModelHandler {
+		return func(ctx context.Context, req Request) (Message, Usage, error) {
+			turn++
+			if turn == 2 { // answer the second turn from elsewhere, reusing the first turn's ID
+				return Message{Role: RoleAssistant, Parts: []Part{ToolUse{ID: "c1", Name: "lookup", Args: json.RawMessage(`{}`)}}}, Usage{}, nil
+			}
+			return next(ctx, req)
+		}
+	}
+	_, err := New(m, NewMemStore(), tool).Use(substitute).WithMaxTurns(4).Run(context.Background(), "r", "go")
+	if !errors.Is(err, ErrToolUseIDReused) {
+		t.Fatalf("err = %v (tool ran %d times), want ErrToolUseIDReused", err, calls)
+	}
+	if calls != 1 {
+		t.Fatalf("tool ran %d times, want 1", calls)
+	}
+}

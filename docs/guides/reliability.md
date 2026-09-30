@@ -17,9 +17,10 @@ a := agent.New(model, store, tools...).
 ```
 
 `Use` composes outermost-first: the first middleware listed sees the call first and the model last.
-Put `Hedge` outermost (it should race whole attempts), `Retry` inside it (retry a target that
-failed), and `RateLimit` innermost (throttle actual calls). Order is a real choice; this is the
-usual one.
+Put `Hedge` outermost (it should race whole attempts) and `Retry` inside it (retry a target that
+failed): middleware inside `Hedge` wraps every target, backups included. Order is a real choice;
+this is the usual one. `RateLimit` and `Cost` count every request actually sent wherever they sit,
+so each retried attempt and each hedged target takes a token and counts as spend.
 
 ## Model middleware (`agent.Use`)
 
@@ -38,9 +39,11 @@ exponential backoff between attempts and honoring context cancellation.
   do not burn attempts or tokens on terminal errors. It also fails fast on errors the same request
   would repeat: `agent.ErrConfig` (a request the adapter refused to build, such as a schema the
   provider cannot take), `agent.ErrQuotaExhausted` (used-up quota or credit, even when the provider
-  sends it as a 429), and `agent.ErrResponseTooLarge`. It retries `agent.ErrToolUseIDReused` (a
-  model turn that reused a tool-use ID; a fresh attempt can issue valid ones) and a provider's
-  mid-stream server error. See [error surfacing](models.md#error-surfacing-shared-across-all-three-adapters)
+  sends it as a 429), `agent.ErrResponseTooLarge`, and `agent.ErrTruncatedToolArgs` (a tool call cut
+  off by the output token limit, which the same request hits again). It retries
+  `agent.ErrToolUseIDReused` (a model turn that reused a tool-use ID; a fresh attempt can issue
+  valid ones), `agent.ErrStreamProtocol` (a stream that broke its provider's event protocol, a fault
+  of that one response), and a provider's mid-stream server error. See [error surfacing](models.md#error-surfacing-shared-across-all-three-adapters)
   for how adapters classify provider errors.
 
 ```go
@@ -64,12 +67,20 @@ a.Use(middleware.Hedge(800*time.Millisecond, openaiModel))
   failover), rather than waiting out the delay.
 - The first nil-error result wins; losers are cancelled via a derived context. If all fail, the
   joined error is returned. With no backups it is a pass-through.
+- Every target, backups included, goes through the middleware listed after `Hedge` and the agent's
+  checks on each model response.
+- `Hedge` does not wait for the losers: it returns as soon as one target wins. A loser whose model
+  ignores cancellation keeps running, with the middleware inside `Hedge` on its path, after the turn
+  has ended.
 
 ### Rate limiting: `RateLimit`
 
 `RateLimit(NewRateLimiter(interval, burst))` caps the model call rate with a token bucket (one token
 per `interval`, up to `burst` in reserve), blocking until a token is free or the context is
-cancelled. Share one `*RateLimiter` across agents to cap an aggregate rate.
+cancelled. Share one `*RateLimiter` across agents to cap an aggregate rate. It takes a token for
+every request the agent sends, wherever it sits in the chain: each attempt of a `Retry` and each
+target a `Hedge` launches waits for its own. An interval of 0 or less sets no limit. Waiters are not
+served in arrival order: a new call can take a freed token ahead of one already waiting.
 
 ```go
 rl := middleware.NewRateLimiter(time.Second, 5) // 5 calls/sec sustained, burst 5
@@ -85,8 +96,14 @@ so you can read spend across a run without touching the loop.
 meter := &middleware.CostMeter{}
 a.Use(middleware.Cost(meter, middleware.Rates{InputPer1M: 3.00, OutputPer1M: 15.00})) // USD per 1M tokens
 // ... after running ...
-fmt.Printf("spent $%.4f, usage %+v\n", meter.Total(), meter.Usage())
+fmt.Printf("spent $%.4f, usage %+v\n", meter.SpentTotal(), meter.Spent())
 ```
+
+The meter keeps two views. `Usage` and `Total` count the answers, the responses the calls
+returned and the run records. `Spent` and `SpentTotal` count every request sent, wherever `Cost`
+sits: failed attempts a `Retry` repeated and losing `Hedge` targets are billed too. The run itself
+keeps the same split: `Result.Usage` is the answers, `Result.Spend` everything, and
+`WithTokenBudget` stops on everything, including model calls that failed for good.
 
 ## Tool middleware
 
