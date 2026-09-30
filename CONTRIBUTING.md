@@ -61,8 +61,17 @@ Each example is its own `main.go` with a package-doc header that states what it 
 - State claims plainly and scope them precisely. Match the surrounding code's comment density and idiom.
 - Keep the guarantee language exact: at-most-once, tamper-evident, offline-verifiable, provably convergent. Do not overstate (for example, the cryptographic guarantees cover integrity and authenticity, not confidentiality; see [docs/guides/security-model.md](docs/guides/security-model.md)).
 
+## Changelog
+
+Every user-facing change adds an entry to [CHANGELOG.md](CHANGELOG.md) under `## [Unreleased]`, in
+the same pull request. Put it under Added, Changed, Deprecated, Removed, Fixed or Security; keep it
+to one line that names the public identifiers affected and links the PR. Mark breaking changes
+with a leading **Breaking:** under Changed or Removed. Describe a fix by the corrected behavior,
+plainly. Internal-only changes (CI, tests, refactors with no API or behavior change) need no entry.
+
 ## Before opening a change
 
 - `GOWORK=off go build ./...`, `GOWORK=off go test ./...`, and `gofmt -l .` are clean (run `gofmt` from the go1.27 toolchain via `export PATH="$(go env GOROOT)/bin:$PATH"`, or use `go fmt ./...`; the base gofmt predates Go 1.27 generic methods and reports false errors).
 - New exported symbols have doc comments.
+- `CHANGELOG.md` has an entry under Unreleased, or the change is not user-facing.
 - New docs are linked from the [docs index](docs/README.md) and honor the style above.
