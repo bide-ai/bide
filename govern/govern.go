@@ -325,6 +325,9 @@ func (pg *PersistentGovernor) ApplyOnce(ctx context.Context, id, event string) (
 	if err != nil {
 		return Applied{State: pg.state, Position: -1}, fmt.Errorf("govern: append log: %w (%w)", err, agent.ErrStorage)
 	}
+	if err := checkPosition(pg.entity, pos); err != nil {
+		return Applied{State: pg.state, Position: -1}, err
+	}
 	if pos < pg.next {
 		// The log already held this id, and this governor has folded past it: rebuild the state
 		// as of its position rather than report the current one.
@@ -338,6 +341,16 @@ func (pg *PersistentGovernor) ApplyOnce(ctx context.Context, id, event string) (
 		return Applied{State: pg.state, Position: pos}, recordedButUnknown(event, pos, err)
 	}
 	return Applied{State: pg.state, Position: pos}, nil
+}
+
+// checkPosition refuses a position an EventLog's Append reported for entity that no append can
+// have: a negative one. The governor slices the log's events by position, so it must never act on
+// one. The event may still have been recorded; the error says the log is broken.
+func checkPosition(entity string, pos int64) error {
+	if pos < 0 {
+		return fmt.Errorf("govern: log for %q reported position %d for an append; a position is at least 0: %w", entity, pos, agent.ErrProtocol)
+	}
+	return nil
 }
 
 // recordedButUnknown reports an append that succeeded when the state after it could not be
