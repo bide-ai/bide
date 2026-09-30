@@ -1,6 +1,6 @@
 # Pre-1.0 API redesign (proposal, v2)
 
-Status: proposal, under review. Nothing here is implemented yet. v2 folds in an independent adversarial critique.
+Status: accepted, in progress. The maintainer approved this plan as the work to do; it is not a 1.0 freeze, and any part may still change before 1.0. Waves 1 and 2 are underway (see the CHANGELOG). v2 folds in an independent adversarial critique.
 
 ## 0. Baseline, what is already done, and how v2 changes v1
 
