@@ -126,30 +126,12 @@ func (a *Agent) RunSaga(ctx context.Context, runID, input string) (Message, erro
 // runSaga is the shared body of RunSaga and StreamSaga; emit (may be nil) receives
 // lifecycle events as the loop runs.
 func (a *Agent) runSaga(ctx context.Context, runID, input string, emit func(AgentEvent)) (Message, error) {
-	if err := checkRunID(ctx, runID); err != nil {
-		return Message{}, err
-	}
-	if err := a.checkTools(); err != nil {
-		return Message{}, err // before a rollback, which looks compensators up by name
-	}
-	recs, err := a.store.History(ctx, runID)
-	if err != nil {
-		return Message{}, err
-	}
-	if cause, aborting := sagaFailure(recs); aborting {
-		return Message{}, a.rollback(ctx, runID, errors.New(cause), cause)
-	}
-
-	out, _, _, err := a.run(ctx, runID, []Message{UserText(input)}, true, emit)
-	var trip *sagaTrip
-	if errors.As(err, &trip) {
-		return Message{}, a.rollback(ctx, runID, trip.cause, trip.journaled)
-	}
+	out, _, _, err := a.runSagaWithTelemetry(ctx, runID, input, emit)
 	return out, err
 }
 
-// runSagaWithTelemetry is the counterpart of runSaga that returns usage and turn count
-// for RunSagaResult. It uses the richer run return values directly.
+// runSagaWithTelemetry is the body of runSaga that also returns usage and turn count, for
+// RunSagaResult.
 func (a *Agent) runSagaWithTelemetry(ctx context.Context, runID, input string, emit func(AgentEvent)) (Message, usageTotals, int, error) {
 	if err := checkRunID(ctx, runID); err != nil {
 		return Message{}, usageTotals{}, 0, err
@@ -162,6 +144,9 @@ func (a *Agent) runSagaWithTelemetry(ctx context.Context, runID, input string, e
 		return Message{}, usageTotals{}, 0, err
 	}
 	if cause, aborting := sagaFailure(recs); aborting {
+		// Re-entered after it aborted (a sub-saga whose parent had not recorded the failure): its
+		// usage goes to the tool call that started it, as run reports it (see callUsage).
+		reportUsage(ctx, runID, journalTotals(recs))
 		return Message{}, usageTotals{}, 0, a.rollback(ctx, runID, errors.New(cause), cause)
 	}
 

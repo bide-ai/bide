@@ -17,19 +17,20 @@ type Result struct {
 	// Message is the final assistant answer, identical to what Run / RunSaga return.
 	Message Message
 
-	// Usage is the sum of the usage of the model responses this invocation recorded, one per
-	// live turn (input, output, and cache tokens).
+	// Usage is the sum of the usage of the model responses the run recorded, one per turn
+	// (input, output, and cache tokens). It is the whole run's, read from the journal: the same
+	// whether the run finished in one invocation or was resumed after a crash, and the same again
+	// when a finished run is re-entered.
 	Usage Usage
 
-	// Spend is every token this invocation's model requests used: Usage plus the usage of
-	// requests whose responses were discarded (failed attempts a middleware retried, losing hedge
-	// targets). It is what the provider bills. The journal keeps the discarded part too (see
-	// Record.DiscardedUsage), and WithTokenBudget counts it.
+	// Spend is every token the run's model requests used: Usage plus the usage of requests whose
+	// responses were discarded (failed attempts a middleware retried, losing hedge targets) and of
+	// model calls that failed. It is what the provider bills, and what WithTokenBudget counts.
+	// Like Usage it is the whole run's, from the journal (see Record.DiscardedUsage).
 	Spend Usage
 
-	// Turns is the number of live model turns executed during this run (replayed turns
-	// from the durable journal are not counted, since their usage was already accounted
-	// for in the original run).
+	// Turns is the number of live model turns this invocation executed. Turns replayed from
+	// the journal are not counted: unlike Usage and Spend, it describes this invocation.
 	Turns int
 
 	// Duration is the wall-clock elapsed time for the run (from entry to return).

@@ -622,8 +622,9 @@ durability at all, so retries re-run everything. Bide' attempt-marker closes the
 `WithMaxTurns(n)` caps model turns per run so a model that keeps calling tools can't loop forever:
 hitting it returns `ErrMaxTurns` (which is `errors.Is` `ErrBudget`). `WithTokenBudget(n)` caps the
 tokens a run may use, cached input included: once the run has used `n`, it makes no further model
-call and returns `ErrBudgetExceeded`. Each call's usage is journaled with its turn, so both limits
-are rebuilt from the journal and hold across a crash and resume.
+call and returns `ErrBudgetExceeded`. The budget covers the run's whole agent tree: its sub-agents'
+model calls count against it, parallel ones included. Each call's usage is journaled with its turn,
+so both limits are rebuilt from the journal and hold across a crash and resume.
 
 ## Human-in-the-loop
 

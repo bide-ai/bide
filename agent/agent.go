@@ -209,8 +209,16 @@ func (a *Agent) WithMaxTurns(n int) *Agent {
 // journaled with it, a failed call's spend is journaled as its own record, and the count is
 // rebuilt from the journal, so a resumed run, on any process, is held to what it has already
 // used. A request still running when the run returns (a hedge loser whose model ignores
-// cancellation) is not counted. Like WithMaxTurns it applies per run (per Session.Send turn), and a
-// sub-agent's run has its own budget.
+// cancellation) is not counted. Like WithMaxTurns it applies per run (per Session.Send turn).
+//
+// The budget covers the run's agent tree: every run started from its tool calls (sub-agents,
+// and theirs) counts against it, and each of those runs checks it, with its own budget if it has
+// one, before each model call. A resumed tree first counts the journals of its sub-agents cut
+// off mid-run, so it is held to everything it used before any of it calls the model again.
+// Overshoot: a check sees every call that has returned, so the tree passes max only by calls in
+// flight when it reached max. Each agent run has at most one model call in flight, so with k
+// runs of the tree calling the model at that moment (k parallel sub-agents; 1 with none) the
+// tree uses less than max plus k calls' usage.
 func (a *Agent) WithTokenBudget(max int) *Agent {
 	a.tokenBudget = max
 	return a
@@ -335,8 +343,9 @@ func (a *Agent) Run(ctx context.Context, runID, input string) (Message, error) {
 // conversation to start from: a single user turn for Run, or the full transcript plus
 // the new user turn for a Session turn. The system prompt, if set, is prepended ahead of
 // the seed. Durability, resume, and side-effect safety are identical regardless of emit.
-// It returns the final message, accumulated token usage across all model turns, the
-// number of live model turns (replayed journal turns are not counted), and any error.
+// It returns the final message, the whole run's token usage (every model call in its journal,
+// recorded by this invocation or an earlier one), the number of live model turns (replayed
+// journal turns are not counted), and any error.
 func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool, emit func(AgentEvent)) (Message, usageTotals, int, error) {
 	if err := checkRunID(ctx, runID); err != nil {
 		return Message{}, usageTotals{}, 0, err
@@ -367,23 +376,19 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 	decided := map[string]bool{}        // tool-use IDs with a recorded approval decision
 	approvals := map[string]bool{}      // tool-use ID -> approve(true)/deny(false)
 	modelSeq := 0
-	var runUsage Usage // token usage across all of this run's model calls, replayed and live
-	spendSeq := 0      // spend records ("@spend/<n>") already in the journal
+	// The run's token usage, rebuilt from the journal and kept up to date from each record the
+	// run writes, so it is the whole run's however many invocations the run took. Its spend is
+	// what WithTokenBudget counts.
+	var tot usageTotals
+	spendSeq := 0 // spend records ("@spend/<n>") already in the journal
 	for _, r := range recs {
-		// Discarded spend: on a model step, its turn's other requests; on a spend record, a
-		// failed model call's requests (see recordSpend).
-		if r.DiscardedUsage != nil {
-			addUsage(&runUsage, *r.DiscardedUsage)
-		}
+		tot.add(r)
 		if strings.HasPrefix(r.Name, spendStepPrefix) {
 			spendSeq++
 		}
 		switch r.Kind {
 		case StepModel:
 			modelSeq++
-			if r.Usage != nil {
-				addUsage(&runUsage, *r.Usage)
-			}
 			if r.Message != nil {
 				msgs = append(msgs, *r.Message)
 				fire(AssistantTurn{Message: *r.Message, Replayed: true})
@@ -412,6 +417,19 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 		}
 	}
 
+	// Report the run's usage to the tool call that started it, if any, however the run returns,
+	// so that call's record carries it (see callUsage).
+	defer func() { reportUsage(ctx, runID, tot) }()
+
+	// Join the agent tree's live token count, counting the journaled spend of this run and of
+	// its sub-agents cut off mid-run, before any of the tree calls the model (see budget_tree.go).
+	node, created := joinBudgetTree(ctx, runID, a.tokenBudget, tot.spend)
+	if created {
+		if err := a.preloadSubRuns(ctx, runID, recs, node); err != nil {
+			return Message{}, tot, 0, err
+		}
+	}
+
 	// A finished run is final: return its recorded answer without asking the model for
 	// another turn. Re-invoking a finished run is routine (a client retrying after a lost
 	// response, a redelivered job, a sub-agent or session turn re-entered on resume), and a
@@ -419,7 +437,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 	// (keyed by tool-use id) would not recognize as repeats. The input is not consulted.
 	if final, ok := completedAnswer(recs); ok {
 		fire(Finished{Final: final})
-		return final, usageTotals{}, 0, nil
+		return final, tot, 0, nil
 	}
 
 	// Resume safety gate: a tool call that we ATTEMPTED (recorded a start marker for) but has
@@ -444,12 +462,11 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 		if ms := attemptedAtMs[id]; ms != 0 {
 			attemptedAt = time.UnixMilli(ms)
 		}
-		return Message{}, usageTotals{}, 0, &ResumeHalt{RunID: runID, RootRunID: rootRunID(ctx, runID), ToolUseID: id, ToolName: name, AttemptedAt: attemptedAt}
+		return Message{}, tot, 0, &ResumeHalt{RunID: runID, RootRunID: rootRunID(ctx, runID), ToolUseID: id, ToolName: name, AttemptedAt: attemptedAt}
 	}
 
-	var totalUsage usageTotals // accumulated token usage across live model turns
-	meter := &spendMeter{}     // usage of every model request this invocation sends
-	var liveTurns int          // number of live (non-replayed) model calls this run
+	meter := &spendMeter{} // usage of every model request this invocation sends
+	var liveTurns int      // number of live (non-replayed) model calls this run
 
 	for {
 		// If the last turn is an assistant message with tool calls still pending (a
@@ -473,13 +490,13 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 			// A cancelled run stops before asking for another turn, rather than relying on the
 			// model adapter to notice the cancellation.
 			if err := ctx.Err(); err != nil {
-				return Message{}, totalUsage, liveTurns, err
+				return Message{}, tot, liveTurns, err
 			}
 			if a.maxTurns > 0 && modelSeq >= a.maxTurns {
-				return Message{}, totalUsage, liveTurns, fmt.Errorf("run %s: %w (%d turns)", runID, ErrMaxTurns, modelSeq)
+				return Message{}, tot, liveTurns, fmt.Errorf("run %s: %w (%d turns)", runID, ErrMaxTurns, modelSeq)
 			}
-			if a.tokenBudget > 0 && runUsage.TotalTokens() >= a.tokenBudget {
-				return Message{}, totalUsage, liveTurns, fmt.Errorf("run %s: %d tokens used, budget %d: %w", runID, runUsage.TotalTokens(), a.tokenBudget, ErrBudgetExceeded)
+			if err := node.exceeded(runID); err != nil {
+				return Message{}, tot, liveTurns, err
 			}
 			fire(TurnStarted{Seq: modelSeq})
 			// Install the token sink so a live (non-replayed) model call forwards its
@@ -490,14 +507,12 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 				genCtx = withModelSink(ctx, turnSink(modelSeq, fire))
 			}
 			genCtx = withModelRun(genCtx, a.store, runID) // model middleware can journal a step of this run (WithRetrieval)
-			var turnUsage Usage
 			rec, err := a.store.Do(genCtx, runID, modelStep(modelSeq),
 				func(ctx context.Context) (Record, error) {
 					m, u, e := a.generate(ctx, Request{Messages: msgs, Tools: a.toolList(), Sampling: a.sampling, ResponseFormat: a.responseFormat, ToolChoice: a.toolChoice}, toolUseIDs(msgs), meter)
 					if e != nil {
 						return Record{}, e
 					}
-					turnUsage = u
 					r := Record{Kind: StepModel, Message: &m, Usage: &u}
 					// The turn recorded one response; every other request it sent was billed too.
 					if d := discardedSpend(meter.take(), u); d != (Usage{}) {
@@ -510,21 +525,17 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 				// The call failed for good, but its requests were billed: journal their spend so the
 				// budget counts it on this and every later invocation of the run.
 				if spent := meter.take(); spent != (Usage{}) {
-					if serr := a.recordSpend(ctx, runID, spendSeq, spent); serr != nil {
+					srec, serr := a.recordSpend(ctx, runID, spendSeq, spent)
+					if serr != nil {
 						err = errors.Join(err, serr)
 					}
+					tot.add(srec)
+					node.add(journalTotals([]Record{srec}).spend)
 				}
-				return Message{}, totalUsage, liveTurns, err
+				return Message{}, tot, liveTurns, err
 			}
-			addUsage(&totalUsage.answer, turnUsage)
-			addUsage(&totalUsage.spend, turnUsage)
-			if rec.Usage != nil {
-				addUsage(&runUsage, *rec.Usage)
-			}
-			if rec.DiscardedUsage != nil {
-				addUsage(&runUsage, *rec.DiscardedUsage)
-				addUsage(&totalUsage.spend, *rec.DiscardedUsage)
-			}
+			tot.add(rec) // the recorded turn, which another driver of the run may have written
+			node.add(journalTotals([]Record{rec}).spend)
 			liveTurns++
 			asst = *rec.Message
 			modelSeq++
@@ -541,10 +552,10 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 			if _, err := a.store.Do(ctx, runID, runCompleteStep, func(context.Context) (Record, error) {
 				return Record{Kind: StepValue}, nil
 			}); err != nil {
-				return Message{}, totalUsage, liveTurns, fmt.Errorf("mark complete (run %s): %w (%w)", runID, err, ErrStorage)
+				return Message{}, tot, liveTurns, fmt.Errorf("mark complete (run %s): %w (%w)", runID, err, ErrStorage)
 			}
 			fire(Finished{Final: asst})
-			return asst, totalUsage, liveTurns, nil // final answer
+			return asst, tot, liveTurns, nil // final answer
 		}
 
 		// Pre-pass (sequential): resolve human-in-the-loop approvals and collect the tools
@@ -564,7 +575,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 			}
 			t, ok := a.tools[tu.Name]
 			if !ok {
-				return Message{}, totalUsage, liveTurns, fmt.Errorf("model called unknown tool %q: %w", tu.Name, ErrUnknownTool)
+				return Message{}, tot, liveTurns, fmt.Errorf("model called unknown tool %q: %w", tu.Name, ErrUnknownTool)
 			}
 			if safety := t.Safety(); safety.RequiresApproval || safety.Approval != nil {
 				var approved bool
@@ -572,19 +583,19 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 					// m-of-n: the decision is the tally over the journaled per-approver records.
 					tally, final, err := a.quorumTally(ctx, runID, tu, pol)
 					if err != nil {
-						return Message{}, totalUsage, liveTurns, err
+						return Message{}, tot, liveTurns, err
 					}
 					if !final {
 						evTally := tally // the event gets its own copy; PendingApproval keeps tally
 						evTally.Pending = append([]string(nil), tally.Pending...)
 						fire(ApprovalRequired{ToolUseID: tu.ID, Name: tu.Name, Args: tu.Args, Quorum: &evTally})
-						return Message{}, totalUsage, liveTurns, &PendingApproval{RunID: runID, RootRunID: rootRunID(ctx, runID), ToolUseID: tu.ID, ToolName: tu.Name, Args: tu.Args, Quorum: &tally}
+						return Message{}, tot, liveTurns, &PendingApproval{RunID: runID, RootRunID: rootRunID(ctx, runID), ToolUseID: tu.ID, ToolName: tu.Name, Args: tu.Args, Quorum: &tally}
 					}
 					approved = tally.Passed()
 				} else {
 					if !decided[tu.ID] {
 						fire(ApprovalRequired{ToolUseID: tu.ID, Name: tu.Name, Args: tu.Args})
-						return Message{}, totalUsage, liveTurns, &PendingApproval{RunID: runID, RootRunID: rootRunID(ctx, runID), ToolUseID: tu.ID, ToolName: tu.Name, Args: tu.Args}
+						return Message{}, tot, liveTurns, &PendingApproval{RunID: runID, RootRunID: rootRunID(ctx, runID), ToolUseID: tu.ID, ToolName: tu.Name, Args: tu.Args}
 					}
 					approved = approvals[tu.ID]
 				}
@@ -593,7 +604,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 					if _, err := a.store.Do(ctx, runID, ToolResultStep(tu.ID), func(context.Context) (Record, error) {
 						return Record{Kind: StepToolResult, ToolUseID: tu.ID, IsError: true, Result: json.RawMessage(denied)}, nil
 					}); err != nil {
-						return Message{}, totalUsage, liveTurns, err
+						return Message{}, tot, liveTurns, err
 					}
 					done[tu.ID] = true
 					results[i] = &Message{Role: RoleTool, Parts: []Part{ToolResult{ToolUseID: tu.ID, Result: json.RawMessage(denied), IsError: true}}}
@@ -617,6 +628,9 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 			pauseMu  sync.Mutex
 			pauseIdx = -1
 			pauseErr error
+			// carried[i] is the usage the record of uses[i] carries: that of the runs it started.
+			// The runs counted their spend in the tree as it happened, so it goes into tot only.
+			carried = make([]usageTotals, len(uses))
 		)
 		for _, c := range toRun {
 			g.Go(func() (err error) {
@@ -632,6 +646,8 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 				}()
 				sctx := withRunScope(gctx, SubRunID(runID, c.tu.ID)) // hierarchical sub-run ID
 				sctx = withRunContext(sctx, a.store, runID)          // lets the tool call Interrupt
+				started := &callUsage{}                              // usage of the runs this call starts
+				sctx = withCallUsage(withBudgetNode(sctx, node), started)
 				if saga {
 					sctx = withSaga(sctx)
 				}
@@ -708,7 +724,9 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 						}
 						if saga {
 							toolCallErr = callErr
-							return Record{Kind: StepSagaFail, ToolUseID: c.tu.ID, Result: mustJSON(toolErrorText(a.toolErrRedact, c.tu.Name, callErr))}, nil
+							f := Record{Kind: StepSagaFail, ToolUseID: c.tu.ID, Result: mustJSON(toolErrorText(a.toolErrRedact, c.tu.Name, callErr))}
+							started.carry(&f)
+							return f, nil
 						}
 						// The model reads the error text as written, less any credential in a URL (and
 						// whatever else the agent's tool-error redactor removes): see toolErrorText.
@@ -717,8 +735,12 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 					} else {
 						r.Result = res
 					}
+					started.carry(&r)
 					return r, nil
 				})
+				if err == nil {
+					carried[c.idx] = journalTotals([]Record{rec})
+				}
 				if saga && toolCallErr != nil {
 					fire(ToolCompleted{ToolUseID: c.tu.ID, Name: c.tu.Name, Result: rec.Result, IsError: true})
 					var journaled string
@@ -745,15 +767,20 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 				return nil
 			})
 		}
-		if err := g.Wait(); err != nil {
+		werr := g.Wait()
+		for _, t := range carried {
+			addUsage(&tot.answer, t.answer)
+			addUsage(&tot.spend, t.spend)
+		}
+		if err := werr; err != nil {
 			var trip *sagaTrip
 			if errors.As(err, &trip) {
-				return Message{}, totalUsage, liveTurns, trip // RunSaga catches → compensates
+				return Message{}, tot, liveTurns, trip // RunSaga catches → compensates
 			}
-			return Message{}, totalUsage, liveTurns, err
+			return Message{}, tot, liveTurns, err
 		}
 		if pauseErr != nil {
-			return Message{}, totalUsage, liveTurns, pauseErr
+			return Message{}, tot, liveTurns, pauseErr
 		}
 
 		// Append results in deterministic uses-order.
