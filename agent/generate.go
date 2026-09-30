@@ -9,41 +9,51 @@ import (
 	"sync/atomic"
 )
 
-// generate asks the model for turn call.Turn of run call.RunID through the agent's middleware
-// chain (see callChain). ts is the turn's state: its request counter, the run's spend meter, the
-// run's journal and, for a streaming run, the turn's sink.
-func (a *Agent) generate(ctx context.Context, call ModelCall, usedIDs map[string]bool, ts *turnState) (ModelResponse, error) {
-	return callChain(ctx, a.mw, call, ts, usedIDs)
+// modelChain is a model call chain: middleware (first = outermost) around a model handler that
+// sends each request. An agent run builds one for all its turns (Agent.modelChain), and CallModel
+// one per call.
+type modelChain struct{ h ModelHandler }
+
+// newModelChain returns the chain of mws around its own model handler. Every handler in it gets
+// its calls clipped (see clipped).
+func newModelChain(mws []Middleware) *modelChain {
+	c := &modelChain{}
+	h := clipped(c.send)
+	for i := len(mws) - 1; i >= 0; i-- {
+		h = clipped(mws[i](h))
+	}
+	c.h = h
+	return c
 }
+
+// modelChain returns the agent's middleware chain, for one run.
+func (a *Agent) modelChain() *modelChain { return newModelChain(a.mw) }
 
 // newTurnSink returns the sink of streaming turn seq, which forwards to fire.
 func newTurnSink(seq int, fire func(AgentEvent)) *turnSink { return &turnSink{seq: seq, fire: fire} }
 
 // turnState is one model turn's state, shared by every request the turn sends. Middleware cannot
-// reach it: a ModelCall carries it unexported, and the agent's model handler accepts only a call
-// that carries its own turn's.
+// reach it: a ModelCall carries it unexported, and the chain's model handler accepts only a call
+// that carries a turn of its own chain.
 type turnState struct {
-	attempts atomic.Int64 // requests numbered so far
-	meter    *spendMeter  // every request's usage, for the run's budget and Result.Spend
-	journal  Durable      // the run's journal, for middleware that records a step (WithRetrieval); nil outside a run
-	sink     *turnSink    // the live token stream (Agent.Stream); nil when not streaming
+	chain    *modelChain     // the chain the turn's calls go through
+	attempts atomic.Int64    // requests numbered so far
+	meter    *spendMeter     // every request's usage, for the run's budget and Result.Spend
+	journal  Durable         // the run's journal, for middleware that records a step (WithRetrieval); nil outside a run
+	sink     *turnSink       // the live token stream (Agent.Stream); nil when not streaming
+	usedIDs  map[string]bool // the tool-use IDs already in the run's conversation (see checkToolUseIDs)
 }
 
-// callChain sends call through mws (first = outermost) to the model handler of turn ts, and
-// checks the response the chain returns. usedIDs holds the tool-use IDs already in the run's
-// conversation (see checkToolUseIDs).
-func callChain(ctx context.Context, mws []Middleware, call ModelCall, ts *turnState, usedIDs map[string]bool) (ModelResponse, error) {
-	h := clipped(baseHandler(ts, usedIDs))
-	for i := len(mws) - 1; i >= 0; i-- {
-		h = clipped(mws[i](h))
-	}
+// call sends call through the chain as turn ts, and checks the response the chain returns.
+func (c *modelChain) call(ctx context.Context, call ModelCall, ts *turnState) (ModelResponse, error) {
+	ts.chain = c
 	call.turn = ts
-	resp, err := h(ctx, call)
+	resp, err := c.h(ctx, call)
 	if err == nil {
 		// The response the chain returns is checked again, since a middleware can return one it did
 		// not get from the handler it wraps (a fallback, a cache), and that response is what the
 		// run records.
-		resp, err = checkResponse(resp, usedIDs)
+		resp, err = checkResponse(resp, ts.usedIDs)
 	}
 	if err != nil {
 		ts.sink.close()
@@ -68,49 +78,48 @@ func clipped(h ModelHandler) ModelHandler {
 // state: one a middleware built instead of deriving it from the call it received.
 var errForeignCall = fmt.Errorf("agent: a ModelCall reached the model handler without its turn's state: a middleware passed on a ModelCall it built instead of a copy of the one it received: %w", ErrConfig)
 
-// baseHandler is the innermost handler of turn ts: it sends each request of the turn. It numbers
-// the request, runs the call's hooks around it, streams it to the turn's sink if it holds the
-// sink's claim, adds its usage to the turn's meter (not a hook, so no middleware can remove it),
-// and checks the response, below middleware, so a retry middleware sees the fault.
-func baseHandler(ts *turnState, usedIDs map[string]bool) ModelHandler {
-	return func(ctx context.Context, call ModelCall) (ModelResponse, error) {
-		if call.turn != ts {
-			return ModelResponse{}, errForeignCall
-		}
-		if call.Model == nil {
-			return ModelResponse{}, fmt.Errorf("agent: a ModelCall reached the model handler with a nil Model: %w", ErrConfig)
-		}
-		call.attempt = int(ts.attempts.Add(1))
-		ran := 0 // hooks whose Before returned nil
-		var err error
-		for _, h := range call.hooks {
-			if h.Before != nil {
-				if err = h.Before(ctx, call); err != nil {
-					break
-				}
-			}
-			ran++
-		}
-		var (
-			resp      ModelResponse
-			discarded Usage
-		)
-		if err == nil {
-			resp, discarded, err = ts.send(ctx, call)
-			if err == nil {
-				resp, err = checkResponse(resp, usedIDs)
-			}
-			ts.sink.done(call.attempt, resp, err)
-			ts.meter.add(resp.Usage)
-			ts.meter.add(discarded)
-		}
-		for _, h := range call.hooks[:ran] {
-			if h.After != nil {
-				h.After(ctx, call, ModelAttempt{Response: resp, Discarded: discarded, Err: err})
-			}
-		}
-		return resp, err
+// send is the chain's model handler: it sends one request of the call's turn. It numbers the
+// request, runs the call's hooks around it, streams it to the turn's sink if it holds the sink's
+// claim, adds its usage to the turn's meter (not a hook, so no middleware can remove it), and
+// checks the response, below middleware, so a retry middleware sees the fault.
+func (c *modelChain) send(ctx context.Context, call ModelCall) (ModelResponse, error) {
+	ts := call.turn
+	if ts == nil || ts.chain != c {
+		return ModelResponse{}, errForeignCall
 	}
+	if call.Model == nil {
+		return ModelResponse{}, fmt.Errorf("agent: a ModelCall reached the model handler with a nil Model: %w", ErrConfig)
+	}
+	call.attempt = int(ts.attempts.Add(1))
+	ran := 0 // hooks whose Before returned nil
+	var err error
+	for _, h := range call.hooks {
+		if h.Before != nil {
+			if err = h.Before(ctx, call); err != nil {
+				break
+			}
+		}
+		ran++
+	}
+	var (
+		resp      ModelResponse
+		discarded Usage
+	)
+	if err == nil {
+		resp, discarded, err = ts.send(ctx, call)
+		if err == nil {
+			resp, err = checkResponse(resp, ts.usedIDs)
+		}
+		ts.sink.done(call.attempt, resp, err)
+		ts.meter.add(resp.Usage)
+		ts.meter.add(discarded)
+	}
+	for _, h := range call.hooks[:ran] {
+		if h.After != nil {
+			h.After(ctx, call, ModelAttempt{Response: resp, Discarded: discarded, Err: err})
+		}
+	}
+	return resp, err
 }
 
 // send makes the request call describes. It streams it to the turn's sink when the request can
@@ -143,7 +152,7 @@ func (ts *turnState) send(ctx context.Context, call ModelCall) (ModelResponse, U
 		Usage:     u,
 		Finish:    fin.Reason,
 		RawFinish: fin.Raw,
-		origin:    &responseOrigin{attempt: n, req: call.Request, info: info, described: described},
+		origin:    responseOrigin{attempt: n, req: call.Request, info: info, described: described},
 	}, discarded, nil
 }
 
@@ -159,7 +168,7 @@ func checkResponse(resp ModelResponse, usedIDs map[string]bool) (ModelResponse, 
 		resp.Finish = FinishStop
 	case FinishStop:
 	case FinishToolUse:
-		if len(resp.Message.toolUses()) == 0 {
+		if !hasToolUse(resp.Message) {
 			return ModelResponse{Usage: resp.Usage}, fmt.Errorf("finish reason %q with no tool call: %w", FinishToolUse, ErrStreamProtocol)
 		}
 	case FinishLength:
@@ -188,9 +197,9 @@ type turnSink struct {
 	mu        sync.Mutex
 	seq       int
 	fire      func(AgentEvent)
-	holder    int            // the number of the request holding the claim; 0 for none
-	streamed  bool           // events were forwarded since the turn started or last restarted
-	delivered *ModelResponse // the response the holder's request completed with
+	holder    int           // the number of the request holding the claim; 0 for none
+	streamed  bool          // events were forwarded since the turn started or last restarted
+	delivered ModelResponse // the response the holder's request completed with, if it succeeded
 	closed    bool
 }
 
@@ -238,7 +247,7 @@ func (s *turnSink) done(n int, resp ModelResponse, err error) {
 		s.holder = 0
 		return
 	}
-	s.delivered = &resp
+	s.delivered = resp
 }
 
 // finish closes the sink on the response the turn returns, replaying it to the caller unless it is
@@ -253,7 +262,7 @@ func (s *turnSink) finish(resp ModelResponse) {
 		return
 	}
 	s.closed = true
-	if s.delivered != nil && sameResponse(*s.delivered, resp) {
+	if sameResponse(s.delivered, resp) {
 		return
 	}
 	if s.streamed {
@@ -279,6 +288,16 @@ func (s *turnSink) close() {
 // streamed is what the turn records only if the middleware above it returned that response
 // unchanged.
 func sameResponse(a, b ModelResponse) bool {
-	return a.origin != nil && a.origin == b.origin && a.Usage == b.Usage && a.Finish == b.Finish &&
+	return a.origin.attempt != 0 && a.origin.attempt == b.origin.attempt && a.Usage == b.Usage && a.Finish == b.Finish &&
 		a.RawFinish == b.RawFinish && reflect.DeepEqual(a.Message, b.Message)
+}
+
+// hasToolUse reports whether m calls a tool.
+func hasToolUse(m Message) bool {
+	for _, p := range m.Parts {
+		if _, ok := p.(ToolUse); ok {
+			return true
+		}
+	}
+	return false
 }

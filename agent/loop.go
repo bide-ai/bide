@@ -196,8 +196,9 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 		return Message{}, tot, 0, toolHalt(runID, rootRunID(ctx, runID), id, name, markerTime(attemptedAtMs[id]), HaltCrashed)
 	}
 
-	meter := &spendMeter{} // usage of every model request this invocation sends
-	var liveTurns int      // number of live (non-replayed) model calls this run
+	meter := &spendMeter{}  // usage of every model request this invocation sends
+	chain := a.modelChain() // the model call chain every turn of this invocation goes through
+	var liveTurns int       // number of live (non-replayed) model calls this run
 
 	for {
 		// If the last turn is an assistant message with tool calls still pending (a
@@ -243,20 +244,17 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 			if emit != nil {
 				ts.sink = newTurnSink(modelSeq, fire)
 			}
-			call := ModelCall{
-				Request: Request{Messages: msgs, Tools: a.toolList(), Sampling: a.sampling, ResponseFormat: a.responseFormat, ToolChoice: a.toolChoice},
-				Model:   a.model,
-				RunID:   runID,
-				Turn:    modelSeq,
-			}
+			seq := modelSeq
 			rec, err := a.store.Do(ctx, runID, modelStep(modelSeq),
 				func(ctx context.Context) (Record, error) {
-					resp, e := a.generate(ctx, call, toolUseIDs(msgs), ts)
+					ts.usedIDs = toolUseIDs(msgs)
+					req := Request{Messages: msgs, Tools: a.toolList(), Sampling: a.sampling, ResponseFormat: a.responseFormat, ToolChoice: a.toolChoice}
+					resp, e := chain.call(ctx, ModelCall{Request: req, Model: a.model, RunID: runID, Turn: seq}, ts)
 					if e != nil {
 						return Record{}, e
 					}
 					r := Record{Kind: StepModel, Message: &resp.Message, Usage: &resp.Usage, Finish: resp.Finish, RawFinish: resp.RawFinish}
-					r.Model, r.PromptDigest, r.ToolsDigest = resp.journal(call.Request)
+					r.Model, r.PromptDigest, r.ToolsDigest = resp.journal(req)
 					// The turn recorded one response; every other request it sent was billed too.
 					if d := discardedSpend(meter.take(), resp.Usage); d != (Usage{}) {
 						r.DiscardedUsage = &d

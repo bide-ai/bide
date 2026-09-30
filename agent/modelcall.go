@@ -5,9 +5,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"hash"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 )
 
@@ -106,11 +106,11 @@ type ModelResponse struct {
 	Finish    FinishReason
 	RawFinish string // the provider's own finish reason, as it sent it; empty if it sent none
 
-	origin *responseOrigin // the request that produced the response; nil for one a middleware built
+	origin responseOrigin // the request that produced the response; zero for one a middleware built
 }
 
-// responseOrigin identifies the request that produced a response: its number within the turn,
-// what it asked and where it went, for the journal.
+// responseOrigin identifies the request that produced a response: its number within the turn
+// (never 0), what it asked and where it went, for the journal.
 type responseOrigin struct {
 	attempt   int
 	req       Request
@@ -126,7 +126,7 @@ func CallModel(ctx context.Context, m Model, req Request, mw ...Middleware) (Mod
 	if m == nil {
 		return ModelResponse{}, fmt.Errorf("agent: CallModel with a nil Model: %w", ErrConfig)
 	}
-	return callChain(ctx, mw, ModelCall{Request: req, Model: m}, &turnState{meter: &spendMeter{}}, nil)
+	return newModelChain(mw).call(ctx, ModelCall{Request: req, Model: m}, &turnState{meter: &spendMeter{}})
 }
 
 // journal returns what a model record journals about resp beside its message and usage: the model
@@ -135,7 +135,7 @@ func CallModel(ctx context.Context, m Model, req Request, mw ...Middleware) (Mod
 // it), there is no model, and the digests are of sent, the request the agent passed to the chain.
 func (resp ModelResponse) journal(sent Request) (model *ModelInfo, prompt, tools string) {
 	req := sent
-	if o := resp.origin; o != nil {
+	if o := resp.origin; o.attempt != 0 {
 		req = o.req
 		if o.described {
 			info := o.info
@@ -149,21 +149,20 @@ func (resp ModelResponse) journal(sent Request) (model *ModelInfo, prompt, tools
 // sent: the text of every system message in msgs, in order, each length-prefixed under a domain
 // tag, so no two different prompts share a digest. It is "" when msgs holds no system message.
 func PromptDigest(msgs []Message) string {
-	var h hash.Hash
+	var b []byte
 	for _, m := range msgs {
 		if m.Role != RoleSystem {
 			continue
 		}
-		if h == nil {
-			h = sha256.New()
-			h.Write([]byte("bide.prompt.v1\n"))
+		if b == nil {
+			b = append(make([]byte, 0, 512), "bide.prompt.v1\n"...)
 		}
-		writeField(h, m.Text())
+		b = appendField(b, m.Text())
 	}
-	if h == nil {
+	if b == nil {
 		return ""
 	}
-	return hex.EncodeToString(h.Sum(nil))
+	return hexDigest(b)
 }
 
 // ToolsDigest is the hex SHA-256 digest a model record journals of the tool set a turn was sent:
@@ -174,31 +173,33 @@ func ToolsDigest(tools []Tool) string {
 	if len(tools) == 0 {
 		return ""
 	}
-	sorted := slices.Clone(tools)
-	slices.SortStableFunc(sorted, func(a, b Tool) int {
-		switch an, bn := a.Name(), b.Name(); {
-		case an < bn:
-			return -1
-		case an > bn:
-			return 1
-		}
-		return 0
-	})
-	h := sha256.New()
-	h.Write([]byte("bide.tools.v1\n"))
-	for _, t := range sorted {
-		writeField(h, t.Name())
-		writeField(h, t.Description())
-		writeField(h, string(t.ArgsSchema()))
+	byName := func(a, b Tool) int { return strings.Compare(a.Name(), b.Name()) }
+	if !slices.IsSortedFunc(tools, byName) {
+		tools = slices.Clone(tools)
+		slices.SortStableFunc(tools, byName)
 	}
-	return hex.EncodeToString(h.Sum(nil))
+	b := append(make([]byte, 0, 512), "bide.tools.v1\n"...)
+	for _, t := range tools {
+		b = appendField(b, t.Name())
+		b = appendField(b, t.Description())
+		b = appendField(b, t.ArgsSchema())
+	}
+	return hexDigest(b)
 }
 
-// writeField writes s to h as its decimal length, a colon, and s itself.
-func writeField(h hash.Hash, s string) {
-	h.Write([]byte(strconv.Itoa(len(s))))
-	h.Write([]byte{':'})
-	h.Write([]byte(s))
+// appendField appends s to b as its decimal length, a colon, and s itself.
+func appendField[S ~string | ~[]byte](b []byte, s S) []byte {
+	b = strconv.AppendInt(b, int64(len(s)), 10)
+	b = append(b, ':')
+	return append(b, s...)
+}
+
+// hexDigest is the hex SHA-256 digest of b.
+func hexDigest(b []byte) string {
+	sum := sha256.Sum256(b)
+	var h [2 * sha256.Size]byte
+	hex.Encode(h[:], sum[:])
+	return string(h[:])
 }
 
 // usageTotals is what a run's model calls used: answer is the usage of the responses the run
