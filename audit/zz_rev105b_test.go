@@ -261,10 +261,11 @@ func Test_R105b_ProvenTallyResultReadsTwoWays(t *testing.T) {
 	}
 }
 
-// L3 follow-up, the audit side of agent's Test_R105b_KeylessApproverIsRefused. distinctApproverKeys
-// skipped a verifier with an empty PublicKey, so two approvers whose keys name nothing were taken
-// as distinct while the gate's counting rule took them as one. An empty key names no key: it is
-// refused with ErrConfig, as the gate refuses it.
+// L3 follow-up, the audit side of agent's Test_R105b_KeylessApproverIsRefused. #105's audit check
+// skipped a verifier with an empty PublicKey, so two approvers whose keys named nothing were taken
+// as distinct while the gate's counting rule took them as one. Under #109's rule a verifier that
+// reports no key identity (here an Ed25519Verifier without a key) is refused with ErrConfig, as
+// the gate refuses it.
 func Test_R105b_VerifyApprovalsRefusesAKeylessApprover(t *testing.T) {
 	signer := p11Signers(t)["ed25519"]
 	v := p11Verifier(t, signer)

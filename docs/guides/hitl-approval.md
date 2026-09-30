@@ -178,7 +178,8 @@ An m-of-n tool inside a `SubAgent` pauses the whole tree: the parent's `Run` ret
 The gate fails with `ErrConfig` (rather than counting zero decisions) when a tool has an `Approval`
 policy but no `WithApproverVerifiers` resolver is set, or when the policy is malformed: no approvers,
 an empty or duplicate approver id, an id that is not valid UTF-8, or `Need` outside
-`1..len(Approvers)` (see `ApprovalPolicy.Validate`).
+`1..len(Approvers)` (see `ApprovalPolicy.Validate`), or when an eligible approver's verifier has an
+empty `PublicKey()` (see above).
 
 Approver ids are compared as exact bytes, but a policy may not list two ids that differ only by
 case or Unicode normalization (`alice` and `Alice`, an NFC and an NFD `café`, a fullwidth and an

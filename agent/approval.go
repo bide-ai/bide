@@ -339,9 +339,7 @@ const (
 // s.ToolUseID (IsApprovalDecision). An approver's decision is their FIRST record that is
 // valid: the approver is in p.Approvers, verifierFor resolves their key, and the signature
 // verifies over ApprovalDecisionBytes(s, approver, approved) under the scheme the record names
-// (ApproverAlg), which must be the scheme of the approver's key, and no approver counted earlier
-// resolves to the same key (one key holder fills one seat, whatever ids it is listed under).
-// Records that are not valid never
+// (ApproverAlg), which must be the scheme of the approver's key. Records that are not valid never
 // occupy an approver's place, so a forged or mistaken decision cannot block the approver's
 // real one; later valid records from an approver who already decided are superseded.
 //
