@@ -7,7 +7,7 @@ wraps each one so the agent core can call it like any native tool. It is built o
 official SDK, `github.com/modelcontextprotocol/go-sdk`.
 
 The package is deliberately thin: two entry points (`Connect` and `Tools`), a handful of options
-(`TrustAnnotations`, `WithSafety`, `WithCallTimeout`, `WithMaxResultBytes`,
+(`TrustAnnotations`, `WithSafety`, `WithApproval`, `WithCallTimeout`, `WithMaxResultBytes`,
 `WithMaxDescriptionBytes`, `WithElicitation`, `DeclineElicitation`, `WithToolListChanged`,
 `WithClientInfo`), and an internal adapter. It does
 not embed a server, spawn processes, or manage transports for you; you bring a
@@ -66,23 +66,30 @@ tools, err := mcp.Tools(ctx, session, mcp.TrustAnnotations())
 
 ### Per-tool safety and approval gates
 
-`WithSafety(name, safety)` sets one tool's `agent.Safety` from the host side, in place of the
-default and of the server's annotations (trusted or not). It is how an MCP tool gets a human
-approval gate, 1-of-1 or m-of-n, and pauses and resumes exactly like a local tool:
+`WithSafety(name, safety)` sets one tool's `agent.Safety` (`ReadOnly` or `Idempotent`) from the
+host side, in place of the default and of the server's annotations (trusted or not).
+`WithApproval(name, policy)` gives one tool a human approval gate, 1-of-1
+(`agent.SingleApproval()`) or m-of-n, so it pauses and resumes exactly like a local tool; a nil or
+invalid policy fails `Tools` with `agent.ErrConfig`:
 
 <!-- docsnip: setup ctx context.Context; import mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"; session *mcpsdk.ClientSession -->
 ```go
 tools, err := mcp.Tools(ctx, session,
-	mcp.WithSafety("transfer", agent.Safety{RequiresApproval: true}),
-	mcp.WithSafety("wire", agent.Safety{Approval: &agent.ApprovalPolicy{Need: 2, Approvers: []string{"alice", "bob", "carol"}}}),
+	mcp.WithApproval("transfer", agent.SingleApproval()),
+	mcp.WithApproval("wire", &agent.ApprovalPolicy{Need: 2, Approvers: []string{"alice", "bob", "carol"}}),
 	mcp.WithSafety("search", agent.Safety{ReadOnly: true}), // retry-safe on your word, not the server's
 )
 ```
 
 The run returns `*agent.ApprovalPending` before the server sees the call; record the decision
 with `agent.Approve` (or `agent.SubmitDecision` for a quorum) and run it again. `Tools` fails with
-`agent.ErrConfig` if the server does not list a tool you named, so a misspelt gate never leaves
-the real tool ungated.
+`agent.ErrConfig` if the server does not list a tool you named (with either option), so a misspelt
+gate never leaves the real tool ungated.
+
+Each tool's `agent.ToolSpec` (see `agent.SpecOf`) carries the rest of what the server lists: `Title`
+is the tool's `title`, or its annotations' title if that is empty; `Output` is its `outputSchema`
+(a declared output schema that is not an object schema fails `Tools` with `agent.ErrProtocol`, as
+an input schema does); `Timeout` is the `WithCallTimeout` value.
 
 A trusted server that changes a tool's annotations cannot make a call already in flight
 retry-safe after the fact: a call that fired as a side effect and lost its result halts the
@@ -116,10 +123,13 @@ over it with an error; neither one truncates.
 
 Pass `n <= 0` to remove either limit.
 
-**Per-call timeout.** `WithCallTimeout(d)` bounds each call by `d`, on top of the run's context.
-There is no default: without it a call waits as long as the run's context allows. A call that
-times out may still be running on the server, so it fails with `agent.ErrToolOutcomeUnknown`
-(see below), and a side effect halts on resume rather than run again.
+**Per-call timeout.** `WithCallTimeout(d)` bounds each call by `d`, on top of the run's context,
+and sets the tool's `ToolSpec.Timeout`, so the agent runs the call, tool middleware included,
+under that deadline too (a plan flow, which calls the tool directly, still gets the tool's own).
+There is no default: without it a call waits as long as the run's context allows. A result that
+arrives after the deadline is recorded. A call that fails after it may still be running on the
+server, so its outcome is unknown (`agent.ErrToolOutcomeUnknown`, see below), and a side effect
+records nothing and halts on resume rather than run again.
 
 **Unknown outcomes are the safe side.** Only two failures are known not to have run the tool:
 a JSON-RPC error from the server, and a call on a session already closed. Every other transport
@@ -170,8 +180,11 @@ func Tools(ctx context.Context, session *mcp.ClientSession, opts ...ToolsOption)
 // TrustAnnotations maps a trusted server's annotations onto agent.Safety.
 func TrustAnnotations() ToolsOption
 
-// WithSafety sets one tool's agent.Safety (approval gates included), overriding annotations.
+// WithSafety sets one tool's agent.Safety (ReadOnly, Idempotent), overriding annotations.
 func WithSafety(name string, s agent.Safety) ToolsOption
+
+// WithApproval gates one tool on human approval (agent.SingleApproval or an m-of-n policy).
+func WithApproval(name string, p *agent.ApprovalPolicy) ToolsOption
 
 // Limits (see Limits): a per-call timeout (no default) and caps on results and descriptions.
 func WithCallTimeout(d time.Duration) ToolsOption

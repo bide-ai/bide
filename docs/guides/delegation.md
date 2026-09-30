@@ -90,14 +90,16 @@ something the caller has to remember. Bind the acting grant and signer once at t
 ```go
 ctx = audit.WithGrant(ctx, rootSG, signer)
 
-tool := audit.AttenuatingSubAgent("researcher", "does research", subAgent, store,
-    func(parent audit.Grant, subAgent string) audit.Grant {
+tool := audit.AttenuatingSubAgent("researcher", "does research", subAgent, audit.AttenuationConfig{
+    Store: store,
+    Narrow: func(parent audit.Grant, subAgent string) audit.Grant {
         // return a narrower grant: keep every constraint, lower the limit.
         scope := maps.Clone(parent.Scope)
         scope["limit"] = "100"
         return audit.Grant{Scope: scope}
     },
-    audit.ScopeRules{"limit": audit.NumericAtMost})
+    Rules: audit.ScopeRules{"limit": audit.NumericAtMost},
+}) // trailing agent.ToolOptions go to agent.SubAgent: agent.WithApproval gates the delegation
 ```
 
 On each call, if a signed grant is bound to the context, the tool mints a narrower child grant

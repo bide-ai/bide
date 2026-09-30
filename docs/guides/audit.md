@@ -573,7 +573,7 @@ in a committed run whose history is provably append-only, without exposing the r
 
 For a governed action (a `gsm` event applied through the Tier-2 governor), the audit trail can
 commit not only to the fact that the action happened but to the policy it ran under.
-`govern.AttestedEventTool` embeds a policy digest (an opaque identifier, e.g.
+An attested `govern.EventTool` (one whose `EventToolConfig.PolicyDigest` is set) embeds a policy digest (an opaque identifier, e.g.
 `gsm.Registry.PolicyDigest`) and the resulting `state_digest` (`gsm.State.Digest`) in the tool's
 journaled result, so one committed leaf binds the action, the policy that admitted it, and the exact
 state it produced, and the same `ProofBundle` that proves the action commits to all three. The SDK
@@ -581,7 +581,7 @@ treats both digests as opaque; it does not depend on the policy engine's seriali
 layout.
 
 If the deployment binds an acting identity to the run (`agent.WithIdentity`, carrying `Actor`,
-`OnBehalfOf`, and `AuthorityRef`), `AttestedEventTool` also stamps those fields into the same leaf,
+`OnBehalfOf`, and `AuthorityRef`), the attested `EventTool` also stamps those fields into the same leaf,
 so an inclusion proof commits to who acted, on whose behalf, and under what authority, not merely
 that the action happened under the policy. Identity is assigned by the deployment from its own auth
 layer (an IdP, a signed grant, a service identity), never by the model, and it rides the context so

@@ -30,6 +30,12 @@ store, it is safe: resume replays it from the journal rather than re-running it.
    claimed exclusively like the first. A process that dies in that gap records nothing, so its
    marker halts as in case 3.
 
+   A tool timeout (`WithTimeout`) is treated the same way. A call that returns a result is
+   recorded even after its deadline, since the outcome is known. A side effect that returns an
+   error after its deadline may have been cut off after its effect took place, so nothing is
+   recorded, the drive fails with `ErrToolOutcomeUnknown`, and a resume halts as in case 3. A
+   retry-safe tool records that error instead.
+
 The same holds when nothing crashed and a caller simply invokes the run again (a client retrying
 after a lost response, a redelivered job, a sub-agent or session turn re-entered on resume):
 
@@ -57,8 +63,8 @@ the journal holds, and so what a resume cannot be talked out of by a redeploy:
 - the run's input and whether it runs as a saga (`run:start`), and for a session turn the
   transcript it started from; an unfinished run resumed with another input, or through the other
   entry point, is `ErrConfig`;
-- in a saga's rollback, which calls completed, failed, or were attempted, and whether each
-  completed call ran `ReadOnly`: a completed write is rolled back even if its tool was relabelled
+- in a saga's rollback, which calls completed, failed, or were attempted, and the `Safety` and
+  approval gate each completed call ran under (`Record.Safety`, `Record.Approval`): a completed write is rolled back even if its tool was relabelled
   `ReadOnly` since, and a call whose tool is no longer registered is reported uncompensated (or
   halts, if it was attempted with no result);
 - for a flow (`plan`), its flow name and input (`run:start`, kind `flow`), its topology digest,
@@ -76,8 +82,8 @@ says happened. A drive uses the configuration it is given for:
   the tool set it was sent (`Record.PromptDigest`, `Record.ToolsDigest`), the model that answered
   (`Record.Model`), and its finish reason, so an audit can tell which configuration produced each
   answer;
-- the tool set offered to new turns, and each tool's `Safety` and tool middleware for a call that
-  has not run yet (a pending call to a tool no longer registered fails with `ErrUnknownTool`);
+- the tool set offered to new turns, and each tool's spec (`Safety`, approval gate, timeout, read
+  once when the agent is built) and tool middleware for a call that has not run yet (a pending call to a tool no longer registered fails with `ErrUnknownTool`);
 - the approval gate for a call with no recorded denial, under the gate's current policy;
 - the `WithMaxTurns` and `WithTokenBudget` limits, compared with the turns and tokens the journal
   records, so raising a limit lets a stopped run continue;
@@ -124,8 +130,8 @@ says happened. A drive uses the configuration it is given for:
   `Step` attempted as a side effect halts even if the resuming code passes a retry-safe
   `StepSafety`. The marker needs no new field for this, so markers written by earlier versions
   are read the same way: every one of them means "not retry-safe, halt", unless the driver that
-  wrote it recorded that its attempt never started. A completed call's result records whether it
-  ran `ReadOnly`, so a saga rollback compensates (or lists as uncompensated) a write whose tool was
+  wrote it recorded that its attempt never started. A completed call's result records the `Safety`
+  it ran under, so a saga rollback compensates (or lists as uncompensated) a write whose tool was
   relabelled `ReadOnly` since. The one case not covered: a call that was retry-safe when it fired
   writes no marker, so if it is cut off with no result and its tool is relabelled a side effect
   before the resume, the resume runs it again and a rollback treats it as never started.

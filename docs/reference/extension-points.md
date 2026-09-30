@@ -325,14 +325,38 @@ The interface is untyped (`json.RawMessage`) so heterogeneous tools share one ty
 including runtime `mcp` tools whose schema is only known at connect time. Most native tools
 never implement this by hand: `agent.Func[In, Out](name, desc, safety, fn)` wraps a typed Go
 function and derives `ArgsSchema` from `In` at construction, so changing `In` is a
-compile-time change. `Safety` declares retry behavior on resume (`ReadOnly`, `Idempotent`,
-`IdempotencyKey`, `RequiresApproval`) and maps directly onto MCP annotations (see
-the [MCP guide](../guides/mcp.md)). Its optional `Approval` field upgrades the approval gate to a signed
-m-of-n policy; approver signatures are checked through the `ApproverVerifier` hook (`Alg()`, `Verify` and `KeyIDs`), which the
+compile-time change. `Safety` declares retry behavior on resume (`ReadOnly`, `Idempotent`) and
+maps directly onto MCP annotations (see the [MCP guide](../guides/mcp.md)). Trailing tool options set
+the rest of the tool's `ToolSpec`: `WithApproval` (a human gate: `SingleApproval()`, or a signed
+m-of-n `ApprovalPolicy`), `WithTimeout`, `WithTitle`, `WithOutputSchema`, and `WithSafety`. A tool that
+also implements `Spec() ToolSpec` is described by it (`agent.SpecOf` reads either method set; the 1.0
+rewrite makes `Spec` the interface). For the m-of-n policy, approver signatures are checked through the `ApproverVerifier` hook (`Alg()`, `Verify` and `KeyIDs`), which the
 `audit` package's Ed25519, ML-DSA, and hybrid verifiers implement; a decision counts only under the scheme
 journaled with it (`Decision.Alg`, recorded as `Record.ApproverAlg`), which must be its approver key's. Its `KeyIDs` method names the keys
 behind a verifier, derived from the public key's bytes, and the gate refuses a policy two of whose
 approvers share one (see [approval](../guides/hitl-approval.md#key-identity)).
+
+<!-- docsnip: api agent -->
+```go
+type ToolSpec struct {
+	Name        string
+	Title       string          // display name; models are not shown it
+	Description string
+	Input       json.RawMessage // argument schema, an object schema
+	Output      json.RawMessage // result schema, when the tool declares one
+	Safety      Safety          // journaled with each result
+	Approval    *ApprovalPolicy // journaled with each result
+	Timeout     time.Duration   // bounds each call, tool middleware included
+}
+```
+
+The agent reads each tool's spec once, when it is registered, and decides every call from that
+copy; model adapters receive the specs as `Request.Tools`, sorted by name. With a `Timeout`, a
+result the tool returns after the deadline is recorded, and an error it returns after the deadline
+has an unknown outcome: a side effect records nothing and halts on resume, a retry-safe tool
+records the error. A tool that wraps another (as `audit.AttenuatingSubAgent` wraps a `SubAgent`)
+says so with an `Unwrap() Tool` method, which the agent follows to find a wrapped sub-agent for
+saga rollback and budget accounting.
 
 ## `Compensator`: how a tool undoes its side effect
 
@@ -349,7 +373,7 @@ type Compensator interface {
 An optional interface a `Tool` implements to declare how to roll back its write. In a saga
 run (`RunSaga`), if a step fails after earlier writes succeeded, the completed compensatable
 writes are rolled back in reverse order, automatically and recursively through sub-agent
-trees. `agent.CompensatedFunc[In, Out](name, desc, safety, do, undo)` builds a typed tool
+trees (a wrapped sub-agent included, through `Unwrap() Tool`). `agent.CompensatedFunc[In, Out](name, desc, safety, do, undo)` builds a typed tool
 that declares both its forward action and its compensator.
 
 ## `Retriever`: bring-your-own RAG

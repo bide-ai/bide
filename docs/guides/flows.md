@@ -364,15 +364,15 @@ A node (or a join) may carry a `safety` classifying how `Run` treats it on the a
 than halting, because its body is safe to repeat; a side effect halts.
 
 **A config may only lower retry safety.** Whether a step is safe to run twice is a property of its Go
-code, so only Go declares it: `RegisterStep`, `RegisterTool` (from the tool's own `Safety`),
+code, so only Go declares it: `RegisterStep`, `RegisterTool` (from the `Safety` in the tool's spec),
 `RegisterModel`, `RegisterJoin2` and `RegisterJoin3` take `ReadOnly()`/`Idempotent()` options. The
-levels, highest first, are read-only, idempotent (`Idempotent` or an `IdempotencyKey`), and side
+levels, highest first, are read-only, idempotent (`Idempotent`), and side
 effect. A config `safety` may keep a block's level or name a lower one (mark a read-only block
 `idempotent`, or any block `side_effect` so a crash with no recorded outcome halts for confirmation),
 and a value above what Go declares (`readonly` or `idempotent` on a side effect, `readonly` on an
-idempotent block) is a load error (`ErrConfig`) naming the node. `side_effect` also drops an
-`IdempotencyKey`, since the key alone makes a node retry-safe. Any other change keeps an approval gate
-or an `IdempotencyKey` the wrapped agent tool declares (so a gated tool is still refused, see
+idempotent block) is a load error (`ErrConfig`) naming the node. A config `safety` changes only the
+retry level: the approval gate the wrapped agent tool declares (its `ToolSpec.Approval`) is not
+part of `Safety` and is kept (so a gated tool is still refused, see
 [Node approval](#node-approval)). The Go options `ReadOnly()` and `Idempotent()` on a
 `Builder` node are Go code and may raise a node's level; they too keep an approval gate.
 

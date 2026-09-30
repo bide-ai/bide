@@ -63,7 +63,7 @@ validity. So pick the posture per rule:
 - **Repair (compensation).** The event may fire into an invalid state, and the `Repair` restores a
   valid normal form. The invariant holds after repair, not during. This is the default and the
   source of order-independent convergence.
-- **Halt (human decision).** A tool marked `agent.Safety{RequiresApproval: true}` (or one that calls
+- **Halt (human decision).** A tool built with `agent.WithApproval(agent.SingleApproval())` (or one that calls
   `Interrupt`) pauses the run for a durable human decision instead of auto-repairing, for cases
   where silent compensation is not acceptable.
 
@@ -88,7 +88,7 @@ pg, _ := govern.NewPersistent(ctx, m, log, "order-42", m.NewState()) // event-so
 through the machine: crash-recoverable, and shared. Any number of processes can run a governor over
 the same log. Before answering, `Apply` folds in every event the log holds up to and including its
 own, in log order, including other processes' events, so the state it returns (and the
-`state_digest` an `AttestedEventTool` records) is exactly what an auditor gets by replaying the log
+`state_digest` an attested `EventTool` records) is exactly what an auditor gets by replaying the log
 through that event's position, reported as `Applied.Position`. Events other processes append later
 are folded in by the next `Apply`, or on demand with `Sync(ctx)`; `State()` is the view as of the last
 of those. `FederatedGovernor` works the same way for a federation.
@@ -139,9 +139,10 @@ into a governed event. This is how an LLM agent participates:
 
 <!-- docsnip: setup gov *govern.Governor -->
 ```go
-tool := govern.EventTool(gov, "pay", "mark the order paid", "pay", agent.Safety{})
+tool := govern.EventTool(gov, govern.EventToolConfig{Name: "pay", Description: "mark the order paid", Event: "pay"})
 // give `tool` to the agent; when the LLM calls it, "pay" is applied to shared state,
-// convergently, and durably.
+// convergently, and durably. EventToolConfig also takes Safety, Options (agent.ToolOptions
+// such as agent.WithApproval or agent.WithTimeout), and PolicyDigest (the attested form).
 ```
 
 Multiple agents sharing one governor converge no matter how their calls interleave.
@@ -150,7 +151,7 @@ Multiple agents sharing one governor converge no matter how their calls interlea
 
 A governed action can commit to **who acted**, not just what happened. The deployment binds an
 `agent.Identity{Actor, OnBehalfOf, AuthorityRef}` to the run (from its own auth layer, never from
-the model), and `AttestedEventTool` stamps it into the same leaf as the policy and state digests:
+the model), and an attested `EventTool` (one whose `EventToolConfig.PolicyDigest` is set) stamps it into the same leaf as the policy and state digests:
 
 <!-- docsnip: setup ctx context.Context; a *agent.Agent; runID string; input string -->
 ```go
@@ -334,6 +335,6 @@ for machines whose global state space is too large to enumerate, gsm verifies **
 [REGIMES field guide](https://github.com/blackwell-systems/normalization-confluence/blob/main/REGIMES.md).
 
 Because the policy is inspectable, serializable data, it also becomes an audit artifact:
-`govern.AttestedEventTool` records which policy admitted each governed action, and the policy is
+An attested `govern.EventTool` (`EventToolConfig.PolicyDigest` set) records which policy admitted each governed action, and the policy is
 anchored as a log leaf an auditor cross-links to the action and re-checks with the external oracle.
 See [Audit](audit.md) for the attestation and `bide-audit verify-governed-action`.

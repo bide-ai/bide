@@ -3,11 +3,15 @@
 A tool can require a human decision before it runs. The decision is a journaled step, so it survives
 a crash, and the run pauses durably until it lands. There are two forms:
 
-- **1-of-1:** one human approves or denies (`Safety{RequiresApproval: true}` + `agent.Approve`).
+- **1-of-1:** one human approves or denies (`agent.WithApproval(agent.SingleApproval())` + `agent.Approve`).
 - **m-of-n:** k distinct, named approvers out of a bounded set of n must sign off
-  (`Safety{Approval: &agent.ApprovalPolicy{...}}` + `agent.SubmitDecision`). Each decision is signed over
+  (`agent.WithApproval(&agent.ApprovalPolicy{...})` + `agent.SubmitDecision`). Each decision is signed over
   the exact call (tool and arguments), and the fact that k approved it before it ran is provable
   offline, from evidence that cannot leave a decision out unnoticed.
+
+The gate is part of the tool's spec (`ToolSpec.Approval`), not of its `Safety`, which only says how
+a call may be retried. A `SubAgent` takes `WithApproval` too, so a parent can require approval before
+it delegates. Each call's result journals the policy it ran under (`Record.Approval`).
 
 For a typed value rather than a yes/no, use `Interrupt`/`AnswerInterrupt` instead (see the
 [README](../../README.md#human-in-the-loop)).
@@ -16,7 +20,7 @@ For a typed value rather than a yes/no, use `Interrupt`/`AnswerInterrupt` instea
 
 <!-- docsnip: setup ctx context.Context; a *agent.Agent; store agent.Durable; runID string; input string; type RefundArgs struct{}; doRefund func(context.Context, RefundArgs) (string, error) -->
 ```go
-refund := agent.Func("refund", "refund the order", agent.Safety{RequiresApproval: true}, doRefund)
+refund := agent.Func("refund", "refund the order", agent.Safety{}, doRefund, agent.WithApproval(agent.SingleApproval()))
 
 _, err := a.Run(ctx, runID, input)
 if pend, ok := errors.AsType[*agent.ApprovalPending](err); ok {
@@ -41,12 +45,11 @@ verifies that approver's signature:
 
 <!-- docsnip: setup model agent.Model; store agent.Durable; type RefundArgs struct{}; doRefund func(context.Context, RefundArgs) (string, error); approverKeys map[string]ed25519.PublicKey -->
 ```go
-refund := agent.Func("refund", "refund the order",
-	agent.Safety{Approval: &agent.ApprovalPolicy{
+refund := agent.Func("refund", "refund the order", agent.Safety{}, doRefund,
+	agent.WithApproval(&agent.ApprovalPolicy{
 		Need:      2,
 		Approvers: []string{"ops", "finance", "risk"}, // n = 3
-	}},
-	doRefund)
+	}))
 
 a := agent.New(model, store, refund).
 	WithApproverVerifiers(func(id string) (agent.ApproverVerifier, bool) {

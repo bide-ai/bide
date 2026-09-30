@@ -208,7 +208,8 @@ These are stated in full in [KNOWN-LIMITATIONS.md](../KNOWN-LIMITATIONS.md); in 
   (one causal order). Truly concurrent agents mutating shared state out of order need the provable
   convergence of the governance tier ([Governance](governance.md)), not a saga.
 
-`SubAgent(name, description, sub)` composes agents into that durable tree: give the sub-agent the
+`SubAgent(name, description, sub, opts...)` composes agents into that durable tree (pass
+`agent.WithApproval` to have the parent wait for a human before it delegates): give the sub-agent the
 **same** `Durable` store as the parent for a unified journal, and a crash anywhere in the tree
 resumes the whole tree precisely (completed sub-agents reused, the in-flight one resumed, and
 `OutcomeUnknown` / `ApprovalPending` / `SagaAborted` from deep in the tree propagating up). A

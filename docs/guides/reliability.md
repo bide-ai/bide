@@ -170,7 +170,11 @@ Tool execution has its own wrappers (attached with `agent.UseTool`):
   call's arguments; pass `LogErrorText()` to log the text the agent journals for the call (its
   `WithToolErrorRedactor` text, with URL credentials redacted).
 
-Middleware reads a call's `Safety` with `agent.ToolSafety(ctx)`. The agent also enforces
+Tool middleware receives an `agent.ToolCall`: the model's `ToolUse`, the registered tool's `Spec`,
+and the `RunID`. It reads the call's `Spec.Safety` before it retries, caches or skips a call. A
+tool's `Timeout` (`agent.WithTimeout`) bounds the whole chain, middleware included. The agent decides
+from its own copy of the spec, so a middleware that changes `call.Spec` changes nothing it
+enforces. The agent also enforces
 at-most-once below every middleware: a tool that is not retry-safe runs at most once per tool
 call, and a middleware that calls it again gets `agent.ErrToolReinvoked` without the tool
 running.

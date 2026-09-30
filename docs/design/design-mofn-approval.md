@@ -21,7 +21,11 @@ Where the implementation refined this design:
   journaling a pending tally would freeze it. A resume reads the terminal record instead of recounting.
 - **Path isolation.** An `ApproveAs` decision never satisfies a 1-of-1 gate, and an `Approve`
   decision never counts toward an m-of-n tally.
-- **Declarative config.** The `approval` block loads onto `Safety.Approval`, but the `plan` runtime
+- **Approval split from Safety.** The policy no longer lives on `Safety`: it is the tool's
+  `ToolSpec.Approval`, set with `agent.WithApproval` (`agent.SingleApproval()` is the 1-of-1 gate
+  that `RequiresApproval` was; any other policy is m-of-n), and `Safety` only says how a call may be
+  retried. The API block below is the design as first shipped.
+- **Declarative config.** The `approval` block loads onto the node's approval gate, but the `plan` runtime
   does not enforce the gate yet, so `plan` Build refuses a flow that declares one (`ErrConfig`).
 - **v2 decisions and evidence** (below). The first implementation followed this document's "first
   decision per approver wins" literally, and an end-to-end test found that it let a bad record lock
@@ -175,9 +179,8 @@ design; where the implementation refined it, the notes at the top and the v2 sec
 ### Policy on the tool (`agent/tool.go`)
 
 `Safety` gains one optional field. `nil` keeps today's exact 1-of-1 behavior, so the change is
-backward-compatible.
+backward-compatible. (Since superseded: the policy is now `ToolSpec.Approval`, see the notes above.)
 
-<!-- docsnip: api agent -->
 ```go
 type Safety struct {
     // ... existing fields ...

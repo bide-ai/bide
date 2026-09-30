@@ -97,7 +97,8 @@ error's text as the status description, with every URL in the text redacted as t
 a tool error before journaling it (see the security model's tool-error redaction): capture is for
 content, not credentials. An `execute_tool` span records exactly the text the agent journals for
 the call, so an `Agent.WithToolErrorRedactor` applies there too. A tool middleware of your own
-that records error text gets the same text from `agent.ToolErrorText(ctx, tool, err)`.
+that records error text gets the same text from `call.ErrorText(err)` on the `agent.ToolCall` it
+receives.
 
 A call that panics ends its span with status Error and the description `panic`, whatever the
 capture setting; the panic value, which can carry content, is not recorded, and the panic
@@ -105,7 +106,7 @@ continues.
 
 `middleware.ToolLog` applies the same rule to its log line: a failed call is logged by its
 `ErrorSummary`. Pass `middleware.LogErrorText()` to log the error text instead: the text the agent
-journals for the call (`agent.ToolErrorText`), so your `WithToolErrorRedactor` and URL redaction
+journals for the call (`ToolCall.ErrorText`), so your `WithToolErrorRedactor` and URL redaction
 apply to the log line too.
 
 ## Attribute keys

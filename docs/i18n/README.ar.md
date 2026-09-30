@@ -561,7 +561,7 @@ a.Use(agent.WithRetrieval(myStore, 5))
 agent.Safety{ReadOnly: true}          // no side effects → always safe to re-run
 agent.Safety{Idempotent: true}        // safe to retry (dedupes downstream)
 agent.Safety{}                        // a write → HALT on unknown outcome, don't double-fire
-agent.Safety{RequiresApproval: true}  // pause for human approval before executing
+agent.WithApproval(agent.SingleApproval()) // not Safety: a tool option that pauses for human approval before executing
 ```
 
 قبل أثر جانبي غير متكرّر بأمان، تُسجّل الحلقة *علامة محاولة* مُعمَّرة، فيميّز الاستئناف بين «لم يُنفَّذ قط»
@@ -585,7 +585,7 @@ LangGraph الموثّقة «يجب أن تكون العُقَد عديمة ال
 
 ## العنصر البشري في الحلقة (Human-in-the-loop)
 
-ثلاث نكهات. **موافقة/رفض**: أداة موسومة بـ `RequiresApproval` تتوقف *قبل* التشغيل؛ وقرار الإنسان قيمة بوليانية:
+ثلاث نكهات. **موافقة/رفض**: أداة موسومة بـ `WithApproval(SingleApproval())` تتوقف *قبل* التشغيل؛ وقرار الإنسان قيمة بوليانية:
 
 <!-- docsnip: setup ctx context.Context; a *agent.Agent; store agent.Durable; runID string; input string -->
 ```go
@@ -629,9 +629,8 @@ if intr, ok := errors.AsType[*agent.InterruptPending](err); ok {
 
 <!-- docsnip: setup ctx context.Context; model agent.Model; store agent.Durable; pend *agent.ApprovalPending; type RefundArgs struct{}; doRefund func(context.Context, RefundArgs) (string, error); keysByApprover agent.ApproverVerifierFor; signer audit.Signer -->
 ```go
-refund := agent.Func("refund", "refund the order",
-	agent.Safety{Approval: &agent.ApprovalPolicy{Need: 2, Approvers: []string{"ops", "finance", "risk"}}},
-	doRefund)
+refund := agent.Func("refund", "refund the order", agent.Safety{}, doRefund,
+	agent.WithApproval(&agent.ApprovalPolicy{Need: 2, Approvers: []string{"ops", "finance", "risk"}}))
 a := agent.New(model, store, refund).WithApproverVerifiers(keysByApprover)
 
 // each approver, out of band, signs the paused call they were shown:
@@ -725,11 +724,11 @@ a.UseTool(trace.Tool(tracer)) // execute_tool span per call; nests across the su
 // Deny a tool by policy: the tool never executes; the model sees the error and reacts.
 func RequireTag(tag string) agent.ToolMiddleware {
 	return func(next agent.ToolHandler) agent.ToolHandler {
-		return func(ctx context.Context, tu agent.ToolUse) (json.RawMessage, error) {
+		return func(ctx context.Context, call agent.ToolCall) (json.RawMessage, error) {
 			if !authorized(ctx, tag) {
-				return nil, fmt.Errorf("tool %q denied: %w", tu.Name, agent.ErrTool)
+				return nil, fmt.Errorf("tool %q denied: %w", call.Use.Name, agent.ErrTool)
 			}
-			return next(ctx, tu) // mutate tu.Args before, transform the result after
+			return next(ctx, call) // mutate call.Use.Args before, transform the result after
 		}
 	}
 }
@@ -790,7 +789,7 @@ gsm فوق عدّ الأصوات، فـ «اتّفق k» مفحوص آليًّا
 <!-- docsnip: setup ctx context.Context; machine *gsm.Machine; import "github.com/blackwell-systems/gsm"; log govern.EventLog -->
 ```go
 gov, _ := govern.NewPersistent(ctx, machine, log, "order-42", machine.NewState())
-tool := govern.EventTool(gov, "pay", "mark the order paid", "pay", agent.Safety{})
+tool := govern.EventTool(gov, govern.EventToolConfig{Name: "pay", Description: "mark the order paid", Event: "pay"})
 // hand `tool` to the agent: concurrent agents sharing `gov` converge, durably.
 ```
 
