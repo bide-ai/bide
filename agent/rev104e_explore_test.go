@@ -7,9 +7,11 @@ package agent_test
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"strings"
 	"testing"
+	"testing/synctest"
 
 	"github.com/bide-ai/bide/agent"
 )
@@ -123,8 +125,10 @@ func TestRev104e_ExploreClaimProtocolThroughWrapper(t *testing.T) {
 
 func eCSubjects(mode int) []cSubject {
 	pick := func(ctx context.Context, j *agent.Journal) agent.Durable {
-		// mode 0: always the wrapper; 1: driver 0 through the Journal, the others through the wrapper.
-		if mode == 1 && cDrv(ctx) == 0 {
+		// mode 0: always the wrapper; 1: driver 1 through the Journal, the others through the
+		// wrapper; 2: driver 2 through the Journal. (Drivers are numbered from 1: mode 1 compared
+		// with driver 0 before, so it repeated mode 0.)
+		if mode > 0 && cDrv(ctx) == mode {
 			return j
 		}
 		return &eWrap{inner: j}
@@ -161,49 +165,54 @@ func eCSubjects(mode int) []cSubject {
 }
 
 func TestRev104e_ExploreConcurrentThroughWrapper(t *testing.T) {
-	maxPre := 1
-	if exploreFull() {
-		maxPre = 2
-	}
-	total := 0
-	for mode := range 2 {
-		for _, sub := range eCSubjects(mode) {
-			for topo := 0; topo < 2; topo++ {
-				for p2 := 0; p2 < 2; p2++ {
-					ex := &hExplorer{}
-					n := 0
-					counts := map[string]int{}
-					examples := map[string]string{}
-					for {
-						viol, h := cRun(sub, topo, p2, ex, maxPre)
-						n++
-						for _, v := range viol {
-							counts[v.kind]++
-							if _, ok := examples[v.kind]; !ok {
-								examples[v.kind] = v.detail + "\n      " + strings.Join(h.log, "\n      ")
+	// The scheduler needs a synctest bubble: synctest.Wait is its quiescence detector.
+	synctest.Test(t, func(t *testing.T) {
+		cFlightHooks(t)
+		maxPre := 1
+		if exploreFull() {
+			maxPre = 2
+		}
+		total := 0
+		for mode := range 3 {
+			for _, sub := range eCSubjects(mode) {
+				for topo := 0; topo < 2; topo++ {
+					for p2 := 0; p2 < 2; p2++ {
+						ex := &hExplorer{}
+						n := 0
+						counts := map[string]int{}
+						examples := map[string]string{}
+						for {
+							viol, h := cRun(sub, topo, p2, ex, maxPre)
+							cSigRecord(t, fmt.Sprintf("%d/%s/%d/%d", mode, sub.name, topo, p2), ex)
+							n++
+							for _, v := range viol {
+								counts[v.kind]++
+								if _, ok := examples[v.kind]; !ok {
+									examples[v.kind] = v.detail + "\n      " + strings.Join(h.log, "\n      ")
+								}
+							}
+							if !ex.next() {
+								break
 							}
 						}
-						if !ex.next() {
-							break
+						total += n
+						t.Logf("mode %d %s topo=%d p2=%d: %d schedules", mode, sub.name, topo, p2, n)
+						keys := make([]string, 0, len(counts))
+						for k := range counts {
+							keys = append(keys, k)
 						}
-					}
-					total += n
-					t.Logf("mode %d %s topo=%d p2=%d: %d schedules", mode, sub.name, topo, p2, n)
-					keys := make([]string, 0, len(counts))
-					for k := range counts {
-						keys = append(keys, k)
-					}
-					sort.Strings(keys)
-					for _, k := range keys {
-						if allowedViolation(k) {
-							t.Logf("   %s (allowed): %d", k, counts[k])
-							continue
+						sort.Strings(keys)
+						for _, k := range keys {
+							if allowedViolation(k) {
+								t.Logf("   %s (allowed): %d", k, counts[k])
+								continue
+							}
+							t.Errorf("mode %d %s topo %d p2 %d: %s: %d   e.g. %s", mode, sub.name, topo, p2, k, counts[k], examples[k])
 						}
-						t.Errorf("mode %d %s topo %d p2 %d: %s: %d   e.g. %s", mode, sub.name, topo, p2, k, counts[k], examples[k])
 					}
 				}
 			}
 		}
-	}
-	t.Logf("TOTAL: %d", total)
+		t.Logf("TOTAL: %d", total)
+	})
 }

@@ -70,6 +70,17 @@ func (e *hExplorer) choose(name string, drive, n int) int {
 	return c
 }
 
+// peek returns the choice the prefix makes at the next branch point (0 past it), for a point
+// whose alternative must be acted on before the point is recorded (see cSched.run).
+func (e *hExplorer) peek() int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if k := len(e.trace); k < len(e.prefix) {
+		return e.prefix[k]
+	}
+	return 0
+}
+
 type hPoint struct {
 	name   string
 	drive  int

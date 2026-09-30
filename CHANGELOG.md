@@ -119,6 +119,7 @@ minor version (0.x.0) may include breaking API or journal-format changes; each o
 - **Breaking:** spend records are keyed by a fresh id, `@spend/<id>` (a replayed run keeps the original's), so two drivers of one run never write their spend under one key ([#104]).
 - **Breaking:** a request of a model turn that is over (its call already returned, so nothing would record it) is refused with `ErrConfig` ([#104]).
 - `ModelCall.Attempt` is documented precisely: a request is numbered when it reaches the model handler, before its Before hooks, so a request a Before hook refused keeps its number ([#104]).
+- The concurrent claim exploration is deterministic: its scheduler finds quiescence with `testing/synctest` instead of timers, runs one driver at a time, and branches on the races between drivers that share a step call in flight, so every run explores the same schedules (more than before, with each one the timing-based scheduler reached) and no longer slows or times out under CPU load ([#118]).
 
 ### Removed
 
@@ -577,6 +578,7 @@ First public release.
 [#115]: https://github.com/bide-ai/bide/pull/115
 [#104]: https://github.com/bide-ai/bide/pull/104
 [#114]: https://github.com/bide-ai/bide/pull/114
+[#118]: https://github.com/bide-ai/bide/pull/118
 [78f8db6]: https://github.com/bide-ai/bide/commit/78f8db6
 [994721b]: https://github.com/bide-ai/bide/commit/994721b
 [3262cd1]: https://github.com/bide-ai/bide/commit/3262cd1
