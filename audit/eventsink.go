@@ -40,7 +40,8 @@ func NewEventLog() *EventLog { return &EventLog{} }
 
 // Add appends one event as a canonical, kind-tagged leaf that commits to a fresh random salt
 // (agent.SaltSize bytes from crypto/rand; see EventInclusion). It errors if the event cannot be
-// canonicalized or the system's random source fails.
+// canonicalized (it holds a string that is not valid UTF-8, for one) or the system's random
+// source fails.
 func (l *EventLog) Add(e agent.AgentEvent) error {
 	salt, err := newEventSalt()
 	if err != nil {
@@ -236,10 +237,15 @@ type eventLeaf struct {
 
 // canonicalEvent returns the leaf bytes of e under salt:
 // "bide.audit.event-leaf.v2\x00" || {"kind":...,"event":...,"salt":...}. It refuses a salt that
-// is not agent.SaltSize bytes: the leaf would be guessable from the event's content.
+// is not agent.SaltSize bytes: the leaf would be guessable from the event's content. It refuses an
+// event holding a string that is not valid UTF-8 (see checkUTF8): the encoding would rewrite it,
+// so two different events would share one leaf and a proof of one would verify the other.
 func canonicalEvent(e agent.AgentEvent, salt []byte) ([]byte, error) {
 	if len(salt) != agent.SaltSize {
 		return nil, fmt.Errorf("audit: canonicalize event: %d-byte salt, want %d", len(salt), agent.SaltSize)
+	}
+	if err := checkUTF8(e); err != nil {
+		return nil, fmt.Errorf("audit: canonicalize event: %w", err)
 	}
 	inner, err := json.Marshal(e)
 	if err != nil {
