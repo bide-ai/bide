@@ -42,6 +42,32 @@
 // versions took in a statement of their own, so nodes of both versions queue on the same lock
 // during a rolling upgrade.
 //
+// The key is hashtextextended(run_id, 0), which names neither the table prefix nor the schema, and
+// govern/postgreslog takes the same key for an entity. So stores with different prefixes, stores
+// in different schemas of one database, and a governed entity named like a run share one lock.
+// That costs throughput, not correctness: the unique (run_id, seq) index keeps each store's
+// positions distinct whatever the lock does. The sharing stays, since the upgrade depends on the
+// key.
+//
+// At repeatable read or serializable, a queued insert's snapshot was taken before it was granted
+// the lock, so under sustained contention on one run most inserts collide once or more and retry
+// with a backoff (see Retries and deadlines): positions stay correct, but throughput on that run
+// falls well below read committed's, and a caller without a deadline may wait long. A deployment
+// that writes one run from many goroutines at once is better served at read committed.
+//
+// # Trust
+//
+// The store trusts every role that can create objects in the schemas on its search path, as it
+// trusts the owner of its tables: such a role could replace a table, and so it could replace the
+// next_seq function. Within that boundary, the store refuses what it can check. The next_seq
+// function must be owned by the owner of the steps table, run with search_path = pg_catalog,
+// pg_temp and have exactly this version's body, whose names are all qualified; Open refuses it
+// otherwise. The statements the store sends call built-ins qualified with pg_catalog, with their
+// parameters cast to the type they are used as, so an overload a role creates in a schema later on
+// the search path (hashtextextended(text, integer), say) cannot match a call better than the
+// built-in. A deployment should not put a schema that untrusted roles can create in on the store's
+// search path before pg_catalog.
+//
 // # Isolation
 //
 // The statements behave the same whatever the deployment's default_transaction_isolation (set on
@@ -107,9 +133,10 @@ const (
 
 // Store is a Postgres-backed agent.Store.
 type Store struct {
-	db  *sql.DB
-	own bool // Close closes db: Open opened it
-	t   tables
+	db     *sql.DB
+	own    bool // Close closes db: Open opened it
+	t      tables
+	schema string // the schema the tables and next_seq are in: current_schema() at Open
 
 	jOnce sync.Once
 	j     *agent.Journal
@@ -125,7 +152,7 @@ var (
 // tables holds the table names, prefixed, and the statements built from them.
 type tables struct {
 	steps, leases, version          string
-	nextSeq, nextSeqBody            string // the next_seq function's name and source
+	nextSeq                         string // the next_seq function's name
 	insert, acquire, renew, release writeSQL
 	get, load                       selectSQL
 }
@@ -135,34 +162,58 @@ type tables struct {
 // change to the definition takes a new version, so a new function beside the old one.
 const nextSeqVersion = "v1"
 
-// nextSeqTemplate is the body of the next_seq function, over the steps table %s. It takes the run's
-// transaction-level advisory lock, which the insert that calls it holds until it commits, and then
-// reads the run's last position. A VOLATILE function takes a new snapshot for each query it runs,
-// so at read committed the MAX is read after the lock is granted and sees every insert into the
-// run that held the lock before: inserts into one run queue on the lock and each takes the next
-// position in its first attempt. At repeatable read or serializable the query uses the
-// transaction's snapshot, taken before the lock was granted, so a queued insert may collide on
-// (run_id, seq) and is run again, as without the function. The key is the one the store has
-// always used for the run's lock, so nodes of earlier versions queue on the same lock.
+// nextSeqTemplate is the body of the next_seq function, over the steps table %s (qualified with its
+// schema). It takes the run's transaction-level advisory lock, which the insert that calls it
+// holds until it commits, and then reads the run's last position. A VOLATILE function takes a new
+// snapshot for each query it runs, so at read committed the MAX is read after the lock is granted
+// and sees every insert into the run that held the lock before: inserts into one run queue on the
+// lock and each takes the next position in its first attempt. At repeatable read or serializable
+// the query uses the transaction's snapshot, taken before the lock was granted, so a queued insert
+// may collide on (run_id, seq) and is run again, as without the function.
+//
+// Every name in the body is qualified, and the function runs with search_path = pg_catalog,
+// pg_temp (nextSeqConfig): a role that can create objects in a schema on the store's search path
+// must not be able to take over a call with an overload that matches better (a
+// hashtextextended(text, integer), say, for an unqualified hashtextextended(r, 0)).
+//
+// The key, hashtextextended(run_id, 0), is the one the store has always used for the run's lock,
+// so nodes of earlier versions queue on the same lock during a rolling upgrade. It does not name
+// the table prefix or schema, and govern/postgreslog uses the same key for an entity, so stores
+// with different prefixes, stores in different schemas of one database, and a governed entity
+// with the same name as a run all queue on one lock. That costs throughput, not correctness: the
+// unique (run_id, seq) index keeps each store's positions distinct whatever the lock does.
 const nextSeqTemplate = `
 BEGIN
-	PERFORM pg_advisory_xact_lock(hashtextextended(r, 0));
-	RETURN (SELECT COALESCE(MAX(seq), -1) + 1 FROM %s WHERE run_id = r);
+	PERFORM pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(r, 0::pg_catalog.int8));
+	RETURN (SELECT COALESCE(pg_catalog.max(seq), -1) + 1 FROM %s WHERE run_id = r);
 END
 `
+
+// nextSeqConfig is the setting the next_seq function runs with, as pg_proc.proconfig stores it.
+const nextSeqConfig = "search_path=pg_catalog, pg_temp"
+
+// quoteIdent quotes name as a SQL identifier.
+func quoteIdent(name string) string { return `"` + strings.ReplaceAll(name, `"`, `""`) + `"` }
+
+// nextSeqBody returns the next_seq function's source for the steps table in schema.
+func (t tables) nextSeqBody(schema string) string {
+	return fmt.Sprintf(nextSeqTemplate, quoteIdent(schema)+"."+t.steps)
+}
 
 func newTables(prefix string) (tables, error) {
 	t := tables{steps: prefix + "steps", leases: prefix + "leases", version: prefix + "schema_version",
 		nextSeq: prefix + "next_seq_" + nextSeqVersion}
-	t.nextSeqBody = fmt.Sprintf(nextSeqTemplate, t.steps)
 	var err error
+	// Built-ins are called qualified with pg_catalog and parameters cast to the type they are
+	// used as, so an overload in a schema on the search path cannot match a call better than the
+	// built-in does.
 	// The position comes from next_seq, which queues the insert on the run's lock (see
 	// nextSeqTemplate). Should two inserts still read the same MAX (at repeatable read or
 	// serializable, or beside a writer that does not take the lock), they collide on UNIQUE
 	// (run_id, seq), which is not the conflict target, so the second fails with 23505 once the
 	// first commits and insert runs it again (see insert).
 	if t.insert, err = newWrite(`INSERT INTO ` + t.steps + ` (run_id, seq, name, data)
-		VALUES ($1, ` + t.nextSeq + `($1), $2, $3)
+		VALUES ($1::pg_catalog.text, ` + t.nextSeq + `($1::pg_catalog.text), $2, $3)
 		ON CONFLICT (run_id, name) DO NOTHING
 		RETURNING seq`); err != nil {
 		return tables{}, err
@@ -170,14 +221,14 @@ func newTables(prefix string) (tables, error) {
 	// Granted when the run is unleased, when the live lease is already holder's, or when the lease
 	// has expired; a row another holder holds live is left alone and nothing is returned.
 	if t.acquire, err = newWrite(`INSERT INTO ` + t.leases + ` (run_id, holder, expiry)
-		VALUES ($1, $2, now() + ($3 * interval '1 second'))
+		VALUES ($1, $2, pg_catalog.now() + ($3::pg_catalog.float8 * '1 second'::pg_catalog.interval))
 		ON CONFLICT (run_id) DO UPDATE
 			SET holder = EXCLUDED.holder, expiry = EXCLUDED.expiry
-			WHERE ` + t.leases + `.holder = EXCLUDED.holder OR ` + t.leases + `.expiry < now()`); err != nil {
+			WHERE ` + t.leases + `.holder = EXCLUDED.holder OR ` + t.leases + `.expiry < pg_catalog.now()`); err != nil {
 		return tables{}, err
 	}
-	if t.renew, err = newWrite(`UPDATE ` + t.leases + ` SET expiry = now() + ($3 * interval '1 second')
-		WHERE run_id = $1 AND holder = $2 AND expiry >= now()`); err != nil {
+	if t.renew, err = newWrite(`UPDATE ` + t.leases + ` SET expiry = pg_catalog.now() + ($3::pg_catalog.float8 * '1 second'::pg_catalog.interval)
+		WHERE run_id = $1 AND holder = $2 AND expiry >= pg_catalog.now()`); err != nil {
 		return tables{}, err
 	}
 	if t.release, err = newWrite(`DELETE FROM ` + t.leases + ` WHERE run_id = $1 AND holder = $2`); err != nil {
@@ -204,10 +255,11 @@ type writeSQL string
 
 // newWrite returns q as a writeSQL, or an error unless q is one statement the pool may run on its
 // own (see oneStatement) that starts with INSERT, UPDATE or DELETE and calls no function but the
-// known ones and the next_seq function (see knownCalls).
+// known built-ins and, in an INSERT into a steps table, that table's next_seq function once (see
+// knownCalls).
 func newWrite(q string) (writeSQL, error) {
 	for _, kw := range []string{"INSERT", "UPDATE", "DELETE"} {
-		if startsWith(q, kw) && oneStatement(q) && knownCalls(q, true) {
+		if startsWith(q, kw) && oneStatement(q) && knownCalls(q, kw == "INSERT") {
 			return writeSQL(q), nil
 		}
 	}
@@ -236,36 +288,75 @@ func oneStatement(q string) bool {
 	return !strings.Contains(q, ";") && !sessionLock.MatchString(q)
 }
 
+// sqlHidden matches the spellings a scan of the text cannot follow, none of which the store's
+// statements use: a Unicode-escaped identifier or string (U&"..." or U&'...'), an escape string
+// (E'...'), a backslash (an escape in a string when standard_conforming_strings is off), a comment,
+// and a dollar-quoted string. Each could hide a call from knownCalls.
+var sqlHidden = regexp.MustCompile(`(?i)u&["']|(^|[^a-z0-9_$])e'|\\|--|/\*|\$([a-z_][a-z0-9_]*)?\$`)
+
 // sqlQuoted matches a string literal or a quoted identifier, whose contents are not SQL.
 var sqlQuoted = regexp.MustCompile(`'(?:[^']|'')*'|"(?:[^"]|"")*"`)
+
+// sqlQuotedName matches a quoted identifier used as a function or schema name: followed by an
+// opening parenthesis or a dot.
+var sqlQuotedName = regexp.MustCompile(`"(?:[^"]|"")*"\s*[(.]`)
 
 // sqlCall matches a name followed by an opening parenthesis: a function call, or a keyword or a
 // table name that takes a parenthesized list.
 var sqlCall = regexp.MustCompile(`([A-Za-z_][A-Za-z0-9_$.]*)\s*\(`)
 
+// sqlSelect matches the keyword SELECT, which in a write would make it an INSERT ... SELECT.
+var sqlSelect = regexp.MustCompile(`(?i)(^|[^a-z0-9_$])select([^a-z0-9_$]|$)`)
+
+// sqlInsertSteps matches the start of an INSERT into a steps table, capturing its prefix.
+var sqlInsertSteps = regexp.MustCompile(`^(?i:insert\s+into)\s+([a-z_][a-z0-9_]*)steps\s*\(`)
+
 // sqlListWords are the keywords the store's statements follow with a parenthesized list, and
-// sqlFunctions the built-in functions they call. A statement calling anything else, a function a
+// sqlFunctions the built-in functions they call, each qualified with pg_catalog so no overload on
+// the search path can take the call over. A statement calling anything else, a function a
 // deployment defined among them, could hold a lock or open a connection the store cannot see.
 var (
-	sqlListWords = map[string]bool{"values": true, "conflict": true, "exists": true, "in": true, "any": true, "as": true, "and": true, "or": true, "not": true, "on": true}
-	sqlFunctions = map[string]bool{"now": true, "max": true, "coalesce": true, "starts_with": true}
-	nextSeqCall  = regexp.MustCompile(`^[a-z_][a-z0-9_]*next_seq_` + nextSeqVersion + `$`)
+	sqlListWords = map[string]bool{"values": true, "conflict": true, "exists": true, "in": true, "any": true, "as": true, "and": true, "or": true, "not": true, "on": true, "coalesce": true}
+	sqlFunctions = map[string]bool{"pg_catalog.now": true, "pg_catalog.max": true, "pg_catalog.starts_with": true}
 )
 
-// knownCalls reports whether every call in q is to a function the store knows: a built-in in
-// sqlFunctions or, in a write, the next_seq function. A name after INTO names the table whose
-// column list follows, and a keyword in sqlListWords a list; neither is a call.
-func knownCalls(q string, write bool) bool {
-	q = sqlQuoted.ReplaceAllString(q, "''")
-	for _, m := range sqlCall.FindAllStringSubmatchIndex(q, -1) {
-		name := strings.ToLower(q[m[2]:m[3]])
-		if before := strings.Fields(q[:m[2]]); len(before) > 0 && strings.EqualFold(before[len(before)-1], "INTO") {
-			continue
-		}
-		if sqlListWords[name] || sqlFunctions[name] || write && nextSeqCall.MatchString(name) {
-			continue
-		}
+// knownCalls reports whether q hides nothing from a scan of its text (sqlHidden, sqlQuotedName)
+// and every call in it is to a function the store knows: a built-in in sqlFunctions or, in an
+// INSERT into a steps table when nextSeq is set, that table's own next_seq function, called once,
+// in an INSERT with no SELECT. A name after INTO names the table whose column list follows, and a
+// keyword in sqlListWords takes a list; neither is a call.
+func knownCalls(q string, nextSeq bool) bool {
+	if sqlHidden.MatchString(q) {
 		return false
+	}
+	q = strings.TrimLeftFunc(q, unicode.IsSpace)
+	stripped := sqlQuoted.ReplaceAllStringFunc(q, func(lit string) string {
+		if lit[0] == '"' {
+			return lit // an identifier, checked below
+		}
+		return "''"
+	})
+	if sqlQuotedName.MatchString(stripped) {
+		return false
+	}
+	stripped = sqlQuoted.ReplaceAllString(stripped, "''")
+	own := ""
+	if m := sqlInsertSteps.FindStringSubmatch(stripped); nextSeq && m != nil && !sqlSelect.MatchString(stripped) {
+		own = m[1] + "next_seq_" + nextSeqVersion
+	}
+	seen := 0
+	for _, m := range sqlCall.FindAllStringSubmatchIndex(stripped, -1) {
+		name := strings.ToLower(stripped[m[2]:m[3]])
+		if before := strings.Fields(stripped[:m[2]]); len(before) > 0 && strings.EqualFold(before[len(before)-1], "INTO") {
+			continue
+		}
+		switch {
+		case sqlListWords[name] || sqlFunctions[name]:
+		case own != "" && name == own && seen == 0:
+			seen++
+		default:
+			return false
+		}
 	}
 	return true
 }
@@ -390,8 +481,36 @@ func (s *Store) migrate(ctx context.Context) error {
 	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`SET LOCAL idle_in_transaction_session_timeout = %d`, migrateIdleTimeout.Milliseconds())); err != nil {
 		return fmt.Errorf("postgres: migrate: %w (%w)", err, agent.ErrStorage)
 	}
-	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock($1)`, migrateLock); err != nil {
+	if _, err := tx.ExecContext(ctx, `SELECT pg_catalog.pg_advisory_xact_lock($1::pg_catalog.int8)`, migrateLock); err != nil {
 		return fmt.Errorf("postgres: migrate: %w (%w)", err, agent.ErrStorage)
+	}
+	// The schema the tables and next_seq are created in: the first schema on the search path.
+	var schema sql.NullString
+	if err := tx.QueryRowContext(ctx, `SELECT pg_catalog.current_schema()`).Scan(&schema); err != nil {
+		return fmt.Errorf("postgres: migrate: %w (%w)", err, agent.ErrStorage)
+	}
+	if !schema.Valid {
+		return fmt.Errorf("postgres: no schema on the search path to create the tables in: %w", agent.ErrConfig)
+	}
+	s.schema = schema.String
+	// The next_seq function, created if missing and never replaced (see nextSeqVersion); first,
+	// before any statement that might refresh this session's catalog cache. The migration lock makes
+	// the check and the creation one step across nodes. The lookup reads pg_proc with the
+	// statement's snapshot, not the session's catalog cache, which taking the advisory lock does not
+	// refresh: it sees a function another node created while this one waited for the lock.
+	var haveNextSeq bool
+	if err := tx.QueryRowContext(ctx, nextSeqPresent, s.t.nextSeq, s.schema).Scan(&haveNextSeq); err != nil {
+		return fmt.Errorf("postgres: look up %s: %w (%w)", s.t.nextSeq, err, agent.ErrStorage)
+	}
+	if !haveNextSeq {
+		body := s.t.nextSeqBody(s.schema)
+		if strings.Contains(body, "$bide$") {
+			return fmt.Errorf("postgres: schema name %q holds $bide$: %w", s.schema, agent.ErrConfig)
+		}
+		if _, err := tx.ExecContext(ctx, `CREATE FUNCTION `+quoteIdent(s.schema)+`.`+s.t.nextSeq+
+			`(r pg_catalog.text) RETURNS pg_catalog.int8 LANGUAGE plpgsql VOLATILE SET search_path = pg_catalog, pg_temp AS $bide$`+body+`$bide$`); err != nil {
+			return fmt.Errorf("postgres: create %s: %w (%w)", s.t.nextSeq, err, agent.ErrStorage)
+		}
 	}
 	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`
 		CREATE TABLE IF NOT EXISTS %[1]s (
@@ -414,20 +533,6 @@ func (s *Store) migrate(ctx context.Context) error {
 		INSERT INTO %[3]s (id, version) VALUES (1, %[4]d) ON CONFLICT (id) DO NOTHING;`,
 		s.t.steps, s.t.leases, s.t.version, schemaVersion)); err != nil {
 		return fmt.Errorf("postgres: create tables: %w (%w)", err, agent.ErrStorage)
-	}
-	// The next_seq function, created if missing and never replaced (see nextSeqVersion). The
-	// migration lock makes the check and the creation one step across nodes.
-	// The lookup reads pg_proc with the statement's snapshot, not the session's catalog cache,
-	// which taking the advisory lock does not refresh: it sees a function another node created
-	// while this one waited for the lock.
-	var haveNextSeq bool
-	if err := tx.QueryRowContext(ctx, nextSeqPresent, s.t.nextSeq).Scan(&haveNextSeq); err != nil {
-		return fmt.Errorf("postgres: look up %s: %w (%w)", s.t.nextSeq, err, agent.ErrStorage)
-	}
-	if !haveNextSeq {
-		if _, err := tx.ExecContext(ctx, `CREATE FUNCTION `+s.t.nextSeq+`(r text) RETURNS bigint LANGUAGE plpgsql VOLATILE AS $bide$`+s.t.nextSeqBody+`$bide$`); err != nil {
-			return fmt.Errorf("postgres: create %s: %w (%w)", s.t.nextSeq, err, agent.ErrStorage)
-		}
 	}
 	var v int
 	if err := tx.QueryRowContext(ctx, `SELECT version FROM `+s.t.version+` WHERE id = 1`).Scan(&v); err != nil {
@@ -457,7 +562,7 @@ func (s *Store) checkSchema(ctx context.Context) error {
 		{s.t.leases, []string{"run_id"}},
 	} {
 		var ok bool
-		if err := s.db.QueryRowContext(ctx, requiredUnique, u.table, u.cols).Scan(&ok); err != nil {
+		if err := s.db.QueryRowContext(ctx, requiredUnique, u.table, s.schema, u.cols).Scan(&ok); err != nil {
 			return fmt.Errorf("postgres: check the uniqueness of %s: %w (%w)", u.table, err, agent.ErrStorage)
 		}
 		if !ok {
@@ -465,41 +570,56 @@ func (s *Store) checkSchema(ctx context.Context) error {
 				u.table, strings.Join(u.cols, ", "), agent.ErrConfig)
 		}
 	}
-	var sameNextSeq bool
-	if err := s.db.QueryRowContext(ctx, expectedFunction, s.t.nextSeq+"(text)", s.t.nextSeqBody).Scan(&sameNextSeq); err != nil {
+	var sameNextSeq, sameOwner sql.NullBool
+	if err := s.db.QueryRowContext(ctx, expectedFunction, s.t.nextSeq, s.schema, nextSeqConfig, s.t.nextSeqBody(s.schema), s.t.steps).Scan(&sameNextSeq, &sameOwner); err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("postgres: check %s: %w (%w)", s.t.nextSeq, err, agent.ErrStorage)
 	}
-	if !sameNextSeq {
-		return fmt.Errorf("postgres: function %s(text) is not the one this version creates (VOLATILE plpgsql returning bigint, not SECURITY DEFINER, with no settings of its own, whose body takes the run's advisory lock and then reads MAX(seq)); the store's inserts depend on it and the migration never replaces a function: %w",
-			s.t.nextSeq, agent.ErrConfig)
+	if !sameNextSeq.Bool {
+		return fmt.Errorf("postgres: function %s.%s(text) is not the one this version creates (VOLATILE plpgsql returning bigint, not SECURITY DEFINER, with SET %s and no other setting, whose body takes the run's advisory lock and then reads MAX(seq), every name qualified); the store's inserts depend on it and the migration never replaces a function: %w",
+			quoteIdent(s.schema), s.t.nextSeq, nextSeqConfig, agent.ErrConfig)
+	}
+	if !sameOwner.Bool {
+		return fmt.Errorf("postgres: function %s.%s(text) has another owner than table %s: its owner could replace it after Open checked it, and every insert would run that role's code; drop it, or have the tables' owner create it: %w",
+			quoteIdent(s.schema), s.t.nextSeq, s.t.steps, agent.ErrConfig)
 	}
 	return nil
 }
 
-// requiredUnique reports whether the table $1 (resolved by the search path, as the store's
-// statements resolve it) has a valid unique index whose key is exactly the column set $2, with no
-// included columns, no expressions and no predicate, checked when each statement runs rather than
-// deferred to commit. The store's inserts and lease upsert rely on each such index: a race for a
-// position fails on it and is retried, and ON CONFLICT needs it as its arbiter.
-const requiredUnique = `SELECT EXISTS (SELECT 1 FROM pg_index i
-	WHERE i.indrelid = to_regclass($1) AND i.indisunique AND i.indisvalid AND i.indimmediate
+// The catalog queries below read pg_catalog's tables with the statement's snapshot and look names
+// up by schema, never through the session's catalog cache (to_regclass, to_regprocedure), which
+// taking an advisory lock does not refresh. Every built-in and type is qualified with pg_catalog.
+
+// requiredUnique reports whether the table $1 in schema $2 has a valid unique index whose key is
+// exactly the column set $3, with no included columns, no expressions and no predicate, checked
+// when each statement runs rather than deferred to commit. The store's inserts and lease upsert
+// rely on each such index: a race for a position fails on it and is retried, and ON CONFLICT needs
+// it as its arbiter.
+const requiredUnique = `SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_index AS i
+	WHERE i.indrelid = (SELECT c.oid FROM pg_catalog.pg_class AS c
+			WHERE c.relname = $1 AND c.relnamespace = (SELECT n.oid FROM pg_catalog.pg_namespace AS n WHERE n.nspname = $2))
+		AND i.indisunique AND i.indisvalid AND i.indimmediate
 		AND i.indpred IS NULL AND i.indexprs IS NULL AND i.indnkeyatts = i.indnatts
-		AND (SELECT array_agg(a.attname::text ORDER BY a.attname::text)
-			FROM unnest(i.indkey::int2[]) AS k JOIN pg_attribute AS a ON a.attrelid = i.indrelid AND a.attnum = k)
-			= (SELECT array_agg(c ORDER BY c) FROM unnest($2::text[]) AS c))`
+		AND (SELECT pg_catalog.array_agg(a.attname::pg_catalog.text ORDER BY a.attname::pg_catalog.text)
+			FROM pg_catalog.unnest(i.indkey::pg_catalog.int2[]) AS k JOIN pg_catalog.pg_attribute AS a ON a.attrelid = i.indrelid AND a.attnum = k)
+			= (SELECT pg_catalog.array_agg(c ORDER BY c) FROM pg_catalog.unnest($3::pg_catalog.text[]) AS c))`
 
-// nextSeqPresent reports whether a function named $1 taking one text argument exists in the schema
-// CREATE FUNCTION creates it in, reading pg_proc with the statement's snapshot.
-const nextSeqPresent = `SELECT EXISTS (SELECT 1 FROM pg_proc
-	WHERE proname = $1 AND pronamespace = current_schema()::regnamespace AND proargtypes = '25'::oidvector)`
+// nextSeqPresent reports whether a function named $1 taking one text argument exists in schema $2.
+const nextSeqPresent = `SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_proc
+	WHERE proname = $1 AND proargtypes = '25'::pg_catalog.oidvector
+		AND pronamespace = (SELECT n.oid FROM pg_catalog.pg_namespace AS n WHERE n.nspname = $2))`
 
-// expectedFunction reports whether the function $1 (a regprocedure signature, resolved by the
-// search path as the insert resolves it) is a VOLATILE plpgsql function returning one bigint, not
-// SECURITY DEFINER and with no settings of its own (a SET search_path, say), whose source is $2.
-const expectedFunction = `SELECT EXISTS (SELECT 1 FROM pg_proc AS p JOIN pg_language AS l ON l.oid = p.prolang
-	WHERE p.oid = to_regprocedure($1) AND l.lanname = 'plpgsql' AND p.provolatile = 'v'
-		AND NOT p.prosecdef AND p.proconfig IS NULL AND NOT p.proretset
-		AND p.prorettype = 'bigint'::regtype AND p.prosrc = $2)`
+// expectedFunction returns, for the function $1(text) in schema $2, whether it is a VOLATILE
+// plpgsql function returning one bigint, not SECURITY DEFINER, whose only setting is $3 and whose
+// source is $4; and whether its owner is the owner of table $5 in the same schema. Each is NULL
+// when there is no such function.
+const expectedFunction = `SELECT
+		l.lanname = 'plpgsql' AND p.provolatile = 'v' AND NOT p.prosecdef AND NOT p.proretset
+			AND p.proconfig = ARRAY[$3::pg_catalog.text] AND p.prorettype = 'pg_catalog.int8'::pg_catalog.regtype
+			AND p.prosrc = $4,
+		p.proowner = (SELECT c.relowner FROM pg_catalog.pg_class AS c WHERE c.relname = $5 AND c.relnamespace = p.pronamespace)
+	FROM pg_catalog.pg_proc AS p JOIN pg_catalog.pg_language AS l ON l.oid = p.prolang
+	WHERE p.proname = $1 AND p.proargtypes = '25'::pg_catalog.oidvector
+		AND p.pronamespace = (SELECT n.oid FROM pg_catalog.pg_namespace AS n WHERE n.nspname = $2)`
 
 // Close closes the connection pool Open opened. A Store made with New leaves its db open.
 func (s *Store) Close() error {
@@ -641,19 +761,19 @@ func (s *Store) Runs(ctx context.Context, f agent.RunFilter) iter.Seq2[string, e
 }
 
 func (s *Store) runsPage(ctx context.Context, f agent.RunFilter, after string) ([]string, error) {
-	q := `SELECT DISTINCT run_id COLLATE "C" AS id FROM ` + s.t.steps + ` AS s WHERE run_id COLLATE "C" > $1`
+	q := `SELECT DISTINCT run_id COLLATE pg_catalog."C" AS id FROM ` + s.t.steps + ` AS s WHERE run_id COLLATE pg_catalog."C" > $1::pg_catalog.text`
 	args := []any{after}
 	if f.Prefix != "" {
 		// The range lets the primary key's index serve the scan; starts_with checks the prefix.
-		q += fmt.Sprintf(` AND run_id COLLATE "C" >= $%d AND starts_with(run_id, $%d)`, len(args)+1, len(args)+1)
+		q += fmt.Sprintf(` AND run_id COLLATE pg_catalog."C" >= $%d::pg_catalog.text AND pg_catalog.starts_with(run_id, $%d::pg_catalog.text)`, len(args)+1, len(args)+1)
 		args = append(args, f.Prefix)
 		if end, ok := prefixEnd(f.Prefix); ok {
-			q += fmt.Sprintf(` AND run_id COLLATE "C" < $%d`, len(args)+1)
+			q += fmt.Sprintf(` AND run_id COLLATE pg_catalog."C" < $%d::pg_catalog.text`, len(args)+1)
 			args = append(args, end)
 		}
 	}
 	if len(f.ExcludeHolding) > 0 {
-		q += fmt.Sprintf(` AND NOT EXISTS (SELECT 1 FROM %s AS x WHERE x.run_id = s.run_id AND x.name = ANY($%d))`, s.t.steps, len(args)+1)
+		q += fmt.Sprintf(` AND NOT EXISTS (SELECT 1 FROM %s AS x WHERE x.run_id = s.run_id AND x.name = ANY($%d::pg_catalog.text[]))`, s.t.steps, len(args)+1)
 		args = append(args, f.ExcludeHolding)
 	}
 	q += fmt.Sprintf(` ORDER BY id LIMIT %d`, runsPage)

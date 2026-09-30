@@ -39,7 +39,7 @@ func TestPostgres_MigrateSeesNextSeqCreatedWhileWaiting(t *testing.T) {
 			// And with migrate's own lookup, so the connection holds its prepared statement and a
 			// warm catalog cache, as a pooled connection that ran an earlier Open does.
 			var present bool
-			if err := db.QueryRowContext(ctx, nextSeqPresent, "bide_next_seq_v1").Scan(&present); err != nil || present {
+			if err := db.QueryRowContext(ctx, nextSeqPresent, "bide_next_seq_v1", schema).Scan(&present); err != nil || present {
 				t.Fatalf("warm-up lookup: present=%v err=%v", present, err)
 			}
 			other, err := admin.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})

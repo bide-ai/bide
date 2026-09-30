@@ -290,16 +290,37 @@ var sessionLockCall = regexp.MustCompile(`(?i)pg_(try_)?advisory_lock`)
 // function is not among them: only the insert, a writeSQL, calls it). A name after INTO names a
 // table, and a keyword in listWords takes a list; neither is a call.
 var (
-	constantCalls = map[string]bool{"now": true, "max": true, "coalesce": true, "starts_with": true,
-		"to_regclass": true, "to_regprocedure": true, "unnest": true, "array_agg": true} // the last four read the catalog, in checkSchema
-	listWords = map[string]bool{"values": true, "conflict": true, "exists": true, "in": true, "any": true, "as": true, "and": true, "or": true, "not": true, "on": true}
+	// Built-ins a constant query may call, each qualified with pg_catalog (the last two read the
+	// catalog, in checkSchema).
+	constantCalls = map[string]bool{"pg_catalog.now": true, "pg_catalog.max": true, "pg_catalog.starts_with": true,
+		"pg_catalog.unnest": true, "pg_catalog.array_agg": true}
+	listWords = map[string]bool{"values": true, "conflict": true, "exists": true, "in": true, "any": true, "as": true, "and": true, "or": true, "not": true, "on": true, "coalesce": true}
 	quotedSQL = regexp.MustCompile(`'(?:[^']|'')*'|"(?:[^"]|"")*"`)
 	callSQL   = regexp.MustCompile(`([A-Za-z_][A-Za-z0-9_$.]*)\s*\(`)
+	// Spellings a scan of the text cannot follow: a Unicode escape, an escape string, a
+	// backslash, a comment, a dollar quote; and a quoted identifier used as a function or schema
+	// name. The store's own queries use none of them.
+	hiddenSQL     = regexp.MustCompile(`(?i)u&["']|(^|[^a-z0-9_$])e'|\\|--|/\*|\$([a-z_][a-z0-9_]*)?\$`)
+	quotedNameSQL = regexp.MustCompile(`"(?:[^"]|"")*"\s*[(.]`)
 )
 
-// unknownCall returns the first function q calls that is not in constantCalls.
+// unknownCall returns why constant query q may not run on the pool: a spelling that hides a call
+// from the scan, or a call to a function outside constantCalls (unqualified, the next_seq function,
+// or a function a deployment defined).
 func unknownCall(q string) (string, bool) {
-	q = quotedSQL.ReplaceAllString(q, "''")
+	if m := hiddenSQL.FindString(q); m != "" {
+		return fmt.Sprintf("%q, which hides SQL from the check,", m), true
+	}
+	literals := quotedSQL.ReplaceAllStringFunc(q, func(lit string) string {
+		if lit[0] == '"' {
+			return lit
+		}
+		return "''"
+	})
+	if m := quotedNameSQL.FindString(literals); m != "" {
+		return fmt.Sprintf("the quoted name %s", m), true
+	}
+	q = quotedSQL.ReplaceAllString(literals, "''")
 	for _, m := range callSQL.FindAllStringSubmatchIndex(q, -1) {
 		name := strings.ToLower(q[m[2]:m[3]])
 		if before := strings.Fields(q[:m[2]]); len(before) > 0 && strings.EqualFold(before[len(before)-1], "INTO") {
