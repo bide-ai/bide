@@ -16,6 +16,10 @@ import (
 	"github.com/bide-ai/bide/agent"
 )
 
+// rvPassword is the test roles' password: servers that authenticate TCP connections by password
+// (the CI service, say) refuse a role that has none.
+const rvPassword = "rv113b-test"
+
 func rvAdmin(t *testing.T) (*sql.DB, string) {
 	t.Helper()
 	base := os.Getenv("PG_DSN")
@@ -65,7 +69,7 @@ func rvRole(t *testing.T, admin *sql.DB, name string) {
 	ctx := context.Background()
 	admin.ExecContext(ctx, `DROP OWNED BY `+name)
 	admin.ExecContext(ctx, `DROP ROLE IF EXISTS `+name)
-	if _, err := admin.ExecContext(ctx, `CREATE ROLE `+name+` LOGIN`); err != nil {
+	if _, err := admin.ExecContext(ctx, `CREATE ROLE `+name+` LOGIN PASSWORD '`+rvPassword+`'`); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
@@ -82,7 +86,7 @@ func rvDSN(t *testing.T, base, user, searchPath string) string {
 	if i < 0 || j < 0 {
 		t.Skip("PG_DSN has no user@ part")
 	}
-	return rvWithParams(base[:i+3]+user+base[j:], "search_path="+searchPath)
+	return rvWithParams(base[:i+3]+user+":"+rvPassword+base[j:], "search_path="+searchPath)
 }
 
 // The function body calls hashtextextended(r, 0), whose 0 is an integer while pg_catalog's
