@@ -67,39 +67,59 @@ func TestPostgres_OpenCreatesNextSeq(t *testing.T) {
 	}
 }
 
-// Open refuses a next_seq function whose definition is not the one this version creates: the
-// insert's ordering depends on its lock and its fresh snapshot, and the migration never replaces
-// a function other nodes may be running. Skips without PG_DSN.
-func TestPostgres_OpenRefusesAnotherNextSeq(t *testing.T) {
-	ctx := context.Background()
-	dsn, schema, admin := freshSchema(t)
-	s, err := Open(ctx, dsn)
+// nextSeqDefinition returns the CREATE FUNCTION statement of the next_seq function this version
+// creates in schema: Open creates it in a scratch schema, and pg_get_functiondef prints it there,
+// with the scratch schema's name replaced by schema's.
+func nextSeqDefinition(t *testing.T, schema string) string {
+	t.Helper()
+	dsn, scratch, admin := freshSchema(t)
+	s, err := Open(context.Background(), dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
 	s.Close()
-	want := nextSeqSource(t, admin, schema, "bide_next_seq_v1")
-	if want == "" {
-		t.Fatal("Open created no bide_next_seq_v1")
+	var def string
+	if err := admin.QueryRowContext(context.Background(), `SELECT pg_get_functiondef($1::regprocedure)`, scratch+".bide_next_seq_v1(text)").Scan(&def); err != nil {
+		t.Fatal(err)
 	}
-	quote := func(src string) string { return "$src$" + src + "$src$" }
-	noLock := `BEGIN RETURN (SELECT COALESCE(MAX(seq), -1) + 1 FROM bide_steps WHERE run_id = r); END`
-	for _, tc := range []struct{ name, def string }{
-		{"no_lock", `CREATE FUNCTION %[1]s.bide_next_seq_v1(r text) RETURNS bigint LANGUAGE plpgsql VOLATILE AS ` + quote(noLock)},
-		{"stable", `CREATE FUNCTION %[1]s.bide_next_seq_v1(r text) RETURNS bigint LANGUAGE plpgsql STABLE AS ` + quote(want)},
-		{"security_definer", `CREATE FUNCTION %[1]s.bide_next_seq_v1(r text) RETURNS bigint LANGUAGE plpgsql VOLATILE SECURITY DEFINER AS ` + quote(want)},
-		{"own_search_path", `CREATE FUNCTION %[1]s.bide_next_seq_v1(r text) RETURNS bigint LANGUAGE plpgsql VOLATILE SET search_path = public AS ` + quote(want)},
-		{"returns_int", `CREATE FUNCTION %[1]s.bide_next_seq_v1(r text) RETURNS int LANGUAGE plpgsql VOLATILE AS ` + quote(want)},
+	def = strings.Replace(def, "CREATE OR REPLACE FUNCTION", "CREATE FUNCTION", 1)
+	return strings.ReplaceAll(def, scratch, schema)
+}
+
+// Open refuses a next_seq function whose definition is not the one this version creates: the
+// insert's ordering depends on its lock and its fresh snapshot, its safety on its fixed search
+// path and qualified names, and the migration never replaces a function other nodes may be
+// running. Each case changes one property of the exact definition. Skips without PG_DSN.
+func TestPostgres_OpenRefusesAnotherNextSeq(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name     string
+		old, new string // replaced once in the exact definition
+	}{
+		{"no_lock", "pg_advisory_xact_lock", "pg_advisory_xact_lock_shared"},
+		{"stable", "LANGUAGE plpgsql", "LANGUAGE plpgsql STABLE"},
+		{"security_definer", "LANGUAGE plpgsql", "LANGUAGE plpgsql SECURITY DEFINER"},
+		{"another_search_path", "LANGUAGE plpgsql", "LANGUAGE plpgsql SET search_path = public"},
+		{"no_search_path", " SET search_path TO 'pg_catalog', 'pg_temp'\n", ""},
+		{"returns_int", "RETURNS bigint", "RETURNS integer"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dsn, schema, admin := freshSchema(t)
-			if _, err := admin.ExecContext(ctx, fmt.Sprintf(completeTables+tc.def, schema)); err != nil {
+			def := nextSeqDefinition(t, schema)
+			if tc.name == "another_search_path" {
+				def = strings.Replace(def, " SET search_path TO 'pg_catalog', 'pg_temp'\n", "", 1)
+			}
+			changed := strings.Replace(def, tc.old, tc.new, 1)
+			if changed == def && tc.name != "no_search_path" {
+				t.Fatalf("the definition holds no %q:\n%s", tc.old, def)
+			}
+			if _, err := admin.ExecContext(ctx, fmt.Sprintf(completeTables, schema)+changed); err != nil {
 				t.Fatal(err)
 			}
 			s, err := Open(ctx, dsn)
 			if err == nil {
 				s.Close()
-				t.Fatal("Open accepted a next_seq function with another definition")
+				t.Fatalf("Open accepted a next_seq function with another definition:\n%s", changed)
 			}
 			if !errors.Is(err, agent.ErrConfig) || !strings.Contains(err.Error(), "bide_next_seq_v1") {
 				t.Fatalf("Open = %v, want an ErrConfig naming bide_next_seq_v1", err)

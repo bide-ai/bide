@@ -89,3 +89,30 @@ func (s *Store) bypassNextSeqInSelect(ctx context.Context) error {
 	_, err := s.db.ExecContext(ctx, "SELECT bide_next_seq_v1('r')") // BYPASS: the next_seq function outside the insert
 	return err
 }
+
+// From the second review of #113: spellings that hide a call from a scan of the text.
+
+func (s *Store) bypassUnicodeIdent(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, `SELECT U&"pg_advisory_\006Cock"(42)`) // BYPASS: pg_advisory_lock through a Unicode-escaped identifier
+	return err
+}
+
+func (s *Store) bypassQuotedIdent(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, `SELECT "set_config"('application_name', 'x', false)`) // BYPASS: a quoted function name
+	return err
+}
+
+func (s *Store) bypassComment(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, `SELECT set_config/**/('application_name', 'x', false)`) // BYPASS: a comment between the name and its parenthesis
+	return err
+}
+
+func (s *Store) bypassDollarQuote(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, `SELECT $$'$$, set_config('application_name', 'x', false), '$$'`) // BYPASS: a quote inside a dollar-quoted string hides the call
+	return err
+}
+
+func (s *Store) bypassUnqualifiedBuiltin(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, "SELECT now()") // BYPASS: a built-in called without pg_catalog, which an overload can take over
+	return err
+}
