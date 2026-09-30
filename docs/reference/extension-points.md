@@ -21,6 +21,7 @@ reference adapters that ship with it.
 
 ## `Model`: the provider primitive
 
+<!-- docsnip: api agent -->
 ```go
 type Model interface {
 	Stream(ctx context.Context, req Request) (*Stream, error)
@@ -35,6 +36,7 @@ implementer maps a provider's wire format onto normalized `Event` values (`TextD
 
 An adapter that reads a response as it arrives builds its stream with `agent.NewStreamFunc`:
 
+<!-- docsnip: setup ctx context.Context; resp *http.Response; ev agent.Event; returns (*agent.Stream, error) -->
 ```go
 return agent.NewStreamFunc(ctx, func(send func(agent.Emit) bool) {
 	defer resp.Body.Close()
@@ -76,6 +78,7 @@ adapter can use too.
 
 ## `Durable`: the crash-safe substrate
 
+<!-- docsnip: api agent -->
 ```go
 type Durable interface {
 	// Do returns the recorded Record for (runID, name) without running fn if present;
@@ -209,6 +212,7 @@ requires a fresh salt on every record, a record journaled even when the caller's
 cancelled while `fn` ran, and nothing recorded for a step whose `fn` fails. Run it from a test in
 your store's package:
 
+<!-- docsnip: setup mystore struct{ New func() agent.Durable } -->
 ```go
 func TestMyStore_Durable(t *testing.T) {
 	durabletest.Run(t, func(t *testing.T) agent.Durable { return mystore.New() })
@@ -219,6 +223,7 @@ func TestMyStore_Durable(t *testing.T) {
 
 ## `Tool`: an action the agent can take
 
+<!-- docsnip: api agent -->
 ```go
 type Tool interface {
 	Name() string
@@ -242,6 +247,7 @@ m-of-n policy; approver signatures are checked through the `ApproverVerifier` ho
 
 ## `Compensator`: how a tool undoes its side effect
 
+<!-- docsnip: api agent -->
 ```go
 type Compensator interface {
 	// Compensate undoes a completed call. args are the arguments the tool accepted (after tool
@@ -259,6 +265,7 @@ that declares both its forward action and its compensator.
 
 ## `Retriever`: bring-your-own RAG
 
+<!-- docsnip: api agent -->
 ```go
 type Retriever interface {
 	Retrieve(ctx context.Context, query string, k int) ([]Doc, error)
@@ -276,6 +283,7 @@ concurrent use. See [RAG and memory](../guides/rag-memory.md).
 
 ## `Anchor`: out-of-band anchoring (`audit`)
 
+<!-- docsnip: api audit -->
 ```go
 type Anchor interface {
 	Publish(ctx context.Context, runID string, sth SignedTreeHead) error
@@ -298,6 +306,7 @@ version is for tests and local dev. See the [audit guide](../guides/audit.md).
 
 ## `EventStore`: durable event-trail persistence (`audit`)
 
+<!-- docsnip: api audit -->
 ```go
 type EventStore interface {
 	// Append durably records leaf at position seq (0-based, contiguous) for runID.

@@ -109,6 +109,7 @@ Temporal 拥有这些保证，但需要一个服务器加一支 worker 机群才
 
 同一个订单分拣流程，三种写法。纯 Go 是默认方式：写普通的控制流，并为日志必须保证崩溃安全的那些步骤命名。
 
+<!-- docsnip: setup ctx context.Context; store agent.Durable; order Order; type Order struct{}; type Receipt struct{}; type Assessment struct{ Rush bool }; type Reservation struct{}; func classify(Order) (Assessment, error); func reserve(Assessment) (Reservation, error); func finalize(Reservation) (Receipt, error); func decline(Assessment) (Receipt, error) -->
 ```go
 // classify, then branch: rush orders reserve-then-finalize, the rest decline.
 assess, _ := agent.Step(ctx, store, "order-42", "classify",
@@ -129,6 +130,7 @@ if assess.Rush {
 
 当你想把同一个流程作为一件一等的、可检视的工件时，`plan` 构建器把类型化的节点接入一个下沉到同一运行时的 `Flow`：
 
+<!-- docsnip: setup type Order struct{}; type Receipt struct{}; type Assessment struct{ Rush bool }; type Reservation struct{} -->
 ```go
 b := plan.New[Order, Receipt]("order-triage")
 classify := b.Step("classify", func(ctx context.Context, o Order) (Assessment, error) { ... })
@@ -163,6 +165,7 @@ flow, err := b.Build() // inherits at-most-once and the audit trail
 }
 ```
 
+<!-- docsnip: setup type Order struct{}; type Receipt struct{}; configBytes []byte; reg *plan.Registry -->
 ```go
 flow, err := plan.Load[Order, Receipt](configBytes, reg) // same topology, same Digest()
 ```
@@ -181,6 +184,7 @@ flow, err := plan.Load[Order, Receipt](configBytes, reg) // same topology, same 
 
 ## 保证 1，在代码里：它不会重复扣款
 
+<!-- docsnip: setup ctx context.Context; a *agent.Agent; runID string; input string; type ChargeArgs struct{}; type Receipt struct{} -->
 ```go
 // A tool that moves money is a write: not ReadOnly, not Idempotent.
 charge := agent.Func("charge_card", "Charge the customer", agent.Safety{},
@@ -254,6 +258,7 @@ func main() {
 
 `Run` 只返回最终消息。要获取一份运行摘要（整次运行的 token 用量，含缓存与子智能体；模型轮次计数；墙钟时长），请用 `RunResult`（以及 `RunSagaResult`）：
 
+<!-- docsnip: setup ctx context.Context; a *agent.Agent; runID string; input string -->
 ```go
 res, err := a.RunResult(ctx, runID, input)
 // res.Message, res.Usage, res.Spend, res.Turns, res.Duration, res.RunID
@@ -263,6 +268,7 @@ res, err := a.RunResult(ctx, runID, input)
 
 `Run` 会阻塞并返回最终答案。要观察智能体工作（token 增量、轮次边界、工具开始/结束），请用 `Stream`。它驱动的是**同一个循环**（`Run` 字面上就是 `Stream(...).Final()`），所以持久性、恢复和副作用安全性是完全一致的：
 
+<!-- docsnip: setup ctx context.Context; a *agent.Agent; runID string; input string -->
 ```go
 stream := a.Stream(ctx, runID, input)
 for ev := range stream.Events() {
@@ -292,6 +298,7 @@ answer, err := stream.Final() // terminal message + error (incl. *PendingApprova
 
 `RunTyped[T]` 返回一个类型化的 `T`，而非一条自由格式的消息。它注入一个合成的 `final_answer` 工具，其 JSON schema 由 `T` 派生而来（经由 `schema` 包），并引导模型在其工作完成后调用它一次，从而一个使用工具的智能体可以先做真正的工作、*然后*给出类型化的回答。与提供商无关（构建在原生工具调用之上，而非某个提供商的 JSON 模式）。
 
+<!-- docsnip: setup ctx context.Context; a *agent.Agent; runID string -->
 ```go
 type Weather struct {
 	City  string `json:"city"`
@@ -310,6 +317,7 @@ w, err := agent.RunTyped[Weather](ctx, a, runID, "weather in SF?")
 
 生成控制项是与提供商无关的，且一次性设定；每个适配器把它们映射到自己的传输格式（并丢弃它做不到的，例如 Anthropic 没有 `seed`）：
 
+<!-- docsnip: setup model agent.Model; store agent.Durable; tools []agent.Tool -->
 ```go
 a := agent.New(model, store, tools...).
 	WithSampling(agent.Temperature(0), agent.MaxTokens(500), agent.TopP(0.9), agent.Seed(42))
@@ -321,6 +329,7 @@ a := agent.New(model, store, tools...).
 
 一个智能体循环每一轮都重新发送一大段恒定的前缀（系统提示 + 工具 schema）。Anthropic 提示缓存把这些重复部分按缓存读取费率计费：
 
+<!-- docsnip: setup key string -->
 ```go
 model := anthropic.New(key, anthropic.WithPromptCache())
 ```
@@ -331,6 +340,7 @@ model := anthropic.New(key, anthropic.WithPromptCache())
 
 `Run` 是一轮。一个 `Session` 是一场持久化的多轮对话：每一次 `Send` 都是一次完整的智能体运行（工具、恢复、副作用安全），并以迄今为止的记录为种子，因此智能体记得先前的各轮。
 
+<!-- docsnip: setup ctx context.Context; a *agent.Agent -->
 ```go
 s, _ := a.Session(ctx, "user-42")   // reopens + rebuilds the transcript from the store
 a1, _ := s.Send(ctx, "what's the capital of France?")
@@ -343,6 +353,7 @@ a2, _ := s.Send(ctx, "and its population?")   // sees turn 1 in context
 
 那条持久化日志已经记录了一次运行的每一步。`audit` 包用一条哈希链承诺那段历史，从而一次运行的执行是可验证的：
 
+<!-- docsnip: setup ctx context.Context; store agent.Durable; runID string; priv ed25519.PrivateKey -->
 ```go
 head, _ := audit.Head(ctx, store, runID)     // SHA-256 chain over the journal (persisted order)
 sig := audit.Sign(head, priv)                // anchor it: sign / publish out-of-band
@@ -358,6 +369,7 @@ sig := audit.Sign(head, priv)                // anchor it: sign / publish out-of
 
 Bide **不附带任何向量存储、嵌入器或记忆后端**：它给你*接缝*，你插入你本就在运行的存储。针对你自己的基础设施实现一个接口：
 
+<!-- docsnip: api agent -->
 ```go
 type Retriever interface {
 	Retrieve(ctx context.Context, query string, k int) ([]agent.Doc, error)
@@ -366,6 +378,7 @@ type Retriever interface {
 
 然后用两种方式之一把它接上：
 
+<!-- docsnip: setup model agent.Model; store agent.Durable; myStore agent.Retriever -->
 ```go
 // Agentic RAG: the model searches on demand:
 a := agent.New(model, store, agent.RetrievalTool(myStore, 5))
@@ -397,6 +410,7 @@ agent.Safety{RequiresApproval: true}  // pause for human approval before executi
 
 三种风味。**批准/拒绝**：一个标记了 `RequiresApproval` 的工具在运行*之前*暂停；人类的决定是一个布尔：
 
+<!-- docsnip: setup ctx context.Context; a *agent.Agent; store agent.Durable; runID string; input string -->
 ```go
 _, err := a.Run(ctx, runID, input)
 var pend *agent.PendingApproval
@@ -409,6 +423,7 @@ if errors.As(err, &pend) {
 
 **中断/恢复**：一个工具在*任意点*暂停，并以一个*类型化的*值恢复（推广了那个布尔）。在一个可重试安全的工具内调用 `agent.Interrupt[T]`：
 
+<!-- docsnip: setup ctx context.Context; a *agent.Agent; store agent.Durable; runID string; input string; type Options struct{}; type Plan struct{}; chosenPlan Plan -->
 ```go
 tool := agent.Func("choose_plan", "pick a plan", agent.Safety{ReadOnly: true},
 	func(ctx context.Context, in Options) (Plan, error) {
@@ -432,6 +447,7 @@ if errors.As(err, &intr) {
 
 **m-of-n 批准**：当一次签核不够时，要求来自一个具名的 n 位批准人集合中的 k 份签名决定。每位批准人签署的是确切的那次调用（工具及其参数）；该门在达到 k 份批准时放行，一旦 k 不再可达就拒绝，否则带着当前计票暂停。一份伪造或出错的决定会被忽略，而不会把它的批准人锁在门外：
 
+<!-- docsnip: setup ctx context.Context; model agent.Model; store agent.Durable; pend *agent.PendingApproval; type RefundArgs struct{}; doRefund func(context.Context, RefundArgs) (string, error); keysByApprover agent.ApproverVerifierFor; signer audit.Signer -->
 ```go
 refund := agent.Func("refund", "refund the order",
 	agent.Safety{Approval: &agent.ApprovalPolicy{Need: 2, Approvers: []string{"ops", "finance", "risk"}}},
@@ -449,6 +465,7 @@ agent.ApproveAs(ctx, store, pend.RunID, pend.ToolUseID, "finance", true, sig)
 
 失败以哨兵错误（sentinel error）来分类，由 `errors.Is` 匹配，这是标准库的惯用法，没有自定义的错误框架。两层：一个**类别（category）**（粗粒度的类）和一个**条件（condition）**（一个具体的成因），后者包裹其类别，因此匹配可以在你需要的任一层级上工作：
 
+<!-- docsnip: setup ctx context.Context; a *agent.Agent; runID string; input string; func backOffAndRetry(); func fixToolWiring(); func alertOps() -->
 ```go
 _, err := a.Run(ctx, runID, input)
 switch {
@@ -469,6 +486,7 @@ case errors.Is(err, agent.ErrStorage):      // durable-store I/O
 
 两条独立的 `func(Handler) Handler` 链，位于两个重要的边界上：模型调用（`Use`）和每一次工具调用（`UseTool`）。最先添加 = 最外层。两者都是*可变更且可短路的*：改写送进去的东西、变换出来的东西，或者不调用 `next` 就返回。
 
+<!-- docsnip: setup model agent.Model; store agent.Durable; tools []agent.Tool; import oteltrace "go.opentelemetry.io/otel/trace"; tracer oteltrace.Tracer -->
 ```go
 var cost middleware.CostMeter
 a := agent.New(model, store, tools...).
@@ -491,6 +509,7 @@ a.UseTool(trace.Tool(tracer)) // execute_tool span per call; nests across the su
 
 工具中间件在持久化步骤*内部*运行，所以一次短路（一次 `ToolCache` 命中）或一次策略拒绝会像任何工具结果一样被记入日志；恢复会重放它，绝不重新运行中间件或工具。`ToolRetry` 和 `ToolCache` 只作用于 `Safety` 允许的工具（分别是可重试安全的和 `ReadOnly` 的），而无论中间件做什么，智能体对一个不可重试安全的工具每次调用至多运行一次。用 `agent.ToolMiddleware` 签名写你自己的：
 
+<!-- docsnip: setup func authorized(context.Context, string) bool -->
 ```go
 // Deny a tool by policy: the tool never executes; the model sees the error and reacts.
 func RequireTag(tag string) agent.ToolMiddleware {
@@ -535,6 +554,7 @@ govern           Tier-2: federated governed state + quorum for agents that must 
 
 **在一个决定上达成一致（法定人数 quorum）。** k-of-n 个具名投票者（每一个是一个模型、提供商或主体）投出一个规范化的决定；每一票都是一个记入日志、至多一次的步骤，记录了谁怎么投的，而 k-of-n 的门是投票计数上的一个 gsm 不变量，因此"k 个达成一致"在每一种可能的计票上都被机器核验。`bide-audit verify-quorum` 从公开工件重新核对计票和每一票，在不信任生产者的情况下复现多数决规则。这个论断是精确的：一个法定人数证明的是*k 个投票者达成了一致*，并降低单模型风险；它并不认证那个决定是正确的（相关的错误不是独立性），且只有规范化的决定才能被法定人数化，自由格式的散文不能。
 
+<!-- docsnip: setup ctx context.Context; machine *gsm.Machine; import "github.com/blackwell-systems/gsm"; log govern.EventLog -->
 ```go
 gov, _ := govern.NewPersistent(ctx, machine, log, "order-42", machine.NewState())
 tool := govern.EventTool(gov, "pay", "mark the order paid", "pay", agent.Safety{})

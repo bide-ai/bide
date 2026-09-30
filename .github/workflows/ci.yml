@@ -22,8 +22,9 @@ env:
 
 jobs:
   # Decides whether a pull request touches anything the Go jobs test. A PR that changes only
-  # documentation skips their steps, but every job still runs and reports under its usual name,
-  # so the required checks pass instead of waiting forever. Pushes to main always run everything,
+  # documentation skips their steps (except Lint's docs snippet check, which compiles the Go
+  # blocks of the docs), but every job still runs and reports under its usual name, so the
+  # required checks pass instead of waiting forever. Pushes to main always run everything,
   # and any doubt (a failed diff, an unexpected event, this job failing) counts as a code change:
   # the gated jobs run unless this job succeeded and said otherwise.
   changes:
@@ -53,7 +54,9 @@ jobs:
   lint:
     name: Lint
     needs: changes
-    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
+    # Gated per step, not per job: the docs snippet check runs on every change, documentation
+    # included, and the rest only when code changed.
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -61,6 +64,7 @@ jobs:
         with:
           go-version: '1.27'
       - name: Every module is built, tested and in go.work
+        if: needs.changes.outputs.code != 'false'
         run: |
           # A module missing from MODULES would never be built or tested here, so its tests could
           # not fail. Every go.mod in the tree must be listed, in MODULES and in go.work, unless it
@@ -70,6 +74,7 @@ jobs:
           .github/scripts/check-modules.sh --self-test
           .github/scripts/check-modules.sh .
       - name: Every module is published or repo-only
+        if: needs.changes.outputs.code != 'false'
         run: |
           # scripts/release.sh tags the published modules at each release and never the repo-only
           # ones; a module in neither list, or a published module requiring a repo-only one, fails.
@@ -78,6 +83,7 @@ jobs:
           scripts/release.sh --self-test
           scripts/release.sh --check-classification
       - name: gofmt
+        if: needs.changes.outputs.code != 'false'
         run: |
           # gofmt is file-based, so one pass from the root covers every module.
           unformatted=$(gofmt -l .)
@@ -88,12 +94,14 @@ jobs:
             exit 1
           fi
       - name: go vet (all modules)
+        if: needs.changes.outputs.code != 'false'
         run: |
           for m in $MODULES; do
             echo "== vet $m =="
             ( cd "$m" && go vet ./... )
           done
       - name: doccheck (all modules)
+        if: needs.changes.outputs.code != 'false'
         # Every exported identifier has a doc comment that starts with its name, and every package
         # has a package comment. One parse-only pass from the root covers every module. The
         # allowlist only shrinks: doccheck fails on an entry that is now documented, and a pull
@@ -114,7 +122,14 @@ jobs:
               fi
             fi
           fi
+      - name: docs snippets compile
+        # Every ```go block in README.md and docs/ compiles against the current code (api listings
+        # match the packages' declarations), resolving bide's modules through go.work. A block
+        # annotates its free identifiers with <!-- docsnip: setup ... -->, or is pseudo-code with
+        # <!-- docsnip: skip reason -->; see CONTRIBUTING.md. Runs on documentation-only changes.
+        run: go run ./internal/tools/docsnip
       - name: govulncheck (all modules)
+        if: needs.changes.outputs.code != 'false'
         # Known vulnerabilities in dependencies or the standard library that bide's code can reach
         # fail the build.
         run: |

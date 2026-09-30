@@ -25,6 +25,7 @@ proves the harness is non-vacuous: a correct loop passes it, that one doesn't).
 Implement `chaos.System` for that SDK: wire it to perform exactly one non-idempotent side
 effect (increment a counter) against a **fault-injectable, resumable** store, exposing:
 
+<!-- docsnip: api chaos -->
 ```go
 type System interface {
     NewRun() Run   // fresh store + zeroed counter

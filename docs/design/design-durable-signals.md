@@ -40,6 +40,7 @@ The signatures below match the shipped code (`agent/pause.go` for `Await`, `Sign
 
 ### Consume (run-side, inside a retry-safe tool)
 
+<!-- docsnip: api agent -->
 ```go
 // Await blocks the run until a single-shot signal `name` is delivered, then returns its
 // payload. Until then it returns *Awaiting and the run pauses durably. On resume it returns
@@ -66,6 +67,7 @@ func Ack(ctx context.Context, d Durable, runID, channel, key string) error
 
 ### Deliver (external, at-most-once intake)
 
+<!-- docsnip: api agent -->
 ```go
 // Signal delivers a single-shot signal to a run, journaled at-most-once by name: a redelivery
 // (a retried webhook) is a no-op and the first payload wins. Safe from any process; the
@@ -79,6 +81,7 @@ func Send[T any](ctx context.Context, d Durable, runID, channel, key string, pay
 
 ### Pause error (parallels `*Interrupted` / `*Sleeping`)
 
+<!-- docsnip: api agent -->
 ```go
 type Awaiting struct {
 	RunID string

@@ -37,6 +37,7 @@ at-most-once property the chaos benchmark proves (`maxFired=1`), now applied to 
 
 For command-style bots with no memory, key the run itself by the event id:
 
+<!-- docsnip: setup ctx context.Context; a *agent.Agent; channelID, eventID, text string -->
 ```go
 // Slack sends a stable event_id / client_msg_id; the X-Slack-Retry-Num header marks redelivery.
 runID := "msg/" + channelID + "/" + eventID
@@ -51,6 +52,7 @@ For multi-turn bots, use a `Session` keyed by the conversation/thread id for mem
 inbound message with `SendOnce` keyed by its event id. `Send` alone is not enough: it keys turns by
 index, so a redelivery would open a second turn.
 
+<!-- docsnip: setup ctx context.Context; a *agent.Agent; conversationID, eventID, text string; returns (string, error) -->
 ```go
 sess, err := a.Session(ctx, conversationID)
 if err != nil {

@@ -14,6 +14,7 @@ For a typed value rather than a yes/no, use `Interrupt`/`Resume` instead (see th
 
 ## 1-of-1
 
+<!-- docsnip: setup ctx context.Context; a *agent.Agent; store agent.Durable; runID string; input string; type RefundArgs struct{}; doRefund func(context.Context, RefundArgs) (string, error) -->
 ```go
 refund := agent.Func("refund", "refund the order", agent.Safety{RequiresApproval: true}, doRefund)
 
@@ -39,6 +40,7 @@ configured, the call's decision is taken under the gate's current policy, so a g
 Declare the policy on the tool, and tell the agent how to resolve an approver id to the key that
 verifies that approver's signature:
 
+<!-- docsnip: setup model agent.Model; store agent.Durable; type RefundArgs struct{}; doRefund func(context.Context, RefundArgs) (string, error); approverKeys map[string]ed25519.PublicKey -->
 ```go
 refund := agent.Func("refund", "refund the order",
 	agent.Safety{Approval: &agent.ApprovalPolicy{
@@ -60,6 +62,7 @@ a := agent.New(model, store, refund).
 When the run pauses, each approver signs the paused call's subject with their own key and records
 the decision:
 
+<!-- docsnip: setup ctx context.Context; store agent.Durable; err error; financeSigner audit.Signer -->
 ```go
 var pend *agent.PendingApproval
 if errors.As(err, &pend) {
@@ -78,6 +81,7 @@ Then re-run with the same `runID`. The gate evaluates the recorded decisions:
 | **Deny** | fewer approvers remain who have not validly denied than `Need` | the tool is skipped and the model gets the same `tool call denied by human` result as a 1-of-1 denial |
 | **Pause** | otherwise | `Run` returns `*PendingApproval` with `Quorum` set to the running tally |
 
+<!-- docsnip: setup err error; pend *agent.PendingApproval -->
 ```go
 if errors.As(err, &pend) && pend.Quorum != nil {
 	q := pend.Quorum // Need, Approved, ApprovedBy, Denied, DeniedBy, Pending (who has not validly decided)
@@ -168,6 +172,7 @@ case, would take them for one approver, who could then fill two seats.
 journal order: the model turn that requested the call (its tool and arguments), every decision
 record the gate read, valid or not, the gate's recorded tally, and the call's result.
 
+<!-- docsnip: setup ctx context.Context; store agent.Durable; runID string; toolUseID string; logPriv ed25519.PrivateKey -->
 ```go
 th, _ := audit.NewTreeHead(ctx, store, runID, time.Now().UnixNano())
 sth := audit.SignTreeHead(th, logPriv)
@@ -180,6 +185,7 @@ package already carries the call.
 An auditor checks it offline with `audit.VerifyApprovals`, holding only the evidence, the policy they
 expect, the approvers' public keys (the same resolver shape the gate uses), and the log key:
 
+<!-- docsnip: setup pkg audit.EvidencePackage; toolUseID string; policy agent.ApprovalPolicy; approverVerifiers agent.ApproverVerifierFor; logPub ed25519.PublicKey -->
 ```go
 v, err := audit.VerifyApprovals(pkg.Actions, toolUseID, policy, approverVerifiers, logPub)
 // v.OK: the evidence is consistent and at least Need approved.

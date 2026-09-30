@@ -245,6 +245,7 @@ journal-backed runtime. See [docs/guides/flows.md](docs/guides/flows.md).
 
 The same order-triage flow, three ways. Plain Go is the default: write ordinary control flow, and name the steps the journal must make crash-safe.
 
+<!-- docsnip: setup ctx context.Context; store agent.Durable; order Order; type Order struct{}; type Receipt struct{}; type Assessment struct{ Rush bool }; type Reservation struct{}; func classify(Order) (Assessment, error); func reserve(Assessment) (Reservation, error); func finalize(Reservation) (Receipt, error); func decline(Assessment) (Receipt, error) -->
 ```go
 // classify, then branch: rush orders reserve-then-finalize, the rest decline.
 assess, _ := agent.Step(ctx, store, "order-42", "classify",
@@ -265,6 +266,7 @@ if assess.Rush {
 
 When you want that same flow as a first-class, inspectable artifact, the `plan` builder wires typed nodes into a `Flow` that lowers to the same runtime:
 
+<!-- docsnip: setup type Order struct{}; type Receipt struct{}; type Assessment struct{ Rush bool }; type Reservation struct{} -->
 ```go
 b := plan.New[Order, Receipt]("order-triage")
 classify := b.Step("classify", func(ctx context.Context, o Order) (Assessment, error) { ... })
@@ -299,6 +301,7 @@ Or author that same topology as declarative config a higher layer (a visual buil
 }
 ```
 
+<!-- docsnip: setup type Order struct{}; type Receipt struct{}; configBytes []byte; reg *plan.Registry -->
 ```go
 flow, err := plan.Load[Order, Receipt](configBytes, reg) // same topology, same Digest()
 ```
@@ -328,6 +331,7 @@ into a waiting run), `examples/interrupt` (human-in-the-loop pause/resume), and 
 
 ## Guarantee 1, in code: it won't double-charge
 
+<!-- docsnip: setup ctx context.Context; a *agent.Agent; runID string; input string; type ChargeArgs struct{}; type Receipt struct{} -->
 ```go
 // A tool that moves money is a write: not ReadOnly, not Idempotent.
 charge := agent.Func("charge_card", "Charge the customer", agent.Safety{},
@@ -416,6 +420,7 @@ argument field the json tag the model sees in the schema.
 `Run` returns just the final message. For a run summary (token usage for the whole run,
 including cache and sub-agents; model-turn count; wall-clock duration) use `RunResult` (and `RunSagaResult`):
 
+<!-- docsnip: setup ctx context.Context; a *agent.Agent; runID string; input string -->
 ```go
 res, err := a.RunResult(ctx, runID, input)
 // res.Message, res.Usage, res.Spend, res.Turns, res.Duration, res.RunID
@@ -427,6 +432,7 @@ res, err := a.RunResult(ctx, runID, input)
 boundaries, tool start/finish), use `Stream`. It drives the **same loop** (`Run` is literally
 `Stream(...).Final()`), so durability, resume, and side-effect safety are identical:
 
+<!-- docsnip: setup ctx context.Context; a *agent.Agent; runID string; input string -->
 ```go
 stream := a.Stream(ctx, runID, input)
 for ev := range stream.Events() {
@@ -468,6 +474,7 @@ Two things worth knowing, both consequences of durability:
 the model to call it once its work is done, so a tool-using agent can do real work and *then*
 answer typed. Provider-agnostic (built on native tool calling, not a provider's JSON mode).
 
+<!-- docsnip: setup ctx context.Context; a *agent.Agent; runID string -->
 ```go
 type Weather struct {
 	City  string `json:"city"`
@@ -497,6 +504,7 @@ no tool round-trip); the Anthropic adapter does not support it and returns `ErrC
 Generation controls are provider-neutral and set once; each adapter maps them onto its wire
 format (and drops what it can't do, e.g. Anthropic has no `seed`):
 
+<!-- docsnip: setup model agent.Model; store agent.Durable; tools []agent.Tool -->
 ```go
 a := agent.New(model, store, tools...).
 	WithSampling(agent.Temperature(0), agent.MaxTokens(500), agent.TopP(0.9), agent.Seed(42))
@@ -511,6 +519,7 @@ adapter's construction-time default.
 An agent loop resends a large constant prefix (system prompt + tool schemas) every turn.
 Anthropic prompt caching bills those repeats at the cache-read rate:
 
+<!-- docsnip: setup key string -->
 ```go
 model := anthropic.New(key, anthropic.WithPromptCache())
 ```
@@ -526,6 +535,7 @@ so cost accounting, tracing, and the run's token budget see the real numbers.
 run (tools, resume, side-effect safety) seeded with the transcript so far, so the agent remembers
 earlier turns.
 
+<!-- docsnip: setup ctx context.Context; a *agent.Agent -->
 ```go
 s, _ := a.Session(ctx, "user-42")   // reopens + rebuilds the transcript from the store
 a1, _ := s.Send(ctx, "what's the capital of France?")
@@ -548,6 +558,7 @@ it started with, even if other messages were answered in between.
 The durable journal already records every step of a run. The `audit` package commits to that
 history with a hash chain, so a run's execution is verifiable:
 
+<!-- docsnip: setup ctx context.Context; store agent.Durable; runID string; priv ed25519.PrivateKey -->
 ```go
 head, _ := audit.Head(ctx, store, runID)     // SHA-256 chain over the journal (persisted order)
 sig := audit.Sign(head, priv)                // anchor it: sign / publish out-of-band
@@ -577,6 +588,7 @@ See [docs/guides/audit.md](docs/guides/audit.md) for the model, the API, and the
 Bide ships **no vector store, embedder, or memory backend**: it gives you the *seam* and
 you plug in the store you already run. Implement one interface against your infra:
 
+<!-- docsnip: api agent -->
 ```go
 type Retriever interface {
 	Retrieve(ctx context.Context, query string, k int) ([]agent.Doc, error)
@@ -585,6 +597,7 @@ type Retriever interface {
 
 Then wire it in one of two ways:
 
+<!-- docsnip: setup model agent.Model; store agent.Durable; myStore agent.Retriever -->
 ```go
 // Agentic RAG: the model searches on demand:
 a := agent.New(model, store, agent.RetrievalTool(myStore, 5))
@@ -634,6 +647,7 @@ so both limits are rebuilt from the journal and hold across a crash and resume.
 Three flavors. **Approve/deny**: a tool marked `RequiresApproval` pauses *before* running; the
 human decision is a bool:
 
+<!-- docsnip: setup ctx context.Context; a *agent.Agent; store agent.Durable; runID string; input string -->
 ```go
 _, err := a.Run(ctx, runID, input)
 var pend *agent.PendingApproval
@@ -647,6 +661,7 @@ if errors.As(err, &pend) {
 **Interrupt/resume**: a tool pauses *at an arbitrary point* and resumes with a *typed* value
 (generalizing the bool). Call `agent.Interrupt[T]` inside a retry-safe tool:
 
+<!-- docsnip: setup ctx context.Context; a *agent.Agent; store agent.Durable; runID string; input string; type Options struct{}; type Plan struct{}; chosenPlan Plan -->
 ```go
 tool := agent.Func("choose_plan", "pick a plan", agent.Safety{ReadOnly: true},
 	func(ctx context.Context, in Options) (Plan, error) {
@@ -675,6 +690,7 @@ of n approvers. Each approver signs the exact call (tool and arguments); the gat
 approvals, denies once k is unreachable, and otherwise pauses with the running tally. A forged or
 mistaken decision is ignored without locking its approver out:
 
+<!-- docsnip: setup ctx context.Context; model agent.Model; store agent.Durable; pend *agent.PendingApproval; type RefundArgs struct{}; doRefund func(context.Context, RefundArgs) (string, error); keysByApprover agent.ApproverVerifierFor; signer audit.Signer -->
 ```go
 refund := agent.Func("refund", "refund the order",
 	agent.Safety{Approval: &agent.ApprovalPolicy{Need: 2, Approvers: []string{"ops", "finance", "risk"}}},
@@ -698,6 +714,7 @@ idiom, no custom error framework. Two tiers: a **category** (the coarse class) a
 **condition** (a specific cause) that wraps its category, so a match works at whichever level
 you need:
 
+<!-- docsnip: setup ctx context.Context; a *agent.Agent; runID string; input string; func backOffAndRetry(); func fixToolWiring(); func alertOps() -->
 ```go
 _, err := a.Run(ctx, runID, input)
 switch {
@@ -737,6 +754,7 @@ call (`Use`) and each tool call (`UseTool`). First added = outermost. Both are *
 short-circuiting*: rewrite what goes in, transform what comes out, or return without calling
 `next`.
 
+<!-- docsnip: setup model agent.Model; store agent.Durable; tools []agent.Tool; import oteltrace "go.opentelemetry.io/otel/trace"; tracer oteltrace.Tracer -->
 ```go
 var cost middleware.CostMeter
 a := agent.New(model, store, tools...).
@@ -767,6 +785,7 @@ middleware or the tool. `ToolRetry` and `ToolCache` act only on tools whose `Saf
 (retry-safe, and `ReadOnly`, respectively), and the agent runs a tool that is not retry-safe at
 most once per call whatever the middleware does. Write your own with the `agent.ToolMiddleware` signature:
 
+<!-- docsnip: setup func authorized(context.Context, string) bool -->
 ```go
 // Deny a tool by policy: the tool never executes; the model sees the error and reacts.
 func RequireTag(tag string) agent.ToolMiddleware {
@@ -839,6 +858,7 @@ quorum proves *that k voters agreed* and lowers single-model risk; it does not c
 is correct (correlated errors are not independence), and only normalized decisions can be quorumed,
 not free-form prose.
 
+<!-- docsnip: setup ctx context.Context; machine *gsm.Machine; import "github.com/blackwell-systems/gsm"; log govern.EventLog -->
 ```go
 gov, _ := govern.NewPersistent(ctx, machine, log, "order-42", machine.NewState())
 tool := govern.EventTool(gov, "pay", "mark the order paid", "pay", agent.Safety{})

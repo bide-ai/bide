@@ -6,6 +6,7 @@ the model call and is attached with `agent.Use`; tool middleware wraps tool exec
 optional and stdlib-only, and it rides the durable substrate, so a retried or hedged call is still
 journaled at most once and a crash still resumes safely.
 
+<!-- docsnip: setup model agent.Model; store agent.Durable; tools []agent.Tool; backupModel agent.Model -->
 ```go
 a := agent.New(model, store, tools...).
     Use(
@@ -47,6 +48,7 @@ a negative `n`, `Retry` and `ToolRetry` fail every call with `agent.ErrConfig` a
   protocol, a fault of that one response), and a provider's mid-stream server error. See [error surfacing](models.md#error-surfacing-shared-across-all-three-adapters)
   for how adapters classify provider errors.
 
+<!-- docsnip: setup a *agent.Agent -->
 ```go
 a.Use(middleware.Retry(3, middleware.WithRetryIf(middleware.Retryable), middleware.WithTimeout(30*time.Second)))
 ```
@@ -57,6 +59,7 @@ a.Use(middleware.Retry(3, middleware.WithRetryIf(middleware.Retryable), middlewa
 first successful response, cancelling the rest. See [the hedge design and boundaries](#when-to-hedge-vs-retry)
 below; the running demo is [`examples/hedge`](../../examples/hedge/main.go).
 
+<!-- docsnip: setup a *agent.Agent; openaiModel agent.Model -->
 ```go
 // Primary is Anthropic; if it is quiet for 800ms, also try OpenAI and take the first good answer.
 a.Use(middleware.Hedge(800*time.Millisecond, openaiModel))
@@ -83,6 +86,7 @@ every request the agent sends, wherever it sits in the chain: each attempt of a 
 target a `Hedge` launches waits for its own. An interval of 0 or less sets no limit. Waiters are not
 served in arrival order: a new call can take a freed token ahead of one already waiting.
 
+<!-- docsnip: setup a *agent.Agent -->
 ```go
 rl := middleware.NewRateLimiter(time.Second, 5) // 5 calls/sec sustained, burst 5
 a.Use(middleware.RateLimit(rl))
@@ -93,6 +97,7 @@ a.Use(middleware.RateLimit(rl))
 `Cost(meter, rates)` accumulates token usage into a `*CostMeter` at the per-token `Rates` you set,
 so you can read spend across a run without touching the loop.
 
+<!-- docsnip: setup a *agent.Agent -->
 ```go
 meter := &middleware.CostMeter{}
 a.Use(middleware.Cost(meter, middleware.Rates{InputPer1M: 3.00, OutputPer1M: 15.00})) // USD per 1M tokens

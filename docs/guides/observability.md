@@ -9,6 +9,7 @@ so a binary that does not import `trace` pays nothing.
 
 `Instrument` wires the whole span taxonomy onto an agent in one call:
 
+<!-- docsnip: setup model agent.Model; store agent.Durable; tools []agent.Tool; import oteltrace "go.opentelemetry.io/otel/trace"; tracer oteltrace.Tracer; rates middleware.Rates -->
 ```go
 a := trace.Instrument(agent.New(model, store, tools...), tracer, trace.WithRates(rates))
 ```
@@ -32,6 +33,7 @@ Three span kinds, matching the GenAI convention's `gen_ai.operation.name`:
 The top-level `invoke_agent` span lives at the call site rather than on the agent, because it
 wraps the `Run` call. Start it with `Invoke` and close it with the returned `end(err)`:
 
+<!-- docsnip: setup ctx context.Context; a *agent.Agent; runID string; input string; import oteltrace "go.opentelemetry.io/otel/trace"; tracer oteltrace.Tracer -->
 ```go
 ctx, end := trace.Invoke(ctx, tracer, "support-agent")
 msg, err := a.Run(ctx, runID, input)
@@ -52,6 +54,7 @@ automatically, with no extra wiring, so a multi-agent run reads as one connected
 Pass `WithRates` to record USD cost on each `chat` span as the `gen_ai.usage.cost` attribute,
 computed from the call's token usage:
 
+<!-- docsnip: setup model agent.Model; store agent.Durable; tools []agent.Tool; import oteltrace "go.opentelemetry.io/otel/trace"; tracer oteltrace.Tracer; rates middleware.Rates -->
 ```go
 a := trace.Instrument(agent.New(model, store, tools...), tracer, trace.WithRates(rates))
 ```

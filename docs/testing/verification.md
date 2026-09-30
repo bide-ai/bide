@@ -115,8 +115,11 @@ Every pull request must pass, before it can merge:
 
 - **Lint:** `gofmt`, `go vet` and `govulncheck` across every module, including the example
   modules; `doccheck` (`internal/tools/doccheck`), which requires a doc comment on every exported
-  identifier and a package comment on every package; and checks that every module is built, tested and in `go.work`, and is classified
-  as published or repo-only for releases.
+  identifier and a package comment on every package; checks that every module is built, tested and in `go.work`, and is classified
+  as published or repo-only for releases; and the docs snippet check (`internal/tools/docsnip`):
+  every Go block in the README and `docs/` compiles against the current code, and every API
+  listing matches the package's declarations. The snippet check also runs on
+  documentation-only changes.
 - **Tests on Linux, macOS, and Windows,** with `-race` on Linux. On Linux the core, `govern` and
   `integration` modules are also tested with `GOEXPERIMENT=nojsonv2`, so the journal encoding does
   not depend on `encoding/json/v2`.

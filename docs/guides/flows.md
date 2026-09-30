@@ -18,6 +18,7 @@ is simpler and wins on every other axis.
 
 ## A flow, end to end
 
+<!-- docsnip: setup ctx context.Context; store agent.Durable; runID string; order Order; type Order struct{}; type Receipt struct{}; type Assessment struct{ Rush bool }; type Reservation struct{}; func classifyOrder(context.Context, Order) (Assessment, error); func reserveInventory(context.Context, Assessment) (Reservation, error); func finalizeReceipt(context.Context, Reservation) (Receipt, error); func declineReceipt(context.Context, Assessment) (Receipt, error); returns error -->
 ```go
 import (
     "github.com/bide-ai/bide/agent"
@@ -183,6 +184,7 @@ the same `*Flow`, so it inherits `RenderMermaid`, `Conform`, and the topology `D
 Registration maps config names to typed Go blocks, capturing each block's I/O types via
 `reflect.TypeFor`, so the config never restates types; they flow from the registered block.
 
+<!-- docsnip: setup type Order struct{}; type Receipt struct{}; type Assessment struct{ Rush bool }; type Reservation struct{}; func classifyOrder(context.Context, Order) (Assessment, error); func reserveInventory(context.Context, Assessment) (Reservation, error); func finalizeReceipt(context.Context, Reservation) (Receipt, error); func declineReceipt(context.Context, Assessment) (Receipt, error) -->
 ```go
 reg := plan.NewRegistry()
 plan.RegisterStep(reg, "classify", classifyOrder)              // infers Order -> Assessment
@@ -204,6 +206,7 @@ plan.RegisterPredicate(reg, "rush", func(a Assessment) bool { return a.Rush })
 Loading supplies the boundary types at the Go call site (the caller knows them); the loader fills the
 middle from data:
 
+<!-- docsnip: setup type Order struct{}; type Receipt struct{}; configBytes []byte; reg *plan.Registry -->
 ```go
 flow, err := plan.Load[Order, Receipt](configBytes, reg)   // *Flow[Order, Receipt], or a load error
 ```
@@ -263,6 +266,7 @@ wiring:
 
 The `merge` block:
 
+<!-- docsnip: setup reg *plan.Registry -->
 ```go
 plan.RegisterJoin2(reg, "mergeBlock", func(_ context.Context, a int, s string) (string, error) {
     return fmt.Sprintf("%s+%d", s, a), nil

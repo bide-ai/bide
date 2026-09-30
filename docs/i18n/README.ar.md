@@ -218,6 +218,7 @@ global context»): [برهان Coq/Rocq](https://github.com/blackwell-systems/no
 تدفّق فرز الطلبات نفسه، بثلاث طرق. Go الخالصة هي الافتراض: اكتب تحكّمًا عاديًّا في التدفّق، وسمِّ الخطوات
 التي يجب أن يجعلها السجل آمنة عند الانهيار.
 
+<!-- docsnip: setup ctx context.Context; store agent.Durable; order Order; type Order struct{}; type Receipt struct{}; type Assessment struct{ Rush bool }; type Reservation struct{}; func classify(Order) (Assessment, error); func reserve(Assessment) (Reservation, error); func finalize(Reservation) (Receipt, error); func decline(Assessment) (Receipt, error) -->
 ```go
 // classify, then branch: rush orders reserve-then-finalize, the rest decline.
 assess, _ := agent.Step(ctx, store, "order-42", "classify",
@@ -239,6 +240,7 @@ if assess.Rush {
 وحين تريد التدفّق نفسه أثرًا من الطبقة الأولى قابلًا للفحص، يصِل باني `plan` عُقَدًا مُصنَّفة في `Flow`
 يُنزَّل إلى زمن التشغيل نفسه:
 
+<!-- docsnip: setup type Order struct{}; type Receipt struct{}; type Assessment struct{ Rush bool }; type Reservation struct{} -->
 ```go
 b := plan.New[Order, Receipt]("order-triage")
 classify := b.Step("classify", func(ctx context.Context, o Order) (Assessment, error) { ... })
@@ -273,6 +275,7 @@ flow, err := b.Build() // inherits at-most-once and the audit trail
 }
 ```
 
+<!-- docsnip: setup type Order struct{}; type Receipt struct{}; configBytes []byte; reg *plan.Registry -->
 ```go
 flow, err := plan.Load[Order, Receipt](configBytes, reg) // same topology, same Digest()
 ```
@@ -301,6 +304,7 @@ flow, err := plan.Load[Order, Receipt](configBytes, reg) // same topology, same 
 
 ## الضمان 1، بالشفرة: لن يشحن مرتين
 
+<!-- docsnip: setup ctx context.Context; a *agent.Agent; runID string; input string; type ChargeArgs struct{}; type Receipt struct{} -->
 ```go
 // A tool that moves money is a write: not ReadOnly, not Idempotent.
 charge := agent.Func("charge_card", "Charge the customer", agent.Safety{},
@@ -377,6 +381,7 @@ func main() {
 تُرجِع `Run` الرسالة النهائية فقط. للحصول على ملخّص تشغيلة (استهلاك الرموز للتشغيلة كلها، شاملًا
 التخزين المؤقت والوكلاء الفرعيين؛ وعدد أدوار النموذج؛ ومدّة الزمن الجداري) استخدم `RunResult` (و`RunSagaResult`):
 
+<!-- docsnip: setup ctx context.Context; a *agent.Agent; runID string; input string -->
 ```go
 res, err := a.RunResult(ctx, runID, input)
 // res.Message, res.Usage, res.Spend, res.Turns, res.Duration, res.RunID
@@ -388,6 +393,7 @@ res, err := a.RunResult(ctx, runID, input)
 استخدم `Stream`. تقود **الحلقة نفسها** (`Run` حرفيًّا هي `Stream(...).Final()`)، فالمعمورية والاستئناف
 وأمان الأثر الجانبي متطابقة:
 
+<!-- docsnip: setup ctx context.Context; a *agent.Agent; runID string; input string -->
 ```go
 stream := a.Stream(ctx, runID, input)
 for ev := range stream.Events() {
@@ -425,6 +431,7 @@ answer, err := stream.Final() // terminal message + error (incl. *PendingApprova
 أن يؤدّي عملًا حقيقيًّا *ثم* يجيب مُصنَّفًا. مُحايد للمورّد (مبنيّ على نداء الأدوات الأصلي، لا وضع JSON عند
 مورّد بعينه).
 
+<!-- docsnip: setup ctx context.Context; a *agent.Agent; runID string -->
 ```go
 type Weather struct {
 	City  string `json:"city"`
@@ -450,6 +457,7 @@ w, err := agent.RunTyped[Weather](ctx, a, runID, "weather in SF?")
 ضوابط التوليد محايدة للمورّد وتُضبَط مرة واحدة؛ ويربطها كل مُحوّل على صيغة سلكه (ويُسقِط ما لا يستطيعه، مثل
 عدم امتلاك Anthropic لـ `seed`):
 
+<!-- docsnip: setup model agent.Model; store agent.Durable; tools []agent.Tool -->
 ```go
 a := agent.New(model, store, tools...).
 	WithSampling(agent.Temperature(0), agent.MaxTokens(500), agent.TopP(0.9), agent.Seed(42))
@@ -463,6 +471,7 @@ a := agent.New(model, store, tools...).
 تعيد حلقة الوكيل إرسال بادئة ثابتة كبيرة (موجّه النظام + مخططات الأدوات) كل دور. يُحاسِب التخزين المؤقت
 لموجّهات Anthropic تلك التكرارات بمعدّل القراءة من التخزين المؤقت:
 
+<!-- docsnip: setup key string -->
 ```go
 model := anthropic.New(key, anthropic.WithPromptCache())
 ```
@@ -477,6 +486,7 @@ model := anthropic.New(key, anthropic.WithPromptCache())
 `Run` دورٌ واحد. `Session` محادثة مُعمَّرة متعدّدة الأدوار: كل `Send` تشغيلة وكيل كاملة (أدوات، استئناف،
 أمان أثر جانبي) مُغذّاة بالنصّ حتى الآن، فيتذكّر الوكيل الأدوار السابقة.
 
+<!-- docsnip: setup ctx context.Context; a *agent.Agent -->
 ```go
 s, _ := a.Session(ctx, "user-42")   // reopens + rebuilds the transcript from the store
 a1, _ := s.Send(ctx, "what's the capital of France?")
@@ -496,6 +506,7 @@ a2, _ := s.Send(ctx, "and its population?")   // sees turn 1 in context
 السجل المُعمَّر يسجّل بالفعل كل خطوة من تشغيلة. تلتزم حزمة `audit` بذلك التاريخ عبر سلسلة تجزئة (hash chain)،
 فيصبح تنفيذ التشغيلة قابلًا للتحقق:
 
+<!-- docsnip: setup ctx context.Context; store agent.Durable; runID string; priv ed25519.PrivateKey -->
 ```go
 head, _ := audit.Head(ctx, store, runID)     // SHA-256 chain over the journal (persisted order)
 sig := audit.Sign(head, priv)                // anchor it: sign / publish out-of-band
@@ -523,6 +534,7 @@ RFC 6962 المنشورة.
 لا يشحن Bide **مخزنًا متجهيًّا ولا مُضمِّنًا (embedder) ولا خلفية ذاكرة**: يمنحك *اللُّحمة* وتوصِل المخزن
 الذي تُشغّله بالفعل. نفِّذ واجهة واحدة مقابل بنيتك التحتية:
 
+<!-- docsnip: api agent -->
 ```go
 type Retriever interface {
 	Retrieve(ctx context.Context, query string, k int) ([]agent.Doc, error)
@@ -531,6 +543,7 @@ type Retriever interface {
 
 ثم وصِّلها بإحدى طريقتين:
 
+<!-- docsnip: setup model agent.Model; store agent.Durable; myStore agent.Retriever -->
 ```go
 // Agentic RAG: the model searches on demand:
 a := agent.New(model, store, agent.RetrievalTool(myStore, 5))
@@ -575,6 +588,7 @@ LangGraph الموثّقة «يجب أن تكون العُقَد عديمة ال
 
 ثلاث نكهات. **موافقة/رفض**: أداة موسومة بـ `RequiresApproval` تتوقف *قبل* التشغيل؛ وقرار الإنسان قيمة بوليانية:
 
+<!-- docsnip: setup ctx context.Context; a *agent.Agent; store agent.Durable; runID string; input string -->
 ```go
 _, err := a.Run(ctx, runID, input)
 var pend *agent.PendingApproval
@@ -588,6 +602,7 @@ if errors.As(err, &pend) {
 **مقاطعة/استئناف**: أداة تتوقف *عند نقطة اعتباطية* وتستأنف بقيمة *مُصنَّفة* (تعمّم البوليان). استدعِ
 `agent.Interrupt[T]` داخل أداة آمنة عند إعادة المحاولة:
 
+<!-- docsnip: setup ctx context.Context; a *agent.Agent; store agent.Durable; runID string; input string; type Options struct{}; type Plan struct{}; chosenPlan Plan -->
 ```go
 tool := agent.Func("choose_plan", "pick a plan", agent.Safety{ReadOnly: true},
 	func(ctx context.Context, in Options) (Plan, error) {
@@ -615,6 +630,7 @@ if errors.As(err, &intr) {
 مُوافِق النداءَ بعينه (الأداة ووسائطها)؛ وتمضي البوّابة عند k موافقات، وترفض متى صار بلوغ k مستحيلًا، وإلا
 تتوقف مع الحصيلة الجارية. ويُتجاهَل القرار المُزوَّر أو الخاطئ دون أن يُقفَل مُوافِقه خارجًا:
 
+<!-- docsnip: setup ctx context.Context; model agent.Model; store agent.Durable; pend *agent.PendingApproval; type RefundArgs struct{}; doRefund func(context.Context, RefundArgs) (string, error); keysByApprover agent.ApproverVerifierFor; signer audit.Signer -->
 ```go
 refund := agent.Func("refund", "refund the order",
 	agent.Safety{Approval: &agent.ApprovalPolicy{Need: 2, Approvers: []string{"ops", "finance", "risk"}}},
@@ -637,6 +653,7 @@ k مُوافِقين مُسمَّين وقّعوا على هذا النداء ب
 إطار أخطاء مخصّص. مستويان: **صنف (category)** (الفئة العامة) و**شرط (condition)** (سبب محدّد) يلفّ صنفه،
 فتعمل المطابقة عند المستوى الذي تحتاجه:
 
+<!-- docsnip: setup ctx context.Context; a *agent.Agent; runID string; input string; func backOffAndRetry(); func fixToolWiring(); func alertOps() -->
 ```go
 _, err := a.Run(ctx, runID, input)
 switch {
@@ -672,6 +689,7 @@ case errors.Is(err, agent.ErrStorage):      // durable-store I/O
 (`UseTool`). أول مُضاف = الأخرج. وكلتاهما *مُغيِّرتان وقاطعتان للدائرة (short-circuiting)*: أعِد كتابة ما
 يدخل، وحوّل ما يخرج، أو ارجِع دون استدعاء `next`.
 
+<!-- docsnip: setup model agent.Model; store agent.Durable; tools []agent.Tool; import oteltrace "go.opentelemetry.io/otel/trace"; tracer oteltrace.Tracer -->
 ```go
 var cost middleware.CostMeter
 a := agent.New(model, store, tools...).
@@ -703,6 +721,7 @@ a.UseTool(trace.Tool(tracer)) // execute_tool span per call; nests across the su
 الـ middleware. اكتب خاصّتك بتوقيع
 `agent.ToolMiddleware`:
 
+<!-- docsnip: setup func authorized(context.Context, string) bool -->
 ```go
 // Deny a tool by policy: the tool never executes; the model sees the error and reacts.
 func RequireTag(tag string) agent.ToolMiddleware {
@@ -769,6 +788,7 @@ gsm فوق عدّ الأصوات، فـ «اتّفق k» مفحوص آليًّا
 يُثبت *أن k ناخبين اتّفقوا* ويخفّض خطر النموذج الواحد؛ ولا يشهد بأن القرار صحيح (الأخطاء المترابطة ليست
 استقلالًا)، وفقط القرارات المُطبَّعة يمكن أن تُنَصَّب، لا النثر الحرّ.
 
+<!-- docsnip: setup ctx context.Context; machine *gsm.Machine; import "github.com/blackwell-systems/gsm"; log govern.EventLog -->
 ```go
 gov, _ := govern.NewPersistent(ctx, machine, log, "order-42", machine.NewState())
 tool := govern.EventTool(gov, "pay", "mark the order paid", "pay", agent.Safety{})

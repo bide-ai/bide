@@ -51,6 +51,7 @@ unknown-outcome resume.
 
 For a server you trust to label its tools, pass `TrustAnnotations()`:
 
+<!-- docsnip: setup ctx context.Context; import mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"; session *mcpsdk.ClientSession -->
 ```go
 tools, err := mcp.Tools(ctx, session, mcp.TrustAnnotations())
 ```
@@ -69,6 +70,7 @@ tools, err := mcp.Tools(ctx, session, mcp.TrustAnnotations())
 default and of the server's annotations (trusted or not). It is how an MCP tool gets a human
 approval gate, 1-of-1 or m-of-n, and pauses and resumes exactly like a local tool:
 
+<!-- docsnip: setup ctx context.Context; import mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"; session *mcpsdk.ClientSession -->
 ```go
 tools, err := mcp.Tools(ctx, session,
 	mcp.WithSafety("transfer", agent.Safety{RequiresApproval: true}),
@@ -155,6 +157,7 @@ default `Connect(ctx, transport)` behaves exactly as before.
 
 ## Exported API
 
+<!-- docsnip: api github.com/bide-ai/bide/mcp; import mcp "github.com/modelcontextprotocol/go-sdk/mcp" -->
 ```go
 // Connect builds a client and opens a session on the given transport. Options
 // wire optional client capabilities (elicitation, tools-list-changed, client info).

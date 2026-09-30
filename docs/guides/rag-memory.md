@@ -21,6 +21,7 @@ already run. This is a deliberate scope boundary, not a gap.
 
 ## The seam (in core, zero-dep)
 
+<!-- docsnip: api agent -->
 ```go
 type Doc struct { ID string; Text string; Score float64; Metadata map[string]any }
 

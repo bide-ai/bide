@@ -25,6 +25,7 @@ then awaits, that side effect runs again on every resume attempt.
 `Await[T]` blocks the run until a single-shot signal named `name` is delivered, then returns
 its payload. `Signal[T]` delivers that payload from any process.
 
+<!-- docsnip: setup ctx context.Context; type PaymentConfirmed struct{}; returns (any, error) -->
 ```go
 // Run-side, inside a retry-safe tool: wait for the "payment-confirmed" event.
 confirmed, err := agent.Await[PaymentConfirmed](ctx, "payment-confirmed")
@@ -34,6 +35,7 @@ if err != nil {
 // ... continue with confirmed ...
 ```
 
+<!-- docsnip: setup ctx context.Context; store agent.Durable; runID string; type PaymentConfirmed struct{} -->
 ```go
 // Deliver-side, from a webhook handler in any process:
 err := agent.Signal(ctx, store, runID, "payment-confirmed", PaymentConfirmed{...})
@@ -53,6 +55,7 @@ Use distinct names for distinct awaits; each pauses and resolves independently.
 `AwaitFor[T]` is `Await` composed with a durable timer: it races the signal against a deadline
 and returns whichever wins.
 
+<!-- docsnip: setup ctx context.Context; type Approval struct{}; returns (any, error) -->
 ```go
 v, ok, err := agent.AwaitFor[Approval](ctx, "approval", 24*time.Hour)
 if err != nil {
@@ -84,11 +87,13 @@ A channel is the multi-message form of a signal: an ordered, per-run stream you 
 exactly once. `Send[T]` appends a message deduped by key; `Receive[T]` returns the oldest
 not-yet-acked message in delivery order; `Ack` marks a message consumed so `Receive` advances.
 
+<!-- docsnip: setup ctx context.Context; store agent.Durable; runID string; eventID string; type MyEvent struct{} -->
 ```go
 // Deliver-side: append a message, deduped by key.
 err := agent.Send(ctx, store, runID, "events", eventID, MyEvent{...})
 ```
 
+<!-- docsnip: setup ctx context.Context; store agent.Durable; runID string; type MyEvent struct{}; returns (any, error) -->
 ```go
 // Run-side, inside a retry-safe tool: consume the stream exactly once.
 for {
@@ -146,6 +151,7 @@ in the top-level run, so re-invoking `RootRunID` is always correct. With the Wak
 the wake for `RootRunID` as well (`Sleep` in a sub-agent already schedules its wake for the root
 run).
 
+<!-- docsnip: setup ctx context.Context; store agent.Durable; err error; payload any; rootAgent *agent.Agent; savedInput string -->
 ```go
 var aw *agent.Awaiting
 if errors.As(err, &aw) {
