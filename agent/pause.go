@@ -176,12 +176,23 @@ func waitUntil(ctx context.Context, name string, fireAtFrom func(now time.Time) 
 	if w := wakerFrom(ctx); w != nil {
 		// Wake the top-level run: re-running it re-enters any sub-agent down to this Sleep,
 		// while the sub-run alone cannot be driven by the root agent's resume callback.
-		w.Schedule(rootRunID(ctx, runID), name, fireAt)
+		w.Schedule(rootRunID(ctx, runID), wakeName(ctx, runID, name), fireAt)
 	}
 	return &Sleeping{RunID: runID, RootRunID: rootRunID(ctx, runID), Name: name, FireAt: fireAt}
 }
 
 func timerStep(name string) string { return "timer:" + name }
+
+// wakeName is the name a timer of run runID registers with the Waker. A wake is keyed by the root
+// run it resumes and this name, so a timer inside a sub-agent is qualified by its sub-run: two
+// sub-agents of one root waiting on timers of the same name register two wakes, not one that the
+// later replaces. A top-level run's timer keeps its plain name.
+func wakeName(ctx context.Context, runID, name string) string {
+	if root := rootRunID(ctx, runID); root != runID {
+		return stepKey(runID, name)
+	}
+	return name
+}
 
 // ===========================================================================
 // Waker: the pluggable wake trigger
@@ -195,6 +206,8 @@ func timerStep(name string) string { return "timer:" + name }
 // reference in-process implementation.
 type Waker interface {
 	// Schedule registers that runID should be resumed at fireAt, idempotent per (runID, name).
+	// runID is the top-level run; name identifies the timer within it (for a timer inside a
+	// sub-agent it is qualified by the sub-run, so same-named timers of two sub-agents differ).
 	Schedule(runID, name string, fireAt time.Time)
 }
 

@@ -19,23 +19,27 @@ import (
 	"github.com/bide-ai/bide/agent"
 )
 
-// oneTool calls the named tool once, then answers in text on the next turn. Reused by the
-// three scenes with a different tool name each.
+// oneTool calls the named tool once, then answers in text once the tool's result is in the
+// conversation. It decides from the request rather than counting its own turns, so a resumed
+// run, driven by a fresh agent and model, gets the answer turn and not a second tool call.
+// Reused by the three scenes with a different tool name each.
 type oneTool struct {
 	tool string
-	turn int
 }
 
-func (m *oneTool) Stream(_ context.Context, _ agent.Request) (*agent.Stream, error) {
+func (m *oneTool) Stream(_ context.Context, req agent.Request) (*agent.Stream, error) {
 	ch := make(chan agent.Emit, 4)
-	if m.turn == 0 {
+	answered := false
+	for _, msg := range req.Messages {
+		answered = answered || msg.Role == agent.RoleTool
+	}
+	if !answered {
 		ch <- agent.Emit{Event: agent.ToolCallDelta{Index: 0, ID: "c1", Name: m.tool, ArgsFragment: []byte(`{}`)}}
 		ch <- agent.Emit{Event: agent.Finish{Reason: "tool_use"}}
 	} else {
 		ch <- agent.Emit{Event: agent.TextDelta{Text: "done"}}
 		ch <- agent.Emit{Event: agent.Finish{Reason: "stop"}}
 	}
-	m.turn++
 	close(ch)
 	return agent.NewStream(ch), nil
 }

@@ -85,7 +85,7 @@ func AwaitFor[T any](ctx context.Context, name string, d time.Duration) (T, bool
 		// sub-agent down to this AwaitFor, while the sub-run alone cannot be driven by the root
 		// agent's resume callback (the same rule as Sleep).
 		if w := wakerFrom(ctx); w != nil {
-			w.Schedule(rootRunID(ctx, runID), awaitTimeoutStep(name), deadline)
+			w.Schedule(rootRunID(ctx, runID), wakeName(ctx, runID, awaitTimeoutStep(name)), deadline)
 		}
 		return zero, false, &Awaiting{RunID: runID, RootRunID: rootRunID(ctx, runID), Name: name}
 	}

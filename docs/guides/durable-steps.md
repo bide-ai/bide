@@ -206,7 +206,8 @@ resumes the whole tree precisely (completed sub-agents reused, the in-flight one
 (match it with `errors.As`); resolve it against the **sub-run's** ID and tool-use ID carried on the
 signal (`RunID`, `ToolUseID`), then re-run the run named by `RootRunID`, the top-level run, with
 the root agent to resume down the path. The same holds for `Interrupted`, `Awaiting`, and
-`Sleeping` from a sub-agent; a `Sleep` in a sub-agent schedules its wake for the root run. When
+`Sleeping` from a sub-agent; a `Sleep` in a sub-agent schedules its wake for the root run, under
+a name qualified by the sub-run, so same-named timers in two sub-agents are two wakes. When
 several calls of one turn pause, the run returns a `ResumeHalt` ahead of any other pause (the run
 cannot go on until it is resolved, whatever else is answered), and otherwise the first call's
 pause. A call that loses its answer (`ErrToolOutcomeUnknown`) is held the same way as a halt: its
