@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -400,12 +401,6 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 			}})
 			name, _ := toolNameFor(recs, r.ToolUseID)
 			fire(ToolCompleted{ToolUseID: r.ToolUseID, Name: name, Result: r.Result, IsError: r.IsError})
-		case StepAttempt:
-			if !isToolAttempt(r) {
-				continue // a Step's marker, not a call's
-			}
-			attempted[r.ToolUseID] = true
-			attemptedAtMs[r.ToolUseID] = r.AttemptedAt
 		case StepSagaFail:
 			done[r.ToolUseID] = true // the failing step is durably resolved (no ResumeHalt)
 		case StepApproval:
@@ -427,6 +422,14 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 	if created {
 		if err := a.preloadSubRuns(ctx, runID, recs, node); err != nil {
 			return Message{}, tot, 0, err
+		}
+	}
+
+	// A call's attempt markers count unless recorded as never started (see attempt.go).
+	for _, r := range liveAttempts(recs) {
+		if isToolAttempt(r) { // a Step's marker is not a call's
+			attempted[r.ToolUseID] = true
+			attemptedAtMs[r.ToolUseID] = r.AttemptedAt
 		}
 	}
 
@@ -650,13 +653,21 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 				// Attempt marker before a non-retriable side effect (crash-mid-write → halt),
 				// written as an exclusive claim: if another driver of this run claimed the call
 				// first (overlapping drivers, e.g. after a lease lapsed), it owns the side effect
-				// and this driver halts rather than run it a second time.
+				// and this driver halts rather than run it a second time. An earlier attempt
+				// recorded as never started does not count: the claim is for the next attempt.
+				var (
+					claimed   bool
+					marker    Record
+					markerKey string
+					called    atomic.Bool // the tool was called: its effect may have fired
+				)
 				if !c.t.Safety().retriableOnResume() {
-					won, got, err := ClaimAttempt(gctx, a.store, runID, toolAttemptStep(c.tu.ID),
+					won, got, key, err := claimNextAttempt(gctx, a.store, runID, toolAttemptStep(c.tu.ID),
 						Record{Kind: StepAttempt, ToolUseID: c.tu.ID, AttemptedAt: time.Now().UnixMilli()})
 					if err != nil {
 						return err
 					}
+					claimed, marker, markerKey = won, got, key
 					if !won {
 						return &ResumeHalt{RunID: runID, RootRunID: rootRunID(ctx, runID), ToolUseID: c.tu.ID, ToolName: c.tu.Name, AttemptedAt: markerTime(got.AttemptedAt)}
 					}
@@ -670,6 +681,12 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 				// re-fire it). The attempt marker above stays on gctx: if we are cancelled before it
 				// commits, the tool has not started, so there is nothing to record.
 				rec, err := a.store.Do(context.WithoutCancel(gctx), runID, ToolResultStep(c.tu.ID), func(context.Context) (Record, error) {
+					if err := sctx.Err(); claimed && err != nil {
+						// Cancelled after the claim and before the call: the tool is not called,
+						// and that is recorded below, so a resume calls it instead of halting.
+						return Record{}, fmt.Errorf("tool %q was not started: %w", c.tu.Name, err)
+					}
+					called.Store(true)
 					res, callErr := toolH(sctx, c.tu)
 					r := Record{Kind: StepToolResult, ToolUseID: c.tu.ID}
 					if callErr != nil && sctx.Err() != nil {
@@ -730,6 +747,13 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 					started.carry(&r)
 					return r, nil
 				})
+				if err != nil && claimed && !called.Load() {
+					// This driver claimed the call and never called the tool (it was cancelled, or
+					// the store failed, first): record that, so the next attempt calls it.
+					if nerr := recordNotStarted(gctx, a.store, runID, markerKey, marker); nerr != nil {
+						err = fmt.Errorf("%w (%w)", err, nerr)
+					}
+				}
 				if err == nil {
 					carried[c.idx] = journalTotals([]Record{rec})
 				}

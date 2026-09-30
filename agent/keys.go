@@ -22,7 +22,7 @@ var reservedPrefixes = []string{
 	"@",               // engine-internal steps: @llm/<n>, @saga/compensate/<call>, @saga/args/<call>, @retrieval/<layer>, @spend/<n>
 	"run:",            // run:complete, run:aborted
 	"tool:",           // a tool call's result: tool:<call>
-	"attempt:",        // attempt markers: attempt:tool:<call>, attempt:step:<name>
+	"attempt:",        // attempt markers: attempt:tool:<call>, attempt:step:<name>, attempt:retry:<n>:..., attempt:not-started:<marker>
 	"approval:",       // approval decisions: approval:<call>[:<approver>:<digest>]
 	"approval-tally:", // an m-of-n gate's tally
 	"signal:",         // Signal / Await
@@ -131,10 +131,47 @@ func toolAttemptStep(toolUseID string) string { return "attempt:tool:" + encodeI
 // stepAttemptStep is the key of the attempt marker of the Step named name.
 func stepAttemptStep(name string) string { return "attempt:step:" + name }
 
-// isToolAttempt reports whether r is the attempt marker of the call r.ToolUseID, not of a Step
-// that happens to share its string.
+// Prefixes of the keys of a re-attempt's marker and of the record that an attempt never started
+// (see attempt.go).
+const (
+	retryAttemptPrefix = "attempt:retry:"
+	notStartedPrefix   = "attempt:not-started:"
+)
+
+// retryAttemptStep is the key of the marker of attempt number gen of the effect whose first
+// attempt's marker key is base (toolAttemptStep or stepAttemptStep): base itself for gen 0, and
+// otherwise "attempt:retry:<gen>:" followed by base without its "attempt:" prefix, so
+// "attempt:retry:<gen>:tool:<call>" or "attempt:retry:<gen>:step:<name>". The digits end at the
+// first ':', and base's own third segment is "tool" or "step", never "retry" or "not-started", so
+// no two (base, gen) pairs share a key and none meets a first attempt's key.
+func retryAttemptStep(base string, gen int) string {
+	if gen == 0 {
+		return base
+	}
+	return retryAttemptPrefix + strconv.Itoa(gen) + ":" + strings.TrimPrefix(base, "attempt:")
+}
+
+// attemptBase is the first attempt's marker key of the effect whose attempt marker is key:
+// the inverse of retryAttemptStep over gen.
+func attemptBase(key string) string {
+	rest, ok := strings.CutPrefix(key, retryAttemptPrefix)
+	if !ok {
+		return key
+	}
+	if i := strings.IndexByte(rest, ':'); i >= 0 {
+		return "attempt:" + rest[i+1:]
+	}
+	return key
+}
+
+// notStartedStep is the key of the record that the attempt whose marker key is marker never
+// started its effect.
+func notStartedStep(marker string) string { return notStartedPrefix + marker }
+
+// isToolAttempt reports whether r is an attempt marker of the call r.ToolUseID (its first attempt
+// or a re-attempt), not of a Step that happens to share its string.
 func isToolAttempt(r Record) bool {
-	return r.Kind == StepAttempt && r.Name == toolAttemptStep(r.ToolUseID)
+	return r.Kind == StepAttempt && attemptBase(r.Name) == toolAttemptStep(r.ToolUseID)
 }
 
 // approvalStep is the key of the single approve/deny decision (Approve) on the call toolUseID.

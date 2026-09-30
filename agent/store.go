@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/sync/singleflight"
@@ -26,6 +27,10 @@ const (
 	StepApproval   StepKind = "approval"    // a durable human approve/deny decision (HITL)
 	StepAttempt    StepKind = "attempt"     // "about to run a non-retriable side effect" marker
 	StepSagaFail   StepKind = "saga_fail"   // a saga step failed → durable abort trigger
+	// StepNotStarted records that the attempt whose marker it names never called its side
+	// effect, written by the driver that claimed it (see attempt.go). That attempt then no
+	// longer halts a resume, and the effect is re-attempted under a new marker.
+	StepNotStarted StepKind = "not_started"
 )
 
 // Record is one durably-recorded, named event. The ordered sequence of Records for a
@@ -131,6 +136,20 @@ func ClaimAttempt(ctx context.Context, d Durable, runID, name string, rec Record
 		return false, Record{}, err
 	}
 	return got.Claim == claim, got, nil
+}
+
+// claimAttempt is ClaimAttempt for a marker key a probe of this process may be reading at the
+// same moment (see doShared): it claims again rather than fail with the probe's outcome.
+func claimAttempt(ctx context.Context, d Durable, runID, name string, rec Record) (bool, Record, error) {
+	for {
+		won, got, err := ClaimAttempt(ctx, d, runID, name, rec)
+		if !errors.Is(err, errNoRecord) {
+			return won, got, err
+		}
+		if err := ctx.Err(); err != nil {
+			return false, Record{}, err
+		}
+	}
 }
 
 // Durable is the crash-safe substrate: named-step memoization. Do runs a step at
@@ -264,37 +283,46 @@ func step[T any](ctx context.Context, d Durable, runID, name string, fn func(con
 	}
 	// The attempt marker is an exclusive claim, as for a tool call: a driver that did not
 	// write it (a resume after a crash, or a second driver of the same run) must not run fn.
-	claimed := true
+	// An earlier attempt recorded as not started does not count (see attempt.go): the claim is
+	// then for the next attempt.
+	base := stepAttemptStep(name)
+	claimed, won := true, false
+	var marker Record
+	var markerKey string
 	var attemptedAt time.Time
 	if !cfg.safety.RetrySafe() {
-		won, got, err := ClaimAttempt(ctx, d, runID, stepAttemptStep(name),
+		w, got, key, err := claimNextAttempt(ctx, d, runID, base,
 			Record{Kind: StepAttempt, ToolUseID: name, AttemptedAt: time.Now().UnixMilli()})
 		if err != nil {
 			return out, err
 		}
-		claimed = won
+		claimed, won, marker, markerKey = w, w, got, key
 		attemptedAt = markerTime(got.AttemptedAt)
 	}
+	var started atomic.Bool // fn was called: from here on its effect may have fired
 	rec, err := d.Do(ctx, runID, name, func(ctx context.Context) (Record, error) {
 		if claimed && cfg.safety.RetrySafe() {
 			// A retry-safe step writes no marker, but an earlier attempt of it may have, if it
 			// was declared a side effect then. The marker is the attempt's recorded safety, so
-			// the step halts as it would have, rather than run a side effect a second time.
-			marker, err := d.Do(ctx, runID, stepAttemptStep(name), func(context.Context) (Record, error) {
-				return Record{}, errNoAttempt
-			})
-			switch {
-			case err == nil:
-				claimed = false
-				attemptedAt = markerTime(marker.AttemptedAt)
-			case !errors.Is(err, errNoAttempt):
+			// the step halts as it would have, rather than run a side effect a second time,
+			// unless that attempt is recorded as never started.
+			m, ok, err := liveAttempt(ctx, d, runID, base)
+			if err != nil {
 				return Record{}, err
+			}
+			if ok {
+				claimed = false
+				attemptedAt = markerTime(m.AttemptedAt)
 			}
 		}
 		if !claimed {
 			// Attempted before, with no recorded result: the outcome is unknown.
 			return Record{}, &ResumeHalt{RunID: runID, RootRunID: runID, ToolUseID: name, AttemptedAt: attemptedAt}
 		}
+		if err := ctx.Err(); won && err != nil {
+			return Record{}, err // cancelled after the claim: fn is not called, and that is recorded below
+		}
+		started.Store(true)
 		v, err := fn(stepOnceScope(ctx, runID, name)) // the step numbers its own NextOnceKey keys
 		if err != nil {
 			return Record{}, err
@@ -306,6 +334,13 @@ func step[T any](ctx context.Context, d Durable, runID, name string, fn func(con
 		return Record{Kind: StepValue, Result: b}, nil
 	})
 	if err != nil {
+		if won && !started.Load() {
+			// This driver claimed the attempt and never called fn (it was cancelled, or the store
+			// failed, first): record that, so the next attempt runs fn instead of halting.
+			if nerr := recordNotStarted(ctx, d, runID, markerKey, marker); nerr != nil {
+				err = fmt.Errorf("%w (%w)", err, nerr)
+			}
+		}
 		return out, err
 	}
 	if rec.IsError { // resolved by ResolveHalt as failed
@@ -317,10 +352,6 @@ func step[T any](ctx context.Context, d Durable, runID, name string, fn func(con
 	err = json.Unmarshal(rec.Result, &out)
 	return out, err
 }
-
-// errNoAttempt is the error a probe for a step's attempt marker returns from Do when there is
-// none, so that Do records nothing.
-var errNoAttempt = errors.New("agent: no attempt marker")
 
 // StepOption configures Step.
 type StepOption func(*stepConfig)
@@ -418,12 +449,14 @@ func resolve(ctx context.Context, store Durable, runID string, h haltKeys, resul
 	if err != nil {
 		return fmt.Errorf("%s: read history for %s: %w (%w)", h.op, runID, err, ErrStorage)
 	}
+	// The live attempt: one recorded as never started fired nothing, so its age says nothing.
+	live := liveAttempts(recs)
 	var attempt, other *Record
+	if r, ok := live[h.attempt]; ok {
+		attempt = &r
+	}
 	for i := range recs {
-		switch recs[i].Name {
-		case h.attempt:
-			attempt = &recs[i]
-		case h.other:
+		if recs[i].Kind == StepAttempt && attemptBase(recs[i].Name) == h.other {
 			other = &recs[i]
 		}
 	}
