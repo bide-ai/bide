@@ -78,6 +78,11 @@ type Record struct {
 	// rather than one the tool produced by running. It lets a later reader (and bide-audit)
 	// tell a reconciled outcome from a clean one at a glance.
 	Reconciled bool `json:"reconciled,omitempty"`
+	// OutcomeUnknown marks a StepSagaFail record for a step whose outcome is unknown: a
+	// retry-safe step that failed with ErrToolOutcomeUnknown, or returned an error after its
+	// deadline. It may have committed, so a rollback reports it (SagaAborted.UnknownOutcome)
+	// rather than take it for a step that changed nothing.
+	OutcomeUnknown bool `json:"outcome_unknown,omitempty"`
 	// Redacted marks a record whose stored bytes a redaction replaced with a tombstone, the
 	// reserved form {"redacted":{"leaf_hash":"<hex>","at_ms":<ms>}}: the hex audit leaf hash of
 	// the bytes it replaced and the Unix-millis time of the redaction. Only Name is meaningful on

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/bide-ai/bide/internal/toolhook"
 	"github.com/bide-ai/bide/schema"
 )
 
@@ -167,6 +168,30 @@ func asSubAgent(t Tool) (*subAgentTool, bool) {
 		}
 	}
 	return nil, false
+}
+
+// bindRollback returns the context a saga rollback walks a sub-agent's run subRunID under: ctx,
+// bound by every wrapper on t's Unwrap chain that is a toolhook.RollbackBinder, innermost last,
+// as the wrappers bind a live call's context (the outermost wraps the call first). A wrapper
+// that narrows a delegation's authority rebinds it here from what the sub-run journaled, so a
+// compensation never runs under authority the delegation did not grant.
+func bindRollback(ctx context.Context, t Tool, subRunID string) (context.Context, error) {
+	for range 64 {
+		if b, ok := t.(toolhook.RollbackBinder); ok {
+			var err error
+			if ctx, err = b.BindRollback(ctx, subRunID); err != nil {
+				return nil, fmt.Errorf("saga rollback: bind the context of sub-run %s: %w", subRunID, err)
+			}
+		}
+		u, ok := t.(interface{ Unwrap() Tool })
+		if !ok {
+			return ctx, nil
+		}
+		if t = u.Unwrap(); t == nil {
+			return ctx, nil
+		}
+	}
+	return ctx, nil
 }
 
 // subRunUnfinished is a sub-agent call whose sub-run stopped short of a verdict: its journal could

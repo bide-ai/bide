@@ -659,7 +659,8 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 						}
 						if saga {
 							toolCallErr = callErr
-							f := Record{Kind: StepSagaFail, ToolUseID: c.tu.ID, Result: mustJSON(toolErrorText(a.toolErrRedact, c.tu.Name, callErr)), Safety: r.Safety, Approval: r.Approval}
+							f := Record{Kind: StepSagaFail, ToolUseID: c.tu.ID, Result: mustJSON(toolErrorText(a.toolErrRedact, c.tu.Name, callErr)), Safety: r.Safety, Approval: r.Approval,
+								OutcomeUnknown: unknownStepOutcome(callErr)}
 							started.carry(&f)
 							return f, nil
 						}

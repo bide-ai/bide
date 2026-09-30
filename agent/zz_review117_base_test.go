@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync/atomic"
 	"testing"
 )
@@ -25,7 +26,29 @@ func TestR117Base_SagaUnknownOutcomeOfARetrySafeWrite(t *testing.T) {
 	if !errors.As(err, &ab) {
 		t.Fatalf("RunSaga: err = %v, want *SagaAborted", err)
 	}
-	if committed.Load() == 1 && undone.Load() == 0 && len(ab.Uncompensated) == 0 {
-		t.Fatalf("unknown-outcome write neither compensated nor reported: %+v", ab)
+	// Reported in the distinct UnknownOutcome list (it may have committed), not compensated blind.
+	if undone.Load() != 0 || len(ab.UnknownOutcome) != 1 || ab.UnknownOutcome[0] != "hold" || len(ab.Uncompensated) != 0 {
+		t.Fatalf("unknown-outcome write: undone %d, unknown %q, uncompensated %q; want it reported as unknown, not compensated", undone.Load(), ab.UnknownOutcome, ab.Uncompensated)
+	}
+	if !strings.Contains(ab.Error(), "UNKNOWN OUTCOME") {
+		t.Fatalf("SagaAborted.Error() = %q, want the unknown outcome named", ab.Error())
+	}
+}
+
+// A sub-agent's unknown-outcome step reaches the root's SagaAborted.UnknownOutcome: the tree's
+// lists are whole.
+func TestR117_UnknownOutcomeInASubAgentIsReportedAtTheRoot(t *testing.T) {
+	hold := CompensatedFunc("hold", "", Safety{Idempotent: true},
+		func(ctx context.Context, _ struct{}) (string, error) {
+			return "", fmt.Errorf("connection reset: %w", ErrToolOutcomeUnknown)
+		},
+		func(context.Context, struct{}, string) error { return nil })
+	store := NewMemStore()
+	sub := New(NewScriptedModel(ToolTurn("h1", "hold", `{}`), TextTurn("done")), store, hold)
+	parent := New(NewScriptedModel(ToolTurn("p1", "delegate", `{"task":"x"}`), TextTurn("done")), store, SubAgent("delegate", "", sub))
+	_, err := parent.RunSaga(context.Background(), "root", "go")
+	var ab *SagaAborted
+	if !errors.As(err, &ab) || len(ab.UnknownOutcome) != 1 || ab.UnknownOutcome[0] != "hold" {
+		t.Fatalf("RunSaga = %v; want *SagaAborted naming hold as unknown", err)
 	}
 }

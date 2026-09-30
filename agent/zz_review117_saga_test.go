@@ -31,9 +31,9 @@ func TestR117_SagaLateErrorOfARetrySafeWriteIsNeitherUndoneNorReported(t *testin
 	if !errors.As(err, &ab) {
 		t.Fatalf("RunSaga: err = %v, want *SagaAborted", err)
 	}
-	if committed.Load() == 1 && undone.Load() == 0 && len(ab.Uncompensated) == 0 {
-		t.Fatalf("a write with an unknown outcome was committed, never compensated, and not reported: compensated %q, uncompensated %q, CompensateErr %v",
-			ab.Compensated, ab.Uncompensated, ab.CompensateErr)
+	if undone.Load() != 0 || len(ab.UnknownOutcome) != 1 || ab.UnknownOutcome[0] != "hold" {
+		t.Fatalf("a write with an unknown outcome: undone %d, compensated %q, uncompensated %q, unknown %q; want it reported as unknown, not compensated",
+			undone.Load(), ab.Compensated, ab.Uncompensated, ab.UnknownOutcome)
 	}
 }
 
