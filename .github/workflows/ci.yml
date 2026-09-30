@@ -64,19 +64,11 @@ jobs:
         run: |
           # A module missing from MODULES would never be built or tested here, so its tests could
           # not fail. Every go.mod in the tree must be listed, in MODULES and in go.work, unless it
-          # is named in UNLISTED_MODULES.
-          found=$(find . -name go.mod -not -path './.git/*' | sed -e 's|^\./||' -e 's|/\{0,1\}go\.mod$||' -e 's|^$|.|' | sort)
-          expected=$(echo "$found" | grep -vxF -f <(tr ' ' '\n' <<< "$UNLISTED_MODULES") || true)
-          listed=$(tr ' ' '\n' <<< "$MODULES" | sed '/^$/d' | sort)
-          workspace=$(go work edit -json | jq -r '.Use[].DiskPath' | sed -e 's|^\./||' -e 's|^$|.|' | sort)
-          ok=true
-          if [ "$expected" != "$listed" ]; then
-            echo "::error::MODULES does not match the modules in the tree"; diff <(echo "$expected") <(echo "$listed") || true; ok=false
-          fi
-          if [ "$expected" != "$workspace" ]; then
-            echo "::error::go.work does not match the modules in the tree"; diff <(echo "$expected") <(echo "$workspace") || true; ok=false
-          fi
-          $ok
+          # is named in UNLISTED_MODULES; a go.mod under testdata/ or vendor/ is ignored, as the go
+          # tool ignores it. The self-test proves the check ignores those and still catches a new
+          # module.
+          .github/scripts/check-modules.sh --self-test
+          .github/scripts/check-modules.sh .
       - name: gofmt
         run: |
           # gofmt is file-based, so one pass from the root covers every module.
