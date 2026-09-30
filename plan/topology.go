@@ -20,7 +20,7 @@ func typeStringOrEmpty(t reflect.Type) string {
 // external tool builds on: Flow.RenderMermaid derives a Mermaid string from the
 // same internal source Topology snapshots, and a visual builder or an audit tool
 // consumes Topology directly rather than parsing a Mermaid string or reading the
-// opaque Digest. Every field carries a json tag, so a Topology round-trips
+// opaque Digest. Every field carries a snake_case json tag, so a Topology round-trips
 // through encoding/json without loss (see Flow.Topology).
 //
 // Topology reports the same topology the Digest commits to (flow name, entry,
@@ -52,16 +52,33 @@ type Topology struct {
 	Loops []TopologyLoop `json:"loops,omitempty"`
 }
 
-// TopologyNode is one declared node: its journal name, its kind as a string
-// ("step", "tool", "model", "switch", or "join"), and its input/output type
+// TopologyNodeKind is the kind of a declared node, as Topology reports it. The set is closed:
+// NodeKindStep, NodeKindTool, NodeKindModel, NodeKindSwitch, and NodeKindJoin.
+type TopologyNodeKind string
+
+// The node kinds a Topology reports.
+const (
+	// NodeKindStep is a Go step (Builder.Step, RegisterStep).
+	NodeKindStep TopologyNodeKind = "step"
+	// NodeKindTool is a node that calls an agent tool (Builder.Tool, RegisterTool).
+	NodeKindTool TopologyNodeKind = "tool"
+	// NodeKindModel is a node that calls the flow's model (Builder.Model, RegisterModel).
+	NodeKindModel TopologyNodeKind = "model"
+	// NodeKindSwitch is a journaled branch-choice node.
+	NodeKindSwitch TopologyNodeKind = "switch"
+	// NodeKindJoin is a fan-in node that merges several producers' outputs.
+	NodeKindJoin TopologyNodeKind = "join"
+)
+
+// TopologyNode is one declared node: its journal name, its kind, and its input/output type
 // names as reflect.Type.String renders them. A join node has no single input
 // type (it fans in several producers), so In is empty for a join; its per-port
 // input types live in the matching TopologyJoin. An unpinned side is empty.
 type TopologyNode struct {
-	Name string `json:"name"`
-	Kind string `json:"kind"`
-	In   string `json:"in"`
-	Out  string `json:"out"`
+	Name string           `json:"name"`
+	Kind TopologyNodeKind `json:"kind"`
+	In   string           `json:"in"`
+	Out  string           `json:"out"`
 }
 
 // TopologyEdge is one declared connection producer.Out -> consumer.In, by node
@@ -91,8 +108,8 @@ type TopologyBranch struct {
 type TopologyBranchArm struct {
 	Target   string `json:"target"`
 	Else     bool   `json:"else,omitempty"`
-	LoopBack bool   `json:"loopBack,omitempty"`
-	LoopMax  int    `json:"loopMax,omitempty"`
+	LoopBack bool   `json:"loop_back,omitempty"`
+	LoopMax  int    `json:"loop_max,omitempty"`
 }
 
 // TopologyJoin is one declared fan-in: the join node's name, its ORDERED input
@@ -103,7 +120,7 @@ type TopologyBranchArm struct {
 type TopologyJoin struct {
 	Name    string   `json:"name"`
 	Inputs  []string `json:"inputs"`
-	InTypes []string `json:"inTypes"`
+	InTypes []string `json:"in_types"`
 	Out     string   `json:"out"`
 }
 
@@ -138,23 +155,25 @@ func (f *Flow[In, Out]) Topology() Topology {
 	return f.core.topology()
 }
 
-// nodeKindName renders a node kind as the stable string the Topology exposes. It
+// nodeKindName renders a node kind as the TopologyNodeKind the Topology exposes. It
 // is the public spelling of the internal nodeKind enum, kept in one place so the
-// wire form does not drift if the enum's numeric values change.
-func nodeKindName(k nodeKind) string {
+// wire form does not drift if the enum's numeric values change. Every nodeKind has a
+// name; the empty kind is returned only for a value outside the enum, which Build never
+// produces.
+func nodeKindName(k nodeKind) TopologyNodeKind {
 	switch k {
 	case kindStep:
-		return "step"
+		return NodeKindStep
 	case kindTool:
-		return "tool"
+		return NodeKindTool
 	case kindModel:
-		return "model"
+		return NodeKindModel
 	case kindSwitch:
-		return "switch"
+		return NodeKindSwitch
 	case kindJoin:
-		return "join"
+		return NodeKindJoin
 	default:
-		return "unknown"
+		return ""
 	}
 }
 

@@ -28,6 +28,7 @@ import (
 // NOT restated here; they flow from the registered blocks at load time. The optional
 // in/out fields are documentation the loader cross-checks against Load's In/Out.
 const declarativeConfig = `{
+  "version": 1,
   "flow": "order-triage",
   "in": "main.Order",
   "out": "main.Receipt",

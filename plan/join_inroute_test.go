@@ -58,7 +58,7 @@ func TestBuild_RefusesAnExtraRouteIntoAJoin(t *testing.T) {
 		for _, n := range names {
 			nodes = append(nodes, `{"name":"`+n+`","block":"`+n+`"}`)
 		}
-		return `{"flow":"f","nodes":[` + strings.Join(nodes, ",") + `],"wiring":[{"edge":["a","p"]},{"edge":["a","q"]},{"inputs":["p","q"],"merge":"sum","join":"j"}` + wiring + `]}`
+		return `{"version":1,"flow":"f","nodes":[` + strings.Join(nodes, ",") + `],"wiring":[{"edge":["a","p"]},{"edge":["a","q"]},{"inputs":["p","q"],"merge":"sum","join":"j"}` + wiring + `]}`
 	}
 	for name, tc := range map[string]struct {
 		names          []string

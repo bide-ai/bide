@@ -151,6 +151,7 @@ flow, err := b.Build() // inherits at-most-once and the audit trail
 
 ```json
 {
+  "version": 1,
   "flow": "order-triage",
   "entry": "classify",
   "nodes": [

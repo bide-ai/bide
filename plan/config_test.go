@@ -62,6 +62,7 @@ func triageRegistry(t *testing.T) *Registry {
 }
 
 const triageConfig = `{
+  "version": 1,
   "flow": "triage",
   "in": "plan.cfgOrder",
   "out": "plan.cfgReceipt",
@@ -231,6 +232,7 @@ func TestEdgeTypeMismatch(t *testing.T) {
 	// finalize (and drop the switch to keep the union valid) by loading a bespoke
 	// config.
 	cfg := `{
+      "version": 1,
       "flow": "bad",
       "entry": "classify",
       "nodes": [
@@ -392,6 +394,7 @@ func diamondRegistry(t *testing.T) *Registry {
 // which registers "merge" and appends y->merge, z->merge) matches buildDiamond, so
 // the two Digests must be equal.
 const diamondConfig = `{
+  "version": 1,
   "flow": "diamond",
   "in": "int",
   "out": "string",
@@ -510,6 +513,7 @@ func loopRegistry(t *testing.T) *Registry {
 // N>0, and an Else exit to done. It mirrors buildCountdownLoop(10) exactly (same node
 // order, same edges, same arm order and bound), so the two Digests must be equal.
 const loopConfig = `{
+  "version": 1,
   "flow": "countdown",
   "in": "int",
   "out": "string",
@@ -523,7 +527,7 @@ const loopConfig = `{
   "wiring": [
     {"edge": ["seed", "refine"]},
     {"edge": ["refine", "check"]},
-    {"switch": "check", "when": [{"pred": "again", "to": "refine", "loopMax": 10}], "else": "done"}
+    {"switch": "check", "when": [{"pred": "again", "to": "refine", "loop_max": 10}], "else": "done"}
   ]
 }`
 
@@ -589,8 +593,8 @@ func TestLoadLoopNonAncestorHeadIsBuildError(t *testing.T) {
 	// When arm so the switch still has a non-loop-back exit; done consumes loopState so
 	// the arm types unify.
 	cfg := strings.Replace(loopConfig,
-		`{"switch": "check", "when": [{"pred": "again", "to": "refine", "loopMax": 10}], "else": "done"}`,
-		`{"switch": "check", "when": [{"pred": "again", "to": "done", "loopMax": 10}], "else": "done"}`, 1)
+		`{"switch": "check", "when": [{"pred": "again", "to": "refine", "loop_max": 10}], "else": "done"}`,
+		`{"switch": "check", "when": [{"pred": "again", "to": "done", "loop_max": 10}], "else": "done"}`, 1)
 	_, err := Load[int, string]([]byte(cfg), reg)
 	if err == nil {
 		t.Fatal("expected non-ancestor loop error, got nil")
@@ -609,6 +613,7 @@ func TestLoadLoopNonAncestorHeadIsBuildError(t *testing.T) {
 // safetyNodeConfig is a one-node flow whose entry "read" carries safety "readonly".
 // The read block registers as ReadOnly in Go, so the config value keeps it re-runnable.
 const safetyNodeConfig = `{
+  "version": 1,
   "flow": "read-flow",
   "in": "int",
   "out": "int",

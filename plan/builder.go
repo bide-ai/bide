@@ -73,10 +73,6 @@ func Idempotent() NodeOption {
 	return func(n *node) { n.safety.ReadOnly, n.safety.Idempotent = false, true }
 }
 
-// Retryable is an alias for Idempotent, reading more naturally at some call sites
-// (a node the author asserts is safe to retry on resume). It sets the same Safety.
-func Retryable() NodeOption { return Idempotent() }
-
 // nodeRetriableOnResume reports whether a node may be safely re-run when a resume
 // finds an attempt marker but no result. It mirrors EXACTLY how the core loop
 // classifies a retry-safe step (agent.Safety.retriableOnResume, which is
@@ -153,7 +149,7 @@ func checkStepName(name string) error {
 // than re-firing the body. A non-idempotent side effect is therefore safe by default,
 // with no per-step opt-in. See docs/guides/flows.md.
 //
-// Pass plan.ReadOnly() or plan.Idempotent() (or the plan.Retryable() alias) to opt
+// Pass plan.ReadOnly() or plan.Idempotent() to opt
 // a node OUT of that halt: a retry-safe node RE-RUNS its body from the top on an
 // ambiguous mid-node crash instead of halting. Omit the option to keep the
 // conservative halt behavior unchanged.
@@ -255,7 +251,7 @@ func (b *Builder[In, Out]) Tool[I, O any](name string, t agent.Tool, opts ...Nod
 // runs only AFTER all its inputs are journaled (Run executes the reachable DAG in
 // topological order), the merge is a plain sequential step under the same
 // attempt/result guard as every other node; the fan-in is a topological barrier,
-// not concurrency. Pass plan.ReadOnly()/plan.Idempotent() (or plan.Retryable()) to
+// not concurrency. Pass plan.ReadOnly()/plan.Idempotent() to
 // opt the join into re-run on an ambiguous crash instead of halting.
 func (b *Builder[In, Out]) Join2[A, B, O any](name string, a Producer[A], bb Producer[B], fn func(context.Context, A, B) (O, error), opts ...NodeOption) Handle[O, O] {
 	aName, bName := endpointName(a), endpointName(bb)
@@ -359,8 +355,8 @@ func (b *Builder[In, Out]) WithModel(m agent.Model) *Builder[In, Out] {
 // SAFETY: a model call is non-idempotent by default (it may cost tokens and its
 // output can vary between calls), so a Model node keeps the conservative
 // halt-on-ambiguous-crash default: on a mid-node crash whose result was lost, Run
-// HALTS rather than re-call the model. Pass plan.ReadOnly() or plan.Idempotent() (or
-// the plan.Retryable() alias) only if you know a re-call is safe; that opts the node
+// HALTS rather than re-call the model. Pass plan.ReadOnly() or plan.Idempotent()
+// only if you know a re-call is safe; that opts the node
 // into re-run on the ambiguous crash instead of halting.
 func (b *Builder[In, Out]) Model[I, O any](name, prompt string, opts ...NodeOption) Handle[I, O] {
 	b.core.register(applyNodeOptions(&node{

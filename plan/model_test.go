@@ -116,7 +116,7 @@ func TestModel_LoadedFlow_BindsModel(t *testing.T) {
 	if err := RegisterModel[ticket, review](reg, "assessBlock", "Subject: {{.Subject}}"); err != nil {
 		t.Fatalf("RegisterModel: %v", err)
 	}
-	cfg := `{"flow":"triage","entry":"assess","nodes":[{"name":"assess","block":"assessBlock"}],"wiring":[]}`
+	cfg := `{"version":1,"flow":"triage","entry":"assess","nodes":[{"name":"assess","block":"assessBlock"}],"wiring":[]}`
 
 	flow, err := Load[ticket, review]([]byte(cfg), reg, WithLoadedModel(fake))
 	if err != nil {
@@ -141,7 +141,7 @@ func TestModel_LoadedFlow_NoBoundModel_ErrorsAtBuild(t *testing.T) {
 	if err := RegisterModel[ticket, review](reg, "assessBlock", "prompt"); err != nil {
 		t.Fatalf("RegisterModel: %v", err)
 	}
-	cfg := `{"flow":"triage","entry":"assess","nodes":[{"name":"assess","block":"assessBlock"}],"wiring":[]}`
+	cfg := `{"version":1,"flow":"triage","entry":"assess","nodes":[{"name":"assess","block":"assessBlock"}],"wiring":[]}`
 
 	_, err := Load[ticket, review]([]byte(cfg), reg) // no WithLoadedModel
 	if err == nil {

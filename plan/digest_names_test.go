@@ -37,7 +37,7 @@ func namesRegistry(t *testing.T, block string) *Registry {
 // namesConfig is a switch over classify with one predicate arm and an else. pred and block
 // choose which registered predicate the arm uses and which block the "approve" node runs.
 func namesConfig(pred, block string) string {
-	return `{"flow":"names","nodes":[
+	return `{"version":1,"flow":"names","nodes":[
     {"name":"classify","block":"classify"},
     {"name":"approve","block":"` + block + `"},
     {"name":"decline","block":"decline"}],

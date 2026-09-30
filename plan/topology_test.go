@@ -82,12 +82,12 @@ func TestTopology_NodesEdgesAndBoundary(t *testing.T) {
 	// Nodes, in insertion order, each with kind and I/O type names as strings. The
 	// join has an empty In (no single input type); its ports live in Joins.
 	want := []TopologyNode{
-		{Name: "parse", Kind: "step", In: "string", Out: "int"},
-		{Name: "gen", Kind: "model", In: "int", Out: "int"},
-		{Name: "gate", Kind: "switch", In: "int", Out: "int"},
-		{Name: "reject", Kind: "tool", In: "int", Out: "string"},
-		{Name: "aux", Kind: "step", In: "int", Out: "bool"},
-		{Name: "merge", Kind: "join", In: "", Out: "string"},
+		{Name: "parse", Kind: NodeKindStep, In: "string", Out: "int"},
+		{Name: "gen", Kind: NodeKindModel, In: "int", Out: "int"},
+		{Name: "gate", Kind: NodeKindSwitch, In: "int", Out: "int"},
+		{Name: "reject", Kind: NodeKindTool, In: "int", Out: "string"},
+		{Name: "aux", Kind: NodeKindStep, In: "int", Out: "bool"},
+		{Name: "merge", Kind: NodeKindJoin, In: "", Out: "string"},
 	}
 	if !reflect.DeepEqual(top.Nodes, want) {
 		t.Errorf("Nodes mismatch:\n got %#v\nwant %#v", top.Nodes, want)

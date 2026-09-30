@@ -75,7 +75,7 @@ production). `runID` is the durable identity: re-running the same `runID` resume
   - `Edge[M](from, to)` connects a producer to a consumer, unifying the connecting type `M`.
   - `Switch[M](over, When(pred, to)..., Else(to))` routes on a node's output to exactly one arm.
     Switch arms do not reconverge (each arm runs to a terminal producing `Out`); use `Join2`/`Join3`
-    for fan-in of branches that both run, and a `When` arm with a `loopMax` back-edge for a bounded loop.
+    for fan-in of branches that both run, and a `When` arm with a `loop_max` back-edge for a bounded loop.
 - **`Build()`** validates whole-graph coherence (entry consumes `In`, every terminal path produces
   `Out`, names unique, no unreachable node, at most one `Else` per switch) and freezes the spec into a
   `*Flow`. Errors name the offending node.
@@ -100,9 +100,8 @@ Every node lowers to a memoized `Do` step under a two-phase attempt/result guard
   body, *any* crash inside a node halts on resume unless the node is classified safe to repeat. The
   default (no classification) never double-fires, but completing after a mid-node crash then requires
   resolving the halt out of band (record the halted node's result, then continue), which is only safe
-  when that node has no side effect. A node may instead declare a `Safety` (read-only, idempotent, or
-  retryable, via `ReadOnly()`/`Idempotent()`/`Retryable()` in Go) so it re-runs on resume instead of
-  halting. A declarative config's `safety` may only lower that (see "Node and join safety").
+  when that node has no side effect. A node may instead declare a `Safety` (read-only or idempotent,
+  via `ReadOnly()`/`Idempotent()` in Go) so it re-runs on resume instead of halting. A declarative config's `safety` may only lower that (see "Node and join safety").
 - **A run keeps its flow.** `Run` records the flow's digest first and, on resume, refuses (`ErrConfig`)
   to continue a run that started under a different digest: its journal only means what it meant
   under that flow.
@@ -209,12 +208,15 @@ flow, err := plan.Load[Order, Receipt](configBytes, reg)   // *Flow[Order, Recei
 
 ### The config schema
 
-A config is pure topology plus block references: a top-level `flow` name, optional `in`/`out`
+A config is pure topology plus block references: a required `version` (`1`, the only version this
+release reads, exported as `plan.ConfigVersion`), a top-level `flow` name, optional `in`/`out`
 documentation, an explicit `entry` (else `nodes[0]`), the `nodes`, and an ordered `wiring` list. Each
 wiring element is EITHER an edge `{"edge": [from, to]}` OR a switch
-`{"switch": over, "when": [{"pred": p, "to": t}], "else": t}`. Illustrative YAML:
+`{"switch": over, "when": [{"pred": p, "to": t}], "else": t}`. Every key is snake_case. Illustrative
+YAML:
 
 ```yaml
+version: 1
 flow: order-triage
 in: main.Order            # optional, cross-checked against Load's In
 out: main.Receipt         # optional, cross-checked against Load's Out
@@ -263,12 +265,12 @@ plan.RegisterJoin2(reg, "mergeBlock", func(_ context.Context, a int, s string) (
 })
 ```
 
-#### Bounded loops: the `loopMax` back-edge arm
+#### Bounded loops: the `loop_max` back-edge arm
 
-A switch `when` arm may carry a `loopMax`: `{"pred": p, "to": head, "loopMax": n}`. This is a bounded
+A switch `when` arm may carry a `loop_max`: `{"pred": p, "to": head, "loop_max": n}`. This is a bounded
 back-edge that routes to an *ancestor* of the switched node (the loop head) while `pred` holds, up to
 `n` iterations, so the graph stays finite. The arm's `pred` is an ordinary registered predicate
-referenced by name; `loopMax` is the only new field. A bounded countdown loop as data:
+referenced by name; `loop_max` is the only new field. A bounded countdown loop as data:
 
 ```yaml
 nodes:
@@ -280,7 +282,7 @@ wiring:
   - edge: [seed, refine]
   - edge: [refine, check]
   - switch: check
-    when: [{pred: again, to: refine, loopMax: 10}]   # loop back to refine while N>0
+    when: [{pred: again, to: refine, loop_max: 10}]  # loop back to refine while N>0
     else: done                                        # exit
 ```
 
@@ -291,8 +293,8 @@ type.
 #### Node and join safety
 
 A node (or a join) may carry a `safety` classifying how `Run` treats it on the ambiguous-crash window
-(an attempt recorded, its result lost to a crash): `"readonly"`, `"idempotent"` (or its alias
-`"retryable"`), or `"side_effect"`. A read-only or idempotent node re-runs its body on resume rather
+(an attempt recorded, its result lost to a crash): `"readonly"`, `"idempotent"`, or
+`"side_effect"` (one spelling per level; the pre-v1 alias `"retryable"` is refused, naming `"idempotent"`). A read-only or idempotent node re-runs its body on resume rather
 than halting, because its body is safe to repeat; a side effect halts.
 
 **A config may only lower retry safety.** Whether a step is safe to run twice is a property of its Go
@@ -305,7 +307,7 @@ and a value above what Go declares (`readonly` or `idempotent` on a side effect,
 idempotent block) is a load error (`ErrConfig`) naming the node. `side_effect` also drops an
 `IdempotencyKey`, since the key alone makes a node retry-safe. Any other change keeps an approval gate
 or an `IdempotencyKey` the wrapped agent tool declares (so a gated tool is still refused, see
-[Node approval](#node-approval)). The Go options `ReadOnly()`, `Idempotent()` and `Retryable()` on a
+[Node approval](#node-approval)). The Go options `ReadOnly()` and `Idempotent()` on a
 `Builder` node are Go code and may raise a node's level; they too keep an approval gate.
 
 ```yaml
@@ -342,7 +344,12 @@ Moving topology from Go to data trades compile-time type checking for load-time 
 miswired config does not fail at `go build`, it fails at `Load`, with a worded error that names the
 offending nodes and types. The JSON is read as written: a name that is not a config field (a
 misspelling such as `aproval`, or a case variant such as `Safety`), a name given twice, and data after
-the value are parse errors, so a typo cannot silently drop a gate or an entry. `Load` then runs, by
+the value are parse errors, so a typo cannot silently drop a gate or an entry. A config that omits
+`version`, or states a version other than `1`, is refused, since the keys a config may use depend on
+its version. A key whose snake_case spelling is a key at that place (the pre-v1 `loopMax`, or
+`Safety`) is refused with an error naming the key to write and where it is, for example
+`$.wiring[2].when[0]: "loopMax" is not a config key; version 1 keys are snake_case, write "loop_max"`.
+Every parse error wraps `ErrConfig`. `Load` then runs, by
 `reflect.Type` identity:
 
 - **Predicate typing:** every switch arm's registered predicate `M` equals the switched node's output
@@ -375,7 +382,7 @@ config-loaded flow is **cryptographically conformable to its config**. `examples
 by asserting the config-loaded flow's `Digest()` **equals** the code-built flow's `Digest()`: the
 config and the Go describe the same topology (the Go names its predicate with `.Named("rush")` and
 the join's merge block with `plan.BlockName("mergeBlock")`, the names the config uses). The same holds for a config-built fan-in or bounded
-loop: `examples/plan` loads a `join` diamond and a `loopMax` loop, runs and conforms each, and asserts
+loop: `examples/plan` loads a `join` diamond and a `loop_max` loop, runs and conforms each, and asserts
 each config-loaded flow's `Digest()` equals its code-built counterpart, so a config-built join or loop
 is cryptographically conformable to its config just like the linear case.
 

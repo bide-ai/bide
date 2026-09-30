@@ -43,7 +43,7 @@
 // strips the iteration prefix to map each key back to its declared node. Like Join, a
 // bounded loop is expressible both through the Go builder and in a declarative config:
 // the config loader (Load) carries the back-edge as a Switch "when" arm with a positive
-// "loopMax" ({"pred":p,"to":head,"loopMax":n}), which Build lowers exactly as LoopBack.
+// "loop_max" ({"pred":p,"to":head,"loop_max":n}), which Build lowers exactly as LoopBack.
 //
 // Because the topology is declared as a value, plan can render the authored
 // graph (Flow.RenderMermaid) and compare it against the journal-derived path of
