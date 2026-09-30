@@ -249,3 +249,105 @@ func TestPostgres_ConcurrentLeasesUnderStricterDefaultIsolation(t *testing.T) {
 		})
 	}
 }
+
+// waitForAdvisoryWaiter polls pg_locks until a session other than admin's waits for the advisory
+// lock keyed by hashtextextended(key, 0), so a test can order a commit after a blocked statement.
+func waitForAdvisoryWaiter(t *testing.T, admin *sql.DB, key string) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		var waiting int
+		if err := admin.QueryRowContext(context.Background(), `
+			SELECT count(*) FROM pg_locks
+			WHERE locktype = 'advisory' AND NOT granted AND objsubid = 1
+				AND ((classid::bigint << 32) | objid::bigint) = hashtextextended($1, 0)`, key).Scan(&waiting); err != nil {
+			t.Fatal(err)
+		}
+		if waiting > 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no session waited for the advisory lock of %q", key)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// The loser's path, made deterministic: a winner transaction takes the run's advisory lock and
+// records seq 0; the store's insert then blocks on the lock; the winner commits; and only then does
+// the insert proceed. At a stricter default isolation the insert's snapshot would be taken by its
+// blocked lock statement, before the winner committed. Recording the same step must then report
+// that another node recorded it (0 rows, no error) rather than fail with 40001, and recording
+// another step must take seq 1 rather than collide on seq 0 (23505). Skips without PG_DSN.
+func TestPostgres_BlockedInsertSeesTheWinnersCommit(t *testing.T) {
+	base := os.Getenv("PG_DSN")
+	if base == "" {
+		t.Skip("set PG_DSN to run the Postgres integration test")
+	}
+	ctx := context.Background()
+	admin, err := sql.Open("pgx", base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer admin.Close()
+	for _, level := range stricterLevels {
+		for _, tc := range []struct {
+			name    string
+			step    string
+			wantN   int64
+			wantSeq int64
+		}{
+			{"same_step", "step", 0, 0},
+			{"next_step", "other", 1, 1},
+		} {
+			t.Run(strings.ReplaceAll(level, " ", "_")+"/"+tc.name, func(t *testing.T) {
+				s, err := Open(ctx, isolatedDSN(t, base, level))
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer s.Close()
+				runID := uniqueID(t, "pg-iso-blocked-")
+				winner, err := admin.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer winner.Rollback()
+				if _, err := winner.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, runID); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := winner.ExecContext(ctx, `INSERT INTO bide_steps (run_id, seq, name, data) VALUES ($1, 0, 'step', '\x00')`, runID); err != nil {
+					t.Fatal(err)
+				}
+				type result struct {
+					n   int64
+					err error
+				}
+				done := make(chan result, 1)
+				go func() {
+					n, err := s.insert(ctx, runID, tc.step, []byte("loser"))
+					done <- result{n, err}
+				}()
+				waitForAdvisoryWaiter(t, admin, runID)
+				if err := winner.Commit(); err != nil {
+					t.Fatal(err)
+				}
+				got := <-done
+				if got.err != nil || got.n != tc.wantN {
+					t.Fatalf("insert of %q after the winner committed = (%d, %v), want (%d, nil)", tc.step, got.n, got.err, tc.wantN)
+				}
+				var seq int64
+				var data []byte
+				if err := admin.QueryRowContext(ctx, `SELECT seq, data FROM bide_steps WHERE run_id = $1 AND name = $2`, runID, tc.step).Scan(&seq, &data); err != nil {
+					t.Fatal(err)
+				}
+				wantData := "loser"
+				if tc.wantN == 0 {
+					wantData = "\x00"
+				}
+				if seq != tc.wantSeq || string(data) != wantData {
+					t.Fatalf("step %q recorded at seq %d with %q, want seq %d with %q", tc.step, seq, data, tc.wantSeq, wantData)
+				}
+			})
+		}
+	}
+}

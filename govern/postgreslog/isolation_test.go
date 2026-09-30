@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/bide-ai/bide/govern/postgreslog"
 )
@@ -141,6 +142,101 @@ func TestOpen_ConcurrentOpensUnderStricterDefaultIsolation(t *testing.T) {
 					}
 				}
 			}
+		}
+	}
+}
+
+// waitForAdvisoryWaiter polls pg_locks until a session waits for the advisory lock keyed by
+// hashtextextended(key, 0), so a test can order a commit after a blocked statement.
+func waitForAdvisoryWaiter(t *testing.T, admin *sql.DB, key string) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		var waiting int
+		if err := admin.QueryRowContext(context.Background(), `
+			SELECT count(*) FROM pg_locks
+			WHERE locktype = 'advisory' AND NOT granted AND objsubid = 1
+				AND ((classid::bigint << 32) | objid::bigint) = hashtextextended($1, 0)`, key).Scan(&waiting); err != nil {
+			t.Fatal(err)
+		}
+		if waiting > 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no session waited for the advisory lock of %q", key)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// An append blocked behind another, made deterministic: a winner transaction takes the entity's
+// advisory lock and records id "a" at position 0; Append then blocks on the lock; the winner
+// commits; and only then does Append proceed. At a stricter default isolation its snapshot would
+// be taken by its blocked lock statement, before the winner committed. Appending "a" again must
+// return the recorded position 0 rather than collide on the append id, and appending "b" must take
+// position 1 rather than collide on position 0. Skips without PG_DSN.
+func TestAppend_BlockedAppendSeesTheWinnersCommit(t *testing.T) {
+	base := os.Getenv("PG_DSN")
+	if base == "" {
+		t.Skip("set PG_DSN to run the Postgres event-log integration test")
+	}
+	ctx := context.Background()
+	admin, err := sql.Open("pgx", base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer admin.Close()
+	for _, level := range stricterLevels {
+		for _, tc := range []struct {
+			name, id, event string
+			want            int64
+		}{
+			{"same_id", "a", "ea", 0},
+			{"next_id", "b", "eb", 1},
+		} {
+			t.Run(strings.ReplaceAll(level, " ", "_")+"/"+tc.name, func(t *testing.T) {
+				l, err := postgreslog.Open(ctx, isolatedDSN(t, base, level))
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer l.Close()
+				entity := uniqueID(t, "iso-blocked-")
+				winner, err := admin.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer winner.Rollback()
+				if _, err := winner.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, entity); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := winner.ExecContext(ctx, `INSERT INTO governed_events (entity, seq, event, append_id) VALUES ($1, 0, 'ea', 'a')`, entity); err != nil {
+					t.Fatal(err)
+				}
+				type result struct {
+					seq int64
+					err error
+				}
+				done := make(chan result, 1)
+				go func() {
+					seq, err := l.Append(ctx, entity, tc.id, tc.event)
+					done <- result{seq, err}
+				}()
+				waitForAdvisoryWaiter(t, admin, entity)
+				if err := winner.Commit(); err != nil {
+					t.Fatal(err)
+				}
+				got := <-done
+				if got.err != nil || got.seq != tc.want {
+					t.Fatalf("Append(%q) after the winner committed = (%d, %v), want (%d, nil)", tc.id, got.seq, got.err, tc.want)
+				}
+				events, err := l.Events(ctx, entity, 0)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if want := int(tc.want) + 1; len(events) != want || events[tc.want] != tc.event {
+					t.Fatalf("events = %q, want %d with %q at position %d", events, want, tc.event, tc.want)
+				}
+			})
 		}
 	}
 }
