@@ -36,6 +36,8 @@ minor version (0.x.0) may include breaking API or journal-format changes; each o
 - `RetrievalTool` options `RetrievalName` and `RetrievalDescription`, so one agent can search several stores ([#62]).
 - `eval.ReportFormat`, `eval.ErrFormat`, `eval.MetricDirection` and `RunOutput.TraceErr` ([#74]).
 - A multi-process HA test harness on Postgres that kills, stalls and restarts workers ([#58]).
+- `bide-audit -json` and `-version` ([#79]).
+- `eval.Compare` options `WithUnscoredTolerance` and `WithCaseSetMismatchAllowed`, `Comparison.Gate`, `ErrRegression`, `ErrInconclusive` and `DirectionInconclusive` ([#78]).
 - CI enforces doc comments on every exported identifier with `internal/tools/doccheck` ([#73]).
 
 ### Changed
@@ -64,6 +66,8 @@ minor version (0.x.0) may include breaking API or journal-format changes; each o
 - **Breaking:** `eval.Matches` takes a `*regexp.Regexp`, `eval.AgentRunner` returns `(RunFunc, error)`, `eval.Compare` returns `(Comparison, error)`, and `GovernanceHeld` predicates take a context ([#74]).
 - **Breaking:** the provider HTTP kit moves from `agent` to the new package `model/provider` (`ClassifyHTTPError`, `ClassifyStreamError`, `NewSSEScanner`, `ParseRetryAfter`, `ToolResultCodec`, `JSONToolResultCodec`, `EncodeToolResultOr` and others); `WithToolResultCodec` takes a `provider.ToolResultCodec` ([#76]).
 - **Breaking:** `Finish.Reason` is the typed `agent.FinishReason` ([#76]).
+- **Breaking:** `eval` `Metric.Fn` returns `(bool, error)`; a metric that cannot score a run leaves it unscored, `MetricStat` reports `Scored` and `Unscored`, and reports are `bide.eval.report.v2` ([#78]).
+- **Breaking:** `bide-audit` exit statuses follow one scheme: 0 verified, 1 not verified, 2 usage, 3 no verdict, 4 input unreadable or unusable ([#79]).
 - `WithTokenBudget` counts discarded and failed requests; `RateLimit` and `Cost` count every request sent; `Hedge` runs each backup through the inner middleware chain; `Retryable` no longer retries `ErrTruncatedToolArgs` ([#55]).
 - A resume halts on any attempt marker without a result, whatever the tool's current safety; a tool no longer registered halts instead of failing with `ErrUnknownTool` ([#57]).
 - `mcp.Tools` returns `ErrProtocol` for malformed or duplicate tool names, non-object schemas and oversized descriptions; an agent with two tools of the same name returns `ErrConfig` ([#57]).
@@ -405,6 +409,8 @@ First public release.
 [#74]: https://github.com/bide-ai/bide/pull/74
 [#75]: https://github.com/bide-ai/bide/pull/75
 [#76]: https://github.com/bide-ai/bide/pull/76
+[#78]: https://github.com/bide-ai/bide/pull/78
+[#79]: https://github.com/bide-ai/bide/pull/79
 [78f8db6]: https://github.com/bide-ai/bide/commit/78f8db6
 [994721b]: https://github.com/bide-ai/bide/commit/994721b
 [3262cd1]: https://github.com/bide-ai/bide/commit/3262cd1
