@@ -45,6 +45,24 @@ const (
 	haPostEffect = 400 * time.Millisecond
 )
 
+// haRecoverInterval is how often a worker's RecoverLoop starts a pass.
+const haRecoverInterval = 50 * time.Millisecond
+
+// haLoad is the factor by which the test lets the machine run slower than the timings the workers
+// are configured with (effect windows, lease TTL, recover interval) before a wait fails: the
+// race detector and a shared CI runner slow every process and every database round trip.
+const haLoad = 4
+
+// takeoverBound is how long after a worker stops (killed or stalled) another driver may take to
+// halt on its claim. The stopped worker's lease was last renewed before it stopped, so it lapses
+// at most ttl after the stop. A worker drives one run at a time, so a survivor may first finish
+// the run it is driving (three effects), and then starts a pass within haRecoverInterval. Each
+// cluster has a schema of its own, so a pass reads only the cluster's few runs: its length does
+// not depend on what other tests left in the database.
+func (c *haCluster) takeoverBound() time.Duration {
+	return haLoad * (c.ttl + haRecoverInterval + 3*(haPreEffect+haPostEffect))
+}
+
 // Exit codes a worker uses to report a failure the parent must see.
 const (
 	haExitSetup = 2 // could not open the store or read its configuration
@@ -97,7 +115,7 @@ func haWorker(name string) int {
 
 	// One run at a time, so a killed worker leaves exactly one call in flight for the test to follow.
 	err = agent.RecoverLoop(ctx, s, w.resume, agent.WithLeaseHolder(holder), agent.WithLeaseTTL(ttl),
-		agent.WithRecoverInterval(50*time.Millisecond), agent.WithRecoverConcurrency(1),
+		agent.WithRecoverInterval(haRecoverInterval), agent.WithRecoverConcurrency(1),
 		agent.WithRecoverErrors(func(err error) { fmt.Fprintf(os.Stderr, "worker %s: recover: %v\n", name, err) }))
 	if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 		fmt.Fprintf(os.Stderr, "worker %s: RecoverLoop: %v\n", name, err)
@@ -187,6 +205,7 @@ type haCluster struct {
 	t      *testing.T
 	s      *Store
 	db     *sql.DB
+	dsn    string // PG_DSN with the cluster's own schema on its search_path
 	prefix string
 	ttl    time.Duration
 	runs   []string
@@ -219,18 +238,24 @@ func (b *syncBuffer) String() string {
 	return b.b.String()
 }
 
+// newHACluster creates the cluster's runs in a schema of its own, which its workers open too. A
+// worker's RecoverLoop lists every incomplete run in the store and leases each in turn, one at a
+// time, so over the shared schema a pass would also walk every run other tests left unfinished
+// (halted runs, runs no one drives): thousands after one pass of the package, and the pass, and so
+// the time to take over a stopped worker's run, would grow with them rather than with the TTL.
 func newHACluster(t *testing.T, runs int, ttl time.Duration) *haCluster {
 	t.Helper()
-	s, ctx := openTestStore(t)
-	if _, err := s.db.ExecContext(ctx, `SELECT pg_advisory_lock($1)`, migrateLock); err != nil {
-		t.Fatal(err)
-	}
-	_, err := s.db.ExecContext(ctx, haSchema)
-	_, _ = s.db.ExecContext(ctx, `SELECT pg_advisory_unlock($1)`, migrateLock)
+	dsn, _, _ := freshSchema(t)
+	ctx := context.Background()
+	s, err := Open(ctx, dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
-	c := &haCluster{t: t, s: s, db: s.db, prefix: strings.ReplaceAll(uniqueID(t, "ha-"), "/", "-") + "-", ttl: ttl, workers: map[string]*haProc{}}
+	t.Cleanup(func() { s.Close() })
+	if _, err := s.db.ExecContext(ctx, haSchema); err != nil {
+		t.Fatal(err)
+	}
+	c := &haCluster{t: t, s: s, db: s.db, dsn: dsn, prefix: strings.ReplaceAll(uniqueID(t, "ha-"), "/", "-") + "-", ttl: ttl, workers: map[string]*haProc{}}
 	for i := range runs {
 		id := fmt.Sprintf("%srun%d", c.prefix, i)
 		// A first step makes the run exist, so Recover finds it; no primary ever drives it.
@@ -249,7 +274,7 @@ func newHACluster(t *testing.T, runs int, ttl time.Duration) *haCluster {
 func (c *haCluster) start(name, holder string) {
 	c.t.Helper()
 	cmd := exec.Command(os.Args[0], "-test.run=^$")
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(os.Environ(), "PG_DSN="+c.dsn, // the last PG_DSN in Env is the one the worker sees
 		haChildEnv+"="+name, haHolderEnv+"="+holder, haPrefixEnv+"="+c.prefix, haTTLEnv+"="+c.ttl.String())
 	p := &haProc{cmd: cmd, out: &syncBuffer{}, exited: make(chan struct{})}
 	cmd.Stdout, cmd.Stderr = p.out, p.out
@@ -551,10 +576,12 @@ func stallPastTTL(t *testing.T, effect string) {
 	c.start(victim.worker+"-restarted", victim.worker)
 
 	// The stalled worker renewed its lease at most ttl/2 before the stop, so the lease is live for
-	// at least ttl/2 after it; take-over is only possible once it lapses.
-	halt := c.waitEvent("another driver to halt on the stalled worker's claim", 20*time.Second, func(e haEvent) bool {
+	// at least ttl/2 after it; take-over is only possible once it lapses, and must happen within
+	// takeoverBound of the stop.
+	halt := c.waitEvent("another driver to halt on the stalled worker's claim", c.takeoverBound(), func(e haEvent) bool {
 		return e.run == victim.run && e.phase == "halt" && e.worker != victim.worker
 	})
+	t.Logf("%s halted on the stalled claim %v after the stop (bound %v)", halt.worker, halt.at.Sub(stoppedAt).Round(time.Millisecond), c.takeoverBound())
 	if halt.effect != effect {
 		t.Errorf("the taking-over driver halted on %q, want the stalled effect (%s)", halt.effect, effect)
 	}
