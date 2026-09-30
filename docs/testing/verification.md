@@ -166,9 +166,9 @@ required checks:
   request runs them at a smaller default bound, under `-race` on Linux; the full bound explores
   three faulted drives, every process plan, and two preemptions with more faults in the concurrent
   explorers, which takes minutes, so it runs without `-race`. The job uploads the test log and the
-  schedule signatures (`BIDE_EXPLORE_SIGS`, one line per explored schedule) as an artifact, and
-  its summary gives the schedule count per test and a digest of the signatures, so coverage can be
-  compared between runs.
+  schedule signatures (`BIDE_EXPLORE_SIGS`, one line per explored schedule) as an artifact kept
+  30 days (about 170 MB a night), and its summary gives the schedule count per test and a digest of
+  the signatures, so coverage can be compared between runs.
 
 ## What this does not prove
 
