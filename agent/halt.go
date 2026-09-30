@@ -274,7 +274,7 @@ func checkNoLiveDriver(ctx context.Context, store Durable, op string, ref HaltRe
 		return noop, nil
 	}
 	root, _, _ := strings.Cut(ref.RunID, subRunSep)
-	l, ok := Capability[Leaser](store)
+	l, ok := capabilityOf[Leaser](store)
 	if !ok {
 		if cfg.minHaltAge <= 0 {
 			return nil, fmt.Errorf("%s: the store cannot say whether a driver of run %s is still running %q (it does not implement Leaser); pass WithMinHaltAge so the halt is resolved only once no driver can still be running it, or WithoutLiveDriverCheck to take that risk: %w", op, root, ref.Op.ID, ErrConfig)

@@ -19,10 +19,10 @@ import (
 // or a session's. The functions and constants named *Step build those keys; a test asserts each
 // one starts with a prefix listed here.
 var reservedPrefixes = []string{
-	"@",               // engine-internal steps: @llm/<n>, @saga/compensate/<call>, @saga/args/<call>, @retrieval/<layer>, @spend/<n>
-	"run:",            // run:complete, run:aborted, run:start
+	"@",               // the journal header @journal, and engine-internal steps: @llm/<n>, @saga/compensate/<call>, @saga/args/<call>, @retrieval/<layer>, @spend/<n>
+	"run:",            // run:start, run:complete, run:aborted, run:cancelled, run:limits:<n>
 	"tool:",           // a tool call's result: tool:<call>
-	"attempt:",        // attempt markers: attempt:tool:<call>, attempt:step:<name>, attempt:retry:<n>:..., attempt:not-started:<marker>
+	"attempt:",        // attempt markers: attempt:tool:<call>, attempt:step:<name>, attempt:retry:<n>:..., attempt:not-started:<claim>:<marker>
 	"approval:",       // approval decisions: approval:<call>[:<approver>:<digest>]
 	"approval-tally:", // an m-of-n gate's tally
 	"signal:",         // Signal / Await
@@ -206,9 +206,11 @@ func attemptBase(key string) string {
 	return key
 }
 
-// notStartedStep is the key of the record that the attempt whose marker key is marker never
-// started its effect.
-func notStartedStep(marker string) string { return notStartedPrefix + marker }
+// notStartedStep is the key of the record that the attempt whose marker key is marker, claimed
+// under claim, never started its effect: "attempt:not-started:<claim>:<marker>". A claim id is hex,
+// so the claim ends at the first ':'. Keying it by the claim keeps apart the records of two drivers
+// that each claimed the same marker key, one of whose claims may never have committed.
+func notStartedStep(marker, claim string) string { return notStartedPrefix + claim + ":" + marker }
 
 // isToolAttempt reports whether r is an attempt marker of the call r.ToolUseID (its first attempt
 // or a re-attempt), not of a Step that happens to share its string.
@@ -229,3 +231,17 @@ func sagaArgsStep(toolUseID string) string { return "@saga/args/" + encodeID(too
 
 // awaitTimeoutStep is the key of AwaitFor's deadline for name.
 func awaitTimeoutStep(name string) string { return "await-timeout:" + name }
+
+// stepKey is the in-process key of step name of runID: the run ID's length in bytes, ':', the run
+// ID, then the name. The length makes the split exact whatever bytes the two hold, so two
+// different steps never share a key (joining them with a separator would not: ("a\x00b", "c") and
+// ("a", "b\x00c") both join to "a\x00b\x00c").
+func stepKey(runID, name string) string { return strconv.Itoa(len(runID)) + ":" + runID + name }
+
+// runCancelledStep is the key of the record that a run was cancelled: a terminal marker, like
+// run:complete, that Recover excludes. The key is reserved now; the engine does not write it yet.
+const runCancelledStep = "run:cancelled"
+
+// runLimitsStep is the key of the n-th amendment of a run's limits (its turn cap or token budget)
+// by a later drive. The key is reserved now; the engine does not write it yet.
+func runLimitsStep(n int) string { return "run:limits:" + strconv.Itoa(n) }

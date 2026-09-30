@@ -52,11 +52,11 @@ func probe(ctx context.Context, d Durable, runID, key string) (Record, bool, err
 // voided reports whether the attempt with marker key key, whose marker is marker, is recorded as
 // never started by the driver that claimed it.
 func voided(ctx context.Context, d Durable, runID, key string, marker Record) (bool, error) {
-	rec, ok, err := probe(ctx, d, runID, notStartedStep(key))
+	rec, ok, err := probe(ctx, d, runID, notStartedStep(key, marker.claim))
 	if err != nil || !ok {
 		return false, err
 	}
-	return rec.Kind == StepNotStarted && marker.Claim != "" && rec.Claim == marker.Claim, nil
+	return rec.Kind == StepNotStarted && marker.claim != "" && rec.claim == marker.claim, nil
 }
 
 // claimNextAttempt claims the next attempt of the effect whose first marker key is base: the
@@ -65,6 +65,9 @@ func voided(ctx context.Context, d Durable, runID, key string, marker Record) (b
 // lost to), and that marker's key. A caller that loses must not run the effect: another driver
 // owns that attempt, or an earlier attempt may have fired it.
 func claimNextAttempt(ctx context.Context, d Durable, runID, base string, rec Record) (bool, Record, string, error) {
+	if j := journalOf(d); j != nil {
+		return j.claimNext(ctx, runID, base, rec)
+	}
 	for gen := 0; ; gen++ {
 		key := retryAttemptStep(base, gen)
 		won, got, err := claimAttempt(ctx, d, runID, key, rec)
@@ -80,6 +83,9 @@ func claimNextAttempt(ctx context.Context, d Durable, runID, base string, rec Re
 // liveAttempt returns the marker of the effect whose first marker key is base that is not
 // recorded as not started, if there is one: the attempt that may have fired the effect.
 func liveAttempt(ctx context.Context, d Durable, runID, base string) (Record, bool, error) {
+	if j := journalOf(d); j != nil {
+		return j.liveAttempt(ctx, runID, base)
+	}
 	for gen := 0; ; gen++ {
 		key := retryAttemptStep(base, gen)
 		marker, ok, err := probe(ctx, d, runID, key)
@@ -99,8 +105,11 @@ func liveAttempt(ctx context.Context, d Durable, runID, base string) (Record, bo
 // the usual reason the effect did not start. If it cannot be written, the marker stands and a
 // resume halts, which is safe.
 func recordNotStarted(ctx context.Context, d Durable, runID, key string, marker Record) error {
-	_, err := doShared(context.WithoutCancel(ctx), d, runID, notStartedStep(key), func(context.Context) (Record, error) {
-		return Record{Kind: StepNotStarted, ToolUseID: marker.ToolUseID, Claim: marker.Claim}, nil
+	if j := journalOf(d); j != nil {
+		return j.notStarted(ctx, runID, key, marker)
+	}
+	_, err := doShared(context.WithoutCancel(ctx), d, runID, notStartedStep(key, marker.claim), func(context.Context) (Record, error) {
+		return Record{Kind: StepNotStarted, ToolUseID: marker.ToolUseID, claim: marker.claim}, nil
 	})
 	if err != nil {
 		return fmt.Errorf("record that %s did not start: %w", key, err)
@@ -113,10 +122,10 @@ func recordNotStarted(ctx context.Context, d Durable, runID, key string, marker 
 // their effect. At most one per effect is live, since a re-attempt is claimed only once the
 // attempt before it is recorded as not started.
 func liveAttempts(recs []Record) map[string]Record {
-	void := map[string]string{} // marker key -> the claim its not-started record carries
+	void := map[string]bool{} // keys of not-started records written by the claim they name
 	for _, r := range recs {
-		if r.Kind == StepNotStarted {
-			void[strings.TrimPrefix(r.Name, notStartedPrefix)] = r.Claim
+		if r.Kind == StepNotStarted && r.claim != "" && strings.HasPrefix(r.Name, notStartedPrefix+r.claim+":") {
+			void[r.Name] = true
 		}
 	}
 	live := map[string]Record{}
@@ -124,7 +133,7 @@ func liveAttempts(recs []Record) map[string]Record {
 		if r.Kind != StepAttempt {
 			continue
 		}
-		if c, ok := void[r.Name]; ok && r.Claim != "" && c == r.Claim {
+		if r.claim != "" && void[notStartedStep(r.Name, r.claim)] {
 			continue
 		}
 		live[attemptBase(r.Name)] = r

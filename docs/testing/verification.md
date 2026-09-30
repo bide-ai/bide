@@ -73,13 +73,22 @@ quietly lose the power to find it.
 **Conformance suites.** A port is held to its contract by a reusable suite that any
 implementation, bide's or yours, can run:
 
-- `agent/durabletest` checks a durable store (`agent.Durable`): the record `Do` returns on the live
-  path is exactly the record a replay reads back, memoized or from `History`, in the journal's
-  canonical form, for content whose encoding is easy to get wrong (HTML-significant characters,
-  U+2028, NUL, invalid UTF-8, unusual number forms, key order); a caller that modifies a returned
-  record cannot change the journal; every record carries a fresh salt; and a record is journaled
-  even when the caller's context was cancelled while the step ran. `MemStore`, `store/sqlite`, and
-  `store/postgres` run it; see [extension points](../reference/extension-points.md#implement-your-own-store).
+- `agent/storetest` checks a store (`agent.Store`) against every requirement the journal builds on
+  (A1 to A8: a single winner among 64 goroutines racing one name through three handles, and a
+  side effect behind a Step that runs exactly once under that race; reads that are always a prefix
+  of the run's commit order; byte fidelity; context; iterators that hold nothing across a yield),
+  the journal format header (first in every run; one header under concurrent first writers; a run
+  in another format, or with no header, refused on reads and writes; a read racing a run's first
+  write never sees a headerless record), in-flight steps shared by Journals over one store, the
+  reuse of a claim whose insert failed but committed, and record fidelity: the record returned on
+  the live path is exactly the record a replay reads back, in the journal's canonical form, for
+  content whose encoding is easy to get wrong (HTML-significant characters, U+2028, NUL, invalid
+  UTF-8, unusual number forms, key order), with a fresh salt on every record, and journaled even
+  when the caller's context was cancelled while the step ran. `MemStore`, `store/sqlite`, and
+  `store/postgres` run it; see
+  [extension points](../reference/extension-points.md#implement-your-own-store).
+  `storetest.CheckWrapper` checks a store wrapper's use of `Unwrap`, and, given two contexts that
+  differ in what the wrapper reads from a context, that its keys do not depend on the context.
 - `govern/eventlogtest` checks a governed event log: dense, unique positions under concurrent
   appends from separate handles, and appends idempotent by id, so a repeated append (a retry, even
   concurrent with the original) is recorded once.

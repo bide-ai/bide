@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"iter"
 	"sync"
 
 	"github.com/bide-ai/bide/agent"
@@ -14,7 +15,9 @@ var errCrash = errors.New("chaos: injected crash")
 
 // crashStore fails the crashAt-th persisting write (0 = never), simulating a crash at that
 // point: the record is not recorded and the run unwinds. A crash is the process dying, so after
-// it the store is dead: every later step fails with the crash without running or persisting.
+// it the store is dead: every later step fails with the crash without running or persisting. It
+// wraps a Durable, crashing after a step's fn has run and before its record is persisted; the
+// naive reference, which has no journal of its own, is built on it.
 type crashStore struct {
 	inner   agent.Durable
 	mu      sync.Mutex
@@ -57,6 +60,59 @@ func (c *crashStore) Do(ctx context.Context, runID, name string, fn func(context
 
 func (c *crashStore) History(ctx context.Context, runID string) ([]agent.Record, error) {
 	return c.inner.History(ctx, runID)
+}
+
+// crashingStore is crashStore at the storage port: it fails the crashAt-th Insert that would
+// store a new entry (0 = never), leaving that entry unstored, and after that crash every call
+// fails. Bide's loop runs over a Journal on it, so the crash lands between any two store round
+// trips the engine makes, including the journal header and the claim, and a resume is a new
+// process: a new Journal that has checked nothing.
+type crashingStore struct {
+	inner   agent.Store
+	mu      sync.Mutex
+	writes  int
+	crashAt int
+	crashed bool
+}
+
+func (c *crashingStore) dead() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.crashed
+}
+
+func (c *crashingStore) Insert(ctx context.Context, runID, name string, data []byte) (agent.Entry, bool, error) {
+	if c.dead() {
+		return agent.Entry{}, false, errCrash
+	}
+	if e, ok, err := c.inner.Get(ctx, runID, name); err != nil || ok {
+		return e, false, err // stores nothing: not a write
+	}
+	c.mu.Lock()
+	c.writes++
+	crash := c.crashAt > 0 && c.writes == c.crashAt
+	if crash {
+		c.crashed = true
+	}
+	c.mu.Unlock()
+	if crash {
+		return agent.Entry{}, false, errCrash // crash: the entry is NOT stored
+	}
+	return c.inner.Insert(ctx, runID, name, data)
+}
+
+func (c *crashingStore) Get(ctx context.Context, runID, name string) (agent.Entry, bool, error) {
+	if c.dead() {
+		return agent.Entry{}, false, errCrash
+	}
+	return c.inner.Get(ctx, runID, name)
+}
+
+func (c *crashingStore) Load(ctx context.Context, runID string, after int64) iter.Seq2[agent.Entry, error] {
+	if c.dead() {
+		return func(yield func(agent.Entry, error) bool) { yield(agent.Entry{}, errCrash) }
+	}
+	return c.inner.Load(ctx, runID, after)
 }
 
 // chargeModel: call charge until there's a tool result, then answer. Deterministic on the
@@ -105,21 +161,26 @@ func Bide() System { return bide{} }
 
 type bide struct{}
 
-func (bide) Writes() int { return 6 } // run:start, @llm/0, attempt:c1, c1, @llm/1, run:complete
+// Writes is a clean run's writes: @journal, run:start, @llm/0, attempt:tool:c1, tool:c1, @llm/1,
+// run:complete.
+func (bide) Writes() int { return 7 }
 
 func (bide) NewRun() Run {
 	return &bideRun{store: agent.NewMemStore(), fired: new(int)}
 }
 
 type bideRun struct {
-	store agent.Durable
+	store agent.Store
 	fired *int
 }
 
 func (r *bideRun) Step(crashAt int) bool {
-	a := agent.New(chargeModel{}, &crashStore{inner: r.store, crashAt: crashAt}, chargeTool{count: r.fired}).
-		SetMaxConcurrency(1)
-	_, err := a.Run(context.Background(), "chaos", "charge me")
+	j, err := agent.NewJournal(&crashingStore{inner: r.store, crashAt: crashAt})
+	if err != nil {
+		panic(err)
+	}
+	a := agent.New(chargeModel{}, j, chargeTool{count: r.fired}).SetMaxConcurrency(1)
+	_, err = a.Run(context.Background(), "chaos", "charge me")
 	return errors.Is(err, errCrash)
 }
 

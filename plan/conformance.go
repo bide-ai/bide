@@ -62,6 +62,9 @@ func (c *builderCore) conform(ctx context.Context, store agent.Durable, runID st
 	if err != nil {
 		return false, nil, fmt.Errorf("plan: conform run %q: load history: %w", runID, err)
 	}
+	if len(recs) > 0 && recs[0].Kind == agent.StepHeader {
+		recs = recs[1:] // the journal header says how the journal is written, not what the flow did
+	}
 
 	// Index the declared topology. byName covers every declared node; the Switch
 	// set and each Switch's declared arm targets let us validate a recorded choice.

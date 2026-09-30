@@ -176,7 +176,7 @@ func completedAnswer(recs []Record) (Message, bool) {
 // input, or the redelivered SendOnce). resume should no-op any other runID it does not own;
 // Recover re-drives every other incomplete run it enumerates.
 func Recover(ctx context.Context, store Durable, resume func(ctx context.Context, runID string) error, opts ...RecoverOption) (int, error) {
-	lister, ok := Capability[Lister](store)
+	lister, ok := capabilityOf[Lister](store)
 	if !ok {
 		return 0, fmt.Errorf("Recover needs a store that implements Lister (itself or through Unwrap) to enumerate runs: %w", ErrConfig)
 	}
@@ -185,18 +185,14 @@ func Recover(ctx context.Context, store Durable, resume func(ctx context.Context
 		return 0, err
 	}
 
-	runIDs, err := lister.Runs(ctx)
-	if err != nil {
-		return 0, fmt.Errorf("list runs for recovery: %w (%w)", err, ErrStorage)
-	}
-
 	var recovered int
 	var errs []error
-	for _, runID := range runIDs {
-		if ok, err := recoverable(ctx, store, runID); err != nil {
-			errs = append(errs, err)
-			continue
-		} else if !ok {
+	for runID, err := range lister.Runs(ctx, recoverFilter) {
+		if err != nil {
+			errs = append(errs, fmt.Errorf("list runs for recovery: %w (%w)", err, ErrStorage))
+			break
+		}
+		if !recoverable(runID) {
 			continue
 		}
 		driven, err := recoverRun(ctx, store, runID, resume, cfg)
@@ -210,23 +206,14 @@ func Recover(ctx context.Context, store Durable, resume func(ctx context.Context
 	return recovered, errors.Join(errs...)
 }
 
-// recoverable reports whether runID still needs driving: it is not a sub-agent's run (its root's
-// re-run resumes it) or a session's (the session resumes it), and has neither completed nor
-// finished rolling back an aborted saga.
-func recoverable(ctx context.Context, store Durable, runID string) (bool, error) {
-	if IsSubRun(runID) || IsSessionRun(runID) {
-		return false, nil
-	}
-	complete, err := IsComplete(ctx, store, runID)
-	if err != nil || complete {
-		return false, err // finished before the crash: nothing to re-drive
-	}
-	aborted, err := hasValueStep(ctx, store, runID, runAbortedStep)
-	if err != nil || aborted {
-		return false, err // a saga that aborted and finished its rollback: over
-	}
-	return true, nil
-}
+// recoverFilter is the runs a recovery pass enumerates: those holding no terminal marker. A run
+// that completed, a saga that aborted and finished its rollback, and a cancelled run are over. A
+// SQL store evaluates the filter in its query, so a pass reads none of the finished runs.
+var recoverFilter = RunFilter{ExcludeHolding: []string{runCompleteStep, runAbortedStep, runCancelledStep}}
+
+// recoverable reports whether a run the recovery filter admits is one a recovery pass drives: not a
+// sub-agent's run (its root's re-run resumes it) or a session's (the session resumes it).
+func recoverable(runID string) bool { return !IsSubRun(runID) && !IsSessionRun(runID) }
 
 // recoverRun drives runID under its lease (when the store supports one) and reports whether it
 // drove it and the genuine failure, if any. A run another holder currently leases is skipped;
@@ -271,7 +258,7 @@ func recoverRun(ctx context.Context, store Durable, runID string, resume func(ct
 // concurrency) is returned at once. Otherwise RecoverLoop returns ctx's error when ctx is done,
 // after the drives it started (whose contexts derive from ctx) have returned.
 func RecoverLoop(ctx context.Context, store Durable, resume func(ctx context.Context, runID string) error, opts ...RecoverOption) error {
-	lister, ok := Capability[Lister](store)
+	lister, ok := capabilityOf[Lister](store)
 	if !ok {
 		return fmt.Errorf("RecoverLoop needs a store that implements Lister (itself or through Unwrap) to enumerate runs: %w", ErrConfig)
 	}
@@ -306,26 +293,22 @@ func RecoverLoop(ctx context.Context, store Durable, resume func(ctx context.Con
 	)
 	defer wg.Wait()
 	pass := func() {
-		runIDs, err := lister.Runs(ctx)
-		if err != nil {
-			report(fmt.Errorf("list runs for recovery: %w (%w)", err, ErrStorage))
-			return
-		}
-		for _, runID := range runIDs {
+		for runID, err := range lister.Runs(ctx, recoverFilter) {
+			if err != nil {
+				report(fmt.Errorf("list runs for recovery: %w (%w)", err, ErrStorage))
+				return
+			}
 			if ctx.Err() != nil {
 				return
+			}
+			if !recoverable(runID) {
+				continue
 			}
 			mu.Lock()
 			busy := inFlight[runID]
 			mu.Unlock()
 			if busy {
 				continue // this loop is driving it already
-			}
-			if ok, err := recoverable(ctx, store, runID); err != nil {
-				report(err)
-				continue
-			} else if !ok {
-				continue
 			}
 			// Wait for a free slot rather than leave the rest of the list to the next pass: the next
 			// pass starts from the top again, so runs that stay incomplete on every pass (halted

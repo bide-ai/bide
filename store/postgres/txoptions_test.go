@@ -24,6 +24,9 @@ import (
 // outcome depends on the level; this check also holds the ones whose outcome does not (the schema
 // migration), and every write a later change adds.
 //
+// A value of the package's type selectSQL, converted to string at the call, counts as a SELECT:
+// newSelect makes one only from a query that starts with SELECT (see TestNewSelect).
+//
 // The check type-checks the package's source, so it follows types, not names: every method of
 // *sql.DB or *sql.Conn that runs SQL or begins a transaction is found whatever its receiver is
 // called or however it is reached (a field, a parameter, a local, an embedded field). On those:
@@ -176,6 +179,10 @@ func isolationProblems(t *testing.T, dir string) []string {
 						report(call.Args[1], "BeginTx on %s without the package-level txOptions inherits the deployment's default isolation", recv)
 					}
 				default:
+					if isSelectSQL(call.Args[idx], info) {
+						reads++ // a selectSQL, which newSelect makes only from a SELECT
+						break
+					}
 					tv := info.Types[call.Args[idx]]
 					if tv.Value == nil || tv.Value.Kind() != constant.String {
 						report(call.Args[idx], "%s on %s with a query that is not a constant string", n.Sel.Name, recv)
@@ -193,6 +200,19 @@ func isolationProblems(t *testing.T, dir string) []string {
 		t.Fatalf("found %d BeginTx calls and %d reads on the pool; the check is not seeing the package's calls", begins, reads)
 	}
 	return problems
+}
+
+// isSelectSQL reports whether e is string(x) for an x of the package's type selectSQL.
+func isSelectSQL(e ast.Expr, info *types.Info) bool {
+	call, ok := ast.Unparen(e).(*ast.CallExpr)
+	if !ok || len(call.Args) != 1 {
+		return false
+	}
+	if tv := info.Types[call.Fun]; !tv.IsType() || tv.Type != types.Typ[types.String] {
+		return false
+	}
+	named, ok := info.Types[call.Args[0]].Type.(*types.Named)
+	return ok && named.Obj().Name() == "selectSQL" && named.Obj().Pkg() != nil && named.Obj().Pkg().Name() == "postgres"
 }
 
 // isPoolHandle reports whether fn is a method of *sql.DB or *sql.Conn, whose statements run

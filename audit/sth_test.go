@@ -29,8 +29,8 @@ func TestSTH_SignVerifyAndTamper(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if th.Size != 3 || len(th.Root) != 32 {
-		t.Fatalf("tree head = %+v, want size 3 / 32-byte root", th)
+	if th.Size != 4 || len(th.Root) != 32 { // the journal header, then a, b, c
+		t.Fatalf("tree head = %+v, want size 4 / 32-byte root", th)
 	}
 	sth := SignTreeHead(th, priv)
 	if !sth.Verify(pub) {

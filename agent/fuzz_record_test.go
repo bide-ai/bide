@@ -31,6 +31,7 @@ func nilIfEmpty(b []byte) []byte {
 // normRecord maps a record to the form the journal keeps: raw JSON in its journal spelling, and
 // empty slices as nil (omitempty drops them).
 func normRecord(r Record) Record {
+	r.raw = nil // the bytes it was decoded from, not its content
 	r.Result = normRaw(r.Result)
 	r.Evidence = normRaw(r.Evidence)
 	r.Signature = nilIfEmpty(r.Signature)
@@ -87,7 +88,7 @@ func FuzzRecordRoundTrip(f *testing.F) {
 			parts = append(parts, Image{Mime: s1, Data: bin, URL: s2})
 		}
 		r := Record{Name: s1, Kind: kinds[int(sel>>5)%len(kinds)], ToolUseID: s2, Result: raw, IsError: flag,
-			Approved: !flag, Approver: s2, Signature: bin, AttemptedAt: n, Reconciled: flag, Evidence: raw, Claim: s1}
+			Approved: !flag, Approver: s2, Signature: bin, AttemptedAt: n, Reconciled: flag, Evidence: raw, claim: s1}
 		if sel&32 != 0 {
 			r.Message = &Message{Role: Role(s2), Parts: parts}
 			r.Usage = &Usage{InputTokens: int(n), OutputTokens: int(sel), CacheReadTokens: -int(n), CacheWriteTokens: int(n) / 3}

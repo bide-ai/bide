@@ -82,7 +82,7 @@ func toolResults(n int) history {
 	h := make(history, n)
 	for i := range h {
 		id := fmt.Sprintf("t%d", i)
-		h[i] = agent.Record{Name: id, Kind: agent.StepToolResult, ToolUseID: id, Result: json.RawMessage(fmt.Sprintf(`{"n":%d}`, i)), Salt: bytes.Repeat([]byte{byte(i + 1)}, agent.SaltSize)}
+		h[i] = withSalt(agent.Record{Name: id, Kind: agent.StepToolResult, ToolUseID: id, Result: json.RawMessage(fmt.Sprintf(`{"n":%d}`, i))}, bytes.Repeat([]byte{byte(i + 1)}, agent.SaltSize))
 	}
 	return h
 }

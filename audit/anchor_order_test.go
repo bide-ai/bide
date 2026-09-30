@@ -42,7 +42,8 @@ func (a *slowAnchor) Publish(ctx context.Context, runID string, sth audit.Signed
 func TestAuditedStore_AnchoredHeadsNeverShrink(t *testing.T) {
 	ctx := context.Background()
 	_, priv, _ := ed25519.GenerateKey(nil)
-	anchor := &slowAnchor{inner: audit.NewMemAnchorLog(), hold: 1, inFlight: make(chan struct{}), release: make(chan struct{})}
+	// The first step's head covers the journal header and the step: size 2.
+	anchor := &slowAnchor{inner: audit.NewMemAnchorLog(), hold: 2, inFlight: make(chan struct{}), release: make(chan struct{})}
 	store := audit.NewAuditedStore(agent.NewMemStore(), priv, anchor)
 	step := func(name string) {
 		if _, err := store.Do(ctx, "r1", name, func(context.Context) (agent.Record, error) {
@@ -54,7 +55,7 @@ func TestAuditedStore_AnchoredHeadsNeverShrink(t *testing.T) {
 
 	var wg sync.WaitGroup
 	wg.Add(1)
-	go func() { defer wg.Done(); step("a") }() // its size-1 head is slow to anchor
+	go func() { defer wg.Done(); step("a") }() // its size-2 head is slow to anchor
 	select {
 	case <-anchor.inFlight:
 	case <-time.After(2 * time.Second):
@@ -74,8 +75,8 @@ func TestAuditedStore_AnchoredHeadsNeverShrink(t *testing.T) {
 			t.Fatalf("run r1's anchored tree sizes, in anchor order, are %v: a later head is smaller than an earlier one", sizes)
 		}
 	}
-	if len(sizes) == 0 || sizes[len(sizes)-1] != 2 {
-		t.Fatalf("run r1's anchored tree sizes are %v, want the last to cover both records (2)", sizes)
+	if len(sizes) == 0 || sizes[len(sizes)-1] != 3 {
+		t.Fatalf("run r1's anchored tree sizes are %v, want the last to cover the header and both records (3)", sizes)
 	}
 }
 

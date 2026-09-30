@@ -119,7 +119,7 @@ type claimRacer struct{ *MemStore }
 func (s claimRacer) Do(ctx context.Context, runID, name string, fn func(context.Context) (Record, error)) (Record, error) {
 	if name == toolAttemptStep("c1") {
 		if _, err := s.MemStore.Do(ctx, runID, name, func(context.Context) (Record, error) {
-			return Record{Kind: StepAttempt, ToolUseID: "c1", AttemptedAt: -1, Claim: "other"}, nil
+			return Record{Kind: StepAttempt, ToolUseID: "c1", AttemptedAt: -1, claim: "other"}, nil
 		}); err != nil {
 			return Record{}, err
 		}

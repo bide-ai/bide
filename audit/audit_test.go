@@ -64,7 +64,7 @@ func TestHead_DeterministicAndTamperEvident(t *testing.T) {
 
 	// The head commits to each record's salt: the same content under another salt diverges.
 	resalted := append(fixedHistory(nil), recs...)
-	resalted[1].Salt = bytes.Repeat([]byte{1}, agent.SaltSize)
+	resalted[1] = withSalt(resalted[1], bytes.Repeat([]byte{1}, agent.SaltSize))
 	if bytes.Equal(head(t, s1, "r"), head(t, resalted, "r")) {
 		t.Fatal("a record's salt must be part of the head")
 	}
@@ -96,8 +96,14 @@ func TestHead_ChainsTheJournalEncoding(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	all, _ := store.History(ctx, "run")
+	header, err := agent.EncodeRecord(all[0]) // the journal header is the chain's first record
+	if err != nil {
+		t.Fatal(err)
+	}
 	seed := sha256.Sum256([]byte("bide.audit.v2"))
-	want := sha256.Sum256(append(seed[:], leaf...))
+	first := sha256.Sum256(append(seed[:], header...))
+	want := sha256.Sum256(append(first[:], leaf...))
 	if got := head(t, store, "run"); !bytes.Equal(got, want[:]) {
 		t.Fatalf("head = %x, want the chain over the journal encoding %q (%x)", got, leaf, want)
 	}

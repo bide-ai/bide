@@ -28,11 +28,11 @@ func TestPostgres_RecordsInvalidUTF8AfterTheEffect(t *testing.T) {
 		t.Fatalf("Do after the effect: %v", err)
 	}
 	hist, err := s.History(ctx, runID)
-	if err != nil || len(hist) != 1 {
+	if err != nil || len(hist) != 2 { // the journal header, then the step
 		t.Fatalf("History = %d records, %v", len(hist), err)
 	}
-	if string(live.Result) != string(result) || string(hist[0].Result) != string(result) {
-		t.Fatalf("recorded %q; Do returned %q, History %q", result, live.Result, hist[0].Result)
+	if string(live.Result) != string(result) || string(hist[1].Result) != string(result) {
+		t.Fatalf("recorded %q; Do returned %q, History %q", result, live.Result, hist[1].Result)
 	}
 }
 

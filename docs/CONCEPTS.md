@@ -17,7 +17,7 @@ The vocabulary, defined once. Terms are grouped by the layer they belong to. See
 ## High availability
 
 - **Lease**: a per-run lock so normally only one process drives a run at a time. A crashed holder's lease expires (by the store's clock) and another node takes over. A holder that stalls past its lease can wake still driving; its drive is cancelled with `ErrLeaseLost`, and the attempt claim, not the lease, keeps its side effects at most once.
-- **Recover**: after a restart, re-drive in-flight runs, in one pass. `Lister` enumerates a store's runs, `IsComplete` skips finished ones, sub-agent runs (`IsSubRun`) and session runs (`IsSessionRun`) are left to the root run and the session that drive them, and the rest resume.
+- **Recover**: after a restart, re-drive in-flight runs, in one pass. `Lister` enumerates a store's runs that hold no terminal marker (the store filters out finished ones), sub-agent runs (`IsSubRun`) and session runs (`IsSessionRun`) are left to the root run and the session that drive them, and the rest resume.
 - **RecoverLoop**: `Recover` repeated for the life of a process, so a dead holder's run is taken over automatically once its lease expires.
 
 ## Ambient and pauses

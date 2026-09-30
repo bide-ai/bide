@@ -18,7 +18,7 @@ func memTamper(t *testing.T, m *MemStore, runID, name string, data []byte) {
 	if !ok {
 		t.Fatalf("no step %q in run %s", name, runID)
 	}
-	rl.order[i] = data
+	rl.entries[i].Data = data
 }
 
 // A row's key is the name it was recorded under, and the record it holds carries that name. A
@@ -62,7 +62,7 @@ func TestMemStore_UnknownFieldStillReads(t *testing.T) {
 	}
 	memTamper(t, m, "r", "x", []byte(`{"name":"x","kind":"value","result":1,"future_field":{"a":1}}`))
 	recs, err := m.History(ctx, "r")
-	if err != nil || len(recs) != 1 || recs[0].Name != "x" {
+	if err != nil || len(recs) != 2 || recs[1].Name != "x" { // the header, then the record
 		t.Fatalf("History = %+v, %v; want the one record", recs, err)
 	}
 	if rec, err := m.Do(ctx, "r", "x", func(context.Context) (Record, error) { return Record{}, errors.New("must not run") }); err != nil || string(rec.Result) != "1" {

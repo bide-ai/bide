@@ -125,8 +125,11 @@ func TestRunJournalsDigest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("History: %v", err)
 	}
+	if len(recs) > 0 && recs[0].Kind == agent.StepHeader {
+		recs = recs[1:] // the journal header comes first in every journal
+	}
 	if len(recs) == 0 || recs[0].Name != flowDigestStep {
-		t.Fatalf("first journal record is not %q: %+v", flowDigestStep, recs)
+		t.Fatalf("first journal record after the header is not %q: %+v", flowDigestStep, recs)
 	}
 	var got string
 	if err := json.Unmarshal(recs[0].Result, &got); err != nil {

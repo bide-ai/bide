@@ -818,12 +818,12 @@ and you don't. A core-only consumer's external-module surface is 2, not 54. See
 
 ## Architecture
 
-Hexagonal by construction: the core defines the ports (`Model`, `Durable`, `Tool`,
+Hexagonal by construction: the core defines the ports (`Model`, `Store`, `Tool`,
 `Middleware`); adapters plug in at the edges. Dependencies point inward; the core imports
 no adapter and no infrastructure, guarded by `architecture_test.go`.
 
 ```
-agent (root)     durable loop · Message/Part · Tool/Safety · Durable · middleware types · RenderMermaid
+agent (root)     durable loop · Journal/Store · Message/Part · Tool/Safety · middleware types · RenderMermaid
 plan             optional typed flow builder + declarative config; lowers to the loop (Topology · Conform)
 model/anthropic  native Claude (thinking + signatures)
 model/openai     any OpenAI-compatible endpoint
@@ -901,7 +901,7 @@ New here? Start with **[Getting started](docs/getting-started.md)**, use the **[
 
 **Reference and internals**
 
-- **[Extension points](docs/reference/extension-points.md)**: the ports and adapters (`Model`, `Durable`, `Tool`, `Compensator`, `Retriever`, `Anchor`, `EventStore`), with an implement-your-own-store walkthrough.
+- **[Extension points](docs/reference/extension-points.md)**: the ports and adapters (`Model`, `Store`, `Tool`, `Compensator`, `Retriever`, `Anchor`, `EventStore`), with an implement-your-own-store walkthrough.
 - **[How bide is verified](docs/testing/verification.md)**: no fix without a failing test, mutation checks, crash and cancellation sweeps, forced interleavings, conformance suites, and what CI enforces.
 - **[Testing and evidence](docs/testing/testing.md)**: what is tested and how, the chaos crash-injection benchmark, differential oracles, RFC 6962 conformance, and the provable-versus-statistical boundary in the `eval` package.
 - **[Journal compaction](docs/design/compaction.md)** (design note): compacting an unbounded journal without breaking the audit spine's inclusion and consistency proofs.

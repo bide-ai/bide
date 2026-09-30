@@ -25,7 +25,7 @@ var strictTargets = []func() any{
 func strictSeeds(tb testing.TB) [][]byte {
 	store, recs, sth := fuzzRun(tb)
 	ctx := context.Background()
-	pb, err := ProveRecord(ctx, store, "run", 0, sth)
+	pb, err := ProveRecord(ctx, store, "run", 1, sth) // leaf 0 is the journal header
 	if err != nil {
 		tb.Fatal(err)
 	}

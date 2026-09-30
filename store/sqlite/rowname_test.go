@@ -35,7 +35,7 @@ func TestStore_RowWhoseRecordNamesAnotherStepIsRefused(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.db.ExecContext(ctx, `UPDATE steps SET data = ? WHERE run_id = 'r' AND name = 'x'`, forged); err != nil {
+	if _, err := s.w.ExecContext(ctx, `UPDATE bide_steps SET data = ? WHERE run_id = 'r' AND name = 'x'`, forged); err != nil {
 		t.Fatal(err)
 	}
 	if done, err := agent.IsComplete(ctx, s, "r"); !errors.Is(err, agent.ErrStorage) {
@@ -56,12 +56,12 @@ func TestStore_RowWhoseRecordNamesAnotherStepIsRefused(t *testing.T) {
 // A record with a field this version does not know still reads.
 func TestStore_UnknownFieldStillReads(t *testing.T) {
 	s, ctx := rownameStore(t)
-	if _, err := s.db.ExecContext(ctx, `UPDATE steps SET data = ? WHERE run_id = 'r' AND name = 'x'`,
+	if _, err := s.w.ExecContext(ctx, `UPDATE bide_steps SET data = ? WHERE run_id = 'r' AND name = 'x'`,
 		[]byte(`{"name":"x","kind":"value","result":1,"future_field":{"a":1}}`)); err != nil {
 		t.Fatal(err)
 	}
 	recs, err := s.History(ctx, "r")
-	if err != nil || len(recs) != 1 || recs[0].Name != "x" {
+	if err != nil || len(recs) != 2 || recs[1].Name != "x" { // the journal header, then the record
 		t.Fatalf("History = %+v, %v", recs, err)
 	}
 	if rec, err := s.Do(ctx, "r", "x", func(context.Context) (agent.Record, error) { return agent.Record{}, errors.New("must not run") }); err != nil || string(rec.Result) != "1" {

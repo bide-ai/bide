@@ -9,7 +9,7 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
-	"github.com/bide-ai/bide/agent/durabletest"
+	"github.com/bide-ai/bide/agent/storetest"
 )
 
 // The journal keeps what was written: the record Do returns on the live path is the record a
@@ -18,7 +18,16 @@ import (
 // the conversation the live run had, and an audit head computed over this store matches one over
 // any other store. Skips without PG_DSN.
 func TestPostgres_Fidelity(t *testing.T) {
-	durabletest.Run(t, func(t *testing.T) agent.Durable {
+	storetest.RunDurable(t, func(t *testing.T) agent.Durable {
+		s, _ := openTestStore(t)
+		return s
+	})
+}
+
+// The store meets every store requirement, through several connection pools on one database, as
+// several nodes reach it. Skips without PG_DSN.
+func TestPostgres_Store(t *testing.T) {
+	storetest.Run(t, func(t *testing.T) agent.Store {
 		s, _ := openTestStore(t)
 		return s
 	})
@@ -28,14 +37,14 @@ func TestPostgres_Fidelity(t *testing.T) {
 // leaf computed from a replayed record is the bytes in the database.
 func TestPostgres_PersistsCanonicalBytes(t *testing.T) {
 	s, ctx := openTestStore(t)
-	for i, c := range durabletest.Cases() {
+	for i, c := range storetest.Cases() {
 		runID := uniqueID(t, fmt.Sprintf("pg-canon-%d-", i))
 		live, err := s.Do(ctx, runID, "step", func(context.Context) (agent.Record, error) { return c.Record, nil })
 		if err != nil {
 			t.Fatalf("%s: Do: %v", c.Name, err)
 		}
 		var data []byte
-		if err := s.db.QueryRowContext(ctx, `SELECT data FROM `+stepsTable+` WHERE run_id = $1 AND name = $2`, runID, "step").Scan(&data); err != nil {
+		if err := s.db.QueryRowContext(ctx, `SELECT data FROM `+s.t.steps+` WHERE run_id = $1 AND name = $2`, runID, "step").Scan(&data); err != nil {
 			t.Fatalf("%s: read stored bytes: %v", c.Name, err)
 		}
 		want, err := agent.EncodeRecord(live)
@@ -67,7 +76,7 @@ func TestDo_ConcurrentStepsGetDistinctPositions(t *testing.T) {
 	}
 	wg.Wait()
 	var dupes int
-	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM (SELECT seq FROM `+stepsTable+` WHERE run_id = $1 GROUP BY seq HAVING count(*) > 1) d`, runID).Scan(&dupes); err != nil {
+	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM (SELECT seq FROM `+s.t.steps+` WHERE run_id = $1 GROUP BY seq HAVING count(*) > 1) d`, runID).Scan(&dupes); err != nil {
 		t.Fatal(err)
 	}
 	if dupes != 0 {

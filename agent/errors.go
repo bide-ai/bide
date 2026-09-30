@@ -4,6 +4,8 @@ import (
 	"cmp"
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -168,3 +170,33 @@ func (e *APIError) Error() string {
 }
 
 func (e *APIError) Unwrap() error { return e.Err }
+
+// ErrJournalVersion is a run whose journal this version cannot read or write: its header names a
+// journal format this version does not support, or the journal has no header first
+// (written before the header existed, or by something other than a Journal). It wraps ErrProtocol.
+// The error the journal returns is a *JournalVersionError, which wraps it.
+var ErrJournalVersion = fmt.Errorf("unsupported journal format: %w", ErrProtocol)
+
+// JournalVersionError is returned by a Journal asked to read or write a run whose journal format
+// it does not support (see JournalFormat). Found is the format the run's header names, or "" for a
+// journal with no header first (an unversioned journal). Supported lists the formats this version
+// reads and writes. It wraps ErrJournalVersion. A journal refuses such a run before it writes to
+// it, so an older binary never adds records to a run a newer one started.
+type JournalVersionError struct {
+	RunID     string
+	Found     string
+	Supported []string
+}
+
+// Error describes the run, the format found, and the formats supported.
+func (e *JournalVersionError) Error() string {
+	found := strconv.Quote(e.Found)
+	if e.Found == "" {
+		found = "none (the journal has no header first)"
+	}
+	return fmt.Sprintf("run %s: journal format %s is not supported (this version supports %s): %v",
+		e.RunID, found, strings.Join(e.Supported, ", "), ErrJournalVersion)
+}
+
+// Unwrap returns ErrJournalVersion.
+func (e *JournalVersionError) Unwrap() error { return ErrJournalVersion }

@@ -56,7 +56,7 @@ func TestPostgres_UnknownFieldStillReads(t *testing.T) {
 		t.Fatal(err)
 	}
 	recs, err := s.History(ctx, run)
-	if err != nil || len(recs) != 1 || recs[0].Name != "x" {
+	if err != nil || len(recs) != 2 || recs[1].Name != "x" { // the journal header, then the record
 		t.Fatalf("History = %+v, %v", recs, err)
 	}
 	if rec, err := s.Do(ctx, run, "x", func(context.Context) (agent.Record, error) { return agent.Record{}, errors.New("must not run") }); err != nil || string(rec.Result) != "1" {

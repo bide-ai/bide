@@ -195,10 +195,10 @@ func projectJournal(ctx context.Context, store agent.Durable, runID string) ([]a
 	salts := make([][]byte, len(evs))
 	for i, src := range sources {
 		r := recs[src]
-		if len(r.Salt) != agent.SaltSize {
-			return nil, nil, fmt.Errorf("audit: run %s: record %q has a %d-byte salt, want %d (a store sets it when it journals the record; see agent.JournalEntry)", runID, r.Name, len(r.Salt), agent.SaltSize)
+		if len(r.Salt()) != agent.SaltSize {
+			return nil, nil, fmt.Errorf("audit: run %s: record %q has a %d-byte salt, want %d (a store sets it when it journals the record; see agent.JournalEntry)", runID, r.Name, len(r.Salt()), agent.SaltSize)
 		}
-		salts[i] = journalEventSalt(r.Salt)
+		salts[i] = journalEventSalt(r.Salt())
 	}
 	return evs, salts, nil
 }

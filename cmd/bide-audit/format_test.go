@@ -33,7 +33,7 @@ func TestVerifyCLI_RefusesAnOldFormatBundle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	bundle, err := audit.ProveRecord(ctx, store, "r", 0, audit.SignTreeHead(th, priv))
+	bundle, err := audit.ProveRecord(ctx, store, "r", 1, audit.SignTreeHead(th, priv)) // leaf 0 is the journal header
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -42,7 +42,7 @@ func TestVerifyCLI_RefusesAnOldFormatBundle(t *testing.T) {
 		t.Fatal(err)
 	}
 	old := bytes.Replace(current, []byte(`"format":"`+audit.ProofFormat+`",`), nil, 1)
-	old = bytes.Replace(old, []byte(`"inclusion":{"index":0,"size":1,"path":`), []byte(`"inclusion":{"Index":0,"Size":1,"Path":`), 1)
+	old = bytes.Replace(old, []byte(`"inclusion":{"index":1,"size":2,"path":`), []byte(`"inclusion":{"Index":1,"Size":2,"Path":`), 1)
 	if bytes.Equal(old, current) || bytes.Contains(old, []byte(`"index"`)) {
 		t.Fatalf("the old layout was not produced from %s", current)
 	}

@@ -46,6 +46,13 @@ res, err := agent.Step(ctx, store, runID, "reserve", // at most once; halts on a
     func(ctx context.Context) (Reservation, error) { return inventory.Reserve(ctx, sku) })
 ```
 
+**A side-effect step must not pause.** If `fn` of a step that is not retry-safe returns a pause
+(`Interrupt`, `Sleep`, `Await`, a pending approval, a halt from a sub-agent it drives), `Step`
+returns an `ErrConfig` error, not the pause, and the step's marker stays, so its next attempt halts:
+`fn` may have done something before it paused, and running it again could repeat that. Put the
+pause in a retry-safe step of its own, before or after the side effect. This is the same rule a
+tool follows.
+
 `Step` is a package function, not a method, because Go methods cannot add type parameters. The
 result is journaled as a `StepValue` record, so it shows up in `RenderMermaid` as `step: <name>`
 and is independently provable via `audit.ProveStep` (see [Audit](audit.md)). `name` must be

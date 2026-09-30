@@ -62,6 +62,17 @@ minor version (0.x.0) may include breaking API or journal-format changes; each o
 - `agent.Record.ReadOnly` (`read_only`): a tool result records whether its call ran ReadOnly ([#70]).
 - The library modules (`govern`, `store/sqlite`, `store/postgres`, `mcp`, `trace`, `codec/gcf`, `govern/sqlitelog`, `govern/redislog`, `govern/postgreslog`) are tagged `<dir>/vX.Y.Z` with each release by `scripts/release.sh`, so they install with `go get` ([#85]).
 - CI checks that every Go block in the README and `docs/` compiles against the current code, and that API listings match the packages, with `internal/tools/docsnip` ([#88]).
+- `agent.Store`, the storage port (`Insert`, `Get`, `Load` of an `Entry` with an opaque, commit-ordered `Seq`), with its requirements A1 to A8 documented on the type, and `agent.Journal` over it (`NewJournal`, `Get`, `History`, `Records`, `Format`): the journal owns memoization, the record encoding and salt, the journal format header, attempt claims, not-started records and recording an outcome after the caller's context is cancelled ([#92]).
+- The journal format header: every run's journal starts with an `@journal` record (`agent.StepHeader`) naming `agent.JournalFormat` (`bide.journal.v1-dev.1`); a run in another format, or with no header, is refused with `*agent.JournalVersionError` (wrapping `agent.ErrJournalVersion`) before anything is read or written ([#92]).
+- `agent.RunFilter` (`After`, `Prefix`, `ExcludeHolding`), which SQL stores evaluate in their query ([#92]).
+- `agent/storetest`: every store requirement (64 goroutines racing one name through three handles, prefix-closed reads, byte fidelity, context, iterator hygiene), the header checks, shared in-flight steps, claim reuse, record fidelity, and `CheckWrapper` ([#92]).
+- `agent/agenttest.CountingStore`, and a test that holds the engine to an exact budget of store round trips per operation ([#92]).
+- `Record.Raw` (the stored bytes), `Record.Salt()`, `Record.ClaimID()`, `Record.Format`, `Record.Redacted` (the reserved redaction tombstone), and `Record.MarshalJSON`, which writes the journal encoding ([#92]).
+- `store/sqlite` implements `agent.Leaser`, on a lease connection of its own with a short busy timeout and expiry from the database's clock; `Open` opens a writer, readers and a lease pool ([#92]).
+- `store/sqlite.New` and `store/postgres.New` over a `*sql.DB`, `WithTablePrefix`, and a schema version row: a database with a newer schema is refused ([#92]).
+- Journals in one process over one store share in-flight steps. A claim whose insert failed (it may have committed) records that its attempt did not start, keyed by its claim (`attempt:not-started:<claim>:<marker>`), so a re-drive in any process re-attempts the effect instead of halting over one that never ran. If that record cannot be written either, the next claim of the marker in the process reuses the claim, after pinning the claim's not-started key so the marker can never be voided under an effect that runs ([#92]).
+- `agent/storetest.CheckWrapper` checks, given at least two contexts that differ in what the wrapper reads from a context, that a store wrapper's mapping of run IDs and names does not depend on the context (A1), and its use of `Unwrap` ([#92]).
+- Benchmarks `BenchmarkRunTurns`, `BenchmarkToolCallSideEffect`, `BenchmarkStep`, `BenchmarkRecoverPass10k`, `BenchmarkAnchoredInsert`, `BenchmarkSQLiteInsert` and `BenchmarkPostgresInsert` ([#92]).
 
 ### Changed
 
@@ -102,6 +113,16 @@ minor version (0.x.0) may include breaking API or journal-format changes; each o
 - `ToolStarted` fires immediately before the tool is called ([#65]).
 - The OpenAI adapter merges consecutive user messages into one turn ([#62]).
 - `bide-audit` exits 2 for stray arguments, unknown flags, `-h`, or both `-tool` and `-index`, and 3 when a `-checker` gives no verdict ([#54]).
+- **Breaking:** every journal starts with the `@journal` header, so `History` returns it first and record indices (audit leaves, `ProveRecord`) shift by one; journals written by v0.7.0 and earlier have no header and are refused, not resumed ([#92]).
+- **Breaking:** `agent.Lister.Runs` takes a `RunFilter` and returns an iterator of run IDs in ascending order; `Recover` and `RecoverLoop` ask the store for the runs holding no terminal marker and read none of the finished ones ([#92]).
+- **Breaking:** `agent.Capability` takes a `Store` and follows `Unwrap() Store`; the engine still finds capabilities behind a `Durable` ([#92]).
+- **Breaking:** `Record.Salt` and `Record.Claim` are read-only: use `Salt()` and `ClaimID()`; the journal sets them ([#92]).
+- **Breaking:** a `Step` that is not retry-safe and returns a pause (`Interrupt`, `Sleep`, `Await`, a pending approval) is `ErrConfig`; its marker stays, so its next attempt halts. Inside a tool call the error is not recorded as a tool failure, so the call halts on resume rather than being retried under a new id. Put the pause in a retry-safe step of its own ([#92]).
+- **Breaking:** `store/sqlite` names its tables `bide_steps`, `bide_leases` and `bide_schema_version`, and `store/postgres` its leases table `bide_leases`. `sqlite.Open` refuses a file whose v0.7.0 journal table (`steps`) holds rows, with `ErrJournalVersion`, rather than open it as empty; Postgres refuses each v0.7.0 run on its first read, without writing to it. Stop every v0.7.0 node before starting this version: the two do not share leases, and v0.7.0 cannot read the new journals ([#92]).
+- **Breaking:** a store wrapper whose `Do` and `History` come from `MemStore`, a SQL store or an embedded `agent.Durable` (directly or through another wrapper) while its `Insert`, `Get` or `Load` comes from elsewhere is `ErrConfig` where a `Durable` goes, since those `Do` and `History` would write past its methods; pass `agent.NewJournal(wrapper)` instead ([#92]).
+- `agent.Durable` and the `Do` and `History` methods of `MemStore` and the SQL stores are transitional: they go through a Journal over the store, so existing code keeps working. `*Journal` implements `Durable`. `agent/durabletest` is `agent/storetest` under its former name ([#92]).
+- `MemStore` honors its context, and lists runs in order ([#92]).
+- A live tool result, a claim and a completion are written with one Insert, without a read first ([#92]).
 - `middleware.LogErrorText` logs the journaled, redacted error text ([#54]).
 - `docs/KNOWN-LIMITATIONS.md` is rewritten for users, grouped by area with impact and workaround ([#49]).
 - The approval guide is now [Human approval (human-in-the-loop)](docs/guides/hitl-approval.md) (`docs/guides/hitl-approval.md`); the old `docs/guides/approval.md` and its site URL point to it.
@@ -454,6 +475,7 @@ First public release.
 [#90]: https://github.com/bide-ai/bide/pull/90
 [#91]: https://github.com/bide-ai/bide/pull/91
 [#93]: https://github.com/bide-ai/bide/pull/93
+[#92]: https://github.com/bide-ai/bide/pull/92
 [#100]: https://github.com/bide-ai/bide/pull/100
 [#106]: https://github.com/bide-ai/bide/pull/106
 [78f8db6]: https://github.com/bide-ai/bide/commit/78f8db6
