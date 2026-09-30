@@ -36,7 +36,8 @@ type exitFixture struct {
 	voteA, voteB, voteATampered, tally               string
 	runCert, runCertTampered                         string
 	evidence, evidenceTampered, evidenceCert         string
-	keys, sharedKeys, notJSON, missing               string
+	keys, sharedKeys, weakKeys, notJSON, missing     string
+	identityPub                                      string // the identity point: small order, accepts forged signatures
 	agree, nonConvergent, broken                     string
 	brokenFirst, brokenSecond                        string // no verdict on one policy, a disagreement on the other
 	fakePolicy                                       string // a tool result shaped like the policy leaf
@@ -176,6 +177,8 @@ func newExitFixture(t *testing.T) *exitFixture {
 
 	f.keys = file("keys.json", map[string]string{"a": f.pub})
 	f.sharedKeys = file("shared-keys.json", map[string]string{"a": f.pub, "b": f.pub})
+	f.identityPub = "01" + strings.Repeat("00", 31)
+	f.weakKeys = file("weak-keys.json", map[string]string{"a": f.identityPub})
 	f.allow = filepath.Join(dir, "approved.txt")
 	if err := os.WriteFile(f.allow, []byte("# approved policies\n"+digest+"\n"+digest2+"\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -256,6 +259,7 @@ func exitCases(f *exitFixture) []exitCase {
 		{name: "verify: genuine", args: []string{"verify", "-bundle", f.bundle, "-pubkey", f.pub}, want: 0},
 		{name: "verify: tampered", args: []string{"verify", "-bundle", f.bundleTampered, "-pubkey", f.pub}, want: 1},
 		{name: "verify: another key", args: []string{"verify", "-bundle", f.bundle, "-pubkey", f.otherPub}, want: 1},
+		{name: "verify: a small-order public key", args: []string{"verify", "-bundle", f.bundle, "-pubkey", f.identityPub}, want: 4},
 		{name: "verify: head signed in the future", args: []string{"verify", "-bundle", f.bundleFuture, "-pubkey", f.pub}, want: 1},
 		{name: "verify: stray argument", args: []string{"verify", "-bundle", f.bundle, "stray", "-pubkey", f.pub}, want: 2},
 		{name: "verify: -h", args: []string{"verify", "-h"}, want: 2},
@@ -348,6 +352,7 @@ func exitCases(f *exitFixture) []exitCase {
 		{name: "verify-approvals: an approver listed twice", args: []string{"verify-approvals", "-evidence", f.missing, "-pubkey", f.pub, "-call", "c1", "-need", "1", "-approvers", "a,a", "-approver-keys", f.missing}, want: 2},
 		{name: "verify-approvals: missing package", args: approvals(f.missing, f.keys), want: 4},
 		{name: "verify-approvals: approver keys not JSON", args: approvals(f.evidence, f.notJSON), want: 4},
+		{name: "verify-approvals: a small-order approver key", args: approvals(f.evidence, f.weakKeys), want: 4},
 		{name: "verify-approvals: two approvers on one key", args: []string{"verify-approvals", "-evidence", f.evidence, "-pubkey", f.pub, "-call", "c1", "-need", "1", "-approvers", "a,b", "-approver-keys", f.sharedKeys}, want: 4},
 
 		// prove-absent
