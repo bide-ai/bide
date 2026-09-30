@@ -46,6 +46,16 @@ func secHead(t *testing.T, s agent.Durable, runID string) ([]agent.Record, TreeH
 	return recs, th
 }
 
+// used is PoliciesUsed, failing t on an error.
+func used(t *testing.T, recs []agent.Record) []string {
+	t.Helper()
+	u, err := PoliciesUsed(recs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return u
+}
+
 func secKey(t *testing.T) (ed25519.PublicKey, ed25519.PrivateKey) {
 	t.Helper()
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
@@ -68,7 +78,7 @@ func TestAbsence_ToolUseTreeCannotProvePolicyAbsent(t *testing.T) {
 		Right: &Neighbor{Key: "tooluse:charge", Proof: Inclusion{Index: 0, Size: 1}}}}
 	for _, set := range []KeySet{PolicyUsedKeys, ToolUseKeys} {
 		if err := forged.Verify(edV(pub), set); err == nil {
-			t.Fatalf("a tool-use absence STH proves policy EVIL absent (as %s), but the run used it (%v)", set.Kind, PoliciesUsed(recs))
+			t.Fatalf("a tool-use absence STH proves policy EVIL absent (as %s), but the run used it (%v)", set.Kind, used(t, recs))
 		}
 	}
 	// A genuine tool-use absence proof against the same head verifies.
@@ -139,7 +149,7 @@ func TestVerifyRun_RejectsSubstitutedAbsenceSTH(t *testing.T) {
 	} {
 		cert := RunCertificate{Format: RunCertificateFormat, RunID: "X", Properties: runCertProperties, UsedPolicies: []string{}, UsedPolicyAbsence: abs, STH: sth}
 		if res, _ := VerifyRun(cert, []string{"GOOD"}, edV(pub)); res.OK || res.OnlyApprovedPolicies {
-			t.Errorf("%s: run X used %v but its certificate verifies only-approved-policies", name, PoliciesUsed(recs))
+			t.Errorf("%s: run X used %v but its certificate verifies only-approved-policies", name, used(t, recs))
 		}
 	}
 }
@@ -850,9 +860,9 @@ func TestProofBundle_RequiresAJournalHead(t *testing.T) {
 	s := secJournal(t, "A", []agent.Record{{Kind: agent.StepValue, Name: "v", Result: json.RawMessage(`1`)}})
 	recs, th := secHead(t, s, "A")
 	// A caller-defined key set whose key is the record's own JSON: its tree equals the journal tree.
-	raw := KeySet{Kind: "absence/raw", Prefix: "{", Key: func(r agent.Record) (string, bool) {
+	raw := KeySet{Kind: "absence/raw", Prefix: "{", Key: func(r agent.Record) []string {
 		b, _ := json.Marshal(r)
-		return string(b), true
+		return []string{string(b)}
 	}}
 	abs, err := SignAbsenceRoot(recs, raw, th, edS(priv), 1)
 	if err != nil {

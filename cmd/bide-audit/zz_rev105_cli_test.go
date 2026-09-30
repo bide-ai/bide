@@ -50,13 +50,17 @@ func Test_R105_CLIVerifyAbsentOnRedactedCall(t *testing.T) {
 		if !errors.Is(err, audit.ErrRedacted) {
 			t.Fatal(err)
 		}
-		keys := map[string]bool{}
+		var kept []agent.Record
 		for _, r := range recs {
-			if k, ok := audit.ToolUseKey(r); ok {
-				keys[k] = true
+			if !r.Redacted {
+				kept = append(kept, r)
 			}
 		}
-		abs, err = audit.SignTreeHead(audit.TreeHead{Kind: audit.TreeToolUse, RunID: "r", Size: len(keys), Root: audit.AbsenceRoot(recs, audit.ToolUseKeys),
+		root, size, rerr := audit.AbsenceRoot(kept, audit.ToolUseKeys)
+		if rerr != nil {
+			t.Fatal(rerr)
+		}
+		abs, err = audit.SignTreeHead(audit.TreeHead{Kind: audit.TreeToolUse, RunID: "r", Size: size, Root: root,
 			TimestampNanos: ts, Journal: &audit.TreeRef{Size: th.Size, Root: th.Root}}, signer)
 		if err != nil {
 			t.Fatal(err)

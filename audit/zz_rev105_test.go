@@ -19,6 +19,18 @@ import (
 	"github.com/bide-ai/bide/audit"
 )
 
+// unredacted returns recs without the records a redaction replaced: the projection a key holder
+// signing by hand over a redacted journal would make.
+func unredacted(recs []agent.Record) []agent.Record {
+	var out []agent.Record
+	for _, r := range recs {
+		if !r.Redacted {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
 func r105Salt(b byte) string {
 	return base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{b}, agent.SaltSize))
 }
@@ -325,14 +337,13 @@ func Test_R105_EveryProjectionRefusesARedactedJournal(t *testing.T) {
 	if _, err := audit.ProveAbsent(recs, audit.ToolUseKeys, audit.ToolUseKeyFor("pay")); !errors.Is(err, audit.ErrRedacted) {
 		t.Errorf("ProveAbsent: err = %v, want ErrRedacted", err)
 	}
-	// A key-set head a key holder signed by hand over the redacted projection.
-	keys := map[string]bool{}
-	for _, r := range recs {
-		if k, ok := audit.ToolUseKey(r); ok {
-			keys[k] = true
-		}
+	// A key-set head a key holder signed by hand over the redacted projection: the key set of the
+	// records that are not redacted.
+	root, size, err := audit.AbsenceRoot(unredacted(recs), audit.ToolUseKeys)
+	if err != nil {
+		t.Fatal(err)
 	}
-	abs, err := audit.SignTreeHead(audit.TreeHead{Kind: audit.TreeToolUse, RunID: "gov", Size: len(keys), Root: audit.AbsenceRoot(recs, audit.ToolUseKeys),
+	abs, err := audit.SignTreeHead(audit.TreeHead{Kind: audit.TreeToolUse, RunID: "gov", Size: size, Root: root,
 		TimestampNanos: 1, Journal: &audit.TreeRef{Size: jth.Size, Root: jth.Root}}, signer)
 	if err != nil {
 		t.Fatal(err)

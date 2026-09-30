@@ -340,7 +340,10 @@ func TestVerify_LeafKindsMatchAudit(t *testing.T) {
 	if err != nil || abs.Left == nil {
 		t.Fatalf("ProveAbsent = %+v, %v", abs, err)
 	}
-	keyRoot := audit.AbsenceRoot(recs, keys)
+	keyRoot, _, err := audit.AbsenceRoot(recs, keys)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	// Event leaves are bide.audit.event-leaf.v3: a snake_case kind and snake_case event JSON, written
 	// out here rather than marshaled, so the test pins the wire form a third party reimplements.

@@ -153,7 +153,13 @@ func CertifyRun(ctx context.Context, store agent.Durable, runID string, sth Sign
 		return RunCertificate{}, fmt.Errorf("audit: certify run %s: %w", runID, err)
 	}
 
-	used := PoliciesUsed(recs)
+	// PoliciesUsed refuses a journal holding a redacted record (ErrRedacted), whose action it
+	// cannot read, and a record whose stored bytes read two ways (ErrMalformed), so a certificate
+	// never omits a policy the run used.
+	used, err := PoliciesUsed(recs)
+	if err != nil {
+		return RunCertificate{}, fmt.Errorf("audit: certify run %s: %w", runID, err)
+	}
 	approved := make(map[string]struct{}, len(spec.ApprovedPolicies))
 	for _, d := range spec.ApprovedPolicies {
 		approved[d] = struct{}{}
@@ -165,9 +171,7 @@ func CertifyRun(ctx context.Context, store agent.Durable, runID string, sth Sign
 	}
 
 	// The used-policy set is the key set of the absence commitment. Sign that commitment, bound to
-	// sth's journal tree, so the disclosed UsedPolicies can be bound to what the run committed. It
-	// refuses a journal holding a redacted record (ErrRedacted), whose action PoliciesUsed cannot
-	// read, so a certificate never omits a policy the run used.
+	// sth's journal tree, so the disclosed UsedPolicies can be bound to what the run committed.
 	absSTH, err := SignAbsenceRoot(recs, PolicyUsedKeys, sth.TreeHead, spec.Signer, spec.TimestampNanos)
 	if err != nil {
 		return RunCertificate{}, fmt.Errorf("audit: certify run %s: %w", runID, err)

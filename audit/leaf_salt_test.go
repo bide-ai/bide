@@ -149,7 +149,7 @@ func TestLeafFormats(t *testing.T) {
 	}
 
 	keyRecs := recordsStore{withSalt(agent.Record{Name: "c", Kind: agent.StepToolResult, ToolUseID: "c"}, recs[0].Salt())}
-	if root := AbsenceRoot(keyRecs, ToolUseKeys); !bytes.Equal(root, h("bide.audit.key-leaf.v1\x00", "tooluse:c")) {
+	if root, _, err := AbsenceRoot(keyRecs, ToolUseKeys); err != nil || !bytes.Equal(root, h("bide.audit.key-leaf.v1\x00", "tooluse:c")) {
 		t.Error("a key leaf does not hash as SHA-256(0x00 || \"bide.audit.key-leaf.v1\\x00\" || key)")
 	}
 

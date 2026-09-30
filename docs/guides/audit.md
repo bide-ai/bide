@@ -670,8 +670,14 @@ policy digest (the `audit.PolicyUsedKeys` key set), so the run's used-policy com
 (`AbsenceRoot`, a Merkle tree over the sorted distinct keys with adjacency-checked non-membership)
 commits exactly the policies that were used. An auditor:
 
-1. recomputes the used set with `audit.PoliciesUsed(records)` and confirms every digest is in the
-   approved set (each approved policy having been oracle-certified convergent, as above);
+1. recomputes the used set with `used, err := audit.PoliciesUsed(records)` and confirms every
+   digest is in the approved set (each approved policy having been oracle-certified convergent, as
+   above). To check a signed used-policy head against the journal, it recomputes the head's root
+   and size with `root, size, err := audit.AbsenceRoot(records, audit.PolicyUsedKeys)`. Both return
+   an error rather than a set when the journal cannot be projected: `audit.ErrRedacted` when a
+   record is redacted (its action, and so its policy, cannot be read) and `audit.ErrMalformed` when
+   a record's stored bytes read two ways, so a recomputation never confirms a head that omits a
+   policy the journal commits;
 2. for any digest that is not approved, obtains an anchorable `audit.AbsenceBundle` via
    `audit.ProveAbsentBundle(records, audit.PolicyUsedKeys, audit.PolicyUsedKeyFor(digest), sth)`
    and verifies it offline with `bundle.Verify(v, audit.PolicyUsedKeys)` (nil means verified), proving no governed
@@ -685,11 +691,16 @@ a policy that was in fact used. And it cannot be borrowed from another tree: eac
 head commits to its kind, its run, and its source journal tree, and `Verify` requires the head to be
 of the set you name and the key to carry that set's prefix. A tool-use head cannot prove a policy
 absent, and a journal head cannot prove anything absent. The tool-use key set holds every call the
-run started, not only completed ones: a result, an attempt marker journaled before a side effect
-fired (the effect may have happened though no result was recorded), and a saga failure. A Step's
-attempt marker adds the step's name as a key too, which can only make an absence proof for that name
-impossible, never a wrong one. A journal holding a redacted record is refused (`audit.ErrRedacted`). The absence covers the journal up to the
-size the head names; that it is the run's final head comes from the anchor log.
+run started, not only completed ones: every call a model turn requested (the request is journaled
+before the call starts, and a retry-safe call journals no attempt marker, so a call whose result
+was lost leaves only its request), a result, an attempt marker journaled before a side effect fired
+(the effect may have happened though no result was recorded), and a saga failure. A call the model
+requested that never ran, and a Step's attempt marker (which adds the step's name as a key), can
+only make an absence proof for that key impossible, never a wrong one. Every producer and
+recomputation of a key set refuses a journal it cannot project: one holding a redacted record
+(`audit.ErrRedacted`), and one holding a record whose stored bytes read two ways to JSON readers
+(`audit.ErrMalformed`, the rule a proof's record bytes follow). The absence covers the journal up to
+the size the head names; that it is the run's final head comes from the anchor log.
 
 The auditor persona produces and checks these from the command line, as with inclusion. Absence
 proofs verify against a separate key-set commitment, signed in one call with

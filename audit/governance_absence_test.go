@@ -43,7 +43,10 @@ func TestGovernanceAbsence_NoActionUnderDisallowedPolicy(t *testing.T) {
 	}
 
 	// The set of policies exercised is exactly the approved one.
-	used := PoliciesUsed(recs)
+	used, err := PoliciesUsed(recs)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(used) != 1 || used[0] != approved {
 		t.Fatalf("expected policies used = [%s], got %v", approved, used)
 	}

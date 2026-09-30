@@ -18,10 +18,20 @@ func keyRecs(ids ...string) []agent.Record {
 	return recs
 }
 
+// absRoot is AbsenceRoot's root, failing t on an error.
+func absRoot(t *testing.T, recs []agent.Record, set audit.KeySet) []byte {
+	t.Helper()
+	root, _, err := audit.AbsenceRoot(recs, set)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return root
+}
+
 // TestAbsence_ProveAndVerify: an absent key proves against the root; a present key cannot.
 func TestAbsence_ProveAndVerify(t *testing.T) {
 	recs := keyRecs("b", "d", "f") // keys: tooluse:b, tooluse:d, tooluse:f
-	root := audit.AbsenceRoot(recs, audit.ToolUseKeys)
+	root := absRoot(t, recs, audit.ToolUseKeys)
 
 	// Absent in the middle (between d and f).
 	proof, err := audit.ProveAbsent(recs, audit.ToolUseKeys, "tooluse:e")
@@ -42,7 +52,7 @@ func TestAbsence_ProveAndVerify(t *testing.T) {
 // neighbor; the empty key set proves everything absent.
 func TestAbsence_Boundaries(t *testing.T) {
 	recs := keyRecs("b", "d", "f")
-	root := audit.AbsenceRoot(recs, audit.ToolUseKeys)
+	root := absRoot(t, recs, audit.ToolUseKeys)
 
 	before, _ := audit.ProveAbsent(recs, audit.ToolUseKeys, "tooluse:a") // sorts before all
 	if before.Left != nil || before.Right == nil {
@@ -61,7 +71,7 @@ func TestAbsence_Boundaries(t *testing.T) {
 	}
 
 	// Empty key set: anything is absent.
-	emptyRoot := audit.AbsenceRoot(nil, audit.ToolUseKeys)
+	emptyRoot := absRoot(t, nil, audit.ToolUseKeys)
 	empty, _ := audit.ProveAbsent(nil, audit.ToolUseKeys, "tooluse:x")
 	if err := audit.VerifyAbsence(emptyRoot, empty); err != nil {
 		t.Fatal("empty-set absence failed to verify")
@@ -73,7 +83,7 @@ func TestAbsence_Boundaries(t *testing.T) {
 // rejected, because the adjacency (consecutive-index) check fails.
 func TestAbsence_AdjacencyIsEnforced(t *testing.T) {
 	recs := keyRecs("b", "d", "f") // indices: b=0, d=1, f=2
-	root := audit.AbsenceRoot(recs, audit.ToolUseKeys)
+	root := absRoot(t, recs, audit.ToolUseKeys)
 
 	// Genuinely prove b and f (indices 0 and 2), then forge an "absence of d" by pairing them.
 	// d IS present at index 1, so a sound verifier must reject this.

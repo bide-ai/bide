@@ -84,15 +84,15 @@ const policyUsedKeyPrefix = "policy_used:"
 // supports "no violation was admitted". It is not a per-action state-validity proof (a
 // per-transition state digest is roadmap), and it does not close the runtime refinement gap: the
 // runtime is differentially tested against the verified reference, not proven equal to it.
-func PolicyUsedKey(r agent.Record) (string, bool) {
+func PolicyUsedKey(r agent.Record) []string {
 	if r.Kind != agent.StepToolResult || len(r.Result) == 0 {
-		return "", false
+		return nil
 	}
 	digest, err := GovernedPolicyDigest(r.Result)
 	if err != nil || digest == "" {
-		return "", false
+		return nil
 	}
-	return policyUsedKeyPrefix + digest, true
+	return []string{policyUsedKeyPrefix + digest}
 }
 
 // GovernedPolicyDigest returns the policy digest a governed-action payload (a tool result, as
@@ -124,14 +124,19 @@ func GovernedPolicyDigest(result json.RawMessage) (string, error) {
 func PolicyUsedKeyFor(digest string) string { return policyUsedKeyPrefix + digest }
 
 // PoliciesUsed returns the sorted, distinct policy digests exercised by governed actions in the
-// run. A redacted record's action cannot be read, so over a journal holding one the result may
-// omit a policy the run used; CertifyRun refuses such a journal (ErrRedacted). An auditor compares this against the approved set; for any disallowed digest it then
+// run. An auditor compares this against the approved set; for any disallowed digest it then
 // obtains an absence proof (ProveAbsentBundle with PolicyUsedKeys) showing no action ran under it.
-func PoliciesUsed(records []agent.Record) []string {
-	keys := absenceKeys(records, PolicyUsedKeys)
+// It refuses records it cannot project, as CertifyRun does, so a recomputation never omits a
+// policy the journal commits: a journal holding a redacted record is ErrRedacted (the redacted
+// action's policy cannot be read), and a record whose stored bytes read two ways is ErrMalformed.
+func PoliciesUsed(records []agent.Record) ([]string, error) {
+	keys, err := projectKeys(records, PolicyUsedKeys, "the used-policy set")
+	if err != nil {
+		return nil, err
+	}
 	out := make([]string, len(keys))
 	for i, k := range keys {
 		out[i] = strings.TrimPrefix(k, policyUsedKeyPrefix)
 	}
-	return out
+	return out, nil
 }

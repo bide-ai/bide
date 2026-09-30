@@ -36,9 +36,10 @@ import (
 // Combined with the journal's own append-only anchoring, that means absent from the real
 // history up to the committed journal size, not merely from a set the prover chose.
 
-// KeyFunc extracts an absence key from a record, returning false to exclude the record from the
-// key set. Absence is proven over the sorted set of distinct keys the KeyFunc yields.
-type KeyFunc func(agent.Record) (string, bool)
+// KeyFunc extracts the absence keys a record adds to a key set: none (nil) to exclude the record,
+// or one or more (a model turn that requests several tool calls adds one key per call). Absence is
+// proven over the sorted set of distinct keys the KeyFunc yields over the journal.
+type KeyFunc func(agent.Record) []string
 
 // KeySet names one absence key set: the tree Kind its signed heads commit to, the Prefix every
 // key it yields starts with, and the KeyFunc that projects a journal onto it. Kind must start
@@ -49,9 +50,11 @@ type KeySet struct {
 	Key    KeyFunc // projects one journal record onto the set
 }
 
-// ToolUseKeys is the key set of the tool calls a run started, keyed "tooluse:<ToolUseID>" (see
-// ToolUseKey). It proves "no tool call with this ID happened in the run": neither completed, nor
-// started and left unresolved, nor failed in a saga.
+// ToolUseKeys is the key set of the tool calls a run's model requested, keyed
+// "tooluse:<ToolUseID>" (see ToolUseKey). It holds every call the run started, since the run
+// starts only a call its model requested, so it proves "no tool call with this ID was requested,
+// and so none happened, in the run": neither completed, nor started and left unresolved, nor
+// failed in a saga.
 var ToolUseKeys = KeySet{Kind: TreeToolUse, Prefix: toolUseKeyPrefix, Key: ToolUseKey}
 
 // PolicyUsedKeys is the key set of policy digests exercised by governed actions, keyed
@@ -78,29 +81,42 @@ func (s KeySet) check() error {
 const toolUseKeyPrefix = "tooluse:"
 
 // ToolUseKey is the KeyFunc of ToolUseKeys: every record that shows a call ran or may have run,
-// keyed by its ToolUseID: a completed call's result (StepToolResult), the attempt marker journaled
-// before a side effect fired (StepAttempt), whose effect may have happened although no result was
-// recorded, and a saga step's failure (StepSagaFail). An attempt marker of a durable Step carries
-// the step's name as its ToolUseID, so it adds that name as a key too: the set may hold a key no
-// tool call has, which only makes an absence proof for that name impossible, never a wrong one.
-// Journal records a redaction replaced cannot be projected; producers refuse a journal holding one
-// (ErrRedacted).
-func ToolUseKey(r agent.Record) (string, bool) {
+// keyed by its ToolUseID. The model turn that requested calls (StepModel) adds each call it
+// requested, whether or not the call ran: a call can run and leave no other record (a retry-safe
+// call journals no attempt marker, and a crash or a lost write can drop its result), and the
+// request is journaled before the call starts. The completed call's result (StepToolResult), the
+// attempt marker journaled before a side effect fired (StepAttempt), and a saga step's failure
+// (StepSagaFail) add their ToolUseID too. An attempt marker of a durable Step carries the step's
+// name as its ToolUseID, so it adds that name as a key: the set may hold a key no tool call has,
+// or a call the model requested that never ran, which only makes an absence proof for that key
+// impossible, never a wrong one. Journal records a redaction replaced cannot be projected;
+// producers refuse a journal holding one (ErrRedacted).
+func ToolUseKey(r agent.Record) []string {
 	switch {
+	case r.Kind == agent.StepModel && r.Message != nil:
+		var keys []string
+		for _, p := range r.Message.Parts {
+			if tu, ok := p.(agent.ToolUse); ok {
+				keys = append(keys, toolUseKeyPrefix+tu.ID)
+			}
+		}
+		return keys
 	case r.Kind == agent.StepToolResult:
-		return toolUseKeyPrefix + r.ToolUseID, true
+		return []string{toolUseKeyPrefix + r.ToolUseID}
 	case (r.Kind == agent.StepAttempt || r.Kind == agent.StepSagaFail) && r.ToolUseID != "":
-		return toolUseKeyPrefix + r.ToolUseID, true
+		return []string{toolUseKeyPrefix + r.ToolUseID}
 	}
-	return "", false
+	return nil
 }
 
-// absenceKeys returns the sorted, de-duplicated keys the key set yields over records.
+// absenceKeys returns the sorted, de-duplicated keys the key set yields over records. It projects
+// records as they are; the exported producers call projectKeys, which first checks that they can
+// be projected.
 func absenceKeys(records []agent.Record, set KeySet) []string {
 	seen := map[string]struct{}{}
 	keys := make([]string, 0, len(records))
 	for _, r := range records {
-		if k, ok := set.Key(r); ok {
+		for _, k := range set.Key(r) {
 			if _, dup := seen[k]; !dup {
 				seen[k] = struct{}{}
 				keys = append(keys, k)
@@ -109,6 +125,37 @@ func absenceKeys(records []agent.Record, set KeySet) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+// projectKeys returns the sorted, de-duplicated keys set yields over records, once projectable
+// accepts records (what names the projection, for errors).
+func projectKeys(records []agent.Record, set KeySet, what string) ([]string, error) {
+	if err := projectable(records, what); err != nil {
+		return nil, err
+	}
+	return absenceKeys(records, set), nil
+}
+
+// projectable reports whether a projection of records (an absence key set, the used-policy set)
+// reads each record as a proof of it would: no record is redacted (ErrRedacted: its content is
+// gone, so the projection would omit it), and each record read back from a journal has stored
+// bytes that read one way to every JSON reader (checkRecordBytes; ErrMalformed), so the key set
+// cannot be projected from one reading of a record while a reader of the journal sees another. A
+// record built in memory has no stored bytes and is projected as it is.
+func projectable(records []agent.Record, what string) error {
+	if err := refuseRedacted(records, what); err != nil {
+		return err
+	}
+	for i, r := range records {
+		raw := r.Raw()
+		if len(raw) == 0 {
+			continue
+		}
+		if err := checkRecordBytes(raw); err != nil {
+			return fmt.Errorf("audit: %s: the stored bytes of record %d (%q) do not read one way to every JSON reader (%v): %w", what, i, r.Name, err, ErrMalformed)
+		}
+	}
+	return nil
 }
 
 // keyLeaf is the leaf data of one absence key: the key leaf tag followed by the key.
@@ -122,12 +169,21 @@ func keyLeaves(keys []string) [][]byte {
 	return leaves
 }
 
-// AbsenceRoot is the RFC 6962 Merkle root over the run's sorted, distinct keys in set. Over a
-// journal holding a redacted record it omits that record's key (NewAbsenceTreeHead refuses such a
-// journal). Anyone
-// holding the journal recomputes it to confirm a signed key-set head reflects the run.
-func AbsenceRoot(records []agent.Record, set KeySet) []byte {
-	return merkleRoot(keyLeaves(absenceKeys(records, set)))
+// AbsenceRoot is the RFC 6962 Merkle root over the run's sorted, distinct keys in set, and the
+// number of keys. Anyone holding the journal recomputes it to confirm a signed key-set head
+// reflects the run: the head's Root and Size must equal it. It refuses records it cannot project
+// as NewAbsenceTreeHead does, so a recomputation never confirms a head that omits a record: a
+// journal holding a redacted record is ErrRedacted (the record's keys cannot be read), and a
+// record whose stored bytes read two ways is ErrMalformed.
+func AbsenceRoot(records []agent.Record, set KeySet) (root []byte, size int, err error) {
+	if err := set.check(); err != nil {
+		return nil, 0, err
+	}
+	keys, err := projectKeys(records, set, "the "+set.Kind+" key set")
+	if err != nil {
+		return nil, 0, err
+	}
+	return merkleRoot(keyLeaves(keys)), len(keys), nil
 }
 
 // Neighbor is one committed key adjacent to an absent key, with its inclusion proof.
@@ -166,10 +222,10 @@ func ProveAbsent(records []agent.Record, set KeySet, key string) (Absence, error
 	if !strings.HasPrefix(key, set.Prefix) {
 		return Absence{}, fmt.Errorf("audit: key %q is not in the %s key set (keys start with %q)", key, set.Kind, set.Prefix)
 	}
-	if err := refuseRedacted(records, "absence of "+key); err != nil {
+	keys, err := projectKeys(records, set, "absence of "+key)
+	if err != nil {
 		return Absence{}, err
 	}
-	keys := absenceKeys(records, set)
 	leaves := keyLeaves(keys)
 	idx := sort.SearchStrings(keys, key)
 	if idx < len(keys) && keys[idx] == key {
@@ -286,7 +342,11 @@ func ProveAbsentBundle(records []agent.Record, set KeySet, key string, sth Signe
 	if err != nil {
 		return AbsenceBundle{}, fmt.Errorf("audit: STH's source journal: %w", err)
 	}
-	if sth.Size != len(absenceKeys(journal, set)) || !bytes.Equal(sth.Root, AbsenceRoot(journal, set)) {
+	root, size, err := AbsenceRoot(journal, set)
+	if err != nil {
+		return AbsenceBundle{}, err
+	}
+	if sth.Size != size || !bytes.Equal(sth.Root, root) {
 		return AbsenceBundle{}, fmt.Errorf("audit: STH does not commit to run %s's %s key set (wrong or stale STH)", sth.RunID, set.Kind)
 	}
 	proof, err := ProveAbsent(journal, set, key)

@@ -185,8 +185,8 @@ func Test_R105b_AuditorRecomputeOverRedactedJournalOmitsAPolicy(t *testing.T) {
 		t.Fatal(err)
 	}
 	recs, _ := s.History(ctx, "gov")
-	if !slices.Contains(audit.PoliciesUsed(recs), "EVIL") {
-		t.Fatal("sanity: EVIL not used before redaction")
+	if used, err := audit.PoliciesUsed(recs); err != nil || !slices.Contains(used, "EVIL") {
+		t.Fatalf("sanity: EVIL not used before redaction (%v, %v)", used, err)
 	}
 	jth, _ := audit.NewTreeHead(ctx, s, "gov", p11Now())
 
@@ -196,18 +196,13 @@ func Test_R105b_AuditorRecomputeOverRedactedJournalOmitsAPolicy(t *testing.T) {
 	if !bytes.Equal(rjth.Root, jth.Root) {
 		t.Fatal("sanity: redaction changed the journal root")
 	}
-	// A key holder signs the used-policy head over the redacted projection by hand.
-	signer := p11Signers(t)["ed25519"]
-	root := audit.AbsenceRoot(rrecs, audit.PolicyUsedKeys)
-	used := audit.PoliciesUsed(rrecs)
-	hand, err := audit.SignTreeHead(audit.TreeHead{Kind: audit.TreePolicyUsed, RunID: "gov", Size: len(used), Root: root,
-		TimestampNanos: p11Now(), Journal: &audit.TreeRef{Size: rjth.Size, Root: rjth.Root}}, signer)
-	if err != nil {
-		t.Fatal(err)
+	// The auditor, holding the journal, recomputes (audit guide: PoliciesUsed, then the root). Over
+	// the redacted journal neither may return a set: both report the redaction.
+	if used, err := audit.PoliciesUsed(rrecs); !errors.Is(err, audit.ErrRedacted) {
+		t.Fatalf("PoliciesUsed over journal tree %x (which commits a governed action under EVIL) = %v, %v; want ErrRedacted", rjth.Root[:6], used, err)
 	}
-	// The auditor, holding the journal, recomputes (audit guide: PoliciesUsed, then the root).
-	if bytes.Equal(hand.Root, audit.AbsenceRoot(rrecs, audit.PolicyUsedKeys)) && !slices.Contains(audit.PoliciesUsed(rrecs), "EVIL") {
-		t.Fatalf("the auditor's recomputation over journal tree %x (which commits a governed action under EVIL) reports used=%v and confirms a hand-signed used-policy head that omits EVIL; nothing signals the redaction", rjth.Root[:6], used)
+	if _, _, err := audit.AbsenceRoot(rrecs, audit.PolicyUsedKeys); !errors.Is(err, audit.ErrRedacted) {
+		t.Fatalf("AbsenceRoot over the redacted journal: err %v, want ErrRedacted", err)
 	}
 }
 
