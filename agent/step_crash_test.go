@@ -54,7 +54,7 @@ func TestStep_HaltResolvedByResolveStepHalt(t *testing.T) {
 		var reserved int
 		reserve := func(context.Context) (string, error) { reserved++; return "res-1", nil }
 		_, _ = Step(context.Background(), store, "order-42", "reserve", reserve)
-		if err := ResolveStepHalt(context.Background(), store, "order-42", "reserve", "res-1", failed); err != nil {
+		if err := ResolveStepHalt(context.Background(), store, "order-42", "reserve", "res-1", failed, WithoutLiveDriverCheck()); err != nil { // the crash wrapper hides MemStore's Leaser; no driver is running
 			t.Fatal(err)
 		}
 		got, err := Step(context.Background(), store, "order-42", "reserve", reserve)

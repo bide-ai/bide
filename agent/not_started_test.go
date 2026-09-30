@@ -85,7 +85,7 @@ func TestTool_CrashBeforeItStartsStillHalts(t *testing.T) {
 	resume := &greedyModel{script: [][]Emit{textTurn("done")}}
 	_, err := New(resume, store.MemStore, charge).Run(context.Background(), "r1", "pay")
 	var halt *ResumeHalt
-	if !errors.As(err, &halt) || halt.ToolUseID != "c1" {
+	if !errors.As(err, &halt) || halt.Op.ID != "c1" {
 		t.Fatalf("resume err = %v after %d charges, want *ResumeHalt for c1", err, calls.Load())
 	}
 }

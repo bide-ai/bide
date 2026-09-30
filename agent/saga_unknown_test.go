@@ -56,7 +56,7 @@ func TestSaga_RollbackHaltsOnAnUnknownOutcome(t *testing.T) {
 		t.Fatalf("err = %v, want *SagaAborted", err)
 	}
 	var halt *ResumeHalt
-	if !errors.As(aborted.CompensateErr, &halt) || halt.ToolUseID != "p1" {
+	if !errors.As(aborted.CompensateErr, &halt) || halt.Op.ID != "p1" {
 		t.Fatalf("SagaAborted = %+v; want the rollback to halt on the charge (p1), whose outcome is unknown (charged=%d refunded=%d)", aborted, charged.Load(), refunded.Load())
 	}
 }
@@ -122,8 +122,8 @@ func TestSaga_RollbackHaltInASubAgentNamesTheRoot(t *testing.T) {
 			if halt == nil {
 				t.Fatalf("err = %v; want a rollback halted on p1", err)
 			}
-			if halt.RunID != "r1>s1" || halt.ToolUseID != "p1" || halt.RootRunID != "r1" {
-				t.Fatalf("halt on call %q in run %q names root %q; want p1 in r1>s1 with root r1", halt.ToolUseID, halt.RunID, halt.RootRunID)
+			if halt.RunID != "r1>s1" || halt.Op.ID != "p1" || halt.RootRunID != "r1" {
+				t.Fatalf("halt on call %q in run %q names root %q; want p1 in r1>s1 with root r1", halt.Op.ID, halt.RunID, halt.RootRunID)
 			}
 		})
 	}

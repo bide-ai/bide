@@ -79,8 +79,8 @@ tools, err := mcp.Tools(ctx, session,
 )
 ```
 
-The run returns `*agent.PendingApproval` before the server sees the call; record the decision
-with `agent.Approve` (or `agent.ApproveAs` for a quorum) and run it again. `Tools` fails with
+The run returns `*agent.ApprovalPending` before the server sees the call; record the decision
+with `agent.Approve` (or `agent.SubmitDecision` for a quorum) and run it again. `Tools` fails with
 `agent.ErrConfig` if the server does not list a tool you named, so a misspelt gate never leaves
 the real tool ungated.
 
@@ -126,7 +126,7 @@ a JSON-RPC error from the server, and a call on a session already closed. Every 
 failure counts as an unknown outcome. That includes a streamable HTTP server that cannot be
 dialled at all: the SDK does not report a refused connection distinctly from one that dropped
 mid-request, so a side effect whose server is down halts the run for confirmation instead of
-failing outright. Confirm with `agent.ResolveHalt` once you know the call did not reach the
+failing outright. Confirm with `agent.ResolveHaltRef` once you know the call did not reach the
 server.
 
 ## Optional client capabilities
@@ -198,7 +198,7 @@ the server flags the result `IsError`, the content is surfaced as a Go error (wr
 A call whose answer never arrives, because the connection dropped or the deadline passed after
 the request was sent, may still have run on the server. `Call` then fails with
 `agent.ErrToolOutcomeUnknown` rather than an ordinary failure. For a side effect the agent
-records no result: the run stops with that error and a resume halts (`ResumeHalt`) instead of
+records no result: the run stops with that error and a resume halts (`OutcomeUnknown`) instead of
 telling the model the call failed, which would invite it to run the side effect again. A
 retry-safe tool's lost call is an ordinary failure the model sees. A JSON-RPC error from the
 server, or a call on a session that is already closed, is an ordinary failure too: the server

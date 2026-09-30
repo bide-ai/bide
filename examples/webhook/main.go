@@ -93,15 +93,22 @@ func statelessCommand(ctx context.Context, a *agent.Agent, channelID, eventID, t
 // conversation/thread id) carries memory across messages, and SendOnce keyed by the event id makes
 // a redelivered inbound message return the recorded reply instead of opening a second turn, even
 // if the process died after the turn and before the reply went out. A turn interrupted by a crash
-// or a pause resumes when the event is redelivered.
+// resumes when the event is redelivered; a paused turn resumes once the pause is answered.
 func handleConversational(ctx context.Context, a *agent.Agent, conversationID, eventID, text string) (string, error) {
 	sess, err := a.Session(ctx, conversationID)
 	if err != nil {
 		return "", err
 	}
 	msg, err := sess.SendOnce(ctx, eventID, text)
+	if p, ok := agent.AsPause(err); ok {
+		// A pause (an approval, an interrupt, a signal, a timer, a halt) is not a failure: the turn
+		// waits durably. Acknowledge the event rather than let the messenger redeliver it on a loop;
+		// once the pause is answered against p.Paused().RunID, calling SendOnce again with the same
+		// event id resumes the same turn.
+		return fmt.Sprintf("working on it (waiting: %v)", p.Paused().RunID), nil
+	}
 	if err != nil {
-		return "", err // a pause/error: the redelivered event resumes the same turn
+		return "", err // an error: the redelivered event resumes the same turn
 	}
 	return msg.Text(), nil
 }

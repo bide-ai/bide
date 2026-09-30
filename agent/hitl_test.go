@@ -46,7 +46,7 @@ func TestInterrupt_PausesAndResumesTyped(t *testing.T) {
 	if !errors.As(err, &intr) {
 		t.Fatalf("err = %v, want *Interrupted", err)
 	}
-	if intr.Key != "q" || intr.Prompt != "what should I use?" {
+	if intr.Name != "q" || intr.Prompt != "what should I use?" {
 		t.Fatalf("interrupt = %+v", intr)
 	}
 	if calls != 1 {

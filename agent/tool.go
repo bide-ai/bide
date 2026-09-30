@@ -40,7 +40,7 @@ type Safety struct {
 	// de-duplicated. Empty result => not derivable.
 	IdempotencyKey func(args json.RawMessage) string
 	// RequiresApproval pauses the run for a durable human decision (HITL) before the
-	// tool executes — surfaced as *PendingApproval; resume after agent.Approve.
+	// tool executes, surfaced as *ApprovalPending; resume after agent.Approve.
 	RequiresApproval bool
 	// Approval, when non-nil, upgrades the approval gate from one
 	// decision to an m-of-n human gate over a bounded, named set of
@@ -62,7 +62,7 @@ type ApprovalPolicy struct {
 //
 // A declared IdempotencyKey counts as retry-safe: the tool asserts that a retried call
 // with the same args de-duplicates downstream, so on an unknown outcome the run may
-// safely retry it instead of firing *ResumeHalt. The contract is the tool's to keep: it
+// safely retry it instead of firing *OutcomeUnknown. The contract is the tool's to keep: it
 // must send that key to the downstream. The SDK derives the same key from the same args
 // on retry, but does not itself call the downstream, so the de-duplication happens only if
 // the tool forwards the key. This turns halt-for-a-human stops into automatic retries for

@@ -30,7 +30,7 @@ func TestSubAgentHalt_ResolvedAndContinuedFromTheRoot(t *testing.T) {
 	if !errors.As(err, &halt) || halt.RunID != "p>s1" || halt.RootRunID != "p" {
 		t.Fatalf("halt = %+v (%v); want RunID p>s1 and RootRunID p", halt, err)
 	}
-	if err := ResolveHalt(context.Background(), store, halt.RunID, halt.ToolUseID, "charged", false); err != nil {
+	if err := ResolveHalt(context.Background(), store, halt.RunID, halt.Op.ID, "charged", false); err != nil {
 		t.Fatal(err)
 	}
 	msg, err := root.Run(context.Background(), halt.RootRunID, "go")
@@ -54,7 +54,7 @@ func TestSubAgentInterrupt_AnsweredAndContinuedFromTheRoot(t *testing.T) {
 	if !errors.As(err, &intr) || intr.RunID != "p>s1" || intr.RootRunID != "p" {
 		t.Fatalf("interrupt = %+v (%v); want RunID p>s1 and RootRunID p", intr, err)
 	}
-	if err := Resume(context.Background(), store, intr.RunID, intr.Key, "yes"); err != nil {
+	if err := Resume(context.Background(), store, intr.RunID, intr.Name, "yes"); err != nil {
 		t.Fatal(err)
 	}
 	if msg, err := root.Run(context.Background(), intr.RootRunID, "go"); err != nil || msg.Text() != "parent done" {

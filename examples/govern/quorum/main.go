@@ -188,7 +188,7 @@ func runWithApprovalGate(ctx context.Context, store agent.Durable, runID string,
 	if escalate.Safety().RequiresApproval {
 		// A real agent loop surfaces *PendingApproval from Run; the run resumes only after
 		// agent.Approve records a decision. With none recorded, the run is paused durably.
-		pending := &agent.PendingApproval{RunID: runID, ToolUseID: "escalate/1", ToolName: escalate.Name()}
+		pending := &agent.ApprovalPending{RunRef: agent.RunRef{RunID: runID, RootRunID: runID}, ToolUseID: "escalate/1", ToolName: escalate.Name()}
 		// Record the pause as a journaled fact so the audit trail shows the run halted for review.
 		if _, err := store.Do(ctx, runID, "escalate/pending", func(context.Context) (agent.Record, error) {
 			b, _ := json.Marshal(map[string]any{"awaiting_approval": true, "tool": escalate.Name()})

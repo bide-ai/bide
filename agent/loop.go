@@ -16,8 +16,8 @@ import (
 
 // Run drives the agent to completion for runID, resuming from the journal if steps
 // already exist. Completed steps are reused; retry-safe tools with no recorded result
-// are re-run; a non-retry-safe tool with no result triggers ResumeHalt; a tool that
-// requires approval with no recorded decision triggers PendingApproval. A run that already
+// are re-run; a non-retry-safe tool with no result triggers OutcomeUnknown; a tool that
+// requires approval with no recorded decision triggers ApprovalPending. A run that already
 // finished is final: Run returns its recorded answer without calling the model, whatever
 // input is passed, so retrying a completed run never repeats its side effects.
 //
@@ -101,10 +101,10 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 			done[r.ToolUseID] = true
 			results[r.ToolUseID] = r // one record per call: it is journaled under the call's ID
 		case StepSagaFail:
-			done[r.ToolUseID] = true // the failing step is durably resolved (no ResumeHalt)
+			done[r.ToolUseID] = true // the failing step is durably resolved (no OutcomeUnknown)
 		case StepApproval:
 			if r.Approver != "" {
-				continue // a per-approver m-of-n decision (ApproveAs); tallied by the quorum gate, not here
+				continue // a per-approver m-of-n decision (SubmitDecision); tallied by the quorum gate, not here
 			}
 			decided[r.ToolUseID] = true
 			approvals[r.ToolUseID] = r.Approved
@@ -169,7 +169,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 	// Resume safety gate: a tool call that we ATTEMPTED (recorded a start marker for) but has
 	// no recorded result crashed mid-side-effect → unknown outcome → halt. A tool that was never
 	// attempted never ran its side effect, so it's safe to run now (not a halt); one awaiting
-	// approval re-surfaces as PendingApproval in the loop.
+	// approval re-surfaces as ApprovalPending in the loop.
 	//
 	// The marker is the call's recorded safety: one is written only for a call that was not
 	// retry-safe when it fired, in this version and every earlier one. So the halt goes by the
@@ -184,7 +184,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 		if !ok {
 			continue
 		}
-		return Message{}, tot, 0, &ResumeHalt{RunID: runID, RootRunID: rootRunID(ctx, runID), ToolUseID: id, ToolName: name, AttemptedAt: markerTime(attemptedAtMs[id])}
+		return Message{}, tot, 0, toolHalt(runID, rootRunID(ctx, runID), id, name, markerTime(attemptedAtMs[id]), HaltCrashed)
 	}
 
 	meter := &spendMeter{} // usage of every model request this invocation sends
@@ -327,16 +327,16 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 						return Message{}, tot, liveTurns, err
 					}
 					if !final {
-						evTally := tally // the event gets its own copy; PendingApproval keeps tally
+						evTally := tally // the event gets its own copy; ApprovalPending keeps tally
 						evTally.Pending = append([]string(nil), tally.Pending...)
 						fire(ApprovalRequired{ToolUseID: tu.ID, Name: tu.Name, Args: tu.Args, Quorum: &evTally})
-						return Message{}, tot, liveTurns, &PendingApproval{RunID: runID, RootRunID: rootRunID(ctx, runID), ToolUseID: tu.ID, ToolName: tu.Name, Args: tu.Args, Quorum: &tally}
+						return Message{}, tot, liveTurns, &ApprovalPending{RunRef: RunRef{RunID: runID, RootRunID: rootRunID(ctx, runID)}, ToolUseID: tu.ID, ToolName: tu.Name, Args: tu.Args, Quorum: &tally}
 					}
 					approved = tally.Passed()
 				} else {
 					if !decided[tu.ID] {
 						fire(ApprovalRequired{ToolUseID: tu.ID, Name: tu.Name, Args: tu.Args})
-						return Message{}, tot, liveTurns, &PendingApproval{RunID: runID, RootRunID: rootRunID(ctx, runID), ToolUseID: tu.ID, ToolName: tu.Name, Args: tu.Args}
+						return Message{}, tot, liveTurns, &ApprovalPending{RunRef: RunRef{RunID: runID, RootRunID: rootRunID(ctx, runID)}, ToolUseID: tu.ID, ToolName: tu.Name, Args: tu.Args}
 					}
 					approved = approvals[tu.ID]
 				}
@@ -360,7 +360,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 		// Execute the ready tools CONCURRENTLY (Go's strength; single-flight-safe). First
 		// failure in saga mode cancels siblings via the errgroup context, and a sibling that
 		// has not started by then never does. A pause or halt (Interrupt, Sleep, Await,
-		// approval, ResumeHalt) does not: it is held until every sibling has finished and
+		// approval, OutcomeUnknown) does not: it is held until every sibling has finished and
 		// recorded its outcome, since a routine pause must not cut off a side effect in flight
 		// and leave it with an unknown outcome. (In a saga, a halt keeps siblings that have not
 		// started from starting; see halted.)
@@ -372,7 +372,11 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 			pauseMu   sync.Mutex
 			pauseIdx  = -1
 			pauseErr  error
-			pauseHalt bool // pauseErr is a *ResumeHalt
+			pauseHalt bool // pauseErr is a *OutcomeUnknown
+			// wakeErr is the first call's failure to schedule a wake (a *wakeError, ErrStorage). It
+			// is held like a pause, so it does not cut off siblings in flight, and it is returned
+			// ahead of any pause once they have finished: the run failed, it is not waiting.
+			wakeErr error
 			// carried[i] is the usage the record of uses[i] carries: that of the runs it started.
 			// The runs counted their spend in the tree as it happened, so it goes into tot only.
 			carried = make([]usageTotals, len(uses))
@@ -385,12 +389,23 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 		for _, c := range toRun {
 			g.Go(func() (err error) {
 				defer func() {
+					// A failed wake schedule records nothing and fails the run, but it is no reason
+					// to cancel a sibling mid-effect, which would leave its outcome unknown.
+					if we := (*wakeError)(nil); err != nil && errors.As(err, &we) {
+						pauseMu.Lock()
+						if wakeErr == nil {
+							wakeErr = err
+						}
+						pauseMu.Unlock()
+						err = nil
+						return
+					}
 					// A call that lost its answer (ErrToolOutcomeUnknown, nothing recorded) is held
 					// like a halt, which is what its resume meets: it does not cut off siblings in
 					// flight, which would leave their outcomes unknown too.
 					lost := err != nil && errors.Is(err, ErrToolOutcomeUnknown)
-					if err != nil && (isPause(err) || lost) {
-						var halt *ResumeHalt
+					if err != nil && (IsPause(err) || lost) {
+						var halt *OutcomeUnknown
 						isHalt := errors.As(err, &halt) || lost
 						pauseMu.Lock()
 						// Report a halt ahead of any other pause, then the first call's. A halt is a
@@ -442,7 +457,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 					}
 					claimed, marker, markerKey = won, got, key
 					if !won {
-						return &ResumeHalt{RunID: runID, RootRunID: rootRunID(ctx, runID), ToolUseID: c.tu.ID, ToolName: c.tu.Name, AttemptedAt: markerTime(got.AttemptedAt)}
+						return toolHalt(runID, rootRunID(ctx, runID), c.tu.ID, c.tu.Name, markerTime(got.AttemptedAt), HaltContended)
 					}
 				}
 				var toolCallErr error
@@ -482,31 +497,34 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 						return Record{}, callErr
 					}
 					if callErr != nil {
-						// A ResumeHalt or PendingApproval raised INSIDE this tool (a sub-agent
+						// An OutcomeUnknown or ApprovalPending raised INSIDE this tool (a sub-agent
 						// whose own tool halted or needs approval) is a control-flow signal for
 						// the whole tree, not a tool failure: record nothing and propagate it up
 						// unchanged, so the parent surfaces it and does NOT mark the run complete.
 						// It is not gated on retry-safety: the pause lives in the sub-run's
 						// journal, and re-driving this tool re-enters that sub-run rather than
 						// re-firing a side effect here (see subagent.go).
-						var subHalt *ResumeHalt
-						var subApproval *PendingApproval
-						if errors.As(callErr, &subHalt) || errors.As(callErr, &subApproval) {
+						// Either kind anywhere in the chain counts (a joined error may hold another
+						// pause ahead of it).
+						_, subHalt := errors.AsType[*OutcomeUnknown](callErr)
+						_, subApproval := errors.AsType[*ApprovalPending](callErr)
+						if subHalt || subApproval {
 							return Record{}, callErr
 						}
+						paused := IsPause(callErr)
 						// A sub-run that stopped short of a verdict has no outcome yet: record
 						// nothing, so a resume re-enters the sub-run (see subRunUnfinished).
 						var subUnfinished *subRunUnfinished
 						if errors.As(callErr, &subUnfinished) {
 							return Record{}, callErr
 						}
-						// An Interrupt or a durable Sleep pauses the run: record nothing and
-						// propagate, so the tool re-runs and resolves on resume. Requires a
-						// retry-safe tool (else its attempt marker would halt the resume instead).
-						var intr *Interrupted
-						var slp *Sleeping
-						var awt *Awaiting
-						if errors.As(callErr, &intr) || errors.As(callErr, &slp) || errors.As(callErr, &awt) {
+						// Any other pause (an Interrupt, a durable Sleep, an Await) pauses the run:
+						// record nothing and propagate, so the tool re-runs and resolves on resume.
+						// So does a Waker that failed to schedule a wake: nothing is recorded, and
+						// the re-driven tool schedules again. Requires a retry-safe tool (else its
+						// attempt marker would halt the resume instead).
+						var wakeFail *wakeError
+						if paused || errors.As(callErr, &wakeFail) {
 							if !c.t.Safety().retriableOnResume() {
 								return Record{}, fmt.Errorf("agent: tool %q paused (Interrupt, Sleep, or Await) but is not retry-safe (mark it ReadOnly or Idempotent): %w", c.tu.Name, ErrConfig)
 							}
@@ -550,14 +568,9 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 					return &sagaTrip{toolName: c.tu.Name, toolUseID: c.tu.ID, cause: toolCallErr, journaled: journaled}
 				}
 				if err != nil {
-					var subHalt *ResumeHalt
-					var subApproval *PendingApproval
-					var intr *Interrupted
-					var slp *Sleeping
-					var awt *Awaiting
-					if errors.As(err, &subHalt) || errors.As(err, &subApproval) ||
-						errors.As(err, &intr) || errors.As(err, &slp) || errors.As(err, &awt) {
-						return err // propagate the pause / sub-tree halt unwrapped
+					var wakeFail *wakeError
+					if IsPause(err) || errors.As(err, &wakeFail) {
+						return err // propagate the pause / sub-tree halt / wake failure (ErrStorage) unwrapped
 					}
 					if sctx.Err() != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
 						return err // a cancellation, not a tool fault: surface it as one
@@ -580,6 +593,9 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 				return Message{}, tot, liveTurns, trip // RunSaga catches → compensates
 			}
 			return Message{}, tot, liveTurns, err
+		}
+		if wakeErr != nil {
+			return Message{}, tot, liveTurns, wakeErr
 		}
 		if pauseErr != nil {
 			return Message{}, tot, liveTurns, pauseErr

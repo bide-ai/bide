@@ -98,7 +98,7 @@ type Durable interface {
 A recorded step returns its `Record` without re-running `fn`; if `fn` errors, nothing is
 recorded, so the step re-runs on the next attempt. `History` returns the ordered `Record`
 sequence, which is the run's full replayable history. The side-effect-safety layer (`Safety`
-/ `ResumeHalt`) sits *above* this and is substrate-agnostic.
+/ `OutcomeUnknown`) sits *above* this and is substrate-agnostic.
 
 **Reference adapters.** `agent.NewMemStore()` is the in-memory implementation for tests and
 local dev (it single-flights concurrent `Do` on the same `(runID, name)` so a side effect

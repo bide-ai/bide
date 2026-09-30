@@ -30,8 +30,11 @@ func TestToolOutcomeUnknown_SideEffectIsNotRecorded(t *testing.T) {
 	m2 := &greedyModel{script: [][]Emit{toolTurn("c2", "charge", `{}`), textTurn("done")}}
 	_, err = New(m2, store, charge).Run(context.Background(), "r1", "pay")
 	var halt *ResumeHalt
-	if !errors.As(err, &halt) || halt.ToolUseID != "c1" {
+	if !errors.As(err, &halt) || halt.Op.ID != "c1" {
 		t.Fatalf("resume err = %v, want ResumeHalt for c1", err)
+	}
+	if halt.Cause != HaltCrashed || halt.Op != (OpRef{Kind: OpTool, ID: "c1", ToolName: "charge"}) {
+		t.Fatalf("halt = %+v, want an OpTool halt on charge c1 with Cause %q (a marker found on resume)", halt, HaltCrashed)
 	}
 	if charged != 1 {
 		t.Fatalf("charged %d times, want 1", charged)

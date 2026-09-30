@@ -37,7 +37,7 @@ func TestResume_RelabelledRetrySafeStillHalts(t *testing.T) {
 	m := &greedyModel{script: [][]Emit{textTurn("done")}} // the charge turn replays from the journal
 	_, err := New(m, store, relabelled).Run(context.Background(), "r1", "pay")
 	var halt *ResumeHalt
-	if !errors.As(err, &halt) || halt.ToolUseID != "c1" {
+	if !errors.As(err, &halt) || halt.Op.ID != "c1" {
 		t.Fatalf("resume err = %v after %d charges, want *ResumeHalt for c1", err, charged)
 	}
 	if charged != 1 {
@@ -55,7 +55,7 @@ func TestResume_AttemptedToolNoLongerRegisteredHalts(t *testing.T) {
 	m := &greedyModel{script: [][]Emit{textTurn("done")}}
 	_, err := New(m, store).Run(context.Background(), "r1", "pay")
 	var halt *ResumeHalt
-	if !errors.As(err, &halt) || halt.ToolUseID != "c1" || halt.ToolName != "charge" {
+	if !errors.As(err, &halt) || halt.Op.ID != "c1" || halt.Op.ToolName != "charge" {
 		t.Fatalf("resume err = %v, want *ResumeHalt for charge (c1)", err)
 	}
 }
@@ -74,7 +74,7 @@ func TestStep_RelabelledRetrySafeStillHalts(t *testing.T) {
 	}
 	_, err := Step(context.Background(), store, "r1", "reserve", reserve, StepSafety(Safety{Idempotent: true}))
 	var halt *ResumeHalt
-	if !errors.As(err, &halt) || halt.ToolUseID != "reserve" {
+	if !errors.As(err, &halt) || halt.Op.ID != "reserve" {
 		t.Fatalf("resume err = %v after %d runs, want *ResumeHalt for reserve", err, ran)
 	}
 	if ran != 1 {

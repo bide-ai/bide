@@ -1,8 +1,9 @@
-// pause.go groups the runtime's durable-pause primitives: human-in-the-loop
-// (Interrupt/Resume), durable timers (Sleep/WaitUntil) and the Waker that fires them, and
-// signals (Signal/Await) that deliver external events into a run. They share one mechanism:
-// a named durable step (Durable.Do) plus a typed pause error the agent loop propagates, so a
-// paused run resumes deterministically after a crash and each pause resolves at most once.
+// pause.go groups the runtime's durable-pause primitives: the sealed Pause contract every
+// pause error satisfies, human-in-the-loop (Interrupt/AnswerInterrupt), durable timers
+// (Sleep/WaitUntil) and the Waker that fires them, and signals (Signal/Await) that deliver
+// external events into a run. They share one mechanism: a named durable step (Durable.Do)
+// plus a typed pause error the agent loop propagates, so a paused run resumes
+// deterministically after a crash and each pause resolves at most once.
 
 package agent
 
@@ -16,39 +17,93 @@ import (
 )
 
 // ===========================================================================
-// Human-in-the-loop: Interrupt / Resume
+// The pause contract
 // ===========================================================================
 
-// Interrupted is returned by Run when a tool called Interrupt and no resume value has
-// been recorded for that key yet. The run has paused durably at the interrupt point.
-// Inspect Prompt to decide what to ask the human, record an answer with Resume (same
-// Key), then re-invoke Run with the same runID to continue.
-type Interrupted struct {
-	RunID string
-	// RootRunID is the run to re-invoke to continue: the top-level run. It differs from RunID
-	// when the signal comes from inside a sub-agent, whose journal is RunID. Record the answer
-	// against RunID (Resume, Approve, ResolveHalt, Signal), then run RootRunID with the root agent.
+// Pause is the error a run returns when it has stopped durably and is waiting on something
+// outside it: a human's approval (*ApprovalPending), an answer to an interrupt
+// (*InterruptPending), a signal or a channel message (*SignalPending), a durable timer
+// (*TimerPending), or a verdict on a side effect whose outcome is unknown (*OutcomeUnknown).
+// A pause is not a failure: the run's journal is intact, and once the condition is met the
+// run is re-invoked with Paused().RootRunID and carries on.
+//
+// The set is sealed: only this package's five types implement Pause, so a type switch over
+// them is exhaustive. Test for a pause with IsPause and read it with AsPause, which see
+// through wrapping.
+type Pause interface {
+	error
+	// Paused names the paused run: RunID is the journal the pause lives in (a sub-agent's
+	// sub-run for a pause raised inside a sub-agent) and RootRunID is the run to re-invoke.
+	Paused() RunRef
+	pause() // declared on each concrete type, never on RunRef, so embedding RunRef does not satisfy Pause
+}
+
+// RunRef names a paused run. RunID is the journal the pause lives in: record the answer
+// against it (Approve, AnswerInterrupt, Signal, ResolveHaltRef). RootRunID is the top-level
+// run to re-invoke to continue; it differs from RunID when the pause comes from inside a
+// sub-agent, whose journal is RunID.
+type RunRef struct {
+	RunID     string
 	RootRunID string
-	Key       string
-	Prompt    any // caller-defined payload for the human: a question, options, current state
 }
 
-func (e *Interrupted) Error() string {
-	return fmt.Sprintf("run %s interrupted at %q awaiting input", e.RunID, e.Key)
+// Paused returns r. Every pause type embeds a RunRef and so reports it through Pause.
+func (r RunRef) Paused() RunRef { return r }
+
+// IsPause reports whether err, or any error it wraps, is a Pause: the run stopped durably
+// and is waiting, rather than failed.
+func IsPause(err error) bool {
+	_, ok := AsPause(err)
+	return ok
 }
 
-// Interrupt pauses the current run to request typed human input, identified by key. Call
+// AsPause returns the first Pause in err's chain, if there is one.
+func AsPause(err error) (Pause, bool) {
+	var p Pause
+	if errors.As(err, &p) {
+		return p, true
+	}
+	return nil, false
+}
+
+// ===========================================================================
+// Human-in-the-loop: Interrupt / AnswerInterrupt
+// ===========================================================================
+
+// InterruptPending is returned by Run when a tool called Interrupt and no answer has been
+// recorded for that name yet. The run has paused durably at the interrupt point. Inspect
+// Prompt to decide what to ask the human, record an answer with AnswerInterrupt (same RunID
+// and Name), then re-invoke Run with RootRunID to continue.
+type InterruptPending struct {
+	RunRef
+	Name   string
+	Prompt any // caller-defined payload for the human: a question, options, current state
+}
+
+// Error names the run and the interrupt point.
+func (e *InterruptPending) Error() string {
+	return fmt.Sprintf("run %s interrupted at %q awaiting input", e.RunID, e.Name)
+}
+
+func (*InterruptPending) pause() {}
+
+// Interrupted is the former name of InterruptPending.
+//
+// Deprecated: transitional; renamed by the 1.0 rewrite. Use InterruptPending.
+type Interrupted = InterruptPending
+
+// Interrupt pauses the current run to request typed human input, identified by name. Call
 // it from inside a tool (the agent loop supplies the run context). On first encounter it
-// returns the zero T and an *Interrupted error that propagates out of Run, pausing the
-// run durably. After Resume records a value for the same key and Run is re-invoked,
-// Interrupt returns that value and execution continues past this point. This generalizes
-// approve/deny (a bool) to an arbitrary typed answer.
+// returns the zero T and an *InterruptPending error that propagates out of Run, pausing the
+// run durably. After AnswerInterrupt records a value for the same name and Run is
+// re-invoked, Interrupt returns that value and execution continues past this point. This
+// generalizes approve/deny (a bool) to an arbitrary typed answer.
 //
 // Interrupt must be called from a retry-safe tool (Safety.ReadOnly or Idempotent): on
 // resume the tool re-runs from the top until the interrupt resolves, so everything
-// before the Interrupt call must be safe to repeat. Use distinct keys for multiple
+// before the Interrupt call must be safe to repeat. Use distinct names for multiple
 // interrupt points; each pauses and resumes independently.
-func Interrupt[T any](ctx context.Context, key string, prompt any) (T, error) {
+func Interrupt[T any](ctx context.Context, name string, prompt any) (T, error) {
 	var zero T
 	d, runID, ok := runContext(ctx)
 	if !ok {
@@ -56,63 +111,75 @@ func Interrupt[T any](ctx context.Context, key string, prompt any) (T, error) {
 	}
 	recs, err := d.History(ctx, runID)
 	if err != nil {
-		return zero, fmt.Errorf("agent: interrupt %q: %w (%w)", key, err, ErrStorage)
+		return zero, fmt.Errorf("agent: interrupt %q: %w (%w)", name, err, ErrStorage)
 	}
-	name := interruptStep(key)
+	step := interruptStep(name)
 	for _, r := range recs {
-		if r.Kind == StepValue && r.Name == name {
+		if r.Kind == StepValue && r.Name == step {
 			var v T
 			if len(r.Result) > 0 {
 				if err := json.Unmarshal(r.Result, &v); err != nil {
-					return zero, fmt.Errorf("agent: decode resume value for %q: %w (%w)", key, err, ErrProtocol)
+					return zero, fmt.Errorf("agent: decode interrupt answer for %q: %w (%w)", name, err, ErrProtocol)
 				}
 			}
 			return v, nil
 		}
 	}
-	return zero, &Interrupted{RunID: runID, RootRunID: rootRunID(ctx, runID), Key: key, Prompt: prompt}
+	return zero, &InterruptPending{RunRef: RunRef{RunID: runID, RootRunID: rootRunID(ctx, runID)}, Name: name, Prompt: prompt}
 }
 
-// Resume records the typed value a paused run is waiting for at key (see Interrupt), then
-// re-invoke Run with the same runID to continue. Idempotent: the first value for a
-// (runID, key) wins. The value survives a crash: it is a journaled step.
-func Resume[T any](ctx context.Context, d Durable, runID, key string, value T) error {
+// AnswerInterrupt records the typed value a paused run is waiting for at the interrupt
+// point name (see Interrupt); then re-invoke Run with the pause's RootRunID to continue.
+// It is idempotent: the first value for a (runID, name) wins. The value survives a crash:
+// it is a journaled step.
+func AnswerInterrupt[T any](ctx context.Context, d Durable, runID, name string, value T) error {
 	if runID == "" {
-		return fmt.Errorf("Resume: empty runID: %w", ErrConfig)
+		return fmt.Errorf("AnswerInterrupt: empty runID: %w", ErrConfig)
 	}
 	b, err := json.Marshal(value)
 	if err != nil {
-		return fmt.Errorf("agent: encode resume value for %q: %w (%w)", key, err, ErrConfig)
+		return fmt.Errorf("agent: encode interrupt answer for %q: %w (%w)", name, err, ErrConfig)
 	}
-	_, err = d.Do(ctx, runID, interruptStep(key), func(context.Context) (Record, error) {
+	_, err = d.Do(ctx, runID, interruptStep(name), func(context.Context) (Record, error) {
 		return Record{Kind: StepValue, Result: b}, nil
 	})
 	return err
 }
 
-func interruptStep(key string) string { return "interrupt:" + key }
+// Resume is the former name of AnswerInterrupt.
+//
+// Deprecated: transitional; renamed by the 1.0 rewrite. Use AnswerInterrupt.
+func Resume[T any](ctx context.Context, d Durable, runID, key string, value T) error {
+	return AnswerInterrupt(ctx, d, runID, key, value)
+}
+
+func interruptStep(name string) string { return "interrupt:" + name }
 
 // ===========================================================================
 // Durable timers: Sleep / WaitUntil
 // ===========================================================================
 
-// Sleeping is returned by Run when a tool called Sleep or WaitUntil and the wake time has not yet
-// passed. The run has paused durably at the timer: its wake time is journaled, so the pause
-// survives a restart. Re-invoke Run with the same runID at or after FireAt to resume (a Waker does
-// this automatically; otherwise the deployment re-invokes on its own schedule).
-type Sleeping struct {
-	RunID string
-	// RootRunID is the run to re-invoke to continue: the top-level run. It differs from RunID
-	// when the signal comes from inside a sub-agent, whose journal is RunID. Record the answer
-	// against RunID (Resume, Approve, ResolveHalt, Signal), then run RootRunID with the root agent.
-	RootRunID string
-	Name      string
-	FireAt    time.Time
+// TimerPending is returned by Run when a tool called Sleep or WaitUntil and the wake time has
+// not yet passed. The run has paused durably at the timer: its wake time is journaled, so the
+// pause survives a restart. Re-invoke Run with RootRunID at or after FireAt to resume (a Waker
+// does this automatically; otherwise the deployment re-invokes on its own schedule).
+type TimerPending struct {
+	RunRef
+	Name   string
+	FireAt time.Time
 }
 
-func (e *Sleeping) Error() string {
+// Error names the run, the timer, and its wake time.
+func (e *TimerPending) Error() string {
 	return fmt.Sprintf("run %s sleeping at %q until %s", e.RunID, e.Name, e.FireAt.Format(time.RFC3339))
 }
+
+func (*TimerPending) pause() {}
+
+// Sleeping is the former name of TimerPending.
+//
+// Deprecated: transitional; renamed by the 1.0 rewrite. Use TimerPending.
+type Sleeping = TimerPending
 
 type clockKey struct{}
 
@@ -131,11 +198,17 @@ func clockFrom(ctx context.Context) func() time.Time {
 
 // Sleep pauses the current run until d has elapsed from the FIRST time this timer was reached,
 // durably. Call it from inside a retry-safe tool (the agent loop supplies the run context). On the
-// first encounter it journals the wake time (now + d) and returns *Sleeping, pausing the run; on a
-// later resume it returns nil once the wake time has passed, and continues past this point. The
-// wake time is fixed on the first call and memoized, so a resumed or crash-recovered run waits to
-// the same absolute instant rather than restarting the clock. Use distinct names for distinct
+// first encounter it journals the wake time (now + d) and returns *TimerPending, pausing the run;
+// on a later resume it returns nil once the wake time has passed, and continues past this point.
+// The wake time is fixed on the first call and memoized, so a resumed or crash-recovered run waits
+// to the same absolute instant rather than restarting the clock. Use distinct names for distinct
 // timers. Sleep requires a retry-safe tool (Safety.ReadOnly or Idempotent), like Interrupt.
+//
+// With a Waker bound (WithWaker), Sleep schedules the wake before it pauses. If the Waker fails,
+// Sleep returns an error wrapping ErrStorage instead of pausing: a pause with no wake scheduled
+// could sleep forever. The run then fails and its tool call records nothing (the memoized wake
+// time aside), so re-driving the run (RecoverLoop does, on its next pass) reaches this Sleep
+// again and schedules again.
 func Sleep(ctx context.Context, name string, d time.Duration) error {
 	return waitUntil(ctx, name, func(now time.Time) time.Time { return now.Add(d) })
 }
@@ -173,30 +246,28 @@ func waitUntil(ctx context.Context, name string, fireAtFrom func(now time.Time) 
 		return nil // due: the wait is over, continue
 	}
 	// Not yet due: schedule a wake if a Waker is bound, then pause durably.
-	if w := wakerFrom(ctx); w != nil {
-		// Wake the top-level run: re-running it re-enters any sub-agent down to this Sleep,
-		// while the sub-run alone cannot be driven by the root agent's resume callback.
-		w.Schedule(rootRunID(ctx, runID), wakeName(ctx, runID, name), fireAt)
+	ref := RunRef{RunID: runID, RootRunID: rootRunID(ctx, runID)}
+	if err := scheduleWake(ctx, Wake{RunID: ref.RunID, RootRunID: ref.RootRunID, Name: name, FireAt: fireAt}); err != nil {
+		return err
 	}
-	return &Sleeping{RunID: runID, RootRunID: rootRunID(ctx, runID), Name: name, FireAt: fireAt}
+	return &TimerPending{RunRef: ref, Name: name, FireAt: fireAt}
 }
 
 func timerStep(name string) string { return "timer:" + name }
 
-// wakeName is the name a timer of run runID registers with the Waker. A wake is keyed by the root
-// run it resumes and this name, so a timer inside a sub-agent is qualified by its sub-run: two
-// sub-agents of one root waiting on timers of the same name register two wakes, not one that the
-// later replaces. A top-level run's timer keeps its plain name.
-func wakeName(ctx context.Context, runID, name string) string {
-	if root := rootRunID(ctx, runID); root != runID {
-		return stepKey(runID, name)
-	}
-	return name
-}
-
 // ===========================================================================
 // Waker: the pluggable wake trigger
 // ===========================================================================
+
+// Wake is one scheduled wake: re-invoke RootRunID at or after FireAt. RunID and Name identify
+// the timer (a sub-agent's timer lives in its sub-run, RunID); the top-level run is what a
+// deployment re-invokes, since re-running it re-enters any sub-agent down to the timer.
+type Wake struct {
+	RunID     string
+	RootRunID string
+	Name      string
+	FireAt    time.Time
+}
 
 // Waker is the pluggable trigger that re-invokes a sleeping run when its durable timer is due. Sleep
 // registers a wake with the Waker bound to the run's context (WithWaker); the Waker later calls back
@@ -205,10 +276,10 @@ func wakeName(ctx context.Context, runID, name string) string {
 // exactly as the inbound trigger for an event-driven run is (see docs/guides/messaging.md). MemWaker is the
 // reference in-process implementation.
 type Waker interface {
-	// Schedule registers that runID should be resumed at fireAt, idempotent per (runID, name).
-	// runID is the top-level run; name identifies the timer within it (for a timer inside a
-	// sub-agent it is qualified by the sub-run, so same-named timers of two sub-agents differ).
-	Schedule(runID, name string, fireAt time.Time)
+	// Schedule registers w, idempotent per (w.RunID, w.Name): scheduling the same timer again
+	// replaces its fire time. An error means the wake may not be registered; the run then fails
+	// with an error wrapping ErrStorage, records nothing, and schedules again when re-driven.
+	Schedule(ctx context.Context, w Wake) error
 }
 
 type wakerKey struct{}
@@ -225,6 +296,28 @@ func wakerFrom(ctx context.Context) Waker {
 	return w
 }
 
+// scheduleWake registers w with the Waker bound to ctx, if any. A failure is a *wakeError
+// wrapping ErrStorage: the run stops with it and records nothing, so a re-drive schedules again.
+func scheduleWake(ctx context.Context, w Wake) error {
+	wk := wakerFrom(ctx)
+	if wk == nil {
+		return nil
+	}
+	if err := wk.Schedule(ctx, w); err != nil {
+		return &wakeError{err: fmt.Errorf("agent: schedule wake %q for run %s: %w (%w)", w.Name, w.RootRunID, err, ErrStorage)}
+	}
+	return nil
+}
+
+// wakeError is a Waker.Schedule failure. The loop records no result for the tool call that
+// raised it, as for a pause, and stops the run with it: the wake may not be registered, so the
+// run must not pause (nothing might wake it) and must not record a failure either (a re-drive
+// schedules again and pauses as it should have).
+type wakeError struct{ err error }
+
+func (e *wakeError) Error() string { return e.err.Error() }
+func (e *wakeError) Unwrap() error { return e.err }
+
 // MemWaker is an in-process Waker: it holds pending timers and, when Fire is called with the
 // current time (or via a Start ticker), resumes every run whose timer is due by calling the resume
 // function it was built with. resume is how the deployment re-invokes a run, typically
@@ -240,7 +333,7 @@ type MemWaker struct {
 }
 
 type scheduled struct {
-	runID  string
+	runID  string // the run to resume: the wake's RootRunID
 	fireAt time.Time
 }
 
@@ -249,12 +342,22 @@ func NewMemWaker(resume func(ctx context.Context, runID string) error) *MemWaker
 	return &MemWaker{timers: map[string]scheduled{}, resume: resume}
 }
 
-// Schedule registers a wake, idempotent per (runID, name): re-scheduling the same timer overwrites
-// its fire time rather than adding a duplicate.
-func (w *MemWaker) Schedule(runID, name string, fireAt time.Time) {
+// Schedule registers a wake, idempotent per (w.RunID, w.Name): re-scheduling the same timer
+// overwrites its fire time rather than adding a duplicate. Timers of the same name in different
+// sub-runs of one root are distinct, and the root is resumed once when either is due. An empty
+// RootRunID resumes RunID. An empty RunID is ErrConfig.
+func (w *MemWaker) Schedule(_ context.Context, wk Wake) error {
+	if wk.RunID == "" {
+		return fmt.Errorf("MemWaker.Schedule: empty RunID: %w", ErrConfig)
+	}
+	root := wk.RootRunID
+	if root == "" {
+		root = wk.RunID
+	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	w.timers[stepKey(runID, name)] = scheduled{runID: runID, fireAt: fireAt}
+	w.timers[stepKey(wk.RunID, wk.Name)] = scheduled{runID: root, fireAt: wk.FireAt}
+	return nil
 }
 
 // Fire resumes every run that has a timer due at or before now, each run once even if several of its
@@ -263,9 +366,9 @@ func (w *MemWaker) Schedule(runID, name string, fireAt time.Time) {
 //
 // A resume that fails (the model provider or the store was briefly unavailable) leaves the run where
 // it was, so its due timers are put back and the next Fire retries it; without that, one transient
-// failure would leave the run asleep with nothing to wake it. A resume that ends in a durable pause
-// (the run slept again, or awaits approval, an interrupt, a signal, or a halt resolution) is not
-// retried: the run is waiting on something else, and waking it every tick would only spin.
+// failure would leave the run asleep with nothing to wake it. A resume that ends in a Pause
+// (IsPause: the run slept again, or awaits approval, an interrupt, a signal, or a halt resolution)
+// is not retried: the run is waiting on something else, and waking it every tick would only spin.
 func (w *MemWaker) Fire(ctx context.Context, now time.Time) (int, error) {
 	type dueTimer struct {
 		key string
@@ -292,7 +395,7 @@ func (w *MemWaker) Fire(ctx context.Context, now time.Time) (int, error) {
 			continue
 		}
 		errs = append(errs, err)
-		if isPause(err) {
+		if IsPause(err) {
 			continue
 		}
 		w.mu.Lock()
@@ -336,30 +439,34 @@ func (w *MemWaker) Start(ctx context.Context, every time.Duration, onError func(
 // Signals: external events delivered into a run
 // ===========================================================================
 
-// Awaiting is returned by Run when a tool called Await and no signal has been delivered for
-// that name yet. The run has paused durably at the await point. Deliver a signal with
-// Signal (same name), then re-invoke Run with the same runID to continue. Awaiting is the
-// externally-pushed dual of Interrupted: Interrupt asks a human and resumes with their
-// answer; Await waits for an event an outside system delivers.
-type Awaiting struct {
-	RunID string
-	// RootRunID is the run to re-invoke to continue: the top-level run. It differs from RunID
-	// when the signal comes from inside a sub-agent, whose journal is RunID. Record the answer
-	// against RunID (Resume, Approve, ResolveHalt, Signal), then run RootRunID with the root agent.
-	RootRunID string
-	Name      string
-	Prompt    any // optional caller payload describing what the run is waiting for
+// SignalPending is returned by Run when a tool called Await, AwaitFor or Receive and nothing
+// has been delivered under Name yet (for Receive, Name is the channel). The run has paused
+// durably at the await point. Deliver with Signal (or Enqueue for a channel), then re-invoke
+// Run with RootRunID to continue. It is the externally-pushed dual of InterruptPending:
+// Interrupt asks a human and resumes with their answer; Await waits for an event an outside
+// system delivers.
+type SignalPending struct {
+	RunRef
+	Name string
 }
 
-func (e *Awaiting) Error() string {
+// Error names the run and the signal or channel it awaits.
+func (e *SignalPending) Error() string {
 	return fmt.Sprintf("run %s awaiting signal %q", e.RunID, e.Name)
 }
 
+func (*SignalPending) pause() {}
+
+// Awaiting is the former name of SignalPending.
+//
+// Deprecated: transitional; renamed by the 1.0 rewrite. Use SignalPending.
+type Awaiting = SignalPending
+
 // Await blocks the current run until a single-shot signal named `name` is delivered, then
 // returns its payload. Call it from inside a tool (the agent loop supplies the run context).
-// On first encounter, with no signal recorded, it returns the zero T and an *Awaiting error
-// that propagates out of Run, pausing the run durably. After Signal records a payload for
-// the same name and Run is re-invoked, Await returns that payload and execution continues
+// On first encounter, with no signal recorded, it returns the zero T and a *SignalPending
+// error that propagates out of Run, pausing the run durably. After Signal records a payload
+// for the same name and Run is re-invoked, Await returns that payload and execution continues
 // past this point. The payload survives a crash: it is a journaled step.
 //
 // Await is the externally-pushed counterpart of Interrupt. Like Interrupt and Sleep it must
@@ -389,7 +496,7 @@ func Await[T any](ctx context.Context, name string) (T, error) {
 			return v, nil
 		}
 	}
-	return zero, &Awaiting{RunID: runID, RootRunID: rootRunID(ctx, runID), Name: name}
+	return zero, &SignalPending{RunRef: RunRef{RunID: runID, RootRunID: rootRunID(ctx, runID)}, Name: name}
 }
 
 // Signal delivers a single-shot signal to a run, journaled at-most-once by name: a
@@ -397,8 +504,8 @@ func Await[T any](ctx context.Context, name string) (T, error) {
 // wins. This turns at-least-once transport into exactly-once application to the run. Safe to
 // call from any process; the store's primary-key / ON CONFLICT is the cross-process dedup.
 //
-// Signal only records the payload. After delivering, re-invoke Run with the same runID to
-// resume the awaiting run: directly, or via a Waker scheduled at the current time.
+// Signal only records the payload. After delivering, re-invoke Run with the pause's RootRunID
+// to resume the awaiting run: directly, or via a Waker scheduled at the current time.
 func Signal[T any](ctx context.Context, d Durable, runID, name string, payload T) error {
 	if runID == "" {
 		return fmt.Errorf("Signal: empty runID: %w", ErrConfig)
@@ -414,16 +521,3 @@ func Signal[T any](ctx context.Context, d Durable, runID, name string, payload T
 }
 
 func signalStep(name string) string { return "signal:" + name }
-
-// isPause reports whether err is a durable pause signal (the run recovered and is still
-// waiting) rather than a genuine failure.
-func isPause(err error) bool {
-	var (
-		pa  *PendingApproval
-		itr *Interrupted
-		slp *Sleeping
-		awt *Awaiting
-		rh  *ResumeHalt
-	)
-	return errors.As(err, &pa) || errors.As(err, &itr) || errors.As(err, &slp) || errors.As(err, &awt) || errors.As(err, &rh)
-}

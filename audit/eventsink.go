@@ -205,7 +205,7 @@ func projectJournal(ctx context.Context, store agent.Durable, runID string) ([]a
 
 // Record drains stream through log — committing every event — while forwarding each event
 // to onEvent (nil to skip), then returns the run's terminal Message and error (including
-// *PendingApproval / *ResumeHalt, exactly as AgentStream.Final does). One pass gives you
+// *ApprovalPending / *OutcomeUnknown, exactly as AgentStream.Final does). One pass gives you
 // both the live UI feed and a committed, provable audit trail. A canonicalization failure
 // is surfaced only if the run itself did not already fail.
 func Record(log *EventLog, stream *agent.AgentStream, onEvent func(agent.AgentEvent)) (agent.Message, error) {

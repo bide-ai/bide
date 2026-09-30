@@ -54,9 +54,9 @@ func (e *SagaAborted) Unwrap() error { return e.Cause }
 // runs again, and a crash mid-compensation re-runs it (so Compensate must be idempotent).
 //
 // Note: if a non-retriable step's outcome is genuinely unknown (crashed after its attempt
-// marker but before any result), resume returns *ResumeHalt instead — you can't safely
+// marker but before any result), resume returns *OutcomeUnknown instead: you can't safely
 // auto-roll-back a step that may have committed; a human decides. A failure a human then
-// records with ResolveHalt (isError) is a failed step: the next RunSaga rolls back.
+// records with ResolveHaltRef (Outcome.IsError) is a failed step: the next RunSaga rolls back.
 func (a *Agent) RunSaga(ctx context.Context, runID, input string) (Message, error) {
 	return a.runSaga(ctx, runID, input, nil)
 }
@@ -123,8 +123,8 @@ func (a *Agent) rollback(ctx context.Context, runID string, cause error, causeTe
 // call cut off by the abort (or by a crash) may still have taken effect:
 //
 //   - a call with no result but an attempt marker (a side effect that started) has an unknown
-//     outcome, so the rollback stops there with a *ResumeHalt: a human, or a reconciler via
-//     ResolveHalt, records what happened, and the next RunSaga resumes the rollback. The halt
+//     outcome, so the rollback stops there with a *OutcomeUnknown: a human, or a reconciler via
+//     ResolveHaltRef, records what happened, and the next RunSaga resumes the rollback. The halt
 //     names root, the top-level run to re-invoke, even when the call is in a sub-agent's run;
 //   - a side effect with neither result nor marker never started, and is skipped;
 //   - a retry-safe call with a compensator and no result is run again to learn its result
@@ -201,7 +201,7 @@ func (a *Agent) rollbackRun(ctx context.Context, runID, root string) (compensate
 			// and nothing here can undo it, so report it rather than a clean rollback.
 			if !done && started[tu.ID] {
 				uncompensated = append(uncompensated, tu.Name)
-				return compensated, uncompensated, &ResumeHalt{RunID: runID, RootRunID: root, ToolUseID: tu.ID, ToolName: tu.Name, AttemptedAt: markerTime(attemptedAt[tu.ID])}
+				return compensated, uncompensated, toolHalt(runID, root, tu.ID, tu.Name, markerTime(attemptedAt[tu.ID]), HaltCrashed)
 			}
 			uncompensated = append(uncompensated, tu.Name)
 			continue
@@ -232,7 +232,7 @@ func (a *Agent) rollbackRun(ctx context.Context, runID, root string) (compensate
 			case started[tu.ID]:
 				// Started, no recorded outcome: it may have taken effect. Stop for a human.
 				uncompensated = append(uncompensated, tu.Name)
-				return compensated, uncompensated, &ResumeHalt{RunID: runID, RootRunID: root, ToolUseID: tu.ID, ToolName: tu.Name, AttemptedAt: markerTime(attemptedAt[tu.ID])}
+				return compensated, uncompensated, toolHalt(runID, root, tu.ID, tu.Name, markerTime(attemptedAt[tu.ID]), HaltCrashed)
 			case !safety.RetrySafe():
 				continue // no attempt marker: it never started
 			case !canUndo:
@@ -301,7 +301,7 @@ func (a *Agent) rollbackRun(ctx context.Context, runID, root string) (compensate
 //
 // A step's failure is normally recorded as a StepSagaFail. A crash can come between the failure
 // and that record: the step then has an attempt marker and no outcome, the run halts, and the
-// operator records the verified outcome with ResolveHalt. A failure recorded that way is a failed
+// operator records the verified outcome with ResolveHaltRef. A failure recorded that way is a failed
 // step too, and aborts the saga as the StepSagaFail would have. In a saga, the only other failed
 // result a call can have is a human's denial, which the model reacts to, as it does outside one.
 func sagaFailure(recs []Record) (string, bool) {

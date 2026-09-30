@@ -28,8 +28,8 @@ func ErrorSummary(err error) string {
 	var (
 		apiErr   *agent.APIError
 		limited  *agent.RateLimited
-		pending  *agent.PendingApproval
-		halt     *agent.ResumeHalt
+		pending  *agent.ApprovalPending
+		halt     *agent.OutcomeUnknown
 		aborted  *agent.SagaAborted
 		signal   string
 		sentinel = errorClass(err)

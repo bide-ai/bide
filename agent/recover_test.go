@@ -94,7 +94,7 @@ func TestRecover_StillPausedCountsAsRecovered(t *testing.T) {
 	charge := Func("charge", "charge a card", Safety{RequiresApproval: true},
 		func(context.Context, struct{}) (string, error) { return "charged", nil })
 	a := New(approvalModel{}, store, charge)
-	if _, err := a.Run(ctx, "p", "hi"); !isPause(err) {
+	if _, err := a.Run(ctx, "p", "hi"); !IsPause(err) {
 		t.Fatalf("run should pause, got %v", err)
 	}
 

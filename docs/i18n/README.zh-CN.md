@@ -10,7 +10,7 @@
 
 一条仅追加（append-only）的日志，带来其他任何智能体框架都无法在单个库中同时提供的四项保证：副作用**至多触发一次**；在**单个进程内、无需集群**即可承载成千上万个并发的持久化运行；一条**可加密验证的审计轨迹**（RFC 6962 Merkle 证明，无需信任厂商即可核验）；以及**可证明收敛**的共享状态。这四项都出自同一套机制，而非四套集成起来的系统，作为一个纯 Go 库交付。专为经手资金、触及记录或在审计之下运行的智能体而生。
 
-**为环境智能体（ambient agent）而生。** 环境智能体在无人值守下运行：它休眠，直到某个触发条件（一个计划任务或一个事件）将其唤醒，随后工作数小时乃至数天，仅在需要判断时才暂停以询问人类，全程无人盯着每一步。恰恰在这种场景下，至多一次、高可用恢复以及可验证的轨迹才从"锦上添花"变成刚需；一个不被观察、独自行动的后台智能体，必须做到崩溃安全、重复触发安全、事后可证明。Bide 为此提供了持久化的生命周期：持久化的 `Sleep`/`WaitUntil` 定时器、用于按时间或事件驱动唤醒的可插拔 `Waker`，以及用于类型化人在回路（human-in-the-loop）的持久化 `Interrupt`/`Resume`，全都建立在同一条日志之上。你负责提供触发源和监督 UI；运行时则保证每一次运行在休眠、崩溃和节点交接之间始终正确。
+**为环境智能体（ambient agent）而生。** 环境智能体在无人值守下运行：它休眠，直到某个触发条件（一个计划任务或一个事件）将其唤醒，随后工作数小时乃至数天，仅在需要判断时才暂停以询问人类，全程无人盯着每一步。恰恰在这种场景下，至多一次、高可用恢复以及可验证的轨迹才从"锦上添花"变成刚需；一个不被观察、独自行动的后台智能体，必须做到崩溃安全、重复触发安全、事后可证明。Bide 为此提供了持久化的生命周期：持久化的 `Sleep`/`WaitUntil` 定时器、用于按时间或事件驱动唤醒的可插拔 `Waker`，以及用于类型化人在回路（human-in-the-loop）的持久化 `Interrupt`/`AnswerInterrupt`，全都建立在同一条日志之上。你负责提供触发源和监督 UI；运行时则保证每一次运行在休眠、崩溃和节点交接之间始终正确。
 
 状态：**可用的 v0**，已完成端到端实地验证。需要 **Go 1.27**。
 
@@ -42,7 +42,7 @@ eino           maxFired=64   ✗
 
 一个工具落在哪一层，取决于它声明的 `Safety`：把它标记为只读、幂等，或给它一个幂等键，未知结果就会自动重试；这些都不声明，它就会停机。可重试安全是需要主动选择的；在你没有主动选择时，暂停就是默认行为，因此一个以"绝不重复触发"为全部意义的库，默认偏向安全而非靠猜。
 
-大多数未知结果根本不会交到人手里：幂等键让提供商对一次安全的重试去重，而对于没有幂等键的系统（邮件、内部服务），一个对账器会根据该步骤留下的记录来解决它（`agent.ResolveHalt`，对于 `Step` 则用 `agent.ResolveStepHalt`）。人类是兜底，而不是默认。
+大多数未知结果根本不会交到人手里：幂等键让提供商对一次安全的重试去重，而对于没有幂等键的系统（邮件、内部服务），一个对账器会根据该步骤留下的记录来解决它（`agent.ResolveHaltRef`）。人类是兜底，而不是默认。
 
 > [!IMPORTANT]
 > **其下的规则：** 当一个动作经手资金、触及记录或在审计之下发生，而其结果真正无法得知时，停下来就是正确的结果。一次人类或对账器能解除的暂停，胜过一次无人能收回的重复扣款。
@@ -178,7 +178,7 @@ flow, err := plan.Load[Order, Receipt](configBytes, reg) // same topology, same 
 
 - **休眠至某个截止时刻。** `Sleep`/`WaitUntil` 暂停一次运行并把它的唤醒时间记入日志，从而暂停能挺过一次重启。在唤醒时刻重新调用会恰好一次地恢复。
 - **按时间或事件唤醒。** 一个可插拔的 `Waker`（默认是进程内的 `MemWaker`）重新调用一个到期的运行；触发源是你的（一个进程内循环、一个 cron、一个队列、一个入站 webhook），因此同一底座既驱动计划型、也驱动事件驱动型的智能体。
-- **为一个人类持久化地中断。** `Interrupt[T]`/`Resume` 在任意点暂停一次运行以请求一个类型化的决定，并以人类的回答作为一个记入日志的步骤来恢复（见 [Human-in-the-loop（人在回路）](#人在回路human-in-the-loop)）。批准/拒绝是那个布尔的特例。
+- **为一个人类持久化地中断。** `Interrupt[T]`/`AnswerInterrupt` 在任意点暂停一次运行以请求一个类型化的决定，并以人类的回答作为一个记入日志的步骤来恢复（见 [Human-in-the-loop（人在回路）](#人在回路human-in-the-loop)）。批准/拒绝是那个布尔的特例。
 
 你提供触发源和监督表面；运行时保证运行在每一次休眠、唤醒、中断、崩溃和交接之间始终正确。可在 `examples/signals`（把一个事件投递进一个等待中的运行）、`examples/interrupt`（人在回路的暂停/恢复）和 `examples/recover`（持久化恢复）中运行。见[信号与环境指南](../../docs/guides/signals.md)。
 
@@ -191,11 +191,10 @@ charge := agent.Func("charge_card", "Charge the customer", agent.Safety{},
 	func(ctx context.Context, in ChargeArgs) (Receipt, error) { /* ... */ })
 
 // If the process crashes after the charge fires but before its result is journaled,
-// resume does NOT run it again: it returns *ResumeHalt so you confirm, not double-charge:
+// resume does NOT run it again: it returns *OutcomeUnknown so you confirm, not double-charge:
 _, err := a.Run(ctx, runID, input)
-var halt *agent.ResumeHalt
-if errors.As(err, &halt) {
-	// halt.ToolName == "charge_card": outcome unknown, a human decides, no double side effect.
+if halt, ok := errors.AsType[*agent.OutcomeUnknown](err); ok {
+	// halt.Op.ToolName == "charge_card": outcome unknown, a human decides, no double side effect.
 }
 ```
 
@@ -283,7 +282,7 @@ for ev := range stream.Events() {
 		fmt.Printf("[%s done]\n", e.Name)
 	}
 }
-answer, err := stream.Final() // terminal message + error (incl. *PendingApproval / *ResumeHalt)
+answer, err := stream.Final() // terminal message + error (incl. a Pause: *ApprovalPending, *OutcomeUnknown, ...)
 ```
 
 事件：`TurnStarted`、`ModelEvent`（token 流）、`AssistantTurn`、`ToolStarted` / `ToolCompleted`、`ApprovalRequired`、`Finished`。为 UI 而 range `Events()` 然后调用 `Final()`，或者单独调用 `Final()` 以表现得与 `Run` 完全一样（它会替你把事件排空）。
@@ -413,11 +412,10 @@ agent.Safety{RequiresApproval: true}  // pause for human approval before executi
 <!-- docsnip: setup ctx context.Context; a *agent.Agent; store agent.Durable; runID string; input string -->
 ```go
 _, err := a.Run(ctx, runID, input)
-var pend *agent.PendingApproval
-if errors.As(err, &pend) {
+if pend, ok := errors.AsType[*agent.ApprovalPending](err); ok {
 	// ... get a human decision ...
-	agent.Approve(ctx, store, runID, pend.ToolUseID, true)
-	out, _ := a.Run(ctx, runID, input) // resumes past the pause
+	agent.Approve(ctx, store, pend.RunID, pend.ToolUseID, true)
+	out, _ := a.Run(ctx, pend.RootRunID, input) // resumes past the pause
 }
 ```
 
@@ -429,17 +427,16 @@ tool := agent.Func("choose_plan", "pick a plan", agent.Safety{ReadOnly: true},
 	func(ctx context.Context, in Options) (Plan, error) {
 		pick, err := agent.Interrupt[Plan](ctx, "plan", in) // pauses the run; in is shown to the human
 		if err != nil {
-			return Plan{}, err // *Interrupted propagates out of Run
+			return Plan{}, err // *InterruptPending propagates out of Run
 		}
 		return pick, nil // on resume, pick is the human's typed answer
 	})
 
 _, err := a.Run(ctx, runID, input)
-var intr *agent.Interrupted
-if errors.As(err, &intr) {
+if intr, ok := errors.AsType[*agent.InterruptPending](err); ok {
 	// ... show intr.Prompt, get a typed answer ...
-	agent.Resume(ctx, store, runID, intr.Key, chosenPlan)
-	out, _ := a.Run(ctx, runID, input) // resumes; Interrupt now returns chosenPlan
+	agent.AnswerInterrupt(ctx, store, intr.RunID, intr.Name, chosenPlan)
+	out, _ := a.Run(ctx, intr.RootRunID, input) // resumes; Interrupt now returns chosenPlan
 }
 ```
 
@@ -447,7 +444,7 @@ if errors.As(err, &intr) {
 
 **m-of-n 批准**：当一次签核不够时，要求来自一个具名的 n 位批准人集合中的 k 份签名决定。每位批准人签署的是确切的那次调用（工具及其参数）；该门在达到 k 份批准时放行，一旦 k 不再可达就拒绝，否则带着当前计票暂停。一份伪造或出错的决定会被忽略，而不会把它的批准人锁在门外：
 
-<!-- docsnip: setup ctx context.Context; model agent.Model; store agent.Durable; pend *agent.PendingApproval; type RefundArgs struct{}; doRefund func(context.Context, RefundArgs) (string, error); keysByApprover agent.ApproverVerifierFor; signer audit.Signer -->
+<!-- docsnip: setup ctx context.Context; model agent.Model; store agent.Durable; pend *agent.ApprovalPending; type RefundArgs struct{}; doRefund func(context.Context, RefundArgs) (string, error); keysByApprover agent.ApproverVerifierFor; signer audit.Signer -->
 ```go
 refund := agent.Func("refund", "refund the order",
 	agent.Safety{Approval: &agent.ApprovalPolicy{Need: 2, Approvers: []string{"ops", "finance", "risk"}}},
@@ -456,7 +453,8 @@ a := agent.New(model, store, refund).WithApproverVerifiers(keysByApprover)
 
 // each approver, out of band, signs the paused call they were shown:
 sig, _ := signer.Sign(agent.ApprovalDecisionBytes(pend.Subject(), "finance", true))
-agent.ApproveAs(ctx, store, pend.RunID, pend.ToolUseID, "finance", true, sig)
+agent.SubmitDecision(ctx, store, agent.Decision{RunID: pend.RunID, ToolUseID: pend.ToolUseID,
+	ApproverID: "finance", Approved: true, Signature: sig})
 ```
 
 然后，`audit.ApprovalEvidence` 与 `audit.VerifyApprovals`（或 `bide-audit verify-approvals`）离线证明：k 位具名批准人在这次确切的调用运行*之前*、依照预期的策略签核了它，所依据的证据不可能在不被察觉的情况下漏掉任何一份决定。见[批准指南](../../docs/guides/hitl-approval.md)；可跨独立进程在 `examples/approval` 中运行。
@@ -480,7 +478,7 @@ case errors.Is(err, agent.ErrStorage):      // durable-store I/O
 
 类别：`ErrConfig`、`ErrModel`、`ErrTool`、`ErrStorage`、`ErrProtocol`、`ErrBudget`。条件（每一个都包裹一个类别）：`ErrUnknownTool`、`ErrToolArgs`（包裹 `ErrTool`）；`ErrToolReinvoked`、`ErrInvalidApproval`、`ErrAlreadyDecided`（包裹 `ErrConfig`）；`ErrNoRecordedOutput`、`ErrIncompleteResponse`（包裹 `ErrModel`）；`ErrTruncatedToolArgs`（包裹 `ErrProtocol`）；`ErrBudgetExceeded`、`ErrMaxTurns`（包裹 `ErrBudget`）。提供商适配器还会返回 `*RateLimited`（HTTP 429，附带一个 `RetryAfter` 提示）和 `*APIError`（其他非 2xx，附带 `StatusCode`），两者都包裹 `ErrModel`。该工具包返回的每一个错误（包括来自模型、MCP、存储和治理适配器的）都带有一个类别，所以 `errors.Is` 在整个表面上都是可靠的。
 
-而**控制流信号**比一个类别更丰富，所以它们保持为具体类型，由 `errors.As` 匹配：`*PendingApproval`（需要批准）、`*Interrupted`（等待人类输入）、`*Sleeping`（持久化定时器待触发）、`*Awaiting`（等待一个外部信号）、`*ResumeHalt`（恢复不安全）、`*SagaAborted`（已回滚），以及 `*HaltTooYoung`（来自 `ResolveHalt` 或 `ResolveStepHalt`，当 `WithMinHaltAge` 尚未到期时）。一个暂停或停机的运行不是一个"失败"类别；检视那个结构体以获取 `RunID` / `ToolUseID` / 补偿细节。取消以通常的 `context.Canceled` / `context.DeadlineExceeded` 浮现，而一次因其运行租约（`agent.Lease`）丢失而被取消的驱动则以 `ErrLeaseLost` 浮现；与取消一样，它不带任何类别。
+而**控制流信号**比一个类别更丰富，所以它们保持为具体类型，由 `errors.As` 匹配：`*ApprovalPending`（需要批准）、`*InterruptPending`（等待人类输入）、`*TimerPending`（持久化定时器待触发）、`*SignalPending`（等待一个外部信号）、`*OutcomeUnknown`（恢复不安全）、`*SagaAborted`（已回滚），以及 `*HaltTooYoung`（来自 `ResolveHaltRef`，当 `WithMinHaltAge` 尚未到期时）。它们都实现了密封接口 `agent.Pause`；用 `agent.IsPause(err)` 判断，用 `agent.AsPause(err)` 读取。一个暂停或停机的运行不是一个"失败"类别；检视那个结构体以获取 `RunID` / `ToolUseID` / 补偿细节。取消以通常的 `context.Canceled` / `context.DeadlineExceeded` 浮现，而一次因其运行租约（`agent.Lease`）丢失而被取消的驱动则以 `ErrLeaseLost` 浮现；与取消一样，它不带任何类别。
 
 ## 中间件与可观测性
 
@@ -572,7 +570,7 @@ tool := govern.EventTool(gov, "pay", "mark the order paid", "pay", agent.Safety{
 - **[流程](../../docs/guides/flows.md)**：`plan` 类型化流程构建器。手写下沉到同一条日志的拓扑（`Step`/`Tool`/`Model`/`Switch`/`Join`/`LoopBack`），然后证明一次运行遵循了它（`Conform`）。可在 `examples/plan` 中运行。
 - **[持久化步骤](../../docs/guides/durable-steps.md)**：组合你自己的持久化工作：`Step`、`Parallel`/`Task` 扇入、saga（`RunSaga`）以及持久化定时器（`Sleep`/`WaitUntil`）。可在 `examples/parallel` 中运行。
 - **[可靠性](../../docs/guides/reliability.md)**：按尝试计的超时、分类的重试、对冲式模型调用、限流和成本跟踪，以及它们如何组合。可在 `examples/hedge` 中运行。
-- **[信号与环境运行](../../docs/guides/signals.md)**：把外部事件接收进一次运行：持久化定时器和 `Waker`、人在回路（`Interrupt`/`Resume`），以及持久化信号（传输进来是至少一次，应用出去是恰好一次）。可在 `examples/signals`、`examples/interrupt` 中运行。
+- **[信号与环境运行](../../docs/guides/signals.md)**：把外部事件接收进一次运行：持久化定时器和 `Waker`、人在回路（`Interrupt`/`AnswerInterrupt`），以及持久化信号（传输进来是至少一次，应用出去是恰好一次）。可在 `examples/signals`、`examples/interrupt` 中运行。
 - **[模型](../../docs/guides/models.md)**：Anthropic、OpenAI 兼容和 Gemini 适配器：`WithBaseURL`、采样、提示缓存、类型化错误和多模态图像输入。
 - **[MCP](../../docs/guides/mcp.md)**：把一个 MCP 服务器作为运行时工具源接入，并具备副作用安全的恢复；一个受信任服务器的工具注解可以把工具标记为可安全重新运行。
 - **[可观测性](../../docs/guides/observability.md)**：一行搞定 OTel gen_ai span（`trace.Instrument`）：span 分类法、子智能体嵌套、token 到成本，以及内容捕获的隐私默认值。可在 `examples/observability` 中运行。
@@ -585,7 +583,7 @@ tool := govern.EventTool(gov, "pay", "mark the order paid", "pay", agent.Safety{
 - **[委派](../../docs/guides/delegation.md)**：子智能体只能收窄的签名能力授权（`Grant`/`SignGrant`），离线核验（`VerifyDelegationChain`），外加从一份干净轨迹中赢得的权限。可在 `examples/govern/delegation`、`examples/govern/authority` 中运行。
 - **[安全模型](../../docs/guides/security-model.md)**：密码学保证的确切范围（完整性、真实性、防篡改性、不可否认性、选择性披露）以及范围之外的内容（机密性）。在依赖审计轨迹之前请读这个。
 - **[治理](../../docs/guides/governance.md)**：Tier-2 受治理状态底座（gsm）。把共享状态描述为一个注册表，而 `Build()` 证明每一种交错都收敛，否则返回一个反例。可在 `examples/govern/mesh`、`examples/govern/compose` 中运行。
-- **[批准](../../docs/guides/hitl-approval.md)**：工具运行之前的持久化人类签核，从 1-of-1 到签名的 m-of-n（`ApprovalPolicy`、`ApproveAs`），并离线证明 k 位具名批准人在动作之前批准了它（`audit.ApprovalEvidence`、`audit.VerifyApprovals`）。可在 `examples/approval` 中运行。
+- **[批准](../../docs/guides/hitl-approval.md)**：工具运行之前的持久化人类签核，从 1-of-1 到签名的 m-of-n（`ApprovalPolicy`、`SubmitDecision`），并离线证明 k 位具名批准人在动作之前批准了它（`audit.ApprovalEvidence`、`audit.VerifyApprovals`）。可在 `examples/approval` 中运行。
 - **[法定人数](../../docs/guides/quorum.md)**：受治理的 k-of-n 模型一致（`govern.Quorum`），计票锚定在日志中并可离线重新核对（`bide-audit verify-quorum`）。可在 `examples/govern/quorum` 中运行。
 
 **参考与内部机制**

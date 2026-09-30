@@ -41,8 +41,8 @@ succeeded by three quarters of the TTL, a quarter of the TTL before any other no
 lease. That bound holds for a process that is running. A holder that stalls past its lease (a long
 GC pause, a suspended VM, a network partition) can wake up still driving and take a step before it
 notices. That is safe: at-most-once rests on the attempt claim written before each side effect, not
-on the lease, so the second driver stops with `*ResumeHalt` instead of firing again. The cost is
-repeated work, such as a model call made twice.
+on the lease, so the second driver stops with `*OutcomeUnknown` (cause `HaltContended`) instead
+of firing again. The cost is repeated work, such as a model call made twice.
 
 **Leases are not fenced.** A fencing token (a number the lease hands out that every write must
 carry, so the store rejects a write from a holder whose lease was superseded) would turn the lease
@@ -71,7 +71,7 @@ leave a partial side effect behind when it returns an error. Make it atomic or i
 
 **An unknown outcome stops the saga instead of rolling back.** If a step that cannot be retried
 crashed after it started but before its result was recorded, bide cannot know whether it happened, so
-`RunSaga` returns `*ResumeHalt` for a person or a reconciler to resolve with `ResolveHalt`. See
+`RunSaga` returns `*OutcomeUnknown` for a person or a reconciler to resolve with `ResolveHaltRef`. See
 [Sagas](guides/durable-steps.md#sagas-transactional-agents-with-reverse-order-compensation).
 
 **A cut-off retry-safe call keeps no record of its safety.** A call that was retry-safe when it

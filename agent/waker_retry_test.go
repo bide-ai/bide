@@ -20,7 +20,7 @@ func TestMemWaker_RetriesAFailedResume(t *testing.T) {
 		return nil
 	})
 	due := time.Unix(1000, 0)
-	w.Schedule("r1", "nap", due)
+	w.Schedule(context.Background(), Wake{RunID: "r1", Name: "nap", FireAt: due})
 
 	if _, err := w.Fire(ctx, due); err == nil {
 		t.Fatal("first Fire: want the resume error reported")
@@ -41,13 +41,13 @@ func TestMemWaker_RetriesAFailedResume(t *testing.T) {
 func TestMemWaker_PauseIsNotRetried(t *testing.T) {
 	ctx := context.Background()
 	for name, pause := range map[string]error{
-		"sleeping":         &Sleeping{RunID: "r1", Name: "next"},
-		"pending approval": &PendingApproval{RunID: "r1"},
+		"sleeping":         &TimerPending{RunRef: RunRef{RunID: "r1"}, Name: "next"},
+		"pending approval": &ApprovalPending{RunRef: RunRef{RunID: "r1"}},
 	} {
 		calls := 0
 		w := NewMemWaker(func(context.Context, string) error { calls++; return pause })
 		due := time.Unix(1000, 0)
-		w.Schedule("r1", "nap", due)
+		w.Schedule(context.Background(), Wake{RunID: "r1", Name: "nap", FireAt: due})
 		_, _ = w.Fire(ctx, due)
 		_, _ = w.Fire(ctx, due.Add(time.Second))
 		if calls != 1 {
@@ -66,10 +66,10 @@ func TestMemWaker_RetryKeepsARescheduledWake(t *testing.T) {
 	calls := 0
 	w = NewMemWaker(func(context.Context, string) error {
 		calls++
-		w.Schedule("r1", "nap", later) // the run got far enough to re-register its wake, then failed
+		w.Schedule(context.Background(), Wake{RunID: "r1", Name: "nap", FireAt: later}) // the run got far enough to re-register its wake, then failed
 		return errors.New("store timeout")
 	})
-	w.Schedule("r1", "nap", due)
+	w.Schedule(context.Background(), Wake{RunID: "r1", Name: "nap", FireAt: due})
 	_, _ = w.Fire(ctx, due)
 	if _, _ = w.Fire(ctx, due.Add(time.Minute)); calls != 1 {
 		t.Fatalf("resume called %d times before the rescheduled time, want 1 (the stale wake overwrote the newer one)", calls)

@@ -77,10 +77,10 @@ func TestMemWaker_DistinctTimersWithNULAreKeptApart(t *testing.T) {
 		return nil
 	})
 	at := time.Unix(100, 0)
-	w.Schedule("a\x00b", "c", at)
-	w.Schedule("a", "b\x00c", at)
-	w.Schedule("xy", "z", at)
-	w.Schedule("x", "yz", at)
+	w.Schedule(context.Background(), Wake{RunID: "a\x00b", Name: "c", FireAt: at})
+	w.Schedule(context.Background(), Wake{RunID: "a", Name: "b\x00c", FireAt: at})
+	w.Schedule(context.Background(), Wake{RunID: "xy", Name: "z", FireAt: at})
+	w.Schedule(context.Background(), Wake{RunID: "x", Name: "yz", FireAt: at})
 	if n, err := w.Fire(context.Background(), at); err != nil || n != 4 {
 		t.Fatalf("Fire = %d, %v; want both runs resumed", n, err)
 	}

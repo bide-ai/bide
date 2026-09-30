@@ -1,7 +1,7 @@
 // Command signals shows the externally-pushed durable pauses: Await for a single-shot
 // signal delivered from outside the run with agent.Signal, AwaitFor with a durable timeout
 // (the signal-vs-deadline race), and an ordered per-run channel consumed exactly-once with
-// Send / Receive / Ack. All three ride the same durable journal, so a signal is applied at
+// Enqueue / Receive / Ack. All three ride the same durable journal, so a signal is applied at
 // most once and channel consumption is replay-safe.
 //
 // It runs with NO API key: each scene uses a small inline scripted Model.
@@ -50,7 +50,7 @@ func main() {
 	channelScene()
 }
 
-// awaitScene: a retry-safe tool Awaits a signal. The first Run pauses (*Awaiting); after an
+// awaitScene: a retry-safe tool Awaits a signal. The first Run pauses (*SignalPending); after an
 // outside caller delivers the signal, re-running resolves the await with the payload.
 func awaitScene() {
 	fmt.Println("== Await: wait for an external signal ==")
@@ -63,16 +63,16 @@ func awaitScene() {
 		func(ctx context.Context, _ struct{}) (string, error) {
 			who, err := agent.Await[string](ctx, sig)
 			if err != nil {
-				return "", err // *Awaiting on the first pass
+				return "", err // *SignalPending on the first pass
 			}
 			return "approved by " + who, nil
 		})
 	a := agent.New(&oneTool{tool: "wait_for_approval"}, store, tool)
 
 	_, err := a.Run(ctx, runID, "Wait for approval, then confirm.")
-	var awt *agent.Awaiting
-	if !errors.As(err, &awt) {
-		log.Fatalf("expected *Awaiting, got %v", err)
+	awt, ok := errors.AsType[*agent.SignalPending](err)
+	if !ok {
+		log.Fatalf("expected *SignalPending, got %v", err)
 	}
 	fmt.Printf("  paused awaiting signal %q\n", awt.Name)
 
@@ -112,8 +112,7 @@ func awaitForScene() {
 	// First Run journals the 1ms deadline and pauses; by the resume the deadline has passed
 	// and no signal arrived, so AwaitFor returns (zero, false, nil): the timeout wins.
 	if _, err := a.Run(ctx, runID, "Wait briefly."); err != nil {
-		var awt *agent.Awaiting
-		if !errors.As(err, &awt) {
+		if !agent.IsPause(err) {
 			log.Fatalf("first run: %v", err)
 		}
 	}
@@ -129,18 +128,18 @@ func awaitForScene() {
 	}
 }
 
-// channelScene: an ordered per-run channel. Messages are Sent from outside, then a tool
+// channelScene: an ordered per-run channel. Messages are enqueued from outside, then a tool
 // consumes them exactly-once by looping Receive -> handle -> Ack until the channel drains.
 func channelScene() {
-	fmt.Println("== Channel: ordered Send / Receive / Ack ==")
+	fmt.Println("== Channel: ordered Enqueue / Receive / Ack ==")
 	ctx := context.Background()
 	store := agent.NewMemStore()
 	const runID, chName = "channel-1", "jobs"
 
-	// Deliver three ordered messages before the run consumes them. Send dedups by key.
+	// Deliver three ordered messages before the run consumes them. Enqueue dedups by key.
 	for _, m := range []struct{ key, body string }{{"k1", "first"}, {"k2", "second"}, {"k3", "third"}} {
-		if err := agent.Send(ctx, store, runID, chName, m.key, m.body); err != nil {
-			log.Fatalf("send %s: %v", m.key, err)
+		if err := agent.Enqueue(ctx, store, runID, chName, m.key, m.body); err != nil {
+			log.Fatalf("enqueue %s: %v", m.key, err)
 		}
 	}
 
@@ -151,8 +150,7 @@ func channelScene() {
 			for {
 				msg, err := agent.Receive[string](ctx, chName)
 				if err != nil {
-					var awt *agent.Awaiting
-					if errors.As(err, &awt) {
+					if _, drained := errors.AsType[*agent.SignalPending](err); drained {
 						return consumed, nil // channel drained: no more unacked messages
 					}
 					return nil, err

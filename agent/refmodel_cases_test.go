@@ -173,7 +173,7 @@ func TestRefModel_HaltHoldsNoSiblingOutsideASaga(t *testing.T) {
 	}
 	_, err := w.agents(mem, &rmModel{w: w}).Run(context.Background(), rmRunID, "S0")
 	var halt *agent.ResumeHalt
-	if !errors.As(err, &halt) || halt.ToolUseID != "c3" {
+	if !errors.As(err, &halt) || halt.Op.ID != "c3" {
 		t.Fatalf("second drive: %v, want a halt on c3", err)
 	}
 	if w.fired["c5"] != 1 {

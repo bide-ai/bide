@@ -16,7 +16,7 @@ type Task[T any] struct {
 	Fn   func(context.Context) (T, error)
 	// Safety declares whether the task may re-run after a crash, as StepSafety does for a Step.
 	// The zero value treats the task as a side effect: it runs at most once, and a crash after
-	// its effect halts the resumed call with *ResumeHalt. Mark a check or a lookup ReadOnly.
+	// its effect halts the resumed call with *OutcomeUnknown. Mark a check or a lookup ReadOnly.
 	Safety Safety
 }
 
@@ -28,7 +28,7 @@ type Task[T any] struct {
 // All tasks run even if some fail, so the full set of results is preserved (a failed check does not
 // hide the others). The returned error joins every task's error and is nil only if all succeeded.
 // Succeeded tasks are memoized on a later resume. A failed task was not journaled: one marked
-// retry-safe (Task.Safety) re-runs, and a side effect halts with *ResumeHalt, as Step does, since a
+// retry-safe (Task.Safety) re-runs, and a side effect halts with *OutcomeUnknown, as Step does, since a
 // failed effect may still have landed. Task names must be unique; a repeated name is ErrConfig.
 // maxConcurrency caps in-flight tasks; <= 0 means one goroutine per task.
 //

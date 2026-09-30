@@ -20,7 +20,7 @@
 خطوة. وذلك هو بالضبط حين تتوقف خاصيات «مرة واحدة على الأكثر» والاستئناف عالي الإتاحة والأثر القابل للتحقق عن
 كونها كماليات؛ فالوكيل الخلفي الذي يتصرّف دون مراقبة لا بد أن يكون آمنًا عند الانهيار، وآمنًا عند إعادة التحفيز،
 وقابلًا للإثبات بعد الوقوع. يوفّر Bide دورة الحياة المُعمَّرة لهذا: مؤقّتات `Sleep`/`WaitUntil` مُعمَّرة، و`Waker`
-قابل للتوصيل للإيقاظ الزمني أو المدفوع بالأحداث، و`Interrupt`/`Resume` مُعمَّر لإدخال العنصر البشري المُصنَّف
+قابل للتوصيل للإيقاظ الزمني أو المدفوع بالأحداث، و`Interrupt`/`AnswerInterrupt` مُعمَّر لإدخال العنصر البشري المُصنَّف
 (typed human-in-the-loop)، وكلها على السجل نفسه. أنت تُحضِر مصدر التحفيز وواجهة الإشراف؛ ويحافظ زمن التشغيل
 على صحة كل تشغيلة عبر النوم والانهيارات وتسليم العُقَد.
 
@@ -70,7 +70,7 @@ eino           maxFired=64   ✗
 
 معظم النتائج المجهولة لا تبلغ إنسانًا أبدًا: مفتاح عدم التكرار يتيح للمورّد إزالة تكرار إعادة محاولة آمنة،
 وللأنظمة التي لا تملكه (البريد، الخدمات الداخلية) يحسم مُسوٍّ الخطوةَ من السجل الذي تركته
-(`agent.ResolveHalt`، أو `agent.ResolveStepHalt` لخطوة `Step`). الإنسان هو الحدّ الأدنى، لا الافتراض.
+(`agent.ResolveHaltRef`). الإنسان هو الحدّ الأدنى، لا الافتراض.
 
 > [!IMPORTANT]
 > **القاعدة تحت ذلك:** حين يُحرّك فعلٌ أموالًا، أو يمسّ سجلًّا، أو يقع تحت التدقيق، وتكون النتيجة مجهولة
@@ -294,7 +294,7 @@ flow, err := plan.Load[Order, Receipt](configBytes, reg) // same topology, same 
 - **استيقظ بالزمن أو الحدث.** `Waker` قابل للتوصيل (`MemWaker` داخل العملية افتراضيًّا) يعيد استدعاء تشغيلة
   مُستحقّة؛ ومصدر التحفيز لك (حلقة داخل العملية، أو cron، أو طابور، أو webhook وارد)، فتقود الركيزة نفسها
   الوكلاء المُجدوَلين والمدفوعين بالأحداث معًا.
-- **قاطِع لأجل إنسان، بمعمورية.** يوقِف `Interrupt[T]`/`Resume` تشغيلة عند أي نقطة لطلب قرار مُصنَّف
+- **قاطِع لأجل إنسان، بمعمورية.** يوقِف `Interrupt[T]`/`AnswerInterrupt` تشغيلة عند أي نقطة لطلب قرار مُصنَّف
   ويستأنف بجواب الإنسان كخطوة مُسجَّلة (انظر [العنصر البشري في الحلقة](#العنصر-البشري-في-الحلقة-human-in-the-loop)).
   الموافقة/الرفض هي الحالة البوليانية الخاصة.
 
@@ -311,11 +311,10 @@ charge := agent.Func("charge_card", "Charge the customer", agent.Safety{},
 	func(ctx context.Context, in ChargeArgs) (Receipt, error) { /* ... */ })
 
 // If the process crashes after the charge fires but before its result is journaled,
-// resume does NOT run it again: it returns *ResumeHalt so you confirm, not double-charge:
+// resume does NOT run it again: it returns *OutcomeUnknown so you confirm, not double-charge:
 _, err := a.Run(ctx, runID, input)
-var halt *agent.ResumeHalt
-if errors.As(err, &halt) {
-	// halt.ToolName == "charge_card": outcome unknown, a human decides, no double side effect.
+if halt, ok := errors.AsType[*agent.OutcomeUnknown](err); ok {
+	// halt.Op.ToolName == "charge_card": outcome unknown, a human decides, no double side effect.
 }
 ```
 
@@ -408,7 +407,7 @@ for ev := range stream.Events() {
 		fmt.Printf("[%s done]\n", e.Name)
 	}
 }
-answer, err := stream.Final() // terminal message + error (incl. *PendingApproval / *ResumeHalt)
+answer, err := stream.Final() // terminal message + error (incl. a Pause: *ApprovalPending, *OutcomeUnknown, ...)
 ```
 
 الأحداث: `TurnStarted`، `ModelEvent` (تغذية الرموز)، `AssistantTurn`، `ToolStarted` / `ToolCompleted`،
@@ -591,11 +590,10 @@ LangGraph الموثّقة «يجب أن تكون العُقَد عديمة ال
 <!-- docsnip: setup ctx context.Context; a *agent.Agent; store agent.Durable; runID string; input string -->
 ```go
 _, err := a.Run(ctx, runID, input)
-var pend *agent.PendingApproval
-if errors.As(err, &pend) {
+if pend, ok := errors.AsType[*agent.ApprovalPending](err); ok {
 	// ... get a human decision ...
-	agent.Approve(ctx, store, runID, pend.ToolUseID, true)
-	out, _ := a.Run(ctx, runID, input) // resumes past the pause
+	agent.Approve(ctx, store, pend.RunID, pend.ToolUseID, true)
+	out, _ := a.Run(ctx, pend.RootRunID, input) // resumes past the pause
 }
 ```
 
@@ -608,17 +606,16 @@ tool := agent.Func("choose_plan", "pick a plan", agent.Safety{ReadOnly: true},
 	func(ctx context.Context, in Options) (Plan, error) {
 		pick, err := agent.Interrupt[Plan](ctx, "plan", in) // pauses the run; in is shown to the human
 		if err != nil {
-			return Plan{}, err // *Interrupted propagates out of Run
+			return Plan{}, err // *InterruptPending propagates out of Run
 		}
 		return pick, nil // on resume, pick is the human's typed answer
 	})
 
 _, err := a.Run(ctx, runID, input)
-var intr *agent.Interrupted
-if errors.As(err, &intr) {
+if intr, ok := errors.AsType[*agent.InterruptPending](err); ok {
 	// ... show intr.Prompt, get a typed answer ...
-	agent.Resume(ctx, store, runID, intr.Key, chosenPlan)
-	out, _ := a.Run(ctx, runID, input) // resumes; Interrupt now returns chosenPlan
+	agent.AnswerInterrupt(ctx, store, intr.RunID, intr.Name, chosenPlan)
+	out, _ := a.Run(ctx, intr.RootRunID, input) // resumes; Interrupt now returns chosenPlan
 }
 ```
 
@@ -630,7 +627,7 @@ if errors.As(err, &intr) {
 مُوافِق النداءَ بعينه (الأداة ووسائطها)؛ وتمضي البوّابة عند k موافقات، وترفض متى صار بلوغ k مستحيلًا، وإلا
 تتوقف مع الحصيلة الجارية. ويُتجاهَل القرار المُزوَّر أو الخاطئ دون أن يُقفَل مُوافِقه خارجًا:
 
-<!-- docsnip: setup ctx context.Context; model agent.Model; store agent.Durable; pend *agent.PendingApproval; type RefundArgs struct{}; doRefund func(context.Context, RefundArgs) (string, error); keysByApprover agent.ApproverVerifierFor; signer audit.Signer -->
+<!-- docsnip: setup ctx context.Context; model agent.Model; store agent.Durable; pend *agent.ApprovalPending; type RefundArgs struct{}; doRefund func(context.Context, RefundArgs) (string, error); keysByApprover agent.ApproverVerifierFor; signer audit.Signer -->
 ```go
 refund := agent.Func("refund", "refund the order",
 	agent.Safety{Approval: &agent.ApprovalPolicy{Need: 2, Approvers: []string{"ops", "finance", "risk"}}},
@@ -639,7 +636,8 @@ a := agent.New(model, store, refund).WithApproverVerifiers(keysByApprover)
 
 // each approver, out of band, signs the paused call they were shown:
 sig, _ := signer.Sign(agent.ApprovalDecisionBytes(pend.Subject(), "finance", true))
-agent.ApproveAs(ctx, store, pend.RunID, pend.ToolUseID, "finance", true, sig)
+agent.SubmitDecision(ctx, store, agent.Decision{RunID: pend.RunID, ToolUseID: pend.ToolUseID,
+	ApproverID: "finance", Approved: true, Signature: sig})
 ```
 
 ثم يُثبِت `audit.ApprovalEvidence` و`audit.VerifyApprovals` (أو `bide-audit verify-approvals`) دون اتصال أن
@@ -675,10 +673,10 @@ case errors.Is(err, agent.ErrStorage):      // durable-store I/O
 وكلاهما يلفّ `ErrModel`. كل خطأ تُرجِعه العُدّة (بما فيه من النموذج وMCP والمخزن ومُحوّلات الحوكمة) يحمل صنفًا،
 فـ `errors.Is` موثوق عبر السطح كله.
 
-**إشارات التحكّم في التدفّق** أغنى من صنف، فتبقى أنواعًا ملموسة تُطابَق بـ `errors.As`: `*PendingApproval`
-(الموافقة مطلوبة)، `*Interrupted` (بانتظار مُدخَل بشري)، `*Sleeping` (مؤقّت مُعمَّر مُعلَّق)، `*Awaiting`
-(بانتظار إشارة خارجية)، `*ResumeHalt` (غير آمن للاستئناف)، `*SagaAborted` (تراجَع)، و`*HaltTooYoung` (من
-`ResolveHalt` أو `ResolveStepHalt`، حين لم تنقضِ مدّة `WithMinHaltAge` بعد). التشغيلة المتوقّفة أو
+**إشارات التحكّم في التدفّق** أغنى من صنف، فتبقى أنواعًا ملموسة تُطابَق بـ `errors.As`: `*ApprovalPending`
+(الموافقة مطلوبة)، `*InterruptPending` (بانتظار مُدخَل بشري)، `*TimerPending` (مؤقّت مُعمَّر مُعلَّق)، `*SignalPending`
+(بانتظار إشارة خارجية)، `*OutcomeUnknown` (غير آمن للاستئناف)، `*SagaAborted` (تراجَع)، و`*HaltTooYoung` (من
+`ResolveHaltRef`، حين لم تنقضِ مدّة `WithMinHaltAge` بعد). جميعها تحقّق الواجهة المختومة `agent.Pause`؛ اختبرها بـ `agent.IsPause(err)` واقرأها بـ `agent.AsPause(err)`. التشغيلة المتوقّفة أو
 المُتوقِّفة ليست صنف «إخفاق»؛ افحص البنية للحصول على `RunID` / `ToolUseID` / تفاصيل التعويض. ويظهر الإلغاء
 كـ `context.Canceled` / `context.DeadlineExceeded` المعتادَين، وتظهر القيادة التي أُلغيت لأن حجز تشغيلتها
 (`agent.Lease`) قد فُقِد كـ `ErrLeaseLost`؛ ومثل الإلغاء، لا يحمل صنفًا.
@@ -816,7 +814,7 @@ gsm، ProofBundle). ويُذكَر ضمان المعمورية الدقيق في
 - **[الموثوقية](../../docs/guides/reliability.md)**: مهلات لكل محاولة، وإعادة محاولة مُصنَّفة، ونداءات نموذج
   مُتحوَّطة، وتحديد المعدّل، وتتبّع التكلفة، وكيف تتألّف. قابل للتشغيل: `examples/hedge`.
 - **[الإشارات والوكلاء المُحيطيّون](../../docs/guides/signals.md)**: أحداث خارجية إلى داخل تشغيلة: المؤقّتات
-  المُعمَّرة و`Waker`، والعنصر البشري في الحلقة (`Interrupt`/`Resume`)، والإشارات المُعمَّرة (دخول «مرة واحدة
+  المُعمَّرة و`Waker`، والعنصر البشري في الحلقة (`Interrupt`/`AnswerInterrupt`)، والإشارات المُعمَّرة (دخول «مرة واحدة
   على الأقل»، وتطبيق «مرة واحدة بالضبط»). قابل للتشغيل: `examples/signals`، `examples/interrupt`.
 - **[النماذج](../../docs/guides/models.md)**: مُحوّلات Anthropic والمتوافق مع OpenAI وGemini: `WithBaseURL`،
   والمعاينة، والتخزين المؤقت للموجّهات، والأخطاء المُصنَّفة، وإدخال الصور المتعدّد الوسائط.
@@ -846,7 +844,7 @@ gsm، ProofBundle). ويُذكَر ضمان المعمورية الدقيق في
   كسجلّ، ويُثبِت `Build()` أن كل تشابك يتقارب أو يُعيد مثالًا مضادًّا. قابل للتشغيل: `examples/govern/mesh`،
   `examples/govern/compose`.
 - **[الموافقة](../../docs/guides/hitl-approval.md)**: توقيع بشري مُعمَّر قبل تشغيل أداة، من 1-من-1 إلى m-من-n
-  الموقَّعة (`ApprovalPolicy`، `ApproveAs`)، مع برهان دون اتصال على أن k مُوافِقين مُسمَّين وافقوا قبل الفعل
+  الموقَّعة (`ApprovalPolicy`، `SubmitDecision`)، مع برهان دون اتصال على أن k مُوافِقين مُسمَّين وافقوا قبل الفعل
   (`audit.ApprovalEvidence`، `audit.VerifyApprovals`). قابل للتشغيل: `examples/approval`.
 - **[النِّصاب](../../docs/guides/quorum.md)**: اتّفاق نماذج محكوم k-من-n (`govern.Quorum`)، مع تثبيت التعداد
   في السجل وقابليته لإعادة الفحص دون اتصال (`bide-audit verify-quorum`). قابل للتشغيل: `examples/govern/quorum`.

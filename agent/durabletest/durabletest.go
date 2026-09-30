@@ -270,9 +270,9 @@ func stepAttemptSafety(t *testing.T, d agent.Durable) {
 		t.Fatal("the failing step succeeded")
 	}
 	_, err = agent.Step(ctx, d, id, "write", write, safe)
-	var halt *agent.ResumeHalt
-	if !errors.As(err, &halt) || halt.ToolUseID != "write" || halt.AttemptedAt.IsZero() {
-		t.Fatalf("resume err = %v, want *ResumeHalt for write with its attempt time", err)
+	var halt *agent.OutcomeUnknown
+	if !errors.As(err, &halt) || halt.Op.ID != "write" || halt.AttemptedAt.IsZero() {
+		t.Fatalf("resume err = %v, want *OutcomeUnknown for write with its attempt time", err)
 	}
 	if ran != 1 {
 		t.Fatalf("the side-effecting step ran %d times, want 1", ran)

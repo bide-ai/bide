@@ -9,6 +9,21 @@ minor version (0.x.0) may include breaking API or journal-format changes; each o
 
 ## [Unreleased]
 
+### Added
+
+- `agent.Pause`, the sealed interface every pause satisfies, with `agent.RunRef`, `IsPause` and `AsPause`. Its five kinds are `ApprovalPending`, `InterruptPending`, `SignalPending`, `TimerPending` and `OutcomeUnknown`; code outside the package cannot add one ([#90]).
+- `agent.ResolveHaltRef(ctx, store, HaltRef, Outcome, ...)`, one resolution for tool and `Step` halts, with `OutcomeUnknown.Ref`, `HaltRef`, `OpRef`, `OpKind` (`OpTool`, `OpStep`), `HaltCause` (`HaltCrashed`, `HaltContended`) and `Outcome` (whose `Evidence` marks the resolution reconciled). The 1.0 rewrite renames it `ResolveHalt` ([#90]).
+- Verbs named for the pause they answer: `SubmitDecision` with `Decision`, `AnswerInterrupt` and `Enqueue`; `agent.Wake` ([#90]).
+- `agent.HaltInFlight`, `agent.HaltAlreadyResolved`, `agent.ErrAlreadyResolved` (wraps `ErrConfig`) and `agent.WithoutLiveDriverCheck` ([#90]).
+
+### Changed
+
+- **Breaking:** the pause types are renamed: `PendingApproval` to `ApprovalPending`, `Interrupted` to `InterruptPending`, `Awaiting` to `SignalPending`, `Sleeping` to `TimerPending` and `ResumeHalt` to `OutcomeUnknown`. The old names stay as deprecated aliases until the 1.0 rewrite, so code that names the types or matches them with `errors.As` keeps compiling, but composite literals and the removed fields break: each type embeds `RunRef` (`RunID`, `RootRunID`), so a composite literal names `RunRef`; `Interrupted.Key` is `InterruptPending.Name`, `ResumeHalt.ToolUseID` and `ToolName` are `OutcomeUnknown.Op.ID` and `Op.ToolName`, and the never-set `Awaiting.Prompt` is gone ([#90]).
+- **Breaking:** `Waker.Schedule(ctx, Wake) error`. A failed schedule fails the run with an error wrapping `ErrStorage` and records nothing for the sleeping call (it used to pause with no wake registered), and `RecoverLoop` schedules it again on its next pass. `MemWaker` keys a wake by its `RunID` and `Name` and resumes its `RootRunID` ([#90]).
+- `OutcomeUnknown.Cause` says why a run halted: `HaltContended` when another driver won the claim during this drive, otherwise `HaltCrashed` (no live claimant known to the halting driver, which is not proof). **Breaking:** `ResolveHaltRef`, and the `ResolveHalt` and `ResolveStepHalt` wrappers, refuse to resolve an effect a driver may still be running: on a store that leases runs they hold the root run's lease while resolving and return `*HaltInFlight` while a driver holds it; on a store that cannot (`store/sqlite`, a custom `Durable`) they require `WithMinHaltAge` (measured from the live attempt), unless `WithoutLiveDriverCheck` is given; a `HaltContended` halt always requires `WithMinHaltAge`. A resolution that conflicts with an outcome already recorded returns `*HaltAlreadyResolved` instead of nil ([#90]).
+- `ResolveHalt`, `ResolveStepHalt`, `ApproveAs`, `Resume` and the channel `Send` are deprecated wrappers of `ResolveHaltRef`, `SubmitDecision`, `AnswerInterrupt` and `Enqueue`; `ResolveHalt` and `ResolveStepHalt` take the cause as `HaltCrashed` ([#90]).
+- The loop, `Recover`, `RecoverLoop` and `MemWaker` detect pauses with `IsPause` ([#90]).
+
 ## [0.8.0] - 2026-09-30
 
 ### Added
@@ -434,6 +449,7 @@ First public release.
 [#87]: https://github.com/bide-ai/bide/pull/87
 [#88]: https://github.com/bide-ai/bide/pull/88
 [#89]: https://github.com/bide-ai/bide/pull/89
+[#90]: https://github.com/bide-ai/bide/pull/90
 [#91]: https://github.com/bide-ai/bide/pull/91
 [#93]: https://github.com/bide-ai/bide/pull/93
 [78f8db6]: https://github.com/bide-ai/bide/commit/78f8db6

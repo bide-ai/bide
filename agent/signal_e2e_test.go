@@ -139,7 +139,7 @@ func TestSignal_DeliverThenWake(t *testing.T) {
 	if err := Signal(context.Background(), mem, "r", "go", "payload"); err != nil {
 		t.Fatalf("Signal: %v", err)
 	}
-	waker.Schedule("r", "signal:go", time.Time{}) // zero time is before now, so the wake is due
+	waker.Schedule(context.Background(), Wake{RunID: "r", Name: "signal:go", FireAt: time.Time{}}) // zero time is before now, so the wake is due
 
 	n, err := waker.Fire(context.Background(), time.Now())
 	if err != nil {

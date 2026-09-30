@@ -9,7 +9,7 @@ import (
 )
 
 // quorumTally evaluates the m-of-n gate for tu. It re-reads the run's journal (the
-// authoritative source of the decisions ApproveAs recorded) and counts it with
+// authoritative source of the decisions SubmitDecision recorded) and counts it with
 // TallyApprovals, the same rule offline verification runs. final reports whether the gate
 // has reached a terminal outcome: passed (Need approvals) or unreachable (too few approvers
 // remain who have not validly denied). A non-final tally means the run must stay paused.
@@ -142,7 +142,7 @@ func (a *Agent) toolHandler() ToolHandler {
 // journalAcceptedArgs records, before the side effect fires, the arguments a compensable call in
 // a saga is about to run with, when a tool middleware changed them from the model's (see
 // sagaArgsStep): compensation then undoes what the tool did, even when the call's outcome is
-// later resolved by ResolveHalt. It is a memoized step, so a retry-safe call that runs again
+// later resolved by ResolveHaltRef. It is a memoized step, so a retry-safe call that runs again
 // keeps the first record; a middleware that rewrites arguments must rewrite them the same way
 // every time. Unchanged arguments, or a call outside a saga, journal nothing, so compensation
 // reads the model's arguments, as for a journal written before this record existed.

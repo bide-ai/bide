@@ -5,6 +5,10 @@
 // second Run leaves the counter unchanged, demonstrating at-most-once execution across a
 // resume (the property a crash-recovery supervisor relies on; see agent.Recover).
 //
+// It then shows the other side of at-most-once: a side effect whose outcome was lost is not
+// fired again. The resumed Step halts with *agent.OutcomeUnknown, an operator records the
+// verified outcome with agent.ResolveHaltRef, and the Step then returns it.
+//
 // It runs with NO API key: the model is a small inline scripted Model.
 //
 //	go run ./examples/recover
@@ -12,6 +16,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"sync/atomic"
@@ -79,4 +84,38 @@ func main() {
 	}
 	fmt.Printf("second run: %s\n", out2.Text())
 	fmt.Printf("side effect fired %d time(s) total (unchanged: at-most-once across resume)\n", charges.Load())
+
+	haltScene(ctx, store)
+}
+
+// haltScene: a Step that is a side effect (no StepSafety) journals an attempt marker before it
+// runs. Its connection drops after the request went out, so nothing is recorded but the marker;
+// the resumed Step cannot know whether the invoice was sent, and halts instead of sending it
+// again. The operator checks the provider and resolves the halt with what really happened.
+func haltScene(ctx context.Context, store agent.Durable) {
+	const runID = "recover-2"
+	var sends atomic.Int64
+	send := func(context.Context) (string, error) {
+		sends.Add(1)
+		return "", errors.New("connection dropped after the request went out")
+	}
+	if _, err := agent.Step(ctx, store, runID, "send-invoice", send); err == nil {
+		log.Fatal("first attempt: want the lost answer reported")
+	}
+	_, err := agent.Step(ctx, store, runID, "send-invoice", send)
+	halt, ok := errors.AsType[*agent.OutcomeUnknown](err)
+	if !ok {
+		log.Fatalf("resumed step: want *OutcomeUnknown, got %v", err)
+	}
+	fmt.Printf("halted: %s %q has an unknown outcome (cause %s); sends so far: %d\n", halt.Op.Kind, halt.Op.ID, halt.Cause, sends.Load())
+
+	// The operator confirms with the provider that invoice INV-7 did go out, and records it.
+	if err := agent.ResolveHaltRef(ctx, store, halt.Ref(), agent.Outcome{Result: "INV-7 (operator-confirmed)"}); err != nil {
+		log.Fatalf("resolve: %v", err)
+	}
+	got, err := agent.Step(ctx, store, runID, "send-invoice", send)
+	if err != nil {
+		log.Fatalf("after resolve: %v", err)
+	}
+	fmt.Printf("resolved: step returns %q; sends total: %d (never fired twice)\n", got, sends.Load())
 }

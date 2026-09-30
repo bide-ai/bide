@@ -116,10 +116,10 @@ func TestSaga_ResolvedUnknownOutcomeCompensatesTheAcceptedArguments(t *testing.T
 	}
 	_, err := build().RunSaga(context.Background(), "r", "trip") // the resume halts on the charge
 	var halt *ResumeHalt
-	if !errors.As(err, &halt) || halt.ToolUseID != "c1" {
+	if !errors.As(err, &halt) || halt.Op.ID != "c1" {
 		t.Fatalf("resumed RunSaga = %v, want a ResumeHalt on the charge", err)
 	}
-	if err := ResolveHalt(context.Background(), store, halt.RunID, halt.ToolUseID, "charged (operator-confirmed)", false); err != nil {
+	if err := ResolveHalt(context.Background(), store, halt.RunID, halt.Op.ID, "charged (operator-confirmed)", false); err != nil {
 		t.Fatalf("ResolveHalt: %v", err)
 	}
 	_, err = build().RunSaga(context.Background(), "r", "trip")

@@ -252,10 +252,9 @@ name, so a replayed run never adds a second one and no earlier record's index sh
 that crashed after journaling its final answer but before the marker is not skipped; re-driving
 it writes the marker from the recorded answer without calling the model.
 
-**Pauses re-surface; they are not errors.** A re-driven run that is still waiting returns one
-of the durable pause signals (`*PendingApproval`, `*Interrupted`, `*Sleeping`, `*Awaiting`,
-`*ResumeHalt`).
-`Recover` detects these with `errors.As` and treats them as SUCCESSFUL recoveries: the run is
+**Pauses re-surface; they are not errors.** A re-driven run that is still waiting returns an
+`agent.Pause` (`*ApprovalPending`, `*InterruptPending`, `*TimerPending`, `*SignalPending`,
+`*OutcomeUnknown`). `Recover` detects these with `agent.IsPause` and treats them as SUCCESSFUL recoveries: the run is
 back in memory and will resume when its condition is met (a human approves, an interrupt is
 answered, a timer fires). Only a genuine model, storage, or tool fault is joined into the
 returned error.
@@ -263,7 +262,9 @@ returned error.
 **A Waker-bound resume rebuilds the timer set** with no separate journal scan. A sleeping run
 journals its wake time (see [Messaging](messaging.md) and `agent/pause.go`). When `Recover` re-drives it with a
 `resume` that binds a `Waker` (`agent.WithWaker`), the run replays into its durable `Sleep`,
-which sees the `Waker` on the context and re-registers the journaled wake automatically.
+which sees the `Waker` on the context and re-registers the journaled wake automatically. If the
+`Waker` cannot schedule it, the run fails with an error wrapping `ErrStorage` (reported to
+`WithRecoverErrors`) and records nothing, and the next `RecoverLoop` pass schedules it again.
 Advancing the clock and firing the waker then resumes the run to completion. The rebuild
 falls out of ordinary replay: no timer-specific recovery path exists or is needed.
 
@@ -298,7 +299,7 @@ worker that is stalled through the cutoff, which is why side effects rest on the
 instead (see [known limitations](../KNOWN-LIMITATIONS.md)).
 
 **The idempotency-key retry path** reduces halt-for-a-human stops. On resume, a tool with an
-unknown outcome (invoked, no result journaled) normally fires `*ResumeHalt` unless it is
+unknown outcome (invoked, no result journaled) normally fires `*OutcomeUnknown` unless it is
 retry-safe. A tool that declares a `Safety.IdempotencyKey` is now treated as retry-safe: it
 asserts that a retried call with the same args de-duplicates downstream, so the run retries it
 instead of halting. The contract is the tool's to keep: it must send that key to the
