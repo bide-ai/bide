@@ -392,12 +392,18 @@ resolution all run around it.
 - **1-of-1 (`Approve`).** `approval:<id>` holds the first decision recorded (`Approve1`, either
   verdict, at any time).
 - **m-of-n (`SubmitDecision`).** Each decision is its own record, in journal order: the approver
-  id it names, the person who signed, the verdict, whether the signature verifies (the signer
-  holds that approver's key: `KeyOf`, `Holder`), and whether it was signed over this exact call
-  or another call or other arguments (`Subjects`). People sign as the approvers whose keys they
-  hold; an actor holding no key (`hx`) forges. An identical resubmission adds nothing.
-- **The counting rule (`TallyApprovals`).** An approver's decision is their first record that
-  verifies over this call; the tally passes with `need` approvals and is final once passed or
+  id it names, the person who signed, the verdict, the key it was signed with, and whether it was
+  signed over this exact call or another call or other arguments (`Subjects`). People sign as an
+  approver with a key they hold that a resolver maps to it (`KeyOf`, `KeyOf2`, `Holder`); an
+  actor holding no key (`hx`) forges. An identical resubmission adds nothing.
+- **Keys (#109).** Each approver's verifier accepts a set of keys (`KeyIDs`: several during a
+  rotation, both components of a hybrid). The resolver (`keys`) may change once (`KeyOf2`), at any
+  time, a count already under way included. The gate's check (`ValidateKeys`, every evaluation)
+  refuses a policy with an approver the resolver knows with no key, or two approvers whose key sets
+  meet; the count (`TallyApprovals`) never seats such an approver under the resolver as it is at
+  the count, and leaves them out of the unreachable test, so a change can make the gate deny.
+- **The counting rule (`TallyApprovals`).** An approver's decision is their first record whose key
+  the approver's verifier accepts at the count and that was signed over this call; the tally passes with `need` approvals and is final once passed or
   unreachable. `quorumTally` reads the history afresh, uses a recorded tally if there is one,
   pauses on a count that is not final, and otherwise records the tally (first writer wins) and
   goes by the record the journal holds.
@@ -412,12 +418,14 @@ resolution all run around it.
 | Label | Go |
 |---|---|
 | `ApGate` | `Agent.run`'s pre-pass: `decided`/`approvals` and `values` from the Load, then `t.Safety()` |
-| `QTally` | `Agent.quorumTally`: `ApprovalPolicy.Validate`, `History`, a recorded `ApprovalTallyStep`, `TallyApprovals` |
+| `QTally` | `Agent.quorumTally`: `ApprovalPolicy.Validate` and the key check, `History`, a recorded `ApprovalTallyStep` |
+| `QCount` | `TallyApprovals` with the resolver as it is now: shared and keyless seats excluded (`ReasonSharedKey`, `ReasonNoKeyID`) |
 | `QRecord` | `quorumTally`'s `step` recording the tally (retry-safe, first writer wins) |
 | `Deny` | the pre-pass's `putRecord` of the denied result |
 | `Approve1` | `Approve` |
 | `Submit` | `SubmitDecision` (without `WithDecisionCheck`: the gate never depends on it) |
 | `Redeploy` | a new deployment of a process's tools |
+| `ResolverChange` | the verifier resolver answering differently (a rotation, a new key file) |
 
 ### Properties
 
@@ -425,8 +433,8 @@ resolution all run around it.
 |---|---|---|
 | `NoUnapprovedFire` | invariant | an effect fires under a gate only with a recorded sufficient approval (an `Approve(true)` or a passing recorded tally) |
 | `DenialFinal` | invariant | a drive whose Load read a recorded denial never fires the effect, whatever the gate is now |
-| `TallySound` | invariant | a passing recorded tally rests on `need` valid approvals, signed over this exact call, by distinct people |
-| `DenialSound` | invariant | a failing recorded tally rests on enough valid denials: an invalid record cannot force a denial |
+| `TallySound` | invariant | a passing recorded tally rests on `need` valid approvals, signed over this exact call, by distinct people (the holders of the signing keys) |
+| `DenialSound` | invariant | a failing recorded tally rests on valid denials and seats the count excluded: an invalid record cannot force a denial |
 | `NoStuckPause` | invariant | the gate never pauses for approvals that are already in (no lockout) |
 
 `AtMostOnce`, `NoLiveOverride` and the rest of model 1's properties are checked in the same runs.
@@ -444,7 +452,9 @@ every drive that read the denial.
 | `ap-one-resolve` | ci | 1-of-1 with an operator resolving halts (lease check, claim of the next attempt); 1 error reply, 1 crash | 3,857 | <1 s |
 | `ap-one-resolve-minage` | ci | 1-of-1 with an operator resolving halts under `WithMinHaltAge` and the claim of the next attempt; 2 error replies | 48,356 | 2 s |
 | `ap-fold-check` | ci | the #68 fix: a policy listing one approver twice is refused | 222 | <1 s |
-| `ap-shared-key-check` | ci | F5's fix: a policy whose approvers share a key is refused | 606 | <1 s |
+| `ap-shared-key-check` | ci | F5's fix (#109): a policy whose approvers share a key is refused | 102 | <1 s |
+| `ap-keysets-check` | ci | key sets that meet without being equal ({k1, k4} and {k2, k4}) are refused | 2,406 | <1 s |
+| `ap-resolver-change` | ci | the resolver changes between the check and the count (a2 now accepts a1's key); two drivers, three decisions | 75,730 | 2 s |
 | `deep-ap-m-same` | nightly | m-of-n, two drivers in one process, three decisions, a redeploy; 1 error reply | 5,252,508 | 6 min |
 
 Regressions: `regress/ap-denial-not-final` (#70: a recorded denial honoured only while the tool
@@ -452,17 +462,22 @@ had a gate; `DenialFinal`, 12 states), `regress/ap-unbound-subject` (approval v2
 another call counted; `TallySound`, 14 states), `regress/ap-slot-per-approver` (approval v2: one
 record per approver, so a forged record took the approver's place and the gate waited for
 approvals already in; `NoStuckPause`, 8 states), `regress/ap-fold-dup` (#68: one person filled
-two seats under two spellings of one id; `TallySound`, 14 states).
+two seats under two spellings of one id; `TallySound`, 14 states), `regress/ap-shared-key` (F5,
+fixed in #109: two approvers on one key with neither the check nor the count looking at keys;
+`TallySound`, 9 states), `regress/ap-set-equality` (key sets compared for equality, not overlap;
+`TallySound`, 9 states), `regress/ap-no-count-exclusion` (the count seating what the check passed
+after the resolver changed; `TallySound`, 10 states). Accepted: `limits/ap-resolver-change-denies`
+(a change that makes two approvers share a key excludes both seats, and the gate can deny with
+no denial recorded; `NoDenyWithoutDenials`, 8 states).
 
 ### Findings
 
-- **F5 (open): two approvers whose verifiers resolve to one key are two seats for one person.**
-  `ApprovalPolicy.Validate` refuses one approver under two spellings, but nothing compares keys:
-  if `verifierFor` resolves a1 and a2 to the same key, its holder signs both decisions, and the
-  tally passes with one person's approval (`findings/ap-shared-key`, `TallySound`, 10 states).
-  Fix, which the model checks (`ap-shared-key-check`, `KeyCheck`): the gate refuses a policy two
-  of whose approvers resolve to one key. The maintainer approved it: `ApproverVerifier` gets a key
-  identity (branch `fix/approver-key-identity`); the finding moves to `regress/` when it lands.
+- **F5 (fixed in #109): two approvers whose verifiers resolve to one key were two seats for one
+  person.** `ApprovalPolicy.Validate` refused one approver under two spellings, but nothing
+  compared keys: if `verifierFor` resolved a1 and a2 to the same key, its holder signed both
+  decisions, and the tally passed with one person's approval (`regress/ap-shared-key`,
+  `TallySound`). #109 gives `ApproverVerifier` its key identities; the gate refuses a policy whose
+  approvers' key sets meet, and the count never seats a shared or keyless approver.
 
 ## Model 2: the bide protocol's claim rules
 

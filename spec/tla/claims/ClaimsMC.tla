@@ -3,7 +3,7 @@
 (* calls and processes from these with <-, and its symmetry set.                         *)
 EXTENDS Claims
 
-CONSTANTS d1, d2, d3, p1, p2, c1, c2, a1, a2, a3, h1, h2, h3, hx, k1, k2, k3
+CONSTANTS d1, d2, d3, p1, p2, c1, c2, a1, a2, a3, h1, h2, h3, hx, k1, k2, k3, k4
 
 \* Placements of two drivers: one process, or one process each.
 SameProc  == [d \in Drivers |-> p1]
@@ -37,10 +37,15 @@ Pols      == ("m" :> [need |-> 2, apprs |-> {a1, a2, a3}])
              @@ ("tight" :> [need |-> 3, apprs |-> {a1, a2, a3}])
              @@ ("loose" :> [need |-> 1, apprs |-> {a1, a2, a3}])
 NoKeys    == [x \in {} |-> x]
-Keys      == (a1 :> k1) @@ (a2 :> k2) @@ (a3 :> k3)
+\* Each approver's verifier accepts a set of keys (KeyIDs).
+Keys      == (a1 :> {k1}) @@ (a2 :> {k2}) @@ (a3 :> {k3})
 \* a2's verifier resolves to a1's key (two approvers sharing one key).
-KeysShared == (a1 :> k1) @@ (a2 :> k1) @@ (a3 :> k3)
+KeysShared == (a1 :> {k1}) @@ (a2 :> {k1}) @@ (a3 :> {k3})
+\* a1 and a2 each accept two keys and share one (k4, h1's): unequal sets that meet, as a hybrid
+\* verifier's component or a rotation window can.
+KeysOverlap == (a1 :> {k1, k4}) @@ (a2 :> {k2, k4}) @@ (a3 :> {k3})
 Holders   == (k1 :> h1) @@ (k2 :> h2) @@ (k3 :> h3)
+Holders4  == (k1 :> h1) @@ (k2 :> h2) @@ (k3 :> h3) @@ (k4 :> h1)
 \* a3 is a1 spelled differently, and a1's person holds a3's key.
 HoldersFold == (k1 :> h1) @@ (k2 :> h2) @@ (k3 :> h1)
 FoldA1A3  == {<<a1, a3>>}
