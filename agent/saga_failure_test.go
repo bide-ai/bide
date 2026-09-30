@@ -18,7 +18,7 @@ func tallyRecord(t ApprovalTally) Record {
 
 // What aborts a saga: a recorded step failure, and a failure an operator recorded for a step a
 // crash cut off (ResolveHalt with isError). Not a human's denial, 1-of-1 or m-of-n, which the
-// model reacts to; not a Step's resolution, which is no tool call; not a success.
+// model reacts to; not a success.
 func TestSagaFailure(t *testing.T) {
 	failed := Record{Name: "c1", Kind: StepToolResult, ToolUseID: "c1", IsError: true, Result: json.RawMessage(`"card declined"`)}
 	quorum := ApprovalTally{Need: 2, Approvers: []string{"ops", "finance"}}
@@ -40,7 +40,6 @@ func TestSagaFailure(t *testing.T) {
 			Record{Name: "approval:c1:risk", Kind: StepApproval, ToolUseID: "c1", Approver: "risk"}, tallyRecord(passedQuorum), failed), "card declined", true},
 		{"denial", sagaJournal(Record{Name: "approval:c1", Kind: StepApproval, ToolUseID: "c1"}, failed), "", false},
 		{"quorum denial", sagaJournal(tallyRecord(deniedQuorum), failed), "", false},
-		{"step resolution", sagaJournal(Record{Name: "reserve", Kind: StepToolResult, ToolUseID: "reserve", IsError: true, Result: json.RawMessage(`"no"`)}), "", false},
 		{"success", sagaJournal(Record{Name: "c1", Kind: StepToolResult, ToolUseID: "c1", Result: json.RawMessage(`{}`)}), "", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

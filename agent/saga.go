@@ -117,7 +117,8 @@ func (e *SagaAborted) Unwrap() error { return e.Cause }
 //
 // Note: if a non-retriable step's outcome is genuinely unknown (crashed after its attempt
 // marker but before any result), resume returns *ResumeHalt instead — you can't safely
-// auto-roll-back a step that may have committed; a human decides.
+// auto-roll-back a step that may have committed; a human decides. A failure a human then
+// records with ResolveHalt (isError) is a failed step: the next RunSaga rolls back.
 func (a *Agent) RunSaga(ctx context.Context, runID, input string) (Message, error) {
 	return a.runSaga(ctx, runID, input, nil)
 }
@@ -341,13 +342,43 @@ func (a *Agent) rollbackRun(ctx context.Context, runID, root string) (compensate
 
 // sagaFailure reports whether the journal records a saga step failure (the durable abort
 // trigger), and its cause.
+//
+// A step's failure is normally recorded as a StepSagaFail. A crash can come between the failure
+// and that record: the step then has an attempt marker and no outcome, the run halts, and the
+// operator records the verified outcome with ResolveHalt. A failure recorded that way is a failed
+// step too, and aborts the saga as the StepSagaFail would have. In a saga, the only other failed
+// result a call can have is a human's denial, which the model reacts to, as it does outside one.
 func sagaFailure(recs []Record) (string, bool) {
+	denied := map[string]bool{}   // calls denied by a 1-of-1 decision
+	values := map[string]Record{} // StepValue records by name, for m-of-n tallies
 	for _, r := range recs {
-		if r.Kind == StepSagaFail {
-			var s string
-			_ = json.Unmarshal(r.Result, &s)
-			return s, true
+		switch {
+		case r.Kind == StepApproval && r.Approver == "" && !r.Approved:
+			denied[r.ToolUseID] = true
+		case r.Kind == StepValue:
+			values[r.Name] = r
 		}
+	}
+	isDenial := func(id string) bool {
+		if denied[id] {
+			return true
+		}
+		v, ok := values[ApprovalTallyStep(id)]
+		var t ApprovalTally
+		return ok && json.Unmarshal(v.Result, &t) == nil && !t.Passed()
+	}
+	for _, r := range recs {
+		switch {
+		case r.Kind == StepSagaFail:
+		case r.Kind == StepToolResult && r.IsError && !isDenial(r.ToolUseID):
+		default:
+			continue
+		}
+		var s string
+		if json.Unmarshal(r.Result, &s) != nil {
+			s = string(r.Result)
+		}
+		return s, true
 	}
 	return "", false
 }
