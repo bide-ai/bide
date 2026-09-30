@@ -155,11 +155,11 @@ var (
 // "$user" schema, created by any role with CREATE on the database) cannot take over a table or the
 // next_seq function.
 type tables struct {
-	steps, leases, version             string // bare names, as in the catalog
-	nextSeq                            string // the next_seq function's bare name
+	steps, leases, version              string // bare names, as in the catalog
+	nextSeq                             string // the next_seq function's bare name
 	qSteps, qLeases, qVersion, qNextSeq string // schema-qualified, as SQL
-	insert, acquire, renew, release    writeSQL
-	get, load                          selectSQL
+	insert, acquire, renew, release     writeSQL
+	get, load                           selectSQL
 }
 
 // nextSeqVersion names the next_seq function's definition. The migration creates the function

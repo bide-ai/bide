@@ -30,7 +30,7 @@ func TestNewSelect(t *testing.T) {
 		`SELECT $q$x$q$`,
 		"SELECT u&'\\0041'",
 		`SELECT U&"pg_advisory_!006Cock" UESCAPE '!'(42)`, // a Unicode escape with no backslash
-		`SELECT run_id COLLATE "C" FROM t`,                  // a collation must be pg_catalog."C"
+		`SELECT run_id COLLATE "C" FROM t`,                // a collation must be pg_catalog."C"
 		// casts only to pg_catalog built-ins: a domain's CHECK can call anything
 		"SELECT x FROM t WHERE y = $1::text", "SELECT x FROM t WHERE y = $1::app.dom", "SELECT x FROM t WHERE y = $1::pg_catalog.bytea",
 		"SELECT CAST($1 AS pg_catalog.text)", "SELECT interval '1 second'", "SELECT E'x'", "SELECT x FROM t WHERE y = pg_catalog.text 'a'",
