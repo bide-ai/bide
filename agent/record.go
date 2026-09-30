@@ -78,6 +78,18 @@ type Record struct {
 	// rather than one the tool produced by running. It lets a later reader (and bide-audit)
 	// tell a reconciled outcome from a clean one at a glance.
 	Reconciled bool `json:"reconciled,omitempty"`
+	// Redacted marks a record whose stored bytes a redaction replaced with a tombstone, the
+	// reserved form {"redacted":{"leaf_hash":"<hex>","at_ms":<ms>}}: the hex audit leaf hash of
+	// the bytes it replaced and the Unix-millis time of the redaction. Only Name is meaningful on
+	// such a record, and Raw returns the tombstone. It is never journaled: the tombstone is what the
+	// store holds. A run holding a redacted record is over and cannot be driven again.
+	Redacted bool `json:"-"`
+	// stamped marks a salt the engine drew for a record it is about to record (stampSalt), which
+	// JournalEntry keeps instead of drawing another, so the engine can tell its own record from
+	// another writer's by the salt the journal holds. It and Redacted sit beside Reconciled so the
+	// three flags share one word: Record is copied by value throughout the engine, and a larger
+	// one measurably slowed a contended run loop (see TestRecord_Size).
+	stamped bool
 	// Safety is the Safety of the tool a StepToolResult or StepSagaFail record's call ran under
 	// (or, for a denied call, would have run under), and Approval its approval gate, nil for an
 	// ungated tool. A saga rollback reads Safety: it skips a call that ran ReadOnly (it changed
@@ -93,12 +105,6 @@ type Record struct {
 	// Format is the journal format a StepHeader record names (see JournalFormat). Empty on every
 	// other kind.
 	Format string `json:"format,omitempty"`
-	// Redacted marks a record whose stored bytes a redaction replaced with a tombstone, the
-	// reserved form {"redacted":{"leaf_hash":"<hex>","at_ms":<ms>}}: the hex audit leaf hash of
-	// the bytes it replaced and the Unix-millis time of the redaction. Only Name is meaningful on
-	// such a record, and Raw returns the tombstone. It is never journaled: the tombstone is what the
-	// store holds. A run holding a redacted record is over and cannot be driven again.
-	Redacted bool `json:"-"`
 
 	// claim is the random id of the driver that wrote an attempt marker (see ClaimAttempt and
 	// ClaimID). A driver runs the side effect only if the marker it gets back carries its own
@@ -109,10 +115,6 @@ type Record struct {
 	salt []byte
 	// raw is the bytes the record was decoded from (see Raw).
 	raw []byte
-	// stamped marks a salt the engine drew for a record it is about to record (stampSalt), which
-	// JournalEntry keeps instead of drawing another, so the engine can tell its own record from
-	// another writer's by the salt the journal holds.
-	stamped bool
 }
 
 // ClaimID returns the random id of the driver that wrote this attempt marker or not-started record
