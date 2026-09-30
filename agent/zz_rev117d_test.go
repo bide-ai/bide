@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"sync/atomic"
 	"testing"
@@ -92,5 +93,49 @@ func TestRev117d_NewRefusesSafetyOverrideOverASubAgent(t *testing.T) {
 	_, err := New(&countingModel{n: &calls}, NewMemStore(), safetyWrap{SubAgent("delegate", "", sub)}).Run(context.Background(), "r1", "go")
 	if !errors.Is(err, ErrConfig) || calls.Load() != 0 {
 		t.Fatalf("Run = %v after %d model calls; want ErrConfig before any", err, calls.Load())
+	}
+}
+
+// gatedArgsStore holds the write of c1's accepted arguments until release is closed, and reports
+// when that write has begun.
+type gatedArgsStore struct {
+	*MemStore
+	writing, release chan struct{}
+}
+
+func (s gatedArgsStore) Do(ctx context.Context, runID, name string, fn func(context.Context) (Record, error)) (Record, error) {
+	if name == sagaArgsStep("c1") {
+		close(s.writing)
+		<-s.release
+	}
+	return s.MemStore.Do(ctx, runID, name, fn)
+}
+
+// F4, the other half: an invocation that reached the call but had not begun the tool when the chain
+// returned finds the call sealed when it gets there, and refuses: the loop counted the call as not
+// called, and it stays so.
+func TestRev117d_SealedCallIsNeverBegun(t *testing.T) {
+	var charges atomic.Int32
+	charge := CompensatedFunc("charge", "", Safety{},
+		func(context.Context, chargeArgs) (string, error) { charges.Add(1); return "ok", nil },
+		func(context.Context, chargeArgs, string) error { return nil })
+	store := gatedArgsStore{NewMemStore(), make(chan struct{}), make(chan struct{})}
+	leaked := make(chan error, 1)
+	leak := func(next ToolHandler) ToolHandler {
+		return func(ctx context.Context, call ToolCall) (json.RawMessage, error) {
+			call.Use.Args = json.RawMessage(`{"amount":500}`) // rewritten, so the saga journals it
+			go func() {
+				_, err := next(context.WithoutCancel(ctx), call)
+				leaked <- err
+			}()
+			<-store.writing                           // the invocation has reached the call and is writing the arguments
+			return nil, errors.New("gave up waiting") // the chain returns: the loop seals the call
+		}
+	}
+	m := &sagaTurns{turns: [][][3]string{{{"c1", "charge", `{"amount":5}`}}}}
+	_, _ = New(m, store, charge).UseTool(leak).RunSaga(context.Background(), "r", "trip")
+	close(store.release)
+	if err := <-leaked; !errors.Is(err, ErrToolNotCalled) || charges.Load() != 0 {
+		t.Fatalf("the invocation that outlived the chain: %v, charges %d; want it refused, the tool never called", err, charges.Load())
 	}
 }
