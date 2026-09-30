@@ -120,6 +120,50 @@ type ApprovalPolicy struct {
 // even {Need: 1} with no approvers, is an m-of-n policy, and one with no approvers is ErrConfig.
 func SingleApproval() *ApprovalPolicy { return &ApprovalPolicy{Need: 1, one: true} }
 
+// MarshalJSON encodes the policy as the journal records it: SingleApproval as {"single":true}, the
+// bide protocol's wire form of the one-decision gate, so an offline reader sees the gate a call ran
+// under without inferring it from a shape; any other policy as {"need":k,"approvers":[...]}.
+func (p ApprovalPolicy) MarshalJSON() ([]byte, error) {
+	if p.one {
+		if p.Need != 1 || len(p.Approvers) != 0 {
+			return nil, fmt.Errorf("a SingleApproval policy was changed to Need %d and %d approvers: %w", p.Need, len(p.Approvers), ErrConfig)
+		}
+		return []byte(`{"single":true}`), nil
+	}
+	return json.Marshal(approvalWire{Need: p.Need, Approvers: p.Approvers})
+}
+
+// UnmarshalJSON decodes what MarshalJSON encodes: {"single":true} is SingleApproval (and carries no
+// need or approvers), anything else an m-of-n policy.
+func (p *ApprovalPolicy) UnmarshalJSON(b []byte) error {
+	var w struct {
+		Single    bool     `json:"single"`
+		Need      *int     `json:"need"`
+		Approvers []string `json:"approvers"`
+	}
+	if err := json.Unmarshal(b, &w); err != nil {
+		return err
+	}
+	if w.Single {
+		if w.Need != nil || w.Approvers != nil {
+			return fmt.Errorf(`approval policy {"single":true} carries need or approvers: %w`, ErrProtocol)
+		}
+		*p = *SingleApproval()
+		return nil
+	}
+	*p = ApprovalPolicy{Approvers: w.Approvers}
+	if w.Need != nil {
+		p.Need = *w.Need
+	}
+	return nil
+}
+
+// approvalWire is an m-of-n ApprovalPolicy's encoding.
+type approvalWire struct {
+	Need      int      `json:"need"`
+	Approvers []string `json:"approvers,omitempty"`
+}
+
 // single reports whether p is the one-decision gate SingleApproval returned.
 func (p *ApprovalPolicy) single() bool { return p != nil && p.one }
 

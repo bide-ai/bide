@@ -89,6 +89,8 @@ func Cases() []Case {
 			Record: agent.Record{Kind: agent.StepToolResult, ToolUseID: "c1", Result: json.RawMessage(`"ok"`), Reconciled: true, Evidence: json.RawMessage(`{ "log" : "<id=7> & done" }`)}},
 		{Name: "read-only tool result",
 			Record: agent.Record{Kind: agent.StepToolResult, ToolUseID: "c1", Result: json.RawMessage(`{"n":1}`), Safety: &agent.Safety{ReadOnly: true}}},
+		{Name: "single-approval tool result",
+			Record: agent.Record{Kind: agent.StepToolResult, ToolUseID: "c1", Result: json.RawMessage(`{"n":3}`), Safety: &agent.Safety{}, Approval: agent.SingleApproval()}},
 		{Name: "gated side-effect tool result",
 			Record: agent.Record{Kind: agent.StepToolResult, ToolUseID: "c1", Result: json.RawMessage(`{"n":2}`), Safety: &agent.Safety{}, Approval: &agent.ApprovalPolicy{Need: 2, Approvers: []string{"a", "b", "c"}}}},
 		{Name: "model message",

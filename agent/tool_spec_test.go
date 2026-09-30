@@ -141,7 +141,7 @@ func TestToolResult_RecordsSafetyAndApproval(t *testing.T) {
 	}
 	for id, want := range map[string]string{
 		"c1": `"safety":{"read_only":true}`,
-		"c2": `"safety":{},"approval":{"need":1}`,
+		"c2": `"safety":{},"approval":{"single":true}`,
 	} {
 		rec, ok := hasStep(t, store, "r1", ToolResultStep(id))
 		if !ok || !strings.Contains(string(rec.Raw()), want) {
@@ -379,7 +379,7 @@ func TestDenialAndSagaFailure_RecordSafetyAndApproval(t *testing.T) {
 	if _, err := a.Run(ctx, "r1", "pay"); err != nil {
 		t.Fatalf("resume: %v", err)
 	}
-	if rec, ok := hasStep(t, store, "r1", ToolResultStep("c1")); !ok || !rec.IsError || !strings.Contains(string(rec.Raw()), `"safety":{},"approval":{"need":1}`) {
+	if rec, ok := hasStep(t, store, "r1", ToolResultStep("c1")); !ok || !rec.IsError || !strings.Contains(string(rec.Raw()), `"safety":{},"approval":{"single":true}`) {
 		t.Fatalf("denial journaled %s, want the safety and the gate", rec.Raw())
 	}
 
@@ -409,4 +409,35 @@ func TestDenialAndSagaFailure_RecordSafetyAndApproval(t *testing.T) {
 		}
 	}
 	t.Fatal("no saga failure record")
+}
+
+// The journal encodes SingleApproval as {"single":true}, the protocol's form, and reads it back as
+// SingleApproval; an m-of-n policy round-trips as need and approvers; {"single":true} with need or
+// approvers is refused.
+func TestApprovalPolicy_JSON(t *testing.T) {
+	b, err := json.Marshal(SingleApproval())
+	if err != nil || string(b) != `{"single":true}` {
+		t.Fatalf("SingleApproval encodes as %s, %v", b, err)
+	}
+	var back ApprovalPolicy
+	if err := json.Unmarshal(b, &back); err != nil || !back.single() || back.Validate() != nil {
+		t.Fatalf("decoded %+v (single %v), %v", back, back.single(), err)
+	}
+	m := &ApprovalPolicy{Need: 2, Approvers: []string{"a", "b"}}
+	b, _ = json.Marshal(m)
+	if string(b) != `{"need":2,"approvers":["a","b"]}` {
+		t.Fatalf("m-of-n encodes as %s", b)
+	}
+	var mb ApprovalPolicy
+	if err := json.Unmarshal(b, &mb); err != nil || mb.single() || mb.Need != 2 || len(mb.Approvers) != 2 {
+		t.Fatalf("m-of-n decoded %+v, %v", mb, err)
+	}
+	if err := json.Unmarshal([]byte(`{"single":true,"need":1}`), &mb); !errors.Is(err, ErrProtocol) {
+		t.Fatalf(`{"single":true,"need":1} decoded: %v, want ErrProtocol`, err)
+	}
+	p := SingleApproval()
+	p.Need = 2
+	if _, err := json.Marshal(p); err == nil {
+		t.Fatal("a changed SingleApproval encoded")
+	}
 }
