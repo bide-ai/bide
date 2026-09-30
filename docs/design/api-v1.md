@@ -1129,6 +1129,7 @@ Within a wave, no two PRs edit the same file. Sizes:
    - Benchmarks land in P6a: `BenchmarkRunTurns`, `BenchmarkToolCallSideEffect`, `BenchmarkStep`, `BenchmarkRecoverPass10k`, `BenchmarkAnchoredInsert`, `BenchmarkSQLiteInsert`, `BenchmarkPostgresInsert`.
    - The existing bench workflow (#45/#47, standard runner) runs base against head with `-count=10`.
    - P6a, P9, P12, P14 and P15 must show no benchstat regression over 5% in time or allocs at p < 0.05, and must paste the table into the PR.
+   - For the `cmd/bench` A/B (bench.yml), "time" means the mean (wall-clock, and throughput as its inverse), p90 and p99 of run latency, never p50: under the closed-loop harness's contention the overhead scenario's p50 is bimodal, a scheduling artifact that shifts with changes that add no work (maintainer decision, recorded with #116, which moves bench reporting to mean, p90 and p99).
    - `BenchmarkAnchoredInsert` must show the O(n) to O(log n) improvement.
 
 ### 10.4 Order relative to the follow-ups
