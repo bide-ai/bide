@@ -79,3 +79,13 @@ func bypassPgconn(ctx context.Context, dsn string) error {
 }
 
 var connect = pgx.Connect // BYPASS: a pgx function used as a value
+
+func (s *Store) bypassUnknownFunction(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, "SELECT dblink_exec('dbname=x', 'BEGIN')") // BYPASS: a function the check does not know
+	return err
+}
+
+func (s *Store) bypassNextSeqInSelect(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, "SELECT bide_next_seq_v1('r')") // BYPASS: the next_seq function outside the insert
+	return err
+}

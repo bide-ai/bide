@@ -37,3 +37,13 @@ func bypassPgx(ctx context.Context, dsn string) (pgx.Tx, error) {
 	}
 	return c.Begin(ctx) // BYPASS: a transaction on a pgx connection
 }
+
+func (l *Log) bypassUnknownFunction(ctx context.Context) error {
+	_, err := l.db.ExecContext(ctx, "SELECT dblink_exec('dbname=x', 'BEGIN')") // BYPASS: a function the check does not know
+	return err
+}
+
+func (l *Log) bypassNextSeqInSelect(ctx context.Context) error {
+	_, err := l.db.ExecContext(ctx, "SELECT governed_events_next_seq_v1('e')") // BYPASS: the next_seq function outside the insert
+	return err
+}

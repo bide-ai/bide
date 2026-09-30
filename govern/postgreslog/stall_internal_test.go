@@ -135,6 +135,7 @@ type staller struct {
 	stalled chan uint32   // the stopped session's backend pid
 	release chan struct{} // closed by resume
 	resumed atomic.Bool
+	sent    atomic.Int64 // statements run, stalled or not
 }
 
 func newStaller(dsn string) *staller {
@@ -156,6 +157,7 @@ func (s *staller) resume() {
 // after runs once a statement returned on c: at the armed statement it reports the session and
 // waits for resume.
 func (s *staller) after(c *stdlib.Conn) {
+	s.sent.Add(1)
 	s.mu.Lock()
 	stop := false
 	if s.left > 0 {
