@@ -124,6 +124,11 @@ asked again, and only the missing voters run. The tally comes out the same.
 If a voter returns an error, `Quorum` returns that error together with the tally of the votes that
 did arrive. The failed voter is asked again the next time you make the same call.
 
+A `k` larger than the number of voters could never be met, so `Quorum` refuses it with
+`agent.ErrConfig` before any vote. A vote read back from the journal must name the voter whose
+step holds it, and a recorded tally must be the one its votes give; a journal that breaks either
+rule (a corrupted or edited record) is `agent.ErrProtocol`, and no tally is returned.
+
 ## When the models disagree
 
 Decide in advance what a failed quorum means, and make it the same every time:

@@ -43,19 +43,72 @@ func TestQuorum_VoteMustNameItsSlotsVoter(t *testing.T) {
 	}
 }
 
-// The tally is derived from the votes. A recorded tally that disagrees with the recorded votes (a
-// corrupted or tampered journal) is ErrProtocol, not returned as the quorum's result.
+// The tally is derived from the votes. A recorded tally that disagrees with the recorded votes in
+// any field (a corrupted or tampered journal) is ErrProtocol, not returned as the quorum's result;
+// one that agrees is returned as recorded.
 func TestQuorum_RecordedTallyMustMatchTheVotes(t *testing.T) {
 	ctx := context.Background()
+	votes := []govern.Vote{{Voter: "a", Decision: "approve"}, {Voter: "b", Decision: "reject"}}
+	right := govern.QuorumResult{Decision: "approve", VotesFor: 1, Total: 2, Agreed: false, Votes: votes}
+	for name, tc := range map[string]struct {
+		edit func(*govern.QuorumResult)
+		ok   bool
+	}{
+		"as the votes give": {func(*govern.QuorumResult) {}, true},
+		"decision":          {func(r *govern.QuorumResult) { r.Decision = "reject" }, false},
+		"votes for":         {func(r *govern.QuorumResult) { r.VotesFor = 2 }, false},
+		"total":             {func(r *govern.QuorumResult) { r.Total = 3 }, false},
+		"agreed":            {func(r *govern.QuorumResult) { r.Agreed = true }, false},
+		"votes":             {func(r *govern.QuorumResult) { r.Votes = []govern.Vote{votes[0], {Voter: "b", Decision: "approve"}} }, false},
+	} {
+		store := agent.NewMemStore()
+		recorded := right
+		recorded.Votes = append([]govern.Vote(nil), votes...)
+		tc.edit(&recorded)
+		if _, err := agent.Step(ctx, store, "run", govern.QuorumTallyStep("q"), func(context.Context) (govern.QuorumResult, error) {
+			return recorded, nil
+		}, agent.StepSafety(agent.Safety{ReadOnly: true})); err != nil {
+			t.Fatal(err)
+		}
+		res, err := govern.Quorum(ctx, store, "run", "q", 1, fixedVoter("a", "approve"), fixedVoter("b", "reject"))
+		if tc.ok && err != nil {
+			t.Errorf("%s: Quorum = %+v, %v; want the recorded tally", name, res, err)
+		}
+		if !tc.ok && !errors.Is(err, agent.ErrProtocol) {
+			t.Errorf("%s: Quorum with a recorded tally the votes do not give = %+v, %v; want ErrProtocol", name, res, err)
+		}
+	}
+}
+
+// A recorded vote that names no voter at all, in the slot of a voter that voted, is as foreign as
+// one naming another voter.
+func TestQuorum_EmptyRecordedVoteIsRefused(t *testing.T) {
+	ctx := context.Background()
 	store := agent.NewMemStore()
-	if _, err := agent.Step(ctx, store, "run", govern.QuorumTallyStep("q"), func(context.Context) (govern.QuorumResult, error) {
-		return govern.QuorumResult{Decision: "approve", VotesFor: 2, Total: 2, Agreed: true,
-			Votes: []govern.Vote{{Voter: "a", Decision: "approve"}, {Voter: "b", Decision: "approve"}}}, nil
+	if _, err := agent.Step(ctx, store, "run", govern.QuorumVoteStep("q", "bob"), func(context.Context) (govern.Vote, error) {
+		return govern.Vote{}, nil
 	}, agent.StepSafety(agent.Safety{ReadOnly: true})); err != nil {
 		t.Fatal(err)
 	}
-	res, err := govern.Quorum(ctx, store, "run", "q", 2, fixedVoter("a", "approve"), fixedVoter("b", "reject"))
+	res, err := govern.Quorum(ctx, store, "run", "q", 1, fixedVoter("alice", "approve"), fixedVoter("bob", "reject"))
 	if !errors.Is(err, agent.ErrProtocol) {
-		t.Fatalf("Quorum with a recorded tally the votes do not give = %+v, %v; want ErrProtocol", res, err)
+		t.Fatalf("Quorum over an empty recorded vote = %+v, %v; want ErrProtocol", res, err)
+	}
+}
+
+// The check holds on a partial tally too: when a voter fails, the votes that were recorded are
+// still each their own voter's.
+func TestQuorum_VoteMustNameItsSlotsVoterWhenAVoterFails(t *testing.T) {
+	ctx := context.Background()
+	store := agent.NewMemStore()
+	if _, err := agent.Step(ctx, store, "run", govern.QuorumVoteStep("q", "bob"), func(context.Context) (govern.Vote, error) {
+		return govern.Vote{Voter: "alice", Decision: "approve"}, nil
+	}, agent.StepSafety(agent.Safety{ReadOnly: true})); err != nil {
+		t.Fatal(err)
+	}
+	failing := govern.Voter{Name: "carol", Decide: func(context.Context) (string, error) { return "", errors.New("provider down") }}
+	res, err := govern.Quorum(ctx, store, "run", "q", 2, fixedVoter("alice", "approve"), fixedVoter("bob", "reject"), failing)
+	if !errors.Is(err, agent.ErrProtocol) {
+		t.Fatalf("Quorum over a foreign vote with a failed voter = %+v, %v; want ErrProtocol", res, err)
 	}
 }
