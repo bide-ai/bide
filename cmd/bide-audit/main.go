@@ -290,7 +290,9 @@ func verifyGovernance(args []string) {
 // verifyGovernedAction verifies a governed action against its anchored policy from public
 // artifacts alone: two ProofBundles (the action and the policy leaf) plus an out-of-band public
 // key. It confirms (1) both bundles are authentic under the key, (2) they are in the SAME signed
-// tree, (3) the action's embedded policy digest matches the anchored policy leaf's digest,
+// tree, (3) the action bundle proves a tool call's result, the policy bundle proves the policy leaf
+// (audit.PolicyLeafName) for the digest it carries, and the action's embedded policy digest
+// matches that digest,
 // (4) the leaf's bytes actually hash to that digest (so the leaf cannot lie about which policy it
 // is), and (5) with -checker, that the external verified oracle certifies the policy converges.
 // Steps 1 to 4 are the cryptographic root; step 5 is the independent mathematical root.
@@ -331,12 +333,14 @@ func verifyGovernedAction(args []string) {
 	}
 
 	// (3) the action's embedded policy digest matches the anchored policy leaf's digest.
+	requireToolResult(action, "action")
 	actionDigest, err := governedPolicyDigest(action.Record.Result)
 	if err != nil {
 		fatal(fmt.Errorf("action result is not a governed-action payload: %w", err))
 	}
 	var pc audit.PolicyContent
 	readLeaf(policy, &pc, "policy bundle is not a policy leaf")
+	requireLeaf(policy, audit.PolicyLeafName(pc.Digest), "policy")
 	if actionDigest == "" || actionDigest != pc.Digest {
 		fmt.Printf("FAIL: action policy digest %q does not link to the anchored policy leaf %q\n", actionDigest, pc.Digest)
 		os.Exit(1)
@@ -416,6 +420,8 @@ func verifyConvergence(args []string) {
 	readLeaf(certBundle, &cc, "certificate bundle is not a convergence leaf")
 	var pc audit.PolicyContent
 	readLeaf(policy, &pc, "policy bundle is not a policy leaf")
+	requireLeaf(certBundle, audit.ConvergenceLeafName(cc.Digest), "certificate")
+	requireLeaf(policy, audit.PolicyLeafName(pc.Digest), "policy")
 	if cc.Digest == "" || cc.Digest != pc.Digest {
 		fmt.Printf("FAIL: certificate digest %q does not link to the anchored policy leaf %q\n", cc.Digest, pc.Digest)
 		os.Exit(1)
@@ -716,6 +722,7 @@ func verifyQuorum(args []string) {
 			fmt.Println("FAIL: the commit is not in the same signed tree and run as the quorum")
 			os.Exit(1)
 		}
+		requireToolResult(commit, "commit")
 		commitDigest, err := governedPolicyDigest(commit.Record.Result)
 		if err != nil || commitDigest == "" {
 			fmt.Println("FAIL: commit bundle is not a governed-action leaf")
@@ -1143,6 +1150,25 @@ type quorumTally struct {
 
 // readLeaf decodes a proven record's Result into v with audit.UnmarshalStrict, as readJSON does a
 // file: the leaf is committed as written, so it must read as written. what names the failure.
+// requireLeaf exits 1 unless b proves the StepValue record named name: the leaf the audit package
+// writes for the role the bundle is read in. A record proves only what it is, so a record of any
+// other name or kind (a tool result whose output has the leaf's shape, say) is not that leaf.
+func requireLeaf(b audit.ProofBundle, name, role string) {
+	if b.Record.Kind != agent.StepValue || b.Record.Name != name {
+		fmt.Printf("FAIL: the %s bundle proves record %q of kind %q, not the %s leaf %q\n", role, b.Record.Name, b.Record.Kind, role, name)
+		os.Exit(1)
+	}
+}
+
+// requireToolResult exits 1 unless b proves a tool call's result: a governed action (or commit) is
+// the result a governed tool journaled, not any record whose payload has that shape.
+func requireToolResult(b audit.ProofBundle, role string) {
+	if b.Record.Kind != agent.StepToolResult {
+		fmt.Printf("FAIL: the %s bundle proves record %q of kind %q, not a tool call's result\n", role, b.Record.Name, b.Record.Kind)
+		os.Exit(1)
+	}
+}
+
 func readLeaf(b audit.ProofBundle, v any, what string) {
 	if err := audit.UnmarshalStrict(b.Record.Result, v); err != nil {
 		fatal(fmt.Errorf("%s: %w", what, err))

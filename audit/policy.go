@@ -22,6 +22,12 @@ type PolicyContent struct {
 // changes policy over its lifetime records each epoch as its own leaf.
 func policyLeafName(digest string) string { return "audit:policy:" + digest }
 
+// PolicyLeafName is the journal name of the policy leaf RecordPolicy writes for digest. A
+// verifier handed a bundle as a policy leaf checks that its record is a StepValue of this name:
+// any other record, such as a tool result whose output has a policy leaf's shape, anchors no
+// policy.
+func PolicyLeafName(digest string) string { return policyLeafName(digest) }
+
 // RecordPolicy commits the serialized policy as a dedicated journal leaf (idempotent per
 // (runID, digest)), so the policy is covered by the same STH and inclusion proofs as the actions
 // taken under it. The digest is the policy owner's stable identifier (e.g.
