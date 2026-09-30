@@ -351,6 +351,9 @@ func New(ctx context.Context, db *sql.DB, opts ...Option) (*Store, error) {
 	if err := s.migrate(ctx); err != nil {
 		return nil, err
 	}
+	if err := s.checkSchema(ctx); err != nil {
+		return nil, err
+	}
 	return s, nil
 }
 
@@ -360,8 +363,9 @@ const migrateLock = 0x62696465
 
 // migrate creates the tables if they do not exist and checks the schema version. It never alters
 // an existing table: altering a table other nodes are running on would take its exclusive lock and
-// change what they write. So it checks that an existing table has each uniqueness the store's
-// single statements depend on (see requiredUnique), and refuses one that does not.
+// change what they write. So Open then checks that an existing table has each uniqueness the
+// store's single statements depend on, and the next_seq function its definition (see
+// checkSchema), and refuses one that does not.
 func (s *Store) migrate(ctx context.Context) error {
 	tx, err := s.db.BeginTx(ctx, txOptions)
 	if err != nil {
@@ -399,8 +403,11 @@ func (s *Store) migrate(ctx context.Context) error {
 	}
 	// The next_seq function, created if missing and never replaced (see nextSeqVersion). The
 	// migration lock makes the check and the creation one step across nodes.
+	// The lookup reads pg_proc with the statement's snapshot, not the session's catalog cache,
+	// which taking the advisory lock does not refresh: it sees a function another node created
+	// while this one waited for the lock.
 	var haveNextSeq bool
-	if err := tx.QueryRowContext(ctx, `SELECT to_regprocedure($1) IS NOT NULL`, s.t.nextSeq+"(text)").Scan(&haveNextSeq); err != nil {
+	if err := tx.QueryRowContext(ctx, nextSeqPresent, s.t.nextSeq).Scan(&haveNextSeq); err != nil {
 		return fmt.Errorf("postgres: look up %s: %w (%w)", s.t.nextSeq, err, agent.ErrStorage)
 	}
 	if !haveNextSeq {
@@ -415,6 +422,18 @@ func (s *Store) migrate(ctx context.Context) error {
 	if v > schemaVersion {
 		return fmt.Errorf("postgres: the database's schema version is %d, newer than this version's %d: %w", v, schemaVersion, agent.ErrConfig)
 	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("postgres: migrate: %w (%w)", err, agent.ErrStorage)
+	}
+	return nil
+}
+
+// checkSchema checks, after the migration committed, that the tables have each uniqueness the
+// store's statements depend on and that next_seq is the function this version creates; the
+// migration never alters a table or replaces a function, so it cannot repair either. It runs in
+// transactions of its own on the pool, which read the catalog as of their start, so it sees what
+// another node's migration created while this one waited for the migration lock.
+func (s *Store) checkSchema(ctx context.Context) error {
 	for _, u := range []struct {
 		table string
 		cols  []string
@@ -424,7 +443,7 @@ func (s *Store) migrate(ctx context.Context) error {
 		{s.t.leases, []string{"run_id"}},
 	} {
 		var ok bool
-		if err := tx.QueryRowContext(ctx, requiredUnique, u.table, u.cols).Scan(&ok); err != nil {
+		if err := s.db.QueryRowContext(ctx, requiredUnique, u.table, u.cols).Scan(&ok); err != nil {
 			return fmt.Errorf("postgres: check the uniqueness of %s: %w (%w)", u.table, err, agent.ErrStorage)
 		}
 		if !ok {
@@ -433,15 +452,12 @@ func (s *Store) migrate(ctx context.Context) error {
 		}
 	}
 	var sameNextSeq bool
-	if err := tx.QueryRowContext(ctx, expectedFunction, s.t.nextSeq+"(text)", s.t.nextSeqBody).Scan(&sameNextSeq); err != nil {
+	if err := s.db.QueryRowContext(ctx, expectedFunction, s.t.nextSeq+"(text)", s.t.nextSeqBody).Scan(&sameNextSeq); err != nil {
 		return fmt.Errorf("postgres: check %s: %w (%w)", s.t.nextSeq, err, agent.ErrStorage)
 	}
 	if !sameNextSeq {
 		return fmt.Errorf("postgres: function %s(text) is not the one this version creates (VOLATILE plpgsql returning bigint, not SECURITY DEFINER, with no settings of its own, whose body takes the run's advisory lock and then reads MAX(seq)); the store's inserts depend on it and the migration never replaces a function: %w",
 			s.t.nextSeq, agent.ErrConfig)
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("postgres: migrate: %w (%w)", err, agent.ErrStorage)
 	}
 	return nil
 }
@@ -457,6 +473,11 @@ const requiredUnique = `SELECT EXISTS (SELECT 1 FROM pg_index i
 		AND (SELECT array_agg(a.attname::text ORDER BY a.attname::text)
 			FROM unnest(i.indkey::int2[]) AS k JOIN pg_attribute AS a ON a.attrelid = i.indrelid AND a.attnum = k)
 			= (SELECT array_agg(c ORDER BY c) FROM unnest($2::text[]) AS c))`
+
+// nextSeqPresent reports whether a function named $1 taking one text argument exists in the schema
+// CREATE FUNCTION creates it in, reading pg_proc with the statement's snapshot.
+const nextSeqPresent = `SELECT EXISTS (SELECT 1 FROM pg_proc
+	WHERE proname = $1 AND pronamespace = current_schema()::regnamespace AND proargtypes = '25'::oidvector)`
 
 // expectedFunction reports whether the function $1 (a regprocedure signature, resolved by the
 // search path as the insert resolves it) is a VOLATILE plpgsql function returning one bigint, not

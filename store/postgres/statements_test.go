@@ -290,10 +290,11 @@ var sessionLockCall = regexp.MustCompile(`(?i)pg_(try_)?advisory_lock`)
 // function is not among them: only the insert, a writeSQL, calls it). A name after INTO names a
 // table, and a keyword in listWords takes a list; neither is a call.
 var (
-	constantCalls = map[string]bool{"now": true, "max": true, "coalesce": true, "starts_with": true}
-	listWords     = map[string]bool{"values": true, "conflict": true, "exists": true, "in": true, "any": true, "as": true, "and": true, "or": true, "not": true, "on": true}
-	quotedSQL     = regexp.MustCompile(`'(?:[^']|'')*'|"(?:[^"]|"")*"`)
-	callSQL       = regexp.MustCompile(`([A-Za-z_][A-Za-z0-9_$.]*)\s*\(`)
+	constantCalls = map[string]bool{"now": true, "max": true, "coalesce": true, "starts_with": true,
+		"to_regclass": true, "to_regprocedure": true, "unnest": true, "array_agg": true} // the last four read the catalog, in checkSchema
+	listWords = map[string]bool{"values": true, "conflict": true, "exists": true, "in": true, "any": true, "as": true, "and": true, "or": true, "not": true, "on": true}
+	quotedSQL = regexp.MustCompile(`'(?:[^']|'')*'|"(?:[^"]|"")*"`)
+	callSQL   = regexp.MustCompile(`([A-Za-z_][A-Za-z0-9_$.]*)\s*\(`)
 )
 
 // unknownCall returns the first function q calls that is not in constantCalls.
