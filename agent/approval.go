@@ -8,6 +8,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"unicode/utf8"
+
+	"golang.org/x/text/cases"
+	"golang.org/x/text/unicode/norm"
 )
 
 // This file holds the m-of-n approval gate's data model: the policy check, what an approver
@@ -15,27 +19,49 @@ import (
 // (TallyApprovals) is exported and pure so the gate at run time and an auditor offline run
 // the same function; see audit.VerifyApprovals.
 
-// Validate reports whether the policy is well formed: at least one approver, no empty or
-// duplicate approver ids, and 1 <= Need <= len(Approvers). A policy that fails is a
-// configuration error; the gate refuses it with ErrConfig rather than guessing.
+// Validate reports whether the policy is well formed: at least one approver, every approver id
+// non-empty valid UTF-8, no two ids the same approver, and 1 <= Need <= len(Approvers). A policy
+// that fails is a configuration error; the gate refuses it with ErrConfig rather than guessing.
+//
+// Approver ids are compared as exact bytes everywhere else (eligibility, the signed decision
+// bytes, the verifier lookup). A policy may still not list two ids that differ only by case or by
+// Unicode normalization ("alice" and "Alice", an NFC and an NFD "café", a fullwidth and an ASCII
+// spelling): a person reading the policy, or a key lookup that folds case, takes them for one
+// approver, who could then fill two seats. Two ids are the same approver when their
+// approverFoldKey is equal, and such a policy is refused as ambiguous.
 func (p ApprovalPolicy) Validate() error {
 	if len(p.Approvers) == 0 {
 		return fmt.Errorf("approval policy has no approvers: %w", ErrConfig)
 	}
-	seen := make(map[string]bool, len(p.Approvers))
+	seen := make(map[string]string, len(p.Approvers)) // fold key -> the first id with it
 	for _, id := range p.Approvers {
 		if id == "" {
 			return fmt.Errorf("approval policy has an empty approver id: %w", ErrConfig)
 		}
-		if seen[id] {
-			return fmt.Errorf("approval policy lists approver %q twice: %w", id, ErrConfig)
+		if !utf8.ValidString(id) {
+			return fmt.Errorf("approval policy approver id %q is not valid UTF-8: %w", id, ErrConfig)
 		}
-		seen[id] = true
+		key := approverFoldKey(id)
+		if first, dup := seen[key]; dup {
+			if first == id {
+				return fmt.Errorf("approval policy lists approver %q twice: %w", id, ErrConfig)
+			}
+			return fmt.Errorf("approval policy lists approvers %q and %q, which differ only by case or Unicode normalization: %w", first, id, ErrConfig)
+		}
+		seen[key] = id
 	}
 	if p.Need < 1 || p.Need > len(p.Approvers) {
 		return fmt.Errorf("approval policy Need = %d, want 1 <= Need <= %d approvers: %w", p.Need, len(p.Approvers), ErrConfig)
 	}
 	return nil
+}
+
+// approverFoldKey is id under NFKC case folding (Unicode's toNFKC_Casefold, without its removal
+// of default-ignorable code points): decomposed, case folded with full folding, then NFKC
+// normalized. Two ids with the same key differ only by case, by canonical or compatibility
+// normalization, or both.
+func approverFoldKey(id string) string {
+	return norm.NFKC.String(cases.Fold().String(norm.NFD.String(id)))
 }
 
 // ApprovalSubject is exactly what an approver decides on: one tool call, with its name and

@@ -14,7 +14,7 @@ require (
 	github.com/jackc/puddle/v2 v2.2.2 // indirect
 	github.com/stretchr/testify v1.12.1 // indirect
 	golang.org/x/sync v0.23.0 // indirect
-	golang.org/x/text v0.39.0 // indirect
+	golang.org/x/text v0.42.0 // indirect
 )
 
 replace github.com/bide-ai/bide => ../../
