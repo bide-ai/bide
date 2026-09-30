@@ -1,6 +1,6 @@
 // Command subagent shows a parent agent delegating to a SubAgent exposed as a tool.
 // The sub-agent shares the parent's Durable store, so the whole tree journals under one
-// unified log (parentRunID/toolUseID): a crash anywhere in the tree resumes precisely.
+// unified log (the sub-run ID is agent.SubRunID(parentRunID, toolUseID)): a crash anywhere in the tree resumes precisely.
 //
 //	OPENROUTER_API_KEY=sk-... go run ./examples/subagent
 package main

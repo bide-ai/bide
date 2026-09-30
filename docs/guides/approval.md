@@ -133,7 +133,7 @@ Eligibility is not checked there, because the policy lives on the tool.
 
 Every decision is a journaled step, so decisions survive crashes and can arrive over any span of
 time. When the gate reaches a terminal outcome (proceed or deny), it journals the tally as its own
-step, `approval-tally:<toolUseID>`, **before the tool runs**. That record carries the policy it
+step, `approval-tally:<encoded toolUseID>` (`agent.ApprovalTallyStep`), **before the tool runs**. That record carries the policy it
 enforced (`Need`, `Approvers`), who approved and denied, and the name of every decision record it read
 (`Records`). A resumed run reads that record instead of recounting, so the outcome is fixed once
 decided even if keys rotate or the policy changes later. A pause writes nothing, so it stays open for

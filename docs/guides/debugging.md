@@ -121,7 +121,8 @@ Each record maps to a node in run order:
 - `StepModel` -> `LLM`
 - `StepToolResult` -> `tool: <name>` (a failed tool result gets a `✗` suffix)
 - `StepApproval` -> `approved ✓` or `denied ✗`
-- `StepValue` -> `step: <name>` (a user-authored durable step)
+- `StepValue` -> `step: <name>` (a user-authored durable step, or the run's `run:start` and
+  `run:complete` records)
 - `StepAttempt` and `StepNotStarted` records are skipped: they are the internal
   side-effect-safety marker and the record that an attempt never started, not part of the visual
   flow.
@@ -141,13 +142,17 @@ Example output for a run that made one model call, ran one tool, then answered:
 ```
 flowchart TD
   start([user])
-  n0["LLM"]
+  n0["step: run:start"]
   start --> n0
-  n1["tool: charge"]
+  n1["LLM"]
   n0 --> n1
-  n2["LLM"]
+  n2["tool: charge"]
   n1 --> n2
-  n2 --> done([done])
+  n3["LLM"]
+  n2 --> n3
+  n4["step: run:complete"]
+  n3 --> n4
+  n4 --> done([done])
 ```
 
 ## 4 · Crash recovery: `Lister` and `Recover`

@@ -75,7 +75,7 @@ production). `runID` is the durable identity: re-running the same `runID` resume
   - `Edge[M](from, to)` connects a producer to a consumer, unifying the connecting type `M`.
   - `Switch[M](over, When(pred, to)..., Else(to))` routes on a node's output to exactly one arm.
     Switch arms do not reconverge (each arm runs to a terminal producing `Out`); use `Join2`/`Join3`
-    for fan-in of branches that both run, and a `When` arm with a `loop_max` back-edge for a bounded loop.
+    for fan-in of branches that both run, and a `LoopBack(max, pred, head)` arm (a `when` arm with `loop_max` in a config) for a bounded loop.
 - **`Build()`** validates whole-graph coherence (entry consumes `In`, every terminal path produces
   `Out`, names unique, no unreachable node, at most one `Else` per switch) and freezes the spec into a
   `*Flow`. Errors name the offending node.
@@ -156,7 +156,7 @@ The flow, end to end:
    `flow:digest` record (index `i`), bundled with the STH.
 4. An auditor holding only the bundle and the signer's public key (obtained out of band) checks
    `bundle.Verify(pub)` (the STH signature is authentic and the record is included under the signed
-   root) and that the proven digest equals the declared flow's `flow.Digest()`. Together: **the run
+   root), checks the STH's timestamp with `audit.CheckTimestamp`, and that the proven digest equals the declared flow's `flow.Digest()`. Together: **the run
    committed to this signed diagram.**
 
 `Conform` closes the loop on the *path*: it recognizes `flow:digest` as an internal record (never a

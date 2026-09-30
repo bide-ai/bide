@@ -92,7 +92,7 @@ minor version (0.x.0) may include breaking API or journal-format changes; each o
 
 - Resuming a run that crashed after its final answer returns the recorded answer without another model call ([#59]).
 - `Replay` keeps redacted reasoning, empty thinking blocks and Gemini thought signatures ([#51]).
-- `Replay` carries each turn's recorded usage and finish reason, so a replayed run stops at the same token budget ([#52]).
+- `Replay` carries each turn's recorded usage, and a finish reason derived from the turn, so a replayed run stops at the same token budget ([#52]).
 - A hedged stream's `Finish` carries the winner's usage ([#52]).
 - A response substituted by middleware or a hedge backup is checked for missing or reused tool-use ids ([#55]).
 - `NewRateLimiter` with a non-positive interval does not block, and a cancelled call keeps its token ([#55]).

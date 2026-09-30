@@ -50,8 +50,8 @@ type AttenuateFunc func(parent Grant, subAgent string) Grant
 // the child grant so a deeper delegation narrows again. With no grant on ctx it is a plain
 // sub-agent (it inherits the identity), so it is safe to use either way. With a grant, it must be
 // called from an agent run (Agent.Run / RunSaga), whose run scope gives each call its own sub-run
-// (parentRunID/toolUseID); called outside one it refuses rather than fall back to a sub-run ID that
-// every parent run would share.
+// (agent.SubRunID of the parent run and the tool-use id); called outside one it refuses rather
+// than fall back to a sub-run ID that every parent run would share.
 //
 // The effect is that capabilities only ever shrink down a delegation tree, by default rather than
 // by remembering to wire it, and the whole chain is provable end to end via VerifyDelegationChain.

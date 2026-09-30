@@ -109,7 +109,7 @@ run's agent tree: a sub-agent's model calls count toward its parent's `Result` a
 
 ## Tool middleware
 
-Tool execution has its own wrappers (attached where you build the agent's tool set):
+Tool execution has its own wrappers (attached with `agent.UseTool`):
 
 - `ToolRetry(n, opts...)` retries a tool call with the same backoff/classification options as
   `Retry`, for tools that are retry-safe (`ReadOnly`, `Idempotent`, or keyed). A tool that is not

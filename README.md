@@ -79,7 +79,7 @@ whose whole point is "never double-fire" defaults to safe rather than to guessin
 
 Most unknowns never reach a person: an idempotency key lets the provider dedupe a safe retry, and
 for systems without one (email, internal services) a reconciler resolves the step from the record
-it left (`agent.ResolveHalt`). The human is the floor, not the default.
+it left (`agent.ResolveHalt`, or `agent.ResolveStepHalt` for a `Step`). The human is the floor, not the default.
 
 > [!IMPORTANT]
 > **The rule underneath it:** when an action moves money, touches a record, or happens under audit
@@ -273,7 +273,7 @@ finalize := b.Step("finalize", func(ctx context.Context, r Reservation) (Receipt
 decline  := b.Step("decline",  func(ctx context.Context, a Assessment) (Receipt, error) { ... })
 
 b.Switch(classify,
-    plan.When(func(a Assessment) bool { return a.Rush }, reserve),
+    plan.When(func(a Assessment) bool { return a.Rush }, reserve).Named("rush"),
     plan.Else(decline),
 )
 b.Edge(reserve, finalize)
@@ -413,12 +413,12 @@ model as the call's result, so the model can correct the call. `encoding/json` w
 values, match names case-insensitively, drop unknown names, and keep the last duplicate. Give each
 argument field the json tag the model sees in the schema.
 
-`Run` returns just the final message. For a run summary (token usage, summed across turns,
-including cache; model-turn count; wall-clock duration) use `RunResult` (and `RunSagaResult`):
+`Run` returns just the final message. For a run summary (token usage for the whole run,
+including cache and sub-agents; model-turn count; wall-clock duration) use `RunResult` (and `RunSagaResult`):
 
 ```go
 res, err := a.RunResult(ctx, runID, input)
-// res.Message, res.Usage, res.Turns, res.Duration, res.RunID
+// res.Message, res.Usage, res.Spend, res.Turns, res.Duration, res.RunID
 ```
 
 ## Streaming
@@ -620,7 +620,7 @@ The harness is exported (`chaos/`) and pointed at other SDKs in `benchmarks/`. T
 **Bide `maxFired=1` (PASS); trpc-agent-go `maxFired=6`; langchaingo `maxFired=64` (both FAIL).**
 trpc's checkpoint/resume genuinely works (verified: resuming a completed run is a no-op); its
 double-fire is the documented LangGraph "nodes must be idempotent" window. langchaingo has no
-durability at all, so retries re-run everything. Bide' attempt-marker closes the window entirely.
+durability at all, so retries re-run everything. Bide's attempt-marker closes the window entirely.
 
 `WithMaxTurns(n)` caps model turns per run so a model that keeps calling tools can't loop forever:
 hitting it returns `ErrMaxTurns` (which is `errors.Is` `ErrBudget`). `WithTokenBudget(n)` caps the
@@ -724,10 +724,11 @@ so `errors.Is` is reliable across the whole surface.
 The **control-flow signals** are richer than a category, so they stay concrete types matched
 with `errors.As`: `*PendingApproval` (approval needed), `*Interrupted` (waiting for human input),
 `*Sleeping` (durable timer pending), `*Awaiting` (waiting for an external signal), `*ResumeHalt`
-(unsafe to resume), `*SagaAborted` (rolled back), and `*HaltTooYoung` (from `ResolveHalt`, when
+(unsafe to resume), `*SagaAborted` (rolled back), and `*HaltTooYoung` (from `ResolveHalt` or `ResolveStepHalt`, when
 `WithMinHaltAge` has not elapsed yet). A paused or halted run is not a "failure" category; inspect the
 struct for `RunID` / `ToolUseID` / compensation details. Cancellation surfaces as the usual
-`context.Canceled` / `context.DeadlineExceeded`.
+`context.Canceled` / `context.DeadlineExceeded`, and a drive cancelled because its run lease was lost
+(`agent.Lease`) as `ErrLeaseLost`; like cancellation, it carries no category.
 
 ## Middleware & observability
 
