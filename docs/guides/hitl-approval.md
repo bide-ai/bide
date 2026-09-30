@@ -183,7 +183,11 @@ approver whose verifier reports no key identity (an empty `KeyIDs`, or an empty 
 holder of a shared key could otherwise sign as each approver it serves and meet the quorum alone.
 An approver the resolver does not know is not refused: their decisions cannot verify, so they fill
 no seat. The gate runs this check on every evaluation, before it reads a recorded tally, so a
-resolver changed between one resume and the next is checked again.
+resolver changed between one resume and the next is checked again. The check guards the tallies
+this version counts and records. A terminal tally already in the journal is reused, not recounted
+(see [What the gate records](#what-the-gate-records)), so a tally recorded by an earlier version,
+which did not compare keys, stands as recorded even if it counted two approvers on one key. Finish
+or audit such runs before relying on this check for them (see the CHANGELOG's upgrade note).
 `ApprovalPolicy.ValidateKeys(resolver)` runs the same check (with `Validate`), so a deployment can
 refuse a bad pairing of policy and keys at startup, before any call pauses.
 
@@ -195,8 +199,9 @@ never from a configured name, so that two verifiers built over one key report th
 `audit` verifiers report the scheme and the hex SHA-256 of the public key's encoding
 (`audit.KeyID`, for example `ed25519:3b6a27bc...`):
 
-- `audit.Ed25519Verifier` and `audit.MLDSAVerifier` report one identity. A key that verifies nothing
-  (an Ed25519 key of the wrong length, a nil ML-DSA key) reports none, so the gate refuses it rather
+- `audit.Ed25519Verifier` and `audit.MLDSAVerifier` report one identity. The ML-DSA label names the
+  key's parameter set (`ml-dsa-44`, `ml-dsa-65` or `ml-dsa-87`). A key that verifies nothing (an
+  Ed25519 key of the wrong length, a nil ML-DSA key) reports none, so the gate refuses it rather
   than seating it.
 - `audit.HybridVerifier` reports both component keys. A hybrid signature is meant to hold while either
   scheme holds, so if one scheme breaks, the other component's key alone signs: two approvers sharing
@@ -206,6 +211,19 @@ never from a configured name, so that two verifiers built over one key report th
 
 Two identities are the same key only when the strings are equal. The gate cannot tell that one person
 holds two different keys; see [Scope](#scope).
+
+**Trust boundary.** A verifier is trusted code, like the resolver that returns it. The gate takes
+`KeyIDs` on faith: it cannot check that the identities name the keys `Verify` really accepts, so a
+verifier that under-reports its keys, or reports identities not derived from them, defeats the check.
+Use the `audit` verifiers, or derive identities the same way.
+
+**It fails closed.** Enrolling one approver's public key under a second approver (a copy-paste in
+the key directory, say) makes the gate refuse the whole policy with `ErrConfig`, not just the second
+approver: no call under that policy runs, and paused calls stay paused, until the keys are corrected.
+A resolver that returns a typed nil verifier (a nil pointer in a non-nil interface) is refused the
+same way, and so is a key a verifier cannot use (it reports no identity). If `TallyApprovals` is
+handed such a resolver directly, the approvers it cannot seat are listed in the tally's `Excluded`,
+never count, and are not waited on: when too few seats remain to reach `Need`, the gate denies.
 
 ## Proving the gate held
 

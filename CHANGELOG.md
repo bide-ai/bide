@@ -31,7 +31,7 @@ minor version (0.x.0) may include breaking API or journal-format changes; each o
 - Journals in one process over one store share in-flight steps. A claim whose insert failed (it may have committed) records that its attempt did not start, keyed by its claim (`attempt:not-started:<claim>:<marker>`), so a re-drive in any process re-attempts the effect instead of halting over one that never ran. If that record cannot be written either (or is written and reported failed), the process remembers the claim, and the next claim of the marker in the process, or a resume that meets it, writes the record again; every claim takes a fresh id, so an effect never runs under a marker that is, or can become, recorded as not started. `plan`'s conformance check ignores not-started records ([#92]).
 - `agent/storetest.CheckWrapper` checks, given at least two contexts that differ in what the wrapper reads from a context, that a store wrapper's mapping of run IDs and names does not depend on the context (A1), and its use of `Unwrap` ([#92]).
 - Benchmarks `BenchmarkRunTurns`, `BenchmarkToolCallSideEffect`, `BenchmarkStep`, `BenchmarkRecoverPass10k`, `BenchmarkAnchoredInsert`, `BenchmarkSQLiteInsert` and `BenchmarkPostgresInsert` ([#92]).
-- `agent.ApprovalPolicy.ValidateKeys`, `agent.ReasonSharedKey`, `agent.ReasonNoKeyID` and `audit.KeyID`; `KeyIDs` on `audit.Ed25519Verifier`, `MLDSAVerifier` and `HybridVerifier` ([#109]).
+- `agent.ApprovalPolicy.ValidateKeys`, `agent.ApprovalTally.Excluded`, `agent.ReasonSharedKey`, `agent.ReasonNoKeyID` and `audit.KeyID`; `KeyIDs` on `audit.Ed25519Verifier`, `MLDSAVerifier` and `HybridVerifier` ([#109]).
 
 ### Changed
 
@@ -59,6 +59,7 @@ minor version (0.x.0) may include breaking API or journal-format changes; each o
 ### Security
 
 - An m-of-n approval gate counts one seat per signing key. Two approvers whose verifiers resolve to one key let that key's holder meet the quorum alone; the gate now refuses such a policy with `ErrConfig` on every evaluation, `TallyApprovals` never counts either approver, `audit.VerifyApprovals` returns an error, and `bide-audit verify-approvals` exits 4. Found by the TLA+ approvals model (finding F5) ([#109]).
+  **Upgrading:** the check covers tallies this version counts. A terminal tally already in a journal is reused, not recounted, so a passed tally recorded by an earlier version stands even if two of its approvers shared a key, and its tool runs when the run resumes. Journals are not promised to resume across pre-releases; before upgrading, finish the runs paused on an m-of-n gate, or audit each one that holds a recorded tally (`audit.VerifyApprovals` under the new rules refuses a shared key) and resolve it by hand if two approvers shared a key.
 
 ## [0.8.0] - 2026-09-30
 

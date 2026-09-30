@@ -167,7 +167,14 @@ type ApproverVerifier interface {
 	// The gate counts one seat per key: it refuses a policy two of whose approvers report a
 	// common entry, or whose approver's verifier reports no entry or an empty one, with
 	// ErrConfig (see ApprovalPolicy.ValidateKeys). Otherwise the holder of a shared key could
-	// sign as each approver that key serves and meet a quorum alone.
+	// sign as each approver that key serves and meet a quorum alone. Enrolling one approver's
+	// public key under a second approver makes the gate refuse the whole policy: it fails closed,
+	// and no call under it runs until the keys are corrected.
+	//
+	// Trust boundary: a verifier is trusted code, like the resolver that returns it. The gate
+	// takes its KeyIDs on faith; it cannot check that they name the keys Verify really accepts.
+	// A verifier that under-reports its keys, or reports an identity that is not derived from a
+	// key, defeats the check. Use the audit verifiers, or derive identities the same way.
 	KeyIDs() []string
 }
 
@@ -184,8 +191,11 @@ type ApproverVerifierFor func(approverID string) (ApproverVerifier, bool)
 //
 // The gate runs this check on every evaluation, before it reads a recorded tally, so a resolver
 // that changes between runs is checked again; TallyApprovals also never counts an approver whose
-// key is shared, whatever resolver it is given. A caller that builds policies and resolvers
-// ahead of a run can call ValidateKeys to refuse a bad pairing before any call pauses.
+// key is shared, whatever resolver it is given. The check guards the tallies this version counts
+// and records. A terminal tally already in the journal stays authoritative and is not recounted,
+// so one recorded before this check existed is reused as recorded, even if it counted two
+// approvers on one key. A caller that builds policies and resolvers ahead of a run can call
+// ValidateKeys to refuse a bad pairing before any call pauses.
 func (p ApprovalPolicy) ValidateKeys(verifierFor ApproverVerifierFor) error {
 	if err := p.Validate(); err != nil {
 		return err

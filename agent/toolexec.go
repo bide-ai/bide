@@ -28,7 +28,8 @@ func (a *Agent) quorumTally(ctx context.Context, runID string, tu ToolUse, pol *
 		return ApprovalTally{}, false, fmt.Errorf("agent: tool %q has an m-of-n Approval policy but no approver verifiers are configured (see WithApproverVerifiers): %w", tu.Name, ErrConfig)
 	}
 	// One seat per signing key (F5), checked on every evaluation and before a recorded tally is
-	// read, so a resolver changed since the last run is checked again.
+	// read, so a resolver changed since the last run is checked again. A recorded tally is still
+	// reused, not recounted: one written before this check existed stands as recorded.
 	if _, _, err := approverSeats(*pol, a.approverVerifiers); err != nil {
 		return ApprovalTally{}, false, fmt.Errorf("agent: tool %q: %w", tu.Name, err)
 	}

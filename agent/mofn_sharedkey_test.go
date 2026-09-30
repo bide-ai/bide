@@ -301,3 +301,52 @@ func TestTallyApprovals_UnreachableExcludesSharedSeats(t *testing.T) {
 		t.Fatalf("tally = %+v: a3 can still approve, so Need 1 is reachable", tally)
 	}
 }
+
+// A terminal tally in the journal is authoritative: a resume reuses it and does not recount, even
+// if the keys changed since. This is documented behaviour, and it bounds F5's fix: a passed tally
+// recorded by a version without the key check, which counted two approvers on one key, stands
+// after the upgrade (the CHANGELOG's upgrade note says to finish or audit such runs first). From
+// the adversarial review of #109; it asserts the behaviour rather than a fix, by decision.
+func TestMofn_RecordedTallyIsReusedNotRecounted(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemStore()
+	pol := &ApprovalPolicy{Need: 2, Approvers: []string{"a1", "a2"}}
+	var charged int
+	if _, err := mofnRun(store, "r1", true, pol, fakeVerifiers("a1", "a2"), &charged); err == nil {
+		t.Fatal("setup: want a pause")
+	}
+	// Under the old deployment a1 and a2 both resolved to key h1, held by one person.
+	subj := subjectOf(t, store, "r1", "c1")
+	for _, a := range pol.Approvers {
+		sig := fakeSign("h1", ApprovalDecisionBytes(subj, a, true))
+		if err := SubmitDecision(ctx, store, Decision{RunID: "r1", ToolUseID: "c1", ApproverID: a, Approved: true, Signature: sig}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The old gate's terminal tally counted both (it compared no keys; emulated here with ids
+	// that differ, which is what the old rule effectively saw).
+	oldVF := resolverOf(map[string]ApproverVerifier{
+		"a1": keyVerifier{signer: "h1", keys: []string{"old-view-1"}},
+		"a2": keyVerifier{signer: "h1", keys: []string{"old-view-2"}},
+	})
+	recs, _ := store.History(ctx, "r1")
+	oldTally, _ := TallyApprovals(recs, subj, *pol, oldVF)
+	if !oldTally.Passed() {
+		t.Fatalf("setup: old tally %+v did not pass", oldTally)
+	}
+	if _, err := step(ctx, store, "r1", ApprovalTallyStep("c1"), func(context.Context) (ApprovalTally, error) { return oldTally, nil }, StepSafety(Safety{ReadOnly: true})); err != nil {
+		t.Fatal(err)
+	}
+	// After the upgrade a2 gets a key of its own. A recount would not pass; the gate does not
+	// recount, and the recorded tally stands.
+	fixed := resolverOf(map[string]ApproverVerifier{
+		"a1": keyVerifier{signer: "h1", keys: []string{"k:h1"}},
+		"a2": keyVerifier{signer: "a2", keys: []string{"k:a2"}},
+	})
+	if recount, _ := TallyApprovals(recs, subj, *pol, fixed); recount.Passed() {
+		t.Fatalf("setup: the recount under the fixed keys passed: %+v", recount)
+	}
+	if _, err := mofnRun(store, "r1", false, pol, fixed, &charged); err != nil || charged != 1 {
+		t.Fatalf("charged=%d err=%v, want the recorded tally reused and the tool run once", charged, err)
+	}
+}
