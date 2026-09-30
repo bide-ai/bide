@@ -61,7 +61,8 @@ func ProveApproval(ctx context.Context, store agent.Durable, runID, step string,
 // It discloses everything the gate read, valid or not, so VerifyApprovals can recount from the
 // same inputs and detect an omission. It errors if the call has no journaled tally (it was not
 // m-of-n gated, or its gate has not reached an outcome), no recorded request, or no result, or
-// if a proof cannot be built against sth.
+// if a proof cannot be built against sth. The tally is read as VerifyApprovals reads it
+// (UnmarshalStrict), so a tally that reads two ways is ErrMalformed here too.
 func ApprovalEvidence(ctx context.Context, store agent.Durable, runID, toolUseID string, sth SignedTreeHead) ([]EvidenceAction, error) {
 	recs, err := store.History(ctx, runID)
 	if err != nil {
@@ -79,7 +80,7 @@ func ApprovalEvidence(ctx context.Context, store agent.Durable, runID, toolUseID
 		return nil, fmt.Errorf("audit: no journaled approval tally for call %q in run %s (not m-of-n gated, or its gate has not decided)", toolUseID, runID)
 	}
 	var tally agent.ApprovalTally
-	if err := json.Unmarshal(recs[tallyIdx].Result, &tally); err != nil {
+	if err := UnmarshalStrict(recs[tallyIdx].Result, &tally); err != nil {
 		return nil, fmt.Errorf("audit: decode %s: %w", tallyName, err)
 	}
 	callIdx, call, ok := agent.FindToolCall(recs, toolUseID)
@@ -247,9 +248,13 @@ func VerifyApprovals(actions []EvidenceAction, toolUseID string, policy agent.Ap
 		}
 	}
 	v.ToolName, v.Args = call.Name, call.Args
+	// The tally is read strictly (UnmarshalStrict: no duplicate or case-variant name, no unknown
+	// field), as the run certificate's leaves are: a result that read one way to this check and
+	// another to a reader of the proof would let the verdict rest on a policy the proof does not
+	// say the gate enforced.
 	var tally agent.ApprovalTally
-	if err := json.Unmarshal(recs[tallyI].Result, &tally); err != nil {
-		return v, fmt.Errorf("audit: decode the journaled tally: %v: %w", err, ErrMalformed)
+	if err := UnmarshalStrict(recs[tallyI].Result, &tally); err != nil {
+		return v, fmt.Errorf("audit: decode the journaled tally: %w", err)
 	}
 	problem := func(format string, args ...any) { v.Problems = append(v.Problems, fmt.Sprintf(format, args...)) }
 

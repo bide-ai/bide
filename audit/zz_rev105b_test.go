@@ -245,6 +245,11 @@ func Test_R105b_ProvenTallyResultReadsTwoWays(t *testing.T) {
 		t.Fatal(err)
 	}
 	sth := signTH(t, th, g.logPriv)
+	// The producer refuses to build evidence from such a tally.
+	if _, err := audit.ApprovalEvidence(ctx, dst, gateRun, "c1", sth); !errors.Is(err, audit.ErrMalformed) {
+		t.Errorf("ApprovalEvidence over the two-way tally: err %v, want ErrMalformed", err)
+	}
+	// Evidence assembled by hand, proof by proof, reaches VerifyApprovals.
 	acts := make([]audit.EvidenceAction, len(orig))
 	for i, a := range orig {
 		pb, err := audit.ProveRecord(ctx, dst, gateRun, a.Bundle.Inclusion.Index, sth)
