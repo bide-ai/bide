@@ -304,8 +304,9 @@ func VerifyRun(cert RunCertificate, approved []string, v Verifier) (RunVerificat
 	if err := checkVerifier(v); err != nil {
 		return res, err
 	}
-	if err := formatOf(cert, cert.Format); err != nil {
-		return res, err
+	// The certificate and every head and bundle it carries are of the format this version reads.
+	if err := checkFormats(cert); err != nil {
+		return res, fmt.Errorf("audit: run certificate: %w", err)
 	}
 	fail := func(ok *bool, format string, args ...any) {
 		*ok = false

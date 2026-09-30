@@ -147,10 +147,7 @@ func (l *MemAnchorLog) ProveConsistency(first int) (Consistency, error) {
 // log is another party's and a monitor reads both fields. It does not verify the entry's signed
 // head; do that with entry.STH.Verify.
 func VerifyAnchorInclusion(root []byte, entry AnchorEntry, proof Inclusion) error {
-	if err := formatOf(entry, entry.Format); err != nil {
-		return err
-	}
-	if err := formatOf(entry.STH, entry.STH.Format); err != nil {
+	if err := checkFormats(entry); err != nil {
 		return fmt.Errorf("audit: anchor entry %d: %w", entry.Seq, err)
 	}
 	if entry.Seq != proof.Index {

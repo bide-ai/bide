@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 
 	"github.com/bide-ai/bide/agent"
 )
@@ -121,6 +122,69 @@ func checkFormat(name, got, want string) error {
 func formatOf(f formatted, got string) error {
 	name, want := f.artifactFormat()
 	return checkFormat(name, got, want)
+}
+
+// checkFormats returns an ErrFormat error for the first artifact in v, v itself or one it carries
+// at any depth (a run certificate's heads, a bundle's head, a package's certificate), whose format
+// is not the one this version reads. It is the check UnmarshalStrict makes on JSON, made on a Go
+// value, so a verifier given an artifact built or changed in memory refuses the same formats it
+// would refuse on the wire, whether or not a later check reaches the artifact.
+func checkFormats(v any) error { return checkFormatsIn(reflect.ValueOf(v), "") }
+
+// auditPkg is this package's import path: checkFormatsIn descends only into its struct types,
+// which are the ones that can carry an artifact.
+var auditPkg = reflect.TypeFor[ProofBundle]().PkgPath()
+
+func checkFormatsIn(v reflect.Value, path string) error {
+	switch v.Kind() {
+	case reflect.Pointer, reflect.Interface:
+		if v.IsNil() {
+			return nil
+		}
+		return checkFormatsIn(v.Elem(), path)
+	case reflect.Slice, reflect.Array:
+		if v.Type().Elem().Kind() == reflect.Uint8 {
+			return nil
+		}
+		for i := range v.Len() {
+			if err := checkFormatsIn(v.Index(i), fmt.Sprintf("%s[%d]", path, i)); err != nil {
+				return err
+			}
+		}
+	case reflect.Map:
+		for it := v.MapRange(); it.Next(); {
+			if err := checkFormatsIn(it.Value(), fmt.Sprintf("%s[%v]", path, it.Key())); err != nil {
+				return err
+			}
+		}
+	case reflect.Struct:
+		t := v.Type()
+		if t.PkgPath() != auditPkg {
+			return nil
+		}
+		if f, ok := reflect.Zero(t).Interface().(formatted); ok {
+			if err := formatOf(f, v.FieldByName("Format").String()); err != nil {
+				if path == "" {
+					return err
+				}
+				return fmt.Errorf("%s: %w", path, err)
+			}
+		}
+		for i := range t.NumField() {
+			sf := t.Field(i)
+			if !sf.IsExported() {
+				continue
+			}
+			sub := sf.Name
+			if path != "" {
+				sub = path + "." + sf.Name
+			}
+			if err := checkFormatsIn(v.Field(i), sub); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // checkDataFormat checks the top-level "format" member of data, an artifact of type f, before the

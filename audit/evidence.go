@@ -471,15 +471,11 @@ func (e EvidencePackage) Verify(v Verifier, opts ...EvidenceVerifyOption) (Evide
 	if err := checkVerifier(v); err != nil {
 		return rep, err
 	}
-	if err := formatOf(e, e.Format); err != nil {
-		return rep, err
-	}
-	// Every artifact the package carries is of the format this version reads, whether or not a
-	// check below reaches it (a run certificate for another run is never passed to VerifyRun).
-	if c := e.RunCertificate; c != nil {
-		if err := formatOf(*c, c.Format); err != nil {
-			return rep, fmt.Errorf("audit: evidence run certificate: %w", err)
-		}
+	// The package and every artifact it carries, at any depth, are of the format this version
+	// reads, whether or not a check below reaches them (a run certificate for another run is never
+	// passed to VerifyRun, so the heads it carries would otherwise go unread).
+	if err := checkFormats(e); err != nil {
+		return rep, fmt.Errorf("audit: evidence package: %w", err)
 	}
 	problem := func(format string, args ...any) { rep.Problems = append(rep.Problems, fmt.Sprintf(format, args...)) }
 
