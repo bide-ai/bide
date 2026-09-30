@@ -164,10 +164,12 @@ func decodeHybrid(sig []byte) (ed, mldsaSig []byte, ok bool) {
 }
 
 // hybridLenFits reports whether a hybrid signature's Ed25519 length prefix n fits in the rest
-// bytes that follow it. It is generic over the integer type so a test can check it at the width
-// int has on a 32-bit platform.
+// bytes that follow it. The comparison is made in uint64, which holds every uint32 and every
+// non-negative int, so it does not depend on the width of int: converting n to a 32-bit int
+// would make a prefix of 2^31 or more negative, pass the check, and panic the split. It is
+// generic over the integer type so a test can check it at the width int has on a 32-bit platform.
 func hybridLenFits[I ~int | ~int32 | ~int64](n uint32, rest I) bool {
-	return I(n) <= rest
+	return rest >= 0 && uint64(n) <= uint64(rest)
 }
 
 // checkPrivateKey refuses an ed25519 private key that is not ed25519.PrivateKeySize bytes, on which
