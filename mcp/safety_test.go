@@ -60,6 +60,8 @@ type testVerifier string
 
 func (testVerifier) Alg() agent.Alg { return "test" }
 
+func (v testVerifier) PublicKey() []byte { return []byte(v) }
+
 func (v testVerifier) Verify(message, sig []byte) bool {
 	return bytes.Equal(sig, append([]byte(v+"|"), message...))
 }

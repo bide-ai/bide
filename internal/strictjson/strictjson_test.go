@@ -63,3 +63,35 @@ func TestUnmarshal_ExactFieldsTakeNull(t *testing.T) {
 		t.Fatal("Unmarshal with SchemaFields accepted null for a required field")
 	}
 }
+
+// AllowUnknown tolerates a name the struct does not have, as a document from a later version
+// carries, and still refuses everything else a strict read refuses: a case variant of a field
+// name, a duplicate name (in the unknown value too), and an escaped lone surrogate.
+func TestAllowUnknown(t *testing.T) {
+	type rec struct {
+		Kind string `json:"kind"`
+		N    int    `json:"n"`
+	}
+	opts := &Options{AllowUnknown: true}
+	var v rec
+	if err := Unmarshal([]byte(`{"kind":"a","n":1,"added_later":{"x":[1,"😀"]}}`), &v, opts); err != nil || v.Kind != "a" || v.N != 1 {
+		t.Fatalf("an unknown field: %+v, %v", v, err)
+	}
+	for name, doc := range map[string]string{
+		"case variant of a field":      `{"kind":"a","Kind":"b"}`,
+		"case variant alone":           `{"KIND":"b"}`,
+		"duplicate field":              `{"kind":"a","kind":"b"}`,
+		"duplicate unknown":            `{"x":1,"x":2}`,
+		"duplicate inside an unknown":  `{"x":{"y":1,"y":2}}`,
+		"lone surrogate in an unknown": `{"x":"\ud800"}`,
+		"lone surrogate in a field":    `{"kind":"\udc00"}`,
+		"lone surrogate in a name":     `{"\ud800":1}`,
+	} {
+		if err := Check([]byte(doc), reflect.TypeFor[rec](), opts); err == nil {
+			t.Errorf("%s: %s accepted", name, doc)
+		}
+	}
+	if err := Check([]byte(`{"kind":"a","extra":1}`), reflect.TypeFor[rec](), nil); err == nil {
+		t.Error("without AllowUnknown an unknown field was accepted")
+	}
+}

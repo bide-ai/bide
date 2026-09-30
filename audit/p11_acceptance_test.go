@@ -819,3 +819,57 @@ func (h p11Fixed) History(context.Context, string) ([]agent.Record, error) { ret
 func (p11Fixed) Do(context.Context, string, string, func(context.Context) (agent.Record, error)) (agent.Record, error) {
 	return agent.Record{}, errors.New("read-only")
 }
+
+// A producer refuses to prove a record whose stored bytes read differently to different JSON
+// readers, and Record() of such bytes is ErrMalformed; an unknown field alone is fine.
+func TestP11_RecordBytesMustReadOneWay(t *testing.T) {
+	ctx := context.Background()
+	salt := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{3}, agent.SaltSize))
+	for name, rec := range map[string]string{
+		"case variant": `{"name":"x","kind":"value","Kind":"tool_result","salt":"` + salt + `"}`,
+		"duplicate":    `{"name":"x","kind":"value","kind":"tool_result","salt":"` + salt + `"}`,
+		"surrogate":    `{"name":"x","kind":"value","result":"a","note":"\ud800","salt":"` + salt + `"}`,
+	} {
+		s := agent.NewMemStore()
+		if _, err := s.Do(ctx, "r", "first", func(context.Context) (agent.Record, error) {
+			return agent.Record{Kind: agent.StepValue, Result: json.RawMessage(`1`)}, nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := s.Insert(ctx, "r", "x", []byte(rec)); err != nil {
+			t.Fatal(err)
+		}
+		signer := p11Signers(t)["ed25519"]
+		th, _ := audit.NewTreeHead(ctx, s, "r", p11Now())
+		sth, _ := audit.SignTreeHead(th, signer)
+		recs, _ := s.History(ctx, "r")
+		if _, err := audit.ProveRecord(ctx, s, "r", len(recs)-1, sth); !errors.Is(err, audit.ErrMalformed) {
+			t.Fatalf("%s: ProveRecord err = %v, want ErrMalformed", name, err)
+		}
+		if _, err := (audit.ProofBundle{RecordBytes: []byte(rec)}).Record(); !errors.Is(err, audit.ErrMalformed) {
+			t.Fatalf("%s: Record() err = %v, want ErrMalformed", name, err)
+		}
+	}
+}
+
+// Evidence checks the format of a run certificate it carries even when no check below reaches it
+// (a certificate for another run).
+func TestP11_EvidenceChecksItsCertificateFormat(t *testing.T) {
+	ctx := context.Background()
+	store, _ := p11GovernedRun(t)
+	signer := p11Signers(t)["ed25519"]
+	ts := p11Now()
+	pkg, err := audit.Evidence(ctx, store, "gov", signer, ts, audit.WithRunCertificate(audit.RunCertSpec{ApprovedPolicies: []string{"D1"}}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cert := *pkg.RunCertificate
+	cert.Format, cert.RunID = "bide.audit.runcert.v2", "another"
+	pkg.RunCertificate = &cert
+	if err := pkg.Seal(signer); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pkg.Verify(p11Verifier(t, signer), audit.WithApprovedPolicies("D1")); !errors.Is(err, audit.ErrFormat) {
+		t.Fatalf("a runcert.v2 inside the package: err = %v, want ErrFormat", err)
+	}
+}

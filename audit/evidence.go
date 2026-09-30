@@ -474,6 +474,13 @@ func (e EvidencePackage) Verify(v Verifier, opts ...EvidenceVerifyOption) (Evide
 	if err := formatOf(e, e.Format); err != nil {
 		return rep, err
 	}
+	// Every artifact the package carries is of the format this version reads, whether or not a
+	// check below reaches it (a run certificate for another run is never passed to VerifyRun).
+	if c := e.RunCertificate; c != nil {
+		if err := formatOf(*c, c.Format); err != nil {
+			return rep, fmt.Errorf("audit: evidence run certificate: %w", err)
+		}
+	}
 	problem := func(format string, args ...any) { rep.Problems = append(rep.Problems, fmt.Sprintf(format, args...)) }
 
 	if e.Alg != v.Alg() || !bytes.Equal(e.PublicKey, v.PublicKey()) {

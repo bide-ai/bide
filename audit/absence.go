@@ -49,8 +49,9 @@ type KeySet struct {
 	Key    KeyFunc // projects one journal record onto the set
 }
 
-// ToolUseKeys is the key set of completed tool calls, keyed "tooluse:<ToolUseID>". It proves "no
-// tool call with this ID happened in the run."
+// ToolUseKeys is the key set of the tool calls a run started, keyed "tooluse:<ToolUseID>" (see
+// ToolUseKey). It proves "no tool call with this ID happened in the run": neither completed, nor
+// started and left unresolved, nor failed in a saga.
 var ToolUseKeys = KeySet{Kind: TreeToolUse, Prefix: toolUseKeyPrefix, Key: ToolUseKey}
 
 // PolicyUsedKeys is the key set of policy digests exercised by governed actions, keyed
@@ -76,9 +77,19 @@ func (s KeySet) check() error {
 
 const toolUseKeyPrefix = "tooluse:"
 
-// ToolUseKey is the KeyFunc of ToolUseKeys: completed tool calls, keyed by their ToolUseID.
+// ToolUseKey is the KeyFunc of ToolUseKeys: every record that shows a call ran or may have run,
+// keyed by its ToolUseID: a completed call's result (StepToolResult), the attempt marker journaled
+// before a side effect fired (StepAttempt), whose effect may have happened although no result was
+// recorded, and a saga step's failure (StepSagaFail). An attempt marker of a durable Step carries
+// the step's name as its ToolUseID, so it adds that name as a key too: the set may hold a key no
+// tool call has, which only makes an absence proof for that name impossible, never a wrong one.
+// Journal records a redaction replaced cannot be projected; producers refuse a journal holding one
+// (ErrRedacted).
 func ToolUseKey(r agent.Record) (string, bool) {
-	if r.Kind == agent.StepToolResult {
+	switch {
+	case r.Kind == agent.StepToolResult:
+		return toolUseKeyPrefix + r.ToolUseID, true
+	case (r.Kind == agent.StepAttempt || r.Kind == agent.StepSagaFail) && r.ToolUseID != "":
 		return toolUseKeyPrefix + r.ToolUseID, true
 	}
 	return "", false
@@ -111,7 +122,9 @@ func keyLeaves(keys []string) [][]byte {
 	return leaves
 }
 
-// AbsenceRoot is the RFC 6962 Merkle root over the run's sorted, distinct keys in set. Anyone
+// AbsenceRoot is the RFC 6962 Merkle root over the run's sorted, distinct keys in set. Over a
+// journal holding a redacted record it omits that record's key (NewAbsenceTreeHead refuses such a
+// journal). Anyone
 // holding the journal recomputes it to confirm a signed key-set head reflects the run.
 func AbsenceRoot(records []agent.Record, set KeySet) []byte {
 	return merkleRoot(keyLeaves(absenceKeys(records, set)))
@@ -152,6 +165,9 @@ func ProveAbsent(records []agent.Record, set KeySet, key string) (Absence, error
 	}
 	if !strings.HasPrefix(key, set.Prefix) {
 		return Absence{}, fmt.Errorf("audit: key %q is not in the %s key set (keys start with %q)", key, set.Kind, set.Prefix)
+	}
+	if err := refuseRedacted(records, "absence of "+key); err != nil {
+		return Absence{}, err
 	}
 	keys := absenceKeys(records, set)
 	leaves := keyLeaves(keys)

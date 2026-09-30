@@ -124,7 +124,8 @@ func GovernedPolicyDigest(result json.RawMessage) (string, error) {
 func PolicyUsedKeyFor(digest string) string { return policyUsedKeyPrefix + digest }
 
 // PoliciesUsed returns the sorted, distinct policy digests exercised by governed actions in the
-// run. An auditor compares this against the approved set; for any disallowed digest it then
+// run. A redacted record's action cannot be read, so over a journal holding one the result may
+// omit a policy the run used; CertifyRun refuses such a journal (ErrRedacted). An auditor compares this against the approved set; for any disallowed digest it then
 // obtains an absence proof (ProveAbsentBundle with PolicyUsedKeys) showing no action ran under it.
 func PoliciesUsed(records []agent.Record) []string {
 	keys := absenceKeys(records, PolicyUsedKeys)

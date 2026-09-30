@@ -58,7 +58,24 @@ var (
 	ErrFormat = fmt.Errorf("audit: unsupported artifact format: %w", ErrMalformed)
 	// ErrNotVerified reports an artifact that was read and understood and does not hold.
 	ErrNotVerified = errors.New("audit: not verified")
+	// ErrRedacted reports a journal holding a redacted record (agent.Record.Redacted) given to a
+	// producer that projects what the records say (an absence key set, a used-policy set, the
+	// event stream): the redacted record's content is gone, so the projection would silently omit
+	// it, and a key set without it would prove absent a call the journal tree commits. Proofs of the
+	// other records, and the journal root, are unaffected. It wraps agent.ErrConfig: the caller
+	// asked for a claim the journal can no longer support.
+	ErrRedacted = fmt.Errorf("audit: the journal holds a redacted record: %w", agent.ErrConfig)
 )
+
+// refuseRedacted returns an ErrRedacted error naming the first redacted record in recs, or nil.
+func refuseRedacted(recs []agent.Record, what string) error {
+	for i, r := range recs {
+		if r.Redacted {
+			return fmt.Errorf("audit: %s: record %d (%q) is redacted, so a projection of the journal would omit what it recorded: %w", what, i, r.Name, ErrRedacted)
+		}
+	}
+	return nil
+}
 
 // notVerified returns an error wrapping ErrNotVerified with the reason.
 func notVerified(format string, args ...any) error {

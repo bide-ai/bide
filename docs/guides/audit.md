@@ -22,9 +22,11 @@ what the agent did*. Stdlib-only (`crypto/sha256`, `crypto/ed25519`, `crypto/mld
 - **Stored bytes, never re-encoded**: a journal leaf commits to the bytes the journal stores for the
   record (`agent.Record.Raw`), verbatim. A proof carries those bytes (`record_bytes`, base64) and
   the verifier hashes exactly them; it decodes them only to display the record and to check its role
-  (its kind and name), leniently, the way the journal itself reads them. So a record written by a
-  newer release, with fields this one does not know, verifies, and what a proof commits to never
-  depends on how this release encodes a record.
+  (its kind and name). A field this release does not know is ignored, so a record written by a
+  newer release verifies, and what a proof commits to never depends on how this release encodes a
+  record. Before decoding, the bytes must read one way to every JSON reader: a duplicate name, a
+  name that is a case variant of a record field (`"Kind"` beside `"kind"`), invalid UTF-8, or an
+  escaped lone surrogate is `audit.ErrMalformed`, and a producer refuses to prove such a record.
 - **Canonical bytes**: grants, seals, and event and anchor leaves are hashed or signed over JSON,
   which is injective only over valid UTF-8 (encoding/json rewrites invalid bytes to U+FFFD). A
   grant, event, or anchor entry with invalid UTF-8 in any string is refused rather than committed
@@ -65,8 +67,13 @@ disclosure or append-only proofs matter.
 `SHA-256(0x00 || "bide.audit.journal-leaf.v1\x00" || stored bytes)`, where the stored bytes are the
 record as the journal holds it (`agent.Record.Raw`; `audit.JournalLeafHash` computes it). A record
 built in memory has no stored bytes and so no leaf. A record a redaction replaced with a tombstone
-keeps its place in every tree through the leaf hash the tombstone records; it can no longer be
-proven itself. The stored bytes do not HTML-escape (unlike v0.6.0's) and include the record's `salt`: 32 random bytes
+keeps its place in the journal tree through the leaf hash the tombstone records, so the root and
+every other record's proof are unchanged; it can no longer be proven itself. What the redacted record
+said is gone, so nothing is projected from a journal holding one: the absence key sets
+(`NewAbsenceTreeHead`, `SignAbsenceRoot`, `ProveAbsent`, `ProveAbsentBundle`), the run certificate's
+used-policy set (`CertifyRun`), and the event stream (`EventLogFromJournal`, `PersistJournal`) refuse
+it with `audit.ErrRedacted`, rather than omit the record and, say, prove absent a call the journal
+tree commits. The stored bytes do not HTML-escape (unlike v0.6.0's) and include the record's `salt`: 32 random bytes
 a store sets when it first journals the record (`agent.JournalEntry`), so that a proof's sibling
 hashes cannot be matched against a guessed neighbouring record. A record without a 32-byte salt
 is refused. Every other kind of leaf carries its own tag too (`bide.audit.key-leaf.v1`,
@@ -272,8 +279,10 @@ A record's index is its position in the run's journal, where the journal header 
 
 `Verify` fails closed (an error wrapping `audit.ErrNotVerified`) on forged record bytes, a proof not
 bound to the signed size, a head that is not a journal head of the bundle's `RunID`, or the wrong key
-or scheme. `Verify` hashes `RecordBytes` as they are; `Record()` decodes them leniently (a field this
-version does not know is ignored), so a record a newer release wrote verifies and displays here. The public key must come from the anchor operator, not the bundle: that is what makes it
+or scheme. `Verify` hashes `RecordBytes` as they are; `Record()` decodes them, ignoring a field this
+version does not know, so a record a newer release wrote verifies and displays here, but refusing
+(`audit.ErrMalformed`) bytes that would read differently to another JSON reader: duplicate or
+case-variant names, invalid UTF-8, escaped lone surrogates. The public key must come from the anchor operator, not the bundle: that is what makes it
 **proofs you verify, not logs you trust.**
 
 For the auditor who does not write Go, the `bide-audit` CLI wraps this (`prove` over an
@@ -675,7 +684,11 @@ a policy that was in fact used. And it cannot be borrowed from another tree: eac
 `tooluse:` keys, `PolicyUsedKeys` is `absence/policy-used` over `policy_used:` keys), the signed
 head commits to its kind, its run, and its source journal tree, and `Verify` requires the head to be
 of the set you name and the key to carry that set's prefix. A tool-use head cannot prove a policy
-absent, and a journal head cannot prove anything absent. The absence covers the journal up to the
+absent, and a journal head cannot prove anything absent. The tool-use key set holds every call the
+run started, not only completed ones: a result, an attempt marker journaled before a side effect
+fired (the effect may have happened though no result was recorded), and a saga failure. A Step's
+attempt marker adds the step's name as a key too, which can only make an absence proof for that name
+impossible, never a wrong one. A journal holding a redacted record is refused (`audit.ErrRedacted`). The absence covers the journal up to the
 size the head names; that it is the run's final head comes from the anchor log.
 
 The auditor persona produces and checks these from the command line, as with inclusion. Absence

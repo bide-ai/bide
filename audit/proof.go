@@ -94,6 +94,9 @@ func proveIn(runID string, recs []agent.Record, index int, sth SignedTreeHead) (
 	if _, err := canonicalRecord(recs[index]); err != nil {
 		return ProofBundle{}, fmt.Errorf("audit: record %d: %w", index, err)
 	}
+	if _, err := decodeRecordBytes(recs[index].Raw()); err != nil {
+		return ProofBundle{}, fmt.Errorf("audit: record %d: %w", index, err)
+	}
 	leaves, err := journalLeafHashes(recs)
 	if err != nil {
 		return ProofBundle{}, err

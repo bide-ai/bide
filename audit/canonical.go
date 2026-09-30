@@ -140,10 +140,28 @@ var recordShape = func() reflect.Type {
 }()
 
 func init() {
-	strictOptions.Hooks = map[reflect.Type]func([]byte, string) error{reflect.TypeFor[partShape](): checkPart}
+	strictOptions.Hooks = map[reflect.Type]func([]byte, string) error{reflect.TypeFor[partShape](): checkPartWith(strictOptions)}
 	for t := range formattedWire {
 		strictOptions.Hooks[t] = checkFormatted(t)
 	}
+	recordBytesOptions.Hooks = map[reflect.Type]func([]byte, string) error{reflect.TypeFor[partShape](): checkPartWith(recordBytesOptions)}
+}
+
+// recordBytesOptions check a proven record's stored bytes (checkRecordBytes): the strict rules of
+// UnmarshalStrict, except that a name the record type does not have is tolerated, as a record a
+// later release wrote carries one.
+var recordBytesOptions = &strictjson.Options{Shapes: strictOptions.Shapes, AllowUnknown: true}
+
+// checkRecordBytes checks a record's stored bytes before they are read for display or a role
+// check, so that what they say to this package is what they say to any JSON reader: valid UTF-8,
+// no duplicate name at any depth, no name that is a case variant of a record field (which
+// encoding/json would read into that field), and no escaped lone surrogate. A name no record field
+// has is tolerated: the leaf is the bytes, and a later release may add fields.
+func checkRecordBytes(b []byte) error {
+	if !utf8.Valid(b) {
+		return errors.New("invalid UTF-8")
+	}
+	return strictjson.Check(b, recordShape, recordBytesOptions)
 }
 
 // messageShape is the wire form of agent.Message (see its MarshalJSON), which UnmarshalStrict
@@ -183,7 +201,11 @@ var partShapes = map[string]reflect.Type{
 
 // checkPart checks one message part (raw, already checked for duplicate names) against the wire
 // form of the part its "type" names.
-func checkPart(raw []byte, path string) error {
+func checkPartWith(opts *strictjson.Options) func([]byte, string) error {
+	return func(raw []byte, path string) error { return checkPart(raw, path, opts) }
+}
+
+func checkPart(raw []byte, path string, opts *strictjson.Options) error {
 	var probe map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &probe); err != nil {
 		return fmt.Errorf("%s: a message part must be an object: %w", path, err)
@@ -196,7 +218,7 @@ func checkPart(raw []byte, path string) error {
 	if !ok {
 		return fmt.Errorf("%s: unknown message part type %q", path, kind)
 	}
-	return strictjson.CheckValue(raw, shape, path, strictOptions)
+	return strictjson.CheckValue(raw, shape, path, opts)
 }
 
 // Every leaf, grant, and seal in this package is hashed or signed over a JSON encoding. JSON

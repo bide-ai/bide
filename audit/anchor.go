@@ -141,7 +141,7 @@ func (l *MemAnchorLog) ProveConsistency(first int) (Consistency, error) {
 
 // VerifyAnchorInclusion returns nil if entry is the leaf at proof.Index in an anchor log of
 // proof.Size entries committed by root, from the entry and proof alone. The entry must be of
-// AnchorEntryFormat (ErrFormat) and state what the proof proves: its Seq is proof.Index, and its
+// AnchorEntryFormat, carrying a head of STHFormat (ErrFormat), and state what the proof proves: its Seq is proof.Index, and its
 // RunID is the run its signed head names (the only entries MemAnchorLog.Publish writes). An entry
 // that misstates either, or is not the leaf, is an error wrapping ErrNotVerified, since the anchor
 // log is another party's and a monitor reads both fields. It does not verify the entry's signed
@@ -149,6 +149,9 @@ func (l *MemAnchorLog) ProveConsistency(first int) (Consistency, error) {
 func VerifyAnchorInclusion(root []byte, entry AnchorEntry, proof Inclusion) error {
 	if err := formatOf(entry, entry.Format); err != nil {
 		return err
+	}
+	if err := formatOf(entry.STH, entry.STH.Format); err != nil {
+		return fmt.Errorf("audit: anchor entry %d: %w", entry.Seq, err)
 	}
 	if entry.Seq != proof.Index {
 		return notVerified("audit: anchor entry says it is at %d, but the proof is for index %d", entry.Seq, proof.Index)

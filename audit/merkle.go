@@ -231,12 +231,16 @@ func tombstoneLeafHash(tombstone []byte) ([]byte, error) {
 }
 
 // decodeRecordBytes decodes a proven record from its stored bytes for display and role checks
-// only, leniently: a field this version does not know is ignored, never an error, as the journal
-// itself reads it. The leaf is the bytes, never this decoding. Bytes that do not decode as a record
-// are ErrMalformed.
+// only. A field this version does not know is ignored, never an error: the leaf is the bytes, never
+// this decoding. Bytes that do not read one way to every JSON reader (checkRecordBytes: a duplicate
+// or case-variant name, invalid UTF-8, an escaped lone surrogate), or that do not decode as a
+// record, are ErrMalformed.
 func decodeRecordBytes(b []byte) (agent.Record, error) {
 	if len(b) == 0 {
 		return agent.Record{}, fmt.Errorf("audit: the proof carries no record bytes: %w", ErrMalformed)
+	}
+	if err := checkRecordBytes(b); err != nil {
+		return agent.Record{}, fmt.Errorf("audit: the record bytes do not read one way to every JSON reader (%v): %w", err, ErrMalformed)
 	}
 	r, err := agent.DecodeRecord(b)
 	if err != nil {

@@ -77,7 +77,9 @@ for the post-quantum options below), with no external dependencies.
   verified, so two different values never share a leaf or a signature. `bide-audit` reads every
   artifact with `audit.UnmarshalStrict`, which rejects duplicate keys, keys that match a field only
   case-insensitively, unknown fields, invalid UTF-8, escaped lone surrogates, and non-standard
-  base64, so a file cannot show a reader one value while the verifier checks another. Tool
+  base64, so a file cannot show a reader one value while the verifier checks another. A proof's
+  `record_bytes` are held to the same rules before they are read (only an unknown field is
+  tolerated, since a newer release may add one). Tool
   arguments are read by the same strict decoder (it also requires every field the tool's schema
   lists as required), so a `Func` tool reads exactly the values its arguments spell out: no
   dropped, case-folded, or duplicated name stands for a value the text does not show. Malformed keys (the wrong length, or none) verify nothing;

@@ -82,7 +82,9 @@ if pend, ok := errors.AsType[*agent.ApprovalPending](err); ok {
 empty one with `agent.ErrConfig`). It is journaled with the decision as `Record.ApproverAlg`, and the
 gate counts the decision only if it equals the `Alg()` of the verifier your resolver returns for
 that approver: a valid signature journaled under another scheme name, or none, is ignored with
-`agent.ReasonAlg`.
+`agent.ReasonAlg`. One key fills one seat (see [Key identity](#key-identity)), and `bide-audit
+verify-approvals` also refuses an approver-key file that gives two ids one key, compared by key
+identity, whether or not both ids are in the policy (exit 4).
 
 Then re-run `pend.RootRunID`. The gate evaluates the recorded decisions:
 

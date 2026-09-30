@@ -17,6 +17,8 @@ const fakeAlg Alg = "fake"
 
 func (fakeVerifier) Alg() Alg { return fakeAlg }
 
+func (v fakeVerifier) PublicKey() []byte { return []byte(v.id) }
+
 // decideAs records a decision signed under fakeAlg.
 func decideAs(ctx context.Context, store Durable, runID, toolUseID, approverID string, approved bool, sig []byte, opts ...ApproveOption) error {
 	return SubmitDecision(ctx, store, Decision{RunID: runID, ToolUseID: toolUseID, ApproverID: approverID, Approved: approved, Alg: fakeAlg, Signature: sig}, opts...)

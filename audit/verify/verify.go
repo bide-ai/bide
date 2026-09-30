@@ -271,6 +271,7 @@ func NewVerifier(alg string, pub []byte) (Verifier, error) {
 type edVerifier ed25519.PublicKey
 
 func (edVerifier) Alg() string { return "ed25519" }
+
 // Verify reports whether sig is a valid Ed25519 signature over m. A weak key (not canonically
 // encoded, small order, or outside the prime-order subgroup; see usableKey) verifies nothing:
 // crypto/ed25519 alone accepts forged signatures under a small-order key.

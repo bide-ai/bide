@@ -1021,11 +1021,35 @@ func (c *cli) verifyApprovals(args []string) {
 	var keyHex map[string]string
 	okKeys := c.note(c.readJSON(*keysPath, &keyHex))
 	keys := make(map[string]audit.Verifier, len(keyHex))
-	for id, text := range keyHex {
-		k, err := audit.ParsePublicKey(text)
+	byKey := make(map[string]string, len(keyHex)) // key identity (audit.KeyID) -> the approver id holding it
+	ids := make([]string, 0, len(keyHex))
+	for id := range keyHex {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids) // report a shared key the same way every run
+	for _, id := range ids {
+		k, err := audit.ParsePublicKey(keyHex[id])
 		if err != nil {
 			okKeys = c.note(unusable(fmt.Errorf("approver %q key: %w", id, err)))
 			continue
+		}
+		// One key under two approver ids would let its holder fill two seats: the key file is
+		// unusable as an approver registry, whether or not both ids are in this policy (the
+		// policy's own check is agent.ApprovalPolicy.ValidateKeys, below). Keys are compared by
+		// the gate's key identities (KeyIDs), so a hybrid key sharing a component with another
+		// entry is one key too.
+		shared := ""
+		for _, ref := range k.KeyIDs() {
+			if other, dup := byKey[ref]; dup && shared == "" {
+				shared = other
+			}
+		}
+		if shared != "" {
+			okKeys = c.note(unusable(fmt.Errorf("approvers %q and %q share a signing key", shared, id)))
+			continue
+		}
+		for _, ref := range k.KeyIDs() {
+			byKey[ref] = id
 		}
 		keys[id] = k
 	}

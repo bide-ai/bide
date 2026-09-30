@@ -6,6 +6,7 @@ import (
 	"crypto/ed25519"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -43,7 +44,23 @@ func Test_R105_CLIVerifyAbsentOnRedactedCall(t *testing.T) {
 	recs, _ := red.History(ctx, "r")
 	abs, err := audit.SignAbsenceRoot(recs, audit.ToolUseKeys, th, signer, ts)
 	if err != nil {
-		t.Fatal(err)
+		// SignAbsenceRoot refuses a journal holding a redacted record (audit.ErrRedacted). A key
+		// holder can still sign the key set it projects by hand; prove-absent must refuse to build
+		// a proof from it.
+		if !errors.Is(err, audit.ErrRedacted) {
+			t.Fatal(err)
+		}
+		keys := map[string]bool{}
+		for _, r := range recs {
+			if k, ok := audit.ToolUseKey(r); ok {
+				keys[k] = true
+			}
+		}
+		abs, err = audit.SignTreeHead(audit.TreeHead{Kind: audit.TreeToolUse, RunID: "r", Size: len(keys), Root: audit.AbsenceRoot(recs, audit.ToolUseKeys),
+			TimestampNanos: ts, Journal: &audit.TreeRef{Size: th.Size, Root: th.Root}}, signer)
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 	dir := t.TempDir()
 	writeJSON(t, filepath.Join(dir, "j.json"), exportJournal(t, red, "r"))

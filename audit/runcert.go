@@ -165,7 +165,9 @@ func CertifyRun(ctx context.Context, store agent.Durable, runID string, sth Sign
 	}
 
 	// The used-policy set is the key set of the absence commitment. Sign that commitment, bound to
-	// sth's journal tree, so the disclosed UsedPolicies can be bound to what the run committed.
+	// sth's journal tree, so the disclosed UsedPolicies can be bound to what the run committed. It
+	// refuses a journal holding a redacted record (ErrRedacted), whose action PoliciesUsed cannot
+	// read, so a certificate never omits a policy the run used.
 	absSTH, err := SignAbsenceRoot(recs, PolicyUsedKeys, sth.TreeHead, spec.Signer, spec.TimestampNanos)
 	if err != nil {
 		return RunCertificate{}, fmt.Errorf("audit: certify run %s: %w", runID, err)

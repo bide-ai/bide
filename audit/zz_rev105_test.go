@@ -307,3 +307,46 @@ func Test_R105_VerifyApprovalsRefusesASharedApproverKey(t *testing.T) {
 		t.Fatalf("err = %v, want ErrConfig for two approvers with one key", err)
 	}
 }
+
+// Each producer that projects a journal refuses one holding a redacted record on its own, with
+// ErrRedacted, whichever entry point a caller uses.
+func Test_R105_EveryProjectionRefusesARedactedJournal(t *testing.T) {
+	ctx := context.Background()
+	orig, _ := p11GovernedRun(t)
+	signer := p11Signers(t)["ed25519"]
+	jth, _ := audit.NewTreeHead(ctx, orig, "gov", p11Now())
+	sth, _ := audit.SignTreeHead(jth, signer)
+	red := r105Copy(t, orig, "gov", "call:pay")
+	recs, _ := red.History(ctx, "gov")
+
+	if _, err := audit.NewAbsenceTreeHead(recs, audit.ToolUseKeys, jth, 1); !errors.Is(err, audit.ErrRedacted) {
+		t.Errorf("NewAbsenceTreeHead: err = %v, want ErrRedacted", err)
+	}
+	if _, err := audit.ProveAbsent(recs, audit.ToolUseKeys, audit.ToolUseKeyFor("pay")); !errors.Is(err, audit.ErrRedacted) {
+		t.Errorf("ProveAbsent: err = %v, want ErrRedacted", err)
+	}
+	// A key-set head a key holder signed by hand over the redacted projection.
+	keys := map[string]bool{}
+	for _, r := range recs {
+		if k, ok := audit.ToolUseKey(r); ok {
+			keys[k] = true
+		}
+	}
+	abs, err := audit.SignTreeHead(audit.TreeHead{Kind: audit.TreeToolUse, RunID: "gov", Size: len(keys), Root: audit.AbsenceRoot(recs, audit.ToolUseKeys),
+		TimestampNanos: 1, Journal: &audit.TreeRef{Size: jth.Size, Root: jth.Root}}, signer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := audit.ProveAbsentBundle(recs, audit.ToolUseKeys, audit.ToolUseKeyFor("pay"), abs); !errors.Is(err, audit.ErrRedacted) {
+		t.Errorf("ProveAbsentBundle: err = %v, want ErrRedacted", err)
+	}
+	if _, err := audit.CertifyRun(ctx, red, "gov", sth, audit.RunCertSpec{ApprovedPolicies: []string{"D1"}, Signer: signer, TimestampNanos: sth.TimestampNanos}); !errors.Is(err, audit.ErrRedacted) {
+		t.Errorf("CertifyRun: err = %v, want ErrRedacted", err)
+	}
+	if _, err := audit.EventLogFromJournal(ctx, red, "gov"); !errors.Is(err, audit.ErrRedacted) {
+		t.Errorf("EventLogFromJournal: err = %v, want ErrRedacted", err)
+	}
+	if err := audit.PersistJournal(ctx, audit.NewMemEventStore(), red, "gov"); !errors.Is(err, audit.ErrRedacted) {
+		t.Errorf("PersistJournal: err = %v, want ErrRedacted", err)
+	}
+}

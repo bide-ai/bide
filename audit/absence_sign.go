@@ -21,6 +21,9 @@ func NewAbsenceTreeHead(records []agent.Record, set KeySet, journal TreeHead, ti
 	if err != nil {
 		return TreeHead{}, err
 	}
+	if err := refuseRedacted(recs, "the "+set.Kind+" key set"); err != nil {
+		return TreeHead{}, err
+	}
 	keys := absenceKeys(recs, set)
 	return TreeHead{
 		Kind:           set.Kind,

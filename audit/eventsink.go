@@ -195,6 +195,12 @@ func projectJournal(ctx context.Context, store agent.Durable, runID string) ([]a
 	if err != nil {
 		return nil, nil, fmt.Errorf("audit: load history %s: %w", runID, err)
 	}
+	// A redacted record's events cannot be projected (its content is gone) nor given a place of
+	// their own (its tombstone keeps only the journal leaf hash), so the event tree of a redacted
+	// journal would silently differ from the one taken before: refuse it.
+	if err := refuseRedacted(recs, "the event stream of run "+runID); err != nil {
+		return nil, nil, err
+	}
 	evs, sources := agent.ProjectEvents(recs)
 	salts := make([][]byte, len(evs))
 	for i, src := range sources {
