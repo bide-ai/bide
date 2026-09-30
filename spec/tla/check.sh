@@ -103,13 +103,16 @@ translate() {
 
 meta() { sed -n "s/^\\\\\\* $1: *//p" "$2" | head -1; }
 
+# mc_of DIR: the model's MC module in DIR (the one *MC.tla file), or nothing.
+mc_of() { (cd "$1" && ls ./*MC.tla 2>/dev/null | head -1 | sed 's|^\./||'); }
+
 # tlc CFG OUT: run TLC on CFG (a copy may live elsewhere) against the MC module beside the
 # original config's directory; print TLC's exit status.
 tlc() {
   local cfg=$1 out=$2 dir=$3 meta_dir status=0
   meta_dir=$(mktemp -d)
   (cd "$dir" && "$java" -XX:+UseParallelGC ${TLC_JAVA_OPTS:-} -cp "$jar" tlc2.TLC \
-      -workers "$workers" -metadir "$meta_dir" -config "$cfg" ClaimsMC.tla) >"$out" 2>&1 || status=$?
+      -workers "$workers" -metadir "$meta_dir" -config "$cfg" "$(mc_of "$dir")") >"$out" 2>&1 || status=$?
   rm -rf "$meta_dir"
   echo "$status"
 }
@@ -136,7 +139,7 @@ run_cfg() {
   cfg=$(cd "$(dirname "$cfg")" && pwd)/$(basename "$cfg")
   name=${cfg#"$here"/}
   dir=$(dirname "$cfg")
-  [ -f "$dir/ClaimsMC.tla" ] || dir=$(dirname "$dir") # regress/, findings/, limits/: the MC module above
+  [ -n "$(mc_of "$dir")" ] || dir=$(dirname "$dir") # regress/, findings/, limits/: the MC module above
   expect=$(meta EXPECT "$cfg")
   kind=${expect%% *}
   want=${expect#* }

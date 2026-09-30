@@ -52,7 +52,7 @@ else fails the check.
 The workflow `.github/workflows/models.yml` has two jobs. **Models** runs on every pull request, in
 the merge queue and on pushes to main: the self-test, the translation check, and every `ci`,
 `regress` and `finding` configuration. On a pull request, its steps run only when the pull request
-touches the models or the Go code they describe (`spec/tla/`, `agent/`, `store/`,
+touches the models or the Go code they describe (`spec/tla/`, `agent/`, `store/`, `plan/`,
 `internal/journalhook/`, or `models.yml` itself); otherwise the job reports success after printing
 that no modelled code changed, so it can be a required check without costing every documentation
 change six minutes. The merge queue and main always run in full, and so does any doubt (a failed
@@ -463,6 +463,67 @@ two seats under two spellings of one id; `TallySound`, 14 states).
   Fix, which the model checks (`ap-shared-key-check`, `KeyCheck`): the gate refuses a policy two
   of whose approvers resolve to one key. The maintainer approved it: `ApproverVerifier` gets a key
   identity (branch `fix/approver-key-identity`); the finding moves to `regress/` when it lands.
+
+## Model 7: flow semantics
+
+`flows/Flows.tla` checks a lowered plan flow (P5b, #103): every node runs as an `agent.Step`
+under its node key, so this model abstracts the Step's claim to one marker (first writer wins; a
+drive that finds a marker with no result halts until the halt is resolved) and leaves the claim
+protocol itself to model 1. Nodes are Steps since P5b: flows no longer claim through
+`ClaimAttempt` on one key (the `Kind = "flow"` configurations of model 1 keep the old rule as a
+record of it).
+
+The flow is one small graph with every routing shape: an entry `E`; a Switch over `E` to a
+bounded loop (head `H`, switched node `S`, whose Switch loops back to `H` or exits to `T`) or to
+`Q`; `H`'s body runs a nested Step `N`. Node outputs are 0 or 1, chosen by the body; the
+predicates are pure over the recorded value. Two drivers, crashes, ambiguous replies, and an
+operator resolving node halts through `Flow.ResolveHalt` (of this flow, or of another flow or
+digest) run around it.
+
+| Label | Go |
+|---|---|
+| `Begin`, `BeginStart` | `journalhook.Begin`: `run:start`, or a recorded `run:complete` |
+| `Node` (`NGet`, `NClaim`, `NBody`, `NNested`, `NRecord`) | `runNode` through `journalhook.Step`: the node key `node:[iter:<i>:]<name>`, its Step claim, the body, a Step the body runs (`node:iter:<i>:H:step:N`), the result |
+| `Choose` (`CDo`, `CRoute`) | `chooseArmKeyed`: `switch:<over>` or `switch:iter:<i>:<over>` |
+| `LoopH` .. `AfterChooseS` | `runLoop`, with its `lp.max` bound (a runaway-loop error) |
+| `Complete` | `journalhook.Complete`: `run:complete` with the terminal's output |
+| `RPick`, `RWrite` | `Flow.ResolveHalt`: a node of this flow with a live attempt and no result, in a run of this flow and digest (`checkRunOfFlow`), then `ResolveHaltRef` |
+
+| Property | Kind | Statement |
+|---|---|---|
+| `AtMostOncePerIteration` | invariant | a node that is not retry-safe fires at most once per iteration key |
+| `NestedOncePerIteration` | invariant | the nested Step fires at most once per iteration, and every iteration a driver recorded ran it |
+| `Conform` | invariant | the journal holds a declared path: every recorded result and choice is on the path the recorded choices take, each choice follows its predicate over the recorded value, and `run:complete` holds the reached terminal's output |
+| `RoutesFollowDeclared` | invariant | every route a driver took followed the predicate over its own iteration's recorded value |
+| `ResultsTyped` | invariant | every recorded node output is one this flow's node types read |
+| `Completes` | liveness | a run whose drives do not halt completes, or stops on the loop bound |
+
+`Conform` here is the property the journal must have, not `plan.Conform` itself: the model shows
+every journal the drivers and the resolver can produce is a declared path, which is what
+`plan.Conform` checks in Go.
+
+| Config | Group | What | States | Time |
+|---|---|---|---|---|
+| `flow-two` | ci | two drivers; `E`, `H`, `T` side effects; 1 error reply, 1 crash | 1,690,704 | 11 s |
+| `flow-resolve` | ci | one driver and the resolver (this flow, or another); 1 error reply, 1 crash | 150,726 | 1 s |
+| `flow-all-side-resolve` | ci | every node a side effect, one driver, the resolver | 253,402 | 2 s |
+| `flow-live` | ci | `Completes`, one driver; 1 error reply, 1 crash | 6,886 | <1 s |
+| `deep-flow-all-side` | nightly | every node a side effect, two drivers | 5,592,438 | 34 s |
+| `deep-flow-resolve` | nightly | two drivers and the resolver, 1 crash | 15,882,920 | 1 min 42 s |
+| `deep-flow-live` | nightly | `Completes`, two drivers | 3,381,384 | 2 min |
+| `deep-flow-iter3` | nightly | three loop iterations, two drivers | 10,758,528 | 1 min |
+
+Regressions (each must fail with its property): `flows/regress/nested-unscoped` (#103 review F7:
+a Step a loop body ran had one key for every iteration, so later iterations replayed the first;
+`NestedOncePerIteration`, 38 states), `flows/regress/loop-switch-unscoped` (a guard: the loop
+Switch's choice journaled once for all iterations; `RoutesFollowDeclared`, 46 states),
+`flows/regress/resolve-any-node` (#103 review F3: a resolution recorded a node that never halted,
+off the taken path; `Conform`, 6 states), `flows/regress/resolve-any-flow` (#103 re-review F4: a
+resolution through another flow or digest recorded a value this flow cannot read;
+`ResultsTyped`, 13 states).
+
+Not modelled here: the flow input's canonical comparison (#103 F2, a Go encoding question), the
+run ID check (F6), and joins (a Join is ordinary sequential Step under topological order).
 
 ## What the bounds do not cover
 
