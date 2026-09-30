@@ -273,7 +273,11 @@ For rigor it does more than a bare pass-count:
   (`DirectionRegression`, `DirectionImprovement`, `DirectionFlat`, `DirectionInconclusive`). A
   metric is inconclusive, with no test run and no place in the correction family, when it is
   missing from one report, has no scored runs in one, or has unscored runs above the tolerance in
-  either (`WithUnscoredTolerance(frac)`; the default 0 makes any unscored run inconclusive).
+  either (`WithUnscoredTolerance(frac)`; the default 0 makes any unscored run inconclusive). Every
+  metric is inconclusive when the two reports ran different case sets (their
+  `Provenance.CaseSetHash` differs or is missing), since a moved rate may only mean the cases
+  changed; `WithCaseSetMismatchAllowed()` instead compares over the cases both ran, matched by each
+  `CaseReport.Hash`, and notes that scope on every compared metric.
   `Comparison.Gate()` is the CI gate: it returns nil only when some metric was compared and every
   metric is flat or improved, and otherwise an error wrapping `ErrRegression` or `ErrInconclusive`,
   so an unmeasured metric never passes. Every `Report` carries
@@ -288,8 +292,8 @@ For rigor it does more than a bare pass-count:
   it, rather than reading significance into an underpowered sample.
 - **Reproducibility provenance.** Each `Report` carries a `Provenance{ModelID, Temperature, Seed,
   Timestamp, CaseSetHash}`; `Run` always fills `CaseSetHash` from `HashCases` (a length-prefixed
-  sha256 over the case set) so a comparison across two reports can confirm they ran the same cases
-  before trusting the delta.
+  sha256 over the case set), and each `CaseReport` carries its own case's hash; `Compare` checks
+  both before trusting a delta.
 - **Stratified breakdown.** `Case.Tags` plus `Report.ByTag` report pass rates per slice (region,
   difficulty, product line), so an aggregate that hides a failing subgroup is visible.
 - **Governance-held metric.** `GovernanceHeld(name, compliant)` scores whether the governed

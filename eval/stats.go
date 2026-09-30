@@ -29,9 +29,11 @@ import (
 // (DirectionRegression for a drop, DirectionImprovement for a rise) or DirectionFlat when the change
 // is not significant.
 //
-// A metric Compare could not compare is DirectionInconclusive, with Note saying why: it is missing
-// from one report, one report has no scored run of it, or its unscored share in either report is
-// above the tolerance (WithUnscoredTolerance). No test is run for it: Significant is false,
+// A metric Compare could not compare is DirectionInconclusive, with Note saying why: the reports ran
+// different case sets (unless WithCaseSetMismatchAllowed), it is missing from one report, one report
+// has no scored run of it, or its unscored share in either report is above the tolerance
+// (WithUnscoredTolerance). A metric compared over only the cases both reports share has a Note
+// saying so. No test is run for it: Significant is false,
 // RateDelta is 0, PValue and AdjustedP are 1, and it is left out of the Benjamini-Hochberg family.
 type MetricComparison struct {
 	Metric      string          `json:"metric"`
@@ -110,8 +112,26 @@ func (c Comparison) Gate() error {
 type CompareOption interface{ applyCompare(*compareConfig) error }
 
 type compareConfig struct {
-	unscoredTolerance float64
+	unscoredTolerance    float64
+	caseSetMismatchAllow bool
 }
+
+type caseSetMismatchAllowed struct{}
+
+func (caseSetMismatchAllowed) applyCompare(c *compareConfig) error {
+	c.caseSetMismatchAllow = true
+	return nil
+}
+
+// WithCaseSetMismatchAllowed lets Compare compare two reports whose case sets differ
+// (Provenance.CaseSetHash), over only the cases both ran: a case is shared when a CaseReport of each
+// report has the same Hash, so a case whose input or expectation changed is not shared. Each
+// metric's stats are then recomputed from the shared cases, the comparison of each metric says so
+// in its Note, and with no shared case every metric is inconclusive.
+//
+// Without it, reports over different case sets make every metric inconclusive: a rate that moved
+// may only mean the cases changed.
+func WithCaseSetMismatchAllowed() CompareOption { return caseSetMismatchAllowed{} }
 
 type unscoredTolerance float64
 
@@ -141,6 +161,10 @@ func WithUnscoredTolerance(frac float64) CompareOption { return unscoredToleranc
 // adjusted p-value is below 0.05, and Direction names the sign of the change. Every other metric,
 // including one present in only one report, is DirectionInconclusive.
 //
+// The reports must have run the same case set: the same non-empty Provenance.CaseSetHash. If they
+// did not, every metric is inconclusive, with a Note naming both hashes, unless
+// WithCaseSetMismatchAllowed compares them over their shared cases.
+//
 // Both reports must carry Format ReportFormat, as every Report that Run returns does; otherwise
 // Compare returns an error wrapping ErrFormat and no comparison. A report of another layout (or a
 // zero Report) decoded into this type would otherwise compare as if its metrics were absent. A bad
@@ -163,9 +187,27 @@ func Compare(old, new Report, opts ...CompareOption) (Comparison, error) {
 			return Comparison{}, fmt.Errorf("%w: the %s report's format is %q, want %q", ErrFormat, r.which, r.format, ReportFormat)
 		}
 	}
-	seen := make(map[string]bool, len(old.Overall)+len(new.Overall))
-	names := make([]string, 0, len(old.Overall)+len(new.Overall))
-	for _, overall := range []map[string]MetricStat{old.Overall, new.Overall} {
+	oldOverall, newOverall := old.Overall, new.Overall
+	var blocked, scope string // blocked: why no metric is compared; scope: a note on each compared one
+	oh, nh := old.Provenance.CaseSetHash, new.Provenance.CaseSetHash
+	if oh == "" || oh != nh {
+		mismatch := fmt.Sprintf("case sets differ (old %s, new %s)", shortHash(oh), shortHash(nh))
+		if !cfg.caseSetMismatchAllow {
+			blocked = mismatch
+		} else {
+			var shared int
+			oldOverall, newOverall, shared = sharedOverall(old.Cases, new.Cases)
+			if shared == 0 {
+				blocked = mismatch + " and share no case"
+				oldOverall, newOverall = old.Overall, new.Overall
+			} else {
+				scope = fmt.Sprintf("%s; compared over the %d shared case(s)", mismatch, shared)
+			}
+		}
+	}
+	seen := make(map[string]bool, len(oldOverall)+len(newOverall))
+	names := make([]string, 0, len(oldOverall)+len(newOverall))
+	for _, overall := range []map[string]MetricStat{oldOverall, newOverall} {
 		for n := range overall {
 			if !seen[n] {
 				seen[n] = true
@@ -179,8 +221,8 @@ func Compare(old, new Report, opts ...CompareOption) (Comparison, error) {
 	var tested []int // indexes into comps of the metrics tested, in order
 	var raw []float64
 	for _, n := range names {
-		o, inOld := old.Overall[n]
-		w, inNew := new.Overall[n]
+		o, inOld := oldOverall[n]
+		w, inNew := newOverall[n]
 		c := MetricComparison{
 			Metric:    n,
 			OldRate:   o.Rate,
@@ -192,6 +234,8 @@ func Compare(old, new Report, opts ...CompareOption) (Comparison, error) {
 			Direction: DirectionInconclusive,
 		}
 		switch {
+		case blocked != "":
+			c.Note = blocked
 		case !inOld:
 			c.Note = "missing from the old report"
 		case !inNew:
@@ -205,6 +249,7 @@ func Compare(old, new Report, opts ...CompareOption) (Comparison, error) {
 			c.RateDelta = w.Rate - o.Rate
 			c.PValue = comparePValue(o.Passes, o.Scored, w.Passes, w.Scored)
 			c.Direction = ""
+			c.Note = scope
 			tested = append(tested, len(comps))
 			raw = append(raw, c.PValue)
 		}
@@ -227,6 +272,60 @@ func Compare(old, new Report, opts ...CompareOption) (Comparison, error) {
 		}
 	}
 	return Comparison{Metrics: comps}, nil
+}
+
+// shortHash abbreviates a case-set hash for a note.
+func shortHash(h string) string {
+	switch {
+	case h == "":
+		return "none"
+	case len(h) > 12:
+		return h[:12]
+	}
+	return h
+}
+
+// sharedOverall recomputes each report's per-metric stats over only the cases both ran, matched by
+// CaseReport.Hash (a case without a hash is never shared), and returns the number of distinct
+// shared cases. Cases repeated within a report under one hash are the same case and are summed.
+func sharedOverall(oldCases, newCases []CaseReport) (oldOverall, newOverall map[string]MetricStat, shared int) {
+	hashes := func(cases []CaseReport) map[string]bool {
+		m := map[string]bool{}
+		for _, c := range cases {
+			if c.Hash != "" {
+				m[c.Hash] = true
+			}
+		}
+		return m
+	}
+	inOld, inNew := hashes(oldCases), hashes(newCases)
+	for h := range inOld {
+		if inNew[h] {
+			shared++
+		}
+	}
+	over := func(cases []CaseReport) map[string]MetricStat {
+		sums := map[string]*sum{}
+		for _, c := range cases {
+			if !inOld[c.Hash] || !inNew[c.Hash] {
+				continue
+			}
+			for name, st := range c.Metrics {
+				s := sums[name]
+				if s == nil {
+					s = &sum{}
+					sums[name] = s
+				}
+				s.add(sum{passes: st.Passes, unscored: st.Unscored, runs: st.Scored + st.Unscored})
+			}
+		}
+		out := make(map[string]MetricStat, len(sums))
+		for name, s := range sums {
+			out[name] = s.stat()
+		}
+		return out
+	}
+	return over(oldCases), over(newCases), shared
 }
 
 // unscoredShare is the fraction of s's runs that were unscored.

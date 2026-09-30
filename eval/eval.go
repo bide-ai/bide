@@ -300,7 +300,10 @@ func wilson(passes, n int) (lo, hi float64) {
 
 // CaseReport holds one case's per-metric stats over its RunsPerCase executions.
 type CaseReport struct {
-	Name    string                `json:"name"`
+	Name string `json:"name"`
+	// Hash identifies the case: HashCases of this case alone, so it changes with the case's Name,
+	// Input or Want. Compare uses it to find the cases two reports share.
+	Hash    string                `json:"hash"`
 	Metrics map[string]MetricStat `json:"metrics"`
 }
 
@@ -420,7 +423,7 @@ launch:
 	// Per-tag accumulators: tag -> metric index -> sum.
 	tagTotals := map[string][]sum{}
 	for i, c := range cases {
-		cr := CaseReport{Name: c.Name, Metrics: map[string]MetricStat{}}
+		cr := CaseReport{Name: c.Name, Hash: HashCases([]Case{c}), Metrics: map[string]MetricStat{}}
 		caseSums := make([]sum, len(metrics))
 		for m := range metrics {
 			caseSums[m] = sum{passes: int(counts[i][m].passes.Load()), unscored: int(counts[i][m].unscored.Load()), runs: runs}
