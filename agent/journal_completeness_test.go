@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"os"
 	"slices"
 	"testing"
 )
@@ -349,35 +348,64 @@ func TestRecordedStart_AmongOtherValues(t *testing.T) {
 	}
 }
 
-// Saga rollback still reads a registered tool's Safety live: a completed write whose tool is
-// relabelled ReadOnly before the rollback runs is skipped as if it had changed nothing, and the
-// rollback reports clean. Closing this needs the call's safety journaled with its result; that is
-// a journal-format decision left to the maintainer (see the PR that added this test), so the test
-// is skipped until it is taken.
-func TestSaga_RelabelledReadOnlyWriteIsSkipped(t *testing.T) {
-	if os.Getenv("BIDE_OPEN_GAPS") == "" {
-		t.Skip("open gap: rollback reads a registered tool's Safety live; set BIDE_OPEN_GAPS=1 to run")
-	}
+// relabelSaga runs a saga whose first call is the tool first, completes it, pauses at a gate,
+// and then resumes with the tool replaced by then; the third call fails, so the saga rolls back.
+// It returns the rollback's *SagaAborted.
+func relabelSaga(t *testing.T, first Tool, then ...Tool) *SagaAborted {
+	t.Helper()
 	ctx := context.Background()
-	var reserved, gated int
+	var gated int
 	gate := &countingTool{name: "gate", safety: Safety{ReadOnly: true, RequiresApproval: true}, calls: &gated}
 	book := Func("book", "", Safety{}, func(context.Context, struct{}) (string, error) {
 		return "", errors.New("no rooms left")
 	})
 	store := NewMemStore()
-	m := NewScriptedModel(ToolTurn("c1", "reserve", `{}`), ToolTurn("c2", "gate", `{}`), ToolTurn("c3", "book", `{}`), TextTurn("done"))
+	m := NewScriptedModel(ToolTurn("c1", first.Name(), `{}`), ToolTurn("c2", "gate", `{}`), ToolTurn("c3", "book", `{}`), TextTurn("done"))
 	var pa *PendingApproval
-	write := &countingTool{name: "reserve", safety: Safety{}, calls: &reserved}
-	if _, err := New(m, store, write, gate, book).RunSaga(ctx, "r", "trip"); !errors.As(err, &pa) {
+	if _, err := New(m, store, first, gate, book).RunSaga(ctx, "r", "trip"); !errors.As(err, &pa) {
 		t.Fatalf("first drive: err = %v, want *PendingApproval", err)
 	}
 	if err := Approve(ctx, store, "r", "c2", true); err != nil {
 		t.Fatal(err)
 	}
-	relabelled := &countingTool{name: "reserve", safety: Safety{ReadOnly: true}, calls: &reserved}
-	_, err := New(m, store, relabelled, gate, book).RunSaga(ctx, "r", "trip")
+	_, err := New(m, store, append([]Tool{gate, book}, then...)...).RunSaga(ctx, "r", "trip")
 	var aborted *SagaAborted
-	if !errors.As(err, &aborted) || !slices.Contains(aborted.Uncompensated, "reserve") {
-		t.Fatalf("rollback: err = %v; the completed reserve write is not reported", err)
+	if !errors.As(err, &aborted) || aborted.CompensateErr != nil {
+		t.Fatalf("resume: err = %v, want a finished rollback", err)
+	}
+	return aborted
+}
+
+// A completed write whose tool was relabelled ReadOnly before the rollback was skipped as if it
+// had changed nothing, and the rollback reported clean. The call ran as a write, so it is
+// compensated if its tool can undo it and listed as uncompensated if not.
+func TestSaga_RelabelledReadOnlyWriteIsStillRolledBack(t *testing.T) {
+	var reserved int
+	write := &countingTool{name: "reserve", safety: Safety{}, calls: &reserved}
+	relabelled := &countingTool{name: "reserve", safety: Safety{ReadOnly: true}, calls: &reserved}
+	if got := relabelSaga(t, write, relabelled); !slices.Contains(got.Uncompensated, "reserve") {
+		t.Fatalf("rollback listed uncompensated %q: the completed reserve write is missing", got.Uncompensated)
+	}
+
+	var undone int
+	undo := func(context.Context, struct{}, string) error { undone++; return nil }
+	do := func(context.Context, struct{}) (string, error) { return "ok", nil }
+	got := relabelSaga(t, CompensatedFunc("hold", "", Safety{}, do, undo), CompensatedFunc("hold", "", Safety{ReadOnly: true}, do, undo))
+	if undone != 1 || !slices.Contains(got.Compensated, "hold") {
+		t.Fatalf("compensations %d, compensated %q; want the relabelled write compensated once", undone, got.Compensated)
+	}
+}
+
+// The reverse: a call that ran ReadOnly changed nothing, so a rollback after its tool was
+// relabelled a write, or unregistered, has nothing to report for it.
+func TestSaga_ReadOnlyCallStaysSkipped(t *testing.T) {
+	var n int
+	read := &countingTool{name: "lookup", safety: Safety{ReadOnly: true}, calls: &n}
+	relabelled := &countingTool{name: "lookup", safety: Safety{}, calls: &n}
+	if got := relabelSaga(t, read, relabelled); len(got.Uncompensated) != 0 {
+		t.Fatalf("a read-only call relabelled a write is listed uncompensated: %q", got.Uncompensated)
+	}
+	if got := relabelSaga(t, read); len(got.Uncompensated) != 0 {
+		t.Fatalf("an unregistered read-only call is listed uncompensated: %q", got.Uncompensated)
 	}
 }
