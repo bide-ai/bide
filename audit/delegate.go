@@ -3,6 +3,7 @@ package audit
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -48,9 +49,10 @@ func withoutGrant(ctx context.Context) context.Context {
 }
 
 // AttenuateFunc derives a child grant from the parent grant and the delegating sub-agent's name.
-// It sets the narrower Scope (and may set Subject and an earlier NotAfterUnix); AttenuatingSubAgent
-// fills in ParentRef and, if empty, Issuer (the parent's Subject), Subject (the sub-agent name), and
-// NotAfterUnix (the parent's), then checks the result with CheckAttenuation before signing it, so a
+// It sets the narrower Scope (and may set an earlier NotAfterUnix; a Subject it sets must be the
+// sub-agent's name, or the delegation is refused); AttenuatingSubAgent fills in ParentRef and, if
+// empty, Issuer (the parent's Subject), Subject (the sub-agent name), and NotAfterUnix (the
+// parent's), then checks the result with CheckAttenuation before signing it, so a
 // widening func is refused at delegation time rather than caught later by VerifyDelegationChain.
 type AttenuateFunc func(parent Grant, subAgent string) Grant
 
@@ -139,20 +141,40 @@ func init() {
 // run stops with it, and a re-drive under the right authority continues the delegation.
 func unrecorded(err error) error { return &toolhook.Unrecorded{Err: err} }
 
+// storageFailure is a failure to read or write the delegation's authority in the store. It says
+// nothing about the delegation, so Call records nothing for it (unrecorded), as a plain SubAgent
+// records nothing for a sub-run whose journal it cannot read: a resume retries the delegation.
+type storageFailure struct{ err error }
+
+func (e *storageFailure) Error() string { return e.err.Error() }
+func (e *storageFailure) Unwrap() error { return e.err }
+
+// authorityErr is err as Call returns it: a storage failure unrecorded, anything else as it is.
+func authorityErr(err error) error {
+	if _, ok := errors.AsType[*storageFailure](err); ok {
+		return unrecorded(err)
+	}
+	return err
+}
+
 // ungrantedLeafName names the leaf a delegation journals in its sub-run when it runs without a
 // grant, so a rollback can tell a delegation that ran without one from a sub-run it cannot read.
 const ungrantedLeafName = "audit:delegation:ungranted"
 
 // journaledAuthority reads what the sub-run subRunID journaled about the authority its delegation
 // ran under: its one grant (nil if none), whether it recorded running without one, and whether the
-// sub-run has any records at all. More than one grant leaf is an error.
+// sub-run has any records at all. Only value records (the kind RecordGrant and the ungranted
+// marker write) count as authority. More than one grant leaf is an error. A failure to read the
+// sub-run is a *storageFailure.
 func (t *attenuatingSubAgent) journaledAuthority(ctx context.Context, subRunID string) (grant *SignedGrant, ungranted, any bool, err error) {
 	recs, err := t.store.History(ctx, subRunID)
 	if err != nil {
-		return nil, false, false, fmt.Errorf("audit: read the authority of delegation %q (sub-run %s): %w", t.name, subRunID, err)
+		return nil, false, false, &storageFailure{fmt.Errorf("audit: read the authority of delegation %q (sub-run %s): %w", t.name, subRunID, err)}
 	}
 	for _, r := range recs {
 		switch {
+		case r.Kind != agent.StepValue:
+			continue
 		case r.Name == ungrantedLeafName:
 			ungranted = true
 		case strings.HasPrefix(r.Name, grantLeafPrefix):
@@ -211,6 +233,9 @@ func (t *attenuatingSubAgent) BindRollback(ctx context.Context, subRunID string)
 		return withoutGrant(ctx), nil
 	case child == nil:
 		return nil, fmt.Errorf("audit: delegation %q (sub-run %s) journaled no authority, so the rollback cannot establish what it ran under: %w", t.name, subRunID, agent.ErrProtocol)
+	case child.Grant.Subject != t.name:
+		// Call refuses the same grant: it was not issued to this sub-agent.
+		return nil, fmt.Errorf("audit: delegation %q (sub-run %s) journaled a grant for subject %q: %w", t.name, subRunID, child.Grant.Subject, agent.ErrProtocol)
 	}
 	parentSG, signer, ok := GrantFrom(ctx)
 	if !ok || signer == nil {
@@ -238,7 +263,7 @@ func (t *attenuatingSubAgent) Call(ctx context.Context, args json.RawMessage) (j
 		if subRunID != "" {
 			existing, _, _, err := t.journaledAuthority(ctx, subRunID)
 			if err != nil {
-				return nil, err
+				return nil, authorityErr(err)
 			}
 			if existing != nil {
 				return nil, unrecorded(fmt.Errorf("audit: delegation %q (sub-run %s) began under a grant; resume it with the grant and signer bound (WithGrant): %w", t.name, subRunID, agent.ErrConfig))
@@ -246,7 +271,7 @@ func (t *attenuatingSubAgent) Call(ctx context.Context, args json.RawMessage) (j
 			if _, err := t.store.Do(ctx, subRunID, ungrantedLeafName, func(context.Context) (agent.Record, error) {
 				return agent.Record{Kind: agent.StepValue, Result: json.RawMessage(`{"ungranted":true}`)}, nil
 			}); err != nil {
-				return nil, fmt.Errorf("audit: record that delegation %q ran without a grant: %w", t.name, err)
+				return nil, unrecorded(fmt.Errorf("audit: record that delegation %q ran without a grant: %w", t.name, err))
 			}
 		}
 		return t.Tool.Call(ctx, args)
@@ -255,13 +280,18 @@ func (t *attenuatingSubAgent) Call(ctx context.Context, args json.RawMessage) (j
 	// journaled the first time, so the sub-run holds one grant whatever Narrow returns now.
 	var existing *SignedGrant
 	if subRunID != "" {
-		var ungranted bool
+		var ungranted, any bool
 		var err error
-		if existing, ungranted, _, err = t.journaledAuthority(ctx, subRunID); err != nil {
-			return nil, err
+		if existing, ungranted, any, err = t.journaledAuthority(ctx, subRunID); err != nil {
+			return nil, authorityErr(err)
 		}
-		if ungranted {
+		switch {
+		case ungranted:
 			return nil, unrecorded(fmt.Errorf("audit: delegation %q (sub-run %s) began without a grant; resume it with none bound: %w", t.name, subRunID, agent.ErrConfig))
+		case existing == nil && any:
+			// The sub-run ran without journaling its authority (an earlier pre-release's ungranted
+			// delegation): a grant minted now would cover steps that ran without one.
+			return nil, unrecorded(fmt.Errorf("audit: delegation %q (sub-run %s) has records but no journaled authority; it cannot be given a grant now: %w", t.name, subRunID, agent.ErrConfig))
 		}
 	}
 	now := time.Now().Unix()
@@ -315,7 +345,7 @@ func (t *attenuatingSubAgent) Call(ctx context.Context, args json.RawMessage) (j
 		}
 		// Anchor the child grant in the sub-run's journal so the delegation is provable in the tree.
 		if _, err := RecordGrant(ctx, t.store, subRunID, childSG); err != nil {
-			return nil, fmt.Errorf("audit: record child grant for %q: %w", t.name, err)
+			return nil, unrecorded(fmt.Errorf("audit: record child grant for %q: %w", t.name, err))
 		}
 	}
 

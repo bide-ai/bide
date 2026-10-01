@@ -107,7 +107,8 @@ On each call, if a signed grant is bound to the context, the tool mints a narrow
 in the sub-run so the chain is anchored, rebinds the sub-run's identity to the child (`Actor` =
 this sub-agent, `OnBehalfOf` = the parent's `Subject`, `AuthorityRef` = the child's digest), and
 propagates the child grant so a deeper delegation narrows again. Your `AttenuateFunc` sets the
-narrower `Scope` (and may set `Subject` and an earlier `NotAfterUnix`); the wrapper fills in
+narrower `Scope` (and may set an earlier `NotAfterUnix`; a `Subject` it sets must be the sub-agent's
+name); the wrapper fills in
 `ParentRef`, and `Issuer` (the parent's `Subject`), `Subject` (the sub-agent's name), and `NotAfterUnix`
 (the parent's) if you left them empty. It then checks the child with `CheckAttenuation` under the
 rules you pass, and refuses the delegation, signing nothing, if the child is not a valid
@@ -127,7 +128,11 @@ it began with (with no grant after a grant, the reverse, or another parent grant
 refused with `ErrConfig` and records nothing: the run stops (siblings in flight finish first,
 and a sibling's pause is reported beside the refusal), and driving it again with the right grant
 bound continues the delegation. Minting from a bound grant that has expired is refused the same
-way: bind a live one and drive again.
+way: bind a live one and drive again. So is minting a grant onto a sub-run that has records but no
+journaled authority (one an earlier pre-release ran without a grant): a grant minted now would cover
+steps that ran without one. A failure to read or write the delegation's authority in the store (the
+journaled grant, the child grant, the ungranted marker) records nothing either, as for a plain
+`SubAgent` whose sub-run's journal cannot be read: a resume retries the delegation.
 
 A delegation cannot run past its grant's `NotAfterUnix`. Every tool call in its sub-run is refused
 once the child grant has expired (a recorded failure; the tool is never called), and a delegation
@@ -135,7 +140,7 @@ resumed after its journaled grant expired fails for good, recorded, since no gra
 journaled one: in a saga it rolls back (the rollback's compensations do not check expiry). A child
 that your `AttenuateFunc` gives an expiry already past fails the same way. A child grant's
 `Subject` is always the sub-agent's name; an `AttenuateFunc` that sets another is refused, and so
-is a journaled grant for another subject.
+is a journaled grant for another subject, by the call and by the rollback binding.
 
 **Upgrading from a journal written before this release.** A delegation that ran without a grant
 now journals that (`audit:delegation:ungranted`), and a rollback into a sub-run with records but

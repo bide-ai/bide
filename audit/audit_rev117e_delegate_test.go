@@ -105,7 +105,8 @@ func TestRev117e_UnrecordedHidesDeepHaltInSaga(t *testing.T) {
 		}
 	})
 	t.Run("expired bound grant: refusal joined with halt", func(t *testing.T) {
-		side, err := run(t, time.Now().Unix()-3600); t.Logf("side=%d err=%v", side, err)
+		side, err := run(t, time.Now().Unix()-3600)
+		t.Logf("side=%d err=%v", side, err)
 		if side != 0 {
 			t.Fatalf("sibling step started %d time(s) after a deep halt that was joined with an unrecorded refusal (err %v)", side, err)
 		}
@@ -225,5 +226,32 @@ func TestRev117e_BindRollbackAcceptsForeignSubject(t *testing.T) {
 		sg, _, _ := GrantFrom(bctx)
 		t.Fatalf("BindRollback accepted a grant for subject %q: identity Actor=%q AuthorityRef=%q (grant digest %q); Call refuses the same grant",
 			sg.Grant.Subject, id.Actor, id.AuthorityRef, foreign.Grant.Digest())
+	}
+}
+
+// Only value records are authority: a record of another kind that happens to carry a grant leaf's
+// or the ungranted marker's name is not what RecordGrant or the marker wrote.
+func TestRev117e_JournaledAuthorityValueRecordsOnly(t *testing.T) {
+	ctx := context.Background()
+	store := agent.NewMemStore()
+	signer := rev117eSigner(t)
+	subRun := agent.SubRunID("p", "c1")
+	sg := rev117eRoot(t, signer, 0)
+	b, err := json.Marshal(sg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{grantLeafName(sg.Grant.Digest()), ungrantedLeafName} {
+		if _, err := store.Do(ctx, subRun, name, func(context.Context) (agent.Record, error) {
+			return agent.Record{Kind: agent.StepSignal, Result: b}, nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tool := AttenuatingSubAgent("deleg", "d", agent.New(answerModel{text: "ok"}, store),
+		AttenuationConfig{Store: store, Narrow: narrowLimitBy(1), Rules: rev117eRules}).(*attenuatingSubAgent)
+	g, ungranted, any, err := tool.journaledAuthority(ctx, subRun)
+	if err != nil || g != nil || ungranted || !any {
+		t.Fatalf("journaledAuthority = grant %v, ungranted %v, any %v, err %v; want no authority over two records", g != nil, ungranted, any, err)
 	}
 }
