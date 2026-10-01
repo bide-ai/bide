@@ -810,7 +810,7 @@ halted runs (TTL 2, interval 2, one worker, concurrency 1; the smallest `Bound` 
 | lapsed runs first (`lapsedFirst`) | 4 | 5 | 10 | 15 |
 | proposed (`split`) | 3 | 3 | 4 | 4 |
 
-**The proposed rule (`PassRule = "split"`, `pickup-split`).** Each worker runs a second loop,
+**The approved rule (`PassRule = "split"`, `pickup-split`).** The maintainers approved it; L1 stays in `findings/` until the code lands, then becomes a regression. Each worker runs a second loop,
 on the same interval, that lists only the unfinished runs whose lease row has lapsed (the stores
 delete a row on release, so a lapsed row means its holder died or stalled) and drives them with a
 slot of its own. The full pass is unchanged and still re-drives the halted and never-leased runs.
@@ -886,8 +886,9 @@ to the pull-request job.
 
 Each regression restores a historical rule behind `Bug` and must fail with its property; each
 finding fails under the rule as it stands and flips to a regression once the fix is adopted; each
-limit states behavior the design accepts. L1 is v0.9.0's rule (`RecoverLoop`); L2 and L3 are
-against D1's text, before P14 is written.
+limit states behavior the design accepts. L1 is v0.9.0's rule (`RecoverLoop`); its fix is
+approved. L2 and L3 are against D1's original text; both rules are now in D1
+(`docs/design/api-v1.md`), and the findings stay open until P14 implements them.
 
 | Config | Group | The rule or behavior | Expected | Trace |
 |---|---|---|---|---|
