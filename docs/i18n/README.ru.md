@@ -116,7 +116,7 @@ eino           maxFired=64   ✗
 // classify, then branch: rush orders reserve-then-finalize, the rest decline.
 assess, _ := agent.Step(ctx, store, "order-42", "classify",
     func(ctx context.Context) (Assessment, error) { return classify(order) },
-    agent.StepSafety(agent.Safety{ReadOnly: true})) // safe to re-run after a crash
+    agent.WithSafety(agent.Safety{ReadOnly: true})) // safe to re-run after a crash
 
 var receipt Receipt
 if assess.Rush {
@@ -379,13 +379,14 @@ type Retriever interface {
 
 Затем подключите его одним из двух способов:
 
-<!-- docsnip: setup model agent.Model; store agent.Durable; myStore agent.Retriever -->
+<!-- docsnip: setup model agent.Model; journal *agent.Journal; myStore agent.Retriever -->
 ```go
 // Agentic RAG: the model searches on demand:
-a := agent.New(model, store, agent.RetrievalTool(myStore, 5))
+a, err := agent.Build(model, journal,
+	agent.WithTools(agent.RetrievalTool("search_kb", "Search the knowledge base.", myStore, 5)))
 
 // Classic RAG: top-k auto-injected as context on each user turn:
-a.Use(agent.WithRetrieval(myStore, 5))
+a, err = agent.Build(model, journal, agent.WithRetrieval(myStore, 5))
 ```
 
 Разговорная память уже встроена (`Session`); динамический контекст идёт через `WithSystemPromptFunc`; этот шов покрывает семантическую / долговременную память. Конкретные адаптеры хранилищ (если вообще понадобятся) были бы отдельными модулями, никогда в ядре. См. [docs/guides/rag-memory.md](../../docs/guides/rag-memory.md).

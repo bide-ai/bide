@@ -96,7 +96,7 @@ func TestRun_AnyToolUseIDKeysItsOwnRecords(t *testing.T) {
 func TestRun_ToolUseIDKeysAreBoundedAndPrintable(t *testing.T) {
 	var scopes []string
 	probe := Func("probe", "", Safety{ReadOnly: true}, func(ctx context.Context, _ struct{}) (string, error) {
-		scopes = append(scopes, RunScope(ctx))
+		scopes = append(scopes, runScope(ctx))
 		return "ok", nil
 	})
 	for _, id := range []string{strings.Repeat("k", 5000), strings.Repeat(":", 2000), "日本語", "nul\x00byte"} {
@@ -227,7 +227,7 @@ func TestResolveHalt_MinAgeReadsTheCallsOwnAttempt(t *testing.T) {
 		t.Fatalf("run: %v, want the simulated crash", err)
 	}
 	err := ResolveHalt(context.Background(), inner, "r", "x", "ok", false,
-		WithMinHaltAge(time.Minute), WithNow(func() time.Time { return now }))
+		WithMinHaltAge(time.Minute), WithClock(func() time.Time { return now }))
 	var young *HaltTooYoung
 	if !errors.As(err, &young) {
 		t.Fatalf("ResolveHalt = %v, want *HaltTooYoung: the call was attempted just now", err)

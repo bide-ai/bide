@@ -253,7 +253,7 @@ type pingTool struct{}
 func (pingTool) Name() string                { return "ping" }
 func (pingTool) Description() string         { return "" }
 func (pingTool) Safety() agent.Safety        { return agent.Safety{ReadOnly: true} }
-func (pingTool) ArgsSchema() json.RawMessage { return nil }
+func (pingTool) ArgsSchema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
 func (pingTool) Call(context.Context, json.RawMessage) (json.RawMessage, error) {
 	return json.RawMessage(`{"pong":1}`), nil
 }
@@ -263,7 +263,7 @@ func TestInstrument_WiresChatAndToolSpans(t *testing.T) {
 	sr, tp := recorder()
 	tracer := tp.Tracer("test")
 
-	a := Instrument(agent.New(instrModel{}, agent.NewMemStore(), pingTool{}), tracer)
+	a := buildAgent(t, agent.NewMemStore(), agent.WithTools(pingTool{}), Instrument(tracer))
 	if _, err := a.Run(context.Background(), "r", "hi"); err != nil {
 		t.Fatal(err)
 	}
@@ -316,4 +316,19 @@ func TestModel_UndescribedModel(t *testing.T) {
 	if _, ok := a["gen_ai.system"]; ok || s.Name() != "chat" {
 		t.Errorf("span %q with attributes %v, want a span named chat with no gen_ai.system", s.Name(), a)
 	}
+}
+
+// buildAgent builds an agent over instrModel and store's journal with opts, failing the test on
+// an error.
+func buildAgent(t *testing.T, store *agent.MemStore, opts ...agent.Option) *agent.Agent {
+	t.Helper()
+	j, err := agent.NewJournal(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := agent.Build(instrModel{}, j, opts...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return a
 }

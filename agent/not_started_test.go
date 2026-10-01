@@ -117,7 +117,7 @@ func TestStep_RetrySafeAfterNotStartedRuns(t *testing.T) {
 	var entered, ran atomic.Int32
 	reserve := reserveFn(&entered, &ran)
 	_, _ = Step(ctx, store, "r1", "reserve", reserve)
-	got, err := Step(context.Background(), store.MemStore, "r1", "reserve", reserve, StepSafety(Safety{Idempotent: true}))
+	got, err := Step(context.Background(), store.MemStore, "r1", "reserve", reserve, WithSafety(Safety{Idempotent: true}))
 	if err != nil || got != "reserved" || ran.Load() != 1 {
 		t.Fatalf("retry-safe step after an attempt that never started = (%q, %v), fn run %d times; want (\"reserved\", nil) and exactly 1", got, err, ran.Load())
 	}

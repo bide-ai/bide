@@ -31,9 +31,11 @@ session into agent tools.
   logs, journal, or approval prompts; if two tools share a name; or if a tool's input schema is
   not a JSON Schema object of type `"object"`. The MCP grammar is wider than the providers':
   Anthropic and OpenAI accept `^[a-zA-Z0-9_-]{1,64}$` (no dots or colons, at most 64
-  characters), and Gemini accepts `^[a-zA-Z_][a-zA-Z0-9_.:-]{0,63}$`. A name the model adapter's
-  provider cannot take fails the run with `agent.ErrConfig` naming the tool, before any request
-  is sent. A server tool named like one of your own tools
+  characters), and Gemini accepts `^[a-zA-Z_][a-zA-Z0-9_.:-]{0,63}$`. Each bundled adapter
+  declares its rule (`agent.ToolRules`), so `agent.Build` and `Agent.With` refuse, with
+  `agent.ErrConfig` naming the tool, a name the agent's model cannot take: a dotted name builds
+  for Gemini and is refused for OpenAI or Anthropic. With the transitional `agent.New`, such a
+  name fails the run with `agent.ErrConfig` naming the tool, before any request is sent. A server tool named like one of your own tools
   (or like a tool from another server) does not replace it: `agent.New` records the clash and
   every run of that agent fails with `agent.ErrConfig`, so the model's call never reaches the
   wrong tool.

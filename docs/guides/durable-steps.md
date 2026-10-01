@@ -33,14 +33,14 @@ outcome. The same holds when `fn` returns an error, since a failed call may stil
 effect. A step cancelled (or whose store fails) after its marker is written and before `fn` is
 called does not call `fn`, and records that the attempt did not start, so the next call runs `fn`
 under a new marker instead of halting; only a process that dies in that gap leaves a halt. A step
-that is safe to re-run declares it with `StepSafety`, and then simply re-runs after
+that is safe to re-run declares it with `WithSafety`, and then simply re-runs after
 a crash or an error:
 
 <!-- docsnip: setup ctx context.Context; store agent.Durable; runID string; type Invoice struct{}; type Reservation struct{}; id, sku string; billing interface{ Lookup(context.Context, string) (Invoice, error) }; inventory interface{ Reserve(context.Context, string) (Reservation, error) } -->
 ```go
 inv, err := agent.Step(ctx, store, runID, "fetch-invoice",
     func(ctx context.Context) (Invoice, error) { return billing.Lookup(ctx, id) },
-    agent.StepSafety(agent.Safety{ReadOnly: true}))
+    agent.WithSafety(agent.Safety{ReadOnly: true}))
 
 res, err := agent.Step(ctx, store, runID, "reserve", // at most once; halts on an unknown outcome
     func(ctx context.Context) (Reservation, error) { return inventory.Reserve(ctx, sku) })
@@ -76,11 +76,11 @@ uses (through `Run` and `SendOnce`) to make a redelivered inbound event replay i
 type Task[T any] struct {
     Name   string
     Fn     func(context.Context) (T, error)
-    Safety Safety // as StepSafety: the zero value is a side effect
+    Safety Safety // as WithSafety: the zero value is a side effect
 }
 
 func Parallel[T any](ctx context.Context, d Durable, runID string,
-    maxConcurrency int, tasks ...Task[T]) ([]T, error)
+    tasks []Task[T], opts ...ParallelOption) ([]T, error)
 ```
 
 `Parallel` runs each `Task` concurrently, each as its own durable `Step`, and returns the results
@@ -104,7 +104,7 @@ checks := []agent.Task[CheckResult]{
     {Name: "pep_check",           Fn: runPEP,          Safety: agent.Safety{ReadOnly: true}},
     {Name: "adverse_media_check", Fn: runAdverseMedia, Safety: agent.Safety{ReadOnly: true}},
 }
-results, err := agent.Parallel(ctx, store, runID, 0, checks...) // 0 = unbounded concurrency
+results, err := agent.Parallel(ctx, store, runID, checks) // add agent.WithMaxConcurrency(n) to cap tasks in flight
 ```
 
 This is deliberately a thin primitive over the journal, not a graph engine. Dynamic, model-driven
@@ -114,7 +114,7 @@ durable checks, then a governed decision, then an offline proof) is
 [`examples/govern/compliance`](../../examples/govern/compliance/main.go).
 
 > Related but distinct: the agent loop already runs a *single turn's* tool calls concurrently
-> (bounded by `SetMaxConcurrency`). `Parallel` is for fan-out you author yourself outside a model
+> (bounded by the `WithMaxConcurrency` option). `Parallel` is for fan-out you author yourself outside a model
 > turn. See the parallel-tool concurrency notes in [KNOWN-LIMITATIONS.md](../KNOWN-LIMITATIONS.md).
 
 ## Sagas: transactional agents with reverse-order compensation
@@ -195,6 +195,20 @@ These are stated in full in [KNOWN-LIMITATIONS.md](../KNOWN-LIMITATIONS.md); in 
   So is any call whose tool is no longer registered when the rollback runs (its compensator and
   safety are unknown), and one of those with an attempt marker and no result stops the rollback
   with a `*OutcomeUnknown`.
+- **Programmatic sub-runs roll back with their call.** A tool that runs another agent itself, under
+  `RunInfo.SubRunFor(name)`, starts a sub-run of its call. In a saga the parent's journal links
+  each one before it records anything, and the rollback walks them, latest first, after the call
+  itself, as it walks a sub-agent's. Declare the agent each one runs with, so the rollback can
+  compensate its writes: `agent.Func(name, desc, safety, fn, agent.WithSubRuns(func(name string)
+  *agent.Agent { return child }))`. With none declared, the sub-run's writes are listed in
+  `SagaAborted.Uncompensated`, as is a declared agent the rollback cannot use (one on another
+  store, or a `WithSubRuns` function that panics), with the reason. The call's own compensation
+  runs before its sub-runs are walked. A sub-run in a saga's tree must journal to the saga's store
+  (`Run` refuses another with `ErrConfig`), and a plain run started from a saga's call links its own
+  sub-runs too. Start the sub-run with `RunSaga` to keep it a saga (whether a call is in a saga is
+  its own run's flag, `RunInfo.Saga`), and start it within the call: `SubRunFor` from a goroutine
+  that outlives its call is `ErrConfig`. A sub-run still running after its call returned may write
+  after the rollback walked it; such a write is not undone.
 - **A failed step with an unknown outcome is reported, not undone.** A retry-safe step that fails
   with `ErrToolOutcomeUnknown`, or returns an error after its `WithTimeout` deadline, may have
   committed before it was cut off. Its failure record carries `outcome_unknown`, and the rollback
@@ -367,21 +381,25 @@ wait := agent.Func("cooldown", "wait before retrying", agent.Safety{ReadOnly: tr
 Re-invoking `Run` with the same runID at or after the wake time resumes past the `Sleep`. What
 re-invokes it is a **`Waker`**, the time-driven sibling of the inbound event trigger in
 [Messaging](messaging.md): the SDK provides the durable, at-most-once timer and its resume safety,
-and the trigger is pluggable. Bind one with `agent.WithWaker(ctx, w)` and `Sleep` registers its wake
-automatically, through `Schedule(ctx, agent.Wake{RunID, RootRunID, Name, FireAt})`. A `Schedule`
+and the trigger is pluggable. Give the agent one with the `agent.WithWaker(w)` option and `Sleep`
+registers its wake automatically, through `Schedule(ctx, agent.Wake{RunID, RootRunID, Name, FireAt})`. A `Schedule`
 that fails fails the run with an error wrapping `ErrStorage` instead of pausing it (a paused run
 with no wake registered might never wake), and the tool call records nothing, so re-driving the run
 (`RecoverLoop` does, on its next pass) reaches the `Sleep` again and schedules again. `MemWaker` is
 the reference in-process implementation:
 
-<!-- docsnip: setup ctx context.Context; a *agent.Agent; store *sqlite.Store; savedInput string -->
+<!-- docsnip: setup ctx context.Context; model agent.Model; journal *agent.Journal; tools []agent.Tool; store *sqlite.Store; savedInput string; returns error -->
 ```go
 ctx, cancel := context.WithCancel(ctx)
-var w *agent.MemWaker
-w = agent.NewMemWaker(func(ctx context.Context, runID string) error {
-    _, err := a.Run(agent.WithWaker(ctx, w), runID, savedInput) // resume; may sleep again
+var a *agent.Agent
+w := agent.NewMemWaker(func(ctx context.Context, runID string) error {
+    _, err := a.Run(ctx, runID, savedInput) // resume; may sleep again
     return err
 })
+a, err := agent.Build(model, journal, agent.WithTools(tools...), agent.WithWaker(w))
+if err != nil {
+    return err
+}
 done := w.Start(ctx, time.Second, nil) // tick: resume every run whose timer is due
 
 // On shutdown: stop the loop and wait for it (including any Fire in flight) before closing the
@@ -397,6 +415,7 @@ returned. Waiting on it before closing the store keeps a resume from writing to 
 Boundaries: `MemWaker` is a local-dev default, not a durable scheduler. Its in-memory timer set is
 lost on process exit, so the wake times must also live in the journal (they do), and a restarted
 deployment rebuilds pending wakes by scanning runs or hands the trigger to an external scheduler
-(cron, a queue). Tests inject a clock with `agent.WithClock` to advance time deterministically. This
+(cron, a queue). Tests give the agent a clock with the `agent.WithClock` option to advance time
+deterministically. This
 is the piece that makes an always-on ambient agent turnkey: a durable wait plus a trigger, with
 at-most-once and crash-resume intact across the wait.

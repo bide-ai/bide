@@ -20,9 +20,20 @@ import (
 // Recovery: re-drive in-flight runs after a restart
 // ===========================================================================
 
-// RecoverOption configures Recover. Lease options apply only when the store implements Leaser.
-type RecoverOption func(*recoverConfig)
+// leaseControl implements LeaseControl.
+type leaseControl func(*recoverConfig)
 
+func (f leaseControl) applyLease(c *recoverConfig) error       { f(c); return nil }
+func (f leaseControl) applyRecover(c *recoverConfig) error     { f(c); return nil }
+func (f leaseControl) applyRecoverLoop(c *recoverConfig) error { f(c); return nil }
+
+// recoverLoopOption implements RecoverLoopOption: a setting only RecoverLoop has.
+type recoverLoopOption func(*recoverConfig)
+
+func (f recoverLoopOption) applyRecoverLoop(c *recoverConfig) error { f(c); return nil }
+
+// recoverConfig is what LeaseOption, RecoverOption and RecoverLoopOption values write. Lease
+// reads the lease fields, Recover those too, and RecoverLoop every field.
 type recoverConfig struct {
 	holder      string
 	ttl         time.Duration
@@ -38,7 +49,9 @@ type recoverConfig struct {
 // (and each run Recover drives) claims under a token of its own derived from it, so two drivers
 // sharing a name still exclude each other, and a restarted worker waits out its predecessor's
 // lease (the TTL) like any other process rather than taking it over.
-func WithLeaseHolder(id string) RecoverOption { return func(c *recoverConfig) { c.holder = id } }
+func WithLeaseHolder(id string) LeaseControl {
+	return leaseControl(func(c *recoverConfig) { c.holder = id })
+}
 
 // WithLeaseTTL sets how long an acquired lease is valid. Lease renews it while a run is driving,
 // so a crash lets the lease expire after roughly this long and another process (RecoverLoop)
@@ -46,45 +59,46 @@ func WithLeaseHolder(id string) RecoverOption { return func(c *recoverConfig) { 
 // you expect a process to take: renewal starts at half the TTL, and a drive that cannot renew
 // within three quarters of it is cancelled with ErrLeaseLost (see Lease). It must be positive:
 // Lease, Recover and RecoverLoop return an ErrConfig error otherwise.
-func WithLeaseTTL(d time.Duration) RecoverOption { return func(c *recoverConfig) { c.ttl = d } }
+func WithLeaseTTL(d time.Duration) LeaseControl {
+	return leaseControl(func(c *recoverConfig) { c.ttl = d })
+}
 
 // WithRecoverInterval sets how often RecoverLoop starts a recovery pass. Defaults to half the
 // lease TTL, so a dead holder's run is taken over within about 1.5 TTLs of its last renewal. It
-// must be positive. Only RecoverLoop reads it.
-func WithRecoverInterval(d time.Duration) RecoverOption {
-	return func(c *recoverConfig) { c.interval, c.intervalSet = d, true }
+// must be positive.
+func WithRecoverInterval(d time.Duration) RecoverLoopOption {
+	return recoverLoopOption(func(c *recoverConfig) { c.interval, c.intervalSet = d, true })
 }
 
 // WithRecoverConcurrency caps how many runs RecoverLoop's full pass drives at once. Defaults to
-// 16. It must be at least 1. Only RecoverLoop reads it. The lapsed loop has slots of its own (see
+// 16. It must be at least 1. The lapsed loop has slots of its own (see
 // WithRecoverLapsedConcurrency).
-func WithRecoverConcurrency(n int) RecoverOption {
-	return func(c *recoverConfig) { c.concurrency = n }
+func WithRecoverConcurrency(n int) RecoverLoopOption {
+	return recoverLoopOption(func(c *recoverConfig) { c.concurrency = n })
 }
 
 // WithRecoverLapsedConcurrency caps how many runs RecoverLoop's lapsed loop drives at once: the
 // runs whose lease lapsed, taken over from a holder that died or stalled (see RecoverLoop).
-// Defaults to 16. It must be at least 1. Only RecoverLoop reads it, and only over a store that
+// Defaults to 16. It must be at least 1. It applies only over a store that
 // implements Leaser. These slots are separate from WithRecoverConcurrency's, so a worker drives
 // up to the sum of the two at once.
-func WithRecoverLapsedConcurrency(n int) RecoverOption {
-	return func(c *recoverConfig) { c.lapsedConc = n }
+func WithRecoverLapsedConcurrency(n int) RecoverLoopOption {
+	return recoverLoopOption(func(c *recoverConfig) { c.lapsedConc = n })
 }
 
 // WithRecoverErrors sets the function RecoverLoop hands each genuine failure to: a store error
 // while enumerating runs or acquiring a lease, or a drive that failed. Pauses and lost leases are
 // not failures and are not reported. Without it, RecoverLoop drops failures (the next pass
-// retries the run). It may be called from several goroutines, one call at a time. Only
-// RecoverLoop reads it.
-func WithRecoverErrors(fn func(error)) RecoverOption {
-	return func(c *recoverConfig) { c.onError = fn }
+// retries the run). It may be called from several goroutines, one call at a time.
+func WithRecoverErrors(fn func(error)) RecoverLoopOption {
+	return recoverLoopOption(func(c *recoverConfig) { c.onError = fn })
 }
 
-// leaseConfig applies opts over the defaults and validates the result.
-func leaseConfig(opts []RecoverOption) (recoverConfig, error) {
+// leaseConfig applies opts, through apply, over the defaults and validates the result.
+func leaseConfig[O comparable](what string, opts []O, apply func(O, *recoverConfig) error) (recoverConfig, error) {
 	cfg := recoverConfig{ttl: 30 * time.Second, concurrency: 16, lapsedConc: 16}
-	for _, o := range opts {
-		o(&cfg)
+	if err := applyOptions(what, &cfg, opts, apply); err != nil {
+		return cfg, err
 	}
 	if cfg.ttl <= 0 {
 		return cfg, fmt.Errorf("lease TTL must be positive, got %v: %w", cfg.ttl, ErrConfig)
@@ -181,7 +195,7 @@ func completedAnswer(recs []Record) (Message, bool) {
 //	    if !ok {
 //	        start = startFor(runID) // your own record, for a run not driven under this version
 //	    }
-//	    ctx = agent.WithWaker(ctx, w)
+//	    ctx = agent.ContextWithWaker(ctx, w)
 //	    if start.Saga {
 //	        _, err = a.RunSaga(ctx, runID, start.Input)
 //	    } else {
@@ -201,7 +215,7 @@ func Recover(ctx context.Context, store Durable, resume func(ctx context.Context
 	if !ok {
 		return 0, fmt.Errorf("Recover needs a store that implements Lister (itself or through Unwrap) to enumerate runs: %w", ErrConfig)
 	}
-	cfg, err := leaseConfig(opts)
+	cfg, err := leaseConfig("Recover", opts, RecoverOption.applyRecover)
 	if err != nil {
 		return 0, err
 	}
@@ -290,13 +304,13 @@ func recoverable(runID string) bool { return !IsSubRun(runID) && !IsSessionRun(r
 // which a resume that calls Run or RunSaga replays without firing anything again.
 func recoverRun(ctx context.Context, store Durable, runID string, resume func(ctx context.Context, runID string) error, cfg recoverConfig) (bool, error) {
 	var resumed bool
-	driven, err := Lease(ctx, store, runID, func(ctx context.Context) error {
+	driven, err := leaseRun(ctx, store, runID, func(ctx context.Context) error {
 		if over, err := runEnded(ctx, store, runID); err != nil || over {
 			return err
 		}
 		resumed = true
 		return resume(ctx, runID)
-	}, WithLeaseHolder(cfg.holder), WithLeaseTTL(cfg.ttl))
+	}, cfg)
 	if err != nil && (!driven || !IsPause(err) && !errors.Is(err, ErrLeaseLost)) {
 		return resumed, fmt.Errorf("recover run %s: %w", runID, err)
 	}
@@ -354,12 +368,12 @@ func recoverRun(ctx context.Context, store Durable, runID string, resume func(ct
 // concurrency) is returned at once. Otherwise RecoverLoop returns ctx's error when ctx is done,
 // after both loops have stopped and the drives they started (whose contexts derive from ctx) have
 // returned.
-func RecoverLoop(ctx context.Context, store Durable, resume func(ctx context.Context, runID string) error, opts ...RecoverOption) error {
+func RecoverLoop(ctx context.Context, store Durable, resume func(ctx context.Context, runID string) error, opts ...RecoverLoopOption) error {
 	lister, ok := capabilityOf[Lister](store)
 	if !ok {
 		return fmt.Errorf("RecoverLoop needs a store that implements Lister (itself or through Unwrap) to enumerate runs: %w", ErrConfig)
 	}
-	cfg, err := leaseConfig(opts)
+	cfg, err := leaseConfig("RecoverLoop", opts, RecoverLoopOption.applyRecoverLoop)
 	if err != nil {
 		return err
 	}

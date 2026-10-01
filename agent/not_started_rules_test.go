@@ -173,7 +173,7 @@ func TestResolveHalt_AgeRunsFromTheLiveAttempt(t *testing.T) {
 		Record{Kind: StepAttempt, ToolUseID: "c1", AttemptedAt: now.UnixMilli()}); err != nil || !won {
 		t.Fatalf("re-attempt claim = (%v, %v)", won, err)
 	}
-	err = ResolveHalt(ctx, store, "r1", "c1", "charged", false, WithMinHaltAge(time.Hour), WithNow(func() time.Time { return now }))
+	err = ResolveHalt(ctx, store, "r1", "c1", "charged", false, WithMinHaltAge(time.Hour), WithClock(func() time.Time { return now }))
 	var young *HaltTooYoung
 	if !errors.As(err, &young) {
 		t.Fatalf("ResolveHalt = %v, want *HaltTooYoung: the live attempt is moments old", err)

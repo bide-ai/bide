@@ -355,7 +355,7 @@ func (m *rmModel) Stream(ctx context.Context, req agent.Request) (*agent.Stream,
 // observe records the run ID a script runs under and checks the conversation a live model call
 // is shown against the reference.
 func (w *rmWorld) observe(ctx context.Context, script string, turn int, conv []rmEntry) {
-	if scope := agent.RunScope(ctx); scope != "" {
+	if scope := callRunID(ctx); scope != "" {
 		w.mu.Lock()
 		if prev, ok := w.runIDs[script]; ok && prev != scope {
 			w.problems = append(w.problems, fmt.Sprintf("script %s ran under two run IDs: %s and %s", script, prev, scope))
@@ -386,7 +386,7 @@ type rmReplayModel struct {
 }
 
 func (m *rmReplayModel) Stream(ctx context.Context, req agent.Request) (*agent.Stream, error) {
-	id := agent.RunScope(ctx)
+	id := callRunID(ctx)
 	if id == "" {
 		id = m.root
 	}
@@ -829,4 +829,13 @@ func TestRefModel_CrashSweep(t *testing.T) {
 		}
 	}
 	t.Logf("%d crash points in %v", points, time.Since(start).Round(time.Millisecond))
+}
+
+// callRunID is the sub-agent run ID of the tool call ctx belongs to (agent.SubRunID of its run and
+// call), or "" outside one.
+func callRunID(ctx context.Context) string {
+	if info, ok := agent.RunInfoFrom(ctx); ok && info.ToolUseID != "" {
+		return agent.SubRunID(info.RunID, info.ToolUseID)
+	}
+	return ""
 }

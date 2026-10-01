@@ -46,7 +46,7 @@ func main() {
 		{Name: "pep_check", Safety: agent.Safety{ReadOnly: true}, Fn: func(context.Context) (checkResult, error) { return checkResult{"pep", true}, nil }},
 		{Name: "adverse_media_check", Safety: agent.Safety{ReadOnly: true}, Fn: func(context.Context) (checkResult, error) { return checkResult{"adverse_media", false}, nil }},
 	}
-	results, err := agent.Parallel(ctx, store, runID, 0, checks...)
+	results, err := agent.Parallel(ctx, store, runID, checks)
 	if err != nil {
 		panic(err)
 	}
@@ -109,7 +109,7 @@ func main() {
 			PolicyDigest: policyDigest,
 			StateDigest:  st.Digest(),
 		}, nil
-	}, agent.StepSafety(agent.Safety{ReadOnly: true}))
+	}, agent.WithSafety(agent.Safety{ReadOnly: true}))
 	if err != nil {
 		panic(err)
 	}

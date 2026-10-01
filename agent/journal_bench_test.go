@@ -57,7 +57,7 @@ func BenchmarkStep(b *testing.B) {
 	ctx := context.Background()
 	store := agent.NewMemStore()
 	fn := func(context.Context) (int, error) { return 1, nil }
-	safe := agent.StepSafety(agent.Safety{ReadOnly: true})
+	safe := agent.WithSafety(agent.Safety{ReadOnly: true})
 	b.ReportAllocs()
 	i := 0
 	for b.Loop() {

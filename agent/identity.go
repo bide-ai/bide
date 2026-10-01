@@ -31,11 +31,15 @@ func (i Identity) Empty() bool {
 
 type identityKey struct{}
 
-// WithIdentity binds an acting identity to ctx. The deployment calls this once at run start (for
-// example, agent.Run(agent.WithIdentity(ctx, id), runID, input)); it then propagates to tool calls
-// and, through the run scope, to sub-agents, so every governed action inherits the same attribution
-// without threading it by hand.
-func WithIdentity(ctx context.Context, id Identity) context.Context {
+// ContextWithIdentity binds an acting identity to ctx, for the run driven with it. The deployment
+// calls this once at run start (for example, a.Run(agent.ContextWithIdentity(ctx, id), runID,
+// input)); it then propagates to tool calls and to sub-agents, so every governed action inherits
+// the same attribution without threading it by hand. An identity bound here takes precedence over
+// the agent's WithIdentity option.
+//
+// Deprecated: transitional; the 1.0 rewrite removes it. The Run API takes the identity as a run
+// option (WithIdentity); until then, an agent-wide identity is the WithIdentity option of Build.
+func ContextWithIdentity(ctx context.Context, id Identity) context.Context {
 	return context.WithValue(ctx, identityKey{}, id)
 }
 

@@ -230,7 +230,7 @@ func TestResolveHaltRef_MinAgeDoesNotOverrideARevivedClaim(t *testing.T) {
 	}
 	ref := agent.HaltRef{RunID: "r", Op: agent.OpRef{Kind: agent.OpStep, ID: "charge"}, Cause: agent.HaltCrashed}
 	rerr := agent.ResolveHaltRef(ctx, jr, ref, agent.Outcome{Result: "not charged", IsError: true},
-		agent.WithMinHaltAge(time.Second), agent.WithNow(func() time.Time { return time.Now().Add(time.Hour) }))
+		agent.WithMinHaltAge(time.Second), agent.WithClock(func() time.Time { return time.Now().Add(time.Hour) }))
 	close(release)
 	got := <-d2
 	rec, ok, err := ja.Get(ctx, "r", "charge")
@@ -324,7 +324,7 @@ func TestResolveHaltRef_AnErroredVerdictLeavesItsAttemptLive(t *testing.T) {
 	}
 	ref := agent.HaltRef{RunID: "r", Op: agent.OpRef{Kind: agent.OpStep, ID: "charge"}, Cause: agent.HaltCrashed}
 	rerr := agent.ResolveHaltRef(ctx, jr, ref, agent.Outcome{Result: "not charged", IsError: true},
-		agent.WithMinHaltAge(time.Second), agent.WithNow(func() time.Time { return time.Now().Add(time.Hour) }))
+		agent.WithMinHaltAge(time.Second), agent.WithClock(func() time.Time { return time.Now().Add(time.Hour) }))
 	if rerr == nil {
 		t.Fatal("the resolution reported success though its verdict write failed")
 	}

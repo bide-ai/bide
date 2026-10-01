@@ -88,7 +88,7 @@ func main() {
 	haltScene(ctx, store)
 }
 
-// haltScene: a Step that is a side effect (no StepSafety) journals an attempt marker before it
+// haltScene: a Step that is a side effect (no WithSafety) journals an attempt marker before it
 // runs. Its connection drops after the request went out, so nothing is recorded but the marker;
 // the resumed Step cannot know whether the invoice was sent, and halts instead of sending it
 // again. The operator checks the provider and resolves the halt with what really happened.

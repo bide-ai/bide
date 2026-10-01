@@ -52,7 +52,7 @@ func eSubjects(mode int) []hSubject {
 			}
 			var opts []agent.StepOption
 			if rs {
-				opts = append(opts, agent.StepSafety(agent.Safety{Idempotent: true}))
+				opts = append(opts, agent.WithSafety(agent.Safety{Idempotent: true}))
 			}
 			return agent.Step(ctx, eDurable(j, mode, drive), runID, "pay", func(context.Context) (string, error) { return p.fire(drive) }, opts...)
 		}
@@ -141,7 +141,7 @@ func eCSubjects(mode int) []cSubject {
 			}
 			var opts []agent.StepOption
 			if rs {
-				opts = append(opts, agent.StepSafety(agent.Safety{Idempotent: true}))
+				opts = append(opts, agent.WithSafety(agent.Safety{Idempotent: true}))
 			}
 			return agent.Step(ctx, pick(ctx, j), runID, "pay", p.fire, opts...)
 		}

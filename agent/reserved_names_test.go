@@ -30,9 +30,9 @@ func TestStep_ReservedNameIsRefused(t *testing.T) {
 func TestParallel_ReservedTaskNameIsRefused(t *testing.T) {
 	var ran int
 	task := func(context.Context) (int, error) { ran++; return 1, nil }
-	_, err := Parallel(context.Background(), NewMemStore(), "r", 0,
-		Task[int]{Name: "fine", Fn: task, Safety: Safety{ReadOnly: true}},
-		Task[int]{Name: "@llm/0", Fn: task, Safety: Safety{ReadOnly: true}})
+	_, err := Parallel(context.Background(), NewMemStore(), "r", []Task[int]{
+		{Name: "fine", Fn: task, Safety: Safety{ReadOnly: true}},
+		{Name: "@llm/0", Fn: task, Safety: Safety{ReadOnly: true}}})
 	if !errors.Is(err, ErrConfig) || !strings.Contains(err.Error(), "@llm/0") || ran != 0 {
 		t.Fatalf("err = %v, %d tasks ran; want ErrConfig naming %q and none run", err, ran, "@llm/0")
 	}

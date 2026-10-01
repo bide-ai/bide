@@ -13,7 +13,7 @@ func TestNextOnceKey(t *testing.T) {
 		t.Fatalf("outside a tool call NextOnceKey = %q, want empty", k)
 	}
 	call := func() []string {
-		cctx := withRunScope(ctx, "r/c1")
+		cctx := withOnceScope(ctx, "r/c1")
 		keys := []string{NextOnceKey(cctx), NextOnceKey(cctx)}
 		d := NewMemStore()
 		for _, st := range [][2]string{{"a:1", "b"}, {"a", "1:b"}} {

@@ -19,7 +19,7 @@ import (
 // or a session's. The functions and constants named *Step build those keys; a test asserts each
 // one starts with a prefix listed here.
 var reservedPrefixes = []string{
-	"@",               // the journal header @journal, and engine-internal steps: @llm/<n>, @saga/compensate/<call>, @saga/args/<call>, @retrieval/<layer>, @spend/<id>, @spend-late/<id>
+	"@",               // the journal header @journal, and engine-internal steps: @llm/<n>, @saga/compensate/<call>, @saga/args/<call>, @retrieval/<layer>, @spend/<id>, @spend-late/<id>, @subrun/<call>/<name>
 	"run:",            // run:start, run:complete, run:aborted, run:cancelled, run:limits:<n>
 	"tool:",           // a tool call's result: tool:<call>
 	"attempt:",        // attempt markers: attempt:tool:<call>, attempt:step:<name>, attempt:retry:<n>:..., attempt:not-started:<claim>:<marker>
@@ -199,16 +199,17 @@ func withSessionRun(ctx context.Context, runID string) context.Context {
 	return context.WithValue(ctx, sessionRunKey{}, runID)
 }
 
-// checkRunID refuses a run ID that is empty or contains subRunSep, which only the engine's own
-// derived run IDs carry: a sub-agent's call passes its run ID in the run scope the loop gave it,
-// and a session its turn's in the context it drives the turn with.
+// checkRunID refuses a run ID that is empty or contains subRunSep, which only derived run IDs
+// carry: a tool call may start the sub-agent run of its own call (SubRunID) or a programmatic
+// sub-run it names (RunInfo.SubRunFor), from the context the loop gave it, and a session drives
+// its turn's run with that run's ID in the context.
 func checkRunID(ctx context.Context, runID string) error {
 	if runID == "" {
 		// An empty runID would key every run to the same journal, silently cross-contaminating
 		// their memoized steps. Reject it rather than corrupt the log.
 		return fmt.Errorf("run: empty runID: %w", ErrConfig)
 	}
-	if !strings.Contains(runID, subRunSep) || runID == RunScope(ctx) {
+	if !strings.Contains(runID, subRunSep) || derivedRunID(ctx, runID) {
 		return nil
 	}
 	if sr, _ := ctx.Value(sessionRunKey{}).(string); sr == runID && IsSessionRun(runID) {
@@ -338,6 +339,18 @@ func sagaCompensateStep(toolUseID string) string { return "@saga/compensate/" + 
 // the tool received them after tool middleware. It is journaled only when a middleware changed
 // the model's arguments (see toolHandler); compensation reads it (see rollbackRun).
 func sagaArgsStep(toolUseID string) string { return "@saga/args/" + encodeID(toolUseID) }
+
+// subRunLinkPrefix starts the keys of the call toolUseID's programmatic sub-run links.
+func subRunLinkPrefix(toolUseID string) string { return subRunLinkPrefixEnc(encodeID(toolUseID)) }
+
+// subRunLinkPrefixEnc is subRunLinkPrefix for a tool-use ID already encoded (encodeID).
+func subRunLinkPrefixEnc(encToolUseID string) string { return "@subrun/" + encToolUseID + "/" }
+
+// subRunLinkStep is the key of the record, in a saga's journal, that its call toolUseID started the
+// programmatic sub-run name (RunInfo.SubRunFor), so its rollback walks that sub-run. It holds name.
+func subRunLinkStep(toolUseID, name string) string {
+	return subRunLinkPrefix(toolUseID) + encodeID(name)
+}
 
 // awaitTimeoutStep is the key of AwaitFor's deadline for name.
 func awaitTimeoutStep(name string) string { return "await-timeout:" + name }

@@ -173,10 +173,10 @@ func TestCaptureOnRecordsNoCredentials(t *testing.T) {
 	sr, tp := recorder()
 	tracer := tp.Tracer("t")
 	store := agent.NewMemStore()
-	a := Instrument(agent.New(instrModel{}, store, failPing{}), tracer).
-		WithToolErrorRedactor(func(_ string, err error) string {
+	a := buildAgent(t, store, agent.WithTools(failPing{}), Instrument(tracer),
+		agent.WithToolErrorRedactor(func(_ string, err error) string {
 			return strings.ReplaceAll(err.Error(), "ACCT-998877", "ACCT-XXXX")
-		})
+		}))
 	if _, err := a.Run(context.Background(), "r", "hi"); err != nil {
 		t.Fatal(err)
 	}

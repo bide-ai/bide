@@ -95,6 +95,14 @@ func New(apiKey string, opts ...Option) *Model {
 	return m
 }
 
+// ToolNameRule implements agent.ToolRules: the tool names OpenAI accepts, `^[a-zA-Z0-9_-]{1,64}$`, so
+// agent.Build refuses any other name when the agent is built.
+func (m *Model) ToolNameRule() *regexp.Regexp { return toolcfg.OpenAIName }
+
+// RequiresToolsForRequired implements agent.ToolRules: OpenAI refuses tool choice "required"
+// with no tools declared.
+func (m *Model) RequiresToolsForRequired() bool { return true }
+
 // Describe reports the adapter's identity: provider "openai" (the Chat Completions API, also when
 // WithBaseURL points it at a compatible server), the configured model ID, and support for a
 // JSON-schema response format.
@@ -502,3 +510,6 @@ func streamSSE(body io.ReadCloser, send func(agent.Emit) bool) {
 		send(agent.Emit{Event: agent.Finish{Reason: finishReason(reason), Raw: reason, Usage: usage}})
 	}
 }
+
+// Model declares its tool rules to agent.Build.
+var _ agent.ToolRules = (*Model)(nil)

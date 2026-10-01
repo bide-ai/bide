@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -45,9 +46,16 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 	if err := a.checkTools(); err != nil {
 		return Message{}, usageTotals{}, 0, err
 	}
+	if err := a.checkRequiredChoice(); err != nil {
+		return Message{}, usageTotals{}, 0, err
+	}
 	if err := checkDurable(a.store); err != nil {
 		return Message{}, usageTotals{}, 0, err
 	}
+	if err := linkSubRun(ctx, runID, a.store); err != nil {
+		return Message{}, usageTotals{}, 0, err
+	}
+	ctx = a.runDefaults(ctx) // the agent's identity, Waker and clock, where the run was given none
 	fire := func(e AgentEvent) {
 		if emit != nil {
 			emit(e)
@@ -78,11 +86,10 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 	}
 	// protocol:lifecycle end
 
-	msgs := []Message{}
-	if sys := a.systemMessage(ctx); sys != "" {
-		msgs = append(msgs, SystemText(sys))
-	}
-	msgs = append(msgs, seed...)
+	// The conversation without its system message, which is computed at the drive's first model
+	// call (see sysMsgs below): a drive that sends the model nothing (a finished run read back, a
+	// resume that pauses or halts before its next turn) does not depend on WithSystemPromptFunc.
+	msgs := append([]Message{}, seed...)
 
 	// The recorded assistant turns and tool results, from which the conversation is rebuilt below.
 	var turns []Message
@@ -212,6 +219,11 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 	// protocol:spend begin SettlePending FailSpend Leave LeaveLate End EndLate
 	meter := &spendMeter{}  // usage of every model request this invocation sends
 	chain := a.modelChain() // the model call chain every turn of this invocation goes through
+	var rag retrieved       // the WithRetrieval context blocks, built at this drive's first model call
+	var (
+		sysMsgs []Message // the system message every request of this drive starts with, if any
+		sysDone bool      // sysMsgs is computed
+	)
 	// writeSpend journals spent, billed usage no model record carries, as the step name. A write
 	// that fails is kept for the run's next drive in this process (see settlePending).
 	writeSpend := func(name string, spent Usage) error {
@@ -298,12 +310,22 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 			if err := node.exceeded(runID); err != nil {
 				return leave(err)
 			}
+			if !sysDone {
+				sys, err := a.systemMessage(ctx, RunInfo{RunID: runID, RootRunID: rootRunID(ctx, runID), Saga: saga})
+				if err != nil {
+					return leave(err)
+				}
+				if sys != "" {
+					sysMsgs = []Message{SystemText(sys)}
+				}
+				sysDone = true
+			}
 			fire(TurnStarted{Seq: modelSeq})
 			// A live (non-replayed) model call streams its deltas as ModelEvents through the
 			// turn's sink. On memoized replay store.Do skips the fn, so no sink fires: an
 			// AssistantTurn{Replayed:true} was emitted during resume.
 			// protocol:spend begin Turn Call Insert Recorded FailPath FailLookup FailSpend
-			ts := &turnState{meter: meter, journal: a.store}
+			ts := &turnState{meter: meter}
 			if emit != nil {
 				ts.sink = newTurnSink(modelSeq, fire)
 			}
@@ -316,7 +338,17 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 			rec, err := a.store.Do(ctx, runID, modelStep(modelSeq),
 				func(ctx context.Context) (Record, error) {
 					ts.usedIDs = toolUseIDs(msgs)
-					req := Request{Messages: msgs, Tools: a.requestTools(), Sampling: a.sampling, ResponseFormat: a.responseFormat, ToolChoice: a.toolChoice}
+					sent := msgs
+					if len(a.retrievals) > 0 {
+						var e error
+						if sent, e = a.withRetrieved(ctx, runID, msgs, &rag); e != nil {
+							return Record{}, e
+						}
+					}
+					if len(sysMsgs) > 0 {
+						sent = append(slices.Clip(sysMsgs), sent...)
+					}
+					req := Request{Messages: sent, Tools: a.requestTools(), Sampling: a.sampling, ResponseFormat: a.responseFormat, ToolChoice: a.toolChoice}
 					resp, e := chain.call(ctx, ModelCall{Request: req, Model: a.model, RunID: runID, Turn: seq}, ts)
 					if e != nil {
 						return Record{}, e
@@ -585,13 +617,10 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 				if halted.Load() {
 					return nil // not started: it runs when the resumed turn does
 				}
-				sctx := withRunScope(gctx, SubRunID(runID, c.tu.ID)) // hierarchical sub-run ID
-				sctx = withRunContext(sctx, a.store, runID)          // lets the tool call Interrupt
-				started := &callUsage{}                              // usage of the runs this call starts
+				sctx := withOnceScope(gctx, SubRunID(runID, c.tu.ID))      // NextOnceKey's scope: the call's sub-run ID
+				sctx = withRunContext(sctx, a.store, runID, c.tu.ID, saga) // RunInfoFrom; lets the tool call Interrupt
+				started := &callUsage{}                                    // usage of the runs this call starts
 				sctx = withCallUsage(withBudgetNode(sctx, node), started)
-				if saga {
-					sctx = withSaga(sctx)
-				}
 				// protocol:lifecycle begin DClaim DCall
 				// protocol:claims begin Claim Lost Win Call
 				// Attempt marker before a non-retriable side effect (crash-mid-write → halt),
@@ -643,6 +672,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 					called.Store(!notCalled)
 					// protocol:claims end
 					// protocol:lifecycle end
+					started.callReturned() // the chain returned: no programmatic sub-run starts from the call's context now
 					if state == callClosed && callErr != nil && !notCalled && !c.spec.Safety.retriableOnResume() {
 						callErr = fmt.Errorf("tool %q: the tool middleware returned an error without calling next, and not ErrToolNotCalled, so the tool may have run: %w (%w)", c.tu.Name, callErr, ErrToolOutcomeUnknown)
 					}

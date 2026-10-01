@@ -220,6 +220,14 @@ wrong:
 - `auto` or `none` with no tools declared is already met, so no tool choice is sent (the providers
   reject one with no tools).
 
+Each adapter declares its rules through `agent.ToolRules` (`ToolNameRule`,
+`RequiresToolsForRequired`), so `agent.Build` and `Agent.With` refuse a tool name the agent's
+model cannot take when the agent is built, not on every run; a model that declares no rules is
+not checked. Two tools with one name, an unknown mode, and `tool` naming a tool the agent lacks
+are refused for any model. `required` on an agent with no tools of its own is checked at the run,
+since `RunTyped` supplies an answer tool: a run with nothing to call fails with `ErrConfig` before
+it opens the journal.
+
 ## Tool-call IDs
 
 The agent keys each tool call's result and journal step by its tool-use ID, so every call in a

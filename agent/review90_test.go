@@ -37,7 +37,7 @@ func TestR90_WakeFailureCutsOffSiblingInFlight(t *testing.T) {
 		return "sent", nil
 	})
 	turn := multiToolTurn([2]string{"c1", "nap"}, [2]string{"c2", "send"})
-	ctx := WithWaker(context.Background(), &failingWaker{fail: 1})
+	ctx := ContextWithWaker(context.Background(), &failingWaker{fail: 1})
 	_, err := New(&greedyModel{script: [][]Emit{turn, textTurn("done")}}, store, nap, send).Run(ctx, "r1", "go")
 	if !errors.Is(err, ErrStorage) {
 		t.Fatalf("first drive = %v; want the wake failure (ErrStorage)", err)
@@ -294,7 +294,7 @@ func TestWaker_FailureBesideAPauseFailsTheRun(t *testing.T) {
 		return "", err
 	})
 	turn := multiToolTurn([2]string{"c1", "ask"}, [2]string{"c2", "nap"})
-	ctx := WithWaker(context.Background(), &failingWaker{fail: 1})
+	ctx := ContextWithWaker(context.Background(), &failingWaker{fail: 1})
 	_, err := New(&greedyModel{script: [][]Emit{turn, textTurn("done")}}, NewMemStore(), ask, napTool()).Run(ctx, "r1", "go")
 	if !errors.Is(err, ErrStorage) || IsPause(err) {
 		t.Fatalf("run = %v; want the wake failure (ErrStorage), not the pause", err)

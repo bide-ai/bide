@@ -2,9 +2,12 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
+	"math/rand/v2"
 	"strings"
+	"time"
 )
 
 // Doc is a document returned by a Retriever: its text plus optional id, similarity score,
@@ -31,94 +34,103 @@ type Retriever interface {
 	Retrieve(ctx context.Context, query string, k int) ([]Doc, error)
 }
 
+// RetrieverFunc adapts a function to a Retriever. It is also how a policy wraps a Retriever: a
+// WithRetrieval step runs before the model middleware chain, so a check that must keep a query
+// from the store (a tenant's data policy, a spend cap) goes in a RetrieverFunc around it, which
+// returns (nil, nil) to retrieve nothing or an error to fail the drive.
+type RetrieverFunc func(ctx context.Context, query string, k int) ([]Doc, error)
+
+// Retrieve calls f.
+func (f RetrieverFunc) Retrieve(ctx context.Context, query string, k int) ([]Doc, error) {
+	return f(ctx, query, k)
+}
+
 // RetrievalTool exposes a Retriever as a tool the model can call to search on demand
 // (agentic RAG): the model decides when to retrieve and with what query. It returns the
-// top-k documents: a Retriever that returns more is cut to its first k. Read-only
-// (retry-safe). The tool is named "retrieve" unless RetrievalName says otherwise; an agent's
-// tools need distinct names, so give each its own when one agent searches several stores. It
-// panics if k is below 1 or a name is empty.
-func RetrievalTool(r Retriever, k int, opts ...RetrievalOption) Tool {
+// top-k documents: a Retriever that returns more is cut to its first k. It is read-only
+// (retry-safe) unless WithSafety says otherwise, and takes the other tool options (WithApproval,
+// WithTimeout, WithTitle, WithOutputSchema) as Func does. name is what the model calls it by, so
+// an agent that searches several stores gives each RetrievalTool its own; description is what the
+// model reads to decide when to call it, such as what the store holds. It panics if name is
+// empty, r is nil, k is below 1, or an option is invalid.
+func RetrievalTool(name, description string, r Retriever, k int, opts ...ToolOption) Tool {
 	checkK("RetrievalTool", k)
-	cfg := retrievalToolConfig{
-		name:        "retrieve",
-		description: "Search the knowledge base and return the most relevant documents.",
-	}
-	for _, o := range opts {
-		o(&cfg)
-	}
-	if cfg.name == "" {
+	if name == "" {
 		panic("agent: RetrievalTool requires a non-empty name")
+	}
+	if isNil(r) {
+		panic("agent: RetrievalTool requires a non-nil Retriever")
 	}
 	type args struct {
 		Query string `json:"query" desc:"what to search the knowledge base for"`
 	}
-	return Func(cfg.name, cfg.description, Safety{ReadOnly: true},
+	return Func(name, description, Safety{ReadOnly: true},
 		func(ctx context.Context, in args) ([]Doc, error) {
 			docs, err := r.Retrieve(ctx, in.Query, k)
 			return topK(docs, k), err
-		})
+		}, opts...)
 }
 
-// RetrievalOption configures a RetrievalTool.
-type RetrievalOption func(*retrievalToolConfig)
-
-type retrievalToolConfig struct{ name, description string }
-
-// RetrievalName names the tool (the default is "retrieve"), for an agent that searches more
-// than one store, each through its own RetrievalTool.
-func RetrievalName(name string) RetrievalOption {
-	return func(c *retrievalToolConfig) { c.name = name }
+// retrievalLayer is one WithRetrieval: its Retriever, how many documents it returns, and how a
+// failed Retrieve is retried (see WithRetrievalRetry).
+type retrievalLayer struct {
+	r       Retriever
+	k       int
+	retries int           // how many more times a failed Retrieve is called
+	base    time.Duration // the first backoff, doubled after each retry
+	max     time.Duration // the cap on a backoff
 }
 
-// RetrievalDescription sets the description the model reads to decide when to call the tool,
-// such as what the store holds.
-func RetrievalDescription(description string) RetrievalOption {
-	return func(c *retrievalToolConfig) { c.description = description }
+// RetrievalOption configures one WithRetrieval: WithRetrievalRetry.
+type RetrievalOption interface {
+	applyRetrieval(*retrievalLayer) error
 }
 
-// WithRetrieval is model middleware that auto-injects retrieved context (classic RAG): it
-// retrieves the top-k documents for the run's user message and adds them, on every model call
-// of the run (so the call that follows a tool result still has them), as a user message placed
-// just before that user message: after the agent's system prompt and any earlier turns. The
-// documents are data the operator does not control, so they are not given system authority,
-// and each is written as one line of JSON, so no document can forge another entry (see
-// formatDocs).
+type retrievalOption func(*retrievalLayer) error
+
+func (f retrievalOption) applyRetrieval(l *retrievalLayer) error { return f(l) }
+
+// WithRetrievalRetry retries a failed Retrieve up to n more times within the drive's retrieval
+// step, sleeping between attempts with exponential backoff and full jitter: a random duration up
+// to base, then up to twice that, and so on, capped at max. Use it for a store with transient
+// failures (a timeout, a 503).
 //
-// Inside an agent run the retrieval is a journaled step (read-only, so a crash before it is
-// recorded simply retrieves again): the run retrieves once, every later call of the run
-// (including after a crash and resume, or from a second driver) is given the documents it
-// recorded, and the journal holds what the model was shown. Retrieved text is therefore
-// durable content, stored like a tool result. Called outside a run, where there is no journal,
-// it retrieves for the latest user message on every call.
-//
-// A retrieval error aborts the model call (and nothing is recorded, so the next attempt
-// retrieves again): have your Retriever return (nil, nil) instead of an error if you prefer to
-// degrade to no context. A Retriever that returns more than k documents is cut to its first
-// k. It panics if k is below 1.
-func WithRetrieval(r Retriever, k int) Middleware {
-	checkK("WithRetrieval", k)
-	return func(next ModelHandler) ModelHandler {
-		return func(ctx context.Context, call ModelCall) (ModelResponse, error) {
-			// Number the WithRetrieval layers on this call path, outermost first, so two of
-			// them on one agent journal their documents under different step names.
-			layer := call.layer
-			call.layer++
-			at, q, ok := lastUserQuery(call.Request.Messages)
-			if !ok {
-				return next(ctx, call)
+// WithRetrieval retrieves as an engine step before the model middleware chain runs, so a model
+// middleware such as middleware.Retry does not retry a retrieval: this option is how a retrieval
+// is retried. Only the final outcome is recorded: the documents of the attempt that succeeded, or,
+// once every attempt failed, nothing, and the drive fails with the last error. A cancelled context
+// ends the retries, and an error wrapping ErrConfig is not retried (the same request fails the
+// same way). n, base or max below 0, or max below base, is ErrConfig.
+func WithRetrievalRetry(n int, base, max time.Duration) RetrievalOption {
+	return retrievalOption(func(l *retrievalLayer) error {
+		if n < 0 || base < 0 || max < base {
+			return fmt.Errorf("WithRetrievalRetry: want n >= 0 and 0 <= base <= max, got n %d, base %v, max %v: %w", n, base, max, ErrConfig)
+		}
+		l.retries, l.base, l.max = n, base, max
+		return nil
+	})
+}
+
+// retrieve calls the layer's Retriever, retrying a failure as WithRetrievalRetry configured.
+func (l retrievalLayer) retrieve(ctx context.Context, query string) ([]Doc, error) {
+	back := l.base
+	for attempt := 0; ; attempt++ {
+		docs, err := l.r.Retrieve(ctx, query, l.k)
+		if err == nil || attempt == l.retries || errors.Is(err, ErrConfig) {
+			return docs, err
+		}
+		if ctx.Err() != nil {
+			return nil, errors.Join(err, ctx.Err())
+		}
+		if back > 0 {
+			t := time.NewTimer(rand.N(back) + 1)
+			select {
+			case <-t.C:
+			case <-ctx.Done():
+				t.Stop()
+				return nil, errors.Join(err, ctx.Err())
 			}
-			docs, err := retrieveOnce(ctx, call, r, q, k, layer)
-			if err != nil {
-				return ModelResponse{}, fmt.Errorf("retrieval: %w", err)
-			}
-			block, err := formatDocs(docs)
-			if err != nil {
-				return ModelResponse{}, fmt.Errorf("retrieval: %w", err)
-			}
-			if block != "" {
-				call.Request.Messages = insertAt(call.Request.Messages, at, UserText(block))
-			}
-			return next(ctx, call)
+			back = min(back*2, l.max)
 		}
 	}
 }
@@ -130,25 +142,60 @@ type retrieval struct {
 	Docs  []Doc  `json:"docs"`
 }
 
-// retrieveOnce returns the top-k documents for query. Inside an agent run it is the run's
-// step "@retrieval/<layer>": the first call retrieves and records the result, and every later
-// call returns the recorded documents. A run has one user message (the last one it was
+// retrieved holds a drive's WithRetrieval context blocks, built at its first model call.
+type retrieved struct {
+	at     int       // where the blocks go: the index of the run's user message
+	blocks []Message // one per layer that found documents, in the order given
+	done   bool
+}
+
+// withRetrieved returns msgs with the run's retrieved context blocks inserted just before its user
+// message, retrieving them at the drive's first model call (see WithRetrieval). Each layer i is
+// the run's step "@retrieval/<i>": the first drive to reach it retrieves and records the
+// documents, and every later one reads them back. A run has one user message (the last one it was
 // seeded with; the loop adds only assistant and tool turns), so one step per layer holds the
-// retrieval for the whole run.
-func retrieveOnce(ctx context.Context, call ModelCall, r Retriever, query string, k, layer int) ([]Doc, error) {
-	get := func(ctx context.Context) (retrieval, error) {
-		docs, err := r.Retrieve(ctx, query, k)
+// retrieval for the whole run. A run whose user message has no text retrieves nothing.
+//
+//go:noinline
+func (a *Agent) withRetrieved(ctx context.Context, runID string, msgs []Message, rv *retrieved) ([]Message, error) {
+	if !rv.done {
+		at, q, ok := lastUserQuery(msgs)
+		if ok {
+			for i, l := range a.retrievals {
+				docs, err := retrieveOnce(ctx, a.store, runID, l, q, i)
+				if err != nil {
+					return nil, fmt.Errorf("retrieval: %w", err)
+				}
+				block, err := formatDocs(docs)
+				if err != nil {
+					return nil, fmt.Errorf("retrieval: %w", err)
+				}
+				if block != "" {
+					rv.blocks = append(rv.blocks, UserText(block))
+				}
+			}
+		}
+		rv.at, rv.done = at, true
+	}
+	if len(rv.blocks) == 0 {
+		return msgs, nil
+	}
+	out := make([]Message, 0, len(msgs)+len(rv.blocks))
+	out = append(out, msgs[:rv.at]...)
+	out = append(out, rv.blocks...)
+	return append(out, msgs[rv.at:]...), nil
+}
+
+// retrieveOnce returns the top-k documents for query: the run's step "@retrieval/<layer>", which
+// the first call retrieves and records, and every later call reads back.
+func retrieveOnce(ctx context.Context, d Durable, runID string, l retrievalLayer, query string, layer int) ([]Doc, error) {
+	rec, err := step(ctx, d, runID, retrievalStep(layer), func(ctx context.Context) (retrieval, error) {
+		docs, err := l.retrieve(ctx, query)
 		if err != nil {
 			return retrieval{}, err
 		}
-		return retrieval{Query: query, Docs: topK(docs, k)}, nil
-	}
-	if call.turn == nil || call.turn.journal == nil {
-		rec, err := get(ctx)
-		return rec.Docs, err
-	}
-	rec, err := step(ctx, call.turn.journal, call.RunID, retrievalStep(layer), get,
-		StepSafety(Safety{ReadOnly: true}))
+		return retrieval{Query: query, Docs: topK(docs, l.k)}, nil
+	}, WithSafety(Safety{ReadOnly: true}))
 	return rec.Docs, err
 }
 
@@ -179,15 +226,6 @@ func topK(docs []Doc, k int) []Doc {
 		out[i] = d
 	}
 	return out
-}
-
-// insertAt returns a copy of msgs with m inserted at index i. The caller's slice is not
-// modified.
-func insertAt(msgs []Message, i int, m Message) []Message {
-	out := make([]Message, 0, len(msgs)+1)
-	out = append(out, msgs[:i]...)
-	out = append(out, m)
-	return append(out, msgs[i:]...)
 }
 
 // lastUserQuery returns the index and text of the latest user message, the turn the run is

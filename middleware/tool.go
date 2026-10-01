@@ -24,7 +24,7 @@ import (
 // n must be at least 0 (0 runs the tool once). With n < 0 every call fails with an error wrapping
 // agent.ErrConfig without running the tool, whatever its safety.
 //
-//	a := agent.New(model, store, tools...).UseTool(middleware.ToolRetry(3))
+//	a, err := agent.Build(model, journal, agent.WithTools(tools...), agent.WithToolMiddleware(middleware.ToolRetry(3)))
 func ToolRetry(n int, opts ...RetryOption) agent.ToolMiddleware {
 	cfg := retryConfig{base: defaultBackoffBase, max: defaultBackoffMax}
 	for _, o := range opts {
@@ -83,10 +83,10 @@ func ToolRetry(n int, opts ...RetryOption) agent.ToolMiddleware {
 }
 
 // ToolLog logs one line per tool call — name, duration, and ok/error — via logf (pass
-// log.Printf, t.Logf, or a structured logger's Printf-shaped method). Attach with
-// agent.Agent.UseTool.
+// log.Printf, t.Logf, or a structured logger's Printf-shaped method). Attach with the
+// agent.WithToolMiddleware option.
 //
-//	a := agent.New(model, store, tools...).UseTool(middleware.ToolLog(log.Printf))
+//	a, err := agent.Build(model, journal, agent.WithTools(tools...), agent.WithToolMiddleware(middleware.ToolLog(log.Printf)))
 //
 // A failed call is logged by its ErrorSummary (category, condition, provider status), not its
 // text: a tool's error text commonly embeds the call's arguments or a URL with a credential in

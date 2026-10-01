@@ -29,21 +29,52 @@ type Retriever interface {
     Retrieve(ctx context.Context, query string, k int) ([]Doc, error)
 }
 
-func RetrievalTool(r Retriever, k int, opts ...RetrievalOption) Tool // agentic: the model searches on demand
-func WithRetrieval(r Retriever, k int) Middleware                    // classic: top-k auto-injected each user turn
+type RetrieverFunc func(ctx context.Context, query string, k int) ([]Doc, error) // a function as a Retriever
+
+func RetrievalTool(name, description string, r Retriever, k int, opts ...ToolOption) Tool // agentic: the model searches on demand
+func WithRetrieval(r Retriever, k int, opts ...RetrievalOption) Option                   // classic: top-k auto-injected each run
+func WithRetrievalRetry(n int, base, max time.Duration) RetrievalOption                  // retry a failed Retrieve n more times
 ```
 
 Implement `Retriever` against your store (~20 lines), then wire it in one of two ways:
 
-- **Agentic RAG**: `agent.New(model, store, agent.RetrievalTool(myStore, 5))`. The model
-  decides when to search and with what query; results come back as a tool result. The tool is
-  named `retrieve`; an agent's tools need distinct names, so to search several stores give each
-  tool its own with `agent.RetrievalName("search_tickets")`, and tell the model what each holds
-  with `agent.RetrievalDescription(...)`.
-- **Classic RAG**: `a.Use(agent.WithRetrieval(myStore, 5))`. The middleware retrieves top-k
-  for the run's user message and adds them on every model call of the run, so the call that
-  follows a tool result still has the context. A retrieval error aborts the call; return
-  `(nil, nil)` from your `Retriever` if you prefer to degrade to no context.
+- **Agentic RAG**: `agent.WithTools(agent.RetrievalTool("search_kb", "Search the knowledge base.", myStore, 5))`.
+  The model decides when to search and with what query; results come back as a tool result. The
+  name is what the model calls it by, and an agent's tools need distinct names, so to search
+  several stores give each tool its own, and tell the model what each holds in its description.
+  The tool is read-only, and takes the other tool options (`WithTimeout`, `WithApproval`,
+  `WithTitle`) as `Func` does.
+- **Classic RAG**: `agent.Build(model, journal, agent.WithRetrieval(myStore, 5))`. The agent
+  retrieves top-k for the run's user message, as a journaled step of the run, and adds them on
+  every model call of the run, so the call that follows a tool result still has the context.
+  Every model middleware sees the request with the documents in it. A retrieval error fails the
+  call; return `(nil, nil)` from your `Retriever` if you prefer to degrade to no context.
+
+### Retrieval runs before model middleware
+
+`WithRetrieval` is a step of the engine, and it runs before the model middleware chain. Two
+consequences follow:
+
+- **Retries.** A model middleware such as `middleware.Retry` does not retry a failed retrieval.
+  `agent.WithRetrieval(myStore, 5, agent.WithRetrievalRetry(3, 200*time.Millisecond, 5*time.Second))`
+  retries a failed `Retrieve` up to 3 more times inside the step, with exponential backoff and
+  full jitter. Only the attempt that succeeded is recorded; if every attempt fails, nothing is,
+  and the next drive retrieves again. An error wrapping `agent.ErrConfig` is not retried.
+- **Policy.** A model middleware that refuses the call (a policy gate, a spend cap, a rate
+  limiter) does not prevent the retrieval: by the time it runs, the user's query has been sent to
+  the `Retriever` and the documents journaled. A policy that must keep a query from the store
+  wraps the `Retriever`:
+
+<!-- docsnip: setup model agent.Model; journal *agent.Journal; myStore agent.Retriever; mayRetrieve func(context.Context) bool -->
+```go
+gated := agent.RetrieverFunc(func(ctx context.Context, query string, k int) ([]agent.Doc, error) {
+	if !mayRetrieve(ctx) {
+		return nil, nil // retrieve nothing; or return an error to fail the drive
+	}
+	return myStore.Retrieve(ctx, query, k)
+})
+a, err := agent.Build(model, journal, agent.WithRetrieval(gated, 5))
+```
 
 The documents `WithRetrieval` adds are a **user** message placed just before the user turn they
 answer, after the system prompt and any earlier conversation. They are text you do not control,
@@ -78,7 +109,7 @@ so the helpers report it as 0.
   `WithRetrieval` records its retrieval as a read-only step of the run (`@retrieval/0`, holding
   the query and the documents): the run retrieves once, and every later model call of the run,
   including one made after a crash and resume, is given the recorded documents without asking
-  your store again. Outside an agent run there is no journal, so it retrieves on every call.
+  your store again.
 - **Retrieved text is stored in the journal, in full.** Either way the documents are durable
   content at rest in the journal, exactly like tool results: stored as written (the tool-error
   redaction does not apply to them), hashed into the audit trail, and readable by anyone who
@@ -100,7 +131,7 @@ so the helpers report it as 0.
 - **Conversational memory** is already built in: `Session` / `Session.Send` carry the Q&A
   transcript across turns, durably (see the sessions docs). No retriever needed.
 - **Dynamic context** (current time, tenant, retrieved summaries) goes through
-  `WithSystemPromptFunc(func(ctx) string)`.
+  `WithSystemPromptFunc(func(ctx, agent.RunInfo) (string, error))`.
 - **Semantic / long-term memory** is the `Retriever` seam above, backed by your store.
 
 ## If demand appears

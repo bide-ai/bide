@@ -192,10 +192,12 @@ type RunFilter struct {
 
 func IsComplete(ctx context.Context, store Durable, runID string) (bool, error)
 func Recover(ctx context.Context, store Durable, resume func(ctx context.Context, runID string) error, opts ...RecoverOption) (int, error)
-func RecoverLoop(ctx context.Context, store Durable, resume func(ctx context.Context, runID string) error, opts ...RecoverOption) error
+func RecoverLoop(ctx context.Context, store Durable, resume func(ctx context.Context, runID string) error, opts ...RecoverLoopOption) error
 ```
 
-The options (`WithLeaseHolder`, `WithLeaseTTL`) apply when the store also implements `Leaser`:
+The lease options (`WithLeaseHolder`, `WithLeaseTTL`, which `Lease`, `Recover` and `RecoverLoop` all
+take; `WithRecoverInterval`, `WithRecoverConcurrency` and `WithRecoverErrors` are `RecoverLoop`'s
+alone) apply when the store also implements `Leaser`:
 `Recover` then drives each run under a per-run lease and skips runs another holder leases (see
 [known limitations](../KNOWN-LIMITATIONS.md) for what the lease does and does not guarantee).
 
@@ -227,7 +229,7 @@ without firing anything again. The check costs three point reads (`Store.Get`) f
 pass drives, and none for the finished runs the filter excluded; over a `Durable` that is not a
 `Journal`, one `History` instead:
 
-<!-- docsnip: setup ctx context.Context; store agent.Durable; a *agent.Agent; waker agent.Waker; func startFor(runID string) agent.RunStart -->
+<!-- docsnip: setup ctx context.Context; store agent.Durable; a *agent.Agent; func startFor(runID string) agent.RunStart -->
 ```go
 n, err := agent.Recover(ctx, store, func(ctx context.Context, runID string) error {
 	start, ok, err := agent.RecordedStart(ctx, store, runID) // the run's own input and entry point
@@ -237,7 +239,7 @@ n, err := agent.Recover(ctx, store, func(ctx context.Context, runID string) erro
 	if !ok {
 		start = startFor(runID) // your own record, for a run not driven under this version
 	}
-	ctx = agent.WithWaker(ctx, waker)
+	// a was built with agent.WithWaker(waker), so a run that sleeps again registers its wake.
 	if start.Saga {
 		_, err = a.RunSaga(ctx, runID, start.Input)
 	} else {
@@ -308,8 +310,8 @@ returned error.
 
 **A Waker-bound resume rebuilds the timer set** with no separate journal scan. A sleeping run
 journals its wake time (see [Messaging](messaging.md) and `agent/pause.go`). When `Recover` re-drives it with a
-`resume` that binds a `Waker` (`agent.WithWaker`), the run replays into its durable `Sleep`,
-which sees the `Waker` on the context and re-registers the journaled wake automatically. If the
+`resume` whose agent has a `Waker` (the `agent.WithWaker` option), the run replays into its
+durable `Sleep`, which sees the `Waker` and re-registers the journaled wake automatically. If the
 `Waker` cannot schedule it, the run fails with an error wrapping `ErrStorage` (reported to
 `WithRecoverErrors`) and records nothing, and the next `RecoverLoop` pass schedules it again.
 Advancing the clock and firing the waker then resumes the run to completion. The rebuild

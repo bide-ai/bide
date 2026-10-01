@@ -49,7 +49,7 @@ func TestR117_AttenuatedSubRunIsCompensatedUnderTheParentsAuthority(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx = agent.WithIdentity(ctx, agent.Identity{Actor: "desk"})
+	ctx = agent.ContextWithIdentity(ctx, agent.Identity{Actor: "desk"})
 	ctx = WithGrant(ctx, rootSG, signer)
 	_, err = parent.RunSaga(ctx, "trip", "book the trip")
 	var aborted *agent.SagaAborted

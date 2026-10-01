@@ -223,7 +223,7 @@ global context»): [برهان Coq/Rocq](https://github.com/blackwell-systems/no
 // classify, then branch: rush orders reserve-then-finalize, the rest decline.
 assess, _ := agent.Step(ctx, store, "order-42", "classify",
     func(ctx context.Context) (Assessment, error) { return classify(order) },
-    agent.StepSafety(agent.Safety{ReadOnly: true})) // safe to re-run after a crash
+    agent.WithSafety(agent.Safety{ReadOnly: true})) // safe to re-run after a crash
 
 var receipt Receipt
 if assess.Rush {
@@ -542,13 +542,14 @@ type Retriever interface {
 
 ثم وصِّلها بإحدى طريقتين:
 
-<!-- docsnip: setup model agent.Model; store agent.Durable; myStore agent.Retriever -->
+<!-- docsnip: setup model agent.Model; journal *agent.Journal; myStore agent.Retriever -->
 ```go
 // Agentic RAG: the model searches on demand:
-a := agent.New(model, store, agent.RetrievalTool(myStore, 5))
+a, err := agent.Build(model, journal,
+	agent.WithTools(agent.RetrievalTool("search_kb", "Search the knowledge base.", myStore, 5)))
 
 // Classic RAG: top-k auto-injected as context on each user turn:
-a.Use(agent.WithRetrieval(myStore, 5))
+a, err = agent.Build(model, journal, agent.WithRetrieval(myStore, 5))
 ```
 
 الذاكرة المحادثية مبنيّة داخليًّا بالفعل (`Session`)؛ والسياق الديناميكي يمرّ عبر `WithSystemPromptFunc`؛

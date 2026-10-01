@@ -257,7 +257,7 @@ func hSubjects() []hSubject {
 			}
 			var opts []agent.StepOption
 			if rs {
-				opts = append(opts, agent.StepSafety(agent.Safety{Idempotent: true}))
+				opts = append(opts, agent.WithSafety(agent.Safety{Idempotent: true}))
 			}
 			return agent.Step(ctx, j, runID, "pay", func(context.Context) (string, error) { return p.fire(drive) }, opts...)
 		}

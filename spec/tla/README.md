@@ -849,6 +849,7 @@ region in the Go code, which modelsync checks.
 | `Crash`, `Cancel`, `Deadline`, `WrongAuth`, `FixAuth` | the faults; `WrongAuth` is H `Unrecorded` from a delegation under the wrong authority |
 
 Not modelled: approvals (model 1b), sub-agent rollback recursion (`asSubAgent`, `bindRollback`),
+the walk of a call's programmatic sub-runs (`walkSubRuns`, `rollbackSubRun`, `subRunLinks`),
 pauses inside a tool, and an unregistered tool in the rollback (`tool == nil`).
 
 ### Properties

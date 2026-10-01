@@ -244,7 +244,7 @@ func (t *attenuatingSubAgent) BindRollback(ctx context.Context, subRunID string)
 	if err := t.checkChild(*child, parentSG, signer); err != nil {
 		return nil, err
 	}
-	ctx = agent.WithIdentity(ctx, agent.Identity{
+	ctx = agent.ContextWithIdentity(ctx, agent.Identity{
 		Actor:        t.name,
 		OnBehalfOf:   child.Grant.Issuer, // the parent's subject: CheckAttenuation required it
 		AuthorityRef: child.Grant.Digest(),
@@ -255,7 +255,10 @@ func (t *attenuatingSubAgent) BindRollback(ctx context.Context, subRunID string)
 func (t *attenuatingSubAgent) Call(ctx context.Context, args json.RawMessage) (json.RawMessage, error) {
 	// The sub-run ID must be unique to this call, or delegations from different parent runs would
 	// share one journal (and memoize to each other's results). Only the agent loop's run scope is.
-	subRunID := agent.RunScope(ctx)
+	var subRunID string
+	if info, ok := agent.RunInfoFrom(ctx); ok && info.ToolUseID != "" {
+		subRunID = agent.SubRunID(info.RunID, info.ToolUseID)
+	}
 	parentSG, signer, ok := GrantFrom(ctx)
 	if !ok {
 		// No grant to attenuate from: plain delegation, inheriting the caller's identity. Inside a
@@ -351,7 +354,7 @@ func (t *attenuatingSubAgent) Call(ctx context.Context, args json.RawMessage) (j
 
 	// Rebind the sub-run: it acts as this sub-agent, on behalf of the parent, under the child grant.
 	// Propagate the child grant so a deeper delegation attenuates from it in turn.
-	ctx = agent.WithIdentity(ctx, agent.Identity{
+	ctx = agent.ContextWithIdentity(ctx, agent.Identity{
 		Actor:        t.name,
 		OnBehalfOf:   parentSG.Grant.Subject,
 		AuthorityRef: childSG.Grant.Digest(),

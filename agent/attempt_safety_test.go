@@ -72,7 +72,7 @@ func TestStep_RelabelledRetrySafeStillHalts(t *testing.T) {
 	if _, err := Step(context.Background(), store, "r1", "reserve", reserve); err == nil {
 		t.Fatal("first attempt succeeded, want its error")
 	}
-	_, err := Step(context.Background(), store, "r1", "reserve", reserve, StepSafety(Safety{Idempotent: true}))
+	_, err := Step(context.Background(), store, "r1", "reserve", reserve, WithSafety(Safety{Idempotent: true}))
 	var halt *ResumeHalt
 	if !errors.As(err, &halt) || halt.Op.ID != "reserve" {
 		t.Fatalf("resume err = %v after %d runs, want *ResumeHalt for reserve", err, ran)
@@ -99,7 +99,7 @@ func TestStep_MarkerLookupFailureStopsTheStep(t *testing.T) {
 	_, err := Step(context.Background(), markerLookupFails{NewMemStore()}, "r1", "read", func(context.Context) (int, error) {
 		ran++
 		return 1, nil
-	}, StepSafety(Safety{ReadOnly: true}))
+	}, WithSafety(Safety{ReadOnly: true}))
 	if !errors.Is(err, ErrStorage) || ran != 0 {
 		t.Fatalf("err = %v after %d runs, want the store's error and no run", err, ran)
 	}

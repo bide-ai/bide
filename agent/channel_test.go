@@ -154,7 +154,7 @@ func TestChannel_ResumeMidStream(t *testing.T) {
 	}
 
 	// Drive Receive directly inside a run context (no full loop): first message is the oldest.
-	rctx := withRunContext(ctx, store, "r")
+	rctx := withRunContext(ctx, store, "r", "", false)
 	first, err := Receive[string](rctx, "inbox")
 	if err != nil {
 		t.Fatalf("Receive: %v", err)

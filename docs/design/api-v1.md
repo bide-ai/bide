@@ -362,9 +362,17 @@ func (a *Agent) Journal() *Journal
 - plan's builder `WithModel` and `WithLoadedModel` become one `plan.WithModel` option.
 
 **`RunInfo`** gains `(RunInfo) SubRunFor(name string) string` for programmatic sub-runs (D5). The scheme is `<parent>>step:<enc name>`, next to `SubRunID`'s `<parent>><enc tool id>`. `>` and `step:` never appear in an encoded tool ID, so the two cannot collide.
+- As built in P13, `<parent>` is the call's scope: `SubRunID(RunID, ToolUseID)` inside a tool call, and `RunID` outside one. Two calls, or two names in one call, never share a sub-run.
+- `Run` accepts the ID only from that call's context, and only when the name segment is exactly what `encodeID` writes.
+- Known gap, for P14: a resumed tree's budget preload (`preloadSubRuns`) counts sub-agent runs by call ID, so a programmatic sub-run cut off mid-run is counted when its call re-enters it, not before.
 
 **Migration.**
 - P13 lands the options and `Build(model, j, opts...) (*Agent, error)` as the transitional name. The old `New` and the builder methods become wrappers over `Build`.
+- As built in P13:
+  - `RunOption` and the run-scope half of each combination type exist and are type-checked, and a run option records its value; the run entry points take them in P14.
+  - Per-run identity, Waker and clock are bound with the transitional `ContextWithX` decorators until then; a value on the run's context beats the agent's option.
+  - `New` keeps its lenient checks, so the tools tests build without schemas keep working until P15 moves them to `Build`; only `Build` and `With` refuse a reserved name and a non-object schema.
+  - `WithoutLease` is not added. Its meaning (item 4: `Lease`, `Recover` and `RecoverLoop` refuse a store with no `Leaser` unless it is passed) changes lease behaviour, which the adversarial review gate covers; it belongs to a lease PR. `LeaseControl` holds `WithLeaseHolder` and `WithLeaseTTL`.
 - P15 renames `Build` to `New` at about 367 sites and deletes the wrappers.
 
 **Risks.** As in v1: construction errors add boilerplate; `agenttest.MustNew` covers tests.
@@ -1110,6 +1118,8 @@ Within a wave, no two PRs edit the same file. Sizes:
 | wrappers `Resume[T]`, `ApproveAs`, channel `Send`, `ResolveStepHalt` | deleted |
 | `Durable` interface and store `Do`/`History` shims | deleted |
 | old `Tool` method set (accepted through `specOf`) | `Spec()` only |
+| `New(model, store, tools...)` and the builder methods (`Use`, `UseTool`, `WithMaxTurns`, `SetMaxConcurrency`, ...), kept by P13 as wrappers | deleted (`Build` becomes `New`) |
+| `ContextWithIdentity`, `ContextWithWaker`, `ContextWithClock` (P13 renamed the context decorators so the `With` names could be options) | deleted (run options) |
 
 ### 10.3 Performance gates
 1. **Counting-store round-trip test.** `agenttest.CountingStore` counts `Insert`, `Get`, `Load` calls and entries read. The test lands in P6a and is kept green by every later PR, which may only lower the budget. It asserts these exact per-operation budgets (deterministic, no timing):

@@ -23,7 +23,7 @@ func TestParallel_StartsNoTaskAfterCancel(t *testing.T) {
 			return i, nil
 		}}
 	}
-	_, err := Parallel(ctx, NewMemStore(), "r1", 1, tasks...)
+	_, err := Parallel(ctx, NewMemStore(), "r1", tasks, WithMaxConcurrency(1))
 	if n := ran.Load(); n != 1 {
 		t.Fatalf("%d tasks ran; want 1 (none started after the cancellation)", n)
 	}

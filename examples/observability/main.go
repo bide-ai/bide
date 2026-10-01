@@ -92,11 +92,17 @@ func main() {
 	// Instrument wires the chat span (with cost) and the execute_tool span in one call.
 	// Rates turn token usage into a USD cost recorded as gen_ai.usage.cost on the chat span.
 	rates := middleware.Rates{InputPer1M: 0.15, OutputPer1M: 0.60}
-	a := trace.Instrument(
-		agent.New(&scriptModel{}, agent.NewMemStore(), weather),
-		tracer,
-		trace.WithRates(rates),
+	j, err := agent.NewJournal(agent.NewMemStore())
+	if err != nil {
+		log.Fatal(err)
+	}
+	a, err := agent.Build(&scriptModel{}, j,
+		agent.WithTools(weather),
+		trace.Instrument(tracer, trace.WithRates(rates)),
 	)
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	// Invoke starts the top-level invoke_agent span around the run.
 	ctx, end := trace.Invoke(ctx, tracer, "weather-agent")

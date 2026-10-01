@@ -183,7 +183,7 @@ func resumedTreeCountsUnfinished(t *testing.T, wrap func(Tool) Tool) {
 	var both sync.WaitGroup
 	both.Add(2)
 	cut := stepTool(func(ctx context.Context) error {
-		scope := RunScope(ctx)
+		scope := runScope(ctx)
 		sub := scope[:len(scope)-len(subRunSep+"s1")]
 		mu.Lock()
 		seen[sub]++
@@ -265,7 +265,7 @@ func TestSaga_FailureRecordCarriesSubAgentUsage(t *testing.T) {
 		if earlier {
 			var aborted *SagaAborted
 			id := SubRunID("r1", "p1")
-			if _, err := sub.RunSaga(withRunScope(context.Background(), id), id, "go"); !errors.As(err, &aborted) {
+			if _, err := sub.RunSaga(asToolCall(context.Background(), "r1", "p1"), id, "go"); !errors.As(err, &aborted) {
 				t.Fatalf("earlier attempt: err = %v, want *SagaAborted", err)
 			}
 		}
@@ -302,7 +302,7 @@ func TestTokenBudget_ResumedTreeCountsEveryLevel(t *testing.T) {
 	var both sync.WaitGroup
 	both.Add(2)
 	cut := stepTool(func(ctx context.Context) error {
-		scope := RunScope(ctx)
+		scope := runScope(ctx)
 		run := scope[:strings.LastIndex(scope, subRunSep)]
 		mu.Lock()
 		seen[run]++
@@ -361,7 +361,7 @@ func TestTokenBudget_ResumedTreeCountsOnce(t *testing.T) {
 	var both sync.WaitGroup
 	both.Add(2)
 	cut := stepTool(func(ctx context.Context) error {
-		scope := RunScope(ctx)
+		scope := runScope(ctx)
 		run := scope[:strings.LastIndex(scope, subRunSep)]
 		mu.Lock()
 		seen[run]++

@@ -14,7 +14,7 @@ import (
 type Task[T any] struct {
 	Name string
 	Fn   func(context.Context) (T, error)
-	// Safety declares whether the task may re-run after a crash, as StepSafety does for a Step.
+	// Safety declares whether the task may re-run after a crash, as WithSafety does for a Step.
 	// The zero value treats the task as a side effect: it runs at most once, and a crash after
 	// its effect halts the resumed call with *OutcomeUnknown. Mark a check or a lookup ReadOnly.
 	Safety Safety
@@ -30,8 +30,8 @@ type Task[T any] struct {
 // Succeeded tasks are memoized on a later resume. A failed task was not journaled: one marked
 // retry-safe (Task.Safety) re-runs, and a side effect halts with *OutcomeUnknown, as Step does, since a
 // failed effect may still have landed. Task names must be unique and not empty; a repeated or empty
-// name is ErrConfig.
-// maxConcurrency caps in-flight tasks; <= 0 means one goroutine per task.
+// name is ErrConfig, as is a nil or invalid option. WithMaxConcurrency caps the tasks in flight;
+// without it, each task runs on a goroutine of its own.
 //
 // This is deliberately a thin primitive over the durable journal, not a graph engine: dynamic,
 // model-driven routing stays in plain Go and sub-agents; Parallel covers the static fan-out/fan-in
@@ -39,7 +39,11 @@ type Task[T any] struct {
 //
 // As with Step, each task result is journaled as JSON, so T must be JSON-serializable;
 // a struct's unexported fields silently round-trip to their zero values.
-func Parallel[T any](ctx context.Context, d Durable, runID string, maxConcurrency int, tasks ...Task[T]) ([]T, error) {
+func Parallel[T any](ctx context.Context, d Durable, runID string, tasks []Task[T], opts ...ParallelOption) ([]T, error) {
+	var cfg parallelConfig
+	if err := applyOptions("Parallel", &cfg, opts, ParallelOption.applyParallel); err != nil {
+		return nil, err
+	}
 	seen := make(map[string]bool, len(tasks))
 	for _, t := range tasks {
 		if err := checkStepName("agent: Parallel", t.Name); err != nil {
@@ -55,8 +59,8 @@ func Parallel[T any](ctx context.Context, d Durable, runID string, maxConcurrenc
 	errs := make([]error, len(tasks))
 
 	var sem chan struct{}
-	if maxConcurrency > 0 {
-		sem = make(chan struct{}, maxConcurrency)
+	if cfg.maxConc > 0 {
+		sem = make(chan struct{}, cfg.maxConc)
 	}
 	var wg sync.WaitGroup
 	for i := range tasks {
@@ -69,7 +73,7 @@ func Parallel[T any](ctx context.Context, d Durable, runID string, maxConcurrenc
 			if sem != nil {
 				defer func() { <-sem }()
 			}
-			results[i], errs[i] = Step(ctx, d, runID, tasks[i].Name, tasks[i].Fn, StepSafety(tasks[i].Safety))
+			results[i], errs[i] = Step(ctx, d, runID, tasks[i].Name, tasks[i].Fn, WithSafety(tasks[i].Safety))
 		}(i)
 	}
 	wg.Wait()

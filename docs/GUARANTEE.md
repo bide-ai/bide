@@ -99,8 +99,8 @@ the journal holds, and so what a resume cannot be talked out of by a redeploy:
 Configuration is live by design: it governs what a drive does next, not what the journal already
 says happened. A drive uses the configuration it is given for:
 
-- the system prompt (`WithSystemPrompt`, and `WithSystemPromptFunc`, which is called on every
-  drive), sampling, tool choice, response format, the model, and model middleware, for the turns
+- the system prompt (`WithSystemPrompt`, and `WithSystemPromptFunc`, which is called once by
+  each drive that sends the model a request, before its first one), sampling, tool choice, response format, the model, and model middleware, for the turns
   that drive makes. Each model turn journals what it was given: digests of the system prompt and
   the tool set it was sent (`Record.PromptDigest`, `Record.ToolsDigest`), the model that answered
   (`Record.Model`), and its finish reason, so an audit can tell which configuration produced each
@@ -110,8 +110,10 @@ says happened. A drive uses the configuration it is given for:
 - the approval gate for a call with no recorded denial, under the gate's current policy;
 - the `WithMaxTurns` and `WithTokenBudget` limits, compared with the turns and tokens the journal
   records, so raising a limit lets a stopped run continue;
-- the clock, for whether a timer or an `AwaitFor` deadline is due and for `WithMinHaltAge`;
-- the identity and grant bound to the context (`WithIdentity`), which the tools a drive runs see;
+- the clock (`WithClock`), for whether a timer or an `AwaitFor` deadline is due and for
+  `WithMinHaltAge`;
+- the identity and grant the drive is given (the `WithIdentity` option, or the run's context), which
+  the tools a drive runs see;
 - a governor's policy (`govern`): governed state is the shared event log replayed under the
   current machine.
 
@@ -151,7 +153,7 @@ says happened. A drive uses the configuration it is given for:
   was not retry-safe when it fired, so a resume halts on a marker without a result whatever the
   tool is declared as by then (relabelled retry-safe, or no longer registered at all), and a
   `Step` attempted as a side effect halts even if the resuming code passes a retry-safe
-  `StepSafety`. The marker needs no new field for this, so markers written by earlier versions
+  `WithSafety`. The marker needs no new field for this, so markers written by earlier versions
   are read the same way: every one of them means "not retry-safe, halt", unless the driver that
   wrote it recorded that its attempt never started. A completed call's result records the `Safety`
   it ran under, so a saga rollback compensates (or lists as uncompensated) a write whose tool was

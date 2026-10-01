@@ -233,6 +233,8 @@ type ToolOption interface{ applyTool(*toolConfig) error }
 // toolConfig is what the options of one tool constructor set.
 type toolConfig struct {
 	spec ToolSpec
+	// subRuns resolves the agent that runs one of the tool's programmatic sub-runs (WithSubRuns).
+	subRuns func(name string) *Agent
 	// set records which options were given, for a constructor that refuses one.
 	safetySet, timeoutSet, outputSet bool
 }
@@ -241,12 +243,25 @@ type toolOption func(*toolConfig) error
 
 func (f toolOption) applyTool(c *toolConfig) error { return f(c) }
 
-// WithSafety sets the tool's Safety. For Func and CompensatedFunc it replaces the Safety argument
-// (which the 1.0 rewrite removes in its favour). SubAgent refuses it: a sub-agent call re-enters
-// its sub-run, whose own calls carry their safety.
-func WithSafety(s Safety) ToolOption {
-	return toolOption(func(c *toolConfig) error { c.spec.Safety, c.safetySet = s, true; return nil })
+// safetyOption implements SafetyOption.
+type safetyOption Safety
+
+func (s safetyOption) applyTool(c *toolConfig) error {
+	c.spec.Safety, c.safetySet = Safety(s), true
+	return nil
 }
+
+func (s safetyOption) applyStep(c *stepConfig) error {
+	c.safety = Safety(s)
+	return nil
+}
+
+// WithSafety declares how safe a tool's calls, or a step, are to re-run. For a tool built by Func
+// or CompensatedFunc it replaces the Safety argument (which the 1.0 rewrite removes in its
+// favour); SubAgent refuses it, since a sub-agent call re-enters its sub-run, whose own calls
+// carry their safety. For a Step, a step that is RetrySafe (ReadOnly or Idempotent) re-runs after
+// a crash, and any other step halts (the default is a side effect).
+func WithSafety(s Safety) SafetyOption { return safetyOption(s) }
 
 // WithApproval gates every call to the tool on human approval before it runs: p is
 // SingleApproval() for one decision (Approve), or an m-of-n policy (SubmitDecision, and the
@@ -299,6 +314,35 @@ func WithOutputSchema(schema json.RawMessage) ToolOption {
 	})
 }
 
+// WithSubRuns declares the agents that run the tool's programmatic sub-runs: agentFor(name) is the
+// agent the tool runs RunInfo.SubRunFor(name) with. A saga's rollback walks those sub-runs as it
+// walks a sub-agent's (SubAgent): for each sub-run a call of the tool started, latest first, it
+// compensates the sub-run's completed writes with agentFor(name)'s compensators, after the call
+// itself. agentFor must return the agent (or one with the same tools) for every name the tool
+// starts a sub-run under, also after a restart, since the rollback may run in a later process.
+//
+// A sub-run in a saga's tree must journal to the run's store, where the rollback reads it: Run
+// refuses (ErrConfig) one whose agent journals elsewhere. The call's own compensation runs before
+// its sub-runs are walked. A sub-run is linked when it starts, within the call; one that is still
+// running when the call returns (held by a goroutine the call left behind) may still be writing
+// while the rollback walks it, so a write it makes after the walk passed it is not undone.
+//
+// Without it, or when agentFor returns nil for a sub-run, the rollback cannot undo the sub-run's
+// writes: it reports each one in SagaAborted.Uncompensated (and stops for a human at one whose
+// outcome is unknown), as it does for a write with no compensator. An agent it cannot use (one on
+// another store, or a panic in agentFor) is reported the same way, and the call is listed too,
+// with the reason (see SagaAborted). A nil agentFor is ErrConfig, and SubAgent, whose sub-run is
+// its own, refuses the option.
+func WithSubRuns(agentFor func(name string) *Agent) ToolOption {
+	return toolOption(func(c *toolConfig) error {
+		if agentFor == nil {
+			return fmt.Errorf("WithSubRuns: nil function: %w", ErrConfig)
+		}
+		c.subRuns = agentFor
+		return nil
+	})
+}
+
 // applyToolOptions applies opts to c in order, and returns the first error, naming the tool.
 func applyToolOptions(c *toolConfig, opts []ToolOption) error {
 	for _, o := range opts {
@@ -322,7 +366,8 @@ func applyToolOptions(c *toolConfig, opts []ToolOption) error {
 // runtime MCP tools) works.
 //
 // opts set the rest of the tool's spec: WithApproval, WithTimeout, WithTitle, WithOutputSchema,
-// and WithSafety, which replaces the safety argument.
+// and WithSafety, which replaces the safety argument. WithSubRuns declares the agents the tool
+// runs programmatic sub-runs with, for a saga's rollback.
 //
 // Func panics, as New does for a missing model, if schema.For cannot describe In: such a type
 // (a field reached through an embedded pointer to an unexported struct) could never be decoded
@@ -343,12 +388,20 @@ func newFuncTool[In, Out any](name, description string, safety Safety, fn func(c
 	if err := applyToolOptions(&c, opts); err != nil {
 		panic(err)
 	}
-	return &funcTool[In, Out]{spec: c.spec, fn: fn}
+	return &funcTool[In, Out]{spec: c.spec, fn: fn, subRuns: c.subRuns}
 }
 
 type funcTool[In, Out any] struct {
-	spec ToolSpec
-	fn   func(context.Context, In) (Out, error)
+	spec    ToolSpec
+	fn      func(context.Context, In) (Out, error)
+	subRuns func(name string) *Agent // WithSubRuns; nil if not given
+}
+
+func (t *funcTool[In, Out]) subRunAgent(name string) *Agent {
+	if t.subRuns == nil {
+		return nil
+	}
+	return t.subRuns(name)
 }
 
 func (t *funcTool[In, Out]) Name() string                { return t.spec.Name }

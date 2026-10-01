@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
 
 	"github.com/bide-ai/bide/agent"
@@ -82,6 +83,14 @@ func New(apiKey string, opts ...Option) *Model {
 	}
 	return m
 }
+
+// ToolNameRule implements agent.ToolRules: the tool names Anthropic accepts, `^[a-zA-Z0-9_-]{1,64}$`, so
+// agent.Build refuses any other name when the agent is built.
+func (m *Model) ToolNameRule() *regexp.Regexp { return toolcfg.AnthropicName }
+
+// RequiresToolsForRequired implements agent.ToolRules: Anthropic refuses tool choice "required"
+// with no tools declared.
+func (m *Model) RequiresToolsForRequired() bool { return true }
 
 // Describe reports the adapter's identity: provider "anthropic", the configured model ID, and no
 // JSON-schema response format (a request that sets one fails with agent.ErrConfig).
@@ -488,3 +497,6 @@ func streamSSE(body io.ReadCloser, send func(agent.Emit) bool) {
 		send(agent.Emit{Err: provider.SSEReadError("anthropic", err)})
 	}
 }
+
+// Model declares its tool rules to agent.Build.
+var _ agent.ToolRules = (*Model)(nil)

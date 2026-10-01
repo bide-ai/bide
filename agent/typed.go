@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"slices"
 
 	"github.com/bide-ai/bide/internal/strictjson"
 	"github.com/bide-ai/bide/schema"
@@ -191,18 +192,21 @@ func RunTypedNative[T any](ctx context.Context, a *Agent, runID, input string) (
 	return out, nil
 }
 
-// clone returns a shallow copy of the agent (shared model/store; copied tool map and
-// middleware slices), leaving the caller's agent untouched.
+// clone returns a copy of the agent that shares nothing mutable with it. The tool set, specs map,
+// middleware lists and retrievals are the copy's own, so adding to either agent's never reaches
+// the other's. Everything else is shared: the model, store, tools and functions are values the
+// agent only calls, the specs are never written through (specList is only copied, see
+// requestTools), and the settings held by pointer (sampling's, the tool choice, the identity,
+// the response format) are replaced when set, never written through. With configures a clone,
+// and RunTyped and RunTypedNative run one, so neither changes the agent it came from, and the two
+// may be used from different goroutines.
 func (a *Agent) clone() *Agent {
 	c := *a // copies every value field and pointer, so a newly added option field can't be forgotten
-	// Deep-copy only the reference types a derived agent must not share with its parent.
-	c.tools = make(map[string]Tool, len(a.tools)+1)
-	for k, v := range a.tools {
-		c.tools[k] = v
-	}
-	c.mw = append([]Middleware(nil), a.mw...)
-	c.toolMW = append([]ToolMiddleware(nil), a.toolMW...)
-	c.specs = maps.Clone(a.specs) // specList is shared: it is only ever copied (requestTools)
+	c.tools = maps.Clone(a.tools)
+	c.specs = maps.Clone(a.specs)
+	c.mw = slices.Clone(a.mw)
+	c.toolMW = slices.Clone(a.toolMW)
+	c.retrievals = slices.Clone(a.retrievals)
 	return &c
 }
 

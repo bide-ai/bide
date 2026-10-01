@@ -205,11 +205,8 @@ func resolveHalt(ctx context.Context, store Durable, op string, ref HaltRef, out
 		return fmt.Errorf("%s: op kind %q is not %q or %q: %w", op, ref.Op.Kind, OpTool, OpStep, ErrConfig)
 	}
 	cfg := resolveConfig{now: time.Now}
-	for _, o := range opts {
-		o(&cfg)
-	}
-	if cfg.evErr != nil {
-		return cfg.evErr
+	if err := applyOptions(op, &cfg, opts, ResolveOption.applyResolve); err != nil {
+		return err
 	}
 	if out.Evidence != nil {
 		if cfg.reconciled {
@@ -403,8 +400,10 @@ func (e *HaltAlreadyResolved) Error() string {
 // Unwrap returns ErrAlreadyResolved.
 func (e *HaltAlreadyResolved) Unwrap() error { return ErrAlreadyResolved }
 
-// ResolveOption configures ResolveHaltRef (and its wrappers ResolveHalt and ResolveStepHalt).
-type ResolveOption func(*resolveConfig)
+// resolveOption implements ResolveOption.
+type resolveOption func(*resolveConfig) error
+
+func (f resolveOption) applyResolve(c *resolveConfig) error { return f(c) }
 
 type resolveConfig struct {
 	noLiveCheck bool
@@ -412,7 +411,6 @@ type resolveConfig struct {
 	now         func() time.Time
 	evidence    json.RawMessage
 	reconciled  bool
-	evErr       error
 }
 
 // WithMinHaltAge refuses to resolve a halt younger than d, measured from the live attempt
@@ -433,7 +431,7 @@ type resolveConfig struct {
 // the timeout, so a halt resolved at the timeout can race a call still running. On a store that
 // leases runs, the lease check that ResolveHaltRef makes first is not affected by this.
 func WithMinHaltAge(d time.Duration) ResolveOption {
-	return func(c *resolveConfig) { c.minHaltAge = d }
+	return resolveOption(func(c *resolveConfig) error { c.minHaltAge = d; return nil })
 }
 
 // WithoutLiveDriverCheck skips ResolveHaltRef's check that no driver may still be running the
@@ -442,17 +440,7 @@ func WithMinHaltAge(d time.Duration) ResolveOption {
 // Pass it only when you know no driver of the run is running, for example with every worker
 // stopped.
 func WithoutLiveDriverCheck() ResolveOption {
-	return func(c *resolveConfig) { c.noLiveCheck = true }
-}
-
-// WithNow overrides the clock WithMinHaltAge measures against (default time.Now). For tests
-// and callers that carry their own clock.
-func WithNow(now func() time.Time) ResolveOption {
-	return func(c *resolveConfig) {
-		if now != nil {
-			c.now = now
-		}
-	}
+	return resolveOption(func(c *resolveConfig) error { c.noLiveCheck = true; return nil })
 }
 
 // WithEvidence records the resolution as reconciled from verified evidence rather than an
@@ -461,15 +449,15 @@ func WithNow(now func() time.Time) ResolveOption {
 // can tell a reconciled step from a clean one and re-check the basis of the verdict.
 // Outcome.Evidence does the same; giving both is ErrConfig.
 func WithEvidence(v any) ResolveOption {
-	return func(c *resolveConfig) {
+	return resolveOption(func(c *resolveConfig) error {
 		b, err := marshalJournal(v)
 		if err != nil {
-			c.evErr = fmt.Errorf("agent: encode resolve-halt evidence: %w (%w)", err, ErrConfig)
-			return
+			return fmt.Errorf("encode resolve-halt evidence: %w (%w)", err, ErrConfig)
 		}
 		c.evidence = b
 		c.reconciled = true
-	}
+		return nil
+	})
 }
 
 // HaltTooYoung is returned by ResolveHaltRef when WithMinHaltAge is set and the halt has not

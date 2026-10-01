@@ -75,7 +75,7 @@ func TestStep_RetrySafeStepReRunsAfterCrash(t *testing.T) {
 	store := &crashOnce{Durable: NewMemStore(), crashName: "classify"}
 	var runs int
 	classify := func(context.Context) (string, error) { runs++; return "rush", nil }
-	ro := StepSafety(Safety{ReadOnly: true})
+	ro := WithSafety(Safety{ReadOnly: true})
 	_, _ = Step(context.Background(), store, "order-42", "classify", classify, ro)
 	got, err := Step(context.Background(), store, "order-42", "classify", classify, ro)
 	if err != nil || got != "rush" || runs != 2 {

@@ -114,7 +114,7 @@ Temporal 拥有这些保证，但需要一个服务器加一支 worker 机群才
 // classify, then branch: rush orders reserve-then-finalize, the rest decline.
 assess, _ := agent.Step(ctx, store, "order-42", "classify",
     func(ctx context.Context) (Assessment, error) { return classify(order) },
-    agent.StepSafety(agent.Safety{ReadOnly: true})) // safe to re-run after a crash
+    agent.WithSafety(agent.Safety{ReadOnly: true})) // safe to re-run after a crash
 
 var receipt Receipt
 if assess.Rush {
@@ -377,13 +377,14 @@ type Retriever interface {
 
 然后用两种方式之一把它接上：
 
-<!-- docsnip: setup model agent.Model; store agent.Durable; myStore agent.Retriever -->
+<!-- docsnip: setup model agent.Model; journal *agent.Journal; myStore agent.Retriever -->
 ```go
 // Agentic RAG: the model searches on demand:
-a := agent.New(model, store, agent.RetrievalTool(myStore, 5))
+a, err := agent.Build(model, journal,
+	agent.WithTools(agent.RetrievalTool("search_kb", "Search the knowledge base.", myStore, 5)))
 
 // Classic RAG: top-k auto-injected as context on each user turn:
-a.Use(agent.WithRetrieval(myStore, 5))
+a, err = agent.Build(model, journal, agent.WithRetrieval(myStore, 5))
 ```
 
 对话记忆已经内建（`Session`）；动态上下文经由 `WithSystemPromptFunc`；这条接缝覆盖语义/长期记忆。具体的存储适配器（如果真有需要的话）会是独立的模块，绝不进入核心。见 [docs/guides/rag-memory.md](../../docs/guides/rag-memory.md)。

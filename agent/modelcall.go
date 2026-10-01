@@ -48,7 +48,6 @@ type ModelCall struct {
 	turn    *turnState      // the per-turn state the agent's model handler uses and checks
 	hooks   []ModelCallHook // added through AddHook, outermost first
 	attempt int             // the request's number, set on the call a hook receives
-	layer   int             // how many WithRetrieval layers the call has passed through
 }
 
 // AddHook returns a copy of c with h appended to its hooks, which the agent's model handler runs

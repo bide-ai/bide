@@ -87,7 +87,7 @@ func TestBudget_Resume(t *testing.T) {
 	j, cs, m := countingJournal(t)
 	// A side-effect call claimed and never recorded: the resume halts on it.
 	a := agent.New(agent.NewScriptedModel(agent.ToolTurn("c1", "charge", `{}`), agent.TextTurn("done")), j, sideEffect())
-	if _, err := agent.Step(ctx, j, "r", "warm", func(context.Context) (int, error) { return 1, nil }, agent.StepSafety(agent.Safety{ReadOnly: true})); err != nil {
+	if _, err := agent.Step(ctx, j, "r", "warm", func(context.Context) (int, error) { return 1, nil }, agent.WithSafety(agent.Safety{ReadOnly: true})); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := a.Run(ctx, "r", "hi"); err != nil {
@@ -147,11 +147,11 @@ func must[T any](v T, err error) T {
 func TestBudget_Step(t *testing.T) {
 	ctx := context.Background()
 	j, cs, _ := countingJournal(t)
-	if _, err := agent.Step(ctx, j, "r", "first", func(context.Context) (int, error) { return 1, nil }, agent.StepSafety(agent.Safety{ReadOnly: true})); err != nil {
+	if _, err := agent.Step(ctx, j, "r", "first", func(context.Context) (int, error) { return 1, nil }, agent.WithSafety(agent.Safety{ReadOnly: true})); err != nil {
 		t.Fatal(err)
 	}
 	cs.Reset()
-	if _, err := agent.Step(ctx, j, "r", "read", func(context.Context) (int, error) { return 1, nil }, agent.StepSafety(agent.Safety{ReadOnly: true})); err != nil {
+	if _, err := agent.Step(ctx, j, "r", "read", func(context.Context) (int, error) { return 1, nil }, agent.WithSafety(agent.Safety{ReadOnly: true})); err != nil {
 		t.Fatal(err)
 	}
 	wantCounts(t, cs, "retry-safe Step", []string{"get read", "get attempt:step:read", "insert read"}, 0, 0)

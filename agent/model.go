@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"iter"
+	"regexp"
 	"strings"
 	"sync"
 )
@@ -56,6 +57,37 @@ func ModelInfoOf(m Model) (ModelInfo, bool) {
 		m = u.Unwrap()
 	}
 	return ModelInfo{}, false
+}
+
+// ToolRules is an optional interface a Model implements to declare the tool setups its provider
+// refuses, so Build and With refuse them when the agent is built instead of every run failing.
+// A Model that does not implement it (itself or through an Unwrap() Model chain, as for
+// ModelInfoOf) declares nothing, and Build checks nothing of the kind for it.
+type ToolRules interface {
+	// ToolNameRule is the pattern every tool name must match; nil declares none.
+	ToolNameRule() *regexp.Regexp
+	// RequiresToolsForRequired reports whether a request with tool choice "required" must
+	// declare at least one tool.
+	RequiresToolsForRequired() bool
+}
+
+// toolRulesOf returns the ToolRules m declares, following an Unwrap() Model chain as ModelInfoOf
+// does, and false when no Model in the chain declares any.
+func toolRulesOf(m Model) (ToolRules, bool) {
+	for range maxUnwrap {
+		if isNil(m) {
+			return nil, false
+		}
+		if r, ok := m.(ToolRules); ok {
+			return r, true
+		}
+		u, ok := m.(interface{ Unwrap() Model })
+		if !ok {
+			return nil, false
+		}
+		m = u.Unwrap()
+	}
+	return nil, false
 }
 
 // Request is a single model call. Tools are the specs of the tools the model may call, sorted by

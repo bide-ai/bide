@@ -20,7 +20,8 @@ import (
 // deep in the tree propagate up (approve, re-run the root, and it resumes down the path).
 //
 // opts set the rest of the tool's spec: WithApproval, so the parent waits for a human before it
-// delegates, WithTitle and WithOutputSchema. SubAgent refuses WithSafety, since a sub-agent call
+// delegates, WithTitle and WithOutputSchema. SubAgent refuses WithSubRuns, whose sub-run is its
+// own, and WithSafety, since a sub-agent call
 // re-enters its sub-run, whose own calls carry their safety, and WithTimeout: a deadline would cut
 // the sub-run off mid-call and record the delegation as failed while the outcome of the sub-run's
 // own call is unknown, so the model, told the delegation failed, could delegate again and repeat a
@@ -45,6 +46,8 @@ func SubAgent(name, description string, sub *Agent, opts ...ToolOption) Tool {
 		panic(fmt.Errorf("agent: SubAgent %q: WithSafety does not apply to a sub-agent, whose sub-run's calls carry their own safety: %w", name, ErrConfig))
 	case c.timeoutSet:
 		panic(fmt.Errorf("agent: SubAgent %q: WithTimeout does not apply to a sub-agent, whose sub-run it would cut off mid-call; give its tools timeouts: %w", name, ErrConfig))
+	case c.subRuns != nil:
+		panic(fmt.Errorf("agent: SubAgent %q: WithSubRuns does not apply to a sub-agent, whose sub-run is its own: %w", name, ErrConfig))
 	}
 	return &subAgentTool{spec: c.spec, sub: sub}
 }
@@ -75,10 +78,13 @@ func (t *subAgentTool) Call(ctx context.Context, args json.RawMessage) (json.Raw
 	if err := decodeArgs(args, &in); err != nil {
 		return nil, fmt.Errorf("decode args for sub-agent %q: %w (%w)", t.spec.Name, err, ErrToolArgs)
 	}
-	subRunID := RunScope(ctx) // SubRunID(parentRunID, toolUseID): stable and unique per call site
+	var subRunID string
+	if info, ok := RunInfoFrom(ctx); ok && info.ToolUseID != "" {
+		subRunID = SubRunID(info.RunID, info.ToolUseID) // stable and unique per call site
+	}
 	if subRunID == "" {
 		// Fallback for a SubAgent tool invoked outside the agent loop (which always sets the run
-		// scope, agent.go withRunScope). This id is NOT unique per call: two calls to a same-named
+		// scope: see RunInfoFrom). This id is NOT unique per call: two calls to a same-named
 		// sub-agent would share one journal and the second would memoize to the first's result. Drive
 		// sub-agents through Agent.Run/RunSaga (the normal path) so each call gets a distinct scope.
 		subRunID = "sub/" + t.spec.Name
@@ -101,7 +107,7 @@ func (t *subAgentTool) Call(ctx context.Context, args json.RawMessage) (json.Raw
 		}()
 		var m Message
 		var e error
-		if InSaga(ctx) {
+		if inSaga(ctx) {
 			m, e = t.sub.RunSaga(ctx, subRunID, in.Task)
 		} else {
 			m, e = t.sub.Run(ctx, subRunID, in.Task)
@@ -199,6 +205,26 @@ func asSubAgent(t Tool) (*subAgentTool, bool) {
 		}
 	}
 	return nil, false
+}
+
+// subRunAgentFor returns the agent t (or a tool on its Unwrap chain) declared, with WithSubRuns,
+// for its programmatic sub-run name, and nil if none did.
+func subRunAgentFor(t Tool, name string) *Agent {
+	for range 64 { // a bound, as in asSubAgent
+		if s, ok := t.(interface{ subRunAgent(string) *Agent }); ok {
+			if sub := s.subRunAgent(name); sub != nil {
+				return sub
+			}
+		}
+		u, ok := t.(interface{ Unwrap() Tool })
+		if !ok {
+			return nil
+		}
+		if t = u.Unwrap(); t == nil {
+			return nil
+		}
+	}
+	return nil
 }
 
 // bindRollback returns the context a saga rollback walks a sub-agent's run subRunID under: ctx,

@@ -47,7 +47,7 @@ func TestAwaitFor_SignalFirst(t *testing.T) {
 	store := NewMemStore()
 	var clk int64 = 1000
 	now := func() time.Time { return time.Unix(atomic.LoadInt64(&clk), 0) }
-	ctx := WithClock(context.Background(), now)
+	ctx := ContextWithClock(context.Background(), now)
 
 	var calls int
 	var got string
@@ -98,7 +98,7 @@ func TestAwaitFor_TimeoutFirst(t *testing.T) {
 	store := NewMemStore()
 	var clk int64 = 1000
 	now := func() time.Time { return time.Unix(atomic.LoadInt64(&clk), 0) }
-	ctx := WithClock(context.Background(), now)
+	ctx := ContextWithClock(context.Background(), now)
 
 	var calls int
 	var got string = "sentinel"
@@ -145,7 +145,7 @@ func TestAwaitFor_DeadlineStable(t *testing.T) {
 	store := NewMemStore()
 	var clk int64 = 1000
 	now := func() time.Time { return time.Unix(atomic.LoadInt64(&clk), 0) }
-	ctx := WithClock(context.Background(), now)
+	ctx := ContextWithClock(context.Background(), now)
 
 	var calls int
 	var arrived bool = true

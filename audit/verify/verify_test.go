@@ -28,7 +28,7 @@ func journal(t *testing.T) (*agent.MemStore, string) {
 	store := agent.NewMemStore()
 	for i, v := range []string{"a", "b", "c", "d", "e"} {
 		name := v
-		if _, err := agent.Step(ctx, store, "run", name, func(context.Context) (string, error) { return v, nil }, agent.StepSafety(agent.Safety{ReadOnly: true})); err != nil {
+		if _, err := agent.Step(ctx, store, "run", name, func(context.Context) (string, error) { return v, nil }, agent.WithSafety(agent.Safety{ReadOnly: true})); err != nil {
 			t.Fatalf("step %d: %v", i, err)
 		}
 	}
