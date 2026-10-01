@@ -223,7 +223,10 @@ has journaled them: start a new run for different settings.
 
 **A cancelled run's in-flight calls finish.** `agent.Cancel` stops a run at its next check (a turn
 boundary, or a won side-effect claim before its call), so a call already past its check when the
-cancellation lands is called and its result recorded. `Cancel` takes no lease: it can land while a
+cancellation lands is called and its result recorded. A retry-safe call (`ReadOnly` or
+`Idempotent`) takes no claim and is not checked one by one: a retry-safe call already dispatched in
+the current turn may still run after `Cancel` returns, and the run stops at its next turn boundary
+or claim. `Cancel` takes no lease: it can land while a
 recovery pass is about to resume the run, whose drive then reports the run cancelled. A cancelled
 run and its completion can both be journaled, since they are two keys; the first in journal order
 is the run's end. Over a store that is not a `Journal` (a transitional `Durable` shim), each

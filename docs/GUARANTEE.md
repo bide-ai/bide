@@ -97,7 +97,10 @@ the journal holds, and so what a resume cannot be talked out of by a redeploy:
   dispatched: a call outside it is refused with an error result recorded, and its tool never runs;
 - a run's end: `run:complete`, `run:aborted` (a saga's finished rollback) or `run:cancelled`
   (`agent.Cancel`, or a cancelled saga's finished rollback). The first in journal order is the
-  run's end for every reader;
+  run's end for every reader. After `Cancel` returns, no side effect fires under a claim won after
+  it, in the run or anywhere in its tree (a sub-agent's run, a `SubRunFor` run, a delegation, which
+  read the root's cancellation), nor in a `plan` flow's run; calls already past their check finish,
+  and a retry-safe call already dispatched in the current turn may still run;
 - in a saga's rollback, which calls completed, failed, or were attempted, and the `Safety` and
   approval gate each completed call ran under (`Record.Safety`, `Record.Approval`): a completed write is rolled back even if its tool was relabelled
   `ReadOnly` since, and a call whose tool is no longer registered is reported uncompensated (or

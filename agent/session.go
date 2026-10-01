@@ -245,9 +245,11 @@ func (s *Session) reload(ctx context.Context) error {
 // (Approve / AnswerInterrupt) and call Send again with the SAME input to resume that turn. Until then,
 // Send with a different input is ErrConfig: the open turn belongs to its message.
 //
-// A turn whose run was cancelled (see Cancel) is closed: Send of its message returns
-// ErrRunCancelled, and the next Send of another message records the turn closed (with no answer,
-// and outside the transcript) and runs its own turn.
+// A turn whose run was cancelled (see Cancel) is closed: Send of its message (the same text)
+// returns ErrRunCancelled, and the next Send of another message records the turn closed (with no
+// answer, and outside the transcript) and runs its own turn. Cancel of a saga turn's run writes
+// only its rollback request: the next Send of another message drives that rollback (under the
+// turn's lease; ErrTurnContended while another worker drives the turn) and then closes the turn.
 //
 // Deprecated: transitional; renamed by the 1.0 rewrite. Use SendMessage, which becomes Send.
 func (s *Session) Send(ctx context.Context, input string) (Message, error) {
