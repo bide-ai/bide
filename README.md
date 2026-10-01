@@ -155,7 +155,7 @@ earned from a clean audit trail, and governed k-of-n quorum. → [docs/guides/au
 The governed-state tier: multiple processes replaying the same durable log **converge on
 identical state**, backed by a **machine-checked proof**. The **gsm** convergence engine's
 normalization rewrite system is confluent, so the order steps replay in cannot change the
-result. The proof is axiom-free and CI-verified on Coq 8.18 and 8.20, and checked on Rocq 9.3
+result. The proof is axiom-free and CI-verified on Coq 8.18, 8.20, and Rocq 9.3
 (`Print Assumptions` reports "Closed under the global context"): [the Coq/Rocq
 proof](https://github.com/blackwell-systems/normalization-confluence/tree/main/coq)
 ([![verify](https://github.com/blackwell-systems/normalization-confluence/actions/workflows/verify.yml/badge.svg)](https://github.com/blackwell-systems/normalization-confluence/actions/workflows/verify.yml)).

@@ -141,7 +141,7 @@ Transparency** ([RFC 6962](https://datatracker.ietf.org/doc/html/rfc6962)، مف
 طبقة الحالة المحكومة: عدة عمليات تُعيد تشغيل السجل المُعمَّر نفسه **تتقارب على حالة متطابقة**، مدعومةً
 بـ**برهان مفحوص آليًّا**. نظام إعادة الكتابة التطبيعي (normalization rewrite system) في محرك التقارب **gsm**
 مُلتقٍ (confluent)، فترتيب إعادة تشغيل الخطوات لا يمكن أن يُغيّر النتيجة. البرهان خالٍ من البدهيّات
-(axiom-free) ومُتحقَّق في الـ CI على Coq 8.18 و8.20، ومفحوص على Rocq 9.3 (يُبلِّغ `Print Assumptions` بـ «Closed under the
+(axiom-free) ومُتحقَّق في الـ CI على Coq 8.18 و8.20 وRocq 9.3 (يُبلِّغ `Print Assumptions` بـ «Closed under the
 global context»): [برهان Coq/Rocq](https://github.com/blackwell-systems/normalization-confluence/tree/main/coq)
 ([![verify](https://github.com/blackwell-systems/normalization-confluence/actions/workflows/verify.yml/badge.svg)](https://github.com/blackwell-systems/normalization-confluence/actions/workflows/verify.yml)).
 والبرهان لا يجلس فقط بجوار الشفرة: يُعاد التصديق على حُكم gsm لكل آلة **عبر مُتحقِّقَين مستقلَّين مُستخرَجَين
