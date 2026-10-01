@@ -340,7 +340,7 @@ func TestRecordedStart_AmongOtherValues(t *testing.T) {
 		t.Fatal(err)
 	}
 	start, ok, err := RecordedStart(ctx, store, "r")
-	if err != nil || !ok || !sameMessage(start.Input, UserText("hello")) || start.Saga || start.Kind != "" {
+	if err != nil || !ok || !sameMessage(start.Input, UserText("hello")) || start.Saga || start.Kind != RunKindAgent {
 		t.Fatalf("RecordedStart = %+v, %v, %v; want the run's input", start, ok, err)
 	}
 	if _, ok, err := RecordedStart(ctx, store, "never"); ok || err != nil {

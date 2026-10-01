@@ -225,9 +225,7 @@ func (a *Agent) newStart(d *driveSpec, idn Identity) (RunStart, error) {
 	s := RunStart{Input: *d.input, Saga: d.cfg.saga, Session: d.session, Typed: d.typed, Tools: d.cfg.tools,
 		Settings: RunSettings{MaxTurns: d.cfg.maxTurns, TokenBudget: d.cfg.tokenBudget, SystemPrompt: d.cfg.systemPrompt,
 			Sampling: d.cfg.sampling, ToolChoice: d.cfg.toolChoice}}
-	if d.runKind() != RunKindAgent {
-		s.Kind = d.kind
-	}
+	s.Kind = d.runKind() // always written: a run:start with no kind is a legacy one (see RunStart.legacy)
 	if idn.OnBehalfOf != "" || idn.AuthorityRef != "" {
 		s.Principal = &Principal{OnBehalfOf: idn.OnBehalfOf, AuthorityRef: idn.AuthorityRef}
 	}
@@ -262,7 +260,7 @@ func (a *Agent) holdDrive(runID string, d *driveSpec, start RunStart, idn Identi
 		return fmt.Errorf("run %s was started with another %s (see RecordedStart); drive it with the journaled one, or with none: %w", runID, what, ErrConfig)
 	}
 	switch {
-	case start.kind() != d.runKind():
+	case !start.admits(d.runKind()):
 		return fmt.Errorf("run %s was started as a run of kind %q, not %q; drive it the way it was started (see RecordedStart): %w", runID, start.kind(), d.runKind(), ErrConfig)
 	case d.input != nil && !sameMessage(start.Input, *d.input):
 		return mismatch("input")
@@ -273,14 +271,14 @@ func (a *Agent) holdDrive(runID string, d *driveSpec, start RunStart, idn Identi
 		return errSagaRun
 	case !start.Saga && d.cfg.saga:
 		return fmt.Errorf("run %s was not started as a saga; resume it without WithSaga (Run, Stream, ResumeRun): %w", runID, ErrConfig)
-	case (start.Typed == nil) != (d.typed == nil):
+	case !start.legacy() && (start.Typed == nil) != (d.typed == nil):
 		if start.Typed != nil {
 			return fmt.Errorf("run %s is a typed run; resume it with RunTypedMessage or ResumeTyped and its answer type: %w", runID, ErrConfig)
 		}
 		return fmt.Errorf("run %s is not a typed run; resume it with RunMessage or ResumeRun: %w", runID, ErrConfig)
-	case d.typed != nil && d.typed.SchemaDigest != start.Typed.SchemaDigest:
+	case d.typed != nil && start.Typed != nil && d.typed.SchemaDigest != start.Typed.SchemaDigest:
 		return mismatch("answer type (its schema digest differs)")
-	case d.typed != nil && d.typed.Mode != "" && d.typed.Mode != start.Typed.Mode:
+	case d.typed != nil && start.Typed != nil && d.typed.Mode != "" && d.typed.Mode != start.Typed.Mode:
 		return mismatch("output mode")
 	case d.typed == nil && d.cfg.outputMode != "":
 		return fmt.Errorf("WithOutputMode applies to a typed run (RunTypedMessage), and run %s is not one: %w", runID, ErrConfig)

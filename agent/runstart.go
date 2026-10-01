@@ -178,7 +178,10 @@ type RunKind string
 
 const (
 	// RunKindAgent is a run an Agent drives (Run, RunSaga, Stream, a sub-agent, a session turn).
-	// A run:start with no kind, as agent runs record it, is this kind.
+	// A run:start journaled before P14 records no kind (an agent run's did not; a flow's always
+	// recorded its kind): any agent entry point may drive it (a plain run, a session turn, a typed
+	// run), as before, since the record does not say which started it. P14 writes the kind of
+	// every run it starts.
 	RunKindAgent RunKind = "agent"
 	// RunKindFlow is a run a plan flow drives (plan.Flow.Run). RunStart.Flow names the flow.
 	RunKindFlow RunKind = "flow"
@@ -213,6 +216,22 @@ func (s RunStart) kind() RunKind {
 		return RunKindAgent
 	}
 	return s.Kind
+}
+
+// legacy reports whether s was journaled before P14: it records no kind (P14 always writes one)
+// and no typed start. Such a run was started by an agent entry point (a flow's start has always
+// recorded its kind) that the record does not name: a plain run, a session turn, a SendOnce turn
+// or a typed run.
+func (s RunStart) legacy() bool { return s.Kind == "" && s.Typed == nil }
+
+// admits reports whether a drive of kind k may drive the run s started: a drive of s's own kind,
+// and, for a legacy start (see legacy), a drive of any kind but a flow's, since the record does not
+// say which agent entry point started the run.
+func (s RunStart) admits(k RunKind) bool {
+	if s.legacy() {
+		return k != RunKindFlow
+	}
+	return s.kind() == k
 }
 
 // RecordedStart returns how runID was started (see RunStart), and ok=false for a run whose
@@ -301,7 +320,7 @@ func checkFinishedStart(runID string, recs []Record, want RunKind, input *Messag
 		if err := json.Unmarshal(r.Result, &got); err != nil {
 			return fmt.Errorf("decode %s (run %s): %w (%w)", runStartStep, runID, err, ErrStorage)
 		}
-		if got.kind() != want {
+		if !got.admits(want) {
 			return fmt.Errorf("run %s was started as a run of kind %q, not %q; drive it the way it was started (see RecordedStart): %w", runID, got.kind(), want, ErrConfig)
 		}
 		if input != nil && !sameMessage(got.Input, *input) {
