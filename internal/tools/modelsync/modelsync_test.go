@@ -370,3 +370,34 @@ func TestParseDiff(t *testing.T) {
 		t.Fatal("hit: wrong old-side intersection")
 	}
 }
+
+// TestSpecNameCase: a model's spec is found by its directory's name whatever the case of the
+// file (spec/tla/toolcall/ToolCall.tla), on a case-sensitive file system as on one that is not:
+// the spec path is the file's own name, not one built from the directory's.
+func TestSpecNameCase(t *testing.T) {
+	root := t.TempDir()
+	p := filepath.Join(root, "spec/tla/toolcall/ToolCall.tla")
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte("---- MODULE ToolCall ----\nIBegin == TRUE\n====\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "spec/tla/toolcall/ToolCallMC.tla"), []byte("---- MODULE ToolCallMC ----\n====\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "spec/tla/README.md"), []byte("# Models\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	models, err := loadModels(root, &report{out: &bytes.Buffer{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := models["toolcall"]
+	if m == nil {
+		t.Fatal("toolcall is not a model")
+	}
+	if m.spec != "spec/tla/toolcall/ToolCall.tla" || !m.defined["IBegin"] {
+		t.Fatalf("spec %q, defined %v", m.spec, m.defined)
+	}
+}

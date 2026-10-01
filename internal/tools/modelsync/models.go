@@ -39,9 +39,9 @@ var (
 )
 
 // loadModels finds every model directory under spec/tla (one holding <Name>.tla, Name being the
-// directory name with its first letter in upper case), reads the actions its spec defines, and
-// reads the README's map tables. Problems in the README are findings; an unreadable file is an
-// error.
+// directory name in any case: claims/Claims.tla, toolcall/ToolCall.tla), reads the actions its
+// spec defines, and reads the README's map tables. Problems in the README are findings; an
+// unreadable file is an error.
 func loadModels(root string, r *report) (map[string]*model, error) {
 	dirs, err := os.ReadDir(filepath.Join(root, "spec/tla"))
 	if err != nil {
@@ -53,11 +53,15 @@ func loadModels(root string, r *report) (map[string]*model, error) {
 			continue
 		}
 		name := d.Name()
-		spec := filepath.ToSlash(filepath.Join("spec/tla", name, strings.ToUpper(name[:1])+name[1:]+".tla"))
-		defined, err := tlaActions(filepath.Join(root, spec))
-		if os.IsNotExist(err) {
+		file, err := specFile(filepath.Join(root, "spec/tla", name), name)
+		if err != nil {
+			return nil, err
+		}
+		if file == "" {
 			continue
 		}
+		spec := filepath.ToSlash(filepath.Join("spec/tla", name, file))
+		defined, err := tlaActions(filepath.Join(root, spec))
 		if err != nil {
 			return nil, err
 		}
@@ -67,6 +71,23 @@ func loadModels(root string, r *report) (map[string]*model, error) {
 		return nil, err
 	}
 	return models, nil
+}
+
+// specFile returns the name of the file in dir that is the model's spec, <name>.tla matched
+// without regard to case, or "" when there is none. The directory is listed rather than the
+// name built and opened, so the result is the same on a case-sensitive file system and on one
+// that is not.
+func specFile(dir, name string) (string, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return "", err
+	}
+	for _, e := range entries {
+		if !e.IsDir() && strings.EqualFold(e.Name(), name+".tla") {
+			return e.Name(), nil
+		}
+	}
+	return "", nil
 }
 
 // tlaActions returns the PlusCal labels and top-level operators defined in a .tla file.
