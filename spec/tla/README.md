@@ -1200,35 +1200,124 @@ a lapsed lease (`RunFilter.LeaseLapsed`) and its own concurrency (`WithRecoverLa
 bound, a slow pass is not a liveness failure, which is why the docs could only be narrowed and the
 bound needs the clock.
 
-### Cancel (P14): the property P14 must satisfy
+### P14: the rules the Run API must implement
 
-D1 (`docs/design/api-v1.md`) says: `Cancel` writes `run:cancelled`; a driver checks for it with a
-`Get` when a drive starts and at every turn boundary, never starts a new claim after seeing it,
-and lets calls already in flight finish; `Recover` excludes cancelled runs. The model states the
-property P14 must satisfy, `CancelFinal`: no effect fires under a claim won after `run:cancelled`
-is in the journal, and a drive that read it claims nothing. Two findings against D1 as written,
-each with the proposed rule the model checks (`life-cancel`, `life-cancel-plain`):
+The model states P14's rules (`docs/design/api-v1.md`, item 1: D1 `Cancel`, D3 the per-run tool
+filter, D8 `Status`, the journaling rule, recovery dispatch) as the drive, `Cancel`, `Status` and
+recovery steps above, under `Api = ApiP14` (`LifecycleMC.tla`). The passing configurations
+(`life-cancel`, `life-cancel-plain`, `life-cancel-saga`, `life-status`, `life-status-load`,
+`life-filter`, `life-limits`, `life-not-started`, and the nightly `deep-cancel-plain`,
+`deep-cancel-saga`, `deep-options`, `deep-filter`) check every property under them; each rule
+has a regression or finding that fails without it. P14 implements these rules; a change to one
+changes the model first.
 
-- **L2: the turn-boundary check races the claim** (`findings/cancel-turn-check`, `CancelFinal`).
-  A drive checks `run:cancelled` (not there), `Cancel` writes it, and the drive claims and calls
-  the effect: a claim won after the cancellation fires, with no fault. Proposed rule
-  (`CancelRule = "claim"`): read `run:cancelled` again once the claim is won and before the call,
-  and if it is there record the attempt as not started. The claim then orders the two: a claim won
-  before the cancellation landed is a call in flight, one won after it never fires.
-- **L3: `Cancel` and completion race on two keys** (`findings/cancel-verdict`,
-  `VerdictAgreement`). `Cancel` reads no end marker, the run writes `run:complete`, `Cancel` writes
-  `run:cancelled` and reports the run cancelled; or the run reports its answer after `Cancel`
-  landed first. Two keys cannot be written atomically (A1 is per key), so `OneEnd` cannot hold
-  (`limits/cancel-two-ends`). Proposed rule (`VerdictRule = "first"`): the first end marker in
-  journal order (A2) is the run's end for every reader (`Run`, `Status`, the drive itself), and a
-  drive or `Cancel` that wrote a marker reads the end markers again before it reports. It costs one
-  `Get` at the end of a run and one in `Cancel`.
+`Cancel` (D1):
+
+1. `Cancel` reads the end markers and refuses a run that is over.
+2. A drive checks for `run:cancelled` when it starts (its `Load`) and at every turn boundary (one
+   `Get`), and starts no claim after seeing it. Calls already in flight finish and record their
+   results.
+3. **L2 (adopted).** Once a claim is won and before the call, the drive reads `run:cancelled`
+   again (one `Get` per side-effect call); if it is there, it records the attempt as not started
+   and stops (`regress/cancel-turn-check`).
+4. **L3 (adopted).** The first end marker in journal order is the run's end for every reader.
+   Every writer of an end marker (`Cancel`, the terminal turn, the rollback) reads the end
+   markers back and reports the first (`regress/cancel-verdict`). A writer may read back with one
+   `Get` per marker: its own marker is visible, so by A2 every marker before it is too, and the
+   lowest `Seq` is the first (argued, not checked: the model's read-back is one step).
+5. **L4 (proposed).** `Cancel` reads `run:start`: a run with none is `ErrNotStarted`, and nothing
+   is written. On a saga, `Cancel` writes a rollback request, which is not an end marker, so the
+   `Lister` filter still returns the run; the drive that sees the request (at its start, at a turn
+   boundary, or after a won claim, the checks of rules 2 and 3) rolls the run back and writes
+   `run:cancelled`. A saga whose `run:complete` lands first is complete. `Cancel` on a saga
+   returns once the request is durable; `Status` reports `Started` until the rollback's
+   `run:cancelled` (`findings/cancel-saga-marker`).
+6. `Recover` and `RecoverLoop` exclude `run:complete`, `run:aborted` and `run:cancelled` through
+   the `Lister` filter, and not the rollback request.
+
+`Status` (D8):
+
+7. **L6 (proposed).** `Status` takes the state from one `Load` (a prefix of the journal, A2), or
+   from one `Get` per end marker followed, when any marker was found, by the `Get`s again; the
+   marker with the lowest `Seq` is the state. One round of `Get`s is not enough
+   (`findings/status-gets`). No end marker is `Started` (running, paused, halted, stopped at its
+   limit); no `run:start` is `NotStarted`.
+
+Per-run options (the journaling rule, B1):
+
+8. The first drive inserts `run:start` with its caller's options and runs under the stored entry
+   the insert returns (first writer wins), not its own values.
+9. Every later drive (`Resume`, `Run` of an existing run, a recovery drive) runs under
+   `run:start`'s options and the last limit amendment, loaded with the run; a recovery resumer
+   passes no per-run option (`regress/options-from-caller`, `regress/limits-from-caller`).
+10. A later drive whose limit differs writes `run:limits:<n>` before it drives and runs under
+    it. An amendment binds the drives that load the run after it; a drive already running keeps
+    the limit it loaded (`limits/limit-lowered-in-flight`).
+11. A later drive whose filter or other setting differs (system prompt, sampling, tool choice,
+    output mode, typed schema, principal) is `ErrConfig`, before any model call.
+12. The turn limit is checked against the drive's journaled limit when it starts and at every
+    turn boundary.
+
+The tool filter (D3):
+
+13. **L5 (proposed).** The filter is enforced at dispatch, against the journaled filter: a call
+    naming a tool outside it (a model naming a tool it was not offered, a turn replayed from the
+    journal) is refused with an error result recorded, and its effect never fires. Narrowing
+    `Request.Tools` alone is not enough (`findings/filter-request-only`).
+
+Recovery dispatch:
+
+14. Recovery reads `run:start` under the lease for every run it visits; a run with none is
+    skipped and reported (`ErrNotStarted`) once per process (`regress/not-started-every-pass`).
+15. **L7 (proposed).** What the process remembers is the report, not the skip: `run:start` is read
+    again on every pass, so a run that starts after a pass found it unstarted is recovered
+    (`findings/not-started-remembered`).
 
 What no rule gives, stated as limits: an effect whose claim was won just before `run:cancelled`
 landed is called just after it (`limits/cancel-in-flight`, `NoFireAfterCancel`), which is D1's
-"calls already in flight finish"; and `Cancel` takes no lease, so it can land between a recovery
+"calls already in flight finish"; `Cancel` takes no lease, so it can land between a recovery
 pass's re-check and `resume` (`limits/cancel-resume`, `NoResumeOfFinished`), where the drive's
-start check returns the run cancelled without a write.
+start check returns the run cancelled without a write; two keys cannot be written atomically, so
+`Cancel` and completion can both land (`limits/cancel-two-ends`, `OneEnd`); and a lowered limit
+does not reach a drive already past its turn check (`limits/limit-lowered-in-flight`,
+`NoFireOverLimit`).
+
+### Findings against P14's design (L4 to L7)
+
+Found by this extension against `docs/design/api-v1.md` as written. Each has a counterexample in
+`findings/` that fails under the design's text, and a proposed rule the passing configurations
+check. They stay findings until the design adopts the rule; P14's tests reproduce each before
+its fix, as for L2 and L3.
+
+- **L4: a cancelled saga is never rolled back** (`findings/cancel-saga-marker`,
+  `CancelRollsBack`). D1 has `Cancel` write `run:cancelled` on a saga too and the saga roll
+  back, but `run:cancelled` is an end marker, which recovery's `Lister` filter excludes. In the
+  shortest trace (13 states), a plain `Run` of a one-call saga records its call; `Cancel`, which
+  read no end marker, writes `run:cancelled`; the drive, past its last check, writes
+  `run:complete` second and reports the run cancelled (rule 4). Nothing rolled the call back, and
+  no recovery pass will list the run again. The same holds when the drive dies between its call
+  and its next check. A drive that opens the run later does roll it back (the model gives D1
+  that reading), but nothing opens it. Proposed rule: rule 5. It costs one `Get` (`run:start`) in
+  `Cancel`. A choice for the maintainer: the rollback's end marker is `run:cancelled` here, so
+  `Status` and `Run` report a cancelled saga as cancelled; `run:aborted` would report it as an
+  abort, with the same checks.
+- **L5: the tool filter must be enforced at dispatch** (`findings/filter-request-only`,
+  `FilterHonoured`). D3 journals the filter but does not say where it applies. If it only
+  narrows the tools the model is offered, a turn that names a filtered-out tool (a model naming
+  a tool it was not offered, or a turn recorded before a crash and replayed) is dispatched by
+  name and fires (11 states, no fault). Proposed rule: rule 13.
+- **L6: one round of `Get`s is not a snapshot** (`findings/status-gets`, `StatusTruthful`). D8
+  does not say how `Status` reads. With one `Get` per end marker, `Status` reads `run:complete`
+  (absent); the run completes; `Cancel`, which read no end marker before, writes
+  `run:cancelled`; `Status` reads `run:aborted` (absent) and `run:cancelled` (present) and
+  reports a completed run cancelled (17 states). Proposed rule: rule 7. The `Load` form costs one
+  scan of the run (D8's `Records` count needs one anyway); the `Get` form costs at most six
+  `Get`s on an ended run and three on a live one.
+- **L7: a remembered skip loses a run** (`findings/not-started-remembered`, `StartedRunSettles`).
+  The design reports a run with no `run:start` once per process. If the process remembers the
+  skip rather than the report, a run found unstarted (a worker took its lease before the
+  primary's first drive) is skipped for good once the primary starts it and dies (27 states, a
+  liveness trace). Proposed rule: rule 15.
 
 ### Configurations
 
@@ -1259,32 +1348,42 @@ to the pull-request job.
 
 ### Regressions and limits
 
-Each regression restores a historical rule behind `Bug` and must fail with its property; each
-finding fails under the rule as it stands and flips to a regression once the fix is adopted; each
-limit states behavior the design accepts. L1 was v0.9.0's rule (`RecoverLoop`); #126 fixed
-it, and it is a regression. L2 and L3 are against D1's original text; both rules are now in D1
-(`docs/design/api-v1.md`), and the findings stay open until P14 implements them.
+Each regression restores a historical rule behind `Bug`, or a rule the design replaced, and must
+fail with its property; each finding fails under the rule as it stands and flips to a regression
+once the fix is adopted; each limit states behavior the design accepts. L1 was v0.9.0's rule
+(`RecoverLoop`); #126 fixed it, and it is a regression. L2 and L3 were against D1's original
+text; D1 adopted both rules, so they are regressions of the rules it replaced, and P14 implements
+them. B1's regressions are the code before P14, in which a drive runs under its own caller's
+options. L4 to L7 are open findings against P14's design (above).
 
 | Config | Group | The rule or behavior | Expected | Trace |
 |---|---|---|---|---|
-| `regress/no-recheck` | regress | #114: recovery checked the end markers when it listed a run, not again under the lease; a run the primary finished in between was handed to resume (Bug = "NoRecheck"). | `NoResumeOfFinished` | 14 states |
-| `regress/no-recheck-stall` | regress | #114 as TestHA_MultiProcessStallPastTTL caught it: the primary stalls past its TTL, the worker takes the run over and finishes it, and the worker's next pass, which listed the run before, resumes it (Bug = "NoRecheck"; no crash). | `NoResumeOfFinished` | 16 states |
-| `regress/shared-holder` | regress | #58 finding 4: Lease claimed under the bare WithLeaseHolder name, which AcquireLease takes as a renewal: a worker's recoverer and its primary under one name both drive the run (Bug = "SharedHolder"). | `OneDriverPerEpoch` | 6 states |
-| `regress/shared-holder-stall` | regress | #58 finding 4 in the HA harness: a worker stalls holding a run, a restarted worker under the same name renews the stalled worker's live lease and drives the run (Bug = "SharedHolder"). | `OneDriverPerEpoch` | 10 states |
-| `regress/no-abort-marker` | regress | #31: a saga whose rollback finished recorded no run:aborted, so every pass re-drove it (Bug = "NoAbortMarker"). | `EndMarked` | 8 states |
-| `regress/record-under-ctx` | regress | #58 finding 1: the SQL stores recorded a step's result under the drive's context, so a drive whose lease was lost while the effect ran dropped the result (Bug = "RecordUnderCtx"). | `OutcomeRecorded` | 10 states |
-| `regress/skip-when-busy` | regress | #58, RecoverLoop's first version: a pass that found every slot busy stopped, and the next began from the top, so runs listed after halted ones starved (Bug = "SkipWhenBusy"). | `PickedUp` (liveness) | 30 states |
+| `regress/no-recheck` | regress | #114: recovery checked the end markers when it listed a run, not again under the lease; a run the primary finished in between was handed to resume (Bug = "NoRecheck"). | `NoResumeOfFinished` | 16 states |
+| `regress/no-recheck-stall` | regress | #114 as TestHA_MultiProcessStallPastTTL caught it: the primary stalls past its TTL, the worker takes the run over and finishes it, and the worker's next pass, which listed the run before, resumes it (Bug = "NoRecheck"; no crash). | `NoResumeOfFinished` | 18 states |
+| `regress/shared-holder` | regress | #58 finding 4: Lease claimed under the bare WithLeaseHolder name, which AcquireLease takes as a renewal: a worker's recoverer and its primary under one name both drive the run (Bug = "SharedHolder"). | `OneDriverPerEpoch` | 7 states |
+| `regress/shared-holder-stall` | regress | #58 finding 4 in the HA harness: a worker stalls holding a run, a restarted worker under the same name renews the stalled worker's live lease and drives the run (Bug = "SharedHolder"). | `OneDriverPerEpoch` | 11 states |
+| `regress/no-abort-marker` | regress | #31: a saga whose rollback finished recorded no run:aborted, so every pass re-drove it (Bug = "NoAbortMarker"). | `EndMarked` | 11 states |
+| `regress/record-under-ctx` | regress | #58 finding 1: the SQL stores recorded a step's result under the drive's context, so a drive whose lease was lost while the effect ran dropped the result (Bug = "RecordUnderCtx"). | `OutcomeRecorded` | 12 states |
+| `regress/skip-when-busy` | regress | #58, RecoverLoop's first version: a pass that found every slot busy stopped, and the next began from the top, so runs listed after halted ones starved (Bug = "SkipWhenBusy"). | `PickedUp` (liveness) | 25 states |
 | `regress/pickup-halted-pile` | regress | L1, fixed by #126: v0.9.0's RecoverLoop (PassRule "all") visits every unfinished run in id order, halted ones included, so a dead holder's run listed after two halted runs is taken over more than Bound ticks after its lease lapsed. | `BoundedPickup` | 20 states |
-| `regress/replay-finished` | regress | c6deb766: a drive of a finished run asked the model for another turn, whose calls have new tool-use ids (Bug = "ReplayFinished"). | `FinishedFinal` | 16 states |
+| `regress/replay-finished` | regress | c6deb766: a drive of a finished run asked the model for another turn, whose calls have new tool-use ids (Bug = "ReplayFinished"). | `FinishedFinal` | 18 states |
+| `regress/cancel-turn-check` | regress | L2, the rule D1 replaced: run:cancelled checked only when a drive starts and at turn boundaries; a drive past its check claims and fires after Cancel landed (CancelRule "turn"). | `CancelFinal` | 10 states |
+| `regress/cancel-verdict` | regress | L3, the rule D1 replaced: Cancel reads no end marker, the run completes, Cancel writes run:cancelled and reports the run cancelled (VerdictRule "none"). | `VerdictAgreement` | 12 states |
+| `regress/options-from-caller` | regress | B1, the code before P14: a recovery drive passes no options and runs the agent's defaults, so a tool the run filtered out fires after the primary dies (Api.opt "caller"). | `FilterHonoured` | 19 states |
+| `regress/limits-from-caller` | regress | B1, the code before P14: a later Resume runs under its own prompt, and a recovery drive under the agent's default limit, not the run's (Api.opt "caller"). | `RunOptionsDurable` | 8 states |
+| `regress/not-started-every-pass` | regress | The reporting the design rules out: a run with no run:start reported on every pass (Api.notStarted "every"). | `NotStartedOnce` | 14 states |
 | `findings/pickup-lapsed-first` | finding | L1, a rejected fix: each pass takes the runs whose lease lapsed first. A lease that lapses while a pass walks the halted runs still waits for the next pass. | `BoundedPickup` | 20 states |
-| `findings/cancel-turn-check` | finding | L2: D1 checks run:cancelled when a drive starts and at turn boundaries; a drive past its check claims and fires after Cancel landed (CancelRule "turn"). | `CancelFinal` | 7 states |
-| `findings/cancel-verdict` | finding | L3: Cancel and completion race on two keys: Cancel reads no end marker, the run completes, Cancel writes run:cancelled and reports the run cancelled (VerdictRule "none"). | `VerdictAgreement` | 10 states |
-| `limits/stall-resume-finished` | limit | #114's documented residual: a worker stalls past its TTL between the re-check and resume; the primary takes the lapsed lease and finishes the run; the worker wakes and resumes it. | `NoResumeOfFinished` | 16 states |
-| `limits/plain-run-resume-finished` | limit | #114's other residual: a plain Run holds no lease, so it can finish the run between a worker's re-check and resume. | `NoResumeOfFinished` | 13 states |
+| `findings/cancel-saga-marker` | finding | L4: D1 as written, Cancel writes run:cancelled on a saga too; recovery excludes the run, so a saga cancelled while no drive will reach a check (or completed after the marker) is never rolled back (Api.sagaCancel "marker"). | `CancelRollsBack` | 13 states |
+| `findings/filter-request-only` | finding | L5: the tool filter only narrows Request.Tools; a turn naming a filtered-out tool is dispatched and fires (Api.filter "request"). | `FilterHonoured` | 11 states |
+| `findings/status-gets` | finding | L6: Status by one Get per end marker reads run:complete before the run completes and run:cancelled after Cancel lands, and reports a completed run cancelled (Api.status "gets"). | `StatusTruthful` | 17 states |
+| `findings/not-started-remembered` | finding | L7: recovery remembers a run it found with no run:start and skips it for good; the primary starts the run after that pass and dies (Api.notStarted "remember"). | `StartedRunSettles` (liveness) | NN states |
+| `limits/stall-resume-finished` | limit | #114's documented residual: a worker stalls past its TTL between the re-check and resume; the primary takes the lapsed lease and finishes the run; the worker wakes and resumes it. | `NoResumeOfFinished` | 18 states |
+| `limits/plain-run-resume-finished` | limit | #114's other residual: a plain Run holds no lease, so it can finish the run between a worker's re-check and resume. | `NoResumeOfFinished` | 15 states |
 | `limits/cancel-resume` | limit | Cancel takes no lease, so it can land between a worker's re-check and resume; the drive's start check then returns the run cancelled without a write. | `NoResumeOfFinished` | 9 states |
 | `limits/stall-two-drivers` | limit | Leases are not fenced: a holder that stalls past its TTL wakes still driving, beside the run's new holder, until its renewer notices. | `OneLiveDriver` | 9 states |
-| `limits/cancel-in-flight` | limit | Cancel cannot stop a call already past its check: under the proposed rules a claim won just before run:cancelled lands fires just after it (NoFireAfterCancel is the literal form). | `NoFireAfterCancel` | 8 states |
-| `limits/cancel-two-ends` | limit | Two keys cannot be written atomically (A1): Cancel and completion can both land; the first in journal order is the verdict (VerdictAgreement holds in life-cancel). | `OneEnd` | 10 states |
+| `limits/cancel-in-flight` | limit | Cancel cannot stop a call already past its check: under the adopted rules a claim won just before run:cancelled lands fires just after it (NoFireAfterCancel is the literal form). | `NoFireAfterCancel` | 10 states |
+| `limits/cancel-two-ends` | limit | Two keys cannot be written atomically (A1): Cancel and completion can both land; the first in journal order is the verdict (VerdictAgreement holds in life-cancel). | `OneEnd` | 12 states |
+| `limits/limit-lowered-in-flight` | limit | A limit amendment binds the drives that load the run after it: a later Resume lowers the limit while a plain primary is past its turn check, and the primary's call fires past the new limit. | `NoFireOverLimit` | 14 states |
 
 ### Keeping model 10 and the code in step
 
