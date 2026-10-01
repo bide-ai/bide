@@ -889,7 +889,17 @@ findings (below).
 | `saga-idem` | nightly | a retry-safe saga step that changes state, contract middleware, every fault (T3's shape) | 532,471 | 3 s |
 | `rollback-rerun` | nightly | the rollback re-runs a retry-safe step cut off by a sibling's saga failure: `next` left running, a cache answer, a cancellation (T4, T5) | 245,482 | 3 s |
 | `live-rollback` | ci | `RollbackEnds`: a result check that rejects every success of the re-run step | 900 | 1 s |
-NIGHTLY_ROWS
+| `deep-adv-a2` | nightly | one side effect, any middleware, two extra invocations and two error replies, four attempts | 46,315,249 | 8 min* |
+| `deep-adv-two` | nightly | two side effects, any middleware but a direct call, a cancellation and an error reply | 103,675,470 | 16 min* |
+| `deep-two-side` | nightly | two side effects, contract middleware, every fault | 5,913,713 | 38 s* |
+| `deep-siblings` | nightly | a side effect and a delegation, contract middleware on both, every fault | 65,561,449 | 24 min* |
+| `deep-live-siblings` | nightly | `NeverBegunProgress` over the siblings with faults, without a cache answer | 3,338,804 | 4 min* |
+| `deep-saga-idem-adv` | nightly | a retry-safe saga step that changes state, any middleware but a direct call, every fault | 6,651,541 | 48 s* |
+| `deep-rollback-rerun` | nightly | the rollback's re-run with an error reply and a deadline beside the cancellation, four attempts | 29,286,833 | 5 min* |
+
+\* The nightly times are TLC's own on the development machine while it ran other jobs (a load
+average of about 30 on 10 cores), so they are upper bounds; on an idle machine `deep-siblings`
+took about 5 minutes and `deep-adv-a2` about 3.
 
 Regressions (each must fail with its property, and passes with its `Bugs` flag removed):
 
