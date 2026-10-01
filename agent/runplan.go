@@ -134,7 +134,7 @@ func (a *Agent) openPlan(ctx context.Context, runID string, d *driveSpec, recs [
 		if err := json.Unmarshal(rec.Result, &got); err != nil {
 			return ctx, nil, nil, fmt.Errorf("decode %s (run %s): %w (%w)", runLimitsStep(n), runID, err, ErrStorage)
 		}
-		lim = applyAmendment(lim, got) // ours, or a concurrent drive's that took the index first
+		lim = applyAmendment(lim, got)                       // ours, or a concurrent drive's that took the index first
 		wrote = append(slices.Clip(wrote), runLimitsStep(n)) // never into startWritten's array
 	}
 	// protocol:lifecycle end
