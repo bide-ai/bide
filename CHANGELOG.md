@@ -9,10 +9,6 @@ minor version (0.x.0) may include breaking API or journal-format changes; each o
 
 ## [Unreleased]
 
-### Fixed
-
-- `RecoverLoop` took over a dead holder's run late when halted runs were listed before it: each pass visited every unfinished run in order, halted ones included, so the takeover waited about one visit per halted run, and a lease that lapsed just after the pass tried the run waited for the whole next pass (finding L1 of the run-lifecycle model, [#124]). It now runs a second loop on the same interval, with slots of its own, that drives only the runs whose lease lapsed, so a dead holder's run is taken over within about one interval of its lease lapsing however many halted runs the store holds. The full pass is unchanged and still re-drives halted runs and runs that held no lease.
-
 ### Added
 
 - `agent.ToolSpec` (`Name`, `Title`, `Description`, `Input`, `Output`, `Safety`, `Approval`, `Timeout`), everything the agent knows about a tool, and `agent.SpecOf(t)`, which reads a tool's `Spec() ToolSpec` method or, for a tool without one, its `Name`, `Description`, `ArgsSchema` and `Safety` (deprecated from the start: see Deprecated). The agent reads each tool's spec once, when it is registered, and decides every call from that copy ([#117]).
@@ -82,6 +78,7 @@ minor version (0.x.0) may include breaking API or journal-format changes; each o
 - A saga rollback into an `audit.AttenuatingSubAgent`'s sub-run now compensates under the child grant and identity the sub-run journaled (none, if the delegation ran without a grant), never the parent's broader authority ([#117]).
 - A saga rollback into a resumed `audit.AttenuatingSubAgent` delegation whose `AttenuateFunc` gave each grant its own ID stopped: the sub-run held two grants. The delegation now keeps its first grant ([#117]).
 - A retry-safe saga step whose outcome was unknown (`ErrToolOutcomeUnknown`) was taken by the rollback for a step that changed nothing, and was neither undone nor reported; it is now reported in `SagaAborted.UnknownOutcome` ([#117]).
+- `RecoverLoop` took over a dead holder's run late when halted runs were listed before it: each pass visited every unfinished run in order, halted ones included, so the takeover waited about one visit per halted run, and a lease that lapsed just after the pass tried the run waited for the whole next pass (finding L1 of the run-lifecycle model, [#124]). It now runs a second loop on the same interval, with slots of its own, that drives only the runs whose lease lapsed, so a dead holder's run is taken over within about one interval of its lease lapsing however many halted runs the store holds. The full pass is unchanged and still re-drives halted runs and runs that held no lease.
 
 ## [0.9.0] - 2026-10-01
 
