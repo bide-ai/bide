@@ -1,10 +1,12 @@
 # Formal models of the coordination protocols (design proposal and plan)
 
 Status: accepted, in progress. It expands the
-[roadmap item](../ROADMAP.md#formal-models-of-the-coordination-protocols) into a plan. Model 1 (the
-claim protocol) is implemented in [spec/tla](../../spec/tla/README.md), with the tooling of M0 and
-the regression configurations of M2 (the counterexample-to-test helper of M2 is not built yet), and
-PR #92 merges only once it passes. Where this plan and `spec/tla/README.md` differ, the README
+[roadmap item](../ROADMAP.md#formal-models-of-the-coordination-protocols) into a plan. Models 1,
+1b, 2, 7, 8, 9 and 10 (numbered as in `spec/tla/README.md`) are implemented in
+[spec/tla](../../spec/tla/README.md) and checked on every pull request. M0, M1 and M4 (#125) are
+done; of M2, the regression configurations and the expected-violation check are done and the
+counterexample-to-test helper is not built yet; M3 and M5 are not started. The overview is
+[Formal verification](../formal-verification.md). Where this plan and `spec/tla/README.md` differ, the README
 states what is checked. Sections 4 and 5 below describe #92's final rules, in which the claim-held
 pin and the reuse of a remembered claim id are gone (the prototype of section 4.8 predates them);
 the script is `spec/tla/check.sh`, and the configurations have other names and bounds.
@@ -74,11 +76,11 @@ the design exhaustively, for three reasons:
 | 3 | **Leases and recovery:** acquire, renew, release, takeover, a holder that stalls past its TTL, `Recover`/`RecoverLoop` dispatch, and the lease that `checkNoLiveDriver` takes. Invariant: at-most-once holds with leases failing arbitrarily. | Deferred. | P13 (the `LeaseControl` option) and P14 (recovery dispatch, not-started runs skipped) are merged. |
 | 4 | **The store contract and journal header:** A1 to A8 as an abstract store with concurrent readers, prefix-closed visibility (A2), first-writer races, the `@journal` header rules, refusal of other formats, redaction. | Deferred. | The first change to A1 to A8 or to the header rules after #92 merges, the runs-table follow-up, or P16 setting the final `JournalFormat`, whichever comes first. |
 | 5 | **Saga rollback:** parallel siblings, sub-agents, calls that never started, compensation by recorded safety, `Cancel` on a saga. | Deferred. | P12 (rollback by recorded safety, `compensate.go`) and P14 (`Cancel` on a saga) are merged. |
-| 1b | **Approval and halt resolution,** an extension of model 1: 1-of-1 `Approve` and m-of-n signed decisions with their recorded tally (approver sets, duplicate approvers or keys, a decision arriving while a resume runs), a denial that stays final when the gate later changes, approval bound to the exact call, contended and crashed halts, and resolution while a driver may be live in all three live-driver modes. Invariants: no action runs without a recorded sufficient approval; a denial is never overridden; resolution never overrides a live driver; at most one fire. | Started: `spec/tla/claims` (model 1b in `spec/tla/README.md`). | None: the rules are those of #90 and #92. |
+| 1b | **Approval and halt resolution,** an extension of model 1: 1-of-1 `Approve` and m-of-n signed decisions with their recorded tally (approver sets, duplicate approvers or keys, a decision arriving while a resume runs), a denial that stays final when the gate later changes, approval bound to the exact call, contended and crashed halts, and resolution while a driver may be live in all three live-driver modes. Invariants: no action runs without a recorded sufficient approval; a denial is never overridden; resolution never overrides a live driver; at most one fire. | Done: `spec/tla/claims` (model 1b in `spec/tla/README.md`, #108); it found F5, fixed in #109. | None: the rules are those of #90 and #92. |
 | 6 | **Sessions:** concurrent `Send` and `SendOnce`, turn ordering, `from/` starting points, crashes between turns. | Candidate. | The next change to the session code. |
-| 7 | **Flow semantics:** switch and loop replay, `run:complete` for flows, per-iteration step scoping. | Started: `spec/tla/flows` (see `spec/tla/README.md`). | #103 (which fixes these) is merged. |
-| 9 | **Spend accounting:** `@llm/<n>`, `@spend/<id>` and `@spend-late/<id>` under A3, crashes, hedged losers and two drivers; `Result.Spend` and `Replay` equal the billed spend exactly once. | Started: `spec/tla/spend`. | P9 (#104). |
-| 10 | **The run lifecycle and recovery:** `run:start`, `run:complete`, `run:aborted` and P14's `run:cancelled`; a leased `Run`, a plain `Run`, `resume`, `Recover` and `RecoverLoop` passes (list, lease, the #114 re-check, resume, release), halts, pauses and `ResolveHalt`, under lease expiry, a stalled holder, ambiguous writes and crashes, with a clock that makes a pass's cost visible (bounded pickup). It takes the lease and recovery part of model 3. | Started: `spec/tla/lifecycle`. | #114, and P14's `Cancel` (D1), whose rules it states as the property P14 must satisfy. |
+| 7 | **Flow semantics:** switch and loop replay, `run:complete` for flows, per-iteration step scoping. | Done: `spec/tla/flows` (model 7, #110). | #103 (which fixes these) is merged. |
+| 9 | **Spend accounting:** `@llm/<n>`, `@spend/<id>` and `@spend-late/<id>` under A3, crashes, hedged losers and two drivers; `Result.Spend` and `Replay` equal the billed spend exactly once. | Done: `spec/tla/spend` (model 8 in `spec/tla/README.md`, #111). | P9 (#104). |
+| 10 | **The run lifecycle and recovery:** `run:start`, `run:complete`, `run:aborted` and P14's `run:cancelled`; a leased `Run`, a plain `Run`, `resume`, `Recover` and `RecoverLoop` passes (list, lease, the #114 re-check, resume, release), halts, pauses and `ResolveHalt`, under lease expiry, a stalled holder, ambiguous writes and crashes, with a clock that makes a pass's cost visible (bounded pickup). It takes the lease and recovery part of model 3. | Done: `spec/tla/lifecycle` (model 10, #124); it found L1, fixed in #126, and L2 and L3, adopted into D1 and open until P14. | #114, and P14's `Cancel` (D1), whose rules it states as the property P14 must satisfy. |
 | 11 | **The tool-call state machine** (model 9 in `spec/tla/README.md`): one turn's tool calls in an errgroup, the call state and began word, the base handler entered by several invocations, the tool middleware, the loop's record decision, retry-safe steps that change state, and `rollbackRun`'s re-run and compensation. | Done: `spec/tla/toolcall` (#123); it found T1 to T6 in #117, all fixed there. | P12 (#117). |
 | 8 | **The whole-tree budget:** the bound on how far concurrent sub-agents can overshoot a shared token budget. | Candidate, low priority. | None. |
 
@@ -664,8 +666,8 @@ speak about the same records:
   `Protocol-Impact: none (<reason>)`. Region markers instead of file paths, because `loop.go` is
   large and mostly unrelated; the job also fails if a marker pair is broken.
   As built (M4): the markers also name the model actions a region implements
-  (`// protocol:claims begin Claim ClaimInsert`), and cover models 1, 1b, 7, 8 and 10, each by its
-  directory name. `internal/tools/modelsync` runs in the Lint job, on pull requests and in the
+  (`// protocol:claims begin Claim ClaimInsert`), and cover models 1, 1b, 7, 8, 9 and 10, each by
+  its directory name. `internal/tools/modelsync` runs in the Lint job, on pull requests and in the
   merge queue. Besides the path rule it checks that every marked action is defined in the spec and
   listed in the README's map, and that every mapped action is marked (or listed as having no Go
   code), so a rename on any side fails. The override is `Protocol-Impact: none (<reason>)` in the
@@ -735,6 +737,9 @@ speak about the same records:
 | M3 | Trace hooks (build tag `bidetrace`), `tracestore`, the emitter and normalizer, `ClaimsTrace.tla`, the `trace-validate` job for the single-process producers | 5 to 7 days | Every trace from the producers is accepted; three Go mutants of the claim code (claim with a remembered id; remember nothing on a failed not-started write; let the Step loser lead a flight) each produce a trace that TLC rejects or that violates an invariant; the default build contains no hook code (no `trace` symbol in `go tool nm`) and the benchmarks are unchanged. |
 | M4 | `TestProtocolVocabulary`, region markers, the path-rule job, the review checklist entry | 1 to 2 days | The path rule blocks a test PR that edits a marked region alone, and passes with a spec change or a `Protocol-Impact` line. |
 | M5 | Multi-process trace merge and validation of the HA harness (nightly) | 3 to 4 days | The two HA tests' traces are accepted nightly for a week. |
+
+Status: M0 and M1 done (#100); M2 done except `agent/internal/interleave` and its generated test;
+M3 not started; M4 done (#125); M5 not started.
 
 M0 to M4 is about three to four weeks of one engineer. Models 2 to 5 are each estimated at one
 to two weeks when their trigger fires, including their trace hooks, on the infrastructure built
