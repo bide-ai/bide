@@ -110,8 +110,10 @@ says happened. A drive uses the configuration it is given for:
 - the approval gate for a call with no recorded denial, under the gate's current policy;
 - the `WithMaxTurns` and `WithTokenBudget` limits, compared with the turns and tokens the journal
   records, so raising a limit lets a stopped run continue;
-- the clock, for whether a timer or an `AwaitFor` deadline is due and for `WithMinHaltAge`;
-- the identity and grant bound to the context (`WithIdentity`), which the tools a drive runs see;
+- the clock (`WithClock`), for whether a timer or an `AwaitFor` deadline is due and for
+  `WithMinHaltAge`;
+- the identity and grant the drive is given (the `WithIdentity` option, or the run's context), which
+  the tools a drive runs see;
 - a governor's policy (`govern`): governed state is the shared event log replayed under the
   current machine.
 

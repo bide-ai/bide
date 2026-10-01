@@ -122,8 +122,8 @@ sub-agents. Independent agents changing shared state concurrently need
 
 ## Parallel tool calls
 
-A model turn's tool calls run concurrently, unbounded by default. Use `SetMaxConcurrency(n)` to cap
-them, or `SetMaxConcurrency(1)` to run them one at a time. Each side effect still fires at most once,
+A model turn's tool calls run concurrently, unbounded by default. Use the `WithMaxConcurrency(n)` option
+to cap them, or `WithMaxConcurrency(1)` to run them one at a time. Each side effect still fires at most once,
 and the conversation lists tool results in the order the model asked for them.
 
 **Journal order is completion order.** Within a turn, parallel tool results are recorded in the

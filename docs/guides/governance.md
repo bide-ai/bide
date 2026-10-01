@@ -154,11 +154,18 @@ A governed action can commit to **who acted**, not just what happened. The deplo
 `agent.Identity{Actor, OnBehalfOf, AuthorityRef}` to the run (from its own auth layer, never from
 the model), and an attested `EventTool` (one whose `EventToolConfig.PolicyDigest` is set) stamps it into the same leaf as the policy and state digests:
 
-<!-- docsnip: setup ctx context.Context; a *agent.Agent; runID string; input string -->
+<!-- docsnip: setup ctx context.Context; a *agent.Agent; runID string; input string; returns error -->
 ```go
 id := agent.Identity{Actor: "exec-agent@1.4.2", OnBehalfOf: "desk-EQ-US", AuthorityRef: "grant#a1b2"}
-a.Run(agent.WithIdentity(ctx, id), runID, input) // propagates to governed tools and sub-agents
+desk, err := a.With(agent.WithIdentity(id)) // a copy of a acting for this desk
+if err != nil {
+	return err
+}
+desk.Run(ctx, runID, input) // the identity propagates to governed tools and sub-agents
 ```
+
+An identity bound to a run's context (`agent.ContextWithIdentity`, transitional until the run API
+takes options) takes precedence over the agent's.
 
 An inclusion proof then commits to who acted, on whose behalf, and under what authority. The SDK
 proves the identity CLAIM; authenticating the principal is the operator's IdP/PKI, and the

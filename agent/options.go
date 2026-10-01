@@ -200,9 +200,9 @@ func Build(model Model, j *Journal, opts ...Option) (*Agent, error) {
 
 // With returns a copy of a configured by opts, applied over a's configuration as Build applies
 // them: a setting given here replaces a's, and tools, middleware and retrievals given here are
-// added after a's. The copy shares nothing mutable with a (its tool set, middleware lists,
-// sampling and settings are its own), so the two may be used, and configured further, from
-// different goroutines. a is never changed. A configuration problem is an error wrapping
+// added after a's. The copy shares nothing mutable with a (its tool set, middleware lists and
+// retrievals are its own, and settings are replaced, never written through), so the two may be
+// used, and configured further, from different goroutines. a is never changed. A configuration problem is an error wrapping
 // ErrConfig, as for Build, including a tool whose name a already uses.
 func (a *Agent) With(opts ...Option) (*Agent, error) {
 	if err := a.checkTools(); err != nil {
@@ -229,7 +229,7 @@ func newAgent(model Model, store Durable) *Agent {
 // a's own deep copy (With), so a failure leaves nothing the caller holds half-configured.
 func configure(a *Agent, opts []Option) error {
 	c := &agentConfig{a: a}
-	if err := applyOptions("Build", c, opts, Option.applyAgent); err != nil {
+	if err := applyOptions("options", c, opts, Option.applyAgent); err != nil {
 		return err
 	}
 	return c.finish()
@@ -239,9 +239,6 @@ func configure(a *Agent, opts []Option) error {
 // the model is sent.
 func (c *agentConfig) finish() error {
 	a := c.a
-	if err := a.checkTools(); err != nil {
-		return err
-	}
 	if err := checkForcedTool(a.toolChoice, a.specs); err != nil {
 		return err
 	}
@@ -381,7 +378,7 @@ func WithSystemPromptFunc(fn func(ctx context.Context, run RunInfo) (string, err
 		if fn == nil {
 			return fmt.Errorf("WithSystemPromptFunc: nil function: %w", ErrConfig)
 		}
-		c.a.systemPrompt, c.a.systemPromptFn = "", fn
+		c.a.systemPromptFn = fn // it takes precedence over the text, which WithSystemPrompt clears it for
 		return nil
 	})
 }

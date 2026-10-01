@@ -58,8 +58,8 @@ type Agent struct {
 	tokenBudget  int      // max tokens per run (Usage.TotalTokens); 0 = unbounded (default)
 	systemPrompt string   // optional static system message prepended to every model call
 	// systemPromptFn, if set, computes the system message per drive of a run (dynamic context:
-	// current time, tenant, retrieved state). It shares one slot with systemPrompt: setting either
-	// clears the other.
+	// current time, tenant, retrieved state). It shares one slot with systemPrompt: it takes
+	// precedence over the text, and setting the text clears it, so the later of the two wins.
 	systemPromptFn func(context.Context, RunInfo) (string, error)
 	responseFormat *ResponseFormat  // native structured-output constraint (see RunTypedNative)
 	toolChoice     *ToolChoice      // tool-choice control applied to every model call (see WithToolChoice)
@@ -258,7 +258,7 @@ func (a *Agent) WithSystemPrompt(s string) *Agent {
 // Deprecated: transitional; the 1.0 rewrite removes it. Use the WithSystemPromptFunc option,
 // whose function is also given the run's RunInfo and may fail.
 func (a *Agent) WithSystemPromptFunc(fn func(context.Context) string) *Agent {
-	a.systemPrompt, a.systemPromptFn = "", func(ctx context.Context, _ RunInfo) (string, error) { return fn(ctx), nil }
+	a.systemPromptFn = func(ctx context.Context, _ RunInfo) (string, error) { return fn(ctx), nil }
 	return a
 }
 

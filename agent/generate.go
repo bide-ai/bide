@@ -39,7 +39,6 @@ type turnState struct {
 	chain    *modelChain     // the chain the turn's calls go through
 	attempts atomic.Int64    // requests numbered so far
 	meter    *spendMeter     // every request's usage, for the run's budget and Result.Spend
-	journal  Durable         // the run's journal, for middleware that records a step (WithRetrieval); nil outside a run
 	sink     *turnSink       // the live token stream (Agent.Stream); nil when not streaming
 	usedIDs  map[string]bool // the tool-use IDs already in the run's conversation (see checkToolUseIDs)
 	finished atomic.Bool     // the chain has returned: the turn sends no new request

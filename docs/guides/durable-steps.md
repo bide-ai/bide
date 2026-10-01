@@ -114,7 +114,7 @@ durable checks, then a governed decision, then an offline proof) is
 [`examples/govern/compliance`](../../examples/govern/compliance/main.go).
 
 > Related but distinct: the agent loop already runs a *single turn's* tool calls concurrently
-> (bounded by `SetMaxConcurrency`). `Parallel` is for fan-out you author yourself outside a model
+> (bounded by the `WithMaxConcurrency` option). `Parallel` is for fan-out you author yourself outside a model
 > turn. See the parallel-tool concurrency notes in [KNOWN-LIMITATIONS.md](../KNOWN-LIMITATIONS.md).
 
 ## Sagas: transactional agents with reverse-order compensation
@@ -367,21 +367,25 @@ wait := agent.Func("cooldown", "wait before retrying", agent.Safety{ReadOnly: tr
 Re-invoking `Run` with the same runID at or after the wake time resumes past the `Sleep`. What
 re-invokes it is a **`Waker`**, the time-driven sibling of the inbound event trigger in
 [Messaging](messaging.md): the SDK provides the durable, at-most-once timer and its resume safety,
-and the trigger is pluggable. Bind one with `agent.WithWaker(ctx, w)` and `Sleep` registers its wake
-automatically, through `Schedule(ctx, agent.Wake{RunID, RootRunID, Name, FireAt})`. A `Schedule`
+and the trigger is pluggable. Give the agent one with the `agent.WithWaker(w)` option and `Sleep`
+registers its wake automatically, through `Schedule(ctx, agent.Wake{RunID, RootRunID, Name, FireAt})`. A `Schedule`
 that fails fails the run with an error wrapping `ErrStorage` instead of pausing it (a paused run
 with no wake registered might never wake), and the tool call records nothing, so re-driving the run
 (`RecoverLoop` does, on its next pass) reaches the `Sleep` again and schedules again. `MemWaker` is
 the reference in-process implementation:
 
-<!-- docsnip: setup ctx context.Context; a *agent.Agent; store *sqlite.Store; savedInput string -->
+<!-- docsnip: setup ctx context.Context; model agent.Model; journal *agent.Journal; tools []agent.Tool; store *sqlite.Store; savedInput string; returns error -->
 ```go
 ctx, cancel := context.WithCancel(ctx)
-var w *agent.MemWaker
-w = agent.NewMemWaker(func(ctx context.Context, runID string) error {
-    _, err := a.Run(agent.WithWaker(ctx, w), runID, savedInput) // resume; may sleep again
+var a *agent.Agent
+w := agent.NewMemWaker(func(ctx context.Context, runID string) error {
+    _, err := a.Run(ctx, runID, savedInput) // resume; may sleep again
     return err
 })
+a, err := agent.Build(model, journal, agent.WithTools(tools...), agent.WithWaker(w))
+if err != nil {
+    return err
+}
 done := w.Start(ctx, time.Second, nil) // tick: resume every run whose timer is due
 
 // On shutdown: stop the loop and wait for it (including any Fire in flight) before closing the
@@ -397,6 +401,7 @@ returned. Waiting on it before closing the store keeps a resume from writing to 
 Boundaries: `MemWaker` is a local-dev default, not a durable scheduler. Its in-memory timer set is
 lost on process exit, so the wake times must also live in the journal (they do), and a restarted
 deployment rebuilds pending wakes by scanning runs or hands the trigger to an external scheduler
-(cron, a queue). Tests inject a clock with `agent.WithClock` to advance time deterministically. This
+(cron, a queue). Tests give the agent a clock with the `agent.WithClock` option to advance time
+deterministically. This
 is the piece that makes an always-on ambient agent turnkey: a durable wait plus a trigger, with
 at-most-once and crash-resume intact across the wait.

@@ -309,7 +309,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 			// turn's sink. On memoized replay store.Do skips the fn, so no sink fires: an
 			// AssistantTurn{Replayed:true} was emitted during resume.
 			// protocol:spend begin Turn Call Insert Recorded FailPath FailLookup FailSpend
-			ts := &turnState{meter: meter, journal: a.store}
+			ts := &turnState{meter: meter}
 			if emit != nil {
 				ts.sink = newTurnSink(modelSeq, fire)
 			}

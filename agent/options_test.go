@@ -122,6 +122,10 @@ func TestBuild_EveryValidationError(t *testing.T) {
 	if _, err := Build(m, j, WithToolChoice(ToolChoice{Mode: "tool", Name: "a"}), WithTools(namedTool("a"))); err != nil {
 		t.Errorf("forcing a tool given after the choice: %v", err)
 	}
+	// The error for an m-of-n policy with no resolver says what is missing.
+	if _, err := Build(m, j, WithTools(gated)); err == nil || !strings.Contains(err.Error(), "WithApproverVerifiers") {
+		t.Errorf("m-of-n without verifiers = %v, want an error naming WithApproverVerifiers", err)
+	}
 	// An m-of-n policy with distinct keys and verifiers given after the tool builds.
 	if _, err := Build(m, j, WithTools(gated), WithApproverVerifiers(distinct)); err != nil {
 		t.Errorf("m-of-n policy with verifiers: %v", err)
@@ -180,6 +184,7 @@ func TestOptions_OtherScopesValidate(t *testing.T) {
 		"nil waker":                WithWaker(nil),
 		"empty identity":           WithIdentity(Identity{}),
 		"bad tool choice":          WithToolChoice(ToolChoice{Mode: "x"}),
+		"tool choice without name": WithToolChoice(ToolChoice{Mode: "tool"}),
 		"nil sampling control":     WithSampling(nil),
 	} {
 		if err := opt.applyRun(&rc); !errors.Is(err, ErrConfig) {
@@ -201,6 +206,16 @@ func TestRunOptions_RecordTheirSetting(t *testing.T) {
 		if err := o.applyRun(&rc); err != nil {
 			t.Fatal(err)
 		}
+	}
+	// The run's sampling is its own: a control's slice the caller changes later is not.
+	stops := []string{"END"}
+	var sc runConfig
+	if err := WithSampling(Stop(stops...)).applyRun(&sc); err != nil {
+		t.Fatal(err)
+	}
+	stops[0] = "CHANGED"
+	if sc.sampling.Stop[0] != "END" {
+		t.Errorf("run stop sequences = %v, want [END]", sc.sampling.Stop)
 	}
 	if *rc.maxTurns != 2 || *rc.tokenBudget != 3 || *rc.maxConc != 4 || *rc.systemPrompt != "p" ||
 		*rc.sampling.Temperature != 0.5 || *rc.sampling.Seed != 7 || rc.toolChoice.Mode != "none" ||

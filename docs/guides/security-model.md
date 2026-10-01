@@ -180,7 +180,7 @@ manage keys; supplying and protecting them is the deployment's responsibility.
 
 ## Identity is a claim, not authentication
 
-When a deployment binds an acting identity to a run (`agent.WithIdentity`, carrying `Actor`,
+When a deployment binds an acting identity to a run (the `agent.WithIdentity` option, carrying `Actor`,
 `OnBehalfOf`, and `AuthorityRef`), a governed leaf stamps those fields into the committed record,
 so an inclusion proof commits to who acted, on whose behalf, and under what authority. The
 boundary to understand:

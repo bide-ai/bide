@@ -580,7 +580,7 @@ state it produced, and the same `ProofBundle` that proves the action commits to 
 treats both digests as opaque; it does not depend on the policy engine's serialization or state
 layout.
 
-If the deployment binds an acting identity to the run (`agent.WithIdentity`, carrying `Actor`,
+If the deployment binds an acting identity to the run (the `agent.WithIdentity` option, carrying `Actor`,
 `OnBehalfOf`, and `AuthorityRef`), the attested `EventTool` also stamps those fields into the same leaf,
 so an inclusion proof commits to who acted, on whose behalf, and under what authority, not merely
 that the action happened under the policy. Identity is assigned by the deployment from its own auth

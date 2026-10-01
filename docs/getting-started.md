@@ -42,7 +42,14 @@ func main() {
 			return "72F and clear in " + in.City, nil
 		})
 
-	a := agent.New(model, agent.NewMemStore(), weather)
+	journal, err := agent.NewJournal(agent.NewMemStore())
+	if err != nil {
+		panic(err)
+	}
+	a, err := agent.Build(model, journal, agent.WithTools(weather))
+	if err != nil {
+		panic(err)
+	}
 	out, err := a.Run(context.Background(), "run-1", "Weather in SF?")
 	if err != nil {
 		panic(err)
@@ -52,6 +59,26 @@ func main() {
 ```
 
 `NewMemStore` is in-memory; for durable resume across restarts use the SQLite store (`store/sqlite`) or the Postgres store (`store/postgres`) for high availability. See the [durable steps guide](guides/durable-steps.md) and [debugging and recovery](guides/debugging.md).
+
+## Configuring an agent
+
+`agent.Build(model, journal, opts...)` builds an agent from options, and checks them all when the agent is built: a nil model, a duplicate or reserved tool name, a tool whose input schema is not a JSON object, an m-of-n approval policy with no `WithApproverVerifiers`, a negative limit and every other configuration problem is an error wrapping `agent.ErrConfig`, returned by `Build`, never by the first run.
+
+<!-- docsnip: setup model agent.Model; journal *agent.Journal; weather agent.Tool -->
+```go
+a, err := agent.Build(model, journal,
+	agent.WithTools(weather),
+	agent.WithSystemPrompt("You are a concise assistant."),
+	agent.WithMaxTurns(8),
+	agent.WithSampling(agent.Temperature(0)),
+)
+```
+
+An agent built this way does not change. `a.With(opts...)` returns a configured copy (a stricter budget for one tenant, an extra tool for one route) and leaves `a` as it was, so both can run at once. For any setting the last value given wins; `WithSystemPrompt` and `WithSystemPromptFunc` share one slot, so the later of the two wins. Build a `[]agent.Option` to choose options conditionally.
+
+Some options apply at more than one scope, and each constructor's type says which: `WithMaxTurns`, for one, is an `agent.AgentRunOption`, a setting for an agent now and for a single run once the run API takes options; `WithSafety` is an `agent.SafetyOption`, which a tool and a `Step` both take; `WithMaxConcurrency` caps an agent's tool calls and `Parallel`'s tasks alike. An option passed where it does not apply does not compile.
+
+`Build` is a transitional name: the 1.0 release renames it `New`, and removes today's `agent.New(model, store, tools...)` and the builder methods (`a.WithMaxTurns(n)`, `a.Use(mw)`, and the rest), which still work until then and change the agent they are called on.
 
 ## Run an example
 

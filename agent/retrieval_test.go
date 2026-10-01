@@ -477,9 +477,8 @@ func TestWithRetrieval_TwoLayers(t *testing.T) {
 		t.Fatalf("model called %d times, want 2", len(got))
 	}
 	for i, blocks := range got {
-		all := strings.Join(blocks, "|")
-		if !strings.Contains(all, "from-docs") || !strings.Contains(all, "from-tickets") {
-			t.Errorf("model call %d got context %q, want both stores' documents", i, blocks)
+		if len(blocks) != 2 || !strings.Contains(blocks[0], "from-docs") || !strings.Contains(blocks[1], "from-tickets") {
+			t.Errorf("model call %d got context %q, want both stores' documents, in the order given", i, blocks)
 		}
 	}
 	if docsR.calls != 1 || ticketsR.calls != 1 {

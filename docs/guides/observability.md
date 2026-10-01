@@ -7,17 +7,18 @@ so a binary that does not import `trace` pays nothing.
 
 ## The one-liner
 
-`Instrument` wires the whole span taxonomy onto an agent in one call:
+`Instrument` is the agent option that wires the whole span taxonomy onto an agent in one call:
 
-<!-- docsnip: setup model agent.Model; store agent.Durable; tools []agent.Tool; import oteltrace "go.opentelemetry.io/otel/trace"; tracer oteltrace.Tracer; rates middleware.Rates -->
+<!-- docsnip: setup model agent.Model; journal *agent.Journal; tools []agent.Tool; import oteltrace "go.opentelemetry.io/otel/trace"; tracer oteltrace.Tracer; rates middleware.Rates -->
 ```go
-a := trace.Instrument(agent.New(model, store, tools...), tracer, trace.WithRates(rates))
+a, err := agent.Build(model, journal, agent.WithTools(tools...), trace.Instrument(tracer, trace.WithRates(rates)))
 ```
 
 `tracer` is any `go.opentelemetry.io/otel/trace.Tracer`. Under the hood `Instrument` attaches
-two middlewares through the existing hooks: a `Model` middleware (via `Agent.Use`) that wraps
-each model call in a `chat` span, and a `Tool` middleware (via `Agent.UseTool`) that wraps each
-tool call in an `execute_tool` span. You can attach `trace.Model(...)` and `trace.Tool(...)`
+two middlewares through the existing hooks: a `Model` middleware (`agent.WithMiddleware`) that
+wraps each model call in a `chat` span, and a `Tool` middleware (`agent.WithToolMiddleware`) that
+wraps each tool call in an `execute_tool` span, at the place the option appears among the agent's
+options. You can attach `trace.Model(...)` and `trace.Tool(...)`
 by hand if you want only one of them, but `Instrument` is the low-friction path.
 
 ## Span taxonomy
@@ -54,9 +55,9 @@ automatically, with no extra wiring, so a multi-agent run reads as one connected
 Pass `WithRates` to record USD cost on each `chat` span as the `gen_ai.usage.cost` attribute,
 computed from the call's token usage:
 
-<!-- docsnip: setup model agent.Model; store agent.Durable; tools []agent.Tool; import oteltrace "go.opentelemetry.io/otel/trace"; tracer oteltrace.Tracer; rates middleware.Rates -->
+<!-- docsnip: setup model agent.Model; journal *agent.Journal; tools []agent.Tool; import oteltrace "go.opentelemetry.io/otel/trace"; tracer oteltrace.Tracer; rates middleware.Rates -->
 ```go
-a := trace.Instrument(agent.New(model, store, tools...), tracer, trace.WithRates(rates))
+a, err := agent.Build(model, journal, agent.WithTools(tools...), trace.Instrument(tracer, trace.WithRates(rates)))
 ```
 
 `rates` is a `middleware.Rates`, the same rate table used to meter runs with a `CostMeter`, so
