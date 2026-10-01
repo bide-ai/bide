@@ -143,9 +143,9 @@ define
   JAuth(c) == IF aj[c].ung THEN "none" ELSE aj[c].g.id
   \* An act in a delegation's sub-run (or below it) under authority the delegation did not grant.
   BadAuth(m, id) == DelF[m] # 0 /\ id \notin granted[DelF[m]]
-  \* The proposed fix of finding D1: the caller binds, beside the current grant, every grant the
-  \* saga minted under (roots), and BindRollback verifies a journaled grant against the one it
-  \* was minted from; a grant never bound stays refused.
+  \* The fix of finding D1 the maintainers adopted (multi-grant binding): the caller binds every
+  \* grant the saga delegated under (roots), and BindRollback checks each journaled child grant
+  \* against its own parent among them; a foreign parent stays refused unless it is bound.
   ChainOK(g) == g.par \in roots \/ \E c \in Nodes : aj[c].g.id = g.par
   \* A listing: "u" in Uncompensated (the call's writes, its sub-runs' included, are left in
   \* place), "k" in UnknownOutcome (the step itself may have committed).

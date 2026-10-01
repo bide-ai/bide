@@ -1445,6 +1445,8 @@ adopts a fix.
     from.
   - A grant never bound stays refused, which keeps `TestR117_BindRollbackRefusesAForeignParent`.
     A fix that only checks the signature would break that test.
+  - The maintainers adopted this rule (multi-grant binding). A separate change fixes D1 to D3 in
+    the code; the findings stay open until it lands.
 - **D2: the rollback's re-run calls a tool after the delegation's grant expired**
   (`findings/d2-rerun-expired`, `AuthorityNarrows`).
   - `BindRollback` rebinds the journaled grant with `WithGrant`, which drops the `delegated`
