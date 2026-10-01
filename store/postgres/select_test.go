@@ -40,6 +40,24 @@ func TestNewSelect(t *testing.T) {
 		"SELECT hijacké($1)", "SELECT conflict($1)", "SELECT 1.5", "SELECT x FROM t WHERE y = 1e3",
 		"SELECT x FROM t AS q(a)",                    // a column list only after INSERT INTO t [AS alias]
 		`SELECT x FROM t WHERE y = 'a\\' OR z = 'b'`, // a backslash in a literal
+		// the second review of #120: keyword operators, which resolve through the search path
+		"SELECT c.relname FROM pg_catalog.pg_class AS c WHERE c.relname LIKE $1",
+		"SELECT c.relname FROM pg_catalog.pg_class AS c WHERE c.relname ILIKE $1",
+		"SELECT c.relname FROM pg_catalog.pg_class AS c WHERE c.relname SIMILAR TO $1",
+		"SELECT c.relname FROM pg_catalog.pg_class AS c WHERE c.relname IS DISTINCT FROM $1",
+		"SELECT c.relname FROM pg_catalog.pg_class AS c WHERE c.relname IS NOT DISTINCT FROM $1",
+		"SELECT c.relname FROM pg_catalog.pg_class AS c WHERE (c.relname, c.relname) OVERLAPS ($1, $2)",
+		"SELECT c.relname FROM pg_catalog.pg_class AS c WHERE c.relname BETWEEN $1 AND $2",
+		"SELECT c.relname FROM pg_catalog.pg_class AS c WHERE c.relkind IN ('r', 'p')",
+		"SELECT CASE c.relkind WHEN 'r' THEN 1 END FROM pg_catalog.pg_class AS c",
+		"SELECT c.relname FROM pg_catalog.pg_class AS c ORDER BY c.relname USING <",
+		"SELECT c.relname FROM pg_catalog.pg_class AS c JOIN pg_catalog.pg_namespace AS n USING (oid)",
+		// array constructors, and comparisons whose operator the check cannot vouch for
+		"SELECT ARRAY[c.relname] FROM pg_catalog.pg_class AS c",
+		"SELECT c.relname FROM pg_catalog.pg_class AS c WHERE c.relname = $1",
+		// relations other than the store's own tables and pg_catalog's
+		"SELECT x FROM t", "SELECT x FROM public.other", `SELECT x FROM "app".bide_steps`,
+		"SELECT x FROM pg_catalog.pg_class AS c, public.other AS o",
 	} {
 		if _, err := newSelect(q); !errors.Is(err, agent.ErrConfig) {
 			t.Errorf("newSelect(%q) = %v, want ErrConfig", q, err)
