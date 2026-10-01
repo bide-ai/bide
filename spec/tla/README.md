@@ -910,14 +910,14 @@ findings (below).
 | `hedge-one` | ci | a hedging wrapper: `next` left running, given up on a done context | 8,533 | <1 s |
 | `direct-one` | ci | a middleware that calls the tool itself | 1,411 | <1 s |
 | `siblings` | nightly | a side effect and a delegation that refuses Unrecorded; a cancellation, an error reply | 191,877 | 2 s |
-| `live-contract` | nightly | `NeverBegunProgress`, contract middleware and retries without a cache answer, every fault | 83,596 | 3 s |
+| `live-contract` | nightly | `NeverBegunProgress`, contract middleware and retries without a cache answer, every fault | 88,448 | 3 s |
 | `live-saga-args` | ci | `NeverBegunProgress` with the accepted-arguments write | 83,483 | 3 s |
 | `live-unrec` | ci | `UnrecordedContinues`, a side effect and a delegation | 1,136 | 1 s |
 | `saga-idem` | nightly | a retry-safe saga step that changes state, contract middleware, every fault (T3's shape) | 532,471 | 3 s |
 | `rollback-rerun` | nightly | the rollback re-runs a retry-safe step cut off by a sibling's saga failure: `next` left running, a cache answer, a cancellation (T4, T5) | 245,482 | 3 s |
 | `live-rollback` | ci | `RollbackEnds`: a result check that rejects every success of the re-run step | 900 | 1 s |
 | `rollback-guard` | ci | the rollback's re-run refused by `toolhook.CallGuard` (an expired delegation grant, which may refuse every later re-run too): listed as an unknown outcome, and the rollback ends (model 11's D2) | 26,049 | 3 s |
-| `deep-adv-a2` | nightly | one side effect, any middleware, two extra invocations and two error replies, four attempts | 46,315,249 | 8 min* |
+| `deep-adv-a2` | nightly | one side effect, any middleware, two extra invocations and two error replies, four attempts | 54,569,064 | 8 min* |
 | `deep-adv-two` | nightly | two side effects, any middleware but a direct call, a cancellation and an error reply | 103,675,470 | 16 min* |
 | `deep-two-side` | nightly | two side effects, contract middleware, every fault | 5,913,713 | 38 s* |
 | `deep-siblings` | nightly | a side effect and a delegation, contract middleware on both, every fault | 65,561,449 | 24 min* |
