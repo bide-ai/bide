@@ -72,6 +72,16 @@ without it: every step is recorded at most once by name, so its write either is 
 record or loses to the one already there. And fencing would make every journal write depend on the
 lease, so a store without leases (a custom one) could not offer the guarantee at all.
 
+**A session turn is single-driver only over a store with leases.** A `Session` drives each turn's
+run under its lease when the store implements `Leaser`, so two workers given one message do not
+both drive its turn: the second gets `agent.ErrTurnContended` and sends the message again later,
+and the turn's token budget holds across workers. A worker that dies mid-turn holds the turn until
+its lease lapses (one TTL, `agent.WithLeaseTTL` on `Agent.Session`). Over a custom store with no
+`Leaser`, two workers can drive one turn at once: it is still recorded once and its side effects
+stay at-most-once, but each worker counts only the spend it has seen, so the turn can spend up to
+its budget once per worker. A stalled holder that wakes past its TTL is the case above: it can
+make a model call the next holder does not count.
+
 **Any role that can connect to the database can stall a run's writes.** The Postgres store
 serializes inserts into one run on a transaction-level advisory lock whose key is
 `hashtextextended(run_id, 0)`, and `govern/postgreslog` does the same for an entity. Any role

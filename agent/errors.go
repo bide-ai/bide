@@ -139,6 +139,12 @@ var ErrNotStarted = fmt.Errorf("run has no run:start record: %w", ErrConfig)
 // run no Resumer drives once per process. Like ErrLeaseLost it wraps no category.
 var ErrNotResumable = errors.New("run not resumable by this resumer")
 
+// ErrTurnContended is returned by a Session's Send, SendOnce, SendMessage and SendMessageOnce when another driver holds
+// the lease on the turn's run (see Session): the turn's run was not driven and its answer was not recorded.
+// Send the same message again later. Like ErrLeaseLost, it is in no category: it is neither a
+// failure of the turn nor a pause of it.
+var ErrTurnContended = errors.New("session turn driven by another holder")
+
 // RateLimited is returned by a provider adapter when it is rate limited (HTTP 429 that is not an
 // exhausted quota; see ClassifyHTTPError). It carries an optional RetryAfter hint from the
 // Retry-After response header or the provider's own retry delay (0 means no hint was provided),

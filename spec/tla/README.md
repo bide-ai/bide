@@ -223,7 +223,8 @@ The model states the rules of P6a (#92) after its third review:
    the process and, if it fails, records its own attempt as not started.
 6. A tool that loses the claim halts (`HaltContended`).
 7. Halt resolution refuses while a live driver may be running: under a store that leases runs, it
-   holds the root run's lease while it resolves (MemStore, `store/postgres`, and `store/sqlite` as
+   holds the root run's lease (a session turn's run, for a turn and its sub-runs: #137) while it
+   resolves (MemStore, `store/postgres`, and `store/sqlite` as
    of #92), and only leased drivers are seen; otherwise it needs `WithMinHaltAge`, and then (F2's
    fix) it first claims the attempt after the live one with `ClaimAttempt`, refusing if a driver
    holds it; if its result write errors, that attempt stays live (F3's fix). It claims on the
@@ -1052,7 +1053,11 @@ errored claim leaving the run halted.
   a claim and a not-yet-called effect stop there, a result is still recorded
   (`context.WithoutCancel`).
 - **The operator.** `ResolveHalt` (`checkNoLiveDriver` takes the run's lease, then the result is
-  written, first writer wins) and `Approve`. Never assumed to act.
+  written, first writer wins) and `Approve`. Never assumed to act. The run whose lease the check
+  takes is the one the halted call's drivers lease (`treeRootID`): the root run for a sub-agent's
+  run, and a session turn's run for the turn and every sub-run inside it (#137, R137-1; the check
+  leased everything before the first `>` before, which missed a live turn's driver and took a
+  root run named like the session for one).
 - **Cancel (P14, D1).** `Cancel` of a run that is not over writes `run:cancelled`. The drive's
   checks follow `CancelRule`: `"turn"` is D1's original text (a `Get` when a drive starts and at
   every turn boundary); `"claim"` is the adopted L2 rule, a check after the claim is won and
@@ -1094,7 +1099,8 @@ errored claim leaving the run halted.
 
 Abstracted away: the model's conversation (the calls of a run are fixed), the claim protocol's
 numbered attempts and remembered claims (model 1), compensation (models 5 and 9), sub-runs and
-sessions (`recoverable`), renewal errors short of a lapse, `Recover` without a `Leaser`, a pass's
+sessions (`recoverable`; a halt in either is resolved under the lease of its tree root,
+`treeRootID`, which is the run modelled here), renewal errors short of a lapse, `Recover` without a `Leaser`, a pass's
 concurrency above 1 (a pass with C slots walks C halted runs at a time; the pickup delay scales
 with the halted runs divided by C), the compensations of a rollback (one step here; models 5
 and 9), token budgets as distinct from turn limits (both are limits under rule 2), typed runs
@@ -1109,7 +1115,7 @@ and their resumers (`ResumeTyped`), and image input.
 | `DIdle` | `Lease` (`AcquireLease` under `<holder>#<token>`, `leaseToken`); for the primary, the caller's `Lease` around `Agent.Run`, or a plain `Agent.Run` |
 | `DCheck` | `recoverRun`'s `runEnded` under the lease: `Store.Get` of each name in `endOfRunMarkers`; P14's dispatch: `RecordedStart`, a run with none skipped and reported once per process (`ErrNotStarted` through `WithRecoverErrors`) |
 | `DResume` | `recoverRun` calling `resume(ctx, runID)` |
-| `DOpen` | `Agent.run`: `openRun`, `firstEnd` (the first end marker in the `Load` is the run's end: `completedAnswer` for a completed run, `endedErr` for a cancelled one), `openPlan` (`run:start`'s options and the limit amendments from the same `Load`, `holdDrive`'s `ErrConfig` comparison), the resume gate (`toolHalt`, `HaltCrashed`), a saga's rollback request in the `Load` (`cancelTrip`), the approval pre-pass (`ApprovalPending`) |
+| `DOpen` | `Agent.run`: `openRun`, `firstEnd` (the first end marker in the `Load` is the run's end: `completedAnswer` for a completed run, to a drive with the input it answered (`checkFinishedStart`, #137), `endedErr` for a cancelled one), `openPlan` (`run:start`'s options and the limit amendments from the same `Load`, `holdDrive`'s `ErrConfig` comparison), the resume gate (`toolHalt`, `HaltCrashed`), a saga's rollback request in the `Load` (`cancelTrip`), the approval pre-pass (`ApprovalPending`) |
 | `DStart` | `openPlan`: the first drive's `run:start` insert (`newStart`, the caller's options; `putRecord`, first writer wins, and the drive runs under the stored entry) |
 | `DAmend` | `openPlan`: the `run:limits:<n>` insert of a later drive's different limit (`journaledLimits`, `applyAmendment`) |
 | `DTurn` | `Agent.run`'s turn boundary: `cancelSeen` (one `Get` of `run:cancelled`, or of `run:cancel-requested` on a saga) once a turn's calls have run since the `Load` (`runPlan.checkTurn`), `leaveCancelled`, and the turn limit (`runPlan.maxTurns`) |
@@ -1122,7 +1128,7 @@ and their resumers (`ResumeTyped`), and image input.
 | `DVerdict` | `writeEnd`'s read-back after `run:complete` (and after `Agent.rollback`'s marker): one `Get` per end marker the run can hold beside it (`endOthers`), the lowest `Seq` first; `endedErr`, `endVerdict` |
 | `DRel` | `Lease`'s deferred `ReleaseLease` |
 | `PList`, `PNext`, `PSlot`, `PWait` | `RecoverLoop`'s `pass` and `every`: `lister.Runs(ctx, recoverFilter)` in the full pass (process `"pass"`), `lister.Runs(ctx, lapsedFilter)` in the lapsed loop (process `"tkp"`, `PassRule = "split"`; its slots are `WithRecoverLapsedConcurrency`'s, the `"tko"` driver); `recoverable`; `PNext`'s `InFlight` is the `inFlight` check before the slot wait; `PSlot` is the slot wait, then the in-flight re-check and mark under the lock (the model does not re-check: a run the other loop took meanwhile reaches `DIdle` and is refused by the lease, where the code skips it before acquiring); the ticker (`Recover`: one pass) |
-| `OPick`, `OLease`, `OWrite`, `ORel` | `ResolveHaltRef` / `resolveHalt` with `checkNoLiveDriver`'s lease; `Approve` |
+| `OPick`, `OLease`, `OWrite`, `ORel` | `ResolveHaltRef` / `resolveHalt` with `checkNoLiveDriver`'s lease of the halted run's tree root (`treeRootID`); `Approve` |
 | `CGet`, `CIns`, `CRead`, `CReq` | `Cancel` (D1): the end-marker `Get`s and `RecordedStart` (L4: none is `ErrNotStarted`), `writeEnd` of `run:cancelled` and its read-back (L3, `cancelVerdict`), and a saga's rollback request `run:cancel-requested` (L4) |
 | `SPick`, `SStart`, `SGet` | `Status` (D8): one `Load` (`Journal.Records`), `run:start`, then the first end marker in it (`firstEnd`) |
 | `Tick` | wall-clock time: `driveWithRenew`'s renewal, lease expiry, `RecoverLoop`'s `time.Ticker` |
@@ -1130,7 +1136,8 @@ and their resumers (`ResumeTyped`), and image input.
 | `Crash` | a process dies (a worker restarts) |
 
 `Leaser.ReapLeases`, which each lapsed pass of `RecoverLoop` calls first, is not modeled: it deletes the
-lapsed leases of ended runs and of runs with no entry, checking the expiry in the same statement,
+lapsed leases of ended runs, of runs with no entry and of session and sub-agent runs (an ID with a
+`>`, which no pass takes over), checking the expiry in the same statement,
 and deleting a lapsed lease changes nothing a holder can observe, since any holder may take it.
 
 ### Properties
@@ -1728,17 +1735,20 @@ model 10's.
 - **A turn's run**, abstracted to what the session depends on: `run:start`'s input (an
   unfinished run driven with another input is `ErrConfig`, #70), its model calls (each a
   first-writer `@llm/<i>` record of the transcript the call was seeded with), the budget
-  check before each call, and `run:complete`, which a later drive returns whatever input it
-  is given (`completedAnswer`). A drive may pause before its first call.
+  check before each call, and `run:complete`, whose answer a later drive gets only if it gives
+  the input `run:start` recorded (`completedAnswer`, `checkFinishedStart`; another input is
+  `ErrConfig` since #137, and before it, behind `Bug = "DoneAnyInput"`, any input got it). A
+  drive may pause before its first call.
 - **Run IDs** as strings: the scheme since #86, and the old one (`"<id>/t<n>"`,
   `"<id>/e/<key>"`) behind `Bug`, so a collision is a configuration's choice of names.
 - **P14's `Cancel`** of a turn's run (D1): `run:cancelled`, read when a drive starts and at each
   turn boundary.
 - **Faults**: error replies on the session journal, process crashes (every caller of the
   process is cut off and redelivered; its handles reopen from the journal; a drive in flight is
-  gone), pauses, and `Cancel`. Leases: a turn's run holds none today (sessions do not call
-  `Lease`, and recovery skips session runs); under S4's rule a drive holds the run's lease, and
-  a crashed holder's lease lapses (its TTL and a stalled holder are model 10's).
+  gone), pauses, and `Cancel`. Leases: under S4's rule (`TurnLease`, the code since #137) a
+  drive holds the turn run's lease, and a crashed holder's lease lapses (its TTL and a stalled
+  holder are model 10's); recovery skips session runs. `TurnLease = FALSE` is the code before
+  #137, when a turn's run held none.
 
 Abstracted away: the claim protocol and tool calls inside a turn (model 1, model 9), spend
 records and late spend beyond the count the budget sees (model 8), the race between
@@ -1761,7 +1771,7 @@ it. Function names are those of `main` after #130; `S` is `agent/session.go`, `K
 | `SCheck`, `SDo` | S `startTurn`: the open-turn check (S1's fix reads the journal again first), the claim (`newClaim`, `store.Do` of `start/<n>`), the lost-claim reload and the second try |
 | `KLook` | S `SendOnce` and `keyedTurn`: the reload of an unseen key, the recorded answer, the input check |
 | `Seed`, `FDo`, `FReload` | S `turnSeed`: `store.Do` of `from/<run>`, the reload when it names more turns than the handle holds |
-| `DLoad`, `DCall`, `DDone` | S `runTurn`'s `Agent.run` of the turn's run: `openRun`, `completedAnswer`, `holdToStart`'s input check, the approval and interrupt pauses, the budget check and `@llm/<n>` (`recorded`), `run:complete`; P14's `run:cancelled` reads |
+| `DLoad`, `DCall`, `DDone` | S `driveRun`: a finished run (`completedAnswer`) answers only the input its `run:start` recorded, else `ErrConfig` (`checkFinishedStart`, #137); S4's rule (`TurnLease`), `leaseRun` of the turn run's lease, and for a lease another holder has, the read of `run:complete`, else `ErrTurnContended` (`"contended"`); then `Agent.run` of the turn's run under the lease: `openRun`, `completedAnswer` and `checkFinishedStart`, `holdToStart`'s input check, the approval and interrupt pauses, the budget check and `@llm/<n>` (`recorded`), `run:complete`, and the lease's release when it returns; P14's `run:cancelled` reads |
 | `ADo` | S `appendTurn`: `store.Do` of `turn/<n>`, the claim and same-run checks, the skip of a slot another handle took; S2's fix checks the turns the handle has loaded first |
 | `AReload` | S `runTurn`'s `reload` after the append |
 | `TurnId`, `EventId` | K `sessionTurnRunID`, `sessionEventRunID`, and `checkRunID`'s refusal of `>` in a root run ID |
@@ -1798,9 +1808,10 @@ finite budgets and no fairness.
 
 States are distinct states; times are TLC's own on the development machine (Apple M1 Pro, one
 worker per configuration, four at a time, as the CI job runs them), under load. Each passing
-configuration is also run for vacuity. The `ci` configurations run the proposed fixes of S1 and
-S2 (and S3's and S4's rules where they say so); the findings below run the code as it stands.
-The whole pull-request set (9 `ci` configurations with their vacuity runs, and 12 regression,
+configuration is also run for vacuity. The `ci` configurations run the fixes of S1 and S2 (and
+S3's and S4's rules where they say so); the regressions and findings below run the rules before
+their fixes.
+The whole pull-request set (10 `ci` configurations with their vacuity runs, and 13 regression,
 finding and limit configurations) took 46 seconds on the CI runner alone (four at a time); in the merge queue's run of every model it
 adds about 170 seconds of TLC and JVM time to the four slots, about 43 seconds of wall time.
 
@@ -1815,6 +1826,7 @@ adds about 170 seconds of TLC and JVM time to the four slots, about 43 seconds o
 | `budget` | ci | S4's rule (a drive holds the turn run's lease): one message on two workers, turns of three model calls, a budget of three, a crash. | 16,498 | 3 s |
 | `cancel-close` | ci | S3's rule: P14's `Cancel` of a Send turn's run, which is then recorded closed, and a second message. | 869 | 3 s |
 | `live-resume` | ci | `Answered` and `TurnsSettle`: two workers with one message each, a crash; every caller sends again until answered. | 4,490 | 13 s |
+| `key-reuse` | ci | One `SendOnce` key reused for two messages on two workers, with the turn lease; an error reply and a crash: a finished run answers only the input it recorded (#137, R137-2). | 6,119 | 1 s |
 | `deep-workers-send` | nightly | One `Send` message on two workers; an error reply and a crash. | 106,192 | 9 s* |
 | `deep-three` | nightly | One `Send` message on two workers and a second message on the first; an error reply and a crash. | 8,934,366 | 4 min 20 s* |
 | `deep-shared` | nightly | One handle shared by three callers: one `Send` message sent twice and a `SendOnce`; an error reply and a pause. | 337,360 | 8 s* |
@@ -1828,8 +1840,9 @@ jobs; on the CI runner (four workers) expect about twice as long, about 25 minut
 ### Regressions, findings and limits
 
 Each regression restores a historical rule behind `Bug` and must fail with its property, and
-passes with `Bug = "none"`. Each finding fails under the code as it stands and passes under its
-proposed rule (`Fix`, `CancelRule`, `TurnLease`), which the `ci` configurations check.
+passes with `Bug = "none"`. S1's, S2's and S4's regressions, and the finding S3, run the rule
+before the fix (`Fix`, `CancelRule`, `TurnLease`) and must fail; the `ci` configurations check
+the fixed rules.
 
 | Config | Group | The rule or behavior | Expected | Trace |
 |---|---|---|---|---|
@@ -1839,26 +1852,26 @@ proposed rule (`Fix`, `CancelRule`, `TurnLease`), which the `ci` configurations 
 | `regress/no-skip` | regress | #22: two handles recording at one index kept only the first, and the other turn vanished (`"NoSkip"`). | `NoLostTurn` | 20 states |
 | `regress/step-wrapped` | regress | #20: the messaging guide wrapped `Send` in a `Step` keyed by the event id; the process died after the session recorded the turn and before the `Step` recorded the reply, and the redelivered event opened a second turn (`"StepWrapped"`). | `KeyOnce` | 23 states |
 | `regress/no-from` | regress | #56: a turn cut off between its model calls resumed seeded with the transcript as it then stood, which a turn answered in between had changed (`"NoFrom"`). | `SeedFaithful` | 23 states |
-| `findings/s1-stale-open` | finding | S1 (below): a stale handle refuses the next message for a turn another worker finished. | `NoFalseRefusal` | 17 states |
-| `findings/s2-shared-send` | finding | S2: two callers on one handle send one message, and its turn is recorded twice. | `TurnOnce` | 18 states |
-| `findings/s2-shared-once` | finding | S2 through `SendOnce`: one key delivered twice to one handle has two records. | `KeyOnce` | 17 states |
+| `regress/s1-stale-open` | regress | S1 (below, fixed in #137): a stale handle refuses the next message for a turn another worker finished. | `NoFalseRefusal` | 17 states |
+| `regress/s2-shared-send` | regress | S2 (fixed in #137): two callers on one handle send one message, and its turn is recorded twice. | `TurnOnce` | 18 states |
+| `regress/s2-shared-once` | regress | S2 (fixed in #137) through `SendOnce`: one key delivered twice to one handle has two records. | `KeyOnce` | 17 states |
 | `regress/s3-cancel-wedge` | regress | S3: `Cancel` of an open Send turn's run, and every other message is refused for ever (`CancelRule = "none"`). | `NoFalseRefusal` | 12 states |
-| `findings/s4-budget-two-workers` | finding | S4: two workers drive one turn's run with no lease, and the turn spends past its budget (`TurnLease = FALSE`). | `BudgetHeld` | 18 states |
+| `regress/s4-budget-two-workers` | regress | S4 (fixed in #137): two workers drive one turn's run with no lease, and the turn spends past its budget (`TurnLease = FALSE`). | `BudgetHeld` | 18 states |
+| `regress/done-any-input` | regress | #137 review, R137-2: a finished run returned its answer whatever input it was given, so a `SendOnce` key reused for another message, its run finished and not yet recorded, answered with the first message's reply (`"DoneAnyInput"`). | `NoCrossTalk` | 15 states |
 | `limits/send-redelivered` | limit | `Send` has no key: the process dies after the turn is recorded and before the reply, and the redelivered message opens a second turn. | `MsgOnce` | 24 states |
 
 ### Findings
 
-Found by this model on `main` at `91909b7` (#130 merged). S1, S2 and S4 each have a failing
-Go test in a scratch directory (`agent/session_model12_test.go`, not in this pull request);
-S3 is against P14's design, which is not built, as L2 and L3 were. Each proposed rule is
-checked in the model. The maintainers adopted S3's rule (rule 16 of the P14 contract in
-`docs/design/api-v1.md`) and S4's (each turn's run is driven under its lease); S1 and S2 are
-being fixed as proposed. Each stays open (`findings/`) until its code lands. S3's landed with P14
-(`Session.startTurn`'s `closeIfCancelled`; the test is `TestP14Rule16_CancelledTurnIsClosed`,
-committed failing first), and it is a regression: it keeps failing under `CancelRule = "none"`.
+Found by this model on `main` at `91909b7` (#130 merged). S1, S2 and S4 are fixed in #137,
+whose Go tests (`agent/session_model12_test.go`) failed first; their configurations are
+regressions now (`regress/`). S3 is against P14's design, which was not built then, as L2 and L3
+were; the maintainers adopted its rule (rule 16 of the P14 contract in `docs/design/api-v1.md`).
+It landed with P14 (`Session.startTurn`'s `closeIfCancelled`; the test is
+`TestP14Rule16_CancelledTurnIsClosed`, committed failing first), and it is a regression: it keeps
+failing under `CancelRule = "none"`.
 
 - **S1: a stale handle refuses the next message for an open turn that another handle finished**
-  (`findings/s1-stale-open`, `NoFalseRefusal`, 17 states).
+  (`regress/s1-stale-open`, `NoFalseRefusal`, 17 states).
   - `startTurn` returns `ErrConfig` ("a turn for x is still open; send that message again")
     from the handle's own `s.open`, without reading the journal. A handle whose `Send("x")`
     started the turn and then failed or paused keeps `x` open in its view. Another worker,
@@ -1869,11 +1882,11 @@ committed failing first), and it is a regression: it keeps failing under `Cancel
   - The test is `TestModel12_S1_StaleOpenTurnRefusesNextMessage`: a model that fails its
     first call, `h1.Send("x")` fails, `h2.Send("x")` answers, and `h1.Send("y")` is
     `ErrConfig` three times out of three.
-  - Proposed fix (`Fix = {"S1"}`): when the open turn is another message's, reload once and
+  - Fix (`Fix = {"S1"}`, #137): when the open turn is another message's, reload once and
     check again before refusing. The godoc already says "a handle that finds the journal moved
     on reloads it".
-- **S2: one handle records a turn twice** (`findings/s2-shared-send`, `TurnOnce`;
-  `findings/s2-shared-once`, `KeyOnce`).
+- **S2: one handle records a turn twice** (`regress/s2-shared-send`, `TurnOnce`;
+  `regress/s2-shared-once`, `KeyOnce`).
   - Two callers on one handle send one message (a redelivery, or a retry while the first still
     runs): `Send` joins the open turn and `SendOnce` runs the key's turn, so both drive one run.
     The first records `turn/0` and reloads the handle. `appendTurn` then starts the second's
@@ -1883,7 +1896,7 @@ committed failing first), and it is a regression: it keeps failing under `Cancel
   - The test is `TestModel12_S2_SharedHandleRecordsATurnTwice` (`Send` and `SendOnce`): the
     first caller's model call is held while the second joins, and the second's load of the
     run is held until the first returned. The transcript holds `[x re: x x re: x]`.
-  - Proposed fix (`Fix = {"S2"}`): `reload` keeps the set of runs among the loaded turns, and
+  - Fix (`Fix = {"S2"}`, #137): `reload` keeps the set of runs among the loaded turns, and
     `appendTurn` returns at once for a run in it.
 - **S3, against P14's design: `Cancel` of an open Send turn's run blocks the session for ever**
   (`regress/s3-cancel-wedge`, `NoFalseRefusal`).
@@ -1908,7 +1921,7 @@ committed failing first), and it is a regression: it keeps failing under `Cancel
     so this model's assumption that only the session drives a turn stays true; and `Status`
     reports the turn's run as a run (`Completed` once `run:complete` is written), its godoc and
     the session's say that the session's own record says a turn is answered.
-- **S4: a turn's budget is spent once per worker** (`findings/s4-budget-two-workers`,
+- **S4: a turn's budget is spent once per worker** (`regress/s4-budget-two-workers`,
   `BudgetHeld`).
   - A turn's run is driven with no lease, so two workers given one message (the redelivery
     `SendOnce` exists for, or `Send` on two handles) both drive it. Each counts the journal's
@@ -1921,11 +1934,11 @@ committed failing first), and it is a regression: it keeps failing under `Cancel
   - The test is `TestModel12_S4_TwoWorkersOvershootATurnBudget`: two processes (two
     `Journal`s over one store) send one message, a model that lets them call in turn reports
     one token per call, and a budget of 6 tokens makes 12 model calls (6 each).
-  - Proposed rule (`TurnLease = TRUE`, `budget`): the session drives a turn's run under its
-    lease when the store has a `Leaser`, as `Lease` drives a run; a second drive gets
-    `HaltContended` and the message is sent again. Adopted by the maintainers.
-    One drive at a time loads the whole journal,
-    and `BudgetHeld` holds. Counting a lost record's own spend in the drive as well would not be
+  - Fix (`TurnLease = TRUE`, `budget`, #137): the session drives a turn's run under its lease
+    when the store has a `Leaser`, as `Lease` drives a run. The lease is asked for before the
+    drive reads anything else of the run but `run:complete` (a finished run needs none): a
+    second drive gets `ErrTurnContended` (`"contended"`), before any input check, and the
+    message is sent again. One drive at a time loads the whole journal, and `BudgetHeld` holds. Counting a lost record's own spend in the drive as well would not be
     enough: the model then overshoots by half the budget.
 
 Accepted limit: `limits/send-redelivered` (`MsgOnce`). `Send` has no key: when the process dies

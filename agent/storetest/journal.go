@@ -575,8 +575,9 @@ func leaseLapsed(t *testing.T, s agent.Store) {
 }
 
 // reapLeases checks Leaser.ReapLeases: it deletes the lapsed leases of runs that hold an entry
-// named in ended or no entry at all, and keeps live leases and the lapsed leases of unfinished
-// runs.
+// named in ended or no entry at all, and of runs whose ID holds a '>' (a session's or a
+// sub-agent's, which no recovery pass drives), and keeps live leases and the lapsed leases of
+// unfinished runs.
 func reapLeases(t *testing.T, s agent.Store) {
 	ctx := context.Background()
 	l, _ := agent.Capability[agent.Lister](s)
@@ -616,6 +617,16 @@ func reapLeases(t *testing.T, s agent.Store) {
 	}
 	finished, open, orphan := prefix+"finished", prefix+"open", prefix+"orphan"
 	finishedLive, orphanLive := prefix+"finished-live", prefix+"orphan-live"
+	// A session's turn run and a sub-agent's run: unfinished, but no recovery pass takes them over
+	// (the session or the root run resumes them), so a lapsed lease on them is never taken by one.
+	turn, sub := prefix+"s>@turn/0", prefix+"t>call"
+	turnLive := prefix + "u>@turn/0"
+	insert(turn, "x")
+	insert(sub, "x")
+	insert(turnLive, "x")
+	acquire(turn, "dead", time.Millisecond)
+	acquire(sub, "dead", time.Millisecond)
+	acquire(turnLive, "live", time.Hour)
 	insert(finished, "x")
 	insert(finished, end)
 	insert(open, "x")
@@ -626,7 +637,7 @@ func reapLeases(t *testing.T, s agent.Store) {
 	acquire(orphan, "dead", time.Millisecond)
 	acquire(finishedLive, "live", time.Hour)
 	acquire(orphanLive, "live", time.Hour)
-	want := []string{finished, open}
+	want := []string{finished, open, turn, sub}
 	deadline := time.Now().Add(30 * time.Second)
 	for got := lapsed(); !slices.Equal(got, want); got = lapsed() {
 		if time.Now().After(deadline) {
@@ -634,11 +645,13 @@ func reapLeases(t *testing.T, s agent.Store) {
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	// With no end markers, only the lease on a run the store does not hold goes (other tests may
-	// have left such leases too, so the count is a lower bound).
-	if n := reap(nil); n < 1 {
-		t.Fatalf("ReapLeases(nil) deleted %d leases, want at least the lapsed one on a run with no entry", n)
+	// With no end markers, the lease on a run the store does not hold goes, and so do those on the
+	// session's and the sub-agent's runs (other tests may have left such leases too, so the count
+	// is a lower bound).
+	if n := reap(nil); n < 3 {
+		t.Fatalf("ReapLeases(nil) deleted %d leases, want at least the lapsed ones on a run with no entry, a session's run and a sub-agent's", n)
 	}
+	want = []string{finished, open}
 	if got := lapsed(); !slices.Equal(got, want) {
 		t.Fatalf("after ReapLeases(nil), Runs(LeaseLapsed) yields %v, want %v: it deleted a lease on a run that has entries", got, want)
 	}
@@ -655,7 +668,7 @@ func reapLeases(t *testing.T, s agent.Store) {
 		t.Fatalf("after a second ReapLeases(end), Runs(LeaseLapsed) yields %v, want only the unfinished run %s", got, open)
 	}
 	// Live leases are kept, finished run or not: their holders still renew them.
-	for _, id := range []string{finishedLive, orphanLive} {
+	for _, id := range []string{finishedLive, orphanLive, turnLive} {
 		if ok, err := leaser.RenewLease(ctx, id, "live", time.Hour); err != nil || !ok {
 			t.Fatalf("RenewLease(%s) after ReapLeases = %v, %v; want the live lease kept", id, ok, err)
 		}

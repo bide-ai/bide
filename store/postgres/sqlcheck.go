@@ -53,6 +53,7 @@ var (
 	// sqlFunctions are the functions a statement may call.
 	sqlFunctions = map[string]bool{
 		"pg_catalog.now": true, "pg_catalog.max": true, "pg_catalog.starts_with": true,
+		"pg_catalog.strpos": true,
 		// the catalog reads in checkSchema and storeSchema
 		"pg_catalog.array_agg": true, "pg_catalog.unnest": true, "pg_catalog.current_schema": true,
 		"pg_catalog.current_schemas": true, "pg_catalog.array_position": true,

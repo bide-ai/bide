@@ -260,8 +260,10 @@ A run's first drive records its input, whether it runs as a saga, and the run op
 passed (the `run:start` step; see `agent.RunStart`), and every later drive runs under them: a
 different limit (`WithMaxTurns`, `WithTokenBudget`) is journaled as an amendment
 (`run:limits:<n>`), and any other different setting (the input, saga, tool filter, system prompt,
-sampling, tool choice, typed schema or output mode, principal) is `ErrConfig`. `RecordedStart`
-reads the record back (its `Input` is a `Message`; `start.Input.Text()` is its text).
+sampling, tool choice, typed schema or output mode, principal) is `ErrConfig`. A completed run
+returns its recorded answer only to a drive with the input it answered; another input is
+`ErrConfig` too. `RecordedStart` reads the record back (its `Input` is a `Message`;
+`start.Input.Text()` is its text).
 
 **Keep recovering for the life of the process.** `Recover` is one pass: a run whose holder died
 a moment ago still has a live lease, so the pass skips it, and nothing re-drives it until someone
@@ -278,8 +280,9 @@ calls `Recover` again. `RecoverLoop` is that someone. Start it once per worker; 
   (`WithRecoverLapsedConcurrency`, 16 by default). A store deletes a lease on release, so a lapsed
   lease means its holder died or stalled; halted runs hold no lease between visits, so this loop
   never waits behind them. Each lapsed pass first deletes, with `Leaser.ReapLeases`, the lapsed
-  leases no pass takes over (a finished run's, left by a holder that died before its release, or
-  one on a run the store does not hold).
+  leases no pass takes over (a finished run's, left by a holder that died before its release, one
+  on a run the store does not hold, or one on a session's or a sub-agent's run, whose ID contains
+  `>`: a session leases each turn's run, and the session, not a pass, resumes it).
 
 So a dead holder's run is taken over within about one interval of its lease expiring however many
 halted runs the store holds, as long as the lapsed loop has a free slot. A run whose driver held no

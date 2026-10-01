@@ -79,18 +79,25 @@ func wantUntouched(t *testing.T, store Durable, m *greedyModel, charged int, bef
 
 // Re-invoking a finished run (a client retrying after a lost response, a redelivered job)
 // returns the recorded answer and never asks the model again, so a side effect cannot fire
-// a second time under a new tool-use id.
+// a second time under a new tool-use id. A re-invocation with another input is ErrConfig (#137,
+// R137-2): the recorded answer is not that input's. Neither touches the journal.
 func TestFinishedRun_RunIsFinal(t *testing.T) {
 	var charged int
 	store, first, before := finishedCharge(t, &charged)
 	charge := &countingTool{name: "charge", safety: Safety{}, calls: &charged}
 	for i := 0; i < 3; i++ {
 		m := &greedyModel{}
-		out, err := New(m, store, charge).Run(context.Background(), "r1", "a different input")
+		out, err := New(m, store, charge).Run(context.Background(), "r1", "pay")
 		if err != nil {
 			t.Fatalf("re-run %d: %v", i, err)
 		}
 		wantUntouched(t, store, m, charged, before, out, first)
+		m = &greedyModel{}
+		out, err = New(m, store, charge).Run(context.Background(), "r1", "a different input")
+		if !errors.Is(err, ErrConfig) {
+			t.Fatalf("re-run %d with a different input = %q, %v; want ErrConfig", i, textOf(out), err)
+		}
+		wantUntouched(t, store, m, charged, before, first, first)
 	}
 }
 

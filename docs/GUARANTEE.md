@@ -63,7 +63,8 @@ The same holds when nothing crashed and a caller simply invokes the run again (a
 after a lost response, a redelivered job, a sub-agent or session turn re-entered on resume):
 
 4. **Re-invoking a finished run** → the run's completion marker is journaled → it returns the
-   recorded final answer without asking the model for another turn. Correct. This matters because
+   recorded final answer without asking the model for another turn (to a drive with the input it
+   answered; another input is `ErrConfig`). Correct. This matters because
    the protection is keyed by the tool call the model emitted: a fresh model turn could request the
    same side effect again under a new call id, which the journal would treat as new work. A crash
    after the final answer was journaled but before the marker was written is handled the same way:
@@ -85,7 +86,8 @@ the journal holds, and so what a resume cannot be talked out of by a redeploy:
   and `WithRetrieval` documents;
 - the run's input (a message, images included) and whether it runs as a saga (`run:start`), and
   for a session turn the transcript it started from; an unfinished run resumed with another input,
-  or through the other entry point, is `ErrConfig`;
+  or through the other entry point, is `ErrConfig`, and so is a completed run driven with another
+  input;
 - the per-run options its first caller passed (`run:start`, see `agent.RunStart`): the turn limit
   and token budget, the system prompt, sampling, tool choice, the tool filter, a typed run's output
   mode and answer schema, and the principal (`OnBehalfOf`, `AuthorityRef`). Every later drive,
@@ -95,7 +97,7 @@ the journal holds, and so what a resume cannot be talked out of by a redeploy:
   dispatched: a call outside it is refused with an error result recorded, and its tool never runs;
 - a run's end: `run:complete`, `run:aborted` (a saga's finished rollback) or `run:cancelled`
   (`agent.Cancel`, or a cancelled saga's finished rollback). The first in journal order is the
-  run's end for every reader, whatever a later drive is given;
+  run's end for every reader;
 - in a saga's rollback, which calls completed, failed, or were attempted, and the `Safety` and
   approval gate each completed call ran under (`Record.Safety`, `Record.Approval`): a completed write is rolled back even if its tool was relabelled
   `ReadOnly` since, and a call whose tool is no longer registered is reported uncompensated (or

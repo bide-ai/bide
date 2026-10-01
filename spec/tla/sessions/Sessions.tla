@@ -48,7 +48,7 @@ CONSTANTS
 
 None == "none"
 Ops == {"send", "once", "root"}
-ASSUME Bug \in {"none", "SlashIds", "IndexTurns", "NoSkip", "StepWrapped", "NoFrom"}
+ASSUME Bug \in {"none", "SlashIds", "IndexTurns", "NoSkip", "StepWrapped", "NoFrom", "DoneAnyInput"}
 ASSUME CancelRule \in {"none", "close"} /\ Fix \subseteq {"S1", "S2"} /\ TurnLease \in BOOLEAN
 ASSUME \A c \in Callers : COp[c] \in Ops /\ (COp[c] = "root") = (CH[c] = None)
 ASSUME NCalls >= 1
@@ -331,7 +331,13 @@ FReload:
 \* The turn's run (Agent.run): its Load, run:start, the model calls under the budget, and the end.
 DLoad:
   with r = runs[rid] do
-    if r.done # NoAns /\ COp[self] = "root" then
+    if r.done # NoAns /\ Bug = "none" /\ r.inp # None /\ r.inp # CMsg[self] then
+      \* #137 (R137-2): a finished run answers the input its run:start recorded, under its lease or
+      \* another holder's; a drive with another input is ErrConfig. Every historical rule (Bug)
+      \* predates it: a finished run then returned its answer whatever input it was given.
+      why := "input";
+      goto Fail;
+    elsif r.done # NoAns /\ COp[self] = "root" then
       ans := r.done;
       ret[self] := r.done;
       okRun[self] := rid;
@@ -342,16 +348,18 @@ DLoad:
       ans := r.done;
       n := -1;
       goto ADo;
+    elsif TurnLease /\ lease[rid] \notin {None, self} then
+      \* S4's rule: another drive holds the turn run's lease (ErrTurnContended); send again
+      \* later. The lease is asked for before the drive reads anything else of the run (a
+      \* finished run, above, needs none): a worker without it does not judge the input.
+      why := "contended";
+      goto Fail;
     elsif r.cx then
       why := "cancelled";
       goto Fail;
     elsif r.inp # None /\ r.inp # CMsg[self] then
       \* #70: an unfinished run resumed with another input is ErrConfig.
       why := "input";
-      goto Fail;
-    elsif TurnLease /\ lease[rid] \notin {None, self} then
-      \* S4's rule: another drive holds the turn run's lease (HaltContended); send again later.
-      why := "contended";
       goto Fail;
     else
       either
@@ -814,59 +822,67 @@ FReload(self) == /\ pc[self] = "FReload"
 
 DLoad(self) == /\ pc[self] = "DLoad"
                /\ LET r == runs[rid[self]] IN
-                    IF r.done # NoAns /\ COp[self] = "root"
-                       THEN /\ ans' = [ans EXCEPT ![self] = r.done]
-                            /\ ret' = [ret EXCEPT ![self] = r.done]
-                            /\ okRun' = [okRun EXCEPT ![self] = rid[self]]
-                            /\ outcome' = [outcome EXCEPT ![self] = "ok"]
-                            /\ pc' = [pc EXCEPT ![self] = "Done"]
-                            /\ UNCHANGED << runs, lease, pauses, cnt, i, n, 
-                                            why >>
-                       ELSE /\ IF r.done # NoAns
+                    IF r.done # NoAns /\ Bug = "none" /\ r.inp # None /\ r.inp # CMsg[self]
+                       THEN /\ why' = [why EXCEPT ![self] = "input"]
+                            /\ pc' = [pc EXCEPT ![self] = "Fail"]
+                            /\ UNCHANGED << runs, lease, pauses, outcome, ret, 
+                                            okRun, cnt, i, n, ans >>
+                       ELSE /\ IF r.done # NoAns /\ COp[self] = "root"
                                   THEN /\ ans' = [ans EXCEPT ![self] = r.done]
-                                       /\ n' = [n EXCEPT ![self] = -1]
-                                       /\ pc' = [pc EXCEPT ![self] = "ADo"]
+                                       /\ ret' = [ret EXCEPT ![self] = r.done]
+                                       /\ okRun' = [okRun EXCEPT ![self] = rid[self]]
+                                       /\ outcome' = [outcome EXCEPT ![self] = "ok"]
+                                       /\ pc' = [pc EXCEPT ![self] = "Done"]
                                        /\ UNCHANGED << runs, lease, pauses, 
-                                                       cnt, i, why >>
-                                  ELSE /\ IF r.cx
-                                             THEN /\ why' = [why EXCEPT ![self] = "cancelled"]
-                                                  /\ pc' = [pc EXCEPT ![self] = "Fail"]
+                                                       cnt, i, n, why >>
+                                  ELSE /\ IF r.done # NoAns
+                                             THEN /\ ans' = [ans EXCEPT ![self] = r.done]
+                                                  /\ n' = [n EXCEPT ![self] = -1]
+                                                  /\ pc' = [pc EXCEPT ![self] = "ADo"]
                                                   /\ UNCHANGED << runs, lease, 
                                                                   pauses, cnt, 
-                                                                  i >>
-                                             ELSE /\ IF r.inp # None /\ r.inp # CMsg[self]
-                                                        THEN /\ why' = [why EXCEPT ![self] = "input"]
+                                                                  i, why >>
+                                             ELSE /\ IF TurnLease /\ lease[rid[self]] \notin {None, self}
+                                                        THEN /\ why' = [why EXCEPT ![self] = "contended"]
                                                              /\ pc' = [pc EXCEPT ![self] = "Fail"]
                                                              /\ UNCHANGED << runs, 
                                                                              lease, 
                                                                              pauses, 
                                                                              cnt, 
                                                                              i >>
-                                                        ELSE /\ IF TurnLease /\ lease[rid[self]] \notin {None, self}
-                                                                   THEN /\ why' = [why EXCEPT ![self] = "contended"]
+                                                        ELSE /\ IF r.cx
+                                                                   THEN /\ why' = [why EXCEPT ![self] = "cancelled"]
                                                                         /\ pc' = [pc EXCEPT ![self] = "Fail"]
                                                                         /\ UNCHANGED << runs, 
                                                                                         lease, 
                                                                                         pauses, 
                                                                                         cnt, 
                                                                                         i >>
-                                                                   ELSE /\ \/ /\ pauses < MaxPause
-                                                                              /\ pauses' = pauses + 1
-                                                                              /\ why' = [why EXCEPT ![self] = "paused"]
-                                                                              /\ pc' = [pc EXCEPT ![self] = "Fail"]
-                                                                              /\ UNCHANGED <<runs, lease, cnt, i>>
-                                                                           \/ /\ runs' = [runs EXCEPT ![rid[self]] = [r EXCEPT !.inp = IF r.inp = None THEN CMsg[self] ELSE @,
-                                                                                                                               !.tag = IF r.inp = None THEN Tag(self) ELSE @]]
-                                                                              /\ IF TurnLease
-                                                                                    THEN /\ lease' = [lease EXCEPT ![rid[self]] = self]
-                                                                                    ELSE /\ TRUE
-                                                                                         /\ lease' = lease
-                                                                              /\ cnt' = [cnt EXCEPT ![self] = r.jsp]
-                                                                              /\ i' = [i EXCEPT ![self] = Len(r.llm)]
-                                                                              /\ pc' = [pc EXCEPT ![self] = "DCall"]
-                                                                              /\ UNCHANGED <<pauses, why>>
-                                       /\ UNCHANGED << n, ans >>
-                            /\ UNCHANGED << outcome, ret, okRun >>
+                                                                   ELSE /\ IF r.inp # None /\ r.inp # CMsg[self]
+                                                                              THEN /\ why' = [why EXCEPT ![self] = "input"]
+                                                                                   /\ pc' = [pc EXCEPT ![self] = "Fail"]
+                                                                                   /\ UNCHANGED << runs, 
+                                                                                                   lease, 
+                                                                                                   pauses, 
+                                                                                                   cnt, 
+                                                                                                   i >>
+                                                                              ELSE /\ \/ /\ pauses < MaxPause
+                                                                                         /\ pauses' = pauses + 1
+                                                                                         /\ why' = [why EXCEPT ![self] = "paused"]
+                                                                                         /\ pc' = [pc EXCEPT ![self] = "Fail"]
+                                                                                         /\ UNCHANGED <<runs, lease, cnt, i>>
+                                                                                      \/ /\ runs' = [runs EXCEPT ![rid[self]] = [r EXCEPT !.inp = IF r.inp = None THEN CMsg[self] ELSE @,
+                                                                                                                                          !.tag = IF r.inp = None THEN Tag(self) ELSE @]]
+                                                                                         /\ IF TurnLease
+                                                                                               THEN /\ lease' = [lease EXCEPT ![rid[self]] = self]
+                                                                                               ELSE /\ TRUE
+                                                                                                    /\ lease' = lease
+                                                                                         /\ cnt' = [cnt EXCEPT ![self] = r.jsp]
+                                                                                         /\ i' = [i EXCEPT ![self] = Len(r.llm)]
+                                                                                         /\ pc' = [pc EXCEPT ![self] = "DCall"]
+                                                                                         /\ UNCHANGED <<pauses, why>>
+                                                  /\ UNCHANGED << n, ans >>
+                                       /\ UNCHANGED << outcome, ret, okRun >>
                /\ UNCHANGED << starts, turns, from, stepv, ht, hs, ho, hl, hmu, 
                                errs, crashes, cancels, nonce, badRef, rid, 
                                seed, att, fresh, closing, cin, tries >>

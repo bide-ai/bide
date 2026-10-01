@@ -59,7 +59,7 @@ func WithLeaseHolder(id string) LeaseControl {
 // takes over. Defaults to 30s. Set it well above the store's round-trip time and the longest pause
 // you expect a process to take: renewal starts at half the TTL, and a drive that cannot renew
 // within three quarters of it is cancelled with ErrLeaseLost (see Lease). It must be positive:
-// Lease, Recover and RecoverLoop return an ErrConfig error otherwise.
+// Lease, Recover, RecoverLoop and Agent.Session return an ErrConfig error otherwise.
 func WithLeaseTTL(d time.Duration) LeaseControl {
 	return leaseControl(func(c *recoverConfig) { c.ttl = d })
 }
@@ -110,10 +110,14 @@ func leaseConfig[O comparable](what string, opts []O, apply func(O, *recoverConf
 	return cfg, nil
 }
 
-func defaultHolder() string {
+// hostPID is the "<host>-<pid>" every default holder starts with, read once: os.Hostname is a
+// system call, and Agent.Session builds a lease configuration for each session it opens.
+var hostPID = sync.OnceValue(func() string {
 	host, _ := os.Hostname()
-	return fmt.Sprintf("%s-%d-%d", host, os.Getpid(), rand.Uint64())
-}
+	return fmt.Sprintf("%s-%d", host, os.Getpid())
+})
+
+func defaultHolder() string { return fmt.Sprintf("%s-%d", hostPID(), rand.Uint64()) }
 
 // IsComplete reports whether runID has reached its terminal answer, by checking the
 // journal for the durable completion marker the agent loop records at the end of a run
@@ -499,8 +503,9 @@ func recoverRun(ctx context.Context, store Durable, runID string, resume Resumer
 //     one its holder neither renewed nor released: the holder died or stalled. A halted run holds
 //     no lease between visits, so the lapsed loop neither visits the halted runs nor waits behind
 //     them. Each lapsed pass first deletes the lapsed leases no pass would take over, those of
-//     finished runs and of runs the store does not hold (Leaser.ReapLeases), so a holder that died
-//     between its run's last write and its release does not leave a lease every later pass reads.
+//     finished runs, of runs the store does not hold and of session and sub-agent runs
+//     (Leaser.ReapLeases), so a holder that died between its run's last write and its release
+//     does not leave a lease every later pass reads.
 //
 // So a dead holder's run is picked up within about one interval of its lease expiring (the TTL
 // after the holder's last renewal), however many halted runs the store holds, while the lapsed

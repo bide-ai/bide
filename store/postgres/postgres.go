@@ -282,13 +282,14 @@ func newTables(prefix, schema string) (tables, error) {
 	if t.release, err = newWrite(`DELETE FROM `+t.qLeases+` WHERE run_id OPERATOR(pg_catalog.=) $1 AND holder OPERATOR(pg_catalog.=) $2`, nil, leases); err != nil {
 		return tables{}, err
 	}
-	// The lapsed leases no recovery pass takes over: a finished run's, or one on a run the steps
-	// table does not hold. The expiry is checked by the DELETE itself, which at read committed
+	// The lapsed leases no recovery pass takes over: a finished run's, one on a run the steps table
+	// does not hold, or one on a run whose ID contains '>' (a session's or a sub-agent's run). The expiry is checked by the DELETE itself, which at read committed
 	// re-evaluates it on a row a concurrent acquisition or renewal updated, so a lease taken or
 	// renewed meanwhile is kept (at repeatable read or serializable the conflict fails the
 	// statement and write runs it again).
 	if t.reap, err = newWrite(`DELETE FROM `+t.qLeases+` AS l WHERE l.expiry OPERATOR(pg_catalog.<) pg_catalog.now()
-		AND (NOT EXISTS (SELECT 1 FROM `+t.qSteps+` AS y WHERE y.run_id OPERATOR(pg_catalog.=) l.run_id)
+		AND (pg_catalog.strpos(l.run_id, '>') OPERATOR(pg_catalog.>) 0
+			OR NOT EXISTS (SELECT 1 FROM `+t.qSteps+` AS y WHERE y.run_id OPERATOR(pg_catalog.=) l.run_id)
 			OR EXISTS (SELECT 1 FROM `+t.qSteps+` AS x WHERE x.run_id OPERATOR(pg_catalog.=) l.run_id AND x.name OPERATOR(pg_catalog.=) ANY ($1::pg_catalog.text[])))`, nil, [][]sqlTok{names[1], names[2]}); err != nil {
 		return tables{}, err
 	}
@@ -966,8 +967,8 @@ func (s *Store) ReleaseLease(ctx context.Context, runID, holder string) error {
 }
 
 // ReapLeases implements agent.Leaser: one DELETE of the lapsed leases whose run is finished (holds
-// an entry named in ended) or not in the steps table, which checks the expiry itself, so a lease
-// taken or renewed meanwhile is kept.
+// an entry named in ended), not in the steps table, or a session's or a sub-agent's (its ID
+// contains '>'), which checks the expiry itself, so a lease taken or renewed meanwhile is kept.
 func (s *Store) ReapLeases(ctx context.Context, ended []string) (int, error) {
 	if ended == nil {
 		ended = []string{}

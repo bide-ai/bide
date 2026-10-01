@@ -573,13 +573,16 @@ transcript: a turn's intermediate tool calls stay in that turn and don't leak in
 a turn pauses (approval / `Interrupt`), `Send` returns that error; resolve it and call `Send` again
 with the same input to resume. Until then, `Send` with a different message returns `ErrConfig`: the
 open turn belongs to its message. For inbound messages that may be redelivered, `SendOnce(ctx, id,
-text)` answers each message id once. Several handles on one session never lose a turn or answer
-one message with another's reply. A turn resumed after a crash is seeded with the same transcript
-it started with, even if other messages were answered in between. `SendMessage` and
-`SendMessageOnce` (transitional names for the 1.0 `Send` and `SendOnce`) take a `Message` and run
-options and return a `Result`. A turn whose run was cancelled (`agent.Cancel`) is closed: `Send`
-of its message returns `ErrRunCancelled`, and the next message's `Send` records the turn closed,
-with no answer and outside the transcript, and runs its own turn.
+text)` answers each message id once. Several handles on one session never lose a turn, record one
+twice, or answer one message with another's reply. Over a store with leases (`MemStore`, SQLite,
+Postgres), a turn is driven by one worker at a time under its run's lease, so its token budget
+holds across workers; a second worker sent the same message meanwhile gets `ErrTurnContended` and
+sends it again later. A turn resumed after a crash is seeded with the same transcript it started
+with, even if other messages were answered in between. `SendMessage` and `SendMessageOnce`
+(transitional names for the 1.0 `Send` and `SendOnce`) take a `Message` and run options and return
+a `Result`. A turn whose run was cancelled (`agent.Cancel`) is closed: `Send` of its message
+returns `ErrRunCancelled`, and the next message's `Send` records the turn closed, with no answer and
+outside the transcript, and runs its own turn.
 
 ## Auditability (tamper-evident journal)
 

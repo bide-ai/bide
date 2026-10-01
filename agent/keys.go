@@ -177,6 +177,21 @@ func IsSubRun(runID string) bool {
 // session drives (see Session). A sub-agent called in a turn is IsSubRun instead.
 func IsSessionRun(runID string) bool { return strings.Contains(runID, subRunSep) && !IsSubRun(runID) }
 
+// treeRootID is the root run of the agent tree runID belongs to, read from the ID alone: the run
+// a driver drives, and leases, to drive runID. It is a session's turn run ("<id>>@turn/<n>" or
+// "<id>>@event/<key>") for the turn and for every sub-run inside it, and otherwise everything up
+// to the first '>' (a root run's ID for its sub-agents' and programmatic sub-runs'). rootRunID
+// gives the same run from a run's context, and the live-driver check of a halt resolution
+// leases it.
+func treeRootID(runID string) string {
+	id, rest, ok := strings.Cut(runID, subRunSep)
+	if !ok || !strings.HasPrefix(rest, sessionMark) {
+		return id
+	}
+	seg, _, _ := strings.Cut(rest, subRunSep)
+	return id + subRunSep + seg
+}
+
 // protocol:sessions begin TurnId EventId
 
 // sessionJournalID is the run ID of the journal of session id: which message started each Send

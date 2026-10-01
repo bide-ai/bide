@@ -10,9 +10,9 @@ redelivering channel. That it already provides. This page shows the pattern; the
 ## The core is transport-agnostic on purpose
 
 `Agent.Run(ctx, runID, input)` takes a caller-supplied `runID` and a plain string. `Session(ctx, id)`
-gives multi-turn continuity keyed by any string without a `/` or `>`: the session runs its turns under
-`<id>/...`, so a `/` could name another session's turn, and `>` separates a sub-agent's run from its
-parent's (join composite ids with another separator).
+gives multi-turn continuity keyed by any string without a `>`: the session runs its turns under
+`<id>>@...`, and `>` separates a sub-agent's run from its parent's (join composite ids with another
+separator).
 A messenger integration is glue you write in your own webhook handler:
 
 1. Verify the provider's signature and return 200 fast (both are the handler's job, not the SDK's).
@@ -80,9 +80,46 @@ declines a session turn's run too.) A turn's run can be cancelled like any run (
 the cancelled turn closed (with no answer, and outside the transcript) and runs its own turn; a
 `SendOnce` key whose run was cancelled stays unanswered. `SendMessage` and `SendMessageOnce` (the
 1.0 `Send` and `SendOnce`, under transitional names) take a `Message` and run options, journaled
-with the turn's run, and return a `Result`. Several workers may hold handles on one conversation: every message is
-recorded once, and a handle that is behind catches up from the journal before answering, so each
+with the turn's run, and return a `Result`. Several workers may hold handles on one conversation:
+every message is recorded once, and a handle that is behind catches up from the journal before
+answering (or before refusing a message because another message's turn looks open to it), so each
 new turn sees the conversation as it stands.
+
+### One worker drives a turn at a time
+
+A turn's run is driven under its lease when the store implements `Leaser` (`MemStore`,
+`store/sqlite` and `store/postgres` do), as `agent.Lease` drives a run. The run loads its journal
+only once it holds the lease, and keeps the lease until it returns, so a worker always loads every
+model call an earlier worker journaled, and `WithTokenBudget` bounds the turn however many workers
+its message reaches. A second worker given the message while the first drives its turn (the
+redelivery `SendOnce` exists for, or `Send` of one message on two handles) does not drive it:
+`Send` or `SendOnce` returns at once with an error wrapping `agent.ErrTurnContended`, having run
+nothing (or, if the run has just finished and its holder has not released the lease yet, with the
+recorded answer). It is neither a failure nor a pause. Acknowledge the delivery and let the provider
+redeliver, or send the message again later: once the turn is recorded, that returns its answer
+without calling the model, and if the first worker stopped short (it paused, failed or died), it
+resumes the turn.
+
+<!-- docsnip: setup ctx context.Context; sess *agent.Session; eventID, text string; returns (string, error) -->
+```go
+msg, err := sess.SendOnce(ctx, eventID, text)
+if errors.Is(err, agent.ErrTurnContended) {
+	return "", err // another worker is answering this message: let the provider redeliver it
+}
+if err != nil {
+	return "", err
+}
+return msg.Text(), nil
+```
+
+Name the lease and set its TTL when you open the session: `a.Session(ctx, conversationID,
+agent.WithLeaseHolder("worker-1"), agent.WithLeaseTTL(30*time.Second))` (the defaults are a
+host, pid and random name, and 30 seconds). A worker that dies mid-turn holds the turn until its
+lease lapses, one TTL after its last renewal; a lapsed lease on a turn run is deleted by
+`RecoverLoop`'s lapsed loop (`Leaser.ReapLeases`), since no recovery pass takes a session's run
+over. Over a store with no `Leaser`, two workers may drive one turn at once: the turn is still
+recorded once, but each worker counts only the spend it has seen (see
+[Known limitations](../KNOWN-LIMITATIONS.md)).
 
 The first delivery runs the turn and records the reply under the event id; a redelivery returns the
 recorded reply without advancing the transcript. If the turn pauses (a tool needs approval) or

@@ -80,14 +80,19 @@ func (a *Agent) run(ctx context.Context, runID string, d *driveSpec) (Message, u
 	// protocol:claims end
 	// The run's input and options are journaled in run:start by its first drive, and every later
 	// drive of an unfinished run is held to them (see RunStart and openPlan). A run that is over
-	// is final: its first end marker in journal order is its end, whatever the drive is given.
+	// is final: its first end marker in journal order is its end. A completed run's answer is
+	// returned only to a drive with the input it answered (#137's R137-2): another input is
+	// ErrConfig, not that input's answer.
 	var p *runPlan
 	if end, ended := firstEnd(recs); ended {
-		if err := checkStartKind(runID, recs, d.runKind()); err != nil {
+		if err := checkFinishedStart(runID, recs, d.runKind(), nil); err != nil {
 			return Message{}, usageTotals{}, 0, err // a finished flow's run holds no answer of an agent's
 		}
 		if end.name != runCompleteStep {
 			return Message{}, journalTotals(recs), 0, endedErr(runID, end)
+		}
+		if err := checkFinishedStart(runID, recs, d.runKind(), d.input); err != nil {
+			return Message{}, usageTotals{}, 0, err // another input's answer
 		}
 		p = &runPlan{maxTurns: a.maxTurns, budget: a.tokenBudget, maxConc: a.maxConc}
 		if d.input == nil {
@@ -204,7 +209,7 @@ func (a *Agent) run(ctx context.Context, runID string, d *driveSpec) (Message, u
 	// another turn. Re-invoking a finished run is routine (a client retrying after a lost
 	// response, a redelivered job, a sub-agent or session turn re-entered on resume), and a
 	// fresh model turn could request tools again under NEW tool-use ids, which at-most-once
-	// (keyed by tool-use id) would not recognize as repeats. The input is not consulted.
+	// (keyed by tool-use id) would not recognize as repeats. The input was checked above.
 	if final, ok := completedAnswer(recs); ok {
 		fire(Finished{Final: final})
 		return final, tot, 0, nil

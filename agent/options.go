@@ -51,7 +51,7 @@ type ResolveOption interface {
 	applyResolve(*resolveConfig) error
 }
 
-// LeaseOption configures Lease.
+// LeaseOption configures Lease, and the lease Agent.Session drives each turn's run under.
 type LeaseOption interface {
 	applyLease(*recoverConfig) error
 }
