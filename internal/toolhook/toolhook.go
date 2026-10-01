@@ -20,6 +20,8 @@ type RollbackBinder interface {
 // package sets it in init; plan calls it so a flow refuses what an agent refuses.
 var CheckTool func(t any) error
 
+// protocol:toolcall begin WrongAuth
+
 // Unrecorded is an error a tool wrapper of this module returns for a call that must leave nothing
 // in the journal: not a result, not a saga failure. The run stops with Err, and a re-drive calls
 // the tool again. AttenuatingSubAgent uses it when a delegation is resumed under authority other
@@ -38,9 +40,15 @@ func (e *Unrecorded) Error() string { return e.Err.Error() }
 // Unwrap returns Err, so errors.Is sees its category.
 func (e *Unrecorded) Unwrap() error { return e.Err }
 
+// protocol:toolcall end
+
+// protocol:toolcall begin IEnter
+
 // CallGuard, when set, is asked before every tool call reaches its tool, with the call's context:
 // by the agent's base handler, where an error refuses the call, recorded as a known failure, and
 // by a plan Tool node, where it fails the node; either way the tool is never called. The audit
 // package sets it (in init) to refuse a call made under a bound grant that has expired, so a
 // delegation cannot act past its grant's NotAfterUnix, however long its sub-run runs.
 var CallGuard func(ctx context.Context) error
+
+// protocol:toolcall end

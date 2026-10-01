@@ -32,6 +32,20 @@ java=${JAVA_HOME:+$JAVA_HOME/bin/}java
 summary=()
 failures=0
 
+# Every temporary file and directory (TLC metadirs, outputs, translation copies) lives under one
+# work directory, removed on exit, failure and interrupt, so a killed run leaves no TLC state
+# behind. A vacuity config is written beside its config (see run_cfg) and removed the same way.
+work=$(mktemp -d "${TMPDIR:-/tmp}/bide-tla.XXXXXX")
+cleanup() {
+  if [ -n "${tlc_pid:-}" ]; then kill "$tlc_pid" 2>/dev/null || true; wait "$tlc_pid" 2>/dev/null || true; fi
+  rm -rf "$work"
+  rm -f "$here"/*/.vacuity-$$.cfg "$here"/*/*/.vacuity-$$.cfg
+}
+trap cleanup EXIT
+trap 'cleanup; exit 130' INT
+trap 'cleanup; exit 143' TERM
+tmpdir() { mktemp -d "$work/d.XXXXXX"; }
+
 die() { echo "check.sh: $*" >&2; exit 1; }
 
 sha256() {
@@ -77,7 +91,7 @@ translate_to() { # translate_to SPEC DIR: translate a copy of SPEC in DIR
 translation() {
   local s tmp ok=0
   for s in $(specs); do
-    tmp=$(mktemp -d)
+    tmp=$(tmpdir)
     translate_to "$s" "$tmp"
     if ! diff -u "$s" "$tmp/$(basename "$s")" >"$tmp/diff"; then
       echo "STALE translation: $s (run spec/tla/check.sh translate and commit the result)" >&2
@@ -94,7 +108,7 @@ translation() {
 translate() {
   local s tmp
   for s in $(specs); do
-    tmp=$(mktemp -d)
+    tmp=$(tmpdir)
     translate_to "$s" "$tmp"
     cp "$tmp/$(basename "$s")" "$s"
     rm -rf "$tmp"
@@ -107,15 +121,20 @@ meta() { sed -n "s/^\\\\\\* $1: *//p" "$2" | head -1; }
 # mc_of DIR: the model's MC module in DIR (the one *MC.tla file), or nothing.
 mc_of() { (cd "$1" && ls ./*MC.tla 2>/dev/null | head -1 | sed 's|^\./||'); }
 
-# tlc CFG OUT: run TLC on CFG (a copy may live elsewhere) against the MC module beside the
-# original config's directory; print TLC's exit status.
+# tlc CFG OUT DIR: run TLC on CFG (a copy may live elsewhere) against the MC module in DIR; set
+# tlc_status to TLC's exit status. TLC runs in the background and is waited for, so an interrupt
+# reaches the trap at once, which stops it (tlc_pid) before removing its metadir.
+tlc_pid=
 tlc() {
-  local cfg=$1 out=$2 dir=$3 meta_dir status=0
-  meta_dir=$(mktemp -d)
-  (cd "$dir" && "$java" -XX:+UseParallelGC ${TLC_JAVA_OPTS:-} -cp "$jar" tlc2.TLC \
-      -workers "$workers" -metadir "$meta_dir" -config "$cfg" "$(mc_of "$dir")") >"$out" 2>&1 || status=$?
+  local cfg=$1 out=$2 dir=$3 meta_dir
+  meta_dir=$(tmpdir)
+  (cd "$dir" && exec "$java" -XX:+UseParallelGC ${TLC_JAVA_OPTS:-} -cp "$jar" tlc2.TLC \
+      -workers "$workers" -metadir "$meta_dir" -config "$cfg" "$(mc_of "$dir")") >"$out" 2>&1 &
+  tlc_pid=$!
+  tlc_status=0
+  wait "$tlc_pid" || tlc_status=$?
+  tlc_pid=
   rm -rf "$meta_dir"
-  echo "$status"
 }
 
 stats() { # stats OUT: "states / depth / time" from TLC's output
@@ -144,9 +163,9 @@ run_cfg() {
   expect=$(meta EXPECT "$cfg")
   kind=${expect%% *}
   want=${expect#* }
-  out=$(mktemp)
+  out=$(mktemp "$work/out.XXXXXX")
   echo "== $name (expect: $expect)"
-  status=$(tlc "$cfg" "$out" "$dir")
+  tlc "$cfg" "$out" "$dir"; status=$tlc_status
   case "$kind" in
     pass)
       if [ "$status" = 0 ] && grep -q 'No error has been found' "$out"; then
@@ -163,7 +182,7 @@ run_cfg() {
       tmp="$(dirname "$cfg")/.vacuity-$$.cfg"
       grep -vE '^(INVARIANTS?|PROPERTY|PROPERTIES)( |$)' "$cfg" >"$tmp"
       echo "INVARIANT EffectNotReachable" >>"$tmp"
-      status=$(tlc "$tmp" "$out.v" "$dir")
+      tlc "$tmp" "$out.v" "$dir"; status=$tlc_status
       rm -f "$tmp"
       if [ "$status" = 12 ] && grep -q 'Invariant EffectNotReachable is violated' "$out.v"; then
         record "$name (vacuity)" ok "effect reachable at depth $(stats "$out.v" | sed 's/.*depth \([0-9?]*\).*/\1/')"
@@ -220,7 +239,7 @@ run_group() {
 # summaries and failures.
 run_parallel() {
   local tmp i=0 f line
-  tmp=$(mktemp -d)
+  tmp=$(tmpdir)
   for f in "$@"; do i=$((i + 1)); printf '%s\n' "$f" >"$tmp/$(printf '%04d' $i).path"; done
   export BIDE_TLA_CACHE="$cache"
   # Each child gets one TLC worker, a bounded heap, and its own java.io.tmpdir (TLC's parser
@@ -251,7 +270,7 @@ self_test() {
   local s tmp
   # A stale translation is caught: edit the algorithm of a copy and check it without translating.
   s=$(specs | head -1)
-  tmp=$(mktemp -d)
+  tmp=$(tmpdir)
   mkdir "$tmp/m"
   awk '{ print } /^Finish:$/ { print "  skip;"; print "FinishAfter:" }' "$s" >"$tmp/m/$(basename "$s")"
   if (here=$tmp; translation) >"$tmp/log" 2>&1 || ! grep -q '^STALE translation' "$tmp/log"; then

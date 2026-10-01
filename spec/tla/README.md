@@ -55,7 +55,7 @@ The workflow `.github/workflows/models.yml` has two jobs. **Models** runs on eve
 the merge queue and on pushes to main: the self-test, the translation check, and every `ci`,
 `regress` and `finding` configuration. On a pull request, its steps run only when the pull request
 touches the models or the Go code they describe (`spec/tla/`, `agent/`, `store/`, `plan/`,
-`internal/journalhook/`, or `models.yml` itself); otherwise the job reports success after printing
+`internal/journalhook/`, `internal/toolhook/`, `middleware/`, or `models.yml` itself); otherwise the job reports success after printing
 that no modelled code changed, so it can be a required check without costing every documentation
 change six minutes. The merge queue and main always run in full, and so does any doubt (a failed
 diff, an unexpected event). A pull request that changes the claim code outside those paths must
@@ -149,8 +149,8 @@ spec/tla/
     regress/         historical rules, each of which must still produce its counterexample
     findings/        open findings, which fail until they are fixed (none open at present)
     limits/          accepted behavior, stated as an expected violation
-  flows/, protocol/, spend/, lifecycle/
-                     models 7, 2, 8 and 10, laid out the same way
+  flows/, protocol/, spend/, toolcall/, lifecycle/
+                     models 7, 2, 8, 9 and 10, laid out the same way
 ```
 
 ## Model 1: claims and attempts
@@ -307,8 +307,9 @@ configurations run without it, and so do the configurations with drivers in diff
 
 On every pull request and in the merge queue (`ci`, `regress`, `finding`, `limit`). States are distinct
 states; times are TLC's own, measured on a development machine (Apple M1 Pro, 8 workers). The
-whole pull-request set, vacuity runs and JVM starts included, takes about 6.5 minutes on the CI runner
-(GitHub `ubuntu-latest`, 4 cores).
+whole pull-request set, vacuity runs and JVM starts included, takes about 9 to 12.5 minutes on the
+CI runner (GitHub `ubuntu-latest`, 4 cores; runner speed varies), of which model 9 (`toolcall/`)
+is about 2 minutes.
 
 | Config | Path | Drivers, processes | Faults (error replies, crashes, cancels) | Attempts | Property | States | Time |
 |---|---|---|---|---|---|---|---|
@@ -763,6 +764,236 @@ Not modelled: two drivers' records equal in every journaled field (KNOWN-LIMITAT
 each driver's own), `OnAnswer` and `Cost`, and the token budget's stop (it reads the same
 totals).
 
+## Model 9: the tool-call state machine
+
+`toolcall/ToolCall.tla` checks how one turn's tool calls are run, decided and recorded (redesign
+P12, #117): the call state and began word, the base handler entered any number of times, the
+middleware around it, the errgroup of sibling calls, and what the journal gets for each outcome.
+It is a model of its own; the claim protocol under it is model 1's, so a claim here either
+succeeds or its process crashes.
+
+### What is modelled
+
+- **One chain per call per drive.** The call state (`open`, `reached`, `refused`, `closed`,
+  `refusedClosed`, the last three terminal) and the began word (`none`, `yes`, `sealed`), each
+  changed only by CAS: `enterTool`, the refusals, `closeCall` and the loop's seal when the chain
+  returns, `beginCall` immediately before `t.Call`.
+- **The base handler**, entered by up to two invocations per call at once: a synchronous `next`,
+  a retry, a renamed call (refused), and a `next` left running in a goroutine, which may outlive
+  the chain and the drive (it keeps a frozen view of its closed chain; its context is done once
+  `callTool` returned with a timeout, or the errgroup ended). Its steps: the checks and
+  `enterTool` (`ctxDone`, `toolhook.CallGuard`), the saga's accepted-arguments write
+  (`journalAcceptedArgs`, which can fail, commit after an error, or be cut off; for a retry-safe
+  step that changes state it is also the "may have begun" record, T3), `beginCall` (which also
+  answers a second invocation of a side effect "already ran", and refuses once the chain has
+  returned, T5), and the tool, which fires its effect or not and returns a result, its own error, an unknown
+  outcome, a context error, or `toolhook.Unrecorded` (a delegation under the wrong authority).
+- **Three kinds of call** (`Kinds`): a side effect (claimed with an attempt marker, not
+  retry-safe); a retry-safe tool that changes state (Idempotent, not ReadOnly, a Compensator;
+  no attempt marker, and it may fire again on every re-run); and a delegation (retry-safe, no
+  effect of its own, refuses Unrecorded under the wrong authority).
+- **The middleware** (`MW`, per call): call `next` and return what it returned; turn its success
+  into an error; retry it; rename the call; end the call with `ErrToolNotCalled`; answer from a
+  cache; return an error of its own without the sentinel; leave `next` running and give up on a
+  done context; call the tool itself (`direct`).
+- **The loop**: the claim, the pre-call check, the chain under the tool's timeout, the decision
+  of `notCalled`, the late rule, the unknown-outcome rules, the saga failure record, the result
+  write (`recordFresh`), and `recordNotStarted` (a failed write is remembered, and the resume gate
+  retries it: model 1's rule 4). The errgroup holds an Unrecorded refusal and a pause or halt until
+  the siblings finish and joins them (`errors.Join`); every other error cancels the group.
+- **The saga's rollback** (`rollbackRun`): the calls in reverse order. A failed step is skipped
+  (an unknown outcome is listed); a side effect with a live marker and no result halts it; a
+  result is compensated, as a memoized step whose record can fail; a retry-safe step with no
+  result is re-run through its middleware chain, in a later `RunSaga`'s context, and its result
+  compensated; only a re-run that reached the tool has a result. A re-run with an unknown
+  outcome is listed and the walk goes on; any other error, or a failed write, stops the rollback,
+  and a later `RunSaga` resumes it.
+- **Faults**, each with a budget: a store write that errors (committed or not, A3), a process
+  crash (every goroutine, leaked ones included, and `pendingClaims`), a run cancellation, a tool
+  deadline, a guard refusal (a delegated grant expired), a tool that says its outcome is unknown,
+  a tool's own error, and a delegation resumed under the wrong authority, which an operator puts
+  right (fair). The run is driven again until it completes, aborts a saga, or halts for ever.
+
+Abstracted away: the model turns (one turn of one or two calls, then completion), approvals
+(model 1b), the claim's own faults and other drivers (model 1), the saga's `halted` flag, pauses
+inside a tool (Interrupt, Sleep), and sub-runs (a delegation has no effect of its own here).
+
+### Model-code map
+
+Each label is one atomic step. Function names are those of #117 as merged (`132c187`); files are
+`agent/toolexec.go` (T), `agent/loop.go` (L), `agent/saga.go` (S), `agent/tool_middleware.go`
+(M) and `internal/toolhook/toolhook.go` (H). A change to any function named here changes the
+model in the same pull request (CONTRIBUTING, "Formal models"); every row but the no-code list
+(`IEnter2`, historical; the faults but `WrongAuth`) has a `// protocol:toolcall begin ... end`
+region in the Go code, which modelsync checks.
+
+<!-- modelsync: no-code toolcall IEnter2 Crash Cancel Deadline FixAuth -->
+<!-- modelsync: map toolcall -->
+| Label | Go |
+|---|---|
+| `IEnter` | T `Agent.toolHandler`'s base handler `h`: the `origID` check (`ErrConfig`, `ErrToolNotCalled`), `ctxDone`, `toolhook.CallGuard` (H), `enterTool` (from `callOpen`, `callRefused` or `callReached`; never from a closed state); the old `ran` mark under `RanEarly` and `RanBeforeArgs` |
+| `IArgs`, `IIdem` | T `journalAcceptedArgs`: the saga's accepted arguments, written always for a compensable retry-safe write (`Safety.retrySafeWrite`), so the record is also its "may have begun" mark (T3); a failure returns `argsJournalError` before the tool |
+| `IEnter2` | `RanEarly` only: the checks and `enterTool` after the arguments, as before round 4 |
+| `IBegin` | T `countIn` (calls that are not ReadOnly, `tracked`), then `callIsClosed` (T5: no begin once the chain returned), then `beginCall` (`sealed`; `ErrToolReinvoked` for a side effect already begun); the `earlier` flag (T3) |
+| `ICall` | T `t.Call` and the tool's own outcome (`toolRunning`, `toolSucceeded`, `toolFailed`, `toolUnknown` in `call.out`), through `callCounted`, whose `countOut` runs on return |
+| `LStart` | L the goroutine's `gctx.Err()` check and `claimNextAttempt` (side effects only: `!retriableOnResume`) |
+| `LPre` | L `recordFresh`'s pre-call check (`claimed && ctxDone(sctx)`); T `Agent.toolCallFor` and the fresh `st`, `began`, `out`, `earlier` of the chain |
+| `LMw`, `LWait` | M the `ToolMiddleware` chain built by `Agent.UseTool`, as the `MW` sets allow |
+| `LClose` | T `callTool` (the timeout and `late`), `closeCall`, the seal (`began` CAS to `beganSealed`), `running` (`tracked` and `countRunning`, whatever the chain's state, T6) and the unknown-outcome rules after `h` returns, with `Agent.unprovenFailure`; L `notCalled`, the `late` rule, `argsJournalError`, `sagaStepMayHaveBegun`, `StepSagaFail` with `OutcomeUnknown`; in a rollback re-run (`rbm`), S the `state != callReached` check |
+| `LRec`, `LNS` | L `recordFresh`'s insert (S `a.store.Do` of `ToolResultStep` in a re-run), `recordNotStarted` |
+| `LRet` | L the goroutine's deferred classification (held or cancelling the errgroup) |
+| `DOpen`, `DGate`, `DWait` | L `Agent.run`'s `Load` (its `values`), the resume gate (`liveAttempts`, `toolHalt`), the errgroup's `Wait`, `errors.Join` and the drive's return |
+| `DRollback`, `DRbStep` | S `Agent.rollback` and `Agent.rollbackRun`'s reverse walk: `failed` and `failedUnknown`, the `sagaArgsStep` listing of a failed retry-safe write (T3), the `started` halt (`toolHalt`), `!safety.RetrySafe()` skip |
+| `DRbWait` | S the re-run of a retry-safe step with a compensator through `toolH` and `callTool`; `ErrToolOutcomeUnknown` lists it in `unknown` and the walk goes on, any other error stops it |
+| `DRbComp`, `DRbNext` | S the memoized `sagaCompensateStep` (`Compensator.Compensate`, then its record) |
+| `Crash`, `Cancel`, `Deadline`, `WrongAuth`, `FixAuth` | the faults; `WrongAuth` is H `Unrecorded` from a delegation under the wrong authority |
+
+Not modelled: approvals (model 1b), sub-agent rollback recursion (`asSubAgent`, `bindRollback`),
+pauses inside a tool, and an unregistered tool in the rollback (`tool == nil`).
+
+### Properties
+
+| Property | Kind | Statement |
+|---|---|---|
+| `NoDoubleFire` | invariant | a side effect fires at most once per call across drives; a call recorded as a known failure (or a saga failure) never fired, nor did an attempt recorded as not started; no call's effect (a retry-safe one included) fires after the rollback recorded its compensation |
+| `TruthfulRecord` | invariant | a not-started record, or a failure recorded because the call was not called, means the tool never began; a failure whose text says the tool already ran means it began |
+| `NoLostSibling` | invariant | a drive that returns only an Unrecorded refusal has recorded every side effect whose tool began |
+| `SagaAccounted` | invariant | after a rollback, every effect still in place (a side effect's, or a retry-safe step's that changes state) is listed as an unknown outcome, or the rollback halted at or before it; the compensated ones are undone |
+| `ArgsAfterReach` | invariant | the saga's accepted arguments are journaled only for a call that was reached |
+| `BoundNotHit` | invariant | no claim is blocked by the attempt bound |
+| `NeverBegunProgress` | liveness | a side effect whose live attempt never began does not halt for ever, unless a crash erased the process's record of the attempt |
+| `UnrecordedContinues` | liveness | a run whose only issue is an Unrecorded refusal completes once driven under the right authority |
+| `RollbackEnds` | liveness | a failed saga's rollback reaches its end (`SagaAborted`, or a halt for a human) |
+
+Liveness assumes a middleware within the ToolMiddleware contract: one that leaves `next` running,
+or ends a call without it and without `ErrToolNotCalled`, is answered with a halt by design.
+
+### Configurations
+
+Times are TLC's own on the development machine (Apple M1 Pro); each passing config is also run
+for vacuity. On the CI runner the whole `toolcall/` pull-request set (ci, regress, finding and
+limit configs, vacuity runs and JVM starts) takes about 3 minutes. The model states #117's rules after its fifth review and the fixes of model 9's own
+findings (below).
+
+| Config | Group | What | States | Time |
+|---|---|---|---|---|
+| `contract-one` | ci | one side effect, middleware within the contract (a result check included), every fault | 33,884 | <1 s |
+| `adv-one` | nightly | one side effect, any middleware but a direct call (retries, `next` left running, errors without the sentinel), every fault | 923,507 | 5 s |
+| `saga-adv` | nightly | a saga Compensator with rewritten arguments (the accepted-arguments write), any middleware but a direct call, four attempts | 1,305,093 | 10 s |
+| `hedge-one` | ci | a hedging wrapper: `next` left running, given up on a done context | 8,533 | <1 s |
+| `direct-one` | ci | a middleware that calls the tool itself | 1,411 | <1 s |
+| `siblings` | nightly | a side effect and a delegation that refuses Unrecorded; a cancellation, an error reply | 191,877 | 2 s |
+| `live-contract` | nightly | `NeverBegunProgress`, contract middleware and retries without a cache answer, every fault | 83,596 | 3 s |
+| `live-saga-args` | ci | `NeverBegunProgress` with the accepted-arguments write | 83,483 | 3 s |
+| `live-unrec` | ci | `UnrecordedContinues`, a side effect and a delegation | 1,136 | 1 s |
+| `saga-idem` | nightly | a retry-safe saga step that changes state, contract middleware, every fault (T3's shape) | 532,471 | 3 s |
+| `rollback-rerun` | nightly | the rollback re-runs a retry-safe step cut off by a sibling's saga failure: `next` left running, a cache answer, a cancellation (T4, T5) | 245,482 | 3 s |
+| `live-rollback` | ci | `RollbackEnds`: a result check that rejects every success of the re-run step | 900 | 1 s |
+| `deep-adv-a2` | nightly | one side effect, any middleware, two extra invocations and two error replies, four attempts | 46,315,249 | 8 min* |
+| `deep-adv-two` | nightly | two side effects, any middleware but a direct call, a cancellation and an error reply | 103,675,470 | 16 min* |
+| `deep-two-side` | nightly | two side effects, contract middleware, every fault | 5,913,713 | 38 s* |
+| `deep-siblings` | nightly | a side effect and a delegation, contract middleware on both, every fault | 65,561,449 | 24 min* |
+| `deep-live-siblings` | nightly | `NeverBegunProgress` over the siblings with faults, without a cache answer | 3,338,804 | 4 min* |
+| `deep-saga-idem-adv` | nightly | a retry-safe saga step that changes state, any middleware but a direct call, every fault | 6,651,541 | 48 s* |
+| `deep-rollback-rerun` | nightly | the rollback's re-run with an error reply and a deadline beside the cancellation, four attempts | 29,286,833 | 5 min* |
+
+\* The nightly times are TLC's own on the development machine while it ran other jobs (a load
+average of about 30 on 10 cores), so they are upper bounds; on an idle machine `deep-siblings`
+took about 5 minutes and `deep-adv-a2` about 3.
+
+Regressions (each must fail with its property, and passes with its `Bugs` flag removed):
+
+| Config | The historical rule | Expected | Trace |
+|---|---|---|---|
+| `regress/abandoned-next` | R117-6 (round 1): "not called" was the flag the base handler sets before `t.Call`; a middleware left `next` running and returned first (`FlagRule`) | `NoDoubleFire` | 22 states |
+| `regress/direct-call` | round 2, item 2: under the flag rule, a middleware calling the tool itself left the flag unset (`FlagRule`) | `NoDoubleFire` | 11 states |
+| `regress/refused-leak` | round 4, finding 1: `refused` was not terminal, so a leaked `next` moved it to `reached` after the call was recorded (`RefusedNotTerminal`; with T5's rule, no begin after the chain returned, as `NoClosedBegin`, it is stopped there too) | `NoDoubleFire` | 26 states |
+| `regress/ran-early` | round 4 (c): the `ran` mark came before the refusal checks, so a retry of a refused call was recorded as "already ran" (`RanEarly`) | `TruthfulRecord` | 26 states |
+| `regress/sealed-args` | round 5, F4: no began word, so a saga call whose accepted-arguments write a cancellation cut off was "called" and halted for ever (`NoBeganWord`) | `NeverBegunProgress` | 19 states |
+| `regress/sibling-cutoff` | round 5, F1: an Unrecorded refusal cancelled the errgroup and cut off a sibling side effect in flight (`UnrecCancels`) | `NoLostSibling` | 62 states |
+| `regress/sibling-cutoff-live` | the same, as liveness: the cut-off sibling halts the re-drive the refusal asked for | `UnrecordedContinues` | 41 states |
+| `regress/t1-maperr` | model 9, T1: a middleware turned the tool's success into an error, recorded as a known failure (`NoToolOutcome`) | `NoDoubleFire` | 17 states |
+| `regress/t1-saga-maperr` | T1 in a saga: a saga failure the rollback skipped and listed nowhere (`NoToolOutcome`) | `SagaAccounted` | 23 states |
+| `regress/t1-retry` | T1: a retry refused after the tool fired, recorded as the call's known failure (`NoToolOutcome`) | `NoDoubleFire` | 25 states |
+| `regress/t1-leak` | T1: `next` left running; the middleware's own error recorded while the tool fires (`NoToolOutcome`) | `NoDoubleFire` | 20 states |
+| `regress/idem-saga-skip` | the P12 final review, bug 2: a retry-safe saga step that changes state, whose success a middleware turned into an error, was a known saga failure the rollback skipped (`IdemSagaSkip`, with `NoIdemBegan` as the code then was; fixed in #117 `be367d7`) | `SagaAccounted` | 23 states |
+| `regress/t3-idem-earlier-attempt` | model 9, T3: a retry-safe saga step that changes state fired, was cut off with nothing recorded, and its re-run failed: the rollback skipped it (`NoIdemBegan`) | `SagaAccounted` | 29 states |
+| `regress/t4-cache-while-running` | model 9, T4: a cache answer while `next`, left running, was in the tool; recorded and compensated before the effect landed (`NoRunningCheck`) | `NoDoubleFire` | 42 states |
+| `regress/t5-begin-after-return` | model 9, T5: a `next` left running began a retry-safe tool after its chain returned and its compensation was recorded (`NoClosedBegin`) | `NoDoubleFire` | 67 states |
+| `regress/t6-cache-while-earlier-runs` | model 9, T6: a re-drive's cache answer while an earlier drive's invocation was in the tool; recorded and compensated before it landed (`RunningReachedOnly`) | `NoDoubleFire` | 55 states |
+| `regress/rollback-no-end` | model 9: the rollback's re-run stopped on any error, so a result check rejecting every success left it with no end (`NoRbUnknown`) | `RollbackEnds` | 71 states |
+| `regress/t2-ran-before-args` | model 9, T2: the `ran` mark preceded the accepted-arguments write, so a retry after a failed write recorded "already ran" (`RanBeforeArgs`) | `TruthfulRecord` | 41 states |
+
+Accepted limits:
+
+- `limits/direct-then-next`: a middleware that calls the tool itself and also gets a refusal
+  from `next` ends `refusedClosed`, indistinguishable from a call that never ran
+  (`NoDoubleFire`). Calling the tool itself is outside the contract; alone it is answered with a
+  halt (`direct-one`).
+- `limits/cache-write-fails`: a middleware answers without `next` (a cache) and the result write
+  fails. A closed call counts as possibly called (it could have called the tool itself), so the
+  re-drive halts on a tool that never began (`NeverBegunProgress`).
+
+### Findings
+
+Found by this model in #117 at `0e0efc3`, each with a failing Go test, and fixed in #117 as the
+model checked them (`a976104`); their counterexamples are the `t1-*` and `t2-*` regressions.
+
+- **T1: a known failure was recorded for a side effect whose tool began and did not itself
+  fail.** The loop decided "known failure" from the chain's error alone. The tool may have
+  succeeded and a middleware turned that into an error (a result check, which the contract
+  allows), or the chain returned a later invocation's refusal (a retry answered
+  `ErrToolReinvoked`, or refused by the guard), or the middleware returned while `next` still ran
+  the tool. The journal then said the call failed though its effect fired; in a saga the step was
+  a `StepSagaFail` without `OutcomeUnknown`, which the rollback skips as "made no change" and
+  `SagaAborted` listed nowhere. The fix: the base handler records the tool's own outcome
+  (running, succeeded, failed, unknown); when the chain returns an error for a side effect whose
+  tool began and did not itself fail, while its context is not done, the error is an unknown
+  outcome: nothing is recorded and the run halts.
+- **T2: "already ran" was recorded for a tool that never began.** Round 4's fix (c) moved the
+  `ran` mark after `enterTool`, but it still preceded the accepted-arguments write. When that
+  write failed, the tool never began (the seal made the call not called, rightly), yet a retry of
+  `next` was answered "already ran and is not retry-safe", and that text was journaled. The fix:
+  no `ran` map; an invocation that finds the began word `yes` is the reinvocation.
+
+Found by the model's extension to retry-safe steps and the rollback's re-run, in #117 at
+`10e889b`, each with a failing Go test, and fixed in #117 as the model checks them (`be4241f`,
+`257596f`, `bb3dd20`); their counterexamples are regressions:
+
+- **T3: an earlier attempt of a retry-safe saga step was listed nowhere**
+  (`regress/t3-idem-earlier-attempt`, `NoIdemBegan`, `SagaAccounted`). A retry-safe call has no
+  attempt marker. A step that changes state fired, the run was cut off (a cancellation, a crash)
+  with nothing recorded, and the re-run failed with a known failure (its own error, a denial):
+  the rollback skipped it as one that made no change, and the first attempt's effect stayed. The
+  fix: the saga-args record, written before the call, is the "may have begun" mark of such a
+  step, and a later known failure of it is an unknown outcome, listed.
+- **T4: a success recorded while the tool still ran** (`regress/t4-cache-while-running`,
+  `NoRunningCheck`, `NoDoubleFire`). A middleware left `next` running and answered from a cache;
+  the call was recorded, and in a saga compensated before the tool's effect landed. The fix: a
+  nil chain return while any invocation of the call is in the tool (of this chain, or one left
+  running past an earlier drive) is an unknown outcome. One outcome word per chain is not enough:
+  a sibling invocation overwrites it, and it does not see an earlier chain's.
+- **T5: a retry-safe tool began after its chain returned** (`regress/t5-begin-after-return`,
+  `NoClosedBegin`, `NoDoubleFire`). `closeCall` leaves a reached call `reached`, so a `next` left
+  running entered the tool again after the result, and the compensation, were recorded. The fix:
+  no invocation begins the tool once its chain has returned.
+- **The rollback's re-run had no end** (`regress/rollback-no-end`, `NoRbUnknown`,
+  `RollbackEnds`). `rollbackRun` stopped on any error of the re-run, so a result check that
+  rejects every success left the rollback returning an error on every `RunSaga`, with no
+  `SagaAborted` and no halt to resolve. The fix: a re-run whose outcome is unknown is listed, and
+  the rollback goes on; a re-run answered without reaching the tool (a cache) is such an outcome.
+
+Found after T4's fix, at `7c0ffd9`, with a failing Go test, and fixed in #117 (`38c1e69`):
+
+- **T6: a cache answer while an earlier drive's invocation is in the tool**
+  (`regress/t6-cache-while-earlier-runs`, `RunningReachedOnly`, `NoDoubleFire`). T4's fix reads
+  the in-flight count only for a chain that reached the tool. A drive was cancelled while a
+  `next` left running was in a retry-safe tool (nothing recorded); the re-drive's middleware
+  answered from a cache without reaching the tool; the answer was recorded and, when a later
+  step failed the saga, compensated, and the first invocation's effect landed after. The fix: a
+  result while the count (of calls that are not ReadOnly, keyed by store, run and call) is above
+  zero is an unknown outcome, whatever the chain's state.
+
 ## Model 10: the run lifecycle and recovery
 
 `lifecycle/Lifecycle.tla` checks how a run reaches its end and how recovery finds the runs that
@@ -1021,6 +1252,10 @@ The mechanisms of section 6 of the plan, as they apply here:
   interval, and L2 and L3 become tests of P14.
 
 ## What the bounds do not cover
+
+Model 9: one turn of one or two calls, two invocations of the base handler per call at a time,
+one extra invocation on pull requests, one of each fault (two error replies nightly). A bug that
+needs three concurrent invocations of one call, or a second turn, is outside the check.
 
 Model 10 adds: one or two recovery workers at concurrency 1, up to three runs (four in the pickup
 measurements), one or two calls per run, one error reply, one crash and one stall per run of the

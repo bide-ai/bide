@@ -195,7 +195,7 @@ deterministic Go test before fixing it, as for any bug. A rule replaced by the c
 `RecoverLoop`, or to `Cancel` changes the run lifecycle model, `spec/tla/lifecycle/Lifecycle.tla`.
 See [spec/tla/README.md](spec/tla/README.md).
 
-The Go code the models describe (the claim protocol, the approval gate, flows, spend accounting)
+The Go code the models describe (the claim protocol, the approval gate, flows, spend accounting, the tool-call state machine)
 is wrapped in region markers, `// protocol:<model> begin <Action> ...` and `// protocol:<model> end`,
 that name the model and the model actions the region implements. The Lint job runs
 `go run ./internal/tools/modelsync`, which fails a pull request that:
@@ -213,11 +213,15 @@ that name the model and the model actions the region implements. The Lint job ru
 Move or add the markers when you move or add modelled code; a new model lands with its markers
 (see [Keeping the code and the models in step](spec/tla/README.md#keeping-the-code-and-the-models-in-step)).
 
+The tool-call state machine (`spec/tla/toolcall/`) covers `agent/toolexec.go`'s base handler
+and call states, the tool call in `agent/loop.go`, `agent/tool_middleware.go`, `rollbackRun` in
+`agent/saga.go`, and `internal/toolhook`.
+
 ## Before opening a change
 
 - `GOWORK=off go build ./...`, `GOWORK=off go test ./...`, `GOWORK=off go vet ./...`, and `gofmt -l .` are clean (run `gofmt` from the go1.27 toolchain via `export PATH="$(go env GOROOT)/bin:$PATH"`, or use `go fmt ./...`; the base gofmt predates Go 1.27 generic methods and reports false errors).
 - New exported symbols have doc comments that start with their name, and every package has a package comment; CI checks this with `go run ./internal/tools/doccheck -root . -allow .doccheck-allow` from the root, and a pull request may not add entries to `.doccheck-allow`.
 - `go run ./internal/tools/docsnip` is clean: the Go blocks of the docs compile (see [Go code in the docs](#go-code-in-the-docs)).
-- `spec/tla/check.sh` passes when the change touches the claim protocol, and `go run ./internal/tools/modelsync -base origin/main` passes (see [Formal models](#formal-models)).
+- `spec/tla/check.sh` passes when the change touches a modelled protocol (the claim protocol, the tool-call state machine), and `go run ./internal/tools/modelsync -base origin/main` passes (see [Formal models](#formal-models)).
 - `CHANGELOG.md` has an entry under Unreleased, or the change is not user-facing.
 - New docs are linked from the [docs index](docs/README.md) and honor the style above.
