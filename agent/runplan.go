@@ -30,6 +30,7 @@ type runPlan struct {
 	reqTools   []ToolSpec      // the specs every request of the drive is sent
 	maxConc    int
 	cancelKey  string // the key the drive's cancellation checks read
+	root       string // a sub-run's tree root, whose cancellation the checks read too; "" for a root
 	checkTurn  bool   // a turn boundary has passed since the drive's Load
 }
 
@@ -167,6 +168,9 @@ func (a *Agent) openPlan(ctx context.Context, runID string, d *driveSpec, recs [
 	p.cancelKey = runCancelledStep
 	if p.saga {
 		p.cancelKey = runCancelRequestedStep // Cancel writes only the request on a saga (rule 5)
+	}
+	if root := treeRootID(runID); root != runID {
+		p.root = root // a Cancel of the tree's root cancels this sub-run too
 	}
 	// The drive's identity: its Actor live, the principal journaled.
 	if idn.Actor != "" || start.Principal != nil {

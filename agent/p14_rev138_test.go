@@ -3,6 +3,7 @@ package agent_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
@@ -213,5 +214,63 @@ func TestRev138_RecoverReportsACancelRollbackAsCancelled(t *testing.T) {
 	st, _ := agent.Status(ctx, j, "r")
 	if err != nil || n != 1 || st.State != agent.RunCancelled || undone.n.Load() != 1 {
 		t.Fatalf("Recover = %d, %v; Status %s; compensated %d; want 1, nil, cancelled, 1", n, err, st.State, undone.n.Load())
+	}
+}
+
+// A sub-run reads its tree root's cancellation at its turn boundaries and after a won claim, not
+// only when it opens: a Cancel of the root that lands while the sub-run runs stops it at its next
+// check.
+func TestRev138_SubRunChecksTheRootAtEveryCheck(t *testing.T) {
+	for _, c := range []struct {
+		where string
+		saga  bool
+	}{{"turn boundary", false}, {"after the claim", false}, {"turn boundary", true}, {"after the claim", true}} {
+		where := c.where
+		t.Run(fmt.Sprintf("%s/saga=%v", where, c.saga), func(t *testing.T) {
+			ctx := context.Background()
+			j, _ := p14Journal(t)
+			var paid counter
+			cancelRoot := func() {
+				if err := agent.Cancel(ctx, j, "r", "stop"); err != nil {
+					t.Errorf("Cancel = %v", err)
+				}
+			}
+			mark := agent.Func("mark", "", agent.Safety{ReadOnly: true}, func(context.Context, struct{}) (string, error) {
+				if where == "turn boundary" {
+					cancelRoot()
+				}
+				return "ok", nil
+			})
+			subModel := &p14Model{turns: []p14Turn{
+				{calls: []agent.ToolUse{call("s1", "mark")}},
+				{calls: []agent.ToolUse{call("s2", "pay")}, hook: func(agent.Request) {
+					if where == "after the claim" {
+						cancelRoot()
+					}
+				}},
+				{text: "paid"},
+			}}
+			sub := p14Build(t, subModel, j, agent.WithTools(mark, paid.tool("pay", agent.Safety{})))
+			parentModel := &p14Model{turns: []p14Turn{
+				{calls: []agent.ToolUse{{ID: "p1", Name: "helper", Args: []byte(`{"task":"pay"}`)}}},
+				{text: "done"},
+			}}
+			parent := p14Build(t, parentModel, j, agent.WithTools(agent.SubAgent("helper", "", sub)))
+			var opts []agent.RunOption
+			if c.saga {
+				opts = append(opts, agent.WithSaga())
+			}
+			_, err := parent.RunMessage(ctx, "r", agent.UserText("go"), opts...)
+			st, _ := agent.Status(ctx, j, "r")
+			if !errors.Is(err, agent.ErrRunCancelled) || st.State != agent.RunCancelled {
+				t.Errorf("parent run = %v, Status %s; want ErrRunCancelled and cancelled", err, st.State)
+			}
+			if n := paid.n.Load(); n != 0 {
+				t.Errorf("the sub-run's side effect fired %d times after its root was cancelled", n)
+			}
+			if where == "turn boundary" && subModel.calls.Load() != 1 {
+				t.Errorf("the sub-run called its model %d times; want 1, the turn boundary stops it", subModel.calls.Load())
+			}
+		})
 	}
 }

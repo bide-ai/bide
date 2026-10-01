@@ -139,9 +139,24 @@ func (e *cancelTrip) Error() string { return "saga cancelled: " + e.reason }
 // protocol:lifecycle begin DTurn DPost
 
 // cancelSeen reads the run's cancellation marker (run:cancelled, or a saga's rollback request):
-// one Get.
+// one Get. A sub-run (one whose tree root is another run: a sub-agent's, a SubRunFor run, a
+// delegation) reads its tree root's too, since a Cancel of the root cancels the whole tree: up to
+// two Gets more (the root's run:cancelled and its rollback request, whichever the root is).
 func (a *Agent) cancelSeen(ctx context.Context, runID string, p *runPlan) (bool, error) {
 	_, ok, err := lookup(ctx, a.store, runID, p.cancelKey)
+	if err != nil || ok || p.root == "" {
+		return ok, err
+	}
+	return a.rootCancelled(ctx, p.root)
+}
+
+// rootCancelled reports whether the tree root root was cancelled: it holds run:cancelled, or a
+// saga's rollback request.
+func (a *Agent) rootCancelled(ctx context.Context, root string) (bool, error) {
+	if _, ok, err := lookup(ctx, a.store, root, runCancelledStep); err != nil || ok {
+		return ok, err
+	}
+	_, ok, err := lookup(ctx, a.store, root, runCancelRequestedStep)
 	return ok, err
 }
 
@@ -169,7 +184,10 @@ func (a *Agent) postClaim(ctx context.Context, runID string, p *runPlan, markerK
 //go:noinline
 func (a *Agent) leaveCancelled(ctx context.Context, runID string, p *runPlan, leave func(error) (Message, usageTotals, int, error), tot *usageTotals, turns int) (Message, usageTotals, int, error) {
 	if p.saga {
-		r, _, err := lookup(ctx, a.store, runID, runCancelRequestedStep)
+		r, ok, err := lookup(ctx, a.store, runID, runCancelRequestedStep)
+		if err == nil && !ok && p.root != "" {
+			r, _, err = lookup(ctx, a.store, p.root, runCancelRequestedStep) // the tree root's request
+		}
 		if err != nil {
 			return leave(err)
 		}

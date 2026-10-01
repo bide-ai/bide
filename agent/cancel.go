@@ -72,6 +72,18 @@ type cancelReason struct {
 //     Status reports the saga RunStarted. A saga whose run:complete lands before the request is
 //     seen is complete.
 //
+// What "starts nothing more" covers, precisely: a side-effect call's claim won after the check saw
+// the marker never fires (its attempt is recorded as not started). A retry-safe call (ReadOnly or
+// Idempotent: no claim) is not checked one by one: a retry-safe call already dispatched in the
+// current turn may still run, and the run stops at its next turn boundary or claim. A sub-run (a
+// sub-agent's, a SubRunFor run, a delegation) reads its tree root's cancellation too, when it
+// opens, at its turn boundaries and after every won claim, so a Cancel of the root stops the whole
+// tree. A plan flow's run checks it when the flow opens, at every node, and after every won claim.
+//
+// Cancel's reads are not one atomic step: a drive can write run:complete between Cancel's first
+// read and its write. The read-back after the write settles it: the first end marker in journal
+// order is the run's end, and Cancel reports ErrRunEnded if it is not run:cancelled.
+//
 // Cancel accepts any run ID but the empty one: a sub-run's or a session turn's run is a run too
 // (see Session.SendMessage for what a cancelled turn does to its session).
 func Cancel(ctx context.Context, j *Journal, runID, reason string) error {
