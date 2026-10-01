@@ -444,6 +444,12 @@ type EventToolConfig struct {
 	// audit over the journal commits to the policy the action ran under. It is treated as an
 	// opaque string: the SDK does not depend on gsm's serialization format.
 	PolicyDigest string
+	// Attested asks for the attested form explicitly: the result records the state digest and
+	// the acting identity as well as the policy digest. A non-empty PolicyDigest makes the tool
+	// attested without it; with an empty PolicyDigest, Attested is refused (EventTool panics with
+	// ErrConfig), since an attestation needs the policy it attests to. It is what a call of the
+	// removed AttestedEventTool, which accepted an empty digest, migrates to.
+	Attested bool
 	// Safety is the tool's retry classification (see agent.Safety). The zero value is a side
 	// effect.
 	Safety agent.Safety
@@ -475,9 +481,13 @@ type EventToolConfig struct {
 // oracle on them (see `bide-audit verify-governance`), tying the cryptographic root (the log) to
 // the mathematical root (the proof) over one artifact.
 //
-// EventTool panics, as agent.Func does, on an invalid option.
+// EventTool panics, as agent.Func does, on an invalid option, and with ErrConfig on a config that
+// asks for the attested form (Attested) with an empty PolicyDigest.
 func EventTool(gov Applier, cfg EventToolConfig) agent.Tool {
 	event, policyDigest := cfg.Event, cfg.PolicyDigest
+	if cfg.Attested && policyDigest == "" {
+		panic(fmt.Errorf("govern: EventTool %q asks for the attested form (state digest and acting identity) with an empty PolicyDigest; set the digest of the policy it attests to: %w", cfg.Name, agent.ErrConfig))
+	}
 	if policyDigest == "" {
 		return agent.Func(cfg.Name, cfg.Description, cfg.Safety,
 			func(ctx context.Context, _ struct{}) (map[string]any, error) {
