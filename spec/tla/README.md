@@ -1813,7 +1813,15 @@ adds about 170 seconds of TLC and JVM time to the four slots, about 43 seconds o
 | `budget` | ci | S4's rule (a drive holds the turn run's lease): one message on two workers, turns of three model calls, a budget of three, a crash. | 16,498 | 3 s |
 | `cancel-close` | ci | S3's rule: P14's `Cancel` of a Send turn's run, which is then recorded closed, and a second message. | 869 | 3 s |
 | `live-resume` | ci | `Answered` and `TurnsSettle`: two workers with one message each, a crash; every caller sends again until answered. | 4,490 | 13 s |
-@@NIGHTLY@@
+| `deep-workers-send` | nightly | One `Send` message on two workers; an error reply and a crash. | 106,192 | 9 s* |
+| `deep-three` | nightly | One `Send` message on two workers and a second message on the first; an error reply and a crash. | 8,934,366 | 4 min 20 s* |
+| `deep-shared` | nightly | One handle shared by three callers: one `Send` message sent twice and a `SendOnce`; an error reply and a pause. | 337,360 | 8 s* |
+| `deep-once` | nightly | `SendOnce`: one key on two workers and a second key; two error replies and a crash. | 2,285,252 | 4 min 17 s* |
+| `deep-cancel` | nightly | S3's rule with three callers and a crash. | 8,909,504 | 3 min 51 s* |
+| `deep-live` | nightly | `Answered` and `TurnsSettle` on two workers: an error reply, a crash and a pause. | 92,437 | 17 s* |
+
+\* Nightly times are TLC's own with eight workers on the development machine while it ran other
+jobs; on the CI runner (four workers) expect about twice as long, about 25 minutes for the set.
 
 ### Regressions, findings and limits
 
