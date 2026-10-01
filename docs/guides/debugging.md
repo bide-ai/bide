@@ -252,7 +252,8 @@ n, err := agent.Recover(ctx, store, func(ctx context.Context, runID string) erro
 
 A run's first drive records its input and whether it runs as a saga (the `run:start` step), and an
 unfinished run resumes only with those: another input, or `Run` for a run started with `RunSaga` (or
-the reverse), is `ErrConfig`. `RecordedStart` reads them back.
+the reverse), is `ErrConfig`. A finished run returns its recorded answer only to a drive with the
+input it answered; another input is `ErrConfig` too. `RecordedStart` reads them back.
 
 **Keep recovering for the life of the process.** `Recover` is one pass: a run whose holder died
 a moment ago still has a live lease, so the pass skips it, and nothing re-drives it until someone

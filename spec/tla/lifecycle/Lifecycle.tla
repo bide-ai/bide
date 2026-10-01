@@ -513,7 +513,9 @@ PWait:
 end process;
 
 \* An operator: ResolveHalt (checkNoLiveDriver takes the run's lease) and Approve. Never assumed
-\* to act.
+\* to act. A run here is a tree root, the run its drivers lease: in the code the check leases
+\* treeRootID of the halted run's ID, the root run for a sub-agent's run and a session turn's run
+\* for the turn and its sub-runs (#137, R137-1), never a run that only shares a prefix of the ID.
 process resolveOp = Op
 begin
 OPick:

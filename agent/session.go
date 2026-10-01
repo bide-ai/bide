@@ -371,7 +371,7 @@ func (s *Session) driveRun(ctx context.Context, runID string, seed []Message) (M
 		return Message{}, storageErr("load history "+runID, err)
 	}
 	if final, ok := completedAnswer(recs); ok {
-		if err := checkStartKind(runID, recs, RunKindAgent); err != nil {
+		if err := checkFinishedStart(runID, recs, seed[len(seed)-1].Text()); err != nil {
 			return Message{}, err
 		}
 		return final, nil
