@@ -39,12 +39,21 @@ The hardest bugs in a durable runtime live in interleavings: two drivers, a cras
 7. **Sessions:** concurrent sends, turn ordering, starting points and crashes between turns, when the session code next changes.
 8. **Flow semantics:** switch and loop replay, flow completion and per-iteration step scoping. Done: [model 7](../spec/tla/README.md#model-7-flow-semantics), with the lowering of #103.
 9. **The whole-tree budget:** how far concurrent sub-agents can overshoot a shared token budget (low priority). The spend accounting of model calls that the budget counts is done: [model 8](../spec/tla/README.md#model-8-spend-accounting), with #104.
+10. **The tool-call state machine of P12:** tool middleware, retries, sibling calls and the saga rollback's re-run. Done: [model 9](../spec/tla/README.md#model-9-the-tool-call-state-machine); it found T1 to T6 in #117 before it merged.
+11. **The run lifecycle and recovery:** end markers, leases, `Recover` and `RecoverLoop`, and the bounded pickup of a dead holder's run. Done: [model 10](../spec/tla/README.md#model-10-the-run-lifecycle-and-recovery); it found L1 (fixed in #126) and L2 and L3 (open until P14).
 
-Order of remaining work: the store contract, then leases and sagas with the changes that settle them, then sessions, then the budget bound.
+Next, in order:
+
+1. **Delegation and sub-run authority, including saga trees:** grants, recorded authority, rollback binding, halts propagating from sub-runs, and links to programmatic sub-runs. Most of P12's and P13's late bugs were here, and model 9 treats a delegation as a black box. Next up.
+2. **Model 10 extended for P14:** `Cancel`, `Status` and the per-run tool filter, with L2 and L3 as its open findings. It gates P14 the way model 9 gated P12.
+3. **Sessions:** multiple turns, resumes and shared history. Built when P14 or later work touches sessions.
+4. **M3 trace validation:** checks real Go runs against the existing models, so they cannot drift.
+
+The store contract and the whole-tree budget bound remain candidates.
 
 Models live in the repository and run in CI. A counterexample the checker finds becomes a deterministic Go regression test.
 
-The design and plan: [formal models of the coordination protocols](design/formal-models.md) (accepted, in progress). Done: models 1, 1b, 2, 7 and 8 are in [spec/tla](../spec/tla/README.md) and checked on every pull request. The code the models describe is marked, and CI fails a change to it that does not change its model or say why. Next: trace validation, so the Go test suites check that the code implements the model.
+The design and plan: [formal models of the coordination protocols](design/formal-models.md) (accepted, in progress). Done: models 1, 1b, 2, 7, 8, 9 and 10 are in [spec/tla](../spec/tla/README.md) and checked on every pull request. The code the models describe is marked, and CI fails a change to it that does not change its model or say why. The overview, with every bug the models caught, is [Formal verification](formal-verification.md).
 
 ### bide underneath other agent frameworks (Go)
 
