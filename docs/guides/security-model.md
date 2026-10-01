@@ -111,7 +111,7 @@ retrieved as a step of the run, so a resumed run shows the model the same docume
 journal records what the model was given. The retrieval runs before the model middleware chain,
 so a model middleware that refuses the call does not keep the query from the store or the
 documents out of the journal; a policy that must wraps the `Retriever` (see
-[RAG and memory](rag-memory.md)). They are stored as written: no redaction applies to
+[RAG and memory](rag-memory.md)). The documents are stored as written: no redaction applies to
 them, and anyone who holds the journal can read them. Salting keeps them out of other records'
 proofs: a `ProofBundle` for a different record of the run discloses a neighbouring leaf only as a
 sibling hash over salted content, which cannot be tested against a guessed document. A proof
