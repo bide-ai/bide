@@ -182,6 +182,8 @@ func completedAnswer(recs []Record) (Message, bool) {
 // interrupt is answered, a timer fires). Only a genuine error (a model
 // or storage fault, a bad tool) is joined into the returned error. A run whose lease was lost
 // mid-drive (ErrLeaseLost) is not joined either: another process holds it now and carries it on.
+// Nor is a run the drive found cancelled (ErrRunCancelled), a saga's included once its
+// cancellation's rollback finished: the run is over, as Cancel asked.
 //
 // resume is deployment POLICY, not a mechanism the SDK can supply: it knows which agent drives a
 // run and any Waker or clock it binds. Under the run's lease, after the terminal markers, Recover
@@ -473,7 +475,7 @@ func recoverRun(ctx context.Context, store Durable, runID string, resume Resumer
 		return err
 	}, cfg)
 	switch {
-	case err != nil && (!driven || !IsPause(err) && !errors.Is(err, ErrLeaseLost)):
+	case err != nil && (!driven || !IsPause(err) && !errors.Is(err, ErrLeaseLost) && !cancelledEnd(err)):
 		return resumed, fmt.Errorf("recover run %s: %w", runID, err)
 	case notStarted && reportOnce(store, runID, ErrNotStarted):
 		return false, fmt.Errorf("recover run %s: skipped: %w", runID, ErrNotStarted)
@@ -481,6 +483,20 @@ func recoverRun(ctx context.Context, store Durable, runID string, resume Resumer
 		return false, fmt.Errorf("recover run %s: skipped: %w", runID, notResumable)
 	}
 	return resumed, nil
+}
+
+// cancelledEnd reports whether a drive's err is the end of a cancelled run: ErrRunCancelled, or a
+// saga's *SagaAborted for a cancellation whose rollback finished. A recovery pass that drove a run
+// to that end succeeded; a cancellation's rollback that stopped (a failed compensator, an unknown
+// outcome) did not.
+func cancelledEnd(err error) bool {
+	if !errors.Is(err, ErrRunCancelled) {
+		return false
+	}
+	if sa, ok := errors.AsType[*SagaAborted](err); ok {
+		return sa.CompensateErr == nil && len(sa.UnknownOutcome) == 0
+	}
+	return true
 }
 
 // RecoverLoop re-drives in-flight runs until ctx is done, so a run whose holder dies is taken over
