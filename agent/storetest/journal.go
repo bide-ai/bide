@@ -642,14 +642,17 @@ func reapLeases(t *testing.T, s agent.Store) {
 	if got := lapsed(); !slices.Equal(got, want) {
 		t.Fatalf("after ReapLeases(nil), Runs(LeaseLapsed) yields %v, want %v: it deleted a lease on a run that has entries", got, want)
 	}
-	if n := reap([]string{"nothing", end}); n != 1 {
-		t.Fatalf("ReapLeases(end) deleted %d leases, want the one lapsed lease on a finished run", n)
+	// Leases of other tests sharing the store may lapse meanwhile and go too: counts are lower
+	// bounds, and the listing shows which of this test's leases went.
+	if n := reap([]string{"nothing", end}); n < 1 {
+		t.Fatalf("ReapLeases(end) deleted %d leases, want at least the lapsed lease on a finished run", n)
 	}
 	if got := lapsed(); !slices.Equal(got, []string{open}) {
 		t.Fatalf("after ReapLeases(end), Runs(LeaseLapsed) yields %v, want only the unfinished run %s", got, open)
 	}
-	if n := reap([]string{end}); n != 0 {
-		t.Fatalf("a second ReapLeases(end) deleted %d leases, want none", n)
+	reap([]string{end})
+	if got := lapsed(); !slices.Equal(got, []string{open}) {
+		t.Fatalf("after a second ReapLeases(end), Runs(LeaseLapsed) yields %v, want only the unfinished run %s", got, open)
 	}
 	// Live leases are kept, finished run or not: their holders still renew them.
 	for _, id := range []string{finishedLive, orphanLive} {
