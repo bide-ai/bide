@@ -604,6 +604,8 @@ func WithSampling(opts ...SamplingOption) AgentRunOption {
 // with no Name, a Name with any other mode, and (for an agent) a forced tool the agent does not
 // have are ErrConfig. Mode "required" on an agent with no tools is ErrConfig when the agent's
 // model declares it needs one (ToolRules), at the run, since RunTyped supplies an answer tool.
+// Mode "none" is enforced at dispatch too: a tool call the model makes anyway is refused with an
+// error result the model reads, and its tool never runs (a typed run's answer tool excepted).
 func WithToolChoice(tc ToolChoice) AgentRunOption {
 	return agentRunOption{
 		check: func() error { return checkToolChoiceValue(tc) },

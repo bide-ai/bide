@@ -524,9 +524,10 @@ func (a *Agent) run(ctx context.Context, runID string, d *driveSpec) (Message, u
 			// protocol:lifecycle begin DClaim
 			// The run's journaled tool filter is enforced at dispatch (rule 13): a call outside it,
 			// whether the model named a tool it was not offered or the turn was replayed from the
-			// journal, is refused with an error result the model reads, and its tool never runs.
-			if !p.allows(tu.Name, a.terminalTool) {
-				m, err := a.refuseFiltered(ctx, runID, tu)
+			// journal, is refused with an error result the model reads, and its tool never runs. So is
+			// any call of a run whose tool choice is none.
+			if why := p.refusal(tu.Name, a.terminalTool); why != "" {
+				m, err := a.refuseFiltered(ctx, runID, tu, why)
 				if err != nil {
 					return leave(err)
 				}

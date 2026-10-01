@@ -187,6 +187,18 @@ func (p *runPlan) allows(name, terminal string) bool {
 	return p.filter == nil || p.filter[name] || name != "" && name == terminal
 }
 
+// refusal is why a call of tool name is refused at dispatch, or "" if it is not: a tool the
+// run's filter leaves out, or any tool but a typed run's answer tool under a tool choice of none.
+func (p *runPlan) refusal(name, terminal string) string {
+	switch {
+	case !p.allows(name, terminal):
+		return "its tool filter leaves it out"
+	case p.toolChoice != nil && p.toolChoice.Mode == "none" && (name == "" || name != terminal):
+		return "its tool choice is none"
+	}
+	return ""
+}
+
 // driveIdentity is the identity the drive was given: its WithIdentity, else its context's (which
 // a sub-agent's run inherits from its parent), else the agent's. explicit is false for the
 // agent's: an agent default is live, never compared with the journal.
@@ -348,12 +360,12 @@ func (a *Agent) planSystem(ctx context.Context, p *runPlan, run RunInfo) (string
 	return a.systemMessage(ctx, run)
 }
 
-// refuseFiltered records the refusal of a call outside the run's tool filter, an error result
+// refuseFiltered records the refusal of a call (see runPlan.refusal: why says why), an error result
 // the model reads, and returns its tool-result message.
 //
 //go:noinline
-func (a *Agent) refuseFiltered(ctx context.Context, runID string, tu ToolUse) (*Message, error) {
-	text, err := marshalJournal(fmt.Sprintf("tool %q is not available in this run (its tool filter leaves it out)", cutName(tu.Name)))
+func (a *Agent) refuseFiltered(ctx context.Context, runID string, tu ToolUse, why string) (*Message, error) {
+	text, err := marshalJournal(fmt.Sprintf("tool %q is not available in this run (%s)", cutName(tu.Name), why))
 	if err != nil {
 		return nil, fmt.Errorf("encode the refusal of call %s: %w (%w)", tu.ID, err, ErrStorage)
 	}
