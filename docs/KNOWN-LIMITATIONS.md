@@ -31,14 +31,22 @@ that does not own any other run it is handed should do nothing. See [Crash recov
 **Takeover needs a process that keeps looking.** `agent.Recover` is one pass: a run whose holder
 has died but whose lease has not yet expired is skipped. Run `agent.RecoverLoop` in every worker for
 the life of the process, and a dead holder's run is taken over within about one pass interval (half
-the lease TTL by default) of its lease expiring, as long as a pass is short.
+the lease TTL by default) of its lease expiring: a loop of its own lists only the runs whose lease
+lapsed, so halted runs do not delay it. Its slots (`WithRecoverLapsedConcurrency`) bound how many
+lapsed runs a worker takes over at once; more lapsed runs than that wait for a slot.
 
-**A long recovery pass delays takeover.** A pass costs about five store round trips for each
-unfinished run it lists, halted runs included, and the next pass starts only after this one has
-started all of its drives. With many unfinished runs (halted runs left unresolved count) or a slow
-store, a pass can outlast its interval, and a dead holder's run can then be picked up as much as a pass's
-length later than the interval suggests. Resolve halted runs promptly, and measure a pass against
-your store if takeover time matters. Bounding a pass's cost is planned after v0.9.0.
+**A long full pass delays the runs that held no lease.** A run whose driver held no lease (a plain
+`Agent.Run` whose process died) has no lease to lapse, so only `RecoverLoop`'s full pass re-drives
+it. A full pass costs about five store round trips for each unfinished run it lists, halted runs
+included, and the next one starts only after this one has started all of its drives. With many
+unfinished runs (halted runs left unresolved count) or a slow store, a full pass can outlast its
+interval, and such a run can then be picked up as much as a pass's length later than the interval
+suggests. Drive runs under `agent.Lease`, resolve halted runs promptly, and measure a pass against
+your store if takeover time matters.
+
+**A lease left by a holder that died after finishing its run stays in the leases table.** The lapsed
+loop's listing skips the finished run, but reads the row on each pass. Such rows accumulate only
+from crashes between a run's last write and its lease's release.
 
 **Leases prevent duplicate work, not duplicate side effects.** With a store that supports leases
 (`MemStore` in one process, SQLite across the processes sharing one file, Postgres across nodes),

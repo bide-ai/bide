@@ -187,6 +187,7 @@ type RunFilter struct {
 	After          string   // cursor: only run IDs after this one
 	Prefix         string   // a tenant or namespace, by run-ID prefix
 	ExcludeHolding []string // drop runs holding an entry with any of these names
+	LeaseLapsed    bool     // only runs whose lease has lapsed (its holder died or stalled)
 }
 
 func IsComplete(ctx context.Context, store Durable, runID string) (bool, error)
@@ -254,12 +255,23 @@ the reverse), is `ErrConfig`. `RecordedStart` reads them back.
 **Keep recovering for the life of the process.** `Recover` is one pass: a run whose holder died
 a moment ago still has a live lease, so the pass skips it, and nothing re-drives it until someone
 calls `Recover` again. `RecoverLoop` is that someone. Start it once per worker; it runs a pass every
-`WithRecoverInterval` (half the lease TTL by default) until its context ends, so a dead holder's
-run is taken over within about one interval of its lease expiring, while a pass is short. A pass
-costs about five store round trips for each unfinished run it lists, halted runs included, and the
-next pass starts only after this one has started all of its drives, so with many unfinished runs
-(or halted runs left unresolved) or a slow store, a pass can outlast the interval and pickup takes
-up to a pass's length longer. Resolve halted runs rather than leaving them for every pass to visit:
+`WithRecoverInterval` (half the lease TTL by default) until its context ends, in two loops:
+
+- The **full pass** lists every unfinished run and drives each one it can lease: halted runs, runs
+  nobody leases (a plain `Run` whose process died) and dead holders' runs. It costs about five store
+  round trips for each unfinished run it lists, halted runs included, and the next full pass starts
+  only after this one has started all of its drives, so with many unfinished runs or a slow store
+  it can outlast the interval.
+- The **lapsed loop**, over a store that implements `Leaser`, lists only the unfinished runs whose
+  lease has lapsed (`RunFilter.LeaseLapsed`) and drives them with slots of its own
+  (`WithRecoverLapsedConcurrency`, 16 by default). A store deletes a lease on release, so a lapsed
+  lease means its holder died or stalled; halted runs hold no lease between visits, so this loop
+  never waits behind them.
+
+So a dead holder's run is taken over within about one interval of its lease expiring however many
+halted runs the store holds, as long as the lapsed loop has a free slot. A run whose driver held no
+lease (a plain `Run`) is left to the full pass, whose length still bounds its pickup, so resolve
+halted runs rather than leaving them for every full pass to visit:
 
 <!-- docsnip: setup ctx context.Context; store agent.Durable; resume func(ctx context.Context, runID string) error -->
 ```go
@@ -271,8 +283,9 @@ go func() {
 }()
 ```
 
-It drives runs concurrently, up to `WithRecoverConcurrency` (16 by default), so one long drive does
-not hold up the others, and it never starts a run it is already driving. A genuine failure goes to
+It drives runs concurrently, up to `WithRecoverConcurrency` in the full pass and
+`WithRecoverLapsedConcurrency` in the lapsed loop (16 each by default), so one long drive does not
+hold up the others, and neither loop starts a run the worker is already driving. A genuine failure goes to
 the `WithRecoverErrors` handler and the run is tried again on the next pass; pauses and lost leases
 are not failures. On shutdown it waits for the drives it started to return.
 

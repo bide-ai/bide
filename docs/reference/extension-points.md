@@ -130,8 +130,9 @@ gets every engine guarantee without reimplementing any of them.
   no connection, transaction or lock across a `yield`, so a caller may write inside its loop.
 
 **Optional capabilities.** A store may also implement `Lister` (`Runs(ctx, RunFilter)`, which a
-recovery supervisor needs; a SQL store evaluates the filter in its query) and `Leaser` (run leases
-that coordinate drivers). `agent.Capability[T](store)` finds them, looking through wrappers that
+recovery supervisor needs; a SQL store evaluates the filter in its query, and every field must be
+honored, including `LeaseLapsed`, which admits only runs whose lease has lapsed and none on a store
+without `Leaser`) and `Leaser` (run leases that coordinate drivers). `agent.Capability[T](store)` finds them, looking through wrappers that
 implement `Unwrap() Store`. Only a wrapper that passes run IDs and names through unchanged may
 implement `Unwrap`; one that rewrites keys (a tenant prefix, say) implements each capability
 itself. `storetest.CheckWrapper(t, wrap, ctxA, ctxB)` checks this, and that the wrapper's keys do
