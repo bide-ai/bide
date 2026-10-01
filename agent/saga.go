@@ -125,6 +125,8 @@ func (a *Agent) runSagaWithTelemetry(ctx context.Context, runID, input string, e
 	return out, usage, turns, err
 }
 
+// protocol:lifecycle begin DRollback DAbort
+
 // rollback compensates runID's writes and returns *SagaAborted with cause. causeText is the text the
 // saga's failure record holds for cause, redacted for the journal; the terminal marker records it,
 // never cause's own text.
@@ -142,6 +144,8 @@ func (a *Agent) rollback(ctx context.Context, runID string, cause error, causeTe
 	}
 	return &SagaAborted{RunID: runID, Cause: cause, Compensated: comp, Uncompensated: uncomp, UnknownOutcome: unknown, CompensateErr: cerr}
 }
+
+// protocol:lifecycle end
 
 // rollbackRun compensates a run's writes in reverse call order, recursing into sub-agent
 // child runs so a whole agent tree rolls back as a unit (distributed saga). Each compensation

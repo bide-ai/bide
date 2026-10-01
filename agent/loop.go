@@ -55,6 +55,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 	}
 	toolH := a.toolHandler(runID) // tool-middleware chain, built once for this run
 
+	// protocol:lifecycle begin DOpen
 	// protocol:claims begin Open
 	// protocol:spend begin Open
 	recs, err := openRun(ctx, a.store, runID)
@@ -73,6 +74,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 	} else if err := checkStartKind(runID, recs, RunKindAgent); err != nil {
 		return Message{}, usageTotals{}, 0, err // a finished flow's run holds no answer of an agent's
 	}
+	// protocol:lifecycle end
 
 	msgs := []Message{}
 	if sys := a.systemMessage(ctx); sys != "" {
@@ -178,6 +180,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 		return final, tot, 0, nil
 	}
 
+	// protocol:lifecycle begin DOpen
 	// protocol:claims begin Open
 	// Resume safety gate: a tool call that we ATTEMPTED (recorded a start marker for) but has
 	// no recorded result crashed mid-side-effect → unknown outcome → halt. A tool that was never
@@ -200,6 +203,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 		return Message{}, tot, 0, toolHalt(runID, rootRunID(ctx, runID), id, name, markerTime(attemptedAtMs[id]), HaltCrashed)
 	}
 	// protocol:claims end
+	// protocol:lifecycle end
 
 	// protocol:spend begin SettlePending FailSpend Leave LeaveLate End EndLate
 	meter := &spendMeter{}  // usage of every model request this invocation sends
@@ -396,6 +400,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 			// so it never shifts an earlier record's index; at-most-once by name, so a
 			// replay of a finished run does not add a second one. Requests still in flight are
 			// waited for first, and their spend journaled, so a finished run's journal holds it.
+			// protocol:lifecycle begin DComplete
 			// protocol:spend begin Complete
 			if err := settle(); err != nil {
 				return leave(err)
@@ -404,6 +409,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 				return leave(fmt.Errorf("mark complete (run %s): %w (%w)", runID, err, ErrStorage))
 			}
 			// protocol:spend end
+			// protocol:lifecycle end
 			fire(Finished{Final: asst})
 			return asst, tot, liveTurns, nil // final answer
 		}
@@ -427,6 +433,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 				return leave(fmt.Errorf("model called unknown tool %q: %w", cutName(tu.Name), ErrUnknownTool))
 			}
 			spec := a.specs[tu.Name]
+			// protocol:lifecycle begin DOpen
 			// protocol:claims begin ApGate Deny
 			// A recorded denial is final, whatever the tool's gate is now: a human's Approve(false)
 			// or an m-of-n gate's terminal tally that did not pass. The gate may have been removed
@@ -476,6 +483,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 				continue
 			}
 			// protocol:claims end
+			// protocol:lifecycle end
 			toRun = append(toRun, call{idx: i, tu: tu, spec: spec})
 		}
 
@@ -579,6 +587,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 				if saga {
 					sctx = withSaga(sctx)
 				}
+				// protocol:lifecycle begin DClaim DCall
 				// protocol:claims begin Claim Lost Win Call
 				// Attempt marker before a non-retriable side effect (crash-mid-write → halt),
 				// written as an exclusive claim: if another driver of this run claimed the call
@@ -628,6 +637,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 					notCalled := state == callRefusedClosed || state == callClosed && callErr != nil && errors.Is(callErr, ErrToolNotCalled)
 					called.Store(!notCalled)
 					// protocol:claims end
+					// protocol:lifecycle end
 					if state == callClosed && callErr != nil && !notCalled && !c.spec.Safety.retriableOnResume() {
 						callErr = fmt.Errorf("tool %q: the tool middleware returned an error without calling next, and not ErrToolNotCalled, so the tool may have run: %w (%w)", c.tu.Name, callErr, ErrToolOutcomeUnknown)
 					}

@@ -685,6 +685,7 @@ func storageErr(what string, err error) error {
 // Attempt claims (see attempt.go for the protocol)
 // ===========================================================================
 
+// protocol:lifecycle begin DClaim
 // protocol:claims begin Claim ClaimRetry ClaimInsert ClaimNS RClaim RRetry RInsert RClaimNS
 
 // newClaimID returns a fresh random claim id.
@@ -746,6 +747,7 @@ func (j *Journal) claim(ctx context.Context, runID, key string, rec Record) (boo
 }
 
 // protocol:claims end
+// protocol:lifecycle end
 
 // protocol:claims begin GateTake GateWrite
 
@@ -986,6 +988,8 @@ func putRecord(ctx context.Context, d Durable, runID, name string, rec Record) (
 	return d.Do(ctx, runID, name, func(context.Context) (Record, error) { return rec, nil })
 }
 
+// protocol:lifecycle begin DCall DRecord
+
 // recordFresh runs fn as the step name of runID, which the caller found unrecorded when it last
 // read the run (see Journal.doFresh).
 func recordFresh(ctx context.Context, d Durable, runID, name string, fn func(context.Context) (Record, error)) (Record, error) {
@@ -994,6 +998,8 @@ func recordFresh(ctx context.Context, d Durable, runID, name string, fn func(con
 	}
 	return d.Do(ctx, runID, name, fn)
 }
+
+// protocol:lifecycle end
 
 // openRun reads runID's journal at the start of a drive (see Journal.open).
 func openRun(ctx context.Context, d Durable, runID string) ([]Record, error) {

@@ -663,7 +663,7 @@ speak about the same records:
   `Protocol-Impact: none (<reason>)`. Region markers instead of file paths, because `loop.go` is
   large and mostly unrelated; the job also fails if a marker pair is broken.
   As built (M4): the markers also name the model actions a region implements
-  (`// protocol:claims begin Claim ClaimInsert`), and cover models 1, 1b, 7 and 8, each by its
+  (`// protocol:claims begin Claim ClaimInsert`), and cover models 1, 1b, 7, 8 and 10, each by its
   directory name. `internal/tools/modelsync` runs in the Lint job, on pull requests and in the
   merge queue. Besides the path rule it checks that every marked action is defined in the spec and
   listed in the README's map, and that every mapped action is marked (or listed as having no Go

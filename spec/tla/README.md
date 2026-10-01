@@ -83,7 +83,7 @@ func (j *Journal) claim(ctx context.Context, runID, key string, rec Record) (boo
 
 A marker above a declaration is followed by a blank line, so it is not part of the doc comment.
 Regions of one model do not nest; regions of different models may overlap (the run's Load is
-`Open` in both model 1 and model 8). Model 2 (`protocol/`) is a design model with no Go code yet,
+`Open` in both model 1 and model 8). Model 10 (`lifecycle/`) marks the lease, recovery, drive and resolution code; the steps P14 has not built yet (`DTurn`, `DPost`, `DVerdict`, `Cancel`'s `CGet`, `CIns`, `CRead`) are on its no-code list until they land. Model 2 (`protocol/`) is a design model with no Go code yet,
 so it has no map and no markers.
 
 **The checks.** `go run ./internal/tools/modelsync` (the Lint job, on every pull request, in the
@@ -127,7 +127,7 @@ included: the record kinds of the vocabulary block in `claims/Claims.tla` (`\* v
 ... `\* vocabulary: end`) must match the kinds the claim code's key constructors and record kinds
 map to, in both directions, and every constructor's keys must parse back to their kind.
 
-**A new model.** A model that describes Go code (model 9, tool calls; model 10, lifecycle) lands
+**A new model.** A model that describes Go code (model 9, tool calls, when it lands) comes
 with its markers in the same pull request: its directory and `<Model>.tla`, a map section in this
 README with the two anchor comments, and a `// protocol:<model> begin ...` region around every Go
 region a map row names. modelsync then holds it to the same rules; a model with no map yet is not
@@ -816,6 +816,8 @@ with the halted runs divided by C), and `Cancel` on a saga (an abort, model 5).
 
 ### Model-code map
 
+<!-- modelsync: no-code lifecycle DTurn DPost DVerdict CGet CIns CRead Stall Wake Crash -->
+<!-- modelsync: map lifecycle -->
 | Label | Go |
 |---|---|
 | `DIdle` | `Lease` (`AcquireLease` under `<holder>#<token>`, `leaseToken`); for the primary, the caller's `Lease` around `Agent.Run`, or a plain `Agent.Run` |

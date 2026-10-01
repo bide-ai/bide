@@ -92,6 +92,8 @@ func (m *MemStore) ReleaseLease(_ context.Context, runID, holder string) error {
 	return nil
 }
 
+// protocol:lifecycle begin DIdle DRel Tick LeaseNotice
+
 // Lease runs drive under an exclusive, auto-renewed lease on runID, so a primary driver and a
 // recoverer (or two workers) do not drive the same run at once. If the store implements Leaser and
 // another holder currently leases the run, drive is NOT called and Lease returns (false, nil). If
@@ -240,6 +242,8 @@ func renewLoop(ctx context.Context, leaser Leaser, runID, owner string, ttl time
 		}
 	}
 }
+
+// protocol:lifecycle end
 
 // sleepUntil waits until t or until ctx is done, and reports whether it reached t.
 func sleepUntil(ctx context.Context, t time.Time) bool {
