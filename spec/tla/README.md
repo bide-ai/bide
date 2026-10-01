@@ -1373,7 +1373,7 @@ which are models 1 and 9.
 Times are TLC's own on the development machine (Apple M1 Pro). Each passing configuration is
 also run for vacuity. The model states the rules of `main` after #127. The `ci` set (regress,
 finding and limit configurations included, with vacuity runs and JVM starts) takes about
-@CITIME@ on the development machine.
+45 seconds (36 for the `ci` group with its vacuity runs, 9 for the 18 `regress`, `finding` and `limit` configurations at four at a time) on the development machine.
 
 | Config | Group | What | States | Time |
 |---|---|---|---|---|
@@ -1392,7 +1392,14 @@ finding and limit configurations included, with vacuity runs and JVM starts) tak
 | `fix-d1-chain` | ci | D1's proposed fix, with both liveness properties. | 647 | <1 s |
 | `fix-d2-guard` | ci | D2's proposed fix, with a crash. | 1,118 | <1 s |
 | `fix-d3-recurse` | ci | D3's proposed fix, with a crash. | 341 | <1 s |
-@NIGHTLY@
+| `deep-deleg` | nightly | The saga delegation under every fault, two of each, with a child grant expiring at tick 2. | 1,211,214 | 33 s |
+| `deep-nested` | nightly | Nested delegations under two crashes and every other fault. | 1,287,276 | 43 s |
+| `deep-halt` | nightly | Halt propagation with three crashes, two error replies and two read errors. | 141,806 | 2 s |
+| `deep-two` | nightly | Two delegations with D1's fix, `P` expiring between them, and every fault. | 8,487,708 | 2 min 29 s |
+| `deep-subruns` | nightly | Programmatic sub-runs under three crashes and three error replies. | 40,197 | 1 s |
+| `deep-plain-tree` | nightly | The three-level plain tree with a sub-agent at its bottom, D3's fix, crashes and error replies. | 48,249 | 1 s |
+| `deep-rerun` | nightly | The rollback's re-run in a delegated sub-run that starts a sub-run, with D2's fix, the grant expiring, lost outcomes and crashes. | 143,739 | 1 s |
+| `deep-live` | nightly | Both liveness properties over nested delegations, with every fault. | 443,210 | 1 min 1 s |
 
 Regressions. Each must fail with its property, and passes with its `Bug` value set to `"none"`:
 
@@ -1475,6 +1482,11 @@ adopts a fix.
   `linkSubRun`, `bindRollback` and the walk's steps.
 
 ## What the bounds do not cover
+
+Model 11: one turn per run, calls one at a time, trees of up to four runs and three levels, two
+root grants and a clock of three ticks, and up to three of each fault nightly. A bug that needs
+two concurrent sibling delegations, a second model turn, or more than two rotations of the
+bound grant is outside the check.
 
 Model 9: one turn of one or two calls, two invocations of the base handler per call at a time,
 one extra invocation on pull requests, one of each fault (two error replies nightly). A bug that
