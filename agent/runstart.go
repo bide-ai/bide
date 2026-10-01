@@ -181,7 +181,11 @@ const (
 type OutputMode string
 
 const (
-	OutputTool   OutputMode = "tool"
+	// OutputTool collects a typed run's answer as the arguments of a final_answer tool call (the
+	// default; see RunTyped).
+	OutputTool OutputMode = "tool"
+	// OutputNative collects a typed run's answer through the provider's native structured output
+	// (see RunTypedNative).
 	OutputNative OutputMode = "native"
 )
 
