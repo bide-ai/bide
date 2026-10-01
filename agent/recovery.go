@@ -109,10 +109,14 @@ func leaseConfig[O comparable](what string, opts []O, apply func(O, *recoverConf
 	return cfg, nil
 }
 
-func defaultHolder() string {
+// hostPID is the "<host>-<pid>" every default holder starts with, read once: os.Hostname is a
+// system call, and Agent.Session builds a lease configuration for each session it opens.
+var hostPID = sync.OnceValue(func() string {
 	host, _ := os.Hostname()
-	return fmt.Sprintf("%s-%d-%d", host, os.Getpid(), rand.Uint64())
-}
+	return fmt.Sprintf("%s-%d", host, os.Getpid())
+})
+
+func defaultHolder() string { return fmt.Sprintf("%s-%d", hostPID(), rand.Uint64()) }
 
 // IsComplete reports whether runID has reached its terminal answer, by checking the
 // journal for the durable completion marker the agent loop records at the end of a run
