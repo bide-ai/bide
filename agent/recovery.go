@@ -187,10 +187,9 @@ func completedAnswer(recs []Record) (Message, bool) {
 // reads the run's run:start (one more point read) and hands it to resume, so resume needs no table
 // of inputs: the run's input, saga flag and per-run options are journaled, and the run runs under
 // them (see RunStart). ResumeAgent(a) is the Resumer of a's runs, ResumeTyped[T](a) that of its
-// typed runs answering a T, and ResumeAny combines several (a deployment with agents and plan
-// flows, say):
+// typed runs answering a T, and ResumeAny combines several (a deployment with two agents, say):
 //
-//	resume := agent.ResumeAny(agent.ResumeAgent(a, agent.WithWaker(w)), plan.ResumeFlows(flows...))
+//	resume := agent.ResumeAny(agent.ResumeAgent(a, agent.WithWaker(w)), agent.ResumeTyped[Quote](b))
 //
 // A deployment's own Resumer is any func(ctx, runID, start) error; it returns an error wrapping
 // ErrNotResumable for a run it does not drive.
@@ -246,8 +245,8 @@ func Recover(ctx context.Context, store Durable, resume Resumer, opts ...Recover
 // drive, so ResumeAny can try the next, and Recover reports the run once per process rather than
 // as a failure on every pass. A Resumer passes no per-run option: the run runs under the options
 // its run:start journaled (see RunStart). ResumeAgent and ResumeTyped return the Resumers of an
-// agent's runs, and plan.ResumeFlows those of plan flows; a deployment's own Resumer is any func
-// with this signature.
+// agent's runs; a deployment's own Resumer is any func with this signature (one that drives a plan
+// flow's runs reads start.Flow and start.Input and calls the flow's Run).
 type Resumer func(ctx context.Context, runID string, start RunStart) error
 
 // ResumeAny returns the Resumer that hands a run to each of rs in turn, in order, until one
