@@ -109,12 +109,12 @@ ASSUME (CancelRule = "none") <=> ~Canceller
 (*           may pass ({}: no later caller); dflt: the agent's defaults,    *)
 (*           which a drive that passes nothing uses under "caller"; init:   *)
 (*           run:start of the runs started before the model begins.         *)
-(*   sagaCancel  "marker": D1 as written, Cancel writes run:cancelled on a  *)
-(*           saga too and a drive that sees it rolls back; "request": the   *)
-(*           proposed rule, Cancel on a saga writes a rollback request (not *)
-(*           an end marker) and the drive that rolls back writes            *)
-(*           run:cancelled; Cancel of a run with no run:start is            *)
-(*           ErrNotStarted.                                                 *)
+(*   sagaCancel  "marker": D1 as first written, Cancel writes               *)
+(*           run:cancelled on a saga too and a drive that sees it rolls     *)
+(*           back; "request": the adopted rule (L4), Cancel on a saga       *)
+(*           writes run:cancel-requested (not an end marker) and the drive  *)
+(*           that rolls back writes run:cancelled; Cancel of a run with no  *)
+(*           run:start is ErrNotStarted.                                    *)
 (*   status  "off", "load" (Status reads one Load, a prefix), "gets" (one   *)
 (*           Get per end marker), "regets" (the Gets, then, if any marker   *)
 (*           was found, the Gets again).                                    *)
@@ -382,7 +382,7 @@ DClaim:
     end if;
   end if;
 DPost:
-  \* The proposed P14 rule: run:cancelled is read again once the claim is won, before the call;
+  \* The P14 rule (L2): run:cancelled is read again once the claim is won, before the call;
   \* a cancelled run records the attempt as not started.
   if CancelSeen(jr[self]) then
     marker[jr[self]][cc[self]] := NoClaim;
@@ -568,7 +568,7 @@ CIns:
 CRead:
   cret := Head(ends[PrimRun]); goto Done;
 CReq:
-  \* The proposed rule for a saga: a rollback request, not an end marker, so recovery still
+  \* The rule for a saga (L4): a rollback request, not an end marker, so recovery still
   \* lists the run; the drive that rolls it back writes run:cancelled.
   Reply(reply[Canc]);
   if reply[Canc] # "err_nc" then creq[PrimRun] := TRUE; end if;

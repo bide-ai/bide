@@ -1055,10 +1055,11 @@ errored claim leaving the run halted.
   before the call that records the attempt as not started. `VerdictRule = "first"` is the adopted
   L3 rule: the first end marker in journal order is the run's end, and a drive or `Cancel` that
   wrote a marker reads the markers again before it reports. On a saga (`Api.sagaCancel`):
-  `"marker"` is D1 as written (`run:cancelled`, and the drive that sees it rolls back and writes
-  `run:aborted`); `"request"` is the rule this model proposes (L4): `Cancel` reads `run:start`,
-  refuses a run with none (`ErrNotStarted`), and on a saga writes a rollback request, which is not
-  an end marker; the drive that sees it rolls the run back and writes `run:cancelled`.
+  `"marker"` is D1 as first written (`run:cancelled`, and the drive that sees it rolls back and
+  writes `run:aborted`); `"request"` is the adopted L4 rule: `Cancel` reads `run:start`, refuses a
+  run with none (`ErrNotStarted`), and on a saga writes a rollback request
+  (`run:cancel-requested`), which is not an end marker; the drive that sees it rolls the run back
+  and writes `run:cancelled`, the saga's final marker.
 - **The run header and per-run options (P14, B1, D3).** The primary's first drive writes
   `run:start` with its caller's options (first writer wins); every later drive (a `Resume`, a
   recovery drive) loads them. An option set is a tool filter (the calls whose tools the run may
@@ -1112,13 +1113,13 @@ and their resumers (`ResumeTyped`), and image input.
 | `DPost` | P14 (D1, L2): `run:cancelled` (or the rollback request) read after the claim is won, `recordNotStarted` |
 | `DCall` | `recordFresh`: the `sctx.Err()` check, `t.Call` |
 | `DRecord` | `recordFresh`'s insert of the result (`putRecord` under `context.WithoutCancel`) |
-| `DRollback`, `DAbort` | `Agent.rollback`: `rollbackRun`, then `store.Do` of `run:aborted`; P14 (L4, proposed): `run:cancelled` after a rollback a cancellation asked for |
+| `DRollback`, `DAbort` | `Agent.rollback`: `rollbackRun`, then `store.Do` of `run:aborted`; P14 (L4): `run:cancelled` after a rollback a cancellation asked for |
 | `DComplete` | the loop's terminal: `putRecord` of `run:complete` |
 | `DVerdict` | P14 (D1, L3): the end markers read again; the first in journal order is reported |
 | `DRel` | `Lease`'s deferred `ReleaseLease` |
 | `PList`, `PNext`, `PSlot`, `PWait` | `RecoverLoop`'s `pass` and `every`: `lister.Runs(ctx, recoverFilter)` in the full pass (process `"pass"`), `lister.Runs(ctx, lapsedFilter)` in the lapsed loop (process `"tkp"`, `PassRule = "split"`; its slots are `WithRecoverLapsedConcurrency`'s, the `"tko"` driver); `recoverable`; `PNext`'s `InFlight` is the `inFlight` check before the slot wait; `PSlot` is the slot wait, then the in-flight re-check and mark under the lock (the model does not re-check: a run the other loop took meanwhile reaches `DIdle` and is refused by the lease, where the code skips it before acquiring); the ticker (`Recover`: one pass) |
 | `OPick`, `OLease`, `OWrite`, `ORel` | `ResolveHaltRef` / `resolveHalt` with `checkNoLiveDriver`'s lease; `Approve` |
-| `CGet`, `CIns`, `CRead`, `CReq` | P14's `Cancel` (D1): the end-marker check (and, under L4's rule, `run:start`), the `run:cancelled` insert, the read-back (L3), and a saga's rollback request (L4, proposed) |
+| `CGet`, `CIns`, `CRead`, `CReq` | P14's `Cancel` (D1): the end-marker check (and, under L4's rule, `run:start`), the `run:cancelled` insert, the read-back (L3), and a saga's rollback request `run:cancel-requested` (L4) |
 | `SPick`, `SStart`, `SGet` | P14's `Status` (D8): `run:start`, then the end markers |
 | `Tick` | wall-clock time: `driveWithRenew`'s renewal, lease expiry, `RecoverLoop`'s `time.Ticker` |
 | `Stall`, `Wake`, `LeaseNotice` | a process pause; `renewLoop` returning `ErrLeaseLost` and cancelling the drive |
@@ -1225,8 +1226,9 @@ changes the model first.
    markers back and reports the first (`regress/cancel-verdict`). A writer may read back with one
    `Get` per marker: its own marker is visible, so by A2 every marker before it is too, and the
    lowest `Seq` is the first (argued, not checked: the model's read-back is one step).
-5. **L4 (proposed).** `Cancel` reads `run:start`: a run with none is `ErrNotStarted`, and nothing
-   is written. On a saga, `Cancel` writes a rollback request, which is not an end marker, so the
+5. **L4 (adopted).** `Cancel` reads `run:start`: a run with none is `ErrNotStarted`, and nothing
+   is written. On a saga, `Cancel` writes a rollback request (`run:cancel-requested`), which is
+   not an end marker, so the
    `Lister` filter still returns the run; the drive that sees the request (at its start, at a turn
    boundary, or after a won claim, the checks of rules 2 and 3) rolls the run back and writes
    `run:cancelled`. A saga whose `run:complete` lands first is complete. `Cancel` on a saga
@@ -1237,7 +1239,7 @@ changes the model first.
 
 `Status` (D8):
 
-7. **L6 (proposed).** `Status` takes the state from one `Load` (a prefix of the journal, A2), or
+7. **L6 (adopted).** `Status` takes the state from one `Load` (a prefix of the journal, A2), or
    from one `Get` per end marker followed, when any marker was found, by the `Get`s again; the
    marker with the lowest `Seq` is the state. One round of `Get`s is not enough
    (`findings/status-gets`). No end marker is `Started` (running, paused, halted, stopped at its
@@ -1260,7 +1262,7 @@ Per-run options (the journaling rule, B1):
 
 The tool filter (D3):
 
-13. **L5 (proposed).** The filter is enforced at dispatch, against the journaled filter: a call
+13. **L5 (adopted).** The filter is enforced at dispatch, against the journaled filter: a call
     naming a tool outside it (a model naming a tool it was not offered, a turn replayed from the
     journal) is refused with an error result recorded, and its effect never fires. Narrowing
     `Request.Tools` alone is not enough (`findings/filter-request-only`).
@@ -1269,7 +1271,7 @@ Recovery dispatch:
 
 14. Recovery reads `run:start` under the lease for every run it visits; a run with none is
     skipped and reported (`ErrNotStarted`) once per process (`regress/not-started-every-pass`).
-15. **L7 (proposed).** What the process remembers is the report, not the skip: `run:start` is read
+15. **L7 (adopted).** What the process remembers is the report, not the skip: `run:start` is read
     again on every pass, so a run that starts after a pass found it unstarted is recovered
     (`findings/not-started-remembered`).
 
@@ -1284,10 +1286,12 @@ does not reach a drive already past its turn check (`limits/limit-lowered-in-fli
 
 ### Findings against P14's design (L4 to L7)
 
-Found by this extension against `docs/design/api-v1.md` as written. Each has a counterexample in
-`findings/` that fails under the design's text, and a proposed rule the passing configurations
-check. They stay findings until the design adopts the rule; P14's tests reproduce each before
-its fix, as for L2 and L3.
+Found by this extension against `docs/design/api-v1.md` as first written. Each has a
+counterexample in `findings/` that fails under that text, and a rule the passing configurations
+check. The maintainer adopted all four rules, and `docs/design/api-v1.md` now states them (D1,
+D3, D8, recovery dispatch, and the P14 contract). They stay open until P14 implements them; P14's
+tests reproduce each before its fix, and its pull request moves the four configurations to
+`regress/`, as L2 and L3 were.
 
 - **L4: a cancelled saga is never rolled back** (`findings/cancel-saga-marker`,
   `CancelRollsBack`). D1 has `Cancel` write `run:cancelled` on a saga too and the saga roll
@@ -1297,27 +1301,26 @@ its fix, as for L2 and L3.
   `run:complete` second and reports the run cancelled (rule 4). Nothing rolled the call back, and
   no recovery pass will list the run again. The same holds when the drive dies between its call
   and its next check. A drive that opens the run later does roll it back (the model gives D1
-  that reading), but nothing opens it. Proposed rule: rule 5. It costs one `Get` (`run:start`) in
-  `Cancel`. A choice for the maintainer: the rollback's end marker is `run:cancelled` here, so
-  `Status` and `Run` report a cancelled saga as cancelled; `run:aborted` would report it as an
-  abort, with the same checks.
+  that reading), but nothing opens it. Adopted rule: rule 5. It costs one `Get` (`run:start`) in
+  `Cancel`. The saga's final marker is `run:cancelled` (the maintainer's decision), so `Status`
+  and `Run` report a cancelled saga as cancelled.
 - **L5: the tool filter must be enforced at dispatch** (`findings/filter-request-only`,
   `FilterHonoured`). D3 journals the filter but does not say where it applies. If it only
   narrows the tools the model is offered, a turn that names a filtered-out tool (a model naming
   a tool it was not offered, or a turn recorded before a crash and replayed) is dispatched by
-  name and fires (11 states, no fault). Proposed rule: rule 13.
+  name and fires (11 states, no fault). Adopted rule: rule 13.
 - **L6: one round of `Get`s is not a snapshot** (`findings/status-gets`, `StatusTruthful`). D8
   does not say how `Status` reads. With one `Get` per end marker, `Status` reads `run:complete`
   (absent); the run completes; `Cancel`, which read no end marker before, writes
   `run:cancelled`; `Status` reads `run:aborted` (absent) and `run:cancelled` (present) and
-  reports a completed run cancelled (17 states). Proposed rule: rule 7. The `Load` form costs one
+  reports a completed run cancelled (17 states). Adopted rule: rule 7. The `Load` form costs one
   scan of the run (D8's `Records` count needs one anyway); the `Get` form costs at most six
   `Get`s on an ended run and three on a live one.
 - **L7: a remembered skip loses a run** (`findings/not-started-remembered`, `StartedRunSettles`).
   The design reports a run with no `run:start` once per process. If the process remembers the
   skip rather than the report, a run found unstarted (a worker took its lease before the
   primary's first drive) is skipped for good once the primary starts it and dies (a liveness
-  trace). Proposed rule: rule 15.
+  trace). Adopted rule: rule 15.
 
 ### Configurations
 
@@ -1342,7 +1345,7 @@ pull-request job (about 55 before P14's extension; measured on the CI runner).
 | `pickup-reach` | ci | Vacuity of the pickup configurations: a dead holder's run waits after its lease lapsed (PickupNotReachable must be violated), under the rule since #126. | 267 | <1 s |
 | `life-resolve` | ci | One run: a leased primary Run, one Recover pass (not RecoverLoop) and an operator resolving halts; an error reply and a crash. | 13,644 | 1 s |
 | `live-pickup` | ci | PickedUp under v0.9.0's rule: a halted run listed before a leased primary's run, the primary dies; every step and the clock weakly fair. | 7,775 | 3 s |
-| `life-cancel-saga` | ci | Cancel (P14) on a saga of two calls under the proposed rule (L4): a rollback request, answered by the drive's rollback and run:cancelled. A leased primary, a worker, a crash. | 95,034 | 3 s |
+| `life-cancel-saga` | ci | Cancel (P14) on a saga of two calls under the adopted rule (L4): a rollback request, answered by the drive's rollback and run:cancelled. A leased primary, a worker, a crash. | 95,034 | 3 s |
 | `life-status` | ci | Status (D8) by Gets with the re-read (L6): a saga of one call, a plain Run, Cancel racing completion and the rollback. | 1,065 | <1 s |
 | `life-status-load` | ci | Status (D8) by one Load, the same scenario. | 435 | <1 s |
 | `life-filter` | ci | The tool filter (D3), journaled and enforced at dispatch (L5): the primary filters call 2's tool out, a worker recovers the run passing no filter; a crash. | 6,634 | 1 s |
@@ -1353,7 +1356,7 @@ pull-request job (about 55 before P14's extension; measured on the CI runner).
 | `deep-leased-resolve` | nightly | One run of two calls, a saga: a leased primary Run, a RecoverLoop worker and an operator resolving halts; an error reply and a crash. | 593,326 | 7 s |
 | `deep-paused` | nightly | Three runs (one waiting for an approval, one halted, a leased primary's), a worker, the operator, a crash. | 2,535,494 | 35 s |
 | `deep-stall` | nightly | One run: a leased primary Run and two workers; a lease holder stalls past its TTL. | 4,515,408 | 1 min |
-| `deep-cancel-saga` | nightly | Cancel (P14) on a saga of two calls under the proposed rules, an operator resolving halts: a leased primary, a worker, an error reply, a crash. | 4,230,609 | 49 s |
+| `deep-cancel-saga` | nightly | Cancel (P14) on a saga of two calls under the adopted rules, an operator resolving halts: a leased primary, a worker, an error reply, a crash. | 4,230,609 | 49 s |
 | `deep-status` | nightly | Status (D8, Gets and the re-read) on a saga of two calls: a plain Run, a worker, Cancel racing completion and the rollback, a crash. | 14,146,194 | 4 min |
 | `deep-options` | nightly | The journaling rule (B1) and the filter: a one-turn primary, a later Resume (raise, other prompt, other filter), a worker, an error reply, a crash. | 321,358 | 4 s |
 | `deep-filter` | nightly | The tool filter (D3): call 2's tool filtered out, two workers passing no filter, an error reply, a crash. | 4,657,685 | 1 min |
@@ -1366,7 +1369,7 @@ once the fix is adopted; each limit states behavior the design accepts. L1 was v
 (`RecoverLoop`); #126 fixed it, and it is a regression. L2 and L3 were against D1's original
 text; D1 adopted both rules, so they are regressions of the rules it replaced, and P14 implements
 them. B1's regressions are the code before P14, in which a drive runs under its own caller's
-options. L4 to L7 are open findings against P14's design (above).
+options. L4 to L7 are findings against P14's design as first written; their rules are adopted, and they stay open until P14 implements them (above).
 
 | Config | Group | The rule or behavior | Expected | Trace |
 |---|---|---|---|---|

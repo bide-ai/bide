@@ -27,7 +27,7 @@ OptLim2 == [f |-> AllCalls, l |-> 2, c |-> "a"]
 OptOther == [f |-> AllCalls, l |-> 1, c |-> "b"]      \* another prompt or principal
 OptNo2Res == [f |-> {1, 3}, l |-> 2, c |-> "a"]
 
-\* P14's rules as proposed: options journaled (B1), the filter enforced at dispatch (D3), Cancel
+\* P14's rules as adopted: options journaled (B1), the filter enforced at dispatch (D3), Cancel
 \* on a saga a rollback request, Status off, a not-started run reported once per process.
 ApiP14 == [opt |-> "journal", filter |-> "dispatch", prim |-> OptAll, res |-> {},
            dflt |-> OptAll, init |-> OptAll, sagaCancel |-> "request", status |-> "off",

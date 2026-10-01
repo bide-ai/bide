@@ -250,7 +250,9 @@ The rule resolves critique B1 and #70's decisions 2 to 4, using #70's table.
 7. **RunTyped (#70 decision 4).** `Typed` holds the mode, `T`'s schema digest and the full schema. Resuming a typed run through `Run`, or with a different `T`, is `ErrConfig` before any model call.
 8. **Deployment-only values, never journaled:** clock, waker, lease holder.
 
-Model 10 checks rules 1 to 3 and the per-run tool filter (`RunOptionsDurable`, `FilterHonoured`; `life-limits`, `life-filter`) and records an open finding, L5: the filter must be enforced at dispatch, not only in `Request.Tools`.
+**The per-run tool filter (D3).** `WithToolFilter(names...)` is journaled in `run:start.Tools` (rule 1), and a different filter on a later drive is `ErrConfig` (rule 3). The filter is enforced at dispatch, against the journaled filter: a call naming a tool outside it is refused with an error result recorded, and the tool never runs. This holds whichever drive dispatches the call (a resume, a recovery drive) and wherever the call came from (a model naming a tool it was not offered, or a turn replayed from the journal). Narrowing `Request.Tools` alone is not enough (model 10, finding L5: adopted, open until P14 implements it).
+
+Model 10 checks rules 1 to 3 and the filter (`RunOptionsDurable`, `FilterHonoured`; `life-limits`, `life-filter`).
 
 ### Recovery dispatch (critique B6, B8)
 <!-- docsnip: skip design proposal: this API is not implemented yet -->
@@ -269,22 +271,25 @@ func ResumeAny(rs ...Resumer) Resumer                              // first that
 - A run with none (a `Signal` sent to a mistyped ID, for example) is skipped. It is reported once per process through `WithRecoverErrors` as `ErrNotStarted`.
 - A run no resumer claims is reported once as `ErrNotResumable`.
 - Neither is re-reported on every pass.
-- Model 10 checks the once-per-process report (`NotStartedOnce`) and records an open finding, L7: `run:start` must be read again on every pass, or a run that starts after a pass found it unstarted is never recovered.
+- What a process remembers is the report, not the skip: `run:start` is read again on every pass, so a run that starts after a pass found it unstarted is recovered (model 10, finding L7: adopted, open until P14 implements it).
+- Model 10 checks both (`NotStartedOnce`, `StartedRunSettles`).
 
 **Typed runs are resumable by registering a typed resumer.** I disagree with the critique's "validate against the journaled schema and complete without T". bide has no JSON Schema validator; strict acceptance is decoding into `T`. A run completed under a weaker check is final, so a wrong answer could not be corrected later. The journaled full schema serves audit and a clear error.
 
 ### Saga
 - `WithSaga()` is a `RunOption`, journaled as #70's `saga` flag.
-- `Cancel` on a saga run rolls it back, because cancelling a saga is an abort.
+- `Cancel` on a saga run rolls it back, because cancelling a saga is an abort. The rollback request, the rollback and the final `run:cancelled` are in Cancellation (D1).
 
 ### Cancellation (D1)
 - `Cancel` writes `run:cancelled` `{reason}` under the reserved `run:` prefix.
 - A driver checks for it with `Get` when a drive starts and at every turn boundary, and never starts a new claim after seeing it. Calls already in flight finish and record their results.
 - `Run` on a cancelled run returns a `Result` and `ErrRunCancelled`. It has no category, because it is a terminal status and not a fault.
-- `Recover` excludes cancelled runs through the `Lister` filter.
+- `Recover` excludes cancelled runs through the `Lister` filter (`run:complete`, `run:aborted`, `run:cancelled`).
+- `Cancel` reads `run:start`. A run with none is `ErrNotStarted`, and nothing is written.
+- **On a saga** (`run:start.Saga`), `Cancel` writes a rollback request, `run:cancel-requested` `{reason}`, not `run:cancelled`. The request is not an end marker, so the `Lister` filter still returns the run and recovery drives it. A drive that sees the request (when it starts, at a turn boundary, or after a won claim, the checks below) starts no new claim, rolls the run back, and then writes `run:cancelled`, the saga's final marker: `Run` returns `ErrRunCancelled` and `Status` reports `Cancelled`. Until then `Status` reports `Started`. `Cancel` on a saga returns once the request is durable. A saga whose `run:complete` lands before the request is seen is complete (the first end marker wins). Writing `run:cancelled` directly on a saga would let recovery exclude a run whose effects were never compensated (model 10, finding L4: adopted, open until P14 implements it).
 - After a drive wins an attempt claim and before it calls the effect, it reads `run:cancelled` again (one `Get` per side-effect call) and, if the marker is present, records the attempt as not started and stops. The turn-boundary check alone lets a drive that checked before `Cancel` landed claim and fire after it (model 10, finding L2). With this rule, an effect fires after `run:cancelled` only under a claim won before it: a call in flight.
 - The first end marker in journal order (`run:complete`, `run:aborted` or `run:cancelled`) is the run's end for every reader (`Run`, `Status`, the drive itself). `Cancel` and completion write different keys and can both land (A1 is per key), so every writer of an end marker reads the end markers back before it reports: `Cancel` reports the run cancelled, and a drive reports its answer, only if its own marker is the first (one `Get` at the end of `Cancel` and at the end of each completed run; model 10, finding L3).
-- Model 10 (`spec/tla/lifecycle`) checks both rules (`life-cancel`, `life-cancel-plain`, `deep-cancel-plain`; `CancelFinal`, `VerdictAgreement`); the rules they replaced are its regressions `cancel-turn-check` and `cancel-verdict`, and P14's tests reproduce both. It also checks `Cancel` on a saga (`CancelRollsBack`) and records an open finding, L4: `run:cancelled` is an end marker, which recovery excludes, so a saga cancelled when no drive will reach a check is never rolled back. The model's proposed rule and P14's full rule list are in `spec/tla/README.md` (model 10, "P14: the rules the Run API must implement").
+- Model 10 (`spec/tla/lifecycle`) checks these rules (`life-cancel`, `life-cancel-plain`, `life-cancel-saga`, `deep-cancel-plain`, `deep-cancel-saga`; `CancelFinal`, `VerdictAgreement`, `CancelRollsBack`). The rules L2 and L3 replaced are its regressions `cancel-turn-check` and `cancel-verdict`; D1 as first written for a saga is its finding `cancel-saga-marker`. L2 to L4 stay open until P14 implements them, and P14's tests reproduce each.
 
 ### Status (D8)
 `RunStatus{State RunState; Terminal string; Records int}` with states:
@@ -296,7 +301,28 @@ func ResumeAny(rs ...Resumer) Resumer                              // first that
 
 Pauses are not journaled, so a paused run reports `Started`. This is documented.
 
-Model 10 checks `Status` against the first end marker (`StatusTruthful`; `life-status`, `life-status-load`) and records an open finding, L6, on how it reads the end markers (one `Load`, or the `Get`s with a re-read).
+A run with no end marker reports `Started`, whether it is running, paused, halted or stopped at its limit. A saga with a pending rollback request reports `Started` until its rollback writes `run:cancelled`.
+
+**How `Status` reads.** The state is the first end marker in journal order, read from a prefix of the journal: either one `Load`, or one `Get` per end marker followed, when any marker was found, by the `Get`s again (once a marker is visible, every earlier one is too, by A2), taking the lowest `Seq`. One round of `Get`s is not enough: it can read `run:complete` before the run completes and `run:cancelled` after `Cancel` lands, and report a completed run cancelled (model 10, finding L6: adopted, open until P14 implements it). Model 10 checks `Status` against the first end marker (`StatusTruthful`; `life-status`, `life-status-load`, `deep-status`).
+
+### The P14 contract (model 10)
+P14 implements these rules. Model 10 (`spec/tla/lifecycle`, "P14: the rules the Run API must implement" in `spec/tla/README.md`) checks each one; a rule's change changes the model first. L2 to L7 are adopted and stay open until P14 implements them.
+
+1. `Cancel` reads the end markers and refuses a run that is over.
+2. A drive checks `run:cancelled` (and, on a saga, the rollback request) when it starts and at every turn boundary, and starts no claim after seeing it. Calls already in flight finish and record their results.
+3. (L2) Once a claim is won and before the call, the drive reads them again (one `Get` per side-effect call); if either is there, it records the attempt as not started and stops.
+4. (L3) The first end marker in journal order is the run's end for every reader. Every writer of an end marker (`Cancel`, the terminal turn, the rollback) reads the markers back and reports the first.
+5. (L4) `Cancel` reads `run:start`: a run with none is `ErrNotStarted`. On a saga it writes `run:cancel-requested`; the drive that sees it rolls the run back and writes `run:cancelled`.
+6. `Recover` and `RecoverLoop` exclude `run:complete`, `run:aborted` and `run:cancelled`, and not `run:cancel-requested`.
+7. (L6) `Status` reads a prefix: one `Load`, or the `Get`s again once any marker is found, lowest `Seq` first. No end marker is `Started`; no `run:start` is `NotStarted`.
+8. The first drive inserts `run:start` with its caller's options and runs under the stored entry the insert returns.
+9. Every later drive (`Resume`, `Run` of an existing run, a recovery drive) runs under `run:start`'s options and the last limit amendment. A recovery resumer passes no per-run option.
+10. A later drive with a different limit writes `run:limits:<n>` before it drives and runs under it. An amendment binds the drives that load the run after it; a drive already running keeps the limit it loaded.
+11. A later drive with any other different setting (filter, system prompt, sampling, tool choice, output mode, typed schema, principal) is `ErrConfig`, before any model call.
+12. The turn limit is checked against the drive's journaled limit when it starts and at every turn boundary.
+13. (L5) The tool filter is enforced at dispatch, against the journaled filter.
+14. Recovery reads `run:start` under the lease for every run it visits; a run with none is skipped and reported (`ErrNotStarted`) once per process.
+15. (L7) The process remembers the report, not the skip: `run:start` is read again on every pass.
 
 ### Replaces
 `Run(string) (Message, error)`, `RunResult`, `RunSaga`, `RunSagaResult`, `Stream(string)`, `StreamSaga`, `AgentStream.Final`, `RunTypedNative`, `Session.Send/SendOnce(string)`, the context decorators `WithWaker/WithClock/WithIdentity`, and `AgentEvent`/`AgentStream`.
@@ -948,7 +974,7 @@ Kept, and documented:
 | C: `OutcomeUnknown.Cause` | adopted | P10 |
 | D1 cancel | adopted (reserve `run:cancelled`) | P14 (key in P6a) |
 | D2 redaction | tombstone format reserved | P6a; the capability depends on maintainer decision D2 |
-| D3 per-run tool filter | `WithToolFilter(names...)` `RunOption`, journaled | P14 |
+| D3 per-run tool filter | `WithToolFilter(names...)` `RunOption`, journaled, enforced at dispatch (L5) | P14 |
 | D4 multi-tenancy | run-ID prefix convention plus `RunFilter.Prefix` | P6a |
 | D5 programmatic sub-runs | `SubRunFor` | P13 |
 | D6 schema migration | statement in item 4 | P6a docs |
@@ -1086,7 +1112,8 @@ Within a wave, no two PRs edit the same file. Sizes:
   - a not-started run is skipped and reported once;
   - `Cancel` on a live run and on a saga (rollback);
   - `Status`;
-  - image input.
+  - image input;
+  - every rule of the P14 contract (item 1), each by a test that fails before the rule is built, reproducing model 10's counterexample where it has one (L2 to L7, B1).
 
 **Wave 7**
 
