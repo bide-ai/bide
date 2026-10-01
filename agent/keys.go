@@ -177,6 +177,8 @@ func IsSubRun(runID string) bool {
 // session drives (see Session). A sub-agent called in a turn is IsSubRun instead.
 func IsSessionRun(runID string) bool { return strings.Contains(runID, subRunSep) && !IsSubRun(runID) }
 
+// protocol:sessions begin TurnId EventId
+
 // sessionJournalID is the run ID of the journal of session id: which message started each Send
 // turn and each completed turn's record.
 func sessionJournalID(id string) string { return id + subRunSep + sessionMark + "session" }
@@ -221,6 +223,8 @@ func checkRunID(ctx context.Context, runID string) error {
 }
 
 // protocol:delegation end
+
+// protocol:sessions end
 
 // maxEncodedID bounds encodeID's output. An ID whose escaped form is longer is replaced by a
 // digest, so a key stays within any store's key limit (Postgres refuses an index row over

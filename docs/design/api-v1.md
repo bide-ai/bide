@@ -323,6 +323,9 @@ P14 implements these rules. Model 10 (`spec/tla/lifecycle`, "P14: the rules the 
 13. (L5) The tool filter is enforced at dispatch, against the journaled filter.
 14. Recovery reads `run:start` under the lease for every run it visits; a run with none is skipped and reported (`ErrNotStarted`) once per process.
 15. (L7) The process remembers the report, not the skip: `run:start` is read again on every pass.
+16. (S3, model 12) A session turn whose run was cancelled is recorded closed, with a cancelled outcome, and the session accepts the next message. The caller of the cancelled message gets `ErrRunCancelled`; `Send`, before it refuses a message because another message's turn is open, reads that turn's run's end markers, and records a cancelled one closed itself. Model 12 (`spec/tla/sessions`) checks it in `cancel-close` (and `deep-cancel` nightly); `findings/s3-cancel-wedge` stays open until P14 implements it.
+
+Two points P14 reconciles with sessions (model 12): recovery skips session runs today (`IsSessionRun`; a turn resumes when its message is sent again, and only the session holds the transcript it is seeded with), while `ResumeAgent` above lists `session_turn` among its kinds; a recovery resumer of a turn must seed it from the turn's `from/` record, and the turn is still recorded only when its message is sent again. And `Status` of a turn's run reports `Completed` once `run:complete` is written, before the session records the turn, so a caller that acknowledges a message on that status leaves the Send turn open; the session's own record, not the run's status, says a turn is answered.
 
 ### Replaces
 `Run(string) (Message, error)`, `RunResult`, `RunSaga`, `RunSagaResult`, `Stream(string)`, `StreamSaga`, `AgentStream.Final`, `RunTypedNative`, `Session.Send/SendOnce(string)`, the context decorators `WithWaker/WithClock/WithIdentity`, and `AgentEvent`/`AgentStream`.
