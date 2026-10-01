@@ -214,8 +214,8 @@ func TestModel11_D1_RollbackAcrossRotatedKeys(t *testing.T) {
 	}
 	// p1 bound under the new key: d1's grant does not verify, and the rollback stops.
 	ab := drive(WithRollbackGrants(WithGrant(ctx, p2, newSigner), newSigner, p1))
-	if !errors.Is(ab.CompensateErr, ErrNotVerified) {
-		t.Fatalf("p1 under the wrong signer: CompensateErr = %v, want ErrNotVerified", ab.CompensateErr)
+	if !errors.Is(ab.CompensateErr, ErrNotVerified) || !strings.Contains(ab.CompensateErr.Error(), "does not verify under the bound signer's key") {
+		t.Fatalf("p1 under the wrong signer: CompensateErr = %v, want the signature refusal (ErrNotVerified)", ab.CompensateErr)
 	}
 	ab = drive(WithRollbackGrants(WithGrant(ctx, p2, newSigner), oldSigner, p1))
 	if ab.CompensateErr != nil || refunds.Load() != 2 {
@@ -258,6 +258,10 @@ func TestModel11_BindRollbackScope(t *testing.T) {
 	// Bound only with WithRollbackGrants and no acting grant: still accepted.
 	if _, err := b.BindRollback(WithRollbackGrants(ctx, s1, old), "sub"); err != nil {
 		t.Fatalf("parent bound only for the rollback: %v", err)
+	}
+	// Each WithRollbackGrants adds to what an outer one bound: old, bound first, still verifies.
+	if _, err := b.BindRollback(WithRollbackGrants(WithRollbackGrants(ctx, s1, old), s2, live), "sub"); err != nil {
+		t.Fatalf("parent bound by an outer WithRollbackGrants: %v", err)
 	}
 	// A nil signer binds nothing: no grant to verify against.
 	if _, err := b.BindRollback(WithRollbackGrants(ctx, nil, old), "sub"); !errors.Is(err, agent.ErrConfig) {
