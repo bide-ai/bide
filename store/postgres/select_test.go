@@ -38,7 +38,7 @@ func TestNewSelect(t *testing.T) {
 		"SELECT a || b FROM t", "SELECT x FROM t WHERE y ### $1", "SELECT x FROM t WHERE y ~ $1", "SELECT x FROM t WHERE y OPERATOR(pg_catalog.=) $1",
 		// no non-ASCII identifier, no keyword-named function
 		"SELECT hijacké($1)", "SELECT conflict($1)", "SELECT 1.5", "SELECT x FROM t WHERE y = 1e3",
-		"SELECT x FROM t AS q(a)",                // a column list only after INSERT INTO t [AS alias]
+		"SELECT x FROM t AS q(a)",                    // a column list only after INSERT INTO t [AS alias]
 		`SELECT x FROM t WHERE y = 'a\\' OR z = 'b'`, // a backslash in a literal
 	} {
 		if _, err := newSelect(q); !errors.Is(err, agent.ErrConfig) {
