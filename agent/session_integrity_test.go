@@ -81,11 +81,14 @@ func TestSession_TwoWritersLoseNoTurn(t *testing.T) {
 }
 
 // Handles racing on one session: distinct messages are all recorded, and one message delivered
-// to several handles at once is recorded once.
+// to several handles at once is recorded once: one handle drives its turn, the others get
+// ErrTurnContended, and their resend returns the recorded answer.
 func TestSendOnce_ConcurrentHandles(t *testing.T) {
 	for _, sameKey := range []bool{false, true} {
 		a := New(&replyModel{}, NewMemStore())
 		var wg sync.WaitGroup
+		var mu sync.Mutex
+		var contended []*Session
 		for i := range 8 {
 			wg.Add(1)
 			go func() {
@@ -99,12 +102,32 @@ func TestSendOnce_ConcurrentHandles(t *testing.T) {
 					t.Error(err)
 					return
 				}
-				if msg, err := s.SendOnce(context.Background(), key, text); err != nil || msg.Text() != "re: "+text {
+				msg, err := s.SendOnce(context.Background(), key, text)
+				if errors.Is(err, ErrTurnContended) {
+					// Another handle drives this key's turn now (S4's turn lease): send it again
+					// once the others are done.
+					mu.Lock()
+					contended = append(contended, s)
+					mu.Unlock()
+					return
+				}
+				if err != nil || msg.Text() != "re: "+text {
 					t.Errorf("%s = %q, %v", key, msg.Text(), err)
 				}
 			}()
 		}
 		wg.Wait()
+		if !sameKey && len(contended) > 0 {
+			t.Errorf("%d handles got ErrTurnContended for keys no other handle sent", len(contended))
+		}
+		if len(contended) == 8 {
+			t.Error("every handle got ErrTurnContended: none drove the turn")
+		}
+		for _, s := range contended { // the resend returns the turn another handle recorded
+			if msg, err := s.SendOnce(context.Background(), "k", "m"); err != nil || msg.Text() != "re: m" {
+				t.Errorf("resend after ErrTurnContended = %q, %v", msg.Text(), err)
+			}
+		}
 		want := 8
 		if sameKey {
 			want = 1
