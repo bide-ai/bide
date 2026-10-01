@@ -47,6 +47,7 @@ type cancelReason struct {
 }
 
 // protocol:lifecycle begin CGet CIns CRead CReq
+// protocol:sessions begin Cancel
 
 // Cancel cancels runID's run (D1), recording reason. It takes no lease: it writes one record, and
 // the run's drives act on it.
@@ -128,6 +129,7 @@ func cancelVerdict(runID, first string) error {
 	return fmt.Errorf("Cancel run %s: its first end marker is %s: %w", runID, first, ErrRunEnded)
 }
 
+// protocol:sessions end
 // protocol:lifecycle end
 
 // protocol:lifecycle begin SPick SStart SGet

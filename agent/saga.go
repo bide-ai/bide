@@ -110,9 +110,22 @@ func (a *Agent) runSagaWithTelemetry(ctx context.Context, runID string, d *drive
 	if err != nil {
 		return Message{}, usageTotals{}, 0, err
 	}
+	// A run that is over is final (model 10's DOpen): only a saga whose first end marker is its own
+	// run:aborted walks its rollback again (memoized, to report what it undid); any other ended run
+	// is reported by run. A failed saga that is not over is held to its run:start first, as every
+	// drive is (rules 9 to 11), and then rolled back.
+	end, ended := firstEnd(recs)
+	if aborting && ended && end.name != runAbortedStep {
+		aborting = false
+	}
 	if aborting {
 		if err := linkSubRun(ctx, runID, a.store); err != nil { // run does this for the other drives
 			return Message{}, usageTotals{}, 0, err
+		}
+		if !ended {
+			if _, _, err := a.openPlan(ctx, runID, d, recs); err != nil {
+				return Message{}, journalTotals(recs), 0, err
+			}
 		}
 		// Re-entered after it aborted (a sub-saga whose parent had not recorded the failure): its
 		// usage goes to the tool call that started it, as run reports it (see callUsage).
