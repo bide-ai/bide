@@ -29,7 +29,7 @@ func (m rev117eMultiModel) Stream(_ context.Context, req agent.Request) (*agent.
 	if n == 0 {
 		for i, c := range m.calls {
 			args := `{}`
-			if c[1] == "deleg" || c[1] == "inner" {
+			if c[1] == "deleg" || c[1] == "inner" || c[1] == "deep" {
 				args = `{"task":"go"}`
 			}
 			ch <- agent.Emit{Event: agent.ToolCallDelta{Index: i, ID: c[0], Name: c[1], ArgsFragment: json.RawMessage(args)}}
@@ -294,5 +294,49 @@ func TestRev117e_StorageWriteFailureRecordsNothing(t *testing.T) {
 				t.Fatalf("delegation never ran: first Run err=%v, resume err=%v", err1, err2)
 			}
 		})
+	}
+}
+
+// The same with a crash halt (*OutcomeUnknown: a side effect in a deeper sub-run whose first drive
+// was cut off after it began) joined with the unrecorded refusal: the sibling saga step still does
+// not start.
+func TestRev117e_UnrecordedJoinedWithCrashHaltInSaga(t *testing.T) {
+	store := agent.NewMemStore()
+	signer := rev117eSigner(t)
+	expired := rev117eRoot(t, signer, time.Now().Unix()-3600)
+	deleg := AttenuatingSubAgent("deleg", "d", agent.New(answerModel{text: "ok"}, store),
+		AttenuationConfig{Store: store, Narrow: narrowLimitBy(1), Rules: rev117eRules})
+	var cancelFirst context.CancelFunc
+	var fired atomic.Int32
+	fire := agent.Func("fire", "a side effect", agent.Safety{}, func(ctx context.Context, _ struct{}) (string, error) {
+		if fired.Add(1) == 1 {
+			cancelFirst() // the drive is cut off while the effect is in flight
+			return "", ctx.Err()
+		}
+		return "ok", nil
+	})
+	// The side effect runs one level deeper, so its halt reaches the inner turn as a sub-agent's
+	// halt (*OutcomeUnknown), joined there with the delegation's refusal.
+	deep := agent.New(rev117eMultiModel{calls: [][2]string{{"d1", "fire"}}}, store, fire)
+	inner := agent.New(rev117eMultiModel{calls: [][2]string{{"i1", "deleg"}, {"i2", "deep"}}}, store, deleg,
+		agent.SubAgent("deep", "d", deep)).SetMaxConcurrency(1)
+	var side atomic.Int32
+	sideTool := agent.Func("side", "a later step", agent.Safety{}, func(context.Context, struct{}) (string, error) {
+		side.Add(1)
+		return "ok", nil
+	})
+	parent := agent.New(rev117eMultiModel{calls: [][2]string{{"c1", "inner"}, {"c2", "side"}}}, store,
+		agent.SubAgent("inner", "i", inner), sideTool).SetMaxConcurrency(1)
+	ctx1, cancel := context.WithCancel(WithGrant(context.Background(), expired, signer))
+	cancelFirst = cancel
+	_, err1 := parent.RunSaga(ctx1, "p", "go")
+	cancel()
+	_, err2 := parent.RunSaga(WithGrant(context.Background(), expired, signer), "p", "go")
+	var halt *agent.OutcomeUnknown
+	if !errors.As(err2, &halt) {
+		t.Fatalf("setup: second drive = %v (first %v), want a crash halt joined with the refusal", err2, err1)
+	}
+	if side.Load() != 0 {
+		t.Fatalf("sibling step started %d time(s) after a deep crash halt joined with an unrecorded refusal (err %v)", side.Load(), err2)
 	}
 }
