@@ -5,6 +5,8 @@ package toolhook
 
 import "context"
 
+// protocol:delegation begin RbBind DClass DGuard
+
 // RollbackBinder is a tool that wraps a sub-agent and runs the sub-run under a context of its
 // own (a narrower grant, another identity). A saga rollback that recurses into the sub-run calls
 // BindRollback first, so the sub-run's compensations run under the authority the delegation
@@ -52,3 +54,5 @@ func (e *Unrecorded) Unwrap() error { return e.Err }
 var CallGuard func(ctx context.Context) error
 
 // protocol:toolcall end
+
+// protocol:delegation end

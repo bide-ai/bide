@@ -55,6 +55,12 @@ TRerun == << <<Fail, SubW(2)>>, <<Eff>> >>
 TDelegRerun == << <<DelegNe(2, 1)>>, <<Fail, RSW>> >>
 \* A delegation inside a plain sub-run of a saga, whose sub-run ends with a model error (D3).
 TPlainDeleg == << <<SubPlain(2), Fail>>, <<Deleg(3)>>, <<Eff>> >>
+\* Nightly: a child grant that expires at tick 2, then a failure.
+TDelegNe2 == << <<DelegNe(2, 2), Fail>>, <<Eff, Eff>> >>
+\* Nightly: the plain tree of B3 with a delegation at its bottom whose sub-run fails (D3).
+TPlainDeep == << <<SubPlain(2), Fail>>, <<SubPlain(3)>>, <<Deleg(4)>>, <<Eff>> >>
+\* Nightly: D2's tree with the re-run write starting a sub-run of its own.
+TDelegRerunSub == << <<DelegNe(2, 1)>>, <<Fail, SubW(3)>>, <<Eff>> >>
 \* An AttenuateFunc that names another subject.
 TDelegOther == << <<DelegOther(2), Fail>>, <<Eff>> >>
 =============================================================================

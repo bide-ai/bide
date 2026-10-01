@@ -199,6 +199,8 @@ func withSessionRun(ctx context.Context, runID string) context.Context {
 	return context.WithValue(ctx, sessionRunKey{}, runID)
 }
 
+// protocol:delegation begin SStart
+
 // checkRunID refuses a run ID that is empty or contains subRunSep, which only derived run IDs
 // carry: a tool call may start the sub-agent run of its own call (SubRunID) or a programmatic
 // sub-run it names (RunInfo.SubRunFor), from the context the loop gave it, and a session drives
@@ -217,6 +219,8 @@ func checkRunID(ctx context.Context, runID string) error {
 	}
 	return fmt.Errorf("run: run ID %q contains %q, which the engine reserves for the run IDs of sub-agents and session turns: %w", runID, subRunSep, ErrConfig)
 }
+
+// protocol:delegation end
 
 // maxEncodedID bounds encodeID's output. An ID whose escaped form is longer is replaced by a
 // digest, so a key stays within any store's key limit (Postgres refuses an index row over

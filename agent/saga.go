@@ -95,6 +95,8 @@ func (a *Agent) runSaga(ctx context.Context, runID, input string, emit func(Agen
 	return out, err
 }
 
+// protocol:delegation begin DOpen DRb DRbEnd RbOpen RbLoop RbSub RbSubRet RbBind RbRec RbBindRet RbComp RbRe RbReRun RbReRet RbReW
+
 // runSagaWithTelemetry is the body of runSaga that also returns usage and turn count, for
 // RunSagaResult.
 func (a *Agent) runSagaWithTelemetry(ctx context.Context, runID, input string, emit func(AgentEvent)) (Message, usageTotals, int, error) {
@@ -554,6 +556,8 @@ func sagaFailure(runID string, recs []Record) (string, bool, error) {
 	}
 	return "", false, nil
 }
+
+// protocol:delegation end
 
 // argsFor finds the original arguments of a tool call from the journaled model turns.
 func argsFor(recs []Record, toolUseID string) (json.RawMessage, bool) {

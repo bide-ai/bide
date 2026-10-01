@@ -3,7 +3,7 @@
 TLA+ models of bide's coordination protocols, written in PlusCal and checked with the TLC model
 checker. The plan and the reasoning behind it are in the design note
 [formal models of the coordination protocols](../../docs/design/formal-models.md);
-this directory holds models 1 (the claim protocol), 1b (the approval gate), 2 (the bide protocol's claim rules), 7 (flow semantics), 8 (spend accounting) and 10 (the run lifecycle and recovery) of that plan.
+this directory holds models 1 (the claim protocol), 1b (the approval gate), 2 (the bide protocol's claim rules), 7 (flow semantics), 8 (spend accounting), 9 (the tool-call state machine), 10 (the run lifecycle and recovery) and 11 (delegation, sub-run authority and saga trees) of that plan.
 
 What a model check establishes, stated narrowly: within the bounds a configuration states (drivers,
 processes, faults, attempt numbers), TLC explores every interleaving of the modelled rules and every
@@ -54,7 +54,7 @@ else fails the check.
 The workflow `.github/workflows/models.yml` has two jobs. **Models** runs on every pull request, in
 the merge queue and on pushes to main: the self-test, the translation check, and every `ci`,
 `regress` and `finding` configuration. On a pull request, its steps run only when the pull request
-touches the models or the Go code they describe (`spec/tla/`, `agent/`, `store/`, `plan/`,
+touches the models or the Go code they describe (`spec/tla/`, `agent/`, `audit/`, `store/`, `plan/`,
 `internal/journalhook/`, `internal/toolhook/`, `middleware/`, or `models.yml` itself); otherwise the job reports success after printing
 that no modelled code changed, so it can be a required check without costing every documentation
 change six minutes. The merge queue and main always run in full, and so does any doubt (a failed
@@ -83,7 +83,7 @@ func (j *Journal) claim(ctx context.Context, runID, key string, rec Record) (boo
 
 A marker above a declaration is followed by a blank line, so it is not part of the doc comment.
 Regions of one model do not nest; regions of different models may overlap (the run's Load is
-`Open` in both model 1 and model 8). Model 10 (`lifecycle/`) marks the lease, recovery, drive and resolution code; the steps P14 has not built yet (`DTurn`, `DPost`, `DVerdict`, `Cancel`'s `CGet`, `CIns`, `CRead`) are on its no-code list until they land. Model 2 (`protocol/`) is a design model with no Go code yet,
+`Open` in both model 1 and model 8). Model 10 (`lifecycle/`) marks the lease, recovery, drive and resolution code; the steps P14 has not built yet (`DTurn`, `DPost`, `DVerdict`, `Cancel`'s `CGet`, `CIns`, `CRead`) are on its no-code list until they land. Model 11 (`delegation/`) marks `audit`'s `AttenuatingSubAgent`, the sub-agent tool, the programmatic sub-run admission and links, the loop's hold and halt rules, and the saga's rollback walk. Model 2 (`protocol/`) is a design model with no Go code yet,
 so it has no map and no markers.
 
 **The checks.** `go run ./internal/tools/modelsync` (the Lint job, on every pull request, in the
@@ -149,8 +149,8 @@ spec/tla/
     regress/         historical rules, each of which must still produce its counterexample
     findings/        open findings, which fail until they are fixed (none open at present)
     limits/          accepted behavior, stated as an expected violation
-  flows/, protocol/, spend/, toolcall/, lifecycle/
-                     models 7, 2, 8, 9 and 10, laid out the same way
+  flows/, protocol/, spend/, toolcall/, lifecycle/, delegation/
+                     models 7, 2, 8, 9, 10 and 11, laid out the same way
 ```
 
 ## Model 1: claims and attempts
@@ -1241,16 +1241,238 @@ The mechanisms of section 6 of the plan, as they apply here:
   `store/`, which hold every function in the map (`agent/recovery.go`, `agent/lease.go`,
   `agent/loop.go`, `agent/runstart.go`, `agent/saga.go`, `agent/halt.go`, and the stores'
   `Leaser` and `Lister`).
-- **Not built yet** (the plan's M3 and M4, for every model): trace validation (`bidetrace`
-  hooks, `tracestore`, a trace spec per model), `TestProtocolVocabulary`, the region markers and
-  the path-rule job, and the counterexample-to-test helper (`agent/internal/interleave`). For this
-  model, the hooks would be `recoverRun` (acquire, `runEnded`, `resume`, release), the end-marker
+- **Built (M4, #125):** the region markers, the path rule and `TestProtocolVocabulary`; see
+  [Keeping the code and the models in step](#keeping-the-code-and-the-models-in-step).
+- **Not built yet** (the plan's M3, for every model): trace validation (`bidetrace` hooks,
+  `tracestore`, a trace spec per model) and the counterexample-to-test helper
+  (`agent/internal/interleave`). For this model, the hooks would be `recoverRun` (acquire, `runEnded`, `resume`, release), the end-marker
   writes, `renewLoop`'s `ErrLeaseLost`, and P14's `Cancel` and `run:cancelled` checks; the
   multi-process HA harness is the natural producer.
 - **Findings need Go tests before their fixes**, as for every model: L1's is
   `TestRecoverLoop_TakesOverALapsedLeaseWithinAnIntervalBehindHaltedRuns` (`agent/recover_lapsed_test.go`,
   committed failing before #126's fix), which measures a takeover behind halted runs against the
   interval, and L2 and L3 become tests of P14.
+
+## Model 11: delegation, sub-run authority and saga trees
+
+`delegation/Delegation.tla` checks what model 9 treats as a black box: a call that runs another
+agent's run. It covers `audit.AttenuatingSubAgent` and the sub-agent tool it wraps, programmatic
+sub-runs (`RunInfo.SubRunFor`, #127), and a saga's rollback through the whole tree. The claim
+protocol under each call is model 1's, and one turn's sibling calls are model 9's. Here the
+calls of a run go one after another, as in an errgroup with a limit of one, and a sub-run is a
+nested drive.
+
+### What is modelled
+
+- **A tree of runs** (`Tree`, from `DelegationMC.tla`). Each run is one turn of calls of four
+  kinds:
+  - a compensable side effect with an attempt marker;
+  - a tool that fails;
+  - a delegation (`AttenuatingSubAgent` over a sub-agent's run);
+  - a tool that starts a programmatic sub-run. It may itself be a retry-safe compensable write,
+    and it declares the agent the rollback uses (`WithSubRuns`: the same store, none, or
+    unusable).
+- **Grants.** A grant is an id that names its chain, a subject, its parent, and an expiry on a
+  discrete clock. A drive binds a root grant (`P`), none, or the wrong one (`W`). After `P`
+  expires, the operator binds a live one (`P2`). A child grant is minted from the bound grant,
+  checked, and journaled (`RecordGrant`). On resume it is reused only after its subject, its
+  parent (the signature and narrowing checks), and its expiry are checked. A delegation with no
+  grant bound journals the ungranted marker. `CallGuard` refuses every call of a delegated
+  sub-run once its grant has expired.
+- **Refusals.** Unrecorded refusals are a storage error, a resume under other authority, minting
+  from an expired bound grant, and minting onto a sub-run with records but no authority. Recorded
+  failures are a journaled grant for another subject, an expired journaled grant (F2), and a
+  child grant the `AttenuateFunc` gives another subject or a past expiry.
+- **The loop's rules.** An Unrecorded refusal does not cut off later calls. A halt or a lost
+  outcome sets the saga's `halted` flag, which also holds when it is joined with an Unrecorded
+  refusal (bug 8). A sub-run that stopped short of a verdict records nothing
+  (`subRunUnfinished`). A saga step's failure is a `StepSagaFail`, and the drive returns the
+  held refusals and halts joined.
+- **Programmatic sub-runs.** In a saga's tree (inherited through plain runs), the link is
+  written before the sub-run records anything. A sub-run on another store is refused, and so is
+  one started after its call returned. An ID from another call's scope is refused.
+- **The rollback** (`rollbackRun`). Failed calls are handled first, then every call in reverse.
+  It recurses into a delegation through `bindRollback` and `BindRollback`, which rebinds the
+  journaled grant and identity or no grant. It walks a call's linked sub-runs latest first, with
+  the declared agent, or with no tools, which lists their writes. It compensates as a memoized
+  step. It re-runs a retry-safe compensable call that has no result, and reloads the links
+  afterward. A stopped rollback is resumed by a later drive.
+- **Faults**, each with a budget:
+  - a crash at every step: the journal stays, and the stack, held errors and flags are lost;
+  - an error reply on the wrapper's leaves, a link or a compensation record (A3: committed or
+    not);
+  - a transient read error of a sub-run's journal;
+  - a lost outcome;
+  - a drive bound to the wrong authority;
+  - the clock.
+
+  The operator binds the authority the last refusal asked for. It is strongly fair in the
+  liveness configurations.
+
+Abstracted away:
+
+- approvals (model 1b);
+- the claim's races (model 1);
+- middleware and sibling concurrency (model 9);
+- model turns beyond one;
+- the token budget;
+- sessions.
+
+### Model-code map
+
+Each label is one atomic step. Files are `audit/delegate.go` (A), `agent/subagent.go` (U),
+`agent/loop.go` (L), `agent/saga.go` (S), `agent/runctx.go` (R), `agent/keys.go` (K),
+`agent/budget_tree.go` (B), `agent/toolexec.go` (T) and `internal/toolhook/toolhook.go` (H).
+Every row but the no-code list has a `// protocol:delegation begin ... end` region. The no-code
+list holds the driver, the faults, the tool's own code, and the side effect's claim and call,
+which are models 1 and 9.
+
+<!-- modelsync: no-code delegation Idle Back EMark EFire ERes SRun SRet SWrite SLateRet Tick WrongAuth FixAuth Crash -->
+<!-- modelsync: map delegation -->
+| Label | Go |
+|---|---|
+| `DOpen` | S `runSagaWithTelemetry`: `sagaFailure` (an aborting saga goes to its rollback); L `Agent.run`'s open and resume gate (model 9's `DOpen`, `DGate`) |
+| `DNext` | L the goroutine's `gctx.Err()` and `halted.Load()` checks: a call after a halt does not start |
+| `DGuard` | T the base handler's `toolhook.CallGuard` (H); A `init`'s guard: a call under an expired delegated grant is refused, recorded |
+| `DgRead` | A `attenuatingSubAgent.Call`'s run scope and `journaledAuthority`; `storageFailure`, `authorityErr`, `unrecorded`; the checks of an ungranted, a legacy, a foreign-subject, a wrong-parent or an expired journaled grant |
+| `DgUng` | A `Call` with no grant bound: the `audit:delegation:ungranted` marker |
+| `DgMint` | A `Call`'s mint: the bound grant's expiry, `t.narrow`, the subject, `CheckAttenuation`, the child's expiry |
+| `DgRec` | A `SignGrant`, `RecordGrant` (a failure is Unrecorded) |
+| `DgRun`, `DgRet` | A the rebound identity and `grantCarrier` (`delegated`); U `subAgentTool.Call` (`RunSaga` in a saga, `Run` otherwise; `subRunUnfinished`) |
+| `SStart` | K `checkRunID`; R `derivedRunID`, `stepRunName`, `withRunContext`'s `sagaTree`; `linkSubRun`'s other-store refusal (`sameStore`) |
+| `SLink` | R `linkSubRun`'s `subRunLinkStep` write; L `Agent.run`'s call of it |
+| `DClass` | L the goroutine's deferred hold (Unrecorded, `halted` for a joined halt or lost outcome) and the classification through `subRunUnfinished`; U `subRunUnfinished`; H `Unrecorded` |
+| `SLate` | L `started.callReturned()`; B `callUsage.callReturned`; R `linkSubRun`'s `returned` check |
+| `DRb`, `DRbEnd` | S `runSagaWithTelemetry`'s rollback, `Agent.rollback` (`run:aborted`) |
+| `DEnd` | L the drive's return: the refusal joined with a held pause or halt |
+| `RbOpen`, `RbLoop` | S `rollbackRun`: its `History`, `subRunLinks`, the failed calls first, then every call in reverse |
+| `RbSub`, `RbSubRet` | S `walkSubRuns`, `rollbackSubRun`, `declaredSubRunAgent`, `subRunLinks`; U `subRunAgentFor` |
+| `RbBind`, `RbRec`, `RbBindRet` | U `bindRollback`, `asSubAgent`; H `RollbackBinder`; A `BindRollback`, `checkChild`, `withoutGrant`; S the recursion into the sub-agent's run |
+| `RbComp` | S the memoized `sagaCompensateStep` |
+| `RbRe`, `RbReRun`, `RbReRet`, `RbReW` | S the re-run of a retry-safe compensable call through `toolH` and `callTool`, and the links reloaded after it |
+| `Idle`, `Back`, `Tick`, `WrongAuth`, `FixAuth`, `Crash` | the root's drives and the environment |
+| `EMark`, `EFire`, `ERes` | a side effect's claim, call and outcome (models 1 and 9) |
+| `SRun`, `SRet`, `SWrite`, `SLateRet` | the tool's own code: `Run` or `RunSaga` of its `SubRunFor` ID, and its own write |
+
+### Properties
+
+| Property | Kind | Statement |
+|---|---|---|
+| `AuthorityNarrows` | invariant | A child never acts (fires a write, or compensates one) with authority its delegation did not grant. No call of a delegated sub-run reaches its tool after the grant expired. |
+| `RollbackSound` | invariant | Once the root's rollback finished (`run:aborted`), every write still in place anywhere in the tree is listed. It is listed itself in `Uncompensated` or `UnknownOutcome`, or a call above it is in `Uncompensated`. |
+| `RollbackUnderGrant` | invariant | A compensation in a delegated sub-run runs under the authority the sub-run journaled, which is the one its write fired under. |
+| `HaltPropagates` | invariant | In a saga, no call starts after a call of the same drive returned a halt or a lost outcome, alone or joined with an Unrecorded refusal, from anywhere below it. |
+| `NoForgedSubRun` | invariant | A sub-run runs only under an ID derived from its own call, while the call is open. |
+| `NoFalseFailure` | invariant | A delegation is recorded as failed only for a permanent cause, never for a storage error or a resume under other authority. |
+| `UnrecordedContinues` | liveness | A run stopped by Unrecorded refusals completes, aborts or halts for a human once the operator binds the authority they ask for. |
+| `RollbackEnds` | liveness | A failed saga's rollback reaches its end. |
+| `NoFireAfterExpiry` | invariant (limit) | The literal form: no write fires after its grant expired. |
+
+### Configurations
+
+Times are TLC's own on the development machine (Apple M1 Pro). Each passing configuration is
+also run for vacuity. The model states the rules of `main` after #127. The `ci` set (regress,
+finding and limit configurations included, with vacuity runs and JVM starts) takes about
+@CITIME@ on the development machine.
+
+| Config | Group | What | States | Time |
+|---|---|---|---|---|
+| `deleg-faults` | ci | A saga delegates under `P`, then fails. It covers mint, reuse on resume and `BindRollback`, with a crash, an error reply, a read error, a wrong binding, and `P` expiring. | 53,760 | 1 s |
+| `deleg-ungranted` | ci | The same with no grant bound: the ungranted marker, and a resume under a grant refused. | 10,022 | <1 s |
+| `deleg-expiry` | ci | A child grant that expires: `CallGuard`, the expired journaled grant (F2), and `BindRollback` with no expiry check, with a crash. | 1,228 | <1 s |
+| `nested` | ci | A delegation inside a delegation, with a crash, a read error, and `P` expiring. | 17,854 | <1 s |
+| `halt` | ci | The child's turn holds an Unrecorded refusal joined with a lost outcome, with a crash. | 2,787 | <1 s |
+| `subruns` | ci | Programmatic sub-runs that are declared, undeclared, and declared on another store, with a crash and an error reply. | 2,389 | <1 s |
+| `sub-long` | ci | A tool-use ID longer than `encodeID`'s limit (B1). | 207 | <1 s |
+| `sub-store` | ci | A saga's sub-run on another store is refused (B2). | 119 | <1 s |
+| `sub-late` | ci | A sub-run started after its call returned is refused. | 128 | <1 s |
+| `plain-tree` | ci | A plain sub-run's sub-run, three levels (B3), with a crash and an error reply. | 1,580 | <1 s |
+| `rerun` | ci | The rollback re-runs a call that never ran, which starts a sub-run, and its outcome may be lost (B4). | 580 | <1 s |
+| `live-unrec` | ci | `UnrecordedContinues` and `RollbackEnds` with a read error, an error reply, a wrong binding, and `P` expiring. | 5,501 | 1 s |
+| `fix-d1-chain` | ci | D1's proposed fix, with both liveness properties. | 647 | <1 s |
+| `fix-d2-guard` | ci | D2's proposed fix, with a crash. | 1,118 | <1 s |
+| `fix-d3-recurse` | ci | D3's proposed fix, with a crash. | 341 | <1 s |
+@NIGHTLY@
+
+Regressions. Each must fail with its property, and passes with its `Bug` value set to `"none"`:
+
+| Config | The historical rule | Expected | Trace |
+|---|---|---|---|
+| `regress/hidden-halt` | #117 final review, bug 8 (rev117e audit 1): an Unrecorded refusal joined with a lost outcome did not set `halted` (`HiddenHalt`). | `HaltPropagates` | 66 states |
+| `regress/storage-recorded` | rev117e audit 2: a store error on the delegation's authority was recorded as its failure (`StorageRecorded`). | `NoFalseFailure` | 38 states |
+| `regress/mint-on-records` | rev117e audit 3: a grant was minted onto a sub-run with records but no journaled authority, and the rollback compensated those records under it (`MintOnRecords`). | `RollbackUnderGrant` | 32 states |
+| `regress/foreign-bind` | rev117e audit 4: `BindRollback` did not check the subject, and compensated under another delegation's grant (`ForeignBind`). | `AuthorityNarrows` | 18 states |
+| `regress/no-bind` | R117-4: the rollback walked a wrapped sub-run under the parent's authority (`NoBind`). | `RollbackUnderGrant` | 37 states |
+| `regress/expired-unrecorded` | round 5, F2: an expired journaled grant was Unrecorded, which no binding puts right, so the saga stopped on every drive (`ExpiredUnrecorded`). | `UnrecordedContinues` | 28 states |
+| `regress/no-call-guard` | round 5, F3: expiry was checked only at mint and reuse, so the sub-run's calls ran past it (`NoCallGuard`). | `AuthorityNarrows` | 45 states |
+| `regress/wrong-auth-recorded` | round 3, item 3: a resume under other authority was recorded as a failure (`WrongAuthRecorded`). | `NoFalseFailure` | 28 states |
+| `regress/mint-foreign` | round 3 (b): an `AttenuateFunc` could set another subject (`MintForeign`). | `AuthorityNarrows` | 14 states |
+| `regress/b1-long-id` | #127 S1 review, B1: links looked up by the raw tool-use ID missed a long ID's digest (`B1`). | `RollbackSound` | 33 states |
+| `regress/b2-other-store` | B2: a saga's sub-run journaled to another store, which the rollback did not read (`B2`). | `RollbackSound` | 35 states |
+| `regress/b3-plain-link` | B3: links were written only when the call's own run was a saga (`B3`). | `RollbackSound` | 50 states |
+| `regress/b4-rerun-links` | B4: after a re-run with an unknown outcome, the links were not reloaded (`B4`). | `RollbackSound` | 39 states |
+| `regress/late-start` | #127 review (c): a sub-run started after its call returned was accepted (`NoReturnedCheck`). | `NoForgedSubRun` | 9 states |
+
+Accepted limit: `limits/fire-in-flight`. `CallGuard` is asked when a call reaches its tool, so a
+tool entered before the grant expired may fire after it (`NoFireAfterExpiry`).
+`AuthorityNarrows` states the guarded form.
+
+### Findings
+
+Found by this model on `main` at `635e7c0` (#127 merged). Each has a failing Go test in a
+scratch directory (`audit/zz_model11_test.go`, not in this pull request). Each fix is checked in
+the model (`Fix`) as a `ci` configuration. The findings stay open (`findings/`) until the code
+adopts a fix.
+
+- **D1: a saga whose delegations were minted under two bound grants can never finish its
+  rollback** (`findings/d1-rotation`, `RollbackEnds`).
+  - `BindRollback` verifies each journaled grant against the one grant bound now.
+  - Minting from an expired bound grant is refused with "bind a live one and drive again". A
+    saga that delegated under `P`, and then under the live `P2`, has two delegations, and no
+    single binding verifies both. The walk stops at the first that does not match, latest
+    first, whichever grant is bound.
+  - The test is `TestModel11_D1_RollbackAcrossRotatedGrants`. It rotates the root grant between
+    drives and re-drives under each grant in turn; the rollback never finishes.
+  - Proposed fix (`ChainBind`): the caller binds every grant the saga minted under, beside the
+    current one, and `BindRollback` verifies a journaled grant against the one it was minted
+    from.
+  - A grant never bound stays refused, which keeps `TestR117_BindRollbackRefusesAForeignParent`.
+    A fix that only checks the signature would break that test.
+- **D2: the rollback's re-run calls a tool after the delegation's grant expired**
+  (`findings/d2-rerun-expired`, `AuthorityNarrows`).
+  - `BindRollback` rebinds the journaled grant with `WithGrant`, which drops the `delegated`
+    mark, so `CallGuard` passes every call under it.
+  - A compensation needs that, because F2 lets a rollback compensate after expiry. But the
+    re-run of a retry-safe compensable call with no result goes through the base handler and
+    calls the tool, which is a forward act.
+  - The test is `TestModel11_D2_RollbackRerunAfterGrantExpiry`. The sub-run's own rollback,
+    under the delegated grant, is refused for the same call, and the parent's walk then calls
+    the tool.
+  - Proposed fix (`GuardRerun`): `BindRollback` keeps the `delegated` mark, which `Compensate`
+    does not consult. A re-run that `CallGuard` refuses is listed in `UnknownOutcome`, and the
+    walk goes on. Without that listing the rollback would stop for ever.
+- **D3: a sub-agent's writes in a plain sub-run of a saga are skipped**
+  (`findings/d3-plain-deleg`, `RollbackSound`).
+  - A plain run (`Run` of a `SubRunFor` ID, which #127 allows in a saga's tree) records a
+    sub-agent call that failed as an error result.
+  - `rollbackRun` skips a call with an error result before it recurses into a sub-agent. The
+    sub-agent's run had written and then failed (a model error, or an expired journaled grant),
+    so its write is neither compensated nor listed.
+  - The test is `TestModel11_D3_FailedSubAgentInPlainSubRunSkipped`.
+  - Proposed fix (`RecurseFailed`): recurse into a sub-agent call whatever its result, as the
+    function's comment already says.
+
+### Keeping model 11 and the code in step
+
+- **The map** above, with its `// protocol:delegation` regions in `agent/`, `audit/` and
+  `internal/toolhook/`, checked by `modelsync`. The Models job's path filter includes `audit/`.
+- **Regressions** for every historical bug of #117's delegation rounds and #127's S1 review
+  that the model can state, each a `Bug` value.
+- **No vocabulary block.** The plan asks for one for the claim records only (section 6.2).
+  This model's records (the grant leaf `audit:grant:`, the ungranted marker, the `@subrun/`
+  link and the saga records) are named in the map.
+- **Not built yet** (M3): trace validation. The hooks would be `Call`'s refusals and leaves,
+  `linkSubRun`, `bindRollback` and the walk's steps.
 
 ## What the bounds do not cover
 
