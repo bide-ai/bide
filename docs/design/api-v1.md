@@ -250,6 +250,8 @@ The rule resolves critique B1 and #70's decisions 2 to 4, using #70's table.
 7. **RunTyped (#70 decision 4).** `Typed` holds the mode, `T`'s schema digest and the full schema. Resuming a typed run through `Run`, or with a different `T`, is `ErrConfig` before any model call.
 8. **Deployment-only values, never journaled:** clock, waker, lease holder.
 
+Model 10 checks rules 1 to 3 and the per-run tool filter (`RunOptionsDurable`, `FilterHonoured`; `life-limits`, `life-filter`) and records an open finding, L5: the filter must be enforced at dispatch, not only in `Request.Tools`.
+
 ### Recovery dispatch (critique B6, B8)
 <!-- docsnip: skip design proposal: this API is not implemented yet -->
 ```go
@@ -267,6 +269,7 @@ func ResumeAny(rs ...Resumer) Resumer                              // first that
 - A run with none (a `Signal` sent to a mistyped ID, for example) is skipped. It is reported once per process through `WithRecoverErrors` as `ErrNotStarted`.
 - A run no resumer claims is reported once as `ErrNotResumable`.
 - Neither is re-reported on every pass.
+- Model 10 checks the once-per-process report (`NotStartedOnce`) and records an open finding, L7: `run:start` must be read again on every pass, or a run that starts after a pass found it unstarted is never recovered.
 
 **Typed runs are resumable by registering a typed resumer.** I disagree with the critique's "validate against the journaled schema and complete without T". bide has no JSON Schema validator; strict acceptance is decoding into `T`. A run completed under a weaker check is final, so a wrong answer could not be corrected later. The journaled full schema serves audit and a clear error.
 
@@ -281,7 +284,7 @@ func ResumeAny(rs ...Resumer) Resumer                              // first that
 - `Recover` excludes cancelled runs through the `Lister` filter.
 - After a drive wins an attempt claim and before it calls the effect, it reads `run:cancelled` again (one `Get` per side-effect call) and, if the marker is present, records the attempt as not started and stops. The turn-boundary check alone lets a drive that checked before `Cancel` landed claim and fire after it (model 10, finding L2). With this rule, an effect fires after `run:cancelled` only under a claim won before it: a call in flight.
 - The first end marker in journal order (`run:complete`, `run:aborted` or `run:cancelled`) is the run's end for every reader (`Run`, `Status`, the drive itself). `Cancel` and completion write different keys and can both land (A1 is per key), so every writer of an end marker reads the end markers back before it reports: `Cancel` reports the run cancelled, and a drive reports its answer, only if its own marker is the first (one `Get` at the end of `Cancel` and at the end of each completed run; model 10, finding L3).
-- Model 10 (`spec/tla/lifecycle`) checks both rules (`life-cancel`, `life-cancel-plain`, `deep-cancel-plain`; `CancelFinal`, `VerdictAgreement`); its findings `cancel-turn-check` and `cancel-verdict` stay open until P14 implements them.
+- Model 10 (`spec/tla/lifecycle`) checks both rules (`life-cancel`, `life-cancel-plain`, `deep-cancel-plain`; `CancelFinal`, `VerdictAgreement`); the rules they replaced are its regressions `cancel-turn-check` and `cancel-verdict`, and P14's tests reproduce both. It also checks `Cancel` on a saga (`CancelRollsBack`) and records an open finding, L4: `run:cancelled` is an end marker, which recovery excludes, so a saga cancelled when no drive will reach a check is never rolled back. The model's proposed rule and P14's full rule list are in `spec/tla/README.md` (model 10, "P14: the rules the Run API must implement").
 
 ### Status (D8)
 `RunStatus{State RunState; Terminal string; Records int}` with states:
@@ -292,6 +295,8 @@ func ResumeAny(rs ...Resumer) Resumer                              // first that
 - `Cancelled`
 
 Pauses are not journaled, so a paused run reports `Started`. This is documented.
+
+Model 10 checks `Status` against the first end marker (`StatusTruthful`; `life-status`, `life-status-load`) and records an open finding, L6, on how it reads the end markers (one `Load`, or the `Get`s with a re-read).
 
 ### Replaces
 `Run(string) (Message, error)`, `RunResult`, `RunSaga`, `RunSagaResult`, `Stream(string)`, `StreamSaga`, `AgentStream.Final`, `RunTypedNative`, `Session.Send/SendOnce(string)`, the context decorators `WithWaker/WithClock/WithIdentity`, and `AgentEvent`/`AgentStream`.
