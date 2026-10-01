@@ -137,8 +137,9 @@ func New(model Model, store Durable, tools ...Tool) *Agent {
 // addTool registers t, reading its spec once: every decision about its calls reads this copy. It
 // refuses a nil tool, a name the agent already has, a wrapper the agent cannot honor
 // (checkWrapper), and an approval policy no option would build (a SingleApproval whose fields
-// were changed), each with ErrConfig. strict (Build and With) also refuses the name RunTyped
-// reserves and an input schema that is not a JSON object; New, which is transitional, does not,
+// were changed), each with ErrConfig. strict (Build and With) also refuses a name outside
+// ^[a-zA-Z0-9_-]{1,64}$ (portableToolName), the name RunTyped reserves, and an input schema that
+// is not a JSON object; New, which is transitional, does not,
 // so the tools it was always given keep working until the 1.0 rewrite moves them to Build. A
 // refused tool is not registered.
 func (a *Agent) addTool(t Tool, strict bool) error {
@@ -165,6 +166,8 @@ func (a *Agent) addTool(t Tool, strict bool) error {
 		// arguments and all, to the server.
 		return fmt.Errorf("agent: two tools are named %q: %w", s.Name, ErrConfig)
 	case !strict:
+	case !portableToolName(s.Name):
+		return fmt.Errorf("agent: tool name %q is not 1 to 64 of a-z, A-Z, 0-9, '_' and '-', the names every model adapter accepts: %w", s.Name, ErrConfig)
 	case s.Name == finalAnswerTool:
 		return fmt.Errorf("agent: tool name %q is reserved for RunTyped's answer: %w", s.Name, ErrConfig)
 	default:
@@ -174,6 +177,22 @@ func (a *Agent) addTool(t Tool, strict bool) error {
 	}
 	a.tools[s.Name], a.specs[s.Name] = t, &s
 	return nil
+}
+
+// portableToolName reports whether name matches ^[a-zA-Z0-9_-]{1,64}$, the tool names every model
+// adapter accepts (the OpenAI and Anthropic rule; Gemini also needs a name that starts with a
+// letter or '_', and allows '.' and ':').
+func portableToolName(name string) bool {
+	if len(name) < 1 || len(name) > 64 {
+		return false
+	}
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		if !('a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' || '0' <= c && c <= '9' || c == '_' || c == '-') {
+			return false
+		}
+	}
+	return true
 }
 
 // checkInputSchema refuses a spec whose Input is not a JSON object schema: a JSON object whose

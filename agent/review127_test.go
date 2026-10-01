@@ -250,3 +250,50 @@ func TestRev127_RetrievalOnceAcrossPause(t *testing.T) {
 		t.Fatalf("retriever calls %d, docs per request %v; want 1 and [1 1]", r.calls, sent)
 	}
 }
+
+// V1 (review of #127): Build refuses a configuration every model adapter refuses on every request
+// (modeltest.ToolConfig): a tool name outside ^[a-zA-Z0-9_-]{1,64}$, and tool choice "required"
+// with no tools. "auto" and "none" with no tools are met, and New stays lenient.
+func TestBuild_RefusesWhatEveryAdapterRefuses(t *testing.T) {
+	named := func(n string) agent.Tool {
+		return agent.Func(n, "", agent.Safety{ReadOnly: true}, func(context.Context, struct{}) (string, error) { return "", nil })
+	}
+	j := agent.NewMemStore().Journal()
+	m := agent.NewScriptedModel()
+	for name, opts := range map[string][]agent.Option{
+		"space in name":            {agent.WithTools(named("get weather"))},
+		"empty name":               {agent.WithTools(named(""))},
+		"slash in name":            {agent.WithTools(named("fs/read"))},
+		"dot in name":              {agent.WithTools(named("fs.read"))},
+		"non-ASCII name":           {agent.WithTools(named("résumé"))},
+		"65-char name":             {agent.WithTools(named(strings.Repeat("a", 65)))},
+		"required, none":           {agent.WithToolChoice(agent.ToolChoice{Mode: "required"})},
+		"required via WithOptions": {agent.WithOptions(agent.WithToolChoice(agent.ToolChoice{Mode: "required"}))},
+	} {
+		if _, err := agent.Build(m, j, opts...); !errors.Is(err, agent.ErrConfig) {
+			t.Errorf("%s: Build err = %v, want ErrConfig", name, err)
+		}
+	}
+	for name, opts := range map[string][]agent.Option{
+		"valid names":     {agent.WithTools(named("get_weather"), named("a-1"), named(strings.Repeat("a", 64)))},
+		"auto, no tools":  {agent.WithToolChoice(agent.ToolChoice{Mode: "auto"})},
+		"none, no tools":  {agent.WithToolChoice(agent.ToolChoice{Mode: "none"})},
+		"required, tools": {agent.WithTools(named("a")), agent.WithToolChoice(agent.ToolChoice{Mode: "required"})},
+	} {
+		if _, err := agent.Build(m, j, opts...); err != nil {
+			t.Errorf("%s: Build err = %v, want none", name, err)
+		}
+	}
+	// With adds to the agent: a required tool choice on an agent with tools stays valid, and a
+	// bad name is refused there too.
+	a, err := agent.Build(m, j, agent.WithTools(named("a")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.With(agent.WithToolChoice(agent.ToolChoice{Mode: "required"})); err != nil {
+		t.Errorf("With(required) on an agent with a tool: %v", err)
+	}
+	if _, err := a.With(agent.WithTools(named("b c"))); !errors.Is(err, agent.ErrConfig) {
+		t.Errorf("With a bad tool name: %v, want ErrConfig", err)
+	}
+}

@@ -220,6 +220,12 @@ wrong:
 - `auto` or `none` with no tools declared is already met, so no tool choice is sent (the providers
   reject one with no tools).
 
+`agent.Build` and `Agent.With` refuse what every adapter refuses, so it fails when the agent is
+built rather than on every run: a tool name outside `^[a-zA-Z0-9_-]{1,64}$`, two tools with one
+name, an unknown mode, `required` on an agent with no tools, and `tool` naming a tool the agent
+lacks. A Gemini-only name (one with a dot or a colon) is refused there too, since an agent is not
+tied to one adapter.
+
 ## Tool-call IDs
 
 The agent keys each tool call's result and journal step by its tool-use ID, so every call in a

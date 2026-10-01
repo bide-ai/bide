@@ -10,10 +10,10 @@ import (
 	"github.com/bide-ai/bide/agent"
 )
 
-// V1: Build accepts a configuration that every provider adapter refuses with ErrConfig on every
-// run (modeltest.ToolConfig: "required" with no tools declared; a tool name outside
-// [a-zA-Z0-9_-]). The PR states every configuration problem is returned by Build.
-func TestRev127_BuildAcceptsWhatEveryRunRefuses(t *testing.T) {
+// V1 (review of #127): a configuration this adapter refuses with ErrConfig on every run
+// (modeltest.ToolConfig: "required" with no tools declared; a tool name outside [a-zA-Z0-9_-])
+// is refused by Build, never accepted there to fail every run.
+func TestBuild_RefusesWhatTheAdapterRefuses(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "not a provider", http.StatusInternalServerError)
 	}))
