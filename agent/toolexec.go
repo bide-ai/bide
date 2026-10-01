@@ -471,8 +471,9 @@ func (a *Agent) toolHandler(runID string) func(context.Context, ToolUse) (json.R
 			state = callRefusedClosed
 		}
 		// An invocation of this call's tool still running in this process (a next left running, a
-		// sibling invocation, or one a cancelled earlier drive left behind) may yet take effect.
-		running := state == callReached && inflightAdd(inflightKey{runID, tu.ID}, 0) > 0
+		// sibling invocation, or one a cancelled earlier drive left behind) may yet take effect,
+		// whether or not this chain reached the tool (a cache answer on a re-drive does not).
+		running := inflightAdd(inflightKey{runID, tu.ID}, 0) > 0
 		if state == callReached && err != nil && !ctxDone(ctx) &&
 			((out.Load() != toolFailed || running) && a.unprovenFailure(ctx, tu.Name) || earlier.Load() && a.specs[tu.Name].Safety.retrySafeWrite() && InSaga(ctx)) {
 			// The tool began, and did not itself fail: it is still running (a next left running),
@@ -490,8 +491,9 @@ func (a *Agent) toolHandler(runID string) func(context.Context, ToolUse) (json.R
 			err = fmt.Errorf("tool %q (call %s): the chain returned an error, but the tool itself did not fail: %w (%w)", tu.Name, tu.ID, err, ErrToolOutcomeUnknown)
 		}
 		if running && err == nil && a.unprovenFailure(ctx, tu.Name) {
-			// The chain answered while the tool it began is still running (a middleware left next
-			// running and answered itself, from a cache say). A result needs positive proof too:
+			// The chain answered while an invocation of the call's tool is still running (a
+			// middleware left next running and answered itself, from a cache say, in this drive or
+			// a cancelled earlier one). A result needs positive proof too:
 			// the tool's effect may land after anything recorded now (a compensation included),
 			// so the call's outcome is unknown. A side effect halts; a retry-safe saga write is
 			// reported as unknown and never compensated. (A retry-safe tool outside a saga, or a
@@ -513,7 +515,7 @@ func (e *argsJournalError) Unwrap() error { return e.err }
 // began and did not itself fail, leaves the call's outcome unknown: for a side effect always, and
 // for a retry-safe tool that changes state (Idempotent, not ReadOnly) inside a saga.
 func (a *Agent) unprovenFailure(ctx context.Context, name string) bool {
-	s := a.specs[name].Safety
+	s := a.specs[name].Safety // a registered tool: only a call that reached it, or ran it, gets here
 	return !s.RetrySafe() || s.retrySafeWrite() && InSaga(ctx)
 }
 
