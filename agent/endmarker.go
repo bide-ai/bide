@@ -88,6 +88,44 @@ func writeEnd(ctx context.Context, d Durable, runID, name string, rec Record, ot
 	return first, nil
 }
 
+// firstEndOf returns the first of runID's end markers names in journal order, read with one Get
+// each over a Journal (the lowest Seq is the first), or one History over another Durable.
+func firstEndOf(ctx context.Context, d Durable, runID string, names ...string) (endMarker, bool, error) {
+	j := journalOf(d)
+	if j == nil {
+		recs, err := d.History(ctx, runID)
+		if err != nil {
+			return endMarker{}, false, fmt.Errorf("load history %s: %w (%w)", runID, err, ErrStorage)
+		}
+		for i, r := range recs {
+			if r.Kind == StepValue && slices.Contains(names, r.Name) {
+				return endMarker{name: r.Name, rec: r, seq: int64(i)}, true, nil
+			}
+		}
+		return endMarker{}, false, nil
+	}
+	var first endMarker
+	found := false
+	for _, name := range names {
+		e, ok, err := j.getEntry(ctx, runID, name)
+		if err != nil {
+			return endMarker{}, false, err
+		}
+		if !ok || found && e.Seq > first.seq {
+			continue
+		}
+		r, err := decodeStored(runID, name, e.Data)
+		if err != nil {
+			return endMarker{}, false, err
+		}
+		if r.Kind != StepValue {
+			continue
+		}
+		first, found = endMarker{name: name, rec: r, seq: e.Seq}, true
+	}
+	return first, found, nil
+}
+
 // endOthers returns the end markers other than own that a run can hold beside it: run:aborted only
 // in a saga, since only a saga's rollback writes it.
 func endOthers(own string, saga bool) []string {

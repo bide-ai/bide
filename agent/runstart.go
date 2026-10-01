@@ -293,15 +293,18 @@ func beginRun(ctx context.Context, d Durable, runID string, want RunStart) (json
 		}
 		recs = []Record{rec}
 	}
-	done, ok, err := lookup(ctx, d, runID, runCompleteStep)
+	end, ok, err := firstEndOf(ctx, d, runID, runCompleteStep, runCancelledStep)
 	if err != nil {
 		return nil, false, err
 	}
 	if err := holdToStart(ctx, d, runID, recs, want); err != nil {
 		return nil, false, err
 	}
-	if ok && done.Kind == StepValue {
-		return done.Result, true, nil
+	switch {
+	case ok && end.name == runCancelledStep:
+		return nil, false, fmt.Errorf("run %s: %w", runID, ErrRunCancelled) // its first end marker
+	case ok:
+		return end.rec.Result, true, nil
 	}
 	return nil, false, nil
 }

@@ -194,6 +194,9 @@ func journalStep(ctx context.Context, j *Journal, runID, name string, cfg stepCo
 			} else if ok {
 				return Record{}, stepHalt(runID, name, markerTime(m.AttemptedAt), HaltCrashed)
 			}
+			if err := cfg.checkCancelled(ctx); err != nil {
+				return Record{}, err
+			}
 			return body(ctx)
 		})
 	}
@@ -233,6 +236,9 @@ func journalStep(ctx context.Context, j *Journal, runID, name string, cfg stepCo
 	rec, err := j.doFresh(ctx, runID, name, func(ctx context.Context) (Record, error) {
 		if err := ctx.Err(); err != nil {
 			return Record{}, err // cancelled after the claim: fn is not called, and that is recorded below
+		}
+		if err := cfg.checkCancelled(ctx); err != nil {
+			return Record{}, err // the run was cancelled: fn is not called, and that is recorded below
 		}
 		started.Store(true)
 		return body(ctx)
@@ -301,6 +307,9 @@ func durableStep(ctx context.Context, d Durable, runID, name string, cfg stepCon
 		if err := ctx.Err(); won && err != nil {
 			return Record{}, err // cancelled after the claim: fn is not called, and that is recorded below
 		}
+		if err := cfg.checkCancelled(ctx); err != nil {
+			return Record{}, err // the run was cancelled: fn is not called, and a won claim records that below
+		}
 		started.Store(true)
 		return body(ctx)
 	})
@@ -332,4 +341,23 @@ func (e *stepPauseError) Unwrap() error { return ErrConfig }
 
 // protocol:claims end
 
-type stepConfig struct{ safety Safety }
+type stepConfig struct {
+	safety Safety
+	// cancelled, when set (a plan flow's node: journalhook.Step), is the run's cancellation check,
+	// made once the step will run: after a side-effect step's claim is won and before fn (the
+	// attempt is then recorded as not started), and before a retry-safe step's fn.
+	cancelled func(context.Context) error
+}
+
+// stepCancelCheck is the internal StepOption that sets stepConfig.cancelled.
+type stepCancelCheck func(context.Context) error
+
+func (f stepCancelCheck) applyStep(c *stepConfig) error { c.cancelled = f; return nil }
+
+// checkCancelled is cfg's cancellation check, nil when it has none.
+func (cfg stepConfig) checkCancelled(ctx context.Context) error {
+	if cfg.cancelled == nil {
+		return nil
+	}
+	return cfg.cancelled(ctx)
+}
