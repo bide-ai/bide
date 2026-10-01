@@ -7,6 +7,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math/rand/v2"
@@ -159,8 +160,8 @@ func completedAnswer(recs []Record) (Message, bool) {
 // the runs the store holds that are not over (via Lister, which filters out every run holding a
 // terminal marker: run:complete, run:aborted or run:cancelled), and calls resume for each to push
 // it forward. A run another driver finished after the listing is not resumed: holding the run's
-// lease, Recover checks the terminal markers again before it calls resume (over a Journal, three
-// point reads per run it drives). It returns how many runs it re-drove and the joined genuine
+// lease, Recover checks the terminal markers again and reads the run's run:start before it calls
+// resume (over a Journal, four point reads per run it drives). It returns how many runs it re-drove and the joined genuine
 // failures (nil if none).
 //
 // The store must implement Lister; a store that cannot enumerate its runs (the base
@@ -181,36 +182,35 @@ func completedAnswer(recs []Record) (Message, bool) {
 // or storage fault, a bad tool) is joined into the returned error. A run whose lease was lost
 // mid-drive (ErrLeaseLost) is not joined either: another process holds it now and carries it on.
 //
-// resume is deployment POLICY, not a mechanism the SDK can supply: it knows which agent drives
-// a run and any Waker or clock to bind onto the context (a Waker-bound resume rebuilds the timer
-// set for sleeping runs, since Sleep re-registers its wake on replay). The run's input and entry
-// point (Run or RunSaga) are in its journal (see RecordedStart), and a resume with another input
-// or entry point is ErrConfig. A typical resume is:
+// resume is deployment POLICY, not a mechanism the SDK can supply: it knows which agent drives a
+// run and any Waker or clock it binds. Under the run's lease, after the terminal markers, Recover
+// reads the run's run:start (one more point read) and hands it to resume, so resume needs no table
+// of inputs: the run's input, saga flag and per-run options are journaled, and the run runs under
+// them (see RunStart). ResumeAgent(a) is the Resumer of a's runs, ResumeTyped[T](a) that of its
+// typed runs answering a T, and ResumeAny combines several (a deployment with agents and plan
+// flows, say):
 //
-//	func(ctx context.Context, runID string) error {
-//	    start, ok, err := agent.RecordedStart(ctx, store, runID)
-//	    if err != nil {
-//	        return err
-//	    }
-//	    if !ok {
-//	        start = startFor(runID) // your own record, for a run not driven under this version
-//	    }
-//	    ctx = agent.ContextWithWaker(ctx, w)
-//	    if start.Saga {
-//	        _, err = a.RunSaga(ctx, runID, start.Input)
-//	    } else {
-//	        _, err = a.Run(ctx, runID, start.Input)
-//	    }
-//	    return err
-//	}
+//	resume := agent.ResumeAny(agent.ResumeAgent(a, agent.WithWaker(w)), plan.ResumeFlows(flows...))
+//
+// A deployment's own Resumer is any func(ctx, runID, start) error; it returns an error wrapping
+// ErrNotResumable for a run it does not drive.
+//
+// A run with no run:start (one never driven, such as a Signal sent to a mistyped run ID, or one
+// whose first drive has not written it yet) is skipped, and reported once per process as
+// ErrNotStarted. A run no Resumer drives (ErrNotResumable) is reported once per process too. What
+// the process remembers is the report, not the skip: each pass reads run:start again, so a run that
+// starts after a pass skipped it is recovered by a later pass. Neither counts as re-driven.
 //
 // Recover skips a sub-agent's run (IsSubRun): its root run drives it, and re-running the root
 // resumes it. It skips a session's journal and turn runs (IsSessionRun) too: a turn is seeded with
 // the transcript before its message, which only the session holds, and only the session records
-// its answer, so an unfinished turn resumes when its message is sent again (Send with the same
-// input, or the redelivered SendOnce). resume should no-op any other runID it does not own;
-// Recover re-drives every other incomplete run it enumerates.
+// its answer, so an unfinished turn resumes when its message is sent again (the same message
+// through Send or SendMessage, or the redelivered SendOnce or SendMessageOnce). Recover re-drives
+// every other incomplete run it enumerates. A nil resume is ErrConfig.
 func Recover(ctx context.Context, store Durable, resume Resumer, opts ...RecoverOption) (int, error) {
+	if resume == nil {
+		return 0, fmt.Errorf("Recover: nil Resumer: %w", ErrConfig)
+	}
 	lister, ok := capabilityOf[Lister](store)
 	if !ok {
 		return 0, fmt.Errorf("Recover needs a store that implements Lister (itself or through Unwrap) to enumerate runs: %w", ErrConfig)
@@ -242,15 +242,67 @@ func Recover(ctx context.Context, store Durable, resume Resumer, opts ...Recover
 }
 
 // Resumer drives one run a recovery pass found unfinished: runID, started as start (its run:start,
-// read under the run's lease). It returns ErrNotResumable for a run it does not drive, so
-// ResumeAny can try the next. A Resumer passes no per-run option: the run runs under the options
-// its run:start journaled.
+// read under the run's lease). It returns an error wrapping ErrNotResumable for a run it does not
+// drive, so ResumeAny can try the next, and Recover reports the run once per process rather than
+// as a failure on every pass. A Resumer passes no per-run option: the run runs under the options
+// its run:start journaled (see RunStart). ResumeAgent and ResumeTyped return the Resumers of an
+// agent's runs, and plan.ResumeFlows those of plan flows; a deployment's own Resumer is any func
+// with this signature.
 type Resumer func(ctx context.Context, runID string, start RunStart) error
 
-// ResumeAny returns the Resumer that hands a run to each of rs in turn, until one does not return
-// ErrNotResumable.
+// ResumeAny returns the Resumer that hands a run to each of rs in turn, in order, until one
+// returns anything that does not wrap ErrNotResumable (nil included), and returns that. If every
+// Resumer returns ErrNotResumable (or rs is empty), it returns an error wrapping ErrNotResumable.
+// A nil Resumer it reaches is ErrConfig.
 func ResumeAny(rs ...Resumer) Resumer {
-	return func(ctx context.Context, runID string, start RunStart) error { return errP14NotBuilt }
+	rs = slices.Clone(rs)
+	return func(ctx context.Context, runID string, start RunStart) error {
+		for i, r := range rs {
+			if r == nil {
+				return fmt.Errorf("ResumeAny: Resumer %d is nil: %w", i, ErrConfig)
+			}
+			if err := r(ctx, runID, start); err == nil || !errors.Is(err, ErrNotResumable) {
+				return err
+			}
+		}
+		return fmt.Errorf("run %s (kind %q): no Resumer drives it: %w", runID, start.kind(), ErrNotResumable)
+	}
+}
+
+// recoverReports holds the reports a recovery pass makes once per process (ErrNotStarted,
+// ErrNotResumable), by the run's store and ID. What is remembered is the report, never the skip:
+// run:start is read again on every pass, so a run that starts after a pass found it unstarted is
+// recovered (model 10, rule 15). An entry lives for the life of the process; there is one per run a
+// pass found unstarted or not resumable.
+var recoverReports = struct {
+	mu sync.Mutex
+	m  map[recoverReportKey]bool
+}{m: map[recoverReportKey]bool{}}
+
+// recoverReportKey names one report: the store's identity (durableIdentity), the run, and the
+// report's sentinel.
+type recoverReportKey struct {
+	store any
+	runID string
+	kind  error
+}
+
+// reportOnce reports whether this process has not yet made the report kind for store's run runID,
+// and marks it made. A store with no identity to key it by (see durableIdentity) is reported on
+// every pass.
+func reportOnce(store Durable, runID string, kind error) bool {
+	id, ok := durableIdentity(store)
+	if !ok {
+		return true
+	}
+	k := recoverReportKey{store: id, runID: runID, kind: kind}
+	recoverReports.mu.Lock()
+	defer recoverReports.mu.Unlock()
+	if recoverReports.m[k] {
+		return false
+	}
+	recoverReports.m[k] = true
+	return true
 }
 
 // endOfRunMarkers are the journal names of the terminal markers: a run that completed, a saga
@@ -294,6 +346,54 @@ func runEnded(ctx context.Context, store Durable, runID string) (bool, error) {
 	return false, nil
 }
 
+// startUnderLease reads runID's run:start for a recovery pass (see RecordedStart). Over a Journal,
+// for a run that holds it, it is one point read (Store.Get) that, like runEnded, does not check the
+// run's header: a run in a format this version cannot read still reaches resume, which refuses it.
+// A run in another format whose run:start is missing or does not decode is a *JournalVersionError.
+// Over another Durable it is RecordedStart.
+func startUnderLease(ctx context.Context, store Durable, runID string) (RunStart, bool, error) {
+	j := journalOf(store)
+	if j == nil {
+		return RecordedStart(ctx, store, runID)
+	}
+	e, ok, err := j.store.Get(ctx, runID, runStartStep)
+	if err != nil {
+		return RunStart{}, false, storageErr(fmt.Sprintf("read step %q of run %s", runStartStep, runID), err)
+	}
+	if !ok {
+		// A run with no run:start: through the Journal's read, which refuses a run in another format
+		// (a *JournalVersionError, reported as such) rather than report it unstarted. This read
+		// costs one Load of the run's first entry, for an unstarted run only.
+		if !j.good.has(runID) {
+			first, any, err := j.firstEntry(ctx, runID)
+			if err != nil {
+				return RunStart{}, false, err
+			}
+			if any {
+				if err := j.checkFirst(runID, first); err != nil {
+					return RunStart{}, false, err
+				}
+			}
+		}
+		return RunStart{}, false, nil
+	}
+	r, err := decodeStored(runID, runStartStep, e.Data)
+	if err != nil {
+		if herr := j.readable(ctx, runID); herr != nil {
+			return RunStart{}, false, herr // a run in another format: refused as such
+		}
+		return RunStart{}, false, err
+	}
+	if r.Kind != StepValue {
+		return RunStart{}, false, nil
+	}
+	var st RunStart
+	if err := json.Unmarshal(r.Result, &st); err != nil {
+		return RunStart{}, false, fmt.Errorf("decode %s (run %s): %w (%w)", runStartStep, runID, err, ErrStorage)
+	}
+	return st, true, nil
+}
+
 // recoverable reports whether a run the recovery filter admits is one a recovery pass drives: not a
 // sub-agent's run (its root's re-run resumes it) or a session's (the session resumes it).
 func recoverable(runID string) bool { return !IsSubRun(runID) && !IsSessionRun(runID) }
@@ -315,16 +415,40 @@ func recoverable(runID string) bool { return !IsSubRun(runID) && !IsSessionRun(r
 // the run in that window. Either way at-most-once still holds: resume is handed a finished run,
 // which a resume that calls Run or RunSaga replays without firing anything again.
 func recoverRun(ctx context.Context, store Durable, runID string, resume Resumer, cfg recoverConfig) (bool, error) {
-	var resumed bool
+	var (
+		resumed      bool
+		notStarted   bool
+		notResumable error // the resumer's ErrNotResumable
+	)
 	driven, err := leaseRun(ctx, store, runID, func(ctx context.Context) error {
 		if over, err := runEnded(ctx, store, runID); err != nil || over {
 			return err
 		}
+		// The run's start, read under the lease on every pass: a run with none is skipped, and
+		// read again next pass (rule 15), so one whose first drive writes it later is recovered.
+		start, ok, err := startUnderLease(ctx, store, runID)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			notStarted = true
+			return nil
+		}
+		err = resume(ctx, runID, start)
+		if err != nil && errors.Is(err, ErrNotResumable) {
+			notResumable = err
+			return nil
+		}
 		resumed = true
-		return resume(ctx, runID, RunStart{})
+		return err
 	}, cfg)
-	if err != nil && (!driven || !IsPause(err) && !errors.Is(err, ErrLeaseLost)) {
+	switch {
+	case err != nil && (!driven || !IsPause(err) && !errors.Is(err, ErrLeaseLost)):
 		return resumed, fmt.Errorf("recover run %s: %w", runID, err)
+	case notStarted && reportOnce(store, runID, ErrNotStarted):
+		return false, fmt.Errorf("recover run %s: skipped: %w", runID, ErrNotStarted)
+	case notResumable != nil && reportOnce(store, runID, ErrNotResumable):
+		return false, fmt.Errorf("recover run %s: skipped: %w", runID, notResumable)
 	}
 	return resumed, nil
 }
@@ -337,7 +461,7 @@ func recoverRun(ctx context.Context, store Durable, runID string, resume Resumer
 //   - The full pass enumerates the store's unfinished runs as Recover does and drives each one it
 //     can lease: halted runs (waiting on an approval, an interrupt, a timer or a signal, or with an
 //     outcome unknown), runs nobody leases (a plain Agent.Run whose process died) and runs whose
-//     holder died. It costs about five store round trips for each unfinished run it lists, halted
+//     holder died. It costs about six store round trips for each unfinished run it lists, halted
 //     runs included, and the next full pass does not start before this one has started all of its
 //     drives, so with many unfinished runs or a slow store a full pass can outlast the interval.
 //   - The lapsed loop, over a store that implements Leaser, enumerates only the unfinished runs
@@ -367,6 +491,9 @@ func recoverRun(ctx context.Context, store Durable, runID string, resume Resumer
 // recorded nothing for the sleeping call, so the next pass reaches the Sleep again and schedules
 // again.
 //
+// A run with no run:start, and a run no Resumer drives, are skipped and reported once per process,
+// as Recover reports them (to the WithRecoverErrors handler); every pass reads run:start again.
+//
 // Run it once per process, for the life of the process, with the same resume Recover takes:
 //
 //	go func() {
@@ -381,6 +508,9 @@ func recoverRun(ctx context.Context, store Durable, runID string, resume Resumer
 // after both loops have stopped and the drives they started (whose contexts derive from ctx) have
 // returned.
 func RecoverLoop(ctx context.Context, store Durable, resume Resumer, opts ...RecoverLoopOption) error {
+	if resume == nil {
+		return fmt.Errorf("RecoverLoop: nil Resumer: %w", ErrConfig)
+	}
 	lister, ok := capabilityOf[Lister](store)
 	if !ok {
 		return fmt.Errorf("RecoverLoop needs a store that implements Lister (itself or through Unwrap) to enumerate runs: %w", ErrConfig)

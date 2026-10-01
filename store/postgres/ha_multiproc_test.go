@@ -258,9 +258,10 @@ func newHACluster(t *testing.T, runs int, ttl time.Duration) *haCluster {
 	c := &haCluster{t: t, s: s, db: s.db, dsn: dsn, prefix: strings.ReplaceAll(uniqueID(t, "ha-"), "/", "-") + "-", ttl: ttl, workers: map[string]*haProc{}}
 	for i := range runs {
 		id := fmt.Sprintf("%srun%d", c.prefix, i)
-		// A first step makes the run exist, so Recover finds it; no primary ever drives it.
-		if _, err := s.Do(ctx, id, "seed", func(context.Context) (agent.Record, error) {
-			return agent.Record{Kind: agent.StepValue}, nil
+		// A run:start makes the run exist and started (its input, the one every worker drives it
+		// with), so Recover finds and drives it; no primary ever drives it.
+		if _, err := s.Do(ctx, id, "run:start", func(context.Context) (agent.Record, error) {
+			return agent.Record{Kind: agent.StepValue, Result: []byte(`{"input":"go"}`)}, nil
 		}); err != nil {
 			t.Fatal(err)
 		}

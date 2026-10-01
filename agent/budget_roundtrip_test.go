@@ -192,7 +192,9 @@ func TestBudget_RecoverPass(t *testing.T) {
 		if i%2 == 0 {
 			name = "run:complete"
 		}
-		if _, err := m.Do(ctx, id, name, func(context.Context) (agent.Record, error) { return agent.Record{Kind: agent.StepValue}, nil }); err != nil {
+		if _, err := m.Do(ctx, id, name, func(context.Context) (agent.Record, error) {
+			return agent.Record{Kind: agent.StepValue, Result: []byte(`{"input":"x"}`)}, nil
+		}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -210,9 +212,9 @@ func TestBudget_RecoverPass(t *testing.T) {
 	if l.calls.Load() != 1 {
 		t.Errorf("Recover listed runs %d times, want once", l.calls.Load())
 	}
-	want := make([]string, 0, 3*runs/2)
+	want := make([]string, 0, 4*runs/2)
 	for range runs / 2 {
-		want = append(want, "get run:complete", "get run:aborted", "get run:cancelled")
+		want = append(want, "get run:complete", "get run:aborted", "get run:cancelled", "get run:start")
 	}
 	wantCounts(t, cs, "recovery pass", want, 0, 0)
 }

@@ -44,8 +44,8 @@ func TestAuditedStore_RecoverListsInnerRuns(t *testing.T) {
 	ctx := context.Background()
 	inner := agent.NewMemStore()
 	store := newAudited(t, inner)
-	if _, err := store.Do(ctx, "r1", "s", func(context.Context) (agent.Record, error) {
-		return agent.Record{Kind: agent.StepValue}, nil
+	if _, err := store.Do(ctx, "r1", "run:start", func(context.Context) (agent.Record, error) { // a run recovery drives has a run:start
+		return agent.Record{Kind: agent.StepValue, Result: []byte(`{"input":"x"}`)}, nil
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -81,8 +81,8 @@ func TestAuditedStore_RecoverLoopListsInnerRuns(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	store := newAudited(t, agent.NewMemStore())
-	if _, err := store.Do(ctx, "r1", "s", func(context.Context) (agent.Record, error) {
-		return agent.Record{Kind: agent.StepValue}, nil
+	if _, err := store.Do(ctx, "r1", "run:start", func(context.Context) (agent.Record, error) { // a run recovery drives has a run:start
+		return agent.Record{Kind: agent.StepValue, Result: []byte(`{"input":"x"}`)}, nil
 	}); err != nil {
 		t.Fatal(err)
 	}

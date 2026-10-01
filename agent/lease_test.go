@@ -11,6 +11,12 @@ import (
 // (no completion marker), i.e. something Recover would try to re-drive.
 func seedRun(t *testing.T, s *MemStore, id string) {
 	t.Helper()
+	// A run recovery drives has a run:start (a run with none is skipped and reported).
+	if _, err := s.Do(context.Background(), id, runStartStep, func(context.Context) (Record, error) {
+		return Record{Kind: StepValue, Result: []byte(`{"input":"go"}`)}, nil
+	}); err != nil {
+		t.Fatalf("seed %s: %v", id, err)
+	}
 	if _, err := s.Do(context.Background(), id, "seed", func(context.Context) (Record, error) {
 		return Record{Kind: StepValue}, nil
 	}); err != nil {
