@@ -6,6 +6,7 @@
 package agent
 
 import (
+	"container/list"
 	"context"
 	"encoding/json"
 	"errors"
@@ -274,12 +275,14 @@ func ResumeAny(rs ...Resumer) Resumer {
 // recoverReports holds the reports a recovery pass makes once per process (ErrNotStarted,
 // ErrNotResumable), by the run's store and ID. What is remembered is the report, never the skip:
 // run:start is read again on every pass, so a run that starts after a pass found it unstarted is
-// recovered (model 10, rule 15). An entry lives for the life of the process; there is one per run a
-// pass found unstarted or not resumable.
+// recovered (model 10, rule 15). It holds at most maxRecoverReports entries, the most recently
+// reported: past that, the least recently reported run is forgotten, and a later pass that finds
+// it unstarted or not resumable again reports it again.
 var recoverReports = struct {
-	mu sync.Mutex
-	m  map[recoverReportKey]bool
-}{m: map[recoverReportKey]bool{}}
+	mu  sync.Mutex
+	m   map[recoverReportKey]*list.Element
+	lru list.List // most recently reported first; each Value is a recoverReportKey
+}{m: map[recoverReportKey]*list.Element{}}
 
 // recoverReportKey names one report: the store's identity (durableIdentity), the run, and the
 // report's sentinel.
@@ -299,21 +302,28 @@ func recoverReportCount() int {
 	return len(recoverReports.m)
 }
 
-// reportOnce reports whether this process has not yet made the report kind for store's run runID,
-// and marks it made. A store with no identity to key it by (see durableIdentity) is reported on
-// every pass.
+// reportOnce reports whether this process has not yet made the report kind for store's run runID
+// (among the reports recoverReports still holds), and marks it made. A store with no identity to
+// key it by (see durableIdentity) is reported on every pass.
 func reportOnce(store Durable, runID string, kind error) bool {
 	id, ok := durableIdentity(store)
 	if !ok {
 		return true
 	}
 	k := recoverReportKey{store: id, runID: runID, kind: kind}
-	recoverReports.mu.Lock()
-	defer recoverReports.mu.Unlock()
-	if recoverReports.m[k] {
+	r := &recoverReports
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if e, ok := r.m[k]; ok {
+		r.lru.MoveToFront(e)
 		return false
 	}
-	recoverReports.m[k] = true
+	r.m[k] = r.lru.PushFront(k)
+	for r.lru.Len() > maxRecoverReports {
+		old := r.lru.Back()
+		r.lru.Remove(old)
+		delete(r.m, old.Value.(recoverReportKey))
+	}
 	return true
 }
 

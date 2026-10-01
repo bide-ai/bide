@@ -226,7 +226,9 @@ whose first drive has not written it yet) is skipped and reported once per proce
 `ErrNotStarted` (in `Recover`'s error, or to `WithRecoverErrors`). The process remembers the
 report, not the skip: `run:start` is read again on every pass, so a run that starts later is
 recovered. A run that `resume` declines (an error wrapping `ErrNotResumable`) is reported once
-the same way.
+the same way. The process remembers the 65,536 runs it reported most recently; one it has
+forgotten is reported again the next time a pass finds it so. `ErrNotStarted` wraps no category:
+a run whose first drive has not written `run:start` yet is a race, not a configuration error.
 
 Another driver can finish a listed run before the pass gets to it (while the pass drives the runs
 listed before it, or, in `RecoverLoop`, waits for a free slot). So once the pass holds a run's
