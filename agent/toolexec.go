@@ -269,12 +269,19 @@ func inflightShard(k inflightKey) *struct {
 	return &inflight[h%uint32(len(inflight))]
 }
 
-// tracksInflight reports whether the in-flight count is kept for calls of the named tool: every
-// tool that is not ReadOnly. Only those can have an unknown outcome from it (see
+// tracked reports whether calls of a tool with this (registered) safety are counted in flight:
+// every tool that is not ReadOnly. Only those can have an unknown outcome from the count (see
 // unprovenFailure), and a ReadOnly call, the common case, pays nothing for it.
-func (a *Agent) tracksInflight(name string) bool {
-	p := a.specs[name]
-	return p != nil && !p.Safety.ReadOnly
+func tracked(s Safety) bool { return !s.ReadOnly }
+
+// callCounted calls the tool, and counts the invocation out of flight under key when the call
+// returns, panicking or not. The caller counted it in. It is kept out of line so the untracked
+// path stays as it was.
+//
+//go:noinline
+func callCounted(ctx context.Context, t Tool, args json.RawMessage, key inflightKey) (json.RawMessage, error) {
+	defer inflightAdd(key, -1)
+	return t.Call(ctx, args)
 }
 
 // inflightAdd adds d to k's count and returns the new count; a count of zero is deleted.
@@ -431,16 +438,71 @@ func (a *Agent) toolHandler(runID string) func(context.Context, ToolUse) (json.R
 		}
 		// A failure here returns before the tool's Call began: the loop seals the call's began word
 		// and counts the call as not called (see beganNone).
-		if err := journalAcceptedArgs(ctx, t, call, a.specs[tu.Name].Safety); err != nil {
+		spec := a.specs[tu.Name]
+		if err := journalAcceptedArgs(ctx, t, call, spec.Safety); err != nil {
 			return nil, err
 		}
-		// Count this invocation in flight, then check the chain has not returned: either the chain
-		// sees the count when it returns (and a result it returns has an unknown outcome), or this
-		// invocation sees the call closed and does not begin the tool (see inflight).
-		if a.tracksInflight(tu.Name) {
-			return a.callCounted(ctx, t, call, inflightKey{storeID, runID, tu.ID})
+		// A tool that is not ReadOnly is counted in flight (see inflight): counted in, then the
+		// chain checked not to have returned, so either the chain sees the count when it returns
+		// (and a result it returns has an unknown outcome), or this invocation sees the call closed
+		// and does not begin the tool. A ReadOnly call is not counted (see tracked).
+		counted := tracked(spec.Safety)
+		var key inflightKey
+		if counted {
+			key = inflightKey{storeID, runID, tu.ID}
+			inflightAdd(key, 1)
 		}
-		return a.invokeTool(ctx, t, call)
+		if call.state != nil && callIsClosed(call.state) {
+			if counted {
+				inflightAdd(key, -1)
+			}
+			return nil, fmt.Errorf("tool %q (call %s) was not started: the tool middleware chain had already returned: %w", tu.Name, tu.ID, ErrToolNotCalled)
+		}
+		// Begin the call, immediately before the tool. The registered spec decides, never
+		// call.Spec: a tool that is not retry-safe is begun once per call, and an invocation that
+		// finds it begun is "already ran", which is then true; its outcome is the earlier
+		// invocation's, which this one does not know (see toolNotRun).
+		if call.began != nil {
+			var refused error
+			switch first, sealed := beginCall(call.began); {
+			case sealed:
+				refused = fmt.Errorf("tool %q (call %s) was not started: the tool middleware chain had already returned: %w", tu.Name, tu.ID, ErrToolNotCalled)
+			case !first && !spec.Safety.RetrySafe():
+				refused = fmt.Errorf("tool %q (call %s) already ran and is not retry-safe: %w", tu.Name, tu.ID, ErrToolReinvoked)
+			}
+			if refused != nil {
+				if counted {
+					inflightAdd(key, -1)
+				}
+				return nil, refused
+			}
+		}
+		if call.out != nil {
+			if prev := call.out.Load(); prev != toolNotRun && prev != toolFailed && call.earlier != nil {
+				call.earlier.Store(true)
+			}
+			call.out.Store(toolRunning)
+		}
+		var res json.RawMessage
+		var err error
+		if counted {
+			res, err = callCounted(ctx, t, tu.Args, key)
+		} else {
+			res, err = t.Call(ctx, tu.Args)
+		}
+		if call.out != nil {
+			// The tool's own outcome: a known failure only if it said so itself, before its context
+			// was done and without ErrToolOutcomeUnknown.
+			switch {
+			case err == nil:
+				call.out.Store(toolSucceeded)
+			case errors.Is(err, ErrToolOutcomeUnknown) || ctxDone(ctx):
+				call.out.Store(toolUnknown)
+			default:
+				call.out.Store(toolFailed)
+			}
+		}
+		return res, err
 	})
 	for i := len(a.toolMW) - 1; i >= 0; i-- {
 		h = a.toolMW[i](h)
@@ -459,7 +521,7 @@ func (a *Agent) toolHandler(runID string) func(context.Context, ToolUse) (json.R
 		// An invocation of this call's tool still running in this process (a next left running, a
 		// sibling invocation, or one a cancelled earlier drive left behind) may yet take effect,
 		// whether or not this chain reached the tool (a cache answer on a re-drive does not).
-		running := a.tracksInflight(tu.Name) && inflightAdd(inflightKey{storeID, runID, tu.ID}, 0) > 0
+		running := tracked(call.Spec.Safety) && inflightAdd(inflightKey{storeID, runID, tu.ID}, 0) > 0
 		if state == callReached && err != nil && !ctxDone(ctx) &&
 			((out.Load() != toolFailed || running) && a.unprovenFailure(ctx, tu.Name) || earlier.Load() && a.specs[tu.Name].Safety.retrySafeWrite() && InSaga(ctx)) {
 			// The tool began, and did not itself fail: it is still running (a next left running),
@@ -488,56 +550,6 @@ func (a *Agent) toolHandler(runID string) func(context.Context, ToolUse) (json.R
 		}
 		return res, state, err
 	}
-}
-
-// callCounted is invokeTool counted in flight under key (see inflight): it counts the invocation in,
-// then checks the chain has not returned, so either the chain sees the count when it returns (and a
-// result it returns has an unknown outcome), or this invocation sees the call closed and does not
-// begin the tool.
-func (a *Agent) callCounted(ctx context.Context, t Tool, call ToolCall, key inflightKey) (json.RawMessage, error) {
-	inflightAdd(key, 1)
-	defer inflightAdd(key, -1)
-	return a.invokeTool(ctx, t, call)
-}
-
-// invokeTool begins the call and calls the tool, unless the chain has returned (see callIsClosed).
-func (a *Agent) invokeTool(ctx context.Context, t Tool, call ToolCall) (json.RawMessage, error) {
-	tu := call.Use
-	if call.state != nil && callIsClosed(call.state) {
-		return nil, fmt.Errorf("tool %q (call %s) was not started: the tool middleware chain had already returned: %w", tu.Name, tu.ID, ErrToolNotCalled)
-	}
-	// Begin the call, immediately before the tool. The registered spec decides, never
-	// call.Spec: a tool that is not retry-safe is begun once per call, and an invocation that
-	// finds it begun is "already ran", which is then true; its outcome is the earlier
-	// invocation's, which this one does not know (see toolNotRun).
-	if call.began != nil {
-		switch first, sealed := beginCall(call.began); {
-		case sealed:
-			return nil, fmt.Errorf("tool %q (call %s) was not started: the tool middleware chain had already returned: %w", tu.Name, tu.ID, ErrToolNotCalled)
-		case !first && !a.specs[tu.Name].Safety.RetrySafe():
-			return nil, fmt.Errorf("tool %q (call %s) already ran and is not retry-safe: %w", tu.Name, tu.ID, ErrToolReinvoked)
-		}
-	}
-	if call.out != nil {
-		if prev := call.out.Load(); prev != toolNotRun && prev != toolFailed && call.earlier != nil {
-			call.earlier.Store(true)
-		}
-		call.out.Store(toolRunning)
-	}
-	res, err := t.Call(ctx, tu.Args)
-	if call.out != nil {
-		// The tool's own outcome: a known failure only if it said so itself, before its context
-		// was done and without ErrToolOutcomeUnknown.
-		switch {
-		case err == nil:
-			call.out.Store(toolSucceeded)
-		case errors.Is(err, ErrToolOutcomeUnknown) || ctxDone(ctx):
-			call.out.Store(toolUnknown)
-		default:
-			call.out.Store(toolFailed)
-		}
-	}
-	return res, err
 }
 
 // argsJournalError is a failure to journal a saga call's accepted arguments, before its tool was
