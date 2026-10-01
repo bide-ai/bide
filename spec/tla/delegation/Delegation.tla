@@ -39,7 +39,7 @@ CONSTANTS
   MaxWrong,    \* drives bound to the wrong authority (another grant, or none)
   MaxLost,     \* calls whose outcome is lost (ErrToolOutcomeUnknown)
   Bug,         \* "none" or a historical rule, see regress/
-  Fix          \* "none" or a proposed fix of a finding, see findings/
+  Fix          \* the fixes of model 11's findings D1 to D3 in force (#133 adopted all three; see regress/)
 
 Inf == 99
 Root == 1
@@ -53,7 +53,10 @@ Min(x, y) == IF x < y THEN x ELSE y
 ASSUME Bug \in {"none", "HiddenHalt", "StorageRecorded", "MintOnRecords", "ForeignBind", "NoBind",
                 "ExpiredUnrecorded", "B1", "B2", "B3", "B4", "NoCallGuard", "WrongAuthRecorded",
                 "NoReturnedCheck", "MintForeign"}
-ASSUME Fix \in {"none", "ChainBind", "GuardRerun", "RecurseFailed"}
+ASSUME Fix \subseteq {"ChainBind", "GuardRerun", "RecurseFailed"}
+\* A sub-agent call: every one is a "deleg" call here (with no grant bound, AttenuatingSubAgent is
+\* the plain SubAgent it wraps, so plain sub-agents are the ungranted delegations).
+SubAgentCall(x, y) == K(x, y) = "deleg"
 ASSUME Orig \in {"P", "none"}
 ASSUME \A x \in Nodes : \A y \in Idx(x) :
          K(x, y) \in {"eff", "fail", "deleg", "sub"} /\ (K(x, y) = "deleg" => Ch(x, y) # 0)
@@ -399,7 +402,7 @@ RbLoop:
   elsif res[rn][j] \in {"sf", "sfu"} then
     if res[rn][j] = "sfu" then walk := walk \cup Lst(rn, j, lst, "k"); end if;
     j := j - 1; goto RbLoop;
-  elsif res[rn][j] = "err" /\ ~(Fix = "RecurseFailed" /\ K(rn, j) = "deleg" /\ ~tl) then
+  elsif res[rn][j] = "err" /\ ~("RecurseFailed" \in Fix /\ SubAgentCall(rn, j) /\ ~tl) then
     goto RbSub;
   elsif tl then
     if K(rn, j) = "sub" /\ ~C(rn, j).w /\ res[rn][j] = "ok" then
@@ -446,10 +449,10 @@ RbBind:
         rb[rn] := "stop"; return;
       elsif aj[Ch(rn, j)].g.sub # Ch(rn, j) /\ Bug # "ForeignBind" then
         rb[rn] := "stop"; return;
-      elsif ra = NoneG \/ ~(aj[Ch(rn, j)].g.par = ra.id \/ (Fix = "ChainBind" /\ ChainOK(aj[Ch(rn, j)].g))) then
+      elsif ra = NoneG \/ ~(aj[Ch(rn, j)].g.par = ra.id \/ ("ChainBind" \in Fix /\ ChainOK(aj[Ch(rn, j)].g))) then
         want := RootFor(aj[Ch(rn, j)].g.par, want); rb[rn] := "stop"; return;
       else
-        ba := aj[Ch(rn, j)].g; bdg := Fix = "GuardRerun"; goto RbRec;
+        ba := aj[Ch(rn, j)].g; bdg := "GuardRerun" \in Fix; goto RbRec;
       end if;
     end either;
   end if;
@@ -476,7 +479,7 @@ RbComp:
 RbRe:
   \* The re-run of a retry-safe compensable call with no result, through the base handler.
   if rdg /\ Expired(ra, now) /\ Bug # "NoCallGuard" then
-    if Fix = "GuardRerun" then
+    if "GuardRerun" \in Fix then
       walk := walk \cup Lst(rn, j, lst, "k"); ls := Links(rn); goto RbSub;
     else
       rb[rn] := "stop"; return;
@@ -1452,7 +1455,7 @@ RbLoop(self) == /\ pc[self] = "RbLoop"
                                                                             ba, 
                                                                             bdg, 
                                                                             re >>
-                                                       ELSE /\ IF res[rn[self]][j[self]] = "err" /\ ~(Fix = "RecurseFailed" /\ K(rn[self], j[self]) = "deleg" /\ ~tl[self])
+                                                       ELSE /\ IF res[rn[self]][j[self]] = "err" /\ ~("RecurseFailed" \in Fix /\ SubAgentCall(rn[self], j[self]) /\ ~tl[self])
                                                                   THEN /\ pc' = [pc EXCEPT ![self] = "RbSub"]
                                                                        /\ UNCHANGED << rb, 
                                                                                        walk, 
@@ -1725,7 +1728,7 @@ RbBind(self) == /\ pc[self] = "RbBind"
                                                                   /\ lst' = [lst EXCEPT ![self] = Head(stack[self]).lst]
                                                                   /\ stack' = [stack EXCEPT ![self] = Tail(stack[self])]
                                                                   /\ want' = want
-                                                             ELSE /\ IF ra[self] = NoneG \/ ~(aj[Ch(rn[self], j[self])].g.par = ra[self].id \/ (Fix = "ChainBind" /\ ChainOK(aj[Ch(rn[self], j[self])].g)))
+                                                             ELSE /\ IF ra[self] = NoneG \/ ~(aj[Ch(rn[self], j[self])].g.par = ra[self].id \/ ("ChainBind" \in Fix /\ ChainOK(aj[Ch(rn[self], j[self])].g)))
                                                                         THEN /\ want' = RootFor(aj[Ch(rn[self], j[self])].g.par, want)
                                                                              /\ rb' = [rb EXCEPT ![rn[self]] = "stop"]
                                                                              /\ pc' = [pc EXCEPT ![self] = Head(stack[self]).pc]
@@ -1742,7 +1745,7 @@ RbBind(self) == /\ pc[self] = "RbBind"
                                                                              /\ lst' = [lst EXCEPT ![self] = Head(stack[self]).lst]
                                                                              /\ stack' = [stack EXCEPT ![self] = Tail(stack[self])]
                                                                         ELSE /\ ba' = [ba EXCEPT ![self] = aj[Ch(rn[self], j[self])].g]
-                                                                             /\ bdg' = [bdg EXCEPT ![self] = Fix = "GuardRerun"]
+                                                                             /\ bdg' = [bdg EXCEPT ![self] = "GuardRerun" \in Fix]
                                                                              /\ pc' = [pc EXCEPT ![self] = "RbRec"]
                                                                              /\ UNCHANGED << want, 
                                                                                              rb, 
@@ -1882,7 +1885,7 @@ RbComp(self) == /\ pc[self] = "RbComp"
 
 RbRe(self) == /\ pc[self] = "RbRe"
               /\ IF rdg[self] /\ Expired(ra[self], now) /\ Bug # "NoCallGuard"
-                    THEN /\ IF Fix = "GuardRerun"
+                    THEN /\ IF "GuardRerun" \in Fix
                                THEN /\ walk' = (walk \cup Lst(rn[self], j[self], lst[self], "k"))
                                     /\ ls' = [ls EXCEPT ![self] = Links(rn[self])]
                                     /\ pc' = [pc EXCEPT ![self] = "RbSub"]

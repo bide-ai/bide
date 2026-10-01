@@ -54,7 +54,7 @@ ASSUME Bugs \subseteq {"FlagRule", "RefusedNotTerminal", "RanEarly", "NoBeganWor
                        "NoToolOutcome", "RanBeforeArgs", "IdemSagaSkip",
                        "NoIdemBegan", "NoRunningCheck",
                        "NoRbUnknown", "RunningReachedOnly",
-                       "NoClosedBegin"}
+                       "NoClosedBegin", "RbGuardStops"}
 ASSUME NCalls \in 1..2 /\ MaxAtt >= 1
 
 (* --algorithm toolcall
@@ -124,6 +124,10 @@ define
   Side(c) == Kinds[c] = "side"
   Idem(c) == Kinds[c] = "idem"
   Bug(b) == b \in Bugs
+  \* The guard (toolhook.CallGuard) may refuse: within its budget, or again once it has refused,
+  \* as a grant that expired stays expired.
+  GuardMay == guards < MaxGuard \/ guards > 0
+  GuardNext == IF guards < MaxGuard THEN guards + 1 ELSE guards
   \* unprovenFailure: a chain error for a tool that began and did not itself fail leaves the
   \* outcome unknown for a side effect, and in a saga for a retry-safe tool that changes state
   \* (before #117's fix of it, IdemSagaSkip: for a side effect only, so the rollback skipped the
@@ -267,9 +271,11 @@ IEnter:
   else
     either
       \* toolhook.CallGuard: the delegated grant expired; a recorded refusal ("guard" is "nc",
-      \* ErrToolNotCalled, that the rollback's re-run tells apart: model 11's D2)
-      await guards < MaxGuard;
-      guards := guards + 1;
+      \* ErrToolNotCalled, that the rollback's re-run tells apart: model 11's D2). An expired
+      \* grant stays expired: once the guard has refused, it may refuse every later call too
+      \* (GuardMay); MaxGuard bounds only the first refusals.
+      await GuardMay;
+      guards := GuardNext;
       st := RefuseSt(self); iret[self] := "guard"; ion[self] := FALSE;
       goto IWait;
     or
@@ -324,8 +330,8 @@ IEnter2:
       goto IWait;
     else
       either
-        await guards < MaxGuard;
-        guards := guards + 1;
+        await GuardMay;
+        guards := GuardNext;
         st := RefuseSt(self); iret[self] := "guard"; ion[self] := FALSE;
         goto IWait;
       or
@@ -547,7 +553,8 @@ LClose:
     \* abort and every later re-run meets the same refusal (model 11's D2).
     rec := IF RbOk(self, cerr) THEN "ok" ELSE "none";
     rbOut[self] := IF RbOk(self, cerr) \/ SDone \/ Bug("NoRbUnknown") THEN "err"
-                   ELSE IF Cls(self, cerr) = "unk" \/ cerr \in {"ok", "guard"} THEN "unk"
+                   ELSE IF Cls(self, cerr) = "unk" \/ cerr = "ok"
+                           \/ (cerr = "guard" /\ ~Bug("RbGuardStops")) THEN "unk"
                    ELSE "err";
   else
     rec := RecOf(self, cerr);
@@ -718,6 +725,10 @@ VARIABLES marker, att, res, argsRec, ibeg, ibs, iear, complete, pend,
 Side(c) == Kinds[c] = "side"
 Idem(c) == Kinds[c] = "idem"
 Bug(b) == b \in Bugs
+
+
+GuardMay == guards < MaxGuard \/ guards > 0
+GuardNext == IF guards < MaxGuard THEN guards + 1 ELSE guards
 
 
 
@@ -943,8 +954,8 @@ IEnter(self) == /\ pc[self] = "IEnter"
                                                  /\ UNCHANGED << ranc, 
                                                                  everReached, 
                                                                  guards >>
-                                            ELSE /\ \/ /\ guards < MaxGuard
-                                                       /\ guards' = guards + 1
+                                            ELSE /\ \/ /\ GuardMay
+                                                       /\ guards' = GuardNext
                                                        /\ st' = RefuseSt(self)
                                                        /\ iret' = [iret EXCEPT ![self] = "guard"]
                                                        /\ ion' = [ion EXCEPT ![self] = FALSE]
@@ -1025,8 +1036,8 @@ IEnter2(self) == /\ pc[self] = "IEnter2"
                                        /\ ion' = [ion EXCEPT ![self] = FALSE]
                                        /\ pc' = [pc EXCEPT ![self] = "IWait"]
                                        /\ UNCHANGED << everReached, guards >>
-                                  ELSE /\ \/ /\ guards < MaxGuard
-                                             /\ guards' = guards + 1
+                                  ELSE /\ \/ /\ GuardMay
+                                             /\ guards' = GuardNext
                                              /\ st' = RefuseSt(self)
                                              /\ iret' = [iret EXCEPT ![self] = "guard"]
                                              /\ ion' = [ion EXCEPT ![self] = FALSE]
@@ -1367,7 +1378,8 @@ LClose(self) == /\ pc[self] = "LClose"
                 /\ IF rbm[self]
                       THEN /\ rec' = [rec EXCEPT ![self] = IF RbOk(self, cerr[self]) THEN "ok" ELSE "none"]
                            /\ rbOut' = [rbOut EXCEPT ![self] = IF RbOk(self, cerr[self]) \/ SDone \/ Bug("NoRbUnknown") THEN "err"
-                                                               ELSE IF Cls(self, cerr[self]) = "unk" \/ cerr[self] \in {"ok", "guard"} THEN "unk"
+                                                               ELSE IF Cls(self, cerr[self]) = "unk" \/ cerr[self] = "ok"
+                                                                       \/ (cerr[self] = "guard" /\ ~Bug("RbGuardStops")) THEN "unk"
                                                                ELSE "err"]
                            /\ gret' = gret
                       ELSE /\ rec' = [rec EXCEPT ![self] = RecOf(self, cerr[self])]

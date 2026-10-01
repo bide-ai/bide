@@ -834,7 +834,8 @@ succeeds or its process crashes.
   rollback, and a later `RunSaga` resumes it.
 - **Faults**, each with a budget: a store write that errors (committed or not, A3), a process
   crash (every goroutine, leaked ones included, and `pendingClaims`), a run cancellation, a tool
-  deadline, a guard refusal (a delegated grant expired), a tool that says its outcome is unknown,
+  deadline, a guard refusal (a delegated grant expired; once it has refused it may refuse every
+  later call, as an expired grant stays expired), a tool that says its outcome is unknown,
   a tool's own error, and a delegation resumed under the wrong authority, which an operator puts
   right (fair). The run is driven again until it completes, aborts a saga, or halts for ever.
 
@@ -915,7 +916,7 @@ findings (below).
 | `saga-idem` | nightly | a retry-safe saga step that changes state, contract middleware, every fault (T3's shape) | 532,471 | 3 s |
 | `rollback-rerun` | nightly | the rollback re-runs a retry-safe step cut off by a sibling's saga failure: `next` left running, a cache answer, a cancellation (T4, T5) | 245,482 | 3 s |
 | `live-rollback` | ci | `RollbackEnds`: a result check that rejects every success of the re-run step | 900 | 1 s |
-| `rollback-guard` | ci | the rollback's re-run refused by `toolhook.CallGuard` (an expired delegation grant): listed as an unknown outcome, and the rollback ends (model 11's D2) | 24,232 | 2 s |
+| `rollback-guard` | ci | the rollback's re-run refused by `toolhook.CallGuard` (an expired delegation grant, which may refuse every later re-run too): listed as an unknown outcome, and the rollback ends (model 11's D2) | 26,049 | 3 s |
 | `deep-adv-a2` | nightly | one side effect, any middleware, two extra invocations and two error replies, four attempts | 46,315,249 | 8 min* |
 | `deep-adv-two` | nightly | two side effects, any middleware but a direct call, a cancellation and an error reply | 103,675,470 | 16 min* |
 | `deep-two-side` | nightly | two side effects, contract middleware, every fault | 5,913,713 | 38 s* |
@@ -949,6 +950,7 @@ Regressions (each must fail with its property, and passes with its `Bugs` flag r
 | `regress/t5-begin-after-return` | model 9, T5: a `next` left running began a retry-safe tool after its chain returned and its compensation was recorded (`NoClosedBegin`) | `NoDoubleFire` | 67 states |
 | `regress/t6-cache-while-earlier-runs` | model 9, T6: a re-drive's cache answer while an earlier drive's invocation was in the tool; recorded and compensated before it landed (`RunningReachedOnly`) | `NoDoubleFire` | 55 states |
 | `regress/rollback-no-end` | model 9: the rollback's re-run stopped on any error, so a result check rejecting every success left it with no end (`NoRbUnknown`) | `RollbackEnds` | 71 states |
+| `regress/rollback-guard-stops` | model 11's D2, fixed in #133: the rollback's re-run that the guard refused stopped the rollback, and an expired grant refuses every later re-run too, so it had no end (`RbGuardStops`) | `RollbackEnds` | 26,556 states |
 | `regress/t2-ran-before-args` | model 9, T2: the `ran` mark preceded the accepted-arguments write, so a retry after a failed write recorded "already ran" (`RanBeforeArgs`) | `TruthfulRecord` | 41 states |
 
 Accepted limits:
@@ -1360,12 +1362,12 @@ which are models 1 and 9.
 |---|---|
 | `DOpen` | S `runSagaWithTelemetry`: `sagaFailure` (an aborting saga goes to its rollback); L `Agent.run`'s open and resume gate (model 9's `DOpen`, `DGate`) |
 | `DNext` | L the goroutine's `gctx.Err()` and `halted.Load()` checks: a call after a halt does not start |
-| `DGuard` | T the base handler's `toolhook.CallGuard` (H); A `init`'s guard: a call under an expired delegated grant is refused, recorded |
+| `DGuard` | T the base handler's `toolhook.CallGuard` (H), whose refusal it wraps in `guardRefusal`; A `init`'s guard: a call under an expired delegated grant is refused, recorded |
 | `DgRead` | A `attenuatingSubAgent.Call`'s run scope and `journaledAuthority`; `storageFailure`, `authorityErr`, `unrecorded`; the checks of an ungranted, a legacy, a foreign-subject, a wrong-parent or an expired journaled grant |
 | `DgUng` | A `Call` with no grant bound: the `audit:delegation:ungranted` marker |
 | `DgMint` | A `Call`'s mint: the bound grant's expiry, `t.narrow`, the subject, `CheckAttenuation`, the child's expiry |
 | `DgRec` | A `SignGrant`, `RecordGrant` (a failure is Unrecorded) |
-| `DgRun`, `DgRet` | A the rebound identity and `grantCarrier` (`delegated`); U `subAgentTool.Call` (`RunSaga` in a saga, `Run` otherwise; `subRunUnfinished`) |
+| `DgRun`, `DgRet` | A the rebound identity and `grantCarrier` (`delegated`) through `bindDelegated`, which also clears the rollback grants (`withRollbackScope`); U `subAgentTool.Call` (`RunSaga` in a saga, `Run` otherwise; `subRunUnfinished`) |
 | `SStart` | K `checkRunID`; R `derivedRunID`, `stepRunName`, `withRunContext`'s `sagaTree`; `linkSubRun`'s other-store refusal (`sameStore`) |
 | `SLink` | R `linkSubRun`'s `subRunLinkStep` write; L `Agent.run`'s call of it |
 | `DClass` | L the goroutine's deferred hold (Unrecorded, `halted` for a joined halt or lost outcome) and the classification through `subRunUnfinished`; U `subRunUnfinished`; H `Unrecorded` |
@@ -1374,9 +1376,9 @@ which are models 1 and 9.
 | `DEnd` | L the drive's return: the refusal joined with a held pause or halt |
 | `RbOpen`, `RbLoop` | S `rollbackRun`: its `History`, `subRunLinks`, the failed calls first, then every call in reverse |
 | `RbSub`, `RbSubRet` | S `walkSubRuns`, `rollbackSubRun`, `declaredSubRunAgent`, `subRunLinks`; U `subRunAgentFor` |
-| `RbBind`, `RbRec`, `RbBindRet` | U `bindRollback`, `asSubAgent`; H `RollbackBinder`; A `BindRollback`, `checkChild`, `withoutGrant`; S the recursion into the sub-agent's run |
+| `RbBind`, `RbRec`, `RbBindRet` | U `bindRollback`, `asSubAgent`; H `RollbackBinder`; A `BindRollback`, `checkChild`, `withoutGrant`, `rollbackParents` (the acting grant and those bound with `WithRollbackGrants`: D1's fix, `ChainBind`), `bindDelegated` (the `delegated` mark kept: D2's fix, `GuardRerun`), `withRollbackScope`; S the recursion into the sub-agent's run, whatever its result (D3's fix, `RecurseFailed`) |
 | `RbComp` | S the memoized `sagaCompensateStep` |
-| `RbRe`, `RbReRun`, `RbReRet`, `RbReW` | S the re-run of a retry-safe compensable call through `toolH` and `callTool`, and the links reloaded after it |
+| `RbRe`, `RbReRun`, `RbReRet`, `RbReW` | S the re-run of a retry-safe compensable call through `toolH` and `callTool`, and the links reloaded after it; a re-run the guard refused (`guardRefusal`) is listed as an unknown outcome (D2's fix) |
 | `Idle`, `Back`, `Tick`, `WrongAuth`, `FixAuth`, `Crash` | the root's drives and the environment |
 | `EMark`, `EFire`, `ERes` | a side effect's claim, call and outcome (models 1 and 9) |
 | `SRun`, `SRet`, `SWrite`, `SLateRet` | the tool's own code: `Run` or `RunSaga` of its `SubRunFor` ID, and its own write |
@@ -1398,7 +1400,8 @@ which are models 1 and 9.
 ### Configurations
 
 Times are TLC's own on the development machine (Apple M1 Pro). Each passing configuration is
-also run for vacuity. The model states the rules of `main` after #127. The `ci` set (regress,
+also run for vacuity. The model states the rules of `main` after #133: every configuration but
+the D1 to D3 regressions sets `Fix` to all three fixes. The `ci` set (regress,
 finding and limit configurations included, with vacuity runs and JVM starts) takes about
 45 seconds (36 for the `ci` group with its vacuity runs, 9 for the 18 `regress`, `finding` and `limit` configurations at four at a time) on the development machine.
 
@@ -1416,9 +1419,10 @@ finding and limit configurations included, with vacuity runs and JVM starts) tak
 | `plain-tree` | ci | A plain sub-run's sub-run, three levels (B3), with a crash and an error reply. | 1,580 | <1 s |
 | `rerun` | ci | The rollback re-runs a call that never ran, which starts a sub-run, and its outcome may be lost (B4). | 580 | <1 s |
 | `live-unrec` | ci | `UnrecordedContinues` and `RollbackEnds` with a read error, an error reply, a wrong binding, and `P` expiring. | 5,501 | 1 s |
-| `fix-d1-chain` | ci | D1's proposed fix, with both liveness properties. | 647 | <1 s |
-| `fix-d2-guard` | ci | D2's proposed fix, with a crash. | 1,118 | <1 s |
-| `fix-d3-recurse` | ci | D3's proposed fix, with a crash. | 341 | <1 s |
+| `fix-d1-chain` | ci | D1's tree with the fixes, with both liveness properties. | 647 | <1 s |
+| `fix-d2-guard` | ci | D2's tree with the fixes, with a crash. | 1,118 | <1 s |
+| `fix-d3-recurse` | ci | D3's tree with the fixes, with a crash. | 341 | <1 s |
+| `fixes-all` | ci | D1 to D3 in one tree: a delegation under `P`, then, after `P` expired, D3's plain sub-run and D2's delegation under `P2`, with every property. Each fix left out fails it (`RollbackEnds`, `AuthorityNarrows`, `RollbackSound`). | 1,338 | 1 s |
 | `deep-deleg` | nightly | The saga delegation under every fault, two of each, with a child grant expiring at tick 2. | 1,211,214 | 33 s |
 | `deep-nested` | nightly | Nested delegations under two crashes and every other fault. | 1,287,276 | 43 s |
 | `deep-halt` | nightly | Halt propagation with three crashes, two error replies and two read errors. | 141,806 | 2 s |
@@ -1428,7 +1432,8 @@ finding and limit configurations included, with vacuity runs and JVM starts) tak
 | `deep-rerun` | nightly | The rollback's re-run in a delegated sub-run that starts a sub-run, with D2's fix, the grant expiring, lost outcomes and crashes. | 143,739 | 1 s |
 | `deep-live` | nightly | Both liveness properties over nested delegations, with every fault. | 443,210 | 1 min 1 s |
 
-Regressions. Each must fail with its property, and passes with its `Bug` value set to `"none"`:
+Regressions. Each must fail with its property, and passes with its `Bug` value set to `"none"`
+(the D1 to D3 ones: with its fix put back in `Fix`):
 
 | Config | The historical rule | Expected | Trace |
 |---|---|---|---|
@@ -1446,6 +1451,9 @@ Regressions. Each must fail with its property, and passes with its `Bug` value s
 | `regress/b3-plain-link` | B3: links were written only when the call's own run was a saga (`B3`). | `RollbackSound` | 50 states |
 | `regress/b4-rerun-links` | B4: after a re-run with an unknown outcome, the links were not reloaded (`B4`). | `RollbackSound` | 39 states |
 | `regress/late-start` | #127 review (c): a sub-run started after its call returned was accepted (`NoReturnedCheck`). | `NoForgedSubRun` | 9 states |
+| `regress/d1-rotation` | D1, fixed in #133: each journaled grant was verified against the one grant bound now (`Fix` without `ChainBind`). | `RollbackEnds` | 745 states |
+| `regress/d2-rerun-expired` | D2, fixed in #133: `BindRollback` dropped the `delegated` mark, and the re-run called the tool after expiry (`Fix` without `GuardRerun`). | `AuthorityNarrows` | 201 states |
+| `regress/d3-plain-deleg` | D3, fixed in #133: a sub-agent call with an error result was skipped (`Fix` without `RecurseFailed`). | `RollbackSound` | 51 states |
 
 Accepted limit: `limits/fire-in-flight`. `CallGuard` is asked when a call reaches its tool, so a
 tool entered before the grant expired may fire after it (`NoFireAfterExpiry`).
@@ -1453,13 +1461,12 @@ tool entered before the grant expired may fire after it (`NoFireAfterExpiry`).
 
 ### Findings
 
-Found by this model on `main` at `635e7c0` (#127 merged). Each has a failing Go test in a
-scratch directory (`audit/zz_model11_test.go`, not in this pull request). Each fix is checked in
-the model (`Fix`) as a `ci` configuration. The findings stay open (`findings/`) until the code
-adopts a fix.
+Found by this model on `main` at `635e7c0` (#127 merged), and fixed in #133, which adopted all
+three fixes and holds their Go tests (`audit/zz_model11_test.go`). Each is now a regression
+(`regress/`, `Fix` without its fix), and every other configuration runs with all three.
 
 - **D1: a saga whose delegations were minted under two bound grants can never finish its
-  rollback** (`findings/d1-rotation`, `RollbackEnds`).
+  rollback** (`regress/d1-rotation`, `RollbackEnds`).
   - `BindRollback` verifies each journaled grant against the one grant bound now.
   - Minting from an expired bound grant is refused with "bind a live one and drive again". A
     saga that delegated under `P`, and then under the live `P2`, has two delegations, and no
@@ -1467,15 +1474,21 @@ adopts a fix.
     first, whichever grant is bound.
   - The test is `TestModel11_D1_RollbackAcrossRotatedGrants`. It rotates the root grant between
     drives and re-drives under each grant in turn; the rollback never finishes.
-  - Proposed fix (`ChainBind`): the caller binds every grant the saga minted under, beside the
+  - Fix (`ChainBind`): the caller binds every grant the saga minted under, beside the
     current one, and `BindRollback` verifies a journaled grant against the one it was minted
     from.
   - A grant never bound stays refused, which keeps `TestR117_BindRollbackRefusesAForeignParent`.
     A fix that only checks the signature would break that test.
-  - The maintainers adopted this rule (multi-grant binding). A separate change fixes D1 to D3 in
-    the code; the findings stay open until it lands.
+  - The maintainers adopted this rule (multi-grant binding): `audit.WithRollbackGrants` binds the
+    earlier grants beside the acting one, and `BindRollback` verifies each journaled grant against
+    the bound grant its `ParentRef` links to (`rollbackParents`).
+  - The model abstracts signers: a grant's chain is its id, and `ChainOK` stands for the signature
+    and narrowing checks under the parent's signer. Key rotation (the earlier grant signed with an
+    older key, each bound grant carrying its own signer) and a bound grant under the wrong signer
+    are covered by the Go tests (`TestModel11_D1_RollbackAcrossRotatedKeys`,
+    `TestModel11_BindRollbackScope`), not by the model.
 - **D2: the rollback's re-run calls a tool after the delegation's grant expired**
-  (`findings/d2-rerun-expired`, `AuthorityNarrows`).
+  (`regress/d2-rerun-expired`, `AuthorityNarrows`).
   - `BindRollback` rebinds the journaled grant with `WithGrant`, which drops the `delegated`
     mark, so `CallGuard` passes every call under it.
   - A compensation needs that, because F2 lets a rollback compensate after expiry. But the
@@ -1484,19 +1497,21 @@ adopts a fix.
   - The test is `TestModel11_D2_RollbackRerunAfterGrantExpiry`. The sub-run's own rollback,
     under the delegated grant, is refused for the same call, and the parent's walk then calls
     the tool.
-  - Proposed fix (`GuardRerun`): `BindRollback` keeps the `delegated` mark, which `Compensate`
+  - Fix (`GuardRerun`): `BindRollback` keeps the `delegated` mark, which `Compensate`
     does not consult. A re-run that `CallGuard` refuses is listed in `UnknownOutcome`, and the
     walk goes on. Without that listing the rollback would stop for ever.
 - **D3: a sub-agent's writes in a plain sub-run of a saga are skipped**
-  (`findings/d3-plain-deleg`, `RollbackSound`).
+  (`regress/d3-plain-deleg`, `RollbackSound`).
   - A plain run (`Run` of a `SubRunFor` ID, which #127 allows in a saga's tree) records a
     sub-agent call that failed as an error result.
   - `rollbackRun` skips a call with an error result before it recurses into a sub-agent. The
     sub-agent's run had written and then failed (a model error, or an expired journaled grant),
     so its write is neither compensated nor listed.
   - The test is `TestModel11_D3_FailedSubAgentInPlainSubRunSkipped`.
-  - Proposed fix (`RecurseFailed`): recurse into a sub-agent call whatever its result, as the
-    function's comment already says.
+  - Fix (`RecurseFailed`): recurse into a sub-agent call whatever its result, as the function's
+    comment already says. Every sub-agent call of the model is a delegation (`SubAgentCall`): with
+    no grant bound, `AttenuatingSubAgent` is the plain `SubAgent` it wraps, so the fix covers both,
+    as the code's `asSubAgent` does.
 
 ### Keeping model 11 and the code in step
 

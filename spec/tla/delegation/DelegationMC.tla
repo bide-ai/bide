@@ -61,6 +61,10 @@ TDelegNe2 == << <<DelegNe(2, 2), Fail>>, <<Eff, Eff>> >>
 TPlainDeep == << <<SubPlain(2), Fail>>, <<SubPlain(3)>>, <<Deleg(4)>>, <<Eff>> >>
 \* Nightly: D2's tree with the re-run write starting a sub-run of its own.
 TDelegRerunSub == << <<DelegNe(2, 1)>>, <<Fail, SubW(3)>>, <<Eff>> >>
+\* D1 to D3 together: a delegation minted under P, a plain sub-run whose delegation's sub-run ends
+\* with a model error (D3), and a delegation whose sub-run fails before its retry-safe write runs
+\* (D2), minted after P expired, under P2 (D1).
+TAllFixes == << <<Deleg(2), SubPlain(3), DelegNe(4, 2)>>, <<Eff>>, <<Deleg(5)>>, <<Fail, RSW>>, <<Eff>> >>
 \* An AttenuateFunc that names another subject.
 TDelegOther == << <<DelegOther(2), Fail>>, <<Eff>> >>
 =============================================================================
