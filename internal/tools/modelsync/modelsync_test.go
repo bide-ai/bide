@@ -73,10 +73,40 @@ type fixture struct {
 	base string
 }
 
+// fixtureGitConfig keeps git from writing into a fixture's .git after the command that started
+// the write has returned: no auto-gc or auto-maintenance (either may detach into the
+// background) and no fsmonitor daemon. A process still writing there when t.TempDir's cleanup
+// runs fails the test with "unlinkat .../.git: directory not empty".
+var fixtureGitConfig = [][2]string{
+	{"gc.auto", "0"},
+	{"gc.autoDetach", "false"},
+	{"maintenance.auto", "false"},
+	{"core.fsmonitor", "false"},
+	{"user.name", "t"},
+	{"user.email", "t@example.com"},
+	{"commit.gpgsign", "false"},
+}
+
+// isolateGit cuts every git process the test starts, the fixture's and modelsync's own, off
+// from the user's and the CI runner's global and system git config, which could otherwise turn
+// on maintenance, fsmonitor, hooks or signing.
+func isolateGit(t *testing.T) {
+	t.Helper()
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_CONFIG_SYSTEM", os.DevNull)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+}
+
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
+	isolateGit(t)
 	f := &fixture{t: t, dir: t.TempDir()}
 	f.git("init", "-q", "-b", "main")
+	// Written into the repository too, so modelsync's own git commands (which do not take the
+	// fixture's -c flags) run under the same settings.
+	for _, kv := range fixtureGitConfig {
+		f.git("config", kv[0], kv[1])
+	}
 	f.write("spec/tla/claims/Claims.tla", fixtureSpec)
 	f.write("spec/tla/README.md", fixtureReadme)
 	f.write("spec/tla/flows/Flows.tla", "---- MODULE Flows ----\nBegin == TRUE\n====\n") // a second model, with no map and no markers
@@ -87,7 +117,12 @@ func newFixture(t *testing.T) *fixture {
 
 func (f *fixture) git(args ...string) string {
 	f.t.Helper()
-	cmd := exec.Command("git", append([]string{"-C", f.dir, "-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false"}, args...)...)
+	pre := []string{"-C", f.dir}
+	for _, kv := range fixtureGitConfig {
+		pre = append(pre, "-c", kv[0]+"="+kv[1])
+	}
+	cmd := exec.Command("git", append(pre, args...)...)
+	// CombinedOutput waits for git to exit; no git process outlives this call.
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		f.t.Fatalf("git %v: %v\n%s", args, err, out)
@@ -399,5 +434,23 @@ func TestSpecNameCase(t *testing.T) {
 	}
 	if m.spec != "spec/tla/toolcall/ToolCall.tla" || !m.defined["IBegin"] {
 		t.Fatalf("spec %q, defined %v", m.spec, m.defined)
+	}
+}
+
+// TestFixtureGitIsolated: the fixture repository has auto-gc, auto-maintenance and fsmonitor
+// off in its own config (so modelsync's git commands see them too), and no global or system
+// config reaches it.
+func TestFixtureGitIsolated(t *testing.T) {
+	f := newFixture(t)
+	for _, kv := range [][2]string{{"gc.auto", "0"}, {"gc.autoDetach", "false"}, {"maintenance.auto", "false"}, {"core.fsmonitor", "false"}} {
+		out, err := git(f.dir, "config", "--local", "--get", kv[0])
+		if err != nil || strings.TrimSpace(out) != kv[1] {
+			t.Errorf("local %s = %q (%v), want %q", kv[0], strings.TrimSpace(out), err, kv[1])
+		}
+	}
+	for _, scope := range []string{"--global", "--system"} {
+		if out, _ := git(f.dir, "config", scope, "--list"); strings.TrimSpace(out) != "" {
+			t.Errorf("%s config reaches the fixture:\n%s", scope, out)
+		}
 	}
 }
