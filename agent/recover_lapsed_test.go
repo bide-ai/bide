@@ -307,3 +307,44 @@ func testRecoverLoopPassDoesNotWaitForASlotForARunInFlight(t *testing.T) {
 	}
 	close(release)
 }
+
+// A failed ReapLeases is a genuine failure: it goes to the WithRecoverErrors handler as a storage
+// error, and the lapsed loop still lists and drives the lapsed runs.
+func TestRecoverLoop_ReportsAFailedReap(t *testing.T) {
+	synctest.Test(t, testRecoverLoopReportsAFailedReap)
+}
+
+func testRecoverLoopReportsAFailedReap(t *testing.T) {
+	s := &failReapStore{countingStore{MemStore: NewMemStore()}}
+	seedRun(t, s.MemStore, "z")
+	if ok, _ := s.MemStore.AcquireLease(context.Background(), "z", "dead-worker#0", time.Millisecond); !ok {
+		t.Fatal("setup: the dead worker should hold z")
+	}
+	var mu sync.Mutex
+	var errs []error
+	driven := make(chan struct{})
+	var once sync.Once
+	stop := runLoop(t, s, func(context.Context, string) error {
+		once.Do(func() { close(driven) })
+		return &OutcomeUnknown{RunRef: RunRef{RunID: "z"}}
+	}, WithRecoverInterval(20*time.Millisecond), WithRecoverErrors(func(err error) {
+		mu.Lock()
+		errs = append(errs, err)
+		mu.Unlock()
+	}))
+	defer stop()
+	<-driven
+	time.Sleep(50 * time.Millisecond)
+	mu.Lock()
+	defer mu.Unlock()
+	if len(errs) == 0 || !errors.Is(errs[0], ErrStorage) || !errors.Is(errs[0], errReap) {
+		t.Fatalf("reported %v, want the reap failure wrapped as ErrStorage", errs)
+	}
+}
+
+var errReap = errors.New("reap refused")
+
+// failReapStore is a countingStore whose ReapLeases fails.
+type failReapStore struct{ countingStore }
+
+func (*failReapStore) ReapLeases(context.Context, []string) (int, error) { return 0, errReap }
