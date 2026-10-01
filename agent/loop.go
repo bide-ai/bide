@@ -80,7 +80,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 	// recorded on its first drive, and every later drive of an unfinished run is held to them
 	// (see RunStart). A finished run is final and returns below without consulting either.
 	if _, finished := completedAnswer(recs); !finished {
-		if err := holdToStart(ctx, a.store, runID, recs, RunStart{Input: seed[len(seed)-1].Text(), Saga: saga}); err != nil {
+		if err := holdToStart(ctx, a.store, runID, recs, RunStart{Input: seed[len(seed)-1], Saga: saga}); err != nil {
 			return Message{}, usageTotals{}, 0, err
 		}
 	} else if err := checkStartKind(runID, recs, RunKindAgent); err != nil {

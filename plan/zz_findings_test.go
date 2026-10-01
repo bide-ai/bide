@@ -110,7 +110,7 @@ func TestF2_RecordedStartInputDoesNotRoundTrip(t *testing.T) {
 				t.Fatalf("RecordedStart: %+v %v %v", start, ok, err)
 			}
 			// Decoded without loss (UseNumber), the recorded input resumes the run.
-			dec := json.NewDecoder(strings.NewReader(start.Input))
+			dec := json.NewDecoder(strings.NewReader(start.Input.Text()))
 			dec.UseNumber()
 			var in any
 			if err := dec.Decode(&in); err != nil {
@@ -122,7 +122,7 @@ func TestF2_RecordedStartInputDoesNotRoundTrip(t *testing.T) {
 			}
 			// Decoded into a float64, it is another number, and another input.
 			var lossy any
-			if err := json.Unmarshal([]byte(start.Input), &lossy); err != nil {
+			if err := json.Unmarshal([]byte(start.Input.Text()), &lossy); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := flow.Run(ctx, mem, "r", lossy); !errors.Is(err, agent.ErrConfig) {

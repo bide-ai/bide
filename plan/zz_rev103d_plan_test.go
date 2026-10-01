@@ -134,7 +134,7 @@ func TestRev103d_ResumeAcrossTheEscapingChange(t *testing.T) {
 			var st agent.RunStart
 			_ = json.Unmarshal(r.Result, &st)
 			inb, _ := json.Marshal(in)
-			st.Input = string(inb)
+			st.Input = agent.UserText(string(inb))
 			r.Result, _ = json.Marshal(st)
 		case "node:a":
 			var s string

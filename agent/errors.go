@@ -118,6 +118,27 @@ var (
 // another driver's to continue. Recover does not count it as a failure.
 var ErrLeaseLost = errors.New("run lease lost")
 
+// ErrRunCancelled is the end of a run that was cancelled (see Cancel): the first of the run's
+// end markers in journal order is run:cancelled. A drive of such a run returns it, with a Result,
+// whatever input it is given, as a finished run returns its answer. It wraps no category: it is a
+// terminal status, not a fault.
+var ErrRunCancelled = errors.New("run cancelled")
+
+// ErrRunEnded is Cancel's answer for a run that is already over: its first end marker is
+// run:complete or run:aborted, so there is nothing left to cancel. Like ErrRunCancelled it wraps
+// no category.
+var ErrRunEnded = errors.New("run already ended")
+
+// ErrNotStarted is a run with no run:start record: one never driven (a Signal sent to a mistyped
+// run ID, say), or one whose first drive has not written it yet. ResumeRun and Cancel refuse such
+// a run, and Recover skips it and reports it once per process.
+var ErrNotStarted = fmt.Errorf("run has no run:start record: %w", ErrConfig)
+
+// ErrNotResumable is a Resumer's answer for a run it does not drive (another kind, a typed run
+// whose schema is not its type's). ResumeAny tries the next Resumer on it, and Recover reports a
+// run no Resumer drives once per process. Like ErrLeaseLost it wraps no category.
+var ErrNotResumable = errors.New("run not resumable by this resumer")
+
 // RateLimited is returned by a provider adapter when it is rate limited (HTTP 429 that is not an
 // exhausted quota; see ClassifyHTTPError). It carries an optional RetryAfter hint from the
 // Retry-After response header or the provider's own retry delay (0 means no hint was provided),

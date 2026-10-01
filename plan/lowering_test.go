@@ -252,7 +252,7 @@ func TestLowering_RunStartHoldsTheFlowAndItsInput(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("RecordedStart: %v, %v", ok, err)
 	}
-	if start.Kind != agent.RunKindFlow || start.Flow == nil || start.Flow.Name != "charge-flow" || start.Input != "5" {
+	if start.Kind != agent.RunKindFlow || start.Flow == nil || start.Flow.Name != "charge-flow" || start.Input.Text() != "5" {
 		t.Fatalf("recorded start = %+v, want a flow run of charge-flow with input 5", start)
 	}
 	before, err := mem.History(ctx, "r")
