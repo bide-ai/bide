@@ -119,3 +119,28 @@ func TestP14Rule09_ResumerRefusesJournaledOptions(t *testing.T) {
 		t.Fatalf("ResumeAgent with the deployment's Actor = %v", err)
 	}
 }
+
+// Rule 16 with model 10's L3 rule: an open turn whose run completed before Cancel landed is not
+// cancelled (its first end marker is run:complete), so it is not closed, and another message is
+// still refused until the turn's own message is sent again and recorded.
+func TestP14Rule16_CompletedFirstIsNotClosed(t *testing.T) {
+	ctx := context.Background()
+	j, m := p14Journal(t)
+	model := &p14Model{turns: []p14Turn{{calls: []agent.ToolUse{call("c1", "pay")}}, {text: "answer"}}}
+	var pay counter
+	a := p14Build(t, model, j, agent.WithTools(pay.tool("pay", agent.Safety{}, agent.WithApproval(agent.SingleApproval()))))
+	s, err := a.Session(ctx, "chat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = s.Send(ctx, "x")
+	pa, ok := errors.AsType[*agent.ApprovalPending](err)
+	if !ok {
+		t.Fatalf("Send(x) = %v, want the approval pause", err)
+	}
+	writeMarker(t, m, pa.RunID, "run:complete", nil)
+	writeMarker(t, m, pa.RunID, "run:cancelled", reason{"late"})
+	if _, err := s.Send(ctx, "y"); !errors.Is(err, agent.ErrConfig) {
+		t.Fatalf("Send(y) = %v, want ErrConfig: x's turn completed, it was not cancelled", err)
+	}
+}
