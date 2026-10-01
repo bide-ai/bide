@@ -646,6 +646,10 @@ speak about the same records:
 - The existing `TestEngineKeys_WritesUseConstructors` already checks that every engine write uses
   a constructor, so the chain is: every write uses a constructor, every claim-code constructor is in
   the table, every table entry is in the spec, and back.
+- As built (M4): the trace emitter does not exist before M3, so the key parser lives in the test
+  (`parseClaimKey`, in `agent/protocol_vocabulary_test.go`) and round-trips each constructor's
+  output to its kind, attempt number, base marker key and claim id; M3's emitter takes it over.
+  The test runs in the Lint job on every change, since the Go tests skip a spec-only change.
 
 ### 6.3 Process
 
@@ -658,6 +662,15 @@ speak about the same records:
   marked region unless it also changes `spec/tla/claims/` or its description holds a line
   `Protocol-Impact: none (<reason>)`. Region markers instead of file paths, because `loop.go` is
   large and mostly unrelated; the job also fails if a marker pair is broken.
+  As built (M4): the markers also name the model actions a region implements
+  (`// protocol:claims begin Claim ClaimInsert`), and cover models 1, 1b, 7 and 8, each by its
+  directory name. `internal/tools/modelsync` runs in the Lint job, on pull requests and in the
+  merge queue. Besides the path rule it checks that every marked action is defined in the spec and
+  listed in the README's map, and that every mapped action is marked (or listed as having no Go
+  code), so a rename on any side fails. The override is `Protocol-Impact: none (<reason>)` in the
+  description or a commit message, or `Protocol-Impact: <model>[,<model>] none (<reason>)` for
+  some models, and each one used is printed as a warning. See
+  [spec/tla/README.md](../../spec/tla/README.md#keeping-the-code-and-the-models-in-step).
 - **The adversarial review gate.** Changes to claims already get an adversarial review (see the
   roadmap). The review checklist adds: the model-code map (section 4.4, kept in
   `spec/tla/README.md`) is still true for every function the diff touches; the reviewer's

@@ -195,11 +195,29 @@ deterministic Go test before fixing it, as for any bug. A rule replaced by the c
 `RecoverLoop`, or to `Cancel` changes the run lifecycle model, `spec/tla/lifecycle/Lifecycle.tla`.
 See [spec/tla/README.md](spec/tla/README.md).
 
+The Go code the models describe (the claim protocol, the approval gate, flows, spend accounting)
+is wrapped in region markers, `// protocol:<model> begin <Action> ...` and `// protocol:<model> end`,
+that name the model and the model actions the region implements. The Lint job runs
+`go run ./internal/tools/modelsync`, which fails a pull request that:
+
+- touches a marked region and changes nothing under `spec/tla/<model>/`. A change that leaves the
+  modelled behavior as it is (a rename, a comment, an error message) says so with a line in the
+  pull request's description or a commit message: `Protocol-Impact: none (<reason>)`, or
+  `Protocol-Impact: <model>[,<model>] none (<reason>)` for some models only. The override is printed
+  as a warning on the pull request, and the reviewer judges the reason. Re-run the Lint job after
+  editing the description.
+- leaves a marker, the model-to-code map in `spec/tla/README.md` and the spec disagreeing on an
+  action's name: every marker names an action the spec defines and the map lists, and every mapped
+  action is marked unless the map lists it as having no Go code.
+
+Move or add the markers when you move or add modelled code; a new model lands with its markers
+(see [Keeping the code and the models in step](spec/tla/README.md#keeping-the-code-and-the-models-in-step)).
+
 ## Before opening a change
 
 - `GOWORK=off go build ./...`, `GOWORK=off go test ./...`, `GOWORK=off go vet ./...`, and `gofmt -l .` are clean (run `gofmt` from the go1.27 toolchain via `export PATH="$(go env GOROOT)/bin:$PATH"`, or use `go fmt ./...`; the base gofmt predates Go 1.27 generic methods and reports false errors).
 - New exported symbols have doc comments that start with their name, and every package has a package comment; CI checks this with `go run ./internal/tools/doccheck -root . -allow .doccheck-allow` from the root, and a pull request may not add entries to `.doccheck-allow`.
 - `go run ./internal/tools/docsnip` is clean: the Go blocks of the docs compile (see [Go code in the docs](#go-code-in-the-docs)).
-- `spec/tla/check.sh` passes when the change touches the claim protocol (see [Formal models](#formal-models)).
+- `spec/tla/check.sh` passes when the change touches the claim protocol, and `go run ./internal/tools/modelsync -base origin/main` passes (see [Formal models](#formal-models)).
 - `CHANGELOG.md` has an entry under Unreleased, or the change is not user-facing.
 - New docs are linked from the [docs index](docs/README.md) and honor the style above.

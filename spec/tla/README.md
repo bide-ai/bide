@@ -9,8 +9,10 @@ What a model check establishes, stated narrowly: within the bounds a configurati
 processes, faults, attempt numbers), TLC explores every interleaving of the modelled rules and every
 placement of the faults, and checks each property in every reachable state. Nothing is proven
 beyond the bounds. The model states the protocol's rules; it does not read the Go code. The map
-below says which Go function each model step abstracts, and it is checked by review, not by a tool,
-until trace validation (milestone M3 of the plan) lands.
+below says which Go function each model step abstracts. Its meaning is checked by review, until
+trace validation (milestone M3 of the plan) lands; its names are checked by a tool, and a change to
+the code it names must change the model or say why not (see
+[Keeping the code and the models in step](#keeping-the-code-and-the-models-in-step)).
 
 ## Running it
 
@@ -62,11 +64,80 @@ on a schedule and on demand (`workflow_dispatch`). The Go counterpart, the full-
 explorations of the claim protocol and of flow lowering (`BIDE_EXPLORE=1`), runs nightly in
 `.github/workflows/explore.yml`; see [verification](../../docs/testing/verification.md).
 
+## Keeping the code and the models in step
+
+Milestone M4 of the plan (section 6.3): the Go code each model describes is marked, and CI fails a
+change to marked code that does not change the model.
+
+**Region markers.** Each Go region a map row names is wrapped in line comments that name the model,
+by its directory under `spec/tla`, and the model actions (PlusCal labels or TLA+ operators) the
+region implements:
+
+```go
+// protocol:claims begin Claim ClaimRetry ClaimInsert ClaimNS
+func (j *Journal) claim(ctx context.Context, runID, key string, rec Record) (bool, Record, error) {
+	// ...
+}
+// protocol:claims end
+```
+
+A marker above a declaration is followed by a blank line, so it is not part of the doc comment.
+Regions of one model do not nest; regions of different models may overlap (the run's Load is
+`Open` in both model 1 and model 8). Model 2 (`protocol/`) is a design model with no Go code yet,
+so it has no map and no markers.
+
+**The checks.** `go run ./internal/tools/modelsync` (the Lint job, on every pull request, in the
+merge queue and on main) fails when:
+
+- a marker is malformed, unpaired, nested in its own model, or names a model with no directory;
+- a marker names an action the model's spec (`spec/tla/<model>/<Model>.tla`) does not define, or
+  its map below does not list (a rename in the spec, the map or the code);
+- an action the map lists is not defined in the spec, or has no marker, unless the map's no-code
+  list names it (a caller, a crash, a historical rule).
+
+The maps are found by two comments on the lines before each table:
+`<!-- modelsync: no-code <model> <Action> ... -->` (optional) and `<!-- modelsync: map <model> -->`.
+
+**The path rule.** With `-base` (on a pull request, the base branch; in the merge queue, the
+batch's base), modelsync diffs the merge base against the head. A change that touches a marked
+region of a model (a line inside it, its markers, or lines deleted from it; a moved file counts as
+deleted and added) and changes no file under `spec/tla/<model>/` fails, unless a commit message in
+the range or the pull request's description holds an override line:
+
+```text
+Protocol-Impact: none (<reason>)
+Protocol-Impact: claims,spend none (<reason>)
+```
+
+The first form covers every model, the second only the models it names. The reason is required,
+and a line that does not parse, or names no model, fails the check. Use it for a change that leaves
+the modelled behavior as it is (a rename, a comment, an error message); a change to a rule changes
+the model. Every override used is printed in the log and as a warning annotation on the pull
+request, so the reviewer sees it. The Lint job reads the description when it runs: after adding
+the line to the description, re-run the job, or put the line in a commit message. In the merge
+queue, the descriptions of every pull request in the batch are read.
+
+```sh
+go run ./internal/tools/modelsync                     # the consistency check
+go run ./internal/tools/modelsync -base origin/main   # and the path rule against main
+```
+
+The Lint job also runs `TestProtocolVocabulary` (package `agent`) on every change, spec-only ones
+included: the record kinds of the vocabulary block in `claims/Claims.tla` (`\* vocabulary: begin`
+... `\* vocabulary: end`) must match the kinds the claim code's key constructors and record kinds
+map to, in both directions, and every constructor's keys must parse back to their kind.
+
+**A new model.** A model that describes Go code (model 9, tool calls; model 10, lifecycle) lands
+with its markers in the same pull request: its directory and `<Model>.tla`, a map section in this
+README with the two anchor comments, and a `// protocol:<model> begin ...` region around every Go
+region a map row names. modelsync then holds it to the same rules; a model with no map yet is not
+checked against the code.
+
 ## Layout
 
 ```text
 spec/tla/
-  README.md          this file
+  README.md          this file, with the model-to-code maps modelsync reads
   tools.lock         pinned tool versions and SHA-256 checksums
   check.sh           fetch, translation check, TLC runs, expected-result checks
   claims/

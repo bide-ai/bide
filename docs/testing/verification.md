@@ -152,6 +152,12 @@ Every pull request must pass, before it can merge:
 - **Models:** the TLA+ models under `spec/tla/` are checked with TLC (`.github/workflows/models.yml`):
   the committed PlusCal translation must be current, every configuration must pass, and every
   regression configuration must still fail with its named property. Larger bounds run nightly.
+  The Lint job keeps the models and the code in step: the code they describe is wrapped in
+  region markers, and `internal/tools/modelsync` fails a change to a marked region that changes
+  no model (unless the pull request says why with a `Protocol-Impact` line) and any action name
+  the markers, the model-to-code maps and the specs disagree on; `TestProtocolVocabulary` checks
+  the claim code's journal keys against the record kinds the claim model declares (see
+  [keeping the code and the models in step](../../spec/tla/README.md#keeping-the-code-and-the-models-in-step)).
 
 Pull requests merge through a merge queue, which runs the required checks again on the change
 combined with `main` and any changes queued ahead of it, so every merge is tested against the code
