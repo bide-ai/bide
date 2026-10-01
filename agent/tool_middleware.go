@@ -96,7 +96,12 @@ type ToolHandler func(ctx context.Context, call ToolCall) (json.RawMessage, erro
 // for a retry-safe tool an earlier invocation already reached. A saga rollback that re-runs a
 // retry-safe step to learn the result to compensate applies the same rules, and takes as the
 // result only an answer that reached the tool: a re-run whose outcome is unknown, or that a
-// middleware answered itself, is reported, not compensated, and the rollback goes on.
+// middleware answered itself, is reported, not compensated, and the rollback goes on. So is a
+// re-run the agent's call guard refused (audit: the delegation's grant has expired), which the
+// rollback recognises by the error next returned. A middleware that returns its own error in place
+// of next's, rather than wrapping it (%w), hides that refusal: the rollback then stops at the step
+// with the middleware's error, and a later RunSaga meets the same refusal. Return next's error, or
+// wrap it, so the error chain (errors.Is, errors.As) still reaches it.
 //
 // The chain runs INSIDE the durable, memoized step, so a short-circuit result or a
 // transformed result is what gets journaled: resume replays it and never re-runs the

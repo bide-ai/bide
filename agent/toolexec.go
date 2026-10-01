@@ -321,6 +321,17 @@ func countRunning(storeID any, runID, id string) bool {
 //go:noinline
 func errNotCalled(err error) error { return fmt.Errorf("%w (%w)", err, ErrToolNotCalled) }
 
+// protocol:delegation begin DGuard RbRe
+
+// guardRefusal is a call toolhook.CallGuard refused: the tool was not called. A saga rollback's
+// re-run of a retry-safe write that the guard refuses reports the step's outcome as unknown.
+type guardRefusal struct{ err error }
+
+func (e *guardRefusal) Error() string { return e.err.Error() }
+func (e *guardRefusal) Unwrap() error { return e.err }
+
+// protocol:delegation end
+
 //go:noinline
 func errCallChanged(origID, origName, id, name string) error {
 	return fmt.Errorf("tool middleware changed call %s (tool %q) to call %s (tool %q); middleware may change a call's arguments, not its tool or ID: %w",
@@ -503,7 +514,7 @@ func (a *Agent) toolHandler(runID string) func(context.Context, ToolUse) (json.R
 		// must not run; the refusal is a known failure, recorded.
 		if guard := toolhook.CallGuard; guard != nil {
 			if err := guard(ctx); err != nil {
-				return refuse(err)
+				return refuse(&guardRefusal{err})
 			}
 		}
 		// protocol:delegation end

@@ -178,6 +178,12 @@ Every guarantee above rests on the custody of the signing keys.
   while it is the last leaf of its controller's ledger run, so a demotion revokes the higher grant
   at once for any verifier holding the ledger's latest anchored head.
 
+A delegation's runtime authority comes from the journal: a saga rollback compensates under the
+child grant the sub-run journaled, after checking its signature and that it narrows a bound grant.
+It does not prove that this delegation minted that grant, so whoever can write the journal could
+plant another validly signed child grant there. The journal itself is trusted at run time; that
+it was not rewritten is what anchoring (above) makes provable afterward.
+
 Attribution is only as strong as the key custody behind these signatures. The runtime does not
 manage keys; supplying and protecting them is the deployment's responsibility.
 

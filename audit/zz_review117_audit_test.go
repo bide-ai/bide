@@ -152,6 +152,15 @@ func TestR117_BindRollbackRefusesAForeignParent(t *testing.T) {
 	if _, err := b.BindRollback(WithGrant(ctx, other, signer), "sub"); !errors.Is(err, ErrNotVerified) {
 		t.Fatalf("BindRollback under a foreign parent = %v, want ErrNotVerified", err)
 	}
+	// A bound set of several grants (model 11 D1) that holds no parent of the child is refused too.
+	third, _ := SignGrant(Grant{ID: "t", Issuer: "corp", Subject: "desk", Scope: map[string]string{"x": "2"}}, signer)
+	if _, err := b.BindRollback(WithRollbackGrants(WithGrant(ctx, other, signer), signer, third), "sub"); !errors.Is(err, ErrNotVerified) {
+		t.Fatalf("BindRollback under a bound set without the parent = %v, want ErrNotVerified", err)
+	}
+	// The parent among the bound grants, beside a foreign acting grant: accepted.
+	if _, err := b.BindRollback(WithRollbackGrants(WithGrant(ctx, other, signer), signer, third, parent), "sub"); err != nil {
+		t.Fatalf("BindRollback with the parent among the bound grants: %v", err)
+	}
 	bound, err := b.BindRollback(WithGrant(ctx, parent, signer), "sub")
 	if err != nil {
 		t.Fatal(err)

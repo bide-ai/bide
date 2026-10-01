@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
+	"slices"
 	"strings"
 	"time"
 
@@ -31,8 +33,26 @@ type grantCarrier struct {
 // reads this to mint a narrower, signed child grant on each delegation and rebind the sub-run's
 // identity to it. Set it once at the root (the top principal's grant and key); each delegation then
 // propagates the narrowed child grant automatically, so authority only ever shrinks down the tree.
+//
+// A nil signer, or a typed nil (a nil pointer in the Signer interface), binds the grant with no
+// signer: a delegation under it is refused with ErrConfig (recording nothing, so binding a signer
+// and driving again continues it), and a rollback cannot verify a delegation against it.
 func WithGrant(ctx context.Context, sg SignedGrant, signer Signer) context.Context {
-	return context.WithValue(ctx, grantCtxKey{}, grantCarrier{sg: sg, signer: signer})
+	return context.WithValue(ctx, grantCtxKey{}, grantCarrier{sg: sg, signer: usableSigner(signer)})
+}
+
+// usableSigner returns s, or nil for a nil or typed-nil signer, whose methods would panic.
+func usableSigner(s Signer) Signer {
+	if s == nil {
+		return nil
+	}
+	switch v := reflect.ValueOf(s); v.Kind() {
+	case reflect.Pointer, reflect.Interface, reflect.Map, reflect.Slice, reflect.Func, reflect.Chan:
+		if v.IsNil() {
+			return nil
+		}
+	}
+	return s
 }
 
 // GrantFrom returns the acting signed grant and signer bound to ctx, and whether one was set.
@@ -45,9 +65,75 @@ func GrantFrom(ctx context.Context) (SignedGrant, Signer, bool) {
 }
 
 // withoutGrant returns ctx with no grant bound, whatever an outer context bound: for work a
-// delegation ran without one.
+// delegation ran without one. It drops the rollback grants too (see withRollbackScope).
 func withoutGrant(ctx context.Context) context.Context {
-	return context.WithValue(ctx, grantCtxKey{}, grantCarrier{absent: true})
+	return withRollbackScope(context.WithValue(ctx, grantCtxKey{}, grantCarrier{absent: true}))
+}
+
+// rollbackGrantsKey carries the grants bound for a saga rollback beside the acting grant
+// (WithRollbackGrants).
+type rollbackGrantsKey struct{}
+
+// boundGrant is a grant bound to a context with the signer its child grants were minted with.
+type boundGrant struct {
+	sg     SignedGrant
+	signer Signer
+}
+
+// WithRollbackGrants binds grants, with the signer the delegations minted under them signed their
+// child grants with, as further parents a saga rollback accepts for the delegations it walks. A
+// delegation's journaled grant is verified against the bound grant its ParentRef links to, so a
+// saga whose delegations were minted under several grants (the root grant was rotated, or expired
+// and was replaced, between drives) rolls back with every one of them bound: the acting grant
+// (WithGrant) and the earlier ones here. A grant bound here is never minted from and is not the
+// acting grant (GrantFrom does not return it): it only lets the rollback verify the delegations
+// minted under it. It may have expired, as the rollback does not check expiry.
+//
+// Each call adds to the grants an outer context bound, so grants signed with different signers (a
+// rotated key) are bound by calling it once per signer. They reach the delegations the acting
+// grant reaches (those of the run ctx is passed to, and of its plain sub-agents), never inside a
+// delegation's sub-run: an AttenuatingSubAgent's sub-run, live or rolled back, is bound to its own
+// journaled grant alone, so a grandchild still verifies against its parent. With a nil or
+// typed-nil signer it binds nothing.
+//
+// The journal is trusted, as everywhere in bide: a rollback verifies the journaled child grant's
+// signature and narrowing, not that this delegation is the one that minted it. Whoever can write
+// the journal could therefore plant a validly signed child grant of a rollback-only grant (one
+// minted by another run, say) and have a compensation run under it; binding a grant here adds its
+// children to what such a writer could use. Writing the journal is already trusted, so this is
+// outside the threat model (see the delegation guide).
+func WithRollbackGrants(ctx context.Context, signer Signer, grants ...SignedGrant) context.Context {
+	if signer = usableSigner(signer); signer == nil {
+		return ctx
+	}
+	prev, _ := ctx.Value(rollbackGrantsKey{}).([]boundGrant)
+	bound := slices.Clone(prev)
+	for _, sg := range grants {
+		bound = append(bound, boundGrant{sg: sg, signer: signer})
+	}
+	return context.WithValue(ctx, rollbackGrantsKey{}, bound)
+}
+
+// withRollbackScope returns ctx with no rollback grants bound: for a delegation's sub-run, whose
+// one parent is the grant it journaled.
+func withRollbackScope(ctx context.Context) context.Context {
+	if ctx.Value(rollbackGrantsKey{}) == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, rollbackGrantsKey{}, []boundGrant(nil))
+}
+
+// rollbackParents returns the grants a rollback bound to ctx accepts as a delegation's parent:
+// the acting grant (WithGrant) first, then those bound with WithRollbackGrants, each with its
+// signer. An acting grant with no signer is left out: nothing can verify a child against it
+// (WithRollbackGrants binds none without a signer).
+func rollbackParents(ctx context.Context) []boundGrant {
+	var out []boundGrant
+	if sg, signer, ok := GrantFrom(ctx); ok && signer != nil {
+		out = append(out, boundGrant{sg: sg, signer: signer})
+	}
+	extra, _ := ctx.Value(rollbackGrantsKey{}).([]boundGrant)
+	return append(out, extra...)
 }
 
 // protocol:delegation end
@@ -219,11 +305,16 @@ func (t *attenuatingSubAgent) checkChild(child SignedGrant, parent SignedGrant, 
 
 // BindRollback returns the context a saga rollback compensates the sub-run subRunID under: the
 // authority the delegation ran under, read from the sub-run's journal, never the parent's.
-//   - A journaled grant is used only once it is verified: its signature under the key of the
-//     signer bound to ctx, and that it attenuates the grant bound to ctx. The identity and grant
-//     are then rebound as Call bound them (Actor this sub-agent, OnBehalfOf the grant's issuer,
-//     AuthorityRef its digest). With no grant and signer bound, it cannot be verified, and the
-//     rollback stops (ErrConfig): bind them (WithGrant) to the rollback's context.
+//   - A journaled grant is used only once it is verified against its own parent among the grants
+//     bound to ctx (the acting grant, WithGrant, and those bound with WithRollbackGrants): the
+//     bound grant its ParentRef links to, under whose signer's key its signature must verify, and
+//     which it must attenuate. A grant whose parent is none of the bound grants stops the rollback
+//     (ErrNotVerified). The identity and grant are then rebound as Call bound them (Actor this
+//     sub-agent, OnBehalfOf the grant's issuer, AuthorityRef its digest), with the delegated mark,
+//     so CallGuard refuses a re-run in the sub-run once the grant has expired, and with no
+//     rollback grants, so a deeper delegation verifies against this grant alone. With no grant and
+//     signer bound, it cannot be verified, and the rollback stops (ErrConfig): bind them
+//     (WithGrant, WithRollbackGrants) to the rollback's context.
 //   - A delegation that journaled running without a grant is compensated with no grant bound, even
 //     if one is bound to ctx. A sub-run with no records has nothing to compensate, and is bound
 //     the same way.
@@ -243,19 +334,40 @@ func (t *attenuatingSubAgent) BindRollback(ctx context.Context, subRunID string)
 		// Call refuses the same grant: it was not issued to this sub-agent.
 		return nil, fmt.Errorf("audit: delegation %q (sub-run %s) journaled a grant for subject %q: %w", t.name, subRunID, child.Grant.Subject, agent.ErrProtocol)
 	}
-	parentSG, signer, ok := GrantFrom(ctx)
-	if !ok || signer == nil {
-		return nil, fmt.Errorf("audit: delegation %q (sub-run %s) ran under a grant, and the rollback has no grant and signer bound to verify it against (see WithGrant): %w", t.name, subRunID, agent.ErrConfig)
+	parents := rollbackParents(ctx)
+	if len(parents) == 0 {
+		return nil, fmt.Errorf("audit: delegation %q (sub-run %s) ran under a grant, and the rollback has no grant and signer bound to verify it against (see WithGrant and WithRollbackGrants): %w", t.name, subRunID, agent.ErrConfig)
 	}
-	if err := t.checkChild(*child, parentSG, signer); err != nil {
-		return nil, err
+	var signer Signer
+	var checkErr error
+	for _, p := range parents {
+		if p.sg.Grant.Digest() != child.Grant.ParentRef {
+			continue
+		}
+		if checkErr = t.checkChild(*child, p.sg, p.signer); checkErr == nil {
+			signer = p.signer
+			break
+		}
+	}
+	switch {
+	case signer != nil:
+	case checkErr != nil:
+		return nil, checkErr
+	default:
+		return nil, fmt.Errorf("audit: delegation %q (sub-run %s): its journaled grant %q was minted from none of the %d grant(s) bound to the rollback; bind the grant it was minted from (WithGrant, or WithRollbackGrants beside the acting grant): %w", t.name, subRunID, child.Grant.ID, len(parents), ErrNotVerified)
 	}
 	ctx = agent.ContextWithIdentity(ctx, agent.Identity{
 		Actor:        t.name,
 		OnBehalfOf:   child.Grant.Issuer, // the parent's subject: CheckAttenuation required it
 		AuthorityRef: child.Grant.Digest(),
 	})
-	return WithGrant(ctx, *child, signer), nil
+	return bindDelegated(ctx, *child, signer), nil
+}
+
+// bindDelegated binds the delegation's child grant sg as the acting grant of its sub-run, marked
+// delegated (CallGuard refuses every call under it once it has expired), with no rollback grants.
+func bindDelegated(ctx context.Context, sg SignedGrant, signer Signer) context.Context {
+	return withRollbackScope(context.WithValue(ctx, grantCtxKey{}, grantCarrier{sg: sg, signer: signer, delegated: true}))
 }
 
 func (t *attenuatingSubAgent) Call(ctx context.Context, args json.RawMessage) (json.RawMessage, error) {
@@ -283,10 +395,14 @@ func (t *attenuatingSubAgent) Call(ctx context.Context, args json.RawMessage) (j
 				return nil, unrecorded(fmt.Errorf("audit: record that delegation %q ran without a grant: %w", t.name, err))
 			}
 		}
-		return t.Tool.Call(ctx, args)
+		return t.Tool.Call(withRollbackScope(ctx), args)
 	}
 	// A delegation re-entered on resume (its sub-run paused, or was cut off) runs under the grant it
 	// journaled the first time, so the sub-run holds one grant whatever Narrow returns now.
+	if signer == nil {
+		// WithGrant bound no usable signer: nothing can verify a journaled grant or sign a child.
+		return nil, unrecorded(fmt.Errorf("audit: attenuating delegation to %q: the bound grant %q has no signer; bind it with its signer (WithGrant): %w", t.name, parentSG.Grant.ID, agent.ErrConfig))
+	}
 	var existing *SignedGrant
 	if subRunID != "" {
 		var ungranted, any bool
@@ -322,8 +438,9 @@ func (t *attenuatingSubAgent) Call(ctx context.Context, args json.RawMessage) (j
 		childSG = *existing
 	} else {
 		if parentSG.Grant.Expired(now) {
-			// The bound grant expired: bind a live one and drive again.
-			return nil, unrecorded(fmt.Errorf("audit: attenuating delegation to %q: the bound grant expired at %d: %w", t.name, parentSG.Grant.NotAfterUnix, agent.ErrConfig))
+			// The bound grant expired: bind a live one and drive again. A saga's rollback must still
+			// verify the delegations minted under the expired one, so it stays bound beside it.
+			return nil, unrecorded(fmt.Errorf("audit: attenuating delegation to %q: the bound grant %q expired at %d; bind a live grant (WithGrant) and drive again, and in a saga keep the expired grant bound beside it (WithRollbackGrants), since a rollback verifies each delegation against the grant it was minted from: %w", t.name, parentSG.Grant.ID, parentSG.Grant.NotAfterUnix, agent.ErrConfig))
 		}
 		child := t.narrow(parentSG.Grant, t.name)
 		child.ParentRef = parentSG.Grant.Digest()
@@ -365,7 +482,7 @@ func (t *attenuatingSubAgent) Call(ctx context.Context, args json.RawMessage) (j
 		OnBehalfOf:   parentSG.Grant.Subject,
 		AuthorityRef: childSG.Grant.Digest(),
 	})
-	ctx = context.WithValue(ctx, grantCtxKey{}, grantCarrier{sg: childSG, signer: signer, delegated: true})
+	ctx = bindDelegated(ctx, childSG, signer)
 
 	return t.Tool.Call(ctx, args)
 }

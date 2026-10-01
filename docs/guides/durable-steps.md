@@ -187,8 +187,11 @@ These are stated in full in [KNOWN-LIMITATIONS.md](../KNOWN-LIMITATIONS.md); in 
   never starts. A side effect that started but has no recorded outcome (a sibling the failure
   cancelled mid-call) stops the rollback with a `*OutcomeUnknown` in `SagaAborted.CompensateErr`;
   resolve it with `ResolveHaltRef` and call `RunSaga` again to finish the rollback. A retry-safe call
-  with a compensator is run again to learn its result, then undone. A sub-agent call is rolled back
-  into whether or not it returned; a sub-agent whose own saga failed rolled itself back first, and
+  with a compensator is run again to learn its result, then undone; if the re-run is refused
+  without reaching its tool (an `audit.AttenuatingSubAgent` delegation's grant has expired), the
+  call is listed in `SagaAborted.UnknownOutcome` and the rollback goes on. A sub-agent call is rolled
+  back into whether or not it returned, and whatever its result: an error result (its sub-run
+  failed in a run that is not a saga) does not say its sub-run made no write. A sub-agent whose own saga failed rolled itself back first, and
   if that rollback stopped (a crash, an unknown outcome, a failing compensator) the parent's stops
   there too and resumes it on the next `RunSaga`, so `SagaAborted` covers the whole tree. A
   completed write with no compensator, idempotent or not, is listed in `SagaAborted.Uncompensated`.
@@ -216,7 +219,10 @@ These are stated in full in [KNOWN-LIMITATIONS.md](../KNOWN-LIMITATIONS.md); in 
   compensator on a result it never returned. Check each one against its downstream system.
 - **A delegation is undone under its own authority.** A rollback into an
   `audit.AttenuatingSubAgent`'s sub-run rebinds the child grant and identity the sub-run journaled,
-  so a compensation never runs under authority the delegation did not grant.
+  so a compensation never runs under authority the delegation did not grant. A saga whose
+  delegations were minted under several grants (the root grant was rotated between drives) rolls
+  back with all of them bound: `audit.WithGrant` for the acting one, `audit.WithRollbackGrants` for
+  the earlier ones (see the [delegation guide](delegation.md)).
 - **A saga resumes as a saga.** A run's first drive records whether it runs as a saga, and resuming
   an unfinished saga through `Run` (or a run through `RunSaga`) is `ErrConfig`.
 - **A reconciled failure aborts.** A crash between a step's failure and its record leaves the step
