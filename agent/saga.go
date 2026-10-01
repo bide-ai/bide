@@ -106,7 +106,11 @@ func (a *Agent) runSagaWithTelemetry(ctx context.Context, runID, input string, e
 	if err != nil {
 		return Message{}, usageTotals{}, 0, err
 	}
-	if cause, aborting := sagaFailure(recs); aborting {
+	cause, aborting, err := sagaFailure(runID, recs)
+	if err != nil {
+		return Message{}, usageTotals{}, 0, err
+	}
+	if aborting {
 		// Re-entered after it aborted (a sub-saga whose parent had not recorded the failure): its
 		// usage goes to the tool call that started it, as run reports it (see callUsage).
 		reportUsage(ctx, runID, journalTotals(recs))
@@ -352,7 +356,9 @@ func (a *Agent) rollbackRun(ctx context.Context, runID, root string) (compensate
 // operator records the verified outcome with ResolveHaltRef. A failure recorded that way is a failed
 // step too, and aborts the saga as the StepSagaFail would have. In a saga, the only other failed
 // result a call can have is a human's denial, which the model reacts to, as it does outside one.
-func sagaFailure(recs []Record) (string, bool) {
+//
+// A recorded tally is read strictly (see decodeTally); one that does not decode is an error.
+func sagaFailure(runID string, recs []Record) (string, bool, error) {
 	denied := map[string]bool{}   // calls denied by a 1-of-1 decision
 	values := map[string]Record{} // StepValue records by name, for m-of-n tallies
 	for _, r := range recs {
@@ -363,18 +369,26 @@ func sagaFailure(recs []Record) (string, bool) {
 			values[r.Name] = r
 		}
 	}
-	isDenial := func(id string) bool {
+	isDenial := func(id string) (bool, error) {
 		if denied[id] {
-			return true
+			return true, nil
 		}
 		v, ok := values[ApprovalTallyStep(id)]
-		var t ApprovalTally
-		return ok && json.Unmarshal(v.Result, &t) == nil && !t.Passed()
+		if !ok {
+			return false, nil
+		}
+		t, err := decodeTally(runID, v)
+		return !t.Passed(), err
 	}
 	for _, r := range recs {
 		switch {
 		case r.Kind == StepSagaFail:
-		case r.Kind == StepToolResult && r.IsError && !isDenial(r.ToolUseID):
+		case r.Kind == StepToolResult && r.IsError:
+			if d, err := isDenial(r.ToolUseID); err != nil {
+				return "", false, err
+			} else if d {
+				continue
+			}
 		default:
 			continue
 		}
@@ -382,9 +396,9 @@ func sagaFailure(recs []Record) (string, bool) {
 		if json.Unmarshal(r.Result, &s) != nil {
 			s = string(r.Result)
 		}
-		return s, true
+		return s, true, nil
 	}
-	return "", false
+	return "", false, nil
 }
 
 // argsFor finds the original arguments of a tool call from the journaled model turns.

@@ -27,6 +27,18 @@ import (
 // resolved gate, carrying the policy it enforced and every decision record it read. Once that
 // record exists it is authoritative: a replay reuses it rather than recounting, so the outcome
 // cannot drift if keys or policy change later.
+// decodeTally reads the terminal tally an m-of-n gate journaled (r, a StepValue record of run
+// runID), strictly, as audit.VerifyApprovals reads it (no duplicate or case-variant name, no
+// unknown field): a tally that read one way here and another to the audit would let the gate run
+// a tool the audit says was not approved. Every reader of a recorded tally reads it through here.
+func decodeTally(runID string, r Record) (ApprovalTally, error) {
+	var t ApprovalTally
+	if err := strictjson.Unmarshal(r.Result, &t, nil); err != nil {
+		return ApprovalTally{}, fmt.Errorf("decode %s (run %s): %w (%w)", r.Name, runID, err, ErrStorage)
+	}
+	return t, nil
+}
+
 func (a *Agent) quorumTally(ctx context.Context, runID string, tu ToolUse, pol *ApprovalPolicy) (ApprovalTally, bool, error) {
 	if err := pol.Validate(); err != nil {
 		return ApprovalTally{}, false, fmt.Errorf("agent: tool %q: %w", tu.Name, err)
@@ -47,12 +59,9 @@ func (a *Agent) quorumTally(ctx context.Context, runID string, tu ToolUse, pol *
 	name := ApprovalTallyStep(tu.ID)
 	for _, r := range recs {
 		if r.Name == name && r.Kind == StepValue {
-			// Read strictly, as audit.VerifyApprovals reads it (no duplicate or case-variant name,
-			// no unknown field): a tally that read one way here and another to the audit would let
-			// the gate run a tool the audit says was not approved.
-			var t ApprovalTally
-			if err := strictjson.Unmarshal(r.Result, &t, nil); err != nil {
-				return ApprovalTally{}, false, fmt.Errorf("decode %s (run %s): %w (%w)", name, runID, err, ErrStorage)
+			t, err := decodeTally(runID, r)
+			if err != nil {
+				return ApprovalTally{}, false, err
 			}
 			return t, true, nil
 		}

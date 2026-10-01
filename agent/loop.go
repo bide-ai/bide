@@ -420,9 +420,9 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 			// current policy, so a tightened policy applies to a call not yet run.
 			denied := decided[tu.ID] && !approvals[tu.ID]
 			if r, ok := values[ApprovalTallyStep(tu.ID)]; ok && !denied {
-				var tally ApprovalTally
-				if err := json.Unmarshal(r.Result, &tally); err != nil {
-					return leave(fmt.Errorf("decode %s (run %s): %w (%w)", r.Name, runID, err, ErrStorage))
+				tally, err := decodeTally(runID, r)
+				if err != nil {
+					return leave(err)
 				}
 				denied = !tally.Passed()
 			}
