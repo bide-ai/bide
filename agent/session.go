@@ -404,3 +404,13 @@ func (s *Session) Turns() int {
 	defer s.mu.Unlock()
 	return s.turns
 }
+
+// SendMessage runs one conversation turn for input under opts.
+func (s *Session) SendMessage(ctx context.Context, input Message, opts ...RunOption) (*Result, error) {
+	return nil, errP14NotBuilt
+}
+
+// SendMessageOnce runs one conversation turn for the message key, at most once per key.
+func (s *Session) SendMessageOnce(ctx context.Context, key string, input Message, opts ...RunOption) (*Result, error) {
+	return nil, errP14NotBuilt
+}
