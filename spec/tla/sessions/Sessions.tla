@@ -342,16 +342,18 @@ DLoad:
       ans := r.done;
       n := -1;
       goto ADo;
+    elsif TurnLease /\ lease[rid] \notin {None, self} then
+      \* S4's rule: another drive holds the turn run's lease (ErrTurnContended); send again
+      \* later. The lease is asked for before the drive reads anything else of the run (a
+      \* finished run, above, needs none): a worker without it does not judge the input.
+      why := "contended";
+      goto Fail;
     elsif r.cx then
       why := "cancelled";
       goto Fail;
     elsif r.inp # None /\ r.inp # CMsg[self] then
       \* #70: an unfinished run resumed with another input is ErrConfig.
       why := "input";
-      goto Fail;
-    elsif TurnLease /\ lease[rid] \notin {None, self} then
-      \* S4's rule: another drive holds the turn run's lease (HaltContended); send again later.
-      why := "contended";
       goto Fail;
     else
       either
@@ -828,22 +830,22 @@ DLoad(self) == /\ pc[self] = "DLoad"
                                        /\ pc' = [pc EXCEPT ![self] = "ADo"]
                                        /\ UNCHANGED << runs, lease, pauses, 
                                                        cnt, i, why >>
-                                  ELSE /\ IF r.cx
-                                             THEN /\ why' = [why EXCEPT ![self] = "cancelled"]
+                                  ELSE /\ IF TurnLease /\ lease[rid[self]] \notin {None, self}
+                                             THEN /\ why' = [why EXCEPT ![self] = "contended"]
                                                   /\ pc' = [pc EXCEPT ![self] = "Fail"]
                                                   /\ UNCHANGED << runs, lease, 
                                                                   pauses, cnt, 
                                                                   i >>
-                                             ELSE /\ IF r.inp # None /\ r.inp # CMsg[self]
-                                                        THEN /\ why' = [why EXCEPT ![self] = "input"]
+                                             ELSE /\ IF r.cx
+                                                        THEN /\ why' = [why EXCEPT ![self] = "cancelled"]
                                                              /\ pc' = [pc EXCEPT ![self] = "Fail"]
                                                              /\ UNCHANGED << runs, 
                                                                              lease, 
                                                                              pauses, 
                                                                              cnt, 
                                                                              i >>
-                                                        ELSE /\ IF TurnLease /\ lease[rid[self]] \notin {None, self}
-                                                                   THEN /\ why' = [why EXCEPT ![self] = "contended"]
+                                                        ELSE /\ IF r.inp # None /\ r.inp # CMsg[self]
+                                                                   THEN /\ why' = [why EXCEPT ![self] = "input"]
                                                                         /\ pc' = [pc EXCEPT ![self] = "Fail"]
                                                                         /\ UNCHANGED << runs, 
                                                                                         lease, 
