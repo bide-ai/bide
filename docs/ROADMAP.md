@@ -44,7 +44,7 @@ Order of remaining work: the store contract, then leases and sagas with the chan
 
 Models live in the repository and run in CI. A counterexample the checker finds becomes a deterministic Go regression test.
 
-The design and plan: [formal models of the coordination protocols](design/formal-models.md) (accepted, in progress). Done: models 1, 1b, 2, 7 and 8 are in [spec/tla](../spec/tla/README.md) and checked on every pull request. Next: trace validation, so the Go test suites check that the code implements the model.
+The design and plan: [formal models of the coordination protocols](design/formal-models.md) (accepted, in progress). Done: models 1, 1b, 2, 7 and 8 are in [spec/tla](../spec/tla/README.md) and checked on every pull request. The code the models describe is marked, and CI fails a change to it that does not change its model or say why. Next: trace validation, so the Go test suites check that the code implements the model.
 
 ### bide underneath other agent frameworks (Go)
 

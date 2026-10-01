@@ -13,6 +13,8 @@ import (
 	"github.com/bide-ai/bide/internal/journalhook"
 )
 
+// protocol:flows begin RPick RWrite
+
 // ResolveHalt clears a halt of a node of this flow, as agent.ResolveHaltRef does, once it has
 // checked the resolution against the flow: ref must name a node of this flow (the halt's Ref: a
 // node key, a loop iteration's key for a node in a loop body, or the key of a Step a node's body
@@ -114,3 +116,5 @@ func (c *builderCore) checkRunOfFlow(ctx context.Context, store agent.Durable, r
 	}
 	return nil
 }
+
+// protocol:flows end

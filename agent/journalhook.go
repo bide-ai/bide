@@ -26,6 +26,7 @@ func init() {
 			return rec, nil
 		})
 	}
+	// protocol:flows begin NGet NClaim NRecord
 	journalhook.Step = func(ctx context.Context, j any, runID, name string, safety any, fn func(context.Context) (json.RawMessage, error)) (json.RawMessage, error) {
 		d, ok := j.(Durable)
 		if !ok {
@@ -44,9 +45,11 @@ func init() {
 		}
 		return step(ctx, d, runID, name, body, StepSafety(s))
 	}
+	// protocol:flows end
 	journalhook.CheckRunID = checkRunID
 	journalhook.Marshal = marshalJournal
 	journalhook.SameJSON = sameJSON
+	// protocol:flows begin Begin BeginStart
 	journalhook.Begin = func(ctx context.Context, j any, runID string, start any) (json.RawMessage, bool, error) {
 		d, ok := j.(Durable)
 		if !ok {
@@ -61,6 +64,8 @@ func init() {
 		}
 		return beginRun(ctx, d, runID, want)
 	}
+	// protocol:flows end
+	// protocol:flows begin Complete
 	journalhook.Complete = func(ctx context.Context, j any, runID string, result json.RawMessage) (json.RawMessage, error) {
 		d, ok := j.(Durable)
 		if !ok {
@@ -75,6 +80,7 @@ func init() {
 		}
 		return r.Result, nil
 	}
+	// protocol:flows end
 	journalhook.WithSalt = func(rec any, salt []byte) any {
 		r := rec.(Record)
 		r.salt = append([]byte(nil), salt...)

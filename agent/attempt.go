@@ -19,6 +19,8 @@ import (
 	"strings"
 )
 
+// protocol:claims begin Claim Lost NotStarted GateTake GateWrite LoserWait Open RCheck
+
 // errNoRecord is what a probe's fn returns from Do when the key is not recorded, so that Do
 // records nothing.
 var errNoRecord = errors.New("agent: no record")
@@ -205,3 +207,5 @@ func liveAttempts(recs []Record) map[string]Record {
 	}
 	return live
 }
+
+// protocol:claims end

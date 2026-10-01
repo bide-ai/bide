@@ -125,6 +125,8 @@ func (a *Agent) runSagaWithTelemetry(ctx context.Context, runID, input string, e
 	return out, usage, turns, err
 }
 
+// protocol:lifecycle begin DRollback DAbort
+
 // rollback compensates runID's writes and returns *SagaAborted with cause. causeText is the text the
 // saga's failure record holds for cause, redacted for the journal; the terminal marker records it,
 // never cause's own text.
@@ -142,6 +144,8 @@ func (a *Agent) rollback(ctx context.Context, runID string, cause error, causeTe
 	}
 	return &SagaAborted{RunID: runID, Cause: cause, Compensated: comp, Uncompensated: uncomp, UnknownOutcome: unknown, CompensateErr: cerr}
 }
+
+// protocol:lifecycle end
 
 // rollbackRun compensates a run's writes in reverse call order, recursing into sub-agent
 // child runs so a whole agent tree rolls back as a unit (distributed saga). Each compensation
@@ -186,6 +190,7 @@ func (a *Agent) rollbackRun(ctx context.Context, runID, root string) (compensate
 			values[r.Name] = r.Result
 		}
 	}
+	// protocol:claims begin Open
 	// An attempt recorded as never started changed nothing (see attempt.go).
 	for _, r := range liveAttempts(recs) {
 		if isToolAttempt(r) { // a Step's marker is not a call's
@@ -193,6 +198,7 @@ func (a *Agent) rollbackRun(ctx context.Context, runID, root string) (compensate
 			attemptedAt[r.ToolUseID] = r.AttemptedAt
 		}
 	}
+	// protocol:claims end
 	// A sub-agent whose own saga failed aborted this one, and rolled itself back before this
 	// rollback began. Its rollback may have stopped part-way (a crash, an unknown outcome, a
 	// failing compensator), and only this walk resumes it, so it is walked first, as it ran first.

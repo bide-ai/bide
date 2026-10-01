@@ -59,11 +59,61 @@ jobs:
     # included, and the rest only when code changed.
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read # the modelsync step reads the descriptions of the pull requests it checks
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # the modelsync step diffs against the merge base and reads commit messages
       - uses: actions/setup-go@v5
         with:
           go-version: '1.27'
+      - name: Code and models in step (modelsync, TestProtocolVocabulary)
+        # Runs on every change, documentation and spec-only ones included. modelsync checks that
+        # every region marker ("// protocol:<model> begin <Action> ...") names an action the
+        # model's spec defines and its map in spec/tla/README.md lists, and that every mapped
+        # action is marked. On a pull request and in the merge queue it also fails a change that
+        # touches a marked region of a model and changes nothing under spec/tla/<model>/, unless
+        # a commit message or the pull request's description holds a line
+        # "Protocol-Impact: none (<reason>)" (or "Protocol-Impact: <model>[,<model>] none
+        # (<reason>)"); each override used is printed as a warning annotation. The descriptions
+        # are read through the API when the step runs, so re-running the job picks up an edited
+        # one. See spec/tla/README.md and CONTRIBUTING.md.
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          EVENT: ${{ github.event_name }}
+          PR: ${{ github.event.pull_request.number }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          MQ_BASE: ${{ github.event.merge_group.base_sha }}
+          MQ_HEAD: ${{ github.event.merge_group.head_sha }}
+          MQ_REF: ${{ github.event.merge_group.head_ref }}
+        run: |
+          go test -count=1 -run '^TestProtocolVocabulary' ./agent/
+          body() { # body N: write pull request N's description to a file and print its path
+            gh api "repos/$REPO/pulls/$1" --jq '.body // ""' > "$RUNNER_TEMP/pr-$1.txt"
+            echo "$RUNNER_TEMP/pr-$1.txt"
+          }
+          case "$EVENT" in
+            pull_request)
+              go run ./internal/tools/modelsync -base "$PR_BASE" -head HEAD -body "$(body "$PR")"
+              ;;
+            merge_group)
+              # Every pull request in the batch: the queue's branch names the last one, and each
+              # squashed commit's title ends in "(#N)".
+              prs=$( { echo "$MQ_REF" | grep -oE 'pr-[0-9]+' | cut -d- -f2 || true
+                       git log --format=%s "$MQ_BASE..$MQ_HEAD" | grep -oE '\(#[0-9]+\)$' | tr -dc '0-9\n' || true; } | sort -u)
+              args=()
+              for n in $prs; do args+=(-body "$(body "$n")"); done
+              echo "Pull requests in this batch: $(echo $prs)"
+              go run ./internal/tools/modelsync -base "$MQ_BASE" -head "$MQ_HEAD" "${args[@]}"
+              ;;
+            *)
+              go run ./internal/tools/modelsync
+              ;;
+          esac
       - name: Every module is built, tested and in go.work
         if: needs.changes.outputs.code != 'false'
         run: |

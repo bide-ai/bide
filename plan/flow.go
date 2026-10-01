@@ -96,10 +96,12 @@ func (f *Flow[In, Out]) Run(ctx context.Context, store agent.Durable, runID stri
 		return out, fmt.Errorf("plan: run %q: encode flow input: %w (%w)", c.flowName, encErr, agent.ErrConfig)
 	}
 	start := agent.RunStart{Kind: agent.RunKindFlow, Flow: &agent.FlowRef{Name: c.flowName}, Input: string(input)}
+	// protocol:flows begin Begin BeginStart
 	done, finished, err := journalhook.Begin(ctx, store, runID, start)
 	if err != nil {
 		return out, fmt.Errorf("plan: run %q: %w", c.flowName, err)
 	}
+	// protocol:flows end
 	if finished {
 		return decodeCompletion[Out](c.flowName, runID, done)
 	}
@@ -295,10 +297,12 @@ func (f *Flow[In, Out]) Run(ctx context.Context, store agent.Durable, runID stri
 	if encErr != nil {
 		return out, fmt.Errorf("plan: run %q: encode completion: %w", c.flowName, encErr)
 	}
+	// protocol:flows begin Complete
 	recorded, err := journalhook.Complete(ctx, store, runID, final)
 	if err != nil {
 		return out, fmt.Errorf("plan: run %q: record the completion of run %s: %w", c.flowName, runID, err)
 	}
+	// protocol:flows end
 	return decodeCompletion[Out](c.flowName, runID, recorded)
 }
 
@@ -327,6 +331,8 @@ func decodeCompletion[Out any](flowName, runID string, raw json.RawMessage) (Out
 	}
 	return out, nil
 }
+
+// protocol:flows begin LoopH AfterH RunS AfterS ChooseS AfterChooseS
 
 // runLoop drives one bounded loop region (head..switch inclusive) iteratively and
 // returns the exit arm's target and the switched value routed to it. It is a plain
@@ -414,6 +420,8 @@ func (f *Flow[In, Out]) runLoop(ctx context.Context, store agent.Durable, runID 
 	}
 }
 
+// protocol:flows end
+
 // nodeInput resolves the decoded input a node consumes when Run reaches it. A Join
 // gathers its ordered inputs from the already-journaled results of its input source
 // nodes (topological order guarantees they ran first) and returns them as a []any
@@ -496,6 +504,8 @@ func iterSwitchKey(iter int, over string) string {
 	return "switch:iter:" + strconv.Itoa(iter) + ":" + over
 }
 
+// protocol:flows begin Node NGet NClaim NBody NNested NRecord
+
 // runNode runs one node as an agent.Step named key (nodeKey, or iterNodeKey inside a
 // loop body) through the engine's step hook, with the node's Safety, and returns the
 // JSON output the journal holds for it. It adds no primitive of its own: the Step
@@ -548,6 +558,8 @@ func runNode(ctx context.Context, store agent.Durable, runID string, model agent
 		return encoded, nil
 	})
 }
+
+// protocol:flows end
 
 // runModel is the body of a kindModel node: it renders the node's prompt as a Go
 // text/template with the decoded input as data, calls the flow's bound model, and
@@ -605,6 +617,8 @@ func (f *Flow[In, Out]) chooseArm(ctx context.Context, store agent.Durable, runI
 	return f.chooseArmKeyed(ctx, store, runID, "switch:"+br.over, br, switchedType, switchedOut)
 }
 
+// protocol:flows begin Choose CDo CRoute
+
 // chooseArmKeyed is chooseArm with an explicit journal key, so a loop Switch can
 // journal each iteration's choice under an iteration-scoped key
 // (switch:iter:<n>:<over>). The recorded choice is replayed on resume exactly as for
@@ -656,6 +670,8 @@ func (f *Flow[In, Out]) chooseArmKeyed(ctx context.Context, store agent.Durable,
 	}
 	return target, nil
 }
+
+// protocol:flows end
 
 // decodeInto decodes a journaled JSON result into a fresh value of the given
 // reflect type and returns it boxed as any, so the next node's type-erased run

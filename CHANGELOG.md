@@ -23,6 +23,7 @@ minor version (0.x.0) may include breaking API or journal-format changes; each o
 #### Formal models
 
 - A TLA+ model of the run lifecycle and recovery (model 10: `run:complete`, `run:aborted` and the reserved `run:cancelled`; leased and plain runs, `Recover` and `RecoverLoop` passes with the end-marker re-check under the lease, halts, pauses and `ResolveHalt`, under lease expiry, stalled holders, ambiguous writes and crashes), checked in CI. It shows the pickup latency the v0.9.0 docs describe (a dead holder's run waits behind the halted runs listed before it), checks a proposed fix, and states the property P14's `Cancel` must satisfy.
+- Code and models are kept in step (milestone M4 of the formal-models plan): the Go code models 1, 1b, 7, 8 and 10 describe is wrapped in `// protocol:<model> begin <Action> ...` / `// protocol:<model> end` region markers, and the Lint job runs `internal/tools/modelsync`, which fails a pull request that touches a marked region without changing `spec/tla/<model>/` (unless the description or a commit message holds `Protocol-Impact: none (<reason>)`, printed as a warning), and any disagreement between the markers, the model-to-code maps in `spec/tla/README.md` and the specs' action names. `TestProtocolVocabulary` checks that the claim code's key constructors and record kinds match the record kinds `Claims.tla` declares, and runs in the same job.
 
 ### Changed
 

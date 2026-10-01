@@ -340,6 +340,8 @@ const (
 	ReasonAlg         = "signed under another scheme than the approver's key"
 )
 
+// protocol:claims begin QCount
+
 // TallyApprovals is the m-of-n counting rule, shared by the gate and offline verification so
 // the two cannot drift. Over recs, in journal order, it considers every decision record on
 // s.ToolUseID (IsApprovalDecision). An approver's decision is their FIRST record that is
@@ -412,6 +414,8 @@ func TallyApprovals(recs []Record, s ApprovalSubject, p ApprovalPolicy, verifier
 	}
 	return t, checks
 }
+
+// protocol:claims end
 
 // IsApprovalDecision reports whether r is an m-of-n approver decision (written by SubmitDecision)
 // on toolUseID. The single-approver Approve record has no Approver and is not one.
@@ -490,6 +494,8 @@ type Decision struct {
 	Signature  []byte
 }
 
+// protocol:claims begin Submit
+
 // SubmitDecision records d, one approver's signed decision on an m-of-n gated call. After
 // enough decisions land, re-run the pause's RootRunID. (A single-approver gate uses Approve.)
 //
@@ -500,6 +506,8 @@ type Decision struct {
 func SubmitDecision(ctx context.Context, store Durable, d Decision, opts ...ApproveOption) error {
 	return submitDecision(ctx, store, "SubmitDecision", d, opts)
 }
+
+// protocol:claims end
 
 func submitDecision(ctx context.Context, store Durable, op string, d Decision, opts []ApproveOption) error {
 	if d.RunID == "" {

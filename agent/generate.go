@@ -89,6 +89,8 @@ func (ts *turnState) answer(ctx context.Context, resp ModelResponse) {
 	}
 }
 
+// protocol:spend begin Call
+
 // call sends call through the chain as turn ts, and checks the response the chain returns.
 func (c *modelChain) call(ctx context.Context, call ModelCall, ts *turnState) (ModelResponse, error) {
 	ts.chain = c
@@ -109,6 +111,8 @@ func (c *modelChain) call(ctx context.Context, call ModelCall, ts *turnState) (M
 	return resp, nil
 }
 
+// protocol:spend end
+
 // clipped wraps h so that every call reaches it with Request.Messages and Request.Tools clipped
 // to their length: an append by h, or by anything h calls, allocates, rather than write into
 // spare capacity that the caller, or a sibling handler given the same call, also holds.
@@ -127,6 +131,8 @@ var errForeignCall = fmt.Errorf("agent: a ModelCall reached the model handler wi
 // errTurnOver is the model handler's refusal of a request of a turn that is over: its chain has
 // returned, so nothing would record the request (a middleware kept the call and sent it later).
 var errTurnOver = fmt.Errorf("agent: a ModelCall of a model turn that is over reached the model handler: its call already returned, so nothing would record the request: %w", ErrConfig)
+
+// protocol:spend begin Call RequestEnds
 
 // send is the chain's model handler: it sends one request of the call's turn. It numbers the
 // request, runs the call's hooks around it, streams it to the turn's sink if it holds the sink's
@@ -179,6 +185,8 @@ func (c *modelChain) send(ctx context.Context, call ModelCall) (ModelResponse, e
 	}
 	return resp, err
 }
+
+// protocol:spend end
 
 // send makes the request call describes. It streams it to the turn's sink when the request can
 // claim the sink, and otherwise drains it: middleware sees the assembled response either way. It

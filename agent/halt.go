@@ -10,6 +10,9 @@ import (
 	"time"
 )
 
+// protocol:lifecycle begin OWrite
+// protocol:claims begin Approve1
+
 // Approve durably records a human approve/deny decision for a tool call (HITL). It is
 // idempotent: the first decision for a (runID, toolUseID) wins. After approving, re-run
 // the agent with the pause's RootRunID and it resumes past the *ApprovalPending pause. The
@@ -23,6 +26,9 @@ func Approve(ctx context.Context, d Durable, runID, toolUseID string, approved b
 	})
 	return err
 }
+
+// protocol:claims end
+// protocol:lifecycle end
 
 // HaltCause says why a run halted on an operation whose outcome is unknown.
 type HaltCause string
@@ -168,6 +174,9 @@ type haltKeys struct {
 	id, attempt, other, otherHint, result string
 	kind                                  StepKind
 }
+
+// protocol:lifecycle begin OPick OLease OWrite ORel
+// protocol:claims begin RCheck RClaim RWrite RRelease
 
 func resolveHalt(ctx context.Context, store Durable, op string, ref HaltRef, out Outcome, opts []ResolveOption) error {
 	if ref.RunID == "" {
@@ -336,6 +345,9 @@ func checkNoLiveDriver(ctx context.Context, store Durable, op string, ref HaltRe
 	}
 	return func() { _ = l.ReleaseLease(context.WithoutCancel(ctx), root, holder) }, true, nil
 }
+
+// protocol:claims end
+// protocol:lifecycle end
 
 // HaltInFlight is returned by ResolveHaltRef when a driver may be running the operation's effect
 // right now, and its own result must win over a resolution: a driver holds the lease on the halted

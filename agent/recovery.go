@@ -105,6 +105,8 @@ func IsComplete(ctx context.Context, store Durable, runID string) (bool, error) 
 	return false, nil
 }
 
+// protocol:lifecycle begin DOpen
+
 // completedAnswer reports whether recs hold the completion marker and, if so, the run's
 // recorded final answer: the last model turn journaled before the marker. Records after the
 // marker (written by an older version that re-drove finished runs) are ignored, so the first
@@ -123,6 +125,10 @@ func completedAnswer(recs []Record) (Message, bool) {
 	}
 	return Message{}, false
 }
+
+// protocol:lifecycle end
+
+// protocol:lifecycle begin PList PNext PSlot PWait DCheck DResume
 
 // Recover re-drives the runs that were in flight when the process died, in one pass. It enumerates
 // the runs the store holds that are not over (via Lister, which filters out every run holding a
@@ -405,3 +411,5 @@ func RecoverLoop(ctx context.Context, store Durable, resume func(ctx context.Con
 		}
 	}
 }
+
+// protocol:lifecycle end
