@@ -6,6 +6,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -88,17 +89,22 @@ func (a *Agent) openPlan(ctx context.Context, runID string, d *driveSpec, recs [
 			return ctx, nil, fmt.Errorf("encode %s (run %s): %w (%w)", runStartStep, runID, err, ErrConfig)
 		}
 		// First writer wins: the drive runs under the stored entry, a concurrent first drive's if
-		// that one landed first (rule 8).
-		rec, err := putRecord(ctx, a.store, runID, runStartStep, Record{Kind: StepValue, Result: b})
+		// that one landed first (rule 8). The drive's own entry needs no check against itself.
+		got, inserted, err := a.putStart(ctx, runID, b)
 		if err != nil {
 			return ctx, nil, fmt.Errorf("record %s (run %s): %w (%w)", runStartStep, runID, err, ErrStorage)
 		}
-		if err := json.Unmarshal(rec.Result, &start); err != nil {
+		if inserted {
+			start = want
+		} else if err := json.Unmarshal(got, &start); err != nil {
 			return ctx, nil, fmt.Errorf("decode %s (run %s): %w (%w)", runStartStep, runID, err, ErrStorage)
 		}
+		found = !inserted
 	}
-	if err := a.holdDrive(runID, d, start, idn, explicitID); err != nil {
-		return ctx, nil, err
+	if found {
+		if err := a.holdDrive(runID, d, start, idn, explicitID); err != nil {
+			return ctx, nil, err
+		}
 	}
 	// A later drive's different limit is journaled before it drives (rule 10).
 	lim := journaledLimits(start.Settings, amends)
@@ -145,8 +151,9 @@ func (a *Agent) openPlan(ctx context.Context, runID string, d *driveSpec, recs [
 	if d.cfg.maxConc != nil {
 		p.maxConc = *d.cfg.maxConc
 	}
-	p.reqTools = a.requestTools()
+	p.reqTools = a.specList // never written through: each request is sent its own copy
 	if start.Tools != nil {
+		p.reqTools = a.requestTools()
 		p.filter = make(map[string]bool, len(start.Tools))
 		for _, n := range start.Tools {
 			p.filter[n] = true
@@ -355,4 +362,34 @@ func (a *Agent) refuseFiltered(ctx context.Context, runID string, tu ToolUse) (*
 		return nil, err
 	}
 	return &Message{Role: RoleTool, Parts: []Part{ToolResult{ToolUseID: tu.ID, Result: rec.Result, IsError: rec.IsError}}}, nil
+}
+
+// putStart inserts runID's run:start holding b, first writer wins, and returns the value the
+// journal holds and whether this call stored it.
+func (a *Agent) putStart(ctx context.Context, runID string, b json.RawMessage) (json.RawMessage, bool, error) {
+	rec := Record{Kind: StepValue, Result: b}
+	j := journalOf(a.store)
+	if j == nil {
+		got, err := putRecord(ctx, a.store, runID, runStartStep, rec)
+		if err != nil {
+			return nil, false, err
+		}
+		return got.Result, bytes.Equal(got.Result, b), nil
+	}
+	if err := j.ensureHeader(ctx, runID); err != nil {
+		return nil, false, err
+	}
+	data, err := JournalEntry(runStartStep, rec)
+	if err != nil {
+		return nil, false, fmt.Errorf("encode step %q: %w (%w)", runStartStep, err, ErrStorage)
+	}
+	e, inserted, err := j.store.Insert(ctx, runID, runStartStep, data)
+	if err != nil {
+		return nil, false, storageErr(fmt.Sprintf("record step %q of run %s", runStartStep, runID), err)
+	}
+	if inserted {
+		return b, true, nil // the drive's own entry: nothing to decode
+	}
+	got, err := decodeStored(runID, runStartStep, e.Data)
+	return got.Result, false, err
 }

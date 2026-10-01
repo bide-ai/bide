@@ -349,6 +349,10 @@ func flowName(f *FlowRef) string {
 
 // sameMessage reports whether a and b are the same message: their journal encodings are equal.
 func sameMessage(a, b Message) bool {
+	if ta, ok := plainUserText(a); ok {
+		tb, ok := plainUserText(b)
+		return ok && ta == tb
+	}
 	x, errA := marshalJournal(a)
 	y, errB := marshalJournal(b)
 	return errA == nil && errB == nil && bytes.Equal(x, y)
