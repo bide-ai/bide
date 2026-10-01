@@ -147,7 +147,8 @@ func (a *Agent) WithSystemPromptFunc(fn func(context.Context) string) *Agent {
 // New constructs an Agent. It panics if model or store is nil: both are load-bearing on every run
 // (the model drives turns, the store journals them for at-most-once resume), so a nil is a
 // construction-time programmer error, not a runtime condition to thread through every call.
-// Tool names must be unique: if two tools share a name, every run fails with ErrConfig.
+// Tool names must be unique: if two tools share a name, every run fails with ErrConfig, as it does
+// for a tool whose spec has an invalid Approval (see ApprovalPolicy.Validate).
 func New(model Model, store Durable, tools ...Tool) *Agent {
 	if model == nil {
 		panic("agent: New requires a non-nil Model")
@@ -163,6 +164,14 @@ func New(model Model, store Durable, tools ...Tool) *Agent {
 		s := SpecOf(t) // read once: every decision about the tool's calls reads this copy
 		if err := checkWrapper(t, s); err != nil && toolErr == nil {
 			toolErr = err
+		}
+		if s.Approval != nil && toolErr == nil {
+			// A tool's own Spec may return a policy no option would build (a SingleApproval whose
+			// fields were changed): refuse it here, before a call is approved and fires, not when
+			// its result fails to encode.
+			if err := checkApproval(s.Approval); err != nil {
+				toolErr = fmt.Errorf("agent: tool %q: %w", s.Name, err)
+			}
 		}
 		if _, taken := m[s.Name]; taken && dup == "" {
 			dup = s.Name
