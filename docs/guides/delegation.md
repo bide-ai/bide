@@ -141,7 +141,11 @@ resumed after its journaled grant expired fails for good, recorded, since no gra
 journaled one: in a saga it rolls back (the rollback's compensations do not check expiry). The
 rollback does not run a tool past the grant either: where it would run a retry-safe write of the
 sub-run again to learn its result, the call is refused once the grant has expired, and listed in
-`SagaAborted.UnknownOutcome` (it may have run before the abort), and the rollback goes on. A child
+`SagaAborted.UnknownOutcome` (it may have run before the abort), and the rollback goes on. This
+is conservative on purpose: the call is listed even when the sub-run's journal holds no "may have
+begun" record for it and its tool was never called, because journals written by v0.9.0 and
+earlier hold no such record, and skipping a call for its absence could skip a write that took
+effect. Check each listed call against its downstream system. A child
 that your `AttenuateFunc` gives an expiry already past fails the same way. A child grant's
 `Subject` is always the sub-agent's name; an `AttenuateFunc` that sets another is refused, and so
 is a journaled grant for another subject, by the call and by the rollback binding.
@@ -174,7 +178,17 @@ A grant bound with `WithRollbackGrants` is never minted from and is not the acti
 out, so grants under two signing keys take two calls. The grants reach the delegations the acting
 grant reaches, never inside a delegation's own sub-run, where the journaled child grant is the
 only parent: a grandchild still verifies against its own parent. A journaled grant whose parent is
-none of the bound grants stops the rollback with `ErrNotVerified`. The wrapped sub-agent still runs its own full agent loop and reasons
+none of the bound grants stops the rollback with `ErrNotVerified`. A nil signer, or a typed nil (a
+nil pointer in the `Signer` interface), binds nothing with `WithRollbackGrants`; with `WithGrant`
+it binds the grant with no signer, and a delegation under it is refused with `ErrConfig` and
+records nothing.
+
+The journal is trusted, as everywhere in bide. The rollback checks a journaled child grant's
+signature and narrowing, not that this delegation minted it, so whoever can write the journal
+could plant a validly signed child of a bound grant (one minted by another run) and have a
+compensation run under it; binding a grant with `WithRollbackGrants` adds its children to what such
+a writer could use. Guarding the journal is outside the threat model ([Security
+model](security-model.md)). The wrapped sub-agent still runs its own full agent loop and reasons
 autonomously; only its authority shrinks. The result is that capabilities monotonically decrease
 down a delegation tree by construction, and the whole chain stays provable via
 `VerifyDelegationChain`.

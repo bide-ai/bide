@@ -206,6 +206,13 @@ at-most-once below every middleware: a tool that is not retry-safe runs at most 
 call, and a middleware that calls it again gets `agent.ErrToolReinvoked` without the tool
 running.
 
+**Keep `next`'s error chain.** A middleware that fails a call after `next` failed returns `next`'s
+error, or wraps it (`%w`), rather than an error of its own. The agent reads the chain: a saga
+rollback's re-run that the call guard refused (an `audit.AttenuatingSubAgent` delegation's grant
+expired) is listed in `SagaAborted.UnknownOutcome` and the rollback goes on, but behind a
+middleware that drops the chain the rollback stops at that step, and every later `RunSaga` meets
+the same refusal.
+
 ## When to hedge vs retry
 
 Retry is reactive and sequential: it waits for a failure, then tries again. Hedge is proactive and
