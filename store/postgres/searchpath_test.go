@@ -17,7 +17,8 @@ import (
 // still read and write the store's own schema, and leave the decoys untouched. Skips without
 // PG_DSN.
 func TestPostgres_NothingResolvesThroughSearchPathAfterOpen(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // a write into a decoy collides and retries
+	defer cancel()
 	dsn, schema, admin := freshSchema(t)
 	decoy := fmt.Sprintf("rv_decoy_%d", time.Now().UnixNano())
 	if _, err := admin.ExecContext(ctx, `CREATE SCHEMA `+decoy); err != nil {

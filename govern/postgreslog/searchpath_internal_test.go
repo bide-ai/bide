@@ -17,7 +17,8 @@ import (
 // the log's own schema, and leave the decoy untouched. Skips without PG_DSN.
 func TestLog_NothingResolvesThroughSearchPathAfterOpen(t *testing.T) {
 	admin, base := rvAdmin(t)
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // an append into a decoy collides and retries
+	defer cancel()
 	sfx := time.Now().UnixNano()
 	app, decoy := fmt.Sprintf("rv_logapp3_%d", sfx), fmt.Sprintf("rv_logdecoy_%d", sfx)
 	for _, s := range []string{app, decoy} {

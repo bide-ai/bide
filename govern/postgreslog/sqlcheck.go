@@ -127,7 +127,7 @@ func sqlTokens(q string) ([]sqlTok, error) {
 			for j < len(q) && isDigit(q[j]) {
 				j++
 			}
-			if j < len(q) && (isIdentByte(q[j]) || q[j] == '.' || q[j] >= 0x80) {
+			if j < len(q) && (isIdentByte(q[j]) || q[j] == '.') {
 				return nil, fmt.Errorf("a number the check does not read, at %q", q[i:min(j+1, len(q))])
 			}
 			toks = append(toks, sqlTok{'n', q[i:j]})
@@ -137,7 +137,7 @@ func sqlTokens(q string) ([]sqlTok, error) {
 			for j < len(q) && isIdentByte(q[j]) {
 				j++
 			}
-			if j < len(q) && (q[j] == '$' || q[j] >= 0x80) {
+			if j < len(q) && q[j] == '$' { // a non-ASCII byte is refused as the next token
 				return nil, fmt.Errorf("an identifier with a byte the check does not read, at %q", q[i:min(j+1, len(q))])
 			}
 			toks = append(toks, sqlTok{'i', strings.ToLower(q[i:j])})
