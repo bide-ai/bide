@@ -244,11 +244,13 @@ func TestRV120_OperatorsOnPathDoNotHijack(t *testing.T) {
 	if n != 2 {
 		t.Fatalf("next_seq = %d, want 2", n)
 	}
-	// Mutant: the same body without SET search_path is taken over, so the check above is live.
+	// The same body without SET search_path is not taken over either: the body writes every
+	// operator OPERATOR(pg_catalog.<op>), so each of the two layers holds on its own. (Before the
+	// body qualified its operators, this mutant was taken over, which showed the check above live.)
 	rv120Exec2(t, conn, `CREATE FUNCTION rv120app.mutant(r pg_catalog.text) RETURNS pg_catalog.int8 LANGUAGE plpgsql VOLATILE AS $bide$`+
 		(tables{steps: "bide_steps"}).nextSeqBody("rv120app")+`$bide$`)
-	if err := conn.QueryRowContext(ctx, `SELECT rv120app.mutant('run'::pg_catalog.text)`).Scan(&n); err == nil || !strings.Contains(err.Error(), "hijacked") {
-		t.Fatalf("mutant without SET search_path was not hijacked: n=%d err=%v", n, err)
+	if err := conn.QueryRowContext(ctx, `SELECT rv120app.mutant('run'::pg_catalog.text)`).Scan(&n); err != nil || n != 2 {
+		t.Fatalf("the body without SET search_path, through the evil schema's operators: n=%d err=%v; want 2", n, err)
 	}
 }
 

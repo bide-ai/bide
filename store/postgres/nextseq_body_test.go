@@ -16,7 +16,7 @@ func TestNextSeqBodyQualifiesEveryName(t *testing.T) {
 	}
 	body := tb.nextSeqBody(`My"Schema`)
 	for _, m := range regexp.MustCompile(`([A-Za-z_][A-Za-z0-9_$.]*)\s*\(`).FindAllStringSubmatch(body, -1) {
-		if name := strings.ToLower(m[1]); name != "coalesce" && name != "return" && !strings.HasPrefix(name, "pg_catalog.") {
+		if name := strings.ToLower(m[1]); name != "coalesce" && name != "return" && name != "operator" && !strings.HasPrefix(name, "pg_catalog.") {
 			t.Errorf("next_seq calls %s, not qualified with pg_catalog:\n%s", m[1], body)
 		}
 	}

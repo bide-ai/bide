@@ -205,9 +205,10 @@ const nextSeqVersion = "v1"
 // the query uses the transaction's snapshot, taken before the lock was granted, so a queued insert
 // may collide on (run_id, seq) and is run again, as without the function.
 //
-// Every name in the body is qualified, and the function runs with search_path = pg_catalog,
-// pg_temp (nextSeqConfig): a role that can create objects in a schema on the store's search path
-// must not be able to take over a call with an overload that matches better (a
+// Every name in the body is qualified, every operator written OPERATOR(pg_catalog.<op>) (the
+// unary minus of -1 included), and the function also runs with search_path = pg_catalog, pg_temp
+// (nextSeqConfig), a second layer: a role that can create objects in a schema on the store's
+// search path must not be able to take over a call with an overload that matches better (a
 // hashtextextended(text, integer), say, for an unqualified hashtextextended(r, 0)).
 //
 // The key, hashtextextended(run_id, 0), is the one the store has always used for the run's lock,
@@ -219,7 +220,8 @@ const nextSeqVersion = "v1"
 const nextSeqTemplate = `
 BEGIN
 	PERFORM pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(r, 0::pg_catalog.int8));
-	RETURN (SELECT COALESCE(pg_catalog.max(seq), -1) + 1 FROM %s WHERE run_id = r);
+	RETURN (SELECT COALESCE(pg_catalog.max(seq), OPERATOR(pg_catalog.-) 1) OPERATOR(pg_catalog.+) 1
+		FROM %s WHERE run_id OPERATOR(pg_catalog.=) r);
 END
 `
 
@@ -374,17 +376,32 @@ func WithTablePrefix(prefix string) Option {
 // discovering it through the search path at every Open. It is the recommended deployment: with it,
 // the search path plays no part in which schema the store uses, and no role can redirect a
 // restarting node by creating a schema earlier on the path. The name is used as given (quoted),
-// so "App" and "app" are different schemas; the schema must exist. An empty name is an ErrConfig
+// so "App" and "app" are different schemas, and Postgres truncates it, like any identifier, to 63
+// bytes. The schema must exist: Open fails with ErrConfig otherwise, and never creates it. An empty
+// name, and a system schema (information_schema, or a name starting with pg_), is an ErrConfig
 // error.
 func WithSchema(name string) Option {
 	return optionFunc(func(c *config) error {
 		if name == "" || strings.IndexByte(name, 0) >= 0 {
 			return fmt.Errorf("postgres: schema name %q is empty or holds a NUL: %w", name, agent.ErrConfig)
 		}
+		if systemSchema(name) {
+			return fmt.Errorf("postgres: schema %q is a system schema (information_schema, or a name starting with pg_, pg_temp among them): %w", name, agent.ErrConfig)
+		}
 		c.schema = name
 		return nil
 	})
 }
+
+// systemSchema reports whether name is information_schema or starts with pg_, the prefix Postgres
+// reserves for its own schemas (pg_catalog, pg_toast, and pg_temp, which names each session's own
+// temporary schema, so a store there would lose its journal with each pooled connection).
+func systemSchema(name string) bool {
+	return name == "information_schema" || strings.HasPrefix(name, "pg_")
+}
+
+// schemaExists reports whether the schema $1 exists. A pinned schema must: Open never creates one.
+const schemaExists = `SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_namespace AS n WHERE n.nspname OPERATOR(pg_catalog.=) $1)`
 
 // warnf reports the store discovering its schema through the search path. It logs through the
 // default slog logger, which an application sets with slog.SetDefault; a test replaces it.
@@ -434,6 +451,15 @@ func New(ctx context.Context, db *sql.DB, opts ...Option) (*Store, error) {
 		return nil, err
 	}
 	schema := cfg.schema
+	if schema != "" {
+		var exists bool
+		if err := retryScan(ctx, func() error { return db.QueryRowContext(ctx, schemaExists, schema).Scan(&exists) }); err != nil {
+			return nil, fmt.Errorf("postgres: look up schema %q: %w (%w)", schema, err, agent.ErrStorage)
+		}
+		if !exists {
+			return nil, fmt.Errorf("postgres: the pinned schema %q does not exist; create it, Open does not: %w", schema, agent.ErrConfig)
+		}
+	}
 	if schema == "" {
 		if schema, err = storeSchema(ctx, db, cfg.prefix+"steps"); err != nil {
 			return nil, err

@@ -114,6 +114,17 @@ func newLogSQL(q string, nextSeq, table []sqlTok) (logSQL, error) {
 // newLog returns a Log over db in schema, or, when schema is empty, in the schema logSchema finds
 // (with a warning), with its statements.
 func newLog(ctx context.Context, db *sql.DB, schema string) (*Log, error) {
+	if schema != "" {
+		var exists bool
+		if err := retry(ctx, func() error {
+			return db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_namespace AS n WHERE n.nspname OPERATOR(pg_catalog.=) $1)`, schema).Scan(&exists)
+		}); err != nil {
+			return nil, fmt.Errorf("postgreslog: look up schema %q: %w", schema, err)
+		}
+		if !exists {
+			return nil, fmt.Errorf("postgreslog: the pinned schema %q does not exist; create it, Open does not: %w", schema, agent.ErrConfig)
+		}
+	}
 	if schema == "" {
 		var first, current sql.NullString
 		var isTable sql.NullBool
@@ -175,12 +186,17 @@ func (f optionFunc) apply(c *config) error { return f(c) }
 // discovering it through the search path at every Open. It is the recommended deployment: with it,
 // the search path plays no part in which schema the log uses, and no role can redirect a
 // restarting process by creating a schema earlier on the path. The name is used as given (quoted),
-// so "App" and "app" are different schemas; the schema must exist. An empty name is an ErrConfig
-// error.
+// so "App" and "app" are different schemas, and Postgres truncates it, like any identifier, to 63
+// bytes. The schema must exist: Open fails with ErrConfig otherwise, and never creates it. An empty
+// name, and a system schema (information_schema, or a name starting with pg_, pg_temp among them,
+// which names each session's own temporary schema), is an ErrConfig error.
 func WithSchema(name string) Option {
 	return optionFunc(func(c *config) error {
 		if name == "" || strings.IndexByte(name, 0) >= 0 {
 			return fmt.Errorf("postgreslog: schema name %q is empty or holds a NUL: %w", name, agent.ErrConfig)
+		}
+		if name == "information_schema" || strings.HasPrefix(name, "pg_") {
+			return fmt.Errorf("postgreslog: schema %q is a system schema (information_schema, or a name starting with pg_, pg_temp among them): %w", name, agent.ErrConfig)
 		}
 		c.schema = name
 		return nil
@@ -267,10 +283,11 @@ const nextSeqPresent = `SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_proc AS p
 // one entity most appends then retry, with a backoff, and throughput falls well below read
 // committed's.
 //
-// Every name in the body is qualified, and the function runs with search_path = pg_catalog,
-// pg_temp (nextSeqConfig), so a role that can create objects in a schema on the log's search path
-// cannot take over a call with an overload that matches better (a hashtextextended(text,
-// integer), say, for an unqualified hashtextextended(e, 0)).
+// Every name in the body is qualified, every operator written OPERATOR(pg_catalog.<op>) (the
+// unary minus of -1 included), and the function also runs with search_path = pg_catalog, pg_temp
+// (nextSeqConfig), a second layer, so a role that can create objects in a schema on the log's
+// search path cannot take over a call with an overload that matches better (a
+// hashtextextended(text, integer), say, for an unqualified hashtextextended(e, 0)).
 //
 // The key, hashtextextended(entity, 0), is the one the log has always used for the entity's lock,
 // so processes of earlier versions queue on the same lock. store/postgres takes the same key for
@@ -280,7 +297,8 @@ const nextSeqPresent = `SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_proc AS p
 const nextSeqTemplate = `
 BEGIN
 	PERFORM pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(e, 0::pg_catalog.int8));
-	RETURN (SELECT COALESCE(pg_catalog.max(seq), -1) + 1 FROM %s WHERE entity = e);
+	RETURN (SELECT COALESCE(pg_catalog.max(seq), OPERATOR(pg_catalog.-) 1) OPERATOR(pg_catalog.+) 1
+		FROM %s WHERE entity OPERATOR(pg_catalog.=) e);
 END
 `
 
