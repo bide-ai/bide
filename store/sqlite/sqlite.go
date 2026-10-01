@@ -521,6 +521,25 @@ func (s *Store) ReleaseLease(ctx context.Context, runID, holder string) error {
 	return nil
 }
 
+// ReapLeases implements agent.Leaser with one DELETE, which checks the expiry in the same
+// statement, so a lease taken or renewed meanwhile is kept.
+func (s *Store) ReapLeases(ctx context.Context, ended []string) (int, error) {
+	q := `DELETE FROM ` + s.t.leases + ` WHERE expiry < unixepoch('subsec')
+		AND (NOT EXISTS (SELECT 1 FROM ` + s.t.steps + ` AS y WHERE y.run_id = ` + s.t.leases + `.run_id)`
+	args := make([]any, 0, len(ended))
+	if len(ended) > 0 {
+		q += ` OR EXISTS (SELECT 1 FROM ` + s.t.steps + ` AS x WHERE x.run_id = ` + s.t.leases + `.run_id AND x.name IN (?` + strings.Repeat(`, ?`, len(ended)-1) + `))`
+		for _, n := range ended {
+			args = append(args, n)
+		}
+	}
+	n, err := s.leaseExec(ctx, 2*time.Second, q+`)`, args...)
+	if err != nil {
+		return 0, fmt.Errorf("reap leases: %w (%w)", err, agent.ErrStorage)
+	}
+	return int(n), nil
+}
+
 // Journal returns the Journal over s that its Do and History shims delegate to.
 //
 // Deprecated: transitional; removed by the 1.0 rewrite. Use agent.NewJournal(s).

@@ -44,10 +44,6 @@ interval, and such a run can then be picked up as much as a pass's length later 
 suggests. Drive runs under `agent.Lease`, resolve halted runs promptly, and measure a pass against
 your store if takeover time matters.
 
-**A lease left by a holder that died after finishing its run stays in the leases table.** The lapsed
-loop's listing skips the finished run, but reads the row on each pass. Such rows accumulate only
-from crashes between a run's last write and its lease's release.
-
 **Leases prevent duplicate work, not duplicate side effects.** With a store that supports leases
 (`MemStore` in one process, SQLite across the processes sharing one file, Postgres across nodes),
 each run is normally driven by one holder at

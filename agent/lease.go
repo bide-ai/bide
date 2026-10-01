@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand/v2"
+	"slices"
 	"time"
 )
 
@@ -40,6 +41,15 @@ type Leaser interface {
 	// ReleaseLease relinquishes runID if held by holder (a no-op otherwise) so another process can
 	// take it immediately rather than waiting for expiry.
 	ReleaseLease(ctx context.Context, runID, holder string) error
+	// ReapLeases deletes every lapsed lease (see RunFilter.LeaseLapsed) whose run the store holds
+	// no entry for, or holds an entry named in ended (a finished run), and returns how many it
+	// deleted. Each lease is deleted only if it is still lapsed when it is deleted, by the
+	// comparison AcquireLease makes, so a lease granted or renewed meanwhile is kept: deleting a
+	// lapsed lease changes nothing a holder can observe, since any holder may take it. A holder that
+	// dies between its run's last write and its release leaves such a lease; RecoverLoop's lapsed
+	// loop calls ReapLeases with the terminal markers on each pass, so these leases do not
+	// accumulate and the lapsed listing does not grow with them.
+	ReapLeases(ctx context.Context, ended []string) (int, error)
 }
 
 // memLease is one in-memory lease: the current holder and when it expires.
@@ -60,6 +70,27 @@ func (m *MemStore) heldByOther(runID, holder string, now time.Time) bool {
 func (m *MemStore) lapsed(runID string, now time.Time) bool {
 	cur, ok := m.leases[runID]
 	return ok && !now.Before(cur.expiry)
+}
+
+// ReapLeases implements Leaser.
+func (m *MemStore) ReapLeases(_ context.Context, ended []string) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.init()
+	now := m.now()
+	n := 0
+	for id := range m.leases {
+		if !m.lapsed(id, now) {
+			continue
+		}
+		r, ok := m.runs[id]
+		if ok && !slices.ContainsFunc(ended, func(name string) bool { _, has := r.byName[name]; return has }) {
+			continue // an unfinished run: the lapsed loop takes it over
+		}
+		delete(m.leases, id)
+		n++
+	}
+	return n, nil
 }
 
 // AcquireLease implements Leaser.

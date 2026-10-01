@@ -319,7 +319,9 @@ func recoverRun(ctx context.Context, store Durable, runID string, resume func(ct
 //     (WithRecoverLapsedConcurrency). A Leaser deletes a lease on release, so a lapsed lease is
 //     one its holder neither renewed nor released: the holder died or stalled. A halted run holds
 //     no lease between visits, so the lapsed loop neither visits the halted runs nor waits behind
-//     them.
+//     them. Each lapsed pass first deletes the lapsed leases no pass would take over, those of
+//     finished runs and of runs the store does not hold (Leaser.ReapLeases), so a holder that died
+//     between its run's last write and its release does not leave a lease every later pass reads.
 //
 // So a dead holder's run is picked up within about one interval of its lease expiring (the TTL
 // after the holder's last renewal), however many halted runs the store holds, while the lapsed
@@ -444,11 +446,15 @@ func RecoverLoop(ctx context.Context, store Durable, resume func(ctx context.Con
 			}()
 		}
 	}
-	// every runs pass(f, slots) now and then once per interval, until ctx is done.
-	every := func(f RunFilter, slots chan struct{}) {
+	// every runs before (when not nil) and pass(f, slots) now and then once per interval, until ctx
+	// is done.
+	every := func(before func(), f RunFilter, slots chan struct{}) {
 		t := time.NewTicker(cfg.interval)
 		defer t.Stop()
 		for {
+			if before != nil {
+				before()
+			}
 			pass(f, slots)
 			select {
 			case <-ctx.Done():
@@ -458,10 +464,17 @@ func RecoverLoop(ctx context.Context, store Durable, resume func(ctx context.Con
 		}
 	}
 
-	if _, ok := capabilityOf[Leaser](store); ok {
-		wg.Go(func() { every(lapsedFilter, make(chan struct{}, cfg.lapsedConc)) })
+	if leaser, ok := capabilityOf[Leaser](store); ok {
+		// Each lapsed pass first deletes the lapsed leases no pass would take over (a finished run's,
+		// or one on a run the store does not hold), so they do not accumulate in the listing.
+		reap := func() {
+			if _, err := leaser.ReapLeases(ctx, endOfRunMarkers); err != nil {
+				report(fmt.Errorf("reap lapsed leases: %w (%w)", err, ErrStorage))
+			}
+		}
+		wg.Go(func() { every(reap, lapsedFilter, make(chan struct{}, cfg.lapsedConc)) })
 	}
-	every(recoverFilter, make(chan struct{}, cfg.concurrency))
+	every(nil, recoverFilter, make(chan struct{}, cfg.concurrency))
 	return ctx.Err()
 }
 

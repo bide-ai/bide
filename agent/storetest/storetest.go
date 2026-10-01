@@ -22,7 +22,7 @@ import (
 
 // Run runs the whole suite: the store requirements (A1 to A8), the Lister contract when the store
 // implements agent.Lister (with RunFilter.LeaseLapsed over its leases, or over none without
-// agent.Leaser), the journal header checks, the Journal's shared in-flight steps and
+// agent.Leaser, and Leaser.ReapLeases when it has both), the journal header checks, the Journal's shared in-flight steps and
 // claims, and the record-fidelity suite over a Journal on the store.
 func Run(t *testing.T, open func(t *testing.T) agent.Store) {
 	t.Run("A1_UniqueNames", func(t *testing.T) { uniqueNames(t, open) })
@@ -38,6 +38,9 @@ func Run(t *testing.T, open func(t *testing.T) agent.Store) {
 	if _, ok := agent.Capability[agent.Lister](open(t)); ok {
 		t.Run("Lister", func(t *testing.T) { lister(t, open(t)) })
 		t.Run("Lister_LeaseLapsed", func(t *testing.T) { leaseLapsed(t, open(t)) })
+		if _, ok := agent.Capability[agent.Leaser](open(t)); ok {
+			t.Run("Leaser_ReapLeases", func(t *testing.T) { reapLeases(t, open(t)) })
+		}
 	}
 	t.Run("Header_First", func(t *testing.T) { headerFirst(t, open(t)) })
 	t.Run("Header_ConcurrentFirstWriters", func(t *testing.T) { concurrentFirstWriters(t, open) })

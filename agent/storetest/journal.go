@@ -574,6 +574,93 @@ func leaseLapsed(t *testing.T, s agent.Store) {
 	}
 }
 
+// reapLeases checks Leaser.ReapLeases: it deletes the lapsed leases of runs that hold an entry
+// named in ended or no entry at all, and keeps live leases and the lapsed leases of unfinished
+// runs.
+func reapLeases(t *testing.T, s agent.Store) {
+	ctx := context.Background()
+	l, _ := agent.Capability[agent.Lister](s)
+	leaser, _ := agent.Capability[agent.Leaser](s)
+	prefix := runID(t) + "/"
+	end := prefix + "end" // an end marker no other test's run holds
+	insert := func(id, name string) {
+		t.Helper()
+		if _, _, err := s.Insert(ctx, id, name, []byte("x")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	acquire := func(id, holder string, ttl time.Duration) {
+		t.Helper()
+		if ok, err := leaser.AcquireLease(ctx, id, holder, ttl); err != nil || !ok {
+			t.Fatalf("AcquireLease(%s, %s) = %v, %v; want granted", id, holder, ok, err)
+		}
+	}
+	lapsed := func() []string {
+		t.Helper()
+		var out []string
+		for id, err := range l.Runs(ctx, agent.RunFilter{Prefix: prefix, LeaseLapsed: true}) {
+			if err != nil {
+				t.Fatal(err)
+			}
+			out = append(out, id)
+		}
+		return out
+	}
+	reap := func(ended []string) int {
+		t.Helper()
+		n, err := leaser.ReapLeases(ctx, ended)
+		if err != nil {
+			t.Fatalf("ReapLeases(%v): %v", ended, err)
+		}
+		return n
+	}
+	finished, open, orphan := prefix+"finished", prefix+"open", prefix+"orphan"
+	finishedLive, orphanLive := prefix+"finished-live", prefix+"orphan-live"
+	insert(finished, "x")
+	insert(finished, end)
+	insert(open, "x")
+	insert(finishedLive, "x")
+	insert(finishedLive, end)
+	acquire(finished, "dead", time.Millisecond)
+	acquire(open, "dead", time.Millisecond)
+	acquire(orphan, "dead", time.Millisecond)
+	acquire(finishedLive, "live", time.Hour)
+	acquire(orphanLive, "live", time.Hour)
+	want := []string{finished, open}
+	deadline := time.Now().Add(30 * time.Second)
+	for got := lapsed(); !slices.Equal(got, want); got = lapsed() {
+		if time.Now().After(deadline) {
+			t.Fatalf("Runs(LeaseLapsed) yields %v 30s after their millisecond leases, want %v", got, want)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	// With no end markers, only the lease on a run the store does not hold goes (other tests may
+	// have left such leases too, so the count is a lower bound).
+	if n := reap(nil); n < 1 {
+		t.Fatalf("ReapLeases(nil) deleted %d leases, want at least the lapsed one on a run with no entry", n)
+	}
+	if got := lapsed(); !slices.Equal(got, want) {
+		t.Fatalf("after ReapLeases(nil), Runs(LeaseLapsed) yields %v, want %v: it deleted a lease on a run that has entries", got, want)
+	}
+	if n := reap([]string{"nothing", end}); n != 1 {
+		t.Fatalf("ReapLeases(end) deleted %d leases, want the one lapsed lease on a finished run", n)
+	}
+	if got := lapsed(); !slices.Equal(got, []string{open}) {
+		t.Fatalf("after ReapLeases(end), Runs(LeaseLapsed) yields %v, want only the unfinished run %s", got, open)
+	}
+	if n := reap([]string{end}); n != 0 {
+		t.Fatalf("a second ReapLeases(end) deleted %d leases, want none", n)
+	}
+	// Live leases are kept, finished run or not: their holders still renew them.
+	for _, id := range []string{finishedLive, orphanLive} {
+		if ok, err := leaser.RenewLease(ctx, id, "live", time.Hour); err != nil || !ok {
+			t.Fatalf("RenewLease(%s) after ReapLeases = %v, %v; want the live lease kept", id, ok, err)
+		}
+	}
+	// The kept lapsed lease is still one a new holder takes.
+	acquire(open, "new", time.Hour)
+}
+
 // CheckWrapper checks a store wrapper against the rules for wrappers (see agent.Store): its
 // mapping of run IDs and names to stored entries does not depend on the context (A1), and it may
 // expose the capabilities of the store it wraps through Unwrap only if it passes run IDs and names

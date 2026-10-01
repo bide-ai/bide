@@ -21,6 +21,8 @@ minor version (0.x.0) may include breaking API or journal-format changes; each o
 - `govern.EventToolConfig` and `govern.FederatedEventToolConfig`, whose `Options` pass `agent.ToolOption`s to the tool; `audit.AttenuationConfig`, and trailing `agent.ToolOption`s on `audit.AttenuatingSubAgent`, which go to its `SubAgent` ([#117]).
 - `agent.RunFilter.LeaseLapsed` admits only the runs whose lease has lapsed, by the comparison `AcquireLease` makes; `MemStore`, SQLite and Postgres evaluate it over their leases table, and `storetest` checks it (`Lister_LeaseLapsed`) ([#126]).
 - `agent.WithRecoverLapsedConcurrency` caps how many lapsed runs `RecoverLoop`'s lapsed loop drives at once (16 by default), apart from `WithRecoverConcurrency` ([#126]).
+- `Leaser.ReapLeases(ctx, ended)` deletes the lapsed leases no recovery pass takes over (a finished run's, or one on a run the store does not hold), checking the expiry in the same statement; `RecoverLoop`'s lapsed loop calls it on each pass, so a holder that died between its run's last write and its release no longer leaves a lease every later pass reads. `MemStore`, SQLite and Postgres implement it, and `storetest` checks it (`Leaser_ReapLeases`) ([#126]).
+- Postgres: `Open` creates two indexes on the leases table when they are missing (`<prefix>leases_expiry` and `<prefix>leases_run_c`, on `run_id` under the "C" collation), so the lapsed listing reads only lapsed leases, or pages through many in order without sorting; on a store whose role does not own the tables, the owner opens it once to create them ([#126]).
 
 #### Formal models
 
@@ -60,6 +62,7 @@ minor version (0.x.0) may include breaking API or journal-format changes; each o
 - Tool timeouts are judged by the deadline itself (a context's error lags its timer), for the tool's timeout and the run's own deadline; only a call whose tool was actually called can be late or unknown: a call a tool middleware ended first is a known failure, and a tool whose deadline passed in the middleware is not started. Plan flows' Tool nodes apply the wrapped tool's `ToolSpec.Timeout` with the same rule ([#117]).
 - `NextOnceKey` and `Safety.Idempotent` document that once keys are scoped to one tool call: a retry the model makes is a new call with new keys, so dedup across the model's retries needs a business key from the arguments ([#117]).
 - **Breaking:** `agent.RunFilter.Admits` takes a third argument, `lapsed func() bool`, which reports whether the run's lease has lapsed; it is called only when the filter sets `LeaseLapsed` ([#126]).
+- **Breaking:** `agent.Leaser` has a fourth method, `ReapLeases` ([#126]).
 
 ### Deprecated
 

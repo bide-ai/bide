@@ -130,8 +130,10 @@ type RunFilter struct {
 	// (never leased, or released) or a live one is not admitted. A Leaser deletes a lease on
 	// release, so a lapsed lease is one its holder neither renewed nor released: the holder died or
 	// stalled. RecoverLoop's lapsed loop sets it. A Lister whose store does not implement Leaser
-	// admits no run under it. Every Lister must honor it: one that ignored it would hand RecoverLoop
-	// every unfinished run on every lapsed pass.
+	// admits no run under it. A custom store that implements both Lister and Leaser must implement
+	// it (storetest's Lister_LeaseLapsed checks it): one that ignored it would hand RecoverLoop's
+	// lapsed loop every unfinished run on every pass, doubling the cost of recovery, and halted runs
+	// would again delay the takeover of a dead holder's run.
 	LeaseLapsed bool
 }
 

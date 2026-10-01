@@ -266,7 +266,9 @@ calls `Recover` again. `RecoverLoop` is that someone. Start it once per worker; 
   lease has lapsed (`RunFilter.LeaseLapsed`) and drives them with slots of its own
   (`WithRecoverLapsedConcurrency`, 16 by default). A store deletes a lease on release, so a lapsed
   lease means its holder died or stalled; halted runs hold no lease between visits, so this loop
-  never waits behind them.
+  never waits behind them. Each lapsed pass first deletes, with `Leaser.ReapLeases`, the lapsed
+  leases no pass takes over (a finished run's, left by a holder that died before its release, or
+  one on a run the store does not hold).
 
 So a dead holder's run is taken over within about one interval of its lease expiring however many
 halted runs the store holds, as long as the lapsed loop has a free slot. A run whose driver held no
@@ -315,7 +317,7 @@ falls out of ordinary replay: no timer-specific recovery path exists or is neede
 
 **Run leasing coordinates recovery across processes.** When several processes recover against a
 shared store they all enumerate the same in-flight runs. If the store implements the optional
-`Leaser` (`AcquireLease` / `RenewLease` / `ReleaseLease`), `Recover` claims an exclusive, renewed
+`Leaser` (`AcquireLease` / `RenewLease` / `ReleaseLease` / `ReapLeases`), `Recover` claims an exclusive, renewed
 lease per run before driving it and skips a run another holder currently leases, so competing
 recoverers do not both re-drive one run (redundant, and a hazard when the store's `Do` is not
 cross-process atomic). A crash lets the lease expire (default 30s, `WithLeaseTTL`) and another
