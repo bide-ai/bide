@@ -21,8 +21,9 @@
 #
 # Needs Java 11 or later (JAVA_HOME or java on PATH), curl, and sha256sum or shasum.
 # Environment: BIDE_TLA_CACHE (tool cache; default ~/.cache/bide-tla), TLC_WORKERS (default auto),
-# TLC_JOBS (default 1: how many regress, finding and limit configs run at a time), TLC_JAVA_OPTS
-# (extra JVM options).
+# TLC_JOBS (default 1: how many configs run at a time; above 1, each runs with one TLC worker),
+# TLC_MODELS (default every model: the model directories whose configs a group runs, such as
+# "claims toolcall"), TLC_JAVA_OPTS (extra JVM options).
 set -euo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -214,21 +215,53 @@ run_cfg() {
   rm -f "$out"
 }
 
-run_group() {
-  local cfg cfgs=()
-  for cfg in "$here"/*/*.cfg "$here"/*/regress/*.cfg "$here"/*/findings/*.cfg "$here"/*/limits/*.cfg; do
-    [ -f "$cfg" ] || continue
-    [ "$(meta GROUP "$cfg")" = "$1" ] || continue
-    cfgs+=("$cfg")
-  done
-  if [ ${#cfgs[@]} = 0 ]; then
-    # finding and limit may be empty (no open finding); ci and regress never are.
-    case "$1" in finding|limit) echo "no configs in group $1" ;; *) die "no configs in group $1" ;; esac
+# models: the model directories a group runs (TLC_MODELS, or every directory holding an MC module).
+models() {
+  local m
+  if [ -z "${TLC_MODELS:-}" ]; then
+    for m in "$here"/*/; do m=$(basename "$m"); [ -z "$(mc_of "$here/$m")" ] || echo "$m"; done
     return
   fi
-  # The regress, finding and limit configs are small: with TLC_JOBS > 1 they run that many at a
-  # time, one TLC worker each, so JVM starts overlap instead of adding up.
-  if [ "${TLC_JOBS:-1}" -gt 1 ] && case "$1" in regress|finding|limit) true ;; *) false ;; esac; then
+  for m in $TLC_MODELS; do
+    [ -n "$(mc_of "$here/$m" 2>/dev/null)" ] || die "TLC_MODELS: $m is not a model directory under spec/tla"
+    echo "$m"
+  done
+}
+
+# group_cfgs GROUP: the configs of GROUP in the selected models, one per line.
+group_cfgs() {
+  local m cfg
+  for m in $(models); do
+    for cfg in "$here/$m"/*.cfg "$here/$m"/regress/*.cfg "$here/$m"/findings/*.cfg "$here/$m"/limits/*.cfg; do
+      [ -f "$cfg" ] || continue
+      [ "$(meta GROUP "$cfg")" = "$1" ] || continue
+      echo "$cfg"
+    done
+  done
+}
+
+# run_groups GROUP...: run every config of the groups. With TLC_JOBS > 1 they share one pool of
+# TLC_JOBS concurrent runs, one TLC worker each, in the order given (the larger ci configs first,
+# the small regress, finding and limit configs filling the pool behind them); otherwise one at a
+# time with TLC_WORKERS workers.
+run_groups() {
+  local g cfg cfgs=() n
+  models >/dev/null # in this shell, so an unknown TLC_MODELS entry stops the check
+  for g in "$@"; do
+    n=${#cfgs[@]}
+    while IFS= read -r cfg; do cfgs+=("$cfg"); done < <(group_cfgs "$g")
+    if [ ${#cfgs[@]} = "$n" ]; then
+      # finding and limit may be empty (no open finding), and so may regress for a selection of
+      # models; ci never is.
+      case "$g" in
+        ci) die "no configs in group ci" ;;
+        regress) [ -n "${TLC_MODELS:-}" ] || die "no configs in group regress"; echo "no configs in group regress" ;;
+        *) echo "no configs in group $g" ;;
+      esac
+    fi
+  done
+  [ ${#cfgs[@]} -gt 0 ] || return 0
+  if [ "${TLC_JOBS:-1}" -gt 1 ]; then
     run_parallel "${cfgs[@]}"
   else
     for cfg in "${cfgs[@]}"; do run_cfg "$cfg"; done
@@ -248,7 +281,7 @@ run_parallel() {
   # summary says why, and a child with no summary (killed, or a script error) counts as a failure
   # of its config.
   ls "$tmp"/*.path | xargs -P "$TLC_JOBS" -I{} bash -c \
-    'mkdir -p "$1.jtmp"; TLC_WORKERS=1 TLC_JOBS=1 GITHUB_STEP_SUMMARY= TLC_JAVA_OPTS="${TLC_JAVA_OPTS:--Xmx1g} -Djava.io.tmpdir=$1.jtmp" "$0" run "$(cat "$1")" >"$1.log" 2>&1' \
+    'mkdir -p "$1.jtmp"; TLC_WORKERS=1 TLC_JOBS=1 GITHUB_STEP_SUMMARY= TLC_JAVA_OPTS="${TLC_JAVA_OPTS:--Xmx2g} -Djava.io.tmpdir=$1.jtmp" "$0" run "$(cat "$1")" >"$1.log" 2>&1' \
     "$here/check.sh" {} || true
   for f in "$tmp"/*.path; do
     sed -n '1,/^Summary:$/p' "$f.log" | grep -v '^Summary:$' | grep -v '^$' || true
@@ -306,8 +339,8 @@ case "$cmd" in
   translation) translation ;;
   translate) translate ;;
   self-test) self_test ;;
-  ci|nightly|regress|finding|limit) run_group "$cmd"; finish ;;
+  ci|nightly|regress|finding|limit) run_groups "$cmd"; finish ;;
   run) [ $# -gt 0 ] || die "run: name at least one .cfg"; for c in "$@"; do run_cfg "$c"; done; finish ;;
-  all) translation; run_group ci; run_group regress; run_group finding; run_group limit; finish ;;
+  all) translation; run_groups ci regress finding limit; finish ;;
   *) die "unknown command $cmd (see the header of $0)" ;;
 esac

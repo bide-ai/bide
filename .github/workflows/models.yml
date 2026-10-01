@@ -1,9 +1,11 @@
 name: Models
 
-# TLA+ models of the coordination protocols (spec/tla/README.md). On a pull request that touches the
-# models or the code they describe, in the merge queue, and on main: the PlusCal translation check,
-# the checker self-test, and every "ci", "regress" and "finding" configuration. Nightly (and on demand): the "nightly" configurations, with larger
-# bounds and the liveness checks at the larger fault budget.
+# TLA+ models of the coordination protocols (spec/tla/README.md). In the merge queue and on main: the
+# PlusCal translation check, the checker self-test, and every "ci", "regress", "finding" and "limit"
+# configuration of every model. On a pull request: the same, for the models whose directory under
+# spec/tla the pull request changes (all of them when it changes check.sh, tools.lock or this file).
+# Nightly (and on demand): the "nightly" configurations, with larger bounds and the liveness checks
+# at the larger fault budget.
 on:
   push:
     branches: [ main ]
@@ -28,28 +30,36 @@ jobs:
         with:
           fetch-depth: 0
       # Gated per step, not per job, so the job always reports as "Models" (a required check).
-      # A pull request runs the models only when it touches them or the Go code they describe
-      # (the model-code maps in spec/tla/README.md: agent/, store/, plan/, internal/journalhook/,
-      # internal/toolhook/, middleware/ for the tool-call model, and audit/ for the delegation model).
-      # merge_group and pushes to main always run in full, and so does any doubt: a failed diff,
-      # an unexpected event, or this step failing.
+      # TLC reads only the model's own directory under spec/tla, the tools and check.sh, so a pull
+      # request checks the models whose directory it changes (all of them when it changes check.sh,
+      # tools.lock or this file) and no others: a change to the Go code a model describes must change
+      # the model or carry a Protocol-Impact override (modelsync, in the Lint job), so its model runs
+      # whenever its rules change. merge_group and pushes to main always run every model, and so does
+      # any doubt: a failed diff, an unexpected event, or this step failing.
       - id: changes
-        name: Did the models or the code they describe change?
+        name: Which models changed?
         shell: bash
         env:
           BASE: ${{ github.event.pull_request.base.sha }}
           HEAD: ${{ github.event.pull_request.head.sha }}
         run: |
           run=true
-          if [ "${{ github.event_name }}" = "pull_request" ] && files=$(git diff --name-only "$BASE" "$HEAD"); then
+          models=
+          if [ "${{ github.event_name }}" = "pull_request" ] && files=$(git diff --name-only "$BASE" "$HEAD") && [ -n "$files" ]; then
             echo "Changed files:"; echo "$files"
-            modelled=$(echo "$files" | grep -E '^(spec/tla/|agent/|audit/|store/|plan/|internal/journalhook/|internal/toolhook/|middleware/|\.github/workflows/models\.yml$)' || true)
-            if [ -n "$files" ] && [ -z "$modelled" ]; then
-              run=false
-              echo "No modelled code changed (spec/tla, agent, store, plan, internal/journalhook, internal/toolhook, middleware, models.yml): the models are not re-checked."
+            if ! echo "$files" | grep -qE '^(spec/tla/check\.sh|spec/tla/tools\.lock|\.github/workflows/models\.yml)$'; then
+              models=$(echo "$files" | sed -n 's|^spec/tla/\([^/]*\)/.*|\1|p' | sort -u | while read -r m; do
+                [ -d "spec/tla/$m" ] && echo "$m"; done | tr '\n' ' ' | sed 's/ $//')
+              if [ -z "$models" ]; then
+                run=false
+                echo "No model changed (spec/tla/<model>/, check.sh, tools.lock, models.yml): the models are not re-checked."
+              else
+                echo "Models changed: $models (the merge queue checks every model)"
+              fi
             fi
           fi
           echo "run=$run" | tee -a "$GITHUB_OUTPUT"
+          echo "models=$models" | tee -a "$GITHUB_OUTPUT"
       - uses: actions/setup-java@v4
         if: steps.changes.outputs.run != 'false'
         with:
@@ -63,10 +73,13 @@ jobs:
       - name: Checker self-test (a stale translation and a wrong jar checksum both fail)
         if: steps.changes.outputs.run != 'false'
         run: spec/tla/check.sh self-test
+      # Four configurations at a time, one TLC worker and a 2 GB heap each (the runner has 4 vCPUs
+      # and 16 GB); TLC_MODELS empty means every model.
       - name: Translation check, then the ci, regress, finding and limit configurations
         if: steps.changes.outputs.run != 'false'
         env:
           TLC_JOBS: '4'
+          TLC_MODELS: ${{ steps.changes.outputs.models }}
         run: spec/tla/check.sh
 
   models-nightly:
