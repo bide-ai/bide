@@ -192,10 +192,12 @@ type RunFilter struct {
 
 func IsComplete(ctx context.Context, store Durable, runID string) (bool, error)
 func Recover(ctx context.Context, store Durable, resume func(ctx context.Context, runID string) error, opts ...RecoverOption) (int, error)
-func RecoverLoop(ctx context.Context, store Durable, resume func(ctx context.Context, runID string) error, opts ...RecoverOption) error
+func RecoverLoop(ctx context.Context, store Durable, resume func(ctx context.Context, runID string) error, opts ...RecoverLoopOption) error
 ```
 
-The options (`WithLeaseHolder`, `WithLeaseTTL`) apply when the store also implements `Leaser`:
+The lease options (`WithLeaseHolder`, `WithLeaseTTL`, which `Lease`, `Recover` and `RecoverLoop` all
+take; `WithRecoverInterval`, `WithRecoverConcurrency` and `WithRecoverErrors` are `RecoverLoop`'s
+alone) apply when the store also implements `Leaser`:
 `Recover` then drives each run under a per-run lease and skips runs another holder leases (see
 [known limitations](../KNOWN-LIMITATIONS.md) for what the lease does and does not guarantee).
 

@@ -80,7 +80,7 @@ type Task[T any] struct {
 }
 
 func Parallel[T any](ctx context.Context, d Durable, runID string,
-    maxConcurrency int, tasks ...Task[T]) ([]T, error)
+    tasks []Task[T], opts ...ParallelOption) ([]T, error)
 ```
 
 `Parallel` runs each `Task` concurrently, each as its own durable `Step`, and returns the results
