@@ -83,9 +83,19 @@ the journal holds, and so what a resume cannot be talked out of by a redeploy:
   (a recorded denial is final even if the tool's gate is removed later) and terminal m-of-n tally;
 - signals, interrupt answers, timer wake times, `AwaitFor` outcomes, channel messages and acks,
   and `WithRetrieval` documents;
-- the run's input and whether it runs as a saga (`run:start`), and for a session turn the
-  transcript it started from; an unfinished run resumed with another input, or through the other
-  entry point, is `ErrConfig`;
+- the run's input (a message, images included) and whether it runs as a saga (`run:start`), and
+  for a session turn the transcript it started from; an unfinished run resumed with another input,
+  or through the other entry point, is `ErrConfig`;
+- the per-run options its first caller passed (`run:start`, see `agent.RunStart`): the turn limit
+  and token budget, the system prompt, sampling, tool choice, the tool filter, a typed run's output
+  mode and answer schema, and the principal (`OnBehalfOf`, `AuthorityRef`). Every later drive,
+  `ResumeRun` and a recovery drive included, runs under them; a later drive's different limit is
+  journaled as an amendment (`run:limits:<n>`) and binds the drives after it; any other different
+  setting is `ErrConfig`, before any model call. The tool filter is enforced when a call is
+  dispatched: a call outside it is refused with an error result recorded, and its tool never runs;
+- a run's end: `run:complete`, `run:aborted` (a saga's finished rollback) or `run:cancelled`
+  (`agent.Cancel`, or a cancelled saga's finished rollback). The first in journal order is the
+  run's end for every reader, whatever a later drive is given;
 - in a saga's rollback, which calls completed, failed, or were attempted, and the `Safety` and
   approval gate each completed call ran under (`Record.Safety`, `Record.Approval`): a completed write is rolled back even if its tool was relabelled
   `ReadOnly` since, and a call whose tool is no longer registered is reported uncompensated (or
@@ -99,8 +109,10 @@ the journal holds, and so what a resume cannot be talked out of by a redeploy:
 Configuration is live by design: it governs what a drive does next, not what the journal already
 says happened. A drive uses the configuration it is given for:
 
-- the system prompt (`WithSystemPrompt`, and `WithSystemPromptFunc`, which is called once by
-  each drive that sends the model a request, before its first one), sampling, tool choice, response format, the model, and model middleware, for the turns
+- the agent's own system prompt (`WithSystemPrompt` given to `Build`, and `WithSystemPromptFunc`,
+  which is called once by each drive that sends the model a request, before its first one),
+  sampling and tool choice, where the run journaled none of its own, and the response format, the
+  model, and model middleware, for the turns
   that drive makes. Each model turn journals what it was given: digests of the system prompt and
   the tool set it was sent (`Record.PromptDigest`, `Record.ToolsDigest`), the model that answered
   (`Record.Model`), and its finish reason, so an audit can tell which configuration produced each
@@ -108,12 +120,13 @@ says happened. A drive uses the configuration it is given for:
 - the tool set offered to new turns, and each tool's spec (`Safety`, approval gate, timeout, read
   once when the agent is built) and tool middleware for a call that has not run yet (a pending call to a tool no longer registered fails with `ErrUnknownTool`);
 - the approval gate for a call with no recorded denial, under the gate's current policy;
-- the `WithMaxTurns` and `WithTokenBudget` limits, compared with the turns and tokens the journal
-  records, so raising a limit lets a stopped run continue;
+- the agent's `WithMaxTurns` and `WithTokenBudget` limits, where the run journaled none of its
+  own, compared with the turns and tokens the journal records, so raising a limit lets a stopped run
+  continue (a journaled limit is raised by a later drive's amendment);
 - the clock (`WithClock`), for whether a timer or an `AwaitFor` deadline is due and for
   `WithMinHaltAge`;
-- the identity and grant the drive is given (the `WithIdentity` option, or the run's context), which
-  the tools a drive runs see;
+- the identity's `Actor` and the grant the drive is given (the `WithIdentity` option, or the run's
+  context), which the tools a drive runs see, with the principal the run journaled;
 - a governor's policy (`govern`): governed state is the shared event log replayed under the
   current machine.
 
