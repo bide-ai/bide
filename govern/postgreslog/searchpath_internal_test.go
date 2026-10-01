@@ -11,8 +11,8 @@ import (
 	"github.com/bide-ai/bide/agent"
 )
 
-// Nothing the log sends resolves through the search path after Open: Open records the schema and
-// every statement names it. The log's only connection is pointed, after Open, at a decoy schema
+// No statement the log sends after Open looks a name up through the search path: Open records the
+// schema and every statement names it. The log's only connection is pointed, after Open, at a decoy schema
 // holding a governed_events table and a next_seq that raises; appends and reads must still use
 // the log's own schema, and leave the decoy untouched. Skips without PG_DSN.
 func TestLog_NothingResolvesThroughSearchPathAfterOpen(t *testing.T) {

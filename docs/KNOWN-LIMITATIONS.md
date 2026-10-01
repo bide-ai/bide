@@ -66,6 +66,12 @@ go. It corrupts nothing, and earlier versions took the same key. The key names n
 schema nor the table prefix, so stores in different schemas or with different prefixes, and a
 governed entity named like a run, also wait on each other: throughput, not correctness.
 
+**Pin the Postgres store's schema.** Without `postgres.WithSchema` (or `postgreslog.WithSchema`),
+every `Open` finds the schema through the search path, and a role that can create a schema earlier
+on the path, which any role with `CREATE` on the database can do for the `"$user"` schema the
+default search path puts first, can redirect a restarting node to a store of its own. `Open` logs
+a warning when it discovers the schema. With the schema pinned, the search path plays no part.
+
 **Renaming the Postgres store's schema needs one step.** The `bide_next_seq_v1` function names
 its schema, so after `ALTER SCHEMA ... RENAME` inserts fail and `Open` refuses it: drop the
 function and `Open` again, and the migration recreates it.

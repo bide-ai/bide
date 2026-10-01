@@ -11,8 +11,8 @@ import (
 	"github.com/bide-ai/bide/agent"
 )
 
-// Nothing the store sends resolves through the search path after Open: Open records the schema
-// and every statement names it. The store's only connection is pointed, after Open, at a decoy
+// No statement the store sends after Open looks a name up through the search path: Open records the
+// schema and every statement names it. The store's only connection is pointed, after Open, at a decoy
 // schema holding tables of the store's names and a next_seq that raises; every operation must
 // still read and write the store's own schema, and leave the decoys untouched. Skips without
 // PG_DSN.

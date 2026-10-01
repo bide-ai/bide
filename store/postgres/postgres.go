@@ -57,25 +57,33 @@
 //
 // # Schema and trust
 //
-// Open records the store's schema: the first schema on the search path holding a relation named
-// like the steps table, or the first schema on the path (current_schema()) when none does, where
-// the migration creates the tables. It refuses a first relation of that name that is not an
-// ordinary or partitioned table. From then on every statement names that schema, the tables,
-// the next_seq function and the migration's DDL alike, so nothing the store sends resolves through
-// the search path after Open. A role with CREATE on the database, which can create a schema named
-// like any role, and so the "$user" schema the default search path puts first, therefore cannot
-// take over the store's tables or next_seq after Open, as it could in every earlier version. The
-// search path matters only at Open, to find the schema: set it to the store's schema, so the first
-// Open does not create the tables in a schema another role made first.
+// Every name in every statement the store sends is qualified: its tables and next_seq function
+// with the store's schema, and every function, type, collation and operator with pg_catalog
+// (operators written OPERATOR(pg_catalog.<op>)). No statement, Open's and the migration's
+// included, looks a name up through the search path. Postgres still resolves some things without
+// a name, none of them through the search path: ORDER BY, DISTINCT and the ON CONFLICT arbiter use
+// the type's default operator class and the table's indexes, and casts use pg_cast. The statement
+// check (sqlcheck.go) holds every statement to this.
+//
+// Which schema is the store's is the one thing the search path can still decide, and only when the
+// schema is not pinned. With WithSchema, the recommended deployment, the store uses the schema
+// given and the search path plays no part. Without it, every Open discovers the schema: the first
+// schema on the search path holding a relation named like the steps table, or the first schema on
+// the path (current_schema()), where the migration creates the tables, when none does; it refuses
+// a first relation of that name that is not an ordinary or partitioned table, and logs a warning.
+// Discovery runs again at every Open, so a role that can create a schema earlier on the path can
+// redirect a restarting node to a store of its own: any role with CREATE on the database can
+// create the "$user" schema the default search path puts first. Discovery is safe only when every
+// schema on the search path is trusted. Within one process, after Open, no role can redirect the
+// store, pinned or not, as it could in every earlier version.
 //
 // The store trusts the owner of its schema and every role that can create objects in it, as it
 // trusts the owner of its tables: such a role could replace a table, and so it could replace the
 // next_seq function. Within that boundary, the store refuses what it can check. The next_seq
 // function must be owned by the owner of the steps table, run with search_path = pg_catalog,
 // pg_temp and have exactly this version's body, whose names are all qualified; Open refuses it
-// otherwise. The statements call built-ins qualified with pg_catalog, cast only to pg_catalog
-// types, and use only built-in operators, which resolve in pg_catalog first unless the search
-// path lists pg_catalog after another schema: a deployment should not do that.
+// otherwise. Unpinned, the store also trusts every role that can create a schema earlier on its
+// search path (see above).
 //
 // Any role that can connect can take a run's advisory lock key itself
 // (pg_advisory_lock(hashtextextended(run_id, 0))) and hold it, and every insert into that run then
@@ -169,10 +177,11 @@ var (
 )
 
 // tables holds the table names, prefixed, their schema-qualified forms, and the statements built
-// from them. Every statement names the schema Open recorded, so nothing the store sends resolves
-// through the search path after Open: a schema that appears earlier on the path later (a role's
-// "$user" schema, created by any role with CREATE on the database) cannot take over a table or the
-// next_seq function.
+// from them. Every statement names the schema Open recorded and qualifies every other name, so no
+// statement looks a name up through the search path: a schema that appears earlier on the path
+// after Open (a role's "$user" schema, which any role with CREATE on the database can create)
+// cannot take over a table or the next_seq function in this process. Which schema an unpinned Open
+// uses is another matter (see storeSchema and WithSchema).
 type tables struct {
 	steps, leases, version              string     // bare names, as in the catalog
 	nextSeq                             string     // the next_seq function's bare name

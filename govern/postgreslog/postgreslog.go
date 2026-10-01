@@ -17,21 +17,27 @@
 // committed would act on the latest row, changed nothing and is run again. The schema migration is
 // the one transaction of several statements; it sets read committed itself (see txOptions).
 //
-// Open records the log's schema: the first schema on the search path holding a relation named
-// governed_events, or the first schema on the path when none does yet (see logSchema), and refuses
-// a first relation of that name that is not an ordinary or partitioned table. Every statement, the
-// next_seq call and the migration's DDL name that schema, so nothing the log sends resolves
-// through the search path after Open: a role with CREATE on the database, which can create the
-// "$user" schema the default search path puts first, cannot take over the table or next_seq
-// after Open, as it could in every earlier version, and a legacy table in a later schema is
-// migrated in place. The search path matters only at Open: set it to the log's schema.
+// Every name in every statement the log sends is qualified: governed_events and next_seq with the
+// log's schema, and every function, type and operator with pg_catalog (operators written
+// OPERATOR(pg_catalog.<op>)), so no statement, Open's and the migration's included, looks a name up
+// through the search path (the statement check in sqlcheck.go holds them to it). Which schema is
+// the log's is the one thing the search path can still decide, and only when the schema is not
+// pinned. With WithSchema, the recommended deployment, the search path plays no part. Without it,
+// every Open discovers the schema: the first schema on the search path holding a relation named
+// governed_events, or the first schema on the path when none does yet (see logSchema); it refuses
+// a first relation of that name that is not an ordinary or partitioned table, migrates a legacy
+// table in a later schema in place, and logs a warning. Discovery runs again at every Open, so a
+// role that can create a schema earlier on the path (any role with CREATE on the database can
+// create the "$user" schema the default search path puts first) can redirect a restarting
+// process: discovery is safe only when every schema on the search path is trusted. Within one
+// process, after Open, no role can redirect the log, pinned or not.
 //
 // The log trusts the owner of its schema and every role that can create objects in it, as it
 // trusts the table's owner: such a role could replace the table. Within that boundary it refuses
 // what it can check: the next_seq function must be owned by the table's owner, run with
 // search_path = pg_catalog, pg_temp and have exactly this version's body, whose names are all
-// qualified, and the log's statements call pg_catalog-qualified built-ins, cast only to
-// pg_catalog types and use only built-in operators. Any role that can connect can hold an
+// qualified. Unpinned, the log also trusts every role that can create a schema earlier on its
+// search path (see above). Any role that can connect can hold an
 // entity's advisory key (pg_advisory_lock(hashtextextended(entity, 0))) and stall its appends, as
 // in earlier versions; it corrupts nothing. After ALTER SCHEMA ... RENAME, drop the function
 // (DROP FUNCTION <schema>.governed_events_next_seq_v1(text)) and Open again.
@@ -65,9 +71,11 @@ import (
 type Log struct {
 	db     *sql.DB
 	schema string // the schema governed_events and next_seq are in, recorded at Open (see logSchema)
-	// The statements, each naming the schema, so nothing the log sends resolves through the search
-	// path after Open: a schema that appears earlier on the path later (a role's "$user" schema,
-	// created by any role with CREATE on the database) cannot take over the table or next_seq.
+	// The statements, each naming the schema and qualifying every other name, so no statement looks
+	// a name up through the search path: a schema that appears earlier on the path after Open (a
+	// role's "$user" schema, which any role with CREATE on the database can create) cannot take
+	// over the table or next_seq in this process. Which schema an unpinned Open uses is another
+	// matter (see logSchema and WithSchema).
 	append, byID, since logSQL
 }
 
