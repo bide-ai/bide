@@ -164,7 +164,10 @@ func (p ApprovalPolicy) MarshalJSON() ([]byte, error) {
 // UnmarshalJSON decodes what MarshalJSON encodes, strictly, as the bide protocol writes the gate:
 // {"single":true}, with no other member, is SingleApproval; any other policy has need (and
 // approvers) and no single. "single" with any other value, beside need or approvers, a policy
-// with no need, a duplicate or unknown member, or a value of the wrong type is ErrProtocol.
+// with no need, a duplicate or unknown member, or a value of the wrong type is ErrProtocol. It is
+// the decoding for a policy being configured or received (a protocol input); the approval inside a
+// stored Record is read leniently instead (see DecodeStoredRecord), so a journal a newer version
+// wrote stays readable.
 func (p *ApprovalPolicy) UnmarshalJSON(b []byte) error {
 	var members map[string]json.RawMessage
 	if err := strictjson.Unmarshal(b, &members, nil); err != nil {

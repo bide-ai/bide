@@ -182,12 +182,44 @@ func unmarshalRecord(b []byte) (Record, error) {
 		(*h)(b)
 	}
 	var f recordFields
-	w := recordWire{recordFields: &f}
+	w := recordReadWire{recordWire: recordWire{recordFields: &f}}
 	if err := json.Unmarshal(b, &w); err != nil {
 		return Record{}, err
 	}
+	f.Approval = w.Approval.policy()
 	f.claim, f.salt, f.raw = w.Claim, w.Salt, nil
 	return Record(f), nil
+}
+
+// recordReadWire is the wire form a record is read through. Its approval member shadows
+// Record.Approval's (a shallower field wins), so a stored record's approval is read leniently
+// (storedApproval): the strict ApprovalPolicy decoding is for a policy being configured or
+// received, and a stored record keeps DecodeStoredRecord's promise that a journal a newer version
+// wrote stays readable.
+type recordReadWire struct {
+	recordWire
+	Approval *storedApproval `json:"approval,omitempty"`
+}
+
+// storedApproval is a journaled approval policy, read leniently: members this version does not
+// know are ignored, {"single":true} is SingleApproval whatever else a newer version wrote beside
+// it, and anything else is the m-of-n policy its need and approvers give. The policy is a record of
+// the gate the call ran under; the gate a run enforces is always the registered tool's.
+type storedApproval struct {
+	Single    json.RawMessage `json:"single,omitempty"`
+	Need      int             `json:"need"`
+	Approvers []string        `json:"approvers,omitempty"`
+}
+
+// policy returns the ApprovalPolicy a stored approval records, or nil for none.
+func (a *storedApproval) policy() *ApprovalPolicy {
+	switch {
+	case a == nil:
+		return nil
+	case string(bytes.TrimSpace(a.Single)) == "true":
+		return SingleApproval()
+	}
+	return &ApprovalPolicy{Need: a.Need, Approvers: a.Approvers}
 }
 
 // markerTime is the time an attempt marker's AttemptedAt records, or the zero time when it records
@@ -333,7 +365,9 @@ func decodeRecord(b []byte) (Record, error) {
 // under "x" holding a record named run:complete would mark an unfinished run complete. Such a row
 // is ErrStorage, naming the run and the key, like any other stored record that does not decode:
 // the store's contents are wrong, whatever wrote them. Fields this version does not know still
-// decode, so a journal a newer version wrote stays readable.
+// decode, so a journal a newer version wrote stays readable; that includes members of the
+// record's approval policy, which a stored record reads leniently (ApprovalPolicy's own
+// UnmarshalJSON is strict, for a policy being configured or received).
 //
 // A redaction tombstone (see Record.Redacted) decodes as a record that carries only its name.
 //
