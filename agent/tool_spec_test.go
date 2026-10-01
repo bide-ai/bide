@@ -8,11 +8,15 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
 // lateTool blocks until its call's context is done, then returns what the test chose: a result,
-// an error of its own, or the context's error.
+// an error of its own, or the context's error. A test that gives it a short WithTimeout runs in a
+// synctest bubble: on the wall clock the deadline may pass while the call is dispatched, and the
+// base handler then refuses the call as not started, so the tool never runs. In a bubble the
+// clock advances only once the tool blocks on its context, so the call always reaches it.
 func lateTool(name string, safety Safety, calls *atomic.Int32, answer func(ctx context.Context) (string, error), opts ...ToolOption) Tool {
 	return Func(name, "", safety, func(ctx context.Context, _ struct{}) (string, error) {
 		calls.Add(1)
@@ -24,6 +28,10 @@ func lateTool(name string, safety Safety, calls *atomic.Int32, answer func(ctx c
 // A call that returns a result after its deadline is recorded, like any other result: its
 // outcome is known, so it is never discarded.
 func TestTimeout_ResultAfterTheDeadlineIsRecorded(t *testing.T) {
+	synctest.Test(t, testResultAfterTheDeadlineIsRecorded)
+}
+
+func testResultAfterTheDeadlineIsRecorded(t *testing.T) {
 	var calls atomic.Int32
 	charge := lateTool("charge", Safety{}, &calls, func(context.Context) (string, error) { return "charged", nil }, WithTimeout(time.Millisecond))
 	store := NewMemStore()
@@ -47,25 +55,27 @@ func TestTimeout_LateErrorHaltsASideEffect(t *testing.T) {
 		"own error":     func(context.Context) (string, error) { return "", errors.New("gateway: connection reset") },
 	} {
 		t.Run(name, func(t *testing.T) {
-			var calls atomic.Int32
-			charge := lateTool("charge", Safety{}, &calls, answer, WithTimeout(time.Millisecond))
-			store := NewMemStore()
-			m := NewScriptedModel(ToolTurn("c1", "charge", `{}`), TextTurn("done"))
-			_, err := New(m, store, charge).Run(context.Background(), "r1", "pay")
-			if !errors.Is(err, ErrToolOutcomeUnknown) || !strings.Contains(err.Error(), "timeout") {
-				t.Fatalf("Run: err = %v, want ErrToolOutcomeUnknown naming the timeout", err)
-			}
-			if _, ok := hasStep(t, store, "r1", ToolResultStep("c1")); ok {
-				t.Fatal("a result was recorded for a call whose outcome is unknown")
-			}
-			_, err = New(m, store, charge).Run(context.Background(), "r1", "pay")
-			var halt *OutcomeUnknown
-			if !errors.As(err, &halt) || halt.Op.ID != "c1" {
-				t.Fatalf("resume: err = %v, want *OutcomeUnknown for c1", err)
-			}
-			if calls.Load() != 1 {
-				t.Fatalf("the side effect was called %d times, want 1", calls.Load())
-			}
+			synctest.Test(t, func(t *testing.T) {
+				var calls atomic.Int32
+				charge := lateTool("charge", Safety{}, &calls, answer, WithTimeout(time.Millisecond))
+				store := NewMemStore()
+				m := NewScriptedModel(ToolTurn("c1", "charge", `{}`), TextTurn("done"))
+				_, err := New(m, store, charge).Run(context.Background(), "r1", "pay")
+				if !errors.Is(err, ErrToolOutcomeUnknown) || !strings.Contains(err.Error(), "timeout") {
+					t.Fatalf("Run: err = %v, want ErrToolOutcomeUnknown naming the timeout", err)
+				}
+				if _, ok := hasStep(t, store, "r1", ToolResultStep("c1")); ok {
+					t.Fatal("a result was recorded for a call whose outcome is unknown")
+				}
+				_, err = New(m, store, charge).Run(context.Background(), "r1", "pay")
+				var halt *OutcomeUnknown
+				if !errors.As(err, &halt) || halt.Op.ID != "c1" {
+					t.Fatalf("resume: err = %v, want *OutcomeUnknown for c1", err)
+				}
+				if calls.Load() != 1 {
+					t.Fatalf("the side effect was called %d times, want 1", calls.Load())
+				}
+			})
 		})
 	}
 }
@@ -73,6 +83,10 @@ func TestTimeout_LateErrorHaltsASideEffect(t *testing.T) {
 // A retry-safe tool that returns an error after its deadline has its error recorded, as for any
 // retry-safe call whose outcome is unknown: running it again is safe, so the model may.
 func TestTimeout_LateErrorOfARetrySafeToolIsRecorded(t *testing.T) {
+	synctest.Test(t, testLateErrorOfARetrySafeToolIsRecorded)
+}
+
+func testLateErrorOfARetrySafeToolIsRecorded(t *testing.T) {
 	var calls atomic.Int32
 	lookup := lateTool("lookup", Safety{Idempotent: true}, &calls, func(ctx context.Context) (string, error) { return "", ctx.Err() }, WithTimeout(time.Millisecond))
 	store := NewMemStore()
@@ -81,8 +95,8 @@ func TestTimeout_LateErrorOfARetrySafeToolIsRecorded(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 	rec, ok := hasStep(t, store, "r1", ToolResultStep("c1"))
-	if !ok || !rec.IsError || !strings.Contains(string(rec.Result), "timeout") {
-		t.Fatalf("result %s (recorded %v, is_error %v); want the timeout recorded as the call's error", rec.Result, ok, rec.IsError)
+	if !ok || !rec.IsError || !strings.Contains(string(rec.Result), "after its 1ms timeout") || calls.Load() != 1 {
+		t.Fatalf("result %s (recorded %v, is_error %v), calls %d; want the timeout recorded as the call's error after one call", rec.Result, ok, rec.IsError, calls.Load())
 	}
 }
 

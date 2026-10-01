@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/bide-ai/bide/agent"
@@ -81,15 +83,24 @@ func TestRev117eDocs_TimeoutRule(t *testing.T) {
 		{"retry-safe, late error", agent.Safety{Idempotent: true}, false, false, true, true},
 		{"side effect, late result", agent.Safety{}, true, false, true, false},
 	} {
+		// In a synctest bubble the deadline passes only once the tool blocks on its context, so the
+		// call always reaches the tool; on the wall clock it can pass during dispatch, and the call
+		// is then refused as not started.
 		t.Run(tc.name, func(t *testing.T) {
-			tool := agent.Func("t", "", tc.safety, late(tc.ok), agent.WithTimeout(10*time.Millisecond))
-			store := agent.NewMemStore()
-			m := agent.NewScriptedModel(agent.ToolTurn("c1", "t", `{}`), agent.TextTurn("done"))
-			_, err := agent.New(m, store, tool).Run(context.Background(), "r1", "go")
-			rec, recorded := rev117eResult(t, store, "r1", "c1")
-			if errors.Is(err, agent.ErrToolOutcomeUnknown) != tc.wantUnknown || recorded != tc.wantRecorded || recorded && rec.IsError != tc.wantIsError {
-				t.Fatalf("Run = %v, recorded %v, is_error %v", err, recorded, rec.IsError)
-			}
+			synctest.Test(t, func(t *testing.T) {
+				var calls atomic.Int32
+				tool := agent.Func("t", "", tc.safety, func(ctx context.Context, a struct{}) (string, error) { calls.Add(1); return late(tc.ok)(ctx, a) }, agent.WithTimeout(10*time.Millisecond))
+				store := agent.NewMemStore()
+				m := agent.NewScriptedModel(agent.ToolTurn("c1", "t", `{}`), agent.TextTurn("done"))
+				_, err := agent.New(m, store, tool).Run(context.Background(), "r1", "go")
+				rec, recorded := rev117eResult(t, store, "r1", "c1")
+				if calls.Load() != 1 || errors.Is(err, agent.ErrToolOutcomeUnknown) != tc.wantUnknown || recorded != tc.wantRecorded || recorded && rec.IsError != tc.wantIsError {
+					t.Fatalf("calls %d, Run = %v, recorded %v, is_error %v", calls.Load(), err, recorded, rec.IsError)
+				}
+				if recorded && rec.IsError && !strings.Contains(string(rec.Result), "after its 10ms timeout") {
+					t.Fatalf("recorded %s; want the late error", rec.Result)
+				}
+			})
 		})
 	}
 }

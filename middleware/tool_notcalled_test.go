@@ -6,6 +6,7 @@ import (
 	"errors"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/bide-ai/bide/agent"
@@ -14,7 +15,14 @@ import (
 
 // A rate limiter that gives up waiting for a slot past the tool's deadline never called the tool:
 // the agent records the call as a known failure, and a resume does not halt for it.
+// It runs in a synctest bubble: on the wall clock the first call's 20ms deadline can pass while
+// it is dispatched, and the agent then refuses it as not started, so nothing is charged. In a
+// bubble the clock advances only once every goroutine blocks, so the first call reaches the tool.
 func TestToolRateLimit_GivingUpRecordsNotCalled(t *testing.T) {
+	synctest.Test(t, testToolRateLimitGivingUpRecordsNotCalled)
+}
+
+func testToolRateLimitGivingUpRecordsNotCalled(t *testing.T) {
 	r := middleware.NewRateLimiter(time.Hour, 1) // one slot an hour
 	var calls atomic.Int32
 	charge := agent.Func("charge", "", agent.Safety{}, func(context.Context, struct{}) (string, error) {
