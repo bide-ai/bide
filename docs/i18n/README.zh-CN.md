@@ -263,6 +263,8 @@ res, err := a.RunResult(ctx, runID, input)
 // res.Message, res.Usage, res.Spend, res.Turns, res.Duration, res.RunID
 ```
 
+过渡名 `RunMessage(ctx, runID, input, opts...)`（1.0 中为 `Run`）接受一个 `Message` 输入（文本，或文本加图像）和每次运行的选项，并在任何错误时也返回一个 `Result`。运行的首次驱动把它的输入和选项记入 `run:start`，之后的每次驱动（包括恢复）都在其下运行：不同的限额（`WithMaxTurns`、`WithTokenBudget`）作为修订 `run:limits:<n>` 记入日志，其他任何不同的设置都是 `ErrConfig`。`agent.Cancel` 取消一次运行（saga 会先回滚），`agent.Status` 从日志读取它的状态。
+
 ## 流式（Streaming）
 
 `Run` 会阻塞并返回最终答案。要观察智能体工作（token 增量、轮次边界、工具开始/结束），请用 `Stream`。它驱动的是**同一个循环**（`Run` 字面上就是 `Stream(...).Final()`），所以持久性、恢复和副作用安全性是完全一致的：
@@ -346,7 +348,7 @@ a1, _ := s.Send(ctx, "what's the capital of France?")
 a2, _ := s.Send(ctx, "and its population?")   // sees turn 1 in context
 ```
 
-记录按会话 id 逐轮记入日志，因此一个重启的进程 `a.Session(ctx, "user-42")` 会把它重建出来并继续。第 N 轮在 `"<id>>@turn/N"` 之下运行（它自己的持久化日志处理该轮*之内*的崩溃恢复）；对话记忆是问答记录：一轮的中间工具调用留在那一轮里，不会泄漏进后面的轮次。如果一轮暂停了（批准 / `Interrupt`），`Send` 会返回那个错误；解决它，然后用相同的输入再次调用 `Send` 以恢复。在此之前，用一条不同的消息调用 `Send` 会返回 `ErrConfig`：那个未完成的轮次属于它自己的消息。对于可能被重投递的入站消息，`SendOnce(ctx, id, text)` 对每个消息 id 只回答一次。同一个会话上的多个句柄既不会丢失任何一轮，也不会用另一条消息的回复来回答某条消息。
+记录按会话 id 逐轮记入日志，因此一个重启的进程 `a.Session(ctx, "user-42")` 会把它重建出来并继续。第 N 轮在 `"<id>>@turn/N"` 之下运行（它自己的持久化日志处理该轮*之内*的崩溃恢复）；对话记忆是问答记录：一轮的中间工具调用留在那一轮里，不会泄漏进后面的轮次。如果一轮暂停了（批准 / `Interrupt`），`Send` 会返回那个错误；解决它，然后用相同的输入再次调用 `Send` 以恢复。在此之前，用一条不同的消息调用 `Send` 会返回 `ErrConfig`：那个未完成的轮次属于它自己的消息。对于可能被重投递的入站消息，`SendOnce(ctx, id, text)` 对每个消息 id 只回答一次。同一个会话上的多个句柄既不会丢失任何一轮，也不会用另一条消息的回复来回答某条消息。 运行被取消的 Send 轮次会被记为关闭：该消息的 `Send` 返回 `ErrRunCancelled`，下一条消息的 `Send` 把该轮记为关闭（没有回答）并运行自己的轮次。
 
 ## 可审计性（防篡改日志）
 

@@ -18,7 +18,8 @@ The vocabulary, defined once. Terms are grouped by the layer they belong to. See
 ## High availability
 
 - **Lease**: a per-run lock so normally only one process drives a run at a time. A crashed holder's lease expires (by the store's clock) and another node takes over. A holder that stalls past its lease can wake still driving; its drive is cancelled with `ErrLeaseLost`, and the attempt claim, not the lease, keeps its side effects at most once.
-- **Recover**: after a restart, re-drive in-flight runs, in one pass. `Lister` enumerates a store's runs that hold no terminal marker (the store filters out finished ones), sub-agent runs (`IsSubRun`) and session runs (`IsSessionRun`) are left to the root run and the session that drive them, and the rest resume.
+- **Recover**: after a restart, re-drive in-flight runs, in one pass. `Lister` enumerates a store's runs that hold no terminal marker (the store filters out finished ones), sub-agent runs (`IsSubRun`) and session runs (`IsSessionRun`) are left to the root run and the session that drive them, and the rest are handed, with their `run:start`, to a `Resumer` (`ResumeAgent`, `ResumeTyped`, `ResumeAny`), which drives each under the options its first drive journaled. A run with no `run:start` is skipped and reported once per process.
+- **Cancel and Status**: `Cancel` ends a run with `run:cancelled` (a saga is rolled back first, on a `run:cancel-requested` request its drive answers); `Status` reads a run's state (not started, started, completed, aborted, cancelled) from its journal. The first end marker in journal order is a run's end.
 - **RecoverLoop**: `Recover` repeated for the life of a process, so a dead holder's run is taken over automatically once its lease expires.
 
 ## Ambient and pauses

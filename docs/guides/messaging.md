@@ -74,7 +74,13 @@ journaled. Reusing a key for different text is `ErrConfig`; any key is allowed, 
 journal, `"<conversation>>@event/<key>"`, carries it encoded. A conversation id may not contain
 `>`: every run a session drives is named `"<id>>@..."`, which no run ID passed to `Run` can be, so
 a run of your own never shares a session's journal. `Recover` skips them (`agent.IsSessionRun`):
-an interrupted turn resumes through the session, when the event is redelivered. Several workers may hold handles on one conversation: every message is
+an interrupted turn resumes through the session, when the event is redelivered. (`agent.ResumeAgent`
+declines a session turn's run too.) A turn's run can be cancelled like any run (`agent.Cancel`):
+`Send` of its message then returns `agent.ErrRunCancelled`, and the next message's `Send` records
+the cancelled turn closed (with no answer, and outside the transcript) and runs its own turn; a
+`SendOnce` key whose run was cancelled stays unanswered. `SendMessage` and `SendMessageOnce` (the
+1.0 `Send` and `SendOnce`, under transitional names) take a `Message` and run options, journaled
+with the turn's run, and return a `Result`. Several workers may hold handles on one conversation: every message is
 recorded once, and a handle that is behind catches up from the journal before answering, so each
 new turn sees the conversation as it stands.
 
