@@ -1794,7 +1794,26 @@ finite budgets and no fairness.
 
 ### Configurations
 
-@@CONFIGS@@
+States are distinct states; times are TLC's own on the development machine (Apple M1 Pro, one
+worker per configuration, four at a time, as the CI job runs them), under load. Each passing
+configuration is also run for vacuity. The `ci` configurations run the proposed fixes of S1 and
+S2 (and S3's and S4's rules where they say so); the findings below run the code as it stands.
+The whole pull-request set (9 `ci` configurations with their vacuity runs, and 12 regression,
+finding and limit configurations) took 46 seconds on the CI runner alone (four at a time); in the merge queue's run of every model it
+adds about 170 seconds of TLC and JVM time to the four slots, about 43 seconds of wall time.
+
+| Config | Group | What | States | Time |
+|---|---|---|---|---|
+| `workers-send` | ci | One `Send` message delivered to two workers, each with a handle in its own process; a crash. | 8,596 | 3 s |
+| `shared-send` | ci | One handle shared by two callers sending one message (a redelivery, or a retry while the first still runs); an error reply and a pause. | 8,722 | 4 s |
+| `workers-once` | ci | `SendOnce` of one key delivered to two workers; an error reply and a crash. | 9,535 | 7 s |
+| `seed-once` | ci | Two `SendOnce` messages on two workers, turns of two model calls, a crash: a turn cut off between its calls resumes with the transcript its `from/` record names. | 1,906 | 4 s |
+| `ids` | ci | Run IDs since #86: session `"chat"`'s first `Send` beside a root `Run("chat/t0")`; a crash. | 510 | 3 s |
+| `ids-sessions` | ci | Run IDs since #86: session `"chat/e"`'s first `Send` beside session `"chat"`'s `SendOnce` of key `"t0"`; a crash. | 1,343 | 3 s |
+| `budget` | ci | S4's rule (a drive holds the turn run's lease): one message on two workers, turns of three model calls, a budget of three, a crash. | 16,498 | 3 s |
+| `cancel-close` | ci | S3's rule: P14's `Cancel` of a Send turn's run, which is then recorded closed, and a second message. | 869 | 3 s |
+| `live-resume` | ci | `Answered` and `TurnsSettle`: two workers with one message each, a crash; every caller sends again until answered. | 4,490 | 13 s |
+@@NIGHTLY@@
 
 ### Regressions, findings and limits
 
@@ -1802,7 +1821,20 @@ Each regression restores a historical rule behind `Bug` and must fail with its p
 passes with `Bug = "none"`. Each finding fails under the code as it stands and passes under its
 proposed rule (`Fix`, `CancelRule`, `TurnLease`), which the `ci` configurations check.
 
-@@REGRESS@@
+| Config | Group | The rule or behavior | Expected | Trace |
+|---|---|---|---|---|
+| `regress/root-shares-turn` | regress | #86: session runs were `"<id>/t<n>"` and `"<id>/e/<key>"`, so `Run("chat/t0")` and session `"chat"`'s first `Send` shared a journal, and whichever finished first handed the other its answer (`Bug = "SlashIds"`). | `NoCrossTalk` | 12 states |
+| `regress/session-shares-turn` | regress | #56: session `"chat/e"`'s first `Send` and session `"chat"`'s `SendOnce` of key `"t0"` both ran `"chat/e/t0"`; the second got the first's reply without a model call (`"SlashIds"`). | `NoCrossTalk` | 16 states |
+| `regress/index-turns` | regress | #22: a Send turn ran under the next turn index with no start record; `"x"` finished its run, the process died before the turn was recorded, and the next message resumed that run and got the reply to `"x"` (`"IndexTurns"`). | `NoCrossTalk` | 13 states |
+| `regress/no-skip` | regress | #22: two handles recording at one index kept only the first, and the other turn vanished (`"NoSkip"`). | `NoLostTurn` | 20 states |
+| `regress/step-wrapped` | regress | #20: the messaging guide wrapped `Send` in a `Step` keyed by the event id; the process died after the session recorded the turn and before the `Step` recorded the reply, and the redelivered event opened a second turn (`"StepWrapped"`). | `KeyOnce` | 23 states |
+| `regress/no-from` | regress | #56: a turn cut off between its model calls resumed seeded with the transcript as it then stood, which a turn answered in between had changed (`"NoFrom"`). | `SeedFaithful` | 23 states |
+| `findings/s1-stale-open` | finding | S1 (below): a stale handle refuses the next message for a turn another worker finished. | `NoFalseRefusal` | 17 states |
+| `findings/s2-shared-send` | finding | S2: two callers on one handle send one message, and its turn is recorded twice. | `TurnOnce` | 18 states |
+| `findings/s2-shared-once` | finding | S2 through `SendOnce`: one key delivered twice to one handle has two records. | `KeyOnce` | 17 states |
+| `findings/s3-cancel-wedge` | finding | S3: `Cancel` of an open Send turn's run, and every other message is refused for ever (`CancelRule = "none"`). | `NoFalseRefusal` | 12 states |
+| `findings/s4-budget-two-workers` | finding | S4: two workers drive one turn's run with no lease, and the turn spends past its budget (`TurnLease = FALSE`). | `BudgetHeld` | 18 states |
+| `limits/send-redelivered` | limit | `Send` has no key: the process dies after the turn is recorded and before the reply, and the redelivered message opens a second turn. | `MsgOnce` | 24 states |
 
 ### Findings
 
