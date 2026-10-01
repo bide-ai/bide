@@ -167,7 +167,7 @@ define
   NotCalled(c, e) == IF Bug("FlagRule") THEN bg[c] # "yes"
                      ELSE \/ FinalSt(c) = "refusedClosed"
                           \/ FinalSt(c) = "refused"
-                          \/ FinalSt(c) = "closed" /\ e = "nc"
+                          \/ FinalSt(c) = "closed" /\ e \in {"nc", "guard"}
   ReachedAt(c) == IF Bug("FlagRule") THEN bg[c] = "yes" ELSE FinalSt(c) = "reached"
   \* The tool is running: the process's in-flight count of the call (inflightAdd) is above zero.
   \* An invocation of the call, of this chain or of an earlier one in this process (a next left
@@ -266,10 +266,11 @@ IEnter:
     goto IWait;
   else
     either
-      \* toolhook.CallGuard: the delegated grant expired; a recorded refusal
+      \* toolhook.CallGuard: the delegated grant expired; a recorded refusal ("guard" is "nc",
+      \* ErrToolNotCalled, that the rollback's re-run tells apart: model 11's D2)
       await guards < MaxGuard;
       guards := guards + 1;
-      st := RefuseSt(self); iret[self] := "nc"; ion[self] := FALSE;
+      st := RefuseSt(self); iret[self] := "guard"; ion[self] := FALSE;
       goto IWait;
     or
       if ~EnterOK(self) then
@@ -325,7 +326,7 @@ IEnter2:
       either
         await guards < MaxGuard;
         guards := guards + 1;
-        st := RefuseSt(self); iret[self] := "nc"; ion[self] := FALSE;
+        st := RefuseSt(self); iret[self] := "guard"; ion[self] := FALSE;
         goto IWait;
       or
         if ~EnterOK(self) then
@@ -541,10 +542,12 @@ LClose:
     \* only if the re-run reached the tool (a cache answer is an unknown outcome). An unknown
     \* outcome is listed and the walk goes on; any other error stops the rollback, and a later
     \* RunSaga resumes it. Before the fix (NoRbUnknown) every error stopped it, so a result check
-    \* that always rejects the re-run's success left the rollback with no end.
+    \* that always rejects the re-run's success left the rollback with no end. A re-run the guard
+    \* refused (the delegation's grant expired) is listed too, as the call may have run before the
+    \* abort and every later re-run meets the same refusal (model 11's D2).
     rec := IF RbOk(self, cerr) THEN "ok" ELSE "none";
     rbOut[self] := IF RbOk(self, cerr) \/ SDone \/ Bug("NoRbUnknown") THEN "err"
-                   ELSE IF Cls(self, cerr) = "unk" \/ cerr = "ok" THEN "unk"
+                   ELSE IF Cls(self, cerr) = "unk" \/ cerr \in {"ok", "guard"} THEN "unk"
                    ELSE "err";
   else
     rec := RecOf(self, cerr);
@@ -758,7 +761,7 @@ FinalSt(c) == IF Seal(c) THEN "refusedClosed" ELSE CloseSt(c)
 NotCalled(c, e) == IF Bug("FlagRule") THEN bg[c] # "yes"
                    ELSE \/ FinalSt(c) = "refusedClosed"
                         \/ FinalSt(c) = "refused"
-                        \/ FinalSt(c) = "closed" /\ e = "nc"
+                        \/ FinalSt(c) = "closed" /\ e \in {"nc", "guard"}
 ReachedAt(c) == IF Bug("FlagRule") THEN bg[c] = "yes" ELSE FinalSt(c) = "reached"
 
 
@@ -943,7 +946,7 @@ IEnter(self) == /\ pc[self] = "IEnter"
                                             ELSE /\ \/ /\ guards < MaxGuard
                                                        /\ guards' = guards + 1
                                                        /\ st' = RefuseSt(self)
-                                                       /\ iret' = [iret EXCEPT ![self] = "nc"]
+                                                       /\ iret' = [iret EXCEPT ![self] = "guard"]
                                                        /\ ion' = [ion EXCEPT ![self] = FALSE]
                                                        /\ pc' = [pc EXCEPT ![self] = "IWait"]
                                                        /\ UNCHANGED <<ranc, everReached>>
@@ -1025,7 +1028,7 @@ IEnter2(self) == /\ pc[self] = "IEnter2"
                                   ELSE /\ \/ /\ guards < MaxGuard
                                              /\ guards' = guards + 1
                                              /\ st' = RefuseSt(self)
-                                             /\ iret' = [iret EXCEPT ![self] = "nc"]
+                                             /\ iret' = [iret EXCEPT ![self] = "guard"]
                                              /\ ion' = [ion EXCEPT ![self] = FALSE]
                                              /\ pc' = [pc EXCEPT ![self] = "IWait"]
                                              /\ UNCHANGED everReached
@@ -1364,7 +1367,7 @@ LClose(self) == /\ pc[self] = "LClose"
                 /\ IF rbm[self]
                       THEN /\ rec' = [rec EXCEPT ![self] = IF RbOk(self, cerr[self]) THEN "ok" ELSE "none"]
                            /\ rbOut' = [rbOut EXCEPT ![self] = IF RbOk(self, cerr[self]) \/ SDone \/ Bug("NoRbUnknown") THEN "err"
-                                                               ELSE IF Cls(self, cerr[self]) = "unk" \/ cerr[self] = "ok" THEN "unk"
+                                                               ELSE IF Cls(self, cerr[self]) = "unk" \/ cerr[self] \in {"ok", "guard"} THEN "unk"
                                                                ELSE "err"]
                            /\ gret' = gret
                       ELSE /\ rec' = [rec EXCEPT ![self] = RecOf(self, cerr[self])]

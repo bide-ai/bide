@@ -829,8 +829,9 @@ succeeds or its process crashes.
   result is compensated, as a memoized step whose record can fail; a retry-safe step with no
   result is re-run through its middleware chain, in a later `RunSaga`'s context, and its result
   compensated; only a re-run that reached the tool has a result. A re-run with an unknown
-  outcome is listed and the walk goes on; any other error, or a failed write, stops the rollback,
-  and a later `RunSaga` resumes it.
+  outcome, or refused by the guard (the delegation's grant expired, so every later re-run would
+  be refused too), is listed and the walk goes on; any other error, or a failed write, stops the
+  rollback, and a later `RunSaga` resumes it.
 - **Faults**, each with a budget: a store write that errors (committed or not, A3), a process
   crash (every goroutine, leaked ones included, and `pendingClaims`), a run cancellation, a tool
   deadline, a guard refusal (a delegated grant expired), a tool that says its outcome is unknown,
@@ -914,6 +915,7 @@ findings (below).
 | `saga-idem` | nightly | a retry-safe saga step that changes state, contract middleware, every fault (T3's shape) | 532,471 | 3 s |
 | `rollback-rerun` | nightly | the rollback re-runs a retry-safe step cut off by a sibling's saga failure: `next` left running, a cache answer, a cancellation (T4, T5) | 245,482 | 3 s |
 | `live-rollback` | ci | `RollbackEnds`: a result check that rejects every success of the re-run step | 900 | 1 s |
+| `rollback-guard` | ci | the rollback's re-run refused by `toolhook.CallGuard` (an expired delegation grant): listed as an unknown outcome, and the rollback ends (model 11's D2) | 24,232 | 2 s |
 | `deep-adv-a2` | nightly | one side effect, any middleware, two extra invocations and two error replies, four attempts | 46,315,249 | 8 min* |
 | `deep-adv-two` | nightly | two side effects, any middleware but a direct call, a cancellation and an error reply | 103,675,470 | 16 min* |
 | `deep-two-side` | nightly | two side effects, contract middleware, every fault | 5,913,713 | 38 s* |
