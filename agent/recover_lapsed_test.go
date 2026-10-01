@@ -208,3 +208,102 @@ func (u *unleasedStore) Runs(ctx context.Context, f RunFilter) iter.Seq2[string,
 	u.mu.Unlock()
 	return u.m.Runs(ctx, f)
 }
+
+// The lapsed loop drives only the unfinished runs whose lease lapsed: while the full pass's only
+// slot is taken, it leaves alone a run nobody leases, a run whose lease is live, and a finished run
+// whose holder died before releasing its lease.
+func TestRecoverLoop_LapsedLoopDrivesOnlyLapsedUnfinishedRuns(t *testing.T) {
+	synctest.Test(t, testRecoverLoopLapsedLoopDrivesOnlyLapsedUnfinishedRuns)
+}
+
+func testRecoverLoopLapsedLoopDrivesOnlyLapsedUnfinishedRuns(t *testing.T) {
+	ctx := context.Background()
+	s := &countingStore{MemStore: NewMemStore()}
+	for _, id := range []string{"a", "done", "live", "none"} {
+		seedRun(t, s.MemStore, id)
+	}
+	if _, err := s.Do(ctx, "done", runCompleteStep, func(context.Context) (Record, error) { return Record{Kind: StepValue}, nil }); err != nil {
+		t.Fatal(err)
+	}
+	if ok, _ := s.MemStore.AcquireLease(ctx, "done", "dead-worker#0", time.Millisecond); !ok {
+		t.Fatal("setup: the dead worker should hold done")
+	}
+	if ok, _ := s.MemStore.AcquireLease(ctx, "live", "other-worker#0", time.Hour); !ok {
+		t.Fatal("setup: the other worker should hold live")
+	}
+	release := make(chan struct{})
+	stop := runLoop(t, s, func(ctx context.Context, id string) error {
+		if id == "a" {
+			<-release // holds the full pass's only slot
+		}
+		return nil
+	}, WithRecoverInterval(20*time.Millisecond), WithRecoverConcurrency(1))
+	defer stop()
+	time.Sleep(200 * time.Millisecond) // ten passes of the lapsed loop
+	for _, id := range []string{"done", "live", "none"} {
+		if n := s.acquires(id); n != 0 {
+			t.Errorf("run %s was leased %d times while the full pass was busy, want none: the lapsed loop drove it", id, n)
+		}
+	}
+	close(release)
+}
+
+// MemStore's lapsed listing agrees with AcquireLease at the expiry instant: a lease is lapsed from
+// the moment another holder can take it.
+func TestMemStore_LeaseLapsedAtExpiry(t *testing.T) {
+	ctx := context.Background()
+	s := NewMemStore()
+	seedRun(t, s, "r")
+	t0 := time.Unix(1000, 0)
+	s.setNow(func() time.Time { return t0 })
+	if ok, _ := s.AcquireLease(ctx, "r", "dead#0", time.Second); !ok {
+		t.Fatal("setup: dead#0 should hold r")
+	}
+	list := func() []string {
+		var out []string
+		for id, err := range s.Runs(ctx, RunFilter{LeaseLapsed: true}) {
+			if err != nil {
+				t.Fatal(err)
+			}
+			out = append(out, id)
+		}
+		return out
+	}
+	s.setNow(func() time.Time { return t0.Add(time.Second - 1) })
+	if got := list(); len(got) != 0 {
+		t.Fatalf("a nanosecond before expiry, Runs(LeaseLapsed) = %v, want none", got)
+	}
+	s.setNow(func() time.Time { return t0.Add(time.Second) })
+	if got := list(); len(got) != 1 {
+		t.Fatalf("at expiry, Runs(LeaseLapsed) = %v, want [r]", got)
+	}
+	if ok, _ := s.AcquireLease(ctx, "r", "new#0", time.Second); !ok {
+		t.Fatal("at expiry AcquireLease refused a lease Runs(LeaseLapsed) listed as lapsed")
+	}
+}
+
+// A pass skips a run this process is already driving without waiting for a slot: with the only
+// slot held by that run's long drive, the full pass still ends at once and the next one starts on
+// schedule.
+func TestRecoverLoop_PassDoesNotWaitForASlotForARunInFlight(t *testing.T) {
+	synctest.Test(t, testRecoverLoopPassDoesNotWaitForASlotForARunInFlight)
+}
+
+func testRecoverLoopPassDoesNotWaitForASlotForARunInFlight(t *testing.T) {
+	s := &countingStore{MemStore: NewMemStore()}
+	seedRun(t, s.MemStore, "a")
+	release := make(chan struct{})
+	stop := runLoop(t, s, func(ctx context.Context, id string) error {
+		<-release
+		return nil
+	}, WithRecoverInterval(20*time.Millisecond), WithRecoverConcurrency(1))
+	defer stop()
+	time.Sleep(105 * time.Millisecond)
+	s.mu.Lock()
+	lists := s.lists
+	s.mu.Unlock()
+	if lists != 6 {
+		t.Fatalf("%d full passes in 105ms with a 20ms interval, want 6: a pass waited for a slot for the run already in flight", lists)
+	}
+	close(release)
+}
