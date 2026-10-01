@@ -178,6 +178,9 @@ func TestRev117e_T5_ReachedBeforeCloseBeginsAfter(t *testing.T) {
 	if err := <-second; !errors.Is(err, ErrToolNotCalled) || charges.Load() != 1 {
 		t.Fatalf("second invocation = %v, charges %d; want it refused and one charge", err, charges.Load())
 	}
+	if n := inflightEntries(); n != 0 {
+		t.Fatalf("%d in-flight entries left after the refused invocation", n)
+	}
 }
 
 // The error path: a retry-safe saga write (no compensator, so no arguments record) whose re-drive

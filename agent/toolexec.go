@@ -279,9 +279,68 @@ func tracked(s Safety) bool { return !s.ReadOnly }
 // path stays as it was.
 //
 //go:noinline
-func callCounted(ctx context.Context, t Tool, args json.RawMessage, key inflightKey) (json.RawMessage, error) {
-	defer inflightAdd(key, -1)
+func callCounted(ctx context.Context, t Tool, args json.RawMessage, storeID any, runID, id string) (json.RawMessage, error) {
+	defer countOut(storeID, runID, id)
 	return t.Call(ctx, args)
+}
+
+// countIn counts an invocation of the call in flight; countOut counts it out; countRunning reports
+// whether any invocation of it is in flight (see inflight).
+//
+//go:noinline
+func countIn(storeID any, runID, id string) { inflightAdd(inflightKey{storeID, runID, id}, 1) }
+
+//go:noinline
+func countOut(storeID any, runID, id string) { inflightAdd(inflightKey{storeID, runID, id}, -1) }
+
+//go:noinline
+func countRunning(storeID any, runID, id string) bool {
+	return inflightAdd(inflightKey{storeID, runID, id}, 0) > 0
+}
+
+// The error builders below are kept out of line (go:noinline) on purpose. Each fmt.Errorf call
+// site holds its own argument array and interface temporaries in its caller's frame, and the base
+// handler and the chain wrapper run on every tool call's goroutine: built inline, their frames grew
+// enough to push each call's goroutine over a stack-size boundary, and copying the stack on every
+// call cost about 20% of a tool-calling run's CPU (#117). Keep cold paths here, not inline.
+
+//go:noinline
+func errNotCalled(err error) error { return fmt.Errorf("%w (%w)", err, ErrToolNotCalled) }
+
+//go:noinline
+func errCallChanged(origID, origName, id, name string) error {
+	return fmt.Errorf("tool middleware changed call %s (tool %q) to call %s (tool %q); middleware may change a call's arguments, not its tool or ID: %w",
+		origID, cutName(origName), cutName(id), cutName(name), ErrConfig)
+}
+
+//go:noinline
+func errUnknownToolCall(name string) error {
+	return fmt.Errorf("call to unknown tool %q: %w", cutName(name), ErrUnknownTool)
+}
+
+//go:noinline
+func errDoneBeforeCall(ctx context.Context, name, id string) error {
+	return fmt.Errorf("tool %q (call %s) was not started: its context was done before the call: %w", name, id, doneCause(ctx))
+}
+
+//go:noinline
+func errChainReturned(name, id string) error {
+	return fmt.Errorf("tool %q (call %s) was not started: the tool middleware chain had already returned: %w", name, id, ErrToolNotCalled)
+}
+
+//go:noinline
+func errReinvoked(name, id string) error {
+	return fmt.Errorf("tool %q (call %s) already ran and is not retry-safe: %w", name, id, ErrToolReinvoked)
+}
+
+//go:noinline
+func errUnprovenFailure(name, id string, err error) error {
+	return fmt.Errorf("tool %q (call %s): the chain returned an error, but the tool itself did not fail: %w (%w)", name, id, err, ErrToolOutcomeUnknown)
+}
+
+//go:noinline
+func errResultWhileRunning(name, id string) error {
+	return fmt.Errorf("tool %q (call %s): the chain returned a result while the tool was still running: %w", name, id, ErrToolOutcomeUnknown)
 }
 
 // inflightAdd adds d to k's count and returns the new count; a count of zero is deleted.
@@ -402,7 +461,7 @@ func (a *Agent) toolHandler(runID string) func(context.Context, ToolUse) (json.R
 			if call.state != nil {
 				call.state.CompareAndSwap(callOpen, callRefused)
 			}
-			return nil, fmt.Errorf("%w (%w)", err, ErrToolNotCalled)
+			return nil, errNotCalled(err)
 		}
 		// The call dispatches as the model made it: a middleware may rewrite the arguments, but a
 		// call renamed to another tool, or under another call's ID, would run a tool the model did
@@ -410,17 +469,16 @@ func (a *Agent) toolHandler(runID string) func(context.Context, ToolUse) (json.R
 		// itself, rather than a copy of the one it was passed, carries no original to check, and
 		// is refused the same way.
 		if call.origID == "" || tu.ID != call.origID || tu.Name != call.origName {
-			return refuse(fmt.Errorf("tool middleware changed call %s (tool %q) to call %s (tool %q); middleware may change a call's arguments, not its tool or ID: %w",
-				call.origID, cutName(call.origName), cutName(tu.ID), cutName(tu.Name), ErrConfig))
+			return refuse(errCallChanged(call.origID, call.origName, tu.ID, tu.Name))
 		}
 		t, ok := a.tools[tu.Name]
 		if !ok {
-			return refuse(fmt.Errorf("call to unknown tool %q: %w", cutName(tu.Name), ErrUnknownTool))
+			return refuse(errUnknownToolCall(tu.Name))
 		}
 		// A deadline that passed in the middleware (a rate limiter's wait) leaves the tool uncalled:
 		// the call fails as a known timeout rather than start an effect already out of time.
 		if ctxDone(ctx) {
-			return refuse(fmt.Errorf("tool %q (call %s) was not started: its context was done before the call: %w", tu.Name, tu.ID, doneCause(ctx)))
+			return refuse(errDoneBeforeCall(ctx, tu.Name, tu.ID))
 		}
 		// A guard of this module (audit: the bound grant has not expired) refuses a call its tool
 		// must not run; the refusal is a known failure, recorded.
@@ -434,7 +492,7 @@ func (a *Agent) toolHandler(runID string) func(context.Context, ToolUse) (json.R
 		if call.state != nil && !enterTool(call.state) {
 			// The chain already returned (a middleware left next running): the loop has decided
 			// the call's outcome without this invocation, so it must not reach the tool.
-			return nil, fmt.Errorf("tool %q (call %s) was not started: the tool middleware chain had already returned: %w", tu.Name, tu.ID, ErrToolNotCalled)
+			return nil, errChainReturned(tu.Name, tu.ID)
 		}
 		// A failure here returns before the tool's Call began: the loop seals the call's began word
 		// and counts the call as not called (see beganNone).
@@ -447,16 +505,14 @@ func (a *Agent) toolHandler(runID string) func(context.Context, ToolUse) (json.R
 		// (and a result it returns has an unknown outcome), or this invocation sees the call closed
 		// and does not begin the tool. A ReadOnly call is not counted (see tracked).
 		counted := tracked(spec.Safety)
-		var key inflightKey
 		if counted {
-			key = inflightKey{storeID, runID, tu.ID}
-			inflightAdd(key, 1)
+			countIn(storeID, runID, tu.ID)
 		}
 		if call.state != nil && callIsClosed(call.state) {
 			if counted {
-				inflightAdd(key, -1)
+				countOut(storeID, runID, tu.ID)
 			}
-			return nil, fmt.Errorf("tool %q (call %s) was not started: the tool middleware chain had already returned: %w", tu.Name, tu.ID, ErrToolNotCalled)
+			return nil, errChainReturned(tu.Name, tu.ID)
 		}
 		// Begin the call, immediately before the tool. The registered spec decides, never
 		// call.Spec: a tool that is not retry-safe is begun once per call, and an invocation that
@@ -466,13 +522,13 @@ func (a *Agent) toolHandler(runID string) func(context.Context, ToolUse) (json.R
 			var refused error
 			switch first, sealed := beginCall(call.began); {
 			case sealed:
-				refused = fmt.Errorf("tool %q (call %s) was not started: the tool middleware chain had already returned: %w", tu.Name, tu.ID, ErrToolNotCalled)
+				refused = errChainReturned(tu.Name, tu.ID)
 			case !first && !spec.Safety.RetrySafe():
-				refused = fmt.Errorf("tool %q (call %s) already ran and is not retry-safe: %w", tu.Name, tu.ID, ErrToolReinvoked)
+				refused = errReinvoked(tu.Name, tu.ID)
 			}
 			if refused != nil {
 				if counted {
-					inflightAdd(key, -1)
+					countOut(storeID, runID, tu.ID)
 				}
 				return nil, refused
 			}
@@ -486,7 +542,7 @@ func (a *Agent) toolHandler(runID string) func(context.Context, ToolUse) (json.R
 		var res json.RawMessage
 		var err error
 		if counted {
-			res, err = callCounted(ctx, t, tu.Args, key)
+			res, err = callCounted(ctx, t, tu.Args, storeID, runID, tu.ID)
 		} else {
 			res, err = t.Call(ctx, tu.Args)
 		}
@@ -521,7 +577,7 @@ func (a *Agent) toolHandler(runID string) func(context.Context, ToolUse) (json.R
 		// An invocation of this call's tool still running in this process (a next left running, a
 		// sibling invocation, or one a cancelled earlier drive left behind) may yet take effect,
 		// whether or not this chain reached the tool (a cache answer on a re-drive does not).
-		running := tracked(call.Spec.Safety) && inflightAdd(inflightKey{storeID, runID, tu.ID}, 0) > 0
+		running := tracked(call.Spec.Safety) && countRunning(storeID, runID, tu.ID)
 		if state == callReached && err != nil && !ctxDone(ctx) &&
 			((out.Load() != toolFailed || running) && a.unprovenFailure(ctx, tu.Name) || earlier.Load() && a.specs[tu.Name].Safety.retrySafeWrite() && InSaga(ctx)) {
 			// The tool began, and did not itself fail: it is still running (a next left running),
@@ -536,7 +592,7 @@ func (a *Agent) toolHandler(runID string) func(context.Context, ToolUse) (json.R
 			// recorded with an unknown outcome and reported in SagaAborted.UnknownOutcome. So is
 			// such a step whose last invocation failed after an earlier one that did not (a middleware
 			// retried it): the earlier one may have taken effect.
-			err = fmt.Errorf("tool %q (call %s): the chain returned an error, but the tool itself did not fail: %w (%w)", tu.Name, tu.ID, err, ErrToolOutcomeUnknown)
+			err = errUnprovenFailure(tu.Name, tu.ID, err)
 		}
 		if running && err == nil && a.unprovenFailure(ctx, tu.Name) {
 			// The chain answered while an invocation of the call's tool is still running (a
@@ -546,7 +602,7 @@ func (a *Agent) toolHandler(runID string) func(context.Context, ToolUse) (json.R
 			// so the call's outcome is unknown. A side effect halts; a retry-safe saga write is
 			// reported as unknown and never compensated. (A retry-safe tool outside a saga, or a
 			// ReadOnly one, may run again by its contract, so its result stands.)
-			res, err = nil, fmt.Errorf("tool %q (call %s): the chain returned a result while the tool was still running: %w", tu.Name, tu.ID, ErrToolOutcomeUnknown)
+			res, err = nil, errResultWhileRunning(tu.Name, tu.ID)
 		}
 		return res, state, err
 	}
