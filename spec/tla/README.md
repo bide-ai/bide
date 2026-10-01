@@ -1316,8 +1316,8 @@ its fix, as for L2 and L3.
 - **L7: a remembered skip loses a run** (`findings/not-started-remembered`, `StartedRunSettles`).
   The design reports a run with no `run:start` once per process. If the process remembers the
   skip rather than the report, a run found unstarted (a worker took its lease before the
-  primary's first drive) is skipped for good once the primary starts it and dies (27 states, a
-  liveness trace). Proposed rule: rule 15.
+  primary's first drive) is skipped for good once the primary starts it and dies (a liveness
+  trace). Proposed rule: rule 15.
 
 ### Configurations
 
@@ -1326,25 +1326,37 @@ States are distinct states. The `ci` rows were measured on the CI runner (GitHub
 under load). Each passing configuration is also run for vacuity, and the safety configurations
 run without `Timed`, so time and the processes interleave freely. The `nightly` rows raise one
 budget each: two workers with an error reply and a crash, two calls with `Cancel`, the operator
-with two calls, three runs with a crash, two workers with a stall. Model 10 adds about 50 seconds
-to the pull-request job.
+with two calls, three runs with a crash, two workers with a stall, and for P14 a saga's `Cancel`
+with the operator and an error reply, `Status` over a saga of two calls, the options with an
+error reply, and the filter with two workers. Model 10 adds about 75 seconds of TLC time to the
+pull-request job (about 55 before P14's extension; measured on the CI runner).
 
 | Config | Group | What | States | Time |
 |---|---|---|---|---|
-| `life-leased` | ci | One run of two calls, a saga (a failing call rolls it back to run:aborted): a leased primary Run and a RecoverLoop worker; an error reply and a crash of either process. | 102,124 | 2 s |
-| `life-stall` | ci | One run: a leased primary Run and a worker; a lease holder stalls past its TTL and wakes; a crash. A stalled holder may resume a run that ended (limits/stall-resume-finished) and may drive beside the run's new holder (limits/stall-two-drivers); every other property holds. | 85,718 | 2 s |
-| `life-paused` | ci | Two runs, one waiting for an approval and one halted, a leased primary on a third that a worker recovers; the operator approves and resolves. | 136,880 | 3 s |
-| `life-cancel` | ci | Cancel (P14) under the proposed rules: run:cancelled read again once a claim is won, before the call, and the first end marker in journal order is the run's verdict. A leased primary, a worker, two calls, a crash. | 101,555 | 2 s |
-| `life-cancel-plain` | ci | Cancel (P14) under the proposed rules, with a plain Run (no lease) and a worker; a crash. | 157,820 | 3 s |
-| `pickup-split` | ci | The recovery rule since #126 (PassRule "split"): a second loop per worker visits only the runs whose lease lapsed, every interval, with a slot of its own. Two halted runs listed before a leased primary's run; the primary dies. Takeover within Bound ticks of the lapse. | 4,859 | 1 s |
-| `pickup-reach` | ci | Vacuity of the pickup configurations: a dead holder's run waits after its lease lapsed (PickupNotReachable must be violated), under the rule since #126. | 189 | <1 s |
-| `life-resolve` | ci | One run: a leased primary Run, one Recover pass (not RecoverLoop) and an operator resolving halts; an error reply and a crash. | 32,982 | 1 s |
-| `live-pickup` | ci | PickedUp under v0.9.0's rule: a halted run listed before a leased primary's run, the primary dies; every step and the clock weakly fair. | 4,699 | 2 s |
-| `deep-two-workers` | nightly | One run: a leased primary Run and two RecoverLoop workers; an error reply and a crash. | 3,620,876 | 2 min |
-| `deep-cancel-plain` | nightly | Cancel (P14) under the proposed rules, a plain Run of two calls and a worker; an error reply and a crash. | 2,290,004 | 1 min |
-| `deep-leased-resolve` | nightly | One run of two calls, a saga: a leased primary Run, a RecoverLoop worker and an operator resolving halts; an error reply and a crash. | 1,269,395 | 34 s |
-| `deep-paused` | nightly | Three runs (one waiting for an approval, one halted, a leased primary's), a worker, the operator, a crash. | 3,440,717 | 2 min |
-| `deep-stall` | nightly | One run: a leased primary Run and two workers; a lease holder stalls past its TTL. | 2,183,810 | 1 min |
+| `life-leased` | ci | One run of two calls, a saga (a failing call rolls it back to run:aborted): a leased primary Run and a RecoverLoop worker; an error reply and a crash of either process. | 59,742 | 2 s |
+| `life-stall` | ci | One run: a leased primary Run and a worker; a lease holder stalls past its TTL and wakes; a crash. A stalled holder may resume a run that ended (limits/stall-resume-finished) and may drive beside the run's new holder (limits/stall-two-drivers); every other property holds. | 126,158 | 3 s |
+| `life-paused` | ci | Two runs, one waiting for an approval and one halted, a leased primary on a third that a worker recovers; the operator approves and resolves. | 110,574 | 3 s |
+| `life-cancel` | ci | Cancel (P14) under the adopted rules: run:cancelled read again once a claim is won, before the call (L2), and the first end marker in journal order is the run's verdict (L3). A leased primary, a worker, two calls, a crash. | 73,178 | 2 s |
+| `life-cancel-plain` | ci | Cancel (P14) under the adopted rules, with a plain Run (no lease) and a worker; a crash. | 291,373 | 7 s |
+| `pickup-split` | ci | The recovery rule since #126 (PassRule "split"): a second loop per worker visits only the runs whose lease lapsed, every interval, with a slot of its own. Two halted runs listed before a leased primary's run; the primary dies. Takeover within Bound ticks of the lapse. | 5,603 | 1 s |
+| `pickup-reach` | ci | Vacuity of the pickup configurations: a dead holder's run waits after its lease lapsed (PickupNotReachable must be violated), under the rule since #126. | 267 | <1 s |
+| `life-resolve` | ci | One run: a leased primary Run, one Recover pass (not RecoverLoop) and an operator resolving halts; an error reply and a crash. | 13,644 | 1 s |
+| `live-pickup` | ci | PickedUp under v0.9.0's rule: a halted run listed before a leased primary's run, the primary dies; every step and the clock weakly fair. | 7,775 | 3 s |
+| `life-cancel-saga` | ci | Cancel (P14) on a saga of two calls under the proposed rule (L4): a rollback request, answered by the drive's rollback and run:cancelled. A leased primary, a worker, a crash. | 95,034 | 3 s |
+| `life-status` | ci | Status (D8) by Gets with the re-read (L6): a saga of one call, a plain Run, Cancel racing completion and the rollback. | 1,065 | <1 s |
+| `life-status-load` | ci | Status (D8) by one Load, the same scenario. | 435 | <1 s |
+| `life-filter` | ci | The tool filter (D3), journaled and enforced at dispatch (L5): the primary filters call 2's tool out, a worker recovers the run passing no filter; a crash. | 6,634 | 1 s |
+| `life-limits` | ci | The journaling rule (B1): a primary with a one-turn limit; a later Resume raises it (an amendment), or passes another prompt or filter (ErrConfig); a worker; a crash. | 89,248 | 3 s |
+| `life-not-started` | ci | A run with no run:start: recovery skips it, reports it once per process and reads run:start again every pass (L7); the primary dies after starting the run. StartedRunSettles and PickedUp, every step and the clock weakly fair. | 4,027 | 2 s |
+| `deep-two-workers` | nightly | One run: a leased primary Run and two RecoverLoop workers; an error reply and a crash. | 3,037,659 | 1 min |
+| `deep-cancel-plain` | nightly | Cancel (P14) under the adopted rules, a plain Run of two calls and a worker; an error reply and a crash. | 4,065,880 | 44 s |
+| `deep-leased-resolve` | nightly | One run of two calls, a saga: a leased primary Run, a RecoverLoop worker and an operator resolving halts; an error reply and a crash. | 593,326 | 7 s |
+| `deep-paused` | nightly | Three runs (one waiting for an approval, one halted, a leased primary's), a worker, the operator, a crash. | 2,535,494 | 35 s |
+| `deep-stall` | nightly | One run: a leased primary Run and two workers; a lease holder stalls past its TTL. | 4,515,408 | 1 min |
+| `deep-cancel-saga` | nightly | Cancel (P14) on a saga of two calls under the proposed rules, an operator resolving halts: a leased primary, a worker, an error reply, a crash. | 4,230,609 | 49 s |
+| `deep-status` | nightly | Status (D8, Gets and the re-read) on a saga of two calls: a plain Run, a worker, Cancel racing completion and the rollback, a crash. | 14,146,194 | 4 min |
+| `deep-options` | nightly | The journaling rule (B1) and the filter: a one-turn primary, a later Resume (raise, other prompt, other filter), a worker, an error reply, a crash. | 321,358 | 4 s |
+| `deep-filter` | nightly | The tool filter (D3): call 2's tool filtered out, two workers passing no filter, an error reply, a crash. | 4,657,685 | 1 min |
 
 ### Regressions and limits
 
@@ -1376,7 +1388,7 @@ options. L4 to L7 are open findings against P14's design (above).
 | `findings/cancel-saga-marker` | finding | L4: D1 as written, Cancel writes run:cancelled on a saga too; recovery excludes the run, so a saga cancelled while no drive will reach a check (or completed after the marker) is never rolled back (Api.sagaCancel "marker"). | `CancelRollsBack` | 13 states |
 | `findings/filter-request-only` | finding | L5: the tool filter only narrows Request.Tools; a turn naming a filtered-out tool is dispatched and fires (Api.filter "request"). | `FilterHonoured` | 11 states |
 | `findings/status-gets` | finding | L6: Status by one Get per end marker reads run:complete before the run completes and run:cancelled after Cancel lands, and reports a completed run cancelled (Api.status "gets"). | `StatusTruthful` | 17 states |
-| `findings/not-started-remembered` | finding | L7: recovery remembers a run it found with no run:start and skips it for good; the primary starts the run after that pass and dies (Api.notStarted "remember"). | `StartedRunSettles` (liveness) | NN states |
+| `findings/not-started-remembered` | finding | L7: recovery remembers a run it found with no run:start and skips it for good; the primary starts the run after that pass and dies (Api.notStarted "remember"). | `StartedRunSettles` (liveness) | a lasso |
 | `limits/stall-resume-finished` | limit | #114's documented residual: a worker stalls past its TTL between the re-check and resume; the primary takes the lapsed lease and finishes the run; the worker wakes and resumes it. | `NoResumeOfFinished` | 18 states |
 | `limits/plain-run-resume-finished` | limit | #114's other residual: a plain Run holds no lease, so it can finish the run between a worker's re-check and resume. | `NoResumeOfFinished` | 15 states |
 | `limits/cancel-resume` | limit | Cancel takes no lease, so it can land between a worker's re-check and resume; the drive's start check then returns the run cancelled without a write. | `NoResumeOfFinished` | 9 states |
@@ -1410,7 +1422,16 @@ The mechanisms of section 6 of the plan, as they apply here:
 - **Findings need Go tests before their fixes**, as for every model: L1's is
   `TestRecoverLoop_TakesOverALapsedLeaseWithinAnIntervalBehindHaltedRuns` (`agent/recover_lapsed_test.go`,
   committed failing before #126's fix), which measures a takeover behind halted runs against the
-  interval, and L2 and L3 become tests of P14.
+  interval. For P14, each counterexample above becomes a test of section 10.1's list: L2's and
+  L3's (`Cancel` on a live run), L4's (`Cancel` on a saga, with rollback), L5's and B1's (a budget,
+  prompt and filter passed per run survive `RecoverLoop`; a limit amendment is journaled; other
+  mismatches are `ErrConfig`; principal restored), L6's (`Status`), L7's and
+  `not-started-every-pass` (a not-started run is skipped and reported once), each failing before
+  the rule it checks is built.
+- **P14's markers.** The steps on the no-code list for P14 (`DStart`, `DAmend`, `DTurn`, `DPost`,
+  `DVerdict`, `CGet`, `CIns`, `CRead`, `CReq`, `SPick`, `SStart`, `SGet`) get their
+  `// protocol:lifecycle begin ... end` regions in P14's pull request, which takes them off the
+  list; modelsync then holds them to the model like every other row.
 
 ## Model 11: delegation, sub-run authority and saga trees
 
@@ -1656,7 +1677,9 @@ needs three concurrent invocations of one call, or a second turn, is outside the
 
 Model 10 adds: one or two recovery workers at concurrency 1, up to three runs (four in the pickup
 measurements), one or two calls per run, one error reply, one crash and one stall per run of the
-checker. The pickup bound is measured for a TTL and an interval of 2 ticks and up to three halted
+checker. For P14: one `Cancel` and one `Status` call, of one run; one later caller (`Resume`)
+choosing among three option sets; a tool filter that drops one call's tool; turn limits of one
+to three calls. The pickup bound is measured for a TTL and an interval of 2 ticks and up to three halted
 runs; the growth it shows (about one halted run's visit per halted run) is an observation at those
 bounds, not a proof for larger ones.
 
