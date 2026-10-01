@@ -23,7 +23,7 @@ func TestRV126_LapsedRowOnFinishedRunIsNeverReaped(t *testing.T) {
 		if ok, _ := s.AcquireLease(ctx, "f", "dead-worker#0", time.Millisecond); !ok {
 			t.Fatal("setup: the dead worker should hold f")
 		}
-		stop := runLoop(t, s, func(context.Context, string) error { return nil }, WithRecoverInterval(20*time.Millisecond))
+		stop := runLoop(t, s, func(context.Context, string, RunStart) error { return nil }, WithRecoverInterval(20*time.Millisecond))
 		time.Sleep(2 * time.Second) // a hundred passes of each loop
 		synctest.Wait()
 		_ = stop()

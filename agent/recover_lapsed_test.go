@@ -57,7 +57,7 @@ func lapsedTakeover(t *testing.T, halted int, visit, interval, deadTTL time.Dura
 	}
 	lapse := time.Now().Add(deadTTL)
 	drivenAt := make(chan time.Time, 1)
-	stop := runLoop(t, s, func(ctx context.Context, id string) error {
+	stop := runLoop(t, s, func(ctx context.Context, id string, _ RunStart) error {
 		if id != "z" {
 			time.Sleep(visit)
 			return &OutcomeUnknown{RunRef: RunRef{RunID: id}} // halted: stays unfinished
@@ -100,7 +100,7 @@ func testRecoverLoopLoopsDoNotStartARunTheOtherIsDriving(t *testing.T) {
 	}
 	release := make(chan struct{})
 	zStarted := make(chan struct{})
-	stop := runLoop(t, s, func(ctx context.Context, id string) error {
+	stop := runLoop(t, s, func(ctx context.Context, id string, _ RunStart) error {
 		if id == "h" {
 			time.Sleep(50 * time.Millisecond) // holds the full pass's only slot past z's lapse
 			return &OutcomeUnknown{RunRef: RunRef{RunID: id}}
@@ -133,7 +133,7 @@ func testRecoverLoopLapsedLoopSkipsARunItsProcessIsDriving(t *testing.T) {
 	seedRun(t, s.MemStore, "r")
 	release := make(chan struct{})
 	started := make(chan struct{})
-	stop := runLoop(t, s, func(ctx context.Context, id string) error {
+	stop := runLoop(t, s, func(ctx context.Context, id string, _ RunStart) error {
 		close(started)
 		<-release // ignores ctx: still driving after the lease lapsed
 		return nil
@@ -173,7 +173,7 @@ func TestRecoverLoop_NoLapsedLoopWithoutLeaser(t *testing.T) {
 
 func testRecoverLoopNoLapsedLoopWithoutLeaser(t *testing.T) {
 	s := &unleasedStore{m: NewMemStore()}
-	stop := runLoop(t, s, func(context.Context, string) error { return nil }, WithRecoverInterval(10*time.Millisecond))
+	stop := runLoop(t, s, func(context.Context, string, RunStart) error { return nil }, WithRecoverInterval(10*time.Millisecond))
 	time.Sleep(55 * time.Millisecond)
 	_ = stop()
 	s.mu.Lock()
@@ -233,7 +233,7 @@ func testRecoverLoopLapsedLoopDrivesOnlyLapsedUnfinishedRuns(t *testing.T) {
 		t.Fatal("setup: the other worker should hold live")
 	}
 	release := make(chan struct{})
-	stop := runLoop(t, s, func(ctx context.Context, id string) error {
+	stop := runLoop(t, s, func(ctx context.Context, id string, _ RunStart) error {
 		if id == "a" {
 			<-release // holds the full pass's only slot
 		}
@@ -294,7 +294,7 @@ func testRecoverLoopPassDoesNotWaitForASlotForARunInFlight(t *testing.T) {
 	s := &countingStore{MemStore: NewMemStore()}
 	seedRun(t, s.MemStore, "a")
 	release := make(chan struct{})
-	stop := runLoop(t, s, func(ctx context.Context, id string) error {
+	stop := runLoop(t, s, func(ctx context.Context, id string, _ RunStart) error {
 		<-release
 		return nil
 	}, WithRecoverInterval(20*time.Millisecond), WithRecoverConcurrency(1))
@@ -325,7 +325,7 @@ func testRecoverLoopReportsAFailedReap(t *testing.T) {
 	var errs []error
 	driven := make(chan struct{})
 	var once sync.Once
-	stop := runLoop(t, s, func(context.Context, string) error {
+	stop := runLoop(t, s, func(context.Context, string, RunStart) error {
 		once.Do(func() { close(driven) })
 		return &OutcomeUnknown{RunRef: RunRef{RunID: "z"}}
 	}, WithRecoverInterval(20*time.Millisecond), WithRecoverErrors(func(err error) {

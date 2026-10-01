@@ -22,7 +22,7 @@ func TestLease_RejectsNonPositiveTTL(t *testing.T) {
 				t.Fatalf("ttl %v: Lease = (%v, %v), ran=%v; want (false, ErrConfig) and no drive", ttl, driven, err, ran)
 			}
 			seedRun(t, s.MemStore, "r")
-			if _, err := Recover(ctx, s, func(context.Context, string) error { ran = true; return nil }, WithLeaseTTL(ttl)); !errors.Is(err, ErrConfig) || ran || s.listed {
+			if _, err := Recover(ctx, s, func(context.Context, string, RunStart) error { ran = true; return nil }, WithLeaseTTL(ttl)); !errors.Is(err, ErrConfig) || ran || s.listed {
 				t.Fatalf("ttl %v: Recover err = %v, ran=%v, listed runs=%v; want ErrConfig before touching the store", ttl, err, ran, s.listed)
 			}
 			continue

@@ -96,7 +96,7 @@ func TestRecover_SkipsSessionRuns(t *testing.T) {
 		t.Fatal("keyed turn finished; want it left unfinished")
 	}
 	var resumed []string
-	n, err := Recover(ctx, store, func(_ context.Context, runID string) error {
+	n, err := Recover(ctx, store, func(_ context.Context, runID string, _ RunStart) error {
 		resumed = append(resumed, runID)
 		return nil
 	})

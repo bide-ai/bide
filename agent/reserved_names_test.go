@@ -80,7 +80,7 @@ func TestRecover_SkipsSubRuns(t *testing.T) {
 		t.Fatalf("run: %v, want a pending approval inside the sub-agent", err)
 	}
 	var asked []string
-	if _, err := Recover(ctx, store, func(ctx context.Context, runID string) error {
+	if _, err := Recover(ctx, store, func(ctx context.Context, runID string, _ RunStart) error {
 		asked = append(asked, runID)
 		_, err := root.Run(ctx, runID, "go")
 		return err

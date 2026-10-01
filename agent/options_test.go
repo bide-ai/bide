@@ -170,10 +170,10 @@ func TestOptions_OtherScopesValidate(t *testing.T) {
 	if _, err := Lease(ctx, store, "r", drive, nil); !errors.Is(err, ErrConfig) {
 		t.Errorf("Lease(nil option) = %v, want ErrConfig", err)
 	}
-	if _, err := Recover(ctx, store, func(context.Context, string) error { return nil }, nil); !errors.Is(err, ErrConfig) {
+	if _, err := Recover(ctx, store, func(context.Context, string, RunStart) error { return nil }, nil); !errors.Is(err, ErrConfig) {
 		t.Errorf("Recover(nil option) = %v, want ErrConfig", err)
 	}
-	if err := RecoverLoop(ctx, store, func(context.Context, string) error { return nil }, nil); !errors.Is(err, ErrConfig) {
+	if err := RecoverLoop(ctx, store, func(context.Context, string, RunStart) error { return nil }, nil); !errors.Is(err, ErrConfig) {
 		t.Errorf("RecoverLoop(nil option) = %v, want ErrConfig", err)
 	}
 	var rc runConfig

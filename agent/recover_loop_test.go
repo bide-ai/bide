@@ -15,7 +15,7 @@ import (
 
 // runLoop runs RecoverLoop in the background and returns a function that stops it and reports
 // what it returned.
-func runLoop(t *testing.T, s Durable, resume func(context.Context, string) error, opts ...RecoverLoopOption) (stop func() error) {
+func runLoop(t *testing.T, s Durable, resume Resumer, opts ...RecoverLoopOption) (stop func() error) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
@@ -48,7 +48,7 @@ func testRecoverLoopTakesOverAfterTheHolderDies(t *testing.T) {
 		t.Fatal("setup: the dead worker should hold r")
 	}
 	drivenAt := make(chan time.Time, 1)
-	stop := runLoop(t, s, func(ctx context.Context, id string) error {
+	stop := runLoop(t, s, func(ctx context.Context, id string, _ RunStart) error {
 		select {
 		case drivenAt <- time.Now():
 		default:
@@ -84,7 +84,7 @@ func testRecoverLoopLongDriveDoesNotBlockOthers(t *testing.T) {
 	}
 	aStarted, bDriven := make(chan struct{}), make(chan struct{})
 	var once sync.Once
-	stop := runLoop(t, s, func(ctx context.Context, id string) error {
+	stop := runLoop(t, s, func(ctx context.Context, id string, _ RunStart) error {
 		switch id {
 		case "a":
 			once.Do(func() { close(aStarted) })
@@ -154,7 +154,7 @@ func TestRecoverLoop_DefaultIntervalIsHalfTheTTL(t *testing.T) {
 
 func testRecoverLoopDefaultIntervalIsHalfTheTTL(t *testing.T) {
 	s := &countingStore{MemStore: NewMemStore()}
-	stop := runLoop(t, s, func(context.Context, string) error { return nil }, WithLeaseTTL(100*time.Millisecond))
+	stop := runLoop(t, s, func(context.Context, string, RunStart) error { return nil }, WithLeaseTTL(100*time.Millisecond))
 	time.Sleep(525 * time.Millisecond)
 	_ = stop()
 	s.mu.Lock()
@@ -177,7 +177,7 @@ func testRecoverLoopWaitsForItsDrivesOnShutdown(t *testing.T) {
 	var mu sync.Mutex
 	returned := false
 	var reported []error
-	stop := runLoop(t, s, func(ctx context.Context, _ string) error {
+	stop := runLoop(t, s, func(ctx context.Context, _ string, _ RunStart) error {
 		close(started)
 		<-ctx.Done()
 		time.Sleep(20 * time.Millisecond) // wind down
@@ -223,7 +223,7 @@ func testRecoverLoopReportsOnlyGenuineFailures(t *testing.T) {
 	var mu sync.Mutex
 	var reported []error
 	drives := map[string]int{}
-	stop := runLoop(t, s, func(ctx context.Context, id string) error {
+	stop := runLoop(t, s, func(ctx context.Context, id string, _ RunStart) error {
 		mu.Lock()
 		drives[id]++
 		mu.Unlock()
@@ -275,7 +275,7 @@ func TestRecoverLoop_RejectsBadConfig(t *testing.T) {
 
 func testRecoverLoopRejectsBadConfig(t *testing.T) {
 	ctx := context.Background()
-	resume := func(context.Context, string) error { return nil }
+	resume := func(context.Context, string, RunStart) error { return nil }
 	for name, tc := range map[string]struct {
 		s    Durable
 		opts []RecoverLoopOption
@@ -313,7 +313,7 @@ func testRecoverLoopEveryPassReachesEveryRun(t *testing.T) {
 	}
 	zDriven := make(chan struct{})
 	var once sync.Once
-	stop := runLoop(t, s, func(ctx context.Context, id string) error {
+	stop := runLoop(t, s, func(ctx context.Context, id string, _ RunStart) error {
 		if id == "z" {
 			once.Do(func() { close(zDriven) })
 			return nil
