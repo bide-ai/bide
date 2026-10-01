@@ -244,7 +244,14 @@ var inflight [64]struct {
 	n  map[inflightKey]int
 }
 
-type inflightKey struct{ runID, id string }
+// inflightKey names a tool call in this process: the identity of the store its run journals to
+// (durableIdentity, so every Journal over one store shares it; nil for a store with none, whose
+// runs then share keys and may see each other's calls as in flight, the conservative side), the
+// run, and the call.
+type inflightKey struct {
+	store     any
+	runID, id string
+}
 
 func inflightShard(k inflightKey) *struct {
 	mu sync.Mutex
@@ -375,6 +382,7 @@ func closeCall(st *atomic.Int32) int32 {
 // chain's entry point for a call of run runID, which also reports the call's final state (see
 // callOpen): reached, refused, or closed.
 func (a *Agent) toolHandler(runID string) func(context.Context, ToolUse) (json.RawMessage, int32, error) {
+	storeID, _ := durableIdentity(a.store) // keys the in-flight count (see inflightKey)
 	// A tool that is not retry-safe runs at most once per tool call, however often a middleware
 	// calls next: the call's began word, set by compare-and-swap here in the base handler, decides,
 	// so no middleware can get around it. (A resume builds a new chain, and the journal's attempt
@@ -430,7 +438,7 @@ func (a *Agent) toolHandler(runID string) func(context.Context, ToolUse) (json.R
 		// sees the count when it returns (and a result it returns has an unknown outcome), or this
 		// invocation sees the call closed and does not begin the tool (see inflight).
 		if a.tracksInflight(tu.Name) {
-			key := inflightKey{runID, tu.ID}
+			key := inflightKey{storeID, runID, tu.ID}
 			inflightAdd(key, 1)
 			defer inflightAdd(key, -1)
 		}
@@ -487,7 +495,7 @@ func (a *Agent) toolHandler(runID string) func(context.Context, ToolUse) (json.R
 		// An invocation of this call's tool still running in this process (a next left running, a
 		// sibling invocation, or one a cancelled earlier drive left behind) may yet take effect,
 		// whether or not this chain reached the tool (a cache answer on a re-drive does not).
-		running := a.tracksInflight(tu.Name) && inflightAdd(inflightKey{runID, tu.ID}, 0) > 0
+		running := a.tracksInflight(tu.Name) && inflightAdd(inflightKey{storeID, runID, tu.ID}, 0) > 0
 		if state == callReached && err != nil && !ctxDone(ctx) &&
 			((out.Load() != toolFailed || running) && a.unprovenFailure(ctx, tu.Name) || earlier.Load() && a.specs[tu.Name].Safety.retrySafeWrite() && InSaga(ctx)) {
 			// The tool began, and did not itself fail: it is still running (a next left running),

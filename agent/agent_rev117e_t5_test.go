@@ -218,3 +218,26 @@ func TestRev117e_T4_OwnFailureWhileEarlierInvocationRuns(t *testing.T) {
 		t.Fatalf("second drive = %v; want write listed as unknown", err)
 	}
 }
+
+// The in-flight count is per store: a run of the same ID and call on another store, still in its
+// tool, does not make this run's result unknown.
+func TestRev117e_T4_InflightIsPerStore(t *testing.T) {
+	release, inTool, done := make(chan struct{}), make(chan struct{}), make(chan error, 1)
+	slow := Func("send", "", Safety{}, func(context.Context, struct{}) (string, error) {
+		close(inTool)
+		<-release
+		return "ok", nil
+	})
+	fast := Func("send", "", Safety{}, func(context.Context, struct{}) (string, error) { return "ok", nil })
+	m := func() Model { return NewScriptedModel(ToolTurn("c1", "send", `{}`), TextTurn("done")) }
+	go func() { _, err := New(m(), NewMemStore(), slow).Run(context.Background(), "r", "go"); done <- err }()
+	<-inTool
+	_, err := New(m(), NewMemStore(), fast).Run(context.Background(), "r", "go")
+	close(release)
+	if err != nil {
+		t.Fatalf("Run on another store = %v; a call of the same run ID elsewhere is not this call", err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
