@@ -28,8 +28,11 @@ The script needs Java 11 or later (`JAVA_HOME` or `java` on `PATH`), `curl`, and
 `shasum`. It downloads the TLA+ tools pinned in [tools.lock](tools.lock) (`tla2tools.jar` from the
 v1.7.4 release) into `~/.cache/bide-tla` (or `$BIDE_TLA_CACHE`) and refuses a jar whose SHA-256
 differs from the lock file. `TLC_WORKERS` sets TLC's worker count (default `auto`),
-`TLC_JAVA_OPTS` adds JVM options, and `TLC_KEEP_OUTPUT=<dir>` keeps each run's full TLC output
-(counterexample traces included).
+`TLC_JOBS=<n>` runs n configurations at a time, one TLC worker and a 2 GB heap each (default 1:
+one at a time, `TLC_WORKERS` workers), `TLC_MODELS="claims toolcall"` limits a group to those
+model directories, `TLC_JAVA_OPTS` adds JVM options, and `TLC_KEEP_OUTPUT=<dir>` keeps each run's
+full TLC output (counterexample traces included). Each concurrent run has its own TLC metadir and
+`java.io.tmpdir` under the script's work directory, so runs never share TLC state.
 
 The PlusCal algorithm and its TLA+ translation live in one file, between the
 `BEGIN TRANSLATION` and `END TRANSLATION` markers. CI translates a copy and fails if the committed
@@ -53,13 +56,16 @@ else fails the check.
 
 The workflow `.github/workflows/models.yml` has two jobs. **Models** runs on every pull request, in
 the merge queue and on pushes to main: the self-test, the translation check, and every `ci`,
-`regress` and `finding` configuration. On a pull request, its steps run only when the pull request
-touches the models or the Go code they describe (`spec/tla/`, `agent/`, `audit/`, `store/`, `plan/`,
-`internal/journalhook/`, `internal/toolhook/`, `middleware/`, or `models.yml` itself); otherwise the job reports success after printing
-that no modelled code changed, so it can be a required check without costing every documentation
-change six minutes. The merge queue and main always run in full, and so does any doubt (a failed
-diff, an unexpected event). A pull request that changes the claim code outside those paths must
-widen the filter in the same pull request. **Models (nightly)** runs the `nightly` configurations
+`regress`, `finding` and `limit` configuration, four at a time (`TLC_JOBS=4`, one TLC worker each,
+on the 4-vCPU runner). On a pull request it checks only the models whose directory under
+`spec/tla/` the pull request changes, and every model when it changes `check.sh`, `tools.lock` or
+`models.yml`; with none of those, the job reports success after printing that no model changed,
+so it can be a required check without costing every other change several minutes. This loses no
+check: TLC reads only the model's own directory, the pinned tools and `check.sh`, so an unchanged
+model gives the result it gave on main, and a change to the Go code a model describes must change
+the model or carry a `Protocol-Impact` override (the path rule below, in the Lint job). The merge
+queue and main always run every model, and so does any doubt (a failed diff, an unexpected
+event). **Models (nightly)** runs the `nightly` configurations
 on a schedule and on demand (`workflow_dispatch`). The Go counterpart, the full-bound fault-schedule
 explorations of the claim protocol and of flow lowering (`BIDE_EXPLORE=1`), runs nightly in
 `.github/workflows/explore.yml`; see [verification](../../docs/testing/verification.md).
@@ -306,36 +312,42 @@ configurations run without it, and so do the configurations with drivers in diff
 ### Configurations
 
 On every pull request and in the merge queue (`ci`, `regress`, `finding`, `limit`). States are distinct
-states; times are TLC's own, measured on a development machine (Apple M1 Pro, 8 workers). The
-whole pull-request set, vacuity runs and JVM starts included, takes about 9 to 12.5 minutes on the
-CI runner (GitHub `ubuntu-latest`, 4 cores; runner speed varies), of which model 9 (`toolcall/`)
-is about 2 minutes.
+states; times are TLC's own, measured on a development machine (Apple M1 Pro, 8 workers; the `-a1`
+rows on an Apple Silicon machine, 4 workers). The whole pull-request set of every model, vacuity
+runs and JVM starts included, takes about 6 minutes on the CI runner (GitHub `ubuntu-latest`,
+4 vCPUs, four configurations at a time; runner speed varies). It took 9 to 15.5 minutes before the
+largest configurations of models 1, 2, 7 and 8 moved to nightly (#132).
 
 | Config | Path | Drivers, processes | Faults (error replies, crashes, cancels) | Attempts | Property | States | Time |
 |---|---|---|---|---|---|---|---|
-| `step-same` | Step | 2 in 1 | 2, 1, 1 | 0..3 | safety | 2,282,585 | 12 s |
-| `step-cross` | Step | 2 in 2 | 2, 1, 1 | 0..3 | safety | 2,004,380 | 11 s |
-| `tool-same` | tool | 2 in 1 | 2, 1, 1 | 0..3 | safety | 1,417,253 | 8 s |
-| `tool-cross` | tool | 2 in 2 | 2, 1, 1 | 0..3 | safety | 2,760,599 | 17 s |
+| `step-same-a1` | Step | 2 in 1 | 1, 1, 1 | 0..2 | safety | 146,864 | 3 s |
+| `step-cross-a1` | Step | 2 in 2 | 1, 1, 1 | 0..2 | safety | 152,375 | 2 s |
+| `tool-same-a1` | tool | 2 in 1 | 1, 1, 1 | 0..2 | safety | 69,179 | 1 s |
+| `tool-cross-a1` | tool | 2 in 2 | 1, 1, 1 | 0..2 | safety | 155,019 | 2 s |
 | `resolve-lease` | tool, resolver (lease) | 2 leased in 2 | 2, 1, 1 | 0..3 | safety | 80,919 | 1 s |
 | `resolve-minage-claim` | tool, resolver (min age, the F2 fix) | 2 in 2 | 2, 1, 0 | 0..4 | safety | 320,662 | 3 s |
 | `intent` | two Steps that pause, the caller, resolver (lease) | 2 leased in 1 | 1, 1, 0 | 0..2 | safety, per intent | 1,370 | <1 s |
 | `intent-minage-claim` | two tool calls, the caller, resolver (min age, the F2 fix) | 2 in 2 | 2, 0, 0 | 0..3 | safety, per intent | 662 | <1 s |
 | `live-step-same` | Step | 2 in 1 | 1, 1, 1 | 0..2 | `Progress` | 291,262 | 9 s |
-| `live-tool-same` | tool | 2 in 1 | 1, 1, 1 | 0..2 | `Progress` | 128,325 | 4 s |
 | `live-tool-cross` | tool | 2 in 2 | 1, 1, 1 | 0..2 | `Progress` | 144,243 | 5 s |
 | `resolve-minage-claim-a3` | tool, resolver (min age, F2 and F3 fixed) | 2 in 2 | 3, 0, 0 | 0..4 | safety | 702,817 | 6 s |
 | `resolve-lease-claim` | tool, resolver (lease, F4's fix), a leased driver and a plain Run | 2 in 1 | 3, 0, 0 | 0..4 | safety | 331,475 | 6 s |
 | `resolve-in-proc-tool` | tool, resolver in the drivers' process (min age, fixes) | 2 in 1 | 2, 1, 0 | 0..4 | safety | 285,231 | 4 s |
 | `flow-same` | one marker key (plan flow) | 2 in 1 | 2, 1, 1 | 0 | safety | 6,588 | <1 s |
 | `flow-cross` | one marker key (plan flow) | 2 in 2 | 2, 1, 1 | 0 | safety | 14,357 | 1 s |
-| `evict-tool-same` | tool, 1 eviction | 2 in 1 | 2, 1, 1 | 0..3 | safety | 1,553,944 | 15 s |
-| `live-evict-step-same` | Step, 1 eviction | 2 in 1 | 1, 1, 1 | 0..2 | `ProgressModuloEviction` | 304,754 | 10 s |
+| `evict-tool-same-a1` | tool, 1 eviction | 2 in 1 | 1, 1, 1 | 0..2 | safety | 71,812 | 2 s |
 
 Nightly (and on demand, `workflow_dispatch`):
 
 | Config | Path | Drivers, processes | Faults | Attempts | Property | States | Time |
 |---|---|---|---|---|---|---|---|
+| `step-same` | Step | 2 in 1 | 2, 1, 1 | 0..3 | safety | 2,282,585 | 12 s |
+| `step-cross` | Step | 2 in 2 | 2, 1, 1 | 0..3 | safety | 2,004,380 | 11 s |
+| `tool-same` | tool | 2 in 1 | 2, 1, 1 | 0..3 | safety | 1,417,253 | 8 s |
+| `tool-cross` | tool | 2 in 2 | 2, 1, 1 | 0..3 | safety | 2,760,599 | 17 s |
+| `evict-tool-same` | tool, 1 eviction | 2 in 1 | 2, 1, 1 | 0..3 | safety | 1,553,944 | 15 s |
+| `live-tool-same` | tool | 2 in 1 | 1, 1, 1 | 0..2 | `Progress` | 128,325 | 4 s |
+| `live-evict-step-same` | Step, 1 eviction | 2 in 1 | 1, 1, 1 | 0..2 | `ProgressModuloEviction` | 304,754 | 10 s |
 | `live-step-same-a2` | Step | 2 in 1 | 2, 1, 1 | 0..3 | `Progress` | 4,541,292 | 2 min |
 | `live-tool-same-a2` | tool | 2 in 1 | 2, 1, 1 | 0..3 | `Progress` | 2,817,680 | 1 min |
 | `live-tool-cross-a2` | tool | 2 in 2 | 2, 1, 1 | 0..3 | `Progress` | 2,760,599 | 1 min |
@@ -353,8 +365,14 @@ Nightly (and on demand, `workflow_dispatch`):
 | `deep-resolve-in-proc-a4` | Step, resolver in the drivers' process | 2 in 1 | 4, 0, 0 | 0..5 | safety | 15,988,971 | 2 min |
 | `deep-resolve-lease-claim` | tool, resolver (lease, F4's fix), a leased driver and a plain Run | 2 in 1 | 2, 1, 1 | 0..4 | safety | 3,663,147 | 1 min |
 
-The nightly set takes about 20 minutes on the development machine. The liveness checks run on every pull
-request with one error reply; with two they run nightly, since liveness checking cannot use symmetry
+The nightly set takes about 21 minutes on the development machine. The five safety configurations
+at two error replies and attempts 0..3 (`step-same`, `step-cross`, `tool-same`, `tool-cross`,
+`evict-tool-same`, 1.4 to 2.8 million states) run nightly; each has a pull-request counterpart
+(`-a1`) with the same invariants at one error reply and attempts 0..2, 70,000 to 155,000 states,
+so every path keeps a passing safety configuration and its vacuity run on every pull request.
+`Progress` runs on every pull request with one error reply on the Step path (`live-step-same`) and
+the tool path (`live-tool-cross`); `live-tool-same`, `ProgressModuloEviction`
+(`live-evict-step-same`) and every liveness check with two error replies run nightly, since liveness checking cannot use symmetry
 and costs several times a safety check of the same states. `deep-late-tool-cross` is nightly only
 to keep the pull-request job short, and so is `deep-late-step-same`; weak A3 runs nightly.
 
@@ -608,10 +626,13 @@ an attempt, ambiguous inserts).
 
 | Config | Group | What | States | Time |
 |---|---|---|---|---|
-| `remote` | ci | two workers, two attempts, three deliveries; a lost and a duplicated task, an ambiguous insert | 1,667,049 | 8 s |
+| `remote-no-loss` | ci | two workers, two attempts, three deliveries; a duplicated task, an ambiguous insert (`remote-restart` has the lost task) | 386,374 | 5 s |
 | `remote-restart` | ci | the same with an engine crash (a new instance, an empty dispatch table), no duplicate | 480,039 | 3 s |
-| `remote-resolve` | ci | a worker crash and an operator resolving halts | 2,899,879 | 12 s |
-| `remote-safe` | ci | a retry-safe call: three deliveries, a lost and a duplicated task, an ambiguous insert | 1,689,461 | 9 s |
+| `remote-resolve-no-restart` | ci | a worker crash and an operator resolving halts, a lost task, no engine crash (`remote-restart` has one) | 444,429 | 5 s |
+| `remote-safe-d2` | ci | a retry-safe call: two deliveries (one re-dispatch), a lost and a duplicated task, an ambiguous insert | 73,657 | 1 s |
+| `remote` | nightly | two workers, two attempts, three deliveries; a lost and a duplicated task, an ambiguous insert | 1,667,049 | 8 s |
+| `remote-resolve` | nightly | a worker crash and an operator resolving halts, with an engine crash | 2,899,879 | 12 s |
+| `remote-safe` | nightly | a retry-safe call: three deliveries, a lost and a duplicated task, an ambiguous insert | 1,689,461 | 9 s |
 | `deep-remote-safe` | nightly | a retry-safe call with an engine crash and a worker crash | 3,294,639 | 26 s |
 | `deep-remote-safe-read-only` | nightly | a `read_only` retry-safe call (it may record `DELIVERY_EXHAUSTED`) | 3,555,285 | 1 min |
 | `deep-remote-two` | nightly | every fault at the pull-request bounds together | 12,112,395 | 55 s |
@@ -692,10 +713,11 @@ every journal the drivers and the resolver can produce is a declared path, which
 
 | Config | Group | What | States | Time |
 |---|---|---|---|---|
-| `flow-two` | ci | two drivers; `E`, `H`, `T` side effects; 1 error reply, 1 crash | 1,690,704 | 11 s |
+| `flow-two-a0` | ci | two drivers; `E`, `H`, `T` side effects; 1 crash, no error reply (`flow-resolve` and `flow-all-side-resolve` have one) | 424,389 | 5 s |
 | `flow-resolve` | ci | one driver and the resolver (this flow, or another); 1 error reply, 1 crash | 150,726 | 1 s |
 | `flow-all-side-resolve` | ci | every node a side effect, one driver, the resolver | 253,402 | 2 s |
 | `flow-live` | ci | `Completes`, one driver; 1 error reply, 1 crash | 6,886 | <1 s |
+| `flow-two` | nightly | two drivers; `E`, `H`, `T` side effects; 1 error reply, 1 crash | 1,690,704 | 11 s |
 | `deep-flow-all-side` | nightly | every node a side effect, two drivers | 5,592,438 | 34 s |
 | `deep-flow-resolve` | nightly | two drivers and the resolver, 1 crash | 15,882,920 | 1 min 42 s |
 | `deep-flow-live` | nightly | `Completes`, two drivers | 3,381,384 | 2 min |
@@ -748,7 +770,8 @@ before it or the first turn), so `SpendExact` is its property too.
 | Config | Group | What | States | Time |
 |---|---|---|---|---|
 | `spend-one` | ci | one driver, two turns, every fault | 38,921 | <1 s |
-| `spend-two` | ci | two drivers (no lease): both may answer a turn; one extra request, a failed call, an ambiguous write, a crash | 1,789,459 | 6 s |
+| `spend-two-no-crash` | ci | two drivers (no lease): both may answer a turn; one extra request, a failed call, an ambiguous write, no crash (`spend-one` has one) | 266,288 | 2 s |
+| `spend-two` | nightly | the same with a crash | 1,789,459 | 6 s |
 | `deep-spend-two` | nightly | two drivers, every fault | 18,110,591 | 1 min |
 
 Regressions: `spend/regress/shared-late-key` (#104 re-review suspicion (a): late spend keyed by a
@@ -872,8 +895,9 @@ or ends a call without it and without `ErrToolNotCalled`, is answered with a hal
 ### Configurations
 
 Times are TLC's own on the development machine (Apple M1 Pro); each passing config is also run
-for vacuity. On the CI runner the whole `toolcall/` pull-request set (ci, regress, finding and
-limit configs, vacuity runs and JVM starts) takes about 3 minutes. The model states #117's rules after its fifth review and the fixes of model 9's own
+for vacuity. The whole `toolcall/` pull-request set (ci, regress, finding and
+limit configs) is about 2 minutes of TLC time on the CI runner, shared with the
+other models' configurations four at a time. The model states #117's rules after its fifth review and the fixes of model 9's own
 findings (below).
 
 | Config | Group | What | States | Time |
@@ -1237,10 +1261,11 @@ The mechanisms of section 6 of the plan, as they apply here:
   and a configuration in `regress/` that must keep failing; a change that makes one pass means
   the model lost the behavior. The two scenarios of the HA harness (`no-recheck-stall`,
   `shared-holder-stall`) are steered to their shape with a `CONSTRAINT` in `LifecycleMC.tla`.
-- **The path filter.** The Models job runs on every pull request that touches `agent/` or
-  `store/`, which hold every function in the map (`agent/recovery.go`, `agent/lease.go`,
-  `agent/loop.go`, `agent/runstart.go`, `agent/saga.go`, `agent/halt.go`, and the stores'
-  `Leaser` and `Lister`).
+- **The path rule.** The map's rows are marked regions (in `agent/recovery.go`, `agent/lease.go`,
+  `agent/loop.go`, `agent/saga.go`, `agent/halt.go` and `agent/journal.go`), so a pull request
+  that changes one changes `spec/tla/lifecycle/` or carries a `Protocol-Impact` override, and the
+  Models job checks this model whenever it changes. Code outside the marked regions that the
+  model depends on (`agent/runstart.go`, the stores' `Leaser` and `Lister`) is held by review.
 - **Built (M4, #125):** the region markers, the path rule and `TestProtocolVocabulary`; see
   [Keeping the code and the models in step](#keeping-the-code-and-the-models-in-step).
 - **Not built yet** (the plan's M3, for every model): trace validation (`bidetrace` hooks,

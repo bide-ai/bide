@@ -43,6 +43,8 @@ minor version (0.x.0) may include breaking API or journal-format changes; each o
 
 ### Changed
 
+- The required Models job checks four configurations at a time (one TLC worker each) and, on a pull request, only the models whose `spec/tla/<model>/` directory the pull request changes; the merge queue and main still check every model. The largest passing pull-request configurations of models 1, 2, 7 and 8 (1.4 to 2.9 million states) and two of model 1's liveness checks run nightly, each safety one with a smaller pull-request counterpart of the same invariants, so every path keeps a passing configuration and its vacuity run on pull requests. The job takes about 6 minutes, down from 9 to 15.5 ([#132]).
+
 - **Breaking:** `agent.Safety` is plain data, `{ReadOnly, Idempotent}`: comparable, and journaled. The approval gate is `ToolSpec.Approval`, set with `agent.WithApproval(agent.SingleApproval())` (for `Safety{RequiresApproval: true}`) or `agent.WithApproval(&agent.ApprovalPolicy{...})` (for `Safety{Approval: ...}`). `ApprovalPolicy` encodes as `need` and `approvers` ([#117]).
 - **Breaking:** `agent.ToolHandler` is `func(ctx, ToolCall) (json.RawMessage, error)`: tool middleware reads `call.Use` and `call.Spec`, and passes `next` a copy with other `Use.Args` to rewrite arguments ([#117]).
 - **Breaking:** `agent.Request.Tools` is `[]agent.ToolSpec`, sorted by name, and `ToolsDigest` takes `[]ToolSpec` (the digest is unchanged) ([#117]).
@@ -751,6 +753,7 @@ First public release.
 [#127]: https://github.com/bide-ai/bide/pull/127
 [#128]: https://github.com/bide-ai/bide/pull/128
 [#131]: https://github.com/bide-ai/bide/pull/131
+[#132]: https://github.com/bide-ai/bide/pull/132
 
 [78f8db6]: https://github.com/bide-ai/bide/commit/78f8db6
 [994721b]: https://github.com/bide-ai/bide/commit/994721b
