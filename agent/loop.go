@@ -78,13 +78,14 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 	// protocol:claims end
 	// The run's input (the seed's last message: the user turn it answers) and entry point are
 	// recorded on its first drive, and every later drive of an unfinished run is held to them
-	// (see RunStart). A finished run is final and returns below without consulting either.
+	// (see RunStart). A finished run is final and returns below, but only to a drive with the
+	// input it answered: another input is ErrConfig, not that input's answer.
 	if _, finished := completedAnswer(recs); !finished {
 		if err := holdToStart(ctx, a.store, runID, recs, RunStart{Input: seed[len(seed)-1].Text(), Saga: saga}); err != nil {
 			return Message{}, usageTotals{}, 0, err
 		}
-	} else if err := checkStartKind(runID, recs, RunKindAgent); err != nil {
-		return Message{}, usageTotals{}, 0, err // a finished flow's run holds no answer of an agent's
+	} else if err := checkFinishedStart(runID, recs, seed[len(seed)-1].Text()); err != nil {
+		return Message{}, usageTotals{}, 0, err // a flow's run, or another input's answer
 	}
 	// protocol:lifecycle end
 
@@ -185,7 +186,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 	// another turn. Re-invoking a finished run is routine (a client retrying after a lost
 	// response, a redelivered job, a sub-agent or session turn re-entered on resume), and a
 	// fresh model turn could request tools again under NEW tool-use ids, which at-most-once
-	// (keyed by tool-use id) would not recognize as repeats. The input is not consulted.
+	// (keyed by tool-use id) would not recognize as repeats. The input was checked above.
 	if final, ok := completedAnswer(recs); ok {
 		fire(Finished{Final: final})
 		return final, tot, 0, nil

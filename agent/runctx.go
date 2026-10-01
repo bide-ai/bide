@@ -39,12 +39,13 @@ func withRunContext(ctx context.Context, store Durable, runID, toolUseID string,
 // protocol:delegation end
 
 // rootRunID is the top-level run for a run with this ID reached through ctx: the root recorded
-// by an enclosing run (a sub-agent is called from its parent's tool context), or runID itself.
+// by an enclosing run (a sub-agent is called from its parent's tool context), or else the root
+// the ID names (treeRootID: runID itself for a root run or a session turn's run).
 func rootRunID(ctx context.Context, runID string) string {
 	if rc, ok := ctx.Value(runContextKey).(runCtx); ok && rc.root != "" {
 		return rc.root
 	}
-	return runID
+	return treeRootID(runID)
 }
 
 func runContext(ctx context.Context) (Durable, string, bool) {

@@ -252,7 +252,8 @@ n, err := agent.Recover(ctx, store, func(ctx context.Context, runID string) erro
 
 A run's first drive records its input and whether it runs as a saga (the `run:start` step), and an
 unfinished run resumes only with those: another input, or `Run` for a run started with `RunSaga` (or
-the reverse), is `ErrConfig`. `RecordedStart` reads them back.
+the reverse), is `ErrConfig`. A finished run returns its recorded answer only to a drive with the
+input it answered; another input is `ErrConfig` too. `RecordedStart` reads them back.
 
 **Keep recovering for the life of the process.** `Recover` is one pass: a run whose holder died
 a moment ago still has a live lease, so the pass skips it, and nothing re-drives it until someone
@@ -269,8 +270,9 @@ calls `Recover` again. `RecoverLoop` is that someone. Start it once per worker; 
   (`WithRecoverLapsedConcurrency`, 16 by default). A store deletes a lease on release, so a lapsed
   lease means its holder died or stalled; halted runs hold no lease between visits, so this loop
   never waits behind them. Each lapsed pass first deletes, with `Leaser.ReapLeases`, the lapsed
-  leases no pass takes over (a finished run's, left by a holder that died before its release, or
-  one on a run the store does not hold).
+  leases no pass takes over (a finished run's, left by a holder that died before its release, one
+  on a run the store does not hold, or one on a session's or a sub-agent's run, whose ID contains
+  `>`: a session leases each turn's run, and the session, not a pass, resumes it).
 
 So a dead holder's run is taken over within about one interval of its lease expiring however many
 halted runs the store holds, as long as the lapsed loop has a free slot. A run whose driver held no

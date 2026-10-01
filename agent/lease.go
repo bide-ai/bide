@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"slices"
+	"strings"
 	"time"
 )
 
@@ -42,13 +43,16 @@ type Leaser interface {
 	// take it immediately rather than waiting for expiry.
 	ReleaseLease(ctx context.Context, runID, holder string) error
 	// ReapLeases deletes every lapsed lease (see RunFilter.LeaseLapsed) whose run the store holds
-	// no entry for, or holds an entry named in ended (a finished run), and returns how many it
-	// deleted. Each lease is deleted only if it is still lapsed when it is deleted, by the
+	// no entry for, holds an entry named in ended (a finished run), or whose run ID contains '>'
+	// (a session's run or a sub-agent's, see IsSessionRun and IsSubRun, which no recovery pass
+	// takes over: the session, or the root run, resumes it), and returns how many it deleted. Each lease is deleted only if it is still lapsed when it is deleted, by the
 	// comparison AcquireLease makes, so a lease granted or renewed meanwhile is kept: deleting a
 	// lapsed lease changes nothing a holder can observe, since any holder may take it. A holder that
 	// dies between its run's last write and its release leaves such a lease; RecoverLoop's lapsed
 	// loop calls ReapLeases with the terminal markers on each pass, so these leases do not
-	// accumulate and the lapsed listing does not grow with them.
+	// accumulate and the lapsed listing does not grow with them. A session's turn run, leased by
+	// its session (see Session), is the same: a holder that died mid-turn leaves a lapsed lease on
+	// an unfinished run that no pass takes over and whose message may never be sent again.
 	ReapLeases(ctx context.Context, ended []string) (int, error)
 }
 
@@ -84,8 +88,8 @@ func (m *MemStore) ReapLeases(_ context.Context, ended []string) (int, error) {
 			continue
 		}
 		r, ok := m.runs[id]
-		if ok && !slices.ContainsFunc(ended, func(name string) bool { _, has := r.byName[name]; return has }) {
-			continue // an unfinished run: the lapsed loop takes it over
+		if ok && !strings.Contains(id, subRunSep) && !slices.ContainsFunc(ended, func(name string) bool { _, has := r.byName[name]; return has }) {
+			continue // an unfinished run the lapsed loop takes over
 		}
 		delete(m.leases, id)
 		n++

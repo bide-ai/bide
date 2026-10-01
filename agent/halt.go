@@ -108,9 +108,11 @@ type Outcome struct {
 // It refuses to resolve an effect a driver may still be running, whatever the halt's Cause:
 //   - with a store that leases runs (Leaser: MemStore, store/sqlite, store/postgres, found through a
 //     Journal and through wrappers that implement Unwrap() Store, see Capability), it takes the
-//     root run's lease for the resolution and returns *HaltInFlight while any driver holds it. Only
-//     drivers that lease the run (Lease, Recover, RecoverLoop) are seen; a plain Run holds no lease,
-//     which the claim below covers.
+//     lease of the run the operation's driver leases (the root run, or a session turn's run for
+//     the turn and every sub-run inside it) for the resolution and returns *HaltInFlight while
+//     any driver holds it. Only
+//     drivers that lease the run (Lease, Recover, RecoverLoop, and a Session's turn) are seen; a
+//     plain Run holds no lease, which the claim below covers.
 //   - with a store that cannot (a custom store with no Leaser, or a Durable that exposes none), it
 //     requires WithMinHaltAge, so the halt is resolved only once no driver can still be running it.
 //
@@ -311,8 +313,9 @@ func resolveHalt(ctx context.Context, store Durable, op string, ref HaltRef, out
 const resolveLeaseTTL = 30 * time.Second
 
 // checkNoLiveDriver refuses to resolve while a driver may be running the halted operation's effect.
-// With a store that leases runs (Leaser), it takes the root run's lease for the resolution, which
-// fails (*HaltInFlight) while any driver holds it, and keeps it until release is called, so no
+// With a store that leases runs (Leaser), it takes the lease of the run the operation's driver
+// leases (treeRootID: the root run, or a session turn's run for the turn and the sub-runs inside
+// it) for the resolution, which fails (*HaltInFlight) while any driver holds it, and keeps it until release is called, so no
 // leased driver takes the run meanwhile. A store without Leaser cannot say whether a driver is
 // live, so the resolution needs WithMinHaltAge. WithoutLiveDriverCheck skips both.
 func checkNoLiveDriver(ctx context.Context, store Durable, op string, ref HaltRef, cfg resolveConfig) (func(), bool, error) {
@@ -320,7 +323,7 @@ func checkNoLiveDriver(ctx context.Context, store Durable, op string, ref HaltRe
 	if cfg.noLiveCheck {
 		return noop, false, nil
 	}
-	root, _, _ := strings.Cut(ref.RunID, subRunSep)
+	root := treeRootID(ref.RunID)
 	l, ok := capabilityOf[Leaser](store)
 	if !ok {
 		if cfg.minHaltAge <= 0 {
@@ -348,13 +351,13 @@ func checkNoLiveDriver(ctx context.Context, store Durable, op string, ref HaltRe
 
 // HaltInFlight is returned by ResolveHaltRef when a driver may be running the operation's effect
 // right now, and its own result must win over a resolution: a driver holds the lease on the halted
-// run's root, or (see ResolveHaltRef) a driver holds the claim on the
+// run's root (a session turn's run, for a turn and the sub-runs inside it), or (see ResolveHaltRef) a driver holds the claim on the
 // attempt after the live one, having found the live one recorded as never started. Retry once the
 // driver has finished (its lease released or expired, or its result recorded); a retry reads the
 // run again.
 type HaltInFlight struct {
 	RunID     string // the run whose journal holds the operation
-	RootRunID string // the run whose lease is held (the halted run's root)
+	RootRunID string // the run whose lease is held (the halted run's root, or its session turn's run)
 	Op        OpRef
 	// Attempt is the attempt marker key a driver holds, when that is why the resolution was
 	// refused; empty when the lease is held.

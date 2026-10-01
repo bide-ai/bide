@@ -25,8 +25,9 @@ const runStartStep = "run:start"
 // RunSagaResult, or a sub-agent called inside a saga). A run's model turns and tool calls answer
 // that input under that entry point's rules, so every later drive is held to it: resuming an
 // unfinished run with another input, or through the other entry point (Run for a saga, RunSaga
-// for a run), is ErrConfig. A finished run returns its recorded answer whatever it is passed, as
-// before.
+// for a run), is ErrConfig. A finished run returns its recorded answer to a drive with the input
+// it answered, through either entry point; another input is ErrConfig, since the answer is not
+// that input's (as a finished flow's run is held to its start).
 //
 // A run whose earlier drives predate this record gets it on its first drive under this version,
 // with the input and entry point that drive is given.
@@ -139,9 +140,12 @@ func beginRun(ctx context.Context, d Durable, runID string, want RunStart) (json
 	return nil, false, nil
 }
 
-// checkStartKind refuses (ErrConfig) a drive of kind want of a run whose recorded start in recs is
-// of another kind. A run with no recorded start passes.
-func checkStartKind(runID string, recs []Record, want RunKind) error {
+// checkFinishedStart refuses (ErrConfig) an agent's drive, with the given input, of a finished
+// run whose recorded start in recs is of another kind or answered another input: the recorded
+// answer is that input's, not this one's (#137's R137-2; an unfinished run is held to its start by
+// holdToStart). A run with no recorded start passes, as a run journaled by a version that recorded
+// none.
+func checkFinishedStart(runID string, recs []Record, input string) error {
 	for _, r := range recs {
 		if r.Kind != StepValue || r.Name != runStartStep {
 			continue
@@ -150,8 +154,11 @@ func checkStartKind(runID string, recs []Record, want RunKind) error {
 		if err := json.Unmarshal(r.Result, &got); err != nil {
 			return fmt.Errorf("decode %s (run %s): %w (%w)", runStartStep, runID, err, ErrStorage)
 		}
-		if got.kind() != want {
-			return fmt.Errorf("run %s was started as a run of kind %q, not %q; drive it the way it was started (see RecordedStart): %w", runID, got.kind(), want, ErrConfig)
+		if got.kind() != RunKindAgent {
+			return fmt.Errorf("run %s was started as a run of kind %q, not %q; drive it the way it was started (see RecordedStart): %w", runID, got.kind(), RunKindAgent, ErrConfig)
+		}
+		if got.Input != input {
+			return fmt.Errorf("run %s finished answering a different input (see RecordedStart); its answer is not this input's: %w", runID, ErrConfig)
 		}
 		return nil
 	}

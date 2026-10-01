@@ -63,7 +63,8 @@ The same holds when nothing crashed and a caller simply invokes the run again (a
 after a lost response, a redelivered job, a sub-agent or session turn re-entered on resume):
 
 4. **Re-invoking a finished run** → the run's completion marker is journaled → it returns the
-   recorded final answer without asking the model for another turn. Correct. This matters because
+   recorded final answer without asking the model for another turn (to a drive with the input it
+   answered; another input is `ErrConfig`). Correct. This matters because
    the protection is keyed by the tool call the model emitted: a fresh model turn could request the
    same side effect again under a new call id, which the journal would treat as new work. A crash
    after the final answer was journaled but before the marker was written is handled the same way:
@@ -85,7 +86,7 @@ the journal holds, and so what a resume cannot be talked out of by a redeploy:
   and `WithRetrieval` documents;
 - the run's input and whether it runs as a saga (`run:start`), and for a session turn the
   transcript it started from; an unfinished run resumed with another input, or through the other
-  entry point, is `ErrConfig`;
+  entry point, is `ErrConfig`, and so is a finished run driven with another input;
 - in a saga's rollback, which calls completed, failed, or were attempted, and the `Safety` and
   approval gate each completed call ran under (`Record.Safety`, `Record.Approval`): a completed write is rolled back even if its tool was relabelled
   `ReadOnly` since, and a call whose tool is no longer registered is reported uncompensated (or

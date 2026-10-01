@@ -33,11 +33,26 @@ import (
 //
 // A turn belongs to the message that started it: while a Send turn is unfinished, Send with a
 // different message is ErrConfig rather than resuming that turn. Several handles on one session
-// (a stale handle, or two workers) never lose a turn or answer one message with another's
-// reply; a handle that finds the journal moved on reloads it.
+// (a stale handle, or two workers) never lose a turn, record one twice, or answer one message
+// with another's reply; a handle that finds the journal moved on reloads it, and one that sees
+// another message's turn open reads the journal again before it refuses.
+//
+// One driver at a time: when the store implements Leaser (MemStore, store/sqlite and
+// store/postgres do, found through a Journal and through wrappers, see Capability), a turn's run
+// is driven under its lease, as Lease drives a run, so two workers given one message do not both
+// drive its turn. The run loads its journal only once it holds the lease, and the lease is held
+// until the run returns, so the drive loads every model call an earlier drive journaled and
+// WithTokenBudget's bound holds across workers. A Send or SendOnce whose turn run another driver
+// holds does not drive it: if the run has finished (the holder has not released the lease yet),
+// its recorded answer is returned and the turn recorded, as a drive of it would; otherwise it
+// returns at once with an error wrapping ErrTurnContended, having driven nothing and recorded
+// no answer. Send the same message again later, and it returns the recorded answer, or resumes
+// the turn if the other driver stopped short of it. A drive whose lease is lost returns an error
+// wrapping ErrLeaseLost (see Lease). Over a store with no Leaser, two drivers of one turn still
+// never record it twice, but each counts only the spend it has seen (see KNOWN-LIMITATIONS).
 //
 // A Session is safe for concurrent use: callers sharing one handle behave as callers on separate
-// handles do, and their turns run in parallel.
+// handles do, and turns of different messages run in parallel.
 type Session struct {
 	agent *Agent
 	id    string
@@ -51,6 +66,11 @@ type Session struct {
 	keyed   map[string]turnRecord // completed SendOnce turns by key
 	starts  int                   // Send turns started (start/N records)
 	open    *turnStart            // the Send turn started but not yet recorded, if any
+	// recorded holds the run IDs of the turns loaded (turn/0 up to turn/<turns-1>), so a turn
+	// whose run is among them is never appended again, however far the handle has moved on.
+	recorded map[string]bool
+
+	lease recoverConfig // the turn runs' lease holder and TTL (see Agent.Session)
 }
 
 // turnRecord is the journaled shape of one completed conversation turn.
@@ -105,12 +125,15 @@ func newClaim() (string, error) {
 // Session opens (or reopens) a multi-turn conversation with the given id, rebuilding the
 // transcript from the store so a restarted process continues where it left off.
 //
+// opts set the lease each turn's run is driven under (WithLeaseHolder, WithLeaseTTL; see
+// Lease): a non-positive TTL is ErrConfig. They have no effect over a store with no Leaser.
+//
 // The id must not contain '>'. The session journals under "<id>>@session" and runs its turns
 // under "<id>>@turn/<n>" and "<id>>@event/<encoded key>" (and their sub-agents under
 // SubRunID(<turn run>, <call>)): everything up to the first '>' is the session id, so two
 // sessions never share a run, and a root run ID may not contain '>', so no root run shares one
 // with a session either.
-func (a *Agent) Session(ctx context.Context, id string) (*Session, error) {
+func (a *Agent) Session(ctx context.Context, id string, opts ...LeaseOption) (*Session, error) {
 	if id == "" {
 		return nil, fmt.Errorf("Session: empty id: %w", ErrConfig)
 	}
@@ -119,7 +142,11 @@ func (a *Agent) Session(ctx context.Context, id string) (*Session, error) {
 		// name another session's run, or a sub-agent's (see SubRunID).
 		return nil, fmt.Errorf("Session: id %q contains %q, which the engine reserves for the run IDs of sub-agents and session turns: %w", id, subRunSep, ErrConfig)
 	}
-	s := &Session{agent: a, id: id}
+	cfg, err := leaseConfig("Session", opts, LeaseOption.applyLease)
+	if err != nil {
+		return nil, err
+	}
+	s := &Session{agent: a, id: id, lease: cfg}
 	if err := s.reload(ctx); err != nil {
 		return nil, err
 	}
@@ -141,6 +168,7 @@ func (s *Session) reload(ctx context.Context) error {
 		}
 	}
 	finished := map[string]bool{} // run IDs whose turn is recorded
+	s.recorded = finished
 	for ; ; s.turns++ {
 		r, ok := byName[sessionTurnStep(s.turns)]
 		if !ok {
@@ -193,11 +221,20 @@ func (s *Session) Send(ctx context.Context, input string) (Message, error) {
 // protocol:sessions begin SCheck SDo
 
 // startTurn returns the open Send turn for input, or claims a new one. A claim lost to another
-// handle reloads the journal and tries once more.
+// handle reloads the journal and tries once more. An open turn of another message is refused only
+// once the journal has been read again: this handle's view of it may be stale (its own Send of
+// that message failed or paused, and another handle has since finished the turn).
 func (s *Session) startTurn(ctx context.Context, input string) (turnStart, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	reloaded := false
 	for attempt := 0; ; attempt++ {
+		if s.open != nil && s.open.Input != input && !reloaded {
+			if err := s.reload(ctx); err != nil {
+				return turnStart{}, err
+			}
+			reloaded = true
+		}
 		if s.open != nil {
 			if s.open.Input != input {
 				return turnStart{}, fmt.Errorf("session %s: a turn for %q is still open; send that message again to finish it: %w", s.id, s.open.Input, ErrConfig)
@@ -236,6 +273,7 @@ func (s *Session) startTurn(ctx context.Context, input string) (turnStart, error
 		if err := s.reload(ctx); err != nil {
 			return turnStart{}, err
 		}
+		reloaded = true
 	}
 }
 
@@ -287,7 +325,7 @@ func (s *Session) keyedTurn(ctx context.Context, key string) (turnRecord, bool, 
 
 // protocol:sessions begin DLoad DCall DDone AReload
 
-// runTurn drives the turn's run and appends the completed turn to the transcript.
+// runTurn drives the turn's run (see driveRun) and appends the completed turn to the transcript.
 func (s *Session) runTurn(ctx context.Context, runID, key, input string) (Message, error) {
 	seed, err := s.turnSeed(ctx, runID)
 	if err != nil {
@@ -295,7 +333,7 @@ func (s *Session) runTurn(ctx context.Context, runID, key, input string) (Messag
 	}
 	seed = append(seed, UserText(input))
 
-	answer, _, _, err := s.agent.run(withSessionRun(ctx, runID), runID, seed, false, nil)
+	answer, err := s.driveRun(ctx, runID, seed)
 	if err != nil {
 		return answer, err // pause/error: transcript unadvanced; retry same input to resume
 	}
@@ -311,6 +349,34 @@ func (s *Session) runTurn(ctx context.Context, runID, key, input string) (Messag
 		return answer, err
 	}
 	return answer, s.reload(ctx)
+}
+
+// driveRun drives the turn's run under its lease when the store has a Leaser (see Session), so
+// the run loads its journal, and with it every model call an earlier holder made, only once it
+// holds the lease. A run another holder leases is not driven: a finished one (holding
+// run:complete) needs no lease, and its recorded answer is returned, as a drive of it would
+// return it; any other is an error wrapping ErrTurnContended.
+func (s *Session) driveRun(ctx context.Context, runID string, seed []Message) (Message, error) {
+	var answer Message
+	driven, err := leaseRun(ctx, s.agent.store, runID, func(ctx context.Context) error {
+		var err error
+		answer, _, _, err = s.agent.run(withSessionRun(ctx, runID), runID, seed, false, nil)
+		return err
+	}, s.lease)
+	if err != nil || driven {
+		return answer, err
+	}
+	recs, err := s.agent.store.History(ctx, runID)
+	if err != nil {
+		return Message{}, storageErr("load history "+runID, err)
+	}
+	if final, ok := completedAnswer(recs); ok {
+		if err := checkFinishedStart(runID, recs, seed[len(seed)-1].Text()); err != nil {
+			return Message{}, err
+		}
+		return final, nil
+	}
+	return Message{}, fmt.Errorf("session %s: turn run %s is driven by another holder; send the message again later: %w", s.id, runID, ErrTurnContended)
 }
 
 // protocol:sessions end
@@ -358,10 +424,15 @@ func (s *Session) turnSeed(ctx context.Context, runID string) ([]Message, error)
 
 // appendTurn records rec at the next free turn index. A slot another handle filled first is
 // skipped rather than overwritten, so no turn is lost; a slot that already holds this run's
-// turn (another handle, or an earlier attempt, recorded it) ends the append, so no turn is
-// recorded twice. Every handle for one message drives the same run ID, which makes that check
-// sufficient. The caller holds s.mu.
+// turn (another handle, or an earlier attempt, recorded it) ends the append, and so does a run
+// among the turns this handle has loaded, which the scan from s.turns would not see (another
+// caller on this handle recorded it and reloaded), so no turn is recorded twice. Every handle
+// for one message drives the same run ID, which makes those checks sufficient. The caller holds
+// s.mu.
 func (s *Session) appendTurn(ctx context.Context, rec turnRecord) error {
+	if s.recorded[rec.RunID] {
+		return nil // recorded at a slot below s.turns
+	}
 	b, err := marshalJournal(rec)
 	if err != nil {
 		return fmt.Errorf("session %s: encode turn: %w (%w)", s.id, err, ErrConfig)

@@ -522,10 +522,12 @@ func (s *Store) ReleaseLease(ctx context.Context, runID, holder string) error {
 }
 
 // ReapLeases implements agent.Leaser with one DELETE, which checks the expiry in the same
-// statement, so a lease taken or renewed meanwhile is kept.
+// statement, so a lease taken or renewed meanwhile is kept. The lapsed leases it deletes are those
+// no recovery pass takes over: a finished run's, one on a run the steps table does not hold, and
+// one on a run whose ID contains '>' (a session's or a sub-agent's run).
 func (s *Store) ReapLeases(ctx context.Context, ended []string) (int, error) {
 	q := `DELETE FROM ` + s.t.leases + ` WHERE expiry < unixepoch('subsec')
-		AND (NOT EXISTS (SELECT 1 FROM ` + s.t.steps + ` AS y WHERE y.run_id = ` + s.t.leases + `.run_id)`
+		AND (instr(run_id, '>') > 0 OR NOT EXISTS (SELECT 1 FROM ` + s.t.steps + ` AS y WHERE y.run_id = ` + s.t.leases + `.run_id)`
 	args := make([]any, 0, len(ended))
 	if len(ended) > 0 {
 		q += ` OR EXISTS (SELECT 1 FROM ` + s.t.steps + ` AS x WHERE x.run_id = ` + s.t.leases + `.run_id AND x.name IN (?` + strings.Repeat(`, ?`, len(ended)-1) + `))`

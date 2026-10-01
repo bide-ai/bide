@@ -108,7 +108,10 @@ func handleConversational(ctx context.Context, a *agent.Agent, conversationID, e
 		return fmt.Sprintf("working on it (waiting: %v)", p.Paused().RunID), nil
 	}
 	if err != nil {
-		return "", err // an error: the redelivered event resumes the same turn
+		// An error: the redelivered event resumes the same turn. That includes
+		// agent.ErrTurnContended, another worker driving this event's turn right now: the
+		// redelivery then returns the reply that worker recorded.
+		return "", err
 	}
 	return msg.Text(), nil
 }
