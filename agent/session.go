@@ -362,18 +362,38 @@ func (s *Session) startTurn(ctx context.Context, input Message) (turnStart, int,
 }
 
 // closeIfCancelled records the open Send turn closed if its run was cancelled (its first end
-// marker is run:cancelled), and reloads: rule 16 of the P14 contract (model 12's S3). The caller
-// holds s.mu, and s.open is set.
+// marker is run:cancelled), and reloads: rule 16 of the P14 contract (model 12's S3). A saga turn's
+// Cancel writes only a rollback request, which the turn's next drive acts on: the session owns its
+// turns, so it drives that rollback itself (under the turn run's lease, as every drive of a turn
+// is), and closes the turn once the rollback has written run:cancelled. A turn whose rollback
+// stopped (a failed compensator, an unknown outcome) stays open, with the rollback's error, and
+// one whose answer was recorded before the request completes and is not closed. The caller holds
+// s.mu, and s.open is set.
 func (s *Session) closeIfCancelled(ctx context.Context) (bool, error) {
-	cancelled, err := cancelledFirst(ctx, s.agent.store, s.open.RunID)
-	if err != nil || !cancelled {
+	runID := s.open.RunID
+	cancelled, err := cancelledFirst(ctx, s.agent.store, runID)
+	if err != nil {
 		return false, err
+	}
+	if !cancelled {
+		if _, requested, err := lookup(ctx, s.agent.store, runID, runCancelRequestedStep); err != nil || !requested {
+			return false, err
+		}
+		// The rollback needs no transcript: the drive's open finds the request before any model
+		// call, and the saga path compensates from the turn run's own journal.
+		d := &driveSpec{resume: true, kind: RunKindSessionTurn, cfg: runConfig{saga: true}}
+		if _, _, _, err := s.driveRun(ctx, runID, d); err != nil && !cancelledEnd(err) {
+			return false, err
+		}
+		if cancelled, err = cancelledFirst(ctx, s.agent.store, runID); err != nil || !cancelled {
+			return false, err
+		}
 	}
 	claim, err := newClaim()
 	if err != nil {
 		return false, err
 	}
-	rec := turnRecord{Input: s.open.Input, Message: s.open.Message, RunID: s.open.RunID, Claim: claim, Cancelled: true}
+	rec := turnRecord{Input: s.open.Input, Message: s.open.Message, RunID: runID, Claim: claim, Cancelled: true}
 	if err := s.appendTurn(ctx, rec); err != nil {
 		return false, err
 	}

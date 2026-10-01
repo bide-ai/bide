@@ -274,3 +274,41 @@ func TestRev138_SubRunChecksTheRootAtEveryCheck(t *testing.T) {
 		})
 	}
 }
+
+// A cancelled saga turn whose step completed: the next message's Send drives the turn's rollback
+// (the session owns its turns), which compensates the step and writes run:cancelled, and records
+// the turn closed.
+func TestRev138_SessionRollsBackACancelledSagaTurn(t *testing.T) {
+	ctx := context.Background()
+	j, _ := p14Journal(t)
+	var undone counter
+	book := agent.CompensatedFunc("book", "", agent.Safety{},
+		func(context.Context, struct{}) (string, error) { return "booked", nil },
+		func(context.Context, struct{}, string) error { undone.n.Add(1); return nil })
+	var c counter
+	model := &p14Model{turns: []p14Turn{{calls: []agent.ToolUse{call("c1", "book")}}, {calls: []agent.ToolUse{call("c2", "pay")}}, {text: "done"}}}
+	a := p14Build(t, model, j, agent.WithTools(book, c.tool("pay", agent.Safety{}, agent.WithApproval(agent.SingleApproval()))))
+	s, err := a.Session(ctx, "s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SendMessage(ctx, agent.UserText("one"), agent.WithSaga()); err == nil {
+		t.Fatal("want the approval pause")
+	}
+	if err := agent.Cancel(ctx, j, "s>@turn/0", "stop"); err != nil {
+		t.Fatalf("Cancel = %v", err)
+	}
+	if st, _ := agent.Status(ctx, j, "s>@turn/0"); st.State != agent.RunStarted {
+		t.Fatalf("a saga turn's Cancel wrote its end: Status %s, want started until its rollback", st.State)
+	}
+	_, err = s.SendMessage(ctx, agent.UserText("two"))
+	if errors.Is(err, agent.ErrConfig) {
+		t.Fatalf("the next message was refused: %v", err)
+	}
+	if st, _ := agent.Status(ctx, j, "s>@turn/0"); st.State != agent.RunCancelled || undone.n.Load() != 1 {
+		t.Fatalf("turn 0: Status %s, compensated %d; want cancelled and 1", st.State, undone.n.Load())
+	}
+	if h := s.History(); len(h) != 0 {
+		t.Fatalf("the closed turn is in the transcript: %v", h)
+	}
+}

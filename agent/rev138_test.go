@@ -156,8 +156,12 @@ func TestRev138_CancelledSagaTurnBlocksSession(t *testing.T) {
 	}
 	_, err = s.SendMessage(ctx, agent.UserText("two"))
 	t.Logf("next message after cancelling a saga turn = %v", err)
-	if err != nil {
+	// The next message runs its own turn (turn 1; the model's script pauses it for approval too).
+	if errors.Is(err, agent.ErrConfig) {
 		t.Errorf("the session refuses the next message after its saga turn was cancelled: %v", err)
+	}
+	if st, _ := agent.Status(ctx, j, "s>@turn/0"); st.State != agent.RunCancelled {
+		t.Errorf("the cancelled saga turn's run is %s, want cancelled (its rollback driven by the session)", st.State)
 	}
 }
 
