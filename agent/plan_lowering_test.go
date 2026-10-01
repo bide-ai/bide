@@ -237,7 +237,7 @@ func TestEmptyStepNameIsRefused(t *testing.T) {
 	if _, err := Step(inNode, m, "r", "", fn); !errors.Is(err, ErrConfig) {
 		t.Errorf("Step(\"\") in a node: %v, want ErrConfig", err)
 	}
-	if _, err := Parallel(ctx, m, "r", 0, Task[int]{Name: "", Fn: fn}); !errors.Is(err, ErrConfig) {
+	if _, err := Parallel(ctx, m, "r", []Task[int]{{Name: "", Fn: fn}}); !errors.Is(err, ErrConfig) {
 		t.Errorf("Parallel with an empty task name: %v, want ErrConfig", err)
 	}
 	if err := ResolveHaltRef(ctx, m, HaltRef{RunID: "r", Op: OpRef{Kind: OpStep, ID: ""}, Cause: HaltCrashed}, Outcome{Result: 1}); !errors.Is(err, ErrConfig) {
@@ -281,7 +281,7 @@ func TestFlowInputWithoutCanonicalJSONIsRefused(t *testing.T) {
 func TestOneJSONRule_Escaping(t *testing.T) {
 	ctx := context.Background()
 	m := NewMemStore()
-	if _, err := Step(ctx, m, "r", "s", func(context.Context) (string, error) { return "a<b & c>d", nil }, StepSafety(Safety{ReadOnly: true})); err != nil {
+	if _, err := Step(ctx, m, "r", "s", func(context.Context) (string, error) { return "a<b & c>d", nil }, WithSafety(Safety{ReadOnly: true})); err != nil {
 		t.Fatal(err)
 	}
 	rec, ok, err := m.Journal().Get(ctx, "r", "s")

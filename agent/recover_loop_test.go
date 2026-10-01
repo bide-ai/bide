@@ -15,7 +15,7 @@ import (
 
 // runLoop runs RecoverLoop in the background and returns a function that stops it and reports
 // what it returned.
-func runLoop(t *testing.T, s Durable, resume func(context.Context, string) error, opts ...RecoverOption) (stop func() error) {
+func runLoop(t *testing.T, s Durable, resume func(context.Context, string) error, opts ...RecoverLoopOption) (stop func() error) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
@@ -278,14 +278,14 @@ func testRecoverLoopRejectsBadConfig(t *testing.T) {
 	resume := func(context.Context, string) error { return nil }
 	for name, tc := range map[string]struct {
 		s    Durable
-		opts []RecoverOption
+		opts []RecoverLoopOption
 	}{
 		"no Lister":               {noListStore{}, nil},
-		"zero TTL":                {NewMemStore(), []RecoverOption{WithLeaseTTL(0)}},
-		"zero interval":           {NewMemStore(), []RecoverOption{WithRecoverInterval(0)}},
-		"zero concurrency":        {NewMemStore(), []RecoverOption{WithRecoverConcurrency(0)}},
-		"zero lapsed concurrency": {NewMemStore(), []RecoverOption{WithRecoverLapsedConcurrency(0)}},
-		"negative interval":       {NewMemStore(), []RecoverOption{WithRecoverInterval(-time.Second)}},
+		"zero TTL":                {NewMemStore(), []RecoverLoopOption{WithLeaseTTL(0)}},
+		"zero interval":           {NewMemStore(), []RecoverLoopOption{WithRecoverInterval(0)}},
+		"zero concurrency":        {NewMemStore(), []RecoverLoopOption{WithRecoverConcurrency(0)}},
+		"zero lapsed concurrency": {NewMemStore(), []RecoverLoopOption{WithRecoverLapsedConcurrency(0)}},
+		"negative interval":       {NewMemStore(), []RecoverLoopOption{WithRecoverInterval(-time.Second)}},
 	} {
 		done := make(chan error, 1)
 		go func() { done <- RecoverLoop(ctx, tc.s, resume, tc.opts...) }()

@@ -114,7 +114,7 @@ Temporal 拥有这些保证，但需要一个服务器加一支 worker 机群才
 // classify, then branch: rush orders reserve-then-finalize, the rest decline.
 assess, _ := agent.Step(ctx, store, "order-42", "classify",
     func(ctx context.Context) (Assessment, error) { return classify(order) },
-    agent.StepSafety(agent.Safety{ReadOnly: true})) // safe to re-run after a crash
+    agent.WithSafety(agent.Safety{ReadOnly: true})) // safe to re-run after a crash
 
 var receipt Receipt
 if assess.Rush {

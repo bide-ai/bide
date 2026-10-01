@@ -183,9 +183,14 @@ type Sleeping = TimerPending
 
 type clockKey struct{}
 
-// WithClock binds a clock to ctx for the durable timer to read "now". Deployments leave it unset
-// (defaulting to time.Now); tests inject a controllable clock to advance time deterministically.
-func WithClock(ctx context.Context, now func() time.Time) context.Context {
+// ContextWithClock binds a clock to ctx for the durable timers of the run driven with it to read
+// "now". Deployments leave it unset (defaulting to time.Now); tests inject a controllable clock to
+// advance time deterministically. A clock bound here takes precedence over the agent's WithClock
+// option.
+//
+// Deprecated: transitional; the 1.0 rewrite removes it. The Run API takes the clock as a run
+// option (WithClock); until then, an agent-wide clock is the WithClock option of Build.
+func ContextWithClock(ctx context.Context, now func() time.Time) context.Context {
 	return context.WithValue(ctx, clockKey{}, now)
 }
 
@@ -204,7 +209,7 @@ func clockFrom(ctx context.Context) func() time.Time {
 // to the same absolute instant rather than restarting the clock. Use distinct names for distinct
 // timers. Sleep requires a retry-safe tool (Safety.ReadOnly or Idempotent), like Interrupt.
 //
-// With a Waker bound (WithWaker), Sleep schedules the wake before it pauses. If the Waker fails,
+// With a Waker bound (the WithWaker option, or ContextWithWaker), Sleep schedules the wake before it pauses. If the Waker fails,
 // Sleep returns an error wrapping ErrStorage instead of pausing: a pause with no wake scheduled
 // could sleep forever. The run then fails and its tool call records nothing (the memoized wake
 // time aside), so re-driving the run (RecoverLoop does, on its next pass) reaches this Sleep
@@ -270,7 +275,7 @@ type Wake struct {
 }
 
 // Waker is the pluggable trigger that re-invokes a sleeping run when its durable timer is due. Sleep
-// registers a wake with the Waker bound to the run's context (WithWaker); the Waker later calls back
+// registers a wake with the run's Waker (WithWaker, ContextWithWaker); the Waker later calls back
 // to resume the run. The SDK provides the durable, at-most-once timer and its resume safety; what
 // re-invokes the run at the wake time is deployment policy (an in-process loop, a cron, a queue),
 // exactly as the inbound trigger for an event-driven run is (see docs/guides/messaging.md). MemWaker is the
@@ -284,10 +289,14 @@ type Waker interface {
 
 type wakerKey struct{}
 
-// WithWaker binds a Waker to ctx so a durable Sleep registers its wake automatically. With no Waker
-// bound, Sleep still pauses durably; the deployment is then responsible for re-invoking the run at
-// or after the wake time on its own schedule.
-func WithWaker(ctx context.Context, w Waker) context.Context {
+// ContextWithWaker binds a Waker to ctx so a durable Sleep of the run driven with it registers its
+// wake automatically. With no Waker bound (here or with the agent's WithWaker option), Sleep still
+// pauses durably; the deployment is then responsible for re-invoking the run at or after the wake
+// time on its own schedule. A Waker bound here takes precedence over the agent's.
+//
+// Deprecated: transitional; the 1.0 rewrite removes it. The Run API takes the Waker as a run
+// option (WithWaker); until then, an agent-wide Waker is the WithWaker option of Build.
+func ContextWithWaker(ctx context.Context, w Waker) context.Context {
 	return context.WithValue(ctx, wakerKey{}, w)
 }
 

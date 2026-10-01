@@ -55,7 +55,7 @@ func TestWaker_ScheduleFailureFailsTheRunAndRecordsNothing(t *testing.T) {
 		t.Run(fmt.Sprintf("saga=%v", saga), func(t *testing.T) {
 			store := NewMemStore()
 			w := &failingWaker{fail: 1}
-			ctx := WithWaker(context.Background(), w)
+			ctx := ContextWithWaker(context.Background(), w)
 			drive := func() error {
 				a := New(&greedyModel{script: [][]Emit{toolTurn("c1", "nap", `{}`), textTurn("done")}}, store, napTool())
 				var err error
@@ -114,7 +114,7 @@ func TestRecoverLoop_RetriesAFailedWakeSchedule(t *testing.T) {
 	var mu sync.Mutex
 	var reported []error
 	resume := func(ctx context.Context, runID string) error {
-		_, err := newAgent().Run(WithWaker(ctx, w), runID, "rest")
+		_, err := newAgent().Run(ContextWithWaker(ctx, w), runID, "rest")
 		return err
 	}
 	done := make(chan error, 1)
@@ -354,7 +354,7 @@ func TestResolveHaltRef_ContendedHaltIsNotResolvedWhileYoung(t *testing.T) {
 	}
 	unresolved("without a minimum age")
 	young := t0.Add(10 * time.Second)
-	err = ResolveHaltRef(ctx, store, contended, out, WithMinHaltAge(time.Minute), WithNow(func() time.Time { return young }))
+	err = ResolveHaltRef(ctx, store, contended, out, WithMinHaltAge(time.Minute), WithClock(func() time.Time { return young }))
 	if tooYoung, ok := errors.AsType[*HaltTooYoung](err); !ok || tooYoung.Age != 10*time.Second {
 		t.Fatalf("young contended halt = %v; want *HaltTooYoung aged 10s (from the live attempt, not the voided one)", err)
 	}
@@ -369,7 +369,7 @@ func TestResolveHaltRef_ContendedHaltIsNotResolvedWhileYoung(t *testing.T) {
 	}
 
 	old := t0.Add(2 * time.Minute)
-	if err := ResolveHaltRef(ctx, store, contended, out, WithMinHaltAge(time.Minute), WithNow(func() time.Time { return old })); err != nil {
+	if err := ResolveHaltRef(ctx, store, contended, out, WithMinHaltAge(time.Minute), WithClock(func() time.Time { return old })); err != nil {
 		t.Fatalf("aged contended halt = %v; want it resolved", err)
 	}
 	if rec, ok := hasStep(t, store, "r1", ToolResultStep("c1")); !ok || string(rec.Result) != `"charged"` {

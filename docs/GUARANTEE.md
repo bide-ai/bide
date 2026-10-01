@@ -151,7 +151,7 @@ says happened. A drive uses the configuration it is given for:
   was not retry-safe when it fired, so a resume halts on a marker without a result whatever the
   tool is declared as by then (relabelled retry-safe, or no longer registered at all), and a
   `Step` attempted as a side effect halts even if the resuming code passes a retry-safe
-  `StepSafety`. The marker needs no new field for this, so markers written by earlier versions
+  `WithSafety`. The marker needs no new field for this, so markers written by earlier versions
   are read the same way: every one of them means "not retry-safe, halt", unless the driver that
   wrote it recorded that its attempt never started. A completed call's result records the `Safety`
   it ran under, so a saga rollback compensates (or lists as uncompensated) a write whose tool was

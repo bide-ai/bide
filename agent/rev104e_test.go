@@ -111,7 +111,7 @@ func rev104eResolverRace(t *testing.T, through func(j *Journal) Durable) {
 	}
 	later := func() time.Time { return time.Now().Add(time.Hour) }
 	err := ResolveHaltRef(ctx, rw, HaltRef{RunID: "r", Op: OpRef{Kind: OpTool, ID: "c1", ToolName: "charge"}, Cause: HaltCrashed},
-		Outcome{Result: "charged"}, WithMinHaltAge(time.Minute), WithNow(later))
+		Outcome{Result: "charged"}, WithMinHaltAge(time.Minute), WithClock(later))
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}

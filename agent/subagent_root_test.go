@@ -81,13 +81,13 @@ func TestSubAgentSleep_WakesTheRoot(t *testing.T) {
 		fired = err == nil && msg.Text() == "parent done"
 		return err
 	})
-	_, err := root.Run(WithWaker(context.Background(), w), "p", "go")
+	_, err := root.Run(ContextWithWaker(context.Background(), w), "p", "go")
 	var slp *Sleeping
 	if !errors.As(err, &slp) || slp.RootRunID != "p" {
 		t.Fatalf("sleep = %+v (%v); want RootRunID p", slp, err)
 	}
 	time.Sleep(20 * time.Millisecond)
-	if _, err := w.Fire(WithWaker(context.Background(), w), time.Now()); err != nil {
+	if _, err := w.Fire(ContextWithWaker(context.Background(), w), time.Now()); err != nil {
 		t.Fatalf("Fire: %v (woke %v)", err, woken)
 	}
 	if len(woken) != 1 || woken[0] != "p" || !fired {

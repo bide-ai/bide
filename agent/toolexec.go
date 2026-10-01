@@ -74,7 +74,7 @@ func (a *Agent) quorumTally(ctx context.Context, runID string, tu ToolUse, pol *
 	if !tally.Passed() && !tally.Unreachable() {
 		return tally, false, nil
 	}
-	tally, err = step(ctx, a.store, runID, name, func(context.Context) (ApprovalTally, error) { return tally, nil }, StepSafety(Safety{ReadOnly: true}))
+	tally, err = step(ctx, a.store, runID, name, func(context.Context) (ApprovalTally, error) { return tally, nil }, WithSafety(Safety{ReadOnly: true}))
 	if err != nil {
 		return ApprovalTally{}, false, fmt.Errorf("record %s (run %s): %w (%w)", name, runID, err, ErrStorage)
 	}
@@ -597,7 +597,7 @@ func (a *Agent) toolHandler(runID string) func(context.Context, ToolUse) (json.R
 		// whether or not this chain reached the tool (a cache answer on a re-drive does not).
 		running := tracked(call.Spec.Safety) && countRunning(storeID, runID, tu.ID)
 		if state == callReached && err != nil && !ctxDone(ctx) &&
-			((out.Load() != toolFailed || running) && a.unprovenFailure(ctx, tu.Name) || earlier.Load() && a.specs[tu.Name].Safety.retrySafeWrite() && InSaga(ctx)) {
+			((out.Load() != toolFailed || running) && a.unprovenFailure(ctx, tu.Name) || earlier.Load() && a.specs[tu.Name].Safety.retrySafeWrite() && inSaga(ctx)) {
 			// The tool began, and did not itself fail: it is still running (a next left running),
 			// it succeeded (a middleware turned that into an error), its outcome is unknown, or a
 			// later invocation's refusal is what the chain returned. "Failed" needs positive proof
@@ -638,7 +638,7 @@ func (e *argsJournalError) Unwrap() error { return e.err }
 // for a retry-safe tool that changes state (Idempotent, not ReadOnly) inside a saga.
 func (a *Agent) unprovenFailure(ctx context.Context, name string) bool {
 	s := a.specs[name].Safety // a registered tool: only a call that reached it, or ran it, gets here
-	return !s.RetrySafe() || s.retrySafeWrite() && InSaga(ctx)
+	return !s.RetrySafe() || s.retrySafeWrite() && inSaga(ctx)
 }
 
 // journalAcceptedArgs records, before the side effect fires, the arguments a compensable call in
@@ -658,7 +658,7 @@ func (a *Agent) unprovenFailure(ctx context.Context, name string) bool {
 // unknown outcome rather than as a step that made no change (see sagaStepMayHaveBegun).
 func journalAcceptedArgs(ctx context.Context, t Tool, call ToolCall, safety Safety) error {
 	tu := call.Use
-	if _, ok := t.(Compensator); !ok || !InSaga(ctx) {
+	if _, ok := t.(Compensator); !ok || !inSaga(ctx) {
 		return nil
 	}
 	if bytes.Equal(call.modelArgs, tu.Args) && !safety.retrySafeWrite() {

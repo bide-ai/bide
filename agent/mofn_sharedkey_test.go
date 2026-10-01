@@ -338,7 +338,7 @@ func TestMofn_RecordedTallyIsReusedNotRecounted(t *testing.T) {
 	if !oldTally.Passed() {
 		t.Fatalf("setup: old tally %+v did not pass", oldTally)
 	}
-	if _, err := step(ctx, store, "r1", ApprovalTallyStep("c1"), func(context.Context) (ApprovalTally, error) { return oldTally, nil }, StepSafety(Safety{ReadOnly: true})); err != nil {
+	if _, err := step(ctx, store, "r1", ApprovalTallyStep("c1"), func(context.Context) (ApprovalTally, error) { return oldTally, nil }, WithSafety(Safety{ReadOnly: true})); err != nil {
 		t.Fatal(err)
 	}
 	// After the upgrade a2 gets a key of its own. A recount would not pass; the gate does not

@@ -65,7 +65,7 @@ func main() {
 		gov := govern.New(m, m.NewState().SetInt(limit, d.limit))
 		buy := govern.EventTool(gov, govern.EventToolConfig{Name: "buy", Description: "buy $1M", Event: "buy", PolicyDigest: policyDigest})
 		id := agent.Identity{Actor: d.actor, OnBehalfOf: d.principal, AuthorityRef: d.grant}
-		runCtx := agent.WithIdentity(ctx, id)
+		runCtx := agent.ContextWithIdentity(ctx, id)
 
 		// The agent tries to buy $6M (six calls). Governance caps it at the desk's granted limit.
 		var lastLeaf json.RawMessage

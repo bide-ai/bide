@@ -26,7 +26,7 @@ func TestResolveHalt_MinHaltAge(t *testing.T) {
 	// Too soon: 30s after the attempt, 60s grace -> *HaltTooYoung, nothing recorded.
 	s := seed()
 	err := ResolveHalt(ctx, s, "r", "c1", "charged", false,
-		WithMinHaltAge(60*time.Second), WithNow(func() time.Time { return base.Add(30 * time.Second) }))
+		WithMinHaltAge(60*time.Second), WithClock(func() time.Time { return base.Add(30 * time.Second) }))
 	var young *HaltTooYoung
 	if !errors.As(err, &young) {
 		t.Fatalf("err = %v, want *HaltTooYoung", err)
@@ -38,7 +38,7 @@ func TestResolveHalt_MinHaltAge(t *testing.T) {
 	// Past the grace: 90s after the attempt -> resolves and records the result.
 	s = seed()
 	if err := ResolveHalt(ctx, s, "r", "c1", "charged", false,
-		WithMinHaltAge(60*time.Second), WithNow(func() time.Time { return base.Add(90 * time.Second) })); err != nil {
+		WithMinHaltAge(60*time.Second), WithClock(func() time.Time { return base.Add(90 * time.Second) })); err != nil {
 		t.Fatalf("resolve after grace: %v", err)
 	}
 	if h, _ := s.History(ctx, "r"); !hasResult(h, "c1") {

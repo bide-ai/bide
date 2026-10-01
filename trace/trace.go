@@ -3,7 +3,7 @@
 // nothing; contrast frameworks whose core drags the full OTel + Temporal stack into
 // every binary). It plugs in through the existing middleware hooks — Model (a .Use
 // middleware) and Tool (a .UseTool middleware) — emitting spans with the OTel GenAI
-// semantic-convention attributes.
+// semantic-convention attributes. Instrument wires both onto an agent as one agent.Option.
 //
 // We hardcode the stable gen_ai.* attribute keys rather than import the semconv module,
 // which churns every release (v1.37 -> v1.41). Message and tool-argument CONTENT is not
@@ -199,16 +199,17 @@ func Tool(tracer oteltrace.Tracer) agent.ToolMiddleware {
 	}
 }
 
-// Instrument wires the gen_ai span taxonomy onto an agent in one call: the "chat" span (via Model)
-// and the "execute_tool" span (via Tool), using tracer. It is the low-friction way to enable
-// observability without hand-wiring each middleware, while the core agent package keeps no
-// OpenTelemetry dependency (importing this package is the single opt-in). Options (WithRates)
-// apply to the chat span. For the top-level "invoke_agent" span, wrap the
-// run with Invoke, which lives at the call site rather than on the agent.
+// Instrument is the agent option that wires the gen_ai span taxonomy onto an agent in one call:
+// the "chat" span (via Model) and the "execute_tool" span (via Tool), using tracer. It is the
+// low-friction way to enable observability without hand-wiring each middleware, while the core
+// agent package keeps no OpenTelemetry dependency (importing this package is the single opt-in).
+// Options (WithRates) apply to the chat span. Its middleware is appended where the option
+// appears among the agent's options. For the top-level "invoke_agent" span, wrap the run with
+// Invoke, which lives at the call site rather than on the agent.
 //
-//	a := trace.Instrument(agent.New(model, store, tools...), tracer, trace.WithRates(rates))
-func Instrument(a *agent.Agent, tracer oteltrace.Tracer, opts ...Option) *agent.Agent {
-	return a.Use(Model(tracer, opts...)).UseTool(Tool(tracer))
+//	a, err := agent.Build(model, journal, agent.WithTools(tools...), trace.Instrument(tracer, trace.WithRates(rates)))
+func Instrument(tracer oteltrace.Tracer, opts ...Option) agent.Option {
+	return agent.WithOptions(agent.WithMiddleware(Model(tracer, opts...)), agent.WithToolMiddleware(Tool(tracer)))
 }
 
 // Invoke starts a top-level gen_ai "invoke_agent" span; call the returned end(err) when

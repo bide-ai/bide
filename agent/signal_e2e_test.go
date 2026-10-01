@@ -126,7 +126,7 @@ func TestSignal_DeliverThenWake(t *testing.T) {
 		return nil
 	})
 	a = New(m, mem, awaitT)
-	ctx := WithWaker(context.Background(), waker)
+	ctx := ContextWithWaker(context.Background(), waker)
 
 	// First run pauses on the await (plain Await does not self-schedule a wake).
 	_, err := a.Run(ctx, "r", "hi")

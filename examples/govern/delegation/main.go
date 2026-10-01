@@ -81,7 +81,7 @@ func main() {
 	buy := govern.EventTool(gov, govern.EventToolConfig{Name: "buy", Description: "buy $1M", Event: "buy", PolicyDigest: policyDigest})
 	// The sub-agent's identity carries its attenuated grant as the authority reference.
 	subID := agent.Identity{Actor: g2.Subject, OnBehalfOf: g1.Subject, AuthorityRef: g2.Digest()}
-	runCtx := agent.WithIdentity(ctx, subID)
+	runCtx := agent.ContextWithIdentity(ctx, subID)
 
 	var lastLeaf json.RawMessage
 	for i := 0; i < 6; i++ { // tries $6M, governed to its $3M delegated limit

@@ -66,7 +66,7 @@ func TestStep_ClaimWinnerRunsTheStepWhenALoserReadsFirst(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Warm the header so the counted calls below are the step's own.
-	if _, err := agent.Step(ctx, j, "r", "warm", func(context.Context) (int, error) { return 0, nil }, agent.StepSafety(agent.Safety{ReadOnly: true})); err != nil {
+	if _, err := agent.Step(ctx, j, "r", "warm", func(context.Context) (int, error) { return 0, nil }, agent.WithSafety(agent.Safety{ReadOnly: true})); err != nil {
 		t.Fatal(err)
 	}
 	winnerClaimed := make(chan struct{})

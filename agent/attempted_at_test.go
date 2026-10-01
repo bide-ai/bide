@@ -36,7 +36,7 @@ func TestResolveHalt_NonPositiveAttemptedAtIsNoTimestamp(t *testing.T) {
 	for _, ms := range []int64{0, -1, -now.UnixMilli()} {
 		s := markerAt(t, ms)
 		err := ResolveHalt(ctx, s, "r", "c1", "charged", false,
-			WithMinHaltAge(time.Hour), WithNow(func() time.Time { return now }))
+			WithMinHaltAge(time.Hour), WithClock(func() time.Time { return now }))
 		if !errors.Is(err, ErrConfig) {
 			t.Errorf("AttemptedAt %d: ResolveHalt = %v, want ErrConfig (no usable timestamp)", ms, err)
 		}
@@ -53,7 +53,7 @@ func TestResolveHalt_FutureAttemptedAtIsTooYoung(t *testing.T) {
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	s := markerAt(t, now.Add(24*time.Hour).UnixMilli())
 	err := ResolveHalt(ctx, s, "r", "c1", "charged", false,
-		WithMinHaltAge(time.Minute), WithNow(func() time.Time { return now }))
+		WithMinHaltAge(time.Minute), WithClock(func() time.Time { return now }))
 	var young *HaltTooYoung
 	if !errors.As(err, &young) {
 		t.Fatalf("ResolveHalt = %v, want *HaltTooYoung", err)
@@ -102,7 +102,7 @@ func TestStepHalt_RetrySafeFindsNonPositiveMarker(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err := Step(ctx, s, "r", "reserve", func(context.Context) (int, error) { return 1, nil },
-		StepSafety(Safety{ReadOnly: true}))
+		WithSafety(Safety{ReadOnly: true}))
 	var halt *ResumeHalt
 	if !errors.As(err, &halt) {
 		t.Fatalf("Step = %v, want *ResumeHalt", err)

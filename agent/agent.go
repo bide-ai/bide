@@ -16,7 +16,9 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"time"
 )
 
 // addUsage accumulates src into dst field-by-field.
@@ -29,23 +31,24 @@ func addUsage(dst *Usage, src Usage) {
 
 // Agent binds a model, a tool set, a durable store, and a middleware chain.
 //
-// The WithX/Use/SetX builder methods MUTATE the receiver in place and return it for chaining; they
-// do not copy. This is deliberate: it lets configuration be applied after construction and after the
-// value has been shared, e.g. a.Use(trace.Model(...)) or a.Use(agent.WithRetrieval(...)) wiring a
-// cross-cutting concern onto an agent other code already holds. The consequence is that two
-// variables assigned from the same New(...) are aliases: reconfiguring one reconfigures both. When
-// you need an independently configured variant, construct a fresh Agent rather than expecting a
-// builder to fork. (The internal clone/cloneWith, used by RunTyped, do copy; they are not exported.)
+// Build an Agent with Build and options, and derive a differently configured one with With,
+// which copies it: an agent built that way is never changed, so it is safe for concurrent
+// Run/Stream/Session calls and for concurrent With calls.
 //
-// An Agent is safe for concurrent Run/Stream/Session calls once configured; the builder methods are
-// not safe to call concurrently with a run or with each other. Configure first, then run.
+// The transitional builder methods (WithMaxTurns, Use, UseTool, SetMaxConcurrency and the rest)
+// MUTATE the receiver in place and return it for chaining; they do not copy. Two variables
+// assigned from the same New(...) are aliases: reconfiguring one reconfigures both. They are not
+// safe to call concurrently with a run or with each other, and the 1.0 rewrite removes them in
+// favour of the options.
 type Agent struct {
-	model        Model
-	tools        map[string]Tool
-	specs        map[string]*ToolSpec // each tool's spec, read once when it was registered; never changed
-	specList     []ToolSpec           // specs sorted by name, as model requests are sent them
-	dupTool      string               // a tool name New was given more than once; every run fails with ErrConfig
-	toolErr      error                // the first tool New refused (checkWrapper); every run fails with it
+	model    Model
+	tools    map[string]Tool
+	specs    map[string]*ToolSpec // each tool's spec, read once when it was registered; never changed
+	specList []ToolSpec           // specs sorted by name, as model requests are sent them
+	// toolErr is the first problem New found with its tools (a duplicate name, a wrapper it
+	// cannot honor, an invalid approval policy): every run fails with it. Build and With return
+	// such a problem instead, so an agent they make never has one.
+	toolErr      error
 	store        Durable
 	mw           []Middleware
 	toolMW       []ToolMiddleware
@@ -54,12 +57,19 @@ type Agent struct {
 	maxTurns     int      // max model turns per run; 0 = unbounded (default)
 	tokenBudget  int      // max tokens per run (Usage.TotalTokens); 0 = unbounded (default)
 	systemPrompt string   // optional static system message prepended to every model call
-	// systemPromptFn, if set, computes the system message per run (dynamic context:
-	// current time, tenant, retrieved state). Takes precedence over systemPrompt.
-	systemPromptFn func(context.Context) string
-	responseFormat *ResponseFormat // native structured-output constraint (see RunTypedNative)
-	toolChoice     *ToolChoice     // tool-choice control applied to every model call (see WithToolChoice)
-	terminalTool   string          // a successful call to this tool ends the run (RunTyped's final_answer)
+	// systemPromptFn, if set, computes the system message per drive of a run (dynamic context:
+	// current time, tenant, retrieved state). It shares one slot with systemPrompt: setting either
+	// clears the other.
+	systemPromptFn func(context.Context, RunInfo) (string, error)
+	responseFormat *ResponseFormat  // native structured-output constraint (see RunTypedNative)
+	toolChoice     *ToolChoice      // tool-choice control applied to every model call (see WithToolChoice)
+	terminalTool   string           // a successful call to this tool ends the run (RunTyped's final_answer)
+	retrievals     []retrievalLayer // WithRetrieval steps, in the order given
+	// identity, waker and clock are the agent's defaults for a run whose context carries none
+	// (see runDefaults).
+	identity *Identity
+	waker    Waker
+	clock    func() time.Time
 	// approverVerifiers resolves an approver id to the verifier for its decision
 	// signature; required by any tool with an m-of-n ToolSpec.Approval (see WithApproverVerifiers).
 	approverVerifiers ApproverVerifierFor
@@ -68,13 +78,17 @@ type Agent struct {
 	toolErrRedact func(tool string, err error) string
 }
 
-// systemMessage returns the system prompt for this run — the dynamic function if set,
-// else the static string.
-func (a *Agent) systemMessage(ctx context.Context) string {
+// systemMessage returns the system prompt for this drive of run: the dynamic function's if one
+// is set, else the static string.
+func (a *Agent) systemMessage(ctx context.Context, run RunInfo) (string, error) {
 	if a.systemPromptFn != nil {
-		return a.systemPromptFn(ctx)
+		s, err := a.systemPromptFn(ctx, run)
+		if err != nil {
+			return "", fmt.Errorf("agent: system prompt for run %s: %w", run.RunID, err)
+		}
+		return s, nil
 	}
-	return a.systemPrompt
+	return a.systemPrompt, nil
 }
 
 // SamplingOption sets one field of the Sampling config; see Temperature, TopP,
@@ -96,8 +110,105 @@ func Stop(seqs ...string) SamplingOption { return func(s *Sampling) { s.Stop = s
 // Seed sets a best-effort determinism seed (honored by providers that support it).
 func Seed(v int64) SamplingOption { return func(s *Sampling) { s.Seed = &v } }
 
+// New constructs an Agent over model, store and tools. It panics if model or store is nil. A
+// problem with the tools (two with one name, an invalid approval policy, a wrapper the agent
+// cannot honor) is not reported here: every run fails with it, as ErrConfig. Build reports these
+// when the agent is built, and refuses more: the reserved name "final_answer", an input schema
+// that is not a JSON object, and every other configuration problem.
+//
+// Deprecated: transitional; the 1.0 rewrite removes it, and renames Build to New. Use Build.
+func New(model Model, store Durable, tools ...Tool) *Agent {
+	if model == nil {
+		panic("agent: New requires a non-nil Model")
+	}
+	if store == nil {
+		panic("agent: New requires a non-nil Durable store")
+	}
+	a := newAgent(model, store)
+	for _, t := range tools {
+		if err := a.addTool(t, false); err != nil && a.toolErr == nil {
+			a.toolErr = err
+		}
+	}
+	a.sortSpecs()
+	return a
+}
+
+// addTool registers t, reading its spec once: every decision about its calls reads this copy. It
+// refuses a nil tool, a name the agent already has, a wrapper the agent cannot honor
+// (checkWrapper), and an approval policy no option would build (a SingleApproval whose fields
+// were changed), each with ErrConfig. strict (Build and With) also refuses the name RunTyped
+// reserves and an input schema that is not a JSON object; New, which is transitional, does not,
+// so the tools it was always given keep working until the 1.0 rewrite moves them to Build. A
+// refused tool is not registered.
+func (a *Agent) addTool(t Tool, strict bool) error {
+	if isNil(t) {
+		return fmt.Errorf("agent: nil tool: %w", ErrConfig)
+	}
+	s := SpecOf(t)
+	if err := checkWrapper(t, s); err != nil {
+		return err
+	}
+	if s.Approval != nil {
+		if err := checkApproval(s.Approval); err != nil {
+			return fmt.Errorf("agent: tool %q: %w", s.Name, err)
+		}
+	}
+	switch _, taken := a.specs[s.Name]; {
+	case taken && !strict:
+		a.tools[s.Name], a.specs[s.Name] = t, &s // as New always did: the run fails with the error
+		return fmt.Errorf("agent: two tools are named %q: %w", s.Name, ErrConfig)
+	case taken:
+		// The model calls a tool by name, so one of the two could never be called, and which one
+		// a call reached would depend on the order the host listed them in: a host that adds tools
+		// from a runtime source such as an MCP server after its own would send the model's call,
+		// arguments and all, to the server.
+		return fmt.Errorf("agent: two tools are named %q: %w", s.Name, ErrConfig)
+	case !strict:
+	case s.Name == finalAnswerTool:
+		return fmt.Errorf("agent: tool name %q is reserved for RunTyped's answer: %w", s.Name, ErrConfig)
+	default:
+		if err := checkInputSchema(s); err != nil {
+			return err
+		}
+	}
+	a.tools[s.Name], a.specs[s.Name] = t, &s
+	return nil
+}
+
+// checkInputSchema refuses a spec whose Input is not a JSON object schema: a JSON object whose
+// "type", if it has one, is "object". Providers take a tool's arguments only as an object.
+func checkInputSchema(s ToolSpec) error {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(s.Input, &obj); err != nil || obj == nil {
+		return fmt.Errorf("agent: tool %q: input schema is not a JSON object: %w", s.Name, ErrConfig)
+	}
+	if t, ok := obj["type"]; ok {
+		var typ string
+		if err := json.Unmarshal(t, &typ); err != nil || typ != "object" {
+			return fmt.Errorf("agent: tool %q: input schema type is %s, not \"object\": %w", s.Name, t, ErrConfig)
+		}
+	}
+	return nil
+}
+
+// checkTools reports the first problem New found with its tools (see New). It is an error rather
+// than a panic because a tool list read from a server at run time is data, not code.
+func (a *Agent) checkTools() error { return a.toolErr }
+
+// Use appends middleware wrapping the model call (first added = outermost). Returns the
+// agent for chaining.
+//
+// Deprecated: transitional; the 1.0 rewrite removes it. Use the WithMiddleware option.
+func (a *Agent) Use(mw ...Middleware) *Agent {
+	a.mw = append(a.mw, mw...)
+	return a
+}
+
 // WithSampling sets generation controls applied to every model call (last write wins per
-// field). Returns the agent for chaining: New(...).WithSampling(agent.Temperature(0), agent.MaxTokens(500)).
+// field). Returns the agent for chaining.
+//
+// Deprecated: transitional; the 1.0 rewrite removes it. Use the WithSampling option.
 func (a *Agent) WithSampling(opts ...SamplingOption) *Agent {
 	for _, o := range opts {
 		o(&a.sampling)
@@ -112,6 +223,8 @@ func (a *Agent) WithSampling(opts ...SamplingOption) *Agent {
 // the model from ever producing a final answer (it must always call a tool), so the run
 // cannot terminate normally. Reserve those modes for single-turn or typed/structured
 // calls; "auto" (the default when unset) is the norm for the agent loop.
+//
+// Deprecated: transitional; the 1.0 rewrite removes it. Use the WithToolChoice option.
 func (a *Agent) WithToolChoice(tc ToolChoice) *Agent {
 	a.toolChoice = &tc
 	return a
@@ -119,86 +232,33 @@ func (a *Agent) WithToolChoice(tc ToolChoice) *Agent {
 
 // WithSystemPrompt sets a system message that is prepended to the conversation on every
 // model turn. The message is re-seeded on each Run (including resumes), so it is always
-// present regardless of journal replay. Returns the agent for chaining:
-// New(...).WithSystemPrompt("you are a concise assistant").
+// present regardless of journal replay. It fills the slot WithSystemPromptFunc fills: the later
+// of the two wins. Returns the agent for chaining.
 //
 // The system message is configuration, not journal: it is not recorded, and the model turns a
 // drive makes are sent the message the agent holds at that drive. A run resumed after the prompt
 // was changed sends its remaining turns the new prompt beside turns that answered the old one.
 // Its recorded turns are not affected, and neither is any decision the loop makes on resume.
+//
+// Deprecated: transitional; the 1.0 rewrite removes it. Use the WithSystemPrompt option.
 func (a *Agent) WithSystemPrompt(s string) *Agent {
-	a.systemPrompt = s
+	a.systemPrompt, a.systemPromptFn = s, nil
 	return a
 }
 
 // WithSystemPromptFunc sets a system message computed per run, so it can inject dynamic
-// context (current date, tenant, retrieved state) each turn. It takes precedence over
-// WithSystemPrompt. Returns the agent for chaining.
+// context (current date, tenant, retrieved state) each turn. It fills the slot WithSystemPrompt
+// fills: the later of the two wins. Returns the agent for chaining.
 //
 // fn is called once per drive of a run (each Run, Stream, or resume), not once per run, and its
 // result is not journaled (see WithSystemPrompt): a run resumed later is sent what fn returns
 // then. Context that the run's later turns must see unchanged belongs in the input, which is
 // journaled (see RunStart), or in a tool result.
+//
+// Deprecated: transitional; the 1.0 rewrite removes it. Use the WithSystemPromptFunc option,
+// whose function is also given the run's RunInfo and may fail.
 func (a *Agent) WithSystemPromptFunc(fn func(context.Context) string) *Agent {
-	a.systemPromptFn = fn
-	return a
-}
-
-// New constructs an Agent. It panics if model or store is nil: both are load-bearing on every run
-// (the model drives turns, the store journals them for at-most-once resume), so a nil is a
-// construction-time programmer error, not a runtime condition to thread through every call.
-// Tool names must be unique: if two tools share a name, every run fails with ErrConfig, as it does
-// for a tool whose spec has an invalid Approval (see ApprovalPolicy.Validate).
-func New(model Model, store Durable, tools ...Tool) *Agent {
-	if model == nil {
-		panic("agent: New requires a non-nil Model")
-	}
-	if store == nil {
-		panic("agent: New requires a non-nil Durable store")
-	}
-	m := make(map[string]Tool, len(tools))
-	specs := make(map[string]*ToolSpec, len(tools))
-	dup := ""
-	var toolErr error
-	for _, t := range tools {
-		s := SpecOf(t) // read once: every decision about the tool's calls reads this copy
-		if err := checkWrapper(t, s); err != nil && toolErr == nil {
-			toolErr = err
-		}
-		if s.Approval != nil && toolErr == nil {
-			// A tool's own Spec may return a policy no option would build (a SingleApproval whose
-			// fields were changed): refuse it here, before a call is approved and fires, not when
-			// its result fails to encode.
-			if err := checkApproval(s.Approval); err != nil {
-				toolErr = fmt.Errorf("agent: tool %q: %w", s.Name, err)
-			}
-		}
-		if _, taken := m[s.Name]; taken && dup == "" {
-			dup = s.Name
-		}
-		m[s.Name], specs[s.Name] = t, &s // a tool with a Spec method is called by its spec's name
-	}
-	a := &Agent{model: model, tools: m, specs: specs, dupTool: dup, toolErr: toolErr, store: store}
-	a.sortSpecs()
-	return a
-}
-
-// checkTools reports a tool name New was given twice. The model calls a tool by name, so one of
-// the two could never be called, and which one a call reaches would depend on the order the host
-// listed them in: a host that adds tools from a runtime source such as an MCP server after its
-// own would send the model's call, arguments and all, to the server. It is an error rather than
-// a panic because a tool list read from a server at run time is data, not code.
-func (a *Agent) checkTools() error {
-	if a.dupTool != "" {
-		return fmt.Errorf("agent: two tools are named %q: %w", a.dupTool, ErrConfig)
-	}
-	return a.toolErr
-}
-
-// Use appends middleware wrapping the model call (first added = outermost). Returns the
-// agent for chaining.
-func (a *Agent) Use(mw ...Middleware) *Agent {
-	a.mw = append(a.mw, mw...)
+	a.systemPrompt, a.systemPromptFn = "", func(ctx context.Context, _ RunInfo) (string, error) { return fn(ctx), nil }
 	return a
 }
 
@@ -206,8 +266,11 @@ func (a *Agent) Use(mw ...Middleware) *Agent {
 // keeps calling tools can't loop forever. n <= 0 means unbounded (the default). When the
 // cap is reached the run returns ErrMaxTurns (category ErrBudget). Returns the agent for
 // chaining. The cap is per run (per Session.Send turn), not per session.
+//
+// Deprecated: transitional; the 1.0 rewrite removes it. Use the WithMaxTurns option, which
+// refuses a negative n.
 func (a *Agent) WithMaxTurns(n int) *Agent {
-	a.maxTurns = n
+	a.maxTurns = max(n, 0)
 	return a
 }
 
@@ -233,7 +296,13 @@ func (a *Agent) WithMaxTurns(n int) *Agent {
 // flight when it reached max. Each agent run has at most one model call in flight, so with k
 // runs of the tree calling the model at that moment (k parallel sub-agents; 1 with none) the
 // tree uses less than max plus k calls' usage.
+//
+// Deprecated: transitional; the 1.0 rewrite removes it. Use the WithTokenBudget option, which
+// refuses a negative max.
 func (a *Agent) WithTokenBudget(max int) *Agent {
+	if max < 0 {
+		max = 0
+	}
 	a.tokenBudget = max
 	return a
 }
@@ -241,8 +310,11 @@ func (a *Agent) WithTokenBudget(max int) *Agent {
 // SetMaxConcurrency bounds how many tool calls run in parallel within a single turn.
 // n <= 0 means unbounded (the default). Returns the agent for chaining; use
 // SetMaxConcurrency(1) to force fully sequential tool execution.
+//
+// Deprecated: transitional; the 1.0 rewrite removes it. Use the WithMaxConcurrency option, which
+// refuses a negative n.
 func (a *Agent) SetMaxConcurrency(n int) *Agent {
-	a.maxConc = n
+	a.maxConc = max(n, 0)
 	return a
 }
 
@@ -250,6 +322,9 @@ func (a *Agent) SetMaxConcurrency(n int) *Agent {
 // the verifier for its signature. Required whenever any tool carries an m-of-n
 // ToolSpec.Approval (see WithApproval): a gated call with no resolver configured fails with ErrConfig rather than
 // silently counting zero decisions. Returns the agent for chaining.
+//
+// Deprecated: transitional; the 1.0 rewrite removes it. Use the WithApproverVerifiers option,
+// with which Build and With check every m-of-n policy when the agent is built.
 func (a *Agent) WithApproverVerifiers(fn ApproverVerifierFor) *Agent {
 	a.approverVerifiers = fn
 	return a
@@ -268,6 +343,8 @@ func (a *Agent) WithApproverVerifiers(fn ApproverVerifierFor) *Agent {
 // It applies to every failed call, a sub-agent's included (a sub-agent's failure is its tool
 // call's error), and to the failure a saga journals. The error the caller gets back
 // (SagaAborted.Cause, for one) is the tool's own. Returns the agent for chaining.
+//
+// Deprecated: transitional; the 1.0 rewrite removes it. Use the WithToolErrorRedactor option.
 func (a *Agent) WithToolErrorRedactor(fn func(tool string, err error) string) *Agent {
 	a.toolErrRedact = fn
 	return a

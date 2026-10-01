@@ -199,16 +199,17 @@ func withSessionRun(ctx context.Context, runID string) context.Context {
 	return context.WithValue(ctx, sessionRunKey{}, runID)
 }
 
-// checkRunID refuses a run ID that is empty or contains subRunSep, which only the engine's own
-// derived run IDs carry: a sub-agent's call passes its run ID in the run scope the loop gave it,
-// and a session its turn's in the context it drives the turn with.
+// checkRunID refuses a run ID that is empty or contains subRunSep, which only derived run IDs
+// carry: a tool call may start the sub-agent run of its own call (SubRunID) or a programmatic
+// sub-run it names (RunInfo.SubRunFor), from the context the loop gave it, and a session drives
+// its turn's run with that run's ID in the context.
 func checkRunID(ctx context.Context, runID string) error {
 	if runID == "" {
 		// An empty runID would key every run to the same journal, silently cross-contaminating
 		// their memoized steps. Reject it rather than corrupt the log.
 		return fmt.Errorf("run: empty runID: %w", ErrConfig)
 	}
-	if !strings.Contains(runID, subRunSep) || runID == RunScope(ctx) {
+	if !strings.Contains(runID, subRunSep) || derivedRunID(ctx, runID) {
 		return nil
 	}
 	if sr, _ := ctx.Value(sessionRunKey{}).(string); sr == runID && IsSessionRun(runID) {

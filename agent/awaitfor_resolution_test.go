@@ -14,7 +14,7 @@ import (
 func TestAwaitFor_TimeoutOutcomeSurvivesALateSignal(t *testing.T) {
 	store := NewMemStore()
 	var clk int64 = 1000
-	ctx := WithClock(context.Background(), func() time.Time { return time.Unix(atomic.LoadInt64(&clk), 0) })
+	ctx := ContextWithClock(context.Background(), func() time.Time { return time.Unix(atomic.LoadInt64(&clk), 0) })
 	var outcomes []bool
 	tool := Func("watch", "", Safety{ReadOnly: true}, func(ctx context.Context, _ struct{}) (string, error) {
 		_, ok, err := AwaitFor[string](ctx, "webhook", time.Minute)
@@ -73,7 +73,7 @@ func TestSubAgentAwaitFor_WakesTheRoot(t *testing.T) {
 		completed = err == nil && msg.Text() == "parent done"
 		return err
 	})
-	ctx := WithWaker(WithClock(context.Background(), now), w)
+	ctx := ContextWithWaker(ContextWithClock(context.Background(), now), w)
 	_, err := root.Run(ctx, "p", "go")
 	var aw *Awaiting
 	if !errors.As(err, &aw) || aw.RunID != "p>s1" || aw.RootRunID != "p" {

@@ -75,10 +75,13 @@ func (t *subAgentTool) Call(ctx context.Context, args json.RawMessage) (json.Raw
 	if err := decodeArgs(args, &in); err != nil {
 		return nil, fmt.Errorf("decode args for sub-agent %q: %w (%w)", t.spec.Name, err, ErrToolArgs)
 	}
-	subRunID := RunScope(ctx) // SubRunID(parentRunID, toolUseID): stable and unique per call site
+	var subRunID string
+	if info, ok := RunInfoFrom(ctx); ok && info.ToolUseID != "" {
+		subRunID = SubRunID(info.RunID, info.ToolUseID) // stable and unique per call site
+	}
 	if subRunID == "" {
 		// Fallback for a SubAgent tool invoked outside the agent loop (which always sets the run
-		// scope, agent.go withRunScope). This id is NOT unique per call: two calls to a same-named
+		// scope: see RunInfoFrom). This id is NOT unique per call: two calls to a same-named
 		// sub-agent would share one journal and the second would memoize to the first's result. Drive
 		// sub-agents through Agent.Run/RunSaga (the normal path) so each call gets a distinct scope.
 		subRunID = "sub/" + t.spec.Name
@@ -101,7 +104,7 @@ func (t *subAgentTool) Call(ctx context.Context, args json.RawMessage) (json.Raw
 		}()
 		var m Message
 		var e error
-		if InSaga(ctx) {
+		if inSaga(ctx) {
 			m, e = t.sub.RunSaga(ctx, subRunID, in.Task)
 		} else {
 			m, e = t.sub.Run(ctx, subRunID, in.Task)

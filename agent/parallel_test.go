@@ -43,7 +43,7 @@ func TestParallel_DurableAuditableFanIn(t *testing.T) {
 		}},
 	}
 
-	results, err := agent.Parallel(ctx, store, runID, 0, checks...)
+	results, err := agent.Parallel(ctx, store, runID, checks)
 	if err != nil {
 		t.Fatalf("Parallel: %v", err)
 	}
@@ -56,7 +56,7 @@ func TestParallel_DurableAuditableFanIn(t *testing.T) {
 	}
 
 	// (b) resume: same runID + names, completed checks are memoized, not re-run.
-	results2, err := agent.Parallel(ctx, store, runID, 0, checks...)
+	results2, err := agent.Parallel(ctx, store, runID, checks)
 	if err != nil {
 		t.Fatalf("Parallel (resume): %v", err)
 	}
@@ -111,7 +111,7 @@ func TestParallel_PartialFailure(t *testing.T) {
 		}},
 	}
 
-	results, err := agent.Parallel(ctx, store, runID, 0, tasks...)
+	results, err := agent.Parallel(ctx, store, runID, tasks)
 	if !errors.Is(err, boom) {
 		t.Fatalf("expected the joined error to include the failing check, got %v", err)
 	}
@@ -120,7 +120,7 @@ func TestParallel_PartialFailure(t *testing.T) {
 	}
 
 	// The failed check was not journaled, so a resume re-runs it (correct: nothing completed).
-	_, _ = agent.Parallel(ctx, store, runID, 0, tasks...)
+	_, _ = agent.Parallel(ctx, store, runID, tasks)
 	if creditAttempts != 2 {
 		t.Fatalf("expected the failed check to re-run on resume, attempts=%d", creditAttempts)
 	}
@@ -167,10 +167,10 @@ func TestParallel_FailedSideEffectHaltsOnResume(t *testing.T) {
 		atomic.AddInt64(&charges, 1)
 		return "", errors.New("gateway timeout")
 	}}}
-	if _, err := agent.Parallel(ctx, store, "r1", 0, tasks...); err == nil {
+	if _, err := agent.Parallel(ctx, store, "r1", tasks); err == nil {
 		t.Fatal("setup: want the charge's error")
 	}
-	_, err := agent.Parallel(ctx, store, "r1", 0, tasks...)
+	_, err := agent.Parallel(ctx, store, "r1", tasks)
 	var halt *agent.ResumeHalt
 	if !errors.As(err, &halt) || halt.Op.ID != "charge" || charges != 1 {
 		t.Fatalf("resume: err = %v after %d charges; want *ResumeHalt for charge after 1", err, charges)
@@ -181,8 +181,8 @@ func TestParallel_FailedSideEffectHaltsOnResume(t *testing.T) {
 func TestParallel_RejectsDuplicateNames(t *testing.T) {
 	var ran int64
 	fn := func(context.Context) (int, error) { atomic.AddInt64(&ran, 1); return 1, nil }
-	_, err := agent.Parallel(context.Background(), agent.NewMemStore(), "r1", 0,
-		agent.Task[int]{Name: "check", Fn: fn}, agent.Task[int]{Name: "check", Fn: fn})
+	_, err := agent.Parallel(context.Background(), agent.NewMemStore(), "r1",
+		[]agent.Task[int]{{Name: "check", Fn: fn}, {Name: "check", Fn: fn}})
 	if !errors.Is(err, agent.ErrConfig) || ran != 0 {
 		t.Fatalf("err = %v, ran = %d; want ErrConfig before any task runs", err, ran)
 	}

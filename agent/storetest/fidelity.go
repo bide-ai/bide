@@ -280,7 +280,7 @@ func recordsAfterCancel(t *testing.T, d agent.Durable) {
 func stepAttemptSafety(t *testing.T, d agent.Durable) {
 	ctx := context.Background()
 	id := runID(t)
-	safe := agent.StepSafety(agent.Safety{ReadOnly: true})
+	safe := agent.WithSafety(agent.Safety{ReadOnly: true})
 	if _, err := agent.Step(ctx, d, id, "read", func(context.Context) (int, error) { return 1, nil }, safe); err != nil {
 		t.Fatal(err)
 	}

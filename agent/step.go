@@ -86,14 +86,14 @@ func hasValueStep(ctx context.Context, store Durable, runID, name string) (bool,
 // Option-B authoring primitive: write plain Go control flow, and name the operations
 // that must survive a crash.
 //
-//	inv, err := agent.Step(ctx, dur, runID, "fetch-invoice", fetchInvoice, agent.StepSafety(agent.Safety{ReadOnly: true}))
+//	inv, err := agent.Step(ctx, dur, runID, "fetch-invoice", fetchInvoice, agent.WithSafety(agent.Safety{ReadOnly: true}))
 //	res, err := agent.Step(ctx, dur, runID, "reserve", reserve) // a side effect: at most once
 //
 // A step runs at most once, like a tool call. By default it is treated as a side effect: an
 // attempt marker is journaled before fn runs, so if the process dies after fn's effect and
 // before its result is recorded, the resumed step returns *OutcomeUnknown instead of running fn
 // again. Clear it with ResolveHaltRef (the halt's Op is OpRef{Kind: OpStep, ID: name}) once the
-// true outcome is known. A step that is safe to re-run declares it with StepSafety (ReadOnly or
+// true outcome is known. A step that is safe to re-run declares it with WithSafety (ReadOnly or
 // Idempotent); it then skips the marker and simply re-runs after a crash.
 //
 // If fn returns an error, nothing is recorded but the marker: a side-effecting step whose fn
@@ -134,8 +134,8 @@ func step[T any](ctx context.Context, d Durable, runID, name string, fn func(con
 		return out, err
 	}
 	var cfg stepConfig
-	for _, o := range opts {
-		o(&cfg)
+	if err := applyOptions("Step", &cfg, opts, StepOption.applyStep); err != nil {
+		return out, err
 	}
 	// body runs fn and journals its value. A step that is not retry-safe must not pause (see Step).
 	body := func(ctx context.Context) (Record, error) {
@@ -325,18 +325,11 @@ func durableStep(ctx context.Context, d Durable, runID, name string, cfg stepCon
 type stepPauseError struct{ name, pause string }
 
 func (e *stepPauseError) Error() string {
-	return fmt.Sprintf("agent: step %q paused (%s) but is not retry-safe, so its attempt marker stays and it halts on the next attempt; put the pause in a retry-safe step of its own (StepSafety): %v", e.name, e.pause, ErrConfig)
+	return fmt.Sprintf("agent: step %q paused (%s) but is not retry-safe, so its attempt marker stays and it halts on the next attempt; put the pause in a retry-safe step of its own (WithSafety): %v", e.name, e.pause, ErrConfig)
 }
 
 func (e *stepPauseError) Unwrap() error { return ErrConfig }
 
 // protocol:claims end
 
-// StepOption configures Step.
-type StepOption func(*stepConfig)
-
 type stepConfig struct{ safety Safety }
-
-// StepSafety declares how safe a step is to re-run, as Safety does for a tool. A step that is
-// RetrySafe (ReadOnly or Idempotent) re-runs after a crash; any other step halts.
-func StepSafety(s Safety) StepOption { return func(c *stepConfig) { c.safety = s } }

@@ -108,7 +108,7 @@ func Quorum(ctx context.Context, store agent.Durable, runID, name string, k int,
 	// a changed k would be answered by a tally computed against the old one.
 	recorded, err := agent.Step(ctx, store, runID, QuorumConfigStep(name), func(context.Context) (quorumConfig, error) {
 		return cfg, nil
-	}, agent.StepSafety(agent.Safety{ReadOnly: true}))
+	}, agent.WithSafety(agent.Safety{ReadOnly: true}))
 	if err != nil {
 		return QuorumResult{}, err
 	}
@@ -133,7 +133,7 @@ func Quorum(ctx context.Context, store agent.Durable, runID, name string, k int,
 	}
 
 	// Fan out durably: each vote is a Step (recorded once, replayable, independently provable).
-	votes, err := agent.Parallel(ctx, store, runID, 0, tasks...)
+	votes, err := agent.Parallel(ctx, store, runID, tasks)
 	if verr := checkVoters(name, votes, cfg.Voters, err == nil); verr != nil {
 		return QuorumResult{}, verr
 	}
@@ -150,7 +150,7 @@ func Quorum(ctx context.Context, store agent.Durable, runID, name string, k int,
 	want := tally(votes, k)
 	result, err := agent.Step(ctx, store, runID, QuorumTallyStep(name), func(context.Context) (QuorumResult, error) {
 		return want, nil
-	}, agent.StepSafety(agent.Safety{ReadOnly: true}))
+	}, agent.WithSafety(agent.Safety{ReadOnly: true}))
 	if err != nil {
 		return QuorumResult{}, err
 	}

@@ -155,7 +155,7 @@ func TestFinishedRun_SubAgentReentry(t *testing.T) {
 
 	// The sub-run completes (as it would have inside the first parent run).
 	subRunID := SubRunID("root", "c1")
-	if _, err := sub.Run(withRunScope(ctx, subRunID), subRunID, "charge it"); err != nil || charged != 1 {
+	if _, err := sub.Run(asToolCall(ctx, "root", "c1"), subRunID, "charge it"); err != nil || charged != 1 {
 		t.Fatalf("sub-run: err=%v charged=%d, want nil/1", err, charged)
 	}
 	// The parent's journal holds the turn that called the sub-agent, and no result for it.

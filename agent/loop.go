@@ -48,6 +48,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 	if err := checkDurable(a.store); err != nil {
 		return Message{}, usageTotals{}, 0, err
 	}
+	ctx = a.runDefaults(ctx) // the agent's identity, Waker and clock, where the run was given none
 	fire := func(e AgentEvent) {
 		if emit != nil {
 			emit(e)
@@ -78,8 +79,12 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 	}
 	// protocol:lifecycle end
 
+	sys, err := a.systemMessage(ctx, RunInfo{RunID: runID, RootRunID: rootRunID(ctx, runID), Saga: saga})
+	if err != nil {
+		return Message{}, usageTotals{}, 0, err
+	}
 	msgs := []Message{}
-	if sys := a.systemMessage(ctx); sys != "" {
+	if sys != "" {
 		msgs = append(msgs, SystemText(sys))
 	}
 	msgs = append(msgs, seed...)
@@ -212,6 +217,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 	// protocol:spend begin SettlePending FailSpend Leave LeaveLate End EndLate
 	meter := &spendMeter{}  // usage of every model request this invocation sends
 	chain := a.modelChain() // the model call chain every turn of this invocation goes through
+	var rag retrieved       // the WithRetrieval context blocks, built at this drive's first model call
 	// writeSpend journals spent, billed usage no model record carries, as the step name. A write
 	// that fails is kept for the run's next drive in this process (see settlePending).
 	writeSpend := func(name string, spent Usage) error {
@@ -316,7 +322,14 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 			rec, err := a.store.Do(ctx, runID, modelStep(modelSeq),
 				func(ctx context.Context) (Record, error) {
 					ts.usedIDs = toolUseIDs(msgs)
-					req := Request{Messages: msgs, Tools: a.requestTools(), Sampling: a.sampling, ResponseFormat: a.responseFormat, ToolChoice: a.toolChoice}
+					sent := msgs
+					if len(a.retrievals) > 0 {
+						var e error
+						if sent, e = a.withRetrieved(ctx, runID, msgs, &rag); e != nil {
+							return Record{}, e
+						}
+					}
+					req := Request{Messages: sent, Tools: a.requestTools(), Sampling: a.sampling, ResponseFormat: a.responseFormat, ToolChoice: a.toolChoice}
 					resp, e := chain.call(ctx, ModelCall{Request: req, Model: a.model, RunID: runID, Turn: seq}, ts)
 					if e != nil {
 						return Record{}, e
@@ -585,13 +598,10 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 				if halted.Load() {
 					return nil // not started: it runs when the resumed turn does
 				}
-				sctx := withRunScope(gctx, SubRunID(runID, c.tu.ID)) // hierarchical sub-run ID
-				sctx = withRunContext(sctx, a.store, runID)          // lets the tool call Interrupt
-				started := &callUsage{}                              // usage of the runs this call starts
+				sctx := withOnceScope(gctx, SubRunID(runID, c.tu.ID))      // NextOnceKey's scope: the call's sub-run ID
+				sctx = withRunContext(sctx, a.store, runID, c.tu.ID, saga) // RunInfoFrom; lets the tool call Interrupt
+				started := &callUsage{}                                    // usage of the runs this call starts
 				sctx = withCallUsage(withBudgetNode(sctx, node), started)
-				if saga {
-					sctx = withSaga(sctx)
-				}
 				// protocol:lifecycle begin DClaim DCall
 				// protocol:claims begin Claim Lost Win Call
 				// Attempt marker before a non-retriable side effect (crash-mid-write → halt),

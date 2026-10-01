@@ -250,7 +250,7 @@ The same order-triage flow, three ways. Plain Go is the default: write ordinary 
 // classify, then branch: rush orders reserve-then-finalize, the rest decline.
 assess, _ := agent.Step(ctx, store, "order-42", "classify",
     func(ctx context.Context) (Assessment, error) { return classify(order) },
-    agent.StepSafety(agent.Safety{ReadOnly: true})) // safe to re-run after a crash
+    agent.WithSafety(agent.Safety{ReadOnly: true})) // safe to re-run after a crash
 
 var receipt Receipt
 if assess.Rush {

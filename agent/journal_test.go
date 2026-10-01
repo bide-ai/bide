@@ -75,7 +75,7 @@ func TestStep_PauseInARetrySafeStepPropagates(t *testing.T) {
 				}
 				return "ok", nil
 			}
-			safe := StepSafety(Safety{Idempotent: true})
+			safe := WithSafety(Safety{Idempotent: true})
 			_, err := Step(ctx, d, "r", "ask", body, safe)
 			var intr *InterruptPending
 			if !errors.As(err, &intr) || errors.Is(err, ErrConfig) {

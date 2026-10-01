@@ -34,7 +34,7 @@ func TestQuorum_VoteMustNameItsSlotsVoter(t *testing.T) {
 	store := agent.NewMemStore()
 	if _, err := agent.Step(ctx, store, "run", govern.QuorumVoteStep("q", "bob"), func(context.Context) (govern.Vote, error) {
 		return govern.Vote{Voter: "alice", Decision: "approve"}, nil
-	}, agent.StepSafety(agent.Safety{ReadOnly: true})); err != nil {
+	}, agent.WithSafety(agent.Safety{ReadOnly: true})); err != nil {
 		t.Fatal(err)
 	}
 	res, err := govern.Quorum(ctx, store, "run", "q", 2, fixedVoter("alice", "approve"), fixedVoter("bob", "reject"))
@@ -67,7 +67,7 @@ func TestQuorum_RecordedTallyMustMatchTheVotes(t *testing.T) {
 		tc.edit(&recorded)
 		if _, err := agent.Step(ctx, store, "run", govern.QuorumTallyStep("q"), func(context.Context) (govern.QuorumResult, error) {
 			return recorded, nil
-		}, agent.StepSafety(agent.Safety{ReadOnly: true})); err != nil {
+		}, agent.WithSafety(agent.Safety{ReadOnly: true})); err != nil {
 			t.Fatal(err)
 		}
 		res, err := govern.Quorum(ctx, store, "run", "q", 1, fixedVoter("a", "approve"), fixedVoter("b", "reject"))
@@ -87,7 +87,7 @@ func TestQuorum_EmptyRecordedVoteIsRefused(t *testing.T) {
 	store := agent.NewMemStore()
 	if _, err := agent.Step(ctx, store, "run", govern.QuorumVoteStep("q", "bob"), func(context.Context) (govern.Vote, error) {
 		return govern.Vote{}, nil
-	}, agent.StepSafety(agent.Safety{ReadOnly: true})); err != nil {
+	}, agent.WithSafety(agent.Safety{ReadOnly: true})); err != nil {
 		t.Fatal(err)
 	}
 	res, err := govern.Quorum(ctx, store, "run", "q", 1, fixedVoter("alice", "approve"), fixedVoter("bob", "reject"))
@@ -103,7 +103,7 @@ func TestQuorum_VoteMustNameItsSlotsVoterWhenAVoterFails(t *testing.T) {
 	store := agent.NewMemStore()
 	if _, err := agent.Step(ctx, store, "run", govern.QuorumVoteStep("q", "bob"), func(context.Context) (govern.Vote, error) {
 		return govern.Vote{Voter: "alice", Decision: "approve"}, nil
-	}, agent.StepSafety(agent.Safety{ReadOnly: true})); err != nil {
+	}, agent.WithSafety(agent.Safety{ReadOnly: true})); err != nil {
 		t.Fatal(err)
 	}
 	failing := govern.Voter{Name: "carol", Decide: func(context.Context) (string, error) { return "", errors.New("provider down") }}

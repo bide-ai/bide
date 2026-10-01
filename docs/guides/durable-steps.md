@@ -33,14 +33,14 @@ outcome. The same holds when `fn` returns an error, since a failed call may stil
 effect. A step cancelled (or whose store fails) after its marker is written and before `fn` is
 called does not call `fn`, and records that the attempt did not start, so the next call runs `fn`
 under a new marker instead of halting; only a process that dies in that gap leaves a halt. A step
-that is safe to re-run declares it with `StepSafety`, and then simply re-runs after
+that is safe to re-run declares it with `WithSafety`, and then simply re-runs after
 a crash or an error:
 
 <!-- docsnip: setup ctx context.Context; store agent.Durable; runID string; type Invoice struct{}; type Reservation struct{}; id, sku string; billing interface{ Lookup(context.Context, string) (Invoice, error) }; inventory interface{ Reserve(context.Context, string) (Reservation, error) } -->
 ```go
 inv, err := agent.Step(ctx, store, runID, "fetch-invoice",
     func(ctx context.Context) (Invoice, error) { return billing.Lookup(ctx, id) },
-    agent.StepSafety(agent.Safety{ReadOnly: true}))
+    agent.WithSafety(agent.Safety{ReadOnly: true}))
 
 res, err := agent.Step(ctx, store, runID, "reserve", // at most once; halts on an unknown outcome
     func(ctx context.Context) (Reservation, error) { return inventory.Reserve(ctx, sku) })
@@ -76,7 +76,7 @@ uses (through `Run` and `SendOnce`) to make a redelivered inbound event replay i
 type Task[T any] struct {
     Name   string
     Fn     func(context.Context) (T, error)
-    Safety Safety // as StepSafety: the zero value is a side effect
+    Safety Safety // as WithSafety: the zero value is a side effect
 }
 
 func Parallel[T any](ctx context.Context, d Durable, runID string,
@@ -104,7 +104,7 @@ checks := []agent.Task[CheckResult]{
     {Name: "pep_check",           Fn: runPEP,          Safety: agent.Safety{ReadOnly: true}},
     {Name: "adverse_media_check", Fn: runAdverseMedia, Safety: agent.Safety{ReadOnly: true}},
 }
-results, err := agent.Parallel(ctx, store, runID, 0, checks...) // 0 = unbounded concurrency
+results, err := agent.Parallel(ctx, store, runID, checks) // add agent.WithMaxConcurrency(n) to cap tasks in flight
 ```
 
 This is deliberately a thin primitive over the journal, not a graph engine. Dynamic, model-driven

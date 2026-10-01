@@ -28,18 +28,19 @@ func main() {
 	store := agent.NewMemStore()
 
 	// Each Task has a unique Name (its durable memoization key within the run) and a Fn
-	// returning a T. Here T is Check. maxConcurrency 0 means one goroutine per task.
-	results, err := agent.Parallel[Check](ctx, store, "screen-1", 0,
-		agent.Task[Check]{Name: "sanctions", Fn: func(_ context.Context) (Check, error) {
+	// returning a T. Here T is Check. Each task runs on a goroutine of its own; pass
+	// agent.WithMaxConcurrency(n) to cap how many run at once.
+	results, err := agent.Parallel(ctx, store, "screen-1", []agent.Task[Check]{
+		{Name: "sanctions", Fn: func(_ context.Context) (Check, error) {
 			return Check{Name: "sanctions", Passed: true, Detail: "no OFAC match"}, nil
 		}},
-		agent.Task[Check]{Name: "credit", Fn: func(_ context.Context) (Check, error) {
+		{Name: "credit", Fn: func(_ context.Context) (Check, error) {
 			return Check{Name: "credit", Passed: true, Detail: "score 780"}, nil
 		}},
-		agent.Task[Check]{Name: "fraud", Fn: func(_ context.Context) (Check, error) {
+		{Name: "fraud", Fn: func(_ context.Context) (Check, error) {
 			return Check{Name: "fraud", Passed: false, Detail: "velocity anomaly"}, nil
 		}},
-	)
+	})
 	if err != nil {
 		log.Printf("one or more checks failed: %v", err)
 	}

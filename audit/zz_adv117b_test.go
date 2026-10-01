@@ -43,7 +43,7 @@ func TestAdv117b_ResumedDelegationWithFreshGrantIDsCannotRollBack(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	gctx := WithGrant(agent.WithIdentity(ctx, agent.Identity{Actor: "desk"}), rootSG, signer)
+	gctx := WithGrant(agent.ContextWithIdentity(ctx, agent.Identity{Actor: "desk"}), rootSG, signer)
 	_, err = parent.RunSaga(gctx, "trip", "go")
 	var pend *agent.ApprovalPending
 	if !errors.As(err, &pend) {

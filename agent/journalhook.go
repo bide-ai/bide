@@ -43,7 +43,7 @@ func init() {
 		body := func(ctx context.Context) (json.RawMessage, error) {
 			return fn(context.WithValue(ctx, planScopeKey{}, planScope{runID: runID, node: name}))
 		}
-		return step(ctx, d, runID, name, body, StepSafety(s))
+		return step(ctx, d, runID, name, body, WithSafety(s))
 	}
 	// protocol:flows end
 	journalhook.CheckRunID = checkRunID

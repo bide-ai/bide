@@ -76,7 +76,7 @@ func TestAttenuatingSubAgent_Default(t *testing.T) {
 	tool := AttenuatingSubAgent("exec", "execute within delegated authority", sub, AttenuationConfig{Store: store, Narrow: narrowLimitBy(3), Rules: ScopeRules{"limit": NumericAtMost}})
 	parent := agent.New(agent.NewScriptedModel(agent.ToolTurn("c1", "exec", `{"task":"do the thing"}`), agent.TextTurn("ok")), store, tool)
 
-	ctx = agent.WithIdentity(ctx, agent.Identity{Actor: "desk-agent", OnBehalfOf: "desk", AuthorityRef: root.Digest()})
+	ctx = agent.ContextWithIdentity(ctx, agent.Identity{Actor: "desk-agent", OnBehalfOf: "desk", AuthorityRef: root.Digest()})
 	ctx = WithGrant(ctx, rootSG, signer)
 
 	if _, err := parent.Run(ctx, "p1", "go"); err != nil {

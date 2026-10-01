@@ -16,10 +16,10 @@ func TestRev103d_ConformParallelAndNestedSteps(t *testing.T) {
 	mem := agent.NewMemStore()
 	b := New[string, string]("par")
 	a := b.Step("a", func(ctx context.Context, in string) (string, error) {
-		res, err := agent.Parallel(ctx, mem, "r", 2,
-			agent.Task[string]{Name: "x", Fn: func(context.Context) (string, error) { return "<x>", nil }},
-			agent.Task[string]{Name: "y:z", Fn: func(context.Context) (string, error) { return "&y", nil }},
-		)
+		res, err := agent.Parallel(ctx, mem, "r", []agent.Task[string]{
+			{Name: "x", Fn: func(context.Context) (string, error) { return "<x>", nil }},
+			{Name: "y:z", Fn: func(context.Context) (string, error) { return "&y", nil }},
+		}, agent.WithMaxConcurrency(2))
 		if err != nil {
 			return "", err
 		}

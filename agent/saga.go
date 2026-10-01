@@ -313,7 +313,7 @@ func (a *Agent) rollbackRun(ctx context.Context, runID, root string) (compensate
 				toolH := a.toolHandler(runID)
 				spec := a.specs[tu.Name]
 				rec, ce := a.store.Do(ctx, runID, ToolResultStep(tu.ID), func(ctx context.Context) (Record, error) {
-					out, state, _, e := callTool(withRunContext(withSaga(ctx), a.store, runID), spec.Timeout, func(ctx context.Context) (json.RawMessage, int32, error) { return toolH(ctx, tu) })
+					out, state, _, e := callTool(withRunContext(ctx, a.store, runID, tu.ID, true), spec.Timeout, func(ctx context.Context) (json.RawMessage, int32, error) { return toolH(ctx, tu) })
 					if e != nil {
 						return Record{}, e
 					}
