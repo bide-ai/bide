@@ -31,7 +31,14 @@ that does not own any other run it is handed should do nothing. See [Crash recov
 **Takeover needs a process that keeps looking.** `agent.Recover` is one pass: a run whose holder
 has died but whose lease has not yet expired is skipped. Run `agent.RecoverLoop` in every worker for
 the life of the process, and a dead holder's run is taken over within about one pass interval (half
-the lease TTL by default) of its lease expiring.
+the lease TTL by default) of its lease expiring, as long as a pass is short.
+
+**A long recovery pass delays takeover.** A pass costs about five store round trips for each
+unfinished run it lists, halted runs included, and the next pass starts only after this one has
+started all of its drives. With many unfinished runs (halted runs left unresolved count) or a slow
+store, a pass can outlast its interval, and a dead holder's run can then be picked up as much as a pass's
+length later than the interval suggests. Resolve halted runs promptly, and measure a pass against
+your store if takeover time matters. Bounding a pass's cost is planned after v0.9.0.
 
 **Leases prevent duplicate work, not duplicate side effects.** With a store that supports leases
 (`MemStore` in one process, SQLite across the processes sharing one file, Postgres across nodes),

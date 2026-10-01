@@ -255,7 +255,11 @@ the reverse), is `ErrConfig`. `RecordedStart` reads them back.
 a moment ago still has a live lease, so the pass skips it, and nothing re-drives it until someone
 calls `Recover` again. `RecoverLoop` is that someone. Start it once per worker; it runs a pass every
 `WithRecoverInterval` (half the lease TTL by default) until its context ends, so a dead holder's
-run is taken over within about one interval of its lease expiring:
+run is taken over within about one interval of its lease expiring, while a pass is short. A pass
+costs about five store round trips for each unfinished run it lists, halted runs included, and the
+next pass starts only after this one has started all of its drives, so with many unfinished runs
+(or halted runs left unresolved) or a slow store, a pass can outlast the interval and pickup takes
+up to a pass's length longer. Resolve halted runs rather than leaving them for every pass to visit:
 
 <!-- docsnip: setup ctx context.Context; store agent.Durable; resume func(ctx context.Context, runID string) error -->
 ```go

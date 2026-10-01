@@ -287,7 +287,10 @@ func recoverRun(ctx context.Context, store Durable, runID string, resume func(ct
 // for a later one. Each pass, started every WithRecoverInterval (half the lease TTL by default),
 // enumerates the store's runs as Recover does and drives each incomplete run it can lease, so a
 // dead holder's run is picked up within about one interval of its lease expiring (the TTL after
-// the holder's last renewal).
+// the holder's last renewal) while a pass is short. A pass costs about five store round trips for
+// each unfinished run it lists, halted runs included, and the next pass does not start before this
+// one has started all of its drives, so with many unfinished runs or a slow store a pass can
+// outlast the interval, and pickup can take up to a pass's length longer.
 //
 // Runs are driven concurrently, up to WithRecoverConcurrency at once (16 by default), so one long
 // drive does not hold up the others; a run this loop is already driving is not started again. A

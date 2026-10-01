@@ -10,6 +10,7 @@ This page describes intent, not promises of dates. Shipped work is recorded in t
 - The redesign's Waves 1 to 3: the `Store` port and `Journal` with a journal format header, the sealed pause contract, `ModelCall` and `ModelResponse` with exact spend accounting, `plan` nodes lowered onto `agent.Step`, and proofs over raw stored bytes with signature agility.
 - Approval seats counted per signing key (`KeyIDs`), with weak Ed25519 keys refused.
 - The bide protocol accepted as the design for SDKs in other languages.
+- Postgres stores whose writes are single statements holding no lock between round trips, with every name qualified and the schema pinned by `WithSchema`.
 
 Shipped earlier: v0.8.0 made runs recover themselves (`RecoverLoop`), put one token budget across an agent tree and made every library module installable with `go get`.
 
