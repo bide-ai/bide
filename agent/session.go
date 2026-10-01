@@ -40,11 +40,13 @@ import (
 // One driver at a time: when the store implements Leaser (MemStore, store/sqlite and
 // store/postgres do, found through a Journal and through wrappers, see Capability), a turn's run
 // is driven under its lease, as Lease drives a run, so two workers given one message do not both
-// drive its turn. The lease is held from before the turn reads its starting point until its
-// answer is recorded, so the drive loads every model call an earlier drive journaled and
+// drive its turn. The run loads its journal only once it holds the lease, and the lease is held
+// until the run returns, so the drive loads every model call an earlier drive journaled and
 // WithTokenBudget's bound holds across workers. A Send or SendOnce whose turn run another driver
-// holds returns at once with an error wrapping ErrTurnContended, drives nothing and records
-// nothing: send the same message again later, and it returns the recorded answer, or resumes
+// holds does not drive it: if the run has finished (the holder has not released the lease yet),
+// its recorded answer is returned and the turn recorded, as a drive of it would; otherwise it
+// returns at once with an error wrapping ErrTurnContended, having driven nothing and recorded
+// no answer. Send the same message again later, and it returns the recorded answer, or resumes
 // the turn if the other driver stopped short of it. A drive whose lease is lost returns an error
 // wrapping ErrLeaseLost (see Lease). Over a store with no Leaser, two drivers of one turn still
 // never record it twice, but each counts only the spend it has seen (see KNOWN-LIMITATIONS).
@@ -323,32 +325,15 @@ func (s *Session) keyedTurn(ctx context.Context, key string) (turnRecord, bool, 
 
 // protocol:sessions begin DLoad DCall DDone AReload
 
-// runTurn drives the turn's run under its lease (when the store has a Leaser; see Session) and
-// appends the completed turn to the transcript. A run another driver leases is not driven:
-// runTurn returns an error wrapping ErrTurnContended.
+// runTurn drives the turn's run (see driveRun) and appends the completed turn to the transcript.
 func (s *Session) runTurn(ctx context.Context, runID, key, input string) (Message, error) {
-	var answer Message
-	driven, err := leaseRun(ctx, s.agent.store, runID, func(ctx context.Context) error {
-		var err error
-		answer, err = s.driveTurn(ctx, runID, key, input)
-		return err
-	}, s.lease)
-	if err == nil && !driven {
-		return Message{}, fmt.Errorf("session %s: turn run %s is driven by another holder; send the message again later: %w", s.id, runID, ErrTurnContended)
-	}
-	return answer, err
-}
-
-// driveTurn is runTurn's drive: it reads the turn's starting point, drives the turn's run and
-// appends the completed turn. Under a lease, all of it happens while the lease is held.
-func (s *Session) driveTurn(ctx context.Context, runID, key, input string) (Message, error) {
 	seed, err := s.turnSeed(ctx, runID)
 	if err != nil {
 		return Message{}, err
 	}
 	seed = append(seed, UserText(input))
 
-	answer, _, _, err := s.agent.run(withSessionRun(ctx, runID), runID, seed, false, nil)
+	answer, err := s.driveRun(ctx, runID, seed)
 	if err != nil {
 		return answer, err // pause/error: transcript unadvanced; retry same input to resume
 	}
@@ -364,6 +349,34 @@ func (s *Session) driveTurn(ctx context.Context, runID, key, input string) (Mess
 		return answer, err
 	}
 	return answer, s.reload(ctx)
+}
+
+// driveRun drives the turn's run under its lease when the store has a Leaser (see Session), so
+// the run loads its journal, and with it every model call an earlier holder made, only once it
+// holds the lease. A run another holder leases is not driven: a finished one (holding
+// run:complete) needs no lease, and its recorded answer is returned, as a drive of it would
+// return it; any other is an error wrapping ErrTurnContended.
+func (s *Session) driveRun(ctx context.Context, runID string, seed []Message) (Message, error) {
+	var answer Message
+	driven, err := leaseRun(ctx, s.agent.store, runID, func(ctx context.Context) error {
+		var err error
+		answer, _, _, err = s.agent.run(withSessionRun(ctx, runID), runID, seed, false, nil)
+		return err
+	}, s.lease)
+	if err != nil || driven {
+		return answer, err
+	}
+	recs, err := s.agent.store.History(ctx, runID)
+	if err != nil {
+		return Message{}, storageErr("load history "+runID, err)
+	}
+	if final, ok := completedAnswer(recs); ok {
+		if err := checkStartKind(runID, recs, RunKindAgent); err != nil {
+			return Message{}, err
+		}
+		return final, nil
+	}
+	return Message{}, fmt.Errorf("session %s: turn run %s is driven by another holder; send the message again later: %w", s.id, runID, ErrTurnContended)
 }
 
 // protocol:sessions end

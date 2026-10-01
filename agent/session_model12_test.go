@@ -401,3 +401,40 @@ func TestSession_LeaseOptions(t *testing.T) {
 		t.Fatal("the turn run's lease is still held after the turn returned")
 	}
 }
+
+// Model 12's DLoad reads the run's completion before its lease: a finished turn run needs no
+// lease. A run that completed while its holder still holds the lease (it has not yet released it,
+// or it died before its release and the lease has not lapsed) returns its recorded answer to
+// another worker, which records the turn, rather than ErrTurnContended.
+func TestSession_FinishedTurnRunNeedsNoLease(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemStore()
+	model := &replyModel{}
+	a := New(model, store)
+	h1 := openSession(t, a, "c1")
+	st, err := h1.startTurn(ctx, "x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	seed, err := h1.turnSeed(ctx, st.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// h1 drives the run to completion and stops before it records the turn, still leasing it.
+	if _, err := h1.driveRun(ctx, st.RunID, append(seed, UserText("x"))); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := store.AcquireLease(ctx, st.RunID, "h1-still-holding", time.Hour); err != nil || !ok {
+		t.Fatalf("AcquireLease = %v, %v", ok, err)
+	}
+	msg, err := openSession(t, a, "c1").Send(ctx, "x")
+	if err != nil || msg.Text() != "re: x" {
+		t.Fatalf(`Send("x") of a finished turn run another holder leases = %q, %v; want its recorded answer`, msg.Text(), err)
+	}
+	if n := model.calls.Load(); n != 1 {
+		t.Fatalf("model calls = %d, want 1", n)
+	}
+	if n := openSession(t, a, "c1").Turns(); n != 1 {
+		t.Fatalf("turns = %d, want 1", n)
+	}
+}

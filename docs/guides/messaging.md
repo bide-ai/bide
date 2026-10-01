@@ -82,13 +82,14 @@ message's turn looks open to it), so each new turn sees the conversation as it s
 ### One worker drives a turn at a time
 
 A turn's run is driven under its lease when the store implements `Leaser` (`MemStore`,
-`store/sqlite` and `store/postgres` do), as `agent.Lease` drives a run. The lease is taken before
-the turn reads its starting point and held until its answer is recorded, so a worker always loads
-every model call an earlier worker journaled, and `WithTokenBudget` bounds the turn however many
-workers its message reaches. A second worker given the message while the first drives its turn
-(the redelivery `SendOnce` exists for, or `Send` of one message on two handles) does not drive it:
+`store/sqlite` and `store/postgres` do), as `agent.Lease` drives a run. The run loads its journal
+only once it holds the lease, and keeps the lease until it returns, so a worker always loads every
+model call an earlier worker journaled, and `WithTokenBudget` bounds the turn however many workers
+its message reaches. A second worker given the message while the first drives its turn (the
+redelivery `SendOnce` exists for, or `Send` of one message on two handles) does not drive it:
 `Send` or `SendOnce` returns at once with an error wrapping `agent.ErrTurnContended`, having run
-nothing. It is neither a failure nor a pause. Acknowledge the delivery and let the provider
+nothing (or, if the run has just finished and its holder has not released the lease yet, with the
+recorded answer). It is neither a failure nor a pause. Acknowledge the delivery and let the provider
 redeliver, or send the message again later: once the turn is recorded, that returns its answer
 without calling the model, and if the first worker stopped short (it paused, failed or died), it
 resumes the turn.
