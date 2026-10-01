@@ -170,7 +170,9 @@ state without a single writer. The claim is precise: *order-independent converge
 replay*, proven, not "agents always agree." The federated convergence results are mechanized: the
 acyclic structural core (limit, retraction, compositionality) and the monotone-cycle case,
 including asynchronous (chaotic) order-independence for finite-height lattices. The cohomological
-classification of which cyclic federations obstruct is paper-proven, not machine-checked.
+layer is mechanized through the cycle basis: in the invertible fragment, a federation has a
+convergent global state iff every fundamental cycle has trivial holonomy. Its full H¹
+classification is paper-proven.
 
 Made concrete at scale: an integration test drives up to **10,000,000 governed agents, 2,048 at a
 time,** through *random, invariant-violating* orders (every run breaches a capped invariant and is
