@@ -374,7 +374,16 @@ func (b *Builder[In, Out]) Model[I, O any](name, prompt string, opts ...NodeOpti
 // context's Err lags its timer), while the flow's own context is live, has an unknown outcome
 // and wraps agent.ErrToolOutcomeUnknown. A node's error records nothing either way: a side-effect
 // node's attempt marker then halts the next drive, and a retry-safe node runs again.
+//
+// Like the agent's base handler, it first asks toolhook.CallGuard (audit refuses a call made under
+// a bound grant that has expired), so a flow run under a delegation cannot act past its grant
+// either; a refused call never reaches the tool.
 func callTool(ctx context.Context, t agent.Tool, timeout time.Duration, args json.RawMessage) (json.RawMessage, error) {
+	if guard := toolhook.CallGuard; guard != nil {
+		if err := guard(ctx); err != nil {
+			return nil, fmt.Errorf("plan: tool %q was not called: %w (%w)", agent.SpecOf(t).Name, err, agent.ErrToolNotCalled)
+		}
+	}
 	if timeout <= 0 {
 		return t.Call(ctx, args)
 	}

@@ -250,8 +250,9 @@ func RegisterStep[I, O any](r *Registry, name string, fn func(context.Context, I
 // RegisterTool registers an agent.Tool as a Tool block named name. I and O are
 // explicit because an agent.Tool is untyped (json.RawMessage in and out): the I
 // input is JSON-encoded into the tool's args and the tool's JSON result is decoded
-// into O, exactly like Builder.Tool. A duplicate name is an error, surfaced at
-// Load and returned here for inline checking.
+// into O, exactly like Builder.Tool. A duplicate name, or a tool the agent's
+// wrapper check refuses (as agent.New would), is an error, surfaced at Load and
+// returned here for inline checking.
 //
 // Safety AUTO-DERIVES from the tool's spec (agent.SpecOf), mirroring Builder.Tool; an explicit
 // plan.ReadOnly()/plan.Idempotent() option overrides the derived Safety. Safety is
@@ -259,7 +260,11 @@ func RegisterStep[I, O any](r *Registry, name string, fn func(context.Context, I
 func RegisterTool[I, O any](r *Registry, name string, t agent.Tool, opts ...NodeOption) error {
 	spec := agent.SpecOf(t) // read once, as the agent reads it
 	if err := checkTool(t); err != nil {
-		return fmt.Errorf("plan: RegisterTool %q: %w", name, err)
+		// Recorded on the Registry, as a duplicate is, so Load reports it to a caller that did
+		// not check this return.
+		err = fmt.Errorf("plan: RegisterTool %q: %w", name, err)
+		r.errs = append(r.errs, err)
+		return err
 	}
 	return r.registerBlock(name, &regBlock{
 		kind:     kindTool,
