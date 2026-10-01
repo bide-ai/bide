@@ -39,7 +39,7 @@ minor version (0.x.0) may include breaking API or journal-format changes; each o
 
 #### Documentation
 
-- [Formal verification](docs/formal-verification.md), an overview of bide's TLA+ models: why bide model-checks, what each model guarantees and which code it covers, the bugs the models caught before release (F1 to F5, P1, P2, T1 to T6, L1 to L3) and where each was fixed, what runs on a pull request and nightly, how the models and the code stay in step, the models planned next, and what the models do not cover. The formal-models plan's status markers and the roadmap are brought up to date (models 9 and 10, M4 done).
+- [Formal verification](docs/formal-verification.md), an overview of bide's TLA+ models: why bide model-checks, what each model guarantees and which code it covers, the bugs the models caught before release (F1 to F5, P1, P2, T1 to T6, L1 to L3) and where each was fixed, what runs on a pull request and nightly, how the models and the code stay in step, the models planned next, and what the models do not cover. The formal-models plan's status markers and the roadmap are brought up to date (models 9 and 10, M4 done) ([#128]).
 
 ### Changed
 
@@ -749,6 +749,7 @@ First public release.
 [#124]: https://github.com/bide-ai/bide/pull/124
 [#126]: https://github.com/bide-ai/bide/pull/126
 [#127]: https://github.com/bide-ai/bide/pull/127
+[#128]: https://github.com/bide-ai/bide/pull/128
 
 [78f8db6]: https://github.com/bide-ai/bide/commit/78f8db6
 [994721b]: https://github.com/bide-ai/bide/commit/994721b
