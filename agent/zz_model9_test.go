@@ -122,3 +122,26 @@ func TestModel9_T2_FailedArgsWriteThenRetryRecordsAlreadyRan(t *testing.T) {
 		}
 	}
 }
+
+// A retry-safe tool is outside T1's rule: running it again is safe, so a middleware that turns its
+// success into an error leaves an ordinary recorded failure, not an unknown outcome.
+func TestModel9_RetrySafeRejectedSuccessIsAnOrdinaryFailure(t *testing.T) {
+	lookup := Func("lookup", "", Safety{Idempotent: true}, func(context.Context, struct{}) (string, error) { return "found", nil })
+	check := ToolMiddleware(func(next ToolHandler) ToolHandler {
+		return func(ctx context.Context, call ToolCall) (json.RawMessage, error) {
+			if _, err := next(ctx, call); err != nil {
+				return nil, err
+			}
+			return nil, errors.New("result failed validation")
+		}
+	})
+	store := NewMemStore()
+	m := NewScriptedModel(ToolTurn("c1", "lookup", `{}`), TextTurn("done"))
+	if _, err := New(m, store, lookup).UseTool(check).Run(context.Background(), "r", "go"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	r, ok := hasStep(t, store, "r", ToolResultStep("c1"))
+	if !ok || !r.IsError || strings.Contains(string(r.Result), "outcome unknown") {
+		t.Fatalf("result %s (recorded %v); want the middleware's failure recorded as is", r.Result, ok)
+	}
+}
