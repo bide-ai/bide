@@ -222,28 +222,30 @@ func TestEngineKeys_ConstructorsAreListed(t *testing.T) {
 // function that only forwards a name its own callers are held to (listed in forwarders).
 func TestEngineKeys_WritesUseConstructors(t *testing.T) {
 	forwarders := map[string]bool{
-		"ClaimAttempt:name":     true, // its callers are checked here
-		"retryNotStarted:key":   true, // a live marker's own key, read from the journal, as Journal.retryNotStarted takes it
-		"step:name":             true, // its callers are checked here
-		"Step:name":             true, // a developer-chosen name, refused if reserved (checkStepName)
-		"resolveHalt:h.result":  true, // ToolResultStep, or a step name checkStepName allowed
-		"resolveHalt:heldKey":   true, // assigned from nextAttemptStep
-		"claimAttempt:name":     true, // its callers are checked here
-		"probe:key":             true, // its callers are checked here
-		"doShared:key":          true, // its callers are checked here
-		"step:markerKey":        true, // returned by claimNextAttempt, which builds it with retryAttemptStep
-		"run:markerKey":         true, // returned by claimNextAttempt, which builds it with retryAttemptStep
-		"putRecord:name":        true, // its callers are checked here
-		"writeEnd:name":         true, // its callers are checked here
-		"recordFresh:name":      true, // its callers are checked here
-		"lookup:name":           true, // its callers are checked here
-		"hasValueStep:name":     true, // its callers pass run:aborted
-		"journalStep:name":      true, // step's name, forwarded
-		"durableStep:name":      true, // step's name, forwarded
-		"durableStep:markerKey": true, // returned by claimNextAttempt, which builds it with retryAttemptStep
-		"Do:name":               true, // MemStore.Do forwards its caller's name to its Journal
-		"init:name":             true, // journalhook.Do forwards audit's and plan's names
-		"recordSpend:name":      true, // its callers pass spendStep and lateSpendStep
+		"ClaimAttempt:name":      true, // its callers are checked here
+		"retryNotStarted:key":    true, // a live marker's own key, read from the journal, as Journal.retryNotStarted takes it
+		"step:name":              true, // its callers are checked here
+		"Step:name":              true, // a developer-chosen name, refused if reserved (checkStepName)
+		"resolveHalt:h.result":   true, // ToolResultStep, or a step name checkStepName allowed
+		"resolveHalt:heldKey":    true, // assigned from nextAttemptStep
+		"claimAttempt:name":      true, // its callers are checked here
+		"probe:key":              true, // its callers are checked here
+		"doShared:key":           true, // its callers are checked here
+		"step:markerKey":         true, // returned by claimNextAttempt, which builds it with retryAttemptStep
+		"run:markerKey":          true, // returned by claimNextAttempt, which builds it with retryAttemptStep
+		"putRecord:name":         true, // its callers are checked here
+		"writeEnd:name":          true, // its callers are checked here
+		"cancelSeen:p.cancelKey": true, // runCancelledStep or runCancelRequestedStep (openPlan)
+		"postClaim:markerKey":    true, // returned by claimNextAttempt, which builds it with retryAttemptStep
+		"recordFresh:name":       true, // its callers are checked here
+		"lookup:name":            true, // its callers are checked here
+		"hasValueStep:name":      true, // its callers pass run:aborted
+		"journalStep:name":       true, // step's name, forwarded
+		"durableStep:name":       true, // step's name, forwarded
+		"durableStep:markerKey":  true, // returned by claimNextAttempt, which builds it with retryAttemptStep
+		"Do:name":                true, // MemStore.Do forwards its caller's name to its Journal
+		"init:name":              true, // journalhook.Do forwards audit's and plan's names
+		"recordSpend:name":       true, // its callers pass spendStep and lateSpendStep
 	}
 	var writes int
 	for file, f := range parseAgentPackage(t) {

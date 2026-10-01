@@ -37,7 +37,18 @@ type driveSpec struct {
 	typed   *TypedStart
 	cfg     runConfig
 	resume  bool // ResumeRun or a recovery drive: a run with no run:start is ErrNotStarted
-	emit    func(AgentEvent)
+	// strictSaga is set by the transitional string entry points (Run, Stream, RunResult): a run
+	// journaled as a saga is ErrConfig through them, as it always was, rather than driven as one.
+	strictSaga bool
+	emit       func(AgentEvent)
+}
+
+// runKind is what drives the run d drives.
+func (d *driveSpec) runKind() RunKind {
+	if d.kind == "" {
+		return RunKindAgent
+	}
+	return d.kind
 }
 
 // RunMessage drives the agent to the end of runID's run, answering input under opts, and returns
@@ -92,24 +103,14 @@ func (a *Agent) runEntry(ctx context.Context, runID string, d *driveSpec, opts [
 // drive runs one drive of runID for d: a saga's (d.cfg.saga, or a run journaled as one) through
 // the saga path, any other through run.
 func (a *Agent) drive(ctx context.Context, runID string, d *driveSpec) (Message, usageTotals, int, error) {
-	if d.resume && d.input == nil {
-		st, ok, err := RecordedStart(ctx, a.store, runID)
-		if err != nil {
-			return Message{}, usageTotals{}, 0, err
+	if !d.cfg.saga {
+		msg, tot, turns, err := a.run(ctx, runID, d)
+		if err != errSagaRun {
+			return msg, tot, turns, err
 		}
-		if !ok {
-			return Message{}, usageTotals{}, 0, fmt.Errorf("run %s: %w", runID, ErrNotStarted)
-		}
-		in := st.Input
-		d.input = &in
-		if st.Saga {
-			d.cfg.saga = true
-		}
+		d.cfg.saga = true // the run is journaled as a saga, and the drive passed no saga option
 	}
-	if d.cfg.saga {
-		return a.runSagaWithTelemetry(ctx, runID, d.input.Text(), d.emit)
-	}
-	return a.run(ctx, runID, append(append([]Message(nil), d.seed...), *d.input), false, d.emit)
+	return a.runSagaWithTelemetry(ctx, runID, d)
 }
 
 // StreamMessage drives the agent like RunMessage but returns a live AgentStream: token deltas,

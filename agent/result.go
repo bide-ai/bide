@@ -52,7 +52,8 @@ type Result struct {
 // change.
 func (a *Agent) RunResult(ctx context.Context, runID, input string) (*Result, error) {
 	start := time.Now()
-	msg, usage, turns, err := a.run(ctx, runID, []Message{UserText(input)}, false, nil)
+	in := UserText(input)
+	msg, usage, turns, err := a.run(ctx, runID, &driveSpec{input: &in, strictSaga: true})
 	elapsed := time.Since(start)
 	if err != nil {
 		return nil, err
@@ -72,7 +73,8 @@ func (a *Agent) RunResult(ctx context.Context, runID, input string) (*Result, er
 // the richer *Result envelope on success.
 func (a *Agent) RunSagaResult(ctx context.Context, runID, input string) (*Result, error) {
 	start := time.Now()
-	msg, usage, turns, err := a.runSagaWithTelemetry(ctx, runID, input, nil)
+	in := UserText(input)
+	msg, usage, turns, err := a.drive(ctx, runID, &driveSpec{input: &in, cfg: runConfig{saga: true}})
 	elapsed := time.Since(start)
 	if err != nil {
 		return nil, err

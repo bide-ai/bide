@@ -189,7 +189,7 @@ func TestFinishedRun_SessionTurnReentry(t *testing.T) {
 
 	// Turn 0's run finishes, but the session-level record of the turn was never written.
 	turn := sessionTurnRunID("s", 0)
-	if _, _, _, err := a.run(withSessionRun(ctx, turn), turn, []Message{UserText("pay")}, false, nil); err != nil || charged != 1 {
+	if _, _, _, err := a.run(withSessionRun(ctx, turn), turn, &driveSpec{input: ptrTo(UserText("pay")), kind: RunKindSessionTurn, session: &SessionRef{ID: "s"}}); err != nil || charged != 1 {
 		t.Fatalf("turn run: err=%v charged=%d", err, charged)
 	}
 	calls := m.calls
@@ -205,3 +205,5 @@ func TestFinishedRun_SessionTurnReentry(t *testing.T) {
 		t.Fatalf("out=%q charged=%d new model calls=%d turns=%d, want done, 1, 0, 1", textOf(out), charged, m.calls-calls, s.Turns())
 	}
 }
+
+func ptrTo[T any](v T) *T { return &v }

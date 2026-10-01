@@ -27,7 +27,8 @@ import (
 // that input: another input is ErrConfig, as is resuming through RunSaga a run started through
 // Run, or the reverse (see RunStart; RecordedStart reads the recorded input back).
 func (a *Agent) Run(ctx context.Context, runID, input string) (Message, error) {
-	msg, _, _, err := a.run(ctx, runID, []Message{UserText(input)}, false, nil)
+	in := UserText(input)
+	msg, _, _, err := a.run(ctx, runID, &driveSpec{input: &in, strictSaga: true})
 	return msg, err
 }
 
@@ -39,7 +40,8 @@ func (a *Agent) Run(ctx context.Context, runID, input string) (Message, error) {
 // It returns the final message, the whole run's token usage (every model call in its journal,
 // recorded by this invocation or an earlier one), the number of live model turns (replayed
 // journal turns are not counted), and any error.
-func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool, emit func(AgentEvent)) (Message, usageTotals, int, error) {
+func (a *Agent) run(ctx context.Context, runID string, d *driveSpec) (Message, usageTotals, int, error) {
+	saga, emit := d.cfg.saga, d.emit
 	if err := checkRunID(ctx, runID); err != nil {
 		return Message{}, usageTotals{}, 0, err
 	}
@@ -76,17 +78,34 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 	// protocol:toolcall end
 	// protocol:spend end
 	// protocol:claims end
-	// The run's input (the seed's last message: the user turn it answers) and entry point are
-	// recorded on its first drive, and every later drive of an unfinished run is held to them
-	// (see RunStart). A finished run is final and returns below without consulting either.
-	if _, finished := completedAnswer(recs); !finished {
-		if err := holdToStart(ctx, a.store, runID, recs, RunStart{Input: seed[len(seed)-1], Saga: saga}); err != nil {
+	// The run's input and options are journaled in run:start by its first drive, and every later
+	// drive of an unfinished run is held to them (see RunStart and openPlan). A run that is over
+	// is final: its first end marker in journal order is its end, whatever the drive is given.
+	var p *runPlan
+	if end, ended := firstEnd(recs); ended {
+		if err := checkStartKind(runID, recs, d.runKind()); err != nil {
+			return Message{}, usageTotals{}, 0, err // a finished flow's run holds no answer of an agent's
+		}
+		if end.name != runCompleteStep {
+			return Message{}, journalTotals(recs), 0, endedErr(runID, end)
+		}
+		p = &runPlan{maxTurns: a.maxTurns, budget: a.tokenBudget, maxConc: a.maxConc}
+		if d.input == nil {
+			in := startInput(recs)
+			d.input = &in
+		}
+	} else {
+		var err error
+		if ctx, p, err = a.openPlan(ctx, runID, d, recs); err != nil {
 			return Message{}, usageTotals{}, 0, err
 		}
-	} else if err := checkStartKind(runID, recs, RunKindAgent); err != nil {
-		return Message{}, usageTotals{}, 0, err // a finished flow's run holds no answer of an agent's
+		if d.input == nil {
+			d.input = &p.start.Input
+		}
+		saga = p.saga
 	}
 	// protocol:lifecycle end
+	seed := append(slices.Clip(d.seed), *d.input)
 
 	// The conversation without its system message, which is computed at the drive's first model
 	// call (see sysMsgs below): a drive that sends the model nothing (a finished run read back, a
@@ -138,7 +157,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 
 	// Join the agent tree's live token count, counting the journaled spend of this run and of
 	// its sub-agents cut off mid-run, before any of the tree calls the model (see budget_tree.go).
-	node, created := joinBudgetTree(ctx, runID, a.tokenBudget, tot.spend)
+	node, created := joinBudgetTree(ctx, runID, p.budget, tot.spend)
 	if created {
 		if err := a.preloadSubRuns(ctx, runID, recs, node); err != nil {
 			return Message{}, tot, 0, err
@@ -216,6 +235,11 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 	}
 	// protocol:toolcall end
 	// protocol:claims end
+	// A saga's rollback request seen in the Load rolls the run back, unless its answer is recorded:
+	// a saga whose final turn landed first completes (rule 5).
+	if r, ok := recordNamed(recs, runCancelRequestedStep); ok && saga && !answerRecorded(msgs, a.terminalTool) {
+		return Message{}, tot, 0, &cancelTrip{reason: endText(r)}
+	}
 	// protocol:lifecycle end
 
 	// protocol:spend begin SettlePending FailSpend Leave LeaveLate End EndLate
@@ -306,14 +330,27 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 			if err := ctx.Err(); err != nil {
 				return leave(err)
 			}
-			if a.maxTurns > 0 && modelSeq >= a.maxTurns {
+			// protocol:lifecycle begin DTurn
+			// A turn boundary: run:cancelled (a saga's rollback request) is read again, once a turn's
+			// calls have run since the drive's Load (rule 2), and the turn limit is the drive's
+			// journaled one (rule 12).
+			if p.checkTurn {
+				if seen, err := a.cancelSeen(ctx, runID, p); err != nil || seen {
+					if err != nil {
+						return leave(err)
+					}
+					return a.leaveCancelled(ctx, runID, p, leave, &tot, liveTurns)
+				}
+			}
+			if p.maxTurns > 0 && modelSeq >= p.maxTurns {
 				return leave(fmt.Errorf("run %s: %w (%d turns)", runID, ErrMaxTurns, modelSeq))
 			}
+			// protocol:lifecycle end
 			if err := node.exceeded(runID); err != nil {
 				return leave(err)
 			}
 			if !sysDone {
-				sys, err := a.systemMessage(ctx, RunInfo{RunID: runID, RootRunID: rootRunID(ctx, runID), Saga: saga})
+				sys, err := a.planSystem(ctx, p, RunInfo{RunID: runID, RootRunID: rootRunID(ctx, runID), Saga: saga})
 				if err != nil {
 					return leave(err)
 				}
@@ -350,7 +387,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 					if len(sysMsgs) > 0 {
 						sent = append(slices.Clip(sysMsgs), sent...)
 					}
-					req := Request{Messages: sent, Tools: a.requestTools(), Sampling: a.sampling, ResponseFormat: a.responseFormat, ToolChoice: a.toolChoice}
+					req := Request{Messages: sent, Tools: slices.Clip(slices.Clone(p.reqTools)), Sampling: cloneSampling(p.sampling), ResponseFormat: a.responseFormat, ToolChoice: p.toolChoice}
 					resp, e := chain.call(ctx, ModelCall{Request: req, Model: a.model, RunID: runID, Turn: seq}, ts)
 					if e != nil {
 						return Record{}, e
@@ -438,15 +475,21 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 			// so it never shifts an earlier record's index; at-most-once by name, so a
 			// replay of a finished run does not add a second one. Requests still in flight are
 			// waited for first, and their spend journaled, so a finished run's journal holds it.
-			// protocol:lifecycle begin DComplete
+			// protocol:lifecycle begin DComplete DVerdict
 			// protocol:spend begin Complete
 			if err := settle(); err != nil {
 				return leave(err)
 			}
-			if _, err := putRecord(ctx, a.store, runID, runCompleteStep, Record{Kind: StepValue}); err != nil {
+			// The first end marker in journal order is the run's end (rule 4): Cancel may have
+			// landed after the drive's last check, so the markers are read back.
+			first, err := writeEnd(ctx, a.store, runID, runCompleteStep, Record{Kind: StepValue}, endOthers(runCompleteStep, saga))
+			if err != nil {
 				return leave(fmt.Errorf("mark complete (run %s): %w (%w)", runID, err, ErrStorage))
 			}
 			// protocol:spend end
+			if first.name != runCompleteStep {
+				return leave(endedErr(runID, first))
+			}
 			// protocol:lifecycle end
 			fire(Finished{Final: asst})
 			return asst, tot, liveTurns, nil // final answer
@@ -470,6 +513,21 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 			if _, ok := a.tools[tu.Name]; !ok {
 				return leave(fmt.Errorf("model called unknown tool %q: %w", cutName(tu.Name), ErrUnknownTool))
 			}
+			// protocol:lifecycle begin DClaim
+			// The run's journaled tool filter is enforced at dispatch (rule 13): a call outside it,
+			// whether the model named a tool it was not offered or the turn was replayed from the
+			// journal, is refused with an error result the model reads, and its tool never runs.
+			if !p.allows(tu.Name, a.terminalTool) {
+				m, err := a.refuseFiltered(ctx, runID, tu)
+				if err != nil {
+					return leave(err)
+				}
+				done[tu.ID] = true
+				results[i] = m
+				fire(ToolCompleted{ToolUseID: tu.ID, Name: tu.Name, Result: m.Parts[0].(ToolResult).Result, IsError: true})
+				continue
+			}
+			// protocol:lifecycle end
 			spec := a.specs[tu.Name]
 			// protocol:lifecycle begin DOpen
 			// protocol:claims begin ApGate Deny
@@ -534,9 +592,12 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 		// started from starting; see halted.)
 		// protocol:toolcall begin LStart LPre LClose LRec LNS LRet DWait
 		g, gctx := errgroup.WithContext(ctx)
-		if a.maxConc > 0 {
-			g.SetLimit(a.maxConc)
+		if p.maxConc > 0 {
+			g.SetLimit(p.maxConc)
 		}
+		// cancelled is set once a call's post-claim check found the run cancelled: the calls not yet
+		// claimed do not start, and those in flight finish and record their results (rule 3).
+		var cancelled atomic.Bool
 		var (
 			pauseMu   sync.Mutex
 			pauseIdx  = -1
@@ -617,7 +678,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 				if err := gctx.Err(); err != nil {
 					return err
 				}
-				if halted.Load() {
+				if halted.Load() || cancelled.Load() {
 					return nil // not started: it runs when the resumed turn does
 				}
 				// protocol:delegation end
@@ -625,7 +686,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 				sctx = withRunContext(sctx, a.store, runID, c.tu.ID, saga) // RunInfoFrom; lets the tool call Interrupt
 				started := &callUsage{}                                    // usage of the runs this call starts
 				sctx = withCallUsage(withBudgetNode(sctx, node), started)
-				// protocol:lifecycle begin DClaim DCall
+				// protocol:lifecycle begin DClaim DPost DCall
 				// protocol:claims begin Claim Lost Win Call
 				// Attempt marker before a non-retriable side effect (crash-mid-write → halt),
 				// written as an exclusive claim: if another driver of this run claimed the call
@@ -647,6 +708,14 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 					claimed, marker, markerKey = won, got, key
 					if !won {
 						return toolHalt(runID, rootRunID(ctx, runID), c.tu.ID, c.tu.Name, markerTime(got.AttemptedAt), HaltContended)
+					}
+					// The claim is won: run:cancelled (a saga's rollback request) is read again before
+					// the call, and a cancelled run records the attempt as not started (rule 3, L2).
+					if stop, err := a.postClaim(gctx, runID, p, markerKey, marker); err != nil || stop {
+						if stop {
+							cancelled.Store(true)
+						}
+						return err
 					}
 				}
 				var toolCallErr error
@@ -837,6 +906,9 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 			addUsage(&tot.answer, t.answer)
 			addUsage(&tot.spend, t.spend)
 		}
+		if cancelled.Load() {
+			return a.leaveCancelled(ctx, runID, p, leave, &tot, liveTurns)
+		}
 		if err := werr; err != nil {
 			var trip *sagaTrip
 			if errors.As(err, &trip) {
@@ -887,6 +959,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 				msgs = append(msgs, m)
 			}
 		}
+		p.checkTurn = true // the next model call is past a turn boundary
 	}
 }
 

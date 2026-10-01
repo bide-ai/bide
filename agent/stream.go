@@ -227,7 +227,7 @@ func (a *Agent) stream(ctx context.Context, runID, input string, saga bool) *Age
 	cfg.saga = saga
 	in := UserText(input)
 	return a.startStream(ctx, func(emit func(AgentEvent)) agentResult {
-		msg, _, _, err := a.drive(ctx, runID, &driveSpec{input: &in, cfg: cfg, emit: emit})
+		msg, _, _, err := a.drive(ctx, runID, &driveSpec{input: &in, cfg: cfg, emit: emit, strictSaga: !saga})
 		return agentResult{msg: msg, err: err}
 	})
 }

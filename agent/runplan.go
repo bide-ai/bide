@@ -1,0 +1,358 @@
+// runplan.go holds the journaling rule (docs/design/api-v1.md, item 1; rules 8 to 12 of the P14
+// contract): a drive's first step after its Load journals run:start (the first drive) or holds
+// the drive to it (every later drive), writes a limit amendment for a later drive's different
+// limit, and settles the values the drive runs under.
+
+package agent
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"reflect"
+	"slices"
+	"strings"
+)
+
+// runPlan is what one drive runs under, settled once when it opens the run: the run's journaled
+// start and limits over the agent's live defaults.
+type runPlan struct {
+	start      RunStart
+	saga       bool
+	maxTurns   int
+	budget     int
+	sysText    *string // the run's journaled system prompt; nil: the agent's
+	sampling   Sampling
+	toolChoice *ToolChoice
+	filter     map[string]bool // the journaled tool filter; nil: none
+	reqTools   []ToolSpec      // the specs every request of the drive is sent
+	maxConc    int
+	cancelKey  string // the key the drive's cancellation checks read
+	checkTurn  bool   // a turn boundary has passed since the drive's Load
+}
+
+// errSagaRun is run's answer for a drive that passed no saga option of a run journaled as a saga:
+// drive takes it through the saga path.
+var errSagaRun = errors.New("agent: the run is a saga")
+
+// limitAmendment is a run:limits:<n> record: the limits a later drive set.
+type limitAmendment struct {
+	MaxTurns    *int `json:"max_turns,omitempty"`
+	TokenBudget *int `json:"token_budget,omitempty"`
+}
+
+// openPlan settles the plan of a drive of runID for d over the run's journal recs (the drive's
+// Load), which holds no end marker. It journals run:start for a first drive (rule 8), holds a
+// later drive to it (rules 9 and 11), journals a different limit as an amendment (rule 10), and
+// binds the identity, Waker and clock the drive runs with to the returned context. It is out of
+// line so the loop's frame does not grow.
+//
+//go:noinline
+func (a *Agent) openPlan(ctx context.Context, runID string, d *driveSpec, recs []Record) (context.Context, *runPlan, error) {
+	// protocol:lifecycle begin DStart DAmend
+	var (
+		start  RunStart
+		found  bool
+		amends []limitAmendment
+	)
+	for _, r := range recs {
+		if r.Kind != StepValue {
+			continue
+		}
+		switch {
+		case r.Name == runStartStep:
+			if err := json.Unmarshal(r.Result, &start); err != nil {
+				return ctx, nil, fmt.Errorf("decode %s (run %s): %w (%w)", runStartStep, runID, err, ErrStorage)
+			}
+			found = true
+		case strings.HasPrefix(r.Name, "run:limits:"):
+			var l limitAmendment
+			if err := json.Unmarshal(r.Result, &l); err != nil {
+				return ctx, nil, fmt.Errorf("decode %s (run %s): %w (%w)", r.Name, runID, err, ErrStorage)
+			}
+			amends = append(amends, l)
+		}
+	}
+	idn, explicitID := a.driveIdentity(ctx, d)
+	if !found {
+		if d.resume {
+			return ctx, nil, fmt.Errorf("run %s: %w", runID, ErrNotStarted)
+		}
+		want, err := a.newStart(d, idn)
+		if err != nil {
+			return ctx, nil, err
+		}
+		b, err := marshalJournal(want)
+		if err != nil {
+			return ctx, nil, fmt.Errorf("encode %s (run %s): %w (%w)", runStartStep, runID, err, ErrConfig)
+		}
+		// First writer wins: the drive runs under the stored entry, a concurrent first drive's if
+		// that one landed first (rule 8).
+		rec, err := putRecord(ctx, a.store, runID, runStartStep, Record{Kind: StepValue, Result: b})
+		if err != nil {
+			return ctx, nil, fmt.Errorf("record %s (run %s): %w (%w)", runStartStep, runID, err, ErrStorage)
+		}
+		if err := json.Unmarshal(rec.Result, &start); err != nil {
+			return ctx, nil, fmt.Errorf("decode %s (run %s): %w (%w)", runStartStep, runID, err, ErrStorage)
+		}
+	}
+	if err := a.holdDrive(runID, d, start, idn, explicitID); err != nil {
+		return ctx, nil, err
+	}
+	// A later drive's different limit is journaled before it drives (rule 10).
+	lim := journaledLimits(start.Settings, amends)
+	for n := len(amends); ; n++ {
+		amend := limitAmendment{}
+		if v := d.cfg.maxTurns; v != nil && !sameInt(lim.MaxTurns, v) {
+			amend.MaxTurns = v
+		}
+		if v := d.cfg.tokenBudget; v != nil && !sameInt(lim.TokenBudget, v) {
+			amend.TokenBudget = v
+		}
+		if amend.MaxTurns == nil && amend.TokenBudget == nil {
+			break
+		}
+		b, err := marshalJournal(amend)
+		if err != nil {
+			return ctx, nil, fmt.Errorf("encode %s (run %s): %w (%w)", runLimitsStep(n), runID, err, ErrConfig)
+		}
+		rec, err := putRecord(ctx, a.store, runID, runLimitsStep(n), Record{Kind: StepValue, Result: b})
+		if err != nil {
+			return ctx, nil, fmt.Errorf("record %s (run %s): %w (%w)", runLimitsStep(n), runID, err, ErrStorage)
+		}
+		var got limitAmendment
+		if err := json.Unmarshal(rec.Result, &got); err != nil {
+			return ctx, nil, fmt.Errorf("decode %s (run %s): %w (%w)", runLimitsStep(n), runID, err, ErrStorage)
+		}
+		lim = applyAmendment(lim, got) // ours, or a concurrent drive's that took the index first
+	}
+	// protocol:lifecycle end
+	p := &runPlan{start: start, saga: start.Saga, maxTurns: a.maxTurns, budget: a.tokenBudget, maxConc: a.maxConc,
+		sampling: a.sampling, toolChoice: a.toolChoice, sysText: start.Settings.SystemPrompt}
+	if lim.MaxTurns != nil {
+		p.maxTurns = *lim.MaxTurns
+	}
+	if lim.TokenBudget != nil {
+		p.budget = *lim.TokenBudget
+	}
+	if s := start.Settings.Sampling; s != nil {
+		p.sampling = overlaySampling(a.sampling, *s)
+	}
+	if tc := start.Settings.ToolChoice; tc != nil {
+		p.toolChoice = tc
+	}
+	if d.cfg.maxConc != nil {
+		p.maxConc = *d.cfg.maxConc
+	}
+	p.reqTools = a.requestTools()
+	if start.Tools != nil {
+		p.filter = make(map[string]bool, len(start.Tools))
+		for _, n := range start.Tools {
+			p.filter[n] = true
+		}
+		p.reqTools = slices.DeleteFunc(p.reqTools, func(s ToolSpec) bool { return !p.allows(s.Name, a.terminalTool) })
+	}
+	p.cancelKey = runCancelledStep
+	if p.saga {
+		p.cancelKey = runCancelRequestedStep // Cancel writes only the request on a saga (rule 5)
+	}
+	// The drive's identity: its Actor live, the principal journaled.
+	if idn.Actor != "" || start.Principal != nil {
+		run := Identity{Actor: idn.Actor}
+		if pr := start.Principal; pr != nil {
+			run.OnBehalfOf, run.AuthorityRef = pr.OnBehalfOf, pr.AuthorityRef
+		}
+		ctx = ContextWithIdentity(ctx, run)
+	}
+	if d.cfg.waker != nil {
+		ctx = ContextWithWaker(ctx, d.cfg.waker)
+	}
+	if d.cfg.clock != nil {
+		ctx = ContextWithClock(ctx, d.cfg.clock)
+	}
+	return ctx, p, nil
+}
+
+// allows reports whether the plan's filter admits a call of tool name: any tool when there is no
+// filter, and a typed run's answer tool always.
+func (p *runPlan) allows(name, terminal string) bool {
+	return p.filter == nil || p.filter[name] || name != "" && name == terminal
+}
+
+// driveIdentity is the identity the drive was given: its WithIdentity, else its context's (which
+// a sub-agent's run inherits from its parent), else the agent's. explicit is false for the
+// agent's: an agent default is live, never compared with the journal.
+func (a *Agent) driveIdentity(ctx context.Context, d *driveSpec) (id Identity, explicit bool) {
+	if d.cfg.identity != nil {
+		return *d.cfg.identity, true
+	}
+	if id, ok := IdentityFrom(ctx); ok {
+		return id, true
+	}
+	if a.identity != nil {
+		return *a.identity, false
+	}
+	return Identity{}, false
+}
+
+// newStart is the run:start a first drive of d journals, with the options it was given. It
+// checks what can only be checked against the agent: a filter names the agent's tools, and a
+// forced tool choice is inside the filter.
+func (a *Agent) newStart(d *driveSpec, idn Identity) (RunStart, error) {
+	if d.input == nil {
+		return RunStart{}, fmt.Errorf("agent: a run's first drive needs its input: %w", ErrConfig)
+	}
+	s := RunStart{Input: *d.input, Saga: d.cfg.saga, Session: d.session, Typed: d.typed, Tools: d.cfg.tools,
+		Settings: RunSettings{MaxTurns: d.cfg.maxTurns, TokenBudget: d.cfg.tokenBudget, SystemPrompt: d.cfg.systemPrompt,
+			Sampling: d.cfg.sampling, ToolChoice: d.cfg.toolChoice}}
+	if d.runKind() != RunKindAgent {
+		s.Kind = d.kind
+	}
+	if idn.OnBehalfOf != "" || idn.AuthorityRef != "" {
+		s.Principal = &Principal{OnBehalfOf: idn.OnBehalfOf, AuthorityRef: idn.AuthorityRef}
+	}
+	if s.Typed != nil && s.Typed.Mode == "" {
+		t := *s.Typed
+		t.Mode = OutputTool
+		s.Typed = &t
+	}
+	for _, n := range s.Tools {
+		if _, ok := a.tools[n]; !ok && n != a.terminalTool {
+			return RunStart{}, fmt.Errorf("WithToolFilter: the agent has no tool %q: %w", n, ErrConfig)
+		}
+	}
+	if s.Tools != nil {
+		tc := d.cfg.toolChoice
+		if tc == nil {
+			tc = a.toolChoice
+		}
+		if tc != nil && tc.Mode == "tool" && !slices.Contains(s.Tools, tc.Name) {
+			return RunStart{}, fmt.Errorf("WithToolFilter: the tool choice forces %q, which the filter leaves out: %w", tc.Name, ErrConfig)
+		}
+	}
+	return s, nil
+}
+
+// holdDrive refuses (ErrConfig) a drive of d whose setting differs from runID's journaled start:
+// what drives it, its input, saga flag, typed schema and output mode, tool filter, system prompt,
+// sampling, tool choice and principal (rule 11). Limits are not compared: a different limit is an
+// amendment (rule 10). A setting the drive did not pass is the journaled one (rule 9).
+func (a *Agent) holdDrive(runID string, d *driveSpec, start RunStart, idn Identity, explicitID bool) error {
+	mismatch := func(what string) error {
+		return fmt.Errorf("run %s was started with another %s (see RecordedStart); drive it with the journaled one, or with none: %w", runID, what, ErrConfig)
+	}
+	switch {
+	case start.kind() != d.runKind():
+		return fmt.Errorf("run %s was started as a run of kind %q, not %q; drive it the way it was started (see RecordedStart): %w", runID, start.kind(), d.runKind(), ErrConfig)
+	case d.input != nil && !sameMessage(start.Input, *d.input):
+		return mismatch("input")
+	case start.Saga && !d.cfg.saga:
+		if d.strictSaga {
+			return fmt.Errorf("run %s was started as a saga; resume it with RunSaga (or StreamSaga): %w", runID, ErrConfig)
+		}
+		return errSagaRun
+	case !start.Saga && d.cfg.saga:
+		return fmt.Errorf("run %s was not started as a saga; resume it without WithSaga (Run, Stream, ResumeRun): %w", runID, ErrConfig)
+	case (start.Typed == nil) != (d.typed == nil):
+		if start.Typed != nil {
+			return fmt.Errorf("run %s is a typed run; resume it with RunTypedMessage or ResumeTyped and its answer type: %w", runID, ErrConfig)
+		}
+		return fmt.Errorf("run %s is not a typed run; resume it with RunMessage or ResumeRun: %w", runID, ErrConfig)
+	case d.typed != nil && d.typed.SchemaDigest != start.Typed.SchemaDigest:
+		return mismatch("answer type (its schema digest differs)")
+	case d.typed != nil && d.typed.Mode != "" && d.typed.Mode != start.Typed.Mode:
+		return mismatch("output mode")
+	case d.typed == nil && d.cfg.outputMode != "":
+		return fmt.Errorf("WithOutputMode applies to a typed run (RunTypedMessage), and run %s is not one: %w", runID, ErrConfig)
+	case d.cfg.tools != nil && !slices.Equal(d.cfg.tools, start.Tools):
+		return mismatch("tool filter")
+	case d.cfg.systemPrompt != nil && !sameSetting(d.cfg.systemPrompt, start.Settings.SystemPrompt):
+		return mismatch("system prompt")
+	case d.cfg.sampling != nil && !sameSetting(d.cfg.sampling, start.Settings.Sampling):
+		return mismatch("sampling")
+	case d.cfg.toolChoice != nil && !sameSetting(d.cfg.toolChoice, start.Settings.ToolChoice):
+		return mismatch("tool choice")
+	case explicitID && (idn.OnBehalfOf != "" || idn.AuthorityRef != "") &&
+		(start.Principal == nil || *start.Principal != (Principal{OnBehalfOf: idn.OnBehalfOf, AuthorityRef: idn.AuthorityRef})):
+		return mismatch("principal (OnBehalfOf, AuthorityRef)")
+	}
+	return nil
+}
+
+// sameValue reports whether two optional settings hold equal values: both nil, or both set and
+// deeply equal.
+func sameSetting[T any](x, y *T) bool {
+	if x == nil || y == nil {
+		return x == y
+	}
+	return reflect.DeepEqual(*x, *y)
+}
+
+func sameInt(x, y *int) bool { return sameSetting(x, y) }
+
+// journaledLimits is the run's limits: run:start's, with each amendment applied in order.
+func journaledLimits(s RunSettings, amends []limitAmendment) limitAmendment {
+	l := limitAmendment{MaxTurns: s.MaxTurns, TokenBudget: s.TokenBudget}
+	for _, a := range amends {
+		l = applyAmendment(l, a)
+	}
+	return l
+}
+
+func applyAmendment(l, a limitAmendment) limitAmendment {
+	if a.MaxTurns != nil {
+		l.MaxTurns = a.MaxTurns
+	}
+	if a.TokenBudget != nil {
+		l.TokenBudget = a.TokenBudget
+	}
+	return l
+}
+
+// overlaySampling returns base with each control run sets replaced by run's.
+func overlaySampling(base, run Sampling) Sampling {
+	s := cloneSampling(base)
+	r := cloneSampling(run)
+	if r.Temperature != nil {
+		s.Temperature = r.Temperature
+	}
+	if r.TopP != nil {
+		s.TopP = r.TopP
+	}
+	if r.MaxTokens != nil {
+		s.MaxTokens = r.MaxTokens
+	}
+	if r.Stop != nil {
+		s.Stop = r.Stop
+	}
+	if r.Seed != nil {
+		s.Seed = r.Seed
+	}
+	return s
+}
+
+// planSystem is the system prompt of a drive under p: the run's journaled text, which takes
+// precedence over the agent's text or function, or else the agent's.
+func (a *Agent) planSystem(ctx context.Context, p *runPlan, run RunInfo) (string, error) {
+	if p.sysText != nil {
+		return *p.sysText, nil
+	}
+	return a.systemMessage(ctx, run)
+}
+
+// refuseFiltered records the refusal of a call outside the run's tool filter, an error result
+// the model reads, and returns its tool-result message.
+//
+//go:noinline
+func (a *Agent) refuseFiltered(ctx context.Context, runID string, tu ToolUse) (*Message, error) {
+	text, err := marshalJournal(fmt.Sprintf("tool %q is not available in this run (its tool filter leaves it out)", cutName(tu.Name)))
+	if err != nil {
+		return nil, fmt.Errorf("encode the refusal of call %s: %w (%w)", tu.ID, err, ErrStorage)
+	}
+	rec, err := putRecord(ctx, a.store, runID, ToolResultStep(tu.ID), Record{Kind: StepToolResult, ToolUseID: tu.ID, IsError: true, Result: text})
+	if err != nil {
+		return nil, err
+	}
+	return &Message{Role: RoleTool, Parts: []Part{ToolResult{ToolUseID: tu.ID, Result: rec.Result, IsError: rec.IsError}}}, nil
+}

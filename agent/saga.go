@@ -85,21 +85,17 @@ func unknownStepOutcome(err error) bool {
 // auto-roll-back a step that may have committed; a human decides. A failure a human then
 // records with ResolveHaltRef (Outcome.IsError) is a failed step: the next RunSaga rolls back.
 func (a *Agent) RunSaga(ctx context.Context, runID, input string) (Message, error) {
-	return a.runSaga(ctx, runID, input, nil)
-}
-
-// runSaga is the shared body of RunSaga and StreamSaga; emit (may be nil) receives
-// lifecycle events as the loop runs.
-func (a *Agent) runSaga(ctx context.Context, runID, input string, emit func(AgentEvent)) (Message, error) {
-	out, _, _, err := a.runSagaWithTelemetry(ctx, runID, input, emit)
+	in := UserText(input)
+	out, _, _, err := a.drive(ctx, runID, &driveSpec{input: &in, cfg: runConfig{saga: true}})
 	return out, err
 }
 
 // protocol:delegation begin DOpen DRb DRbEnd RbOpen RbLoop RbSub RbSubRet RbBind RbRec RbBindRet RbComp RbRe RbReRun RbReRet RbReW
 
-// runSagaWithTelemetry is the body of runSaga that also returns usage and turn count, for
-// RunSagaResult.
-func (a *Agent) runSagaWithTelemetry(ctx context.Context, runID, input string, emit func(AgentEvent)) (Message, usageTotals, int, error) {
+// runSagaWithTelemetry is a saga's drive: the rollback of a saga whose failure is recorded, or the
+// loop, and the rollback a failed step or a rollback request starts. It returns the run's usage
+// and turn count, for a Result.
+func (a *Agent) runSagaWithTelemetry(ctx context.Context, runID string, d *driveSpec) (Message, usageTotals, int, error) {
 	if err := checkRunID(ctx, runID); err != nil {
 		return Message{}, usageTotals{}, 0, err
 	}
@@ -121,13 +117,18 @@ func (a *Agent) runSagaWithTelemetry(ctx context.Context, runID, input string, e
 		// Re-entered after it aborted (a sub-saga whose parent had not recorded the failure): its
 		// usage goes to the tool call that started it, as run reports it (see callUsage).
 		reportUsage(ctx, runID, journalTotals(recs))
-		return Message{}, usageTotals{}, 0, a.rollback(ctx, runID, errors.New(cause), cause)
+		out, err := a.rollback(ctx, runID, errors.New(cause), cause, nil)
+		return out, usageTotals{}, 0, err
 	}
 
-	out, usage, turns, err := a.run(ctx, runID, []Message{UserText(input)}, true, emit)
-	var trip *sagaTrip
-	if errors.As(err, &trip) {
-		return Message{}, usageTotals{}, 0, a.rollback(ctx, runID, trip.cause, trip.journaled)
+	out, usage, turns, err := a.run(ctx, runID, d)
+	if trip, ok := errors.AsType[*sagaTrip](err); ok {
+		out, err := a.rollback(ctx, runID, trip.cause, trip.journaled, nil)
+		return out, usage, turns, err
+	}
+	if trip, ok := errors.AsType[*cancelTrip](err); ok {
+		out, err := a.rollback(ctx, runID, fmt.Errorf("run %s: %w", runID, ErrRunCancelled), trip.reason, trip)
+		return out, usage, turns, err
 	}
 	return out, usage, turns, err
 }
@@ -138,20 +139,39 @@ func (a *Agent) runSagaWithTelemetry(ctx context.Context, runID, input string, e
 
 // rollback compensates runID's writes and returns *SagaAborted with cause. causeText is the text the
 // saga's failure record holds for cause, redacted for the journal; the terminal marker records it,
-// never cause's own text.
-func (a *Agent) rollback(ctx context.Context, runID string, cause error, causeText string) error {
+// never cause's own text. A rollback a cancellation asked for (cancel is its trip, causeText the
+// reason Cancel was given) ends the run with run:cancelled; any other with run:aborted.
+//
+// The marker is read back (rule 4): when another end marker landed first (the saga completed, or
+// another drive's rollback ended it otherwise), that one is the run's end, and the rollback
+// reports it: a completed run's answer, or the error its end gives.
+func (a *Agent) rollback(ctx context.Context, runID string, cause error, causeText string, cancel *cancelTrip) (Message, error) {
 	comp, uncomp, unknown, cerr := a.rollbackRun(ctx, runID, rootRunID(ctx, runID))
 	if cerr == nil {
 		// The rollback finished: the run is over. Mark it terminal so a recovery supervisor
 		// leaves it alone. A rollback that stopped (an unknown outcome, a failed compensator) is
 		// not marked, so it is re-driven once the cause is resolved.
-		if _, err := a.store.Do(ctx, runID, runAbortedStep, func(context.Context) (Record, error) {
-			return Record{Kind: StepValue, Result: mustJSON(causeText)}, nil
-		}); err != nil {
+		name, value := runAbortedStep, mustJSON(causeText)
+		if cancel != nil {
+			name, value = runCancelledStep, mustJSONValue(cancelReason{Reason: causeText})
+		}
+		first, err := writeEnd(ctx, a.store, runID, name, Record{Kind: StepValue, Result: value}, endOthers(name, true))
+		switch {
+		case err != nil:
 			cerr = fmt.Errorf("saga %s: record the finished rollback: %w (%w)", runID, err, ErrStorage)
+		case first.name == runCompleteStep:
+			return a.endVerdict(ctx, runID)
+		case first.name != name && first.name == runCancelledStep:
+			cause = fmt.Errorf("run %s: %w (cancelled before it aborted)", runID, ErrRunCancelled)
 		}
 	}
-	return &SagaAborted{RunID: runID, Cause: cause, Compensated: comp, Uncompensated: uncomp, UnknownOutcome: unknown, CompensateErr: cerr}
+	return Message{}, &SagaAborted{RunID: runID, Cause: cause, Compensated: comp, Uncompensated: uncomp, UnknownOutcome: unknown, CompensateErr: cerr}
+}
+
+// mustJSONValue is v's journal encoding, for a value that always encodes.
+func mustJSONValue(v any) json.RawMessage {
+	b, _ := marshalJournal(v)
+	return b
 }
 
 // protocol:lifecycle end

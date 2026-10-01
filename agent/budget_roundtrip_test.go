@@ -47,24 +47,28 @@ func readOnly() agent.Tool {
 }
 
 // A new run that answers at once: one Load (which finds the run empty), the header, the start
-// record, one model turn (its memo read and its record), and the completion.
+// record, one model turn (its memo read and its record), and the completion with its read-back of
+// run:cancelled (P14 rule 4: the first end marker in journal order is the run's end). The drive's
+// first turn needs no run:cancelled check: its Load read the run.
 func TestBudget_FirstDriveAndCompletion(t *testing.T) {
 	j, cs, _ := countingJournal(t)
 	if _, err := agent.New(agent.NewScriptedModel(agent.TextTurn("done")), j).Run(context.Background(), "r", "hi"); err != nil {
 		t.Fatal(err)
 	}
 	wantCounts(t, cs, "first drive, one turn, completion",
-		[]string{"insert @journal", "insert run:start", "get @llm/0", "insert @llm/0", "insert run:complete"}, 1, 0)
+		[]string{"insert @journal", "insert run:start", "get @llm/0", "insert @llm/0", "insert run:complete", "get run:cancelled"}, 1, 0)
 }
 
-// A side-effect tool call costs two Inserts (its claim and its result); a retry-safe one, one.
+// A side-effect tool call costs two Inserts (its claim and its result) and one Get (run:cancelled,
+// read once the claim is won: P14 rule 3); a retry-safe one, one Insert. Every model turn after a
+// drive's first costs one Get more (run:cancelled at the turn boundary: P14 rule 2).
 func TestBudget_ToolCalls(t *testing.T) {
 	for _, c := range []struct {
 		name string
 		tool agent.Tool
 		want []string
 	}{
-		{"side effect", sideEffect(), []string{"insert attempt:tool:c1", "insert tool:c1"}},
+		{"side effect", sideEffect(), []string{"insert attempt:tool:c1", "get run:cancelled", "insert tool:c1"}},
 		{"retry-safe", readOnly(), []string{"insert tool:c1"}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -74,7 +78,7 @@ func TestBudget_ToolCalls(t *testing.T) {
 				t.Fatal(err)
 			}
 			want := append([]string{"insert @journal", "insert run:start", "get @llm/0", "insert @llm/0"}, c.want...)
-			want = append(want, "get @llm/1", "insert @llm/1", "insert run:complete")
+			want = append(want, "get run:cancelled", "get @llm/1", "insert @llm/1", "insert run:complete", "get run:cancelled")
 			wantCounts(t, cs, c.name+" tool call", want, 1, 0)
 		})
 	}

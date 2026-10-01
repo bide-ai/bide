@@ -279,9 +279,9 @@ func (s *Session) runTurn(ctx context.Context, runID, key, input string) (Messag
 	if err != nil {
 		return Message{}, err
 	}
-	seed = append(seed, UserText(input))
-
-	answer, _, _, err := s.agent.run(withSessionRun(ctx, runID), runID, seed, false, nil)
+	in := UserText(input)
+	d := &driveSpec{input: &in, seed: seed, kind: RunKindSessionTurn, session: &SessionRef{ID: s.id, Key: key}, strictSaga: true}
+	answer, _, _, err := s.agent.run(withSessionRun(ctx, runID), runID, d)
 	if err != nil {
 		return answer, err // pause/error: transcript unadvanced; retry same input to resume
 	}
