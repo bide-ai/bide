@@ -28,6 +28,7 @@ type recoverConfig struct {
 	ttl         time.Duration
 	interval    time.Duration // RecoverLoop only; 0 means ttl/2
 	concurrency int           // RecoverLoop only
+	lapsedConc  int           // RecoverLoop only: the lapsed loop's concurrency
 	onError     func(error)   // RecoverLoop only
 	intervalSet bool
 }
@@ -54,10 +55,20 @@ func WithRecoverInterval(d time.Duration) RecoverOption {
 	return func(c *recoverConfig) { c.interval, c.intervalSet = d, true }
 }
 
-// WithRecoverConcurrency caps how many runs RecoverLoop drives at once. Defaults to 16. It must
-// be at least 1. Only RecoverLoop reads it.
+// WithRecoverConcurrency caps how many runs RecoverLoop's full pass drives at once. Defaults to
+// 16. It must be at least 1. Only RecoverLoop reads it. The lapsed loop has slots of its own (see
+// WithRecoverLapsedConcurrency).
 func WithRecoverConcurrency(n int) RecoverOption {
 	return func(c *recoverConfig) { c.concurrency = n }
+}
+
+// WithRecoverLapsedConcurrency caps how many runs RecoverLoop's lapsed loop drives at once: the
+// runs whose lease lapsed, taken over from a holder that died or stalled (see RecoverLoop).
+// Defaults to 16. It must be at least 1. Only RecoverLoop reads it, and only over a store that
+// implements Leaser. These slots are separate from WithRecoverConcurrency's, so a worker drives
+// up to the sum of the two at once.
+func WithRecoverLapsedConcurrency(n int) RecoverOption {
+	return func(c *recoverConfig) { c.lapsedConc = n }
 }
 
 // WithRecoverErrors sets the function RecoverLoop hands each genuine failure to: a store error
@@ -71,7 +82,7 @@ func WithRecoverErrors(fn func(error)) RecoverOption {
 
 // leaseConfig applies opts over the defaults and validates the result.
 func leaseConfig(opts []RecoverOption) (recoverConfig, error) {
-	cfg := recoverConfig{ttl: 30 * time.Second, concurrency: 16}
+	cfg := recoverConfig{ttl: 30 * time.Second, concurrency: 16, lapsedConc: 16}
 	for _, o := range opts {
 		o(&cfg)
 	}
@@ -224,6 +235,10 @@ var endOfRunMarkers = []string{runCompleteStep, runAbortedStep, runCancelledStep
 // store evaluates the filter in its query, so a pass reads none of the finished runs.
 var recoverFilter = RunFilter{ExcludeHolding: endOfRunMarkers}
 
+// lapsedFilter is the runs RecoverLoop's lapsed loop enumerates: those recoverFilter admits whose
+// lease has lapsed.
+var lapsedFilter = RunFilter{ExcludeHolding: endOfRunMarkers, LeaseLapsed: true}
+
 // runEnded reports whether runID holds an entry named by a terminal marker (see endOfRunMarkers):
 // recoverFilter's test, applied to one run. Like the filter, it asks only whether the entry exists,
 // so it reads no header and decodes nothing: a run in a format this version cannot read that is
@@ -290,20 +305,36 @@ func recoverRun(ctx context.Context, store Durable, runID string, resume func(ct
 
 // RecoverLoop re-drives in-flight runs until ctx is done, so a run whose holder dies is taken over
 // automatically: Recover is a single pass, and a run another holder leases at that moment is left
-// for a later one. Each pass, started every WithRecoverInterval (half the lease TTL by default),
-// enumerates the store's runs as Recover does and drives each incomplete run it can lease, so a
-// dead holder's run is picked up within about one interval of its lease expiring (the TTL after
-// the holder's last renewal) while a pass is short. A pass costs about five store round trips for
-// each unfinished run it lists, halted runs included, and the next pass does not start before this
-// one has started all of its drives, so with many unfinished runs or a slow store a pass can
-// outlast the interval, and pickup can take up to a pass's length longer.
+// for a later one. It runs two loops, each starting a pass every WithRecoverInterval (half the
+// lease TTL by default):
 //
-// Runs are driven concurrently, up to WithRecoverConcurrency at once (16 by default), so one long
-// drive does not hold up the others; a run this loop is already driving is not started again. A
-// pass that finds every slot busy waits for one, so each pass reaches every run it listed; the
-// next pass starts when this one has started all of its drives and the interval has elapsed. Genuine failures go
-// to the WithRecoverErrors handler, and the run is retried on the next pass; pauses and lost leases
-// are not failures (see Recover).
+//   - The full pass enumerates the store's unfinished runs as Recover does and drives each one it
+//     can lease: halted runs (waiting on an approval, an interrupt, a timer or a signal, or with an
+//     outcome unknown), runs nobody leases (a plain Agent.Run whose process died) and runs whose
+//     holder died. It costs about five store round trips for each unfinished run it lists, halted
+//     runs included, and the next full pass does not start before this one has started all of its
+//     drives, so with many unfinished runs or a slow store a full pass can outlast the interval.
+//   - The lapsed loop, over a store that implements Leaser, enumerates only the unfinished runs
+//     whose lease has lapsed (RunFilter.LeaseLapsed) and drives them with slots of its own
+//     (WithRecoverLapsedConcurrency). A Leaser deletes a lease on release, so a lapsed lease is
+//     one its holder neither renewed nor released: the holder died or stalled. A halted run holds
+//     no lease between visits, so the lapsed loop neither visits the halted runs nor waits behind
+//     them.
+//
+// So a dead holder's run is picked up within about one interval of its lease expiring (the TTL
+// after the holder's last renewal), however many halted runs the store holds, while the lapsed
+// loop has a free slot and its listing is short: it waits for a slot only while it is already
+// driving WithRecoverLapsedConcurrency lapsed runs. A run that holds no lease when its driver dies
+// (one driven by a plain Agent.Run, not under Lease) is left to the full pass, and its pickup can
+// take up to a full pass's length longer.
+//
+// Runs are driven concurrently, up to WithRecoverConcurrency at once in the full pass (16 by
+// default) and up to WithRecoverLapsedConcurrency in the lapsed loop (16 by default), so one long
+// drive does not hold up the others; a run either loop is already driving is not started again by
+// either. A pass that finds every slot of its loop busy waits for one, so each pass reaches every
+// run it listed; the loop's next pass starts when this one has started all of its drives and the
+// interval has elapsed. Genuine failures go to the WithRecoverErrors handler, and the run is
+// retried on a later pass; pauses and lost leases are not failures (see Recover).
 // A run that failed because its Waker could not schedule a wake (an error wrapping ErrStorage)
 // recorded nothing for the sleeping call, so the next pass reaches the Sleep again and schedules
 // again.
@@ -319,7 +350,8 @@ func recoverRun(ctx context.Context, store Durable, runID string, resume func(ct
 //
 // A configuration error (a store that does not implement Lister, a non-positive TTL, interval or
 // concurrency) is returned at once. Otherwise RecoverLoop returns ctx's error when ctx is done,
-// after the drives it started (whose contexts derive from ctx) have returned.
+// after both loops have stopped and the drives they started (whose contexts derive from ctx) have
+// returned.
 func RecoverLoop(ctx context.Context, store Durable, resume func(ctx context.Context, runID string) error, opts ...RecoverOption) error {
 	lister, ok := capabilityOf[Lister](store)
 	if !ok {
@@ -338,6 +370,9 @@ func RecoverLoop(ctx context.Context, store Durable, resume func(ctx context.Con
 	if cfg.concurrency < 1 {
 		return fmt.Errorf("recover concurrency must be at least 1, got %d: %w", cfg.concurrency, ErrConfig)
 	}
+	if cfg.lapsedConc < 1 {
+		return fmt.Errorf("recover lapsed concurrency must be at least 1, got %d: %w", cfg.lapsedConc, ErrConfig)
+	}
 
 	var reportMu sync.Mutex
 	report := func(err error) {
@@ -351,12 +386,13 @@ func RecoverLoop(ctx context.Context, store Durable, resume func(ctx context.Con
 	var (
 		wg       sync.WaitGroup
 		mu       sync.Mutex
-		inFlight = map[string]bool{}
-		slots    = make(chan struct{}, cfg.concurrency)
+		inFlight = map[string]bool{} // the runs either loop is driving
 	)
 	defer wg.Wait()
-	pass := func() {
-		for runID, err := range lister.Runs(ctx, recoverFilter) {
+	// pass lists the runs f admits and drives each one this process is not driving yet, taking one
+	// of slots for each drive.
+	pass := func(f RunFilter, slots chan struct{}) {
+		for runID, err := range lister.Runs(ctx, f) {
 			if err != nil {
 				report(fmt.Errorf("list runs for recovery: %w (%w)", err, ErrStorage))
 				return
@@ -371,7 +407,7 @@ func RecoverLoop(ctx context.Context, store Durable, resume func(ctx context.Con
 			busy := inFlight[runID]
 			mu.Unlock()
 			if busy {
-				continue // this loop is driving it already
+				continue // this process is driving it already
 			}
 			// Wait for a free slot rather than leave the rest of the list to the next pass: the next
 			// pass starts from the top again, so runs that stay incomplete on every pass (halted
@@ -381,9 +417,18 @@ func RecoverLoop(ctx context.Context, store Durable, resume func(ctx context.Con
 			case <-ctx.Done():
 				return
 			}
+			// The other loop may have started the run while this one waited for a slot: check again
+			// and mark it under one lock, so only one drive owns the entry it deletes.
 			mu.Lock()
-			inFlight[runID] = true
+			busy = inFlight[runID]
+			if !busy {
+				inFlight[runID] = true
+			}
 			mu.Unlock()
+			if busy {
+				<-slots
+				continue
+			}
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
@@ -399,17 +444,25 @@ func RecoverLoop(ctx context.Context, store Durable, resume func(ctx context.Con
 			}()
 		}
 	}
-
-	t := time.NewTicker(cfg.interval)
-	defer t.Stop()
-	for {
-		pass()
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-t.C:
+	// every runs pass(f, slots) now and then once per interval, until ctx is done.
+	every := func(f RunFilter, slots chan struct{}) {
+		t := time.NewTicker(cfg.interval)
+		defer t.Stop()
+		for {
+			pass(f, slots)
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+			}
 		}
 	}
+
+	if _, ok := capabilityOf[Leaser](store); ok {
+		wg.Go(func() { every(lapsedFilter, make(chan struct{}, cfg.lapsedConc)) })
+	}
+	every(recoverFilter, make(chan struct{}, cfg.concurrency))
+	return ctx.Err()
 }
 
 // protocol:lifecycle end

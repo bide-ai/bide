@@ -847,6 +847,14 @@ func (s *Store) Runs(ctx context.Context, f agent.RunFilter) iter.Seq2[string, e
 
 func (s *Store) runsPage(ctx context.Context, f agent.RunFilter, after string) ([]string, error) {
 	q := `SELECT DISTINCT run_id COLLATE pg_catalog."C" AS id FROM ` + s.t.qSteps + ` AS s WHERE run_id COLLATE pg_catalog."C" OPERATOR(pg_catalog.>) $1::pg_catalog.text`
+	if f.LeaseLapsed {
+		// The runs with a lapsed lease, read from the leases table, which holds a row only for a
+		// lease taken and not released: the same comparison as AcquireLease's, and only runs the
+		// steps table holds.
+		q = `SELECT run_id COLLATE pg_catalog."C" AS id FROM ` + s.t.qLeases + ` AS s WHERE expiry OPERATOR(pg_catalog.<) pg_catalog.now()
+			AND EXISTS (SELECT 1 FROM ` + s.t.qSteps + ` AS y WHERE y.run_id OPERATOR(pg_catalog.=) s.run_id)
+			AND run_id COLLATE pg_catalog."C" OPERATOR(pg_catalog.>) $1::pg_catalog.text`
+	}
 	args := []any{after}
 	if f.Prefix != "" {
 		// The range lets the primary key's index serve the scan; starts_with checks the prefix.

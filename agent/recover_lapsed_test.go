@@ -2,7 +2,10 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"iter"
+	"sync"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -77,4 +80,131 @@ func lapsedTakeover(t *testing.T, halted int, visit, interval, deadTTL time.Dura
 		t.Fatal("the loop never took over the dead holder's run")
 		return 0
 	}
+}
+
+// A run the full pass is waiting to start (every slot of the full pass busy) whose lease lapses
+// meanwhile is driven by the lapsed loop, and when the full pass gets its slot it sees the run in
+// flight and does not try it again: one lease acquisition for the run, and the drive's entry stays
+// marked in flight until the drive returns.
+func TestRecoverLoop_LoopsDoNotStartARunTheOtherIsDriving(t *testing.T) {
+	synctest.Test(t, testRecoverLoopLoopsDoNotStartARunTheOtherIsDriving)
+}
+
+func testRecoverLoopLoopsDoNotStartARunTheOtherIsDriving(t *testing.T) {
+	ctx := context.Background()
+	s := &countingStore{MemStore: NewMemStore()}
+	seedRun(t, s.MemStore, "h")
+	seedRun(t, s.MemStore, "z")
+	if ok, _ := s.MemStore.AcquireLease(ctx, "z", "dead-worker#0", 30*time.Millisecond); !ok {
+		t.Fatal("setup: the dead worker should hold z")
+	}
+	release := make(chan struct{})
+	zStarted := make(chan struct{})
+	stop := runLoop(t, s, func(ctx context.Context, id string) error {
+		if id == "h" {
+			time.Sleep(50 * time.Millisecond) // holds the full pass's only slot past z's lapse
+			return &OutcomeUnknown{RunRef: RunRef{RunID: id}}
+		}
+		close(zStarted)
+		<-release
+		return nil
+	}, WithRecoverInterval(20*time.Millisecond), WithRecoverConcurrency(1), WithLeaseTTL(time.Second))
+	defer stop()
+	<-zStarted                        // the lapsed loop's pass at 40ms
+	time.Sleep(30 * time.Millisecond) // the full pass gets its slot back at 50ms and reaches z
+	if n := s.acquires("z"); n != 1 {
+		t.Fatalf("z was leased %d times while the lapsed loop drove it, want once", n)
+	}
+	time.Sleep(100 * time.Millisecond) // later passes of both loops
+	if n := s.acquires("z"); n != 1 {
+		t.Fatalf("z was leased %d times while the lapsed loop drove it, want once", n)
+	}
+	close(release)
+}
+
+// A run whose lease lapsed while this process still drives it (a drive that ignores the
+// cancellation its lost lease caused) is not started again by the lapsed loop.
+func TestRecoverLoop_LapsedLoopSkipsARunItsProcessIsDriving(t *testing.T) {
+	synctest.Test(t, testRecoverLoopLapsedLoopSkipsARunItsProcessIsDriving)
+}
+
+func testRecoverLoopLapsedLoopSkipsARunItsProcessIsDriving(t *testing.T) {
+	s := &failRenewStore{countingStore{MemStore: NewMemStore()}}
+	seedRun(t, s.MemStore, "r")
+	release := make(chan struct{})
+	started := make(chan struct{})
+	stop := runLoop(t, s, func(ctx context.Context, id string) error {
+		close(started)
+		<-release // ignores ctx: still driving after the lease lapsed
+		return nil
+	}, WithRecoverInterval(20*time.Millisecond), WithLeaseTTL(100*time.Millisecond))
+	defer stop()
+	<-started
+	time.Sleep(300 * time.Millisecond) // the lease lapsed at 100ms; lapsed passes every 20ms since
+	if !s.MemStore.lapsedNow("r") {
+		t.Fatal("setup: r's lease should have lapsed")
+	}
+	if n := s.acquires("r"); n != 1 {
+		t.Fatalf("r was leased %d times while this process drove it, want once", n)
+	}
+	close(release)
+}
+
+// failRenewStore is a countingStore whose renewals fail, so a drive's lease lapses at its TTL.
+type failRenewStore struct{ countingStore }
+
+func (*failRenewStore) RenewLease(context.Context, string, string, time.Duration) (bool, error) {
+	return false, errors.New("renewal refused")
+}
+
+// lapsedNow reports whether runID's lease has lapsed on m's clock.
+func (m *MemStore) lapsedNow(runID string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.init()
+	return m.lapsed(runID, m.now())
+}
+
+// Over a store that implements Lister but not Leaser there are no leases to lapse, and RecoverLoop
+// runs no lapsed loop: every listing is the full pass's.
+func TestRecoverLoop_NoLapsedLoopWithoutLeaser(t *testing.T) {
+	synctest.Test(t, testRecoverLoopNoLapsedLoopWithoutLeaser)
+}
+
+func testRecoverLoopNoLapsedLoopWithoutLeaser(t *testing.T) {
+	s := &unleasedStore{m: NewMemStore()}
+	stop := runLoop(t, s, func(context.Context, string) error { return nil }, WithRecoverInterval(10*time.Millisecond))
+	time.Sleep(55 * time.Millisecond)
+	_ = stop()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.full != 6 || s.lapsed != 0 {
+		t.Fatalf("%d full and %d lapsed listings in 55ms, want 6 and 0", s.full, s.lapsed)
+	}
+}
+
+// unleasedStore is a Durable that implements Lister and not Leaser, counting its listings.
+type unleasedStore struct {
+	m            *MemStore
+	mu           sync.Mutex
+	full, lapsed int
+}
+
+func (u *unleasedStore) Do(ctx context.Context, runID, name string, fn func(context.Context) (Record, error)) (Record, error) {
+	return u.m.Do(ctx, runID, name, fn)
+}
+
+func (u *unleasedStore) History(ctx context.Context, runID string) ([]Record, error) {
+	return u.m.History(ctx, runID)
+}
+
+func (u *unleasedStore) Runs(ctx context.Context, f RunFilter) iter.Seq2[string, error] {
+	u.mu.Lock()
+	if f.LeaseLapsed {
+		u.lapsed++
+	} else {
+		u.full++
+	}
+	u.mu.Unlock()
+	return u.m.Runs(ctx, f)
 }

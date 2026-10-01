@@ -47,9 +47,11 @@ func rv120cWork(t *testing.T, ctx context.Context, s *Store, tag string) {
 	if n != 2 {
 		t.Fatalf("Load read %d entries", n)
 	}
-	for _, err := range s.Runs(ctx, agent.RunFilter{Prefix: "rv120c-", ExcludeHolding: []string{"zz"}}) {
-		if err != nil {
-			t.Fatalf("Runs: %v", err)
+	for _, f := range []agent.RunFilter{{Prefix: "rv120c-", ExcludeHolding: []string{"zz"}}, {Prefix: "rv120c-", ExcludeHolding: []string{"zz"}, LeaseLapsed: true}} {
+		for _, err := range s.Runs(ctx, f) {
+			if err != nil {
+				t.Fatalf("Runs(%+v): %v", f, err)
+			}
 		}
 	}
 	if ok, err := s.AcquireLease(ctx, run, "h", time.Minute); err != nil || !ok {

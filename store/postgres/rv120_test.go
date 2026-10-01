@@ -10,6 +10,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/bide-ai/bide/agent"
 )
@@ -201,7 +202,25 @@ func rv120Exercise(ctx context.Context, s *Store) error {
 	if _, err := s.RenewLease(ctx, "run", "h", 1e9); err != nil {
 		return err
 	}
-	return s.ReleaseLease(ctx, "run", "h")
+	if err := s.ReleaseLease(ctx, "run", "h"); err != nil {
+		return err
+	}
+	// A lease that has already lapsed, so the lapsed listing compares a row's expiry and probes
+	// the steps table.
+	if _, err := s.AcquireLease(ctx, "run", "dead", -time.Second); err != nil {
+		return err
+	}
+	lapsed := 0
+	for _, err := range s.Runs(ctx, agent.RunFilter{Prefix: "ru", ExcludeHolding: []string{"zz"}, LeaseLapsed: true}) {
+		if err != nil {
+			return err
+		}
+		lapsed++
+	}
+	if lapsed != 1 {
+		return fmt.Errorf("Runs(LeaseLapsed) listed %d runs, want the one with a lapsed lease", lapsed)
+	}
+	return s.ReleaseLease(ctx, "run", "dead")
 }
 
 // With pg_catalog searched first (the default: it is implicitly first), an operator a role

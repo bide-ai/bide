@@ -55,6 +55,13 @@ func (m *MemStore) heldByOther(runID, holder string, now time.Time) bool {
 	return ok && cur.holder != holder && now.Before(cur.expiry)
 }
 
+// lapsed reports whether runID holds a lease that has expired at now: one AcquireLease would grant
+// to any holder (see RunFilter.LeaseLapsed). The caller must hold m.mu.
+func (m *MemStore) lapsed(runID string, now time.Time) bool {
+	cur, ok := m.leases[runID]
+	return ok && !now.Before(cur.expiry)
+}
+
 // AcquireLease implements Leaser.
 func (m *MemStore) AcquireLease(_ context.Context, runID, holder string, ttl time.Duration) (bool, error) {
 	m.mu.Lock()

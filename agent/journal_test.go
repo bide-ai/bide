@@ -232,22 +232,34 @@ func TestRunFilter_Admits(t *testing.T) {
 		}
 	}
 	for _, c := range []struct {
-		f     RunFilter
-		id    string
-		names []string
-		want  bool
+		f      RunFilter
+		id     string
+		names  []string
+		lapsed bool
+		want   bool
 	}{
-		{RunFilter{}, "a", nil, true},
-		{RunFilter{After: "a"}, "a", nil, false},
-		{RunFilter{After: "a"}, "b", nil, true},
-		{RunFilter{Prefix: "t1/"}, "t1/x", nil, true},
-		{RunFilter{Prefix: "t1/"}, "t2/x", nil, false},
-		{RunFilter{Prefix: "t1/"}, "t1", nil, false},
-		{RunFilter{ExcludeHolding: []string{"run:complete"}}, "a", []string{"run:complete"}, false},
-		{RunFilter{ExcludeHolding: []string{"run:complete"}}, "a", []string{"run:start"}, true},
+		{RunFilter{}, "a", nil, false, true},
+		{RunFilter{After: "a"}, "a", nil, false, false},
+		{RunFilter{After: "a"}, "b", nil, false, true},
+		{RunFilter{Prefix: "t1/"}, "t1/x", nil, false, true},
+		{RunFilter{Prefix: "t1/"}, "t2/x", nil, false, false},
+		{RunFilter{Prefix: "t1/"}, "t1", nil, false, false},
+		{RunFilter{ExcludeHolding: []string{"run:complete"}}, "a", []string{"run:complete"}, false, false},
+		{RunFilter{ExcludeHolding: []string{"run:complete"}}, "a", []string{"run:start"}, false, true},
+		{RunFilter{}, "a", nil, true, true}, // LeaseLapsed unset: the lease does not matter
+		{RunFilter{LeaseLapsed: true}, "a", nil, false, false},
+		{RunFilter{LeaseLapsed: true}, "a", nil, true, true},
+		{RunFilter{LeaseLapsed: true, ExcludeHolding: []string{"run:complete"}}, "a", []string{"run:complete"}, true, false},
+		{RunFilter{LeaseLapsed: true, Prefix: "t1/"}, "t2/x", nil, true, false},
 	} {
-		if got := c.f.Admits(c.id, holds(c.names...)); got != c.want {
-			t.Errorf("%+v.Admits(%q holding %v) = %v, want %v", c.f, c.id, c.names, got, c.want)
+		lapsed := func() bool {
+			if !c.f.LeaseLapsed {
+				t.Errorf("%+v.Admits(%q) asked about the lease without LeaseLapsed", c.f, c.id)
+			}
+			return c.lapsed
+		}
+		if got := c.f.Admits(c.id, holds(c.names...), lapsed); got != c.want {
+			t.Errorf("%+v.Admits(%q holding %v, lapsed %v) = %v, want %v", c.f, c.id, c.names, c.lapsed, got, c.want)
 		}
 	}
 }

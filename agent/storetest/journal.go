@@ -394,7 +394,7 @@ func ambiguousClaim(t *testing.T, s agent.Store) {
 }
 
 // lister checks the Lister contract: ascending order, the filter's After, Prefix and
-// ExcludeHolding, early breaks, and writes inside the loop.
+// ExcludeHolding, early breaks, and writes inside the loop (leaseLapsed checks LeaseLapsed).
 func lister(t *testing.T, s agent.Store) {
 	ctx := context.Background()
 	l, _ := agent.Capability[agent.Lister](s)
@@ -467,6 +467,110 @@ func lister(t *testing.T, s agent.Store) {
 	}
 	if got := list(agent.RunFilter{Prefix: prefix, ExcludeHolding: []string{"done"}}); len(got) != 0 {
 		t.Fatalf("Runs(ExcludeHolding) still yields %d runs after every run got a done entry", len(got))
+	}
+}
+
+// leaseLapsed checks RunFilter.LeaseLapsed: it admits exactly the runs the store holds whose lease
+// has lapsed, a lapsed lease is one AcquireLease grants to a new holder, and the filter combines
+// with Prefix, After and ExcludeHolding over more than one page. A store without Leaser admits no
+// run under it.
+func leaseLapsed(t *testing.T, s agent.Store) {
+	ctx := context.Background()
+	l, _ := agent.Capability[agent.Lister](s)
+	prefix := runID(t) + "/"
+	list := func(f agent.RunFilter) []string {
+		t.Helper()
+		f.Prefix, f.LeaseLapsed = prefix, true
+		var out []string
+		for id, err := range l.Runs(ctx, f) {
+			if err != nil {
+				t.Fatalf("Runs(%+v): %v", f, err)
+			}
+			out = append(out, id)
+		}
+		return out
+	}
+	leaser, ok := agent.Capability[agent.Leaser](s)
+	if !ok {
+		if _, _, err := s.Insert(ctx, prefix+"r", "x", []byte("x")); err != nil {
+			t.Fatal(err)
+		}
+		if got := list(agent.RunFilter{}); len(got) != 0 {
+			t.Fatalf("Runs(LeaseLapsed) over a store without Leaser yields %v, want no run", got)
+		}
+		return
+	}
+	acquire := func(id, holder string, ttl time.Duration) {
+		t.Helper()
+		if ok, err := leaser.AcquireLease(ctx, id, holder, ttl); err != nil || !ok {
+			t.Fatalf("AcquireLease(%s, %s) = %v, %v; want granted", id, holder, ok, err)
+		}
+	}
+	// Each run falls in a class by its index: 0 to 3 a lapsed lease, 4 a lapsed lease and a done
+	// entry, 5 a live lease, 6 a released lease (even tens) or none (odd tens), 7 a lapsed lease
+	// another holder took since. More than a page of runs has a lapsed lease.
+	const n = 1100
+	var lapsed, lapsedOpen, retaken []string
+	for i := range n {
+		id := fmt.Sprintf("%s%04d", prefix, i)
+		if _, _, err := s.Insert(ctx, id, "x", []byte("x")); err != nil {
+			t.Fatal(err)
+		}
+		switch c := i % 8; c {
+		case 0, 1, 2, 3, 4:
+			acquire(id, "dead", time.Millisecond)
+			lapsed = append(lapsed, id)
+			if c == 4 {
+				if _, _, err := s.Insert(ctx, id, "done", []byte("x")); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				lapsedOpen = append(lapsedOpen, id)
+			}
+		case 5:
+			acquire(id, "live", time.Hour)
+		case 6:
+			if i/10%2 == 0 {
+				acquire(id, "gone", time.Hour)
+				if err := leaser.ReleaseLease(ctx, id, "gone"); err != nil {
+					t.Fatal(err)
+				}
+			}
+		case 7:
+			acquire(id, "dead", time.Millisecond)
+			retaken = append(retaken, id)
+		}
+	}
+	// A lapsed lease on a run the store does not hold (no entry) is not a run to list.
+	acquire(prefix+"orphan", "dead", time.Millisecond)
+
+	// Wait for the millisecond leases to lapse on the store's clock.
+	want := slices.Sorted(slices.Values(append(slices.Clone(lapsed), retaken...)))
+	deadline := time.Now().Add(30 * time.Second)
+	for got := list(agent.RunFilter{}); !slices.Equal(got, want); got = list(agent.RunFilter{}) {
+		if time.Now().After(deadline) {
+			t.Fatalf("Runs(LeaseLapsed) yields %d runs 30s after their millisecond leases, want the %d with a lapsed lease (and no other)", len(got), len(want))
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	for _, id := range retaken {
+		acquire(id, "new", time.Hour) // a lapsed lease is granted to a new holder, and is live again
+	}
+	if got := list(agent.RunFilter{}); !slices.Equal(got, lapsed) {
+		t.Fatalf("Runs(LeaseLapsed) yields %d runs, want the %d whose lease lapsed and was not taken since", len(got), len(lapsed))
+	}
+	if got := list(agent.RunFilter{ExcludeHolding: []string{"done"}}); !slices.Equal(got, lapsedOpen) {
+		t.Fatalf("Runs(LeaseLapsed, ExcludeHolding) yields %d runs, want the %d lapsed ones without a done entry", len(got), len(lapsedOpen))
+	}
+	cursor := lapsedOpen[len(lapsedOpen)/2]
+	if got := list(agent.RunFilter{ExcludeHolding: []string{"done"}, After: cursor}); !slices.Equal(got, lapsedOpen[len(lapsedOpen)/2+1:]) {
+		t.Fatalf("Runs(LeaseLapsed, After) yields %d runs, want the %d after the cursor", len(got), len(lapsedOpen)-len(lapsedOpen)/2-1)
+	}
+	// What the filter admits is what AcquireLease grants: a new holder takes a listed run, after
+	// which it is no longer lapsed.
+	acquire(lapsedOpen[0], "taker", time.Hour)
+	if got := list(agent.RunFilter{ExcludeHolding: []string{"done"}}); !slices.Equal(got, lapsedOpen[1:]) {
+		t.Fatalf("Runs(LeaseLapsed) yields %d runs after a new holder took one, want %d", len(got), len(lapsedOpen)-1)
 	}
 }
 

@@ -400,6 +400,13 @@ func (s *Store) Runs(ctx context.Context, f agent.RunFilter) iter.Seq2[string, e
 
 func (s *Store) runsPage(ctx context.Context, f agent.RunFilter, after string) ([]string, error) {
 	q := `SELECT DISTINCT run_id FROM ` + s.t.steps + ` AS s WHERE run_id > ?`
+	if f.LeaseLapsed {
+		// The runs with a lapsed lease, read from the leases table, which holds a row only for a
+		// lease taken and not released: the same comparison as AcquireLease's, and only runs the
+		// steps table holds.
+		q = `SELECT run_id FROM ` + s.t.leases + ` AS s WHERE expiry < unixepoch('subsec')
+			AND EXISTS (SELECT 1 FROM ` + s.t.steps + ` AS y WHERE y.run_id = s.run_id) AND run_id > ?`
+	}
 	args := []any{after}
 	if f.Prefix != "" {
 		// The range lets the primary key's index serve the scan; substr checks the bytes.
