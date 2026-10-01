@@ -876,11 +876,11 @@ to the pull-request job.
 | `pickup-reach` | ci | Vacuity of the pickup configurations: a dead holder's run waits after its lease lapsed (PickupNotReachable must be violated), under the proposed rule. | 189 | <1 s |
 | `life-resolve` | ci | One run: a leased primary Run, one Recover pass (not RecoverLoop) and an operator resolving halts; an error reply and a crash. | 32,982 | 1 s |
 | `live-pickup` | ci | PickedUp under v0.9.0's rule: a halted run listed before a leased primary's run, the primary dies; every step and the clock weakly fair. | 4,699 | 2 s |
-| `deep-two-workers` | nightly | One run: a leased primary Run and two RecoverLoop workers; an error reply and a crash. | ? | ? |
+| `deep-two-workers` | nightly | One run: a leased primary Run and two RecoverLoop workers; an error reply and a crash. | 3,620,876 | 2 min |
 | `deep-cancel-plain` | nightly | Cancel (P14) under the proposed rules, a plain Run of two calls and a worker; an error reply and a crash. | 2,290,004 | 1 min |
 | `deep-leased-resolve` | nightly | One run of two calls, a saga: a leased primary Run, a RecoverLoop worker and an operator resolving halts; an error reply and a crash. | 1,269,395 | 34 s |
 | `deep-paused` | nightly | Three runs (one waiting for an approval, one halted, a leased primary's), a worker, the operator, a crash. | 3,440,717 | 2 min |
-| `deep-stall` | nightly | One run: a leased primary Run and two workers; a lease holder stalls past its TTL. | ? | ? |
+| `deep-stall` | nightly | One run: a leased primary Run and two workers; a lease holder stalls past its TTL. | 2,183,810 | 1 min |
 
 ### Regressions and limits
 
@@ -935,6 +935,12 @@ The mechanisms of section 6 of the plan, as they apply here:
   `takeoverBound` with halted runs listed first), and L2 and L3 become tests of P14.
 
 ## What the bounds do not cover
+
+Model 10 adds: one or two recovery workers at concurrency 1, up to three runs (four in the pickup
+measurements), one or two calls per run, one error reply, one crash and one stall per run of the
+checker. The pickup bound is measured for a TTL and an interval of 2 ticks and up to three halted
+runs; the growth it shows (about one halted run's visit per halted run) is an observation at those
+bounds, not a proof for larger ones.
 
 Model 1b adds: three approvers and a policy of 2 of 3 (tightened to 3 or loosened to 1 by a
 redeploy), up to three decisions and two `Approve` calls, one call. A bug that needs more
