@@ -121,3 +121,14 @@ func (a *Agent) drive(ctx context.Context, runID string, d *driveSpec) (Message,
 func (a *Agent) StreamMessage(ctx context.Context, runID string, input Message, opts ...RunOption) *AgentStream {
 	return a.streamEntry(ctx, runID, &driveSpec{input: &input}, opts)
 }
+
+// ResumeAgent returns the Resumer that drives a with the runs it can: runs of kind agent that are
+// not typed.
+func ResumeAgent(a *Agent, opts ...RunOption) Resumer {
+	return func(ctx context.Context, runID string, start RunStart) error { return errP14NotBuilt }
+}
+
+// ResumeTyped returns the Resumer that drives a's typed runs whose answer type is T.
+func ResumeTyped[T any](a *Agent, opts ...RunOption) Resumer {
+	return func(ctx context.Context, runID string, start RunStart) error { return errP14NotBuilt }
+}
