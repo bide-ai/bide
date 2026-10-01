@@ -127,6 +127,8 @@ func (a *Agent) runSagaWithTelemetry(ctx context.Context, runID, input string, e
 
 // protocol:lifecycle begin DRollback DAbort
 
+// protocol:toolcall begin DRollback DRbStep DRbWait DRbComp DRbNext
+
 // rollback compensates runID's writes and returns *SagaAborted with cause. causeText is the text the
 // saga's failure record holds for cause, redacted for the journal; the terminal marker records it,
 // never cause's own text.
@@ -376,6 +378,8 @@ func (a *Agent) rollbackRun(ctx context.Context, runID, root string) (compensate
 	}
 	return compensated, uncompensated, unknown, nil
 }
+
+// protocol:toolcall end
 
 // sagaFailure reports whether the journal records a saga step failure (the durable abort
 // trigger), and its cause.

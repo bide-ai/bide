@@ -52,6 +52,8 @@ func (c ToolCall) ErrorText(err error) string { return toolErrorText(c.redact, c
 // tool-side analogue of ModelHandler.
 type ToolHandler func(ctx context.Context, call ToolCall) (json.RawMessage, error)
 
+// protocol:toolcall begin LMw LWait
+
 // ToolMiddleware wraps a ToolHandler, the same func(Handler) Handler idiom as model
 // Middleware, but around TOOL execution. First added = outermost. A middleware can:
 //
@@ -109,3 +111,5 @@ func (a *Agent) UseTool(mw ...ToolMiddleware) *Agent {
 	a.toolMW = append(a.toolMW, mw...)
 	return a
 }
+
+// protocol:toolcall end

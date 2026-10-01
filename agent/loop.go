@@ -58,10 +58,12 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 	// protocol:lifecycle begin DOpen
 	// protocol:claims begin Open
 	// protocol:spend begin Open
+	// protocol:toolcall begin DOpen
 	recs, err := openRun(ctx, a.store, runID)
 	if err != nil {
 		return Message{}, usageTotals{}, 0, err
 	}
+	// protocol:toolcall end
 	// protocol:spend end
 	// protocol:claims end
 	// The run's input (the seed's last message: the user turn it answers) and entry point are
@@ -192,6 +194,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 	// marker, not by the tool's safety now: a tool relabelled retry-safe since (a trusted MCP
 	// server's new annotations, a code change), or no longer registered at all, still halts,
 	// rather than run a side effect a second time.
+	// protocol:toolcall begin DGate
 	for id := range attempted {
 		if done[id] {
 			continue
@@ -202,6 +205,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 		}
 		return Message{}, tot, 0, toolHalt(runID, rootRunID(ctx, runID), id, name, markerTime(attemptedAtMs[id]), HaltCrashed)
 	}
+	// protocol:toolcall end
 	// protocol:claims end
 	// protocol:lifecycle end
 
@@ -494,6 +498,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 		// recorded its outcome, since a routine pause must not cut off a side effect in flight
 		// and leave it with an unknown outcome. (In a saga, a halt keeps siblings that have not
 		// started from starting; see halted.)
+		// protocol:toolcall begin LStart LPre LClose LRec LNS LRet DWait
 		g, gctx := errgroup.WithContext(ctx)
 		if a.maxConc > 0 {
 			g.SetLimit(a.maxConc)
@@ -803,6 +808,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 			}
 			return leave(err)
 		}
+		// protocol:toolcall end
 		if wakeErr != nil {
 			return leave(wakeErr)
 		}

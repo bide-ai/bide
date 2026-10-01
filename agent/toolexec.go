@@ -131,6 +131,8 @@ func toolResultMessage(r Record) Message {
 	return Message{Role: RoleTool, Parts: []Part{ToolResult{ToolUseID: r.ToolUseID, Result: r.Result, IsError: r.IsError}}}
 }
 
+// protocol:toolcall begin LClose
+
 // callTool runs call under ctx, bounded by timeout when it is positive (a tool's
 // ToolSpec.Timeout). call reports the call's final state (see callOpen). late reports an error
 // returned, by a call that reached the tool, once that deadline had passed. The caller checks ctx
@@ -158,6 +160,8 @@ func ctxDone(ctx context.Context) bool {
 	dl, ok := ctx.Deadline()
 	return ok && !time.Now().Before(dl)
 }
+
+// protocol:toolcall end
 
 // doneCause is why a ctx that ctxDone reports done is done: its cause, or DeadlineExceeded when
 // the deadline has passed and its timer has not run yet.
@@ -195,6 +199,8 @@ func (a *Agent) requestTools() []ToolSpec {
 	return slices.Clip(slices.Clone(a.specList))
 }
 
+// protocol:toolcall begin LPre
+
 // toolCallFor is the ToolCall the middleware chain receives for tu in run runID: tu, the
 // registered tool's spec (the zero spec for an unknown name), and the agent's redactor.
 func (a *Agent) toolCallFor(runID string, tu ToolUse) ToolCall {
@@ -205,6 +211,8 @@ func (a *Agent) toolCallFor(runID string, tu ToolUse) ToolCall {
 	}
 	return ToolCall{Use: tu, Spec: s, RunID: runID, redact: a.toolErrRedact, modelArgs: tu.Args, origName: tu.Name, origID: tu.ID}
 }
+
+// protocol:toolcall end
 
 // A call's state records, by compare-and-swap only, whether its tool was called. It starts open.
 //
@@ -228,6 +236,8 @@ const (
 	callRefusedClosed
 	callReachedClosed
 )
+
+// protocol:toolcall begin IEnter IBegin ICall LClose
 
 // callIsClosed reports whether the chain has returned for the call whose state is st.
 func callIsClosed(st *atomic.Int32) bool {
@@ -447,6 +457,10 @@ func closeCall(st *atomic.Int32) int32 {
 	}
 }
 
+// protocol:toolcall end
+
+// protocol:toolcall begin IEnter IArgs IIdem IBegin ICall LClose
+
 // toolHandler builds the wrapped tool-execution chain once per run: a base handler that
 // dispatches by name to the registered tool, wrapped by the middleware in order. It returns the
 // chain's entry point for a call of run runID, which also reports the call's final state (see
@@ -661,3 +675,5 @@ func journalAcceptedArgs(ctx context.Context, t Tool, call ToolCall, safety Safe
 	}
 	return nil
 }
+
+// protocol:toolcall end
