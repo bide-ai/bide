@@ -574,7 +574,10 @@ func WithWaker(w Waker) AgentRunOption {
 }
 
 // WithIdentity sets the acting identity of a run (see Identity): tool calls read it with
-// IdentityFrom, and the runs they start inherit it. An empty identity is ErrConfig.
+// IdentityFrom, and the runs they start inherit it. An identity the run's context already carries
+// takes precedence, so a sub-agent built with WithIdentity runs as its parent's identity whenever
+// the parent has one (attenuate the delegation to narrow it instead). An empty identity is
+// ErrConfig.
 func WithIdentity(id Identity) AgentRunOption {
 	return agentRunOption{
 		check: func() error {

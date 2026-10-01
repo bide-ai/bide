@@ -297,3 +297,51 @@ func TestBuild_RefusesWhatEveryAdapterRefuses(t *testing.T) {
 		t.Errorf("With a bad tool name: %v, want ErrConfig", err)
 	}
 }
+
+// Suspicion (a) of the review of #127: whether a tool call is in a saga is its own run's flag. A
+// plain run started from a saga's tool call (child.Run with a SubRunFor ID) is not a saga, and its
+// calls are not in one; the context's saga mode used to be inherited from the call that started
+// the run. child.RunSaga is, and a sub-agent called from a saga runs as one.
+func TestRunInfoSaga_IsTheRunsOwnFlag(t *testing.T) {
+	store := agent.NewMemStore()
+	seen := map[string]bool{}
+	probe := func(name string) agent.Tool {
+		return agent.Func(name, "", agent.Safety{ReadOnly: true}, func(ctx context.Context, _ struct{}) (string, error) {
+			info, _ := agent.RunInfoFrom(ctx)
+			seen[name] = info.Saga
+			return "ok", nil
+		})
+	}
+	childAgent := func(tool string) *agent.Agent {
+		c, err := agent.Build(agent.NewScriptedModel(agent.ToolTurn("k1", tool, `{}`), agent.TextTurn("done")),
+			store.Journal(), agent.WithTools(probe(tool)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c
+	}
+	plainChild, sagaChild, sub := childAgent("in_plain_child"), childAgent("in_saga_child"), childAgent("in_sub_agent")
+	starter := agent.Func("starter", "", agent.Safety{ReadOnly: true}, func(ctx context.Context, _ struct{}) (string, error) {
+		info, _ := agent.RunInfoFrom(ctx)
+		seen["starter"] = info.Saga
+		if _, err := plainChild.Run(ctx, info.SubRunFor("plain"), "go"); err != nil {
+			return "", err
+		}
+		_, err := sagaChild.RunSaga(ctx, info.SubRunFor("saga"), "go")
+		return "ok", err
+	})
+	p, err := agent.Build(agent.NewScriptedModel(agent.ToolTurn("c1", "starter", `{}`), agent.ToolTurn("c2", "sub", `{"task":"go"}`), agent.TextTurn("done")),
+		store.Journal(), agent.WithTools(starter, agent.SubAgent("sub", "", sub)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.RunSaga(context.Background(), "root", "go"); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]bool{"starter": true, "in_plain_child": false, "in_saga_child": true, "in_sub_agent": true}
+	for k, v := range want {
+		if got, ok := seen[k]; !ok || got != v {
+			t.Errorf("%s: RunInfo.Saga = %v (seen %v), want %v", k, got, ok, v)
+		}
+	}
+}

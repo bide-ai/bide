@@ -195,6 +195,15 @@ These are stated in full in [KNOWN-LIMITATIONS.md](../KNOWN-LIMITATIONS.md); in 
   So is any call whose tool is no longer registered when the rollback runs (its compensator and
   safety are unknown), and one of those with an attempt marker and no result stops the rollback
   with a `*OutcomeUnknown`.
+- **Programmatic sub-runs roll back with their call.** A tool that runs another agent itself, under
+  `RunInfo.SubRunFor(name)`, starts a sub-run of its call. In a saga the parent's journal links
+  each one before it records anything, and the rollback walks them, latest first, after the call
+  itself, as it walks a sub-agent's. Declare the agent each one runs with, so the rollback can
+  compensate its writes: `agent.Func(name, desc, safety, fn, agent.WithSubRuns(func(name string)
+  *agent.Agent { return child }))`. With none declared, the sub-run's writes are listed in
+  `SagaAborted.Uncompensated`. Start the sub-run with `RunSaga` to keep it a saga (whether a call
+  is in a saga is its own run's flag, `RunInfo.Saga`), and start it within the call: `SubRunFor`
+  from a goroutine that outlives its call is `ErrConfig`.
 - **A failed step with an unknown outcome is reported, not undone.** A retry-safe step that fails
   with `ErrToolOutcomeUnknown`, or returns an error after its `WithTimeout` deadline, may have
   committed before it was cut off. Its failure record carries `outcome_unknown`, and the rollback

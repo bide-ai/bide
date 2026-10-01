@@ -97,8 +97,13 @@ func (r RunInfo) callScope() string {
 // (SubRunID(RunID, ToolUseID)) inside a tool call, and RunID outside one. The ID is stable, so a
 // resumed call that starts the sub-run again resumes it, and distinct, so two calls (or two names
 // in one call) never share a journal. The sub-run is part of the run's tree like a sub-agent's:
-// Recover leaves it to its root (IsSubRun), and a run given this ID from the tool call's context
-// is accepted although it contains '>'. name must not be empty: Run refuses the ID otherwise.
+// Recover leaves it to its root (IsSubRun), a saga's rollback walks it after the call that started
+// it (declare the agent it runs with, WithSubRuns, so the rollback can compensate its writes), and
+// a run given this ID from the tool call's context is accepted although it contains '>'. Run
+// refuses the ID (ErrConfig) for an empty name, once the tool call has returned (start the
+// sub-run within the call, not from a goroutine that outlives it), and, in a saga, for a name
+// longer than 96 bytes once escaped. Start it with RunSaga to keep it a saga: whether a call is in
+// one is its own run's flag.
 func (r RunInfo) SubRunFor(name string) string {
 	return r.callScope() + subRunSep + stepRunMark + encodeID(name)
 }
