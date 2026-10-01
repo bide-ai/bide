@@ -207,3 +207,32 @@ func answerRecorded(msgs []Message, terminal string) bool {
 	_, ok := terminalCallDone(msgs, terminal)
 	return ok
 }
+
+// cancelledFirst reports whether runID's first end marker is run:cancelled. Over a Journal it Gets
+// run:cancelled, and, when it is there, each end marker that could precede it: by A2 every marker
+// before a visible one is visible too, so the lowest Seq is the first.
+func cancelledFirst(ctx context.Context, d Durable, runID string) (bool, error) {
+	j := journalOf(d)
+	if j == nil {
+		recs, err := d.History(ctx, runID)
+		if err != nil {
+			return false, fmt.Errorf("load history %s: %w (%w)", runID, err, ErrStorage)
+		}
+		first, ok := firstEnd(recs)
+		return ok && first.name == runCancelledStep, nil
+	}
+	c, ok, err := j.getEntry(ctx, runID, runCancelledStep)
+	if err != nil || !ok {
+		return false, err
+	}
+	for _, o := range endOthers(runCancelledStep, true) {
+		e, ok, err := j.getEntry(ctx, runID, o)
+		if err != nil {
+			return false, err
+		}
+		if ok && e.Seq < c.Seq {
+			return false, nil
+		}
+	}
+	return true, nil
+}

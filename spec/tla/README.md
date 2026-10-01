@@ -1842,7 +1842,7 @@ proposed rule (`Fix`, `CancelRule`, `TurnLease`), which the `ci` configurations 
 | `findings/s1-stale-open` | finding | S1 (below): a stale handle refuses the next message for a turn another worker finished. | `NoFalseRefusal` | 17 states |
 | `findings/s2-shared-send` | finding | S2: two callers on one handle send one message, and its turn is recorded twice. | `TurnOnce` | 18 states |
 | `findings/s2-shared-once` | finding | S2 through `SendOnce`: one key delivered twice to one handle has two records. | `KeyOnce` | 17 states |
-| `findings/s3-cancel-wedge` | finding | S3: `Cancel` of an open Send turn's run, and every other message is refused for ever (`CancelRule = "none"`). | `NoFalseRefusal` | 12 states |
+| `regress/s3-cancel-wedge` | regress | S3: `Cancel` of an open Send turn's run, and every other message is refused for ever (`CancelRule = "none"`). | `NoFalseRefusal` | 12 states |
 | `findings/s4-budget-two-workers` | finding | S4: two workers drive one turn's run with no lease, and the turn spends past its budget (`TurnLease = FALSE`). | `BudgetHeld` | 18 states |
 | `limits/send-redelivered` | limit | `Send` has no key: the process dies after the turn is recorded and before the reply, and the redelivered message opens a second turn. | `MsgOnce` | 24 states |
 
@@ -1853,8 +1853,9 @@ Go test in a scratch directory (`agent/session_model12_test.go`, not in this pul
 S3 is against P14's design, which is not built, as L2 and L3 were. Each proposed rule is
 checked in the model. The maintainers adopted S3's rule (rule 16 of the P14 contract in
 `docs/design/api-v1.md`) and S4's (each turn's run is driven under its lease); S1 and S2 are
-being fixed as proposed. All four stay open (`findings/`) until their code lands; S3 lands with
-P14.
+being fixed as proposed. Each stays open (`findings/`) until its code lands. S3's landed with P14
+(`Session.startTurn`'s `closeIfCancelled`; the test is `TestP14Rule16_CancelledTurnIsClosed`,
+committed failing first), and it is a regression: it keeps failing under `CancelRule = "none"`.
 
 - **S1: a stale handle refuses the next message for an open turn that another handle finished**
   (`findings/s1-stale-open`, `NoFalseRefusal`, 17 states).
@@ -1885,7 +1886,7 @@ P14.
   - Proposed fix (`Fix = {"S2"}`): `reload` keeps the set of runs among the loaded turns, and
     `appendTurn` returns at once for a run in it.
 - **S3, against P14's design: `Cancel` of an open Send turn's run blocks the session for ever**
-  (`findings/s3-cancel-wedge`, `NoFalseRefusal`).
+  (`regress/s3-cancel-wedge`, `NoFalseRefusal`).
   - D1 cancels a run; a session turn is a run. A cancelled turn run never completes, so its
     `start/<n>` stays open: `Send` of its message returns `ErrRunCancelled` every time, and
     every other message is refused with `ErrConfig` naming the open turn. `SendOnce` is not
@@ -1894,11 +1895,19 @@ P14.
     cancelled is recorded closed (a `turn/<n>` record naming the run, with a cancelled
     answer), which ends the open turn. `startTurn` checks `run:cancelled` of the open turn's
     run before refusing (one `Get`), and records the close itself; the caller of the cancelled
-    message gets `ErrRunCancelled`. Adopted: rule 16 of the P14 contract.
+    message gets `ErrRunCancelled`. Adopted: rule 16 of the P14 contract, built by P14. The
+    `Get` is of `run:cancelled`; when it is there, the end markers that could precede it are read
+    too (`cancelledFirst`), so a turn whose `run:complete` landed first is not closed (model 10's
+    L3 rule, which this model abstracts).
   - Two more points P14 reconciles (rule 16's note): recovery skips session runs while
     `ResumeAgent` lists `session_turn` among its kinds (a recovery resumer must seed a turn from
     its `from/` record, and the session records the turn only when its message is sent again);
     and `Status` of a turn's run says `Completed` before the session records the turn.
+    P14 decided both (maintainer to confirm): recovery keeps skipping session runs, and
+    `ResumeAgent` drives only runs of kind `agent` (a `session_turn` start is `ErrNotResumable`),
+    so this model's assumption that only the session drives a turn stays true; and `Status`
+    reports the turn's run as a run (`Completed` once `run:complete` is written), its godoc and
+    the session's say that the session's own record says a turn is answered.
 - **S4: a turn's budget is spent once per worker** (`findings/s4-budget-two-workers`,
   `BudgetHeld`).
   - A turn's run is driven with no lease, so two workers given one message (the redelivery
