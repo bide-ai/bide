@@ -121,3 +121,39 @@ func TestPostgres_OpenRefusesANonTableSteps(t *testing.T) {
 		})
 	}
 }
+
+// A store whose tables are in a later schema on the search path than an empty one keeps them: Open
+// records the later schema, and the migration's DDL names it, so nothing is created in the empty
+// first schema and the run's entries stay where they were. Skips without PG_DSN.
+func TestPostgres_OpenKeepsTablesInALaterSchema(t *testing.T) {
+	ctx := context.Background()
+	dsn, schema, admin := freshSchema(t)
+	s, err := Open(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.Insert(ctx, "run", "a", []byte("a")); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	first := fmt.Sprintf("rv_emptyfirst_%d", time.Now().UnixNano())
+	if _, err := admin.ExecContext(ctx, `CREATE SCHEMA `+first); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { admin.ExecContext(context.Background(), `DROP SCHEMA `+first+` CASCADE`) })
+	s, err = Open(ctx, strings.Replace(dsn, "search_path="+schema, "search_path="+first+","+schema, 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if e, ok, err := s.Insert(ctx, "run", "b", []byte("b")); err != nil || !ok || e.Seq != 1 {
+		t.Fatalf("Insert = %+v, %v, %v; want seq 1 in the existing table", e, ok, err)
+	}
+	var objects int
+	if err := admin.QueryRowContext(ctx, `SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = $1`, first).Scan(&objects); err != nil {
+		t.Fatal(err)
+	}
+	if objects != 0 {
+		t.Fatalf("Open created %d relations in the empty schema %s", objects, first)
+	}
+}
