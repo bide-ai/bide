@@ -132,7 +132,18 @@ func (s *RunStart) UnmarshalJSON(b []byte) error {
 	if err := json.Unmarshal(b, &w); err != nil {
 		return err
 	}
-	*s = RunStart{Saga: w.Saga, Kind: w.Kind, Session: w.Session, Flow: w.Flow, Typed: w.Typed,
+	st, err := w.start()
+	if err != nil {
+		return err
+	}
+	*s = st
+	return nil
+}
+
+// start is the RunStart w is the journal form of: its input decoded (see MarshalJSON), the rest as
+// w holds it.
+func (w *runStartWire) start() (RunStart, error) {
+	s := RunStart{Saga: w.Saga, Kind: w.Kind, Session: w.Session, Flow: w.Flow, Typed: w.Typed,
 		Settings: w.Settings, Principal: w.Principal, Tools: w.Tools, Ext: w.Ext}
 	in := bytes.TrimSpace(w.Input)
 	switch {
@@ -140,15 +151,15 @@ func (s *RunStart) UnmarshalJSON(b []byte) error {
 	case in[0] == '"':
 		var t string
 		if err := json.Unmarshal(in, &t); err != nil {
-			return err
+			return RunStart{}, err
 		}
 		s.Input = UserText(t)
 	default:
 		if err := json.Unmarshal(in, &s.Input); err != nil {
-			return err
+			return RunStart{}, err
 		}
 	}
-	return nil
+	return s, nil
 }
 
 // plainUserText reports whether m is a user message of exactly one text part, and its text.

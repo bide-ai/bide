@@ -376,6 +376,11 @@ func startUnderLease(ctx context.Context, store Durable, runID string) (RunStart
 		}
 		return RunStart{}, false, nil
 	}
+	if st, ok := decodeStartEntry(e.Data); ok {
+		return st, true, nil
+	}
+	// Anything else (a tombstone, a record of another kind, a row that does not decode) takes the
+	// full decoding, which reports it as such.
 	r, err := decodeStored(runID, runStartStep, e.Data)
 	if err != nil {
 		if herr := j.readable(ctx, runID); herr != nil {
@@ -391,6 +396,31 @@ func startUnderLease(ctx context.Context, store Durable, runID string) (RunStart
 		return RunStart{}, false, fmt.Errorf("decode %s (run %s): %w (%w)", runStartStep, runID, err, ErrStorage)
 	}
 	return st, true, nil
+}
+
+// decodeStartEntry decodes a stored run:start record in one pass, reading only what a recovery
+// pass needs: the record's name and kind, and the start its result holds. It reports false for
+// anything but a value record named run:start whose result decodes as a start; the caller then
+// takes the full decoding (decodeStored), which refuses or reports it. The record's other members
+// are not read here: the drive the Resumer starts reads the whole journal, run:start included,
+// through the full decoding, and refuses a record that does not decode.
+func decodeStartEntry(b []byte) (RunStart, bool) {
+	if h := decodeHook.Load(); h != nil {
+		(*h)(b)
+	}
+	var w struct {
+		Name   string        `json:"name"`
+		Kind   StepKind      `json:"kind"`
+		Result *runStartWire `json:"result"`
+	}
+	if err := json.Unmarshal(b, &w); err != nil || w.Name != runStartStep || w.Kind != StepValue || w.Result == nil {
+		return RunStart{}, false
+	}
+	st, err := w.Result.start()
+	if err != nil {
+		return RunStart{}, false
+	}
+	return st, true
 }
 
 // recoverable reports whether a run the recovery filter admits is one a recovery pass drives: not a
