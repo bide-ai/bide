@@ -14,9 +14,9 @@ At a glance:
 
 - **8 models** (1, 1b, 2, 7, 8, 9, 10 and 11), each checked on every pull request that changes it,
   and all of them in the merge queue and on main. **Models** is a required check.
-- **171 configurations** on every such pull request (67 that must pass, each also run for vacuity,
-  and 104 regression, finding and limit configurations that must fail with their named property),
-  and **53 larger ones nightly**.
+- **169 configurations** in the merge queue (65 that must pass, each also run for vacuity, and 104
+  regression, finding and limit configurations that must fail with their named property), and
+  **65 larger ones nightly**.
 - **21 bugs caught before release** in bide's own design or code (F1 to F5, P1, P2, T1 to T6, a
   rollback that never ended, L1 to L3, a spend-accounting bug model 8 confirmed, and D1 to D3).
   Each fixed one is kept as a regression configuration; L2 and L3 stay open until P14 implements
@@ -166,8 +166,8 @@ same for bugs found by review and testing before the models existed, back to #31
 
 | Where | What | Time |
 |---|---|---|
-| Every pull request, the merge queue and main (**Models**, required) | The checker self-test, the PlusCal translation check, and every `ci`, `regress`, `finding` and `limit` configuration (136), each passing one also run for vacuity, four at a time; on a pull request, of the models it changes | About 6 minutes for every model on the CI runner (job timeout 30 minutes) |
-| Nightly and on demand (**Models (nightly)**) | The 57 `nightly` configurations: more faults, more drivers, liveness at two error replies, weak A3 (late commits) | About 1 hour 50 minutes on the CI runner (1 hour 40 minutes measured before this split, plus about 7 minutes moved from pull requests; job timeout 4 hours) |
+| Every pull request, the merge queue and main (**Models**, required) | The checker self-test, the PlusCal translation check, and every `ci`, `regress`, `finding` and `limit` configuration (169), each passing one also run for vacuity, four at a time; on a pull request, of the models it changes | About 6 minutes for every model on the CI runner (job timeout 30 minutes) |
+| Nightly and on demand (**Models (nightly)**) | The 65 `nightly` configurations: more faults, more drivers, liveness at two error replies, weak A3 (late commits) | About 1 hour 50 minutes on the CI runner (1 hour 40 minutes measured before this split, plus about 7 minutes moved from pull requests; job timeout 4 hours) |
 | Nightly and on demand (**Explore (full bound)**) | The Go fault-schedule explorations of the claim protocol and of flow lowering at their full bound (`BIDE_EXPLORE=1`); every pull request runs them at a smaller bound under `-race` in the Test job | About 15 to 22 minutes |
 | Every pull request (**Lint**, required) | `modelsync` and `TestProtocolVocabulary` (next section) | Part of Lint |
 

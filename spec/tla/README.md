@@ -1499,7 +1499,8 @@ adopts a fix.
 ### Keeping model 11 and the code in step
 
 - **The map** above, with its `// protocol:delegation` regions in `agent/`, `audit/` and
-  `internal/toolhook/`, checked by `modelsync`. The Models job's path filter includes `audit/`.
+  `internal/toolhook/`, checked by `modelsync`. A pull request that changes one changes
+  `spec/tla/delegation/` (the path rule), so the Models job checks this model on it.
 - **Regressions** for every historical bug of #117's delegation rounds and #127's S1 review
   that the model can state, each a `Bug` value.
 - **No vocabulary block.** The plan asks for one for the claim records only (section 6.2).
