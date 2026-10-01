@@ -92,7 +92,7 @@ func BenchmarkRecoverPass10k(b *testing.B) {
 	}
 	b.ReportAllocs()
 	for b.Loop() {
-		n, err := agent.Recover(ctx, store, func(context.Context, string) error { return nil }, agent.WithLeaseHolder("w"))
+		n, err := agent.Recover(ctx, store, func(context.Context, string, agent.RunStart) error { return nil }, agent.WithLeaseHolder("w"))
 		if err != nil || n != 1000 {
 			b.Fatalf("Recover = %d, %v", n, err)
 		}

@@ -210,7 +210,7 @@ func completedAnswer(recs []Record) (Message, bool) {
 // its answer, so an unfinished turn resumes when its message is sent again (Send with the same
 // input, or the redelivered SendOnce). resume should no-op any other runID it does not own;
 // Recover re-drives every other incomplete run it enumerates.
-func Recover(ctx context.Context, store Durable, resume func(ctx context.Context, runID string) error, opts ...RecoverOption) (int, error) {
+func Recover(ctx context.Context, store Durable, resume Resumer, opts ...RecoverOption) (int, error) {
 	lister, ok := capabilityOf[Lister](store)
 	if !ok {
 		return 0, fmt.Errorf("Recover needs a store that implements Lister (itself or through Unwrap) to enumerate runs: %w", ErrConfig)
@@ -314,14 +314,14 @@ func recoverable(runID string) bool { return !IsSubRun(runID) && !IsSessionRun(r
 // stalls past the TTL between the check and resume loses the lease, and another driver may finish
 // the run in that window. Either way at-most-once still holds: resume is handed a finished run,
 // which a resume that calls Run or RunSaga replays without firing anything again.
-func recoverRun(ctx context.Context, store Durable, runID string, resume func(ctx context.Context, runID string) error, cfg recoverConfig) (bool, error) {
+func recoverRun(ctx context.Context, store Durable, runID string, resume Resumer, cfg recoverConfig) (bool, error) {
 	var resumed bool
 	driven, err := leaseRun(ctx, store, runID, func(ctx context.Context) error {
 		if over, err := runEnded(ctx, store, runID); err != nil || over {
 			return err
 		}
 		resumed = true
-		return resume(ctx, runID)
+		return resume(ctx, runID, RunStart{})
 	}, cfg)
 	if err != nil && (!driven || !IsPause(err) && !errors.Is(err, ErrLeaseLost)) {
 		return resumed, fmt.Errorf("recover run %s: %w", runID, err)
@@ -380,7 +380,7 @@ func recoverRun(ctx context.Context, store Durable, runID string, resume func(ct
 // concurrency) is returned at once. Otherwise RecoverLoop returns ctx's error when ctx is done,
 // after both loops have stopped and the drives they started (whose contexts derive from ctx) have
 // returned.
-func RecoverLoop(ctx context.Context, store Durable, resume func(ctx context.Context, runID string) error, opts ...RecoverLoopOption) error {
+func RecoverLoop(ctx context.Context, store Durable, resume Resumer, opts ...RecoverLoopOption) error {
 	lister, ok := capabilityOf[Lister](store)
 	if !ok {
 		return fmt.Errorf("RecoverLoop needs a store that implements Lister (itself or through Unwrap) to enumerate runs: %w", ErrConfig)

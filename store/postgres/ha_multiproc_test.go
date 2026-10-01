@@ -139,7 +139,7 @@ type haDriver struct {
 	worker, prefix string
 }
 
-func (w *haDriver) resume(ctx context.Context, runID string) error {
+func (w *haDriver) resume(ctx context.Context, runID string, _ agent.RunStart) error {
 	if !strings.HasPrefix(runID, w.prefix) {
 		return nil // another test's run: not ours to drive
 	}

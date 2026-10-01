@@ -67,7 +67,7 @@ func TestRecover_SkipsCompletedRedrivesIncomplete(t *testing.T) {
 
 	// Recover: the resume callback records which runIDs it was asked to re-drive.
 	var asked []string
-	n, err := Recover(ctx, store, func(ctx context.Context, runID string) error {
+	n, err := Recover(ctx, store, func(ctx context.Context, runID string, _ RunStart) error {
 		asked = append(asked, runID)
 		_, err := paused.Run(ctx, runID, "hi") // still paused -> a pause error, treated as success
 		return err
@@ -97,7 +97,7 @@ func TestRecover_StillPausedCountsAsRecovered(t *testing.T) {
 		t.Fatalf("run should pause, got %v", err)
 	}
 
-	n, err := Recover(ctx, store, func(ctx context.Context, runID string) error {
+	n, err := Recover(ctx, store, func(ctx context.Context, runID string, _ RunStart) error {
 		_, err := a.Run(ctx, runID, "hi") // re-drives, still pauses for approval
 		return err
 	})
@@ -112,7 +112,7 @@ func TestRecover_StillPausedCountsAsRecovered(t *testing.T) {
 // TestRecover_NeedsLister confirms Recover reports a config error for a store that cannot
 // enumerate its runs.
 func TestRecover_NeedsLister(t *testing.T) {
-	_, err := Recover(context.Background(), noListStore{}, func(context.Context, string) error { return nil })
+	_, err := Recover(context.Background(), noListStore{}, func(context.Context, string, RunStart) error { return nil })
 	if !errors.Is(err, ErrConfig) {
 		t.Fatalf("err = %v, want ErrConfig for a non-Lister store", err)
 	}
@@ -150,7 +150,7 @@ func TestRecover_WakerRebuild(t *testing.T) {
 
 	// Recover rebuilds the timer set: it re-drives the incomplete run with a Waker-bound
 	// resume, and Sleep re-registers the journaled wake on the fresh waker.
-	n, err := Recover(context.Background(), store, func(ctx context.Context, runID string) error {
+	n, err := Recover(context.Background(), store, func(ctx context.Context, runID string, _ RunStart) error {
 		_, err := a.Run(ContextWithWaker(ContextWithClock(ctx, now), w), runID, "go")
 		return err
 	})

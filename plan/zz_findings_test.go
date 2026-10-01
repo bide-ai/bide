@@ -50,7 +50,7 @@ func TestF1_CompletedFlowIsRecoveredEveryPass(t *testing.T) {
 		t.Fatal(err)
 	}
 	drives := 0
-	resume := func(ctx context.Context, runID string) error {
+	resume := func(ctx context.Context, runID string, _ agent.RunStart) error {
 		drives++
 		_, err := flow.Run(ctx, mem, runID, 1)
 		return err
@@ -64,7 +64,7 @@ func TestF1_CompletedFlowIsRecoveredEveryPass(t *testing.T) {
 	changed := twoNode(t, "two", &fired, true)
 	var failures int
 	for range 3 {
-		_, err := agent.Recover(ctx, mem, func(ctx context.Context, runID string) error {
+		_, err := agent.Recover(ctx, mem, func(ctx context.Context, runID string, _ agent.RunStart) error {
 			_, err := changed.Run(ctx, mem, runID, 1)
 			return err
 		})

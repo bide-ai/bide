@@ -441,7 +441,7 @@ func TestLowering_RecoverLoopTreatsAFlowHaltAsAPause(t *testing.T) {
 	drives := map[string]int{}
 	var results []error
 	var reported []error
-	resume := func(ctx context.Context, runID string) error {
+	resume := func(ctx context.Context, runID string, _ agent.RunStart) error {
 		var err error
 		switch runID {
 		case "halting":

@@ -113,7 +113,7 @@ func TestRecoverLoop_RetriesAFailedWakeSchedule(t *testing.T) {
 	defer cancel()
 	var mu sync.Mutex
 	var reported []error
-	resume := func(ctx context.Context, runID string) error {
+	resume := func(ctx context.Context, runID string, _ RunStart) error {
 		_, err := newAgent().Run(ContextWithWaker(ctx, w), runID, "rest")
 		return err
 	}

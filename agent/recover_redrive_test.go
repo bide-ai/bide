@@ -51,7 +51,7 @@ func TestRecoverLoop_DoesNotResumeARunCompletedWhileItWaited(t *testing.T) {
 		first, release := make(chan string, 1), make(chan struct{})
 		var mu sync.Mutex
 		var resumedComplete []string
-		stop := runLoop(t, s, func(ctx context.Context, id string) error {
+		stop := runLoop(t, s, func(ctx context.Context, id string, _ RunStart) error {
 			if done, _ := IsComplete(ctx, s, id); done {
 				mu.Lock()
 				resumedComplete = append(resumedComplete, id)
@@ -90,7 +90,7 @@ func TestRecover_DoesNotResumeARunCompletedWhileItWaited(t *testing.T) {
 			seedRun(t, s, id)
 		}
 		var resumedComplete []string
-		n, err := Recover(context.Background(), s, func(ctx context.Context, id string) error {
+		n, err := Recover(context.Background(), s, func(ctx context.Context, id string, _ RunStart) error {
 			if done, _ := IsComplete(ctx, s, id); done {
 				resumedComplete = append(resumedComplete, id)
 				// The documented resume: Run replays a finished run and returns its answer.
@@ -133,7 +133,7 @@ func TestRecover_DoesNotResumeARunEndedWhileItWaited(t *testing.T) {
 					seedRun(t, s, id)
 				}
 				var resumed []string
-				n, err := Recover(context.Background(), wrap(s), func(ctx context.Context, id string) error {
+				n, err := Recover(context.Background(), wrap(s), func(ctx context.Context, id string, _ RunStart) error {
 					resumed = append(resumed, id)
 					if id == "a" {
 						endUnderLease(t, s, "b", name) // b ends while this pass drives a
@@ -190,7 +190,7 @@ func TestRecover_DoesNotResumeARunItCannotCheck(t *testing.T) {
 				t.Fatal(err)
 			}
 			resumed := 0
-			n, err := Recover(context.Background(), j, func(context.Context, string) error { resumed++; return nil }, WithLeaseHolder("w"))
+			n, err := Recover(context.Background(), j, func(context.Context, string, RunStart) error { resumed++; return nil }, WithLeaseHolder("w"))
 			if !errors.Is(err, ErrStorage) || resumed != 0 {
 				t.Errorf("Recover = %d, %v, resumed %d times; want an ErrStorage error and no resume", n, err, resumed)
 			}
@@ -215,7 +215,7 @@ func TestRecover_ForeignFormatIsNotAStorageError(t *testing.T) {
 				t.Fatal(err)
 			}
 			d := wrap(s)
-			_, err := Recover(context.Background(), d, func(ctx context.Context, id string) error {
+			_, err := Recover(context.Background(), d, func(ctx context.Context, id string, _ RunStart) error {
 				_, err := New(NewScriptedModel(TextTurn("x")), d).Run(ctx, id, "go")
 				return err
 			}, WithLeaseHolder("w"))

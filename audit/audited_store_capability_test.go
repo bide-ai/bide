@@ -50,7 +50,7 @@ func TestAuditedStore_RecoverListsInnerRuns(t *testing.T) {
 		t.Fatal(err)
 	}
 	var resumed []string
-	n, err := agent.Recover(ctx, store, func(_ context.Context, runID string) error {
+	n, err := agent.Recover(ctx, store, func(_ context.Context, runID string, _ agent.RunStart) error {
 		resumed = append(resumed, runID)
 		return nil
 	})
@@ -67,7 +67,7 @@ type bareStore struct{ agent.Durable }
 func TestAuditedStore_AddsNoCapabilities(t *testing.T) {
 	ctx := context.Background()
 	store := newAudited(t, bareStore{agent.NewMemStore()})
-	if _, err := agent.Recover(ctx, store, func(context.Context, string) error { return nil }); !errors.Is(err, agent.ErrConfig) {
+	if _, err := agent.Recover(ctx, store, func(context.Context, string, agent.RunStart) error { return nil }); !errors.Is(err, agent.ErrConfig) {
 		t.Fatalf("Recover over a non-Lister = %v, want ErrConfig", err)
 	}
 	driven, err := agent.Lease(ctx, store, "r", func(context.Context) error { return nil })
@@ -89,7 +89,7 @@ func TestAuditedStore_RecoverLoopListsInnerRuns(t *testing.T) {
 	resumed := make(chan string, 16)
 	done := make(chan error, 1)
 	go func() {
-		done <- agent.RecoverLoop(ctx, store, func(_ context.Context, runID string) error {
+		done <- agent.RecoverLoop(ctx, store, func(_ context.Context, runID string, _ agent.RunStart) error {
 			resumed <- runID
 			return nil
 		}, agent.WithRecoverInterval(10*time.Millisecond))

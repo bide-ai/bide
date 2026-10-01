@@ -97,7 +97,7 @@ func testRecoverLostLeaseIsNotAFailure(t *testing.T) {
 	s := notHeldLeaser{NewMemStore()}
 	seedRun(t, s.MemStore, "r")
 	var cause error
-	n, err := Recover(context.Background(), s, func(ctx context.Context, _ string) error { return waitForCancel(&cause)(ctx) },
+	n, err := Recover(context.Background(), s, func(ctx context.Context, _ string, _ RunStart) error { return waitForCancel(&cause)(ctx) },
 		WithLeaseTTL(40*time.Millisecond))
 	if err != nil {
 		t.Fatalf("Recover = %v, want nil: a lost lease is not a failure", err)

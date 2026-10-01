@@ -18,7 +18,7 @@ func TestRecover_SkipsAFinishedSagaAbort(t *testing.T) {
 	}
 	var redriven int
 	for pass := range 2 {
-		n, err := Recover(context.Background(), store, func(ctx context.Context, runID string) error {
+		n, err := Recover(context.Background(), store, func(ctx context.Context, runID string, _ RunStart) error {
 			redriven++
 			_, err := a.RunSaga(ctx, runID, "go")
 			return err

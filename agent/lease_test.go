@@ -72,7 +72,7 @@ func TestRecover_SkipsLeasedByOther(t *testing.T) {
 
 	var mu sync.Mutex
 	driven := map[string]bool{}
-	resume := func(_ context.Context, id string) error {
+	resume := func(_ context.Context, id string, _ RunStart) error {
 		mu.Lock()
 		driven[id] = true
 		mu.Unlock()

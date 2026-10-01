@@ -203,7 +203,7 @@ func TestBudget_RecoverPass(t *testing.T) {
 		t.Fatal(err)
 	}
 	var driven atomic.Int64
-	n, err := agent.Recover(ctx, j, func(context.Context, string) error { driven.Add(1); return nil }, agent.WithLeaseHolder("w"))
+	n, err := agent.Recover(ctx, j, func(context.Context, string, agent.RunStart) error { driven.Add(1); return nil }, agent.WithLeaseHolder("w"))
 	if err != nil || n != runs/2 || driven.Load() != runs/2 {
 		t.Fatalf("Recover = %d, %v (drove %d); want the %d unfinished runs", n, err, driven.Load(), runs/2)
 	}
