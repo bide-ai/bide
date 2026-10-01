@@ -13,7 +13,6 @@ import (
 
 	"github.com/bide-ai/bide/internal/strictjson"
 	"github.com/bide-ai/bide/internal/toolhook"
-	"hash/fnv"
 	"sync"
 )
 
@@ -251,11 +250,24 @@ func inflightShard(k inflightKey) *struct {
 	mu sync.Mutex
 	n  map[inflightKey]int
 } {
-	h := fnv.New32a()
-	h.Write([]byte(k.runID))
-	h.Write([]byte{0})
-	h.Write([]byte(k.id))
-	return &inflight[h.Sum32()%uint32(len(inflight))]
+	// FNV-1a over runID, a zero byte and id, without allocating.
+	h := uint32(2166136261)
+	for i := 0; i < len(k.runID); i++ {
+		h = (h ^ uint32(k.runID[i])) * 16777619
+	}
+	h *= 16777619 // the zero byte
+	for i := 0; i < len(k.id); i++ {
+		h = (h ^ uint32(k.id[i])) * 16777619
+	}
+	return &inflight[h%uint32(len(inflight))]
+}
+
+// tracksInflight reports whether the in-flight count is kept for calls of the named tool: every
+// tool that is not ReadOnly. Only those can have an unknown outcome from it (see
+// unprovenFailure), and a ReadOnly call, the common case, pays nothing for it.
+func (a *Agent) tracksInflight(name string) bool {
+	p := a.specs[name]
+	return p != nil && !p.Safety.ReadOnly
 }
 
 // inflightAdd adds d to k's count and returns the new count; a count of zero is deleted.
@@ -417,9 +429,11 @@ func (a *Agent) toolHandler(runID string) func(context.Context, ToolUse) (json.R
 		// Count this invocation in flight, then check the chain has not returned: either the chain
 		// sees the count when it returns (and a result it returns has an unknown outcome), or this
 		// invocation sees the call closed and does not begin the tool (see inflight).
-		key := inflightKey{runID, tu.ID}
-		inflightAdd(key, 1)
-		defer inflightAdd(key, -1)
+		if a.tracksInflight(tu.Name) {
+			key := inflightKey{runID, tu.ID}
+			inflightAdd(key, 1)
+			defer inflightAdd(key, -1)
+		}
 		if call.state != nil && callIsClosed(call.state) {
 			return nil, fmt.Errorf("tool %q (call %s) was not started: the tool middleware chain had already returned: %w", tu.Name, tu.ID, ErrToolNotCalled)
 		}
@@ -473,7 +487,7 @@ func (a *Agent) toolHandler(runID string) func(context.Context, ToolUse) (json.R
 		// An invocation of this call's tool still running in this process (a next left running, a
 		// sibling invocation, or one a cancelled earlier drive left behind) may yet take effect,
 		// whether or not this chain reached the tool (a cache answer on a re-drive does not).
-		running := inflightAdd(inflightKey{runID, tu.ID}, 0) > 0
+		running := a.tracksInflight(tu.Name) && inflightAdd(inflightKey{runID, tu.ID}, 0) > 0
 		if state == callReached && err != nil && !ctxDone(ctx) &&
 			((out.Load() != toolFailed || running) && a.unprovenFailure(ctx, tu.Name) || earlier.Load() && a.specs[tu.Name].Safety.retrySafeWrite() && InSaga(ctx)) {
 			// The tool began, and did not itself fail: it is still running (a next left running),
