@@ -6,6 +6,7 @@ import (
 	"errors"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // logged is the usual decorator: it embeds a Tool and overrides Call. Tool's interface has no Spec
@@ -20,22 +21,56 @@ func (l logged) Call(ctx context.Context, args json.RawMessage) (json.RawMessage
 	return l.Tool.Call(ctx, args)
 }
 
+// unwrapped is the same decorator with Unwrap, which SpecOf follows.
+type unwrapped struct{ logged }
+
+func (u unwrapped) Unwrap() Tool { return u.logged.Tool }
+
+// nested hides the gated tool one level deeper, behind an unexported embedded pointer.
+type nested struct{ *inner }
+type inner struct{ Tool }
+
 // Before P12 the approval gate was part of Safety (Safety{RequiresApproval: true}), which an
 // embedding decorator forwards. Now it lives only in ToolSpec.Approval, read through a Spec method
-// the decorator does not have: the gate is dropped without an error, and the side effect runs
-// without the approval the tool was built to require.
+// the decorator does not have, so the gate would be dropped without an error and the side effect
+// would run without the approval the tool was built to require. New fails closed: a tool that
+// embeds a gated tool (or one with a timeout) and whose own spec lacks the gate is ErrConfig; a
+// decorator with Unwrap keeps the gate.
 func TestRev117e_EmbeddingDecoratorDropsApprovalGate(t *testing.T) {
 	var sent, seen atomic.Int32
 	send := Func("send", "", Safety{}, func(context.Context, struct{}) (string, error) { sent.Add(1); return "sent", nil },
 		WithApproval(SingleApproval()))
+	timed := Func("send", "", Safety{}, func(context.Context, struct{}) (string, error) { sent.Add(1); return "sent", nil },
+		WithTimeout(time.Minute))
 	if SpecOf(send).Approval == nil {
 		t.Fatal("setup: the inner tool is gated")
 	}
-	m := NewScriptedModel(ToolTurn("c1", "send", `{}`), TextTurn("done"))
-	_, err := New(m, NewMemStore(), logged{Tool: send, seen: &seen}).Run(context.Background(), "r", "go")
+	run := func(tool Tool) error {
+		m := NewScriptedModel(ToolTurn("c1", "send", `{}`), TextTurn("done"))
+		_, err := New(m, NewMemStore(), tool).Run(context.Background(), "r", "go")
+		return err
+	}
+	for name, tool := range map[string]Tool{
+		"embedded":          logged{Tool: send, seen: &seen},
+		"embedded pointer":  &logged{Tool: send, seen: &seen},
+		"nested unexported": nested{&inner{send}},
+		"timeout":           logged{Tool: timed, seen: &seen},
+	} {
+		if err := run(tool); !errors.Is(err, ErrConfig) || sent.Load() != 0 {
+			t.Fatalf("%s: Run = %v, sent %d time(s); want ErrConfig before the tool runs", name, err, sent.Load())
+		}
+	}
+	if s := SpecOf(unwrapped{logged{Tool: send, seen: &seen}}); s.Approval == nil {
+		t.Fatalf("SpecOf does not follow Unwrap: %+v", s)
+	}
+	if s := SpecOf(unwrapped{logged{Tool: timed, seen: &seen}}); s.Timeout != time.Minute {
+		t.Fatalf("SpecOf does not take the timeout through Unwrap: %+v", s)
+	}
 	var ap *ApprovalPending
-	if !errors.As(err, &ap) {
-		t.Fatalf("Run = %v, sent %d time(s): the gated tool ran without approval through its decorator (SpecOf(wrapper).Approval = %v)",
-			err, sent.Load(), SpecOf(logged{Tool: send, seen: &seen}).Approval)
+	if err := run(unwrapped{logged{Tool: send, seen: &seen}}); !errors.As(err, &ap) || sent.Load() != 0 {
+		t.Fatalf("Unwrap decorator: Run = %v, sent %d; want ApprovalPending", err, sent.Load())
+	}
+	if err := run(logged{Tool: Func("send", "", Safety{}, func(context.Context, struct{}) (string, error) { return "", nil }), seen: &seen}); err != nil {
+		t.Fatalf("an ungated embedded tool: Run = %v", err)
 	}
 }

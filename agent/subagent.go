@@ -132,8 +132,12 @@ func (t *subAgentTool) Call(ctx context.Context, args json.RawMessage) (json.Raw
 // would cut the sub-run off mid-call) or another Safety (the sub-run's own calls carry theirs),
 // which SubAgent itself refuses. No wrapper on the Unwrap chain may be a Compensator: it would
 // never be asked to compensate, since a rollback that finds a sub-agent through it recurses into
-// the sub-run, and one that does not takes it for the tool it wraps.
+// the sub-run, and one that does not takes it for the tool it wraps. Nor may a tool hide the
+// approval gate or timeout of a tool it embeds (see checkEmbedded).
 func checkWrapper(t Tool, s ToolSpec) error {
+	if err := checkEmbedded(t, s); err != nil {
+		return err
+	}
 	if sub, ok := asSubAgent(t); ok {
 		if _, wraps := t.(interface{ Unwrap() Tool }); wraps {
 			switch {

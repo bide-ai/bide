@@ -67,8 +67,14 @@ type ToolSpec struct {
 type specTool interface{ Spec() ToolSpec }
 
 // SpecOf returns t's ToolSpec: t.Spec() if t has that method, and otherwise the spec its Name,
-// Description, ArgsSchema and Safety methods describe (no approval gate, timeout, title or output
-// schema). The Approval policy is a copy, so changing it does not change the tool.
+// Description, ArgsSchema and Safety methods describe. A tool with no Spec method that wraps
+// another (Unwrap() Tool) takes the fields that method set cannot express (Title, Output,
+// Approval and Timeout) from the wrapped tool's spec, so a wrapper keeps the approval gate and
+// timeout of the tool it wraps; any other tool with no Spec method has none of them. The Approval
+// policy is a copy, so changing it does not change the tool.
+//
+// New refuses a tool that hides a gate: one that embeds a tool with an approval gate or a timeout
+// (as a decorator embeds the tool it decorates) while its own spec has none (see checkWrapper).
 //
 // Deprecated: transitional; renamed by the 1.0 rewrite, where Tool has a Spec method and t.Spec()
 // replaces SpecOf(t).
@@ -78,9 +84,31 @@ func SpecOf(t Tool) ToolSpec {
 		s = st.Spec()
 	} else {
 		s = ToolSpec{Name: t.Name(), Description: t.Description(), Input: t.ArgsSchema(), Safety: t.Safety()}
+		if inner := unwrapSpec(t); inner != nil {
+			s.Title, s.Output, s.Approval, s.Timeout = inner.Title, inner.Output, inner.Approval, inner.Timeout
+		}
 	}
 	s.Approval = s.Approval.Clone()
 	return s
+}
+
+// unwrapSpec returns the spec of the first tool on t's Unwrap chain that has a Spec method, or
+// nil when no tool on the chain (bounded, as asSubAgent's walk) has one.
+func unwrapSpec(t Tool) *ToolSpec {
+	for range 64 {
+		u, ok := t.(interface{ Unwrap() Tool })
+		if !ok {
+			return nil
+		}
+		if t = u.Unwrap(); t == nil {
+			return nil
+		}
+		if st, ok := t.(specTool); ok {
+			s := st.Spec()
+			return &s
+		}
+	}
+	return nil
 }
 
 // Safety declares how a tool call may be retried: when a run resumes after a crash and the call's
