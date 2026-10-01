@@ -119,20 +119,17 @@ var hostPID = sync.OnceValue(func() string {
 
 func defaultHolder() string { return fmt.Sprintf("%s-%d", hostPID(), rand.Uint64()) }
 
-// IsComplete reports whether runID has reached its terminal answer, by checking the
-// journal for the durable completion marker the agent loop records at the end of a run
-// (see runCompleteStep). A crash-recovery supervisor uses it to skip finished runs.
+// IsComplete reports whether runID completed: its first end marker in journal order is the
+// completion marker the agent loop records at the end of a run (see runCompleteStep). A run whose
+// run:cancelled or run:aborted precedes its run:complete is not complete: that marker is its end,
+// as Status and every drive read it. A crash-recovery supervisor uses it to skip finished runs.
 func IsComplete(ctx context.Context, store Durable, runID string) (bool, error) {
 	recs, err := store.History(ctx, runID)
 	if err != nil {
 		return false, fmt.Errorf("load history %s: %w (%w)", runID, err, ErrStorage)
 	}
-	for _, r := range recs {
-		if r.Kind == StepValue && r.Name == runCompleteStep {
-			return true, nil
-		}
-	}
-	return false, nil
+	end, ok := firstEnd(recs)
+	return ok && end.name == runCompleteStep, nil
 }
 
 // protocol:lifecycle begin DOpen

@@ -131,8 +131,10 @@ var ErrRunEnded = errors.New("run already ended")
 
 // ErrNotStarted is a run with no run:start record: one never driven (a Signal sent to a mistyped
 // run ID, say), or one whose first drive has not written it yet. ResumeRun and Cancel refuse such
-// a run, and Recover skips it and reports it once per process.
-var ErrNotStarted = fmt.Errorf("run has no run:start record: %w", ErrConfig)
+// a run, and Recover skips it and reports it once per process. It wraps no category: the run may
+// be a race with its first drive, which a later call does not lose, rather than a configuration
+// error.
+var ErrNotStarted = errors.New("run has no run:start record")
 
 // ErrNotResumable is a Resumer's answer for a run it does not drive (another kind, a typed run
 // whose schema is not its type's). ResumeAny tries the next Resumer on it, and Recover reports a

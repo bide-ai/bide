@@ -259,7 +259,7 @@ Model 10 checks rules 1 to 3 and the filter (`RunOptionsDurable`, `FilterHonoure
 ```go
 type Resumer func(ctx context.Context, runID string, start RunStart) error
 var ErrNotResumable = errors.New("run not resumable by this resumer") // no category, like ErrLeaseLost
-var ErrNotStarted  = fmt.Errorf("run has no run:start record: %w", ErrConfig)
+var ErrNotStarted  = errors.New("run has no run:start record")       // no category: a race with the first drive
 
 func ResumeAgent(a *Agent, opts ...RunOption) Resumer              // kind agent (untyped); session turns resume through their session
 func ResumeTyped[T any](a *Agent, opts ...RunOption) Resumer       // typed runs whose schema digest is T's

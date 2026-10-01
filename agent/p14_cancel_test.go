@@ -209,8 +209,8 @@ func TestP14Rule05_CancelNotStartedAndSagaRequest(t *testing.T) {
 	pcMark(t, j, "r", "signal:x", "hi")
 	hs.takeInserts()
 	err := Cancel(ctx, j, "r", "stop")
-	if !errors.Is(err, ErrNotStarted) || !errors.Is(err, ErrConfig) {
-		t.Fatalf("Cancel of a run with no run:start = %v, want ErrNotStarted", err)
+	if !errors.Is(err, ErrNotStarted) || errors.Is(err, ErrConfig) {
+		t.Fatalf("Cancel of a run with no run:start = %v, want ErrNotStarted (no category)", err)
 	}
 	if got := hs.takeInserts(); len(got) != 0 {
 		t.Fatalf("Cancel of a run with no run:start wrote %v", got)

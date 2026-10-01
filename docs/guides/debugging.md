@@ -307,8 +307,9 @@ are not failures. On shutdown it waits for the drives it started to return.
 
 **The completion marker lets it skip finished runs.** When a run returns its final answer,
 the loop records one terminal `StepValue` named `run:complete` (it renders as
-`step: run:complete` in the Mermaid graph above). `IsComplete` checks for it, and `Recover`'s
-filter excludes any run that has it. The marker is appended only at the terminal and is at-most-once by
+`step: run:complete` in the Mermaid graph above). `IsComplete` reports whether it is the run's
+first end marker (a run cancelled before it completed is not complete), and `Recover`'s filter
+excludes any run that has an end marker. The marker is appended only at the terminal and is at-most-once by
 name, so a replayed run never adds a second one and no earlier record's index shifts. A run
 that crashed after journaling its final answer but before the marker is not skipped; re-driving
 it writes the marker from the recorded answer without calling the model.
