@@ -27,3 +27,31 @@ func TestNextSeqBodyQualifiesEveryName(t *testing.T) {
 		t.Errorf("next_seq's lock key does not pass a bigint 0 to hashtextextended:\n%s", body)
 	}
 }
+
+// The next_seq body writes every operator OPERATOR(pg_catalog.<op>), unary minus included, besides
+// running with SET search_path = pg_catalog, pg_temp: the body's text holds no bare operator.
+func TestNextSeqBodyHasNoBareOperator(t *testing.T) {
+	tb, err := newTables("app_", "app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bare := bareOperators(t, tb.nextSeqBody("app")); len(bare) > 0 {
+		t.Errorf("next_seq's body holds bare operators %q:\n%s", bare, tb.nextSeqBody("app"))
+	}
+}
+
+// bareOperators returns the operators in sql that are not written OPERATOR(pg_catalog.<op>).
+func bareOperators(t *testing.T, sql string) []string {
+	t.Helper()
+	toks, err := sqlTokens(strings.NewReplacer(";", " ", ":=", " ").Replace(sql)) // plpgsql's statement ends
+	if err != nil {
+		t.Fatalf("tokenize the body: %v", err)
+	}
+	var bare []string
+	for i, tok := range toks {
+		if tok.kind == 'o' && !(isTok(toks, i-1, 'p', ".") && isTok(toks, i-2, 'i', "pg_catalog") && isTok(toks, i-4, 'i', "operator")) {
+			bare = append(bare, tok.text)
+		}
+	}
+	return bare
+}

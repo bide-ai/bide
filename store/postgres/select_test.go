@@ -166,3 +166,20 @@ func TestOpenQueriesPassTheCheck(t *testing.T) {
 		}
 	}
 }
+
+// WithSchema refuses the system schemas, information_schema and every name starting with pg_
+// (pg_catalog, pg_toast, pg_temp and a session's pg_temp_N among them), with ErrConfig.
+func TestWithSchemaRefusesSystemSchemas(t *testing.T) {
+	for _, name := range []string{"information_schema", "pg_catalog", "pg_toast", "pg_temp", "pg_temp_3", "pg_toast_temp_1", "pg_anything", "pg_"} {
+		var c config
+		if err := WithSchema(name).apply(&c); !errors.Is(err, agent.ErrConfig) {
+			t.Errorf("WithSchema(%q) = %v, want ErrConfig", name, err)
+		}
+	}
+	for _, name := range []string{"app", "Pg_upper", "information_schema2", "my pg_x"} {
+		var c config
+		if err := WithSchema(name).apply(&c); err != nil || c.schema != name {
+			t.Errorf("WithSchema(%q) = %v, schema %q", name, err, c.schema)
+		}
+	}
+}
