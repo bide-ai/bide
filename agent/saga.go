@@ -127,7 +127,7 @@ func (a *Agent) runSagaWithTelemetry(ctx context.Context, runID string, d *drive
 			if err != nil {
 				return Message{}, journalTotals(recs), 0, err
 			}
-			if wrote {
+			if len(wrote) > 0 {
 				return a.runSagaWithTelemetry(ctx, runID, d) // DStart, DAmend: back to DOpen
 			}
 		}

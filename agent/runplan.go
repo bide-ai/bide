@@ -47,11 +47,13 @@ type limitAmendment struct {
 // openPlan settles the plan of a drive of runID for d over the run's journal recs (the drive's
 // Load), which holds no end marker. It journals run:start for a first drive (rule 8), holds a
 // later drive to it (rules 9 and 11), journals a different limit as an amendment (rule 10), and
-// binds the identity, Waker and clock the drive runs with to the returned context. It is out of
-// line so the loop's frame does not grow.
+// binds the identity, Waker and clock the drive runs with to the returned context. wrote names
+// the records it wrote (run:start, run:limits:<n>): the caller loads the run again before it goes
+// on (model 10's DStart and DAmend return to DOpen; see Agent.run). It is out of line so the
+// loop's frame does not grow.
 //
 //go:noinline
-func (a *Agent) openPlan(ctx context.Context, runID string, d *driveSpec, recs []Record) (_ context.Context, _ *runPlan, wrote bool, _ error) {
+func (a *Agent) openPlan(ctx context.Context, runID string, d *driveSpec, recs []Record) (_ context.Context, _ *runPlan, wrote []string, _ error) {
 	// protocol:lifecycle begin DStart DAmend
 	var (
 		start  RunStart
@@ -65,13 +67,13 @@ func (a *Agent) openPlan(ctx context.Context, runID string, d *driveSpec, recs [
 		switch {
 		case r.Name == runStartStep:
 			if err := json.Unmarshal(r.Result, &start); err != nil {
-				return ctx, nil, false, fmt.Errorf("decode %s (run %s): %w (%w)", runStartStep, runID, err, ErrStorage)
+				return ctx, nil, nil, fmt.Errorf("decode %s (run %s): %w (%w)", runStartStep, runID, err, ErrStorage)
 			}
 			found = true
 		case strings.HasPrefix(r.Name, "run:limits:"):
 			var l limitAmendment
 			if err := json.Unmarshal(r.Result, &l); err != nil {
-				return ctx, nil, false, fmt.Errorf("decode %s (run %s): %w (%w)", r.Name, runID, err, ErrStorage)
+				return ctx, nil, nil, fmt.Errorf("decode %s (run %s): %w (%w)", r.Name, runID, err, ErrStorage)
 			}
 			amends = append(amends, l)
 		}
@@ -79,32 +81,32 @@ func (a *Agent) openPlan(ctx context.Context, runID string, d *driveSpec, recs [
 	idn, explicitID := a.driveIdentity(ctx, d)
 	if !found {
 		if d.resume {
-			return ctx, nil, false, fmt.Errorf("run %s: %w", runID, ErrNotStarted)
+			return ctx, nil, nil, fmt.Errorf("run %s: %w", runID, ErrNotStarted)
 		}
 		want, err := a.newStart(d, idn)
 		if err != nil {
-			return ctx, nil, false, err
+			return ctx, nil, nil, err
 		}
 		b, err := marshalJournal(want)
 		if err != nil {
-			return ctx, nil, false, fmt.Errorf("encode %s (run %s): %w (%w)", runStartStep, runID, err, ErrConfig)
+			return ctx, nil, nil, fmt.Errorf("encode %s (run %s): %w (%w)", runStartStep, runID, err, ErrConfig)
 		}
 		// First writer wins: the drive runs under the stored entry, a concurrent first drive's if
 		// that one landed first (rule 8). The drive's own entry needs no check against itself.
 		got, inserted, err := a.putStart(ctx, runID, b)
 		if err != nil {
-			return ctx, nil, false, fmt.Errorf("record %s (run %s): %w (%w)", runStartStep, runID, err, ErrStorage)
+			return ctx, nil, nil, fmt.Errorf("record %s (run %s): %w (%w)", runStartStep, runID, err, ErrStorage)
 		}
 		if inserted {
-			start, wrote = want, true
+			start, wrote = want, startWritten
 		} else if err := json.Unmarshal(got, &start); err != nil {
-			return ctx, nil, false, fmt.Errorf("decode %s (run %s): %w (%w)", runStartStep, runID, err, ErrStorage)
+			return ctx, nil, nil, fmt.Errorf("decode %s (run %s): %w (%w)", runStartStep, runID, err, ErrStorage)
 		}
 		found = !inserted
 	}
 	if found {
 		if err := a.holdDrive(runID, d, start, idn, explicitID); err != nil {
-			return ctx, nil, false, err
+			return ctx, nil, nil, err
 		}
 	}
 	// A later drive's different limit is journaled before it drives (rule 10).
@@ -122,23 +124,20 @@ func (a *Agent) openPlan(ctx context.Context, runID string, d *driveSpec, recs [
 		}
 		b, err := marshalJournal(amend)
 		if err != nil {
-			return ctx, nil, false, fmt.Errorf("encode %s (run %s): %w (%w)", runLimitsStep(n), runID, err, ErrConfig)
+			return ctx, nil, nil, fmt.Errorf("encode %s (run %s): %w (%w)", runLimitsStep(n), runID, err, ErrConfig)
 		}
 		rec, err := putRecord(ctx, a.store, runID, runLimitsStep(n), Record{Kind: StepValue, Result: b})
 		if err != nil {
-			return ctx, nil, false, fmt.Errorf("record %s (run %s): %w (%w)", runLimitsStep(n), runID, err, ErrStorage)
+			return ctx, nil, nil, fmt.Errorf("record %s (run %s): %w (%w)", runLimitsStep(n), runID, err, ErrStorage)
 		}
 		var got limitAmendment
 		if err := json.Unmarshal(rec.Result, &got); err != nil {
-			return ctx, nil, false, fmt.Errorf("decode %s (run %s): %w (%w)", runLimitsStep(n), runID, err, ErrStorage)
+			return ctx, nil, nil, fmt.Errorf("decode %s (run %s): %w (%w)", runLimitsStep(n), runID, err, ErrStorage)
 		}
 		lim = applyAmendment(lim, got) // ours, or a concurrent drive's that took the index first
-		wrote = true
+		wrote = append(slices.Clip(wrote), runLimitsStep(n)) // never into startWritten's array
 	}
 	// protocol:lifecycle end
-	if wrote {
-		return ctx, nil, true, nil // the caller loads the run again (DStart, DAmend: back to DOpen)
-	}
 	p := &runPlan{start: start, saga: start.Saga, maxTurns: a.maxTurns, budget: a.tokenBudget, maxConc: a.maxConc,
 		sampling: a.sampling, toolChoice: a.toolChoice, sysText: start.Settings.SystemPrompt}
 	if lim.MaxTurns != nil {
@@ -186,7 +185,53 @@ func (a *Agent) openPlan(ctx context.Context, runID string, d *driveSpec, recs [
 	if d.cfg.clock != nil {
 		ctx = ContextWithClock(ctx, d.cfg.clock)
 	}
-	return ctx, p, false, nil
+	return ctx, p, wrote, nil
+}
+
+// startWritten is openPlan's wrote for a first drive that wrote run:start and no amendment (shared:
+// never appended to in place).
+var startWritten = []string{runStartStep}
+
+// onlyWritten loads runID again after its open wrote the records wrote, and reports whether the
+// run holds nothing that before (the open's Load) did not but those records and the journal
+// header. Over a Journal it is one Load whose entries are not decoded (their names suffice); over
+// another Durable, one History.
+func (a *Agent) onlyWritten(ctx context.Context, runID string, before []Record, wrote []string) (bool, error) {
+	if j := journalOf(a.store); j != nil {
+		for e, err := range j.store.Load(ctx, runID, -1) {
+			if err != nil {
+				return false, storageErr("load "+runID, err)
+			}
+			if !knownToOpen(e.Name, before, wrote) {
+				return false, nil
+			}
+		}
+		return true, nil
+	}
+	recs, err := a.store.History(ctx, runID)
+	if err != nil {
+		return false, storageErr("load history "+runID, err)
+	}
+	for _, r := range recs {
+		if !knownToOpen(r.Name, before, wrote) {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+// knownToOpen reports whether the record name is one the open knew of: in before, one it wrote, or
+// the journal header.
+func knownToOpen(name string, before []Record, wrote []string) bool {
+	if name == headerStep || slices.Contains(wrote, name) {
+		return true
+	}
+	for _, r := range before {
+		if r.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 // allows reports whether the plan's filter admits a call of tool name: any tool when there is no

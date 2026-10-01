@@ -79,17 +79,20 @@ func (a *Agent) run(ctx context.Context, runID string, d *driveSpec) (Message, u
 		p    *runPlan
 		recs []Record
 	)
-	for open := ctx; ; {
-		// protocol:claims begin Open
-		// protocol:spend begin Open
-		// protocol:toolcall begin DOpen
-		var err error
-		if recs, err = openRun(open, a.store, runID); err != nil {
-			return Message{}, usageTotals{}, 0, err
+	for open, loaded := ctx, false; ; {
+		if !loaded {
+			// protocol:claims begin Open
+			// protocol:spend begin Open
+			// protocol:toolcall begin DOpen
+			var err error
+			if recs, err = openRun(open, a.store, runID); err != nil {
+				return Message{}, usageTotals{}, 0, err
+			}
+			// protocol:toolcall end
+			// protocol:spend end
+			// protocol:claims end
 		}
-		// protocol:toolcall end
-		// protocol:spend end
-		// protocol:claims end
+		loaded = false
 		if end, ended := firstEnd(recs); ended {
 			if err := checkFinishedStart(runID, recs, d.runKind(), nil); err != nil {
 				return Message{}, usageTotals{}, 0, err // a finished flow's run holds no answer of an agent's
@@ -110,13 +113,23 @@ func (a *Agent) run(ctx context.Context, runID string, d *driveSpec) (Message, u
 			}
 			break
 		}
-		var wrote bool
-		if ctx, p, wrote, err = a.openPlan(open, runID, d, recs); err != nil {
+		pctx, plan, wrote, err := a.openPlan(open, runID, d, recs)
+		if err != nil {
 			return Message{}, usageTotals{}, 0, err
 		}
-		if wrote {
-			continue // DStart, DAmend: back to DOpen
+		if len(wrote) > 0 {
+			// DStart, DAmend: back to DOpen. The run is loaded again; if it holds nothing new but
+			// what the open wrote (and the header), the open's verdict is the same and the plan
+			// stands, and otherwise the open runs again over what it loaded.
+			same, err := a.onlyWritten(open, runID, recs, wrote)
+			if err != nil {
+				return Message{}, usageTotals{}, 0, err
+			}
+			if !same {
+				continue // the open runs again over a fresh Load
+			}
 		}
+		ctx, p = pctx, plan
 		if d.input == nil {
 			d.input = &p.start.Input
 		}

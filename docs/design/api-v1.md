@@ -1164,7 +1164,7 @@ Within a wave, no two PRs edit the same file. Sizes:
 
    | Operation | Budget |
    |---|---|
-   | first drive of a new run | 1 `Load`, `Insert @journal`, `Insert run:start`, and 1 `Load` again once `run:start` is written (the header and `run:start`: model 10's `DStart` returns to `DOpen`, so a `Cancel` that landed meanwhile is seen) |
+   | first drive of a new run | 1 `Load`, `Insert @journal`, `Insert run:start`, and 1 `Load` again once `run:start` is written (the header and `run:start`, their names only: model 10's `DStart` returns to `DOpen`, so a `Cancel` that landed meanwhile is seen; anything but the drive's own writes runs the open again) |
    | each live model turn | 1 `Get` (the turn's own record, `@llm/<n>`) and 1 `Insert`; plus, for every turn after a drive's first, 1 `Get` (`run:cancelled`, or `run:cancel-requested` on a saga: P14 rule 2) |
    | side-effect tool call | 2 `Insert` (claim, result), and 1 `Get` (`run:cancelled` once the claim is won: P14 rule 3); +1 `Insert` only under #67's condition |
    | retry-safe tool call | 1 `Insert` |
