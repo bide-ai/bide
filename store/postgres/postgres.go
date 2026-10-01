@@ -55,18 +55,36 @@
 // falls well below read committed's, and a caller without a deadline may wait long. A deployment
 // that writes one run from many goroutines at once is better served at read committed.
 //
-// # Trust
+// # Schema and trust
 //
-// The store trusts every role that can create objects in the schemas on its search path, as it
+// Open records the store's schema: the first schema on the search path holding a relation named
+// like the steps table, or the first schema on the path (current_schema()) when none does, where
+// the migration creates the tables. It refuses a first relation of that name that is not an
+// ordinary or partitioned table. From then on every statement names that schema, the tables,
+// the next_seq function and the migration's DDL alike, so nothing the store sends resolves through
+// the search path after Open. A role with CREATE on the database, which can create a schema named
+// like any role, and so the "$user" schema the default search path puts first, therefore cannot
+// take over the store's tables or next_seq after Open, as it could in every earlier version. The
+// search path matters only at Open, to find the schema: set it to the store's schema, so the first
+// Open does not create the tables in a schema another role made first.
+//
+// The store trusts the owner of its schema and every role that can create objects in it, as it
 // trusts the owner of its tables: such a role could replace a table, and so it could replace the
 // next_seq function. Within that boundary, the store refuses what it can check. The next_seq
 // function must be owned by the owner of the steps table, run with search_path = pg_catalog,
 // pg_temp and have exactly this version's body, whose names are all qualified; Open refuses it
-// otherwise. The statements the store sends call built-ins qualified with pg_catalog, with their
-// parameters cast to the type they are used as, so an overload a role creates in a schema later on
-// the search path (hashtextextended(text, integer), say) cannot match a call better than the
-// built-in. A deployment should not put a schema that untrusted roles can create in on the store's
-// search path before pg_catalog.
+// otherwise. The statements call built-ins qualified with pg_catalog, cast only to pg_catalog
+// types, and use only built-in operators, which resolve in pg_catalog first unless the search
+// path lists pg_catalog after another schema: a deployment should not do that.
+//
+// Any role that can connect can take a run's advisory lock key itself
+// (pg_advisory_lock(hashtextextended(run_id, 0))) and hold it, and every insert into that run then
+// waits until it lets go. That was so before next_seq too, since earlier versions took the same
+// key; it stalls a run's writes, and corrupts nothing.
+//
+// The next_seq function's body names its schema. After ALTER SCHEMA ... RENAME, every insert fails
+// and Open refuses the function: drop it (DROP FUNCTION <schema>.bide_next_seq_v1(text), with the
+// prefix) and Open again, and the migration creates it under the new name.
 //
 // # Isolation
 //

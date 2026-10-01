@@ -171,8 +171,10 @@ deadline if it must be bounded. Inserts into one run queue on the run's advisory
 function `bide_next_seq_v1` takes inside the insert's statement; it qualifies every name and runs
 with `SET search_path = pg_catalog, pg_temp`. `Open` and `New` create the function and refuse an
 existing table that lacks a uniqueness the statements depend on, or a function with another
-definition or owner, since they never alter either. The store trusts roles that can create
-objects in the schemas on its search path, as it trusts the tables' owner.
+definition or owner, since they never alter either. `Open` records the store's schema and every
+statement names it, so the search path matters only at `Open`: set it to the store's schema. The
+store trusts the owner of its schema and every role that can create objects in it, as it trusts
+the tables' owner. After renaming the schema, drop `bide_next_seq_v1(text)` and `Open` again.
 
 **Transition.** The engine's functions still take the `Durable` interface (`Do` and `History`),
 which `*agent.Journal` implements; `MemStore` and the SQL stores also implement it, through a

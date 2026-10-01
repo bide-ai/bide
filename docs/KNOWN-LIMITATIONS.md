@@ -58,6 +58,18 @@ without it: every step is recorded at most once by name, so its write either is 
 record or loses to the one already there. And fencing would make every journal write depend on the
 lease, so a store without leases (a custom one) could not offer the guarantee at all.
 
+**Any role that can connect to the database can stall a run's writes.** The Postgres store
+serializes inserts into one run on a transaction-level advisory lock whose key is
+`hashtextextended(run_id, 0)`, and `govern/postgreslog` does the same for an entity. Any role
+that can connect can take that key itself and hold it, and the run's inserts wait until it lets
+go. It corrupts nothing, and earlier versions took the same key. The key names neither the
+schema nor the table prefix, so stores in different schemas or with different prefixes, and a
+governed entity named like a run, also wait on each other: throughput, not correctness.
+
+**Renaming the Postgres store's schema needs one step.** The `bide_next_seq_v1` function names
+its schema, so after `ALTER SCHEMA ... RENAME` inserts fail and `Open` refuses it: drop the
+function and `Open` again, and the migration recreates it.
+
 **Crash safety is tested, not formally proven.** The crash tests fail the store at every write point,
 across hundreds of randomized multi-crash schedules, and check that no side effect fires twice and
 every rollback completes. That is strong evidence, but it is not a machine-checked proof over every

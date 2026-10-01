@@ -17,15 +17,24 @@
 // committed would act on the latest row, changed nothing and is run again. The schema migration is
 // the one transaction of several statements; it sets read committed itself (see txOptions).
 //
-// The log's table and function live in the first schema on the search path that holds a
-// governed_events table, or the first schema on the path when none does yet (see logSchema). The
-// log trusts every role that can create objects in the schemas on its search path, as it trusts
-// the table's owner: such a role could replace the table. Within that boundary it refuses what it
-// can check: the next_seq function must be owned by the table's owner, run with search_path =
-// pg_catalog, pg_temp and have exactly this version's body, whose names are all qualified, and
-// the log's statements call pg_catalog-qualified built-ins with their parameters cast, so an
-// overload created later on the search path cannot take a call over. A deployment should not put a
-// schema that untrusted roles can create in on the log's search path before pg_catalog.
+// Open records the log's schema: the first schema on the search path holding a relation named
+// governed_events, or the first schema on the path when none does yet (see logSchema), and refuses
+// a first relation of that name that is not an ordinary or partitioned table. Every statement, the
+// next_seq call and the migration's DDL name that schema, so nothing the log sends resolves
+// through the search path after Open: a role with CREATE on the database, which can create the
+// "$user" schema the default search path puts first, cannot take over the table or next_seq
+// after Open, as it could in every earlier version, and a legacy table in a later schema is
+// migrated in place. The search path matters only at Open: set it to the log's schema.
+//
+// The log trusts the owner of its schema and every role that can create objects in it, as it
+// trusts the table's owner: such a role could replace the table. Within that boundary it refuses
+// what it can check: the next_seq function must be owned by the table's owner, run with
+// search_path = pg_catalog, pg_temp and have exactly this version's body, whose names are all
+// qualified, and the log's statements call pg_catalog-qualified built-ins, cast only to
+// pg_catalog types and use only built-in operators. Any role that can connect can hold an
+// entity's advisory key (pg_advisory_lock(hashtextextended(entity, 0))) and stall its appends, as
+// in earlier versions; it corrupts nothing. After ALTER SCHEMA ... RENAME, drop the function
+// (DROP FUNCTION <schema>.governed_events_next_seq_v1(text)) and Open again.
 //
 // A retry does not always follow another transaction's commit: at serializable, Postgres may fail
 // a statement for a conflict with a transaction that has not committed yet, and many processes
