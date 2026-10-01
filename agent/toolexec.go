@@ -13,6 +13,8 @@ import (
 
 	"github.com/bide-ai/bide/internal/strictjson"
 	"github.com/bide-ai/bide/internal/toolhook"
+	"hash/fnv"
+	"sync"
 )
 
 // quorumTally evaluates the m-of-n gate for tu. It re-reads the run's journal (the
@@ -208,10 +210,12 @@ func (a *Agent) toolCallFor(runID string, tu ToolUse) ToolCall {
 //	refused -> reached        a later invocation of next, while the chain is still running, calls it
 //	open    -> closed         the chain returned without the base handler reaching the tool
 //	refused -> refusedClosed  the chain returned after the base handler refused the call
+//	reached -> reachedClosed  the chain returned after the base handler reached the tool
 //
-// reached, closed and refusedClosed are terminal: no transition leaves them, so an invocation of
-// next that comes after the chain returned (a middleware that left it running) finds the call
-// closed and is refused. A call is known not to have reached its tool only when its final state is
+// closed, refusedClosed and reachedClosed are terminal: no transition leaves them, so an invocation
+// of next that comes after the chain returned (a middleware that left it running) finds the call
+// closed and is refused, whether or not an earlier invocation reached the tool. closeCall reports
+// reachedClosed as reached. A call is known not to have reached its tool only when its final state is
 // refusedClosed, or closed with a chain error that wraps ErrToolNotCalled.
 const (
 	callOpen int32 = iota
@@ -219,11 +223,61 @@ const (
 	callRefused
 	callClosed
 	callRefusedClosed
+	callReachedClosed
 )
 
+// callIsClosed reports whether the chain has returned for the call whose state is st.
+func callIsClosed(st *atomic.Int32) bool {
+	switch st.Load() {
+	case callClosed, callRefusedClosed, callReachedClosed:
+		return true
+	}
+	return false
+}
+
+// inflight counts, per run and tool call, the invocations of the call's tool that are running in
+// this process (any agent, any drive): the base handler counts one in before it begins the tool and
+// out when the tool returns, and an entry is deleted at zero. A chain that returns a result while
+// the count is above zero has an unknown outcome (see toolHandler). The map is striped, so calls of
+// different runs rarely share a lock.
+var inflight [64]struct {
+	mu sync.Mutex
+	n  map[inflightKey]int
+}
+
+type inflightKey struct{ runID, id string }
+
+func inflightShard(k inflightKey) *struct {
+	mu sync.Mutex
+	n  map[inflightKey]int
+} {
+	h := fnv.New32a()
+	h.Write([]byte(k.runID))
+	h.Write([]byte{0})
+	h.Write([]byte(k.id))
+	return &inflight[h.Sum32()%uint32(len(inflight))]
+}
+
+// inflightAdd adds d to k's count and returns the new count; a count of zero is deleted.
+func inflightAdd(k inflightKey, d int) int {
+	s := inflightShard(k)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := s.n[k] + d
+	if n == 0 {
+		delete(s.n, k)
+	} else {
+		if s.n == nil {
+			s.n = map[inflightKey]int{}
+		}
+		s.n[k] = n
+	}
+	return n
+}
+
 // enterTool moves st to reached, from open or refused (a retry of a refused call while the chain
-// runs), and reports false, leaving st as it is, once the chain has closed the call. A call already
-// reached stays so.
+// runs), and reports false, leaving st as it is, once the chain has closed the call (whatever an
+// earlier invocation did). A call already reached, and not closed, stays so.
 func enterTool(st *atomic.Int32) bool {
 	for {
 		switch s := st.Load(); s {
@@ -233,7 +287,7 @@ func enterTool(st *atomic.Int32) bool {
 			if st.CompareAndSwap(s, callReached) {
 				return true
 			}
-		default: // callClosed, callRefusedClosed: terminal
+		default: // callClosed, callRefusedClosed, callReachedClosed: terminal
 			return false
 		}
 	}
@@ -276,12 +330,32 @@ const (
 )
 
 // closeCall moves st to its closed state when the chain returns (open to closed, refused to
-// refusedClosed; reached stays) and returns the final state.
+// refusedClosed, reached to reachedClosed) and returns the final state, reachedClosed reported as
+// reached.
 func closeCall(st *atomic.Int32) int32 {
-	if !st.CompareAndSwap(callOpen, callClosed) {
-		st.CompareAndSwap(callRefused, callRefusedClosed)
+	for {
+		s := st.Load()
+		var c int32
+		switch s {
+		case callOpen:
+			c = callClosed
+		case callRefused:
+			c = callRefusedClosed
+		case callReached:
+			c = callReachedClosed
+		default:
+			if s == callReachedClosed {
+				return callReached
+			}
+			return s
+		}
+		if st.CompareAndSwap(s, c) {
+			if c == callReachedClosed {
+				return callReached
+			}
+			return c
+		}
 	}
-	return st.Load()
 }
 
 // toolHandler builds the wrapped tool-execution chain once per run: a base handler that
@@ -340,6 +414,15 @@ func (a *Agent) toolHandler(runID string) func(context.Context, ToolUse) (json.R
 		if err := journalAcceptedArgs(ctx, t, call, a.specs[tu.Name].Safety); err != nil {
 			return nil, err
 		}
+		// Count this invocation in flight, then check the chain has not returned: either the chain
+		// sees the count when it returns (and a result it returns has an unknown outcome), or this
+		// invocation sees the call closed and does not begin the tool (see inflight).
+		key := inflightKey{runID, tu.ID}
+		inflightAdd(key, 1)
+		defer inflightAdd(key, -1)
+		if call.state != nil && callIsClosed(call.state) {
+			return nil, fmt.Errorf("tool %q (call %s) was not started: the tool middleware chain had already returned: %w", tu.Name, tu.ID, ErrToolNotCalled)
+		}
 		// Begin the call, immediately before the tool. The registered spec decides, never
 		// call.Spec: a tool that is not retry-safe is begun once per call, and an invocation that
 		// finds it begun is "already ran", which is then true; its outcome is the earlier
@@ -387,8 +470,11 @@ func (a *Agent) toolHandler(runID string) func(context.Context, ToolUse) (json.R
 			// Reached, but no invocation began the tool's Call, and now none can: not called.
 			state = callRefusedClosed
 		}
+		// An invocation of this call's tool still running in this process (a next left running, a
+		// sibling invocation, or one a cancelled earlier drive left behind) may yet take effect.
+		running := state == callReached && inflightAdd(inflightKey{runID, tu.ID}, 0) > 0
 		if state == callReached && err != nil && !ctxDone(ctx) &&
-			(out.Load() != toolFailed && a.unprovenFailure(ctx, tu.Name) || earlier.Load() && a.specs[tu.Name].Safety.retrySafeWrite() && InSaga(ctx)) {
+			((out.Load() != toolFailed || running) && a.unprovenFailure(ctx, tu.Name) || earlier.Load() && a.specs[tu.Name].Safety.retrySafeWrite() && InSaga(ctx)) {
 			// The tool began, and did not itself fail: it is still running (a next left running),
 			// it succeeded (a middleware turned that into an error), its outcome is unknown, or a
 			// later invocation's refusal is what the chain returned. "Failed" needs positive proof
@@ -403,12 +489,13 @@ func (a *Agent) toolHandler(runID string) func(context.Context, ToolUse) (json.R
 			// retried it): the earlier one may have taken effect.
 			err = fmt.Errorf("tool %q (call %s): the chain returned an error, but the tool itself did not fail: %w (%w)", tu.Name, tu.ID, err, ErrToolOutcomeUnknown)
 		}
-		if state == callReached && err == nil && out.Load() == toolRunning {
+		if running && err == nil && a.unprovenFailure(ctx, tu.Name) {
 			// The chain answered while the tool it began is still running (a middleware left next
 			// running and answered itself, from a cache say). A result needs positive proof too:
 			// the tool's effect may land after anything recorded now (a compensation included),
-			// so the call's outcome is unknown. A side effect halts; a retry-safe saga step is
-			// reported as unknown and never compensated.
+			// so the call's outcome is unknown. A side effect halts; a retry-safe saga write is
+			// reported as unknown and never compensated. (A retry-safe tool outside a saga, or a
+			// ReadOnly one, may run again by its contract, so its result stands.)
 			res, err = nil, fmt.Errorf("tool %q (call %s): the chain returned a result while the tool was still running: %w", tu.Name, tu.ID, ErrToolOutcomeUnknown)
 		}
 		return res, state, err

@@ -305,9 +305,14 @@ func (a *Agent) rollbackRun(ctx context.Context, runID, root string) (compensate
 				toolH := a.toolHandler(runID)
 				spec := a.specs[tu.Name]
 				rec, ce := a.store.Do(ctx, runID, ToolResultStep(tu.ID), func(ctx context.Context) (Record, error) {
-					out, _, _, e := callTool(withRunContext(withSaga(ctx), a.store, runID), spec.Timeout, func(ctx context.Context) (json.RawMessage, int32, error) { return toolH(ctx, tu) })
+					out, state, _, e := callTool(withRunContext(withSaga(ctx), a.store, runID), spec.Timeout, func(ctx context.Context) (json.RawMessage, int32, error) { return toolH(ctx, tu) })
 					if e != nil {
 						return Record{}, e
+					}
+					if state != callReached {
+						// A middleware answered (a cache hit) without the re-run reaching the tool:
+						// that is not the step's result, and nothing was learned about it.
+						return Record{}, fmt.Errorf("tool %q (call %s): the rollback's re-run was answered without reaching the tool: %w", tu.Name, tu.ID, ErrToolOutcomeUnknown)
 					}
 					return Record{Kind: StepToolResult, ToolUseID: tu.ID, Result: out, Safety: recordedSafety(*spec), Approval: spec.Approval.Clone()}, nil
 				})

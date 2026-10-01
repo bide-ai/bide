@@ -85,13 +85,16 @@ type ToolHandler func(ctx context.Context, call ToolCall) (json.RawMessage, erro
 // unknown outcome and reported in SagaAborted.UnknownOutcome, since the rollback would otherwise
 // skip it as a step that made no change.
 //
-// A result needs positive proof as well: a chain that returns a result while the tool it began is
-// still running (a middleware left next running and answered from a cache) has an unknown
-// outcome, since the tool's effect may land after anything the run records next, a saga's
-// compensation included. A side effect halts; a retry-safe saga step is reported in
-// SagaAborted.UnknownOutcome and never compensated. A saga rollback that re-runs a retry-safe step
-// to learn the result to compensate applies the same rules: a re-run whose outcome is unknown is
-// reported, not compensated, and the rollback goes on.
+// A result needs positive proof as well: a chain that returns a result while any invocation of the
+// call's tool is still running in this process (a next the middleware left running, a sibling
+// invocation, or one an earlier, cancelled drive left behind) has an unknown outcome, since that
+// invocation's effect may land after anything the run records next, a saga's compensation
+// included. A side effect halts; a retry-safe saga write is reported in SagaAborted.UnknownOutcome
+// and never compensated. Once the chain has returned, no invocation of next begins the tool, even
+// for a retry-safe tool an earlier invocation already reached. A saga rollback that re-runs a
+// retry-safe step to learn the result to compensate applies the same rules, and takes as the
+// result only an answer that reached the tool: a re-run whose outcome is unknown, or that a
+// middleware answered itself, is reported, not compensated, and the rollback goes on.
 //
 // The chain runs INSIDE the durable, memoized step, so a short-circuit result or a
 // transformed result is what gets journaled: resume replays it and never re-runs the

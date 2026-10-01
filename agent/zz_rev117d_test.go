@@ -70,6 +70,9 @@ func TestRev117d_CallStateRace(t *testing.T) {
 		<-done
 		<-done
 		final := st.Load()
+		if final == callReachedClosed { // a reached call the chain closed
+			final = callReached
+		}
 		if entered.Load() != (final == callReached) || (verdict != final && verdict != callReached && final == callReached) {
 			t.Fatalf("iter %d: entered %v, verdict %d, final %d", i, entered.Load(), verdict, final)
 		}

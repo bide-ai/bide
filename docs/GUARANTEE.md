@@ -53,8 +53,9 @@ store, it is safe: resume replays it from the journal rather than re-running it.
    its journaled arguments mark that an attempt may have begun, so a later known failure of a
    step an earlier drive began is recorded with an unknown outcome too, as is one a middleware
    ran again after an invocation that did not itself fail. A result needs positive proof as well:
-   a chain that answers while the tool it began is still running (a middleware that left `next`
-   running) has an unknown outcome, so a side effect halts and a retry-safe saga step is reported
+   a chain that answers while any invocation of the call's tool is still running in the process (a
+   middleware that left `next` running, a sibling invocation, one a cancelled drive left behind)
+   has an unknown outcome, and no invocation begins the tool once the chain has returned, so a side effect halts and a retry-safe saga step is reported
    in `SagaAborted.UnknownOutcome`, never compensated before its effect lands. A rollback that
    re-runs such a step to learn its result reports a re-run whose outcome is unknown the same way.
 
