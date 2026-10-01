@@ -104,7 +104,7 @@ func TestOptionScopes_TypeChecked(t *testing.T) {
 
 	// The closed list: the exported interfaces that combine two or more option scopes.
 	scopes := []string{"Option", "RunOption", "ParallelOption", "StepOption", "ResolveOption", "ToolOption",
-		"LeaseOption", "RecoverOption", "RecoverLoopOption"}
+		"LeaseOption", "RecoverOption", "RecoverLoopOption", "RetrievalOption"}
 	var combos []string
 	for _, name := range pkg.Scope().Names() {
 		obj, ok := pkg.Scope().Lookup(name).(*types.TypeName)
@@ -142,7 +142,8 @@ func TestOptionScopes_TypeChecked(t *testing.T) {
 		"WithToolErrorRedactor": "Option", "WithRetrieval": "Option", "WithSystemPromptFunc": "Option", "WithOptions": "Option",
 		"WithRecoverInterval": "RecoverLoopOption", "WithRecoverConcurrency": "RecoverLoopOption", "WithRecoverLapsedConcurrency": "RecoverLoopOption", "WithRecoverErrors": "RecoverLoopOption",
 		"WithMinHaltAge": "ResolveOption", "WithoutLiveDriverCheck": "ResolveOption", "WithEvidence": "ResolveOption",
-		"WithApproval": "ToolOption", "WithTimeout": "ToolOption", "WithTitle": "ToolOption", "WithOutputSchema": "ToolOption",
+		"WithRetrievalRetry": "RetrievalOption",
+		"WithApproval":       "ToolOption", "WithTimeout": "ToolOption", "WithTitle": "ToolOption", "WithOutputSchema": "ToolOption",
 	}
 	optionTypes := append(slices.Clone(scopes), "AgentRunOption", "ConcurrencyOption", "ClockOption", "SafetyOption", "LeaseControl")
 	for _, name := range pkg.Scope().Names() {

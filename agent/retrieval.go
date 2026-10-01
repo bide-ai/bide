@@ -2,9 +2,12 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
+	"math/rand/v2"
 	"strings"
+	"time"
 )
 
 // Doc is a document returned by a Retriever: its text plus optional id, similarity score,
@@ -29,6 +32,17 @@ type Doc struct {
 // on one Agent, and sub-agents sharing a Retriever call it at once.
 type Retriever interface {
 	Retrieve(ctx context.Context, query string, k int) ([]Doc, error)
+}
+
+// RetrieverFunc adapts a function to a Retriever. It is also how a policy wraps a Retriever: a
+// WithRetrieval step runs before the model middleware chain, so a check that must keep a query
+// from the store (a tenant's data policy, a spend cap) goes in a RetrieverFunc around it, which
+// returns (nil, nil) to retrieve nothing or an error to fail the drive.
+type RetrieverFunc func(ctx context.Context, query string, k int) ([]Doc, error)
+
+// Retrieve calls f.
+func (f RetrieverFunc) Retrieve(ctx context.Context, query string, k int) ([]Doc, error) {
+	return f(ctx, query, k)
 }
 
 // RetrievalTool exposes a Retriever as a tool the model can call to search on demand
@@ -57,10 +71,68 @@ func RetrievalTool(name, description string, r Retriever, k int, opts ...ToolOpt
 		}, opts...)
 }
 
-// retrievalLayer is one WithRetrieval: its Retriever and how many documents it returns.
+// retrievalLayer is one WithRetrieval: its Retriever, how many documents it returns, and how a
+// failed Retrieve is retried (see WithRetrievalRetry).
 type retrievalLayer struct {
-	r Retriever
-	k int
+	r       Retriever
+	k       int
+	retries int           // how many more times a failed Retrieve is called
+	base    time.Duration // the first backoff, doubled after each retry
+	max     time.Duration // the cap on a backoff
+}
+
+// RetrievalOption configures one WithRetrieval: WithRetrievalRetry.
+type RetrievalOption interface {
+	applyRetrieval(*retrievalLayer) error
+}
+
+type retrievalOption func(*retrievalLayer) error
+
+func (f retrievalOption) applyRetrieval(l *retrievalLayer) error { return f(l) }
+
+// WithRetrievalRetry retries a failed Retrieve up to n more times within the drive's retrieval
+// step, sleeping between attempts with exponential backoff and full jitter: a random duration up
+// to base, then up to twice that, and so on, capped at max. Use it for a store with transient
+// failures (a timeout, a 503).
+//
+// WithRetrieval retrieves as an engine step before the model middleware chain runs, so a model
+// middleware such as middleware.Retry does not retry a retrieval: this option is how a retrieval
+// is retried. Only the final outcome is recorded: the documents of the attempt that succeeded, or,
+// once every attempt failed, nothing, and the drive fails with the last error. A cancelled context
+// ends the retries, and an error wrapping ErrConfig is not retried (the same request fails the
+// same way). n, base or max below 0, or max below base, is ErrConfig.
+func WithRetrievalRetry(n int, base, max time.Duration) RetrievalOption {
+	return retrievalOption(func(l *retrievalLayer) error {
+		if n < 0 || base < 0 || max < base {
+			return fmt.Errorf("WithRetrievalRetry: want n >= 0 and 0 <= base <= max, got n %d, base %v, max %v: %w", n, base, max, ErrConfig)
+		}
+		l.retries, l.base, l.max = n, base, max
+		return nil
+	})
+}
+
+// retrieve calls the layer's Retriever, retrying a failure as WithRetrievalRetry configured.
+func (l retrievalLayer) retrieve(ctx context.Context, query string) ([]Doc, error) {
+	back := l.base
+	for attempt := 0; ; attempt++ {
+		docs, err := l.r.Retrieve(ctx, query, l.k)
+		if err == nil || attempt == l.retries || errors.Is(err, ErrConfig) {
+			return docs, err
+		}
+		if ctx.Err() != nil {
+			return nil, errors.Join(err, ctx.Err())
+		}
+		if back > 0 {
+			t := time.NewTimer(rand.N(back) + 1)
+			select {
+			case <-t.C:
+			case <-ctx.Done():
+				t.Stop()
+				return nil, errors.Join(err, ctx.Err())
+			}
+			back = min(back*2, l.max)
+		}
+	}
 }
 
 // retrieval is the journaled record of one WithRetrieval step: the query and the documents
@@ -90,7 +162,7 @@ func (a *Agent) withRetrieved(ctx context.Context, runID string, msgs []Message,
 		at, q, ok := lastUserQuery(msgs)
 		if ok {
 			for i, l := range a.retrievals {
-				docs, err := retrieveOnce(ctx, a.store, runID, l.r, q, l.k, i)
+				docs, err := retrieveOnce(ctx, a.store, runID, l, q, i)
 				if err != nil {
 					return nil, fmt.Errorf("retrieval: %w", err)
 				}
@@ -116,13 +188,13 @@ func (a *Agent) withRetrieved(ctx context.Context, runID string, msgs []Message,
 
 // retrieveOnce returns the top-k documents for query: the run's step "@retrieval/<layer>", which
 // the first call retrieves and records, and every later call reads back.
-func retrieveOnce(ctx context.Context, d Durable, runID string, r Retriever, query string, k, layer int) ([]Doc, error) {
+func retrieveOnce(ctx context.Context, d Durable, runID string, l retrievalLayer, query string, layer int) ([]Doc, error) {
 	rec, err := step(ctx, d, runID, retrievalStep(layer), func(ctx context.Context) (retrieval, error) {
-		docs, err := r.Retrieve(ctx, query, k)
+		docs, err := l.retrieve(ctx, query)
 		if err != nil {
 			return retrieval{}, err
 		}
-		return retrieval{Query: query, Docs: topK(docs, k)}, nil
+		return retrieval{Query: query, Docs: topK(docs, l.k)}, nil
 	}, WithSafety(Safety{ReadOnly: true}))
 	return rec.Docs, err
 }

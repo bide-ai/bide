@@ -108,7 +108,7 @@ func TestWithRetrieval_ErrorAborts(t *testing.T) {
 func ExampleRetrievalTool() {
 	// Your store, behind the Retriever port (here a trivial in-memory one).
 	docs := map[string]string{"france": "Paris is the capital of France."}
-	r := retrieverFunc(func(_ context.Context, query string, _ int) ([]Doc, error) {
+	r := RetrieverFunc(func(_ context.Context, query string, _ int) ([]Doc, error) {
 		if d, ok := docs[strings.ToLower(query)]; ok {
 			return []Doc{{Text: d}}, nil
 		}
@@ -121,11 +121,30 @@ func ExampleRetrievalTool() {
 	// Output: [{"text":"Paris is the capital of France."}]
 }
 
-// retrieverFunc adapts a function to the Retriever interface (example convenience).
-type retrieverFunc func(context.Context, string, int) ([]Doc, error)
+// ExampleRetrieverFunc gates a WithRetrieval with a policy. The retrieval runs before the model
+// middleware chain, so a policy that must keep a query from the store wraps the Retriever: here a
+// tenant whose data may not be searched retrieves nothing, and the run goes on without context.
+func ExampleRetrieverFunc() {
+	var store Retriever = RetrieverFunc(func(context.Context, string, int) ([]Doc, error) {
+		return []Doc{{Text: "the private record"}}, nil
+	})
+	mayRetrieve := func(ctx context.Context) bool { return false } // your policy: the tenant, a spend cap
+	gated := RetrieverFunc(func(ctx context.Context, query string, k int) ([]Doc, error) {
+		if !mayRetrieve(ctx) {
+			return nil, nil // or an error, to fail the drive
+		}
+		return store.Retrieve(ctx, query, k)
+	})
 
-func (f retrieverFunc) Retrieve(ctx context.Context, q string, k int) ([]Doc, error) {
-	return f(ctx, q, k)
+	a, err := Build(NewScriptedModel(TextTurn("answered without the record")), NewMemStore().Journal(),
+		WithRetrieval(gated, 3))
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	msg, err := a.Run(context.Background(), "gated-1", "what does the record say?")
+	fmt.Println(msg.Text(), err)
+	// Output: answered without the record <nil>
 }
 
 // k is how many documents to return, so a k below 1 asks for nothing a Retriever can serve

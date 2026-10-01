@@ -401,12 +401,19 @@ func WithSystemPromptFunc(fn func(ctx context.Context, run RunInfo) (string, err
 // control, so they are not given system authority, and each is written as one line of JSON, so
 // no document can forge another entry.
 //
-// A retrieval error fails the model call, and nothing is recorded, so the next attempt retrieves
-// again: have the Retriever return (nil, nil) to degrade to no context instead. A Retriever that
-// returns more than k documents is cut to its first k. Several WithRetrieval options retrieve in
-// the order given, and their blocks appear in that order. A nil Retriever or a k below 1 is
-// ErrConfig.
-func WithRetrieval(r Retriever, k int) Option {
+// The retrieval runs before the model middleware chain, so model middleware neither retries it
+// nor prevents it:
+//   - A retrieval error fails the model call, and nothing is recorded, so the next drive retrieves
+//     again. A model middleware such as middleware.Retry does not retry it; WithRetrievalRetry
+//     does. Have the Retriever return (nil, nil) to degrade to no context instead.
+//   - A model middleware that refuses the call (a policy gate, a spend cap, a rate limiter) runs
+//     after the retrieval: the query has been sent to the Retriever and the documents journaled.
+//     A policy that must keep a query from the Retriever wraps the Retriever (see RetrieverFunc).
+//
+// A Retriever that returns more than k documents is cut to its first k. Several WithRetrieval
+// options retrieve in the order given, and their blocks appear in that order. A nil Retriever, a
+// k below 1, or an invalid option is ErrConfig.
+func WithRetrieval(r Retriever, k int, opts ...RetrievalOption) Option {
 	return agentOption(func(c *agentConfig) error {
 		if isNil(r) {
 			return fmt.Errorf("WithRetrieval: nil Retriever: %w", ErrConfig)
@@ -414,7 +421,11 @@ func WithRetrieval(r Retriever, k int) Option {
 		if k < 1 {
 			return fmt.Errorf("WithRetrieval: k must be at least 1, got %d: %w", k, ErrConfig)
 		}
-		c.a.retrievals = append(c.a.retrievals, retrievalLayer{r: r, k: k})
+		l := retrievalLayer{r: r, k: k}
+		if err := applyOptions("WithRetrieval", &l, opts, RetrievalOption.applyRetrieval); err != nil {
+			return err
+		}
+		c.a.retrievals = append(c.a.retrievals, l)
 		return nil
 	})
 }

@@ -402,7 +402,8 @@ embedder; you implement `Retrieve` against infrastructure you already run and wi
 `agent.RetrievalTool(name, description, r, k)` (agentic: the model searches on demand) or the
 `agent.WithRetrieval(r, k)` option (classic: the top-k for the run's user message, retrieved once
 per run as a journaled step and sent on every model call of the run as a user message just before
-that message). Both journal what was retrieved, so a
+that message; it runs before the model middleware chain, so wrap the `Retriever` to gate it, and
+retry it with `WithRetrievalRetry`). Both journal what was retrieved, so a
 resumed run sees the same documents, and both call `Retrieve` concurrently, so it must be safe for
 concurrent use. See [RAG and memory](../guides/rag-memory.md).
 

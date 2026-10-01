@@ -29,8 +29,11 @@ type Retriever interface {
     Retrieve(ctx context.Context, query string, k int) ([]Doc, error)
 }
 
+type RetrieverFunc func(ctx context.Context, query string, k int) ([]Doc, error) // a function as a Retriever
+
 func RetrievalTool(name, description string, r Retriever, k int, opts ...ToolOption) Tool // agentic: the model searches on demand
-func WithRetrieval(r Retriever, k int) Option                                            // classic: top-k auto-injected each run
+func WithRetrieval(r Retriever, k int, opts ...RetrievalOption) Option                   // classic: top-k auto-injected each run
+func WithRetrievalRetry(n int, base, max time.Duration) RetrievalOption                  // retry a failed Retrieve n more times
 ```
 
 Implement `Retriever` against your store (~20 lines), then wire it in one of two ways:
@@ -46,6 +49,32 @@ Implement `Retriever` against your store (~20 lines), then wire it in one of two
   every model call of the run, so the call that follows a tool result still has the context.
   Every model middleware sees the request with the documents in it. A retrieval error fails the
   call; return `(nil, nil)` from your `Retriever` if you prefer to degrade to no context.
+
+### Retrieval runs before model middleware
+
+`WithRetrieval` is a step of the engine, and it runs before the model middleware chain. Two
+consequences follow:
+
+- **Retries.** A model middleware such as `middleware.Retry` does not retry a failed retrieval.
+  `agent.WithRetrieval(myStore, 5, agent.WithRetrievalRetry(3, 200*time.Millisecond, 5*time.Second))`
+  retries a failed `Retrieve` up to 3 more times inside the step, with exponential backoff and
+  full jitter. Only the attempt that succeeded is recorded; if every attempt fails, nothing is,
+  and the next drive retrieves again. An error wrapping `agent.ErrConfig` is not retried.
+- **Policy.** A model middleware that refuses the call (a policy gate, a spend cap, a rate
+  limiter) does not prevent the retrieval: by the time it runs, the user's query has been sent to
+  the `Retriever` and the documents journaled. A policy that must keep a query from the store
+  wraps the `Retriever`:
+
+<!-- docsnip: setup model agent.Model; journal *agent.Journal; myStore agent.Retriever; mayRetrieve func(context.Context) bool -->
+```go
+gated := agent.RetrieverFunc(func(ctx context.Context, query string, k int) ([]agent.Doc, error) {
+	if !mayRetrieve(ctx) {
+		return nil, nil // retrieve nothing; or return an error to fail the drive
+	}
+	return myStore.Retrieve(ctx, query, k)
+})
+a, err := agent.Build(model, journal, agent.WithRetrieval(gated, 5))
+```
 
 The documents `WithRetrieval` adds are a **user** message placed just before the user turn they
 answer, after the system prompt and any earlier conversation. They are text you do not control,

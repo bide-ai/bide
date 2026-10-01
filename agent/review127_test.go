@@ -3,9 +3,11 @@ package agent_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/middleware"
@@ -22,49 +24,157 @@ func (r *flakyRetriever) Retrieve(context.Context, string, int) ([]agent.Doc, er
 	return []agent.Doc{{ID: "1", Text: "doc"}}, nil
 }
 
-// R1: a Retry model middleware no longer retries a transient retrieval error. On v0.9.0 the
-// retrieval was a middleware, and one placed inside Retry was retried with the model call.
-func TestRev127_RetryMiddlewareCoversRetrieval(t *testing.T) {
-	r := &flakyRetriever{fail: 1}
-	store := agent.NewMemStore()
-	a, err := agent.Build(agent.NewScriptedModel(agent.TextTurn("done")), store.Journal(),
-		agent.WithMiddleware(middleware.Retry(3, middleware.WithBackoff(0, 0))), agent.WithRetrieval(r, 1))
+// retrievalRecords returns the names of runID's retrieval records.
+func retrievalRecords(t *testing.T, store *agent.MemStore, runID string) []string {
+	t.Helper()
+	recs, err := store.History(context.Background(), runID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := a.Run(context.Background(), "r1", "q"); err != nil {
-		t.Fatalf("run failed on one transient retrieval error under Retry(3): %v (retriever calls %d)", err, r.calls)
+	var names []string
+	for _, rec := range recs {
+		if strings.HasPrefix(rec.Name, "@retrieval/") {
+			names = append(names, rec.Name)
+		}
+	}
+	return names
+}
+
+// R1 (review of #127): WithRetrieval retrieves before the model middleware chain, so a Retry model
+// middleware does not retry a failed retrieval; WithRetrievalRetry does, within the step, and only
+// the attempt that succeeded is recorded.
+func TestWithRetrievalRetry_RetriesTheStep(t *testing.T) {
+	ctx := context.Background()
+	retry := agent.WithMiddleware(middleware.Retry(3, middleware.WithBackoff(0, 0)))
+
+	// Retry middleware alone: the transient error fails the drive after one call.
+	r := &flakyRetriever{fail: 1}
+	store := agent.NewMemStore()
+	a, err := agent.Build(agent.NewScriptedModel(agent.TextTurn("done")), store.Journal(), retry, agent.WithRetrieval(r, 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Run(ctx, "plain", "q"); err == nil || r.calls != 1 {
+		t.Fatalf("under Retry middleware only: err %v after %d retriever calls; want the retrieval error after 1", err, r.calls)
+	}
+
+	// WithRetrievalRetry(2): two failures, then the documents, recorded once.
+	r = &flakyRetriever{fail: 2}
+	store = agent.NewMemStore()
+	a, err = agent.Build(agent.NewScriptedModel(agent.TextTurn("done")), store.Journal(),
+		agent.WithRetrieval(r, 1, agent.WithRetrievalRetry(2, time.Millisecond, 2*time.Millisecond)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Run(ctx, "retried", "q"); err != nil || r.calls != 3 {
+		t.Fatalf("WithRetrievalRetry(2) over two failures: err %v after %d calls; want success after 3", err, r.calls)
+	}
+	if got := retrievalRecords(t, store, "retried"); !slices.Equal(got, []string{"@retrieval/0"}) {
+		t.Fatalf("retrieval records %v, want one", got)
+	}
+
+	// Every attempt fails: nothing is recorded, and the next drive retrieves again.
+	r = &flakyRetriever{fail: 3}
+	store = agent.NewMemStore()
+	a, err = agent.Build(agent.NewScriptedModel(agent.TextTurn("done")), store.Journal(),
+		agent.WithRetrieval(r, 1, agent.WithRetrievalRetry(1, 0, 0)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Run(ctx, "spent", "q"); err == nil || r.calls != 2 || len(retrievalRecords(t, store, "spent")) != 0 {
+		t.Fatalf("retries spent: err %v, %d calls, records %v; want an error after 2 calls and no record",
+			err, r.calls, retrievalRecords(t, store, "spent"))
+	}
+	if _, err := a.Run(ctx, "spent", "q"); err != nil || r.calls != 4 {
+		t.Fatalf("next drive: err %v, %d calls in all; want success on the fourth", err, r.calls)
 	}
 }
 
-// R2: a model middleware that refuses the call (a policy gate, a spend cap, a rate limiter) no
-// longer stops the retrieval: the user's query is sent to the retriever, and the documents are
-// journaled, for a call that is never made.
-func TestRev127_RefusingMiddlewareStopsRetrieval(t *testing.T) {
-	r := &flakyRetriever{}
+// WithRetrievalRetry does not retry an ErrConfig, stops when the context is cancelled during a
+// backoff, and refuses invalid values at Build.
+func TestWithRetrievalRetry_StopsAndValidates(t *testing.T) {
+	calls := 0
+	refuse := agent.RetrieverFunc(func(context.Context, string, int) ([]agent.Doc, error) {
+		calls++
+		return nil, fmt.Errorf("bad index name: %w", agent.ErrConfig)
+	})
+	a, err := agent.Build(agent.NewScriptedModel(agent.TextTurn("done")), agent.NewMemStore().Journal(),
+		agent.WithRetrieval(refuse, 1, agent.WithRetrievalRetry(5, 0, 0)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Run(context.Background(), "cfg", "q"); !errors.Is(err, agent.ErrConfig) || calls != 1 {
+		t.Fatalf("ErrConfig from the Retriever: err %v after %d calls; want it unretried", err, calls)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cancelling := agent.RetrieverFunc(func(context.Context, string, int) ([]agent.Doc, error) {
+		cancel() // the caller gives up while the step backs off
+		return nil, errors.New("transient")
+	})
+	a, err = agent.Build(agent.NewScriptedModel(agent.TextTurn("done")), agent.NewMemStore().Journal(),
+		agent.WithRetrieval(cancelling, 1, agent.WithRetrievalRetry(5, time.Hour, time.Hour)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Run(ctx, "cancel", "q"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled during the backoff: err %v, want context.Canceled", err)
+	}
+
+	for _, o := range []agent.RetrievalOption{
+		agent.WithRetrievalRetry(-1, 0, 0), agent.WithRetrievalRetry(1, -1, 0), agent.WithRetrievalRetry(1, 2, 1), nil,
+	} {
+		if _, err := agent.Build(agent.NewScriptedModel(), agent.NewMemStore().Journal(),
+			agent.WithRetrieval(&flakyRetriever{}, 1, o)); !errors.Is(err, agent.ErrConfig) {
+			t.Errorf("WithRetrieval with option %v: Build err %v, want ErrConfig", o, err)
+		}
+	}
+}
+
+// R2 (review of #127): retrieval runs before the model middleware chain, so a model middleware
+// that refuses the call does not prevent it (as documented on WithRetrieval): the query reaches
+// the Retriever and the documents are journaled. A policy that must keep the query from the store
+// wraps the Retriever, which this test shows does keep it.
+func TestWithRetrieval_RunsBeforeModelMiddleware(t *testing.T) {
 	deny := func(agent.ModelHandler) agent.ModelHandler {
 		return func(context.Context, agent.ModelCall) (agent.ModelResponse, error) {
 			return agent.ModelResponse{}, errors.New("policy: model call denied")
 		}
 	}
+	r := &flakyRetriever{}
 	store := agent.NewMemStore()
 	a, err := agent.Build(agent.NewScriptedModel(agent.TextTurn("done")), store.Journal(),
 		agent.WithMiddleware(deny), agent.WithRetrieval(r, 1))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := a.Run(context.Background(), "r2", "secret question"); err == nil {
+	if _, err := a.Run(context.Background(), "denied", "secret question"); err == nil {
 		t.Fatal("want the denial")
 	}
-	recs, _ := store.History(context.Background(), "r2")
-	var journaled []string
-	for _, rec := range recs {
-		if strings.HasPrefix(rec.Name, "@retrieval/") {
-			journaled = append(journaled, rec.Name)
-		}
+	if got := retrievalRecords(t, store, "denied"); r.calls != 1 || !slices.Equal(got, []string{"@retrieval/0"}) {
+		t.Fatalf("model call denied by middleware: retriever called %d times, records %v; want 1 and the record", r.calls, got)
 	}
-	if r.calls != 0 || len(journaled) != 0 {
-		t.Fatalf("denied call: retriever called %d times, retrieval records %v; want none", r.calls, journaled)
+
+	// The policy wraps the Retriever instead: the query never reaches the store.
+	r = &flakyRetriever{}
+	allowed := func(context.Context) bool { return false }
+	gated := agent.RetrieverFunc(func(ctx context.Context, q string, k int) ([]agent.Doc, error) {
+		if !allowed(ctx) {
+			return nil, errors.New("policy: retrieval denied")
+		}
+		return r.Retrieve(ctx, q, k)
+	})
+	store = agent.NewMemStore()
+	a, err = agent.Build(agent.NewScriptedModel(agent.TextTurn("done")), store.Journal(), agent.WithRetrieval(gated, 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Run(context.Background(), "gated", "secret question"); err == nil {
+		t.Fatal("want the denial")
+	}
+	if got := retrievalRecords(t, store, "gated"); r.calls != 0 || len(got) != 0 {
+		t.Fatalf("gated retriever: store called %d times, records %v; want none", r.calls, got)
 	}
 }
 
