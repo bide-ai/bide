@@ -505,6 +505,12 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 							unrecErr = err
 						}
 						pauseMu.Unlock()
+						// The refusal may come joined with a halt or a lost outcome from deeper in
+						// the tree (a sub-run's turn that held both): that step's outcome is
+						// unknown all the same, so in a saga no further step starts.
+						if _, h := errors.AsType[*OutcomeUnknown](err); saga && (h || errors.Is(err, ErrToolOutcomeUnknown)) {
+							halted.Store(true)
+						}
 						err = nil
 						return
 					}
