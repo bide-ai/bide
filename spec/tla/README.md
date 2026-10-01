@@ -904,8 +904,8 @@ findings (below).
 
 | Config | Group | What | States | Time |
 |---|---|---|---|---|
-| `contract-one` | ci | one side effect, middleware within the contract (a result check included), every fault | 33,884 | <1 s |
-| `adv-one` | nightly | one side effect, any middleware but a direct call (retries, `next` left running, errors without the sentinel), every fault | 923,507 | 5 s |
+| `contract-one` | ci | one side effect, middleware within the contract (a result check included), every fault | 34,618 | <1 s |
+| `adv-one` | nightly | one side effect, any middleware but a direct call (retries, `next` left running, errors without the sentinel), every fault | 1,004,140 | 5 s |
 | `saga-adv` | nightly | a saga Compensator with rewritten arguments (the accepted-arguments write), any middleware but a direct call, four attempts | 1,305,093 | 10 s |
 | `hedge-one` | ci | a hedging wrapper: `next` left running, given up on a done context | 8,533 | <1 s |
 | `direct-one` | ci | a middleware that calls the tool itself | 1,411 | <1 s |
@@ -1407,10 +1407,10 @@ finding and limit configurations included, with vacuity runs and JVM starts) tak
 
 | Config | Group | What | States | Time |
 |---|---|---|---|---|
-| `deleg-faults` | ci | A saga delegates under `P`, then fails. It covers mint, reuse on resume and `BindRollback`, with a crash, an error reply, a read error, a wrong binding, and `P` expiring. | 53,760 | 1 s |
+| `deleg-faults` | ci | A saga delegates under `P`, then fails. It covers mint, reuse on resume and `BindRollback`, with a crash, an error reply, a read error, a wrong binding, and `P` expiring. | 54,878 | 1 s |
 | `deleg-ungranted` | ci | The same with no grant bound: the ungranted marker, and a resume under a grant refused. | 10,022 | <1 s |
 | `deleg-expiry` | ci | A child grant that expires: `CallGuard`, the expired journaled grant (F2), and `BindRollback` with no expiry check, with a crash. | 1,228 | <1 s |
-| `nested` | ci | A delegation inside a delegation, with a crash, a read error, and `P` expiring. | 17,854 | <1 s |
+| `nested` | ci | A delegation inside a delegation, with a crash, a read error, and `P` expiring. | 17,848 | <1 s |
 | `halt` | ci | The child's turn holds an Unrecorded refusal joined with a lost outcome, with a crash. | 2,787 | <1 s |
 | `subruns` | ci | Programmatic sub-runs that are declared, undeclared, and declared on another store, with a crash and an error reply. | 2,389 | <1 s |
 | `sub-long` | ci | A tool-use ID longer than `encodeID`'s limit (B1). | 207 | <1 s |
@@ -1418,7 +1418,7 @@ finding and limit configurations included, with vacuity runs and JVM starts) tak
 | `sub-late` | ci | A sub-run started after its call returned is refused. | 128 | <1 s |
 | `plain-tree` | ci | A plain sub-run's sub-run, three levels (B3), with a crash and an error reply. | 1,580 | <1 s |
 | `rerun` | ci | The rollback re-runs a call that never ran, which starts a sub-run, and its outcome may be lost (B4). | 580 | <1 s |
-| `live-unrec` | ci | `UnrecordedContinues` and `RollbackEnds` with a read error, an error reply, a wrong binding, and `P` expiring. | 5,501 | 1 s |
+| `live-unrec` | ci | `UnrecordedContinues` and `RollbackEnds` with a read error, an error reply, a wrong binding, and `P` expiring. | 5,309 | 1 s |
 | `fix-d1-chain` | ci | D1's tree with the fixes, with both liveness properties. | 647 | <1 s |
 | `fix-d2-guard` | ci | D2's tree with the fixes, with a crash. | 1,118 | <1 s |
 | `fix-d3-recurse` | ci | D3's tree with the fixes, with a crash. | 341 | <1 s |
