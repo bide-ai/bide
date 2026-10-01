@@ -1423,14 +1423,14 @@ finding and limit configurations included, with vacuity runs and JVM starts) tak
 | `fix-d2-guard` | ci | D2's tree with the fixes, with a crash. | 1,118 | <1 s |
 | `fix-d3-recurse` | ci | D3's tree with the fixes, with a crash. | 341 | <1 s |
 | `fixes-all` | ci | D1 to D3 in one tree: a delegation under `P`, then, after `P` expired, D3's plain sub-run and D2's delegation under `P2`, with every property. Each fix left out fails it (`RollbackEnds`, `AuthorityNarrows`, `RollbackSound`). | 1,338 | 1 s |
-| `deep-deleg` | nightly | The saga delegation under every fault, two of each, with a child grant expiring at tick 2. | 1,211,214 | 33 s |
-| `deep-nested` | nightly | Nested delegations under two crashes and every other fault. | 1,287,276 | 43 s |
+| `deep-deleg` | nightly | The saga delegation under every fault, two of each, with a child grant expiring at tick 2. | 1,310,328 | 1 min |
+| `deep-nested` | nightly | Nested delegations under two crashes and every other fault. | 1,477,591 | 1 min |
 | `deep-halt` | nightly | Halt propagation with three crashes, two error replies and two read errors. | 141,806 | 2 s |
 | `deep-two` | nightly | Two delegations with D1's fix, `P` expiring between them, and every fault. | 8,487,708 | 2 min 29 s |
 | `deep-subruns` | nightly | Programmatic sub-runs under three crashes and three error replies. | 40,197 | 1 s |
 | `deep-plain-tree` | nightly | The three-level plain tree with a sub-agent at its bottom, D3's fix, crashes and error replies. | 48,249 | 1 s |
 | `deep-rerun` | nightly | The rollback's re-run in a delegated sub-run that starts a sub-run, with D2's fix, the grant expiring, lost outcomes and crashes. | 143,739 | 1 s |
-| `deep-live` | nightly | Both liveness properties over nested delegations, with every fault. | 443,210 | 1 min 1 s |
+| `deep-live` | nightly | Both liveness properties over nested delegations, with every fault. | 489,114 | 2 min |
 
 Regressions. Each must fail with its property, and passes with its `Bug` value set to `"none"`
 (the D1 to D3 ones: with its fix put back in `Fix`):
