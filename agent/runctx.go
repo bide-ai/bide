@@ -23,12 +23,15 @@ type runCtx struct {
 	root      string // the top-level run; a sub-agent's runs inherit it
 	toolUseID string // the call being executed; "" outside one
 	saga      bool   // the run is a saga
+	sagaTree  bool   // the run is a saga or belongs to a saga's tree (a run started from one's call)
 }
 
 // withRunContext returns ctx carrying run runID of store, and the call toolUseID of it being
 // executed ("" for none), in a saga run or not.
 func withRunContext(ctx context.Context, store Durable, runID, toolUseID string, saga bool) context.Context {
-	return context.WithValue(ctx, runContextKey, runCtx{store: store, runID: runID, root: rootRunID(ctx, runID), toolUseID: toolUseID, saga: saga})
+	parent, _ := ctx.Value(runContextKey).(runCtx) // the call that started this run, if any
+	return context.WithValue(ctx, runContextKey, runCtx{store: store, runID: runID, root: rootRunID(ctx, runID), toolUseID: toolUseID,
+		saga: saga, sagaTree: saga || parent.sagaTree})
 }
 
 // rootRunID is the top-level run for a run with this ID reached through ctx: the root recorded
@@ -102,8 +105,10 @@ func (r RunInfo) callScope() string {
 // a run given this ID from the tool call's context is accepted although it contains '>'. Run
 // refuses the ID (ErrConfig) for an empty name, once the tool call has returned (start the
 // sub-run within the call, not from a goroutine that outlives it), and, in a saga, for a name
-// longer than 96 bytes once escaped. Start it with RunSaga to keep it a saga: whether a call is in
-// one is its own run's flag.
+// longer than 96 bytes once escaped or for an agent that journals to another store than the run
+// (a saga's tree shares one store). Start it with RunSaga to keep it a saga: whether a call is in
+// one is its own run's flag; a plain run started from a saga's call still links its own
+// programmatic sub-runs, since the saga's rollback walks it.
 func (r RunInfo) SubRunFor(name string) string {
 	return r.callScope() + subRunSep + stepRunMark + encodeID(name)
 }
@@ -139,13 +144,15 @@ func stepRunName(ctx context.Context, runID string) (name string, ok bool) {
 	return name, true
 }
 
-// linkSubRun admits the programmatic sub-run runID, if it is one: it is refused (ErrConfig) once
-// the tool call that names it has returned, since a sub-run started from a goroutine that
-// outlived its call would belong to no call (no rollback, and no Recover, would reach it). In a
-// saga, the parent run's journal records that the call started it (subRunLinkStep), before the
-// sub-run records anything, so the saga's rollback walks it (see WithSubRuns). The link is written
+// linkSubRun admits the programmatic sub-run runID of a run on store sub, if it is one: it is
+// refused (ErrConfig) once the tool call that names it has returned, since a sub-run started from
+// a goroutine that outlived its call would belong to no call (no rollback, and no Recover, would
+// reach it). In a saga's tree (the call's run is a saga, or was started from one's call), the
+// parent run's journal records that the call started it (subRunLinkStep), before the sub-run
+// records anything, so the saga's rollback walks it (see WithSubRuns); such a sub-run must journal
+// to the parent's store (ErrConfig otherwise), where the rollback reads it. The link is written
 // while the call is held open, so a call that has returned has recorded every link it will have.
-func linkSubRun(ctx context.Context, runID string) error {
+func linkSubRun(ctx context.Context, runID string, sub Durable) error {
 	name, ok := stepRunName(ctx, runID)
 	if !ok {
 		return nil
@@ -161,8 +168,12 @@ func linkSubRun(ctx context.Context, runID string) error {
 		return fmt.Errorf("run: programmatic sub-run %q started after its tool call (%s of run %s) returned; start it within the call: %w",
 			runID, rc.toolUseID, rc.runID, ErrConfig)
 	}
-	if !rc.saga {
+	if !rc.sagaTree {
 		return nil
+	}
+	if !sameStore(sub, rc.store) {
+		return fmt.Errorf("run: programmatic sub-run %q of a saga journals to another store than its parent run %s; a saga's sub-runs share its store, where its rollback reads them: %w",
+			runID, rc.runID, ErrConfig)
 	}
 	if name == "" {
 		return fmt.Errorf("run: programmatic sub-run %q of a saga: its name is too long for the saga's link to it (at most %d bytes once escaped): %w",
@@ -174,6 +185,14 @@ func linkSubRun(ctx context.Context, runID string) error {
 		return fmt.Errorf("run: record the programmatic sub-run %q in run %s: %w (%w)", runID, rc.runID, err, ErrStorage)
 	}
 	return nil
+}
+
+// sameStore reports whether a and b are provably one store: both have an identity
+// (durableIdentity) and it is the same.
+func sameStore(a, b Durable) bool {
+	ia, oka := durableIdentity(a)
+	ib, okb := durableIdentity(b)
+	return oka && okb && ia == ib
 }
 
 // isEncodedID reports whether s is a string encodeID returns for some ID: the escaped form

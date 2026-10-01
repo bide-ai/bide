@@ -68,17 +68,70 @@ func TestAdv127b_LongToolUseIDLinkIgnored(t *testing.T) {
 	}
 }
 
-// B2: the documented fallback (no WithSubRuns: the child's writes are listed in Uncompensated)
-// reads the child's journal from the PARENT's store. A child agent on its own store is silently
-// skipped.
-func TestAdv127b_UndeclaredChildOnOwnStoreNotListed(t *testing.T) {
-	var undone int
-	ps, cs := agent.NewMemStore(), agent.NewMemStore()
-	_, err := adv127b(t, ps, cs, "c1", false, &undone).RunSaga(context.Background(), "root", "go")
-	ab := adv127bAbort(t, err)
-	if !slices.Contains(ab.Uncompensated, "book") && !slices.Contains(ab.Compensated, "book") {
-		t.Errorf("child on its own store: compensated %v, uncompensated %v, unknown %v; the child's book is listed nowhere",
-			ab.Compensated, ab.Uncompensated, ab.UnknownOutcome)
+// B2 (decided): a saga's programmatic sub-run must journal to the parent's store, where the
+// rollback reads it. A child agent on its own store is refused (ErrConfig) before it records or
+// runs anything, so no write of it can be missed.
+func TestAdv127b_ChildOnOwnStoreRefused(t *testing.T) {
+	for _, declare := range []bool{false, true} {
+		var undone int
+		ps, cs := agent.NewMemStore(), agent.NewMemStore()
+		_, err := adv127b(t, ps, cs, "c1", declare, &undone).RunSaga(context.Background(), "root", "go")
+		ab := adv127bAbort(t, err)
+		if !strings.Contains(ab.Cause.Error(), "another store") {
+			t.Errorf("declare %v: abort cause %v, want the child refused for its store", declare, ab.Cause)
+		}
+		for id, lerr := range cs.Runs(context.Background(), agent.RunFilter{}) {
+			t.Errorf("declare %v: the child's store holds run %q (%v); want none", declare, id, lerr)
+		}
+		if undone != 0 {
+			t.Errorf("declare %v: undone %d, want 0 (the child never ran)", declare, undone)
+		}
+	}
+}
+
+// B2 (decided): at rollback, an agent from WithSubRuns that journals to another store than the
+// run's cannot be used: the call is listed in Uncompensated with the reason, and the sub-run's
+// writes are listed from its journal. A panicking WithSubRuns function is listed the same way.
+func TestAdv127b_UnusableDeclarationListed(t *testing.T) {
+	for _, mode := range []string{"other store", "panic"} {
+		s := agent.NewMemStore()
+		book := agent.CompensatedFunc("book", "", agent.Safety{},
+			func(context.Context, struct{}) (string, error) { return "booked", nil },
+			func(context.Context, struct{}, string) error { t.Error("compensated by an unusable agent"); return nil })
+		child, err := agent.Build(agent.NewScriptedModel(agent.ToolTurn("k1", "book", `{}`), agent.TextTurn("done")), s.Journal(), agent.WithTools(book))
+		if err != nil {
+			t.Fatal(err)
+		}
+		elsewhere, err := agent.Build(agent.NewScriptedModel(), agent.NewMemStore().Journal(), agent.WithTools(book))
+		if err != nil {
+			t.Fatal(err)
+		}
+		declared := func(string) *agent.Agent {
+			if mode == "panic" {
+				panic("tenant lookup failed")
+			}
+			return elsewhere
+		}
+		starter := agent.Func("starter", "", agent.Safety{ReadOnly: true}, func(ctx context.Context, _ struct{}) (string, error) {
+			info, _ := agent.RunInfoFrom(ctx)
+			msg, err := child.RunSaga(ctx, info.SubRunFor("child"), "work")
+			return msg.Text(), err
+		}, agent.WithSubRuns(declared))
+		boom := agent.Func("boom", "", agent.Safety{}, func(context.Context, struct{}) (string, error) { return "", errors.New("boom") })
+		p, err := agent.Build(agent.NewScriptedModel(agent.ToolTurn("c1", "starter", `{}`), agent.ToolTurn("c2", "boom", `{}`), agent.TextTurn("x")),
+			s.Journal(), agent.WithTools(starter, boom))
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = p.RunSaga(context.Background(), "root", "go")
+		ab := adv127bAbort(t, err)
+		want := map[string]string{"other store": "another store", "panic": "tenant lookup failed"}[mode]
+		listed := slices.ContainsFunc(ab.Uncompensated, func(u string) bool {
+			return strings.HasPrefix(u, "starter (") && strings.Contains(u, want)
+		})
+		if !listed || !slices.Contains(ab.Uncompensated, "book") {
+			t.Errorf("%s: uncompensated %v; want the starter call with its reason and the child's book", mode, ab.Uncompensated)
+		}
 	}
 }
 

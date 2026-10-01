@@ -26,7 +26,8 @@ func (e *sagaTrip) Error() string { return fmt.Sprintf("saga step %q failed: %v"
 // with a *ResumeHalt in CompensateErr, whether or not it has a compensator), or a call whose tool
 // is no longer registered. They are side effects that may need manual cleanup. CompensateErr is
 // non-nil if the rollback stopped (a compensator failed, or an outcome is unknown), so writes
-// before it remain uncompensated.
+// before it remain uncompensated. A programmatic sub-run whose declared agent (WithSubRuns) could
+// not be used is listed as "<tool> (sub-run \"<name>\": <reason>)", next to its writes.
 //
 // UnknownOutcome lists the saga steps that failed with an unknown outcome, the failure that
 // aborted the saga included: a retry-safe step that returned ErrToolOutcomeUnknown, or an error
@@ -112,7 +113,7 @@ func (a *Agent) runSagaWithTelemetry(ctx context.Context, runID, input string, e
 		return Message{}, usageTotals{}, 0, err
 	}
 	if aborting {
-		if err := linkSubRun(ctx, runID); err != nil { // run does this for the other drives
+		if err := linkSubRun(ctx, runID, a.store); err != nil { // run does this for the other drives
 			return Message{}, usageTotals{}, 0, err
 		}
 		// Re-entered after it aborted (a sub-saga whose parent had not recorded the failure): its
@@ -203,7 +204,7 @@ func (a *Agent) rollbackRun(ctx context.Context, runID, root string) (compensate
 	links := subRunLinks(recs)
 	// walkSubRuns rolls back the programmatic sub-runs the call tu started, latest first.
 	walkSubRuns := func(tu ToolUse) error {
-		names := links[tu.ID]
+		names := links[encodeID(tu.ID)]
 		for j := len(names) - 1; j >= 0; j-- {
 			cc, cu, ck, ce := a.rollbackSubRun(ctx, runID, root, tu, names[j])
 			compensated = append(compensated, cc...)
@@ -372,6 +373,20 @@ func (a *Agent) rollbackRun(ctx context.Context, runID, root string) (compensate
 					}
 					return Record{Kind: StepToolResult, ToolUseID: tu.ID, Result: out, Safety: recordedSafety(*spec), Approval: spec.Approval.Clone()}, nil
 				})
+				// The re-run may have journaled the arguments it accepted, and started programmatic
+				// sub-runs, whatever its outcome: read them back, so the sub-runs are walked after it
+				// (an unknown outcome included).
+				again, he := a.store.History(ctx, runID)
+				if he != nil {
+					uncompensated = append(uncompensated, tu.Name)
+					return compensated, uncompensated, unknown, he
+				}
+				for _, r := range again {
+					if r.Kind == StepValue && r.Name == sagaArgsStep(tu.ID) {
+						values[r.Name] = r.Result
+					}
+				}
+				links = subRunLinks(again)
 				if ce != nil {
 					// The re-run gives no result to compensate. When its outcome is unknown (the tool
 					// said so, a middleware turned its success into an error, the chain answered
@@ -386,19 +401,6 @@ func (a *Agent) rollbackRun(ctx context.Context, runID, root string) (compensate
 					return compensated, uncompensated, unknown, fmt.Errorf("saga rollback: learn the outcome of %q (call %s): %w", tu.Name, tu.ID, ce)
 				}
 				res = rec
-				// The re-run may have journaled the arguments it accepted: read them back.
-				again, he := a.store.History(ctx, runID)
-				if he != nil {
-					uncompensated = append(uncompensated, tu.Name)
-					return compensated, uncompensated, unknown, he
-				}
-				for _, r := range again {
-					if r.Kind == StepValue && r.Name == sagaArgsStep(tu.ID) {
-						values[r.Name] = r.Result
-					}
-				}
-				links = subRunLinks(again) // and the programmatic sub-runs it started
-
 			}
 		}
 
@@ -431,8 +433,9 @@ func (a *Agent) rollbackRun(ctx context.Context, runID, root string) (compensate
 
 // protocol:toolcall end
 
-// subRunLinks returns the names of the programmatic sub-runs each call started, by tool-use ID, in
-// the order they were started, from a saga's links to them (subRunLinkStep).
+// subRunLinks returns the names of the programmatic sub-runs each call started, keyed by the
+// call's encoded tool-use ID (encodeID, which is a digest for a long ID), in the order they were
+// started, from a saga's links to them (subRunLinkStep).
 func subRunLinks(recs []Record) map[string][]string {
 	var links map[string][]string
 	for _, r := range recs {
@@ -441,29 +444,38 @@ func subRunLinks(recs []Record) map[string][]string {
 			continue
 		}
 		encTU, _, ok := strings.Cut(rest, "/")
-		tuID, dec := decodeID(encTU)
 		var name string
-		if !ok || !dec || json.Unmarshal(r.Result, &name) != nil || r.Name != subRunLinkStep(tuID, name) {
+		if !ok || json.Unmarshal(r.Result, &name) != nil || r.Name != subRunLinkPrefixEnc(encTU)+encodeID(name) {
 			continue // not a link this version writes
 		}
 		if links == nil {
 			links = map[string][]string{}
 		}
-		links[tuID] = append(links[tuID], name)
+		links[encTU] = append(links[encTU], name)
 	}
 	return links
 }
 
 // rollbackSubRun rolls back the programmatic sub-run name of run runID's call tu: with the agent
-// tu's tool declares for it (WithSubRuns), under the context the tool's wrappers bind for it, or,
-// with none, from its journal alone (an agent with no tools), so each of its writes is reported
-// uncompensated, and one whose outcome is unknown stops the rollback for a human.
+// tu's tool declares for it (WithSubRuns), under the context the tool's wrappers bind for it. With
+// no agent declared, or one that cannot be used (it journals to another store, or the WithSubRuns
+// function panicked), the sub-run is walked from its journal alone (an agent with no tools, over
+// the store linkSubRun made it share), so each of its writes is reported uncompensated, and one
+// whose outcome is unknown stops the rollback for a human; an unusable declaration also lists the
+// call itself, with the reason (see SagaAborted).
 func (a *Agent) rollbackSubRun(ctx context.Context, runID, root string, tu ToolUse, name string) (compensated, uncompensated, unknown []string, err error) {
 	subID := RunInfo{RunID: runID, ToolUseID: tu.ID}.SubRunFor(name)
 	tool := a.tools[tu.Name]
-	sub := (*Agent)(nil)
+	var sub *Agent
 	if tool != nil {
-		sub = subRunAgentFor(tool, name)
+		var why string
+		sub, why = declaredSubRunAgent(tool, name)
+		if why == "" && sub != nil && !sameStore(sub.store, a.store) {
+			sub, why = nil, "the agent WithSubRuns returned journals to another store than the run's"
+		}
+		if why != "" {
+			uncompensated = append(uncompensated, fmt.Sprintf("%s (sub-run %q: %s)", tu.Name, name, why))
+		}
 	}
 	if sub == nil {
 		sub = &Agent{store: a.store}
@@ -472,10 +484,22 @@ func (a *Agent) rollbackSubRun(ctx context.Context, runID, root string, tu ToolU
 	if tool != nil {
 		var be error
 		if sctx, be = bindRollback(ctx, tool, subID); be != nil {
-			return nil, []string{tu.Name}, nil, be
+			return nil, append(uncompensated, tu.Name), nil, be
 		}
 	}
-	return sub.rollbackRun(sctx, subID, root)
+	cc, cu, ck, err := sub.rollbackRun(sctx, subID, root)
+	return cc, append(uncompensated, cu...), ck, err
+}
+
+// declaredSubRunAgent returns the agent t declares for its sub-run name (subRunAgentFor), or a
+// reason it has none to give: the WithSubRuns function panicked.
+func declaredSubRunAgent(t Tool, name string) (sub *Agent, why string) {
+	defer func() {
+		if p := recover(); p != nil {
+			sub, why = nil, fmt.Sprintf("the WithSubRuns function panicked: %v", p)
+		}
+	}()
+	return subRunAgentFor(t, name), ""
 }
 
 // sagaFailure reports whether the journal records a saga step failure (the durable abort

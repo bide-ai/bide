@@ -201,9 +201,14 @@ These are stated in full in [KNOWN-LIMITATIONS.md](../KNOWN-LIMITATIONS.md); in 
   itself, as it walks a sub-agent's. Declare the agent each one runs with, so the rollback can
   compensate its writes: `agent.Func(name, desc, safety, fn, agent.WithSubRuns(func(name string)
   *agent.Agent { return child }))`. With none declared, the sub-run's writes are listed in
-  `SagaAborted.Uncompensated`. Start the sub-run with `RunSaga` to keep it a saga (whether a call
-  is in a saga is its own run's flag, `RunInfo.Saga`), and start it within the call: `SubRunFor`
-  from a goroutine that outlives its call is `ErrConfig`.
+  `SagaAborted.Uncompensated`, as is a declared agent the rollback cannot use (one on another
+  store, or a `WithSubRuns` function that panics), with the reason. The call's own compensation
+  runs before its sub-runs are walked. A sub-run in a saga's tree must journal to the saga's store
+  (`Run` refuses another with `ErrConfig`), and a plain run started from a saga's call links its own
+  sub-runs too. Start the sub-run with `RunSaga` to keep it a saga (whether a call is in a saga is
+  its own run's flag, `RunInfo.Saga`), and start it within the call: `SubRunFor` from a goroutine
+  that outlives its call is `ErrConfig`. A sub-run still running after its call returned may write
+  after the rollback walked it; such a write is not undone.
 - **A failed step with an unknown outcome is reported, not undone.** A retry-safe step that fails
   with `ErrToolOutcomeUnknown`, or returns an error after its `WithTimeout` deadline, may have
   committed before it was cut off. Its failure record carries `outcome_unknown`, and the rollback

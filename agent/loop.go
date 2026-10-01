@@ -52,7 +52,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 	if err := checkDurable(a.store); err != nil {
 		return Message{}, usageTotals{}, 0, err
 	}
-	if err := linkSubRun(ctx, runID); err != nil {
+	if err := linkSubRun(ctx, runID, a.store); err != nil {
 		return Message{}, usageTotals{}, 0, err
 	}
 	ctx = a.runDefaults(ctx) // the agent's identity, Waker and clock, where the run was given none

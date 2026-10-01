@@ -120,8 +120,10 @@ func TestSagaRollback_SubRunResumedByFreshAgents(t *testing.T) {
 	}
 }
 
-// Only a saga links its programmatic sub-runs: a plain run writes no link.
-func TestSubRunLink_OnlyInASaga(t *testing.T) {
+// Only a saga's tree links its programmatic sub-runs: a plain run outside one writes no link. (A
+// plain run started from a saga's call is in the tree and links its own; see
+// TestAdv127b_NestedThroughNonSagaChild.)
+func TestSubRunLink_OnlyInASagaTree(t *testing.T) {
 	f := &subRunFixture{store: agent.NewMemStore()}
 	_, _ = f.parent(t, true, false).Run(context.Background(), "plain", "go")
 	recs, err := f.store.History(context.Background(), "plain")

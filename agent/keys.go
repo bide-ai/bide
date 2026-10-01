@@ -19,7 +19,7 @@ import (
 // or a session's. The functions and constants named *Step build those keys; a test asserts each
 // one starts with a prefix listed here.
 var reservedPrefixes = []string{
-	"@",               // the journal header @journal, and engine-internal steps: @llm/<n>, @saga/compensate/<call>, @saga/args/<call>, @retrieval/<layer>, @spend/<id>, @spend-late/<id>
+	"@",               // the journal header @journal, and engine-internal steps: @llm/<n>, @saga/compensate/<call>, @saga/args/<call>, @retrieval/<layer>, @spend/<id>, @spend-late/<id>, @subrun/<call>/<name>
 	"run:",            // run:start, run:complete, run:aborted, run:cancelled, run:limits:<n>
 	"tool:",           // a tool call's result: tool:<call>
 	"attempt:",        // attempt markers: attempt:tool:<call>, attempt:step:<name>, attempt:retry:<n>:..., attempt:not-started:<claim>:<marker>
@@ -341,7 +341,10 @@ func sagaCompensateStep(toolUseID string) string { return "@saga/compensate/" + 
 func sagaArgsStep(toolUseID string) string { return "@saga/args/" + encodeID(toolUseID) }
 
 // subRunLinkPrefix starts the keys of the call toolUseID's programmatic sub-run links.
-func subRunLinkPrefix(toolUseID string) string { return "@subrun/" + encodeID(toolUseID) + "/" }
+func subRunLinkPrefix(toolUseID string) string { return subRunLinkPrefixEnc(encodeID(toolUseID)) }
+
+// subRunLinkPrefixEnc is subRunLinkPrefix for a tool-use ID already encoded (encodeID).
+func subRunLinkPrefixEnc(encToolUseID string) string { return "@subrun/" + encToolUseID + "/" }
 
 // subRunLinkStep is the key of the record, in a saga's journal, that its call toolUseID started the
 // programmatic sub-run name (RunInfo.SubRunFor), so its rollback walks that sub-run. It holds name.

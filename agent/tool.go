@@ -321,10 +321,18 @@ func WithOutputSchema(schema json.RawMessage) ToolOption {
 // itself. agentFor must return the agent (or one with the same tools) for every name the tool
 // starts a sub-run under, also after a restart, since the rollback may run in a later process.
 //
+// A sub-run in a saga's tree must journal to the run's store, where the rollback reads it: Run
+// refuses (ErrConfig) one whose agent journals elsewhere. The call's own compensation runs before
+// its sub-runs are walked. A sub-run is linked when it starts, within the call; one that is still
+// running when the call returns (held by a goroutine the call left behind) may still be writing
+// while the rollback walks it, so a write it makes after the walk passed it is not undone.
+//
 // Without it, or when agentFor returns nil for a sub-run, the rollback cannot undo the sub-run's
 // writes: it reports each one in SagaAborted.Uncompensated (and stops for a human at one whose
-// outcome is unknown), as it does for a write with no compensator. A nil agentFor is ErrConfig,
-// and SubAgent, whose sub-run is its own, refuses the option.
+// outcome is unknown), as it does for a write with no compensator. An agent it cannot use (one on
+// another store, or a panic in agentFor) is reported the same way, and the call is listed too,
+// with the reason (see SagaAborted). A nil agentFor is ErrConfig, and SubAgent, whose sub-run is
+// its own, refuses the option.
 func WithSubRuns(agentFor func(name string) *Agent) ToolOption {
 	return toolOption(func(c *toolConfig) error {
 		if agentFor == nil {
