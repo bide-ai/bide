@@ -125,19 +125,15 @@ func withRollbackScope(ctx context.Context) context.Context {
 
 // rollbackParents returns the grants a rollback bound to ctx accepts as a delegation's parent:
 // the acting grant (WithGrant) first, then those bound with WithRollbackGrants, each with its
-// signer. A grant with no signer is left out: nothing can verify a child against it.
+// signer. An acting grant with no signer is left out: nothing can verify a child against it
+// (WithRollbackGrants binds none without a signer).
 func rollbackParents(ctx context.Context) []boundGrant {
 	var out []boundGrant
 	if sg, signer, ok := GrantFrom(ctx); ok && signer != nil {
 		out = append(out, boundGrant{sg: sg, signer: signer})
 	}
 	extra, _ := ctx.Value(rollbackGrantsKey{}).([]boundGrant)
-	for _, b := range extra {
-		if b.signer != nil {
-			out = append(out, b)
-		}
-	}
-	return out
+	return append(out, extra...)
 }
 
 // protocol:delegation end

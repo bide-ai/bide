@@ -268,6 +268,10 @@ func TestModel11_BindRollbackScope(t *testing.T) {
 	if _, err := b.BindRollback(WithRollbackGrants(WithRollbackGrants(ctx, s1, old), s2, live), "sub"); err != nil {
 		t.Fatalf("parent bound by an outer WithRollbackGrants: %v", err)
 	}
+	// An acting grant bound with no signer is no parent: nothing to verify against.
+	if _, err := b.BindRollback(WithGrant(ctx, old, nil), "sub"); !errors.Is(err, agent.ErrConfig) {
+		t.Fatalf("acting grant with no signer: %v, want ErrConfig", err)
+	}
 	// A nil signer binds nothing: no grant to verify against.
 	if _, err := b.BindRollback(WithRollbackGrants(ctx, nil, old), "sub"); !errors.Is(err, agent.ErrConfig) {
 		t.Fatalf("nil signer: %v, want ErrConfig", err)
