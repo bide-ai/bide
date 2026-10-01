@@ -140,6 +140,8 @@ define
   Leased(p) == p # Prim \/ Primary = "leased"
   NextCall(r) == IF \E c \in Calls : result[r][c] = "none"
                  THEN Min({c \in Calls : result[r][c] = "none"}) ELSE LastCall + 1
+  \* What a drive that read run:cancelled reports: under VerdictRule "first", the first end marker.
+  CancelledVerdict(r) == IF VerdictRule = "first" THEN Head(ends[r]) ELSE "cancelled"
   InFlight(q, r) == \E d \in Drivers : d[2] = q[2] /\ job[d] = r
 end define;
 
@@ -202,7 +204,7 @@ DOpen:
 DTurn:
   \* A turn boundary: D1's run:cancelled check (one Get) before the next model turn.
   if CancelRule # "none" /\ "cancelled" \in Range(ends[jr[self]]) then
-    ret[self] := "cancelled"; goto DRel;
+    ret[self] := CancelledVerdict(jr[self]); goto DRel;
   end if;
 DClaim:
   \* The attempt claim (model 1), an Insert under the drive's context.
@@ -225,7 +227,7 @@ DPost:
   \* a cancelled run records the attempt as not started.
   if "cancelled" \in Range(ends[jr[self]]) then
     marker[jr[self]][cc[self]] := NoClaim;
-    ret[self] := "cancelled"; goto DRel;
+    ret[self] := CancelledVerdict(jr[self]); goto DRel;
   end if;
 DCall:
   \* recordFresh: the sctx.Err() check, then the effect.
@@ -409,6 +411,8 @@ LiveFor(p) == holds[p] # 0 /\ lease[holds[p]].o = Tok(p) /\ lease[holds[p]].left
 Leased(p) == p # Prim \/ Primary = "leased"
 NextCall(r) == IF \E c \in Calls : result[r][c] = "none"
                THEN Min({c \in Calls : result[r][c] = "none"}) ELSE LastCall + 1
+
+CancelledVerdict(r) == IF VerdictRule = "first" THEN Head(ends[r]) ELSE "cancelled"
 InFlight(q, r) == \E d \in Drivers : d[2] = q[2] /\ job[d] = r
 
 
@@ -556,7 +560,7 @@ DOpen(self) == /\ pc[self] = "DOpen"
 
 DTurn(self) == /\ pc[self] = "DTurn"
                /\ IF CancelRule # "none" /\ "cancelled" \in Range(ends[jr[self]])
-                     THEN /\ ret' = [ret EXCEPT ![self] = "cancelled"]
+                     THEN /\ ret' = [ret EXCEPT ![self] = CancelledVerdict(jr[self])]
                           /\ pc' = [pc EXCEPT ![self] = "DRel"]
                      ELSE /\ pc' = [pc EXCEPT ![self] = "DClaim"]
                           /\ ret' = ret
@@ -604,7 +608,7 @@ DClaim(self) == /\ pc[self] = "DClaim"
 DPost(self) == /\ pc[self] = "DPost"
                /\ IF "cancelled" \in Range(ends[jr[self]])
                      THEN /\ marker' = [marker EXCEPT ![jr[self]][cc[self]] = NoClaim]
-                          /\ ret' = [ret EXCEPT ![self] = "cancelled"]
+                          /\ ret' = [ret EXCEPT ![self] = CancelledVerdict(jr[self])]
                           /\ pc' = [pc EXCEPT ![self] = "DRel"]
                      ELSE /\ pc' = [pc EXCEPT ![self] = "DCall"]
                           /\ UNCHANGED << marker, ret >>
@@ -1104,7 +1108,7 @@ OneDriverPerEpoch ==
 
 \* At most one live driver: no two drives of one run are running with their contexts live.
 \* A holder that stalled past its TTL breaks it (limits/stall-two-drivers): leases are not fenced.
-Driving(p) == p \in Drivers /\ holds[p] # 0 /\ ~ctxDead[p] /\ pc[p] \notin {"DIdle", "DRel", "Done"}
+Driving(p) == p \in Drivers /\ holds[p] # 0 /\ ~ctxDead[p] /\ ~stalled[p] /\ pc[p] \notin {"DIdle", "DRel", "Done"}
 OneLiveDriver == \A r \in Runs : Cardinality({p \in Drivers : Driving(p) /\ holds[p] = r}) <= 1
 
 \* No double completion: a run is never both completed and aborted, and each end marker is

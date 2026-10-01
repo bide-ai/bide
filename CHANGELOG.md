@@ -20,6 +20,10 @@ minor version (0.x.0) may include breaking API or journal-format changes; each o
 - `mcp.WithApproval(name, policy)`: `Tools` fails with `ErrConfig` when the policy is nil or invalid, or when the server lists no tool of that name, so a misspelt gate never leaves the real tool ungated. Each MCP tool's spec: `Title` (its title, else its annotations' title), `Output` (its `outputSchema`) and `Timeout` (`WithCallTimeout`) ([#117]).
 - `govern.EventToolConfig` and `govern.FederatedEventToolConfig`, whose `Options` pass `agent.ToolOption`s to the tool; `audit.AttenuationConfig`, and trailing `agent.ToolOption`s on `audit.AttenuatingSubAgent`, which go to its `SubAgent` ([#117]).
 
+#### Formal models
+
+- A TLA+ model of the run lifecycle and recovery (model 10: `run:complete`, `run:aborted` and the reserved `run:cancelled`; leased and plain runs, `Recover` and `RecoverLoop` passes with the end-marker re-check under the lease, halts, pauses and `ResolveHalt`, under lease expiry, stalled holders, ambiguous writes and crashes), checked in CI. It shows the pickup latency the v0.9.0 docs describe (a dead holder's run waits behind the halted runs listed before it), checks a proposed fix, and states the property P14's `Cancel` must satisfy.
+
 ### Changed
 
 - **Breaking:** `agent.Safety` is plain data, `{ReadOnly, Idempotent}`: comparable, and journaled. The approval gate is `ToolSpec.Approval`, set with `agent.WithApproval(agent.SingleApproval())` (for `Safety{RequiresApproval: true}`) or `agent.WithApproval(&agent.ApprovalPolicy{...})` (for `Safety{Approval: ...}`). `ApprovalPolicy` encodes as `need` and `approvers` ([#117]).
