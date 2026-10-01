@@ -49,7 +49,10 @@ store, it is safe: resume replays it from the journal rather than re-running it.
    outcome is unknown: nothing is recorded, the drive fails with `ErrToolOutcomeUnknown`, and a
    resume halts. A retry-safe tool records that error, except a saga step that changes state
    (`Idempotent`, not `ReadOnly`), which is recorded with an unknown outcome and named in
-   `SagaAborted.UnknownOutcome`.
+   `SagaAborted.UnknownOutcome`. Such a step writes no attempt marker; when it is compensable,
+   its journaled arguments mark that an attempt may have begun, so a later known failure of a
+   step an earlier drive began is recorded with an unknown outcome too, as is one a middleware
+   ran again after an invocation that did not itself fail.
 
 The same holds when nothing crashed and a caller simply invokes the run again (a client retrying
 after a lost response, a redelivered job, a sub-agent or session turn re-entered on resume):

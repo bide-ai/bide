@@ -231,7 +231,16 @@ func (a *Agent) rollbackRun(ctx context.Context, runID, root string) (compensate
 		}
 		res, done := results[tu.ID]
 		if done && res.IsError {
-			continue // a failed call made no change (saga steps must be atomic)
+			// A failed call made no change (saga steps must be atomic), unless an earlier attempt of
+			// a compensable retry-safe write journaled its arguments, its "may have begun" marker,
+			// before this result (a denial) was recorded: that attempt may have taken effect, and
+			// no result of it was recorded to compensate, so it is reported.
+			if _, comp := a.tools[tu.Name].(Compensator); comp && res.Safety != nil && res.Safety.retrySafeWrite() {
+				if _, began := values[sagaArgsStep(tu.ID)]; began {
+					unknown = append(unknown, tu.Name)
+				}
+			}
+			continue
 		}
 		if done && res.Safety != nil && res.Safety.ReadOnly {
 			continue // it ran as ReadOnly, so it changed nothing, whatever its tool is declared as now

@@ -629,6 +629,11 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 						// repeat.
 						return Record{}, callErr
 					}
+					if _, aj := errors.AsType[*argsJournalError](callErr); aj && !called.Load() {
+						// The store failed before the tool was called: record nothing, and fail the
+						// run (below) as for any store fault before a call; a re-drive calls it.
+						return Record{}, callErr
+					}
 					if _, unrecorded := errors.AsType[*toolhook.Unrecorded](callErr); unrecorded {
 						// A tool wrapper of this module refused the call without effect, and asked that
 						// nothing be recorded (see toolhook.Unrecorded): the run stops, and a re-drive
@@ -641,6 +646,13 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 						// just as for a tool that says so (below). The error keeps its chain, so a
 						// pause or a sub-run's halt inside it is still seen for what it is.
 						callErr = fmt.Errorf("tool %q returned an error after its %s timeout: %w (%w)", c.tu.Name, c.spec.Timeout, callErr, ErrToolOutcomeUnknown)
+					}
+					if callErr != nil && saga && !errors.Is(callErr, ErrToolOutcomeUnknown) && a.sagaStepMayHaveBegun(values, c.tu, c.spec.Safety) {
+						// An earlier drive's attempt of this retry-safe write may have taken effect
+						// (it journaled the step's arguments, and no outcome): this attempt's known
+						// failure says nothing about that one, so the step's outcome is unknown, and
+						// the rollback reports it rather than skip it as a step that made no change.
+						callErr = fmt.Errorf("tool %q: an earlier attempt of this saga step may have taken effect: %w (%w)", c.tu.Name, callErr, ErrToolOutcomeUnknown)
 					}
 					if callErr != nil && errors.Is(callErr, ErrToolOutcomeUnknown) && !c.spec.Safety.retriableOnResume() {
 						// The tool cannot tell whether its side effect took place (its connection
@@ -867,4 +879,18 @@ func checkToolUseIDs(m Message, used map[string]bool) error {
 		seen[tu.ID] = true
 	}
 	return nil
+}
+
+// sagaStepMayHaveBegun reports whether an earlier drive began the saga step tu: it is a compensable
+// retry-safe write (Idempotent, not ReadOnly), which writes no attempt marker, and the journal held
+// its accepted-arguments record (see journalAcceptedArgs) when this drive began.
+func (a *Agent) sagaStepMayHaveBegun(values map[string]Record, tu ToolUse, safety Safety) bool {
+	if !safety.retrySafeWrite() {
+		return false
+	}
+	if _, comp := a.tools[tu.Name].(Compensator); !comp {
+		return false
+	}
+	_, ok := values[sagaArgsStep(tu.ID)]
+	return ok
 }

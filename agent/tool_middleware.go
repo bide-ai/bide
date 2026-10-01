@@ -34,6 +34,10 @@ type ToolCall struct {
 	began *atomic.Int32
 	// out is the tool's own outcome (see toolNotRun).
 	out *atomic.Int32
+	// earlier is set when an invocation of the call begins after an earlier one that did not
+	// itself fail (it succeeded, is still running, or its outcome is unknown): the earlier one may
+	// have taken effect, whatever the later one reports.
+	earlier *atomic.Bool
 }
 
 // ErrorText returns the text the agent journals, and sends to the model, for this call failing

@@ -224,6 +224,9 @@ func (s Safety) retriableOnResume() bool { return s.ReadOnly || s.Idempotent }
 // middleware applies before retrying a call (see ToolCall).
 func (s Safety) RetrySafe() bool { return s.retriableOnResume() }
 
+// retrySafeWrite reports whether a call is retry-safe and changes state: Idempotent, not ReadOnly.
+func (s Safety) retrySafeWrite() bool { return s.Idempotent && !s.ReadOnly }
+
 // ToolOption configures a tool built by Func, CompensatedFunc or SubAgent.
 type ToolOption interface{ applyTool(*toolConfig) error }
 

@@ -337,7 +337,7 @@ func (a *Agent) toolHandler(runID string) func(context.Context, ToolUse) (json.R
 		}
 		// A failure here returns before the tool's Call began: the loop seals the call's began word
 		// and counts the call as not called (see beganNone).
-		if err := journalAcceptedArgs(ctx, t, call); err != nil {
+		if err := journalAcceptedArgs(ctx, t, call, a.specs[tu.Name].Safety); err != nil {
 			return nil, err
 		}
 		// Begin the call, immediately before the tool. The registered spec decides, never
@@ -353,6 +353,9 @@ func (a *Agent) toolHandler(runID string) func(context.Context, ToolUse) (json.R
 			}
 		}
 		if call.out != nil {
+			if prev := call.out.Load(); prev != toolNotRun && prev != toolFailed && call.earlier != nil {
+				call.earlier.Store(true)
+			}
 			call.out.Store(toolRunning)
 		}
 		res, err := t.Call(ctx, tu.Args)
@@ -376,14 +379,16 @@ func (a *Agent) toolHandler(runID string) func(context.Context, ToolUse) (json.R
 	return func(ctx context.Context, tu ToolUse) (json.RawMessage, int32, error) {
 		call := a.toolCallFor(runID, tu)
 		var st, began, out atomic.Int32 // callOpen, beganNone, toolNotRun
-		call.state, call.began, call.out = &st, &began, &out
+		var earlier atomic.Bool
+		call.state, call.began, call.out, call.earlier = &st, &began, &out, &earlier
 		res, err := h(ctx, call)
 		state := closeCall(&st)
 		if state == callReached && began.CompareAndSwap(beganNone, beganSealed) {
 			// Reached, but no invocation began the tool's Call, and now none can: not called.
 			state = callRefusedClosed
 		}
-		if state == callReached && err != nil && out.Load() != toolFailed && !ctxDone(ctx) && a.unprovenFailure(ctx, tu.Name) {
+		if state == callReached && err != nil && !ctxDone(ctx) &&
+			(out.Load() != toolFailed && a.unprovenFailure(ctx, tu.Name) || earlier.Load() && a.specs[tu.Name].Safety.retrySafeWrite() && InSaga(ctx)) {
 			// The tool began, and did not itself fail: it is still running (a next left running),
 			// it succeeded (a middleware turned that into an error), its outcome is unknown, or a
 			// later invocation's refusal is what the chain returned. "Failed" needs positive proof
@@ -393,19 +398,28 @@ func (a *Agent) toolHandler(runID string) func(context.Context, ToolUse) (json.R
 			// A retry-safe tool's error stays an ordinary failure, which the model may retry, except
 			// in a saga for one that changes state (Idempotent, not ReadOnly): the rollback skips a
 			// step that failed as one that made no change, so a step that may have changed state is
-			// recorded with an unknown outcome and reported in SagaAborted.UnknownOutcome.
+			// recorded with an unknown outcome and reported in SagaAborted.UnknownOutcome. So is
+			// such a step whose last invocation failed after an earlier one that did not (a middleware
+			// retried it): the earlier one may have taken effect.
 			err = fmt.Errorf("tool %q (call %s): the chain returned an error, but the tool itself did not fail: %w (%w)", tu.Name, tu.ID, err, ErrToolOutcomeUnknown)
 		}
 		return res, state, err
 	}
 }
 
+// argsJournalError is a failure to journal a saga call's accepted arguments, before its tool was
+// called: a store fault, for which the loop records nothing and fails the run.
+type argsJournalError struct{ err error }
+
+func (e *argsJournalError) Error() string { return e.err.Error() }
+func (e *argsJournalError) Unwrap() error { return e.err }
+
 // unprovenFailure reports whether an error the chain returned for a call of the named tool, which
 // began and did not itself fail, leaves the call's outcome unknown: for a side effect always, and
 // for a retry-safe tool that changes state (Idempotent, not ReadOnly) inside a saga.
 func (a *Agent) unprovenFailure(ctx context.Context, name string) bool {
 	s := a.specs[name].Safety
-	return !s.RetrySafe() || !s.ReadOnly && InSaga(ctx)
+	return !s.RetrySafe() || s.retrySafeWrite() && InSaga(ctx)
 }
 
 // journalAcceptedArgs records, before the side effect fires, the arguments a compensable call in
@@ -417,19 +431,28 @@ func (a *Agent) unprovenFailure(ctx context.Context, name string) bool {
 // reads the model's arguments, as for a journal written before this record existed. A ToolCall
 // a middleware built itself carries no model arguments, so its arguments are journaled unless
 // they are empty.
-func journalAcceptedArgs(ctx context.Context, t Tool, call ToolCall) error {
+//
+// For a retry-safe step that changes state (Idempotent, not ReadOnly) the record is journaled
+// whether or not the arguments changed: it is the step's "may have begun" marker. Such a step
+// writes no attempt marker, so on a later drive the loop reads this record to know that an
+// earlier attempt may have taken effect, and records a later known failure of the step with an
+// unknown outcome rather than as a step that made no change (see sagaStepMayHaveBegun).
+func journalAcceptedArgs(ctx context.Context, t Tool, call ToolCall, safety Safety) error {
 	tu := call.Use
 	if _, ok := t.(Compensator); !ok || !InSaga(ctx) {
 		return nil
 	}
-	if bytes.Equal(call.modelArgs, tu.Args) {
+	if bytes.Equal(call.modelArgs, tu.Args) && !safety.retrySafeWrite() {
 		return nil
 	}
 	store, runID, _ := runContext(ctx) // the loop and the rollback both set it
 	if _, err := store.Do(ctx, runID, sagaArgsStep(tu.ID), func(context.Context) (Record, error) {
 		return Record{Kind: StepValue, Result: tu.Args}, nil
 	}); err != nil {
-		return fmt.Errorf("journal the arguments tool %q (call %s) accepted: %w (%w)", tu.Name, tu.ID, err, ErrStorage)
+		// The tool was not called. The loop records nothing for it (not a known failure, which
+		// would abort a saga on a transient store fault): the run fails, as for any store fault
+		// before a call, and a re-drive calls the tool again.
+		return &argsJournalError{fmt.Errorf("journal the arguments tool %q (call %s) accepted: %w (%w)", tu.Name, tu.ID, err, ErrStorage)}
 	}
 	return nil
 }
