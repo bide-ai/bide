@@ -88,6 +88,9 @@ func (a *Agent) run(ctx context.Context, runID string, d *driveSpec) (Message, u
 		if err := checkFinishedStart(runID, recs, d.runKind(), nil); err != nil {
 			return Message{}, usageTotals{}, 0, err // a finished flow's run holds no answer of an agent's
 		}
+		if end.name == runAbortedStep && !d.cfg.saga && !d.strictSaga {
+			return Message{}, usageTotals{}, 0, errSagaRun // an aborted saga reports its abort (*SagaAborted)
+		}
 		if end.name != runCompleteStep {
 			return Message{}, journalTotals(recs), 0, endedErr(runID, end)
 		}

@@ -130,6 +130,13 @@ func (a *Agent) runSagaWithTelemetry(ctx context.Context, runID string, d *drive
 		// Re-entered after it aborted (a sub-saga whose parent had not recorded the failure): its
 		// usage goes to the tool call that started it, as run reports it (see callUsage).
 		reportUsage(ctx, runID, journalTotals(recs))
+		// A rollback request is checked before the recorded failure (model 10's DOpen): once Cancel
+		// has asked for the rollback, the saga ends run:cancelled.
+		if r, ok := recordNamed(recs, runCancelRequestedStep); ok && !ended {
+			trip := &cancelTrip{reason: endText(r)}
+			out, err := a.rollback(ctx, runID, fmt.Errorf("run %s: %w", runID, ErrRunCancelled), trip.reason, trip)
+			return out, usageTotals{}, 0, err
+		}
 		out, err := a.rollback(ctx, runID, errors.New(cause), cause, nil)
 		return out, usageTotals{}, 0, err
 	}
@@ -164,6 +171,20 @@ func (a *Agent) rollback(ctx context.Context, runID string, cause error, causeTe
 		// The rollback finished: the run is over. Mark it terminal so a recovery supervisor
 		// leaves it alone. A rollback that stopped (an unknown outcome, a failed compensator) is
 		// not marked, so it is re-driven once the cause is resolved.
+		if cancel == nil {
+			// A failure's rollback of a saga whose rollback request exists ends it cancelled: once
+			// Cancel has asked for the rollback, the run's end is run:cancelled, whichever cause
+			// started the rollback (one Get, on a failure's rollback only).
+			r, ok, err := lookup(ctx, a.store, runID, runCancelRequestedStep)
+			if err != nil {
+				return Message{}, &SagaAborted{RunID: runID, Cause: cause, Compensated: comp, Uncompensated: uncomp, UnknownOutcome: unknown,
+					CompensateErr: fmt.Errorf("saga %s: read the rollback request: %w", runID, err)}
+			}
+			if ok {
+				cancel, causeText = &cancelTrip{reason: endText(r)}, endText(r)
+				cause = fmt.Errorf("run %s: %w (a step failed after the cancellation was requested: %w)", runID, ErrRunCancelled, cause)
+			}
+		}
 		name, value := runAbortedStep, mustJSON(causeText)
 		if cancel != nil {
 			name, value = runCancelledStep, mustJSONValue(cancelReason{Reason: causeText})
@@ -174,8 +195,13 @@ func (a *Agent) rollback(ctx context.Context, runID string, cause error, causeTe
 			cerr = fmt.Errorf("saga %s: record the finished rollback: %w (%w)", runID, err, ErrStorage)
 		case first.name == runCompleteStep:
 			return a.endVerdict(ctx, runID)
-		case first.name != name && first.name == runCancelledStep:
+		case first.name == name:
+		case first.name == runCancelledStep:
 			cause = fmt.Errorf("run %s: %w (cancelled before it aborted)", runID, ErrRunCancelled)
+		case first.name == runAbortedStep:
+			// Another drive's rollback of a failure ended the run first: the run aborted, and this
+			// rollback reports that end, not its own cancellation.
+			cause = fmt.Errorf("saga %s aborted before its cancellation's rollback finished: %s", runID, endText(first.rec))
 		}
 	}
 	return Message{}, &SagaAborted{RunID: runID, Cause: cause, Compensated: comp, Uncompensated: uncomp, UnknownOutcome: unknown, CompensateErr: cerr}
