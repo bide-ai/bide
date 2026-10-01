@@ -671,6 +671,8 @@ speak about the same records:
   description or a commit message, or `Protocol-Impact: <model>[,<model>] none (<reason>)` for
   some models, and each one used is printed as a warning. See
   [spec/tla/README.md](../../spec/tla/README.md#keeping-the-code-and-the-models-in-step).
+  The review checklist entry below is in the pull request template
+  (`.github/pull_request_template.md`); its trace-validation item waits for M3.
 - **The adversarial review gate.** Changes to claims already get an adversarial review (see the
   roadmap). The review checklist adds: the model-code map (section 4.4, kept in
   `spec/tla/README.md`) is still true for every function the diff touches; the reviewer's
