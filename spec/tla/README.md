@@ -1859,16 +1859,16 @@ checked in the model. The findings stay open (`findings/`) until the code adopts
     whose record lost goes to the meter as late spend, which no running drive counts. Neither
     drive sees the other's later calls. `WithTokenBudget`'s godoc says "a check sees every
     call that has returned" and bounds the overshoot by the calls in flight; with two drivers
-    the overshoot grows with the budget (in the model: 1 call over at a budget of 2, 2 at 4, 3
-    at 6, with this model's count).
+    the overshoot grows with the budget: in the model the turn makes twice its budget's calls
+    (2 over at a budget of 2, 4 at 4, 6 at 6).
   - The test is `TestModel12_S4_TwoWorkersOvershootATurnBudget`: two processes (two
     `Journal`s over one store) send one message, a model that lets them call in turn reports
     one token per call, and a budget of 6 tokens makes 12 model calls (6 each).
   - Proposed rule (`TurnLease = TRUE`, `budget`): the session drives a turn's run under its
     lease when the store has a `Leaser`, as `Lease` drives a run; a second drive gets
     `HaltContended` and the message is sent again. One drive at a time loads the whole journal,
-    and `BudgetHeld` holds. Counting a lost record's own spend in the drive would not be
-    enough: the model still overshoots.
+    and `BudgetHeld` holds. Counting a lost record's own spend in the drive as well would not be
+    enough: the model then overshoots by half the budget.
 
 Accepted limit: `limits/send-redelivered` (`MsgOnce`). `Send` has no key: when the process dies
 after the turn is recorded and before the reply, the redelivered message opens a second turn.
