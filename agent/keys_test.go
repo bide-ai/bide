@@ -38,6 +38,7 @@ var keyConstructors = map[string]func(string) string{
 	"ApprovalTallyStep":    ApprovalTallyStep,
 	"sagaCompensateStep":   sagaCompensateStep,
 	"sagaArgsStep":         sagaArgsStep,
+	"subRunLinkStep":       func(s string) string { return subRunLinkStep(s, s) },
 	"signalStep":           signalStep,
 	"awaitTimeoutStep":     awaitTimeoutStep,
 	"awaitResolvedStep":    awaitResolvedStep,

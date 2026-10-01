@@ -143,7 +143,7 @@ func TestOptionScopes_TypeChecked(t *testing.T) {
 		"WithRecoverInterval": "RecoverLoopOption", "WithRecoverConcurrency": "RecoverLoopOption", "WithRecoverLapsedConcurrency": "RecoverLoopOption", "WithRecoverErrors": "RecoverLoopOption",
 		"WithMinHaltAge": "ResolveOption", "WithoutLiveDriverCheck": "ResolveOption", "WithEvidence": "ResolveOption",
 		"WithRetrievalRetry": "RetrievalOption",
-		"WithApproval":       "ToolOption", "WithTimeout": "ToolOption", "WithTitle": "ToolOption", "WithOutputSchema": "ToolOption",
+		"WithApproval":       "ToolOption", "WithTimeout": "ToolOption", "WithTitle": "ToolOption", "WithOutputSchema": "ToolOption", "WithSubRuns": "ToolOption",
 	}
 	optionTypes := append(slices.Clone(scopes), "AgentRunOption", "ConcurrencyOption", "ClockOption", "SafetyOption", "LeaseControl")
 	for _, name := range pkg.Scope().Names() {

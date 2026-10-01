@@ -147,10 +147,20 @@ func journalTotals(recs []Record) usageTotals {
 
 // callUsage collects, for one tool call, the usage of the runs the call started, so the call's
 // record can carry it. A run reports its whole usage when it returns, keyed by its run ID: a run
-// driven twice in one call (a tool retried) is counted once.
+// driven twice in one call (a tool retried) is counted once. It also says whether the call has
+// returned: a programmatic sub-run is started only while it has not (see linkSubRun).
 type callUsage struct {
-	mu    sync.Mutex
-	byRun map[string]usageTotals
+	mu       sync.Mutex
+	byRun    map[string]usageTotals
+	returned bool // the call's tool middleware chain has returned
+}
+
+// callReturned marks the call returned, once any sub-run start in progress has recorded its link:
+// a programmatic sub-run started from the call's context after this is refused.
+func (c *callUsage) callReturned() {
+	c.mu.Lock()
+	c.returned = true
+	c.mu.Unlock()
 }
 
 const callUsageKey ctxKey = 8

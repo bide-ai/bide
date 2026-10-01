@@ -233,6 +233,8 @@ type ToolOption interface{ applyTool(*toolConfig) error }
 // toolConfig is what the options of one tool constructor set.
 type toolConfig struct {
 	spec ToolSpec
+	// subRuns resolves the agent that runs one of the tool's programmatic sub-runs (WithSubRuns).
+	subRuns func(name string) *Agent
 	// set records which options were given, for a constructor that refuses one.
 	safetySet, timeoutSet, outputSet bool
 }
@@ -312,6 +314,27 @@ func WithOutputSchema(schema json.RawMessage) ToolOption {
 	})
 }
 
+// WithSubRuns declares the agents that run the tool's programmatic sub-runs: agentFor(name) is the
+// agent the tool runs RunInfo.SubRunFor(name) with. A saga's rollback walks those sub-runs as it
+// walks a sub-agent's (SubAgent): for each sub-run a call of the tool started, latest first, it
+// compensates the sub-run's completed writes with agentFor(name)'s compensators, after the call
+// itself. agentFor must return the agent (or one with the same tools) for every name the tool
+// starts a sub-run under, also after a restart, since the rollback may run in a later process.
+//
+// Without it, or when agentFor returns nil for a sub-run, the rollback cannot undo the sub-run's
+// writes: it reports each one in SagaAborted.Uncompensated (and stops for a human at one whose
+// outcome is unknown), as it does for a write with no compensator. A nil agentFor is ErrConfig,
+// and SubAgent, whose sub-run is its own, refuses the option.
+func WithSubRuns(agentFor func(name string) *Agent) ToolOption {
+	return toolOption(func(c *toolConfig) error {
+		if agentFor == nil {
+			return fmt.Errorf("WithSubRuns: nil function: %w", ErrConfig)
+		}
+		c.subRuns = agentFor
+		return nil
+	})
+}
+
 // applyToolOptions applies opts to c in order, and returns the first error, naming the tool.
 func applyToolOptions(c *toolConfig, opts []ToolOption) error {
 	for _, o := range opts {
@@ -335,7 +358,8 @@ func applyToolOptions(c *toolConfig, opts []ToolOption) error {
 // runtime MCP tools) works.
 //
 // opts set the rest of the tool's spec: WithApproval, WithTimeout, WithTitle, WithOutputSchema,
-// and WithSafety, which replaces the safety argument.
+// and WithSafety, which replaces the safety argument. WithSubRuns declares the agents the tool
+// runs programmatic sub-runs with, for a saga's rollback.
 //
 // Func panics, as New does for a missing model, if schema.For cannot describe In: such a type
 // (a field reached through an embedded pointer to an unexported struct) could never be decoded
@@ -356,12 +380,20 @@ func newFuncTool[In, Out any](name, description string, safety Safety, fn func(c
 	if err := applyToolOptions(&c, opts); err != nil {
 		panic(err)
 	}
-	return &funcTool[In, Out]{spec: c.spec, fn: fn}
+	return &funcTool[In, Out]{spec: c.spec, fn: fn, subRuns: c.subRuns}
 }
 
 type funcTool[In, Out any] struct {
-	spec ToolSpec
-	fn   func(context.Context, In) (Out, error)
+	spec    ToolSpec
+	fn      func(context.Context, In) (Out, error)
+	subRuns func(name string) *Agent // WithSubRuns; nil if not given
+}
+
+func (t *funcTool[In, Out]) subRunAgent(name string) *Agent {
+	if t.subRuns == nil {
+		return nil
+	}
+	return t.subRuns(name)
 }
 
 func (t *funcTool[In, Out]) Name() string                { return t.spec.Name }

@@ -49,6 +49,9 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 	if err := checkDurable(a.store); err != nil {
 		return Message{}, usageTotals{}, 0, err
 	}
+	if err := linkSubRun(ctx, runID); err != nil {
+		return Message{}, usageTotals{}, 0, err
+	}
 	ctx = a.runDefaults(ctx) // the agent's identity, Waker and clock, where the run was given none
 	fire := func(e AgentEvent) {
 		if emit != nil {
@@ -666,6 +669,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 					called.Store(!notCalled)
 					// protocol:claims end
 					// protocol:lifecycle end
+					started.callReturned() // the chain returned: no programmatic sub-run starts from the call's context now
 					if state == callClosed && callErr != nil && !notCalled && !c.spec.Safety.retriableOnResume() {
 						callErr = fmt.Errorf("tool %q: the tool middleware returned an error without calling next, and not ErrToolNotCalled, so the tool may have run: %w (%w)", c.tu.Name, callErr, ErrToolOutcomeUnknown)
 					}

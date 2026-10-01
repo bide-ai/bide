@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 	"strings"
 )
@@ -117,12 +118,72 @@ func derivedRunID(ctx context.Context, runID string) bool {
 	return ok && rest != "" && isEncodedID(rest)
 }
 
+// stepRunName reports whether runID is a programmatic sub-run the tool call ctx belongs to names
+// with SubRunFor, and returns its name, or "" for a name too long to be decoded (its encoding is a
+// digest; see encodeID).
+func stepRunName(ctx context.Context, runID string) (name string, ok bool) {
+	info, ok := RunInfoFrom(ctx)
+	if !ok || info.ToolUseID == "" {
+		return "", false
+	}
+	rest, ok := strings.CutPrefix(runID, info.callScope()+subRunSep+stepRunMark)
+	if !ok || rest == "" || !isEncodedID(rest) {
+		return "", false
+	}
+	name, _ = decodeID(rest)
+	return name, true
+}
+
+// linkSubRun admits the programmatic sub-run runID, if it is one: it is refused (ErrConfig) once
+// the tool call that names it has returned, since a sub-run started from a goroutine that
+// outlived its call would belong to no call (no rollback, and no Recover, would reach it). In a
+// saga, the parent run's journal records that the call started it (subRunLinkStep), before the
+// sub-run records anything, so the saga's rollback walks it (see WithSubRuns). The link is written
+// while the call is held open, so a call that has returned has recorded every link it will have.
+func linkSubRun(ctx context.Context, runID string) error {
+	name, ok := stepRunName(ctx, runID)
+	if !ok {
+		return nil
+	}
+	rc, _ := ctx.Value(runContextKey).(runCtx)
+	cu, _ := ctx.Value(callUsageKey).(*callUsage)
+	if cu == nil {
+		return fmt.Errorf("run: programmatic sub-run %q started outside its tool call's context: %w", runID, ErrConfig)
+	}
+	cu.mu.Lock()
+	defer cu.mu.Unlock()
+	if cu.returned {
+		return fmt.Errorf("run: programmatic sub-run %q started after its tool call (%s of run %s) returned; start it within the call: %w",
+			runID, rc.toolUseID, rc.runID, ErrConfig)
+	}
+	if !rc.saga {
+		return nil
+	}
+	if name == "" {
+		return fmt.Errorf("run: programmatic sub-run %q of a saga: its name is too long for the saga's link to it (at most %d bytes once escaped): %w",
+			runID, maxEncodedID, ErrConfig)
+	}
+	if _, err := rc.store.Do(ctx, rc.runID, subRunLinkStep(rc.toolUseID, name), func(context.Context) (Record, error) {
+		return Record{Kind: StepValue, Result: mustJSON(name)}, nil
+	}); err != nil {
+		return fmt.Errorf("run: record the programmatic sub-run %q in run %s: %w (%w)", runID, rc.runID, err, ErrStorage)
+	}
+	return nil
+}
+
 // isEncodedID reports whether s is a string encodeID returns for some ID: the escaped form
 // (decoded and encoded again, it is s itself), or '~' and a lowercase hex SHA-256.
 func isEncodedID(s string) bool {
 	if sum, ok := strings.CutPrefix(s, "~"); ok {
 		return len(sum) == 64 && strings.Trim(sum, "0123456789abcdef") == ""
 	}
+	_, ok := decodeID(s)
+	return ok
+}
+
+// decodeID returns the ID whose escaped form (see encodeID) s is, and false if s is not one: a
+// digest form ('~' and a SHA-256) cannot be decoded.
+func decodeID(s string) (string, bool) {
 	b := make([]byte, 0, len(s))
 	for i := 0; i < len(s); i++ {
 		if s[i] != '%' {
@@ -130,14 +191,17 @@ func isEncodedID(s string) bool {
 			continue
 		}
 		if i+2 >= len(s) {
-			return false
+			return "", false
 		}
 		v, err := strconv.ParseUint(s[i+1:i+3], 16, 8)
 		if err != nil {
-			return false
+			return "", false
 		}
 		b = append(b, byte(v))
 		i += 2
 	}
-	return encodeID(string(b)) == s
+	if id := string(b); encodeID(id) == s {
+		return id, true
+	}
+	return "", false
 }

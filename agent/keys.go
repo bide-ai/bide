@@ -340,6 +340,15 @@ func sagaCompensateStep(toolUseID string) string { return "@saga/compensate/" + 
 // the model's arguments (see toolHandler); compensation reads it (see rollbackRun).
 func sagaArgsStep(toolUseID string) string { return "@saga/args/" + encodeID(toolUseID) }
 
+// subRunLinkPrefix starts the keys of the call toolUseID's programmatic sub-run links.
+func subRunLinkPrefix(toolUseID string) string { return "@subrun/" + encodeID(toolUseID) + "/" }
+
+// subRunLinkStep is the key of the record, in a saga's journal, that its call toolUseID started the
+// programmatic sub-run name (RunInfo.SubRunFor), so its rollback walks that sub-run. It holds name.
+func subRunLinkStep(toolUseID, name string) string {
+	return subRunLinkPrefix(toolUseID) + encodeID(name)
+}
+
 // awaitTimeoutStep is the key of AwaitFor's deadline for name.
 func awaitTimeoutStep(name string) string { return "await-timeout:" + name }
 
