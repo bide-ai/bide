@@ -1,0 +1,44 @@
+package agent
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"slices"
+	"sync/atomic"
+	"testing"
+)
+
+// T1's saga case for a retry-safe step that mutates state (Idempotent, with a compensator): a
+// middleware turns the step's success into an error (a result check, which the ToolMiddleware
+// contract allows). The step fired, yet the saga failure is recorded as a known failure, so the
+// rollback skips it as "made no change", and SagaAborted lists it nowhere.
+func TestRev117e_IdempotentSagaStepRejectedSuccessIsNotAccounted(t *testing.T) {
+	var charged, refunded atomic.Int32
+	charge := CompensatedFunc("charge", "", Safety{Idempotent: true},
+		func(context.Context, struct{}) (string, error) { charged.Add(1); return "ok", nil },
+		func(context.Context, struct{}, string) error { refunded.Add(1); return nil })
+	check := ToolMiddleware(func(next ToolHandler) ToolHandler {
+		return func(ctx context.Context, call ToolCall) (json.RawMessage, error) {
+			res, err := next(ctx, call)
+			if err == nil && call.Use.Name == "charge" {
+				return nil, errors.New("result failed validation")
+			}
+			return res, err
+		}
+	})
+	m := NewScriptedModel(ToolTurn("c1", "charge", `{}`), TextTurn("done"))
+	_, err := New(m, NewMemStore(), charge).UseTool(check).RunSaga(context.Background(), "r", "go")
+	var ab *SagaAborted
+	if !errors.As(err, &ab) {
+		if !errors.Is(err, ErrToolOutcomeUnknown) {
+			t.Fatalf("RunSaga = %v, want *SagaAborted or a halt on the step's outcome", err)
+		}
+		return
+	}
+	accounted := refunded.Load() == 1 || slices.Contains(ab.UnknownOutcome, "charge") || slices.Contains(ab.Uncompensated, "charge")
+	if charged.Load() == 1 && !accounted {
+		t.Fatalf("the idempotent charge fired once, was refunded %d times, and the abort lists it nowhere: compensated %v, uncompensated %v, unknown %v",
+			refunded.Load(), ab.Compensated, ab.Uncompensated, ab.UnknownOutcome)
+	}
+}
