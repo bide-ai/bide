@@ -129,3 +129,60 @@ func TestRev117e_T3_RollbackReportsDeniedStepWithEarlierAttempt(t *testing.T) {
 		t.Fatalf("rollbackRun = unknown %v, %v; want charge reported", unknown, err)
 	}
 }
+
+// The rollback re-runs a retry-safe write that a sibling's failure cut off, to learn the result to
+// compensate, and a result check rejects every success: the re-run's outcome is unknown. The step
+// is reported as unknown and the rollback reaches SagaAborted, as the live path does, rather than
+// stopping on "learn the outcome" on every drive.
+func TestRev117e_T4_RollbackRerunRejectedSuccessIsUnknown(t *testing.T) {
+	var calls, refunded atomic.Int32
+	started := make(chan struct{})
+	charge := CompensatedFunc("charge", "", Safety{Idempotent: true},
+		func(ctx context.Context, _ struct{}) (string, error) {
+			if calls.Add(1) == 1 {
+				close(started)
+				<-ctx.Done() // cut off by the sibling's failure
+				return "", ctx.Err()
+			}
+			return "ok", nil
+		},
+		func(context.Context, struct{}, string) error { refunded.Add(1); return nil })
+	fail := Func("fail", "", Safety{}, func(context.Context, struct{}) (string, error) {
+		<-started // charge is in flight
+		return "", errors.New("declined")
+	})
+	check := ToolMiddleware(func(next ToolHandler) ToolHandler {
+		return func(ctx context.Context, call ToolCall) (json.RawMessage, error) {
+			res, err := next(ctx, call)
+			if err == nil && call.Use.Name == "charge" {
+				return nil, errors.New("result failed validation")
+			}
+			return res, err
+		}
+	})
+	a := New(t4TwoCalls{}, NewMemStore(), charge, fail).UseTool(check)
+	for drive := 1; drive <= 2; drive++ {
+		_, err := a.RunSaga(context.Background(), "r", "go")
+		var ab *SagaAborted
+		if !errors.As(err, &ab) || !slices.Contains(ab.UnknownOutcome, "charge") || refunded.Load() != 0 {
+			t.Fatalf("drive %d: RunSaga = %v (refunded %d); want *SagaAborted listing charge as unknown", drive, err, refunded.Load())
+		}
+	}
+}
+
+// t4TwoCalls calls charge and fail in its first turn, then answers.
+type t4TwoCalls struct{}
+
+func (t4TwoCalls) Stream(_ context.Context, req Request) (*Stream, error) {
+	ch := make(chan Emit, 4)
+	if len(req.Messages) <= 1 {
+		ch <- Emit{Event: ToolCallDelta{Index: 0, ID: "c1", Name: "charge", ArgsFragment: json.RawMessage(`{}`)}}
+		ch <- Emit{Event: ToolCallDelta{Index: 1, ID: "c2", Name: "fail", ArgsFragment: json.RawMessage(`{}`)}}
+		ch <- Emit{Event: Finish{Reason: "tool_use"}}
+	} else {
+		ch <- Emit{Event: TextDelta{Text: "done"}}
+		ch <- Emit{Event: Finish{Reason: "stop"}}
+	}
+	close(ch)
+	return NewStream(ch), nil
+}

@@ -85,6 +85,14 @@ type ToolHandler func(ctx context.Context, call ToolCall) (json.RawMessage, erro
 // unknown outcome and reported in SagaAborted.UnknownOutcome, since the rollback would otherwise
 // skip it as a step that made no change.
 //
+// A result needs positive proof as well: a chain that returns a result while the tool it began is
+// still running (a middleware left next running and answered from a cache) has an unknown
+// outcome, since the tool's effect may land after anything the run records next, a saga's
+// compensation included. A side effect halts; a retry-safe saga step is reported in
+// SagaAborted.UnknownOutcome and never compensated. A saga rollback that re-runs a retry-safe step
+// to learn the result to compensate applies the same rules: a re-run whose outcome is unknown is
+// reported, not compensated, and the rollback goes on.
+//
 // The chain runs INSIDE the durable, memoized step, so a short-circuit result or a
 // transformed result is what gets journaled: resume replays it and never re-runs the
 // middleware or the tool. A tool's Timeout bounds the whole chain. Batteries live in the

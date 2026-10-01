@@ -403,6 +403,14 @@ func (a *Agent) toolHandler(runID string) func(context.Context, ToolUse) (json.R
 			// retried it): the earlier one may have taken effect.
 			err = fmt.Errorf("tool %q (call %s): the chain returned an error, but the tool itself did not fail: %w (%w)", tu.Name, tu.ID, err, ErrToolOutcomeUnknown)
 		}
+		if state == callReached && err == nil && out.Load() == toolRunning {
+			// The chain answered while the tool it began is still running (a middleware left next
+			// running and answered itself, from a cache say). A result needs positive proof too:
+			// the tool's effect may land after anything recorded now (a compensation included),
+			// so the call's outcome is unknown. A side effect halts; a retry-safe saga step is
+			// reported as unknown and never compensated.
+			res, err = nil, fmt.Errorf("tool %q (call %s): the chain returned a result while the tool was still running: %w", tu.Name, tu.ID, ErrToolOutcomeUnknown)
+		}
 		return res, state, err
 	}
 }

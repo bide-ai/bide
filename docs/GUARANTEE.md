@@ -52,7 +52,11 @@ store, it is safe: resume replays it from the journal rather than re-running it.
    `SagaAborted.UnknownOutcome`. Such a step writes no attempt marker; when it is compensable,
    its journaled arguments mark that an attempt may have begun, so a later known failure of a
    step an earlier drive began is recorded with an unknown outcome too, as is one a middleware
-   ran again after an invocation that did not itself fail.
+   ran again after an invocation that did not itself fail. A result needs positive proof as well:
+   a chain that answers while the tool it began is still running (a middleware that left `next`
+   running) has an unknown outcome, so a side effect halts and a retry-safe saga step is reported
+   in `SagaAborted.UnknownOutcome`, never compensated before its effect lands. A rollback that
+   re-runs such a step to learn its result reports a re-run whose outcome is unknown the same way.
 
 The same holds when nothing crashed and a caller simply invokes the run again (a client retrying
 after a lost response, a redelivered job, a sub-agent or session turn re-entered on resume):

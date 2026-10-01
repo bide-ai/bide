@@ -192,7 +192,11 @@ error, or returns another error for a call whose tool did not itself fail (a ref
 say), makes the outcome unknown, and the run halts rather than tell the model a fired side effect
 failed. A retry-safe tool's error is recorded as a failure, except in a saga for a step that
 changes state (`Idempotent`, not `ReadOnly`): there it is recorded with an unknown outcome and
-listed in `SagaAborted.UnknownOutcome`. The agent decides from its own copy of
+listed in `SagaAborted.UnknownOutcome`. A result needs positive proof too: a chain that returns a
+result while the tool it began is still running (a middleware that left `next` running and
+answered from a cache) has an unknown outcome, since the tool's effect may land after a saga's
+compensation; a side effect halts, and a retry-safe saga step is reported as unknown and never
+compensated. The agent decides from its own copy of
 the spec, so a middleware that changes `call.Spec` changes nothing it enforces. A middleware passes
 `next` the `ToolCall` it was given, or a copy with other `Use.Args`: one that changes `Use.Name` or
 `Use.ID`, or builds its own `ToolCall`, gets `ErrConfig` and the tool is not called. The agent also enforces

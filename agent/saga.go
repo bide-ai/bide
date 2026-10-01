@@ -312,6 +312,15 @@ func (a *Agent) rollbackRun(ctx context.Context, runID, root string) (compensate
 					return Record{Kind: StepToolResult, ToolUseID: tu.ID, Result: out, Safety: recordedSafety(*spec), Approval: spec.Approval.Clone()}, nil
 				})
 				if ce != nil {
+					// The re-run gives no result to compensate. When its outcome is unknown (the tool
+					// said so, a middleware turned its success into an error, the chain answered
+					// while it ran), the step is reported as unknown, as the live path reports it,
+					// and the rollback goes on: re-running it again would meet the same answer, and
+					// the rollback would never finish. Any other failure stops the rollback.
+					if errors.Is(ce, ErrToolOutcomeUnknown) {
+						unknown = append(unknown, tu.Name)
+						continue
+					}
 					uncompensated = append(uncompensated, tu.Name)
 					return compensated, uncompensated, unknown, fmt.Errorf("saga rollback: learn the outcome of %q (call %s): %w", tu.Name, tu.ID, ce)
 				}
