@@ -105,7 +105,9 @@ func TestModel12_S2_SharedHandleRecordsATurnTwice(t *testing.T) {
 		}
 		t.Run(name, func(t *testing.T) {
 			ctx := context.Background()
-			gate := &loadGate{Durable: NewMemStore(), runID: runID, n: 2, arrived: make(chan struct{}), release: make(chan struct{})}
+			// The third Load of the run is the second caller's: the first caller's drive loads it
+			// twice (its open, and again once it has written run:start).
+			gate := &loadGate{Durable: NewMemStore(), runID: runID, n: 3, arrived: make(chan struct{}), release: make(chan struct{})}
 			model := &blockFirstModel{entered: make(chan struct{}), release: make(chan struct{})}
 			a := New(model, gate)
 			h := openSession(t, a, "c1")

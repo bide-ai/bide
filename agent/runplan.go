@@ -50,7 +50,7 @@ type limitAmendment struct {
 // line so the loop's frame does not grow.
 //
 //go:noinline
-func (a *Agent) openPlan(ctx context.Context, runID string, d *driveSpec, recs []Record) (context.Context, *runPlan, error) {
+func (a *Agent) openPlan(ctx context.Context, runID string, d *driveSpec, recs []Record) (_ context.Context, _ *runPlan, wrote bool, _ error) {
 	// protocol:lifecycle begin DStart DAmend
 	var (
 		start  RunStart
@@ -64,13 +64,13 @@ func (a *Agent) openPlan(ctx context.Context, runID string, d *driveSpec, recs [
 		switch {
 		case r.Name == runStartStep:
 			if err := json.Unmarshal(r.Result, &start); err != nil {
-				return ctx, nil, fmt.Errorf("decode %s (run %s): %w (%w)", runStartStep, runID, err, ErrStorage)
+				return ctx, nil, false, fmt.Errorf("decode %s (run %s): %w (%w)", runStartStep, runID, err, ErrStorage)
 			}
 			found = true
 		case strings.HasPrefix(r.Name, "run:limits:"):
 			var l limitAmendment
 			if err := json.Unmarshal(r.Result, &l); err != nil {
-				return ctx, nil, fmt.Errorf("decode %s (run %s): %w (%w)", r.Name, runID, err, ErrStorage)
+				return ctx, nil, false, fmt.Errorf("decode %s (run %s): %w (%w)", r.Name, runID, err, ErrStorage)
 			}
 			amends = append(amends, l)
 		}
@@ -78,32 +78,32 @@ func (a *Agent) openPlan(ctx context.Context, runID string, d *driveSpec, recs [
 	idn, explicitID := a.driveIdentity(ctx, d)
 	if !found {
 		if d.resume {
-			return ctx, nil, fmt.Errorf("run %s: %w", runID, ErrNotStarted)
+			return ctx, nil, false, fmt.Errorf("run %s: %w", runID, ErrNotStarted)
 		}
 		want, err := a.newStart(d, idn)
 		if err != nil {
-			return ctx, nil, err
+			return ctx, nil, false, err
 		}
 		b, err := marshalJournal(want)
 		if err != nil {
-			return ctx, nil, fmt.Errorf("encode %s (run %s): %w (%w)", runStartStep, runID, err, ErrConfig)
+			return ctx, nil, false, fmt.Errorf("encode %s (run %s): %w (%w)", runStartStep, runID, err, ErrConfig)
 		}
 		// First writer wins: the drive runs under the stored entry, a concurrent first drive's if
 		// that one landed first (rule 8). The drive's own entry needs no check against itself.
 		got, inserted, err := a.putStart(ctx, runID, b)
 		if err != nil {
-			return ctx, nil, fmt.Errorf("record %s (run %s): %w (%w)", runStartStep, runID, err, ErrStorage)
+			return ctx, nil, false, fmt.Errorf("record %s (run %s): %w (%w)", runStartStep, runID, err, ErrStorage)
 		}
 		if inserted {
-			start = want
+			start, wrote = want, true
 		} else if err := json.Unmarshal(got, &start); err != nil {
-			return ctx, nil, fmt.Errorf("decode %s (run %s): %w (%w)", runStartStep, runID, err, ErrStorage)
+			return ctx, nil, false, fmt.Errorf("decode %s (run %s): %w (%w)", runStartStep, runID, err, ErrStorage)
 		}
 		found = !inserted
 	}
 	if found {
 		if err := a.holdDrive(runID, d, start, idn, explicitID); err != nil {
-			return ctx, nil, err
+			return ctx, nil, false, err
 		}
 	}
 	// A later drive's different limit is journaled before it drives (rule 10).
@@ -121,19 +121,23 @@ func (a *Agent) openPlan(ctx context.Context, runID string, d *driveSpec, recs [
 		}
 		b, err := marshalJournal(amend)
 		if err != nil {
-			return ctx, nil, fmt.Errorf("encode %s (run %s): %w (%w)", runLimitsStep(n), runID, err, ErrConfig)
+			return ctx, nil, false, fmt.Errorf("encode %s (run %s): %w (%w)", runLimitsStep(n), runID, err, ErrConfig)
 		}
 		rec, err := putRecord(ctx, a.store, runID, runLimitsStep(n), Record{Kind: StepValue, Result: b})
 		if err != nil {
-			return ctx, nil, fmt.Errorf("record %s (run %s): %w (%w)", runLimitsStep(n), runID, err, ErrStorage)
+			return ctx, nil, false, fmt.Errorf("record %s (run %s): %w (%w)", runLimitsStep(n), runID, err, ErrStorage)
 		}
 		var got limitAmendment
 		if err := json.Unmarshal(rec.Result, &got); err != nil {
-			return ctx, nil, fmt.Errorf("decode %s (run %s): %w (%w)", runLimitsStep(n), runID, err, ErrStorage)
+			return ctx, nil, false, fmt.Errorf("decode %s (run %s): %w (%w)", runLimitsStep(n), runID, err, ErrStorage)
 		}
 		lim = applyAmendment(lim, got) // ours, or a concurrent drive's that took the index first
+		wrote = true
 	}
 	// protocol:lifecycle end
+	if wrote {
+		return ctx, nil, true, nil // the caller loads the run again (DStart, DAmend: back to DOpen)
+	}
 	p := &runPlan{start: start, saga: start.Saga, maxTurns: a.maxTurns, budget: a.tokenBudget, maxConc: a.maxConc,
 		sampling: a.sampling, toolChoice: a.toolChoice, sysText: start.Settings.SystemPrompt}
 	if lim.MaxTurns != nil {
@@ -178,7 +182,7 @@ func (a *Agent) openPlan(ctx context.Context, runID string, d *driveSpec, recs [
 	if d.cfg.clock != nil {
 		ctx = ContextWithClock(ctx, d.cfg.clock)
 	}
-	return ctx, p, nil
+	return ctx, p, false, nil
 }
 
 // allows reports whether the plan's filter admits a call of tool name: any tool when there is no

@@ -68,49 +68,60 @@ func (a *Agent) run(ctx context.Context, runID string, d *driveSpec) (Message, u
 	toolH := a.toolHandler(runID) // tool-middleware chain, built once for this run
 
 	// protocol:lifecycle begin DOpen
-	// protocol:claims begin Open
-	// protocol:spend begin Open
-	// protocol:toolcall begin DOpen
-	recs, err := openRun(ctx, a.store, runID)
-	if err != nil {
-		return Message{}, usageTotals{}, 0, err
-	}
-	// protocol:toolcall end
-	// protocol:spend end
-	// protocol:claims end
 	// The run's input and options are journaled in run:start by its first drive, and every later
 	// drive of an unfinished run is held to them (see RunStart and openPlan). A run that is over
 	// is final: its first end marker in journal order is its end. A completed run's answer is
 	// returned only to a drive with the input it answered (#137's R137-2): another input is
-	// ErrConfig, not that input's answer.
-	var p *runPlan
-	if end, ended := firstEnd(recs); ended {
-		if err := checkFinishedStart(runID, recs, d.runKind(), nil); err != nil {
-			return Message{}, usageTotals{}, 0, err // a finished flow's run holds no answer of an agent's
-		}
-		if end.name == runAbortedStep && !d.cfg.saga && !d.strictSaga {
-			return Message{}, usageTotals{}, 0, errSagaRun // an aborted saga reports its abort (*SagaAborted)
-		}
-		if end.name != runCompleteStep {
-			return Message{}, journalTotals(recs), 0, endedErr(runID, end)
-		}
-		if err := checkFinishedStart(runID, recs, d.runKind(), d.input); err != nil {
-			return Message{}, usageTotals{}, 0, err // another input's answer
-		}
-		p = &runPlan{maxTurns: a.maxTurns, budget: a.tokenBudget, maxConc: a.maxConc}
-		if d.input == nil {
-			in := startInput(recs)
-			d.input = &in
-		}
-	} else {
+	// ErrConfig, not that input's answer. A drive that writes run:start or a limit amendment loads
+	// the run again before it goes on (model 10: DStart and DAmend return to DOpen), so a Cancel
+	// that landed meanwhile is seen before the drive's first model call.
+	var (
+		p    *runPlan
+		recs []Record
+	)
+	for open := ctx; ; {
+		// protocol:claims begin Open
+		// protocol:spend begin Open
+		// protocol:toolcall begin DOpen
 		var err error
-		if ctx, p, err = a.openPlan(ctx, runID, d, recs); err != nil {
+		if recs, err = openRun(open, a.store, runID); err != nil {
 			return Message{}, usageTotals{}, 0, err
+		}
+		// protocol:toolcall end
+		// protocol:spend end
+		// protocol:claims end
+		if end, ended := firstEnd(recs); ended {
+			if err := checkFinishedStart(runID, recs, d.runKind(), nil); err != nil {
+				return Message{}, usageTotals{}, 0, err // a finished flow's run holds no answer of an agent's
+			}
+			if end.name == runAbortedStep && !d.cfg.saga && !d.strictSaga {
+				return Message{}, usageTotals{}, 0, errSagaRun // an aborted saga reports its abort (*SagaAborted)
+			}
+			if end.name != runCompleteStep {
+				return Message{}, journalTotals(recs), 0, endedErr(runID, end)
+			}
+			if err := checkFinishedStart(runID, recs, d.runKind(), d.input); err != nil {
+				return Message{}, usageTotals{}, 0, err // another input's answer
+			}
+			p = &runPlan{maxTurns: a.maxTurns, budget: a.tokenBudget, maxConc: a.maxConc}
+			if d.input == nil {
+				in := startInput(recs)
+				d.input = &in
+			}
+			break
+		}
+		var wrote bool
+		if ctx, p, wrote, err = a.openPlan(open, runID, d, recs); err != nil {
+			return Message{}, usageTotals{}, 0, err
+		}
+		if wrote {
+			continue // DStart, DAmend: back to DOpen
 		}
 		if d.input == nil {
 			d.input = &p.start.Input
 		}
 		saga = p.saga
+		break
 	}
 	// protocol:lifecycle end
 	seed := append(slices.Clip(d.seed), *d.input)

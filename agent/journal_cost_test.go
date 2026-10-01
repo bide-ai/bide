@@ -199,17 +199,19 @@ func TestLiveRun_JournalOperations(t *testing.T) {
 	if _, err := a.Run(context.Background(), "r", "go "+marker); err != nil {
 		t.Fatal(err)
 	}
-	// run:start, @llm/0, the tool's result, @llm/1, run:complete; the Load, the turn boundary's
-	// run:cancelled check (the header, run:start, @llm/0 and the result) and the read-back after run:complete (those, @llm/1 and run:complete).
-	if store.histories != 3 || store.read != 10 || store.dos != 5 {
-		t.Fatalf("a fresh run with one tool call read History %d times (%d records) and made %d Do calls; want 3 (10 records) and 5",
+	// run:start, @llm/0, the tool's result, @llm/1, run:complete; the Load, the Load again once
+	// run:start is written (the header and run:start: model 10's DStart returns to DOpen), the turn
+	// boundary's run:cancelled check (the header, run:start, @llm/0 and the result) and the
+	// read-back after run:complete (those, @llm/1 and run:complete).
+	if store.histories != 4 || store.read != 12 || store.dos != 5 {
+		t.Fatalf("a fresh run with one tool call read History %d times (%d records) and made %d Do calls; want 4 (12 records) and 5",
 			store.histories, store.read, store.dos)
 	}
 	// Every record but run:complete carries the marker (the input, the call's ID, the answer). The
-	// records the run writes are decoded once each (4); the two point reads above decode what they
-	// read again (3 at the turn boundary, 4 after run:complete).
-	if n := decodes.Load(); n != 11 {
-		t.Fatalf("the run decoded the records that carry the marker %d times, want 4 written and 7 read back", n)
+	// records the run writes are decoded once each (4); the three reads above decode what they
+	// read again (1 after run:start, 3 at the turn boundary, 4 after run:complete).
+	if n := decodes.Load(); n != 12 {
+		t.Fatalf("the run decoded the records that carry the marker %d times, want 4 written and 8 read back", n)
 	}
 }
 

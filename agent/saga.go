@@ -123,8 +123,12 @@ func (a *Agent) runSagaWithTelemetry(ctx context.Context, runID string, d *drive
 			return Message{}, usageTotals{}, 0, err
 		}
 		if !ended {
-			if _, _, err := a.openPlan(ctx, runID, d, recs); err != nil {
+			_, _, wrote, err := a.openPlan(ctx, runID, d, recs)
+			if err != nil {
 				return Message{}, journalTotals(recs), 0, err
+			}
+			if wrote {
+				return a.runSagaWithTelemetry(ctx, runID, d) // DStart, DAmend: back to DOpen
 			}
 		}
 		// Re-entered after it aborted (a sub-saga whose parent had not recorded the failure): its

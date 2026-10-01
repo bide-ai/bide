@@ -1164,13 +1164,13 @@ Within a wave, no two PRs edit the same file. Sizes:
 
    | Operation | Budget |
    |---|---|
-   | first drive of a new run | 1 `Load`, `Insert @journal`, `Insert run:start` |
+   | first drive of a new run | 1 `Load`, `Insert @journal`, `Insert run:start`, and 1 `Load` again once `run:start` is written (the header and `run:start`: model 10's `DStart` returns to `DOpen`, so a `Cancel` that landed meanwhile is seen) |
    | each live model turn | 1 `Get` (the turn's own record, `@llm/<n>`) and 1 `Insert`; plus, for every turn after a drive's first, 1 `Get` (`run:cancelled`, or `run:cancel-requested` on a saga: P14 rule 2) |
    | side-effect tool call | 2 `Insert` (claim, result), and 1 `Get` (`run:cancelled` once the claim is won: P14 rule 3); +1 `Insert` only under #67's condition |
    | retry-safe tool call | 1 `Insert` |
    | retry-safe `Step` | 1 `Get`, 1 `Insert` |
    | completion | 1 `Insert`, and 1 `Get` (`run:cancelled`) read back (P14 rule 4); on a saga 2 (`run:cancelled`, `run:aborted`) |
-   | limit amendment (a later drive's different limit) | 1 `Insert` (`run:limits:<n>`) |
+   | limit amendment (a later drive's different limit) | 1 `Insert` (`run:limits:<n>`), and 1 `Load` of the run again (`DAmend` returns to `DOpen`) |
    | `Cancel` | 3 `Get` (the end markers) and 1 `Get` (`run:start`); then 1 `Insert` (`run:cancelled`) and 1 `Get` (`run:complete`) read back, or on a saga 1 `Insert` (`run:cancel-requested`) |
    | `Status` | 1 `Load` |
    | resume of a run with n records | 1 `Load` of n entries, no point reads for markers |
@@ -1179,7 +1179,7 @@ Within a wave, no two PRs edit the same file. Sizes:
 
    The `Recover` row was raised after P6a, with the maintainer's approval: a pass read no run at all until it was found to call `resume` for a run another driver finished between the listing and the lease, and the three point reads close that gap.
 
-   P14 raised the model-turn, side-effect and completion rows (the `Get`s of rules 2 to 4) and the `Recover` row (rule 14's `run:start` read), and added the amendment, `Cancel` and `Status` rows; the `BenchmarkRunTurns` and `BenchmarkToolCallSideEffect` A/B in its pull request measures them (a maintainer decision, as it is a published budget). The drive's first model turn needs no `run:cancelled` check: its `Load` read the run.
+   P14 raised the model-turn, side-effect and completion rows (the `Get`s of rules 2 to 4) and the `Recover` row (rule 14's `run:start` read), and added the amendment, `Cancel` and `Status` rows; its adversarial review raised the first-drive and amendment rows (the `Load` again after the write); the `BenchmarkRunTurns` and `BenchmarkToolCallSideEffect` A/B in its pull request measures them (a maintainer decision, as it is a published budget). The drive's first model turn needs no `run:cancelled` check: its `Load` read the run.
 
 2. **Benchstat on the CI runner.**
    - Benchmarks land in P6a: `BenchmarkRunTurns`, `BenchmarkToolCallSideEffect`, `BenchmarkStep`, `BenchmarkRecoverPass10k`, `BenchmarkAnchoredInsert`, `BenchmarkSQLiteInsert`, `BenchmarkPostgresInsert`.
