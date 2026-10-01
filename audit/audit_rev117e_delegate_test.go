@@ -255,3 +255,44 @@ func TestRev117e_JournaledAuthorityValueRecordsOnly(t *testing.T) {
 		t.Fatalf("journaledAuthority = grant %v, ungranted %v, any %v, err %v; want no authority over two records", g != nil, ungranted, any, err)
 	}
 }
+
+// rev117eFlakyDoStore fails one Do whose step name has prefix, once, with a storage error.
+type rev117eFlakyDoStore struct {
+	agent.Durable
+	prefix string
+	fails  atomic.Int32
+}
+
+func (s *rev117eFlakyDoStore) Do(ctx context.Context, runID, name string, fn func(context.Context) (agent.Record, error)) (agent.Record, error) {
+	if strings.HasPrefix(name, s.prefix) && s.fails.Add(-1) >= 0 {
+		return agent.Record{}, fmt.Errorf("transient write failure: %w", agent.ErrStorage)
+	}
+	return s.Durable.Do(ctx, runID, name, fn)
+}
+
+// A failure writing the delegation's authority (the child grant, or the ungranted marker) records
+// nothing either: the resume retries the delegation.
+func TestRev117e_StorageWriteFailureRecordsNothing(t *testing.T) {
+	for _, withGrant := range []bool{false, true} {
+		t.Run(fmt.Sprintf("grant=%v", withGrant), func(t *testing.T) {
+			ctx := context.Background()
+			store := agent.NewMemStore()
+			flaky := &rev117eFlakyDoStore{Durable: store, prefix: ungrantedLeafName}
+			if withGrant {
+				signer := rev117eSigner(t)
+				ctx = WithGrant(ctx, rev117eRoot(t, signer, 0), signer)
+				flaky.prefix = grantLeafPrefix
+			}
+			flaky.fails.Store(1)
+			var subCalls atomic.Int32
+			deleg := AttenuatingSubAgent("deleg", "d", agent.New(rev117eCountModel{n: &subCalls}, store),
+				AttenuationConfig{Store: flaky, Narrow: narrowLimitBy(1), Rules: rev117eRules})
+			parent := agent.New(agent.NewScriptedModel(agent.ToolTurn("c1", "deleg", `{"task":"go"}`), agent.TextTurn("done")), store, deleg)
+			_, err1 := parent.Run(ctx, "p", "go")
+			_, err2 := parent.Run(ctx, "p", "go")
+			if subCalls.Load() == 0 || err2 != nil {
+				t.Fatalf("delegation never ran: first Run err=%v, resume err=%v", err1, err2)
+			}
+		})
+	}
+}

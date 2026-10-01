@@ -74,3 +74,28 @@ func TestRev117e_EmbeddingDecoratorDropsApprovalGate(t *testing.T) {
 		t.Fatalf("an ungated embedded tool: Run = %v", err)
 	}
 }
+
+// ptrTool has pointer-receiver methods; specHider embeds it by value and declares its own Spec,
+// which drops the embedded tool's approval gate.
+type ptrTool struct{ spec ToolSpec }
+
+func (t *ptrTool) Name() string                { return t.spec.Name }
+func (t *ptrTool) Description() string         { return "" }
+func (t *ptrTool) ArgsSchema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
+func (t *ptrTool) Safety() Safety              { return Safety{} }
+func (t *ptrTool) Spec() ToolSpec              { return t.spec }
+func (t *ptrTool) Call(context.Context, json.RawMessage) (json.RawMessage, error) {
+	return json.RawMessage(`"sent"`), nil
+}
+
+type specHider struct{ ptrTool }
+
+func (h *specHider) Spec() ToolSpec { return ToolSpec{Name: h.spec.Name} }
+
+func TestRev117e_ValueEmbeddedPointerToolSpecHidesGate(t *testing.T) {
+	h := &specHider{ptrTool{spec: ToolSpec{Name: "send", Approval: SingleApproval()}}}
+	m := NewScriptedModel(ToolTurn("c1", "send", `{}`), TextTurn("done"))
+	if _, err := New(m, NewMemStore(), h).Run(context.Background(), "r", "go"); !errors.Is(err, ErrConfig) {
+		t.Fatalf("Run = %v, want ErrConfig: the outer Spec hides the embedded tool's gate", err)
+	}
+}
