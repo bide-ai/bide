@@ -168,3 +168,28 @@ func TestRev117eDocs_ApprovalWire(t *testing.T) {
 		t.Fatalf("m-of-n = %s", b)
 	}
 }
+
+// README.md "Write your own" snippet as corrected: a denial that wraps ErrToolNotCalled is
+// recorded as a failure the model sees, the tool never runs, and the run completes.
+func TestRev117eDocs_ReadmeRequireTagWithNotCalled(t *testing.T) {
+	authorized := func(context.Context, string) bool { return false }
+	RequireTag := func(tag string) agent.ToolMiddleware {
+		return func(next agent.ToolHandler) agent.ToolHandler {
+			return func(ctx context.Context, call agent.ToolCall) (json.RawMessage, error) {
+				if !authorized(ctx, tag) {
+					return nil, fmt.Errorf("tool %q denied: %w", call.Use.Name, agent.ErrToolNotCalled)
+				}
+				return next(ctx, call)
+			}
+		}
+	}
+	ran := false
+	tool := agent.Func("refund", "", agent.Safety{}, func(context.Context, struct{}) (string, error) { ran = true; return "ran", nil })
+	store := agent.NewMemStore()
+	m := agent.NewScriptedModel(agent.ToolTurn("c1", "refund", `{}`), agent.TextTurn("done"))
+	_, err := agent.New(m, store, tool).UseTool(RequireTag("x")).Run(context.Background(), "r1", "go")
+	rec, recorded := rev117eResult(t, store, "r1", "c1")
+	if err != nil || ran || !recorded || !rec.IsError {
+		t.Fatalf("Run = %v, ran %v, recorded %v (is_error %v)", err, ran, recorded, rec.IsError)
+	}
+}
