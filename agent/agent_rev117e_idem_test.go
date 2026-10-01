@@ -46,7 +46,13 @@ func TestRev117e_IdempotentSagaStepRejectedSuccessIsNotAccounted(t *testing.T) {
 // A ReadOnly saga step changed nothing, so a middleware's rejection of its success stays an
 // ordinary failure: it is not reported as an unknown outcome.
 func TestRev117e_ReadOnlySagaStepRejectedSuccessIsAFailure(t *testing.T) {
-	look := Func("look", "", Safety{ReadOnly: true}, func(context.Context, struct{}) (string, error) { return "ok", nil })
+	for _, safety := range []Safety{{ReadOnly: true}, {ReadOnly: true, Idempotent: true}} {
+		testReadOnlySagaStepRejectedSuccess(t, safety)
+	}
+}
+
+func testReadOnlySagaStepRejectedSuccess(t *testing.T, safety Safety) {
+	look := Func("look", "", safety, func(context.Context, struct{}) (string, error) { return "ok", nil })
 	check := ToolMiddleware(func(next ToolHandler) ToolHandler {
 		return func(ctx context.Context, call ToolCall) (json.RawMessage, error) {
 			if _, err := next(ctx, call); err != nil {
@@ -59,6 +65,6 @@ func TestRev117e_ReadOnlySagaStepRejectedSuccessIsAFailure(t *testing.T) {
 	_, err := New(m, NewMemStore(), look).UseTool(check).RunSaga(context.Background(), "r", "go")
 	var ab *SagaAborted
 	if !errors.As(err, &ab) || len(ab.UnknownOutcome) != 0 {
-		t.Fatalf("RunSaga = %v; want a SagaAborted with no unknown outcome", err)
+		t.Fatalf("%+v: RunSaga = %v; want a SagaAborted with no unknown outcome", safety, err)
 	}
 }

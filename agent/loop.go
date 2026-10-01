@@ -647,7 +647,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 						// pause or a sub-run's halt inside it is still seen for what it is.
 						callErr = fmt.Errorf("tool %q returned an error after its %s timeout: %w (%w)", c.tu.Name, c.spec.Timeout, callErr, ErrToolOutcomeUnknown)
 					}
-					if callErr != nil && saga && !errors.Is(callErr, ErrToolOutcomeUnknown) && a.sagaStepMayHaveBegun(values, c.tu, c.spec.Safety) {
+					if callErr != nil && saga && !errors.Is(callErr, ErrToolOutcomeUnknown) && sagaStepMayHaveBegun(values, c.tu, c.spec.Safety) {
 						// An earlier drive's attempt of this retry-safe write may have taken effect
 						// (it journaled the step's arguments, and no outcome): this attempt's known
 						// failure says nothing about that one, so the step's outcome is unknown, and
@@ -884,13 +884,11 @@ func checkToolUseIDs(m Message, used map[string]bool) error {
 // sagaStepMayHaveBegun reports whether an earlier drive began the saga step tu: it is a compensable
 // retry-safe write (Idempotent, not ReadOnly), which writes no attempt marker, and the journal held
 // its accepted-arguments record (see journalAcceptedArgs) when this drive began.
-func (a *Agent) sagaStepMayHaveBegun(values map[string]Record, tu ToolUse, safety Safety) bool {
+func sagaStepMayHaveBegun(values map[string]Record, tu ToolUse, safety Safety) bool {
 	if !safety.retrySafeWrite() {
 		return false
 	}
-	if _, comp := a.tools[tu.Name].(Compensator); !comp {
-		return false
-	}
+	// Only a Compensator's call journals the record (see journalAcceptedArgs).
 	_, ok := values[sagaArgsStep(tu.ID)]
 	return ok
 }
