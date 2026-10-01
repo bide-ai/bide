@@ -155,8 +155,8 @@ earned from a clean audit trail, and governed k-of-n quorum. → [docs/guides/au
 The governed-state tier: multiple processes replaying the same durable log **converge on
 identical state**, backed by a **machine-checked proof**. The **gsm** convergence engine's
 normalization rewrite system is confluent, so the order steps replay in cannot change the
-result. The proof is axiom-free and CI-verified on Coq 8.18 and 8.20 (`Print Assumptions`
-reports "Closed under the global context"): [the Coq/Rocq
+result. The proof is axiom-free and CI-verified on Coq 8.18 and 8.20, and checked on Rocq 9.3
+(`Print Assumptions` reports "Closed under the global context"): [the Coq/Rocq
 proof](https://github.com/blackwell-systems/normalization-confluence/tree/main/coq)
 ([![verify](https://github.com/blackwell-systems/normalization-confluence/actions/workflows/verify.yml/badge.svg)](https://github.com/blackwell-systems/normalization-confluence/actions/workflows/verify.yml)).
 And the proof does not just sit next to the code: gsm's own per-machine verdict is
@@ -167,8 +167,10 @@ combinator data** rather than opaque closures, which is what makes them serializ
 and re-checkable; verification can also run **footprint-local** (`BuildCompositional`) to certify
 machines whose global state space is too large to enumerate. This is how independent agents share
 state without a single writer. The claim is precise: *order-independent convergence of the
-replay*, proven, not "agents always agree." The federated result is mechanized in full, including
-asynchronous (chaotic) order-independence.
+replay*, proven, not "agents always agree." The federated convergence results are mechanized: the
+acyclic structural core (limit, retraction, compositionality) and the monotone-cycle case,
+including asynchronous (chaotic) order-independence for finite-height lattices. The cohomological
+classification of which cyclic federations obstruct is paper-proven, not machine-checked.
 
 Made concrete at scale: an integration test drives up to **10,000,000 governed agents, 2,048 at a
 time,** through *random, invariant-violating* orders (every run breaches a capped invariant and is

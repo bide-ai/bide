@@ -327,7 +327,7 @@ monotone cycles, compositionality, and synthesis are all theorems in that work; 
 their preconditions exhaustively at build time.
 
 The convergence guarantee is backed by a **machine-checked, axiom-free Coq/Rocq proof**,
-CI-verified on Coq 8.18 and 8.20 (`Print Assumptions` reports "Closed under the global context"
+CI-verified on Coq 8.18 and 8.20, and checked on Rocq 9.3 (`Print Assumptions` reports "Closed under the global context"
 for every key theorem; no axioms, no admits; the badge is green and anyone can reproduce it with
 one command). Mechanized: Newman's Lemma, the single-registry Convergence Theorem (confluence +
 unique normal forms), the soundness of gsm's WFC/CC certification (footprint-disjointness =>
