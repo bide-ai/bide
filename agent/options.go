@@ -371,8 +371,13 @@ func WithToolErrorRedactor(fn func(tool string, err error) string) Option {
 // the tenant, state read from elsewhere). It fills the slot WithSystemPrompt fills: the later of
 // the two wins. Its result is not journaled: a run resumed later is sent what fn returns then.
 // Context that the run's later turns must see unchanged belongs in the input, which is journaled
-// (see RunStart), or in a tool result. An error from fn fails the drive, wrapped with the run's
-// ID, before the drive calls the model or any tool. A nil fn is ErrConfig.
+// (see RunStart), or in a tool result.
+//
+// fn is called once per drive, just before the drive's first model request, and only if the drive
+// sends one: reading back a finished run, or a resume whose pending tool calls pause or halt
+// before the next turn, does not call it, so an outage of the prompt's source does not block
+// them. A resumed turn's pending tool calls run before it. An error from fn fails the drive,
+// wrapped with the run's ID, and the model is not called. A nil fn is ErrConfig.
 func WithSystemPromptFunc(fn func(ctx context.Context, run RunInfo) (string, error)) Option {
 	return agentOption(func(c *agentConfig) error {
 		if fn == nil {

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -79,15 +80,10 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 	}
 	// protocol:lifecycle end
 
-	sys, err := a.systemMessage(ctx, RunInfo{RunID: runID, RootRunID: rootRunID(ctx, runID), Saga: saga})
-	if err != nil {
-		return Message{}, usageTotals{}, 0, err
-	}
-	msgs := []Message{}
-	if sys != "" {
-		msgs = append(msgs, SystemText(sys))
-	}
-	msgs = append(msgs, seed...)
+	// The conversation without its system message, which is computed at the drive's first model
+	// call (see sysMsgs below): a drive that sends the model nothing (a finished run read back, a
+	// resume that pauses or halts before its next turn) does not depend on WithSystemPromptFunc.
+	msgs := append([]Message{}, seed...)
 
 	// The recorded assistant turns and tool results, from which the conversation is rebuilt below.
 	var turns []Message
@@ -218,6 +214,10 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 	meter := &spendMeter{}  // usage of every model request this invocation sends
 	chain := a.modelChain() // the model call chain every turn of this invocation goes through
 	var rag retrieved       // the WithRetrieval context blocks, built at this drive's first model call
+	var (
+		sysMsgs []Message // the system message every request of this drive starts with, if any
+		sysDone bool      // sysMsgs is computed
+	)
 	// writeSpend journals spent, billed usage no model record carries, as the step name. A write
 	// that fails is kept for the run's next drive in this process (see settlePending).
 	writeSpend := func(name string, spent Usage) error {
@@ -304,6 +304,16 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 			if err := node.exceeded(runID); err != nil {
 				return leave(err)
 			}
+			if !sysDone {
+				sys, err := a.systemMessage(ctx, RunInfo{RunID: runID, RootRunID: rootRunID(ctx, runID), Saga: saga})
+				if err != nil {
+					return leave(err)
+				}
+				if sys != "" {
+					sysMsgs = []Message{SystemText(sys)}
+				}
+				sysDone = true
+			}
 			fire(TurnStarted{Seq: modelSeq})
 			// A live (non-replayed) model call streams its deltas as ModelEvents through the
 			// turn's sink. On memoized replay store.Do skips the fn, so no sink fires: an
@@ -328,6 +338,9 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 						if sent, e = a.withRetrieved(ctx, runID, msgs, &rag); e != nil {
 							return Record{}, e
 						}
+					}
+					if len(sysMsgs) > 0 {
+						sent = append(slices.Clip(sysMsgs), sent...)
 					}
 					req := Request{Messages: sent, Tools: a.requestTools(), Sampling: a.sampling, ResponseFormat: a.responseFormat, ToolChoice: a.toolChoice}
 					resp, e := chain.call(ctx, ModelCall{Request: req, Model: a.model, RunID: runID, Turn: seq}, ts)

@@ -79,6 +79,7 @@ minor version (0.x.0) may include breaking API or journal-format changes; each o
 - **Breaking:** `Lease` takes `LeaseOption`s, `Recover` `RecoverOption`s and `RecoverLoop` `RecoverLoopOption`s. `WithLeaseHolder` and `WithLeaseTTL` fit all three; `WithRecoverInterval`, `WithRecoverConcurrency` and `WithRecoverErrors` fit only `RecoverLoop`, so passing one to `Recover` or `Lease`, which ignored it, no longer compiles ([#127]).
 - **Breaking:** `agent.RunScope` and `agent.InSaga` are replaced by `RunInfoFrom`: `SubRunID(info.RunID, info.ToolUseID)` is a call's sub-agent run ID, and `info.Saga` whether its run is a saga. A saga rollback's re-run of a retry-safe call now carries that call's `RunInfo` (it carried whatever scope the rollback's context held) ([#127]).
 - `Agent.WithSystemPrompt` and `Agent.WithSystemPromptFunc` share one slot: the later call wins (the function used to win whatever the order) ([#127]).
+- The system prompt function (`WithSystemPromptFunc`) is called once per drive just before the drive's first model request, and not at all by a drive that sends none: reading back a finished run, or a resume whose pending tool calls pause or halt, no longer fails when the function does. A resumed turn's pending tool calls run before it ([#127]).
 
 ### Deprecated
 

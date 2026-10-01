@@ -99,8 +99,8 @@ the journal holds, and so what a resume cannot be talked out of by a redeploy:
 Configuration is live by design: it governs what a drive does next, not what the journal already
 says happened. A drive uses the configuration it is given for:
 
-- the system prompt (`WithSystemPrompt`, and `WithSystemPromptFunc`, which is called on every
-  drive), sampling, tool choice, response format, the model, and model middleware, for the turns
+- the system prompt (`WithSystemPrompt`, and `WithSystemPromptFunc`, which is called once by
+  each drive that sends the model a request, before its first one), sampling, tool choice, response format, the model, and model middleware, for the turns
   that drive makes. Each model turn journals what it was given: digests of the system prompt and
   the tool set it was sent (`Record.PromptDigest`, `Record.ToolsDigest`), the model that answered
   (`Record.Model`), and its finish reason, so an audit can tell which configuration produced each

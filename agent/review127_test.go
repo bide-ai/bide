@@ -68,28 +68,37 @@ func TestRev127_RefusingMiddlewareStopsRetrieval(t *testing.T) {
 	}
 }
 
-// R3: a WithSystemPromptFunc error fails Run on a run that already finished, so the recorded
-// answer cannot be read back while the prompt source is down. Nothing is sent to the model.
-func TestRev127_PromptFuncErrorOnFinishedRun(t *testing.T) {
+// R3 (review of #127): the system prompt function is called only by a drive that sends the model a
+// request, once, before the first: a finished run is read back while the prompt's source is down.
+func TestSystemPromptFunc_OnlyWhenTheModelIsCalled(t *testing.T) {
 	store := agent.NewMemStore()
-	down := false
+	down, calls := false, 0
 	fn := func(context.Context, agent.RunInfo) (string, error) {
+		calls++
 		if down {
 			return "", errors.New("tenant db down")
 		}
 		return "you are helpful", nil
 	}
-	a, err := agent.Build(agent.NewScriptedModel(agent.TextTurn("answer")), store.Journal(), agent.WithSystemPromptFunc(fn))
+	noop := agent.Func("noop", "", agent.Safety{ReadOnly: true}, func(context.Context, struct{}) (string, error) { return "ok", nil })
+	a, err := agent.Build(agent.NewScriptedModel(agent.ToolTurn("c1", "noop", `{}`), agent.TextTurn("answer")), store.Journal(),
+		agent.WithSystemPromptFunc(fn), agent.WithTools(noop))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := a.Run(context.Background(), "r3", "q"); err != nil {
 		t.Fatal(err)
 	}
+	if calls != 1 {
+		t.Fatalf("a drive of two model turns called the prompt function %d times, want 1", calls)
+	}
 	down = true
 	msg, err := a.Run(context.Background(), "r3", "q")
 	if err != nil || msg.Text() != "answer" {
 		t.Fatalf("re-reading a finished run: %q, %v; want the recorded answer", msg.Text(), err)
+	}
+	if calls != 1 {
+		t.Fatalf("reading back a finished run called the prompt function (%d calls in all)", calls)
 	}
 }
 
