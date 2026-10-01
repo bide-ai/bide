@@ -57,7 +57,9 @@ type ToolHandler func(ctx context.Context, call ToolCall) (json.RawMessage, erro
 //   - transform the result before it is journaled (turning a side effect's success into an
 //     error halts the run: see below);
 //   - SHORT-CIRCUIT: return a result (a cache hit) or an error (a policy denial)
-//     WITHOUT calling next, so the tool never runs.
+//     WITHOUT calling next, so the tool never runs. A denial MUST wrap ErrToolNotCalled
+//     (fmt.Errorf("denied: %w", agent.ErrToolNotCalled)): without it, a side effect's
+//     outcome is unknown and the run halts (see below).
 //
 // A middleware that may call next more than once (a retry) or not at all (a cache) must check
 // the call's Spec.Safety first: repeating or skipping a side effect is not its call to make. The
@@ -67,13 +69,17 @@ type ToolHandler func(ctx context.Context, call ToolCall) (json.RawMessage, erro
 // A middleware reaches the tool only through next: never by calling the tool itself, and never by
 // leaving next running after it returns (the agent refuses an invocation of next that comes after
 // the chain returned). When it ends a call without calling next (a denial, a rate limiter that
-// gives up), it returns an error wrapping ErrToolNotCalled, and it returns that error only then.
-// The agent needs positive proof that a side effect was not called: a chain that returns an error
-// without calling next, and without ErrToolNotCalled, leaves the side effect's outcome unknown,
-// and the run halts for it rather than risk running it twice. It needs positive proof that a side
-// effect failed, too: a middleware may transform a result, but one that turns a side effect's
-// success into an error (or returns another error for a call whose tool did not itself fail) makes
-// the outcome unknown, and the run halts for it. The model is never told a fired effect failed.
+// gives up), it MUST return an error wrapping ErrToolNotCalled, and it returns that error only
+// then. The agent needs positive proof that a side effect was not called: a chain that returns an
+// error without calling next, and without ErrToolNotCalled, leaves the side effect's outcome
+// unknown, and the run halts for it rather than risk running it twice. It needs positive proof
+// that a side effect failed, too: a middleware may transform a result, but one that turns a side
+// effect's success into an error (or returns another error for a call whose tool did not itself
+// fail) makes the outcome unknown, and the run halts for it, so the model is never told a fired
+// side effect failed. A retry-safe tool's error is recorded as a failure the model sees, except in
+// a saga for one that changes state (Idempotent, not ReadOnly): there it is recorded with an
+// unknown outcome and reported in SagaAborted.UnknownOutcome, since the rollback would otherwise
+// skip it as a step that made no change.
 //
 // The chain runs INSIDE the durable, memoized step, so a short-circuit result or a
 // transformed result is what gets journaled: resume replays it and never re-runs the

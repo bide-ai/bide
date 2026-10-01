@@ -374,16 +374,29 @@ func (a *Agent) toolHandler(runID string) func(context.Context, ToolUse) (json.R
 			// Reached, but no invocation began the tool's Call, and now none can: not called.
 			state = callRefusedClosed
 		}
-		if state == callReached && err != nil && out.Load() != toolFailed && !ctxDone(ctx) && !a.specs[tu.Name].Safety.RetrySafe() {
+		if state == callReached && err != nil && out.Load() != toolFailed && !ctxDone(ctx) && a.unprovenFailure(ctx, tu.Name) {
 			// The tool began, and did not itself fail: it is still running (a next left running),
 			// it succeeded (a middleware turned that into an error), its outcome is unknown, or a
 			// later invocation's refusal is what the chain returned. "Failed" needs positive proof
 			// too: the side effect's outcome is unknown. (With ctx done the loop already records
 			// nothing, or judges the error late, so the error keeps its own category.)
+			//
+			// A retry-safe tool's error stays an ordinary failure, which the model may retry, except
+			// in a saga for one that changes state (Idempotent, not ReadOnly): the rollback skips a
+			// step that failed as one that made no change, so a step that may have changed state is
+			// recorded with an unknown outcome and reported in SagaAborted.UnknownOutcome.
 			err = fmt.Errorf("tool %q (call %s): the chain returned an error, but the tool itself did not fail: %w (%w)", tu.Name, tu.ID, err, ErrToolOutcomeUnknown)
 		}
 		return res, state, err
 	}
+}
+
+// unprovenFailure reports whether an error the chain returned for a call of the named tool, which
+// began and did not itself fail, leaves the call's outcome unknown: for a side effect always, and
+// for a retry-safe tool that changes state (Idempotent, not ReadOnly) inside a saga.
+func (a *Agent) unprovenFailure(ctx context.Context, name string) bool {
+	s := a.specs[name].Safety
+	return !s.RetrySafe() || !s.ReadOnly && InSaga(ctx)
 }
 
 // journalAcceptedArgs records, before the side effect fires, the arguments a compensable call in

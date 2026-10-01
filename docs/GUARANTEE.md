@@ -44,6 +44,12 @@ store, it is safe: resume replays it from the journal rather than re-running it.
    handler, and without `ErrToolNotCalled`, may have reached the tool some other way, so a side
    effect's outcome is unknown and a resume halts; the base handler refuses any invocation that
    comes after the chain returned, whether the call was refused before or never entered.
+   "Failed" needs positive proof too: when the tool began and did not itself fail, but the chain
+   returned an error (a middleware turned the tool's success into an error), a side effect's
+   outcome is unknown: nothing is recorded, the drive fails with `ErrToolOutcomeUnknown`, and a
+   resume halts. A retry-safe tool records that error, except a saga step that changes state
+   (`Idempotent`, not `ReadOnly`), which is recorded with an unknown outcome and named in
+   `SagaAborted.UnknownOutcome`.
 
 The same holds when nothing crashed and a caller simply invokes the run again (a client retrying
 after a lost response, a redelivered job, a sub-agent or session turn re-entered on resume):
