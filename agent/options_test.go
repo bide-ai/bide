@@ -413,12 +413,24 @@ func TestPrecedence_RunBeatsAgentBeatsDefault(t *testing.T) {
 
 // With returns a copy that shares nothing mutable with the agent: under -race, many goroutines
 // derive, configure (with options and with the transitional builder methods) and run copies of
-// one agent while it runs, and each sees exactly its own configuration.
+// one agent while it runs, and each sees exactly its own configuration. The agent's middleware,
+// tool middleware and retrieval lists have spare capacity, so a copy that shared their arrays
+// would write its additions into a sibling's.
 func TestWith_IsolationUnderRace(t *testing.T) {
 	stops := []string{"STOP"}
-	parent := buildT(t, NewScriptedModel(TextTurn("ok")), WithTools(namedTool("base")),
-		WithSampling(Stop(stops...)), WithMaxTurns(5))
+	noMW := func(next ModelHandler) ModelHandler { return next }
+	noToolMW := func(next ToolHandler) ToolHandler { return next }
+	var none docsRetriever
+	parent := buildT(t, NewScriptedModel(ToolTurn("c1", "base", `{}`), TextTurn("ok")), WithTools(namedTool("base")),
+		WithSampling(Stop(stops...)), WithMaxTurns(5),
+		WithMiddleware(noMW), WithMiddleware(noMW), WithMiddleware(noMW), // one at a time: capacity 4
+		WithToolMiddleware(noToolMW), WithToolMiddleware(noToolMW), WithToolMiddleware(noToolMW),
+		WithRetrieval(none, 1), WithRetrieval(none, 1), WithRetrieval(none, 1))
 	stops[0] = "CHANGED" // the caller's slice is not the agent's
+	if cap(parent.mw) == len(parent.mw) || cap(parent.toolMW) == len(parent.toolMW) || cap(parent.retrievals) == len(parent.retrievals) {
+		t.Fatalf("setup: the agent's lists have no spare capacity (mw %d/%d, toolMW %d/%d, retrievals %d/%d)",
+			len(parent.mw), cap(parent.mw), len(parent.toolMW), cap(parent.toolMW), len(parent.retrievals), cap(parent.retrievals))
+	}
 	parentTools := slices.Clone(parent.specList)
 
 	var wg sync.WaitGroup
@@ -427,15 +439,29 @@ func TestWith_IsolationUnderRace(t *testing.T) {
 		wg.Add(2)
 		go func() {
 			defer wg.Done()
-			var seen []string
-			mark := fmt.Sprintf("mw-%d", i)
+			var seen, seenTool []string
+			var sent string
+			mark := fmt.Sprintf("mark-%d", i)
+			mine := docsRetriever{{Text: mark}}
 			child, err := parent.With(
 				WithTools(namedTool(fmt.Sprintf("t%d", i))),
 				WithMaxTurns(i+10),
 				WithSampling(Stop(mark)),
+				WithRetrieval(mine, 1),
 				WithMiddleware(func(next ModelHandler) ModelHandler {
 					return func(ctx context.Context, call ModelCall) (ModelResponse, error) {
 						seen = append(seen, mark)
+						for _, m := range call.Request.Messages {
+							if isContext(m) {
+								sent += m.Text()
+							}
+						}
+						return next(ctx, call)
+					}
+				}),
+				WithToolMiddleware(func(next ToolHandler) ToolHandler {
+					return func(ctx context.Context, call ToolCall) (json.RawMessage, error) {
+						seenTool = append(seenTool, mark)
 						return next(ctx, call)
 					}
 				}),
@@ -445,17 +471,20 @@ func TestWith_IsolationUnderRace(t *testing.T) {
 				return
 			}
 			// The transitional builders mutate the copy, never the agent or a sibling.
-			child.Use(func(next ModelHandler) ModelHandler { return next }).WithSystemPrompt(mark)
-			child.model = NewScriptedModel(TextTurn("ok"))
+			child.Use(noMW).UseTool(noToolMW).WithSystemPrompt(mark)
 			if _, err := child.Run(context.Background(), fmt.Sprintf("c%d", i), "go"); err != nil {
 				errs <- err
 				return
 			}
 			switch {
-			case len(seen) != 1 || seen[0] != mark:
-				errs <- fmt.Errorf("child %d's middleware saw %v", i, seen)
-			case child.maxTurns != i+10 || len(child.tools) != 2 || len(child.mw) != 2 || child.systemPrompt != mark:
-				errs <- fmt.Errorf("child %d config: turns %d, tools %d, mw %d, prompt %q", i, child.maxTurns, len(child.tools), len(child.mw), child.systemPrompt)
+			case len(seen) != 2 || seen[0] != mark || len(seenTool) != 1 || seenTool[0] != mark:
+				errs <- fmt.Errorf("child %d's middleware saw %v and %v", i, seen, seenTool)
+			case !strings.Contains(sent, mark) || strings.Count(sent, "mark-") != 2: // two calls, one document each
+				errs <- fmt.Errorf("child %d's model was sent context %q, want its own document only", i, sent)
+			case child.maxTurns != i+10 || len(child.tools) != 2 || len(child.mw) != 5 || len(child.toolMW) != 5 ||
+				len(child.retrievals) != 4 || child.systemPrompt != mark:
+				errs <- fmt.Errorf("child %d config: turns %d, tools %d, mw %d, toolMW %d, retrievals %d, prompt %q", i,
+					child.maxTurns, len(child.tools), len(child.mw), len(child.toolMW), len(child.retrievals), child.systemPrompt)
 			case len(child.sampling.Stop) != 1 || child.sampling.Stop[0] != mark:
 				errs <- fmt.Errorf("child %d stop = %v", i, child.sampling.Stop)
 			}
@@ -467,7 +496,6 @@ func TestWith_IsolationUnderRace(t *testing.T) {
 				errs <- err
 				return
 			}
-			c.model = NewScriptedModel(TextTurn("ok"))
 			if _, err := c.Run(context.Background(), fmt.Sprintf("p%d", i), "go"); err != nil {
 				errs <- err
 			}
@@ -478,10 +506,12 @@ func TestWith_IsolationUnderRace(t *testing.T) {
 	for err := range errs {
 		t.Error(err)
 	}
-	if parent.maxTurns != 5 || len(parent.tools) != 1 || len(parent.specs) != 1 || len(parent.mw) != 0 ||
-		parent.systemPrompt != "" || !slices.EqualFunc(parent.specList, parentTools, func(a, b ToolSpec) bool { return a.Name == b.Name }) {
-		t.Errorf("the agent changed: turns %d, tools %d, specs %d, mw %d, prompt %q, specList %v",
-			parent.maxTurns, len(parent.tools), len(parent.specs), len(parent.mw), parent.systemPrompt, parent.specList)
+	if parent.maxTurns != 5 || len(parent.tools) != 1 || len(parent.specs) != 1 || len(parent.mw) != 3 || len(parent.toolMW) != 3 ||
+		len(parent.retrievals) != 3 || parent.systemPrompt != "" ||
+		!slices.EqualFunc(parent.specList, parentTools, func(a, b ToolSpec) bool { return a.Name == b.Name }) {
+		t.Errorf("the agent changed: turns %d, tools %d, specs %d, mw %d, toolMW %d, retrievals %d, prompt %q, specList %v",
+			parent.maxTurns, len(parent.tools), len(parent.specs), len(parent.mw), len(parent.toolMW), len(parent.retrievals),
+			parent.systemPrompt, parent.specList)
 	}
 	if len(parent.sampling.Stop) != 1 || parent.sampling.Stop[0] != "STOP" {
 		t.Errorf("the agent's stop sequences = %v, want [STOP]", parent.sampling.Stop)
@@ -531,3 +561,8 @@ func TestWithRetrieval_EveryMiddlewareSeesTheDocuments(t *testing.T) {
 		t.Errorf("middleware given before WithRetrieval saw context %q, want the documents", got)
 	}
 }
+
+// docsRetriever is a Retriever that returns fixed documents; it is safe for concurrent use.
+type docsRetriever []Doc
+
+func (d docsRetriever) Retrieve(context.Context, string, int) ([]Doc, error) { return d, nil }

@@ -192,43 +192,22 @@ func RunTypedNative[T any](ctx context.Context, a *Agent, runID, input string) (
 	return out, nil
 }
 
-// clone returns a copy of the agent that shares nothing mutable with it: the model, store, tools,
-// middleware and functions are shared (they are values the agent only calls), while the tool set,
-// specs, middleware lists, sampling, settings held by pointer and retrievals are the copy's own.
-// With configures a clone, and RunTyped and RunTypedNative run one, so neither changes the agent
-// it came from, and the two may be used from different goroutines.
+// clone returns a copy of the agent that shares nothing mutable with it. The tool set, specs map,
+// middleware lists and retrievals are the copy's own, so adding to either agent's never reaches
+// the other's. Everything else is shared: the model, store, tools and functions are values the
+// agent only calls, the specs are never written through (specList is only copied, see
+// requestTools), and the settings held by pointer (sampling's, the tool choice, the identity,
+// the response format) are replaced when set, never written through. With configures a clone,
+// and RunTyped and RunTypedNative run one, so neither changes the agent it came from, and the two
+// may be used from different goroutines.
 func (a *Agent) clone() *Agent {
 	c := *a // copies every value field and pointer, so a newly added option field can't be forgotten
-	// Deep-copy every reference type, so neither agent can change the other's view.
 	c.tools = maps.Clone(a.tools)
-	if c.tools == nil {
-		c.tools = map[string]Tool{}
-	}
-	c.specs = maps.Clone(a.specs) // the specs are never written through; specList is only copied (requestTools)
-	if c.specs == nil {
-		c.specs = map[string]*ToolSpec{}
-	}
+	c.specs = maps.Clone(a.specs)
 	c.mw = slices.Clone(a.mw)
 	c.toolMW = slices.Clone(a.toolMW)
 	c.retrievals = slices.Clone(a.retrievals)
-	c.sampling = cloneSampling(a.sampling)
-	c.toolChoice = clonePtr(a.toolChoice)
-	c.identity = clonePtr(a.identity)
-	if a.responseFormat != nil {
-		rf := *a.responseFormat
-		rf.Schema = bytes.Clone(rf.Schema)
-		c.responseFormat = &rf
-	}
 	return &c
-}
-
-// clonePtr returns a pointer to a copy of *p, or nil for nil.
-func clonePtr[T any](p *T) *T {
-	if p == nil {
-		return nil
-	}
-	v := *p
-	return &v
 }
 
 // cloneWith returns a clone with one extra tool and appended model middleware.
