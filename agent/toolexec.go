@@ -4,10 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -243,11 +243,28 @@ const (
 	beganSealed
 )
 
-// beginCall moves b to beganYes, or reports false if the loop has sealed it. A call already begun
-// (a retry-safe tool a middleware calls again) stays begun.
-func beginCall(b *atomic.Int32) bool {
-	return b.CompareAndSwap(beganNone, beganYes) || b.Load() == beganYes
+// beginCall moves b to beganYes. first reports that this invocation began the call; sealed, that
+// the loop sealed it first, so the tool must not be called. A call already begun stays begun.
+func beginCall(b *atomic.Int32) (first, sealed bool) {
+	if b.CompareAndSwap(beganNone, beganYes) {
+		return true, false
+	}
+	return false, b.Load() == beganSealed
 }
+
+// A call's out word is the tool's own outcome, as the base handler saw its Call return: not run,
+// running, succeeded, failed (it returned an error, before its context was done, that does not
+// wrap ErrToolOutcomeUnknown), or unknown. When the chain returns an error for a side effect whose
+// tool began and did not itself fail (a middleware turned a success into an error, or returned a
+// later invocation's refusal, or left the call running), the loop cannot record a known failure:
+// "failed", like "not called", needs positive proof, so the side effect's outcome is unknown.
+const (
+	toolNotRun int32 = iota
+	toolRunning
+	toolSucceeded
+	toolFailed
+	toolUnknown
+)
 
 // closeCall moves st to its closed state when the chain returns (open to closed, refused to
 // refusedClosed; reached stays) and returns the final state.
@@ -263,11 +280,10 @@ func closeCall(st *atomic.Int32) int32 {
 // chain's entry point for a call of run runID, which also reports the call's final state (see
 // callOpen): reached, refused, or closed.
 func (a *Agent) toolHandler(runID string) func(context.Context, ToolUse) (json.RawMessage, int32, error) {
-	// ran holds the tool-use IDs of tools that are not retry-safe and have been invoked in this
-	// run. It lives here, in the base handler, rather than in the context, so no middleware can
-	// get around it: such a tool runs at most once per tool call, however often a middleware
-	// calls next. (A resume builds a new chain, and the journal's attempt marker decides there.)
-	var ran sync.Map
+	// A tool that is not retry-safe runs at most once per tool call, however often a middleware
+	// calls next: the call's began word, set by compare-and-swap here in the base handler, decides,
+	// so no middleware can get around it. (A resume builds a new chain, and the journal's attempt
+	// marker decides there.)
 	h := ToolHandler(func(ctx context.Context, call ToolCall) (json.RawMessage, error) {
 		tu := call.Use
 		// refuse ends the call without calling the tool: the state says so, and the error wraps
@@ -310,37 +326,61 @@ func (a *Agent) toolHandler(runID string) func(context.Context, ToolUse) (json.R
 			// the call's outcome without this invocation, so it must not reach the tool.
 			return nil, fmt.Errorf("tool %q (call %s) was not started: the tool middleware chain had already returned: %w", tu.Name, tu.ID, ErrToolNotCalled)
 		}
-		// The registered spec decides, never call.Spec, which a middleware may have changed. The
-		// call is marked as run only here, immediately before the tool, so no refusal above marks
-		// a tool that never ran.
-		if !a.specs[tu.Name].Safety.RetrySafe() {
-			if _, again := ran.LoadOrStore(tu.ID, true); again {
-				// The earlier invocation reached the tool.
-				return nil, fmt.Errorf("tool %q (call %s) already ran and is not retry-safe: %w", tu.Name, tu.ID, ErrToolReinvoked)
-			}
-		}
 		// A failure here returns before the tool's Call began: the loop seals the call's began word
 		// and counts the call as not called (see beganNone).
 		if err := journalAcceptedArgs(ctx, t, call); err != nil {
 			return nil, err
 		}
-		if call.began != nil && !beginCall(call.began) {
-			return nil, fmt.Errorf("tool %q (call %s) was not started: the tool middleware chain had already returned: %w", tu.Name, tu.ID, ErrToolNotCalled)
+		// Begin the call, immediately before the tool. The registered spec decides, never
+		// call.Spec: a tool that is not retry-safe is begun once per call, and an invocation that
+		// finds it begun is "already ran", which is then true; its outcome is the earlier
+		// invocation's, which this one does not know (see toolNotRun).
+		if call.began != nil {
+			switch first, sealed := beginCall(call.began); {
+			case sealed:
+				return nil, fmt.Errorf("tool %q (call %s) was not started: the tool middleware chain had already returned: %w", tu.Name, tu.ID, ErrToolNotCalled)
+			case !first && !a.specs[tu.Name].Safety.RetrySafe():
+				return nil, fmt.Errorf("tool %q (call %s) already ran and is not retry-safe: %w", tu.Name, tu.ID, ErrToolReinvoked)
+			}
 		}
-		return t.Call(ctx, tu.Args)
+		if call.out != nil {
+			call.out.Store(toolRunning)
+		}
+		res, err := t.Call(ctx, tu.Args)
+		if call.out != nil {
+			// The tool's own outcome: a known failure only if it said so itself, before its context
+			// was done and without ErrToolOutcomeUnknown.
+			switch {
+			case err == nil:
+				call.out.Store(toolSucceeded)
+			case errors.Is(err, ErrToolOutcomeUnknown) || ctxDone(ctx):
+				call.out.Store(toolUnknown)
+			default:
+				call.out.Store(toolFailed)
+			}
+		}
+		return res, err
 	})
 	for i := len(a.toolMW) - 1; i >= 0; i-- {
 		h = a.toolMW[i](h)
 	}
 	return func(ctx context.Context, tu ToolUse) (json.RawMessage, int32, error) {
 		call := a.toolCallFor(runID, tu)
-		var st, began atomic.Int32 // callOpen, beganNone
-		call.state, call.began = &st, &began
+		var st, began, out atomic.Int32 // callOpen, beganNone, toolNotRun
+		call.state, call.began, call.out = &st, &began, &out
 		res, err := h(ctx, call)
 		state := closeCall(&st)
 		if state == callReached && began.CompareAndSwap(beganNone, beganSealed) {
 			// Reached, but no invocation began the tool's Call, and now none can: not called.
 			state = callRefusedClosed
+		}
+		if state == callReached && err != nil && out.Load() != toolFailed && !ctxDone(ctx) && !a.specs[tu.Name].Safety.RetrySafe() {
+			// The tool began, and did not itself fail: it is still running (a next left running),
+			// it succeeded (a middleware turned that into an error), its outcome is unknown, or a
+			// later invocation's refusal is what the chain returned. "Failed" needs positive proof
+			// too: the side effect's outcome is unknown. (With ctx done the loop already records
+			// nothing, or judges the error late, so the error keeps its own category.)
+			err = fmt.Errorf("tool %q (call %s): the chain returned an error, but the tool itself did not fail: %w (%w)", tu.Name, tu.ID, err, ErrToolOutcomeUnknown)
 		}
 		return res, state, err
 	}

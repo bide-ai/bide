@@ -32,6 +32,8 @@ type ToolCall struct {
 	state *atomic.Int32
 	// began is whether any invocation began the tool's Call (see beganNone), by compare-and-swap.
 	began *atomic.Int32
+	// out is the tool's own outcome (see toolNotRun).
+	out *atomic.Int32
 }
 
 // ErrorText returns the text the agent journals, and sends to the model, for this call failing
