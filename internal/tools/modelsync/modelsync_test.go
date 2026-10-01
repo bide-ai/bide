@@ -79,6 +79,7 @@ func newFixture(t *testing.T) *fixture {
 	f.git("init", "-q", "-b", "main")
 	f.write("spec/tla/claims/Claims.tla", fixtureSpec)
 	f.write("spec/tla/README.md", fixtureReadme)
+	f.write("spec/tla/flows/Flows.tla", "---- MODULE Flows ----\nBegin == TRUE\n====\n") // a second model, with no map and no markers
 	f.write("agent/claim.go", fixtureGo)
 	f.base = f.commit("base")
 	return f
@@ -213,7 +214,8 @@ func TestRegionChangeWithOverridePasses(t *testing.T) {
 // excuse the change.
 func TestBadOverrideFails(t *testing.T) {
 	for _, tc := range []struct{ msg, want string }{
-		{"Protocol-Impact: flows none (wrong model)", `override names model "flows"`},
+		{"Protocol-Impact: flows none (another model)", "model claims: marked code changed"},
+		{"Protocol-Impact: nosuch none (no such model)", `override names model "nosuch"`},
 		{"Protocol-Impact: none ()", "malformed override"},
 		{"Protocol-Impact: none", "malformed override"},
 		{"Protocol-Impact: maybe (it is fine)", "malformed override"},
