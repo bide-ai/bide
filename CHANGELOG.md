@@ -9,9 +9,7 @@ minor version (0.x.0) may include breaking API or journal-format changes; each o
 
 ## [Unreleased]
 
-## [0.9.0] - YYYY-MM-DD
-
-<!-- RELEASE DATE: set at tag time (scripts/release.sh runs on the maintainer's go). -->
+## [0.9.0] - 2026-10-01
 
 ### Added
 

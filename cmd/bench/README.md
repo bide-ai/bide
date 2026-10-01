@@ -20,8 +20,8 @@ the concurrency turned up.
 
 Two environments, medians reported. Every run journals to the in-memory `MemStore`, so the
 journal-records figure is an in-memory write rate, not a durable-store one. Each run writes six
-journal records in these scenarios, the `@journal` header among them (five at v0.8.0, when the
-runner table below was measured).
+journal records in these scenarios, the `@journal` header among them (five at v0.8.0, whose row
+the runner table keeps as history).
 
 Latency is reported as the mean run latency (concurrency / throughput: the harness keeps a fixed
 number of runs in flight, so by Little's law this is the mean time a run takes), p90 and p99. The
@@ -31,15 +31,22 @@ between runs.
 
 **A standard GitHub Actions runner** (`ubuntu-latest`, 4 vCPU AMD EPYC 7763, Go 1.27), each
 scenario run 21 times, from a single-ref run of the [Benchmark workflow](../../.github/workflows/bench.yml)
-at v0.8.0. Anyone can reproduce these: Actions, Benchmark, Run workflow, with `base` and `head`
+at v0.9.0 ([run 36802470752](https://github.com/bide-ai/bide/actions/runs/36802470752); a same-ref A/B run on the
+same CPU model put the noise within 2.7% on every metric shown), with the v0.8.0 row kept for comparison. Anyone can reproduce these: Actions, Benchmark, Run workflow, with `base` and `head`
 empty. Runner CPU models vary between jobs (AMD EPYC 7763 and 9V74 among them), and the job summary
 states the model; published numbers always come from a single-ref run and name its CPU model, and
 a reproduction is comparable only on the same model.
 
 | Scenario | Wall-clock | Runs/s | Journal records/s | Mean latency | p90 | p99 | Peak goroutines | Heap delta |
 |---|---|---|---|---|---|---|---|---|
-| Overhead: `-runs 5000 -concurrency 256` | ~211 ms | ~23,700 | ~118,400 | 10.8 ms | 26 ms | 52 ms | 304 | ~14 MB |
-| I/O fan-out: `-runs 20000 -concurrency 5000 -latency 50ms` | ~1.05 s | ~19,000 | ~95,000 | 263 ms | 322 ms | 419 ms | 5,805 | ~64 MB |
+| Overhead: `-runs 5000 -concurrency 256` | ~197 ms | ~25,400 | ~152,400 | 10.1 ms | 22 ms | 50 ms | 302 | ~17 MB |
+| Overhead, v0.8.0 (history) | ~211 ms | ~23,700 | ~118,400 | 10.8 ms | 26 ms | 52 ms | 304 | ~14 MB |
+| I/O fan-out: `-runs 20000 -concurrency 5000 -latency 50ms` | ~1.01 s | ~19,900 | ~119,300 | 251 ms | 321 ms | 447 ms | 5,669 | ~74 MB |
+| I/O fan-out, v0.8.0 (history) | ~1.05 s | ~19,000 | ~95,000 | 263 ms | 322 ms | 419 ms | 5,805 | ~64 MB |
+
+At v0.9.0 the fan-out p99 is higher than at v0.8.0 (447 vs 419 ms) while throughput and the mean
+improved: the sixth journal record each run writes (the `@journal` header, #92) reshapes the
+latency distribution. The `Record` shrink planned after P12 is expected to recover some of it.
 
 **A 10-core Apple silicon Mac** (darwin/arm64, Go 1.27), measured at v0.7.0, each scenario run
 seven times, when each run wrote four journal records. It was measured with other work running (a
