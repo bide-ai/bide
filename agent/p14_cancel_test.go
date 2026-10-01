@@ -8,10 +8,10 @@ import (
 	"testing"
 )
 
-// hookStore wraps a Store: it counts Inserts, and calls onGet after each Get and onLoad after
+// pcHookStore wraps a Store: it counts Inserts, and calls onGet after each Get and onLoad after
 // each Load's first yielded entry, so a test can land another writer's entry at an exact point of
 // a reader's sequence of reads (no sleeps).
-type hookStore struct {
+type pcHookStore struct {
 	Store
 	mu      sync.Mutex
 	inserts []string
@@ -19,7 +19,7 @@ type hookStore struct {
 	onLoad  func(runID string)
 }
 
-func (s *hookStore) Insert(ctx context.Context, runID, name string, data []byte) (Entry, bool, error) {
+func (s *pcHookStore) Insert(ctx context.Context, runID, name string, data []byte) (Entry, bool, error) {
 	e, ins, err := s.Store.Insert(ctx, runID, name, data)
 	if ins {
 		s.mu.Lock()
@@ -29,7 +29,7 @@ func (s *hookStore) Insert(ctx context.Context, runID, name string, data []byte)
 	return e, ins, err
 }
 
-func (s *hookStore) Get(ctx context.Context, runID, name string) (Entry, bool, error) {
+func (s *pcHookStore) Get(ctx context.Context, runID, name string) (Entry, bool, error) {
 	e, ok, err := s.Store.Get(ctx, runID, name)
 	if f := s.onGet; f != nil {
 		f(runID, name)
@@ -37,7 +37,7 @@ func (s *hookStore) Get(ctx context.Context, runID, name string) (Entry, bool, e
 	return e, ok, err
 }
 
-func (s *hookStore) Load(ctx context.Context, runID string, after int64) iter.Seq2[Entry, error] {
+func (s *pcHookStore) Load(ctx context.Context, runID string, after int64) iter.Seq2[Entry, error] {
 	return func(yield func(Entry, error) bool) {
 		first := true
 		for e, err := range s.Store.Load(ctx, runID, after) {
@@ -54,7 +54,7 @@ func (s *hookStore) Load(ctx context.Context, runID string, after int64) iter.Se
 	}
 }
 
-func (s *hookStore) takeInserts() []string {
+func (s *pcHookStore) takeInserts() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := s.inserts
@@ -62,10 +62,10 @@ func (s *hookStore) takeInserts() []string {
 	return out
 }
 
-// p14Journal returns a journal over a hookStore on a MemStore.
-func p14Journal(t *testing.T) (*Journal, *hookStore) {
+// pcJournal returns a journal over a pcHookStore on a MemStore.
+func pcJournal(t *testing.T) (*Journal, *pcHookStore) {
 	t.Helper()
-	hs := &hookStore{Store: NewMemStore()}
+	hs := &pcHookStore{Store: NewMemStore()}
 	j, err := NewJournal(hs)
 	if err != nil {
 		t.Fatal(err)
@@ -73,8 +73,8 @@ func p14Journal(t *testing.T) (*Journal, *hookStore) {
 	return j, hs
 }
 
-// p14Start journals runID's run:start.
-func p14Start(t *testing.T, j *Journal, runID string, saga bool) {
+// pcStart journals runID's run:start.
+func pcStart(t *testing.T, j *Journal, runID string, saga bool) {
 	t.Helper()
 	b, err := marshalJournal(RunStart{Input: UserText("go"), Saga: saga})
 	if err != nil {
@@ -85,8 +85,8 @@ func p14Start(t *testing.T, j *Journal, runID string, saga bool) {
 	}
 }
 
-// p14Mark journals the value step name (an end marker, a request) of runID with text.
-func p14Mark(t *testing.T, j *Journal, runID, name, text string) {
+// pcMark journals the value step name (an end marker, a request) of runID with text.
+func pcMark(t *testing.T, j *Journal, runID, name, text string) {
 	t.Helper()
 	if _, err := j.put(context.Background(), runID, name, Record{Kind: StepValue, Result: mustJSON(text)}); err != nil {
 		t.Fatal(err)
@@ -110,9 +110,9 @@ func TestP14Rule01_CancelRefusesARunThatIsOver(t *testing.T) {
 		{"cancelled saga", runCancelledStep, true, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			j, hs := p14Journal(t)
-			p14Start(t, j, "r", tc.saga)
-			p14Mark(t, j, "r", tc.marker, "x")
+			j, hs := pcJournal(t)
+			pcStart(t, j, "r", tc.saga)
+			pcMark(t, j, "r", tc.marker, "x")
 			hs.takeInserts()
 			err := Cancel(ctx, j, "r", "stop")
 			if tc.want == nil && err != nil || tc.want != nil && !errors.Is(err, tc.want) {
@@ -125,25 +125,25 @@ func TestP14Rule01_CancelRefusesARunThatIsOver(t *testing.T) {
 	}
 	// The first end marker decides: a run completed and then cancelled (two keys can both land)
 	// is over as completed.
-	j, hs := p14Journal(t)
-	p14Start(t, j, "r", false)
-	p14Mark(t, j, "r", runCompleteStep, "")
-	p14Mark(t, j, "r", runCancelledStep, "late")
+	j, hs := pcJournal(t)
+	pcStart(t, j, "r", false)
+	pcMark(t, j, "r", runCompleteStep, "")
+	pcMark(t, j, "r", runCancelledStep, "late")
 	hs.takeInserts()
 	if err := Cancel(ctx, j, "r", "stop"); !errors.Is(err, ErrRunEnded) {
 		t.Fatalf("Cancel of a run completed first = %v, want ErrRunEnded", err)
 	}
 	// And one cancelled first, then completed, is cancelled.
-	j, _ = p14Journal(t)
-	p14Start(t, j, "r", false)
-	p14Mark(t, j, "r", runCancelledStep, "first")
-	p14Mark(t, j, "r", runCompleteStep, "")
+	j, _ = pcJournal(t)
+	pcStart(t, j, "r", false)
+	pcMark(t, j, "r", runCancelledStep, "first")
+	pcMark(t, j, "r", runCompleteStep, "")
 	if err := Cancel(ctx, j, "r", "stop"); err != nil {
 		t.Fatalf("Cancel of a run cancelled first = %v, want nil", err)
 	}
 	// A live run is cancelled: run:cancelled {reason} is written.
-	j, hs = p14Journal(t)
-	p14Start(t, j, "r", false)
+	j, hs = pcJournal(t)
+	pcStart(t, j, "r", false)
 	hs.takeInserts()
 	if err := Cancel(ctx, j, "r", "stop"); err != nil {
 		t.Fatalf("Cancel of a live run = %v", err)
@@ -163,7 +163,7 @@ func TestP14Rule01_CancelRefusesARunThatIsOver(t *testing.T) {
 	}
 	// A session turn's run (and a sub-run) is a run: its ID is accepted.
 	turn := sessionTurnRunID("chat", 0)
-	p14Start(t, j, turn, false)
+	pcStart(t, j, turn, false)
 	if err := Cancel(ctx, j, turn, "x"); err != nil {
 		t.Fatalf("Cancel of a session turn's run = %v", err)
 	}
@@ -175,8 +175,8 @@ func TestP14Rule01_CancelRefusesARunThatIsOver(t *testing.T) {
 // regress/cancel-verdict is Cancel reporting cancelled here).
 func TestP14Rule04_CancelReadsBackTheFirstEndMarker(t *testing.T) {
 	ctx := context.Background()
-	j, hs := p14Journal(t)
-	p14Start(t, j, "r", false)
+	j, hs := pcJournal(t)
+	pcStart(t, j, "r", false)
 	fired := false
 	hs.onGet = func(runID, name string) {
 		if name == runStartStep && !fired { // Cancel's last read before its insert
@@ -204,9 +204,9 @@ func TestP14Rule04_CancelReadsBackTheFirstEndMarker(t *testing.T) {
 // marker run:cancelled, so recovery still lists the run, and Status says Started.
 func TestP14Rule05_CancelNotStartedAndSagaRequest(t *testing.T) {
 	ctx := context.Background()
-	j, hs := p14Journal(t)
+	j, hs := pcJournal(t)
 	// A run that holds records but no run:start (a Signal sent to a mistyped ID).
-	p14Mark(t, j, "r", "signal:x", "hi")
+	pcMark(t, j, "r", "signal:x", "hi")
 	hs.takeInserts()
 	err := Cancel(ctx, j, "r", "stop")
 	if !errors.Is(err, ErrNotStarted) || !errors.Is(err, ErrConfig) {
@@ -223,7 +223,7 @@ func TestP14Rule05_CancelNotStartedAndSagaRequest(t *testing.T) {
 		t.Fatalf("Cancel of an empty run wrote %v", got)
 	}
 
-	p14Start(t, j, "saga", true)
+	pcStart(t, j, "saga", true)
 	hs.takeInserts()
 	if err := Cancel(ctx, j, "saga", "stop"); err != nil {
 		t.Fatalf("Cancel of a saga = %v", err)
