@@ -304,13 +304,13 @@ func recoverable(runID string) bool { return !IsSubRun(runID) && !IsSessionRun(r
 // which a resume that calls Run or RunSaga replays without firing anything again.
 func recoverRun(ctx context.Context, store Durable, runID string, resume func(ctx context.Context, runID string) error, cfg recoverConfig) (bool, error) {
 	var resumed bool
-	driven, err := Lease(ctx, store, runID, func(ctx context.Context) error {
+	driven, err := leaseRun(ctx, store, runID, func(ctx context.Context) error {
 		if over, err := runEnded(ctx, store, runID); err != nil || over {
 			return err
 		}
 		resumed = true
 		return resume(ctx, runID)
-	}, WithLeaseHolder(cfg.holder), WithLeaseTTL(cfg.ttl))
+	}, cfg)
 	if err != nil && (!driven || !IsPause(err) && !errors.Is(err, ErrLeaseLost)) {
 		return resumed, fmt.Errorf("recover run %s: %w", runID, err)
 	}

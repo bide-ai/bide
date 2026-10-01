@@ -156,6 +156,12 @@ func Lease(ctx context.Context, store Durable, runID string, drive func(context.
 	if err != nil {
 		return false, err
 	}
+	return leaseRun(ctx, store, runID, drive, cfg)
+}
+
+// leaseRun is Lease under a configuration leaseConfig validated: a recovery pass calls it for
+// each run with its own, so it builds no options per run.
+func leaseRun(ctx context.Context, store Durable, runID string, drive func(context.Context) error, cfg recoverConfig) (bool, error) {
 	leaser, ok := capabilityOf[Leaser](store)
 	if !ok {
 		return true, drive(ctx) // no leasing available: drive unconditionally
