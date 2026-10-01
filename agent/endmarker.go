@@ -176,6 +176,8 @@ func (e *cancelTrip) Error() string { return "saga cancelled: " + e.reason }
 
 // protocol:lifecycle begin DTurn DPost
 
+// protocol:delegation begin ECx
+
 // cancelSeen reads the run's cancellation marker (run:cancelled, or a saga's rollback request):
 // one Get. A sub-run (one whose tree root is another run: a sub-agent's, a SubRunFor run, a
 // delegation) reads its tree root's too, since a Cancel of the root cancels the whole tree: up to
@@ -197,6 +199,8 @@ func (a *Agent) rootCancelled(ctx context.Context, root string) (bool, error) {
 	_, ok, err := lookup(ctx, a.store, root, runCancelRequestedStep)
 	return ok, err
 }
+
+// protocol:delegation end
 
 // postClaim is a won claim's check before its call (rule 3, L2): if the run was cancelled, the
 // attempt is recorded as not started, so it never fires, and stop is true.

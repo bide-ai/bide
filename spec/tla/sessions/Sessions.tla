@@ -41,7 +41,9 @@ CONSTANTS
   MaxTry,      \* sends per caller (0: a caller sends again until it is answered, for liveness)
   MaxStarts,   \* bound on Send turns per session
   MaxClaims,   \* bound on the claims one caller draws
-  CancelRule,  \* "none": P14 as designed; "close": the proposed rule (finding S3)
+  CancelRule,  \* "none": P14 as designed; "close": the proposed rule (finding S3); "rollback": it,
+               \* and a saga turn's rollback request driven by the session (#138 review, finding 6)
+  SagaTurns,   \* TRUE: the turns' runs are sagas, so Cancel writes a rollback request, not run:cancelled
   TurnLease,   \* FALSE: a turn's run is driven with no lease; TRUE: the proposed rule (finding S4)
   Fix,         \* the proposed fixes in force: a subset of {"S1", "S2"} (findings S1, S2)
   Bug          \* "none" or a historical rule, see regress/
@@ -49,7 +51,8 @@ CONSTANTS
 None == "none"
 Ops == {"send", "once", "root"}
 ASSUME Bug \in {"none", "SlashIds", "IndexTurns", "NoSkip", "StepWrapped", "NoFrom", "DoneAnyInput"}
-ASSUME CancelRule \in {"none", "close"} /\ Fix \subseteq {"S1", "S2"} /\ TurnLease \in BOOLEAN
+ASSUME CancelRule \in {"none", "close", "rollback"} /\ Fix \subseteq {"S1", "S2"} /\ TurnLease \in BOOLEAN
+ASSUME SagaTurns \in BOOLEAN
 ASSUME \A c \in Callers : COp[c] \in Ops /\ (COp[c] = "root") = (CH[c] = None)
 ASSUME NCalls >= 1
 
@@ -69,12 +72,12 @@ RunIds == {TurnId(s, n) : s \in Sess, n \in 0..MaxStarts} \cup {EventId(s, k) : 
 
 \* A run's journal, abstracted: run:start's input (and a ghost tag: the SendOnce key whose turn
 \* started it), the model records (each the number of transcript turns its call was seeded
-\* with), run:complete's answer, P14's run:cancelled, and the spend: billed model calls and the
-\* journaled spend (records and late spend).
+\* with), run:complete's answer, P14's run:cancelled (cx) and a saga's rollback request (rq), and
+\* the spend: billed model calls and the journaled spend (records and late spend).
 NoAns == [msg |-> None, seen |-> -2]
 NoTag == <<None, None>>
 NoTurn == [in |-> None, ans |-> NoAns, key |-> None, run |-> None, claim |-> <<None, 0>>]
-NoRun == [inp |-> None, tag |-> NoTag, llm |-> <<>>, done |-> NoAns, cx |-> FALSE,
+NoRun == [inp |-> None, tag |-> NoTag, llm |-> <<>>, done |-> NoAns, cx |-> FALSE, rq |-> FALSE,
           billed |-> 0, jsp |-> 0]
 Tag(c) == IF COp[c] = "once" THEN <<SOf(c), CKey[c]>> ELSE NoTag
 
@@ -127,6 +130,10 @@ define
   Justified(s, m) ==
     LET o == FirstOpen(s)
     IN o # 0 /\ starts[s][o].in # m /\ ~runs[starts[s][o].run].cx
+       /\ ~(runs[starts[s][o].run].rq /\ runs[starts[s][o].run].done = NoAns)
+  \* The open turn's run can be closed: cancelled, or (CancelRule = "rollback") a saga with a
+  \* rollback request whose answer is not recorded, which the session rolls back itself.
+  Closable(r) == runs[r].cx \/ (CancelRule = "rollback" /\ runs[r].rq /\ runs[r].done = NoAns)
   \* A delivery is acknowledged once one caller of its message and op was answered; the others
   \* stop sending it.
   Acked(c) == \E d \in Callers : CMsg[d] = CMsg[c] /\ COp[d] = COp[c] /\ outcome[d] = "ok"
@@ -191,8 +198,16 @@ SCheck:
       rid := starts[s][o].run;
       hmu[h] := None;
       goto Seed;
-    elsif o # 0 /\ CancelRule = "close" /\ runs[starts[s][o].run].cx then
+    elsif o # 0 /\ CancelRule # "none" /\ Closable(starts[s][o].run) /\ ~runs[starts[s][o].run].cx
+          /\ TurnLease /\ lease[starts[s][o].run] \notin {None, self} then
+      \* The saga turn's rollback is another holder's drive (ErrTurnContended): send again later.
+      why := "contended";
+      goto Fail;
+    elsif o # 0 /\ CancelRule # "none" /\ Closable(starts[s][o].run) then
       \* S3's rule: the open turn's run was cancelled; record the turn closed, then start ours.
+      \* Under "rollback", a saga turn's request is acted on first: the session drives the turn's
+      \* run under its lease, which rolls it back and writes run:cancelled (closeIfCancelled).
+      runs[starts[s][o].run].cx := TRUE;
       hmu[h] := self;
       closing := TRUE;
       cin := starts[s][o].in;
@@ -354,7 +369,9 @@ DLoad:
       \* finished run, above, needs none): a worker without it does not judge the input.
       why := "contended";
       goto Fail;
-    elsif r.cx then
+    elsif r.cx \/ r.rq then
+      \* A cancelled run, or a saga's request: the drive rolls it back and writes run:cancelled.
+      runs[rid].cx := TRUE;
       why := "cancelled";
       goto Fail;
     elsif r.inp # None /\ r.inp # CMsg[self] then
@@ -378,8 +395,10 @@ DLoad:
     end if;
   end with;
 DCall:
-  if runs[rid].cx then
-    \* P14 (D1): run:cancelled is read at every turn boundary.
+  if runs[rid].cx \/ runs[rid].rq then
+    \* P14 (D1): run:cancelled (a saga's request: the drive rolls it back, then writes
+    \* run:cancelled) is read at every turn boundary.
+    runs[rid].cx := TRUE;
     why := "cancelled";
     goto Fail;
   elsif i >= NCalls then
@@ -523,6 +542,10 @@ KeyedIn(s, k, key) ==
 Justified(s, m) ==
   LET o == FirstOpen(s)
   IN o # 0 /\ starts[s][o].in # m /\ ~runs[starts[s][o].run].cx
+     /\ ~(runs[starts[s][o].run].rq /\ runs[starts[s][o].run].done = NoAns)
+
+
+Closable(r) == runs[r].cx \/ (CancelRule = "rollback" /\ runs[r].rq /\ runs[r].done = NoAns)
 
 
 Acked(c) == \E d \in Callers : CMsg[d] = CMsg[c] /\ COp[d] = COp[c] /\ outcome[d] = "ok"
@@ -632,34 +655,47 @@ SCheck(self) == /\ pc[self] = "SCheck"
                                    THEN /\ rid' = [rid EXCEPT ![self] = starts[s][o].run]
                                         /\ hmu' = [hmu EXCEPT ![h] = None]
                                         /\ pc' = [pc EXCEPT ![self] = "Seed"]
-                                        /\ UNCHANGED << nonce, badRef, n, 
+                                        /\ UNCHANGED << runs, nonce, badRef, n, 
                                                         closing, cin, why >>
-                                   ELSE /\ IF o # 0 /\ CancelRule = "close" /\ runs[starts[s][o].run].cx
-                                              THEN /\ hmu' = [hmu EXCEPT ![h] = self]
-                                                   /\ closing' = [closing EXCEPT ![self] = TRUE]
-                                                   /\ cin' = [cin EXCEPT ![self] = starts[s][o].in]
-                                                   /\ rid' = [rid EXCEPT ![self] = starts[s][o].run]
-                                                   /\ n' = [n EXCEPT ![self] = t]
-                                                   /\ nonce' = [nonce EXCEPT ![self] = nonce[self] + 1]
-                                                   /\ pc' = [pc EXCEPT ![self] = "ADo"]
-                                                   /\ UNCHANGED << badRef, why >>
-                                              ELSE /\ IF o # 0
-                                                         THEN /\ badRef' = (badRef \/ ~Justified(s, CMsg[self]))
-                                                              /\ why' = [why EXCEPT ![self] = "open"]
-                                                              /\ pc' = [pc EXCEPT ![self] = "Fail"]
-                                                              /\ UNCHANGED << hmu, 
-                                                                              nonce >>
-                                                         ELSE /\ hmu' = [hmu EXCEPT ![h] = self]
+                                   ELSE /\ IF o # 0 /\ CancelRule # "none" /\ Closable(starts[s][o].run) /\ ~runs[starts[s][o].run].cx
+                                              /\ TurnLease /\ lease[starts[s][o].run] \notin {None, self}
+                                              THEN /\ why' = [why EXCEPT ![self] = "contended"]
+                                                   /\ pc' = [pc EXCEPT ![self] = "Fail"]
+                                                   /\ UNCHANGED << runs, hmu, 
+                                                                   nonce, 
+                                                                   badRef, rid, 
+                                                                   n, closing, 
+                                                                   cin >>
+                                              ELSE /\ IF o # 0 /\ CancelRule # "none" /\ Closable(starts[s][o].run)
+                                                         THEN /\ runs' = [runs EXCEPT ![starts[s][o].run].cx = TRUE]
+                                                              /\ hmu' = [hmu EXCEPT ![h] = self]
+                                                              /\ closing' = [closing EXCEPT ![self] = TRUE]
+                                                              /\ cin' = [cin EXCEPT ![self] = starts[s][o].in]
+                                                              /\ rid' = [rid EXCEPT ![self] = starts[s][o].run]
+                                                              /\ n' = [n EXCEPT ![self] = t]
                                                               /\ nonce' = [nonce EXCEPT ![self] = nonce[self] + 1]
-                                                              /\ pc' = [pc EXCEPT ![self] = "SDo"]
+                                                              /\ pc' = [pc EXCEPT ![self] = "ADo"]
                                                               /\ UNCHANGED << badRef, 
                                                                               why >>
-                                                   /\ UNCHANGED << rid, n, 
-                                                                   closing, 
-                                                                   cin >>
-                /\ UNCHANGED << runs, starts, turns, from, stepv, hl, lease, 
-                                errs, crashes, pauses, cancels, outcome, ret, 
-                                okRun, seed, cnt, i, ans, att, tries >>
+                                                         ELSE /\ IF o # 0
+                                                                    THEN /\ badRef' = (badRef \/ ~Justified(s, CMsg[self]))
+                                                                         /\ why' = [why EXCEPT ![self] = "open"]
+                                                                         /\ pc' = [pc EXCEPT ![self] = "Fail"]
+                                                                         /\ UNCHANGED << hmu, 
+                                                                                         nonce >>
+                                                                    ELSE /\ hmu' = [hmu EXCEPT ![h] = self]
+                                                                         /\ nonce' = [nonce EXCEPT ![self] = nonce[self] + 1]
+                                                                         /\ pc' = [pc EXCEPT ![self] = "SDo"]
+                                                                         /\ UNCHANGED << badRef, 
+                                                                                         why >>
+                                                              /\ UNCHANGED << runs, 
+                                                                              rid, 
+                                                                              n, 
+                                                                              closing, 
+                                                                              cin >>
+                /\ UNCHANGED << starts, turns, from, stepv, hl, lease, errs, 
+                                crashes, pauses, cancels, outcome, ret, okRun, 
+                                seed, cnt, i, ans, att, tries >>
 
 SDo(self) == /\ pc[self] = "SDo"
              /\ LET h == CH[self] IN
@@ -850,11 +886,11 @@ DLoad(self) == /\ pc[self] = "DLoad"
                                                                              pauses, 
                                                                              cnt, 
                                                                              i >>
-                                                        ELSE /\ IF r.cx
-                                                                   THEN /\ why' = [why EXCEPT ![self] = "cancelled"]
+                                                        ELSE /\ IF r.cx \/ r.rq
+                                                                   THEN /\ runs' = [runs EXCEPT ![rid[self]].cx = TRUE]
+                                                                        /\ why' = [why EXCEPT ![self] = "cancelled"]
                                                                         /\ pc' = [pc EXCEPT ![self] = "Fail"]
-                                                                        /\ UNCHANGED << runs, 
-                                                                                        lease, 
+                                                                        /\ UNCHANGED << lease, 
                                                                                         pauses, 
                                                                                         cnt, 
                                                                                         i >>
@@ -888,10 +924,11 @@ DLoad(self) == /\ pc[self] = "DLoad"
                                seed, att, fresh, closing, cin, tries >>
 
 DCall(self) == /\ pc[self] = "DCall"
-               /\ IF runs[rid[self]].cx
-                     THEN /\ why' = [why EXCEPT ![self] = "cancelled"]
+               /\ IF runs[rid[self]].cx \/ runs[rid[self]].rq
+                     THEN /\ runs' = [runs EXCEPT ![rid[self]].cx = TRUE]
+                          /\ why' = [why EXCEPT ![self] = "cancelled"]
                           /\ pc' = [pc EXCEPT ![self] = "Fail"]
-                          /\ UNCHANGED << runs, cnt, i >>
+                          /\ UNCHANGED << cnt, i >>
                      ELSE /\ IF i[self] >= NCalls
                                 THEN /\ pc' = [pc EXCEPT ![self] = "DDone"]
                                      /\ UNCHANGED << runs, cnt, i, why >>
@@ -1083,11 +1120,12 @@ Crash(p) ==
   /\ UNCHANGED <<runs, starts, turns, from, stepv, ht, hs, ho, errs, pauses, cancels, nonce,
                  outcome, ret, okRun, badRef, seed, cnt, i, n, ans, att, cin, tries>>
 
-\* P14's Cancel (D1) of a turn's run that has started and not ended: run:cancelled.
+\* P14's Cancel (D1) of a turn's run that has started and not ended: run:cancelled, or on a saga
+\* the rollback request.
 Cancel(r) ==
   /\ cancels < MaxCancel
-  /\ runs[r].inp # None /\ runs[r].done = NoAns /\ ~runs[r].cx
-  /\ runs' = [runs EXCEPT ![r].cx = TRUE]
+  /\ runs[r].inp # None /\ runs[r].done = NoAns /\ ~runs[r].cx /\ ~runs[r].rq
+  /\ runs' = IF SagaTurns THEN [runs EXCEPT ![r].rq = TRUE] ELSE [runs EXCEPT ![r].cx = TRUE]
   /\ cancels' = cancels + 1
   /\ UNCHANGED <<starts, turns, from, stepv, ht, hs, ho, hl, hmu, lease, errs, crashes, pauses, nonce,
                  outcome, ret, okRun, badRef, pc, rid, seed, cnt, i, n, ans, att, closing, cin,

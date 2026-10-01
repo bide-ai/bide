@@ -233,7 +233,9 @@ define
   SagaCancelPending(r) == Api.sagaCancel = "marker" /\ r \in SagaRuns /\ Ended(r)
                           /\ Head(ends[r]) = "cancelled" /\ "aborted" \notin Range(ends[r])
   \* The end marker a finished rollback writes.
-  AbortKind(p) == IF why[p] = "cancel" /\ Api.sagaCancel = "request" THEN "cancelled" ELSE "aborted"
+  \* A failure's rollback of a saga whose rollback request exists ends it cancelled too: the
+  \* rollback reads the request (one Get) before it writes its end marker (#138 review).
+  AbortKind(p) == IF Api.sagaCancel = "request" /\ (why[p] = "cancel" \/ creq[jr[p]]) THEN "cancelled" ELSE "aborted"
   \* Status's Gets: the markers found so far, with this Get's result added.
   Pos(r, k) == CHOOSE i \in DOMAIN ends[r] : ends[r][i] = k
   Seen1 == IF EndKinds[sk] \in Range(ends[srun])
@@ -310,6 +312,10 @@ DOpen:
     ret[self] := "config"; goto DRel;             \* rule 3: ErrConfig
   elsif Amends(self, jr[self]) then
     goto DAmend;                                  \* rule 2: run:limits:<n>
+  elsif creq[jr[self]] /\ \E c \in Calls : result[jr[self]][c] = "fail" then
+    \* A saga's rollback request is read before a recorded failure (#138 review): once Cancel
+    \* asked for the rollback, the run ends run:cancelled.
+    why[self] := "cancel"; goto DRollback;
   elsif \E c \in Calls : result[jr[self]][c] = "fail" then
     why[self] := "fail"; goto DRollback;
   elsif NextCall(jr[self]) > NCalls /\ "complete" \notin Range(ends[jr[self]]) then
@@ -552,7 +558,9 @@ CGet:
   \* Under sagaCancel "request", Cancel also reads run:start (the saga flag).
   await Canceller;
   if Ended(PrimRun) then
-    cret := "over"; goto Done;
+    \* A run that is over is ErrRunEnded, but one already cancelled is cancelled: Cancel returns
+    \* nil, so a Cancel retried after a lost reply succeeds (maintainer decision, #138).
+    cret := IF Head(ends[PrimRun]) = "cancelled" THEN "cancelled" ELSE "over"; goto Done;
   elsif Api.sagaCancel = "request" /\ start[PrimRun] = NoStart then
     cret := "notstarted"; goto Done;              \* ErrNotStarted: nothing is written
   elsif Api.sagaCancel = "request" /\ PrimRun \in SagaRuns then
@@ -645,7 +653,9 @@ CancelSeen(r) == "cancelled" \in Range(ends[r]) \/ creq[r]
 SagaCancelPending(r) == Api.sagaCancel = "marker" /\ r \in SagaRuns /\ Ended(r)
                         /\ Head(ends[r]) = "cancelled" /\ "aborted" \notin Range(ends[r])
 
-AbortKind(p) == IF why[p] = "cancel" /\ Api.sagaCancel = "request" THEN "cancelled" ELSE "aborted"
+
+
+AbortKind(p) == IF Api.sagaCancel = "request" /\ (why[p] = "cancel" \/ creq[jr[p]]) THEN "cancelled" ELSE "aborted"
 
 Pos(r, k) == CHOOSE i \in DOMAIN ends[r] : ends[r][i] = k
 Seen1 == IF EndKinds[sk] \in Range(ends[srun])
@@ -850,52 +860,59 @@ DOpen(self) == /\ pc[self] = "DOpen"
                                                                                                                                   eo, 
                                                                                                                                   why, 
                                                                                                                                   optBroken >>
-                                                                                                             ELSE /\ IF \E c \in Calls : result[jr[self]][c] = "fail"
-                                                                                                                        THEN /\ why' = [why EXCEPT ![self] = "fail"]
+                                                                                                             ELSE /\ IF creq[jr[self]] /\ \E c \in Calls : result[jr[self]][c] = "fail"
+                                                                                                                        THEN /\ why' = [why EXCEPT ![self] = "cancel"]
                                                                                                                              /\ pc' = [pc EXCEPT ![self] = "DRollback"]
                                                                                                                              /\ UNCHANGED << cc, 
                                                                                                                                              ret, 
                                                                                                                                              eo, 
                                                                                                                                              optBroken >>
-                                                                                                                        ELSE /\ IF NextCall(jr[self]) > NCalls /\ "complete" \notin Range(ends[jr[self]])
-                                                                                                                                   THEN /\ pc' = [pc EXCEPT ![self] = "DComplete"]
+                                                                                                                        ELSE /\ IF \E c \in Calls : result[jr[self]][c] = "fail"
+                                                                                                                                   THEN /\ why' = [why EXCEPT ![self] = "fail"]
+                                                                                                                                        /\ pc' = [pc EXCEPT ![self] = "DRollback"]
                                                                                                                                         /\ UNCHANGED << cc, 
                                                                                                                                                         ret, 
                                                                                                                                                         eo, 
-                                                                                                                                                        why, 
                                                                                                                                                         optBroken >>
-                                                                                                                                   ELSE /\ IF Live(jr[self], NextCall(jr[self]))
-                                                                                                                                              THEN /\ ret' = [ret EXCEPT ![self] = "halt"]
-                                                                                                                                                   /\ pc' = [pc EXCEPT ![self] = "DRel"]
+                                                                                                                                   ELSE /\ IF NextCall(jr[self]) > NCalls /\ "complete" \notin Range(ends[jr[self]])
+                                                                                                                                              THEN /\ pc' = [pc EXCEPT ![self] = "DComplete"]
                                                                                                                                                    /\ UNCHANGED << cc, 
+                                                                                                                                                                   ret, 
                                                                                                                                                                    eo, 
                                                                                                                                                                    why, 
                                                                                                                                                                    optBroken >>
-                                                                                                                                              ELSE /\ IF creq[jr[self]]
-                                                                                                                                                         THEN /\ why' = [why EXCEPT ![self] = "cancel"]
-                                                                                                                                                              /\ pc' = [pc EXCEPT ![self] = "DRollback"]
+                                                                                                                                              ELSE /\ IF Live(jr[self], NextCall(jr[self]))
+                                                                                                                                                         THEN /\ ret' = [ret EXCEPT ![self] = "halt"]
+                                                                                                                                                              /\ pc' = [pc EXCEPT ![self] = "DRel"]
                                                                                                                                                               /\ UNCHANGED << cc, 
-                                                                                                                                                                              ret, 
                                                                                                                                                                               eo, 
+                                                                                                                                                                              why, 
                                                                                                                                                                               optBroken >>
-                                                                                                                                                         ELSE /\ IF jr[self] \in Paused0 /\ ~approved[jr[self]]
-                                                                                                                                                                    THEN /\ ret' = [ret EXCEPT ![self] = "pause"]
-                                                                                                                                                                         /\ pc' = [pc EXCEPT ![self] = "DRel"]
+                                                                                                                                                         ELSE /\ IF creq[jr[self]]
+                                                                                                                                                                    THEN /\ why' = [why EXCEPT ![self] = "cancel"]
+                                                                                                                                                                         /\ pc' = [pc EXCEPT ![self] = "DRollback"]
                                                                                                                                                                          /\ UNCHANGED << cc, 
+                                                                                                                                                                                         ret, 
                                                                                                                                                                                          eo, 
                                                                                                                                                                                          optBroken >>
-                                                                                                                                                                    ELSE /\ IF NextCall(jr[self]) > Eff(self, jr[self]).l
-                                                                                                                                                                               THEN /\ ret' = [ret EXCEPT ![self] = "limit"]
+                                                                                                                                                                    ELSE /\ IF jr[self] \in Paused0 /\ ~approved[jr[self]]
+                                                                                                                                                                               THEN /\ ret' = [ret EXCEPT ![self] = "pause"]
                                                                                                                                                                                     /\ pc' = [pc EXCEPT ![self] = "DRel"]
                                                                                                                                                                                     /\ UNCHANGED << cc, 
                                                                                                                                                                                                     eo, 
                                                                                                                                                                                                     optBroken >>
-                                                                                                                                                                               ELSE /\ eo' = [eo EXCEPT ![self] = Eff(self, jr[self])]
-                                                                                                                                                                                    /\ optBroken' = (optBroken \/ Eff(self, jr[self]) # Journaled(jr[self]))
-                                                                                                                                                                                    /\ cc' = [cc EXCEPT ![self] = NextCall(jr[self])]
-                                                                                                                                                                                    /\ pc' = [pc EXCEPT ![self] = "DClaim"]
-                                                                                                                                                                                    /\ ret' = ret
-                                                                                                                                                              /\ why' = why
+                                                                                                                                                                               ELSE /\ IF NextCall(jr[self]) > Eff(self, jr[self]).l
+                                                                                                                                                                                          THEN /\ ret' = [ret EXCEPT ![self] = "limit"]
+                                                                                                                                                                                               /\ pc' = [pc EXCEPT ![self] = "DRel"]
+                                                                                                                                                                                               /\ UNCHANGED << cc, 
+                                                                                                                                                                                                               eo, 
+                                                                                                                                                                                                               optBroken >>
+                                                                                                                                                                                          ELSE /\ eo' = [eo EXCEPT ![self] = Eff(self, jr[self])]
+                                                                                                                                                                                               /\ optBroken' = (optBroken \/ Eff(self, jr[self]) # Journaled(jr[self]))
+                                                                                                                                                                                               /\ cc' = [cc EXCEPT ![self] = NextCall(jr[self])]
+                                                                                                                                                                                               /\ pc' = [pc EXCEPT ![self] = "DClaim"]
+                                                                                                                                                                                               /\ ret' = ret
+                                                                                                                                                                         /\ why' = why
                /\ UNCHANGED << marker, result, ends, approved, start, lims, 
                                creq, lease, job, jr, holds, outc, reply, 
                                ctxDead, stalled, copt, srun, sk, sseen, sround, 
@@ -1420,7 +1437,7 @@ resolveOp == OPick \/ OLease \/ OWrite \/ ORel
 CGet == /\ pc[Canc] = "CGet"
         /\ Canceller
         /\ IF Ended(PrimRun)
-              THEN /\ cret' = "over"
+              THEN /\ cret' = (IF Head(ends[PrimRun]) = "cancelled" THEN "cancelled" ELSE "over")
                    /\ pc' = [pc EXCEPT ![Canc] = "Done"]
               ELSE /\ IF Api.sagaCancel = "request" /\ start[PrimRun] = NoStart
                          THEN /\ cret' = "notstarted"

@@ -1113,23 +1113,23 @@ and their resumers (`ResumeTyped`), and image input.
 | Label | Go |
 |---|---|
 | `DIdle` | `Lease` (`AcquireLease` under `<holder>#<token>`, `leaseToken`); for the primary, the caller's `Lease` around `Agent.Run`, or a plain `Agent.Run` |
-| `DCheck` | `recoverRun`'s `runEnded` under the lease: `Store.Get` of each name in `endOfRunMarkers`; P14's dispatch: `RecordedStart`, a run with none skipped and reported once per process (`ErrNotStarted` through `WithRecoverErrors`) |
+| `DCheck` | `recoverRun`'s `runEnded` under the lease: `Store.Get` of each name in `endOfRunMarkers`; P14's dispatch: `startUnderLease` (one `Get` of `run:start`, decoded in one pass, `decodeStartEntry`), a run with none skipped and reported once per process (`ErrNotStarted` through `WithRecoverErrors`; the process remembers its 65,536 most recent reports, an LRU the model does not bound) |
 | `DResume` | `recoverRun` calling `resume(ctx, runID)` |
 | `DOpen` | `Agent.run`: `openRun`, `firstEnd` (the first end marker in the `Load` is the run's end: `completedAnswer` for a completed run, to a drive with the input it answered (`checkFinishedStart`, #137), `endedErr` for a cancelled one), `openPlan` (`run:start`'s options and the limit amendments from the same `Load`, `holdDrive`'s `ErrConfig` comparison), the resume gate (`toolHalt`, `HaltCrashed`), a saga's rollback request in the `Load` (`cancelTrip`), the approval pre-pass (`ApprovalPending`) |
-| `DStart` | `openPlan`: the first drive's `run:start` insert (`newStart`, the caller's options; `putRecord`, first writer wins, and the drive runs under the stored entry) |
-| `DAmend` | `openPlan`: the `run:limits:<n>` insert of a later drive's different limit (`journaledLimits`, `applyAmendment`) |
+| `DStart` | `openPlan`: the first drive's `run:start` insert (`newStart`, the caller's options; `putRecord`, first writer wins); `openPlan` reports the write and `Agent.run`'s open loads the run again (`goto DOpen`, #138 review) |
+| `DAmend` | `openPlan`: the `run:limits:<n>` insert of a later drive's different limit (`journaledLimits`, `applyAmendment`); then, as for `DStart`, the open loads the run again |
 | `DTurn` | `Agent.run`'s turn boundary: `cancelSeen` (one `Get` of `run:cancelled`, or of `run:cancel-requested` on a saga) once a turn's calls have run since the `Load` (`runPlan.checkTurn`), `leaveCancelled`, and the turn limit (`runPlan.maxTurns`) |
 | `DClaim` | `claimNextAttempt` / `Journal.claim` (model 1), under the drive's context; the journaled tool filter at dispatch (`runPlan.allows`, `refuseFiltered`: the call's error result recorded) |
 | `DPost` | `postClaim`: `cancelSeen` once the claim is won, before the call, and `recordNotStarted`; the turn's calls not yet claimed do not start (`cancelled`) |
 | `DCall` | `recordFresh`: the `sctx.Err()` check, `t.Call` |
 | `DRecord` | `recordFresh`'s insert of the result (`putRecord` under `context.WithoutCancel`) |
-| `DRollback`, `DAbort` | `Agent.rollback`: `rollbackRun`, then `writeEnd` of `run:aborted`, or of `run:cancelled` after a rollback a cancellation asked for (`cancelTrip`, L4) |
+| `DRollback`, `DAbort` | `Agent.rollback`: `rollbackRun`, then `writeEnd` of `run:aborted`, or of `run:cancelled` after a rollback a cancellation asked for (`cancelTrip`, L4) or a failure's rollback of a saga whose rollback request exists (one `Get` of `run:cancel-requested`: `AbortKind`, #138 review); `runSagaWithTelemetry` reads the request before a recorded failure (`DOpen`'s order) |
 | `DComplete` | the loop's terminal: `putRecord` of `run:complete` |
 | `DVerdict` | `writeEnd`'s read-back after `run:complete` (and after `Agent.rollback`'s marker): one `Get` per end marker the run can hold beside it (`endOthers`), the lowest `Seq` first; `endedErr`, `endVerdict` |
 | `DRel` | `Lease`'s deferred `ReleaseLease` |
 | `PList`, `PNext`, `PSlot`, `PWait` | `RecoverLoop`'s `pass` and `every`: `lister.Runs(ctx, recoverFilter)` in the full pass (process `"pass"`), `lister.Runs(ctx, lapsedFilter)` in the lapsed loop (process `"tkp"`, `PassRule = "split"`; its slots are `WithRecoverLapsedConcurrency`'s, the `"tko"` driver); `recoverable`; `PNext`'s `InFlight` is the `inFlight` check before the slot wait; `PSlot` is the slot wait, then the in-flight re-check and mark under the lock (the model does not re-check: a run the other loop took meanwhile reaches `DIdle` and is refused by the lease, where the code skips it before acquiring); the ticker (`Recover`: one pass) |
 | `OPick`, `OLease`, `OWrite`, `ORel` | `ResolveHaltRef` / `resolveHalt` with `checkNoLiveDriver`'s lease of the halted run's tree root (`treeRootID`); `Approve` |
-| `CGet`, `CIns`, `CRead`, `CReq` | `Cancel` (D1): the end-marker `Get`s and `RecordedStart` (L4: none is `ErrNotStarted`), `writeEnd` of `run:cancelled` and its read-back (L3, `cancelVerdict`), and a saga's rollback request `run:cancel-requested` (L4) |
+| `CGet`, `CIns`, `CRead`, `CReq` | `Cancel` (D1): the end-marker `Get`s (a run already cancelled is `nil`, a run otherwise over `ErrRunEnded`: `cancelVerdict`, a maintainer decision) and `RecordedStart` (L4: none is `ErrNotStarted`), `writeEnd` of `run:cancelled` and its read-back (L3), and a saga's rollback request `run:cancel-requested` (L4). `Cancel`'s reads are not one atomic step (a drive can write `run:complete` between them): the model's `CGet` is one step, and the read-back after the write is what settles the run's end, which `VerdictAgreement` checks |
 | `SPick`, `SStart`, `SGet` | `Status` (D8): one `Load` (`Journal.Records`), `run:start`, then the first end marker in it (`firstEnd`) |
 | `Tick` | wall-clock time: `driveWithRenew`'s renewal, lease expiry, `RecoverLoop`'s `time.Ticker` |
 | `Stall`, `Wake`, `LeaseNotice` | a process pause; `renewLoop` returning `ErrLeaseLost` and cancelling the drive |
@@ -1516,12 +1516,13 @@ Abstracted away:
 
 Each label is one atomic step. Files are `audit/delegate.go` (A), `agent/subagent.go` (U),
 `agent/loop.go` (L), `agent/saga.go` (S), `agent/runctx.go` (R), `agent/keys.go` (K),
-`agent/budget_tree.go` (B), `agent/toolexec.go` (T) and `internal/toolhook/toolhook.go` (H).
+`agent/budget_tree.go` (B), `agent/toolexec.go` (T), `agent/endmarker.go` (E) and
+`internal/toolhook/toolhook.go` (H).
 Every row but the no-code list has a `// protocol:delegation begin ... end` region. The no-code
 list holds the driver, the faults, the tool's own code, and the side effect's claim and call,
 which are models 1 and 9.
 
-<!-- modelsync: no-code delegation Idle Back EMark EFire ERes SRun SRet SWrite SLateRet Tick WrongAuth FixAuth Crash -->
+<!-- modelsync: no-code delegation Idle Back EMark EFire ERes SRun SRet SWrite SLateRet Tick WrongAuth FixAuth Crash CancelRoot -->
 <!-- modelsync: map delegation -->
 | Label | Go |
 |---|---|
@@ -1544,7 +1545,8 @@ which are models 1 and 9.
 | `RbBind`, `RbRec`, `RbBindRet` | U `bindRollback`, `asSubAgent`; H `RollbackBinder`; A `BindRollback`, `checkChild`, `withoutGrant`, `rollbackParents` (the acting grant and those bound with `WithRollbackGrants`: D1's fix, `ChainBind`), `bindDelegated` (the `delegated` mark kept: D2's fix, `GuardRerun`), `withRollbackScope`; S the recursion into the sub-agent's run, whatever its result (D3's fix, `RecurseFailed`) |
 | `RbComp` | S the memoized `sagaCompensateStep` |
 | `RbRe`, `RbReRun`, `RbReRet`, `RbReW` | S the re-run of a retry-safe compensable call through `toolH` and `callTool`, and the links reloaded after it; a re-run the guard refused (`guardRefusal`) is listed as an unknown outcome (D2's fix) |
-| `Idle`, `Back`, `Tick`, `WrongAuth`, `FixAuth`, `Crash` | the root's drives and the environment |
+| `ECx` | E `cancelSeen` and `rootCancelled` (the tree root's `run:cancelled` and rollback request, for a sub-run: `runPlan.root`, `treeRootID`), called by `postClaim` once a claim is won; `recordNotStarted` (#138 review) |
+| `Idle`, `Back`, `Tick`, `WrongAuth`, `FixAuth`, `Crash`, `CancelRoot` | the root's drives and the environment (`CancelRoot`: P14's `Cancel` of the root) |
 | `EMark`, `EFire`, `ERes` | a side effect's claim, call and outcome (models 1 and 9) |
 | `SRun`, `SRet`, `SWrite`, `SLateRet` | the tool's own code: `Run` or `RunSaga` of its `SubRunFor` ID, and its own write |
 
@@ -1560,6 +1562,7 @@ which are models 1 and 9.
 | `NoFalseFailure` | invariant | A delegation is recorded as failed only for a permanent cause, never for a storage error or a resume under other authority. |
 | `UnrecordedContinues` | liveness | A run stopped by Unrecorded refusals completes, aborts or halts for a human once the operator binds the authority they ask for. |
 | `RollbackEnds` | liveness | A failed saga's rollback reaches its end. |
+| `NoFireAfterRootCancel` | invariant | No write anywhere in the tree fires once the check after its claim read the root's `run:cancelled` (P14's `Cancel` of the root, `CancelRoot`, at any step; #138 review). A write whose check came before the `Cancel` may still fire: a call in flight, as model 10's `CancelFinal` allows. |
 | `NoFireAfterExpiry` | invariant (limit) | The literal form: no write fires after its grant expired. |
 
 ### Configurations
@@ -1588,6 +1591,8 @@ finding and limit configurations included, with vacuity runs and JVM starts) tak
 | `fix-d2-guard` | ci | D2's tree with the fixes, with a crash. | 1,118 | <1 s |
 | `fix-d3-recurse` | ci | D3's tree with the fixes, with a crash. | 341 | <1 s |
 | `fixes-all` | ci | D1 to D3 in one tree: a delegation under `P`, then, after `P` expired, D3's plain sub-run and D2's delegation under `P2`, with every property. Each fix left out fails it (`RollbackEnds`, `AuthorityNarrows`, `RollbackSound`). | 1,338 | 1 s |
+| `cancel-tree` | ci | P14's `Cancel` of the root of nested delegations at any step, with a crash: every run of the tree reads the root's cancellation after a won claim (`NoFireAfterRootCancel`). | 834 | <1 s |
+| `cancel-tree-saga` | ci | The same in a saga tree, with `RollbackSound`. | 1,429 | <1 s |
 | `deep-deleg` | nightly | The saga delegation under every fault, two of each, with a child grant expiring at tick 2. | 1,310,328 | 1 min |
 | `deep-nested` | nightly | Nested delegations under two crashes and every other fault. | 1,477,591 | 1 min |
 | `deep-halt` | nightly | Halt propagation with three crashes, two error replies and two read errors. | 141,806 | 2 s |
@@ -1616,6 +1621,7 @@ Regressions. Each must fail with its property, and passes with its `Bug` value s
 | `regress/b3-plain-link` | B3: links were written only when the call's own run was a saga (`B3`). | `RollbackSound` | 50 states |
 | `regress/b4-rerun-links` | B4: after a re-run with an unknown outcome, the links were not reloaded (`B4`). | `RollbackSound` | 39 states |
 | `regress/late-start` | #127 review (c): a sub-run started after its call returned was accepted (`NoReturnedCheck`). | `NoForgedSubRun` | 9 states |
+| `regress/no-root-cancel` | #138 review, findings 2 and 3: a sub-run read only its own `run:cancelled`, which the root's `Cancel` never writes, so its write fired after `Cancel(root)` returned (`NoRootCancel`). | `NoFireAfterRootCancel` | 90 states |
 | `regress/d1-rotation` | D1, fixed in #133: each journaled grant was verified against the one grant bound now (`Fix` without `ChainBind`). | `RollbackEnds` | 745 states |
 | `regress/d2-rerun-expired` | D2, fixed in #133: `BindRollback` dropped the `delegated` mark, and the re-run called the tool after expiry (`Fix` without `GuardRerun`). | `AuthorityNarrows` | 201 states |
 | `regress/d3-plain-deleg` | D3, fixed in #133: a sub-agent call with an error result was skipped (`Fix` without `RecurseFailed`). | `RollbackSound` | 51 states |
@@ -1777,7 +1783,7 @@ it. Function names are those of `main` after #130; `S` is `agent/session.go`, `K
 | `TurnId`, `EventId` | K `sessionTurnRunID`, `sessionEventRunID`, and `checkRunID`'s refusal of `>` in a root run ID |
 | `Idle`, `Fail` | the caller: a delivery, and its redelivery after an error, a pause or a crash |
 | `SWGet`, `SWPut` | historical only (`Bug = "StepWrapped"`): the messaging guide's `Step` around `Send`, before #20 |
-| `Crash`, `Cancel` | a process dies (no code); `Cancel` (`agent/cancel.go`, D1) of a turn's run |
+| `Crash`, `Cancel` | a process dies (no code); `Cancel` (`agent/cancel.go`, D1) of a turn's run: `run:cancelled`, or on a saga turn (`SagaTurns`) the rollback request |
 
 ### Properties
 
@@ -1825,6 +1831,7 @@ adds about 170 seconds of TLC and JVM time to the four slots, about 43 seconds o
 | `ids-sessions` | ci | Run IDs since #86: session `"chat/e"`'s first `Send` beside session `"chat"`'s `SendOnce` of key `"t0"`; a crash. | 1,343 | 3 s |
 | `budget` | ci | S4's rule (a drive holds the turn run's lease): one message on two workers, turns of three model calls, a budget of three, a crash. | 16,498 | 3 s |
 | `cancel-close` | ci | S3's rule: P14's `Cancel` of a Send turn's run, which is then recorded closed, and a second message. | 869 | 3 s |
+| `cancel-saga` | ci | The same for saga turns (`SagaTurns`), whose `Cancel` writes only a rollback request: the next message's `Send` drives the turn's rollback under the turn lease and records the turn closed (`CancelRule = "rollback"`, #138 review finding 6). | 995 | <1 s |
 | `live-resume` | ci | `Answered` and `TurnsSettle`: two workers with one message each, a crash; every caller sends again until answered. | 4,490 | 13 s |
 | `key-reuse` | ci | One `SendOnce` key reused for two messages on two workers, with the turn lease; an error reply and a crash: a finished run answers only the input it recorded (#137, R137-2). | 6,119 | 1 s |
 | `deep-workers-send` | nightly | One `Send` message on two workers; an error reply and a crash. | 106,192 | 9 s* |
@@ -1856,6 +1863,7 @@ the fixed rules.
 | `regress/s2-shared-send` | regress | S2 (fixed in #137): two callers on one handle send one message, and its turn is recorded twice. | `TurnOnce` | 18 states |
 | `regress/s2-shared-once` | regress | S2 (fixed in #137) through `SendOnce`: one key delivered twice to one handle has two records. | `KeyOnce` | 17 states |
 | `regress/s3-cancel-wedge` | regress | S3: `Cancel` of an open Send turn's run, and every other message is refused for ever (`CancelRule = "none"`). | `NoFalseRefusal` | 12 states |
+| `regress/s3-saga-wedge` | regress | #138 review, finding 6: S3's rule as P14 first built it (`CancelRule = "close"`) acts only on `run:cancelled`, so a saga turn's `Cancel` (a rollback request) leaves the turn open and every other message refused. | `NoFalseRefusal` | 15 states |
 | `regress/s4-budget-two-workers` | regress | S4 (fixed in #137): two workers drive one turn's run with no lease, and the turn spends past its budget (`TurnLease = FALSE`). | `BudgetHeld` | 18 states |
 | `regress/done-any-input` | regress | #137 review, R137-2: a finished run returned its answer whatever input it was given, so a `SendOnce` key reused for another message, its run finished and not yet recorded, answered with the first message's reply (`"DoneAnyInput"`). | `NoCrossTalk` | 15 states |
 | `limits/send-redelivered` | limit | `Send` has no key: the process dies after the turn is recorded and before the reply, and the redelivered message opens a second turn. | `MsgOnce` | 24 states |
@@ -1912,6 +1920,13 @@ failing under `CancelRule = "none"`.
     `Get` is of `run:cancelled`; when it is there, the end markers that could precede it are read
     too (`cancelledFirst`), so a turn whose `run:complete` landed first is not closed (model 10's
     L3 rule, which this model abstracts).
+  - A saga turn (#138 review, finding 6; `SagaTurns`, `CancelRule = "rollback"`, `cancel-saga`,
+    `regress/s3-saga-wedge`): `Cancel` of a saga writes only its rollback request, so the turn's
+    run has no `run:cancelled` to close it on. The session owns its turns: `closeIfCancelled`
+    finds the request (one `Get`), drives the turn's run under the turn lease (#137's S4 rule;
+    a lease another holder has is `ErrTurnContended`), which rolls it back and writes
+    `run:cancelled`, and then records the turn closed. A turn whose answer was recorded before
+    the request completes instead, and is not closed.
   - Two more points P14 reconciles (rule 16's note): recovery skips session runs while
     `ResumeAgent` lists `session_turn` among its kinds (a recovery resumer must seed a turn from
     its `from/` record, and the session records the turn only when its message is sent again);
