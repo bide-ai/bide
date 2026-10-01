@@ -186,6 +186,7 @@ func (a *Agent) rollbackRun(ctx context.Context, runID, root string) (compensate
 			values[r.Name] = r.Result
 		}
 	}
+	// protocol:claims begin Open
 	// An attempt recorded as never started changed nothing (see attempt.go).
 	for _, r := range liveAttempts(recs) {
 		if isToolAttempt(r) { // a Step's marker is not a call's
@@ -193,6 +194,7 @@ func (a *Agent) rollbackRun(ctx context.Context, runID, root string) (compensate
 			attemptedAt[r.ToolUseID] = r.AttemptedAt
 		}
 	}
+	// protocol:claims end
 	// A sub-agent whose own saga failed aborted this one, and rolled itself back before this
 	// rollback began. Its rollback may have stopped part-way (a crash, an unknown outcome, a
 	// failing compensator), and only this walk resumes it, so it is walked first, as it ran first.

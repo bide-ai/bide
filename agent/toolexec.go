@@ -16,18 +16,8 @@ import (
 	"sync"
 )
 
-// quorumTally evaluates the m-of-n gate for tu. It re-reads the run's journal (the
-// authoritative source of the decisions SubmitDecision recorded) and counts it with
-// TallyApprovals, the same rule offline verification runs. final reports whether the gate
-// has reached a terminal outcome: passed (Need approvals) or unreachable (too few approvers
-// remain who have not validly denied). A non-final tally means the run must stay paused.
-//
-// Only a terminal tally is journaled, as a StepValue named ApprovalTallyStep(tu.ID), before
-// the tool runs. Steps are append-once by name, so writing a still-pending count would freeze
-// a stale tally; recording only the terminal outcome keeps one final, provable record per
-// resolved gate, carrying the policy it enforced and every decision record it read. Once that
-// record exists it is authoritative: a replay reuses it rather than recounting, so the outcome
-// cannot drift if keys or policy change later.
+// protocol:claims begin QTally QCount QRecord
+
 // decodeTally reads the terminal tally an m-of-n gate journaled (r, a StepValue record of run
 // runID), strictly, as audit.VerifyApprovals reads it (no duplicate or case-variant name, no
 // unknown field): a tally that read one way here and another to the audit would let the gate run
@@ -40,6 +30,18 @@ func decodeTally(runID string, r Record) (ApprovalTally, error) {
 	return t, nil
 }
 
+// quorumTally evaluates the m-of-n gate for tu. It re-reads the run's journal (the
+// authoritative source of the decisions SubmitDecision recorded) and counts it with
+// TallyApprovals, the same rule offline verification runs. final reports whether the gate
+// has reached a terminal outcome: passed (Need approvals) or unreachable (too few approvers
+// remain who have not validly denied). A non-final tally means the run must stay paused.
+//
+// Only a terminal tally is journaled, as a StepValue named ApprovalTallyStep(tu.ID), before
+// the tool runs. Steps are append-once by name, so writing a still-pending count would freeze
+// a stale tally; recording only the terminal outcome keeps one final, provable record per
+// resolved gate, carrying the policy it enforced and every decision record it read. Once that
+// record exists it is authoritative: a replay reuses it rather than recounting, so the outcome
+// cannot drift if keys or policy change later.
 func (a *Agent) quorumTally(ctx context.Context, runID string, tu ToolUse, pol *ApprovalPolicy) (ApprovalTally, bool, error) {
 	if err := pol.Validate(); err != nil {
 		return ApprovalTally{}, false, fmt.Errorf("agent: tool %q: %w", tu.Name, err)
@@ -78,6 +80,8 @@ func (a *Agent) quorumTally(ctx context.Context, runID string, tu ToolUse, pol *
 	}
 	return tally, true, nil
 }
+
+// protocol:claims end
 
 // toolNameFor finds the tool name for a tool-use ID across the journaled model turns.
 func toolNameFor(recs []Record, id string) (string, bool) {

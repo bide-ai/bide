@@ -403,6 +403,8 @@ func (j *Journal) Format(ctx context.Context, runID string) (string, error) {
 	return headerFormat(runID, e)
 }
 
+// protocol:claims begin RWrite RRecord RWait
+
 // Do runs fn as the named step name of runID, at most once: if the step is recorded, Do returns
 // the recorded record without calling fn; otherwise it calls fn and records the record fn returns
 // (with Name set and a fresh salt), and returns the record the journal holds, which is another
@@ -439,6 +441,10 @@ func (j *Journal) Do(ctx context.Context, runID, name string, fn func(context.Co
 	return decodeStored(runID, name, b)
 }
 
+// protocol:claims end
+
+// protocol:claims begin Win WinnerWait Record
+
 // doFresh is Do for a step its caller knows was not recorded when it last read the run (the
 // engine's live model turns and tool calls): it calls fn without reading the step first. If
 // another driver recorded the step meanwhile, the Insert loses and doFresh returns that driver's
@@ -460,6 +466,8 @@ func (j *Journal) doFresh(ctx context.Context, runID, name string, fn func(conte
 	}
 	return decodeStored(runID, name, b)
 }
+
+// protocol:claims end
 
 // put records rec as the step name of runID unless the step is recorded, and returns the record
 // the journal holds: one Insert, for a record that is a pure value (a marker, a decision).
@@ -506,6 +514,8 @@ func (j *Journal) insert(ctx context.Context, runID, name string, rec Record) ([
 	return e.Data, nil
 }
 
+// protocol:claims begin Open
+
 // open reads runID's journal for a drive that will write to it: one Load, which also checks the
 // header, and, for a run with no entries, the header's Insert. A run in another format, or with
 // no header first, is refused before anything is written to it. A run holding a redacted record
@@ -532,6 +542,8 @@ func (j *Journal) open(ctx context.Context, runID string) ([]Record, error) {
 	}
 	return recs, nil
 }
+
+// protocol:claims end
 
 // ensureHeader makes sure runID's journal starts with a header this version writes, before the
 // journal's first write to the run: it reads the run's first entry and inserts the header only if
@@ -673,6 +685,8 @@ func storageErr(what string, err error) error {
 // Attempt claims (see attempt.go for the protocol)
 // ===========================================================================
 
+// protocol:claims begin Claim ClaimRetry ClaimInsert ClaimNS RClaim RRetry RInsert RClaimNS
+
 // newClaimID returns a fresh random claim id.
 func newClaimID() string {
 	var b [16]byte
@@ -731,6 +745,10 @@ func (j *Journal) claim(ctx context.Context, runID, key string, rec Record) (boo
 	return got.claim == id, got, nil
 }
 
+// protocol:claims end
+
+// protocol:claims begin GateTake GateWrite
+
 // retryNotStarted writes again the not-started record of the attempt with marker key key, whose
 // marker is marker, when this process remembers that marker's own claim id (its earlier
 // not-started write failed), and reports whether the attempt is now recorded as not started. A
@@ -742,6 +760,10 @@ func (j *Journal) retryNotStarted(ctx context.Context, runID, key string, marker
 	}
 	return j.notStarted(ctx, runID, key, marker) == nil
 }
+
+// protocol:claims end
+
+// protocol:claims begin Lost LoserWait
 
 // claimNext claims the next attempt of the effect whose first marker key is base (see
 // claimNextAttempt).
@@ -785,6 +807,10 @@ func (j *Journal) liveAttempt(ctx context.Context, runID, base string) (Record, 
 	}
 }
 
+// protocol:claims end
+
+// protocol:claims begin NotStarted ClaimNS ClaimRetry GateWrite
+
 // notStarted records that the attempt with marker key key, which this driver claimed with marker,
 // never called its effect. It is written whatever ctx's state. If it cannot be written, the claim
 // id is remembered, so the next claim of the key in this process (or a resume that meets the
@@ -798,6 +824,8 @@ func (j *Journal) notStarted(ctx context.Context, runID, key string, marker Reco
 	}
 	return nil
 }
+
+// protocol:claims end
 
 // ===========================================================================
 // The engine's view of a Durable
@@ -983,6 +1011,8 @@ func openRun(ctx context.Context, d Durable, runID string) ([]Record, error) {
 // Process-wide state shared by Journals over one store
 // ===========================================================================
 
+// protocol:claims begin Win WinnerWait Join RWait
+
 // flightKey names one step of one run in one store (see storeIdentity).
 type flightKey struct {
 	store       any
@@ -1056,6 +1086,10 @@ func joinFlight(k flightKey) ([]byte, bool, error) {
 	f.done.Wait()
 	return f.val, true, f.err
 }
+
+// protocol:claims end
+
+// protocol:claims begin ClaimRetry GateTake Evict
 
 // pendingClaims holds, by store, run and marker key, the claim ids whose not-started record could
 // not be written, so their markers may be live though their effect never ran (see Journal.claim).
@@ -1137,6 +1171,8 @@ func (c *claimMemo) takeID(k flightKey, id string) bool {
 	}
 	return true
 }
+
+// protocol:claims end
 
 // runSet is a bounded set of run IDs: past maxKnownRuns, the least recently used is forgotten.
 type runSet struct {

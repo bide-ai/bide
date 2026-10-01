@@ -9,6 +9,8 @@ import (
 	"time"
 )
 
+// protocol:claims begin Claim ClaimRetry ClaimInsert ClaimNS RClaim RRetry RInsert RClaimNS
+
 // ClaimAttempt writes the attempt marker named name as an exclusive claim and reports whether
 // the caller won it. It stamps rec with a fresh random claim id and inserts it; because a journal
 // records a name at most once, exactly one driver's marker is stored, and a driver won only if the
@@ -70,6 +72,8 @@ func claimAttempt(ctx context.Context, d Durable, runID, name string, rec Record
 		}
 	}
 }
+
+// protocol:claims end
 
 // hasValueStep reports whether runID's journal holds a StepValue record named name.
 func hasValueStep(ctx context.Context, store Durable, runID, name string) (bool, error) {
@@ -167,6 +171,8 @@ func step[T any](ctx context.Context, d Durable, runID, name string, fn func(con
 	err = json.Unmarshal(rec.Result, &out)
 	return out, err
 }
+
+// protocol:claims begin Open Lost Join LoserRead LoserWait Win Call NotStarted
 
 // journalStep runs a step through j: a recorded step costs one Get. A side-effect step claims its
 // attempt with one Insert and records its value with another; a retry-safe step reads the marker
@@ -308,6 +314,10 @@ func durableStep(ctx context.Context, d Durable, runID, name string, cfg stepCon
 	return rec, err
 }
 
+// protocol:claims end
+
+// protocol:claims begin Call
+
 // stepPauseError is Step's refusal of a pause from a step that is not retry-safe (see Step). It
 // wraps ErrConfig and not the pause, so no caller takes it for one. A tool call that returns it
 // records nothing, as for a pause: the step's marker then halts the call's next attempt, where a
@@ -319,6 +329,8 @@ func (e *stepPauseError) Error() string {
 }
 
 func (e *stepPauseError) Unwrap() error { return ErrConfig }
+
+// protocol:claims end
 
 // StepOption configures Step.
 type StepOption func(*stepConfig)

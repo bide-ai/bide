@@ -255,6 +255,8 @@ func (t *usageTotals) add(r Record) {
 	}
 }
 
+// protocol:spend begin Call RequestEnds EndsAfterReturn
+
 // spendMeter collects the usage of the model requests a run sends until the run takes it to
 // record, and counts the requests in flight. A request that ends after its turn was recorded (a
 // hedge loser that outlived the race) is taken with the next turn, or, at the run's end, waited
@@ -335,9 +337,13 @@ func discardedSpend(spent, answer Usage) Usage {
 	}
 }
 
+// protocol:spend end
+
 // spendStepPrefix names the records that journal a failed model call's spend: "@spend/<id>", with
 // a fresh id per record (a replayed run keeps the original's).
 const spendStepPrefix = "@spend/"
+
+// protocol:spend begin FailSpend SettlePending
 
 // recordSpend journals spent, billed usage no model record carries, as the step name: a
 // StepValue carrying it as DiscardedUsage (spendStep for a model call that failed, lateSpendStep
@@ -494,6 +500,8 @@ func (a *Agent) settlePending(ctx context.Context, runID string, recs []Record) 
 	}
 	return wrote, errors.Join(errs...)
 }
+
+// protocol:spend end
 
 // recordNamed returns the record of recs named name.
 func recordNamed(recs []Record, name string) (Record, bool) {

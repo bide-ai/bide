@@ -55,10 +55,14 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 	}
 	toolH := a.toolHandler(runID) // tool-middleware chain, built once for this run
 
+	// protocol:claims begin Open
+	// protocol:spend begin Open
 	recs, err := openRun(ctx, a.store, runID)
 	if err != nil {
 		return Message{}, usageTotals{}, 0, err
 	}
+	// protocol:spend end
+	// protocol:claims end
 	// The run's input (the seed's last message: the user turn it answers) and entry point are
 	// recorded on its first drive, and every later drive of an unfinished run is held to them
 	// (see RunStart). A finished run is final and returns below without consulting either.
@@ -128,6 +132,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 		}
 	}
 
+	// protocol:claims begin Open GateTake GateWrite
 	// A call's attempt markers count unless recorded as never started (see attempt.go).
 	for _, r := range liveAttempts(recs) {
 		if isToolAttempt(r) { // a Step's marker is not a call's
@@ -139,6 +144,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 			attemptedAtMs[r.ToolUseID] = r.AttemptedAt
 		}
 	}
+	// protocol:claims end
 
 	// Rebuild the conversation as the live loop builds it: each assistant turn followed by the
 	// results of its calls in the order the model made them. The journal holds a turn's results
@@ -172,6 +178,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 		return final, tot, 0, nil
 	}
 
+	// protocol:claims begin Open
 	// Resume safety gate: a tool call that we ATTEMPTED (recorded a start marker for) but has
 	// no recorded result crashed mid-side-effect → unknown outcome → halt. A tool that was never
 	// attempted never ran its side effect, so it's safe to run now (not a halt); one awaiting
@@ -192,7 +199,9 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 		}
 		return Message{}, tot, 0, toolHalt(runID, rootRunID(ctx, runID), id, name, markerTime(attemptedAtMs[id]), HaltCrashed)
 	}
+	// protocol:claims end
 
+	// protocol:spend begin SettlePending FailSpend Leave LeaveLate End EndLate
 	meter := &spendMeter{}  // usage of every model request this invocation sends
 	chain := a.modelChain() // the model call chain every turn of this invocation goes through
 	// writeSpend journals spent, billed usage no model record carries, as the step name. A write
@@ -243,6 +252,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 		}
 		return Message{}, tot, liveTurns, err
 	}
+	// protocol:spend end
 
 	for {
 		// If the last turn is an assistant message with tool calls still pending (a
@@ -284,6 +294,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 			// A live (non-replayed) model call streams its deltas as ModelEvents through the
 			// turn's sink. On memoized replay store.Do skips the fn, so no sink fires: an
 			// AssistantTurn{Replayed:true} was emitted during resume.
+			// protocol:spend begin Turn Call Insert Recorded FailPath FailLookup FailSpend
 			ts := &turnState{meter: meter, journal: a.store}
 			if emit != nil {
 				ts.sink = newTurnSink(modelSeq, fire)
@@ -375,6 +386,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 			modelSeq++
 			msgs = append(msgs, asst)
 			fire(AssistantTurn{Message: asst, Replayed: false})
+			// protocol:spend end
 		}
 
 		uses := asst.toolUses()
@@ -384,12 +396,14 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 			// so it never shifts an earlier record's index; at-most-once by name, so a
 			// replay of a finished run does not add a second one. Requests still in flight are
 			// waited for first, and their spend journaled, so a finished run's journal holds it.
+			// protocol:spend begin Complete
 			if err := settle(); err != nil {
 				return leave(err)
 			}
 			if _, err := putRecord(ctx, a.store, runID, runCompleteStep, Record{Kind: StepValue}); err != nil {
 				return leave(fmt.Errorf("mark complete (run %s): %w (%w)", runID, err, ErrStorage))
 			}
+			// protocol:spend end
 			fire(Finished{Final: asst})
 			return asst, tot, liveTurns, nil // final answer
 		}
@@ -413,6 +427,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 				return leave(fmt.Errorf("model called unknown tool %q: %w", cutName(tu.Name), ErrUnknownTool))
 			}
 			spec := a.specs[tu.Name]
+			// protocol:claims begin ApGate Deny
 			// A recorded denial is final, whatever the tool's gate is now: a human's Approve(false)
 			// or an m-of-n gate's terminal tally that did not pass. The gate may have been removed
 			// or loosened since (a redeploy), and the call must still not run. A recorded approval
@@ -460,6 +475,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 				fire(ToolCompleted{ToolUseID: tu.ID, Name: tu.Name, Result: json.RawMessage(deniedResult), IsError: true})
 				continue
 			}
+			// protocol:claims end
 			toRun = append(toRun, call{idx: i, tu: tu, spec: spec})
 		}
 
@@ -563,6 +579,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 				if saga {
 					sctx = withSaga(sctx)
 				}
+				// protocol:claims begin Claim Lost Win Call
 				// Attempt marker before a non-retriable side effect (crash-mid-write → halt),
 				// written as an exclusive claim: if another driver of this run claimed the call
 				// first (overlapping drivers, e.g. after a lease lapsed), it owns the side effect
@@ -610,6 +627,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 					// so a side effect's outcome is then unknown and the run halts for it.
 					notCalled := state == callRefusedClosed || state == callClosed && callErr != nil && errors.Is(callErr, ErrToolNotCalled)
 					called.Store(!notCalled)
+					// protocol:claims end
 					if state == callClosed && callErr != nil && !notCalled && !c.spec.Safety.retriableOnResume() {
 						callErr = fmt.Errorf("tool %q: the tool middleware returned an error without calling next, and not ErrToolNotCalled, so the tool may have run: %w (%w)", c.tu.Name, callErr, ErrToolOutcomeUnknown)
 					}
@@ -719,6 +737,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 					started.carry(&r)
 					return r, nil
 				})
+				// protocol:claims begin NotStarted
 				if err != nil && claimed && !called.Load() {
 					// This driver claimed the call and never called the tool (it was cancelled, or
 					// the store failed, first): record that, so the next attempt calls it.
@@ -726,6 +745,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 						err = fmt.Errorf("%w (%w)", err, nerr)
 					}
 				}
+				// protocol:claims end
 				if err == nil {
 					carried[c.idx] = journalTotals([]Record{rec})
 				}

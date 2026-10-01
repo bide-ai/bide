@@ -109,6 +109,8 @@ type planScopeKey struct{}
 
 type planScope struct{ runID, node string }
 
+// protocol:flows begin NNested
+
 // planScopedStep returns the journal key of the Step named name of runID when it runs in the body
 // of a plan flow node of that run: the node's key, ":step:", then name, so a Step a node's body
 // runs is recorded once per node and per loop iteration (a loop body's Step runs again in each
@@ -120,6 +122,8 @@ func planScopedStep(ctx context.Context, runID, name string) string {
 	}
 	return name
 }
+
+// protocol:flows end
 
 // IsReservedStepName reports whether name starts with a prefix the engine reserves for its own
 // journal keys. Step and Parallel refuse such a name, and so do ResolveHaltRef and ResolveStepHalt
@@ -251,6 +255,8 @@ func spendStep(id string) string { return spendStepPrefix + id }
 // modelStep is the key of the run's n-th model turn.
 func modelStep(n int) string { return "@llm/" + strconv.Itoa(n) }
 
+// protocol:claims begin ClaimInsert NotStarted Record
+
 // ToolResultStep is the key of the result of the call toolUseID: the record the loop, a saga
 // rollback, or ResolveHalt writes when the call's outcome is known.
 func ToolResultStep(toolUseID string) string { return "tool:" + encodeID(toolUseID) }
@@ -319,6 +325,8 @@ func notStartedStep(marker, claim string) string { return notStartedPrefix + cla
 func isToolAttempt(r Record) bool {
 	return r.Kind == StepAttempt && attemptBase(r.Name) == toolAttemptStep(r.ToolUseID)
 }
+
+// protocol:claims end
 
 // approvalStep is the key of the single approve/deny decision (Approve) on the call toolUseID.
 func approvalStep(toolUseID string) string { return "approval:" + encodeID(toolUseID) }

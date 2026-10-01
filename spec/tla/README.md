@@ -157,6 +157,8 @@ The model states the rules of P6a (#92) after its third review:
 Each label is one atomic step: one store round trip or one local decision. Function names are
 those of #92 (P6a); where #92 has not yet adopted a rule, the step names the rule.
 
+<!-- modelsync: no-code claims Start Hold LoserLead RNotStarted Finish Crash LateApply -->
+<!-- modelsync: map claims -->
 | Label | Go |
 |---|---|
 | `Start` | the caller issuing the call: a model turn naming the tool-use id, or code calling `Step` |
@@ -419,6 +421,8 @@ resolution all run around it.
   or a failing recorded tally, whatever the gate is now (#70), and records the denial as the
   call's result.
 
+<!-- modelsync: no-code claims Redeploy ResolverChange -->
+<!-- modelsync: map claims -->
 | Label | Go |
 |---|---|
 | `ApGate` | `Agent.run`'s pre-pass: `decided`/`approvals` and `values` from the Load, then `t.Safety()` |
@@ -591,12 +595,13 @@ predicates are pure over the recorded value. Two drivers, crashes, ambiguous rep
 operator resolving node halts through `Flow.ResolveHalt` (of this flow, or of another flow or
 digest) run around it.
 
+<!-- modelsync: map flows -->
 | Label | Go |
 |---|---|
 | `Begin`, `BeginStart` | `journalhook.Begin`: `run:start`, or a recorded `run:complete` |
 | `Node` (`NGet`, `NClaim`, `NBody`, `NNested`, `NRecord`) | `runNode` through `journalhook.Step`: the node key `node:[iter:<i>:]<name>`, its Step claim, the body, a Step the body runs (`node:iter:<i>:H:step:N`), the result |
 | `Choose` (`CDo`, `CRoute`) | `chooseArmKeyed`: `switch:<over>` or `switch:iter:<i>:<over>` |
-| `LoopH` .. `AfterChooseS` | `runLoop`, with its `lp.max` bound (a runaway-loop error) |
+| `LoopH`, `AfterH`, `RunS`, `AfterS`, `ChooseS`, `AfterChooseS` | `runLoop`, with its `lp.max` bound (a runaway-loop error) |
 | `Complete` | `journalhook.Complete`: `run:complete` with the terminal's output |
 | `RPick`, `RWrite` | `Flow.ResolveHalt`: a node of this flow with a live attempt and no result, in a run of this flow and digest (`checkRunOfFlow`), then `ResolveHaltRef` |
 
@@ -646,6 +651,8 @@ the drive's end journals it as late spend), or ignores its cancellation past the
 wait. Drivers are in separate processes; faults are failed model calls, ambiguous writes, a failed
 read of a turn's record after its write errored, crashes, and requests outliving the wait.
 
+<!-- modelsync: no-code spend Crash -->
+<!-- modelsync: map spend -->
 | Label | Go |
 |---|---|
 | `Open`, `SettlePending` | `Agent.run`'s Load and `settlePending` (spend a drive of this process could not journal, decided from the journal) |
