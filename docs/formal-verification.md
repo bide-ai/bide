@@ -12,11 +12,11 @@ milestones, is the design note [formal models of the coordination protocols](des
 
 At a glance:
 
-- **8 models** (1, 1b, 2, 7, 8, 9, 10 and 11), checked on every pull request that touches them or the
-  code they describe, and always in the merge queue and on main. **Models** is a required check.
-- **171 configurations** on every such pull request (67 that must pass, each also run for vacuity,
-  and 104 regression, finding and limit configurations that must fail with their named property),
-  and **53 larger ones nightly**.
+- **8 models** (1, 1b, 2, 7, 8, 9, 10 and 11), each checked on every pull request that changes it,
+  and all of them in the merge queue and on main. **Models** is a required check.
+- **169 configurations** in the merge queue (65 that must pass, each also run for vacuity, and 104
+  regression, finding and limit configurations that must fail with their named property), and
+  **65 larger ones nightly**.
 - **21 bugs caught before release** in bide's own design or code (F1 to F5, P1, P2, T1 to T6, a
   rollback that never ended, L1 to L3, a spend-accounting bug model 8 confirmed, and D1 to D3).
   Each fixed one is kept as a regression configuration; L2 and L3 stay open until P14 implements
@@ -114,11 +114,11 @@ property. Nightly runs larger bounds.
 
 | Model | What it guarantees | Key properties | Code it covers | PR | Nightly | Status |
 |---|---|---|---|---|---|---|
-| [1: claims and attempts](../spec/tla/README.md#model-1-claims-and-attempts) | A side effect or a `Step` fires at most once across crashes, ambiguous writes, cancellations and drivers in one or several processes; a won claim never halts; halt resolution never overrides a live driver; a call that provably never started does not halt for ever. | `AtMostOnce`, `AtMostOncePerIntent`, `NotStartedExclusive`, `NoLiveOverride`, `WinnerNeverHalts`, `ResultStable`, `Progress` | `agent`: `journal.go`, `attempt.go`, `step.go`, `loop.go` (resume gate, tool claim), `halt.go`, `keys.go`, `saga.go` | 38 | 16 | Checked; F1 to F4 fixed in #92 |
+| [1: claims and attempts](../spec/tla/README.md#model-1-claims-and-attempts) | A side effect or a `Step` fires at most once across crashes, ambiguous writes, cancellations and drivers in one or several processes; a won claim never halts; halt resolution never overrides a live driver; a call that provably never started does not halt for ever. | `AtMostOnce`, `AtMostOncePerIntent`, `NotStartedExclusive`, `NoLiveOverride`, `WinnerNeverHalts`, `ResultStable`, `Progress` | `agent`: `journal.go`, `attempt.go`, `step.go`, `loop.go` (resume gate, tool claim), `halt.go`, `keys.go`, `saga.go` | 36 | 23 | Checked; F1 to F4 fixed in #92 |
 | [1b: the approval gate](../spec/tla/README.md#model-1b-the-approval-gate) | An effect under an approval gate fires only with a recorded sufficient approval; a recorded denial is final; a passing tally rests on enough valid approvals by distinct people, signed over this exact call; the gate never waits for approvals already in. | `NoUnapprovedFire`, `DenialFinal`, `TallySound`, `DenialSound`, `NoStuckPause` | `agent`: `approval.go`, `toolexec.go` (`quorumTally`), the pre-pass in `loop.go` | 17 | 1 | Checked; F5 fixed in #109 |
-| [2: the bide protocol's claim rules](../spec/tla/README.md#model-2-the-bide-protocols-claim-rules) | A remote tool call fires at most once under lost, late and duplicated deliveries, engine and worker crashes; at most one worker runs under a marker; `DELIVERY_EXHAUSTED` is recorded only when no effect ran. | `AtMostOnce`, `BeginExclusive`, `BeginIdempotent`, `NoRunAfterAbandon`, `ExhaustedTruthful`, `DownstreamOnce` | None yet: a design model of [the bide protocol](design/protocol.md), which is not implemented | 16 | 5 | Checked; P1 and P2 fixed in the design (#95) |
-| [7: flow semantics](../spec/tla/README.md#model-7-flow-semantics) | A lowered plan flow runs each node that is not retry-safe at most once per loop iteration, and the journal always holds a path the flow declares, resolutions included. | `AtMostOncePerIteration`, `NestedOncePerIteration`, `Conform`, `ResultsTyped`, `Completes` | `plan`: `flow.go`, `resolve.go`; `agent/journalhook.go`, `agent/keys.go` | 8 | 4 | Checked; no new finding |
-| [8: spend accounting](../spec/tla/README.md#model-8-spend-accounting) | The journal holds every billed model request exactly once, across hedged and retried requests, failed calls, ambiguous writes, crashes and two drivers; `Result.Spend` never exceeds it. | `NoDoubleCount`, `SpendExact`, `ResultSpend` | `agent`: `modelcall.go`, `generate.go`, `loop.go` (Load, `settle`) | 6 | 1 | Checked; confirmed the #104 shared-key bug on the old rule |
+| [2: the bide protocol's claim rules](../spec/tla/README.md#model-2-the-bide-protocols-claim-rules) | A remote tool call fires at most once under lost, late and duplicated deliveries, engine and worker crashes; at most one worker runs under a marker; `DELIVERY_EXHAUSTED` is recorded only when no effect ran. | `AtMostOnce`, `BeginExclusive`, `BeginIdempotent`, `NoRunAfterAbandon`, `ExhaustedTruthful`, `DownstreamOnce` | None yet: a design model of [the bide protocol](design/protocol.md), which is not implemented | 16 | 8 | Checked; P1 and P2 fixed in the design (#95) |
+| [7: flow semantics](../spec/tla/README.md#model-7-flow-semantics) | A lowered plan flow runs each node that is not retry-safe at most once per loop iteration, and the journal always holds a path the flow declares, resolutions included. | `AtMostOncePerIteration`, `NestedOncePerIteration`, `Conform`, `ResultsTyped`, `Completes` | `plan`: `flow.go`, `resolve.go`; `agent/journalhook.go`, `agent/keys.go` | 8 | 5 | Checked; no new finding |
+| [8: spend accounting](../spec/tla/README.md#model-8-spend-accounting) | The journal holds every billed model request exactly once, across hedged and retried requests, failed calls, ambiguous writes, crashes and two drivers; `Result.Spend` never exceeds it. | `NoDoubleCount`, `SpendExact`, `ResultSpend` | `agent`: `modelcall.go`, `generate.go`, `loop.go` (Load, `settle`) | 6 | 2 | Checked; confirmed the #104 shared-key bug on the old rule |
 | [9: the tool-call state machine](../spec/tla/README.md#model-9-the-tool-call-state-machine) | Under any tool middleware, retries, leaked `next` calls and sibling calls, a side effect fires at most once, the journal's record of a call is true, a saga's rollback accounts for every effect left in place, and the rollback ends. | `NoDoubleFire`, `TruthfulRecord`, `NoLostSibling`, `SagaAccounted`, `NeverBegunProgress`, `RollbackEnds` | `agent`: `toolexec.go`, `loop.go`, `saga.go`, `tool_middleware.go`; `internal/toolhook` | 26 | 13 | Checked; T1 to T6 fixed in #117 |
 | [10: the run lifecycle and recovery](../spec/tla/README.md#model-10-the-run-lifecycle-and-recovery) | Recovery never resumes a finished run; one live lease holder per epoch; each end marker is written once; nothing fires after a run completed or aborted; a dead holder's run is taken over within a bounded time of its lease lapsing. | `NoResumeOfFinished`, `OneDriverPerEpoch`, `NoDoubleCompletion`, `FinishedFinal`, `CancelFinal`, `VerdictAgreement`, `BoundedPickup`, `PickedUp` | `agent`: `recovery.go`, `lease.go`, `loop.go`, `saga.go`, `halt.go`, `journal.go`; the stores' `Leaser` and `Lister` | 27 | 5 | Checked; L1 fixed in #126; L2 and L3 open until P14 |
 | [11: delegation, sub-run authority and saga trees](../spec/tla/README.md#model-11-delegation-sub-run-authority-and-saga-trees) | A child never acts with authority its delegation did not grant, nor reaches a tool after its grant expired; a saga's rollback compensates or lists every write anywhere in the tree, under the authority each sub-run journaled; a halt or lost outcome anywhere in the tree stops later saga steps; a sub-run runs only under its own call's ID while the call is open; a storage error or a wrong-authority resume is never recorded as a delegation failure, and a run it stopped continues once the right grant is bound. | `AuthorityNarrows`, `RollbackSound`, `RollbackUnderGrant`, `HaltPropagates`, `NoForgedSubRun`, `NoFalseFailure`, `UnrecordedContinues`, `RollbackEnds` | `audit`: `delegate.go`; `agent`: `subagent.go`, `saga.go`, `runctx.go`, `loop.go`; `internal/toolhook` | 33 | 8 | Checked; D1 to D3 open until their fixes land |
@@ -166,15 +166,17 @@ same for bugs found by review and testing before the models existed, back to #31
 
 | Where | What | Time |
 |---|---|---|
-| Every pull request (**Models**, required) | The checker self-test, the PlusCal translation check, and every `ci`, `regress`, `finding` and `limit` configuration (138), each passing one also run for vacuity | About 9 to 12.5 minutes on the CI runner (job timeout 30 minutes) |
-| Nightly and on demand (**Models (nightly)**) | The 53 `nightly` configurations: more faults, more drivers, liveness at two error replies, weak A3 (late commits) | About 1 hour 40 minutes on the CI runner (job timeout 4 hours) |
+| Every pull request, the merge queue and main (**Models**, required) | The checker self-test, the PlusCal translation check, and every `ci`, `regress`, `finding` and `limit` configuration (169), each passing one also run for vacuity, four at a time; on a pull request, of the models it changes | About 6 minutes for every model on the CI runner (job timeout 30 minutes) |
+| Nightly and on demand (**Models (nightly)**) | The 65 `nightly` configurations: more faults, more drivers, liveness at two error replies, weak A3 (late commits) | About 1 hour 50 minutes on the CI runner (1 hour 40 minutes measured before this split, plus about 7 minutes moved from pull requests; job timeout 4 hours) |
 | Nightly and on demand (**Explore (full bound)**) | The Go fault-schedule explorations of the claim protocol and of flow lowering at their full bound (`BIDE_EXPLORE=1`); every pull request runs them at a smaller bound under `-race` in the Test job | About 15 to 22 minutes |
 | Every pull request (**Lint**, required) | `modelsync` and `TestProtocolVocabulary` (next section) | Part of Lint |
 
-On a pull request, the Models steps run only when it touches the models or the code they describe
-(`spec/tla/`, `agent/`, `store/`, `plan/`, `internal/journalhook/`, `internal/toolhook/`,
-`middleware/`, or the workflow itself); otherwise the job reports success without re-checking. The
-merge queue and pushes to main always run in full. Workflows: `.github/workflows/models.yml` and
+On a pull request, the Models steps check only the models whose directory under `spec/tla/` it
+changes (every model when it changes `check.sh`, `tools.lock` or the workflow); otherwise the job
+reports success without re-checking. TLC reads nothing outside the model's directory, and a change
+to the Go code a model describes must change the model or carry a `Protocol-Impact` override (the
+Lint job), so this skips no check whose result could differ. The merge queue and pushes to main
+always run every model. Workflows: `.github/workflows/models.yml` and
 `.github/workflows/explore.yml`.
 
 **What a counterexample looks like.** When a property fails, TLC prints the violated invariant (or
