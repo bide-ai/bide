@@ -834,12 +834,15 @@ with the halted runs divided by C), and `Cancel` on a saga (an abort, model 5).
 | `DVerdict` | proposed for P14: the end markers read again; the first in journal order is reported |
 | `DRel` | `Lease`'s deferred `ReleaseLease` |
 | `PList`, `PNext`, `PSlot`, `PWait` | `RecoverLoop`'s `pass` and `every`: `lister.Runs(ctx, recoverFilter)` in the full pass (process `"pass"`), `lister.Runs(ctx, lapsedFilter)` in the lapsed loop (process `"tkp"`, `PassRule = "split"`; its slots are `WithRecoverLapsedConcurrency`'s, the `"tko"` driver); `recoverable`; `PNext`'s `InFlight` is the `inFlight` check before the slot wait; `PSlot` is the slot wait, then the in-flight re-check and mark under the lock (the model does not re-check: a run the other loop took meanwhile reaches `DIdle` and is refused by the lease, where the code skips it before acquiring); the ticker (`Recover`: one pass) |
-| (not modeled) | `Leaser.ReapLeases`, which each lapsed pass calls first: it deletes lapsed leases of ended runs and of runs with no entry, checking the expiry in the same statement; deleting a lapsed lease changes nothing a holder can observe, since any holder may take it |
 | `OPick`, `OLease`, `OWrite`, `ORel` | `ResolveHaltRef` / `resolveHalt` with `checkNoLiveDriver`'s lease; `Approve` |
 | `CGet`, `CIns`, `CRead` | P14's `Cancel` (D1): the end-marker check, the `run:cancelled` insert, and the proposed read-back |
 | `Tick` | wall-clock time: `driveWithRenew`'s renewal, lease expiry, `RecoverLoop`'s `time.Ticker` |
 | `Stall`, `Wake`, `LeaseNotice` | a process pause; `renewLoop` returning `ErrLeaseLost` and cancelling the drive |
 | `Crash` | a process dies (a worker restarts) |
+
+`Leaser.ReapLeases`, which each lapsed pass of `RecoverLoop` calls first, is not modeled: it deletes the
+lapsed leases of ended runs and of runs with no entry, checking the expiry in the same statement,
+and deleting a lapsed lease changes nothing a holder can observe, since any holder may take it.
 
 ### Properties
 
