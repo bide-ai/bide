@@ -21,6 +21,53 @@ At a glance:
   rollback that never ended, L1 to L3, and a spend-accounting bug model 8 confirmed). Each fixed
   one is kept as a regression configuration; L2 and L3 stay open until P14 implements their fix.
 
+## What TLA+ and model checking are
+
+**TLA+** is a language for describing a system as its states and the steps that change them.
+**PlusCal** is a code-like form of TLA+ that reads like an algorithm, with labels marking the steps;
+bide writes its models in PlusCal, and the tools translate them to TLA+. **TLC** is the model
+checker: it starts from the initial states and explores every state reachable within the bounds a
+configuration sets (how many drivers, crashes, ambiguous replies, attempts).
+
+A test runs the schedules someone wrote or a randomizer happened to reach. TLC tries every
+interleaving of the modelled steps and every placement of every fault, up to the bound, and checks
+the stated properties in each state it reaches.
+
+The properties come in two kinds. An **invariant** must hold in every reachable state: "a side
+effect never fires twice". A **liveness** property says something good eventually happens: "a dead
+holder's run is eventually picked up". The bounds are small, so a result says nothing beyond them.
+Small bounds still find real bugs because most protocol bugs show up in small cases: two drivers,
+one crash, two or three ambiguous replies (the small-scope hypothesis). Every bug on this page was
+found at such bounds. A **vacuity check** guards against a model that passes because nothing
+happens in it: each passing configuration is run again with the invariant "the effect never
+fires", which TLC must report violated.
+
+When a property fails, TLC prints a **counterexample**: the step-by-step trace of states that
+leads to the violation, each state one atomic step such as a store write, a crash or a
+cancellation. In bide's models these are typically 10 to 30 states long.
+
+A small excerpt from the claims model (`spec/tla/claims/Claims.tla`): the step a claim takes when
+its marker write returned an error, and the at-most-once invariant.
+
+```tla
+ClaimNS:
+  \* The marker may have committed: record that this claim never called the effect.
+  Reply(reply);
+  WriteNS(CallOf[self], g, cid[self], reply);
+  if reply # "ok" then
+    Remember(g, cid[self]);
+  end if;
+  outcome := "error"; goto Finish;
+
+AtMostOnce == \A c \in Calls : fired[c] <= 1
+```
+
+`Reply(reply)` lets TLC pick any store reply (success, an error that did not commit, an error that
+did, while the configuration's error budget lasts), the claim writes its not-started record and remembers its claim id if that write fails too,
+and `AtMostOnce` says that no call's effect has fired more than once, in any state TLC reaches.
+
+To learn more, see Leslie Lamport's [TLA+ home page](https://lamport.azurewebsites.net/tla/tla.html).
+
 ## Why bide model-checks
 
 bide's core promise is that a side effect fires at most once, and that what the journal says about
