@@ -107,13 +107,8 @@ func (t *subAgentTool) Call(ctx context.Context, args json.RawMessage) (json.Raw
 				ch <- result{err: fmt.Errorf("sub-agent %q panicked: %v (%w)", t.spec.Name, r, ErrTool)}
 			}
 		}()
-		var m Message
-		var e error
-		if inSaga(ctx) {
-			m, e = t.sub.RunSaga(ctx, subRunID, in.Task)
-		} else {
-			m, e = t.sub.Run(ctx, subRunID, in.Task)
-		}
+		task, saga := UserText(in.Task), inSaga(ctx)
+		m, _, _, e := t.sub.drive(ctx, subRunID, &driveSpec{input: &task, cfg: runConfig{saga: saga}, strictSaga: !saga})
 		ch <- result{msg: m, err: e}
 	}()
 
