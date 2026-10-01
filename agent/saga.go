@@ -406,7 +406,12 @@ func (a *Agent) rollbackRun(ctx context.Context, runID, root string) (compensate
 					// A guard of this module refused the re-run (audit: the delegation's grant has
 					// expired), so the tool was not called and its outcome is still unknown: the
 					// call may have run before the abort. It is reported, and the rollback goes on,
-					// as a re-run under the same authority would meet the same refusal.
+					// as a re-run under the same authority would meet the same refusal. This is
+					// conservative on purpose: the step is listed even when the journal holds no
+					// "may have begun" record for it (sagaArgsStep) and the tool was never called,
+					// because journals written by v0.9.0 and earlier hold no such record, and
+					// skipping a step for its absence could skip a write that did take effect.
+					// Over-reporting is the safe side.
 					if _, guarded := errors.AsType[*guardRefusal](ce); guarded {
 						unknown = append(unknown, tu.Name)
 						continue

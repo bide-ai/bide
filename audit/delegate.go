@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 	"time"
@@ -32,8 +33,26 @@ type grantCarrier struct {
 // reads this to mint a narrower, signed child grant on each delegation and rebind the sub-run's
 // identity to it. Set it once at the root (the top principal's grant and key); each delegation then
 // propagates the narrowed child grant automatically, so authority only ever shrinks down the tree.
+//
+// A nil signer, or a typed nil (a nil pointer in the Signer interface), binds the grant with no
+// signer: a delegation under it is refused with ErrConfig (recording nothing, so binding a signer
+// and driving again continues it), and a rollback cannot verify a delegation against it.
 func WithGrant(ctx context.Context, sg SignedGrant, signer Signer) context.Context {
-	return context.WithValue(ctx, grantCtxKey{}, grantCarrier{sg: sg, signer: signer})
+	return context.WithValue(ctx, grantCtxKey{}, grantCarrier{sg: sg, signer: usableSigner(signer)})
+}
+
+// usableSigner returns s, or nil for a nil or typed-nil signer, whose methods would panic.
+func usableSigner(s Signer) Signer {
+	if s == nil {
+		return nil
+	}
+	switch v := reflect.ValueOf(s); v.Kind() {
+	case reflect.Pointer, reflect.Interface, reflect.Map, reflect.Slice, reflect.Func, reflect.Chan:
+		if v.IsNil() {
+			return nil
+		}
+	}
+	return s
 }
 
 // GrantFrom returns the acting signed grant and signer bound to ctx, and whether one was set.
@@ -74,9 +93,19 @@ type boundGrant struct {
 // rotated key) are bound by calling it once per signer. They reach the delegations the acting
 // grant reaches (those of the run ctx is passed to, and of its plain sub-agents), never inside a
 // delegation's sub-run: an AttenuatingSubAgent's sub-run, live or rolled back, is bound to its own
-// journaled grant alone, so a grandchild still verifies against its parent. With a nil signer it
-// binds nothing.
+// journaled grant alone, so a grandchild still verifies against its parent. With a nil or
+// typed-nil signer it binds nothing.
+//
+// The journal is trusted, as everywhere in bide: a rollback verifies the journaled child grant's
+// signature and narrowing, not that this delegation is the one that minted it. Whoever can write
+// the journal could therefore plant a validly signed child grant of a rollback-only grant (one
+// minted by another run, say) and have a compensation run under it; binding a grant here adds its
+// children to what such a writer could use. Writing the journal is already trusted, so this is
+// outside the threat model (see the delegation guide).
 func WithRollbackGrants(ctx context.Context, signer Signer, grants ...SignedGrant) context.Context {
+	if signer = usableSigner(signer); signer == nil {
+		return ctx
+	}
 	prev, _ := ctx.Value(rollbackGrantsKey{}).([]boundGrant)
 	bound := slices.Clone(prev)
 	for _, sg := range grants {
@@ -374,6 +403,10 @@ func (t *attenuatingSubAgent) Call(ctx context.Context, args json.RawMessage) (j
 	}
 	// A delegation re-entered on resume (its sub-run paused, or was cut off) runs under the grant it
 	// journaled the first time, so the sub-run holds one grant whatever Narrow returns now.
+	if signer == nil {
+		// WithGrant bound no usable signer: nothing can verify a journaled grant or sign a child.
+		return nil, unrecorded(fmt.Errorf("audit: attenuating delegation to %q: the bound grant %q has no signer; bind it with its signer (WithGrant): %w", t.name, parentSG.Grant.ID, agent.ErrConfig))
+	}
 	var existing *SignedGrant
 	if subRunID != "" {
 		var ungranted, any bool

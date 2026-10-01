@@ -172,6 +172,11 @@ func TestModel11_D3_FailedSubAgentInPlainSubRunSkipped(t *testing.T) {
 	if ab.CompensateErr == nil && undone.Load() == 0 && !listed {
 		t.Fatalf("the sub-agent's write was neither compensated nor listed (compensated %v, uncompensated %v)", ab.Compensated, ab.Uncompensated)
 	}
+	// The fix compensates it (the walk reaches the sub-agent's run with its tools), once.
+	if ab.CompensateErr != nil || undone.Load() != 1 || !slices.Contains(ab.Compensated, "charge") || listed {
+		t.Fatalf("the sub-agent's write must be compensated once: undone %d, compensated %v, uncompensated %v, err %v",
+			undone.Load(), ab.Compensated, ab.Uncompensated, ab.CompensateErr)
+	}
 }
 
 // D1, key rotation: the root grant and its signing key were both rotated between drives. Each
@@ -266,5 +271,81 @@ func TestModel11_BindRollbackScope(t *testing.T) {
 	// A nil signer binds nothing: no grant to verify against.
 	if _, err := b.BindRollback(WithRollbackGrants(ctx, nil, old), "sub"); !errors.Is(err, agent.ErrConfig) {
 		t.Fatalf("nil signer: %v, want ErrConfig", err)
+	}
+}
+
+// D2, the documented over-report: the re-run the guard refuses is listed as an unknown outcome
+// even when the sub-run's journal holds no "may have begun" record (@saga/args/) for the step and
+// its tool was never called. Journals of v0.9.0 and earlier hold no such record, so its absence
+// cannot prove the step never began; over-reporting is the safe side (see rollbackRun).
+func TestModel11_D2_UnknownEvenWithoutABeganRecord(t *testing.T) {
+	ctx := context.Background()
+	store := agent.NewMemStore()
+	signer := rev117eSigner(t)
+	notAfter := time.Now().Unix() + 1
+	narrow := func(parent Grant, sub string) Grant {
+		g := narrowLimitBy(1)(parent, sub)
+		g.NotAfterUnix = notAfter
+		return g
+	}
+	var calls atomic.Int32
+	idem := agent.CompensatedFunc("idem", "a retry-safe write", agent.Safety{Idempotent: true},
+		func(context.Context, struct{}) (string, error) { calls.Add(1); return "set", nil },
+		func(context.Context, struct{}, string) error { return nil })
+	boom := agent.Func("boom", "fails", agent.Safety{}, func(context.Context, struct{}) (string, error) {
+		for time.Now().Unix() <= notAfter {
+			time.Sleep(20 * time.Millisecond)
+		}
+		return "", errors.New("sold out")
+	})
+	sub := agent.New(rev117eMultiModel{calls: [][2]string{{"s1", "boom"}, {"s2", "idem"}}}, store, boom, idem).SetMaxConcurrency(1)
+	deleg := AttenuatingSubAgent("deleg", "d", sub, AttenuationConfig{Store: store, Narrow: narrow, Rules: rev117eRules})
+	parent := agent.New(rev117eMultiModel{calls: [][2]string{{"c1", "deleg"}}}, store, deleg)
+	_, err := parent.RunSaga(WithGrant(ctx, m11Root(t, signer, "p"), signer), "trip", "go")
+	var ab *agent.SagaAborted
+	if !errors.As(err, &ab) {
+		t.Fatalf("RunSaga = %v, want *SagaAborted", err)
+	}
+	recs, err := store.History(ctx, agent.SubRunID("trip", "c1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range recs {
+		if strings.HasPrefix(r.Name, "@saga/args/") {
+			t.Fatalf("the sub-run holds a may-have-begun record %q; the test needs a step with none", r.Name)
+		}
+	}
+	if calls.Load() != 0 || !slices.Contains(ab.UnknownOutcome, "idem") || ab.CompensateErr != nil {
+		t.Fatalf("want idem never called and listed as an unknown outcome: called %d, unknown %v, err %v", calls.Load(), ab.UnknownOutcome, ab.CompensateErr)
+	}
+}
+
+// nilSigner is a pointer Signer whose methods panic on a nil receiver.
+type nilSigner struct{ Ed25519Signer }
+
+// A typed-nil signer (a nil pointer in the Signer interface) is refused: WithGrant binds the grant
+// with no signer, so a delegation under it is refused with ErrConfig and records nothing, and
+// WithRollbackGrants binds nothing. Neither panics.
+func TestModel11_TypedNilSignerRefused(t *testing.T) {
+	ctx := context.Background()
+	store := agent.NewMemStore()
+	signer := rev117eSigner(t)
+	root := m11Root(t, signer, "p")
+	var typedNil *nilSigner
+	if _, s, ok := GrantFrom(WithGrant(ctx, root, typedNil)); !ok || s != nil {
+		t.Fatalf("GrantFrom after WithGrant with a typed-nil signer: signer %v, ok %v; want the grant with no signer", s, ok)
+	}
+	if ps := rollbackParents(WithRollbackGrants(ctx, typedNil, root)); len(ps) != 0 {
+		t.Fatalf("WithRollbackGrants with a typed-nil signer bound %d grant(s)", len(ps))
+	}
+	sub := agent.New(agent.NewScriptedModel(agent.TextTurn("done")), store)
+	deleg := AttenuatingSubAgent("deleg", "d", sub, AttenuationConfig{Store: store, Narrow: narrowLimitBy(1), Rules: rev117eRules})
+	parent := agent.New(agent.NewScriptedModel(agent.ToolTurn("c1", "deleg", `{"task":"a"}`), agent.TextTurn("x")), store, deleg)
+	if _, err := parent.Run(WithGrant(ctx, root, typedNil), "r", "go"); !errors.Is(err, agent.ErrConfig) {
+		t.Fatalf("Run under a grant with a typed-nil signer = %v, want ErrConfig", err)
+	}
+	recs, err := store.History(ctx, agent.SubRunID("r", "c1"))
+	if err != nil || len(recs) != 0 {
+		t.Fatalf("the refused delegation journaled %d record(s) (err %v), want none", len(recs), err)
 	}
 }
