@@ -134,6 +134,7 @@ variables
   granted = [x \in Nodes |-> {}],
   walk = {},
   listed = {},
+  roots = {},
   anyFire = FALSE, badAct = FALSE, admitLate = FALSE, fireLate = FALSE, badComp = FALSE,
   startAfterHalt = FALSE, falseFail = FALSE, forged = FALSE;
 
@@ -142,9 +143,13 @@ define
   JAuth(c) == IF aj[c].ung THEN "none" ELSE aj[c].g.id
   \* An act in a delegation's sub-run (or below it) under authority the delegation did not grant.
   BadAuth(m, id) == DelF[m] # 0 /\ id \notin granted[DelF[m]]
-  \* The proposed fix of finding D1: the journaled grant's chain verifies under the bound signer.
-  ChainOK(g) == g.par \in {r.id : r \in RootGrants} \/ \E c \in Nodes : aj[c].g.id = g.par
-  Lst(m, q, l) == IF l THEN {<<m, q>>} ELSE {}
+  \* The proposed fix of finding D1: the caller binds, beside the current grant, every grant the
+  \* saga minted under (roots), and BindRollback verifies a journaled grant against the one it
+  \* was minted from; a grant never bound stays refused.
+  ChainOK(g) == g.par \in roots \/ \E c \in Nodes : aj[c].g.id = g.par
+  \* A listing: "u" in Uncompensated (the call's writes, its sub-runs' included, are left in
+  \* place), "k" in UnknownOutcome (the step itself may have committed).
+  Lst(m, q, l, w) == IF l THEN {<<m, q, w>>} ELSE {}
   Links(m) == {q \in Idx(m) : lk[m][q]}
   SubWalk(m, q, ls0) == K(m, q) = "sub" /\ Ch(m, q) # 0 /\ q \in ls0 /\ ~(Bug = "B1" /\ C(m, q).long)
   VerdictOf(x) ==
@@ -267,6 +272,7 @@ DgMint:
 DgRec:
   granted[Ch(n, i)] := IF MintOf(a, n, i).sub = Ch(n, i) THEN granted[Ch(n, i)] \cup {MintOf(a, n, i).id}
                        ELSE granted[Ch(n, i)];
+  roots := IF a.sub = 0 THEN roots \cup {a.id} ELSE roots;
   either
     aj[Ch(n, i)].g := MintOf(a, n, i); ca := MintOf(a, n, i); cdg := TRUE; goto DgRun;
   or
@@ -391,7 +397,7 @@ RbLoop:
       j := j - 1; goto RbLoop;
     end if;
   elsif res[rn][j] \in {"sf", "sfu"} then
-    if res[rn][j] = "sfu" then walk := walk \cup Lst(rn, j, lst); end if;
+    if res[rn][j] = "sfu" then walk := walk \cup Lst(rn, j, lst, "k"); end if;
     j := j - 1; goto RbLoop;
   elsif res[rn][j] = "err" /\ ~(Fix = "RecurseFailed" /\ K(rn, j) = "deleg" /\ ~tl) then
     goto RbSub;
@@ -399,16 +405,16 @@ RbLoop:
     if K(rn, j) = "sub" /\ ~C(rn, j).w /\ res[rn][j] = "ok" then
       goto RbSub;
     elsif res[rn][j] = "none" /\ mk[rn][j] then
-      walk := walk \cup Lst(rn, j, lst); rb[rn] := "halt"; return;
+      walk := walk \cup Lst(rn, j, lst, "u"); rb[rn] := "halt"; return;
     else
-      walk := walk \cup Lst(rn, j, lst); goto RbSub;
+      walk := walk \cup Lst(rn, j, lst, "u"); goto RbSub;
     end if;
   elsif K(rn, j) = "deleg" then
     goto RbBind;
   elsif K(rn, j) = "eff" /\ res[rn][j] = "ok" then
     goto RbComp;
   elsif K(rn, j) = "eff" /\ mk[rn][j] then
-    walk := walk \cup Lst(rn, j, lst); rb[rn] := "halt"; return;
+    walk := walk \cup Lst(rn, j, lst, "u"); rb[rn] := "halt"; return;
   elsif K(rn, j) = "sub" /\ C(rn, j).w /\ res[rn][j] = "ok" then
     goto RbComp;
   elsif K(rn, j) = "sub" /\ C(rn, j).w then
@@ -419,7 +425,7 @@ RbLoop:
 RbSub:
   \* walkSubRuns / rollbackSubRun: the call's linked sub-run, with its declared agent.
   if SubWalk(rn, j, ls) then
-    if ~tl /\ C(rn, j).decl = "other" then walk := walk \cup Lst(rn, j, lst); end if;
+    if ~tl /\ C(rn, j).decl = "other" then walk := walk \cup Lst(rn, j, lst, "u"); end if;
     call Rollback(Ch(rn, j), ra, rdg, tl \/ C(rn, j).decl # "same", lst);
   else
     j := j - 1; goto RbLoop;
@@ -471,7 +477,7 @@ RbRe:
   \* The re-run of a retry-safe compensable call with no result, through the base handler.
   if rdg /\ Expired(ra, now) /\ Bug # "NoCallGuard" then
     if Fix = "GuardRerun" then
-      walk := walk \cup Lst(rn, j, lst); ls := Links(rn); goto RbSub;
+      walk := walk \cup Lst(rn, j, lst, "k"); ls := Links(rn); goto RbSub;
     else
       rb[rn] := "stop"; return;
     end if;
@@ -496,7 +502,7 @@ RbReW:
     or
       await re # {} \/ lost < MaxLost;
       lost := IF re = {} THEN lost + 1 ELSE lost;
-      walk := walk \cup Lst(rn, j, lst);
+      walk := walk \cup Lst(rn, j, lst, "k");
       if Bug # "B4" then ls := Links(rn); end if;
       goto RbSub;
     end either;
@@ -518,7 +524,7 @@ end algorithm; *)
 CONSTANT defaultInitValue
 VARIABLES opened, mk, res, lk, cp, aj, cm, ab, now, bound, want, verdict, 
           ambig, readErr, crashes, wrongs, lost, rv, rb, haltIn, fx, fa, 
-          granted, walk, listed, anyFire, badAct, admitLate, fireLate, 
+          granted, walk, listed, roots, anyFire, badAct, admitLate, fireLate, 
           badComp, startAfterHalt, falseFail, forged, pc, stack
 
 (* define statement *)
@@ -527,8 +533,12 @@ JAuth(c) == IF aj[c].ung THEN "none" ELSE aj[c].g.id
 
 BadAuth(m, id) == DelF[m] # 0 /\ id \notin granted[DelF[m]]
 
-ChainOK(g) == g.par \in {r.id : r \in RootGrants} \/ \E c \in Nodes : aj[c].g.id = g.par
-Lst(m, q, l) == IF l THEN {<<m, q>>} ELSE {}
+
+
+ChainOK(g) == g.par \in roots \/ \E c \in Nodes : aj[c].g.id = g.par
+
+
+Lst(m, q, l, w) == IF l THEN {<<m, q, w>>} ELSE {}
 Links(m) == {q \in Idx(m) : lk[m][q]}
 SubWalk(m, q, ls0) == K(m, q) = "sub" /\ Ch(m, q) # 0 /\ q \in ls0 /\ ~(Bug = "B1" /\ C(m, q).long)
 VerdictOf(x) ==
@@ -544,7 +554,7 @@ VARIABLES n, a, dg, sg, st, i, held, hl, e, ca, cdg, cz, rn, ra, rdg, tl, lst,
 
 vars == << opened, mk, res, lk, cp, aj, cm, ab, now, bound, want, verdict, 
            ambig, readErr, crashes, wrongs, lost, rv, rb, haltIn, fx, fa, 
-           granted, walk, listed, anyFire, badAct, admitLate, fireLate, 
+           granted, walk, listed, roots, anyFire, badAct, admitLate, fireLate, 
            badComp, startAfterHalt, falseFail, forged, pc, stack, n, a, dg, 
            sg, st, i, held, hl, e, ca, cdg, cz, rn, ra, rdg, tl, lst, j, ph, 
            ls, ba, bdg, re >>
@@ -577,6 +587,7 @@ Init == (* Global variables *)
         /\ granted = [x \in Nodes |-> {}]
         /\ walk = {}
         /\ listed = {}
+        /\ roots = {}
         /\ anyFire = FALSE
         /\ badAct = FALSE
         /\ admitLate = FALSE
@@ -660,8 +671,8 @@ DOpen(self) == /\ pc[self] = "DOpen"
                                                                 ca, cdg, cz >>
                /\ UNCHANGED << mk, res, lk, cp, aj, cm, ab, now, bound, want, 
                                verdict, ambig, readErr, crashes, wrongs, lost, 
-                               rb, fx, fa, granted, walk, listed, anyFire, 
-                               badAct, admitLate, fireLate, badComp, 
+                               rb, fx, fa, granted, walk, listed, roots, 
+                               anyFire, badAct, admitLate, fireLate, badComp, 
                                startAfterHalt, falseFail, forged, rn, ra, rdg, 
                                tl, lst, j, ph, ls, ba, bdg, re >>
 
@@ -677,11 +688,11 @@ DNext(self) == /\ pc[self] = "DNext"
                /\ UNCHANGED << opened, mk, res, lk, cp, aj, cm, ab, now, bound, 
                                want, verdict, ambig, readErr, crashes, wrongs, 
                                lost, rv, rb, haltIn, fx, fa, granted, walk, 
-                               listed, anyFire, badAct, admitLate, fireLate, 
-                               badComp, startAfterHalt, falseFail, forged, 
-                               stack, n, a, dg, sg, st, held, hl, e, ca, cdg, 
-                               cz, rn, ra, rdg, tl, lst, j, ph, ls, ba, bdg, 
-                               re >>
+                               listed, roots, anyFire, badAct, admitLate, 
+                               fireLate, badComp, startAfterHalt, falseFail, 
+                               forged, stack, n, a, dg, sg, st, held, hl, e, 
+                               ca, cdg, cz, rn, ra, rdg, tl, lst, j, ph, ls, 
+                               ba, bdg, re >>
 
 DGuard(self) == /\ pc[self] = "DGuard"
                 /\ startAfterHalt' = (startAfterHalt \/ (sg[self] /\ haltIn[n[self]]))
@@ -704,7 +715,7 @@ DGuard(self) == /\ pc[self] = "DGuard"
                 /\ UNCHANGED << opened, mk, res, lk, cp, aj, cm, ab, now, 
                                 bound, want, verdict, ambig, readErr, crashes, 
                                 wrongs, lost, rv, rb, haltIn, fx, fa, granted, 
-                                walk, listed, anyFire, badAct, fireLate, 
+                                walk, listed, roots, anyFire, badAct, fireLate, 
                                 badComp, falseFail, forged, stack, n, a, dg, 
                                 sg, st, i, held, hl, ca, cdg, rn, ra, rdg, tl, 
                                 lst, j, ph, ls, ba, bdg, re >>
@@ -715,11 +726,11 @@ EMark(self) == /\ pc[self] = "EMark"
                /\ UNCHANGED << opened, res, lk, cp, aj, cm, ab, now, bound, 
                                want, verdict, ambig, readErr, crashes, wrongs, 
                                lost, rv, rb, haltIn, fx, fa, granted, walk, 
-                               listed, anyFire, badAct, admitLate, fireLate, 
-                               badComp, startAfterHalt, falseFail, forged, 
-                               stack, n, a, dg, sg, st, i, held, hl, e, ca, 
-                               cdg, cz, rn, ra, rdg, tl, lst, j, ph, ls, ba, 
-                               bdg, re >>
+                               listed, roots, anyFire, badAct, admitLate, 
+                               fireLate, badComp, startAfterHalt, falseFail, 
+                               forged, stack, n, a, dg, sg, st, i, held, hl, e, 
+                               ca, cdg, cz, rn, ra, rdg, tl, lst, j, ph, ls, 
+                               ba, bdg, re >>
 
 EFire(self) == /\ pc[self] = "EFire"
                /\ fx' = [fx EXCEPT ![n[self]][i[self]] = "in"]
@@ -731,10 +742,10 @@ EFire(self) == /\ pc[self] = "EFire"
                /\ UNCHANGED << opened, mk, res, lk, cp, aj, cm, ab, now, bound, 
                                want, verdict, ambig, readErr, crashes, wrongs, 
                                lost, rv, rb, haltIn, granted, walk, listed, 
-                               admitLate, badComp, startAfterHalt, falseFail, 
-                               forged, stack, n, a, dg, sg, st, i, held, hl, e, 
-                               ca, cdg, cz, rn, ra, rdg, tl, lst, j, ph, ls, 
-                               ba, bdg, re >>
+                               roots, admitLate, badComp, startAfterHalt, 
+                               falseFail, forged, stack, n, a, dg, sg, st, i, 
+                               held, hl, e, ca, cdg, cz, rn, ra, rdg, tl, lst, 
+                               j, ph, ls, ba, bdg, re >>
 
 ERes(self) == /\ pc[self] = "ERes"
               /\ \/ /\ e' = [e EXCEPT ![self] = {}]
@@ -746,10 +757,10 @@ ERes(self) == /\ pc[self] = "ERes"
               /\ UNCHANGED << opened, mk, res, lk, cp, aj, cm, ab, now, bound, 
                               want, verdict, ambig, readErr, crashes, wrongs, 
                               rv, rb, haltIn, fx, fa, granted, walk, listed, 
-                              anyFire, badAct, admitLate, fireLate, badComp, 
-                              startAfterHalt, falseFail, forged, stack, n, a, 
-                              dg, sg, st, i, held, hl, ca, cdg, cz, rn, ra, 
-                              rdg, tl, lst, j, ph, ls, ba, bdg, re >>
+                              roots, anyFire, badAct, admitLate, fireLate, 
+                              badComp, startAfterHalt, falseFail, forged, 
+                              stack, n, a, dg, sg, st, i, held, hl, ca, cdg, 
+                              cz, rn, ra, rdg, tl, lst, j, ph, ls, ba, bdg, re >>
 
 DgRead(self) == /\ pc[self] = "DgRead"
                 /\ \/ /\ readErr < MaxReadErr
@@ -822,10 +833,10 @@ DgRead(self) == /\ pc[self] = "DgRead"
                 /\ UNCHANGED << opened, mk, res, lk, cp, aj, cm, ab, now, 
                                 bound, verdict, ambig, crashes, wrongs, lost, 
                                 rv, rb, haltIn, fx, fa, granted, walk, listed, 
-                                anyFire, badAct, admitLate, fireLate, badComp, 
-                                startAfterHalt, falseFail, forged, stack, n, a, 
-                                dg, sg, st, i, held, hl, rn, ra, rdg, tl, lst, 
-                                j, ph, ls, ba, bdg, re >>
+                                roots, anyFire, badAct, admitLate, fireLate, 
+                                badComp, startAfterHalt, falseFail, forged, 
+                                stack, n, a, dg, sg, st, i, held, hl, rn, ra, 
+                                rdg, tl, lst, j, ph, ls, ba, bdg, re >>
 
 DgUng(self) == /\ pc[self] = "DgUng"
                /\ \/ /\ aj' = [aj EXCEPT ![Ch(n[self], i[self])].ung = TRUE]
@@ -856,8 +867,8 @@ DgUng(self) == /\ pc[self] = "DgUng"
                      /\ UNCHANGED <<aj, granted, ca, cdg>>
                /\ UNCHANGED << opened, mk, res, lk, cp, cm, ab, now, bound, 
                                want, verdict, readErr, crashes, wrongs, lost, 
-                               rv, rb, haltIn, fx, fa, walk, listed, anyFire, 
-                               badAct, admitLate, fireLate, badComp, 
+                               rv, rb, haltIn, fx, fa, walk, listed, roots, 
+                               anyFire, badAct, admitLate, fireLate, badComp, 
                                startAfterHalt, falseFail, forged, stack, n, a, 
                                dg, sg, st, i, held, hl, rn, ra, rdg, tl, lst, 
                                j, ph, ls, ba, bdg, re >>
@@ -879,15 +890,16 @@ DgMint(self) == /\ pc[self] = "DgMint"
                 /\ UNCHANGED << opened, mk, res, lk, cp, aj, cm, ab, now, 
                                 bound, verdict, ambig, readErr, crashes, 
                                 wrongs, lost, rv, rb, haltIn, fx, fa, granted, 
-                                walk, listed, anyFire, badAct, admitLate, 
-                                fireLate, badComp, startAfterHalt, falseFail, 
-                                forged, stack, n, a, dg, sg, st, i, held, hl, 
-                                ca, cdg, cz, rn, ra, rdg, tl, lst, j, ph, ls, 
-                                ba, bdg, re >>
+                                walk, listed, roots, anyFire, badAct, 
+                                admitLate, fireLate, badComp, startAfterHalt, 
+                                falseFail, forged, stack, n, a, dg, sg, st, i, 
+                                held, hl, ca, cdg, cz, rn, ra, rdg, tl, lst, j, 
+                                ph, ls, ba, bdg, re >>
 
 DgRec(self) == /\ pc[self] = "DgRec"
                /\ granted' = [granted EXCEPT ![Ch(n[self], i[self])] = IF MintOf(a[self], n[self], i[self]).sub = Ch(n[self], i[self]) THEN granted[Ch(n[self], i[self])] \cup {MintOf(a[self], n[self], i[self]).id}
                                                                        ELSE granted[Ch(n[self], i[self])]]
+               /\ roots' = (IF a[self].sub = 0 THEN roots \cup {a[self].id} ELSE roots)
                /\ \/ /\ aj' = [aj EXCEPT ![Ch(n[self], i[self])].g = MintOf(a[self], n[self], i[self])]
                      /\ ca' = [ca EXCEPT ![self] = MintOf(a[self], n[self], i[self])]
                      /\ cdg' = [cdg EXCEPT ![self] = TRUE]
@@ -952,9 +964,10 @@ DgRun(self) == /\ pc[self] = "DgRun"
                /\ UNCHANGED << opened, mk, res, lk, cp, aj, cm, ab, now, bound, 
                                want, verdict, ambig, readErr, crashes, wrongs, 
                                lost, rv, rb, haltIn, fx, fa, granted, walk, 
-                               listed, anyFire, badAct, admitLate, fireLate, 
-                               badComp, startAfterHalt, falseFail, forged, rn, 
-                               ra, rdg, tl, lst, j, ph, ls, ba, bdg, re >>
+                               listed, roots, anyFire, badAct, admitLate, 
+                               fireLate, badComp, startAfterHalt, falseFail, 
+                               forged, rn, ra, rdg, tl, lst, j, ph, ls, ba, 
+                               bdg, re >>
 
 DgRet(self) == /\ pc[self] = "DgRet"
                /\ e' = [e EXCEPT ![self] = rv[Ch(n[self], i[self])]]
@@ -962,11 +975,11 @@ DgRet(self) == /\ pc[self] = "DgRet"
                /\ UNCHANGED << opened, mk, res, lk, cp, aj, cm, ab, now, bound, 
                                want, verdict, ambig, readErr, crashes, wrongs, 
                                lost, rv, rb, haltIn, fx, fa, granted, walk, 
-                               listed, anyFire, badAct, admitLate, fireLate, 
-                               badComp, startAfterHalt, falseFail, forged, 
-                               stack, n, a, dg, sg, st, i, held, hl, ca, cdg, 
-                               cz, rn, ra, rdg, tl, lst, j, ph, ls, ba, bdg, 
-                               re >>
+                               listed, roots, anyFire, badAct, admitLate, 
+                               fireLate, badComp, startAfterHalt, falseFail, 
+                               forged, stack, n, a, dg, sg, st, i, held, hl, 
+                               ca, cdg, cz, rn, ra, rdg, tl, lst, j, ph, ls, 
+                               ba, bdg, re >>
 
 SStart(self) == /\ pc[self] = "SStart"
                 /\ forged' = (forged \/ (C(n[self], i[self]).forge /\ <<n[self], i[self]>> = <<n[self], i[self] + 1>>))
@@ -984,11 +997,11 @@ SStart(self) == /\ pc[self] = "SStart"
                 /\ UNCHANGED << opened, mk, res, lk, cp, aj, cm, ab, now, 
                                 bound, want, verdict, ambig, readErr, crashes, 
                                 wrongs, lost, rv, rb, haltIn, fx, fa, granted, 
-                                walk, listed, anyFire, badAct, admitLate, 
-                                fireLate, badComp, startAfterHalt, falseFail, 
-                                stack, n, a, dg, sg, st, i, held, hl, ca, cdg, 
-                                cz, rn, ra, rdg, tl, lst, j, ph, ls, ba, bdg, 
-                                re >>
+                                walk, listed, roots, anyFire, badAct, 
+                                admitLate, fireLate, badComp, startAfterHalt, 
+                                falseFail, stack, n, a, dg, sg, st, i, held, 
+                                hl, ca, cdg, cz, rn, ra, rdg, tl, lst, j, ph, 
+                                ls, ba, bdg, re >>
 
 SLink(self) == /\ pc[self] = "SLink"
                /\ \/ /\ lk' = [lk EXCEPT ![n[self]][i[self]] = TRUE]
@@ -1007,10 +1020,11 @@ SLink(self) == /\ pc[self] = "SLink"
                /\ UNCHANGED << opened, mk, res, cp, aj, cm, ab, now, bound, 
                                want, verdict, readErr, crashes, wrongs, lost, 
                                rv, rb, haltIn, fx, fa, granted, walk, listed, 
-                               anyFire, badAct, admitLate, fireLate, badComp, 
-                               startAfterHalt, falseFail, forged, stack, n, a, 
-                               dg, sg, st, i, held, hl, ca, cdg, cz, rn, ra, 
-                               rdg, tl, lst, j, ph, ls, ba, bdg, re >>
+                               roots, anyFire, badAct, admitLate, fireLate, 
+                               badComp, startAfterHalt, falseFail, forged, 
+                               stack, n, a, dg, sg, st, i, held, hl, ca, cdg, 
+                               cz, rn, ra, rdg, tl, lst, j, ph, ls, ba, bdg, 
+                               re >>
 
 SRun(self) == /\ pc[self] = "SRun"
               /\ /\ a' = [a EXCEPT ![self] = a[self]]
@@ -1044,9 +1058,10 @@ SRun(self) == /\ pc[self] = "SRun"
               /\ UNCHANGED << opened, mk, res, lk, cp, aj, cm, ab, now, bound, 
                               want, verdict, ambig, readErr, crashes, wrongs, 
                               lost, rv, rb, haltIn, fx, fa, granted, walk, 
-                              listed, anyFire, badAct, admitLate, fireLate, 
-                              badComp, startAfterHalt, falseFail, forged, rn, 
-                              ra, rdg, tl, lst, j, ph, ls, ba, bdg, re >>
+                              listed, roots, anyFire, badAct, admitLate, 
+                              fireLate, badComp, startAfterHalt, falseFail, 
+                              forged, rn, ra, rdg, tl, lst, j, ph, ls, ba, bdg, 
+                              re >>
 
 SRet(self) == /\ pc[self] = "SRet"
               /\ e' = [e EXCEPT ![self] = rv[Ch(n[self], i[self])]]
@@ -1054,10 +1069,11 @@ SRet(self) == /\ pc[self] = "SRet"
               /\ UNCHANGED << opened, mk, res, lk, cp, aj, cm, ab, now, bound, 
                               want, verdict, ambig, readErr, crashes, wrongs, 
                               lost, rv, rb, haltIn, fx, fa, granted, walk, 
-                              listed, anyFire, badAct, admitLate, fireLate, 
-                              badComp, startAfterHalt, falseFail, forged, 
-                              stack, n, a, dg, sg, st, i, held, hl, ca, cdg, 
-                              cz, rn, ra, rdg, tl, lst, j, ph, ls, ba, bdg, re >>
+                              listed, roots, anyFire, badAct, admitLate, 
+                              fireLate, badComp, startAfterHalt, falseFail, 
+                              forged, stack, n, a, dg, sg, st, i, held, hl, ca, 
+                              cdg, cz, rn, ra, rdg, tl, lst, j, ph, ls, ba, 
+                              bdg, re >>
 
 SWrite(self) == /\ pc[self] = "SWrite"
                 /\ IF C(n[self], i[self]).w /\ e[self] = {}
@@ -1072,10 +1088,10 @@ SWrite(self) == /\ pc[self] = "SWrite"
                 /\ UNCHANGED << opened, mk, res, lk, cp, aj, cm, ab, now, 
                                 bound, want, verdict, ambig, readErr, crashes, 
                                 wrongs, lost, rv, rb, haltIn, granted, walk, 
-                                listed, admitLate, badComp, startAfterHalt, 
-                                falseFail, forged, stack, n, a, dg, sg, st, i, 
-                                held, hl, e, ca, cdg, cz, rn, ra, rdg, tl, lst, 
-                                j, ph, ls, ba, bdg, re >>
+                                listed, roots, admitLate, badComp, 
+                                startAfterHalt, falseFail, forged, stack, n, a, 
+                                dg, sg, st, i, held, hl, e, ca, cdg, cz, rn, 
+                                ra, rdg, tl, lst, j, ph, ls, ba, bdg, re >>
 
 DClass(self) == /\ pc[self] = "DClass"
                 /\ IF e[self] = {}
@@ -1151,7 +1167,7 @@ DClass(self) == /\ pc[self] = "DClass"
                                                  /\ UNCHANGED haltIn
                 /\ UNCHANGED << opened, mk, lk, cp, aj, cm, ab, now, bound, 
                                 want, verdict, ambig, readErr, crashes, wrongs, 
-                                lost, rb, fx, fa, granted, walk, listed, 
+                                lost, rb, fx, fa, granted, walk, listed, roots, 
                                 anyFire, badAct, admitLate, fireLate, badComp, 
                                 startAfterHalt, forged, rn, ra, rdg, tl, lst, 
                                 j, ph, ls, ba, bdg, re >>
@@ -1198,9 +1214,9 @@ SLate(self) == /\ pc[self] = "SLate"
                /\ UNCHANGED << opened, mk, res, cp, aj, cm, ab, now, bound, 
                                want, verdict, ambig, readErr, crashes, wrongs, 
                                lost, rv, rb, haltIn, fx, fa, granted, walk, 
-                               listed, anyFire, badAct, admitLate, fireLate, 
-                               badComp, startAfterHalt, falseFail, rn, ra, rdg, 
-                               tl, lst, j, ph, ls, ba, bdg, re >>
+                               listed, roots, anyFire, badAct, admitLate, 
+                               fireLate, badComp, startAfterHalt, falseFail, 
+                               rn, ra, rdg, tl, lst, j, ph, ls, ba, bdg, re >>
 
 SLateRet(self) == /\ pc[self] = "SLateRet"
                   /\ i' = [i EXCEPT ![self] = i[self] + 1]
@@ -1208,11 +1224,11 @@ SLateRet(self) == /\ pc[self] = "SLateRet"
                   /\ UNCHANGED << opened, mk, res, lk, cp, aj, cm, ab, now, 
                                   bound, want, verdict, ambig, readErr, 
                                   crashes, wrongs, lost, rv, rb, haltIn, fx, 
-                                  fa, granted, walk, listed, anyFire, badAct, 
-                                  admitLate, fireLate, badComp, startAfterHalt, 
-                                  falseFail, forged, stack, n, a, dg, sg, st, 
-                                  held, hl, e, ca, cdg, cz, rn, ra, rdg, tl, 
-                                  lst, j, ph, ls, ba, bdg, re >>
+                                  fa, granted, walk, listed, roots, anyFire, 
+                                  badAct, admitLate, fireLate, badComp, 
+                                  startAfterHalt, falseFail, forged, stack, n, 
+                                  a, dg, sg, st, held, hl, e, ca, cdg, cz, rn, 
+                                  ra, rdg, tl, lst, j, ph, ls, ba, bdg, re >>
 
 DRb(self) == /\ pc[self] = "DRb"
              /\ IF n[self] = Root
@@ -1248,9 +1264,9 @@ DRb(self) == /\ pc[self] = "DRb"
              /\ UNCHANGED << opened, mk, res, lk, cp, aj, cm, ab, now, bound, 
                              want, verdict, ambig, readErr, crashes, wrongs, 
                              lost, rv, rb, haltIn, fx, fa, granted, listed, 
-                             anyFire, badAct, admitLate, fireLate, badComp, 
-                             startAfterHalt, falseFail, forged, n, a, dg, sg, 
-                             st, i, held, hl, e, ca, cdg, cz >>
+                             roots, anyFire, badAct, admitLate, fireLate, 
+                             badComp, startAfterHalt, falseFail, forged, n, a, 
+                             dg, sg, st, i, held, hl, e, ca, cdg, cz >>
 
 DRbEnd(self) == /\ pc[self] = "DRbEnd"
                 /\ IF rb[n[self]] = "ok"
@@ -1278,7 +1294,7 @@ DRbEnd(self) == /\ pc[self] = "DRbEnd"
                 /\ stack' = [stack EXCEPT ![self] = Tail(stack[self])]
                 /\ UNCHANGED << opened, mk, res, lk, cp, aj, cm, now, bound, 
                                 want, verdict, ambig, readErr, crashes, wrongs, 
-                                lost, rb, haltIn, fx, fa, granted, walk, 
+                                lost, rb, haltIn, fx, fa, granted, walk, roots, 
                                 anyFire, badAct, admitLate, fireLate, badComp, 
                                 startAfterHalt, falseFail, forged, rn, ra, rdg, 
                                 tl, lst, j, ph, ls, ba, bdg, re >>
@@ -1337,9 +1353,9 @@ DEnd(self) == /\ pc[self] = "DEnd"
               /\ UNCHANGED << opened, mk, res, lk, cp, aj, ab, now, bound, 
                               want, verdict, ambig, readErr, crashes, wrongs, 
                               lost, rb, haltIn, fx, fa, granted, walk, listed, 
-                              anyFire, badAct, admitLate, fireLate, badComp, 
-                              startAfterHalt, falseFail, forged, rn, ra, rdg, 
-                              tl, lst, j, ph, ls, ba, bdg, re >>
+                              roots, anyFire, badAct, admitLate, fireLate, 
+                              badComp, startAfterHalt, falseFail, forged, rn, 
+                              ra, rdg, tl, lst, j, ph, ls, ba, bdg, re >>
 
 Drive(self) == DOpen(self) \/ DNext(self) \/ DGuard(self) \/ EMark(self)
                   \/ EFire(self) \/ ERes(self) \/ DgRead(self)
@@ -1375,10 +1391,10 @@ RbOpen(self) == /\ pc[self] = "RbOpen"
                 /\ UNCHANGED << opened, mk, res, lk, cp, aj, cm, ab, now, 
                                 bound, want, verdict, ambig, readErr, crashes, 
                                 wrongs, lost, rv, haltIn, fx, fa, granted, 
-                                walk, listed, anyFire, badAct, admitLate, 
-                                fireLate, badComp, startAfterHalt, falseFail, 
-                                forged, n, a, dg, sg, st, i, held, hl, e, ca, 
-                                cdg, cz >>
+                                walk, listed, roots, anyFire, badAct, 
+                                admitLate, fireLate, badComp, startAfterHalt, 
+                                falseFail, forged, n, a, dg, sg, st, i, held, 
+                                hl, e, ca, cdg, cz >>
 
 RbLoop(self) == /\ pc[self] = "RbLoop"
                 /\ IF j[self] = 0 /\ ph[self] = 1
@@ -1419,7 +1435,7 @@ RbLoop(self) == /\ pc[self] = "RbLoop"
                                                                  bdg, re >>
                                             ELSE /\ IF res[rn[self]][j[self]] \in {"sf", "sfu"}
                                                        THEN /\ IF res[rn[self]][j[self]] = "sfu"
-                                                                  THEN /\ walk' = (walk \cup Lst(rn[self], j[self], lst[self]))
+                                                                  THEN /\ walk' = (walk \cup Lst(rn[self], j[self], lst[self], "k"))
                                                                   ELSE /\ TRUE
                                                                        /\ walk' = walk
                                                             /\ j' = [j EXCEPT ![self] = j[self] - 1]
@@ -1470,7 +1486,7 @@ RbLoop(self) == /\ pc[self] = "RbLoop"
                                                                                                              bdg, 
                                                                                                              re >>
                                                                                         ELSE /\ IF res[rn[self]][j[self]] = "none" /\ mk[rn[self]][j[self]]
-                                                                                                   THEN /\ walk' = (walk \cup Lst(rn[self], j[self], lst[self]))
+                                                                                                   THEN /\ walk' = (walk \cup Lst(rn[self], j[self], lst[self], "u"))
                                                                                                         /\ rb' = [rb EXCEPT ![rn[self]] = "halt"]
                                                                                                         /\ pc' = [pc EXCEPT ![self] = Head(stack[self]).pc]
                                                                                                         /\ j' = [j EXCEPT ![self] = Head(stack[self]).j]
@@ -1485,7 +1501,7 @@ RbLoop(self) == /\ pc[self] = "RbLoop"
                                                                                                         /\ tl' = [tl EXCEPT ![self] = Head(stack[self]).tl]
                                                                                                         /\ lst' = [lst EXCEPT ![self] = Head(stack[self]).lst]
                                                                                                         /\ stack' = [stack EXCEPT ![self] = Tail(stack[self])]
-                                                                                                   ELSE /\ walk' = (walk \cup Lst(rn[self], j[self], lst[self]))
+                                                                                                   ELSE /\ walk' = (walk \cup Lst(rn[self], j[self], lst[self], "u"))
                                                                                                         /\ pc' = [pc EXCEPT ![self] = "RbSub"]
                                                                                                         /\ UNCHANGED << rb, 
                                                                                                                         stack, 
@@ -1533,7 +1549,7 @@ RbLoop(self) == /\ pc[self] = "RbLoop"
                                                                                                                         bdg, 
                                                                                                                         re >>
                                                                                                    ELSE /\ IF K(rn[self], j[self]) = "eff" /\ mk[rn[self]][j[self]]
-                                                                                                              THEN /\ walk' = (walk \cup Lst(rn[self], j[self], lst[self]))
+                                                                                                              THEN /\ walk' = (walk \cup Lst(rn[self], j[self], lst[self], "u"))
                                                                                                                    /\ rb' = [rb EXCEPT ![rn[self]] = "halt"]
                                                                                                                    /\ pc' = [pc EXCEPT ![self] = Head(stack[self]).pc]
                                                                                                                    /\ j' = [j EXCEPT ![self] = Head(stack[self]).j]
@@ -1570,14 +1586,15 @@ RbLoop(self) == /\ pc[self] = "RbLoop"
                 /\ UNCHANGED << opened, mk, res, lk, cp, aj, cm, ab, now, 
                                 bound, want, verdict, ambig, readErr, crashes, 
                                 wrongs, lost, rv, haltIn, fx, fa, granted, 
-                                listed, anyFire, badAct, admitLate, fireLate, 
-                                badComp, startAfterHalt, falseFail, forged, n, 
-                                a, dg, sg, st, i, held, hl, e, ca, cdg, cz >>
+                                listed, roots, anyFire, badAct, admitLate, 
+                                fireLate, badComp, startAfterHalt, falseFail, 
+                                forged, n, a, dg, sg, st, i, held, hl, e, ca, 
+                                cdg, cz >>
 
 RbSub(self) == /\ pc[self] = "RbSub"
                /\ IF SubWalk(rn[self], j[self], ls[self])
                      THEN /\ IF ~tl[self] /\ C(rn[self], j[self]).decl = "other"
-                                THEN /\ walk' = (walk \cup Lst(rn[self], j[self], lst[self]))
+                                THEN /\ walk' = (walk \cup Lst(rn[self], j[self], lst[self], "u"))
                                 ELSE /\ TRUE
                                      /\ walk' = walk
                           /\ /\ lst' = [lst EXCEPT ![self] = lst[self]]
@@ -1613,9 +1630,9 @@ RbSub(self) == /\ pc[self] = "RbSub"
                /\ UNCHANGED << opened, mk, res, lk, cp, aj, cm, ab, now, bound, 
                                want, verdict, ambig, readErr, crashes, wrongs, 
                                lost, rv, rb, haltIn, fx, fa, granted, listed, 
-                               anyFire, badAct, admitLate, fireLate, badComp, 
-                               startAfterHalt, falseFail, forged, n, a, dg, sg, 
-                               st, i, held, hl, e, ca, cdg, cz >>
+                               roots, anyFire, badAct, admitLate, fireLate, 
+                               badComp, startAfterHalt, falseFail, forged, n, 
+                               a, dg, sg, st, i, held, hl, e, ca, cdg, cz >>
 
 RbSubRet(self) == /\ pc[self] = "RbSubRet"
                   /\ IF rb[Ch(rn[self], j[self])] # "ok"
@@ -1640,10 +1657,10 @@ RbSubRet(self) == /\ pc[self] = "RbSubRet"
                   /\ UNCHANGED << opened, mk, res, lk, cp, aj, cm, ab, now, 
                                   bound, want, verdict, ambig, readErr, 
                                   crashes, wrongs, lost, rv, haltIn, fx, fa, 
-                                  granted, walk, listed, anyFire, badAct, 
-                                  admitLate, fireLate, badComp, startAfterHalt, 
-                                  falseFail, forged, n, a, dg, sg, st, i, held, 
-                                  hl, e, ca, cdg, cz >>
+                                  granted, walk, listed, roots, anyFire, 
+                                  badAct, admitLate, fireLate, badComp, 
+                                  startAfterHalt, falseFail, forged, n, a, dg, 
+                                  sg, st, i, held, hl, e, ca, cdg, cz >>
 
 RbBind(self) == /\ pc[self] = "RbBind"
                 /\ IF Bug = "NoBind"
@@ -1743,9 +1760,9 @@ RbBind(self) == /\ pc[self] = "RbBind"
                 /\ UNCHANGED << opened, mk, res, lk, cp, aj, cm, ab, now, 
                                 bound, verdict, ambig, crashes, wrongs, lost, 
                                 rv, haltIn, fx, fa, granted, walk, listed, 
-                                anyFire, badAct, admitLate, fireLate, badComp, 
-                                startAfterHalt, falseFail, forged, n, a, dg, 
-                                sg, st, i, held, hl, e, ca, cdg, cz >>
+                                roots, anyFire, badAct, admitLate, fireLate, 
+                                badComp, startAfterHalt, falseFail, forged, n, 
+                                a, dg, sg, st, i, held, hl, e, ca, cdg, cz >>
 
 RbRec(self) == /\ pc[self] = "RbRec"
                /\ /\ lst' = [lst EXCEPT ![self] = lst[self]]
@@ -1777,9 +1794,10 @@ RbRec(self) == /\ pc[self] = "RbRec"
                /\ UNCHANGED << opened, mk, res, lk, cp, aj, cm, ab, now, bound, 
                                want, verdict, ambig, readErr, crashes, wrongs, 
                                lost, rv, rb, haltIn, fx, fa, granted, walk, 
-                               listed, anyFire, badAct, admitLate, fireLate, 
-                               badComp, startAfterHalt, falseFail, forged, n, 
-                               a, dg, sg, st, i, held, hl, e, ca, cdg, cz >>
+                               listed, roots, anyFire, badAct, admitLate, 
+                               fireLate, badComp, startAfterHalt, falseFail, 
+                               forged, n, a, dg, sg, st, i, held, hl, e, ca, 
+                               cdg, cz >>
 
 RbBindRet(self) == /\ pc[self] = "RbBindRet"
                    /\ IF rb[Ch(rn[self], j[self])] # "ok"
@@ -1804,8 +1822,8 @@ RbBindRet(self) == /\ pc[self] = "RbBindRet"
                    /\ UNCHANGED << opened, mk, res, lk, cp, aj, cm, ab, now, 
                                    bound, want, verdict, ambig, readErr, 
                                    crashes, wrongs, lost, rv, haltIn, fx, fa, 
-                                   granted, walk, listed, anyFire, badAct, 
-                                   admitLate, fireLate, badComp, 
+                                   granted, walk, listed, roots, anyFire, 
+                                   badAct, admitLate, fireLate, badComp, 
                                    startAfterHalt, falseFail, forged, n, a, dg, 
                                    sg, st, i, held, hl, e, ca, cdg, cz >>
 
@@ -1857,15 +1875,15 @@ RbComp(self) == /\ pc[self] = "RbComp"
                                  /\ cp' = cp
                 /\ UNCHANGED << opened, mk, res, lk, aj, cm, ab, now, bound, 
                                 want, verdict, readErr, crashes, wrongs, lost, 
-                                rv, haltIn, fa, granted, walk, listed, anyFire, 
-                                admitLate, fireLate, startAfterHalt, falseFail, 
-                                forged, n, a, dg, sg, st, i, held, hl, e, ca, 
-                                cdg, cz >>
+                                rv, haltIn, fa, granted, walk, listed, roots, 
+                                anyFire, admitLate, fireLate, startAfterHalt, 
+                                falseFail, forged, n, a, dg, sg, st, i, held, 
+                                hl, e, ca, cdg, cz >>
 
 RbRe(self) == /\ pc[self] = "RbRe"
               /\ IF rdg[self] /\ Expired(ra[self], now) /\ Bug # "NoCallGuard"
                     THEN /\ IF Fix = "GuardRerun"
-                               THEN /\ walk' = (walk \cup Lst(rn[self], j[self], lst[self]))
+                               THEN /\ walk' = (walk \cup Lst(rn[self], j[self], lst[self], "k"))
                                     /\ ls' = [ls EXCEPT ![self] = Links(rn[self])]
                                     /\ pc' = [pc EXCEPT ![self] = "RbSub"]
                                     /\ UNCHANGED << rb, stack, rn, ra, rdg, tl, 
@@ -1897,7 +1915,7 @@ RbRe(self) == /\ pc[self] = "RbRe"
                                          j, ph, ls, ba, bdg >>
               /\ UNCHANGED << opened, mk, res, cp, aj, cm, ab, now, bound, 
                               want, verdict, ambig, readErr, crashes, wrongs, 
-                              lost, rv, haltIn, fx, fa, granted, listed, 
+                              lost, rv, haltIn, fx, fa, granted, listed, roots, 
                               anyFire, badAct, fireLate, badComp, 
                               startAfterHalt, falseFail, forged, n, a, dg, sg, 
                               st, i, held, hl, e, ca, cdg, cz >>
@@ -1934,10 +1952,10 @@ RbReRun(self) == /\ pc[self] = "RbReRun"
                  /\ UNCHANGED << opened, mk, res, lk, cp, aj, cm, ab, now, 
                                  bound, want, verdict, ambig, readErr, crashes, 
                                  wrongs, lost, rv, rb, haltIn, fx, fa, granted, 
-                                 walk, listed, anyFire, badAct, admitLate, 
-                                 fireLate, badComp, startAfterHalt, falseFail, 
-                                 forged, rn, ra, rdg, tl, lst, j, ph, ls, ba, 
-                                 bdg, re >>
+                                 walk, listed, roots, anyFire, badAct, 
+                                 admitLate, fireLate, badComp, startAfterHalt, 
+                                 falseFail, forged, rn, ra, rdg, tl, lst, j, 
+                                 ph, ls, ba, bdg, re >>
 
 RbReRet(self) == /\ pc[self] = "RbReRet"
                  /\ re' = [re EXCEPT ![self] = rv[Ch(rn[self], j[self])]]
@@ -1945,11 +1963,11 @@ RbReRet(self) == /\ pc[self] = "RbReRet"
                  /\ UNCHANGED << opened, mk, res, lk, cp, aj, cm, ab, now, 
                                  bound, want, verdict, ambig, readErr, crashes, 
                                  wrongs, lost, rv, rb, haltIn, fx, fa, granted, 
-                                 walk, listed, anyFire, badAct, admitLate, 
-                                 fireLate, badComp, startAfterHalt, falseFail, 
-                                 forged, stack, n, a, dg, sg, st, i, held, hl, 
-                                 e, ca, cdg, cz, rn, ra, rdg, tl, lst, j, ph, 
-                                 ls, ba, bdg >>
+                                 walk, listed, roots, anyFire, badAct, 
+                                 admitLate, fireLate, badComp, startAfterHalt, 
+                                 falseFail, forged, stack, n, a, dg, sg, st, i, 
+                                 held, hl, e, ca, cdg, cz, rn, ra, rdg, tl, 
+                                 lst, j, ph, ls, ba, bdg >>
 
 RbReW(self) == /\ pc[self] = "RbReW"
                /\ IF re[self] # {} /\ "L" \notin re[self]
@@ -1981,7 +1999,7 @@ RbReW(self) == /\ pc[self] = "RbReW"
                                 /\ UNCHANGED <<lost, walk>>
                              \/ /\ re[self] # {} \/ lost < MaxLost
                                 /\ lost' = (IF re[self] = {} THEN lost + 1 ELSE lost)
-                                /\ walk' = (walk \cup Lst(rn[self], j[self], lst[self]))
+                                /\ walk' = (walk \cup Lst(rn[self], j[self], lst[self], "k"))
                                 /\ IF Bug # "B4"
                                       THEN /\ ls' = [ls EXCEPT ![self] = Links(rn[self])]
                                       ELSE /\ TRUE
@@ -1992,9 +2010,9 @@ RbReW(self) == /\ pc[self] = "RbReW"
                                           ph, ba, bdg, re >>
                /\ UNCHANGED << opened, mk, lk, cp, aj, cm, ab, now, bound, 
                                want, verdict, ambig, readErr, crashes, wrongs, 
-                               rv, haltIn, granted, listed, admitLate, badComp, 
-                               startAfterHalt, falseFail, forged, n, a, dg, sg, 
-                               st, i, held, hl, e, ca, cdg, cz >>
+                               rv, haltIn, granted, listed, roots, admitLate, 
+                               badComp, startAfterHalt, falseFail, forged, n, 
+                               a, dg, sg, st, i, held, hl, e, ca, cdg, cz >>
 
 Rollback(self) == RbOpen(self) \/ RbLoop(self) \/ RbSub(self)
                      \/ RbSubRet(self) \/ RbBind(self) \/ RbRec(self)
@@ -2033,8 +2051,8 @@ Idle == /\ pc["d"] = "Idle"
         /\ pc' = [pc EXCEPT !["d"] = "DOpen"]
         /\ UNCHANGED << opened, mk, res, lk, cp, aj, cm, ab, now, bound, want, 
                         verdict, ambig, readErr, crashes, wrongs, lost, rv, rb, 
-                        haltIn, fx, fa, granted, walk, listed, anyFire, badAct, 
-                        admitLate, fireLate, badComp, startAfterHalt, 
+                        haltIn, fx, fa, granted, walk, listed, roots, anyFire, 
+                        badAct, admitLate, fireLate, badComp, startAfterHalt, 
                         falseFail, forged, rn, ra, rdg, tl, lst, j, ph, ls, ba, 
                         bdg, re >>
 
@@ -2043,7 +2061,7 @@ Back == /\ pc["d"] = "Back"
         /\ pc' = [pc EXCEPT !["d"] = "Idle"]
         /\ UNCHANGED << opened, mk, res, lk, cp, aj, cm, ab, now, bound, want, 
                         ambig, readErr, crashes, wrongs, lost, rv, rb, haltIn, 
-                        fx, fa, granted, walk, listed, anyFire, badAct, 
+                        fx, fa, granted, walk, listed, roots, anyFire, badAct, 
                         admitLate, fireLate, badComp, startAfterHalt, 
                         falseFail, forged, stack, n, a, dg, sg, st, i, held, 
                         hl, e, ca, cdg, cz, rn, ra, rdg, tl, lst, j, ph, ls, 
@@ -2072,7 +2090,7 @@ Tick ==
   /\ now < MaxTime
   /\ now' = now + 1
   /\ UNCHANGED <<opened, mk, res, lk, cp, aj, cm, ab, bound, want, verdict, ambig, readErr,
-                 crashes, wrongs, lost, rv, rb, haltIn, fx, fa, granted, walk, listed, anyFire, badAct,
+                 crashes, wrongs, lost, rv, rb, haltIn, fx, fa, granted, walk, listed, roots, anyFire, badAct,
                  admitLate, fireLate, badComp, startAfterHalt, falseFail, forged, pc, stack, n, a,
                  dg, sg, st, i, held, hl, e, ca, cdg, cz, rn, ra, rdg, tl, lst, j, ph, ls, ba, bdg,
                  re>>
@@ -2083,7 +2101,7 @@ WrongAuth ==
   /\ \E b \in {WG, NoneG} \ {bound} : bound' = b
   /\ wrongs' = wrongs + 1
   /\ UNCHANGED <<opened, mk, res, lk, cp, aj, cm, ab, now, want, verdict, ambig, readErr,
-                 crashes, lost, rv, rb, haltIn, fx, fa, granted, walk, listed, anyFire, badAct,
+                 crashes, lost, rv, rb, haltIn, fx, fa, granted, walk, listed, roots, anyFire, badAct,
                  admitLate, fireLate, badComp, startAfterHalt, falseFail, forged, pc, stack, n, a,
                  dg, sg, st, i, held, hl, e, ca, cdg, cz, rn, ra, rdg, tl, lst, j, ph, ls, ba, bdg,
                  re>>
@@ -2093,7 +2111,7 @@ FixAuth ==
   /\ pc["d"] = "Idle" /\ verdict \in Retry /\ bound # want
   /\ bound' = want
   /\ UNCHANGED <<opened, mk, res, lk, cp, aj, cm, ab, now, want, verdict, ambig, readErr,
-                 crashes, wrongs, lost, rv, rb, haltIn, fx, fa, granted, walk, listed, anyFire, badAct,
+                 crashes, wrongs, lost, rv, rb, haltIn, fx, fa, granted, walk, listed, roots, anyFire, badAct,
                  admitLate, fireLate, badComp, startAfterHalt, falseFail, forged, pc, stack, n, a,
                  dg, sg, st, i, held, hl, e, ca, cdg, cz, rn, ra, rdg, tl, lst, j, ph, ls, ba, bdg,
                  re>>
@@ -2130,7 +2148,7 @@ Crash ==
   /\ bdg' = [bdg EXCEPT !["d"] = FALSE]
   /\ re' = [re EXCEPT !["d"] = {}]
   /\ UNCHANGED <<opened, mk, res, lk, cp, aj, cm, ab, now, bound, want, ambig, readErr, wrongs,
-                 lost, rv, rb, haltIn, fx, fa, granted, walk, listed, anyFire, badAct, admitLate,
+                 lost, rv, rb, haltIn, fx, fa, granted, walk, listed, roots, anyFire, badAct, admitLate,
                  fireLate, badComp, startAfterHalt, falseFail, forged>>
 
 FullNext == Next \/ Tick \/ WrongAuth \/ FixAuth \/ Crash
@@ -2155,11 +2173,12 @@ AuthorityNarrows == ~badAct /\ ~admitLate
 NoFireAfterExpiry == ~fireLate
 
 \* Every write in place anywhere in the tree, once the root's rollback finished (run:aborted), is
-\* reported: itself, or a call above it, is in Uncompensated or UnknownOutcome. None is
-\* silently skipped.
+\* reported: itself in Uncompensated or UnknownOutcome, or a call above it in Uncompensated (a
+\* sub-agent the rollback could not walk is listed by its call). None is silently skipped.
 RollbackSound ==
   ab[Root] => \A x \in Nodes : \A y \in Idx(x) :
-                fx[x][y] = "in" => (<<x, y>> \in listed \/ AboveF[x] \cap listed # {})
+                fx[x][y] = "in" => (<<x, y, "u">> \in listed \/ <<x, y, "k">> \in listed
+                                    \/ \E p \in AboveF[x] : <<p[1], p[2], "u">> \in listed)
 
 \* A compensation in a delegation's sub-run runs under the authority the sub-run journaled,
 \* which is the one the write fired under.

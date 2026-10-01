@@ -31,18 +31,21 @@ RSW == SubW(0)
 TDeleg == << <<Deleg(2), Fail>>, <<Eff>> >>
 \* The same with a child grant that expires at tick 1.
 TDelegNe == << <<DelegNe(2, 1), Fail>>, <<Eff>> >>
+\* The delegation alone, so nothing else ends the saga (F2).
+TDelegNeOnly == << <<DelegNe(2, 1)>>, <<Eff>> >>
 \* A delegation inside a delegation: the grandchild narrows the child's grant.
 TNested == << <<Deleg(2), Fail>>, <<Deleg(3), Eff>>, <<Eff>> >>
 \* Halt propagation (bug 8 of #117's final review): the child's turn holds an Unrecorded refusal
 \* and a lost outcome; the root's next step must not start.
 THalt == << <<Deleg(2), Eff>>, <<Deleg(3), Eff>>, <<Eff>> >>
-\* Two delegations, then a failure: their grants may come from different bound grants (D1).
-TTwo == << <<Deleg(2), Deleg(3), Fail>>, <<Eff>>, <<Eff>> >>
+\* Two delegations, the second of whose sub-runs fails: their grants may come from different
+\* bound grants (D1).
+TTwo == << <<Deleg(2), Deleg(3)>>, <<Eff>>, <<Eff, Fail>> >>
 \* Programmatic sub-runs: a declared agent, an undeclared one, one on another store; a long ID.
 TSubs == << <<Sub(2), SubDecl(3, "none"), SubDecl(4, "other"), Fail>>, <<Eff>>, <<Eff>>, <<Eff>> >>
 TSubLong == << <<SubLong(2), Fail>>, <<Eff>> >>
-TSubOther == << <<SubOther(2), Fail>>, <<Eff>> >>
-TSubLate == << <<SubLate(2), Fail>>, <<Eff>> >>
+TSubOther == << <<Eff, SubOther(2), Fail>>, <<Eff>> >>
+TSubLate == << <<Eff, SubLate(2), Fail>>, <<Eff>> >>
 \* A saga's call starts a plain sub-run, whose call starts another (B3: three levels).
 TPlain == << <<SubPlain(2), Fail>>, <<SubPlain(3)>>, <<Eff>> >>
 \* The rollback re-runs a retry-safe compensable call that never ran, and it starts a sub-run (B4).
