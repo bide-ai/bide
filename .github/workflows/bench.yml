@@ -110,13 +110,14 @@ jobs:
         run: .github/scripts/bench.sh run "$REPEATS" out base=./bench-base head=./bench-head
       - name: Go benchmarks, interleaved (benchstat)
         # The agent's per-call cost, measured without the closed-loop harness: allocations and
-        # ns/op of a tool-calling run (BenchmarkRunTurns, ReadOnly calls) and of a side-effect
-        # call (BenchmarkToolCallSideEffect). Ten runs per ref, alternating, on this machine.
+        # ns/op of a tool-calling run (BenchmarkRunTurns, ReadOnly calls), of a side-effect call
+        # (BenchmarkToolCallSideEffect) and of one recovery pass over 10,000 runs
+        # (BenchmarkRecoverPass10k). Ten runs per ref, alternating, on this machine.
         run: |
           mkdir -p out/gobench
           for i in $(seq 1 10); do
             for side in base head; do
-              (cd "$RUNNER_TEMP/src-$side" && go test ./agent -run '^$' -bench '^Benchmark(RunTurns|ToolCallSideEffect)$' -benchmem -count=1) |
+              (cd "$RUNNER_TEMP/src-$side" && go test ./agent -run '^$' -bench '^Benchmark(RunTurns|ToolCallSideEffect|RecoverPass10k)$' -benchmem -count=1) |
                 grep '^Benchmark' >> "out/gobench/$side.txt"
             done
           done

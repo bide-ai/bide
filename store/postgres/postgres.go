@@ -188,6 +188,7 @@ type tables struct {
 	qSteps, qLeases, qVersion, qNextSeq string     // schema-qualified, as SQL
 	rels                                [][]sqlTok // the qualified tables, as the statement check names them
 	insert, acquire, renew, release     writeSQL
+	reap                                writeSQL
 	get, load                           selectSQL
 }
 
@@ -279,6 +280,16 @@ func newTables(prefix, schema string) (tables, error) {
 		return tables{}, err
 	}
 	if t.release, err = newWrite(`DELETE FROM `+t.qLeases+` WHERE run_id OPERATOR(pg_catalog.=) $1 AND holder OPERATOR(pg_catalog.=) $2`, nil, leases); err != nil {
+		return tables{}, err
+	}
+	// The lapsed leases no recovery pass takes over: a finished run's, or one on a run the steps
+	// table does not hold. The expiry is checked by the DELETE itself, which at read committed
+	// re-evaluates it on a row a concurrent acquisition or renewal updated, so a lease taken or
+	// renewed meanwhile is kept (at repeatable read or serializable the conflict fails the
+	// statement and write runs it again).
+	if t.reap, err = newWrite(`DELETE FROM `+t.qLeases+` AS l WHERE l.expiry OPERATOR(pg_catalog.<) pg_catalog.now()
+		AND (NOT EXISTS (SELECT 1 FROM `+t.qSteps+` AS y WHERE y.run_id OPERATOR(pg_catalog.=) l.run_id)
+			OR EXISTS (SELECT 1 FROM `+t.qSteps+` AS x WHERE x.run_id OPERATOR(pg_catalog.=) l.run_id AND x.name OPERATOR(pg_catalog.=) ANY ($1::pg_catalog.text[])))`, nil, [][]sqlTok{names[1], names[2]}); err != nil {
 		return tables{}, err
 	}
 	if t.get, err = newSelect(`SELECT seq, data FROM `+t.qSteps+` WHERE run_id OPERATOR(pg_catalog.=) $1 AND name OPERATOR(pg_catalog.=) $2`, steps); err != nil {
@@ -594,6 +605,27 @@ func (s *Store) migrate(ctx context.Context) error {
 		s.t.qSteps, s.t.qLeases, s.t.qVersion, schemaVersion)); err != nil {
 		return fmt.Errorf("postgres: create tables: %w (%w)", err, agent.ErrStorage)
 	}
+	// The lapsed listing's indexes (see runsPage): expiry finds the few lapsed leases among many
+	// live ones, and run_id under "C", the listing's order, pages through many lapsed leases
+	// without sorting them. They are created when missing, on a table of v0.9.0 too: building one
+	// holds the leases table's SHARE lock (lease writes wait) for as long as it takes to index a
+	// table that holds only live and lapsed leases. Creating an index takes the table's owner, so
+	// a store role that does not own the tables needs the owner to open the store once.
+	for _, ix := range []struct{ name, cols string }{
+		{s.t.leases + "_expiry", `(expiry)`},
+		{s.t.leases + "_run_c", `((run_id COLLATE pg_catalog."C"))`},
+	} {
+		var have bool
+		if err := tx.QueryRowContext(ctx, indexPresent, ix.name, s.schema).Scan(&have); err != nil {
+			return fmt.Errorf("postgres: look up index %s: %w (%w)", ix.name, err, agent.ErrStorage)
+		}
+		if have {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS `+quoteIdent(ix.name)+` ON `+s.t.qLeases+` `+ix.cols); err != nil {
+			return fmt.Errorf("postgres: create index %s on %s (the tables' owner must open the store once to create it): %w (%w)", ix.name, s.t.leases, err, agent.ErrStorage)
+		}
+	}
 	var v int
 	if err := tx.QueryRowContext(ctx, versionQuery(s.t.qVersion)).Scan(&v); err != nil {
 		return fmt.Errorf("postgres: read schema version: %w (%w)", err, agent.ErrStorage)
@@ -680,6 +712,12 @@ const relationIsTable = `SELECT c.relkind OPERATOR(pg_catalog.=) 'r' OR c.relkin
 	FROM pg_catalog.pg_class AS c
 	WHERE c.relname OPERATOR(pg_catalog.=) $1
 		AND c.relnamespace OPERATOR(pg_catalog.=) (SELECT n.oid FROM pg_catalog.pg_namespace AS n WHERE n.nspname OPERATOR(pg_catalog.=) $2)`
+
+// indexPresent reports whether a relation named $1 (an index, or anything else holding the name)
+// exists in schema $2.
+const indexPresent = `SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_class AS c
+	WHERE c.relname OPERATOR(pg_catalog.=) $1
+		AND c.relnamespace OPERATOR(pg_catalog.=) (SELECT n.oid FROM pg_catalog.pg_namespace AS n WHERE n.nspname OPERATOR(pg_catalog.=) $2))`
 
 // nextSeqPresent reports whether a function named $1 taking one text argument exists in schema $2.
 const nextSeqPresent = `SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_proc AS p
@@ -847,6 +885,14 @@ func (s *Store) Runs(ctx context.Context, f agent.RunFilter) iter.Seq2[string, e
 
 func (s *Store) runsPage(ctx context.Context, f agent.RunFilter, after string) ([]string, error) {
 	q := `SELECT DISTINCT run_id COLLATE pg_catalog."C" AS id FROM ` + s.t.qSteps + ` AS s WHERE run_id COLLATE pg_catalog."C" OPERATOR(pg_catalog.>) $1::pg_catalog.text`
+	if f.LeaseLapsed {
+		// The runs with a lapsed lease, read from the leases table, which holds a row only for a
+		// lease taken and not released: the same comparison as AcquireLease's, and only runs the
+		// steps table holds.
+		q = `SELECT run_id COLLATE pg_catalog."C" AS id FROM ` + s.t.qLeases + ` AS s WHERE expiry OPERATOR(pg_catalog.<) pg_catalog.now()
+			AND EXISTS (SELECT 1 FROM ` + s.t.qSteps + ` AS y WHERE y.run_id OPERATOR(pg_catalog.=) s.run_id)
+			AND run_id COLLATE pg_catalog."C" OPERATOR(pg_catalog.>) $1::pg_catalog.text`
+	}
 	args := []any{after}
 	if f.Prefix != "" {
 		// The range lets the primary key's index serve the scan; starts_with checks the prefix.
@@ -917,6 +963,20 @@ func (s *Store) ReleaseLease(ctx context.Context, runID, holder string) error {
 		return fmt.Errorf("release lease %q: %w (%w)", runID, err, agent.ErrStorage)
 	}
 	return nil
+}
+
+// ReapLeases implements agent.Leaser: one DELETE of the lapsed leases whose run is finished (holds
+// an entry named in ended) or not in the steps table, which checks the expiry itself, so a lease
+// taken or renewed meanwhile is kept.
+func (s *Store) ReapLeases(ctx context.Context, ended []string) (int, error) {
+	if ended == nil {
+		ended = []string{}
+	}
+	n, err := s.write(ctx, s.t.reap, ended)
+	if err != nil {
+		return 0, fmt.Errorf("reap leases: %w (%w)", err, agent.ErrStorage)
+	}
+	return int(n), nil
 }
 
 // write sends one data-changing statement on the pool, where Postgres runs it as a transaction of

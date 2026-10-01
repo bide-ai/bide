@@ -124,11 +124,24 @@ type RunFilter struct {
 	// ExcludeHolding drops every run that holds an entry with any of these names. Recover passes
 	// the terminal markers (run:complete, run:aborted, run:cancelled).
 	ExcludeHolding []string
+	// LeaseLapsed admits only runs whose lease has lapsed: the store holds a lease on the run (see
+	// Leaser) and its expiry has passed, by the same comparison AcquireLease makes, so a run it
+	// admits is one AcquireLease would grant to another holder at that moment. A run with no lease
+	// (never leased, or released) or a live one is not admitted. A Leaser deletes a lease on
+	// release, so a lapsed lease is one its holder neither renewed nor released: the holder died or
+	// stalled. RecoverLoop's lapsed loop sets it. A Lister whose store does not implement Leaser
+	// admits no run under it. A custom store that implements both Lister and Leaser must implement
+	// it (storetest's Lister_LeaseLapsed checks it): one that ignored it would hand RecoverLoop's
+	// lapsed loop every unfinished run on every pass, doubling the cost of recovery, and halted runs
+	// would again delay the takeover of a dead holder's run.
+	LeaseLapsed bool
 }
 
 // Admits reports whether f admits runID, given holds, which reports whether the run holds an
-// entry with a given name. It is the filter's meaning, for a store that evaluates it in Go.
-func (f RunFilter) Admits(runID string, holds func(name string) bool) bool {
+// entry with a given name, and lapsed, which reports whether the run's lease has lapsed (see
+// LeaseLapsed; it is called only when f.LeaseLapsed is set). It is the filter's meaning, for a
+// store that evaluates it in Go.
+func (f RunFilter) Admits(runID string, holds func(name string) bool, lapsed func() bool) bool {
 	if runID <= f.After || len(runID) < len(f.Prefix) || runID[:len(f.Prefix)] != f.Prefix {
 		return false
 	}
@@ -137,7 +150,7 @@ func (f RunFilter) Admits(runID string, holds func(name string) bool) bool {
 			return false
 		}
 	}
-	return true
+	return !f.LeaseLapsed || lapsed()
 }
 
 // Capability returns store's implementation of the optional capability T (Lister, Leaser, or any

@@ -394,7 +394,7 @@ func ambiguousClaim(t *testing.T, s agent.Store) {
 }
 
 // lister checks the Lister contract: ascending order, the filter's After, Prefix and
-// ExcludeHolding, early breaks, and writes inside the loop.
+// ExcludeHolding, early breaks, and writes inside the loop (leaseLapsed checks LeaseLapsed).
 func lister(t *testing.T, s agent.Store) {
 	ctx := context.Background()
 	l, _ := agent.Capability[agent.Lister](s)
@@ -468,6 +468,200 @@ func lister(t *testing.T, s agent.Store) {
 	if got := list(agent.RunFilter{Prefix: prefix, ExcludeHolding: []string{"done"}}); len(got) != 0 {
 		t.Fatalf("Runs(ExcludeHolding) still yields %d runs after every run got a done entry", len(got))
 	}
+}
+
+// leaseLapsed checks RunFilter.LeaseLapsed: it admits exactly the runs the store holds whose lease
+// has lapsed, a lapsed lease is one AcquireLease grants to a new holder, and the filter combines
+// with Prefix, After and ExcludeHolding over more than one page. A store without Leaser admits no
+// run under it.
+func leaseLapsed(t *testing.T, s agent.Store) {
+	ctx := context.Background()
+	l, _ := agent.Capability[agent.Lister](s)
+	prefix := runID(t) + "/"
+	list := func(f agent.RunFilter) []string {
+		t.Helper()
+		f.Prefix, f.LeaseLapsed = prefix, true
+		var out []string
+		for id, err := range l.Runs(ctx, f) {
+			if err != nil {
+				t.Fatalf("Runs(%+v): %v", f, err)
+			}
+			out = append(out, id)
+		}
+		return out
+	}
+	leaser, ok := agent.Capability[agent.Leaser](s)
+	if !ok {
+		if _, _, err := s.Insert(ctx, prefix+"r", "x", []byte("x")); err != nil {
+			t.Fatal(err)
+		}
+		if got := list(agent.RunFilter{}); len(got) != 0 {
+			t.Fatalf("Runs(LeaseLapsed) over a store without Leaser yields %v, want no run", got)
+		}
+		return
+	}
+	acquire := func(id, holder string, ttl time.Duration) {
+		t.Helper()
+		if ok, err := leaser.AcquireLease(ctx, id, holder, ttl); err != nil || !ok {
+			t.Fatalf("AcquireLease(%s, %s) = %v, %v; want granted", id, holder, ok, err)
+		}
+	}
+	// Each run falls in a class by its index: 0 to 3 a lapsed lease, 4 a lapsed lease and a done
+	// entry, 5 a live lease, 6 a released lease (even tens) or none (odd tens), 7 a lapsed lease
+	// another holder took since. More than a page of runs has a lapsed lease.
+	const n = 1100
+	var lapsed, lapsedOpen, retaken []string
+	for i := range n {
+		id := fmt.Sprintf("%s%04d", prefix, i)
+		if _, _, err := s.Insert(ctx, id, "x", []byte("x")); err != nil {
+			t.Fatal(err)
+		}
+		switch c := i % 8; c {
+		case 0, 1, 2, 3, 4:
+			acquire(id, "dead", time.Millisecond)
+			lapsed = append(lapsed, id)
+			if c == 4 {
+				if _, _, err := s.Insert(ctx, id, "done", []byte("x")); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				lapsedOpen = append(lapsedOpen, id)
+			}
+		case 5:
+			acquire(id, "live", time.Hour)
+		case 6:
+			if i/10%2 == 0 {
+				acquire(id, "gone", time.Hour)
+				if err := leaser.ReleaseLease(ctx, id, "gone"); err != nil {
+					t.Fatal(err)
+				}
+			}
+		case 7:
+			acquire(id, "dead", time.Millisecond)
+			retaken = append(retaken, id)
+		}
+	}
+	// A lapsed lease on a run the store does not hold (no entry) is not a run to list.
+	acquire(prefix+"orphan", "dead", time.Millisecond)
+
+	// Wait for the millisecond leases to lapse on the store's clock.
+	want := slices.Sorted(slices.Values(append(slices.Clone(lapsed), retaken...)))
+	deadline := time.Now().Add(30 * time.Second)
+	for got := list(agent.RunFilter{}); !slices.Equal(got, want); got = list(agent.RunFilter{}) {
+		if time.Now().After(deadline) {
+			t.Fatalf("Runs(LeaseLapsed) yields %d runs 30s after their millisecond leases, want the %d with a lapsed lease (and no other)", len(got), len(want))
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	for _, id := range retaken {
+		acquire(id, "new", time.Hour) // a lapsed lease is granted to a new holder, and is live again
+	}
+	if got := list(agent.RunFilter{}); !slices.Equal(got, lapsed) {
+		t.Fatalf("Runs(LeaseLapsed) yields %d runs, want the %d whose lease lapsed and was not taken since", len(got), len(lapsed))
+	}
+	if got := list(agent.RunFilter{ExcludeHolding: []string{"done"}}); !slices.Equal(got, lapsedOpen) {
+		t.Fatalf("Runs(LeaseLapsed, ExcludeHolding) yields %d runs, want the %d lapsed ones without a done entry", len(got), len(lapsedOpen))
+	}
+	cursor := lapsedOpen[len(lapsedOpen)/2]
+	if got := list(agent.RunFilter{ExcludeHolding: []string{"done"}, After: cursor}); !slices.Equal(got, lapsedOpen[len(lapsedOpen)/2+1:]) {
+		t.Fatalf("Runs(LeaseLapsed, After) yields %d runs, want the %d after the cursor", len(got), len(lapsedOpen)-len(lapsedOpen)/2-1)
+	}
+	// What the filter admits is what AcquireLease grants: a new holder takes a listed run, after
+	// which it is no longer lapsed.
+	acquire(lapsedOpen[0], "taker", time.Hour)
+	if got := list(agent.RunFilter{ExcludeHolding: []string{"done"}}); !slices.Equal(got, lapsedOpen[1:]) {
+		t.Fatalf("Runs(LeaseLapsed) yields %d runs after a new holder took one, want %d", len(got), len(lapsedOpen)-1)
+	}
+}
+
+// reapLeases checks Leaser.ReapLeases: it deletes the lapsed leases of runs that hold an entry
+// named in ended or no entry at all, and keeps live leases and the lapsed leases of unfinished
+// runs.
+func reapLeases(t *testing.T, s agent.Store) {
+	ctx := context.Background()
+	l, _ := agent.Capability[agent.Lister](s)
+	leaser, _ := agent.Capability[agent.Leaser](s)
+	prefix := runID(t) + "/"
+	end := prefix + "end" // an end marker no other test's run holds
+	insert := func(id, name string) {
+		t.Helper()
+		if _, _, err := s.Insert(ctx, id, name, []byte("x")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	acquire := func(id, holder string, ttl time.Duration) {
+		t.Helper()
+		if ok, err := leaser.AcquireLease(ctx, id, holder, ttl); err != nil || !ok {
+			t.Fatalf("AcquireLease(%s, %s) = %v, %v; want granted", id, holder, ok, err)
+		}
+	}
+	lapsed := func() []string {
+		t.Helper()
+		var out []string
+		for id, err := range l.Runs(ctx, agent.RunFilter{Prefix: prefix, LeaseLapsed: true}) {
+			if err != nil {
+				t.Fatal(err)
+			}
+			out = append(out, id)
+		}
+		return out
+	}
+	reap := func(ended []string) int {
+		t.Helper()
+		n, err := leaser.ReapLeases(ctx, ended)
+		if err != nil {
+			t.Fatalf("ReapLeases(%v): %v", ended, err)
+		}
+		return n
+	}
+	finished, open, orphan := prefix+"finished", prefix+"open", prefix+"orphan"
+	finishedLive, orphanLive := prefix+"finished-live", prefix+"orphan-live"
+	insert(finished, "x")
+	insert(finished, end)
+	insert(open, "x")
+	insert(finishedLive, "x")
+	insert(finishedLive, end)
+	acquire(finished, "dead", time.Millisecond)
+	acquire(open, "dead", time.Millisecond)
+	acquire(orphan, "dead", time.Millisecond)
+	acquire(finishedLive, "live", time.Hour)
+	acquire(orphanLive, "live", time.Hour)
+	want := []string{finished, open}
+	deadline := time.Now().Add(30 * time.Second)
+	for got := lapsed(); !slices.Equal(got, want); got = lapsed() {
+		if time.Now().After(deadline) {
+			t.Fatalf("Runs(LeaseLapsed) yields %v 30s after their millisecond leases, want %v", got, want)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	// With no end markers, only the lease on a run the store does not hold goes (other tests may
+	// have left such leases too, so the count is a lower bound).
+	if n := reap(nil); n < 1 {
+		t.Fatalf("ReapLeases(nil) deleted %d leases, want at least the lapsed one on a run with no entry", n)
+	}
+	if got := lapsed(); !slices.Equal(got, want) {
+		t.Fatalf("after ReapLeases(nil), Runs(LeaseLapsed) yields %v, want %v: it deleted a lease on a run that has entries", got, want)
+	}
+	// Leases of other tests sharing the store may lapse meanwhile and go too: counts are lower
+	// bounds, and the listing shows which of this test's leases went.
+	if n := reap([]string{"nothing", end}); n < 1 {
+		t.Fatalf("ReapLeases(end) deleted %d leases, want at least the lapsed lease on a finished run", n)
+	}
+	if got := lapsed(); !slices.Equal(got, []string{open}) {
+		t.Fatalf("after ReapLeases(end), Runs(LeaseLapsed) yields %v, want only the unfinished run %s", got, open)
+	}
+	reap([]string{end})
+	if got := lapsed(); !slices.Equal(got, []string{open}) {
+		t.Fatalf("after a second ReapLeases(end), Runs(LeaseLapsed) yields %v, want only the unfinished run %s", got, open)
+	}
+	// Live leases are kept, finished run or not: their holders still renew them.
+	for _, id := range []string{finishedLive, orphanLive} {
+		if ok, err := leaser.RenewLease(ctx, id, "live", time.Hour); err != nil || !ok {
+			t.Fatalf("RenewLease(%s) after ReapLeases = %v, %v; want the live lease kept", id, ok, err)
+		}
+	}
+	// The kept lapsed lease is still one a new holder takes.
+	acquire(open, "new", time.Hour)
 }
 
 // CheckWrapper checks a store wrapper against the rules for wrappers (see agent.Store): its

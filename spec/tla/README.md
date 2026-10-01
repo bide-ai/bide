@@ -833,12 +833,16 @@ with the halted runs divided by C), and `Cancel` on a saga (an abort, model 5).
 | `DComplete` | the loop's terminal: `putRecord` of `run:complete` |
 | `DVerdict` | proposed for P14: the end markers read again; the first in journal order is reported |
 | `DRel` | `Lease`'s deferred `ReleaseLease` |
-| `PList`, `PNext`, `PSlot`, `PWait` | `RecoverLoop`'s `pass`: `lister.Runs(ctx, recoverFilter)`, `recoverable`, `inFlight`, `slots`, the ticker (`Recover`: one pass) |
+| `PList`, `PNext`, `PSlot`, `PWait` | `RecoverLoop`'s `pass` and `every`: `lister.Runs(ctx, recoverFilter)` in the full pass (process `"pass"`), `lister.Runs(ctx, lapsedFilter)` in the lapsed loop (process `"tkp"`, `PassRule = "split"`; its slots are `WithRecoverLapsedConcurrency`'s, the `"tko"` driver); `recoverable`; `PNext`'s `InFlight` is the `inFlight` check before the slot wait; `PSlot` is the slot wait, then the in-flight re-check and mark under the lock (the model does not re-check: a run the other loop took meanwhile reaches `DIdle` and is refused by the lease, where the code skips it before acquiring); the ticker (`Recover`: one pass) |
 | `OPick`, `OLease`, `OWrite`, `ORel` | `ResolveHaltRef` / `resolveHalt` with `checkNoLiveDriver`'s lease; `Approve` |
 | `CGet`, `CIns`, `CRead` | P14's `Cancel` (D1): the end-marker check, the `run:cancelled` insert, and the proposed read-back |
 | `Tick` | wall-clock time: `driveWithRenew`'s renewal, lease expiry, `RecoverLoop`'s `time.Ticker` |
 | `Stall`, `Wake`, `LeaseNotice` | a process pause; `renewLoop` returning `ErrLeaseLost` and cancelling the drive |
 | `Crash` | a process dies (a worker restarts) |
+
+`Leaser.ReapLeases`, which each lapsed pass of `RecoverLoop` calls first, is not modeled: it deletes the
+lapsed leases of ended runs and of runs with no entry, checking the expiry in the same statement,
+and deleting a lapsed lease changes nothing a holder can observe, since any holder may take it.
 
 ### Properties
 
@@ -865,7 +869,7 @@ can step, so a tick is an upper bound on a round trip, and a takeover within `Bo
 safety property over the ghost clock `age`. `PickedUp` is its unbounded form, which holds under
 both rules; only the bound shows the cost of a pass.
 
-### Recovery cost: the pickup bound (finding L1)
+### Recovery cost: the pickup bound (L1, fixed by #126)
 
 `RecoverLoop`'s godoc, since v0.9.0, says a dead holder's run is picked up within about one
 interval of its lease expiring only while a pass is short: a pass visits every unfinished run it
@@ -875,7 +879,7 @@ halted run's visit is five steps of the worker's slot (`DIdle` with the lease, `
 `DResume`, `DOpen`'s halt, `DRel`), and the pass hands one run to the slot at a time, so a pass
 over H halted runs takes about 5H ticks.
 
-**L1 (`findings/pickup-halted-pile`, `BoundedPickup`).** Runs are listed in id order, so older
+**L1 (`regress/pickup-halted-pile`, `BoundedPickup`).** Runs are listed in id order, so older
 halted runs come first. A leased primary's run is listed last and the primary dies. In the
 shortest counterexample (two halted runs) the pass listed all three runs, its slot is visiting
 halted run 1 when run 3's lease lapses, and run 3 waits for the visits to runs 1 and 2, past a
@@ -888,9 +892,9 @@ halted runs (TTL 2, interval 2, one worker, concurrency 1; the smallest `Bound` 
 |---|---|---|---|---|
 | v0.9.0 (`all`) | 4 | 5 | 10 | 15 |
 | lapsed runs first (`lapsedFirst`) | 4 | 5 | 10 | 15 |
-| proposed (`split`) | 3 | 3 | 4 | 4 |
+| `split` (since #126) | 3 | 3 | 4 | 4 |
 
-**The approved rule (`PassRule = "split"`, `pickup-split`).** The maintainers approved it; L1 stays in `findings/` until the code lands, then becomes a regression. Each worker runs a second loop,
+**The rule (`PassRule = "split"`, `pickup-split`), `RecoverLoop` since #126.** L1 is now a regression. Each worker runs a second loop,
 on the same interval, that lists only the unfinished runs whose lease row has lapsed (the stores
 delete a row on release, so a lapsed row means its holder died or stalled) and drives them with a
 slot of its own. The full pass is unchanged and still re-drives the halted and never-leased runs.
@@ -899,7 +903,7 @@ A dead holder's run is then taken over within 3 or 4 ticks of the lapse with 0 t
 per halted run listed before it. Ordering each pass's list with the lapsed runs first is not enough
 (`PassRule = "lapsedFirst"`, `findings/pickup-lapsed-first`): a lease that lapses while a pass
 walks the halted runs still waits for the next pass. The rule needs a store query for runs with
-a lapsed lease (a `RunFilter` field, say), and its own concurrency.
+a lapsed lease (`RunFilter.LeaseLapsed`) and its own concurrency (`WithRecoverLapsedConcurrency`).
 
 `PickedUp` holds under every rule but the historical one (`regress/skip-when-busy`): without a
 bound, a slow pass is not a liveness failure, which is why the docs could only be narrowed and the
@@ -952,8 +956,8 @@ to the pull-request job.
 | `life-paused` | ci | Two runs, one waiting for an approval and one halted, a leased primary on a third that a worker recovers; the operator approves and resolves. | 136,880 | 3 s |
 | `life-cancel` | ci | Cancel (P14) under the proposed rules: run:cancelled read again once a claim is won, before the call, and the first end marker in journal order is the run's verdict. A leased primary, a worker, two calls, a crash. | 101,555 | 2 s |
 | `life-cancel-plain` | ci | Cancel (P14) under the proposed rules, with a plain Run (no lease) and a worker; a crash. | 157,820 | 3 s |
-| `pickup-split` | ci | The proposed recovery rule (PassRule "split"): a second loop per worker visits only the runs whose lease lapsed, every interval, with a slot of its own. Two halted runs listed before a leased primary's run; the primary dies. Takeover within Bound ticks of the lapse. | 4,859 | 1 s |
-| `pickup-reach` | ci | Vacuity of the pickup configurations: a dead holder's run waits after its lease lapsed (PickupNotReachable must be violated), under the proposed rule. | 189 | <1 s |
+| `pickup-split` | ci | The recovery rule since #126 (PassRule "split"): a second loop per worker visits only the runs whose lease lapsed, every interval, with a slot of its own. Two halted runs listed before a leased primary's run; the primary dies. Takeover within Bound ticks of the lapse. | 4,859 | 1 s |
+| `pickup-reach` | ci | Vacuity of the pickup configurations: a dead holder's run waits after its lease lapsed (PickupNotReachable must be violated), under the rule since #126. | 189 | <1 s |
 | `life-resolve` | ci | One run: a leased primary Run, one Recover pass (not RecoverLoop) and an operator resolving halts; an error reply and a crash. | 32,982 | 1 s |
 | `live-pickup` | ci | PickedUp under v0.9.0's rule: a halted run listed before a leased primary's run, the primary dies; every step and the clock weakly fair. | 4,699 | 2 s |
 | `deep-two-workers` | nightly | One run: a leased primary Run and two RecoverLoop workers; an error reply and a crash. | 3,620,876 | 2 min |
@@ -966,8 +970,8 @@ to the pull-request job.
 
 Each regression restores a historical rule behind `Bug` and must fail with its property; each
 finding fails under the rule as it stands and flips to a regression once the fix is adopted; each
-limit states behavior the design accepts. L1 is v0.9.0's rule (`RecoverLoop`); its fix is
-approved. L2 and L3 are against D1's original text; both rules are now in D1
+limit states behavior the design accepts. L1 was v0.9.0's rule (`RecoverLoop`); #126 fixed
+it, and it is a regression. L2 and L3 are against D1's original text; both rules are now in D1
 (`docs/design/api-v1.md`), and the findings stay open until P14 implements them.
 
 | Config | Group | The rule or behavior | Expected | Trace |
@@ -979,8 +983,8 @@ approved. L2 and L3 are against D1's original text; both rules are now in D1
 | `regress/no-abort-marker` | regress | #31: a saga whose rollback finished recorded no run:aborted, so every pass re-drove it (Bug = "NoAbortMarker"). | `EndMarked` | 8 states |
 | `regress/record-under-ctx` | regress | #58 finding 1: the SQL stores recorded a step's result under the drive's context, so a drive whose lease was lost while the effect ran dropped the result (Bug = "RecordUnderCtx"). | `OutcomeRecorded` | 10 states |
 | `regress/skip-when-busy` | regress | #58, RecoverLoop's first version: a pass that found every slot busy stopped, and the next began from the top, so runs listed after halted ones starved (Bug = "SkipWhenBusy"). | `PickedUp` (liveness) | 30 states |
+| `regress/pickup-halted-pile` | regress | L1, fixed by #126: v0.9.0's RecoverLoop (PassRule "all") visits every unfinished run in id order, halted ones included, so a dead holder's run listed after two halted runs is taken over more than Bound ticks after its lease lapsed. | `BoundedPickup` | 20 states |
 | `regress/replay-finished` | regress | c6deb766: a drive of a finished run asked the model for another turn, whose calls have new tool-use ids (Bug = "ReplayFinished"). | `FinishedFinal` | 16 states |
-| `findings/pickup-halted-pile` | finding | L1: v0.9.0's RecoverLoop visits every unfinished run in id order, halted ones included, so a dead holder's run listed after two halted runs is taken over more than Bound ticks after its lease lapsed. | `BoundedPickup` | 20 states |
 | `findings/pickup-lapsed-first` | finding | L1, a rejected fix: each pass takes the runs whose lease lapsed first. A lease that lapses while a pass walks the halted runs still waits for the next pass. | `BoundedPickup` | 20 states |
 | `findings/cancel-turn-check` | finding | L2: D1 checks run:cancelled when a drive starts and at turn boundaries; a drive past its check claims and fires after Cancel landed (CancelRule "turn"). | `CancelFinal` | 7 states |
 | `findings/cancel-verdict` | finding | L3: Cancel and completion race on two keys: Cancel reads no end marker, the run completes, Cancel writes run:cancelled and reports the run cancelled (VerdictRule "none"). | `VerdictAgreement` | 10 states |
@@ -1011,9 +1015,10 @@ The mechanisms of section 6 of the plan, as they apply here:
   model, the hooks would be `recoverRun` (acquire, `runEnded`, `resume`, release), the end-marker
   writes, `renewLoop`'s `ErrLeaseLost`, and P14's `Cancel` and `run:cancelled` checks; the
   multi-process HA harness is the natural producer.
-- **Findings need Go tests before their fixes**, as for every model: L1 needs a test that
-  measures a takeover behind halted runs against the interval (the HA harness's
-  `takeoverBound` with halted runs listed first), and L2 and L3 become tests of P14.
+- **Findings need Go tests before their fixes**, as for every model: L1's is
+  `TestRecoverLoop_TakesOverALapsedLeaseWithinAnIntervalBehindHaltedRuns` (`agent/recover_lapsed_test.go`,
+  committed failing before #126's fix), which measures a takeover behind halted runs against the
+  interval, and L2 and L3 become tests of P14.
 
 ## What the bounds do not cover
 

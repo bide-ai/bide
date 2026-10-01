@@ -140,9 +140,11 @@ func (m *MemStore) Runs(ctx context.Context, f RunFilter) iter.Seq2[string, erro
 			return
 		}
 		m.mu.Lock()
+		m.init()
+		now := m.now()
 		ids := make([]string, 0, len(m.runs))
 		for id, r := range m.runs {
-			if f.Admits(id, func(name string) bool { _, ok := r.byName[name]; return ok }) {
+			if f.Admits(id, func(name string) bool { _, ok := r.byName[name]; return ok }, func() bool { return m.lapsed(id, now) }) {
 				ids = append(ids, id)
 			}
 		}

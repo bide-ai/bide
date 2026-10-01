@@ -70,6 +70,11 @@ func TestPostgres_NothingResolvesThroughSearchPathAfterOpen(t *testing.T) {
 	if n != 2 || runs != 1 {
 		t.Fatalf("Load read %d entries and Runs %d runs, want 2 and 1", n, runs)
 	}
+	for _, err := range s.Runs(ctx, agent.RunFilter{Prefix: "ru", ExcludeHolding: []string{"zz"}, LeaseLapsed: true}) {
+		if err != nil {
+			t.Fatalf("Runs(LeaseLapsed): %v", err)
+		}
+	}
 	if ok, err := s.AcquireLease(ctx, "run", "h", time.Minute); err != nil || !ok {
 		t.Fatalf("AcquireLease = %v, %v", ok, err)
 	}

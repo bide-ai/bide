@@ -110,12 +110,14 @@ func testRecoverLoopLongDriveDoesNotBlockOthers(t *testing.T) {
 	}
 }
 
-// countingStore is a MemStore that counts lease acquisitions per run and listings.
+// countingStore is a MemStore that counts lease acquisitions per run and listings: the full
+// pass's (lists) and the lapsed loop's (lapsedLists) apart.
 type countingStore struct {
 	*MemStore
-	mu       sync.Mutex
-	acquired map[string]int
-	lists    int
+	mu          sync.Mutex
+	acquired    map[string]int
+	lists       int
+	lapsedLists int
 }
 
 func (c *countingStore) AcquireLease(ctx context.Context, runID, holder string, ttl time.Duration) (bool, error) {
@@ -130,7 +132,11 @@ func (c *countingStore) AcquireLease(ctx context.Context, runID, holder string, 
 
 func (c *countingStore) Runs(ctx context.Context, f RunFilter) iter.Seq2[string, error] {
 	c.mu.Lock()
-	c.lists++
+	if f.LeaseLapsed {
+		c.lapsedLists++
+	} else {
+		c.lists++
+	}
 	c.mu.Unlock()
 	return c.MemStore.Runs(ctx, f)
 }
@@ -141,7 +147,7 @@ func (c *countingStore) acquires(runID string) int {
 	return c.acquired[runID]
 }
 
-// Without WithRecoverInterval, a pass starts every half lease TTL.
+// Without WithRecoverInterval, a pass of each loop starts every half lease TTL.
 func TestRecoverLoop_DefaultIntervalIsHalfTheTTL(t *testing.T) {
 	synctest.Test(t, testRecoverLoopDefaultIntervalIsHalfTheTTL)
 }
@@ -153,8 +159,8 @@ func testRecoverLoopDefaultIntervalIsHalfTheTTL(t *testing.T) {
 	_ = stop()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.lists != 11 {
-		t.Fatalf("%d passes in 525ms with a 100ms TTL, want 11 (one every 50ms, from 0ms to 500ms)", s.lists)
+	if s.lists != 11 || s.lapsedLists != 11 {
+		t.Fatalf("%d full and %d lapsed passes in 525ms with a 100ms TTL, want 11 of each (one every 50ms, from 0ms to 500ms)", s.lists, s.lapsedLists)
 	}
 }
 
@@ -274,11 +280,12 @@ func testRecoverLoopRejectsBadConfig(t *testing.T) {
 		s    Durable
 		opts []RecoverOption
 	}{
-		"no Lister":         {noListStore{}, nil},
-		"zero TTL":          {NewMemStore(), []RecoverOption{WithLeaseTTL(0)}},
-		"zero interval":     {NewMemStore(), []RecoverOption{WithRecoverInterval(0)}},
-		"zero concurrency":  {NewMemStore(), []RecoverOption{WithRecoverConcurrency(0)}},
-		"negative interval": {NewMemStore(), []RecoverOption{WithRecoverInterval(-time.Second)}},
+		"no Lister":               {noListStore{}, nil},
+		"zero TTL":                {NewMemStore(), []RecoverOption{WithLeaseTTL(0)}},
+		"zero interval":           {NewMemStore(), []RecoverOption{WithRecoverInterval(0)}},
+		"zero concurrency":        {NewMemStore(), []RecoverOption{WithRecoverConcurrency(0)}},
+		"zero lapsed concurrency": {NewMemStore(), []RecoverOption{WithRecoverLapsedConcurrency(0)}},
+		"negative interval":       {NewMemStore(), []RecoverOption{WithRecoverInterval(-time.Second)}},
 	} {
 		done := make(chan error, 1)
 		go func() { done <- RecoverLoop(ctx, tc.s, resume, tc.opts...) }()

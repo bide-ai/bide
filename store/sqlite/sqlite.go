@@ -400,6 +400,13 @@ func (s *Store) Runs(ctx context.Context, f agent.RunFilter) iter.Seq2[string, e
 
 func (s *Store) runsPage(ctx context.Context, f agent.RunFilter, after string) ([]string, error) {
 	q := `SELECT DISTINCT run_id FROM ` + s.t.steps + ` AS s WHERE run_id > ?`
+	if f.LeaseLapsed {
+		// The runs with a lapsed lease, read from the leases table, which holds a row only for a
+		// lease taken and not released: the same comparison as AcquireLease's, and only runs the
+		// steps table holds.
+		q = `SELECT run_id FROM ` + s.t.leases + ` AS s WHERE expiry < unixepoch('subsec')
+			AND EXISTS (SELECT 1 FROM ` + s.t.steps + ` AS y WHERE y.run_id = s.run_id) AND run_id > ?`
+	}
 	args := []any{after}
 	if f.Prefix != "" {
 		// The range lets the primary key's index serve the scan; substr checks the bytes.
@@ -512,6 +519,25 @@ func (s *Store) ReleaseLease(ctx context.Context, runID, holder string) error {
 		return fmt.Errorf("release lease %q: %w (%w)", runID, err, agent.ErrStorage)
 	}
 	return nil
+}
+
+// ReapLeases implements agent.Leaser with one DELETE, which checks the expiry in the same
+// statement, so a lease taken or renewed meanwhile is kept.
+func (s *Store) ReapLeases(ctx context.Context, ended []string) (int, error) {
+	q := `DELETE FROM ` + s.t.leases + ` WHERE expiry < unixepoch('subsec')
+		AND (NOT EXISTS (SELECT 1 FROM ` + s.t.steps + ` AS y WHERE y.run_id = ` + s.t.leases + `.run_id)`
+	args := make([]any, 0, len(ended))
+	if len(ended) > 0 {
+		q += ` OR EXISTS (SELECT 1 FROM ` + s.t.steps + ` AS x WHERE x.run_id = ` + s.t.leases + `.run_id AND x.name IN (?` + strings.Repeat(`, ?`, len(ended)-1) + `))`
+		for _, n := range ended {
+			args = append(args, n)
+		}
+	}
+	n, err := s.leaseExec(ctx, 2*time.Second, q+`)`, args...)
+	if err != nil {
+		return 0, fmt.Errorf("reap leases: %w (%w)", err, agent.ErrStorage)
+	}
+	return int(n), nil
 }
 
 // Journal returns the Journal over s that its Do and History shims delegate to.

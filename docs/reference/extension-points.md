@@ -131,7 +131,12 @@ gets every engine guarantee without reimplementing any of them.
 
 **Optional capabilities.** A store may also implement `Lister` (`Runs(ctx, RunFilter)`, which a
 recovery supervisor needs; a SQL store evaluates the filter in its query) and `Leaser` (run leases
-that coordinate drivers). `agent.Capability[T](store)` finds them, looking through wrappers that
+that coordinate drivers, and `ReapLeases`, which deletes lapsed leases no recovery pass takes over).
+A store that implements both must implement `RunFilter.LeaseLapsed`, which admits only the runs
+whose lease has lapsed by the comparison `AcquireLease` makes: `RecoverLoop`'s lapsed loop lists
+with it on every pass, so a store that ignored it would hand that loop every unfinished run,
+doubling the cost of recovery and letting halted runs delay takeover again. `storetest.Run` checks
+both (`Lister_LeaseLapsed`, `Leaser_ReapLeases`). `agent.Capability[T](store)` finds them, looking through wrappers that
 implement `Unwrap() Store`. Only a wrapper that passes run IDs and names through unchanged may
 implement `Unwrap`; one that rewrites keys (a tenant prefix, say) implements each capability
 itself. `storetest.CheckWrapper(t, wrap, ctxA, ctxB)` checks this, and that the wrapper's keys do

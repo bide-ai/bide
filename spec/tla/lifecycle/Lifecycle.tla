@@ -30,7 +30,7 @@ CONSTANTS
   Primary,      \* "none", "leased" (Lease around Run) or "plain" (Run): run NRuns's first drive
   PrimName,     \* the primary's WithLeaseHolder name
   Loop,         \* TRUE: RecoverLoop; FALSE: one Recover pass per worker
-  PassRule,     \* "all" (v0.9.0), "lapsedFirst" or "split" (proposed), see the README
+  PassRule,     \* "all" (v0.9.0), "lapsedFirst" or "split" (RecoverLoop since #126), see the README
   Resolver,     \* an operator resolving halts (ResolveHalt) and approving (Approve)
   Canceller,    \* P14's Cancel of run NRuns, once
   CancelRule,   \* "none" (no Cancel), "turn" (D1: at drive start and turn boundaries), "claim"
