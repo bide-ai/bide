@@ -126,6 +126,7 @@ import (
 	"errors"
 	"fmt"
 	"iter"
+	"log/slog"
 	"math/rand/v2"
 	"regexp"
 	"strings"
@@ -173,9 +174,10 @@ var (
 // "$user" schema, created by any role with CREATE on the database) cannot take over a table or the
 // next_seq function.
 type tables struct {
-	steps, leases, version              string // bare names, as in the catalog
-	nextSeq                             string // the next_seq function's bare name
-	qSteps, qLeases, qVersion, qNextSeq string // schema-qualified, as SQL
+	steps, leases, version              string     // bare names, as in the catalog
+	nextSeq                             string     // the next_seq function's bare name
+	qSteps, qLeases, qVersion, qNextSeq string     // schema-qualified, as SQL
+	rels                                [][]sqlTok // the qualified tables, as the statement check names them
 	insert, acquire, renew, release     writeSQL
 	get, load                           selectSQL
 }
@@ -228,13 +230,19 @@ func newTables(prefix, schema string) (tables, error) {
 		nextSeq: prefix + "next_seq_" + nextSeqVersion}
 	q := quoteIdent(schema) + "."
 	t.qSteps, t.qLeases, t.qVersion, t.qNextSeq = q+t.steps, q+t.leases, q+t.version, q+t.nextSeq
-	nextSeq, err := parseName(t.qNextSeq)
-	if err != nil {
-		return tables{}, fmt.Errorf("postgres: schema %q: %w (%w)", schema, err, agent.ErrConfig)
+	var names [4][]sqlTok
+	for i, n := range []string{t.qNextSeq, t.qSteps, t.qLeases, t.qVersion} {
+		var err error
+		if names[i], err = parseName(n); err != nil {
+			return tables{}, fmt.Errorf("postgres: schema %q: %w (%w)", schema, err, agent.ErrConfig)
+		}
 	}
-	// Built-ins are called qualified with pg_catalog and parameters cast to the type they are
-	// used as, so an overload in a schema on the search path cannot match a call better than the
-	// built-in does.
+	nextSeq, steps, leases := names[0], [][]sqlTok{names[1]}, [][]sqlTok{names[2]}
+	t.rels = [][]sqlTok{names[1], names[2], names[3]}
+	var err error
+	// Every name is qualified: tables with the recorded schema, built-ins, types and the collation
+	// with pg_catalog, and every operator written OPERATOR(pg_catalog.<op>), so that no name in a
+	// statement resolves through the search path (see sqlcheck.go).
 	// The position comes from next_seq, which queues the insert on the run's lock (see
 	// nextSeqTemplate). Should two inserts still read the same MAX (at repeatable read or
 	// serializable, or beside a writer that does not take the lock), they collide on UNIQUE
@@ -243,29 +251,29 @@ func newTables(prefix, schema string) (tables, error) {
 	if t.insert, err = newWrite(`INSERT INTO `+t.qSteps+` (run_id, seq, name, data)
 		VALUES ($1::pg_catalog.text, `+t.qNextSeq+`($1::pg_catalog.text), $2, $3)
 		ON CONFLICT (run_id, name) DO NOTHING
-		RETURNING seq`, nextSeq); err != nil {
+		RETURNING seq`, nextSeq, steps); err != nil {
 		return tables{}, err
 	}
 	// Granted when the run is unleased, when the live lease is already holder's, or when the lease
 	// has expired; a row another holder holds live is left alone and nothing is returned.
 	if t.acquire, err = newWrite(`INSERT INTO `+t.qLeases+` AS l (run_id, holder, expiry)
-		VALUES ($1, $2, pg_catalog.now() + ($3::pg_catalog.float8 * '1 second'::pg_catalog.interval))
+		VALUES ($1, $2, pg_catalog.now() OPERATOR(pg_catalog.+) ($3::pg_catalog.float8 OPERATOR(pg_catalog.*) '1 second'::pg_catalog.interval))
 		ON CONFLICT (run_id) DO UPDATE
 			SET holder = EXCLUDED.holder, expiry = EXCLUDED.expiry
-			WHERE l.holder = EXCLUDED.holder OR l.expiry < pg_catalog.now()`, nil); err != nil {
+			WHERE l.holder OPERATOR(pg_catalog.=) EXCLUDED.holder OR l.expiry OPERATOR(pg_catalog.<) pg_catalog.now()`, nil, leases); err != nil {
 		return tables{}, err
 	}
-	if t.renew, err = newWrite(`UPDATE `+t.qLeases+` SET expiry = pg_catalog.now() + ($3::pg_catalog.float8 * '1 second'::pg_catalog.interval)
-		WHERE run_id = $1 AND holder = $2 AND expiry >= pg_catalog.now()`, nil); err != nil {
+	if t.renew, err = newWrite(`UPDATE `+t.qLeases+` SET expiry = pg_catalog.now() OPERATOR(pg_catalog.+) ($3::pg_catalog.float8 OPERATOR(pg_catalog.*) '1 second'::pg_catalog.interval)
+		WHERE run_id OPERATOR(pg_catalog.=) $1 AND holder OPERATOR(pg_catalog.=) $2 AND expiry OPERATOR(pg_catalog.>=) pg_catalog.now()`, nil, leases); err != nil {
 		return tables{}, err
 	}
-	if t.release, err = newWrite(`DELETE FROM `+t.qLeases+` WHERE run_id = $1 AND holder = $2`, nil); err != nil {
+	if t.release, err = newWrite(`DELETE FROM `+t.qLeases+` WHERE run_id OPERATOR(pg_catalog.=) $1 AND holder OPERATOR(pg_catalog.=) $2`, nil, leases); err != nil {
 		return tables{}, err
 	}
-	if t.get, err = newSelect(`SELECT seq, data FROM ` + t.qSteps + ` WHERE run_id = $1 AND name = $2`); err != nil {
+	if t.get, err = newSelect(`SELECT seq, data FROM `+t.qSteps+` WHERE run_id OPERATOR(pg_catalog.=) $1 AND name OPERATOR(pg_catalog.=) $2`, steps); err != nil {
 		return tables{}, err
 	}
-	if t.load, err = newSelect(`SELECT seq, name, data FROM ` + t.qSteps + ` WHERE run_id = $1 AND seq > $2 ORDER BY seq LIMIT $3`); err != nil {
+	if t.load, err = newSelect(`SELECT seq, name, data FROM `+t.qSteps+` WHERE run_id OPERATOR(pg_catalog.=) $1 AND seq OPERATOR(pg_catalog.>) $2 ORDER BY seq LIMIT $3`, steps); err != nil {
 		return tables{}, err
 	}
 	return t, nil
@@ -282,24 +290,25 @@ type writeSQL string
 
 // newWrite returns q as a writeSQL, or an error unless q starts with INSERT, UPDATE or DELETE and
 // passes the statement check. nextSeq, when not nil, is the schema-qualified next_seq function,
-// which q may call once if it is an INSERT with no SELECT.
-func newWrite(q string, nextSeq []sqlTok) (writeSQL, error) {
+// which q may call once if it is an INSERT with no SELECT; rels are the relations, besides
+// pg_catalog's, q may name.
+func newWrite(q string, nextSeq []sqlTok, rels [][]sqlTok) (writeSQL, error) {
 	if !startsWith(q, "INSERT") && !startsWith(q, "UPDATE") && !startsWith(q, "DELETE") {
 		return "", fmt.Errorf("postgres: a write on the pool must be one INSERT, UPDATE or DELETE statement, got %.40q: %w", q, agent.ErrConfig)
 	}
-	if err := checkSQL(q, nextSeq); err != nil {
+	if err := checkSQL(q, nextSeq, rels); err != nil {
 		return "", fmt.Errorf("postgres: a write on the pool holds %v, in %.40q: %w", err, q, agent.ErrConfig)
 	}
 	return writeSQL(q), nil
 }
 
 // newSelect returns q as a selectSQL, or an error unless q starts with SELECT and passes the
-// statement check.
-func newSelect(q string) (selectSQL, error) {
+// statement check; rels are the relations, besides pg_catalog's, q may name.
+func newSelect(q string, rels [][]sqlTok) (selectSQL, error) {
 	if !startsWith(q, "SELECT") {
 		return "", fmt.Errorf("postgres: a read on the pool must be one SELECT statement, got %.40q: %w", q, agent.ErrConfig)
 	}
-	if err := checkSQL(q, nil); err != nil {
+	if err := checkSQL(q, nil, rels); err != nil {
 		return "", fmt.Errorf("postgres: a read on the pool holds %v, in %.40q: %w", err, q, agent.ErrConfig)
 	}
 	return selectSQL(q), nil
@@ -328,7 +337,10 @@ const migrateIdleTimeout = 5 * time.Second
 // Option configures Open and New.
 type Option interface{ apply(*config) error }
 
-type config struct{ prefix string }
+type config struct {
+	prefix string
+	schema string // set by WithSchema; empty: discover it (see storeSchema)
+}
 
 type optionFunc func(*config) error
 
@@ -348,6 +360,26 @@ func WithTablePrefix(prefix string) Option {
 		return nil
 	})
 }
+
+// WithSchema pins the schema the store's tables and next_seq function are in, instead of
+// discovering it through the search path at every Open. It is the recommended deployment: with it,
+// the search path plays no part in which schema the store uses, and no role can redirect a
+// restarting node by creating a schema earlier on the path. The name is used as given (quoted),
+// so "App" and "app" are different schemas; the schema must exist. An empty name is an ErrConfig
+// error.
+func WithSchema(name string) Option {
+	return optionFunc(func(c *config) error {
+		if name == "" || strings.IndexByte(name, 0) >= 0 {
+			return fmt.Errorf("postgres: schema name %q is empty or holds a NUL: %w", name, agent.ErrConfig)
+		}
+		c.schema = name
+		return nil
+	})
+}
+
+// warnf reports the store discovering its schema through the search path. It logs through the
+// default slog logger, which an application sets with slog.SetDefault; a test replaces it.
+var warnf = func(msg string, args ...any) { slog.Warn(msg, args...) }
 
 func newConfig(opts []Option) (config, error) {
 	c := config{prefix: "bide_"}
@@ -392,9 +424,13 @@ func New(ctx context.Context, db *sql.DB, opts ...Option) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	schema, err := storeSchema(ctx, db, cfg.prefix+"steps")
-	if err != nil {
-		return nil, err
+	schema := cfg.schema
+	if schema == "" {
+		if schema, err = storeSchema(ctx, db, cfg.prefix+"steps"); err != nil {
+			return nil, err
+		}
+		warnf("store/postgres: the store's schema was found through the search path; pin it with WithSchema",
+			"schema", schema, "why", "discovery runs again at every Open, so a role that can create a schema earlier on the search path (any role with CREATE on the database can create the \"$user\" schema) can redirect a restarting node; discovery is safe only when every schema on the search path is trusted")
 	}
 	t, err := newTables(cfg.prefix, schema)
 	if err != nil {
@@ -450,11 +486,12 @@ func retryScan(ctx context.Context, fn func() error) error {
 // partitioned table; and current_schema(), where the migration creates the tables when there is
 // none.
 const firstRelation = `SELECT
-	(SELECT n.nspname FROM pg_catalog.pg_class AS c JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace
-		WHERE c.relname = $1 AND n.nspname = ANY (pg_catalog.current_schemas(false))
+	(SELECT n.nspname FROM pg_catalog.pg_class AS c JOIN pg_catalog.pg_namespace AS n ON n.oid OPERATOR(pg_catalog.=) c.relnamespace
+		WHERE c.relname OPERATOR(pg_catalog.=) $1 AND n.nspname OPERATOR(pg_catalog.=) ANY (pg_catalog.current_schemas(false))
 		ORDER BY pg_catalog.array_position(pg_catalog.current_schemas(false), n.nspname) LIMIT 1),
-	(SELECT c.relkind IN ('r', 'p') FROM pg_catalog.pg_class AS c JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace
-		WHERE c.relname = $1 AND n.nspname = ANY (pg_catalog.current_schemas(false))
+	(SELECT c.relkind OPERATOR(pg_catalog.=) 'r' OR c.relkind OPERATOR(pg_catalog.=) 'p'
+		FROM pg_catalog.pg_class AS c JOIN pg_catalog.pg_namespace AS n ON n.oid OPERATOR(pg_catalog.=) c.relnamespace
+		WHERE c.relname OPERATOR(pg_catalog.=) $1 AND n.nspname OPERATOR(pg_catalog.=) ANY (pg_catalog.current_schemas(false))
 		ORDER BY pg_catalog.array_position(pg_catalog.current_schemas(false), n.nspname) LIMIT 1),
 	pg_catalog.current_schema()`
 
@@ -523,7 +560,7 @@ func (s *Store) migrate(ctx context.Context) error {
 		return fmt.Errorf("postgres: create tables: %w (%w)", err, agent.ErrStorage)
 	}
 	var v int
-	if err := tx.QueryRowContext(ctx, `SELECT version FROM `+s.t.qVersion+` WHERE id = 1`).Scan(&v); err != nil {
+	if err := tx.QueryRowContext(ctx, versionQuery(s.t.qVersion)).Scan(&v); err != nil {
 		return fmt.Errorf("postgres: read schema version: %w (%w)", err, agent.ErrStorage)
 	}
 	if v > schemaVersion {
@@ -568,7 +605,7 @@ func (s *Store) checkSchema(ctx context.Context) error {
 		}
 	}
 	var sameNextSeq, sameOwner sql.NullBool
-	if err := s.db.QueryRowContext(ctx, expectedFunction, s.t.nextSeq, s.schema, nextSeqConfig, s.t.nextSeqBody(s.schema), s.t.steps).Scan(&sameNextSeq, &sameOwner); err != nil && !errors.Is(err, sql.ErrNoRows) {
+	if err := s.db.QueryRowContext(ctx, expectedFunction, s.t.nextSeq, s.schema, []string{nextSeqConfig}, s.t.nextSeqBody(s.schema), s.t.steps).Scan(&sameNextSeq, &sameOwner); err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("postgres: check %s: %w (%w)", s.t.nextSeq, err, agent.ErrStorage)
 	}
 	if !sameNextSeq.Bool {
@@ -592,36 +629,47 @@ func (s *Store) checkSchema(ctx context.Context) error {
 // rely on each such index: a race for a position fails on it and is retried, and ON CONFLICT needs
 // it as its arbiter.
 const requiredUnique = `SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_index AS i
-	WHERE i.indrelid = (SELECT c.oid FROM pg_catalog.pg_class AS c
-			WHERE c.relname = $1 AND c.relnamespace = (SELECT n.oid FROM pg_catalog.pg_namespace AS n WHERE n.nspname = $2))
+	WHERE i.indrelid OPERATOR(pg_catalog.=) (SELECT c.oid FROM pg_catalog.pg_class AS c
+			WHERE c.relname OPERATOR(pg_catalog.=) $1
+				AND c.relnamespace OPERATOR(pg_catalog.=) (SELECT n.oid FROM pg_catalog.pg_namespace AS n WHERE n.nspname OPERATOR(pg_catalog.=) $2))
 		AND i.indisunique AND i.indisvalid AND i.indimmediate
-		AND i.indpred IS NULL AND i.indexprs IS NULL AND i.indnkeyatts = i.indnatts
+		AND i.indpred IS NULL AND i.indexprs IS NULL AND i.indnkeyatts OPERATOR(pg_catalog.=) i.indnatts
 		AND (SELECT pg_catalog.array_agg(a.attname::pg_catalog.text ORDER BY a.attname::pg_catalog.text)
-			FROM pg_catalog.unnest(i.indkey::pg_catalog.int2[]) AS k JOIN pg_catalog.pg_attribute AS a ON a.attrelid = i.indrelid AND a.attnum = k)
-			= (SELECT pg_catalog.array_agg(c ORDER BY c) FROM pg_catalog.unnest($3::pg_catalog.text[]) AS c))`
+			FROM pg_catalog.unnest(i.indkey::pg_catalog.int2[]) AS k
+				JOIN pg_catalog.pg_attribute AS a ON a.attrelid OPERATOR(pg_catalog.=) i.indrelid AND a.attnum OPERATOR(pg_catalog.=) k)
+			OPERATOR(pg_catalog.=) (SELECT pg_catalog.array_agg(c ORDER BY c) FROM pg_catalog.unnest($3::pg_catalog.text[]) AS c))`
 
 // relationIsTable returns whether the relation $1 in schema $2 is an ordinary or partitioned
 // table, and no row when there is no such relation.
-const relationIsTable = `SELECT c.relkind IN ('r', 'p') FROM pg_catalog.pg_class AS c
-	WHERE c.relname = $1 AND c.relnamespace = (SELECT n.oid FROM pg_catalog.pg_namespace AS n WHERE n.nspname = $2)`
+const relationIsTable = `SELECT c.relkind OPERATOR(pg_catalog.=) 'r' OR c.relkind OPERATOR(pg_catalog.=) 'p'
+	FROM pg_catalog.pg_class AS c
+	WHERE c.relname OPERATOR(pg_catalog.=) $1
+		AND c.relnamespace OPERATOR(pg_catalog.=) (SELECT n.oid FROM pg_catalog.pg_namespace AS n WHERE n.nspname OPERATOR(pg_catalog.=) $2)`
 
 // nextSeqPresent reports whether a function named $1 taking one text argument exists in schema $2.
-const nextSeqPresent = `SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_proc
-	WHERE proname = $1 AND proargtypes = '25'::pg_catalog.oidvector
-		AND pronamespace = (SELECT n.oid FROM pg_catalog.pg_namespace AS n WHERE n.nspname = $2))`
+const nextSeqPresent = `SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_proc AS p
+	WHERE p.proname OPERATOR(pg_catalog.=) $1 AND p.proargtypes OPERATOR(pg_catalog.=) '25'::pg_catalog.oidvector
+		AND p.pronamespace OPERATOR(pg_catalog.=) (SELECT n.oid FROM pg_catalog.pg_namespace AS n WHERE n.nspname OPERATOR(pg_catalog.=) $2))`
 
 // expectedFunction returns, for the function $1(text) in schema $2, whether it is a VOLATILE
 // plpgsql function returning one bigint, not SECURITY DEFINER, whose only setting is $3 and whose
 // source is $4; and whether its owner is the owner of table $5 in the same schema. Each is NULL
 // when there is no such function.
 const expectedFunction = `SELECT
-		l.lanname = 'plpgsql' AND p.provolatile = 'v' AND NOT p.prosecdef AND NOT p.proretset
-			AND p.proconfig = ARRAY[$3::pg_catalog.text] AND p.prorettype = 'pg_catalog.int8'::pg_catalog.regtype
-			AND p.prosrc = $4,
-		p.proowner = (SELECT c.relowner FROM pg_catalog.pg_class AS c WHERE c.relname = $5 AND c.relnamespace = p.pronamespace)
-	FROM pg_catalog.pg_proc AS p JOIN pg_catalog.pg_language AS l ON l.oid = p.prolang
-	WHERE p.proname = $1 AND p.proargtypes = '25'::pg_catalog.oidvector
-		AND p.pronamespace = (SELECT n.oid FROM pg_catalog.pg_namespace AS n WHERE n.nspname = $2)`
+		l.lanname OPERATOR(pg_catalog.=) 'plpgsql' AND p.provolatile OPERATOR(pg_catalog.=) 'v' AND NOT p.prosecdef AND NOT p.proretset
+			AND p.proconfig OPERATOR(pg_catalog.=) $3::pg_catalog.text[]
+			AND p.prorettype OPERATOR(pg_catalog.=) 'pg_catalog.int8'::pg_catalog.regtype::pg_catalog.oid
+			AND p.prosrc OPERATOR(pg_catalog.=) $4,
+		p.proowner OPERATOR(pg_catalog.=) (SELECT c.relowner FROM pg_catalog.pg_class AS c
+			WHERE c.relname OPERATOR(pg_catalog.=) $5 AND c.relnamespace OPERATOR(pg_catalog.=) p.pronamespace)
+	FROM pg_catalog.pg_proc AS p JOIN pg_catalog.pg_language AS l ON l.oid OPERATOR(pg_catalog.=) p.prolang
+	WHERE p.proname OPERATOR(pg_catalog.=) $1 AND p.proargtypes OPERATOR(pg_catalog.=) '25'::pg_catalog.oidvector
+		AND p.pronamespace OPERATOR(pg_catalog.=) (SELECT n.oid FROM pg_catalog.pg_namespace AS n WHERE n.nspname OPERATOR(pg_catalog.=) $2)`
+
+// versionQuery reads the schema version from the version table qVersion.
+func versionQuery(qVersion string) string {
+	return `SELECT version FROM ` + qVersion + ` WHERE id OPERATOR(pg_catalog.=) 1`
+}
 
 // Close closes the connection pool Open opened. A Store made with New leaves its db open.
 func (s *Store) Close() error {
@@ -763,23 +811,23 @@ func (s *Store) Runs(ctx context.Context, f agent.RunFilter) iter.Seq2[string, e
 }
 
 func (s *Store) runsPage(ctx context.Context, f agent.RunFilter, after string) ([]string, error) {
-	q := `SELECT DISTINCT run_id COLLATE pg_catalog."C" AS id FROM ` + s.t.qSteps + ` AS s WHERE run_id COLLATE pg_catalog."C" > $1::pg_catalog.text`
+	q := `SELECT DISTINCT run_id COLLATE pg_catalog."C" AS id FROM ` + s.t.qSteps + ` AS s WHERE run_id COLLATE pg_catalog."C" OPERATOR(pg_catalog.>) $1::pg_catalog.text`
 	args := []any{after}
 	if f.Prefix != "" {
 		// The range lets the primary key's index serve the scan; starts_with checks the prefix.
-		q += fmt.Sprintf(` AND run_id COLLATE pg_catalog."C" >= $%d::pg_catalog.text AND pg_catalog.starts_with(run_id, $%d::pg_catalog.text)`, len(args)+1, len(args)+1)
+		q += fmt.Sprintf(` AND run_id COLLATE pg_catalog."C" OPERATOR(pg_catalog.>=) $%d::pg_catalog.text AND pg_catalog.starts_with(run_id, $%d::pg_catalog.text)`, len(args)+1, len(args)+1)
 		args = append(args, f.Prefix)
 		if end, ok := prefixEnd(f.Prefix); ok {
-			q += fmt.Sprintf(` AND run_id COLLATE pg_catalog."C" < $%d::pg_catalog.text`, len(args)+1)
+			q += fmt.Sprintf(` AND run_id COLLATE pg_catalog."C" OPERATOR(pg_catalog.<) $%d::pg_catalog.text`, len(args)+1)
 			args = append(args, end)
 		}
 	}
 	if len(f.ExcludeHolding) > 0 {
-		q += fmt.Sprintf(` AND NOT EXISTS (SELECT 1 FROM %s AS x WHERE x.run_id = s.run_id AND x.name = ANY($%d::pg_catalog.text[]))`, s.t.qSteps, len(args)+1)
+		q += fmt.Sprintf(` AND NOT EXISTS (SELECT 1 FROM %s AS x WHERE x.run_id OPERATOR(pg_catalog.=) s.run_id AND x.name OPERATOR(pg_catalog.=) ANY ($%d::pg_catalog.text[]))`, s.t.qSteps, len(args)+1)
 		args = append(args, f.ExcludeHolding)
 	}
 	q += fmt.Sprintf(` ORDER BY id LIMIT %d`, runsPage)
-	sel, err := newSelect(q)
+	sel, err := newSelect(q, s.t.rels)
 	if err != nil {
 		return nil, err
 	}

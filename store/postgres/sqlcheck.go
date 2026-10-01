@@ -6,19 +6,28 @@ import (
 	"strings"
 )
 
-// The statement check. Every statement the store sends on the pool is checked token by token
-// against allowlists before it is used (see newSelect and newWrite), and the statement check in
-// statements_test.go holds constant queries to the same rules. A statement may:
+// The statement check. Every statement the store sends on the pool is tokenized and held to
+// allowlists. Its rule is that it refuses anything whose resolution it cannot vouch for: every
+// name Postgres would look up through the search path must be qualified, or refused. A statement
+// may:
 //
-//   - call only a function in sqlFunctions, each qualified with pg_catalog, or, in the one INSERT
-//     that takes an entry's position, the store's next_seq function under its exact
-//     schema-qualified name, once. A name followed by "(" is a call unless it is a keyword that
-//     takes a list and cannot name a function (sqlListWords), CONFLICT after ON, or the table
-//     after INTO whose column list follows; so a function named like an unreserved keyword
-//     (conflict, say) is a call, and refused.
+//   - call only a function in sqlFunctions, each qualified with pg_catalog, or the next_seq
+//     function under its exact schema-qualified name, once, in an INSERT with no SELECT. A name
+//     followed by "(" is a call unless it is a reserved keyword that takes a list and cannot name
+//     a function (sqlListWords), CONFLICT after ON, or the table (or its alias) after INTO.
+//   - use an operator only written OPERATOR(pg_catalog.<op>), with <op> in sqlOperators: a bare
+//     operator resolves through the search path, and pg_catalog has no exact match for some
+//     argument types (text[] = text[], oid = regtype), so an operator a role creates with those
+//     types anywhere on the path would win. The one bare operator is the "=" of an assignment in
+//     a SET list, which is syntax, not an operator.
+//   - use none of the keywords that resolve an operator or a function implicitly (sqlRefused):
+//     LIKE, ILIKE, SIMILAR, IS [NOT] DISTINCT, OVERLAPS, BETWEEN, IN, CASE, USING, and ARRAY
+//     constructors.
+//   - name as a relation (after FROM, JOIN, INTO or UPDATE, or in a FROM list) only the store's own tables
+//     under their exact schema-qualified names, a pg_catalog relation, a subquery, or a call of
+//     an allowed function.
 //   - cast ("::") only to a type in sqlTypes, qualified with pg_catalog: a domain's CHECK can
 //     call any function, and an unqualified type resolves through the search path.
-//   - use only the operators in sqlOperators: an operator is a call to its function.
 //   - use only ASCII outside string literals and quoted identifiers, so no name ends where a
 //     scan of the text would not expect it.
 //
@@ -27,6 +36,10 @@ import (
 // standard_conforming_strings is off), a typed literal (a name before a string literal, which also
 // covers E'...', U&'...' and B'...'), and any byte outside the tokens below. A Unicode-escaped
 // identifier, U&"...", is an identifier followed by the operator "&", which is refused.
+//
+// What Postgres still resolves without a name in the statement does not go through the search
+// path: ORDER BY, DISTINCT and the ON CONFLICT arbiter use the type's default operator class and
+// the table's indexes, and casts use pg_cast.
 
 // sqlTok is one token of a statement: an identifier ('i', lower-cased), a quoted identifier ('q',
 // its name), a string literal ('s'), a parameter ('$'), a number ('n'), an operator ('o'), or
@@ -45,18 +58,25 @@ var (
 		"pg_catalog.current_schemas": true, "pg_catalog.array_position": true,
 	}
 	// sqlListWords are the keywords the store's statements follow with a parenthesized list or
-	// subquery. None can name a function: VALUES, IN, ANY, FROM, WHERE, SELECT, ON, AND, OR and
-	// NOT are reserved, and EXISTS and COALESCE are keywords that cannot be function names.
-	sqlListWords = map[string]bool{"values": true, "exists": true, "in": true, "any": true, "coalesce": true,
+	// subquery. None can name a function: VALUES, ANY, FROM, WHERE, SELECT, ON, AND, OR and NOT
+	// are reserved, and EXISTS and COALESCE are keywords that cannot be function names.
+	sqlListWords = map[string]bool{"values": true, "exists": true, "any": true, "coalesce": true,
 		"from": true, "where": true, "select": true, "on": true, "and": true, "or": true, "not": true}
+	// sqlRefused are the keywords that resolve an operator or a function through the search path
+	// without naming it (ARRAY builds an array the check cannot type).
+	sqlRefused = map[string]bool{"like": true, "ilike": true, "similar": true, "overlaps": true, "between": true,
+		"in": true, "case": true, "using": true, "array": true}
 	// sqlTypes are the types a statement may cast to, each written pg_catalog.<type>, optionally
 	// as an array (<type>[]).
-	sqlTypes = map[string]bool{"text": true, "int8": true, "int2": true, "float8": true, "interval": true, "oidvector": true, "regtype": true}
+	sqlTypes = map[string]bool{"text": true, "int8": true, "int2": true, "float8": true, "interval": true, "oidvector": true, "regtype": true, "oid": true}
 	// sqlOperators are the operators a statement may use.
 	sqlOperators = map[string]bool{"=": true, "<>": true, "<": true, ">": true, "<=": true, ">=": true, "+": true, "-": true, "*": true}
 )
 
 const sqlOperatorChars = "+-*/<>=~!@#%^&|`?"
+
+// sqlOwner names what the check guards, for its errors.
+const sqlOwner = "store"
 
 func isDigit(c byte) bool      { return c >= '0' && c <= '9' }
 func isIdentStart(c byte) bool { return c == '_' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' }
@@ -209,8 +229,8 @@ func sameName(a, b []sqlTok) bool {
 
 // checkSQL returns an error unless q follows the rules above. nextSeq, when not nil, is the
 // schema-qualified name of the next_seq function, which q may call once if it is an INSERT with no
-// SELECT.
-func checkSQL(q string, nextSeq []sqlTok) error {
+// SELECT; rels are the qualified names of the relations, other than pg_catalog's, q may name.
+func checkSQL(q string, nextSeq []sqlTok, rels [][]sqlTok) error {
 	toks, err := sqlTokens(q)
 	if err != nil {
 		return err
@@ -229,9 +249,21 @@ func checkSQL(q string, nextSeq []sqlTok) error {
 		}
 	}
 	calledNextSeq := false
+	inSet := false            // in a SET list, where "column =" is an assignment
+	fromList := []bool{false} // per parenthesis depth: in a FROM list, where "," precedes a relation
 	for i := 0; i < len(toks); i++ {
 		t := toks[i]
-		if t.kind == 'p' && t.text == "::" {
+		depth := len(fromList) - 1
+		switch {
+		case t.kind == 'p' && t.text == "(":
+			fromList = append(fromList, false)
+			continue
+		case t.kind == 'p' && t.text == ")":
+			if depth > 0 {
+				fromList = fromList[:depth]
+			}
+			continue
+		case t.kind == 'p' && t.text == "::":
 			typ, end := []sqlTok(nil), i
 			if i+1 < len(toks) && (toks[i+1].kind == 'i' || toks[i+1].kind == 'q') {
 				typ, end = sqlName(toks, i+1)
@@ -244,9 +276,39 @@ func checkSQL(q string, nextSeq []sqlTok) error {
 			}
 			i = end
 			continue
+		case t.kind == 'o':
+			if t.text == "=" && inSet && i >= 2 && toks[i-1].kind == 'i' && (isTok(toks, i-2, 'i', "set") || isTok(toks, i-2, 'p', ",")) {
+				continue // an assignment
+			}
+			return fmt.Errorf("the bare operator %q, which resolves through the search path; write OPERATOR(pg_catalog.%s)", t.text, t.text)
 		}
 		if t.kind != 'i' && t.kind != 'q' {
 			continue
+		}
+		if t.kind == 'i' {
+			switch {
+			case t.text == "operator" && isTok(toks, i+1, 'p', "("):
+				if !isTok(toks, i+2, 'i', "pg_catalog") || !isTok(toks, i+3, 'p', ".") || i+4 >= len(toks) ||
+					toks[i+4].kind != 'o' || !sqlOperators[toks[i+4].text] || !isTok(toks, i+5, 'p', ")") {
+					return errors.New("an OPERATOR(...) other than OPERATOR(pg_catalog.<op>) with an allowed op")
+				}
+				i += 5
+				continue
+			case sqlRefused[t.text]:
+				return fmt.Errorf("the keyword %s, which resolves an operator or function through the search path", strings.ToUpper(t.text))
+			case t.text == "distinct" && (isTok(toks, i-1, 'i', "is") || isTok(toks, i-1, 'i', "not") && isTok(toks, i-2, 'i', "is")):
+				return errors.New("IS [NOT] DISTINCT FROM, which resolves an operator through the search path")
+			case t.text == "set":
+				inSet = true
+			case t.text == "where" || t.text == "returning" || t.text == "from":
+				inSet = false
+			}
+			switch t.text {
+			case "from":
+				fromList[depth] = true
+			case "where", "on", "join", "order", "group", "limit", "returning", "having", "union", "set", "values":
+				fromList[depth] = false
+			}
 		}
 		name, end := sqlName(toks, i)
 		if end+1 < len(toks) && toks[end+1].kind == 's' {
@@ -257,7 +319,17 @@ func checkSQL(q string, nextSeq []sqlTok) error {
 				return errors.New(`a collation other than pg_catalog."C"`)
 			}
 		}
-		if isTok(toks, end+1, 'p', "(") {
+		call := isTok(toks, end+1, 'p', "(")
+		// A relation: after FROM, JOIN, INTO or UPDATE (not DO UPDATE), or after "," in a FROM list.
+		relation := isTok(toks, i-1, 'i', "from") || isTok(toks, i-1, 'i', "join") || isTok(toks, i-1, 'i', "into") ||
+			isTok(toks, i-1, 'i', "update") && !isTok(toks, i-2, 'i', "do") ||
+			isTok(toks, i-1, 'p', ",") && fromList[depth]
+		if relation && !(call && !isTok(toks, i-1, 'i', "into")) {
+			if !knownRelation(name, rels) {
+				return fmt.Errorf("the relation %s, which is neither the %s's own nor pg_catalog's", sqlNameString(name), sqlOwner)
+			}
+		}
+		if call {
 			single := len(name) == 1 && name[0].kind == 'i'
 			switch {
 			case single && sqlListWords[name[0].text]:
@@ -268,12 +340,25 @@ func checkSQL(q string, nextSeq []sqlTok) error {
 				calledNextSeq = true
 			case sqlFunctions[qualifiedBuiltin(name)]:
 			default:
-				return fmt.Errorf("a call of %s, a function the store does not know", sqlNameString(name))
+				return fmt.Errorf("a call of %s, a function the %s does not know", sqlNameString(name), sqlOwner)
 			}
 		}
 		i = end
 	}
 	return nil
+}
+
+// knownRelation reports whether name is one of rels or a pg_catalog relation.
+func knownRelation(name []sqlTok, rels [][]sqlTok) bool {
+	if len(name) == 2 && name[0].kind == 'i' && name[0].text == "pg_catalog" && name[1].kind == 'i' {
+		return true
+	}
+	for _, r := range rels {
+		if sameName(name, r) {
+			return true
+		}
+	}
+	return false
 }
 
 // afterInto reports whether toks[end] ends a dotted name that follows INTO.

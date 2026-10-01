@@ -99,9 +99,9 @@ func TestRV120_StaticCheckRefusesHiddenCalls(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			var err error
 			if strings.HasPrefix(c.q, "SELECT") {
-				_, err = newSelect(c.q)
+				_, err = newSelect(c.q, nil)
 			} else {
-				_, err = newWrite(c.q, nil)
+				_, err = newWrite(c.q, nil, nil)
 			}
 			if err == nil {
 				t.Errorf("run-time check accepted %q", c.q)

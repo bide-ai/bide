@@ -81,7 +81,10 @@ func TestRV120b_OpenRunsPathOperatorsAsTheStoreRole(t *testing.T) {
 	}
 }
 
-// Control for the test above: with rv120app alone on the path, the same operators do not run.
+// Control for the test above: with rv120app alone on the path, the same operators do not run; and
+// with the attacker's schema last on the path they do not run either, now that every operator Open
+// sends is written OPERATOR(pg_catalog.<op>). (Before the fix this control showed the operator
+// running from the end of the path, pg_catalog first or not.)
 func TestRV120b_OpenOperatorsControl(t *testing.T) {
 	admin, base := rv120Admin(t)
 	ctx := context.Background()
@@ -97,22 +100,27 @@ func TestRV120b_OpenOperatorsControl(t *testing.T) {
 		t.Fatal(err)
 	}
 	s.Close()
-	if _, err := Open(ctx, rv120DSN(t, base, "rv120bstore", `rv120app,"$user"`)); err == nil || !strings.Contains(err.Error(), "hijacked") {
-		t.Fatalf("with the attacker's schema last on the path (pg_catalog implicitly first), want the operator to run, got %v", err)
+	s, err = Open(ctx, rv120DSN(t, base, "rv120bstore", `rv120app,"$user"`))
+	if err != nil {
+		t.Fatalf("with the attacker's schema last on the path, Open = %v; want it to run no path operator and succeed", err)
 	}
+	s.Close()
 }
 
 // 3. The schema choice is redone at every Open. After a node has written to rv120app, a role with
 // CREATE on the database creates the store role's "$user" schema holding a steps table and a
-// next_seq function with this version's exact body, both its own. A restarted node passes every
-// check, moves to the attacker's schema (its run's entries are gone), and the attacker, owner of
-// next_seq, then replaces it and runs code as the store's role on every insert.
+// next_seq function with this version's exact body, both its own. Without a pinned schema, a
+// restarted node passes every check and moves to the attacker's schema (its run's entries are
+// gone), and the attacker, owner of next_seq, then replaces it and runs code as the store's role
+// on every insert: discovery is safe only when every schema on the search path is trusted (Open
+// warns, see TestPostgres_DiscoveryWarns). With the schema pinned (WithSchema, the recommended
+// deployment), as here, the restarted node stays in rv120app.
 func TestRV120b_RestartMovesToALaterEarlierSchema(t *testing.T) {
 	admin, base := rv120Admin(t)
 	ctx := context.Background()
 	atk := rv120bAttackerSetup(t, admin, base)
 	dsn := rv120DSN(t, base, "rv120bstore", `"$user",rv120app`)
-	s, err := Open(ctx, dsn)
+	s, err := Open(ctx, dsn, WithSchema("rv120app"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -133,7 +141,7 @@ func TestRV120b_RestartMovesToALaterEarlierSchema(t *testing.T) {
 		`GRANT ALL ON rv120bstore.bide_steps TO rv120bstore`,
 		`CREATE FUNCTION rv120bstore.bide_next_seq_v1(r pg_catalog.text) RETURNS pg_catalog.int8 LANGUAGE plpgsql VOLATILE SET search_path = pg_catalog, pg_temp AS $bide$`+body+`$bide$`,
 	)
-	s, err = Open(ctx, dsn)
+	s, err = Open(ctx, dsn, WithSchema("rv120app"))
 	if err != nil {
 		t.Fatalf("restart refused: %v", err)
 	}
@@ -152,8 +160,9 @@ func TestRV120b_RestartMovesToALaterEarlierSchema(t *testing.T) {
 	if err := admin.QueryRowContext(ctx, `SELECT count(*) FROM rv120app.bide_steps`).Scan(&left); err != nil {
 		t.Fatal(err)
 	}
-	if n != 2 || left != 2 {
-		t.Fatalf("restarted node: schema %q, sees %d of the run's 2 entries; then the attacker's next_seq ran as the store role (insert seq=%d err=%v) and left %d of 2 rows in rv120app.bide_steps", s.schema, n, e.Seq, err, left)
+	// Pinned, the insert of "c" goes through the store's own next_seq: seq 2, and three rows.
+	if n != 2 || err != nil || e.Seq != 2 || left != 3 {
+		t.Fatalf("restarted node: schema %q, sees %d of the run's 2 entries; then the insert (seq=%d err=%v) left %d rows in rv120app.bide_steps, want seq 2 and 3 rows", s.schema, n, e.Seq, err, left)
 	}
 }
 
@@ -176,15 +185,20 @@ func TestRV120b_AcceptedStatementsRunPathOperators(t *testing.T) {
 		`CREATE FUNCTION rv120bevil.nl(name, name) RETURNS boolean LANGUAGE sql AS $$ SELECT rv120bevil.boom(1, 1) $$`,
 		`CREATE OPERATOR rv120bevil.~~ (LEFTARG = name, RIGHTARG = name, FUNCTION = rv120bevil.nl)`,
 	)
+	steps, err := parseName(`"rv120bapp".bide_steps`) // the store's own table, so the operator rules decide
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, q := range []string{
 		`SELECT seq FROM "rv120bapp".bide_steps WHERE ARRAY[run_id] = $1::pg_catalog.text[]`,
 		`SELECT seq FROM "rv120bapp".bide_steps WHERE ARRAY[run_id] IS DISTINCT FROM $1::pg_catalog.text[]`,
 		`SELECT c.relname FROM pg_catalog.pg_class AS c WHERE c.relname LIKE $1`,
 	} {
 		t.Run(q, func(t *testing.T) {
-			sel, err := newSelect(q)
+			sel, err := newSelect(q, [][]sqlTok{steps})
 			if err != nil {
-				t.Skipf("refused by the check: %v", err)
+				t.Logf("refused by the check: %v", err) // the outcome wanted; not t.Skip, which CI's Postgres job refuses
+				return
 			}
 			conn, err := admin.Conn(ctx)
 			if err != nil {

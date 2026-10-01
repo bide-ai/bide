@@ -158,3 +158,80 @@ func TestPostgres_OpenKeepsTablesInALaterSchema(t *testing.T) {
 		t.Fatalf("Open created %d relations in the empty schema %s", objects, first)
 	}
 }
+
+// Without WithSchema, Open discovers the schema through the search path and warns, naming the
+// schema it found; with it, Open does not warn. Skips without PG_DSN.
+func TestPostgres_DiscoveryWarns(t *testing.T) {
+	ctx := context.Background()
+	dsn, schema, _ := freshSchema(t)
+	var got []string
+	defer func(w func(string, ...any)) { warnf = w }(warnf)
+	warnf = func(msg string, args ...any) { got = append(got, fmt.Sprint(append([]any{msg}, args...)...)) }
+	s, err := Open(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	if len(got) != 1 || !strings.Contains(got[0], "WithSchema") || !strings.Contains(got[0], schema) {
+		t.Fatalf("Open without WithSchema warned %q; want one warning naming %s and WithSchema", got, schema)
+	}
+	got = nil
+	s, err = Open(ctx, dsn, WithSchema(schema))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	if len(got) != 0 {
+		t.Fatalf("Open with WithSchema warned %q", got)
+	}
+}
+
+// A pinned schema decides where the store is, whatever the search path says: a restarted node
+// with WithSchema stays in its schema when a role has since put a complete store of its own
+// (tables and next_seq, with this version's body) in a schema earlier on the path, and when the
+// search path names neither. Skips without PG_DSN.
+func TestPostgres_PinnedSchemaSurvivesARestart(t *testing.T) {
+	ctx := context.Background()
+	dsn, schema, admin := freshSchema(t)
+	s, err := Open(ctx, dsn, WithSchema(schema))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range []string{"a", "b"} {
+		if _, _, err := s.Insert(ctx, "run", n, []byte(n)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s.Close()
+	decoy := fmt.Sprintf("rv_pinned_decoy_%d", time.Now().UnixNano())
+	if _, err := admin.ExecContext(ctx, `CREATE SCHEMA `+decoy); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { admin.ExecContext(context.Background(), `DROP SCHEMA `+decoy+` CASCADE`) })
+	d, err := Open(ctx, strings.Replace(dsn, "search_path="+schema, "search_path="+decoy, 1)) // a complete store in decoy
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.Close()
+	for _, path := range []string{decoy + "," + schema, decoy, "public"} {
+		s, err := Open(ctx, strings.Replace(dsn, "search_path="+schema, "search_path="+path, 1), WithSchema(schema))
+		if err != nil {
+			t.Fatalf("search_path %s: %v", path, err)
+		}
+		n := 0
+		for _, err := range s.Load(ctx, "run", -1) {
+			if err != nil {
+				t.Fatal(err)
+			}
+			n++
+		}
+		if s.schema != schema || n != 2 {
+			t.Fatalf("search_path %s: the pinned store is in %q and sees %d of the run's 2 entries", path, s.schema, n)
+		}
+		s.Close()
+	}
+	var decoySteps int
+	if err := admin.QueryRowContext(ctx, `SELECT count(*) FROM `+decoy+`.bide_steps`).Scan(&decoySteps); err != nil || decoySteps != 0 {
+		t.Fatalf("the decoy store holds %d steps (%v)", decoySteps, err)
+	}
+}

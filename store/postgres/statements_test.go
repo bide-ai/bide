@@ -290,7 +290,7 @@ var sessionLockCall = regexp.MustCompile(`(?i)pg_(try_)?advisory_lock`)
 // (checkSQL, in sqlcheck.go) refuses. A constant query never calls the next_seq function, which
 // only the insert, a writeSQL, does.
 func unknownCall(q string) (string, bool) {
-	if err := checkSQL(q, nil); err != nil {
+	if err := checkSQL(q, nil, nil); err != nil {
 		return err.Error(), true
 	}
 	return "", false
