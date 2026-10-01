@@ -27,10 +27,11 @@ type Option interface {
 	applyAgent(*agentConfig) error
 }
 
-// RunOption configures one run. It is the scope of the settings a caller may choose per run,
-// which take precedence over the agent's (see Build). The run entry points that take RunOptions
-// arrive with the Run API; until then a RunOption value is built and type-checked, and its
-// settings are given to the agent with Build or With.
+// RunOption configures one run (RunMessage, ResumeRun, StreamMessage, RunTypedMessage,
+// Session.SendMessage). It is the scope of the settings a caller may choose per run, which take
+// precedence over the agent's (see Build). The settings a run's first drive is given are journaled
+// in its run:start and hold for every later drive (see RunStart); the clock, the Waker, the
+// concurrency cap and the identity's Actor are the deployment's, and are not journaled.
 type RunOption interface {
 	applyRun(*runConfig) error
 }
@@ -132,6 +133,62 @@ type runConfig struct {
 	waker                          Waker
 	identity                       *Identity
 	clock                          func() time.Time
+	saga                           bool       // WithSaga
+	tools                          []string   // WithToolFilter: sorted, unique; nil: none given
+	outputMode                     OutputMode // WithOutputMode; "": none given
+}
+
+// runOption is a RunOption that only applies to a run.
+type runOption func(*runConfig) error
+
+func (f runOption) applyRun(c *runConfig) error { return f(c) }
+
+// WithSaga runs the run as a saga: a step that fails after earlier writes succeeded rolls the run
+// back, compensating the completed writes in reverse order (recursing into sub-agent trees), and
+// the run returns *SagaAborted. It is journaled (run:start's saga flag): a later drive of the run
+// is a saga whether or not it passes WithSaga, and a drive that passes it for a run that is not a
+// saga is ErrConfig. Cancel on a saga rolls it back (see Cancel).
+func WithSaga() RunOption {
+	return runOption(func(c *runConfig) error { c.saga = true; return nil })
+}
+
+// WithToolFilter restricts a run to the named tools of its agent: the model is offered only
+// those, and a call naming any other tool (a model naming a tool it was not offered, or a turn
+// replayed from the journal) is refused at dispatch, with an error result recorded that the model
+// reads, and the tool never runs. The filter is journaled (run:start's tools) and enforced against
+// the journaled filter by every drive, a recovery drive included; a later drive that passes
+// another filter is ErrConfig. RunTypedMessage's answer tool is always offered. No name, an empty
+// name, or (at the run's first drive) a name the agent has no tool for is ErrConfig.
+func WithToolFilter(names ...string) RunOption {
+	return runOption(func(c *runConfig) error {
+		if len(names) == 0 {
+			return fmt.Errorf("WithToolFilter: no tool names (a run that may call no tool sets WithToolChoice(ToolChoice{Mode: \"none\"})): %w", ErrConfig)
+		}
+		set := make([]string, 0, len(names))
+		for _, n := range names {
+			if n == "" {
+				return fmt.Errorf("WithToolFilter: empty tool name: %w", ErrConfig)
+			}
+			set = append(set, n)
+		}
+		slices.Sort(set)
+		c.tools = slices.Compact(set)
+		return nil
+	})
+}
+
+// WithOutputMode sets how a typed run (RunTypedMessage) collects its answer: OutputTool (the
+// default) or OutputNative (see OutputMode). It is journaled with the run's typed start, and a
+// later drive that passes another mode is ErrConfig. Any other mode, and the option on an untyped
+// run, is ErrConfig.
+func WithOutputMode(m OutputMode) RunOption {
+	return runOption(func(c *runConfig) error {
+		if m != OutputTool && m != OutputNative {
+			return fmt.Errorf("WithOutputMode: mode %q is not OutputTool or OutputNative: %w", m, ErrConfig)
+		}
+		c.outputMode = m
+		return nil
+	})
 }
 
 // parallelConfig is what ParallelOption values write.

@@ -231,3 +231,13 @@ func injectSystem(s string) Middleware {
 		}
 	}
 }
+
+// RunTypedMessage runs the agent to the end of runID's run like RunMessage, and returns its answer
+// as a T (see RunTyped for how the answer is collected and decoded), with the run's Result.
+//
+// Deprecated: transitional; renamed by the 1.0 rewrite. RunTypedMessage becomes the method
+// RunTyped, and the package function RunTyped is removed.
+func (a *Agent) RunTypedMessage[T any](ctx context.Context, runID string, input Message, opts ...RunOption) (T, *Result, error) {
+	var zero T
+	return zero, nil, errP14NotBuilt
+}

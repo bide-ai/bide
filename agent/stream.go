@@ -166,6 +166,7 @@ type AgentStream struct {
 
 type agentResult struct {
 	msg Message
+	res *Result // the Result RunMessage would return; nil for a stream from Stream or StreamSaga
 	err error
 }
 
@@ -195,6 +196,18 @@ func (as *AgentStream) Final() (Message, error) {
 	return as.res.msg, as.res.err
 }
 
+// Result drains any un-consumed events and returns the run's Result and error, as RunMessage
+// returns them: the Result is non-nil whenever the run ID is valid, whatever the error. For a
+// stream from the transitional Stream or StreamSaga it returns a Result built from Final's
+// message.
+func (as *AgentStream) Result() (*Result, error) {
+	msg, err := as.Final()
+	if as.res.res != nil {
+		return as.res.res, err
+	}
+	return &Result{Message: msg}, err
+}
+
 // Stream drives the agent like Run but returns a live AgentStream: token deltas, turn
 // boundaries, and tool start/finish arrive as events while the durable loop runs.
 // Resume, approval, and side-effect safety are identical to Run — Stream and Run share
@@ -210,6 +223,31 @@ func (a *Agent) StreamSaga(ctx context.Context, runID, input string) *AgentStrea
 }
 
 func (a *Agent) stream(ctx context.Context, runID, input string, saga bool) *AgentStream {
+	var cfg runConfig
+	cfg.saga = saga
+	in := UserText(input)
+	return a.startStream(ctx, func(emit func(AgentEvent)) agentResult {
+		msg, _, _, err := a.drive(ctx, runID, &driveSpec{input: &in, cfg: cfg, emit: emit})
+		return agentResult{msg: msg, err: err}
+	})
+}
+
+// streamEntry is StreamMessage's body: RunMessage's, with events.
+func (a *Agent) streamEntry(ctx context.Context, runID string, d *driveSpec, opts []RunOption) *AgentStream {
+	return a.startStream(ctx, func(emit func(AgentEvent)) agentResult {
+		d.emit = emit
+		res, err := a.runEntry(ctx, runID, d, opts)
+		r := agentResult{res: res, err: err}
+		if res != nil {
+			r.msg = res.Message
+		}
+		return r
+	})
+}
+
+// startStream runs body on its own goroutine, handing it the emit function that feeds the
+// stream's events, and returns the stream.
+func (a *Agent) startStream(ctx context.Context, body func(emit func(AgentEvent)) agentResult) *AgentStream {
 	as := &AgentStream{ch: make(chan AgentEvent), result: make(chan agentResult, 1)}
 	// mu and closed let an event that arrives after the run has ended be dropped rather than
 	// sent on the closed channel, which would panic and take down the process. That can happen
@@ -238,14 +276,7 @@ func (a *Agent) stream(ctx context.Context, runID, input string, saga bool) *Age
 			close(as.ch)
 			mu.Unlock()
 		}()
-		var msg Message
-		var err error
-		if saga {
-			msg, err = a.runSaga(ctx, runID, input, emit)
-		} else {
-			msg, _, _, err = a.run(ctx, runID, []Message{UserText(input)}, false, emit)
-		}
-		as.result <- agentResult{msg: msg, err: err}
+		as.result <- body(emit)
 	}()
 	return as
 }

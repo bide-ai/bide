@@ -20,36 +20,37 @@ import (
 // function that builds one from a sample string. TestEngineKeys_ConstructorsAreListed keeps
 // the map complete, so a new key constructor is checked by the tests below.
 var keyConstructors = map[string]func(string) string{
-	"runCompleteStep":      func(string) string { return runCompleteStep },
-	"runAbortedStep":       func(string) string { return runAbortedStep },
-	"runStartStep":         func(string) string { return runStartStep },
-	"runCancelledStep":     func(string) string { return runCancelledStep },
-	"runLimitsStep":        func(s string) string { return runLimitsStep(len(s)) },
-	"headerStep":           func(string) string { return headerStep },
-	"modelStep":            func(s string) string { return modelStep(len(s)) },
-	"ToolResultStep":       ToolResultStep,
-	"toolAttemptStep":      toolAttemptStep,
-	"stepAttemptStep":      stepAttemptStep,
-	"retryAttemptStep":     func(s string) string { return retryAttemptStep(toolAttemptStep(s), 1+len(s)) },
-	"notStartedStep":       func(s string) string { return notStartedStep(toolAttemptStep(s), "0123abcd") },
-	"nextAttemptStep":      func(s string) string { return nextAttemptStep(retryAttemptStep(stepAttemptStep(s), 1+len(s))) },
-	"approvalStep":         approvalStep,
-	"approvalDecisionStep": func(s string) string { return approvalDecisionStep(s, "ops:1", true, "ed25519", []byte(s)) },
-	"ApprovalTallyStep":    ApprovalTallyStep,
-	"sagaCompensateStep":   sagaCompensateStep,
-	"sagaArgsStep":         sagaArgsStep,
-	"subRunLinkStep":       func(s string) string { return subRunLinkStep(s, s) },
-	"signalStep":           signalStep,
-	"awaitTimeoutStep":     awaitTimeoutStep,
-	"awaitResolvedStep":    awaitResolvedStep,
-	"timerStep":            timerStep,
-	"interruptStep":        interruptStep,
-	"chanStep":             func(s string) string { return chanStep(s, s) },
-	"chanAckStep":          func(s string) string { return chanAckStep(s, s) },
-	"sessionTurnStep":      func(s string) string { return sessionTurnStep(len(s)) },
-	"sessionStartStep":     func(s string) string { return sessionStartStep(len(s)) },
-	"sessionFromStep":      sessionFromStep,
-	"retrievalStep":        func(s string) string { return retrievalStep(len(s)) },
+	"runCompleteStep":        func(string) string { return runCompleteStep },
+	"runAbortedStep":         func(string) string { return runAbortedStep },
+	"runStartStep":           func(string) string { return runStartStep },
+	"runCancelledStep":       func(string) string { return runCancelledStep },
+	"runCancelRequestedStep": func(string) string { return runCancelRequestedStep },
+	"runLimitsStep":          func(s string) string { return runLimitsStep(len(s)) },
+	"headerStep":             func(string) string { return headerStep },
+	"modelStep":              func(s string) string { return modelStep(len(s)) },
+	"ToolResultStep":         ToolResultStep,
+	"toolAttemptStep":        toolAttemptStep,
+	"stepAttemptStep":        stepAttemptStep,
+	"retryAttemptStep":       func(s string) string { return retryAttemptStep(toolAttemptStep(s), 1+len(s)) },
+	"notStartedStep":         func(s string) string { return notStartedStep(toolAttemptStep(s), "0123abcd") },
+	"nextAttemptStep":        func(s string) string { return nextAttemptStep(retryAttemptStep(stepAttemptStep(s), 1+len(s))) },
+	"approvalStep":           approvalStep,
+	"approvalDecisionStep":   func(s string) string { return approvalDecisionStep(s, "ops:1", true, "ed25519", []byte(s)) },
+	"ApprovalTallyStep":      ApprovalTallyStep,
+	"sagaCompensateStep":     sagaCompensateStep,
+	"sagaArgsStep":           sagaArgsStep,
+	"subRunLinkStep":         func(s string) string { return subRunLinkStep(s, s) },
+	"signalStep":             signalStep,
+	"awaitTimeoutStep":       awaitTimeoutStep,
+	"awaitResolvedStep":      awaitResolvedStep,
+	"timerStep":              timerStep,
+	"interruptStep":          interruptStep,
+	"chanStep":               func(s string) string { return chanStep(s, s) },
+	"chanAckStep":            func(s string) string { return chanAckStep(s, s) },
+	"sessionTurnStep":        func(s string) string { return sessionTurnStep(len(s)) },
+	"sessionStartStep":       func(s string) string { return sessionStartStep(len(s)) },
+	"sessionFromStep":        sessionFromStep,
+	"retrievalStep":          func(s string) string { return retrievalStep(len(s)) },
 	"planScopedStep": func(s string) string {
 		return planScopedStep(context.WithValue(context.Background(), planScopeKey{}, planScope{runID: "r", node: "node:n"}), "r", s)
 	},
@@ -81,7 +82,7 @@ func TestEngineKeys_AreDistinct(t *testing.T) {
 	for name, build := range keyConstructors {
 		for _, s := range adversarialToolUseIDs() {
 			from := name + "(" + s + ")"
-			if name == "runCompleteStep" || name == "runAbortedStep" || name == "runStartStep" || name == "runCancelledStep" || name == "headerStep" {
+			if name == "runCompleteStep" || name == "runAbortedStep" || name == "runStartStep" || name == "runCancelledStep" || name == "runCancelRequestedStep" || name == "headerStep" {
 				from = name // a constant
 			}
 			if name == "sessionTurnStep" || name == "sessionStartStep" || name == "modelStep" || name == "retrievalStep" || name == "runLimitsStep" {
@@ -233,6 +234,7 @@ func TestEngineKeys_WritesUseConstructors(t *testing.T) {
 		"step:markerKey":        true, // returned by claimNextAttempt, which builds it with retryAttemptStep
 		"run:markerKey":         true, // returned by claimNextAttempt, which builds it with retryAttemptStep
 		"putRecord:name":        true, // its callers are checked here
+		"writeEnd:name":         true, // its callers are checked here
 		"recordFresh:name":      true, // its callers are checked here
 		"lookup:name":           true, // its callers are checked here
 		"hasValueStep:name":     true, // its callers pass run:aborted
@@ -291,7 +293,7 @@ func TestEngineKeys_WritesUseConstructors(t *testing.T) {
 var attemptWriters = map[string]bool{
 	"ClaimAttempt": true, "step": true, "claimAttempt": true, "claimNextAttempt": true, "probe": true,
 	"doShared": true, "voided": true, "liveAttempt": true, "recordNotStarted": true,
-	"putRecord": true, "recordFresh": true, "lookup": true,
+	"putRecord": true, "recordFresh": true, "lookup": true, "writeEnd": true,
 }
 
 func keyFromConstructor(e ast.Expr, fn *ast.FuncDecl, forwarders map[string]bool) bool {

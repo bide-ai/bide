@@ -241,6 +241,29 @@ func Recover(ctx context.Context, store Durable, resume func(ctx context.Context
 	return recovered, errors.Join(errs...)
 }
 
+// Resumer drives one run a recovery pass found unfinished: runID, started as start (its run:start,
+// read under the run's lease). It returns ErrNotResumable for a run it does not drive, so
+// ResumeAny can try the next. A Resumer passes no per-run option: the run runs under the options
+// its run:start journaled.
+type Resumer func(ctx context.Context, runID string, start RunStart) error
+
+// ResumeAgent returns the Resumer that drives a with the runs it can: runs of kind agent that are
+// not typed.
+func ResumeAgent(a *Agent, opts ...RunOption) Resumer {
+	return func(ctx context.Context, runID string, start RunStart) error { return errP14NotBuilt }
+}
+
+// ResumeTyped returns the Resumer that drives a's typed runs whose answer type is T.
+func ResumeTyped[T any](a *Agent, opts ...RunOption) Resumer {
+	return func(ctx context.Context, runID string, start RunStart) error { return errP14NotBuilt }
+}
+
+// ResumeAny returns the Resumer that hands a run to each of rs in turn, until one does not return
+// ErrNotResumable.
+func ResumeAny(rs ...Resumer) Resumer {
+	return func(ctx context.Context, runID string, start RunStart) error { return errP14NotBuilt }
+}
+
 // endOfRunMarkers are the journal names of the terminal markers: a run that completed, a saga
 // that aborted and finished its rollback, and a cancelled run are over.
 var endOfRunMarkers = []string{runCompleteStep, runAbortedStep, runCancelledStep}
