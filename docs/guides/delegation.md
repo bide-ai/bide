@@ -128,7 +128,8 @@ it began with (with no grant after a grant, the reverse, or another parent grant
 refused with `ErrConfig` and records nothing: the run stops (siblings in flight finish first,
 and a sibling's pause is reported beside the refusal), and driving it again with the right grant
 bound continues the delegation. Minting from a bound grant that has expired is refused the same
-way: bind a live one and drive again. So is minting a grant onto a sub-run that has records but no
+way: bind a live one and drive again, and in a saga keep the expired one bound for the rollback
+(`WithRollbackGrants`, below). So is minting a grant onto a sub-run that has records but no
 journaled authority (one an earlier pre-release ran without a grant): a grant minted now would cover
 steps that ran without one. A failure to read or write the delegation's authority in the store (the
 journaled grant, the child grant, the ungranted marker) records nothing either, as for a plain
@@ -137,7 +138,10 @@ journaled grant, the child grant, the ungranted marker) records nothing either, 
 A delegation cannot run past its grant's `NotAfterUnix`. Every tool call in its sub-run is refused
 once the child grant has expired (a recorded failure; the tool is never called), and a delegation
 resumed after its journaled grant expired fails for good, recorded, since no grant can renew a
-journaled one: in a saga it rolls back (the rollback's compensations do not check expiry). A child
+journaled one: in a saga it rolls back (the rollback's compensations do not check expiry). The
+rollback does not run a tool past the grant either: where it would run a retry-safe write of the
+sub-run again to learn its result, the call is refused once the grant has expired, and listed in
+`SagaAborted.UnknownOutcome` (it may have run before the abort), and the rollback goes on. A child
 that your `AttenuateFunc` gives an expiry already past fails the same way. A child grant's
 `Subject` is always the sub-agent's name; an `AttenuateFunc` that sets another is refused, and so
 is a journaled grant for another subject, by the call and by the rollback binding.
@@ -151,7 +155,26 @@ sagas before upgrading. In a saga, a rollback into
 the sub-run compensates under that journaled grant and identity, never the parent's: it verifies
 the grant (its signature under the bound signer's key, and that it attenuates the bound parent)
 before it binds it, so resume a saga whose delegations ran under a grant with the grant and signer
-bound (`WithGrant`); without them the rollback stops with `ErrConfig`. The wrapped sub-agent still runs its own full agent loop and reasons
+bound (`WithGrant`); without them the rollback stops with `ErrConfig`.
+
+A saga can delegate under more than one grant: the root grant expired, or was rotated, between
+two drives, and later delegations were minted from the new one. Each journaled grant is verified
+against its own parent, the bound grant its `ParentRef` links to, so bind every grant the saga
+delegated under: the acting one with `WithGrant`, the others with `WithRollbackGrants`, each with
+the signer its delegations were signed with.
+
+<!-- docsnip: setup ctx context.Context; oldSG, newSG audit.SignedGrant; oldSigner, signer audit.Signer -->
+```go
+ctx = audit.WithGrant(ctx, newSG, signer)               // the acting grant: delegations mint from it
+ctx = audit.WithRollbackGrants(ctx, oldSigner, oldSG)   // verifies the delegations minted from oldSG
+```
+
+A grant bound with `WithRollbackGrants` is never minted from and is not the acting grant
+(`GrantFrom` does not return it); it may have expired. Each call adds to the grants bound further
+out, so grants under two signing keys take two calls. The grants reach the delegations the acting
+grant reaches, never inside a delegation's own sub-run, where the journaled child grant is the
+only parent: a grandchild still verifies against its own parent. A journaled grant whose parent is
+none of the bound grants stops the rollback with `ErrNotVerified`. The wrapped sub-agent still runs its own full agent loop and reasons
 autonomously; only its authority shrinks. The result is that capabilities monotonically decrease
 down a delegation tree by construction, and the whole chain stays provable via
 `VerifyDelegationChain`.
@@ -222,7 +245,7 @@ enforcement of the limit it sets stays a convergent governance invariant on the 
 
 - `audit/grant.go`: `Grant`, `SignGrant`, `RecordGrant` / `ProveGrant`, `CheckAttenuation`,
   `ScopeRules`, `NumericAtMost`, `VerifyDelegationChain`.
-- `audit/delegate.go`: `WithGrant`, `AttenuatingSubAgent`, `AttenuateFunc`.
+- `audit/delegate.go`: `WithGrant`, `WithRollbackGrants`, `AttenuatingSubAgent`, `AttenuateFunc`.
 - `audit/earned.go`: `EarnedAuthority`, `EarnedRules`, `ProveCurrentGrant`, `VerifyCurrentGrant`.
 - `examples/govern/delegation`, `examples/govern/authority`, `examples/govern/earned-authority`: runnable end to end.
 - `docs/guides/security-model.md`: how grant signatures fit the overall trust model.

@@ -116,6 +116,13 @@ ran writes no attempt marker. If it is cut off before its result is recorded and
 relabelled a side effect, a resume runs it again and a saga rollback treats it as never started.
 A completed call does not have this gap: its result records whether it ran `ReadOnly`.
 
+**A delegated rollback needs every grant the saga delegated under.** A rollback verifies each
+`audit.AttenuatingSubAgent` delegation against the grant it was minted from, so keep a rotated or
+expired root grant, and its signer, until the sagas that delegated under it have finished, and bind
+it with `audit.WithRollbackGrants`. After a delegation's grant has expired, the rollback does not
+run its cut-off retry-safe writes again to learn their results: it lists them in
+`SagaAborted.UnknownOutcome`, for a person to check. See the [delegation guide](guides/delegation.md).
+
 **Rollback follows the sub-agent tree.** Compensation runs in one order, through the tree of
 sub-agents. Independent agents changing shared state concurrently need
 [governed state](guides/governance.md), not a saga.
