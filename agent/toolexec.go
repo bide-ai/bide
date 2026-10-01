@@ -498,6 +498,7 @@ func (a *Agent) toolHandler(runID string) func(context.Context, ToolUse) (json.R
 		if ctxDone(ctx) {
 			return refuse(errDoneBeforeCall(ctx, tu.Name, tu.ID))
 		}
+		// protocol:delegation begin DGuard
 		// A guard of this module (audit: the bound grant has not expired) refuses a call its tool
 		// must not run; the refusal is a known failure, recorded.
 		if guard := toolhook.CallGuard; guard != nil {
@@ -505,6 +506,7 @@ func (a *Agent) toolHandler(runID string) func(context.Context, ToolUse) (json.R
 				return refuse(err)
 			}
 		}
+		// protocol:delegation end
 		// From here the call is reached: the chain can no longer close it, so nothing after this
 		// (the accepted arguments' record, the tool) runs for a call the loop has already decided.
 		if call.state != nil && !enterTool(call.state) {

@@ -30,7 +30,7 @@ jobs:
       # Gated per step, not per job, so the job always reports as "Models" (a required check).
       # A pull request runs the models only when it touches them or the Go code they describe
       # (the model-code maps in spec/tla/README.md: agent/, store/, plan/, internal/journalhook/,
-      # internal/toolhook/, and middleware/ for the tool-call model).
+      # internal/toolhook/, middleware/ for the tool-call model, and audit/ for the delegation model).
       # merge_group and pushes to main always run in full, and so does any doubt: a failed diff,
       # an unexpected event, or this step failing.
       - id: changes
@@ -43,7 +43,7 @@ jobs:
           run=true
           if [ "${{ github.event_name }}" = "pull_request" ] && files=$(git diff --name-only "$BASE" "$HEAD"); then
             echo "Changed files:"; echo "$files"
-            modelled=$(echo "$files" | grep -E '^(spec/tla/|agent/|store/|plan/|internal/journalhook/|internal/toolhook/|middleware/|\.github/workflows/models\.yml$)' || true)
+            modelled=$(echo "$files" | grep -E '^(spec/tla/|agent/|audit/|store/|plan/|internal/journalhook/|internal/toolhook/|middleware/|\.github/workflows/models\.yml$)' || true)
             if [ -n "$files" ] && [ -z "$modelled" ]; then
               run=false
               echo "No modelled code changed (spec/tla, agent, store, plan, internal/journalhook, internal/toolhook, middleware, models.yml): the models are not re-checked."

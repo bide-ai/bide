@@ -26,6 +26,8 @@ type runCtx struct {
 	sagaTree  bool   // the run is a saga or belongs to a saga's tree (a run started from one's call)
 }
 
+// protocol:delegation begin SStart
+
 // withRunContext returns ctx carrying run runID of store, and the call toolUseID of it being
 // executed ("" for none), in a saga run or not.
 func withRunContext(ctx context.Context, store Durable, runID, toolUseID string, saga bool) context.Context {
@@ -33,6 +35,8 @@ func withRunContext(ctx context.Context, store Durable, runID, toolUseID string,
 	return context.WithValue(ctx, runContextKey, runCtx{store: store, runID: runID, root: rootRunID(ctx, runID), toolUseID: toolUseID,
 		saga: saga, sagaTree: saga || parent.sagaTree})
 }
+
+// protocol:delegation end
 
 // rootRunID is the top-level run for a run with this ID reached through ctx: the root recorded
 // by an enclosing run (a sub-agent is called from its parent's tool context), or runID itself.
@@ -112,6 +116,8 @@ func (r RunInfo) callScope() string {
 func (r RunInfo) SubRunFor(name string) string {
 	return r.callScope() + subRunSep + stepRunMark + encodeID(name)
 }
+
+// protocol:delegation begin SStart SLink SLate
 
 // derivedRunID reports whether runID is a run ID the run described by ctx may start: the
 // sub-agent run of the tool call ctx belongs to (SubRunID), or a programmatic sub-run it names
@@ -194,6 +200,8 @@ func sameStore(a, b Durable) bool {
 	ib, okb := durableIdentity(b)
 	return oka && okb && ia == ib
 }
+
+// protocol:delegation end
 
 // isEncodedID reports whether s is a string encodeID returns for some ID: the escaped form
 // (decoded and encoded again, it is s itself), or '~' and a lowercase hex SHA-256.

@@ -145,6 +145,8 @@ func journalTotals(recs []Record) usageTotals {
 	return t
 }
 
+// protocol:delegation begin SLate
+
 // callUsage collects, for one tool call, the usage of the runs the call started, so the call's
 // record can carry it. A run reports its whole usage when it returns, keyed by its run ID: a run
 // driven twice in one call (a tool retried) is counted once. It also says whether the call has
@@ -162,6 +164,8 @@ func (c *callUsage) callReturned() {
 	c.returned = true
 	c.mu.Unlock()
 }
+
+// protocol:delegation end
 
 const callUsageKey ctxKey = 8
 

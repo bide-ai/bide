@@ -73,6 +73,8 @@ func (t *subAgentTool) Spec() ToolSpec {
 	return s
 }
 
+// protocol:delegation begin DgRun DgRet DClass
+
 func (t *subAgentTool) Call(ctx context.Context, args json.RawMessage) (json.RawMessage, error) {
 	var in subAgentArgs
 	if err := decodeArgs(args, &in); err != nil {
@@ -132,6 +134,8 @@ func (t *subAgentTool) Call(ctx context.Context, args json.RawMessage) (json.Raw
 	}
 	return marshalJournal(firstText(out.msg)) // not HTML-escaped: the parent model reads it as written
 }
+
+// protocol:delegation end
 
 // checkWrapper refuses a tool that wraps another (it has an Unwrap() Tool method) in a way the
 // agent cannot honor, with ErrConfig. A wrapper over a sub-agent may not give it a Timeout (it
@@ -207,6 +211,8 @@ func asSubAgent(t Tool) (*subAgentTool, bool) {
 	return nil, false
 }
 
+// protocol:delegation begin RbSub RbBind DClass
+
 // subRunAgentFor returns the agent t (or a tool on its Unwrap chain) declared, with WithSubRuns,
 // for its programmatic sub-run name, and nil if none did.
 func subRunAgentFor(t Tool, name string) *Agent {
@@ -259,3 +265,5 @@ type subRunUnfinished struct{ err error }
 
 func (e *subRunUnfinished) Error() string { return e.err.Error() }
 func (e *subRunUnfinished) Unwrap() error { return e.err }
+
+// protocol:delegation end

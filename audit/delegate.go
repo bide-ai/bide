@@ -12,6 +12,8 @@ import (
 	"github.com/bide-ai/bide/internal/toolhook"
 )
 
+// protocol:delegation begin DgRun RbBind
+
 // grantCtxKey carries the acting principal's signed grant plus the signer used to mint attenuated
 // child grants, so AttenuatingSubAgent can narrow authority automatically down a delegation tree.
 type grantCtxKey struct{}
@@ -47,6 +49,8 @@ func GrantFrom(ctx context.Context) (SignedGrant, Signer, bool) {
 func withoutGrant(ctx context.Context) context.Context {
 	return context.WithValue(ctx, grantCtxKey{}, grantCarrier{absent: true})
 }
+
+// protocol:delegation end
 
 // AttenuateFunc derives a child grant from the parent grant and the delegating sub-agent's name.
 // It sets the narrower Scope (and may set an earlier NotAfterUnix; a Subject it sets must be the
@@ -123,6 +127,8 @@ func (t *attenuatingSubAgent) Spec() agent.ToolSpec { return agent.SpecOf(t.Tool
 // Unwrap returns the SubAgent tool it wraps, so the agent recognises the call as a delegation:
 // a saga rollback recurses into its sub-run, and the tree's token budget counts it.
 func (t *attenuatingSubAgent) Unwrap() agent.Tool { return t.Tool }
+
+// protocol:delegation begin DGuard DgRead DgUng DgMint DgRec DgRun RbBind
 
 func init() {
 	// Every tool call in a delegation's sub-run is refused once the delegation's grant has expired
@@ -363,3 +369,5 @@ func (t *attenuatingSubAgent) Call(ctx context.Context, args json.RawMessage) (j
 
 	return t.Tool.Call(ctx, args)
 }
+
+// protocol:delegation end

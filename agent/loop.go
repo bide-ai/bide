@@ -52,9 +52,11 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 	if err := checkDurable(a.store); err != nil {
 		return Message{}, usageTotals{}, 0, err
 	}
+	// protocol:delegation begin SLink
 	if err := linkSubRun(ctx, runID, a.store); err != nil {
 		return Message{}, usageTotals{}, 0, err
 	}
+	// protocol:delegation end
 	ctx = a.runDefaults(ctx) // the agent's identity, Waker and clock, where the run was given none
 	fire := func(e AgentEvent) {
 		if emit != nil {
@@ -559,6 +561,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 		)
 		for _, c := range toRun {
 			g.Go(func() (err error) {
+				// protocol:delegation begin DNext DClass
 				defer func() {
 					if _, u := errors.AsType[*toolhook.Unrecorded](err); err != nil && u {
 						pauseMu.Lock()
@@ -617,6 +620,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 				if halted.Load() {
 					return nil // not started: it runs when the resumed turn does
 				}
+				// protocol:delegation end
 				sctx := withOnceScope(gctx, SubRunID(runID, c.tu.ID))      // NextOnceKey's scope: the call's sub-run ID
 				sctx = withRunContext(sctx, a.store, runID, c.tu.ID, saga) // RunInfoFrom; lets the tool call Interrupt
 				started := &callUsage{}                                    // usage of the runs this call starts
@@ -672,6 +676,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 					called.Store(!notCalled)
 					// protocol:claims end
 					// protocol:lifecycle end
+					// protocol:delegation begin SLate DClass
 					started.callReturned() // the chain returned: no programmatic sub-run starts from the call's context now
 					if state == callClosed && callErr != nil && !notCalled && !c.spec.Safety.retriableOnResume() {
 						callErr = fmt.Errorf("tool %q: the tool middleware returned an error without calling next, and not ErrToolNotCalled, so the tool may have run: %w (%w)", c.tu.Name, callErr, ErrToolOutcomeUnknown)
@@ -746,6 +751,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 						if errors.As(callErr, &subUnfinished) {
 							return Record{}, callErr
 						}
+						// protocol:delegation end
 						// A Step inside the call refused to pause (see Step): record nothing, so
 						// the step's marker halts the call's next attempt. It is checked ahead of the
 						// pauses below: it wraps no pause, and a pause joined with it must not turn it
@@ -842,6 +848,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 		if wakeErr != nil {
 			return leave(wakeErr)
 		}
+		// protocol:delegation begin DEnd
 		if unrecErr != nil {
 			// A sibling's pause or halt is reported beside the refusal, never hidden by it: the
 			// caller has both to act on before the re-drive.
@@ -850,6 +857,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 			}
 			return leave(unrecErr)
 		}
+		// protocol:delegation end
 		if pauseErr != nil {
 			return leave(pauseErr)
 		}

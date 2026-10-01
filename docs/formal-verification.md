@@ -12,14 +12,15 @@ milestones, is the design note [formal models of the coordination protocols](des
 
 At a glance:
 
-- **7 models** (1, 1b, 2, 7, 8, 9 and 10), checked on every pull request that touches them or the
+- **8 models** (1, 1b, 2, 7, 8, 9, 10 and 11), checked on every pull request that touches them or the
   code they describe, and always in the merge queue and on main. **Models** is a required check.
-- **138 configurations** on every such pull request (52 that must pass, each also run for vacuity,
-  and 86 regression, finding and limit configurations that must fail with their named property),
-  and **45 larger ones nightly**.
-- **18 bugs caught before release** in bide's own design or code (F1 to F5, P1, P2, T1 to T6, a
-  rollback that never ended, L1 to L3, and a spend-accounting bug model 8 confirmed). Each fixed
-  one is kept as a regression configuration; L2 and L3 stay open until P14 implements their fix.
+- **171 configurations** on every such pull request (67 that must pass, each also run for vacuity,
+  and 104 regression, finding and limit configurations that must fail with their named property),
+  and **53 larger ones nightly**.
+- **21 bugs caught before release** in bide's own design or code (F1 to F5, P1, P2, T1 to T6, a
+  rollback that never ended, L1 to L3, a spend-accounting bug model 8 confirmed, and D1 to D3).
+  Each fixed one is kept as a regression configuration; L2 and L3 stay open until P14 implements
+  their fix, and D1 to D3 until their fixes land in the code.
 
 ## What TLA+ and model checking are
 
@@ -120,9 +121,10 @@ property. Nightly runs larger bounds.
 | [8: spend accounting](../spec/tla/README.md#model-8-spend-accounting) | The journal holds every billed model request exactly once, across hedged and retried requests, failed calls, ambiguous writes, crashes and two drivers; `Result.Spend` never exceeds it. | `NoDoubleCount`, `SpendExact`, `ResultSpend` | `agent`: `modelcall.go`, `generate.go`, `loop.go` (Load, `settle`) | 6 | 1 | Checked; confirmed the #104 shared-key bug on the old rule |
 | [9: the tool-call state machine](../spec/tla/README.md#model-9-the-tool-call-state-machine) | Under any tool middleware, retries, leaked `next` calls and sibling calls, a side effect fires at most once, the journal's record of a call is true, a saga's rollback accounts for every effect left in place, and the rollback ends. | `NoDoubleFire`, `TruthfulRecord`, `NoLostSibling`, `SagaAccounted`, `NeverBegunProgress`, `RollbackEnds` | `agent`: `toolexec.go`, `loop.go`, `saga.go`, `tool_middleware.go`; `internal/toolhook` | 26 | 13 | Checked; T1 to T6 fixed in #117 |
 | [10: the run lifecycle and recovery](../spec/tla/README.md#model-10-the-run-lifecycle-and-recovery) | Recovery never resumes a finished run; one live lease holder per epoch; each end marker is written once; nothing fires after a run completed or aborted; a dead holder's run is taken over within a bounded time of its lease lapsing. | `NoResumeOfFinished`, `OneDriverPerEpoch`, `NoDoubleCompletion`, `FinishedFinal`, `CancelFinal`, `VerdictAgreement`, `BoundedPickup`, `PickedUp` | `agent`: `recovery.go`, `lease.go`, `loop.go`, `saga.go`, `halt.go`, `journal.go`; the stores' `Leaser` and `Lister` | 27 | 5 | Checked; L1 fixed in #126; L2 and L3 open until P14 |
+| [11: delegation, sub-run authority and saga trees](../spec/tla/README.md#model-11-delegation-sub-run-authority-and-saga-trees) | A child never acts with authority its delegation did not grant, nor reaches a tool after its grant expired; a saga's rollback compensates or lists every write anywhere in the tree, under the authority each sub-run journaled; a halt or lost outcome anywhere in the tree stops later saga steps; a sub-run runs only under its own call's ID while the call is open; a storage error or a wrong-authority resume is never recorded as a delegation failure, and a run it stopped continues once the right grant is bound. | `AuthorityNarrows`, `RollbackSound`, `RollbackUnderGrant`, `HaltPropagates`, `NoForgedSubRun`, `NoFalseFailure`, `UnrecordedContinues`, `RollbackEnds` | `audit`: `delegate.go`; `agent`: `subagent.go`, `saga.go`, `runctx.go`, `loop.go`; `internal/toolhook` | 33 | 8 | Checked; D1 to D3 open until their fixes land |
 
 Model numbers are those of `spec/tla/README.md`. The plan's deferred models 3 (leases) and 5 (saga
-rollback) are partly covered by models 10 and 9; its model 4 (the store contract) is not built.
+rollback) are partly covered by models 10, 9 and 11; its model 4 (the store contract) is not built.
 
 ## Bugs the models caught
 
@@ -150,6 +152,9 @@ details are in the linked README sections.
 | L1 | 10 | `RecoverLoop` visited every unfinished run in id order, halted ones included, so a dead holder's run waited behind the halted runs listed before it (10 ticks with two halted runs and 15 with three, against 3 or 4 after the fix). | Slow recovery | [#126](https://github.com/bide-ai/bide/pull/126): a second loop drives only runs whose lease lapsed (found in [#124](https://github.com/bide-ai/bide/pull/124)) |
 | L2 | 10 | `Cancel`'s turn-boundary check races the claim: a drive past its check claims and fires after `run:cancelled` landed, with no fault. | Fire after cancel | Rule adopted into P14's design (D1 in [api-v1](design/api-v1.md)) by [#124](https://github.com/bide-ai/bide/pull/124); open until P14 implements it |
 | L3 | 10 | `Cancel` and completion race on two keys: `Cancel` can report a run cancelled that completed, or the run report an answer after `Cancel` landed first. | Wrong verdict reported | As L2: the first end marker in journal order is the verdict; open until P14 |
+| D1 | 11 | `BindRollback` checked each journaled grant against the one grant bound now, so a saga that delegated under two bound grants (the refusal for an expired grant asks for a live one) could not verify both, and its rollback never ended. | Stuck rollback | Open: the caller binds every grant the saga delegated under, and each child grant is checked against its own parent (found in [#130](https://github.com/bide-ai/bide/pull/130)) |
+| D2 | 11 | `BindRollback` dropped the delegated mark, so the rollback's re-run of a retry-safe write in a delegated sub-run passed `CallGuard` and called the tool after the grant expired. | Act past grant expiry | Open: keep the mark, and list a refused re-run as an unknown outcome (found in [#130](https://github.com/bide-ai/bide/pull/130)) |
+| D3 | 11 | In a plain sub-run of a saga, a failed sub-agent call is an error result, and the rollback skipped error results before recursing, so the sub-agent's writes were neither compensated nor listed. | Write left in place, listed nowhere | Open: recurse into a sub-agent call whatever its result (found in [#130](https://github.com/bide-ai/bide/pull/130)) |
 | Shared late key | 8 | Late spend was keyed by a sequence number each driver counted itself, so two drivers wrote one `@spend-late` key and the second's spend was lost. Found as a suspicion in the #104 re-review; model 8 confirmed it on the old rule. | Lost spend | [#104](https://github.com/bide-ai/bide/pull/104): a fresh id per spend record (confirmed in [#111](https://github.com/bide-ai/bide/pull/111)) |
 
 Models 7 and 8 found no new bug in the rules they check. Their regressions encode bugs earlier
@@ -162,7 +167,7 @@ same for bugs found by review and testing before the models existed, back to #31
 | Where | What | Time |
 |---|---|---|
 | Every pull request (**Models**, required) | The checker self-test, the PlusCal translation check, and every `ci`, `regress`, `finding` and `limit` configuration (138), each passing one also run for vacuity | About 9 to 12.5 minutes on the CI runner (job timeout 30 minutes) |
-| Nightly and on demand (**Models (nightly)**) | The 45 `nightly` configurations: more faults, more drivers, liveness at two error replies, weak A3 (late commits) | About 1 hour 40 minutes on the CI runner (job timeout 4 hours) |
+| Nightly and on demand (**Models (nightly)**) | The 53 `nightly` configurations: more faults, more drivers, liveness at two error replies, weak A3 (late commits) | About 1 hour 40 minutes on the CI runner (job timeout 4 hours) |
 | Nightly and on demand (**Explore (full bound)**) | The Go fault-schedule explorations of the claim protocol and of flow lowering at their full bound (`BIDE_EXPLORE=1`); every pull request runs them at a smaller bound under `-race` in the Test job | About 15 to 22 minutes |
 | Every pull request (**Lint**, required) | `modelsync` and `TestProtocolVocabulary` (next section) | Part of Lint |
 
