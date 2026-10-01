@@ -287,7 +287,8 @@ func (a *Agent) rollbackRun(ctx context.Context, runID, root string) (compensate
 			continue // the step whose failure aborted the saga: walked above if a sub-agent; otherwise it made no change
 		}
 		res, done := results[tu.ID]
-		if done && res.IsError {
+		_, isSub := asSubAgent(a.tools[tu.Name])
+		if done && res.IsError && !isSub {
 			// A failed call made no change (saga steps must be atomic), unless an earlier attempt of
 			// a compensable retry-safe write journaled its arguments, its "may have begun" marker,
 			// before this result (a denial) was recorded: that attempt may have taken effect, and
@@ -299,6 +300,9 @@ func (a *Agent) rollbackRun(ctx context.Context, runID, root string) (compensate
 			}
 			continue
 		}
+		// A sub-agent call is rolled back into whatever its result: an error result (its run
+		// failed, or its delegation was refused, in a run that is not a saga) says nothing of the
+		// writes its sub-run made before it failed.
 		if done && res.Safety != nil && res.Safety.ReadOnly {
 			continue // it ran as ReadOnly, so it changed nothing, whatever its tool is declared as now
 		}
@@ -396,6 +400,14 @@ func (a *Agent) rollbackRun(ctx context.Context, runID, root string) (compensate
 					// and the rollback goes on: re-running it again would meet the same answer, and
 					// the rollback would never finish. Any other failure stops the rollback.
 					if errors.Is(ce, ErrToolOutcomeUnknown) {
+						unknown = append(unknown, tu.Name)
+						continue
+					}
+					// A guard of this module refused the re-run (audit: the delegation's grant has
+					// expired), so the tool was not called and its outcome is still unknown: the
+					// call may have run before the abort. It is reported, and the rollback goes on,
+					// as a re-run under the same authority would meet the same refusal.
+					if _, guarded := errors.AsType[*guardRefusal](ce); guarded {
 						unknown = append(unknown, tu.Name)
 						continue
 					}

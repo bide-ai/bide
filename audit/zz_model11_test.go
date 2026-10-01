@@ -4,9 +4,11 @@ package audit
 // the code as it stands.
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"slices"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -59,27 +61,26 @@ func TestModel11_D1_RollbackAcrossRotatedGrants(t *testing.T) {
 	script := func() agent.Model {
 		return agent.NewScriptedModel(agent.ToolTurn("c1", "d1", `{"task":"a"}`), agent.ToolTurn("c2", "d2", `{"task":"b"}`), agent.TextTurn("x"))
 	}
-	drive := func(g SignedGrant) *agent.SagaAborted {
-		_, err := agent.New(script(), store, tools()...).RunSaga(WithGrant(ctx, g, signer), "trip", "go")
+	drive := func(ctx context.Context) *agent.SagaAborted {
+		_, err := agent.New(script(), store, tools()...).RunSaga(ctx, "trip", "go")
 		var ab *agent.SagaAborted
 		if !errors.As(err, &ab) {
 			t.Fatalf("RunSaga = %v, want *SagaAborted", err)
 		}
 		return ab
 	}
-	ab := drive(p2)
-	t.Logf("under p2: compensated %v, uncompensated %v, err %v", ab.Compensated, ab.Uncompensated, ab.CompensateErr)
-	for k := 0; k < 4 && ab.CompensateErr != nil; k++ {
-		g := p1
-		if k%2 == 1 {
-			g = p2
-		}
-		ab = drive(g)
-		t.Logf("re-drive under %s: compensated %v, uncompensated %v, err %v", g.Grant.ID, ab.Compensated, ab.Uncompensated, ab.CompensateErr)
+	// Under p2 alone, d1's grant links to no bound grant: refused, with a message that says what
+	// to bind. (Before the fix, either grant alone left the rollback stuck for good.)
+	ab := drive(WithGrant(ctx, p2, signer))
+	if !errors.Is(ab.CompensateErr, ErrNotVerified) || !strings.Contains(ab.CompensateErr.Error(), "WithRollbackGrants") {
+		t.Fatalf("under p2 alone: CompensateErr = %v, want ErrNotVerified naming WithRollbackGrants", ab.CompensateErr)
 	}
-	if ab.CompensateErr != nil || refunds.Load() != 2 {
-		t.Fatalf("the rollback never finished under either grant the delegations were minted from: refunds %d, last error %v",
-			refunds.Load(), ab.CompensateErr)
+	// With both bound (p2 acting, p1 for the rollback), each delegation verifies against its own
+	// parent and the rollback finishes.
+	ab = drive(WithRollbackGrants(WithGrant(ctx, p2, signer), signer, p1))
+	if ab.CompensateErr != nil || refunds.Load() != 2 || len(ab.Uncompensated) != 0 {
+		t.Fatalf("the rollback did not finish with both grants bound: compensated %v, uncompensated %v, refunds %d, error %v",
+			ab.Compensated, ab.Uncompensated, refunds.Load(), ab.CompensateErr)
 	}
 }
 
@@ -119,6 +120,9 @@ func TestModel11_D2_RollbackRerunAfterGrantExpiry(t *testing.T) {
 	t.Logf("compensated %v, unknown %v, err %v; idem called %d times, undone %d", ab.Compensated, ab.UnknownOutcome, ab.CompensateErr, calls.Load(), undone.Load())
 	if calls.Load() != 0 {
 		t.Fatalf("idem's tool was called %d time(s) by the rollback after the delegation's grant expired at %d", calls.Load(), notAfter)
+	}
+	if ab.CompensateErr != nil || !slices.Contains(ab.UnknownOutcome, "idem") {
+		t.Fatalf("the refused re-run must be listed as an unknown outcome and the rollback go on: unknown %v, err %v", ab.UnknownOutcome, ab.CompensateErr)
 	}
 }
 
@@ -167,5 +171,96 @@ func TestModel11_D3_FailedSubAgentInPlainSubRunSkipped(t *testing.T) {
 	listed := slices.Contains(ab.Uncompensated, "charge") || slices.Contains(ab.Uncompensated, "worker")
 	if ab.CompensateErr == nil && undone.Load() == 0 && !listed {
 		t.Fatalf("the sub-agent's write was neither compensated nor listed (compensated %v, uncompensated %v)", ab.Compensated, ab.Uncompensated)
+	}
+}
+
+// D1, key rotation: the root grant and its signing key were both rotated between drives. Each
+// rollback grant carries its own signer, so the delegation minted under the old key verifies
+// under the old key, and the one minted under the new key under the new one; a grant bound with
+// the wrong signer verifies nothing.
+func TestModel11_D1_RollbackAcrossRotatedKeys(t *testing.T) {
+	ctx := context.Background()
+	store := agent.NewMemStore()
+	oldSigner, newSigner := rev117eSigner(t), rev117eSigner(t)
+	p1, p2 := m11Root(t, oldSigner, "p1"), m11Root(t, newSigner, "p2")
+	var refunds atomic.Int32
+	charge := func(name string) agent.Tool {
+		return agent.CompensatedFunc(name, "a write", agent.Safety{},
+			func(context.Context, struct{}) (string, error) { return "charged", nil },
+			func(context.Context, struct{}, string) error { refunds.Add(1); return nil })
+	}
+	boom := agent.Func("boom", "fails", agent.Safety{}, func(context.Context, struct{}) (string, error) {
+		return "", errors.New("sold out")
+	})
+	cfg := AttenuationConfig{Store: store, Narrow: narrowLimitBy(1), Rules: rev117eRules}
+	tools := func() []agent.Tool {
+		sub1 := agent.New(agent.NewScriptedModel(agent.ToolTurn("s1", "charge1", `{}`), agent.TextTurn("d1 done")), store, charge("charge1"))
+		sub2 := agent.New(agent.NewScriptedModel(agent.ToolTurn("s2", "charge2", `{}`), agent.ToolTurn("s3", "boom", `{}`), agent.TextTurn("x")),
+			store, charge("charge2"), boom)
+		return []agent.Tool{AttenuatingSubAgent("d1", "first", sub1, cfg), AttenuatingSubAgent("d2", "second", sub2, cfg)}
+	}
+	parent1 := agent.New(agent.NewScriptedModel(agent.ToolTurn("c1", "d1", `{"task":"a"}`), agent.ErrorTurn(errors.New("provider down"))), store, tools()...)
+	if _, err := parent1.RunSaga(WithGrant(ctx, p1, oldSigner), "trip", "go"); err == nil {
+		t.Fatal("drive 1: want the provider error")
+	}
+	drive := func(ctx context.Context) *agent.SagaAborted {
+		m := agent.NewScriptedModel(agent.ToolTurn("c1", "d1", `{"task":"a"}`), agent.ToolTurn("c2", "d2", `{"task":"b"}`), agent.TextTurn("x"))
+		_, err := agent.New(m, store, tools()...).RunSaga(ctx, "trip", "go")
+		var ab *agent.SagaAborted
+		if !errors.As(err, &ab) {
+			t.Fatalf("RunSaga = %v, want *SagaAborted", err)
+		}
+		return ab
+	}
+	// p1 bound under the new key: d1's grant does not verify, and the rollback stops.
+	ab := drive(WithRollbackGrants(WithGrant(ctx, p2, newSigner), newSigner, p1))
+	if !errors.Is(ab.CompensateErr, ErrNotVerified) {
+		t.Fatalf("p1 under the wrong signer: CompensateErr = %v, want ErrNotVerified", ab.CompensateErr)
+	}
+	ab = drive(WithRollbackGrants(WithGrant(ctx, p2, newSigner), oldSigner, p1))
+	if ab.CompensateErr != nil || refunds.Load() != 2 {
+		t.Fatalf("rollback across the key rotation: compensated %v, uncompensated %v, refunds %d, err %v",
+			ab.Compensated, ab.Uncompensated, refunds.Load(), ab.CompensateErr)
+	}
+}
+
+// D1 and D2, the bound context: BindRollback accepts a parent bound only with WithRollbackGrants
+// (the acting grant is another), rebinds the child marked delegated with its parent's signer, and
+// binds no rollback grants in the sub-run, so a grandchild verifies against the child alone.
+func TestModel11_BindRollbackScope(t *testing.T) {
+	ctx := context.Background()
+	store := agent.NewMemStore()
+	s1, s2 := rev117eSigner(t), rev117eSigner(t)
+	old, live := m11Root(t, s1, "old"), m11Root(t, s2, "live")
+	child, err := SignGrant(Grant{ID: "c", Issuer: "desk", Subject: "exec", Scope: map[string]string{"limit": "6"},
+		NotAfterUnix: old.Grant.NotAfterUnix, ParentRef: old.Grant.Digest()}, s1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RecordGrant(ctx, store, "sub", child); err != nil {
+		t.Fatal(err)
+	}
+	sub := agent.New(agent.NewScriptedModel(agent.TextTurn("x")), store)
+	b := AttenuatingSubAgent("exec", "", sub, AttenuationConfig{Store: store, Narrow: narrowLimitBy(1), Rules: rev117eRules}).(interface {
+		BindRollback(context.Context, string) (context.Context, error)
+	})
+	bound, err := b.BindRollback(WithRollbackGrants(WithGrant(ctx, live, s2), s1, old), "sub")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, _ := bound.Value(grantCtxKey{}).(grantCarrier)
+	if c.sg.Grant.ID != "c" || !c.delegated || c.signer == nil || !bytes.Equal(c.signer.PublicKey(), s1.PublicKey()) {
+		t.Fatalf("bound carrier: grant %q, delegated %v; want the child, delegated, under its parent's signer", c.sg.Grant.ID, c.delegated)
+	}
+	if ps := rollbackParents(bound); len(ps) != 1 || ps[0].sg.Grant.ID != "c" {
+		t.Fatalf("the sub-run's rollback parents = %d, want the child alone", len(ps))
+	}
+	// Bound only with WithRollbackGrants and no acting grant: still accepted.
+	if _, err := b.BindRollback(WithRollbackGrants(ctx, s1, old), "sub"); err != nil {
+		t.Fatalf("parent bound only for the rollback: %v", err)
+	}
+	// A nil signer binds nothing: no grant to verify against.
+	if _, err := b.BindRollback(WithRollbackGrants(ctx, nil, old), "sub"); !errors.Is(err, agent.ErrConfig) {
+		t.Fatalf("nil signer: %v, want ErrConfig", err)
 	}
 }
