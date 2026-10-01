@@ -78,6 +78,7 @@ the design exhaustively, for three reasons:
 | 6 | **Sessions:** concurrent `Send` and `SendOnce`, turn ordering, `from/` starting points, crashes between turns. | Candidate. | The next change to the session code. |
 | 7 | **Flow semantics:** switch and loop replay, `run:complete` for flows, per-iteration step scoping. | Started: `spec/tla/flows` (see `spec/tla/README.md`). | #103 (which fixes these) is merged. |
 | 9 | **Spend accounting:** `@llm/<n>`, `@spend/<id>` and `@spend-late/<id>` under A3, crashes, hedged losers and two drivers; `Result.Spend` and `Replay` equal the billed spend exactly once. | Started: `spec/tla/spend`. | P9 (#104). |
+| 10 | **The run lifecycle and recovery:** `run:start`, `run:complete`, `run:aborted` and P14's `run:cancelled`; a leased `Run`, a plain `Run`, `resume`, `Recover` and `RecoverLoop` passes (list, lease, the #114 re-check, resume, release), halts, pauses and `ResolveHalt`, under lease expiry, a stalled holder, ambiguous writes and crashes, with a clock that makes a pass's cost visible (bounded pickup). It takes the lease and recovery part of model 3. | Started: `spec/tla/lifecycle`. | #114, and P14's `Cancel` (D1), whose rules it states as the property P14 must satisfy. |
 | 8 | **The whole-tree budget:** the bound on how far concurrent sub-agents can overshoot a shared token budget. | Candidate, low priority. | None. |
 
 Models 2 to 5 wait because modelling a design that is still moving costs the model twice. Each

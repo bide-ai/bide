@@ -279,6 +279,9 @@ func ResumeAny(rs ...Resumer) Resumer                              // first that
 - A driver checks for it with `Get` when a drive starts and at every turn boundary, and never starts a new claim after seeing it. Calls already in flight finish and record their results.
 - `Run` on a cancelled run returns a `Result` and `ErrRunCancelled`. It has no category, because it is a terminal status and not a fault.
 - `Recover` excludes cancelled runs through the `Lister` filter.
+- After a drive wins an attempt claim and before it calls the effect, it reads `run:cancelled` again (one `Get` per side-effect call) and, if the marker is present, records the attempt as not started and stops. The turn-boundary check alone lets a drive that checked before `Cancel` landed claim and fire after it (model 10, finding L2). With this rule, an effect fires after `run:cancelled` only under a claim won before it: a call in flight.
+- The first end marker in journal order (`run:complete`, `run:aborted` or `run:cancelled`) is the run's end for every reader (`Run`, `Status`, the drive itself). `Cancel` and completion write different keys and can both land (A1 is per key), so every writer of an end marker reads the end markers back before it reports: `Cancel` reports the run cancelled, and a drive reports its answer, only if its own marker is the first (one `Get` at the end of `Cancel` and at the end of each completed run; model 10, finding L3).
+- Model 10 (`spec/tla/lifecycle`) checks both rules (`life-cancel`, `life-cancel-plain`, `deep-cancel-plain`; `CancelFinal`, `VerdictAgreement`); its findings `cancel-turn-check` and `cancel-verdict` stay open until P14 implements them.
 
 ### Status (D8)
 `RunStatus{State RunState; Terminal string; Records int}` with states:

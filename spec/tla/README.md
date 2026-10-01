@@ -3,7 +3,7 @@
 TLA+ models of bide's coordination protocols, written in PlusCal and checked with the TLC model
 checker. The plan and the reasoning behind it are in the design note
 [formal models of the coordination protocols](../../docs/design/formal-models.md);
-this directory holds models 1 (the claim protocol), 1b (the approval gate), 2 (the bide protocol's claim rules), 7 (flow semantics) and 8 (spend accounting) of that plan.
+this directory holds models 1 (the claim protocol), 1b (the approval gate), 2 (the bide protocol's claim rules), 7 (flow semantics), 8 (spend accounting) and 10 (the run lifecycle and recovery) of that plan.
 
 What a model check establishes, stated narrowly: within the bounds a configuration states (drivers,
 processes, faults, attempt numbers), TLC explores every interleaving of the modelled rules and every
@@ -78,6 +78,8 @@ spec/tla/
     regress/         historical rules, each of which must still produce its counterexample
     findings/        open findings, which fail until they are fixed (none open at present)
     limits/          accepted behavior, stated as an expected violation
+  flows/, protocol/, spend/, lifecycle/
+                     models 7, 2, 8 and 10, laid out the same way
 ```
 
 ## Model 1: claims and attempts
@@ -683,7 +685,263 @@ Not modelled: two drivers' records equal in every journaled field (KNOWN-LIMITAT
 each driver's own), `OnAnswer` and `Cost`, and the token budget's stop (it reads the same
 totals).
 
+## Model 10: the run lifecycle and recovery
+
+`lifecycle/Lifecycle.tla` checks how a run reaches its end and how recovery finds the runs that
+have not: the end markers, the drives that write them, the recovery passes that re-drive what is
+left, and how long a dead holder's run waits. It is a model of its own; the claim protocol under
+the calls is model 1's, reduced here to one marker per call (first writer wins), with a lost or
+errored claim leaving the run halted.
+
+### What is modelled
+
+- **End markers.** `run:complete` (the loop's terminal turn, `putRecord`), `run:aborted` (a saga
+  whose rollback finished, `Agent.rollback`) and `run:cancelled` (reserved; written by P14's
+  `Cancel`, D1 in `docs/design/api-v1.md`). Each is its own key, first writer wins, and the model
+  keeps them in journal order (A2).
+- **Drives.** A leased `Run` (`Lease` around `Agent.Run`, the primary), a plain `Run` (no lease),
+  and the `resume` a recovery pass calls (the model's resume is `Run` or `RunSaga`). A drive loads
+  the run, returns a finished run's end, halts on a live attempt with no result (the resume gate),
+  pauses on a pending approval, claims and calls up to two side effects, records each result, and
+  writes `run:complete`, or, for a saga whose call failed, rolls back and writes `run:aborted`.
+- **Recovery.** `Recover` (one pass) and `RecoverLoop` (a pass every interval) per worker: the
+  `Lister` filter (no end marker), the in-flight set, a slot that waits for a free slot (the
+  model's concurrency is 1), and `recoverRun`: `AcquireLease`, `runEnded` under the lease (#114),
+  `resume`, the deferred `ReleaseLease`. Runs are listed in id order, as the SQL stores list them.
+- **Leases.** Owner and time left. A holder's renewer keeps its lease live; a stalled or dead
+  holder's lapses after `TTL` ticks, and any holder may then take it. A holder that wakes from a
+  stall keeps driving until its renewer notices the loss and cancels its context (`ErrLeaseLost`):
+  a claim and a not-yet-called effect stop there, a result is still recorded
+  (`context.WithoutCancel`).
+- **The operator.** `ResolveHalt` (`checkNoLiveDriver` takes the run's lease, then the result is
+  written, first writer wins) and `Approve`. Never assumed to act.
+- **Cancel (P14).** `Cancel` of a run that is not over writes `run:cancelled`. The drive's checks
+  follow `CancelRule`: `"turn"` is D1 as written (a `Get` when a drive starts and at every turn
+  boundary); `"claim"` adds the proposed check after the claim is won, before the call, recording
+  the attempt as not started. `VerdictRule = "first"` is the proposed reading rule: the first end
+  marker in journal order is the run's end, and a drive or `Cancel` that wrote a marker reads the
+  markers again before it reports.
+- **Faults.** Error replies on every write (A3: committed or not), crashes (a worker restarts with
+  new lease tokens and an empty in-flight set; the primary does not restart), and a lease holder
+  that stalls past its TTL.
+- **Time.** A discrete clock (`Tick`) runs the leases and each loop's ticker (a buffered tick, as
+  `time.Ticker`). Under `Timed`, every process takes at most one step per tick and none lets a
+  tick pass while it can step (`Settled`), so a step is one store round trip and a pass's length
+  is visible. Without `Timed` (the safety configurations) time and processes interleave freely,
+  which covers every relative speed.
+
+Abstracted away: the model's conversation (the calls of a run are fixed), the claim protocol's
+numbered attempts and remembered claims (model 1), compensation (models 5 and 9), sub-runs and
+sessions (`recoverable`), renewal errors short of a lapse, `Recover` without a `Leaser`, a pass's
+concurrency above 1 (a pass with C slots walks C halted runs at a time; the pickup delay scales
+with the halted runs divided by C), and `Cancel` on a saga (an abort, model 5).
+
+### Model-code map
+
+| Label | Go |
+|---|---|
+| `DIdle` | `Lease` (`AcquireLease` under `<holder>#<token>`, `leaseToken`); for the primary, the caller's `Lease` around `Agent.Run`, or a plain `Agent.Run` |
+| `DCheck` | `recoverRun`'s `runEnded` under the lease: `Store.Get` of each name in `endOfRunMarkers` |
+| `DResume` | `recoverRun` calling `resume(ctx, runID)` |
+| `DOpen` | `Agent.run`: `openRun`, `completedAnswer` (a finished run returns its answer), `holdToStart`, the resume gate (`toolHalt`, `HaltCrashed`), the approval pre-pass (`ApprovalPending`); P14's start check of `run:cancelled` |
+| `DTurn` | P14 (D1): the `run:cancelled` `Get` at a turn boundary |
+| `DClaim` | `claimNextAttempt` / `Journal.claim` (model 1), under the drive's context |
+| `DPost` | proposed for P14: `run:cancelled` read after the claim is won, `recordNotStarted` |
+| `DCall` | `recordFresh`: the `sctx.Err()` check, `t.Call` |
+| `DRecord` | `recordFresh`'s insert of the result (`putRecord` under `context.WithoutCancel`) |
+| `DRollback`, `DAbort` | `Agent.rollback`: `rollbackRun`, then `store.Do` of `run:aborted` |
+| `DComplete` | the loop's terminal: `putRecord` of `run:complete` |
+| `DVerdict` | proposed for P14: the end markers read again; the first in journal order is reported |
+| `DRel` | `Lease`'s deferred `ReleaseLease` |
+| `PList`, `PNext`, `PSlot`, `PWait` | `RecoverLoop`'s `pass`: `lister.Runs(ctx, recoverFilter)`, `recoverable`, `inFlight`, `slots`, the ticker (`Recover`: one pass) |
+| `OPick`, `OLease`, `OWrite`, `ORel` | `ResolveHaltRef` / `resolveHalt` with `checkNoLiveDriver`'s lease; `Approve` |
+| `CGet`, `CIns`, `CRead` | P14's `Cancel` (D1): the end-marker check, the `run:cancelled` insert, and the proposed read-back |
+| `Tick` | wall-clock time: `driveWithRenew`'s renewal, lease expiry, `RecoverLoop`'s `time.Ticker` |
+| `Stall`, `Wake`, `LeaseNotice` | a process pause; `renewLoop` returning `ErrLeaseLost` and cancelling the drive |
+| `Crash` | a process dies (a worker restarts) |
+
+### Properties
+
+| Property | Kind | Statement |
+|---|---|---|
+| `NoResumeOfFinished` | invariant | a recovery pass never calls `resume` for a run holding an end marker |
+| `OneDriverPerEpoch` | invariant | no two drives hold a live lease on one run at once (each acquisition of a free or lapsed lease is an epoch, owned by one drive's token) |
+| `OneLiveDriver` | invariant | no two drives of one run run at once with live contexts |
+| `NoDoubleCompletion` | invariant | a run is never both completed and aborted, and each end marker is written once |
+| `OneEnd` | invariant | a run holds at most one end marker |
+| `VerdictAgreement` | invariant | a drive or `Cancel` that reports how a run ended agrees with the run's first end marker |
+| `FinishedFinal` | invariant | no effect fires under a claim won after `run:complete` or `run:aborted` |
+| `CancelFinal` | invariant | no effect fires under a claim won after `run:cancelled` is in the journal (the property P14 must satisfy) |
+| `NoFireAfterCancel` | invariant | no effect is called once `run:cancelled` is in the journal (the literal form; not achievable, see the limits) |
+| `AtMostOnce` | invariant | each call fires at most once |
+| `EndMarked` | invariant | a drive that reports a run complete or aborted leaves the marker |
+| `OutcomeRecorded` | invariant | an effect whose driver returned, did not crash and got no error on its record write is recorded |
+| `BoundedPickup` | invariant (Timed) | a run whose lease holder died is taken over within `Bound` ticks of its lease lapsing |
+| `PickedUp` | liveness | a run whose lease holder died is eventually taken over, or ends |
+| `EffectNotReachable`, `PickupNotReachable` | vacuity | must be violated |
+
+`BoundedPickup` is a bounded-response property: under `Timed`, time cannot pass while a process
+can step, so a tick is an upper bound on a round trip, and a takeover within `Bound` ticks is a
+safety property over the ghost clock `age`. `PickedUp` is its unbounded form, which holds under
+both rules; only the bound shows the cost of a pass.
+
+### Recovery cost: the pickup bound (finding L1)
+
+`RecoverLoop`'s godoc, since v0.9.0, says a dead holder's run is picked up within about one
+interval of its lease expiring only while a pass is short: a pass visits every unfinished run it
+lists, halted ones included, at about five store round trips each, and the next pass starts only
+once this one has handed out every run. The model makes that cost visible. Under `Timed`, a
+halted run's visit is five steps of the worker's slot (`DIdle` with the lease, `DCheck`,
+`DResume`, `DOpen`'s halt, `DRel`), and the pass hands one run to the slot at a time, so a pass
+over H halted runs takes about 5H ticks.
+
+**L1 (`findings/pickup-halted-pile`, `BoundedPickup`).** Runs are listed in id order, so older
+halted runs come first. A leased primary's run is listed last and the primary dies. In the
+shortest counterexample (two halted runs) the pass listed all three runs, its slot is visiting
+halted run 1 when run 3's lease lapses, and run 3 waits for the visits to runs 1 and 2, past a
+bound of 4 (where the trace stops). When the lapse comes just after the pass tried run 3 (its
+lease still live), the wait is the whole next pass: 10 ticks with two halted runs. The smallest bound that holds grows with the
+halted runs (TTL 2, interval 2, one worker, concurrency 1; the smallest `Bound` at which
+`BoundedPickup` holds, found by checking each bound in turn):
+
+| Rule | 0 halted runs | 1 | 2 | 3 |
+|---|---|---|---|---|
+| v0.9.0 (`all`) | 4 | 5 | 10 | 15 |
+| lapsed runs first (`lapsedFirst`) | 4 | 5 | 10 | 15 |
+| proposed (`split`) | 3 | 3 | 4 | 4 |
+
+**The approved rule (`PassRule = "split"`, `pickup-split`).** The maintainers approved it; L1 stays in `findings/` until the code lands, then becomes a regression. Each worker runs a second loop,
+on the same interval, that lists only the unfinished runs whose lease row has lapsed (the stores
+delete a row on release, so a lapsed row means its holder died or stalled) and drives them with a
+slot of its own. The full pass is unchanged and still re-drives the halted and never-leased runs.
+A dead holder's run is then taken over within 3 or 4 ticks of the lapse with 0 to 3 halted runs
+(the interval is 2), against 4, 5, 10 and 15 under v0.9.0's rule: about one halted run's visit
+per halted run listed before it. Ordering each pass's list with the lapsed runs first is not enough
+(`PassRule = "lapsedFirst"`, `findings/pickup-lapsed-first`): a lease that lapses while a pass
+walks the halted runs still waits for the next pass. The rule needs a store query for runs with
+a lapsed lease (a `RunFilter` field, say), and its own concurrency.
+
+`PickedUp` holds under every rule but the historical one (`regress/skip-when-busy`): without a
+bound, a slow pass is not a liveness failure, which is why the docs could only be narrowed and the
+bound needs the clock.
+
+### Cancel (P14): the property P14 must satisfy
+
+D1 (`docs/design/api-v1.md`) says: `Cancel` writes `run:cancelled`; a driver checks for it with a
+`Get` when a drive starts and at every turn boundary, never starts a new claim after seeing it,
+and lets calls already in flight finish; `Recover` excludes cancelled runs. The model states the
+property P14 must satisfy, `CancelFinal`: no effect fires under a claim won after `run:cancelled`
+is in the journal, and a drive that read it claims nothing. Two findings against D1 as written,
+each with the proposed rule the model checks (`life-cancel`, `life-cancel-plain`):
+
+- **L2: the turn-boundary check races the claim** (`findings/cancel-turn-check`, `CancelFinal`).
+  A drive checks `run:cancelled` (not there), `Cancel` writes it, and the drive claims and calls
+  the effect: a claim won after the cancellation fires, with no fault. Proposed rule
+  (`CancelRule = "claim"`): read `run:cancelled` again once the claim is won and before the call,
+  and if it is there record the attempt as not started. The claim then orders the two: a claim won
+  before the cancellation landed is a call in flight, one won after it never fires.
+- **L3: `Cancel` and completion race on two keys** (`findings/cancel-verdict`,
+  `VerdictAgreement`). `Cancel` reads no end marker, the run writes `run:complete`, `Cancel` writes
+  `run:cancelled` and reports the run cancelled; or the run reports its answer after `Cancel`
+  landed first. Two keys cannot be written atomically (A1 is per key), so `OneEnd` cannot hold
+  (`limits/cancel-two-ends`). Proposed rule (`VerdictRule = "first"`): the first end marker in
+  journal order (A2) is the run's end for every reader (`Run`, `Status`, the drive itself), and a
+  drive or `Cancel` that wrote a marker reads the end markers again before it reports. It costs one
+  `Get` at the end of a run and one in `Cancel`.
+
+What no rule gives, stated as limits: an effect whose claim was won just before `run:cancelled`
+landed is called just after it (`limits/cancel-in-flight`, `NoFireAfterCancel`), which is D1's
+"calls already in flight finish"; and `Cancel` takes no lease, so it can land between a recovery
+pass's re-check and `resume` (`limits/cancel-resume`, `NoResumeOfFinished`), where the drive's
+start check returns the run cancelled without a write.
+
+### Configurations
+
+States are distinct states. The `ci` rows were measured on the CI runner (GitHub
+`ubuntu-latest`, TLC's own times); the `nightly` rows on the development machine (Apple M1 Pro,
+under load). Each passing configuration is also run for vacuity, and the safety configurations
+run without `Timed`, so time and the processes interleave freely. The `nightly` rows raise one
+budget each: two workers with an error reply and a crash, two calls with `Cancel`, the operator
+with two calls, three runs with a crash, two workers with a stall. Model 10 adds about 50 seconds
+to the pull-request job.
+
+| Config | Group | What | States | Time |
+|---|---|---|---|---|
+| `life-leased` | ci | One run of two calls, a saga (a failing call rolls it back to run:aborted): a leased primary Run and a RecoverLoop worker; an error reply and a crash of either process. | 102,124 | 2 s |
+| `life-stall` | ci | One run: a leased primary Run and a worker; a lease holder stalls past its TTL and wakes; a crash. A stalled holder may resume a run that ended (limits/stall-resume-finished) and may drive beside the run's new holder (limits/stall-two-drivers); every other property holds. | 85,718 | 2 s |
+| `life-paused` | ci | Two runs, one waiting for an approval and one halted, a leased primary on a third that a worker recovers; the operator approves and resolves. | 136,880 | 3 s |
+| `life-cancel` | ci | Cancel (P14) under the proposed rules: run:cancelled read again once a claim is won, before the call, and the first end marker in journal order is the run's verdict. A leased primary, a worker, two calls, a crash. | 101,555 | 2 s |
+| `life-cancel-plain` | ci | Cancel (P14) under the proposed rules, with a plain Run (no lease) and a worker; a crash. | 157,820 | 3 s |
+| `pickup-split` | ci | The proposed recovery rule (PassRule "split"): a second loop per worker visits only the runs whose lease lapsed, every interval, with a slot of its own. Two halted runs listed before a leased primary's run; the primary dies. Takeover within Bound ticks of the lapse. | 4,859 | 1 s |
+| `pickup-reach` | ci | Vacuity of the pickup configurations: a dead holder's run waits after its lease lapsed (PickupNotReachable must be violated), under the proposed rule. | 189 | <1 s |
+| `life-resolve` | ci | One run: a leased primary Run, one Recover pass (not RecoverLoop) and an operator resolving halts; an error reply and a crash. | 32,982 | 1 s |
+| `live-pickup` | ci | PickedUp under v0.9.0's rule: a halted run listed before a leased primary's run, the primary dies; every step and the clock weakly fair. | 4,699 | 2 s |
+| `deep-two-workers` | nightly | One run: a leased primary Run and two RecoverLoop workers; an error reply and a crash. | 3,620,876 | 2 min |
+| `deep-cancel-plain` | nightly | Cancel (P14) under the proposed rules, a plain Run of two calls and a worker; an error reply and a crash. | 2,290,004 | 1 min |
+| `deep-leased-resolve` | nightly | One run of two calls, a saga: a leased primary Run, a RecoverLoop worker and an operator resolving halts; an error reply and a crash. | 1,269,395 | 34 s |
+| `deep-paused` | nightly | Three runs (one waiting for an approval, one halted, a leased primary's), a worker, the operator, a crash. | 3,440,717 | 2 min |
+| `deep-stall` | nightly | One run: a leased primary Run and two workers; a lease holder stalls past its TTL. | 2,183,810 | 1 min |
+
+### Regressions and limits
+
+Each regression restores a historical rule behind `Bug` and must fail with its property; each
+finding fails under the rule as it stands and flips to a regression once the fix is adopted; each
+limit states behavior the design accepts. L1 is v0.9.0's rule (`RecoverLoop`); its fix is
+approved. L2 and L3 are against D1's original text; both rules are now in D1
+(`docs/design/api-v1.md`), and the findings stay open until P14 implements them.
+
+| Config | Group | The rule or behavior | Expected | Trace |
+|---|---|---|---|---|
+| `regress/no-recheck` | regress | #114: recovery checked the end markers when it listed a run, not again under the lease; a run the primary finished in between was handed to resume (Bug = "NoRecheck"). | `NoResumeOfFinished` | 14 states |
+| `regress/no-recheck-stall` | regress | #114 as TestHA_MultiProcessStallPastTTL caught it: the primary stalls past its TTL, the worker takes the run over and finishes it, and the worker's next pass, which listed the run before, resumes it (Bug = "NoRecheck"; no crash). | `NoResumeOfFinished` | 16 states |
+| `regress/shared-holder` | regress | #58 finding 4: Lease claimed under the bare WithLeaseHolder name, which AcquireLease takes as a renewal: a worker's recoverer and its primary under one name both drive the run (Bug = "SharedHolder"). | `OneDriverPerEpoch` | 6 states |
+| `regress/shared-holder-stall` | regress | #58 finding 4 in the HA harness: a worker stalls holding a run, a restarted worker under the same name renews the stalled worker's live lease and drives the run (Bug = "SharedHolder"). | `OneDriverPerEpoch` | 10 states |
+| `regress/no-abort-marker` | regress | #31: a saga whose rollback finished recorded no run:aborted, so every pass re-drove it (Bug = "NoAbortMarker"). | `EndMarked` | 8 states |
+| `regress/record-under-ctx` | regress | #58 finding 1: the SQL stores recorded a step's result under the drive's context, so a drive whose lease was lost while the effect ran dropped the result (Bug = "RecordUnderCtx"). | `OutcomeRecorded` | 10 states |
+| `regress/skip-when-busy` | regress | #58, RecoverLoop's first version: a pass that found every slot busy stopped, and the next began from the top, so runs listed after halted ones starved (Bug = "SkipWhenBusy"). | `PickedUp` (liveness) | 30 states |
+| `regress/replay-finished` | regress | c6deb766: a drive of a finished run asked the model for another turn, whose calls have new tool-use ids (Bug = "ReplayFinished"). | `FinishedFinal` | 16 states |
+| `findings/pickup-halted-pile` | finding | L1: v0.9.0's RecoverLoop visits every unfinished run in id order, halted ones included, so a dead holder's run listed after two halted runs is taken over more than Bound ticks after its lease lapsed. | `BoundedPickup` | 20 states |
+| `findings/pickup-lapsed-first` | finding | L1, a rejected fix: each pass takes the runs whose lease lapsed first. A lease that lapses while a pass walks the halted runs still waits for the next pass. | `BoundedPickup` | 20 states |
+| `findings/cancel-turn-check` | finding | L2: D1 checks run:cancelled when a drive starts and at turn boundaries; a drive past its check claims and fires after Cancel landed (CancelRule "turn"). | `CancelFinal` | 7 states |
+| `findings/cancel-verdict` | finding | L3: Cancel and completion race on two keys: Cancel reads no end marker, the run completes, Cancel writes run:cancelled and reports the run cancelled (VerdictRule "none"). | `VerdictAgreement` | 10 states |
+| `limits/stall-resume-finished` | limit | #114's documented residual: a worker stalls past its TTL between the re-check and resume; the primary takes the lapsed lease and finishes the run; the worker wakes and resumes it. | `NoResumeOfFinished` | 16 states |
+| `limits/plain-run-resume-finished` | limit | #114's other residual: a plain Run holds no lease, so it can finish the run between a worker's re-check and resume. | `NoResumeOfFinished` | 13 states |
+| `limits/cancel-resume` | limit | Cancel takes no lease, so it can land between a worker's re-check and resume; the drive's start check then returns the run cancelled without a write. | `NoResumeOfFinished` | 9 states |
+| `limits/stall-two-drivers` | limit | Leases are not fenced: a holder that stalls past its TTL wakes still driving, beside the run's new holder, until its renewer notices. | `OneLiveDriver` | 9 states |
+| `limits/cancel-in-flight` | limit | Cancel cannot stop a call already past its check: under the proposed rules a claim won just before run:cancelled lands fires just after it (NoFireAfterCancel is the literal form). | `NoFireAfterCancel` | 8 states |
+| `limits/cancel-two-ends` | limit | Two keys cannot be written atomically (A1): Cancel and completion can both land; the first in journal order is the verdict (VerdictAgreement holds in life-cancel). | `OneEnd` | 10 states |
+
+### Keeping model 10 and the code in step
+
+The mechanisms of section 6 of the plan, as they apply here:
+
+- **The model-code map** above names the Go function behind every label, checked by review (the
+  plan's adversarial review gate) until trace validation lands.
+- **Regressions.** Every historical bug of this layer that the model can state is a `Bug` value
+  and a configuration in `regress/` that must keep failing; a change that makes one pass means
+  the model lost the behavior. The two scenarios of the HA harness (`no-recheck-stall`,
+  `shared-holder-stall`) are steered to their shape with a `CONSTRAINT` in `LifecycleMC.tla`.
+- **The path filter.** The Models job runs on every pull request that touches `agent/` or
+  `store/`, which hold every function in the map (`agent/recovery.go`, `agent/lease.go`,
+  `agent/loop.go`, `agent/runstart.go`, `agent/saga.go`, `agent/halt.go`, and the stores'
+  `Leaser` and `Lister`).
+- **Not built yet** (the plan's M3 and M4, for every model): trace validation (`bidetrace`
+  hooks, `tracestore`, a trace spec per model), `TestProtocolVocabulary`, the region markers and
+  the path-rule job, and the counterexample-to-test helper (`agent/internal/interleave`). For this
+  model, the hooks would be `recoverRun` (acquire, `runEnded`, `resume`, release), the end-marker
+  writes, `renewLoop`'s `ErrLeaseLost`, and P14's `Cancel` and `run:cancelled` checks; the
+  multi-process HA harness is the natural producer.
+- **Findings need Go tests before their fixes**, as for every model: L1 needs a test that
+  measures a takeover behind halted runs against the interval (the HA harness's
+  `takeoverBound` with halted runs listed first), and L2 and L3 become tests of P14.
+
 ## What the bounds do not cover
+
+Model 10 adds: one or two recovery workers at concurrency 1, up to three runs (four in the pickup
+measurements), one or two calls per run, one error reply, one crash and one stall per run of the
+checker. The pickup bound is measured for a TTL and an interval of 2 ticks and up to three halted
+runs; the growth it shows (about one halted run's visit per halted run) is an observation at those
+bounds, not a proof for larger ones.
 
 Model 1b adds: three approvers and a policy of 2 of 3 (tightened to 3 or loosened to 1 by a
 redeploy), up to three decisions and two `Approve` calls, one call. A bug that needs more
