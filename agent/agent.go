@@ -250,7 +250,8 @@ func (a *Agent) WithSystemPrompt(s string) *Agent {
 // context (current date, tenant, retrieved state) each turn. It fills the slot WithSystemPrompt
 // fills: the later of the two wins. Returns the agent for chaining.
 //
-// fn is called once per drive of a run (each Run, Stream, or resume), not once per run, and its
+// fn is called once per drive of a run (each Run, Stream, or resume) that sends the model a
+// request, just before the first one, not once per run (see the WithSystemPromptFunc option), and its
 // result is not journaled (see WithSystemPrompt): a run resumed later is sent what fn returns
 // then. Context that the run's later turns must see unchanged belongs in the input, which is
 // journaled (see RunStart), or in a tool result.
