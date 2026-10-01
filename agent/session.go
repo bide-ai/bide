@@ -63,10 +63,10 @@ type turnRecord struct {
 	Answer  Message  `json:"answer"`
 	// Cancelled records a turn closed because its run was cancelled (P14 rule 16): it has no
 	// answer, and it is not part of the transcript later turns are seeded with.
-	Cancelled bool `json:"cancelled,omitempty"`
-	Key    string  `json:"key,omitempty"`    // SendOnce's key; empty for Send
-	RunID  string  `json:"run_id,omitempty"` // the run that produced the answer
-	Claim  string  `json:"claim,omitempty"`  // random id of the writer, to tell its record from another's
+	Cancelled bool   `json:"cancelled,omitempty"`
+	Key       string `json:"key,omitempty"`    // SendOnce's key; empty for Send
+	RunID     string `json:"run_id,omitempty"` // the run that produced the answer
+	Claim     string `json:"claim,omitempty"`  // random id of the writer, to tell its record from another's
 }
 
 // turnStart is the journaled start of a Send turn: which message owns turn run RunID.
@@ -532,4 +532,3 @@ func (s *Session) Turns() int {
 	defer s.mu.Unlock()
 	return s.turns
 }
-
