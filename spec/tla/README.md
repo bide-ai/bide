@@ -1851,7 +1851,10 @@ proposed rule (`Fix`, `CancelRule`, `TurnLease`), which the `ci` configurations 
 Found by this model on `main` at `91909b7` (#130 merged). S1, S2 and S4 each have a failing
 Go test in a scratch directory (`agent/session_model12_test.go`, not in this pull request);
 S3 is against P14's design, which is not built, as L2 and L3 were. Each proposed rule is
-checked in the model. The findings stay open (`findings/`) until the code adopts a fix.
+checked in the model. The maintainers adopted S3's rule (rule 16 of the P14 contract in
+`docs/design/api-v1.md`) and S4's (each turn's run is driven under its lease); S1 and S2 are
+being fixed as proposed. All four stay open (`findings/`) until their code lands; S3 lands with
+P14.
 
 - **S1: a stale handle refuses the next message for an open turn that another handle finished**
   (`findings/s1-stale-open`, `NoFalseRefusal`, 17 states).
@@ -1891,8 +1894,11 @@ checked in the model. The findings stay open (`findings/`) until the code adopts
     cancelled is recorded closed (a `turn/<n>` record naming the run, with a cancelled
     answer), which ends the open turn. `startTurn` checks `run:cancelled` of the open turn's
     run before refusing (one `Get`), and records the close itself; the caller of the cancelled
-    message gets `ErrRunCancelled`. P14's contract should state it, or refuse `Cancel` of a
-    session run.
+    message gets `ErrRunCancelled`. Adopted: rule 16 of the P14 contract.
+  - Two more points P14 reconciles (rule 16's note): recovery skips session runs while
+    `ResumeAgent` lists `session_turn` among its kinds (a recovery resumer must seed a turn from
+    its `from/` record, and the session records the turn only when its message is sent again);
+    and `Status` of a turn's run says `Completed` before the session records the turn.
 - **S4: a turn's budget is spent once per worker** (`findings/s4-budget-two-workers`,
   `BudgetHeld`).
   - A turn's run is driven with no lease, so two workers given one message (the redelivery
@@ -1908,7 +1914,8 @@ checked in the model. The findings stay open (`findings/`) until the code adopts
     one token per call, and a budget of 6 tokens makes 12 model calls (6 each).
   - Proposed rule (`TurnLease = TRUE`, `budget`): the session drives a turn's run under its
     lease when the store has a `Leaser`, as `Lease` drives a run; a second drive gets
-    `HaltContended` and the message is sent again. One drive at a time loads the whole journal,
+    `HaltContended` and the message is sent again. Adopted by the maintainers.
+    One drive at a time loads the whole journal,
     and `BudgetHeld` holds. Counting a lost record's own spend in the drive as well would not be
     enough: the model then overshoots by half the budget.
 

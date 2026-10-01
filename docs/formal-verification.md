@@ -14,7 +14,7 @@ At a glance:
 
 - **9 models** (1, 1b, 2, 7, 8, 9, 10, 11 and 12), each checked on every pull request that changes it,
   and all of them in the merge queue and on main. **Models** is a required check.
-- **204 configurations** in the merge queue (80 that must pass, each also run for vacuity, and 124
+- **207 configurations** in the merge queue (82 that must pass, each also run for vacuity, and 125
   regression, finding and limit configurations that must fail with their named property), and
   **75 larger ones nightly**.
 - **29 bugs caught before release** in bide's own design or code (F1 to F5, P1, P2, T1 to T6, a
@@ -163,8 +163,8 @@ details are in the linked README sections.
 | D3 | 11 | In a plain sub-run of a saga, a failed sub-agent call is an error result, and the rollback skipped error results before recursing, so the sub-agent's writes were neither compensated nor listed. | Write left in place, listed nowhere | Open: recurse into a sub-agent call whatever its result (found in [#130](https://github.com/bide-ai/bide/pull/130)) |
 | S1 | 12 | A handle whose `Send` started a turn and then failed or paused keeps it open in its own view; once another worker finished that turn, the handle refused every other message with `ErrConfig` ("a turn for x is still open") and never read the journal again. | Session refuses every new message on that handle | Open: reload before refusing (found in this model's pull request) |
 | S2 | 12 | Two callers on one handle sending one message both drive its run; the second's append started past the slot the first had recorded and its reload had loaded, so the run's turn was recorded twice (and a `SendOnce` key had two records). | Duplicate turn in the history | Open: `appendTurn` returns at once for a run among the loaded turns |
-| S3 | 12 | Against P14's design: `Cancel` of an open Send turn's run leaves the turn open for ever, so every other message on the session is refused. | Session blocked for ever | Open: record a cancelled turn closed, or refuse `Cancel` of a session run |
-| S4 | 12 | A turn's run is driven with no lease, so two workers given one message both drive it, each counting only the spend it has seen, and the turn spends up to its budget once per worker. | Budget overspent | Open: drive a turn's run under its lease |
+| S3 | 12 | Against P14's design: `Cancel` of an open Send turn's run leaves the turn open for ever, so every other message on the session is refused. | Session blocked for ever | Rule adopted into P14's contract (rule 16 in [api-v1](design/api-v1.md)); open until P14 implements it |
+| S4 | 12 | A turn's run is driven with no lease, so two workers given one message both drive it, each counting only the spend it has seen, and the turn spends up to its budget once per worker. | Budget overspent | Rule adopted (each turn's run is driven under its lease); open until the code lands |
 | Shared late key | 8 | Late spend was keyed by a sequence number each driver counted itself, so two drivers wrote one `@spend-late` key and the second's spend was lost. Found as a suspicion in the #104 re-review; model 8 confirmed it on the old rule. | Lost spend | [#104](https://github.com/bide-ai/bide/pull/104): a fresh id per spend record (confirmed in [#111](https://github.com/bide-ai/bide/pull/111)) |
 
 Models 7 and 8 found no new bug in the rules they check. Their regressions encode bugs earlier
@@ -176,7 +176,7 @@ same for bugs found by review and testing before the models existed, back to #31
 
 | Where | What | Time |
 |---|---|---|
-| Every pull request, the merge queue and main (**Models**, required) | The checker self-test, the PlusCal translation check, and every `ci`, `regress`, `finding` and `limit` configuration (204), each passing one also run for vacuity, four at a time; on a pull request, of the models it changes | About 6 minutes for every model on the CI runner (job timeout 30 minutes) |
+| Every pull request, the merge queue and main (**Models**, required) | The checker self-test, the PlusCal translation check, and every `ci`, `regress`, `finding` and `limit` configuration (207), each passing one also run for vacuity, four at a time; on a pull request, of the models it changes | About 6 minutes for every model on the CI runner (job timeout 30 minutes) |
 | Nightly and on demand (**Models (nightly)**) | The 75 `nightly` configurations: more faults, more drivers, liveness at two error replies, weak A3 (late commits) | About 1 hour 50 minutes on the CI runner (1 hour 40 minutes measured before this split, plus about 7 minutes moved from pull requests, and model 10's four P14 configurations, about 6 minutes on the development machine; job timeout 4 hours) |
 | Nightly and on demand (**Explore (full bound)**) | The Go fault-schedule explorations of the claim protocol and of flow lowering at their full bound (`BIDE_EXPLORE=1`); every pull request runs them at a smaller bound under `-race` in the Test job | About 15 to 22 minutes |
 | Every pull request (**Lint**, required) | `modelsync` and `TestProtocolVocabulary` (next section) | Part of Lint |
