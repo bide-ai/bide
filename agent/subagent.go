@@ -182,7 +182,8 @@ func init() {
 //
 // The contract of Unwrap: a wrapper adds no side effect of its own (it may change the context the
 // wrapped tool runs in, as AttenuatingSubAgent binds a narrower grant), is not a Compensator, and
-// does not give a wrapped sub-agent a Timeout; New refuses the last two (checkWrapper). A rollback
+// does not give a wrapped sub-agent a Timeout or another Safety; New refuses the last three
+// (checkWrapper). A rollback
 // through a wrapper runs the wrapped sub-agent's compensations, never the wrapper's.
 func asSubAgent(t Tool) (*subAgentTool, bool) {
 	for range 64 { // a bound, so a wrapper that unwraps to itself cannot loop forever

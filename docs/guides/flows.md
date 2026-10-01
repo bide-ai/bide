@@ -65,7 +65,14 @@ production). `runID` is the durable identity: re-running the same `runID` resume
     `Join2`/`Join3` merge bodies take the same leading `ctx`. `When` predicates and `Switch` routing
     take no ctx: they must be pure functions of the value, since resume replays the recorded arm.
   - `Tool[I, O](name, agent.Tool)` runs a tool; give `I`/`O` explicitly (they say how to JSON-encode
-    the input and decode the result).
+    the input and decode the result). The node runs the tool as an agent does: under its
+    `ToolSpec.Timeout` (`agent.WithTimeout`), where a result that arrives after the deadline is
+    returned and an error after it, while the flow's own context is live, has an unknown outcome
+    (`agent.ErrToolOutcomeUnknown`: a side-effect node halts on its next drive, a retry-safe node
+    runs again); and only once the call guard admits it, so a flow run under an
+    `audit.AttenuatingSubAgent` delegation whose grant has expired fails the node without calling
+    the tool. `Build` (and `RegisterTool`, reported again at `Load`) refuses a tool `agent.New`
+    would refuse for how it wraps another.
   - `Model[I, O](name, prompt)` is a model turn: bind a model with `Builder.WithModel(m)` (or, in a
     declarative config, `Load`'s `WithLoadedModel`). The node renders `prompt` as a `text/template` over the
     typed input `I`, calls the bound model, and decodes the structured response into `O` (so `O` must
@@ -388,7 +395,8 @@ lower what its merge block's `RegisterJoin2`/`RegisterJoin3` options declare.
 #### Node approval
 
 A node may also carry an `approval` block declaring an m-of-n human gate, which loads onto the node's
-`Safety.Approval` alongside any `safety` classification:
+approval gate (an `agent.ApprovalPolicy`, as `agent.WithApproval` sets on a tool) alongside any
+`safety` classification:
 
 ```yaml
 nodes:

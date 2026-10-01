@@ -158,7 +158,7 @@ handler, hooks included.
 Tool execution has its own wrappers (attached with `agent.UseTool`):
 
 - `ToolRetry(n, opts...)` retries a tool call with the same backoff/classification options as
-  `Retry`, for tools that are retry-safe (`ReadOnly`, `Idempotent`, or keyed). A tool that is not
+  `Retry`, for tools that are retry-safe (`ReadOnly` or `Idempotent`). A tool that is not
   runs once and its error goes to the model as is, since a failed side effect may still have
   taken effect.
 - `ToolRateLimit(rl)` caps a tool's call rate (share a `*RateLimiter` to bound a downstream API).

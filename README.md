@@ -72,8 +72,8 @@ unknown case by a fixed hierarchy, never a guess:
   <img src="assets/resolution-ladder.png" width="820" alt="Unknown-outcome resolution ladder: a retry-safe effect auto-retries and the provider dedupes; an effect that left a queryable record is resolved automatically by a reconciler; a genuinely unknowable outcome halts and waits for a human. Under ultimate ambiguity, it stops.">
 </p>
 
-Which tier a tool lands in is set by its declared `Safety`: mark it read-only, idempotent, or
-give it an idempotency key and an unknown outcome auto-retries; declare none of those and it
+Which tier a tool lands in is set by its declared `Safety`: mark it read-only or idempotent and
+an unknown outcome auto-retries; declare none of those and it
 halts. Retry-safety is opt-in; the pause is the default when you have not opted in, so a library
 whose whole point is "never double-fire" defaults to safe rather than to guessing.
 
@@ -740,7 +740,8 @@ Conditions (each wraps a category): `ErrUnknownTool`, `ErrToolArgs`, `ErrToolOut
 `ErrToolReinvoked`, `ErrInvalidApproval`, `ErrAlreadyDecided` (wrap `ErrConfig`),
 `ErrNoRecordedOutput`, `ErrIncompleteResponse` (wrap `ErrModel`), `ErrTruncatedToolArgs` (wraps
 `ErrProtocol`), `ErrStreamProtocol` and `ErrNegativeUsage` (wrap `ErrProtocol` and `ErrModel`), `ErrBudgetExceeded`,
-`ErrMaxTurns` (wrap `ErrBudget`). Provider adapters also return `*RateLimited` (HTTP 429, with a
+`ErrMaxTurns` (wrap `ErrBudget`). `ErrToolNotCalled` wraps no category: it marks a tool call known
+never to have reached its tool (a tool middleware's denial wraps it). Provider adapters also return `*RateLimited` (HTTP 429, with a
 `RetryAfter` hint) and `*APIError` (other non-2xx, with the `StatusCode`), both wrapping
 `ErrModel`. Every error the
 toolkit returns (including from the model, MCP, store, and governance adapters) carries a category,
@@ -818,20 +819,23 @@ Because `trace.Tool` runs inside the loop, its span sits in the context handed t
 when a tool is itself a sub-agent, the sub-agent's run and its own spans nest as children. The
 trace crosses the sub-agent boundary automatically (a gap in ADK / AgenticGoKit / trpc-agent-go).
 
-Tool middleware runs *inside* the durable step, so a short-circuit (a `ToolCache` hit) or a
-policy denial is journaled like any tool result; resume replays it and never re-runs the
-middleware or the tool. `ToolRetry` and `ToolCache` act only on tools whose `Safety` allows it
+Tool middleware runs *inside* the durable step, so a short-circuit result (a `ToolCache` hit) is
+journaled like any tool result, and so is a policy denial that wraps `agent.ErrToolNotCalled`; resume
+replays it and never re-runs the middleware or the tool. A denial must wrap `agent.ErrToolNotCalled`:
+one that does not leaves a side effect's outcome unknown, records nothing, and the run halts. `ToolRetry` and `ToolCache` act only on tools whose `Safety` allows it
 (retry-safe, and `ReadOnly`, respectively), and the agent runs a tool that is not retry-safe at
 most once per call whatever the middleware does. Write your own with the `agent.ToolMiddleware` signature:
 
 <!-- docsnip: setup func authorized(context.Context, string) bool -->
 ```go
 // Deny a tool by policy: the tool never executes; the model sees the error and reacts.
+// A denial must wrap agent.ErrToolNotCalled: without it the agent cannot tell the tool did
+// not run, so a side effect's outcome is unknown and the run halts.
 func RequireTag(tag string) agent.ToolMiddleware {
 	return func(next agent.ToolHandler) agent.ToolHandler {
 		return func(ctx context.Context, call agent.ToolCall) (json.RawMessage, error) {
 			if !authorized(ctx, tag) {
-				return nil, fmt.Errorf("tool %q denied: %w", call.Use.Name, agent.ErrTool)
+				return nil, fmt.Errorf("tool %q denied: %w", call.Use.Name, agent.ErrToolNotCalled)
 			}
 			return next(ctx, call) // mutate call.Use.Args before, transform the result after
 		}

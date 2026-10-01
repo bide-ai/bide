@@ -178,13 +178,19 @@ An m-of-n tool inside a `SubAgent` pauses the whole tree: the parent's `Run` ret
 
 ### Configuration errors
 
-The gate fails with `ErrConfig` (rather than counting zero decisions) when a tool has an `Approval`
-policy but no `WithApproverVerifiers` resolver is set, or when the policy is malformed: no approvers
-(only `agent.SingleApproval()` asks for the one-decision gate; a policy literal such as
-`{Need: 1}` with an empty approver list is refused, never taken for it),
-an empty or duplicate approver id, an id that is not valid UTF-8, or `Need` outside
-`1..len(Approvers)` (see `ApprovalPolicy.Validate`), or when an eligible approver's verifier has an
-empty `PublicKey()` (see above).
+A malformed policy is refused when the tool is built: `agent.WithApproval` (on `Func`,
+`CompensatedFunc`, `SubAgent` and the other constructors that take tool options) panics with
+`ErrConfig`, and `New` refuses one a tool's own `Spec` returns (every run fails with `ErrConfig`
+before any model call). A policy is malformed when it has no approvers (only
+`agent.SingleApproval()` asks for the one-decision gate; a policy literal such as `{Need: 1}` with an
+empty approver list is refused, never taken for it), an empty or duplicate approver id, an id that
+is not valid UTF-8, or `Need` outside `1..len(Approvers)` (see `ApprovalPolicy.Validate`), or when it
+is a `SingleApproval()` whose fields were changed.
+
+Verifiers are needed only for an m-of-n gate: the gate fails with `ErrConfig` (rather than counting
+zero decisions) when a tool has an m-of-n policy but no `WithApproverVerifiers` resolver is set, or
+when an eligible approver's verifier has an empty `PublicKey()` (see above). A `SingleApproval()`
+gate needs none.
 
 Approver ids are compared as exact bytes, but a policy may not list two ids that differ only by
 case or Unicode normalization (`alice` and `Alice`, an NFC and an NFD `café`, a fullwidth and an

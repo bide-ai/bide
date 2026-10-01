@@ -139,7 +139,8 @@ type ApprovalPolicy struct {
 	Approvers []string `json:"approvers,omitempty"` // eligible approver ids; the bounded set (n)
 
 	// one marks the policy SingleApproval returned (and its copies): the one-decision gate. It is
-	// not journaled; the gate a run enforces is always the registered tool's.
+	// unexported so no literal can set it; MarshalJSON journals it as {"single":true}. The gate a
+	// run enforces is always the registered tool's, never one read back from the journal.
 	one bool
 }
 

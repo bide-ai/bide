@@ -40,7 +40,7 @@ eino           maxFired=64   ✗
   <img src="../../assets/resolution-ladder.png" width="820" alt="Лестница разрешения неизвестного исхода: безопасный для повтора эффект повторяется автоматически, и поставщик устраняет дубликат; эффект, оставивший запрашиваемую запись, разрешается автоматически реконсилятором; исход, который узнать действительно нельзя, останавливает прогон и ждёт человека. При полной неопределённости прогон останавливается.">
 </p>
 
-На какую ступень попадает инструмент, определяется его объявленным `Safety`: пометьте его как только-для-чтения, идемпотентный или дайте ему ключ идемпотентности, и неизвестный исход повторится автоматически; не объявите ничего из этого, и прогон остановится. Безопасность повтора включается явно; пока вы её не включили, по умолчанию действует пауза, так что библиотека, весь смысл которой в том, чтобы «никогда не срабатывать дважды», по умолчанию выбирает безопасность, а не догадку.
+На какую ступень попадает инструмент, определяется его объявленным `Safety`: пометьте его как только-для-чтения или идемпотентный, и неизвестный исход повторится автоматически; не объявите ничего из этого, и прогон остановится. Безопасность повтора включается явно; пока вы её не включили, по умолчанию действует пауза, так что библиотека, весь смысл которой в том, чтобы «никогда не срабатывать дважды», по умолчанию выбирает безопасность, а не догадку.
 
 Большинство неизвестных исходов до человека не доходят: ключ идемпотентности позволяет поставщику устранить дубликат безопасного повтора, а для систем без такого ключа (почта, внутренние сервисы) реконсилятор разрешает шаг по оставленной им записи (`agent.ResolveHaltRef`). Человек здесь нижняя ступень, а не вариант по умолчанию.
 
@@ -477,7 +477,7 @@ case errors.Is(err, agent.ErrStorage):      // durable-store I/O
 }
 ```
 
-Категории: `ErrConfig`, `ErrModel`, `ErrTool`, `ErrStorage`, `ErrProtocol`, `ErrBudget`. Условия (каждое оборачивает категорию): `ErrUnknownTool`, `ErrToolArgs` (оборачивают `ErrTool`), `ErrToolReinvoked`, `ErrInvalidApproval`, `ErrAlreadyDecided` (оборачивают `ErrConfig`), `ErrNoRecordedOutput`, `ErrIncompleteResponse` (оборачивают `ErrModel`), `ErrTruncatedToolArgs` (оборачивает `ErrProtocol`), `ErrBudgetExceeded`, `ErrMaxTurns` (оборачивают `ErrBudget`). Адаптеры поставщиков также возвращают `*RateLimited` (HTTP 429, с подсказкой `RetryAfter`) и `*APIError` (прочие не-2xx, с `StatusCode`), оба оборачивают `ErrModel`. Каждая ошибка, которую возвращает набор инструментов (включая из модели, MCP, хранилища и адаптеров управления), несёт категорию, так что `errors.Is` надёжен по всей поверхности.
+Категории: `ErrConfig`, `ErrModel`, `ErrTool`, `ErrStorage`, `ErrProtocol`, `ErrBudget`. Условия (каждое оборачивает категорию): `ErrUnknownTool`, `ErrToolArgs` (оборачивают `ErrTool`), `ErrToolReinvoked`, `ErrInvalidApproval`, `ErrAlreadyDecided` (оборачивают `ErrConfig`), `ErrNoRecordedOutput`, `ErrIncompleteResponse` (оборачивают `ErrModel`), `ErrTruncatedToolArgs` (оборачивает `ErrProtocol`), `ErrBudgetExceeded`, `ErrMaxTurns` (оборачивают `ErrBudget`). `ErrToolNotCalled` не оборачивает никакую категорию: он помечает вызов инструмента, о котором известно, что он так и не дошёл до инструмента (его оборачивает отказ middleware инструментов). Адаптеры поставщиков также возвращают `*RateLimited` (HTTP 429, с подсказкой `RetryAfter`) и `*APIError` (прочие не-2xx, с `StatusCode`), оба оборачивают `ErrModel`. Каждая ошибка, которую возвращает набор инструментов (включая из модели, MCP, хранилища и адаптеров управления), несёт категорию, так что `errors.Is` надёжен по всей поверхности.
 
 А **сигналы потока управления** богаче, чем категория, поэтому они остаются конкретными типами, сопоставляемыми через `errors.As`: `*ApprovalPending` (нужно одобрение), `*InterruptPending` (ожидание ввода человека), `*TimerPending` (ожидает надёжный таймер), `*SignalPending` (ожидание внешнего сигнала), `*OutcomeUnknown` (небезопасно возобновлять), `*SagaAborted` (откачено) и `*HaltTooYoung` (из `ResolveHaltRef`, когда `WithMinHaltAge` ещё не истёк). Все они реализуют запечатанный интерфейс `agent.Pause`; проверяйте его через `agent.IsPause(err)` и читайте через `agent.AsPause(err)`. Приостановленный или остановленный прогон не относится к категории «сбоя»; инспектируйте структуру ради `RunID` / `ToolUseID` / деталей компенсации. Отмена всплывает как обычные `context.Canceled` / `context.DeadlineExceeded`, а ведение прогона, отменённое из-за потери его аренды (`agent.Lease`), всплывает как `ErrLeaseLost`; как и отмена, эта ошибка не несёт категории.
 
@@ -506,16 +506,18 @@ a.UseTool(trace.Tool(tracer)) // execute_tool span per call; nests across the su
 
 Поскольку `trace.Tool` выполняется внутри цикла, его span сидит в контексте, переданном инструменту, так что когда инструмент сам является суб-агентом, прогон этого суб-агента и его собственные span'ы вкладываются как дочерние. Трейс пересекает границу суб-агента автоматически (пробел в ADK / AgenticGoKit / trpc-agent-go).
 
-Middleware инструментов выполняется *внутри* надёжного шага, так что коротко-замыкание (попадание в `ToolCache`) или отказ по политике записывается в журнал как любой результат инструмента; возобновление переигрывает это и никогда не перезапускает middleware или инструмент. `ToolRetry` и `ToolCache` действуют только на инструменты, чей `Safety` это допускает (безопасные при повторе и `ReadOnly` соответственно), и агент выполняет инструмент, не безопасный при повторе, не более одного раза на вызов, что бы ни делал middleware. Напишите свою с сигнатурой `agent.ToolMiddleware`:
+Middleware инструментов выполняется *внутри* надёжного шага, так что результат коротко-замыкания (попадание в `ToolCache`) записывается в журнал как любой результат инструмента, как и отказ по политике, оборачивающий `agent.ErrToolNotCalled`; отказ обязан оборачивать `agent.ErrToolNotCalled`: отказ без него оставляет исход побочного эффекта неизвестным, ничего не записывается, и прогон останавливается; возобновление переигрывает это и никогда не перезапускает middleware или инструмент. `ToolRetry` и `ToolCache` действуют только на инструменты, чей `Safety` это допускает (безопасные при повторе и `ReadOnly` соответственно), и агент выполняет инструмент, не безопасный при повторе, не более одного раза на вызов, что бы ни делал middleware. Напишите свою с сигнатурой `agent.ToolMiddleware`:
 
 <!-- docsnip: setup func authorized(context.Context, string) bool -->
 ```go
 // Deny a tool by policy: the tool never executes; the model sees the error and reacts.
+// A denial must wrap agent.ErrToolNotCalled: without it the agent cannot tell the tool did
+// not run, so a side effect's outcome is unknown and the run halts.
 func RequireTag(tag string) agent.ToolMiddleware {
 	return func(next agent.ToolHandler) agent.ToolHandler {
 		return func(ctx context.Context, call agent.ToolCall) (json.RawMessage, error) {
 			if !authorized(ctx, tag) {
-				return nil, fmt.Errorf("tool %q denied: %w", call.Use.Name, agent.ErrTool)
+				return nil, fmt.Errorf("tool %q denied: %w", call.Use.Name, agent.ErrToolNotCalled)
 			}
 			return next(ctx, call) // mutate call.Use.Args before, transform the result after
 		}

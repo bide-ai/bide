@@ -15,15 +15,19 @@ type RollbackBinder interface {
 }
 
 // CheckTool refuses a tool the agent's New would refuse for how it wraps another (see
-// agent.checkWrapper): a Compensator on its Unwrap chain, or a timeout over a sub-agent. The agent
+// agent.checkWrapper): a Compensator on its Unwrap chain, a timeout or another Safety over a
+// sub-agent, or an embedded tool whose approval gate or timeout its own spec hides. The agent
 // package sets it in init; plan calls it so a flow refuses what an agent refuses.
 var CheckTool func(t any) error
 
 // Unrecorded is an error a tool wrapper of this module returns for a call that must leave nothing
 // in the journal: not a result, not a saga failure. The run stops with Err, and a re-drive calls
 // the tool again. AttenuatingSubAgent uses it when a delegation is resumed under authority other
-// than it began with, or its grant has expired: the operator can bind the right grant and drive
-// again, and the delegation continues rather than being failed for good. It is only for a tool
+// than it began with, or the bound grant it would mint from has expired, or it would mint a grant
+// onto a sub-run that journaled no authority: the operator can bind the right grant and drive
+// again, and the delegation continues rather than being failed for good. It also uses it when the
+// store fails to read or write the delegation's authority, so a resume retries. (A journaled grant
+// that has expired is a recorded failure, not this.) It is only for a tool
 // whose call is safe to make again (the agent refuses nothing else for it; a side effect with an
 // attempt marker halts on the re-drive, as any call that recorded nothing does).
 type Unrecorded struct{ Err error }

@@ -40,7 +40,7 @@ eino           maxFired=64   ✗
   <img src="../../assets/resolution-ladder.png" width="820" alt="अज्ञात-परिणाम समाधान सीढ़ी: एक पुनः-प्रयास-सुरक्षित इफ़ेक्ट स्वतः पुनः-प्रयास करता है और प्रदाता दोहराव हटाता है; जो इफ़ेक्ट एक क्वेरी-योग्य रिकॉर्ड छोड़ गया, उसे एक reconciler स्वचालित रूप से हल करता है; एक वास्तव में अज्ञेय परिणाम रुकता है और एक इंसान की प्रतीक्षा करता है। अंतिम अस्पष्टता में, यह रुक जाता है।">
 </p>
 
-कोई टूल किस स्तर पर आता है, यह उसकी घोषित `Safety` तय करती है: उसे read-only, idempotent चिह्नित करें, या उसे एक idempotency key दें, और एक अज्ञात परिणाम स्वतः पुनः-प्रयास होता है; इनमें से कुछ भी घोषित न करें और वह रुक जाता है। पुनः-प्रयास-सुरक्षा opt-in है; जब आपने opt-in नहीं किया तब विराम डिफ़ॉल्ट है, ताकि एक लाइब्रेरी जिसका पूरा उद्देश्य "कभी दो बार फ़ायर न करना" है, अनुमान लगाने के बजाय सुरक्षित पर डिफ़ॉल्ट करे।
+कोई टूल किस स्तर पर आता है, यह उसकी घोषित `Safety` तय करती है: उसे read-only या idempotent चिह्नित करें, और एक अज्ञात परिणाम स्वतः पुनः-प्रयास होता है; इनमें से कुछ भी घोषित न करें और वह रुक जाता है। पुनः-प्रयास-सुरक्षा opt-in है; जब आपने opt-in नहीं किया तब विराम डिफ़ॉल्ट है, ताकि एक लाइब्रेरी जिसका पूरा उद्देश्य "कभी दो बार फ़ायर न करना" है, अनुमान लगाने के बजाय सुरक्षित पर डिफ़ॉल्ट करे।
 
 अधिकांश अज्ञात कभी किसी व्यक्ति तक नहीं पहुँचते: एक idempotency key प्रदाता को एक सुरक्षित पुनः-प्रयास का दोहराव हटाने देती है, और जिन सिस्टमों में वह नहीं होती (ईमेल, आंतरिक सेवाएँ) उनके लिए एक reconciler चरण को उस रिकॉर्ड से हल करता है जो वह छोड़ गया (`agent.ResolveHaltRef`)। इंसान न्यूनतम आधार है, डिफ़ॉल्ट नहीं।
 
@@ -477,7 +477,7 @@ case errors.Is(err, agent.ErrStorage):      // durable-store I/O
 }
 ```
 
-श्रेणियाँ: `ErrConfig`, `ErrModel`, `ErrTool`, `ErrStorage`, `ErrProtocol`, `ErrBudget`। स्थितियाँ (हर एक एक श्रेणी को लपेटती है): `ErrUnknownTool`, `ErrToolArgs` (`ErrTool` को लपेटती हैं), `ErrToolReinvoked`, `ErrInvalidApproval`, `ErrAlreadyDecided` (`ErrConfig` को लपेटती हैं), `ErrNoRecordedOutput`, `ErrIncompleteResponse` (`ErrModel` को लपेटती हैं), `ErrTruncatedToolArgs` (`ErrProtocol` को लपेटती है), `ErrBudgetExceeded`, `ErrMaxTurns` (`ErrBudget` को लपेटती हैं)। प्रदाता अडैप्टर `*RateLimited` (HTTP 429, एक `RetryAfter` संकेत के साथ) और `*APIError` (अन्य non-2xx, `StatusCode` के साथ) भी लौटाते हैं, दोनों `ErrModel` को लपेटते हैं। टूलकिट जो भी त्रुटि लौटाता है (मॉडल, MCP, स्टोर, और शासन अडैप्टरों से सहित) एक श्रेणी वहन करती है, इसलिए `errors.Is` पूरी सतह पर विश्वसनीय है।
+श्रेणियाँ: `ErrConfig`, `ErrModel`, `ErrTool`, `ErrStorage`, `ErrProtocol`, `ErrBudget`। स्थितियाँ (हर एक एक श्रेणी को लपेटती है): `ErrUnknownTool`, `ErrToolArgs` (`ErrTool` को लपेटती हैं), `ErrToolReinvoked`, `ErrInvalidApproval`, `ErrAlreadyDecided` (`ErrConfig` को लपेटती हैं), `ErrNoRecordedOutput`, `ErrIncompleteResponse` (`ErrModel` को लपेटती हैं), `ErrTruncatedToolArgs` (`ErrProtocol` को लपेटती है), `ErrBudgetExceeded`, `ErrMaxTurns` (`ErrBudget` को लपेटती हैं)। `ErrToolNotCalled` किसी श्रेणी को नहीं लपेटती: यह एक ऐसी टूल कॉल को चिह्नित करती है जिसके बारे में ज्ञात है कि वह अपने टूल तक कभी नहीं पहुँची (एक टूल middleware की अस्वीकृति इसे लपेटती है)। प्रदाता अडैप्टर `*RateLimited` (HTTP 429, एक `RetryAfter` संकेत के साथ) और `*APIError` (अन्य non-2xx, `StatusCode` के साथ) भी लौटाते हैं, दोनों `ErrModel` को लपेटते हैं। टूलकिट जो भी त्रुटि लौटाता है (मॉडल, MCP, स्टोर, और शासन अडैप्टरों से सहित) एक श्रेणी वहन करती है, इसलिए `errors.Is` पूरी सतह पर विश्वसनीय है।
 
 और **नियंत्रण-प्रवाह संकेत** एक श्रेणी से समृद्धतर हैं, इसलिए वे ठोस प्रकार बने रहते हैं जिन्हें `errors.As` मिलाता है: `*ApprovalPending` (अनुमोदन आवश्यक), `*InterruptPending` (इंसानी इनपुट की प्रतीक्षा), `*TimerPending` (टिकाऊ टाइमर लंबित), `*SignalPending` (एक बाहरी सिग्नल की प्रतीक्षा), `*OutcomeUnknown` (पुनरारंभ असुरक्षित), `*SagaAborted` (वापस लुढ़काया गया), और `*HaltTooYoung` (`ResolveHaltRef` से, जब `WithMinHaltAge` अभी बीता नहीं है)। ये सभी सील किए गए इंटरफ़ेस `agent.Pause` को संतुष्ट करते हैं; `agent.IsPause(err)` से जाँचें और `agent.AsPause(err)` से पढ़ें। एक रुका या ठहरा हुआ रन एक "विफलता" श्रेणी नहीं है; `RunID` / `ToolUseID` / क्षतिपूर्ति विवरण के लिए struct का निरीक्षण करें। रद्दीकरण सामान्य `context.Canceled` / `context.DeadlineExceeded` के रूप में उभरता है, और जो ड्राइव अपने रन की लीज़ (`agent.Lease`) खो जाने के कारण रद्द हुई, वह `ErrLeaseLost` के रूप में; रद्दीकरण की तरह, यह कोई श्रेणी वहन नहीं करती।
 
@@ -506,16 +506,18 @@ a.UseTool(trace.Tool(tracer)) // execute_tool span per call; nests across the su
 
 चूँकि `trace.Tool` लूप के भीतर चलता है, उसका span टूल को सौंपे गए संदर्भ में बैठता है, इसलिए जब एक टूल स्वयं एक उप-एजेंट होता है, तो उप-एजेंट का रन और उसके अपने span बच्चों के रूप में नेस्ट होते हैं। ट्रेस उप-एजेंट सीमा को स्वचालित रूप से पार करता है (ADK / AgenticGoKit / trpc-agent-go में एक कमी)।
 
-टूल middleware टिकाऊ चरण के *भीतर* चलती है, इसलिए एक लघु-परिपथ (एक `ToolCache` हिट) या एक नीति अस्वीकृति किसी भी टूल परिणाम की तरह जर्नल होती है; पुनरारंभ इसे फिर से चलाता है और कभी middleware या टूल को दोबारा नहीं चलाता। `ToolRetry` और `ToolCache` केवल उन टूलों पर काम करते हैं जिनकी `Safety` इसकी अनुमति देती है (क्रमशः पुनः-प्रयास-सुरक्षित, और `ReadOnly`), और middleware चाहे जो करे, एजेंट एक ऐसे टूल को जो पुनः-प्रयास-सुरक्षित नहीं है, प्रति कॉल ज़्यादा-से-ज़्यादा एक बार चलाता है। `agent.ToolMiddleware` हस्ताक्षर के साथ अपनी लिखें:
+टूल middleware टिकाऊ चरण के *भीतर* चलती है, इसलिए एक लघु-परिपथ परिणाम (एक `ToolCache` हिट) किसी भी टूल परिणाम की तरह जर्नल होता है, और वैसे ही एक नीति अस्वीकृति जो `agent.ErrToolNotCalled` को लपेटती है; एक अस्वीकृति को `agent.ErrToolNotCalled` को लपेटना ही चाहिए: जो नहीं लपेटती, वह एक साइड इफ़ेक्ट के परिणाम को अज्ञात छोड़ देती है, कुछ भी रिकॉर्ड नहीं होता, और रन रुक जाता है; पुनरारंभ इसे फिर से चलाता है और कभी middleware या टूल को दोबारा नहीं चलाता। `ToolRetry` और `ToolCache` केवल उन टूलों पर काम करते हैं जिनकी `Safety` इसकी अनुमति देती है (क्रमशः पुनः-प्रयास-सुरक्षित, और `ReadOnly`), और middleware चाहे जो करे, एजेंट एक ऐसे टूल को जो पुनः-प्रयास-सुरक्षित नहीं है, प्रति कॉल ज़्यादा-से-ज़्यादा एक बार चलाता है। `agent.ToolMiddleware` हस्ताक्षर के साथ अपनी लिखें:
 
 <!-- docsnip: setup func authorized(context.Context, string) bool -->
 ```go
 // Deny a tool by policy: the tool never executes; the model sees the error and reacts.
+// A denial must wrap agent.ErrToolNotCalled: without it the agent cannot tell the tool did
+// not run, so a side effect's outcome is unknown and the run halts.
 func RequireTag(tag string) agent.ToolMiddleware {
 	return func(next agent.ToolHandler) agent.ToolHandler {
 		return func(ctx context.Context, call agent.ToolCall) (json.RawMessage, error) {
 			if !authorized(ctx, tag) {
-				return nil, fmt.Errorf("tool %q denied: %w", call.Use.Name, agent.ErrTool)
+				return nil, fmt.Errorf("tool %q denied: %w", call.Use.Name, agent.ErrToolNotCalled)
 			}
 			return next(ctx, call) // mutate call.Use.Args before, transform the result after
 		}

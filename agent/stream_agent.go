@@ -92,7 +92,7 @@ type ApprovalRequired struct {
 	ToolUseID string          `json:"tool_use_id"`
 	Name      string          `json:"name"`
 	Args      json.RawMessage `json:"args"`
-	// Quorum is the running tally when the tool has an m-of-n Safety.Approval policy, so a
+	// Quorum is the running tally when the tool has an m-of-n approval policy (ToolSpec.Approval), so a
 	// streaming UI can show progress ("1 of 2 approved") without waiting for Final. Nil for
 	// a 1-of-1 gate.
 	Quorum *ApprovalTally `json:"quorum,omitempty"`
