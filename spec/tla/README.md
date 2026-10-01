@@ -180,7 +180,7 @@ those of #92 (P6a); where #92 has not yet adopted a rule, the step names the rul
 | `RCheck` | `resolveHalt`: `checkNoLiveDriver` (the lease), the `WithMinHaltAge` check, `liveAttempts` |
 | `RClaim`, `RRetry`, `RInsert`, `RClaimNS` | F2's fix, `resolveHalt`'s `ClaimAttempt` on `nextAttemptStep` of the live attempt (`ResolveClaim = TRUE`): `Journal.claim`'s retry of remembered ids, its fresh-id Insert, and its error path |
 | `RWrite`, `RRecord`, `RWait` | `resolveHalt`'s `store.Do` on the result key: `Journal.Do` through `shareFlight` when the resolver runs in a driver's process |
-| `RNotStarted` | `resolveHalt`'s `recordNotStarted` of its own attempt after an errored write (`ResolveVoidOnError = TRUE`, #92 at `06408db`; finding F3) |
+| `RNotStarted` | historical only: `resolveHalt`'s `recordNotStarted` of its own attempt after an errored write (`ResolveVoidOnError = TRUE`, #92 at `06408db`; finding F3) |
 | `RRelease` | the lease's release |
 | `Crash(p)` | a process dies: its drives restart, its `pendingClaims` and flights are gone, its lease lapses, a resolution running in it stops |
 | `Evict(p)` | `claimMemo.remember` dropping the oldest marker keys past `maxPendingClaims` |

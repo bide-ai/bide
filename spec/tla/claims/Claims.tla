@@ -81,6 +81,15 @@ Gens == 0..MaxGen
 Ids  == 1..MaxIds
 ResolverSet == IF HasResolver THEN {"resolver"} ELSE {}
 Halts == {"halt_crashed", "halt_contended"}
+\* vocabulary: begin
+\* The kinds of journal record the claim protocol reads and writes, named by key: an attempt's
+\* first marker (attempt:tool:<id>, attempt:step:<name>), a numbered re-attempt's marker
+\* (attempt:retry:<n>:...), a not-started record (attempt:not-started:<claim>:<marker>), and the
+\* result of a tool call (tool:<id>) or of a Step (its name). The model's marker, nsSet and
+\* result variables hold them. TestProtocolVocabulary (package agent) maps every Go key
+\* constructor and record kind of the claim code to one of these and fails if the two differ.
+RecordKinds == {"marker", "retry_marker", "not_started", "result_tool", "result_step"}
+\* vocabulary: end
 
 ASSUME MaxGen \in Nat /\ MaxIds \in Nat /\ MaxAmbig \in Nat /\ MaxCrash \in Nat /\ MaxCancel \in Nat
 ASSUME LiveCheck \in {"lease", "minAge", "none"}
