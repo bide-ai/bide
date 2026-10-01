@@ -109,8 +109,8 @@ type Outcome struct {
 //   - with a store that leases runs (Leaser: MemStore, store/sqlite, store/postgres, found through a
 //     Journal and through wrappers that implement Unwrap() Store, see Capability), it takes the
 //     root run's lease for the resolution and returns *HaltInFlight while any driver holds it. Only
-//     drivers that lease the run (Lease, Recover, RecoverLoop) are seen; a plain Run holds no lease,
-//     which the claim below covers.
+//     drivers that lease the run (Lease, Recover, RecoverLoop, and a Session's turn) are seen; a
+//     plain Run holds no lease, which the claim below covers.
 //   - with a store that cannot (a custom store with no Leaser, or a Durable that exposes none), it
 //     requires WithMinHaltAge, so the halt is resolved only once no driver can still be running it.
 //

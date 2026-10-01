@@ -58,7 +58,7 @@ func WithLeaseHolder(id string) LeaseControl {
 // takes over. Defaults to 30s. Set it well above the store's round-trip time and the longest pause
 // you expect a process to take: renewal starts at half the TTL, and a drive that cannot renew
 // within three quarters of it is cancelled with ErrLeaseLost (see Lease). It must be positive:
-// Lease, Recover and RecoverLoop return an ErrConfig error otherwise.
+// Lease, Recover, RecoverLoop and Agent.Session return an ErrConfig error otherwise.
 func WithLeaseTTL(d time.Duration) LeaseControl {
 	return leaseControl(func(c *recoverConfig) { c.ttl = d })
 }

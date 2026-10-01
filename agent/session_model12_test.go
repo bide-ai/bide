@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -316,8 +317,11 @@ func TestSession_TurnLeaseExcludesASecondDriver(t *testing.T) {
 		t.Fatal("timed out waiting for h1's model call")
 	}
 	_, err := h2.Send(ctx, "x")
-	if err == nil {
-		t.Fatal(`h2.Send("x") drove the turn while h1 holds its lease`)
+	if !errors.Is(err, ErrTurnContended) {
+		t.Fatalf(`h2.Send("x") while h1 holds the turn's lease = %v; want ErrTurnContended`, err)
+	}
+	if errors.Is(err, ErrConfig) || IsPause(err) {
+		t.Fatalf("ErrTurnContended must be in no category and not a pause: %v", err)
 	}
 	if n := model.calls.Load(); n != 1 {
 		t.Fatalf("model calls = %d while h1 holds the lease, want 1 (h2 must not drive)", n)
@@ -356,5 +360,44 @@ func BenchmarkSession_Send(b *testing.B) {
 			b.Fatal(err)
 		}
 		i++
+	}
+}
+
+// Session's options set the turn runs' lease: the holder names the lease a turn is driven under,
+// and a non-positive TTL is refused.
+func TestSession_LeaseOptions(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemStore()
+	model := &blockFirstModel{entered: make(chan struct{}), release: make(chan struct{})}
+	a := New(model, store)
+	if _, err := a.Session(ctx, "c1", WithLeaseTTL(0)); !errors.Is(err, ErrConfig) {
+		t.Fatalf("Session with a zero lease TTL = %v; want ErrConfig", err)
+	}
+	s, err := a.Session(ctx, "c1", WithLeaseHolder("worker-7"), WithLeaseTTL(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { _, err := s.SendOnce(ctx, "k", "x"); done <- err }()
+	select {
+	case <-model.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for the turn's model call")
+	}
+	store.mu.Lock()
+	l, ok := store.leases[sessionEventRunID("c1", "k")]
+	store.mu.Unlock()
+	close(model.release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if !ok || !strings.HasPrefix(l.holder, "worker-7#") || time.Until(l.expiry) < 50*time.Minute {
+		t.Fatalf("the turn run's lease while it ran = %+v (held %v); want holder worker-7#<token> and a TTL of an hour", l, ok)
+	}
+	store.mu.Lock()
+	_, held := store.leases[sessionEventRunID("c1", "k")]
+	store.mu.Unlock()
+	if held {
+		t.Fatal("the turn run's lease is still held after the turn returned")
 	}
 }

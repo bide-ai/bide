@@ -118,6 +118,12 @@ var (
 // another driver's to continue. Recover does not count it as a failure.
 var ErrLeaseLost = errors.New("run lease lost")
 
+// ErrTurnContended is returned by Session.Send and Session.SendOnce when another driver holds
+// the lease on the turn's run (see Session): the turn's run was not driven and its answer was not recorded.
+// Send the same message again later. Like ErrLeaseLost, it is in no category: it is neither a
+// failure of the turn nor a pause of it.
+var ErrTurnContended = errors.New("session turn driven by another holder")
+
 // RateLimited is returned by a provider adapter when it is rate limited (HTTP 429 that is not an
 // exhausted quota; see ClassifyHTTPError). It carries an optional RetryAfter hint from the
 // Retry-After response header or the provider's own retry delay (0 means no hint was provided),
