@@ -938,7 +938,7 @@ New here? Start with **[Getting started](docs/getting-started.md)**, use the **[
 **Reference and internals**
 
 - **[Extension points](docs/reference/extension-points.md)**: the ports and adapters (`Model`, `Store`, `Tool`, `Compensator`, `Retriever`, `Anchor`, `EventStore`), with an implement-your-own-store walkthrough.
-- **[How bide is verified](docs/testing/verification.md)**: no fix without a failing test, mutation checks, crash and cancellation sweeps, forced interleavings, conformance suites, and what CI enforces.
+- **[How bide is verified](docs/testing/verification.md)**: no fix without a failing test, mutation checks, crash and cancellation sweeps, forced interleavings, conformance suites, TLA+ model checking of the coordination protocols, and what CI enforces.
 - **[Testing and evidence](docs/testing/testing.md)**: what is tested and how, the chaos crash-injection benchmark, differential oracles, RFC 6962 conformance, and the provable-versus-statistical boundary in the `eval` package.
 - **[Journal compaction](docs/design/compaction.md)** (design note): compacting an unbounded journal without breaking the audit spine's inclusion and consistency proofs.
 

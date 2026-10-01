@@ -31,7 +31,14 @@ that does not own any other run it is handed should do nothing. See [Crash recov
 **Takeover needs a process that keeps looking.** `agent.Recover` is one pass: a run whose holder
 has died but whose lease has not yet expired is skipped. Run `agent.RecoverLoop` in every worker for
 the life of the process, and a dead holder's run is taken over within about one pass interval (half
-the lease TTL by default) of its lease expiring.
+the lease TTL by default) of its lease expiring, as long as a pass is short.
+
+**A long recovery pass delays takeover.** A pass costs about five store round trips for each
+unfinished run it lists, halted runs included, and the next pass starts only after this one has
+started all of its drives. With many unfinished runs (halted runs left unresolved count) or a slow
+store, a pass can outlast its interval, and a dead holder's run can then be picked up as much as a pass's
+length later than the interval suggests. Resolve halted runs promptly, and measure a pass against
+your store if takeover time matters. Bounding a pass's cost is planned after v0.9.0.
 
 **Leases prevent duplicate work, not duplicate side effects.** With a store that supports leases
 (`MemStore` in one process, SQLite across the processes sharing one file, Postgres across nodes),
@@ -76,11 +83,15 @@ a warning when it discovers the schema. With the schema pinned, the search path 
 its schema, so after `ALTER SCHEMA ... RENAME` inserts fail and `Open` refuses it: drop the
 function and `Open` again, and the migration recreates it.
 
-**Crash safety is tested, not formally proven.** The crash tests fail the store at every write point,
-across hundreds of randomized multi-crash schedules, and check that no side effect fires twice and
-every rollback completes. That is strong evidence, but it is not a machine-checked proof over every
-possible interleaving. A crash is modelled as a failed durable write followed by the run unwinding,
-which matches a process dying around its writes. See [How bide is verified](testing/verification.md).
+**Crash safety is tested and model-checked within bounds, not proven for the code.** The crash
+tests fail the store at every write point, across hundreds of randomized multi-crash schedules, and
+check that no side effect fires twice and every rollback completes. The protocol designs (claims,
+the approval gate, flows, spend accounting and the bide protocol's claim rules) are TLA+ models that
+TLC checks in every interleaving within each configuration's bounds; nothing is proven beyond those
+bounds, and the models state the rules, not the Go code, whose correspondence is checked by review
+until trace validation lands. A crash is modelled as a failed durable write followed by the run
+unwinding, which matches a process dying around its writes. See [How bide is verified](testing/verification.md)
+and [the formal models](../spec/tla/README.md).
 
 **`run:complete` appears in diagrams.** A finished run records a `run:complete` step, so
 `RenderMermaid` shows it just before `done`. This is expected.
