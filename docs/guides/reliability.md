@@ -181,7 +181,10 @@ the chain returned). A middleware that ends a call without calling `next` (a den
 gives up) returns an error wrapping `agent.ErrToolNotCalled`, and only then; `ToolRateLimit` and
 `ToolRetry` do. The agent needs positive proof that a side effect was not called: such a call is
 recorded as a known failure, but a chain that returns an error without calling `next`, and without
-`ErrToolNotCalled`, leaves a side effect's outcome unknown, and the run halts for it. The agent decides from its own copy of
+`ErrToolNotCalled`, leaves a side effect's outcome unknown, and the run halts for it. "Failed"
+needs positive proof as well: a middleware that turns a side effect's success into an error, or
+returns another error for a call whose tool did not itself fail (a refusal of a retry, say), makes
+the outcome unknown, and the run halts rather than tell the model a fired effect failed. The agent decides from its own copy of
 the spec, so a middleware that changes `call.Spec` changes nothing it enforces. A middleware passes
 `next` the `ToolCall` it was given, or a copy with other `Use.Args`: one that changes `Use.Name` or
 `Use.ID`, or builds its own `ToolCall`, gets `ErrConfig` and the tool is not called. The agent also enforces

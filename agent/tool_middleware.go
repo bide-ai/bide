@@ -54,7 +54,8 @@ type ToolHandler func(ctx context.Context, call ToolCall) (json.RawMessage, erro
 //   - observe/log/trace a call (its name, args, duration, error);
 //   - MUTATE the outgoing args (validate, redact, inject defaults) by calling next with
 //     a copy of the ToolCall whose Use.Args differ;
-//   - transform the result before it is journaled;
+//   - transform the result before it is journaled (turning a side effect's success into an
+//     error halts the run: see below);
 //   - SHORT-CIRCUIT: return a result (a cache hit) or an error (a policy denial)
 //     WITHOUT calling next, so the tool never runs.
 //
@@ -69,7 +70,10 @@ type ToolHandler func(ctx context.Context, call ToolCall) (json.RawMessage, erro
 // gives up), it returns an error wrapping ErrToolNotCalled, and it returns that error only then.
 // The agent needs positive proof that a side effect was not called: a chain that returns an error
 // without calling next, and without ErrToolNotCalled, leaves the side effect's outcome unknown,
-// and the run halts for it rather than risk running it twice.
+// and the run halts for it rather than risk running it twice. It needs positive proof that a side
+// effect failed, too: a middleware may transform a result, but one that turns a side effect's
+// success into an error (or returns another error for a call whose tool did not itself fail) makes
+// the outcome unknown, and the run halts for it. The model is never told a fired effect failed.
 //
 // The chain runs INSIDE the durable, memoized step, so a short-circuit result or a
 // transformed result is what gets journaled: resume replays it and never re-runs the
