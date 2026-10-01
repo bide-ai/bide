@@ -19,8 +19,8 @@ minor version (0.x.0) may include breaking API or journal-format changes; each o
 - A tool that wraps another says so with an `Unwrap() Tool` method; the agent follows it to find a wrapped `SubAgent`, so a saga rollback and the tree's token budget recurse into its sub-run ([#117]).
 - `mcp.WithApproval(name, policy)`: `Tools` fails with `ErrConfig` when the policy is nil or invalid, or when the server lists no tool of that name, so a misspelt gate never leaves the real tool ungated. Each MCP tool's spec: `Title` (its title, else its annotations' title), `Output` (its `outputSchema`) and `Timeout` (`WithCallTimeout`) ([#117]).
 - `govern.EventToolConfig` and `govern.FederatedEventToolConfig`, whose `Options` pass `agent.ToolOption`s to the tool; `audit.AttenuationConfig`, and trailing `agent.ToolOption`s on `audit.AttenuatingSubAgent`, which go to its `SubAgent` ([#117]).
-- `agent.RunFilter.LeaseLapsed` admits only the runs whose lease has lapsed, by the comparison `AcquireLease` makes; `MemStore`, SQLite and Postgres evaluate it over their leases table, and `storetest` checks it (`Lister_LeaseLapsed`).
-- `agent.WithRecoverLapsedConcurrency` caps how many lapsed runs `RecoverLoop`'s lapsed loop drives at once (16 by default), apart from `WithRecoverConcurrency`.
+- `agent.RunFilter.LeaseLapsed` admits only the runs whose lease has lapsed, by the comparison `AcquireLease` makes; `MemStore`, SQLite and Postgres evaluate it over their leases table, and `storetest` checks it (`Lister_LeaseLapsed`) ([#126]).
+- `agent.WithRecoverLapsedConcurrency` caps how many lapsed runs `RecoverLoop`'s lapsed loop drives at once (16 by default), apart from `WithRecoverConcurrency` ([#126]).
 
 #### Formal models
 
@@ -59,7 +59,7 @@ minor version (0.x.0) may include breaking API or journal-format changes; each o
 - Once a tool call's middleware chain has returned, no invocation of `next` begins the tool, even a retry-safe one an earlier invocation reached: it used to begin again after the call's result was recorded, and after a saga's compensation. Found by the TLA+ tool-call model (T5) ([#117]).
 - Tool timeouts are judged by the deadline itself (a context's error lags its timer), for the tool's timeout and the run's own deadline; only a call whose tool was actually called can be late or unknown: a call a tool middleware ended first is a known failure, and a tool whose deadline passed in the middleware is not started. Plan flows' Tool nodes apply the wrapped tool's `ToolSpec.Timeout` with the same rule ([#117]).
 - `NextOnceKey` and `Safety.Idempotent` document that once keys are scoped to one tool call: a retry the model makes is a new call with new keys, so dedup across the model's retries needs a business key from the arguments ([#117]).
-- **Breaking:** `agent.RunFilter.Admits` takes a third argument, `lapsed func() bool`, which reports whether the run's lease has lapsed; it is called only when the filter sets `LeaseLapsed`.
+- **Breaking:** `agent.RunFilter.Admits` takes a third argument, `lapsed func() bool`, which reports whether the run's lease has lapsed; it is called only when the filter sets `LeaseLapsed` ([#126]).
 
 ### Deprecated
 
@@ -78,7 +78,7 @@ minor version (0.x.0) may include breaking API or journal-format changes; each o
 - A saga rollback into an `audit.AttenuatingSubAgent`'s sub-run now compensates under the child grant and identity the sub-run journaled (none, if the delegation ran without a grant), never the parent's broader authority ([#117]).
 - A saga rollback into a resumed `audit.AttenuatingSubAgent` delegation whose `AttenuateFunc` gave each grant its own ID stopped: the sub-run held two grants. The delegation now keeps its first grant ([#117]).
 - A retry-safe saga step whose outcome was unknown (`ErrToolOutcomeUnknown`) was taken by the rollback for a step that changed nothing, and was neither undone nor reported; it is now reported in `SagaAborted.UnknownOutcome` ([#117]).
-- `RecoverLoop` took over a dead holder's run late when halted runs were listed before it: each pass visited every unfinished run in order, halted ones included, so the takeover waited about one visit per halted run, and a lease that lapsed just after the pass tried the run waited for the whole next pass (finding L1 of the run-lifecycle model, [#124]). It now runs a second loop on the same interval, with slots of its own, that drives only the runs whose lease lapsed, so a dead holder's run is taken over within about one interval of its lease lapsing however many halted runs the store holds. The full pass is unchanged and still re-drives halted runs and runs that held no lease.
+- `RecoverLoop` took over a dead holder's run late when halted runs were listed before it: each pass visited every unfinished run in order, halted ones included, so the takeover waited about one visit per halted run, and a lease that lapsed just after the pass tried the run waited for the whole next pass (finding L1 of the run-lifecycle model, [#124]). It now runs a second loop on the same interval, with slots of its own, that drives only the runs whose lease lapsed, so a dead holder's run is taken over within about one interval of its lease lapsing however many halted runs the store holds. The full pass is unchanged and still re-drives halted runs and runs that held no lease ([#126]).
 
 ## [0.9.0] - 2026-10-01
 
@@ -718,6 +718,7 @@ First public release.
 [#121]: https://github.com/bide-ai/bide/pull/121
 [#122]: https://github.com/bide-ai/bide/pull/122
 [#124]: https://github.com/bide-ai/bide/pull/124
+[#126]: https://github.com/bide-ai/bide/pull/126
 
 [78f8db6]: https://github.com/bide-ai/bide/commit/78f8db6
 [994721b]: https://github.com/bide-ai/bide/commit/994721b
