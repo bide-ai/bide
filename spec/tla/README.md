@@ -3,7 +3,7 @@
 TLA+ models of bide's coordination protocols, written in PlusCal and checked with the TLC model
 checker. The plan and the reasoning behind it are in the design note
 [formal models of the coordination protocols](../../docs/design/formal-models.md);
-this directory holds models 1 (the claim protocol), 1b (the approval gate), 2 (the bide protocol's claim rules), 7 (flow semantics), 8 (spend accounting), 9 (the tool-call state machine), 10 (the run lifecycle and recovery) and 11 (delegation, sub-run authority and saga trees) of that plan.
+this directory holds models 1 (the claim protocol), 1b (the approval gate), 2 (the bide protocol's claim rules), 7 (flow semantics), 8 (spend accounting), 9 (the tool-call state machine), 10 (the run lifecycle and recovery), 11 (delegation, sub-run authority and saga trees) and 12 (sessions) of that plan.
 
 What a model check establishes, stated narrowly: within the bounds a configuration states (drivers,
 processes, faults, attempt numbers), TLC explores every interleaving of the modelled rules and every
@@ -89,7 +89,7 @@ func (j *Journal) claim(ctx context.Context, runID, key string, rec Record) (boo
 
 A marker above a declaration is followed by a blank line, so it is not part of the doc comment.
 Regions of one model do not nest; regions of different models may overlap (the run's Load is
-`Open` in both model 1 and model 8). Model 10 (`lifecycle/`) marks the lease, recovery, drive and resolution code; the steps P14 has not built yet (`DStart`, `DAmend`, `DTurn`, `DPost`, `DVerdict`, `Cancel`'s `CGet`, `CIns`, `CRead`, `CReq`, `Status`'s `SPick`, `SStart`, `SGet`) are on its no-code list until they land, and P14's pull request adds their markers. Model 11 (`delegation/`) marks `audit`'s `AttenuatingSubAgent`, the sub-agent tool, the programmatic sub-run admission and links, the loop's hold and halt rules, and the saga's rollback walk. Model 2 (`protocol/`) is a design model with no Go code yet,
+`Open` in both model 1 and model 8). Model 10 (`lifecycle/`) marks the lease, recovery, drive and resolution code; the steps P14 has not built yet (`DStart`, `DAmend`, `DTurn`, `DPost`, `DVerdict`, `Cancel`'s `CGet`, `CIns`, `CRead`, `CReq`, `Status`'s `SPick`, `SStart`, `SGet`) are on its no-code list until they land, and P14's pull request adds their markers. Model 11 (`delegation/`) marks `audit`'s `AttenuatingSubAgent`, the sub-agent tool, the programmatic sub-run admission and links, the loop's hold and halt rules, and the saga's rollback walk. Model 12 (`sessions/`) marks `agent/session.go`'s handle load, turn start, `SendOnce` lookup, seed, drive and append, and the session run IDs in `agent/keys.go`; P14's `Cancel` is on its no-code list. Model 2 (`protocol/`) is a design model with no Go code yet,
 so it has no map and no markers.
 
 **The checks.** `go run ./internal/tools/modelsync` (the Lint job, on every pull request, in the
@@ -155,8 +155,8 @@ spec/tla/
     regress/         historical rules, each of which must still produce its counterexample
     findings/        open findings, which fail until they are fixed (none open at present)
     limits/          accepted behavior, stated as an expected violation
-  flows/, protocol/, spend/, toolcall/, lifecycle/, delegation/
-                     models 7, 2, 8, 9, 10 and 11, laid out the same way
+  flows/, protocol/, spend/, toolcall/, lifecycle/, delegation/, sessions/
+                     models 7, 2, 8, 9, 10, 11 and 12, laid out the same way
 ```
 
 ## Model 1: claims and attempts
@@ -1684,7 +1684,216 @@ three fixes and holds their Go tests (`audit/zz_model11_test.go`). Each is now a
 - **Not built yet** (M3): trace validation. The hooks would be `Call`'s refusals and leaves,
   `linkSubRun`, `bindRollback` and the walk's steps.
 
+## Model 12: sessions
+
+`sessions/Sessions.tla` checks agent sessions (`agent/session.go`): what a turn is, how the
+shared history is written and read, and what happens when handles, workers and processes send
+on one session at once, crash, retry, or are redelivered a message. It is a model of its own;
+the claim protocol inside a turn is model 1's, the spend records model 8's, the end markers
+model 10's.
+
+### What a session is
+
+- **Each `Send` or `SendOnce` is its own run, and the history is shared.** A turn runs under
+  its own run ID (`"<id>>@turn/<n>"` for `Send`, `"<id>>@event/<encoded key>"` for `SendOnce`),
+  whose journal holds the turn's model calls and tool calls and resumes it after a crash. The
+  run is seeded with the conversation so far: the (input, answer) pairs of the turns recorded
+  before it. Tool calls are not carried into later turns.
+- **The session's journal** (`"<id>>@session"`) holds `start/<n>` (which message started Send
+  turn n: an exclusive claim, first writer wins), `from/<turn run>` (the number of recorded
+  turns, and their chained digest, the turn was seeded with, journaled before its first model
+  call), and `turn/<n>` (the completed turn: input, answer, key, run, claim). The history is the
+  `turn/<n>` records in index order.
+- **Handles.** A handle (`*Session`) holds a copy of the journal's state: its turn and start
+  counts, the open Send turn, and the keys answered. Its mutex is held while the session
+  journal is read or written, never while a turn's run is in progress. A handle that loses a
+  start claim reloads and tries once more; `SendOnce` reloads before running an unseen key.
+- **Resuming.** `Recover` and `RecoverLoop` skip session runs. A turn cut off by a crash resumes
+  when its message is sent again: the same `Send` (while a Send turn is open, another message
+  is `ErrConfig`), or the redelivered `SendOnce`. The resumed run is seeded from its `from/`
+  record.
+- **The budget.** `WithTokenBudget` and `WithMaxTurns` apply per turn (per run), not per
+  session. A drive counts the journal's spend when it loads, then its own calls and the
+  records of other drivers it takes.
+
+### What is modelled
+
+- **Callers** send one message each through a handle, and send it again after an error, a
+  pause or a crash, until it is answered or the error is final (a budget stop, a cancellation,
+  a key reused with other text). Callers with one message are one delivery: once one is
+  answered, the others stop (the queue stops redelivering). Several callers may share one
+  handle; handles live in processes.
+- **The session journal**: `start/<n>`, `from/<run>`, `turn/<n>`, each written with `store.Do`
+  (first writer wins), and each write may get an error reply that committed or did not (A3).
+- **A turn's run**, abstracted to what the session depends on: `run:start`'s input (an
+  unfinished run driven with another input is `ErrConfig`, #70), its model calls (each a
+  first-writer `@llm/<i>` record of the transcript the call was seeded with), the budget
+  check before each call, and `run:complete`, which a later drive returns whatever input it
+  is given (`completedAnswer`). A drive may pause before its first call.
+- **Run IDs** as strings: the scheme since #86, and the old one (`"<id>/t<n>"`,
+  `"<id>/e/<key>"`) behind `Bug`, so a collision is a configuration's choice of names.
+- **P14's `Cancel`** of a turn's run (D1): `run:cancelled`, read when a drive starts and at each
+  turn boundary.
+- **Faults**: error replies on the session journal, process crashes (every caller of the
+  process is cut off and redelivered; its handles reopen from the journal; a drive in flight is
+  gone), pauses, and `Cancel`.
+
+Abstracted away: the claim protocol and tool calls inside a turn (model 1, model 9), spend
+records and late spend beyond the count the budget sees (model 8), the race between
+`run:cancelled` and `run:complete` (model 10's L3 rule), sub-agents in a turn (model 11),
+encodings and digests (the chained digest is equality of record identities), `Status` (a turn
+run's status says nothing the session reads), and `Recover` (it skips session runs; P14's
+design lists `session_turn` among `ResumeAgent`'s kinds, which this model does not check).
+
+### Model-code map
+
+Each label is one atomic step: one store round trip, or one read and the local decision after
+it. Function names are those of `main` after #130; `S` is `agent/session.go`, `K` is
+`agent/keys.go`.
+
+<!-- modelsync: no-code sessions Idle Fail SWGet SWPut Crash Cancel -->
+<!-- modelsync: map sessions -->
+| Label | Go |
+|---|---|
+| `Open` | S `Agent.Session` and `reload`: a handle loaded from the journal (after a restart, a fresh one) |
+| `SCheck`, `SDo` | S `startTurn`: the open-turn check (S1's fix reads the journal again first), the claim (`newClaim`, `store.Do` of `start/<n>`), the lost-claim reload and the second try |
+| `KLook` | S `SendOnce` and `keyedTurn`: the reload of an unseen key, the recorded answer, the input check |
+| `Seed`, `FDo`, `FReload` | S `turnSeed`: `store.Do` of `from/<run>`, the reload when it names more turns than the handle holds |
+| `DLoad`, `DCall`, `DDone` | S `runTurn`'s `Agent.run` of the turn's run: `openRun`, `completedAnswer`, `holdToStart`'s input check, the approval and interrupt pauses, the budget check and `@llm/<n>` (`recorded`), `run:complete`; P14's `run:cancelled` reads |
+| `ADo` | S `appendTurn`: `store.Do` of `turn/<n>`, the claim and same-run checks, the skip of a slot another handle took; S2's fix checks the turns the handle has loaded first |
+| `AReload` | S `runTurn`'s `reload` after the append |
+| `TurnId`, `EventId` | K `sessionTurnRunID`, `sessionEventRunID`, and `checkRunID`'s refusal of `>` in a root run ID |
+| `Idle`, `Fail` | the caller: a delivery, and its redelivery after an error, a pause or a crash |
+| `SWGet`, `SWPut` | historical only (`Bug = "StepWrapped"`): the messaging guide's `Step` around `Send`, before #20 |
+| `Crash`, `Cancel` | a process dies; P14's `Cancel` (D1, not built yet) |
+
+### Properties
+
+Derived from the `Session`, `Send`, `SendOnce`, `appendTurn` and `WithTokenBudget` godoc, the
+messaging guide and `docs/GUARANTEE.md`:
+
+| Property | Kind | Statement |
+|---|---|---|
+| `TurnOnce` | invariant | each turn at most once: no run's turn is recorded in two slots ("no turn is recorded twice") |
+| `KeyOnce` | invariant | `SendOnce` at most once: one key is at most one turn record, and at most one run did a key's work |
+| `MsgOnce` | invariant | one message, one turn record (holds for `SendOnce`; a limit for `Send`, which has no key) |
+| `NoCrossTalk` | invariant | every reply, and every turn record, answers its own message in its own session ("never answer one message with another's reply") |
+| `NoLostTurn` | invariant | a caller answered by a turn finds that turn in the history ("never lose a turn") |
+| `SeedFaithful` | invariant | every model call of a turn sees one transcript, the one its `from/` record names |
+| `CausalOrder` | invariant | a turn never saw a turn recorded after it |
+| `AppendOnly` | action | `start/<n>` and `turn/<n>` are never changed or moved: every reader reads one history in one order |
+| `BudgetHeld` | invariant | a turn's run never makes more model calls than its budget (one unit per call) |
+| `SpendOnce` | invariant | the journal counts no billed call twice |
+| `NoFalseRefusal` | invariant | `Send` refuses a message ("a turn for ... is still open") only while the journal holds an open turn of another message that can still finish |
+| `Answered` | liveness | every caller is answered or stops for a final reason, crashes included |
+| `TurnsSettle` | liveness | every Send turn started is eventually recorded: a session whose driver died resumes |
+| `EffectNotReachable` | vacuity | must be violated: some session caller is answered |
+
+Fairness: every caller step is weakly fair; crashes, error replies, pauses and `Cancel` have
+finite budgets and no fairness.
+
+### Configurations
+
+@@CONFIGS@@
+
+### Regressions, findings and limits
+
+Each regression restores a historical rule behind `Bug` and must fail with its property, and
+passes with `Bug = "none"`. Each finding fails under the code as it stands and passes under its
+proposed rule (`Fix`, `CancelRule`, `TurnLease`), which the `ci` configurations check.
+
+@@REGRESS@@
+
+### Findings
+
+Found by this model on `main` at `91909b7` (#130 merged). S1, S2 and S4 each have a failing
+Go test in a scratch directory (`agent/session_model12_test.go`, not in this pull request);
+S3 is against P14's design, which is not built, as L2 and L3 were. Each proposed rule is
+checked in the model. The findings stay open (`findings/`) until the code adopts a fix.
+
+- **S1: a stale handle refuses the next message for an open turn that another handle finished**
+  (`findings/s1-stale-open`, `NoFalseRefusal`, 17 states).
+  - `startTurn` returns `ErrConfig` ("a turn for x is still open; send that message again")
+    from the handle's own `s.open`, without reading the journal. A handle whose `Send("x")`
+    started the turn and then failed or paused keeps `x` open in its view. Another worker,
+    given `x` again, finishes and records the turn. The first handle then refuses `"y"` on
+    every try: nothing on that path reloads it. The model's trace is fault-free: a caller
+    still driving `x` on one handle, `x` finished through another worker, and `"y"` sent on
+    the first handle.
+  - The test is `TestModel12_S1_StaleOpenTurnRefusesNextMessage`: a model that fails its
+    first call, `h1.Send("x")` fails, `h2.Send("x")` answers, and `h1.Send("y")` is
+    `ErrConfig` three times out of three.
+  - Proposed fix (`Fix = {"S1"}`): when the open turn is another message's, reload once and
+    check again before refusing. The godoc already says "a handle that finds the journal moved
+    on reloads it".
+- **S2: one handle records a turn twice** (`findings/s2-shared-send`, `TurnOnce`;
+  `findings/s2-shared-once`, `KeyOnce`).
+  - Two callers on one handle send one message (a redelivery, or a retry while the first still
+    runs): `Send` joins the open turn and `SendOnce` runs the key's turn, so both drive one run.
+    The first records `turn/0` and reloads the handle. `appendTurn` then starts the second's
+    append at the handle's new count, past `turn/0`, so its same-run check never sees it, and it
+    records the run's turn again at `turn/1`. The history holds the message and its answer
+    twice, and every later turn is seeded with both; for `SendOnce`, one key has two records.
+  - The test is `TestModel12_S2_SharedHandleRecordsATurnTwice` (`Send` and `SendOnce`): the
+    first caller's model call is held while the second joins, and the second's load of the
+    run is held until the first returned. The transcript holds `[x re: x x re: x]`.
+  - Proposed fix (`Fix = {"S2"}`): `reload` keeps the set of runs among the loaded turns, and
+    `appendTurn` returns at once for a run in it.
+- **S3, against P14's design: `Cancel` of an open Send turn's run blocks the session for ever**
+  (`findings/s3-cancel-wedge`, `NoFalseRefusal`).
+  - D1 cancels a run; a session turn is a run. A cancelled turn run never completes, so its
+    `start/<n>` stays open: `Send` of its message returns `ErrRunCancelled` every time, and
+    every other message is refused with `ErrConfig` naming the open turn. `SendOnce` is not
+    blocked (its turns have no start record), but its key stays unanswered.
+  - Proposed rule (`CancelRule = "close"`, `cancel-close`, `deep-cancel`): a turn whose run was
+    cancelled is recorded closed (a `turn/<n>` record naming the run, with a cancelled
+    answer), which ends the open turn. `startTurn` checks `run:cancelled` of the open turn's
+    run before refusing (one `Get`), and records the close itself; the caller of the cancelled
+    message gets `ErrRunCancelled`. P14's contract should state it, or refuse `Cancel` of a
+    session run.
+- **S4: a turn's budget is spent once per worker** (`findings/s4-budget-two-workers`,
+  `BudgetHeld`).
+  - A turn's run is driven with no lease, so two workers given one message (the redelivery
+    `SendOnce` exists for, or `Send` on two handles) both drive it. Each counts the journal's
+    spend when it loads, then its own calls and the records of the other it takes; a call
+    whose record lost goes to the meter as late spend, which no running drive counts. Neither
+    drive sees the other's later calls. `WithTokenBudget`'s godoc says "a check sees every
+    call that has returned" and bounds the overshoot by the calls in flight; with two drivers
+    the overshoot grows with the budget (in the model: 1 call over at a budget of 2, 2 at 4, 3
+    at 6, with this model's count).
+  - The test is `TestModel12_S4_TwoWorkersOvershootATurnBudget`: two processes (two
+    `Journal`s over one store) send one message, a model that lets them call in turn reports
+    one token per call, and a budget of 6 tokens makes 12 model calls (6 each).
+  - Proposed rule (`TurnLease = TRUE`, `budget`): the session drives a turn's run under its
+    lease when the store has a `Leaser`, as `Lease` drives a run; a second drive gets
+    `HaltContended` and the message is sent again. One drive at a time loads the whole journal,
+    and `BudgetHeld` holds. Counting a lost record's own spend in the drive would not be
+    enough: the model still overshoots.
+
+Accepted limit: `limits/send-redelivered` (`MsgOnce`). `Send` has no key: when the process dies
+after the turn is recorded and before the reply, the redelivered message opens a second turn.
+`SendOnce` exists for this; `MsgOnce` holds in `workers-once` and `deep-once`.
+
+### Keeping model 12 and the code in step
+
+- **The map** above, with `// protocol:sessions` regions in `agent/session.go` and
+  `agent/keys.go`, checked by `modelsync`. The Models job's path filter covers `agent/`.
+- **Regressions** for every historical session bug the model can state: #20, #22 (two of its
+  three bugs; the third, a stale handle answering with another message's reply, is the start
+  claim the model always has), #56 (two of three; the data race is not a protocol rule) and
+  #86, each a `Bug` value.
+- **No vocabulary block**: the session's records (`start/`, `from/`, `turn/`) are named in the
+  map.
+- **Not built yet** (M3): trace validation. The hooks would be `startTurn`'s claim,
+  `turnSeed`'s `from/`, `appendTurn`'s slots and `reload`.
+
 ## What the bounds do not cover
+
+Model 12: one or two sessions, two handles in one or two processes, two or three callers (one
+message each, with redeliveries), turns of one to four model calls, one of each fault on pull
+requests (two error replies nightly), and one `Cancel`. A bug that needs three handles, two
+concurrent Send turns of different messages on one session (the start claim refuses the
+second), or more than one crash is outside the check.
 
 Model 11: one turn per run, calls one at a time, trees of up to four runs and three levels, two
 root grants and a clock of three ticks, and up to three of each fault nightly. A bug that needs

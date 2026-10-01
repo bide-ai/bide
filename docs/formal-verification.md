@@ -12,15 +12,16 @@ milestones, is the design note [formal models of the coordination protocols](des
 
 At a glance:
 
-- **8 models** (1, 1b, 2, 7, 8, 9, 10 and 11), each checked on every pull request that changes it,
+- **9 models** (1, 1b, 2, 7, 8, 9, 10, 11 and 12), each checked on every pull request that changes it,
   and all of them in the merge queue and on main. **Models** is a required check.
-- **183 configurations** in the merge queue (71 that must pass, each also run for vacuity, and 112
+- **204 configurations** in the merge queue (80 that must pass, each also run for vacuity, and 124
   regression, finding and limit configurations that must fail with their named property), and
-  **69 larger ones nightly**.
-- **25 bugs caught before release** in bide's own design or code (F1 to F5, P1, P2, T1 to T6, a
-  rollback that never ended, L1 to L7, a spend-accounting bug model 8 confirmed, and D1 to D3).
-  Each fixed one is kept as a regression configuration; L2 to L7 stay open until P14 implements
-  their fix, and D1 to D3 until their fixes land in the code.
+  **75 larger ones nightly**.
+- **29 bugs caught before release** in bide's own design or code (F1 to F5, P1, P2, T1 to T6, a
+  rollback that never ended, L1 to L7, a spend-accounting bug model 8 confirmed, D1 to D3, and
+  S1 to S4). Each fixed one is kept as a regression configuration; L2 to L7 stay open until P14
+  implements their fix, D1 to D3 until their fixes land in the code, and S1 to S4 until their
+  fixes land (S3 with P14; the maintainers adopted S3's and S4's rules).
 
 ## What TLA+ and model checking are
 
@@ -122,6 +123,7 @@ property. Nightly runs larger bounds.
 | [9: the tool-call state machine](../spec/tla/README.md#model-9-the-tool-call-state-machine) | Under any tool middleware, retries, leaked `next` calls and sibling calls, a side effect fires at most once, the journal's record of a call is true, a saga's rollback accounts for every effect left in place, and the rollback ends. | `NoDoubleFire`, `TruthfulRecord`, `NoLostSibling`, `SagaAccounted`, `NeverBegunProgress`, `RollbackEnds` | `agent`: `toolexec.go`, `loop.go`, `saga.go`, `tool_middleware.go`; `internal/toolhook` | 26 | 13 | Checked; T1 to T6 fixed in #117 |
 | [10: the run lifecycle and recovery](../spec/tla/README.md#model-10-the-run-lifecycle-and-recovery) | Recovery never resumes a finished run; one live lease holder per epoch; each end marker is written once; nothing fires after a run completed or aborted, or under a claim won after it was cancelled; `Status` and every writer report the first end marker; per-run options and the tool filter survive recovery; a cancelled saga is rolled back; a dead holder's run is taken over within a bounded time of its lease lapsing. | `NoResumeOfFinished`, `OneDriverPerEpoch`, `NoDoubleCompletion`, `FinishedFinal`, `CancelFinal`, `VerdictAgreement`, `StatusTruthful`, `FilterHonoured`, `RunOptionsDurable`, `CancelRollsBack`, `BoundedPickup`, `PickedUp` | `agent`: `recovery.go`, `lease.go`, `loop.go`, `saga.go`, `halt.go`, `journal.go`; the stores' `Leaser` and `Lister` | 41 | 9 | Checked, and gates P14 (#129); L1 fixed in #126; L2 to L7 adopted, open until P14 |
 | [11: delegation, sub-run authority and saga trees](../spec/tla/README.md#model-11-delegation-sub-run-authority-and-saga-trees) | A child never acts with authority its delegation did not grant, nor reaches a tool after its grant expired; a saga's rollback compensates or lists every write anywhere in the tree, under the authority each sub-run journaled; a halt or lost outcome anywhere in the tree stops later saga steps; a sub-run runs only under its own call's ID while the call is open; a storage error or a wrong-authority resume is never recorded as a delegation failure, and a run it stopped continues once the right grant is bound. | `AuthorityNarrows`, `RollbackSound`, `RollbackUnderGrant`, `HaltPropagates`, `NoForgedSubRun`, `NoFalseFailure`, `UnrecordedContinues`, `RollbackEnds` | `audit`: `delegate.go`; `agent`: `subagent.go`, `saga.go`, `runctx.go`, `loop.go`; `internal/toolhook` | 33 | 8 | Checked; D1 to D3 open until their fixes land |
+| [12: sessions](../spec/tla/README.md#model-12-sessions) | Each turn of a session is recorded once and answers its own message; a `SendOnce` key is one turn, whose work runs in one run; the history is append-only and every reader sees one order; a resumed turn sees the transcript it started from; no run is shared between sessions or with a root run; a session whose driver died resumes when its message is sent again. | `TurnOnce`, `KeyOnce`, `NoCrossTalk`, `NoLostTurn`, `SeedFaithful`, `AppendOnly`, `BudgetHeld`, `NoFalseRefusal`, `Answered`, `TurnsSettle` | `agent`: `session.go`, `keys.go` (session run IDs) | 21 | 5 | Checked; S1 to S4 open until the session code adopts a fix |
 
 Model numbers are those of `spec/tla/README.md`. The plan's deferred models 3 (leases) and 5 (saga
 rollback) are partly covered by models 10, 9 and 11; its model 4 (the store contract) is not built.
@@ -159,6 +161,10 @@ details are in the linked README sections.
 | D1 | 11 | `BindRollback` checked each journaled grant against the one grant bound now, so a saga that delegated under two bound grants (the refusal for an expired grant asks for a live one) could not verify both, and its rollback never ended. | Stuck rollback | Open: the caller binds every grant the saga delegated under, and each child grant is checked against its own parent (found in [#130](https://github.com/bide-ai/bide/pull/130)) |
 | D2 | 11 | `BindRollback` dropped the delegated mark, so the rollback's re-run of a retry-safe write in a delegated sub-run passed `CallGuard` and called the tool after the grant expired. | Act past grant expiry | Open: keep the mark, and list a refused re-run as an unknown outcome (found in [#130](https://github.com/bide-ai/bide/pull/130)) |
 | D3 | 11 | In a plain sub-run of a saga, a failed sub-agent call is an error result, and the rollback skipped error results before recursing, so the sub-agent's writes were neither compensated nor listed. | Write left in place, listed nowhere | Open: recurse into a sub-agent call whatever its result (found in [#130](https://github.com/bide-ai/bide/pull/130)) |
+| S1 | 12 | A handle whose `Send` started a turn and then failed or paused keeps it open in its own view; once another worker finished that turn, the handle refused every other message with `ErrConfig` ("a turn for x is still open") and never read the journal again. | Session refuses every new message on that handle | Open: reload before refusing (found in this model's pull request) |
+| S2 | 12 | Two callers on one handle sending one message both drive its run; the second's append started past the slot the first had recorded and its reload had loaded, so the run's turn was recorded twice (and a `SendOnce` key had two records). | Duplicate turn in the history | Open: `appendTurn` returns at once for a run among the loaded turns |
+| S3 | 12 | Against P14's design: `Cancel` of an open Send turn's run leaves the turn open for ever, so every other message on the session is refused. | Session blocked for ever | Open: record a cancelled turn closed, or refuse `Cancel` of a session run |
+| S4 | 12 | A turn's run is driven with no lease, so two workers given one message both drive it, each counting only the spend it has seen, and the turn spends up to its budget once per worker. | Budget overspent | Open: drive a turn's run under its lease |
 | Shared late key | 8 | Late spend was keyed by a sequence number each driver counted itself, so two drivers wrote one `@spend-late` key and the second's spend was lost. Found as a suspicion in the #104 re-review; model 8 confirmed it on the old rule. | Lost spend | [#104](https://github.com/bide-ai/bide/pull/104): a fresh id per spend record (confirmed in [#111](https://github.com/bide-ai/bide/pull/111)) |
 
 Models 7 and 8 found no new bug in the rules they check. Their regressions encode bugs earlier
@@ -170,8 +176,8 @@ same for bugs found by review and testing before the models existed, back to #31
 
 | Where | What | Time |
 |---|---|---|
-| Every pull request, the merge queue and main (**Models**, required) | The checker self-test, the PlusCal translation check, and every `ci`, `regress`, `finding` and `limit` configuration (183), each passing one also run for vacuity, four at a time; on a pull request, of the models it changes | About 6 minutes for every model on the CI runner (job timeout 30 minutes) |
-| Nightly and on demand (**Models (nightly)**) | The 69 `nightly` configurations: more faults, more drivers, liveness at two error replies, weak A3 (late commits) | About 1 hour 50 minutes on the CI runner (1 hour 40 minutes measured before this split, plus about 7 minutes moved from pull requests, and model 10's four P14 configurations, about 6 minutes on the development machine; job timeout 4 hours) |
+| Every pull request, the merge queue and main (**Models**, required) | The checker self-test, the PlusCal translation check, and every `ci`, `regress`, `finding` and `limit` configuration (204), each passing one also run for vacuity, four at a time; on a pull request, of the models it changes | About 6 minutes for every model on the CI runner (job timeout 30 minutes) |
+| Nightly and on demand (**Models (nightly)**) | The 75 `nightly` configurations: more faults, more drivers, liveness at two error replies, weak A3 (late commits) | About 1 hour 50 minutes on the CI runner (1 hour 40 minutes measured before this split, plus about 7 minutes moved from pull requests, and model 10's four P14 configurations, about 6 minutes on the development machine; job timeout 4 hours) |
 | Nightly and on demand (**Explore (full bound)**) | The Go fault-schedule explorations of the claim protocol and of flow lowering at their full bound (`BIDE_EXPLORE=1`); every pull request runs them at a smaller bound under `-race` in the Test job | About 15 to 22 minutes |
 | Every pull request (**Lint**, required) | `modelsync` and `TestProtocolVocabulary` (next section) | Part of Lint |
 
@@ -200,7 +206,7 @@ A model checks the design, not the code. These mechanisms keep the two from drif
 - **Region markers.** Each Go region a model's map names is wrapped in comments that name the
   model and the model actions it implements, for example
   `// protocol:claims begin Claim ClaimRetry ClaimInsert ClaimNS` ... `// protocol:claims end`.
-  Models 1, 1b, 7, 8, 9 and 10 are marked; model 2 has no Go code yet.
+  Models 1, 1b, 7, 8, 9, 10, 11 and 12 are marked; model 2 has no Go code yet.
 - **The path rule.** `go run ./internal/tools/modelsync`, in the required Lint job, fails a pull
   request that touches a marked region of a model without changing anything under
   `spec/tla/<model>/`.

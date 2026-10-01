@@ -100,6 +100,8 @@ func newClaim() (string, error) {
 	return hex.EncodeToString(b[:]), nil
 }
 
+// protocol:sessions begin Open
+
 // Session opens (or reopens) a multi-turn conversation with the given id, rebuilding the
 // transcript from the store so a restarted process continues where it left off.
 //
@@ -171,6 +173,8 @@ func (s *Session) reload(ctx context.Context) error {
 	return nil
 }
 
+// protocol:sessions end
+
 // Send runs one conversation turn: the agent answers `input` with the full prior
 // transcript in context, and the turn is journaled. Returns the assistant's answer.
 //
@@ -185,6 +189,8 @@ func (s *Session) Send(ctx context.Context, input string) (Message, error) {
 	}
 	return s.runTurn(ctx, start.RunID, "", input)
 }
+
+// protocol:sessions begin SCheck SDo
 
 // startTurn returns the open Send turn for input, or claims a new one. A claim lost to another
 // handle reloads the journal and tries once more.
@@ -233,6 +239,10 @@ func (s *Session) startTurn(ctx context.Context, input string) (turnStart, error
 	}
 }
 
+// protocol:sessions end
+
+// protocol:sessions begin KLook
+
 // SendOnce runs one conversation turn for an inbound message identified by key (an event or
 // message id), at most once per key. A key whose turn already completed returns that turn's
 // answer without running anything, so a redelivered message never opens a second turn, even
@@ -273,6 +283,10 @@ func (s *Session) keyedTurn(ctx context.Context, key string) (turnRecord, bool, 
 	return tr, ok, nil
 }
 
+// protocol:sessions end
+
+// protocol:sessions begin DLoad DCall DDone AReload
+
 // runTurn drives the turn's run and appends the completed turn to the transcript.
 func (s *Session) runTurn(ctx context.Context, runID, key, input string) (Message, error) {
 	seed, err := s.turnSeed(ctx, runID)
@@ -298,6 +312,10 @@ func (s *Session) runTurn(ctx context.Context, runID, key, input string) (Messag
 	}
 	return answer, s.reload(ctx)
 }
+
+// protocol:sessions end
+
+// protocol:sessions begin Seed FDo FReload
 
 // turnSeed returns the transcript the turn run runID is seeded with. The first time the turn runs,
 // it is the transcript this handle holds, and that starting point is journaled before the run
@@ -334,6 +352,10 @@ func (s *Session) turnSeed(ctx context.Context, runID string) ([]Message, error)
 	return append(seed, s.history[:2*from.Turns]...), nil
 }
 
+// protocol:sessions end
+
+// protocol:sessions begin ADo
+
 // appendTurn records rec at the next free turn index. A slot another handle filled first is
 // skipped rather than overwritten, so no turn is lost; a slot that already holds this run's
 // turn (another handle, or an earlier attempt, recorded it) ends the append, so no turn is
@@ -363,6 +385,8 @@ func (s *Session) appendTurn(ctx context.Context, rec turnRecord) error {
 		}
 	}
 }
+
+// protocol:sessions end
 
 // History returns a copy of the conversation transcript so far (alternating user and
 // final-assistant messages).
