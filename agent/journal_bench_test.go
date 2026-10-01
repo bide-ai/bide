@@ -79,9 +79,12 @@ func BenchmarkRecoverPass10k(b *testing.B) {
 	ctx := context.Background()
 	store := agent.NewMemStore()
 	value := func(context.Context) (agent.Record, error) { return agent.Record{Kind: agent.StepValue}, nil }
+	start := func(context.Context) (agent.Record, error) {
+		return agent.Record{Kind: agent.StepValue, Result: []byte(`{"input":"go"}`)}, nil // recovery reads it (P14)
+	}
 	for i := range 10_000 {
 		id := fmt.Sprintf("run-%05d", i)
-		if _, err := store.Do(ctx, id, "run:start", value); err != nil {
+		if _, err := store.Do(ctx, id, "run:start", start); err != nil {
 			b.Fatal(err)
 		}
 		if i%10 != 0 {
