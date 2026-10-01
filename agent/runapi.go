@@ -15,7 +15,8 @@ import (
 // RunTypedMessage): it is not empty and holds no '>', which the engine reserves for the run IDs of
 // sub-agents and session turns. Any other string is a valid run ID: the journal's keys encode
 // whatever they are given. A run ID that fails is ErrConfig, and the run entry points return it
-// with a nil Result.
+// with a nil Result. (From a tool call's own context they also accept the programmatic sub-run IDs
+// RunInfo.SubRunFor derives.)
 func ValidateRunID(id string) error {
 	if id == "" {
 		return fmt.Errorf("run: empty runID: %w", ErrConfig)
@@ -83,7 +84,7 @@ func (a *Agent) ResumeRun(ctx context.Context, runID string, opts ...RunOption) 
 // runEntry is the body of the root run entry points: it validates runID, applies opts and drives
 // the run, and returns a Result for every outcome but an invalid runID.
 func (a *Agent) runEntry(ctx context.Context, runID string, d *driveSpec, opts []RunOption) (*Result, error) {
-	if err := ValidateRunID(runID); err != nil {
+	if err := checkRunID(ctx, runID); err != nil {
 		return nil, err
 	}
 	start := time.Now()
@@ -123,13 +124,70 @@ func (a *Agent) StreamMessage(ctx context.Context, runID string, input Message, 
 	return a.streamEntry(ctx, runID, &driveSpec{input: &input}, opts)
 }
 
-// ResumeAgent returns the Resumer that drives a with the runs it can: runs of kind agent that are
-// not typed.
+// ResumeAgent returns the Resumer that drives a's runs: those of kind agent that are not typed,
+// sagas included (the run's journal says which). It drives each under the options its run:start
+// journaled (ResumeRun's semantics), with opts setting only the deployment's values: WithWaker,
+// WithClock, WithMaxConcurrency and an identity's Actor. A journaled setting in opts (a limit, the
+// system prompt, sampling, tool choice, a tool filter, saga, an output mode, a principal) is
+// ErrConfig on every call, since a recovery drive must not change a run's options. Any other run
+// is ErrNotResumable: a typed run (ResumeTyped), a flow's (plan), and a session turn's, which only
+// its session drives (it is seeded with the session's transcript, and only the session records the
+// turn), so Recover never hands it one.
 func ResumeAgent(a *Agent, opts ...RunOption) Resumer {
-	return func(ctx context.Context, runID string, start RunStart) error { return errP14NotBuilt }
+	return func(ctx context.Context, runID string, start RunStart) error {
+		if k := start.kind(); k != RunKindAgent {
+			return fmt.Errorf("run %s is of kind %q, which ResumeAgent does not drive: %w", runID, k, ErrNotResumable)
+		}
+		if start.Typed != nil {
+			return fmt.Errorf("run %s is a typed run; resume it with ResumeTyped and its answer type: %w", runID, ErrNotResumable)
+		}
+		d, err := resumeDrive(runID, start, opts)
+		if err != nil {
+			return err
+		}
+		_, _, _, err = a.drive(ctx, runID, d)
+		return err
+	}
 }
 
-// ResumeTyped returns the Resumer that drives a's typed runs whose answer type is T.
+// ResumeTyped returns the Resumer that drives a's typed runs whose answer type is T: the runs of
+// kind agent whose run:start journals T's schema digest, in their journaled output mode. opts are
+// as for ResumeAgent. Any other run is ErrNotResumable.
 func ResumeTyped[T any](a *Agent, opts ...RunOption) Resumer {
-	return func(ctx context.Context, runID string, start RunStart) error { return errP14NotBuilt }
+	return func(ctx context.Context, runID string, start RunStart) error {
+		if start.kind() != RunKindAgent || start.Typed == nil {
+			return fmt.Errorf("run %s is not a typed agent run: %w", runID, ErrNotResumable)
+		}
+		_, ts, err := typedAgent[T](a, start.Typed.Mode)
+		if err != nil {
+			return err
+		}
+		if ts.SchemaDigest != start.Typed.SchemaDigest {
+			var zero T
+			return fmt.Errorf("run %s's answer type is not %T (its schema digest differs): %w", runID, zero, ErrNotResumable)
+		}
+		d, err := resumeDrive(runID, start, opts)
+		if err != nil {
+			return err
+		}
+		_, _, err = runTyped[T](ctx, a, runID, d, start.Typed.Mode, nil)
+		return err
+	}
+}
+
+// resumeDrive is a recovery drive of runID, started as start, under opts: the run's journaled
+// input and options, and only the deployment's values from opts (rule 9: a recovery drive passes no
+// per-run option).
+func resumeDrive(runID string, start RunStart, opts []RunOption) (*driveSpec, error) {
+	d := &driveSpec{resume: true, input: &start.Input}
+	if err := applyOptions("resume", &d.cfg, opts, RunOption.applyRun); err != nil {
+		return nil, err
+	}
+	c := d.cfg
+	if c.maxTurns != nil || c.tokenBudget != nil || c.systemPrompt != nil || c.sampling != nil || c.toolChoice != nil ||
+		c.tools != nil || c.saga || c.outputMode != "" || c.identity != nil && (c.identity.OnBehalfOf != "" || c.identity.AuthorityRef != "") {
+		return nil, fmt.Errorf("run %s: a recovery Resumer takes only the deployment's options (WithWaker, WithClock, WithMaxConcurrency, an identity's Actor); a run's own options are journaled: %w", runID, ErrConfig)
+	}
+	d.cfg.saga = start.Saga
+	return d, nil
 }

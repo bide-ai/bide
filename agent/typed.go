@@ -3,10 +3,13 @@ package agent
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"maps"
 	"slices"
+	"time"
 
 	"github.com/bide-ai/bide/internal/strictjson"
 	"github.com/bide-ai/bide/schema"
@@ -41,45 +44,66 @@ const finalAnswerTool = "final_answer"
 // ErrConfig before the run starts. Because Go methods cannot add type parameters, this is a
 // package function: agent.RunTyped[MyResult](ctx, a, id, in).
 func RunTyped[T any](ctx context.Context, a *Agent, runID, input string) (T, error) {
+	v, _, err := runTyped[T](ctx, a, runID, &driveSpec{input: ptrMessage(UserText(input)), strictSaga: true}, OutputTool, nil)
+	return v, err
+}
+
+func ptrMessage(m Message) *Message { return &m }
+
+// typedAgent returns the agent that drives a's typed run of T in mode, and the run's typed start:
+// for OutputTool, a copy of a with the final_answer tool, whose successful call ends the run, and
+// the instruction to call it; for OutputNative, a copy that sends T's schema as the response format.
+func typedAgent[T any](a *Agent, mode OutputMode) (*Agent, *TypedStart, error) {
 	var zero T
 	sch, err := schema.For[T]()
 	if err != nil {
-		return zero, fmt.Errorf("typed: schema for %T: %w (%w)", zero, err, ErrConfig)
+		return nil, nil, fmt.Errorf("typed: schema for %T: %w (%w)", zero, err, ErrConfig)
+	}
+	digest := sha256.Sum256(sch)
+	ts := &TypedStart{Mode: mode, SchemaDigest: hex.EncodeToString(digest[:]), Schema: sch}
+	if mode == OutputNative {
+		c := a.clone()
+		c.responseFormat = &ResponseFormat{Name: "response", Schema: sch}
+		return c, ts, nil
 	}
 	var shape struct {
 		Type string `json:"type"`
 	}
 	_ = json.Unmarshal(sch, &shape) // For's own output, always a JSON object
 	if shape.Type != "object" {
-		return zero, fmt.Errorf("typed: %T is not a JSON object, and a final_answer tool call's arguments must be one (wrap it in a struct field): %w", zero, ErrConfig)
+		return nil, nil, fmt.Errorf("typed: %T is not a JSON object, and a final_answer tool call's arguments must be one (wrap it in a struct field): %w", zero, ErrConfig)
 	}
 	if _, taken := a.tools[finalAnswerTool]; taken {
-		return zero, fmt.Errorf("typed: agent already registers a %q tool, which RunTyped needs: %w", finalAnswerTool, ErrConfig)
+		return nil, nil, fmt.Errorf("typed: agent already registers a %q tool, which RunTyped needs: %w", finalAnswerTool, ErrConfig)
 	}
-
 	// The terminal tool: its arguments decode strictly as T, so a malformed call is rejected
 	// with ErrToolArgs and the model self-corrects. Its result journals the arguments it
-	// accepted, which RunTyped reads back (below), so resume works.
-	respond := &answerTool[T]{schema: sch}
-
+	// accepted, which readTypedAnswer reads back, so resume works.
 	instruction := "Use the available tools to do any needed work, then call the " + finalAnswerTool +
 		" tool exactly once with the final answer. Calling it completes the task; do not add further prose."
-
 	// A successful final_answer call ends the run: the answer exists, so the model is not asked
 	// for another turn (which could only repeat the answer, or run into the turn cap).
-	typed := a.cloneWith(respond, injectSystem(instruction))
-	typed.terminalTool = finalAnswerTool
-	final, err := typed.Run(ctx, runID, input)
-	if err != nil {
-		return zero, err
-	}
+	c := a.cloneWith(&answerTool[T]{schema: sch}, injectSystem(instruction))
+	c.terminalTool = finalAnswerTool
+	return c, ts, nil
+}
 
+// readTypedAnswer reads a finished typed run's answer as a T, and the answer as its journal holds it.
+func readTypedAnswer[T any](ctx context.Context, a *Agent, runID string, mode OutputMode, final Message) (T, json.RawMessage, error) {
+	var zero, out T
+	if mode == OutputNative {
+		raw := json.RawMessage(firstText(final))
+		if err := strictjson.Unmarshal(raw, &out, argsOptions); err != nil {
+			return zero, nil, fmt.Errorf("typed: decode native structured output into %T: %w (%w)", zero, err, ErrProtocol)
+		}
+		return out, raw, nil
+	}
 	// The answer is the journaled result of the first final_answer call (in the model's order)
 	// the tool accepted (resume-safe). A call the tool rejected (arguments that do not decode as
 	// T) is not an answer. Only if no call was accepted does the final turn's text stand in.
 	recs, err := a.store.History(ctx, runID)
 	if err != nil {
-		return zero, fmt.Errorf("typed: load history %s: %w (%w)", runID, err, ErrStorage)
+		return zero, nil, fmt.Errorf("typed: load history %s: %w (%w)", runID, err, ErrStorage)
 	}
 	accepted := map[string]json.RawMessage{}
 	for _, r := range recs {
@@ -87,7 +111,6 @@ func RunTyped[T any](ctx context.Context, a *Agent, runID, input string) (T, err
 			accepted[r.ToolUseID] = r.Result
 		}
 	}
-	var out T
 	for _, r := range recs {
 		if r.Kind != StepModel || r.Message == nil {
 			continue
@@ -95,9 +118,9 @@ func RunTyped[T any](ctx context.Context, a *Agent, runID, input string) (T, err
 		for _, tu := range r.Message.toolUses() {
 			if result, ok := accepted[tu.ID]; ok && tu.Name == finalAnswerTool {
 				if err := readAnswer(result, tu.Args, &out); err != nil {
-					return zero, fmt.Errorf("typed: decode final_answer into %T: %w (%w)", zero, err, ErrProtocol)
+					return zero, nil, fmt.Errorf("typed: decode final_answer into %T: %w (%w)", zero, err, ErrProtocol)
 				}
-				return out, nil
+				return out, answerRaw(result, tu.Args), nil
 			}
 		}
 	}
@@ -106,12 +129,22 @@ func RunTyped[T any](ctx context.Context, a *Agent, runID, input string) (T, err
 	if len(raw) == 0 {
 		// The model neither called the final_answer tool nor produced any text to parse: there is
 		// no answer to decode. Report that directly rather than surfacing an opaque JSON error on "".
-		return zero, fmt.Errorf("typed: run produced no final_answer tool call and no text answer to decode into %T: %w", zero, ErrProtocol)
+		return zero, nil, fmt.Errorf("typed: run produced no final_answer tool call and no text answer to decode into %T: %w", zero, ErrProtocol)
 	}
 	if err := strictjson.Unmarshal(raw, &out, argsOptions); err != nil {
-		return zero, fmt.Errorf("typed: decode answer into %T (the model answered in text that is not valid JSON for this type): %w (%w)", zero, err, ErrProtocol)
+		return zero, nil, fmt.Errorf("typed: decode answer into %T (the model answered in text that is not valid JSON for this type): %w (%w)", zero, err, ErrProtocol)
 	}
-	return out, nil
+	return out, raw, nil
+}
+
+// answerRaw is the answer an accepted final_answer call journaled: its accepted arguments, or, for
+// a run journaled before the tool recorded them, the model's arguments.
+func answerRaw(result, args json.RawMessage) json.RawMessage {
+	var rec answerRecord
+	if strictjson.Unmarshal(result, &rec, argsOptions) == nil && len(rec.Accepted) > 0 {
+		return rec.Accepted
+	}
+	return args
 }
 
 // answerTool is RunTyped's final_answer tool. Its arguments decode strictly as T, and its result
@@ -174,22 +207,8 @@ func readAnswer(result, args json.RawMessage, out any) error {
 // response formats (Anthropic) fails the run with ErrConfig before calling the model; use
 // the provider-agnostic RunTyped there. Package function (Go methods can't add type parameters).
 func RunTypedNative[T any](ctx context.Context, a *Agent, runID, input string) (T, error) {
-	var zero T
-	sch, err := schema.For[T]()
-	if err != nil {
-		return zero, fmt.Errorf("typed: schema for %T: %w (%w)", zero, err, ErrConfig)
-	}
-	c := a.clone()
-	c.responseFormat = &ResponseFormat{Name: "response", Schema: sch}
-	msg, err := c.Run(ctx, runID, input)
-	if err != nil {
-		return zero, err
-	}
-	var out T
-	if err := strictjson.Unmarshal([]byte(firstText(msg)), &out, argsOptions); err != nil {
-		return zero, fmt.Errorf("typed: decode native structured output into %T: %w (%w)", zero, err, ErrProtocol)
-	}
-	return out, nil
+	v, _, err := runTyped[T](ctx, a, runID, &driveSpec{input: ptrMessage(UserText(input)), strictSaga: true}, OutputNative, nil)
+	return v, err
 }
 
 // clone returns a copy of the agent that shares nothing mutable with it. The tool set, specs map,
@@ -233,11 +252,65 @@ func injectSystem(s string) Middleware {
 }
 
 // RunTypedMessage runs the agent to the end of runID's run like RunMessage, and returns its answer
-// as a T (see RunTyped for how the answer is collected and decoded), with the run's Result.
+// as a T, with the run's Result (whose Output is the answer as journaled). Its output mode
+// (WithOutputMode) is OutputTool by default: see RunTyped for how the final_answer tool collects
+// and decodes the answer; OutputNative uses the provider's native structured output instead (see
+// RunTypedNative). The mode and T's schema (in full and as a digest) are journaled in run:start:
+// driving a typed run through RunMessage or ResumeRun, or with another T or mode, is ErrConfig
+// before any model call. Recovery resumes a typed run with ResumeTyped[T].
 //
 // Deprecated: transitional; renamed by the 1.0 rewrite. RunTypedMessage becomes the method
-// RunTyped, and the package function RunTyped is removed.
+// RunTyped, and the package functions RunTyped and RunTypedNative are removed.
 func (a *Agent) RunTypedMessage[T any](ctx context.Context, runID string, input Message, opts ...RunOption) (T, *Result, error) {
 	var zero T
-	return zero, nil, errP14NotBuilt
+	if err := checkRunID(ctx, runID); err != nil {
+		return zero, nil, err
+	}
+	d := &driveSpec{input: &input}
+	start := time.Now()
+	if err := applyOptions("run", &d.cfg, opts, RunOption.applyRun); err != nil {
+		return zero, &Result{RunID: runID, Duration: time.Since(start)}, err
+	}
+	mode := d.cfg.outputMode
+	if mode == "" {
+		// A later drive that passes no mode runs in the journaled one.
+		st, ok, err := RecordedStart(ctx, a.store, runID)
+		if err != nil {
+			return zero, &Result{RunID: runID, Duration: time.Since(start)}, err
+		}
+		mode = OutputTool
+		if ok && st.Typed != nil && st.Typed.Mode != "" {
+			mode = st.Typed.Mode
+		}
+	}
+	return runTyped[T](ctx, a, runID, d, mode, &start)
+}
+
+// runTyped drives a's typed run of T for d in mode, and returns the answer and the run's Result.
+// began is when the entry point was called, or nil for one that returns no Result.
+func runTyped[T any](ctx context.Context, a *Agent, runID string, d *driveSpec, mode OutputMode, began *time.Time) (T, *Result, error) {
+	var zero T
+	t0 := time.Now()
+	if began != nil {
+		t0 = *began
+	}
+	res := &Result{RunID: runID}
+	c, ts, err := typedAgent[T](a, mode)
+	if err != nil {
+		res.Duration = time.Since(t0)
+		return zero, res, err
+	}
+	d.typed = ts
+	final, tot, turns, err := c.drive(ctx, runID, d)
+	res.Usage, res.Spend, res.Turns = tot.answer, tot.spend, turns
+	if err == nil {
+		var v T
+		v, res.Output, err = readTypedAnswer[T](ctx, a, runID, mode, final)
+		if err == nil {
+			res.Message, res.Duration = final, time.Since(t0)
+			return v, res, nil
+		}
+	}
+	res.Duration = time.Since(t0)
+	return zero, res, err
 }
