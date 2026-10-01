@@ -66,7 +66,7 @@ func WithRetryIf(pred func(error) bool) RetryOption {
 // cannot classify (e.g. raw network errors, a provider's mid-stream server error) are retried,
 // since those are usually transient.
 //
-//	agent.New(model, store, tools...).Use(middleware.Retry(3, middleware.WithRetryIf(middleware.Retryable)))
+//	agent.WithMiddleware(middleware.Retry(3, middleware.WithRetryIf(middleware.Retryable)))
 func Retryable(err error) bool {
 	if err == nil {
 		return false

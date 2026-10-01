@@ -8,8 +8,10 @@ import (
 	"go/token"
 	"go/types"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -224,4 +226,90 @@ func loadAgent(t *testing.T) (*types.Package, types.Importer) {
 		t.Fatal(err)
 	}
 	return pkg, imp
+}
+
+// Option constructors outside the agent package (trace.Instrument, and any a later package or
+// nested module adds) follow the same rule: each returns its narrowest agent option type, and a
+// new one must be listed here. Every module's source in the repository is read, nested modules
+// included, since the agent package's tests cannot load their export data; the result type is
+// resolved through each file's import of the agent package, whatever its local name.
+func TestOptionScopes_ConstructorsOutsideAgent(t *testing.T) {
+	want := map[string]string{
+		"github.com/bide-ai/bide/trace.Instrument": "Option",
+	}
+	optionTypes := []string{"Option", "RunOption", "ParallelOption", "StepOption", "ResolveOption", "ToolOption",
+		"LeaseOption", "RecoverOption", "RecoverLoopOption", "RetrievalOption",
+		"AgentRunOption", "ConcurrencyOption", "ClockOption", "SafetyOption", "LeaseControl"}
+	root, err := filepath.Abs("..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := 0
+	err = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			switch {
+			case path == filepath.Join(root, "agent"): // the test above checks it with the type checker
+				return filepath.SkipDir
+			case path != root && (d.Name() == "testdata" || d.Name() == "node_modules" || strings.HasPrefix(d.Name(), ".")):
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		f, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.SkipObjectResolution)
+		if err != nil {
+			return err
+		}
+		agentName := ""
+		for _, im := range f.Imports {
+			if im.Path.Value == `"github.com/bide-ai/bide/agent"` {
+				agentName = "agent"
+				if im.Name != nil {
+					agentName = im.Name.Name
+				}
+			}
+		}
+		if agentName == "" {
+			return nil
+		}
+		rel, _ := filepath.Rel(root, filepath.Dir(path))
+		pkgPath := strings.TrimSuffix("github.com/bide-ai/bide/"+filepath.ToSlash(rel), "/.")
+		for _, decl := range f.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Recv != nil || !fn.Name.IsExported() || fn.Type.Results == nil || len(fn.Type.Results.List) != 1 {
+				continue
+			}
+			sel, ok := fn.Type.Results.List[0].Type.(*ast.SelectorExpr)
+			if !ok {
+				continue
+			}
+			if x, ok := sel.X.(*ast.Ident); !ok || x.Name != agentName || !slices.Contains(optionTypes, sel.Sel.Name) {
+				continue
+			}
+			found++
+			name := pkgPath + "." + fn.Name.Name
+			switch w, listed := want[name]; {
+			case !listed:
+				t.Errorf("option constructor %s (returns agent.%s) is not in the table; add it with its narrowest type", name, sel.Sel.Name)
+			case w != sel.Sel.Name:
+				t.Errorf("%s returns agent.%s, want agent.%s", name, sel.Sel.Name, w)
+			}
+			delete(want, name)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name := range want {
+		t.Errorf("option constructor %s is listed but not found", name)
+	}
+	if found == 0 {
+		t.Fatal("no option constructor found outside the agent package; is the repository root right?")
+	}
 }

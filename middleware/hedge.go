@@ -58,8 +58,8 @@ import (
 // concern, not this).
 //
 //	// Primary is Anthropic; if it is quiet for 800ms, also try OpenAI and take the first.
-//	a := agent.New(anthropicModel, store, tools...).
-//	    Use(middleware.Hedge(800*time.Millisecond, openaiModel))
+//	a, err := agent.Build(anthropicModel, journal, agent.WithTools(tools...),
+//		agent.WithMiddleware(middleware.Hedge(800*time.Millisecond, openaiModel)))
 func Hedge(delay time.Duration, backups ...agent.Model) agent.Middleware {
 	return func(next agent.ModelHandler) agent.ModelHandler {
 		if len(backups) == 0 {

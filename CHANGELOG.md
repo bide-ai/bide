@@ -23,7 +23,6 @@ minor version (0.x.0) may include breaking API or journal-format changes; each o
 - `agent.WithRecoverLapsedConcurrency` caps how many lapsed runs `RecoverLoop`'s lapsed loop drives at once (16 by default), apart from `WithRecoverConcurrency` ([#126]).
 - `Leaser.ReapLeases(ctx, ended)` deletes the lapsed leases no recovery pass takes over (a finished run's, or one on a run the store does not hold), checking the expiry in the same statement; `RecoverLoop`'s lapsed loop calls it on each pass, so a holder that died between its run's last write and its release no longer leaves a lease every later pass reads. `MemStore`, SQLite and Postgres implement it, and `storetest` checks it (`Leaser_ReapLeases`) ([#126]).
 - Postgres: `Open` creates two indexes on the leases table when they are missing (`<prefix>leases_expiry` and `<prefix>leases_run_c`, on `run_id` under the "C" collation), so the lapsed listing reads only lapsed leases, or pages through many in order without sorting; on a store whose role does not own the tables, the owner opens it once to create them ([#126]).
-
 - `agent.Build(model, journal, opts...) (*Agent, error)`, construction from options, and `Agent.With(opts...)`, which returns a configured copy and leaves the agent unchanged. `Build` and `With` return every configuration problem as `ErrConfig` when the agent is built: a nil model, journal, option, tool, middleware or function; two tools with one name or one named `final_answer`; a tool name outside `^[a-zA-Z0-9_-]{1,64}$`, the names every model adapter accepts; a non-object input schema; an invalid approval policy, an m-of-n policy with no `WithApproverVerifiers` or with two approvers on one signing key; a negative limit; a `WithRetrieval` k below 1; and a tool choice with an unknown mode, a tool the agent lacks, or mode `required` on an agent with no tools. `Build` is the transitional name of the 1.0 `New`. `Agent.Journal()` returns the agent's journal ([#127]).
 - Agent options: `WithTools`, `WithMiddleware`, `WithToolMiddleware`, `WithApproverVerifiers`, `WithToolErrorRedactor`, `WithSystemPromptFunc` (its function gets the run's `RunInfo` and may fail), `WithRetrieval`, `WithOptions`, and `WithMaxTurns`, `WithTokenBudget`, `WithSystemPrompt`, `WithSampling`, `WithToolChoice`, `WithWaker`, `WithIdentity`, `WithMaxConcurrency` and `WithClock`. The last value given for a setting wins; `WithSystemPrompt` and `WithSystemPromptFunc` share one slot. The agent's `WithIdentity`, `WithWaker` and `WithClock` apply to a run whose context carries none ([#127]).
 - Option scopes are interfaces with unexported methods (`Option`, `RunOption`, `ParallelOption`, `StepOption`, `ResolveOption`, `LeaseOption`, `RecoverOption`, `RecoverLoopOption`, `RetrievalOption`, and `ToolOption`), and a setting for several scopes returns one of the combination types `AgentRunOption`, `ConcurrencyOption`, `ClockOption`, `SafetyOption` or `LeaseControl`, so an option passed where it does not apply does not compile. `RunOption` values are type-checked now and taken by the run API in the next redesign step ([#127]).
@@ -71,7 +70,6 @@ minor version (0.x.0) may include breaking API or journal-format changes; each o
 - `NextOnceKey` and `Safety.Idempotent` document that once keys are scoped to one tool call: a retry the model makes is a new call with new keys, so dedup across the model's retries needs a business key from the arguments ([#117]).
 - **Breaking:** `agent.RunFilter.Admits` takes a third argument, `lapsed func() bool`, which reports whether the run's lease has lapsed; it is called only when the filter sets `LeaseLapsed` ([#126]).
 - **Breaking:** `agent.Leaser` has a fourth method, `ReapLeases` ([#126]).
-
 - **Breaking:** `agent.WithRetrieval(r, k)` is an agent `Option`, not a model middleware: the agent retrieves for the run's user message as a journaled engine step, at a drive's first model call, and every model middleware sees the request with the documents in it. Migration: `a.Use(agent.WithRetrieval(r, k))` becomes `agent.Build(model, j, agent.WithRetrieval(r, k))` or `a.With(agent.WithRetrieval(r, k))`. A retrieval outside an agent run no longer exists. The retrieval runs before the model middleware chain, so model middleware neither retries it nor prevents it: `middleware.Retry` no longer retries a failed retrieval (use `agent.WithRetrievalRetry`), and a model middleware that refuses the call (a policy gate, a spend cap) runs after the query has reached the `Retriever` and the documents are journaled. A policy that must keep a query from the store wraps the `Retriever` (see `agent.RetrieverFunc` and the RAG guide) ([#127]).
 - **Breaking:** `agent.RetrievalTool(name, description, r, k, opts...)` takes the tool's name and description and the tool options, as `Func` does; `RetrievalOption`, `RetrievalName` and `RetrievalDescription` are removed ([#127]).
 - **Breaking:** `trace.Instrument(tracer, opts...)` returns an `agent.Option`. Migration: `trace.Instrument(a, tracer)` becomes `agent.Build(model, j, trace.Instrument(tracer))` or `a.With(trace.Instrument(tracer))` ([#127]).
@@ -738,7 +736,6 @@ First public release.
 [#115]: https://github.com/bide-ai/bide/pull/115
 [#116]: https://github.com/bide-ai/bide/pull/116
 [#117]: https://github.com/bide-ai/bide/pull/117
-[#127]: https://github.com/bide-ai/bide/pull/127
 [#118]: https://github.com/bide-ai/bide/pull/118
 [#119]: https://github.com/bide-ai/bide/pull/119
 [#120]: https://github.com/bide-ai/bide/pull/120
@@ -746,6 +743,7 @@ First public release.
 [#122]: https://github.com/bide-ai/bide/pull/122
 [#124]: https://github.com/bide-ai/bide/pull/124
 [#126]: https://github.com/bide-ai/bide/pull/126
+[#127]: https://github.com/bide-ai/bide/pull/127
 
 [78f8db6]: https://github.com/bide-ai/bide/commit/78f8db6
 [994721b]: https://github.com/bide-ai/bide/commit/994721b
