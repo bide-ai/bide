@@ -62,7 +62,7 @@ func main() {
 
 ## Configuring an agent
 
-`agent.Build(model, journal, opts...)` builds an agent from options, and checks them all when the agent is built: a nil model, a duplicate or reserved tool name, a tool name outside `^[a-zA-Z0-9_-]{1,64}$` (the names every model adapter accepts), tool choice `required` with no tools, a tool whose input schema is not a JSON object, an m-of-n approval policy with no `WithApproverVerifiers`, a negative limit and every other configuration problem is an error wrapping `agent.ErrConfig`, returned by `Build`, never by the first run.
+`agent.Build(model, journal, opts...)` builds an agent from options, and checks them all when the agent is built: a nil model, a duplicate or reserved tool name, a tool name the agent's model refuses (when the model declares its rule, as the bundled adapters do), a tool whose input schema is not a JSON object, an m-of-n approval policy with no `WithApproverVerifiers`, a negative limit and every other configuration problem is an error wrapping `agent.ErrConfig`, returned by `Build`, never by the first run.
 
 <!-- docsnip: setup model agent.Model; journal *agent.Journal; weather agent.Tool -->
 ```go

@@ -5,32 +5,34 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
 )
 
-// V1 (review of #127): a configuration this adapter refuses with ErrConfig on every run
-// (modeltest.ToolConfig: "required" with no tools declared; a tool name outside [a-zA-Z0-9_-])
-// is refused by Build, never accepted there to fail every run.
-func TestBuild_RefusesWhatTheAdapterRefuses(t *testing.T) {
+// V1 (review of #127): the adapter declares its tool rules (agent.ToolRules), so agent.Build
+// refuses a tool name OpenAI refuses, and a run of an agent with tool choice "required" and
+// nothing to call fails with ErrConfig before anything reaches the provider.
+func TestBuild_FollowsTheAdaptersToolRules(t *testing.T) {
+	var hits atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
 		http.Error(w, "not a provider", http.StatusInternalServerError)
 	}))
 	defer srv.Close()
 	m := New("k", WithBaseURL(srv.URL), WithHTTPClient(srv.Client()))
-	for name, opts := range map[string][]agent.Option{
-		"required, no tools": {agent.WithToolChoice(agent.ToolChoice{Mode: "required"})},
-		"space in tool name": {agent.WithTools(agent.Func("get weather", "", agent.Safety{ReadOnly: true},
-			func(context.Context, struct{}) (string, error) { return "", nil }))},
-	} {
-		a, err := agent.Build(m, agent.NewMemStore().Journal(), opts...)
-		if err != nil {
-			continue // refused at build: what the PR claims
+	for _, n := range []string{"get weather", "fs.read", "fs:read"} {
+		tool := agent.Func(n, "", agent.Safety{ReadOnly: true}, func(context.Context, struct{}) (string, error) { return "", nil })
+		if _, err := agent.Build(m, agent.NewMemStore().Journal(), agent.WithTools(tool)); !errors.Is(err, agent.ErrConfig) {
+			t.Errorf("tool %q: Build err = %v, want ErrConfig", n, err)
 		}
-		_, rerr := a.Run(context.Background(), "r", "hi")
-		if errors.Is(rerr, agent.ErrConfig) {
-			t.Errorf("%s: Build accepted it, and the run fails with ErrConfig: %v", name, rerr)
-		}
+	}
+	a, err := agent.Build(m, agent.NewMemStore().Journal(), agent.WithToolChoice(agent.ToolChoice{Mode: "required"}))
+	if err != nil {
+		t.Fatalf("Build refused required with no tools (RunTyped may supply one): %v", err)
+	}
+	if _, err := a.Run(context.Background(), "r", "hi"); !errors.Is(err, agent.ErrConfig) || hits.Load() != 0 {
+		t.Errorf("run with required and no tools: err %v, %d requests sent; want ErrConfig and none", err, hits.Load())
 	}
 }

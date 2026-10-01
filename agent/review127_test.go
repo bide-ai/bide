@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -251,50 +252,99 @@ func TestRev127_RetrievalOnceAcrossPause(t *testing.T) {
 	}
 }
 
-// V1 (review of #127): Build refuses a configuration every model adapter refuses on every request
-// (modeltest.ToolConfig): a tool name outside ^[a-zA-Z0-9_-]{1,64}$, and tool choice "required"
-// with no tools. "auto" and "none" with no tools are met, and New stays lenient.
-func TestBuild_RefusesWhatEveryAdapterRefuses(t *testing.T) {
+// rulesModel is a scripted model that declares tool rules (ToolRules), or wraps one that does.
+type rulesModel struct {
+	agent.Model
+	name     *regexp.Regexp
+	required bool
+	calls    int
+}
+
+func (m *rulesModel) ToolNameRule() *regexp.Regexp   { return m.name }
+func (m *rulesModel) RequiresToolsForRequired() bool { return m.required }
+func (m *rulesModel) Stream(ctx context.Context, req agent.Request) (*agent.Stream, error) {
+	m.calls++
+	return m.Model.Stream(ctx, req)
+}
+
+// unwrapModel wraps a Model without declaring rules itself; Build follows Unwrap to its rules.
+type unwrapModel struct{ agent.Model }
+
+func (m unwrapModel) Unwrap() agent.Model { return m.Model }
+
+// V1 (review of #127): Build checks tool names against the rule the agent's model declares
+// (ToolRules), through an Unwrap chain, and checks nothing for a model that declares none.
+func TestBuild_ToolNamesFollowTheModelsRule(t *testing.T) {
 	named := func(n string) agent.Tool {
 		return agent.Func(n, "", agent.Safety{ReadOnly: true}, func(context.Context, struct{}) (string, error) { return "", nil })
 	}
+	strict := regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
+	gemini := regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_.:-]{0,63}$`)
 	j := agent.NewMemStore().Journal()
-	m := agent.NewScriptedModel()
-	for name, opts := range map[string][]agent.Option{
-		"space in name":            {agent.WithTools(named("get weather"))},
-		"empty name":               {agent.WithTools(named(""))},
-		"slash in name":            {agent.WithTools(named("fs/read"))},
-		"dot in name":              {agent.WithTools(named("fs.read"))},
-		"non-ASCII name":           {agent.WithTools(named("résumé"))},
-		"65-char name":             {agent.WithTools(named(strings.Repeat("a", 65)))},
-		"required, none":           {agent.WithToolChoice(agent.ToolChoice{Mode: "required"})},
-		"required via WithOptions": {agent.WithOptions(agent.WithToolChoice(agent.ToolChoice{Mode: "required"}))},
+	for _, tc := range []struct {
+		name  string
+		model agent.Model
+		tool  string
+		ok    bool
+	}{
+		{"strict refuses a space", &rulesModel{Model: agent.NewScriptedModel(), name: strict}, "get weather", false},
+		{"strict refuses a dot", &rulesModel{Model: agent.NewScriptedModel(), name: strict}, "fs.read", false},
+		{"strict refuses 65 chars", &rulesModel{Model: agent.NewScriptedModel(), name: strict}, strings.Repeat("a", 65), false},
+		{"strict accepts", &rulesModel{Model: agent.NewScriptedModel(), name: strict}, "get_weather-1", true},
+		{"gemini accepts a dot", &rulesModel{Model: agent.NewScriptedModel(), name: gemini}, "fs.read", true},
+		{"gemini refuses a leading digit", &rulesModel{Model: agent.NewScriptedModel(), name: gemini}, "1tool", false},
+		{"through Unwrap", unwrapModel{&rulesModel{Model: agent.NewScriptedModel(), name: strict}}, "fs.read", false},
+		{"no rule declared", agent.NewScriptedModel(), "fs.read", true},
+		{"nil rule", &rulesModel{Model: agent.NewScriptedModel()}, "get weather", true},
 	} {
-		if _, err := agent.Build(m, j, opts...); !errors.Is(err, agent.ErrConfig) {
-			t.Errorf("%s: Build err = %v, want ErrConfig", name, err)
+		_, err := agent.Build(tc.model, j, agent.WithTools(named(tc.tool)))
+		if tc.ok != (err == nil) || err != nil && !errors.Is(err, agent.ErrConfig) {
+			t.Errorf("%s: Build err = %v, want ok %v", tc.name, err, tc.ok)
 		}
 	}
-	for name, opts := range map[string][]agent.Option{
-		"valid names":     {agent.WithTools(named("get_weather"), named("a-1"), named(strings.Repeat("a", 64)))},
-		"auto, no tools":  {agent.WithToolChoice(agent.ToolChoice{Mode: "auto"})},
-		"none, no tools":  {agent.WithToolChoice(agent.ToolChoice{Mode: "none"})},
-		"required, tools": {agent.WithTools(named("a")), agent.WithToolChoice(agent.ToolChoice{Mode: "required"})},
-	} {
-		if _, err := agent.Build(m, j, opts...); err != nil {
-			t.Errorf("%s: Build err = %v, want none", name, err)
-		}
-	}
-	// With adds to the agent: a required tool choice on an agent with tools stays valid, and a
-	// bad name is refused there too.
-	a, err := agent.Build(m, j, agent.WithTools(named("a")))
+	a, err := agent.Build(&rulesModel{Model: agent.NewScriptedModel(), name: strict}, j)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := a.With(agent.WithToolChoice(agent.ToolChoice{Mode: "required"})); err != nil {
-		t.Errorf("With(required) on an agent with a tool: %v", err)
-	}
 	if _, err := a.With(agent.WithTools(named("b c"))); !errors.Is(err, agent.ErrConfig) {
 		t.Errorf("With a bad tool name: %v, want ErrConfig", err)
+	}
+}
+
+// V1: tool choice "required" on an agent with no tools of its own is left to the run, since
+// RunTyped supplies an answer tool. A run with nothing to call fails with ErrConfig before it
+// opens the journal or calls the model, when the model declares it needs a tool; RunTyped runs.
+func TestRequiredChoice_CheckedAtTheRun(t *testing.T) {
+	required := agent.WithToolChoice(agent.ToolChoice{Mode: "required"})
+	store := agent.NewMemStore()
+	m := &rulesModel{Model: agent.NewScriptedModel(), required: true}
+	a, err := agent.Build(m, store.Journal(), required)
+	if err != nil {
+		t.Fatalf("Build refused required with no tools: %v", err)
+	}
+	if _, err := a.Run(context.Background(), "plain", "hi"); !errors.Is(err, agent.ErrConfig) || m.calls != 0 {
+		t.Fatalf("Run: err %v after %d model calls, want ErrConfig and none", err, m.calls)
+	}
+	if recs, _ := store.History(context.Background(), "plain"); len(recs) != 0 {
+		t.Fatalf("the refused run journaled %d records", len(recs))
+	}
+	typed := &rulesModel{Model: agent.NewScriptedModel(agent.ToolTurn("c1", "final_answer", `{"N":7}`)), required: true}
+	b, err := agent.Build(typed, store.Journal(), required)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := agent.RunTyped[struct{ N int }](context.Background(), b, "typed", "count")
+	if err != nil || got.N != 7 {
+		t.Fatalf("RunTyped under required with no tools of its own: %+v, %v", got, err)
+	}
+	// A model that does not declare the rule is not second-guessed: the run reaches it.
+	free := &rulesModel{Model: agent.NewScriptedModel(agent.TextTurn("ok"))}
+	c, err := agent.Build(free, store.Journal(), required)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Run(context.Background(), "free", "hi"); err != nil || free.calls != 1 {
+		t.Fatalf("a model with no rule: err %v after %d calls", err, free.calls)
 	}
 }
 

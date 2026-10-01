@@ -46,6 +46,9 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 	if err := a.checkTools(); err != nil {
 		return Message{}, usageTotals{}, 0, err
 	}
+	if err := a.checkRequiredChoice(); err != nil {
+		return Message{}, usageTotals{}, 0, err
+	}
 	if err := checkDurable(a.store); err != nil {
 		return Message{}, usageTotals{}, 0, err
 	}

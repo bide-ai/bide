@@ -220,11 +220,13 @@ wrong:
 - `auto` or `none` with no tools declared is already met, so no tool choice is sent (the providers
   reject one with no tools).
 
-`agent.Build` and `Agent.With` refuse what every adapter refuses, so it fails when the agent is
-built rather than on every run: a tool name outside `^[a-zA-Z0-9_-]{1,64}$`, two tools with one
-name, an unknown mode, `required` on an agent with no tools, and `tool` naming a tool the agent
-lacks. A Gemini-only name (one with a dot or a colon) is refused there too, since an agent is not
-tied to one adapter.
+Each adapter declares its rules through `agent.ToolRules` (`ToolNameRule`,
+`RequiresToolsForRequired`), so `agent.Build` and `Agent.With` refuse a tool name the agent's
+model cannot take when the agent is built, not on every run; a model that declares no rules is
+not checked. Two tools with one name, an unknown mode, and `tool` naming a tool the agent lacks
+are refused for any model. `required` on an agent with no tools of its own is checked at the run,
+since `RunTyped` supplies an answer tool: a run with nothing to call fails with `ErrConfig` before
+it opens the journal.
 
 ## Tool-call IDs
 

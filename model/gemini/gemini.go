@@ -27,6 +27,7 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -90,6 +91,14 @@ func New(apiKey string, opts ...Option) *Model {
 	}
 	return m
 }
+
+// ToolNameRule implements agent.ToolRules: the tool names Gemini accepts, `^[a-zA-Z_][a-zA-Z0-9_.:-]{0,63}$`, so
+// agent.Build refuses any other name when the agent is built.
+func (m *Model) ToolNameRule() *regexp.Regexp { return toolcfg.GeminiName }
+
+// RequiresToolsForRequired implements agent.ToolRules: Gemini refuses tool choice "required"
+// with no tools declared.
+func (m *Model) RequiresToolsForRequired() bool { return true }
 
 // Describe reports the adapter's identity: provider "gemini", the configured model ID, and support
 // for a JSON-schema response format.
@@ -568,3 +577,6 @@ func streamSSE(body io.ReadCloser, send func(agent.Emit) bool) {
 		Usage: agent.Usage{InputTokens: in - cacheRead, OutputTokens: out, CacheReadTokens: cacheRead},
 	}})
 }
+
+// Model declares its tool rules to agent.Build.
+var _ agent.ToolRules = (*Model)(nil)

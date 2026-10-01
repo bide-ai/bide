@@ -242,10 +242,6 @@ func (c *agentConfig) finish() error {
 	if err := checkForcedTool(a.toolChoice, a.specs); err != nil {
 		return err
 	}
-	if tc := a.toolChoice; tc != nil && tc.Mode == "required" && len(a.specs) == 0 {
-		// Every model adapter refuses it on every request (there is no tool to call).
-		return fmt.Errorf("agent: tool choice \"required\" with no tools: %w", ErrConfig)
-	}
 	for _, name := range slices.Sorted(maps.Keys(a.specs)) {
 		s := a.specs[name]
 		if s.Approval == nil || s.Approval.single() {
@@ -302,8 +298,8 @@ func (f agentOption) applyAgent(c *agentConfig) error { return f(c) }
 
 // WithTools registers tools with the agent. Each tool's spec is read once, here, and every
 // decision about its calls is made from that copy. A nil tool, two tools with one name (including
-// a name the agent already has), a name outside ^[a-zA-Z0-9_-]{1,64}$ (the names every model
-// adapter accepts), the name "final_answer", a non-object input schema, an invalid approval
+// a name the agent already has), a name the agent's model's declared tool-name rule does not
+// match (ToolRules), the name "final_answer", a non-object input schema, an invalid approval
 // policy, and a wrapper the agent cannot honor are ErrConfig.
 func WithTools(tools ...Tool) Option {
 	return agentOption(func(c *agentConfig) error {
@@ -549,7 +545,8 @@ func WithSampling(opts ...SamplingOption) AgentRunOption {
 // WithToolChoice sets the tool-choice control applied to every model call (see ToolChoice and
 // Agent.WithToolChoice). A mode that is not "", "auto", "none", "required" or "tool", mode "tool"
 // with no Name, a Name with any other mode, and (for an agent) a forced tool the agent does not
-// have or mode "required" on an agent with no tools are ErrConfig.
+// have are ErrConfig. Mode "required" on an agent with no tools is ErrConfig when the agent's
+// model declares it needs one (ToolRules), at the run, since RunTyped supplies an answer tool.
 func WithToolChoice(tc ToolChoice) AgentRunOption {
 	return agentRunOption{
 		check: func() error { return checkToolChoiceValue(tc) },
