@@ -47,3 +47,53 @@ func (l *Log) bypassNextSeqInSelect(ctx context.Context) error {
 	_, err := l.db.ExecContext(ctx, "SELECT governed_events_next_seq_v1('e')") // BYPASS: the next_seq function outside the insert
 	return err
 }
+
+// From the second review of #113: spellings that hide a call from a scan of the text, and
+// next_seq outside Append's one-row INSERT.
+
+func (l *Log) bypassUnicodeIdent(ctx context.Context) error {
+	_, err := l.db.ExecContext(ctx, `SELECT U&"pg_advisory_\006Cock"(42)`) // BYPASS: pg_advisory_lock through a Unicode-escaped identifier
+	return err
+}
+
+func (l *Log) bypassQuotedIdent(ctx context.Context) error {
+	_, err := l.db.ExecContext(ctx, `SELECT "set_config"('application_name', 'x', false)`) // BYPASS: a quoted function name
+	return err
+}
+
+func (l *Log) bypassComment(ctx context.Context) error {
+	_, err := l.db.ExecContext(ctx, `SELECT set_config/**/('application_name', 'x', false)`) // BYPASS: a comment between the name and its parenthesis
+	return err
+}
+
+func (l *Log) bypassDollarQuote(ctx context.Context) error {
+	_, err := l.db.ExecContext(ctx, `SELECT $$'$$, set_config('application_name', 'x', false), '$$'`) // BYPASS: a quote inside a dollar-quoted string hides the call
+	return err
+}
+
+func (l *Log) bypassNextSeqInsertSelect(ctx context.Context) error {
+	_, err := l.db.ExecContext(ctx, `INSERT INTO governed_events (entity, seq, event) SELECT entity, governed_events_next_seq_v1(entity), event FROM governed_events`) // BYPASS: next_seq for many entities in one INSERT ... SELECT
+	return err
+}
+
+func (l *Log) bypassNextSeqTwice(ctx context.Context) error {
+	_, err := l.db.ExecContext(ctx, `INSERT INTO governed_events (entity, seq, event) VALUES ($1::text, governed_events_next_seq_v1($1::text), governed_events_next_seq_v1($1::text)::text)`) // BYPASS: next_seq called twice
+	return err
+}
+
+func (l *Log) bypassUnqualifiedBuiltin(ctx context.Context) error {
+	_, err := l.db.ExecContext(ctx, "SELECT max(seq) FROM governed_events") // BYPASS: a built-in called without pg_catalog, which an overload can take over
+	return err
+}
+
+func (l *Log) bypassUnicodeUescape(ctx context.Context) error {
+	_, err := l.db.ExecContext(ctx, `SELECT U&"pg_advisory_!006Cock" UESCAPE '!'(42)`) // BYPASS: a Unicode escape with no backslash
+	return err
+}
+
+const typedLog logSQL = "BEGIN" // BYPASS: a logSQL constant, made without newLogSQL
+
+func (l *Log) bypassLogSQL(ctx context.Context) error {
+	_, err := l.db.ExecContext(ctx, string(logSQL("BEGIN"))) // BYPASS: a conversion to logSQL outside newLogSQL
+	return err
+}

@@ -49,38 +49,47 @@ func TestOpen_CreatesNextSeq(t *testing.T) {
 	}
 }
 
-// Open refuses a next_seq function whose definition is not the one this version creates. Skips
-// without PG_DSN.
+// Open refuses a next_seq function whose definition is not the one this version creates. Each case
+// changes one property of the exact definition, which pg_get_functiondef prints for the function
+// Open created in another schema. Skips without PG_DSN.
 func TestOpen_RefusesAnotherNextSeq(t *testing.T) {
 	ctx := context.Background()
-	db, schema, dsn := migrationSchema(t, false)
+	db, scratch, dsn := migrationSchema(t, false)
 	l, err := postgreslog.Open(ctx, dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
 	l.Close()
-	want := nextSeqSource(t, db, schema)
-	if want == "" {
-		t.Fatalf("Open created no %s", nextSeqFn)
+	var exact string
+	if err := db.QueryRow(`SELECT pg_get_functiondef($1::regprocedure)`, scratch+"."+nextSeqFn+"(text)").Scan(&exact); err != nil {
+		t.Fatal(err)
 	}
-	quote := func(src string) string { return "$src$" + src + "$src$" }
-	noLock := `BEGIN RETURN (SELECT COALESCE(MAX(seq), -1) + 1 FROM governed_events WHERE entity = e); END`
-	for _, tc := range []struct{ name, def string }{
-		{"no_lock", `CREATE FUNCTION %s.` + nextSeqFn + `(e text) RETURNS bigint LANGUAGE plpgsql VOLATILE AS ` + quote(noLock)},
-		{"stable", `CREATE FUNCTION %s.` + nextSeqFn + `(e text) RETURNS bigint LANGUAGE plpgsql STABLE AS ` + quote(want)},
-		{"security_definer", `CREATE FUNCTION %s.` + nextSeqFn + `(e text) RETURNS bigint LANGUAGE plpgsql VOLATILE SECURITY DEFINER AS ` + quote(want)},
+	exact = strings.Replace(exact, "CREATE OR REPLACE FUNCTION", "CREATE FUNCTION", 1)
+	const setPath = " SET search_path TO 'pg_catalog', 'pg_temp'\n"
+	for _, tc := range []struct{ name, old, new string }{
+		{"no_lock", "pg_advisory_xact_lock", "pg_advisory_xact_lock_shared"},
+		{"stable", "LANGUAGE plpgsql", "LANGUAGE plpgsql STABLE"},
+		{"security_definer", "LANGUAGE plpgsql", "LANGUAGE plpgsql SECURITY DEFINER"},
+		{"another_search_path", setPath, " SET search_path TO 'public'\n"},
+		{"no_search_path", setPath, ""},
+		{"returns_int", "RETURNS bigint", "RETURNS integer"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			db, schema, dsn := migrationSchema(t, false)
-			ddl := `CREATE TABLE %s.governed_events (entity text NOT NULL, seq bigint NOT NULL, event text NOT NULL, append_id text, PRIMARY KEY (entity, seq));
-				CREATE UNIQUE INDEX governed_events_append_id ON %s.governed_events (entity, append_id);` + tc.def
-			if _, err := db.Exec(strings.ReplaceAll(ddl, "%s", schema)); err != nil {
+			def := strings.ReplaceAll(exact, scratch, schema)
+			changed := strings.Replace(def, tc.old, tc.new, 1)
+			if changed == def && !strings.Contains(tc.name, "search_path") {
+				t.Fatalf("the definition holds no %q:\n%s", tc.old, def)
+			}
+			ddl := strings.ReplaceAll(`CREATE TABLE %s.governed_events (entity text NOT NULL, seq bigint NOT NULL, event text NOT NULL, append_id text, PRIMARY KEY (entity, seq));
+				CREATE UNIQUE INDEX governed_events_append_id ON %s.governed_events (entity, append_id);`, "%s", schema)
+			if _, err := db.Exec(ddl + changed); err != nil {
 				t.Fatal(err)
 			}
 			l, err := postgreslog.Open(ctx, dsn)
 			if err == nil {
 				l.Close()
-				t.Fatal("Open accepted a next_seq function with another definition")
+				t.Fatalf("Open accepted a next_seq function with another definition:\n%s", changed)
 			}
 			if !errors.Is(err, agent.ErrConfig) || !strings.Contains(err.Error(), nextSeqFn) {
 				t.Fatalf("Open = %v, want an ErrConfig naming %s", err, nextSeqFn)

@@ -31,17 +31,18 @@ import (
 // called or however it is reached (a field, a parameter, a local, an embedded field). On those:
 //   - BeginTx may be called only in the method migrate, and must pass the package-level txOptions
 //     (a local of the same name does not count);
-//   - Exec, Query and QueryRow (and their Context forms) must pass a constant query that is one
-//     statement (it holds no semicolon) and starts with SELECT or INSERT;
+//   - Exec, Query and QueryRow (and their Context forms) must pass a logSQL (built at Open by
+//     newLogSQL, which checks it) or a constant query that starts with SELECT or INSERT and passes
+//     the statement check (checkSQL, in sqlcheck.go);
 //   - Begin, Prepare and Raw, which could run anything, and a method value that escapes the check,
 //     are refused.
 //
 // The same methods called through an interface or a method expression are refused, since the check
 // cannot tell which handle they reach, and nothing may assign to txOptions or through it. Beyond
 // the pool (see checkExpr): no function of a pgx package may be used outside migrate, no constant
-// names a session-level advisory lock, and a constant query calls no function outside
-// constantCalls, but for the append's call of nextSeqFunction. TestStatementCheckCatchesBypasses holds the check
-// to a fixture of ways around it.
+// names a session-level advisory lock, and no constant or conversion of type logSQL appears
+// outside newLogSQL. TestStatementCheckCatchesBypasses holds the check to a fixture of ways
+// around it.
 func TestStatementsOnThePool(t *testing.T) {
 	if txOptions == nil || txOptions.Isolation != sql.LevelReadCommitted || txOptions.ReadOnly {
 		t.Fatalf("txOptions = %+v, want read committed", txOptions)
@@ -174,7 +175,7 @@ func statementProblems(t *testing.T, dir string, extra ...string) []string {
 			return true
 		})
 	}
-	begins, reads, writes := 0, 0, 0
+	begins, reads, writes, vouched := 0, 0, 0, 0
 	for _, f := range files {
 		for _, decl := range f.Decls {
 			fnName := ""
@@ -241,13 +242,17 @@ func statementProblems(t *testing.T, dir string, extra ...string) []string {
 							report(call.Args[1], "BeginTx on %s without the package-level txOptions inherits the deployment's default isolation", recv)
 						}
 					default:
+						if isLogSQL(call.Args[idx], info) {
+							vouched++ // a logSQL, which newLogSQL makes only from a checked statement
+							break
+						}
 						tv := info.Types[call.Args[idx]]
 						if tv.Value == nil || tv.Value.Kind() != constant.String {
 							report(call.Args[idx], "%s on %s with a query that is not a constant string", n.Sel.Name, recv)
 						} else if q := constant.StringVal(tv.Value); strings.Contains(q, ";") {
 							report(call.Args[idx], "%s on %s runs more than one statement", n.Sel.Name, recv)
-						} else if name, ok := unknownCall(q); ok {
-							report(call.Args[idx], "%s on %s calls %s, a function the check does not know", n.Sel.Name, recv, name)
+						} else if why, ok := unknownCall(q); ok {
+							report(call.Args[idx], "%s on %s runs a query the statement check refuses: it holds %s", n.Sel.Name, recv, why)
 						} else if isKeyword(q, "SELECT") {
 							reads++
 						} else if isKeyword(q, "INSERT") {
@@ -261,8 +266,8 @@ func statementProblems(t *testing.T, dir string, extra ...string) []string {
 			})
 		}
 	}
-	if begins == 0 || reads == 0 || writes == 0 {
-		t.Fatalf("found %d BeginTx calls, %d reads and %d writes on the pool; the check is not seeing the package's calls", begins, reads, writes)
+	if begins == 0 || reads == 0 || vouched == 0 {
+		t.Fatalf("found %d BeginTx calls, %d constant reads, %d constant writes and %d logSQL statements on the pool; the check is not seeing the package's calls", begins, reads, writes, vouched)
 	}
 	return problems
 }
@@ -272,31 +277,27 @@ func statementProblems(t *testing.T, dir string, extra ...string) []string {
 // and pg_try_advisory_xact_lock) end with the statement's transaction.
 var sessionLockCall = regexp.MustCompile(`(?i)pg_(try_)?advisory_lock`)
 
-// constantCalls are the only functions a constant query on the pool may call; nextSeqFunction
-// only in an INSERT, the append. A name after INTO names a table, and a keyword in listWords
-// takes a list; neither is a call.
-var (
-	constantCalls = map[string]bool{"max": true, "coalesce": true, "to_regclass": true, "to_regprocedure": true, "unnest": true, "array_agg": true}
-	listWords     = map[string]bool{"values": true, "conflict": true, "exists": true, "in": true, "any": true, "as": true, "and": true, "or": true, "not": true, "on": true}
-	quotedSQL     = regexp.MustCompile(`'(?:[^']|'')*'|"(?:[^"]|"")*"`)
-	callSQL       = regexp.MustCompile(`([A-Za-z_][A-Za-z0-9_$.]*)\s*\(`)
-)
-
-// unknownCall returns the first function q calls that is not in constantCalls (or, in an INSERT,
-// nextSeqFunction).
+// unknownCall returns why constant query q may not run on the pool: whatever the statement check
+// (checkSQL, in sqlcheck.go) refuses. A constant query never calls next_seq, which only the
+// append, a logSQL, does.
 func unknownCall(q string) (string, bool) {
-	insert := isKeyword(q, "INSERT")
-	q = quotedSQL.ReplaceAllString(q, "''")
-	for _, m := range callSQL.FindAllStringSubmatchIndex(q, -1) {
-		name := strings.ToLower(q[m[2]:m[3]])
-		if before := strings.Fields(q[:m[2]]); len(before) > 0 && strings.EqualFold(before[len(before)-1], "INTO") {
-			continue
-		}
-		if !listWords[name] && !constantCalls[name] && !(insert && name == nextSeqFunction) {
-			return name, true
-		}
+	if err := checkSQL(q, nil, nil); err != nil {
+		return err.Error(), true
 	}
 	return "", false
+}
+
+// isLogSQL reports whether e is string(x) for an x of the package's type logSQL.
+func isLogSQL(e ast.Expr, info *types.Info) bool {
+	call, ok := ast.Unparen(e).(*ast.CallExpr)
+	if !ok || len(call.Args) != 1 {
+		return false
+	}
+	if tv := info.Types[call.Fun]; !tv.IsType() || tv.Type != types.Typ[types.String] {
+		return false
+	}
+	named, ok := info.Types[call.Args[0]].Type.(*types.Named)
+	return ok && named.Obj().Name() == "logSQL" && named.Obj().Pkg() != nil && named.Obj().Pkg().Name() == "postgreslog"
 }
 
 // pgxPackage reports whether path is one of the pgx packages, whose connections and transactions
@@ -317,7 +318,18 @@ func checkExpr(e ast.Expr, fnName string, info *types.Info, report func(ast.Node
 		}
 		return
 	}
-	if tv, ok := info.Types[e]; ok && tv.Value != nil && tv.Value.Kind() == constant.String && sessionLockCall.MatchString(constant.StringVal(tv.Value)) {
+	tv, ok := info.Types[e]
+	if !ok {
+		return
+	}
+	if named, ok := tv.Type.(*types.Named); ok && named.Obj().Name() == "logSQL" && named.Obj().Pkg() != nil && named.Obj().Pkg().Name() == "postgreslog" && fnName != "newLogSQL" {
+		if tv.Value != nil {
+			report(e, "a constant of type logSQL outside newLogSQL, which alone vouches for the statement")
+		} else if call, ok := e.(*ast.CallExpr); ok && info.Types[call.Fun].IsType() {
+			report(e, "a conversion to logSQL outside newLogSQL, which alone vouches for the statement")
+		}
+	}
+	if tv.Value != nil && tv.Value.Kind() == constant.String && sessionLockCall.MatchString(constant.StringVal(tv.Value)) {
 		report(e, "a session-level advisory lock, held across round trips")
 	}
 }

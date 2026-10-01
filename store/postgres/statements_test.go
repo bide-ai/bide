@@ -262,8 +262,8 @@ func statementProblems(t *testing.T, dir string, extra ...string) []string {
 							report(call.Args[idx], "%s on %s with a query that is not a constant string", n.Sel.Name, recv)
 						} else if q := constant.StringVal(tv.Value); strings.Contains(q, ";") {
 							report(call.Args[idx], "%s on %s runs more than one statement", n.Sel.Name, recv)
-						} else if name, ok := unknownCall(q); ok {
-							report(call.Args[idx], "%s on %s calls %s, a function the check does not know", n.Sel.Name, recv, name)
+						} else if why, ok := unknownCall(q); ok {
+							report(call.Args[idx], "%s on %s runs a query the statement check refuses: it holds %s", n.Sel.Name, recv, why)
 						} else if !isSelect(q) {
 							report(call.Args[idx], "%s on %s runs a statement other than SELECT outside a transaction begun with txOptions", n.Sel.Name, recv)
 						} else {
@@ -286,28 +286,12 @@ func statementProblems(t *testing.T, dir string, extra ...string) []string {
 // and pg_try_advisory_xact_lock) end with the statement's transaction.
 var sessionLockCall = regexp.MustCompile(`(?i)pg_(try_)?advisory_lock`)
 
-// constantCalls are the only functions a constant query on the pool may call (the next_seq
-// function is not among them: only the insert, a writeSQL, calls it). A name after INTO names a
-// table, and a keyword in listWords takes a list; neither is a call.
-var (
-	constantCalls = map[string]bool{"now": true, "max": true, "coalesce": true, "starts_with": true,
-		"to_regclass": true, "to_regprocedure": true, "unnest": true, "array_agg": true} // the last four read the catalog, in checkSchema
-	listWords = map[string]bool{"values": true, "conflict": true, "exists": true, "in": true, "any": true, "as": true, "and": true, "or": true, "not": true, "on": true}
-	quotedSQL = regexp.MustCompile(`'(?:[^']|'')*'|"(?:[^"]|"")*"`)
-	callSQL   = regexp.MustCompile(`([A-Za-z_][A-Za-z0-9_$.]*)\s*\(`)
-)
-
-// unknownCall returns the first function q calls that is not in constantCalls.
+// unknownCall returns why constant query q may not run on the pool: whatever the statement check
+// (checkSQL, in sqlcheck.go) refuses. A constant query never calls the next_seq function, which
+// only the insert, a writeSQL, does.
 func unknownCall(q string) (string, bool) {
-	q = quotedSQL.ReplaceAllString(q, "''")
-	for _, m := range callSQL.FindAllStringSubmatchIndex(q, -1) {
-		name := strings.ToLower(q[m[2]:m[3]])
-		if before := strings.Fields(q[:m[2]]); len(before) > 0 && strings.EqualFold(before[len(before)-1], "INTO") {
-			continue
-		}
-		if !listWords[name] && !constantCalls[name] {
-			return name, true
-		}
+	if err := checkSQL(q, nil, nil); err != nil {
+		return err.Error(), true
 	}
 	return "", false
 }

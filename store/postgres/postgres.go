@@ -42,6 +42,58 @@
 // versions took in a statement of their own, so nodes of both versions queue on the same lock
 // during a rolling upgrade.
 //
+// The key is hashtextextended(run_id, 0), which names neither the table prefix nor the schema, and
+// govern/postgreslog takes the same key for an entity. So stores with different prefixes, stores
+// in different schemas of one database, and a governed entity named like a run share one lock.
+// That costs throughput, not correctness: the unique (run_id, seq) index keeps each store's
+// positions distinct whatever the lock does. The sharing stays, since the upgrade depends on the
+// key.
+//
+// At repeatable read or serializable, a queued insert's snapshot was taken before it was granted
+// the lock, so under sustained contention on one run most inserts collide once or more and retry
+// with a backoff (see Retries and deadlines): positions stay correct, but throughput on that run
+// falls well below read committed's, and a caller without a deadline may wait long. A deployment
+// that writes one run from many goroutines at once is better served at read committed.
+//
+// # Schema and trust
+//
+// Every name in every statement the store sends is qualified: its tables and next_seq function
+// with the store's schema, and every function, type, collation and operator with pg_catalog
+// (operators written OPERATOR(pg_catalog.<op>)). No statement, Open's and the migration's
+// included, looks a name up through the search path. Postgres still resolves some things without
+// a name, none of them through the search path: ORDER BY, DISTINCT and the ON CONFLICT arbiter use
+// the type's default operator class and the table's indexes, and casts use pg_cast. The statement
+// check (sqlcheck.go) holds every statement to this.
+//
+// Which schema is the store's is the one thing the search path can still decide, and only when the
+// schema is not pinned. With WithSchema, the recommended deployment, the store uses the schema
+// given and the search path plays no part. Without it, every Open discovers the schema: the first
+// schema on the search path holding a relation named like the steps table, or the first schema on
+// the path (current_schema()), where the migration creates the tables, when none does; it refuses
+// a first relation of that name that is not an ordinary or partitioned table, and logs a warning.
+// Discovery runs again at every Open, so a role that can create a schema earlier on the path can
+// redirect a restarting node to a store of its own: any role with CREATE on the database can
+// create the "$user" schema the default search path puts first. Discovery is safe only when every
+// schema on the search path is trusted. Within one process, after Open, no role can redirect the
+// store, pinned or not, as it could in every earlier version.
+//
+// The store trusts the owner of its schema and every role that can create objects in it, as it
+// trusts the owner of its tables: such a role could replace a table, and so it could replace the
+// next_seq function. Within that boundary, the store refuses what it can check. The next_seq
+// function must be owned by the owner of the steps table, run with search_path = pg_catalog,
+// pg_temp and have exactly this version's body, whose names are all qualified; Open refuses it
+// otherwise. Unpinned, the store also trusts every role that can create a schema earlier on its
+// search path (see above).
+//
+// Any role that can connect can take a run's advisory lock key itself
+// (pg_advisory_lock(hashtextextended(run_id, 0))) and hold it, and every insert into that run then
+// waits until it lets go. That was so before next_seq too, since earlier versions took the same
+// key; it stalls a run's writes, and corrupts nothing.
+//
+// The next_seq function's body names its schema. After ALTER SCHEMA ... RENAME, every insert fails
+// and Open refuses the function: drop it (DROP FUNCTION <schema>.bide_next_seq_v1(text), with the
+// prefix) and Open again, and the migration creates it under the new name.
+//
 // # Isolation
 //
 // The statements behave the same whatever the deployment's default_transaction_isolation (set on
@@ -82,6 +134,7 @@ import (
 	"errors"
 	"fmt"
 	"iter"
+	"log/slog"
 	"math/rand/v2"
 	"regexp"
 	"strings"
@@ -107,9 +160,10 @@ const (
 
 // Store is a Postgres-backed agent.Store.
 type Store struct {
-	db  *sql.DB
-	own bool // Close closes db: Open opened it
-	t   tables
+	db     *sql.DB
+	own    bool // Close closes db: Open opened it
+	t      tables
+	schema string // the schema the tables and next_seq are in, recorded at Open (see storeSchema)
 
 	jOnce sync.Once
 	j     *agent.Journal
@@ -122,12 +176,19 @@ var (
 	_ agent.Durable = (*Store)(nil) // transitional: Do and History go through its Journal
 )
 
-// tables holds the table names, prefixed, and the statements built from them.
+// tables holds the table names, prefixed, their schema-qualified forms, and the statements built
+// from them. Every statement names the schema Open recorded and qualifies every other name, so no
+// statement looks a name up through the search path: a schema that appears earlier on the path
+// after Open (a role's "$user" schema, which any role with CREATE on the database can create)
+// cannot take over a table or the next_seq function in this process. Which schema an unpinned Open
+// uses is another matter (see storeSchema and WithSchema).
 type tables struct {
-	steps, leases, version          string
-	nextSeq, nextSeqBody            string // the next_seq function's name and source
-	insert, acquire, renew, release writeSQL
-	get, load                       selectSQL
+	steps, leases, version              string     // bare names, as in the catalog
+	nextSeq                             string     // the next_seq function's bare name
+	qSteps, qLeases, qVersion, qNextSeq string     // schema-qualified, as SQL
+	rels                                [][]sqlTok // the qualified tables, as the statement check names them
+	insert, acquire, renew, release     writeSQL
+	get, load                           selectSQL
 }
 
 // nextSeqVersion names the next_seq function's definition. The migration creates the function
@@ -135,139 +196,133 @@ type tables struct {
 // change to the definition takes a new version, so a new function beside the old one.
 const nextSeqVersion = "v1"
 
-// nextSeqTemplate is the body of the next_seq function, over the steps table %s. It takes the run's
-// transaction-level advisory lock, which the insert that calls it holds until it commits, and then
-// reads the run's last position. A VOLATILE function takes a new snapshot for each query it runs,
-// so at read committed the MAX is read after the lock is granted and sees every insert into the
-// run that held the lock before: inserts into one run queue on the lock and each takes the next
-// position in its first attempt. At repeatable read or serializable the query uses the
-// transaction's snapshot, taken before the lock was granted, so a queued insert may collide on
-// (run_id, seq) and is run again, as without the function. The key is the one the store has
-// always used for the run's lock, so nodes of earlier versions queue on the same lock.
+// nextSeqTemplate is the body of the next_seq function, over the steps table %s (qualified with its
+// schema). It takes the run's transaction-level advisory lock, which the insert that calls it
+// holds until it commits, and then reads the run's last position. A VOLATILE function takes a new
+// snapshot for each query it runs, so at read committed the MAX is read after the lock is granted
+// and sees every insert into the run that held the lock before: inserts into one run queue on the
+// lock and each takes the next position in its first attempt. At repeatable read or serializable
+// the query uses the transaction's snapshot, taken before the lock was granted, so a queued insert
+// may collide on (run_id, seq) and is run again, as without the function.
+//
+// Every name in the body is qualified, every operator written OPERATOR(pg_catalog.<op>) (the
+// unary minus of -1 included), and the function also runs with search_path = pg_catalog, pg_temp
+// (nextSeqConfig), a second layer: a role that can create objects in a schema on the store's
+// search path must not be able to take over a call with an overload that matches better (a
+// hashtextextended(text, integer), say, for an unqualified hashtextextended(r, 0)).
+//
+// The key, hashtextextended(run_id, 0), is the one the store has always used for the run's lock,
+// so nodes of earlier versions queue on the same lock during a rolling upgrade. It does not name
+// the table prefix or schema, and govern/postgreslog uses the same key for an entity, so stores
+// with different prefixes, stores in different schemas of one database, and a governed entity
+// with the same name as a run all queue on one lock. That costs throughput, not correctness: the
+// unique (run_id, seq) index keeps each store's positions distinct whatever the lock does.
 const nextSeqTemplate = `
 BEGIN
-	PERFORM pg_advisory_xact_lock(hashtextextended(r, 0));
-	RETURN (SELECT COALESCE(MAX(seq), -1) + 1 FROM %s WHERE run_id = r);
+	PERFORM pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(r, 0::pg_catalog.int8));
+	RETURN (SELECT COALESCE(pg_catalog.max(seq), OPERATOR(pg_catalog.-) 1) OPERATOR(pg_catalog.+) 1
+		FROM %s WHERE run_id OPERATOR(pg_catalog.=) r);
 END
 `
 
-func newTables(prefix string) (tables, error) {
+// nextSeqConfig is the setting the next_seq function runs with, as pg_proc.proconfig stores it.
+const nextSeqConfig = "search_path=pg_catalog, pg_temp"
+
+// quoteIdent quotes name as a SQL identifier.
+func quoteIdent(name string) string { return `"` + strings.ReplaceAll(name, `"`, `""`) + `"` }
+
+// nextSeqBody returns the next_seq function's source for the steps table in schema.
+func (t tables) nextSeqBody(schema string) string {
+	return fmt.Sprintf(nextSeqTemplate, quoteIdent(schema)+"."+t.steps)
+}
+
+func newTables(prefix, schema string) (tables, error) {
 	t := tables{steps: prefix + "steps", leases: prefix + "leases", version: prefix + "schema_version",
 		nextSeq: prefix + "next_seq_" + nextSeqVersion}
-	t.nextSeqBody = fmt.Sprintf(nextSeqTemplate, t.steps)
+	q := quoteIdent(schema) + "."
+	t.qSteps, t.qLeases, t.qVersion, t.qNextSeq = q+t.steps, q+t.leases, q+t.version, q+t.nextSeq
+	var names [4][]sqlTok
+	for i, n := range []string{t.qNextSeq, t.qSteps, t.qLeases, t.qVersion} {
+		var err error
+		if names[i], err = parseName(n); err != nil {
+			return tables{}, fmt.Errorf("postgres: schema %q: %w (%w)", schema, err, agent.ErrConfig)
+		}
+	}
+	nextSeq, steps, leases := names[0], [][]sqlTok{names[1]}, [][]sqlTok{names[2]}
+	t.rels = [][]sqlTok{names[1], names[2], names[3]}
 	var err error
+	// Every name is qualified: tables with the recorded schema, built-ins, types and the collation
+	// with pg_catalog, and every operator written OPERATOR(pg_catalog.<op>), so that no name in a
+	// statement resolves through the search path (see sqlcheck.go).
 	// The position comes from next_seq, which queues the insert on the run's lock (see
 	// nextSeqTemplate). Should two inserts still read the same MAX (at repeatable read or
 	// serializable, or beside a writer that does not take the lock), they collide on UNIQUE
 	// (run_id, seq), which is not the conflict target, so the second fails with 23505 once the
 	// first commits and insert runs it again (see insert).
-	if t.insert, err = newWrite(`INSERT INTO ` + t.steps + ` (run_id, seq, name, data)
-		VALUES ($1, ` + t.nextSeq + `($1), $2, $3)
+	if t.insert, err = newWrite(`INSERT INTO `+t.qSteps+` (run_id, seq, name, data)
+		VALUES ($1::pg_catalog.text, `+t.qNextSeq+`($1::pg_catalog.text), $2, $3)
 		ON CONFLICT (run_id, name) DO NOTHING
-		RETURNING seq`); err != nil {
+		RETURNING seq`, nextSeq, steps); err != nil {
 		return tables{}, err
 	}
 	// Granted when the run is unleased, when the live lease is already holder's, or when the lease
 	// has expired; a row another holder holds live is left alone and nothing is returned.
-	if t.acquire, err = newWrite(`INSERT INTO ` + t.leases + ` (run_id, holder, expiry)
-		VALUES ($1, $2, now() + ($3 * interval '1 second'))
+	if t.acquire, err = newWrite(`INSERT INTO `+t.qLeases+` AS l (run_id, holder, expiry)
+		VALUES ($1, $2, pg_catalog.now() OPERATOR(pg_catalog.+) ($3::pg_catalog.float8 OPERATOR(pg_catalog.*) '1 second'::pg_catalog.interval))
 		ON CONFLICT (run_id) DO UPDATE
 			SET holder = EXCLUDED.holder, expiry = EXCLUDED.expiry
-			WHERE ` + t.leases + `.holder = EXCLUDED.holder OR ` + t.leases + `.expiry < now()`); err != nil {
+			WHERE l.holder OPERATOR(pg_catalog.=) EXCLUDED.holder OR l.expiry OPERATOR(pg_catalog.<) pg_catalog.now()`, nil, leases); err != nil {
 		return tables{}, err
 	}
-	if t.renew, err = newWrite(`UPDATE ` + t.leases + ` SET expiry = now() + ($3 * interval '1 second')
-		WHERE run_id = $1 AND holder = $2 AND expiry >= now()`); err != nil {
+	if t.renew, err = newWrite(`UPDATE `+t.qLeases+` SET expiry = pg_catalog.now() OPERATOR(pg_catalog.+) ($3::pg_catalog.float8 OPERATOR(pg_catalog.*) '1 second'::pg_catalog.interval)
+		WHERE run_id OPERATOR(pg_catalog.=) $1 AND holder OPERATOR(pg_catalog.=) $2 AND expiry OPERATOR(pg_catalog.>=) pg_catalog.now()`, nil, leases); err != nil {
 		return tables{}, err
 	}
-	if t.release, err = newWrite(`DELETE FROM ` + t.leases + ` WHERE run_id = $1 AND holder = $2`); err != nil {
+	if t.release, err = newWrite(`DELETE FROM `+t.qLeases+` WHERE run_id OPERATOR(pg_catalog.=) $1 AND holder OPERATOR(pg_catalog.=) $2`, nil, leases); err != nil {
 		return tables{}, err
 	}
-	if t.get, err = newSelect(`SELECT seq, data FROM ` + t.steps + ` WHERE run_id = $1 AND name = $2`); err != nil {
+	if t.get, err = newSelect(`SELECT seq, data FROM `+t.qSteps+` WHERE run_id OPERATOR(pg_catalog.=) $1 AND name OPERATOR(pg_catalog.=) $2`, steps); err != nil {
 		return tables{}, err
 	}
-	if t.load, err = newSelect(`SELECT seq, name, data FROM ` + t.steps + ` WHERE run_id = $1 AND seq > $2 ORDER BY seq LIMIT $3`); err != nil {
+	if t.load, err = newSelect(`SELECT seq, name, data FROM `+t.qSteps+` WHERE run_id OPERATOR(pg_catalog.=) $1 AND seq OPERATOR(pg_catalog.>) $2 ORDER BY seq LIMIT $3`, steps); err != nil {
 		return tables{}, err
 	}
 	return t, nil
 }
 
-// selectSQL is a query that starts with the keyword SELECT. The statement check in
-// txoptions_test.go allows a value of this type on the pool, as it allows a constant SELECT. Only
-// newSelect makes one.
+// selectSQL is one SELECT statement that passed the statement check (see sqlcheck.go). The static
+// check in statements_test.go allows a value of this type on the pool. Only newSelect makes one.
 type selectSQL string
 
-// writeSQL is one INSERT, UPDATE or DELETE statement, which the store sends on the pool on its
-// own, so Postgres runs it as a transaction of its own. The statement check in txoptions_test.go
-// allows a value of this type on the pool. Only newWrite makes one.
+// writeSQL is one INSERT, UPDATE or DELETE statement that passed the statement check, which the
+// store sends on the pool on its own, so Postgres runs it as a transaction of its own. The static
+// check allows a value of this type on the pool. Only newWrite makes one.
 type writeSQL string
 
-// newWrite returns q as a writeSQL, or an error unless q is one statement the pool may run on its
-// own (see oneStatement) that starts with INSERT, UPDATE or DELETE and calls no function but the
-// known ones and the next_seq function (see knownCalls).
-func newWrite(q string) (writeSQL, error) {
-	for _, kw := range []string{"INSERT", "UPDATE", "DELETE"} {
-		if startsWith(q, kw) && oneStatement(q) && knownCalls(q, true) {
-			return writeSQL(q), nil
-		}
+// newWrite returns q as a writeSQL, or an error unless q starts with INSERT, UPDATE or DELETE and
+// passes the statement check. nextSeq, when not nil, is the schema-qualified next_seq function,
+// which q may call once if it is an INSERT with no SELECT; rels are the relations, besides
+// pg_catalog's, q may name.
+func newWrite(q string, nextSeq []sqlTok, rels [][]sqlTok) (writeSQL, error) {
+	if !startsWith(q, "INSERT") && !startsWith(q, "UPDATE") && !startsWith(q, "DELETE") {
+		return "", fmt.Errorf("postgres: a write on the pool must be one INSERT, UPDATE or DELETE statement, got %.40q: %w", q, agent.ErrConfig)
 	}
-	return "", fmt.Errorf("postgres: a write on the pool must be one INSERT, UPDATE or DELETE statement, got %.40q: %w", q, agent.ErrConfig)
+	if err := checkSQL(q, nextSeq, rels); err != nil {
+		return "", fmt.Errorf("postgres: a write on the pool holds %v, in %.40q: %w", err, q, agent.ErrConfig)
+	}
+	return writeSQL(q), nil
 }
 
-// newSelect returns q as a selectSQL, or an error unless q is one statement the pool may run on
-// its own (see oneStatement) that starts with SELECT and calls no function but the known ones
-// (see knownCalls).
-func newSelect(q string) (selectSQL, error) {
-	if !startsWith(q, "SELECT") || !oneStatement(q) || !knownCalls(q, false) {
+// newSelect returns q as a selectSQL, or an error unless q starts with SELECT and passes the
+// statement check; rels are the relations, besides pg_catalog's, q may name.
+func newSelect(q string, rels [][]sqlTok) (selectSQL, error) {
+	if !startsWith(q, "SELECT") {
 		return "", fmt.Errorf("postgres: a read on the pool must be one SELECT statement, got %.40q: %w", q, agent.ErrConfig)
 	}
-	return selectSQL(q), nil
-}
-
-// sessionLock matches the session-level advisory lock functions (pg_advisory_lock,
-// pg_advisory_lock_shared, pg_try_advisory_lock and pg_try_advisory_lock_shared), whose lock
-// outlives the statement's transaction and so would be held across round trips.
-var sessionLock = regexp.MustCompile(`(?i)pg_(try_)?advisory_lock`)
-
-// oneStatement reports whether q can only be one statement that holds nothing after it ends: it
-// holds no semicolon (under the simple protocol, which a DSN can select, a semicolon separates
-// statements, one of which could be BEGIN) and names no session-level advisory lock.
-func oneStatement(q string) bool {
-	return !strings.Contains(q, ";") && !sessionLock.MatchString(q)
-}
-
-// sqlQuoted matches a string literal or a quoted identifier, whose contents are not SQL.
-var sqlQuoted = regexp.MustCompile(`'(?:[^']|'')*'|"(?:[^"]|"")*"`)
-
-// sqlCall matches a name followed by an opening parenthesis: a function call, or a keyword or a
-// table name that takes a parenthesized list.
-var sqlCall = regexp.MustCompile(`([A-Za-z_][A-Za-z0-9_$.]*)\s*\(`)
-
-// sqlListWords are the keywords the store's statements follow with a parenthesized list, and
-// sqlFunctions the built-in functions they call. A statement calling anything else, a function a
-// deployment defined among them, could hold a lock or open a connection the store cannot see.
-var (
-	sqlListWords = map[string]bool{"values": true, "conflict": true, "exists": true, "in": true, "any": true, "as": true, "and": true, "or": true, "not": true, "on": true}
-	sqlFunctions = map[string]bool{"now": true, "max": true, "coalesce": true, "starts_with": true}
-	nextSeqCall  = regexp.MustCompile(`^[a-z_][a-z0-9_]*next_seq_` + nextSeqVersion + `$`)
-)
-
-// knownCalls reports whether every call in q is to a function the store knows: a built-in in
-// sqlFunctions or, in a write, the next_seq function. A name after INTO names the table whose
-// column list follows, and a keyword in sqlListWords a list; neither is a call.
-func knownCalls(q string, write bool) bool {
-	q = sqlQuoted.ReplaceAllString(q, "''")
-	for _, m := range sqlCall.FindAllStringSubmatchIndex(q, -1) {
-		name := strings.ToLower(q[m[2]:m[3]])
-		if before := strings.Fields(q[:m[2]]); len(before) > 0 && strings.EqualFold(before[len(before)-1], "INTO") {
-			continue
-		}
-		if sqlListWords[name] || sqlFunctions[name] || write && nextSeqCall.MatchString(name) {
-			continue
-		}
-		return false
+	if err := checkSQL(q, nil, rels); err != nil {
+		return "", fmt.Errorf("postgres: a read on the pool holds %v, in %.40q: %w", err, q, agent.ErrConfig)
 	}
-	return true
+	return selectSQL(q), nil
 }
 
 // startsWith reports whether q starts with the keyword kw, after leading white space.
@@ -293,7 +348,10 @@ const migrateIdleTimeout = 5 * time.Second
 // Option configures Open and New.
 type Option interface{ apply(*config) error }
 
-type config struct{ prefix string }
+type config struct {
+	prefix string
+	schema string // set by WithSchema; empty: discover it (see storeSchema)
+}
 
 type optionFunc func(*config) error
 
@@ -313,6 +371,41 @@ func WithTablePrefix(prefix string) Option {
 		return nil
 	})
 }
+
+// WithSchema pins the schema the store's tables and next_seq function are in, instead of
+// discovering it through the search path at every Open. It is the recommended deployment: with it,
+// the search path plays no part in which schema the store uses, and no role can redirect a
+// restarting node by creating a schema earlier on the path. The name is used as given (quoted),
+// so "App" and "app" are different schemas, and Postgres truncates it, like any identifier, to 63
+// bytes. The schema must exist: Open fails with ErrConfig otherwise, and never creates it. An empty
+// name, and a system schema (information_schema, or a name starting with pg_), is an ErrConfig
+// error.
+func WithSchema(name string) Option {
+	return optionFunc(func(c *config) error {
+		if name == "" || strings.IndexByte(name, 0) >= 0 {
+			return fmt.Errorf("postgres: schema name %q is empty or holds a NUL: %w", name, agent.ErrConfig)
+		}
+		if systemSchema(name) {
+			return fmt.Errorf("postgres: schema %q is a system schema (information_schema, or a name starting with pg_, pg_temp among them): %w", name, agent.ErrConfig)
+		}
+		c.schema = name
+		return nil
+	})
+}
+
+// systemSchema reports whether name is information_schema or starts with pg_, the prefix Postgres
+// reserves for its own schemas (pg_catalog, pg_toast, and pg_temp, which names each session's own
+// temporary schema, so a store there would lose its journal with each pooled connection).
+func systemSchema(name string) bool {
+	return name == "information_schema" || strings.HasPrefix(name, "pg_")
+}
+
+// schemaExists reports whether the schema $1 exists. A pinned schema must: Open never creates one.
+const schemaExists = `SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_namespace AS n WHERE n.nspname OPERATOR(pg_catalog.=) $1)`
+
+// warnf reports the store discovering its schema through the search path. It logs through the
+// default slog logger, which an application sets with slog.SetDefault; a test replaces it.
+var warnf = func(msg string, args ...any) { slog.Warn(msg, args...) }
 
 func newConfig(opts []Option) (config, error) {
 	c := config{prefix: "bide_"}
@@ -357,11 +450,28 @@ func New(ctx context.Context, db *sql.DB, opts ...Option) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	t, err := newTables(cfg.prefix)
+	schema := cfg.schema
+	if schema != "" {
+		var exists bool
+		if err := retryScan(ctx, func() error { return db.QueryRowContext(ctx, schemaExists, schema).Scan(&exists) }); err != nil {
+			return nil, fmt.Errorf("postgres: look up schema %q: %w (%w)", schema, err, agent.ErrStorage)
+		}
+		if !exists {
+			return nil, fmt.Errorf("postgres: the pinned schema %q does not exist; create it, Open does not: %w", schema, agent.ErrConfig)
+		}
+	}
+	if schema == "" {
+		if schema, err = storeSchema(ctx, db, cfg.prefix+"steps"); err != nil {
+			return nil, err
+		}
+		warnf("store/postgres: the store's schema was found through the search path; pin it with WithSchema",
+			"schema", schema, "why", "discovery runs again at every Open, so a role that can create a schema earlier on the search path (any role with CREATE on the database can create the \"$user\" schema) can redirect a restarting node; discovery is safe only when every schema on the search path is trusted")
+	}
+	t, err := newTables(cfg.prefix, schema)
 	if err != nil {
 		return nil, err
 	}
-	s := &Store{db: db, t: t}
+	s := &Store{db: db, t: t, schema: schema}
 	if err := s.migrate(ctx); err != nil {
 		return nil, err
 	}
@@ -370,6 +480,55 @@ func New(ctx context.Context, db *sql.DB, opts ...Option) (*Store, error) {
 	}
 	return s, nil
 }
+
+// storeSchema returns the schema the store's tables are in, which Open records and every statement
+// names from then on: the first schema on the search path holding a relation named steps (the
+// steps table, as an unqualified name would resolve), or the first schema on the path, where the
+// migration creates the tables, when none does. It refuses, with ErrConfig, a first relation of
+// that name that is not an ordinary or partitioned table (a view, a foreign table, a sequence):
+// the store would read and write through it while checking another table.
+func storeSchema(ctx context.Context, db *sql.DB, steps string) (string, error) {
+	var first, current sql.NullString
+	var isTable sql.NullBool
+	err := retryScan(ctx, func() error {
+		return db.QueryRowContext(ctx, firstRelation, steps).Scan(&first, &isTable, &current)
+	})
+	if err != nil {
+		return "", fmt.Errorf("postgres: find the schema of %s: %w (%w)", steps, err, agent.ErrStorage)
+	}
+	if first.Valid {
+		if !isTable.Bool {
+			return "", fmt.Errorf("postgres: %s.%s, the first relation of that name on the search path, is not a table: %w",
+				quoteIdent(first.String), steps, agent.ErrConfig)
+		}
+		return first.String, nil
+	}
+	if !current.Valid {
+		return "", fmt.Errorf("postgres: no schema on the search path to create the tables in: %w", agent.ErrConfig)
+	}
+	return current.String, nil
+}
+
+// retryScan runs fn, one statement, again after a backoff while it fails with an error retryable
+// accepts (see retry).
+func retryScan(ctx context.Context, fn func() error) error {
+	_, err := retry(ctx, func() (struct{}, error) { return struct{}{}, fn() })
+	return err
+}
+
+// firstRelation returns, for the relation name $1: the schema of the first relation of that name
+// on the search path (NULL when there is none); whether that relation is an ordinary or
+// partitioned table; and current_schema(), where the migration creates the tables when there is
+// none.
+const firstRelation = `SELECT
+	(SELECT n.nspname FROM pg_catalog.pg_class AS c JOIN pg_catalog.pg_namespace AS n ON n.oid OPERATOR(pg_catalog.=) c.relnamespace
+		WHERE c.relname OPERATOR(pg_catalog.=) $1 AND n.nspname OPERATOR(pg_catalog.=) ANY (pg_catalog.current_schemas(false))
+		ORDER BY pg_catalog.array_position(pg_catalog.current_schemas(false), n.nspname) LIMIT 1),
+	(SELECT c.relkind OPERATOR(pg_catalog.=) 'r' OR c.relkind OPERATOR(pg_catalog.=) 'p'
+		FROM pg_catalog.pg_class AS c JOIN pg_catalog.pg_namespace AS n ON n.oid OPERATOR(pg_catalog.=) c.relnamespace
+		WHERE c.relname OPERATOR(pg_catalog.=) $1 AND n.nspname OPERATOR(pg_catalog.=) ANY (pg_catalog.current_schemas(false))
+		ORDER BY pg_catalog.array_position(pg_catalog.current_schemas(false), n.nspname) LIMIT 1),
+	pg_catalog.current_schema()`
 
 // migrateLock is the advisory lock key that serializes schema creation across nodes opening the
 // store at once ("bide" in ASCII).
@@ -390,47 +549,53 @@ func (s *Store) migrate(ctx context.Context) error {
 	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`SET LOCAL idle_in_transaction_session_timeout = %d`, migrateIdleTimeout.Milliseconds())); err != nil {
 		return fmt.Errorf("postgres: migrate: %w (%w)", err, agent.ErrStorage)
 	}
-	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock($1)`, migrateLock); err != nil {
+	if _, err := tx.ExecContext(ctx, `SELECT pg_catalog.pg_advisory_xact_lock($1::pg_catalog.int8)`, migrateLock); err != nil {
 		return fmt.Errorf("postgres: migrate: %w (%w)", err, agent.ErrStorage)
+	}
+	// The next_seq function, created if missing and never replaced (see nextSeqVersion); the first
+	// statement after the lock, so no statement between could refresh the session's catalog cache
+	// and hide a stale lookup from the tests. The migration lock makes
+	// the check and the creation one step across nodes. The lookup reads pg_proc with the
+	// statement's snapshot, not the session's catalog cache, which taking the advisory lock does not
+	// refresh: it sees a function another node created while this one waited for the lock.
+	var haveNextSeq bool
+	if err := tx.QueryRowContext(ctx, nextSeqPresent, s.t.nextSeq, s.schema).Scan(&haveNextSeq); err != nil {
+		return fmt.Errorf("postgres: look up %s: %w (%w)", s.t.nextSeq, err, agent.ErrStorage)
+	}
+	if !haveNextSeq {
+		body := s.t.nextSeqBody(s.schema)
+		if strings.Contains(body, "$bide$") {
+			return fmt.Errorf("postgres: schema name %q holds $bide$: %w", s.schema, agent.ErrConfig)
+		}
+		if _, err := tx.ExecContext(ctx, `CREATE FUNCTION `+s.t.qNextSeq+
+			`(r pg_catalog.text) RETURNS pg_catalog.int8 LANGUAGE plpgsql VOLATILE SET search_path = pg_catalog, pg_temp AS $bide$`+body+`$bide$`); err != nil {
+			return fmt.Errorf("postgres: create %s: %w (%w)", s.t.nextSeq, err, agent.ErrStorage)
+		}
 	}
 	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`
 		CREATE TABLE IF NOT EXISTS %[1]s (
-			run_id text COLLATE "C" NOT NULL,
-			seq    bigint NOT NULL,
-			name   text   NOT NULL,
-			data   bytea  NOT NULL,
+			run_id pg_catalog.text COLLATE pg_catalog."C" NOT NULL,
+			seq    pg_catalog.int8  NOT NULL,
+			name   pg_catalog.text  NOT NULL,
+			data   pg_catalog.bytea NOT NULL,
 			PRIMARY KEY (run_id, name),
 			UNIQUE (run_id, seq)
 		);
 		CREATE TABLE IF NOT EXISTS %[2]s (
-			run_id text        PRIMARY KEY,
-			holder text        NOT NULL,
-			expiry timestamptz NOT NULL
+			run_id pg_catalog.text        PRIMARY KEY,
+			holder pg_catalog.text        NOT NULL,
+			expiry pg_catalog.timestamptz NOT NULL
 		);
 		CREATE TABLE IF NOT EXISTS %[3]s (
-			id      int PRIMARY KEY CHECK (id = 1),
-			version int NOT NULL
+			id      pg_catalog.int4 PRIMARY KEY CHECK (id OPERATOR(pg_catalog.=) 1),
+			version pg_catalog.int4 NOT NULL
 		);
 		INSERT INTO %[3]s (id, version) VALUES (1, %[4]d) ON CONFLICT (id) DO NOTHING;`,
-		s.t.steps, s.t.leases, s.t.version, schemaVersion)); err != nil {
+		s.t.qSteps, s.t.qLeases, s.t.qVersion, schemaVersion)); err != nil {
 		return fmt.Errorf("postgres: create tables: %w (%w)", err, agent.ErrStorage)
 	}
-	// The next_seq function, created if missing and never replaced (see nextSeqVersion). The
-	// migration lock makes the check and the creation one step across nodes.
-	// The lookup reads pg_proc with the statement's snapshot, not the session's catalog cache,
-	// which taking the advisory lock does not refresh: it sees a function another node created
-	// while this one waited for the lock.
-	var haveNextSeq bool
-	if err := tx.QueryRowContext(ctx, nextSeqPresent, s.t.nextSeq).Scan(&haveNextSeq); err != nil {
-		return fmt.Errorf("postgres: look up %s: %w (%w)", s.t.nextSeq, err, agent.ErrStorage)
-	}
-	if !haveNextSeq {
-		if _, err := tx.ExecContext(ctx, `CREATE FUNCTION `+s.t.nextSeq+`(r text) RETURNS bigint LANGUAGE plpgsql VOLATILE AS $bide$`+s.t.nextSeqBody+`$bide$`); err != nil {
-			return fmt.Errorf("postgres: create %s: %w (%w)", s.t.nextSeq, err, agent.ErrStorage)
-		}
-	}
 	var v int
-	if err := tx.QueryRowContext(ctx, `SELECT version FROM `+s.t.version+` WHERE id = 1`).Scan(&v); err != nil {
+	if err := tx.QueryRowContext(ctx, versionQuery(s.t.qVersion)).Scan(&v); err != nil {
 		return fmt.Errorf("postgres: read schema version: %w (%w)", err, agent.ErrStorage)
 	}
 	if v > schemaVersion {
@@ -448,6 +613,15 @@ func (s *Store) migrate(ctx context.Context) error {
 // transactions of its own on the pool, which read the catalog as of their start, so it sees what
 // another node's migration created while this one waited for the migration lock.
 func (s *Store) checkSchema(ctx context.Context) error {
+	for _, table := range []string{s.t.steps, s.t.leases, s.t.version} {
+		var isTable sql.NullBool
+		if err := s.db.QueryRowContext(ctx, relationIsTable, table, s.schema).Scan(&isTable); err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("postgres: check %s: %w (%w)", table, err, agent.ErrStorage)
+		}
+		if !isTable.Bool {
+			return fmt.Errorf("postgres: %s.%s is not an ordinary or partitioned table: %w", quoteIdent(s.schema), table, agent.ErrConfig)
+		}
+	}
 	for _, u := range []struct {
 		table string
 		cols  []string
@@ -457,7 +631,7 @@ func (s *Store) checkSchema(ctx context.Context) error {
 		{s.t.leases, []string{"run_id"}},
 	} {
 		var ok bool
-		if err := s.db.QueryRowContext(ctx, requiredUnique, u.table, u.cols).Scan(&ok); err != nil {
+		if err := s.db.QueryRowContext(ctx, requiredUnique, u.table, s.schema, u.cols).Scan(&ok); err != nil {
 			return fmt.Errorf("postgres: check the uniqueness of %s: %w (%w)", u.table, err, agent.ErrStorage)
 		}
 		if !ok {
@@ -465,41 +639,72 @@ func (s *Store) checkSchema(ctx context.Context) error {
 				u.table, strings.Join(u.cols, ", "), agent.ErrConfig)
 		}
 	}
-	var sameNextSeq bool
-	if err := s.db.QueryRowContext(ctx, expectedFunction, s.t.nextSeq+"(text)", s.t.nextSeqBody).Scan(&sameNextSeq); err != nil {
+	var sameNextSeq, sameOwner sql.NullBool
+	if err := s.db.QueryRowContext(ctx, expectedFunction, s.t.nextSeq, s.schema, []string{nextSeqConfig}, s.t.nextSeqBody(s.schema), s.t.steps).Scan(&sameNextSeq, &sameOwner); err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("postgres: check %s: %w (%w)", s.t.nextSeq, err, agent.ErrStorage)
 	}
-	if !sameNextSeq {
-		return fmt.Errorf("postgres: function %s(text) is not the one this version creates (VOLATILE plpgsql returning bigint, not SECURITY DEFINER, with no settings of its own, whose body takes the run's advisory lock and then reads MAX(seq)); the store's inserts depend on it and the migration never replaces a function: %w",
-			s.t.nextSeq, agent.ErrConfig)
+	if !sameNextSeq.Bool {
+		return fmt.Errorf("postgres: function %s.%s(text) is not the one this version creates (VOLATILE plpgsql returning bigint, not SECURITY DEFINER, with SET %s and no other setting, whose body takes the run's advisory lock and then reads MAX(seq), every name qualified); the store's inserts depend on it and the migration never replaces a function: %w",
+			quoteIdent(s.schema), s.t.nextSeq, nextSeqConfig, agent.ErrConfig)
+	}
+	if !sameOwner.Bool {
+		return fmt.Errorf("postgres: function %s.%s(text) has another owner than table %s: its owner could replace it after Open checked it, and every insert would run that role's code; drop it, or have the tables' owner create it: %w",
+			quoteIdent(s.schema), s.t.nextSeq, s.t.steps, agent.ErrConfig)
 	}
 	return nil
 }
 
-// requiredUnique reports whether the table $1 (resolved by the search path, as the store's
-// statements resolve it) has a valid unique index whose key is exactly the column set $2, with no
-// included columns, no expressions and no predicate, checked when each statement runs rather than
-// deferred to commit. The store's inserts and lease upsert rely on each such index: a race for a
-// position fails on it and is retried, and ON CONFLICT needs it as its arbiter.
-const requiredUnique = `SELECT EXISTS (SELECT 1 FROM pg_index i
-	WHERE i.indrelid = to_regclass($1) AND i.indisunique AND i.indisvalid AND i.indimmediate
-		AND i.indpred IS NULL AND i.indexprs IS NULL AND i.indnkeyatts = i.indnatts
-		AND (SELECT array_agg(a.attname::text ORDER BY a.attname::text)
-			FROM unnest(i.indkey::int2[]) AS k JOIN pg_attribute AS a ON a.attrelid = i.indrelid AND a.attnum = k)
-			= (SELECT array_agg(c ORDER BY c) FROM unnest($2::text[]) AS c))`
+// The catalog queries below read pg_catalog's tables with the statement's snapshot and look names
+// up by schema, never through the session's catalog cache (to_regclass, to_regprocedure), which
+// taking an advisory lock does not refresh. Every built-in and type is qualified with pg_catalog.
 
-// nextSeqPresent reports whether a function named $1 taking one text argument exists in the schema
-// CREATE FUNCTION creates it in, reading pg_proc with the statement's snapshot.
-const nextSeqPresent = `SELECT EXISTS (SELECT 1 FROM pg_proc
-	WHERE proname = $1 AND pronamespace = current_schema()::regnamespace AND proargtypes = '25'::oidvector)`
+// requiredUnique reports whether the table $1 in schema $2 has a valid unique index whose key is
+// exactly the column set $3, with no included columns, no expressions and no predicate, checked
+// when each statement runs rather than deferred to commit. The store's inserts and lease upsert
+// rely on each such index: a race for a position fails on it and is retried, and ON CONFLICT needs
+// it as its arbiter.
+const requiredUnique = `SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_index AS i
+	WHERE i.indrelid OPERATOR(pg_catalog.=) (SELECT c.oid FROM pg_catalog.pg_class AS c
+			WHERE c.relname OPERATOR(pg_catalog.=) $1
+				AND c.relnamespace OPERATOR(pg_catalog.=) (SELECT n.oid FROM pg_catalog.pg_namespace AS n WHERE n.nspname OPERATOR(pg_catalog.=) $2))
+		AND i.indisunique AND i.indisvalid AND i.indimmediate
+		AND i.indpred IS NULL AND i.indexprs IS NULL AND i.indnkeyatts OPERATOR(pg_catalog.=) i.indnatts
+		AND (SELECT pg_catalog.array_agg(a.attname::pg_catalog.text ORDER BY a.attname::pg_catalog.text)
+			FROM pg_catalog.unnest(i.indkey::pg_catalog.int2[]) AS k
+				JOIN pg_catalog.pg_attribute AS a ON a.attrelid OPERATOR(pg_catalog.=) i.indrelid AND a.attnum OPERATOR(pg_catalog.=) k)
+			OPERATOR(pg_catalog.=) (SELECT pg_catalog.array_agg(c ORDER BY c) FROM pg_catalog.unnest($3::pg_catalog.text[]) AS c))`
 
-// expectedFunction reports whether the function $1 (a regprocedure signature, resolved by the
-// search path as the insert resolves it) is a VOLATILE plpgsql function returning one bigint, not
-// SECURITY DEFINER and with no settings of its own (a SET search_path, say), whose source is $2.
-const expectedFunction = `SELECT EXISTS (SELECT 1 FROM pg_proc AS p JOIN pg_language AS l ON l.oid = p.prolang
-	WHERE p.oid = to_regprocedure($1) AND l.lanname = 'plpgsql' AND p.provolatile = 'v'
-		AND NOT p.prosecdef AND p.proconfig IS NULL AND NOT p.proretset
-		AND p.prorettype = 'bigint'::regtype AND p.prosrc = $2)`
+// relationIsTable returns whether the relation $1 in schema $2 is an ordinary or partitioned
+// table, and no row when there is no such relation.
+const relationIsTable = `SELECT c.relkind OPERATOR(pg_catalog.=) 'r' OR c.relkind OPERATOR(pg_catalog.=) 'p'
+	FROM pg_catalog.pg_class AS c
+	WHERE c.relname OPERATOR(pg_catalog.=) $1
+		AND c.relnamespace OPERATOR(pg_catalog.=) (SELECT n.oid FROM pg_catalog.pg_namespace AS n WHERE n.nspname OPERATOR(pg_catalog.=) $2)`
+
+// nextSeqPresent reports whether a function named $1 taking one text argument exists in schema $2.
+const nextSeqPresent = `SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_proc AS p
+	WHERE p.proname OPERATOR(pg_catalog.=) $1 AND p.proargtypes OPERATOR(pg_catalog.=) '25'::pg_catalog.oidvector
+		AND p.pronamespace OPERATOR(pg_catalog.=) (SELECT n.oid FROM pg_catalog.pg_namespace AS n WHERE n.nspname OPERATOR(pg_catalog.=) $2))`
+
+// expectedFunction returns, for the function $1(text) in schema $2, whether it is a VOLATILE
+// plpgsql function returning one bigint, not SECURITY DEFINER, whose only setting is $3 and whose
+// source is $4; and whether its owner is the owner of table $5 in the same schema. Each is NULL
+// when there is no such function.
+const expectedFunction = `SELECT
+		l.lanname OPERATOR(pg_catalog.=) 'plpgsql' AND p.provolatile OPERATOR(pg_catalog.=) 'v' AND NOT p.prosecdef AND NOT p.proretset
+			AND p.proconfig OPERATOR(pg_catalog.=) $3::pg_catalog.text[]
+			AND p.prorettype OPERATOR(pg_catalog.=) 'pg_catalog.int8'::pg_catalog.regtype::pg_catalog.oid
+			AND p.prosrc OPERATOR(pg_catalog.=) $4,
+		p.proowner OPERATOR(pg_catalog.=) (SELECT c.relowner FROM pg_catalog.pg_class AS c
+			WHERE c.relname OPERATOR(pg_catalog.=) $5 AND c.relnamespace OPERATOR(pg_catalog.=) p.pronamespace)
+	FROM pg_catalog.pg_proc AS p JOIN pg_catalog.pg_language AS l ON l.oid OPERATOR(pg_catalog.=) p.prolang
+	WHERE p.proname OPERATOR(pg_catalog.=) $1 AND p.proargtypes OPERATOR(pg_catalog.=) '25'::pg_catalog.oidvector
+		AND p.pronamespace OPERATOR(pg_catalog.=) (SELECT n.oid FROM pg_catalog.pg_namespace AS n WHERE n.nspname OPERATOR(pg_catalog.=) $2)`
+
+// versionQuery reads the schema version from the version table qVersion.
+func versionQuery(qVersion string) string {
+	return `SELECT version FROM ` + qVersion + ` WHERE id OPERATOR(pg_catalog.=) 1`
+}
 
 // Close closes the connection pool Open opened. A Store made with New leaves its db open.
 func (s *Store) Close() error {
@@ -641,23 +846,23 @@ func (s *Store) Runs(ctx context.Context, f agent.RunFilter) iter.Seq2[string, e
 }
 
 func (s *Store) runsPage(ctx context.Context, f agent.RunFilter, after string) ([]string, error) {
-	q := `SELECT DISTINCT run_id COLLATE "C" AS id FROM ` + s.t.steps + ` AS s WHERE run_id COLLATE "C" > $1`
+	q := `SELECT DISTINCT run_id COLLATE pg_catalog."C" AS id FROM ` + s.t.qSteps + ` AS s WHERE run_id COLLATE pg_catalog."C" OPERATOR(pg_catalog.>) $1::pg_catalog.text`
 	args := []any{after}
 	if f.Prefix != "" {
 		// The range lets the primary key's index serve the scan; starts_with checks the prefix.
-		q += fmt.Sprintf(` AND run_id COLLATE "C" >= $%d AND starts_with(run_id, $%d)`, len(args)+1, len(args)+1)
+		q += fmt.Sprintf(` AND run_id COLLATE pg_catalog."C" OPERATOR(pg_catalog.>=) $%d::pg_catalog.text AND pg_catalog.starts_with(run_id, $%d::pg_catalog.text)`, len(args)+1, len(args)+1)
 		args = append(args, f.Prefix)
 		if end, ok := prefixEnd(f.Prefix); ok {
-			q += fmt.Sprintf(` AND run_id COLLATE "C" < $%d`, len(args)+1)
+			q += fmt.Sprintf(` AND run_id COLLATE pg_catalog."C" OPERATOR(pg_catalog.<) $%d::pg_catalog.text`, len(args)+1)
 			args = append(args, end)
 		}
 	}
 	if len(f.ExcludeHolding) > 0 {
-		q += fmt.Sprintf(` AND NOT EXISTS (SELECT 1 FROM %s AS x WHERE x.run_id = s.run_id AND x.name = ANY($%d))`, s.t.steps, len(args)+1)
+		q += fmt.Sprintf(` AND NOT EXISTS (SELECT 1 FROM %s AS x WHERE x.run_id OPERATOR(pg_catalog.=) s.run_id AND x.name OPERATOR(pg_catalog.=) ANY ($%d::pg_catalog.text[]))`, s.t.qSteps, len(args)+1)
 		args = append(args, f.ExcludeHolding)
 	}
 	q += fmt.Sprintf(` ORDER BY id LIMIT %d`, runsPage)
-	sel, err := newSelect(q)
+	sel, err := newSelect(q, s.t.rels)
 	if err != nil {
 		return nil, err
 	}

@@ -19,7 +19,7 @@ func waitBlocked(t *testing.T, admin *sql.DB, n int) {
 	deadline := time.Now().Add(30 * time.Second)
 	for ; time.Now().Before(deadline); <-tick.C {
 		var c int
-		if err := admin.QueryRow(`SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query LIKE 'INSERT INTO bide_steps%'`).Scan(&c); err != nil {
+		if err := admin.QueryRow(`SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query LIKE 'INSERT INTO %bide_steps%'`).Scan(&c); err != nil {
 			t.Fatal(err)
 		}
 		if c >= n {

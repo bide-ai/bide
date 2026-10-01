@@ -53,7 +53,10 @@ func TestAppend_StalledAppenderHoldsNoLock(t *testing.T) {
 			for k := 1; ; k++ {
 				st := newStaller(dsn)
 				db := sql.OpenDB(st)
-				stalled := &Log{db: db}
+				stalled, err := newLog(ctx, db, "")
+				if err != nil {
+					t.Fatal(err)
+				}
 				entity := fmt.Sprintf("pg-stall-%s-%d-%d", t.Name(), k, time.Now().UnixNano())
 				st.arm(k)
 				opDone := make(chan error, 1)
