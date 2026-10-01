@@ -89,3 +89,43 @@ func TestT4_LeakedNextEffectAfterCompensation(t *testing.T) {
 		t.Fatalf("charge reported compensated, but its tool charged after the refund: charged %d, refunded %d", charged.Load(), refunded.Load())
 	}
 }
+
+// Model 9, T5: a middleware calls next and returns its result, and also leaves a second next
+// running that reaches the retry-safe tool only after the chain returned. The tool begins
+// again after its result was recorded, and after the rollback's compensation.
+func TestT5_RetrySafeBeginsAfterChainReturned(t *testing.T) {
+	release, done := make(chan struct{}), make(chan struct{})
+	var charged, refunded atomic.Int32
+	var chargedAfterRefund atomic.Bool
+	charge := CompensatedFunc("charge", "", Safety{Idempotent: true},
+		func(ctx context.Context, _ struct{}) (string, error) {
+			if refunded.Load() > 0 {
+				chargedAfterRefund.Store(true)
+			}
+			charged.Add(1)
+			return "ok", nil
+		},
+		func(context.Context, struct{}, string) error { refunded.Add(1); return nil })
+	fail := Func("fail", "", Safety{}, func(context.Context, struct{}) (string, error) { return "", errors.New("declined") })
+	leak := ToolMiddleware(func(next ToolHandler) ToolHandler {
+		return func(ctx context.Context, call ToolCall) (json.RawMessage, error) {
+			if call.Use.Name != "charge" {
+				return next(ctx, call)
+			}
+			res, err := next(ctx, call)
+			go func() { <-release; next(context.WithoutCancel(ctx), call); close(done) }() //nolint:errcheck
+			return res, err
+		}
+	})
+	m := NewScriptedModel(ToolTurn("c1", "charge", `{}`), ToolTurn("c2", "fail", `{}`), TextTurn("done"))
+	_, err := New(m, NewMemStore(), charge, fail).UseTool(leak).RunSaga(context.Background(), "r", "go")
+	close(release)
+	<-done
+	var ab *SagaAborted
+	if !errors.As(err, &ab) {
+		t.Fatalf("RunSaga = %v, want *SagaAborted", err)
+	}
+	if chargedAfterRefund.Load() {
+		t.Fatalf("the tool began after its chain returned and charged after the refund: charged %d, refunded %d, compensated %v", charged.Load(), refunded.Load(), ab.Compensated)
+	}
+}
