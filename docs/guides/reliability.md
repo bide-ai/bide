@@ -158,7 +158,7 @@ handler, hooks included.
 Tool execution has its own wrappers (attached with `agent.UseTool`):
 
 - `ToolRetry(n, opts...)` retries a tool call with the same backoff/classification options as
-  `Retry`, for tools that are retry-safe (`ReadOnly`, `Idempotent`, or keyed). A tool that is not
+  `Retry`, for tools that are retry-safe (`ReadOnly` or `Idempotent`). A tool that is not
   runs once and its error goes to the model as is, since a failed side effect may still have
   taken effect.
 - `ToolRateLimit(rl)` caps a tool's call rate (share a `*RateLimiter` to bound a downstream API).
@@ -170,7 +170,38 @@ Tool execution has its own wrappers (attached with `agent.UseTool`):
   call's arguments; pass `LogErrorText()` to log the text the agent journals for the call (its
   `WithToolErrorRedactor` text, with URL credentials redacted).
 
-Middleware reads a call's `Safety` with `agent.ToolSafety(ctx)`. The agent also enforces
+Tool middleware receives an `agent.ToolCall`: the model's `ToolUse`, the registered tool's `Spec`,
+and the `RunID`. It reads the call's `Spec.Safety` before it retries, caches or skips a call. A
+tool's `Timeout` (`agent.WithTimeout`) bounds the whole chain, middleware included, and the agent
+does not start a tool whose deadline passed in the middleware.
+
+A middleware reaches the tool only through `next`: never by calling the tool itself, and never by
+leaving `next` running after it returns (the agent refuses an invocation of `next` that comes after
+the chain returned).
+
+**A denial must wrap `agent.ErrToolNotCalled`.** A middleware that ends a call without calling
+`next` (a policy denial, a limiter that gives up) returns an error wrapping
+`agent.ErrToolNotCalled`, and only then; `ToolRateLimit` and `ToolRetry` do. The agent needs
+positive proof that a side effect was not called: such a call is recorded as a known failure the
+model sees, but a chain that returns an error without calling `next`, and without
+`ErrToolNotCalled`, leaves a side effect's outcome unknown, records nothing, and the run halts for
+it.
+
+"Failed" needs positive proof as well: a middleware that turns a side effect's success into an
+error, or returns another error for a call whose tool did not itself fail (a refusal of a retry,
+say), makes the outcome unknown, and the run halts rather than tell the model a fired side effect
+failed. A retry-safe tool's error is recorded as a failure, except in a saga for a step that
+changes state (`Idempotent`, not `ReadOnly`): there it is recorded with an unknown outcome and
+listed in `SagaAborted.UnknownOutcome`. A result needs positive proof too: a chain that returns a
+result while any invocation of the call's tool is still running in the process (a middleware that
+left `next` running and answered from a cache, a sibling invocation, one a cancelled drive left
+behind) has an unknown outcome, and once the chain has returned no invocation of `next` begins the
+tool, since the tool's effect may land after a saga's
+compensation; a side effect halts, and a retry-safe saga step is reported as unknown and never
+compensated. The agent decides from its own copy of
+the spec, so a middleware that changes `call.Spec` changes nothing it enforces. A middleware passes
+`next` the `ToolCall` it was given, or a copy with other `Use.Args`: one that changes `Use.Name` or
+`Use.ID`, or builds its own `ToolCall`, gets `ErrConfig` and the tool is not called. The agent also enforces
 at-most-once below every middleware: a tool that is not retry-safe runs at most once per tool
 call, and a middleware that calls it again gets `agent.ErrToolReinvoked` without the tool
 running.

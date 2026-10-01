@@ -16,12 +16,12 @@ import (
 // returns what was logged.
 func logFailedCharge(t *testing.T, opts ...ToolLogOption) string {
 	t.Helper()
-	base := agent.ToolHandler(func(_ context.Context, tu agent.ToolUse) (json.RawMessage, error) {
-		return nil, fmt.Errorf("charge failed for %s: %w", tu.Args, agent.ErrTool)
+	base := agent.ToolHandler(func(_ context.Context, call agent.ToolCall) (json.RawMessage, error) {
+		return nil, fmt.Errorf("charge failed for %s: %w", call.Use.Args, agent.ErrTool)
 	})
 	var sb strings.Builder
 	h := ToolLog(func(format string, args ...any) { fmt.Fprintf(&sb, format, args...) }, opts...)(base)
-	if _, err := h(context.Background(), agent.ToolUse{ID: "c1", Name: "charge", Args: json.RawMessage(`{"card":"4111111111111111"}`)}); err == nil {
+	if _, err := h(context.Background(), agent.ToolCall{Use: agent.ToolUse{ID: "c1", Name: "charge", Args: json.RawMessage(`{"card":"4111111111111111"}`)}}); err == nil {
 		t.Fatal("want error")
 	}
 	return sb.String()

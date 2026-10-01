@@ -13,6 +13,10 @@
 // TrustAnnotations to Tools and the hints map onto agent.Safety: readOnlyHint is always safe
 // to re-run after a crash, and idempotentHint is safe to retry.
 //
+// Each tool describes itself with an agent.ToolSpec (see tool.Spec): the server's name, title,
+// description, input schema and output schema, the Safety above, the approval gate WithApproval
+// sets, and the per-call timeout WithCallTimeout sets.
+//
 // Connect optionally wires three more client capabilities (see Option): an
 // elicitation resolver (WithElicitation) the server can call to request
 // structured input mid-tool-call; a tools-list-changed callback
@@ -54,13 +58,16 @@ import (
 //
 // The server's tool list is untrusted input. Tools refuses the whole list, with an error
 // wrapping agent.ErrProtocol, if a tool's name is outside the MCP grammar (1 to 128 of A-Z a-z
-// 0-9 _ - .), two tools share a name, a tool's input schema is not an object schema, or a
-// tool's description is longer than the limit (DefaultMaxDescriptionBytes unless set with
+// 0-9 _ - .), two tools share a name, a tool's input schema is not an object schema, its output
+// schema is present and not an object schema, or a tool's description is longer than the limit (DefaultMaxDescriptionBytes unless set with
 // WithMaxDescriptionBytes).
 func Tools(ctx context.Context, session *mcp.ClientSession, opts ...ToolsOption) ([]agent.Tool, error) {
 	cfg := &toolsConfig{maxResult: DefaultMaxResultBytes, maxDescription: DefaultMaxDescriptionBytes}
 	for _, o := range opts {
 		o(cfg)
+	}
+	if cfg.err != nil {
+		return nil, cfg.err
 	}
 	var tools []agent.Tool
 	seen := map[string]bool{}
@@ -85,11 +92,20 @@ func Tools(ctx context.Context, session *mcp.ClientSession, opts ...ToolsOption)
 		if err != nil {
 			return nil, fmt.Errorf("mcp: list tools: tool %q: %w (%w)", def.Name, err, agent.ErrProtocol)
 		}
-		tools = append(tools, &tool{session: session, def: def, schema: schema, cfg: cfg})
+		output, err := outputSchema(def.OutputSchema)
+		if err != nil {
+			return nil, fmt.Errorf("mcp: list tools: tool %q: %w (%w)", def.Name, err, agent.ErrProtocol)
+		}
+		tools = append(tools, &tool{session: session, def: def, schema: schema, output: output, cfg: cfg})
 	}
 	for _, name := range slices.Sorted(maps.Keys(cfg.safety)) {
 		if !seen[name] {
 			return nil, fmt.Errorf("mcp: WithSafety names tool %q, which the server does not list: %w", name, agent.ErrConfig)
+		}
+	}
+	for _, name := range slices.Sorted(maps.Keys(cfg.approval)) {
+		if !seen[name] {
+			return nil, fmt.Errorf("mcp: WithApproval names tool %q, which the server does not list: %w", name, agent.ErrConfig)
 		}
 	}
 	return tools, nil
@@ -131,21 +147,37 @@ func inputSchema(s any) (json.RawMessage, error) {
 	return json.Marshal(obj)
 }
 
+// outputSchema returns a tool's output schema as JSON, or nil when the server declares none. The
+// MCP specification requires a declared output schema to be a JSON Schema object of type
+// "object", as for the input schema.
+func outputSchema(s any) (json.RawMessage, error) {
+	if s == nil {
+		return nil, nil
+	}
+	obj, _ := s.(map[string]any)
+	if obj["type"] != "object" {
+		return nil, errors.New(`output schema is not a JSON Schema object of type "object"`)
+	}
+	return json.Marshal(obj)
+}
+
 // ToolsOption configures Tools.
 type ToolsOption func(*toolsConfig)
 
 type toolsConfig struct {
-	trust          bool                    // map the server's annotations onto Safety (TrustAnnotations)
-	timeout        time.Duration           // per-call deadline (WithCallTimeout); 0 = none
-	maxResult      int                     // largest result Call accepts, in bytes; <= 0 = no limit
-	maxDescription int                     // longest description Tools accepts, in bytes; <= 0 = no limit
-	safety         map[string]agent.Safety // per-tool Safety by name (WithSafety)
+	trust          bool                             // map the server's annotations onto Safety (TrustAnnotations)
+	timeout        time.Duration                    // per-call deadline (WithCallTimeout); 0 = none
+	maxResult      int                              // largest result Call accepts, in bytes; <= 0 = no limit
+	maxDescription int                              // longest description Tools accepts, in bytes; <= 0 = no limit
+	safety         map[string]agent.Safety          // per-tool Safety by name (WithSafety)
+	approval       map[string]*agent.ApprovalPolicy // per-tool approval gate by name (WithApproval)
+	err            error                            // the first invalid option, returned by Tools
 }
 
 // WithSafety sets the agent.Safety of the server's tool named name, in place of the default
-// (a side effect) and of anything its annotations say, trusted or not. It is how an MCP tool
-// gets a human approval gate (RequiresApproval, or an m-of-n Approval policy), or is declared
-// retry-safe (ReadOnly, Idempotent, IdempotencyKey) by the host rather than by the server.
+// (a side effect) and of anything its annotations say, trusted or not. It is how an MCP tool is
+// declared retry-safe (ReadOnly or Idempotent) by the host rather than by the server. A human
+// approval gate is set with WithApproval.
 // Tools fails with agent.ErrConfig if the server does not list a tool of that name, so a
 // misspelt gate never leaves the real tool ungated. A later WithSafety for the same name wins.
 func WithSafety(name string, s agent.Safety) ToolsOption {
@@ -155,6 +187,37 @@ func WithSafety(name string, s agent.Safety) ToolsOption {
 		}
 		c.safety[name] = s
 	}
+}
+
+// WithApproval gates every call to the server's tool named name on human approval before the
+// server sees it: p is agent.SingleApproval() for one decision (agent.Approve), or an m-of-n
+// policy (agent.SubmitDecision, with the agent's WithApproverVerifiers). It becomes the tool's
+// ToolSpec.Approval. Tools fails with agent.ErrConfig if p is nil or invalid, or if the server
+// does not list a tool of that name, so a misspelt gate never leaves the real tool ungated. A
+// later WithApproval for the same name wins. The policy is copied.
+func WithApproval(name string, p *agent.ApprovalPolicy) ToolsOption {
+	return func(c *toolsConfig) {
+		if err := checkApproval(p); err != nil {
+			if c.err == nil {
+				c.err = fmt.Errorf("mcp: WithApproval for tool %q: %w", name, err)
+			}
+			return
+		}
+		if c.approval == nil {
+			c.approval = map[string]*agent.ApprovalPolicy{}
+		}
+		c.approval[name] = p.Clone()
+	}
+}
+
+// checkApproval reports whether p is a gate the agent enforces: agent.SingleApproval(), or an
+// m-of-n policy that Validate accepts (a policy with no approvers is not one). It is the check
+// agent.WithApproval applies.
+func checkApproval(p *agent.ApprovalPolicy) error {
+	if p == nil {
+		return fmt.Errorf("approval policy is nil: %w", agent.ErrConfig)
+	}
+	return p.Validate()
 }
 
 // DefaultMaxResultBytes is the largest tool result, in bytes of JSON, that Call accepts unless
@@ -172,10 +235,13 @@ const DefaultMaxResultBytes = 1 << 20
 const DefaultMaxDescriptionBytes = 8 << 10
 
 // WithCallTimeout bounds each call to a tool from Tools by d, on top of the caller's context.
-// There is no default: without it a call waits as long as the run's context allows. A call
-// that times out has an unknown outcome (the server may still be running it), so it fails
-// with agent.ErrToolOutcomeUnknown, and a side effect halts on resume rather than run again.
-// d <= 0 sets no timeout.
+// There is no default: without it a call waits as long as the run's context allows. d is the
+// tool's ToolSpec.Timeout, so an agent runs each call (its tool middleware included) under that
+// deadline; Call applies it as well, for a caller that invokes the tool directly, such as a plan
+// flow. A call that times out has an unknown outcome (the server may still be running it), so it
+// fails with agent.ErrToolOutcomeUnknown, and a side effect records nothing and halts on resume
+// rather than run again; an error returned after the agent's deadline is treated the same way. A
+// result that arrives is recorded, even after the deadline. d <= 0 sets no timeout.
 func WithCallTimeout(d time.Duration) ToolsOption { return func(c *toolsConfig) { c.timeout = d } }
 
 // WithMaxResultBytes sets the largest result, in bytes of JSON, that a tool's Call accepts
@@ -276,11 +342,46 @@ type tool struct {
 	session *mcp.ClientSession
 	def     *mcp.Tool
 	schema  json.RawMessage // def.InputSchema, checked to be an object schema
+	output  json.RawMessage // def.OutputSchema, checked to be an object schema; nil if none
 	cfg     *toolsConfig
 }
 
 func (t *tool) Name() string        { return t.def.Name }
 func (t *tool) Description() string { return t.def.Description }
+
+// Spec describes the tool to the agent: the server's name, title (its title, or the title its
+// annotations carry), description, input and output schemas, the Safety (see Safety), the
+// approval gate WithApproval set for it, and the timeout WithCallTimeout set.
+func (t *tool) Spec() agent.ToolSpec {
+	s := agent.ToolSpec{
+		Name:        t.def.Name,
+		Title:       t.title(),
+		Description: t.def.Description,
+		Input:       t.schema,
+		Output:      t.output,
+		Safety:      t.Safety(),
+		Timeout:     t.cfg.timeout,
+	}
+	if s.Timeout < 0 {
+		s.Timeout = 0
+	}
+	if p, ok := t.cfg.approval[t.def.Name]; ok {
+		s.Approval = p.Clone()
+	}
+	return s
+}
+
+// title is the tool's display name: its own title, else the one its annotations carry. The MCP
+// specification gives the tool's title precedence.
+func (t *tool) title() string {
+	if t.def.Title != "" {
+		return t.def.Title
+	}
+	if a := t.def.Annotations; a != nil {
+		return a.Title
+	}
+	return ""
+}
 
 // ArgsSchema returns the MCP tool's InputSchema as raw JSON, checked and encoded once by Tools,
 // for the schema/ package to dialectize per provider.

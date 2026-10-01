@@ -430,9 +430,37 @@ func (pg *PersistentGovernor) State() gsm.State {
 	return pg.state
 }
 
-// EventTool gives an agent a GOVERNED action: when the agent's LLM calls it, `event` is
+// EventToolConfig configures EventTool.
+type EventToolConfig struct {
+	// Name is the tool's name, as the model calls it.
+	Name string
+	// Description tells the model what the governed action does.
+	Description string
+	// Event is the governed event the tool applies when called.
+	Event string
+	// PolicyDigest, when non-empty, makes the tool attested: its durable result records this
+	// stable identifier of the governed policy that admitted the action (for example
+	// gsm.Registry.PolicyDigest), the resulting state's digest, and the acting identity, so an
+	// audit over the journal commits to the policy the action ran under. It is treated as an
+	// opaque string: the SDK does not depend on gsm's serialization format.
+	PolicyDigest string
+	// Attested asks for the attested form explicitly: the result records the state digest and
+	// the acting identity as well as the policy digest. A non-empty PolicyDigest makes the tool
+	// attested without it; with an empty PolicyDigest, Attested is refused (EventTool panics with
+	// ErrConfig), since an attestation needs the policy it attests to. It is what a call of the
+	// removed AttestedEventTool, which accepted an empty digest, migrates to.
+	Attested bool
+	// Safety is the tool's retry classification (see agent.Safety). The zero value is a side
+	// effect.
+	Safety agent.Safety
+	// Options are further tool options (agent.WithApproval, agent.WithTimeout, agent.WithTitle,
+	// agent.WithOutputSchema), applied after Safety.
+	Options []agent.ToolOption
+}
+
+// EventTool gives an agent a GOVERNED action: when the agent's LLM calls it, cfg.Event is
 // applied to the shared governed state (convergent + thread-safe). Multiple agents that
-// share one governor converge regardless of how their governed calls interleave — the
+// share one governor converge regardless of how their governed calls interleave: the
 // tool-boundary bridge from real agent loops to gsm's proven convergence. gsm Guards
 // handle preconditions (a guarded-out event is a no-op).
 //
@@ -444,31 +472,33 @@ func (pg *PersistentGovernor) State() gsm.State {
 // within it (agent.NextOnceKey), so a call that runs again (a retry-safe tool whose process died
 // before its result was recorded) applies its event once and reports the original position, and a
 // composite tool that calls EventTool several times in one call applies each of them.
-func EventTool(gov Applier, name, description, event string, safety agent.Safety) agent.Tool {
-	return agent.Func(name, description, safety,
-		func(ctx context.Context, _ struct{}) (map[string]any, error) {
-			a, err := applyForCall(ctx, gov, event)
-			if err != nil {
-				return nil, err
-			}
-			return map[string]any{"event": event, "applied": true, "position": a.Position}, nil
-		})
-}
-
-// AttestedEventTool is EventTool that also records, in the tool's durable result, WHICH
-// governed policy admitted the action: it embeds policyDigest (a stable identifier of the
-// combinator policy, e.g. gsm.Registry.PolicyDigest) alongside the event. Because the result
-// is part of the journaled record, any audit over the journal (a signed tree head, or a
-// ProofBundle from ProveToolCall) then commits cryptographically to the policy the action ran
-// under, not merely that the action happened. An auditor recomputes the digest from the
-// published policy bytes and runs the external verified oracle on them (see
-// `bide-audit verify-governance`), tying the cryptographic root (the log) to the
-// mathematical root (the proof) over one artifact.
 //
-// policyDigest is treated as an opaque string on purpose: the SDK does not depend on gsm's
-// serialization format, it only records the identifier the policy's owner published.
-func AttestedEventTool(gov Applier, name, description, event, policyDigest string, safety agent.Safety) agent.Tool {
-	return agent.Func(name, description, safety,
+// With a non-empty cfg.PolicyDigest the tool is attested: its result also records WHICH governed
+// policy admitted the action. Because the result is part of the journaled record, any audit over
+// the journal (a signed tree head, or a ProofBundle from ProveToolCall) then commits
+// cryptographically to the policy the action ran under, not merely that the action happened. An
+// auditor recomputes the digest from the published policy bytes and runs the external verified
+// oracle on them (see `bide-audit verify-governance`), tying the cryptographic root (the log) to
+// the mathematical root (the proof) over one artifact.
+//
+// EventTool panics, as agent.Func does, on an invalid option, and with ErrConfig on a config that
+// asks for the attested form (Attested) with an empty PolicyDigest.
+func EventTool(gov Applier, cfg EventToolConfig) agent.Tool {
+	event, policyDigest := cfg.Event, cfg.PolicyDigest
+	if cfg.Attested && policyDigest == "" {
+		panic(fmt.Errorf("govern: EventTool %q asks for the attested form (state digest and acting identity) with an empty PolicyDigest; set the digest of the policy it attests to: %w", cfg.Name, agent.ErrConfig))
+	}
+	if policyDigest == "" {
+		return agent.Func(cfg.Name, cfg.Description, cfg.Safety,
+			func(ctx context.Context, _ struct{}) (map[string]any, error) {
+				a, err := applyForCall(ctx, gov, event)
+				if err != nil {
+					return nil, err
+				}
+				return map[string]any{"event": event, "applied": true, "position": a.Position}, nil
+			}, cfg.Options...)
+	}
+	return agent.Func(cfg.Name, cfg.Description, cfg.Safety,
 		func(ctx context.Context, _ struct{}) (map[string]any, error) {
 			a, err := applyForCall(ctx, gov, event)
 			if err != nil {
@@ -502,5 +532,5 @@ func AttestedEventTool(gov Applier, name, description, event, policyDigest strin
 				}
 			}
 			return result, nil
-		})
+		}, cfg.Options...)
 }

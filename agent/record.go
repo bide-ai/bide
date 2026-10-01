@@ -78,11 +78,31 @@ type Record struct {
 	// rather than one the tool produced by running. It lets a later reader (and bide-audit)
 	// tell a reconciled outcome from a clean one at a glance.
 	Reconciled bool `json:"reconciled,omitempty"`
-	// ReadOnly marks a StepToolResult for a call whose tool was declared ReadOnly when the call
-	// ran. A saga rollback skips such a call (it changed nothing) and treats any other completed
-	// call as a write, whatever the tool is declared as by the time the rollback runs. A result
-	// that ResolveHalt injected is never ReadOnly: only a call that was not retry-safe halts.
-	ReadOnly bool `json:"read_only,omitempty"`
+	// OutcomeUnknown marks a StepSagaFail record for a step whose outcome is unknown: a
+	// retry-safe step that failed with ErrToolOutcomeUnknown, or returned an error after its
+	// deadline. It may have committed, so a rollback reports it (SagaAborted.UnknownOutcome)
+	// rather than take it for a step that changed nothing.
+	OutcomeUnknown bool `json:"outcome_unknown,omitempty"`
+	// Redacted marks a record whose stored bytes a redaction replaced with a tombstone, the
+	// reserved form {"redacted":{"leaf_hash":"<hex>","at_ms":<ms>}}: the hex audit leaf hash of
+	// the bytes it replaced and the Unix-millis time of the redaction. Only Name is meaningful on
+	// such a record, and Raw returns the tombstone. It is never journaled: the tombstone is what the
+	// store holds. A run holding a redacted record is over and cannot be driven again.
+	Redacted bool `json:"-"`
+	// stamped marks a salt the engine drew for a record it is about to record (stampSalt), which
+	// JournalEntry keeps instead of drawing another, so the engine can tell its own record from
+	// another writer's by the salt the journal holds. It and Redacted sit beside Reconciled so the
+	// three flags share one word: Record is copied by value throughout the engine, and a larger
+	// one measurably slowed a contended run loop (see TestRecord_Size).
+	stamped bool
+	// Safety is the Safety of the tool a StepToolResult or StepSagaFail record's call ran under
+	// (or, for a denied call, would have run under), and Approval its approval gate, nil for an
+	// ungated tool. A saga rollback reads Safety: it skips a call that ran ReadOnly (it changed
+	// nothing) and treats any other completed call as a write, whatever the tool is declared as
+	// by the time the rollback runs. Safety is nil on a result that ResolveHalt injected, which
+	// is a write (only a call that was not retry-safe halts), and on every other kind.
+	Safety   *Safety         `json:"safety,omitempty"`
+	Approval *ApprovalPolicy `json:"approval,omitempty"`
 	// Evidence is what a reconciler read to decide the outcome (a queried provider record,
 	// a message id, a log line). It is carried on the reconciled result and signed with it,
 	// so the verdict and its basis live in the journal beside the outcome.
@@ -90,12 +110,6 @@ type Record struct {
 	// Format is the journal format a StepHeader record names (see JournalFormat). Empty on every
 	// other kind.
 	Format string `json:"format,omitempty"`
-	// Redacted marks a record whose stored bytes a redaction replaced with a tombstone, the
-	// reserved form {"redacted":{"leaf_hash":"<hex>","at_ms":<ms>}}: the hex audit leaf hash of
-	// the bytes it replaced and the Unix-millis time of the redaction. Only Name is meaningful on
-	// such a record, and Raw returns the tombstone. It is never journaled: the tombstone is what the
-	// store holds. A run holding a redacted record is over and cannot be driven again.
-	Redacted bool `json:"-"`
 
 	// claim is the random id of the driver that wrote an attempt marker (see ClaimAttempt and
 	// ClaimID). A driver runs the side effect only if the marker it gets back carries its own
@@ -106,10 +120,6 @@ type Record struct {
 	salt []byte
 	// raw is the bytes the record was decoded from (see Raw).
 	raw []byte
-	// stamped marks a salt the engine drew for a record it is about to record (stampSalt), which
-	// JournalEntry keeps instead of drawing another, so the engine can tell its own record from
-	// another writer's by the salt the journal holds.
-	stamped bool
 }
 
 // ClaimID returns the random id of the driver that wrote this attempt marker or not-started record
@@ -172,12 +182,44 @@ func unmarshalRecord(b []byte) (Record, error) {
 		(*h)(b)
 	}
 	var f recordFields
-	w := recordWire{recordFields: &f}
+	w := recordReadWire{recordWire: recordWire{recordFields: &f}}
 	if err := json.Unmarshal(b, &w); err != nil {
 		return Record{}, err
 	}
+	f.Approval = w.Approval.policy()
 	f.claim, f.salt, f.raw = w.Claim, w.Salt, nil
 	return Record(f), nil
+}
+
+// recordReadWire is the wire form a record is read through. Its approval member shadows
+// Record.Approval's (a shallower field wins), so a stored record's approval is read leniently
+// (storedApproval): the strict ApprovalPolicy decoding is for a policy being configured or
+// received, and a stored record keeps DecodeStoredRecord's promise that a journal a newer version
+// wrote stays readable.
+type recordReadWire struct {
+	recordWire
+	Approval *storedApproval `json:"approval,omitempty"`
+}
+
+// storedApproval is a journaled approval policy, read leniently: members this version does not
+// know are ignored, {"single":true} is SingleApproval whatever else a newer version wrote beside
+// it, and anything else is the m-of-n policy its need and approvers give. The policy is a record of
+// the gate the call ran under; the gate a run enforces is always the registered tool's.
+type storedApproval struct {
+	Single    json.RawMessage `json:"single,omitempty"`
+	Need      int             `json:"need"`
+	Approvers []string        `json:"approvers,omitempty"`
+}
+
+// policy returns the ApprovalPolicy a stored approval records, or nil for none.
+func (a *storedApproval) policy() *ApprovalPolicy {
+	switch {
+	case a == nil:
+		return nil
+	case string(bytes.TrimSpace(a.Single)) == "true":
+		return SingleApproval()
+	}
+	return &ApprovalPolicy{Need: a.Need, Approvers: a.Approvers}
 }
 
 // markerTime is the time an attempt marker's AttemptedAt records, or the zero time when it records
@@ -323,7 +365,9 @@ func decodeRecord(b []byte) (Record, error) {
 // under "x" holding a record named run:complete would mark an unfinished run complete. Such a row
 // is ErrStorage, naming the run and the key, like any other stored record that does not decode:
 // the store's contents are wrong, whatever wrote them. Fields this version does not know still
-// decode, so a journal a newer version wrote stays readable.
+// decode, so a journal a newer version wrote stays readable; that includes members of the
+// record's approval policy, which a stored record reads leniently (ApprovalPolicy's own
+// UnmarshalJSON is strict, for a policy being configured or received).
 //
 // A redaction tombstone (see Record.Redacted) decodes as a record that carries only its name.
 //

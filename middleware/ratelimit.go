@@ -3,6 +3,7 @@ package middleware
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"sync"
 	"time"
 
@@ -88,14 +89,19 @@ func RateLimit(r *RateLimiter) agent.Middleware {
 	}
 }
 
-// ToolRateLimit throttles tool calls through the shared limiter.
+// ToolRateLimit throttles tool calls through the shared limiter. A call that gives up waiting for
+// a slot (its context was done: the run was cancelled, or the tool's WithTimeout deadline passed)
+// never calls the tool, and fails with an error wrapping agent.ErrToolNotCalled, so the agent
+// records a known failure rather than halt for an outcome that cannot have happened.
 func ToolRateLimit(r *RateLimiter) agent.ToolMiddleware {
 	return func(next agent.ToolHandler) agent.ToolHandler {
-		return func(ctx context.Context, tu agent.ToolUse) (json.RawMessage, error) {
+		return func(ctx context.Context, call agent.ToolCall) (json.RawMessage, error) {
 			if err := r.wait(ctx); err != nil {
-				return nil, err
+				// It gave up before calling next: the tool was not called, and the agent records
+				// the call as a known failure rather than an unknown outcome.
+				return nil, fmt.Errorf("%w (%w)", err, agent.ErrToolNotCalled)
 			}
-			return next(ctx, tu)
+			return next(ctx, call)
 		}
 	}
 }

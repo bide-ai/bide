@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+	"time"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/internal/toolhook"
 )
 
 // New constructs a flow builder whose input is In and output is Out, both pinned
@@ -57,8 +59,8 @@ func BlockName(name string) NodeOption {
 // and after an ambiguous mid-node crash (the body ran, its result was lost) Run
 // RE-RUNS the body rather than halting. Use it for a node that only reads.
 //
-// It sets only the retry classification: an approval gate or IdempotencyKey the node already
-// carries (a wrapped agent tool's) is kept, so the option cannot switch a gate off.
+// It sets only the retry classification: an approval gate the node already carries (a wrapped
+// agent tool's) is kept, so the option cannot switch a gate off.
 func ReadOnly() NodeOption {
 	return func(n *node) { n.safety.ReadOnly, n.safety.Idempotent = true, false }
 }
@@ -67,8 +69,8 @@ func ReadOnly() NodeOption {
 // same input is a no-op downstream, so it is safe to retry. On an ambiguous
 // mid-node crash Run RE-RUNS the body rather than halting. Use it for a node whose
 // effect de-duplicates downstream (for example an upsert keyed by a stable id).
-// Like ReadOnly, it sets only the retry classification and keeps any approval gate or
-// IdempotencyKey the node already carries.
+// Like ReadOnly, it sets only the retry classification and keeps any approval gate the node
+// already carries.
 func Idempotent() NodeOption {
 	return func(n *node) { n.safety.ReadOnly, n.safety.Idempotent = false, true }
 }
@@ -179,20 +181,25 @@ func (b *Builder[In, Out]) Step[I, O any](name string, fn func(context.Context, 
 // Tool infers I and O: the I input is JSON-encoded into the tool's args and the
 // tool's JSON result is decoded into O.
 //
-// Safety AUTO-DERIVES from the wrapped agent.Tool: Tool records t.Safety() on the
-// node, so a tool the core classifies as retry-safe (ReadOnly, Idempotent, or
-// carrying an IdempotencyKey) RE-RUNS on an ambiguous mid-node crash while a
+// Safety AUTO-DERIVES from the wrapped agent.Tool: Tool records its spec's Safety
+// (agent.SpecOf) on the node, so a tool the core classifies as retry-safe (ReadOnly
+// or Idempotent) RE-RUNS on an ambiguous mid-node crash while a
 // non-idempotent tool HALTS, matching the core loop's own resume decision. An
 // explicit plan.ReadOnly()/plan.Idempotent() option OVERRIDES the derived Safety
 // (options apply after the literal), for the rare case the author knows better
 // than the tool's own declaration.
 func (b *Builder[In, Out]) Tool[I, O any](name string, t agent.Tool, opts ...NodeOption) Handle[I, O] {
+	spec := agent.SpecOf(t) // read once, as the agent reads it
+	if err := checkTool(t); err != nil {
+		b.core.errs = append(b.core.errs, fmt.Errorf("plan: tool step %q: %w", name, err)) // surfaced at Build
+	}
 	b.core.register(applyNodeOptions(&node{
-		name:    name,
-		kind:    kindTool,
-		inType:  typeOf[I](),
-		outType: typeOf[O](),
-		safety:  t.Safety(), // auto-derived; an explicit option below overrides it
+		name:     name,
+		kind:     kindTool,
+		inType:   typeOf[I](),
+		outType:  typeOf[O](),
+		safety:   spec.Safety, // auto-derived; an explicit option below overrides it
+		approval: spec.Approval,
 		run: func(ctx context.Context, in any) (any, error) {
 			typed, ok := in.(I)
 			if !ok {
@@ -202,7 +209,7 @@ func (b *Builder[In, Out]) Tool[I, O any](name string, t agent.Tool, opts ...Nod
 			if err != nil {
 				return nil, fmt.Errorf("plan: tool %q encode input: %w", name, err)
 			}
-			raw, err := t.Call(ctx, args)
+			raw, err := callTool(ctx, t, spec.Timeout, args)
 			if err != nil {
 				return nil, err
 			}
@@ -360,4 +367,49 @@ func (b *Builder[In, Out]) Model[I, O any](name, prompt string, opts ...NodeOpti
 		// the flow's bound model at run time (it is not known here at construction).
 	}, opts))
 	return Handle[I, O]{name: name, b: b.core}
+}
+
+// callTool calls a wrapped agent tool as the agent does: under its ToolSpec.Timeout when that is
+// positive. An error it returns once that deadline has passed (judged by the deadline, since a
+// context's Err lags its timer), while the flow's own context is live, has an unknown outcome
+// and wraps agent.ErrToolOutcomeUnknown. A node's error records nothing either way: a side-effect
+// node's attempt marker then halts the next drive, and a retry-safe node runs again.
+//
+// Like the agent's base handler, it first asks toolhook.CallGuard (audit refuses a call made under
+// a bound grant that has expired), so a flow run under a delegation cannot act past its grant
+// either; a refused call never reaches the tool.
+func callTool(ctx context.Context, t agent.Tool, timeout time.Duration, args json.RawMessage) (json.RawMessage, error) {
+	if guard := toolhook.CallGuard; guard != nil {
+		if err := guard(ctx); err != nil {
+			return nil, fmt.Errorf("plan: tool %q was not called: %w (%w)", agent.SpecOf(t).Name, err, agent.ErrToolNotCalled)
+		}
+	}
+	if timeout <= 0 {
+		return t.Call(ctx, args)
+	}
+	tctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	raw, err := t.Call(tctx, args)
+	if err != nil && pastDeadline(tctx) && !pastDeadline(ctx) {
+		return nil, fmt.Errorf("plan: tool %q returned an error after its %s timeout: %w (%w)", agent.SpecOf(t).Name, timeout, err, agent.ErrToolOutcomeUnknown)
+	}
+	return raw, err
+}
+
+// checkTool refuses a tool agent.New would refuse for how it wraps another: a Compensator on its
+// Unwrap chain, or a timeout over a sub-agent (the agent's own check, shared through toolhook).
+func checkTool(t agent.Tool) error {
+	if toolhook.CheckTool == nil { // set by the agent package's init, which plan imports
+		return nil
+	}
+	return toolhook.CheckTool(t)
+}
+
+// pastDeadline reports whether ctx is done or its deadline has passed.
+func pastDeadline(ctx context.Context) bool {
+	if ctx.Err() != nil {
+		return true
+	}
+	dl, ok := ctx.Deadline()
+	return ok && !time.Now().Before(dl)
 }

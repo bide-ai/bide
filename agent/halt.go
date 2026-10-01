@@ -414,6 +414,12 @@ type resolveConfig struct {
 // carries none (a negative value is not one the engine writes). Returns *HaltTooYoung when the
 // halt has not aged enough, including a marker stamped in the future, so the caller waits and
 // retries later.
+//
+// Where d stands in for the live-driver check (a HaltContended halt, or a store with no Leaser),
+// it must cover the tool's real worst-case run time, not its ToolSpec.Timeout: a result the tool
+// returns after its deadline is still recorded, and a tool that ignores cancellation can run past
+// the timeout, so a halt resolved at the timeout can race a call still running. On a store that
+// leases runs, the lease check that ResolveHaltRef makes first is not affected by this.
 func WithMinHaltAge(d time.Duration) ResolveOption {
 	return func(c *resolveConfig) { c.minHaltAge = d }
 }

@@ -73,7 +73,7 @@ func ProvePolicy(ctx context.Context, store agent.Durable, runID, digest string,
 const policyUsedKeyPrefix = "policy_used:"
 
 // PolicyUsedKey is the KeyFunc of PolicyUsedKeys (see ProveAbsent / ProveAbsentBundle) over governed-action leaves:
-// a completed tool call whose result carries a policy_digest, as govern.AttestedEventTool
+// a completed tool call whose result carries a policy_digest, as an attested govern.EventTool
 // records. It keys by that digest, so the absence machinery commits the set of policies actually
 // exercised in a run. Proving a digest ABSENT under this KeyFunc shows that no governed action
 // ran under that policy; recomputing AbsenceRoot lists exactly which policies were used, so an
@@ -96,7 +96,7 @@ func PolicyUsedKey(r agent.Record) []string {
 }
 
 // GovernedPolicyDigest returns the policy digest a governed-action payload (a tool result, as
-// govern.AttestedEventTool journals it) carries. It is the one reading PolicyUsedKey and bide-audit
+// an attested govern.EventTool journals it) carries. It is the one reading PolicyUsedKey and bide-audit
 // share, so an action cannot be said to run under one policy by the used-policy set and under
 // another by the CLI. The payload is open (it may hold other fields, such as the acting identity),
 // so its names are not checked against a type, but it must decode strictly as an object (see

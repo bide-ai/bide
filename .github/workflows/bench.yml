@@ -108,6 +108,19 @@ jobs:
           (cd "$RUNNER_TEMP/src-head" && go build -o "$GITHUB_WORKSPACE/bench-head" ./cmd/bench)
       - name: Run scenarios, interleaved
         run: .github/scripts/bench.sh run "$REPEATS" out base=./bench-base head=./bench-head
+      - name: Go benchmarks, interleaved (benchstat)
+        # The agent's per-call cost, measured without the closed-loop harness: allocations and
+        # ns/op of a tool-calling run (BenchmarkRunTurns, ReadOnly calls) and of a side-effect
+        # call (BenchmarkToolCallSideEffect). Ten runs per ref, alternating, on this machine.
+        run: |
+          mkdir -p out/gobench
+          for i in $(seq 1 10); do
+            for side in base head; do
+              (cd "$RUNNER_TEMP/src-$side" && go test ./agent -run '^$' -bench '^Benchmark(RunTurns|ToolCallSideEffect)$' -benchmem -count=1) |
+                grep '^Benchmark' >> "out/gobench/$side.txt"
+            done
+          done
+          go run golang.org/x/perf/cmd/benchstat@v0.0.0-20260929162123-406019bb8b68 base=out/gobench/base.txt head=out/gobench/head.txt | tee out/gobench/benchstat.txt
       - name: Summarize (medians and change)
         run: |
           {
@@ -118,6 +131,12 @@ jobs:
             echo "Runner: $(.github/scripts/bench.sh cpu), $(go version | cut -d' ' -f3-4). Both binaries ran on this machine in one job."
             echo
             .github/scripts/bench.sh compare out base head "$REPEATS"
+            echo
+            echo "### Go benchmarks (benchstat, 10 runs per ref)"
+            echo
+            echo '```'
+            cat out/gobench/benchstat.txt
+            echo '```'
             echo
             echo "<details><summary>Raw output</summary>"
             echo

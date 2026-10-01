@@ -90,14 +90,16 @@ something the caller has to remember. Bind the acting grant and signer once at t
 ```go
 ctx = audit.WithGrant(ctx, rootSG, signer)
 
-tool := audit.AttenuatingSubAgent("researcher", "does research", subAgent, store,
-    func(parent audit.Grant, subAgent string) audit.Grant {
+tool := audit.AttenuatingSubAgent("researcher", "does research", subAgent, audit.AttenuationConfig{
+    Store: store,
+    Narrow: func(parent audit.Grant, subAgent string) audit.Grant {
         // return a narrower grant: keep every constraint, lower the limit.
         scope := maps.Clone(parent.Scope)
         scope["limit"] = "100"
         return audit.Grant{Scope: scope}
     },
-    audit.ScopeRules{"limit": audit.NumericAtMost})
+    Rules: audit.ScopeRules{"limit": audit.NumericAtMost},
+}) // trailing agent.ToolOptions go to agent.SubAgent: agent.WithApproval gates the delegation
 ```
 
 On each call, if a signed grant is bound to the context, the tool mints a narrower child grant
@@ -105,7 +107,8 @@ On each call, if a signed grant is bound to the context, the tool mints a narrow
 in the sub-run so the chain is anchored, rebinds the sub-run's identity to the child (`Actor` =
 this sub-agent, `OnBehalfOf` = the parent's `Subject`, `AuthorityRef` = the child's digest), and
 propagates the child grant so a deeper delegation narrows again. Your `AttenuateFunc` sets the
-narrower `Scope` (and may set `Subject` and an earlier `NotAfterUnix`); the wrapper fills in
+narrower `Scope` (and may set an earlier `NotAfterUnix`; a `Subject` it sets must be the sub-agent's
+name); the wrapper fills in
 `ParentRef`, and `Issuer` (the parent's `Subject`), `Subject` (the sub-agent's name), and `NotAfterUnix`
 (the parent's) if you left them empty. It then checks the child with `CheckAttenuation` under the
 rules you pass, and refuses the delegation, signing nothing, if the child is not a valid
@@ -115,7 +118,40 @@ The child grant is recorded in the sub-run the agent loop gives this call (`agen
 toolUseID)`, unique per call), so each delegation's grant sits in its own journal. Called outside an agent run,
 where there is no such scope, the tool refuses rather than fall back to a sub-run ID that every
 parent run would share. With no grant on the context it is a plain sub-agent that inherits the
-identity, so it is safe to use either way. The wrapped sub-agent still runs its own full agent loop and reasons
+identity, so it is safe to use either way; inside a run it journals that it ran without a grant
+(`audit:delegation:ungranted`).
+
+A delegation re-entered on resume (its sub-run paused, or was cut off) runs under the grant it
+journaled the first time, verified against the bound parent and signer, so the sub-run holds one
+grant whatever your `AttenuateFunc` returns now. A delegation resumed under other authority than
+it began with (with no grant after a grant, the reverse, or another parent grant or signer) is
+refused with `ErrConfig` and records nothing: the run stops (siblings in flight finish first,
+and a sibling's pause is reported beside the refusal), and driving it again with the right grant
+bound continues the delegation. Minting from a bound grant that has expired is refused the same
+way: bind a live one and drive again. So is minting a grant onto a sub-run that has records but no
+journaled authority (one an earlier pre-release ran without a grant): a grant minted now would cover
+steps that ran without one. A failure to read or write the delegation's authority in the store (the
+journaled grant, the child grant, the ungranted marker) records nothing either, as for a plain
+`SubAgent` whose sub-run's journal cannot be read: a resume retries the delegation.
+
+A delegation cannot run past its grant's `NotAfterUnix`. Every tool call in its sub-run is refused
+once the child grant has expired (a recorded failure; the tool is never called), and a delegation
+resumed after its journaled grant expired fails for good, recorded, since no grant can renew a
+journaled one: in a saga it rolls back (the rollback's compensations do not check expiry). A child
+that your `AttenuateFunc` gives an expiry already past fails the same way. A child grant's
+`Subject` is always the sub-agent's name; an `AttenuateFunc` that sets another is refused, and so
+is a journaled grant for another subject, by the call and by the rollback binding.
+
+**Upgrading from a journal written before this release.** A delegation that ran without a grant
+now journals that (`audit:delegation:ungranted`), and a rollback into a sub-run with records but
+no journaled authority stops rather than guess. A saga journaled by an earlier pre-release that
+holds an ungranted `AttenuatingSubAgent` delegation therefore cannot be rolled back after the
+upgrade (`ErrProtocol`). Journals are not promised across pre-releases: finish or roll back such
+sagas before upgrading. In a saga, a rollback into
+the sub-run compensates under that journaled grant and identity, never the parent's: it verifies
+the grant (its signature under the bound signer's key, and that it attenuates the bound parent)
+before it binds it, so resume a saga whose delegations ran under a grant with the grant and signer
+bound (`WithGrant`); without them the rollback stops with `ErrConfig`. The wrapped sub-agent still runs its own full agent loop and reasons
 autonomously; only its authority shrinks. The result is that capabilities monotonically decrease
 down a delegation tree by construction, and the whole chain stays provable via
 `VerifyDelegationChain`.

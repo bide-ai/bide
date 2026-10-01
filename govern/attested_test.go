@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/bide-ai/bide/agent"
 	gsm "github.com/blackwell-systems/gsm"
 )
 
@@ -22,14 +21,14 @@ func (f *fakeApplier) ApplyOnce(ctx context.Context, _ string, event string) (Ap
 }
 func (f *fakeApplier) State() gsm.State { return gsm.State{} }
 
-// TestAttestedEventTool_EmbedsPolicyDigest confirms the governed tool applies the event and
+// TestEventToolAttested_EmbedsPolicyDigest confirms the governed tool applies the event and
 // records the policy digest in its result, so the journaled record (and any ProofBundle over
 // it) commits to which policy admitted the action.
-func TestAttestedEventTool_EmbedsPolicyDigest(t *testing.T) {
+func TestEventToolAttested_EmbedsPolicyDigest(t *testing.T) {
 	fa := &fakeApplier{}
 	const digest = "b4c0ffeed00dfeed" // opaque identifier; the SDK does not interpret it
 
-	tool := AttestedEventTool(fa, "ship", "ship the order", "ship", digest, agent.Safety{})
+	tool := EventTool(fa, EventToolConfig{Name: "ship", Description: "ship the order", Event: "ship", PolicyDigest: digest})
 	res, err := tool.Call(context.Background(), json.RawMessage(`{}`))
 	if err != nil {
 		t.Fatalf("Call: %v", err)

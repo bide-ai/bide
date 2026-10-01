@@ -52,7 +52,7 @@ func TestEventTool_EveryApplyInOneCallIsRecorded(t *testing.T) {
 			}
 			var tools []agent.Tool
 			for _, ev := range events {
-				tools = append(tools, govern.EventTool(g, ev, "", ev, agent.Safety{Idempotent: true}))
+				tools = append(tools, govern.EventTool(g, govern.EventToolConfig{Name: ev, Description: "", Event: ev, Safety: agent.Safety{Idempotent: true}}))
 			}
 			runOnce(t, composite("both", tools...))
 			if evs := logEvents(t, log, "e"); !slices.Equal(evs, events) {
@@ -67,7 +67,7 @@ func TestEventTool_EveryApplyInOneCallIsRecorded_InMemoryAndFederated(t *testing
 	ctx := context.Background()
 	m := buildTwoCounters(t)
 	g := govern.New(m, m.NewState())
-	runOnce(t, composite("both", govern.EventTool(g, "a1", "", "inc_a", agent.Safety{Idempotent: true}), govern.EventTool(g, "a2", "", "inc_a", agent.Safety{Idempotent: true})))
+	runOnce(t, composite("both", govern.EventTool(g, govern.EventToolConfig{Name: "a1", Description: "", Event: "inc_a", Safety: agent.Safety{Idempotent: true}}), govern.EventTool(g, govern.EventToolConfig{Name: "a2", Description: "", Event: "inc_a", Safety: agent.Safety{Idempotent: true}})))
 	if got := g.State().Digest(); got != m.Apply(m.Apply(m.NewState(), "inc_a"), "inc_a").Digest() {
 		t.Fatal("two applies in one tool call applied once to the in-memory governor")
 	}
@@ -78,7 +78,7 @@ func TestEventTool_EveryApplyInOneCallIsRecorded_InMemoryAndFederated(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	pub := govern.FederatedEventTool(fg, "publish", "", "manufacturer", "epub", agent.Safety{Idempotent: true})
+	pub := govern.FederatedEventTool(fg, govern.FederatedEventToolConfig{Name: "publish", Description: "", Registry: "manufacturer", Event: "epub", Safety: agent.Safety{Idempotent: true}})
 	runOnce(t, composite("twice", pub, pub))
 	if evs := logEvents(t, log, "f"); len(evs) != 2 {
 		t.Fatalf("two federated applies in one tool call recorded %d entries: %q", len(evs), evs)
@@ -96,9 +96,9 @@ func TestEventTool_ReRunOfATwoApplyCallRecordsEachOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	tool := composite("both",
-		govern.EventTool(g, "a", "", "inc_a", agent.Safety{Idempotent: true}),
-		govern.EventTool(g, "b", "", "inc_b", agent.Safety{Idempotent: true}),
-		govern.EventTool(g, "a", "", "inc_a", agent.Safety{Idempotent: true}))
+		govern.EventTool(g, govern.EventToolConfig{Name: "a", Description: "", Event: "inc_a", Safety: agent.Safety{Idempotent: true}}),
+		govern.EventTool(g, govern.EventToolConfig{Name: "b", Description: "", Event: "inc_b", Safety: agent.Safety{Idempotent: true}}),
+		govern.EventTool(g, govern.EventToolConfig{Name: "a", Description: "", Event: "inc_a", Safety: agent.Safety{Idempotent: true}}))
 	runToolTwice(t, tool, nil)
 	if evs := logEvents(t, log, "e"); !slices.Equal(evs, []string{"inc_a", "inc_b", "inc_a"}) {
 		t.Fatalf("a re-run three-apply tool call recorded %q", evs)
@@ -115,8 +115,8 @@ func TestEventTool_ParallelFanOutInOneCall(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	incA := govern.EventTool(g, "a", "", "inc_a", agent.Safety{Idempotent: true})
-	incB := govern.EventTool(g, "b", "", "inc_b", agent.Safety{Idempotent: true})
+	incA := govern.EventTool(g, govern.EventToolConfig{Name: "a", Description: "", Event: "inc_a", Safety: agent.Safety{Idempotent: true}})
+	incB := govern.EventTool(g, govern.EventToolConfig{Name: "b", Description: "", Event: "inc_b", Safety: agent.Safety{Idempotent: true}})
 	bFirst := true // which task applies first; the re-run flips it
 	fan := agent.Func("fan", "", agent.Safety{Idempotent: true}, func(ctx context.Context, _ struct{}) (map[string]any, error) {
 		first, second := incA, incB

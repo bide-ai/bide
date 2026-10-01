@@ -58,7 +58,7 @@ type configNode struct {
 	// an unknown string (see safetyFromConfig). An approval gate the block declares is kept.
 	Safety string `json:"safety,omitempty"`
 	// Approval, when present, declares an m-of-n human approval gate
-	// that lowers to agent.Safety.Approval on the built node. Absent
+	// that lowers to the built node's approval gate. Absent
 	// keeps the node's existing (1-of-1 or none) approval behavior.
 	Approval *configApproval `json:"approval,omitempty"`
 }
@@ -415,7 +415,7 @@ func assemble(cfg *config, reg *Registry) (*builderCore, error) {
 		// Safety default is the registered block's Safety (the Go registration default);
 		// an explicit config "safety" overrides it. An unknown safety string is a load
 		// error naming the node, collected with the rest of the drift.
-		safety := b.safety
+		safety, approval := b.safety, b.approval
 		if cn.Safety != "" {
 			s, err := safetyFromConfig(b.safety, cn.Safety)
 			if err != nil {
@@ -424,8 +424,8 @@ func assemble(cfg *config, reg *Registry) (*builderCore, error) {
 				safety = s
 			}
 		}
-		// An "approval" block lowers to Safety.Approval, applied after the safety string
-		// so an explicit "safety" does not discard it. Invalid blocks are load errors
+		// An "approval" block lowers to the node's approval gate, kept apart from the
+		// safety string so an explicit "safety" does not discard it. Invalid blocks are load errors
 		// naming the node, collected with the rest of the drift.
 		if cn.Approval != nil {
 			n := len(cn.Approval.Approvers)
@@ -445,7 +445,7 @@ func assemble(cfg *config, reg *Registry) (*builderCore, error) {
 				}
 				seenApprover[id] = true
 			}
-			safety.Approval = &agent.ApprovalPolicy{Need: cn.Approval.Need, Approvers: cn.Approval.Approvers}
+			approval = &agent.ApprovalPolicy{Need: cn.Approval.Need, Approvers: cn.Approval.Approvers}
 		}
 		resolvedNodes = append(resolvedNodes, &node{
 			name:    cn.Name,
@@ -458,7 +458,8 @@ func assemble(cfg *config, reg *Registry) (*builderCore, error) {
 			// identically to a hand-built one. The default is the registered block's Safety
 			// (recorded in Go at registration, see regBlock.safety); an explicit config
 			// "safety" overrides it.
-			safety: safety,
+			safety:   safety,
+			approval: approval,
 			// Carry the model prompt template for a Model block, so a loaded Model node
 			// renders identically to a hand-built one (see RegisterModel / runModel).
 			prompt: b.prompt,
@@ -746,7 +747,7 @@ func mergeNames(reg *Registry) []string {
 // to it: raising one is Go code's decision alone.
 const (
 	levelSideEffect = iota // halts on an ambiguous crash
-	levelIdempotent        // Idempotent, or an IdempotencyKey: re-runs, de-duplicated downstream
+	levelIdempotent        // Idempotent: re-runs, de-duplicated downstream
 	levelReadOnly          // re-runs, no side effect
 )
 
@@ -755,7 +756,7 @@ func retryLevel(s agent.Safety) int {
 	switch {
 	case s.ReadOnly:
 		return levelReadOnly
-	case s.Idempotent || s.IdempotencyKey != nil:
+	case s.Idempotent:
 		return levelIdempotent
 	}
 	return levelSideEffect
@@ -766,12 +767,12 @@ var levelNames = [...]string{levelSideEffect: "side_effect", levelIdempotent: "i
 
 // safetyFromConfig applies a config safety string to base, the Safety the node's Go
 // registration declares. "readonly" sets ReadOnly, "idempotent" sets
-// Idempotent, and "side_effect" clears ReadOnly, Idempotent and the IdempotencyKey (the key
-// alone makes a node retry-safe), so the node halts on an ambiguous crash. A config may only
+// Idempotent, and "side_effect" clears ReadOnly and Idempotent, so the node halts on an
+// ambiguous crash. A config may only
 // LOWER retry safety: a value above the level base declares (readonly or idempotent on a side
 // effect, readonly on an idempotent block) is an error, because only Go code can say a step is
-// safe to run twice. An approval gate (RequiresApproval, Approval) in base is always kept, so a
-// config file cannot switch off a gate the wrapped tool declares. The error, also returned for an
+// safe to run twice. It sets only the retry classification: the node's approval gate is not part
+// of Safety, so a config file cannot switch off a gate the wrapped tool declares. The error, also returned for an
 // unknown string, reads after the node's name and wraps nothing; the caller adds ErrConfig.
 func safetyFromConfig(base agent.Safety, s string) (agent.Safety, error) {
 	var level int
@@ -783,7 +784,7 @@ func safetyFromConfig(base agent.Safety, s string) (agent.Safety, error) {
 		level, opt = levelIdempotent, Idempotent()
 	case "side_effect":
 		level, opt = levelSideEffect, func(n *node) {
-			n.safety.ReadOnly, n.safety.Idempotent, n.safety.IdempotencyKey = false, false, nil
+			n.safety.ReadOnly, n.safety.Idempotent = false, false
 		}
 	case "retryable":
 		// The pre-v1 alias of "idempotent": each level has one spelling.

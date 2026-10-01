@@ -705,13 +705,13 @@ func TestP11_ApprovalsUnderPostQuantumKeys(t *testing.T) {
 	}
 	store := agent.NewMemStore()
 	charged := 0
-	charge := agent.Func("charge", "charge the card", agent.Safety{Approval: &policy},
+	charge := agent.Func("charge", "charge the card", agent.Safety{},
 		func(context.Context, struct {
 			Amount int `json:"amount"`
 		}) (string, error) {
 			charged++
 			return "ok", nil
-		})
+		}, agent.WithApproval(&policy))
 	a := agent.New(p11ChargeModel{}, store, charge).WithApproverVerifiers(resolver(approvers))
 	_, err := a.Run(ctx, "gate", "pay")
 	var pend *agent.PendingApproval

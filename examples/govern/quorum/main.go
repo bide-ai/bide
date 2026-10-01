@@ -6,8 +6,8 @@
 //   - fan-out: govern.Quorum runs the voters with agent.Parallel, so each vote is a durable Step;
 //   - tally: plain Go, counting agreement on the normalized decision;
 //   - govern: a gsm invariant makes the k-of-n gate provable (verified over every possible count);
-//   - commit: govern.AttestedEventTool journals the commit, binding it to the policy and state;
-//   - escalate: a failed quorum forces the decision to "escalate" and pauses under RequiresApproval;
+//   - commit: govern.EventTool with a PolicyDigest journals the commit, binding it to the policy and state;
+//   - escalate: a failed quorum forces the decision to "escalate" and pauses under an approval gate (agent.WithApproval);
 //   - audit: each vote, the tally, and the commit are provable offline against a signed tree head.
 //
 // There is no LLM or network here: the voters are stubs returning fixed decisions, so the example
@@ -118,7 +118,7 @@ func runAgree(ctx context.Context, m *gsm.Machine, votesFor, committed gsm.Var, 
 	// Seed the (verified) tally into governed state, then attempt the commit. The governor caps
 	// the outcome to what the policy admits: with votes_for >= k the guard lets commit through.
 	gov := govern.New(m, m.NewState().SetInt(votesFor, res.VotesFor))
-	commit := govern.AttestedEventTool(gov, "commit", "commit the quorum decision", "commit", policyDigest, agent.Safety{})
+	commit := govern.EventTool(gov, govern.EventToolConfig{Name: "commit", Description: "commit the quorum decision", Event: "commit", PolicyDigest: policyDigest})
 	leaf, err := commit.Call(ctx, []byte(`{}`))
 	if err != nil {
 		panic(err)
@@ -140,7 +140,7 @@ func runAgree(ctx context.Context, m *gsm.Machine, votesFor, committed gsm.Var, 
 
 // runDisagree: three voters split three ways. Quorum is NOT met, so the guard makes commit a no-op
 // and the invariant forces the decision to escalate. The escalate path routes to human approval
-// (RequiresApproval), which pauses the run durably; nothing commits.
+// (agent.WithApproval), which pauses the run durably; nothing commits.
 func runDisagree(ctx context.Context, m *gsm.Machine, votesFor, committed gsm.Var, policyDigest string) {
 	store := agent.NewMemStore()
 	const runID = "quorum/disagree"
@@ -160,7 +160,7 @@ func runDisagree(ctx context.Context, m *gsm.Machine, votesFor, committed gsm.Va
 	// invariant forces the decision to escalate. The commit stays attested and journaled either
 	// way, so the audit trail records that the action was gated out, not silently dropped.
 	gov := govern.New(m, m.NewState().SetInt(votesFor, res.VotesFor))
-	commit := govern.AttestedEventTool(gov, "commit", "commit the quorum decision", "commit", policyDigest, agent.Safety{})
+	commit := govern.EventTool(gov, govern.EventToolConfig{Name: "commit", Description: "commit the quorum decision", Event: "commit", PolicyDigest: policyDigest})
 	if _, err := commit.Call(ctx, []byte(`{}`)); err != nil {
 		panic(err)
 	}
@@ -168,24 +168,24 @@ func runDisagree(ctx context.Context, m *gsm.Machine, votesFor, committed gsm.Va
 	fmt.Printf("committed=%v (quorum NOT met); the guard made commit a no-op\n", didCommit)
 
 	// The disagreement policy is explicit: escalate to a human under dual control. The escalate
-	// tool RequiresApproval, so calling it through the agent loop pauses the run durably rather
+	// tool has an approval gate, so calling it through the agent loop pauses the run durably rather
 	// than acting. Here we show the pause directly: no recorded approval yet, so the run halts.
 	escalate := agent.Func("escalate", "route the ungoverned decision to a human",
-		agent.Safety{RequiresApproval: true},
+		agent.Safety{},
 		func(context.Context, struct{}) (map[string]any, error) {
 			return map[string]any{"escalated": true}, nil
-		})
+		}, agent.WithApproval(agent.SingleApproval()))
 	esc := runWithApprovalGate(ctx, store, runID, escalate)
 	fmt.Printf("escalate path: %s\n", esc)
 
 	proveRun(ctx, store, runID, quorumSteps(voters), "")
 }
 
-// runWithApprovalGate models the HITL seam: a tool that RequiresApproval does not execute until a
+// runWithApprovalGate models the HITL seam: a tool with an approval gate does not execute until a
 // human decision is recorded. With none recorded, the run is paused (PendingApproval), which is the
 // deterministic disagreement policy from the design note. Returns a one-line description.
 func runWithApprovalGate(ctx context.Context, store agent.Durable, runID string, escalate agent.Tool) string {
-	if escalate.Safety().RequiresApproval {
+	if agent.SpecOf(escalate).Approval != nil {
 		// A real agent loop surfaces *PendingApproval from Run; the run resumes only after
 		// agent.Approve records a decision. With none recorded, the run is paused durably.
 		pending := &agent.ApprovalPending{RunRef: agent.RunRef{RunID: runID, RootRunID: runID}, ToolUseID: "escalate/1", ToolName: escalate.Name()}

@@ -167,6 +167,15 @@ func TestTokenBudget_ParallelSubAgentsBound(t *testing.T) {
 // tokens) and the parent one (100) before the process died: 500 used, over a budget of 450, so
 // the resumed tree makes no model call at all, even running its sub-agents one at a time.
 func TestTokenBudget_ResumedTreeCountsUnfinishedSubAgents(t *testing.T) {
+	resumedTreeCountsUnfinished(t, func(t Tool) Tool { return t })
+}
+
+// The same holds through a tool that wraps the sub-agent (see asSubAgent).
+func TestTokenBudget_ResumedTreeCountsUnfinishedWrappedSubAgents(t *testing.T) {
+	resumedTreeCountsUnfinished(t, func(t Tool) Tool { return wrappedSub{t} })
+}
+
+func resumedTreeCountsUnfinished(t *testing.T, wrap func(Tool) Tool) {
 	store := NewMemStore()
 	ctx, cancel := context.WithCancel(context.Background())
 	var mu sync.Mutex
@@ -191,7 +200,7 @@ func TestTokenBudget_ResumedTreeCountsUnfinishedSubAgents(t *testing.T) {
 	subModel := &stepper{n: 3, u: hundred}
 	sub := New(subModel, store, cut)
 	parentModel := &delegator{ids: []string{"p1", "p2"}, u: hundred}
-	if _, err := New(parentModel, store, SubAgent("sub", "delegate", sub)).Run(ctx, "r1", "q"); !errors.Is(err, context.Canceled) {
+	if _, err := New(parentModel, store, wrap(SubAgent("sub", "delegate", sub))).Run(ctx, "r1", "q"); !errors.Is(err, context.Canceled) {
 		t.Fatalf("first invocation: err = %v, want context.Canceled", err)
 	}
 	if p, s := parentModel.calls.Load(), subModel.calls.Load(); p != 1 || s != 4 {
@@ -201,7 +210,7 @@ func TestTokenBudget_ResumedTreeCountsUnfinishedSubAgents(t *testing.T) {
 	subModel2 := &stepper{n: 3, u: hundred}
 	sub2 := New(subModel2, store, stepTool(func(context.Context) error { return nil }))
 	parentModel2 := &delegator{ids: []string{"p1", "p2"}, u: hundred}
-	parent2 := New(parentModel2, store, SubAgent("sub", "delegate", sub2)).WithTokenBudget(450).SetMaxConcurrency(1)
+	parent2 := New(parentModel2, store, wrap(SubAgent("sub", "delegate", sub2))).WithTokenBudget(450).SetMaxConcurrency(1)
 	if _, err := parent2.Run(context.Background(), "r1", "q"); !errors.Is(err, ErrBudgetExceeded) {
 		t.Fatalf("resumed: err = %v, want ErrBudgetExceeded", err)
 	}

@@ -11,6 +11,8 @@ import (
 	"unicode/utf8"
 
 	"golang.org/x/sync/errgroup"
+
+	"github.com/bide-ai/bide/internal/toolhook"
 )
 
 // Run drives the agent to completion for runID, resuming from the journal if steps
@@ -51,7 +53,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 			emit(e)
 		}
 	}
-	toolH := a.toolHandler() // tool-middleware chain, built once for this run
+	toolH := a.toolHandler(runID) // tool-middleware chain, built once for this run
 
 	recs, err := openRun(ctx, a.store, runID)
 	if err != nil {
@@ -295,7 +297,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 			rec, err := a.store.Do(ctx, runID, modelStep(modelSeq),
 				func(ctx context.Context) (Record, error) {
 					ts.usedIDs = toolUseIDs(msgs)
-					req := Request{Messages: msgs, Tools: a.toolList(), Sampling: a.sampling, ResponseFormat: a.responseFormat, ToolChoice: a.toolChoice}
+					req := Request{Messages: msgs, Tools: a.requestTools(), Sampling: a.sampling, ResponseFormat: a.responseFormat, ToolChoice: a.toolChoice}
 					resp, e := chain.call(ctx, ModelCall{Request: req, Model: a.model, RunID: runID, Turn: seq}, ts)
 					if e != nil {
 						return Record{}, e
@@ -397,9 +399,9 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 		// conversation is assembled in deterministic uses-order regardless of which tool
 		// finishes first.
 		type call struct {
-			idx int
-			tu  ToolUse
-			t   Tool
+			idx  int
+			tu   ToolUse
+			spec *ToolSpec // the tool's registered spec (shared, never changed): every decision about the call reads it
 		}
 		var toRun []call
 		results := make([]*Message, len(uses))
@@ -407,10 +409,10 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 			if done[tu.ID] {
 				continue // already recorded (resumed turn) — its result is already in msgs
 			}
-			t, ok := a.tools[tu.Name]
-			if !ok {
+			if _, ok := a.tools[tu.Name]; !ok {
 				return leave(fmt.Errorf("model called unknown tool %q: %w", cutName(tu.Name), ErrUnknownTool))
 			}
+			spec := a.specs[tu.Name]
 			// A recorded denial is final, whatever the tool's gate is now: a human's Approve(false)
 			// or an m-of-n gate's terminal tally that did not pass. The gate may have been removed
 			// or loosened since (a redeploy), and the call must still not run. A recorded approval
@@ -418,15 +420,15 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 			// current policy, so a tightened policy applies to a call not yet run.
 			denied := decided[tu.ID] && !approvals[tu.ID]
 			if r, ok := values[ApprovalTallyStep(tu.ID)]; ok && !denied {
-				var tally ApprovalTally
-				if err := json.Unmarshal(r.Result, &tally); err != nil {
-					return leave(fmt.Errorf("decode %s (run %s): %w (%w)", r.Name, runID, err, ErrStorage))
+				tally, err := decodeTally(runID, r)
+				if err != nil {
+					return leave(err)
 				}
 				denied = !tally.Passed()
 			}
-			if safety := t.Safety(); !denied && (safety.RequiresApproval || safety.Approval != nil) {
+			if pol := spec.Approval; !denied && pol != nil {
 				var approved bool
-				if pol := safety.Approval; pol != nil {
+				if !pol.single() {
 					// m-of-n: the decision is the tally over the journaled per-approver records.
 					tally, final, err := a.quorumTally(ctx, runID, tu, pol)
 					if err != nil {
@@ -450,7 +452,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 			}
 			if denied { // record a denial and let the model react
 				const deniedResult = `"tool call denied by human"`
-				if _, err := putRecord(ctx, a.store, runID, ToolResultStep(tu.ID), Record{Kind: StepToolResult, ToolUseID: tu.ID, IsError: true, Result: json.RawMessage(deniedResult)}); err != nil {
+				if _, err := putRecord(ctx, a.store, runID, ToolResultStep(tu.ID), Record{Kind: StepToolResult, ToolUseID: tu.ID, IsError: true, Result: json.RawMessage(deniedResult), Safety: recordedSafety(*spec), Approval: spec.Approval.Clone()}); err != nil {
 					return leave(err)
 				}
 				done[tu.ID] = true
@@ -458,7 +460,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 				fire(ToolCompleted{ToolUseID: tu.ID, Name: tu.Name, Result: json.RawMessage(deniedResult), IsError: true})
 				continue
 			}
-			toRun = append(toRun, call{idx: i, tu: tu, t: t})
+			toRun = append(toRun, call{idx: i, tu: tu, spec: spec})
 		}
 
 		// Execute the ready tools CONCURRENTLY (Go's strength; single-flight-safe). First
@@ -481,6 +483,10 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 			// is held like a pause, so it does not cut off siblings in flight, and it is returned
 			// ahead of any pause once they have finished: the run failed, it is not waiting.
 			wakeErr error
+			// unrecErr is the first call's unrecorded refusal (toolhook.Unrecorded). It is held like
+			// a pause, so it does not cut off siblings in flight, whose side effects would then have
+			// unknown outcomes on the re-drive the refusal asks for; it is returned once they finish.
+			unrecErr error
 			// carried[i] is the usage the record of uses[i] carries: that of the runs it started.
 			// The runs counted their spend in the tree as it happened, so it goes into tot only.
 			carried = make([]usageTotals, len(uses))
@@ -493,6 +499,21 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 		for _, c := range toRun {
 			g.Go(func() (err error) {
 				defer func() {
+					if _, u := errors.AsType[*toolhook.Unrecorded](err); err != nil && u {
+						pauseMu.Lock()
+						if unrecErr == nil {
+							unrecErr = err
+						}
+						pauseMu.Unlock()
+						// The refusal may come joined with a halt or a lost outcome from deeper in
+						// the tree (a sub-run's turn that held both): that step's outcome is
+						// unknown all the same, so in a saga no further step starts.
+						if _, h := errors.AsType[*OutcomeUnknown](err); saga && (h || errors.Is(err, ErrToolOutcomeUnknown)) {
+							halted.Store(true)
+						}
+						err = nil
+						return
+					}
 					// A failed wake schedule records nothing and fails the run, but it is no reason
 					// to cancel a sibling mid-effect, which would leave its outcome unknown.
 					if we := (*wakeError)(nil); err != nil && errors.As(err, &we) {
@@ -553,7 +574,7 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 					markerKey string
 					called    atomic.Bool // the tool was called: its effect may have fired
 				)
-				if !c.t.Safety().retriableOnResume() {
+				if !c.spec.Safety.retriableOnResume() {
 					won, got, key, err := claimNextAttempt(gctx, a.store, runID, toolAttemptStep(c.tu.ID),
 						Record{Kind: StepAttempt, ToolUseID: c.tu.ID, AttemptedAt: time.Now().UnixMilli()})
 					if err != nil {
@@ -572,18 +593,33 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 				// re-fire it). The attempt marker above stays on gctx: if we are cancelled before it
 				// commits, the tool has not started, so there is nothing to record.
 				rec, err := recordFresh(context.WithoutCancel(gctx), a.store, runID, ToolResultStep(c.tu.ID), func(context.Context) (Record, error) {
-					if err := sctx.Err(); claimed && err != nil {
+					if claimed && ctxDone(sctx) {
 						// Cancelled after the claim and before the call: the tool is not called,
 						// and that is recorded below, so a resume calls it instead of halting.
-						return Record{}, fmt.Errorf("tool %q was not started: %w", c.tu.Name, err)
+						return Record{}, fmt.Errorf("tool %q was not started: %w", c.tu.Name, doneCause(sctx))
 					}
-					called.Store(true)
 					// Emitted here, past the pre-call check, so a consumer sees ToolStarted only for a
 					// call that actually starts; one recorded as not started emits neither event.
 					fire(ToolStarted{ToolUseID: c.tu.ID, Name: c.tu.Name, Args: c.tu.Args})
-					res, callErr := toolH(sctx, c.tu)
-					r := Record{Kind: StepToolResult, ToolUseID: c.tu.ID, ReadOnly: c.t.Safety().ReadOnly} // the safety it ran under, for a saga rollback
-					if callErr != nil && sctx.Err() != nil {
+					res, state, late, callErr := callTool(sctx, c.spec.Timeout, func(ctx context.Context) (json.RawMessage, int32, error) { return toolH(ctx, c.tu) })
+					// "Not called" needs positive proof: the base handler refused the call, or the
+					// chain returned without entering it and says so with ErrToolNotCalled. Only then
+					// is a claim recorded as never started (below) or a failure recorded as known. A
+					// chain that returned without entering the base handler and without that error
+					// may have reached the tool some other way (a middleware that called it itself),
+					// so a side effect's outcome is then unknown and the run halts for it.
+					notCalled := state == callRefusedClosed || state == callClosed && callErr != nil && errors.Is(callErr, ErrToolNotCalled)
+					called.Store(!notCalled)
+					if state == callClosed && callErr != nil && !notCalled && !c.spec.Safety.retriableOnResume() {
+						callErr = fmt.Errorf("tool %q: the tool middleware returned an error without calling next, and not ErrToolNotCalled, so the tool may have run: %w (%w)", c.tu.Name, callErr, ErrToolOutcomeUnknown)
+					}
+					// The safety and approval gate the call ran under, for a saga rollback and an audit.
+					r := Record{Kind: StepToolResult, ToolUseID: c.tu.ID, Safety: recordedSafety(*c.spec), Approval: c.spec.Approval.Clone()}
+					if callErr != nil && ctxDone(sctx) {
+						// (A call known not to have reached the tool records nothing here either,
+						// and called is false for it, so its claim is recorded as never started
+						// below and a resume calls the tool.)
+						//
 						// The call was cancelled (the run was cancelled, or a sibling paused or
 						// failed the group) before it could report back, so its outcome is
 						// unknown, not failed: a request may already have reached a provider.
@@ -593,7 +629,32 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 						// repeat.
 						return Record{}, callErr
 					}
-					if callErr != nil && errors.Is(callErr, ErrToolOutcomeUnknown) && !c.t.Safety().retriableOnResume() {
+					if _, aj := errors.AsType[*argsJournalError](callErr); aj && !called.Load() {
+						// The store failed before the tool was called: record nothing, and fail the
+						// run (below) as for any store fault before a call; a re-drive calls it.
+						return Record{}, callErr
+					}
+					if _, unrecorded := errors.AsType[*toolhook.Unrecorded](callErr); unrecorded {
+						// A tool wrapper of this module refused the call without effect, and asked that
+						// nothing be recorded (see toolhook.Unrecorded): the run stops, and a re-drive
+						// calls it again.
+						return Record{}, callErr
+					}
+					if late {
+						// The call's own deadline passed before it returned an error: the tool may
+						// have been cut off after its effect took place, so the outcome is unknown,
+						// just as for a tool that says so (below). The error keeps its chain, so a
+						// pause or a sub-run's halt inside it is still seen for what it is.
+						callErr = fmt.Errorf("tool %q returned an error after its %s timeout: %w (%w)", c.tu.Name, c.spec.Timeout, callErr, ErrToolOutcomeUnknown)
+					}
+					if callErr != nil && saga && !errors.Is(callErr, ErrToolOutcomeUnknown) && sagaStepMayHaveBegun(values, c.tu, c.spec.Safety) {
+						// An earlier drive's attempt of this retry-safe write may have taken effect
+						// (it journaled the step's arguments, and no outcome): this attempt's known
+						// failure says nothing about that one, so the step's outcome is unknown, and
+						// the rollback reports it rather than skip it as a step that made no change.
+						callErr = fmt.Errorf("tool %q: an earlier attempt of this saga step may have taken effect: %w (%w)", c.tu.Name, callErr, ErrToolOutcomeUnknown)
+					}
+					if callErr != nil && errors.Is(callErr, ErrToolOutcomeUnknown) && !c.spec.Safety.retriableOnResume() {
 						// The tool cannot tell whether its side effect took place (its connection
 						// dropped after the request went out). Recording a failure would tell the
 						// model it did not, and invite it to ask again. Record nothing: the attempt
@@ -636,14 +697,15 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 						// attempt marker would halt the resume instead).
 						var wakeFail *wakeError
 						if paused || errors.As(callErr, &wakeFail) {
-							if !c.t.Safety().retriableOnResume() {
+							if !c.spec.Safety.retriableOnResume() {
 								return Record{}, fmt.Errorf("agent: tool %q paused (Interrupt, Sleep, or Await) but is not retry-safe (mark it ReadOnly or Idempotent): %w", c.tu.Name, ErrConfig)
 							}
 							return Record{}, callErr
 						}
 						if saga {
 							toolCallErr = callErr
-							f := Record{Kind: StepSagaFail, ToolUseID: c.tu.ID, Result: mustJSON(toolErrorText(a.toolErrRedact, c.tu.Name, callErr))}
+							f := Record{Kind: StepSagaFail, ToolUseID: c.tu.ID, Result: mustJSON(toolErrorText(a.toolErrRedact, c.tu.Name, callErr)), Safety: r.Safety, Approval: r.Approval,
+								OutcomeUnknown: unknownStepOutcome(callErr)}
 							started.carry(&f)
 							return f, nil
 						}
@@ -689,6 +751,9 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 					if stepPause := (*stepPauseError)(nil); errors.As(err, &stepPause) {
 						return err // a misconfigured Step (ErrConfig), not a tool fault
 					}
+					if _, unrecorded := errors.AsType[*toolhook.Unrecorded](err); unrecorded {
+						return err // its own category (ErrConfig, say), not a tool fault
+					}
 					return fmt.Errorf("tool %q: %w (%w)", c.tu.Name, err, ErrTool)
 				}
 				results[c.idx] = &Message{Role: RoleTool, Parts: []Part{ToolResult{ToolUseID: c.tu.ID, Result: rec.Result, IsError: rec.IsError}}}
@@ -710,6 +775,14 @@ func (a *Agent) run(ctx context.Context, runID string, seed []Message, saga bool
 		}
 		if wakeErr != nil {
 			return leave(wakeErr)
+		}
+		if unrecErr != nil {
+			// A sibling's pause or halt is reported beside the refusal, never hidden by it: the
+			// caller has both to act on before the re-drive.
+			if pauseErr != nil {
+				return leave(errors.Join(unrecErr, pauseErr))
+			}
+			return leave(unrecErr)
 		}
 		if pauseErr != nil {
 			return leave(pauseErr)
@@ -806,4 +879,16 @@ func checkToolUseIDs(m Message, used map[string]bool) error {
 		seen[tu.ID] = true
 	}
 	return nil
+}
+
+// sagaStepMayHaveBegun reports whether an earlier drive began the saga step tu: it is a compensable
+// retry-safe write (Idempotent, not ReadOnly), which writes no attempt marker, and the journal held
+// its accepted-arguments record (see journalAcceptedArgs) when this drive began.
+func sagaStepMayHaveBegun(values map[string]Record, tu ToolUse, safety Safety) bool {
+	if !safety.retrySafeWrite() {
+		return false
+	}
+	// Only a Compensator's call journals the record (see journalAcceptedArgs).
+	_, ok := values[sagaArgsStep(tu.ID)]
+	return ok
 }

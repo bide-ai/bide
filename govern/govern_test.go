@@ -180,8 +180,8 @@ func TestGovernor_TwoRealAgentsConverge(t *testing.T) {
 
 	for trial := 0; trial < 50; trial++ {
 		gov := New(m, m.NewState().SetInt(v.inventory, 1))
-		payTool := EventTool(gov, "pay", "process the payment", "process_payment", agent.Safety{})
-		restockTool := EventTool(gov, "restock", "restock inventory", "restock", agent.Safety{})
+		payTool := EventTool(gov, EventToolConfig{Name: "pay", Description: "process the payment", Event: "process_payment"})
+		restockTool := EventTool(gov, EventToolConfig{Name: "restock", Description: "restock inventory", Event: "restock"})
 
 		store := agent.NewMemStore()
 		payAgent := agent.New(&scriptModel{turns: [][]agent.Emit{toolTurn("p1", "pay"), textTurn("done")}}, store, payTool)

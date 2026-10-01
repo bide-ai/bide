@@ -63,8 +63,8 @@ eino           maxFired=64   ✗
   <img src="../../assets/resolution-ladder.png" width="820" alt="سُلَّم حسم النتيجة المجهولة: الأثر الآمن لإعادة المحاولة يُعاد تلقائيًّا ويُزيل المورّد التكرار؛ والأثر الذي ترك سجلًّا قابلًا للاستعلام يحسمه مُسوِّي (reconciler) تلقائيًّا؛ والنتيجة المجهولة حقًّا تتوقف وتنتظر إنسانًا. عند الالتباس التام، يتوقف.">
 </p>
 
-الطبقة التي تقع فيها أداةٌ يحدّدها `Safety` المُعلَن لها: وسمها للقراءة فقط، أو عديمة الأثر عند التكرار، أو
-إعطاؤها مفتاح عدم تكرار (idempotency key)، يجعل النتيجة المجهولة تُعاد تلقائيًّا؛ وإن لم تُعلِن شيئًا من ذلك
+الطبقة التي تقع فيها أداةٌ يحدّدها `Safety` المُعلَن لها: وسمها للقراءة فقط أو عديمة الأثر عند التكرار
+يجعل النتيجة المجهولة تُعاد تلقائيًّا؛ وإن لم تُعلِن شيئًا من ذلك
 فإنها تتوقف. أمان إعادة المحاولة اختياري بالتفعيل؛ والتوقّف هو الافتراض ما لم تُفعِّله، فمكتبةٌ غايتها كلها
 «لا تنفيذ مزدوج أبدًا» تفترض الأمان لا التخمين.
 
@@ -561,7 +561,7 @@ a.Use(agent.WithRetrieval(myStore, 5))
 agent.Safety{ReadOnly: true}          // no side effects → always safe to re-run
 agent.Safety{Idempotent: true}        // safe to retry (dedupes downstream)
 agent.Safety{}                        // a write → HALT on unknown outcome, don't double-fire
-agent.Safety{RequiresApproval: true}  // pause for human approval before executing
+agent.WithApproval(agent.SingleApproval()) // not Safety: a tool option that pauses for human approval before executing
 ```
 
 قبل أثر جانبي غير متكرّر بأمان، تُسجّل الحلقة *علامة محاولة* مُعمَّرة، فيميّز الاستئناف بين «لم يُنفَّذ قط»
@@ -585,7 +585,7 @@ LangGraph الموثّقة «يجب أن تكون العُقَد عديمة ال
 
 ## العنصر البشري في الحلقة (Human-in-the-loop)
 
-ثلاث نكهات. **موافقة/رفض**: أداة موسومة بـ `RequiresApproval` تتوقف *قبل* التشغيل؛ وقرار الإنسان قيمة بوليانية:
+ثلاث نكهات. **موافقة/رفض**: أداة موسومة بـ `WithApproval(SingleApproval())` تتوقف *قبل* التشغيل؛ وقرار الإنسان قيمة بوليانية:
 
 <!-- docsnip: setup ctx context.Context; a *agent.Agent; store agent.Durable; runID string; input string -->
 ```go
@@ -629,9 +629,8 @@ if intr, ok := errors.AsType[*agent.InterruptPending](err); ok {
 
 <!-- docsnip: setup ctx context.Context; model agent.Model; store agent.Durable; pend *agent.ApprovalPending; type RefundArgs struct{}; doRefund func(context.Context, RefundArgs) (string, error); keysByApprover agent.ApproverVerifierFor; signer audit.Signer -->
 ```go
-refund := agent.Func("refund", "refund the order",
-	agent.Safety{Approval: &agent.ApprovalPolicy{Need: 2, Approvers: []string{"ops", "finance", "risk"}}},
-	doRefund)
+refund := agent.Func("refund", "refund the order", agent.Safety{}, doRefund,
+	agent.WithApproval(&agent.ApprovalPolicy{Need: 2, Approvers: []string{"ops", "finance", "risk"}}))
 a := agent.New(model, store, refund).WithApproverVerifiers(keysByApprover)
 
 // each approver, out of band, signs the paused call they were shown:
@@ -669,7 +668,8 @@ case errors.Is(err, agent.ErrStorage):      // durable-store I/O
 الشروط (يلفّ كلٌّ منها صنفًا): `ErrUnknownTool`، `ErrToolArgs` (يلفّان `ErrTool`)،
 `ErrToolReinvoked`، `ErrInvalidApproval`، `ErrAlreadyDecided` (تلفّ `ErrConfig`)،
 `ErrNoRecordedOutput`، `ErrIncompleteResponse` (يلفّان `ErrModel`)، `ErrTruncatedToolArgs` (يلفّ
-`ErrProtocol`)، `ErrBudgetExceeded`، `ErrMaxTurns` (يلفّان `ErrBudget`). وتُرجِع مُحوّلات المورّدين أيضًا
+`ErrProtocol`)، `ErrBudgetExceeded`، `ErrMaxTurns` (يلفّان `ErrBudget`). أما `ErrToolNotCalled` فلا يلفّ أي صنف: إنه يَسِم نداء أداة معلومًا
+أنه لم يبلغ أداته قط (ويلفّه رفضُ middleware الأداة). وتُرجِع مُحوّلات المورّدين أيضًا
 `*RateLimited` (HTTP 429، مع تلميح `RetryAfter`) و`*APIError` (أي استجابة غير 2xx أخرى، مع `StatusCode`)،
 وكلاهما يلفّ `ErrModel`. كل خطأ تُرجِعه العُدّة (بما فيه من النموذج وMCP والمخزن ومُحوّلات الحوكمة) يحمل صنفًا،
 فـ `errors.Is` موثوق عبر السطح كله.
@@ -713,8 +713,9 @@ a.UseTool(trace.Tool(tracer)) // execute_tool span per call; nests across the su
 وكيلًا فرعيًّا، تتداخل تشغيلة الوكيل الفرعي ونطاقاته كأبناء. ويعبر التتبّع حدّ الوكيل الفرعي تلقائيًّا (وهي
 فجوة في ADK / AgenticGoKit / trpc-agent-go).
 
-يعمل middleware الأداة *داخل* الخطوة المُعمَّرة، فقطع الدائرة (إصابة `ToolCache`) أو رفض السياسة يُسجَّل كأي
-نتيجة أداة؛ ويعيد الاستئناف تشغيله ولا يعيد تشغيل الـ middleware ولا الأداة أبدًا. لا يعمل `ToolRetry`
+يعمل middleware الأداة *داخل* الخطوة المُعمَّرة، فنتيجة قطع الدائرة (إصابة `ToolCache`) تُسجَّل كأي
+نتيجة أداة، وكذلك رفض السياسة الذي يلفّ `agent.ErrToolNotCalled`؛ ويجب أن يلفّ الرفضُ `agent.ErrToolNotCalled`:
+فالرفض الذي لا يلفّه يترك نتيجة الأثر الجانبي مجهولة، فلا يُسجَّل شيء ويتوقف التشغيل؛ ويعيد الاستئناف تشغيله ولا يعيد تشغيل الـ middleware ولا الأداة أبدًا. لا يعمل `ToolRetry`
 و`ToolCache` إلا على الأدوات التي يسمح `Safety` الخاص بها بذلك (الآمنة لإعادة المحاولة، و`ReadOnly`، على
 الترتيب)، ويُشغّل الوكيل الأداة غير الآمنة لإعادة المحاولة مرة واحدة على الأكثر لكل نداء أيًّا كان ما يفعله
 الـ middleware. اكتب خاصّتك بتوقيع
@@ -723,13 +724,15 @@ a.UseTool(trace.Tool(tracer)) // execute_tool span per call; nests across the su
 <!-- docsnip: setup func authorized(context.Context, string) bool -->
 ```go
 // Deny a tool by policy: the tool never executes; the model sees the error and reacts.
+// A denial must wrap agent.ErrToolNotCalled: without it the agent cannot tell the tool did
+// not run, so a side effect's outcome is unknown and the run halts.
 func RequireTag(tag string) agent.ToolMiddleware {
 	return func(next agent.ToolHandler) agent.ToolHandler {
-		return func(ctx context.Context, tu agent.ToolUse) (json.RawMessage, error) {
+		return func(ctx context.Context, call agent.ToolCall) (json.RawMessage, error) {
 			if !authorized(ctx, tag) {
-				return nil, fmt.Errorf("tool %q denied: %w", tu.Name, agent.ErrTool)
+				return nil, fmt.Errorf("tool %q denied: %w", call.Use.Name, agent.ErrToolNotCalled)
 			}
-			return next(ctx, tu) // mutate tu.Args before, transform the result after
+			return next(ctx, call) // mutate call.Use.Args before, transform the result after
 		}
 	}
 }
@@ -790,7 +793,7 @@ gsm فوق عدّ الأصوات، فـ «اتّفق k» مفحوص آليًّا
 <!-- docsnip: setup ctx context.Context; machine *gsm.Machine; import "github.com/blackwell-systems/gsm"; log govern.EventLog -->
 ```go
 gov, _ := govern.NewPersistent(ctx, machine, log, "order-42", machine.NewState())
-tool := govern.EventTool(gov, "pay", "mark the order paid", "pay", agent.Safety{})
+tool := govern.EventTool(gov, govern.EventToolConfig{Name: "pay", Description: "mark the order paid", Event: "pay"})
 // hand `tool` to the agent: concurrent agents sharing `gov` converge, durably.
 ```
 

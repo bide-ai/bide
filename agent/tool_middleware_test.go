@@ -38,17 +38,17 @@ func TestToolMiddleware_OrderMutateTransform(t *testing.T) {
 	var order []string
 	mw := func(tag string) ToolMiddleware {
 		return func(next ToolHandler) ToolHandler {
-			return func(ctx context.Context, tu ToolUse) (json.RawMessage, error) {
+			return func(ctx context.Context, call ToolCall) (json.RawMessage, error) {
 				order = append(order, tag)
-				return next(ctx, tu)
+				return next(ctx, call)
 			}
 		}
 	}
 	// Inner middleware rewrites the args; another transforms the result.
 	rewrite := func(next ToolHandler) ToolHandler {
-		return func(ctx context.Context, tu ToolUse) (json.RawMessage, error) {
-			tu.Args = json.RawMessage(`{"q":"rewritten"}`)
-			res, err := next(ctx, tu)
+		return func(ctx context.Context, call ToolCall) (json.RawMessage, error) {
+			call.Use.Args = json.RawMessage(`{"q":"rewritten"}`)
+			res, err := next(ctx, call)
 			if err != nil {
 				return res, err
 			}
@@ -83,7 +83,7 @@ func TestToolMiddleware_ShortCircuits(t *testing.T) {
 	m := &scriptModel{turns: [][]Emit{toolTurn("c1", "act", `{}`), textTurn("done")}}
 
 	deny := func(next ToolHandler) ToolHandler {
-		return func(ctx context.Context, tu ToolUse) (json.RawMessage, error) {
+		return func(ctx context.Context, call ToolCall) (json.RawMessage, error) {
 			return json.RawMessage(`"cached"`), nil // never calls next
 		}
 	}
@@ -104,9 +104,9 @@ func TestToolMiddleware_ResultIsJournaled(t *testing.T) {
 	tool := &recordTool{name: "act", safety: Safety{ReadOnly: true}, calls: &calls}
 
 	counting := func(next ToolHandler) ToolHandler {
-		return func(ctx context.Context, tu ToolUse) (json.RawMessage, error) {
+		return func(ctx context.Context, call ToolCall) (json.RawMessage, error) {
 			mwHits++
-			return next(ctx, tu)
+			return next(ctx, call)
 		}
 	}
 

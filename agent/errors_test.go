@@ -84,7 +84,7 @@ func TestErrors_TruncatedToolArgsClassified(t *testing.T) {
 // swept up by the category sentinels.
 func TestErrors_ControlFlowStillTyped(t *testing.T) {
 	var calls int
-	tool := &countingTool{name: "charge", safety: Safety{RequiresApproval: true}, calls: &calls}
+	tool := &countingTool{name: "charge", approval: SingleApproval(), calls: &calls}
 	m := &scriptModel{turns: [][]Emit{toolTurn("c1", "charge", `{}`), textTurn("done")}}
 	a := New(m, NewMemStore(), tool)
 

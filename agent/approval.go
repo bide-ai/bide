@@ -32,6 +32,12 @@ import (
 // approver, who could then fill two seats. Two ids are the same approver when their
 // approverFoldKey is equal, and such a policy is refused as ambiguous.
 func (p ApprovalPolicy) Validate() error {
+	if p.one { // SingleApproval, unless its fields were changed since
+		if p.Need != 1 || len(p.Approvers) != 0 {
+			return fmt.Errorf("a SingleApproval policy was changed to Need %d and %d approvers; build an m-of-n policy instead: %w", p.Need, len(p.Approvers), ErrConfig)
+		}
+		return nil
+	}
 	if len(p.Approvers) == 0 {
 		return fmt.Errorf("approval policy has no approvers: %w", ErrConfig)
 	}

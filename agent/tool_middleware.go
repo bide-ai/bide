@@ -3,31 +3,103 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"sync/atomic"
 )
 
-// ToolHandler executes one tool call: given the ToolUse (ID, Name, Args), it returns
-// the raw JSON result or an error. It is the tool-side analogue of ModelHandler.
-type ToolHandler func(context.Context, ToolUse) (json.RawMessage, error)
+// ToolCall is one tool call as tool middleware sees it: the ToolUse the model sent (ID, Name,
+// Args), the Spec of the tool it names, and the run it belongs to. A middleware reads Spec to
+// tell a side effect from a read before it retries, caches, or skips a call, and may pass next
+// a copy with different Use.Args. It passes next the ToolCall it was given (or a copy): a call
+// whose Use.Name or Use.ID a middleware changed, or a ToolCall it built itself, fails with
+// ErrConfig and the tool is not called. Spec is the zero ToolSpec (a side effect) for a call that
+// names no registered tool.
+//
+// Spec informs middleware only. The agent decides from its own copy of the registered tool's
+// spec: a middleware that changes Spec changes nothing the agent enforces.
+type ToolCall struct {
+	Use   ToolUse
+	Spec  ToolSpec
+	RunID string // the run whose model made the call
 
-// ToolMiddleware wraps a ToolHandler — the same func(Handler) Handler idiom as model
+	// redact is the agent's WithToolErrorRedactor (see ErrorText).
+	redact func(tool string, err error) string
+	// modelArgs are the arguments as the model sent them, before any middleware changed Use.Args.
+	modelArgs json.RawMessage
+	// origName and origID are the call as the model made it: the base handler refuses a call a
+	// middleware renamed or re-identified.
+	origName, origID string
+	// state is whether the call reached its tool (see callOpen), changed by compare-and-swap only.
+	state *atomic.Int32
+	// began is whether any invocation began the tool's Call (see beganNone), by compare-and-swap.
+	began *atomic.Int32
+	// out is the tool's own outcome (see toolNotRun).
+	out *atomic.Int32
+	// earlier is set when an invocation of the call begins after an earlier one that did not
+	// itself fail (it succeeded, is still running, or its outcome is unknown): the earlier one may
+	// have taken effect, whatever the later one reports.
+	earlier *atomic.Bool
+}
+
+// ErrorText returns the text the agent journals, and sends to the model, for this call failing
+// with err: the text chosen by the agent's WithToolErrorRedactor, if it has one, and otherwise
+// err's own text, in either case with every URL in it redacted. A tool middleware that records a
+// failed call's error text (a trace span, a log line) uses it to record no more than the journal
+// holds. A ToolCall the middleware built itself, rather than one the agent passed it, has no
+// redactor: its text is err's own, URLs redacted.
+func (c ToolCall) ErrorText(err error) string { return toolErrorText(c.redact, c.Use.Name, err) }
+
+// ToolHandler executes one tool call and returns the raw JSON result or an error. It is the
+// tool-side analogue of ModelHandler.
+type ToolHandler func(ctx context.Context, call ToolCall) (json.RawMessage, error)
+
+// ToolMiddleware wraps a ToolHandler, the same func(Handler) Handler idiom as model
 // Middleware, but around TOOL execution. First added = outermost. A middleware can:
 //
 //   - observe/log/trace a call (its name, args, duration, error);
 //   - MUTATE the outgoing args (validate, redact, inject defaults) by calling next with
-//     a modified ToolUse;
-//   - transform the result before it is journaled;
-//   - SHORT-CIRCUIT — return a result (a cache hit) or an error (a policy denial)
-//     WITHOUT calling next, so the tool never runs.
+//     a copy of the ToolCall whose Use.Args differ;
+//   - transform the result before it is journaled (turning a side effect's success into an
+//     error halts the run: see below);
+//   - SHORT-CIRCUIT: return a result (a cache hit) or an error (a policy denial)
+//     WITHOUT calling next, so the tool never runs. A denial MUST wrap ErrToolNotCalled
+//     (fmt.Errorf("denied: %w", agent.ErrToolNotCalled)): without it, a side effect's
+//     outcome is unknown and the run halts (see below).
 //
 // A middleware that may call next more than once (a retry) or not at all (a cache) must check
-// the tool's Safety first, with ToolSafety(ctx): repeating or skipping a side effect is not
-// its call to make. The agent enforces the first half itself: a tool that is not RetrySafe
-// runs at most once per tool call, and a second call to next for it returns
-// ErrToolReinvoked without running the tool.
+// the call's Spec.Safety first: repeating or skipping a side effect is not its call to make. The
+// agent enforces the first half itself: a tool that is not RetrySafe runs at most once per tool
+// call, and a second call to next for it returns ErrToolReinvoked without running the tool.
+//
+// A middleware reaches the tool only through next: never by calling the tool itself, and never by
+// leaving next running after it returns (the agent refuses an invocation of next that comes after
+// the chain returned). When it ends a call without calling next (a denial, a rate limiter that
+// gives up), it MUST return an error wrapping ErrToolNotCalled, and it returns that error only
+// then. The agent needs positive proof that a side effect was not called: a chain that returns an
+// error without calling next, and without ErrToolNotCalled, leaves the side effect's outcome
+// unknown, and the run halts for it rather than risk running it twice. It needs positive proof
+// that a side effect failed, too: a middleware may transform a result, but one that turns a side
+// effect's success into an error (or returns another error for a call whose tool did not itself
+// fail) makes the outcome unknown, and the run halts for it, so the model is never told a fired
+// side effect failed. A retry-safe tool's error is recorded as a failure the model sees, except in
+// a saga for one that changes state (Idempotent, not ReadOnly): there it is recorded with an
+// unknown outcome and reported in SagaAborted.UnknownOutcome, since the rollback would otherwise
+// skip it as a step that made no change.
+//
+// A result needs positive proof as well: a chain that returns a result while any invocation of the
+// call's tool is still running in this process (a next the middleware left running, a sibling
+// invocation, or one an earlier, cancelled drive left behind) has an unknown outcome, since that
+// invocation's effect may land after anything the run records next, a saga's compensation
+// included. A side effect halts; a retry-safe saga write is reported in SagaAborted.UnknownOutcome
+// and never compensated. Once the chain has returned, no invocation of next begins the tool, even
+// for a retry-safe tool an earlier invocation already reached. A saga rollback that re-runs a
+// retry-safe step to learn the result to compensate applies the same rules, and takes as the
+// result only an answer that reached the tool: a re-run whose outcome is unknown, or that a
+// middleware answered itself, is reported, not compensated, and the rollback goes on.
 //
 // The chain runs INSIDE the durable, memoized step, so a short-circuit result or a
-// transformed result is what gets journaled — resume replays it and never re-runs the
-// middleware or the tool. Batteries live in the middleware/ package (ToolLog, ToolCache).
+// transformed result is what gets journaled: resume replays it and never re-runs the
+// middleware or the tool. A tool's Timeout bounds the whole chain. Batteries live in the
+// middleware/ package (ToolLog, ToolCache, ToolRetry).
 type ToolMiddleware func(ToolHandler) ToolHandler
 
 // UseTool appends tool middleware wrapping every tool call (first added = outermost).
@@ -37,25 +109,3 @@ func (a *Agent) UseTool(mw ...ToolMiddleware) *Agent {
 	a.toolMW = append(a.toolMW, mw...)
 	return a
 }
-
-type toolSafetyKey struct{}
-
-// ToolSafety returns the Safety of the tool that a tool-middleware call is for, so a
-// middleware can tell a side effect from a read before it retries, caches, or skips a call.
-// ok is false outside a tool call, or when the call names no registered tool; a middleware
-// should then treat the call as a side effect.
-func ToolSafety(ctx context.Context) (s Safety, ok bool) {
-	s, ok = ctx.Value(toolSafetyKey{}).(Safety)
-	return s, ok
-}
-
-// WithToolSafety returns ctx carrying s as the Safety that ToolSafety reports. The agent sets
-// it for every tool call; call it yourself to run tool middleware outside an agent, as in a
-// test. It informs middleware only: the agent's at-most-once check reads the registered
-// tool's Safety, never this value.
-func WithToolSafety(ctx context.Context, s Safety) context.Context {
-	return context.WithValue(ctx, toolSafetyKey{}, s)
-}
-
-// modelArgsKey carries a call's arguments as the model sent them, before tool middleware.
-type modelArgsKey struct{}

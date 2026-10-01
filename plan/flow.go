@@ -507,7 +507,7 @@ func iterSwitchKey(iter int, over string) string {
 //     (*agent.OutcomeUnknown) instead of re-running it, and a claim the driver never
 //     started (cancelled, or a failed store, before the body) is recorded as not
 //     started, so the next drive re-attempts it;
-//   - a retry-safe node (ReadOnly, Idempotent, or keyed) writes no marker and re-runs
+//   - a retry-safe node (ReadOnly or Idempotent) writes no marker and re-runs
 //     after a crash, unless an earlier attempt of it claimed a marker as a side effect,
 //     in which case it halts as that attempt would have;
 //   - a body that returns a pause from a node that is not retry-safe is ErrConfig (the

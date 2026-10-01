@@ -290,7 +290,7 @@ func TestAdv104_PauseThenResumeLateSpendOnce(t *testing.T) {
 	}
 	j, _ := NewJournal(st)
 	var charged int
-	charge := &countingTool{name: "charge", safety: Safety{RequiresApproval: true}, calls: &charged}
+	charge := &countingTool{name: "charge", approval: SingleApproval(), calls: &charged}
 	m := &scriptModel{turns: [][]Emit{toolTurnWithUsage("c1", "charge", `{}`, billed)}}
 	_, err := New(m, j, charge).Use(answerAndLeave(bg)).RunResult(ctx, "r", "go")
 	var pend *PendingApproval

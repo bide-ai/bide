@@ -58,10 +58,12 @@ func ModelInfoOf(m Model) (ModelInfo, bool) {
 	return ModelInfo{}, false
 }
 
-// Request is a single model call.
+// Request is a single model call. Tools are the specs of the tools the model may call, sorted by
+// name; an adapter sends each one's Name, Description and Input schema. The agent sends each
+// request its own copy of the slice, but the specs' schema bytes are shared: treat them as read-only.
 type Request struct {
 	Messages       []Message
-	Tools          []Tool
+	Tools          []ToolSpec
 	Sampling       Sampling        // generation controls; zero value = provider/model defaults
 	ResponseFormat *ResponseFormat // nil = free-form; set = constrain output to a JSON schema
 	ToolChoice     *ToolChoice     // nil = provider default (auto); see ToolChoice

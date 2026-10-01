@@ -253,7 +253,7 @@ func TestMofnDST_CrashSweepAfterQuorum(t *testing.T) {
 	vf := fakeVerifiers(opsFinRisk...)
 	wantTally := counts{Need: 2, Approved: 2, ApprovedBy: []string{"ops", "finance"}, Pending: []string{"risk"}}
 	resume := func(store Durable, charged *int) error {
-		charge := &countingTool{name: "charge", safety: Safety{Approval: pol}, calls: charged}
+		charge := &countingTool{name: "charge", approval: pol, calls: charged}
 		a := New(&scriptModel{turns: [][]Emit{textTurn("done")}}, store, charge).WithApproverVerifiers(vf)
 		_, err := a.Run(context.Background(), "r1", "pay")
 		return err

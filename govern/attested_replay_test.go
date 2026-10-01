@@ -5,16 +5,15 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/bide-ai/bide/agent"
 	gsm "github.com/blackwell-systems/gsm"
 )
 
-// TestAttestedEventTool_StateDigestsReplay is the payoff for the single-leaf (action, policy,
+// TestEventToolAttested_StateDigestsReplay is the payoff for the single-leaf (action, policy,
 // state) binding: a verifier holding the policy and the run's governed events can rebuild the
 // reference machine, replay the events from the initial state, and confirm each committed
 // state_digest matches the reference at that transition. This checks the runtime's state against
 // the verified reference per action, for this run (it does not prove refinement for all inputs).
-func TestAttestedEventTool_StateDigestsReplay(t *testing.T) {
+func TestEventToolAttested_StateDigestsReplay(t *testing.T) {
 	ctx := context.Background()
 
 	build := func() (*gsm.Machine, gsm.Var, gsm.Var) {
@@ -39,7 +38,7 @@ func TestAttestedEventTool_StateDigestsReplay(t *testing.T) {
 	events := []string{"inc_a", "inc_b", "inc_a", "inc_a", "inc_a"} // a is capped at 3
 	committed := make([]string, 0, len(events))
 	for i, ev := range events {
-		tool := AttestedEventTool(gov, ev, ev, ev, digest, agent.Safety{})
+		tool := EventTool(gov, EventToolConfig{Name: ev, Description: ev, Event: ev, PolicyDigest: digest})
 		res, err := tool.Call(ctx, json.RawMessage(`{}`))
 		if err != nil {
 			t.Fatalf("call %d: %v", i, err)

@@ -73,6 +73,11 @@ builds `cmd/bench` at `base` and at `head` in one job and runs the two binaries 
 head, base, head, ...) for the configured repeats, so drift in the machine's speed during the job
 reaches both. The job summary states the CPU model and gives, for each scenario and metric (mean
 latency, p90 and p99 among them), the median at base, the median at head and the percentage change from base to head.
+The same job also runs the agent's Go benchmarks `BenchmarkRunTurns` and `BenchmarkToolCallSideEffect`
+with `-benchmem`, ten times per ref, interleaved, and adds their
+[benchstat](https://pkg.go.dev/golang.org/x/perf/cmd/benchstat) comparison (time/op, B/op and allocs/op)
+to the summary: the per-call cost of a change, without the closed-loop harness. The redesign's
+performance gate reads both (see `docs/design/api-v1.md` §10.3).
 
 ```
 gh workflow run bench.yml -R bide-ai/bide --ref main -f base=v0.8.0 -f head=main

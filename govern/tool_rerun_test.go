@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/govern"
@@ -73,7 +74,7 @@ func TestEventTool_RerunAfterCrashAppendsOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	res := runToolTwice(t, govern.EventTool(g, "bump", "", "inc_a", agent.Safety{Idempotent: true}), nil)
+	res := runToolTwice(t, govern.EventTool(g, govern.EventToolConfig{Name: "bump", Description: "", Event: "inc_a", Safety: agent.Safety{Idempotent: true}}), nil)
 	evs, _ := log.Events(ctx, "e", 0)
 	if len(evs) != 1 {
 		t.Fatalf("one tool call appended %d events: %q", len(evs), evs)
@@ -85,7 +86,7 @@ func TestEventTool_RerunAfterCrashAppendsOnce(t *testing.T) {
 
 // When another process appends between the crash and the re-run, the re-run still reports the
 // original append: its position, and the state an auditor gets by replaying the log through it.
-func TestAttestedEventTool_RerunReportsTheOriginalAppend(t *testing.T) {
+func TestEventToolAttested_RerunReportsTheOriginalAppend(t *testing.T) {
 	ctx := context.Background()
 	m := buildCounter(t)
 	log := govern.NewMemEventLog()
@@ -97,7 +98,7 @@ func TestAttestedEventTool_RerunReportsTheOriginalAppend(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	tool := govern.AttestedEventTool(g, "bump", "", "inc_a", "policy", agent.Safety{Idempotent: true})
+	tool := govern.EventTool(g, govern.EventToolConfig{Name: "bump", Description: "", Event: "inc_a", PolicyDigest: "policy", Safety: agent.Safety{Idempotent: true}})
 	res := runToolTwice(t, tool, func() {
 		if _, err := other.Apply(ctx, "inc_a"); err != nil {
 			t.Fatal(err)
@@ -121,7 +122,7 @@ func TestEventTool_RerunAfterCrashAppliesOnce_InMemoryAndFederated(t *testing.T)
 	ctx := context.Background()
 	m := buildCounter(t)
 	g := govern.New(m, m.NewState())
-	runToolTwice(t, govern.EventTool(g, "bump", "", "inc_a", agent.Safety{Idempotent: true}), nil)
+	runToolTwice(t, govern.EventTool(g, govern.EventToolConfig{Name: "bump", Description: "", Event: "inc_a", Safety: agent.Safety{Idempotent: true}}), nil)
 	if a, err := g.Apply(ctx, "inc_a"); err != nil || a.Position != 1 {
 		t.Fatalf("next Apply after one re-run tool call = %+v, %v; want position 1", a, err)
 	}
@@ -132,8 +133,38 @@ func TestEventTool_RerunAfterCrashAppliesOnce_InMemoryAndFederated(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	runToolTwice(t, govern.FederatedEventTool(fg, "publish", "", "manufacturer", "epub", agent.Safety{Idempotent: true}), nil)
+	runToolTwice(t, govern.FederatedEventTool(fg, govern.FederatedEventToolConfig{Name: "publish", Description: "", Registry: "manufacturer", Event: "epub", Safety: agent.Safety{Idempotent: true}}), nil)
 	if evs, _ := log.Events(ctx, "f", 0); len(evs) != 1 {
 		t.Fatalf("one federated tool call appended %d entries: %q", len(evs), evs)
+	}
+}
+
+// EventTool and FederatedEventTool apply their config's Safety and Options to the tool's spec, so
+// a governed action can be gated on approval or bounded by a timeout like any agent tool.
+func TestEventToolConfig_SpecCarriesSafetyAndOptions(t *testing.T) {
+	ctx := context.Background()
+	m := buildCounter(t)
+	g, err := govern.NewPersistent(ctx, m, govern.NewMemEventLog(), "e", m.NewState())
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts := []agent.ToolOption{agent.WithApproval(agent.SingleApproval()), agent.WithTimeout(time.Minute), agent.WithTitle("Bump")}
+	for name, tool := range map[string]agent.Tool{
+		"plain":    govern.EventTool(g, govern.EventToolConfig{Name: "bump", Event: "inc_a", Safety: agent.Safety{Idempotent: true}, Options: opts}),
+		"attested": govern.EventTool(g, govern.EventToolConfig{Name: "bump", Event: "inc_a", PolicyDigest: "p", Safety: agent.Safety{Idempotent: true}, Options: opts}),
+	} {
+		s := agent.SpecOf(tool)
+		if s.Name != "bump" || !s.Safety.Idempotent || s.Approval == nil || s.Timeout != time.Minute || s.Title != "Bump" {
+			t.Errorf("%s: spec %+v; want the config's name, safety and options", name, s)
+		}
+	}
+	fm, _, _, _, _ := buildMfrSupFederation(t)
+	fg, err := govern.NewFederated(ctx, fm, govern.NewMemEventLog(), "f", fm.NewState())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := agent.SpecOf(govern.FederatedEventTool(fg, govern.FederatedEventToolConfig{Name: "publish", Registry: "manufacturer", Event: "epub", Safety: agent.Safety{Idempotent: true}, Options: opts}))
+	if s.Name != "publish" || !s.Safety.Idempotent || s.Approval == nil || s.Timeout != time.Minute {
+		t.Errorf("federated: spec %+v; want the config's name, safety and options", s)
 	}
 }

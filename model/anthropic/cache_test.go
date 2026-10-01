@@ -21,7 +21,7 @@ func (t toolStub) Call(context.Context, json.RawMessage) (json.RawMessage, error
 func cacheReq() agent.Request {
 	return agent.Request{
 		Messages: []agent.Message{agent.SystemText("you are helpful"), agent.UserText("hi")},
-		Tools:    []agent.Tool{toolStub{"a"}, toolStub{"b"}},
+		Tools:    []agent.ToolSpec{agent.SpecOf(toolStub{"a"}), agent.SpecOf(toolStub{"b"})},
 	}
 }
 

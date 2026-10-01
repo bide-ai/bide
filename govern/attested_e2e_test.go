@@ -10,18 +10,17 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/bide-ai/bide/agent"
 	gsm "github.com/blackwell-systems/gsm"
 )
 
-// TestAttestedEventTool_RealPolicyDigest wires a real gsm policy end to end: it builds a
+// TestEventToolAttested_RealPolicyDigest wires a real gsm policy end to end: it builds a
 // combinator machine, takes its PolicyDigest, governs a real state transition through
-// AttestedEventTool, and confirms the journaled result carries that exact digest. It also
+// an attested EventTool, and confirms the journaled result carries that exact digest. It also
 // recomputes the digest independently (the same domain-separated formula bide-audit
 // verify-governance uses) and asserts parity with gsm's own PolicyDigest, so the SDK, the
 // verifier CLI, and gsm agree on the policy's identity. When GSM_AST_CHECKER is set, it runs
 // the external verified oracle on the policy bytes to close the second trust root in-repo.
-func TestAttestedEventTool_RealPolicyDigest(t *testing.T) {
+func TestEventToolAttested_RealPolicyDigest(t *testing.T) {
 	r := gsm.NewRegistry("cap")
 	a := r.Int("a", 0, 5)
 	b := r.Int("b", 0, 5)
@@ -54,7 +53,7 @@ func TestAttestedEventTool_RealPolicyDigest(t *testing.T) {
 	}
 	gov := New(m, m.NewState())
 
-	tool := AttestedEventTool(gov, "inc_a", "increment a (capped at 3)", "inc_a", digest, agent.Safety{})
+	tool := EventTool(gov, EventToolConfig{Name: "inc_a", Description: "increment a (capped at 3)", Event: "inc_a", PolicyDigest: digest})
 	res, err := tool.Call(context.Background(), json.RawMessage(`{}`))
 	if err != nil {
 		t.Fatalf("Call: %v", err)

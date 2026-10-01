@@ -333,14 +333,13 @@ the drive and for the store's clock rate to differ slightly from the worker's; i
 worker that is stalled through the cutoff, which is why side effects rest on the attempt claim
 instead (see [known limitations](../KNOWN-LIMITATIONS.md)).
 
-**The idempotency-key retry path** reduces halt-for-a-human stops. On resume, a tool with an
+**The idempotent retry path** reduces halt-for-a-human stops. On resume, a tool with an
 unknown outcome (invoked, no result journaled) normally fires `*OutcomeUnknown` unless it is
-retry-safe. A tool that declares a `Safety.IdempotencyKey` is now treated as retry-safe: it
-asserts that a retried call with the same args de-duplicates downstream, so the run retries it
-instead of halting. The contract is the tool's to keep: it must send that key to the
-downstream (the SDK derives the same key from the same args on retry, but does not itself call
-the downstream). This keeps autonomous and ambient agents moving instead of stopping for a
-human on every uncertain call.
+retry-safe. A tool declared `Safety{Idempotent: true}` is retry-safe: it asserts that a retried
+call de-duplicates downstream, so the run retries it instead of halting. The contract is the
+tool's to keep: it derives a stable downstream key from its arguments (or uses
+`agent.NextOnceKey`) and sends it with the request. This keeps autonomous and ambient agents
+moving instead of stopping for a human on every uncertain call.
 
 **Boundary: mechanism vs policy.** `Recover` is the mechanism (enumerate, skip finished,
 re-drive the rest). `resume` is deployment POLICY: it knows which agent drives a run and any

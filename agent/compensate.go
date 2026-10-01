@@ -40,17 +40,20 @@ type Compensator interface {
 // has no such record, so compensation there falls back to the model's arguments. A middleware
 // that rewrites a retry-safe compensable call's arguments must rewrite them the same way every
 // time: the first record is kept when the call runs again.
+//
+// opts set the rest of the tool's spec, as for Func.
 func CompensatedFunc[In, Out any](
 	name, description string,
 	safety Safety,
 	do func(context.Context, In) (Out, error),
 	undo func(context.Context, In, Out) error,
+	opts ...ToolOption,
 ) Tool {
-	return &compTool[In, Out]{Tool: Func(name, description, safety, do), undo: undo}
+	return &compTool[In, Out]{funcTool: newFuncTool(name, description, safety, do, opts), undo: undo}
 }
 
 type compTool[In, Out any] struct {
-	Tool
+	*funcTool[In, Out]
 	undo func(context.Context, In, Out) error
 }
 

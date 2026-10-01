@@ -15,7 +15,6 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/govern"
 	gsm "github.com/blackwell-systems/gsm"
 )
@@ -72,8 +71,7 @@ func main() {
 	}
 	// An agent action: a tool call that becomes a governed event (the real LLM-agent path).
 	act := func(g *govern.FederatedGovernor, line, level string) {
-		tool := govern.FederatedEventTool(g, line+"_signal_"+level,
-			line+" signals "+level, line, "signal_"+level, agent.Safety{})
+		tool := govern.FederatedEventTool(g, govern.FederatedEventToolConfig{Name: line + "_signal_" + level, Description: line + " signals " + level, Registry: line, Event: "signal_" + level})
 		if _, err := tool.Call(ctx, []byte("{}")); err != nil {
 			panic(err)
 		}

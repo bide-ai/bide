@@ -42,10 +42,10 @@ func failingSpans(t *testing.T) []sdktrace.ReadOnlySpan {
 			Err:  fmt.Errorf("openai (%w)", agent.ErrModel)}
 	})
 	_, _ = mh(context.Background(), agent.ModelCall{Request: agent.Request{Messages: []agent.Message{agent.UserText("PATIENT-SSN-123-45-6789")}}})
-	th := Tool(tracer)(func(_ context.Context, tu agent.ToolUse) (json.RawMessage, error) {
-		return nil, fmt.Errorf("charge failed for args %s: %w", tu.Args, agent.ErrTool)
+	th := Tool(tracer)(func(_ context.Context, call agent.ToolCall) (json.RawMessage, error) {
+		return nil, fmt.Errorf("charge failed for args %s: %w", call.Use.Args, agent.ErrTool)
 	})
-	_, _ = th(context.Background(), agent.ToolUse{ID: "t1", Name: "charge", Args: json.RawMessage(`{"card":"4111111111111111"}`)})
+	_, _ = th(context.Background(), agent.ToolCall{Use: agent.ToolUse{ID: "t1", Name: "charge", Args: json.RawMessage(`{"card":"4111111111111111"}`)}})
 	_, end := Invoke(context.Background(), tracer, "a")
 	end(errors.New("run failed on input CUSTOMER-NOTE-SECRET"))
 	return sr.Ended()
@@ -128,10 +128,10 @@ func TestPanicMarksSpanFailed(t *testing.T) {
 			_, _ = h(context.Background(), agent.ModelCall{Request: agent.Request{}})
 		})
 		mustPanic(func() {
-			h := Tool(tracer)(func(context.Context, agent.ToolUse) (json.RawMessage, error) {
+			h := Tool(tracer)(func(context.Context, agent.ToolCall) (json.RawMessage, error) {
 				panic("PATIENT-SSN-123-45-6789")
 			})
-			_, _ = h(context.Background(), agent.ToolUse{ID: "t1", Name: "charge"})
+			_, _ = h(context.Background(), agent.ToolCall{Use: agent.ToolUse{ID: "t1", Name: "charge"}})
 		})
 		spans := sr.Ended()
 		if len(spans) != 2 {
@@ -197,10 +197,10 @@ func TestCaptureOnRecordsNoCredentials(t *testing.T) {
 		return agent.ModelResponse{}, fmt.Errorf("openai: %w", &url.Error{Op: "Post", URL: credURL, Err: agent.ErrModel})
 	})
 	_, _ = mh(context.Background(), agent.ModelCall{Request: agent.Request{}})
-	th := Tool(tracer)(func(context.Context, agent.ToolUse) (json.RawMessage, error) {
+	th := Tool(tracer)(func(context.Context, agent.ToolCall) (json.RawMessage, error) {
 		return nil, &url.Error{Op: "Get", URL: credURL, Err: errors.New("timeout")}
 	})
-	_, _ = th(context.Background(), agent.ToolUse{ID: "t2", Name: "fetch"})
+	_, _ = th(context.Background(), agent.ToolCall{Use: agent.ToolUse{ID: "t2", Name: "fetch"}})
 	_, end := Invoke(context.Background(), tracer, "a")
 	end(&url.Error{Op: "Get", URL: credURL, Err: errors.New("timeout")})
 

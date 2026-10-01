@@ -40,7 +40,7 @@ eino           maxFired=64   ✗
   <img src="../../assets/resolution-ladder.png" width="820" alt="结果未知的解决阶梯：可安全重试的副作用会自动重试，由提供商去重；留下了可查询记录的副作用由一个对账器（reconciler）自动解决；真正无法得知的结果则停机并等待人类。在终极的不确定之下，它停下来。">
 </p>
 
-一个工具落在哪一层，取决于它声明的 `Safety`：把它标记为只读、幂等，或给它一个幂等键，未知结果就会自动重试；这些都不声明，它就会停机。可重试安全是需要主动选择的；在你没有主动选择时，暂停就是默认行为，因此一个以"绝不重复触发"为全部意义的库，默认偏向安全而非靠猜。
+一个工具落在哪一层，取决于它声明的 `Safety`：把它标记为只读或幂等，未知结果就会自动重试；这些都不声明，它就会停机。可重试安全是需要主动选择的；在你没有主动选择时，暂停就是默认行为，因此一个以"绝不重复触发"为全部意义的库，默认偏向安全而非靠猜。
 
 大多数未知结果根本不会交到人手里：幂等键让提供商对一次安全的重试去重，而对于没有幂等键的系统（邮件、内部服务），一个对账器会根据该步骤留下的记录来解决它（`agent.ResolveHaltRef`）。人类是兜底，而不是默认。
 
@@ -394,7 +394,7 @@ a.Use(agent.WithRetrieval(myStore, 5))
 agent.Safety{ReadOnly: true}          // no side effects → always safe to re-run
 agent.Safety{Idempotent: true}        // safe to retry (dedupes downstream)
 agent.Safety{}                        // a write → HALT on unknown outcome, don't double-fire
-agent.Safety{RequiresApproval: true}  // pause for human approval before executing
+agent.WithApproval(agent.SingleApproval()) // not Safety: a tool option that pauses for human approval before executing
 ```
 
 在一个非幂等副作用之前，循环记录一个持久化的*尝试标记*，从而恢复能区分"从未运行"（可安全运行）与"运行过并崩溃了"（停机）：是精确地，而非保守地。
@@ -407,7 +407,7 @@ agent.Safety{RequiresApproval: true}  // pause for human approval before executi
 
 ## 人在回路（Human-in-the-loop）
 
-三种风味。**批准/拒绝**：一个标记了 `RequiresApproval` 的工具在运行*之前*暂停；人类的决定是一个布尔：
+三种风味。**批准/拒绝**：一个标记了 `WithApproval(SingleApproval())` 的工具在运行*之前*暂停；人类的决定是一个布尔：
 
 <!-- docsnip: setup ctx context.Context; a *agent.Agent; store agent.Durable; runID string; input string -->
 ```go
@@ -446,9 +446,8 @@ if intr, ok := errors.AsType[*agent.InterruptPending](err); ok {
 
 <!-- docsnip: setup ctx context.Context; model agent.Model; store agent.Durable; pend *agent.ApprovalPending; type RefundArgs struct{}; doRefund func(context.Context, RefundArgs) (string, error); keysByApprover agent.ApproverVerifierFor; signer audit.Signer -->
 ```go
-refund := agent.Func("refund", "refund the order",
-	agent.Safety{Approval: &agent.ApprovalPolicy{Need: 2, Approvers: []string{"ops", "finance", "risk"}}},
-	doRefund)
+refund := agent.Func("refund", "refund the order", agent.Safety{}, doRefund,
+	agent.WithApproval(&agent.ApprovalPolicy{Need: 2, Approvers: []string{"ops", "finance", "risk"}}))
 a := agent.New(model, store, refund).WithApproverVerifiers(keysByApprover)
 
 // each approver, out of band, signs the paused call they were shown:
@@ -476,7 +475,7 @@ case errors.Is(err, agent.ErrStorage):      // durable-store I/O
 }
 ```
 
-类别：`ErrConfig`、`ErrModel`、`ErrTool`、`ErrStorage`、`ErrProtocol`、`ErrBudget`。条件（每一个都包裹一个类别）：`ErrUnknownTool`、`ErrToolArgs`（包裹 `ErrTool`）；`ErrToolReinvoked`、`ErrInvalidApproval`、`ErrAlreadyDecided`（包裹 `ErrConfig`）；`ErrNoRecordedOutput`、`ErrIncompleteResponse`（包裹 `ErrModel`）；`ErrTruncatedToolArgs`（包裹 `ErrProtocol`）；`ErrBudgetExceeded`、`ErrMaxTurns`（包裹 `ErrBudget`）。提供商适配器还会返回 `*RateLimited`（HTTP 429，附带一个 `RetryAfter` 提示）和 `*APIError`（其他非 2xx，附带 `StatusCode`），两者都包裹 `ErrModel`。该工具包返回的每一个错误（包括来自模型、MCP、存储和治理适配器的）都带有一个类别，所以 `errors.Is` 在整个表面上都是可靠的。
+类别：`ErrConfig`、`ErrModel`、`ErrTool`、`ErrStorage`、`ErrProtocol`、`ErrBudget`。条件（每一个都包裹一个类别）：`ErrUnknownTool`、`ErrToolArgs`（包裹 `ErrTool`）；`ErrToolReinvoked`、`ErrInvalidApproval`、`ErrAlreadyDecided`（包裹 `ErrConfig`）；`ErrNoRecordedOutput`、`ErrIncompleteResponse`（包裹 `ErrModel`）；`ErrTruncatedToolArgs`（包裹 `ErrProtocol`）；`ErrBudgetExceeded`、`ErrMaxTurns`（包裹 `ErrBudget`）。`ErrToolNotCalled` 不包裹任何类别：它标记一次已知从未到达其工具的工具调用（工具中间件的拒绝会包裹它）。提供商适配器还会返回 `*RateLimited`（HTTP 429，附带一个 `RetryAfter` 提示）和 `*APIError`（其他非 2xx，附带 `StatusCode`），两者都包裹 `ErrModel`。该工具包返回的每一个错误（包括来自模型、MCP、存储和治理适配器的）都带有一个类别，所以 `errors.Is` 在整个表面上都是可靠的。
 
 而**控制流信号**比一个类别更丰富，所以它们保持为具体类型，由 `errors.As` 匹配：`*ApprovalPending`（需要批准）、`*InterruptPending`（等待人类输入）、`*TimerPending`（持久化定时器待触发）、`*SignalPending`（等待一个外部信号）、`*OutcomeUnknown`（恢复不安全）、`*SagaAborted`（已回滚），以及 `*HaltTooYoung`（来自 `ResolveHaltRef`，当 `WithMinHaltAge` 尚未到期时）。它们都实现了密封接口 `agent.Pause`；用 `agent.IsPause(err)` 判断，用 `agent.AsPause(err)` 读取。一个暂停或停机的运行不是一个"失败"类别；检视那个结构体以获取 `RunID` / `ToolUseID` / 补偿细节。取消以通常的 `context.Canceled` / `context.DeadlineExceeded` 浮现，而一次因其运行租约（`agent.Lease`）丢失而被取消的驱动则以 `ErrLeaseLost` 浮现；与取消一样，它不带任何类别。
 
@@ -505,18 +504,20 @@ a.UseTool(trace.Tool(tracer)) // execute_tool span per call; nests across the su
 
 因为 `trace.Tool` 在循环内部运行，它的 span 处于交给工具的上下文中，所以当一个工具本身就是一个子智能体时，该子智能体的运行及其自己的 span 会作为子级嵌套。该 trace 自动跨越子智能体边界（这是 ADK / AgenticGoKit / trpc-agent-go 的一个缺口）。
 
-工具中间件在持久化步骤*内部*运行，所以一次短路（一次 `ToolCache` 命中）或一次策略拒绝会像任何工具结果一样被记入日志；恢复会重放它，绝不重新运行中间件或工具。`ToolRetry` 和 `ToolCache` 只作用于 `Safety` 允许的工具（分别是可重试安全的和 `ReadOnly` 的），而无论中间件做什么，智能体对一个不可重试安全的工具每次调用至多运行一次。用 `agent.ToolMiddleware` 签名写你自己的：
+工具中间件在持久化步骤*内部*运行，所以一次短路的结果（一次 `ToolCache` 命中）会像任何工具结果一样被记入日志，包裹了 `agent.ErrToolNotCalled` 的策略拒绝也一样；拒绝必须包裹 `agent.ErrToolNotCalled`：不包裹它的拒绝会让副作用的结果未知，什么都不记录，运行随之停止；恢复会重放它，绝不重新运行中间件或工具。`ToolRetry` 和 `ToolCache` 只作用于 `Safety` 允许的工具（分别是可重试安全的和 `ReadOnly` 的），而无论中间件做什么，智能体对一个不可重试安全的工具每次调用至多运行一次。用 `agent.ToolMiddleware` 签名写你自己的：
 
 <!-- docsnip: setup func authorized(context.Context, string) bool -->
 ```go
 // Deny a tool by policy: the tool never executes; the model sees the error and reacts.
+// A denial must wrap agent.ErrToolNotCalled: without it the agent cannot tell the tool did
+// not run, so a side effect's outcome is unknown and the run halts.
 func RequireTag(tag string) agent.ToolMiddleware {
 	return func(next agent.ToolHandler) agent.ToolHandler {
-		return func(ctx context.Context, tu agent.ToolUse) (json.RawMessage, error) {
+		return func(ctx context.Context, call agent.ToolCall) (json.RawMessage, error) {
 			if !authorized(ctx, tag) {
-				return nil, fmt.Errorf("tool %q denied: %w", tu.Name, agent.ErrTool)
+				return nil, fmt.Errorf("tool %q denied: %w", call.Use.Name, agent.ErrToolNotCalled)
 			}
-			return next(ctx, tu) // mutate tu.Args before, transform the result after
+			return next(ctx, call) // mutate call.Use.Args before, transform the result after
 		}
 	}
 }
@@ -555,7 +556,7 @@ govern           Tier-2: federated governed state + quorum for agents that must 
 <!-- docsnip: setup ctx context.Context; machine *gsm.Machine; import "github.com/blackwell-systems/gsm"; log govern.EventLog -->
 ```go
 gov, _ := govern.NewPersistent(ctx, machine, log, "order-42", machine.NewState())
-tool := govern.EventTool(gov, "pay", "mark the order paid", "pay", agent.Safety{})
+tool := govern.EventTool(gov, govern.EventToolConfig{Name: "pay", Description: "mark the order paid", Event: "pay"})
 // hand `tool` to the agent: concurrent agents sharing `gov` converge, durably.
 ```
 

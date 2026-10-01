@@ -29,20 +29,20 @@ func ToolConfig(t *testing.T, newModel func(baseURL string, client *http.Client)
 	t.Cleanup(srv.Close)
 	m := newModel(srv.URL, srv.Client())
 	msgs := []agent.Message{agent.UserText("hi")}
-	tool := func(name string) agent.Tool { return namedTool(name) }
+	tool := namedTool
 
 	for name, req := range map[string]agent.Request{
-		"space in name":    {Messages: msgs, Tools: []agent.Tool{tool("get weather")}},
-		"empty name":       {Messages: msgs, Tools: []agent.Tool{tool("")}},
-		"slash in name":    {Messages: msgs, Tools: []agent.Tool{tool("fs/read")}},
-		"non-ASCII name":   {Messages: msgs, Tools: []agent.Tool{tool("résumé")}},
-		"65-char name":     {Messages: msgs, Tools: []agent.Tool{tool(strings.Repeat("a", 65))}},
-		"duplicate names":  {Messages: msgs, Tools: []agent.Tool{tool("a"), tool("a")}},
-		"unknown mode":     {Messages: msgs, Tools: []agent.Tool{tool("a")}, ToolChoice: &agent.ToolChoice{Mode: "sometimes"}},
+		"space in name":    {Messages: msgs, Tools: []agent.ToolSpec{tool("get weather")}},
+		"empty name":       {Messages: msgs, Tools: []agent.ToolSpec{tool("")}},
+		"slash in name":    {Messages: msgs, Tools: []agent.ToolSpec{tool("fs/read")}},
+		"non-ASCII name":   {Messages: msgs, Tools: []agent.ToolSpec{tool("résumé")}},
+		"65-char name":     {Messages: msgs, Tools: []agent.ToolSpec{tool(strings.Repeat("a", 65))}},
+		"duplicate names":  {Messages: msgs, Tools: []agent.ToolSpec{tool("a"), tool("a")}},
+		"unknown mode":     {Messages: msgs, Tools: []agent.ToolSpec{tool("a")}, ToolChoice: &agent.ToolChoice{Mode: "sometimes"}},
 		"required, none":   {Messages: msgs, ToolChoice: &agent.ToolChoice{Mode: "required"}},
 		"tool, none":       {Messages: msgs, ToolChoice: &agent.ToolChoice{Mode: "tool", Name: "a"}},
-		"tool, no name":    {Messages: msgs, Tools: []agent.Tool{tool("a")}, ToolChoice: &agent.ToolChoice{Mode: "tool"}},
-		"tool, undeclared": {Messages: msgs, Tools: []agent.Tool{tool("a")}, ToolChoice: &agent.ToolChoice{Mode: "tool", Name: "b"}},
+		"tool, no name":    {Messages: msgs, Tools: []agent.ToolSpec{tool("a")}, ToolChoice: &agent.ToolChoice{Mode: "tool"}},
+		"tool, undeclared": {Messages: msgs, Tools: []agent.ToolSpec{tool("a")}, ToolChoice: &agent.ToolChoice{Mode: "tool", Name: "b"}},
 	} {
 		before := hits.Load()
 		_, err := m.Stream(context.Background(), req)
@@ -54,10 +54,10 @@ func ToolConfig(t *testing.T, newModel func(baseURL string, client *http.Client)
 		}
 	}
 	for name, req := range map[string]agent.Request{
-		"valid names":    {Messages: msgs, Tools: []agent.Tool{tool("get_weather"), tool("a-1"), tool(strings.Repeat("a", 64))}},
+		"valid names":    {Messages: msgs, Tools: []agent.ToolSpec{tool("get_weather"), tool("a-1"), tool(strings.Repeat("a", 64))}},
 		"auto, no tools": {Messages: msgs, ToolChoice: &agent.ToolChoice{Mode: "auto"}},
 		"none, no tools": {Messages: msgs, ToolChoice: &agent.ToolChoice{Mode: "none"}},
-		"tool, declared": {Messages: msgs, Tools: []agent.Tool{tool("a")}, ToolChoice: &agent.ToolChoice{Mode: "tool", Name: "a"}},
+		"tool, declared": {Messages: msgs, Tools: []agent.ToolSpec{tool("a")}, ToolChoice: &agent.ToolChoice{Mode: "tool", Name: "a"}},
 	} {
 		before := hits.Load()
 		_, err := m.Stream(context.Background(), req)
@@ -67,15 +67,14 @@ func ToolConfig(t *testing.T, newModel func(baseURL string, client *http.Client)
 	}
 }
 
-// namedTool is a tool with a one-string-argument schema and the given name.
-type namedTool string
-
-func (n namedTool) Name() string                                                 { return string(n) }
-func (namedTool) Description() string                                            { return "a test tool" }
-func (namedTool) Safety() agent.Safety                                           { return agent.Safety{ReadOnly: true} }
-func (namedTool) Call(context.Context, json.RawMessage) (json.RawMessage, error) { return nil, nil }
-func (namedTool) ArgsSchema() json.RawMessage {
-	return json.RawMessage(`{"type":"object","properties":{"q":{"type":"string"}},"required":["q"]}`)
+// namedTool is the spec of a tool with a one-string-argument schema and the given name.
+func namedTool(name string) agent.ToolSpec {
+	return agent.ToolSpec{
+		Name:        name,
+		Description: "a test tool",
+		Input:       json.RawMessage(`{"type":"object","properties":{"q":{"type":"string"}},"required":["q"]}`),
+		Safety:      agent.Safety{ReadOnly: true},
+	}
 }
 
 // ToolNames checks the adapter's own tool-name rule against names an MCP server may list (the
@@ -94,7 +93,7 @@ func ToolNames(t *testing.T, newModel func(baseURL string, client *http.Client) 
 	msgs := []agent.Message{agent.UserText("hi")}
 	for _, n := range refused {
 		before := hits.Load()
-		_, err := m.Stream(context.Background(), agent.Request{Messages: msgs, Tools: []agent.Tool{namedTool("ok"), namedTool(n)}})
+		_, err := m.Stream(context.Background(), agent.Request{Messages: msgs, Tools: []agent.ToolSpec{namedTool("ok"), namedTool(n)}})
 		if !errors.Is(err, agent.ErrConfig) || !strings.Contains(err.Error(), strconv.Quote(n)) {
 			t.Errorf("%q: err = %v, want agent.ErrConfig naming the tool", n, err)
 		}
@@ -104,7 +103,7 @@ func ToolNames(t *testing.T, newModel func(baseURL string, client *http.Client) 
 	}
 	for _, n := range accepted {
 		before := hits.Load()
-		_, err := m.Stream(context.Background(), agent.Request{Messages: msgs, Tools: []agent.Tool{namedTool(n)}})
+		_, err := m.Stream(context.Background(), agent.Request{Messages: msgs, Tools: []agent.ToolSpec{namedTool(n)}})
 		if errors.Is(err, agent.ErrConfig) || hits.Load() == before {
 			t.Errorf("%q: err = %v, want the request sent to the provider", n, err)
 		}

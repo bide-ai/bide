@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"sort"
 	"sync/atomic"
@@ -47,8 +46,8 @@ func TestRecover_SkipsCompletedRedrivesIncomplete(t *testing.T) {
 		t.Fatalf("done2: %v", err)
 	}
 	// One run that pauses for human approval (never reaches the terminal marker).
-	charge := Func("charge", "charge a card", Safety{RequiresApproval: true},
-		func(context.Context, struct{}) (string, error) { return "charged", nil })
+	charge := Func("charge", "charge a card", Safety{},
+		func(context.Context, struct{}) (string, error) { return "charged", nil }, WithApproval(SingleApproval()))
 	paused := New(approvalModel{}, store, charge)
 	_, err := paused.Run(ctx, "paused1", "hi")
 	var pa *PendingApproval
@@ -91,8 +90,8 @@ func TestRecover_StillPausedCountsAsRecovered(t *testing.T) {
 	ctx := context.Background()
 	store := NewMemStore()
 
-	charge := Func("charge", "charge a card", Safety{RequiresApproval: true},
-		func(context.Context, struct{}) (string, error) { return "charged", nil })
+	charge := Func("charge", "charge a card", Safety{},
+		func(context.Context, struct{}) (string, error) { return "charged", nil }, WithApproval(SingleApproval()))
 	a := New(approvalModel{}, store, charge)
 	if _, err := a.Run(ctx, "p", "hi"); !IsPause(err) {
 		t.Fatalf("run should pause, got %v", err)
@@ -178,7 +177,7 @@ func TestRecover_WakerRebuild(t *testing.T) {
 	}
 }
 
-// TestRetriableOnResume covers the Part 3 change: a declared idempotency key is retry-safe.
+// TestRetriableOnResume: only ReadOnly and Idempotent make a call retry-safe.
 func TestRetriableOnResume(t *testing.T) {
 	cases := []struct {
 		name string
@@ -187,9 +186,7 @@ func TestRetriableOnResume(t *testing.T) {
 	}{
 		{"read-only", Safety{ReadOnly: true}, true},
 		{"idempotent", Safety{Idempotent: true}, true},
-		{"idempotency-key", Safety{IdempotencyKey: func(json.RawMessage) string { return "k" }}, true},
 		{"bare", Safety{}, false},
-		{"approval-only", Safety{RequiresApproval: true}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

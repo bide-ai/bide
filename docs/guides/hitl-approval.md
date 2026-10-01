@@ -3,11 +3,15 @@
 A tool can require a human decision before it runs. The decision is a journaled step, so it survives
 a crash, and the run pauses durably until it lands. There are two forms:
 
-- **1-of-1:** one human approves or denies (`Safety{RequiresApproval: true}` + `agent.Approve`).
+- **1-of-1:** one human approves or denies (`agent.WithApproval(agent.SingleApproval())` + `agent.Approve`).
 - **m-of-n:** k distinct, named approvers out of a bounded set of n must sign off
-  (`Safety{Approval: &agent.ApprovalPolicy{...}}` + `agent.SubmitDecision`). Each decision is signed over
+  (`agent.WithApproval(&agent.ApprovalPolicy{...})` + `agent.SubmitDecision`). Each decision is signed over
   the exact call (tool and arguments), and the fact that k approved it before it ran is provable
   offline, from evidence that cannot leave a decision out unnoticed.
+
+The gate is part of the tool's spec (`ToolSpec.Approval`), not of its `Safety`, which only says how
+a call may be retried. A `SubAgent` takes `WithApproval` too, so a parent can require approval before
+it delegates. Each call's result journals the policy it ran under (`Record.Approval`).
 
 For a typed value rather than a yes/no, use `Interrupt`/`AnswerInterrupt` instead (see the
 [README](../../README.md#human-in-the-loop)).
@@ -16,7 +20,7 @@ For a typed value rather than a yes/no, use `Interrupt`/`AnswerInterrupt` instea
 
 <!-- docsnip: setup ctx context.Context; a *agent.Agent; store agent.Durable; runID string; input string; type RefundArgs struct{}; doRefund func(context.Context, RefundArgs) (string, error) -->
 ```go
-refund := agent.Func("refund", "refund the order", agent.Safety{RequiresApproval: true}, doRefund)
+refund := agent.Func("refund", "refund the order", agent.Safety{}, doRefund, agent.WithApproval(agent.SingleApproval()))
 
 _, err := a.Run(ctx, runID, input)
 if pend, ok := errors.AsType[*agent.ApprovalPending](err); ok {
@@ -41,12 +45,11 @@ verifies that approver's signature:
 
 <!-- docsnip: setup model agent.Model; store agent.Durable; type RefundArgs struct{}; doRefund func(context.Context, RefundArgs) (string, error); approverKeys map[string]ed25519.PublicKey -->
 ```go
-refund := agent.Func("refund", "refund the order",
-	agent.Safety{Approval: &agent.ApprovalPolicy{
+refund := agent.Func("refund", "refund the order", agent.Safety{}, doRefund,
+	agent.WithApproval(&agent.ApprovalPolicy{
 		Need:      2,
 		Approvers: []string{"ops", "finance", "risk"}, // n = 3
-	}},
-	doRefund)
+	}))
 
 a := agent.New(model, store, refund).
 	WithApproverVerifiers(func(id string) (agent.ApproverVerifier, bool) {
@@ -175,11 +178,19 @@ An m-of-n tool inside a `SubAgent` pauses the whole tree: the parent's `Run` ret
 
 ### Configuration errors
 
-The gate fails with `ErrConfig` (rather than counting zero decisions) when a tool has an `Approval`
-policy but no `WithApproverVerifiers` resolver is set, or when the policy is malformed: no approvers,
-an empty or duplicate approver id, an id that is not valid UTF-8, or `Need` outside
-`1..len(Approvers)` (see `ApprovalPolicy.Validate`), or when an eligible approver's verifier has an
-empty `PublicKey()` (see above).
+A malformed policy is refused when the tool is built: `agent.WithApproval` (on `Func`,
+`CompensatedFunc`, `SubAgent` and the other constructors that take tool options) panics with
+`ErrConfig`, and `New` refuses one a tool's own `Spec` returns (every run fails with `ErrConfig`
+before any model call). A policy is malformed when it has no approvers (only
+`agent.SingleApproval()` asks for the one-decision gate; a policy literal such as `{Need: 1}` with an
+empty approver list is refused, never taken for it), an empty or duplicate approver id, an id that
+is not valid UTF-8, or `Need` outside `1..len(Approvers)` (see `ApprovalPolicy.Validate`), or when it
+is a `SingleApproval()` whose fields were changed.
+
+Verifiers are needed only for an m-of-n gate: the gate fails with `ErrConfig` (rather than counting
+zero decisions) when a tool has an m-of-n policy but no `WithApproverVerifiers` resolver is set, or
+when an eligible approver's verifier has an empty `PublicKey()` (see above). A `SingleApproval()`
+gate needs none.
 
 Approver ids are compared as exact bytes, but a policy may not list two ids that differ only by
 case or Unicode normalization (`alice` and `Alice`, an NFC and an NFD `café`, a fullwidth and an

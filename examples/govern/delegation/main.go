@@ -78,7 +78,7 @@ func main() {
 
 	subLimit, _ := strconv.Atoi(g2.Scope["limit"])
 	gov := govern.New(m, m.NewState().SetInt(limit, subLimit))
-	buy := govern.AttestedEventTool(gov, "buy", "buy $1M", "buy", policyDigest, agent.Safety{})
+	buy := govern.EventTool(gov, govern.EventToolConfig{Name: "buy", Description: "buy $1M", Event: "buy", PolicyDigest: policyDigest})
 	// The sub-agent's identity carries its attenuated grant as the authority reference.
 	subID := agent.Identity{Actor: g2.Subject, OnBehalfOf: g1.Subject, AuthorityRef: g2.Digest()}
 	runCtx := agent.WithIdentity(ctx, subID)

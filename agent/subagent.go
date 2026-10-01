@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/bide-ai/bide/internal/toolhook"
 	"github.com/bide-ai/bide/schema"
 )
 
@@ -18,11 +19,34 @@ import (
 // the in-flight one resumes from its own journal, and OutcomeUnknown / ApprovalPending from
 // deep in the tree propagate up (approve, re-run the root, and it resumes down the path).
 //
+// opts set the rest of the tool's spec: WithApproval, so the parent waits for a human before it
+// delegates, WithTitle and WithOutputSchema. SubAgent refuses WithSafety, since a sub-agent call
+// re-enters its sub-run, whose own calls carry their safety, and WithTimeout: a deadline would cut
+// the sub-run off mid-call and record the delegation as failed while the outcome of the sub-run's
+// own call is unknown, so the model, told the delegation failed, could delegate again and repeat a
+// side effect that may already have happened. Bound the sub-agent's tools instead; each of them
+// then follows the timeout rule (see WithTimeout) inside the sub-run's own journal. It panics, with an error wrapping
+// ErrConfig, on a refused or invalid option, as Func does.
+//
 // This is what the incumbents can't do: ADK/agenticenv can't recover sub-agents across a
 // restart, and Eino doesn't unify nested state into the parent checkpoint.
-func SubAgent(name, description string, sub *Agent) Tool {
+func SubAgent(name, description string, sub *Agent, opts ...ToolOption) Tool {
 	s, _ := schema.For[subAgentArgs]()
-	return &subAgentTool{name: name, description: description, sub: sub, argsSchema: s}
+	// Idempotent: re-running a sub-agent call on resume RESUMES the sub-run from its journal
+	// (it doesn't restart it), and a sub-run that already finished returns its recorded answer,
+	// so it's safe to retry. Any unsafe write inside the sub-run halts via the sub-run's own
+	// OutcomeUnknown, which propagates up here.
+	c := toolConfig{spec: ToolSpec{Name: name, Description: description, Input: s, Safety: Safety{Idempotent: true}}}
+	if err := applyToolOptions(&c, opts); err != nil {
+		panic(err)
+	}
+	switch {
+	case c.safetySet:
+		panic(fmt.Errorf("agent: SubAgent %q: WithSafety does not apply to a sub-agent, whose sub-run's calls carry their own safety: %w", name, ErrConfig))
+	case c.timeoutSet:
+		panic(fmt.Errorf("agent: SubAgent %q: WithTimeout does not apply to a sub-agent, whose sub-run it would cut off mid-call; give its tools timeouts: %w", name, ErrConfig))
+	}
+	return &subAgentTool{spec: c.spec, sub: sub}
 }
 
 type subAgentArgs struct {
@@ -30,25 +54,26 @@ type subAgentArgs struct {
 }
 
 type subAgentTool struct {
-	name, description string
-	sub               *Agent
-	argsSchema        json.RawMessage
+	spec ToolSpec
+	sub  *Agent
 }
 
-func (t *subAgentTool) Name() string                { return t.name }
-func (t *subAgentTool) Description() string         { return t.description }
-func (t *subAgentTool) ArgsSchema() json.RawMessage { return t.argsSchema }
+func (t *subAgentTool) Name() string                { return t.spec.Name }
+func (t *subAgentTool) Description() string         { return t.spec.Description }
+func (t *subAgentTool) ArgsSchema() json.RawMessage { return t.spec.Input }
+func (t *subAgentTool) Safety() Safety              { return t.spec.Safety }
 
-// Idempotent: re-running a sub-agent call on resume RESUMES the sub-run from its journal
-// (it doesn't restart it), and a sub-run that already finished returns its recorded answer,
-// so it's safe to retry. Any unsafe write inside the sub-run
-// halts via the sub-run's own OutcomeUnknown, which propagates up here.
-func (t *subAgentTool) Safety() Safety { return Safety{Idempotent: true} }
+// Spec returns the tool's spec, with a copy of its approval policy.
+func (t *subAgentTool) Spec() ToolSpec {
+	s := t.spec
+	s.Approval = s.Approval.Clone()
+	return s
+}
 
 func (t *subAgentTool) Call(ctx context.Context, args json.RawMessage) (json.RawMessage, error) {
 	var in subAgentArgs
 	if err := decodeArgs(args, &in); err != nil {
-		return nil, fmt.Errorf("decode args for sub-agent %q: %w (%w)", t.name, err, ErrToolArgs)
+		return nil, fmt.Errorf("decode args for sub-agent %q: %w (%w)", t.spec.Name, err, ErrToolArgs)
 	}
 	subRunID := RunScope(ctx) // SubRunID(parentRunID, toolUseID): stable and unique per call site
 	if subRunID == "" {
@@ -56,7 +81,7 @@ func (t *subAgentTool) Call(ctx context.Context, args json.RawMessage) (json.Raw
 		// scope, agent.go withRunScope). This id is NOT unique per call: two calls to a same-named
 		// sub-agent would share one journal and the second would memoize to the first's result. Drive
 		// sub-agents through Agent.Run/RunSaga (the normal path) so each call gets a distinct scope.
-		subRunID = "sub/" + t.name
+		subRunID = "sub/" + t.spec.Name
 	}
 	// Run the sub-agent on its OWN goroutine (fresh, small stack) rather than recursing on
 	// the parent's stack — so a deep agent tree is N shallow stacks, not one that balloons
@@ -71,7 +96,7 @@ func (t *subAgentTool) Call(ctx context.Context, args json.RawMessage) (json.Raw
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
-				ch <- result{err: fmt.Errorf("sub-agent %q panicked: %v (%w)", t.name, r, ErrTool)}
+				ch <- result{err: fmt.Errorf("sub-agent %q panicked: %v (%w)", t.spec.Name, r, ErrTool)}
 			}
 		}()
 		var m Message
@@ -100,6 +125,104 @@ func (t *subAgentTool) Call(ctx context.Context, args json.RawMessage) (json.Raw
 		return nil, out.err // SagaAborted / OutcomeUnknown / ApprovalPending / cancellation propagate up
 	}
 	return marshalJournal(firstText(out.msg)) // not HTML-escaped: the parent model reads it as written
+}
+
+// checkWrapper refuses a tool that wraps another (it has an Unwrap() Tool method) in a way the
+// agent cannot honor, with ErrConfig. A wrapper over a sub-agent may not give it a Timeout (it
+// would cut the sub-run off mid-call) or another Safety (the sub-run's own calls carry theirs),
+// which SubAgent itself refuses. No wrapper on the Unwrap chain may be a Compensator: it would
+// never be asked to compensate, since a rollback that finds a sub-agent through it recurses into
+// the sub-run, and one that does not takes it for the tool it wraps. Nor may a tool hide the
+// approval gate or timeout of a tool it embeds (see checkEmbedded).
+func checkWrapper(t Tool, s ToolSpec) error {
+	if err := checkEmbedded(t, s); err != nil {
+		return err
+	}
+	if sub, ok := asSubAgent(t); ok {
+		if _, wraps := t.(interface{ Unwrap() Tool }); wraps {
+			switch {
+			case s.Timeout > 0:
+				return fmt.Errorf("agent: tool %q wraps a sub-agent and has a Timeout, which a sub-agent refuses (see SubAgent): %w", s.Name, ErrConfig)
+			case s.Safety != sub.spec.Safety:
+				return fmt.Errorf("agent: tool %q wraps a sub-agent and declares Safety %+v, which a sub-agent refuses (its sub-run's calls carry their own; see SubAgent): %w", s.Name, s.Safety, ErrConfig)
+			}
+		}
+	}
+	// Every wrapper on the Unwrap chain, not only the outermost, is held to the contract.
+	for range 64 { // the same bound as asSubAgent
+		u, wraps := t.(interface{ Unwrap() Tool })
+		if !wraps {
+			return nil
+		}
+		if _, comp := t.(Compensator); comp {
+			return fmt.Errorf("agent: tool %q wraps another tool (Unwrap), and a wrapper on its Unwrap chain (%T) is a Compensator; a wrapper must not have side effects or a compensation of its own: %w", s.Name, t, ErrConfig)
+		}
+		if t = u.Unwrap(); t == nil {
+			return nil
+		}
+	}
+	return fmt.Errorf("agent: tool %q unwraps more than 64 times (a cycle?): %w", s.Name, ErrConfig)
+}
+
+// init shares checkWrapper with plan (see toolhook.CheckTool), so a flow refuses what New refuses.
+func init() {
+	toolhook.CheckTool = func(t any) error {
+		tool, ok := t.(Tool)
+		if !ok {
+			return fmt.Errorf("agent: %T is not a Tool: %w", t, ErrConfig)
+		}
+		return checkWrapper(tool, SpecOf(tool))
+	}
+}
+
+// asSubAgent returns the SubAgent tool t is, or wraps. A tool that wraps another (as
+// audit.AttenuatingSubAgent wraps a SubAgent) says so with an Unwrap() Tool method, which is
+// followed as errors.As follows Unwrap, so a saga rollback and the run's budget recurse into the
+// sub-run of a wrapped sub-agent as they do into a plain one's.
+//
+// The contract of Unwrap: a wrapper adds no side effect of its own (it may change the context the
+// wrapped tool runs in, as AttenuatingSubAgent binds a narrower grant), is not a Compensator, and
+// does not give a wrapped sub-agent a Timeout or another Safety; New refuses the last three
+// (checkWrapper). A rollback
+// through a wrapper runs the wrapped sub-agent's compensations, never the wrapper's.
+func asSubAgent(t Tool) (*subAgentTool, bool) {
+	for range 64 { // a bound, so a wrapper that unwraps to itself cannot loop forever
+		if s, ok := t.(*subAgentTool); ok {
+			return s, true
+		}
+		u, ok := t.(interface{ Unwrap() Tool })
+		if !ok {
+			return nil, false
+		}
+		if t = u.Unwrap(); t == nil {
+			return nil, false
+		}
+	}
+	return nil, false
+}
+
+// bindRollback returns the context a saga rollback walks a sub-agent's run subRunID under: ctx,
+// bound by every wrapper on t's Unwrap chain that is a toolhook.RollbackBinder, innermost last,
+// as the wrappers bind a live call's context (the outermost wraps the call first). A wrapper
+// that narrows a delegation's authority rebinds it here from what the sub-run journaled, so a
+// compensation never runs under authority the delegation did not grant.
+func bindRollback(ctx context.Context, t Tool, subRunID string) (context.Context, error) {
+	for range 64 {
+		if b, ok := t.(toolhook.RollbackBinder); ok {
+			var err error
+			if ctx, err = b.BindRollback(ctx, subRunID); err != nil {
+				return nil, fmt.Errorf("saga rollback: bind the context of sub-run %s: %w", subRunID, err)
+			}
+		}
+		u, ok := t.(interface{ Unwrap() Tool })
+		if !ok {
+			return ctx, nil
+		}
+		if t = u.Unwrap(); t == nil {
+			return ctx, nil
+		}
+	}
+	return ctx, nil
 }
 
 // subRunUnfinished is a sub-agent call whose sub-run stopped short of a verdict: its journal could

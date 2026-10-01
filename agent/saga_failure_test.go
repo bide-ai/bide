@@ -43,8 +43,8 @@ func TestSagaFailure(t *testing.T) {
 		{"success", sagaJournal(Record{Name: "c1", Kind: StepToolResult, ToolUseID: "c1", Result: json.RawMessage(`{}`)}), "", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			cause, got := sagaFailure(tc.recs)
-			if got != tc.want || cause != tc.wantCause {
+			cause, got, err := sagaFailure("r", tc.recs)
+			if err != nil || got != tc.want || cause != tc.wantCause {
 				t.Fatalf("sagaFailure = %q, %v; want %q, %v", cause, got, tc.wantCause, tc.want)
 			}
 		})

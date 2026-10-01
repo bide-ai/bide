@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 
 	"github.com/bide-ai/bide/internal/strictjson"
 	"github.com/bide-ai/bide/schema"
@@ -123,12 +124,18 @@ type answerRecord struct {
 	Accepted json.RawMessage `json:"accepted"`
 }
 
-func (t *answerTool[T]) Name() string { return finalAnswerTool }
-func (t *answerTool[T]) Description() string {
-	return "Call this exactly once, with the final answer structured per the schema, to complete the task."
-}
+// answerToolDescription is what the model is told the final_answer tool is for.
+const answerToolDescription = "Call this exactly once, with the final answer structured per the schema, to complete the task."
+
+func (t *answerTool[T]) Name() string                { return finalAnswerTool }
+func (t *answerTool[T]) Description() string         { return answerToolDescription }
 func (t *answerTool[T]) Safety() Safety              { return Safety{ReadOnly: true} }
 func (t *answerTool[T]) ArgsSchema() json.RawMessage { return t.schema }
+
+// Spec returns the final_answer tool's spec: read-only, ungated, with T's schema as its input.
+func (t *answerTool[T]) Spec() ToolSpec {
+	return ToolSpec{Name: finalAnswerTool, Description: answerToolDescription, Input: t.schema, Safety: Safety{ReadOnly: true}}
+}
 
 func (t *answerTool[T]) Call(_ context.Context, args json.RawMessage) (json.RawMessage, error) {
 	var v T
@@ -195,13 +202,16 @@ func (a *Agent) clone() *Agent {
 	}
 	c.mw = append([]Middleware(nil), a.mw...)
 	c.toolMW = append([]ToolMiddleware(nil), a.toolMW...)
+	c.specs = maps.Clone(a.specs) // specList is shared: it is only ever copied (requestTools)
 	return &c
 }
 
 // cloneWith returns a clone with one extra tool and appended model middleware.
 func (a *Agent) cloneWith(extra Tool, mw ...Middleware) *Agent {
 	c := a.clone()
-	c.tools[extra.Name()] = extra
+	s := SpecOf(extra)
+	c.tools[s.Name], c.specs[s.Name] = extra, &s
+	c.sortSpecs()
 	c.mw = append(c.mw, mw...)
 	return c
 }

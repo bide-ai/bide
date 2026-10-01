@@ -99,7 +99,7 @@ func mofnRun(store Durable, runID string, first bool, pol *ApprovalPolicy, verif
 	if first {
 		turns = [][]Emit{toolTurn("c1", "charge", `{}`), textTurn("done")}
 	}
-	charge := &countingTool{name: "charge", safety: Safety{Approval: pol}, calls: charged}
+	charge := &countingTool{name: "charge", approval: pol, calls: charged}
 	a := New(&scriptModel{turns: turns}, store, charge)
 	if verifiers != nil {
 		a.WithApproverVerifiers(verifiers)
@@ -237,7 +237,7 @@ func TestMofn_AutoDenyWhenUnreachable(t *testing.T) {
 	// The same call denied through the 1-of-1 path.
 	legacy := NewMemStore()
 	var n int
-	one := &countingTool{name: "charge", safety: Safety{RequiresApproval: true}, calls: &n}
+	one := &countingTool{name: "charge", approval: SingleApproval(), calls: &n}
 	_, _ = New(&scriptModel{turns: [][]Emit{toolTurn("c1", "charge", `{}`)}}, legacy, one).Run(context.Background(), "r1", "pay")
 	if err := Approve(context.Background(), legacy, "r1", "c1", false); err != nil {
 		t.Fatal(err)
@@ -315,7 +315,7 @@ func TestMofn_NilApprovalKeepsOneOfOne(t *testing.T) {
 	store := NewMemStore()
 	ctx := context.Background()
 	var charged int
-	charge := &countingTool{name: "charge", safety: Safety{RequiresApproval: true}, calls: &charged}
+	charge := &countingTool{name: "charge", approval: SingleApproval(), calls: &charged}
 	run := func(turns ...[]Emit) error {
 		_, err := New(&scriptModel{turns: turns}, store, charge).WithApproverVerifiers(fakeVerifiers(abc...)).Run(ctx, "r1", "pay")
 		return err
@@ -358,7 +358,10 @@ func TestMofn_ConfigErrors(t *testing.T) {
 		{"need-above-n", &ApprovalPolicy{Need: 4, Approvers: abc}, fakeVerifiers(abc...)},
 		{"duplicate-approver", &ApprovalPolicy{Need: 2, Approvers: []string{"alice", "alice", "bob"}}, fakeVerifiers(abc...)},
 		{"empty-approver", &ApprovalPolicy{Need: 1, Approvers: []string{"alice", ""}}, fakeVerifiers(abc...)},
+		// Only SingleApproval() is the one-decision gate: a literal with no approvers is refused.
 		{"no-approvers", &ApprovalPolicy{Need: 1}, fakeVerifiers(abc...)},
+		{"no-approvers-need-two", &ApprovalPolicy{Need: 2}, fakeVerifiers(abc...)},
+		{"no-approvers-need-zero", &ApprovalPolicy{}, fakeVerifiers(abc...)},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -102,9 +102,9 @@ cannot silently pass a non-convergent machine.** The two-independent-implementat
 if two programs written from the same axiom-free proof, by different routes, both accept a
 machine, a single implementation bug is far less likely to have admitted a bad one.
 
-- In Bide, `govern/attested_e2e_test.go` (`TestAttestedEventTool_RealPolicyDigest`) builds
+- In Bide, `govern/attested_e2e_test.go` (`TestEventToolAttested_RealPolicyDigest`) builds
   a real gsm policy, takes its `PolicyDigest`, governs a real transition through
-  `AttestedEventTool`, and confirms the journaled leaf carries that exact digest and the
+  an attested `EventTool`, and confirms the journaled leaf carries that exact digest and the
   resulting state digest. It independently recomputes the digest with the same domain-separated
   SHA-256 formula the `bide-audit verify-governance` CLI uses (without importing gsm), and
   asserts parity, so the SDK, the verifier CLI, and gsm agree on the policy's identity. When
@@ -398,7 +398,7 @@ E2E_HUGE=million    go test ./convergence -run TestE2E_ManyAgentsConvergeAndAreT
 E2E_HUGE=tenmillion go test ./convergence -run TestE2E_ManyAgentsConvergeAndAreTraceable -v -timeout 0   # adds 10,000,000 (~13 min)
 
 # Second trust root: re-certify the anchored policy with the external verified oracle.
-cd govern && GSM_AST_CHECKER=/path/to/checker go test . -run TestAttestedEventTool_RealPolicyDigest -v
+cd govern && GSM_AST_CHECKER=/path/to/checker go test . -run TestEventToolAttested_RealPolicyDigest -v
 ```
 
 There is no `Makefile` in this repository; the `go test` invocations above are the interface.

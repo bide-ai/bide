@@ -91,8 +91,8 @@ so the helpers report it as 0.
   on one `Agent`, and sub-agents sharing a `Retriever` all call it at once.
 - **Memory writes are side effects.** Bide ships no write path. A tool that writes to your
   memory store is a tool like any other: leave its `Safety` unset so it runs at most once and a
-  crash mid-write halts for confirmation, or declare it `Idempotent` (with an
-  `IdempotencyKey`) only when a repeat write is a no-op downstream, such as an upsert by a stable
+  crash mid-write halts for confirmation, or declare it `Idempotent` (the tool
+  derives its own downstream idempotency key, or uses `agent.NextOnceKey`) only when a repeat write is a no-op downstream, such as an upsert by a stable
   id. Do not mark it `ReadOnly`: a read-only call with no recorded result is re-run on resume.
 
 ## Memory, in layers

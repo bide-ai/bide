@@ -37,7 +37,7 @@ type node struct {
 	// (as any) and returns the output (as any) or an error. nil for kindSwitch.
 	run func(ctx context.Context, in any) (any, error)
 	// safety is the node's retry-on-resume classification, mirroring agent.Safety
-	// for a core tool. The zero value (no ReadOnly/Idempotent, no IdempotencyKey)
+	// for a core tool. The zero value (no ReadOnly/Idempotent)
 	// is the conservative default: on an ambiguous mid-node crash the node HALTS
 	// rather than re-run, preserving the surface's at-most-once-by-default. A node
 	// marked retry-safe (agent.Safety.RetrySafe) instead re-runs its body from the
@@ -45,6 +45,9 @@ type node struct {
 	// runtime resume property, not part of the wired topology, so it deliberately
 	// does NOT participate in Digest (a flow's identity is its shape).
 	safety agent.Safety
+	// approval is the approval gate a wrapped agent tool (its ToolSpec.Approval) or a config
+	// "approval" block declares. Build refuses a flow with one, since flows do not enforce it.
+	approval *agent.ApprovalPolicy
 	// prompt is the raw prompt template of a kindModel node, recorded at
 	// construction. It is a Go text/template rendered with the decoded input I as
 	// data at run time, so {{.Field}} references the input's fields. It is empty

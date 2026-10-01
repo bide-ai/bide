@@ -8,7 +8,7 @@
 // There is no LLM or network here: the checks are stubs standing in for external screening calls,
 // so the example runs as-is and exercises the durability + governance + audit machinery. In a real
 // agent the checks would be tool calls or sub-agents and the governed events would be applied
-// through govern.AttestedEventTool (which journals each one); the guarantees are identical.
+// through an attested govern.EventTool (which journals each one); the guarantees are identical.
 package main
 
 import (

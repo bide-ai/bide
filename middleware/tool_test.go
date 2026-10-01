@@ -13,15 +13,16 @@ import (
 
 func TestToolCache_ShortCircuitsRepeat(t *testing.T) {
 	var calls int
-	base := agent.ToolHandler(func(_ context.Context, tu agent.ToolUse) (json.RawMessage, error) {
+	base := agent.ToolHandler(func(_ context.Context, call agent.ToolCall) (json.RawMessage, error) {
 		calls++
-		return json.RawMessage(`{"n":` + string(tu.Args) + `}`), nil
+		return json.RawMessage(`{"n":` + string(call.Use.Args) + `}`), nil
 	})
 	h := ToolCache()(base)
-	ctx := agent.WithToolSafety(context.Background(), agent.Safety{ReadOnly: true}) // ToolCache caches only ReadOnly tools
+	ctx := context.Background()
+	readOnly := agent.ToolSpec{Name: "f", Safety: agent.Safety{ReadOnly: true}} // ToolCache caches only ReadOnly tools
 
 	call := func(args string) string {
-		res, err := h(ctx, agent.ToolUse{Name: "f", Args: json.RawMessage(args)})
+		res, err := h(ctx, agent.ToolCall{Use: agent.ToolUse{Name: "f", Args: json.RawMessage(args)}, Spec: readOnly})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -44,15 +45,16 @@ func TestToolCache_ShortCircuitsRepeat(t *testing.T) {
 
 func TestToolCache_DoesNotCacheErrors(t *testing.T) {
 	var calls int
-	base := agent.ToolHandler(func(_ context.Context, _ agent.ToolUse) (json.RawMessage, error) {
+	base := agent.ToolHandler(func(_ context.Context, _ agent.ToolCall) (json.RawMessage, error) {
 		calls++
 		return nil, errors.New("boom")
 	})
 	h := ToolCache()(base)
-	ctx := agent.WithToolSafety(context.Background(), agent.Safety{ReadOnly: true}) // ToolCache caches only ReadOnly tools
+	ctx := context.Background()
+	readOnly := agent.ToolSpec{Name: "f", Safety: agent.Safety{ReadOnly: true}} // ToolCache caches only ReadOnly tools
 
 	for i := 0; i < 3; i++ {
-		if _, err := h(ctx, agent.ToolUse{Name: "f", Args: json.RawMessage(`{}`)}); err == nil {
+		if _, err := h(ctx, agent.ToolCall{Use: agent.ToolUse{Name: "f", Args: json.RawMessage(`{}`)}, Spec: readOnly}); err == nil {
 			t.Fatal("want error")
 		}
 	}
@@ -66,12 +68,12 @@ func TestToolLog_LogsOutcome(t *testing.T) {
 	logf := func(format string, args ...any) {
 		fmt.Fprintf(&sb, format, args...)
 	}
-	base := agent.ToolHandler(func(_ context.Context, _ agent.ToolUse) (json.RawMessage, error) {
+	base := agent.ToolHandler(func(_ context.Context, _ agent.ToolCall) (json.RawMessage, error) {
 		return json.RawMessage(`{}`), nil
 	})
 	h := ToolLog(logf)(base)
 
-	if _, err := h(context.Background(), agent.ToolUse{ID: "c1", Name: "lookup", Args: json.RawMessage(`{}`)}); err != nil {
+	if _, err := h(context.Background(), agent.ToolCall{Use: agent.ToolUse{ID: "c1", Name: "lookup", Args: json.RawMessage(`{}`)}}); err != nil {
 		t.Fatal(err)
 	}
 	if got := sb.String(); !strings.Contains(got, "lookup") || !strings.Contains(got, "ok") {

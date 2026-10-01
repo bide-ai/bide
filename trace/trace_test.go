@@ -64,11 +64,11 @@ func TestTool_EmitsExecuteToolSpan(t *testing.T) {
 	sr, tp := recorder()
 	tracer := tp.Tracer("test")
 
-	base := agent.ToolHandler(func(context.Context, agent.ToolUse) (json.RawMessage, error) {
+	base := agent.ToolHandler(func(context.Context, agent.ToolCall) (json.RawMessage, error) {
 		return json.RawMessage(`{}`), nil
 	})
 	h := Tool(tracer)(base)
-	if _, err := h(context.Background(), agent.ToolUse{ID: "c1", Name: "lookup"}); err != nil {
+	if _, err := h(context.Background(), agent.ToolCall{Use: agent.ToolUse{ID: "c1", Name: "lookup"}}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -97,13 +97,13 @@ func TestTool_NestsChildSpanAcrossBoundary(t *testing.T) {
 
 	// The "outer" tool, when run, itself invokes an "inner" traced tool with the same ctx —
 	// exactly how a sub-agent tool re-enters the loop and runs its own tools.
-	inner := mw(agent.ToolHandler(func(context.Context, agent.ToolUse) (json.RawMessage, error) {
+	inner := mw(agent.ToolHandler(func(context.Context, agent.ToolCall) (json.RawMessage, error) {
 		return json.RawMessage(`{}`), nil
 	}))
-	outer := mw(agent.ToolHandler(func(ctx context.Context, _ agent.ToolUse) (json.RawMessage, error) {
-		return inner(ctx, agent.ToolUse{ID: "c2", Name: "inner"})
+	outer := mw(agent.ToolHandler(func(ctx context.Context, _ agent.ToolCall) (json.RawMessage, error) {
+		return inner(ctx, agent.ToolCall{Use: agent.ToolUse{ID: "c2", Name: "inner"}})
 	}))
-	if _, err := outer(context.Background(), agent.ToolUse{ID: "c1", Name: "outer"}); err != nil {
+	if _, err := outer(context.Background(), agent.ToolCall{Use: agent.ToolUse{ID: "c1", Name: "outer"}}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -203,11 +203,11 @@ func TestTool_CapturesArgsAndResultWhenEnabled(t *testing.T) {
 	sr, tp := recorder()
 	tracer := tp.Tracer("test")
 
-	base := agent.ToolHandler(func(context.Context, agent.ToolUse) (json.RawMessage, error) {
+	base := agent.ToolHandler(func(context.Context, agent.ToolCall) (json.RawMessage, error) {
 		return json.RawMessage(`{"ok":1}`), nil
 	})
 	h := Tool(tracer)(base)
-	if _, err := h(context.Background(), agent.ToolUse{ID: "c1", Name: "lookup", Args: json.RawMessage(`{"q":"x"}`)}); err != nil {
+	if _, err := h(context.Background(), agent.ToolCall{Use: agent.ToolUse{ID: "c1", Name: "lookup", Args: json.RawMessage(`{"q":"x"}`)}}); err != nil {
 		t.Fatal(err)
 	}
 

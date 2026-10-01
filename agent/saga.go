@@ -26,18 +26,29 @@ func (e *sagaTrip) Error() string { return fmt.Sprintf("saga step %q failed: %v"
 // is no longer registered. They are side effects that may need manual cleanup. CompensateErr is
 // non-nil if the rollback stopped (a compensator failed, or an outcome is unknown), so writes
 // before it remain uncompensated.
+//
+// UnknownOutcome lists the saga steps that failed with an unknown outcome, the failure that
+// aborted the saga included: a retry-safe step that returned ErrToolOutcomeUnknown, or an error
+// after its WithTimeout deadline, may have committed before it was cut off. The rollback does not
+// run their compensators (it has no result to compensate, and the effect may not have happened),
+// and it does not list them as Uncompensated writes; it reports them here, so they are never
+// silent. Check each against its downstream system.
 type SagaAborted struct {
-	RunID         string
-	Cause         error
-	Compensated   []string
-	Uncompensated []string
-	CompensateErr error
+	RunID          string
+	Cause          error
+	Compensated    []string
+	Uncompensated  []string
+	UnknownOutcome []string
+	CompensateErr  error
 }
 
 func (e *SagaAborted) Error() string {
 	msg := fmt.Sprintf("saga %s aborted (%v); compensated %v", e.RunID, e.Cause, e.Compensated)
 	if len(e.Uncompensated) > 0 {
 		msg += fmt.Sprintf("; UNCOMPENSATED writes %v", e.Uncompensated)
+	}
+	if len(e.UnknownOutcome) > 0 {
+		msg += fmt.Sprintf("; steps with UNKNOWN OUTCOME, possibly committed %v", e.UnknownOutcome)
 	}
 	if e.CompensateErr != nil {
 		msg += fmt.Sprintf("; rollback INCOMPLETE: %v", e.CompensateErr)
@@ -46,6 +57,17 @@ func (e *SagaAborted) Error() string {
 }
 
 func (e *SagaAborted) Unwrap() error { return e.Cause }
+
+// unknownStepOutcome reports whether a saga step's failure err leaves its outcome unknown: it
+// wraps ErrToolOutcomeUnknown (the tool said so, or returned an error after its deadline). A
+// sub-agent's own abort (*SagaAborted) is not: its sub-run rolled itself back, and the rollback
+// walks it and reports its unknown steps by name.
+func unknownStepOutcome(err error) bool {
+	if _, sub := errors.AsType[*SagaAborted](err); sub {
+		return false
+	}
+	return errors.Is(err, ErrToolOutcomeUnknown)
+}
 
 // RunSaga runs the agent as a transaction: on success it behaves like Run; if a step
 // fails after earlier writes succeeded, it compensates the completed writes in reverse
@@ -84,7 +106,11 @@ func (a *Agent) runSagaWithTelemetry(ctx context.Context, runID, input string, e
 	if err != nil {
 		return Message{}, usageTotals{}, 0, err
 	}
-	if cause, aborting := sagaFailure(recs); aborting {
+	cause, aborting, err := sagaFailure(runID, recs)
+	if err != nil {
+		return Message{}, usageTotals{}, 0, err
+	}
+	if aborting {
 		// Re-entered after it aborted (a sub-saga whose parent had not recorded the failure): its
 		// usage goes to the tool call that started it, as run reports it (see callUsage).
 		reportUsage(ctx, runID, journalTotals(recs))
@@ -103,7 +129,7 @@ func (a *Agent) runSagaWithTelemetry(ctx context.Context, runID, input string, e
 // saga's failure record holds for cause, redacted for the journal; the terminal marker records it,
 // never cause's own text.
 func (a *Agent) rollback(ctx context.Context, runID string, cause error, causeText string) error {
-	comp, uncomp, cerr := a.rollbackRun(ctx, runID, rootRunID(ctx, runID))
+	comp, uncomp, unknown, cerr := a.rollbackRun(ctx, runID, rootRunID(ctx, runID))
 	if cerr == nil {
 		// The rollback finished: the run is over. Mark it terminal so a recovery supervisor
 		// leaves it alone. A rollback that stopped (an unknown outcome, a failed compensator) is
@@ -114,7 +140,7 @@ func (a *Agent) rollback(ctx context.Context, runID string, cause error, causeTe
 			cerr = fmt.Errorf("saga %s: record the finished rollback: %w (%w)", runID, err, ErrStorage)
 		}
 	}
-	return &SagaAborted{RunID: runID, Cause: cause, Compensated: comp, Uncompensated: uncomp, CompensateErr: cerr}
+	return &SagaAborted{RunID: runID, Cause: cause, Compensated: comp, Uncompensated: uncomp, UnknownOutcome: unknown, CompensateErr: cerr}
 }
 
 // rollbackRun compensates a run's writes in reverse call order, recursing into sub-agent
@@ -133,15 +159,16 @@ func (a *Agent) rollback(ctx context.Context, runID string, cause error, causeTe
 //   - a retry-safe call with a compensator and no result is run again to learn its result
 //     (safe by its declaration), then compensated;
 //   - a sub-agent call is always rolled back into, whether or not it finished.
-func (a *Agent) rollbackRun(ctx context.Context, runID, root string) (compensated, uncompensated []string, err error) {
+func (a *Agent) rollbackRun(ctx context.Context, runID, root string) (compensated, uncompensated, unknown []string, err error) {
 	recs, e := a.store.History(ctx, runID)
 	if e != nil {
-		return nil, nil, e
+		return nil, nil, nil, e
 	}
 	var calls []ToolUse
 	results := map[string]Record{}
 	values := map[string]json.RawMessage{} // StepValue records by key: the accepted arguments (sagaArgsStep)
 	failed := map[string]bool{}
+	failedUnknown := map[string]bool{} // failed steps whose outcome is unknown: they may have committed
 	attemptedAt := map[string]int64{}
 	started := map[string]bool{}
 	for _, r := range recs {
@@ -154,6 +181,7 @@ func (a *Agent) rollbackRun(ctx context.Context, runID, root string) (compensate
 			results[r.ToolUseID] = r
 		case StepSagaFail:
 			failed[r.ToolUseID] = true
+			failedUnknown[r.ToolUseID] = r.OutcomeUnknown
 		case StepValue:
 			values[r.Name] = r.Result
 		}
@@ -172,27 +200,49 @@ func (a *Agent) rollbackRun(ctx context.Context, runID, root string) (compensate
 	// step) and reports what it undid, so the tree's lists are whole.
 	for i := len(calls) - 1; i >= 0; i-- {
 		tu := calls[i]
-		sat, ok := a.tools[tu.Name].(*subAgentTool)
+		sat, ok := asSubAgent(a.tools[tu.Name])
 		if !ok || !failed[tu.ID] {
 			continue
 		}
-		cc, cu, ce := sat.sub.rollbackRun(ctx, SubRunID(runID, tu.ID), root)
+		subID := SubRunID(runID, tu.ID)
+		sctx, be := bindRollback(ctx, a.tools[tu.Name], subID)
+		if be != nil {
+			uncompensated = append(uncompensated, tu.Name)
+			return compensated, uncompensated, unknown, be
+		}
+		cc, cu, ck, ce := sat.sub.rollbackRun(sctx, subID, root)
 		compensated = append(compensated, cc...)
 		uncompensated = append(uncompensated, cu...)
+		unknown = append(unknown, ck...)
 		if ce != nil {
-			return compensated, uncompensated, ce
+			return compensated, uncompensated, unknown, ce
 		}
 	}
 	for i := len(calls) - 1; i >= 0; i-- {
 		tu := calls[i]
 		if failed[tu.ID] {
+			if failedUnknown[tu.ID] {
+				// Its outcome is unknown (it said so, or returned an error after its deadline): it
+				// may have committed. Its compensation is not run blind, on a result it never
+				// returned; it is reported, so the rollback is never silent about it.
+				unknown = append(unknown, tu.Name)
+			}
 			continue // the step whose failure aborted the saga: walked above if a sub-agent; otherwise it made no change
 		}
 		res, done := results[tu.ID]
 		if done && res.IsError {
-			continue // a failed call made no change (saga steps must be atomic)
+			// A failed call made no change (saga steps must be atomic), unless an earlier attempt of
+			// a compensable retry-safe write journaled its arguments, its "may have begun" marker,
+			// before this result (a denial) was recorded: that attempt may have taken effect, and
+			// no result of it was recorded to compensate, so it is reported.
+			if _, comp := a.tools[tu.Name].(Compensator); comp && res.Safety != nil && res.Safety.retrySafeWrite() {
+				if _, began := values[sagaArgsStep(tu.ID)]; began {
+					unknown = append(unknown, tu.Name)
+				}
+			}
+			continue
 		}
-		if done && res.ReadOnly {
+		if done && res.Safety != nil && res.Safety.ReadOnly {
 			continue // it ran as ReadOnly, so it changed nothing, whatever its tool is declared as now
 		}
 		tool := a.tools[tu.Name]
@@ -204,7 +254,7 @@ func (a *Agent) rollbackRun(ctx context.Context, runID, root string) (compensate
 			// and nothing here can undo it, so report it rather than a clean rollback.
 			if !done && started[tu.ID] {
 				uncompensated = append(uncompensated, tu.Name)
-				return compensated, uncompensated, toolHalt(runID, root, tu.ID, tu.Name, markerTime(attemptedAt[tu.ID]), HaltCrashed)
+				return compensated, uncompensated, unknown, toolHalt(runID, root, tu.ID, tu.Name, markerTime(attemptedAt[tu.ID]), HaltCrashed)
 			}
 			uncompensated = append(uncompensated, tu.Name)
 			continue
@@ -212,20 +262,27 @@ func (a *Agent) rollbackRun(ctx context.Context, runID, root string) (compensate
 
 		// Sub-agent: recurse into its child run (using the SUB-agent's own tools), so its
 		// writes are compensated too, even if the call was cut off before it returned.
-		if sat, ok := tool.(*subAgentTool); ok {
-			cc, cu, ce := sat.sub.rollbackRun(ctx, SubRunID(runID, tu.ID), root)
+		if sat, ok := asSubAgent(tool); ok {
+			subID := SubRunID(runID, tu.ID)
+			sctx, be := bindRollback(ctx, tool, subID)
+			if be != nil {
+				uncompensated = append(uncompensated, tu.Name)
+				return compensated, uncompensated, unknown, be
+			}
+			cc, cu, ck, ce := sat.sub.rollbackRun(sctx, subID, root)
 			compensated = append(compensated, cc...)
 			uncompensated = append(uncompensated, cu...)
+			unknown = append(unknown, ck...)
 			if ce != nil {
-				return compensated, uncompensated, ce
+				return compensated, uncompensated, unknown, ce
 			}
 			continue
 		}
 
-		// A completed call's result records whether it ran ReadOnly (skipped above), so it is a
-		// write here even if its tool has been relabelled ReadOnly since. A call with no result
-		// has no record of its safety, and goes by the tool's safety now.
-		safety := tool.Safety()
+		// A completed call's result records the safety it ran under (a ReadOnly one is skipped
+		// above), so it is a write here even if its tool has been relabelled ReadOnly since. A
+		// call with no result has no record of its safety, and goes by the tool's safety now.
+		safety := a.specs[tu.Name].Safety
 		if !done && safety.ReadOnly {
 			continue
 		}
@@ -235,7 +292,7 @@ func (a *Agent) rollbackRun(ctx context.Context, runID, root string) (compensate
 			case started[tu.ID]:
 				// Started, no recorded outcome: it may have taken effect. Stop for a human.
 				uncompensated = append(uncompensated, tu.Name)
-				return compensated, uncompensated, toolHalt(runID, root, tu.ID, tu.Name, markerTime(attemptedAt[tu.ID]), HaltCrashed)
+				return compensated, uncompensated, unknown, toolHalt(runID, root, tu.ID, tu.Name, markerTime(attemptedAt[tu.ID]), HaltCrashed)
 			case !safety.RetrySafe():
 				continue // no attempt marker: it never started
 			case !canUndo:
@@ -245,24 +302,39 @@ func (a *Agent) rollbackRun(ctx context.Context, runID, root string) (compensate
 				// Retry-safe: running it again is safe, and yields the result to compensate. It runs
 				// through the tool middleware, like the live call it repeats, and in this run's
 				// saga context, so the arguments it accepts are journaled as the live call's were.
-				toolH := a.toolHandler()
+				toolH := a.toolHandler(runID)
+				spec := a.specs[tu.Name]
 				rec, ce := a.store.Do(ctx, runID, ToolResultStep(tu.ID), func(ctx context.Context) (Record, error) {
-					out, e := toolH(withRunContext(withSaga(ctx), a.store, runID), tu)
+					out, state, _, e := callTool(withRunContext(withSaga(ctx), a.store, runID), spec.Timeout, func(ctx context.Context) (json.RawMessage, int32, error) { return toolH(ctx, tu) })
 					if e != nil {
 						return Record{}, e
 					}
-					return Record{Kind: StepToolResult, ToolUseID: tu.ID, Result: out}, nil
+					if state != callReached {
+						// A middleware answered (a cache hit) without the re-run reaching the tool:
+						// that is not the step's result, and nothing was learned about it.
+						return Record{}, fmt.Errorf("tool %q (call %s): the rollback's re-run was answered without reaching the tool: %w", tu.Name, tu.ID, ErrToolOutcomeUnknown)
+					}
+					return Record{Kind: StepToolResult, ToolUseID: tu.ID, Result: out, Safety: recordedSafety(*spec), Approval: spec.Approval.Clone()}, nil
 				})
 				if ce != nil {
+					// The re-run gives no result to compensate. When its outcome is unknown (the tool
+					// said so, a middleware turned its success into an error, the chain answered
+					// while it ran), the step is reported as unknown, as the live path reports it,
+					// and the rollback goes on: re-running it again would meet the same answer, and
+					// the rollback would never finish. Any other failure stops the rollback.
+					if errors.Is(ce, ErrToolOutcomeUnknown) {
+						unknown = append(unknown, tu.Name)
+						continue
+					}
 					uncompensated = append(uncompensated, tu.Name)
-					return compensated, uncompensated, fmt.Errorf("saga rollback: learn the outcome of %q (call %s): %w", tu.Name, tu.ID, ce)
+					return compensated, uncompensated, unknown, fmt.Errorf("saga rollback: learn the outcome of %q (call %s): %w", tu.Name, tu.ID, ce)
 				}
 				res = rec
 				// The re-run may have journaled the arguments it accepted: read them back.
 				again, he := a.store.History(ctx, runID)
 				if he != nil {
 					uncompensated = append(uncompensated, tu.Name)
-					return compensated, uncompensated, he
+					return compensated, uncompensated, unknown, he
 				}
 				for _, r := range again {
 					if r.Kind == StepValue && r.Name == sagaArgsStep(tu.ID) {
@@ -285,7 +357,7 @@ func (a *Agent) rollbackRun(ctx context.Context, runID, root string) (compensate
 				}
 				return Record{Kind: StepValue}, nil
 			}); ce != nil {
-				return compensated, uncompensated, ce // stop; earlier writes stay uncompensated
+				return compensated, uncompensated, unknown, ce // stop; earlier writes stay uncompensated
 			}
 			compensated = append(compensated, tu.Name)
 			continue
@@ -296,7 +368,7 @@ func (a *Agent) rollbackRun(ctx context.Context, runID, root string) (compensate
 		// report a clean rollback while side effects remain.
 		uncompensated = append(uncompensated, tu.Name)
 	}
-	return compensated, uncompensated, nil
+	return compensated, uncompensated, unknown, nil
 }
 
 // sagaFailure reports whether the journal records a saga step failure (the durable abort
@@ -307,7 +379,9 @@ func (a *Agent) rollbackRun(ctx context.Context, runID, root string) (compensate
 // operator records the verified outcome with ResolveHaltRef. A failure recorded that way is a failed
 // step too, and aborts the saga as the StepSagaFail would have. In a saga, the only other failed
 // result a call can have is a human's denial, which the model reacts to, as it does outside one.
-func sagaFailure(recs []Record) (string, bool) {
+//
+// A recorded tally is read strictly (see decodeTally); one that does not decode is an error.
+func sagaFailure(runID string, recs []Record) (string, bool, error) {
 	denied := map[string]bool{}   // calls denied by a 1-of-1 decision
 	values := map[string]Record{} // StepValue records by name, for m-of-n tallies
 	for _, r := range recs {
@@ -318,18 +392,26 @@ func sagaFailure(recs []Record) (string, bool) {
 			values[r.Name] = r
 		}
 	}
-	isDenial := func(id string) bool {
+	isDenial := func(id string) (bool, error) {
 		if denied[id] {
-			return true
+			return true, nil
 		}
 		v, ok := values[ApprovalTallyStep(id)]
-		var t ApprovalTally
-		return ok && json.Unmarshal(v.Result, &t) == nil && !t.Passed()
+		if !ok {
+			return false, nil
+		}
+		t, err := decodeTally(runID, v)
+		return !t.Passed(), err
 	}
 	for _, r := range recs {
 		switch {
 		case r.Kind == StepSagaFail:
-		case r.Kind == StepToolResult && r.IsError && !isDenial(r.ToolUseID):
+		case r.Kind == StepToolResult && r.IsError:
+			if d, err := isDenial(r.ToolUseID); err != nil {
+				return "", false, err
+			} else if d {
+				continue
+			}
 		default:
 			continue
 		}
@@ -337,9 +419,9 @@ func sagaFailure(recs []Record) (string, bool) {
 		if json.Unmarshal(r.Result, &s) != nil {
 			s = string(r.Result)
 		}
-		return s, true
+		return s, true, nil
 	}
-	return "", false
+	return "", false, nil
 }
 
 // argsFor finds the original arguments of a tool call from the journaled model turns.

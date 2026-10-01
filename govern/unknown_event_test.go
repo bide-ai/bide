@@ -123,7 +123,7 @@ func TestEventTool_UnknownEventFailsTheCallWithoutPanicking(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	tool := govern.EventTool(g, "bump", "", "inc_typo", agent.Safety{Idempotent: true})
+	tool := govern.EventTool(g, govern.EventToolConfig{Name: "bump", Description: "", Event: "inc_typo", Safety: agent.Safety{Idempotent: true}})
 	noPanic(t, "EventTool with an unknown event", func() {
 		if _, err := tool.Call(ctx, []byte(`{}`)); !errors.Is(err, agent.ErrConfig) {
 			t.Fatalf("tool call err = %v, want ErrConfig", err)

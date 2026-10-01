@@ -31,11 +31,11 @@ func TestBuildRequest_GeminiToolNames(t *testing.T) {
 			return 0, nil
 		})
 	}
-	if _, err := New("k").buildRequest(agent.Request{Tools: []agent.Tool{stub("ns.tool:v1"), stub("_x")}}); err != nil {
+	if _, err := New("k").buildRequest(agent.Request{Tools: []agent.ToolSpec{agent.SpecOf(stub("ns.tool:v1")), agent.SpecOf(stub("_x"))}}); err != nil {
 		t.Errorf("dotted name refused: %v", err)
 	}
 	for _, n := range []string{"1abc", "-x"} {
-		if _, err := New("k").buildRequest(agent.Request{Tools: []agent.Tool{stub(n)}}); !errors.Is(err, agent.ErrConfig) {
+		if _, err := New("k").buildRequest(agent.Request{Tools: []agent.ToolSpec{agent.SpecOf(stub(n))}}); !errors.Is(err, agent.ErrConfig) {
 			t.Errorf("%q: err = %v, want ErrConfig", n, err)
 		}
 	}

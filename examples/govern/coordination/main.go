@@ -80,8 +80,7 @@ func synthesizeScene() {
 	fmt.Printf("  convergent=%v (synthesized a repair, cost %d)\n", syn.Convergent, syn.Cost)
 
 	gov := govern.New(m, m.NewState())
-	incA := govern.EventTool(gov, "increment_a", "Apply the governed inc_a event", "inc_a",
-		agent.Safety{Idempotent: true})
+	incA := govern.EventTool(gov, govern.EventToolConfig{Name: "increment_a", Description: "Apply the governed inc_a event", Event: "inc_a", Safety: agent.Safety{Idempotent: true}})
 
 	// The agent calls increment_a five times; the cap is 3, so the synthesized compensation
 	// clamps the shared state to a valid normal form regardless of how the calls interleave.

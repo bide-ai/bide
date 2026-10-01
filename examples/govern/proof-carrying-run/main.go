@@ -5,7 +5,7 @@
 // head) into one per-run certificate plus a verifier; there is no new cryptography.
 //
 // The example is offline: no LLM, no network. The "agent" applies governed actions through
-// govern.AttestedEventTool (each journaled with the policy digest that admitted it), exactly as a
+// an attested govern.EventTool (each journaled with the policy digest that admitted it), exactly as a
 // real agent loop would; the governed guarantees are identical. It:
 //
 //  1. anchors a convergent policy and its convergence certificate, runs governed actions under it;
@@ -75,12 +75,12 @@ func main() {
 	}
 	fmt.Printf("policy %s anchored and certified convergent over %d states\n\n", short(policyDigest), rep.StateCount)
 
-	// Run governed actions through AttestedEventTool: each tool call applies an event to the shared
+	// Run governed actions through attested EventTools: each tool call applies an event to the shared
 	// governed state and journals a leaf carrying the policy digest that admitted it. This is what
 	// makes the run's policy-used set provable.
 	gov := govern.New(m, m.NewState())
-	approveTool := govern.AttestedEventTool(gov, "approve", "approve the case", "approve", policyDigest, agent.Safety{})
-	flagTool := govern.AttestedEventTool(gov, "flag", "flag the case", "flag", policyDigest, agent.Safety{})
+	approveTool := govern.EventTool(gov, govern.EventToolConfig{Name: "approve", Description: "approve the case", Event: "approve", PolicyDigest: policyDigest})
+	flagTool := govern.EventTool(gov, govern.EventToolConfig{Name: "flag", Description: "flag the case", Event: "flag", PolicyDigest: policyDigest})
 
 	fmt.Println("governed actions (each journaled with the policy that admitted it):")
 	callGoverned(ctx, store, runID, "call_approve", approveTool)

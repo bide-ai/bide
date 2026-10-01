@@ -42,7 +42,10 @@ func addUsage(dst *Usage, src Usage) {
 type Agent struct {
 	model        Model
 	tools        map[string]Tool
-	dupTool      string // a tool name New was given more than once; every run fails with ErrConfig
+	specs        map[string]*ToolSpec // each tool's spec, read once when it was registered; never changed
+	specList     []ToolSpec           // specs sorted by name, as model requests are sent them
+	dupTool      string               // a tool name New was given more than once; every run fails with ErrConfig
+	toolErr      error                // the first tool New refused (checkWrapper); every run fails with it
 	store        Durable
 	mw           []Middleware
 	toolMW       []ToolMiddleware
@@ -58,7 +61,7 @@ type Agent struct {
 	toolChoice     *ToolChoice     // tool-choice control applied to every model call (see WithToolChoice)
 	terminalTool   string          // a successful call to this tool ends the run (RunTyped's final_answer)
 	// approverVerifiers resolves an approver id to the verifier for its decision
-	// signature; required by any tool with a non-nil Safety.Approval (see WithApproverVerifiers).
+	// signature; required by any tool with an m-of-n ToolSpec.Approval (see WithApproverVerifiers).
 	approverVerifiers ApproverVerifierFor
 	// toolErrRedact, if set, chooses the text journaled and sent to the model for a failed tool
 	// call (see WithToolErrorRedactor).
@@ -144,7 +147,8 @@ func (a *Agent) WithSystemPromptFunc(fn func(context.Context) string) *Agent {
 // New constructs an Agent. It panics if model or store is nil: both are load-bearing on every run
 // (the model drives turns, the store journals them for at-most-once resume), so a nil is a
 // construction-time programmer error, not a runtime condition to thread through every call.
-// Tool names must be unique: if two tools share a name, every run fails with ErrConfig.
+// Tool names must be unique: if two tools share a name, every run fails with ErrConfig, as it does
+// for a tool whose spec has an invalid Approval (see ApprovalPolicy.Validate).
 func New(model Model, store Durable, tools ...Tool) *Agent {
 	if model == nil {
 		panic("agent: New requires a non-nil Model")
@@ -153,14 +157,30 @@ func New(model Model, store Durable, tools ...Tool) *Agent {
 		panic("agent: New requires a non-nil Durable store")
 	}
 	m := make(map[string]Tool, len(tools))
+	specs := make(map[string]*ToolSpec, len(tools))
 	dup := ""
+	var toolErr error
 	for _, t := range tools {
-		if _, taken := m[t.Name()]; taken && dup == "" {
-			dup = t.Name()
+		s := SpecOf(t) // read once: every decision about the tool's calls reads this copy
+		if err := checkWrapper(t, s); err != nil && toolErr == nil {
+			toolErr = err
 		}
-		m[t.Name()] = t
+		if s.Approval != nil && toolErr == nil {
+			// A tool's own Spec may return a policy no option would build (a SingleApproval whose
+			// fields were changed): refuse it here, before a call is approved and fires, not when
+			// its result fails to encode.
+			if err := checkApproval(s.Approval); err != nil {
+				toolErr = fmt.Errorf("agent: tool %q: %w", s.Name, err)
+			}
+		}
+		if _, taken := m[s.Name]; taken && dup == "" {
+			dup = s.Name
+		}
+		m[s.Name], specs[s.Name] = t, &s // a tool with a Spec method is called by its spec's name
 	}
-	return &Agent{model: model, tools: m, dupTool: dup, store: store}
+	a := &Agent{model: model, tools: m, specs: specs, dupTool: dup, toolErr: toolErr, store: store}
+	a.sortSpecs()
+	return a
 }
 
 // checkTools reports a tool name New was given twice. The model calls a tool by name, so one of
@@ -172,7 +192,7 @@ func (a *Agent) checkTools() error {
 	if a.dupTool != "" {
 		return fmt.Errorf("agent: two tools are named %q: %w", a.dupTool, ErrConfig)
 	}
-	return nil
+	return a.toolErr
 }
 
 // Use appends middleware wrapping the model call (first added = outermost). Returns the
@@ -227,8 +247,8 @@ func (a *Agent) SetMaxConcurrency(n int) *Agent {
 }
 
 // WithApproverVerifiers configures how the m-of-n approval gate resolves an approver id to
-// the verifier for its signature. Required whenever any tool carries a non-nil
-// Safety.Approval: a gated call with no resolver configured fails with ErrConfig rather than
+// the verifier for its signature. Required whenever any tool carries an m-of-n
+// ToolSpec.Approval (see WithApproval): a gated call with no resolver configured fails with ErrConfig rather than
 // silently counting zero decisions. Returns the agent for chaining.
 func (a *Agent) WithApproverVerifiers(fn ApproverVerifierFor) *Agent {
 	a.approverVerifiers = fn
@@ -251,12 +271,4 @@ func (a *Agent) WithApproverVerifiers(fn ApproverVerifierFor) *Agent {
 func (a *Agent) WithToolErrorRedactor(fn func(tool string, err error) string) *Agent {
 	a.toolErrRedact = fn
 	return a
-}
-
-func (a *Agent) toolList() []Tool {
-	out := make([]Tool, 0, len(a.tools))
-	for _, t := range a.tools {
-		out = append(out, t)
-	}
-	return out
 }

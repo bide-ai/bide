@@ -135,8 +135,8 @@ rule (a corrupted or edited record) is `agent.ErrProtocol`, and no tally is retu
 Decide in advance what a failed quorum means, and make it the same every time:
 
 - **Ask people.** Route the decision to a tool that requires approval, so the run pauses until it
-  is signed off: by one person (`agent.Safety{RequiresApproval: true}`), or by k of n named approvers
-  (`agent.Safety{Approval: &agent.ApprovalPolicy{Need: 2, Approvers: []string{"ops", "finance", "risk"}}}`)
+  is signed off: by one person (`agent.WithApproval(agent.SingleApproval())`), or by k of n named approvers
+  (`agent.WithApproval(&agent.ApprovalPolicy{Need: 2, Approvers: []string{"ops", "finance", "risk"}})`)
   when the decision needs more than one sign-off. Each approver's decision is signed over the exact
   call, so like the votes, it can be verified offline (see [Human approval](hitl-approval.md#m-of-n)).
 - **Fall back to a safe default,** such as "deny" or "hold for review".
@@ -171,7 +171,7 @@ machine, report, err := r.Build() // fails with a counterexample if the policy c
 ```
 
 The policy is checked for every possible vote count, so the gate holds however the models vote.
-Commit through `govern.AttestedEventTool` to record the commit bound to the policy it ran under.
+Commit through an attested `govern.EventTool` (`EventToolConfig.PolicyDigest` set) to record the commit bound to the policy it ran under.
 `examples/govern/quorum` shows the whole wiring.
 
 ## Verifying a decision offline

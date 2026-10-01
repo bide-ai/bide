@@ -2,7 +2,6 @@ package plan
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -29,7 +28,6 @@ func safetyConfig(s string) string {
 // more retry-safe than its Go registration declares (a side effect marked readonly or
 // idempotent, or an idempotent tool marked readonly) is a load error naming the node.
 func TestLoad_ConfigCannotRaiseRetrySafety(t *testing.T) {
-	key := func(json.RawMessage) string { return "k" }
 	for name, tc := range map[string]struct {
 		base agent.Safety
 		cfg  string
@@ -37,7 +35,6 @@ func TestLoad_ConfigCannotRaiseRetrySafety(t *testing.T) {
 		"side effect to readonly":   {agent.Safety{}, "readonly"},
 		"side effect to idempotent": {agent.Safety{}, "idempotent"},
 		"idempotent to readonly":    {agent.Safety{Idempotent: true}, "readonly"},
-		"keyed to readonly":         {agent.Safety{IdempotencyKey: key}, "readonly"},
 	} {
 		_, err := Load[int, int]([]byte(safetyConfig(tc.cfg)), safetyRegistry(t, tc.base))
 		if !errors.Is(err, agent.ErrConfig) || !strings.Contains(err.Error(), `"t"`) {
@@ -57,9 +54,7 @@ func TestLoad_ConfigCannotRaiseAJoinsRetrySafety(t *testing.T) {
 
 // A config may lower retry safety: mark a readonly tool idempotent, or mark any retry-safe tool
 // "side_effect" so a crash with no recorded outcome halts instead of re-running it. Lowering to
-// side_effect clears an IdempotencyKey too, since the key alone makes a node retry-safe.
 func TestLoad_ConfigMayLowerRetrySafety(t *testing.T) {
-	key := func(json.RawMessage) string { return "k" }
 	for name, tc := range map[string]struct {
 		base      agent.Safety
 		cfg       string
@@ -69,7 +64,6 @@ func TestLoad_ConfigMayLowerRetrySafety(t *testing.T) {
 		"readonly to idempotent":    {agent.Safety{ReadOnly: true}, "idempotent", true, false},
 		"readonly to side effect":   {agent.Safety{ReadOnly: true}, "side_effect", false, false},
 		"idempotent to side effect": {agent.Safety{Idempotent: true}, "side_effect", false, false},
-		"keyed to side effect":      {agent.Safety{IdempotencyKey: key}, "side_effect", false, false},
 		"readonly stays readonly":   {agent.Safety{ReadOnly: true}, "readonly", true, true},
 		"side effect stays":         {agent.Safety{}, "side_effect", false, false},
 	} {

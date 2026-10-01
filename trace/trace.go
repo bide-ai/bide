@@ -177,23 +177,23 @@ func Model(tracer oteltrace.Tracer, opts ...Option) agent.Middleware {
 func Tool(tracer oteltrace.Tracer) agent.ToolMiddleware {
 	capture := captureContent()
 	return func(next agent.ToolHandler) agent.ToolHandler {
-		return func(ctx context.Context, tu agent.ToolUse) (json.RawMessage, error) {
-			ctx, span := tracer.Start(ctx, "execute_tool "+tu.Name, oteltrace.WithAttributes(
+		return func(ctx context.Context, call agent.ToolCall) (json.RawMessage, error) {
+			ctx, span := tracer.Start(ctx, "execute_tool "+call.Use.Name, oteltrace.WithAttributes(
 				attribute.String(attrOperation, "execute_tool"),
-				attribute.String(attrToolName, tu.Name),
+				attribute.String(attrToolName, call.Use.Name),
 			))
 			defer end(span)
-			if tu.ID != "" {
-				span.SetAttributes(attribute.String(attrToolCallID, tu.ID))
+			if call.Use.ID != "" {
+				span.SetAttributes(attribute.String(attrToolCallID, call.Use.ID))
 			}
-			if capture && len(tu.Args) > 0 {
-				span.SetAttributes(attribute.String(attrToolArguments, string(tu.Args)))
+			if capture && len(call.Use.Args) > 0 {
+				span.SetAttributes(attribute.String(attrToolArguments, string(call.Use.Args)))
 			}
-			res, err := next(ctx, tu)
+			res, err := next(ctx, call)
 			if capture && err == nil && len(res) > 0 {
 				span.SetAttributes(attribute.String(attrToolResult, string(res)))
 			}
-			recordError(span, err, capture, func() string { return agent.ToolErrorText(ctx, tu.Name, err) })
+			recordError(span, err, capture, func() string { return call.ErrorText(err) })
 			return res, err
 		}
 	}

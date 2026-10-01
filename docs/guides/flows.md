@@ -65,7 +65,14 @@ production). `runID` is the durable identity: re-running the same `runID` resume
     `Join2`/`Join3` merge bodies take the same leading `ctx`. `When` predicates and `Switch` routing
     take no ctx: they must be pure functions of the value, since resume replays the recorded arm.
   - `Tool[I, O](name, agent.Tool)` runs a tool; give `I`/`O` explicitly (they say how to JSON-encode
-    the input and decode the result).
+    the input and decode the result). The node runs the tool as an agent does: under its
+    `ToolSpec.Timeout` (`agent.WithTimeout`), where a result that arrives after the deadline is
+    returned and an error after it, while the flow's own context is live, has an unknown outcome
+    (`agent.ErrToolOutcomeUnknown`: a side-effect node halts on its next drive, a retry-safe node
+    runs again); and only once the call guard admits it, so a flow run under an
+    `audit.AttenuatingSubAgent` delegation whose grant has expired fails the node without calling
+    the tool. `Build` (and `RegisterTool`, reported again at `Load`) refuses a tool `agent.New`
+    would refuse for how it wraps another.
   - `Model[I, O](name, prompt)` is a model turn: bind a model with `Builder.WithModel(m)` (or, in a
     declarative config, `Load`'s `WithLoadedModel`). The node renders `prompt` as a `text/template` over the
     typed input `I`, calls the bound model, and decodes the structured response into `O` (so `O` must
@@ -364,15 +371,15 @@ A node (or a join) may carry a `safety` classifying how `Run` treats it on the a
 than halting, because its body is safe to repeat; a side effect halts.
 
 **A config may only lower retry safety.** Whether a step is safe to run twice is a property of its Go
-code, so only Go declares it: `RegisterStep`, `RegisterTool` (from the tool's own `Safety`),
+code, so only Go declares it: `RegisterStep`, `RegisterTool` (from the `Safety` in the tool's spec),
 `RegisterModel`, `RegisterJoin2` and `RegisterJoin3` take `ReadOnly()`/`Idempotent()` options. The
-levels, highest first, are read-only, idempotent (`Idempotent` or an `IdempotencyKey`), and side
+levels, highest first, are read-only, idempotent (`Idempotent`), and side
 effect. A config `safety` may keep a block's level or name a lower one (mark a read-only block
 `idempotent`, or any block `side_effect` so a crash with no recorded outcome halts for confirmation),
 and a value above what Go declares (`readonly` or `idempotent` on a side effect, `readonly` on an
-idempotent block) is a load error (`ErrConfig`) naming the node. `side_effect` also drops an
-`IdempotencyKey`, since the key alone makes a node retry-safe. Any other change keeps an approval gate
-or an `IdempotencyKey` the wrapped agent tool declares (so a gated tool is still refused, see
+idempotent block) is a load error (`ErrConfig`) naming the node. A config `safety` changes only the
+retry level: the approval gate the wrapped agent tool declares (its `ToolSpec.Approval`) is not
+part of `Safety` and is kept (so a gated tool is still refused, see
 [Node approval](#node-approval)). The Go options `ReadOnly()` and `Idempotent()` on a
 `Builder` node are Go code and may raise a node's level; they too keep an approval gate.
 
@@ -388,7 +395,8 @@ lower what its merge block's `RegisterJoin2`/`RegisterJoin3` options declare.
 #### Node approval
 
 A node may also carry an `approval` block declaring an m-of-n human gate, which loads onto the node's
-`Safety.Approval` alongside any `safety` classification:
+approval gate (an `agent.ApprovalPolicy`, as `agent.WithApproval` sets on a tool) alongside any
+`safety` classification:
 
 ```yaml
 nodes:
