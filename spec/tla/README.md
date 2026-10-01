@@ -1736,7 +1736,9 @@ model 10's.
   turn boundary.
 - **Faults**: error replies on the session journal, process crashes (every caller of the
   process is cut off and redelivered; its handles reopen from the journal; a drive in flight is
-  gone), pauses, and `Cancel`.
+  gone), pauses, and `Cancel`. Leases: a turn's run holds none today (sessions do not call
+  `Lease`, and recovery skips session runs); under S4's rule a drive holds the run's lease, and
+  a crashed holder's lease lapses (its TTL and a stalled holder are model 10's).
 
 Abstracted away: the claim protocol and tool calls inside a turn (model 1, model 9), spend
 records and late spend beyond the count the budget sees (model 8), the race between
