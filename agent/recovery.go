@@ -338,8 +338,9 @@ func recoverRun(ctx context.Context, store Durable, runID string, resume func(ct
 //     one its holder neither renewed nor released: the holder died or stalled. A halted run holds
 //     no lease between visits, so the lapsed loop neither visits the halted runs nor waits behind
 //     them. Each lapsed pass first deletes the lapsed leases no pass would take over, those of
-//     finished runs and of runs the store does not hold (Leaser.ReapLeases), so a holder that died
-//     between its run's last write and its release does not leave a lease every later pass reads.
+//     finished runs, of runs the store does not hold and of session and sub-agent runs
+//     (Leaser.ReapLeases), so a holder that died between its run's last write and its release
+//     does not leave a lease every later pass reads.
 //
 // So a dead holder's run is picked up within about one interval of its lease expiring (the TTL
 // after the holder's last renewal), however many halted runs the store holds, while the lapsed

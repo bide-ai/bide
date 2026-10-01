@@ -131,7 +131,8 @@ gets every engine guarantee without reimplementing any of them.
 
 **Optional capabilities.** A store may also implement `Lister` (`Runs(ctx, RunFilter)`, which a
 recovery supervisor needs; a SQL store evaluates the filter in its query) and `Leaser` (run leases
-that coordinate drivers, and `ReapLeases`, which deletes lapsed leases no recovery pass takes over).
+that coordinate drivers, and `ReapLeases`, which deletes lapsed leases no recovery pass takes over:
+a finished run's, one on a run the store does not hold, and one on a run whose ID contains `>`).
 A store that implements both must implement `RunFilter.LeaseLapsed`, which admits only the runs
 whose lease has lapsed by the comparison `AcquireLease` makes: `RecoverLoop`'s lapsed loop lists
 with it on every pass, so a store that ignored it would hand that loop every unfinished run,

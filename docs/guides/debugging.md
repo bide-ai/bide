@@ -269,8 +269,9 @@ calls `Recover` again. `RecoverLoop` is that someone. Start it once per worker; 
   (`WithRecoverLapsedConcurrency`, 16 by default). A store deletes a lease on release, so a lapsed
   lease means its holder died or stalled; halted runs hold no lease between visits, so this loop
   never waits behind them. Each lapsed pass first deletes, with `Leaser.ReapLeases`, the lapsed
-  leases no pass takes over (a finished run's, left by a holder that died before its release, or
-  one on a run the store does not hold).
+  leases no pass takes over (a finished run's, left by a holder that died before its release, one
+  on a run the store does not hold, or one on a session's or a sub-agent's run, whose ID contains
+  `>`: a session leases each turn's run, and the session, not a pass, resumes it).
 
 So a dead holder's run is taken over within about one interval of its lease expiring however many
 halted runs the store holds, as long as the lapsed loop has a free slot. A run whose driver held no

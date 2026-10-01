@@ -1130,7 +1130,8 @@ and their resumers (`ResumeTyped`), and image input.
 | `Crash` | a process dies (a worker restarts) |
 
 `Leaser.ReapLeases`, which each lapsed pass of `RecoverLoop` calls first, is not modeled: it deletes the
-lapsed leases of ended runs and of runs with no entry, checking the expiry in the same statement,
+lapsed leases of ended runs, of runs with no entry and of session and sub-agent runs (an ID with a
+`>`, which no pass takes over), checking the expiry in the same statement,
 and deleting a lapsed lease changes nothing a holder can observe, since any holder may take it.
 
 ### Properties

@@ -31,6 +31,7 @@ minor version (0.x.0) may include breaking API or journal-format changes; each o
 - `agent.WithRetrievalRetry(n, base, max)`, a `RetrievalOption` for `WithRetrieval(r, k, opts...)`: a failed `Retrieve` is retried up to n more times within the retrieval step, with exponential backoff and full jitter, and only the attempt that succeeded is recorded. `agent.RetrieverFunc` adapts a function to a `Retriever`, which is how a policy wraps one ([#127]).
 - `agent.WithSubRuns(agentFor)`, a tool option that declares the agent each of the tool's programmatic sub-runs (`RunInfo.SubRunFor(name)`) runs with. A saga's rollback walks every programmatic sub-run a call started, latest first and after the call's own compensation, as it walks a sub-agent's: a run in a saga's tree (a saga, or a plain run started from one's call) links each one in its journal (`@subrun/<call>/<name>`) before the sub-run records anything, and the rollback compensates the sub-run's writes with the declared agent's compensators, or, with none declared, reports them in `SagaAborted.Uncompensated`. A declared agent it cannot use (on another store, or a `WithSubRuns` function that panics) is listed there with the reason. A sub-run in a saga's tree must journal to the saga's store: `Run` refuses another with `ErrConfig` ([#127]).
 - `agent.ToolRules`, an optional interface a `Model` implements (itself or through `Unwrap() Model`) to declare the tool setups its provider refuses: `ToolNameRule() *regexp.Regexp` and `RequiresToolsForRequired() bool`. `Build` and `With` refuse a tool name the declared rule does not match, and check nothing for a model that declares no rule. `model/openai` and `model/anthropic` declare `^[a-zA-Z0-9_-]{1,64}$`, and `model/gemini` its own `^[a-zA-Z_][a-zA-Z0-9_.:-]{0,63}$`, so a dotted MCP tool name still builds for Gemini. Tool choice `required` on an agent with no tools of its own is left to the run, since `RunTyped` supplies an answer tool: a run with nothing to call, under a model that declares it needs one, fails with `ErrConfig` before it opens the journal or calls the model ([#127]).
+- `agent.ErrTurnContended`: a `Session.Send` or `SendOnce` whose turn run another holder leases returns at once with an error wrapping it, having driven nothing (no category, like `ErrLeaseLost`); send the message again later. `Agent.Session(ctx, id, opts...)` takes `LeaseOption` values (`WithLeaseHolder`, `WithLeaseTTL`) for that lease ([#137]).
 
 #### Formal models
 
@@ -43,6 +44,9 @@ minor version (0.x.0) may include breaking API or journal-format changes; each o
 - [Formal verification](docs/formal-verification.md), an overview of bide's TLA+ models: why bide model-checks, what each model guarantees and which code it covers, the bugs the models caught before release (F1 to F5, P1, P2, T1 to T6, L1 to L3) and where each was fixed, what runs on a pull request and nightly, how the models and the code stay in step, the models planned next, and what the models do not cover. The formal-models plan's status markers and the roadmap are brought up to date (models 9 and 10, M4 done) ([#128]); a section explains TLA+, PlusCal, TLC and model checking for readers new to them ([#131]).
 
 ### Changed
+
+- A session's turn run is driven under its lease when the store implements `Leaser` (`MemStore`, SQLite, Postgres), as `agent.Lease` drives a run, from before the turn reads its starting point until its answer is recorded (model 12, finding S4). **Cost:** a first `Send` turn over `MemStore` takes about 14 µs, 25 allocations and 1.7 KiB more (`BenchmarkSession_Send`, the lease's renewer goroutine and timer), and over SQLite or Postgres two more single-row statements (the lease's acquisition and release) ([#137]).
+- `Leaser.ReapLeases` also deletes the lapsed leases of runs whose ID contains `>` (a session's or a sub-agent's run), which no recovery pass takes over, so a worker that died mid-turn does not leave a lease every later lapsed pass reads. `MemStore`, SQLite and Postgres implement it, and `storetest`'s `Leaser_ReapLeases` checks it. A custom `Leaser` must do the same ([#137]).
 
 - The required Models job checks four configurations at a time (one TLC worker each) and, on a pull request, only the models whose `spec/tla/<model>/` directory the pull request changes; the merge queue and main still check every model. The largest passing pull-request configurations of models 1, 2, 7 and 8 (1.4 to 2.9 million states) and two of model 1's liveness checks run nightly, each safety one with a smaller pull-request counterpart of the same invariants, so every path keeps a passing configuration and its vacuity run on pull requests. The job takes about 6 minutes, down from 9 to 15.5 ([#132]).
 
@@ -104,6 +108,10 @@ minor version (0.x.0) may include breaking API or journal-format changes; each o
 - **Breaking:** `govern.AttestedEventTool`; an `EventToolConfig` with a `PolicyDigest` is the attested form. Migration: `AttestedEventTool(gov, name, desc, event, digest, safety)` becomes `EventTool(gov, EventToolConfig{Name: name, Description: desc, Event: event, PolicyDigest: digest, Attested: true, Safety: safety})`. The old form accepted an empty digest and still recorded the state digest and acting identity; `EventToolConfig{PolicyDigest: ""}` is the plain tool, which records neither, so a config that sets `Attested` with an empty `PolicyDigest` is refused (`EventTool` panics with `ErrConfig`) rather than silently dropping the attestation ([#117]).
 
 ### Fixed
+
+- A stale `Session` handle refused every new message for a turn another handle had finished: a handle whose `Send` of that turn's message failed or paused kept the turn open in its own view, and `Send` of another message returned `ErrConfig` without reading the journal. It now reads the journal once before it refuses (model 12, finding S1) ([#137]).
+- Two callers on one `Session` handle sending one message (a redelivery, or a retry while the first still ran) recorded its turn twice, for `Send` and for one `SendOnce` key: the second caller's append started past the slot the first had recorded and reloaded. A handle now skips the append of any run among the turns it has loaded (model 12, finding S2) ([#137]).
+- Two workers given one session message both drove its turn's run, and each counted only the spend it had seen, so a turn under `WithTokenBudget` spent up to its budget once per worker (twice its budget in the test). Over a store with leases one worker drives a turn at a time (model 12, finding S4) ([#137]).
 
 - `agent.New` read a tool's spec twice, once for its name and once for the rest, so a tool whose answers differed had its calls decided by the second ([#117]).
 - A saga rollback did not recurse through a tool that wraps a sub-agent (`audit.AttenuatingSubAgent`): the sub-run's compensable writes were left in place and the delegation reported uncompensated. A resumed tree's token budget missed such a sub-run's spend the same way ([#117]).
@@ -760,6 +768,7 @@ First public release.
 [#131]: https://github.com/bide-ai/bide/pull/131
 [#132]: https://github.com/bide-ai/bide/pull/132
 [#133]: https://github.com/bide-ai/bide/pull/133
+[#137]: https://github.com/bide-ai/bide/pull/137
 
 [78f8db6]: https://github.com/bide-ai/bide/commit/78f8db6
 [994721b]: https://github.com/bide-ai/bide/commit/994721b
