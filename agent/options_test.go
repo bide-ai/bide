@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -298,7 +299,7 @@ func systemOf(t *testing.T, a *Agent) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := c.Run(context.Background(), fmt.Sprintf("r%d", time.Now().UnixNano()), "hi"); err != nil {
+	if _, err := c.Run(context.Background(), fmt.Sprintf("r%d", runSeq.Add(1)), "hi"); err != nil {
 		t.Fatal(err)
 	}
 	return strings.Join(got, "|")
@@ -396,7 +397,7 @@ func TestPrecedence_RunBeatsAgentBeatsDefault(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := c.Run(ctx, fmt.Sprintf("r%d", time.Now().UnixNano()), "go"); err != nil {
+		if _, err := c.Run(ctx, fmt.Sprintf("r%d", runSeq.Add(1)), "go"); err != nil {
 			t.Fatal(err)
 		}
 		return got
@@ -581,3 +582,7 @@ func TestWithRetrieval_EveryMiddlewareSeesTheDocuments(t *testing.T) {
 type docsRetriever []Doc
 
 func (d docsRetriever) Retrieve(context.Context, string, int) ([]Doc, error) { return d, nil }
+
+// runSeq numbers the runs of tests that need a fresh run ID on a shared journal (a clock's
+// resolution is too coarse on some platforms).
+var runSeq atomic.Int64
