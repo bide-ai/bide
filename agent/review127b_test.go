@@ -187,3 +187,43 @@ func TestAdv127b_NestedThroughNonSagaChild(t *testing.T) {
 		}
 	}
 }
+
+// B3, deeper: a saga's tree is inherited through any number of plain runs. root (saga) -> a
+// (plain) -> b (plain) -> leaf (saga) books; the root's rollback reaches leaf through two plain
+// runs' links and undoes the booking.
+func TestAdv127b_NestedThroughTwoPlainRuns(t *testing.T) {
+	s := agent.NewMemStore()
+	undone := 0
+	book := agent.CompensatedFunc("book", "", agent.Safety{},
+		func(context.Context, struct{}) (string, error) { return "booked", nil },
+		func(context.Context, struct{}, string) error { undone++; return nil })
+	build := func(m agent.Model, tools ...agent.Tool) *agent.Agent {
+		a, err := agent.Build(m, s.Journal(), agent.WithTools(tools...))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return a
+	}
+	starts := func(tool, name string, sub *agent.Agent, saga bool) agent.Tool {
+		return agent.Func(tool, "", agent.Safety{ReadOnly: true}, func(ctx context.Context, _ struct{}) (string, error) {
+			info, _ := agent.RunInfoFrom(ctx)
+			run := sub.Run
+			if saga {
+				run = sub.RunSaga
+			}
+			msg, err := run(ctx, info.SubRunFor(name), "work")
+			return msg.Text(), err
+		}, agent.WithSubRuns(func(string) *agent.Agent { return sub }))
+	}
+	leaf := build(agent.NewScriptedModel(agent.ToolTurn("k1", "book", `{}`), agent.TextTurn("leaf")), book)
+	b := build(agent.NewScriptedModel(agent.ToolTurn("b1", "to_leaf", `{}`), agent.TextTurn("b")), starts("to_leaf", "leaf", leaf, true))
+	a := build(agent.NewScriptedModel(agent.ToolTurn("a1", "to_b", `{}`), agent.TextTurn("a")), starts("to_b", "b", b, false))
+	boom := agent.Func("boom", "", agent.Safety{}, func(context.Context, struct{}) (string, error) { return "", errors.New("boom") })
+	root := build(agent.NewScriptedModel(agent.ToolTurn("c1", "to_a", `{}`), agent.ToolTurn("c2", "boom", `{}`), agent.TextTurn("x")),
+		starts("to_a", "a", a, false), boom)
+	_, err := root.RunSaga(context.Background(), "root", "go")
+	ab := adv127bAbort(t, err)
+	if undone != 1 || !slices.Contains(ab.Compensated, "book") {
+		t.Errorf("undone %d, compensated %v, uncompensated %v; want leaf's book undone", undone, ab.Compensated, ab.Uncompensated)
+	}
+}
