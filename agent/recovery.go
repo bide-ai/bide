@@ -289,6 +289,16 @@ type recoverReportKey struct {
 	kind  error
 }
 
+// maxRecoverReports bounds recoverReports.
+var maxRecoverReports = maxKnownRuns
+
+// recoverReportCount is how many reports recoverReports holds.
+func recoverReportCount() int {
+	recoverReports.mu.Lock()
+	defer recoverReports.mu.Unlock()
+	return len(recoverReports.m)
+}
+
 // reportOnce reports whether this process has not yet made the report kind for store's run runID,
 // and marks it made. A store with no identity to key it by (see durableIdentity) is reported on
 // every pass.
