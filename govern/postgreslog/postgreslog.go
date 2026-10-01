@@ -51,6 +51,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math/rand/v2"
 	"strings"
 	"time"
@@ -76,46 +77,55 @@ type Log struct {
 type logSQL string
 
 // newLogSQL returns q as a logSQL, or an error unless q starts with SELECT or INSERT and passes the
-// statement check. nextSeq, when not nil, is the schema-qualified next_seq function, which q may
-// call once if it is an INSERT into the log's governed_events (into, the table's qualified name)
-// with no SELECT.
-func newLogSQL(q string, nextSeq, into []sqlTok) (logSQL, error) {
+// statement check. table is the log's governed_events, schema-qualified: the one relation besides
+// pg_catalog's that q may name. nextSeq, when not nil, is the schema-qualified next_seq function,
+// which q may call once if it is an INSERT into table with no SELECT.
+func newLogSQL(q string, nextSeq, table []sqlTok) (logSQL, error) {
 	toks, err := sqlTokens(q)
 	if err != nil || len(toks) == 0 || !isTok(toks, 0, 'i', "select") && !isTok(toks, 0, 'i', "insert") {
 		return "", fmt.Errorf("postgreslog: a statement on the pool must be one SELECT or INSERT, got %.40q: %w", q, agent.ErrConfig)
 	}
 	if nextSeq != nil {
-		if !isTok(toks, 1, 'i', "into") || len(toks) < 2+len(into)*2-1 {
+		if !isTok(toks, 1, 'i', "into") || len(toks) < 2+len(table)*2-1 {
 			return "", fmt.Errorf("postgreslog: next_seq outside an INSERT into governed_events, in %.40q: %w", q, agent.ErrConfig)
 		}
-		if name, _ := sqlName(toks, 2); !sameName(name, into) {
+		if name, _ := sqlName(toks, 2); !sameName(name, table) {
 			return "", fmt.Errorf("postgreslog: next_seq outside an INSERT into governed_events, in %.40q: %w", q, agent.ErrConfig)
 		}
 	}
-	if err := checkSQL(q, nextSeq); err != nil {
+	var rels [][]sqlTok
+	if table != nil {
+		rels = [][]sqlTok{table}
+	}
+	if err := checkSQL(q, nextSeq, rels); err != nil {
 		return "", fmt.Errorf("postgreslog: a statement on the pool holds %v, in %.40q: %w", err, q, agent.ErrConfig)
 	}
 	return logSQL(q), nil
 }
 
-// newLog returns a Log over db in the schema logSchema finds, with its statements.
-func newLog(ctx context.Context, db *sql.DB) (*Log, error) {
-	var first, current sql.NullString
-	var isTable sql.NullBool
-	if err := retry(ctx, func() error {
-		return db.QueryRowContext(ctx, logSchema).Scan(&first, &isTable, &current)
-	}); err != nil {
-		return nil, fmt.Errorf("postgreslog: find the schema of governed_events: %w", err)
-	}
-	schema := current.String
-	switch {
-	case first.Valid && !isTable.Bool:
-		return nil, fmt.Errorf("postgreslog: %s.governed_events, the first relation of that name on the search path, is not a table: %w",
-			quoteIdent(first.String), agent.ErrConfig)
-	case first.Valid:
-		schema = first.String
-	case !current.Valid:
-		return nil, fmt.Errorf("postgreslog: no schema on the search path to create governed_events in: %w", agent.ErrConfig)
+// newLog returns a Log over db in schema, or, when schema is empty, in the schema logSchema finds
+// (with a warning), with its statements.
+func newLog(ctx context.Context, db *sql.DB, schema string) (*Log, error) {
+	if schema == "" {
+		var first, current sql.NullString
+		var isTable sql.NullBool
+		if err := retry(ctx, func() error {
+			return db.QueryRowContext(ctx, logSchema).Scan(&first, &isTable, &current)
+		}); err != nil {
+			return nil, fmt.Errorf("postgreslog: find the schema of governed_events: %w", err)
+		}
+		schema = current.String
+		switch {
+		case first.Valid && !isTable.Bool:
+			return nil, fmt.Errorf("postgreslog: %s.governed_events, the first relation of that name on the search path, is not a table: %w",
+				quoteIdent(first.String), agent.ErrConfig)
+		case first.Valid:
+			schema = first.String
+		case !current.Valid:
+			return nil, fmt.Errorf("postgreslog: no schema on the search path to create governed_events in: %w", agent.ErrConfig)
+		}
+		warnf("govern/postgreslog: the log's schema was found through the search path; pin it with WithSchema",
+			"schema", schema, "why", "discovery runs again at every Open, so a role that can create a schema earlier on the search path (any role with CREATE on the database can create the \"$user\" schema) can redirect a restarting process; discovery is safe only when every schema on the search path is trusted")
 	}
 	table := quoteIdent(schema) + ".governed_events"
 	into, err := parseName(table)
@@ -133,18 +143,59 @@ func newLog(ctx context.Context, db *sql.DB) (*Log, error) {
 			RETURNING seq`, nextSeq, into); err != nil {
 		return nil, err
 	}
-	if l.byID, err = newLogSQL(`SELECT seq, event FROM `+table+` WHERE entity = $1 AND append_id = $2`, nil, nil); err != nil {
+	if l.byID, err = newLogSQL(`SELECT seq, event FROM `+table+` WHERE entity OPERATOR(pg_catalog.=) $1 AND append_id OPERATOR(pg_catalog.=) $2`, nil, into); err != nil {
 		return nil, err
 	}
-	if l.since, err = newLogSQL(`SELECT seq, event FROM `+table+` WHERE entity = $1 AND seq >= $2 ORDER BY seq`, nil, nil); err != nil {
+	if l.since, err = newLogSQL(`SELECT seq, event FROM `+table+` WHERE entity OPERATOR(pg_catalog.=) $1 AND seq OPERATOR(pg_catalog.>=) $2 ORDER BY seq`, nil, into); err != nil {
 		return nil, err
 	}
 	return l, nil
 }
 
+// Option configures Open.
+type Option interface{ apply(*config) error }
+
+type config struct {
+	schema string // set by WithSchema; empty: discover it (see logSchema)
+}
+
+type optionFunc func(*config) error
+
+func (f optionFunc) apply(c *config) error { return f(c) }
+
+// WithSchema pins the schema governed_events and its next_seq function are in, instead of
+// discovering it through the search path at every Open. It is the recommended deployment: with it,
+// the search path plays no part in which schema the log uses, and no role can redirect a
+// restarting process by creating a schema earlier on the path. The name is used as given (quoted),
+// so "App" and "app" are different schemas; the schema must exist. An empty name is an ErrConfig
+// error.
+func WithSchema(name string) Option {
+	return optionFunc(func(c *config) error {
+		if name == "" || strings.IndexByte(name, 0) >= 0 {
+			return fmt.Errorf("postgreslog: schema name %q is empty or holds a NUL: %w", name, agent.ErrConfig)
+		}
+		c.schema = name
+		return nil
+	})
+}
+
+// warnf reports the log discovering its schema through the search path. It logs through the
+// default slog logger, which an application sets with slog.SetDefault; a test replaces it.
+var warnf = func(msg string, args ...any) { slog.Warn(msg, args...) }
+
 // Open connects to Postgres via a pgx DSN (e.g. "postgres://user:pass@host:5432/db") and ensures
-// the schema exists.
-func Open(ctx context.Context, dsn string) (*Log, error) {
+// the schema exists. Pin the schema with WithSchema; without it, Open discovers the schema through
+// the search path (see logSchema) and logs a warning.
+func Open(ctx context.Context, dsn string, opts ...Option) (*Log, error) {
+	var cfg config
+	for _, o := range opts {
+		if o == nil {
+			return nil, fmt.Errorf("postgreslog: nil option: %w", agent.ErrConfig)
+		}
+		if err := o.apply(&cfg); err != nil {
+			return nil, err
+		}
+	}
 	db, err := sql.Open("pgx", dsn)
 	if err != nil {
 		return nil, err
@@ -153,7 +204,7 @@ func Open(ctx context.Context, dsn string) (*Log, error) {
 		db.Close()
 		return nil, err
 	}
-	l, err := newLog(ctx, db)
+	l, err := newLog(ctx, db, cfg.schema)
 	if err != nil {
 		db.Close()
 		return nil, err
@@ -185,18 +236,18 @@ const nextSeqFunction = "governed_events_next_seq_v1"
 // first relation that is not a table (a view, a foreign table, a sequence): appends would go
 // through it while Open checked another table.
 const logSchema = `SELECT
-	(SELECT n.nspname FROM pg_catalog.pg_class AS c JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace
-		WHERE c.relname = 'governed_events' AND n.nspname = ANY (pg_catalog.current_schemas(false))
+	(SELECT n.nspname FROM pg_catalog.pg_class AS c JOIN pg_catalog.pg_namespace AS n ON n.oid OPERATOR(pg_catalog.=) c.relnamespace
+		WHERE c.relname OPERATOR(pg_catalog.=) 'governed_events' AND n.nspname OPERATOR(pg_catalog.=) ANY (pg_catalog.current_schemas(false))
 		ORDER BY pg_catalog.array_position(pg_catalog.current_schemas(false), n.nspname) LIMIT 1),
-	(SELECT c.relkind IN ('r', 'p') FROM pg_catalog.pg_class AS c JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace
-		WHERE c.relname = 'governed_events' AND n.nspname = ANY (pg_catalog.current_schemas(false))
+	(SELECT c.relkind OPERATOR(pg_catalog.=) 'r' OR c.relkind OPERATOR(pg_catalog.=) 'p' FROM pg_catalog.pg_class AS c JOIN pg_catalog.pg_namespace AS n ON n.oid OPERATOR(pg_catalog.=) c.relnamespace
+		WHERE c.relname OPERATOR(pg_catalog.=) 'governed_events' AND n.nspname OPERATOR(pg_catalog.=) ANY (pg_catalog.current_schemas(false))
 		ORDER BY pg_catalog.array_position(pg_catalog.current_schemas(false), n.nspname) LIMIT 1),
 	pg_catalog.current_schema()`
 
 // nextSeqPresent reports whether a function named $1 taking one text argument exists in schema $2.
-const nextSeqPresent = `SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_proc
-	WHERE proname = $1 AND proargtypes = '25'::pg_catalog.oidvector
-		AND pronamespace = (SELECT n.oid FROM pg_catalog.pg_namespace AS n WHERE n.nspname = $2))`
+const nextSeqPresent = `SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_proc AS p
+	WHERE p.proname OPERATOR(pg_catalog.=) $1 AND proargtypes OPERATOR(pg_catalog.=) '25'::pg_catalog.oidvector
+		AND pronamespace OPERATOR(pg_catalog.=) (SELECT n.oid FROM pg_catalog.pg_namespace AS n WHERE n.nspname OPERATOR(pg_catalog.=) $2))`
 
 // nextSeqTemplate is the source of nextSeqFunction, over the governed_events table %s (qualified
 // with its schema). It takes the entity's transaction-level advisory lock, which the append that
@@ -247,13 +298,13 @@ func (l *Log) checkSchema(ctx context.Context) error {
 	for _, cols := range [][]string{{"entity", "seq"}, {"entity", "append_id"}} {
 		var ok bool
 		if err := l.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_index AS i
-			WHERE i.indrelid = (SELECT c.oid FROM pg_catalog.pg_class AS c
-					WHERE c.relname = 'governed_events' AND c.relnamespace = (SELECT n.oid FROM pg_catalog.pg_namespace AS n WHERE n.nspname = $2))
+			WHERE i.indrelid OPERATOR(pg_catalog.=) (SELECT c.oid FROM pg_catalog.pg_class AS c
+					WHERE c.relname OPERATOR(pg_catalog.=) 'governed_events' AND c.relnamespace OPERATOR(pg_catalog.=) (SELECT n.oid FROM pg_catalog.pg_namespace AS n WHERE n.nspname OPERATOR(pg_catalog.=) $2))
 				AND i.indisunique AND i.indisvalid AND i.indimmediate
-				AND i.indpred IS NULL AND i.indexprs IS NULL AND i.indnkeyatts = i.indnatts
+				AND i.indpred IS NULL AND i.indexprs IS NULL AND i.indnkeyatts OPERATOR(pg_catalog.=) i.indnatts
 				AND (SELECT pg_catalog.array_agg(a.attname::pg_catalog.text ORDER BY a.attname::pg_catalog.text)
-					FROM pg_catalog.unnest(i.indkey::pg_catalog.int2[]) AS k JOIN pg_catalog.pg_attribute AS a ON a.attrelid = i.indrelid AND a.attnum = k)
-					= (SELECT pg_catalog.array_agg(c ORDER BY c) FROM pg_catalog.unnest($1::pg_catalog.text[]) AS c))`, cols, schema).Scan(&ok); err != nil {
+					FROM pg_catalog.unnest(i.indkey::pg_catalog.int2[]) AS k JOIN pg_catalog.pg_attribute AS a ON a.attrelid OPERATOR(pg_catalog.=) i.indrelid AND a.attnum OPERATOR(pg_catalog.=) k)
+					OPERATOR(pg_catalog.=) (SELECT pg_catalog.array_agg(c ORDER BY c) FROM pg_catalog.unnest($1::pg_catalog.text[]) AS c))`, cols, schema).Scan(&ok); err != nil {
 			return fmt.Errorf("postgreslog: check the uniqueness of governed_events: %w", err)
 		}
 		if !ok {
@@ -263,14 +314,14 @@ func (l *Log) checkSchema(ctx context.Context) error {
 	}
 	var same, sameOwner sql.NullBool
 	if err := l.db.QueryRowContext(ctx, `SELECT
-			l.lanname = 'plpgsql' AND p.provolatile = 'v' AND NOT p.prosecdef AND NOT p.proretset
-				AND p.proconfig = ARRAY[$3::pg_catalog.text] AND p.prorettype = 'pg_catalog.int8'::pg_catalog.regtype
-				AND p.prosrc = $4,
-			p.proowner = (SELECT c.relowner FROM pg_catalog.pg_class AS c WHERE c.relname = 'governed_events' AND c.relnamespace = p.pronamespace)
-		FROM pg_catalog.pg_proc AS p JOIN pg_catalog.pg_language AS l ON l.oid = p.prolang
-		WHERE p.proname = $1 AND p.proargtypes = '25'::pg_catalog.oidvector
-			AND p.pronamespace = (SELECT n.oid FROM pg_catalog.pg_namespace AS n WHERE n.nspname = $2)`,
-		nextSeqFunction, schema, nextSeqConfig, nextSeqBody(schema)).Scan(&same, &sameOwner); err != nil && !errors.Is(err, sql.ErrNoRows) {
+			l.lanname OPERATOR(pg_catalog.=) 'plpgsql' AND p.provolatile OPERATOR(pg_catalog.=) 'v' AND NOT p.prosecdef AND NOT p.proretset
+				AND p.proconfig OPERATOR(pg_catalog.=) $3::pg_catalog.text[] AND p.prorettype OPERATOR(pg_catalog.=) 'pg_catalog.int8'::pg_catalog.regtype::pg_catalog.oid
+				AND p.prosrc OPERATOR(pg_catalog.=) $4,
+			p.proowner OPERATOR(pg_catalog.=) (SELECT c.relowner FROM pg_catalog.pg_class AS c WHERE c.relname OPERATOR(pg_catalog.=) 'governed_events' AND c.relnamespace OPERATOR(pg_catalog.=) p.pronamespace)
+		FROM pg_catalog.pg_proc AS p JOIN pg_catalog.pg_language AS l ON l.oid OPERATOR(pg_catalog.=) p.prolang
+		WHERE p.proname OPERATOR(pg_catalog.=) $1 AND p.proargtypes OPERATOR(pg_catalog.=) '25'::pg_catalog.oidvector
+			AND p.pronamespace OPERATOR(pg_catalog.=) (SELECT n.oid FROM pg_catalog.pg_namespace AS n WHERE n.nspname OPERATOR(pg_catalog.=) $2)`,
+		nextSeqFunction, schema, []string{nextSeqConfig}, nextSeqBody(schema)).Scan(&same, &sameOwner); err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("postgreslog: check %s: %w", nextSeqFunction, err)
 	}
 	if !same.Bool {
@@ -385,12 +436,12 @@ func (l *Log) migrate(ctx context.Context) error {
 func schemaCurrent(ctx context.Context, db *sql.DB, schema string) (current, haveNextSeq bool, err error) {
 	err = db.QueryRowContext(ctx, `SELECT
 			EXISTS (SELECT 1 FROM pg_catalog.pg_index AS i
-				JOIN pg_catalog.pg_class AS t ON t.oid = i.indrelid JOIN pg_catalog.pg_class AS x ON x.oid = i.indexrelid
-				WHERE t.relname = 'governed_events' AND x.relname = 'governed_events_append_id'
-					AND t.relnamespace = (SELECT n.oid FROM pg_catalog.pg_namespace AS n WHERE n.nspname = $1)),
+				JOIN pg_catalog.pg_class AS t ON t.oid OPERATOR(pg_catalog.=) i.indrelid JOIN pg_catalog.pg_class AS x ON x.oid OPERATOR(pg_catalog.=) i.indexrelid
+				WHERE t.relname OPERATOR(pg_catalog.=) 'governed_events' AND x.relname OPERATOR(pg_catalog.=) 'governed_events_append_id'
+					AND t.relnamespace OPERATOR(pg_catalog.=) (SELECT n.oid FROM pg_catalog.pg_namespace AS n WHERE n.nspname OPERATOR(pg_catalog.=) $1)),
 			EXISTS (SELECT 1 FROM pg_catalog.pg_proc
-				WHERE proname = $2 AND proargtypes = '25'::pg_catalog.oidvector
-					AND pronamespace = (SELECT n.oid FROM pg_catalog.pg_namespace AS n WHERE n.nspname = $1))`,
+				WHERE proname OPERATOR(pg_catalog.=) $2 AND proargtypes OPERATOR(pg_catalog.=) '25'::pg_catalog.oidvector
+					AND pronamespace OPERATOR(pg_catalog.=) (SELECT n.oid FROM pg_catalog.pg_namespace AS n WHERE n.nspname OPERATOR(pg_catalog.=) $1))`,
 		schema, nextSeqFunction).Scan(&current, &haveNextSeq)
 	return current, haveNextSeq, err
 }

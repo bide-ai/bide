@@ -236,7 +236,7 @@ func TestOpen_MigrateSeesNextSeqCreatedWhileWaiting(t *testing.T) {
 	if err := db.QueryRowContext(ctx, `SELECT to_regprocedure($1) IS NULL`, nextSeqFunction+"(text)").Scan(&missing); err != nil || !missing {
 		t.Fatalf("warm-up: missing=%v err=%v", missing, err)
 	}
-	l, err := newLog(ctx, db) // records the schema, before the other process creates the function
+	l, err := newLog(ctx, db, "") // records the schema, before the other process creates the function
 	if err != nil {
 		t.Fatal(err)
 	}

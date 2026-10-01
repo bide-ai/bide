@@ -100,3 +100,77 @@ func TestOpen_RefusesANonTableGovernedEvents(t *testing.T) {
 		})
 	}
 }
+
+// Without WithSchema, Open discovers the schema through the search path and warns, naming the
+// schema; with it, Open does not warn. Skips without PG_DSN.
+func TestOpen_DiscoveryWarns(t *testing.T) {
+	admin, base := rvAdmin(t)
+	ctx := context.Background()
+	schema := fmt.Sprintf("rv_logwarn_%d", time.Now().UnixNano())
+	if _, err := admin.ExecContext(ctx, `CREATE SCHEMA `+schema); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { admin.ExecContext(context.Background(), `DROP SCHEMA `+schema+` CASCADE`) })
+	var got []string
+	defer func(w func(string, ...any)) { warnf = w }(warnf)
+	warnf = func(msg string, args ...any) { got = append(got, fmt.Sprint(append([]any{msg}, args...)...)) }
+	l, err := Open(ctx, rvDSN(t, base, "", schema))
+	if err != nil {
+		t.Fatal(err)
+	}
+	l.Close()
+	if len(got) != 1 || !strings.Contains(got[0], "WithSchema") || !strings.Contains(got[0], schema) {
+		t.Fatalf("Open without WithSchema warned %q; want one warning naming %s and WithSchema", got, schema)
+	}
+	got = nil
+	l, err = Open(ctx, rvDSN(t, base, "", schema), WithSchema(schema))
+	if err != nil {
+		t.Fatal(err)
+	}
+	l.Close()
+	if len(got) != 0 {
+		t.Fatalf("Open with WithSchema warned %q", got)
+	}
+}
+
+// A pinned schema decides where the log is, whatever the search path says: a restarted process with
+// WithSchema stays in its schema when another log has since been created in a schema earlier on the
+// path, and when the path names neither. Skips without PG_DSN.
+func TestOpen_PinnedSchemaSurvivesARestart(t *testing.T) {
+	admin, base := rvAdmin(t)
+	ctx := context.Background()
+	sfx := time.Now().UnixNano()
+	app, decoy := fmt.Sprintf("rv_logpin_%d", sfx), fmt.Sprintf("rv_logpindecoy_%d", sfx)
+	for _, s := range []string{app, decoy} {
+		if _, err := admin.ExecContext(ctx, `CREATE SCHEMA `+s); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { admin.ExecContext(context.Background(), `DROP SCHEMA `+s+` CASCADE`) })
+	}
+	l, err := Open(ctx, rvDSN(t, base, "", app), WithSchema(app))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"a", "b"} {
+		if _, err := l.Append(ctx, "e", id, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	l.Close()
+	d, err := Open(ctx, rvDSN(t, base, "", decoy)) // a complete log in the decoy schema
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.Close()
+	for _, path := range []string{decoy + "," + app, decoy, "public"} {
+		l, err := Open(ctx, rvDSN(t, base, "", path), WithSchema(app))
+		if err != nil {
+			t.Fatalf("search_path %s: %v", path, err)
+		}
+		evs, err := l.Events(ctx, "e", 0)
+		if err != nil || l.schema != app || len(evs) != 2 {
+			t.Fatalf("search_path %s: the pinned log is in %q and reads %v, %v; want 2 events", path, l.schema, evs, err)
+		}
+		l.Close()
+	}
+}

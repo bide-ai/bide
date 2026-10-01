@@ -53,7 +53,7 @@ func TestAppend_StalledAppenderHoldsNoLock(t *testing.T) {
 			for k := 1; ; k++ {
 				st := newStaller(dsn)
 				db := sql.OpenDB(st)
-				stalled, err := newLog(ctx, db)
+				stalled, err := newLog(ctx, db, "")
 				if err != nil {
 					t.Fatal(err)
 				}

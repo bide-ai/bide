@@ -40,3 +40,14 @@ func TestNewLogSQL(t *testing.T) {
 		t.Errorf("newLogSQL accepted next_seq in a SELECT with no next_seq allowed: %v", err)
 	}
 }
+
+// The queries the log sends that newLogSQL does not build pass the same statement check: the
+// catalog reads on the pool (which the static check also runs through it) and the migration
+// transaction's next_seq lookup, which the static check does not govern.
+func TestLogQueriesPassTheCheck(t *testing.T) {
+	for name, q := range map[string]string{"logSchema": logSchema, "nextSeqPresent": nextSeqPresent} {
+		if err := checkSQL(q, nil, nil); err != nil {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+}

@@ -34,7 +34,7 @@ func TestAppend_QueuesOnTheEntityLock(t *testing.T) {
 	st := newStaller(dsn)
 	db := sql.OpenDB(st)
 	defer db.Close()
-	l, err := newLog(ctx, db)
+	l, err := newLog(ctx, db, "")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -71,14 +71,17 @@ func TestRV120b_OpenRunsPathOperatorsAsTheLogRole(t *testing.T) {
 	}
 }
 
-// The schema is chosen again at every Open: a governed_events created later in an earlier schema
-// (here the "$user" schema, by a role with CREATE on the database) moves a restarted process to it.
+// The schema is chosen again at every Open: without a pinned schema, a governed_events created later
+// in an earlier schema (here the "$user" schema, by a role with CREATE on the database) moves a
+// restarted process to it, which is why discovery warns and is safe only when every schema on the
+// search path is trusted. With the schema pinned (WithSchema, the recommended deployment), as here,
+// the restarted process stays in rv120b_app.
 func TestRV120b_RestartMovesToALaterEarlierSchema(t *testing.T) {
 	admin, base := rv120Admin(t)
 	ctx := context.Background()
 	atk := rv120bSetup(t, admin, base)
 	dsn := rv120DSN(t, base, "rv120blog", `"$user",rv120b_app`)
-	l, err := Open(ctx, dsn)
+	l, err := Open(ctx, dsn, WithSchema("rv120b_app"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +100,7 @@ func TestRV120b_RestartMovesToALaterEarlierSchema(t *testing.T) {
 		`GRANT ALL ON rv120blog.governed_events TO rv120blog`,
 		`CREATE FUNCTION rv120blog.governed_events_next_seq_v1(e pg_catalog.text) RETURNS pg_catalog.int8 LANGUAGE plpgsql VOLATILE SET search_path = pg_catalog, pg_temp AS $bide$`+nextSeqBody("rv120blog")+`$bide$`,
 	)
-	l, err = Open(ctx, dsn)
+	l, err = Open(ctx, dsn, WithSchema("rv120b_app"))
 	if err != nil {
 		t.Fatalf("restart refused: %v", err)
 	}
