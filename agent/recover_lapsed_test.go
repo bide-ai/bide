@@ -218,7 +218,8 @@ func TestRecoverLoop_LapsedLoopDrivesOnlyLapsedUnfinishedRuns(t *testing.T) {
 
 func testRecoverLoopLapsedLoopDrivesOnlyLapsedUnfinishedRuns(t *testing.T) {
 	ctx := context.Background()
-	s := &countingStore{MemStore: NewMemStore()}
+	// Reaping is off, so the finished run's lapsed lease stays and the listing must exclude it.
+	s := &noReapStore{countingStore{MemStore: NewMemStore()}}
 	for _, id := range []string{"a", "done", "live", "none"} {
 		seedRun(t, s.MemStore, id)
 	}
@@ -348,3 +349,8 @@ var errReap = errors.New("reap refused")
 type failReapStore struct{ countingStore }
 
 func (*failReapStore) ReapLeases(context.Context, []string) (int, error) { return 0, errReap }
+
+// noReapStore is a countingStore whose ReapLeases deletes nothing.
+type noReapStore struct{ countingStore }
+
+func (*noReapStore) ReapLeases(context.Context, []string) (int, error) { return 0, nil }
