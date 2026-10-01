@@ -261,7 +261,7 @@ type Resumer func(ctx context.Context, runID string, start RunStart) error
 var ErrNotResumable = errors.New("run not resumable by this resumer") // no category, like ErrLeaseLost
 var ErrNotStarted  = fmt.Errorf("run has no run:start record: %w", ErrConfig)
 
-func ResumeAgent(a *Agent, opts ...RunOption) Resumer              // kinds agent, session_turn (untyped)
+func ResumeAgent(a *Agent, opts ...RunOption) Resumer              // kind agent (untyped); session turns resume through their session
 func ResumeTyped[T any](a *Agent, opts ...RunOption) Resumer       // typed runs whose schema digest is T's
 func ResumeAny(rs ...Resumer) Resumer                              // first that does not return ErrNotResumable
 // plan: func ResumeFlows(flows ...plan.Resumable) agent.Resumer
@@ -323,9 +323,11 @@ P14 implements these rules. Model 10 (`spec/tla/lifecycle`, "P14: the rules the 
 13. (L5) The tool filter is enforced at dispatch, against the journaled filter.
 14. Recovery reads `run:start` under the lease for every run it visits; a run with none is skipped and reported (`ErrNotStarted`) once per process.
 15. (L7) The process remembers the report, not the skip: `run:start` is read again on every pass.
-16. (S3, model 12) A session turn whose run was cancelled is recorded closed, with a cancelled outcome, and the session accepts the next message. The caller of the cancelled message gets `ErrRunCancelled`; `Send`, before it refuses a message because another message's turn is open, reads that turn's run's end markers, and records a cancelled one closed itself. Model 12 (`spec/tla/sessions`) checks it in `cancel-close` (and `deep-cancel` nightly); `findings/s3-cancel-wedge` stays open until P14 implements it.
+16. (S3, model 12) A session turn whose run was cancelled is recorded closed, with a cancelled outcome, and the session accepts the next message. The caller of the cancelled message gets `ErrRunCancelled`; `Send`, before it refuses a message because another message's turn is open, reads that turn's run's end markers, and records a cancelled one closed itself. Model 12 (`spec/tla/sessions`) checks it in `cancel-close` (and `deep-cancel` nightly); P14 implements it, and `regress/s3-cancel-wedge` is its regression.
 
 Two points P14 reconciles with sessions (model 12): recovery skips session runs today (`IsSessionRun`; a turn resumes when its message is sent again, and only the session holds the transcript it is seeded with), while `ResumeAgent` above lists `session_turn` among its kinds; a recovery resumer of a turn must seed it from the turn's `from/` record, and the turn is still recorded only when its message is sent again. And `Status` of a turn's run reports `Completed` once `run:complete` is written, before the session records the turn, so a caller that acknowledges a message on that status leaves the Send turn open; the session's own record, not the run's status, says a turn is answered.
+
+P14 settled both (maintainer to confirm): recovery keeps skipping session runs, and `ResumeAgent` drives only runs of kind `agent`; a `session_turn` start handed to it is `ErrNotResumable`, so only the session drives a turn (model 12's assumption) and recovery needs no copy of the session's transcript. `Status` reports a turn's run as a run, and its godoc and the session's say that the session's record says a turn is answered.
 
 ### Replaces
 `Run(string) (Message, error)`, `RunResult`, `RunSaga`, `RunSagaResult`, `Stream(string)`, `StreamSaga`, `AgentStream.Final`, `RunTypedNative`, `Session.Send/SendOnce(string)`, the context decorators `WithWaker/WithClock/WithIdentity`, and `AgentEvent`/`AgentStream`.
@@ -1147,7 +1149,8 @@ Within a wave, no two PRs edit the same file. Sizes:
 | Transitional | Final |
 |---|---|
 | `Build` | `New` |
-| `RunMessage`, `StreamMessage`, `ResumeRun`, `RunTypedMessage`, `Session.SendMessage`, `Session.SendMessageOnce` | `Run`, `Stream`, `Resume`, `RunTyped`, `Session.Send`, `Session.SendOnce` |
+| `RunMessage`, `StreamMessage`, `ResumeRun`, `RunTypedMessage` (a generic method), `Session.SendMessage`, `Session.SendMessageOnce` | `Run`, `Stream`, `Resume`, `RunTyped`, `Session.Send`, `Session.SendOnce` |
+| the string entry points `Run`, `RunSaga`, `RunResult`, `RunSagaResult`, `Stream`, `StreamSaga`, `Session.Send`, `Session.SendOnce`, `RunTyped` and `RunTypedNative` (functions), `AgentStream.Final`, kept by P14 as wrappers | deleted |
 | `ResolveHaltRef` | `ResolveHalt` |
 | aliases `PendingApproval`, `Interrupted`, `Awaiting`, `Sleeping`, `ResumeHalt` | deleted |
 | wrappers `Resume[T]`, `ApproveAs`, channel `Send`, `ResolveStepHalt` | deleted |
@@ -1162,16 +1165,21 @@ Within a wave, no two PRs edit the same file. Sizes:
    | Operation | Budget |
    |---|---|
    | first drive of a new run | 1 `Load`, `Insert @journal`, `Insert run:start` |
-   | each live model turn | 1 `Insert`, plus 1 `Get` (`run:cancelled` check) |
-   | side-effect tool call | 2 `Insert` (claim, result); +1 only under #67's condition |
+   | each live model turn | 1 `Get` (the turn's own record, `@llm/<n>`) and 1 `Insert`; plus, for every turn after a drive's first, 1 `Get` (`run:cancelled`, or `run:cancel-requested` on a saga: P14 rule 2) |
+   | side-effect tool call | 2 `Insert` (claim, result), and 1 `Get` (`run:cancelled` once the claim is won: P14 rule 3); +1 `Insert` only under #67's condition |
    | retry-safe tool call | 1 `Insert` |
    | retry-safe `Step` | 1 `Get`, 1 `Insert` |
-   | completion | 1 `Insert` |
+   | completion | 1 `Insert`, and 1 `Get` (`run:cancelled`) read back (P14 rule 4); on a saga 2 (`run:cancelled`, `run:aborted`) |
+   | limit amendment (a later drive's different limit) | 1 `Insert` (`run:limits:<n>`) |
+   | `Cancel` | 3 `Get` (the end markers) and 1 `Get` (`run:start`); then 1 `Insert` (`run:cancelled`) and 1 `Get` (`run:complete`) read back, or on a saga 1 `Insert` (`run:cancel-requested`) |
+   | `Status` | 1 `Load` |
    | resume of a run with n records | 1 `Load` of n entries, no point reads for markers |
    | `Recover` pass over R runs, D of them driven | ceil(R/500) `Runs` pages on SQL stores (MemStore the same), no `Load`, and 3 `Get` per driven run (the terminal markers, re-checked under its lease): 3D in all, none for the finished runs the filter excludes |
    | anchored insert | 1 `Load` of the new entries only, O(log n) hashes |
 
    The `Recover` row was raised after P6a, with the maintainer's approval: a pass read no run at all until it was found to call `resume` for a run another driver finished between the listing and the lease, and the three point reads close that gap.
+
+   P14 raised the model-turn, side-effect and completion rows (the `Get`s of rules 2 to 4) and the `Recover` row (rule 14's `run:start` read), and added the amendment, `Cancel` and `Status` rows; the `BenchmarkRunTurns` and `BenchmarkToolCallSideEffect` A/B in its pull request measures them (a maintainer decision, as it is a published budget). The drive's first model turn needs no `run:cancelled` check: its `Load` read the run.
 
 2. **Benchstat on the CI runner.**
    - Benchmarks land in P6a: `BenchmarkRunTurns`, `BenchmarkToolCallSideEffect`, `BenchmarkStep`, `BenchmarkRecoverPass10k`, `BenchmarkAnchoredInsert`, `BenchmarkSQLiteInsert`, `BenchmarkPostgresInsert`.
