@@ -32,6 +32,13 @@ jobs:
           repository: ${{ env.GSM_REPO }}
           ref: ${{ env.GSM_COMMIT }}
           path: .gsm-gate/gsm
+          fetch-depth: 0 # the provenance step reads gsm's main
+
+      # The pinned gsm commit must be on gsm's main: reviewed and merged, not a branch head.
+      - name: The pinned gsm commit is on gsm's main
+        run: |
+          git -C .gsm-gate/gsm merge-base --is-ancestor "$GSM_COMMIT" origin/main ||
+            { echo "::error::GSM_COMMIT $GSM_COMMIT is not on $GSM_REPO main"; exit 1; }
 
       # gsm's pins name the proof commit, the Rocq image (by digest) and the two checker binaries.
       - name: Read gsm's checker pins
@@ -64,7 +71,7 @@ jobs:
 
       - name: Record every gsm machine the programs make
         id: record
-        # Each program in the catalog runs once, built with -tags gsmgate against gsm at GSM_COMMIT (a
+        # Each program in the catalog runs once, with no arguments, built with -tags gsmgate against gsm at GSM_COMMIT (a
         # replace added to its module for this run only), and records every machine it makes. A
         # program that fails (a Build error it does not expect) fails this step, after every program
         # has run, and the next step still checks what was recorded.
@@ -90,14 +97,16 @@ jobs:
             exit 1
           fi
 
+      # gsmgate is its own module in gsm (internal/cmd/gsmgate). -scan type-checks every bide module
+      # that imports gsm and fails if a package outside the programs above makes a gsm machine.
       - name: Check every machine with the extracted checkers
         if: ${{ !cancelled() && steps.record.outcome != 'skipped' }}
-        working-directory: .gsm-gate/gsm
+        working-directory: .gsm-gate/gsm/internal/cmd/gsmgate
         env:
           GOWORK: 'off'
         run: |
           x="$GITHUB_WORKSPACE/.gsm-gate/nc/coq/extraction"
-          go run ./internal/cmd/gsmgate \
+          go run . \
             -dumps "$RUNNER_TEMP/gsm-gate" \
             -catalog "$GITHUB_WORKSPACE/.github/gsm-gate/machines.txt" \
             -table-checker "$x/$TABLE_CHECKER" -rules-checker "$x/$RULES_CHECKER" \
