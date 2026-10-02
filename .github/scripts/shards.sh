@@ -17,6 +17,9 @@
 #   shards.sh plan NAME              what shard NAME's job builds and tests, one line per entry: the
 #                                    module's directory, then "./..." for a whole module, or the
 #                                    import paths of its packages (go list; needs Go)
+#   shards.sh run NAME FLAG...       run shard NAME's plan: in each module's directory, go build the
+#                                    packages with non-test Go files (as go build ./... skips a
+#                                    test-only package), then go test FLAG... the packages
 #   shards.sh check-modules          fail unless every module in $MODULES has a module entry in
 #                                    exactly one shard, every package entry is in exactly one shard
 #                                    and names a package directory of a module in $MODULES, and
@@ -131,6 +134,19 @@ plan() {
         echo "$e" $keep ;;
     esac
   done
+}
+
+run_shard() {
+  local name=$1 plan m pkgs build
+  shift
+  plan=$(plan "$name") || { echo "$plan"; return 1; }
+  echo "$plan"
+  while read -r m pkgs; do
+    echo "== $m =="
+    build=$(cd "$m" && go list -f '{{if .GoFiles}}{{.ImportPath}}{{end}}' $pkgs) || return 1
+    if [ -n "$build" ]; then (cd "$m" && go build $build) || return 1; fi
+    (cd "$m" && go test "$@" $pkgs) || return 1
+  done <<< "$plan"
 }
 
 check_packages() {
@@ -266,16 +282,23 @@ self_test() {
   printf 'module example.com/r\n\ngo 1.21\n' > "$g/go.mod"
   printf 'module example.com/m\n\ngo 1.21\n' > "$g/m/go.mod"
   for d in p p/sub q m; do printf 'package %s\n' "$(basename "$d")" > "$g/$d/x.go"; done
+  mkdir -p "$g/t"; printf 'package t\n\nimport "testing"\n\nfunc TestT(t *testing.T) {}\n' > "$g/t/x_test.go"
   pk() { (cd "$g" && GOWORK=off GOFLAGS= GOTOOLCHAIN=local MODULES=". m" SHARDS=$1 "$self" check-packages); }
   expect pass "p alone, the rest of the core" pk $'x: .:p\ny: .\nz: m'
   expect pass "p and q alone, the rest of the core" pk $'x: .:p .:q\ny: .\nz: m'
   expect fail "package p in two shards" pk $'x: .:p\ny: . .:p\nz: m'
   expect fail "no such package .:nope" pk $'x: .:nope\ny: .\nz: m'
-  expect fail "the core's module entry keeps no package" pk $'x: .:p .:p/sub .:q\ny: .\nz: m'
+  expect fail "the core's module entry keeps no package" pk $'x: .:p .:p/sub .:q .:t\ny: .\nz: m'
   expect fail "the core in two module entries" pk $'x: .:p .\ny: .\nz: m'
   pl() { (cd "$g" && GOWORK=off GOFLAGS= GOTOOLCHAIN=local SHARDS=$'x: .:p\ny: . m' "$self" plan "$1") > "$tmp/plan" 2>&1 && [ "$(cat "$tmp/plan")" = "$2" ]; }
   expect pass "the plan of a package entry" pl x ". example.com/r/p"
-  expect pass "the plan of the rest of the core" pl y $'. example.com/r/p/sub example.com/r/q\nm ./...'
+  expect pass "the plan of the rest of the core" pl y $'. example.com/r/p/sub example.com/r/q example.com/r/t\nm ./...'
+  # A shard's run builds only the packages with non-test Go files (t holds only a test), and
+  # tests them all.
+  rn() { (cd "$g" && GOWORK=off GOFLAGS= GOTOOLCHAIN=local SHARDS=$'x: .:p\ny: . m' "$self" run "$1" -count=1) > "$tmp/run" 2>&1 && grep -q "$2" "$tmp/run"; }
+  expect pass "a shard with a test-only package" rn y '^ok .*example.com/r/t'
+  expect pass "a shard of one package" rn x '^?.*example.com/r/p'
+  expect fail "a shard whose test fails" rn y 'never printed'
   # Models, against the real check.sh in a scratch tree.
   local t=$tmp/repo/spec/tla
   mkdir -p "$t/a/regress" "$t/a/limits" "$t/b/limits" "$t/notamodel"
@@ -328,6 +351,7 @@ case "${1:-}" in
   names) parse; printf '%s\n' "${names[@]}" ;;
   json) parse; printf '%s\n' "${names[@]}" | jq -R . | jq -cs . ;;
   plan) plan "${2:-}" ;;
+  run) shift; [ $# -ge 1 ] || { err "run: NAME FLAG..."; exit 1; }; run_shard "$@" ;;
   check-packages) check_packages ;;
   get)
     parse

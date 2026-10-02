@@ -57,29 +57,30 @@ else fails the check.
 
 ## In CI
 
-The workflow `.github/workflows/models.yml` has a plan job, **Models (plan)**, the shard jobs,
-**Models (<shard>)**, the required **Models** job, and **Models (nightly)**. On every pull request,
-in the merge queue and on pushes to main they run the self-test, the translation check, and every `ci`,
-`regress`, `finding` and `limit` configuration, four at a time (`TLC_JOBS=4`, one TLC worker each,
-on the 4-vCPU runner). The configurations run in six parallel shard jobs, **Models (<shard>)**, each
+The workflow `.github/workflows/models.yml` has a plan job, **Models (plan)**, the shard jobs
+(**Models (claims)** and the like), the required **Models** job, and **Models (nightly)**. On every
+pull request, in the merge queue and on pushes to main they run the self-test, the translation
+check, and every `ci`, `regress`, `finding` and `limit` configuration, four at a time (`TLC_JOBS=4`,
+one TLC worker each, on the 4-vCPU runner). The configurations run in six parallel shard jobs, each
 a set of configuration directories (`MODEL_SHARDS` in the workflow, passed as `TLC_DIRS`), and the
 **Models** job, the required check, fails unless every shard succeeded. A plan job fails first
 unless every `ci`, `regress`, `finding` and `limit` configuration is in exactly one shard
-(`.github/scripts/shards.sh check-models`, which takes each shard's configurations from
-`check.sh list`), so a new model or a new `regress`, `findings` or `limits` directory is assigned to
-a shard in the same pull request. On a pull request it checks only the models whose directory under
+(`.github/scripts/shards.sh check-models`, which takes each shard's configurations from `check.sh
+list`), so a new model or a new `regress`, `findings` or `limits` directory is assigned to a shard
+in the same pull request. On a pull request it checks only the models whose directory under
 `spec/tla/` the pull request changes, and every model when it changes `check.sh`, `tools.lock`,
 `.github/scripts/shards.sh` or `models.yml`; a changed directory under `spec/tla/` that is not a
-model with a `ci` configuration, or a changed model no shard holds, fails the plan job; with none of those, the job reports success after printing that no model changed,
-so it can be a required check without costing every other change several minutes. This loses no
-check: TLC reads only the model's own directory, the pinned tools and `check.sh`, so an unchanged
-model gives the result it gave on main, and a change to the Go code a model describes must change
-the model or carry a `Protocol-Impact` override (the path rule below, in the Lint job). The merge
-queue and main always run every model, and so does any doubt (a failed diff, an unexpected
-event). **Models (nightly)** runs the `nightly` configurations
-on a schedule and on demand (`workflow_dispatch`). The Go counterpart, the full-bound fault-schedule
-explorations of the claim protocol and of flow lowering (`BIDE_EXPLORE=1`), runs nightly in
-`.github/workflows/explore.yml`; see [verification](../../docs/testing/verification.md).
+model with a `ci` configuration, or a changed model no shard holds, fails the plan job; with none of
+those, the job reports success after printing that no model changed, so it can be a required check
+without costing every other change several minutes. This loses no check: TLC reads only the model's
+own directory, the pinned tools and `check.sh`, so an unchanged model gives the result it gave on
+main, and a change to the Go code a model describes must change the model or carry a
+`Protocol-Impact` override (the path rule below, in the Lint job). The merge queue and main always
+run every model, and so does any doubt (a failed diff, an unexpected event). **Models (nightly)**
+runs the `nightly` configurations on a schedule and on demand (`workflow_dispatch`). The Go
+counterpart, the full-bound fault-schedule explorations of the claim protocol and of flow lowering
+(`BIDE_EXPLORE=1`), runs nightly in `.github/workflows/explore.yml`; see
+[verification](../../docs/testing/verification.md).
 
 ## Keeping the code and the models in step
 
@@ -323,13 +324,14 @@ configurations run without it, and so do the configurations with drivers in diff
 
 ### Configurations
 
-On every pull request and in the merge queue (`ci`, `regress`, `finding`, `limit`). States are distinct
-states; times are TLC's own, measured on a development machine (Apple M1 Pro, 8 workers; the `-a1`
-rows on an Apple Silicon machine, 4 workers). The whole pull-request set of every model, vacuity
-runs and JVM starts included, takes about 10.5 minutes of runner time on the CI runner (GitHub
+On every pull request and in the merge queue (`ci`, `regress`, `finding`, `limit`). States are
+distinct states; times are TLC's own, measured on a development machine (Apple M1 Pro, 8 workers;
+the `-a1` rows on an Apple Silicon machine, 4 workers). The whole pull-request set of every model,
+vacuity runs and JVM starts included, took 7.6 to 10.7 minutes in one job on the CI runner (GitHub
 `ubuntu-latest`, 4 vCPUs, four configurations at a time; runner speed varies); in six parallel
-shards the Models workflow takes about 3.5 minutes, the largest shard (model 1) 3. It took 9 to 15.5 minutes before the
-largest configurations of models 1, 2, 7 and 8 moved to nightly (#132).
+shards the Models workflow takes 3.5 to 4.1 minutes from start to finish, the largest shard (model
+1) about 3. It took 9 to 15.5 minutes before the largest configurations of models 1, 2, 7 and 8
+moved to nightly (#132).
 
 | Config | Path | Drivers, processes | Faults (error replies, crashes, cancels) | Attempts | Property | States | Time |
 |---|---|---|---|---|---|---|---|

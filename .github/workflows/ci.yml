@@ -242,15 +242,10 @@ jobs:
         shell: bash
         env:
           SHARD: ${{ matrix.shard }}
-        # Each line of the plan: a module's directory, then "./..." for the whole module or the
-        # packages of it this shard owns.
-        run: |
-          SHARDS="$TEST_SHARDS" .github/scripts/shards.sh plan "$SHARD" > "$RUNNER_TEMP/plan"
-          cat "$RUNNER_TEMP/plan"
-          while read -r m pkgs; do
-            echo "== $m =="
-            ( cd "$m" && go build $pkgs && go test -race -count=1 $pkgs )
-          done < "$RUNNER_TEMP/plan"
+        # For each line of the shard's plan (a module's directory, then "./..." or the packages of
+        # it this shard owns): go build the packages with non-test Go files, as go build ./...
+        # does, then go test -race -count=1 every package.
+        run: SHARDS="$TEST_SHARDS" .github/scripts/shards.sh run "$SHARD" -race -count=1
 
   test-nojsonv2:
     name: Test (ubuntu-latest, without encoding/json/v2)
