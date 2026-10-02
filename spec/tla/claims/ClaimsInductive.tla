@@ -141,6 +141,9 @@ Locals ==
        /\ pc[d] = "Lost" => marker[c][g[d]] \notin {0, cid[d]}
        /\ pc[d] = "NotStarted" => marker[c][g[d]] = cid[d]
        /\ pc[d] = "Record" => firedAt[c][g[d]] = cid[d]
+  /\ ResolverSet = {} => rids = {} /\ rcid = 0
+  /\ Cardinality(rids) <= 1
+  /\ rcid \in rids \cup {0}
   /\ \A r \in ResolverSet :
        /\ toRetry[r] # {} <=> pc[r] = "RRetry"
        /\ pc[r] = "RCheck" <=> rc[r] = None
@@ -152,7 +155,6 @@ Locals ==
             rcid \in Ids /\ rids = {rcid} /\ rg[r] + 1 \in Gens
        /\ pc[r] \in {"RWrite", "RRecord", "RWait", "RNotStarted"} => rclaimed[r]
        /\ pc[r] = "RClaimNS" => ~rclaimed[r]
-       /\ Cardinality(rids) <= 1
        /\ rclaimed[r] => rids # {}
 
 \* Attempts are claimed in order: an attempt a driver claims (a marker, a late marker write, or a

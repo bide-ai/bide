@@ -762,7 +762,9 @@ here.
   covers every fault placement on every write of one attempt. The small-scope argument (most
   protocol bugs have small counterexamples) is an observation, not a guarantee; the three
   historical double fires needed at most two drivers, three faults and three attempts. An
-  inductive invariant checked by Apalache would remove the bound for safety; it is optional work.
+  inductive invariant checked by Apalache removes the depth and fault bounds for safety: model 1
+  has one ([Apalache results](../../spec/tla/README.md#apalache-results)); the number of drivers,
+  attempts and claim ids it covers stays bounded.
 - **The model encodes the code's misunderstanding.** If the model is written from the code, it can
   share the code's error. The regression configs are the check that each invariant has teeth; the
   vacuity invariant checks the effect is reachable; TLC's coverage report (`-coverage`) must show

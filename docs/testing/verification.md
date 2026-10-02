@@ -68,8 +68,8 @@ guarantees: at most one fire per call, no not-started record for a claim that fi
 result never replaced, a resolution never overriding a live driver; a liveness property states that
 an effect that provably never started does not halt for ever. Each rule an earlier review found
 wrong is kept as a configuration that must still produce its counterexample, so the model cannot
-quietly lose the power to find it. Nightly, the Apalache model checker also checks the claim
-model symbolically, and an inductive invariant {{VERIF_IND}}. Further models cover the approval gate with 1-of-1 and m-of-n
+quietly lose the power to find it. Nightly, the Apalache model checker also checks an inductive
+invariant of the claim model, which proves {{VERIF_IND}} at any depth and for any number of faults. Further models cover the approval gate with 1-of-1 and m-of-n
 tallies and approvers' key sets (model 1b), flow semantics (model 7), spend accounting of model
 calls (model 8) and the bide protocol's claim rules (model 2).
 
@@ -175,7 +175,7 @@ required checks:
 - **Models (nightly)** checks the `nightly` TLA+ configurations, with larger bounds
   (`.github/workflows/models.yml`).
 - **Apalache (nightly)** runs the Apalache checks (`spec/tla/check.sh apalache`): the claim
-  model's inductive invariant and bounded symbolic checks of models 1 and 9
+  model's inductive invariant and a bounded symbolic regression check
   (`.github/workflows/models.yml`).
 - **Explore (full bound)** runs the fault-schedule explorations of the claim protocol (`agent`) and
   of flow lowering (`plan`) with `BIDE_EXPLORE=1` (`.github/workflows/explore.yml`). Every pull
