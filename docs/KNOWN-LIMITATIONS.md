@@ -107,9 +107,11 @@ function and `Open` again, and the migration recreates it.
 **Crash safety is tested and model-checked within bounds, not proven for the code.** The crash
 tests fail the store at every write point, across hundreds of randomized multi-crash schedules, and
 check that no side effect fires twice and every rollback completes. The protocol designs (claims,
-the approval gate, flows, spend accounting and the bide protocol's claim rules) are TLA+ models that
-TLC checks in every interleaving within each configuration's bounds; nothing is proven beyond those
-bounds, and the models state the rules, not the Go code, whose correspondence is checked by review
+the approval gate, flows, spend accounting, the bide protocol's claim rules, tool calls, the run
+lifecycle and recovery, delegation and saga trees, and sessions) are TLA+ models that TLC checks in
+every interleaving within each configuration's bounds; nothing is proven beyond those bounds, and
+the models state the rules, not the Go code. CI checks that marked code changes with its model and
+that the names agree; that each Go function does what its model step says is checked by review
 until trace validation lands. A crash is modelled as a failed durable write followed by the run
 unwinding, which matches a process dying around its writes. See [How bide is verified](testing/verification.md)
 and [the formal models](../spec/tla/README.md).
