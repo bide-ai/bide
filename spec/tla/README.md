@@ -57,8 +57,9 @@ else fails the check.
 
 ## In CI
 
-The workflow `.github/workflows/models.yml` has two jobs. **Models** runs on every pull request, in
-the merge queue and on pushes to main: the self-test, the translation check, and every `ci`,
+The workflow `.github/workflows/models.yml` has a plan job, **Models (plan)**, the shard jobs,
+**Models (<shard>)**, the required **Models** job, and **Models (nightly)**. On every pull request,
+in the merge queue and on pushes to main they run the self-test, the translation check, and every `ci`,
 `regress`, `finding` and `limit` configuration, four at a time (`TLC_JOBS=4`, one TLC worker each,
 on the 4-vCPU runner). The configurations run in six parallel shard jobs, **Models (<shard>)**, each
 a set of configuration directories (`MODEL_SHARDS` in the workflow, passed as `TLC_DIRS`), and the
@@ -67,8 +68,9 @@ unless every `ci`, `regress`, `finding` and `limit` configuration is in exactly 
 (`.github/scripts/shards.sh check-models`, which takes each shard's configurations from
 `check.sh list`), so a new model or a new `regress`, `findings` or `limits` directory is assigned to
 a shard in the same pull request. On a pull request it checks only the models whose directory under
-`spec/tla/` the pull request changes, and every model when it changes `check.sh`, `tools.lock` or
-`models.yml`; with none of those, the job reports success after printing that no model changed,
+`spec/tla/` the pull request changes, and every model when it changes `check.sh`, `tools.lock`,
+`.github/scripts/shards.sh` or `models.yml`; a changed directory under `spec/tla/` that is not a
+model with a `ci` configuration, or a changed model no shard holds, fails the plan job; with none of those, the job reports success after printing that no model changed,
 so it can be a required check without costing every other change several minutes. This loses no
 check: TLC reads only the model's own directory, the pinned tools and `check.sh`, so an unchanged
 model gives the result it gave on main, and a change to the Go code a model describes must change

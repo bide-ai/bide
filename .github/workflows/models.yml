@@ -3,7 +3,8 @@ name: Models
 # TLA+ models of the coordination protocols (spec/tla/README.md). In the merge queue and on main: the
 # PlusCal translation check, the checker self-test, and every "ci", "regress", "finding" and "limit"
 # configuration of every model. On a pull request: the same, for the models whose directory under
-# spec/tla the pull request changes (all of them when it changes check.sh, tools.lock or this file).
+# spec/tla the pull request changes (all of them when it changes check.sh, tools.lock, shards.sh or
+# this file).
 # Nightly (and on demand): the "nightly" configurations, with larger bounds and the liveness checks
 # at the larger fault budget.
 on:
@@ -86,29 +87,24 @@ jobs:
         run: |
           .github/scripts/shards.sh --self-test
           SHARDS="$MODEL_SHARDS" .github/scripts/shards.sh check-models .
-      # The shards holding a changed model (every shard when TLC_MODELS is empty).
+      # The shards holding a changed model (every shard when no model is named).
       - id: shards
         name: Shards to run
         shell: bash
         env:
           RUN: ${{ steps.changes.outputs.run }}
           MODELS: ${{ steps.changes.outputs.models }}
+        # Fails, failing the Models check, when a changed directory under spec/tla is no model with
+        # a ci configuration, or no shard holds a changed model; it never turns a failure into run=false.
         run: |
-          export SHARDS="$MODEL_SHARDS"
-          sel=()
+          set -euo pipefail
+          shards='[]'
           if [ "$RUN" != false ]; then
-            for s in $(.github/scripts/shards.sh names); do
-              for e in $(.github/scripts/shards.sh get "$s"); do
-                if [ -z "$MODELS" ] || [[ " $MODELS " == *" ${e%%/*} "* ]]; then sel+=("$s"); break; fi
-              done
-            done
-          fi
-          if [ ${#sel[@]} = 0 ]; then
-            [ "$RUN" = false ] || echo "No shard holds a pull-request configuration of the changed models."
-            RUN=false
+            # shellcheck disable=SC2086 # MODELS is a list
+            shards=$(SHARDS="$MODEL_SHARDS" .github/scripts/shards.sh select . $MODELS)
           fi
           echo "run=$RUN" | tee -a "$GITHUB_OUTPUT"
-          echo "shards=$(printf '%s\n' "${sel[@]}" | jq -R . | jq -cs 'map(select(. != ""))')" | tee -a "$GITHUB_OUTPUT"
+          echo "shards=$shards" | tee -a "$GITHUB_OUTPUT"
 
   shard:
     name: Models (${{ matrix.shard }})

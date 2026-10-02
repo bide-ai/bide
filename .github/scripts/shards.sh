@@ -28,6 +28,11 @@
 #                                    ROOT/spec/tla/check.sh runs is run by exactly one shard; each
 #                                    shard's configurations come from check.sh itself, with the
 #                                    shard's entries as TLC_DIRS, as the shard's job runs it
+#   shards.sh select ROOT [MODEL...]  the Models shards to run, as a JSON array: every shard, or
+#                                    with MODELs (the models a pull request changes) the shards
+#                                    holding them; fails unless each MODEL is a model directory with
+#                                    a ci configuration (ROOT/spec/tla/check.sh list ci), so a change
+#                                    to anything else under spec/tla/<dir>/ never passes unchecked
 #   shards.sh verdict PLAN RUN JOB=RESULT...
 #                                    the required check's result: fail unless PLAN (the result of
 #                                    the job that planned the shards) is success and either RUN is
@@ -193,6 +198,25 @@ check_models() {
   return $ok
 }
 
+select_shards() {
+  local root=$1 m e i out sel=()
+  shift
+  parse || return 1
+  for m in "$@"; do
+    out=$(env -u TLC_DIRS TLC_MODELS="$m" "$root/spec/tla/check.sh" list ci 2>&1) || { err "spec/tla/$m changed: $out"; return 1; }
+    [ -n "$out" ] || { err "spec/tla/$m changed, and it has no ci configuration: a model needs one on every pull request"; return 1; }
+  done
+  for i in "${!names[@]}"; do
+    for e in ${entries[$i]}; do
+      if [ $# = 0 ] || [[ " $* " == *" ${e%%/*} "* ]]; then sel+=("${names[$i]}"); break; fi
+    done
+  done
+  for m in "$@"; do
+    [[ " $(printf '%s\n' ${entries[@]} | cut -d/ -f1 | tr '\n' ' ') " == *" $m "* ]] || { err "spec/tla/$m changed, and no shard holds it: $(fix_dir "$m" 0)"; return 1; }
+  done
+  printf '%s\n' "${sel[@]}" | jq -R . | jq -cs .
+}
+
 verdict() {
   local plan=$1 run=$2 j ok=0
   shift 2
@@ -270,6 +294,21 @@ self_test() {
   mkdir -p "$t/c"; touch "$t/c/CMC.tla"; cfg c/three.cfg ci
   expect fail "new model c in no shard" mt $'s1: a a/regress\ns2: b b/limits'
   expect pass "new model c assigned" mt $'s1: a a/regress c\ns2: b b/limits'
+  # The shards to run for the changed models.
+  mkdir -p "$t/n"; touch "$t/n/NMC.tla"; cfg n/deep.cfg nightly
+  sl() { # sl SHARDS WANT MODEL...: select prints WANT
+    local shards=$1 want=$2
+    shift 2
+    SHARDS=$shards "$self" select "$tmp/repo" "$@" > "$tmp/sel" && [ "$(tail -1 "$tmp/sel")" = "$want" ]
+  }
+  local two=$'s1: a a/regress c\ns2: b b/limits'
+  expect pass "every shard with no model named" sl "$two" '["s1","s2"]'
+  expect pass "the shard holding b" sl "$two" '["s2"]' b
+  expect pass "the shards holding c and b" sl "$two" '["s1","s2"]' c b
+  expect fail "a changed directory that is no model" sl "$two" '[]' notamodel
+  expect fail "a changed model with only nightly configurations" sl $'s1: a a/regress c n\ns2: b b/limits' '["s1"]' n
+  expect fail "a changed model no shard holds" sl $'s1: a a/regress\ns2: b b/limits' '["s2"]' b c
+  expect fail "a malformed shard list" sl $'s1 a a/regress c\ns2: b b/limits' '["s2"]' b
   # The verdict.
   expect pass "every shard succeeded" "$0" verdict success true x=success y=success
   expect pass "every shard succeeded (run unset)" "$0" verdict success "" x=success
@@ -296,6 +335,7 @@ case "${1:-}" in
     err "no shard ${2:-}"; exit 1 ;;
   check-modules) check_modules ;;
   check-models) check_models "${2:-.}" ;;
+  select) shift; [ $# -ge 1 ] || { err "select: ROOT [MODEL...]"; exit 1; }; select_shards "$@" ;;
   verdict) shift; [ $# -ge 2 ] || { err "verdict: PLAN RUN JOB=RESULT..."; exit 1; }; verdict "$@" ;;
   --self-test) self_test ;;
   *) echo "usage: see the header of $0" >&2; exit 2 ;;
