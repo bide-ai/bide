@@ -111,8 +111,8 @@ type Request struct {
 // terminates. Those two modes are intended for single-turn or typed/structured calls
 // where exactly one tool round-trip is expected. Use "auto" (the default) for the loop.
 type ToolChoice struct {
-	Mode string // "", "auto", "none", "required", or "tool"
-	Name string // tool name to force; only meaningful when Mode == "tool"
+	Mode string `json:"mode,omitempty"` // "", "auto", "none", "required", or "tool"
+	Name string `json:"name,omitempty"` // tool name to force; only meaningful when Mode == "tool"
 }
 
 // ResponseFormat asks the provider to constrain the model's output to a named JSON schema
@@ -131,11 +131,11 @@ type ResponseFormat struct {
 // the set fields onto its wire format and ignores those it doesn't support (e.g.
 // Anthropic has no Seed). Set it once with Agent.WithSampling.
 type Sampling struct {
-	Temperature *float64 // 0..2 (OpenAI) / 0..1 (Anthropic); determinism at 0
-	TopP        *float64 // nucleus sampling
-	MaxTokens   *int     // cap on generated tokens; overrides the adapter's construction default
-	Stop        []string // stop sequences
-	Seed        *int64   // best-effort determinism (OpenAI; ignored where unsupported)
+	Temperature *float64 `json:"temperature,omitempty"` // 0..2 (OpenAI) / 0..1 (Anthropic); determinism at 0
+	TopP        *float64 `json:"top_p,omitempty"`       // nucleus sampling
+	MaxTokens   *int     `json:"max_tokens,omitempty"`  // cap on generated tokens; overrides the adapter's construction default
+	Stop        []string `json:"stop,omitempty"`        // stop sequences
+	Seed        *int64   `json:"seed,omitempty"`        // best-effort determinism (OpenAI; ignored where unsupported)
 }
 
 // Usage is token accounting for a call; middleware turns it into cost. The four counts are

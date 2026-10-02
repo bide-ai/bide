@@ -2,20 +2,23 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 )
 
-// Result is a rich envelope returned by RunResult and RunSagaResult. It carries the
-// terminal assistant message plus telemetry accumulated over the whole run: total token
-// usage (sum of every model-call Usage), the number of model turns, wall-clock duration,
-// and the run ID.
-//
-// Run and RunSaga are unchanged and remain the idiomatic path for callers that only need
-// the final message; RunResult / RunSagaResult are the additive counterparts for callers
-// that need observability data.
+// Result is what a run entry point returns (RunMessage, ResumeRun, AgentStream.Result,
+// RunTypedMessage, Session.SendMessage, and the transitional RunResult and RunSagaResult): the
+// final answer and the run's telemetry. RunMessage and the other Message entry points return a
+// non-nil Result whenever the run ID is valid, whatever the error: a pause, a halt, a failure, a
+// saga's abort, or a cancellation.
 type Result struct {
-	// Message is the final assistant answer, identical to what Run / RunSaga return.
+	// Message is the final assistant answer. It is zero unless the run returned no error.
 	Message Message
+
+	// Output is a typed run's answer as its journal holds it (RunTypedMessage): the arguments the
+	// final_answer tool accepted, or the model's native structured output. It is nil for an
+	// untyped run, and for a typed run that returned an error.
+	Output json.RawMessage
 
 	// Usage is the sum of the usage of the model responses the run recorded, one per turn
 	// (input, output, and cache tokens). It is the whole run's, read from the journal: the same
@@ -49,7 +52,8 @@ type Result struct {
 // change.
 func (a *Agent) RunResult(ctx context.Context, runID, input string) (*Result, error) {
 	start := time.Now()
-	msg, usage, turns, err := a.run(ctx, runID, []Message{UserText(input)}, false, nil)
+	in := UserText(input)
+	msg, usage, turns, err := a.run(ctx, runID, &driveSpec{input: &in, strictSaga: true})
 	elapsed := time.Since(start)
 	if err != nil {
 		return nil, err
@@ -69,7 +73,8 @@ func (a *Agent) RunResult(ctx context.Context, runID, input string) (*Result, er
 // the richer *Result envelope on success.
 func (a *Agent) RunSagaResult(ctx context.Context, runID, input string) (*Result, error) {
 	start := time.Now()
-	msg, usage, turns, err := a.runSagaWithTelemetry(ctx, runID, input, nil)
+	in := UserText(input)
+	msg, usage, turns, err := a.drive(ctx, runID, &driveSpec{input: &in, cfg: runConfig{saga: true}})
 	elapsed := time.Since(start)
 	if err != nil {
 		return nil, err

@@ -105,7 +105,9 @@ func TestModel12_S2_SharedHandleRecordsATurnTwice(t *testing.T) {
 		}
 		t.Run(name, func(t *testing.T) {
 			ctx := context.Background()
-			gate := &loadGate{Durable: NewMemStore(), runID: runID, n: 2, arrived: make(chan struct{}), release: make(chan struct{})}
+			// The third Load of the run is the second caller's: the first caller's drive loads it
+			// twice (its open, and again once it has written run:start).
+			gate := &loadGate{Durable: NewMemStore(), runID: runID, n: 3, arrived: make(chan struct{}), release: make(chan struct{})}
 			model := &blockFirstModel{entered: make(chan struct{}), release: make(chan struct{})}
 			a := New(model, gate)
 			h := openSession(t, a, "c1")
@@ -412,7 +414,7 @@ func TestSession_FinishedTurnRunNeedsNoLease(t *testing.T) {
 	model := &replyModel{}
 	a := New(model, store)
 	h1 := openSession(t, a, "c1")
-	st, err := h1.startTurn(ctx, "x")
+	st, n, err := h1.startTurn(ctx, UserText("x"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -421,7 +423,7 @@ func TestSession_FinishedTurnRunNeedsNoLease(t *testing.T) {
 		t.Fatal(err)
 	}
 	// h1 drives the run to completion and stops before it records the turn, still leasing it.
-	if _, err := h1.driveRun(ctx, st.RunID, append(seed, UserText("x"))); err != nil {
+	if _, _, _, err := h1.driveRun(ctx, st.RunID, turnDrive("c1", &n, "", UserText("x"), seed)); err != nil {
 		t.Fatal(err)
 	}
 	if ok, err := store.AcquireLease(ctx, st.RunID, "h1-still-holding", time.Hour); err != nil || !ok {
@@ -437,4 +439,10 @@ func TestSession_FinishedTurnRunNeedsNoLease(t *testing.T) {
 	if n := openSession(t, a, "c1").Turns(); n != 1 {
 		t.Fatalf("turns = %d, want 1", n)
 	}
+}
+
+// turnDrive is the drive a session's turn makes of its run: session id's turn n (Send) or key
+// (SendOnce), answering input after seed.
+func turnDrive(id string, n *int, key string, input Message, seed []Message) *driveSpec {
+	return &driveSpec{input: &input, seed: seed, kind: RunKindSessionTurn, session: &SessionRef{ID: id, Turn: n, Key: key}, strictSaga: true}
 }

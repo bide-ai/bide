@@ -61,7 +61,7 @@ func TestResume_DifferentInputIsRefused(t *testing.T) {
 		t.Fatalf("model was sent user messages %q, want the run's input", u)
 	}
 	start, ok, err := RecordedStart(ctx, store, "r")
-	if err != nil || !ok || start.Input != "refund order 17" || start.Saga {
+	if err != nil || !ok || start.Input.Text() != "refund order 17" || start.Saga {
 		t.Fatalf("RecordedStart = %+v, %v, %v; want the run's input, not a saga", start, ok, err)
 	}
 }
@@ -135,7 +135,7 @@ func TestResume_SagaRunThroughRunIsRefused(t *testing.T) {
 		t.Fatalf("saga resumed through RunSaga: err = %v, compensations %d; want *SagaAborted and 1", err, undone)
 	}
 	start, ok, err := RecordedStart(ctx, store, "r")
-	if err != nil || !ok || !start.Saga || start.Input != "trip" {
+	if err != nil || !ok || !start.Saga || start.Input.Text() != "trip" {
 		t.Fatalf("RecordedStart = %+v, %v, %v; want the saga's input", start, ok, err)
 	}
 }
@@ -340,7 +340,7 @@ func TestRecordedStart_AmongOtherValues(t *testing.T) {
 		t.Fatal(err)
 	}
 	start, ok, err := RecordedStart(ctx, store, "r")
-	if err != nil || !ok || start != (RunStart{Input: "hello"}) {
+	if err != nil || !ok || !sameMessage(start.Input, UserText("hello")) || start.Saga || start.Kind != RunKindAgent {
 		t.Fatalf("RecordedStart = %+v, %v, %v; want the run's input", start, ok, err)
 	}
 	if _, ok, err := RecordedStart(ctx, store, "never"); ok || err != nil {

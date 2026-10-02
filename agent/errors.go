@@ -118,8 +118,33 @@ var (
 // another driver's to continue. Recover does not count it as a failure.
 var ErrLeaseLost = errors.New("run lease lost")
 
-// ErrTurnContended is returned by Session.Send and Session.SendOnce when another driver holds
-// the lease on the turn's run (see Session): the turn's run was not driven and its answer was not recorded.
+// ErrRunCancelled is the end of a run that was cancelled (see Cancel): the first of the run's
+// end markers in journal order is run:cancelled. A drive of such a run returns it, with a Result,
+// whatever input it is given, as a finished run returns its answer. It wraps no category: it is a
+// terminal status, not a fault.
+var ErrRunCancelled = errors.New("run cancelled")
+
+// ErrRunEnded is Cancel's answer for a run that is already over: its first end marker is
+// run:complete or run:aborted, so there is nothing left to cancel. Like ErrRunCancelled it wraps
+// no category.
+var ErrRunEnded = errors.New("run already ended")
+
+// ErrNotStarted is a run with no run:start record: one never driven (a Signal sent to a mistyped
+// run ID, say), or one whose first drive has not written it yet. ResumeRun and Cancel refuse such
+// a run, and Recover skips it and reports it once per process. It wraps no category: the run may
+// be a race with its first drive, which a later call does not lose, rather than a configuration
+// error.
+var ErrNotStarted = errors.New("run has no run:start record")
+
+// ErrNotResumable is a Resumer's answer for a run it does not drive (another kind, a typed run
+// whose schema is not its type's). ResumeAny tries the next Resumer on it, and Recover reports a
+// run no Resumer drives once per process. Like ErrLeaseLost it wraps no category.
+var ErrNotResumable = errors.New("run not resumable by this resumer")
+
+// ErrTurnContended is returned by a Session's Send, SendOnce, SendMessage and SendMessageOnce when another driver holds
+// the lease on the turn's run (see Session): another worker, or, while a cancelled saga turn's
+// rollback is in progress, another caller on the same session handle (see Session.Send). The
+// turn's run was not driven and its answer was not recorded.
 // Send the same message again later. Like ErrLeaseLost, it is in no category: it is neither a
 // failure of the turn nor a pause of it.
 var ErrTurnContended = errors.New("session turn driven by another holder")

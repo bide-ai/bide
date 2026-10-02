@@ -194,7 +194,16 @@ func leaseRun(ctx context.Context, store Durable, runID string, drive func(conte
 }
 
 // leaseToken returns a random token that makes each Lease call's claim its own.
-func leaseToken() string { return fmt.Sprintf("%016x", rand.Uint64()) }
+func leaseToken() string {
+	var b [16]byte
+	const hex = "0123456789abcdef"
+	v := rand.Uint64()
+	for i := 15; i >= 0; i-- {
+		b[i] = hex[v&0xf]
+		v >>= 4
+	}
+	return string(b[:])
+}
 
 // driveWithRenew runs the drive while renewing the lease, so a drive that outlasts the TTL keeps
 // its lease. The drive is given a derived context that is cancelled if the lease is lost or the
@@ -227,17 +236,20 @@ func leaseToken() string { return fmt.Sprintf("%016x", rand.Uint64()) }
 // the release that follows it.
 func driveWithRenew(ctx context.Context, leaser Leaser, runID, owner string, ttl time.Duration, issued time.Time, run func(context.Context) error) error {
 	dctx, cancel := context.WithCancelCause(ctx)
-	defer cancel(nil)
-	rctx, stopRenew := context.WithCancel(ctx)
 	renewerDone := make(chan struct{})
-	defer func() {
-		stopRenew()
-		<-renewerDone
-	}()
-	go func() {
+	// The renewer starts at the first renewal (issued+ttl/2), not with the drive: a drive that ends
+	// before then (most recovery visits: a halted run, a run over since the listing) starts no
+	// goroutine. It runs under dctx, which the drive's end cancels.
+	renewer := time.AfterFunc(time.Until(issued.Add(ttl/2)), func() {
 		defer close(renewerDone)
-		if lost := renewLoop(rctx, leaser, runID, owner, ttl, issued); lost != nil {
+		if lost := renewLoop(dctx, leaser, runID, owner, ttl, issued); lost != nil {
 			cancel(lost) // lost the lease: stop the drive rather than run un-leased
+		}
+	})
+	defer func() {
+		cancel(nil)
+		if !renewer.Stop() {
+			<-renewerDone // it started: wait for it to see dctx done
 		}
 	}()
 	err := run(dctx)

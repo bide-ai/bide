@@ -127,7 +127,7 @@ func TestSubRunFor(t *testing.T) {
 	}
 	// Recover drives roots only: the finished parent and its sub-run are not driven again.
 	var resumed []string
-	if _, err := Recover(context.Background(), store, func(_ context.Context, id string) error { resumed = append(resumed, id); return nil }); err != nil {
+	if _, err := Recover(context.Background(), store, func(_ context.Context, id string, _ RunStart) error { resumed = append(resumed, id); return nil }); err != nil {
 		t.Fatal(err)
 	}
 	if slices.Contains(resumed, ids[0]) {

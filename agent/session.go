@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Session is a durable multi-turn conversation. Each Send is one full agent run (tools,
@@ -46,7 +47,8 @@ import (
 // holds does not drive it: if the run has finished (the holder has not released the lease yet),
 // its recorded answer is returned and the turn recorded, as a drive of it would; otherwise it
 // returns at once with an error wrapping ErrTurnContended, having driven nothing and recorded
-// no answer. Send the same message again later, and it returns the recorded answer, or resumes
+// no answer. That includes a second caller on the same handle while a saga turn's rollback is in
+// progress (see Send). Send the same message again later, and it returns the recorded answer, or resumes
 // the turn if the other driver stopped short of it. A drive whose lease is lost returns an error
 // wrapping ErrLeaseLost (see Lease). Over a store with no Leaser, two drivers of one turn still
 // never record it twice, but each counts only the spend it has seen (see KNOWN-LIMITATIONS).
@@ -60,12 +62,14 @@ type Session struct {
 	// mu guards the fields below. It is held while the session journal is read or written,
 	// never while a turn's run is in progress.
 	mu      sync.Mutex
-	history []Message // alternating user / final-assistant messages
+	history []Message // alternating user / final-assistant messages, of the answered turns
+	histAt  []int     // histAt[n] is len(history) after the first n recorded turns
 	chain   []string  // chain[n] is the digest of the first n recorded turns
 	turns   int
 	keyed   map[string]turnRecord // completed SendOnce turns by key
 	starts  int                   // Send turns started (start/N records)
 	open    *turnStart            // the Send turn started but not yet recorded, if any
+	openAt  int                   // the index n of open's start/<n> record
 	// recorded holds the run IDs of the turns loaded (turn/0 up to turn/<turns-1>), so a turn
 	// whose run is among them is never appended again, however far the handle has moved on.
 	recorded map[string]bool
@@ -75,18 +79,46 @@ type Session struct {
 
 // turnRecord is the journaled shape of one completed conversation turn.
 type turnRecord struct {
-	Input  string  `json:"input"`
-	Answer Message `json:"answer"`
-	Key    string  `json:"key,omitempty"`    // SendOnce's key; empty for Send
-	RunID  string  `json:"run_id,omitempty"` // the run that produced the answer
-	Claim  string  `json:"claim,omitempty"`  // random id of the writer, to tell its record from another's
+	Input   string   `json:"input"`
+	Message *Message `json:"message,omitempty"` // the input, when it is not a user message of one text part
+	Answer  Message  `json:"answer"`
+	// Cancelled records a turn closed because its run was cancelled (P14 rule 16): it has no
+	// answer, and it is not part of the transcript later turns are seeded with.
+	Cancelled bool   `json:"cancelled,omitempty"`
+	Key       string `json:"key,omitempty"`    // SendOnce's key; empty for Send
+	RunID     string `json:"run_id,omitempty"` // the run that produced the answer
+	Claim     string `json:"claim,omitempty"`  // random id of the writer, to tell its record from another's
 }
 
 // turnStart is the journaled start of a Send turn: which message owns turn run RunID.
 type turnStart struct {
-	Input string `json:"input"`
-	RunID string `json:"run_id"`
-	Claim string `json:"claim"`
+	Input   string   `json:"input"`
+	Message *Message `json:"message,omitempty"` // the input, when it is not a user message of one text part
+	RunID   string   `json:"run_id"`
+	Claim   string   `json:"claim"`
+}
+
+// sessionInput is input as the session journal holds it: its text, and the message itself when it
+// is not a user message of one text part.
+func sessionInput(input Message) (string, *Message) {
+	if t, ok := plainUserText(input); ok {
+		return t, nil
+	}
+	m := input
+	return input.Text(), &m
+}
+
+// inputOf is the input message a turn's records hold.
+func inputOf(text string, m *Message) Message {
+	if m != nil {
+		return *m
+	}
+	return UserText(text)
+}
+
+// sameInput reports whether a turn's recorded input is input.
+func sameInput(text string, m *Message, input Message) bool {
+	return sameMessage(inputOf(text, m), input)
 }
 
 // turnFrom is the journaled starting point of a turn: it was seeded with the session's first
@@ -160,7 +192,7 @@ func (s *Session) reload(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("session %s: load transcript: %w (%w)", s.id, err, ErrStorage)
 	}
-	s.history, s.chain, s.turns, s.keyed, s.starts, s.open = nil, []string{""}, 0, map[string]turnRecord{}, 0, nil
+	s.history, s.histAt, s.chain, s.turns, s.keyed, s.starts, s.open = nil, []int{0}, []string{""}, 0, map[string]turnRecord{}, 0, nil
 	byName := make(map[string]Record, len(recs))
 	for _, r := range recs {
 		if r.Kind == StepValue {
@@ -178,7 +210,10 @@ func (s *Session) reload(ctx context.Context) error {
 		if err := json.Unmarshal(r.Result, &tr); err != nil {
 			return fmt.Errorf("session %s: decode turn %d: %w (%w)", s.id, s.turns, err, ErrProtocol)
 		}
-		s.history = append(s.history, UserText(tr.Input), tr.Answer)
+		if !tr.Cancelled {
+			s.history = append(s.history, inputOf(tr.Input, tr.Message), tr.Answer)
+		}
+		s.histAt = append(s.histAt, len(s.history))
 		s.chain = append(s.chain, chainTurn(s.chain[s.turns], tr))
 		if tr.Key != "" {
 			s.keyed[tr.Key] = tr
@@ -195,7 +230,7 @@ func (s *Session) reload(ctx context.Context) error {
 			return fmt.Errorf("session %s: decode turn start %d: %w (%w)", s.id, s.starts, err, ErrProtocol)
 		}
 		if !finished[st.RunID] && s.open == nil {
-			s.open = &st
+			s.open, s.openAt = &st, s.starts
 		}
 	}
 	return nil
@@ -210,71 +245,199 @@ func (s *Session) reload(ctx context.Context) error {
 // (*ApprovalPending / *InterruptPending / ...) and does NOT advance the transcript; resolve it
 // (Approve / AnswerInterrupt) and call Send again with the SAME input to resume that turn. Until then,
 // Send with a different input is ErrConfig: the open turn belongs to its message.
+//
+// A turn whose run was cancelled (see Cancel) is closed: Send of its message (the same text)
+// returns ErrRunCancelled, and the next Send of another message records the turn closed (with no
+// answer, and outside the transcript) and runs its own turn. Cancel of a saga turn's run writes
+// only its rollback request: the next Send of another message drives that rollback and then
+// closes the turn. Over a store with a Leaser the rollback is driven under the turn's lease and
+// without holding the handle's mutex, so the call gets ErrTurnContended while another driver holds
+// the turn, and while the rollback is in progress any other caller gets ErrTurnContended: another
+// worker, or a second caller on this same handle. Over a store with no Leaser the handle's mutex
+// is held across the rollback, and a second caller on the handle waits for it.
+//
+// Deprecated: transitional; renamed by the 1.0 rewrite. Use SendMessage, which becomes Send.
 func (s *Session) Send(ctx context.Context, input string) (Message, error) {
-	start, err := s.startTurn(ctx, input)
-	if err != nil {
-		return Message{}, err
+	msg, _, err := s.send(ctx, UserText(input), nil)
+	return msg, err
+}
+
+// SendMessage runs one conversation turn as Send does, for input (which may carry images) under
+// opts, the turn run's options (journaled in its run:start, as RunMessage journals them), and
+// returns the turn's Result: non-nil whatever the error once the turn has its run (an invalid
+// option, or a refusal to start the turn, such as another message's open turn, has none).
+//
+// Deprecated: transitional; renamed by the 1.0 rewrite. SendMessage becomes Send.
+func (s *Session) SendMessage(ctx context.Context, input Message, opts ...RunOption) (*Result, error) {
+	_, res, err := s.send(ctx, input, opts)
+	return res, err
+}
+
+// send is Send's and SendMessage's body.
+func (s *Session) send(ctx context.Context, input Message, opts []RunOption) (Message, *Result, error) {
+	t0 := time.Now()
+	var cfg runConfig
+	if err := applyOptions("run", &cfg, opts, RunOption.applyRun); err != nil {
+		return Message{}, nil, err
 	}
-	return s.runTurn(ctx, start.RunID, "", input)
+	start, n, err := s.startTurn(ctx, input)
+	if err != nil {
+		return Message{}, nil, err
+	}
+	msg, tot, turns, err := s.runTurn(ctx, start.RunID, &SessionRef{ID: s.id, Turn: &n}, input, cfg)
+	return s.turnResult(t0, start.RunID, msg, tot, turns, err)
+}
+
+// turnResult is the Result of a turn's drive.
+func (s *Session) turnResult(t0 time.Time, runID string, msg Message, tot usageTotals, turns int, err error) (Message, *Result, error) {
+	res := &Result{RunID: runID, Usage: tot.answer, Spend: tot.spend, Turns: turns, Duration: time.Since(t0)}
+	if err == nil {
+		res.Message = msg
+	}
+	return msg, res, err
 }
 
 // protocol:sessions begin SCheck SDo
 
-// startTurn returns the open Send turn for input, or claims a new one. A claim lost to another
-// handle reloads the journal and tries once more. An open turn of another message is refused only
-// once the journal has been read again: this handle's view of it may be stale (its own Send of
-// that message failed or paused, and another handle has since finished the turn).
-func (s *Session) startTurn(ctx context.Context, input string) (turnStart, error) {
+// startTurn returns the open Send turn for input, or claims a new one, and its index. A claim lost
+// to another handle reloads the journal and tries once more. An open turn of another message is
+// refused only once the journal has been read again (this handle's view of it may be stale: its own
+// Send of that message failed or paused, and another handle has since finished the turn), and only
+// if its run was not cancelled: a cancelled turn is recorded closed first (P14 rule 16).
+func (s *Session) startTurn(ctx context.Context, input Message) (turnStart, int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	reloaded := false
+	rolledBack := "" // the turn run whose rollback this call drove: it is driven at most once
 	for attempt := 0; ; attempt++ {
-		if s.open != nil && s.open.Input != input && !reloaded {
+		if s.open != nil && !sameInput(s.open.Input, s.open.Message, input) && !reloaded {
 			if err := s.reload(ctx); err != nil {
-				return turnStart{}, err
+				return turnStart{}, 0, err
 			}
 			reloaded = true
 		}
-		if s.open != nil {
-			if s.open.Input != input {
-				return turnStart{}, fmt.Errorf("session %s: a turn for %q is still open; send that message again to finish it: %w", s.id, s.open.Input, ErrConfig)
+		if s.open != nil && !sameInput(s.open.Input, s.open.Message, input) {
+			closed, requested, err := s.closeIfCancelled(ctx)
+			if err != nil {
+				return turnStart{}, 0, err
 			}
-			return *s.open, nil
+			if closed {
+				attempt--
+				continue
+			}
+			if requested != "" && requested != rolledBack {
+				// The saga turn's rollback, without s.mu; the journal is read again after it,
+				// since another caller may have moved the session on meanwhile.
+				if err := s.rollbackTurn(ctx, requested); err != nil {
+					return turnStart{}, 0, err
+				}
+				rolledBack = requested
+				if err := s.reload(ctx); err != nil {
+					return turnStart{}, 0, err
+				}
+				attempt--
+				continue
+			}
+		}
+		if s.open != nil {
+			if !sameInput(s.open.Input, s.open.Message, input) {
+				return turnStart{}, 0, fmt.Errorf("session %s: a turn for %q is still open; send that message again to finish it: %w", s.id, s.open.Input, ErrConfig)
+			}
+			return *s.open, s.openAt, nil
 		}
 		claim, err := newClaim()
 		if err != nil {
-			return turnStart{}, err
+			return turnStart{}, 0, err
 		}
 		n := s.starts
-		st := turnStart{Input: input, RunID: sessionTurnRunID(s.id, n), Claim: claim}
+		text, msg := sessionInput(input)
+		st := turnStart{Input: text, Message: msg, RunID: sessionTurnRunID(s.id, n), Claim: claim}
 		b, err := marshalJournal(st)
 		if err != nil {
-			return turnStart{}, fmt.Errorf("session %s: encode turn start: %w (%w)", s.id, err, ErrConfig)
+			return turnStart{}, 0, fmt.Errorf("session %s: encode turn start: %w (%w)", s.id, err, ErrConfig)
 		}
 		got, err := s.agent.store.Do(ctx, sessionJournalID(s.id), sessionStartStep(n), func(context.Context) (Record, error) {
 			return Record{Kind: StepValue, Result: b}, nil
 		})
 		if err != nil {
-			return turnStart{}, fmt.Errorf("session %s: record turn start %d: %w (%w)", s.id, n, err, ErrStorage)
+			return turnStart{}, 0, fmt.Errorf("session %s: record turn start %d: %w (%w)", s.id, n, err, ErrStorage)
 		}
 		var won turnStart
 		if err := json.Unmarshal(got.Result, &won); err != nil {
-			return turnStart{}, fmt.Errorf("session %s: decode turn start %d: %w (%w)", s.id, n, err, ErrProtocol)
+			return turnStart{}, 0, fmt.Errorf("session %s: decode turn start %d: %w (%w)", s.id, n, err, ErrProtocol)
 		}
 		if won.Claim == claim {
 			s.starts++
-			s.open = &st
-			return st, nil
+			s.open, s.openAt = &st, n
+			return st, n, nil
 		}
 		// Another handle started turn n first: this handle is stale. Catch up and try again.
 		if attempt > 0 {
-			return turnStart{}, fmt.Errorf("session %s: another writer is sending on this session: %w", s.id, ErrConfig)
+			return turnStart{}, 0, fmt.Errorf("session %s: another writer is sending on this session: %w", s.id, ErrConfig)
 		}
 		if err := s.reload(ctx); err != nil {
-			return turnStart{}, err
+			return turnStart{}, 0, err
 		}
 		reloaded = true
 	}
+}
+
+// closeIfCancelled records the open Send turn closed if its run was cancelled (its first end
+// marker is run:cancelled), and reloads: rule 16 of the P14 contract (model 12's S3). A saga turn's
+// Cancel writes only a rollback request, which the turn's next drive acts on: the session owns its
+// turns, so it drives that rollback itself, and closes the turn once the rollback has written
+// run:cancelled. closeIfCancelled does not drive it: it returns the turn run's ID as requested,
+// and startTurn drives the rollback without s.mu (rollbackTurn) and then checks again. The caller
+// holds s.mu, and s.open is set.
+func (s *Session) closeIfCancelled(ctx context.Context) (closed bool, requested string, _ error) {
+	runID := s.open.RunID
+	cancelled, err := cancelledFirst(ctx, s.agent.store, runID)
+	if err != nil || !cancelled {
+		if err == nil {
+			var ok bool
+			if _, ok, err = lookup(ctx, s.agent.store, runID, runCancelRequestedStep); ok {
+				requested = runID
+			}
+		}
+		return false, requested, err
+	}
+	claim, err := newClaim()
+	if err != nil {
+		return false, "", err
+	}
+	rec := turnRecord{Input: s.open.Input, Message: s.open.Message, RunID: runID, Claim: claim, Cancelled: true}
+	if err := s.appendTurn(ctx, rec); err != nil {
+		return false, "", err
+	}
+	return true, "", s.reload(ctx)
+}
+
+// protocol:sessions end
+
+// protocol:sessions begin SRb
+
+// rollbackTurn drives the rollback a Cancel of the saga turn run runID requested, under the turn
+// run's lease (as every drive of a turn is). Over a store with a Leaser it runs without s.mu: a
+// rollback runs compensators, which may take as long as any tool call, and the lease keeps any
+// other driver, another caller on this handle included, off the turn run: such a caller gets
+// ErrTurnContended until the rollback is over. Over a store with no Leaser nothing else would keep
+// two callers on this handle from driving the same rollback at once, so s.mu stays held across
+// the drive, and another caller on the handle waits for it. The rollback needs no transcript: the
+// drive's open finds the request before any model call, and the saga path compensates from the
+// turn run's own journal. A rollback that stopped (a failed compensator, an unknown outcome)
+// returns its error, and the turn stays open; one that found the turn's answer recorded before the
+// request returns nil, and the turn is not closed. The caller holds s.mu; over a store with a
+// Leaser it is released for the drive and held again when rollbackTurn returns.
+func (s *Session) rollbackTurn(ctx context.Context, runID string) error {
+	if _, leased := capabilityOf[Leaser](s.agent.store); leased {
+		s.mu.Unlock()
+		defer s.mu.Lock()
+	}
+	d := &driveSpec{resume: true, kind: RunKindSessionTurn, cfg: runConfig{saga: true}}
+	if _, _, _, err := s.driveRun(ctx, runID, d); err != nil && !cancelledEnd(err) {
+		return err
+	}
+	return nil
 }
 
 // protocol:sessions end
@@ -290,21 +453,46 @@ func (s *Session) startTurn(ctx context.Context, input string) (turnStart, error
 // arriving in between gets its own turn.
 // Reusing a key with a different input is ErrConfig, whether the key's turn has finished or is
 // still open: the turn's run records the message it answers (see RunStart).
+//
+// Deprecated: transitional; renamed by the 1.0 rewrite. Use SendMessageOnce, which becomes
+// SendOnce.
 func (s *Session) SendOnce(ctx context.Context, key, input string) (Message, error) {
+	msg, _, err := s.sendOnce(ctx, key, UserText(input), nil)
+	return msg, err
+}
+
+// SendMessageOnce runs one conversation turn for the message key as SendOnce does, for input under
+// opts, and returns the turn's Result.
+//
+// Deprecated: transitional; renamed by the 1.0 rewrite. SendMessageOnce becomes SendOnce.
+func (s *Session) SendMessageOnce(ctx context.Context, key string, input Message, opts ...RunOption) (*Result, error) {
+	_, res, err := s.sendOnce(ctx, key, input, opts)
+	return res, err
+}
+
+// sendOnce is SendOnce's and SendMessageOnce's body.
+func (s *Session) sendOnce(ctx context.Context, key string, input Message, opts []RunOption) (Message, *Result, error) {
+	t0 := time.Now()
 	if key == "" {
-		return Message{}, fmt.Errorf("session %s: SendOnce: empty key: %w", s.id, ErrConfig)
+		return Message{}, nil, fmt.Errorf("session %s: SendOnce: empty key: %w", s.id, ErrConfig)
 	}
+	var cfg runConfig
+	if err := applyOptions("run", &cfg, opts, RunOption.applyRun); err != nil {
+		return Message{}, nil, err
+	}
+	runID := sessionEventRunID(s.id, key)
 	tr, ok, err := s.keyedTurn(ctx, key)
 	if err != nil {
-		return Message{}, err
+		return Message{}, &Result{RunID: runID, Duration: time.Since(t0)}, err
 	}
 	if ok {
-		if tr.Input != input {
-			return Message{}, fmt.Errorf("session %s: key %q was already used for a different message: %w", s.id, key, ErrConfig)
+		if !sameInput(tr.Input, tr.Message, input) {
+			return Message{}, &Result{RunID: runID, Duration: time.Since(t0)}, fmt.Errorf("session %s: key %q was already used for a different message: %w", s.id, key, ErrConfig)
 		}
-		return tr.Answer, nil
+		return s.turnResult(t0, runID, tr.Answer, usageTotals{}, 0, nil)
 	}
-	return s.runTurn(ctx, sessionEventRunID(s.id, key), key, input)
+	msg, tot, turns, err := s.runTurn(ctx, runID, &SessionRef{ID: s.id, Key: key}, input, cfg)
+	return s.turnResult(t0, runID, msg, tot, turns, err)
 }
 
 // keyedTurn returns the completed SendOnce turn for key, reloading the journal first if this
@@ -326,57 +514,70 @@ func (s *Session) keyedTurn(ctx context.Context, key string) (turnRecord, bool, 
 // protocol:sessions begin DLoad DCall DDone AReload
 
 // runTurn drives the turn's run (see driveRun) and appends the completed turn to the transcript.
-func (s *Session) runTurn(ctx context.Context, runID, key, input string) (Message, error) {
+func (s *Session) runTurn(ctx context.Context, runID string, ref *SessionRef, input Message, cfg runConfig) (Message, usageTotals, int, error) {
 	seed, err := s.turnSeed(ctx, runID)
 	if err != nil {
-		return Message{}, err
+		return Message{}, usageTotals{}, 0, err
 	}
-	seed = append(seed, UserText(input))
-
-	answer, err := s.driveRun(ctx, runID, seed)
+	d := &driveSpec{input: &input, seed: seed, kind: RunKindSessionTurn, session: ref, cfg: cfg, strictSaga: !cfg.saga}
+	answer, tot, turns, err := s.driveRun(ctx, runID, d)
 	if err != nil {
-		return answer, err // pause/error: transcript unadvanced; retry same input to resume
+		return answer, tot, turns, err // pause/error: transcript unadvanced; retry same input to resume
 	}
 
 	claim, err := newClaim()
 	if err != nil {
-		return answer, err
+		return answer, tot, turns, err
 	}
-	rec := turnRecord{Input: input, Answer: answer, Key: key, RunID: runID, Claim: claim}
+	text, msg := sessionInput(input)
+	rec := turnRecord{Input: text, Message: msg, Answer: answer, Key: ref.Key, RunID: runID, Claim: claim}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.appendTurn(ctx, rec); err != nil {
-		return answer, err
+		return answer, tot, turns, err
 	}
-	return answer, s.reload(ctx)
+	return answer, tot, turns, s.reload(ctx)
 }
 
-// driveRun drives the turn's run under its lease when the store has a Leaser (see Session), so
-// the run loads its journal, and with it every model call an earlier holder made, only once it
-// holds the lease. A run another holder leases is not driven: a finished one (holding
-// run:complete) needs no lease, and its recorded answer is returned, as a drive of it would
-// return it; any other is an error wrapping ErrTurnContended.
-func (s *Session) driveRun(ctx context.Context, runID string, seed []Message) (Message, error) {
-	var answer Message
+// driveRun drives the turn's run (d) under its lease when the store has a Leaser (see Session),
+// so the run loads its journal, and with it every model call an earlier holder made, only once it
+// holds the lease. A run another holder leases is not driven: a finished one needs no lease, and
+// its end is returned as a drive of it would return it (its first end marker: a completed run's
+// answer, to a drive with the input it answered, or ErrRunCancelled); any other is an error
+// wrapping ErrTurnContended.
+func (s *Session) driveRun(ctx context.Context, runID string, d *driveSpec) (Message, usageTotals, int, error) {
+	var (
+		answer Message
+		tot    usageTotals
+		turns  int
+	)
 	driven, err := leaseRun(ctx, s.agent.store, runID, func(ctx context.Context) error {
 		var err error
-		answer, _, _, err = s.agent.run(withSessionRun(ctx, runID), runID, seed, false, nil)
+		answer, tot, turns, err = s.agent.drive(withSessionRun(ctx, runID), runID, d)
 		return err
 	}, s.lease)
 	if err != nil || driven {
-		return answer, err
+		return answer, tot, turns, err
 	}
 	recs, err := s.agent.store.History(ctx, runID)
 	if err != nil {
-		return Message{}, storageErr("load history "+runID, err)
+		return Message{}, usageTotals{}, 0, storageErr("load history "+runID, err)
 	}
-	if final, ok := completedAnswer(recs); ok {
-		if err := checkFinishedStart(runID, recs, seed[len(seed)-1].Text()); err != nil {
-			return Message{}, err
+	if end, ended := firstEnd(recs); ended {
+		if err := checkFinishedStart(runID, recs, d.runKind(), nil); err != nil {
+			return Message{}, usageTotals{}, 0, err
 		}
-		return final, nil
+		if end.name != runCompleteStep {
+			return Message{}, journalTotals(recs), 0, endedErr(runID, end)
+		}
+		if err := checkFinishedStart(runID, recs, d.runKind(), d.input); err != nil {
+			return Message{}, usageTotals{}, 0, err
+		}
+		if final, ok := completedAnswer(recs); ok {
+			return final, journalTotals(recs), 0, nil
+		}
 	}
-	return Message{}, fmt.Errorf("session %s: turn run %s is driven by another holder; send the message again later: %w", s.id, runID, ErrTurnContended)
+	return Message{}, usageTotals{}, 0, fmt.Errorf("session %s: turn run %s is driven by another holder; send the message again later: %w", s.id, runID, ErrTurnContended)
 }
 
 // protocol:sessions end
@@ -414,8 +615,8 @@ func (s *Session) turnSeed(ctx context.Context, runID string) ([]Message, error)
 	if from.Turns < 0 || from.Turns > s.turns || s.chain[from.Turns] != from.Digest {
 		return nil, fmt.Errorf("session %s: %s names %d turns the journal does not hold: %w", s.id, name, from.Turns, ErrProtocol)
 	}
-	seed := make([]Message, 0, 2*from.Turns+1)
-	return append(seed, s.history[:2*from.Turns]...), nil
+	seed := make([]Message, 0, s.histAt[from.Turns]+1)
+	return append(seed, s.history[:s.histAt[from.Turns]]...), nil
 }
 
 // protocol:sessions end

@@ -74,10 +74,23 @@ journaled. Reusing a key for different text is `ErrConfig`; any key is allowed, 
 journal, `"<conversation>>@event/<key>"`, carries it encoded. A conversation id may not contain
 `>`: every run a session drives is named `"<id>>@..."`, which no run ID passed to `Run` can be, so
 a run of your own never shares a session's journal. `Recover` skips them (`agent.IsSessionRun`):
-an interrupted turn resumes through the session, when the event is redelivered. Several workers may
-hold handles on one conversation: every message is recorded once, and a handle that is behind
-catches up from the journal before answering (or before refusing a message because another
-message's turn looks open to it), so each new turn sees the conversation as it stands.
+an interrupted turn resumes through the session, when the event is redelivered. (`agent.ResumeAgent`
+declines a session turn's run too.) A turn's run can be cancelled like any run (`agent.Cancel`):
+`Send` of its message (the same text) then returns `agent.ErrRunCancelled`, and the next message's
+`Send` records the cancelled turn closed (with no answer, and outside the transcript) and runs its
+own turn; a `SendOnce` key whose run was cancelled stays unanswered. A saga turn's `Cancel` writes
+only its rollback request: the next message's `Send` drives that rollback itself and then records
+the turn closed. Over a store with leases it drives the rollback under the turn's lease and without
+holding the handle, so other callers are not blocked behind its compensators: while the rollback
+is in progress, any other caller gets `ErrTurnContended`, another worker or a second caller on the
+same handle alike (and the `Send` itself gets it if another worker is driving the turn). Over a
+store with no `Leaser`, the handle stays held across the rollback, so a second caller on the same
+handle waits for it. `SendMessage` and `SendMessageOnce` (the
+1.0 `Send` and `SendOnce`, under transitional names) take a `Message` and run options, journaled
+with the turn's run, and return a `Result`. Several workers may hold handles on one conversation:
+every message is recorded once, and a handle that is behind catches up from the journal before
+answering (or before refusing a message because another message's turn looks open to it), so each
+new turn sees the conversation as it stands.
 
 ### One worker drives a turn at a time
 

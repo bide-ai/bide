@@ -191,8 +191,13 @@ type RunFilter struct {
 }
 
 func IsComplete(ctx context.Context, store Durable, runID string) (bool, error)
-func Recover(ctx context.Context, store Durable, resume func(ctx context.Context, runID string) error, opts ...RecoverOption) (int, error)
-func RecoverLoop(ctx context.Context, store Durable, resume func(ctx context.Context, runID string) error, opts ...RecoverLoopOption) error
+type Resumer func(ctx context.Context, runID string, start RunStart) error
+
+func Recover(ctx context.Context, store Durable, resume Resumer, opts ...RecoverOption) (int, error)
+func RecoverLoop(ctx context.Context, store Durable, resume Resumer, opts ...RecoverLoopOption) error
+func ResumeAgent(a *Agent, opts ...RunOption) Resumer         // runs of kind agent, not typed
+func ResumeTyped[T any](a *Agent, opts ...RunOption) Resumer  // typed runs whose answer type is T
+func ResumeAny(rs ...Resumer) Resumer                         // the first that does not return ErrNotResumable
 ```
 
 The lease options (`WithLeaseHolder`, `WithLeaseTTL`, which `Lease`, `Recover` and `RecoverLoop` all
@@ -214,7 +219,16 @@ terminal marker (`run:complete`, `run:aborted`, `run:cancelled`), which a SQL st
 its query, a page of 500 run IDs at a time, so a pass reads none of the finished runs. It skips
 every sub-agent run (`agent.IsSubRun`; its root's re-run resumes it) and every session journal and
 turn run (`agent.IsSessionRun`; the session resumes a turn when its message is sent again), and
-calls `resume` for each remaining run to push it forward.
+hands each remaining run to `resume` with its `run:start` record, read under the run's lease.
+
+A run with no `run:start` (one never driven, such as a `Signal` sent to a mistyped run ID, or one
+whose first drive has not written it yet) is skipped and reported once per process as
+`ErrNotStarted` (in `Recover`'s error, or to `WithRecoverErrors`). The process remembers the
+report, not the skip: `run:start` is read again on every pass, so a run that starts later is
+recovered. A run that `resume` declines (an error wrapping `ErrNotResumable`) is reported once
+the same way. The process remembers the 65,536 runs it reported most recently; one it has
+forgotten is reported again the next time a pass finds it so. `ErrNotStarted` wraps no category:
+a run whose first drive has not written `run:start` yet is a race, not a configuration error.
 
 Another driver can finish a listed run before the pass gets to it (while the pass drives the runs
 listed before it, or, in `RecoverLoop`, waits for a free slot). So once the pass holds a run's
@@ -225,35 +239,35 @@ driver records the marker before it releases its lease. It can miss two others: 
 driver that holds no lease (a plain `Run`), and a finish in the lost-lease window, when the pass
 stalls past its lease TTL between the check and `resume` and another driver takes the run over and
 finishes it. In both cases `resume` is handed a finished run, which `Run` or `RunSaga` replays
-without firing anything again. The check costs three point reads (`Store.Get`) for each run the
-pass drives, and none for the finished runs the filter excluded; over a `Durable` that is not a
-`Journal`, one `History` instead:
+without firing anything again. The check and the `run:start` read cost four point reads
+(`Store.Get`) for each run the pass drives, and none for the finished runs the filter excluded;
+over a `Durable` that is not a `Journal`, `History` reads instead.
 
-<!-- docsnip: setup ctx context.Context; store agent.Durable; a *agent.Agent; func startFor(runID string) agent.RunStart -->
+`ResumeAgent` is the usual `Resumer`: it drives each run under the options its `run:start`
+journaled (a saga as a saga), and takes only the deployment's own options (a Waker, a clock, a
+concurrency cap, an identity's Actor); a journaled setting passed to it is `ErrConfig`, since a
+recovery drive must not change a run's options. It declines typed runs (use `ResumeTyped[T]`),
+flows and session turns with `ErrNotResumable`, and so a run whose `run:start` an earlier version
+wrote (no kind and no typed start: the record does not say whether the run is typed). Recover
+those with a `Resumer` of your own, placed after `ResumeAgent`; `ResumeAny` combines several:
+
+<!-- docsnip: setup ctx context.Context; store agent.Durable; a *agent.Agent; w agent.Waker -->
 ```go
-n, err := agent.Recover(ctx, store, func(ctx context.Context, runID string) error {
-	start, ok, err := agent.RecordedStart(ctx, store, runID) // the run's own input and entry point
-	if err != nil {
-		return err
-	}
-	if !ok {
-		start = startFor(runID) // your own record, for a run not driven under this version
-	}
-	// a was built with agent.WithWaker(waker), so a run that sleeps again registers its wake.
-	if start.Saga {
-		_, err = a.RunSaga(ctx, runID, start.Input)
-	} else {
-		_, err = a.Run(ctx, runID, start.Input)
-	}
-	return err
-})
+n, err := agent.Recover(ctx, store, agent.ResumeAgent(a, agent.WithWaker(w)))
 // n = runs re-driven; err = joined genuine failures (nil if the only "errors" were pauses)
 ```
 
-A run's first drive records its input and whether it runs as a saga (the `run:start` step), and an
-unfinished run resumes only with those: another input, or `Run` for a run started with `RunSaga` (or
-the reverse), is `ErrConfig`. A finished run returns its recorded answer only to a drive with the
-input it answered; another input is `ErrConfig` too. `RecordedStart` reads them back.
+A deployment's own `Resumer` is any `func(ctx, runID, start agent.RunStart) error`, and returns an
+error wrapping `agent.ErrNotResumable` for a run it does not drive.
+
+A run's first drive records its input, whether it runs as a saga, and the run options its caller
+passed (the `run:start` step; see `agent.RunStart`), and every later drive runs under them: a
+different limit (`WithMaxTurns`, `WithTokenBudget`) is journaled as an amendment
+(`run:limits:<n>`), and any other different setting (the input, saga, tool filter, system prompt,
+sampling, tool choice, typed schema or output mode, principal) is `ErrConfig`. A completed run
+returns its recorded answer only to a drive with the input it answered; another input is
+`ErrConfig` too. `RecordedStart` reads the record back (its `Input` is a `Message`;
+`start.Input.Text()` is its text).
 
 **Keep recovering for the life of the process.** `Recover` is one pass: a run whose holder died
 a moment ago still has a live lease, so the pass skips it, and nothing re-drives it until someone
@@ -279,7 +293,7 @@ halted runs the store holds, as long as the lapsed loop has a free slot. A run w
 lease (a plain `Run`) is left to the full pass, whose length still bounds its pickup, so resolve
 halted runs rather than leaving them for every full pass to visit:
 
-<!-- docsnip: setup ctx context.Context; store agent.Durable; resume func(ctx context.Context, runID string) error -->
+<!-- docsnip: setup ctx context.Context; store agent.Durable; resume agent.Resumer -->
 ```go
 go func() {
 	err := agent.RecoverLoop(ctx, store, resume,
@@ -297,11 +311,30 @@ are not failures. On shutdown it waits for the drives it started to return.
 
 **The completion marker lets it skip finished runs.** When a run returns its final answer,
 the loop records one terminal `StepValue` named `run:complete` (it renders as
-`step: run:complete` in the Mermaid graph above). `IsComplete` checks for it, and `Recover`'s
-filter excludes any run that has it. The marker is appended only at the terminal and is at-most-once by
+`step: run:complete` in the Mermaid graph above). `IsComplete` reports whether it is the run's
+first end marker (a run cancelled before it completed is not complete), and `Recover`'s filter
+excludes any run that has an end marker. The marker is appended only at the terminal and is at-most-once by
 name, so a replayed run never adds a second one and no earlier record's index shifts. A run
 that crashed after journaling its final answer but before the marker is not skipped; re-driving
 it writes the marker from the recorded answer without calling the model.
+
+**Cancel and Status.** `agent.Cancel(ctx, j, runID, reason)` ends a run: it writes `run:cancelled`
+(an end marker the filter excludes), or, on a saga, a rollback request `run:cancel-requested`, which
+is not an end marker, so recovery still drives the saga, whose drive rolls it back and then writes
+`run:cancelled`. A drive checks for the marker when it starts, at every turn boundary after its
+first, and after each won side-effect claim, before the call (a claim it then records as not
+started); calls already in flight finish and record their results, and a retry-safe call already
+dispatched in the current turn may still run. A sub-run reads its tree root's cancellation at the
+same checks (from the root's store, also when the sub-agent journals to another), so `Cancel` of
+the root stops the whole tree, and a `plan` flow's run reads it before
+each node that runs. A run with no `run:start` is
+`ErrNotStarted`, and a run already over is `ErrRunEnded` (one already cancelled is `nil`). A drive
+of a cancelled run returns `ErrRunCancelled`, with a `Result`. The keys `run:complete`,
+`run:aborted` and `run:cancelled` are distinct, so two can land; the first in journal order is the
+run's end for every reader, and every writer of one reads the markers back and reports the first.
+`agent.Status(ctx, j, runID)` reads a run's `RunStatus` (`not_started`, `started`, `completed`,
+`aborted`, `cancelled`, the end marker's text, the record count) from one `Load`; a paused, halted
+or limit-stopped run is `started`, since pauses are not journaled.
 
 **Pauses re-surface; they are not errors.** A re-driven run that is still waiting returns an
 `agent.Pause` (`*ApprovalPending`, `*InterruptPending`, `*TimerPending`, `*SignalPending`,

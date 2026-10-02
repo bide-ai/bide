@@ -252,7 +252,7 @@ func TestLowering_RunStartHoldsTheFlowAndItsInput(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("RecordedStart: %v, %v", ok, err)
 	}
-	if start.Kind != agent.RunKindFlow || start.Flow == nil || start.Flow.Name != "charge-flow" || start.Input != "5" {
+	if start.Kind != agent.RunKindFlow || start.Flow == nil || start.Flow.Name != "charge-flow" || start.Input.Text() != "5" {
 		t.Fatalf("recorded start = %+v, want a flow run of charge-flow with input 5", start)
 	}
 	before, err := mem.History(ctx, "r")
@@ -354,9 +354,11 @@ func TestLowering_NoHistoryReadsPerNode(t *testing.T) {
 				t.Fatalf("Run: %d, %v", out, err)
 			}
 			// The one Load is the journal's check that its header is the run's first entry, which
-			// every first drive of a new run makes (the budget agenttest holds the engine to).
-			if c := cs.Reset(); c.Load != 1 || c.Get != n+1 {
-				t.Fatalf("a fresh drive of %d nodes loaded the run %d times and made %d point reads, want 1 and %d (%v)", n, c.Load, c.Get, n+1, c.Names)
+			// every first drive of a new run makes (the budget agenttest holds the engine to). The
+			// point reads are flow:digest's and each node's memo, run:cancelled once each node will
+			// run (D1: the node's claim is won), and run:cancelled read back after run:complete.
+			if c := cs.Reset(); c.Load != 1 || c.Get != 2*n+2 {
+				t.Fatalf("a fresh drive of %d nodes loaded the run %d times and made %d point reads, want 1 and %d (%v)", n, c.Load, c.Get, 2*n+2, c.Names)
 			}
 			if out, err := flow.Run(ctx, j, "r", 0); err != nil || out != n {
 				t.Fatalf("replay: %d, %v", out, err)
@@ -365,10 +367,11 @@ func TestLowering_NoHistoryReadsPerNode(t *testing.T) {
 			if c.Load != 0 {
 				t.Fatalf("a replay of %d nodes loaded the run %d times, want 0 (%v)", n, c.Load, c.Names)
 			}
-			// A replay of a finished run reads its completion and nothing else, and writes nothing
-			// but the start's insert-if-absent (which finds the recorded one).
-			if c.Get != 1 || c.Insert != 1 || c.Inserted != 0 {
-				t.Fatalf("a replay of %d nodes made %d point reads and %d inserts storing %d entries, want 1, 1 and 0 (%v)", n, c.Get, c.Insert, c.Inserted, c.Names)
+			// A replay of a finished run reads its end markers (run:complete and run:cancelled: the
+			// first is its end) and nothing else, and writes nothing but the start's
+			// insert-if-absent (which finds the recorded one).
+			if c.Get != 2 || c.Insert != 1 || c.Inserted != 0 {
+				t.Fatalf("a replay of %d nodes made %d point reads and %d inserts storing %d entries, want 2, 1 and 0 (%v)", n, c.Get, c.Insert, c.Inserted, c.Names)
 			}
 		})
 	}
@@ -441,7 +444,7 @@ func TestLowering_RecoverLoopTreatsAFlowHaltAsAPause(t *testing.T) {
 	drives := map[string]int{}
 	var results []error
 	var reported []error
-	resume := func(ctx context.Context, runID string) error {
+	resume := func(ctx context.Context, runID string, _ agent.RunStart) error {
 		var err error
 		switch runID {
 		case "halting":

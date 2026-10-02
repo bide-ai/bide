@@ -120,6 +120,12 @@ guarantees:
   resolution is final, so one the flow could not read would leave the run unable to continue). Like
   `agent.ResolveHaltRef`, it resolves only a node that halted: one with a live attempt marker
   (`agent.ErrNoLiveAttempt` otherwise).
+- **A cancelled flow stops at its next node.** `agent.Cancel(ctx, j, runID, reason)` of a flow's run
+  writes `run:cancelled`. A node reads it once it will run (after a side-effect node's claim is won,
+  recording the attempt as not started), so no node starts after `Cancel` returns; a node already
+  running finishes. The flow then returns `agent.ErrRunCancelled`, and so does every later `Run`.
+  A flow that completed while `Cancel` landed reads its end markers back: the first in journal order
+  is its end, as `agent.Status` reports it.
 - **A node that provably never started is re-attempted.** A driver cancelled (or whose store failed)
   after claiming a node's marker and before calling its body records that the attempt did not start,
   and the next `Run` re-attempts the node under a numbered marker (`attempt:retry:<n>:step:node:<name>`)

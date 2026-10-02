@@ -70,8 +70,8 @@ func (m *MemStore) Insert(ctx context.Context, runID, name string, data []byte) 
 	if err := ctx.Err(); err != nil {
 		return Entry{}, false, err
 	}
+	data = bytes.Clone(data) // outside the mutex: the critical section only places the entry
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	m.init()
 	r := m.runs[runID]
 	if r == nil {
@@ -79,11 +79,14 @@ func (m *MemStore) Insert(ctx context.Context, runID, name string, data []byte) 
 		m.runs[runID] = r
 	}
 	if i, ok := r.byName[name]; ok {
-		return cloneEntry(r.entries[i]), false, nil
+		e := r.entries[i]
+		m.mu.Unlock()
+		return cloneEntry(e), false, nil // an entry is never modified once appended
 	}
-	e := Entry{Seq: int64(len(r.entries)), Name: name, Data: bytes.Clone(data)}
+	e := Entry{Seq: int64(len(r.entries)), Name: name, Data: data}
 	r.byName[name] = len(r.entries)
 	r.entries = append(r.entries, e)
+	m.mu.Unlock()
 	return cloneEntry(e), true, nil
 }
 
@@ -93,16 +96,19 @@ func (m *MemStore) Get(ctx context.Context, runID, name string) (Entry, bool, er
 		return Entry{}, false, err
 	}
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	r := m.runs[runID]
-	if r == nil {
-		return Entry{}, false, nil
+	var e Entry
+	ok := false
+	if r := m.runs[runID]; r != nil {
+		var i int
+		if i, ok = r.byName[name]; ok {
+			e = r.entries[i]
+		}
 	}
-	i, ok := r.byName[name]
+	m.mu.Unlock()
 	if !ok {
 		return Entry{}, false, nil
 	}
-	return cloneEntry(r.entries[i]), true, nil
+	return cloneEntry(e), true, nil // outside the mutex: an entry is never modified once appended
 }
 
 // Load implements Store. It takes the run's entries as of the call and yields them without

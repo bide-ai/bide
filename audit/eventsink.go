@@ -233,7 +233,11 @@ func Record(log *EventLog, stream *agent.AgentStream, onEvent func(agent.AgentEv
 			onEvent(e)
 		}
 	}
-	msg, err := stream.Final()
+	res, err := stream.Result()
+	var msg agent.Message
+	if res != nil {
+		msg = res.Message
+	}
 	if err != nil {
 		return msg, err
 	}

@@ -85,21 +85,17 @@ func unknownStepOutcome(err error) bool {
 // auto-roll-back a step that may have committed; a human decides. A failure a human then
 // records with ResolveHaltRef (Outcome.IsError) is a failed step: the next RunSaga rolls back.
 func (a *Agent) RunSaga(ctx context.Context, runID, input string) (Message, error) {
-	return a.runSaga(ctx, runID, input, nil)
-}
-
-// runSaga is the shared body of RunSaga and StreamSaga; emit (may be nil) receives
-// lifecycle events as the loop runs.
-func (a *Agent) runSaga(ctx context.Context, runID, input string, emit func(AgentEvent)) (Message, error) {
-	out, _, _, err := a.runSagaWithTelemetry(ctx, runID, input, emit)
+	in := UserText(input)
+	out, _, _, err := a.drive(ctx, runID, &driveSpec{input: &in, cfg: runConfig{saga: true}})
 	return out, err
 }
 
 // protocol:delegation begin DOpen DRb DRbEnd RbOpen RbLoop RbSub RbSubRet RbBind RbRec RbBindRet RbComp RbRe RbReRun RbReRet RbReW
 
-// runSagaWithTelemetry is the body of runSaga that also returns usage and turn count, for
-// RunSagaResult.
-func (a *Agent) runSagaWithTelemetry(ctx context.Context, runID, input string, emit func(AgentEvent)) (Message, usageTotals, int, error) {
+// runSagaWithTelemetry is a saga's drive: the rollback of a saga whose failure is recorded, or the
+// loop, and the rollback a failed step or a rollback request starts. It returns the run's usage
+// and turn count, for a Result.
+func (a *Agent) runSagaWithTelemetry(ctx context.Context, runID string, d *driveSpec) (Message, usageTotals, int, error) {
 	if err := checkRunID(ctx, runID); err != nil {
 		return Message{}, usageTotals{}, 0, err
 	}
@@ -114,20 +110,49 @@ func (a *Agent) runSagaWithTelemetry(ctx context.Context, runID, input string, e
 	if err != nil {
 		return Message{}, usageTotals{}, 0, err
 	}
+	// A run that is over is final (model 10's DOpen): only a saga whose first end marker is its own
+	// run:aborted walks its rollback again (memoized, to report what it undid); any other ended run
+	// is reported by run. A failed saga that is not over is held to its run:start first, as every
+	// drive is (rules 9 to 11), and then rolled back.
+	end, ended := firstEnd(recs)
+	if aborting && ended && end.name != runAbortedStep {
+		aborting = false
+	}
 	if aborting {
 		if err := linkSubRun(ctx, runID, a.store); err != nil { // run does this for the other drives
 			return Message{}, usageTotals{}, 0, err
 		}
+		if !ended {
+			_, _, wrote, err := a.openPlan(ctx, runID, d, recs)
+			if err != nil {
+				return Message{}, journalTotals(recs), 0, err
+			}
+			if len(wrote) > 0 {
+				return a.runSagaWithTelemetry(ctx, runID, d) // DStart, DAmend: back to DOpen
+			}
+		}
 		// Re-entered after it aborted (a sub-saga whose parent had not recorded the failure): its
 		// usage goes to the tool call that started it, as run reports it (see callUsage).
 		reportUsage(ctx, runID, journalTotals(recs))
-		return Message{}, usageTotals{}, 0, a.rollback(ctx, runID, errors.New(cause), cause)
+		// A rollback request is checked before the recorded failure (model 10's DOpen): once Cancel
+		// has asked for the rollback, the saga ends run:cancelled.
+		if r, ok := recordNamed(recs, runCancelRequestedStep); ok && !ended {
+			trip := &cancelTrip{reason: endText(r)}
+			out, err := a.rollback(ctx, runID, fmt.Errorf("run %s: %w", runID, ErrRunCancelled), trip.reason, trip)
+			return out, usageTotals{}, 0, err
+		}
+		out, err := a.rollback(ctx, runID, errors.New(cause), cause, nil)
+		return out, usageTotals{}, 0, err
 	}
 
-	out, usage, turns, err := a.run(ctx, runID, []Message{UserText(input)}, true, emit)
-	var trip *sagaTrip
-	if errors.As(err, &trip) {
-		return Message{}, usageTotals{}, 0, a.rollback(ctx, runID, trip.cause, trip.journaled)
+	out, usage, turns, err := a.run(ctx, runID, d)
+	if trip, ok := errors.AsType[*sagaTrip](err); ok {
+		out, err := a.rollback(ctx, runID, trip.cause, trip.journaled, nil)
+		return out, usage, turns, err
+	}
+	if trip, ok := errors.AsType[*cancelTrip](err); ok {
+		out, err := a.rollback(ctx, runID, fmt.Errorf("run %s: %w", runID, ErrRunCancelled), trip.reason, trip)
+		return out, usage, turns, err
 	}
 	return out, usage, turns, err
 }
@@ -138,20 +163,62 @@ func (a *Agent) runSagaWithTelemetry(ctx context.Context, runID, input string, e
 
 // rollback compensates runID's writes and returns *SagaAborted with cause. causeText is the text the
 // saga's failure record holds for cause, redacted for the journal; the terminal marker records it,
-// never cause's own text.
-func (a *Agent) rollback(ctx context.Context, runID string, cause error, causeText string) error {
+// never cause's own text. A rollback a cancellation asked for (cancel is its trip, causeText the
+// reason Cancel was given) ends the run with run:cancelled; any other with run:aborted.
+//
+// The marker is read back (rule 4): when another end marker landed first (the saga completed, or
+// another drive's rollback ended it otherwise), that one is the run's end, and the rollback
+// reports it: a completed run's answer, or the error its end gives.
+func (a *Agent) rollback(ctx context.Context, runID string, cause error, causeText string, cancel *cancelTrip) (Message, error) {
 	comp, uncomp, unknown, cerr := a.rollbackRun(ctx, runID, rootRunID(ctx, runID))
 	if cerr == nil {
 		// The rollback finished: the run is over. Mark it terminal so a recovery supervisor
 		// leaves it alone. A rollback that stopped (an unknown outcome, a failed compensator) is
 		// not marked, so it is re-driven once the cause is resolved.
-		if _, err := a.store.Do(ctx, runID, runAbortedStep, func(context.Context) (Record, error) {
-			return Record{Kind: StepValue, Result: mustJSON(causeText)}, nil
-		}); err != nil {
+		if cancel == nil {
+			// A failure's rollback of a saga whose rollback request exists ends it cancelled: once
+			// Cancel has asked for the rollback, the run's end is run:cancelled, whichever cause
+			// started the rollback (one Get, on a failure's rollback only). A sub-run's tree root's
+			// cancellation asks for it too (up to two Gets more, from the root's store).
+			r, ok, err := lookup(ctx, a.store, runID, runCancelRequestedStep)
+			if root := treeRootID(runID); err == nil && !ok && root != runID {
+				r, ok, err = rootCancelRecord(ctx, rootStoreOf(ctx, root, a.store), root)
+			}
+			if err != nil {
+				return Message{}, &SagaAborted{RunID: runID, Cause: cause, Compensated: comp, Uncompensated: uncomp, UnknownOutcome: unknown,
+					CompensateErr: fmt.Errorf("saga %s: read the rollback request: %w", runID, err)}
+			}
+			if ok {
+				cancel, causeText = &cancelTrip{reason: endText(r)}, endText(r)
+				cause = fmt.Errorf("run %s: %w (a step failed after the cancellation was requested: %w)", runID, ErrRunCancelled, cause)
+			}
+		}
+		name, value := runAbortedStep, mustJSON(causeText)
+		if cancel != nil {
+			name, value = runCancelledStep, mustJSONValue(cancelReason{Reason: causeText})
+		}
+		first, err := writeEnd(ctx, a.store, runID, name, Record{Kind: StepValue, Result: value}, endOthers(name, true))
+		switch {
+		case err != nil:
 			cerr = fmt.Errorf("saga %s: record the finished rollback: %w (%w)", runID, err, ErrStorage)
+		case first.name == runCompleteStep:
+			return a.endVerdict(ctx, runID)
+		case first.name == name:
+		case first.name == runCancelledStep:
+			cause = fmt.Errorf("run %s: %w (cancelled before it aborted)", runID, ErrRunCancelled)
+		case first.name == runAbortedStep:
+			// Another drive's rollback of a failure ended the run first: the run aborted, and this
+			// rollback reports that end, not its own cancellation.
+			cause = fmt.Errorf("saga %s aborted before its cancellation's rollback finished: %s", runID, endText(first.rec))
 		}
 	}
-	return &SagaAborted{RunID: runID, Cause: cause, Compensated: comp, Uncompensated: uncomp, UnknownOutcome: unknown, CompensateErr: cerr}
+	return Message{}, &SagaAborted{RunID: runID, Cause: cause, Compensated: comp, Uncompensated: uncomp, UnknownOutcome: unknown, CompensateErr: cerr}
+}
+
+// mustJSONValue is v's journal encoding, for a value that always encodes.
+func mustJSONValue(v any) json.RawMessage {
+	b, _ := marshalJournal(v)
+	return b
 }
 
 // protocol:lifecycle end

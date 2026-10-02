@@ -30,7 +30,7 @@ func TestLease_SameHolderDoesNotDriveTwice(t *testing.T) {
 	<-entered
 
 	redriven := false
-	n, err := Recover(ctx, s, func(context.Context, string) error { redriven = true; return nil },
+	n, err := Recover(ctx, s, func(context.Context, string, RunStart) error { redriven = true; return nil },
 		WithLeaseHolder("worker-1"), WithLeaseTTL(time.Hour))
 	if err != nil {
 		t.Fatalf("Recover: %v", err)

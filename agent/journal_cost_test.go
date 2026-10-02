@@ -186,7 +186,9 @@ func (j *journalOps) Unwrap() Durable { return j.MemStore }
 
 // A live run reads its journal once, at the start, and records each step once: its budget and
 // token totals are kept up to date from the records it writes, not by reading the journal again
-// each turn. Each record it writes is decoded once.
+// each turn. Each record it writes is decoded once. Over a Durable with no Journal (this shim), the
+// P14 point reads (run:cancelled at the turn boundary, the end markers read back after
+// run:complete) are each a History: two more here.
 func TestLiveRun_JournalOperations(t *testing.T) {
 	const marker = "journal-ops-marker"
 	decodes := countDecodes(t, marker)
@@ -197,14 +199,19 @@ func TestLiveRun_JournalOperations(t *testing.T) {
 	if _, err := a.Run(context.Background(), "r", "go "+marker); err != nil {
 		t.Fatal(err)
 	}
-	// run:start, @llm/0, the tool's result, @llm/1, run:complete.
-	if store.histories != 1 || store.read != 0 || store.dos != 5 {
-		t.Fatalf("a fresh run with one tool call read History %d times (%d records) and made %d Do calls; want 1 (0 records) and 5",
+	// run:start, @llm/0, the tool's result, @llm/1, run:complete; the Load, the Load again once
+	// run:start is written (the header and run:start: model 10's DStart returns to DOpen), the turn
+	// boundary's run:cancelled check (the header, run:start, @llm/0 and the result) and the
+	// read-back after run:complete (those, @llm/1 and run:complete).
+	if store.histories != 4 || store.read != 12 || store.dos != 5 {
+		t.Fatalf("a fresh run with one tool call read History %d times (%d records) and made %d Do calls; want 4 (12 records) and 5",
 			store.histories, store.read, store.dos)
 	}
-	// Every record but run:complete carries the marker (the input, the call's ID, the answer).
-	if n := decodes.Load(); n != 4 {
-		t.Fatalf("the run decoded the four records that carry the marker %d times, want once each", n)
+	// Every record but run:complete carries the marker (the input, the call's ID, the answer). The
+	// records the run writes are decoded once each (4); the three reads above decode what they
+	// read again (1 after run:start, 3 at the turn boundary, 4 after run:complete).
+	if n := decodes.Load(); n != 12 {
+		t.Fatalf("the run decoded the records that carry the marker %d times, want 4 written and 8 read back", n)
 	}
 }
 

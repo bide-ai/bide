@@ -375,7 +375,8 @@ func (b *Builder[In, Out]) Model[I, O any](name, prompt string, opts ...NodeOpti
 // and wraps agent.ErrToolOutcomeUnknown. A node's error records nothing either way: a side-effect
 // node's attempt marker then halts the next drive, and a retry-safe node runs again.
 //
-// Like the agent's base handler, it first asks toolhook.CallGuard (audit refuses a call made under
+// Like the agent's base handler, it does not call a tool whose context is done or whose deadline
+// has passed (ErrToolNotCalled), and it first asks toolhook.CallGuard (audit refuses a call made under
 // a bound grant that has expired), so a flow run under a delegation cannot act past its grant
 // either; a refused call never reaches the tool.
 func callTool(ctx context.Context, t agent.Tool, timeout time.Duration, args json.RawMessage) (json.RawMessage, error) {
@@ -383,6 +384,15 @@ func callTool(ctx context.Context, t agent.Tool, timeout time.Duration, args jso
 		if err := guard(ctx); err != nil {
 			return nil, fmt.Errorf("plan: tool %q was not called: %w (%w)", agent.SpecOf(t).Name, err, agent.ErrToolNotCalled)
 		}
+	}
+	// A deadline that has already passed leaves the tool uncalled, as the agent's base handler
+	// leaves it: the call fails as a known timeout rather than start an effect already out of time.
+	if pastDeadline(ctx) {
+		cause := ctx.Err()
+		if cause == nil {
+			cause = context.DeadlineExceeded // the deadline passed and its timer has not run yet
+		}
+		return nil, fmt.Errorf("plan: tool %q was not called: its context was done: %w (%w)", agent.SpecOf(t).Name, cause, agent.ErrToolNotCalled)
 	}
 	if timeout <= 0 {
 		return t.Call(ctx, args)

@@ -418,14 +418,29 @@ model as the call's result, so the model can correct the call. `encoding/json` w
 values, match names case-insensitively, drop unknown names, and keep the last duplicate. Give each
 argument field the json tag the model sees in the schema.
 
-`Run` returns just the final message. For a run summary (token usage for the whole run,
-including cache and sub-agents; model-turn count; wall-clock duration) use `RunResult` (and `RunSagaResult`):
+`Run` returns just the final message. The Run API, under its transitional names until the 1.0
+rewrite renames them (`RunMessage` becomes `Run`, `ResumeRun` becomes `Resume`), takes a `Message`
+input (text, or text and images) and per-run options, and returns a `Result` (token usage for the
+whole run, including cache and sub-agents; model-turn count; wall-clock duration). The `Result` is
+non-nil on every error once the run ID is valid: a pause, a halt, a failure, a saga's abort, a
+cancellation:
 
 <!-- docsnip: setup ctx context.Context; a *agent.Agent; runID string; input string -->
 ```go
-res, err := a.RunResult(ctx, runID, input)
+res, err := a.RunMessage(ctx, runID, agent.UserText(input),
+	agent.WithTokenBudget(50_000), agent.WithSystemPrompt("You are terse."))
 // res.Message, res.Usage, res.Spend, res.Turns, res.Duration, res.RunID
+_ = err
 ```
+
+A run's first drive journals its input and the options its caller passed in `run:start`, and
+every later drive runs under them, a recovery drive included: `ResumeRun(ctx, runID)` needs
+neither, a later drive may raise or lower a limit (`WithMaxTurns`, `WithTokenBudget`: journaled
+as an amendment), and any other different setting is `ErrConfig`. `WithSaga()` runs the run as a
+saga, and `WithToolFilter(names...)` restricts it to some of the agent's tools, enforced when each
+call is dispatched. `agent.Cancel(ctx, j, runID, reason)` cancels a run (a saga is rolled back
+first), and `agent.Status(ctx, j, runID)` reads its state from the journal. `RunResult` and
+`RunSagaResult` are the transitional string forms.
 
 ## Streaming
 
@@ -469,7 +484,8 @@ Two things worth knowing, both consequences of durability:
   `ToolCompleted` before live progress, so a fresh UI reconstructs the whole story after a
   crash, and a replayed turn produces no token deltas (it was already decided).
 
-`StreamSaga` is the streaming counterpart of `RunSaga`.
+`StreamSaga` is the streaming counterpart of `RunSaga`. `StreamMessage(ctx, runID, input, opts...)`
+is `RunMessage`'s, and its `AgentStream.Result()` returns what `RunMessage` would.
 
 ## Typed output
 
@@ -489,7 +505,10 @@ w, err := agent.RunTyped[Weather](ctx, a, runID, "weather in SF?")
 // w.City == "SF", w.TempF == 68
 ```
 
-It's a package function, not a method (Go methods can't add type parameters). The answer is the
+`a.RunTypedMessage[T](ctx, runID, input, opts...)` is the Run API's form, a Go 1.27 generic method
+that returns the run's `Result` too (its `Output` is the answer as journaled). A typed run journals
+its output mode and `T`'s schema in `run:start`, so resuming it through an untyped entry point, or
+with another `T`, is `ErrConfig`; recovery resumes it with `agent.ResumeTyped[T](a)`. The answer is the
 arguments `final_answer` accepted, decoded strictly like any `Func` tool's (a loose call goes back
 to the model to correct), as the tool received them after any tool middleware. The tool journals
 them as its result, so the answer is **resume-safe**: a crash mid-run recovers the typed answer
@@ -498,10 +517,11 @@ Only if the model never makes one (it replies in plain JSON text instead) does `
 the text of the run's final turn. `T` must be a JSON object (a struct, a pointer to one, or a map),
 since providers take tool arguments only as an object; any other `T` is `ErrConfig`.
 
-On OpenAI-compatible providers with strict structured outputs, `RunTypedNative[T]` uses the
-provider's native JSON-schema response format instead of the tool (schema enforced provider-side,
-no tool round-trip); the Anthropic adapter does not support it and returns `ErrConfig`, so use
-`RunTyped` there for provider-agnostic output.
+On OpenAI-compatible providers with strict structured outputs, `RunTypedNative[T]` (or
+`RunTypedMessage` with `agent.WithOutputMode(agent.OutputNative)`) uses the provider's native
+JSON-schema response format instead of the tool (schema enforced provider-side, no tool
+round-trip); the Anthropic adapter does not support it and returns `ErrConfig`, so use `RunTyped`
+there for provider-agnostic output.
 
 ## Sampling
 
@@ -558,7 +578,11 @@ twice, or answer one message with another's reply. Over a store with leases (`Me
 Postgres), a turn is driven by one worker at a time under its run's lease, so its token budget
 holds across workers; a second worker sent the same message meanwhile gets `ErrTurnContended` and
 sends it again later. A turn resumed after a crash is seeded with the same transcript it started
-with, even if other messages were answered in between.
+with, even if other messages were answered in between. `SendMessage` and `SendMessageOnce`
+(transitional names for the 1.0 `Send` and `SendOnce`) take a `Message` and run options and return
+a `Result`. A turn whose run was cancelled (`agent.Cancel`) is closed: `Send` of its message
+returns `ErrRunCancelled`, and the next message's `Send` records the turn closed, with no answer and
+outside the transcript, and runs its own turn.
 
 ## Auditability (tamper-evident journal)
 
@@ -762,7 +786,9 @@ with `agent.IsPause(err)`, read it with `agent.AsPause(err)` (its `Paused()` nam
 and the run to re-invoke), or match a kind with `errors.As`. The others are `*SagaAborted` (rolled
 back) and `*HaltTooYoung` (from `ResolveHaltRef`, when `WithMinHaltAge` has not elapsed yet). A
 paused or halted run is not a "failure" category; inspect the struct for its run, operation, or
-compensation details. Cancellation surfaces as the usual `context.Canceled` /
+compensation details. A run cancelled with `agent.Cancel` returns `ErrRunCancelled` (with a
+`Result`), which carries no category: it is a terminal status, not a fault. Context cancellation
+surfaces as the usual `context.Canceled` /
 `context.DeadlineExceeded`, and a drive cancelled because its run lease was lost (`agent.Lease`) as
 `ErrLeaseLost`; like cancellation, it carries no category.
 

@@ -36,6 +36,39 @@ func withRunContext(ctx context.Context, store Durable, runID, toolUseID string,
 		saga: saga, sagaTree: saga || parent.sagaTree})
 }
 
+// rootStoreKey is the context key of a rootStore: the store a tree's root journals to, set by a
+// sub-run's drive whose own store is another (a sub-agent outside a saga may journal elsewhere), so
+// the sub-runs below it read the root's markers where they are. A tree on one store never sets it,
+// so runCtx, copied on every tool call, does not carry the store twice.
+type rootStoreKey struct{}
+
+type rootStore struct {
+	root  string
+	store Durable
+}
+
+// rootStoreOf is the store the tree root root journals to, for a run whose drive runs under ctx: the
+// one a sub-run on another store above it recorded (rootStoreKey); else the enclosing run's store,
+// if that run belongs to root's tree (it is root itself, or a sub-run on root's store); else own.
+func rootStoreOf(ctx context.Context, root string, own Durable) Durable {
+	if v, ok := ctx.Value(rootStoreKey{}).(rootStore); ok && v.root == root {
+		return v.store
+	}
+	if rc, ok := ctx.Value(runContextKey).(runCtx); ok && rc.root == root && rc.store != nil {
+		return rc.store
+	}
+	return own
+}
+
+// withRootStore returns ctx recording store as the store of the tree root root, for the drive of a
+// sub-run whose own store is own: only when they are not provably one store (see rootStoreOf).
+func withRootStore(ctx context.Context, root string, store, own Durable) context.Context {
+	if sameStore(store, own) {
+		return ctx
+	}
+	return context.WithValue(ctx, rootStoreKey{}, rootStore{root: root, store: store})
+}
+
 // protocol:delegation end
 
 // rootRunID is the top-level run for a run with this ID reached through ctx: the root recorded

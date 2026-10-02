@@ -359,6 +359,25 @@ func (j *Journal) getEntry(ctx context.Context, runID, name string) (Entry, bool
 	return e, true, nil
 }
 
+// getOpened is getEntry for a run whose format this drive has already checked: one it opened
+// (Journal.open reads its header) or wrote to (putEntry checks or writes its header). A miss is
+// then "not recorded", with no format check (no runSet lookup); a hit is checked as getEntry
+// checks it. It is the read of the drive's own cancellation checks and of a writer's read-back,
+// which are misses on every run that is not cancelled.
+func (j *Journal) getOpened(ctx context.Context, runID, name string) (Entry, bool, error) {
+	e, ok, err := j.store.Get(ctx, runID, name)
+	if err != nil {
+		return Entry{}, false, storageErr(fmt.Sprintf("read step %q of run %s", name, runID), err)
+	}
+	if !ok {
+		return Entry{}, false, nil
+	}
+	if err := j.readable(ctx, runID); err != nil {
+		return Entry{}, false, err
+	}
+	return e, true, nil
+}
+
 // Records yields runID's records in journal order, the header first. It checks the header as it
 // streams: a run whose first entry is not a header naming a supported format yields a
 // *JournalVersionError and nothing else.

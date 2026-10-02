@@ -85,7 +85,7 @@ func TestLease_RecoverUsesTheLeaser(t *testing.T) {
 		t.Fatal(err)
 	}
 	driven := false
-	if n, err := agent.Recover(ctx, s, func(context.Context, string) error { driven = true; return nil }); err != nil || n != 0 || driven {
+	if n, err := agent.Recover(ctx, s, func(context.Context, string, agent.RunStart) error { driven = true; return nil }); err != nil || n != 0 || driven {
 		t.Fatalf("Recover = %d, %v (drove: %v); want the leased run skipped", n, err, driven)
 	}
 }

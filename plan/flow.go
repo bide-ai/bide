@@ -95,7 +95,7 @@ func (f *Flow[In, Out]) Run(ctx context.Context, store agent.Durable, runID stri
 	if encErr != nil {
 		return out, fmt.Errorf("plan: run %q: encode flow input: %w (%w)", c.flowName, encErr, agent.ErrConfig)
 	}
-	start := agent.RunStart{Kind: agent.RunKindFlow, Flow: &agent.FlowRef{Name: c.flowName}, Input: string(input)}
+	start := agent.RunStart{Kind: agent.RunKindFlow, Flow: &agent.FlowRef{Name: c.flowName}, Input: agent.UserText(string(input))}
 	// protocol:flows begin Begin BeginStart
 	done, finished, err := journalhook.Begin(ctx, store, runID, start)
 	if err != nil {

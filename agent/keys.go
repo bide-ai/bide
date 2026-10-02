@@ -20,7 +20,7 @@ import (
 // one starts with a prefix listed here.
 var reservedPrefixes = []string{
 	"@",               // the journal header @journal, and engine-internal steps: @llm/<n>, @saga/compensate/<call>, @saga/args/<call>, @retrieval/<layer>, @spend/<id>, @spend-late/<id>, @subrun/<call>/<name>
-	"run:",            // run:start, run:complete, run:aborted, run:cancelled, run:limits:<n>
+	"run:",            // run:start, run:complete, run:aborted, run:cancelled, run:cancel-requested, run:limits:<n>
 	"tool:",           // a tool call's result: tool:<call>
 	"attempt:",        // attempt markers: attempt:tool:<call>, attempt:step:<name>, attempt:retry:<n>:..., attempt:not-started:<claim>:<marker>
 	"approval:",       // approval decisions: approval:<call>[:<approver>:<digest>]
@@ -384,10 +384,16 @@ func awaitTimeoutStep(name string) string { return "await-timeout:" + name }
 // ("a", "b\x00c") both join to "a\x00b\x00c").
 func stepKey(runID, name string) string { return strconv.Itoa(len(runID)) + ":" + runID + name }
 
-// runCancelledStep is the key of the record that a run was cancelled: a terminal marker, like
-// run:complete, that Recover excludes. The key is reserved now; the engine does not write it yet.
+// runCancelledStep is the key of the record that a run was cancelled, {"reason"}: an end marker,
+// like run:complete, that Recover excludes. Cancel writes it for a run that is not a saga, and a
+// saga's rollback writes it once a cancellation's rollback has finished.
 const runCancelledStep = "run:cancelled"
 
+// runCancelRequestedStep is the key of a saga's rollback request, {"reason"}: Cancel on a saga
+// writes it rather than run:cancelled. It is not an end marker, so recovery still lists the run;
+// the drive that sees it rolls the run back and writes run:cancelled.
+const runCancelRequestedStep = "run:cancel-requested"
+
 // runLimitsStep is the key of the n-th amendment of a run's limits (its turn cap or token budget)
-// by a later drive. The key is reserved now; the engine does not write it yet.
+// by a later drive (see RunStart).
 func runLimitsStep(n int) string { return "run:limits:" + strconv.Itoa(n) }

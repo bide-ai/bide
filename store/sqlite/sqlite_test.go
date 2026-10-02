@@ -156,7 +156,7 @@ func TestSQLite_RecoverReDrivesInFlightRun(t *testing.T) {
 	defer store2.Close()
 
 	var resumed []string
-	resume := func(ctx context.Context, runID string) error {
+	resume := func(ctx context.Context, runID string, _ agent.RunStart) error {
 		resumed = append(resumed, runID)
 		recovered := &scriptModel{turns: [][]agent.Emit{textTurn("final")}}
 		_, err := agent.New(recovered, store2, tool).Run(ctx, runID, "hi")

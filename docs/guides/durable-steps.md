@@ -394,12 +394,12 @@ with no wake registered might never wake), and the tool call records nothing, so
 (`RecoverLoop` does, on its next pass) reaches the `Sleep` again and schedules again. `MemWaker` is
 the reference in-process implementation:
 
-<!-- docsnip: setup ctx context.Context; model agent.Model; journal *agent.Journal; tools []agent.Tool; store *sqlite.Store; savedInput string; returns error -->
+<!-- docsnip: setup ctx context.Context; model agent.Model; journal *agent.Journal; tools []agent.Tool; store *sqlite.Store; returns error -->
 ```go
 ctx, cancel := context.WithCancel(ctx)
 var a *agent.Agent
 w := agent.NewMemWaker(func(ctx context.Context, runID string) error {
-    _, err := a.Run(ctx, runID, savedInput) // resume; may sleep again
+    _, err := a.ResumeRun(ctx, runID) // resume from the journaled input and options; may sleep again
     return err
 })
 a, err := agent.Build(model, journal, agent.WithTools(tools...), agent.WithWaker(w))

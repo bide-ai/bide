@@ -43,7 +43,16 @@ func init() {
 		body := func(ctx context.Context) (json.RawMessage, error) {
 			return fn(context.WithValue(ctx, planScopeKey{}, planScope{runID: runID, node: name}))
 		}
-		return step(ctx, d, runID, name, body, WithSafety(s))
+		// The flow's cancellation (D1) is read once the node will run: after a side-effect node's
+		// claim is won, before its call (rule 3), and before a retry-safe node's call. A node that
+		// finds the run cancelled does not run, and the flow returns ErrRunCancelled.
+		cancelled := stepCancelCheck(func(ctx context.Context) error {
+			if _, ok, err := lookup(ctx, d, runID, runCancelledStep); err != nil || !ok {
+				return err
+			}
+			return fmt.Errorf("run %s: %w", runID, ErrRunCancelled)
+		})
+		return step(ctx, d, runID, name, body, WithSafety(s), cancelled)
 	}
 	// protocol:flows end
 	journalhook.CheckRunID = checkRunID
@@ -74,11 +83,16 @@ func init() {
 		if err := checkDurable(d); err != nil {
 			return nil, err
 		}
-		r, err := putRecord(ctx, d, runID, runCompleteStep, Record{Kind: StepValue, Result: result})
+		// The first end marker in journal order is the run's end (rule 4): a flow cancelled before
+		// its completion landed is cancelled, whatever this drive completed.
+		first, err := writeEnd(ctx, d, runID, runCompleteStep, Record{Kind: StepValue, Result: result}, []string{runCancelledStep})
 		if err != nil {
 			return nil, err
 		}
-		return r.Result, nil
+		if first.name != runCompleteStep {
+			return nil, fmt.Errorf("run %s: %w", runID, ErrRunCancelled)
+		}
+		return first.rec.Result, nil
 	}
 	// protocol:flows end
 	journalhook.WithSalt = func(rec any, salt []byte) any {

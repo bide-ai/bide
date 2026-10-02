@@ -75,7 +75,7 @@ func TestR137_FinishedRunUnderLeaseSkipsTheInputCheck(t *testing.T) {
 			h1 := openSession(t, a, "c1")
 			run := sessionEventRunID("c1", "k")
 			// h1 drives key k's run for message "A" to completion and stops before recording it.
-			if _, err := h1.driveRun(ctx, run, []Message{UserText("A")}); err != nil {
+			if _, _, _, err := h1.driveRun(ctx, run, turnDrive("c1", nil, "k", UserText("A"), nil)); err != nil {
 				t.Fatal(err)
 			}
 			if leased {

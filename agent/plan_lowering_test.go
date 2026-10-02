@@ -98,20 +98,20 @@ func TestJournalhookStepRefusesOtherNames(t *testing.T) {
 // drive each other's journal, and a flow run is held to its flow's name.
 func TestRunStartHoldsKindAndFlow(t *testing.T) {
 	ctx := context.Background()
-	flow := RunStart{Kind: RunKindFlow, Flow: &FlowRef{Name: "f"}, Input: "1"}
+	flow := RunStart{Kind: RunKindFlow, Flow: &FlowRef{Name: "f"}, Input: UserText("1")}
 	for _, tc := range []struct {
 		name        string
 		first, next RunStart
 		ok          bool
 	}{
 		{"same flow", flow, flow, true},
-		{"agent then agent", RunStart{Input: "1"}, RunStart{Input: "1"}, true},
-		{"explicit agent kind", RunStart{Input: "1"}, RunStart{Kind: RunKindAgent, Input: "1"}, true},
-		{"agent then flow", RunStart{Input: "1"}, flow, false},
-		{"flow then agent", flow, RunStart{Input: "1"}, false},
-		{"another flow", flow, RunStart{Kind: RunKindFlow, Flow: &FlowRef{Name: "g"}, Input: "1"}, false},
-		{"flow with no name", flow, RunStart{Kind: RunKindFlow, Input: "1"}, false},
-		{"another input", flow, RunStart{Kind: RunKindFlow, Flow: &FlowRef{Name: "f"}, Input: "2"}, false},
+		{"agent then agent", RunStart{Input: UserText("1")}, RunStart{Input: UserText("1")}, true},
+		{"explicit agent kind", RunStart{Input: UserText("1")}, RunStart{Kind: RunKindAgent, Input: UserText("1")}, true},
+		{"agent then flow", RunStart{Input: UserText("1")}, flow, false},
+		{"flow then agent", flow, RunStart{Input: UserText("1")}, false},
+		{"another flow", flow, RunStart{Kind: RunKindFlow, Flow: &FlowRef{Name: "g"}, Input: UserText("1")}, false},
+		{"flow with no name", flow, RunStart{Kind: RunKindFlow, Input: UserText("1")}, false},
+		{"another input", flow, RunStart{Kind: RunKindFlow, Flow: &FlowRef{Name: "f"}, Input: UserText("2")}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			m := NewMemStore()
@@ -132,9 +132,9 @@ func TestRunStartEncoding(t *testing.T) {
 		start RunStart
 		want  string
 	}{
-		{RunStart{Input: "hi"}, `{"input":"hi"}`},
-		{RunStart{Input: "hi", Saga: true}, `{"input":"hi","saga":true}`},
-		{RunStart{Kind: RunKindFlow, Flow: &FlowRef{Name: "f"}, Input: `{"a":1}`}, `{"input":"{\"a\":1}","kind":"flow","flow":{"name":"f"}}`},
+		{RunStart{Input: UserText("hi")}, `{"input":"hi"}`},
+		{RunStart{Input: UserText("hi"), Saga: true}, `{"input":"hi","saga":true}`},
+		{RunStart{Kind: RunKindFlow, Flow: &FlowRef{Name: "f"}, Input: UserText(`{"a":1}`)}, `{"input":"{\"a\":1}","kind":"flow","flow":{"name":"f"}}`},
 	} {
 		b, err := marshalJournal(tc.start)
 		if err != nil {
@@ -258,7 +258,7 @@ func TestFlowInputWithoutCanonicalJSONIsRefused(t *testing.T) {
 	ctx := context.Background()
 	for _, in := range []string{`{"a":1,"a":2}`, `"\ud800"`, `"\udc00x"`, `["\ud800A"]`, "\"\xff\""} {
 		m := NewMemStore()
-		start := RunStart{Kind: RunKindFlow, Flow: &FlowRef{Name: "f"}, Input: in}
+		start := RunStart{Kind: RunKindFlow, Flow: &FlowRef{Name: "f"}, Input: UserText(in)}
 		if _, _, err := journalhook.Begin(ctx, m, "r", start); !errors.Is(err, ErrConfig) {
 			t.Errorf("Begin with input %q: %v, want ErrConfig", in, err)
 		}
@@ -268,10 +268,10 @@ func TestFlowInputWithoutCanonicalJSONIsRefused(t *testing.T) {
 	}
 	// A valid surrogate pair is a character, and compares with the character itself.
 	m := NewMemStore()
-	if _, _, err := journalhook.Begin(ctx, m, "r", RunStart{Kind: RunKindFlow, Flow: &FlowRef{Name: "f"}, Input: `"😀"`}); err != nil {
+	if _, _, err := journalhook.Begin(ctx, m, "r", RunStart{Kind: RunKindFlow, Flow: &FlowRef{Name: "f"}, Input: UserText(`"😀"`)}); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := journalhook.Begin(ctx, m, "r", RunStart{Kind: RunKindFlow, Flow: &FlowRef{Name: "f"}, Input: "\"\U0001F600\""}); err != nil {
+	if _, _, err := journalhook.Begin(ctx, m, "r", RunStart{Kind: RunKindFlow, Flow: &FlowRef{Name: "f"}, Input: UserText("\"\U0001F600\"")}); err != nil {
 		t.Fatalf("the same character, unescaped: %v", err)
 	}
 }

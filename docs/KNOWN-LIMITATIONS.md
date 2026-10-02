@@ -22,11 +22,14 @@ and tests. They keep everything in memory, so after a real crash there is nothin
 pending `Sleep` has no timer to wake it. In production, use SQLite or Postgres, and either a durable
 waker or an external scheduler that re-drives sleeping runs.
 
-**You supply the resume function.** `agent.Recover` finds incomplete runs and re-drives them, but only
+**You supply the Resumer.** `agent.Recover` finds incomplete runs and re-drives them, but only
 your deployment knows which agent drives each run and which waker and clock to bind. Pass that as the
-`resume` function. The run's input and entry point are journaled at its first drive (read them with
-`agent.RecordedStart`), and a resume with a different input or entry point is `ErrConfig`. `Recover` skips sub-agent runs, which their root run drives; a `resume`
-that does not own any other run it is handed should do nothing. See [Crash recovery](guides/debugging.md#4--crash-recovery-lister-and-recover).
+`Resumer`: `agent.ResumeAgent(a, agent.WithWaker(w))` for an agent's runs, `agent.ResumeTyped[T](a)`
+for its typed runs, and `agent.ResumeAny` to combine them. A run's input, entry point and per-run
+options are journaled at its first drive (`agent.RecordedStart`), and every recovery drive runs
+under them. `Recover` skips sub-agent runs, which their root run drives, and session runs, which
+their session drives when the message is sent again; a run with no `run:start` is skipped and
+reported once per process (`ErrNotStarted`), and so is a run no `Resumer` drives (`ErrNotResumable`), which includes a run an earlier version started (its `run:start` does not say whether it is typed, so `ResumeAgent` and `ResumeTyped` decline it). See [Crash recovery](guides/debugging.md#4--crash-recovery-lister-and-recover).
 
 **Takeover needs a process that keeps looking.** `agent.Recover` is one pass: a run whose holder
 has died but whose lease has not yet expired is skipped. Run `agent.RecoverLoop` in every worker for
@@ -76,7 +79,10 @@ and the turn's token budget holds across workers. A worker that dies mid-turn ho
 its lease lapses (one TTL, `agent.WithLeaseTTL` on `Agent.Session`). Over a custom store with no
 `Leaser`, two workers can drive one turn at once: it is still recorded once and its side effects
 stay at-most-once, but each worker counts only the spend it has seen, so the turn can spend up to
-its budget once per worker. A stalled holder that wakes past its TTL is the case above: it can
+its budget once per worker. (A saga turn's rollback, driven by the next message's `Send`, holds
+the session handle over such a store, so callers sharing one handle never drive it at once;
+callers on separate handles still can, as with any turn over such a store.) A stalled holder that
+wakes past its TTL is the case above: it can
 make a model call the next holder does not count.
 
 **Any role that can connect to the database can stall a run's writes.** The Postgres store
@@ -211,8 +217,23 @@ on replay.
 **MCP tools are untyped.** Tools discovered from an MCP server at runtime use raw JSON arguments,
 because Go cannot create a struct type from a schema at runtime.
 
-**Settings apply to the whole agent.** `WithSampling`, `WithSystemPrompt` and `WithMaxTurns` are set on
-the agent. There is no per-`Run` override yet; use a separate agent for different settings.
+**Per-run settings come with the transitional Run API.** `WithSampling`, `WithSystemPrompt`,
+`WithMaxTurns`, `WithTokenBudget`, `WithToolChoice` and `WithToolFilter` apply to one run through
+`RunMessage`, `ResumeRun`, `StreamMessage`, `RunTypedMessage` and `Session.SendMessage`; the string
+entry points (`Run`, `RunSaga`, `Stream`, `Session.Send`) take none, and use the run's journaled
+settings or the agent's. A run's settings other than its limits cannot change once its first drive
+has journaled them: start a new run for different settings.
+
+**A cancelled run's in-flight calls finish.** `agent.Cancel` stops a run at its next check (a turn
+boundary, or a won side-effect claim before its call), so a call already past its check when the
+cancellation lands is called and its result recorded. A retry-safe call (`ReadOnly` or
+`Idempotent`) takes no claim and is not checked one by one: a retry-safe call already dispatched in
+the current turn may still run after `Cancel` returns, and the run stops at its next turn boundary
+or claim. `Cancel` takes no lease: it can land while a
+recovery pass is about to resume the run, whose drive then reports the run cancelled. A cancelled
+run and its completion can both be journaled, since they are two keys; the first in journal order
+is the run's end. Over a store that is not a `Journal` (a transitional `Durable` shim), each
+cancellation check and end-marker read-back reads the run's `History`.
 
 ## Approval and quorum
 

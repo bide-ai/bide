@@ -6,7 +6,11 @@
 package agent
 
 import (
+	"bytes"
+	"container/list"
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math/rand/v2"
@@ -14,6 +18,7 @@ import (
 	"slices"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 // ===========================================================================
@@ -118,20 +123,17 @@ var hostPID = sync.OnceValue(func() string {
 
 func defaultHolder() string { return fmt.Sprintf("%s-%d", hostPID(), rand.Uint64()) }
 
-// IsComplete reports whether runID has reached its terminal answer, by checking the
-// journal for the durable completion marker the agent loop records at the end of a run
-// (see runCompleteStep). A crash-recovery supervisor uses it to skip finished runs.
+// IsComplete reports whether runID completed: its first end marker in journal order is the
+// completion marker the agent loop records at the end of a run (see runCompleteStep). A run whose
+// run:cancelled or run:aborted precedes its run:complete is not complete: that marker is its end,
+// as Status and every drive read it. A crash-recovery supervisor uses it to skip finished runs.
 func IsComplete(ctx context.Context, store Durable, runID string) (bool, error) {
 	recs, err := store.History(ctx, runID)
 	if err != nil {
 		return false, fmt.Errorf("load history %s: %w (%w)", runID, err, ErrStorage)
 	}
-	for _, r := range recs {
-		if r.Kind == StepValue && r.Name == runCompleteStep {
-			return true, nil
-		}
-	}
-	return false, nil
+	end, ok := firstEnd(recs)
+	return ok && end.name == runCompleteStep, nil
 }
 
 // protocol:lifecycle begin DOpen
@@ -163,8 +165,8 @@ func completedAnswer(recs []Record) (Message, bool) {
 // the runs the store holds that are not over (via Lister, which filters out every run holding a
 // terminal marker: run:complete, run:aborted or run:cancelled), and calls resume for each to push
 // it forward. A run another driver finished after the listing is not resumed: holding the run's
-// lease, Recover checks the terminal markers again before it calls resume (over a Journal, three
-// point reads per run it drives). It returns how many runs it re-drove and the joined genuine
+// lease, Recover checks the terminal markers again and reads the run's run:start before it calls
+// resume (over a Journal, four point reads per run it drives). It returns how many runs it re-drove and the joined genuine
 // failures (nil if none).
 //
 // The store must implement Lister; a store that cannot enumerate its runs (the base
@@ -184,37 +186,37 @@ func completedAnswer(recs []Record) (Message, bool) {
 // interrupt is answered, a timer fires). Only a genuine error (a model
 // or storage fault, a bad tool) is joined into the returned error. A run whose lease was lost
 // mid-drive (ErrLeaseLost) is not joined either: another process holds it now and carries it on.
+// Nor is a run the drive found cancelled (ErrRunCancelled), a saga's included once its
+// cancellation's rollback finished: the run is over, as Cancel asked.
 //
-// resume is deployment POLICY, not a mechanism the SDK can supply: it knows which agent drives
-// a run and any Waker or clock to bind onto the context (a Waker-bound resume rebuilds the timer
-// set for sleeping runs, since Sleep re-registers its wake on replay). The run's input and entry
-// point (Run or RunSaga) are in its journal (see RecordedStart), and a resume with another input
-// or entry point is ErrConfig. A typical resume is:
+// resume is deployment POLICY, not a mechanism the SDK can supply: it knows which agent drives a
+// run and any Waker or clock it binds. Under the run's lease, after the terminal markers, Recover
+// reads the run's run:start (one more point read) and hands it to resume, so resume needs no table
+// of inputs: the run's input, saga flag and per-run options are journaled, and the run runs under
+// them (see RunStart). ResumeAgent(a) is the Resumer of a's runs, ResumeTyped[T](a) that of its
+// typed runs answering a T, and ResumeAny combines several (a deployment with two agents, say):
 //
-//	func(ctx context.Context, runID string) error {
-//	    start, ok, err := agent.RecordedStart(ctx, store, runID)
-//	    if err != nil {
-//	        return err
-//	    }
-//	    if !ok {
-//	        start = startFor(runID) // your own record, for a run not driven under this version
-//	    }
-//	    ctx = agent.ContextWithWaker(ctx, w)
-//	    if start.Saga {
-//	        _, err = a.RunSaga(ctx, runID, start.Input)
-//	    } else {
-//	        _, err = a.Run(ctx, runID, start.Input)
-//	    }
-//	    return err
-//	}
+//	resume := agent.ResumeAny(agent.ResumeAgent(a, agent.WithWaker(w)), agent.ResumeTyped[Quote](b))
+//
+// A deployment's own Resumer is any func(ctx, runID, start) error; it returns an error wrapping
+// ErrNotResumable for a run it does not drive.
+//
+// A run with no run:start (one never driven, such as a Signal sent to a mistyped run ID, or one
+// whose first drive has not written it yet) is skipped, and reported once per process as
+// ErrNotStarted. A run no Resumer drives (ErrNotResumable) is reported once per process too. What
+// the process remembers is the report, not the skip: each pass reads run:start again, so a run that
+// starts after a pass skipped it is recovered by a later pass. Neither counts as re-driven.
 //
 // Recover skips a sub-agent's run (IsSubRun): its root run drives it, and re-running the root
 // resumes it. It skips a session's journal and turn runs (IsSessionRun) too: a turn is seeded with
 // the transcript before its message, which only the session holds, and only the session records
-// its answer, so an unfinished turn resumes when its message is sent again (Send with the same
-// input, or the redelivered SendOnce). resume should no-op any other runID it does not own;
-// Recover re-drives every other incomplete run it enumerates.
-func Recover(ctx context.Context, store Durable, resume func(ctx context.Context, runID string) error, opts ...RecoverOption) (int, error) {
+// its answer, so an unfinished turn resumes when its message is sent again (the same message
+// through Send or SendMessage, or the redelivered SendOnce or SendMessageOnce). Recover re-drives
+// every other incomplete run it enumerates. A nil resume is ErrConfig.
+func Recover(ctx context.Context, store Durable, resume Resumer, opts ...RecoverOption) (int, error) {
+	if resume == nil {
+		return 0, fmt.Errorf("Recover: nil Resumer: %w", ErrConfig)
+	}
 	lister, ok := capabilityOf[Lister](store)
 	if !ok {
 		return 0, fmt.Errorf("Recover needs a store that implements Lister (itself or through Unwrap) to enumerate runs: %w", ErrConfig)
@@ -243,6 +245,89 @@ func Recover(ctx context.Context, store Durable, resume func(ctx context.Context
 		}
 	}
 	return recovered, errors.Join(errs...)
+}
+
+// Resumer drives one run a recovery pass found unfinished: runID, started as start (its run:start,
+// read under the run's lease). It returns an error wrapping ErrNotResumable for a run it does not
+// drive, so ResumeAny can try the next, and Recover reports the run once per process rather than
+// as a failure on every pass. A Resumer passes no per-run option: the run runs under the options
+// its run:start journaled (see RunStart). ResumeAgent and ResumeTyped return the Resumers of an
+// agent's runs; a deployment's own Resumer is any func with this signature (one that drives a plan
+// flow's runs reads start.Flow and start.Input and calls the flow's Run).
+type Resumer func(ctx context.Context, runID string, start RunStart) error
+
+// ResumeAny returns the Resumer that hands a run to each of rs in turn, in order, until one
+// returns anything that does not wrap ErrNotResumable (nil included), and returns that. If every
+// Resumer returns ErrNotResumable (or rs is empty), it returns an error wrapping ErrNotResumable.
+// A nil Resumer it reaches is ErrConfig.
+func ResumeAny(rs ...Resumer) Resumer {
+	rs = slices.Clone(rs)
+	return func(ctx context.Context, runID string, start RunStart) error {
+		for i, r := range rs {
+			if r == nil {
+				return fmt.Errorf("ResumeAny: Resumer %d is nil: %w", i, ErrConfig)
+			}
+			if err := r(ctx, runID, start); err == nil || !errors.Is(err, ErrNotResumable) {
+				return err
+			}
+		}
+		return fmt.Errorf("run %s (kind %q): no Resumer drives it: %w", runID, start.kind(), ErrNotResumable)
+	}
+}
+
+// recoverReports holds the reports a recovery pass makes once per process (ErrNotStarted,
+// ErrNotResumable), by the run's store and ID. What is remembered is the report, never the skip:
+// run:start is read again on every pass, so a run that starts after a pass found it unstarted is
+// recovered (model 10, rule 15). It holds at most maxRecoverReports entries, the most recently
+// reported: past that, the least recently reported run is forgotten, and a later pass that finds
+// it unstarted or not resumable again reports it again.
+var recoverReports = struct {
+	mu  sync.Mutex
+	m   map[recoverReportKey]*list.Element
+	lru list.List // most recently reported first; each Value is a recoverReportKey
+}{m: map[recoverReportKey]*list.Element{}}
+
+// recoverReportKey names one report: the store's identity (durableIdentity), the run, and the
+// report's sentinel.
+type recoverReportKey struct {
+	store any
+	runID string
+	kind  error
+}
+
+// maxRecoverReports bounds recoverReports.
+var maxRecoverReports = maxKnownRuns
+
+// recoverReportCount is how many reports recoverReports holds.
+func recoverReportCount() int {
+	recoverReports.mu.Lock()
+	defer recoverReports.mu.Unlock()
+	return len(recoverReports.m)
+}
+
+// reportOnce reports whether this process has not yet made the report kind for store's run runID
+// (among the reports recoverReports still holds), and marks it made. A store with no identity to
+// key it by (see durableIdentity) is reported on every pass.
+func reportOnce(store Durable, runID string, kind error) bool {
+	id, ok := durableIdentity(store)
+	if !ok {
+		return true
+	}
+	k := recoverReportKey{store: id, runID: runID, kind: kind}
+	r := &recoverReports
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if e, ok := r.m[k]; ok {
+		r.lru.MoveToFront(e)
+		return false
+	}
+	r.m[k] = r.lru.PushFront(k)
+	for r.lru.Len() > maxRecoverReports {
+		old := r.lru.Back()
+		r.lru.Remove(old)
+		delete(r.m, old.Value.(recoverReportKey))
+	}
+	return true
 }
 
 // endOfRunMarkers are the journal names of the terminal markers: a run that completed, a saga
@@ -286,6 +371,291 @@ func runEnded(ctx context.Context, store Durable, runID string) (bool, error) {
 	return false, nil
 }
 
+// startUnderLease reads runID's run:start for a recovery pass (see RecordedStart). Over a Journal,
+// for a run that holds it, it is one point read (Store.Get) that, like runEnded, does not check the
+// run's header: a run in a format this version cannot read still reaches resume, which refuses it.
+// A run in another format whose run:start is missing or does not decode is a *JournalVersionError.
+// Over another Durable it is RecordedStart.
+func startUnderLease(ctx context.Context, store Durable, runID string) (RunStart, bool, error) {
+	j := journalOf(store)
+	if j == nil {
+		return RecordedStart(ctx, store, runID)
+	}
+	e, ok, err := j.store.Get(ctx, runID, runStartStep)
+	if err != nil {
+		return RunStart{}, false, storageErr(fmt.Sprintf("read step %q of run %s", runStartStep, runID), err)
+	}
+	if !ok {
+		// A run with no run:start: through the Journal's read, which refuses a run in another format
+		// (a *JournalVersionError, reported as such) rather than report it unstarted. This read
+		// costs one Load of the run's first entry, for an unstarted run only.
+		if !j.good.has(runID) {
+			first, any, err := j.firstEntry(ctx, runID)
+			if err != nil {
+				return RunStart{}, false, err
+			}
+			if any {
+				if err := j.checkFirst(runID, first); err != nil {
+					return RunStart{}, false, err
+				}
+			}
+		}
+		return RunStart{}, false, nil
+	}
+	if st, ok := decodeStartEntry(e.Data); ok {
+		return st, true, nil
+	}
+	// Anything else (a tombstone, a record of another kind, a row that does not decode) takes the
+	// full decoding, which reports it as such.
+	r, err := decodeStored(runID, runStartStep, e.Data)
+	if err != nil {
+		if herr := j.readable(ctx, runID); herr != nil {
+			return RunStart{}, false, herr // a run in another format: refused as such
+		}
+		return RunStart{}, false, err
+	}
+	if r.Kind != StepValue {
+		return RunStart{}, false, nil
+	}
+	var st RunStart
+	if err := json.Unmarshal(r.Result, &st); err != nil {
+		return RunStart{}, false, fmt.Errorf("decode %s (run %s): %w (%w)", runStartStep, runID, err, ErrStorage)
+	}
+	return st, true, nil
+}
+
+// decodeStartEntry decodes a stored run:start record in one pass: the record's name and kind, its
+// salt, and the start its result holds. It reports false for anything but a value record named
+// run:start, with a salt of SaltSize bytes, whose result decodes as a start, and for a record with
+// any member but those four, or with one of them twice: the caller then takes the full decoding
+// (decodeStored), which refuses or reports it. Wherever it reports a start, the full decoding
+// decodes the same bytes without error to the same start (TestRev138c_StartDecodeAgreesWithFull,
+// FuzzRev138c_StartDecode).
+func decodeStartEntry(b []byte) (RunStart, bool) {
+	if h := decodeHook.Load(); h != nil {
+		(*h)(b)
+	}
+	if st, ok := decodePlainStart(b); ok {
+		return st, true
+	}
+	w := startEntryPool.Get().(*startEntry)
+	defer startEntryPool.Put(w)
+	*w = startEntry{} // Unmarshal merges into what it is given
+	// A result with no input (absent, null, or holding none) takes the full decoding, which
+	// reports an absent or null result as before; a start with no input reads the same either way.
+	if err := json.Unmarshal(b, w); err != nil || !bool(w.Name) || !bool(w.Kind) || !bool(w.Salt) || w.Result.Input == nil {
+		return RunStart{}, false
+	}
+	// Unmarshal ignores members it does not know (the full decoding reads more of them, and refuses
+	// one of the wrong type), matches names case-insensitively, and on a repeated member keeps the
+	// last or merges the two (the full decoding keeps the last): only the four members, each once,
+	// are read here.
+	if !startMembersOnly(b) {
+		return RunStart{}, false
+	}
+	st, err := w.Result.start()
+	if err != nil {
+		return RunStart{}, false
+	}
+	return st, true
+}
+
+// plainStartPrefix, plainStartKind and plainStartLegacy frame the record written for the run:start
+// of an agent run with a plain text input and no other setting: name, kind, a result of the input
+// and the run's kind (none before P14), and the salt, in that order.
+const (
+	plainStartPrefix = `{"name":"` + runStartStep + `","kind":"` + string(StepValue) + `","result":{"input":"`
+	plainStartKind   = `","kind":"` + string(RunKindAgent) + `"},"salt":"`
+	plainStartLegacy = `"},"salt":"`
+)
+
+// decodePlainStart decodes b if it is exactly the record written for the run:start of an agent run
+// with a plain text input and no other setting (by this version, or with no kind by an earlier
+// one), its input a JSON string with no escape (valid UTF-8, no '"', '\' or control character)
+// and its salt base64: the commonest start, read without the JSON decoder. Such bytes are valid
+// JSON whose decoding is the start it returns. Anything else reports false and takes the JSON
+// decoding.
+func decodePlainStart(b []byte) (RunStart, bool) {
+	rest, ok := bytes.CutPrefix(b, []byte(plainStartPrefix))
+	if !ok {
+		return RunStart{}, false
+	}
+	end := bytes.IndexByte(rest, '"')
+	if end < 0 {
+		return RunStart{}, false
+	}
+	in := rest[:end]
+	for _, c := range in {
+		if c < 0x20 || c == '\\' {
+			return RunStart{}, false
+		}
+	}
+	if !utf8.Valid(in) {
+		return RunStart{}, false
+	}
+	kind := RunKindAgent
+	salt, ok := bytes.CutPrefix(rest[end:], []byte(plainStartKind))
+	if !ok {
+		kind = ""
+		if salt, ok = bytes.CutPrefix(rest[end:], []byte(plainStartLegacy)); !ok {
+			return RunStart{}, false
+		}
+	}
+	salt, ok = bytes.CutSuffix(salt, []byte(`"}`))
+	if !ok || !validSalt(salt) {
+		return RunStart{}, false
+	}
+	return RunStart{Input: UserText(string(in)), Kind: kind}, true
+}
+
+// saltLen is the length of a salt's encoding: SaltSize bytes in standard base64, padded.
+const saltLen = (SaltSize + 2) / 3 * 4 // base64.StdEncoding.EncodedLen(SaltSize)
+
+// validSalt reports whether s, the contents of a JSON string with no escape, is a salt as the
+// journal writes one: exactly saltLen bytes that decode, as standard base64, to SaltSize bytes.
+// Decode refuses any byte outside the alphabet and padding anywhere but at the end; it skips '\r'
+// and '\n', but saltLen bytes holding any of them leave too few others to decode to SaltSize
+// bytes. The full decoding decodes such a string, as a []byte, to the same bytes without error.
+func validSalt(s []byte) bool {
+	if len(s) != saltLen {
+		return false // and Decode cannot overrun buf
+	}
+	var buf [saltLen / 4 * 3]byte // Decode writes up to this many, if s has no padding
+	n, err := base64.StdEncoding.Decode(buf[:], s)
+	return err == nil && n == SaltSize
+}
+
+// startMembersOnly reports whether b, a JSON value Unmarshal accepted into a startEntry, is an
+// object with no member but name, kind, result and salt, none twice, each spelled exactly so (no
+// escape, no other case). It walks only the top level, skipping each member's value.
+func startMembersOnly(b []byte) bool {
+	i := skipSpace(b, 0)
+	if i >= len(b) || b[i] != '{' {
+		return false
+	}
+	var seen [4]bool
+	for i = skipSpace(b, i+1); i < len(b) && b[i] == '"'; {
+		end := bytes.IndexByte(b[i+1:], '"')
+		if end < 0 {
+			return false
+		}
+		key := b[i+1 : i+1+end]
+		k := -1
+		switch string(key) {
+		case "name":
+			k = 0
+		case "kind":
+			k = 1
+		case "result":
+			k = 2
+		case "salt":
+			k = 3
+		}
+		if k < 0 || seen[k] {
+			return false // another member, an escaped name (it holds a '\\'), or a repeated one
+		}
+		seen[k] = true
+		i = skipSpace(b, i+end+2)
+		if i >= len(b) || b[i] != ':' {
+			return false
+		}
+		if i = skipValue(b, skipSpace(b, i+1)); i < 0 {
+			return false
+		}
+		i = skipSpace(b, i)
+		if i < len(b) && b[i] == ',' {
+			i = skipSpace(b, i+1)
+			continue
+		}
+		if i < len(b) && b[i] == '}' {
+			return true // Unmarshal has read each of the four (the caller checks them)
+		}
+		return false
+	}
+	return false
+}
+
+// skipSpace returns the index of the first byte of b at or after i that is not JSON whitespace.
+func skipSpace(b []byte, i int) int {
+	for i < len(b) && (b[i] == ' ' || b[i] == '\t' || b[i] == '\n' || b[i] == '\r') {
+		i++
+	}
+	return i
+}
+
+// skipValue returns the index of the ',' '}' or ']' that ends the JSON value starting at b[i]
+// (after any space following it), len(b) if the value ends b, or -1. b is valid JSON, so only
+// brackets and strings need tracking (in a string, a '\\' escapes the byte after it).
+func skipValue(b []byte, i int) int {
+	depth := 0
+	for ; i < len(b); i++ {
+		switch b[i] {
+		case '"':
+			for i++; i < len(b) && b[i] != '"'; i++ {
+				if b[i] == '\\' {
+					i++
+				}
+			}
+			if i >= len(b) {
+				return -1
+			}
+		case '{', '[':
+			depth++
+		case '}', ']':
+			if depth == 0 {
+				return i
+			}
+			depth--
+		case ',':
+			if depth == 0 {
+				return i
+			}
+		}
+	}
+	if depth != 0 {
+		return -1
+	}
+	return i
+}
+
+// startEntry is the part of a stored run:start record decodeStartEntry reads. Name and Kind are
+// matched against the encoding this version writes ("run:start", "value") without decoding a
+// string; any other spelling of them takes the full decoding. Pooled: a recovery pass decodes one
+// per run it drives.
+type startEntry struct {
+	Name   isStartName  `json:"name"`
+	Kind   isValueKind  `json:"kind"`
+	Salt   isSalt       `json:"salt"`
+	Result runStartWire `json:"result"`
+}
+
+var startEntryPool = sync.Pool{New: func() any { return new(startEntry) }}
+
+// isStartName is true for a JSON value that is the string "run:start", as written.
+type isStartName bool
+
+func (n *isStartName) UnmarshalJSON(b []byte) error {
+	*n = string(b) == `"`+runStartStep+`"`
+	return nil
+}
+
+// isSalt is true for a JSON value that is a string, with no escape, holding a salt as the journal
+// writes one (validSalt).
+type isSalt bool
+
+func (s *isSalt) UnmarshalJSON(b []byte) error {
+	*s = isSalt(len(b) >= 2 && b[0] == '"' && b[len(b)-1] == '"' && validSalt(b[1:len(b)-1]))
+	return nil
+}
+
+// isValueKind is true for a JSON value that is the string "value", as written.
+type isValueKind bool
+
+func (k *isValueKind) UnmarshalJSON(b []byte) error {
+	*k = string(b) == `"`+string(StepValue)+`"`
+	return nil
+}
+
 // recoverable reports whether a run the recovery filter admits is one a recovery pass drives: not a
 // sub-agent's run (its root's re-run resumes it) or a session's (the session resumes it).
 func recoverable(runID string) bool { return !IsSubRun(runID) && !IsSessionRun(runID) }
@@ -306,19 +676,57 @@ func recoverable(runID string) bool { return !IsSubRun(runID) && !IsSessionRun(r
 // stalls past the TTL between the check and resume loses the lease, and another driver may finish
 // the run in that window. Either way at-most-once still holds: resume is handed a finished run,
 // which a resume that calls Run or RunSaga replays without firing anything again.
-func recoverRun(ctx context.Context, store Durable, runID string, resume func(ctx context.Context, runID string) error, cfg recoverConfig) (bool, error) {
-	var resumed bool
+func recoverRun(ctx context.Context, store Durable, runID string, resume Resumer, cfg recoverConfig) (bool, error) {
+	var (
+		resumed      bool
+		notStarted   bool
+		notResumable error // the resumer's ErrNotResumable
+	)
 	driven, err := leaseRun(ctx, store, runID, func(ctx context.Context) error {
 		if over, err := runEnded(ctx, store, runID); err != nil || over {
 			return err
 		}
+		// The run's start, read under the lease on every pass: a run with none is skipped, and
+		// read again next pass (rule 15), so one whose first drive writes it later is recovered.
+		start, ok, err := startUnderLease(ctx, store, runID)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			notStarted = true
+			return nil
+		}
+		err = resume(ctx, runID, start)
+		if err != nil && errors.Is(err, ErrNotResumable) {
+			notResumable = err
+			return nil
+		}
 		resumed = true
-		return resume(ctx, runID)
+		return err
 	}, cfg)
-	if err != nil && (!driven || !IsPause(err) && !errors.Is(err, ErrLeaseLost)) {
+	switch {
+	case err != nil && (!driven || !IsPause(err) && !errors.Is(err, ErrLeaseLost) && !cancelledEnd(err)):
 		return resumed, fmt.Errorf("recover run %s: %w", runID, err)
+	case notStarted && reportOnce(store, runID, ErrNotStarted):
+		return false, fmt.Errorf("recover run %s: skipped: %w", runID, ErrNotStarted)
+	case notResumable != nil && reportOnce(store, runID, ErrNotResumable):
+		return false, fmt.Errorf("recover run %s: skipped: %w", runID, notResumable)
 	}
 	return resumed, nil
+}
+
+// cancelledEnd reports whether a drive's err is the end of a cancelled run: ErrRunCancelled, or a
+// saga's *SagaAborted for a cancellation whose rollback finished. A recovery pass that drove a run
+// to that end succeeded; a cancellation's rollback that stopped (a failed compensator, an unknown
+// outcome) did not.
+func cancelledEnd(err error) bool {
+	if !errors.Is(err, ErrRunCancelled) {
+		return false
+	}
+	if sa, ok := errors.AsType[*SagaAborted](err); ok {
+		return sa.CompensateErr == nil && len(sa.UnknownOutcome) == 0
+	}
+	return true
 }
 
 // RecoverLoop re-drives in-flight runs until ctx is done, so a run whose holder dies is taken over
@@ -329,7 +737,7 @@ func recoverRun(ctx context.Context, store Durable, runID string, resume func(ct
 //   - The full pass enumerates the store's unfinished runs as Recover does and drives each one it
 //     can lease: halted runs (waiting on an approval, an interrupt, a timer or a signal, or with an
 //     outcome unknown), runs nobody leases (a plain Agent.Run whose process died) and runs whose
-//     holder died. It costs about five store round trips for each unfinished run it lists, halted
+//     holder died. It costs about six store round trips for each unfinished run it lists, halted
 //     runs included, and the next full pass does not start before this one has started all of its
 //     drives, so with many unfinished runs or a slow store a full pass can outlast the interval.
 //   - The lapsed loop, over a store that implements Leaser, enumerates only the unfinished runs
@@ -360,6 +768,9 @@ func recoverRun(ctx context.Context, store Durable, runID string, resume func(ct
 // recorded nothing for the sleeping call, so the next pass reaches the Sleep again and schedules
 // again.
 //
+// A run with no run:start, and a run no Resumer drives, are skipped and reported once per process,
+// as Recover reports them (to the WithRecoverErrors handler); every pass reads run:start again.
+//
 // Run it once per process, for the life of the process, with the same resume Recover takes:
 //
 //	go func() {
@@ -373,7 +784,10 @@ func recoverRun(ctx context.Context, store Durable, runID string, resume func(ct
 // concurrency) is returned at once. Otherwise RecoverLoop returns ctx's error when ctx is done,
 // after both loops have stopped and the drives they started (whose contexts derive from ctx) have
 // returned.
-func RecoverLoop(ctx context.Context, store Durable, resume func(ctx context.Context, runID string) error, opts ...RecoverLoopOption) error {
+func RecoverLoop(ctx context.Context, store Durable, resume Resumer, opts ...RecoverLoopOption) error {
+	if resume == nil {
+		return fmt.Errorf("RecoverLoop: nil Resumer: %w", ErrConfig)
+	}
 	lister, ok := capabilityOf[Lister](store)
 	if !ok {
 		return fmt.Errorf("RecoverLoop needs a store that implements Lister (itself or through Unwrap) to enumerate runs: %w", ErrConfig)
