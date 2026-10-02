@@ -68,7 +68,8 @@ guarantees: at most one fire per call, no not-started record for a claim that fi
 result never replaced, a resolution never overriding a live driver; a liveness property states that
 an effect that provably never started does not halt for ever. Each rule an earlier review found
 wrong is kept as a configuration that must still produce its counterexample, so the model cannot
-quietly lose the power to find it. Further models cover the approval gate with 1-of-1 and m-of-n
+quietly lose the power to find it. Nightly, the Apalache model checker also checks the claim
+model symbolically, and an inductive invariant {{VERIF_IND}}. Further models cover the approval gate with 1-of-1 and m-of-n
 tallies and approvers' key sets (model 1b), flow semantics (model 7), spend accounting of model
 calls (model 8) and the bide protocol's claim rules (model 2).
 
@@ -168,10 +169,13 @@ combined with `main` and any changes queued ahead of it, so every merge is teste
 it lands on. A pull request that changes only documentation (or only the models under `spec/tla/`)
 skips the Go lint, build and tests; the required checks still report, so it can merge.
 
-Two jobs run nightly and on demand (`workflow_dispatch`), not on pull requests, and are not
+Three jobs run nightly and on demand (`workflow_dispatch`), not on pull requests, and are not
 required checks:
 
 - **Models (nightly)** checks the `nightly` TLA+ configurations, with larger bounds
+  (`.github/workflows/models.yml`).
+- **Apalache (nightly)** runs the Apalache checks (`spec/tla/check.sh apalache`): the claim
+  model's inductive invariant and bounded symbolic checks of models 1 and 9
   (`.github/workflows/models.yml`).
 - **Explore (full bound)** runs the fault-schedule explorations of the claim protocol (`agent`) and
   of flow lowering (`plan`) with `BIDE_EXPLORE=1` (`.github/workflows/explore.yml`). Every pull
@@ -193,7 +197,9 @@ required checks:
   someone does.
 - **Model checking is bounded, and checks the design, not the code.** TLC explores every
   interleaving within the bounds each configuration states (drivers, faults, attempts); a bug that
-  needs more is outside it. Until trace validation lands, nothing checks mechanically that the Go
+  needs more is outside it. The inductive invariant Apalache checks for the claim model lifts the
+  depth and fault bounds for its properties, not the number of drivers, processes, calls,
+  attempts or claim ids. Until trace validation lands, nothing checks mechanically that the Go
   code implements the model; the map from model steps to Go functions in `spec/tla/README.md` is
   reviewed by hand.
 - **Model behaviour is measured, not proven.** Whether a model decides well is evaluated

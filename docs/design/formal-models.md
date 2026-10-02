@@ -723,10 +723,13 @@ speak about the same records:
   (re-translate in place). The script needs Java 11 or later on `PATH` or in `JAVA_HOME`, `curl`
   and a SHA-256 tool; nothing else. The repository has no Makefile, and adding one only for this is
   not worth a second entry point.
-- **Apalache (optional):** v0.62.2 can check an inductive invariant symbolically, with no bound on
-  claim ids or re-drives. It is not needed for model 1's plan; it is worth trying once model 1 is
-  stable, to find an inductive strengthening of `NotStartedExclusive`, and for model 4, where
-  `Seq` values and concurrent readers make explicit-state checking expensive.
+- **Apalache:** v0.62.2, pinned in `tools.lock` like TLC and run by `spec/tla/check.sh apalache`
+  in its own nightly job. TLC stays the checker of record on every pull request: it is exhaustive
+  within its bounds, fast at the small bounds that find most bugs, and checks liveness. Apalache
+  adds what TLC cannot do: bounded symbolic checks with the configuration's placements left to the
+  solver, and inductive invariants, which prove a safety property at any depth and for any fault
+  budget. Status: APALACHE_STATUS. Apalache remains the candidate for model 4, where `Seq`
+  values and concurrent readers make explicit-state checking expensive.
 
 ## 8. Milestones
 

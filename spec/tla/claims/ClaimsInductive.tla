@@ -44,6 +44,7 @@ InCustody(i) ==
   \/ \E p \in Procs, c \in Calls, x \in Gens : i \in pending[p][c][x]
   \/ \E d \in DOMAIN toRetry : i \in toRetry[d]
   \/ \E w \in lateNS : w[3] = i
+  \/ \E d \in Drivers : pc[d] = "GateWrite" /\ oldId[d] = i
 
 \* A resolution of call c is recorded, or written and may still commit.
 ResolvedOrLate(c) ==
