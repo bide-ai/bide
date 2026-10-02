@@ -34,12 +34,6 @@ jobs:
           path: .gsm-gate/gsm
           fetch-depth: 0 # the provenance step reads gsm's main
 
-      # The pinned gsm commit must be on gsm's main: reviewed and merged, not a branch head.
-      - name: The pinned gsm commit is on gsm's main
-        run: |
-          git -C .gsm-gate/gsm merge-base --is-ancestor "$GSM_COMMIT" origin/main ||
-            { echo "::error::GSM_COMMIT $GSM_COMMIT is not on $GSM_REPO main"; exit 1; }
-
       # gsm's pins name the proof commit, the Rocq image (by digest) and the two checker binaries.
       - name: Read gsm's checker pins
         run: cat .gsm-gate/gsm/.github/oracle/pins.env >> "$GITHUB_ENV"
@@ -112,3 +106,11 @@ jobs:
             -table-checker "$x/$TABLE_CHECKER" -rules-checker "$x/$RULES_CHECKER" \
             -scan "$GITHUB_WORKSPACE" \
             -summary "$GITHUB_STEP_SUMMARY"
+
+      # The pinned gsm commit must be on gsm's main: reviewed and merged, not a branch head. Last, so
+      # the checks above still report when it fails.
+      - name: The pinned gsm commit is on gsm's main
+        if: ${{ !cancelled() }}
+        run: |
+          git -C .gsm-gate/gsm merge-base --is-ancestor "$GSM_COMMIT" origin/main ||
+            { echo "::error::GSM_COMMIT $GSM_COMMIT is not on $GSM_REPO main"; exit 1; }
