@@ -507,7 +507,7 @@ Journal and engine events are recorded by hook calls at these sites:
 | `claim_won`, `claim_lost` | `Journal.claim` | at each return |
 | `pending_remember` | `claimMemo.remember` (called from `Journal.claim`) | entry |
 | `voided_check` (result) | `Journal.claimNext`, `Journal.voided` | after the check |
-| `gate_halt` | the resume gate in `loop.go` (`Agent.run`'s `for id := range attempted`) | before the `ResumeHalt` return |
+| `gate_halt` | the resume gate in `loop.go` (`Agent.runLoop`'s `for id := range attempted`) | before the `ResumeHalt` return |
 | `effect_skip` (cancelled before the call) | `journalStep` (`ctx.Err()` in the `doFresh` closure), `loop.go` (`sctx.Err()` in the `recordFresh` closure), `durableStep` | the early return |
 | `effect_call` | the same three closures | at `started.Store(true)` / `called.Store(true)` |
 | `not_started` | `Journal.notStarted` | entry |

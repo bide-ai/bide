@@ -51,7 +51,7 @@ type limitAmendment struct {
 // binds the identity, Waker and clock the drive runs with to the returned context. wrote names
 // the records it wrote or tried to write (run:start, run:limits:<n>), whether its insert won or
 // lost to another drive's: the caller loads the run again before it goes on whenever wrote is not
-// empty (model 10's DStart and DAmend return to DOpen; see Agent.run). It is out of line so the
+// empty (model 10's DStart and DAmend return to DOpen; see Agent.runLoop). It is out of line so the
 // loop's frame does not grow.
 //
 //go:noinline
@@ -89,7 +89,7 @@ func (a *Agent) openPlan(ctx context.Context, runID string, d *driveSpec, recs [
 		if err != nil {
 			return ctx, nil, nil, err
 		}
-		b, err := marshalJournal(want)
+		b, err := marshalJournal(want.out())
 		if err != nil {
 			return ctx, nil, nil, fmt.Errorf("encode %s (run %s): %w (%w)", runStartStep, runID, err, ErrConfig)
 		}

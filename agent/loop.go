@@ -39,8 +39,45 @@ func (a *Agent) Run(ctx context.Context, runID, input string) (Message, error) {
 // the seed. Durability, resume, and side-effect safety are identical regardless of emit.
 // It returns the final message, the whole run's token usage (every model call in its journal,
 // recorded by this invocation or an earlier one), the number of live model turns (replayed
-// journal turns are not counted), and any error.
+// journal turns are not counted), and any error. Its body is runLoop, after probeDriveStack.
 func (a *Agent) run(ctx context.Context, runID string, d *driveSpec) (Message, usageTotals, int, error) {
+	_ = probeDriveStack()
+	return a.runLoop(ctx, runID, d)
+}
+
+// driveStackProbe is the stack a drive needs below Agent.run, less a margin: about 23 KiB at its
+// deepest (the journal header's insert under openRun), of which drive's own frame is about 12 KiB.
+// It stays below that need, so the probe never grows a stack the drive would not.
+// TestDriveStackHighWater (drive_stack_test.go) pins that need between 17 and 32 KiB and fails
+// when the drive changes enough that this size should be revisited.
+const driveStackProbe = 16 << 10
+
+// probeDriveStack makes the calling goroutine's stack hold driveStackProbe more bytes, so a
+// goroutine that starts small grows its stack once, here, where little is on it, rather than
+// deep inside the drive, where the runtime copies (and adjusts) every frame above. It reads one
+// byte of its frame; the frame's size is what grows the stack.
+//
+// Why it exists: a run in a fresh goroutine (a server handler, a Recover worker, a parallel
+// sub-run) starts with an 8 KiB stack. Without the probe, the drive outgrows it twice, once deep
+// under openRun and once more further down, and each growth copies every frame above it,
+// including drive's own large one, a cost the overhead benchmark (short runs) is sensitive to.
+// With the probe, the stack grows here once, while only run's small frame is above it, and the
+// drive then fits. When the stack is already large enough, the probe costs one call (its frame's
+// stack check passes). If the drive's stack need moves outside what the probe
+// assumes, TestDriveStackHighWater fails: resize driveStackProbe, or remove the probe, and
+// re-measure the overhead benchmark.
+//
+//go:noinline
+func probeDriveStack() byte {
+	var pad [driveStackProbe]byte
+	return pad[stackProbeIndex]
+}
+
+// stackProbeIndex is always 0: a variable, so the compiler keeps probeDriveStack's frame.
+var stackProbeIndex int
+
+// runLoop is run's body (see run).
+func (a *Agent) runLoop(ctx context.Context, runID string, d *driveSpec) (Message, usageTotals, int, error) {
 	saga, emit := d.cfg.saga, d.emit
 	if err := checkRunID(ctx, runID); err != nil {
 		return Message{}, usageTotals{}, 0, err

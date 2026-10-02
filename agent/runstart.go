@@ -113,14 +113,18 @@ type runStartWire struct {
 
 // MarshalJSON writes s's journal form: the input as a JSON string when it is a user message of
 // one text part, and as a message otherwise.
-func (s RunStart) MarshalJSON() ([]byte, error) {
+func (s RunStart) MarshalJSON() ([]byte, error) { return marshalJournal(s.out()) }
+
+// out is s as MarshalJSON writes it. One encoding pass: the input is encoded in place, as
+// marshalJournal would encode it alone. The engine encodes it directly (marshalJournal(s.out())),
+// so the method's output is not encoded a second time.
+func (s RunStart) out() runStartOut {
 	var in any = s.Input
 	if t, ok := plainUserText(s.Input); ok {
 		in = t
 	}
-	// One encoding pass: the input is encoded in place, as marshalJournal would encode it alone.
-	return marshalJournal(runStartOut{Input: in, Saga: s.Saga, Kind: s.Kind, Session: s.Session, Flow: s.Flow,
-		Typed: s.Typed, Settings: s.Settings, Principal: s.Principal, Tools: s.Tools, Ext: s.Ext})
+	return runStartOut{Input: in, Saga: s.Saga, Kind: s.Kind, Session: s.Session, Flow: s.Flow,
+		Typed: s.Typed, Settings: s.Settings, Principal: s.Principal, Tools: s.Tools, Ext: s.Ext}
 }
 
 // runStartOut is runStartWire as MarshalJSON writes it: the input a string or a Message, encoded in
@@ -286,7 +290,7 @@ func beginRun(ctx context.Context, d Durable, runID string, want RunStart) (json
 			return nil, false, fmt.Errorf("run %s: the flow input: %w (%w)", runID, err, ErrConfig)
 		}
 	}
-	b, err := marshalJournal(want)
+	b, err := marshalJournal(want.out())
 	if err != nil {
 		return nil, false, fmt.Errorf("encode %s (run %s): %w (%w)", runStartStep, runID, err, ErrConfig)
 	}
@@ -356,7 +360,7 @@ func holdToStart(ctx context.Context, d Durable, runID string, recs []Record, wa
 		}
 	}
 	if !found {
-		b, err := marshalJournal(want)
+		b, err := marshalJournal(want.out())
 		if err != nil {
 			return fmt.Errorf("encode %s (run %s): %w (%w)", runStartStep, runID, err, ErrConfig)
 		}

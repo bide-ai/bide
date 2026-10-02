@@ -232,7 +232,7 @@ func TestEngineKeys_WritesUseConstructors(t *testing.T) {
 		"probe:key":              true, // its callers are checked here
 		"doShared:key":           true, // its callers are checked here
 		"step:markerKey":         true, // returned by claimNextAttempt, which builds it with retryAttemptStep
-		"run:markerKey":          true, // returned by claimNextAttempt, which builds it with retryAttemptStep
+		"runLoop:markerKey":      true, // returned by claimNextAttempt, which builds it with retryAttemptStep
 		"putRecord:name":         true, // its callers are checked here
 		"writeEnd:name":          true, // its callers are checked here
 		"cancelSeen:p.cancelKey": true, // runCancelledStep or runCancelRequestedStep (openPlan)
