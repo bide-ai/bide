@@ -5,12 +5,11 @@
 #
 # <program> <machine> <verdict>
 #
-# program: a directory with a main package; the workflow runs it twice, with no
-#   arguments, built with -tags gsmgate, and it records every gsm machine it
-#   makes; the two runs must make the same machines. A program that reads (or
-#   imports a bide package that reads) flags, arguments, the environment, stdin,
-#   files or the platform fails the scan, since another run could make other
-#   machines.
+# program: a directory with a main package. The gate builds it with -tags gsmgate
+#   and runs it twice, canonically (no arguments, only PATH, fresh empty HOME,
+#   TMPDIR and working directory, empty stdin); each run records every gsm machine
+#   it makes, and the two runs must make the same machines. The gate certifies
+#   the machines a program makes when run that way.
 # machine: the registry's name (a federation's components are listed one by one).
 # verdict: certified         Build accepts it; both checkers verify it.
 #          certified-tables  Build accepts it; the table checker verifies it. Its

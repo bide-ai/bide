@@ -69,50 +69,22 @@ jobs:
         with:
           go-version: '1.27'
 
-      - name: Record every gsm machine the programs make
-        id: record
-        # Each program in the catalog runs twice, with no arguments, built with -tags gsmgate against
-        # gsm at GSM_COMMIT (a replace added to its module for this run only), and records every
-        # machine it makes. The second run has another time zone and starts later; the check step
-        # fails if the two runs made different machines. A program that fails (a Build error it does
-        # not expect) fails this step, after every program has run, and the next step still checks
-        # what was recorded.
-        env:
-          GOWORK: 'off'
-          GOFLAGS: '-mod=mod'
-        run: |
-          gsm="$GITHUB_WORKSPACE/gsm"
-          programs=$(awk '{ sub(/#.*/, "") } NF && $1 !~ /^@/ { print $1 }' .github/gsm-gate/machines.txt | sort -u)
-          failed=
-          for p in $programs; do
-            mod=$(cd "$p" && go env GOMOD)
-            (cd "$(dirname "$mod")" && go mod edit -replace "github.com/blackwell-systems/gsm=$gsm")
-            echo "::group::$p"
-            for run in 1 2; do
-              tz=UTC; [ "$run" = 2 ] && tz=Pacific/Chatham
-              start=$(date +%s)
-              (cd "$p" && TZ=$tz GSM_GATE_DIR="$RUNNER_TEMP/gsm-gate-$run/$p" timeout 300 go run -tags gsmgate .) || failed="$failed $p"
-              echo "$p run $run: $(( $(date +%s) - start )) s"
-            done
-            echo "::endgroup::"
-          done
-          if [ -n "$failed" ]; then
-            echo "::error::these programs failed against gsm at GSM_COMMIT:$failed"
-            exit 1
-          fi
-
-      # gsmgate is its own module in gsm (internal/cmd/gsmgate). -scan loads every bide module and
-      # fails if bide makes a gsm machine outside the programs above (see the README).
-      - name: Check every machine with the extracted checkers
-        if: ${{ !cancelled() && steps.record.outcome != 'skipped' }}
+      # gsmgate is its own module in gsm (internal/cmd/gsmgate). It builds each catalog program with
+      # -tags gsmgate against gsm at GSM_COMMIT (through a copy of the program's go.mod, so bide is not
+      # changed) and runs it twice, canonically: no arguments, only PATH, a fresh empty HOME, TMPDIR and
+      # working directory, empty stdin. Each run records every machine the program makes; the two runs
+      # must make the same machines. Then it checks every machine with both checkers against
+      # machines.txt, and -scan loads every bide module and fails if bide makes a gsm machine outside
+      # the programs (see the README).
+      - name: Run every program and check its machines
         working-directory: gsm/internal/cmd/gsmgate
         env:
           GOWORK: 'off'
         run: |
           x="$GITHUB_WORKSPACE/nc/coq/extraction"
           go run . \
-            -dumps "$RUNNER_TEMP/gsm-gate-1" \
-            -rerun "$RUNNER_TEMP/gsm-gate-2" \
+            -run-programs "$GITHUB_WORKSPACE/bide" -gsm "$GITHUB_WORKSPACE/gsm" \
+            -dumps "$RUNNER_TEMP/gsm-gate-1" -rerun "$RUNNER_TEMP/gsm-gate-2" \
             -catalog "$GITHUB_WORKSPACE/bide/.github/gsm-gate/machines.txt" \
             -table-checker "$x/$TABLE_CHECKER" -rules-checker "$x/$RULES_CHECKER" \
             -scan "$GITHUB_WORKSPACE/bide" \

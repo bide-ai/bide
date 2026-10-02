@@ -11,31 +11,41 @@ interim gate, in CI only, until an in-process gate lands in gsm.
 `machines.txt` lists every program that makes gsm machines (today the
 `examples/govern` programs), every machine each one makes, and its expected
 verdict (`certified`, `certified-tables`, `rejected`, `synthesized`,
-`not-built`; the file explains each). The workflow runs each program twice
-(the second time in another time zone), with no arguments, built with
-`-tags gsmgate`, which records every machine the program makes: each `Build`
-result, including each component a federation builds, and each synthesized or
-compositional machine. gsm's `internal/cmd/gsmgate` then runs both checkers on
-the records. The job fails if:
+`not-built`; the file explains each). gsm's `internal/cmd/gsmgate` builds each
+program with `-tags gsmgate` (through a copy of its `go.mod`, so bide is not
+changed) and runs it twice, canonically: no arguments, an environment of only
+`PATH=/usr/bin:/bin`, a fresh empty `HOME` and `TMPDIR` and the gate directory,
+empty standard input, and a fresh empty working directory. Each run records
+every machine the program makes: each `Build` result, including each component
+a federation builds, and each synthesized or compositional machine. What the
+gate certifies is the machines each program makes when run that way, with no
+arguments, no environment and no input. gsmgate then runs both checkers on the
+records. The job fails if:
 
 - a checker rejects a machine listed as accepted, refuses its input, or crashes;
 - a checker disagrees with `Build` (verifies a machine `Build` rejects);
 - a program makes a machine `machines.txt` does not list, or a listed machine is
   not made;
-- a program makes different machines on its two runs (a machine that depends on
-  the clock, randomness or the host; two runs can agree by chance, so this check
-  catches such a dependence without proving its absence);
+- a program makes different machines on its two runs. The runs start moments
+  apart on the same host, so a machine that depends on the time of day is not
+  detected, and one that depends on randomness only when the runs happen to
+  differ;
 - the scan (`gsmgate -scan`) fails. It loads every bide module, hidden,
   `testdata`, `vendor` and `node_modules` directories included, with its full
   import graph (test code excluded), and fails on: a main package that depends on
-  gsm, through any module, and is not a program in `machines.txt`; a package
-  outside the programs that refers to a gsm function or method making a machine
+  gsm (on this platform or 13 others, or through a file a build tag excludes,
+  through any module) and is not a program in `machines.txt`; a package outside
+  the programs that refers to a gsm function or method making a machine
   (type-checked, so under any import name and as a value); a program, or a bide
-  package it imports, that reads flags, arguments, the environment, stdin, files
-  or the platform, or has a file a build constraint excludes; a gsm import hidden
-  from the load; a symlinked directory; a document (`.md`, `.mdx`, `.markdown`,
-  `.rst`, `.adoc`, `.txt`, `.html`) showing a gsm machine without an `@doc` line.
-  Nothing that makes machines can be exempt;
+  package it imports, that has a file a build constraint excludes or refers to an
+  identifier on gsm's input list (package `flag`; `os.Args`, `Getenv`,
+  `LookupEnv`, `Environ`, `ExpandEnv`, `Stdin`, `ReadFile`, `Open`, `OpenFile`,
+  `ReadDir`, `DirFS`, `Getwd`; `syscall.Getenv`, `Environ`; `runtime.GOOS`,
+  `GOARCH`), which is a list, not a proof, and only an early warning, since the
+  canonical runs are what fix the input; a gsm import hidden from the load; a
+  symlinked directory; a document (`.md`, `.mdx`, `.markdown`, `.rst`, `.adoc`,
+  `.txt`, `.html`) showing a gsm machine without an `@doc` line. Nothing that
+  makes machines can be exempt;
 - the pinned gsm commit is not on gsm's `main`.
 
 Test code is not scanned: test machines are not shipped. Documents are listed,
