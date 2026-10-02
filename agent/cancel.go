@@ -78,7 +78,8 @@ type cancelReason struct {
 // current turn may still run, and the run stops at its next turn boundary or claim. A sub-run (a
 // sub-agent's, a SubRunFor run, a delegation) reads its tree root's cancellation too, when it
 // opens, at its turn boundaries and after every won claim, so a Cancel of the root stops the whole
-// tree. A plan flow's run checks it when the flow opens, at every node, and after every won claim.
+// tree; it reads the root's markers from the root's store, also when its own agent journals to
+// another. A plan flow's run checks it when the flow opens, at every node, and after every won claim.
 //
 // Cancel's reads are not one atomic step: a drive can write run:complete between Cancel's first
 // read and its write. The read-back after the write settles it: the first end marker in journal

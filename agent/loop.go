@@ -276,13 +276,13 @@ func (a *Agent) run(ctx context.Context, runID string, d *driveSpec) (Message, u
 	// A sub-run's Load did not read its tree root: the root's cancellation is read now, before the
 	// sub-run calls the model or a tool (a Cancel of the root cancels the whole tree).
 	if p.root != "" && !answerRecorded(msgs, a.terminalTool) {
-		seen, err := a.rootCancelled(ctx, p.root)
+		seen, err := p.rootCancelled(ctx)
 		if err != nil {
 			return Message{}, tot, 0, err
 		}
 		if seen {
 			if saga {
-				r, _, err := lookup(ctx, a.store, p.root, runCancelRequestedStep)
+				r, _, err := lookup(ctx, p.rootStore, p.root, runCancelRequestedStep)
 				if err != nil {
 					return Message{}, tot, 0, err
 				}

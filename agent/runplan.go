@@ -29,9 +29,10 @@ type runPlan struct {
 	filter     map[string]bool // the journaled tool filter; nil: none
 	reqTools   []ToolSpec      // the specs every request of the drive is sent
 	maxConc    int
-	cancelKey  string // the key the drive's cancellation checks read
-	root       string // a sub-run's tree root, whose cancellation the checks read too; "" for a root
-	checkTurn  bool   // a turn boundary has passed since the drive's Load
+	cancelKey  string  // the key the drive's cancellation checks read
+	root       string  // a sub-run's tree root, whose cancellation the checks read too; "" for a root
+	rootStore  Durable // the store root journals to (see rootStoreOf)
+	checkTurn  bool    // a turn boundary has passed since the drive's Load
 }
 
 // errSagaRun is run's answer for a drive that passed no saga option of a run journaled as a saga:
@@ -174,6 +175,7 @@ func (a *Agent) openPlan(ctx context.Context, runID string, d *driveSpec, recs [
 	}
 	if root := treeRootID(runID); root != runID {
 		p.root = root // a Cancel of the tree's root cancels this sub-run too
+		p.rootStore = rootStoreOf(ctx, root, a.store)
 	}
 	// The drive's identity: its Actor live, the principal journaled.
 	if idn.Actor != "" || start.Principal != nil {

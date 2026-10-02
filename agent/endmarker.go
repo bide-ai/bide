@@ -187,16 +187,17 @@ func (a *Agent) cancelSeen(ctx context.Context, runID string, p *runPlan) (bool,
 	if err != nil || ok || p.root == "" {
 		return ok, err
 	}
-	return a.rootCancelled(ctx, p.root)
+	return p.rootCancelled(ctx)
 }
 
-// rootCancelled reports whether the tree root root was cancelled: it holds run:cancelled, or a
-// saga's rollback request.
-func (a *Agent) rootCancelled(ctx context.Context, root string) (bool, error) {
-	if _, ok, err := lookup(ctx, a.store, root, runCancelledStep); err != nil || ok {
+// rootCancelled reports whether p's tree root was cancelled: it holds run:cancelled, or a saga's
+// rollback request. Both are read from the root's own store (p.rootStore), which is not the
+// sub-run's when its agent journals elsewhere.
+func (p *runPlan) rootCancelled(ctx context.Context) (bool, error) {
+	if _, ok, err := lookup(ctx, p.rootStore, p.root, runCancelledStep); err != nil || ok {
 		return ok, err
 	}
-	_, ok, err := lookup(ctx, a.store, root, runCancelRequestedStep)
+	_, ok, err := lookup(ctx, p.rootStore, p.root, runCancelRequestedStep)
 	return ok, err
 }
 
@@ -228,7 +229,7 @@ func (a *Agent) leaveCancelled(ctx context.Context, runID string, p *runPlan, le
 	if p.saga {
 		r, ok, err := lookup(ctx, a.store, runID, runCancelRequestedStep)
 		if err == nil && !ok && p.root != "" {
-			r, _, err = lookup(ctx, a.store, p.root, runCancelRequestedStep) // the tree root's request
+			r, _, err = lookup(ctx, p.rootStore, p.root, runCancelRequestedStep) // the tree root's request
 		}
 		if err != nil {
 			return leave(err)

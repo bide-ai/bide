@@ -323,7 +323,8 @@ is not an end marker, so recovery still drives the saga, whose drive rolls it ba
 first, and after each won side-effect claim, before the call (a claim it then records as not
 started); calls already in flight finish and record their results, and a retry-safe call already
 dispatched in the current turn may still run. A sub-run reads its tree root's cancellation at the
-same checks, so `Cancel` of the root stops the whole tree, and a `plan` flow's run reads it before
+same checks (from the root's store, also when the sub-agent journals to another), so `Cancel` of
+the root stops the whole tree, and a `plan` flow's run reads it before
 each node that runs. A run with no `run:start` is
 `ErrNotStarted`, and a run already over is `ErrRunEnded` (one already cancelled is `nil`). A drive
 of a cancelled run returns `ErrRunCancelled`, with a `Result`. The keys `run:complete`,

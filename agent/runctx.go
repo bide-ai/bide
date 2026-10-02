@@ -20,10 +20,11 @@ const (
 type runCtx struct {
 	store     Durable
 	runID     string
-	root      string // the top-level run; a sub-agent's runs inherit it
-	toolUseID string // the call being executed; "" outside one
-	saga      bool   // the run is a saga
-	sagaTree  bool   // the run is a saga or belongs to a saga's tree (a run started from one's call)
+	root      string  // the top-level run; a sub-agent's runs inherit it
+	rootStore Durable // the store root journals to (a sub-agent may journal to another); inherited with it
+	toolUseID string  // the call being executed; "" outside one
+	saga      bool    // the run is a saga
+	sagaTree  bool    // the run is a saga or belongs to a saga's tree (a run started from one's call)
 }
 
 // protocol:delegation begin SStart
@@ -32,8 +33,22 @@ type runCtx struct {
 // executed ("" for none), in a saga run or not.
 func withRunContext(ctx context.Context, store Durable, runID, toolUseID string, saga bool) context.Context {
 	parent, _ := ctx.Value(runContextKey).(runCtx) // the call that started this run, if any
-	return context.WithValue(ctx, runContextKey, runCtx{store: store, runID: runID, root: rootRunID(ctx, runID), toolUseID: toolUseID,
+	root, rootStore := rootRunID(ctx, runID), store
+	if parent.root == root && parent.rootStore != nil {
+		rootStore = parent.rootStore
+	}
+	return context.WithValue(ctx, runContextKey, runCtx{store: store, runID: runID, root: root, rootStore: rootStore, toolUseID: toolUseID,
 		saga: saga, sagaTree: saga || parent.sagaTree})
+}
+
+// rootStoreOf is the store the tree root root journals to, for a run whose drive runs under ctx:
+// the root's store as the enclosing run's context carries it (a sub-agent may journal to another
+// store than its root, outside a saga), and own when ctx carries none for root.
+func rootStoreOf(ctx context.Context, root string, own Durable) Durable {
+	if rc, ok := ctx.Value(runContextKey).(runCtx); ok && rc.root == root && rc.rootStore != nil {
+		return rc.rootStore
+	}
+	return own
 }
 
 // protocol:delegation end

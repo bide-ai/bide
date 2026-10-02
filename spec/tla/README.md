@@ -1510,7 +1510,11 @@ Abstracted away:
 - middleware and sibling concurrency (model 9);
 - model turns beyond one;
 - the token budget;
-- sessions.
+- sessions;
+- stores: the model has one store. A sub-agent outside a saga may journal to another store than
+  its root; its checks (`ECx`) read the root's markers from the root's store (`runPlan.rootStore`,
+  carried in the run context), which the model does not distinguish. That cross-store read is
+  covered by Go tests (`TestReview138b_CrossStoreSubRunIgnoresRootCancel`).
 
 ### Model-code map
 
@@ -1545,7 +1549,7 @@ which are models 1 and 9.
 | `RbBind`, `RbRec`, `RbBindRet` | U `bindRollback`, `asSubAgent`; H `RollbackBinder`; A `BindRollback`, `checkChild`, `withoutGrant`, `rollbackParents` (the acting grant and those bound with `WithRollbackGrants`: D1's fix, `ChainBind`), `bindDelegated` (the `delegated` mark kept: D2's fix, `GuardRerun`), `withRollbackScope`; S the recursion into the sub-agent's run, whatever its result (D3's fix, `RecurseFailed`) |
 | `RbComp` | S the memoized `sagaCompensateStep` |
 | `RbRe`, `RbReRun`, `RbReRet`, `RbReW` | S the re-run of a retry-safe compensable call through `toolH` and `callTool`, and the links reloaded after it; a re-run the guard refused (`guardRefusal`) is listed as an unknown outcome (D2's fix) |
-| `ECx` | E `cancelSeen` and `rootCancelled` (the tree root's `run:cancelled` and rollback request, for a sub-run: `runPlan.root`, `treeRootID`), called by `postClaim` once a claim is won; `recordNotStarted` (#138 review) |
+| `ECx` | E `cancelSeen` and `rootCancelled` (the tree root's `run:cancelled` and rollback request, for a sub-run: `runPlan.root`, `treeRootID`, read from the root's store, `runPlan.rootStore`), called by `postClaim` once a claim is won; `recordNotStarted` (#138 review) |
 | `Idle`, `Back`, `Tick`, `WrongAuth`, `FixAuth`, `Crash`, `CancelRoot` | the root's drives and the environment (`CancelRoot`: P14's `Cancel` of the root) |
 | `EMark`, `EFire`, `ERes` | a side effect's claim, call and outcome (models 1 and 9) |
 | `SRun`, `SRet`, `SWrite`, `SLateRet` | the tool's own code: `Run` or `RunSaga` of its `SubRunFor` ID, and its own write |
