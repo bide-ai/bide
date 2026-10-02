@@ -247,7 +247,9 @@ over a `Durable` that is not a `Journal`, `History` reads instead.
 journaled (a saga as a saga), and takes only the deployment's own options (a Waker, a clock, a
 concurrency cap, an identity's Actor); a journaled setting passed to it is `ErrConfig`, since a
 recovery drive must not change a run's options. It declines typed runs (use `ResumeTyped[T]`),
-flows and session turns with `ErrNotResumable`; `ResumeAny` combines several:
+flows and session turns with `ErrNotResumable`, and so a run whose `run:start` an earlier version
+wrote (no kind and no typed start: the record does not say whether the run is typed). Recover
+those with a `Resumer` of your own, placed after `ResumeAgent`; `ResumeAny` combines several:
 
 <!-- docsnip: setup ctx context.Context; store agent.Durable; a *agent.Agent; w agent.Waker -->
 ```go

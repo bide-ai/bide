@@ -132,9 +132,15 @@ func (a *Agent) StreamMessage(ctx context.Context, runID string, input Message, 
 // ErrConfig on every call, since a recovery drive must not change a run's options. Any other run
 // is ErrNotResumable: a typed run (ResumeTyped), a flow's (plan), and a session turn's, which only
 // its session drives (it is seeded with the session's transcript, and only the session records the
-// turn), so Recover never hands it one.
+// turn), so Recover never hands it one. So is a run whose run:start records no kind and no typed
+// start (one an earlier version journaled): the record does not say whether a plain run or a typed
+// one started it, so ResumeAgent does not guess; a deployment that knows drives it with a Resumer
+// of its own (after ResumeAgent in ResumeAny, say).
 func ResumeAgent(a *Agent, opts ...RunOption) Resumer {
 	return func(ctx context.Context, runID string, start RunStart) error {
+		if start.legacy() {
+			return fmt.Errorf("run %s was started by an earlier version, whose run:start does not say whether the run is typed; drive it with a Resumer of your own: %w", runID, ErrNotResumable)
+		}
 		if k := start.kind(); k != RunKindAgent {
 			return fmt.Errorf("run %s is of kind %q, which ResumeAgent does not drive: %w", runID, k, ErrNotResumable)
 		}

@@ -35,8 +35,11 @@ func TestRev138c_LegacyStartIsNotResumedByResumeAgent(t *testing.T) {
 	if err := agent.ResumeAny(agent.ResumeAgent(a), own)(ctx, "r", start); err != nil || mine != 1 {
 		t.Fatalf("ResumeAny(ResumeAgent, own) = %v, own called %d times; want nil and 1", err, mine)
 	}
+	if n, err := agent.Recover(ctx, j, agent.ResumeAgent(a), agent.WithLeaseHolder("w")); n != 0 || !errors.Is(err, agent.ErrNotResumable) || model.calls.Load() != 0 {
+		t.Fatalf("Recover(ResumeAgent) = %d, %v, model calls %d; want 0, ErrNotResumable, 0", n, err, model.calls.Load())
+	}
 	if n, err := agent.Recover(ctx, j, agent.ResumeAgent(a), agent.WithLeaseHolder("w")); n != 0 || err != nil || model.calls.Load() != 0 {
-		t.Fatalf("Recover(ResumeAgent) = %d, %v, model calls %d; want 0, nil (reported once), 0", n, err, model.calls.Load())
+		t.Fatalf("a second Recover(ResumeAgent) = %d, %v, model calls %d; want 0, nil (reported once), 0", n, err, model.calls.Load())
 	}
 }
 

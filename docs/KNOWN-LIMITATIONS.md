@@ -29,7 +29,7 @@ for its typed runs, and `agent.ResumeAny` to combine them. A run's input, entry 
 options are journaled at its first drive (`agent.RecordedStart`), and every recovery drive runs
 under them. `Recover` skips sub-agent runs, which their root run drives, and session runs, which
 their session drives when the message is sent again; a run with no `run:start` is skipped and
-reported once per process (`ErrNotStarted`), and so is a run no `Resumer` drives (`ErrNotResumable`). See [Crash recovery](guides/debugging.md#4--crash-recovery-lister-and-recover).
+reported once per process (`ErrNotStarted`), and so is a run no `Resumer` drives (`ErrNotResumable`), which includes a run an earlier version started (its `run:start` does not say whether it is typed, so `ResumeAgent` and `ResumeTyped` decline it). See [Crash recovery](guides/debugging.md#4--crash-recovery-lister-and-recover).
 
 **Takeover needs a process that keeps looking.** `agent.Recover` is one pass: a run whose holder
 has died but whose lease has not yet expired is skipped. Run `agent.RecoverLoop` in every worker for
