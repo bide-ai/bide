@@ -48,8 +48,9 @@ type limitAmendment struct {
 // Load), which holds no end marker. It journals run:start for a first drive (rule 8), holds a
 // later drive to it (rules 9 and 11), journals a different limit as an amendment (rule 10), and
 // binds the identity, Waker and clock the drive runs with to the returned context. wrote names
-// the records it wrote (run:start, run:limits:<n>): the caller loads the run again before it goes
-// on (model 10's DStart and DAmend return to DOpen; see Agent.run). It is out of line so the
+// the records it wrote or tried to write (run:start, run:limits:<n>), whether its insert won or
+// lost to another drive's: the caller loads the run again before it goes on whenever wrote is not
+// empty (model 10's DStart and DAmend return to DOpen; see Agent.run). It is out of line so the
 // loop's frame does not grow.
 //
 //go:noinline
@@ -98,11 +99,14 @@ func (a *Agent) openPlan(ctx context.Context, runID string, d *driveSpec, recs [
 			return ctx, nil, nil, fmt.Errorf("record %s (run %s): %w (%w)", runStartStep, runID, err, ErrStorage)
 		}
 		if inserted {
-			start, wrote = want, startWritten
+			start = want
 		} else if err := json.Unmarshal(got, &start); err != nil {
 			return ctx, nil, nil, fmt.Errorf("decode %s (run %s): %w (%w)", runStartStep, runID, err, ErrStorage)
 		}
-		found = !inserted
+		// DStart returns to DOpen whether the insert won or lost: a lost insert means another drive
+		// wrote the run first, and that drive (or a Cancel) may have written more since the Load.
+		// Either way the open knows run:start (its own, or the one it was handed back).
+		wrote, found = startWritten, !inserted
 	}
 	if found {
 		if err := a.holdDrive(runID, d, start, idn, explicitID); err != nil {
@@ -188,8 +192,8 @@ func (a *Agent) openPlan(ctx context.Context, runID string, d *driveSpec, recs [
 	return ctx, p, wrote, nil
 }
 
-// startWritten is openPlan's wrote for a first drive that wrote run:start and no amendment (shared:
-// never appended to in place).
+// startWritten is openPlan's wrote for a first drive that inserted run:start, or lost the insert to
+// another drive's, and wrote no amendment (shared: never appended to in place).
 var startWritten = []string{runStartStep}
 
 // onlyWritten loads runID again after its open wrote the records wrote, and reports whether the

@@ -118,9 +118,10 @@ func (a *Agent) run(ctx context.Context, runID string, d *driveSpec) (Message, u
 			return Message{}, usageTotals{}, 0, err
 		}
 		if len(wrote) > 0 {
-			// DStart, DAmend: back to DOpen. The run is loaded again; if it holds nothing new but
-			// what the open wrote (and the header), the open's verdict is the same and the plan
-			// stands, and otherwise the open runs again over what it loaded.
+			// DStart, DAmend: back to DOpen, whether the open's inserts won or lost. The run is
+			// loaded again; if it holds nothing new but the records the open wrote or was handed
+			// back (and the header), the open's verdict is the same and the plan stands, and
+			// otherwise the open runs again over what it loaded.
 			same, err := a.onlyWritten(open, runID, recs, wrote)
 			if err != nil {
 				return Message{}, usageTotals{}, 0, err
