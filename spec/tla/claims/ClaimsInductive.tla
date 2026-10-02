@@ -156,6 +156,8 @@ Locals ==
             rcid \in Ids /\ rids = {rcid} /\ rg[r] + 1 \in Gens
        /\ pc[r] \in {"RWrite", "RRecord", "RWait", "RNotStarted"} => rclaimed[r]
        /\ pc[r] = "RClaimNS" => ~rclaimed[r]
+       \* The scope's resolution never records its own attempt as not started.
+       /\ ~ResolveVoidOnError => pc[r] # "RNotStarted"
        /\ rclaimed[r] => rids # {}
 
 \* Attempts are claimed in order: an attempt a driver claims (a marker, a late marker write, or a
