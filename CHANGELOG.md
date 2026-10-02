@@ -52,6 +52,7 @@ minor version (0.x.0) may include breaking API or journal-format changes; each o
 
 ### Changed
 
+- Three governance examples declare the gsm rules of six registries with combinators instead of closures (`examples/govern/compose`'s inventory, `coordination`'s two registries, `mesh`'s three lines), so both of gsm's extracted checkers, not only the table checker, certify them in the gsm machine gate. Their behaviour and output are unchanged ([#146]).
 - **Breaking:** `agent.Record` shrinks from 368 to 256 bytes, from the 384-byte Go size class to the 256-byte one, so each heap copy of a record (a decode, an encode, a store's put) is smaller. Two groups of rarely set fields move behind embedded pointers: `*agent.ModelTurn` holds `Finish`, `RawFinish`, `Model`, `PromptDigest` and `ToolsDigest` (set on `StepModel` records only), and `*agent.ApproverSignature` holds `Approver`, `ApproverAlg` and `Signature` (set on decisions `SubmitDecision` records only). Direct access to those fields no longer compiles. Migration: read them with the nil-safe methods of the same names (`rec.Finish()`, `rec.Approver()`, ...), which return the zero value for a record that carries none, and build a record with `ModelTurn: &agent.ModelTurn{...}` or `ApproverSignature: &agent.ApproverSignature{...}`. The journal encoding is byte for byte the same: the members keep their names, order and `omitempty` behaviour, and existing journals decode as before. Measured A/B against main on two 4-vCPU runners (bench.yml, 21 interleaved runs per binary, AMD EPYC 7763 and 9V74): the overhead scenario ran +0.7% and +1.6% runs/s, mean latency -0.4% and -1.6%, p90 -1.0% and -9.1%, p99 -4.4% and -7.8%; the fanout scenario ran -1.4% and +1.2% runs/s, within the runners' noise, with mean, p90 and p99 within 2% either way. In the Go benchmarks (benchstat, 10 runs per ref), `RunTurns` allocates 4.4% fewer bytes (73.2 to 70.0 KiB/op) and `ToolCallSideEffect` 6.0% fewer (26.1 to 24.5 KiB/op), with 1.3% more allocations (a model record's `ModelTurn` is its own allocation); `RecoverPass10k` is unchanged, and no time per op changed significantly ([#140]).
 - **Breaking:** `agent.Recover` and `agent.RecoverLoop` take an `agent.Resumer` (`func(ctx, runID, start RunStart) error`) instead of `func(ctx, runID) error`. Migration: pass `agent.ResumeAgent(a)`, or add the `start agent.RunStart` parameter to your own callback; a run an earlier version started is not driven by `ResumeAgent` (see the kind entry below) (P14).
 - **Breaking:** `RunStart.Input` is a `Message` (a user message of one text part is still journaled as a JSON string, so existing records read back unchanged); read its text with `start.Input.Text()` (P14).
@@ -805,6 +806,7 @@ First public release.
 [#140]: https://github.com/bide-ai/bide/pull/140
 [#143]: https://github.com/bide-ai/bide/pull/143
 [#145]: https://github.com/bide-ai/bide/pull/145
+[#146]: https://github.com/bide-ai/bide/pull/146
 
 [78f8db6]: https://github.com/bide-ai/bide/commit/78f8db6
 [994721b]: https://github.com/bide-ai/bide/commit/994721b
