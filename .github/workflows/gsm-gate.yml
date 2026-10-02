@@ -1,0 +1,99 @@
+name: gsm machine gate
+
+# Every gsm machine bide's programs make (.github/gsm-gate/machines.txt) is checked by the two
+# checkers extracted from gsm's Coq proof (normalization-confluence). The checkers are built exactly
+# as gsm's own CI builds them: from the proof commit and digest-pinned Rocq image gsm pins at
+# GSM_COMMIT, and checked against gsm's SHA256SUMS. See .github/gsm-gate/README.md.
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  merge_group:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    name: gsm machine gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # bide, gsm and the proof are checked out side by side, so the scan of bide sees only bide.
+    defaults:
+      run:
+        working-directory: bide
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: bide
+
+      - name: Read pins
+        run: cat .github/gsm-gate/pins.env >> "$GITHUB_ENV"
+
+      - name: Checkout gsm at the pinned commit
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.GSM_REPO }}
+          ref: ${{ env.GSM_COMMIT }}
+          path: gsm
+          fetch-depth: 0 # the provenance step reads gsm's main
+
+      # gsm's pins name the proof commit, the Rocq image (by digest) and the two checker binaries.
+      - name: Read gsm's checker pins
+        run: cat ../gsm/.github/oracle/pins.env >> "$GITHUB_ENV"
+
+      - name: Checkout the proof at gsm's pinned commit
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.NC_REPO }}
+          ref: ${{ env.NC_COMMIT }}
+          path: nc
+
+      - name: Build the extracted checkers
+        run: bash ../nc/coq/extraction/ci-build.sh "$ROCQ_IMAGE"
+
+      - name: Verify gsm's pinned hashes
+        # Every file in gsm's SHA256SUMS must match, and both checkers the pins name must be among them.
+        working-directory: nc/coq/extraction
+        run: |
+          sums="$GITHUB_WORKSPACE/gsm/.github/oracle/SHA256SUMS"
+          sha256sum -c "$sums"
+          for c in "$TABLE_CHECKER" "$RULES_CHECKER"; do
+            awk -v f="$c" '$2 == f { found = 1 } END { exit !found }' "$sums" ||
+              { echo "::error::$c is not in gsm's SHA256SUMS"; exit 1; }
+          done
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27'
+
+      # gsmgate is its own module in gsm (internal/cmd/gsmgate). It builds each catalog program with
+      # -tags gsmgate against gsm at GSM_COMMIT (through a copy of the program's go.mod, so bide is not
+      # changed) and runs it twice, canonically: no arguments, only PATH, a fresh empty HOME, TMPDIR and
+      # working directory, empty stdin. Each run records every machine the program makes; the two runs
+      # must make the same machines. Then it checks every machine with both checkers against
+      # machines.txt, and -scan loads every bide module and fails if bide makes a gsm machine outside
+      # the programs (see the README).
+      - name: Run every program and check its machines
+        working-directory: gsm/internal/cmd/gsmgate
+        env:
+          GOWORK: 'off'
+        run: |
+          x="$GITHUB_WORKSPACE/nc/coq/extraction"
+          go run . \
+            -run-programs "$GITHUB_WORKSPACE/bide" -gsm "$GITHUB_WORKSPACE/gsm" \
+            -dumps "$RUNNER_TEMP/gsm-gate-1" -rerun "$RUNNER_TEMP/gsm-gate-2" \
+            -catalog "$GITHUB_WORKSPACE/bide/.github/gsm-gate/machines.txt" \
+            -table-checker "$x/$TABLE_CHECKER" -rules-checker "$x/$RULES_CHECKER" \
+            -scan "$GITHUB_WORKSPACE/bide" \
+            -summary "$GITHUB_STEP_SUMMARY"
+
+      # The pinned gsm commit must be on gsm's main: reviewed and merged, not a branch head. Last, so
+      # the checks above still report when it fails.
+      - name: The pinned gsm commit is on gsm's main
+        if: ${{ !cancelled() }}
+        run: |
+          git -C ../gsm merge-base --is-ancestor "$GSM_COMMIT" origin/main ||
+            { echo "::error::GSM_COMMIT $GSM_COMMIT is not on $GSM_REPO main"; exit 1; }

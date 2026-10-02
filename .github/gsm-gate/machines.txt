@@ -1,0 +1,58 @@
+# Every gsm machine bide's programs make (the examples/govern programs; no other
+# bide code makes one, which the scan enforces), checked by the checkers
+# extracted from gsm's Coq proof in the "gsm machine gate" workflow (.github/workflows/gsm-gate.yml).
+# See README.md in this directory.
+#
+# <program> <machine> <verdict>
+#
+# program: a directory with a main package. The gate builds it with -tags gsmgate
+#   and runs it twice with no arguments, an environment of only PATH, HOME and
+#   TMPDIR (plus GSM_GATE_DIR), empty stdin and an empty working directory; each
+#   run records every gsm machine it makes, and the two runs must make the same
+#   machines. The gate certifies the machines a program makes when run that way;
+#   files read by absolute path, the network, the host, the clock and randomness
+#   are not fixed.
+# machine: the registry's name (a federation's components are listed one by one).
+# verdict: certified         Build accepts it; both checkers verify it.
+#          certified-tables  Build accepts it; the table checker verifies it. Its
+#                            rules are closures, so the rules checker cannot run.
+#          rejected          Build rejects it (WFC or CC); every checker that can
+#                            run rejects it for the same reason.
+#          synthesized       a synthesized repair; the table checker verifies it.
+#          not-built         Build rejects it and nothing can be exported for
+#                            the checkers (an invariant without a repair, left
+#                            to synthesis).
+#
+# @doc <path> <note>       a document that shows a gsm machine (documents are
+#                          listed, not run: a snippet is checked by hand
+#                          against the program it copies)
+#
+# Nothing that makes gsm machines can be exempt: the scan fails on any package
+# outside the programs below that refers to a gsm function or method making one.
+#
+# The gate fails if a checker rejects a machine listed as accepted, disagrees with
+# Build, a program makes a machine not listed here, a listed machine is not made,
+# or the scan (gsmgate -scan, which loads every bide module) finds a main package
+# depending on gsm, or a package making a gsm machine, that is not a program
+# here, or a document showing one without an @doc line.
+
+examples/govern/authority           execution-desk  certified
+examples/govern/compliance          kyc-decision    certified
+examples/govern/compose             inventory       certified-tables
+examples/govern/compose             shipping        certified
+examples/govern/compose             order           certified
+examples/govern/compose             ops             certified
+examples/govern/coordination        counters        not-built
+examples/govern/coordination        counters        synthesized
+examples/govern/coordination        a               certified-tables
+examples/govern/coordination        b               certified-tables
+examples/govern/delegation          execution-desk  certified
+examples/govern/earned-authority    work            certified
+examples/govern/mesh                line1           certified-tables
+examples/govern/mesh                line2           certified-tables
+examples/govern/mesh                line3           certified-tables
+examples/govern/proof-carrying-run  kyc-decision    certified
+examples/govern/quorum              model-quorum    certified
+
+@doc docs/guides/governance.md  an excerpt of the order machine (ship elided), shown as the gsm v0.11.0 Build gap; not a complete machine
+@doc docs/guides/quorum.md      the model-quorum policy of examples/govern/quorum
