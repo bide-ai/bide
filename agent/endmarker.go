@@ -203,6 +203,15 @@ func (p *runPlan) rootCancelled(ctx context.Context) (bool, error) {
 
 // protocol:delegation end
 
+// rootCancelRecord returns the tree root root's cancellation as store holds it: its rollback
+// request, else its run:cancelled (a root that is not a saga), and whether it has one.
+func rootCancelRecord(ctx context.Context, store Durable, root string) (Record, bool, error) {
+	if r, ok, err := lookup(ctx, store, root, runCancelRequestedStep); err != nil || ok {
+		return r, ok, err
+	}
+	return lookup(ctx, store, root, runCancelledStep)
+}
+
 // postClaim is a won claim's check before its call (rule 3, L2): if the run was cancelled, the
 // attempt is recorded as not started, so it never fires, and stop is true.
 //

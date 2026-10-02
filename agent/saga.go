@@ -178,8 +178,12 @@ func (a *Agent) rollback(ctx context.Context, runID string, cause error, causeTe
 		if cancel == nil {
 			// A failure's rollback of a saga whose rollback request exists ends it cancelled: once
 			// Cancel has asked for the rollback, the run's end is run:cancelled, whichever cause
-			// started the rollback (one Get, on a failure's rollback only).
+			// started the rollback (one Get, on a failure's rollback only). A sub-run's tree root's
+			// cancellation asks for it too (up to two Gets more, from the root's store).
 			r, ok, err := lookup(ctx, a.store, runID, runCancelRequestedStep)
+			if root := treeRootID(runID); err == nil && !ok && root != runID {
+				r, ok, err = rootCancelRecord(ctx, rootStoreOf(ctx, root, a.store), root)
+			}
 			if err != nil {
 				return Message{}, &SagaAborted{RunID: runID, Cause: cause, Compensated: comp, Uncompensated: uncomp, UnknownOutcome: unknown,
 					CompensateErr: fmt.Errorf("saga %s: read the rollback request: %w", runID, err)}

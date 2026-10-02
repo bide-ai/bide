@@ -1123,7 +1123,7 @@ and their resumers (`ResumeTyped`), and image input.
 | `DPost` | `postClaim`: `cancelSeen` once the claim is won, before the call, and `recordNotStarted`; the turn's calls not yet claimed do not start (`cancelled`) |
 | `DCall` | `recordFresh`: the `sctx.Err()` check, `t.Call` |
 | `DRecord` | `recordFresh`'s insert of the result (`putRecord` under `context.WithoutCancel`) |
-| `DRollback`, `DAbort` | `Agent.rollback`: `rollbackRun`, then `writeEnd` of `run:aborted`, or of `run:cancelled` after a rollback a cancellation asked for (`cancelTrip`, L4) or a failure's rollback of a saga whose rollback request exists (one `Get` of `run:cancel-requested`: `AbortKind`, #138 review); `runSagaWithTelemetry` reads the request before a recorded failure (`DOpen`'s order) |
+| `DRollback`, `DAbort` | `Agent.rollback`: `rollbackRun`, then `writeEnd` of `run:aborted`, or of `run:cancelled` after a rollback a cancellation asked for (`cancelTrip`, L4) or a failure's rollback of a saga whose rollback request exists (one `Get` of `run:cancel-requested`: `AbortKind`, #138 review), or, for a saga sub-run, whose tree root was cancelled (`rootCancelRecord`, from the root's store; this model has one run, and model 11 does not tell the end markers apart, so Go tests cover it); `runSagaWithTelemetry` reads the request before a recorded failure (`DOpen`'s order) |
 | `DComplete` | the loop's terminal: `putRecord` of `run:complete` |
 | `DVerdict` | `writeEnd`'s read-back after `run:complete` (and after `Agent.rollback`'s marker): one `Get` per end marker the run can hold beside it (`endOthers`), the lowest `Seq` first; `endedErr`, `endVerdict` |
 | `DRel` | `Lease`'s deferred `ReleaseLease` |
