@@ -26,6 +26,9 @@ func strictStart(t *testing.T, b []byte) (RunStart, bool, error) {
 	return st, true, nil
 }
 
+// testSalt is a salt of SaltSize bytes, as the journal gives every record it records.
+var testSalt = []byte("0123456789abcdef0123456789abcdef")
+
 // A recovery pass decodes run:start in one pass, reading only the record's name and kind and the
 // start (decodeStartEntry). For every start a drive journals, that is the start the full decoding
 // reads; anything else is left to the full decoding.
@@ -52,7 +55,8 @@ func TestP14_RecoveryStartDecodeMatchesFullDecode(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			b, err := EncodeRecord(Record{Name: runStartStep, Kind: StepValue, Result: res})
+			// A journaled record carries a salt (JournalEntry); without one it takes the full decoding.
+			b, err := EncodeRecord(Record{Name: runStartStep, Kind: StepValue, Result: res, salt: testSalt})
 			if err != nil {
 				t.Fatal(err)
 			}

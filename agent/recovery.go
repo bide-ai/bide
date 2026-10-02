@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"container/list"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -423,12 +424,13 @@ func startUnderLease(ctx context.Context, store Durable, runID string) (RunStart
 	return st, true, nil
 }
 
-// decodeStartEntry decodes a stored run:start record in one pass, reading only what a recovery
-// pass needs: the record's name and kind, and the start its result holds. It reports false for
-// anything but a value record named run:start whose result decodes as a start; the caller then
-// takes the full decoding (decodeStored), which refuses or reports it. The record's other members
-// are not read here: the drive the Resumer starts reads the whole journal, run:start included,
-// through the full decoding, and refuses a record that does not decode.
+// decodeStartEntry decodes a stored run:start record in one pass: the record's name and kind, its
+// salt, and the start its result holds. It reports false for anything but a value record named
+// run:start, with a salt of SaltSize bytes, whose result decodes as a start, and for a record with
+// any member but those four, or with one of them twice: the caller then takes the full decoding
+// (decodeStored), which refuses or reports it. Wherever it reports a start, the full decoding
+// decodes the same bytes without error to the same start (TestRev138c_StartDecodeAgreesWithFull,
+// FuzzRev138c_StartDecode).
 func decodeStartEntry(b []byte) (RunStart, bool) {
 	if h := decodeHook.Load(); h != nil {
 		(*h)(b)
@@ -441,7 +443,14 @@ func decodeStartEntry(b []byte) (RunStart, bool) {
 	*w = startEntry{} // Unmarshal merges into what it is given
 	// A result with no input (absent, null, or holding none) takes the full decoding, which
 	// reports an absent or null result as before; a start with no input reads the same either way.
-	if err := json.Unmarshal(b, w); err != nil || !bool(w.Name) || !bool(w.Kind) || w.Result.Input == nil {
+	if err := json.Unmarshal(b, w); err != nil || !bool(w.Name) || !bool(w.Kind) || !bool(w.Salt) || w.Result.Input == nil {
+		return RunStart{}, false
+	}
+	// Unmarshal ignores members it does not know (the full decoding reads more of them, and refuses
+	// one of the wrong type), matches names case-insensitively, and on a repeated member keeps the
+	// last or merges the two (the full decoding keeps the last): only the four members, each once,
+	// are read here.
+	if !startMembersOnly(b) {
 		return RunStart{}, false
 	}
 	st, err := w.Result.start()
@@ -493,15 +502,127 @@ func decodePlainStart(b []byte) (RunStart, bool) {
 		}
 	}
 	salt, ok = bytes.CutSuffix(salt, []byte(`"}`))
-	if !ok || len(salt) == 0 {
+	if !ok || !validSalt(salt) {
 		return RunStart{}, false
 	}
-	for _, c := range salt {
-		if !('A' <= c && c <= 'Z' || 'a' <= c && c <= 'z' || '0' <= c && c <= '9' || c == '+' || c == '/' || c == '=') {
-			return RunStart{}, false
+	return RunStart{Input: UserText(string(in)), Kind: kind}, true
+}
+
+// saltLen is the length of a salt's encoding: SaltSize bytes in standard base64, padded.
+const saltLen = (SaltSize + 2) / 3 * 4 // base64.StdEncoding.EncodedLen(SaltSize)
+
+// validSalt reports whether s, the contents of a JSON string with no escape, is a salt as the
+// journal writes one: exactly saltLen characters of the standard base64 alphabet, '=' only as
+// the padding at the end, decoding to SaltSize bytes. The full decoding decodes such a string,
+// as a []byte, without error.
+func validSalt(s []byte) bool {
+	if len(s) != saltLen {
+		return false
+	}
+	for i, c := range s {
+		switch {
+		case 'A' <= c && c <= 'Z', 'a' <= c && c <= 'z', '0' <= c && c <= '9', c == '+', c == '/':
+		case c == '=' && i >= saltLen-2 && (i == saltLen-1 || s[saltLen-1] == '='):
+		default:
+			return false
 		}
 	}
-	return RunStart{Input: UserText(string(in)), Kind: kind}, true
+	var buf [saltLen / 4 * 3]byte // Decode writes up to this many, if s has no padding
+	n, err := base64.StdEncoding.Decode(buf[:], s)
+	return err == nil && n == SaltSize
+}
+
+// startMembersOnly reports whether b, a JSON value Unmarshal accepted, is an object whose members
+// are name, kind, result and salt, each exactly once and spelled exactly so (no escape, no other
+// case). It walks only the top level, skipping each member's value.
+func startMembersOnly(b []byte) bool {
+	i := skipSpace(b, 0)
+	if i >= len(b) || b[i] != '{' {
+		return false
+	}
+	var seen [4]bool
+	for i = skipSpace(b, i+1); i < len(b) && b[i] == '"'; {
+		end := bytes.IndexByte(b[i+1:], '"')
+		if end < 0 {
+			return false
+		}
+		key := b[i+1 : i+1+end]
+		k := -1
+		switch string(key) {
+		case "name":
+			k = 0
+		case "kind":
+			k = 1
+		case "result":
+			k = 2
+		case "salt":
+			k = 3
+		}
+		if k < 0 || seen[k] {
+			return false // another member, an escaped name (it holds a '\\'), or a repeated one
+		}
+		seen[k] = true
+		i = skipSpace(b, i+end+2)
+		if i >= len(b) || b[i] != ':' {
+			return false
+		}
+		if i = skipValue(b, skipSpace(b, i+1)); i < 0 {
+			return false
+		}
+		i = skipSpace(b, i)
+		if i < len(b) && b[i] == ',' {
+			i = skipSpace(b, i+1)
+			continue
+		}
+		if i < len(b) && b[i] == '}' {
+			return seen == [4]bool{true, true, true, true} && skipSpace(b, i+1) == len(b)
+		}
+		return false
+	}
+	return false
+}
+
+// skipSpace returns the index of the first byte of b at or after i that is not JSON whitespace.
+func skipSpace(b []byte, i int) int {
+	for i < len(b) && (b[i] == ' ' || b[i] == '\t' || b[i] == '\n' || b[i] == '\r') {
+		i++
+	}
+	return i
+}
+
+// skipValue returns the index of the ',' '}' or ']' that ends the JSON value starting at b[i]
+// (after any space following it), len(b) if the value ends b, or -1. b is valid JSON, so only
+// brackets and strings need tracking (in a string, a '\\' escapes the byte after it).
+func skipValue(b []byte, i int) int {
+	depth := 0
+	for ; i < len(b); i++ {
+		switch b[i] {
+		case '"':
+			for i++; i < len(b) && b[i] != '"'; i++ {
+				if b[i] == '\\' {
+					i++
+				}
+			}
+			if i >= len(b) {
+				return -1
+			}
+		case '{', '[':
+			depth++
+		case '}', ']':
+			if depth == 0 {
+				return i
+			}
+			depth--
+		case ',':
+			if depth == 0 {
+				return i
+			}
+		}
+	}
+	if depth != 0 {
+		return -1
+	}
+	return i
 }
 
 // startEntry is the part of a stored run:start record decodeStartEntry reads. Name and Kind are
@@ -511,6 +632,7 @@ func decodePlainStart(b []byte) (RunStart, bool) {
 type startEntry struct {
 	Name   isStartName  `json:"name"`
 	Kind   isValueKind  `json:"kind"`
+	Salt   isSalt       `json:"salt"`
 	Result runStartWire `json:"result"`
 }
 
@@ -521,6 +643,15 @@ type isStartName bool
 
 func (n *isStartName) UnmarshalJSON(b []byte) error {
 	*n = string(b) == `"`+runStartStep+`"`
+	return nil
+}
+
+// isSalt is true for a JSON value that is a string, with no escape, holding a salt as the journal
+// writes one (validSalt).
+type isSalt bool
+
+func (s *isSalt) UnmarshalJSON(b []byte) error {
+	*s = isSalt(len(b) >= 2 && b[0] == '"' && b[len(b)-1] == '"' && validSalt(b[1:len(b)-1]))
 	return nil
 }
 
