@@ -52,7 +52,9 @@ gsmgate then runs both checkers on the records. The job fails if:
 Test code is not scanned: test machines are not shipped. Documents are listed,
 not run: `docs/guides/quorum.md` copies the quorum example's policy by hand. A machine whose rules
 are closures cannot be exported as rules, so only the table checker runs on it
-(`certified-tables`).
+(`certified-tables`). Every machine bide ships today declares its rules with
+gsm's combinators, so both checkers verify each one (`certified`); a
+federation's morphism maps are still closures, which no checker reads.
 
 What it does not check: federation-level checks (morphisms, resolvers,
 acyclicity, the monotone-cycle check), which gsm's `Build` does and no extracted
