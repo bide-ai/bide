@@ -8,9 +8,10 @@ import (
 	gsm "github.com/blackwell-systems/gsm"
 )
 
-// TestSignalsCommute checks the order independence the example claims: any two signal events, on
-// the same line or on different lines, applied in either order from the initial state or from any
-// state one signal away, leave every line in the same state.
+// TestSignalsCommute checks the order independence the example claims, exhaustively: from every
+// state the signal events reach (a breadth-first search from the initial state), any two signal
+// events, on the same line or on different lines, applied in either order, leave every line in the
+// same state. Each line's signal takes each of the 3 levels independently, so there are 27.
 func TestSignalsCommute(t *testing.T) {
 	m, regs, _ := buildSafetyMesh()
 	type ev struct {
@@ -30,14 +31,19 @@ func TestSignalsCommute(t *testing.T) {
 		}
 		return b.String()
 	}
-	starts := []gsm.FedState{m.NewState()}
-	for _, e := range evs {
-		starts = append(starts, m.Apply(m.NewState(), e.reg, e.event))
-	}
-	for _, s := range starts {
+	seen := map[string]bool{show(m.NewState()): true}
+	queue := []gsm.FedState{m.NewState()}
+	for len(queue) > 0 {
+		s := queue[0]
+		queue = queue[1:]
 		for _, a := range evs {
+			next := m.Apply(s, a.reg, a.event)
+			if k := show(next); !seen[k] {
+				seen[k] = true
+				queue = append(queue, next)
+			}
 			for _, b := range evs {
-				ab := m.Apply(m.Apply(s, a.reg, a.event), b.reg, b.event)
+				ab := m.Apply(next, b.reg, b.event)
 				ba := m.Apply(m.Apply(s, b.reg, b.event), a.reg, a.event)
 				if show(ab) != show(ba) {
 					t.Fatalf("from %s: %s.%s then %s.%s gives %s; the other order gives %s",
@@ -45,5 +51,8 @@ func TestSignalsCommute(t *testing.T) {
 				}
 			}
 		}
+	}
+	if len(seen) != 27 {
+		t.Fatalf("reached %d states, want 27 (3 levels for each of 3 lines)", len(seen))
 	}
 }
