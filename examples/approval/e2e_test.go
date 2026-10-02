@@ -183,7 +183,7 @@ func TestApprovalAcrossProcesses(t *testing.T) {
 	flipped := false
 	editEvidence(t, evidence, tampered, true, func(act *audit.EvidenceAction) bool {
 		// The proof carries the record's stored bytes: flip ops's approval in them.
-		if rec, err := act.Bundle.Record(); err == nil && act.Kind == audit.KindApproval && rec.Approver == "ops" {
+		if rec, err := act.Bundle.Record(); err == nil && act.Kind == audit.KindApproval && rec.Approver() == "ops" {
 			edited := bytes.Replace(act.Bundle.RecordBytes, []byte(`"approved":true,`), nil, 1)
 			flipped = flipped || !bytes.Equal(edited, act.Bundle.RecordBytes)
 			act.Bundle.RecordBytes = edited

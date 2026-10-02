@@ -38,8 +38,7 @@ func Test_R105b_KeylessApproverIsRefused(t *testing.T) {
 	var recs []agent.Record
 	for _, id := range []string{"alice", "bob"} {
 		sig := append([]byte(keys[id].secret+"|"), agent.ApprovalDecisionBytes(s, id, true)...)
-		recs = append(recs, agent.Record{Name: "approval:c:" + id, Kind: agent.StepApproval, ToolUseID: "c", Approved: true,
-			Approver: id, ApproverAlg: "svc", Signature: sig})
+		recs = append(recs, agent.Record{Name: "approval:c:" + id, Kind: agent.StepApproval, ToolUseID: "c", Approved: true, ApproverSignature: &agent.ApproverSignature{Approver: id, ApproverAlg: "svc", Signature: sig}})
 	}
 	p := agent.ApprovalPolicy{Need: 1, Approvers: []string{"alice", "bob"}}
 	got, checks := agent.TallyApprovals(recs, s, p, resolve)

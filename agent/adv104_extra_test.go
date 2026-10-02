@@ -109,7 +109,7 @@ func TestAdv104_ReplayLateRecordBeforeAnyTurn(t *testing.T) {
 	msg := Message{Role: RoleAssistant, Parts: []Part{Text{Text: "done"}}}
 	u := billed
 	if _, err := src.Do(ctx, "r", modelStep(0), func(context.Context) (Record, error) {
-		return Record{Kind: StepModel, Message: &msg, Usage: &u, Finish: FinishStop}, nil
+		return Record{Kind: StepModel, Message: &msg, Usage: &u, ModelTurn: &ModelTurn{Finish: FinishStop}}, nil
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -164,8 +164,8 @@ func TestAdv104_ReplayThroughADecoratorKeepsModel(t *testing.T) {
 		t.Fatal(err)
 	}
 	a, b := modelRecords(t, src, "r"), modelRecords(t, dst, "r")
-	if a[0].Model == nil || b[0].Model == nil || *a[0].Model != *b[0].Model {
-		t.Fatalf("replayed Model = %v, original %v", b[0].Model, a[0].Model)
+	if a[0].Model() == nil || b[0].Model() == nil || *a[0].Model() != *b[0].Model() {
+		t.Fatalf("replayed Model = %v, original %v", b[0].Model(), a[0].Model())
 	}
 }
 

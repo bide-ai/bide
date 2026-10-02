@@ -373,31 +373,31 @@ func TallyApprovals(recs []Record, s ApprovalSubject, p ApprovalPolicy, verifier
 			continue
 		}
 		t.Records = append(t.Records, r.Name)
-		c := DecisionCheck{Step: r.Name, Approver: r.Approver, Approved: r.Approved}
-		v, ok := vs[r.Approver]
-		reason, excluded := bad[r.Approver]
+		c := DecisionCheck{Step: r.Name, Approver: r.Approver(), Approved: r.Approved}
+		v, ok := vs[r.Approver()]
+		reason, excluded := bad[r.Approver()]
 		switch {
-		case !eligible[r.Approver]:
+		case !eligible[r.Approver()]:
 			c.Reason = ReasonNotEligible
-		case decided[r.Approver]:
+		case decided[r.Approver()]:
 			c.Reason = ReasonSuperseded
 		case excluded:
 			c.Reason = reason
 		case !ok:
 			c.Reason = ReasonNoKey
-		case r.ApproverAlg == "" || r.ApproverAlg != v.Alg():
+		case r.ApproverAlg() == "" || r.ApproverAlg() != v.Alg():
 			c.Reason = ReasonAlg
-		case !v.Verify(ApprovalDecisionBytes(s, r.Approver, r.Approved), r.Signature):
+		case !v.Verify(ApprovalDecisionBytes(s, r.Approver(), r.Approved), r.Signature()):
 			c.Reason = ReasonBadSig
 		default:
 			c.Counted = true
-			decided[r.Approver] = true
+			decided[r.Approver()] = true
 			if r.Approved {
 				t.Approved++
-				t.ApprovedBy = append(t.ApprovedBy, r.Approver)
+				t.ApprovedBy = append(t.ApprovedBy, r.Approver())
 			} else {
 				t.Denied++
-				t.DeniedBy = append(t.DeniedBy, r.Approver)
+				t.DeniedBy = append(t.DeniedBy, r.Approver())
 			}
 		}
 		checks = append(checks, c)
@@ -420,7 +420,7 @@ func TallyApprovals(recs []Record, s ApprovalSubject, p ApprovalPolicy, verifier
 // IsApprovalDecision reports whether r is an m-of-n approver decision (written by SubmitDecision)
 // on toolUseID. The single-approver Approve record has no Approver and is not one.
 func IsApprovalDecision(r Record, toolUseID string) bool {
-	return r.Kind == StepApproval && r.ToolUseID == toolUseID && r.Approver != ""
+	return r.Kind == StepApproval && r.ToolUseID == toolUseID && r.Approver() != ""
 }
 
 // ApprovalTallyStep is the journal name of the gate's terminal tally for toolUseID.
@@ -536,7 +536,7 @@ func submitDecision(ctx context.Context, store Durable, op string, d Decision, o
 		}
 	}
 	_, err := store.Do(ctx, d.RunID, name, func(context.Context) (Record, error) {
-		return Record{Kind: StepApproval, ToolUseID: d.ToolUseID, Approved: d.Approved, Approver: d.ApproverID, ApproverAlg: d.Alg, Signature: d.Signature}, nil
+		return Record{Kind: StepApproval, ToolUseID: d.ToolUseID, Approved: d.Approved, ApproverSignature: &ApproverSignature{Approver: d.ApproverID, ApproverAlg: d.Alg, Signature: d.Signature}}, nil
 	})
 	return err
 }
@@ -567,10 +567,10 @@ func checkDecision(ctx context.Context, store Durable, op string, d Decision, na
 		return fmt.Errorf("%s: approver %q: %s: %w", op, d.ApproverID, ReasonBadSig, ErrInvalidApproval)
 	}
 	for _, r := range recs {
-		if !IsApprovalDecision(r, d.ToolUseID) || r.Approver != d.ApproverID || r.Name == name {
+		if !IsApprovalDecision(r, d.ToolUseID) || r.Approver() != d.ApproverID || r.Name == name {
 			continue
 		}
-		if r.ApproverAlg == v.Alg() && v.Verify(ApprovalDecisionBytes(s, d.ApproverID, r.Approved), r.Signature) {
+		if r.ApproverAlg() == v.Alg() && v.Verify(ApprovalDecisionBytes(s, d.ApproverID, r.Approved), r.Signature()) {
 			return fmt.Errorf("%s: approver %q already decided on call %q: %w", op, d.ApproverID, d.ToolUseID, ErrAlreadyDecided)
 		}
 	}

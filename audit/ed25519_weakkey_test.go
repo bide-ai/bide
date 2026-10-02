@@ -134,7 +134,7 @@ func tSignFor(a *big.Int, pub, msg []byte) []byte {
 var weakSubject = agent.ApprovalSubject{RunID: "r1", ToolUseID: "c1", ToolName: "charge", Args: []byte(`{}`)}
 
 func weakRec(approver string, sig []byte) agent.Record {
-	return agent.Record{Name: "d:" + approver, Kind: agent.StepApproval, ToolUseID: "c1", Approver: approver, Approved: true, Signature: sig}
+	return agent.Record{Name: "d:" + approver, Kind: agent.StepApproval, ToolUseID: "c1", Approved: true, ApproverSignature: &agent.ApproverSignature{Approver: approver, Signature: sig}}
 }
 
 // mixedOrderKey returns one secret's two public keys: A = a·B, and A + T with T = (0, -1) of

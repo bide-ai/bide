@@ -211,7 +211,7 @@ func (a *Agent) runLoop(ctx context.Context, runID string, d *driveSpec) (Messag
 		case StepSagaFail:
 			done[r.ToolUseID] = true // the failing step is durably resolved (no OutcomeUnknown)
 		case StepApproval:
-			if r.Approver != "" {
+			if r.Approver() != "" {
 				continue // a per-approver m-of-n decision (SubmitDecision); tallied by the quorum gate, not here
 			}
 			decided[r.ToolUseID] = true
@@ -480,8 +480,9 @@ func (a *Agent) runLoop(ctx context.Context, runID string, d *driveSpec) (Messag
 					if e != nil {
 						return Record{}, e
 					}
-					r := Record{Kind: StepModel, Message: &resp.Message, Usage: &resp.Usage, Finish: resp.Finish, RawFinish: resp.RawFinish}
-					r.Model, r.PromptDigest, r.ToolsDigest = resp.journal(req)
+					t := ModelTurn{Finish: resp.Finish, RawFinish: resp.RawFinish}
+					t.Model, t.PromptDigest, t.ToolsDigest = resp.journal(req)
+					r := Record{Kind: StepModel, Message: &resp.Message, Usage: &resp.Usage, ModelTurn: modelTurn(t)}
 					// The turn recorded one response; every other request it sent was billed too.
 					spent := meter.take()
 					if d := discardedSpend(spent, resp.Usage); d != (Usage{}) {

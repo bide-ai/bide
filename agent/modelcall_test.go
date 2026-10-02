@@ -202,7 +202,7 @@ func TestModelResponse_BuiltByMiddleware(t *testing.T) {
 		t.Fatal(err)
 	}
 	recs := modelRecords(t, store, "r")
-	if len(recs) != 1 || recs[0].Finish != FinishStop || recs[0].Model != nil {
+	if len(recs) != 1 || recs[0].Finish() != FinishStop || recs[0].Model() != nil {
 		t.Fatalf("records = %+v, want one with Finish stop and no Model", recs)
 	}
 	for reason, want := range map[FinishReason]error{
@@ -276,18 +276,18 @@ func TestModelRecord_JournalsPerTurnDigests(t *testing.T) {
 	}
 	for i, r := range recs {
 		w := want[i]
-		if r.PromptDigest != w.promptDigest || r.ToolsDigest != tools || r.Finish != w.finish || r.RawFinish != w.raw {
-			t.Errorf("turn %d: prompt %s tools %s finish %q/%q; want the digest of %s, %s, %q/%q", i, r.PromptDigest, r.ToolsDigest, r.Finish, r.RawFinish, w.prompt, tools, w.finish, w.raw)
+		if r.PromptDigest() != w.promptDigest || r.ToolsDigest() != tools || r.Finish() != w.finish || r.RawFinish() != w.raw {
+			t.Errorf("turn %d: prompt %s tools %s finish %q/%q; want the digest of %s, %s, %q/%q", i, r.PromptDigest(), r.ToolsDigest(), r.Finish(), r.RawFinish(), w.prompt, tools, w.finish, w.raw)
 		}
-		if r.Model == nil || *r.Model != (ModelInfo{Provider: "acme", Model: "acme-large", ResponseFormat: true}) {
-			t.Errorf("turn %d: Model = %+v, want the describing model's info", i, r.Model)
+		if r.Model() == nil || *r.Model() != (ModelInfo{Provider: "acme", Model: "acme-large", ResponseFormat: true}) {
+			t.Errorf("turn %d: Model = %+v, want the describing model's info", i, r.Model())
 		}
 	}
-	if recs[0].PromptDigest == recs[1].PromptDigest {
+	if recs[0].PromptDigest() == recs[1].PromptDigest() {
 		t.Error("the two turns were sent different prompts but journal one digest")
 	}
 	back, err := DecodeRecord(recs[1].Raw())
-	if err != nil || back.PromptDigest != recs[1].PromptDigest || back.Model == nil || back.Finish != FinishStop {
+	if err != nil || back.PromptDigest() != recs[1].PromptDigest() || back.Model() == nil || back.Finish() != FinishStop {
 		t.Fatalf("the journal encoding does not round-trip the new fields: %+v, %v", back, err)
 	}
 }
@@ -346,11 +346,11 @@ func TestReplay_ReproducesFinishAndSpend(t *testing.T) {
 	}
 	for i := range want {
 		w, g := want[i], got[i]
-		if g.Finish != w.Finish || g.RawFinish != w.RawFinish || fmt.Sprint(g.DiscardedUsage) != fmt.Sprint(w.DiscardedUsage) || *g.Usage != *w.Usage {
-			t.Errorf("turn %d: replayed %q/%q discarded %v usage %v, original %q/%q %v %v", i, g.Finish, g.RawFinish, g.DiscardedUsage, *g.Usage, w.Finish, w.RawFinish, w.DiscardedUsage, *w.Usage)
+		if g.Finish() != w.Finish() || g.RawFinish() != w.RawFinish() || fmt.Sprint(g.DiscardedUsage) != fmt.Sprint(w.DiscardedUsage) || *g.Usage != *w.Usage {
+			t.Errorf("turn %d: replayed %q/%q discarded %v usage %v, original %q/%q %v %v", i, g.Finish(), g.RawFinish(), g.DiscardedUsage, *g.Usage, w.Finish(), w.RawFinish(), w.DiscardedUsage, *w.Usage)
 		}
 	}
-	if want[0].RawFinish != "tool_calls" || want[0].DiscardedUsage == nil {
+	if want[0].RawFinish() != "tool_calls" || want[0].DiscardedUsage == nil {
 		t.Fatalf("setup: the original's first turn journaled %+v", want[0])
 	}
 }

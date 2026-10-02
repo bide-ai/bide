@@ -72,7 +72,7 @@ func TestMemStoreDo_DecodesAWriteOnce(t *testing.T) {
 func TestMemStoreDo_UnstableEncodingDecodesStoredBytes(t *testing.T) {
 	ctx := context.Background()
 	const run = "decode-unstable-run"
-	rec := Record{Name: "v", Kind: StepValue, Approver: "bad\xffutf8", Result: json.RawMessage(`"` + run + `"`)}
+	rec := Record{Name: "v", Kind: StepValue, Result: json.RawMessage(`"` + run + `"`), ApproverSignature: &ApproverSignature{Approver: "bad\xffutf8"}}
 	first, err := marshalJournal(rec)
 	if err != nil {
 		t.Fatal(err)
@@ -98,7 +98,7 @@ func TestMemStoreDo_UnstableEncodingDecodesStoredBytes(t *testing.T) {
 		t.Fatalf("recording the step decoded it %d times, want %d (passes agree: %v)", n, want, want == 1)
 	}
 	hist, _ := s.History(ctx, run)
-	if !reflect.DeepEqual(got, hist[1]) || got.Approver != "bad"+replacementChar+"utf8" {
+	if !reflect.DeepEqual(got, hist[1]) || got.Approver() != "bad"+replacementChar+"utf8" {
 		t.Fatalf("Do returned %#v, History reads %#v", got, hist[1])
 	}
 }

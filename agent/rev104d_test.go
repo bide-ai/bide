@@ -98,7 +98,7 @@ func TestRev104d_OwnRecordFallbackTrickyContent(t *testing.T) {
 		for _, ar := range args {
 			msg := Message{Role: RoleAssistant, Parts: []Part{Text{Text: tx}, ToolUse{ID: "c", Name: "t", Args: json.RawMessage(ar)}}}
 			u := Usage{}
-			built := Record{Kind: StepModel, Message: &msg, Usage: &u, Finish: FinishToolUse}
+			built := Record{Kind: StepModel, Message: &msg, Usage: &u, ModelTurn: &ModelTurn{Finish: FinishToolUse}}
 			if err := stampSalt(&built); err != nil {
 				t.Fatal(err)
 			}

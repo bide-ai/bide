@@ -603,7 +603,7 @@ func sagaFailure(runID string, recs []Record) (string, bool, error) {
 	values := map[string]Record{} // StepValue records by name, for m-of-n tallies
 	for _, r := range recs {
 		switch {
-		case r.Kind == StepApproval && r.Approver == "" && !r.Approved:
+		case r.Kind == StepApproval && r.Approver() == "" && !r.Approved:
 			denied[r.ToolUseID] = true
 		case r.Kind == StepValue:
 			values[r.Name] = r

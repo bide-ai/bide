@@ -56,7 +56,7 @@ func FuzzEncodeRecord_FixedPoint(f *testing.F) {
 		}
 		msg := Message{Role: RoleAssistant, Parts: []Part{Text{Text: text}, Reasoning{Text: text, Signature: text},
 			ToolUse{ID: text, Name: text, Args: raw}, ToolResult{ToolUseID: text, Result: raw}}}
-		rec := Record{Name: text, Kind: StepModel, Message: &msg, Result: raw, Evidence: raw, Approver: text}
+		rec := Record{Name: text, Kind: StepModel, Message: &msg, Result: raw, Evidence: raw, ApproverSignature: &ApproverSignature{Approver: text}}
 		data, err := EncodeRecord(rec)
 		if err != nil {
 			return // not every valid JSON text survives encoding/json's Marshaler checks

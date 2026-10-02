@@ -411,7 +411,7 @@ func TestVerbs_WrappersWriteTheSameRecords(t *testing.T) {
 			recs, _ := d.History(ctx, "r1")
 			var out []written
 			for _, r := range recs {
-				out = append(out, written{r.Name, r.ToolUseID, r.Approver, r.Kind, r.Result, r.Approved, r.Signature})
+				out = append(out, written{r.Name, r.ToolUseID, r.Approver(), r.Kind, r.Result, r.Approved, r.Signature()})
 			}
 			return out
 		}

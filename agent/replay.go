@@ -56,7 +56,7 @@ func Replay(ctx context.Context, source Durable, runID string) (Model, error) {
 	for _, r := range recs {
 		switch {
 		case r.Kind == StepModel && r.Message != nil:
-			t := recordedTurn{msg: *r.Message, reason: r.Finish, raw: r.RawFinish, model: r.Model}
+			t := recordedTurn{msg: *r.Message, reason: r.Finish(), raw: r.RawFinish(), model: r.Model()}
 			if r.Usage != nil {
 				t.usage = *r.Usage
 			}
