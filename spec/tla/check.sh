@@ -7,6 +7,8 @@
 #   spec/tla/check.sh ci|nightly|regress|finding|limit
 #                                     the configs of one group
 #   spec/tla/check.sh run FILE.cfg... the named configs, whatever their group
+#   spec/tla/check.sh list GROUP...   the configs of the groups (with TLC_MODELS and TLC_DIRS), one
+#                                     per line relative to spec/tla; needs no tools or Java
 #   spec/tla/check.sh translation     fail if a committed translation is stale
 #   spec/tla/check.sh translate       re-translate every spec in place
 #   spec/tla/check.sh fetch           download and verify the tools only
@@ -23,7 +25,9 @@
 # Environment: BIDE_TLA_CACHE (tool cache; default ~/.cache/bide-tla), TLC_WORKERS (default auto),
 # TLC_JOBS (default 1: how many configs run at a time; above 1, each runs with one TLC worker),
 # TLC_MODELS (default every model: the model directories whose configs a group runs, such as
-# "claims toolcall"), TLC_JAVA_OPTS (extra JVM options).
+# "claims toolcall"), TLC_DIRS (default every directory: the configuration directories a group
+# runs, each a model's directory or its regress, findings or limits directory, such as
+# "claims claims/limits"; CI's Models shards), TLC_JAVA_OPTS (extra JVM options).
 set -euo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -228,13 +232,37 @@ models() {
   done
 }
 
-# group_cfgs GROUP: the configs of GROUP in the selected models, one per line.
+# dirs: fail unless each TLC_DIRS entry is a configuration directory group_cfgs reads (a model's
+# directory, or its regress, findings or limits directory), so a misspelt entry cannot select
+# nothing.
+dirs() {
+  local d
+  for d in ${TLC_DIRS:-}; do
+    case "$d" in
+      */regress|*/findings|*/limits) [ -n "$(mc_of "$here/${d%/*}" 2>/dev/null)" ] && [ -d "$here/$d" ] ;;
+      */*) false ;;
+      *) [ -n "$(mc_of "$here/$d" 2>/dev/null)" ] ;;
+    esac || die "TLC_DIRS: $d is not a model directory under spec/tla or its regress, findings or limits directory"
+  done
+}
+
+# in_dirs CFG: CFG's directory is in TLC_DIRS (always, when TLC_DIRS is empty).
+in_dirs() {
+  local d rel
+  [ -n "${TLC_DIRS:-}" ] || return 0
+  rel=$(dirname "${1#"$here"/}")
+  for d in $TLC_DIRS; do [ "$d" = "$rel" ] && return 0; done
+  return 1
+}
+
+# group_cfgs GROUP: the configs of GROUP in the selected models and directories, one per line.
 group_cfgs() {
   local m cfg
   for m in $(models); do
     for cfg in "$here/$m"/*.cfg "$here/$m"/regress/*.cfg "$here/$m"/findings/*.cfg "$here/$m"/limits/*.cfg; do
       [ -f "$cfg" ] || continue
       [ "$(meta GROUP "$cfg")" = "$1" ] || continue
+      in_dirs "$cfg" || continue
       echo "$cfg"
     done
   done
@@ -246,16 +274,18 @@ group_cfgs() {
 # time with TLC_WORKERS workers.
 run_groups() {
   local g cfg cfgs=() n
-  models >/dev/null # in this shell, so an unknown TLC_MODELS entry stops the check
+  models >/dev/null # in this shell, so an unknown TLC_MODELS or TLC_DIRS entry stops the check
+  dirs
   for g in "$@"; do
     n=${#cfgs[@]}
     while IFS= read -r cfg; do cfgs+=("$cfg"); done < <(group_cfgs "$g")
     if [ ${#cfgs[@]} = "$n" ]; then
       # finding and limit may be empty (no open finding), and so may regress for a selection of
-      # models; ci never is.
+      # models, and ci and regress for a selection of directories (a CI shard; .github/scripts/
+      # shards.sh checks that the shards together run every config); ci never is otherwise.
       case "$g" in
-        ci) die "no configs in group ci" ;;
-        regress) [ -n "${TLC_MODELS:-}" ] || die "no configs in group regress"; echo "no configs in group regress" ;;
+        ci) [ -n "${TLC_DIRS:-}" ] || die "no configs in group ci"; echo "no configs in group ci" ;;
+        regress) [ -n "${TLC_MODELS:-}${TLC_DIRS:-}" ] || die "no configs in group regress"; echo "no configs in group regress" ;;
         *) echo "no configs in group $g" ;;
       esac
     fi
@@ -333,6 +363,16 @@ finish() {
 
 cmd=${1:-all}
 [ $# -gt 0 ] && shift
+if [ "$cmd" = list ]; then
+  [ $# -gt 0 ] || die "list: name at least one group"
+  models >/dev/null
+  dirs
+  for g in "$@"; do
+    case "$g" in ci|nightly|regress|finding|limit) ;; *) die "list: unknown group $g" ;; esac
+    group_cfgs "$g" | sed "s|^$here/||"
+  done
+  exit 0
+fi
 fetch
 case "$cmd" in
   fetch) ;;

@@ -3,7 +3,8 @@ name: Models
 # TLA+ models of the coordination protocols (spec/tla/README.md). In the merge queue and on main: the
 # PlusCal translation check, the checker self-test, and every "ci", "regress", "finding" and "limit"
 # configuration of every model. On a pull request: the same, for the models whose directory under
-# spec/tla the pull request changes (all of them when it changes check.sh, tools.lock or this file).
+# spec/tla the pull request changes (all of them when it changes check.sh, tools.lock, shards.sh or
+# this file).
 # Nightly (and on demand): the "nightly" configurations, with larger bounds and the liveness checks
 # at the larger fault budget.
 on:
@@ -19,23 +20,40 @@ on:
 permissions:
   contents: read
 
+# The pull-request set runs in parallel shards, one job each, by configuration directory: a model's
+# directory, or its regress, findings or limits directory (check.sh's TLC_DIRS). Balanced by the
+# measured TLC times; the plan job fails unless every ci, regress, finding and limit configuration
+# is in exactly one shard (.github/scripts/shards.sh check-models), so a new model, configuration
+# directory or finding must be assigned here before it merges.
+env:
+  MODEL_SHARDS: |
+    claims: claims
+    claims-regress: claims/regress claims/limits spend spend/regress
+    lifecycle: lifecycle lifecycle/regress lifecycle/findings lifecycle/limits
+    delegation: delegation delegation/regress delegation/limits
+    toolcall-flows: toolcall toolcall/regress toolcall/limits flows flows/regress
+    protocol-sessions: protocol protocol/regress protocol/limits sessions sessions/regress sessions/limits
+
 jobs:
-  models:
-    name: Models
+  plan:
+    name: Models (plan)
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    outputs:
+      run: ${{ steps.shards.outputs.run }}
+      models: ${{ steps.changes.outputs.models }}
+      shards: ${{ steps.shards.outputs.shards }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      # Gated per step, not per job, so the job always reports as "Models" (a required check).
       # TLC reads only the model's own directory under spec/tla, the tools and check.sh, so a pull
       # request checks the models whose directory it changes (all of them when it changes check.sh,
-      # tools.lock or this file) and no others: a change to the Go code a model describes must change
-      # the model or carry a Protocol-Impact override (modelsync, in the Lint job), so its model runs
-      # whenever its rules change. merge_group and pushes to main always run every model, and so does
-      # any doubt: a failed diff, an unexpected event, or this step failing.
+      # tools.lock, shards.sh or this file) and no others: a change to the Go code a model describes
+      # must change the model or carry a Protocol-Impact override (modelsync, in the Lint job), so
+      # its model runs whenever its rules change. merge_group and pushes to main always run every
+      # model, and so does any doubt: a failed diff or an unexpected event. This job failing fails
+      # the Models check.
       - id: changes
         name: Which models changed?
         shell: bash
@@ -47,12 +65,12 @@ jobs:
           models=
           if [ "${{ github.event_name }}" = "pull_request" ] && files=$(git diff --name-only "$BASE" "$HEAD") && [ -n "$files" ]; then
             echo "Changed files:"; echo "$files"
-            if ! echo "$files" | grep -qE '^(spec/tla/check\.sh|spec/tla/tools\.lock|\.github/workflows/models\.yml)$'; then
+            if ! echo "$files" | grep -qE '^(spec/tla/check\.sh|spec/tla/tools\.lock|\.github/workflows/models\.yml|\.github/scripts/shards\.sh)$'; then
               models=$(echo "$files" | sed -n 's|^spec/tla/\([^/]*\)/.*|\1|p' | sort -u | while read -r m; do
                 [ -d "spec/tla/$m" ] && echo "$m"; done | tr '\n' ' ' | sed 's/ $//')
               if [ -z "$models" ]; then
                 run=false
-                echo "No model changed (spec/tla/<model>/, check.sh, tools.lock, models.yml): the models are not re-checked."
+                echo "No model changed (spec/tla/<model>/, check.sh, tools.lock, shards.sh, models.yml): the models are not re-checked."
               else
                 echo "Models changed: $models (the merge queue checks every model)"
               fi
@@ -60,27 +78,84 @@ jobs:
           fi
           echo "run=$run" | tee -a "$GITHUB_OUTPUT"
           echo "models=$models" | tee -a "$GITHUB_OUTPUT"
+      # Go only for shards.sh's self-test, whose package cases run go list in a scratch module.
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27'
+          cache: false
+      - name: Every configuration is in exactly one shard
+        run: |
+          .github/scripts/shards.sh --self-test
+          SHARDS="$MODEL_SHARDS" .github/scripts/shards.sh check-models .
+      # The shards holding a changed model (every shard when no model is named).
+      - id: shards
+        name: Shards to run
+        shell: bash
+        env:
+          RUN: ${{ steps.changes.outputs.run }}
+          MODELS: ${{ steps.changes.outputs.models }}
+        # Fails, failing the Models check, when a changed directory under spec/tla is no model with
+        # a ci configuration, or no shard holds a changed model; it never turns a failure into run=false.
+        run: |
+          set -euo pipefail
+          shards='[]'
+          if [ "$RUN" != false ]; then
+            # shellcheck disable=SC2086 # MODELS is a list
+            shards=$(SHARDS="$MODEL_SHARDS" .github/scripts/shards.sh select . $MODELS)
+          fi
+          echo "run=$RUN" | tee -a "$GITHUB_OUTPUT"
+          echo "shards=$shards" | tee -a "$GITHUB_OUTPUT"
+
+  shard:
+    name: Models (${{ matrix.shard }})
+    needs: plan
+    if: needs.plan.outputs.run != 'false'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.plan.outputs.shards) }}
+    steps:
+      - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
-        if: steps.changes.outputs.run != 'false'
         with:
           distribution: temurin
           java-version: '21'
       - uses: actions/cache@v4
-        if: steps.changes.outputs.run != 'false'
         with:
           path: ~/.cache/bide-tla
           key: tla-tools-${{ hashFiles('spec/tla/tools.lock') }}
+      # Each shard runs the self-test and the translation check (seconds) as well as its configs.
       - name: Checker self-test (a stale translation and a wrong jar checksum both fail)
-        if: steps.changes.outputs.run != 'false'
         run: spec/tla/check.sh self-test
       # Four configurations at a time, one TLC worker and a 2 GB heap each (the runner has 4 vCPUs
-      # and 16 GB); TLC_MODELS empty means every model.
-      - name: Translation check, then the ci, regress, finding and limit configurations
-        if: steps.changes.outputs.run != 'false'
+      # and 16 GB); TLC_MODELS empty means every model, and TLC_DIRS is the shard's directories.
+      - name: Translation check, then the shard's ci, regress, finding and limit configurations
+        shell: bash
         env:
           TLC_JOBS: '4'
-          TLC_MODELS: ${{ steps.changes.outputs.models }}
-        run: spec/tla/check.sh
+          TLC_MODELS: ${{ needs.plan.outputs.models }}
+          SHARD: ${{ matrix.shard }}
+        run: |
+          TLC_DIRS=$(SHARDS="$MODEL_SHARDS" .github/scripts/shards.sh get "$SHARD")
+          echo "Shard $SHARD: $TLC_DIRS"
+          TLC_DIRS="$TLC_DIRS" spec/tla/check.sh
+
+  # The required check. It always reports, on every event but the schedule: success when the plan
+  # job succeeded and either no model needed checking or every shard succeeded; a failed,
+  # cancelled or skipped shard, or a failed plan, fails it.
+  models:
+    name: Models
+    needs: [plan, shard]
+    if: always() && github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/scripts
+      - name: Every shard passed
+        run: .github/scripts/shards.sh verdict "${{ needs.plan.result }}" "${{ needs.plan.outputs.run }}" "shards=${{ needs.shard.result }}"
 
   models-nightly:
     name: Models (nightly)

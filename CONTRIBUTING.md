@@ -25,7 +25,7 @@ without a sign-off fail the DCO check.
 
 ## Build and test
 
-This is a multi-module workspace. The core is one Go module at the repository root; adapters and backends are their own modules (`trace`, `mcp`, `store/sqlite`, `store/postgres`, `govern`, `govern/postgreslog`, `govern/redislog`, `govern/sqlitelog`, `codec/gcf`, the self-contained example modules `examples/approval`, `examples/plan`, `examples/mcp`, `examples/observability` and `examples/govern`, and the test-only `integration` module, which holds the core's tests that need govern). A `go.work` stitches them together for local development, and CI builds and tests every module listed in `MODULES` in `.github/workflows/ci.yml` (it fails if a module is missing from that list or from `go.work`).
+This is a multi-module workspace. The core is one Go module at the repository root; adapters and backends are their own modules (`trace`, `mcp`, `store/sqlite`, `store/postgres`, `govern`, `govern/postgreslog`, `govern/redislog`, `govern/sqlitelog`, `codec/gcf`, the self-contained example modules `examples/approval`, `examples/plan`, `examples/mcp`, `examples/observability` and `examples/govern`, and the test-only `integration` module, which holds the core's tests that need govern). A `go.work` stitches them together for local development, and CI builds and tests every module listed in `MODULES` in `.github/workflows/ci.yml` (it fails if a module is missing from that list or from `go.work`). On Linux the tests run in parallel shards, one job each (`TEST_SHARDS` in the same file): a shard names modules (`mcp`) or single packages of a module (`.:agent`, the core's `agent` package), and a module entry covers the module's packages no package entry names. A new module goes on exactly one shard's line, or CI fails and says where (`.github/scripts/shards.sh check-modules`); a new package of the core needs nothing, since the `core` shard covers it.
 
 Build and test with the versions pinned in each `go.mod` (rather than the workspace) by setting `GOWORK=off`:
 
@@ -190,7 +190,12 @@ in the same pull request: edit the PlusCal in `spec/tla/claims/Claims.tla`, re-t
 needs Java 11 or later and downloads the pinned `tla2tools.jar` (checked against its SHA-256 in
 `spec/tla/tools.lock`). A counterexample TLC finds in the current rules is a bug: reproduce it as a
 deterministic Go test before fixing it, as for any bug. A rule replaced by the change becomes a
-`Bug` value and a configuration in `spec/tla/claims/regress/` that must keep failing. The same holds for the other models under
+`Bug` value and a configuration in `spec/tla/claims/regress/` that must keep failing. The Models
+workflow checks the configurations in parallel shards listed in `MODEL_SHARDS` in
+`.github/workflows/models.yml`, each a set of configuration directories: a new model, or a model's
+first `regress`, `findings` or `limits` directory, goes on one shard's line in the same pull
+request. Until it does, the Models check fails with the directory to add and the shard line to add
+it to (`.github/scripts/shards.sh check-models`). The same holds for the other models under
 `spec/tla/`; in particular, a change to the run's end markers, to `Lease`, `Recover` or
 `RecoverLoop`, or to `Cancel` changes the run lifecycle model, `spec/tla/lifecycle/Lifecycle.tla`, and a
 change to `audit.AttenuatingSubAgent` (its grants, `BindRollback`, `CallGuard`), the sub-agent

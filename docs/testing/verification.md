@@ -144,7 +144,11 @@ Every pull request must pass, before it can merge:
   documentation-only changes.
 - **Tests on Linux, macOS, and Windows,** with `-race` on Linux. On Linux the core, `govern` and
   `integration` modules are also tested with `GOEXPERIMENT=nojsonv2`, so the journal encoding does
-  not depend on `encoding/json/v2`.
+  not depend on `encoding/json/v2`. The Linux tests run in parallel jobs (the core's `agent`
+  package, the rest of the core, the other modules, and the `nojsonv2` run), and the required **Test
+  (ubuntu-latest)** check fails unless each of them succeeded. Every module, and every package of
+  the split core, is in exactly one of the `agent`, `core` and `rest` shards, or CI fails; the
+  `nojsonv2` job runs the core, `govern` and `integration` again, as before.
 - **Integration** against real Postgres 16 and Redis 7. Each suite runs twice against the same
   services, so a test that passes only on a fresh database fails, and a skipped test fails the job,
   since a skip would mean nothing was tested.

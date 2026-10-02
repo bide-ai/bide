@@ -73,7 +73,10 @@ On main, each nested module's `go.mod` requires the core (and `govern`, for the 
 the placeholder `v0.0.0` and carries a `replace github.com/bide-ai/bide => <rel>`, so it builds
 standalone against the code in the tree, with or without the workspace (`GOWORK=off`). CI builds and tests every module in its own directory (see
 `.github/workflows/ci.yml`, `MODULES`), except `benchmarks`, which CI does not run. The Lint job
-fails if a module in the tree is missing from `MODULES` or from `go.work`.
+fails if a module in the tree is missing from `MODULES` or from `go.work`, and the Changes job if a
+module in `MODULES` is not in exactly one of the Linux test shards (`TEST_SHARDS`); the core is
+split there, its `agent` package in a shard of its own (`.:agent`) and the rest of its packages in
+another, and Lint fails unless each of the core's packages is in exactly one.
 
 ## Releases
 
