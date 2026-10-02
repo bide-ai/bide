@@ -1,6 +1,6 @@
 // Command coordination shows the gsm "Governed State Machine" convergence layer surfaced
 // through the govern package: multiple agents mutating SHARED state converge to the same
-// valid normal form regardless of interleaving, proven at build time (not asserted at
+// valid normal form regardless of interleaving, certified at build time (not asserted at
 // runtime). Two scenes, both with NO API key (a small inline scripted Model drives the
 // agent tool calls):
 //

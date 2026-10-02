@@ -70,7 +70,9 @@ Temporal 拥有这些保证，但需要一个服务器加一支 worker 机群才
 
 ### 4 · 可证明收敛的共享状态（gsm）
 
-受治理的状态层：多个进程重放同一条持久化日志会**收敛到完全相同的状态**，并有一份**机器核验的证明**作后盾。**gsm** 收敛引擎的规范化重写系统是合流的（confluent），因此各步骤重放的顺序无法改变结果。该证明是无公理的，并在 Coq 8.18、8.20 与 Rocq 9.3 上经 CI 验证（`Print Assumptions` 报告 "Closed under the global context"）：[Coq/Rocq 证明](https://github.com/blackwell-systems/normalization-confluence/tree/main/coq)（[![verify](https://github.com/blackwell-systems/normalization-confluence/actions/workflows/verify.yml/badge.svg)](https://github.com/blackwell-systems/normalization-confluence/actions/workflows/verify.yml)）。而且这份证明并不只是躺在代码旁边：gsm 自身对每台机器的判定会被**从该证明中提取出来的两个独立检查器重新认证**（一个从发出的步骤表重新计算收敛性，另一个直接从规则重新计算），因此 gsm 的 Go 验证器里的 bug 不可能让一台非收敛的机器蒙混过关。规则被表达为**可检视的组合子（combinator）数据**，而非不透明的闭包，正是这一点使它们可序列化、可移植、可重新核验；验证还可以以**局部足迹（footprint-local）**的方式运行（`BuildCompositional`），以认证那些全局状态空间大到无法枚举的机器。这就是独立的智能体在没有单一写者的情况下共享状态的方式。这个论断是精确的：*重放的顺序无关收敛性*，已被证明，而非"智能体总能达成一致"。这一联邦化的收敛结果已被机械化，包括异步（混沌）顺序无关性。上同调层已机械化至循环基：在可逆片段中，联邦存在全局收敛状态当且仅当每个基本循环的和乐平凡。完整的 H¹ 分类是论文证明的。
+受治理的状态层：多个进程重放同一条持久化日志会**收敛到完全相同的状态**，并有一份**机器核验的证明**作后盾。**gsm** 收敛引擎的规范化重写系统是合流的（confluent），因此各步骤重放的顺序无法改变结果。该证明是无公理的，并在 Coq 8.18、8.20 与 Rocq 9.3 上经 CI 验证（`Print Assumptions` 报告 "Closed under the global context"）：[Coq/Rocq 证明](https://github.com/blackwell-systems/normalization-confluence/tree/main/coq)（[![verify](https://github.com/blackwell-systems/normalization-confluence/actions/workflows/verify.yml/badge.svg)](https://github.com/blackwell-systems/normalization-confluence/actions/workflows/verify.yml)）。gsm 的 `Build` 通过枚举状态空间来检查给定机器是否满足该定理的条件（补偿总会终止，即 WFC；事件在补偿后可交换，即 CC）。从该证明中提取出的两个检查器确实存在（一个从发出的步骤表重新计算收敛性，另一个直接从规则重新计算），可以重新核验导出的机器，但目前它们既不在 gsm 的 CI 中运行，也不在运行时运行，因此 `Build` 的判定并不以它们为依据。一个源自证明的门控已在计划中：在每次成功构建时运行一个提取出的检查器。规则被表达为**可检视的组合子（combinator）数据**，而非不透明的闭包，正是这一点使它们可序列化、可移植、可重新核验；验证还可以以**局部足迹（footprint-local）**的方式运行（`BuildCompositional`），以认证那些全局状态空间大到无法枚举的机器。这就是独立的智能体在没有单一写者的情况下共享状态的方式。这个论断是精确的：*重放的顺序无关收敛性*，对满足定理条件的机器已被证明，而非"智能体总能达成一致"。这一联邦化的收敛结果已被机械化，包括异步（混沌）顺序无关性。上同调层已机械化至循环基：在可逆片段中，联邦存在全局收敛状态当且仅当每个基本循环的和乐平凡。完整的 H¹ 分类是论文证明的。
+
+**gsm v0.11.0（bide 锁定的版本）中的已知缺口。** `Build` 对它根据写入内容判定为独立的事件对跳过交换性检查，却不检查它们的守卫（guard）和效果读取了什么。证明中的交换引理假设每个事件只读取自己的足迹，因此当一个事件的守卫或效果读取了另一个事件写入的变量时（例如以 `paid` 为守卫的 `ship` 事件，而 `paid` 由 `pay` 设置），这台机器可能被认证为收敛，而实际上并不收敛。定理本身是正确的；问题在于实现在应用它时没有检查这一前提条件。修复正在 [gsm#2](https://github.com/blackwell-systems/gsm/pull/2) 中进行；在 bide 升级到包含该修复的 gsm 版本之前，不要依赖 v0.11.0 对此类机器给出的收敛判定。参见[已知限制](../../docs/KNOWN-LIMITATIONS.md#governed-state-gsm)。
 
 在规模上具体化：一个集成测试驱动多达 **1,000 万个受治理智能体，每次 2,048 个**，让它们经历*随机的、违反不变量的*顺序（每一次运行都突破一个设了上限的不变量并被补偿），并断言每一个智能体都收敛到同一个有效的规范形式*且*产出一份可离线核验的审计证明，全在单个进程内、以约 3 MB 的扁平活跃堆完成（约 13 分钟，约每秒 1.25 万个智能体）。这是一个框架级的测试（桩模型、内存存储）：它在规模上考验治理和审计机器，而非一个真实的 LLM 或一个生产数据库。见 [docs/testing/testing.md](../../docs/testing/testing.md)。
 
@@ -81,7 +83,9 @@ Temporal 拥有这些保证，但需要一个服务器加一支 worker 机群才
 | 崩溃时的非幂等副作用 | **至多一次（结果未知即停机）** | 至少一次；活动/步骤必须幂等 | 至少一次；重新运行（**实测 4–64×**） |
 | 部署 | **一个库 + 一个你本就在运行的数据库** | 服务器 + worker 机群 | 库 |
 | 防篡改审计 | **RFC 6962 Merkle 脊柱（同一条日志）** | 非内建 | 无 |
-| 收敛的共享状态 | **可证明（gsm）** | 不适用 | 无 |
+| 收敛的共享状态 | **可证明（gsm）**[^gsm] | 不适用 | 无 |
+
+[^gsm]: 收敛定理经过机器核验；gsm 的 `Build` 依据其条件认证每台机器。在 bide 锁定的 gsm v0.11.0 中，`Build` 可能错误地认证守卫或效果读取了另一个事件所写变量的机器；修复正在进行中。参见[已知限制](../../docs/KNOWN-LIMITATIONS.md#governed-state-gsm)。
 
 ### 底层的匠心
 
@@ -552,7 +556,7 @@ govern           Tier-2: federated governed state + quorum for agents that must 
 
 持久化核心让*一个*智能体的工作免于崩溃。`govern` 层处理另一个难题：**许多独立运行、却必须达成一致的智能体**，跨进程、跨团队或跨组织边界，没有中央协调者、没有单一写者。它给出两种可验证的一致形式，而在两者中要点都是*核验，不信任*：一方从公开工件核验结果，无需信任任何其他人的智能体。
 
-**在共享状态上达成一致（收敛）。** 把共享状态描述为一个注册表（变量 + 不变量 + 事件）；gsm 在*构建时*证明智能体动作的每一种交错都到达同一个有效状态，否则就拒绝构建并向你展示一个反例。运行时是 O(1) 的表查找；状态是事件溯源的、崩溃可恢复的。它从单个共享注册表向上扩展、穿过**联邦（federations）**（跨边界约束：树、带解析器的多源 DAG、单调循环的*网格 mesh*），经由 `Embed` 组合，甚至能替你**合成**补偿（声明规则，得到一个收敛的治理者，或一份证明其不存在的证据）。智能体经由 `FederatedEventTool` 插入，因此一次 LLM 工具调用就成为一个受治理的事件。
+**在共享状态上达成一致（收敛）。** 把共享状态描述为一个注册表（变量 + 不变量 + 事件）；gsm 在*构建时*检查智能体动作的每一种交错都到达同一个有效状态，否则就拒绝构建并向你展示一个反例（gsm v0.11.0 对读取另一个事件写入内容的守卫和效果存在已知缺口；参见[已知限制](../../docs/KNOWN-LIMITATIONS.md#governed-state-gsm)）。运行时是 O(1) 的表查找；状态是事件溯源的、崩溃可恢复的。它从单个共享注册表向上扩展、穿过**联邦（federations）**（跨边界约束：树、带解析器的多源 DAG、单调循环的*网格 mesh*），经由 `Embed` 组合，甚至能替你**合成**补偿（声明规则，得到一个收敛的治理者，或一份证明其不存在的证据）。智能体经由 `FederatedEventTool` 插入，因此一次 LLM 工具调用就成为一个受治理的事件。
 
 **在一个决定上达成一致（法定人数 quorum）。** k-of-n 个具名投票者（每一个是一个模型、提供商或主体）投出一个规范化的决定；每一票都是一个记入日志、至多一次的步骤，记录了谁怎么投的，而 k-of-n 的门是投票计数上的一个 gsm 不变量，因此"k 个达成一致"在每一种可能的计票上都被机器核验。`bide-audit verify-quorum` 从公开工件重新核对计票和每一票，在不信任生产者的情况下复现多数决规则。这个论断是精确的：一个法定人数证明的是*k 个投票者达成了一致*，并降低单模型风险；它并不认证那个决定是正确的（相关的错误不是独立性），且只有规范化的决定才能被法定人数化，自由格式的散文不能。
 
@@ -586,7 +590,7 @@ tool := govern.EventTool(gov, govern.EventToolConfig{Name: "pay", Description: "
 - **[审计](../../docs/guides/audit.md)**：带证明的运行。一次运行随附一份可移植的 `RunCertificate`，可用 `bide-audit verify-run` 离线核验。可在 `examples/govern/proof-carrying-run` 中运行。
 - **[委派](../../docs/guides/delegation.md)**：子智能体只能收窄的签名能力授权（`Grant`/`SignGrant`），离线核验（`VerifyDelegationChain`），外加从一份干净轨迹中赢得的权限。可在 `examples/govern/delegation`、`examples/govern/authority` 中运行。
 - **[安全模型](../../docs/guides/security-model.md)**：密码学保证的确切范围（完整性、真实性、防篡改性、不可否认性、选择性披露）以及范围之外的内容（机密性）。在依赖审计轨迹之前请读这个。
-- **[治理](../../docs/guides/governance.md)**：Tier-2 受治理状态底座（gsm）。把共享状态描述为一个注册表，而 `Build()` 证明每一种交错都收敛，否则返回一个反例。可在 `examples/govern/mesh`、`examples/govern/compose` 中运行。
+- **[治理](../../docs/guides/governance.md)**：Tier-2 受治理状态底座（gsm）。把共享状态描述为一个注册表，而 `Build()` 检查每一种交错都收敛，否则返回一个反例（gsm v0.11.0 存在一个已知缺口）。可在 `examples/govern/mesh`、`examples/govern/compose` 中运行。
 - **[批准](../../docs/guides/hitl-approval.md)**：工具运行之前的持久化人类签核，从 1-of-1 到签名的 m-of-n（`ApprovalPolicy`、`SubmitDecision`），并离线证明 k 位具名批准人在动作之前批准了它（`audit.ApprovalEvidence`、`audit.VerifyApprovals`）。可在 `examples/approval` 中运行。
 - **[法定人数](../../docs/guides/quorum.md)**：受治理的 k-of-n 模型一致（`govern.Quorum`），计票锚定在日志中并可离线重新核对（`bide-audit verify-quorum`）。可在 `examples/govern/quorum` 中运行。
 

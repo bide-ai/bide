@@ -1,13 +1,15 @@
 // Package govern is the Tier-2 (distributed / concurrent) compensating-agent layer: it
 // integrates the gsm "Governed State Machine" library so that MULTIPLE concurrent agents
-// mutating SHARED state converge to the same valid state regardless of interleaving —
-// PROVABLY, via gsm's build-time normalization-confluence verification (WFC + CC).
+// mutating SHARED state converge to the same valid state regardless of interleaving, as
+// certified by gsm's build-time normalization-confluence verification (WFC + CC).
 //
 // This is the fundamentally different tier from the sequential/hierarchical saga in the
 // core package: there is no single causal order to reverse, so correctness can't be
 // "reverse-the-log." Instead each agent's action is a gsm Event, shared business state is
 // gsm's finite-domain state, business rules are Invariants, and compensations are Repairs.
-// gsm proves at build time that every interleaving reaches the same normal form.
+// gsm checks at build time that every interleaving reaches the same normal form. gsm v0.11.0
+// can wrongly certify a machine whose event guards or effects read variables another event
+// writes; see docs/KNOWN-LIMITATIONS.md ("Governed state (gsm)").
 //
 // It lives OUTSIDE the core, in its own module (github.com/bide-ai/bide/govern), so the core
 // module never depends on gsm: an edge integration, and the lean hexagonal core is untouched.

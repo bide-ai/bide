@@ -24,8 +24,10 @@ type ConfluenceCertificate struct {
 	Machine      string `json:"machine"`       // name of the gsm machine the certificate is about
 	PolicyDigest string `json:"policy_digest"` // stable identifier of the policy this certificate certifies
 
-	// Converges is the headline: WFC && CC. True means every interleaving of events reaches the
-	// same normal form, proven exhaustively at build time.
+	// Converges is the headline: WFC && CC. True means gsm's Build certified that every
+	// interleaving of events reaches the same normal form, checked exhaustively at build time
+	// (gsm v0.11.0 can certify a machine whose event guards or effects read another event's
+	// writes when it does not converge; see docs/KNOWN-LIMITATIONS.md).
 	Converges bool `json:"converges"`
 
 	// WFC (well-founded compensation): every repair chain terminates; MaxRepairLen is the longest

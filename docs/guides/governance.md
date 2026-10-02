@@ -2,8 +2,11 @@
 
 How to let **multiple concurrent agents mutate shared state and still agree**, without a
 lock, a leader, or a consensus round. This is the `govern` package. It's built on
-[gsm](https://github.com/blackwell-systems/gsm) (Governed State Machines), which proves *at
-build time* that every interleaving of agent actions converges to the same valid state.
+[gsm](https://github.com/blackwell-systems/gsm) (Governed State Machines), which checks *at
+build time* that every interleaving of agent actions converges to the same valid state, against
+the conditions of a machine-checked convergence theorem. gsm v0.11.0, the version bide pins, has a
+known gap for events whose guards or effects read what another event writes; see
+[Limits](#limits).
 
 > If you only need one agent's work to survive a crash without firing a side effect twice,
 > you want the **durable core + sagas** (see the main README), not this. This tier is for
@@ -30,8 +33,9 @@ You describe shared state as a **registry**:
 - **Invariants**: what "valid" means (`Holds`), and how to **repair** a violation (`Repair`).
 - **Events**: the actions agents can take (`Writes` / `Guard` / `Apply`).
 
-`Build()` enumerates the state space and **proves** two properties: compensation always
-terminates (WFC) and event order doesn't matter after repair (CC). If it can't prove them, it
+`Build()` enumerates the state space and **checks** two properties: compensation always
+terminates (WFC) and event order doesn't matter after repair (CC). The convergence theorem says a
+machine with both properties converges under every order. If `Build` finds a violation, it
 **refuses to build** and hands you a counterexample. A built machine is an immutable set of
 O(1) lookup tables; no compensation logic runs at runtime.
 
@@ -46,14 +50,18 @@ r.Invariant("no_ship_unpaid").Watches(status, paid).
 r.Event("pay").Writes(status, paid).
     Apply(func(s gsm.State) gsm.State { return s.Set(status, "paid").SetBool(paid, true) }).Add()
 // ... ship event ...
-m, report, err := r.Build() // proves convergence, or returns a counterexample
+m, report, err := r.Build() // certifies WFC + CC, or returns a counterexample
 ```
+
+This order machine is also the standard case of the gsm v0.11.0 gap: if `ship` is guarded on
+`paid`, which `pay` writes, v0.11.0's `Build` can certify the machine although `ship` then `pay`
+and `pay` then `ship` end in different states. See [Limits](#limits).
 
 ## What an invariant guarantees: prevent, repair, halt
 
 An invariant is inviolate on the **committed state**: every state a governor ever returns or
-commits satisfies every invariant, proven exhaustively at build and backed by the machine-checked
-convergence proof. What it does not promise is that no *transient* state is ever invalid, because
+commits satisfies every invariant, checked exhaustively at build against the conditions of the
+machine-checked convergence theorem (subject to the gsm v0.11.0 gap in [Limits](#limits)). What it does not promise is that no *transient* state is ever invalid, because
 the model is precisely that an event may violate an invariant and compensation then restores
 validity. So pick the posture per rule:
 
@@ -231,7 +239,7 @@ a `FederatedGovernor`. The capability ladder:
 - **Compositional `Embed`**: verify a subsystem once, reuse it as a unit inside a larger
   federation. See `examples/govern/compose`.
 
-`Build()` rejects anything it can't prove convergent: cycles without monotonicity,
+`Build()` rejects the structures it cannot certify convergent: cycles without monotonicity,
 multi-source without a resolver, morphisms that don't preserve validity.
 
 ## Synthesis: generate the compensation, or prove it's impossible
@@ -260,7 +268,7 @@ unacceptable, the fix is to redesign the *events*, not the compensation.
 
 ### gsm v0.11.0: verify-or-repair and federation coordination
 
-`govern.New` / `govern.NewFederated` wrap a machine that is **already built and proven** by gsm.
+`govern.New` / `govern.NewFederated` wrap a machine that is **already built and certified** by gsm.
 So the newer gsm v0.11.0 build APIs are run by the caller on the registry or federation, and the
 resulting machine is then handed to `govern`. Two capabilities are worth reaching for:
 
@@ -310,6 +318,12 @@ go run ./quorum     # governed model quorum: k-of-n agreement gates the commit, 
 
 ## Limits
 
+- **gsm v0.11.0 can certify a non-convergent machine.** Its `Build` skips the CC check for event
+  pairs it judges independent from what they write, without checking what their guards and effects
+  read, so a machine where one event's guard or effect reads a variable another event writes can
+  be certified convergent when it is not. Do not rely on a v0.11.0 convergence verdict for such a
+  machine. A fix is in progress in [gsm#2](https://github.com/blackwell-systems/gsm/pull/2); see
+  [known limitations](../KNOWN-LIMITATIONS.md#governed-state-gsm).
 - **Finite state spaces.** The semantic state must be finite (bounded enums/ints). Unbounded
   numeric state is a theory extension, not shipped.
 - **Convergent ≠ correct.** Convergence is order-independence, not business correctness.
@@ -323,24 +337,28 @@ go run ./quorum     # governed model quorum: k-of-n agreement gates the commit, 
 `govern` never leaks into the durable core (the architecture guard enforces it). All of the
 above is `gsm`, the convergence engine and the founder's published research
 ([Normalization Confluence](https://doi.org/10.5281/zenodo.18677400)). The federation ladder,
-monotone cycles, compositionality, and synthesis are all theorems in that work; gsm verifies
-their preconditions exhaustively at build time.
+monotone cycles, compositionality, and synthesis are all theorems in that work; gsm checks
+their preconditions at build time by enumeration (v0.11.0 skips one of them, as
+[Limits](#limits) describes).
 
-The convergence guarantee is backed by a **machine-checked, axiom-free Coq/Rocq proof**,
+The convergence theorem is a **machine-checked, axiom-free Coq/Rocq proof**,
 CI-verified on Coq 8.18, 8.20, and Rocq 9.3 (`Print Assumptions` reports "Closed under the global context"
 for every key theorem; no axioms, no admits; the badge is green and anyone can reproduce it with
 one command). Mechanized: Newman's Lemma, the single-registry Convergence Theorem (confluence +
 unique normal forms), the soundness of gsm's WFC/CC certification (footprint-disjointness =>
-commutation, potential-decrease => termination), and the federated monotone-cycles result: both
+commutation, for events that read only their own footprint; potential-decrease => termination), and the federated monotone-cycles result: both
 the least fixed point (Kleene) and asynchronous (chaotic) order-independent convergence to it.
 Proof directory:
 [normalization-confluence/coq](https://github.com/blackwell-systems/normalization-confluence/tree/main/coq).
-The engine's own per-machine verification is also differentially checked against the proof by
-**two independent oracles extracted from the Coq development**: a *table oracle* that re-certifies
-gsm's emitted step tables converge, and a *rules oracle* that recomputes convergence straight from
-the combinator declarations (trusting neither gsm's enumeration nor its normalization). Either one
-runs independently of the Go, so a bug in gsm's own verifier cannot let a non-convergent machine
-pass. The rules are built from a fixed combinator vocabulary rather than arbitrary Go closures,
+The theorem is correct; gsm v0.11.0's `Build` used the commutation lemma without checking its
+read-footprint precondition, which is the gap in [Limits](#limits).
+**Two independent oracles are extracted from the Coq development**: a *table oracle* that
+re-certifies that gsm's emitted step tables converge, and a *rules oracle* that recomputes
+convergence straight from the combinator declarations (trusting neither gsm's enumeration nor its
+normalization). They can re-check an exported machine, but today they run neither in gsm's CI nor
+at runtime, so they do not back `Build`'s verdict; a proof-derived gate that runs an extracted
+checker on every successful build is planned. An auditor can run the rules oracle on a disclosed
+policy with `bide-audit`'s `-checker` flag (see [Audit](audit.md)). The rules are built from a fixed combinator vocabulary rather than arbitrary Go closures,
 which is what makes them inspectable and serializable to those checkers in the first place; and
 for machines whose global state space is too large to enumerate, gsm verifies **footprint-local**
 (`BuildCompositional`), certifying each independent component over its own small subspace. For

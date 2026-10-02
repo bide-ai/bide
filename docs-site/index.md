@@ -27,7 +27,7 @@ features:
   - title: Verifiable audit trail
     details: Every run's journal is committed to an RFC 6962 Merkle tree. Build inclusion and consistency proofs for any record on demand and check them offline, without trusting the vendor or the process that produced them.
   - title: Provably convergent state
-    details: Shared governed state carries machine-checked convergence, not eventual hope. Coordinate agents on state you can prove settles.
+    details: Shared governed state is certified against a machine-checked convergence theorem, not eventual hope. gsm v0.11.0 has a known Build gap; see Known limitations.
   - title: The whole agent surface
     details: Models (OpenAI, Anthropic, Gemini), tools, typed multi-step flows, memory and RAG, MCP, multi-agent coordination, and typed human-in-the-loop.
   - title: A library, not a cluster

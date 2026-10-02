@@ -13,6 +13,7 @@ Each section says what the limit is, whether it affects you, and what to do abou
 - [Approval and quorum](#approval-and-quorum)
 - [Flows](#flows)
 - [Audit and proofs](#audit-and-proofs)
+- [Governed state (gsm)](#governed-state-gsm)
 - [Stores](#stores)
 
 ## Durability and recovery
@@ -278,6 +279,35 @@ re-hash everything in it. See [Audit](guides/audit.md#security-model-read-this-f
 cannot be matched against guessed neighbouring records. Key-set leaves are not salted, because an absence proof names its
 neighbouring keys by design, and neither are anchor-log leaves, which hold signed tree heads meant to
 be public.
+
+## Governed state (gsm)
+
+**gsm v0.11.0's `Build` can certify a machine that does not converge.** bide's `govern` module pins
+gsm v0.11.0. Its `Build` skips the compensation-commutativity (CC) check for an event pair it
+judges independent from what the two events write, and does not look at what their guards and
+effects read. The Coq/Rocq lemma behind that shortcut assumes each event reads only its own
+footprint, and v0.11.0 does not check that precondition. So a machine where one event's guard or
+effect reads a variable another event writes can pass `Build` although two orders of its events end
+in different states: the order machine with `pay` and a `ship` event guarded on `paid` is the
+standard case. Two events that write the same variable no invariant watches are skipped the same
+way. The convergence theorem itself is correct; the gap is in how v0.11.0 applies it.
+
+What it affects: a convergence verdict from gsm v0.11.0 for such a machine, whether it is `Build`
+succeeding, the report's CC verdict, or a `govern.CertifyConvergence` certificate built from that
+report.
+Do not rely on it. gsm's `Certificate.Verify` and `EmbedCertified` trust the verdict stored in a
+certificate rather than re-checking it, so they do not catch the gap either. A machine is not
+affected when no event's guard or effect reads a variable another event writes and no two events
+write the same variable.
+
+What to do: until bide moves to a gsm release with the fix, keep each event's guard and effect off
+the variables other events write, or check the machine another way (run its events in every order over its
+states in a test, or run the extracted rules checker with `bide-audit`'s `-checker` flag). The fix is in
+progress in [gsm#2](https://github.com/blackwell-systems/gsm/pull/2): `Build` checks every event
+pair exactly. gsm's two checkers extracted from the proof can re-check an exported machine, but
+today they run neither in gsm's CI nor at runtime; a proof-derived gate that runs an extracted
+checker on every successful build is planned. See
+[Convergent governance](guides/governance.md#under-the-hood).
 
 ## Stores
 
