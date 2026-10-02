@@ -133,6 +133,7 @@ Locals ==
   /\ \A d \in Drivers :
        LET c == CallOf[d] IN
        /\ toRetry[d] # {} <=> pc[d] = "ClaimRetry"
+       /\ cid[d] \notin rids
        /\ pc[d] \in {"GateTake", "GateWrite", "ApGate"} => g[d] = 0
        /\ pc[d] \in {"GateTake", "GateWrite"} => Kind[c] = "tool" /\ oldId[d] \in Ids
        /\ pc[d] = "GateTake" => marker[c][gg[d]] = oldId[d]
