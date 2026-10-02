@@ -575,7 +575,8 @@ same kind of configuration to its full depth (25 to 61 steps) in seconds. The ni
 therefore runs no bounded check of the properties. It runs one bounded regression, to show the
 symbolic check can fail on this model: with fixed placements (`apalache/regress-resolve-no-check`),
 Apalache must find #90's F2, a resolution with no live-driver check overriding a driver that
-called the effect (`NoLiveOverride`), {{REGRESS}}.
+called the effect (`NoLiveOverride`), which it does within 12 steps (TLC's trace is 11 states) in about an hour on the development
+machine under load.
 
 ### Findings
 
