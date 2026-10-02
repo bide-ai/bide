@@ -44,6 +44,21 @@ found at such bounds. A **vacuity check** guards against a model that passes bec
 happens in it: each passing configuration is run again with the invariant "the effect never
 fires", which TLC must report violated.
 
+**Apalache** is a second model checker for the same models. Instead of enumerating states, it
+turns a model's states and steps into formulas and lets an SMT solver search them. The three kinds
+of result differ in what they cover:
+
+- **Bounded exhaustive (TLC):** every reachable state within a configuration's bounds (drivers,
+  faults, attempts), however many steps it takes to reach. Nothing beyond the bounds.
+- **Bounded symbolic (Apalache, `check --length=N`):** every behavior of up to N steps, with the
+  constants a configuration leaves open (which process each driver runs in, the kind of call, the
+  lease holders) chosen by the solver. It reaches larger parameters than TLC, but only short
+  behaviors.
+- **Inductive (Apalache):** a stronger statement `IndInv` that holds initially, that every step
+  preserves from any state satisfying it, and that implies the property. Three one-step checks
+  then prove the property in every reachable state, at any depth and for any number of faults.
+  What stays bounded is only what the check fixes, such as the number of drivers.
+
 When a property fails, TLC prints a **counterexample**: the step-by-step trace of states that
 leads to the violation, each state one atomic step such as a store write, a crash or a
 cancellation. In bide's models these are typically 10 to 30 states long.

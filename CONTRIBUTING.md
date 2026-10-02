@@ -205,6 +205,16 @@ delegation model, `spec/tla/delegation/Delegation.tla`, and a change to `Session
 session run IDs changes the sessions model, `spec/tla/sessions/Sessions.tla`.
 See [spec/tla/README.md](spec/tla/README.md).
 
+The claim model is also checked with Apalache, nightly: bounded symbolic checks and an inductive
+invariant (`spec/tla/claims/ClaimsInductive.tla`) that proves its safety properties at any depth.
+A change to `Claims.tla` should keep both passing; run them locally with
+`spec/tla/check.sh apalache claims`, which needs Java 17 or later and downloads the pinned Apalache
+release (about 190 MB, checked against its SHA-256 in `spec/tla/tools.lock`). If a rule change
+breaks the induction step, Apalache prints a counterexample to induction: a state satisfying the
+invariant and one step out of it. Either the rule broke the property (reproduce it as a bounded
+counterexample and a Go test) or the invariant needs a new conjunct; see
+[Apalache](spec/tla/README.md#apalache).
+
 The Go code the models describe (the claim protocol, the approval gate, flows, spend accounting, the tool-call state machine, the run lifecycle, delegation and sub-run authority, sessions)
 is wrapped in region markers, `// protocol:<model> begin <Action> ...` and `// protocol:<model> end`,
 that name the model and the model actions the region implements. The Lint job runs

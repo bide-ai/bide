@@ -208,20 +208,24 @@ ApNoHolder == [x \in {} |-> "none"]
 ApNoStrs == {}
 \* @type: Set(<<Str, Str>>);
 ApNoPairs == {}
+ApAllTool == [c \in Calls |-> "tool"]
+ApCrossProc == [d \in Drivers |-> IF d = "d1" THEN "p1" ELSE "p2"]
 ApAllStep == [c \in Calls |-> "step"]
 ApSameProc == [d \in Drivers |-> "p1"]
+ApC1ThenC2 == [c \in Calls |-> IF c = "c1" THEN "c2" ELSE "none"]
 ApOneCall == [d \in Drivers |-> "c1"]
 ApNoNext == [c \in Calls |-> "none"]
 ApNoGate == [c \in Calls |-> "none"]
 ApPols == [n \in {"m"} |-> [need |-> 2, apprs |-> {"a1", "a2", "a3"}]]
 
 \* The constants a configuration (apalache/*.cfg) leaves to the solver: every placement of the
-\* drivers D in the processes P, every kind of call (tool, step or flow) for the calls C, whether
+\* drivers D in the processes P and on the calls C, every kind of call (tool, step or flow) for the calls C, whether
 \* a Step pauses, which drivers hold the lease, and whether errored writes may commit late (weak
 \* A3). One check covers what TLC needs one configuration each for. D, P and C must be the
 \* configuration's Drivers, Procs and Calls (Apalache's --cinit reads no constant the .cfg sets).
 Placements(D, P, C) ==
   /\ ProcOf' \in [D -> P]
+  /\ CallOf' \in [D -> C]
   /\ Kind' \in [C -> {"tool", "step", "flow"}]
   /\ PauseCalls' \in SUBSET {c \in C : Kind'[c] = "step"}
   /\ LeasedDrivers' \in SUBSET D
@@ -229,6 +233,18 @@ Placements(D, P, C) ==
 
 CInit2x2x1 == Placements({"d1", "d2"}, {"p1", "p2"}, {"c1"})
 CInit3x2x1 == Placements({"d1", "d2", "d3"}, {"p1", "p2"}, {"c1"})
+CInit2x2x2 == Placements({"d1", "d2"}, {"p1", "p2"}, {"c1", "c2"})
+CInit3x2x2 == Placements({"d1", "d2", "d3"}, {"p1", "p2"}, {"c1", "c2"})
+
+\* Halt resolution as the current protocol does it: the resolver claims the attempt after the live
+\* one, leaves its attempt live when its result write errors, checks either the lease or the
+\* minimum age, and runs in either process or in neither. Under the lease check, no plain run
+\* holds the live attempt at the check (PlainRunIdleAtCheck): #90's accepted limit, which
+\* limits/lease-plain-run-claims-first states.
+CInitResolver2x2x2 ==
+  /\ Placements({"d1", "d2"}, {"p1", "p2"}, {"c1", "c2"})
+  /\ LiveCheck' \in {"lease", "minAge"}
+  /\ ResolverProc' \in {"p1", "p2", "none"}
 
 \* The core safety invariants of model 1, checked together.
 CoreSafety == AtMostOnce /\ NotStartedExclusive /\ NoLiveOverride /\ AtMostOncePerIntent

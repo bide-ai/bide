@@ -82,6 +82,67 @@ counterpart, the full-bound fault-schedule explorations of the claim protocol an
 (`BIDE_EXPLORE=1`), runs nightly in `.github/workflows/explore.yml`; see
 [verification](../../docs/testing/verification.md).
 
+## Apalache
+
+[Apalache](https://github.com/apalache-mc/apalache) is a second model checker for the same models.
+TLC enumerates states one by one; Apalache translates a model's states and steps into SMT formulas
+and lets a solver (Z3) search them. That gives two kinds of check TLC cannot make:
+
+- **A bounded symbolic check** (`apalache-mc check --length=N`): every behavior of up to N steps,
+  with the constants a configuration leaves open (which process each driver runs in, the kind of
+  call, whether errored writes may commit late, which drivers hold the lease) chosen by the solver,
+  so one check covers what TLC needs one configuration each for. Its bound is the number of steps,
+  not the number of states, so it reaches larger parameters but shorter behaviors than TLC.
+- **An inductive invariant**: a state predicate `IndInv` such that `Init` implies it, every step
+  from any state satisfying it leads to a state satisfying it, and it implies the property. Each
+  of the three is one Apalache query of at most one step, and together they prove the property in
+  every reachable state, at any depth. TLC's result says nothing beyond its bounds; an inductive
+  result has no depth bound and no bound on the fault counters (see below for what stays bounded).
+
+```sh
+spec/tla/check.sh apalache                    # every model's Apalache checks
+spec/tla/check.sh apalache claims             # one model's
+spec/tla/check.sh apalache spec/tla/claims/apalache/inductive-2x2x1.cfg
+```
+
+Apalache needs Java 17 or later. The script downloads the release archive pinned in
+[tools.lock](tools.lock) (`apalache-0.62.2.tgz`, about 190 MB) into the tool cache (or
+`$BIDE_APALACHE_CACHE`), refuses it if its SHA-256 differs, and unpacks a fresh copy into its work
+directory for each run, so only verified bytes run. Apalache's output directory and its JVM
+temporary directory live under that work directory too, and are removed on exit, on failure and on
+interrupt. `APALACHE_JAVA_OPTS` replaces the JVM options (default `-Xmx4g`), and
+`APALACHE_KEEP_OUTPUT=<dir>` keeps each check's output and counterexample. Neither TLC check needs
+Apalache, and `check.sh` downloads it only for the `apalache` and `fetch` commands.
+
+**Types.** Apalache's type checker needs a type for every constant and variable. The PlusCal
+translator rewrites the variable declarations of the translation, so the annotations cannot live
+there; instead each checked model has a typed wrapper module (`claims/ClaimsApalache.tla`) that
+declares every constant and variable with its type and instantiates the model unchanged, with
+model values written as strings. The checks run the model's own `Init` and `FullNext`. Typing model
+1 took three edits to `Claims.tla`, none of which changes its meaning, and TLC passes every
+configuration as before: `CountsFor` takes a call and an index instead of a record (Apalache cannot
+type a record parameter), the m-of-n count ranges over `DOMAIN dlog[c]` instead of
+`1..Len(dlog[c])` (Apalache needs constant range bounds), and the resume gate's `CHOOSE` names its
+bound variable `y` instead of shadowing the `with` variable `x`.
+
+**Configurations.** A model's Apalache configurations live in its `apalache/` directory, which TLC
+never reads. Each is a TLC-style `.cfg` (Apalache reads the same format) that sets the constants
+the checks fix, and names its module and its checks in comment lines; `check.sh` runs every check
+and compares the result:
+
+```text
+\* SPEC: ClaimsInductive.tla
+\* CHECK: pass | --cinit=CInit2x2x1 --init=IndInit --inv=IndInv --length=1
+\* CHECK: invariant EffectNotReachable | --cinit=CInit2x2x1 --init=IndInit --inv=EffectNotReachable --length=0
+```
+
+A `pass` check must report no error; an `invariant <Name>` check must report that invariant
+violated (exit status 12), which is how the vacuity and regression checks are stated.
+
+**In CI.** The **Apalache (nightly)** job of `models.yml` runs `check.sh apalache` on the nightly
+schedule and on demand, beside the TLC nightly job; no pull request runs it, so the required
+**Models** job is unchanged. Results for model 1 are in [Apalache results](#apalache-results).
+
 ## Keeping the code and the models in step
 
 Milestone M4 of the plan (section 6.3): the Go code each model describes is marked, and CI fails a

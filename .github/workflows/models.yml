@@ -6,7 +6,8 @@ name: Models
 # spec/tla the pull request changes (all of them when it changes check.sh, tools.lock, shards.sh or
 # this file).
 # Nightly (and on demand): the "nightly" configurations, with larger bounds and the liveness checks
-# at the larger fault budget.
+# at the larger fault budget; and, in a job of its own beside it, the Apalache checks (symbolic and
+# inductive, spec/tla/README.md "Apalache"), which no pull request runs.
 on:
   push:
     branches: [ main ]
@@ -174,3 +175,27 @@ jobs:
           key: tla-tools-${{ hashFiles('spec/tla/tools.lock') }}
       - name: Nightly configurations
         run: spec/tla/check.sh nightly
+
+  apalache-nightly:
+    name: Apalache (nightly)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      # The TLA+ tools and the Apalache archive (about 190 MB) are cached apart, so the pull-request
+      # job never restores the archive.
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/bide-tla
+          key: tla-tools-${{ hashFiles('spec/tla/tools.lock') }}
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/bide-apalache
+          key: apalache-${{ hashFiles('spec/tla/tools.lock') }}
+      - name: Apalache checks
+        run: BIDE_APALACHE_CACHE="$HOME/.cache/bide-apalache" spec/tla/check.sh apalache
