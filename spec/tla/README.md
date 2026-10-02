@@ -111,7 +111,7 @@ Apalache needs Java 17 or later. The script downloads the release archive pinned
 `$BIDE_APALACHE_CACHE`), refuses it if its SHA-256 differs, and unpacks a fresh copy into its work
 directory for each run, so only verified bytes run. Apalache's output directory and its JVM
 temporary directory live under that work directory too, and are removed on exit, on failure and on
-interrupt. `APALACHE_JAVA_OPTS` replaces the JVM options (default `-Xmx4g`), and
+interrupt. `APALACHE_JAVA_OPTS` replaces the JVM options (default `-Xmx8g`), and
 `APALACHE_KEEP_OUTPUT=<dir>` keeps each check's output and counterexample. Neither TLC check needs
 Apalache, and `check.sh` downloads it only for the `apalache` and `fetch` commands.
 

@@ -33,7 +33,7 @@
 # Needs Java 11 or later (JAVA_HOME or java on PATH; Apalache needs 17 or later), curl, tar, and
 # sha256sum or shasum.
 # Environment: BIDE_TLA_CACHE (tool cache; default ~/.cache/bide-tla), BIDE_APALACHE_CACHE (where
-# the Apalache archive is kept; default the tool cache), APALACHE_JAVA_OPTS (default -Xmx4g),
+# the Apalache archive is kept; default the tool cache), APALACHE_JAVA_OPTS (default -Xmx8g),
 # TLC_WORKERS (default auto),
 # TLC_JOBS (default 1: how many configs run at a time; above 1, each runs with one TLC worker),
 # TLC_MODELS (default every model: the model directories whose configs a group runs, such as
@@ -372,7 +372,7 @@ apalache_run() {
   shift 4
   odir=$(tmpdir)
   # shellcheck disable=SC2086 # APALACHE_JAVA_OPTS is a list of options
-  (cd "$dir" && exec "$java" ${APALACHE_JAVA_OPTS:--Xmx4g} -Djava.io.tmpdir="$odir" -jar "$apalache" \
+  (cd "$dir" && exec "$java" ${APALACHE_JAVA_OPTS:--Xmx8g} -Djava.io.tmpdir="$odir" -jar "$apalache" \
       check --out-dir="$odir" --config="$cfg" --no-deadlock "$@" "$spec") >"$out" 2>&1 &
   apalache_pid=$!
   apalache_status=0
