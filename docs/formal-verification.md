@@ -19,7 +19,7 @@ At a glance:
 - **215 configurations** in the merge queue (86 that must pass, each also run for vacuity, and 129
   that must fail with their named property: the regression, finding and limit configurations and
   one `ci` reachability check), and **76 larger ones nightly**.
-- **Apalache, nightly:** {{GLANCE}}
+- **Apalache, nightly:** an inductive invariant proves the claim protocol's `AtMostOnce` and `NotStartedExclusive` at any depth and for any number of faults, for two drivers on one call; its extension to halt resolution is written and awaits its first full check; a bounded symbolic regression must find #90's F2.
 - **29 bugs caught before release** in bide's own design or code (F1 to F5, P1, P2, T1 to T6, a
   rollback that never ended, L1 to L7, a spend-accounting bug model 8 confirmed, D1 to D3, and
   S1 to S4). Each fixed one is kept as a regression configuration (L2 to L7 and S3 since P14
@@ -197,7 +197,7 @@ same for bugs found by review and testing before the models existed, back to #31
 | Every pull request, the merge queue and main (**Models**, required) | The checker self-test, the PlusCal translation check, and every `ci`, `regress`, `finding` and `limit` configuration (215: 87 `ci`, 109 `regress`, 1 `finding`, 18 `limit`), each passing one also run for vacuity, four at a time; on a pull request, of the models it changes | 3.5 to 4.1 minutes for every model on the CI runner, in six parallel shard jobs that the **Models** job stands for (each shard's timeout 30 minutes) |
 | Nightly and on demand (**Models (nightly)**) | The 76 `nightly` configurations: more faults, more drivers, liveness at two error replies, weak A3 (late commits) | About 1 hour 50 minutes on the CI runner (1 hour 40 minutes measured before this split, plus about 7 minutes moved from pull requests, and model 10's four P14 configurations, about 6 minutes on the development machine; job timeout 4 hours) |
 | Nightly and on demand (**Explore (full bound)**) | The Go fault-schedule explorations of the claim protocol and of flow lowering at their full bound (`BIDE_EXPLORE=1`); every pull request runs them at a smaller bound under `-race` in the Test job | About 15 to 22 minutes |
-| Nightly and on demand (**Apalache (nightly)**) | `spec/tla/check.sh apalache`: model 1's inductive invariant (three one-step checks per scope, and a vacuity check) and a bounded symbolic regression that must fail ([Apalache](../spec/tla/README.md#apalache)) | {{NIGHTLY_TIME}} (job timeout 2 hours), in parallel with the TLC nightly job |
+| Nightly and on demand (**Apalache (nightly)**) | `spec/tla/check.sh apalache`: model 1's inductive invariant (the one-step checks of each scope, the resolver scope's step split in four, and a vacuity check) and a bounded symbolic regression that must fail ([Apalache](../spec/tla/README.md#apalache)) | One job per Apalache configuration (seven), in parallel with each other and with the TLC nightly job; the time on the runner is given in [Apalache results](../spec/tla/README.md#apalache-results) (job timeout 350 minutes) |
 | Every pull request (**Lint**, required) | `modelsync` and `TestProtocolVocabulary` (next section) | Part of Lint |
 
 On a pull request, the Models steps check only the models whose directory under `spec/tla/` it
@@ -270,7 +270,7 @@ skeleton; and M5, merging and validating the traces of the multi-process HA harn
 ## What the models do not cover
 
 - **Only the bounds checked**, except where an inductive invariant holds. TLC checks every
-  behavior within each configuration's bounds and nothing beyond them. {{INDUCTIVE_LIMIT}} Typical bounds: two drivers (three in one nightly configuration), one crash,
+  behavior within each configuration's bounds and nothing beyond them. Model 1's inductive invariant lifts the depth and fault bounds for `AtMostOnce` and `NotStartedExclusive`, for two drivers, two processes and one call, attempts 0..3 and 8 claim ids, without halt resolution or the approval gate; its extension to halt resolution awaits its first full check ([Apalache results](../spec/tla/README.md#apalache-results)). Typical bounds: two drivers (three in one nightly configuration), one crash,
   one cancellation, up to two error replies on pull requests and four nightly; model 9, one turn
   of one or two calls with at most two invocations of a call at once; model 10, one or two
   recovery workers, up to three runs; model 1b, three approvers and up to three decisions. A bug

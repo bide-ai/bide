@@ -250,6 +250,18 @@ IndInv == TypeOK /\ Core
 \* The properties IndInv must imply.
 IndProps == AtMostOnce /\ NotStartedExclusive /\ NoLiveOverride /\ AtMostOncePerIntent
 
+\* The induction step split by FullNext's disjuncts, so a large scope can be checked in parallel
+\* jobs: with Drivers = {"d1", "d2"}, FullNext is exactly StepD1 \/ StepD2 \/ StepResolver \/
+\* StepEnv (Next is the drivers' steps, the resolver's and Terminating), so IndInv is preserved by
+\* FullNext when each of the four preserves it.
+StepD1 == driver("d1")
+StepD2 == driver("d2")
+StepResolver == \E self \in ResolverSet : resolver(self)
+StepEnv == \/ Terminating
+           \/ \E p \in Procs : Crash(p) \/ Evict(p)
+           \/ LateApply /\ UNCHANGED LateVars
+           \/ ApprovalEnv
+
 \* For the induction step: any state of the invariant.
 IndInit == TypeGen /\ Core
 =============================================================================

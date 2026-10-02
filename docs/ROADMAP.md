@@ -50,7 +50,7 @@ Next, in order:
 
 The store contract and the whole-tree budget bound remain candidates.
 
-**Proofs beyond the bounds (Apalache).** TLC's results hold only within each configuration's bounds. The claim model also has an inductive invariant, checked nightly by Apalache, that proves {{ROADMAP_IND}} at any depth and for any number of faults ([Apalache results](../spec/tla/README.md#apalache-results)). Next: the same for model 9 (tool calls; its typed wrapper is in place, the invariant is not written) and model 10 (the run lifecycle), and checking the claim invariant at more drivers, attempts and claim ids.
+**Proofs beyond the bounds (Apalache).** TLC's results hold only within each configuration's bounds. The claim model also has an inductive invariant, checked nightly by Apalache, that proves `AtMostOnce` and `NotStartedExclusive` for two drivers on one call (its extension to halt resolution awaits its first full check) at any depth and for any number of faults ([Apalache results](../spec/tla/README.md#apalache-results)). Next: the same for model 9 (tool calls; its typed wrapper is in place, the invariant is not written) and model 10 (the run lifecycle), and checking the claim invariant at more drivers, attempts and claim ids.
 
 Models live in the repository and run in CI. A counterexample the checker finds becomes a deterministic Go regression test.
 

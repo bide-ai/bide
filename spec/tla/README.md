@@ -140,8 +140,9 @@ and compares the result:
 A `pass` check must report no error; an `invariant <Name>` check must report that invariant
 violated (exit status 12), which is how the vacuity and regression checks are stated.
 
-**In CI.** The **Apalache (nightly)** job of `models.yml` runs `check.sh apalache` on the nightly
-schedule and on demand, beside the TLC nightly job; no pull request runs it, so the required
+**In CI.** The **Apalache (nightly)** jobs of `models.yml` run `check.sh apalache <file.cfg>`, one
+job per configuration in parallel (the largest check takes hours, and a GitHub job at most 6), on
+the nightly schedule and on demand, beside the TLC nightly job; no pull request runs them, so the required
 **Models** job is unchanged. Results for model 1 are in [Apalache results](#apalache-results).
 
 ## Keeping the code and the models in step
@@ -546,7 +547,10 @@ has fired.
 **Assumptions and bounds.** The current protocol (`Bug = "none"`), no approval gate (model 1b),
 and the constants of each configuration:
 
-{{IND_TABLE}}
+| Configuration | Drivers, processes, calls | Attempts, claim ids | Halt resolution | Properties | Result |
+|---|---|---|---|---|---|
+| `inductive-2x2x1` | 2, 2, 1 | 0..3, 8 | none | `AtMostOnce`, `NotStartedExclusive` | inductive; the step check took 78 minutes on the development machine under load (4,699 s), the other checks about 20 s each |
+| `inductive-resolver` and its four `-step-*` shards | 2, 2, 2 (the second call is issued when the first reads as not charged) | 0..3, 6 | the fixed resolution, lease or minimum-age check, in either process or neither | all four | awaits its first full check: the unsplit step check found two counterexamples to induction (a driver holding the resolver's claim id; the resolver at `RNotStarted`, which the fixed resolution never reaches), each a state the invariant did not yet exclude, not a protocol bug; each run took hours, the last 7.1 hours, so the step now runs nightly in four parallel jobs, one per disjunct group of `FullNext` (`StepD1`, `StepD2`, `StepResolver`, `StepEnv`) |
 
 Each configuration leaves to the solver which process each driver runs in, which call it drives,
 each call's kind (tool, Step or plan flow), whether a Step pauses, which drivers hold the lease,

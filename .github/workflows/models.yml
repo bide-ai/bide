@@ -176,11 +176,30 @@ jobs:
       - name: Nightly configurations
         run: spec/tla/check.sh nightly
 
-  apalache-nightly:
-    name: Apalache (nightly)
+  # One job per Apalache configuration (spec/tla/*/apalache/*.cfg), in parallel: the largest
+  # check takes hours, and a job is capped at 6. The resolver scope's induction step is split by
+  # FullNext's disjuncts into four configurations for this reason.
+  apalache-list:
+    name: Apalache configurations
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
-    timeout-minutes: 240
+    outputs:
+      cfgs: ${{ steps.list.outputs.cfgs }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: list
+        run: echo "cfgs=$(ls spec/tla/*/apalache/*.cfg | jq -R . | jq -sc .)" >> "$GITHUB_OUTPUT"
+
+  apalache-nightly:
+    name: Apalache (nightly)
+    needs: apalache-list
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        cfg: ${{ fromJSON(needs.apalache-list.outputs.cfgs) }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -197,5 +216,5 @@ jobs:
         with:
           path: ~/.cache/bide-apalache
           key: apalache-${{ hashFiles('spec/tla/tools.lock') }}
-      - name: Apalache checks
-        run: BIDE_APALACHE_CACHE="$HOME/.cache/bide-apalache" spec/tla/check.sh apalache
+      - name: Apalache checks of ${{ matrix.cfg }}
+        run: BIDE_APALACHE_CACHE="$HOME/.cache/bide-apalache" spec/tla/check.sh apalache "${{ matrix.cfg }}"

@@ -69,7 +69,7 @@ result never replaced, a resolution never overriding a live driver; a liveness p
 an effect that provably never started does not halt for ever. Each rule an earlier review found
 wrong is kept as a configuration that must still produce its counterexample, so the model cannot
 quietly lose the power to find it. Nightly, the Apalache model checker also checks an inductive
-invariant of the claim model, which proves {{VERIF_IND}} at any depth and for any number of faults. Further models cover the approval gate with 1-of-1 and m-of-n
+invariant of the claim model, which proves the at-most-once rule (`AtMostOnce`, `NotStartedExclusive`) for two drivers on one call at any depth and for any number of faults. Further models cover the approval gate with 1-of-1 and m-of-n
 tallies and approvers' key sets (model 1b), flow semantics (model 7), spend accounting of model
 calls (model 8) and the bide protocol's claim rules (model 2).
 
