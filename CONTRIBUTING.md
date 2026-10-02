@@ -206,7 +206,7 @@ session run IDs changes the sessions model, `spec/tla/sessions/Sessions.tla`.
 See [spec/tla/README.md](spec/tla/README.md).
 
 The claim model is also checked with Apalache, nightly: bounded symbolic checks and an inductive
-invariant (`spec/tla/claims/ClaimsInductive.tla`) that proves `AtMostOnce`, `NotStartedExclusive`, `NoLiveOverride` and `AtMostOncePerIntent` for two drivers over two processes, on one call (attempts 0..3, 8 claim ids) or with halt resolution and the caller's second call (attempts 0..3, 6 claim ids), without the approval gate, and, under the lease check, assuming no plain run holds the live attempt at the check (`PlainRunIdleAtCheck`), at any depth and for any number and mix of faults within the run's 8 (6) claim ids and attempts 0..3 (claim ids are never reused, so this bounds the number of claims).
+invariant (`spec/tla/claims/ClaimsInductive.tla`) that proves, for two drivers over two processes, `AtMostOnce` and `NotStartedExclusive` on one call (attempts 0..3, 8 claim ids) and all four of `AtMostOnce`, `NotStartedExclusive`, `NoLiveOverride` and `AtMostOncePerIntent` with halt resolution and the caller's second call (attempts 0..3, 6 claim ids), without the approval gate, and, under the lease check, assuming no plain run holds the live attempt at the check (`PlainRunIdleAtCheck`), at any depth and for any number and mix of faults within the run's 8 (6) claim ids and attempts 0..3 (claim ids are never reused, so this bounds the number of claims).
 A change to `Claims.tla` should keep both passing; run them locally with
 `spec/tla/check.sh apalache claims`, which needs Java 17 or later and downloads the pinned Apalache
 release (about 190 MB, checked against its SHA-256 in `spec/tla/tools.lock`). If a rule change

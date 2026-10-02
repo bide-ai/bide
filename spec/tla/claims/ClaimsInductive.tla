@@ -27,7 +27,9 @@ EXTENDS ClaimsApalache
 
 \* The induction step is split into StepD1, StepD2, StepResolver and StepEnv below, which are
 \* FullNext only when these are the drivers: a configuration with a third driver must not pass by
-\* leaving its steps out.
+\* leaving its steps out. A violated ASSUME makes Apalache report ExecutionsTooShort with exit
+\* status 0, so this guard relies on check.sh requiring the outcome NoError for a pass: do not
+\* loosen that test to the exit status alone.
 ASSUME Drivers = {"d1", "d2"}
 
 DriverLabels == {"Start", "Open", "GateTake", "GateWrite", "ApGate", "Claim", "ClaimRetry",

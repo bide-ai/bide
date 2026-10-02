@@ -548,7 +548,7 @@ the counters at 0, where every fault is enabled, does too: the result holds for 
 of error replies of every kind, late commits, crashes, cancellations and evictions within the
 run's claim ids (8, or 6 in the resolver scope) and attempts 0..3. Claim ids are never reused, and
 a claim blocks when none is free, so the id pool bounds the number of claims in a covered run, and
-with it the faults that void one. A
+with it the faults that force a new claim. A
 fourth check is for vacuity: `IndInv` admits states in which the effect
 has fired.
 

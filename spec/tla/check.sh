@@ -419,6 +419,8 @@ run_apalache_cfg() {
     secs=$(( $(date +%s) - t0 ))s
     case "$kind" in
       pass)
+        # Exit status 0 alone is not a pass: a violated ASSUME (ClaimsInductive's Drivers guard)
+        # also exits 0, with the outcome ExecutionsTooShort.
         if [ "$apalache_status" = 0 ] && grep -q 'The outcome is: NoError' "$out"; then
           record "$name:$args" ok "no error, $secs"
         else

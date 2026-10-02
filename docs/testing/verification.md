@@ -69,7 +69,7 @@ result never replaced, a resolution never overriding a live driver; a liveness p
 an effect that provably never started does not halt for ever. Each rule an earlier review found
 wrong is kept as a configuration that must still produce its counterexample, so the model cannot
 quietly lose the power to find it. Nightly, the Apalache model checker also checks an inductive
-invariant of the claim model, which proves `AtMostOnce`, `NotStartedExclusive`, `NoLiveOverride` and `AtMostOncePerIntent` for two drivers over two processes, on one call (attempts 0..3, 8 claim ids) or with halt resolution and the caller's second call (attempts 0..3, 6 claim ids), without the approval gate, and, under the lease check, assuming no plain run holds the live attempt at the check (`PlainRunIdleAtCheck`), at any depth and for any number and mix of faults within the run's 8 (6) claim ids and attempts 0..3 (claim ids are never reused, so this bounds the number of claims). Further models cover the approval gate with 1-of-1 and m-of-n
+invariant of the claim model, which proves, for two drivers over two processes, `AtMostOnce` and `NotStartedExclusive` on one call (attempts 0..3, 8 claim ids) and all four of `AtMostOnce`, `NotStartedExclusive`, `NoLiveOverride` and `AtMostOncePerIntent` with halt resolution and the caller's second call (attempts 0..3, 6 claim ids), without the approval gate, and, under the lease check, assuming no plain run holds the live attempt at the check (`PlainRunIdleAtCheck`), at any depth and for any number and mix of faults within the run's 8 (6) claim ids and attempts 0..3 (claim ids are never reused, so this bounds the number of claims). Further models cover the approval gate with 1-of-1 and m-of-n
 tallies and approvers' key sets (model 1b), flow semantics (model 7), spend accounting of model
 calls (model 8) and the bide protocol's claim rules (model 2).
 
@@ -175,7 +175,8 @@ required checks:
 - **Models (nightly)** checks the `nightly` TLA+ configurations, with larger bounds
   (`.github/workflows/models.yml`).
 - **Apalache (nightly)** runs the Apalache checks (`spec/tla/check.sh apalache`): the claim
-  model's inductive invariant and a bounded symbolic regression check
+  model's inductive invariant, a bounded symbolic regression check, TLC checks that the invariant
+  holds in every reachable state of three configurations, and a type check of model 9's wrapper
   (`.github/workflows/models.yml`).
 - **Explore (full bound)** runs the fault-schedule explorations of the claim protocol (`agent`) and
   of flow lowering (`plan`) with `BIDE_EXPLORE=1` (`.github/workflows/explore.yml`). Every pull
