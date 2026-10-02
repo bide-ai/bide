@@ -43,16 +43,10 @@ func buildSafetyMesh() (*gsm.FedMachine, []*gsm.Registry, []gsm.Var) {
 		levelV[i] = r.Enum("level", levels...)   // effective level (shared, mesh-controlled)
 		sig := signalV[i]
 		for _, lv := range signalLevels {
-			v := lv
-			// Raise only: a signal below the line's current one changes nothing, so two signals
-			// end in the higher of the two whatever their order.
-			r.Event("signal_" + v).Writes(sig).
-				Apply(func(s gsm.State) gsm.State {
-					if rank[s.Get(sig)] >= rank[v] {
-						return s
-					}
-					return s.Set(sig, v)
-				}).Add()
+			// Raise only: a signal at or below the line's current one changes nothing, so two
+			// signals end in the higher of the two whatever their order. An enum compares by its
+			// label's position in levels, which is its rank.
+			r.On("signal_" + lv).OnlyIf(gsm.Lt(gsm.V(sig), gsm.Lit(rank[lv]))).Does(gsm.SetLabel(sig, lv)).Add()
 		}
 		regs[i] = r
 	}

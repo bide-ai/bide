@@ -102,11 +102,11 @@ func federatedScene() {
 
 	regA := gsm.NewRegistry("a")
 	as := regA.Enum("as", "lo", "hi")
-	regA.Event("araise").Writes(as).Apply(func(s gsm.State) gsm.State { return s.Set(as, "hi") }).Add()
+	regA.On("araise").Does(gsm.SetLabel(as, "hi")).Add()
 
 	regB := gsm.NewRegistry("b")
 	bs := regB.Enum("bs", "lo", "hi")
-	regB.Event("braise").Writes(bs).Apply(func(s gsm.State) gsm.State { return s.Set(bs, "hi") }).Add()
+	regB.On("braise").Does(gsm.SetLabel(bs, "hi")).Add()
 
 	// A non-monotone flip in BOTH directions makes the two morphisms a cycle: a drives b and
 	// b drives a, so no acyclic topological normal form exists.

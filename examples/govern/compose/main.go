@@ -20,8 +20,7 @@ import (
 func buildFulfillment() (sub *gsm.Federation, inventory, shipping *gsm.Registry, stock, mode gsm.Var) {
 	inventory = gsm.NewRegistry("inventory")
 	stock = inventory.Enum("stock", "low", "high")
-	inventory.Event("restock").Writes(stock).
-		Apply(func(s gsm.State) gsm.State { return s.Set(stock, "high") }).Add()
+	inventory.On("restock").Does(gsm.SetLabel(stock, "high")).Add()
 
 	shipping = gsm.NewRegistry("shipping")
 	mode = shipping.Enum("mode", "standard", "expedited")

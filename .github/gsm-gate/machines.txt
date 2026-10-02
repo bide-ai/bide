@@ -38,19 +38,19 @@
 
 examples/govern/authority           execution-desk  certified
 examples/govern/compliance          kyc-decision    certified
-examples/govern/compose             inventory       certified-tables
+examples/govern/compose             inventory       certified
 examples/govern/compose             shipping        certified
 examples/govern/compose             order           certified
 examples/govern/compose             ops             certified
 examples/govern/coordination        counters        not-built
 examples/govern/coordination        counters        synthesized
-examples/govern/coordination        a               certified-tables
-examples/govern/coordination        b               certified-tables
+examples/govern/coordination        a               certified
+examples/govern/coordination        b               certified
 examples/govern/delegation          execution-desk  certified
 examples/govern/earned-authority    work            certified
-examples/govern/mesh                line1           certified-tables
-examples/govern/mesh                line2           certified-tables
-examples/govern/mesh                line3           certified-tables
+examples/govern/mesh                line1           certified
+examples/govern/mesh                line2           certified
+examples/govern/mesh                line3           certified
 examples/govern/proof-carrying-run  kyc-decision    certified
 examples/govern/quorum              model-quorum    certified
 
