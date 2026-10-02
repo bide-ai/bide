@@ -71,6 +71,7 @@ minor version (0.x.0) may include breaking API or journal-format changes; each o
 - `Leaser.ReapLeases` also deletes the lapsed leases of runs whose ID contains `>` (a session's or a sub-agent's run), which no recovery pass takes over, so a worker that died mid-turn does not leave a lease every later lapsed pass reads. `MemStore`, SQLite and Postgres implement it, and `storetest`'s `Leaser_ReapLeases` checks it. A custom `Leaser` must do the same ([#137]).
 
 - The required Models job checks four configurations at a time (one TLC worker each) and, on a pull request, only the models whose `spec/tla/<model>/` directory the pull request changes; the merge queue and main still check every model. The largest passing pull-request configurations of models 1, 2, 7 and 8 (1.4 to 2.9 million states) and two of model 1's liveness checks run nightly, each safety one with a smaller pull-request counterpart of the same invariants, so every path keeps a passing configuration and its vacuity run on pull requests. The job takes about 6 minutes, down from 9 to 15.5 ([#132]).
+- CI runs its two slowest jobs in parallel shards, with no check dropped: the Models configurations in six shard jobs by configuration directory (`check.sh`'s new `TLC_DIRS`), and the Linux Go tests in a core-module job, a job for the other modules and a `nojsonv2` job, each with the same flags as before. The required check names are unchanged: a final **Models** and **Test (ubuntu-latest)** job needs every shard and fails unless each succeeded (or nothing needed checking). `.github/scripts/shards.sh` fails CI unless every module and every pull-request configuration is in exactly one shard, and its self-test proves it catches a missing, doubled or unknown entry. On the first measured run the Models workflow took 3.6 minutes (10.7 before) and the CI workflow 6.0 (8.1 before) ([#143]).
 
 - **Breaking:** `agent.Safety` is plain data, `{ReadOnly, Idempotent}`: comparable, and journaled. The approval gate is `ToolSpec.Approval`, set with `agent.WithApproval(agent.SingleApproval())` (for `Safety{RequiresApproval: true}`) or `agent.WithApproval(&agent.ApprovalPolicy{...})` (for `Safety{Approval: ...}`). `ApprovalPolicy` encodes as `need` and `approvers` ([#117]).
 - **Breaking:** `agent.ToolHandler` is `func(ctx, ToolCall) (json.RawMessage, error)`: tool middleware reads `call.Use` and `call.Spec`, and passes `next` a copy with other `Use.Args` to rewrite arguments ([#117]).
@@ -801,6 +802,7 @@ First public release.
 [#133]: https://github.com/bide-ai/bide/pull/133
 [#137]: https://github.com/bide-ai/bide/pull/137
 [#140]: https://github.com/bide-ai/bide/pull/140
+[#143]: https://github.com/bide-ai/bide/pull/143
 
 [78f8db6]: https://github.com/bide-ai/bide/commit/78f8db6
 [994721b]: https://github.com/bide-ai/bide/commit/994721b

@@ -176,7 +176,7 @@ same for bugs found by review and testing before the models existed, back to #31
 
 | Where | What | Time |
 |---|---|---|
-| Every pull request, the merge queue and main (**Models**, required) | The checker self-test, the PlusCal translation check, and every `ci`, `regress`, `finding` and `limit` configuration (207), each passing one also run for vacuity, four at a time; on a pull request, of the models it changes | About 6 minutes for every model on the CI runner (job timeout 30 minutes) |
+| Every pull request, the merge queue and main (**Models**, required) | The checker self-test, the PlusCal translation check, and every `ci`, `regress`, `finding` and `limit` configuration (207), each passing one also run for vacuity, four at a time; on a pull request, of the models it changes | About 3.5 minutes for every model on the CI runner, in six parallel shard jobs that the **Models** job stands for (each shard's timeout 30 minutes) |
 | Nightly and on demand (**Models (nightly)**) | The 75 `nightly` configurations: more faults, more drivers, liveness at two error replies, weak A3 (late commits) | About 1 hour 50 minutes on the CI runner (1 hour 40 minutes measured before this split, plus about 7 minutes moved from pull requests, and model 10's four P14 configurations, about 6 minutes on the development machine; job timeout 4 hours) |
 | Nightly and on demand (**Explore (full bound)**) | The Go fault-schedule explorations of the claim protocol and of flow lowering at their full bound (`BIDE_EXPLORE=1`); every pull request runs them at a smaller bound under `-race` in the Test job | About 15 to 22 minutes |
 | Every pull request (**Lint**, required) | `modelsync` and `TestProtocolVocabulary` (next section) | Part of Lint |

@@ -22,6 +22,7 @@ spec/tla/check.sh nightly         # the larger configs the nightly job runs
 spec/tla/check.sh run spec/tla/claims/step-same.cfg
 spec/tla/check.sh translate       # re-translate the PlusCal after editing it
 spec/tla/check.sh self-test       # prove a stale translation and a wrong jar checksum both fail
+spec/tla/check.sh list ci regress # the configs of the groups, one per line (no Java needed)
 ```
 
 The script needs Java 11 or later (`JAVA_HOME` or `java` on `PATH`), `curl`, and `sha256sum` or
@@ -30,7 +31,9 @@ v1.7.4 release) into `~/.cache/bide-tla` (or `$BIDE_TLA_CACHE`) and refuses a ja
 differs from the lock file. `TLC_WORKERS` sets TLC's worker count (default `auto`),
 `TLC_JOBS=<n>` runs n configurations at a time, one TLC worker and a 2 GB heap each (default 1:
 one at a time, `TLC_WORKERS` workers), `TLC_MODELS="claims toolcall"` limits a group to those
-model directories, `TLC_JAVA_OPTS` adds JVM options, and `TLC_KEEP_OUTPUT=<dir>` keeps each run's
+model directories, `TLC_DIRS="claims claims/limits"` limits it to those configuration directories
+(a model's directory, or its `regress`, `findings` or `limits` directory; CI's shards),
+`TLC_JAVA_OPTS` adds JVM options, and `TLC_KEEP_OUTPUT=<dir>` keeps each run's
 full TLC output (counterexample traces included). Each concurrent run has its own TLC metadir and
 `java.io.tmpdir` under the script's work directory, so runs never share TLC state.
 
@@ -57,7 +60,13 @@ else fails the check.
 The workflow `.github/workflows/models.yml` has two jobs. **Models** runs on every pull request, in
 the merge queue and on pushes to main: the self-test, the translation check, and every `ci`,
 `regress`, `finding` and `limit` configuration, four at a time (`TLC_JOBS=4`, one TLC worker each,
-on the 4-vCPU runner). On a pull request it checks only the models whose directory under
+on the 4-vCPU runner). The configurations run in six parallel shard jobs, **Models (<shard>)**, each
+a set of configuration directories (`MODEL_SHARDS` in the workflow, passed as `TLC_DIRS`), and the
+**Models** job, the required check, fails unless every shard succeeded. A plan job fails first
+unless every `ci`, `regress`, `finding` and `limit` configuration is in exactly one shard
+(`.github/scripts/shards.sh check-models`, which takes each shard's configurations from
+`check.sh list`), so a new model or a new `regress`, `findings` or `limits` directory is assigned to
+a shard in the same pull request. On a pull request it checks only the models whose directory under
 `spec/tla/` the pull request changes, and every model when it changes `check.sh`, `tools.lock` or
 `models.yml`; with none of those, the job reports success after printing that no model changed,
 so it can be a required check without costing every other change several minutes. This loses no
@@ -315,8 +324,9 @@ configurations run without it, and so do the configurations with drivers in diff
 On every pull request and in the merge queue (`ci`, `regress`, `finding`, `limit`). States are distinct
 states; times are TLC's own, measured on a development machine (Apple M1 Pro, 8 workers; the `-a1`
 rows on an Apple Silicon machine, 4 workers). The whole pull-request set of every model, vacuity
-runs and JVM starts included, takes about 6 minutes on the CI runner (GitHub `ubuntu-latest`,
-4 vCPUs, four configurations at a time; runner speed varies). It took 9 to 15.5 minutes before the
+runs and JVM starts included, takes about 10.5 minutes of runner time on the CI runner (GitHub
+`ubuntu-latest`, 4 vCPUs, four configurations at a time; runner speed varies); in six parallel
+shards the Models workflow takes about 3.5 minutes, the largest shard (model 1) 3. It took 9 to 15.5 minutes before the
 largest configurations of models 1, 2, 7 and 8 moved to nightly (#132).
 
 | Config | Path | Drivers, processes | Faults (error replies, crashes, cancels) | Attempts | Property | States | Time |
