@@ -86,3 +86,37 @@ func TestReview138b_LostStartInsertSkipsReload(t *testing.T) {
 		t.Errorf("RunMessage = %v, want ErrRunCancelled", err)
 	}
 }
+
+// B2 on the saga path: a saga's drive that loses its run:start insert, after which a Cancel writes
+// the rollback request, reloads too and rolls back before its first model call (the run ends
+// run:cancelled).
+func TestReview138b_LostStartInsertSkipsReloadSaga(t *testing.T) {
+	ctx := context.Background()
+	m := agent.NewMemStore()
+	s := &lostStartStore{MemStore: m, armed: true}
+	j, err := agent.NewJournal(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := agent.NewJournal(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.race = func(ctx context.Context, runID string, data []byte) {
+		if _, _, err := m.Insert(ctx, runID, "run:start", data); err != nil {
+			t.Fatal(err)
+		}
+		if err := agent.Cancel(ctx, other, runID, "stop"); err != nil {
+			t.Fatalf("Cancel = %v", err)
+		}
+	}
+	model := &p14Model{turns: []p14Turn{{text: "answer"}}}
+	a := p14Build(t, model, j)
+	_, err = a.RunMessage(ctx, "r", agent.UserText("go"), agent.WithSaga())
+	if n := model.calls.Load(); n != 0 {
+		t.Errorf("the saga's drive called its model %d times after its rollback was requested (err %v)", n, err)
+	}
+	if st, _ := agent.Status(ctx, other, "r"); st.State != agent.RunCancelled {
+		t.Errorf("Status = %s (run %v), want cancelled", st.State, err)
+	}
+}
