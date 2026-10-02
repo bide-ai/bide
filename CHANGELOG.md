@@ -72,6 +72,7 @@ minor version (0.x.0) may include breaking API or journal-format changes; each o
 - `Leaser.ReapLeases` also deletes the lapsed leases of runs whose ID contains `>` (a session's or a sub-agent's run), which no recovery pass takes over, so a worker that died mid-turn does not leave a lease every later lapsed pass reads. `MemStore`, SQLite and Postgres implement it, and `storetest`'s `Leaser_ReapLeases` checks it. A custom `Leaser` must do the same ([#137]).
 
 - The required Models job checks four configurations at a time (one TLC worker each) and, on a pull request, only the models whose `spec/tla/<model>/` directory the pull request changes; the merge queue and main still check every model. The largest passing pull-request configurations of models 1, 2, 7 and 8 (1.4 to 2.9 million states) and two of model 1's liveness checks run nightly, each safety one with a smaller pull-request counterpart of the same invariants, so every path keeps a passing configuration and its vacuity run on pull requests. The job takes about 6 minutes, down from 9 to 15.5 ([#132]).
+- The gsm machine gate checks with gsm at 219dcaa, whose pinned rules checker carries normalization-confluence#11's fixes ([#147]).
 - CI runs its two slowest jobs in parallel shards, with no check dropped: the Models configurations in six shard jobs by configuration directory (`check.sh`'s new `TLC_DIRS`), and the Linux Go tests in four jobs (the core's `agent` package, the rest of the core, the other modules, and the `nojsonv2` run), each with the same flags as before. The required check names are unchanged: a final **Models** and **Test (ubuntu-latest)** job needs every shard and fails unless each succeeded (or nothing needed checking). `.github/scripts/shards.sh` fails CI unless every module, every package of the split core and every pull-request configuration is in exactly one shard, naming the line to change, and its self-test proves it catches a missing, doubled or unknown entry. With every model and every module checked, the Models workflow took 3.5 to 4.1 minutes on this pull request's runs, against 7.6 to 7.8 on pushes to main and 9.8 to 10.7 in the merge queue before, and the CI workflow 5.2 to 6.0 minutes, against 7.5 to 8.4 on main (each from the run's creation to its last update) ([#143]).
 
 - **Breaking:** `agent.Safety` is plain data, `{ReadOnly, Idempotent}`: comparable, and journaled. The approval gate is `ToolSpec.Approval`, set with `agent.WithApproval(agent.SingleApproval())` (for `Safety{RequiresApproval: true}`) or `agent.WithApproval(&agent.ApprovalPolicy{...})` (for `Safety{Approval: ...}`). `ApprovalPolicy` encodes as `need` and `approvers` ([#117]).
@@ -807,6 +808,7 @@ First public release.
 [#143]: https://github.com/bide-ai/bide/pull/143
 [#145]: https://github.com/bide-ai/bide/pull/145
 [#146]: https://github.com/bide-ai/bide/pull/146
+[#147]: https://github.com/bide-ai/bide/pull/147
 
 [78f8db6]: https://github.com/bide-ai/bide/commit/78f8db6
 [994721b]: https://github.com/bide-ai/bide/commit/994721b
