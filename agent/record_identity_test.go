@@ -383,8 +383,8 @@ func TestRecordIdentity_Random(t *testing.T) {
 
 // TestRecordIdentity_AllFields checks every one of the 2^30 masks (every field combination, with
 // and without empty sub-structs), each under one of the sets of tricky values in turn, decoding one
-// in 4096. It takes
-// minutes on every core, so it runs only with BIDE_RECORD_IDENTITY_ALL=1.
+// in 4096. At about 20 microseconds a mask that is hours of CPU on every core, so it runs only
+// with BIDE_RECORD_IDENTITY_ALL=1, and reports its progress every 2^26 masks.
 func TestRecordIdentity_AllFields(t *testing.T) {
 	if os.Getenv("BIDE_RECORD_IDENTITY_ALL") != "1" {
 		t.Skip("set BIDE_RECORD_IDENTITY_ALL=1 to check all 2^30 field combinations")
