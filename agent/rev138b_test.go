@@ -120,3 +120,37 @@ func TestReview138b_LostStartInsertSkipsReloadSaga(t *testing.T) {
 		t.Errorf("Status = %s (run %v), want cancelled", st.State, err)
 	}
 }
+
+// B1, two levels down: the root on one store, its sub-agent on a second, and that sub-agent's own
+// sub-agent on a third. The Cancel of the root lands while the middle run is in its model turn; the
+// innermost sub-run reads the root's markers from the root's store (which neither its own store
+// nor its parent's is), and does nothing.
+func TestReview138b_CrossStoreNestedSubRunSeesRootCancel(t *testing.T) {
+	ctx := context.Background()
+	j, _ := p14Journal(t)
+	j2, _ := p14Journal(t)
+	j3, _ := p14Journal(t)
+	var paid counter
+	innerModel := &p14Model{turns: []p14Turn{{calls: []agent.ToolUse{call("i1", "pay")}}, {text: "paid"}}}
+	inner := p14Build(t, innerModel, j3, agent.WithTools(paid.tool("pay", agent.Safety{})))
+	midModel := &p14Model{turns: []p14Turn{
+		{calls: []agent.ToolUse{{ID: "m1", Name: "inner", Args: []byte(`{"task":"x"}`)}}, hook: func(agent.Request) {
+			if err := agent.Cancel(ctx, j, "r", "stop"); err != nil {
+				t.Errorf("Cancel = %v", err)
+			}
+		}},
+		{text: "mid"},
+	}}
+	mid := p14Build(t, midModel, j2, agent.WithTools(agent.SubAgent("inner", "", inner)))
+	parentModel := &p14Model{turns: []p14Turn{{calls: []agent.ToolUse{{ID: "p1", Name: "mid", Args: []byte(`{"task":"x"}`)}}}, {text: "done"}}}
+	parent := p14Build(t, parentModel, j, agent.WithTools(agent.SubAgent("mid", "", mid)))
+	if _, err := parent.RunMessage(ctx, "r", agent.UserText("go")); !errors.Is(err, agent.ErrRunCancelled) {
+		t.Fatalf("parent run = %v, want ErrRunCancelled", err)
+	}
+	if n := innerModel.calls.Load(); n != 0 {
+		t.Errorf("the innermost sub-run called its model %d times after its root was cancelled", n)
+	}
+	if n := paid.n.Load(); n != 0 {
+		t.Errorf("the innermost sub-run's side effect fired %d times after its root was cancelled", n)
+	}
+}

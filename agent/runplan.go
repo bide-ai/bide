@@ -176,6 +176,7 @@ func (a *Agent) openPlan(ctx context.Context, runID string, d *driveSpec, recs [
 	if root := treeRootID(runID); root != runID {
 		p.root = root // a Cancel of the tree's root cancels this sub-run too
 		p.rootStore = rootStoreOf(ctx, root, a.store)
+		ctx = withRootStore(ctx, root, p.rootStore, a.store) // for the sub-runs this one starts
 	}
 	// The drive's identity: its Actor live, the principal journaled.
 	if idn.Actor != "" || start.Principal != nil {
