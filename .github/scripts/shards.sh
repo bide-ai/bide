@@ -4,15 +4,26 @@
 # that stands for them.
 #
 # A shard list ($SHARDS) holds one shard per line, "name: entry entry ...". CI's TEST_SHARDS
-# (ci.yml) names the Go modules each Linux test shard builds and tests; the Models workflow's
-# MODEL_SHARDS (models.yml) names the configuration directories under spec/tla each Models shard
-# checks (check.sh's TLC_DIRS: a model's directory, or its regress, findings or limits directory).
+# (ci.yml) names what each Linux test shard builds and tests: a module ("mcp", "." for the core),
+# or one package of a module ("MODULE:DIR", such as ".:agent", the package in the core's agent
+# directory and not its subpackages). A module entry covers the module's packages that no package
+# entry names. The Models workflow's MODEL_SHARDS (models.yml) names the configuration directories
+# under spec/tla each Models shard checks (check.sh's TLC_DIRS: a model's directory, or its
+# regress, findings or limits directory).
 #
 #   shards.sh names                  every shard's name, one per line
 #   shards.sh json                   every shard's name, as a JSON array (a job matrix)
 #   shards.sh get NAME               shard NAME's entries, space-separated
-#   shards.sh check-modules          fail unless every module in $MODULES is in exactly one shard
-#                                    and every entry is a module in $MODULES
+#   shards.sh plan NAME              what shard NAME's job builds and tests, one line per entry: the
+#                                    module's directory, then "./..." for a whole module, or the
+#                                    import paths of its packages (go list; needs Go)
+#   shards.sh check-modules          fail unless every module in $MODULES has a module entry in
+#                                    exactly one shard, every package entry is in exactly one shard
+#                                    and names a package directory of a module in $MODULES, and
+#                                    every module entry is a module in $MODULES (no Go needed)
+#   shards.sh check-packages         for each module split by package entries: fail unless every
+#                                    package go list finds in it is in exactly one shard's plan, and
+#                                    each plan's packages are the module's (needs Go)
 #   shards.sh check-models [ROOT]    fail unless every ci, regress, finding and limit configuration
 #                                    ROOT/spec/tla/check.sh runs is run by exactly one shard; each
 #                                    shard's configurations come from check.sh itself, with the
@@ -23,12 +34,14 @@
 #                                    "false" (nothing to check) and every JOB was skipped or
 #                                    succeeded, or every JOB succeeded; a failed, cancelled or
 #                                    skipped shard fails it
-#   shards.sh --self-test            prove each check fails on a missing, doubled or unknown entry,
-#                                    and the verdict on a failed, cancelled or skipped shard
+#   shards.sh --self-test            prove each check fails on a missing, doubled or unknown entry
+#                                    (module, package, configuration directory), and the verdict on
+#                                    a failed, cancelled or skipped shard (needs Go)
 set -euo pipefail
 set -f # entries are paths, never globs
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+self=$here/$(basename "${BASH_SOURCE[0]}")
 
 err() { echo "::error::$*"; }
 
@@ -58,38 +71,121 @@ parse() {
 # count WORD LIST: how many lines of LIST are exactly WORD.
 count() { grep -cxF -- "$1" <<< "$2" || true; }
 
+where_test='TEST_SHARDS in .github/workflows/ci.yml'
+
 check_modules() {
-  local all m n ok=0
+  local all mods pkgs listed m e n ok=0
   parse || return 1
   all=$(printf '%s\n' ${entries[@]})
-  for m in ${MODULES:-}; do
-    n=$(count "$m" "$all")
-    [ "$n" = 1 ] || { err "module $m is in $n shards, want exactly one"; ok=1; }
+  mods=$(grep -v : <<< "$all" || true)
+  pkgs=$(grep : <<< "$all" || true)
+  listed=$(printf '%s\n' ${MODULES:-})
+  for m in $listed; do
+    n=$(count "$m" "$mods")
+    [ "$n" = 1 ] || { err "module $m is in $n shards, want exactly one: name it on exactly one shard's line of $where_test"; ok=1; }
   done
-  for m in $(LC_ALL=C sort -u <<< "$all"); do
-    [ "$(count "$m" "$(printf '%s\n' ${MODULES:-})")" -gt 0 ] || { err "shard entry $m is not a module in MODULES"; ok=1; }
+  for m in $(LC_ALL=C sort -u <<< "$mods"); do
+    [ "$(count "$m" "$listed")" -gt 0 ] || { err "shard entry $m is not a module in MODULES: remove it from $where_test"; ok=1; }
   done
-  [ $ok = 0 ] && echo "every module is in exactly one shard (${#names[@]} shards)"
+  for e in $(LC_ALL=C sort -u <<< "$pkgs"); do
+    n=$(count "$e" "$pkgs")
+    [ "$n" = 1 ] || { err "package entry $e is in $n shards, want exactly one: keep it on one shard's line of $where_test"; ok=1; }
+    [ "$(count "${e%%:*}" "$listed")" -gt 0 ] || { err "package entry $e: ${e%%:*} is not a module in MODULES"; ok=1; }
+    if ! [[ ${e#*:} =~ ^[A-Za-z0-9_][A-Za-z0-9_./-]*$ ]] || [[ ${e#*:} == *...* || ${e#*:} == */ || ${e#*:} == *//* || ${e#*:} == *./* ]]; then
+      err "package entry $e: want MODULE:DIR, one package directory relative to the module (no ./ and no ...)"; ok=1
+    fi
+  done
+  [ $ok = 0 ] && echo "every module is in exactly one shard, and every package entry in one (${#names[@]} shards)"
   return $ok
 }
 
+# plan NAME: see the header. A module entry's packages are the module's (go list ./...) but those
+# its package entries, in any shard, name; with no package entry, "./...", as before the split.
+plan() {
+  local name=$1 list= e x ex all drop keep i
+  parse || return 1
+  for i in "${!names[@]}"; do [ "${names[$i]}" != "$name" ] || list=${entries[$i]}; done
+  [ -n "$list" ] || { err "no shard $name"; return 1; }
+  for e in $list; do
+    case "$e" in
+      *:*)
+        x=$(cd "${e%%:*}" && go list "./${e#*:}") || { err "$e: go list failed"; return 1; }
+        echo "${e%%:*} $x" ;;
+      *)
+        ex=
+        for x in ${entries[@]}; do case "$x" in "$e":*) ex+=" ${x#*:}" ;; esac; done
+        if [ -z "$ex" ]; then echo "$e ./..."; continue; fi
+        all=$(cd "$e" && go list ./...) || { err "$e: go list failed"; return 1; }
+        drop=
+        for x in $ex; do
+          drop+=$(cd "$e" && go list "./$x") || { err "$e:$x: go list failed"; return 1; }
+          drop+=$'\n'
+        done
+        keep=$(grep -vxF -f <(printf '%s' "$drop") <<< "$all" || true)
+        [ -n "$keep" ] || { err "shard $name: module $e keeps no package once its package entries are taken out"; return 1; }
+        echo "$e" $keep ;;
+    esac
+  done
+}
+
+check_packages() {
+  local m i n p want got out ok=0
+  parse || return 1
+  for m in $(printf '%s\n' ${entries[@]} | grep : | cut -d: -f1 | LC_ALL=C sort -u); do
+    want=$(cd "$m" && go list ./...) || { err "$m: go list failed"; return 1; }
+    got=
+    for i in "${!names[@]}"; do
+      out=$(plan "${names[$i]}") || { err "shard ${names[$i]}: $out"; ok=1; continue; }
+      got+=$(awk -v m="$m" '$1 == m { for (i = 2; i <= NF; i++) print $i }' <<< "$out")$'\n'
+    done
+    for p in $want; do
+      n=$(count "$p" "$got")
+      [ "$n" = 1 ] || { err "package $p (module $m) is in $n shards' plans, want exactly one: check the $m entries of $where_test"; ok=1; }
+    done
+    for p in $(grep -v '^$' <<< "$got" | LC_ALL=C sort -u); do
+      [ "$(count "$p" "$want")" -gt 0 ] || { err "shard package $p is not a package of module $m"; ok=1; }
+    done
+    [ $ok = 0 ] && echo "module $m: every package ($(wc -l <<< "$want" | tr -d ' ')) is in exactly one shard"
+  done
+  return $ok
+}
+
+where_models='MODEL_SHARDS in .github/workflows/models.yml'
+
+# fix_dir DIR N: what to change when the configs in DIR run in N shards (0, or more than 1).
+fix_dir() {
+  local i e
+  if [ "$2" != 0 ]; then echo "keep \"$1\" on only one shard's line of $where_models"; return; fi
+  for i in "${!names[@]}"; do
+    for e in ${entries[$i]}; do
+      if [ "${e%%/*}" = "${1%%/*}" ]; then
+        echo "add \"$1\" to the \"${names[$i]}:\" line of $where_models (the shard holding ${1%%/*}), or to another shard's line"
+        return
+      fi
+    done
+  done
+  echo "add \"$1\" to one shard's line of $where_models (a new model: add it to the shard with the least work, or add a shard)"
+}
+
 check_models() {
-  local check=${1:-.}/spec/tla/check.sh all got out c n i ok=0
+  local check=${1:-.}/spec/tla/check.sh all got out bad c d k n i ok=0
   parse || return 1
   all=$(env -u TLC_MODELS -u TLC_DIRS "$check" list ci regress finding limit) || { err "check.sh list failed"; return 1; }
   [ -n "$all" ] || { err "check.sh lists no configuration"; return 1; }
   got=
   for i in "${!names[@]}"; do
     if ! out=$(env -u TLC_MODELS TLC_DIRS="${entries[$i]}" "$check" list ci regress finding limit 2>&1); then
-      err "shard ${names[$i]}: $out"; ok=1; continue
+      err "shard ${names[$i]}: $out (remove it from the \"${names[$i]}:\" line of $where_models)"; ok=1; continue
     fi
-    [ -n "$out" ] || { err "shard ${names[$i]} runs no configuration"; ok=1; continue; }
+    [ -n "$out" ] || { err "shard ${names[$i]} runs no configuration: remove its line from $where_models, or give it a directory"; ok=1; continue; }
     got+=$out$'\n'
   done
-  for c in $all; do
-    n=$(count "$c" "$got")
-    [ "$n" = 1 ] || { err "$c is run by $n shards, want exactly one (assign its directory to one shard in MODEL_SHARDS)"; ok=1; }
-  done
+  # One error per directory and shard count, naming the configs' directory and the fix.
+  bad=$(for c in $all; do n=$(count "$c" "$got"); [ "$n" = 1 ] || echo "$(dirname "$c") $n"; done | LC_ALL=C sort | uniq -c)
+  while read -r k d n; do
+    [ -n "$d" ] || continue
+    err "$k configuration(s) in spec/tla/$d run in $n shards, want exactly one: $(fix_dir "$d" "$n")"; ok=1
+  done <<< "$bad"
   for c in $(LC_ALL=C sort -u <<< "$got"); do
     [ "$(count "$c" "$all")" -gt 0 ] || { err "shard config $c is not in the pull-request set"; ok=1; }
   done
@@ -133,6 +229,29 @@ self_test() {
   expect fail "shard x named twice" m $'x: .\nx: a b/c'
   expect fail "shard z with no entries" m $'x: .\ny: a b/c\nz:'
   expect fail "malformed line" m $'x: .\ny a b/c'
+  expect pass "a package entry" m $'x: .\ny: a b/c .:p'
+  expect fail "package entry .:p in two shards" m $'x: . .:p\ny: a b/c .:p'
+  expect fail "package entry of a module not in MODULES" m $'x: .\ny: a b/c d:p'
+  expect fail "package entry .:./p" m $'x: .\ny: a b/c .:./p'
+  expect fail "package entry .:p/..." m $'x: .\ny: a b/c .:p/...'
+  expect fail "a package entry and no module entry" m $'x: .:p\ny: a b/c'
+  # Packages, against go list in a scratch module (the core) with packages p, p/sub and q, and a
+  # module m that no package entry splits.
+  local g=$tmp/go
+  mkdir -p "$g/p/sub" "$g/q" "$g/m"
+  printf 'module example.com/r\n\ngo 1.21\n' > "$g/go.mod"
+  printf 'module example.com/m\n\ngo 1.21\n' > "$g/m/go.mod"
+  for d in p p/sub q m; do printf 'package %s\n' "$(basename "$d")" > "$g/$d/x.go"; done
+  pk() { (cd "$g" && GOWORK=off GOFLAGS= GOTOOLCHAIN=local MODULES=". m" SHARDS=$1 "$self" check-packages); }
+  expect pass "p alone, the rest of the core" pk $'x: .:p\ny: .\nz: m'
+  expect pass "p and q alone, the rest of the core" pk $'x: .:p .:q\ny: .\nz: m'
+  expect fail "package p in two shards" pk $'x: .:p\ny: . .:p\nz: m'
+  expect fail "no such package .:nope" pk $'x: .:nope\ny: .\nz: m'
+  expect fail "the core's module entry keeps no package" pk $'x: .:p .:p/sub .:q\ny: .\nz: m'
+  expect fail "the core in two module entries" pk $'x: .:p .\ny: .\nz: m'
+  pl() { (cd "$g" && GOWORK=off GOFLAGS= GOTOOLCHAIN=local SHARDS=$'x: .:p\ny: . m' "$self" plan "$1") > "$tmp/plan" 2>&1 && [ "$(cat "$tmp/plan")" = "$2" ]; }
+  expect pass "the plan of a package entry" pl x ". example.com/r/p"
+  expect pass "the plan of the rest of the core" pl y $'. example.com/r/p/sub example.com/r/q\nm ./...'
   # Models, against the real check.sh in a scratch tree.
   local t=$tmp/repo/spec/tla
   mkdir -p "$t/a/regress" "$t/a/limits" "$t/b/limits" "$t/notamodel"
@@ -169,6 +288,8 @@ self_test() {
 case "${1:-}" in
   names) parse; printf '%s\n' "${names[@]}" ;;
   json) parse; printf '%s\n' "${names[@]}" | jq -R . | jq -cs . ;;
+  plan) plan "${2:-}" ;;
+  check-packages) check_packages ;;
   get)
     parse
     for i in "${!names[@]}"; do [ "${names[$i]}" != "${2:-}" ] || { echo "${entries[$i]}"; exit 0; }; done
