@@ -1,0 +1,96 @@
+name: gsm machine gate
+
+# Every gsm machine bide ships (.github/gsm-gate/machines.txt) is checked by the two checkers
+# extracted from gsm's Coq proof (normalization-confluence). The checkers are built exactly as gsm's
+# own CI builds them: from the proof commit and digest-pinned Rocq image gsm pins at GSM_COMMIT, and
+# checked against gsm's SHA256SUMS. See .github/gsm-gate/README.md.
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  merge_group:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    name: gsm machine gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read pins
+        run: cat .github/gsm-gate/pins.env >> "$GITHUB_ENV"
+
+      - name: Checkout gsm at the pinned commit
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.GSM_REPO }}
+          ref: ${{ env.GSM_COMMIT }}
+          path: .gsm-gate/gsm
+
+      # gsm's pins name the proof commit, the Rocq image (by digest) and the two checker binaries.
+      - name: Read gsm's checker pins
+        run: cat .gsm-gate/gsm/.github/oracle/pins.env >> "$GITHUB_ENV"
+
+      - name: Checkout the proof at gsm's pinned commit
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.NC_REPO }}
+          ref: ${{ env.NC_COMMIT }}
+          path: .gsm-gate/nc
+
+      - name: Build the extracted checkers
+        run: bash .gsm-gate/nc/coq/extraction/ci-build.sh "$ROCQ_IMAGE"
+
+      - name: Verify gsm's pinned hashes
+        # Every file in gsm's SHA256SUMS must match, and both checkers the pins name must be among them.
+        run: |
+          sums="$GITHUB_WORKSPACE/.gsm-gate/gsm/.github/oracle/SHA256SUMS"
+          cd .gsm-gate/nc/coq/extraction
+          sha256sum -c "$sums"
+          for c in "$TABLE_CHECKER" "$RULES_CHECKER"; do
+            awk -v f="$c" '$2 == f { found = 1 } END { exit !found }' "$sums" ||
+              { echo "::error::$c is not in gsm's SHA256SUMS"; exit 1; }
+          done
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27'
+
+      - name: Record every gsm machine the programs make
+        # Each program in the catalog runs once, built with -tags gsmgate against gsm at GSM_COMMIT (a
+        # replace added to its module for this run only), and records every machine it makes.
+        env:
+          GOWORK: 'off'
+          GOFLAGS: '-mod=mod'
+        run: |
+          gsm="$GITHUB_WORKSPACE/.gsm-gate/gsm"
+          dumps="$RUNNER_TEMP/gsm-gate"
+          programs=$(awk '{ sub(/#.*/, "") } NF && $1 !~ /^@/ { print $1 }' .github/gsm-gate/machines.txt | sort -u)
+          for p in $programs; do
+            mod=$(cd "$p" && go env GOMOD)
+            (cd "$(dirname "$mod")" && go mod edit -replace "github.com/blackwell-systems/gsm=$gsm")
+            echo "::group::$p"
+            start=$(date +%s)
+            (cd "$p" && GSM_GATE_DIR="$dumps/$p" timeout 300 go run -tags gsmgate .)
+            echo "$p: $(( $(date +%s) - start )) s"
+            echo "::endgroup::"
+          done
+
+      - name: Check every machine with the extracted checkers
+        working-directory: .gsm-gate/gsm
+        env:
+          GOWORK: 'off'
+        run: |
+          x="$GITHUB_WORKSPACE/.gsm-gate/nc/coq/extraction"
+          go run ./internal/cmd/gsmgate \
+            -dumps "$RUNNER_TEMP/gsm-gate" \
+            -catalog "$GITHUB_WORKSPACE/.github/gsm-gate/machines.txt" \
+            -table-checker "$x/$TABLE_CHECKER" -rules-checker "$x/$RULES_CHECKER" \
+            -scan "$GITHUB_WORKSPACE" \
+            -summary "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,49 @@
+# Every gsm machine bide ships, checked by the checkers extracted from gsm's
+# Coq proof in the "gsm machine gate" workflow (.github/workflows/gsm-gate.yml).
+# See README.md in this directory.
+#
+# <program> <machine> <verdict>
+#
+# program: a directory with a main package; the workflow runs it built with
+#   -tags gsmgate, and it records every gsm machine it makes.
+# machine: the registry's name (a federation's components are listed one by one).
+# verdict: certified         Build accepts it; both checkers verify it.
+#          certified-tables  Build accepts it; the table checker verifies it. Its
+#                            rules are closures, so the rules checker cannot run.
+#          rejected          Build rejects it (WFC or CC); every checker that can
+#                            run rejects it for the same reason.
+#          synthesized       a synthesized repair; the table checker verifies it.
+#          not-built         Build fails before its convergence check (an
+#                            invariant without a repair, left to synthesis).
+#
+# @doc <path> <note>       a document that shows a gsm machine
+# @exempt <dir> <reason>   a directory that makes gsm machines but is not run
+#
+# The gate fails if a checker rejects a machine listed as accepted, disagrees with
+# Build, a program makes a machine not listed here, a listed machine is not made,
+# or (the scan) a directory's non-test Go code makes a gsm machine and is not a
+# program here, or a document shows one without an @doc line.
+
+examples/govern/authority           execution-desk  certified
+examples/govern/compliance          kyc-decision    certified
+examples/govern/compose             inventory       certified-tables
+examples/govern/compose             shipping        certified
+examples/govern/compose             order           certified
+examples/govern/compose             ops             certified
+examples/govern/coordination        counters        not-built
+examples/govern/coordination        counters        synthesized
+examples/govern/coordination        a               certified-tables
+examples/govern/coordination        b               certified-tables
+examples/govern/delegation          execution-desk  certified
+examples/govern/earned-authority    work            certified
+examples/govern/mesh                line1           certified-tables
+examples/govern/mesh                line2           certified-tables
+examples/govern/mesh                line3           certified-tables
+examples/govern/proof-carrying-run  kyc-decision    certified
+examples/govern/quorum              model-quorum    certified
+
+@doc docs/guides/governance.md  an excerpt of the order machine (ship elided), shown as the gsm v0.11.0 Build gap; not a complete machine
+@doc docs/guides/quorum.md      the model-quorum policy of examples/govern/quorum
+
+# Deliberately non-convergent, listed as certified to show the gate failing.
+examples/govern/naive-payship       naive_pay_ship  certified
