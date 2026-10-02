@@ -565,6 +565,16 @@ accepted limit, which `limits/lease-plain-run-claims-first` states). That the in
 inductive for every larger number of drivers, attempts or ids is plausible (it quantifies over
 them uniformly) but not checked.
 
+**An inductive invariant is also a true one.** A conjunct added to exclude a counterexample to
+induction could be false of some reachable state, which would make the induction check pass for
+a property while ruling out real behavior. So TLC checks `IndInv` itself as a plain invariant on
+every reachable state of two configurations in `apalache/tlc/` (TLC never runs them in a group;
+run them with `java -cp tla2tools.jar tlc2.TLC -config apalache/tlc/<name>.cfg ClaimsInductive.tla`
+from `spec/tla/claims`): `minage-in-proc` (halt resolution with the minimum-age check in the
+drivers' process, a Step and a tool call, weak A3; 8,988,594 distinct states, 10 min 47 s on the
+development machine) and `lease-cross` (the lease check, drivers in two processes, one leased,
+cancellations and an eviction; 4,142,552 states, 5 min 9 s). Both pass with every conjunct.
+
 **Bounded symbolic checks.** On this model they reach far less than TLC. Each step is a
 disjunction of a few hundred transitions (every label of every driver and of the resolver,
 crashes, evictions, late commits), and Apalache checks each one at each step. Measured on the

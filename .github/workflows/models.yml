@@ -17,6 +17,13 @@ on:
   schedule:
     - cron: '17 3 * * *'
   workflow_dispatch:
+    inputs:
+      only:
+        description: 'Run only these nightly jobs: all, tlc or apalache'
+        required: false
+        default: all
+        type: choice
+        options: [all, tlc, apalache]
 
 permissions:
   contents: read
@@ -160,7 +167,7 @@ jobs:
 
   models-nightly:
     name: Models (nightly)
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.only != 'apalache')
     runs-on: ubuntu-latest
     timeout-minutes: 240
     steps:
@@ -181,7 +188,7 @@ jobs:
   # FullNext's disjuncts into four configurations for this reason.
   apalache-list:
     name: Apalache configurations
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.only != 'tlc')
     runs-on: ubuntu-latest
     outputs:
       cfgs: ${{ steps.list.outputs.cfgs }}
@@ -193,7 +200,7 @@ jobs:
   apalache-nightly:
     name: Apalache (nightly)
     needs: apalache-list
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.only != 'tlc')
     runs-on: ubuntu-latest
     timeout-minutes: 350
     strategy:

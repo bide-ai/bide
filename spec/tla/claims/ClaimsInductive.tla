@@ -233,6 +233,9 @@ Resolver ==
             /\ ~NSTaken(c, x, marker[c][x])
             /\ ~InCustody(marker[c][x])
        /\ pc[r] = "RRecord" => rclaimed[r]
+       \* The resolver writes its claim id only as the marker of the attempt after the one it checked.
+       /\ \A c \in Calls, x \in Gens : marker[c][x] \in rids => c = rc[r] /\ x = rg[r] + 1
+       /\ \A w \in lateMarker : w[3] \in rids => w[1] = rc[r] /\ w[2] = rg[r] + 1
   /\ \A c \in Calls : ResolvedOrLate(c) => \E r \in ResolverSet : rc[r] = c /\ rclaimed[r]
   /\ \A c \in Calls :
        (result[c] = "res_err" \/ <<c, "res_err">> \in lateResult) => fired[c] = 0

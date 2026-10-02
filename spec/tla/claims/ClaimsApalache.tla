@@ -213,6 +213,8 @@ ApCrossProc == [d \in Drivers |-> IF d = "d1" THEN "p1" ELSE "p2"]
 ApAllStep == [c \in Calls |-> "step"]
 ApSameProc == [d \in Drivers |-> "p1"]
 ApC1ThenC2 == [c \in Calls |-> IF c = "c1" THEN "c2" ELSE "none"]
+ApAllDrivers == Drivers
+ApStepTool == [c \in Calls |-> IF c = "c1" THEN "step" ELSE "tool"]
 ApOneCall == [d \in Drivers |-> "c1"]
 ApNoNext == [c \in Calls |-> "none"]
 ApNoGate == [c \in Calls |-> "none"]
