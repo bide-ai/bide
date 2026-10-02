@@ -72,7 +72,7 @@ func writeEnd(ctx context.Context, d Durable, runID, name string, rec Record, ot
 	}
 	first := endMarker{name: name, rec: got, seq: seq}
 	for _, o := range others {
-		e, ok, err := j.getEntry(ctx, runID, o)
+		e, ok, err := j.getOpened(ctx, runID, o) // putEntry checked the run's header
 		if err != nil {
 			return endMarker{}, err
 		}
@@ -183,7 +183,18 @@ func (e *cancelTrip) Error() string { return "saga cancelled: " + e.reason }
 // delegation) reads its tree root's too, since a Cancel of the root cancels the whole tree: up to
 // two Gets more (the root's run:cancelled and its rollback request, whichever the root is).
 func (a *Agent) cancelSeen(ctx context.Context, runID string, p *runPlan) (bool, error) {
-	_, ok, err := lookup(ctx, a.store, runID, p.cancelKey)
+	var ok bool
+	var err error
+	if j := journalOf(a.store); j != nil {
+		var e Entry
+		e, ok, err = j.getOpened(ctx, runID, p.cancelKey) // the drive opened the run: its format is checked
+		if ok {
+			_, err = decodeStored(runID, p.cancelKey, e.Data) // as lookup reads it
+			ok = err == nil
+		}
+	} else {
+		_, ok, err = lookup(ctx, a.store, runID, p.cancelKey)
+	}
 	if err != nil || ok || p.root == "" {
 		return ok, err
 	}
