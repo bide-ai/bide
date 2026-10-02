@@ -408,7 +408,9 @@ func TestRecordIdentity_AllFields(t *testing.T) {
 						return
 					}
 				}
-				done.Add(1 << 16)
+				if d := done.Add(1 << 16); d%(1<<26) == 0 {
+					t.Logf("%d/%d masks checked", d, total)
+				}
 			}
 		})
 	}
