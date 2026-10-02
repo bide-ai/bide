@@ -183,7 +183,8 @@ jobs:
       - name: Nightly configurations
         run: spec/tla/check.sh nightly
 
-  # One job per Apalache configuration (spec/tla/*/apalache/*.cfg), in parallel: the largest
+  # One job per Apalache configuration (spec/tla/*/apalache/*.cfg, and the TLC cross-checks in
+  # spec/tla/*/apalache/tlc/), in parallel: the largest
   # check takes hours, and a job is capped at 6. The resolver scope's induction step is split by
   # FullNext's disjuncts into four configurations for this reason.
   apalache-list:
@@ -195,7 +196,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - id: list
-        run: echo "cfgs=$(ls spec/tla/*/apalache/*.cfg | jq -R . | jq -sc .)" >> "$GITHUB_OUTPUT"
+        run: echo "cfgs=$(ls spec/tla/*/apalache/*.cfg spec/tla/*/apalache/tlc/*.cfg | jq -R . | jq -sc .)" >> "$GITHUB_OUTPUT"
 
   apalache-nightly:
     name: Apalache (nightly)

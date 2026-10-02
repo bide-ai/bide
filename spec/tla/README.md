@@ -98,7 +98,8 @@ and lets a solver (Z3) search them. That gives two kinds of check TLC cannot mak
   from any state satisfying it leads to a state satisfying it, and it implies the property. Each
   of the three is one Apalache query of at most one step, and together they prove the property in
   every reachable state, at any depth. TLC's result says nothing beyond its bounds; an inductive
-  result has no depth bound and no bound on the fault counters (see below for what stays bounded).
+  result has no depth bound and no bound on the fault counters, though the attempts and claim ids
+  the check fixes still bound how many claims a run can make (see below).
 
 ```sh
 spec/tla/check.sh apalache                    # every model's Apalache checks
@@ -138,7 +139,10 @@ and compares the result:
 ```
 
 A `pass` check must report no error; an `invariant <Name>` check must report that invariant
-violated (exit status 12), which is how the vacuity and regression checks are stated.
+violated (exit status 12), which is how the vacuity and regression checks are stated; a
+`typecheck` check runs only Apalache's type checker (`toolcall/apalache/typecheck.cfg` keeps model
+9's wrapper typed until it has checks of its own). A configuration in a model's `apalache/tlc/`
+directory is run by TLC on the module its `SPEC` line names, and must find no error.
 
 **In CI.** The **Apalache (nightly)** jobs of `models.yml` run `check.sh apalache <file.cfg>`, one
 job per configuration in parallel (the largest check takes hours, and a GitHub job at most 6), on
@@ -228,7 +232,8 @@ spec/tla/
                      the configurations select with <-
     ClaimsApalache.tla  the typed wrapper Apalache checks (see Apalache)
     ClaimsInductive.tla the inductive invariant of model 1's safety properties
-    apalache/        the Apalache configurations (TLC never reads them)
+    apalache/        the Apalache configurations (no TLC group reads them), and in tlc/ the TLC
+                     checks that IndInv is a plain invariant
     *.cfg            the configurations (group ci or nightly)
     regress/         historical rules, each of which must still produce its counterexample
     findings/        open findings, which fail until they are fixed (none open at present)
@@ -539,9 +544,12 @@ a state satisfying it (`--init=IndInit --length=1`, where `IndInit` generates ev
 and `IndInv` implies the properties (`IndProps`). Together: `AtMostOnce` and `NotStartedExclusive`
 (and, in the resolver scope, `NoLiveOverride` and `AtMostOncePerIntent`) hold in every reachable
 state, at any depth. `IndInv` does not mention the fault counters, so a state satisfying it with
-the counters at 0, where every fault is enabled, does too: the result holds for any number of
-error replies of every kind, late commits, crashes, cancellations and evictions, which a smaller
-budget only restricts. A fourth check is for vacuity: `IndInv` admits states in which the effect
+the counters at 0, where every fault is enabled, does too: the result holds for any number and mix
+of error replies of every kind, late commits, crashes, cancellations and evictions within the
+run's claim ids (8, or 6 in the resolver scope) and attempts 0..3. Claim ids are never reused, and
+a claim blocks when none is free, so the id pool bounds the number of claims in a covered run, and
+with it the faults that void one. A
+fourth check is for vacuity: `IndInv` admits states in which the effect
 has fired.
 
 **Assumptions and bounds.** The current protocol (`Bug = "none"`), no approval gate (model 1b),
@@ -568,12 +576,14 @@ them uniformly) but not checked.
 **An inductive invariant is also a true one.** A conjunct added to exclude a counterexample to
 induction could be false of some reachable state, which would make the induction check pass for
 a property while ruling out real behavior. So TLC checks `IndInv` itself as a plain invariant on
-every reachable state of two configurations in `apalache/tlc/` (TLC never runs them in a group;
-run them with `java -cp tla2tools.jar tlc2.TLC -config apalache/tlc/<name>.cfg ClaimsInductive.tla`
-from `spec/tla/claims`): `minage-in-proc` (halt resolution with the minimum-age check in the
+every reachable state of the configurations in `apalache/tlc/` (no TLC group runs them; `check.sh
+apalache` does, nightly, and so does `spec/tla/check.sh apalache spec/tla/claims/apalache/tlc/<name>.cfg`):
+`minage-in-proc` (halt resolution with the minimum-age check in the
 drivers' process, a Step and a tool call, weak A3; 8,988,594 distinct states, 10 min 47 s on the
 development machine) and `lease-cross` (the lease check, drivers in two processes, one leased,
-cancellations and an eviction; 4,142,552 states, 5 min 9 s). Both pass with every conjunct.
+cancellations and an eviction; 4,142,552 states, 5 min 9 s) and `two-calls` (each of the intent's
+two calls with its own driver, so `AtMostOncePerIntent` meets a live second call; 11,981 states, 3 s). All pass with
+every conjunct.
 
 **How the invariant was found.** Each counterexample to induction Apalache reported was a state
 the invariant did not yet exclude, never a reachable violation: a driver at `GateWrite` holding a
@@ -2200,6 +2210,7 @@ cancellation, up to two error replies per run on pull requests (three in the F3 
 four nightly; one call except in the intent configurations.
 Calls interact only through the fault budgets and the id pool, so two independent calls add no
 behavior the one-call configurations miss. A bug that needs more than these is outside the check,
-except for the properties model 1's inductive invariant proves: for those, the depth and the fault
-budgets are unbounded, and only the drivers, processes, calls, attempts and claim ids of its
-configurations stay bounded ([Apalache results](#apalache-results)).
+except for the properties model 1's inductive invariant proves: for those, the depth is
+unbounded and any number and mix of faults is covered within its configurations' drivers,
+processes, calls, attempts and claim ids (claim ids are never reused, so the pool bounds the
+number of claims) ([Apalache results](#apalache-results)).

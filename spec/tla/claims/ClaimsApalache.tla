@@ -215,6 +215,7 @@ ApSameProc == [d \in Drivers |-> "p1"]
 ApC1ThenC2 == [c \in Calls |-> IF c = "c1" THEN "c2" ELSE "none"]
 ApAllDrivers == Drivers
 ApStepTool == [c \in Calls |-> IF c = "c1" THEN "step" ELSE "tool"]
+ApTwoCalls == [d \in Drivers |-> IF d = "d1" THEN "c1" ELSE "c2"]
 ApOneCall == [d \in Drivers |-> "c1"]
 ApNoNext == [c \in Calls |-> "none"]
 ApNoGate == [c \in Calls |-> "none"]

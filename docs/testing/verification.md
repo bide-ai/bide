@@ -69,7 +69,7 @@ result never replaced, a resolution never overriding a live driver; a liveness p
 an effect that provably never started does not halt for ever. Each rule an earlier review found
 wrong is kept as a configuration that must still produce its counterexample, so the model cannot
 quietly lose the power to find it. Nightly, the Apalache model checker also checks an inductive
-invariant of the claim model, which proves `AtMostOnce`, `NotStartedExclusive`, `NoLiveOverride` and `AtMostOncePerIntent` for two drivers, with and without halt resolution, at any depth and for any number of faults. Further models cover the approval gate with 1-of-1 and m-of-n
+invariant of the claim model, which proves `AtMostOnce`, `NotStartedExclusive`, `NoLiveOverride` and `AtMostOncePerIntent` for two drivers over two processes, on one call (attempts 0..3, 8 claim ids) or with halt resolution and the caller's second call (attempts 0..3, 6 claim ids), without the approval gate, and, under the lease check, assuming no plain run holds the live attempt at the check (`PlainRunIdleAtCheck`), at any depth and for any number and mix of faults within the run's 8 (6) claim ids and attempts 0..3 (claim ids are never reused, so this bounds the number of claims). Further models cover the approval gate with 1-of-1 and m-of-n
 tallies and approvers' key sets (model 1b), flow semantics (model 7), spend accounting of model
 calls (model 8) and the bide protocol's claim rules (model 2).
 
@@ -198,8 +198,8 @@ required checks:
 - **Model checking is bounded, and checks the design, not the code.** TLC explores every
   interleaving within the bounds each configuration states (drivers, faults, attempts); a bug that
   needs more is outside it. The inductive invariant Apalache checks for the claim model lifts the
-  depth and fault bounds for its properties, not the number of drivers, processes, calls,
-  attempts or claim ids. Until trace validation lands, nothing checks mechanically that the Go
+  depth bound for its properties, not the number of drivers, processes, calls, attempts or claim
+  ids, and the id pool bounds the number of claims a covered run can make. Until trace validation lands, nothing checks mechanically that the Go
   code implements the model; the map from model steps to Go functions in `spec/tla/README.md` is
   reviewed by hand.
 - **Model behaviour is measured, not proven.** Whether a model decides well is evaluated

@@ -598,7 +598,7 @@ tool := govern.EventTool(gov, govern.EventToolConfig{Name: "pay", Description: "
 
 - **[扩展点](../../docs/reference/extension-points.md)**：端口与适配器（`Model`、`Store`、`Tool`、`Compensator`、`Retriever`、`Anchor`、`EventStore`），附一个"实现你自己的存储"的演练。
 - **[bide 如何被验证](../../docs/testing/verification.md)**：没有失败测试就没有修复、变异检查、崩溃与取消扫描、强制交错、一致性测试套件、协调协议的 TLA+ 模型检验，以及 CI 强制执行的内容。
-- **[形式化验证](../../docs/formal-verification.md)**：bide 协调协议的 TLA+ 模型（每个 pull request 用 TLC 检验，每晚用 Apalache 检验：一个归纳不变式证明认领协议的“至多一次”规则在任意深度下成立）、每个模型保证什么并覆盖哪些代码、模型在发布前发现的每个缺陷，以及模型不覆盖的范围。
+- **[形式化验证](../../docs/formal-verification.md)**：bide 协调协议的 TLA+ 模型（每个 pull request 用 TLC 检验，每晚用 Apalache 检验：一个归纳不变式证明认领协议的“至多一次”规则在任意深度下成立，适用于两个驱动者、有界的尝试次数和认领 ID）、每个模型保证什么并覆盖哪些代码、模型在发布前发现的每个缺陷，以及模型不覆盖的范围。
 - **[测试与证据](../../docs/testing/testing.md)**：测试了什么以及如何测试、混沌崩溃注入基准、差分预言机、RFC 6962 一致性，以及 `eval` 包中可证明与统计之间的边界。
 - **[日志压紧](../../docs/design/compaction.md)**（设计说明）：在不破坏审计脊柱的包含性和一致性证明的前提下，压紧一条无界的日志。
 

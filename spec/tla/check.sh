@@ -29,6 +29,10 @@
 #   \* SPEC: <module>.tla   (in the model's directory)
 #   \* CHECK: pass | <arguments>
 #   \* CHECK: invariant <Name> | <arguments>
+#   \* CHECK: typecheck |   (Apalache's type checker only)
+# A configuration in a model's apalache/tlc/ directory is for TLC instead: TLC checks the module
+# its SPEC line names with it and must find no error (an inductive invariant that is also a
+# plain invariant of every reachable state).
 #
 # Needs Java 11 or later (JAVA_HOME or java on PATH; Apalache needs 17 or later), curl, tar, and
 # sha256sum or shasum.
@@ -164,10 +168,10 @@ mc_of() { (cd "$1" && ls ./*MC.tla 2>/dev/null | head -1 | sed 's|^\./||'); }
 # reaches the trap at once, which stops it (tlc_pid) before removing its metadir.
 tlc_pid=
 tlc() {
-  local cfg=$1 out=$2 dir=$3 meta_dir
+  local cfg=$1 out=$2 dir=$3 module=${4:-} meta_dir
   meta_dir=$(tmpdir)
   (cd "$dir" && exec "$java" -XX:+UseParallelGC ${TLC_JAVA_OPTS:-} -cp "$jar" tlc2.TLC \
-      -workers "$workers" -metadir "$meta_dir" -config "$cfg" "$(mc_of "$dir")") >"$out" 2>&1 &
+      -workers "$workers" -metadir "$meta_dir" -config "$cfg" "${module:-$(mc_of "$dir")}") >"$out" 2>&1 &
   tlc_pid=$!
   tlc_status=0
   wait "$tlc_pid" || tlc_status=$?
@@ -372,8 +376,13 @@ apalache_run() {
   shift 4
   odir=$(tmpdir)
   # shellcheck disable=SC2086 # APALACHE_JAVA_OPTS is a list of options
-  (cd "$dir" && exec "$java" ${APALACHE_JAVA_OPTS:--Xmx8g} -Djava.io.tmpdir="$odir" -jar "$apalache" \
-      check --out-dir="$odir" --config="$cfg" --no-deadlock "$@" "$spec") >"$out" 2>&1 &
+  if [ -z "$cfg" ]; then # a type check only
+    (cd "$dir" && exec "$java" ${APALACHE_JAVA_OPTS:--Xmx8g} -Djava.io.tmpdir="$odir" -jar "$apalache" \
+        typecheck --out-dir="$odir" "$spec") >"$out" 2>&1 &
+  else
+    (cd "$dir" && exec "$java" ${APALACHE_JAVA_OPTS:--Xmx8g} -Djava.io.tmpdir="$odir" -jar "$apalache" \
+        check --out-dir="$odir" --config="$cfg" --no-deadlock "$@" "$spec") >"$out" 2>&1 &
+  fi
   apalache_pid=$!
   apalache_status=0
   wait "$apalache_pid" || apalache_status=$?
@@ -401,8 +410,12 @@ run_apalache_cfg() {
     out=$(mktemp "$work/out.XXXXXX")
     echo "== $name:$args (expect: $expect)"
     t0=$(date +%s)
-    # shellcheck disable=SC2086 # args is the list of arguments the CHECK line gives
-    apalache_run "$out" "$dir" "$spec" "$cfg" $args
+    if [ "$kind" = typecheck ]; then
+      apalache_run "$out" "$dir" "$spec" ""
+    else
+      # shellcheck disable=SC2086 # args is the list of arguments the CHECK line gives
+      apalache_run "$out" "$dir" "$spec" "$cfg" $args
+    fi
     secs=$(( $(date +%s) - t0 ))s
     case "$kind" in
       pass)
@@ -421,7 +434,14 @@ run_apalache_cfg() {
           tail -40 "$out"; record "$name:$args" FAIL "exit $apalache_status, expected $want violated"
         fi
         ;;
-      *) die "$name: CHECK must expect pass or invariant <Name>" ;;
+      typecheck)
+        if [ "$apalache_status" = 0 ] && grep -q 'Type checker \[OK\]' "$out"; then
+          record "$name: typecheck" ok "types check, $secs"
+        else
+          tail -40 "$out"; record "$name: typecheck" FAIL "exit $apalache_status, expected the types to check"
+        fi
+        ;;
+      *) die "$name: CHECK must expect pass, invariant <Name> or typecheck" ;;
     esac
     if [ -n "${APALACHE_KEEP_OUTPUT:-}" ]; then
       mkdir -p "$APALACHE_KEEP_OUTPUT"
@@ -432,17 +452,38 @@ run_apalache_cfg() {
   done < <(sed -n 's/^\\\* CHECK: *//p' "$cfg")
 }
 
+# run_tlc_spec_cfg CFG: a configuration in a model's apalache/tlc/ directory: TLC checks the
+# module its SPEC line names (an Apalache module, such as ClaimsInductive.tla, whose inductive
+# invariant must also be a plain invariant of every reachable state) and must find no error.
+run_tlc_spec_cfg() {
+  local cfg=$1 name dir spec out
+  cfg=$(cd "$(dirname "$cfg")" && pwd)/$(basename "$cfg")
+  name=${cfg#"$here"/}
+  dir=$(dirname "$(dirname "$(dirname "$cfg")")")
+  spec=$(meta SPEC "$cfg")
+  [ -n "$spec" ] && [ -f "$dir/$spec" ] || die "$name: SPEC must name a module in $dir"
+  out=$(mktemp "$work/out.XXXXXX")
+  echo "== $name (TLC on $spec, expect: pass)"
+  tlc "$cfg" "$out" "$dir" "$spec"
+  if [ "$tlc_status" = 0 ] && grep -q 'No error has been found' "$out"; then
+    record "$name" ok "$(stats "$out")"
+  else
+    tail -60 "$out"; record "$name" FAIL "exit $tlc_status, expected no error"
+  fi
+  rm -f "$out"
+}
+
 # apalache_cfgs [MODEL|FILE.cfg]...: the Apalache configurations named, or every model's.
 apalache_cfgs() {
   local a cfg
   if [ $# = 0 ]; then
-    for cfg in "$here"/*/apalache/*.cfg; do [ -f "$cfg" ] && echo "$cfg"; done
+    for cfg in "$here"/*/apalache/*.cfg "$here"/*/apalache/tlc/*.cfg; do [ -f "$cfg" ] && echo "$cfg"; done
     return
   fi
   for a in "$@"; do
     if [ -f "$a" ]; then echo "$a"
     elif [ -d "$here/$a/apalache" ]; then
-      for cfg in "$here/$a"/apalache/*.cfg; do [ -f "$cfg" ] && echo "$cfg"; done
+      for cfg in "$here/$a"/apalache/*.cfg "$here/$a"/apalache/tlc/*.cfg; do [ -f "$cfg" ] && echo "$cfg"; done
     else die "apalache: $a is neither a .cfg nor a model with an apalache/ directory"
     fi
   done
@@ -503,8 +544,10 @@ case "$cmd" in
   apalache)
     cfgs=$(apalache_cfgs "$@")
     [ -n "$cfgs" ] || die "apalache: no configurations"
-    fetch_apalache
-    for c in $cfgs; do run_apalache_cfg "$c"; done
+    case "$cfgs" in */apalache/[!t]*|*/apalache/t[!l]*) fetch_apalache ;; esac
+    for c in $cfgs; do
+      case "$c" in */apalache/tlc/*) run_tlc_spec_cfg "$c" ;; *) run_apalache_cfg "$c" ;; esac
+    done
     finish ;;
   all) translation; run_groups ci regress finding limit; finish ;;
   *) die "unknown command $cmd (see the header of $0)" ;;

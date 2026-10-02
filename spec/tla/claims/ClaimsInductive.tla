@@ -7,10 +7,12 @@
 (* satisfies it leads to a state that satisfies it, and it implies         *)
 (* AtMostOnce, NotStartedExclusive, NoLiveOverride and AtMostOncePerIntent. *)
 (* So the properties hold in every reachable state, at any depth, and for  *)
-(* every fault budget: IndInv says nothing about the fault counters        *)
-(* (ambig, crashes, cancels, evictions), so a state that satisfies it does *)
-(* so with each counter reset to 0, where every fault is enabled; a        *)
-(* smaller budget only removes steps.                                       *)
+(* any number and mix of faults within the configuration's claim ids and   *)
+(* attempts: IndInv says nothing about the fault counters (ambig,          *)
+(* crashes, cancels, evictions), so a state that satisfies it does so with *)
+(* each counter reset to 0, where every fault is enabled. Claim ids are    *)
+(* never reused and a claim blocks when none is free, so the id pool       *)
+(* bounds the number of claims in a covered run.                           *)
 (*                                                                          *)
 (* Scope: the current protocol (Bug = "none"), with or without halt        *)
 (* resolution as the current protocol does it (ResolveClaim, the lease or  *)
@@ -22,6 +24,11 @@
 (* resolver's check and process are left to the solver.                   *)
 (***************************************************************************)
 EXTENDS ClaimsApalache
+
+\* The induction step is split into StepD1, StepD2, StepResolver and StepEnv below, which are
+\* FullNext only when these are the drivers: a configuration with a third driver must not pass by
+\* leaving its steps out.
+ASSUME Drivers = {"d1", "d2"}
 
 DriverLabels == {"Start", "Open", "GateTake", "GateWrite", "ApGate", "Claim", "ClaimRetry",
                  "ClaimInsert", "ClaimNS", "Lost", "Join", "LoserRead", "LoserWait", "Win",
