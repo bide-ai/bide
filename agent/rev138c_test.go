@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/bide-ai/bide/agent"
 )
@@ -131,5 +132,94 @@ func TestRev138c_TurnRollbackDoesNotHoldTheSessionMutex(t *testing.T) {
 	}
 	if st, _ := agent.Status(ctx, j, "s>@turn/1"); st.State == agent.RunNotStarted {
 		t.Fatalf("the next message's turn did not run (%v)", err)
+	}
+}
+
+// failCompleteOnce fails the first run:complete insert, as a crash between a run's answer and its
+// end marker leaves it.
+type failCompleteOnce struct {
+	*agent.MemStore
+	done bool
+}
+
+func (s *failCompleteOnce) Insert(ctx context.Context, runID, name string, data []byte) (agent.Entry, bool, error) {
+	if name == "run:complete" && !s.done {
+		s.done = true
+		return agent.Entry{}, false, errors.New("injected: the store went away")
+	}
+	return s.MemStore.Insert(ctx, runID, name, data)
+}
+
+// Suspicion 3, the check after the rollback: a cancelled saga turn whose answer was recorded
+// before the request completes when the session drives it (rule 5), and is not closed; the session
+// drives it once, then refuses the other message (the turn is the first message's to finish), and
+// does not drive it again and again.
+func TestRev138c_TurnRollbackThatCompletesIsDrivenOnce(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // a mutant loops until it
+	defer cancel()
+	st := &failCompleteOnce{MemStore: agent.NewMemStore()}
+	j, err := agent.NewJournal(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	model := &p14Model{turns: []p14Turn{{text: "answer"}}}
+	a := p14Build(t, model, j)
+	s, err := a.Session(ctx, "s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SendMessage(ctx, agent.UserText("one"), agent.WithSaga()); err == nil {
+		t.Fatal("want the injected failure of run:complete")
+	}
+	if err := agent.Cancel(ctx, j, "s>@turn/0", "stop"); err != nil {
+		t.Fatalf("Cancel = %v", err)
+	}
+	if _, err := s.SendMessage(ctx, agent.UserText("two")); !errors.Is(err, agent.ErrConfig) {
+		t.Fatalf("the next message = %v, want ErrConfig: turn 0 completed (its answer was recorded first), it is not closed", err)
+	}
+	if got, _ := agent.Status(ctx, j, "s>@turn/0"); got.State != agent.RunCompleted {
+		t.Fatalf("turn 0: Status %s, want completed", got.State)
+	}
+	if n := model.calls.Load(); n != 1 {
+		t.Fatalf("model calls = %d, want 1", n)
+	}
+}
+
+// Suspicion 2 under a root that is not a saga: a programmatic saga sub-run of a plain run fails
+// after the root's Cancel (run:cancelled, no rollback request); its failure rollback ends it
+// run:cancelled too.
+func TestRev138c_SagaSubRunOfAPlainRootEndsCancelled(t *testing.T) {
+	ctx := context.Background()
+	j, _ := p14Journal(t)
+	var undone counter
+	book := agent.CompensatedFunc("book", "", agent.Safety{},
+		func(context.Context, struct{}) (string, error) { return "booked", nil },
+		func(context.Context, struct{}, string) error { undone.n.Add(1); return nil })
+	fail := agent.Func("fail", "", agent.Safety{}, func(context.Context, struct{}) (string, error) {
+		if err := agent.Cancel(ctx, j, "r", "the customer left"); err != nil {
+			t.Errorf("Cancel = %v", err)
+		}
+		return "", errors.New("the card was declined")
+	})
+	subModel := &p14Model{turns: []p14Turn{{calls: []agent.ToolUse{call("s1", "book")}}, {calls: []agent.ToolUse{call("s2", "fail")}}, {text: "sub"}}}
+	sub := p14Build(t, subModel, j, agent.WithTools(book, fail))
+	var subID string
+	work := agent.Func("work", "", agent.Safety{ReadOnly: true}, func(ctx context.Context, _ struct{}) (string, error) {
+		info, _ := agent.RunInfoFrom(ctx)
+		subID = info.SubRunFor("w")
+		_, err := sub.RunMessage(ctx, subID, agent.UserText("x"), agent.WithSaga())
+		return "worked", err
+	})
+	parentModel := &p14Model{turns: []p14Turn{{calls: []agent.ToolUse{call("p1", "work")}}, {text: "done"}}}
+	parent := p14Build(t, parentModel, j, agent.WithTools(work))
+	_, err := parent.RunMessage(ctx, "r", agent.UserText("go"))
+	if st, _ := agent.Status(ctx, j, "r"); st.State != agent.RunCancelled {
+		t.Fatalf("the root's Status = %s (run %v), want cancelled", st.State, err)
+	}
+	if undone.n.Load() != 1 {
+		t.Fatalf("compensated %d, want 1", undone.n.Load())
+	}
+	if st, _ := agent.Status(ctx, j, subID); st.State != agent.RunCancelled || st.Terminal != "the customer left" {
+		t.Fatalf("the sub-run's Status = %+v, want cancelled with the root's reason", st)
 	}
 }
