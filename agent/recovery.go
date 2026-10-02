@@ -6,6 +6,7 @@
 package agent
 
 import (
+	"bytes"
 	"container/list"
 	"context"
 	"encoding/json"
@@ -16,6 +17,7 @@ import (
 	"slices"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 // ===========================================================================
@@ -431,6 +433,9 @@ func decodeStartEntry(b []byte) (RunStart, bool) {
 	if h := decodeHook.Load(); h != nil {
 		(*h)(b)
 	}
+	if st, ok := decodePlainStart(b); ok {
+		return st, true
+	}
 	w := startEntryPool.Get().(*startEntry)
 	defer startEntryPool.Put(w)
 	*w = startEntry{} // Unmarshal merges into what it is given
@@ -444,6 +449,59 @@ func decodeStartEntry(b []byte) (RunStart, bool) {
 		return RunStart{}, false
 	}
 	return st, true
+}
+
+// plainStartPrefix, plainStartKind and plainStartLegacy frame the record written for the run:start
+// of an agent run with a plain text input and no other setting: name, kind, a result of the input
+// and the run's kind (none before P14), and the salt, in that order.
+const (
+	plainStartPrefix = `{"name":"` + runStartStep + `","kind":"` + string(StepValue) + `","result":{"input":"`
+	plainStartKind   = `","kind":"` + string(RunKindAgent) + `"},"salt":"`
+	plainStartLegacy = `"},"salt":"`
+)
+
+// decodePlainStart decodes b if it is exactly the record written for the run:start of an agent run
+// with a plain text input and no other setting (by this version, or with no kind by an earlier
+// one), its input a JSON string with no escape (valid UTF-8, no '"', '\' or control character)
+// and its salt base64: the commonest start, read without the JSON decoder. Such bytes are valid
+// JSON whose decoding is the start it returns. Anything else reports false and takes the JSON
+// decoding.
+func decodePlainStart(b []byte) (RunStart, bool) {
+	rest, ok := bytes.CutPrefix(b, []byte(plainStartPrefix))
+	if !ok {
+		return RunStart{}, false
+	}
+	end := bytes.IndexByte(rest, '"')
+	if end < 0 {
+		return RunStart{}, false
+	}
+	in := rest[:end]
+	for _, c := range in {
+		if c < 0x20 || c == '\\' {
+			return RunStart{}, false
+		}
+	}
+	if !utf8.Valid(in) {
+		return RunStart{}, false
+	}
+	kind := RunKindAgent
+	salt, ok := bytes.CutPrefix(rest[end:], []byte(plainStartKind))
+	if !ok {
+		kind = ""
+		if salt, ok = bytes.CutPrefix(rest[end:], []byte(plainStartLegacy)); !ok {
+			return RunStart{}, false
+		}
+	}
+	salt, ok = bytes.CutSuffix(salt, []byte(`"}`))
+	if !ok || len(salt) == 0 {
+		return RunStart{}, false
+	}
+	for _, c := range salt {
+		if !('A' <= c && c <= 'Z' || 'a' <= c && c <= 'z' || '0' <= c && c <= '9' || c == '+' || c == '/' || c == '=') {
+			return RunStart{}, false
+		}
+	}
+	return RunStart{Input: UserText(string(in)), Kind: kind}, true
 }
 
 // startEntry is the part of a stored run:start record decodeStartEntry reads. Name and Kind are

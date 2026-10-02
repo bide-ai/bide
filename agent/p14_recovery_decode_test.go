@@ -131,3 +131,75 @@ func TestStartUnderLeaseFallsBackToTheFullDecoding(t *testing.T) {
 		})
 	}
 }
+
+// decodePlainStart reads only the records it is sure of, and reads them as the full decoding does:
+// a plain text start this version writes (or one with no kind, as earlier versions wrote it) whose
+// input needs no escape, with any other input or setting left to the JSON decoding.
+func TestDecodePlainStartMatchesFullDecode(t *testing.T) {
+	entry := func(result string) []byte {
+		b, err := JournalEntry(runStartStep, Record{Kind: StepValue, Result: json.RawMessage(result)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return b
+	}
+	start := func(s RunStart) []byte {
+		r, err := marshalJournal(s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return entry(string(r))
+	}
+	full := func(b []byte) RunStart {
+		rec, err := decodeStored("r", runStartStep, b)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var st RunStart
+		if err := json.Unmarshal(rec.Result, &st); err != nil {
+			t.Fatal(err)
+		}
+		return st
+	}
+	taken := map[string][]byte{
+		"plain":        start(RunStart{Input: UserText("go"), Kind: RunKindAgent}),
+		"empty":        start(RunStart{Input: UserText(""), Kind: RunKindAgent}),
+		"unicode":      start(RunStart{Input: UserText("caf\u00e9 \u4e16\u754c <b> & 'x'"), Kind: RunKindAgent}),
+		"legacy":       entry(`{"input":"go"}`),
+		"legacy space": entry(`{"input":"a b"}`),
+	}
+	for name, b := range taken {
+		t.Run("taken/"+name, func(t *testing.T) {
+			got, ok := decodePlainStart(b)
+			if !ok {
+				t.Fatalf("decodePlainStart left %s to the JSON decoding", b)
+			}
+			if want := full(b); !reflect.DeepEqual(got, want) {
+				t.Fatalf("decodePlainStart = %#v, the full decoding = %#v", got, want)
+			}
+		})
+	}
+	left := map[string][]byte{
+		"quote":        start(RunStart{Input: UserText(`a "b"`), Kind: RunKindAgent}),
+		"backslash":    start(RunStart{Input: UserText(`a \ b`), Kind: RunKindAgent}),
+		"control":      start(RunStart{Input: UserText("a\tb\n"), Kind: RunKindAgent}),
+		"line sep":     start(RunStart{Input: UserText("a\u2028b"), Kind: RunKindAgent}),
+		"saga":         start(RunStart{Input: UserText("go"), Kind: RunKindAgent, Saga: true}),
+		"session":      start(RunStart{Input: UserText("go"), Kind: RunKindSessionTurn}),
+		"image":        start(RunStart{Input: Message{Role: RoleUser, Parts: []Part{Text{Text: "go"}, Image{URL: "u"}}}, Kind: RunKindAgent}),
+		"escaped":      entry(`{"input":"g\u006f"}`),
+		"invalid utf8": []byte(plainStartPrefix + "\xff" + plainStartKind + `AAAA"}`),
+		"raw control":  []byte(plainStartPrefix + "a\x01b" + plainStartKind + `AAAA"}`),
+		"bad salt":     []byte(plainStartPrefix + "go" + plainStartKind + `AA AA"}`),
+		"no salt":      []byte(plainStartPrefix + "go" + plainStartKind + `"}`),
+		"trailing":     []byte(plainStartPrefix + "go" + plainStartKind + `AAAA"},`),
+		"extra member": []byte(plainStartPrefix + "go" + plainStartKind + `AAAA","x":1}`),
+	}
+	for name, b := range left {
+		t.Run("left/"+name, func(t *testing.T) {
+			if st, ok := decodePlainStart(b); ok {
+				t.Fatalf("decodePlainStart took %s as %#v", b, st)
+			}
+		})
+	}
+}
