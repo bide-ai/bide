@@ -114,18 +114,28 @@ type runStartWire struct {
 // MarshalJSON writes s's journal form: the input as a JSON string when it is a user message of
 // one text part, and as a message otherwise.
 func (s RunStart) MarshalJSON() ([]byte, error) {
-	var in json.RawMessage
-	var err error
+	var in any = s.Input
 	if t, ok := plainUserText(s.Input); ok {
-		in, err = marshalJournal(t)
-	} else {
-		in, err = marshalJournal(s.Input)
+		in = t
 	}
-	if err != nil {
-		return nil, err
-	}
-	return marshalJournal(runStartWire{Input: in, Saga: s.Saga, Kind: s.Kind, Session: s.Session, Flow: s.Flow,
+	// One encoding pass: the input is encoded in place, as marshalJournal would encode it alone.
+	return marshalJournal(runStartOut{Input: in, Saga: s.Saga, Kind: s.Kind, Session: s.Session, Flow: s.Flow,
 		Typed: s.Typed, Settings: s.Settings, Principal: s.Principal, Tools: s.Tools, Ext: s.Ext})
+}
+
+// runStartOut is runStartWire as MarshalJSON writes it: the input a string or a Message, encoded in
+// the same pass as the rest (its fields and tags are runStartWire's).
+type runStartOut struct {
+	Input     any                        `json:"input"`
+	Saga      bool                       `json:"saga,omitempty"`
+	Kind      RunKind                    `json:"kind,omitempty"`
+	Session   *SessionRef                `json:"session,omitempty"`
+	Flow      *FlowRef                   `json:"flow,omitempty"`
+	Typed     *TypedStart                `json:"typed,omitempty"`
+	Settings  RunSettings                `json:"settings,omitzero"`
+	Principal *Principal                 `json:"principal,omitempty"`
+	Tools     []string                   `json:"tools,omitempty"`
+	Ext       map[string]json.RawMessage `json:"ext,omitempty"`
 }
 
 // UnmarshalJSON reads s's journal form (see MarshalJSON).
