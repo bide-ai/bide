@@ -32,6 +32,10 @@ SendXXOnceZ == (c1 :> "send" @@ c2 :> "send" @@ c3 :> "once")
 MsgXXZ      == (c1 :> "x" @@ c2 :> "x" @@ c3 :> "z")
 KeyZ        == (c1 :> "none" @@ c2 :> "none" @@ c3 :> "k2")
 
+\* Three messages on one handle ("x", "y", "z"): while the first message's saga turn is open
+\* and cancelled, the two others race to roll it back and close it (#138, second review).
+MsgXYZ      == (c1 :> "x" @@ c2 :> "y" @@ c3 :> "z")
+
 \* SendOnce: key k1 ("x") delivered to two workers, and key k2 ("y").
 OnceAll  == (c1 :> "once" @@ c2 :> "once" @@ c3 :> "once")
 KeyK1K1K2 == (c1 :> "k1" @@ c2 :> "k1" @@ c3 :> "k2")

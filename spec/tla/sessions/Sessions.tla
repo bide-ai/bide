@@ -198,16 +198,14 @@ SCheck:
       rid := starts[s][o].run;
       hmu[h] := None;
       goto Seed;
-    elsif o # 0 /\ CancelRule # "none" /\ Closable(starts[s][o].run) /\ ~runs[starts[s][o].run].cx
-          /\ TurnLease /\ lease[starts[s][o].run] \notin {None, self} then
-      \* The saga turn's rollback is another holder's drive (ErrTurnContended): send again later.
-      why := "contended";
-      goto Fail;
+    elsif o # 0 /\ CancelRule # "none" /\ Closable(starts[s][o].run) /\ ~runs[starts[s][o].run].cx then
+      \* Under "rollback", a saga turn's request is acted on first: the session drives the turn's
+      \* rollback (SRb) without the handle's mutex, and then checks again.
+      rid := starts[s][o].run;
+      hmu[h] := None;
+      goto SRb;
     elsif o # 0 /\ CancelRule # "none" /\ Closable(starts[s][o].run) then
       \* S3's rule: the open turn's run was cancelled; record the turn closed, then start ours.
-      \* Under "rollback", a saga turn's request is acted on first: the session drives the turn's
-      \* run under its lease, which rolls it back and writes run:cancelled (closeIfCancelled).
-      runs[starts[s][o].run].cx := TRUE;
       hmu[h] := self;
       closing := TRUE;
       cin := starts[s][o].in;
@@ -257,6 +255,21 @@ SDo:
       goto SCheck;
     end if;
   end with;
+
+\* rollbackTurn: the saga turn's rollback, a drive of the turn's run under its lease (another
+\* holder's drive is ErrTurnContended: send again later), without the handle's mutex. It writes
+\* run:cancelled, unless the turn's answer was recorded first (the run completed). Its steps
+\* inside the run are models 10 and 11's; here it is one step. Then the check runs again, the
+\* journal read first (startTurn reloads under the mutex).
+SRb:
+  if TurnLease /\ lease[rid] \notin {None, self} then
+    why := "contended";
+    goto Fail;
+  else
+    if runs[rid].done = NoAns then runs[rid].cx := TRUE; end if;
+    fresh := TRUE;
+    goto SCheck;
+  end if;
 
 \* SendOnce: keyedTurn (reload if the key is unseen), under the handle's mutex.
 KLook:
@@ -655,20 +668,18 @@ SCheck(self) == /\ pc[self] = "SCheck"
                                    THEN /\ rid' = [rid EXCEPT ![self] = starts[s][o].run]
                                         /\ hmu' = [hmu EXCEPT ![h] = None]
                                         /\ pc' = [pc EXCEPT ![self] = "Seed"]
-                                        /\ UNCHANGED << runs, nonce, badRef, n, 
+                                        /\ UNCHANGED << nonce, badRef, n, 
                                                         closing, cin, why >>
                                    ELSE /\ IF o # 0 /\ CancelRule # "none" /\ Closable(starts[s][o].run) /\ ~runs[starts[s][o].run].cx
-                                              /\ TurnLease /\ lease[starts[s][o].run] \notin {None, self}
-                                              THEN /\ why' = [why EXCEPT ![self] = "contended"]
-                                                   /\ pc' = [pc EXCEPT ![self] = "Fail"]
-                                                   /\ UNCHANGED << runs, hmu, 
-                                                                   nonce, 
-                                                                   badRef, rid, 
-                                                                   n, closing, 
-                                                                   cin >>
+                                              THEN /\ rid' = [rid EXCEPT ![self] = starts[s][o].run]
+                                                   /\ hmu' = [hmu EXCEPT ![h] = None]
+                                                   /\ pc' = [pc EXCEPT ![self] = "SRb"]
+                                                   /\ UNCHANGED << nonce, 
+                                                                   badRef, n, 
+                                                                   closing, 
+                                                                   cin, why >>
                                               ELSE /\ IF o # 0 /\ CancelRule # "none" /\ Closable(starts[s][o].run)
-                                                         THEN /\ runs' = [runs EXCEPT ![starts[s][o].run].cx = TRUE]
-                                                              /\ hmu' = [hmu EXCEPT ![h] = self]
+                                                         THEN /\ hmu' = [hmu EXCEPT ![h] = self]
                                                               /\ closing' = [closing EXCEPT ![self] = TRUE]
                                                               /\ cin' = [cin EXCEPT ![self] = starts[s][o].in]
                                                               /\ rid' = [rid EXCEPT ![self] = starts[s][o].run]
@@ -688,14 +699,13 @@ SCheck(self) == /\ pc[self] = "SCheck"
                                                                          /\ pc' = [pc EXCEPT ![self] = "SDo"]
                                                                          /\ UNCHANGED << badRef, 
                                                                                          why >>
-                                                              /\ UNCHANGED << runs, 
-                                                                              rid, 
+                                                              /\ UNCHANGED << rid, 
                                                                               n, 
                                                                               closing, 
                                                                               cin >>
-                /\ UNCHANGED << starts, turns, from, stepv, hl, lease, errs, 
-                                crashes, pauses, cancels, outcome, ret, okRun, 
-                                seed, cnt, i, ans, att, tries >>
+                /\ UNCHANGED << runs, starts, turns, from, stepv, hl, lease, 
+                                errs, crashes, pauses, cancels, outcome, ret, 
+                                okRun, seed, cnt, i, ans, att, tries >>
 
 SDo(self) == /\ pc[self] = "SDo"
              /\ LET h == CH[self] IN
@@ -734,6 +744,23 @@ SDo(self) == /\ pc[self] = "SDo"
              /\ UNCHANGED << runs, turns, from, stepv, ht, hl, lease, crashes, 
                              pauses, cancels, nonce, outcome, ret, okRun, 
                              badRef, seed, cnt, i, n, ans, closing, cin, tries >>
+
+SRb(self) == /\ pc[self] = "SRb"
+             /\ IF TurnLease /\ lease[rid[self]] \notin {None, self}
+                   THEN /\ why' = [why EXCEPT ![self] = "contended"]
+                        /\ pc' = [pc EXCEPT ![self] = "Fail"]
+                        /\ UNCHANGED << runs, fresh >>
+                   ELSE /\ IF runs[rid[self]].done = NoAns
+                              THEN /\ runs' = [runs EXCEPT ![rid[self]].cx = TRUE]
+                              ELSE /\ TRUE
+                                   /\ runs' = runs
+                        /\ fresh' = [fresh EXCEPT ![self] = TRUE]
+                        /\ pc' = [pc EXCEPT ![self] = "SCheck"]
+                        /\ why' = why
+             /\ UNCHANGED << starts, turns, from, stepv, ht, hs, ho, hl, hmu, 
+                             lease, errs, crashes, pauses, cancels, nonce, 
+                             outcome, ret, okRun, badRef, rid, seed, cnt, i, n, 
+                             ans, att, closing, cin, tries >>
 
 KLook(self) == /\ pc[self] = "KLook"
                /\ hmu[CH[self]] = None
@@ -1080,10 +1107,11 @@ Fail(self) == /\ pc[self] = "Fail"
                               cin >>
 
 caller(self) == Idle(self) \/ Open(self) \/ SCheck(self) \/ SDo(self)
-                   \/ KLook(self) \/ SWGet(self) \/ SWPut(self)
-                   \/ Seed(self) \/ FDo(self) \/ FReload(self)
-                   \/ DLoad(self) \/ DCall(self) \/ DDone(self)
-                   \/ ADo(self) \/ AReload(self) \/ Fail(self)
+                   \/ SRb(self) \/ KLook(self) \/ SWGet(self)
+                   \/ SWPut(self) \/ Seed(self) \/ FDo(self)
+                   \/ FReload(self) \/ DLoad(self) \/ DCall(self)
+                   \/ DDone(self) \/ ADo(self) \/ AReload(self)
+                   \/ Fail(self)
 
 (* Allow infinite stuttering to prevent deadlock on termination. *)
 Terminating == /\ \A self \in ProcSet: pc[self] = "Done"

@@ -1778,7 +1778,8 @@ it. Function names are those of `main` after #130; `S` is `agent/session.go`, `K
 | Label | Go |
 |---|---|
 | `Open` | S `Agent.Session` and `reload`: a handle loaded from the journal (after a restart, a fresh one) |
-| `SCheck`, `SDo` | S `startTurn`: the open-turn check (S1's fix reads the journal again first), the claim (`newClaim`, `store.Do` of `start/<n>`), the lost-claim reload and the second try |
+| `SCheck`, `SDo` | S `startTurn`: the open-turn check (S1's fix reads the journal again first), `closeIfCancelled` (rule 16: a cancelled turn recorded closed), the claim (`newClaim`, `store.Do` of `start/<n>`), the lost-claim reload and the second try |
+| `SRb` | S `rollbackTurn`: a cancelled saga turn's rollback, `driveRun` under the turn lease with `s.mu` released; `startTurn` reloads after it |
 | `KLook` | S `SendOnce` and `keyedTurn`: the reload of an unseen key, the recorded answer, the input check |
 | `Seed`, `FDo`, `FReload` | S `turnSeed`: `store.Do` of `from/<run>`, the reload when it names more turns than the handle holds |
 | `DLoad`, `DCall`, `DDone` | S `driveRun`: a finished run (`completedAnswer`) answers only the input its `run:start` recorded, else `ErrConfig` (`checkFinishedStart`, #137); S4's rule (`TurnLease`), `leaseRun` of the turn run's lease, and for a lease another holder has, the read of `run:complete`, else `ErrTurnContended` (`"contended"`); then `Agent.run` of the turn's run under the lease: `openRun`, `completedAnswer` and `checkFinishedStart`, `holdToStart`'s input check, the approval and interrupt pauses, the budget check and `@llm/<n>` (`recorded`), `run:complete`, and the lease's release when it returns; P14's `run:cancelled` reads |
@@ -1835,7 +1836,8 @@ adds about 170 seconds of TLC and JVM time to the four slots, about 43 seconds o
 | `ids-sessions` | ci | Run IDs since #86: session `"chat/e"`'s first `Send` beside session `"chat"`'s `SendOnce` of key `"t0"`; a crash. | 1,343 | 3 s |
 | `budget` | ci | S4's rule (a drive holds the turn run's lease): one message on two workers, turns of three model calls, a budget of three, a crash. | 16,498 | 3 s |
 | `cancel-close` | ci | S3's rule: P14's `Cancel` of a Send turn's run, which is then recorded closed, and a second message. | 869 | 3 s |
-| `cancel-saga` | ci | The same for saga turns (`SagaTurns`), whose `Cancel` writes only a rollback request: the next message's `Send` drives the turn's rollback under the turn lease and records the turn closed (`CancelRule = "rollback"`, #138 review finding 6). | 995 | <1 s |
+| `cancel-saga` | ci | The same for saga turns (`SagaTurns`), whose `Cancel` writes only a rollback request: the next message's `Send` drives the turn's rollback under the turn lease and records the turn closed (`CancelRule = "rollback"`, #138 review finding 6). | 1,081 | <1 s |
+| `cancel-saga-shared` | ci | The same with three messages on one handle: the rollback (`SRb`) runs without the handle's mutex, so another caller on the handle may close the turn and start its own meanwhile (#138, second review). | 24,056 | 1 s |
 | `live-resume` | ci | `Answered` and `TurnsSettle`: two workers with one message each, a crash; every caller sends again until answered. | 4,490 | 13 s |
 | `key-reuse` | ci | One `SendOnce` key reused for two messages on two workers, with the turn lease; an error reply and a crash: a finished run answers only the input it recorded (#137, R137-2). | 6,119 | 1 s |
 | `deep-workers-send` | nightly | One `Send` message on two workers; an error reply and a crash. | 106,192 | 9 s* |
@@ -1843,6 +1845,7 @@ adds about 170 seconds of TLC and JVM time to the four slots, about 43 seconds o
 | `deep-shared` | nightly | One handle shared by three callers: one `Send` message sent twice and a `SendOnce`; an error reply and a pause. | 337,360 | 8 s* |
 | `deep-once` | nightly | `SendOnce`: one key on two workers and a second key; two error replies and a crash. | 2,285,252 | 4 min 17 s* |
 | `deep-cancel` | nightly | S3's rule with three callers and a crash. | 8,909,504 | 3 min 51 s* |
+| `deep-cancel-saga-shared` | nightly | `cancel-saga-shared` with a crash. | 843,486 | 14 s* |
 | `deep-live` | nightly | `Answered` and `TurnsSettle` on two workers: an error reply, a crash and a pause. | 92,437 | 17 s* |
 
 \* Nightly times are TLC's own with eight workers on the development machine while it ran other
@@ -1927,10 +1930,26 @@ failing under `CancelRule = "none"`.
   - A saga turn (#138 review, finding 6; `SagaTurns`, `CancelRule = "rollback"`, `cancel-saga`,
     `regress/s3-saga-wedge`): `Cancel` of a saga writes only its rollback request, so the turn's
     run has no `run:cancelled` to close it on. The session owns its turns: `closeIfCancelled`
-    finds the request (one `Get`), drives the turn's run under the turn lease (#137's S4 rule;
-    a lease another holder has is `ErrTurnContended`), which rolls it back and writes
-    `run:cancelled`, and then records the turn closed. A turn whose answer was recorded before
-    the request completes instead, and is not closed.
+    finds the request (one `Get`), `rollbackTurn` drives the turn's run under the turn lease
+    (#137's S4 rule; a lease another holder has is `ErrTurnContended`), which rolls it back and
+    writes `run:cancelled`, and the check runs again and records the turn closed. A turn whose
+    answer was recorded before the request completes instead, and is not closed.
+  - The rollback runs without the handle's mutex (#138, second review): compensators may take as
+    long as any tool call, and the mutex is never held while a turn's run is in progress. The
+    model first took the rollback, its `run:cancelled` and the closing record's mutex in one
+    `SCheck` step. The code now has a window there, so the model has it too: `SCheck` releases
+    the mutex and goes to `SRb`, the rollback as one step under the turn lease, which returns to
+    `SCheck` with the journal read again. Every behaviour of the one-step version is one of the
+    split model's (`SCheck`, `SRb`, `SCheck` with no other step between them), so the split
+    model passing shows the one-step abstraction hid no violation of these properties in these
+    configurations; the rollback inside the run stays one step, as models 10 and 11 check it
+    (its only effect the session reads is `run:cancelled`, which a drive of the turn also writes
+    without the mutex at `DLoad` and `DCall`). Another caller on the handle may check,
+    close the turn and start its own turn in that window. S1 (the read before a refusal), S2 (the
+    loaded-turn check in `appendTurn`, under the mutex), S4 (the rollback is a drive under the
+    turn lease) and rule 16 (the closing record, under the mutex after the read) are unchanged,
+    and `cancel-saga`, `cancel-saga-shared` (three messages on one handle) and
+    `deep-cancel-saga-shared` (with a crash) pass every property.
   - Two more points P14 reconciles (rule 16's note): recovery skips session runs while
     `ResumeAgent` lists `session_turn` among its kinds (a recovery resumer must seed a turn from
     its `from/` record, and the session records the turn only when its message is sent again);

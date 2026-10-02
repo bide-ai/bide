@@ -249,7 +249,8 @@ func (s *Session) reload(ctx context.Context) error {
 // returns ErrRunCancelled, and the next Send of another message records the turn closed (with no
 // answer, and outside the transcript) and runs its own turn. Cancel of a saga turn's run writes
 // only its rollback request: the next Send of another message drives that rollback (under the
-// turn's lease; ErrTurnContended while another worker drives the turn) and then closes the turn.
+// turn's lease, ErrTurnContended while another worker drives the turn, and without holding the
+// handle's mutex) and then closes the turn.
 //
 // Deprecated: transitional; renamed by the 1.0 rewrite. Use SendMessage, which becomes Send.
 func (s *Session) Send(ctx context.Context, input string) (Message, error) {
@@ -303,6 +304,7 @@ func (s *Session) startTurn(ctx context.Context, input Message) (turnStart, int,
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	reloaded := false
+	rolledBack := "" // the turn run whose rollback this call drove: it is driven at most once
 	for attempt := 0; ; attempt++ {
 		if s.open != nil && !sameInput(s.open.Input, s.open.Message, input) && !reloaded {
 			if err := s.reload(ctx); err != nil {
@@ -311,11 +313,24 @@ func (s *Session) startTurn(ctx context.Context, input Message) (turnStart, int,
 			reloaded = true
 		}
 		if s.open != nil && !sameInput(s.open.Input, s.open.Message, input) {
-			closed, err := s.closeIfCancelled(ctx)
+			closed, requested, err := s.closeIfCancelled(ctx)
 			if err != nil {
 				return turnStart{}, 0, err
 			}
 			if closed {
+				attempt--
+				continue
+			}
+			if requested != "" && requested != rolledBack {
+				// The saga turn's rollback, without s.mu; the journal is read again after it,
+				// since another caller may have moved the session on meanwhile.
+				if err := s.rollbackTurn(ctx, requested); err != nil {
+					return turnStart{}, 0, err
+				}
+				rolledBack = requested
+				if err := s.reload(ctx); err != nil {
+					return turnStart{}, 0, err
+				}
 				attempt--
 				continue
 			}
@@ -366,40 +381,54 @@ func (s *Session) startTurn(ctx context.Context, input Message) (turnStart, int,
 // closeIfCancelled records the open Send turn closed if its run was cancelled (its first end
 // marker is run:cancelled), and reloads: rule 16 of the P14 contract (model 12's S3). A saga turn's
 // Cancel writes only a rollback request, which the turn's next drive acts on: the session owns its
-// turns, so it drives that rollback itself (under the turn run's lease, as every drive of a turn
-// is), and closes the turn once the rollback has written run:cancelled. A turn whose rollback
-// stopped (a failed compensator, an unknown outcome) stays open, with the rollback's error, and
-// one whose answer was recorded before the request completes and is not closed. The caller holds
-// s.mu, and s.open is set.
-func (s *Session) closeIfCancelled(ctx context.Context) (bool, error) {
+// turns, so it drives that rollback itself, and closes the turn once the rollback has written
+// run:cancelled. closeIfCancelled does not drive it: it returns the turn run's ID as requested,
+// and startTurn drives the rollback without s.mu (rollbackTurn) and then checks again. The caller
+// holds s.mu, and s.open is set.
+func (s *Session) closeIfCancelled(ctx context.Context) (closed bool, requested string, _ error) {
 	runID := s.open.RunID
 	cancelled, err := cancelledFirst(ctx, s.agent.store, runID)
-	if err != nil {
-		return false, err
-	}
-	if !cancelled {
-		if _, requested, err := lookup(ctx, s.agent.store, runID, runCancelRequestedStep); err != nil || !requested {
-			return false, err
+	if err != nil || !cancelled {
+		if err == nil {
+			var ok bool
+			if _, ok, err = lookup(ctx, s.agent.store, runID, runCancelRequestedStep); ok {
+				requested = runID
+			}
 		}
-		// The rollback needs no transcript: the drive's open finds the request before any model
-		// call, and the saga path compensates from the turn run's own journal.
-		d := &driveSpec{resume: true, kind: RunKindSessionTurn, cfg: runConfig{saga: true}}
-		if _, _, _, err := s.driveRun(ctx, runID, d); err != nil && !cancelledEnd(err) {
-			return false, err
-		}
-		if cancelled, err = cancelledFirst(ctx, s.agent.store, runID); err != nil || !cancelled {
-			return false, err
-		}
+		return false, requested, err
 	}
 	claim, err := newClaim()
 	if err != nil {
-		return false, err
+		return false, "", err
 	}
 	rec := turnRecord{Input: s.open.Input, Message: s.open.Message, RunID: runID, Claim: claim, Cancelled: true}
 	if err := s.appendTurn(ctx, rec); err != nil {
-		return false, err
+		return false, "", err
 	}
-	return true, s.reload(ctx)
+	return true, "", s.reload(ctx)
+}
+
+// protocol:sessions end
+
+// protocol:sessions begin SRb
+
+// rollbackTurn drives the rollback a Cancel of the saga turn run runID requested, under the turn
+// run's lease (as every drive of a turn is), without s.mu: a rollback runs compensators, which may
+// take as long as any tool call, and s.mu is never held while a turn's run is in progress. The
+// rollback needs no transcript: the drive's open finds the request before any model call, and the
+// saga path compensates from the turn run's own journal. A rollback that stopped (a failed
+// compensator, an unknown outcome) returns its error, and the turn stays open; one that found the
+// turn's answer recorded before the request returns nil, and the turn is not closed. Another
+// worker's drive of the run is ErrTurnContended. The caller holds s.mu: it is released for the
+// drive and held again when rollbackTurn returns.
+func (s *Session) rollbackTurn(ctx context.Context, runID string) error {
+	s.mu.Unlock()
+	defer s.mu.Lock()
+	d := &driveSpec{resume: true, kind: RunKindSessionTurn, cfg: runConfig{saga: true}}
+	if _, _, _, err := s.driveRun(ctx, runID, d); err != nil && !cancelledEnd(err) {
+		return err
+	}
+	return nil
 }
 
 // protocol:sessions end

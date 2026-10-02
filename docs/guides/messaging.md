@@ -80,7 +80,8 @@ declines a session turn's run too.) A turn's run can be cancelled like any run (
 `Send` records the cancelled turn closed (with no answer, and outside the transcript) and runs its
 own turn; a `SendOnce` key whose run was cancelled stays unanswered. A saga turn's `Cancel` writes
 only its rollback request: the next message's `Send` drives that rollback itself (under the turn's
-lease, so a worker driving the turn meanwhile makes it `ErrTurnContended`), and then records the turn
+lease, so a worker driving the turn meanwhile makes it `ErrTurnContended`, and without holding the
+handle, so other callers on it are not blocked behind its compensators), and then records the turn
 closed. `SendMessage` and `SendMessageOnce` (the
 1.0 `Send` and `SendOnce`, under transitional names) take a `Message` and run options, journaled
 with the turn's run, and return a `Result`. Several workers may hold handles on one conversation:
