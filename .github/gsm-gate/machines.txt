@@ -5,10 +5,12 @@
 #
 # <program> <machine> <verdict>
 #
-# program: a directory with a main package; the workflow runs it once, with no
+# program: a directory with a main package; the workflow runs it twice, with no
 #   arguments, built with -tags gsmgate, and it records every gsm machine it
-#   makes. A program that reads flags, its arguments or the environment fails
-#   the scan, since another run could make other machines.
+#   makes; the two runs must make the same machines. A program that reads (or
+#   imports a bide package that reads) flags, arguments, the environment, stdin,
+#   files or the platform fails the scan, since another run could make other
+#   machines.
 # machine: the registry's name (a federation's components are listed one by one).
 # verdict: certified         Build accepts it; both checkers verify it.
 #          certified-tables  Build accepts it; the table checker verifies it. Its
@@ -29,9 +31,9 @@
 #
 # The gate fails if a checker rejects a machine listed as accepted, disagrees with
 # Build, a program makes a machine not listed here, a listed machine is not made,
-# or the scan (gsmgate -scan, which type-checks every module that imports gsm)
-# finds a package making a gsm machine that is not a program here, or a document
-# showing one without an @doc line.
+# or the scan (gsmgate -scan, which loads every bide module) finds a main package
+# depending on gsm, or a package making a gsm machine, that is not a program
+# here, or a document showing one without an @doc line.
 
 examples/govern/authority           execution-desk  certified
 examples/govern/compliance          kyc-decision    certified

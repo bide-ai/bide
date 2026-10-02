@@ -11,8 +11,9 @@ interim gate, in CI only, until an in-process gate lands in gsm.
 `machines.txt` lists every program that makes gsm machines (today the
 `examples/govern` programs), every machine each one makes, and its expected
 verdict (`certified`, `certified-tables`, `rejected`, `synthesized`,
-`not-built`; the file explains each). The workflow runs each program once, with
-no arguments, built with `-tags gsmgate`, which records every machine the program makes: each `Build`
+`not-built`; the file explains each). The workflow runs each program twice
+(the second time in another time zone), with no arguments, built with
+`-tags gsmgate`, which records every machine the program makes: each `Build`
 result, including each component a federation builds, and each synthesized or
 compositional machine. gsm's `internal/cmd/gsmgate` then runs both checkers on
 the records. The job fails if:
@@ -21,14 +22,20 @@ the records. The job fails if:
 - a checker disagrees with `Build` (verifies a machine `Build` rejects);
 - a program makes a machine `machines.txt` does not list, or a listed machine is
   not made;
-- the scan (`gsmgate -scan`) finds, in the non-test code of any bide module that
-  imports gsm (type-checked, so under any import name and as a function or method
-  value), a package outside `machines.txt`'s programs that refers to a gsm
-  function or method making a machine; a program that is not a main package or
-  reads flags, its arguments or the environment (another run could make other
-  machines); a gsm import a build constraint hides from the type check; or a
-  document (`.md`, `.mdx`, `.rst`, `.adoc`, `.txt`, `.html`) showing a gsm machine
-  without an `@doc` line. Nothing that makes machines can be exempt;
+- a program makes different machines on its two runs (a machine that depends on
+  the clock, randomness or the host; two runs can agree by chance, so this check
+  catches such a dependence without proving its absence);
+- the scan (`gsmgate -scan`) fails. It loads every bide module, hidden,
+  `testdata`, `vendor` and `node_modules` directories included, with its full
+  import graph (test code excluded), and fails on: a main package that depends on
+  gsm, through any module, and is not a program in `machines.txt`; a package
+  outside the programs that refers to a gsm function or method making a machine
+  (type-checked, so under any import name and as a value); a program, or a bide
+  package it imports, that reads flags, arguments, the environment, stdin, files
+  or the platform, or has a file a build constraint excludes; a gsm import hidden
+  from the load; a symlinked directory; a document (`.md`, `.mdx`, `.markdown`,
+  `.rst`, `.adoc`, `.txt`, `.html`) showing a gsm machine without an `@doc` line.
+  Nothing that makes machines can be exempt;
 - the pinned gsm commit is not on gsm's `main`.
 
 Test code is not scanned: test machines are not shipped. Documents are listed,

@@ -1,9 +1,9 @@
 name: gsm machine gate
 
-# Every gsm machine bide ships (.github/gsm-gate/machines.txt) is checked by the two checkers
-# extracted from gsm's Coq proof (normalization-confluence). The checkers are built exactly as gsm's
-# own CI builds them: from the proof commit and digest-pinned Rocq image gsm pins at GSM_COMMIT, and
-# checked against gsm's SHA256SUMS. See .github/gsm-gate/README.md.
+# Every gsm machine bide's programs make (.github/gsm-gate/machines.txt) is checked by the two
+# checkers extracted from gsm's Coq proof (normalization-confluence). The checkers are built exactly
+# as gsm's own CI builds them: from the proof commit and digest-pinned Rocq image gsm pins at
+# GSM_COMMIT, and checked against gsm's SHA256SUMS. See .github/gsm-gate/README.md.
 on:
   push:
     branches: [ main ]
@@ -20,8 +20,14 @@ jobs:
     name: gsm machine gate
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # bide, gsm and the proof are checked out side by side, so the scan of bide sees only bide.
+    defaults:
+      run:
+        working-directory: bide
     steps:
       - uses: actions/checkout@v4
+        with:
+          path: bide
 
       - name: Read pins
         run: cat .github/gsm-gate/pins.env >> "$GITHUB_ENV"
@@ -31,28 +37,28 @@ jobs:
         with:
           repository: ${{ env.GSM_REPO }}
           ref: ${{ env.GSM_COMMIT }}
-          path: .gsm-gate/gsm
+          path: gsm
           fetch-depth: 0 # the provenance step reads gsm's main
 
       # gsm's pins name the proof commit, the Rocq image (by digest) and the two checker binaries.
       - name: Read gsm's checker pins
-        run: cat .gsm-gate/gsm/.github/oracle/pins.env >> "$GITHUB_ENV"
+        run: cat ../gsm/.github/oracle/pins.env >> "$GITHUB_ENV"
 
       - name: Checkout the proof at gsm's pinned commit
         uses: actions/checkout@v4
         with:
           repository: ${{ env.NC_REPO }}
           ref: ${{ env.NC_COMMIT }}
-          path: .gsm-gate/nc
+          path: nc
 
       - name: Build the extracted checkers
-        run: bash .gsm-gate/nc/coq/extraction/ci-build.sh "$ROCQ_IMAGE"
+        run: bash ../nc/coq/extraction/ci-build.sh "$ROCQ_IMAGE"
 
       - name: Verify gsm's pinned hashes
         # Every file in gsm's SHA256SUMS must match, and both checkers the pins name must be among them.
+        working-directory: nc/coq/extraction
         run: |
-          sums="$GITHUB_WORKSPACE/.gsm-gate/gsm/.github/oracle/SHA256SUMS"
-          cd .gsm-gate/nc/coq/extraction
+          sums="$GITHUB_WORKSPACE/gsm/.github/oracle/SHA256SUMS"
           sha256sum -c "$sums"
           for c in "$TABLE_CHECKER" "$RULES_CHECKER"; do
             awk -v f="$c" '$2 == f { found = 1 } END { exit !found }' "$sums" ||
@@ -65,25 +71,29 @@ jobs:
 
       - name: Record every gsm machine the programs make
         id: record
-        # Each program in the catalog runs once, with no arguments, built with -tags gsmgate against gsm at GSM_COMMIT (a
-        # replace added to its module for this run only), and records every machine it makes. A
-        # program that fails (a Build error it does not expect) fails this step, after every program
-        # has run, and the next step still checks what was recorded.
+        # Each program in the catalog runs twice, with no arguments, built with -tags gsmgate against
+        # gsm at GSM_COMMIT (a replace added to its module for this run only), and records every
+        # machine it makes. The second run has another time zone and starts later; the check step
+        # fails if the two runs made different machines. A program that fails (a Build error it does
+        # not expect) fails this step, after every program has run, and the next step still checks
+        # what was recorded.
         env:
           GOWORK: 'off'
           GOFLAGS: '-mod=mod'
         run: |
-          gsm="$GITHUB_WORKSPACE/.gsm-gate/gsm"
-          dumps="$RUNNER_TEMP/gsm-gate"
+          gsm="$GITHUB_WORKSPACE/gsm"
           programs=$(awk '{ sub(/#.*/, "") } NF && $1 !~ /^@/ { print $1 }' .github/gsm-gate/machines.txt | sort -u)
           failed=
           for p in $programs; do
             mod=$(cd "$p" && go env GOMOD)
             (cd "$(dirname "$mod")" && go mod edit -replace "github.com/blackwell-systems/gsm=$gsm")
             echo "::group::$p"
-            start=$(date +%s)
-            (cd "$p" && GSM_GATE_DIR="$dumps/$p" timeout 300 go run -tags gsmgate .) || failed="$failed $p"
-            echo "$p: $(( $(date +%s) - start )) s"
+            for run in 1 2; do
+              tz=UTC; [ "$run" = 2 ] && tz=Pacific/Chatham
+              start=$(date +%s)
+              (cd "$p" && TZ=$tz GSM_GATE_DIR="$RUNNER_TEMP/gsm-gate-$run/$p" timeout 300 go run -tags gsmgate .) || failed="$failed $p"
+              echo "$p run $run: $(( $(date +%s) - start )) s"
+            done
             echo "::endgroup::"
           done
           if [ -n "$failed" ]; then
@@ -91,20 +101,21 @@ jobs:
             exit 1
           fi
 
-      # gsmgate is its own module in gsm (internal/cmd/gsmgate). -scan type-checks every bide module
-      # that imports gsm and fails if a package outside the programs above makes a gsm machine.
+      # gsmgate is its own module in gsm (internal/cmd/gsmgate). -scan loads every bide module and
+      # fails if bide makes a gsm machine outside the programs above (see the README).
       - name: Check every machine with the extracted checkers
         if: ${{ !cancelled() && steps.record.outcome != 'skipped' }}
-        working-directory: .gsm-gate/gsm/internal/cmd/gsmgate
+        working-directory: gsm/internal/cmd/gsmgate
         env:
           GOWORK: 'off'
         run: |
-          x="$GITHUB_WORKSPACE/.gsm-gate/nc/coq/extraction"
+          x="$GITHUB_WORKSPACE/nc/coq/extraction"
           go run . \
-            -dumps "$RUNNER_TEMP/gsm-gate" \
-            -catalog "$GITHUB_WORKSPACE/.github/gsm-gate/machines.txt" \
+            -dumps "$RUNNER_TEMP/gsm-gate-1" \
+            -rerun "$RUNNER_TEMP/gsm-gate-2" \
+            -catalog "$GITHUB_WORKSPACE/bide/.github/gsm-gate/machines.txt" \
             -table-checker "$x/$TABLE_CHECKER" -rules-checker "$x/$RULES_CHECKER" \
-            -scan "$GITHUB_WORKSPACE" \
+            -scan "$GITHUB_WORKSPACE/bide" \
             -summary "$GITHUB_STEP_SUMMARY"
 
       # The pinned gsm commit must be on gsm's main: reviewed and merged, not a branch head. Last, so
@@ -112,5 +123,5 @@ jobs:
       - name: The pinned gsm commit is on gsm's main
         if: ${{ !cancelled() }}
         run: |
-          git -C .gsm-gate/gsm merge-base --is-ancestor "$GSM_COMMIT" origin/main ||
+          git -C ../gsm merge-base --is-ancestor "$GSM_COMMIT" origin/main ||
             { echo "::error::GSM_COMMIT $GSM_COMMIT is not on $GSM_REPO main"; exit 1; }
