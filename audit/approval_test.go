@@ -22,7 +22,7 @@ func TestProveApproval(t *testing.T) {
 	}
 	var alice agent.Record
 	for _, r := range recs {
-		if agent.IsApprovalDecision(r, "c1") && r.Approver == "alice" {
+		if agent.IsApprovalDecision(r, "c1") && r.Approver() == "alice" {
 			alice = r
 		}
 	}
@@ -34,7 +34,7 @@ func TestProveApproval(t *testing.T) {
 		t.Fatalf("bundle: err=%v size=%d, want it to verify under the STH", err, pb.Inclusion.Size)
 	}
 	r := recOf(t, pb)
-	if !ed25519.Verify(g.pubs["alice"], agent.ApprovalDecisionBytes(g.subject(t), r.Approver, r.Approved), r.Signature) {
+	if !ed25519.Verify(g.pubs["alice"], agent.ApprovalDecisionBytes(g.subject(t), r.Approver(), r.Approved), r.Signature()) {
 		t.Fatal("disclosed signature does not verify under alice's key")
 	}
 	other, _, _ := ed25519.GenerateKey(rand.Reader)

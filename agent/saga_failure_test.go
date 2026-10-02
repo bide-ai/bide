@@ -37,7 +37,7 @@ func TestSagaFailure(t *testing.T) {
 		{"reconciled failure after an approval", sagaJournal(Record{Name: "approval:c1", Kind: StepApproval, ToolUseID: "c1", Approved: true}, failed), "card declined", true},
 		{"reconciled failure after a passed quorum", sagaJournal(tallyRecord(passedQuorum), failed), "card declined", true},
 		{"reconciled failure after a quorum passed over a denial", sagaJournal(
-			Record{Name: "approval:c1:risk", Kind: StepApproval, ToolUseID: "c1", Approver: "risk"}, tallyRecord(passedQuorum), failed), "card declined", true},
+			Record{Name: "approval:c1:risk", Kind: StepApproval, ToolUseID: "c1", ApproverSignature: &ApproverSignature{Approver: "risk"}}, tallyRecord(passedQuorum), failed), "card declined", true},
 		{"denial", sagaJournal(Record{Name: "approval:c1", Kind: StepApproval, ToolUseID: "c1"}, failed), "", false},
 		{"quorum denial", sagaJournal(tallyRecord(deniedQuorum), failed), "", false},
 		{"success", sagaJournal(Record{Name: "c1", Kind: StepToolResult, ToolUseID: "c1", Result: json.RawMessage(`{}`)}), "", false},

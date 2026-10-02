@@ -48,27 +48,24 @@ type Record struct {
 	// StepToolResult or StepSagaFail record, the rest of the Spend of the runs the tool call
 	// started. Nil when there was none. WithTokenBudget counts it.
 	DiscardedUsage *Usage `json:"discarded_usage,omitempty"`
-	// Finish is why the model turn ended, and RawFinish the provider's own reason as it sent it
-	// (see Finish). StepModel only; empty on a record written before they were journaled.
-	Finish    FinishReason `json:"finish,omitempty"`
-	RawFinish string       `json:"raw_finish,omitempty"`
-	// Model identifies the model that answered the turn (see ModelInfoOf), for audit and for a
-	// run whose turns a middleware sent to different providers. StepModel only; nil when the
-	// model does not describe itself or no request produced the response (a middleware built it).
-	Model *ModelInfo `json:"model,omitempty"`
-	// PromptDigest and ToolsDigest are digests of the system prompt and the tool set the turn was
-	// sent (see the functions of the same names), so an auditor can tell which instructions and
-	// which tools each answer was given, although agent-level defaults stay live across a
-	// redeploy. StepModel only; empty when the turn was sent no system prompt, or no tools.
-	PromptDigest string          `json:"prompt_digest,omitempty"`
-	ToolsDigest  string          `json:"tools_digest,omitempty"`
-	ToolUseID    string          `json:"tool_use_id,omitempty"`  // StepToolResult
-	Result       json.RawMessage `json:"result,omitempty"`       // StepToolResult / StepValue
-	IsError      bool            `json:"is_error,omitempty"`     // StepToolResult
-	Approved     bool            `json:"approved,omitempty"`     // StepApproval
-	Approver     string          `json:"approver,omitempty"`     // StepApproval written by SubmitDecision
-	ApproverAlg  Alg             `json:"approver_alg,omitempty"` // StepApproval written by SubmitDecision: the scheme Signature is under
-	Signature    []byte          `json:"signature,omitempty"`    // StepApproval written by SubmitDecision
+	// ModelTurn is the model-turn metadata of a StepModel record: why the turn ended, the model that
+	// answered it, and digests of the prompt and tools it was sent. Nil on every other kind, and on
+	// a StepModel record that carries none. Read it through the nil-safe accessors (Record.Finish,
+	// RawFinish, Model, PromptDigest, ToolsDigest). It sits behind a pointer to keep Record small
+	// (see TestRecord_Size); its fields are journaled in place, as members of the record. A copy of
+	// the record shares it: do not write through it.
+	*ModelTurn
+	ToolUseID string          `json:"tool_use_id,omitempty"` // StepToolResult
+	Result    json.RawMessage `json:"result,omitempty"`      // StepToolResult / StepValue
+	IsError   bool            `json:"is_error,omitempty"`    // StepToolResult
+	Approved  bool            `json:"approved,omitempty"`    // StepApproval
+	// ApproverSignature is the signed decision of a StepApproval record written by SubmitDecision:
+	// who decided and their signature. Nil on every other record, including an approval that Approve
+	// or Deny wrote. Read it through the nil-safe accessors (Record.Approver, ApproverAlg,
+	// Signature). It sits behind a pointer to keep Record small (see TestRecord_Size); its fields
+	// are journaled in place, as members of the record. A copy of the record shares it: do not write
+	// through it.
+	*ApproverSignature
 	// AttemptedAt is the Unix-millis wall-clock time an attempt marker (StepAttempt) was
 	// written, i.e. just before a non-retriable side effect fired. It is set once and read
 	// back verbatim on replay, so it stays deterministic. Zero (and omitted) on every
@@ -92,8 +89,8 @@ type Record struct {
 	// stamped marks a salt the engine drew for a record it is about to record (stampSalt), which
 	// JournalEntry keeps instead of drawing another, so the engine can tell its own record from
 	// another writer's by the salt the journal holds. It and Redacted sit beside Reconciled so the
-	// three flags share one word: Record is copied by value throughout the engine, and a larger
-	// one measurably slowed a contended run loop (see TestRecord_Size).
+	// three flags share one word, which is why it is not in ModelTurn: there it would save no space
+	// and would make every stamped record allocate one.
 	stamped bool
 	// Safety is the Safety of the tool a StepToolResult or StepSagaFail record's call ran under
 	// (or, for a denied call, would have run under), and Approval its approval gate, nil for an
@@ -120,6 +117,118 @@ type Record struct {
 	salt []byte
 	// raw is the bytes the record was decoded from (see Raw).
 	raw []byte
+}
+
+// ModelTurn is a StepModel record's model-turn metadata (see Record.ModelTurn). A Record copy
+// shares it with the original: never write through a record's ModelTurn, assign the record a new
+// one instead. A record decoded from its journal encoding carries one only when the encoding holds
+// a non-empty member of it.
+type ModelTurn struct {
+	// Finish is why the model turn ended, and RawFinish the provider's own reason as it sent it
+	// (see FinishReason). Empty on a record written before they were journaled.
+	Finish    FinishReason `json:"finish,omitempty"`
+	RawFinish string       `json:"raw_finish,omitempty"`
+	// Model identifies the model that answered the turn (see ModelInfoOf), for audit and for a
+	// run whose turns a middleware sent to different providers. Nil when the model does not
+	// describe itself or no request produced the response (a middleware built it).
+	Model *ModelInfo `json:"model,omitempty"`
+	// PromptDigest and ToolsDigest are digests of the system prompt and the tool set the turn was
+	// sent (see the functions of the same names), so an auditor can tell which instructions and
+	// which tools each answer was given, although agent-level defaults stay live across a
+	// redeploy. Empty when the turn was sent no system prompt, or no tools.
+	PromptDigest string `json:"prompt_digest,omitempty"`
+	ToolsDigest  string `json:"tools_digest,omitempty"`
+}
+
+// ApproverSignature is the signed decision a StepApproval record written by SubmitDecision carries
+// (see Record.ApproverSignature). A Record copy shares it with the original: never write through a
+// record's ApproverSignature, assign the record a new one instead. A record decoded from its
+// journal encoding carries one only when the encoding holds a non-empty member of it.
+type ApproverSignature struct {
+	Approver    string `json:"approver,omitempty"`     // the approver's id (Decision.ApproverID)
+	ApproverAlg Alg    `json:"approver_alg,omitempty"` // the scheme Signature is under
+	Signature   []byte `json:"signature,omitempty"`    // the approver's signature (Decision.Signature)
+}
+
+// Finish returns why the model turn ended (ModelTurn.Finish), or "" when the record carries no
+// model-turn metadata.
+func (r Record) Finish() FinishReason {
+	if r.ModelTurn == nil {
+		return ""
+	}
+	return r.ModelTurn.Finish
+}
+
+// RawFinish returns the provider's own finish reason (ModelTurn.RawFinish), or "" when the record
+// carries no model-turn metadata.
+func (r Record) RawFinish() string {
+	if r.ModelTurn == nil {
+		return ""
+	}
+	return r.ModelTurn.RawFinish
+}
+
+// Model returns the model that answered the turn (ModelTurn.Model), or nil when the record
+// carries no model-turn metadata.
+func (r Record) Model() *ModelInfo {
+	if r.ModelTurn == nil {
+		return nil
+	}
+	return r.ModelTurn.Model
+}
+
+// PromptDigest returns the digest of the system prompt the turn was sent (ModelTurn.PromptDigest),
+// or "" when the record carries no model-turn metadata.
+func (r Record) PromptDigest() string {
+	if r.ModelTurn == nil {
+		return ""
+	}
+	return r.ModelTurn.PromptDigest
+}
+
+// ToolsDigest returns the digest of the tool set the turn was sent (ModelTurn.ToolsDigest), or ""
+// when the record carries no model-turn metadata.
+func (r Record) ToolsDigest() string {
+	if r.ModelTurn == nil {
+		return ""
+	}
+	return r.ModelTurn.ToolsDigest
+}
+
+// Approver returns the approver of a signed decision (ApproverSignature.Approver), or "" when the
+// record carries none.
+func (r Record) Approver() string {
+	if r.ApproverSignature == nil {
+		return ""
+	}
+	return r.ApproverSignature.Approver
+}
+
+// ApproverAlg returns the scheme a signed decision is under (ApproverSignature.ApproverAlg), or ""
+// when the record carries none.
+func (r Record) ApproverAlg() Alg {
+	if r.ApproverSignature == nil {
+		return ""
+	}
+	return r.ApproverSignature.ApproverAlg
+}
+
+// Signature returns the signature of a signed decision (ApproverSignature.Signature), or nil when
+// the record carries none. The slice is the record's own, as the field was.
+func (r Record) Signature() []byte {
+	if r.ApproverSignature == nil {
+		return nil
+	}
+	return r.ApproverSignature.Signature
+}
+
+// modelTurn returns the ModelTurn of its arguments, or nil when they are all empty, so a record
+// built in memory carries metadata exactly when its journal encoding does.
+func modelTurn(t ModelTurn) *ModelTurn {
+	if t == (ModelTurn{}) {
+		return nil
+	}
+	return &t
 }
 
 // ClaimID returns the random id of the driver that wrote this attempt marker or not-started record
@@ -188,6 +297,15 @@ func unmarshalRecord(b []byte) (Record, error) {
 	}
 	f.Approval = w.Approval.policy()
 	f.claim, f.salt, f.raw = w.Claim, w.Salt, nil
+	// A member written with its empty value ({"finish":""}, {"model":null}, {"signature":null}),
+	// which the encoding never writes, still makes the decoder allocate the sub-struct. Such a
+	// record carries none, as its encoding holds none, so decoding stays a fixed point.
+	if f.ModelTurn != nil && *f.ModelTurn == (ModelTurn{}) {
+		f.ModelTurn = nil
+	}
+	if s := f.ApproverSignature; s != nil && s.Approver == "" && s.ApproverAlg == "" && len(s.Signature) == 0 {
+		f.ApproverSignature = nil
+	}
 	return Record(f), nil
 }
 

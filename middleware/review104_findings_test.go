@@ -95,11 +95,11 @@ func TestF2_ReplayLosesModelInfo(t *testing.T) {
 		return agent.Record{}
 	}
 	ra, rb := pick(a), pick(b)
-	if ra.Finish != rb.Finish || ra.RawFinish != rb.RawFinish || ra.PromptDigest != rb.PromptDigest || ra.ToolsDigest != rb.ToolsDigest {
+	if ra.Finish() != rb.Finish() || ra.RawFinish() != rb.RawFinish() || ra.PromptDigest() != rb.PromptDigest() || ra.ToolsDigest() != rb.ToolsDigest() {
 		t.Fatalf("finish/digest mismatch: %+v vs %+v", ra, rb)
 	}
-	if !reflect.DeepEqual(ra.Model, rb.Model) {
-		t.Fatalf("replayed record Model = %v, original %+v", rb.Model, *ra.Model)
+	if !reflect.DeepEqual(ra.Model(), rb.Model()) {
+		t.Fatalf("replayed record Model = %v, original %+v", rb.Model(), *ra.Model())
 	}
 }
 

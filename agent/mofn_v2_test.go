@@ -87,7 +87,7 @@ func TestMofn_JunkCannotBlockOrDeny(t *testing.T) {
 
 	_, _ = mofnRun(store, "r1", true, pol, vf, &charged)
 	for _, id := range abc {
-		writeRaw(t, store, "r1", approvalStep("c1")+":"+id+":junk", Record{Kind: StepApproval, ToolUseID: "c1", Approver: id, Approved: false, Signature: []byte("junk")})
+		writeRaw(t, store, "r1", approvalStep("c1")+":"+id+":junk", Record{Kind: StepApproval, ToolUseID: "c1", Approved: false, ApproverSignature: &ApproverSignature{Approver: id, Signature: []byte("junk")}})
 	}
 	_, err := mofnRun(store, "r1", false, pol, vf, &charged)
 	wantPending(t, err, counts{Need: 2, Pending: abc})
@@ -270,8 +270,8 @@ func TestMofn_DecisionCountsOnlyUnderItsScheme(t *testing.T) {
 	if !errors.Is(err, ErrInvalidApproval) {
 		t.Fatalf("another scheme under WithDecisionCheck: err = %v, want ErrInvalidApproval", err)
 	}
-	writeRaw(t, store, "r1", approvalStep("c1")+":alice:noalg", Record{Kind: StepApproval, ToolUseID: "c1", Approver: "alice", Approved: true, Signature: sig})
-	writeRaw(t, store, "r1", approvalStep("c1")+":alice:otheralg", Record{Kind: StepApproval, ToolUseID: "c1", Approver: "alice", Approved: true, ApproverAlg: "ml-dsa-65", Signature: sig})
+	writeRaw(t, store, "r1", approvalStep("c1")+":alice:noalg", Record{Kind: StepApproval, ToolUseID: "c1", Approved: true, ApproverSignature: &ApproverSignature{Approver: "alice", Signature: sig}})
+	writeRaw(t, store, "r1", approvalStep("c1")+":alice:otheralg", Record{Kind: StepApproval, ToolUseID: "c1", Approved: true, ApproverSignature: &ApproverSignature{Approver: "alice", ApproverAlg: "ml-dsa-65", Signature: sig}})
 	_, err = mofnRun(store, "r1", false, pol, vf, &charged)
 	wantPending(t, err, counts{Need: 1, Pending: []string{"alice", "bob", "carol"}})
 	_, checks := TallyApprovals(mofnHistory(t, store, "r1"), subj, *pol, vf)
@@ -303,8 +303,7 @@ func TestMofn_OneKeyUnderTwoApproverIdsCountsOnce(t *testing.T) {
 	s := ApprovalSubject{RunID: "r", ToolUseID: "c", ToolName: "wire", Args: json.RawMessage(`{}`)}
 	var recs []Record
 	for _, id := range []string{"alice", "bob"} {
-		recs = append(recs, Record{Name: "approval:c:" + id, Kind: StepApproval, ToolUseID: "c", Approved: true, Approver: id,
-			ApproverAlg: fakeAlg, Signature: fakeSign("shared", ApprovalDecisionBytes(s, id, true))})
+		recs = append(recs, Record{Name: "approval:c:" + id, Kind: StepApproval, ToolUseID: "c", Approved: true, ApproverSignature: &ApproverSignature{Approver: id, ApproverAlg: fakeAlg, Signature: fakeSign("shared", ApprovalDecisionBytes(s, id, true))}})
 	}
 	p := ApprovalPolicy{Need: 2, Approvers: []string{"alice", "bob"}}
 	got, checks := TallyApprovals(recs, s, p, func(string) (ApproverVerifier, bool) { return sharedKeyVerifier{}, true })

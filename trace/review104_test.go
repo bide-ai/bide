@@ -40,7 +40,7 @@ func TestT1_TraceFinishOfBuiltResponse(t *testing.T) {
 	var fin agent.FinishReason
 	for _, r := range recs {
 		if r.Kind == agent.StepModel {
-			fin = r.Finish
+			fin = r.Finish()
 		}
 	}
 	var spanFin string

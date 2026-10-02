@@ -43,7 +43,7 @@ func ProveApproval(ctx context.Context, store agent.Durable, runID, step string,
 		return ProofBundle{}, fmt.Errorf("audit: load journal %s: %w", runID, err)
 	}
 	for i, r := range recs {
-		if r.Kind == agent.StepApproval && r.Name == step && r.Approver != "" {
+		if r.Kind == agent.StepApproval && r.Name == step && r.Approver() != "" {
 			return ProveRecord(ctx, store, runID, i, sth)
 		}
 	}
@@ -107,7 +107,7 @@ func ApprovalEvidence(ctx context.Context, store agent.Durable, runID, toolUseID
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, EvidenceAction{Label: recs[i].Approver, Kind: KindApproval, Ref: name, Bundle: pb})
+		out = append(out, EvidenceAction{Label: recs[i].Approver(), Kind: KindApproval, Ref: name, Bundle: pb})
 	}
 	tallyPB, err := prove(tallyIdx)
 	if err != nil {
@@ -285,7 +285,7 @@ func VerifyApprovals(actions []EvidenceAction, toolUseID string, policy agent.Ap
 			continue
 		}
 		ignore := func(reason string) {
-			v.Ignored = append(v.Ignored, IgnoredDecision{Approver: r.Approver, Step: r.Name, Reason: reason})
+			v.Ignored = append(v.Ignored, IgnoredDecision{Approver: r.Approver(), Step: r.Name, Reason: reason})
 		}
 		err := a.Bundle.Verify(logV)
 		if err != nil && !errors.Is(err, ErrNotVerified) {

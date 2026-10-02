@@ -131,7 +131,11 @@ not report one) is recorded as `agent.FinishStop`. A response a middleware build
 fallback, a cache) is checked the same way: `FinishLength` and `FinishFiltered` are the errors
 above, and an unknown reason is `agent.ErrStreamProtocol`.
 
-Each model record (`agent.Record` of kind `StepModel`) journals, beside the message and usage:
+Each model record (`agent.Record` of kind `StepModel`) journals, beside the message and usage, the
+turn's metadata. The record holds it in `Record.ModelTurn` (a `*agent.ModelTurn`, nil when the
+record carries none) and you read it through the nil-safe accessors `Finish()`, `RawFinish()`,
+`Model()`, `PromptDigest()` and `ToolsDigest()`; the journal encoding writes each as a member of the
+record:
 
 - `Finish` and `RawFinish`, which `agent.Replay` reproduces;
 - `Model`, the `agent.ModelInfo` of the model that answered (`nil` when it does not describe

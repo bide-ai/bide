@@ -734,8 +734,8 @@ func TestP11_ApprovalsUnderPostQuantumKeys(t *testing.T) {
 	}
 	recs, _ := store.History(ctx, "gate")
 	for _, r := range recs {
-		if agent.IsApprovalDecision(r, "c1") && r.ApproverAlg != approvers[r.Approver].Alg() {
-			t.Fatalf("decision by %s journaled under %q, want %q", r.Approver, r.ApproverAlg, approvers[r.Approver].Alg())
+		if agent.IsApprovalDecision(r, "c1") && r.ApproverAlg() != approvers[r.Approver()].Alg() {
+			t.Fatalf("decision by %s journaled under %q, want %q", r.Approver(), r.ApproverAlg(), approvers[r.Approver()].Alg())
 		}
 	}
 

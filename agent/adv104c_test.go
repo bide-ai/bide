@@ -235,11 +235,11 @@ func TestAdv104c_IdenticalRecordsOfTwoDrivers(t *testing.T) {
 // record read back in its canonical form is the one built, and a different one is not.
 func TestAdv104c_OwnRecordWithoutSalt(t *testing.T) {
 	msg := Message{Role: RoleAssistant, Parts: []Part{ToolUse{ID: "c1", Name: "lookup", Args: json.RawMessage(`{"q": "x"}`)}, Text{Text: "bad \xff"}}}
-	built := Record{Kind: StepModel, Message: &msg, Usage: &billed, Finish: FinishToolUse}
+	built := Record{Kind: StepModel, Message: &msg, Usage: &billed, ModelTurn: &ModelTurn{Finish: FinishToolUse}}
 	if err := stampSalt(&built); err != nil {
 		t.Fatal(err)
 	}
-	b, err := EncodeRecord(Record{Name: "@llm/0", Kind: StepModel, Message: &msg, Usage: &billed, Finish: FinishToolUse})
+	b, err := EncodeRecord(Record{Name: "@llm/0", Kind: StepModel, Message: &msg, Usage: &billed, ModelTurn: &ModelTurn{Finish: FinishToolUse}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -251,7 +251,7 @@ func TestAdv104c_OwnRecordWithoutSalt(t *testing.T) {
 		t.Fatal("the record read back in canonical form is not taken as the one built")
 	}
 	other := held
-	other.Finish = FinishStop
+	other.ModelTurn = &ModelTurn{Finish: FinishStop}
 	if ownRecord(other, built) {
 		t.Fatal("a different record is taken as the one built")
 	}

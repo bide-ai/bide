@@ -676,7 +676,7 @@ func actionMismatch(a EvidenceAction) (string, error) {
 		_, call, ok := agent.FindToolCall([]agent.Record{r}, a.Ref)
 		return want(ok, call.Name, a.Ref), nil
 	case KindApproval:
-		return want(r.Kind == agent.StepApproval && r.Approver != "", r.Approver, r.Name), nil
+		return want(r.Kind == agent.StepApproval && r.Approver() != "", r.Approver(), r.Name), nil
 	case KindApprovalTally:
 		return want(r.Kind == agent.StepValue && strings.HasPrefix(r.Name, agent.ApprovalTallyStep("")), "approval tally", r.Name), nil
 	case KindGrant:

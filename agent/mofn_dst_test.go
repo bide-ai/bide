@@ -47,7 +47,7 @@ func countDecisions(t *testing.T, store Durable, runID, toolUseID, approver stri
 	t.Helper()
 	n := 0
 	for _, r := range mofnHistory(t, store, runID) {
-		if IsApprovalDecision(r, toolUseID) && r.Approver == approver {
+		if IsApprovalDecision(r, toolUseID) && r.Approver() == approver {
 			n++
 		}
 	}

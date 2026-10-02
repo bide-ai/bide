@@ -137,8 +137,7 @@ func TestTallyApprovals_SharedKeyNeverCounts(t *testing.T) {
 		"a4": keyVerifier{signer: "h4"},
 	})
 	rec := func(approver, signer string) Record {
-		return Record{Name: "d:" + approver, Kind: StepApproval, ToolUseID: "c1", Approver: approver, Approved: true, ApproverAlg: fakeAlg,
-			Signature: fakeSign(signer, ApprovalDecisionBytes(s, approver, true))}
+		return Record{Name: "d:" + approver, Kind: StepApproval, ToolUseID: "c1", Approved: true, ApproverSignature: &ApproverSignature{Approver: approver, ApproverAlg: fakeAlg, Signature: fakeSign(signer, ApprovalDecisionBytes(s, approver, true))}}
 	}
 	pol := ApprovalPolicy{Need: 2, Approvers: []string{"a1", "a2", "a3", "a4"}}
 	for _, order := range [][]string{{"a1", "a2", "a3", "a4"}, {"a2", "a1", "a3", "a4"}} {
@@ -261,7 +260,7 @@ func TestMofn_TypedNilVerifierRefused(t *testing.T) {
 		}
 	})
 	s := ApprovalSubject{RunID: "r", ToolUseID: "c1", ToolName: "charge", Args: []byte(`{}`)}
-	recs := []Record{{Name: "d:a1", Kind: StepApproval, ToolUseID: "c1", Approver: "a1", Approved: true, ApproverAlg: fakeAlg, Signature: []byte("x")}}
+	recs := []Record{{Name: "d:a1", Kind: StepApproval, ToolUseID: "c1", Approved: true, ApproverSignature: &ApproverSignature{Approver: "a1", ApproverAlg: fakeAlg, Signature: []byte("x")}}}
 	noPanic(t, "TallyApprovals", func() {
 		tally, checks := TallyApprovals(recs, s, pol, vf)
 		if tally.Approved != 0 || len(checks) != 1 || checks[0].Counted {
