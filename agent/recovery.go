@@ -431,12 +431,12 @@ func decodeStartEntry(b []byte) (RunStart, bool) {
 	if h := decodeHook.Load(); h != nil {
 		(*h)(b)
 	}
-	var w struct {
-		Name   string        `json:"name"`
-		Kind   StepKind      `json:"kind"`
-		Result *runStartWire `json:"result"`
-	}
-	if err := json.Unmarshal(b, &w); err != nil || w.Name != runStartStep || w.Kind != StepValue || w.Result == nil {
+	w := startEntryPool.Get().(*startEntry)
+	defer startEntryPool.Put(w)
+	*w = startEntry{} // Unmarshal merges into what it is given
+	// A result with no input (absent, null, or holding none) takes the full decoding, which
+	// reports an absent or null result as before; a start with no input reads the same either way.
+	if err := json.Unmarshal(b, w); err != nil || !bool(w.Name) || !bool(w.Kind) || w.Result.Input == nil {
 		return RunStart{}, false
 	}
 	st, err := w.Result.start()
@@ -444,6 +444,34 @@ func decodeStartEntry(b []byte) (RunStart, bool) {
 		return RunStart{}, false
 	}
 	return st, true
+}
+
+// startEntry is the part of a stored run:start record decodeStartEntry reads. Name and Kind are
+// matched against the encoding this version writes ("run:start", "value") without decoding a
+// string; any other spelling of them takes the full decoding. Pooled: a recovery pass decodes one
+// per run it drives.
+type startEntry struct {
+	Name   isStartName  `json:"name"`
+	Kind   isValueKind  `json:"kind"`
+	Result runStartWire `json:"result"`
+}
+
+var startEntryPool = sync.Pool{New: func() any { return new(startEntry) }}
+
+// isStartName is true for a JSON value that is the string "run:start", as written.
+type isStartName bool
+
+func (n *isStartName) UnmarshalJSON(b []byte) error {
+	*n = string(b) == `"`+runStartStep+`"`
+	return nil
+}
+
+// isValueKind is true for a JSON value that is the string "value", as written.
+type isValueKind bool
+
+func (k *isValueKind) UnmarshalJSON(b []byte) error {
+	*k = string(b) == `"`+string(StepValue)+`"`
+	return nil
 }
 
 // recoverable reports whether a run the recovery filter admits is one a recovery pass drives: not a

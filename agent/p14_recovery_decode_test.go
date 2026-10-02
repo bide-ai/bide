@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"reflect"
 	"testing"
@@ -75,13 +76,57 @@ func TestP14_RecoveryStartDecodeMatchesFullDecode(t *testing.T) {
 	renamed, _ := EncodeRecord(Record{Name: "run:other", Kind: StepValue, Result: json.RawMessage(`{"input":"go"}`)})
 	badInput, _ := EncodeRecord(Record{Name: runStartStep, Kind: StepValue, Result: json.RawMessage(`{"input":5}`)})
 	noResult, _ := EncodeRecord(Record{Name: runStartStep, Kind: StepValue})
+	nullResult := []byte(`{"name":"run:start","kind":"value","result":null}`)
+	noInput := []byte(`{"name":"run:start","kind":"value","result":{"saga":true}}`)
+	escapedName := []byte(`{"name":"run\u003astart","kind":"value","result":{"input":"go"}}`)
+	escapedKind := []byte(`{"name":"run:start","kind":"valu\u0065","result":{"input":"go"}}`)
+	renamedLast := []byte(`{"name":"run:start","kind":"value","result":{"input":"go"},"name":"run:other"}`)
 	for name, b := range map[string][]byte{
 		"tombstone": tomb, "other kind": other, "other name": renamed, "bad input": badInput,
-		"no result": noResult, "not json": []byte(`{"name":`),
+		"no result": noResult, "not json": []byte(`{"name":`), "null result": nullResult, "no input": noInput,
+		"escaped name": escapedName, "escaped kind": escapedKind, "renamed by a later member": renamedLast,
 	} {
 		t.Run(name, func(t *testing.T) {
 			if st, ok := decodeStartEntry(b); ok {
 				t.Fatalf("decodeStartEntry took %s as %#v; the full decoding must read it", b, st)
+			}
+		})
+	}
+}
+
+// A record the one-pass decoding leaves to the full decoding reads as the full decoding reads it:
+// a name or kind spelled with escapes is still run:start's, and a result with no input is a start
+// with no input.
+func TestStartUnderLeaseFallsBackToTheFullDecoding(t *testing.T) {
+	ctx := context.Background()
+	for name, b := range map[string][]byte{
+		"escaped name": []byte(`{"name":"run\u003astart","kind":"value","result":{"input":"go","saga":true}}`),
+		"escaped kind": []byte(`{"name":"run:start","kind":"valu\u0065","result":{"input":"go"}}`),
+		"no input":     []byte(`{"name":"run:start","kind":"value","result":{"saga":true}}`),
+	} {
+		t.Run(name, func(t *testing.T) {
+			m := NewMemStore()
+			j, err := NewJournal(m)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := j.ensureHeader(ctx, "r"); err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := m.Insert(ctx, "r", runStartStep, b); err != nil {
+				t.Fatal(err)
+			}
+			rec, err := decodeStored("r", runStartStep, b)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var want RunStart
+			if err := json.Unmarshal(rec.Result, &want); err != nil {
+				t.Fatal(err)
+			}
+			got, ok, err := startUnderLease(ctx, j, "r")
+			if err != nil || !ok || !reflect.DeepEqual(got, want) {
+				t.Fatalf("startUnderLease = %#v, %v, %v; want %#v (the full decoding)", got, ok, err, want)
 			}
 		})
 	}
