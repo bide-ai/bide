@@ -19,7 +19,7 @@ At a glance:
 - **215 configurations** in the merge queue (86 that must pass, each also run for vacuity, and 129
   that must fail with their named property: the regression, finding and limit configurations and
   one `ci` reachability check), and **76 larger ones nightly**.
-- **Apalache, nightly:** an inductive invariant proves the claim protocol's `AtMostOnce` and `NotStartedExclusive` at any depth and for any number of faults, for two drivers on one call; its extension to halt resolution is written and awaits its first full check; a bounded symbolic regression must find #90's F2.
+- **Apalache, nightly:** an inductive invariant proves the claim protocol's `AtMostOnce`, `NotStartedExclusive`, `NoLiveOverride` and `AtMostOncePerIntent` at any depth and for any number of faults, for two drivers (on one call, and with halt resolution and the caller on two calls); a bounded symbolic regression must find #90's F2.
 - **29 bugs caught before release** in bide's own design or code (F1 to F5, P1, P2, T1 to T6, a
   rollback that never ended, L1 to L7, a spend-accounting bug model 8 confirmed, D1 to D3, and
   S1 to S4). Each fixed one is kept as a regression configuration (L2 to L7 and S3 since P14
@@ -270,7 +270,7 @@ skeleton; and M5, merging and validating the traces of the multi-process HA harn
 ## What the models do not cover
 
 - **Only the bounds checked**, except where an inductive invariant holds. TLC checks every
-  behavior within each configuration's bounds and nothing beyond them. Model 1's inductive invariant lifts the depth and fault bounds for `AtMostOnce` and `NotStartedExclusive`, for two drivers, two processes and one call, attempts 0..3 and 8 claim ids, without halt resolution or the approval gate; its extension to halt resolution awaits its first full check ([Apalache results](../spec/tla/README.md#apalache-results)). Typical bounds: two drivers (three in one nightly configuration), one crash,
+  behavior within each configuration's bounds and nothing beyond them. Model 1's inductive invariant lifts the depth and fault bounds for `AtMostOnce`, `NotStartedExclusive`, `NoLiveOverride` and `AtMostOncePerIntent`, for two drivers over two processes (one call, attempts 0..3 and 8 claim ids; with halt resolution, two calls, attempts 0..3 and 6 claim ids), without the approval gate and, under the lease check, assuming no plain run holds the live attempt at the check ([Apalache results](../spec/tla/README.md#apalache-results)). Typical bounds: two drivers (three in one nightly configuration), one crash,
   one cancellation, up to two error replies on pull requests and four nightly; model 9, one turn
   of one or two calls with at most two invocations of a call at once; model 10, one or two
   recovery workers, up to three runs; model 1b, three approvers and up to three decisions. A bug

@@ -728,7 +728,7 @@ speak about the same records:
   within its bounds, fast at the small bounds that find most bugs, and checks liveness. Apalache
   adds what TLC cannot do: bounded symbolic checks with the configuration's placements left to the
   solver, and inductive invariants, which prove a safety property at any depth and for any fault
-  budget. Status: model 1's inductive invariant proves `AtMostOnce` and `NotStartedExclusive` for two drivers on one call; its extension to halt resolution awaits its first full check; bounded symbolic checks proved too slow on these models to reach a fire (see [Apalache results](../../spec/tla/README.md#apalache-results)); model 9 has a typed wrapper and no check yet. Apalache remains the candidate for model 4, where `Seq`
+  budget. Status: model 1's inductive invariant proves `AtMostOnce`, `NotStartedExclusive`, `NoLiveOverride` and `AtMostOncePerIntent` for two drivers, with and without halt resolution; bounded symbolic checks proved too slow on these models to reach a fire (see [Apalache results](../../spec/tla/README.md#apalache-results)); model 9 has a typed wrapper and no check yet. Apalache remains the candidate for model 4, where `Seq`
   values and concurrent readers make explicit-state checking expensive.
 
 ## 8. Milestones

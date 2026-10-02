@@ -549,8 +549,8 @@ and the constants of each configuration:
 
 | Configuration | Drivers, processes, calls | Attempts, claim ids | Halt resolution | Properties | Result |
 |---|---|---|---|---|---|
-| `inductive-2x2x1` | 2, 2, 1 | 0..3, 8 | none | `AtMostOnce`, `NotStartedExclusive` | inductive; the step check took 78 minutes on the development machine under load (4,699 s), the other checks about 20 s each |
-| `inductive-resolver` and its four `-step-*` shards | 2, 2, 2 (the second call is issued when the first reads as not charged) | 0..3, 6 | the fixed resolution, lease or minimum-age check, in either process or neither | all four | awaits its first full check: the unsplit step check found two counterexamples to induction (a driver holding the resolver's claim id; the resolver at `RNotStarted`, which the fixed resolution never reaches), each a state the invariant did not yet exclude, not a protocol bug; each run took hours, the last 7.1 hours, so the step now runs nightly in four parallel jobs, one per disjunct group of `FullNext` (`StepD1`, `StepD2`, `StepResolver`, `StepEnv`) |
+| `inductive-2x2x1` | 2, 2, 1 | 0..3, 8 | none | `AtMostOnce`, `NotStartedExclusive` | inductive; 40 minutes on the CI runner for the four checks (the step check took 78 minutes on the development machine under load) |
+| `inductive-resolver` and its four `-step-*` shards | 2, 2, 2 (the second call is issued when the first reads as not charged) | 0..3, 6 | the fixed resolution, lease or minimum-age check, in either process or neither | `AtMostOnce`, `NotStartedExclusive`, `NoLiveOverride`, `AtMostOncePerIntent` | inductive; on the CI runner the base checks take 2 minutes and the step shards `StepD1` 2 h 48 min, `StepD2` 2 h 50 min, `StepResolver` 54 min, `StepEnv` 2 min, in parallel |
 
 Each configuration leaves to the solver which process each driver runs in, which call it drives,
 each call's kind (tool, Step or plan flow), whether a Step pauses, which drivers hold the lease,
@@ -574,6 +574,12 @@ from `spec/tla/claims`): `minage-in-proc` (halt resolution with the minimum-age 
 drivers' process, a Step and a tool call, weak A3; 8,988,594 distinct states, 10 min 47 s on the
 development machine) and `lease-cross` (the lease check, drivers in two processes, one leased,
 cancellations and an eviction; 4,142,552 states, 5 min 9 s). Both pass with every conjunct.
+
+**How the invariant was found.** Each counterexample to induction Apalache reported was a state
+the invariant did not yet exclude, never a reachable violation: a driver at `GateWrite` holding a
+remembered id outside every custody set, a driver holding the resolver's claim id, the resolver
+at `RNotStarted` (which the fixed resolution never reaches), and the resolver's claim id as the
+marker of an attempt other than the one it claims. Each added one conjunct.
 
 **Bounded symbolic checks.** On this model they reach far less than TLC. Each step is a
 disjunction of a few hundred transitions (every label of every driver and of the resolver,
