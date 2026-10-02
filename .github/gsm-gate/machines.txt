@@ -6,10 +6,12 @@
 # <program> <machine> <verdict>
 #
 # program: a directory with a main package. The gate builds it with -tags gsmgate
-#   and runs it twice, canonically (no arguments, only PATH, fresh empty HOME,
-#   TMPDIR and working directory, empty stdin); each run records every gsm machine
-#   it makes, and the two runs must make the same machines. The gate certifies
-#   the machines a program makes when run that way.
+#   and runs it twice with no arguments, an environment of only PATH, HOME and
+#   TMPDIR (plus GSM_GATE_DIR), empty stdin and an empty working directory; each
+#   run records every gsm machine it makes, and the two runs must make the same
+#   machines. The gate certifies the machines a program makes when run that way;
+#   files read by absolute path, the network, the host, the clock and randomness
+#   are not fixed.
 # machine: the registry's name (a federation's components are listed one by one).
 # verdict: certified         Build accepts it; both checkers verify it.
 #          certified-tables  Build accepts it; the table checker verifies it. Its

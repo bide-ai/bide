@@ -13,19 +13,20 @@ interim gate, in CI only, until an in-process gate lands in gsm.
 verdict (`certified`, `certified-tables`, `rejected`, `synthesized`,
 `not-built`; the file explains each). gsm's `internal/cmd/gsmgate` builds each
 program with `-tags gsmgate` (through a copy of its `go.mod`, so bide is not
-changed) and runs it twice, canonically: no arguments, an environment of only
-`PATH=/usr/bin:/bin`, a fresh empty `HOME` and `TMPDIR` and the gate directory,
-empty standard input, and a fresh empty working directory. Each run records
-every machine the program makes: each `Build` result, including each component
-a federation builds, and each synthesized or compositional machine. What the
-gate certifies is the machines each program makes when run that way, with no
-arguments, no environment and no input. gsmgate then runs both checkers on the
-records. The job fails if:
+changed) and runs it twice. Each run records every machine the program makes:
+each `Build` result, including each component a federation builds, and each
+synthesized or compositional machine. What the gate certifies is the machines
+each program makes when run with no arguments, an environment of only `PATH`,
+`HOME` and `TMPDIR` (plus `GSM_GATE_DIR`), empty stdin and an empty working
+directory. Files read by absolute path, the network, the host, the clock and
+randomness are not fixed. Programs are built with the runner's Go settings.
+gsmgate then runs both checkers on the records. The job fails if:
 
 - a checker rejects a machine listed as accepted, refuses its input, or crashes;
 - a checker disagrees with `Build` (verifies a machine `Build` rejects);
 - a program makes a machine `machines.txt` does not list, or a listed machine is
   not made;
+- a program fails on either run (a panic, a non-zero exit, a timeout);
 - a program makes different machines on its two runs. The runs start moments
   apart on the same host, so a machine that depends on the time of day is not
   detected, and one that depends on randomness only when the runs happen to
