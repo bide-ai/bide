@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -93,6 +94,29 @@ func checkStartAgree(t *testing.T, b []byte) {
 	}
 }
 
+// The fast paths still read the records the journal writes, escapes and all: both decode them.
+func TestRev138c_StartDecodeTakesJournaledStarts(t *testing.T) {
+	for _, st := range []RunStart{
+		{Input: UserText("go"), Kind: RunKindAgent},
+		{Input: UserText(`say "hi`), Saga: true},
+		{Input: UserText(`a\b "c" {d} [e], f`), Kind: RunKindAgent, Tools: []string{`x"`, `]`}},
+		{Input: UserText("hi"), Ext: map[string]json.RawMessage{"k": json.RawMessage(`{"a":"}\""}`)}},
+	} {
+		res, err := marshalJournal(st)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, err := EncodeRecord(Record{Name: runStartStep, Kind: StepValue, Result: res, salt: []byte("0123456789abcdef0123456789abcdef")})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := decodeStartEntry(b); !ok {
+			t.Errorf("decodeStartEntry refused %s", b)
+		}
+		checkStartAgree(t, b)
+	}
+}
+
 // saltLen is the length the journal's encoding of a salt has.
 func TestRev138c_SaltLen(t *testing.T) {
 	want := base64.StdEncoding.EncodedLen(SaltSize)
@@ -118,6 +142,7 @@ func TestRev138c_ValidSalt(t *testing.T) {
 		rev138cSalt[:40] + "\r\nA=":               false, // Decode skips the newline: 33 others, 24 bytes
 		rev138cSalt[:42] + "-=":                   false, // outside the standard alphabet
 		"":                                        false,
+		strings.Repeat("A", 48):                   false, // 36 bytes: more than Decode may write into a salt's buffer
 	} {
 		if got := validSalt([]byte(s)); got != want {
 			t.Errorf("validSalt(%q) = %v, want %v", s, got, want)
