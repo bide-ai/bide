@@ -12,9 +12,10 @@ import (
 	"github.com/bide-ai/bide/eval"
 )
 
-// unreadableJournal serves the agent's own two reads of a run's history (its Load, and its read-back
-// of the end markers after run:complete), then fails every later read of that run, as a SQL store
-// does when its connection drops between the run and the eval's read.
+// unreadableJournal serves the agent's own three reads of a run's history (its Load, its Load again
+// once run:start is written, and its read-back of the end markers after run:complete), then fails
+// every later read of that run, as a SQL store does when its connection drops between the run and
+// the eval's read.
 type unreadableJournal struct {
 	agent.Durable
 	reads sync.Map // runID -> *atomic.Int32
@@ -24,7 +25,7 @@ var errReadFailed = fmt.Errorf("history unavailable: %w", agent.ErrStorage)
 
 func (j *unreadableJournal) History(ctx context.Context, runID string) ([]agent.Record, error) {
 	n, _ := j.reads.LoadOrStore(runID, new(atomic.Int32))
-	if n.(*atomic.Int32).Add(1) > 2 {
+	if n.(*atomic.Int32).Add(1) > 3 {
 		return nil, errReadFailed
 	}
 	return j.Durable.History(ctx, runID)
