@@ -224,14 +224,12 @@ func (s RunStart) kind() RunKind {
 // or a typed run.
 func (s RunStart) legacy() bool { return s.Kind == "" && s.Typed == nil }
 
-// admits reports whether a drive of kind k may drive the run s started: a drive of s's own kind,
-// and, for a legacy start (see legacy), a drive of any kind but a flow's, since the record does not
-// say which agent entry point started the run.
+// admits reports whether an agent's drive of kind k may drive the run s started: a drive of s's
+// own kind, and, for a legacy start (see legacy), a drive of any kind, since the record does not
+// say which agent entry point started the run. (A flow holds its start through holdToStart, which
+// reads a legacy start as an agent run's.)
 func (s RunStart) admits(k RunKind) bool {
-	if s.legacy() {
-		return k != RunKindFlow
-	}
-	return s.kind() == k
+	return s.legacy() || s.kind() == k
 }
 
 // RecordedStart returns how runID was started (see RunStart), and ok=false for a run whose

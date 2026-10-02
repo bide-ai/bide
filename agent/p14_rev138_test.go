@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
+	"time"
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
@@ -142,6 +144,11 @@ func TestRev138_RequestBeforeRecordedFailureOnTheNextDrive(t *testing.T) {
 	st, _ := agent.Status(ctx, j, "r")
 	if !errors.Is(err, agent.ErrRunCancelled) || st.State != agent.RunCancelled {
 		t.Fatalf("next drive of a failed saga with a rollback request = %v, Status %s; want ErrRunCancelled and cancelled", err, st.State)
+	}
+	// The drive read the request first (model 10's DOpen order) and rolled back for it, not for the
+	// failure that its rollback then found requested.
+	if strings.Contains(err.Error(), "a step failed after the cancellation was requested") {
+		t.Fatalf("the drive rolled back for the failure first: %v", err)
 	}
 }
 
@@ -310,5 +317,100 @@ func TestRev138_SessionRollsBackACancelledSagaTurn(t *testing.T) {
 	}
 	if h := s.History(); len(h) != 0 {
 		t.Fatalf("the closed turn is in the transcript: %v", h)
+	}
+	if st, _ := agent.Status(ctx, j, "s>@turn/1"); st.State == agent.RunNotStarted {
+		t.Fatalf("the next message's turn did not run (%v)", err)
+	}
+}
+
+// A sub-run reads its tree root's cancellation when it opens: a sub-agent called after its root
+// was cancelled (the Cancel landed during the parent's model turn) does not call its model.
+func TestRev138_SubRunOpenChecksTheRoot(t *testing.T) {
+	ctx := context.Background()
+	j, _ := p14Journal(t)
+	subModel := &p14Model{turns: []p14Turn{{text: "sub"}}}
+	sub := p14Build(t, subModel, j)
+	parentModel := &p14Model{turns: []p14Turn{
+		{calls: []agent.ToolUse{{ID: "p1", Name: "helper", Args: []byte(`{"task":"x"}`)}}, hook: func(agent.Request) {
+			if err := agent.Cancel(ctx, j, "r", "stop"); err != nil {
+				t.Errorf("Cancel = %v", err)
+			}
+		}},
+		{text: "done"},
+	}}
+	parent := p14Build(t, parentModel, j, agent.WithTools(agent.SubAgent("helper", "", sub)))
+	if _, err := parent.RunMessage(ctx, "r", agent.UserText("go")); !errors.Is(err, agent.ErrRunCancelled) {
+		t.Fatalf("parent run = %v, want ErrRunCancelled", err)
+	}
+	if n := subModel.calls.Load(); n != 0 {
+		t.Fatalf("the sub-run called its model %d times after its root was cancelled", n)
+	}
+}
+
+// A saga sub-run that rolls back for its root's cancellation records the root's reason in its own
+// run:cancelled.
+func TestRev138_SagaSubRunRecordsTheRootsReason(t *testing.T) {
+	ctx := context.Background()
+	j, m := p14Journal(t)
+	var undone counter
+	book := agent.CompensatedFunc("book", "", agent.Safety{},
+		func(context.Context, struct{}) (string, error) { return "booked", nil },
+		func(context.Context, struct{}, string) error { undone.n.Add(1); return nil })
+	mark := agent.Func("mark", "", agent.Safety{ReadOnly: true}, func(context.Context, struct{}) (string, error) {
+		if err := agent.Cancel(ctx, j, "r", "the customer left"); err != nil {
+			t.Errorf("Cancel = %v", err)
+		}
+		return "ok", nil
+	})
+	subModel := &p14Model{turns: []p14Turn{{calls: []agent.ToolUse{call("s1", "book")}}, {calls: []agent.ToolUse{call("s2", "mark")}}, {text: "sub"}}}
+	sub := p14Build(t, subModel, j, agent.WithTools(book, mark))
+	parentModel := &p14Model{turns: []p14Turn{{calls: []agent.ToolUse{{ID: "p1", Name: "helper", Args: []byte(`{"task":"x"}`)}}}, {text: "done"}}}
+	parent := p14Build(t, parentModel, j, agent.WithTools(agent.SubAgent("helper", "", sub)))
+	if _, err := parent.RunMessage(ctx, "r", agent.UserText("go"), agent.WithSaga()); !errors.Is(err, agent.ErrRunCancelled) {
+		t.Fatalf("parent saga = %v, want ErrRunCancelled", err)
+	}
+	if undone.n.Load() != 1 {
+		t.Fatalf("compensated %d, want 1", undone.n.Load())
+	}
+	var subs []string
+	for id, err := range m.Runs(ctx, agent.RunFilter{}) {
+		if err != nil {
+			t.Fatal(err)
+		}
+		if agent.IsSubRun(id) {
+			subs = append(subs, id)
+		}
+	}
+	if len(subs) != 1 {
+		t.Fatalf("sub-runs = %v, want one", subs)
+	}
+	if st, _ := agent.Status(ctx, j, subs[0]); st.State != agent.RunCancelled || st.Terminal != "the customer left" {
+		t.Fatalf("the sub-run's Status = %+v, want cancelled with the root's reason", st)
+	}
+}
+
+// A cancelled turn's run whose lease another worker still holds: Send of its message returns
+// ErrRunCancelled (the run's end), not ErrTurnContended.
+func TestRev138_CancelledTurnUnderAnotherLease(t *testing.T) {
+	ctx := context.Background()
+	j, m := p14Journal(t)
+	var c counter
+	model := &p14Model{turns: []p14Turn{{calls: []agent.ToolUse{call("c1", "pay")}}, {text: "done"}}}
+	a := p14Build(t, model, j, agent.WithTools(c.tool("pay", agent.Safety{}, agent.WithApproval(agent.SingleApproval()))))
+	s, err := a.Session(ctx, "s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Send(ctx, "one"); err == nil {
+		t.Fatal("want the approval pause")
+	}
+	if err := agent.Cancel(ctx, j, "s>@turn/0", "stop"); err != nil {
+		t.Fatalf("Cancel = %v", err)
+	}
+	if ok, err := m.AcquireLease(ctx, "s>@turn/0", "another-worker", time.Hour); err != nil || !ok {
+		t.Fatalf("AcquireLease = %v, %v", ok, err)
+	}
+	if _, err := s.Send(ctx, "one"); !errors.Is(err, agent.ErrRunCancelled) {
+		t.Fatalf("Send of the cancelled message under another worker's lease = %v, want ErrRunCancelled", err)
 	}
 }
