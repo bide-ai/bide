@@ -12,6 +12,12 @@ and fails unless each succeeded, or nothing needed checking (`.github/scripts/sh
 The shard jobs are not required checks themselves, so the shard layout can change without changing
 branch protection.
 
+`gsm machine gate` (the job of `.github/workflows/gsm-gate.yml`, see `.github/gsm-gate/README.md`)
+is to be required too, added to branch protection once the workflow is on `main`. Its name is
+fixed, and it always runs and reports: it runs on `pull_request`, `merge_group` and pushes to
+`main`, with no path filter and no job-level condition, so a documentation-only change runs it as
+well (the coverage scan reads the docs) and it never waits as pending.
+
 To apply the ruleset:
 
 ```sh
