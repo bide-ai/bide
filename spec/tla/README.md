@@ -113,7 +113,11 @@ Apalache needs Java 17 or later. The script downloads the release archive pinned
 directory for each run, so only verified bytes run. Apalache's output directory and its JVM
 temporary directory live under that work directory too, and are removed on exit, on failure and on
 interrupt. `APALACHE_JAVA_OPTS` replaces the JVM options (default `-Xmx8g`), and
-`APALACHE_KEEP_OUTPUT=<dir>` keeps each check's output and counterexample. Neither TLC check needs
+`APALACHE_KEEP_OUTPUT=<dir>` keeps each check's output and counterexample. While a check runs, the
+script prints a progress line every `APALACHE_PROGRESS` seconds (default 300, 0 for none): the step,
+the transition and how many there are, how many were enabled or disabled so far, and the
+invariant conjunct being checked, read from Apalache's detailed log; it is output only, and no
+result depends on it. Neither TLC check needs
 Apalache, and `check.sh` downloads it only for the `apalache` and `fetch` commands.
 
 **Types.** Apalache's type checker needs a type for every constant and variable. The PlusCal

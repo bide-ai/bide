@@ -38,6 +38,8 @@
 # sha256sum or shasum.
 # Environment: BIDE_TLA_CACHE (tool cache; default ~/.cache/bide-tla), BIDE_APALACHE_CACHE (where
 # the Apalache archive is kept; default the tool cache), APALACHE_JAVA_OPTS (default -Xmx8g),
+# APALACHE_PROGRESS (seconds between progress lines of a running Apalache check; default 300, 0 for
+# none),
 # TLC_WORKERS (default auto),
 # TLC_JOBS (default 1: how many configs run at a time; above 1, each runs with one TLC worker),
 # TLC_MODELS (default every model: the model directories whose configs a group runs, such as
@@ -60,6 +62,7 @@ failures=0
 work=$(mktemp -d "${TMPDIR:-/tmp}/bide-tla.XXXXXX")
 cleanup() {
   if [ -n "${tlc_pid:-}" ]; then kill "$tlc_pid" 2>/dev/null || true; wait "$tlc_pid" 2>/dev/null || true; fi
+  if [ -n "${progress_pid:-}" ]; then kill "$progress_pid" 2>/dev/null || true; wait "$progress_pid" 2>/dev/null || true; fi
   if [ -n "${apalache_pid:-}" ]; then kill "$apalache_pid" 2>/dev/null || true; wait "$apalache_pid" 2>/dev/null || true; fi
   rm -rf "$work"
   rm -f "$here"/*/.vacuity-$$.cfg "$here"/*/*/.vacuity-$$.cfg
@@ -366,6 +369,26 @@ run_parallel() {
   rm -rf "$tmp"
 }
 
+# apalache_progress ODIR START: one line on how far the running check has got, from Apalache's
+# detailed log: the step, the transition and how many it has (enabled ones are checked against
+# every invariant conjunct, disabled ones are discarded), and the invariant conjunct it checks.
+# Output only: no result depends on it.
+apalache_progress() {
+  local log total last step tr en dis inv
+  # Under pipefail a grep that matches nothing fails its pipeline: every one ends with || true.
+  log=$(find "$1" -name detailed.log 2>/dev/null | head -1 || true)
+  [ -n "$log" ] && [ -f "$log" ] || return 0
+  total=$(sed -n 's/.*Found \([0-9]*\) transitions.*/\1/p' "$log" | tail -1 || true)
+  last=$(grep -o 'Step [0-9]*: Transition #[0-9]*' "$log" | tail -1 || true)
+  [ -n "$last" ] || { echo "   progress: preparing ($(( ($(date +%s) - $2) / 60 )) min)"; return 0; }
+  step=$(echo "$last" | sed 's/Step \([0-9]*\):.*/\1/')
+  tr=$(echo "$last" | sed 's/.*#//')
+  en=$(grep -c "Step $step: Transition #[0-9]* is enabled" "$log" || true)
+  dis=$(grep -c "Step $step: Transition #[0-9]* is disabled" "$log" || true)
+  inv=$(grep -o 'Checking state invariant [0-9]*' "$log" | tail -1 | sed 's/.* //' || true)
+  echo "   progress: step $step, transition $tr of ${total:-?} ($en enabled, $dis disabled so far), invariant conjunct ${inv:-?}, $(( ($(date +%s) - $2) / 60 )) min"
+}
+
 # apalache_run OUT DIR SPEC CFG ARG...: run "apalache-mc check" on SPEC in DIR with CFG, its output
 # directory and JVM temporary directory under the work directory; set apalache_status to its exit
 # status (0: no error, 12: an invariant violated). Like tlc, it runs in the background and is
@@ -384,9 +407,19 @@ apalache_run() {
         check --out-dir="$odir" --config="$cfg" --no-deadlock "$@" "$spec") >"$out" 2>&1 &
   fi
   apalache_pid=$!
+  # A progress line every APALACHE_PROGRESS seconds (default 300; 0 for none), so a long check
+  # shows how far it has got in a live CI log.
+  progress_pid=
+  if [ "${APALACHE_PROGRESS:-300}" -gt 0 ]; then
+    (start=$(date +%s); while sleep "${APALACHE_PROGRESS:-300}"; do
+       kill -0 "$apalache_pid" 2>/dev/null || exit 0; apalache_progress "$odir" "$start"; done) &
+    progress_pid=$!
+  fi
   apalache_status=0
   wait "$apalache_pid" || apalache_status=$?
   apalache_pid=
+  if [ -n "$progress_pid" ]; then kill "$progress_pid" 2>/dev/null || true; wait "$progress_pid" 2>/dev/null || true; fi
+  progress_pid=
   # The counterexample, if any, for the summary's caller and for APALACHE_KEEP_OUTPUT.
   find "$odir" -name 'violation1.tla' -exec cp {} "$out.trace" \; 2>/dev/null || true
   rm -rf "$odir"
