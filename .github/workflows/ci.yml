@@ -19,6 +19,12 @@ permissions:
 env:
   MODULES: ". mcp trace store/sqlite store/postgres govern govern/redislog govern/sqlitelog govern/postgreslog codec/gcf examples/approval examples/plan examples/mcp examples/observability examples/govern integration"
   UNLISTED_MODULES: "benchmarks"
+  # The Linux test shards, one job each, balanced by measured time (the core module's -race suite
+  # alone takes most of the Linux run). The Changes job fails unless every module in MODULES is in
+  # exactly one shard (.github/scripts/shards.sh check-modules).
+  TEST_SHARDS: |
+    core: .
+    rest: mcp trace store/sqlite store/postgres govern govern/redislog govern/sqlitelog govern/postgreslog codec/gcf examples/approval examples/plan examples/mcp examples/observability examples/govern integration
 
 jobs:
   # Decides whether a pull request touches anything the Go jobs test. A PR that changes only
@@ -26,12 +32,14 @@ jobs:
   # blocks of the docs), but every job still runs and reports under its usual name, so the
   # required checks pass instead of waiting forever. Pushes to main always run everything,
   # and any doubt (a failed diff, an unexpected event, this job failing) counts as a code change:
-  # the gated jobs run unless this job succeeded and said otherwise.
+  # the gated jobs run unless this job succeeded and said otherwise (the Linux test shards, which
+  # it plans, fail Test (ubuntu-latest) instead).
   changes:
     name: Changes
     runs-on: ubuntu-latest
     outputs:
       code: ${{ steps.diff.outputs.code }}
+      shards: ${{ steps.shards.outputs.shards }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -51,6 +59,13 @@ jobs:
             [ -n "$files" ] && [ -z "$other" ] && code=false
           fi
           echo "code=$code" | tee -a "$GITHUB_OUTPUT"
+      - id: shards
+        name: Every module is in exactly one Linux test shard
+        env:
+          SHARDS: ${{ env.TEST_SHARDS }}
+        run: |
+          .github/scripts/shards.sh check-modules
+          echo "shards=$(.github/scripts/shards.sh json)" | tee -a "$GITHUB_OUTPUT"
 
   lint:
     name: Lint
@@ -197,6 +212,75 @@ jobs:
             ( cd "$m" && "$(go env GOPATH)/bin/govulncheck" ./... )
           done
 
+  # Linux: the modules in shards, one job each, under the race detector, which finds the same races
+  # on Linux as it would on macOS. Test (ubuntu-latest), the required check, stands for the shards
+  # and the json/v2 job. Postgres/Redis integration tests self-skip unless PG_DSN / REDIS_ADDR are
+  # set, so no service containers here.
+  test-linux:
+    name: Test (ubuntu-latest, ${{ matrix.shard }})
+    needs: changes
+    if: needs.changes.outputs.code != 'false'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.changes.outputs.shards) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27'
+      - name: Build & test (the shard's modules)
+        shell: bash
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          modules=$(SHARDS="$TEST_SHARDS" .github/scripts/shards.sh get "$SHARD")
+          for m in $modules; do
+            echo "== $m =="
+            ( cd "$m" && go build ./... && go test -race -count=1 ./... )
+          done
+
+  test-nojsonv2:
+    name: Test (ubuntu-latest, without encoding/json/v2)
+    needs: changes
+    if: needs.changes.outputs.code != 'false'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27'
+      - name: Test without encoding/json/v2 (core, govern and integration modules)
+        shell: bash
+        # encoding/json/v2 is a Go experiment in Go 1.27, on by default. bide does not depend on it,
+        # and the journal encoding must be identical with and without it, so the core module is
+        # also tested with the experiment off, as are govern and the core's tests that moved to
+        # the integration module.
+        run: |
+          for m in . govern integration; do
+            echo "== $m =="
+            ( cd "$m" && GOEXPERIMENT=nojsonv2 go test -count=1 ./... )
+          done
+
+  # The required check for Linux. It always reports: success when the Changes job succeeded and
+  # either only documentation changed or every shard and the json/v2 job succeeded; a failed,
+  # cancelled or skipped one, or a failed Changes job, fails it.
+  test-linux-result:
+    name: Test (ubuntu-latest)
+    needs: [changes, test-linux, test-nojsonv2]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/scripts
+      - name: Every shard passed
+        run: .github/scripts/shards.sh verdict "${{ needs.changes.result }}" "${{ needs.changes.outputs.code }}" "shards=${{ needs.test-linux.result }}" "nojsonv2=${{ needs.test-nojsonv2.result }}"
+
+  # macOS and Windows: every module in one job each (about 3 and 4 minutes, under the Linux core
+  # shard), without -race, which also runs the scale tests at full size (they run smaller under
+  # -race).
   test:
     name: Test
     needs: changes
@@ -206,7 +290,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [macos-latest, windows-latest]
     steps:
       - name: Documentation-only change
         if: needs.changes.outputs.code == 'false'
@@ -220,28 +304,10 @@ jobs:
       - name: Build & test (all modules)
         if: needs.changes.outputs.code != 'false'
         shell: bash
-        # The race detector runs on Linux, where it finds the same races it would on macOS;
-        # macOS and Windows run the plain suite, which also runs the scale tests at full size
-        # (they run smaller under -race). Postgres/Redis integration tests self-skip unless
-        # PG_DSN / REDIS_ADDR are set, so no service containers here.
         run: |
-          race=""
-          [ "${{ runner.os }}" = "Linux" ] && race="-race"
           for m in $MODULES; do
             echo "== $m =="
-            ( cd "$m" && go build ./... && go test $race -count=1 ./... )
-          done
-      - name: Test without encoding/json/v2 (core, govern and integration modules)
-        if: runner.os == 'Linux' && needs.changes.outputs.code != 'false'
-        shell: bash
-        # encoding/json/v2 is a Go experiment in Go 1.27, on by default. bide does not depend on it,
-        # and the journal encoding must be identical with and without it, so the core module is
-        # also tested with the experiment off, as are govern and the core's tests that moved to
-        # the integration module.
-        run: |
-          for m in . govern integration; do
-            echo "== $m =="
-            ( cd "$m" && GOEXPERIMENT=nojsonv2 go test -count=1 ./... )
+            ( cd "$m" && go build ./... && go test -count=1 ./... )
           done
 
   integration:
