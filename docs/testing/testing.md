@@ -16,7 +16,8 @@ an idealized plan. One item is stated differently here than you may expect:
 - The **differential oracle** work (a table oracle over emitted step tables, a rules oracle
   recomputing convergence from the combinator declarations, both extracted from the axiom-free
   Coq/Rocq proof) lives in the sibling `gsm` and `normalization-confluence` repositories, where
-  gsm's convergence verdict is re-certified. It is not a pair of `oracle_test.go` /
+  it can re-check gsm's convergence verdict on an exported machine (it does not run in gsm's CI
+  today). It is not a pair of `oracle_test.go` /
   `astoracle_test.go` files inside Bide, and there is no `GSM_CONVERGENCE_CHECKER`
   environment variable in this repo. What Bide ships in-repo is a single optional hook,
   `GSM_AST_CHECKER`, in `govern/attested_e2e_test.go`, which runs the external verified oracle
@@ -96,9 +97,12 @@ attempt in turn. A failing scenario is shrunk to a minimal one. `BIDE_REFMODEL_N
 
 ## Pillar 2: differential testing against a verified oracle
 
-**gsm proves at build time that every interleaving of agent events converges to the same valid
-state; a second, independent implementation re-checks that verdict, so a bug in one verifier
-cannot silently pass a non-convergent machine.** The two-independent-implementations principle:
+**gsm checks at build time that every interleaving of agent events converges to the same valid
+state; a second, independent implementation can re-check that verdict, so one verifier's bug need
+not pass a non-convergent machine silently.** That second check runs only where it is wired in:
+here, when `GSM_AST_CHECKER` is set (below). gsm's extracted checkers run neither in gsm's CI nor
+at runtime today, and gsm v0.11.0's `Build` has a known gap for event guards and effects that read
+another event's writes (see [known limitations](../KNOWN-LIMITATIONS.md#governed-state-gsm)). The two-independent-implementations principle:
 if two programs written from the same axiom-free proof, by different routes, both accept a
 machine, a single implementation bug is far less likely to have admitted a bad one.
 
@@ -173,7 +177,7 @@ The precise bounds:
   ceiling; the per-run store here isolates runtime scaling from store capacity, it does not model
   a durable backend's write cost.
 - "Arbitrary-order-all-converge" structurally requires the **commuting regime**. `Build()`
-  succeeding is the proof that these events commute after compensation (WFC + CC). A fully
+  succeeding is gsm's certificate that these events commute after compensation (WFC + CC). A fully
   non-commuting case (for example ship-before-pay) deliberately would not converge under
   arbitrary order and would be rejected by `Build()`; that harder case needs causal ordering and
   is proven in the Coq/gsm layer instead, not asserted at scale here.

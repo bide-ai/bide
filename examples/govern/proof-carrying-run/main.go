@@ -45,8 +45,9 @@ func main() {
 	const runID = "kyc-applicant-42"
 
 	// A convergent compliance policy: an approval is reverted when the case is flagged, so applying
-	// {approve, flag} in ANY order converges to the same compliant outcome. Build succeeding IS the
-	// proof it converges (WFC + CC over the enumerated state space).
+	// {approve, flag} in ANY order converges to the same compliant outcome. Build succeeding is gsm's
+	// certificate that it converges (WFC + CC over the enumerated state space); neither event reads
+	// a variable the other writes, so the gsm v0.11.0 Build gap does not apply here.
 	r := gsm.NewRegistry("kyc-decision")
 	approved := r.Bool("approved")
 	flag := r.Bool("flagged")
