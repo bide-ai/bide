@@ -13,8 +13,9 @@
 #          rejected          Build rejects it (WFC or CC); every checker that can
 #                            run rejects it for the same reason.
 #          synthesized       a synthesized repair; the table checker verifies it.
-#          not-built         Build fails before its convergence check (an
-#                            invariant without a repair, left to synthesis).
+#          not-built         Build rejects it and nothing can be exported for
+#                            the checkers (an invariant without a repair, left
+#                            to synthesis).
 #
 # @doc <path> <note>       a document that shows a gsm machine
 # @exempt <dir> <reason>   a directory that makes gsm machines but is not run
@@ -44,6 +45,3 @@ examples/govern/quorum              model-quorum    certified
 
 @doc docs/guides/governance.md  an excerpt of the order machine (ship elided), shown as the gsm v0.11.0 Build gap; not a complete machine
 @doc docs/guides/quorum.md      the model-quorum policy of examples/govern/quorum
-
-# Deliberately non-convergent, listed as certified to show the gate failing.
-examples/govern/naive-payship       naive_pay_ship  certified
