@@ -22,6 +22,9 @@ import (
 var levels = []string{"normal", "caution", "stop"}
 var rank = map[string]int{"normal": 0, "caution": 1, "stop": 2}
 
+// signalLevels are the levels a line can signal, one event each (signal_<level>).
+var signalLevels = levels
+
 func buildSafetyMesh() (*gsm.FedMachine, []*gsm.Registry, []gsm.Var) {
 	names := []string{"line1", "line2", "line3"}
 	regs := make([]*gsm.Registry, 3)
@@ -32,7 +35,7 @@ func buildSafetyMesh() (*gsm.FedMachine, []*gsm.Registry, []gsm.Var) {
 		signalV[i] = r.Enum("signal", levels...) // this line's own request (local)
 		levelV[i] = r.Enum("level", levels...)   // effective level (shared, mesh-controlled)
 		sig := signalV[i]
-		for _, lv := range levels {
+		for _, lv := range signalLevels {
 			v := lv
 			r.Event("signal_" + v).Writes(sig).
 				Apply(func(s gsm.State) gsm.State { return s.Set(sig, v) }).Add()
