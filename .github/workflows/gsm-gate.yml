@@ -63,8 +63,11 @@ jobs:
           go-version: '1.27'
 
       - name: Record every gsm machine the programs make
+        id: record
         # Each program in the catalog runs once, built with -tags gsmgate against gsm at GSM_COMMIT (a
-        # replace added to its module for this run only), and records every machine it makes.
+        # replace added to its module for this run only), and records every machine it makes. A
+        # program that fails (a Build error it does not expect) fails this step, after every program
+        # has run, and the next step still checks what was recorded.
         env:
           GOWORK: 'off'
           GOFLAGS: '-mod=mod'
@@ -72,17 +75,23 @@ jobs:
           gsm="$GITHUB_WORKSPACE/.gsm-gate/gsm"
           dumps="$RUNNER_TEMP/gsm-gate"
           programs=$(awk '{ sub(/#.*/, "") } NF && $1 !~ /^@/ { print $1 }' .github/gsm-gate/machines.txt | sort -u)
+          failed=
           for p in $programs; do
             mod=$(cd "$p" && go env GOMOD)
             (cd "$(dirname "$mod")" && go mod edit -replace "github.com/blackwell-systems/gsm=$gsm")
             echo "::group::$p"
             start=$(date +%s)
-            (cd "$p" && GSM_GATE_DIR="$dumps/$p" timeout 300 go run -tags gsmgate .)
+            (cd "$p" && GSM_GATE_DIR="$dumps/$p" timeout 300 go run -tags gsmgate .) || failed="$failed $p"
             echo "$p: $(( $(date +%s) - start )) s"
             echo "::endgroup::"
           done
+          if [ -n "$failed" ]; then
+            echo "::error::these programs failed against gsm at GSM_COMMIT:$failed"
+            exit 1
+          fi
 
       - name: Check every machine with the extracted checkers
+        if: ${{ !cancelled() && steps.record.outcome != 'skipped' }}
         working-directory: .gsm-gate/gsm
         env:
           GOWORK: 'off'
