@@ -512,29 +512,22 @@ func decodePlainStart(b []byte) (RunStart, bool) {
 const saltLen = (SaltSize + 2) / 3 * 4 // base64.StdEncoding.EncodedLen(SaltSize)
 
 // validSalt reports whether s, the contents of a JSON string with no escape, is a salt as the
-// journal writes one: exactly saltLen characters of the standard base64 alphabet, '=' only as
-// the padding at the end, decoding to SaltSize bytes. The full decoding decodes such a string,
-// as a []byte, without error.
+// journal writes one: exactly saltLen bytes that decode, as standard base64, to SaltSize bytes.
+// Decode refuses any byte outside the alphabet and padding anywhere but at the end; it skips '\r'
+// and '\n', but saltLen bytes holding any of them leave too few others to decode to SaltSize
+// bytes. The full decoding decodes such a string, as a []byte, to the same bytes without error.
 func validSalt(s []byte) bool {
 	if len(s) != saltLen {
-		return false
-	}
-	for i, c := range s {
-		switch {
-		case 'A' <= c && c <= 'Z', 'a' <= c && c <= 'z', '0' <= c && c <= '9', c == '+', c == '/':
-		case c == '=' && i >= saltLen-2 && (i == saltLen-1 || s[saltLen-1] == '='):
-		default:
-			return false
-		}
+		return false // and Decode cannot overrun buf
 	}
 	var buf [saltLen / 4 * 3]byte // Decode writes up to this many, if s has no padding
 	n, err := base64.StdEncoding.Decode(buf[:], s)
 	return err == nil && n == SaltSize
 }
 
-// startMembersOnly reports whether b, a JSON value Unmarshal accepted, is an object whose members
-// are name, kind, result and salt, each exactly once and spelled exactly so (no escape, no other
-// case). It walks only the top level, skipping each member's value.
+// startMembersOnly reports whether b, a JSON value Unmarshal accepted into a startEntry, is an
+// object with no member but name, kind, result and salt, none twice, each spelled exactly so (no
+// escape, no other case). It walks only the top level, skipping each member's value.
 func startMembersOnly(b []byte) bool {
 	i := skipSpace(b, 0)
 	if i >= len(b) || b[i] != '{' {
@@ -575,7 +568,7 @@ func startMembersOnly(b []byte) bool {
 			continue
 		}
 		if i < len(b) && b[i] == '}' {
-			return seen == [4]bool{true, true, true, true} && skipSpace(b, i+1) == len(b)
+			return true // Unmarshal has read each of the four (the caller checks them)
 		}
 		return false
 	}

@@ -73,12 +73,16 @@ func TestDriveStackHighWater(t *testing.T) {
 		turns = append(turns, TextTurn(fmt.Sprint("answer ", i)))
 	}
 	a := New(NewScriptedModel(turns...), NewMemStore())
+	probe := 0 // the stack probeDriveStack touches: its frame, at least driveStackProbe bytes
 	worst, valid := 0, 0
 	for i := range 9 { // the first drive (one-time initialization in the process) is not counted
 		done := make(chan struct{})
 		go func() {
 			defer close(done)
 			growStack(stackSpan>>10 + 10)
+			if d, ok := measureStack(func() { probeDriveStack() }); ok {
+				probe = max(probe, d)
+			}
 			in := UserText("go")
 			depth, ok := measureStack(func() {
 				if _, _, _, err := a.runLoop(context.Background(), fmt.Sprint("hw-", i), &driveSpec{input: &in, strictSaga: true}); err != nil {
@@ -95,7 +99,10 @@ func TestDriveStackHighWater(t *testing.T) {
 	if valid == 0 {
 		t.Fatal("no valid measurement: the stack moved during every drive")
 	}
-	t.Logf("drive stack high-water mark: %d bytes (%d valid measurements)", worst, valid)
+	t.Logf("drive stack high-water mark: %d bytes (%d valid measurements); the probe's: %d", worst, valid, probe)
+	if probe < driveStackProbe || probe > worst {
+		t.Fatalf("probeDriveStack touches %d bytes of stack, want at least driveStackProbe (%d) and at most the drive's %d", probe, driveStackProbe, worst)
+	}
 	if lo, hi := 17<<10, 32<<10; worst < lo || worst > hi {
 		t.Fatalf("drive stack high-water mark = %d bytes, want %d..%d: driveStackProbe (%d) is sized against it; see this test's comment",
 			worst, lo, hi, driveStackProbe)

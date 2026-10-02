@@ -102,3 +102,25 @@ func TestRev138c_SaltLen(t *testing.T) {
 		}
 	}
 }
+
+// validSalt takes exactly what the journal writes for a salt: SaltSize bytes, base64, padded.
+func TestRev138c_ValidSalt(t *testing.T) {
+	written := base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef"))
+	for s, want := range map[string]bool{
+		written:                    true,
+		rev138cSalt:                true,
+		"AAAAAAAAAAAAAAAAAAAAAA==": false, // 16 bytes
+		rev138cSalt[:43]:           false, // unpadded
+		rev138cSalt + "AAAA":       false, // 35 bytes (and longer than any salt)
+		rev138cSalt[:42] + "==":    false, // 31 bytes
+		"=" + rev138cSalt[1:]:      false, // padding first
+		rev138cSalt[:20] + "=" + rev138cSalt[21:]: false,
+		rev138cSalt[:40] + "\r\nA=":               false, // Decode skips the newline: 33 others, 24 bytes
+		rev138cSalt[:42] + "-=":                   false, // outside the standard alphabet
+		"":                                        false,
+	} {
+		if got := validSalt([]byte(s)); got != want {
+			t.Errorf("validSalt(%q) = %v, want %v", s, got, want)
+		}
+	}
+}
