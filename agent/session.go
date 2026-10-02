@@ -47,7 +47,8 @@ import (
 // holds does not drive it: if the run has finished (the holder has not released the lease yet),
 // its recorded answer is returned and the turn recorded, as a drive of it would; otherwise it
 // returns at once with an error wrapping ErrTurnContended, having driven nothing and recorded
-// no answer. Send the same message again later, and it returns the recorded answer, or resumes
+// no answer. That includes a second caller on the same handle while a saga turn's rollback is in
+// progress (see Send). Send the same message again later, and it returns the recorded answer, or resumes
 // the turn if the other driver stopped short of it. A drive whose lease is lost returns an error
 // wrapping ErrLeaseLost (see Lease). Over a store with no Leaser, two drivers of one turn still
 // never record it twice, but each counts only the spend it has seen (see KNOWN-LIMITATIONS).
@@ -248,9 +249,12 @@ func (s *Session) reload(ctx context.Context) error {
 // A turn whose run was cancelled (see Cancel) is closed: Send of its message (the same text)
 // returns ErrRunCancelled, and the next Send of another message records the turn closed (with no
 // answer, and outside the transcript) and runs its own turn. Cancel of a saga turn's run writes
-// only its rollback request: the next Send of another message drives that rollback (under the
-// turn's lease, ErrTurnContended while another worker drives the turn, and without holding the
-// handle's mutex) and then closes the turn.
+// only its rollback request: the next Send of another message drives that rollback and then
+// closes the turn. Over a store with a Leaser the rollback is driven under the turn's lease and
+// without holding the handle's mutex, so the call gets ErrTurnContended while another driver holds
+// the turn, and while the rollback is in progress any other caller gets ErrTurnContended: another
+// worker, or a second caller on this same handle. Over a store with no Leaser the handle's mutex
+// is held across the rollback, and a second caller on the handle waits for it.
 //
 // Deprecated: transitional; renamed by the 1.0 rewrite. Use SendMessage, which becomes Send.
 func (s *Session) Send(ctx context.Context, input string) (Message, error) {
@@ -413,17 +417,22 @@ func (s *Session) closeIfCancelled(ctx context.Context) (closed bool, requested 
 // protocol:sessions begin SRb
 
 // rollbackTurn drives the rollback a Cancel of the saga turn run runID requested, under the turn
-// run's lease (as every drive of a turn is), without s.mu: a rollback runs compensators, which may
-// take as long as any tool call, and s.mu is never held while a turn's run is in progress. The
-// rollback needs no transcript: the drive's open finds the request before any model call, and the
-// saga path compensates from the turn run's own journal. A rollback that stopped (a failed
-// compensator, an unknown outcome) returns its error, and the turn stays open; one that found the
-// turn's answer recorded before the request returns nil, and the turn is not closed. Another
-// worker's drive of the run is ErrTurnContended. The caller holds s.mu: it is released for the
-// drive and held again when rollbackTurn returns.
+// run's lease (as every drive of a turn is). Over a store with a Leaser it runs without s.mu: a
+// rollback runs compensators, which may take as long as any tool call, and the lease keeps any
+// other driver, another caller on this handle included, off the turn run: such a caller gets
+// ErrTurnContended until the rollback is over. Over a store with no Leaser nothing else would keep
+// two callers on this handle from driving the same rollback at once, so s.mu stays held across
+// the drive, and another caller on the handle waits for it. The rollback needs no transcript: the
+// drive's open finds the request before any model call, and the saga path compensates from the
+// turn run's own journal. A rollback that stopped (a failed compensator, an unknown outcome)
+// returns its error, and the turn stays open; one that found the turn's answer recorded before the
+// request returns nil, and the turn is not closed. The caller holds s.mu; over a store with a
+// Leaser it is released for the drive and held again when rollbackTurn returns.
 func (s *Session) rollbackTurn(ctx context.Context, runID string) error {
-	s.mu.Unlock()
-	defer s.mu.Lock()
+	if _, leased := capabilityOf[Leaser](s.agent.store); leased {
+		s.mu.Unlock()
+		defer s.mu.Lock()
+	}
 	d := &driveSpec{resume: true, kind: RunKindSessionTurn, cfg: runConfig{saga: true}}
 	if _, _, _, err := s.driveRun(ctx, runID, d); err != nil && !cancelledEnd(err) {
 		return err

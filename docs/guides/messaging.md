@@ -79,10 +79,13 @@ declines a session turn's run too.) A turn's run can be cancelled like any run (
 `Send` of its message (the same text) then returns `agent.ErrRunCancelled`, and the next message's
 `Send` records the cancelled turn closed (with no answer, and outside the transcript) and runs its
 own turn; a `SendOnce` key whose run was cancelled stays unanswered. A saga turn's `Cancel` writes
-only its rollback request: the next message's `Send` drives that rollback itself (under the turn's
-lease, so a worker driving the turn meanwhile makes it `ErrTurnContended`, and without holding the
-handle, so other callers on it are not blocked behind its compensators), and then records the turn
-closed. `SendMessage` and `SendMessageOnce` (the
+only its rollback request: the next message's `Send` drives that rollback itself and then records
+the turn closed. Over a store with leases it drives the rollback under the turn's lease and without
+holding the handle, so other callers are not blocked behind its compensators: while the rollback
+is in progress, any other caller gets `ErrTurnContended`, another worker or a second caller on the
+same handle alike (and the `Send` itself gets it if another worker is driving the turn). Over a
+store with no `Leaser`, the handle stays held across the rollback, so a second caller on the same
+handle waits for it. `SendMessage` and `SendMessageOnce` (the
 1.0 `Send` and `SendOnce`, under transitional names) take a `Message` and run options, journaled
 with the turn's run, and return a `Result`. Several workers may hold handles on one conversation:
 every message is recorded once, and a handle that is behind catches up from the journal before

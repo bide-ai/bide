@@ -79,7 +79,10 @@ and the turn's token budget holds across workers. A worker that dies mid-turn ho
 its lease lapses (one TTL, `agent.WithLeaseTTL` on `Agent.Session`). Over a custom store with no
 `Leaser`, two workers can drive one turn at once: it is still recorded once and its side effects
 stay at-most-once, but each worker counts only the spend it has seen, so the turn can spend up to
-its budget once per worker. A stalled holder that wakes past its TTL is the case above: it can
+its budget once per worker. (A saga turn's rollback, driven by the next message's `Send`, holds
+the session handle over such a store, so callers sharing one handle never drive it at once;
+callers on separate handles still can, as with any turn over such a store.) A stalled holder that
+wakes past its TTL is the case above: it can
 make a model call the next holder does not count.
 
 **Any role that can connect to the database can stall a run's writes.** The Postgres store

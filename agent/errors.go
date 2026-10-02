@@ -142,7 +142,9 @@ var ErrNotStarted = errors.New("run has no run:start record")
 var ErrNotResumable = errors.New("run not resumable by this resumer")
 
 // ErrTurnContended is returned by a Session's Send, SendOnce, SendMessage and SendMessageOnce when another driver holds
-// the lease on the turn's run (see Session): the turn's run was not driven and its answer was not recorded.
+// the lease on the turn's run (see Session): another worker, or, while a cancelled saga turn's
+// rollback is in progress, another caller on the same session handle (see Session.Send). The
+// turn's run was not driven and its answer was not recorded.
 // Send the same message again later. Like ErrLeaseLost, it is in no category: it is neither a
 // failure of the turn nor a pause of it.
 var ErrTurnContended = errors.New("session turn driven by another holder")
