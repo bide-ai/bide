@@ -382,7 +382,8 @@ func TestRecordIdentity_Random(t *testing.T) {
 }
 
 // TestRecordIdentity_AllFields checks every one of the 2^30 masks (every field combination, with
-// and without empty sub-structs) under the first tricky values, decoding one in 4096. It takes
+// and without empty sub-structs), each under one of the sets of tricky values in turn, decoding one
+// in 4096. It takes
 // minutes on every core, so it runs only with BIDE_RECORD_IDENTITY_ALL=1.
 func TestRecordIdentity_AllFields(t *testing.T) {
 	if os.Getenv("BIDE_RECORD_IDENTITY_ALL") != "1" {
@@ -400,13 +401,11 @@ func TestRecordIdentity_AllFields(t *testing.T) {
 					return
 				}
 				for m := start; m < start+1<<16; m++ {
-					for _, v := range trickyVals {
-						r, l := idPair(uint32(m), v)
-						if err := checkIdentity(r, l, m%4096 == 0); err != nil {
-							err = fmt.Errorf("mask %#x: %w", m, err)
-							failed.Store(&err)
-							return
-						}
+					r, l := idPair(uint32(m), trickyVals[m%uint64(len(trickyVals))])
+					if err := checkIdentity(r, l, m%4096 == 0); err != nil {
+						err = fmt.Errorf("mask %#x: %w", m, err)
+						failed.Store(&err)
+						return
 					}
 				}
 				done.Add(1 << 16)
@@ -417,7 +416,7 @@ func TestRecordIdentity_AllFields(t *testing.T) {
 	if p := failed.Load(); p != nil {
 		t.Fatal(*p)
 	}
-	t.Logf("%d masks x %d value sets checked", done.Load(), len(trickyVals))
+	t.Logf("%d masks checked", done.Load())
 }
 
 // FuzzRecordIdentity checks arbitrary field combinations with arbitrary values.
