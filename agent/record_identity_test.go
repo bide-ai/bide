@@ -281,7 +281,7 @@ func checkDecode(b []byte) error {
 	if (got.ModelTurn != nil) != (want.Finish != "" || want.RawFinish != "" || want.Model != nil || want.PromptDigest != "" || want.ToolsDigest != "") {
 		return fmt.Errorf("decode %q: ModelTurn %+v for a record whose journal encoding holds none (or the reverse)", b, got.ModelTurn)
 	}
-	if (got.ApproverSignature != nil) != (want.Approver != "" || want.ApproverAlg != "" || want.Signature != nil) {
+	if (got.ApproverSignature != nil) != (want.Approver != "" || want.ApproverAlg != "" || len(want.Signature) != 0) {
 		return fmt.Errorf("decode %q: ApproverSignature %+v for a record whose journal encoding holds none (or the reverse)", b, got.ApproverSignature)
 	}
 	again, err := EncodeRecord(got)
@@ -453,10 +453,21 @@ func FuzzRecordIdentity_Decode(f *testing.F) {
 		if err != nil {
 			return
 		}
+		if len(want.Signature) == 0 && want.Approver == "" && want.ApproverAlg == "" {
+			// "signature":"" decodes to an empty, non-nil slice in the legacy layout; the record
+			// carries no ApproverSignature then, so it reads nil. Both encode alike (omitempty).
+			want.Signature = nil
+		}
 		view := legacyView(got)
 		view.raw = nil
 		if !reflect.DeepEqual(view, want) {
 			t.Fatalf("decode %q:\n got %+v\nwant %+v", b, view, want)
+		}
+		if (got.ModelTurn != nil) != (want.Finish != "" || want.RawFinish != "" || want.Model != nil || want.PromptDigest != "" || want.ToolsDigest != "") {
+			t.Fatalf("decode %q: ModelTurn %+v, though the record holds no model-turn metadata (or the reverse)", b, got.ModelTurn)
+		}
+		if (got.ApproverSignature != nil) != (want.Approver != "" || want.ApproverAlg != "" || len(want.Signature) != 0) {
+			t.Fatalf("decode %q: ApproverSignature %+v, though the record holds no signed decision (or the reverse)", b, got.ApproverSignature)
 		}
 		enc, err := EncodeRecord(got)
 		lenc, lerr := legacyEncode(want)

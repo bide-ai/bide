@@ -52,7 +52,8 @@ type Record struct {
 	// answered it, and digests of the prompt and tools it was sent. Nil on every other kind, and on
 	// a StepModel record that carries none. Read it through the nil-safe accessors (Record.Finish,
 	// RawFinish, Model, PromptDigest, ToolsDigest). It sits behind a pointer to keep Record small
-	// (see TestRecord_Size); its fields are journaled in place, as members of the record.
+	// (see TestRecord_Size); its fields are journaled in place, as members of the record. A copy of
+	// the record shares it: do not write through it.
 	*ModelTurn
 	ToolUseID string          `json:"tool_use_id,omitempty"` // StepToolResult
 	Result    json.RawMessage `json:"result,omitempty"`      // StepToolResult / StepValue
@@ -62,7 +63,8 @@ type Record struct {
 	// who decided and their signature. Nil on every other record, including an approval that Approve
 	// or Deny wrote. Read it through the nil-safe accessors (Record.Approver, ApproverAlg,
 	// Signature). It sits behind a pointer to keep Record small (see TestRecord_Size); its fields
-	// are journaled in place, as members of the record.
+	// are journaled in place, as members of the record. A copy of the record shares it: do not write
+	// through it.
 	*ApproverSignature
 	// AttemptedAt is the Unix-millis wall-clock time an attempt marker (StepAttempt) was
 	// written, i.e. just before a non-retriable side effect fired. It is set once and read
@@ -118,7 +120,9 @@ type Record struct {
 }
 
 // ModelTurn is a StepModel record's model-turn metadata (see Record.ModelTurn). A Record copy
-// shares it, so replace it rather than change a shared one.
+// shares it with the original: never write through a record's ModelTurn, assign the record a new
+// one instead. A record decoded from its journal encoding carries one only when the encoding holds
+// a non-empty member of it.
 type ModelTurn struct {
 	// Finish is why the model turn ended, and RawFinish the provider's own reason as it sent it
 	// (see FinishReason). Empty on a record written before they were journaled.
@@ -137,8 +141,9 @@ type ModelTurn struct {
 }
 
 // ApproverSignature is the signed decision a StepApproval record written by SubmitDecision carries
-// (see Record.ApproverSignature). A Record copy shares it, so replace it rather than change a
-// shared one.
+// (see Record.ApproverSignature). A Record copy shares it with the original: never write through a
+// record's ApproverSignature, assign the record a new one instead. A record decoded from its
+// journal encoding carries one only when the encoding holds a non-empty member of it.
 type ApproverSignature struct {
 	Approver    string `json:"approver,omitempty"`     // the approver's id (Decision.ApproverID)
 	ApproverAlg Alg    `json:"approver_alg,omitempty"` // the scheme Signature is under
@@ -292,6 +297,15 @@ func unmarshalRecord(b []byte) (Record, error) {
 	}
 	f.Approval = w.Approval.policy()
 	f.claim, f.salt, f.raw = w.Claim, w.Salt, nil
+	// A member written with its empty value ({"finish":""}, {"model":null}, {"signature":null}),
+	// which the encoding never writes, still makes the decoder allocate the sub-struct. Such a
+	// record carries none, as its encoding holds none, so decoding stays a fixed point.
+	if f.ModelTurn != nil && *f.ModelTurn == (ModelTurn{}) {
+		f.ModelTurn = nil
+	}
+	if s := f.ApproverSignature; s != nil && s.Approver == "" && s.ApproverAlg == "" && len(s.Signature) == 0 {
+		f.ApproverSignature = nil
+	}
 	return Record(f), nil
 }
 
