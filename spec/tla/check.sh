@@ -11,8 +11,11 @@
 #                                     per line relative to spec/tla; needs no tools or Java
 #   spec/tla/check.sh translation     fail if a committed translation is stale
 #   spec/tla/check.sh translate       re-translate every spec in place
-#   spec/tla/check.sh fetch           download and verify the tools only
+#   spec/tla/check.sh fetch           download and verify every tool only
 #   spec/tla/check.sh self-test       prove the translation and checksum checks can fail
+#   spec/tla/check.sh apalache [MODEL|FILE.cfg]...
+#                                     the Apalache checks (every model's apalache/*.cfg, or those
+#                                     named; see "Apalache" in spec/tla/README.md)
 #
 # Each .cfg names its group and its expected result in comment lines:
 #   \* GROUP: ci | nightly | regress | finding | limit
@@ -21,8 +24,17 @@
 # "pass" configs are also run once with the vacuity invariant EffectNotReachable, which TLC must
 # report violated: a model in which the effect never fires satisfies every safety property.
 #
-# Needs Java 11 or later (JAVA_HOME or java on PATH), curl, and sha256sum or shasum.
-# Environment: BIDE_TLA_CACHE (tool cache; default ~/.cache/bide-tla), TLC_WORKERS (default auto),
+# An Apalache configuration (spec/tla/<model>/apalache/*.cfg) names its module and its checks in
+# comment lines, each check an expected result and the arguments of "apalache-mc check":
+#   \* SPEC: <module>.tla   (in the model's directory)
+#   \* CHECK: pass | <arguments>
+#   \* CHECK: invariant <Name> | <arguments>
+#
+# Needs Java 11 or later (JAVA_HOME or java on PATH; Apalache needs 17 or later), curl, tar, and
+# sha256sum or shasum.
+# Environment: BIDE_TLA_CACHE (tool cache; default ~/.cache/bide-tla), BIDE_APALACHE_CACHE (where
+# the Apalache archive is kept; default the tool cache), APALACHE_JAVA_OPTS (default -Xmx4g),
+# TLC_WORKERS (default auto),
 # TLC_JOBS (default 1: how many configs run at a time; above 1, each runs with one TLC worker),
 # TLC_MODELS (default every model: the model directories whose configs a group runs, such as
 # "claims toolcall"), TLC_DIRS (default every directory: the configuration directories a group
@@ -37,12 +49,14 @@ java=${JAVA_HOME:+$JAVA_HOME/bin/}java
 summary=()
 failures=0
 
-# Every temporary file and directory (TLC metadirs, outputs, translation copies) lives under one
-# work directory, removed on exit, failure and interrupt, so a killed run leaves no TLC state
-# behind. A vacuity config is written beside its config (see run_cfg) and removed the same way.
+# Every temporary file and directory (TLC metadirs, outputs, translation copies, the unpacked
+# Apalache and its output and JVM temporary directories) lives under one work directory, removed on
+# exit, failure and interrupt, so a killed run leaves no checker state behind. A vacuity config is
+# written beside its config (see run_cfg) and removed the same way.
 work=$(mktemp -d "${TMPDIR:-/tmp}/bide-tla.XXXXXX")
 cleanup() {
   if [ -n "${tlc_pid:-}" ]; then kill "$tlc_pid" 2>/dev/null || true; wait "$tlc_pid" 2>/dev/null || true; fi
+  if [ -n "${apalache_pid:-}" ]; then kill "$apalache_pid" 2>/dev/null || true; wait "$apalache_pid" 2>/dev/null || true; fi
   rm -rf "$work"
   rm -f "$here"/*/.vacuity-$$.cfg "$here"/*/*/.vacuity-$$.cfg
 }
@@ -65,23 +79,42 @@ verify_jar() {
   [ "$got" = "$2" ] || die "$1: SHA-256 $got, want $2 (tools.lock); refusing to run it"
 }
 
-# fetch: download each tool in tools.lock into the cache, verify it, and set $jar.
-fetch() {
-  mkdir -p "$cache"
-  local name version sum url file
+# fetch_tool NAME DIR: download NAME's file as tools.lock pins it ("name version sha256 url") into
+# DIR, unless it is there, verify its SHA-256, and set $fetched to its path. It runs in this shell,
+# not a command substitution, so any failure stops the check.
+fetch_tool() {
+  local name version sum url
+  name=; version=; sum=; url=
   while read -r name version sum url; do
-    case "$name" in ''|'#'*) continue ;; esac
-    file="$cache/$name-$version.jar"
-    if [ ! -f "$file" ]; then
-      echo "fetching $name $version"
-      curl -fsSL --retry 3 -o "$file.part" "$url"
-      mv "$file.part" "$file"
-    fi
-    verify_jar "$file" "$sum"
-    [ "$name" = tla2tools ] && jar=$file
+    [ "$name" = "$1" ] && break
+    name=
   done < "$here/tools.lock"
-  [ -n "${jar:-}" ] || die "tools.lock names no tla2tools"
+  [ -n "$name" ] && [ -n "$url" ] || die "tools.lock names no $1"
+  mkdir -p "$2"
+  fetched="$2/$name-$version.${url##*.}"
+  if [ ! -f "$fetched" ]; then
+    echo "fetching $name $version"
+    curl -fsSL --retry 3 -o "$fetched.part" "$url"
+    mv "$fetched.part" "$fetched"
+  fi
+  verify_jar "$fetched" "$sum"
+}
+
+# fetch: the TLA+ tools (tla2tools.jar) in the cache, verified; set $jar.
+fetch() {
+  fetch_tool tla2tools "$cache"
+  jar=$fetched
   "$java" -version >/dev/null 2>&1 || die "no java (set JAVA_HOME or put java on PATH)"
+}
+
+# fetch_apalache: the Apalache release archive in its cache, verified, unpacked into the work
+# directory (a fresh copy each run, so only verified bytes run); set $apalache.
+fetch_apalache() {
+  fetch_tool apalache "${BIDE_APALACHE_CACHE:-$cache}"
+  mkdir -p "$work/apalache"
+  tar -xzf "$fetched" -C "$work/apalache" --strip-components=1
+  apalache=$work/apalache/lib/apalache.jar
+  [ -f "$apalache" ] || die "$fetched holds no lib/apalache.jar"
 }
 
 # specs: every module holding a PlusCal algorithm.
@@ -329,6 +362,92 @@ run_parallel() {
   rm -rf "$tmp"
 }
 
+# apalache_run OUT DIR SPEC CFG ARG...: run "apalache-mc check" on SPEC in DIR with CFG, its output
+# directory and JVM temporary directory under the work directory; set apalache_status to its exit
+# status (0: no error, 12: an invariant violated). Like tlc, it runs in the background and is
+# waited for, so an interrupt stops it at once.
+apalache_pid=
+apalache_run() {
+  local out=$1 dir=$2 spec=$3 cfg=$4 odir
+  shift 4
+  odir=$(tmpdir)
+  # shellcheck disable=SC2086 # APALACHE_JAVA_OPTS is a list of options
+  (cd "$dir" && exec "$java" ${APALACHE_JAVA_OPTS:--Xmx4g} -Djava.io.tmpdir="$odir" -jar "$apalache" \
+      check --out-dir="$odir" --config="$cfg" --no-deadlock "$@" "$spec") >"$out" 2>&1 &
+  apalache_pid=$!
+  apalache_status=0
+  wait "$apalache_pid" || apalache_status=$?
+  apalache_pid=
+  # The counterexample, if any, for the summary's caller and for APALACHE_KEEP_OUTPUT.
+  find "$odir" -name 'violation1.tla' -exec cp {} "$out.trace" \; 2>/dev/null || true
+  rm -rf "$odir"
+}
+
+# run_apalache_cfg CFG: run every CHECK line of an Apalache configuration and check its result.
+run_apalache_cfg() {
+  local cfg=$1 name dir spec line expect args out kind want t0 secs
+  [ -f "$cfg" ] || die "no config $cfg"
+  cfg=$(cd "$(dirname "$cfg")" && pwd)/$(basename "$cfg")
+  name=${cfg#"$here"/}
+  dir=$(dirname "$(dirname "$cfg")")
+  spec=$(meta SPEC "$cfg")
+  [ -n "$spec" ] && [ -f "$dir/$spec" ] || die "$name: SPEC must name a module in $dir"
+  grep -q '^\\\* CHECK:' "$cfg" || die "$name: no CHECK line"
+  while IFS= read -r line; do
+    expect=$(echo "${line%%|*}" | sed 's/ *$//')
+    args=${line#*|}
+    kind=${expect%% *}
+    want=${expect#* }
+    out=$(mktemp "$work/out.XXXXXX")
+    echo "== $name:$args (expect: $expect)"
+    t0=$(date +%s)
+    # shellcheck disable=SC2086 # args is the list of arguments the CHECK line gives
+    apalache_run "$out" "$dir" "$spec" "$cfg" $args
+    secs=$(( $(date +%s) - t0 ))s
+    case "$kind" in
+      pass)
+        if [ "$apalache_status" = 0 ] && grep -q 'The outcome is: NoError' "$out"; then
+          record "$name:$args" ok "no error, $secs"
+        else
+          tail -40 "$out"; [ ! -f "$out.trace" ] || cat "$out.trace"
+          record "$name:$args" FAIL "exit $apalache_status, expected no error"
+        fi
+        ;;
+      invariant)
+        if [ "$apalache_status" = 12 ] && grep -q 'The outcome is: Error' "$out" &&
+           echo "$args" | grep -qE -- "--inv=$want( |$)"; then
+          record "$name:$args" ok "$want violated, $secs"
+        else
+          tail -40 "$out"; record "$name:$args" FAIL "exit $apalache_status, expected $want violated"
+        fi
+        ;;
+      *) die "$name: CHECK must expect pass or invariant <Name>" ;;
+    esac
+    if [ -n "${APALACHE_KEEP_OUTPUT:-}" ]; then
+      mkdir -p "$APALACHE_KEEP_OUTPUT"
+      cp "$out" "$APALACHE_KEEP_OUTPUT/$(echo "$name" | tr / -).$(echo "$args" | tr -c 'A-Za-z0-9=\n' _).out"
+      [ ! -f "$out.trace" ] || cp "$out.trace" "$APALACHE_KEEP_OUTPUT/$(echo "$name" | tr / -).$(echo "$args" | tr -c 'A-Za-z0-9=\n' _).trace.tla"
+    fi
+    rm -f "$out" "$out.trace"
+  done < <(sed -n 's/^\\\* CHECK: *//p' "$cfg")
+}
+
+# apalache_cfgs [MODEL|FILE.cfg]...: the Apalache configurations named, or every model's.
+apalache_cfgs() {
+  local a cfg
+  if [ $# = 0 ]; then
+    for cfg in "$here"/*/apalache/*.cfg; do [ -f "$cfg" ] && echo "$cfg"; done
+    return
+  fi
+  for a in "$@"; do
+    if [ -f "$a" ]; then echo "$a"
+    elif [ -d "$here/$a/apalache" ]; then
+      for cfg in "$here/$a"/apalache/*.cfg; do [ -f "$cfg" ] && echo "$cfg"; done
+    else die "apalache: $a is neither a .cfg nor a model with an apalache/ directory"
+    fi
+  done
+}
+
 self_test() {
   local s tmp
   # A stale translation is caught: edit the algorithm of a copy and check it without translating.
@@ -375,12 +494,18 @@ if [ "$cmd" = list ]; then
 fi
 fetch
 case "$cmd" in
-  fetch) ;;
+  fetch) fetch_apalache ;;
   translation) translation ;;
   translate) translate ;;
   self-test) self_test ;;
   ci|nightly|regress|finding|limit) run_groups "$cmd"; finish ;;
   run) [ $# -gt 0 ] || die "run: name at least one .cfg"; for c in "$@"; do run_cfg "$c"; done; finish ;;
+  apalache)
+    cfgs=$(apalache_cfgs "$@")
+    [ -n "$cfgs" ] || die "apalache: no configurations"
+    fetch_apalache
+    for c in $cfgs; do run_apalache_cfg "$c"; done
+    finish ;;
   all) translation; run_groups ci regress finding limit; finish ;;
   *) die "unknown command $cmd (see the header of $0)" ;;
 esac
