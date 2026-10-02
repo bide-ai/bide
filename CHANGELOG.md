@@ -134,6 +134,7 @@ minor version (0.x.0) may include breaking API or journal-format changes; each o
 
 ### Fixed
 
+- `examples/govern/mesh` was not convergent (each signal event set the level, so order mattered); gsm v0.11.0 wrongly certified it; signals now only raise the level (max), which commutes. `TestSignalsCommute` checks every pair of signals in both orders, and the example no longer shows a line standing down, which no order-independent event can do ([#145]).
 - `plan`: a Tool node called a tool whose context's deadline had already passed (its timer not yet run), which the agent's base handler refuses; it now fails with `ErrToolNotCalled` without calling the tool (P14).
 - `ResolveHaltRef`'s live-driver check leased everything before the first `>` of the halted run's ID. It did not see a live session turn's driver, which leases the turn's run (`<id>>@turn/<n>`), so it could resolve a call the turn was running, and it took a root run named like the session for a live driver (`*HaltInFlight`). It now leases the halted run's tree root: the turn's run for a session turn and every sub-run inside it, the root run otherwise, the run `RunInfo.RootRunID` names ([#137], review R137-1).
 
@@ -803,6 +804,7 @@ First public release.
 [#137]: https://github.com/bide-ai/bide/pull/137
 [#140]: https://github.com/bide-ai/bide/pull/140
 [#143]: https://github.com/bide-ai/bide/pull/143
+[#145]: https://github.com/bide-ai/bide/pull/145
 
 [78f8db6]: https://github.com/bide-ai/bide/commit/78f8db6
 [994721b]: https://github.com/bide-ai/bide/commit/994721b

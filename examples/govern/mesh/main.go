@@ -2,11 +2,17 @@
 // state constrains each other *cyclically* (mutual constraints) — a topology the tree/DAG
 // governance tier cannot express.
 //
-// Three production lines form a ring. Each line can signal a safety level (normal < caution
-// < stop). The mesh rule is most-restrictive-wins: every line runs at the HIGHEST level any
-// line is signalling — you cannot have one line running normal while a peer signals stop.
-// The rule is mutual (cyclic), so it needs monotone-cycle convergence. Actions go through
-// govern.FederatedEventTool, the same tool boundary a real LLM agent would call.
+// Three production lines form a ring. Each line can raise its safety signal (normal < caution
+// < stop); a signal only ever raises it (the new signal is the higher of the current and the
+// requested level), so any two signals commute, on one line or on two. The mesh rule is
+// most-restrictive-wins: every line runs at the HIGHEST level any line is signalling, so you
+// cannot have one line running normal while a peer signals stop. The rule is mutual (cyclic), so
+// it needs monotone-cycle convergence. Actions go through govern.FederatedEventTool, the same tool
+// boundary a real LLM agent would call.
+//
+// Standing a line down is not in the mesh: a lower signal racing a higher one would be decided by
+// their order, which is exactly what convergence rules out. Lowering a level needs a coordinated
+// step outside it (a human approval, say).
 //
 // Run (from examples/govern, its own module): go run ./mesh
 package main
@@ -22,8 +28,9 @@ import (
 var levels = []string{"normal", "caution", "stop"}
 var rank = map[string]int{"normal": 0, "caution": 1, "stop": 2}
 
-// signalLevels are the levels a line can signal, one event each (signal_<level>).
-var signalLevels = levels
+// signalLevels are the levels a line can raise its signal to, one event each (signal_<level>).
+// Every line starts at normal and never goes below it, so there is no signal_normal.
+var signalLevels = levels[1:]
 
 func buildSafetyMesh() (*gsm.FedMachine, []*gsm.Registry, []gsm.Var) {
 	names := []string{"line1", "line2", "line3"}
@@ -37,8 +44,15 @@ func buildSafetyMesh() (*gsm.FedMachine, []*gsm.Registry, []gsm.Var) {
 		sig := signalV[i]
 		for _, lv := range signalLevels {
 			v := lv
+			// Raise only: a signal below the line's current one changes nothing, so two signals
+			// end in the higher of the two whatever their order.
 			r.Event("signal_" + v).Writes(sig).
-				Apply(func(s gsm.State) gsm.State { return s.Set(sig, v) }).Add()
+				Apply(func(s gsm.State) gsm.State {
+					if rank[s.Get(sig)] >= rank[v] {
+						return s
+					}
+					return s.Set(sig, v)
+				}).Add()
 		}
 		regs[i] = r
 	}
@@ -103,10 +117,10 @@ func main() {
 	show("  converged:", g2)
 	fmt.Println("→ identical — coordination-free, order-independent.")
 
-	fmt.Println("\nline3 stands down; the mesh re-derives from current signals:")
-	act(g, "line3", "normal")
-	show("  line3 → normal:", g)
-	fmt.Println("→ line2's caution still governs the plant — not stuck high.")
+	fmt.Println("\nline3 signals caution after its own stop:")
+	act(g, "line3", "caution")
+	show("  line3 → caution:", g)
+	fmt.Println("→ unchanged: a signal only raises a level, so a late lower signal cannot undo a stop.")
 
 	fmt.Println("\nCrash recovery (a fresh process replays the durable event log):")
 	g3, _ := govern.NewFederated(ctx, m, log, "plant", m.NewState())
