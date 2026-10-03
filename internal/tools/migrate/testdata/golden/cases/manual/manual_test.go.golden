@@ -2,6 +2,8 @@ package manual
 
 import (
 	"context"
+	"encoding/json"
+	"flag"
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
@@ -53,4 +55,49 @@ func TestManual(t *testing.T) {
 	_ = f
 	h := holder{a: helper(1)}
 	h.a.WithMaxTurns(5) // a builder on a field, its result unused: it changed h.a in place
+}
+
+// fromHelper gets its old methods from an embedded struct that is not a tool: reported.
+type descHelper struct{}
+
+func (descHelper) Description() string         { return "h" }
+func (descHelper) ArgsSchema() json.RawMessage { return nil }
+func (descHelper) Safety() agent.Safety        { return agent.Safety{} }
+
+type fromHelper struct{ descHelper }
+
+func (fromHelper) Name() string { return "h" }
+func (fromHelper) Call(ctx context.Context, args json.RawMessage) (json.RawMessage, error) {
+	return nil, nil
+}
+
+var _ agent.Tool = fromHelper{}
+
+// Builder statements whose arguments may not evaluate the same where the agent is built: each
+// is reported and left, not folded into the construction.
+func TestFoldNeedsStableArguments(t *testing.T) {
+	turns := flag.Int("turns", 3, "")
+	a := agenttest.MustNew(agenttest.NewScriptedModel(), agenttest.MemJournal())
+	flag.Parse()
+	a.WithMaxTurns(*turns) // a pointer read after flag.Parse
+
+	k := 1
+	b := agenttest.MustNew(agenttest.NewScriptedModel(), agenttest.MemJournal())
+	k = 2
+	b.WithMaxTurns(k) // a variable assigned between
+
+	c := agenttest.MustNew(agenttest.NewScriptedModel(), agenttest.MemJournal())
+	var p = "late"
+	c.WithSystemPrompt(p) // a variable declared after the construction
+
+	n := 4
+	bump := func() { n++ }
+	d := agenttest.MustNew(agenttest.NewScriptedModel(), agenttest.MemJournal())
+	bump()
+	d.WithMaxTurns(n) // a variable a closure changes
+
+	e := agenttest.MustNew(agenttest.NewScriptedModel(), agenttest.MemJournal())
+	_, _ = e.Run(context.Background(), "r", agent.UserText("x"))
+	e.WithMaxTurns(5) // a builder after the agent ran: its first run had no limit
+	_, _, _, _ = a, b, c, d
 }

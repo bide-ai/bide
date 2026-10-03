@@ -16,6 +16,9 @@ func checkPause(t *testing.T, a *agent.Agent) {
 	ctx := context.Background()
 	j, _ := agent.NewJournal(agent.NewMemStore())
 	_, err := a.Run(ctx, "r", agent.UserText("go"), agent.WithWaker(waker{}))
+	_, _ = a.Run(ctx, "r2", agent.UserText("go"), agent.WithIdentity(agent.Identity{Actor: "ops"})) // never empty
+	var who agent.Identity
+	_, _ = a.Run(ctx, "r3", agent.UserText("go"), agent.WithIdentity(who)) // may be empty: reported
 	var p *agent.ApprovalPending
 	if errors.As(err, &p) {
 		t.Log(p)

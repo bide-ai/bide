@@ -15,12 +15,14 @@
 //
 //	go run github.com/bide-ai/bide/internal/tools/migrate@<version> [-n] [-rules r1,r2] [packages]
 //
-// Packages default to ./... . With -md, the arguments are markdown files or directories (README.md
-// and docs by default), whose Go code blocks are rewritten instead (see MigrateMarkdown). -n
-// reports what would change without writing. -rules selects
-// rewrite classes (default: all; -list prints them). Rewritten files are gofmt'ed. The exit status
-// is 0 when every site was rewritten, 1 when some need a person (they are listed), and 2 when the
-// tool could not run.
+// Packages default to ./... . After rewriting, it type-checks the module against the new API
+// (-bide: a version, or the directory of a bide checkout; by default the version it was built
+// from), and lists every error as a site that needs a person. With -md, the arguments are
+// markdown files or directories (README.md and docs by default), whose Go code blocks are
+// rewritten instead (see MigrateMarkdown). -n reports what would change without writing. -rules
+// selects rewrite classes (default: all; -list prints them). Rewritten files are gofmt'ed. The
+// exit status is 0 when every site was rewritten and the result type-checks, 1 when some sites
+// need a person (they are listed, with a count), and 2 when the tool could not run.
 package main
 
 import (
@@ -45,6 +47,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	dry := fl.Bool("n", false, "report what would change, write nothing")
 	only := fl.String("rules", "", "comma-separated rewrite classes to run (default all)")
 	list := fl.Bool("list", false, "list the rewrite classes and exit")
+	bide := fl.String("bide", "", "the new bide API to type-check the rewritten code against: a version, or the directory of a bide checkout (default: the version this command was built from)")
 	md := fl.Bool("md", false, "rewrite the Go code blocks of markdown files (the arguments: files or directories, relative to -C; default README.md and docs) instead of packages")
 	if err := fl.Parse(args); err != nil {
 		return 2
@@ -78,6 +81,11 @@ func run(args []string, stdout, stderr io.Writer) int {
 			patterns = []string{"./..."}
 		}
 		out, res, err = MigrateModule(*dir, patterns, rules)
+		if err == nil {
+			var fs []Finding
+			fs, err = CheckModule(*dir, patterns, out, *bide)
+			res.Findings = append(res.Findings, fs...)
+		}
 	}
 	if err != nil {
 		fmt.Fprintln(stderr, "migrate:", err)
@@ -109,7 +117,13 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stdout, f)
 	}
 	if len(res.Findings) > 0 {
-		fmt.Fprintf(stdout, "%d sites need a person\n", len(res.Findings))
+		unchecked := 0
+		for _, f := range res.Findings {
+			if f.Rule == "check" {
+				unchecked++
+			}
+		}
+		fmt.Fprintf(stdout, "%d sites need a person (%d of them: the code does not type-check against the new API after the rewrite, or was not checked)\n", len(res.Findings), unchecked)
 		return 1
 	}
 	return 0

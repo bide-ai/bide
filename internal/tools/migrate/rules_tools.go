@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"go/ast"
 	"go/types"
+	"strings"
 )
 
 // The tool rule: the Tool interface is Spec() ToolSpec and Call (docs/design/api-v1.md, item 7),
@@ -116,10 +117,19 @@ func isZeroSafety(e ast.Expr) bool {
 	return ok && len(lit.Elts) == 0
 }
 
-// addSpecMethod adds a Spec method after the Name method of a type that implements the old Tool
-// method set and has no Spec.
+// addSpecMethod gives a Spec method to a type that implements the old Tool method set and has
+// none, at the first of its old methods (Name, Description, ArgsSchema, Safety) it declares. The
+// Spec reports what the old methods did, so a method the type declares keeps overriding:
+//
+//   - a decorator that embeds an agent.Tool starts from the embedded tool's Spec and sets the
+//     fields of the methods it declares (the embedded tool's own old methods become its Spec);
+//   - a wrapper with Unwrap() Tool starts from the wrapped tool's Spec, as SpecOf read it;
+//   - any other type builds the spec from its four methods.
+//
+// A type whose old methods come from anywhere else (an embedded struct, a method of another
+// file) is reported for a person.
 func addSpecMethod(c *Ctx, fd *ast.FuncDecl) {
-	if fd.Recv == nil || fd.Name.Name != "Name" || len(fd.Recv.List) != 1 {
+	if fd.Recv == nil || oldToolMethods[fd.Name.Name] == "" || len(fd.Recv.List) != 1 {
 		return
 	}
 	obj, ok := c.Info.Defs[fd.Name].(*types.Func)
@@ -127,25 +137,99 @@ func addSpecMethod(c *Ctx, fd *ast.FuncDecl) {
 		return
 	}
 	recvT := obj.Type().(*types.Signature).Recv().Type()
-	ptr := recvT
-	if _, isPtr := recvT.(*types.Pointer); !isPtr {
-		ptr = types.NewPointer(recvT)
+	base := recvT
+	if p, isPtr := recvT.(*types.Pointer); isPtr {
+		base = p.Elem()
 	}
-	if !hasMethods(ptr, "Name", "Description", "ArgsSchema", "Safety", "Call") || hasMethods(ptr, "Spec") {
+	nt := named(base)
+	if nt == nil {
 		return
 	}
+	ptr := types.NewPointer(base)
+	if !hasMethods(ptr, "Call") || hasMethods(ptr, "Spec") {
+		return
+	}
+	if c.run.specDone == nil {
+		c.run.specDone = map[types.Object]bool{}
+	}
+	if c.run.specDone[nt.Obj()] {
+		return
+	}
+	// The embedded agent.Tool, if any: its old methods are gone after the rewrite.
+	embed := ""
+	if st, ok := base.Underlying().(*types.Struct); ok {
+		for i := range st.NumFields() {
+			if f := st.Field(i); f.Embedded() && isNamed(f.Type(), agentPath, "Tool") {
+				embed = f.Name()
+			}
+		}
+	}
+	// The old methods the type declares itself (the ones that keep overriding), and whether every
+	// one it has comes from itself or from the embedded tool.
+	declared := map[string]*types.Func{}
+	for i := range nt.NumMethods() {
+		if m := nt.Method(i); oldToolMethods[m.Name()] != "" {
+			declared[m.Name()] = m
+		}
+	}
+	for _, name := range []string{"Name", "Description", "ArgsSchema", "Safety"} {
+		if declared[name] != nil {
+			if c.Pkg.Fset.File(declared[name].Pos()) != c.Pkg.Fset.File(fd.Pos()) {
+				c.run.specDone[nt.Obj()] = true
+				c.Manual(fd, "%s declares the old Tool methods in more than one file: give it a Spec method (agent.ToolSpec) by hand", nt.Obj().Name())
+				return
+			}
+			continue
+		}
+		// Not declared: with an embedded agent.Tool it can only be the tool's (another embedded
+		// type providing it at the same depth would make it ambiguous).
+		if hasMethods(ptr, name) && embed == "" {
+			c.run.specDone[nt.Obj()] = true
+			c.Manual(fd, "%s gets its %s method from an embedded type other than agent.Tool: give it a Spec method (agent.ToolSpec) by hand", nt.Obj().Name(), name)
+			return
+		}
+	}
+	// Generate it once, at the first declared old method in the file.
+	for _, m := range declared {
+		if m.Pos() < obj.Pos() {
+			return
+		}
+	}
+	c.run.specDone[nt.Obj()] = true
 	recv := "t"
 	if names := fd.Recv.List[0].Names; len(names) > 0 && names[0].Name != "_" {
 		recv = names[0].Name
 	}
-	A := c.A()
-	recvDecl := recv + " " + c.Ed.Orig(fd.Recv.List[0].Type)
-	var body string
-	if hasMethods(ptr, "Unwrap") {
-		body = fmt.Sprintf("s := %s.Unwrap().Spec()\ns.Name, s.Description, s.Input, s.Safety = %s.Name(), %s.Description(), %s.ArgsSchema(), %s.Safety()\nreturn s", recv, recv, recv, recv, recv)
-	} else {
-		body = fmt.Sprintf("return %sToolSpec{Name: %s.Name(), Description: %s.Description(), Input: %s.ArgsSchema(), Safety: %s.Safety()}", A, recv, recv, recv, recv)
+	// The receiver: a pointer if any declared old method has one, so a value keeps the method set
+	// it had (a value's promoted methods were the embedded tool's, as its Spec will be).
+	typ := strings.TrimPrefix(c.Ed.Orig(fd.Recv.List[0].Type), "*")
+	for _, m := range declared {
+		if _, isPtr := m.Type().(*types.Signature).Recv().Type().(*types.Pointer); isPtr {
+			typ = "*" + typ
+			break
+		}
 	}
-	c.Ed.InsertAfter(fd, fmt.Sprintf("\n\n// Spec describes the tool to the agent (see %sTool).\nfunc (%s) Spec() %sToolSpec {\n%s\n}\n", A, recvDecl, A, body))
+	A := c.A()
+	var start string
+	switch {
+	case embed != "":
+		start = fmt.Sprintf("s := %s.%s.Spec()", recv, embed)
+	case hasMethods(ptr, "Unwrap"):
+		start = fmt.Sprintf("s := %s.Unwrap().Spec()", recv)
+	default:
+		if len(declared) != 4 {
+			c.Manual(fd, "%s implements the old Tool methods only in part: give it a Spec method (agent.ToolSpec) by hand", nt.Obj().Name())
+			return
+		}
+		start = fmt.Sprintf("var s %sToolSpec", A)
+	}
+	body := []string{start}
+	for _, name := range []string{"Name", "Description", "ArgsSchema", "Safety"} {
+		if declared[name] != nil {
+			body = append(body, fmt.Sprintf("s.%s = %s.%s()", oldToolMethods[name], recv, name))
+		}
+	}
+	body = append(body, "return s")
+	c.Ed.InsertAfter(fd, fmt.Sprintf("\n\n// Spec describes the tool to the agent (see %sTool).\nfunc (%s %s) Spec() %sToolSpec {\n%s\n}\n", A, recv, typ, A, strings.Join(body, "\n")))
 	c.Count()
 }

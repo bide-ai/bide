@@ -28,7 +28,12 @@ func (t *legacy) Name() string { return t.name }
 
 // Spec describes the tool to the agent (see agent.Tool).
 func (t *legacy) Spec() agent.ToolSpec {
-	return agent.ToolSpec{Name: t.Name(), Description: t.Description(), Input: t.ArgsSchema(), Safety: t.Safety()}
+	var s agent.ToolSpec
+	s.Name = t.Name()
+	s.Description = t.Description()
+	s.Input = t.ArgsSchema()
+	s.Safety = t.Safety()
+	return s
 }
 
 func (t *legacy) Description() string         { return "legacy" }
@@ -53,3 +58,40 @@ func register(r *plan.Registry) error {
 func withOpts(opts ...agent.ToolOption) agent.Tool {
 	return agent.MustFunc("x", "d", func(ctx context.Context, x in) (int, error) { return 0, nil }, append([]agent.ToolOption{agent.WithSafety(agent.Safety{ReadOnly: true})}, opts...)...)
 }
+
+// forceSideEffect is a decorator that embeds a tool and overrides its Safety: the override must
+// survive (a read-only tool forced to be a side effect must not be re-run on resume).
+type forceSideEffect struct{ agent.Tool }
+
+func (forceSideEffect) Safety() agent.Safety { return agent.Safety{} }
+
+// Spec describes the tool to the agent (see agent.Tool).
+func (t forceSideEffect) Spec() agent.ToolSpec {
+	s := t.Tool.Spec()
+	s.Safety = t.Safety()
+	return s
+}
+
+// renamed overrides the name and the description, on a pointer receiver, and reads the embedded
+// tool's own description.
+type renamed struct {
+	agent.Tool
+	prefix string
+}
+
+func (r *renamed) Name() string { return r.prefix + r.Tool.Spec().Name }
+
+// Spec describes the tool to the agent (see agent.Tool).
+func (r *renamed) Spec() agent.ToolSpec {
+	s := r.Tool.Spec()
+	s.Name = r.Name()
+	s.Description = r.Description()
+	return s
+}
+
+func (r *renamed) Description() string { return "renamed: " + r.Tool.Spec().Description }
+
+// passThrough embeds a tool and overrides nothing: the embedded Spec is its own.
+type passThrough struct{ agent.Tool }
+
+var _ = []agent.Tool{forceSideEffect{}, &renamed{}, passThrough{}}

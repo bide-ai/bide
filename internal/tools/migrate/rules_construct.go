@@ -44,6 +44,7 @@ type construction struct {
 type builderStmt struct {
 	obj    types.Object
 	opts   []string
+	calls  []*ast.CallExpr // the builder calls, whose arguments folding moves to the construction
 	folded bool
 }
 
@@ -203,7 +204,7 @@ func visitConstruct(c *Ctx, n ast.Node) {
 			if id, ok := ast.Unparen(root).(*ast.Ident); ok {
 				if obj, ok := c.Info.Uses[id].(*types.Var); ok {
 					if stmt := c.builderStatement(n, obj); stmt != nil {
-						c.builders[stmt] = &builderStmt{obj: obj, opts: opts}
+						c.builders[stmt] = &builderStmt{obj: obj, opts: opts, calls: calls}
 						return
 					}
 				}
@@ -342,8 +343,14 @@ func foldBuilders(c *Ctx, list []ast.Stmt) {
 			continue
 		}
 		var extra []string
-		for _, t := range list[i+1:] {
+		for j, t := range list[i+1:] {
 			if b := c.builders[t]; b != nil && b.obj == k.obj {
+				// Folding moves the builder's arguments to the construction: only arguments
+				// that evaluate the same there may move.
+				if !c.stableArgs(b.calls, s, t, list[i+1:i+1+j]) {
+					b.folded = true // reported: the builder statement stays, unfolded
+					break
+				}
 				extra = append(extra, b.opts...)
 				b.folded = true
 				c.Ed.DeleteStmt(t)
@@ -357,6 +364,112 @@ func foldBuilders(c *Ctx, list []ast.Stmt) {
 			k.emit(extra)
 		}
 	}
+}
+
+// stableArgs reports whether every argument of the builder calls (in the statement at) evaluates
+// at the construction (stmt) to what it evaluated to after the statements between: a constant, a
+// function literal, a function, or a local variable declared before the construction that nothing
+// between assigns, and whose address no code of the function takes or no closure captures (a
+// call between could change it through either). Anything else (a pointer dereference, a call, a
+// field) may change in between, as a flag's value does at flag.Parse; the site is reported.
+func (c *Ctx) stableArgs(calls []*ast.CallExpr, stmt, at ast.Stmt, between []ast.Stmt) bool {
+	fn := c.enclosingBody()
+	for _, call := range calls {
+		for _, a := range call.Args {
+			if !c.stableArg(ast.Unparen(a), stmt, between, fn) {
+				c.Manual(at, "builder methods after the construction take %s, which may not evaluate the same where the agent is built: pass the options to agent.New where the values are final", c.Ed.Orig(a))
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func (c *Ctx) stableArg(a ast.Expr, stmt ast.Stmt, between []ast.Stmt, fn ast.Node) bool {
+	if tv, ok := c.Info.Types[a]; ok && tv.Value != nil {
+		return true // a constant
+	}
+	switch e := a.(type) {
+	case *ast.FuncLit:
+		return true
+	case *ast.SelectorExpr:
+		if id, ok := e.X.(*ast.Ident); ok {
+			if _, isPkg := c.Info.Uses[id].(*types.PkgName); isPkg {
+				_, isFunc := c.Info.Uses[e.Sel].(*types.Func)
+				return isFunc
+			}
+		}
+	case *ast.Ident:
+		switch o := c.Info.Uses[e].(type) {
+		case *types.Func, *types.Nil:
+			return true
+		case *types.Var:
+			if o.Pkg() == nil || o.Parent() == o.Pkg().Scope() || o.Pos() >= stmt.Pos() {
+				return false // a package variable, or one declared after the construction
+			}
+			for _, t := range between {
+				if c.assignsTo(t, o) {
+					return false
+				}
+			}
+			return fn != nil && !c.escapes(fn, o)
+		}
+	}
+	return false
+}
+
+// enclosingBody returns the body of the innermost function on the stack.
+func (c *Ctx) enclosingBody() ast.Node {
+	for i := 0; ; i++ {
+		switch p := c.Parent(i).(type) {
+		case nil:
+			return nil
+		case *ast.FuncDecl:
+			return p.Body
+		case *ast.FuncLit:
+			return p.Body
+		}
+	}
+}
+
+// assignsTo reports whether n assigns obj (=, op=, ++, --, or a range clause).
+func (c *Ctx) assignsTo(n ast.Node, obj types.Object) bool {
+	found := false
+	is := func(e ast.Expr) bool {
+		id, ok := ast.Unparen(e).(*ast.Ident)
+		return ok && (c.Info.Uses[id] == obj || c.Info.Defs[id] == obj)
+	}
+	ast.Inspect(n, func(x ast.Node) bool {
+		switch x := x.(type) {
+		case *ast.AssignStmt:
+			for _, l := range x.Lhs {
+				found = found || is(l)
+			}
+		case *ast.IncDecStmt:
+			found = found || is(x.X)
+		case *ast.RangeStmt:
+			found = found || (x.Key != nil && is(x.Key)) || (x.Value != nil && is(x.Value))
+		}
+		return !found
+	})
+	return found
+}
+
+// escapes reports whether fn takes obj's address or a closure in it uses obj.
+func (c *Ctx) escapes(fn ast.Node, obj types.Object) bool {
+	found := false
+	ast.Inspect(fn, func(x ast.Node) bool {
+		switch x := x.(type) {
+		case *ast.UnaryExpr:
+			if id, ok := ast.Unparen(x.X).(*ast.Ident); ok && x.Op == token.AND && c.Info.Uses[id] == obj {
+				found = true
+			}
+		case *ast.FuncLit:
+			found = found || c.mentions(x, obj)
+		}
+		return !found
+	})
+	return found
 }
 
 // mentions reports whether n uses obj.

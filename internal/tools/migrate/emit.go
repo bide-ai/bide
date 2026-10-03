@@ -38,7 +38,7 @@ func (c *Ctx) fallible(e ast.Expr, call, must, base string) (string, bool) {
 		}
 		return c.helper("Must") + "(" + call + ")", true
 	}
-	stmt, _ := c.stmtInList()
+	stmt, depth := c.stmtInList()
 	if stmt == nil {
 		c.Manual(e, "a constructor that now returns an error, outside a function: handle the error by hand")
 		return call, true
@@ -59,10 +59,102 @@ func (c *Ctx) fallible(e ast.Expr, call, must, base string) (string, bool) {
 			return "", false
 		}
 	}
+	if why := c.notHoistable(e, depth); why != "" {
+		c.Manual(e, "a constructor that now returns an error, %s: moving the call before the statement would run it when the statement would not; handle the error by hand", why)
+		return call, true
+	}
 	name := c.fresh(base)
 	c.claimErr(stmt.Pos())
 	c.Ed.InsertBefore(stmt, fmt.Sprintf("%s, err := %s\n%s\n", name, call, c.onErr(stmt.Pos(), "err")))
 	return name, true
+}
+
+// notHoistable says why e, under the statement at stack depth, is not evaluated every time the
+// statement runs, before anything else of it ("" when it is): a call hoisted before the statement
+// must run exactly when e would have, and before nothing e followed.
+func (c *Ctx) notHoistable(e ast.Expr, depth int) string {
+	child := ast.Node(e)
+	for j := len(c.stack) - 1; j >= depth; j-- {
+		n := c.stack[j]
+		if n == child {
+			continue
+		}
+		switch p := n.(type) {
+		case *ast.BinaryExpr:
+			if (p.Op == token.LAND || p.Op == token.LOR) && p.Y == child {
+				return "on the right of " + p.Op.String()
+			}
+		case *ast.FuncLit:
+			return "in a function literal"
+		case *ast.IfStmt:
+			if j != depth {
+				return "in an else-if"
+			}
+			if p.Init != nil && child != p.Init {
+				return "in an if statement after its init statement"
+			}
+		case *ast.SwitchStmt, *ast.TypeSwitchStmt, *ast.ForStmt, *ast.RangeStmt, *ast.SelectStmt, *ast.CaseClause, *ast.CommClause:
+			if j != depth || !isHeadOf(p, child) {
+				return "in a loop, switch or select"
+			}
+		case *ast.AssignStmt:
+			// the left-hand side's index and pointer operands are evaluated first
+			for _, l := range p.Lhs {
+				if l == child {
+					return "on the left of an assignment"
+				}
+			}
+			if len(p.Rhs) > 1 {
+				for _, r := range p.Rhs {
+					if r == child {
+						break
+					}
+					if hasCall(r) {
+						return "after another call of the assignment"
+					}
+				}
+			}
+		case *ast.CallExpr:
+			// arguments evaluate in order: a call among the earlier ones runs first
+			if p.Fun != child && hasCall(p.Fun) {
+				return "after the call that computes the function"
+			}
+			for _, a := range p.Args {
+				if a == child {
+					break
+				}
+				if hasCall(a) {
+					return "after another argument's call"
+				}
+			}
+		}
+		child = n
+	}
+	return ""
+}
+
+// isHeadOf reports whether child is a part of s evaluated once, before anything else of it: a
+// switch's tag (with no init statement), a range's operand.
+func isHeadOf(s ast.Node, child ast.Node) bool {
+	switch s := s.(type) {
+	case *ast.SwitchStmt:
+		return s.Init == nil && s.Tag == child
+	case *ast.RangeStmt:
+		return s.X == child
+	}
+	return false
+}
+
+// hasCall reports whether e contains a call (whose side effects a hoisted call would now precede).
+func hasCall(e ast.Node) bool {
+	found := false
+	ast.Inspect(e, func(n ast.Node) bool {
+		if _, ok := n.(*ast.CallExpr); ok {
+			found = true
+		}
+		return !found
+	})
+	return found
 }
 
 // isJournalType reports whether t is *agent.Journal.

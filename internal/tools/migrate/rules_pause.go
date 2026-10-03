@@ -137,6 +137,24 @@ func visitPauseCall(c *Ctx, call *ast.CallExpr) {
 	}
 }
 
+// nonEmptyIdentity reports whether e is an agent.Identity literal with a field set to a non-empty
+// string constant, which WithIdentity accepts.
+func (c *Ctx) nonEmptyIdentity(e ast.Expr) bool {
+	lit, ok := ast.Unparen(e).(*ast.CompositeLit)
+	if !ok {
+		return false
+	}
+	for _, el := range lit.Elts {
+		if kv, ok := el.(*ast.KeyValueExpr); ok {
+			el = kv.Value
+		}
+		if tv, ok := c.Info.Types[el]; ok && tv.Value != nil && tv.Value.ExactString() != `""` {
+			return true
+		}
+	}
+	return false
+}
+
 // undecorate moves context decorators wrapped around a run entry point's context argument to run
 // options: a.Run(agent.ContextWithWaker(ctx, w), id, in) becomes a.Run(ctx, id, in,
 // agent.WithWaker(w)).
@@ -151,6 +169,9 @@ func undecorate(c *Ctx, call *ast.CallExpr) {
 		r, ok := c.refOf(inner.Fun)
 		if !ok || r.Pkg != agentPath || decorators[r.Name] == "" {
 			break
+		}
+		if r.Name == "ContextWithIdentity" && !c.nonEmptyIdentity(inner.Args[1]) {
+			c.Manual(inner, "WithIdentity refuses an empty identity (ErrConfig), which ContextWithIdentity bound: rewritten; make sure %s is never empty", c.Ed.Orig(inner.Args[1]))
 		}
 		opts = append([]string{c.A() + decorators[r.Name] + "(" + c.Ed.Text(inner.Args[1]) + ")"}, opts...)
 		ctx = inner.Args[0]

@@ -162,7 +162,8 @@ func (s *Session) SendMessage(ctx context.Context, input Message, opts ...RunOpt
 	panic("stub")
 }
 
-func ContextWithWaker(ctx context.Context, w Waker) context.Context { panic("stub") }
+func ContextWithWaker(ctx context.Context, w Waker) context.Context        { panic("stub") }
+func ContextWithIdentity(ctx context.Context, id Identity) context.Context { panic("stub") }
 
 // Tools
 

@@ -33,6 +33,12 @@ func TestConstruct(t *testing.T) {
 	)
 	_ = c
 
+	limit := 7
+	e := agenttest.MustNew(m, agenttest.MemJournal(), agent.WithMaxTurns(max(limit, 0)))
+	_ = limit + 1
+	// a variable nothing changes between: folded
+	_ = e
+
 	j, _ := agent.NewJournal(agent.NewMemStore())
 	d, err := agent.New(m, j, agent.WithMaxTurns(2))
 	_, _ = d, err

@@ -61,10 +61,11 @@ type listed struct {
 // command builds, so a package is checked against exactly what it compiles against.
 //
 // overlay, when not empty, holds file contents (by absolute path) that stand for the files on
-// disk: the go command builds with them (-overlay), and the packages are parsed from them.
-func Load(dir string, patterns []string, overlay map[string][]byte) ([]*Package, error) {
-	args := []string{"list", "-e", "-test", "-deps", "-export",
-		"-json=ImportPath,Name,Dir,ForTest,DepOnly,Export,GoFiles,CgoFiles,ImportMap,Error"}
+// disk: the go command builds with them (-overlay), and the packages are parsed from them. flags
+// are further go command flags (CheckModule's -modfile).
+func Load(dir string, patterns []string, overlay map[string][]byte, flags ...string) ([]*Package, error) {
+	args := append([]string{"list", "-e", "-test", "-deps", "-export",
+		"-json=ImportPath,Name,Dir,ForTest,DepOnly,Export,GoFiles,CgoFiles,ImportMap,Error"}, flags...)
 	if len(overlay) > 0 {
 		tmp, err := os.MkdirTemp("", "migrate-overlay")
 		if err != nil {

@@ -47,3 +47,24 @@ func register(r *plan.Registry) error {
 func withOpts(opts ...agent.ToolOption) agent.Tool {
 	return agent.Func("x", "d", agent.Safety{ReadOnly: true}, func(ctx context.Context, x in) (int, error) { return 0, nil }, opts...)
 }
+
+// forceSideEffect is a decorator that embeds a tool and overrides its Safety: the override must
+// survive (a read-only tool forced to be a side effect must not be re-run on resume).
+type forceSideEffect struct{ agent.Tool }
+
+func (forceSideEffect) Safety() agent.Safety { return agent.Safety{} }
+
+// renamed overrides the name and the description, on a pointer receiver, and reads the embedded
+// tool's own description.
+type renamed struct {
+	agent.Tool
+	prefix string
+}
+
+func (r *renamed) Name() string        { return r.prefix + r.Tool.Name() }
+func (r *renamed) Description() string { return "renamed: " + r.Tool.Description() }
+
+// passThrough embeds a tool and overrides nothing: the embedded Spec is its own.
+type passThrough struct{ agent.Tool }
+
+var _ = []agent.Tool{forceSideEffect{}, &renamed{}, passThrough{}}

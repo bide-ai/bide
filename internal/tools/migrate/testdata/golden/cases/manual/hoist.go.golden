@@ -1,0 +1,47 @@
+package manual
+
+import "github.com/bide-ai/bide/agent"
+
+// Constructors that now return an error, in positions a hoisted call would change: each is
+// reported and left.
+
+func ready() bool { return false }
+
+func shortCircuit(m agent.Model) bool {
+	return ready() && agent.New(m, agent.NewJournal(agent.NewMemStore())) != nil // only when ready
+}
+
+func elseIf(m agent.Model, a bool) {
+	if a {
+		return
+	} else if agent.New(m, agent.NewJournal(agent.NewMemStore())) != nil { // only when !a
+		return
+	}
+}
+
+func inClosure(m agent.Model) func() *agent.Agent {
+	return func() *agent.Agent {
+		j, err := agent.NewJournal(agent.NewMemStore())
+		if err != nil {
+			panic(err)
+		}
+		ag, err := agent.New(m, j)
+		if err != nil {
+			panic(err)
+		}
+		return ag
+	}
+}
+
+// noErrorResult has no error result: the rewrite handles the error with panic(err) and says so.
+func noErrorResult(m agent.Model) *agent.Agent {
+	j, err := agent.NewJournal(agent.NewMemStore())
+	if err != nil {
+		panic(err)
+	}
+	a, err := agent.New(m, j)
+	if err != nil {
+		panic(err)
+	}
+	return a
+}

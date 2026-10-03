@@ -56,7 +56,8 @@ type Run struct {
 	Counts   map[string]int // rule -> sites rewritten
 	// Docs is set for documentation snippets, whose errors are handled with log.Fatal where the
 	// snippet's function returns none (a snippet stands for a program's code).
-	Docs bool
+	Docs     bool
+	specDone map[types.Object]bool // tool types the tools rule gave a Spec method (or reported)
 }
 
 // Ctx is a rule's view of the file it is rewriting.
@@ -549,7 +550,7 @@ func (c *Ctx) errDeclared(pos token.Pos) bool {
 
 // onErr returns the statement that handles a non-nil err in the enclosing function: t.Fatal
 // in a test, a return of err from a function whose last result is an error, log.Fatal in main,
-// and panic otherwise.
+// and panic otherwise, which is reported for a person to review.
 func (c *Ctx) onErr(pos token.Pos, err string) string {
 	if t := c.testVar(pos); t != "" {
 		return fmt.Sprintf("if %s != nil {\n%s.Fatal(%s)\n}", err, t, err)
@@ -568,6 +569,10 @@ func (c *Ctx) onErr(pos token.Pos, err string) string {
 	if c.Pkg.Name == "main" || c.run.Docs {
 		return fmt.Sprintf("if %s != nil {\n%sFatal(%s)\n}", err, c.Q("log"), err)
 	}
+	// The old call could not fail here; the new one panics where it fails, which a library
+	// function's caller does not expect: rewritten, and reported.
+	c.run.Findings = append(c.run.Findings, Finding{Pos: c.Pkg.Fset.Position(pos), Rule: c.rule,
+		Msg: "the error the new call returns is handled with panic(err), as this function returns no error: return or handle it"})
 	return fmt.Sprintf("if %s != nil {\npanic(%s)\n}", err, err)
 }
 

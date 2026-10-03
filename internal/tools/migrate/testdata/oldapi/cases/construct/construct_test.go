@@ -22,6 +22,12 @@ func TestConstruct(t *testing.T) {
 	c.WithSystemPrompt("sys")
 	_ = c
 
+	limit := 7
+	e := agent.New(m, agent.NewMemStore())
+	_ = limit + 1
+	e.WithMaxTurns(limit) // a variable nothing changes between: folded
+	_ = e
+
 	j, _ := agent.NewJournal(agent.NewMemStore())
 	d, err := agent.Build(m, j, agent.WithMaxTurns(2))
 	_, _ = d, err
