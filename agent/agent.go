@@ -105,7 +105,8 @@ func Seed(v int64) SamplingOption { return func(s *Sampling) { s.Seed = &v } }
 // refuses, each with ErrConfig, a nil tool, a name the agent already has, a wrapper the agent
 // cannot honor (checkWrapper), an approval policy no option would build (a SingleApproval whose
 // fields were changed), a name the agent's model's declared tool-name rule (ToolRules) does not
-// match, the name RunTyped reserves, and an input schema that is not a JSON object. A refused tool
+// match, the name RunTyped reserves, an input schema that is not a JSON object, and a method of
+// the old Tool method set that disagrees with the tool's Spec (checkOldMethods). A refused tool
 // is not registered.
 func (a *Agent) addTool(t Tool) error {
 	if isNil(t) {
@@ -113,6 +114,9 @@ func (a *Agent) addTool(t Tool) error {
 	}
 	s := specOf(t)
 	if err := checkWrapper(t, s); err != nil {
+		return err
+	}
+	if err := checkOldMethods(t, s); err != nil {
 		return err
 	}
 	if s.Approval != nil {

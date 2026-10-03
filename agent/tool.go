@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/bide-ai/bide/internal/strictjson"
@@ -62,6 +63,34 @@ func specOf(t Tool) ToolSpec {
 	s := t.Spec()
 	s.Approval = s.Approval.Clone()
 	return s
+}
+
+// checkOldMethods refuses a tool with a method of the Tool interface's old method set (Name()
+// string, Description() string, ArgsSchema() json.RawMessage, Safety() Safety) whose value is not
+// its Spec's. The agent reads only Spec, so such a method is an override written for the old
+// interface that no longer overrides anything: typically a decorator that embeds the tool it
+// decorates, whose Spec is the embedded tool's, and whose own Safety() (a side effect it adds)
+// would be ignored, so a resume would run it again. A method that agrees with Spec changes nothing
+// and is accepted.
+func checkOldMethods(t Tool, s ToolSpec) error {
+	var dead []string
+	if m, ok := t.(interface{ Name() string }); ok && m.Name() != s.Name {
+		dead = append(dead, "Name")
+	}
+	if m, ok := t.(interface{ Description() string }); ok && m.Description() != s.Description {
+		dead = append(dead, "Description")
+	}
+	if m, ok := t.(interface{ ArgsSchema() json.RawMessage }); ok && !bytes.Equal(m.ArgsSchema(), s.Input) {
+		dead = append(dead, "ArgsSchema")
+	}
+	if m, ok := t.(interface{ Safety() Safety }); ok && m.Safety() != s.Safety {
+		dead = append(dead, "Safety")
+	}
+	if len(dead) > 0 {
+		return fmt.Errorf("agent: tool %q (%T): %s disagrees with its Spec, which is all the agent reads: set the value in Spec (a decorator: s := d.Tool.Spec(), then the fields it overrides): %w",
+			s.Name, t, strings.Join(dead, ", "), ErrConfig)
+	}
+	return nil
 }
 
 // Safety declares how a tool call may be retried: when a run resumes after a crash and the call's
