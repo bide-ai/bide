@@ -20,10 +20,21 @@ import (
 func MigrateModule(dir string, patterns []string, rules []Rule) (map[string][]byte, *Run, error) {
 	out := map[string][]byte{}
 	res := &Run{Counts: map[string]int{}}
+	type passFindings struct {
+		fs     []Finding
+		before map[string][]byte // the files as the pass read them
+	}
+	var passes []passFindings
 	for _, r := range rules {
 		pkgs, err := Load(dir, patterns, out)
 		if err != nil {
 			return nil, nil, err
+		}
+		before := map[string][]byte{}
+		for _, p := range pkgs {
+			for _, f := range p.Files {
+				before[f.Path] = f.Src
+			}
 		}
 		o, rr, err := Migrate(pkgs, []Rule{r})
 		if err != nil {
@@ -35,7 +46,13 @@ func MigrateModule(dir string, patterns []string, rules []Rule) (map[string][]by
 		for k, v := range rr.Counts {
 			res.Counts[k] += v
 		}
-		res.Findings = append(res.Findings, rr.Findings...)
+		passes = append(passes, passFindings{rr.Findings, before})
+	}
+	// Each pass found its sites in the files as it read them: name them in the files as the run
+	// leaves them.
+	for _, p := range passes {
+		remapFindings(p.fs, p.before, out)
+		res.Findings = append(res.Findings, p.fs...)
 	}
 	return out, res, nil
 }

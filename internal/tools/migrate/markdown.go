@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"go/token"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -33,6 +34,9 @@ func MigrateMarkdown(root string, mdFiles []string, rules []Rule) (map[string][]
 	if err != nil {
 		return nil, nil, err
 	}
+	if err := addBideNames(root, names); err != nil {
+		return nil, nil, err
+	}
 	content := map[string]string{}
 	for _, f := range mdFiles {
 		b, err := os.ReadFile(f)
@@ -42,19 +46,83 @@ func MigrateMarkdown(root string, mdFiles []string, rules []Rule) (map[string][]
 		content[f] = string(b)
 	}
 	res := &Run{Counts: map[string]int{}}
+	type passFindings struct {
+		from, to int               // the pass's findings: res.Findings[from:to]
+		before   map[string][]byte // the files as the pass read them
+	}
+	var passes []passFindings
 	for _, r := range rules {
+		before := map[string][]byte{}
+		for f, c := range content {
+			before[f] = []byte(c)
+		}
+		from := len(res.Findings)
 		if err := markdownPass(root, names, content, r, res); err != nil {
 			return nil, nil, err
 		}
+		passes = append(passes, passFindings{from, len(res.Findings), before})
 	}
 	out := map[string][]byte{}
+	final := map[string][]byte{}
 	for _, f := range mdFiles {
 		c := rewriteSetups(content[f])
+		final[f] = []byte(c)
 		if orig, _ := os.ReadFile(f); string(orig) != c {
 			out[f] = []byte(c)
 		}
 	}
+	// each pass's findings name lines of the files as it read them: name them in the result
+	for _, p := range passes {
+		remapFindings(res.Findings[p.from:p.to], p.before, final)
+	}
 	return out, res, nil
+}
+
+// addBideNames adds to names the packages of the bide modules the module at root requires, under
+// their package names (agent, audit, ...), where the module has no package of that name itself:
+// snip.PackageNames lists only the module's own packages and the standard library, so a user's
+// blocks naming agent would resolve nothing.
+func addBideNames(root string, names map[string]string) error {
+	m, err := readGoMod(root)
+	if err != nil {
+		return err
+	}
+	var patterns []string
+	for _, r := range m.Require {
+		if r.Path == bidePath || strings.HasPrefix(r.Path, bidePath+"/") {
+			patterns = append(patterns, r.Path+"/...")
+		}
+	}
+	if len(patterns) == 0 {
+		return nil
+	}
+	cmd := exec.Command("go", append([]string{"list", "-e", "-f", "{{.ImportPath}} {{.Name}}"}, patterns...)...)
+	cmd.Dir = root
+	out, err := cmd.Output()
+	if err != nil {
+		return fmt.Errorf("go list %s: %v", strings.Join(patterns, " "), err)
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		path, name, ok := strings.Cut(line, " ")
+		if !ok || name == "main" || !publicPath(path) {
+			continue
+		}
+		if _, taken := names[name]; !taken {
+			names[name] = path
+		}
+	}
+	return nil
+}
+
+// publicPath reports whether a package path is one a user imports: none of internal, testdata,
+// cmd or examples.
+func publicPath(path string) bool {
+	for _, el := range strings.Split(path, "/") {
+		if el == "internal" || el == "testdata" || el == "cmd" || el == "examples" {
+			return false
+		}
+	}
+	return true
 }
 
 // snipUnit is one block made into a Go file.

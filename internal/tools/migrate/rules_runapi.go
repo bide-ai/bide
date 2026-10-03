@@ -203,12 +203,9 @@ func reshapeMessage(c *Ctx, call *ast.CallExpr, text, A string) {
 			c.Count()
 			return
 		}
-		if _, isIf := c.Parent(2).(*ast.IfStmt); isIf {
-			break // an if statement's init: the answer is scoped to the if
-		}
 		stmt, depth := c.stmtInList()
 		if stmt != ast.Stmt(p) {
-			break
+			break // not a statement of a list (an if statement's init, say): the answer stays scoped
 		}
 		res := c.fresh("res")
 		errText := c.Ed.Text(p.Lhs[1])

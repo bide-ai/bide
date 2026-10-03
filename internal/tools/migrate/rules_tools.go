@@ -215,7 +215,8 @@ func addSpecMethod(c *Ctx, fd *ast.FuncDecl) {
 	case embed != "":
 		start = fmt.Sprintf("s := %s.%s.Spec()", recv, embed)
 	case hasMethods(ptr, "Unwrap"):
-		start = fmt.Sprintf("s := %s.Unwrap().Spec()", recv)
+		// SpecOf read a nil Unwrap() as no wrapped tool
+		start = fmt.Sprintf("var s %sToolSpec\nif u := %s.Unwrap(); u != nil {\ns = u.Spec()\n}", A, recv)
 	default:
 		if len(declared) != 4 {
 			c.Manual(fd, "%s implements the old Tool methods only in part: give it a Spec method (agent.ToolSpec) by hand", nt.Obj().Name())

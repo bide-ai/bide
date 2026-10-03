@@ -97,3 +97,59 @@ func TestCheckModule_BideItself(t *testing.T) {
 		t.Fatalf("findings %v, err %v; want the error at x.go:5", fs, err)
 	}
 }
+
+// A user's docs name bide's packages without importing them, as bide's own docs do: the
+// markdown mode resolves them through the bide modules the user's module requires (it used to
+// resolve only the module's own packages, and left such blocks alone, silently).
+func TestMigrateMarkdown_UserModuleResolvesBide(t *testing.T) {
+	t.Setenv("GOWORK", "off")
+	dir := userModule(t, "package user\n")
+	md := filepath.Join(dir, "README.md")
+	doc := "# Use\n\n<!-- docsnip: setup model agent.Model; journal *agent.Journal -->\n```go\na, err := agent.Build(model, journal)\n```\n"
+	if err := os.WriteFile(md, []byte(doc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, _, err := MigrateMarkdown(dir, []string{md}, Rules())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(out[md]); !strings.Contains(got, "agent.New(model, journal)") {
+		t.Fatalf("the block was not rewritten:\n%s", got)
+	}
+}
+
+// A rebase brings old call sites into code already migrated: the old New, used as one value,
+// no longer type-checks against the new New (two results), and is still recognised and rewritten.
+func TestRebase_OldNewAsOneValue(t *testing.T) {
+	t.Setenv("GOWORK", "off")
+	nw := copyTree(t, "testdata/newapi")
+	f := filepath.Join(nw, "cases", "rebase", "rebase_test.go")
+	src := `package rebase
+
+import (
+	"testing"
+
+	"github.com/bide-ai/bide/agent"
+)
+
+func TestRebase(t *testing.T) {
+	var m agent.Model
+	j, _ := agent.NewJournal(agent.NewMemStore())
+	a := agent.New(m, j)
+	_ = a
+}
+`
+	if err := os.MkdirAll(filepath.Dir(f), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(f, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, _, err := MigrateModule(nw, []string{"./cases/rebase/..."}, Rules())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(out[f]); !strings.Contains(got, "a := agenttest.MustNew(m, j)") {
+		t.Fatalf("the old New was not rewritten:\n%s", got)
+	}
+}

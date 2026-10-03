@@ -74,3 +74,16 @@ func typed(ctx context.Context, a *agent.Agent) (answer, error) {
 	v, _, err := a.RunTyped[answer](ctx, "r", agent.UserText("q"))
 	return v, err
 }
+
+// The error check names the answer: the answer must be set before the check reads it.
+func checkAnswerInErrCheck(t *testing.T, a *agent.Agent) {
+	res, err := a.Run(context.Background(), "r", agent.UserText("x"))
+	var msg agent.Message
+	if res != nil {
+		msg = res.Message
+	}
+	if err != nil {
+		t.Fatal(msg.Text(), err)
+	}
+	_ = msg
+}

@@ -68,3 +68,22 @@ func (r *renamed) Description() string { return "renamed: " + r.Tool.Description
 type passThrough struct{ agent.Tool }
 
 var _ = []agent.Tool{forceSideEffect{}, &renamed{}, passThrough{}}
+
+// wrapper implements the old method set and wraps a tool (Unwrap): its Spec starts from the
+// wrapped tool's (its gate and timeout), as SpecOf read it, and a nil wrapped tool is none.
+type wrapper struct{ inner agent.Tool }
+
+func (w wrapper) Name() string                { return "w" }
+func (w wrapper) Description() string         { return "wrapped" }
+func (w wrapper) ArgsSchema() json.RawMessage { return nil }
+func (w wrapper) Safety() agent.Safety        { return agent.Safety{ReadOnly: true} }
+func (w wrapper) Unwrap() agent.Tool          { return w.inner }
+func (w wrapper) Call(ctx context.Context, args json.RawMessage) (json.RawMessage, error) {
+	return w.inner.Call(ctx, args)
+}
+
+var _ agent.Tool = wrapper{}
+
+// The caller's own WithSafety comes after the converted one, so it still wins.
+var overridden = agent.Func("o", "d", agent.Safety{ReadOnly: true}, func(ctx context.Context, x in) (int, error) { return 0, nil },
+	agent.WithSafety(agent.Safety{Idempotent: true}))

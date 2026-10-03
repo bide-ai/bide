@@ -101,3 +101,11 @@ func TestFoldNeedsStableArguments(t *testing.T) {
 	e.WithMaxTurns(5) // a builder after the agent ran: its first run had no limit
 	_, _, _, _ = a, b, c, d
 }
+
+// Context decorators around a call that passes its options as a slice: reported (the option
+// would have to join the slice).
+func TestDecoratorsWithSliceOptions(t *testing.T) {
+	a := helper(1)
+	opts := []agent.RunOption{agent.WithSaga()}
+	_, _ = a.Run(agent.ContextWithWaker(context.Background(), waker{}), "r", agent.UserText("x"), opts...)
+}

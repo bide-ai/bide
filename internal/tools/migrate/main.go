@@ -28,6 +28,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"go/token"
 	"io"
 	"io/fs"
 	"os"
@@ -75,6 +76,12 @@ func run(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stderr, "migrate:", err)
 			return 2
 		}
+		if len(out) > 0 {
+			// the blocks are rewritten in the module's packages (the old API), not compiled
+			// against the new one
+			res.Findings = append(res.Findings, Finding{Pos: token.Position{Filename: *dir}, Rule: "check",
+				Msg: "the rewritten Go blocks were not type-checked against the new API: compile them (bide's docs use internal/tools/docsnip) once the module requires it"})
+		}
 	} else {
 		patterns := fl.Args()
 		if len(patterns) == 0 {
@@ -103,7 +110,11 @@ func run(args []string, stdout, stderr io.Writer) int {
 				return 2
 			}
 		}
-		fmt.Fprintln(stdout, "rewrote", p)
+		if *dry {
+			fmt.Fprintln(stdout, "would rewrite", p)
+		} else {
+			fmt.Fprintln(stdout, "rewrote", p)
+		}
 	}
 	names := make([]string, 0, len(res.Counts))
 	for n := range res.Counts {

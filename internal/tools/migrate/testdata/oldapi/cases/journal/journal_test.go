@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/audit"
 )
 
 // A store used only as a journal is retyped.
@@ -42,4 +43,21 @@ func TestRawWrite(t *testing.T) {
 	ctx := context.Background()
 	j, _ := agent.NewJournal(agent.NewMemStore())
 	_, _ = j.Do(ctx, "r", "k", func(context.Context) (agent.Record, error) { return agent.Record{}, nil })
+}
+
+// A store variable assigned again: each use is a journal over the value it has then, not over
+// the first value only.
+func TestReassigned(t *testing.T) {
+	ctx := context.Background()
+	store := agent.NewMemStore()
+	_ = agent.Approve(ctx, store, "r", "c1", true)
+	store = agent.NewMemStore()
+	_ = agent.Approve(ctx, store, "r", "c2", true)
+}
+
+// An audited store wraps the store beneath a journal.
+func TestAuditedOverJournal(t *testing.T) {
+	var d agent.Durable = agent.NewMemStore()
+	as, err := audit.NewAuditedStore(d)
+	_, _ = as, err
 }
