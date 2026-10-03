@@ -9,7 +9,7 @@ minor version (0.x.0) may include breaking API or journal-format changes; each o
 
 ## [Unreleased]
 
-## [0.10.0] - YYYY-MM-DD
+## [0.10.0] - 2026-10-03
 
 ### Added
 
