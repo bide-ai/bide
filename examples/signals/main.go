@@ -83,7 +83,7 @@ func awaitScene() {
 	fmt.Printf("  paused awaiting signal %q\n", awt.Name)
 
 	// Delivered from outside the run (another process, a webhook). Journaled at-most-once.
-	if err := agent.Signal(ctx, store, runID, sig, "alice"); err != nil {
+	if err := store.Signal(ctx, runID, sig, "alice"); err != nil {
 		log.Fatalf("signal: %v", err)
 	}
 	ag, err := agent.New(&oneTool{tool: "wait_for_approval"}, store, agent.WithTools(tool))
@@ -162,7 +162,7 @@ func channelScene() {
 
 	// Deliver three ordered messages before the run consumes them. Enqueue dedups by key.
 	for _, m := range []struct{ key, body string }{{"k1", "first"}, {"k2", "second"}, {"k3", "third"}} {
-		if err := agent.Enqueue(ctx, store, runID, chName, m.key, m.body); err != nil {
+		if err := store.Enqueue(ctx, runID, chName, m.key, m.body); err != nil {
 			log.Fatalf("enqueue %s: %v", m.key, err)
 		}
 	}

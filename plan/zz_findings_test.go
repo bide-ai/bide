@@ -147,14 +147,14 @@ func TestF3_ResolveHaltRefOnANodeThatNeverHalted(t *testing.T) {
 	var fired atomic.Int64
 	flow := twoNode(t, "two", &fired, false)
 	ref := agent.HaltRef{RunID: "r", Op: agent.OpRef{Kind: agent.OpStep, ID: "node:a"}, Cause: agent.HaltCrashed}
-	err := agent.ResolveHaltRef(ctx, j, ref, agent.Outcome{Result: 7})
+	err := agent.ResolveHalt(ctx, j, ref, agent.Outcome{Result: 7})
 	out, rerr := flow.Run(ctx, j, "r", 1)
 	t.Logf("resolve of an unattempted node: %v; Run -> %d, %v; body ran %d times", err, out, rerr, fired.Load())
 	if err == nil {
 		t.Errorf("ResolveHaltRef recorded an output for node:a, which never attempted anything: want a refusal")
 	}
 	ref.Op.ID = "node:iter:01:a"
-	if err := agent.ResolveHaltRef(ctx, agenttest.MemJournal(), ref, agent.Outcome{Result: 7}); err == nil {
+	if err := agent.ResolveHalt(ctx, agenttest.MemJournal(), ref, agent.Outcome{Result: 7}); err == nil {
 		t.Errorf("ResolveHaltRef accepted node:iter:01:a, a key Run never writes (it writes node:iter:1:a)")
 	}
 }
@@ -204,7 +204,7 @@ func TestF5_ConformFlagsAStepInsideANodeBody(t *testing.T) {
 	j := agenttest.MustJournal(mem)
 	b := plan.New[int, int]("nested")
 	b.Step("a", func(ctx context.Context, n int) (int, error) {
-		return agent.Step(ctx, j, "r", "fetch", func(context.Context) (int, error) { return n + 1, nil })
+		return j.Step(ctx, "r", "fetch", func(context.Context) (int, error) { return n + 1, nil })
 	})
 	flow, err := b.Build()
 	if err != nil {
@@ -271,7 +271,7 @@ func TestF7_NestedStepInLoopBodyIsNotIterationScoped(t *testing.T) {
 	b := plan.New[int, string]("nloop")
 	seed := b.Step("seed", func(_ context.Context, n int) (fLoopState, error) { return fLoopState{n}, nil }, plan.ReadOnly())
 	inc := b.Step("inc", func(ctx context.Context, s fLoopState) (fLoopState, error) {
-		v, err := agent.Step(ctx, j, "r", "charge", func(context.Context) (int, error) { return int(charges.Add(1)), nil })
+		v, err := j.Step(ctx, "r", "charge", func(context.Context) (int, error) { return int(charges.Add(1)), nil })
 		return fLoopState{s.N + 1 + 0*v}, err
 	})
 	check := b.Step("check", func(_ context.Context, s fLoopState) (fLoopState, error) { return s, nil }, plan.ReadOnly())

@@ -106,7 +106,7 @@ func Quorum(ctx context.Context, store *agent.Journal, runID, name string, k int
 	// Record this quorum's k and voters before any vote, and hold every later call under the same
 	// name to them: a reused name with another voter set would otherwise mix two quorums' votes, and
 	// a changed k would be answered by a tally computed against the old one.
-	recorded, err := agent.Step(ctx, store, runID, QuorumConfigStep(name), func(context.Context) (quorumConfig, error) {
+	recorded, err := store.Step(ctx, runID, QuorumConfigStep(name), func(context.Context) (quorumConfig, error) {
 		return cfg, nil
 	}, agent.WithSafety(agent.Safety{ReadOnly: true}))
 	if err != nil {
@@ -133,7 +133,7 @@ func Quorum(ctx context.Context, store *agent.Journal, runID, name string, k int
 	}
 
 	// Fan out durably: each vote is a Step (recorded once, replayable, independently provable).
-	votes, err := agent.Parallel(ctx, store, runID, tasks)
+	votes, err := store.Parallel(ctx, runID, tasks)
 	if verr := checkVoters(name, votes, cfg.Voters, err == nil); verr != nil {
 		return QuorumResult{}, verr
 	}
@@ -148,7 +148,7 @@ func Quorum(ctx context.Context, store *agent.Journal, runID, name string, k int
 	// Record the tally as its own durable step so the tally itself is provable, not just the
 	// individual votes, and so a resumed run returns the same tally without recomputing it.
 	want := tally(votes, k)
-	result, err := agent.Step(ctx, store, runID, QuorumTallyStep(name), func(context.Context) (QuorumResult, error) {
+	result, err := store.Step(ctx, runID, QuorumTallyStep(name), func(context.Context) (QuorumResult, error) {
 		return want, nil
 	}, agent.WithSafety(agent.Safety{ReadOnly: true}))
 	if err != nil {

@@ -36,8 +36,7 @@ func TestResolveHalt_NonPositiveAttemptedAtIsNoTimestamp(t *testing.T) {
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	for _, ms := range []int64{0, -1, -now.UnixMilli()} {
 		s := mustJournal(markerAt(t, ms))
-		err := ResolveHalt(ctx, s, "r", "c1", "charged", false,
-			WithMinHaltAge(time.Hour), WithClock(func() time.Time { return now }))
+		err := ResolveHalt(ctx, s, HaltRef{RunID: "r", Op: OpRef{Kind: OpTool, ID: "c1"}, Cause: HaltCrashed}, Outcome{Result: "charged", IsError: false}, WithMinHaltAge(time.Hour), WithClock(func() time.Time { return now }))
 		if !errors.Is(err, ErrConfig) {
 			t.Errorf("AttemptedAt %d: ResolveHalt = %v, want ErrConfig (no usable timestamp)", ms, err)
 		}
@@ -53,8 +52,7 @@ func TestResolveHalt_FutureAttemptedAtIsTooYoung(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	s := mustJournal(markerAt(t, now.Add(24*time.Hour).UnixMilli()))
-	err := ResolveHalt(ctx, s, "r", "c1", "charged", false,
-		WithMinHaltAge(time.Minute), WithClock(func() time.Time { return now }))
+	err := ResolveHalt(ctx, s, HaltRef{RunID: "r", Op: OpRef{Kind: OpTool, ID: "c1"}, Cause: HaltCrashed}, Outcome{Result: "charged", IsError: false}, WithMinHaltAge(time.Minute), WithClock(func() time.Time { return now }))
 	var young *HaltTooYoung
 	if !errors.As(err, &young) {
 		t.Fatalf("ResolveHalt = %v, want *HaltTooYoung", err)
@@ -68,7 +66,7 @@ func TestResumeHalt_NonPositiveAttemptedAtIsZero(t *testing.T) {
 	charge := Func("charge", "", Safety{}, func(context.Context, struct{}) (string, error) { return "ok", nil })
 	a := mustNew(NewScriptedModel(), mustJournal(markerAt(t, -1)), WithTools(charge))
 	_, err := a.Run(ctx, "r", UserText("go"))
-	var halt *ResumeHalt
+	var halt *OutcomeUnknown
 	if !errors.As(err, &halt) {
 		t.Fatalf("Run = %v, want *ResumeHalt", err)
 	}
@@ -83,7 +81,7 @@ func TestResumeHalt_NonPositiveAttemptedAtIsZero(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	_, err = Step(ctx, s, "r", "reserve", func(context.Context) (int, error) { return 1, nil })
+	_, err = s.Step(ctx, "r", "reserve", func(context.Context) (int, error) { return 1, nil })
 	if !errors.As(err, &halt) {
 		t.Fatalf("Step = %v, want *ResumeHalt", err)
 	}
@@ -102,9 +100,9 @@ func TestStepHalt_RetrySafeFindsNonPositiveMarker(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	_, err := Step(ctx, s, "r", "reserve", func(context.Context) (int, error) { return 1, nil },
+	_, err := s.Step(ctx, "r", "reserve", func(context.Context) (int, error) { return 1, nil },
 		WithSafety(Safety{ReadOnly: true}))
-	var halt *ResumeHalt
+	var halt *OutcomeUnknown
 	if !errors.As(err, &halt) {
 		t.Fatalf("Step = %v, want *ResumeHalt", err)
 	}
@@ -135,7 +133,7 @@ func TestResumeHalt_LostClaimToNonPositiveMarker(t *testing.T) {
 	charge := Func("charge", "", Safety{}, func(context.Context, struct{}) (string, error) { return "ok", nil })
 	m := &sagaTurns{turns: [][][3]string{{{"c1", "charge", `{}`}}}}
 	_, err := mustNew(m, mustJournal(claimRacer{NewMemStore()}), WithTools(charge)).Run(context.Background(), "r", UserText("go"))
-	var halt *ResumeHalt
+	var halt *OutcomeUnknown
 	if !errors.As(err, &halt) {
 		t.Fatalf("Run = %v, want *ResumeHalt from the lost claim", err)
 	}
@@ -170,7 +168,7 @@ func TestSagaRollbackHalt_NonPositiveMarker(t *testing.T) {
 	if !errors.As(err, &aborted) {
 		t.Fatalf("RunSaga = %v, want *SagaAborted", err)
 	}
-	var halt *ResumeHalt
+	var halt *OutcomeUnknown
 	if !errors.As(aborted.CompensateErr, &halt) || halt.Op.ID != "p1" {
 		t.Fatalf("CompensateErr = %v, want a ResumeHalt on p1", aborted.CompensateErr)
 	}

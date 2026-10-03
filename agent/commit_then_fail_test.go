@@ -70,7 +70,7 @@ func TestCommitThenFailSweep(t *testing.T) {
 					j2, _ = agent.NewJournal(&sweepStore{m: m}) // a new process
 				}
 				_, err2 := agenttest.MustNew(model(), j2, agent.WithTools(charge), agent.WithMaxConcurrency(1)).Run(ctx, "r", agent.UserText("hi"))
-				var halt *agent.ResumeHalt
+				var halt *agent.OutcomeUnknown
 				t.Logf("failed %q: first %v; second %v; fired %d", s.failed, err1, err2, fired)
 				if fired > 1 {
 					t.Fatalf("fired %d times", fired)

@@ -113,7 +113,7 @@ func TestOverlappingDrivers_SideEffectFiresOnce(t *testing.T) {
 	}
 	var halts, oks int
 	for _, err := range errs {
-		var halt *ResumeHalt
+		var halt *OutcomeUnknown
 		switch {
 		case err == nil:
 			oks++
@@ -123,7 +123,7 @@ func TestOverlappingDrivers_SideEffectFiresOnce(t *testing.T) {
 				t.Fatalf("lost-claim halt = %+v, want an OpTool halt with Cause %q", halt, HaltContended)
 			}
 			// The winner may still be running the charge, so its halt cannot be resolved blind.
-			if rerr := ResolveHaltRef(ctx, store.proc(), halt.Ref(), Outcome{Result: "ok"}); !errors.Is(rerr, ErrConfig) {
+			if rerr := ResolveHalt(ctx, store.proc(), halt.Ref(), Outcome{Result: "ok"}); !errors.Is(rerr, ErrConfig) {
 				t.Fatalf("ResolveHaltRef on a contended halt without WithMinHaltAge = %v, want ErrConfig", rerr)
 			}
 			halts++

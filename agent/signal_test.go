@@ -43,7 +43,7 @@ func TestAwait_PausesAndResumesOnSignal(t *testing.T) {
 	a := mustNew(m, store, WithTools(tool))
 
 	_, err := a.Run(context.Background(), "r", UserText("hi"))
-	var awt *Awaiting
+	var awt *SignalPending
 	if !errors.As(err, &awt) {
 		t.Fatalf("err = %v, want *Awaiting", err)
 	}
@@ -54,7 +54,7 @@ func TestAwait_PausesAndResumesOnSignal(t *testing.T) {
 		t.Fatalf("tool ran %d times before signal, want 1", calls)
 	}
 
-	if err := Signal(context.Background(), store, "r", "webhook", "payload-1"); err != nil {
+	if err := store.Signal(context.Background(), "r", "webhook", "payload-1"); err != nil {
 		t.Fatalf("Signal: %v", err)
 	}
 
@@ -79,10 +79,10 @@ func TestAwait_PausesAndResumesOnSignal(t *testing.T) {
 func TestSignal_RedeliveryIsAtMostOnce(t *testing.T) {
 	store := memJournal()
 	ctx := context.Background()
-	if err := Signal(ctx, store, "r", "webhook", "first"); err != nil {
+	if err := store.Signal(ctx, "r", "webhook", "first"); err != nil {
 		t.Fatal(err)
 	}
-	if err := Signal(ctx, store, "r", "webhook", "second"); err != nil { // redelivery of the same signal
+	if err := store.Signal(ctx, "r", "webhook", "second"); err != nil { // redelivery of the same signal
 		t.Fatal(err)
 	}
 	recs, err := store.History(ctx, "r")
@@ -117,7 +117,7 @@ func TestAwait_RequiresRetrySafe(t *testing.T) {
 	if !errors.Is(err, ErrConfig) {
 		t.Fatalf("err = %v, want errors.Is ErrConfig", err)
 	}
-	var awt *Awaiting
+	var awt *SignalPending
 	if errors.As(err, &awt) {
 		t.Fatal("a non-retry-safe await must not surface as a resumable pause")
 	}

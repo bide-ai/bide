@@ -29,7 +29,7 @@ func TestStep_LoserOfALiveClaimHaltsContended(t *testing.T) {
 	flights.mu.Unlock()
 	ran := 0
 	fn := func(context.Context) (int, error) { ran++; return 1, nil }
-	_, err = Step(ctx, j, "r", "s", fn)
+	_, err = j.Step(ctx, "r", "s", fn)
 	flights.mu.Lock()
 	delete(flights.m, k)
 	flights.mu.Unlock()
@@ -41,12 +41,12 @@ func TestStep_LoserOfALiveClaimHaltsContended(t *testing.T) {
 		t.Fatalf("the loser ran fn %d times, want 0", ran)
 	}
 	ref := halt.Ref()
-	if err := ResolveHaltRef(ctx, j, ref, Outcome{Result: 1}); !errors.Is(err, ErrConfig) {
+	if err := ResolveHalt(ctx, j, ref, Outcome{Result: 1}); !errors.Is(err, ErrConfig) {
 		t.Errorf("resolving the contended halt without WithMinHaltAge = %v; want ErrConfig", err)
 	}
 
 	// No call in flight: the owner may have died, and nothing says it is live.
-	_, err = Step(ctx, j, "r", "s", fn)
+	_, err = j.Step(ctx, "r", "s", fn)
 	halt, ok = errors.AsType[*OutcomeUnknown](err)
 	if !ok || halt.Cause != HaltCrashed {
 		t.Fatalf("a loser with no call in flight = %v (%+v); want Cause %q", err, halt, HaltCrashed)
@@ -64,11 +64,11 @@ func TestStepPauseGuard_JoinedWithAHaltPropagatesTheHalt(t *testing.T) {
 	store := memJournal()
 	mixed := Func("mixed", "", Safety{Idempotent: true}, func(ctx context.Context, _ struct{}) (string, error) {
 		d, runID, _ := runContext(ctx)
-		_, guard := Step(ctx, d, runID, "confirm", func(ctx context.Context) (int, error) {
+		_, guard := d.Step(ctx, runID, "confirm", func(ctx context.Context) (int, error) {
 			return Interrupt[int](ctx, "q", nil)
 		})
 		_, _, _ = ClaimAttempt(ctx, d, runID, stepAttemptStep("inner"), Record{Kind: StepAttempt, ToolUseID: "inner", AttemptedAt: 1})
-		_, halt := Step(ctx, d, runID, "inner", func(context.Context) (int, error) { return 1, nil })
+		_, halt := d.Step(ctx, runID, "inner", func(context.Context) (int, error) { return 1, nil })
 		return "", errors.Join(guard, halt)
 	})
 	_, err := mustNew(

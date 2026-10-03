@@ -436,8 +436,8 @@ func (w *rmWorld) drive(mem *agent.MemStore, model agent.Model, crashes []int, d
 		if err != nil {
 			obs.lastErrMsg = err.Error()
 		}
-		var halt *agent.ResumeHalt
-		var pa *agent.PendingApproval
+		var halt *agent.OutcomeUnknown
+		var pa *agent.ApprovalPending
 		var sa *agent.SagaAborted
 		switch {
 		case err == nil:
@@ -544,7 +544,7 @@ func rmDriveOnce(ctx context.Context, root *agent.Agent, sc *rmScenario) (agent.
 // call's true outcome. A call the provider never saw is, going forward, carried out by hand and
 // its outcome recorded (the run then continues as if it had run normally); during a rollback it
 // is recorded as not performed, so there is nothing to undo.
-func (w *rmWorld) reconcile(mem *agent.MemStore, h *agent.ResumeHalt, rollingBack bool) {
+func (w *rmWorld) reconcile(mem *agent.MemStore, h *agent.OutcomeUnknown, rollingBack bool) {
 	c := w.calls[h.Op.ID]
 	if c == nil {
 		w.problem("halt on an unknown call: %v", h)
@@ -560,7 +560,7 @@ func (w *rmWorld) reconcile(mem *agent.MemStore, h *agent.ResumeHalt, rollingBac
 		}
 	}
 	w.mu.Unlock()
-	if err := agent.ResolveHalt(context.Background(), agenttest.MustJournal(mem), h.RunID, h.Op.ID, json.RawMessage(res.content), res.isError); err != nil {
+	if err := agent.ResolveHalt(context.Background(), agenttest.MustJournal(mem), agent.HaltRef{RunID: h.RunID, Op: agent.OpRef{Kind: agent.OpTool, ID: h.Op.ID}, Cause: agent.HaltCrashed}, agent.Outcome{Result: json.RawMessage(res.content), IsError: res.isError}); err != nil {
 		w.problem("ResolveHalt(%s, %s): %v", h.RunID, h.Op.ID, err)
 	}
 }

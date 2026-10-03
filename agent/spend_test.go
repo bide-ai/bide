@@ -85,7 +85,7 @@ func TestTokenBudget_DiscardedSpendSurvivesResume(t *testing.T) {
 	gated := &countingTool{name: "lookup", safety: Safety{ReadOnly: true}, approval: SingleApproval(), calls: &calls}
 	m := &scriptModel{turns: [][]Emit{truncatedTurn(billed), toolTurnWithUsage("c1", "lookup", `{}`, billed)}}
 	_, err := mustNew(m, store, WithTools(gated), WithMiddleware(retryOnceMW)).Run(ctx, "r", UserText("go"))
-	var pa *PendingApproval
+	var pa *ApprovalPending
 	if !errors.As(err, &pa) {
 		t.Fatalf("err = %v, want PendingApproval", err)
 	}

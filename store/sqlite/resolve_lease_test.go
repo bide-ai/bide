@@ -35,14 +35,14 @@ func TestResolveHaltRef_UsesTheLease(t *testing.T) {
 		t.Fatal(ok, err)
 	}
 	ref := agent.HaltRef{RunID: "r1", Op: agent.OpRef{Kind: agent.OpTool, ID: "c1"}, Cause: agent.HaltCrashed}
-	err = agent.ResolveHaltRef(ctx, j, ref, agent.Outcome{Result: "charged"})
+	err = agent.ResolveHalt(ctx, j, ref, agent.Outcome{Result: "charged"})
 	if _, ok := errors.AsType[*agent.HaltInFlight](err); !ok {
 		t.Fatalf("resolving while another handle leases the run = %v; want *HaltInFlight", err)
 	}
 	if err := b.ReleaseLease(ctx, "r1", "worker-b"); err != nil {
 		t.Fatal(err)
 	}
-	if err := agent.ResolveHaltRef(ctx, j, ref, agent.Outcome{Result: "charged"}); err != nil {
+	if err := agent.ResolveHalt(ctx, j, ref, agent.Outcome{Result: "charged"}); err != nil {
 		t.Fatalf("resolving once the lease is free = %v; want nil, with no WithMinHaltAge", err)
 	}
 	if rec, ok, err := j.Get(ctx, "r1", agent.ToolResultStep("c1")); err != nil || !ok || string(rec.Result) != `"charged"` {

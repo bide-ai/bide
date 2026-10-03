@@ -37,7 +37,7 @@ func TestEntryPoints_RejectEmptyRunID(t *testing.T) {
 	if err := Approve(ctx, s, "", "tu", true); !errors.Is(err, ErrConfig) {
 		t.Errorf("Approve(empty) err = %v, want ErrConfig", err)
 	}
-	if err := Resume(ctx, s, "", "k", 1); !errors.Is(err, ErrConfig) {
+	if err := s.AnswerInterrupt(ctx, "", "k", 1); !errors.Is(err, ErrConfig) {
 		t.Errorf("Resume(empty) err = %v, want ErrConfig", err)
 	}
 }

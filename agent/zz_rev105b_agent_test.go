@@ -91,7 +91,7 @@ func Test_R105c_GateReadsTheRecordedTallyStrictly(t *testing.T) {
 			s,
 			agent.WithTools(wire), agent.WithApproverVerifiers(resolve))
 	}
-	var pend *agent.PendingApproval
+	var pend *agent.ApprovalPending
 	if _, err := newAgent().Run(ctx, "r", agent.UserText("hi")); !errors.As(err, &pend) {
 		t.Fatalf("setup: first run err %v, want a pending approval", err)
 	}

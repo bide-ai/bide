@@ -283,7 +283,7 @@ func TestMofnDST_CrashSweepAfterQuorum(t *testing.T) {
 		if charged > 1 {
 			t.Fatalf("crashAt=%d: charge fired %d times, want at most 1", crashAt, charged)
 		}
-		var halt *ResumeHalt
+		var halt *OutcomeUnknown
 		switch {
 		case err == nil:
 			if charged != 1 {

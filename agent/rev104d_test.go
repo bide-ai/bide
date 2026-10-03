@@ -171,10 +171,10 @@ func TestRev104d_ClaimBehindStoreWrapperIsRemembered(t *testing.T) {
 	st.failNoCommitPrefix = "attempt:not-started:"
 	var runs int
 	pay := func(context.Context) (string, error) { runs++; return "paid", nil }
-	if _, err := Step(ctx, mustJournal(&wrapStore{Store: st, failLoad: &fail}), "r", "pay", pay); err == nil {
+	if _, err := mustJournal(&wrapStore{Store: st, failLoad: &fail}).Step(ctx, "r", "pay", pay); err == nil {
 		t.Fatal("want the claim's write failure")
 	}
-	got, err := Step(ctx, mustJournal(&wrapStore{Store: st, failLoad: &fail}), "r", "pay", pay)
+	got, err := mustJournal(&wrapStore{Store: st, failLoad: &fail}).Step(ctx, "r", "pay", pay)
 	if err != nil || got != "paid" || runs != 1 {
 		t.Fatalf("second drive = %q, %v, effect ran %d times; want paid, nil, once (the first claim never ran it)", got, err, runs)
 	}
@@ -189,10 +189,10 @@ func TestRev104d_ClaimThroughJournalIsRemembered(t *testing.T) {
 	st.failNoCommitPrefix = "attempt:not-started:"
 	var runs int
 	pay := func(context.Context) (string, error) { runs++; return "paid", nil }
-	if _, err := Step(ctx, j, "r", "pay", pay); err == nil {
+	if _, err := j.Step(ctx, "r", "pay", pay); err == nil {
 		t.Fatal("want the claim's write failure")
 	}
-	got, err := Step(ctx, j, "r", "pay", pay)
+	got, err := j.Step(ctx, "r", "pay", pay)
 	if err != nil || got != "paid" || runs != 1 {
 		t.Fatalf("second drive = %q, %v, effect ran %d times; want paid, nil, once", got, err, runs)
 	}

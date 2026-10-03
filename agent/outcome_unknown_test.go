@@ -29,7 +29,7 @@ func TestToolOutcomeUnknown_SideEffectIsNotRecorded(t *testing.T) {
 
 	m2 := &greedyModel{script: [][]Emit{toolTurn("c2", "charge", `{}`), textTurn("done")}}
 	_, err = mustNew(m2, store, WithTools(charge)).Run(context.Background(), "r1", UserText("pay"))
-	var halt *ResumeHalt
+	var halt *OutcomeUnknown
 	if !errors.As(err, &halt) || halt.Op.ID != "c1" {
 		t.Fatalf("resume err = %v, want ResumeHalt for c1", err)
 	}

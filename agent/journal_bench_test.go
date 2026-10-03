@@ -68,13 +68,13 @@ func BenchmarkStep(b *testing.B) {
 	i := 0
 	for b.Loop() {
 		i++
-		if _, err := agent.Step(ctx, store, "run", fmt.Sprintf("w%d", i), fn); err != nil {
+		if _, err := store.Step(ctx, "run", fmt.Sprintf("w%d", i), fn); err != nil {
 			b.Fatal(err)
 		}
-		if _, err := agent.Step(ctx, store, "run", fmt.Sprintf("r%d", i), fn, safe); err != nil {
+		if _, err := store.Step(ctx, "run", fmt.Sprintf("r%d", i), fn, safe); err != nil {
 			b.Fatal(err)
 		}
-		if _, err := agent.Step(ctx, store, "run", fmt.Sprintf("w%d", i), fn); err != nil {
+		if _, err := store.Step(ctx, "run", fmt.Sprintf("w%d", i), fn); err != nil {
 			b.Fatal(err)
 		}
 	}

@@ -69,7 +69,7 @@ type OpRef struct {
 // operation, the operation, and why it halted. Take it from the halt with OutcomeUnknown.Ref.
 //
 // Cause matters: a HaltContended halt may still be running in another driver, and
-// ResolveHaltRef resolves it only once it is older than WithMinHaltAge. An operator building a
+// ResolveHalt resolves it only once it is older than WithMinHaltAge. An operator building a
 // HaltRef by hand from a journal listing must state the cause.
 type HaltRef struct {
 	RunID string
@@ -88,7 +88,7 @@ type Outcome struct {
 	Evidence any
 }
 
-// ResolveHaltRef is the sanctioned escape from an *OutcomeUnknown halt. After a non-retriable
+// ResolveHalt is the sanctioned escape from an *OutcomeUnknown halt. After a non-retriable
 // tool call or Step halted with an unknown outcome, an operator (or a reconciler) who has
 // verified the real side effect out of band records it as the operation's result, so a re-run
 // proceeds past the halt instead of halting again:
@@ -142,31 +142,8 @@ type Outcome struct {
 // is young could record an outcome that driver is about to contradict.
 //
 // Deciding the true outcome is a human (or reconciler) judgment the runtime cannot make for you.
-func ResolveHaltRef(ctx context.Context, store *Journal, ref HaltRef, out Outcome, opts ...ResolveOption) error {
-	return resolveHalt(ctx, store, "ResolveHaltRef", ref, out, opts)
-}
-
-// ResolveHalt clears an *OutcomeUnknown halt on the tool call toolUseID of run runID, recording
-// result (and isError) as the call's outcome. It is ResolveHaltRef for a tool call, with the
-// cause taken as HaltCrashed, and the same live-driver check.
-//
-// Deprecated: transitional; replaced by ResolveHaltRef, which the 1.0 rewrite renames to
-// ResolveHalt.
-func ResolveHalt(ctx context.Context, store *Journal, runID, toolUseID string, result any, isError bool, opts ...ResolveOption) error {
-	if toolUseID == "" {
-		return fmt.Errorf("ResolveHalt: empty toolUseID: %w", ErrConfig)
-	}
-	ref := HaltRef{RunID: runID, Op: OpRef{Kind: OpTool, ID: toolUseID}, Cause: HaltCrashed}
-	return resolveHalt(ctx, store, "ResolveHalt", ref, Outcome{Result: result, IsError: isError}, opts)
-}
-
-// ResolveStepHalt clears an *OutcomeUnknown halt on the Step named name, as ResolveHalt does for
-// a tool call, with the same live-driver check.
-//
-// Deprecated: transitional; use ResolveHaltRef with OpRef{Kind: OpStep}.
-func ResolveStepHalt(ctx context.Context, store *Journal, runID, name string, result any, isError bool, opts ...ResolveOption) error {
-	ref := HaltRef{RunID: runID, Op: OpRef{Kind: OpStep, ID: name}, Cause: HaltCrashed}
-	return resolveHalt(ctx, store, "ResolveStepHalt", ref, Outcome{Result: result, IsError: isError}, opts)
+func ResolveHalt(ctx context.Context, store *Journal, ref HaltRef, out Outcome, opts ...ResolveOption) error {
+	return resolveHalt(ctx, store, "ResolveHalt", ref, out, opts)
 }
 
 // haltKeys names what a resolution reads and writes: the halted operation's attempt marker, the
@@ -497,11 +474,6 @@ func (e *ApprovalPending) Error() string {
 
 func (*ApprovalPending) pause() {}
 
-// PendingApproval is the former name of ApprovalPending.
-//
-// Deprecated: transitional; renamed by the 1.0 rewrite. Use ApprovalPending.
-type PendingApproval = ApprovalPending
-
 // OutcomeUnknown is returned when a run cannot safely proceed past an operation whose outcome
 // is unknown: a non-retriable tool call or Step was attempted (its marker is recorded) but no
 // result was. The run stops for confirmation rather than risk a double side effect (a double
@@ -542,11 +514,6 @@ func (*OutcomeUnknown) pause() {}
 
 // Ref returns the reference ResolveHaltRef takes to clear this halt.
 func (e *OutcomeUnknown) Ref() HaltRef { return HaltRef{RunID: e.RunID, Op: e.Op, Cause: e.Cause} }
-
-// ResumeHalt is the former name of OutcomeUnknown.
-//
-// Deprecated: transitional; renamed by the 1.0 rewrite. Use OutcomeUnknown.
-type ResumeHalt = OutcomeUnknown
 
 // toolHalt and stepHalt build the halts the engine returns.
 func toolHalt(runID, root, toolUseID, toolName string, attemptedAt time.Time, cause HaltCause) *OutcomeUnknown {

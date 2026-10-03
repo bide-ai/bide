@@ -110,10 +110,10 @@ func haltScene(ctx context.Context, store *agent.Journal) {
 		sends.Add(1)
 		return "", errors.New("connection dropped after the request went out")
 	}
-	if _, err := agent.Step(ctx, store, runID, "send-invoice", send); err == nil {
+	if _, err := store.Step(ctx, runID, "send-invoice", send); err == nil {
 		log.Fatal("first attempt: want the lost answer reported")
 	}
-	_, err := agent.Step(ctx, store, runID, "send-invoice", send)
+	_, err := store.Step(ctx, runID, "send-invoice", send)
 	halt, ok := errors.AsType[*agent.OutcomeUnknown](err)
 	if !ok {
 		log.Fatalf("resumed step: want *OutcomeUnknown, got %v", err)
@@ -121,10 +121,10 @@ func haltScene(ctx context.Context, store *agent.Journal) {
 	fmt.Printf("halted: %s %q has an unknown outcome (cause %s); sends so far: %d\n", halt.Op.Kind, halt.Op.ID, halt.Cause, sends.Load())
 
 	// The operator confirms with the provider that invoice INV-7 did go out, and records it.
-	if err := agent.ResolveHaltRef(ctx, store, halt.Ref(), agent.Outcome{Result: "INV-7 (operator-confirmed)"}); err != nil {
+	if err := agent.ResolveHalt(ctx, store, halt.Ref(), agent.Outcome{Result: "INV-7 (operator-confirmed)"}); err != nil {
 		log.Fatalf("resolve: %v", err)
 	}
-	got, err := agent.Step(ctx, store, runID, "send-invoice", send)
+	got, err := store.Step(ctx, runID, "send-invoice", send)
 	if err != nil {
 		log.Fatalf("after resolve: %v", err)
 	}

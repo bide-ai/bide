@@ -161,7 +161,7 @@ func refused(t *testing.T, s agent.Store, id, found string) {
 		return agent.Record{Kind: agent.StepValue}, nil
 	})
 	check("Do", err)
-	_, err = agent.Step(ctx, j, id, "effect", func(context.Context) (int, error) { ran = true; return 1, nil })
+	_, err = j.Step(ctx, id, "effect", func(context.Context) (int, error) { ran = true; return 1, nil })
 	check("Step", err)
 	if ran {
 		t.Fatal("a step ran for a run the journal refuses")
@@ -339,7 +339,7 @@ func ambiguousClaim(t *testing.T, s agent.Store) {
 		var paid atomic.Int64
 		for range n {
 			wg.Go(func() {
-				v, err := agent.Step(ctx, journal(t, w), id, "pay", pay)
+				v, err := journal(t, w).Step(ctx, id, "pay", pay)
 				var halt *agent.OutcomeUnknown
 				switch {
 				case err == nil && v == "paid":
@@ -360,7 +360,7 @@ func ambiguousClaim(t *testing.T, s agent.Store) {
 	// process) re-attempts.
 	id := runID(t)
 	w := &commitThenFail{Store: s, fail: marker}
-	if _, err := agent.Step(ctx, journal(t, w), id, "pay", pay); err == nil || fired.Load() != 0 {
+	if _, err := journal(t, w).Step(ctx, id, "pay", pay); err == nil || fired.Load() != 0 {
 		t.Fatalf("Step whose claim failed = %v (effect ran %d times); want the error, and no effect", err, fired.Load())
 	}
 	redrive(t, id, &commitThenFail{Store: s}, 2)
@@ -370,7 +370,7 @@ func ambiguousClaim(t *testing.T, s agent.Store) {
 	fired.Store(0)
 	id = runID(t)
 	w = &commitThenFail{Store: s, fail: marker, refuse: "attempt:not-started:"}
-	if _, err := agent.Step(ctx, journal(t, w), id, "pay", pay); err == nil || fired.Load() != 0 {
+	if _, err := journal(t, w).Step(ctx, id, "pay", pay); err == nil || fired.Load() != 0 {
 		t.Fatalf("Step whose claim failed = %v (effect ran %d times); want the error, and no effect", err, fired.Load())
 	}
 	w.refuse = ""
@@ -382,7 +382,7 @@ func ambiguousClaim(t *testing.T, s agent.Store) {
 	fired.Store(0)
 	id = runID(t)
 	w = &commitThenFail{Store: s, fail: marker, lose: "attempt:not-started:"}
-	if _, err := agent.Step(ctx, journal(t, w), id, "pay", pay); err == nil || fired.Load() != 0 {
+	if _, err := journal(t, w).Step(ctx, id, "pay", pay); err == nil || fired.Load() != 0 {
 		t.Fatalf("Step whose claim failed = %v (effect ran %d times); want the error, and no effect", err, fired.Load())
 	}
 	redrive(t, id, w, 2)

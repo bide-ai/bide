@@ -31,7 +31,7 @@ func TestStep_PauseInASideEffectStepIsErrConfig(t *testing.T) {
 				ran++
 				return 0, &InterruptPending{RunRef: RunRef{RunID: "r"}, Name: "confirm"}
 			}
-			_, err := Step(ctx, d, "r", "charge", body)
+			_, err := d.Step(ctx, "r", "charge", body)
 			var intr *InterruptPending
 			if !errors.Is(err, ErrConfig) || errors.As(err, &intr) || IsPause(err) {
 				t.Fatalf("Step = %v; want ErrConfig that is not a pause", err)
@@ -39,7 +39,7 @@ func TestStep_PauseInASideEffectStepIsErrConfig(t *testing.T) {
 			if !strings.Contains(err.Error(), "retry-safe") {
 				t.Errorf("the error does not tell the developer what to do: %v", err)
 			}
-			_, err = Step(ctx, d, "r", "charge", body)
+			_, err = d.Step(ctx, "r", "charge", body)
 			var halt *OutcomeUnknown
 			if !errors.As(err, &halt) || halt.Op != (OpRef{Kind: OpStep, ID: "charge"}) {
 				t.Fatalf("the next attempt = %v; want *OutcomeUnknown on the step", err)
@@ -65,13 +65,13 @@ func TestStep_PauseInARetrySafeStepPropagates(t *testing.T) {
 				return "ok", nil
 			}
 			safe := WithSafety(Safety{Idempotent: true})
-			_, err := Step(ctx, d, "r", "ask", body, safe)
+			_, err := d.Step(ctx, "r", "ask", body, safe)
 			var intr *InterruptPending
 			if !errors.As(err, &intr) || errors.Is(err, ErrConfig) {
 				t.Fatalf("Step = %v; want the *InterruptPending itself", err)
 			}
 			answered = true
-			if v, err := Step(ctx, d, "r", "ask", body, safe); err != nil || v != "ok" {
+			if v, err := d.Step(ctx, "r", "ask", body, safe); err != nil || v != "ok" {
 				t.Fatalf("resumed Step = %q, %v", v, err)
 			}
 		})

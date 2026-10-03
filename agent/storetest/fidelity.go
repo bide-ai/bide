@@ -281,7 +281,7 @@ func stepAttemptSafety(t *testing.T, d *agent.Journal) {
 	ctx := context.Background()
 	id := runID(t)
 	safe := agent.WithSafety(agent.Safety{ReadOnly: true})
-	if _, err := agent.Step(ctx, d, id, "read", func(context.Context) (int, error) { return 1, nil }, safe); err != nil {
+	if _, err := d.Step(ctx, id, "read", func(context.Context) (int, error) { return 1, nil }, safe); err != nil {
 		t.Fatal(err)
 	}
 	if hist := history(t, d, id); len(hist) != 1 || hist[0].Name != "read" {
@@ -290,10 +290,10 @@ func stepAttemptSafety(t *testing.T, d *agent.Journal) {
 
 	ran := 0
 	write := func(context.Context) (int, error) { ran++; return 0, fmt.Errorf("lost the answer") }
-	if _, err := agent.Step(ctx, d, id, "write", write); err == nil {
+	if _, err := d.Step(ctx, id, "write", write); err == nil {
 		t.Fatal("the failing step succeeded")
 	}
-	_, err := agent.Step(ctx, d, id, "write", write, safe)
+	_, err := d.Step(ctx, id, "write", write, safe)
 	var halt *agent.OutcomeUnknown
 	if !errors.As(err, &halt) || halt.Op.ID != "write" || halt.AttemptedAt.IsZero() {
 		t.Fatalf("resume err = %v, want *OutcomeUnknown for write with its attempt time", err)

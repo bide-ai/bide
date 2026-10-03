@@ -36,7 +36,7 @@ func TestResume_RelabelledRetrySafeStillHalts(t *testing.T) {
 	})
 	m := &greedyModel{script: [][]Emit{textTurn("done")}} // the charge turn replays from the journal
 	_, err := mustNew(m, store, WithTools(relabelled)).Run(context.Background(), "r1", UserText("pay"))
-	var halt *ResumeHalt
+	var halt *OutcomeUnknown
 	if !errors.As(err, &halt) || halt.Op.ID != "c1" {
 		t.Fatalf("resume err = %v after %d charges, want *ResumeHalt for c1", err, charged)
 	}
@@ -54,7 +54,7 @@ func TestResume_AttemptedToolNoLongerRegisteredHalts(t *testing.T) {
 
 	m := &greedyModel{script: [][]Emit{textTurn("done")}}
 	_, err := mustNew(m, store).Run(context.Background(), "r1", UserText("pay"))
-	var halt *ResumeHalt
+	var halt *OutcomeUnknown
 	if !errors.As(err, &halt) || halt.Op.ID != "c1" || halt.Op.ToolName != "charge" {
 		t.Fatalf("resume err = %v, want *ResumeHalt for charge (c1)", err)
 	}
@@ -69,11 +69,11 @@ func TestStep_RelabelledRetrySafeStillHalts(t *testing.T) {
 		ran++
 		return "", errors.New("connection reset after the reservation was sent")
 	}
-	if _, err := Step(context.Background(), store, "r1", "reserve", reserve); err == nil {
+	if _, err := store.Step(context.Background(), "r1", "reserve", reserve); err == nil {
 		t.Fatal("first attempt succeeded, want its error")
 	}
-	_, err := Step(context.Background(), store, "r1", "reserve", reserve, WithSafety(Safety{Idempotent: true}))
-	var halt *ResumeHalt
+	_, err := store.Step(context.Background(), "r1", "reserve", reserve, WithSafety(Safety{Idempotent: true}))
+	var halt *OutcomeUnknown
 	if !errors.As(err, &halt) || halt.Op.ID != "reserve" {
 		t.Fatalf("resume err = %v after %d runs, want *ResumeHalt for reserve", err, ran)
 	}
@@ -103,7 +103,7 @@ func (s markerLookupFails) Insert(ctx context.Context, runID, name string, data 
 // step does not run: running it could be the second run of that side effect.
 func TestStep_MarkerLookupFailureStopsTheStep(t *testing.T) {
 	ran := 0
-	_, err := Step(context.Background(), mustJournal(markerLookupFails{NewMemStore()}), "r1", "read", func(context.Context) (int, error) {
+	_, err := mustJournal(markerLookupFails{NewMemStore()}).Step(context.Background(), "r1", "read", func(context.Context) (int, error) {
 		ran++
 		return 1, nil
 	}, WithSafety(Safety{ReadOnly: true}))

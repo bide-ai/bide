@@ -76,7 +76,7 @@ func TestRev103b_F7_EmptyStepNameInsideNodeDoesNotConform(t *testing.T) {
 	mem := agenttest.MemJournal()
 	b := New[int, int]("nested-empty")
 	b.Step("a", func(ctx context.Context, n int) (int, error) {
-		return agent.Step(ctx, mem, "r", "", func(context.Context) (int, error) { return n + 1, nil })
+		return mem.Step(ctx, "r", "", func(context.Context) (int, error) { return n + 1, nil })
 	}, ReadOnly())
 	flow, err := b.Build()
 	if err != nil {
@@ -98,7 +98,7 @@ func TestRev103b_F7_EmptyStepNameHaltIsUnresolvable(t *testing.T) {
 	var charges int
 	b := New[int, int]("nested-empty-halt")
 	b.Step("a", func(ctx context.Context, n int) (int, error) {
-		return agent.Step(ctx, mem, "r", "", func(context.Context) (int, error) {
+		return mem.Step(ctx, "r", "", func(context.Context) (int, error) {
 			charges++
 			if charges == 1 {
 				return 0, errors.New("connection reset after the charge")

@@ -15,7 +15,7 @@ import (
 func journal(t *testing.T, store *agent.Journal, runID string, vals ...string) {
 	t.Helper()
 	for i, v := range vals {
-		if _, err := agent.Step(context.Background(), store, runID, fmt.Sprintf("s%d", i),
+		if _, err := store.Step(context.Background(), runID, fmt.Sprintf("s%d", i),
 			func(context.Context) (string, error) { return v, nil }, agent.WithSafety(agent.Safety{ReadOnly: true})); err != nil {
 			t.Fatal(err)
 		}

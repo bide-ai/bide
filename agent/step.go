@@ -69,7 +69,7 @@ func ClaimAttempt(ctx context.Context, d *Journal, runID, name string, rec Recor
 // name must not be empty, and must not start with a prefix the engine reserves for its own journal keys ("@", "run:",
 // "tool:", "attempt:", "approval:", "signal:", and the rest; see IsReservedStepName): such a
 // name is ErrConfig.
-func Step[T any](ctx context.Context, d *Journal, runID, name string, fn func(context.Context) (T, error), opts ...StepOption) (T, error) {
+func (d *Journal) Step[T any](ctx context.Context, runID, name string, fn func(context.Context) (T, error), opts ...StepOption) (T, error) {
 	if err := checkStepName("Step", name); err != nil {
 		var zero T
 		return zero, err

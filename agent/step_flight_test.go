@@ -66,7 +66,7 @@ func TestStep_ClaimWinnerRunsTheStepWhenALoserReadsFirst(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Warm the header so the counted calls below are the step's own.
-	if _, err := agent.Step(ctx, j, "r", "warm", func(context.Context) (int, error) { return 0, nil }, agent.WithSafety(agent.Safety{ReadOnly: true})); err != nil {
+	if _, err := j.Step(ctx, "r", "warm", func(context.Context) (int, error) { return 0, nil }, agent.WithSafety(agent.Safety{ReadOnly: true})); err != nil {
 		t.Fatal(err)
 	}
 	winnerClaimed := make(chan struct{})
@@ -90,15 +90,15 @@ func TestStep_ClaimWinnerRunsTheStepWhenALoserReadsFirst(t *testing.T) {
 	var wg sync.WaitGroup
 	var winnerErr, loserErr error
 	wg.Add(2)
-	go func() { defer wg.Done(); _, winnerErr = agent.Step(ctx, j, "r", "s", fn) }()
+	go func() { defer wg.Done(); _, winnerErr = j.Step(ctx, "r", "s", fn) }()
 	<-winnerClaimed
-	go func() { defer wg.Done(); _, loserErr = agent.Step(ctx, j, "r", "s", fn) }()
+	go func() { defer wg.Done(); _, loserErr = j.Step(ctx, "r", "s", fn) }()
 	<-loserInFlight
 	close(releaseWinner) // the winner now enters doFresh and joins the loser's flight
 	time.Sleep(100 * time.Millisecond)
 	close(releaseLoser)
 	wg.Wait()
-	var halt *agent.ResumeHalt
+	var halt *agent.OutcomeUnknown
 	t.Logf("winner: %v; loser: %v; fn ran %d time(s)", winnerErr, loserErr, ran.Load())
 	if ran.Load() != 1 {
 		t.Errorf("fn ran %d times across the two drivers, want exactly 1 (the claim winner)", ran.Load())

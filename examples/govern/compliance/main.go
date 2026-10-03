@@ -50,7 +50,7 @@ func main() {
 		{Name: "pep_check", Safety: agent.Safety{ReadOnly: true}, Fn: func(context.Context) (checkResult, error) { return checkResult{"pep", true}, nil }},
 		{Name: "adverse_media_check", Safety: agent.Safety{ReadOnly: true}, Fn: func(context.Context) (checkResult, error) { return checkResult{"adverse_media", false}, nil }},
 	}
-	results, err := agent.Parallel(ctx, store, runID, checks)
+	results, err := store.Parallel(ctx, runID, checks)
 	if err != nil {
 		panic(err)
 	}
@@ -108,7 +108,7 @@ func main() {
 
 	// Record the decision as a durable, provable step binding the outcome, the policy, and the
 	// resulting governed state.
-	dec, err := agent.Step(ctx, store, runID, "decision", func(context.Context) (decision, error) {
+	dec, err := store.Step(ctx, runID, "decision", func(context.Context) (decision, error) {
 		return decision{
 			Approved:     st.GetBool(approved),
 			Flagged:      st.GetBool(flag),

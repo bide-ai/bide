@@ -25,7 +25,7 @@ import (
 // at-least-once transport). Safe to call from any process; the store's PK / ON CONFLICT is the
 // cross-process dedup, exactly as for Signal. After enqueueing, re-invoke a run paused on the
 // channel (*SignalPending) with the pause's RootRunID.
-func Enqueue[T any](ctx context.Context, d *Journal, runID, channel, key string, payload T) error {
+func (d *Journal) Enqueue[T any](ctx context.Context, runID, channel, key string, payload T) error {
 	if runID == "" {
 		return fmt.Errorf("Enqueue: empty runID: %w", ErrConfig)
 	}
@@ -37,13 +37,6 @@ func Enqueue[T any](ctx context.Context, d *Journal, runID, channel, key string,
 		return Record{Kind: StepSignal, Result: b}, nil
 	})
 	return err
-}
-
-// Send is the former name of Enqueue.
-//
-// Deprecated: transitional; renamed by the 1.0 rewrite. Use Enqueue.
-func Send[T any](ctx context.Context, d *Journal, runID, channel, key string, payload T) error {
-	return Enqueue(ctx, d, runID, channel, key, payload)
 }
 
 // Received is one message pulled from a channel.

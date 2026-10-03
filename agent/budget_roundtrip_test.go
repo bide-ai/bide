@@ -98,7 +98,7 @@ func TestBudget_Resume(t *testing.T) {
 		j,
 		agent.WithTools(sideEffect()),
 	)
-	if _, err := agent.Step(ctx, j, "r", "warm", func(context.Context) (int, error) { return 1, nil }, agent.WithSafety(agent.Safety{ReadOnly: true})); err != nil {
+	if _, err := j.Step(ctx, "r", "warm", func(context.Context) (int, error) { return 1, nil }, agent.WithSafety(agent.Safety{ReadOnly: true})); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := a.Run(ctx, "r", agent.UserText("hi")); err != nil {
@@ -138,7 +138,7 @@ func TestBudget_Resume(t *testing.T) {
 	}
 	cs.Reset()
 	_, err = a.Run(ctx, "h", agent.UserText("hi"))
-	var halt *agent.ResumeHalt
+	var halt *agent.OutcomeUnknown
 	if !errors.As(err, &halt) {
 		t.Fatalf("resume = %v, want the halt", err)
 	}
@@ -158,19 +158,19 @@ func must[T any](v T, err error) T {
 func TestBudget_Step(t *testing.T) {
 	ctx := context.Background()
 	j, cs, _ := countingJournal(t)
-	if _, err := agent.Step(ctx, j, "r", "first", func(context.Context) (int, error) { return 1, nil }, agent.WithSafety(agent.Safety{ReadOnly: true})); err != nil {
+	if _, err := j.Step(ctx, "r", "first", func(context.Context) (int, error) { return 1, nil }, agent.WithSafety(agent.Safety{ReadOnly: true})); err != nil {
 		t.Fatal(err)
 	}
 	cs.Reset()
-	if _, err := agent.Step(ctx, j, "r", "read", func(context.Context) (int, error) { return 1, nil }, agent.WithSafety(agent.Safety{ReadOnly: true})); err != nil {
+	if _, err := j.Step(ctx, "r", "read", func(context.Context) (int, error) { return 1, nil }, agent.WithSafety(agent.Safety{ReadOnly: true})); err != nil {
 		t.Fatal(err)
 	}
 	wantCounts(t, cs, "retry-safe Step", []string{"get read", "get attempt:step:read", "insert read"}, 0, 0)
-	if _, err := agent.Step(ctx, j, "r", "write", func(context.Context) (int, error) { return 1, nil }); err != nil {
+	if _, err := j.Step(ctx, "r", "write", func(context.Context) (int, error) { return 1, nil }); err != nil {
 		t.Fatal(err)
 	}
 	wantCounts(t, cs, "side-effect Step", []string{"get write", "insert attempt:step:write", "insert write"}, 0, 0)
-	if _, err := agent.Step(ctx, j, "r", "write", func(context.Context) (int, error) { return 1, nil }); err != nil {
+	if _, err := j.Step(ctx, "r", "write", func(context.Context) (int, error) { return 1, nil }); err != nil {
 		t.Fatal(err)
 	}
 	wantCounts(t, cs, "recorded Step", []string{"get write"}, 0, 0)

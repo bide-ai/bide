@@ -293,7 +293,7 @@ func TestAdv104_PauseThenResumeLateSpendOnce(t *testing.T) {
 	charge := &countingTool{name: "charge", approval: SingleApproval(), calls: &charged}
 	m := &scriptModel{turns: [][]Emit{toolTurnWithUsage("c1", "charge", `{}`, billed)}}
 	_, err := mustNew(m, j, WithTools(charge), WithMiddleware(answerAndLeave(bg))).Run(ctx, "r", UserText("go"))
-	var pend *PendingApproval
+	var pend *ApprovalPending
 	if !errors.As(err, &pend) {
 		t.Fatalf("err = %v, want a pause", err)
 	}

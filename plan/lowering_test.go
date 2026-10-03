@@ -66,7 +66,7 @@ func TestLowering_ResolveHaltRefClearsNodeHalt(t *testing.T) {
 	if fired != 1 {
 		t.Fatalf("the halted node ran %d times, want 1", fired)
 	}
-	if err := agent.ResolveHaltRef(ctx, mem, halt.Ref(), agent.Outcome{Result: 7}); err != nil {
+	if err := agent.ResolveHalt(ctx, mem, halt.Ref(), agent.Outcome{Result: 7}); err != nil {
 		t.Fatalf("ResolveHaltRef: %v", err)
 	}
 	out, err := flow.Run(ctx, mem, "r", 5)
@@ -118,7 +118,7 @@ func TestLowering_ResolveHaltRefClearsLoopIterationHalt(t *testing.T) {
 	if !ok || halt.Op != (agent.OpRef{Kind: agent.OpStep, ID: "node:iter:1:refine"}) {
 		t.Fatalf("second drive: err = %v, want a halt on node:iter:1:refine", err)
 	}
-	if err := agent.ResolveHaltRef(ctx, mem, halt.Ref(), agent.Outcome{Result: loopState{N: 0, Trace: "seed|refine|resolved"}}); err != nil {
+	if err := agent.ResolveHalt(ctx, mem, halt.Ref(), agent.Outcome{Result: loopState{N: 0, Trace: "seed|refine|resolved"}}); err != nil {
 		t.Fatalf("ResolveHaltRef: %v", err)
 	}
 	out, err := build().Run(ctx, mem, "loop", 3)
@@ -134,7 +134,7 @@ func TestLowering_ResolveHaltRefClearsLoopIterationHalt(t *testing.T) {
 func TestLowering_ResolveHaltRefRefusesOtherReservedNames(t *testing.T) {
 	for _, id := range []string{"switch:x", "flow:digest", "node:", "node:a:b", "node:iter:x:a", "attempt:step:x"} {
 		ref := agent.HaltRef{RunID: "r", Op: agent.OpRef{Kind: agent.OpStep, ID: id}, Cause: agent.HaltCrashed}
-		err := agent.ResolveHaltRef(context.Background(), agenttest.MemJournal(), ref, agent.Outcome{Result: 1})
+		err := agent.ResolveHalt(context.Background(), agenttest.MemJournal(), ref, agent.Outcome{Result: 1})
 		if !errors.Is(err, agent.ErrConfig) {
 			t.Errorf("ResolveHaltRef on step %q: err = %v, want ErrConfig", id, err)
 		}

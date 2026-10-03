@@ -70,7 +70,7 @@ func TestDST_Signal_NoDoubleFire_CrashSweep(t *testing.T) {
 		mem := memJournal()
 		// The signal is delivered (persisted) up front, so the await resolves on the first run;
 		// the crash sweep then exercises the resume-and-charge path.
-		if err := Signal(context.Background(), mem, "dst-sig", "go", "payload"); err != nil {
+		if err := mem.Signal(context.Background(), "dst-sig", "go", "payload"); err != nil {
 			t.Fatalf("Signal: %v", err)
 		}
 
@@ -83,7 +83,7 @@ func TestDST_Signal_NoDoubleFire_CrashSweep(t *testing.T) {
 		if count > 1 {
 			t.Fatalf("crashAt=%d: charge fired %d times after signal-driven resume: DOUBLE FIRE", crashAt, count)
 		}
-		var halt *ResumeHalt
+		var halt *OutcomeUnknown
 		switch {
 		case err == nil:
 			if count != 1 {
@@ -122,7 +122,7 @@ func TestSignal_DeliverThenWake(t *testing.T) {
 		if res != nil {
 			out = res.Message
 		}
-		var awt *Awaiting
+		var awt *SignalPending
 		if errors.As(err, &awt) {
 			return nil // still waiting is not an error
 		}
@@ -135,17 +135,17 @@ func TestSignal_DeliverThenWake(t *testing.T) {
 		return nil
 	})
 	a = mustNew(m, mem, WithTools(awaitT))
-	ctx := ContextWithWaker(context.Background(), waker)
+	ctx := contextWithWaker(context.Background(), waker)
 
 	// First run pauses on the await (plain Await does not self-schedule a wake).
 	_, err := a.Run(ctx, "r", UserText("hi"))
-	var awt *Awaiting
+	var awt *SignalPending
 	if !errors.As(err, &awt) {
 		t.Fatalf("first run err = %v, want *Awaiting", err)
 	}
 
 	// The deliverer records the signal, then schedules a wake now (the deliver-then-wake idiom).
-	if err := Signal(context.Background(), mem, "r", "go", "payload"); err != nil {
+	if err := mem.Signal(context.Background(), "r", "go", "payload"); err != nil {
 		t.Fatalf("Signal: %v", err)
 	}
 	waker.Schedule(context.Background(), Wake{RunID: "r", Name: "signal:go", FireAt: time.Time{}}) // zero time is before now, so the wake is due

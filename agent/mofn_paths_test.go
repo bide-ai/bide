@@ -56,7 +56,7 @@ func TestMofn_StreamEmitsTally(t *testing.T) {
 
 	// The event's tally is its own copy: mutating it does not reach the returned PendingApproval.
 	reqs[0].Quorum.Pending[0] = "mutated"
-	var pend *PendingApproval
+	var pend *ApprovalPending
 	errors.As(err, &pend)
 	if pend.Quorum.Pending[0] != "alice" {
 		t.Fatalf("PendingApproval.Quorum shares the event's Pending slice: %v", pend.Quorum.Pending)
@@ -103,7 +103,7 @@ func TestMofn_StreamOneOfOneHasNoTally(t *testing.T) {
 	if !seen {
 		t.Fatal("no ApprovalRequired event for a RequiresApproval tool")
 	}
-	if _, err := as.Result(); !errors.As(err, new(*PendingApproval)) {
+	if _, err := as.Result(); !errors.As(err, new(*ApprovalPending)) {
 		t.Fatalf("Final err = %v, want *PendingApproval", err)
 	}
 }
@@ -137,7 +137,7 @@ func TestMofn_InsideSubAgent(t *testing.T) {
 	)
 
 	_, err := parent.Run(ctx, "root", UserText("delegate"))
-	var pend *PendingApproval
+	var pend *ApprovalPending
 	if !errors.As(err, &pend) || pend.Quorum == nil {
 		t.Fatalf("parent Run err = %v, want an m-of-n *PendingApproval from the sub-agent", err)
 	}

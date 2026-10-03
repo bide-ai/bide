@@ -47,7 +47,7 @@ func TestAwaitFor_SignalFirst(t *testing.T) {
 	store := memJournal()
 	var clk int64 = 1000
 	now := func() time.Time { return time.Unix(atomic.LoadInt64(&clk), 0) }
-	ctx := ContextWithClock(context.Background(), now)
+	ctx := contextWithClock(context.Background(), now)
 
 	var calls int
 	var got string
@@ -57,7 +57,7 @@ func TestAwaitFor_SignalFirst(t *testing.T) {
 	a := mustNew(m, store, WithTools(tool))
 
 	_, err := a.Run(ctx, "r", UserText("hi"))
-	var awt *Awaiting
+	var awt *SignalPending
 	if !errors.As(err, &awt) {
 		t.Fatalf("err = %v, want *Awaiting", err)
 	}
@@ -69,7 +69,7 @@ func TestAwaitFor_SignalFirst(t *testing.T) {
 	}
 
 	// Deliver the signal before the deadline (clock has not advanced).
-	if err := Signal(context.Background(), store, "r", "webhook", "payload-1"); err != nil {
+	if err := store.Signal(context.Background(), "r", "webhook", "payload-1"); err != nil {
 		t.Fatalf("Signal: %v", err)
 	}
 
@@ -99,7 +99,7 @@ func TestAwaitFor_TimeoutFirst(t *testing.T) {
 	store := memJournal()
 	var clk int64 = 1000
 	now := func() time.Time { return time.Unix(atomic.LoadInt64(&clk), 0) }
-	ctx := ContextWithClock(context.Background(), now)
+	ctx := contextWithClock(context.Background(), now)
 
 	var calls int
 	var got string = "sentinel"
@@ -110,7 +110,7 @@ func TestAwaitFor_TimeoutFirst(t *testing.T) {
 
 	// First run: no signal, before the deadline, so the run pauses durably.
 	_, err := a.Run(ctx, "r", UserText("hi"))
-	var awt *Awaiting
+	var awt *SignalPending
 	if !errors.As(err, &awt) {
 		t.Fatalf("err = %v, want *Awaiting", err)
 	}
@@ -147,7 +147,7 @@ func TestAwaitFor_DeadlineStable(t *testing.T) {
 	store := memJournal()
 	var clk int64 = 1000
 	now := func() time.Time { return time.Unix(atomic.LoadInt64(&clk), 0) }
-	ctx := ContextWithClock(context.Background(), now)
+	ctx := contextWithClock(context.Background(), now)
 
 	var calls int
 	var arrived bool = true
@@ -205,6 +205,6 @@ func TestAwaitFor_DeadlineStable(t *testing.T) {
 }
 
 func errorsIsAwaiting(err error) bool {
-	var awt *Awaiting
+	var awt *SignalPending
 	return errors.As(err, &awt)
 }

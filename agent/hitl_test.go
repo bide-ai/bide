@@ -42,7 +42,7 @@ func TestInterrupt_PausesAndResumesTyped(t *testing.T) {
 	a := mustNew(m, store, WithTools(tool))
 
 	_, err := a.Run(context.Background(), "r", UserText("hi"))
-	var intr *Interrupted
+	var intr *InterruptPending
 	if !errors.As(err, &intr) {
 		t.Fatalf("err = %v, want *Interrupted", err)
 	}
@@ -53,7 +53,7 @@ func TestInterrupt_PausesAndResumesTyped(t *testing.T) {
 		t.Fatalf("tool ran %d times before resume, want 1", calls)
 	}
 
-	if err := Resume(context.Background(), store, "r", "q", "hello-human"); err != nil {
+	if err := store.AnswerInterrupt(context.Background(), "r", "q", "hello-human"); err != nil {
 		t.Fatalf("Resume: %v", err)
 	}
 
@@ -96,7 +96,7 @@ func TestInterrupt_StructValue(t *testing.T) {
 	if _, err := a.Run(context.Background(), "r", UserText("hi")); !errorsAsInterrupted(err) {
 		t.Fatalf("want interrupt, got %v", err)
 	}
-	if err := Resume(context.Background(), store, "r", "pick", choice{Option: "b", Weight: 3}); err != nil {
+	if err := store.AnswerInterrupt(context.Background(), "r", "pick", choice{Option: "b", Weight: 3}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := a.Run(context.Background(), "r", UserText("hi")); err != nil {
@@ -134,6 +134,6 @@ func TestInterrupt_OutsideRun(t *testing.T) {
 }
 
 func errorsAsInterrupted(err error) bool {
-	var i *Interrupted
+	var i *InterruptPending
 	return errors.As(err, &i)
 }

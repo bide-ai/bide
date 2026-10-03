@@ -89,7 +89,7 @@ func TestErrors_ControlFlowStillTyped(t *testing.T) {
 	a := mustNew(m, memJournal(), WithTools(tool))
 
 	_, err := a.Run(context.Background(), "r", UserText("pay"))
-	var pend *PendingApproval
+	var pend *ApprovalPending
 	if !errors.As(err, &pend) {
 		t.Fatalf("err = %v, want *PendingApproval", err)
 	}

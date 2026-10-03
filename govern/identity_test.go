@@ -40,7 +40,7 @@ func TestEventToolAttested_StampsIdentity(t *testing.T) {
 	tool := govern.EventTool(gov, govern.EventToolConfig{Name: "credit", Description: "credit $1", Event: "credit", PolicyDigest: digest})
 
 	id := agent.Identity{Actor: "exec-agent@1.4.2", OnBehalfOf: "desk-EQ-US", AuthorityRef: "grant#a1b2"}
-	ctx := agent.ContextWithIdentity(context.Background(), id)
+	ctx := agenttest.ContextWithIdentity(context.Background(), id)
 
 	raw, err := tool.Call(ctx, []byte(`{}`))
 	if err != nil {
@@ -98,7 +98,7 @@ func TestProof_CommitsToIdentity(t *testing.T) {
 		store,
 		agent.WithTools(tool),
 	)
-	if _, err := a.Run(agent.ContextWithIdentity(ctx, id), runID, agent.UserText("go")); err != nil {
+	if _, err := a.Run(ctx, runID, agent.UserText("go"), agent.WithIdentity(id)); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 

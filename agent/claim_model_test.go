@@ -139,11 +139,11 @@ func TestClaimMemo_KeepsEveryRememberedClaim(t *testing.T) {
 		}
 		once.Do(func() { // d1's claim has committed: d1 is cancelled, and d2 starts its claim
 			cancel1()
-			go func() { defer close(d2Done); _, d2Err = agent.Step(ctx, j, "r", "charge", fn) }()
+			go func() { defer close(d2Done); _, d2Err = j.Step(ctx, "r", "charge", fn) }()
 			<-d2AtMarker
 		})
 	}
-	if _, err := agent.Step(ctx1, j, "r", "charge", fn); err == nil {
+	if _, err := j.Step(ctx1, "r", "charge", fn); err == nil {
 		t.Fatal("d1 (cancelled after its claim) succeeded")
 	}
 	close(releaseD2)
@@ -157,7 +157,7 @@ func TestClaimMemo_KeepsEveryRememberedClaim(t *testing.T) {
 	if ran.Load() != 0 {
 		t.Fatalf("the effect ran %d times before the re-drive, want 0", ran.Load())
 	}
-	v, err := agent.Step(ctx, j, "r", "charge", fn)
+	v, err := j.Step(ctx, "r", "charge", fn)
 	if err != nil || v != "charged" || ran.Load() != 1 {
 		t.Fatalf("the re-drive = %q, %v, the effect ran %d times; want the effect run once: no attempt of it ever started", v, err, ran.Load())
 	}
@@ -207,7 +207,7 @@ func TestResolveHaltRef_MinAgeDoesNotOverrideARevivedClaim(t *testing.T) {
 		}
 		return "charged", nil
 	}
-	if _, err := agent.Step(ctx1, ja, "r", "charge", fn); err == nil {
+	if _, err := ja.Step(ctx1, "r", "charge", fn); err == nil {
 		t.Fatal("d1 (cancelled after its claim) succeeded")
 	}
 	pa.mu.Lock()
@@ -224,12 +224,12 @@ func TestResolveHaltRef_MinAgeDoesNotOverrideARevivedClaim(t *testing.T) {
 	var once sync.Once
 	pr.before = func(string) {
 		once.Do(func() {
-			go func() { v, err := agent.Step(ctx, ja, "r", "charge", fn); d2 <- res{v, err} }()
+			go func() { v, err := ja.Step(ctx, "r", "charge", fn); d2 <- res{v, err} }()
 			<-inEffect
 		})
 	}
 	ref := agent.HaltRef{RunID: "r", Op: agent.OpRef{Kind: agent.OpStep, ID: "charge"}, Cause: agent.HaltCrashed}
-	rerr := agent.ResolveHaltRef(ctx, jr, ref, agent.Outcome{Result: "not charged", IsError: true},
+	rerr := agent.ResolveHalt(ctx, jr, ref, agent.Outcome{Result: "not charged", IsError: true},
 		agent.WithMinHaltAge(time.Second), agent.WithClock(func() time.Time { return time.Now().Add(time.Hour) }))
 	close(release)
 	got := <-d2
@@ -284,7 +284,7 @@ func TestResolveHaltRef_AnErroredVerdictLeavesItsAttemptLive(t *testing.T) {
 	}
 	var fired atomic.Int32
 	fn := func(context.Context) (string, error) { fired.Add(1); return "charged", nil }
-	if _, err := agent.Step(ctx1, ja, "r", "charge", fn); err == nil {
+	if _, err := ja.Step(ctx1, "r", "charge", fn); err == nil {
 		t.Fatal("d1 (cancelled after its claim) succeeded")
 	}
 	pa.mu.Lock()
@@ -312,7 +312,7 @@ func TestResolveHaltRef_AnErroredVerdictLeavesItsAttemptLive(t *testing.T) {
 			return
 		}
 		once.Do(func() {
-			go func() { v, err := agent.Step(ctx, ja, "r", "charge", fn); d2 <- res{v, err} }()
+			go func() { v, err := ja.Step(ctx, "r", "charge", fn); d2 <- res{v, err} }()
 			<-checking
 		})
 	}
@@ -323,7 +323,7 @@ func TestResolveHaltRef_AnErroredVerdictLeavesItsAttemptLive(t *testing.T) {
 		return ""
 	}
 	ref := agent.HaltRef{RunID: "r", Op: agent.OpRef{Kind: agent.OpStep, ID: "charge"}, Cause: agent.HaltCrashed}
-	rerr := agent.ResolveHaltRef(ctx, jr, ref, agent.Outcome{Result: "not charged", IsError: true},
+	rerr := agent.ResolveHalt(ctx, jr, ref, agent.Outcome{Result: "not charged", IsError: true},
 		agent.WithMinHaltAge(time.Second), agent.WithClock(func() time.Time { return time.Now().Add(time.Hour) }))
 	if rerr == nil {
 		t.Fatal("the resolution reported success though its verdict write failed")
@@ -377,7 +377,7 @@ func TestResolveHaltRef_LeasePathDoesNotOverrideARevivedClaim(t *testing.T) {
 	}
 	var fired atomic.Int32
 	fn := func(context.Context) (string, error) { fired.Add(1); return "charged", nil }
-	if _, err := agent.Step(ctx, ja, "r", "charge", fn); err == nil {
+	if _, err := ja.Step(ctx, "r", "charge", fn); err == nil {
 		t.Fatal("d1 (its marker Insert failed) succeeded")
 	}
 	pa.mu.Lock()
@@ -404,12 +404,12 @@ func TestResolveHaltRef_LeasePathDoesNotOverrideARevivedClaim(t *testing.T) {
 			return
 		}
 		onceR.Do(func() {
-			go func() { v, err := agent.Step(ctx, ja, "r", "charge", fn); d2 <- res{v, err} }()
+			go func() { v, err := ja.Step(ctx, "r", "charge", fn); d2 <- res{v, err} }()
 			<-atRetry
 		})
 	}
 	ref := agent.HaltRef{RunID: "r", Op: agent.OpRef{Kind: agent.OpStep, ID: "charge"}, Cause: agent.HaltCrashed}
-	rerr := agent.ResolveHaltRef(ctx, jr, ref, agent.Outcome{Result: "not charged", IsError: true})
+	rerr := agent.ResolveHalt(ctx, jr, ref, agent.Outcome{Result: "not charged", IsError: true})
 	close(resume)
 	got := <-d2
 	rec, ok, err := ja.Get(ctx, "r", "charge")

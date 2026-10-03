@@ -176,7 +176,7 @@ func TestDST_NoDoubleFire_CrashSweep(t *testing.T) {
 		if count > 1 {
 			t.Fatalf("crashAt=%d: charge fired %d times — DOUBLE FIRE", crashAt, count)
 		}
-		var halt *ResumeHalt
+		var halt *OutcomeUnknown
 		switch {
 		case err == nil:
 			if count != 1 {
@@ -216,7 +216,7 @@ func TestDST_NoDoubleFire_Randomized(t *testing.T) {
 				break // terminal
 			}
 		}
-		var halt *ResumeHalt
+		var halt *OutcomeUnknown
 		if !errors.Is(err, errCrash) && err != nil && !errors.As(err, &halt) {
 			t.Fatalf("seed=%d: unexpected terminal error: %v", seed, err)
 		}

@@ -146,7 +146,7 @@ func TestEventTool_ParallelFanOutInOneCall(t *testing.T) {
 			second: task(second, firstDone, nil),
 		}
 		// A fresh journal each time the call runs, so the re-run runs both tasks again.
-		_, err := agent.Parallel(ctx, agenttest.MemJournal(), "fan", []agent.Task[bool]{
+		_, err := agenttest.MemJournal().Parallel(ctx, "fan", []agent.Task[bool]{
 			{Name: "a", Fn: fnFor[incA], Safety: agent.Safety{Idempotent: true}},
 			{Name: "b", Fn: fnFor[incB], Safety: agent.Safety{Idempotent: true}}})
 		if err != nil {

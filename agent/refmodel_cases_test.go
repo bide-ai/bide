@@ -174,7 +174,7 @@ func TestRefModel_HaltHoldsNoSiblingOutsideASaga(t *testing.T) {
 		t.Fatalf("first drive: %v, want the injected failure", err)
 	}
 	_, err := w.agents(agenttest.MustJournal(mem), &rmModel{w: w}).Run(context.Background(), rmRunID, agent.UserText("S0"))
-	var halt *agent.ResumeHalt
+	var halt *agent.OutcomeUnknown
 	if !errors.As(err, &halt) || halt.Op.ID != "c3" {
 		t.Fatalf("second drive: %v, want a halt on c3", err)
 	}

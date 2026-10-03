@@ -14,7 +14,7 @@ import (
 func TestAwaitFor_TimeoutOutcomeSurvivesALateSignal(t *testing.T) {
 	store := memJournal()
 	var clk int64 = 1000
-	ctx := ContextWithClock(context.Background(), func() time.Time { return time.Unix(atomic.LoadInt64(&clk), 0) })
+	ctx := contextWithClock(context.Background(), func() time.Time { return time.Unix(atomic.LoadInt64(&clk), 0) })
 	var outcomes []bool
 	tool := Func("watch", "", Safety{ReadOnly: true}, func(ctx context.Context, _ struct{}) (string, error) {
 		_, ok, err := AwaitFor[string](ctx, "webhook", time.Minute)
@@ -25,19 +25,19 @@ func TestAwaitFor_TimeoutOutcomeSurvivesALateSignal(t *testing.T) {
 		return Interrupt[string](ctx, "confirm", nil) // a later pause in the same tool
 	})
 	a := mustNew(NewScriptedModel(ToolTurn("c1", "watch", `{}`), TextTurn("done")), store, WithTools(tool))
-	var aw *Awaiting
+	var aw *SignalPending
 	if _, err := a.Run(ctx, "r", UserText("go")); !errors.As(err, &aw) {
 		t.Fatalf("first run: %v, want *Awaiting", err)
 	}
 	atomic.StoreInt64(&clk, 2000) // the deadline passes: the timeout wins
-	var in *Interrupted
+	var in *InterruptPending
 	if _, err := a.Run(ctx, "r", UserText("go")); !errors.As(err, &in) {
 		t.Fatalf("second run: %v, want *Interrupted", err)
 	}
-	if err := Signal(context.Background(), store, "r", "webhook", "late"); err != nil {
+	if err := store.Signal(context.Background(), "r", "webhook", "late"); err != nil {
 		t.Fatal(err)
 	}
-	if err := Resume(context.Background(), store, "r", "confirm", "yes"); err != nil {
+	if err := store.AnswerInterrupt(context.Background(), "r", "confirm", "yes"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := a.Run(ctx, "r", UserText("go")); err != nil {
@@ -77,9 +77,9 @@ func TestSubAgentAwaitFor_WakesTheRoot(t *testing.T) {
 		completed = err == nil && msg.Text() == "parent done"
 		return err
 	})
-	ctx := ContextWithWaker(ContextWithClock(context.Background(), now), w)
+	ctx := contextWithWaker(contextWithClock(context.Background(), now), w)
 	_, err := root.Run(ctx, "p", UserText("go"))
-	var aw *Awaiting
+	var aw *SignalPending
 	if !errors.As(err, &aw) || aw.RunID != "p>s1" || aw.RootRunID != "p" {
 		t.Fatalf("await = %+v (%v); want RunID p>s1 and RootRunID p", aw, err)
 	}

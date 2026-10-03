@@ -104,16 +104,16 @@ func TestRememberedClaimRunsUnderAVoidedMarker_Step(t *testing.T) {
 		failNoCommit: map[string]bool{},
 	}
 	j1, _ := agent.NewJournal(s)
-	_, err1 := agent.Step(ctx, j1, "r", "pay", body)
+	_, err1 := j1.Step(ctx, "r", "pay", body)
 	t.Logf("drive 1: %v (fired %d)", err1, fired)
 
 	s.failNoCommit["pay"] = true
 	j2, _ := agent.NewJournal(s)
-	_, err2 := agent.Step(ctx, j2, "r", "pay", body)
+	_, err2 := j2.Step(ctx, "r", "pay", body)
 	t.Logf("drive 2: %v (fired %d)", err2, fired)
 
 	j3, _ := agent.NewJournal(&faultStore{m: m})
-	_, err3 := agent.Step(ctx, j3, "r", "pay", body)
+	_, err3 := j3.Step(ctx, "r", "pay", body)
 	t.Logf("drive 3: %v (fired %d)", err3, fired)
 	if fired > 1 {
 		t.Fatalf("side effect fired %d times", fired)
@@ -132,10 +132,10 @@ func TestClaimErrorThenNoNotStarted_NewProcessHalts(t *testing.T) {
 		failNoCommit: map[string]bool{"attempt:not-started:": true},
 	}
 	j1, _ := agent.NewJournal(s)
-	_, err1 := agent.Step(ctx, j1, "r", "pay", body)
+	_, err1 := j1.Step(ctx, "r", "pay", body)
 	j2, _ := agent.NewJournal(&faultStore{m: m})
-	_, err2 := agent.Step(ctx, j2, "r", "pay", body)
-	var halt *agent.ResumeHalt
+	_, err2 := j2.Step(ctx, "r", "pay", body)
+	var halt *agent.OutcomeUnknown
 	t.Logf("drive 1: %v; drive 2: %v; fired %d", err1, err2, fired)
 	if fired != 0 || !errors.As(err2, &halt) {
 		t.Fatalf("want a halt and nothing fired")
@@ -153,11 +153,11 @@ func TestTwoDriversBothRecordNotStarted(t *testing.T) {
 	b := &faultStore{m: m, commitErr: map[string]bool{}, failNoCommit: map[string]bool{"attempt:step:pay": true}}
 	ja, _ := agent.NewJournal(a)
 	jb, _ := agent.NewJournal(b)
-	_, ea := agent.Step(ctx, ja, "r", "pay", body)
-	_, eb := agent.Step(ctx, jb, "r", "pay", body)
+	_, ea := ja.Step(ctx, "r", "pay", body)
+	_, eb := jb.Step(ctx, "r", "pay", body)
 	for i := 0; i < 3; i++ {
 		jn, _ := agent.NewJournal(&faultStore{m: m})
-		_, _ = agent.Step(ctx, jn, "r", "pay", body)
+		_, _ = jn.Step(ctx, "r", "pay", body)
 	}
 	t.Logf("a: %v; b: %v; fired %d", ea, eb, fired)
 	if fired != 1 {
@@ -192,7 +192,7 @@ func TestReattemptWhoseResultIsLostHalts(t *testing.T) {
 		cs := agenttest.NewCountingStore(m)
 		j3, _ := agent.NewJournal(cs)
 		_, err3 := agenttest.MustNew(model(), j3, agent.WithTools(charge), agent.WithMaxConcurrency(1)).Run(ctx, "r", agent.UserText("hi"))
-		var halt *agent.ResumeHalt
+		var halt *agent.OutcomeUnknown
 		if fired != 1 || !errors.As(err3, &halt) {
 			t.Fatalf("a new process = %v with the effect fired %d times; want a halt and once", err3, fired)
 		}
@@ -211,16 +211,16 @@ func TestReattemptWhoseResultIsLostHalts(t *testing.T) {
 			failNoCommit: map[string]bool{"attempt:not-started:": true},
 		}
 		j1, _ := agent.NewJournal(s)
-		_, _ = agent.Step(ctx, j1, "r", "pay", body)
+		_, _ = j1.Step(ctx, "r", "pay", body)
 		s.failNoCommit["pay"] = true
 		j2, _ := agent.NewJournal(s)
-		_, err2 := agent.Step(ctx, j2, "r", "pay", body)
+		_, err2 := j2.Step(ctx, "r", "pay", body)
 		if fired != 1 {
 			t.Fatalf("the held claim's drive fired %d times (%v), want once", fired, err2)
 		}
 		j3, _ := agent.NewJournal(&faultStore{m: m})
-		_, err3 := agent.Step(ctx, j3, "r", "pay", body)
-		var halt *agent.ResumeHalt
+		_, err3 := j3.Step(ctx, "r", "pay", body)
+		var halt *agent.OutcomeUnknown
 		if fired != 1 || !errors.As(err3, &halt) {
 			t.Fatalf("a new process = %v with the effect fired %d times; want a halt and once", err3, fired)
 		}

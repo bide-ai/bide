@@ -246,7 +246,7 @@ func TestRev127_RetrievalOnceAcrossPause(t *testing.T) {
 	if _, err := a.Run(context.Background(), "r4", agent.UserText("q")); err == nil {
 		t.Fatal("want a pause")
 	}
-	if err := agent.AnswerInterrupt(context.Background(), store, "r4", "q", "yes"); err != nil {
+	if err := store.AnswerInterrupt(context.Background(), "r4", "q", "yes"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := a.Run(context.Background(), "r4", agent.UserText("q")); err != nil {

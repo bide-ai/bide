@@ -29,16 +29,16 @@ func receiveOnce(t *testing.T, store *Journal, runID, channel string) (Received[
 // "orders" does not see a message sent to "orders:vip".
 func TestChannel_NameWithColonIsItsOwnChannel(t *testing.T) {
 	store := memJournal()
-	if err := Send(context.Background(), store, "r", "orders:vip", "k1", "vip-order"); err != nil {
+	if err := store.Enqueue(context.Background(), "r", "orders:vip", "k1", "vip-order"); err != nil {
 		t.Fatal(err)
 	}
 	got, err := receiveOnce(t, store, "r", "orders")
-	var aw *Awaiting
+	var aw *SignalPending
 	if !errors.As(err, &aw) {
 		t.Fatalf("Receive(\"orders\") = %+v, %v; want *Awaiting (the message is on \"orders:vip\")", got, err)
 	}
 	store2 := memJournal()
-	if err := Send(context.Background(), store2, "r", "orders:vip", "k1", "vip-order"); err != nil {
+	if err := store2.Enqueue(context.Background(), "r", "orders:vip", "k1", "vip-order"); err != nil {
 		t.Fatal(err)
 	}
 	if got, err := receiveOnce(t, store2, "r", "orders:vip"); err != nil || got.Key != "k1" || got.Payload != "vip-order" {
@@ -51,10 +51,10 @@ func TestChannel_NameWithColonIsItsOwnChannel(t *testing.T) {
 func TestChannel_ColonsNeverCollide(t *testing.T) {
 	ctx := context.Background()
 	store := memJournal()
-	if err := Send(ctx, store, "r", "a:b", "c", "on a:b"); err != nil {
+	if err := store.Enqueue(ctx, "r", "a:b", "c", "on a:b"); err != nil {
 		t.Fatal(err)
 	}
-	if err := Send(ctx, store, "r", "a", "b:c", "on a"); err != nil {
+	if err := store.Enqueue(ctx, "r", "a", "b:c", "on a"); err != nil {
 		t.Fatal(err)
 	}
 	if err := Ack(ctx, store, "r", "a", "b:c"); err != nil {

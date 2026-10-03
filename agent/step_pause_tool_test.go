@@ -22,7 +22,7 @@ func TestStepPauseGuard_InsideAToolIsNotRecordedAsAToolFailure(t *testing.T) {
 		ID string `json:"id"`
 	}
 	book := agent.Func("book", "", agent.Safety{Idempotent: true}, func(ctx context.Context, a in) (string, error) {
-		return agent.Step(ctx, store, "wf", "charge-"+a.ID, func(ctx context.Context) (string, error) {
+		return store.Step(ctx, "wf", "charge-"+a.ID, func(ctx context.Context) (string, error) {
 			fired++ // the side effect
 			return agent.Interrupt[string](ctx, "confirm-"+a.ID, "confirm the charge?")
 		})
@@ -38,7 +38,7 @@ func TestStepPauseGuard_InsideAToolIsNotRecordedAsAToolFailure(t *testing.T) {
 	}
 	// The call recorded nothing: a resume runs it again, and the step halts on its marker.
 	_, err = a.Run(ctx, "r", agent.UserText("book it"))
-	var halt *agent.ResumeHalt
+	var halt *agent.OutcomeUnknown
 	if !errors.As(err, &halt) {
 		t.Errorf("resume = %v; want the step's halt", err)
 	}

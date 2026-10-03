@@ -151,20 +151,20 @@ func TestResolve_RefusesTheOtherKindsHalt(t *testing.T) {
 	ctx := context.Background()
 	store := memJournal()
 	seedStepAttempt(t, store, "r", "reserve", time.Now())
-	if err := ResolveHalt(ctx, store, "r", "reserve", "ok", false); !errors.Is(err, ErrConfig) {
+	if err := ResolveHalt(ctx, store, HaltRef{RunID: "r", Op: OpRef{Kind: OpTool, ID: "reserve"}, Cause: HaltCrashed}, Outcome{Result: "ok", IsError: false}); !errors.Is(err, ErrConfig) {
 		t.Fatalf("ResolveHalt on a step's halt = %v, want ErrConfig", err)
 	}
 	if _, _, err := ClaimAttempt(ctx, store, "r", toolAttemptStep("c1"), Record{Kind: StepAttempt, ToolUseID: "c1"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := ResolveStepHalt(ctx, store, "r", "c1", "ok", false); !errors.Is(err, ErrConfig) {
+	if err := ResolveHalt(ctx, store, HaltRef{RunID: "r", Op: OpRef{Kind: OpStep, ID: "c1"}, Cause: HaltCrashed}, Outcome{Result: "ok", IsError: false}); !errors.Is(err, ErrConfig) {
 		t.Fatalf("ResolveStepHalt on a call's halt = %v, want ErrConfig", err)
 	}
 	// Each records its own kind of result: a step's is a step value (provable as a step).
-	if err := ResolveStepHalt(ctx, store, "r", "reserve", "ok", false); err != nil {
+	if err := ResolveHalt(ctx, store, HaltRef{RunID: "r", Op: OpRef{Kind: OpStep, ID: "reserve"}, Cause: HaltCrashed}, Outcome{Result: "ok", IsError: false}); err != nil {
 		t.Fatal(err)
 	}
-	if err := ResolveHalt(ctx, store, "r", "c1", "ok", false); err != nil {
+	if err := ResolveHalt(ctx, store, HaltRef{RunID: "r", Op: OpRef{Kind: OpTool, ID: "c1"}, Cause: HaltCrashed}, Outcome{Result: "ok", IsError: false}); err != nil {
 		t.Fatal(err)
 	}
 	if rec, ok := hasStep(t, store, "r", "reserve"); !ok || rec.Kind != StepValue || rec.ToolUseID != "" {
@@ -362,7 +362,7 @@ func parseAgentPackage(t *testing.T) map[string]*ast.File {
 // ResolveStepHalt names a step, so it refuses a reserved name as Step does.
 func TestResolveStepHalt_ReservedNameIsRefused(t *testing.T) {
 	store := memJournal()
-	err := ResolveStepHalt(context.Background(), store, "r", runCompleteStep, "ok", false)
+	err := ResolveHalt(context.Background(), store, HaltRef{RunID: "r", Op: OpRef{Kind: OpStep, ID: runCompleteStep}, Cause: HaltCrashed}, Outcome{Result: "ok", IsError: false})
 	if complete, _ := IsComplete(context.Background(), store, "r"); !errors.Is(err, ErrConfig) || complete {
 		t.Fatalf("err = %v, IsComplete = %v; want ErrConfig and no completion marker", err, complete)
 	}

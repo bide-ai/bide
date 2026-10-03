@@ -90,7 +90,7 @@ func TestDST_Saga_CrashSweep(t *testing.T) {
 		if charge > 1 {
 			t.Fatalf("crashAt=%d: chargeA fired %d times — DOUBLE FORWARD FIRE", crashAt, charge)
 		}
-		var halt *ResumeHalt
+		var halt *OutcomeUnknown
 		var sa *SagaAborted
 		switch {
 		case errors.As(err, &halt):
@@ -138,7 +138,7 @@ func TestDST_Saga_Randomized(t *testing.T) {
 				break // settled
 			}
 		}
-		var halt *ResumeHalt
+		var halt *OutcomeUnknown
 		var sa *SagaAborted
 		switch {
 		case errors.As(err, &halt):

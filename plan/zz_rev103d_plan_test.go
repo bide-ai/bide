@@ -18,15 +18,15 @@ func TestRev103d_ConformParallelAndNestedSteps(t *testing.T) {
 	mem := agenttest.MemJournal()
 	b := New[string, string]("par")
 	a := b.Step("a", func(ctx context.Context, in string) (string, error) {
-		res, err := agent.Parallel(ctx, mem, "r", []agent.Task[string]{
+		res, err := mem.Parallel(ctx, "r", []agent.Task[string]{
 			{Name: "x", Fn: func(context.Context) (string, error) { return "<x>", nil }},
 			{Name: "y:z", Fn: func(context.Context) (string, error) { return "&y", nil }},
 		}, agent.WithMaxConcurrency(2))
 		if err != nil {
 			return "", err
 		}
-		outer, err := agent.Step(ctx, mem, "r", "outer", func(ctx context.Context) (string, error) {
-			return agent.Step(ctx, mem, "r", "inner", func(context.Context) (string, error) { return "in", nil })
+		outer, err := mem.Step(ctx, "r", "outer", func(ctx context.Context) (string, error) {
+			return mem.Step(ctx, "r", "inner", func(context.Context) (string, error) { return "in", nil })
 		})
 		return in + res[0] + res[1] + outer, err
 	})
@@ -56,7 +56,7 @@ func TestRev103d_ConformAfterHaltResolved(t *testing.T) {
 	var fails = map[string]bool{"inside": true, "last": true}
 	b := New[int, string]("halts")
 	a := b.Step("a", func(ctx context.Context, n int) (int, error) {
-		return agent.Step(ctx, mem, "r", "inside", func(context.Context) (int, error) {
+		return mem.Step(ctx, "r", "inside", func(context.Context) (int, error) {
 			if fails["inside"] {
 				return 0, errors.New("crash inside")
 			}

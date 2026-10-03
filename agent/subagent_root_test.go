@@ -34,11 +34,11 @@ func TestSubAgentHalt_ResolvedAndContinuedFromTheRoot(t *testing.T) {
 	root := clerkTree(store, charge)
 	_, _ = root.Run(ctx, "p", UserText("go"))
 	_, err := root.Run(context.Background(), "p", UserText("go"))
-	var halt *ResumeHalt
+	var halt *OutcomeUnknown
 	if !errors.As(err, &halt) || halt.RunID != "p>s1" || halt.RootRunID != "p" {
 		t.Fatalf("halt = %+v (%v); want RunID p>s1 and RootRunID p", halt, err)
 	}
-	if err := ResolveHalt(context.Background(), store, halt.RunID, halt.Op.ID, "charged", false); err != nil {
+	if err := ResolveHalt(context.Background(), store, HaltRef{RunID: halt.RunID, Op: OpRef{Kind: OpTool, ID: halt.Op.ID}, Cause: HaltCrashed}, Outcome{Result: "charged", IsError: false}); err != nil {
 		t.Fatal(err)
 	}
 	res, err := root.Run(context.Background(), halt.RootRunID, UserText("go"))
@@ -62,11 +62,11 @@ func TestSubAgentInterrupt_AnsweredAndContinuedFromTheRoot(t *testing.T) {
 	})
 	root := clerkTree(store, ask)
 	_, err := root.Run(context.Background(), "p", UserText("go"))
-	var intr *Interrupted
+	var intr *InterruptPending
 	if !errors.As(err, &intr) || intr.RunID != "p>s1" || intr.RootRunID != "p" {
 		t.Fatalf("interrupt = %+v (%v); want RunID p>s1 and RootRunID p", intr, err)
 	}
-	if err := Resume(context.Background(), store, intr.RunID, intr.Name, "yes"); err != nil {
+	if err := store.AnswerInterrupt(context.Background(), intr.RunID, intr.Name, "yes"); err != nil {
 		t.Fatal(err)
 	}
 	if msg, err := answerOf(root.Run(context.Background(), intr.RootRunID, UserText("go"))); err != nil || msg.Text() != "parent done" {
@@ -97,13 +97,13 @@ func TestSubAgentSleep_WakesTheRoot(t *testing.T) {
 		fired = err == nil && msg.Text() == "parent done"
 		return err
 	})
-	_, err := root.Run(ContextWithWaker(context.Background(), w), "p", UserText("go"))
-	var slp *Sleeping
+	_, err := root.Run(context.Background(), "p", UserText("go"), WithWaker(w))
+	var slp *TimerPending
 	if !errors.As(err, &slp) || slp.RootRunID != "p" {
 		t.Fatalf("sleep = %+v (%v); want RootRunID p", slp, err)
 	}
 	time.Sleep(20 * time.Millisecond)
-	if _, err := w.Fire(ContextWithWaker(context.Background(), w), time.Now()); err != nil {
+	if _, err := w.Fire(contextWithWaker(context.Background(), w), time.Now()); err != nil {
 		t.Fatalf("Fire: %v (woke %v)", err, woken)
 	}
 	if len(woken) != 1 || woken[0] != "p" || !fired {

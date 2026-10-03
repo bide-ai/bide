@@ -55,7 +55,7 @@ func TestSaga_RollbackHaltsOnAnUnknownOutcome(t *testing.T) {
 	if !errors.As(err, &aborted) {
 		t.Fatalf("err = %v, want *SagaAborted", err)
 	}
-	var halt *ResumeHalt
+	var halt *OutcomeUnknown
 	if !errors.As(aborted.CompensateErr, &halt) || halt.Op.ID != "p1" {
 		t.Fatalf("SagaAborted = %+v; want the rollback to halt on the charge (p1), whose outcome is unknown (charged=%d refunded=%d)", aborted, charged.Load(), refunded.Load())
 	}
@@ -131,13 +131,13 @@ func TestSaga_RollbackHaltInASubAgentNamesTheRoot(t *testing.T) {
 
 // rollbackHalt returns the halt that stopped a saga rollback, following aborts whose cause is a
 // sub-agent's abort, or nil.
-func rollbackHalt(err error) *ResumeHalt {
+func rollbackHalt(err error) *OutcomeUnknown {
 	for {
 		var ab *SagaAborted
 		if !errors.As(err, &ab) {
 			return nil
 		}
-		var halt *ResumeHalt
+		var halt *OutcomeUnknown
 		if errors.As(ab.CompensateErr, &halt) {
 			return halt
 		}
@@ -206,7 +206,7 @@ func TestSaga_ResolvedUnknownOutcomeIsCompensated(t *testing.T) {
 	m := &sagaTurns{turns: [][][3]string{{{"p1", "pay", `{}`}, {"b1", "book", `{}`}}}}
 	a := mustNew(m, store, WithTools(pay, book))
 	_, _ = a.Run(context.Background(), "r1", UserText("trip"), WithSaga())
-	if err := ResolveHalt(context.Background(), store, "r1", "p1", "rcpt-9", false); err != nil {
+	if err := ResolveHalt(context.Background(), store, HaltRef{RunID: "r1", Op: OpRef{Kind: OpTool, ID: "p1"}, Cause: HaltCrashed}, Outcome{Result: "rcpt-9", IsError: false}); err != nil {
 		t.Fatal(err)
 	}
 	_, err := a.Run(context.Background(), "r1", UserText("trip"), WithSaga())

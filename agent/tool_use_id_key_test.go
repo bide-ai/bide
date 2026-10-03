@@ -237,8 +237,7 @@ func TestResolveHalt_MinAgeReadsTheCallsOwnAttempt(t *testing.T) {
 	if _, err := runRecovering(mustNew(m, mustJournal(store), WithTools(tool)), "r"); !errors.Is(err, errDied) {
 		t.Fatalf("run: %v, want the simulated crash", err)
 	}
-	err := ResolveHalt(context.Background(), j, "r", "x", "ok", false,
-		WithMinHaltAge(time.Minute), WithClock(func() time.Time { return now }))
+	err := ResolveHalt(context.Background(), j, HaltRef{RunID: "r", Op: OpRef{Kind: OpTool, ID: "x"}, Cause: HaltCrashed}, Outcome{Result: "ok", IsError: false}, WithMinHaltAge(time.Minute), WithClock(func() time.Time { return now }))
 	var young *HaltTooYoung
 	if !errors.As(err, &young) {
 		t.Fatalf("ResolveHalt = %v, want *HaltTooYoung: the call was attempted just now", err)

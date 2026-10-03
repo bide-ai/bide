@@ -204,7 +204,7 @@ func TestMofn_SharedKeyBetweenRounds(t *testing.T) {
 	pol := &ApprovalPolicy{Need: 2, Approvers: []string{"a1", "a2", "a3"}}
 	var charged int
 	_, err := mofnRun(store, "r1", true, pol, fakeVerifiers("a1", "a2", "a3"), &charged)
-	var pend *PendingApproval
+	var pend *ApprovalPending
 	if !errors.As(err, &pend) {
 		t.Fatalf("first round err = %v, want a pause", err)
 	}

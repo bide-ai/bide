@@ -41,7 +41,7 @@ func TestChannel_OrderExactlyOnce(t *testing.T) {
 	store := memJournal()
 	ctx := context.Background()
 	for _, m := range []struct{ k, v string }{{"k1", "one"}, {"k2", "two"}, {"k3", "three"}} {
-		if err := Send(ctx, store, "r", "inbox", m.k, m.v); err != nil {
+		if err := store.Enqueue(ctx, "r", "inbox", m.k, m.v); err != nil {
 			t.Fatalf("Send %s: %v", m.k, err)
 		}
 	}
@@ -55,7 +55,7 @@ func TestChannel_OrderExactlyOnce(t *testing.T) {
 	a := mustNew(m, store, WithTools(tool))
 
 	_, err := a.Run(ctx, "r", UserText("hi"))
-	var awt *Awaiting
+	var awt *SignalPending
 	if !errors.As(err, &awt) {
 		t.Fatalf("err = %v, want *Awaiting after draining", err)
 	}
@@ -75,10 +75,10 @@ func TestChannel_OrderExactlyOnce(t *testing.T) {
 func TestSend_RedeliveryIsAtMostOnce(t *testing.T) {
 	store := memJournal()
 	ctx := context.Background()
-	if err := Send(ctx, store, "r", "inbox", "k1", "first"); err != nil {
+	if err := store.Enqueue(ctx, "r", "inbox", "k1", "first"); err != nil {
 		t.Fatal(err)
 	}
-	if err := Send(ctx, store, "r", "inbox", "k1", "second"); err != nil { // redelivery of the same key
+	if err := store.Enqueue(ctx, "r", "inbox", "k1", "second"); err != nil { // redelivery of the same key
 		t.Fatal(err)
 	}
 	recs, err := store.History(ctx, "r")
@@ -114,7 +114,7 @@ func TestChannel_EmptyPausesThenResumes(t *testing.T) {
 	a := mustNew(m, store, WithTools(tool))
 
 	_, err := a.Run(ctx, "r", UserText("hi")) // channel empty: pauses immediately
-	var awt *Awaiting
+	var awt *SignalPending
 	if !errors.As(err, &awt) {
 		t.Fatalf("err = %v, want *Awaiting on empty channel", err)
 	}
@@ -125,7 +125,7 @@ func TestChannel_EmptyPausesThenResumes(t *testing.T) {
 		t.Fatalf("consumed %v before any Send, want none", got)
 	}
 
-	if err := Send(ctx, store, "r", "inbox", "k1", "hello"); err != nil {
+	if err := store.Enqueue(ctx, "r", "inbox", "k1", "hello"); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 
@@ -136,7 +136,7 @@ func TestChannel_EmptyPausesThenResumes(t *testing.T) {
 	} // re-run: Receive now resolves, drains, then pauses again? no:
 	// after handling k1 the tool loops back, finds the channel drained, and pauses again. So the
 	// resolved-and-drained run pauses once more rather than completing. Assert it consumed k1.
-	var awt2 *Awaiting
+	var awt2 *SignalPending
 	if !errors.As(err, &awt2) {
 		t.Fatalf("resume err = %v, want *Awaiting (drained after consuming k1)", err)
 	}
@@ -152,7 +152,7 @@ func TestChannel_ResumeMidStream(t *testing.T) {
 	store := memJournal()
 	ctx := context.Background()
 	for _, m := range []struct{ k, v string }{{"k1", "one"}, {"k2", "two"}, {"k3", "three"}} {
-		if err := Send(ctx, store, "r", "inbox", m.k, m.v); err != nil {
+		if err := store.Enqueue(ctx, "r", "inbox", m.k, m.v); err != nil {
 			t.Fatalf("Send %s: %v", m.k, err)
 		}
 	}

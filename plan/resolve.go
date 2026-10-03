@@ -58,7 +58,7 @@ func (f *Flow[In, Out]) ResolveHalt(ctx context.Context, store *agent.Journal, r
 			return fmt.Errorf("plan: flow %q: resolve %q: the outcome %s is not a %s, node %q's output: %w (%w)", c.flowName, ref.Op.ID, b, typeName(c.byName[name].outType), name, err, agent.ErrConfig)
 		}
 	}
-	return agent.ResolveHaltRef(ctx, store, ref, out, opts...)
+	return agent.ResolveHalt(ctx, store, ref, out, opts...)
 }
 
 // decodeStrict decodes raw into a fresh value of type into as Run will decode a node's recorded

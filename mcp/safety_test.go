@@ -39,7 +39,7 @@ func TestWithApproval_PausesAndResumes(t *testing.T) {
 	m := agent.NewScriptedModel(agent.ToolTurn("c1", "transfer", `{"cents":500}`), agent.TextTurn("done"))
 	a := agenttest.MustNew(m, store, agent.WithTools(tools...))
 	_, err = a.Run(context.Background(), "r1", agent.UserText("send $5"))
-	var pend *agent.PendingApproval
+	var pend *agent.ApprovalPending
 	if !errors.As(err, &pend) || pend.ToolName != "transfer" || pend.ToolUseID != "c1" {
 		t.Fatalf("run err = %v, want *PendingApproval for transfer", err)
 	}
@@ -88,7 +88,7 @@ func TestWithApproval_Quorum(t *testing.T) {
 	store := agenttest.MemJournal()
 	m := agent.NewScriptedModel(agent.ToolTurn("c1", "transfer", `{"cents":500}`), agent.TextTurn("done"))
 	a := agenttest.MustNew(m, store, agent.WithTools(tools...), agent.WithApproverVerifiers(verifiers))
-	var pend *agent.PendingApproval
+	var pend *agent.ApprovalPending
 	for i, approver := range []string{"", "alice", "bob"} {
 		if approver != "" {
 			sig := []byte(approver + "|")

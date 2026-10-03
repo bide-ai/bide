@@ -97,10 +97,10 @@ func TestLoserLeads_WinnerNeverHaltsThroughWrapper(t *testing.T) {
 	var err1 error
 	go func() {
 		defer close(winnerDone)
-		got1, err1 = Step(context.WithValue(ctx, drvKey{}, 1), w, "r", "pay", pay)
+		got1, err1 = w.Step(context.WithValue(ctx, drvKey{}, 1), "r", "pay", pay)
 	}()
 	<-d1At
-	got2, err2 := Step(context.WithValue(ctx, drvKey{}, 2), w, "r", "pay", pay)
+	got2, err2 := w.Step(context.WithValue(ctx, drvKey{}, 2), "r", "pay", pay)
 	<-winnerDone
 
 	if err1 != nil || got1 != "paid" || runs != 1 {
@@ -137,7 +137,7 @@ func TestLoserJoinsFailedFlight_HaltContendedThroughWrapper(t *testing.T) {
 	}
 	winnerDone := make(chan error, 1)
 	go func() {
-		_, err := Step(ctx, w, "r", "pay", func(context.Context) (string, error) {
+		_, err := w.Step(ctx, "r", "pay", func(context.Context) (string, error) {
 			close(inBody)
 			<-release
 			return "", errors.New("provider down")
@@ -152,7 +152,7 @@ func TestLoserJoinsFailedFlight_HaltContendedThroughWrapper(t *testing.T) {
 		}
 		close(release)
 	}()
-	_, err2 := Step(ctx, w, "r", "pay", func(context.Context) (string, error) { return "", nil })
+	_, err2 := w.Step(ctx, "r", "pay", func(context.Context) (string, error) { return "", nil })
 	<-winnerDone
 	var halt *OutcomeUnknown
 	if !errors.As(err2, &halt) || halt.Cause != HaltContended {
@@ -217,10 +217,10 @@ func TestLoserLeads_LoserStartsNoCallAfterItsRead(t *testing.T) {
 	var err1 error
 	go func() {
 		defer close(winnerDone)
-		got1, err1 = Step(context.WithValue(ctx, drvKey{}, 1), w, "r", "pay", pay)
+		got1, err1 = w.Step(context.WithValue(ctx, drvKey{}, 1), "r", "pay", pay)
 	}()
 	<-d1At
-	_, _ = Step(context.WithValue(ctx, drvKey{}, 2), w, "r", "pay", pay)
+	_, _ = w.Step(context.WithValue(ctx, drvKey{}, 2), "r", "pay", pay)
 	close(d2Done)
 	<-winnerDone
 	if err1 != nil || got1 != "paid" || runs != 1 {

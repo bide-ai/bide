@@ -127,7 +127,7 @@ func TestResume_HaltsOnUnsafeWrite(t *testing.T) {
 	write := &countingTool{name: "charge", safety: Safety{}, calls: &calls} // not ReadOnly, not Idempotent
 	_, err := mustNew(&scriptModel{}, store, WithTools(write)).Run(ctx, "run3", UserText("hi"))
 
-	var halt *ResumeHalt
+	var halt *OutcomeUnknown
 	if !errors.As(err, &halt) {
 		t.Fatalf("err = %v, want *ResumeHalt", err)
 	}
@@ -143,7 +143,7 @@ func TestNamedStep_MemoizesAcrossResume(t *testing.T) {
 	var loads int
 
 	work := func(runID string, crashAfterLoad bool) (string, error) {
-		loaded, err := Step(context.Background(), store, runID, "load", func(context.Context) (string, error) {
+		loaded, err := store.Step(context.Background(), runID, "load", func(context.Context) (string, error) {
 			loads++
 			return "loaded", nil
 		})
@@ -153,7 +153,7 @@ func TestNamedStep_MemoizesAcrossResume(t *testing.T) {
 		if crashAfterLoad {
 			return "", errors.New("crash before finish")
 		}
-		return Step(context.Background(), store, runID, "finish", func(context.Context) (string, error) {
+		return store.Step(context.Background(), runID, "finish", func(context.Context) (string, error) {
 			return loaded + "-done", nil
 		})
 	}
@@ -220,7 +220,7 @@ func TestHITL_PausesForApprovalThenResumes(t *testing.T) {
 	m := &scriptModel{turns: [][]Emit{toolTurn("c1", "charge", `{}`), textTurn("done")}}
 	_, err := mustNew(m, store, WithTools(charge)).Run(ctx, "r1", UserText("pay"))
 
-	var pend *PendingApproval
+	var pend *ApprovalPending
 	if !errors.As(err, &pend) {
 		t.Fatalf("err = %v, want *PendingApproval", err)
 	}
@@ -603,7 +603,7 @@ func TestSubAgent_PropagatesHaltAndApproval(t *testing.T) {
 		}
 
 		_, err := parent.Run(ctx, "root", UserText("delegate"))
-		var halt *ResumeHalt
+		var halt *OutcomeUnknown
 		if !errors.As(err, &halt) {
 			t.Fatalf("parent Run err = %v, want *ResumeHalt propagated from sub-agent", err)
 		}
@@ -618,7 +618,7 @@ func TestSubAgent_PropagatesHaltAndApproval(t *testing.T) {
 		}
 
 		// Operator confirms the outcome out of band and resolves the halt in the SUB-run.
-		if err := ResolveHalt(ctx, store, subRunID, "s1", "charged (confirmed)", false); err != nil {
+		if err := ResolveHalt(ctx, store, HaltRef{RunID: subRunID, Op: OpRef{Kind: OpTool, ID: "s1"}, Cause: HaltCrashed}, Outcome{Result: "charged (confirmed)", IsError: false}); err != nil {
 			t.Fatal(err)
 		}
 		res, err := parent.Run(ctx, "root", UserText("delegate"))
@@ -657,7 +657,7 @@ func TestSubAgent_PropagatesHaltAndApproval(t *testing.T) {
 		)
 
 		_, err := parent.Run(ctx, "root", UserText("delegate"))
-		var pend *PendingApproval
+		var pend *ApprovalPending
 		if !errors.As(err, &pend) {
 			t.Fatalf("parent Run err = %v, want *PendingApproval propagated from sub-agent", err)
 		}

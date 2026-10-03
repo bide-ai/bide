@@ -32,8 +32,8 @@ func TestNotStarted_OnlyTheClaimantVoidsAnAttempt(t *testing.T) {
 				t.Fatal(err)
 			}
 			var entered, ran atomic.Int32
-			_, err = Step(ctx, store, "r1", "reserve", reserveFn(&entered, &ran))
-			var halt *ResumeHalt
+			_, err = store.Step(ctx, "r1", "reserve", reserveFn(&entered, &ran))
+			var halt *OutcomeUnknown
 			if !errors.As(err, &halt) || entered.Load() != 0 {
 				t.Fatalf("Step = %v with fn called %d times, want a ResumeHalt: the attempt was never recorded as not started by its claimant", err, entered.Load())
 			}
@@ -81,10 +81,10 @@ func TestStep_NotStartedIsRecordedOnAStoreThatChecksContext(t *testing.T) {
 	store := mustJournal(&ctxStore{MemStore: NewMemStore(), cancel: cancel})
 	var entered, ran atomic.Int32
 	reserve := reserveFn(&entered, &ran)
-	if _, err := Step(ctx, store, "r1", "reserve", reserve); !errors.Is(err, context.Canceled) {
+	if _, err := store.Step(ctx, "r1", "reserve", reserve); !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancelled step err = %v, want context.Canceled", err)
 	}
-	got, err := Step(context.Background(), store, "r1", "reserve", reserve)
+	got, err := store.Step(context.Background(), "r1", "reserve", reserve)
 	if err != nil || got != "reserved" || ran.Load() != 1 {
 		t.Fatalf("second attempt = (%q, %v) with fn run %d times, want (\"reserved\", nil) and exactly 1", got, err, ran.Load())
 	}
@@ -148,7 +148,7 @@ func TestResolveHalt_AgeRunsFromTheLiveAttempt(t *testing.T) {
 		Record{Kind: StepAttempt, ToolUseID: "c1", AttemptedAt: now.UnixMilli()}); err != nil || !won {
 		t.Fatalf("re-attempt claim = (%v, %v)", won, err)
 	}
-	err = ResolveHalt(ctx, store, "r1", "c1", "charged", false, WithMinHaltAge(time.Hour), WithClock(func() time.Time { return now }))
+	err = ResolveHalt(ctx, store, HaltRef{RunID: "r1", Op: OpRef{Kind: OpTool, ID: "c1"}, Cause: HaltCrashed}, Outcome{Result: "charged", IsError: false}, WithMinHaltAge(time.Hour), WithClock(func() time.Time { return now }))
 	var young *HaltTooYoung
 	if !errors.As(err, &young) {
 		t.Fatalf("ResolveHalt = %v, want *HaltTooYoung: the live attempt is moments old", err)
@@ -180,7 +180,7 @@ func TestTool_CrashInAReattemptHalts(t *testing.T) {
 		mustJournal(store.MemStore),
 		WithTools(charge),
 	).Run(context.Background(), "r1", UserText("pay"))
-	var halt *ResumeHalt
+	var halt *OutcomeUnknown
 	if !errors.As(err, &halt) || halt.Op.ID != "c1" || calls.Load() != 0 {
 		t.Fatalf("resume after a crash in the re-attempt = %v with %d charges, want *ResumeHalt for c1 and no charge", err, calls.Load())
 	}

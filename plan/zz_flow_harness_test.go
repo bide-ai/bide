@@ -421,7 +421,7 @@ func fRun(sub fSubject, sameProc [2]bool, ex *fExplorer, leased bool) (viol []fV
 			break
 		}
 		if !leased {
-			if rerr := agent.ResolveHaltRef(context.Background(), agenttest.MustJournal(h.mem), halt.Ref(), agent.Outcome{Result: val}, agent.WithoutLiveDriverCheck()); rerr != nil {
+			if rerr := agent.ResolveHalt(context.Background(), agenttest.MustJournal(h.mem), halt.Ref(), agent.Outcome{Result: val}, agent.WithoutLiveDriverCheck()); rerr != nil {
 				add("I7-resolve-failed", "ResolveHaltRef(%s): %v", halt.Op.ID, rerr)
 				break
 			}

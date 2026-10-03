@@ -53,11 +53,11 @@ func TestParallelTurn_PauseDoesNotCancelASibling(t *testing.T) {
 	m := &turnsModel{turns: [][][2]string{{{"a1", "ask"}, {"s1", "send"}}}}
 	a := mustNew(m, store, WithTools(ask, send))
 	_, err := a.Run(context.Background(), "r1", UserText("go"))
-	var intr *Interrupted
+	var intr *InterruptPending
 	if !errors.As(err, &intr) {
 		t.Fatalf("first run: %v, want *Interrupted", err)
 	}
-	if err := Resume(context.Background(), store, "r1", "confirm", "yes"); err != nil {
+	if err := store.AnswerInterrupt(context.Background(), "r1", "confirm", "yes"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := a.Run(context.Background(), "r1", UserText("go")); err != nil {

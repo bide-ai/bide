@@ -83,7 +83,7 @@ func TestTool_CrashBeforeItStartsStillHalts(t *testing.T) {
 	}
 	resume := &greedyModel{script: [][]Emit{textTurn("done")}}
 	_, err := mustNew(resume, mustJournal(store.MemStore), WithTools(charge)).Run(context.Background(), "r1", UserText("pay"))
-	var halt *ResumeHalt
+	var halt *OutcomeUnknown
 	if !errors.As(err, &halt) || halt.Op.ID != "c1" {
 		t.Fatalf("resume err = %v after %d charges, want *ResumeHalt for c1", err, calls.Load())
 	}
@@ -97,13 +97,13 @@ func TestStep_CancelledBeforeItStartsIsReattempted(t *testing.T) {
 	j := mustJournal(store)
 	var entered, ran atomic.Int32
 	reserve := reserveFn(&entered, &ran)
-	if _, err := Step(ctx, j, "r1", "reserve", reserve); !errors.Is(err, context.Canceled) {
+	if _, err := j.Step(ctx, "r1", "reserve", reserve); !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancelled step err = %v, want context.Canceled", err)
 	}
 	if n := entered.Load(); n != 0 {
 		t.Fatalf("fn was called %d times after the step was cancelled, want 0", n)
 	}
-	got, err := Step(context.Background(), mustJournal(store.MemStore), "r1", "reserve", reserve)
+	got, err := mustJournal(store.MemStore).Step(context.Background(), "r1", "reserve", reserve)
 	if err != nil || got != "reserved" || ran.Load() != 1 {
 		t.Fatalf("second attempt = (%q, %v) with fn run %d times, want (\"reserved\", nil) and exactly 1", got, err, ran.Load())
 	}
@@ -117,8 +117,8 @@ func TestStep_RetrySafeAfterNotStartedRuns(t *testing.T) {
 	j := mustJournal(store)
 	var entered, ran atomic.Int32
 	reserve := reserveFn(&entered, &ran)
-	_, _ = Step(ctx, j, "r1", "reserve", reserve)
-	got, err := Step(context.Background(), mustJournal(store.MemStore), "r1", "reserve", reserve, WithSafety(Safety{Idempotent: true}))
+	_, _ = j.Step(ctx, "r1", "reserve", reserve)
+	got, err := mustJournal(store.MemStore).Step(context.Background(), "r1", "reserve", reserve, WithSafety(Safety{Idempotent: true}))
 	if err != nil || got != "reserved" || ran.Load() != 1 {
 		t.Fatalf("retry-safe step after an attempt that never started = (%q, %v), fn run %d times; want (\"reserved\", nil) and exactly 1", got, err, ran.Load())
 	}
@@ -132,15 +132,15 @@ func TestStep_ReattemptIsClaimedOnce(t *testing.T) {
 	j := mustJournal(store)
 	var entered, ran atomic.Int32
 	reserve := reserveFn(&entered, &ran)
-	_, _ = Step(ctx, j, "r1", "reserve", reserve)
+	_, _ = j.Step(ctx, "r1", "reserve", reserve)
 
 	var wg sync.WaitGroup
 	for range 8 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_, err := Step(context.Background(), mustJournal(store.MemStore), "r1", "reserve", reserve)
-			var halt *ResumeHalt
+			_, err := mustJournal(store.MemStore).Step(context.Background(), "r1", "reserve", reserve)
+			var halt *OutcomeUnknown
 			if err != nil && !errors.As(err, &halt) {
 				t.Errorf("a racing re-attempt failed with %v, want the result or a ResumeHalt", err)
 			}
@@ -150,7 +150,7 @@ func TestStep_ReattemptIsClaimedOnce(t *testing.T) {
 	if n := ran.Load(); n != 1 {
 		t.Fatalf("fn ran %d times across racing re-attempts, want exactly 1", n)
 	}
-	if got, err := Step(context.Background(), mustJournal(store.MemStore), "r1", "reserve", reserve); err != nil || got != "reserved" {
+	if got, err := mustJournal(store.MemStore).Step(context.Background(), "r1", "reserve", reserve); err != nil || got != "reserved" {
 		t.Fatalf("the step after the race = (%q, %v), want its recorded result", got, err)
 	}
 }

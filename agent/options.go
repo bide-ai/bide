@@ -728,15 +728,15 @@ func WithClock(now func() time.Time) ClockOption { return clockOption(now) }
 func (a *Agent) runDefaults(ctx context.Context) context.Context {
 	if a.identity != nil {
 		if _, set := IdentityFrom(ctx); !set {
-			ctx = ContextWithIdentity(ctx, *a.identity)
+			ctx = contextWithIdentity(ctx, *a.identity)
 		}
 	}
 	if a.waker != nil && wakerFrom(ctx) == nil {
-		ctx = ContextWithWaker(ctx, a.waker)
+		ctx = contextWithWaker(ctx, a.waker)
 	}
 	if a.clock != nil {
 		if _, set := ctx.Value(clockKey{}).(func() time.Time); !set {
-			ctx = ContextWithClock(ctx, a.clock)
+			ctx = contextWithClock(ctx, a.clock)
 		}
 	}
 	return ctx

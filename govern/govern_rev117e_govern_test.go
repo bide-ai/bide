@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/govern"
 )
 
@@ -37,7 +38,7 @@ func TestRev117e_EmptyDigestAttestedFormLost(t *testing.T) {
 		}()
 		govern.EventTool(gov, govern.EventToolConfig{Name: "credit", Event: "credit", Attested: true})
 	}()
-	ctx := agent.ContextWithIdentity(context.Background(), agent.Identity{Actor: "a"})
+	ctx := agenttest.ContextWithIdentity(context.Background(), agent.Identity{Actor: "a"})
 	for _, tc := range []struct {
 		cfg      govern.EventToolConfig
 		attested bool

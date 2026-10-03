@@ -21,7 +21,7 @@ func TestWaker_SameNamedTimersInTwoSubRunsAreDistinct(t *testing.T) {
 		t0 := time.Unix(1_000_000, 0)
 		var resumed []string
 		w := NewMemWaker(func(_ context.Context, runID string) error { resumed = append(resumed, runID); return nil })
-		root := withRunContext(ContextWithWaker(ContextWithClock(context.Background(), func() time.Time { return t0 }), w), store, "root", "", false)
+		root := withRunContext(contextWithWaker(contextWithClock(context.Background(), func() time.Time { return t0 }), w), store, "root", "", false)
 		for i, sub := range []string{"a", "b"} {
 			ctx := withRunContext(root, store, SubRunID("root", sub), "", false)
 			if err := wait(ctx, time.Duration(i+1)*time.Hour); !IsPause(err) {

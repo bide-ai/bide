@@ -51,7 +51,7 @@ func TestRecover_SkipsCompletedRedrivesIncomplete(t *testing.T) {
 		func(context.Context, struct{}) (string, error) { return "charged", nil }, WithApproval(SingleApproval()))
 	paused := mustNew(approvalModel{}, store, WithTools(charge))
 	_, err := paused.Run(ctx, "paused1", UserText("hi"))
-	var pa *PendingApproval
+	var pa *ApprovalPending
 	if !errors.As(err, &pa) {
 		t.Fatalf("paused1 should await approval, got %v", err)
 	}
@@ -144,21 +144,21 @@ func TestRecover_WakerRebuild(t *testing.T) {
 	a := mustNew(sleepModel{}, store, WithTools(waitTool()))
 
 	// The run sleeps for an hour and pauses durably. Its wake time is journaled.
-	if _, err := a.Run(ContextWithClock(context.Background(), now), "sleeper", UserText("go")); !errorsIsSleeping(err) {
+	if _, err := a.Run(context.Background(), "sleeper", UserText("go"), WithClock(now)); !errorsIsSleeping(err) {
 		t.Fatalf("run should sleep, got %v", err)
 	}
 
 	// Crash: a brand-new MemWaker has an EMPTY timer set (the in-memory timers are lost).
 	var w *MemWaker
 	w = NewMemWaker(func(ctx context.Context, runID string) error {
-		_, err := a.Run(ContextWithWaker(ContextWithClock(ctx, now), w), runID, UserText("go"))
+		_, err := a.Run(ctx, runID, UserText("go"), WithClock(now), WithWaker(w))
 		return err
 	})
 
 	// Recover rebuilds the timer set: it re-drives the incomplete run with a Waker-bound
 	// resume, and Sleep re-registers the journaled wake on the fresh waker.
 	n, err := Recover(context.Background(), store, func(ctx context.Context, runID string, _ RunStart) error {
-		_, err := a.Run(ContextWithWaker(ContextWithClock(ctx, now), w), runID, UserText("go"))
+		_, err := a.Run(ctx, runID, UserText("go"), WithClock(now), WithWaker(w))
 		return err
 	})
 	if err != nil {

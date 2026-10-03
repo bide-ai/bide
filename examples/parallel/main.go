@@ -33,7 +33,7 @@ func main() {
 	// Each Task has a unique Name (its durable memoization key within the run) and a Fn
 	// returning a T. Here T is Check. Each task runs on a goroutine of its own; pass
 	// agent.WithMaxConcurrency(n) to cap how many run at once.
-	results, err := agent.Parallel(ctx, store, "screen-1", []agent.Task[Check]{
+	results, err := store.Parallel(ctx, "screen-1", []agent.Task[Check]{
 		{Name: "sanctions", Fn: func(_ context.Context) (Check, error) {
 			return Check{Name: "sanctions", Passed: true, Detail: "no OFAC match"}, nil
 		}},

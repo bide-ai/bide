@@ -315,7 +315,7 @@ func TestNestedStep_HaltResolvesUnderTheNodeKey(t *testing.T) {
 	b := New[int, int]("nested")
 	b.Step("a", func(ctx context.Context, n int) (int, error) {
 		bodies++
-		return agent.Step(ctx, mem, "r", "charge", func(context.Context) (int, error) {
+		return mem.Step(ctx, "r", "charge", func(context.Context) (int, error) {
 			charges++
 			if charges == 1 {
 				return 0, errors.New("connection reset after the charge")

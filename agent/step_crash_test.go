@@ -34,14 +34,14 @@ func TestStep_CrashAfterEffectDoesNotRepeatIt(t *testing.T) {
 	var reserved int
 	reserve := func(context.Context) (string, error) { reserved++; return "res-1", nil }
 
-	if _, err := Step(context.Background(), store, "order-42", "reserve", reserve); !errors.Is(err, errDied) {
+	if _, err := store.Step(context.Background(), "order-42", "reserve", reserve); !errors.Is(err, errDied) {
 		t.Fatalf("setup: %v", err)
 	}
-	_, err := Step(context.Background(), store, "order-42", "reserve", reserve) // resume
+	_, err := store.Step(context.Background(), "order-42", "reserve", reserve) // resume
 	if reserved != 1 {
 		t.Fatalf("reserved %d times across a crash and resume, want 1 (resume err = %v)", reserved, err)
 	}
-	var halt *ResumeHalt
+	var halt *OutcomeUnknown
 	if !errors.As(err, &halt) {
 		t.Fatalf("resume err = %v, want *ResumeHalt for the unconfirmed reservation", err)
 	}
@@ -54,11 +54,11 @@ func TestStep_HaltResolvedByResolveStepHalt(t *testing.T) {
 		store := mustJournal(&crashOnce{Store: NewMemStore(), crashName: "reserve"})
 		var reserved int
 		reserve := func(context.Context) (string, error) { reserved++; return "res-1", nil }
-		_, _ = Step(context.Background(), store, "order-42", "reserve", reserve)
-		if err := ResolveStepHalt(context.Background(), store, "order-42", "reserve", "res-1", failed, WithoutLiveDriverCheck()); err != nil { // the crash wrapper hides MemStore's Leaser; no driver is running
+		_, _ = store.Step(context.Background(), "order-42", "reserve", reserve)
+		if err := ResolveHalt(context.Background(), store, HaltRef{RunID: "order-42", Op: OpRef{Kind: OpStep, ID: "reserve"}, Cause: HaltCrashed}, Outcome{Result: "res-1", IsError: failed}, WithoutLiveDriverCheck()); err != nil { // the crash wrapper hides MemStore's Leaser; no driver is running
 			t.Fatal(err)
 		}
-		got, err := Step(context.Background(), store, "order-42", "reserve", reserve)
+		got, err := store.Step(context.Background(), "order-42", "reserve", reserve)
 		if reserved != 1 {
 			t.Fatalf("failed=%v: reserved %d times, want 1", failed, reserved)
 		}
@@ -77,8 +77,8 @@ func TestStep_RetrySafeStepReRunsAfterCrash(t *testing.T) {
 	var runs int
 	classify := func(context.Context) (string, error) { runs++; return "rush", nil }
 	ro := WithSafety(Safety{ReadOnly: true})
-	_, _ = Step(context.Background(), store, "order-42", "classify", classify, ro)
-	got, err := Step(context.Background(), store, "order-42", "classify", classify, ro)
+	_, _ = store.Step(context.Background(), "order-42", "classify", classify, ro)
+	got, err := store.Step(context.Background(), "order-42", "classify", classify, ro)
 	if err != nil || got != "rush" || runs != 2 {
 		t.Fatalf("got %q, %v after %d runs; want rush after 2", got, err, runs)
 	}

@@ -77,7 +77,7 @@ func TestConsistency_JournalAppendOnly(t *testing.T) {
 	ctx := context.Background()
 	store := agenttest.MemJournal()
 	add := func(name, v string) {
-		if _, err := agent.Step(ctx, store, "run", name, func(context.Context) (string, error) { return v, nil }, agent.WithSafety(agent.Safety{ReadOnly: true})); err != nil {
+		if _, err := store.Step(ctx, "run", name, func(context.Context) (string, error) { return v, nil }, agent.WithSafety(agent.Safety{ReadOnly: true})); err != nil {
 			t.Fatal(err)
 		}
 	}

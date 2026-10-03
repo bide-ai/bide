@@ -35,7 +35,7 @@ func TestQuorum_VoteMustNameItsSlotsVoter(t *testing.T) {
 	ctx := context.Background()
 	store := agent.NewMemStore()
 	j := agenttest.MustJournal(store)
-	if _, err := agent.Step(ctx, j, "run", govern.QuorumVoteStep("q", "bob"), func(context.Context) (govern.Vote, error) {
+	if _, err := j.Step(ctx, "run", govern.QuorumVoteStep("q", "bob"), func(context.Context) (govern.Vote, error) {
 		return govern.Vote{Voter: "alice", Decision: "approve"}, nil
 	}, agent.WithSafety(agent.Safety{ReadOnly: true})); err != nil {
 		t.Fatal(err)
@@ -69,7 +69,7 @@ func TestQuorum_RecordedTallyMustMatchTheVotes(t *testing.T) {
 		recorded := right
 		recorded.Votes = append([]govern.Vote(nil), votes...)
 		tc.edit(&recorded)
-		if _, err := agent.Step(ctx, j, "run", govern.QuorumTallyStep("q"), func(context.Context) (govern.QuorumResult, error) {
+		if _, err := j.Step(ctx, "run", govern.QuorumTallyStep("q"), func(context.Context) (govern.QuorumResult, error) {
 			return recorded, nil
 		}, agent.WithSafety(agent.Safety{ReadOnly: true})); err != nil {
 			t.Fatal(err)
@@ -90,7 +90,7 @@ func TestQuorum_EmptyRecordedVoteIsRefused(t *testing.T) {
 	ctx := context.Background()
 	store := agent.NewMemStore()
 	j := agenttest.MustJournal(store)
-	if _, err := agent.Step(ctx, j, "run", govern.QuorumVoteStep("q", "bob"), func(context.Context) (govern.Vote, error) {
+	if _, err := j.Step(ctx, "run", govern.QuorumVoteStep("q", "bob"), func(context.Context) (govern.Vote, error) {
 		return govern.Vote{}, nil
 	}, agent.WithSafety(agent.Safety{ReadOnly: true})); err != nil {
 		t.Fatal(err)
@@ -107,7 +107,7 @@ func TestQuorum_VoteMustNameItsSlotsVoterWhenAVoterFails(t *testing.T) {
 	ctx := context.Background()
 	store := agent.NewMemStore()
 	j := agenttest.MustJournal(store)
-	if _, err := agent.Step(ctx, j, "run", govern.QuorumVoteStep("q", "bob"), func(context.Context) (govern.Vote, error) {
+	if _, err := j.Step(ctx, "run", govern.QuorumVoteStep("q", "bob"), func(context.Context) (govern.Vote, error) {
 		return govern.Vote{Voter: "alice", Decision: "approve"}, nil
 	}, agent.WithSafety(agent.Safety{ReadOnly: true})); err != nil {
 		t.Fatal(err)

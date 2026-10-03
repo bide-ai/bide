@@ -63,7 +63,7 @@ func TestToolOutcomeUnknown_SiblingInFlightFinishes(t *testing.T) {
 		t.Fatalf("b's effect fired %d times; want 1: a lost answer must not cut off a sibling in flight", bFired.Load())
 	}
 	_, err = ag.Run(context.Background(), "r", agent.UserText("go"))
-	var halt *agent.ResumeHalt
+	var halt *agent.OutcomeUnknown
 	if !errors.As(err, &halt) || halt.Op.ID != "ca" {
 		t.Fatalf("resume = %v; want a halt on ca alone", err)
 	}

@@ -77,7 +77,7 @@ func TestMerkle_InclusionRoundTrip(t *testing.T) {
 func TestMerkle_JournalSelectiveDisclosure(t *testing.T) {
 	store := agenttest.MemJournal()
 	for i, v := range []string{"open-case", "charge-500", "email-receipt", "close-case"} {
-		if _, err := agent.Step(context.Background(), store, "run", fmt.Sprintf("s%d", i),
+		if _, err := store.Step(context.Background(), "run", fmt.Sprintf("s%d", i),
 			func(context.Context) (string, error) { return v, nil }, agent.WithSafety(agent.Safety{ReadOnly: true})); err != nil {
 			t.Fatal(err)
 		}

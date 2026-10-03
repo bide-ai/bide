@@ -117,7 +117,7 @@ func mofnRun(store *Journal, runID string, first bool, pol *ApprovalPolicy, veri
 
 func wantPending(t *testing.T, err error, want counts) {
 	t.Helper()
-	var pend *PendingApproval
+	var pend *ApprovalPending
 	if !errors.As(err, &pend) {
 		t.Fatalf("err = %v, want *PendingApproval", err)
 	}
@@ -335,7 +335,7 @@ func TestMofn_NilApprovalKeepsOneOfOne(t *testing.T) {
 	}
 
 	err := run(toolTurn("c1", "charge", `{}`), textTurn("done"))
-	var pend *PendingApproval
+	var pend *ApprovalPending
 	if !errors.As(err, &pend) || pend.Quorum != nil {
 		t.Fatalf("err = %v, want *PendingApproval with nil Quorum", err)
 	}

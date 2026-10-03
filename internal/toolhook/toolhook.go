@@ -22,6 +22,12 @@ type RollbackBinder interface {
 // package sets it in init; plan calls it so a flow refuses what an agent refuses.
 var CheckTool func(t any) error
 
+// WithIdentity binds the acting identity (actor, on behalf of whom, under what authority) to ctx
+// for the sub-run a tool wrapper starts, as a run's WithIdentity option binds a run's: the
+// delegation's sub-run acts as the delegate, on behalf of the parent, under the child grant. The
+// agent package sets it in init.
+var WithIdentity func(ctx context.Context, actor, onBehalfOf, authorityRef string) context.Context
+
 // protocol:toolcall begin WrongAuth
 
 // Unrecorded is an error a tool wrapper of this module returns for a call that must leave nothing

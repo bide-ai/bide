@@ -547,7 +547,7 @@ func cSubjects() []cSubject {
 			if rs {
 				opts = append(opts, agent.WithSafety(agent.Safety{Idempotent: true}))
 			}
-			return agent.Step(ctx, j, runID, "pay", p.fire, opts...)
+			return j.Step(ctx, runID, "pay", p.fire, opts...)
 		}
 	}
 	tool := func(rs bool) func(ctx context.Context, p *cProc, runID string) (string, error) {
@@ -651,7 +651,7 @@ func cRun(sub cSubject, topo, p2 int, ex *hExplorer, maxPre int) (viol []hViolat
 	sameHalted := false
 	if !p3.crashed.Load() {
 		sc.run(map[int]func(){4: drive(4, p3)})
-		var hl *agent.ResumeHalt
+		var hl *agent.OutcomeUnknown
 		sameHalted = errors.As(out[4].err, &hl)
 	}
 	sc.run(map[int]func(){5: drive(5, &cProc{h: h})})
@@ -708,7 +708,7 @@ func cRun(sub cSubject, topo, p2 int, ex *hExplorer, maxPre int) (viol []hViolat
 		}
 	}
 	final := out[5]
-	var halt *agent.ResumeHalt
+	var halt *agent.OutcomeUnknown
 	if errors.As(final.err, &halt) {
 		if sub.retrySafe {
 			add("I4-retrysafe-halts", "%v", final.err)

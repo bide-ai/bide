@@ -104,7 +104,7 @@ func TestVerifyQuorumCLI_DisclosedVotesMustBeTheRecordedOnes(t *testing.T) {
 	store := agenttest.MemJournal()
 	record := func(step string, v any) {
 		t.Helper()
-		if _, err := agent.Step(ctx, store, "run", step, func(context.Context) (any, error) { return v, nil }); err != nil {
+		if _, err := store.Step(ctx, "run", step, func(context.Context) (any, error) { return v, nil }); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -161,7 +161,7 @@ func TestVerifyQuorumCLI_OneVoterCountsOnce(t *testing.T) {
 	store := agenttest.MemJournal()
 	record := func(step string, v any) {
 		t.Helper()
-		if _, err := agent.Step(ctx, store, "run", step, func(context.Context) (any, error) { return v, nil }); err != nil {
+		if _, err := store.Step(ctx, "run", step, func(context.Context) (any, error) { return v, nil }); err != nil {
 			t.Fatal(err)
 		}
 	}

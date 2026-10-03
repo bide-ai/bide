@@ -53,7 +53,7 @@ func TestCall_ConnectionLostMidCallIsUnknownOutcome(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = agenttest.MustNew(script(), store, agent.WithTools(tools...)).Run(context.Background(), "r1", agent.UserText("send $5"))
-	var halt *agent.ResumeHalt
+	var halt *agent.OutcomeUnknown
 	if !errors.As(err, &halt) || halt.Op.ID != "c1" {
 		t.Fatalf("resume err = %v, want *ResumeHalt for c1", err)
 	}
@@ -153,7 +153,7 @@ func TestResume_RelabelledByTrustedServerStillHalts(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = agenttest.MustNew(agent.NewScriptedModel(agent.TextTurn("done")), store, agent.WithTools(tools...)).Run(context.Background(), "r1", agent.UserText("send $5"))
-	var halt *agent.ResumeHalt
+	var halt *agent.OutcomeUnknown
 	if !errors.As(err, &halt) || halt.Op.ID != "c1" {
 		t.Fatalf("resume err = %v after %d transfers, want *ResumeHalt for c1", err, transfers.Load())
 	}

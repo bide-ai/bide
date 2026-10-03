@@ -279,7 +279,7 @@ func TestDST_Flow_HaltThenResolveCompletes(t *testing.T) {
 	// Resolve out of band with ResolveHaltRef, as an operator confirming the effect
 	// landed would: it records the node's output. Then a fresh Run completes by replay
 	// without re-firing the increment (count stays 1).
-	if err := agent.ResolveHaltRef(context.Background(), mem, halt.Ref(), agent.Outcome{Result: 1}); err != nil {
+	if err := agent.ResolveHalt(context.Background(), mem, halt.Ref(), agent.Outcome{Result: 1}); err != nil {
 		t.Fatalf("ResolveHaltRef: %v", err)
 	}
 

@@ -27,8 +27,7 @@ func TestResolveHalt_MinHaltAge(t *testing.T) {
 	// Too soon: 30s after the attempt, 60s grace -> *HaltTooYoung, nothing recorded.
 	s := seed()
 	j := mustJournal(s)
-	err := ResolveHalt(ctx, j, "r", "c1", "charged", false,
-		WithMinHaltAge(60*time.Second), WithClock(func() time.Time { return base.Add(30 * time.Second) }))
+	err := ResolveHalt(ctx, j, HaltRef{RunID: "r", Op: OpRef{Kind: OpTool, ID: "c1"}, Cause: HaltCrashed}, Outcome{Result: "charged", IsError: false}, WithMinHaltAge(60*time.Second), WithClock(func() time.Time { return base.Add(30 * time.Second) }))
 	var young *HaltTooYoung
 	if !errors.As(err, &young) {
 		t.Fatalf("err = %v, want *HaltTooYoung", err)
@@ -39,8 +38,7 @@ func TestResolveHalt_MinHaltAge(t *testing.T) {
 
 	// Past the grace: 90s after the attempt -> resolves and records the result.
 	s = seed()
-	if err := ResolveHalt(ctx, j, "r", "c1", "charged", false,
-		WithMinHaltAge(60*time.Second), WithClock(func() time.Time { return base.Add(90 * time.Second) })); err != nil {
+	if err := ResolveHalt(ctx, j, HaltRef{RunID: "r", Op: OpRef{Kind: OpTool, ID: "c1"}, Cause: HaltCrashed}, Outcome{Result: "charged", IsError: false}, WithMinHaltAge(60*time.Second), WithClock(func() time.Time { return base.Add(90 * time.Second) })); err != nil {
 		t.Fatalf("resolve after grace: %v", err)
 	}
 	if h, _ := j.History(ctx, "r"); !hasResult(h, "c1") {
@@ -49,7 +47,7 @@ func TestResolveHalt_MinHaltAge(t *testing.T) {
 
 	// No attempt timestamp to measure against: fail closed rather than resolve blind.
 	bare := memJournal()
-	if err := ResolveHalt(ctx, bare, "r", "c1", "x", false, WithMinHaltAge(time.Second)); err == nil {
+	if err := ResolveHalt(ctx, bare, HaltRef{RunID: "r", Op: OpRef{Kind: OpTool, ID: "c1"}, Cause: HaltCrashed}, Outcome{Result: "x", IsError: false}, WithMinHaltAge(time.Second)); err == nil {
 		t.Fatal("min-halt-age with no attempt marker should error, not resolve")
 	}
 }
@@ -69,7 +67,7 @@ func TestResolveHalt_Evidence(t *testing.T) {
 	}
 
 	ev := map[string]string{"message_id": "msg_123", "source": "provider log"}
-	if err := ResolveHalt(ctx, s, "r", "c1", "sent", false, WithEvidence(ev)); err != nil {
+	if err := ResolveHalt(ctx, s, HaltRef{RunID: "r", Op: OpRef{Kind: OpTool, ID: "c1"}, Cause: HaltCrashed}, Outcome{Result: "sent", IsError: false}, WithEvidence(ev)); err != nil {
 		t.Fatalf("reconciled resolve: %v", err)
 	}
 	rec := resultFor(t, s, "r", "c1")
@@ -82,7 +80,7 @@ func TestResolveHalt_Evidence(t *testing.T) {
 	}
 
 	// A plain resolve is a clean outcome: no reconciliation annotation.
-	if err := ResolveHalt(ctx, s, "r", "c2", "sent", false); err != nil {
+	if err := ResolveHalt(ctx, s, HaltRef{RunID: "r", Op: OpRef{Kind: OpTool, ID: "c2"}, Cause: HaltCrashed}, Outcome{Result: "sent", IsError: false}); err != nil {
 		t.Fatalf("plain resolve: %v", err)
 	}
 	rec2 := resultFor(t, s, "r", "c2")
@@ -108,7 +106,7 @@ func TestResumeHalt_AttemptedAt(t *testing.T) {
 	write := &countingTool{name: "charge", safety: Safety{}, calls: &calls} // not retry-safe
 	_, err := mustNew(&scriptModel{}, store, WithTools(write)).Run(ctx, "r", UserText("hi"))
 
-	var halt *ResumeHalt
+	var halt *OutcomeUnknown
 	if !errors.As(err, &halt) {
 		t.Fatalf("err = %v, want *ResumeHalt", err)
 	}

@@ -87,11 +87,6 @@ func (e *InterruptPending) Error() string {
 
 func (*InterruptPending) pause() {}
 
-// Interrupted is the former name of InterruptPending.
-//
-// Deprecated: transitional; renamed by the 1.0 rewrite. Use InterruptPending.
-type Interrupted = InterruptPending
-
 // Interrupt pauses the current run to request typed human input, identified by name. Call
 // it from inside a tool (the agent loop supplies the run context). On first encounter it
 // returns the zero T and an *InterruptPending error that propagates out of Run, pausing the
@@ -132,7 +127,7 @@ func Interrupt[T any](ctx context.Context, name string, prompt any) (T, error) {
 // point name (see Interrupt); then re-invoke Run with the pause's RootRunID to continue.
 // It is idempotent: the first value for a (runID, name) wins. The value survives a crash:
 // it is a journaled step.
-func AnswerInterrupt[T any](ctx context.Context, d *Journal, runID, name string, value T) error {
+func (d *Journal) AnswerInterrupt[T any](ctx context.Context, runID, name string, value T) error {
 	if runID == "" {
 		return fmt.Errorf("AnswerInterrupt: empty runID: %w", ErrConfig)
 	}
@@ -144,13 +139,6 @@ func AnswerInterrupt[T any](ctx context.Context, d *Journal, runID, name string,
 		return Record{Kind: StepValue, Result: b}, nil
 	})
 	return err
-}
-
-// Resume is the former name of AnswerInterrupt.
-//
-// Deprecated: transitional; renamed by the 1.0 rewrite. Use AnswerInterrupt.
-func Resume[T any](ctx context.Context, d *Journal, runID, key string, value T) error {
-	return AnswerInterrupt(ctx, d, runID, key, value)
 }
 
 func interruptStep(name string) string { return "interrupt:" + name }
@@ -176,21 +164,13 @@ func (e *TimerPending) Error() string {
 
 func (*TimerPending) pause() {}
 
-// Sleeping is the former name of TimerPending.
-//
-// Deprecated: transitional; renamed by the 1.0 rewrite. Use TimerPending.
-type Sleeping = TimerPending
-
 type clockKey struct{}
 
-// ContextWithClock binds a clock to ctx for the durable timers of the run driven with it to read
+// contextWithClock binds a clock to ctx for the durable timers of the run driven with it to read
 // "now". Deployments leave it unset (defaulting to time.Now); tests inject a controllable clock to
 // advance time deterministically. A clock bound here takes precedence over the agent's WithClock
 // option.
-//
-// Deprecated: transitional; the 1.0 rewrite removes it. The Run API takes the clock as a run
-// option (WithClock); until then, an agent-wide clock is the WithClock option of New.
-func ContextWithClock(ctx context.Context, now func() time.Time) context.Context {
+func contextWithClock(ctx context.Context, now func() time.Time) context.Context {
 	return context.WithValue(ctx, clockKey{}, now)
 }
 
@@ -209,7 +189,7 @@ func clockFrom(ctx context.Context) func() time.Time {
 // to the same absolute instant rather than restarting the clock. Use distinct names for distinct
 // timers. Sleep requires a retry-safe tool (Safety.ReadOnly or Idempotent), like Interrupt.
 //
-// With a Waker bound (the WithWaker option, or ContextWithWaker), Sleep schedules the wake before it pauses. If the Waker fails,
+// With a Waker bound (the WithWaker option), Sleep schedules the wake before it pauses. If the Waker fails,
 // Sleep returns an error wrapping ErrStorage instead of pausing: a pause with no wake scheduled
 // could sleep forever. The run then fails and its tool call records nothing (the memoized wake
 // time aside), so re-driving the run (RecoverLoop does, on its next pass) reaches this Sleep
@@ -289,14 +269,11 @@ type Waker interface {
 
 type wakerKey struct{}
 
-// ContextWithWaker binds a Waker to ctx so a durable Sleep of the run driven with it registers its
+// contextWithWaker binds a Waker to ctx so a durable Sleep of the run driven with it registers its
 // wake automatically. With no Waker bound (here or with the agent's WithWaker option), Sleep still
 // pauses durably; the deployment is then responsible for re-invoking the run at or after the wake
 // time on its own schedule. A Waker bound here takes precedence over the agent's.
-//
-// Deprecated: transitional; the 1.0 rewrite removes it. The Run API takes the Waker as a run
-// option (WithWaker); until then, an agent-wide Waker is the WithWaker option of New.
-func ContextWithWaker(ctx context.Context, w Waker) context.Context {
+func contextWithWaker(ctx context.Context, w Waker) context.Context {
 	return context.WithValue(ctx, wakerKey{}, w)
 }
 
@@ -466,11 +443,6 @@ func (e *SignalPending) Error() string {
 
 func (*SignalPending) pause() {}
 
-// Awaiting is the former name of SignalPending.
-//
-// Deprecated: transitional; renamed by the 1.0 rewrite. Use SignalPending.
-type Awaiting = SignalPending
-
 // Await blocks the current run until a single-shot signal named `name` is delivered, then
 // returns its payload. Call it from inside a tool (the agent loop supplies the run context).
 // On first encounter, with no signal recorded, it returns the zero T and a *SignalPending
@@ -515,7 +487,7 @@ func Await[T any](ctx context.Context, name string) (T, error) {
 //
 // Signal only records the payload. After delivering, re-invoke Run with the pause's RootRunID
 // to resume the awaiting run: directly, or via a Waker scheduled at the current time.
-func Signal[T any](ctx context.Context, d *Journal, runID, name string, payload T) error {
+func (d *Journal) Signal[T any](ctx context.Context, runID, name string, payload T) error {
 	if runID == "" {
 		return fmt.Errorf("Signal: empty runID: %w", ErrConfig)
 	}

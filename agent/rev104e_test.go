@@ -61,7 +61,7 @@ func rev104eResolverRace(t *testing.T, through func(s Store) Store) {
 		})
 	}
 	later := func() time.Time { return time.Now().Add(time.Hour) }
-	err := ResolveHaltRef(ctx, mustJournal(rw), HaltRef{RunID: "r", Op: OpRef{Kind: OpTool, ID: "c1", ToolName: "charge"}, Cause: HaltCrashed},
+	err := ResolveHalt(ctx, mustJournal(rw), HaltRef{RunID: "r", Op: OpRef{Kind: OpTool, ID: "c1", ToolName: "charge"}, Cause: HaltCrashed},
 		Outcome{Result: "charged"}, WithMinHaltAge(time.Minute), WithClock(later))
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
@@ -102,7 +102,7 @@ func TestRev104e_TwoRememberedIdsThroughWrapper(t *testing.T) {
 		}
 	}
 	st.failNoCommitPrefix = "attempt:not-started:"
-	if _, err := Step(c1, mustJournal(&hookWrap{Store: st}), "r", "pay", pay); err == nil {
+	if _, err := mustJournal(&hookWrap{Store: st}).Step(c1, "r", "pay", pay); err == nil {
 		t.Fatal("drive 1: want the cancellation")
 	}
 	st.afterInsert = nil
@@ -114,9 +114,9 @@ func TestRev104e_TwoRememberedIdsThroughWrapper(t *testing.T) {
 	// (attempt 0 holds drive 1's marker, so drive 2's fresh claim loses to it; the claimNext
 	// loop reads it as live and halts.)
 	st.failNoCommitPrefix = "attempt:not-started:"
-	_, err := Step(ctx, mustJournal(&hookWrap{Store: st}), "r", "pay", pay)
+	_, err := mustJournal(&hookWrap{Store: st}).Step(ctx, "r", "pay", pay)
 	t.Logf("drive 2: %v", err)
-	got, err := Step(ctx, mustJournal(&hookWrap{Store: st}), "r", "pay", pay)
+	got, err := mustJournal(&hookWrap{Store: st}).Step(ctx, "r", "pay", pay)
 	if err != nil || got != "paid" || runs != 1 {
 		t.Fatalf("drive 3 = %q, %v, ran %d; want paid, nil, once", got, err, runs)
 	}
@@ -260,7 +260,7 @@ func TestRev104e_WrapperStepLoserLeadsFlight(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		_, wErr = Step(context.WithValue(ctx, who{}, "W"), jw, "r", "pay", func(context.Context) (string, error) {
+		_, wErr = jw.Step(context.WithValue(ctx, who{}, "W"), "r", "pay", func(context.Context) (string, error) {
 			ranW.Add(1)
 			return "paid", nil
 		})
@@ -269,7 +269,7 @@ func TestRev104e_WrapperStepLoserLeadsFlight(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		_, lErr = Step(context.WithValue(ctx, who{}, "L"), jl, "r", "pay", func(context.Context) (string, error) {
+		_, lErr = jl.Step(context.WithValue(ctx, who{}, "L"), "r", "pay", func(context.Context) (string, error) {
 			return "loser-ran", nil
 		})
 	}()

@@ -121,7 +121,7 @@ func TestProveRecord_RejectsSTHFromDifferentRun(t *testing.T) {
 	j := agenttest.MustJournal(otherStore)
 	for _, v := range []string{"x", "y", "z"} {
 		vv := v
-		if _, err := agent.Step(ctx, j, "other", vv, func(context.Context) (string, error) { return vv, nil }, agent.WithSafety(agent.Safety{ReadOnly: true})); err != nil {
+		if _, err := j.Step(ctx, "other", vv, func(context.Context) (string, error) { return vv, nil }, agent.WithSafety(agent.Safety{ReadOnly: true})); err != nil {
 			t.Fatalf("other journal: %v", err)
 		}
 	}

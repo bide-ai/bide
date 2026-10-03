@@ -356,11 +356,8 @@ func (t *attenuatingSubAgent) BindRollback(ctx context.Context, subRunID string)
 	default:
 		return nil, fmt.Errorf("audit: delegation %q (sub-run %s): its journaled grant %q was minted from none of the %d grant(s) bound to the rollback; bind the grant it was minted from (WithGrant, or WithRollbackGrants beside the acting grant): %w", t.name, subRunID, child.Grant.ID, len(parents), ErrNotVerified)
 	}
-	ctx = agent.ContextWithIdentity(ctx, agent.Identity{
-		Actor:        t.name,
-		OnBehalfOf:   child.Grant.Issuer, // the parent's subject: CheckAttenuation required it
-		AuthorityRef: child.Grant.Digest(),
-	})
+	// on behalf of the parent's subject (the child grant's issuer, as CheckAttenuation required)
+	ctx = toolhook.WithIdentity(ctx, t.name, child.Grant.Issuer, child.Grant.Digest())
 	return bindDelegated(ctx, *child, signer), nil
 }
 
@@ -477,11 +474,7 @@ func (t *attenuatingSubAgent) Call(ctx context.Context, args json.RawMessage) (j
 
 	// Rebind the sub-run: it acts as this sub-agent, on behalf of the parent, under the child grant.
 	// Propagate the child grant so a deeper delegation attenuates from it in turn.
-	ctx = agent.ContextWithIdentity(ctx, agent.Identity{
-		Actor:        t.name,
-		OnBehalfOf:   parentSG.Grant.Subject,
-		AuthorityRef: childSG.Grant.Digest(),
-	})
+	ctx = toolhook.WithIdentity(ctx, t.name, parentSG.Grant.Subject, childSG.Grant.Digest())
 	ctx = bindDelegated(ctx, childSG, signer)
 
 	return t.Tool.Call(ctx, args)

@@ -52,8 +52,8 @@ func TestAdv117b_ResumedDelegationWithFreshGrantIDsCannotRollBack(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	gctx := WithGrant(agent.ContextWithIdentity(ctx, agent.Identity{Actor: "desk"}), rootSG, signer)
-	_, err = parent.Run(gctx, "trip", agent.UserText("go"), agent.WithSaga())
+	gctx := WithGrant(ctx, rootSG, signer)
+	_, err = parent.Run(gctx, "trip", agent.UserText("go"), agent.WithSaga(), agent.WithIdentity(agent.Identity{Actor: "desk"}))
 	var pend *agent.ApprovalPending
 	if !errors.As(err, &pend) {
 		t.Fatalf("first drive: %v, want the sub-run's approval pause", err)
@@ -61,7 +61,7 @@ func TestAdv117b_ResumedDelegationWithFreshGrantIDsCannotRollBack(t *testing.T) 
 	if err := agent.Approve(ctx, store, pend.RunID, pend.ToolUseID, true); err != nil {
 		t.Fatal(err)
 	}
-	_, err = parent.Run(gctx, "trip", agent.UserText("go"), agent.WithSaga())
+	_, err = parent.Run(gctx, "trip", agent.UserText("go"), agent.WithSaga(), agent.WithIdentity(agent.Identity{Actor: "desk"}))
 	var aborted *agent.SagaAborted
 	if !errors.As(err, &aborted) {
 		t.Fatalf("resume: %v, want *SagaAborted", err)

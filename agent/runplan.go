@@ -183,13 +183,13 @@ func (a *Agent) openPlan(ctx context.Context, runID string, d *driveSpec, recs [
 		if pr := start.Principal; pr != nil {
 			run.OnBehalfOf, run.AuthorityRef = pr.OnBehalfOf, pr.AuthorityRef
 		}
-		ctx = ContextWithIdentity(ctx, run)
+		ctx = contextWithIdentity(ctx, run)
 	}
 	if d.cfg.waker != nil {
-		ctx = ContextWithWaker(ctx, d.cfg.waker)
+		ctx = contextWithWaker(ctx, d.cfg.waker)
 	}
 	if d.cfg.clock != nil {
-		ctx = ContextWithClock(ctx, d.cfg.clock)
+		ctx = contextWithClock(ctx, d.cfg.clock)
 	}
 	return ctx, p, wrote, nil
 }

@@ -732,7 +732,7 @@ func TestP11_ApprovalsUnderPostQuantumKeys(t *testing.T) {
 		agent.WithApproverVerifiers(resolver(approvers)),
 	)
 	_, err := a.Run(ctx, "gate", agent.UserText("pay"))
-	var pend *agent.PendingApproval
+	var pend *agent.ApprovalPending
 	if !errors.As(err, &pend) {
 		t.Fatalf("err = %v, want a pause", err)
 	}

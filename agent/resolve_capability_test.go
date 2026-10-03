@@ -23,14 +23,14 @@ func TestResolveHaltRef_FindsTheLeaserThroughAJournal(t *testing.T) {
 		t.Fatal(ok, err)
 	}
 	ref := HaltRef{RunID: "r1", Op: OpRef{Kind: OpTool, ID: "c1"}, Cause: HaltCrashed}
-	err := ResolveHaltRef(ctx, j, ref, Outcome{Result: "charged"})
+	err := ResolveHalt(ctx, j, ref, Outcome{Result: "charged"})
 	if _, ok := errors.AsType[*HaltInFlight](err); !ok {
 		t.Fatalf("resolving through a Journal under a live lease = %v; want *HaltInFlight", err)
 	}
 	if err := mem.ReleaseLease(ctx, "r1", "worker-1"); err != nil {
 		t.Fatal(err)
 	}
-	if err := ResolveHaltRef(ctx, j, ref, Outcome{Result: "charged"}); err != nil {
+	if err := ResolveHalt(ctx, j, ref, Outcome{Result: "charged"}); err != nil {
 		t.Fatalf("resolving once the lease is released = %v", err)
 	}
 
@@ -38,10 +38,10 @@ func TestResolveHaltRef_FindsTheLeaserThroughAJournal(t *testing.T) {
 	if won, _, err := ClaimAttempt(ctx, hidden, "r1", toolAttemptStep("c1"), Record{Kind: StepAttempt, ToolUseID: "c1", AttemptedAt: 1}); err != nil || !won {
 		t.Fatal(won, err)
 	}
-	if err := ResolveHaltRef(ctx, hidden, ref, Outcome{Result: "x"}); !errors.Is(err, ErrConfig) {
+	if err := ResolveHalt(ctx, hidden, ref, Outcome{Result: "x"}); !errors.Is(err, ErrConfig) {
 		t.Fatalf("a Journal over a store with no Leaser, no minimum age = %v; want ErrConfig", err)
 	}
-	if err := ResolveHaltRef(ctx, hidden, ref, Outcome{Result: "x"}, WithMinHaltAge(time.Second)); err != nil {
+	if err := ResolveHalt(ctx, hidden, ref, Outcome{Result: "x"}, WithMinHaltAge(time.Second)); err != nil {
 		t.Fatalf("with an old enough attempt = %v", err)
 	}
 }
@@ -66,7 +66,7 @@ func TestResolveHaltRef_ClaimsTheNextAttemptUnlessOptedOut(t *testing.T) {
 				t.Fatal(won, err)
 			}
 			ref := HaltRef{RunID: "r1", Op: OpRef{Kind: OpTool, ID: "c1"}, Cause: HaltCrashed}
-			if err := ResolveHaltRef(ctx, d, ref, Outcome{Result: "charged"}, tc.opts...); err != nil {
+			if err := ResolveHalt(ctx, d, ref, Outcome{Result: "charged"}, tc.opts...); err != nil {
 				t.Fatal(err)
 			}
 			rec, ok, err := d.Get(ctx, "r1", retryAttemptStep(toolAttemptStep("c1"), 1))

@@ -56,7 +56,7 @@ func TestCancelledToolCall_IsNotRecordedAsItsOutcome(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("resume hung")
 	}
-	var halt *ResumeHalt
+	var halt *OutcomeUnknown
 	if !errors.As(resumeErr, &halt) || halt.Op.ID != "c1" {
 		t.Fatalf("resume err = %v, want ResumeHalt for c1 (charged %d times)", resumeErr, charged)
 	}
@@ -107,7 +107,7 @@ func TestCancelledToolCall_ResumeDoesNotChargeTwice(t *testing.T) {
 	if charged != 1 {
 		t.Fatalf("charged %d times, want 1 (resume err: %v)", charged, err)
 	}
-	var halt *ResumeHalt
+	var halt *OutcomeUnknown
 	if !errors.As(err, &halt) || halt.Op.ID != "c1" {
 		t.Fatalf("resume err = %v, want ResumeHalt for c1", err)
 	}

@@ -84,7 +84,7 @@ func main() {
 
 	// The human answers. AnswerInterrupt records the typed decision durably (first value wins),
 	// against the journal the pause lives in (itr.RunID).
-	if err := agent.AnswerInterrupt(ctx, store, itr.RunID, itr.Name, decision{Approved: true, Note: "looks good"}); err != nil {
+	if err := store.AnswerInterrupt(ctx, itr.RunID, itr.Name, decision{Approved: true, Note: "looks good"}); err != nil {
 		log.Fatalf("answer: %v", err)
 	}
 	fmt.Println("recorded human decision; resuming the run")

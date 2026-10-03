@@ -26,7 +26,7 @@ func TestSQLite_SignalRedeliveryDedupsAcrossProcesses(t *testing.T) {
 		t.Fatal(err)
 	}
 	j := agenttest.MustJournal(s1)
-	if err := agent.Signal(ctx, j, runID, "webhook", "first"); err != nil {
+	if err := j.Signal(ctx, runID, "webhook", "first"); err != nil {
 		t.Fatalf("Signal (process 1): %v", err)
 	}
 	s1.Close()
@@ -39,7 +39,7 @@ func TestSQLite_SignalRedeliveryDedupsAcrossProcesses(t *testing.T) {
 	}
 	j2 := agenttest.MustJournal(s2)
 	defer s2.Close()
-	if err := agent.Signal(ctx, j2, runID, "webhook", "second"); err != nil {
+	if err := j2.Signal(ctx, runID, "webhook", "second"); err != nil {
 		t.Fatalf("Signal (process 2): %v", err)
 	}
 

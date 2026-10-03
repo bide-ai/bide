@@ -37,7 +37,7 @@ func TestR90_WakeFailureCutsOffSiblingInFlight(t *testing.T) {
 		return "sent", nil
 	})
 	turn := multiToolTurn([2]string{"c1", "nap"}, [2]string{"c2", "send"})
-	ctx := ContextWithWaker(context.Background(), &failingWaker{fail: 1})
+	ctx := contextWithWaker(context.Background(), &failingWaker{fail: 1})
 	_, err := mustNew(&greedyModel{script: [][]Emit{turn, textTurn("done")}}, store, WithTools(nap, send)).Run(ctx, "r1", UserText("go"))
 	if !errors.Is(err, ErrStorage) {
 		t.Fatalf("first drive = %v; want the wake failure (ErrStorage)", err)
@@ -87,7 +87,7 @@ func TestR90_LiveToolClaimIsClassifiedCrashed(t *testing.T) {
 	}
 	// The reconciler does what the docs show: resolve halt.Ref(). The store cannot say whether a
 	// driver is live (no Leaser), so without a minimum age the resolution must be refused.
-	rerr := ResolveHaltRef(ctx, store.proc(), halt.Ref(), Outcome{Result: "not charged", IsError: true})
+	rerr := ResolveHalt(ctx, store.proc(), halt.Ref(), Outcome{Result: "not charged", IsError: true})
 	close(release)
 	if aerr := <-errA; aerr != nil {
 		t.Logf("driver A: %v", aerr)
@@ -111,7 +111,7 @@ func TestR90_LiveStepClaimIsClassifiedCrashed(t *testing.T) {
 	}
 	resA := make(chan res, 1)
 	go func() {
-		v, e := Step(ctx, store.proc(), "r1", "charge", func(context.Context) (string, error) {
+		v, e := store.proc().Step(ctx, "r1", "charge", func(context.Context) (string, error) {
 			close(inEffect)
 			<-release
 			return "charged:txn-1", nil
@@ -119,13 +119,13 @@ func TestR90_LiveStepClaimIsClassifiedCrashed(t *testing.T) {
 		resA <- res{v, e}
 	}()
 	<-inEffect
-	_, err := Step(ctx, store.proc(), "r1", "charge", func(context.Context) (string, error) { return "second", nil })
+	_, err := store.proc().Step(ctx, "r1", "charge", func(context.Context) (string, error) { return "second", nil })
 	halt, ok := errors.AsType[*OutcomeUnknown](err)
 	if !ok {
 		close(release)
 		t.Fatalf("second driver = %v; want *OutcomeUnknown", err)
 	}
-	rerr := ResolveHaltRef(ctx, store.proc(), halt.Ref(), Outcome{Result: "operator-guess"})
+	rerr := ResolveHalt(ctx, store.proc(), halt.Ref(), Outcome{Result: "operator-guess"})
 	close(release)
 	a := <-resA
 	if rerr == nil {
@@ -145,7 +145,7 @@ func TestR90_JoinedInterruptThenHaltKeepsTheHalt(t *testing.T) {
 		d, runID, _ := runContext(ctx)
 		_, e1 := Interrupt[string](ctx, "q", nil)
 		_, _, _ = ClaimAttempt(ctx, d, runID, stepAttemptStep("inner"), Record{Kind: StepAttempt, ToolUseID: "inner", AttemptedAt: 1})
-		_, e2 := Step(ctx, d, runID, "inner", func(context.Context) (int, error) { return 1, nil })
+		_, e2 := d.Step(ctx, runID, "inner", func(context.Context) (int, error) { return 1, nil })
 		return "", errors.Join(e1, e2)
 	})
 	_, err := mustNew(
@@ -153,7 +153,7 @@ func TestR90_JoinedInterruptThenHaltKeepsTheHalt(t *testing.T) {
 		store,
 		WithTools(mixed),
 	).Run(context.Background(), "r1", UserText("go"))
-	var halt *ResumeHalt
+	var halt *OutcomeUnknown
 	if !errors.As(err, &halt) || errors.Is(err, ErrConfig) {
 		t.Errorf("run = %v; want the inner halt propagated (as on main), not ErrConfig", err)
 	}
@@ -167,13 +167,13 @@ func TestR90_SecondConflictingResolutionIsSilent(t *testing.T) {
 		t.Fatal(won, err)
 	}
 	ref := HaltRef{RunID: "r1", Op: OpRef{Kind: OpTool, ID: "c1"}, Cause: HaltCrashed}
-	if err := ResolveHaltRef(ctx, store, ref, Outcome{Result: "charged"}); err != nil {
+	if err := ResolveHalt(ctx, store, ref, Outcome{Result: "charged"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := ResolveHaltRef(ctx, store, ref, Outcome{Result: "charged"}); err != nil {
+	if err := ResolveHalt(ctx, store, ref, Outcome{Result: "charged"}); err != nil {
 		t.Errorf("an identical repeat = %v; want nil", err)
 	}
-	err := ResolveHaltRef(ctx, store, ref, Outcome{Result: "refunded", IsError: true})
+	err := ResolveHalt(ctx, store, ref, Outcome{Result: "refunded", IsError: true})
 	rec, _ := hasStep(t, store, "r1", ToolResultStep("c1"))
 	if string(rec.Result) != `"charged"` || rec.IsError {
 		t.Fatalf("the first resolution was overwritten: %s", rec.Result)
@@ -202,7 +202,7 @@ func TestResolveHaltRef_RefusesWhileTheRunIsLeased(t *testing.T) {
 		t.Fatal(ok, err)
 	}
 	ref := HaltRef{RunID: sub, Op: OpRef{Kind: OpTool, ID: "c1"}, Cause: HaltCrashed}
-	err := ResolveHaltRef(ctx, j, ref, Outcome{Result: "charged"})
+	err := ResolveHalt(ctx, j, ref, Outcome{Result: "charged"})
 	if inFlight, ok := errors.AsType[*HaltInFlight](err); !ok || inFlight.RootRunID != "r1" {
 		t.Fatalf("resolving under a live lease = %v; want *HaltInFlight on r1", err)
 	}
@@ -212,7 +212,7 @@ func TestResolveHaltRef_RefusesWhileTheRunIsLeased(t *testing.T) {
 	if err := store.ReleaseLease(ctx, "r1", "worker-1"); err != nil {
 		t.Fatal(err)
 	}
-	if err := ResolveHaltRef(ctx, j, ref, Outcome{Result: "charged"}); err != nil {
+	if err := ResolveHalt(ctx, j, ref, Outcome{Result: "charged"}); err != nil {
 		t.Fatalf("resolving once the lease is released = %v", err)
 	}
 	if ok, err := store.AcquireLease(ctx, "r1", "worker-2", time.Minute); err != nil || !ok {
@@ -228,18 +228,18 @@ func TestResolveHaltRef_WithoutALeaserNeedsAnAgeOrAnOptOut(t *testing.T) {
 		t.Fatal(won, err)
 	}
 	ref := HaltRef{RunID: "r1", Op: OpRef{Kind: OpTool, ID: "c1"}, Cause: HaltCrashed}
-	if err := ResolveHaltRef(ctx, store, ref, Outcome{Result: "x"}); !errors.Is(err, ErrConfig) {
+	if err := ResolveHalt(ctx, store, ref, Outcome{Result: "x"}); !errors.Is(err, ErrConfig) {
 		t.Fatalf("no Leaser, no minimum age = %v; want ErrConfig", err)
 	}
-	if err := ResolveHalt(ctx, store, "r1", "c1", "x", false); !errors.Is(err, ErrConfig) {
+	if err := ResolveHalt(ctx, store, HaltRef{RunID: "r1", Op: OpRef{Kind: OpTool, ID: "c1"}, Cause: HaltCrashed}, Outcome{Result: "x", IsError: false}); !errors.Is(err, ErrConfig) {
 		t.Fatalf("the ResolveHalt wrapper, no Leaser, no minimum age = %v; want ErrConfig (the same rule)", err)
 	}
-	if err := ResolveHaltRef(ctx, store, ref, Outcome{Result: "x"}, WithMinHaltAge(time.Second)); err != nil {
+	if err := ResolveHalt(ctx, store, ref, Outcome{Result: "x"}, WithMinHaltAge(time.Second)); err != nil {
 		t.Fatalf("with an old enough attempt = %v", err)
 	}
 	store2 := newXprocStore().proc()
 	_, _, _ = ClaimAttempt(ctx, store2, "r1", toolAttemptStep("c1"), Record{Kind: StepAttempt, ToolUseID: "c1", AttemptedAt: time.Now().UnixMilli()})
-	if err := ResolveHaltRef(ctx, store2, ref, Outcome{Result: "x"}, WithoutLiveDriverCheck()); err != nil {
+	if err := ResolveHalt(ctx, store2, ref, Outcome{Result: "x"}, WithoutLiveDriverCheck()); err != nil {
 		t.Fatalf("with the explicit opt-out = %v", err)
 	}
 }
@@ -272,20 +272,20 @@ func TestR90_ResolveWrappersSameRecords(t *testing.T) {
 		return s
 	}
 	a, b := seed(toolAttemptStep("c1"), "c1"), seed(toolAttemptStep("c1"), "c1")
-	if err := ResolveHalt(ctx, a, "r1", "c1", map[string]int{"x": 1}, true, WithEvidence("ev")); err != nil {
+	if err := ResolveHalt(ctx, a, HaltRef{RunID: "r1", Op: OpRef{Kind: OpTool, ID: "c1"}, Cause: HaltCrashed}, Outcome{Result: map[string]int{"x": 1}, IsError: true}, WithEvidence("ev")); err != nil {
 		t.Fatal(err)
 	}
-	if err := ResolveHaltRef(ctx, b, HaltRef{RunID: "r1", Op: OpRef{Kind: OpTool, ID: "c1"}, Cause: HaltCrashed}, Outcome{Result: map[string]int{"x": 1}, IsError: true, Evidence: "ev"}); err != nil {
+	if err := ResolveHalt(ctx, b, HaltRef{RunID: "r1", Op: OpRef{Kind: OpTool, ID: "c1"}, Cause: HaltCrashed}, Outcome{Result: map[string]int{"x": 1}, IsError: true, Evidence: "ev"}); err != nil {
 		t.Fatal(err)
 	}
 	if x, y := proj(a, ToolResultStep("c1")), proj(b, ToolResultStep("c1")); !jsonEq(x, y) {
 		t.Errorf("tool: %+v vs %+v", x, y)
 	}
 	a, b = seed(stepAttemptStep("s"), "s"), seed(stepAttemptStep("s"), "s")
-	if err := ResolveStepHalt(ctx, a, "r1", "s", "v", false); err != nil {
+	if err := ResolveHalt(ctx, a, HaltRef{RunID: "r1", Op: OpRef{Kind: OpStep, ID: "s"}, Cause: HaltCrashed}, Outcome{Result: "v", IsError: false}); err != nil {
 		t.Fatal(err)
 	}
-	if err := ResolveHaltRef(ctx, b, HaltRef{RunID: "r1", Op: OpRef{Kind: OpStep, ID: "s"}, Cause: HaltCrashed}, Outcome{Result: "v"}); err != nil {
+	if err := ResolveHalt(ctx, b, HaltRef{RunID: "r1", Op: OpRef{Kind: OpStep, ID: "s"}, Cause: HaltCrashed}, Outcome{Result: "v"}); err != nil {
 		t.Fatal(err)
 	}
 	if x, y := proj(a, "s"), proj(b, "s"); !jsonEq(x, y) || x.Name == "" {
@@ -307,7 +307,7 @@ func TestWaker_FailureBesideAPauseFailsTheRun(t *testing.T) {
 		return "", err
 	})
 	turn := multiToolTurn([2]string{"c1", "ask"}, [2]string{"c2", "nap"})
-	ctx := ContextWithWaker(context.Background(), &failingWaker{fail: 1})
+	ctx := contextWithWaker(context.Background(), &failingWaker{fail: 1})
 	_, err := mustNew(
 		&greedyModel{script: [][]Emit{turn, textTurn("done")}},
 		memJournal(),

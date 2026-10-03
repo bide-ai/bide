@@ -109,7 +109,7 @@ func TestSagaHaltsOnHeldClaimWithoutResult(t *testing.T) {
 	t.Logf("drive 1: %v\ndrive 2: %v\ndrive 3: %v; fired %d undone %d", err1, err2, err3, c.fired, c.undone)
 	r3Dump(t, m, "r")
 	var ab *agent.SagaAborted
-	var halt *agent.ResumeHalt
+	var halt *agent.OutcomeUnknown
 	if c.fired != 1 || !errors.As(err3, &ab) || !errors.As(ab.CompensateErr, &halt) {
 		t.Fatalf("want the rollback to halt on the call that fired with no result")
 	}

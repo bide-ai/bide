@@ -66,7 +66,7 @@ func TestMofn_SignatureBindsTheCall(t *testing.T) {
 			t.Fatal(err)
 		}
 		_, err := mofnRun(store, "r1", false, pol, vf, &charged)
-		var pend *PendingApproval
+		var pend *ApprovalPending
 		if !errors.As(err, &pend) || pend.Quorum.Approved != 0 || charged != 0 {
 			t.Fatalf("%s: a signature over another subject counted (err=%v, charged=%d)", name, err, charged)
 		}

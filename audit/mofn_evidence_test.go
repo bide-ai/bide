@@ -137,7 +137,7 @@ func (g *gate) sth(t *testing.T, ts int64) audit.SignedTreeHead {
 
 func wantPaused(t *testing.T, err error, approved int) {
 	t.Helper()
-	var pend *agent.PendingApproval
+	var pend *agent.ApprovalPending
 	if !errors.As(err, &pend) || pend.Quorum == nil || pend.Quorum.Approved != approved {
 		t.Fatalf("err = %v, want an m-of-n pause at %d approved", err, approved)
 	}

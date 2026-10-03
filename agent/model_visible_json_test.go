@@ -100,7 +100,7 @@ func TestModelVisibleJSON_NotHTMLEscaped(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		if err := ResolveHalt(ctx, store, "r", "c1", "charged <id=7> & sent", false); err != nil {
+		if err := ResolveHalt(ctx, store, HaltRef{RunID: "r", Op: OpRef{Kind: OpTool, ID: "c1"}, Cause: HaltCrashed}, Outcome{Result: "charged <id=7> & sent", IsError: false}); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := mustNew(m, store, WithTools(tool)).Run(ctx, "r", UserText("go")); err != nil {

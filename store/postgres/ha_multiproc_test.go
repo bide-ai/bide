@@ -148,7 +148,7 @@ func (w *haDriver) resume(ctx context.Context, runID string, _ agent.RunStart) e
 	}
 	w.event(runID, "", "resume")
 	err := w.drive(ctx, runID)
-	var halt *agent.ResumeHalt
+	var halt *agent.OutcomeUnknown
 	switch {
 	case errors.Is(context.Cause(ctx), agent.ErrLeaseLost):
 		w.event(runID, "", "lost")
@@ -163,7 +163,7 @@ func (w *haDriver) resume(ctx context.Context, runID string, _ agent.RunStart) e
 }
 
 func (w *haDriver) drive(ctx context.Context, runID string) error {
-	if _, err := agent.Step(ctx, agenttest.MustJournal(w.s), runID, "reserve", func(context.Context) (string, error) {
+	if _, err := agenttest.MustJournal(w.s).Step(ctx, runID, "reserve", func(context.Context) (string, error) {
 		return w.effect(runID, "reserve"), nil
 	}); err != nil {
 		return err

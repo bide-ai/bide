@@ -55,7 +55,7 @@ func TestWaker_ScheduleFailureFailsTheRunAndRecordsNothing(t *testing.T) {
 		t.Run(fmt.Sprintf("saga=%v", saga), func(t *testing.T) {
 			store := memJournal()
 			w := &failingWaker{fail: 1}
-			ctx := ContextWithWaker(context.Background(), w)
+			ctx := contextWithWaker(context.Background(), w)
 			drive := func() error {
 				a := mustNew(
 					&greedyModel{script: [][]Emit{toolTurn("c1", "nap", `{}`), textTurn("done")}},
@@ -122,7 +122,7 @@ func TestRecoverLoop_RetriesAFailedWakeSchedule(t *testing.T) {
 	var mu sync.Mutex
 	var reported []error
 	resume := func(ctx context.Context, runID string, _ RunStart) error {
-		_, err := newAgent().Run(ContextWithWaker(ctx, w), runID, UserText("rest"))
+		_, err := newAgent().Run(ctx, runID, UserText("rest"), WithWaker(w))
 		return err
 	}
 	done := make(chan error, 1)
@@ -244,7 +244,7 @@ func TestResolveHaltRef_ToolHalt(t *testing.T) {
 	if halt.Ref() != want {
 		t.Fatalf("Ref = %+v; want %+v", halt.Ref(), want)
 	}
-	if err := ResolveHaltRef(ctx, store, halt.Ref(), Outcome{Result: "charged", Evidence: map[string]string{"charge": "ch_1"}}); err != nil {
+	if err := ResolveHalt(ctx, store, halt.Ref(), Outcome{Result: "charged", Evidence: map[string]string{"charge": "ch_1"}}); err != nil {
 		t.Fatal(err)
 	}
 	rec, ok := hasStep(t, store, "r1", ToolResultStep("c1"))
@@ -272,10 +272,10 @@ func TestResolveHaltRef_StepHalt(t *testing.T) {
 	lost := func(context.Context) (string, error) { return "", errors.New("connection dropped") }
 	halted := func(name string) *OutcomeUnknown {
 		t.Helper()
-		if _, err := Step(ctx, store, "r1", name, lost); err == nil {
+		if _, err := store.Step(ctx, "r1", name, lost); err == nil {
 			t.Fatal("the failing step succeeded")
 		}
-		_, err := Step(ctx, store, "r1", name, lost)
+		_, err := store.Step(ctx, "r1", name, lost)
 		halt, ok := errors.AsType[*OutcomeUnknown](err)
 		if !ok {
 			t.Fatalf("resumed step = %v; want *OutcomeUnknown", err)
@@ -289,21 +289,21 @@ func TestResolveHaltRef_StepHalt(t *testing.T) {
 	ok := halted("reserve")
 	asTool := ok.Ref()
 	asTool.Op.Kind = OpTool
-	if err := ResolveHaltRef(ctx, store, asTool, Outcome{Result: "x"}); !errors.Is(err, ErrConfig) {
+	if err := ResolveHalt(ctx, store, asTool, Outcome{Result: "x"}); !errors.Is(err, ErrConfig) {
 		t.Fatalf("resolving a step's halt as a tool call = %v; want ErrConfig", err)
 	}
-	if err := ResolveHaltRef(ctx, store, ok.Ref(), Outcome{Result: "R-9"}); err != nil {
+	if err := ResolveHalt(ctx, store, ok.Ref(), Outcome{Result: "R-9"}); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := Step(ctx, store, "r1", "reserve", lost); err != nil || got != "R-9" {
+	if got, err := store.Step(ctx, "r1", "reserve", lost); err != nil || got != "R-9" {
 		t.Fatalf("step after resolution = %q, %v; want the recorded value", got, err)
 	}
 
 	failed := halted("pay")
-	if err := ResolveHaltRef(ctx, store, failed.Ref(), Outcome{Result: "declined", IsError: true}); err != nil {
+	if err := ResolveHalt(ctx, store, failed.Ref(), Outcome{Result: "declined", IsError: true}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Step(ctx, store, "r1", "pay", lost); !errors.Is(err, ErrTool) {
+	if _, err := store.Step(ctx, "r1", "pay", lost); !errors.Is(err, ErrTool) {
 		t.Fatalf("step resolved as failed = %v; want ErrTool", err)
 	}
 }
@@ -327,7 +327,7 @@ func TestResolveHaltRef_RefusesAnIncompleteRef(t *testing.T) {
 		"reserved step":  {ref: HaltRef{RunID: "r1", Op: OpRef{Kind: OpStep, ID: "run:complete"}, Cause: HaltCrashed}},
 		"evidence twice": {ref: good, out: Outcome{Evidence: 1}, opts: []ResolveOption{WithEvidence(2)}},
 	} {
-		if err := ResolveHaltRef(ctx, store, c.ref, c.out, c.opts...); !errors.Is(err, ErrConfig) {
+		if err := ResolveHalt(ctx, store, c.ref, c.out, c.opts...); !errors.Is(err, ErrConfig) {
 			t.Errorf("%s: ResolveHaltRef = %v; want ErrConfig", name, err)
 		}
 	}
@@ -365,12 +365,12 @@ func TestResolveHaltRef_ContendedHaltIsNotResolvedWhileYoung(t *testing.T) {
 		}
 	}
 
-	if err := ResolveHaltRef(ctx, store, contended, out); !errors.Is(err, ErrConfig) {
+	if err := ResolveHalt(ctx, store, contended, out); !errors.Is(err, ErrConfig) {
 		t.Fatalf("contended halt without WithMinHaltAge = %v; want ErrConfig", err)
 	}
 	unresolved("without a minimum age")
 	young := t0.Add(10 * time.Second)
-	err = ResolveHaltRef(ctx, store, contended, out, WithMinHaltAge(time.Minute), WithClock(func() time.Time { return young }))
+	err = ResolveHalt(ctx, store, contended, out, WithMinHaltAge(time.Minute), WithClock(func() time.Time { return young }))
 	if tooYoung, ok := errors.AsType[*HaltTooYoung](err); !ok || tooYoung.Age != 10*time.Second {
 		t.Fatalf("young contended halt = %v; want *HaltTooYoung aged 10s (from the live attempt, not the voided one)", err)
 	}
@@ -380,12 +380,12 @@ func TestResolveHaltRef_ContendedHaltIsNotResolvedWhileYoung(t *testing.T) {
 	if won, _, err := ClaimAttempt(ctx, store, "r1", toolAttemptStep("c2"), Record{Kind: StepAttempt, ToolUseID: "c2", AttemptedAt: t0.UnixMilli()}); err != nil || !won {
 		t.Fatal(won, err)
 	}
-	if err := ResolveHaltRef(ctx, store, HaltRef{RunID: "r1", Op: OpRef{Kind: OpTool, ID: "c2"}, Cause: HaltCrashed}, out); err != nil {
+	if err := ResolveHalt(ctx, store, HaltRef{RunID: "r1", Op: OpRef{Kind: OpTool, ID: "c2"}, Cause: HaltCrashed}, out); err != nil {
 		t.Fatalf("crashed halt = %v; want it resolved", err)
 	}
 
 	old := t0.Add(2 * time.Minute)
-	if err := ResolveHaltRef(ctx, store, contended, out, WithMinHaltAge(time.Minute), WithClock(func() time.Time { return old })); err != nil {
+	if err := ResolveHalt(ctx, store, contended, out, WithMinHaltAge(time.Minute), WithClock(func() time.Time { return old })); err != nil {
 		t.Fatalf("aged contended halt = %v; want it resolved", err)
 	}
 	if rec, ok := hasStep(t, store, "r1", ToolResultStep("c1")); !ok || string(rec.Result) != `"charged"` {
@@ -400,12 +400,12 @@ func TestVerbs_WrappersWriteTheSameRecords(t *testing.T) {
 	type verb struct{ newer, older func(*Journal) error }
 	for name, v := range map[string]verb{
 		"AnswerInterrupt/Resume": {
-			func(d *Journal) error { return AnswerInterrupt(ctx, d, "r1", "q", 42) },
-			func(d *Journal) error { return Resume(ctx, d, "r1", "q", 42) },
+			func(d *Journal) error { return d.AnswerInterrupt(ctx, "r1", "q", 42) },
+			func(d *Journal) error { return d.AnswerInterrupt(ctx, "r1", "q", 42) },
 		},
 		"Enqueue/Send": {
-			func(d *Journal) error { return Enqueue(ctx, d, "r1", "jobs", "k1", "body") },
-			func(d *Journal) error { return Send(ctx, d, "r1", "jobs", "k1", "body") },
+			func(d *Journal) error { return d.Enqueue(ctx, "r1", "jobs", "k1", "body") },
+			func(d *Journal) error { return d.Enqueue(ctx, "r1", "jobs", "k1", "body") },
 		},
 	} {
 		a, b := NewMemStore(), NewMemStore()
@@ -442,8 +442,8 @@ func TestVerbs_WrappersWriteTheSameRecords(t *testing.T) {
 	}
 	for name, err := range map[string]error{
 		"SubmitDecision":  SubmitDecision(ctx, memJournal(), Decision{ToolUseID: "c1", ApproverID: "a", Signature: []byte("s")}),
-		"AnswerInterrupt": AnswerInterrupt(ctx, memJournal(), "", "q", 1),
-		"Enqueue":         Enqueue(ctx, memJournal(), "", "jobs", "k", 1),
+		"AnswerInterrupt": memJournal().AnswerInterrupt(ctx, "", "q", 1),
+		"Enqueue":         memJournal().Enqueue(ctx, "", "jobs", "k", 1),
 	} {
 		if !errors.Is(err, ErrConfig) || err.Error()[:len(name)] != name {
 			t.Errorf("%s with no runID = %v; want ErrConfig naming %s", name, err, name)
@@ -471,7 +471,7 @@ func TestAnswerInterrupt_ResumesThePause(t *testing.T) {
 	if !ok || p.Name != "how-many" || p.Prompt != "how many?" || p.Paused() != (RunRef{RunID: "r1", RootRunID: "r1"}) {
 		t.Fatalf("run = %v; want *InterruptPending at how-many for r1", err)
 	}
-	if err := AnswerInterrupt(ctx, store, p.RunID, p.Name, 3); err != nil {
+	if err := store.AnswerInterrupt(ctx, p.RunID, p.Name, 3); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := mustNew(&greedyModel{script: [][]Emit{textTurn("done")}}, store, WithTools(ask)).Run(ctx, p.RootRunID, UserText("go")); err != nil {

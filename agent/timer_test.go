@@ -46,13 +46,13 @@ func waitTool() Tool {
 func TestSleep_PausesAndResumes(t *testing.T) {
 	var clk int64 = 1000 // seconds since epoch, controllable
 	now := func() time.Time { return time.Unix(atomic.LoadInt64(&clk), 0) }
-	ctx := ContextWithClock(context.Background(), now)
+	ctx := contextWithClock(context.Background(), now)
 
 	a := mustNew(sleepModel{}, memJournal(), WithTools(waitTool()))
 
 	// First run: the wait tool sleeps, so the run pauses with *Sleeping at now+1h.
 	_, err := a.Run(ctx, "r1", UserText("go"))
-	var slp *Sleeping
+	var slp *TimerPending
 	if !errors.As(err, &slp) {
 		t.Fatalf("expected *Sleeping, got %v", err)
 	}
@@ -91,11 +91,11 @@ func TestMemWaker_FiresDueRun(t *testing.T) {
 
 	var w *MemWaker
 	w = NewMemWaker(func(ctx context.Context, runID string) error {
-		rctx := ContextWithWaker(ContextWithClock(ctx, now), w) // resumed run can reschedule if it sleeps again
+		rctx := contextWithWaker(contextWithClock(ctx, now), w) // resumed run can reschedule if it sleeps again
 		_, err := a.Run(rctx, runID, UserText("go"))
 		return err
 	})
-	ctx := ContextWithWaker(ContextWithClock(context.Background(), now), w)
+	ctx := contextWithWaker(contextWithClock(context.Background(), now), w)
 
 	// First run pauses and registers a wake with the waker.
 	if _, err := a.Run(ctx, "r1", UserText("go")); !errorsIsSleeping(err) {
@@ -114,7 +114,7 @@ func TestMemWaker_FiresDueRun(t *testing.T) {
 		t.Fatalf("waker should resume exactly one run, fired %d err %v", n, err)
 	}
 	// The resumed run completed: a replay now returns the final answer with no pause.
-	res, err := a.Run(ContextWithClock(context.Background(), now), "r1", UserText("go"))
+	res, err := a.Run(context.Background(), "r1", UserText("go"), WithClock(now))
 	var msg Message
 	if res != nil {
 		msg = res.Message
@@ -125,6 +125,6 @@ func TestMemWaker_FiresDueRun(t *testing.T) {
 }
 
 func errorsIsSleeping(err error) bool {
-	var slp *Sleeping
+	var slp *TimerPending
 	return errors.As(err, &slp)
 }

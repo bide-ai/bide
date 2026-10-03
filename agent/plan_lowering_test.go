@@ -18,7 +18,7 @@ func TestPlanPrefixesAreReserved(t *testing.T) {
 		if !IsReservedStepName(name) {
 			t.Errorf("%q is not reserved", name)
 		}
-		if _, err := Step(context.Background(), memJournal(), "r", name, func(context.Context) (int, error) { return 1, nil }); !errors.Is(err, ErrConfig) {
+		if _, err := memJournal().Step(context.Background(), "r", name, func(context.Context) (int, error) { return 1, nil }); !errors.Is(err, ErrConfig) {
 			t.Errorf("Step(%q): err = %v, want ErrConfig", name, err)
 		}
 	}
@@ -165,7 +165,7 @@ func TestResolveHaltRef_RefusesAnOperationWithNoLiveAttempt(t *testing.T) {
 		}
 	}
 	for _, op := range []OpRef{{Kind: OpTool, ID: "never"}, {Kind: OpStep, ID: "never"}, {Kind: OpStep, ID: "voided"}, {Kind: OpStep, ID: "node:a"}} {
-		err := ResolveHaltRef(ctx, m, HaltRef{RunID: "r", Op: op, Cause: HaltCrashed}, Outcome{Result: 1})
+		err := ResolveHalt(ctx, m, HaltRef{RunID: "r", Op: op, Cause: HaltCrashed}, Outcome{Result: 1})
 		if !errors.Is(err, ErrNoLiveAttempt) || !errors.Is(err, ErrConfig) {
 			t.Errorf("ResolveHaltRef(%+v): err = %v, want ErrNoLiveAttempt", op, err)
 		}
@@ -230,17 +230,17 @@ func TestEmptyStepNameIsRefused(t *testing.T) {
 	m := memJournal()
 	ran := 0
 	fn := func(context.Context) (int, error) { ran++; return 1, nil }
-	if _, err := Step(ctx, m, "r", "", fn); !errors.Is(err, ErrConfig) {
+	if _, err := m.Step(ctx, "r", "", fn); !errors.Is(err, ErrConfig) {
 		t.Errorf("Step(\"\"): %v, want ErrConfig", err)
 	}
 	inNode := context.WithValue(ctx, planScopeKey{}, planScope{runID: "r", node: "node:a"})
-	if _, err := Step(inNode, m, "r", "", fn); !errors.Is(err, ErrConfig) {
+	if _, err := m.Step(inNode, "r", "", fn); !errors.Is(err, ErrConfig) {
 		t.Errorf("Step(\"\") in a node: %v, want ErrConfig", err)
 	}
-	if _, err := Parallel(ctx, m, "r", []Task[int]{{Name: "", Fn: fn}}); !errors.Is(err, ErrConfig) {
+	if _, err := m.Parallel(ctx, "r", []Task[int]{{Name: "", Fn: fn}}); !errors.Is(err, ErrConfig) {
 		t.Errorf("Parallel with an empty task name: %v, want ErrConfig", err)
 	}
-	if err := ResolveHaltRef(ctx, m, HaltRef{RunID: "r", Op: OpRef{Kind: OpStep, ID: ""}, Cause: HaltCrashed}, Outcome{Result: 1}); !errors.Is(err, ErrConfig) {
+	if err := ResolveHalt(ctx, m, HaltRef{RunID: "r", Op: OpRef{Kind: OpStep, ID: ""}, Cause: HaltCrashed}, Outcome{Result: 1}); !errors.Is(err, ErrConfig) {
 		t.Errorf("ResolveHaltRef of an empty step: %v, want ErrConfig", err)
 	}
 	if ran != 0 {
@@ -281,7 +281,7 @@ func TestFlowInputWithoutCanonicalJSONIsRefused(t *testing.T) {
 func TestOneJSONRule_Escaping(t *testing.T) {
 	ctx := context.Background()
 	m := memJournal()
-	if _, err := Step(ctx, m, "r", "s", func(context.Context) (string, error) { return "a<b & c>d", nil }, WithSafety(Safety{ReadOnly: true})); err != nil {
+	if _, err := m.Step(ctx, "r", "s", func(context.Context) (string, error) { return "a<b & c>d", nil }, WithSafety(Safety{ReadOnly: true})); err != nil {
 		t.Fatal(err)
 	}
 	rec, ok, err := m.Get(ctx, "r", "s")
@@ -304,10 +304,10 @@ func TestOneJSONRule_Escaping(t *testing.T) {
 		t.Fatalf("the escaped outcome is stored as %s, want the escape kept", got.Result)
 	}
 	ref := HaltRef{RunID: "r", Op: OpRef{Kind: OpStep, ID: "t"}, Cause: HaltCrashed}
-	if err := ResolveHaltRef(ctx, m, ref, Outcome{Result: "a<b"}); err != nil {
+	if err := ResolveHalt(ctx, m, ref, Outcome{Result: "a<b"}); err != nil {
 		t.Fatalf("resolving the recorded outcome again: %v, want nil", err)
 	}
-	if err := ResolveHaltRef(ctx, m, ref, Outcome{Result: "a>b"}); !errors.Is(err, ErrAlreadyResolved) {
+	if err := ResolveHalt(ctx, m, ref, Outcome{Result: "a>b"}); !errors.Is(err, ErrAlreadyResolved) {
 		t.Fatalf("resolving another outcome: %v, want ErrAlreadyResolved", err)
 	}
 }
@@ -339,13 +339,13 @@ func TestOneJSONRule_EngineValuesUnescaped(t *testing.T) {
 	ctx := context.Background()
 	m := memJournal()
 	const v = "a<b & c>d"
-	if err := AnswerInterrupt(ctx, m, "r", "q", v); err != nil {
+	if err := m.AnswerInterrupt(ctx, "r", "q", v); err != nil {
 		t.Fatal(err)
 	}
-	if err := Signal(ctx, m, "r", "s", v); err != nil {
+	if err := m.Signal(ctx, "r", "s", v); err != nil {
 		t.Fatal(err)
 	}
-	if err := Enqueue(ctx, m, "r", "c", "k", v); err != nil {
+	if err := m.Enqueue(ctx, "r", "c", "k", v); err != nil {
 		t.Fatal(err)
 	}
 	for _, key := range []string{interruptStep("q"), signalStep("s"), chanStep("c", "k")} {

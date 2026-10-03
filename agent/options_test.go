@@ -151,18 +151,18 @@ func TestOptions_OtherScopesValidate(t *testing.T) {
 	ctx := context.Background()
 	store := memJournal()
 	task := []Task[int]{{Name: "t", Fn: func(context.Context) (int, error) { return 1, nil }}}
-	if _, err := Parallel(ctx, store, "r", task, nil); !errors.Is(err, ErrConfig) {
+	if _, err := store.Parallel(ctx, "r", task, nil); !errors.Is(err, ErrConfig) {
 		t.Errorf("Parallel(nil option) = %v, want ErrConfig", err)
 	}
-	if _, err := Parallel(ctx, store, "r", task, WithMaxConcurrency(-1)); !errors.Is(err, ErrConfig) {
+	if _, err := store.Parallel(ctx, "r", task, WithMaxConcurrency(-1)); !errors.Is(err, ErrConfig) {
 		t.Errorf("Parallel(WithMaxConcurrency(-1)) = %v, want ErrConfig", err)
 	}
-	if _, err := Step(ctx, store, "r", "s", func(context.Context) (int, error) { return 1, nil }, nil); !errors.Is(err, ErrConfig) {
+	if _, err := store.Step(ctx, "r", "s", func(context.Context) (int, error) { return 1, nil }, nil); !errors.Is(err, ErrConfig) {
 		t.Errorf("Step(nil option) = %v, want ErrConfig", err)
 	}
 	ref := HaltRef{RunID: "r", Op: OpRef{Kind: OpTool, ID: "c1", ToolName: "t"}}
 	for name, opt := range map[string]ResolveOption{"nil": nil, "nil clock": WithClock(nil)} {
-		if err := ResolveHaltRef(ctx, store, ref, Outcome{Result: "x"}, opt); !errors.Is(err, ErrConfig) {
+		if err := ResolveHalt(ctx, store, ref, Outcome{Result: "x"}, opt); !errors.Is(err, ErrConfig) {
 			t.Errorf("ResolveHaltRef(%s) = %v, want ErrConfig", name, err)
 		}
 	}
@@ -416,7 +416,7 @@ func TestPrecedence_RunBeatsAgentBeatsDefault(t *testing.T) {
 	}
 
 	// The run's own values win.
-	ctx := ContextWithClock(ContextWithWaker(ContextWithIdentity(context.Background(), runID), runW), func() time.Time { return runT })
+	ctx := contextWithClock(contextWithWaker(contextWithIdentity(context.Background(), runID), runW), func() time.Time { return runT })
 	if s := run(configured(), ctx); s.id != runID || s.waker != runW || !s.now.Equal(runT) {
 		t.Errorf("run values over agent values: %+v, want the run's", s)
 	}

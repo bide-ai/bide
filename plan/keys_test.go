@@ -78,7 +78,7 @@ func TestRunKeys_AreReserved(t *testing.T) {
 			t.Errorf("key %q is not reserved by agent", k)
 		}
 	}
-	if _, err := agent.Step(context.Background(), agenttest.MemJournal(), "r", nodeKey("x"),
+	if _, err := agenttest.MemJournal().Step(context.Background(), "r", nodeKey("x"),
 		func(context.Context) (int, error) { return 1, nil }); err == nil {
 		t.Fatalf("agent.Step accepted the node key %q", nodeKey("x"))
 	}

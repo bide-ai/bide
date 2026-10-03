@@ -18,7 +18,7 @@ func TestStep_ReservedNameIsRefused(t *testing.T) {
 		"turn/0", "start/0", "from/x", "audit:policy:x"} {
 		store := memJournal()
 		ran := false
-		_, err := Step(context.Background(), store, "r", name, func(context.Context) (string, error) { ran = true; return "v", nil })
+		_, err := store.Step(context.Background(), "r", name, func(context.Context) (string, error) { ran = true; return "v", nil })
 		if !errors.Is(err, ErrConfig) || !strings.Contains(err.Error(), name) || ran {
 			complete, _ := IsComplete(context.Background(), store, "r")
 			t.Fatalf("Step %q: err = %v, ran = %v (IsComplete %v); want ErrConfig naming it, not run", name, err, ran, complete)
@@ -30,7 +30,7 @@ func TestStep_ReservedNameIsRefused(t *testing.T) {
 func TestParallel_ReservedTaskNameIsRefused(t *testing.T) {
 	var ran int
 	task := func(context.Context) (int, error) { ran++; return 1, nil }
-	_, err := Parallel(context.Background(), memJournal(), "r", []Task[int]{
+	_, err := memJournal().Parallel(context.Background(), "r", []Task[int]{
 		{Name: "fine", Fn: task, Safety: Safety{ReadOnly: true}},
 		{Name: "@llm/0", Fn: task, Safety: Safety{ReadOnly: true}}})
 	if !errors.Is(err, ErrConfig) || !strings.Contains(err.Error(), "@llm/0") || ran != 0 {
@@ -81,7 +81,7 @@ func TestRecover_SkipsSubRuns(t *testing.T) {
 	charge := Func("charge", "charge a card", Safety{},
 		func(context.Context, struct{}) (string, error) { return "charged", nil }, WithApproval(SingleApproval()))
 	root := clerkTree(store, charge)
-	var pa *PendingApproval
+	var pa *ApprovalPending
 	if _, err := root.Run(ctx, "p", UserText("go")); !errors.As(err, &pa) {
 		t.Fatalf("run: %v, want a pending approval inside the sub-agent", err)
 	}
